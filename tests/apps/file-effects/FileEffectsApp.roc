@@ -22,7 +22,7 @@ import pf.Html
 ## - "Show" asks for a URL that shows the first file and links to it
 ##   (`test-id "preview"`, `test-id "shown"`); "Hide" gives it up.
 FileEffectsApp := [].{
-	S : { files : List(File), read : Ask, panel : Bool, send : Pick, send_panel : Bool, panel_sent : Str, digest : Pick, show : Pick }
+	S : { files : List(File), read : Ask, panel : Bool, send : Pick, send_panel : Bool, panel_sent : Str, progress : Str, progress_sent : Str, progress_pick : Pick, digest : Pick, show : Pick }
 
 	## What the page was last asked to read: nothing, or a file as text or
 	## as bytes, or as bytes accepting a large file.
@@ -160,7 +160,7 @@ FileEffectsApp := [].{
 		)
 
 	upload : File -> Engine.Request
-	upload = |f| f.upload({ url: "/upload", headers: [("x-name", f.name())] })
+	upload = |f| f.upload({ url: "/upload", headers: [("x-name", f.name())], credentials: Include })
 
 	digested : Result -> Str
 	digested = |res| match Engine.file_digest(res) {
@@ -192,6 +192,17 @@ FileEffectsApp := [].{
 		[] => Skip
 	}
 
+	## Keep exact transfer counts visible without converting wide integers through JSON numbers.
+	transfer_text : Engine.Transfer -> Str
+	transfer_text = |transfer| {
+		direction = if (transfer.direction == Sending) "sending" else "receiving"
+		total = match transfer.total {
+			Known(count) => count.to_str()
+			Unknown => "unknown"
+		}
+		"${direction} ${transfer.done.to_str()}/${total}"
+	}
+
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
 		v = st.signal()
@@ -221,6 +232,18 @@ FileEffectsApp := [].{
 				Html.button("Send", [], st.update(|s| { ..s, send: FileEffectsApp.pick_first(s.files, FileEffectsApp.whole) })),
 				Html.button("Send tail", [], st.update(|s| { ..s, send: FileEffectsApp.pick_first(s.files, FileEffectsApp.tail_of) })),
 				FileEffectsApp.operation(v.map(|s| s.send), FileEffectsApp.upload, FileEffectsApp.sent, |r| Html.p_s(r.map(FileEffectsApp.show_op), [Engine.test_id("sent")])),
+				Html.button("Send progress", [], st.update(|s| { ..s, progress_pick: FileEffectsApp.pick_first(s.files, FileEffectsApp.whole), progress: "waiting" })),
+				Html.button("Cancel progress", [], st.update(|s| { ..s, progress_pick: Skip })),
+				Engine.watch_latest(
+					v.map(|s| s.progress_pick),
+					|pick| match pick {
+						Run(file) => [FileEffectsApp.upload(file)]
+						Skip => []
+					},
+					st.on_result(|s, _, result| { ..s, progress_sent: FileEffectsApp.sent(result) }).with_progress({ every_ms: 1 }, st.on_progress(|s, _, transfer| { ..s, progress: FileEffectsApp.transfer_text(transfer) })),
+				),
+				Html.p_s(v.map(|s| s.progress), [Engine.test_id("transfer-progress")]),
+				Html.p_s(v.map(|s| s.progress_sent), [Engine.test_id("transfer-result")]),
 				Html.button("Send panel", [], st.update(|s| { ..s, send_panel: !s.send_panel })),
 				Engine.when(
 					v.map(|s| s.send_panel),
@@ -234,7 +257,7 @@ FileEffectsApp := [].{
 									Run(f) => [FileEffectsApp.upload(f)]
 									Skip => []
 								},
-								st.on_result(|s, _, res| { ..s, panel_sent: FileEffectsApp.sent(res) }),
+								st.on_result(|s, _, res| { ..s, panel_sent: FileEffectsApp.sent(res) }).with_progress({ every_ms: 100 }, st.on_progress(|s, _, transfer| { ..s, progress: FileEffectsApp.transfer_text(transfer) })),
 							),
 						],
 					),
@@ -263,5 +286,5 @@ FileEffectsApp := [].{
 	}
 
 	program : Engine.Program
-	program = Engine.program(|| Engine.state({ files: [], read: Skip, panel: Bool.False, send: Skip, send_panel: Bool.False, panel_sent: "nothing sent", digest: Skip, show: Skip }, |st| FileEffectsApp.view(st)))
+	program = Engine.program(|| Engine.state({ files: [], read: Skip, panel: Bool.False, send: Skip, send_panel: Bool.False, panel_sent: "nothing sent", progress: "none", progress_sent: "idle", progress_pick: Skip, digest: Skip, show: Skip }, |st| FileEffectsApp.view(st)))
 }

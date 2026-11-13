@@ -39,7 +39,7 @@ RemountApp := [].{
 							Html.p_s(body.signal(), [Engine.test_id("body")]),
 							Engine.watch(
 								id.lift().lift(),
-								|i| [Http({ method: "GET", url: "/messages/${i}", headers: [], body: "", timeout_ms: 0 })],
+								|i| [Http({ method: "GET", url: "/messages/${i}", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin })],
 								body.on_result(RemountApp.loaded),
 							),
 							Engine.watch(Engine.const("reminder"), |_| [Timer(60000)], Engine.ignore({})),

@@ -44,7 +44,7 @@ OutboxApp := [].{
 
 	## A note's request: one GET whose URL names it.
 	request : Str -> Engine.Request
-	request = |note| Http({ method: "GET", url: "/notes/${note}", headers: [], body: "", timeout_ms: 0 })
+	request = |note| Http({ method: "GET", url: "/notes/${note}", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin })
 
 	## A line of the log: the note an answer belongs to, and the answer.
 	answered : S, Str, Engine.Result -> S

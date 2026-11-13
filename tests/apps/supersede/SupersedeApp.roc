@@ -74,7 +74,7 @@ SupersedeApp := [].{
 	item_cfg = {
 		init: SupersedeApp.idle,
 		pending: |s, id| { ..s, pending: id, slow: False },
-		plan: |id| if (id == "") [] else [Http({ method: "GET", url: "/item/${id}", headers: [], body: "", timeout_ms: 1000 }), Timer(2000)],
+		plan: |id| if (id == "") [] else [Http({ method: "GET", url: "/item/${id}", headers: [], body: "", timeout_ms: 1000, cache: Default, credentials: SameOrigin }), Timer(2000)],
 		resolve: |s, id, res| match res {
 			Fired(_) => if (s.pending == "") s else { ..s, slow: True }
 			_ => { pending: "", answer: SupersedeApp.answer_of(id, res), previous: s.answer, slow: False }
@@ -107,7 +107,7 @@ SupersedeApp := [].{
 				{
 					init: "",
 					pending: |_, (k, v)| "loading ${k}/${v.to_str()}",
-					plan: |(k, v)| [Http({ method: "GET", url: "/row/${k}/${v.to_str()}", headers: [], body: "", timeout_ms: 0 })],
+					plan: |(k, v)| [Http({ method: "GET", url: "/row/${k}/${v.to_str()}", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin })],
 					resolve: |_, (k, v), res| SupersedeApp.answer_of("${k}/${v.to_str()}", res),
 				},
 				|l| Html.span_s(l, [Engine.test_id_s(key.lift().map(|k| "row ${k}"))]),
@@ -237,7 +237,7 @@ SupersedeApp := [].{
 									[
 										Engine.watch(
 											row.key(),
-											|k| [Http({ method: "GET", url: "/deluge/${k}", headers: [], body: "", timeout_ms: 0 })],
+											|k| [Http({ method: "GET", url: "/deluge/${k}", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin })],
 											tally.lift_row().on_result(
 												|t, _, r| match r {
 													Refused => { ..t, refused: t.refused + 1 }
@@ -268,7 +268,7 @@ SupersedeApp := [].{
 				Html.button("Clear", [], st.update(|s| { ..s, query: "" })),
 				Engine.watch_latest(
 					v.map(|s| s.query),
-					|q| if (q == "") [] else [Http({ method: "GET", url: "/search?q=${q}", headers: [], body: "", timeout_ms: 1000 })],
+					|q| if (q == "") [] else [Http({ method: "GET", url: "/search?q=${q}", headers: [], body: "", timeout_ms: 1000, cache: Default, credentials: SameOrigin })],
 					st.on_result(|s, q, r| { ..s, results: SupersedeApp.answer_of(q, r) }),
 				),
 				Html.p_s(v.map(|s| s.results), [Engine.test_id("results")]),
@@ -323,7 +323,7 @@ SupersedeApp := [].{
 								[
 									Engine.watch(
 										row.key(),
-										|k| [Http({ method: "GET", url: "/flood/${k}", headers: [], body: "", timeout_ms: 0 })],
+										|k| [Http({ method: "GET", url: "/flood/${k}", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin })],
 										st.lift_row().on_result(
 											|s, _, r| match r {
 												Refused => { ..s, refused: s.refused + 1 }

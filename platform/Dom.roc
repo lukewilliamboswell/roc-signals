@@ -7,7 +7,7 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 15
+	protocol_version = 16
 
 	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
 
@@ -1324,9 +1324,35 @@ Dom := [].{
 		Str.join_with($parts, " ")
 	}
 
+	## Network policy decoded independently from the command stream.
+	HttpOptions : { cache : Str, credentials : Str, progress_ms : U32 }
+
+	## Validate the closed policy bytes, including upload’s fixed default cache.
+	http_options : List(U8), U64, Bool -> HttpOptions
+	http_options = |bytes, at, upload| {
+		cache = match Dom.byte(bytes, at) {
+			1 => "default"
+			2 if !upload => "no-store"
+			3 if !upload => "reload"
+			4 if !upload => "no-cache"
+			5 if !upload => "force-cache"
+			_ => crash "invalid HTTP cache policy"
+		}
+		credentials = match Dom.byte(bytes, at + 1) {
+			1 => "same-origin"
+			2 => "include"
+			_ => crash "invalid HTTP credentials policy"
+		}
+		progress_ms = Dom.u32(bytes, at + 2)
+		if progress_ms > 0 and progress_ms < 16 {
+			crash "invalid HTTP progress interval"
+		}
+		{ cache, credentials, progress_ms }
+	}
+
 	## An effect command, decoded independently of the engine.
 	FxCmd : [
-		Http(U32, Str, Str, List((Str, Str)), Str, U32),
+		Http(U32, Str, Str, List((Str, Str)), Str, U32, HttpOptions),
 		Get(U32, Str),
 		SessionGet(U32, Str),
 		StorageSub(U32, Str),
@@ -1362,7 +1388,7 @@ Dom := [].{
 
 		## An HTTP request whose body is a file's range: id, method, URL,
 		## headers, the file and the timeout (ms, 0 none).
-		Upload(U32, Str, Str, List((Str, Str)), { token : U64, start : U64, len : U64 }, U32),
+		Upload(U32, Str, Str, List((Str, Str)), { token : U64, start : U64, len : U64 }, U32, HttpOptions),
 
 		## A digest of a file's range: id, algorithm (1 SHA-256) and the file.
 		Digest(U32, U8, { token : U64, start : U64, len : U64 }),
@@ -1382,7 +1408,7 @@ Dom := [].{
 
 		## An HTTP request whose body becomes a file (`FX` kind 15): id,
 		## method, URL, headers and timeout (ms, 0 none).
-		Fetch(U32, Str, Str, List((Str, Str)), U32),
+		Fetch(U32, Str, Str, List((Str, Str)), U32, HttpOptions),
 
 		## A file's range saved as a download (`SAVE`), and the name it is
 		## saved under.
@@ -1695,8 +1721,8 @@ Dom := [].{
 					}
 					(body, a3) = Dom.str(b, $a)
 					timeout = Dom.u32(b, a3)
-					$at = a3 + 4
-					$fx = $fx.append(Http(id, method, url, $hs, body, timeout))
+					$at = a3 + 10
+					$fx = $fx.append(Http(id, method, url, $hs, body, timeout, Dom.http_options(b, a3 + 4, False)))
 				} else if kind == 2 {
 					(key, a1) = Dom.str(b, $at)
 					$at = a1
@@ -1766,8 +1792,8 @@ Dom := [].{
 						$hs = $hs.append((hk, hv))
 						$a = h2
 					}
-					$fx = $fx.append(Upload(id, method, url, $hs, Dom.file_ref(b, $a), Dom.u32(b, $a + 24)))
-					$at = $a + 28
+					$fx = $fx.append(Upload(id, method, url, $hs, Dom.file_ref(b, $a), Dom.u32(b, $a + 24), Dom.http_options(b, $a + 28, True)))
+					$at = $a + 34
 				} else if kind == 13 {
 					algorithm = Dom.byte(b, $at)
 					if algorithm != 1 {
@@ -1820,8 +1846,8 @@ Dom := [].{
 						$hs = $hs.append((hk, hv))
 						$a = h2
 					}
-					$fx = $fx.append(Fetch(id, method, url, $hs, Dom.u32(b, $a)))
-					$at = $a + 4
+					$fx = $fx.append(Fetch(id, method, url, $hs, Dom.u32(b, $a), Dom.http_options(b, $a + 4, False)))
+					$at = $a + 10
 				} else {
 					crash "unknown effect kind ${kind.to_str()}"
 				}

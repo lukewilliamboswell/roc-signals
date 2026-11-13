@@ -529,6 +529,19 @@ Engine := [].{
 	## How `File.upload` sends a file: `url` (required), `method` (`"POST"`
 	## by default), `headers` (none by default) and `timeout` (`Unlimited`
 	## by default, or `Ms(ms)`).
+	## Browser cache policy for HTTP and downloaded files.
+	Cache : Core.Cache
+
+	## Whether requests include cross-origin credentials.
+	Credentials : Core.Credentials
+
+	## HTTP options; only the URL is required.
+	HttpProps : Core.HttpProps
+
+	## Construct a request with explicit browser cache and credential policies.
+	http : HttpProps -> Request
+	http = Core.http
+
 	UploadProps : Core.UploadProps
 
 	## A piece of state as context `ctx` sees it, holding an `s`.
@@ -564,6 +577,10 @@ Engine := [].{
 		## counted (`skipped`).
 		on_result : State(ctx, s), (s, a, Result -> s) -> Reaction(ctx, a)
 		on_result = |{ s }, f| s.on_result(f)
+
+		## Reduce progress in an ordinary turn; retired local writes are skipped.
+		on_progress : State(ctx, s), (s, a, Transfer -> s) -> ProgressReaction(ctx, a)
+		on_progress = |{ s }, f| s.on_progress(f)
 
 		## A handler whose reducer receives its typed payload: text, received
 		## file handles, or another kind chosen by its attach function.
@@ -746,7 +763,7 @@ Engine := [].{
 	## answered and kept as `Http` is.
 	Request : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
-		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
+		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32, cache : Cache, credentials : Credentials }),
 		StorageGet(Str),
 		SessionStorageGet(Str),
 		StorageChanges(Str),
@@ -787,7 +804,7 @@ Engine := [].{
 		SessionStorageRemove(Str),
 		ReadBytes({ file : File, max_bytes : U64 }),
 		ReadUtf8({ file : File, max_bytes : U64 }),
-		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32 }),
+		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32, credentials : Credentials }),
 		Sha256(File),
 		ObjectUrl(File),
 
@@ -807,7 +824,7 @@ Engine := [].{
 
 		## An HTTP request whose response body becomes a file
 		## (`File.fetch`), answered `Fetched`; kept like `Http`.
-		Fetch({ method : Str, url : Str, headers : List((Str, Str)), timeout_ms : U32 }),
+		Fetch({ method : Str, url : Str, headers : List((Str, Str)), timeout_ms : U32, cache : Cache, credentials : Credentials }),
 	]
 
 	## A request that is emitted and forgotten: the commands of [Request],
@@ -968,7 +985,24 @@ Engine := [].{
 	## for local state or with `react` for the store's cells, or use `ignore`.
 	## `first.also(second)` runs both on one result, in order, as one atomic
 	## transition, the second seeing the first's writes, like `Handler.also`.
+	## `with_progress(props, handler)` attaches a separate sampled transfer
+	## reaction to this site’s HTTP, upload and fetch requests. The handler
+	## receives the original issued-for item; a report keeps its request live.
 	Reaction(ctx, a) : Core.Reaction(ctx, a)
+
+	## A sampled count from one transfer, with a truthful known or unknown total.
+	Transfer : Core.Transfer
+
+	## A progress handler receives the original issued-for item and sampled counts.
+	ProgressReaction(ctx, a) : Core.ProgressReaction(ctx, a)
+
+	## The requested sampling interval, with a 16 ms minimum.
+	ProgressProps : Core.ProgressProps
+
+	## Turn a sampled count into a pure decision over store cells.
+	react_progress : (a, Transfer -> List(Write(st))) -> ProgressReaction(ctx, a)
+		where [ctx.store : () -> Reach(ctx, st)]
+	react_progress = Core.store_progress
 
 	## A reaction that discards every result, for sites that only issue commands.
 	ignore : {} -> Reaction(ctx, a)

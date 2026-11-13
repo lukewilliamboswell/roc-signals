@@ -209,6 +209,10 @@ SpecRunner := [].{
 		## never searches the full subscription set.
 		report_sources : Dict(U32, {}),
 
+		## Policy metadata for pending network requests only; removed by final
+		## delivery or cancel, so the engine’s in-flight cap bounds this map.
+		network : Dict(U32, { method : Str, options : Dom.HttpOptions }),
+
 		## One source index and epoch over the same ingress queue as focus
 		## callbacks. Slots are absolute while a drain removes its prefix.
 		reports : { held : Bool, releasing : Bool, replaced : U64, epoch : U64, head : U64, index : Dict(ReportSource, { epoch : U64, slot : U64 }) },
@@ -761,6 +765,7 @@ SpecRunner := [].{
 		scroll_exhausted: Bool.False,
 		scroll_error: "",
 		report_sources: Dict.empty(),
+		network: Dict.empty(),
 		reports: { held: Bool.False, releasing: Bool.False, replaced: 0, epoch: 0, head: 0, index: Dict.empty() },
 	}
 
@@ -785,7 +790,7 @@ SpecRunner := [].{
 			}
 			b = $b
 			$b = match c {
-				Http(id, _, url, _, body, _) => { ..b, pending: b.pending.append({ id, url, body, kind: HttpRequest }), issued: b.issued.append(id) }
+				Http(id, method, url, _, body, _, options) => { ..b, network: b.network.insert(id, { method, options }), report_sources: if (options.progress_ms > 0) b.report_sources.insert(id, {}) else b.report_sources, pending: b.pending.append({ id, url, body, kind: HttpRequest }), issued: b.issued.append(id) }
 				Guard(on) => { ..b, guard: on }
 				SessionGet(id, key) => { ..b, gets: b.gets.append(Read({ id, key, session: True })) }
 				StorageSub(id, key) => { ..b, subs: b.subs.append({ id, sub: StorageSub(key) }), report_sources: b.report_sources.insert(id, {}) }
@@ -825,7 +830,7 @@ SpecRunner := [].{
 							Failures => !failures.is_empty()
 						},
 					)
-					{ ..b, pending: b.pending.keep_if(|request| request.id != id), subs: b.subs.keep_if(|entry| entry.id != id), gets: tasks, failure_queue: failures, failure_scheduled: b.failure_scheduled and !failures.is_empty(), reports: { ..b.reports, index: b.reports.index.remove(Request(id)) }, report_sources: b.report_sources.remove(id) }
+					{ ..b, pending: b.pending.keep_if(|request| request.id != id), subs: b.subs.keep_if(|entry| entry.id != id), gets: tasks, failure_queue: failures, failure_scheduled: b.failure_scheduled and !failures.is_empty(), reports: { ..b.reports, index: b.reports.index.remove(Request(id)) }, report_sources: b.report_sources.remove(id), network: b.network.remove(id) }
 				}
 				Push(url) => { ..b, back: b.back.append({ url: b.env.url, doc: b.doc }), env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) }, fwd: [] }
 				Replace(url) => { ..b, env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) } }
@@ -835,13 +840,13 @@ SpecRunner := [].{
 				Title(t) => { ..b, title: t }
 				Ref(_) | Shown(_) => b
 				FileRead(id, mode, file, max_bytes) => { ..b, pending: b.pending.append({ id, url: "read", body: "", kind: ReadRequest({ mode, file, max_bytes }) }), issued: b.issued.append(id) }
-				Upload(id, _, url, _, file, _) => { ..b, pending: b.pending.append({ id, url, body: "", kind: UploadRequest(file) }), issued: b.issued.append(id) }
+				Upload(id, method, url, _, file, _, options) => { ..b, network: b.network.insert(id, { method, options }), report_sources: if (options.progress_ms > 0) b.report_sources.insert(id, {}) else b.report_sources, pending: b.pending.append({ id, url, body: "", kind: UploadRequest(file) }), issued: b.issued.append(id) }
 				Digest(id, _, file) => { ..b, pending: b.pending.append({ id, url: "digest", body: "", kind: DigestRequest(file) }), issued: b.issued.append(id) }
 				FileUrl(id, file) => { ..b, pending: b.pending.append({ id, url: "url", body: "", kind: UrlRequest(file) }), issued: b.issued.append(id) }
 				PortSend(port, msg) => { ..b, port_log: b.port_log.append({ port, json: msg.json }) }
 				PortCall(id, port, msg, timeout_ms) => { ..b, pending: b.pending.append({ id, url: "port", body: "", kind: PortRequest({ port, json: msg.json, timeout_ms }) }), issued: b.issued.append(id) }
 				PortListen(id, port, msg) => { ..b, subs: b.subs.append({ id, sub: PortSub(port, msg.json) }), report_sources: if (b.latest_ports.contains(port)) b.report_sources.insert(id, {}) else b.report_sources }
-				Fetch(id, _, url, _, _) => { ..b, pending: b.pending.append({ id, url, body: "", kind: FetchRequest }), issued: b.issued.append(id) }
+				Fetch(id, method, url, _, _, options) => { ..b, network: b.network.insert(id, { method, options }), report_sources: if (options.progress_ms > 0) b.report_sources.insert(id, {}) else b.report_sources, pending: b.pending.append({ id, url, body: "", kind: FetchRequest }), issued: b.issued.append(id) }
 				# The runtime resolves a save's file when it applies the batch,
 				# while a handle the batch released still names its file.
 				Save(file, name) => { ..b, saves: b.saves.append({ name, bytes: SpecRunner.file_bytes(b, file) }) }
@@ -1060,7 +1065,9 @@ SpecRunner := [].{
 		if !outer and active.turns >= 4096 {
 			return { ..active, fault: Poisoned("resource_limit: more than 4096 turns delivered without returning to idle (an event feedback loop)"), event_queue: [], after_batch: [], browser: SpecRunner.clear_callbacks(active.browser) }
 		}
-		counted = { ..active, turns: active.turns + if (outer) 0 else 1 }
+		is_final_network = node == SpecRunner.fx_node and payload.first() != Ok(26) and active.browser.network.contains(h)
+		cleaned = if (is_final_network) { ..active, browser: { ..active.browser, report_sources: active.browser.report_sources.remove(h), network: active.browser.network.remove(h), reports: { ..active.browser.reports, index: active.browser.reports.index.remove(Request(h)) } } } else active
+		counted = { ..cleaned, turns: cleaned.turns + if (outer) 0 else 1 }
 		(inst, cmds, wbuf) = (program.event)(counted.inst, counted.buf, counted.wbuf, node, h, payload)
 		next = SpecRunner.answer_gets(program, SpecRunner.take(counted, inst, cmds, wbuf))
 		if (outer) { ..SpecRunner.drain_focus(program, next), draining: Bool.False } else next
@@ -1260,7 +1267,10 @@ SpecRunner := [].{
 
 	## Deliver an effect result to request `id`.
 	deliver : Program(state), S(state), U32, List(U8) -> S(state)
-	deliver = |program, s, id, payload| SpecRunner.send(program, s, SpecRunner.fx_node, id, payload)
+	deliver = |program, s, id, payload| {
+		ready = if (payload == [7]) { ..s, browser: { ..s.browser, report_sources: s.browser.report_sources.remove(id), reports: { ..s.browser.reports, index: s.browser.reports.index.remove(Request(id)) } } } else s
+		SpecRunner.send(program, ready, SpecRunner.fx_node, id, payload)
+	}
 
 	## Deliver `payload` to every live subscription `pick` selects.
 	broadcast : Program(state), S(state), ({ id : U32, sub : Sub } -> Bool), List(U8) -> S(state)
@@ -2031,7 +2041,11 @@ SpecRunner := [].{
 	## do not flush a held frame, and an unchanged fact raises no report.
 	is_occurrence : S(state), Scm.Op -> Bool
 	is_occurrence = |s, op| match op {
-		Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | LeavePage(_) | RunEffect(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
+		RunEffect(_) => match s.browser.stub {
+			Staged(Reject({ kind: Timeout, .. })) => False
+			_ => True
+		}
+		Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | LeavePage(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
 		PasteText(loc, _) => match SpecRunner.find(s.dom, loc) {
 			Err(_) => False
 			Ok(node) => match Dom.target(s.dom, node, "paste", True) {
@@ -2262,6 +2276,54 @@ SpecRunner := [].{
 			ExpectNoLocalStorage(key) => check(!b.env.storage.any(|(name, _)| name == key), "local storage ${key} is present")
 			ExpectPendingEffects(n) => check(b.pending.len() == n, "expected ${n.to_str()} pending effects, got ${b.pending.len().to_str()}")
 			RunEffect(n) => SpecRunner.run_effect(program, s, n)
+			ExpectRequest({ n, checks }) => {
+				if n == 0 {
+					return Err("pending request index is one-based")
+				}
+				request = b.pending.get(n - 1) ? |_| "pending request ${n.to_str()} does not exist"
+				network = b.network.get(request.id) ? |_| "pending request ${n.to_str()} is not HTTP, upload or fetch"
+				for field in checks {
+					actual = match field.key {
+						"method" => network.method
+						"url" => request.url
+						"cache" => network.options.cache
+						"credentials" => network.options.credentials
+						_ => crash "SpecRunner: parser supplied unknown request field"
+					}
+					if actual != field.value {
+						return Err("request ${n.to_str()} ${field.key}: expected ${JsonOut.quote(field.value)}, got ${JsonOut.quote(actual)}")
+					}
+				}
+				Ok(s)
+			}
+			ProgressEffect({ n, direction, done, total }) => {
+				if n == 0 {
+					return Err("pending request index is one-based")
+				}
+				request = b.pending.get(n - 1) ? |_| "pending request ${n.to_str()} does not exist"
+				network = b.network.get(request.id) ? |_| "pending request ${n.to_str()} is not a transfer"
+				if network.options.progress_ms == 0 {
+					return Err("pending request ${n.to_str()} did not request progress")
+				}
+				bytes = SpecRunner.put_u64([26, if (direction == Sending) 1 else 2], done)
+				payload = match total {
+					Unknown => SpecRunner.put_u64(bytes.append(0), 0)
+					Known(count) => SpecRunner.put_u64(bytes.append(1), count)
+				}
+				Ok(SpecRunner.report(program, { state: s, id: request.id, payload }))
+			}
+			ExpectPortSubscriptionArg({ port, n, json }) => {
+				active = b.subs.keep_if(|entry| SpecRunner.on_port(entry.sub, port))
+				if n == 0 {
+					return Err("active subscription index is one-based")
+				}
+				entry = active.get(n - 1) ? |_| "active subscription ${n.to_str()} does not exist for ${port}"
+				actual = match entry.sub {
+					PortSub(_, value) => value
+					_ => crash "SpecRunner: selected port subscription changed kind"
+				}
+				check(actual == json, "active subscription ${n.to_str()} argument differs: ${JsonOut.quote(actual)}")
+			}
 			LoseWork({ occurrence, fault }) => {
 				job = SpecRunner.pending_job(s, occurrence)?
 				SpecRunner.deliver_job(program, s, job.id, SpecRunner.encode_lost(fault))
@@ -3483,7 +3545,7 @@ SpecRunner := [].{
 				}
 				record = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u64($record, bytes.len()), name), mime)
 				rb = rest.browser
-				s1 = { ..rest, browser: { ..rb, files: rb.files.append({ name: key, mime, bytes }), given: rb.given.append({ token: Box.unbox(handle), name: key }) } }
+				s1 = { ..rest, browser: { ..rb, files: rb.files.append({ name: key, mime, bytes }), given: rb.given.append({ token: Box.unbox(handle), name: key }), network: rb.network.remove(id), report_sources: rb.report_sources.remove(id), reports: { ..rb.reports, index: rb.reports.index.remove(Request(id)) } } }
 				(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, SpecRunner.fx_node, id, record, handles)
 				Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s1, draining: Bool.True, turns: 0 }, inst, cmds, wbuf))), draining: Bool.False })
 			}

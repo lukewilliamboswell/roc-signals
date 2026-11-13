@@ -196,7 +196,7 @@ admit = |m, k, c, kind| {
 		# G asks for 300 ms (odd c) or c * 250 s, capped at 600 s; H for none
 		asked = if (c % 2 == 1) 300 else c * 250000
 		timeout = if (kind == G) (if (asked > 600000) 600000 else asked.to_u32_wrap()) else 0
-		{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c, at: 0, kind, orphan: False }), fx: m.fx.append(Http(id, "GET", url, headers, "", timeout)) }
+		{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c, at: 0, kind, orphan: False }), fx: m.fx.append(Http(id, "GET", url, headers, "", timeout, { cache: "default", credentials: "same-origin", progress_ms: 0 })) }
 	}
 }
 
@@ -270,11 +270,11 @@ issue_l = |m, q| {
 	if q == 0 {
 		m
 	} else if q % 4 == 1 {
-		admit_x(m, k_l, q, Lh, |id| Http(id, "GET", url, [], "", 5000), RefL)
+		admit_x(m, k_l, q, Lh, |id| Http(id, "GET", url, [], "", 5000, { cache: "default", credentials: "same-origin", progress_ms: 0 }), RefL)
 	} else if q % 4 == 2 {
 		admit_x(m, k_l, q, Li, |id| Interval(id, 500), RefL)
 	} else if q % 4 == 3 {
-		m1 = admit_x(m, k_l, q, Lh, |id| Http(id, "GET", url, [], "", 0), RefL)
+		m1 = admit_x(m, k_l, q, Lh, |id| Http(id, "GET", url, [], "", 0, { cache: "default", credentials: "same-origin", progress_ms: 0 }), RefL)
 		{ ..m1, queue: m1.queue.concat([{ k: k_l, c: q, at: 1, what: SelfL }, { k: k_l, c: q, at: 2, what: SelfL }]) }
 	} else {
 		m
@@ -288,9 +288,9 @@ issue_r = |m, r| {
 	if r == 0 {
 		m
 	} else if r % 3 == 1 {
-		admit_x(m, k_r, r, Rh, |id| Http(id, "GET", url, [], "", 0), RefR)
+		admit_x(m, k_r, r, Rh, |id| Http(id, "GET", url, [], "", 0, { cache: "default", credentials: "same-origin", progress_ms: 0 }), RefR)
 	} else if r % 3 == 2 {
-		m1 = admit_x(m, k_r, r, Rh, |id| Http(id, "GET", url, [], "", 0), RefR)
+		m1 = admit_x(m, k_r, r, Rh, |id| Http(id, "GET", url, [], "", 0, { cache: "default", credentials: "same-origin", progress_ms: 0 }), RefR)
 		admit_x(m1, k_r, r, Rt, |id| Timer(id, 100), RefR)
 	} else {
 		m1 = admit_x(m, k_r, r, Ri, |id| Interval(id, 700), RefR)
@@ -365,7 +365,7 @@ issue_x = |m, g| {
 	var $m = m
 	var $at = 0
 	for input in FxApp.inputs_x(g) {
-		$m = admit_at($m, { k: k_x, c: g, at: $at }, Xh, |id| Http(id, "GET", "/x/${input.to_str()}", [], "", 0), RefX)
+		$m = admit_at($m, { k: k_x, c: g, at: $at }, Xh, |id| Http(id, "GET", "/x/${input.to_str()}", [], "", 0, { cache: "default", credentials: "same-origin", progress_ms: 0 }), RefX)
 		$at = $at + 1
 	}
 	$m
@@ -464,7 +464,7 @@ model_post : M -> M
 model_post = |m| {
 	posts = m.posts + 1
 	item = posts // 2
-	drain(admit_x({ ..m, posts }, k_o, item, Oh, |id| Http(id, "GET", "/o/${item.to_str()}?q=${m.q.to_str()}", [], "", 0), RefO))
+	drain(admit_x({ ..m, posts }, k_o, item, Oh, |id| Http(id, "GET", "/o/${item.to_str()}?q=${m.q.to_str()}", [], "", 0, { cache: "default", credentials: "same-origin", progress_ms: 0 }), RefO))
 }
 
 ## The query changes (a click or L's own follow-up): L supersedes, then
@@ -1076,6 +1076,7 @@ test! = |{ mode, program }| {
 		run_media(program)
 		run_transitions(program)
 		run_persistence(program)
+		run_progress(program)
 		Fuzz.keep
 	}
 }
@@ -1086,6 +1087,7 @@ ex = |name, mode, program| Fuzz.example({ name, revision: "1", make: || { mode, 
 target = Fuzz.target_with!({
 	name: "fx-channel",
 	examples: [
+		ex("progress-lifecycle", 1, [0, 4, 3, 8, 1, 3, 2, 0, 5, 6, 12, 3, 16, 3, 9]),
 		ex("post-send-time-reading", 1, [12, 0, 4, 0, 12, 0, 4, 0, 12, 0, 2, 5, 2, 6, 2, 7]),
 		ex("persistence-lifetimes", 1, [3, 0, 2, 4, 1, 5, 1, 0, 8, 11, 0, 14, 1, 17, 1]),
 		ex("transition-batches", 1, [2, 1, 1, 3, 3, 0, 5, 4, 0, 1]),
@@ -1246,3 +1248,110 @@ run_persistence = |bytes| {
 
 ## Mixed refusals, supersession, repeated reports and reparenting use the same model.
 expect run_persistence([3, 0, 2, 4, 1, 5, 1, 0, 8, 11, 0, 14, 1, 17, 1]) == {}
+
+## Generated progress and final turns preserve issued-for identity across
+## supersession and reparenting. The model tracks live owners independently;
+## reports never retire an id or increase final delivery counters.
+run_progress : List(U8) -> {}
+run_progress = |bytes| {
+	view = Core.state(
+		{ shown: True, query: 0.U64, progress: 0.U64, answered: 0.U64 },
+		|state| Core.element(
+			"main",
+			[],
+			[
+				Core.element("button", [Core.on_click(state.update(|value| { ..value, query: value.query + 1 }))], [Core.text("query")]),
+				Core.element("button", [Core.on_click(state.update(|value| { ..value, shown: !value.shown }))], [Core.text("toggle")]),
+				Core.text_s(state.signal().map(|value| "${value.progress.to_str()}/${value.answered.to_str()}")),
+				Core.when(
+					state.signal().map(|value| value.shown),
+					|| Core.watch_latest(
+						state.signal().map(|value| value.query),
+						|query| [Core.http({ url: "/progress/${query.to_str()}", cache: NoStore, credentials: Include })],
+						state.on_result(|value, query, _| { ..value, answered: value.answered + query + 1 }).with_progress({ every_ms: 1 }, state.on_progress(|value, query, transfer| { ..value, progress: value.progress + query + transfer.done })),
+					),
+					|| Core.text(""),
+				),
+			],
+		),
+	)
+	(initial, mount) = Core.take_cmds(Core.mount_with(64, view), [])
+	var $engine = initial
+	var $dom = Dom.apply(Dom.new({}), mount)
+	var $live = [{ id: 1.U32, query: 0.U64, orphan: False }]
+	var $next = 2.U32
+	var $shown = True
+	var $query = 0.U64
+	var $progress = 0.U64
+	var $answered = 0.U64
+	var $reports = 0.U64
+	var $delivered = 0.U64
+	var $stale = 0.U64
+	var $cancelled = 0.U64
+	var $reparented = 0.U64
+	for byte in bytes {
+		var $wanted = []
+		engine = if byte % 4 < 2 {
+			id = byte.to_u32() % $next + 1
+			found = $live.find_first(|entry| entry.id == id)
+			match found {
+				Err(_) => {
+					$stale = $stale + 1
+				}
+				Ok(entry) => if byte % 4 == 0 {
+					$reports = $reports + 1
+					$progress = $progress + entry.query + byte.to_u64()
+				} else {
+					$answered = $answered + entry.query + 1
+					$delivered = $delivered + 1
+					$live = $live.keep_if(|item| item.id != id)
+				}
+			}
+			if (byte % 4 == 0) Core.progress($engine, id, { direction: Receiving, done: byte.to_u64(), total: Unknown }) else Core.result($engine, id, Timeout)
+		} else {
+			toggle = byte % 4 == 3
+			if toggle {
+				$shown = !$shown
+				if !$shown {
+					$reparented = $reparented + $live.count_if(|entry| !entry.orphan)
+					$live = $live.map(|entry| { ..entry, orphan: True })
+				}
+			} else {
+				$query = $query + 1
+				if $shown {
+					removed = $live.keep_if(|entry| !entry.orphan)
+					$wanted = removed.map(|entry| Cancel(entry.id))
+					$cancelled = $cancelled + removed.len()
+					$live = $live.keep_if(|entry| entry.orphan)
+				}
+			}
+			if $shown {
+				id = $next
+				$next = $next + 1
+				$live = $live.append({ id, query: $query, orphan: False })
+				$wanted = $wanted.append(Http(id, "GET", "/progress/${$query.to_str()}", [], "", 0, { cache: "no-store", credentials: "include", progress_ms: 16 }))
+			}
+			label = if (toggle) "toggle" else "query"
+			index = SpecRunner.find($dom, Text(label)) ?? crash "progress model button absent"
+			route = Dom.target($dom, index, "click", True) ?? crash "progress model button has no handler"
+			Core.event($engine, route.node, route.handler, "")
+		}
+		(taken, commands) = Core.take_cmds(engine, [])
+		(dom, _, effects) = Dom.apply_fx($dom, commands)
+		stats = Core.fx_stats(taken)
+		actual = { live: Core.fx_live(taken), effects, progress: Core.work_counters(taken).get(47), issued: stats.issued, delivered: stats.delivered, stale: stats.stale, cancelled: stats.cancelled, reparented: stats.reparented, text: Dom.text_of(dom, dom.root) }
+		expected = { live: $live.map(|entry| entry.id), effects: $wanted, progress: Ok($reports), issued: ($next - 1).to_u64(), delivered: $delivered, stale: $stale, cancelled: $cancelled, reparented: $reparented, text: "querytoggle${$progress.to_str()}/${$answered.to_str()}" }
+		if actual != expected {
+			crash "progress lifecycle model differs: ${Str.inspect(actual)} expected ${Str.inspect(expected)}"
+		}
+		if Core.settled(taken).is_err() {
+			crash "progress turn left a reader stale"
+		}
+		$engine = taken
+		$dom = dom
+	}
+	{}
+}
+
+## Progress remains live through repeated reports, reparenting, final delivery and supersession.
+expect run_progress([0, 4, 3, 8, 1, 3, 2, 0, 5, 6, 12, 3, 16, 3, 9]) == {}

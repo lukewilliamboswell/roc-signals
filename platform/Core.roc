@@ -230,7 +230,7 @@ Core := [].{
 		## The context's type, named so its method can be called.
 		Ctx : ctx
 		store_over = Ctx.store().over
-		{ run: |e, r, res, site| store_writes(store_over, e, decide(r, res), Reaction(site)) }
+		{ run: |e, r, res, site| store_writes(store_over, e, decide(r, res), Reaction(site)), progress: NoProgress }
 	}
 
 	## As `store_reaction`, where `decide` also receives `v`, read once when
@@ -247,6 +247,7 @@ Core := [].{
 				writes = decide(read(e), r, res)
 				store_writes(store_over, e, writes, Reaction(site))
 			},
+			progress: NoProgress,
 		}
 	}
 
@@ -578,12 +579,12 @@ Core := [].{
 		## browser can no longer read fails the request, which the browser
 		## reports as a network failure.
 		upload : File, UploadProps -> Request
-		upload = |f, UploadProps.({ url, method, headers, timeout })| {
+		upload = |f, UploadProps.({ url, method, headers, timeout, credentials })| {
 			timeout_ms = match timeout {
 				Unlimited => 0
 				Ms(ms) => ms
 			}
-			Upload({ method, url, headers, body: f, timeout_ms })
+			Upload({ method, url, headers, body: f, timeout_ms, credentials })
 		}
 
 		## A request for the SHA-256 digest of the file, or its range: answered
@@ -676,26 +677,27 @@ Core := [].{
 
 		## How a download into a file is asked for: the URL, the method, the
 		## request headers, and a timeout (`Unlimited` by default; capped at
-		## ten minutes).
-		FetchProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [], timeout : [Unlimited, Ms(U32)] ?? Unlimited }
+		## ten minutes), with browser cache and credentials policies.
+		FetchProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [], timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
 
 		## A request for an HTTP response whose body becomes a [File], for an
-		## effect site's plan: the body stays in the browser and never enters
-		## the page's memory, and the file can be read, digested, shown,
+		## effect site's plan: the body stays outside Wasm, and the file can be read, digested, shown,
 		## uploaded, saved or sent to a task like any other. It is answered
 		## `Fetched({ status, headers, body })` for any status, or as an HTTP
 		## request fails (`Network`, `Timeout`), or `FileFailed(TooLarge)` for
 		## a body over the `maxFileBytes` mount option; read it with
 		## `fetched`. Like an HTTP request it is kept when its site is
-		## disposed and answered to the nearest surviving ancestor.
+		## disposed and answered to the nearest surviving ancestor. With progress,
+		## Default cache uses the browser’s Blob path; other cache policies collect
+		## streamed chunks in JavaScript, bounded by maxFileBytes.
 		fetch : FetchProps -> Request
 		fetch = |props| {
-			{ url, method, headers, timeout } = props
+			{ url, method, headers, timeout, cache, credentials } = props
 			timeout_ms = match timeout {
 				Unlimited => 0
 				Ms(ms) => ms
 			}
-			Fetch({ method, url, headers, timeout_ms })
+			Fetch({ method, url, headers, timeout_ms, cache, credentials })
 		}
 
 		## Write the file with the format's `encode_file`: in a worker request
@@ -826,6 +828,30 @@ Core := [].{
 	## here, what a deployment allows is the mount's.
 	ReadProps := { max_bytes : U64 ?? 8388608 }
 
+	## Browser cache policy carried unchanged to the network service.
+	Cache : [Default, NoStore, Reload, NoCache, ForceCache]
+
+	## Same-origin credentials by default; Include also permits cross-origin credentials.
+	Credentials : [SameOrigin, Include]
+
+	## HTTP options with browser defaults, for an effect site’s plan.
+	HttpProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [], body : Str ?? "", timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
+
+	## Build an HTTP request without repeating its default method, body or policies.
+	http : HttpProps -> Request
+	http = |props| Http({
+		method: props.method,
+		url: props.url,
+		headers: props.headers,
+		body: props.body,
+		timeout_ms: match props.timeout {
+			Unlimited => 0
+			Ms(ms) => ms
+		},
+		cache: props.cache,
+		credentials: props.credentials,
+	})
+
 	## How to send a file as an HTTP body (`File.upload`):
 	##
 	## - `url`: where to send it; required.
@@ -835,11 +861,13 @@ Core := [].{
 	##   `Http` request's are.
 	## - `timeout`: `Ms(ms)` answers `Timeout` when the server has not
 	##   answered in time, capped at ten minutes; `Unlimited` by default.
+	## - `credentials`: SameOrigin by default, or Include for credentials across origins.
 	UploadProps := {
 		url : Str,
 		method : Str ?? "POST",
 		headers : List((Str, Str)) ?? [],
 		timeout : [Unlimited, Ms(U32)] ?? Unlimited,
+		credentials : Credentials ?? SameOrigin,
 	}
 
 	## A text handler is the generic family specialised to UTF-8 text.
@@ -953,8 +981,13 @@ Core := [].{
 		## counted (`skipped`).
 		on_result : State(ctx, s), (s, a, Result -> s) -> Reaction(ctx, a)
 		on_result = |{ mask: _, writes: wrote, get: _, modify }, f| {
-			{ run: |e, a, r, _| (modify(e, |s| f(s, a, r)), wrote) }
+			{ run: |e, a, r, _| (modify(e, |s| f(s, a, r)), wrote), progress: NoProgress }
 		}
+
+		## Reduce a sampled transfer count into this state. Reparented writes to
+		## retired state are skipped in the same way as final-result writes.
+		on_progress : State(ctx, s), (s, a, Transfer -> s) -> ProgressReaction(ctx, a)
+		on_progress = |{ mask: _, writes: wrote, get: _, modify }, f| { run: |env, a, transfer, _| (modify(env, |value| f(value, a, transfer)), wrote) }
 
 		## A handler whose reducer receives its typed payload: text, received
 		## file handles, or another kind chosen by its attach function.
@@ -1381,7 +1414,7 @@ Core := [].{
 	## answered and kept as `Http` is.
 	Request : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
-		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
+		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32, cache : Cache, credentials : Credentials }),
 		StorageGet(Str),
 		SessionStorageGet(Str),
 		StorageChanges(Str),
@@ -1422,7 +1455,7 @@ Core := [].{
 		SessionStorageRemove(Str),
 		ReadBytes({ file : File, max_bytes : U64 }),
 		ReadUtf8({ file : File, max_bytes : U64 }),
-		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32 }),
+		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32, credentials : Credentials }),
 		Sha256(File),
 		ObjectUrl(File),
 
@@ -1443,7 +1476,7 @@ Core := [].{
 		## An HTTP request whose response body becomes a file
 		## (`File.fetch`), delivering `Fetched`. `timeout_ms` 0 = none, capped
 		## at 10 minutes; kept like `Http`.
-		Fetch({ method : Str, url : Str, headers : List((Str, Str)), timeout_ms : U32 }),
+		Fetch({ method : Str, url : Str, headers : List((Str, Str)), timeout_ms : U32, cache : Cache, credentials : Credentials }),
 	]
 
 	## A request that is emitted and forgotten: the commands of [Request],
@@ -1647,12 +1680,35 @@ Core := [].{
 		_ => crash "contract: fetched was given a result that is not from File.fetch"
 	}
 
+	## A sampled transfer count. Unknown never substitutes a guessed total.
+	Transfer : { direction : [Sending, Receiving], done : U64, total : [Known(U64), Unknown] }
+
+	## A progress decision, separate from a request’s final result reaction.
+	ProgressReaction(ctx, a) :: { run : (ctx, a, Transfer, List(U32) -> (ctx, Layers)) }
+
+	## Sampling interval requested by an application; intervals below 16 ms use 16 ms.
+	ProgressProps := { every_ms : U32 ?? 100 }
+
+	## Apply a pure decision’s writes for a sampled transfer count and the original item.
+	store_progress : (a, Transfer -> List(Write(st))) -> ProgressReaction(ctx, a)
+		where [ctx.store : () -> StoreReach(ctx, st)]
+	store_progress = |decide| {
+		Ctx : ctx
+		store_over = Ctx.store().over
+		{ run: |env, a, transfer, site| store_writes(store_over, env, decide(a, transfer), Reaction(site)) }
+	}
+
 	## What an effect site does with a result: what it writes, given the value
 	## the request was issued for and the [Result]. Make one with `State.on_result`
 	## or `store_reaction`, or use `ignore`. Like a handler's, its `run` is
 	## also given the path of the site whose reaction it is, and returns the
 	## set it wrote.
-	Reaction(ctx, a) :: { run : (ctx, a, Result, List(U32) -> (ctx, Layers)) }.{
+	Reaction(ctx, a) :: { run : (ctx, a, Result, List(U32) -> (ctx, Layers)), progress : ProgressHandler(ctx, a) }.{
+
+		## Ask every HTTP transfer issued by this site to sample progress, using
+		## the original issued-for item and ordinary turn settlement.
+		with_progress : Reaction(ctx, a), ProgressProps, ProgressReaction(ctx, a) -> Reaction(ctx, a)
+		with_progress = |reaction, props, progress| { ..reaction, progress: Reporting({ every_ms: if (props.every_ms < 16) 16 else props.every_ms, run: progress.run }) }
 
 		## One reaction that runs `first` and then `second` on the same
 		## result, as one atomic write: `second` receives the environment
@@ -1669,13 +1725,14 @@ Core := [].{
 					(e2, w2) = run_second(e1, a, r, site)
 					(e2, layers_or(w1, w2))
 				},
+				progress: combine_progress(first.progress, second.progress),
 			}
 		}
 	}
 
 	## A reaction that discards every result, for sites that only issue commands.
 	ignore : {} -> Reaction(ctx, a)
-	ignore = |_| { run: |e, _, _, _| (e, no_layers) }
+	ignore = |_| { run: |e, _, _, _| (e, no_layers), progress: NoProgress }
 
 	## `on_cleanup(name, v, plan)` runs `plan` on `v`, read in the scope's last
 	## environment, when the scope this site is mounted in is disposed, and issues
@@ -1739,7 +1796,7 @@ Core := [].{
 			|env, args, tx| {
 				a = (v.read)(env)
 				cfg = { v, plan: |_, value| plan(value), step: |_, old, value, path| replanned(plan)(old, value, path), react, path: args.path }
-				(t1, owned) = issue(count_evals(tx, 1), args.path, plan(a), a, [])
+				(t1, owned) = issue_progress(count_evals(tx, 1), args.path, plan(a), a, [], progress_interval(react))
 				(latest_inst(cfg, a, owned), eff_mask(v), t1)
 			},
 		),
@@ -2544,9 +2601,19 @@ Core := [].{
 				# A subscription stays live until it is cancelled, unless its
 				# JavaScript ended it (a port's `Closed` or `Threw`).
 				tx1 = if (entry.sub and !(programs.ports.ends)(res)) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
-				drain(turn({ root, tx: start_batch(tx1), programs }, entry.path, id, Fx(res)))
+				drain(turn({ root, tx: start_batch(tx1), programs }, entry.path, id, Fx(Final(res))))
 			}
 		}
+	}
+
+	## Deliver a sampled transfer through its live request’s owning path without
+	## retiring the request. An unsolicited report is a contract error.
+	progress : App, U32, Transfer -> App
+	progress = |{ root, tx, programs }, id, transfer| match tx.fx.live.find_first(|entry| entry.id == id) {
+		Err(_) => { root, tx: fx_count(tx, Stale), programs }
+		Ok(entry) => if entry.progress {
+			drain(turn({ root, tx: start_batch(tx), programs }, entry.path, id, Fx(Progress(transfer))))
+		} else crash "contract: transfer progress was not requested for effect ${id.to_str()} at site ${show_path(entry.path)}"
 	}
 
 	## For test platforms and harnesses: take the commands accumulated since the
@@ -2586,7 +2653,7 @@ Core := [].{
 			$out = $out.append(work_get(a.tx.work, $i))
 			$i = $i + 1
 		}
-		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42), work_get(a.tx.work, 43), a.tx.fx.observed.live, work_get(a.tx.work, 45), work_get(a.tx.work, 46)])
+		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42), work_get(a.tx.work, 43), a.tx.fx.observed.live, work_get(a.tx.work, 45), work_get(a.tx.work, 46), work_get(a.tx.work, 47)])
 	}
 
 	# ------------------------------------------------------------------
@@ -2637,7 +2704,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 15
+	protocol_version = 16
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -2936,7 +3003,7 @@ Core := [].{
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
 				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
 				if node == fx_node {
-					finish(Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
+					finish(if (payload.first() == Ok(26)) Core.progress(fresh, handler, decode_progress(payload)) else Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
 				} else {
 					finish(deliver(fresh, node, handler, Ev(payload)), [], wbuf)
 				}
@@ -3003,7 +3070,7 @@ Mount(ctx) := [Mount((ctx, Args, Tx -> (Inst(ctx), U128, Tx)))]
 ## the written layers below it (`waits_for_outer`). Each of them joined that
 ## pass if the pass reached its site; the walk refreshes, at its own site,
 ## each one the pass did not reach, and stops at the deepest of them.
-Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(Result), Settle(Layers, Bool), OpenState(Bool)]
+Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(EffectInput), Settle(Layers, Bool), OpenState(Bool)]
 
 ## Whether a payload is a `Settle` walk, and if so whether it names a
 ## layer below index `depth`, so that it goes on past the state site there.
@@ -3283,7 +3350,7 @@ Out(ctx) := [Done, Pending(ctx, Layers), Orphaned(List(Orphan(ctx)))]
 ## with the disposed scope land in a snapshot that is discarded (the third
 ## part of its answer counts them), writes to surviving states commit, and
 ## the write set names only surviving layers.
-Orphan(ctx) : { id : U32, run : (ctx, Result -> (ctx, Layers, U64)) }
+Orphan(ctx) : { id : U32, run : (ctx, EffectInput -> (ctx, Layers, U64)) }
 
 orphans_of : Out(ctx) -> List(Orphan(ctx))
 orphans_of = |out| match out {
@@ -3379,15 +3446,15 @@ w_port_sends = 40
 ## effect counters, port commands (40), property commands (41–42), and
 ## released registrations (43), live observations (44), and marked batches (45).
 w_record_count : U64
-w_record_count = w_count + 15
+w_record_count = w_count + 16
 
 ## The work counters as plain fields (`c01` is counter 1): bumping one
 ## updates a value in the accumulator and never allocates, so counting
 ## cannot cost an allocation or a copy on any path.
-Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64, c45 : U64, c46 : U64 }
+Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64, c45 : U64, c46 : U64, c47 : U64 }
 
 work_zero : Work
-work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0, c45: 0, c46: 0 }
+work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0, c45: 0, c46: 0, c47: 0 }
 
 ## Add `n` to counter `i`; counter 0 (and any index past the last) is the
 ## unused sink.
@@ -3430,6 +3497,7 @@ add_work = |w, i, n| match i {
 	43 => { ..w, c43: w.c43 + n }
 	45 => { ..w, c45: w.c45 + n }
 	46 => { ..w, c46: w.c46 + n }
+	47 => { ..w, c47: w.c47 + n }
 	_ => w
 }
 
@@ -3473,6 +3541,7 @@ work_get = |w, i| match i {
 	43 => w.c43
 	45 => w.c45
 	46 => w.c46
+	47 => w.c47
 	_ => 0
 }
 
@@ -7114,6 +7183,26 @@ port_kind_name = |kind| match kind {
 ## `decode_res` with result tags 14 and 15 read by `port_res`, which is
 ## the program's own (see [Ports]): an app that declares no ports
 ## carries no port decoder.
+decode_progress : List(U8) -> Core.Transfer
+decode_progress = |bytes| {
+	if bytes.len() != 19 {
+		crash "contract: transfer progress needs exactly 19 bytes"
+	}
+	direction = match bytes.get(1) {
+		Ok(1) => Sending
+		Ok(2) => Receiving
+		_ => crash "contract: transfer progress direction must be 1 or 2"
+	}
+	done = get_u64(bytes, 2, "transfer progress")
+	total_bytes = get_u64(bytes, 11, "transfer progress")
+	total = match bytes.get(10) {
+		Ok(0) if total_bytes == 0 => Unknown
+		Ok(1) => Known(total_bytes)
+		_ => crash "contract: transfer progress total flag must be 0 with zero total, or 1"
+	}
+	{ direction, done, total }
+}
+
 decode_res_with : List(U8), (List(U8), List(Blob) -> Result) -> Result
 decode_res_with = |b, port_res| {
 	tag = b.first() ?? crash "contract: empty effect result"
@@ -7443,7 +7532,7 @@ ends_subscription = |res| match res {
 	_ => False
 }
 
-Live : { id : U32, path : List(U32), sub : Bool }
+Live : { id : U32, path : List(U32), sub : Bool, progress : Bool }
 
 Queued : { id : U32, path : List(U32), res : Result }
 
@@ -7578,6 +7667,69 @@ Owned(a) : { id : U32, sub : Bool, keep : Bool, a : a, at : U64 }
 ## mount, and `step` those for a change from the value last seen to a new
 ## one at the site's path (`plan` of the new value, except for `on_post`,
 ## which checks the change).
+EffectInput : [Final(Result), Progress(Core.Transfer)]
+
+ProgressHandler(ctx, a) : [NoProgress, Reporting({ every_ms : U32, run : (ctx, a, Core.Transfer, List(U32) -> (ctx, Layers)) })]
+
+is_progress : EffectInput -> Bool
+is_progress = |input| match input {
+	Progress(_) => True
+	Final(_) => False
+}
+
+progress_interval : Core.Reaction(ctx, a) -> U32
+progress_interval = |reaction| match reaction.progress {
+	NoProgress => 0
+	Reporting(report) => report.every_ms
+}
+
+supports_progress : Request -> Bool
+supports_progress = |request| match request {
+	Http(_) | Upload(_) | Fetch(_) => True
+	_ => False
+}
+
+count_delivery : Tx, EffectInput -> Tx
+count_delivery = |tx, input| if (is_progress(input)) bump(tx, 47, 1) else fx_count(tx, Delivered)
+
+run_reaction : Core.Reaction(ctx, a), ctx, a, EffectInput, List(U32) -> (ctx, Layers)
+run_reaction = |reaction, env, a, input, site| match input {
+	Final(result) => (reaction.run)(env, a, result, site)
+	Progress(transfer) => match reaction.progress {
+		Reporting(report) => (report.run)(env, a, transfer, site)
+		NoProgress => crash "contract: progress requires a reaction with_progress at site ${show_path(site)}"
+	}
+}
+
+combine_progress : ProgressHandler(ctx, a), ProgressHandler(ctx, a) -> ProgressHandler(ctx, a)
+combine_progress = |first, second| match (first, second) {
+	(NoProgress, report) | (report, NoProgress) => report
+	(Reporting(left), Reporting(right)) => Reporting({
+		every_ms: min_u32(left.every_ms, right.every_ms),
+		run: |env, a, transfer, site| {
+			(e1, w1) = (left.run)(env, a, transfer, site)
+			(e2, w2) = (right.run)(e1, a, transfer, site)
+			(e2, layers_or(w1, w2))
+		},
+	})
+}
+
+put_http_options : List(U8), Core.Cache, Core.Credentials, U32 -> List(U8)
+put_http_options = |bytes, cache, credentials, progress_ms| {
+	cache_code = match cache {
+		Default => 1
+		NoStore => 2
+		Reload => 3
+		NoCache => 4
+		ForceCache => 5
+	}
+	credentials_code = match credentials {
+		SameOrigin => 1
+		Include => 2
+	}
+	put_u32(bytes.append(cache_code).append(credentials_code), progress_ms)
+}
+
 EffectCfg(ctx, a) : { v : Signal(ctx, a), plan : (ctx, a -> List(Request)), step : (ctx, a, a, List(U32) -> List(Request)), react : Reaction(ctx, a), path : List(U32) }
 
 ## The `step` of a site that issues `plan` of each new value.
@@ -7631,22 +7783,25 @@ min_u32 = |a, b| if (a < b) a else b
 
 ## An admitted request's `FX` command (design.md, Appendix B). A port
 ## request's is written at the end of its turn instead (see [PortAt]).
-put_req : List(U8), U32, Request -> List(U8)
-put_req = |c, id, req| match req {
+put_req : List(U8), U32, Request, U32 -> List(U8)
+put_req = |c, id, req, progress_ms| match req {
 	PortCall(_) | PortSubscribe(_) => c
-	_ => put_fx(c, id, req)
+	_ => put_fx_progress(c, id, req, progress_ms)
 }
 
 put_fx : List(U8), U32, Request -> List(U8)
-put_fx = |c, id, req| {
+put_fx = |c, id, req| put_fx_progress(c, id, req, 0)
+
+put_fx_progress : List(U8), U32, Request, U32 -> List(U8)
+put_fx_progress = |c, id, req, progress_ms| {
 	head = put_u32(c.append(13), id)
 	match req {
-		Http({ method, url, headers, body, timeout_ms }) => {
+		Http({ method, url, headers, body, timeout_ms, cache, credentials }) => {
 			var $b = put_u32(put_str(put_str(head.append(1), method), url), headers.len().to_u32_wrap())
 			for (k, v) in headers {
 				$b = put_str(put_str($b, k), v)
 			}
-			put_u32(put_str($b, body), min_u32(timeout_ms, max_timeout_ms))
+			put_http_options(put_u32(put_str($b, body), min_u32(timeout_ms, max_timeout_ms)), cache, credentials, progress_ms)
 		}
 		StorageGet(k) => put_str(head.append(2), k)
 		SessionStorageGet(key) => put_str(head.append(17), key)
@@ -7665,7 +7820,7 @@ put_fx = |c, id, req| {
 		Work({ task, input, files, timeout_ms, on_cancel, prepared, .. }) => put_work(head, task, input, files, timeout_ms, on_cancel, prepared)
 		ReadBytes({ file, max_bytes }) => put_u64(put_file(head.append(11).append(1), file), max_bytes)
 		ReadUtf8({ file, max_bytes }) => put_u64(put_file(head.append(11).append(2), file), max_bytes)
-		Upload({ method, url, headers, body, timeout_ms }) => {
+		Upload({ method, url, headers, body, timeout_ms, credentials }) => {
 			if method == "GET" or method == "HEAD" {
 				crash "contract: File.upload of \"${body.name}\" to ${url} uses ${method}, which carries no body"
 			}
@@ -7673,16 +7828,16 @@ put_fx = |c, id, req| {
 			for (k, v) in headers {
 				$b = put_str(put_str($b, k), v)
 			}
-			put_u32(put_file($b, body), min_u32(timeout_ms, max_timeout_ms))
+			put_http_options(put_u32(put_file($b, body), min_u32(timeout_ms, max_timeout_ms)), Default, credentials, progress_ms)
 		}
 		Sha256(f) => put_file(head.append(13).append(1), f)
 		ObjectUrl(f) => put_file(head.append(14), f)
-		Fetch({ method, url, headers, timeout_ms }) => {
+		Fetch({ method, url, headers, timeout_ms, cache, credentials }) => {
 			var $b = put_u32(put_str(put_str(head.append(15), method), url), headers.len().to_u32_wrap())
 			for (k, v) in headers {
 				$b = put_str(put_str($b, k), v)
 			}
-			put_u32($b, min_u32(timeout_ms, max_timeout_ms))
+			put_http_options(put_u32($b, min_u32(timeout_ms, max_timeout_ms)), cache, credentials, progress_ms)
 		}
 		_ => crash "not an awaited request"
 	}
@@ -7690,7 +7845,10 @@ put_fx = |c, id, req| {
 
 ## Admit an awaited request (or refuse it when the table is full).
 fx_admit : Tx, List(U32), Request -> (U32, Tx)
-fx_admit = |tx, path, req| {
+fx_admit = |tx, path, req| fx_admit_progress(tx, path, req, 0)
+
+fx_admit_progress : Tx, List(U32), Request, U32 -> (U32, Tx)
+fx_admit_progress = |tx, path, req, progress_ms| {
 	# A port request's bytes are written at the end of the turn.
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = turn_end_later(tx, path, req)
 	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch } = fx
@@ -7698,8 +7856,8 @@ fx_admit = |tx, path, req| {
 		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
 		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2 })
 	} else {
-		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
-		(id, { cmds: put_req(cmds, id, req), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2 })
+		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req), progress: progress_ms > 0 and supports_progress(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
+		(id, { cmds: put_req(cmds, id, req, progress_ms), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2 })
 	}
 }
 
@@ -7744,7 +7902,10 @@ fx_follow = |tx, path, res| {
 
 ## Issue a site's requests for value `a`.
 issue : Tx, List(U32), List(Request), a, List(Owned(a)) -> (Tx, List(Owned(a)))
-issue = |tx, path, reqs, a, owned| {
+issue = |tx, path, reqs, a, owned| issue_progress(tx, path, reqs, a, owned, 0)
+
+issue_progress : Tx, List(U32), List(Request), a, List(Owned(a)), U32 -> (Tx, List(Owned(a)))
+issue_progress = |tx, path, reqs, a, owned, progress_ms| {
 	var $tx = tx
 	var $owned = owned
 	var $at = 0
@@ -7799,7 +7960,7 @@ issue = |tx, path, reqs, a, owned| {
 				$tx = { cmds: put_str(put_u64(put_u64(put_u64(cmds.append(20), token), start), len), name), next, free, routes, work, paths, site_free, observations, fx }
 			}
 			_ => {
-				(id, t1) = fx_admit($tx, path, req)
+				(id, t1) = fx_admit_progress($tx, path, req, progress_ms)
 				$tx = t1
 				$owned = $owned.append({ id, sub: is_sub(req), keep: is_kept(req), a, at })
 			}
@@ -7817,7 +7978,7 @@ fx_dispose : Tx, Reaction(ctx, a), List(Owned(a)), List(U32) -> (List(Orphan(ctx
 fx_dispose = |tx, react, owned, site| {
 	var $tx = tx
 	var $orph = []
-	run = react.run
+	run = |env, a, input, path| run_reaction(react, env, a, input, path)
 	for o in owned {
 		id = o.id
 		if $tx.fx.live.any(|l| l.id == id) {
@@ -7852,7 +8013,7 @@ fx_adopt = |tx, path, orphans| {
 			tx,
 			|fx| {
 				..fx,
-				live: fx.live.map(|l| if (ids.contains(l.id)) { id: l.id, path, sub: l.sub } else l),
+				live: fx.live.map(|l| if (ids.contains(l.id)) { ..l, path } else l),
 				reparented: fx.reparented + ids.len(),
 			},
 		)
@@ -7860,7 +8021,7 @@ fx_adopt = |tx, path, orphans| {
 }
 
 ## An effect result arriving at the site path itself (not below it).
-leaf_fx : List(U32), U64, Payload -> Try(Result, [NotFx])
+leaf_fx : List(U32), U64, Payload -> Try(EffectInput, [NotFx])
 leaf_fx = |path, pos, payload| {
 	if pos >= path.len() {
 		match payload {
@@ -7875,15 +8036,15 @@ leaf_fx = |path, pos, payload| {
 ## Deliver a result to an adopted orphan: its reaction runs in this
 ## site's current environment; writes to retired states are counted as
 ## skipped. An id this site does not hold is dropped and counted stale.
-adopt_deliver : List(Orphan(ctx)), ctx, U32, Result, Tx -> (List(Orphan(ctx)), Out(ctx), Tx)
+adopt_deliver : List(Orphan(ctx)), ctx, U32, EffectInput, Tx -> (List(Orphan(ctx)), Out(ctx), Tx)
 adopt_deliver = |adopted, env, id, res, tx| {
 	match adopted.find_first_index(|o| o.id == id) {
 		Ok(i) => {
 			o = adopted.get(i) ?? crash "adopted"
 			run = o.run
-			kept = adopted.drop_at(i)
+			kept = if (is_progress(res)) adopted else adopted.drop_at(i)
 			(e2, m, sk) = run(env, res)
-			(kept, Pending(e2, m), with_fx(tx, |fx| { ..fx, delivered: fx.delivered + 1, skipped: fx.skipped + sk }))
+			(kept, Pending(e2, m), with_fx(count_delivery(tx, res), |fx| { ..fx, skipped: fx.skipped + sk }))
 		}
 		Err(_) => (adopted, Pending(env, no_layers), fx_count(tx, Stale))
 	}
@@ -7957,7 +8118,7 @@ effect_reading = |v, initial, plan, step, react| Site(
 			cfg = { v, plan, step, react, path: args.path }
 			t1 = count_evals(tx, 1)
 			if initial {
-				(t2, owned) = issue(t1, args.path, plan(env, a), a, [])
+				(t2, owned) = issue_progress(t1, args.path, plan(env, a), a, [], progress_interval(react))
 				(effect_inst(cfg, a, owned), eff_mask(v), t2)
 			} else {
 				(effect_inst(cfg, a, []), eff_mask(v), t1)
@@ -8033,7 +8194,7 @@ effect_inst = |cfg0, last0, owned0| {
 						if a == last {
 							(effect_inst(cfg, last, owned), Done, t1)
 						} else {
-							(t2, owned2) = issue(t1, cfg.path, (cfg.step)(env, last, a, cfg.path), a, owned)
+							(t2, owned2) = issue_progress(t1, cfg.path, (cfg.step)(env, last, a, cfg.path), a, owned, progress_interval(cfg.react))
 							(effect_inst(cfg, a, owned2), Done, t2)
 						}
 					}
@@ -8057,17 +8218,17 @@ effect_inst = |cfg0, last0, owned0| {
 	)
 }
 
-effect_deliver : EffectCfg(ctx, a), a, List(Owned(a)), ctx, U32, Result, Tx -> (Inst(ctx), Out(ctx), Tx)
+effect_deliver : EffectCfg(ctx, a), a, List(Owned(a)), ctx, U32, EffectInput, Tx -> (Inst(ctx), Out(ctx), Tx)
 	where [a.is_eq : a, a -> Bool]
 effect_deliver = |cfg, last, owned, env, id, res, tx| {
 	match owned.find_first_index(|o| o.id == id) {
 		Ok(i) => {
 			entry = owned.get(i) ?? crash "owned"
-			kept = if (entry.sub) owned else owned.drop_at(i)
+			kept = if (entry.sub or is_progress(res)) owned else owned.drop_at(i)
 			react = cfg.react
 			next = effect_inst(cfg, last, kept)
-			(env2, wrote) = (react.run)(env, entry.a, res, cfg.path)
-			(next, Pending(env2, wrote), fx_count(tx, Delivered))
+			(env2, wrote) = run_reaction(react, env, entry.a, res, cfg.path)
+			(next, Pending(env2, wrote), count_delivery(tx, res))
 		}
 		Err(_) => (effect_inst(cfg, last, owned), Pending(env, no_layers), fx_count(tx, Stale))
 	}
@@ -8119,7 +8280,7 @@ latest_inst = |cfg0, last0, owned0| {
 						if a == last {
 							(latest_inst(cfg, last, owned), Done, t1)
 						} else {
-							(t2, owned2) = issue(fx_supersede(t1, owned), cfg.path, (cfg.plan)(env, a), a, [])
+							(t2, owned2) = issue_progress(fx_supersede(t1, owned), cfg.path, (cfg.plan)(env, a), a, [], progress_interval(cfg.react))
 							(latest_inst(cfg, a, owned2), Done, t2)
 						}
 					}
@@ -8139,17 +8300,17 @@ latest_inst = |cfg0, last0, owned0| {
 	)
 }
 
-latest_deliver : EffectCfg(ctx, a), a, List(Owned(a)), ctx, U32, Result, Tx -> (Inst(ctx), Out(ctx), Tx)
+latest_deliver : EffectCfg(ctx, a), a, List(Owned(a)), ctx, U32, EffectInput, Tx -> (Inst(ctx), Out(ctx), Tx)
 	where [a.is_eq : a, a -> Bool]
 latest_deliver = |cfg, last, owned, env, id, res, tx| {
 	match owned.find_first_index(|o| o.id == id) {
 		Ok(i) => {
 			entry = owned.get(i) ?? crash "owned"
-			kept = if (entry.sub) owned else owned.drop_at(i)
+			kept = if (entry.sub or is_progress(res)) owned else owned.drop_at(i)
 			react = cfg.react
 			next = latest_inst(cfg, last, kept)
-			(env2, wrote) = (react.run)(env, entry.a, res, cfg.path)
-			(next, Pending(env2, wrote), fx_count(tx, Delivered))
+			(env2, wrote) = run_reaction(react, env, entry.a, res, cfg.path)
+			(next, Pending(env2, wrote), count_delivery(tx, res))
 		}
 		Err(_) => (latest_inst(cfg, last, owned), Pending(env, no_layers), fx_count(tx, Stale))
 	}
@@ -8203,6 +8364,16 @@ posted_reaction : Core.Reaction(ctx, item) -> Core.Reaction(ctx, Core.Outbox(ite
 posted_reaction = |react| {
 	run = react.run
 	{
+		progress: match react.progress {
+			NoProgress => NoProgress
+			Reporting(report) => Reporting({
+				every_ms: report.every_ms,
+				run: |env, box, transfer, site| match box.last() {
+					Posted(item) => (report.run)(env, item, transfer, site)
+					Unposted => (env, no_layers)
+				},
+			})
+		},
 		run: |env, box, res, site| match box.last() {
 			Posted(item) => run(env, item, res, site)
 			Unposted => (env, no_layers)
@@ -8267,7 +8438,8 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 				}
 				Fire(path, pos, h, payload) => {
 					match leaf_fx(path, pos, payload) {
-						Ok(res) => resource_deliver(rc, last, s, owned, block, env, h, res, tx)
+						Ok(Final(res)) => resource_deliver(rc, last, s, owned, block, env, h, res, tx)
+						Ok(Progress(_)) => crash "contract: progress delivered to a resource without a progress reaction"
 						Err(_) => {
 							match fire_target(block, path, pos) {
 								Leaf => {
@@ -8294,6 +8466,7 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 							{ outer, value } = e
 							(In.{ outer, value: resolve(value, a, at, r) }, one_layer(depth))
 						},
+						progress: NoProgress,
 					}
 					(mine, t1) = fx_dispose(tx, react, owned.map(|o| { id: o.id, sub: o.sub, keep: o.keep, a: (o.a, o.at), at: o.at }), rc.path)
 					(orph, t2) = dispose_block(block, In.{ outer: env, value: s }, remove, t1)
@@ -8808,7 +8981,7 @@ drain = |app0| {
 			$deep_turns = $deep_turns + 1
 		}
 		tx1 = with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_first(1) })
-		$app = turn({ root, tx: tx1, programs }, q.path, q.id, Fx(q.res))
+		$app = turn({ root, tx: tx1, programs }, q.path, q.id, Fx(Final(q.res)))
 	}
 	$app
 }
@@ -8858,6 +9031,7 @@ work_bytes = |inst, buf| {
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, w_port_sends)), work_get(counters, 41)), work_get(counters, 42))
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, 43)), fx.observed.live), work_get(counters, 45))
 	$b = put_u64($b, work_get(counters, 46))
+	$b = put_u64($b, work_get(counters, 47))
 	runs = inst.tx.fx.cleanups
 	$b = put_u32($b, runs.len().to_u32_wrap())
 	for (name, k) in runs {
@@ -9569,7 +9743,7 @@ expect encode_keymap(Core.Keymap.prevent([Core.Chord.plain("")]).concat(Core.Key
 expect read_key(put_str(put_str(put_str([0], "Escape"), "").append(0), "")).is_err()
 
 ## Serialized work retains RELEASE at counter 43 and starts the cleanup table
-## after all 47 counters, including a multibyte cleanup name and its run count.
+## after all 48 counters, including a multibyte cleanup name and its run count.
 expect {
 	mounted = Core.mount(
 		Core.state(
@@ -9599,7 +9773,7 @@ expect {
 	(name, after_name) = get_str(bytes, cleanup_at + 4, "cleanup name")
 	runs = get_u64(bytes, after_name, "cleanup runs")
 	{ count, counters_match: $decoded == counters, released: $decoded.get(43), names, name, runs, consumed: after_name + 8 == bytes.len() } == {
-		count: 47,
+		count: 48,
 		counters_match: True,
 		released: Ok(1),
 		names: 1,
@@ -10058,4 +10232,84 @@ expect {
 	(changed, empty) = Core.take_cmds(Core.event(ready, 2, 0, ""), [])
 	(posted, commands) = Core.take_cmds(Core.event(changed, 3, 1, ""), [])
 	{ empty, commands, settled: Core.settled(posted).is_ok() } == { empty: [], commands: put_str([0, 17], "2:7"), settled: True }
+}
+
+## Progress keeps an admitted id live after disposal, while both progress and
+## final writes to a retired local state are skipped and counted separately.
+expect {
+	mounted = Core.mount(
+		Core.state(
+			True,
+			|shown| Core.element(
+				"main",
+				[],
+				[
+					Core.element("button", [Core.on_click(shown.update(|_| False))], []),
+					Core.when(
+						shown.signal(),
+						|| Core.state(
+							0.U64,
+							|local| Core.watch(
+								Core.const({}),
+								|_| [Core.http({ url: "/kept" })],
+								local.on_result(|value, _, _| value + 1).with_progress({}, local.on_progress(|value, _, _| value + 1)),
+							),
+						),
+						|| Core.text(""),
+					),
+				],
+			),
+		),
+	)
+	first = Core.progress(mounted, 1, { direction: Receiving, done: 1, total: Known(2) })
+	hidden = Core.event(first, 2, 0, "")
+	reported = Core.progress(hidden, 1, { direction: Receiving, done: 2, total: Known(2) })
+	answered = Core.result(reported, 1, Timeout)
+	stats = Core.fx_stats(answered)
+	{ live_after_report: Core.fx_live(reported), live_after_answer: Core.fx_live(answered), progress: Core.work_counters(answered).get(47), delivered: stats.delivered, skipped: stats.skipped, reparented: stats.reparented, settled: Core.settled(answered).is_ok() } == {
+		live_after_report: [1],
+		live_after_answer: [],
+		progress: Ok(2),
+		delivered: 1,
+		skipped: 2,
+		reparented: 1,
+		settled: True,
+	}
+}
+
+## The HTTP builder preserves explicit policy choices and defaults only what
+## was omitted; progress is requested by a reaction rather than request data.
+expect {
+	request = Core.http({ url: "/status", cache: NoStore, credentials: Include, timeout: Ms(300) })
+	request == Http({ method: "GET", url: "/status", headers: [], body: "", timeout_ms: 300, cache: NoStore, credentials: Include })
+}
+
+## A posted transfer reports against its original item, without passing a
+## progress payload to the final-result reaction or retaining the outbox wrapper.
+expect {
+	mounted = Core.mount(
+		Core.state(
+			{ box: Core.outbox({}), count: 0.U64 },
+			|state| Core.element(
+				"main",
+				[],
+				[
+					Core.element("button", [Core.on_click(state.update(|value| { ..value, box: value.box.post(9.U64) }))], []),
+					Core.text_s(state.signal().map(|value| value.count.to_str())),
+					Core.on_post(state.signal().map(|value| value.box), |_| [Core.http({ url: "/post" })], Core.ignore({}).with_progress({}, state.on_progress(|value, item, transfer| { ..value, count: item + transfer.done }))),
+				],
+			),
+		),
+	)
+	(clean, _) = Core.take_cmds(mounted, [])
+	posted = Core.event(clean, 2, 0, "")
+	(before, _) = Core.take_cmds(posted, [])
+	reported = Core.progress(before, 1, { direction: Sending, done: 41, total: Unknown })
+	(after, commands) = Core.take_cmds(reported, [])
+	{ commands, pending: Core.fx_live(after), reports: Core.work_counters(after).get(47), final: Core.fx_stats(after).delivered } == {
+		commands: [0, 12, 3, 0, 0, 0, 2, 0, 0, 0, '5', '0'],
+		pending: [1],
+		reports: Ok(1),
+		final: 0,
+	}
 }

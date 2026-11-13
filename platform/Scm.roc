@@ -614,6 +614,9 @@ Scm := [].{
 		ExpectUpdates(Loc, U64),
 		StubHttp({ label : Str, stub : Stub }),
 		RunEffect(U64),
+		ExpectRequest({ n : U64, checks : List({ key : Str, value : Str }) }),
+		ProgressEffect({ n : U64, direction : [Sending, Receiving], done : U64, total : [Known(U64), Unknown] }),
+		ExpectPortSubscriptionArg({ port : Str, n : U64, json : Str }),
 		ExpectPendingEffects(U64),
 
 		## Answer the N-th effect occurrence, a pending worker job, as lost
@@ -1250,6 +1253,42 @@ Scm := [].{
 		}
 	}
 
+	## Parse only the request fields an assertion states, rejecting unknown policies.
+	request_assertion : Sx, List(Sx) -> Try(Op, Problem)
+	request_assertion = |form, args| {
+		if args.is_empty() {
+			return Err(Scm.bad(form, "expect-request requires a pending occurrence"))
+		}
+		n = Scm.unsigned(Scm.arg(args, 0), "the pending occurrence")?
+		if n == 0 {
+			return Err(Scm.bad(form, "the pending occurrence is one-based"))
+		}
+		fields = Scm.keywords(form, args.drop_first(1))?
+		var $checks = []
+		for field in fields {
+			value = match field.key {
+				":method" | ":url" => Scm.string(field.value, field.key)?
+				":cache" => {
+					policy = Scm.symbol(field.value, "a cache policy")?
+					if !["default", "no-store", "reload", "no-cache", "force-cache"].contains(policy) {
+						return Err(Scm.bad(field.value, "unknown HTTP cache policy"))
+					}
+					policy
+				}
+				":credentials" => {
+					policy = Scm.symbol(field.value, "a credentials policy")?
+					if !["same-origin", "include"].contains(policy) {
+						return Err(Scm.bad(field.value, "unknown HTTP credentials policy"))
+					}
+					policy
+				}
+				_ => return Err(Scm.bad(form, "expect-request accepts :method, :url, :cache and :credentials"))
+			}
+			$checks = $checks.append({ key: field.key.drop_prefix(":"), value })
+		}
+		Ok(ExpectRequest({ n, checks: $checks }))
+	}
+
 	## `:key value` pairs, each key at most once.
 	keywords : Sx, List(Sx) -> Try(List({ key : Str, value : Sx }), Problem)
 	keywords = |form, items| {
@@ -1489,6 +1528,39 @@ Scm := [].{
 		{ name: "stub-http", parse: |form, args| Ok(StubHttp(Scm.http_fixture(form, "stub-http", args)?)) },
 		{ name: "stub-http-reject", parse: |form, args| Ok(StubHttp(Scm.http_fixture(form, "stub-http-reject", args)?)) },
 		{ name: "run-effect", parse: |form, args| Ok(RunEffect(Scm.count1(form, args, "the effect occurrence")?)) },
+		{ name: "expect-request", parse: Scm.request_assertion },
+		{
+			name: "progress-effect",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 4)?
+				n = Scm.unsigned(Scm.arg(a, 0), "the pending occurrence")?
+				if n == 0 {
+					return Err(Scm.bad(form, "the pending occurrence is one-based"))
+				}
+				direction = match Scm.symbol(Scm.arg(a, 1), "sending or receiving")? {
+					"sending" => Sending
+					"receiving" => Receiving
+					_ => return Err(Scm.bad(Scm.arg(a, 1), "direction is sending or receiving"))
+				}
+				done = Scm.scroll_count(Scm.arg(a, 2), "bytes transferred")?
+				total = match Scm.arg(a, 3) {
+					Sym("unknown", _) => Unknown
+					value => Known(Scm.scroll_count(value, "the total or unknown")?)
+				}
+				Ok(ProgressEffect({ n, direction, done, total }))
+			},
+		},
+		{
+			name: "expect-port-subscription-arg",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 3)?
+				n = Scm.unsigned(Scm.arg(a, 1), "the active subscription index")?
+				if n == 0 {
+					return Err(Scm.bad(form, "the active subscription index is one-based"))
+				}
+				Ok(ExpectPortSubscriptionArg({ port: Scm.port_name(Scm.arg(a, 0))?, n, json: Scm.string(Scm.arg(a, 2), "the argument JSON")? }))
+			},
+		},
 		{ name: "expect-pending-effects", parse: |form, args| Ok(ExpectPendingEffects(Scm.count1(form, args, "the pending count")?)) },
 		{
 			name: "lose-work",
@@ -1744,6 +1816,7 @@ Scm := [].{
 		{ name: "effects_cancelled", counters: [36] },
 		{ name: "effects_reparented", counters: [37] },
 		{ name: "effects_skipped", counters: [38] },
+		{ name: "effects_progress", counters: [47] },
 		{ name: "view_transitions", counters: [45] },
 	]
 
@@ -1827,6 +1900,9 @@ Scm := [].{
 		{ op: "stub-http", grant: Never },
 		{ op: "stub-http-reject", grant: Never },
 		{ op: "run-effect", grant: Never },
+		{ op: "expect-request", grant: Never },
+		{ op: "progress-effect", grant: Never },
+		{ op: "expect-port-subscription-arg", grant: Never },
 		{ op: "expect-pending-effects", grant: Never },
 		{ op: "lose-work", grant: Never },
 		{ op: "time-out-work", grant: Never },
@@ -1930,6 +2006,9 @@ Scm := [].{
 			StubHttp({ stub: Reply(_), .. }) => "stub-http"
 			StubHttp({ stub: Reject(_), .. }) => "stub-http-reject"
 			RunEffect(_) => "run-effect"
+			ExpectRequest(_) => "expect-request"
+			ProgressEffect(_) => "progress-effect"
+			ExpectPortSubscriptionArg(_) => "expect-port-subscription-arg"
 			ExpectPendingEffects(_) => "expect-pending-effects"
 			LoseWork(_) => "lose-work"
 			TimeOutWork(_) => "time-out-work"
@@ -2199,6 +2278,20 @@ Scm := [].{
 			ExpectUpdates(l, n) => [loc(l), JsonOut.field("count", Nat(n))]
 			StubHttp(fixture) => Scm.stub_fields(fixture)
 			RunEffect(n) => [JsonOut.field("count", Nat(n))]
+			ExpectRequest({ n, checks }) => [JsonOut.field("n", Nat(n))].concat(checks.map(|field| JsonOut.field(field.key, Text(field.value))))
+			ProgressEffect({ n, direction, done, total }) => [
+				JsonOut.field("n", Nat(n)),
+				JsonOut.field("direction", Text(if (direction == Sending) "sending" else "receiving")),
+				JsonOut.field("done", Text(done.to_str())),
+				JsonOut.field(
+					"total",
+					match total {
+						Known(bytes) => Text(bytes.to_str())
+						Unknown => Null
+					},
+				),
+			]
+			ExpectPortSubscriptionArg({ port, n, json }) => [JsonOut.field("port", Text(port)), JsonOut.field("n", Nat(n)), JsonOut.field("json", Text(json))]
 			ExpectPendingEffects(n) => [JsonOut.field("count", Nat(n))]
 			LoseWork({ occurrence, fault }) => [JsonOut.field("count", Nat(occurrence)), JsonOut.field("fault", Text(Scm.work_fault_name(fault)))]
 			TimeOutWork(n) => [JsonOut.field("count", Nat(n))]
@@ -2486,7 +2579,7 @@ expect {
 		\\${problem_of("(test \"t\" (steps (expect-metric-delta-at-most rows_painted 0)))")}
 		\\${JsonOut.render(Scm.spec_fields("m", spec))}
 	expected =
-		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, registrations_released, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped, view_transitions
+		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, registrations_released, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped, effects_progress, view_transitions
 		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"session":[],"session_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
 }
@@ -2823,4 +2916,19 @@ expect {
 		"(test \"t\" (steps (paste-text (label \"Import\"))))",
 	]
 	inputs.map(|source| Scm.parse(source).is_err()) == List.repeat(True, inputs.len())
+}
+
+## Request assertions retain only stated fields, and progress JSON preserves full U64 values.
+expect {
+	spec = Scm.parse("(test \"transfer\" (steps (expect-request 1 :cache no-store :credentials include) (progress-effect 2 receiving 18446744073709551615 unknown) (expect-port-subscription-arg \"feed\" 1 \"{}\")))")?
+	{ names: spec.steps.map(|step| Scm.op_name(step.op)), json: JsonOut.render(Scm.step_json(spec.steps.get(1)?)) } == {
+		names: ["expect-request", "progress-effect", "expect-port-subscription-arg"],
+		json: "{\"op\":\"progress-effect\",\"line\":1,\"column\":81,\"n\":2,\"direction\":\"receiving\",\"done\":\"18446744073709551615\",\"total\":null}",
+	}
+}
+
+## Network assertions reject unknown, duplicate and unsupported policies at the parser boundary.
+expect {
+	forms = ["(expect-request)", "(expect-request 0)", "(expect-request 1 :cache only-if-cached)", "(expect-request 1 :mode \"cors\")", "(expect-request 1 :url \"/a\" :url \"/b\")", "(expect-request 1 :credentials omit)", "(progress-effect 1 sent 2 unknown)", "(progress-effect 1 receiving 18446744073709551616 unknown)", "(expect-port-subscription-arg \"feed\" 0 \"{}\")"]
+	forms.all(|form| Scm.parse("(test \"invalid\" (steps ${form}))").is_err())
 }
