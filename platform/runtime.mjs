@@ -152,12 +152,11 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // messagePort(), and commands are logged in portLog.
 //
 // Attributes carry explicit presence; a present empty string stays present.
-// Element properties have their own commands and a closed table. Names in
-// the platform's legacy absence convention are present for any value other
-// than "" and "false"; that metadata includes the enumerated hidden attribute.
+// Element properties have their own commands and a closed table. Attribute
+// text is never interpreted as absence, including empty or false text.
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 17;
+export const PROTOCOL_VERSION = 18;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -290,22 +289,150 @@ function readStr(u8, at, n) {
   return utf8.decode(u8.subarray(at, at + n));
 }
 
-function walk(root, path) {
+function walk(root, path, protocol) {
   let node = root;
-  for (let i = 0; i < path.length; i += 1) {
-    node = node.firstChild;
-    for (let k = path[i]; k > 0; k -= 1) node = node.nextSibling;
+  for (let i = 0; i < path.length; i += 2) {
+    const container = protocol.CONTAINERS[path[i]];
+    if (!container) throw new Error(`unknown hole container ${path[i]}`);
+    node = container(node).childNodes[path[i + 1]];
+    if (!node) throw new Error("template path does not address a child");
   }
   return node;
 }
 
 
+const HTML_NS = "http://www.w3.org/1999/xhtml";
 const SVG_NS = "http://www.w3.org/2000/svg";
+const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
 
-// Elements are created in the SVG namespace for <svg> and anything inside it.
-function createIn(doc, tag, parent) {
-  if (tag === "svg" || (parent && parent.namespaceURI === SVG_NS && parent.tagName !== "foreignObject")) return doc.createElementNS(SVG_NS, tag);
-  return doc.createElement(tag);
+// Registry keys bind the module's names to real decoding implementations before
+// init. Command layout and DOM validation remain independent from Roc.
+const NAMESPACE_READERS = {
+  HTML: reader => { reader.namespace = HTML_NS; },
+  SVG: reader => { reader.namespace = SVG_NS; },
+  MATHML: reader => { reader.namespace = MATHML_NS; },
+  NONE: reader => { reader.namespace = null; },
+  URI: reader => {
+    const value = nameString(reader);
+    if (!value) throw new Error("explicit namespace URI is empty");
+    reader.namespace = value;
+  },
+};
+
+function nameString(reader) {
+  const size = reader.dv.getUint32(reader.at, true);
+  reader.at += 4;
+  const text = readStr(reader.u8, reader.at, size);
+  reader.at += size;
+  return text;
+}
+
+function validateExpandedName(name, element) {
+  const localPattern = /^(?:[A-Za-z][^\0\t\n\f\r\u0020/>]*|[:_\u0080-\u{10FFFF}][A-Za-z0-9-.:_\u0080-\u{10FFFF}]*)$/u;
+  if (!(element ? localPattern.test(name.local) : name.local.length > 0 && !/[\0\t\n\f\r\u0020/=>]/u.test(name.local))) throw new Error("invalid namespace-dependent local name");
+  if (name.prefix !== null) {
+    if (!name.prefix || /[\0\t\n\f\r\u0020/:>]/u.test(name.prefix)) throw new Error("invalid namespace prefix");
+    if (name.namespace === null) throw new Error("namespace prefix without namespace");
+    if (name.prefix === "xml" && name.namespace !== "http://www.w3.org/XML/1998/namespace") throw new Error("xml prefix requires XML namespace");
+  } else if (name.local.includes(":") && !((element && (name.namespace === HTML_NS || name.namespace === null)) || (!element && name.namespace === null))) {
+    throw new Error("unrepresentable unprefixed local name");
+  }
+  const ordinary = name.prefix === null && ((element && (name.namespace === HTML_NS || name.namespace === null)) || (!element && name.namespace === null));
+  const declares = name.prefix === "xmlns" || name.qualified === "xmlns";
+  if (!ordinary && (name.namespace === "http://www.w3.org/2000/xmlns/") !== declares) throw new Error("invalid xmlns namespace pairing");
+}
+
+function expandedName(reader, element) {
+  const code = reader.u8[reader.at++];
+  const read = reader.protocol.NAMESPACES[code];
+  if (!read) throw new Error(`unknown namespace kind ${code}`);
+  read(reader);
+  const namespace = reader.namespace;
+  const prefix = nameString(reader) || null;
+  const local = nameString(reader);
+  const name = { namespace, prefix, local, qualified: prefix === null ? local : `${prefix}:${local}` };
+  validateExpandedName(name, element);
+  return name;
+}
+
+// Read the actual wrapper's finite facts without walking ancestors or choosing
+// construction semantics. Roc classifies the context; these are not app Boot.
+function mountRootBytes(root, protocol) {
+  if (!root || root.nodeType !== 1) throw new Error("mount-root must be an Element");
+  const namespace = root.namespaceURI;
+  const prefix = root.prefix ?? "";
+  const local = root.localName;
+  for (const value of [namespace ?? "", prefix, local]) {
+    if (typeof value !== "string" || !value.isWellFormed()) throw new Error("mount-root facts must be well-formed Unicode");
+  }
+  let code;
+  if (namespace === HTML_NS) code = protocol.NS_HTML;
+  else if (namespace === SVG_NS) code = protocol.NS_SVG;
+  else if (namespace === MATHML_NS) code = protocol.NS_MATHML;
+  else if (namespace === null) code = protocol.NS_NONE;
+  else code = protocol.NS_URI;
+  const uriLength = code === protocol.NS_URI ? namespace.length + 4 : 0;
+  if (9 + prefix.length + local.length + uriLength > 65536) throw new Error("mount-root exceeds 65536 encoded bytes");
+  const bytes = concat([new Uint8Array([code]), ...(code === protocol.NS_URI ? [encStr(namespace)] : []), encStr(prefix), encStr(local)]);
+  if (bytes.length > 65536) throw new Error("mount-root exceeds 65536 encoded bytes");
+  return bytes;
+}
+
+function createNamedElement(doc, name) {
+  if (name.namespace === null && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")) {
+    const source = doc.implementation.createDocument(null, "");
+    return doc.importNode(source.createElement(name.local), false);
+  }
+  const element = name.namespace === HTML_NS && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")
+    ? doc.createElement(name.local)
+    : doc.createElementNS(name.namespace, name.qualified);
+  if (element.namespaceURI !== name.namespace || element.prefix !== name.prefix || element.localName !== name.local) throw new Error("element factory changed expanded identity");
+  return element;
+}
+
+// Container roles select an already-decided DOM target. HTML template.content
+// is distinct from ordinary childNodes, including on the same element interface.
+const CONTAINER_APPLIERS = {
+  CHILDREN: element => element,
+  TEMPLATE_CONTENT(element) {
+    if (element.namespaceURI !== HTML_NS || element.localName !== "template" || !element.content) throw new Error("template content requires an HTML template");
+    return element.content;
+  },
+};
+
+function readContainer(reader, element) {
+  const code = reader.u8[reader.at++];
+  const apply = reader.protocol.CONTAINERS[code];
+  if (!apply) throw new Error(`unknown child container ${code}`);
+  const target = apply(element);
+  if (target !== element) element.__childTarget = target;
+  return { code, target };
+}
+
+const TEMPLATE_NODE_APPLIERS = {
+  ELEMENT(reader) {
+    const element = createNamedElement(reader.doc, expandedName(reader, true));
+    const { code, target } = readContainer(reader, element);
+    if (target !== element) reader.contentOwners.push(reader.path.slice());
+    const attributes = reader.u8[reader.at++];
+    for (let index = 0; index < attributes; index += 1) setAttr(element, expandedName(reader, false), nameString(reader));
+    const children = reader.u8[reader.at++];
+    for (let index = 0; index < children; index += 1) {
+      reader.path.push(code, index);
+      target.appendChild(templateNode(reader));
+      reader.path.length -= 2;
+    }
+    return element;
+  },
+  TEXT: reader => reader.doc.createTextNode(nameString(reader)),
+  COMMENT: reader => reader.doc.createComment(nameString(reader)),
+};
+
+function templateNode(reader) {
+  const kind = reader.u8[reader.at++];
+  const apply = reader.protocol.TEMPLATE_NODES[kind];
+  if (!apply) throw new Error(`unknown template node kind ${kind}`);
+  return apply(reader);
 }
 
 // Controlled text values (design.md, "Controlled inputs"): an equal value is
@@ -327,15 +454,19 @@ function setValue(el, value) {
   el.value = value;
 }
 
-function setAttr(el, name, value, booleanAttributes) {
-  if (booleanAttributes.has(name)) {
-    if (value === "" || value === "false") el.removeAttribute(name);
-    else el.setAttribute(name, value === "true" ? "" : value);
-  } else if (name === "class" && el.namespaceURI !== SVG_NS) {
-    el.className = value;
-  } else {
-    el.setAttribute(name, value);
-  }
+function setAttr(el, name, value) {
+  if (name.namespace === null && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")) {
+    if (el.namespaceURI === HTML_NS && /[A-Z]/u.test(name.local)) {
+      const existing = el.getAttributeNodeNS(null, name.local);
+      if (existing) existing.value = value;
+      else {
+        const source = el.ownerDocument.implementation.createDocument(null, "");
+        const attribute = source.createAttribute(name.local);
+        attribute.value = value;
+        el.setAttributeNodeNS(attribute);
+      }
+    } else el.setAttribute(name.local, value);
+  } else el.setAttributeNS(name.namespace, name.qualified, value);
 }
 
 // ApplyValue uses the last rendered property even when equality pruning
@@ -377,22 +508,20 @@ function applyHoleCommand(reader) {
   return at;
 }
 function applyNodeCommand(reader) {
-  const { dv, u8, doc, op } = reader;
-  let at = reader.at;
-  const node = dv.getUint32(at, true);
-  const parent = dv.getUint32(at + 4, true);
-  const before = dv.getUint32(at + 8, true);
-  const n = dv.getUint32(at + 12, true);
-  const s = readStr(u8, at + 16, n);
-  at += 16 + n;
-  const parentEl = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
-  const el = op === this.protocol.OP_ELEM ? createIn(doc, s, parentEl) : doc.createTextNode(s);
-  // Command addresses do not route events; only LISTEN assigns __rn.
+  const { dv, doc, op } = reader;
+  const node = dv.getUint32(reader.at, true);
+  const parent = dv.getUint32(reader.at + 4, true);
+  const before = dv.getUint32(reader.at + 8, true);
+  reader.at += 12;
+  const element = op === this.protocol.OP_ELEM;
+  const el = element ? createNamedElement(doc, expandedName(reader, true))
+    : op === this.protocol.OP_COMMENT ? doc.createComment(nameString(reader)) : doc.createTextNode(nameString(reader));
+  if (element) readContainer(reader, el);
   el.__id = node;
   this.place(el, parent, before);
-  if (op === this.protocol.OP_ELEM && el.tagName === "OPTION") settleSelect(el.parentNode);
+  if (element && el.namespaceURI === HTML_NS && el.localName === "option") settleSelect(el.parentNode);
   this.statics[node] = el;
-  return at;
+  return reader.at;
 }
 
 const COMMAND_APPLIERS = {
@@ -405,21 +534,17 @@ const COMMAND_APPLIERS = {
     const site = dv.getUint32(at + 12, true);
     const tpl = this.templates[site];
     at += 16;
-    if (!tpl.svg && tpl.root.namespaceURI !== SVG_NS) {
-      const p = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
-      if (p.namespaceURI === SVG_NS && p.tagName !== "foreignObject") {
-        const bytes = tpl.bytes;
-        tpl.root = this.parseTemplate(bytes, new DataView(bytes.buffer), 0, bytes.length, p).root;
-        tpl.svg = true;
-      }
-    }
     const el = tpl.root.cloneNode(true);
+    for (const path of tpl.contentOwners) {
+      const owner = walk(el, path, this.protocol);
+      owner.__childTarget = CONTAINER_APPLIERS.TEMPLATE_CONTENT(owner);
+    }
     el.__rn = node;
     const holes = tpl.holes;
     // Hole targets are resolved once, here: a nested site inserting
     // content into the row later shifts sibling indices.
     const targets = new Array(holes.length);
-    for (let i = 0; i < holes.length; i += 1) targets[i] = walk(el, holes[i].path);
+    for (let i = 0; i < holes.length; i += 1) targets[i] = walk(el, holes[i].path, this.protocol);
     el.__ht = targets;
     el.__aliases = [];
     for (let i = 0; i < holes.length; i += 1) {
@@ -497,7 +622,9 @@ const COMMAND_APPLIERS = {
   CLEAR(reader) {
     const { dv } = reader;
     let at = reader.at;
-    const parent = this.lookup(dv.getUint32(at, true));
+    const parentId = dv.getUint32(at, true);
+    const owner = this.lookup(parentId);
+    const parent = parentId === 0 ? owner : owner.__childTarget ?? owner;
     const site = dv.getUint32(at + 4, true);
     for (let child = parent.firstChild; child; child = child.nextSibling) this.forgetSubtree(child);
     this.sites[site] = new Set();
@@ -517,15 +644,12 @@ const COMMAND_APPLIERS = {
   },
   ELEM: applyNodeCommand,
   TEXTNODE: applyNodeCommand,
+  COMMENT: applyNodeCommand,
   ATTR(reader) {
-    const { dv, u8 } = reader;
-    let at = reader.at;
-    const el = this.lookup(dv.getUint32(at, true));
-    const n = dv.getUint32(at + 4, true);
-    const name = readStr(u8, at + 8, n);
-    at += 8 + n;
-    at = applyAttribute(this, u8, dv, at, el, name);
-    return at;
+    const el = this.lookup(reader.dv.getUint32(reader.at, true));
+    reader.at += 4;
+    const name = expandedName(reader, false);
+    return applyAttribute(this, reader.u8, reader.dv, reader.at, el, name);
   },
   PROP(reader) {
     const { dv, u8 } = reader;
@@ -827,10 +951,10 @@ const COMMAND_APPLIERS = {
 
 function applyAttribute(runtime, u8, dv, at, el, name) {
   const present = u8[at++];
-  if (present === 0) el.removeAttribute(name);
+  if (present === 0) el.removeAttributeNS(name.namespace, name.local);
   else if (present === 1) {
     const n = dv.getUint32(at, true);
-    setAttr(el, name, readStr(u8, at + 4, n), runtime.protocol.BOOL_ATTRS);
+    setAttr(el, name, readStr(u8, at + 4, n));
     at += 4 + n;
   } else throw new Error(`invalid attribute presence ${present}`);
   return at;
@@ -1024,7 +1148,8 @@ function bindProtocolFacts(facts) {
   for (const row of facts.ops) protocol[`OP_${row.name}`] = row.code;
   for (const row of facts.kinds) protocol[`KIND_${row.name}`] = row.code;
   for (const row of facts.policies) protocol[`POLICY_${row.name}`] = row.bit;
-  protocol.BOOL_ATTRS = new Set(facts.bool_attrs);
+  for (const row of facts.namespaces) protocol[`NS_${row.name}`] = row.code;
+  for (const row of facts.template_nodes) protocol[`NODE_${row.name}`] = row.code;
   protocol.LOST_CLASSES = facts.fault_classes;
   protocol.HTTP_CACHE = Object.fromEntries(facts.http_cache.map(row => [row.code, row.name]));
   protocol.HTTP_CREDENTIALS = Object.fromEntries(facts.http_credentials.map(row => [row.code, row.name]));
@@ -1034,6 +1159,9 @@ function bindProtocolFacts(facts) {
     for (const name of Object.keys(implementations)) if (!names.has(name)) throw new Error(`missing ${label} name ${JSON.stringify(name)}`);
     return Object.freeze(Object.fromEntries(rows.map(row => [row[key], Object.freeze(make(row, implementations[row.name]))])));
   };
+  protocol.NAMESPACES = bind(facts.namespaces, NAMESPACE_READERS, "code", (_row, implementation) => implementation, "namespace");
+  protocol.CONTAINERS = bind(facts.child_containers, CONTAINER_APPLIERS, "code", (_row, implementation) => implementation, "child container");
+  protocol.TEMPLATE_NODES = bind(facts.template_nodes, TEMPLATE_NODE_APPLIERS, "code", (_row, implementation) => implementation, "template node");
   protocol.COMMANDS = bind(facts.ops, COMMAND_APPLIERS, "code", (_row, implementation) => implementation, "opcode");
   protocol.POLICIES = bind(facts.policies, POLICY_APPLIERS, "bit", (_row, implementation) => implementation, "policy");
   protocol.policyValidators = Object.freeze(Object.keys(POLICY_APPLIERS).flatMap(name => {
@@ -2795,6 +2923,7 @@ export class RocEngineRuntime {
   }
 
   bootBytes() {
+    const mountRoot = mountRootBytes(this.root, this.protocol);
     // Read before mount with the port table (see mount()).
     const keys = this.bootKeys;
     // Storage is unavailable when there is none or any read throws; then
@@ -2839,6 +2968,7 @@ export class RocEngineRuntime {
       { tag: 9, write: () => concat([u32(languages.length), ...languages.map(encStr)]) },
       { tag: 10, write: () => concat([encStr(zone.name), i64Bytes(zone.from_ms), i64Bytes(zone.until_ms), u32(zone.offsets.length), ...zone.offsets.flatMap(offset => [i64Bytes(offset.from_ms), i32Bytes(offset.minutes)])]) },
       { tag: 11, write: () => concat([new Uint8Array([sessionOk ? 1 : 0]), u32(session.length), ...session.flatMap(([key, value]) => [encStr(key), encStr(value)])]) },
+      { tag: 13, write: () => mountRoot },
     ];
     return concat(sections.map(({ tag, write }) => {
       const body = write();
@@ -3800,6 +3930,7 @@ export class RocEngineRuntime {
       node.__shownControl = undefined;
       node.__popoverControl = undefined;
       for (let child = node.firstChild; child; child = child.nextSibling) pending.push(child);
+      if (node.__childTarget && node.__childTarget !== node) pending.push(node.__childTarget);
       if (node.__site !== undefined) {
         this.sites[node.__site].delete(node.__rn);
         for (const id of node.__aliases) this.statics[id] = undefined;
@@ -3810,14 +3941,17 @@ export class RocEngineRuntime {
   }
 
   place(el, parent, before) {
-    if (before === 0) this.lookup(parent).appendChild(el);
+    if (before === 0) {
+      const owner = this.lookup(parent);
+      (parent === 0 ? owner : owner.__childTarget ?? owner).appendChild(el);
+    }
     else {
       const b = this.lookup(before);
       b.parentNode.insertBefore(el, b);
     }
   }
 
-  parseTemplate(u8, dv, start, len, under = null) {
+  parseTemplate(u8, dv, start, len) {
     let at = start;
     const doc = this.doc;
     const str = () => {
@@ -3827,32 +3961,19 @@ export class RocEngineRuntime {
       at += n;
       return s;
     };
-    const node = (parent) => {
-      const kind = u8[at++];
-      if (kind === 2) return doc.createTextNode(str());
-      const el = createIn(doc, str(), parent);
-      const attrs = u8[at++];
-      for (let i = 0; i < attrs; i += 1) {
-        const name = str();
-        setAttr(el, name, str(), this.protocol.BOOL_ATTRS);
-      }
-      const children = u8[at++];
-      for (let i = 0; i < children; i += 1) el.appendChild(node(el));
-      return el;
-    };
-    // The original bytes preserve case until the first SVG parent is known.
-    // That first INST reparses under its parent, including foreignObject's
-    // return to HTML; later rows clone the resulting template (see INST).
-    const root = node(under);
+    const reader = { u8, dv, at, doc, protocol: this.protocol, path: [], contentOwners: [] };
+    const root = templateNode(reader);
+    at = reader.at;
     const holes = [];
     const count = u8[at++];
     for (let i = 0; i < count; i += 1) {
       const kind = u8[at++];
       const depth = u8[at++];
-      const path = Array.from(u8.subarray(at, at + depth));
-      at += depth;
+      const path = Array.from(u8.subarray(at, at + depth * 2));
+      at += depth * 2;
+      walk(root, path, this.protocol);
       const hole = { kind, path, name: null, handler: 0, prop: 0, entry: null };
-      if (kind === HOLE_ATTR) hole.name = str();
+      if (kind === HOLE_ATTR) { reader.at = at; hole.name = expandedName(reader, false); at = reader.at; }
       else if (kind === HOLE_CLICK) {
         hole.handler = u8[at++];
         hole.name = str();
@@ -3868,7 +3989,7 @@ export class RocEngineRuntime {
       holes.push(hole);
     }
     if (at !== start + len) throw new Error("template length mismatch");
-    return { root, holes, bytes: under ? null : u8.slice(start, start + len) };
+    return { root, holes, contentOwners: reader.contentOwners };
   }
 
   // One shared promise covers both a deferred update and its animation. Manual
@@ -4018,7 +4139,7 @@ export class RocEngineRuntime {
     const skipString = () => { const n = dv.getUint32(at, true); at += 4 + n; };
     const skipAttribute = () => { const present = u8[at++]; if (present === 1) skipString(); else if (present !== 0) throw new Error(`invalid attribute presence ${present}`); };
     // One reader per batch; no implementation retains it or its memory views.
-    const reader = { u8, dv, doc, mode, batch, len, flags, at: 1, op: 0, offset: 0, marked: false };
+    const reader = { u8, dv, doc, protocol: this.protocol, mode, batch, len, flags, at: 1, op: 0, offset: 0, marked: false };
     while (at < len) {
       const offset = at;
       const op = u8[at];
@@ -4055,8 +4176,17 @@ export class RocEngineRuntime {
           case this.protocol.OP_TEXT: case this.protocol.OP_HPROP: case this.protocol.OP_PROP: at += 5; skipString(); break;
           case this.protocol.OP_MOVE: case this.protocol.OP_CLEAR: at += 8; break;
           case this.protocol.OP_RELEASE: case this.protocol.OP_REMOVE: at += 4; break;
-          case this.protocol.OP_ELEM: case this.protocol.OP_TEXTNODE: at += 12; skipString(); break;
-          case this.protocol.OP_ATTR: at += 4; skipString(); skipAttribute(); break;
+          case this.protocol.OP_ELEM: {
+            reader.at = at + 12;
+            const name = expandedName(reader, true);
+            const container = reader.protocol.CONTAINERS[u8[reader.at++]];
+            if (!container) throw new Error("unknown child container");
+            if (container === CONTAINER_APPLIERS.TEMPLATE_CONTENT && (name.namespace !== HTML_NS || name.local !== "template")) throw new Error("template content requires an HTML template");
+            at = reader.at;
+            break;
+          }
+          case this.protocol.OP_TEXTNODE: case this.protocol.OP_COMMENT: at += 12; skipString(); break;
+          case this.protocol.OP_ATTR: at += 4; reader.at = at; expandedName(reader, false); at = reader.at; skipAttribute(); break;
           case this.protocol.OP_LISTEN: { const n = dv.getUint32(at + 8, true); at += 17 + n; break; }
           case this.protocol.OP_SETTEXT: at += 4; skipString(); break;
           case this.protocol.OP_REF: {
@@ -5492,7 +5622,7 @@ export function readProtocolFacts(bytes) {
     ["policies", r => r.rows(s => ({ bit: s.u32(), name: s.name() }))],
     ["properties", r => nestedRows(r, "index", "elements")],
     ["http_cache", codeRows], ["http_credentials", codeRows],
-    ["bool_attrs", names], ["text_entry_excluded", names], ["fault_classes", names],
+    ["namespaces", codeRows], ["text_entry_excluded", names], ["fault_classes", names], ["template_nodes", codeRows], ["child_containers", codeRows],
   ];
   const outer = reader(bytes), facts = {};
   for (let i = 0; i < fields.length; i += 1) {
@@ -5503,7 +5633,7 @@ export function readProtocolFacts(bytes) {
     body.done();
   }
   outer.done();
-  for (const field of ["ops", "kinds", "policies", "properties", "http_cache", "http_credentials"]) {
+  for (const field of ["ops", "kinds", "policies", "properties", "http_cache", "http_credentials", "namespaces", "template_nodes", "child_containers"]) {
     const rows = facts[field];
     if (rows.length === 0) throw new Error(`empty protocol ${field}`);
     unique(rows.map(row => row.name), `${field} names`);
@@ -5511,7 +5641,7 @@ export function readProtocolFacts(bytes) {
     unique(rows.map(row => row[key]), `${field} codes`);
     if (field === "policies") {
       if (rows.some(row => row.bit === 0 || (row.bit & (row.bit - 1)) !== 0)) throw new Error("invalid protocol policy bit");
-    } else if (rows.some((row, i) => row[key] !== i + 1)) throw new Error(`non-dense protocol ${field}`);
+    } else if (rows.some((row, i) => row[key] !== i + (["namespaces", "child_containers"].includes(field) ? 0 : 1))) throw new Error(`non-dense protocol ${field}`);
   }
   if (facts.fault_classes.length === 0) throw new Error("empty protocol fault classes");
   return facts;

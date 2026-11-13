@@ -5,6 +5,35 @@
 import { mountRocEngineApp } from "./runtime.mjs";
 const params = new URLSearchParams(location.search);
 try {
+  // Test-only preparation of an explicitly supplied external wrapper. A host
+  // document can already provide parser-created roots; this is not a runtime
+  // element factory or permission for literal lowering to parse in the browser.
+  if (window.__mountRoot) {
+    const facts = window.__mountRoot;
+    const namespace = facts.namespace || null, prefix = facts.prefix || null;
+    const qualified = prefix === null ? facts.local : `${prefix}:${facts.local}`;
+    const previous = document.getElementById("app");
+    let root;
+    if (namespace === null && prefix === null && (facts.local.includes(":") || facts.local === "xmlns")) {
+      root = document.importNode(document.implementation.createDocument(null, "").createElement(facts.local), false);
+    } else if (namespace === "http://www.w3.org/1999/xhtml" && prefix === null && (facts.local.includes(":") || facts.local === "xmlns")) {
+      root = document.createElement(facts.local);
+    } else if (prefix === null && facts.local === "xmlns" && namespace !== "http://www.w3.org/2000/xmlns/") {
+      const escape = value => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;").replaceAll("\r", "&#13;").replaceAll("\n", "&#10;").replaceAll("\t", "&#9;");
+      const parsed = new DOMParser().parseFromString(`<xmlns xmlns="${escape(namespace)}"/>`, "application/xml");
+      if (parsed.getElementsByTagName("parsererror").length) throw new Error("mount-root XML fixture could not be prepared");
+      parsed.documentElement.removeAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns");
+      root = document.importNode(parsed.documentElement, false);
+    } else if (prefix === null && facts.local.includes(":") && ["http://www.w3.org/2000/svg", "http://www.w3.org/1998/Math/MathML"].includes(namespace)) {
+      const wrapper = namespace === "http://www.w3.org/2000/svg" ? "svg" : "math";
+      const template = document.createElement("template");
+      template.innerHTML = `<${wrapper}><${facts.local}></${facts.local}></${wrapper}>`;
+      root = document.importNode(template.content.firstChild.firstChild, false);
+    } else root = document.createElementNS(namespace, qualified);
+    if (root.namespaceURI !== namespace || root.prefix !== prefix || root.localName !== facts.local || root.attributes.length || root.childNodes.length) throw new Error("mount-root fixture changed expanded identity or added content");
+    root.setAttributeNS(null, "id", "app");
+    previous.replaceWith(root);
+  }
   // An app's own port handlers, when a test names their module (the soak
   // mounts an example with them); spec replays answer ports themselves.
   const ports = window.__portsModule ? { ports: (await import(window.__portsModule)).default } : {};

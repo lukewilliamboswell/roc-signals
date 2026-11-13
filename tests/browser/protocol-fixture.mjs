@@ -1,13 +1,13 @@
-// Independent test-owned protocol 17 declarations. Raw command contracts keep
+// Independent test-owned protocol 18 declarations. Raw command contracts keep
 // their own numbers; no Roc producer metadata is imported to make them agree.
 const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
 const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
 const list = values => [...word(values.length), ...values.flat()];
 const names = values => list(values.map(text));
-const codes = values => list(values.map((name, i) => [i + 1, ...text(name)]));
+const codes = (values, first = 1) => list(values.map((name, i) => [i + first, ...text(name)]));
 const section = (tag, body) => [tag, ...word(body.length), ...body];
 const fields = [
-  codes(["INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD"]),
+  codes(["INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD", "COMMENT"]),
   list([
     ["TEXT", []], ["FILES", ["change", "drop", "paste"]], ["POINTER", ["pointerdown", "pointermove", "pointerup", "pointercancel"]],
     ["KEY", ["keydown", "keyup"]], ["OPEN_STATE", ["close", "toggle", "change"]], ["SCROLL", ["scroll"]], ["SIZE", ["size"]], ["SEEN", ["seen"]], ["PASTE", ["paste"]],
@@ -17,9 +17,11 @@ const fields = [
     ["value", ["input", "textarea", "select", "option"]], ["checked", ["input"]], ["pointer_zone", []], ["keymap_down", []], ["keymap_up", []], ["shown", ["dialog"]], ["popover_shown", []],
   ].map(([name, elements], i) => [i + 1, ...text(name), ...names(elements)])),
   codes(["default", "no-store", "reload", "no-cache", "force-cache"]), codes(["same-origin", "include"]),
-  names(["disabled", "selected", "readonly", "required", "hidden", "multiple", "open"]),
+  codes(["HTML", "SVG", "MATHML", "NONE", "URI"], 0),
   names(["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "range", "color", "image"]),
   names(["none", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed", "unavailable", "executor"]),
+  codes(["ELEMENT", "TEXT", "COMMENT"]),
+  codes(["CHILDREN", "TEMPLATE_CONTENT"], 0),
 ];
 export const protocolFixtureSection = Uint8Array.from(section(12, fields.flatMap((body, i) => section(i + 1, body))));
 
@@ -40,7 +42,7 @@ export async function installProtocolFixture(page) {
       const memory = new WebAssembly.Memory({ initial: 2 });
       let length = 0;
       const x = {
-        memory, protocol_version: () => 17,
+        memory, protocol_version: () => 18,
         boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
         cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
         init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; },

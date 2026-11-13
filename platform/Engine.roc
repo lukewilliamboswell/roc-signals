@@ -1478,7 +1478,7 @@ Engine := [].{
 	## Build an element from a checked tag, attributes and children. `Html`
 	## offers typed helpers for common elements and controls.
 	element : Tag, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
-	element = |tag, attrs, kids| Core.element(tag.text(), attrs, kids)
+	element = |tag, attrs, kids| Core.element_named(tag, attrs, kids)
 
 	## Follow scroll offsets through the report queue, keeping the newest
 	## value before the next frame rather than dispatching every native event.
@@ -1523,7 +1523,7 @@ Engine := [].{
 	## Set a static attribute to literal text, keeping an empty nonboolean
 	## attribute present. Use a property builder for names a control claims.
 	attr : AttrName, Str -> Attr(ctx)
-	attr = |name, value| Core.attr(name.text(), value)
+	attr = |name, value| Core.attr_named(name, value)
 
 	## Follow a signal with an attribute, writing only when it changes. An
 	## empty string keeps a nonboolean attribute present. Names claimed by
@@ -1531,15 +1531,15 @@ Engine := [].{
 	## `prop_s` for live control state.
 	attr_s : AttrName, Signal(ctx, Str) -> Attr(ctx)
 	attr_s = |name, signal| match signal {
-		Fixed(value) => Core.attr(name.text(), value)
-		Varies(value) => Core.attr_s(name.text(), value)
+		Fixed(value) => Core.attr_named(name, value)
+		Varies(value) => Core.attr_named_s(name, value)
 	}
 
 	## Follow explicit presence, keeping `Present("")` as an empty nonboolean
 	## attribute and removing the attribute for `Absent`. As with `attr_s`,
 	## names claimed by a property must use that property's builder instead.
 	attr_presence : AttrName, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
-	attr_presence = |name, signal| Core.attr_presence(name.text(), core_signal(signal))
+	attr_presence = |name, signal| Core.attr_named_presence(name, core_signal(signal))
 
 	## A static `class` attribute.
 	class : Str -> Attr(ctx)

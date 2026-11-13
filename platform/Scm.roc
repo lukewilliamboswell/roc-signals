@@ -1,6 +1,7 @@
 import Protocol
 import JsonOut
 import Core
+import Web
 
 ## The `.scm` spec language: the one parser both spec runners use.
 ##
@@ -301,6 +302,7 @@ Scm := [].{
 		LocalStorageFull,
 		ClipboardDenied,
 		MaxPasteBytes(U64),
+		MountRoot(MountRoot),
 
 		## A file the spec's file steps can give the app: its name, its media
 		## type, and its contents, `text` repeated `repeat` times.
@@ -311,6 +313,47 @@ Scm := [].{
 		## not say).
 		MaxOutputBytes(U64),
 	]
+
+	## Engine-only mount identity, separate from the app's browser environment.
+	## Prefix is explicit; a colon in local text does not infer one.
+	MountRoot : { namespace : Str, prefix : Str, local : Str }
+
+	## The ordinary wrapper used by both runners and empty driver boot.
+	default_mount_root : MountRoot
+	default_mount_root = { namespace: "http://www.w3.org/1999/xhtml", prefix: "", local: "div" }
+
+	## Resolve the engine-only setup once. Repetition is an error instead of a
+	## runner-specific choice of the first or last wrapper.
+	mount_root : List({ item : Setup, pos : Pos }) -> Try(MountRoot, Problem)
+	mount_root = |setup| {
+		var $root = Scm.default_mount_root
+		var $seen = False
+		for { item, pos } in setup {
+			match item {
+				MountRoot(value) => {
+					if $seen {
+						return Err({ pos, message: "mount-root is declared more than once" })
+					}
+					$seen = True
+					$root = value
+				}
+				_ => {}
+			}
+		}
+		Ok($root)
+	}
+
+	## Shared namespace spelling for setup and observations. URI strings stay
+	## literal, including the empty string for no namespace.
+	namespace_uri : Sx -> Try(Str, Problem)
+	namespace_uri = |form| match form {
+		Str(uri, _) => Ok(uri)
+		Sym("html", _) => Ok("http://www.w3.org/1999/xhtml")
+		Sym("svg", _) => Ok("http://www.w3.org/2000/svg")
+		Sym("mathml", _) => Ok("http://www.w3.org/1998/Math/MathML")
+		Sym("none", _) => Ok("")
+		_ => Err(Scm.bad(form, "namespace must be html, svg, mathml, none or a URI string"))
+	}
 
 	## The browser facts a spec starts from. Boot owns their fixed defaults, so
 	## empty boot bytes, a pure Boot literal and a spec agree on every value.
@@ -358,7 +401,7 @@ Scm := [].{
 					}
 					{ ..env, session_available: False }
 				}
-				File(_) | MaxOutputBytes(_) | SessionStorageFull | LocalStorageFull | ClipboardDenied | MaxPasteBytes(_) => env
+				MountRoot(_) | File(_) | MaxOutputBytes(_) | SessionStorageFull | LocalStorageFull | ClipboardDenied | MaxPasteBytes(_) => env
 			}
 		}
 		Ok($env)
@@ -627,6 +670,7 @@ Scm := [].{
 		PointerCancel(U32),
 		Press(KeyPress),
 		Dismiss,
+		ExpectElement({ target : Loc, namespace : Str, name : Str }),
 		ExpectShown(Loc, [Hidden, Open, Modal, Popover]),
 		ExpectScroll({ ordinal : U64, target : Loc, kind : [IntoView, To] }),
 		ExpectScrolls(U64),
@@ -772,7 +816,7 @@ Scm := [].{
 
 	## A parsed spec file and its resolved browser facts. The defaulted field
 	## also lets a pure harness construct a spec with Boot's default environment.
-	Spec := { name : Str, setup : List({ item : Setup, pos : Pos }), steps : List(Step), environment : Environment ?? {} }.{
+	Spec := { name : Str, setup : List({ item : Setup, pos : Pos }), steps : List(Step), environment : Environment ?? {}, mount_root : MountRoot ?? { namespace: "http://www.w3.org/1999/xhtml", prefix: "", local: "div" } }.{
 
 		## Structural equality includes source positions and resolved environment
 		## facts alongside setup and steps, allowing parser consistency tests to
@@ -842,7 +886,7 @@ Scm := [].{
 			return Err({ pos, message: "the test has no (steps ...) section" })
 		}
 		Scm.anchored($steps, $never_drawn)?
-		Ok({ name, setup: $setup, steps: $steps, environment: Scm.environment($setup)? })
+		Ok({ name, setup: $setup, steps: $steps, environment: Scm.environment($setup)?, mount_root: Scm.mount_root($setup)? })
 	}
 
 	## The locator a step must resolve to run. Absence itself cannot prove a
@@ -861,6 +905,7 @@ Scm := [].{
 			Focused => Err(NoRequiredLocator)
 		}
 		Dismiss => Err(NoRequiredLocator)
+		ExpectElement({ target, .. }) => Ok(target)
 		ExpectShown(loc, _) => Ok(loc)
 		ExpectScroll({ target, .. }) => Ok(target)
 		ExpectScrolls(_) => Err(NoRequiredLocator)
@@ -1376,6 +1421,39 @@ Scm := [].{
 	## accepts exactly these; anything else is an unknown setup form.
 	setup_forms : List({ name : Str, parse : (Sx, List(Sx) -> Try(Setup, Problem)) })
 	setup_forms = [
+		{
+			name: "mount-root",
+			parse: |form, args| {
+				if args.len() != 2 and args.len() != 4 {
+					return Err(Scm.bad(form, "mount-root needs namespace, local name and optional :prefix text"))
+				}
+				namespace = Scm.namespace_uri(Scm.arg(args, 0))?
+				local_form = Scm.arg(args, 1)
+				local = Scm.string(local_form, "the exact mount-root local name")?
+				_ = Web.Tag.from_str(local).map_err(|NotATag(message)| Scm.bad(local_form, message))?
+				prefix = if args.len() == 4 {
+					if !Scm.is_sym(Scm.arg(args, 2), ":prefix") {
+						return Err(Scm.bad(Scm.arg(args, 2), "mount-root accepts only :prefix"))
+					}
+					Scm.string(Scm.arg(args, 3), "the mount-root prefix")?
+				} else ""
+				if !prefix.is_empty() and (namespace.is_empty() or prefix.to_utf8().any(|unit| [0.U8, 9, 10, 12, 13, 32, 47, 58, 62].contains(unit))) {
+					return Err(Scm.bad(form, "mount-root has an invalid prefix or no namespace for its prefix"))
+				}
+				if prefix == "xml" and namespace != "http://www.w3.org/XML/1998/namespace" {
+					return Err(Scm.bad(form, "the xml prefix requires the XML namespace"))
+				}
+				if prefix == "xmlns" and namespace != "http://www.w3.org/2000/xmlns/" {
+					return Err(Scm.bad(form, "the xmlns prefix requires the XMLNS namespace"))
+				}
+				common = ["http://www.w3.org/1999/xhtml", "http://www.w3.org/2000/svg", "http://www.w3.org/1998/Math/MathML", ""].contains(namespace)
+				size = 9 + prefix.count_utf8_bytes() + local.count_utf8_bytes() + if (common) 0 else 4 + namespace.count_utf8_bytes()
+				if size > 65_536 {
+					return Err(Scm.bad(form, "mount-root exceeds 65536 encoded bytes"))
+				}
+				Ok(MountRoot({ namespace, prefix, local }))
+			},
+		},
 		{ name: "initial-time", parse: |form, args| Ok(InitialTime(Scm.time_ms(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
 		{ name: "seed", parse: |form, args| Ok(Seed(Scm.seed_value(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
 		{ name: "languages", parse: |form, args| Ok(Languages(Scm.read_languages(form, args)?)) },
@@ -1632,6 +1710,20 @@ Scm := [].{
 		{ name: "expect-clipboard-writes", parse: |form, args| Ok(ExpectClipboardWrites(Scm.scroll_count(Scm.arg(Scm.arity(form, args, 1)?, 0), "the write count")?)) },
 		{ name: "press", parse: |form, args| Scm.key_press(form, args) },
 		{ name: "dismiss", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| Dismiss) },
+		{
+			name: "expect-element",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 3)?
+				ns_form = Scm.arg(values, 1)
+				namespace = Scm.namespace_uri(ns_form)?
+				name_form = Scm.arg(values, 2)
+				name = Scm.string(name_form, "the exact element local name")?
+				if name.is_empty() {
+					return Err(Scm.bad(name_form, "element local name must not be empty"))
+				}
+				Ok(ExpectElement({ target: Scm.locator(Scm.arg(values, 0))?, namespace, name }))
+			},
+		},
 		{
 			name: "expect-shown",
 			parse: |form, args| {
@@ -2096,7 +2188,7 @@ Scm := [].{
 		{ name: "bind_event", counters: [11] },
 		{ name: "registrations_released", counters: [43] },
 		{ name: "set_metadata", counters: [17] },
-		{ name: "patches_emitted", counters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 41, 42] },
+		{ name: "patches_emitted", counters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 41, 42, 48] },
 		{ name: "derived_calls_into_roc", counters: [21] },
 		{ name: "scopes_created", counters: [25] },
 		{ name: "scopes_disposed", counters: [26] },
@@ -2152,6 +2244,7 @@ Scm := [].{
 		{ op: "advance-time", grant: Never },
 		{ op: "press", grant: KeyboardPress },
 		{ op: "dismiss", grant: Never },
+		{ op: "expect-element", grant: Never },
 		{ op: "expect-shown", grant: Never },
 		{ op: "expect-scroll", grant: Never },
 		{ op: "expect-scrolls", grant: Never },
@@ -2265,6 +2358,7 @@ Scm := [].{
 			PointerCancel(_) => "pointer-cancel"
 			Press(_) => "press"
 			Dismiss => "dismiss"
+			ExpectElement(_) => "expect-element"
 			ExpectShown(_, _) => "expect-shown"
 			ExpectScroll(_) => "expect-scroll"
 			ExpectScrolls(_) => "expect-scrolls"
@@ -2395,8 +2489,14 @@ Scm := [].{
 			JsonOut.field("name", Text(spec.name)),
 			JsonOut.field("setup", Array(spec.setup.map(|s| Scm.setup_json(s)))),
 			JsonOut.field("environment", Scm.environment_json(spec.environment)),
+			JsonOut.field("mount_root", Scm.mount_root_json(spec.mount_root)),
 			JsonOut.field("steps", Array(spec.steps.map(|s| Scm.step_json(s)))),
 		])
+
+	## Root facts stay outside environment JSON, matching the engine-only boot
+	## section rather than adding a value an app can read from Boot.
+	mount_root_json : MountRoot -> JsonOut.Value
+	mount_root_json = |root| Object([JsonOut.field("namespace", Text(root.namespace)), JsonOut.field("prefix", Text(root.prefix)), JsonOut.field("local", Text(root.local))])
 
 	## The already-resolved facts, without defaults or setup rules for a runner
 	## to interpret. Storage pairs retain Boot's declared data representation.
@@ -2486,6 +2586,7 @@ Scm := [].{
 			Seed(seed) => ("seed", [JsonOut.field("seed", Text(seed.to_str()))])
 			Languages(languages) => ("languages", [JsonOut.field("languages", Array(languages.map(|language| Text(language))))])
 			TimeZone(zone) => ("time-zone", [JsonOut.field("zone", Scm.zone_json(zone))])
+			MountRoot(root) => ("mount-root", [JsonOut.field("namespace", Text(root.namespace)), JsonOut.field("prefix", Text(root.prefix)), JsonOut.field("local", Text(root.local))])
 			InitialLocation(url) => ("initial-location", [JsonOut.field("text", Text(url))])
 			InitialVisibility(v) => ("initial-visibility", [JsonOut.field("text", Text(Scm.visibility_name(v)))])
 			InitialOnline(o) => ("initial-online", [JsonOut.field("text", Text(Scm.online_name(o)))])
@@ -2553,6 +2654,7 @@ Scm := [].{
 				},
 			)
 			Dismiss => []
+			ExpectElement({ target, namespace, name }) => [loc(target), JsonOut.field("namespace", Text(namespace)), JsonOut.field("name", Text(name))]
 			ExpectShown(l, shown) => [
 				loc(l),
 				JsonOut.field(
@@ -2760,7 +2862,7 @@ expect {
 		\\${JsonOut.render(Scm.spec_fields("w", spec))}
 	expected =
 		\\[LoseWork({ fault: AppCrash, occurrence: 1 }), TimeOutWork(2), ExpectPendingWork({ count: 3, task: "example.org/search/filter" })]
-		\\{"id":"w","name":"work","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"session":[],"session_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
+		\\{"id":"w","name":"work","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"session":[],"session_available":true,"online":true,"visible":true,"media":[]},"mount_root":{"namespace":"http://www.w3.org/1999/xhtml","prefix":"","local":"div"},"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
 	actual == expected
 }
 
@@ -2890,7 +2992,7 @@ expect {
 expect {
 	spec = Scm.parse("(test \"j\" (setup (local-storage \"k\" \"v\")) (steps (expect-checked (role checkbox :name \"A\") true)))")?
 	actual = JsonOut.render(Scm.spec_fields("j-file", spec))
-	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"environment\":{\"url\":\"/\",\"now_ms\":\"0\",\"seed\":\"0\",\"languages\":[\"en-US\"],\"zone\":{\"name\":\"UTC\",\"from_ms\":\"-9223372036854775808\",\"until_ms\":\"9223372036854775807\",\"offsets\":[{\"from_ms\":\"-9223372036854775808\",\"minutes\":0}]},\"storage\":[[\"k\",\"v\"]],\"storage_available\":true,\"session\":[],\"session_available\":true,\"online\":true,\"visible\":true,\"media\":[]},\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
+	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"environment\":{\"url\":\"/\",\"now_ms\":\"0\",\"seed\":\"0\",\"languages\":[\"en-US\"],\"zone\":{\"name\":\"UTC\",\"from_ms\":\"-9223372036854775808\",\"until_ms\":\"9223372036854775807\",\"offsets\":[{\"from_ms\":\"-9223372036854775808\",\"minutes\":0}]},\"storage\":[[\"k\",\"v\"]],\"storage_available\":true,\"session\":[],\"session_available\":true,\"online\":true,\"visible\":true,\"media\":[]},\"mount_root\":{\"namespace\":\"http://www.w3.org/1999/xhtml\",\"prefix\":\"\",\"local\":\"div\"},\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
 }
 
 ## Metric names are checked: an unknown one is a parse error, and a known one
@@ -2902,7 +3004,7 @@ expect {
 		\\${JsonOut.render(Scm.spec_fields("m", spec))}
 	expected =
 		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, registrations_released, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped, effects_progress, view_transitions
-		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"session":[],"session_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
+		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"session":[],"session_available":true,"online":true,"visible":true,"media":[]},"mount_root":{"namespace":"http://www.w3.org/1999/xhtml","prefix":"","local":"div"},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
 }
 
@@ -3315,6 +3417,7 @@ expect {
 		"(expect-visible (test-id \"row-7\"))",
 		"(expect-focused (test-id \"row-7\"))",
 		"(expect-shown (test-id \"row-7\") hidden)",
+		"(expect-element (test-id \"row-7\") html \"div\")",
 		"(expect-value (test-id \"row-7\") \"x\")",
 		"(expect-attr (test-id \"row-7\") \"title\" \"x\")",
 		"(expect-no-attr (test-id \"row-7\") \"title\")",
@@ -3420,4 +3523,29 @@ expect {
 	covered = classified.keep_oks(|item| item).concat(nonrequiring)
 	names = Scm.step_forms.map(|form| form.name)
 	classified.all(|item| item.is_ok()) and covered.len() == names.len() and covered.fold(Dict.empty(), |seen, name| seen.insert(name, {})).len() == names.len() and names.all(|name| covered.contains(name))
+}
+
+## Namespace assertions require a real locator and compare exact local case;
+## common aliases and arbitrary extension URI strings share one operation.
+expect {
+	spec = Scm.parse("(test \"namespaces\" (steps (expect-absent (test-id \"path\")) (expect-element (test-id \"path\") svg \"linearGradient\") (expect-element (test-id \"entry\") \"urn:entry\" \"entry\")))")?
+	spec.steps.get(1).map_ok(|step| step.op) == Ok(ExpectElement({ target: TestId("path"), namespace: "http://www.w3.org/2000/svg", name: "linearGradient" })) and Scm.required_loc((spec.steps.get(2)?).op) == Ok(TestId("entry"))
+}
+
+## Invalid namespace aliases, local names and arity fail at parse time;
+## an unanchored absence remains invalid rather than receiving a fake anchor.
+expect {
+	["(expect-element (test-id \"x\") mystery \"path\")", "(expect-element (test-id \"x\") svg \"\")", "(expect-element (test-id \"x\") svg)", "(expect-absent (test-id \"x\")) (expect-element (test-id \"other\") svg \"path\")"].all(|steps| Scm.parse("(test \"bad\" (steps ${steps}))").is_err())
+}
+
+## External SVG and foreignObject mounts are explicit engine inputs; they do
+## not add a field to the app-visible environment or infer a prefix from local.
+expect {
+	spec = Scm.parse("(test \"root\" (setup (mount-root svg \"foreignObject\" :prefix \"s\")) (steps (mark-metrics)))")?
+	spec.mount_root == { namespace: "http://www.w3.org/2000/svg", prefix: "s", local: "foreignObject" } and spec.environment == {}
+}
+
+## Invalid roots and duplicate declarations fail before either runner mounts.
+expect {
+	["(mount-root svg \"\")", "(mount-root none \"root\" :prefix \"p\")", "(mount-root svg \"root\" :prefix \"a:b\")", "(mount-root svg \"svg\") (mount-root html \"div\")"].all(|setup| Scm.parse("(test \"bad\" (setup ${setup}) (steps (mark-metrics)))").is_err())
 }

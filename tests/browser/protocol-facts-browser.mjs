@@ -32,7 +32,7 @@ try {
     const make = declarations => {
       const memory = new WebAssembly.Memory({ initial: 2 }); let length = 0, initCalls = 0;
       const root = document.createElement("div"); document.body.append(root);
-      const x = { memory, protocol_version: () => 17,
+      const x = { memory, protocol_version: () => 18,
         boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
         cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
         init() { initCalls++; new Uint8Array(memory.buffer)[0] = 0; length = 1; },
@@ -49,56 +49,69 @@ try {
     };
     reject("missing facts refuses before init", []);
     reject("truncated facts refuses before init", fixture.slice(0, -1));
-    reject("unknown field refuses before init", section(12, [10, ...body.slice(1)]));
+    reject("unknown field refuses before init", section(12, [12, ...body.slice(1)]));
     reject("duplicate field refuses before init", section(12, [...section(1, fields[0]), ...body]));
     reject("trailing facts refuses before init", section(12, [...body, 0]));
-    const duplicate = fields.map((value, i) => i === 6 ? [...word(2), ...text("open"), ...text("open")] : value);
+    const duplicate = fields.map((value, i) => i === 6 ? [...word(2), 0, ...text("HTML"), 1, ...text("HTML")] : value);
     reject("duplicate vocabulary name refuses before init", encode(duplicate));
-    const invalidUtf8 = fields.map((value, i) => i === 6 ? [...word(1), ...word(1), 255] : value);
+    const invalidUtf8 = fields.map((value, i) => i === 6 ? [...word(1), 0, ...word(1), 255] : value);
     reject("invalid UTF-8 refuses before init", encode(invalidUtf8));
     const unknownProperty = fields.map((value, i) => i === 3 ? [...value.slice(0, 5), ...text("unknown"), ...value.slice(14)] : value);
     reject("unsupported property implementation refuses before init", encode(unknownProperty));
-    const unknownOpcode = fields.map((value, i) => i === 0 ? [...value.slice(0, -10), 25, ...text("BOGUS")] : value);
+    const unknownOpcode = fields.map((value, i) => i === 0 ? [...value.slice(0, -12), 26, ...text("BOGUS")] : value);
     reject("unknown opcode name refuses before init", encode(unknownOpcode), 'unknown opcode name "BOGUS"');
     const bomOpcode = fields.map((value, i) => i === 0 ? [...value.slice(0, 5), ...text("\uFEFFINST"), ...value.slice(13)] : value);
     reject("a leading BOM cannot disguise an unknown opcode name", encode(bomOpcode));
-    const missingOpcode = fields.map((value, i) => i === 0 ? [...word(24), ...value.slice(4, -10)] : value);
-    reject("missing opcode name refuses before init", encode(missingOpcode), 'missing opcode name "GUARD"');
+    const missingOpcode = fields.map((value, i) => i === 0 ? [...word(25), ...value.slice(4, -12)] : value);
+    reject("missing opcode name refuses before init", encode(missingOpcode), 'missing opcode name "COMMENT"');
     const unknownPolicy = fields.map((value, i) => i === 2 ? [...value.slice(0, -13), ...word(32), ...text("BOGUS")] : value);
     reject("unknown policy name refuses before init", encode(unknownPolicy), 'unknown policy name "BOGUS"');
     const missingPolicy = fields.map((value, i) => i === 2 ? [...word(5), ...value.slice(4, -13)] : value);
     reject("missing policy name refuses before init", encode(missingPolicy), 'missing policy name "AHEAD"');
+    const unknownNamespace = fields.map((value, i) => i === 6 ? [...value.slice(0, -8), 4, ...text("BOGUS")] : value);
+    reject("unknown namespace refuses before init", encode(unknownNamespace), 'unknown namespace name "BOGUS"');
+    const missingNamespace = fields.map((value, i) => i === 6 ? [...word(4), ...value.slice(4, -8)] : value);
+    reject("missing namespace refuses before init", encode(missingNamespace), 'missing namespace name "URI"');
+    const unknownNode = fields.map((value, i) => i === 9 ? [...value.slice(0, -12), 3, ...text("BOGUS")] : value);
+    reject("unknown template node refuses before init", encode(unknownNode), 'unknown template node name "BOGUS"');
+    const missingNode = fields.map((value, i) => i === 9 ? [...word(2), ...value.slice(4, -12)] : value);
+    reject("missing template node refuses before init", encode(missingNode), 'missing template node name "COMMENT"');
+    const unknownContainer = fields.map((value, i) => i === 10 ? [...value.slice(0, 5), ...text("BOGUS"), ...value.slice(17)] : value);
+    reject("unknown child container refuses before init", encode(unknownContainer), 'unknown child container name "BOGUS"');
+    const missingContainer = fields.map((value, i) => i === 10 ? [...word(1), ...value.slice(4, 17)] : value);
+    reject("missing child container refuses before init", encode(missingContainer), 'missing child container name "TEMPLATE_CONTENT"');
     const metadataOnly = make(Uint8Array.from([...prefix, ...fixture]));
-    const createElement = document.createElement;
+    const factories = new Map(["createElement", "createElementNS", "createTextNode", "createComment", "createDocumentFragment"].map(name => [name, document[name]]));
     const objectKinds = ["Blob", "File", "Worker", "MutationObserver", "ResizeObserver", "IntersectionObserver"];
     const constructors = new Map(objectKinds.map(name => [name, globalThis[name]]));
     let browserObjects = 0, bindings;
     try {
-      document.createElement = () => { browserObjects++; throw new Error("metadata binding created a DOM node"); };
+      for (const name of factories.keys()) document[name] = () => { browserObjects++; throw new Error(`metadata binding called ${name}`); };
       for (const name of objectKinds) globalThis[name] = class { constructor() { browserObjects++; throw new Error(`metadata binding created ${name}`); } };
       bindings = readDeclarations(metadataOnly.runtime.x).bindings;
     } finally {
-      document.createElement = createElement;
+      for (const [name, factory] of factories) document[name] = factory;
       for (const [name, constructor] of constructors) globalThis[name] = constructor;
     }
     check("declaration binding creates no DOM/browser objects and never initializes the app", browserObjects === 0 && metadataOnly.initCalls === 0 && typeof bindings.COMMANDS[1] === "function");
     metadataOnly.root.remove();
     const first = make(Uint8Array.from([...prefix, ...fixture])); first.runtime.mount();
     // Exchange the ELEM and TEXTNODE names, retaining the independently owned
-    // numeric row codes. Both operand layouts are node,parent,before,string.
-    const opNames = ["INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "TEXTNODE", "ATTR", "ELEM", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD"];
+    // numeric row codes. Their own semantic handlers still decode the correct
+    // distinct layouts, with explicit expanded names on ELEM.
+    const opNames = ["INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "TEXTNODE", "ATTR", "ELEM", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD", "COMMENT"];
     const swapped = fields.map((value, i) => i === 0 ? [...word(opNames.length), ...opNames.flatMap((name, index) => [index + 1, ...text(name)])] : value);
     const second = make(Uint8Array.from([...prefix, ...encode(swapped)])); second.runtime.mount();
-    first.raw([0, 8, ...word(1), ...word(0), ...word(0), ...text("div")]);
-    second.raw([0, 10, ...word(1), ...word(0), ...word(0), ...text("span")]);
+    first.raw([0, 8, ...word(1), ...word(0), ...word(0), 0, ...text(""), ...text("div"), 0]);
+    second.raw([0, 10, ...word(1), ...word(0), ...word(0), 0, ...text(""), ...text("span"), 0]);
     check("a second mount cannot replace the first module's opcode bindings", first.root.firstChild?.tagName === "DIV" && second.root.firstChild?.tagName === "SPAN");
     check("mounts retain distinct immutable facts and dispatch tables", first.runtime.protocol !== second.runtime.protocol && first.runtime.protocol.PROPS !== second.runtime.protocol.PROPS && Object.isFrozen(first.runtime.protocol.facts.ops));
     for (const [id, length] of [[2, 2], [3, 48]]) {
       const name = "\uFEFF" + "a".repeat(length);
       const value = "\uFEFF" + "v".repeat(length);
       const data = "\uFEFF" + "t".repeat(length);
-      first.raw([0, 8, ...word(id), ...word(0), ...word(0), ...text(name),
-        9, ...word(id), ...text(name), 1, ...text(value),
+      first.raw([0, 8, ...word(id), ...word(0), ...word(0), 0, ...text(""), ...text(name), 0,
+        9, ...word(id), 3, ...text(""), ...text(name), 1, ...text(value),
         10, ...word(id + 10), ...word(id), ...word(0), ...text(data)]);
       const element = first.root.lastElementChild;
       check(`leading U+FEFF survives ${length <= 32 ? "short" : "long"} command names and values`,

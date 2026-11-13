@@ -144,7 +144,7 @@ Web := [].{
 			Ok(AttrName.({ local: name.local, namespace: ns, prefix: selected_prefix, exact: True }))
 		}
 
-		## Names compare by their local spelling, namespace selection and prefix.
+		## Names compare local spelling, namespace, prefix and raw/exact construction intent.
 		is_eq : _
 	}
 
@@ -378,9 +378,12 @@ check_qualified = |local, namespace, prefix, element| {
 			}
 		}
 		Unprefixed => {
+			if element and namespace == Html and local.contains(":") and local.to_utf8().any(|unit| unit >= 'A' and unit <= 'Z') {
+				return Err("an unprefixed HTML colon local name cannot preserve uppercase through its DOM factory")
+			}
 			# Raw HTML local names and ordinary attributes can contain a colon.
 			# Namespace-aware factories would reinterpret it as a prefix.
-			if local.contains(":") and !((element and namespace == Html) or (!element and namespace == None)) {
+			if local.contains(":") and !((element and (namespace == Html or namespace == None)) or (!element and namespace == None)) {
 				return Err("${Str.inspect(local)} requires an explicit prefix and local name in this namespace")
 			}
 		}
@@ -389,7 +392,7 @@ check_qualified = |local, namespace, prefix, element| {
 	declares = written == "xmlns" or prefix == Prefix("xmlns")
 	# An ordinary raw xmlns attribute is allowed by setAttribute, like other
 	# unqualified raw text; explicit namespace declarations stay distinct.
-	ordinary = prefix == Unprefixed and ((element and namespace == Html) or (!element and namespace == None))
+	ordinary = prefix == Unprefixed and ((element and (namespace == Html or namespace == None)) or (!element and namespace == None))
 	if !ordinary and xmlns != declares {
 		return Err("xmlns names require the XMLNS namespace, and only xmlns names use it")
 	}
@@ -459,4 +462,13 @@ expect {
 	raw = Web.AttrName.from_str("data-UPPER")?
 	exact = raw.in_namespace(None, Unprefixed)?
 	!raw.is_qualified() and exact.is_qualified() and raw.local() == exact.local() and exact.local() == "data-UPPER"
+}
+
+## Non-NS DOM factories preserve xmlns and colon local names without inventing
+## a prefix. These identities must not inherit NS-factory reserved-name rules.
+expect {
+	Web.Tag.from_str("xmlns")?.in_namespace(None, Unprefixed).is_ok() and
+		Web.Tag.from_str("a:UPPER")?.in_namespace(None, Unprefixed).is_ok() and
+			Web.AttrName.from_str("xmlns")?.in_namespace(None, Unprefixed).is_ok() and
+				Web.Tag.from_str("a:UPPER")?.in_namespace(Html, Unprefixed).is_err()
 }

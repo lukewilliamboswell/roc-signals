@@ -1152,7 +1152,7 @@ Core := [].{
 	## `ctx`. Make one with `attr`, `attr_s`, `attr_presence`, `class`,
 	## `class_s`, `test_id`,
 	## `test_id_s`, `on`, `on_click`, `ref` or `ref_s`.
-	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Signal(ctx, [Absent, Present(Str)])), On(EventDecl, RoutedHandler(ctx)), KeyOn(EventDecl, RoutedHandler(ctx), Signal(ctx, Str)), ShownOn(U8, Signal(ctx, Str), HandlerOf(ctx, Bool), Str), Property(U8, Str), PropertyV(U8, Signal(ctx, Str)), Ref(Signal(ctx, Str))]
+	Attr(ctx) :: [Static(Web.AttrName, Str), Dyn(Web.AttrName, Signal(ctx, [Absent, Present(Str)])), On(EventDecl, RoutedHandler(ctx)), KeyOn(EventDecl, RoutedHandler(ctx), Signal(ctx, Str)), ShownOn(U8, Signal(ctx, Str), HandlerOf(ctx, Bool), Str), Property(U8, Str), PropertyV(U8, Signal(ctx, Str)), Ref(Signal(ctx, Str))]
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
 	## (`state`, `derive`, `resource`, `when`, `switch`, `remount_on`, `each`,
@@ -1160,7 +1160,9 @@ Core := [].{
 	## An `Elem` is a description; the engine mounts it once and afterwards updates
 	## only what reads a changed layer.
 	Elem(ctx) :: [
-		Element(Str, List(Attr(ctx)), List(Elem(ctx))),
+		Element({ name : Web.Tag, container : U8 }, List(Attr(ctx)), List(Elem(ctx))),
+		Comment(Str),
+		Placed(List([Svg]), Elem(ctx)),
 		Text(Str),
 		Fragment(List(Elem(ctx))),
 		TextV(Signal(ctx, Str)),
@@ -1183,7 +1185,7 @@ Core := [].{
 			|env, args, tx| {
 				depth = layer(args.depth)
 				elem = body(state_handle(depth))
-				(block, tx1) = mount_block(In.{ outer: env, value: init }, elem, depth, args.path, args.parent, args.before, { cap: args.cap }, tx)
+				(block, tx1) = mount_block(In.{ outer: env, value: init }, elem, depth, args.path, args.parent, args.before, { cap: args.cap, enclosing: args.enclosing }, tx)
 				reads = block.reads
 				(state_inst(init, block, depth, Settled), reads, tx1)
 			},
@@ -1212,7 +1214,7 @@ Core := [].{
 		Mount(
 			|env, args, tx| {
 				depth = layer(args.depth)
-				plan = compile(template(RowRef.{ depth }), depth, args.path, "an each")
+				plan = compile(template(RowRef.{ depth }), depth, args.path, "an each", args.enclosing)
 				(site, tx1) = alloc_site(tx, args.path)
 				tpl = template_bytes(plan)
 				tx2 = emit_op(tx1, 7, |c| put_u32(put_u32(c, site), tpl.len().to_u32_wrap()).concat(tpl))
@@ -1300,7 +1302,7 @@ Core := [].{
 			|env, args, tx| {
 				get = view_source(source)
 				depth = layer(args.depth)
-				plan = compile(template(view_key({}), view_row(source, depth, args.path)), depth, args.path, "a table view")
+				plan = compile(template(view_key({}), view_row(source, depth, args.path)), depth, args.path, "a table view", args.enclosing)
 				(site, tx1) = alloc_site(tx, args.path)
 				tpl = template_bytes(plan)
 				tx2 = emit_op(tx1, 7, |c| put_u32(put_u32(c, site), tpl.len().to_u32_wrap()).concat(tpl))
@@ -1348,7 +1350,7 @@ Core := [].{
 				tx2 = emit_op(tx1, 10, |c| put_str(put_u32(put_u32(put_u32(c, anchor), args.parent), before), ""))
 				c = (cond.read)(env)
 				elem = if (c) yes() else no()
-				(block, tx3) = mount_block(env, elem, args.depth, args.path, 0, anchor, { cap: args.cap }, bump(count_evals(tx2, 1), w_scopes_created, 1))
+				(block, tx3) = mount_block(env, elem, args.depth, args.path, 0, anchor, { cap: args.cap, enclosing: args.enclosing }, bump(count_evals(tx2, 1), w_scopes_created, 1))
 				# Listen to the condition, this branch, and what the other branch
 				# would read once mounted (or the cap, when the parent knows it).
 				reads = if args.cap != 0 {
@@ -1357,7 +1359,7 @@ Core := [].{
 					other = if (c) no() else yes()
 					eff_mask(cond).bitwise_or(block.reads).bitwise_or(elem_reads(other, args.depth))
 				}
-				w = { cond, yes, no, anchor, depth: args.depth, path: args.path, cap: args.cap }
+				w = { cond, yes, no, anchor, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
 				(when_inst(w, c, [], block), reads, tx3)
 			},
 		),
@@ -1377,9 +1379,9 @@ Core := [].{
 				before = args.before
 				tx2 = emit_op(tx1, 10, |c| put_str(put_u32(put_u32(put_u32(c, anchor), args.parent), before), ""))
 				k = switch_value(sel, cases, env, args.path)
-				(block, tx3) = mount_block(env, body(k), args.depth, args.path, 0, anchor, { cap: args.cap }, bump(count_evals(tx2, 1), w_scopes_created, 1))
+				(block, tx3) = mount_block(env, body(k), args.depth, args.path, 0, anchor, { cap: args.cap, enclosing: args.enclosing }, bump(count_evals(tx2, 1), w_scopes_created, 1))
 				reads = if (args.cap != 0) args.cap else switch_reads(sel, cases, body, args.depth)
-				w = { sel, cases, body, anchor, depth: args.depth, path: args.path, cap: args.cap }
+				w = { sel, cases, body, anchor, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
 				(switch_inst(w, k, [], block), reads, tx3)
 			},
 		),
@@ -1409,9 +1411,9 @@ Core := [].{
 				before = args.before
 				tx2 = emit_op(tx1, 10, |c| put_str(put_u32(put_u32(put_u32(c, anchor), args.parent), before), ""))
 				k = (key.read)(env)
-				(block, tx3) = mount_block(env, body(), args.depth, args.path, 0, anchor, { cap: args.cap }, bump(count_evals(tx2, 1), w_scopes_created, 1))
+				(block, tx3) = mount_block(env, body(), args.depth, args.path, 0, anchor, { cap: args.cap, enclosing: args.enclosing }, bump(count_evals(tx2, 1), w_scopes_created, 1))
 				reads = if (args.cap != 0) args.cap else eff_mask(key).bitwise_or(block.reads)
-				w = { key, body, anchor, depth: args.depth, path: args.path, cap: args.cap }
+				w = { key, body, anchor, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
 				(remount_inst(w, k, [], block), reads, tx3)
 			},
 		),
@@ -1431,7 +1433,7 @@ Core := [].{
 				depth = layer(args.depth)
 				v = (input.read)(env)
 				elem = body({ mask: bit(depth), read: |e| e.value, sel: NoSel })
-				(block, tx1) = mount_block(In.{ outer: env, value: v }, elem, depth, args.path, args.parent, args.before, { cap: args.cap }, count_evals(tx, 1))
+				(block, tx1) = mount_block(In.{ outer: env, value: v }, elem, depth, args.path, args.parent, args.before, { cap: args.cap, enclosing: args.enclosing }, count_evals(tx, 1))
 				# Everything the body reads except this layer, which only this
 				# site changes (refreshing its block itself): a state below it
 				# reports its bit upward, and the Changed pass must find it here.
@@ -2068,7 +2070,7 @@ Core := [].{
 					s = (cfg.pending)(cfg.init, a)
 					(t1, owned) = issue(count_evals(tx, 1), args.path, planned(a), [])
 					elem = body({ mask: bit(depth), read: |e| e.value, sel: NoSel })
-					(block, t2) = mount_block(In.{ outer: env, value: s }, elem, depth, args.path, args.parent, args.before, { cap: args.cap }, t1)
+					(block, t2) = mount_block(In.{ outer: env, value: s }, elem, depth, args.path, args.parent, args.before, { cap: args.cap, enclosing: args.enclosing }, t1)
 					reads = block.reads.bitwise_or(eff_mask(input))
 					rc = { input, pending: cfg.pending, plan: planned, resolve: |value, held, at, result| resolve(value, held.value, at, (held.read)(result)), path: args.path, depth }
 					(resource_inst(rc, a, s, owned, block), reads, t2)
@@ -2314,6 +2316,62 @@ Core := [].{
 		is_eq : _
 	}
 
+	## The measured mount element, retained separately from app-visible Boot.
+	## Namespace enum aliases retain framing here but resolve by URI identity.
+	MountRoot : { namespace : Web.Namespace, prefix : Web.Prefix, local : Str }
+
+	## Empty driver boot uses an ordinary HTML div, as native and browser specs
+	## do unless they explicitly choose another actual mount element.
+	default_mount_root : MountRoot
+	default_mount_root = { namespace: Html, prefix: Unprefixed, local: "div" }
+
+	## Decode engine-only root facts beside the app environment. Nonempty boot
+	## must end in section13; every body is consumed and the root is bounded
+	## before text decoding. Existing roots need not be reconstructible by an
+	## element factory: these are measured identity facts, not creation requests.
+	read_mount : List(U8), List(Str) -> Try({ boot : Boot, root : MountRoot }, Str)
+	read_mount = |bytes, queries| {
+		if bytes.is_empty() {
+			return Ok({ boot: Core.read_environment([], queries)?, root: Core.default_mount_root })
+		}
+		var $boot = Core.read_environment([], queries)?
+		var $at = 0.U64
+		for section in boot_sections(queries) {
+			context = "contract: boot section ${section.tag.to_str()} (${section.name})"
+			if $at == bytes.len() {
+				return Err("${context} missing section")
+			}
+			tag = bytes.get($at) ? |_| "${context} missing tag"
+			if tag != section.tag {
+				return Err("${context} expected tag ${section.tag.to_str()}, got ${tag.to_str()} (unknown, repeated or out-of-order section)")
+			}
+			length = boot_u32(bytes, $at + 1) ? |reason| "${context} ${reason}"
+			start = $at + 5
+			if start > bytes.len() or length.to_u64() > bytes.len() - start {
+				return Err("${context} truncated body")
+			}
+			$boot = (section.read)($boot, bytes.sublist({ start, len: length.to_u64() })) ? |reason| "${context} ${reason}"
+			$at = start + length.to_u64()
+		}
+		context = "contract: boot section 13 (mount-root)"
+		if bytes.get($at) != Ok(13) {
+			return Err("${context} missing, unknown, repeated or out-of-order section")
+		}
+		length = boot_u32(bytes, $at + 1) ? |reason| "${context} ${reason}"
+		if length > 65_536 {
+			return Err("${context} exceeds 65536 bytes")
+		}
+		start = $at + 5
+		if start > bytes.len() or length.to_u64() > bytes.len() - start {
+			return Err("${context} truncated body")
+		}
+		if start + length.to_u64() != bytes.len() {
+			return Err("${context} trailing bytes or section")
+		}
+		root = read_mount_root(bytes.sublist({ start, len: length.to_u64() })) ? |reason| "${context} ${reason}"
+		Ok({ boot: $boot, root })
+	}
+
 	## Decode boot sections without crashing. Empty bytes mean `Boot {}`;
 	## otherwise every section must occur once in ascending order. Membership
 	## of storage keys is checked separately when a program mounts.
@@ -2323,7 +2381,12 @@ Core := [].{
 	## Decode media flags against the declared query order; no names cross in
 	## the media boot body. Empty bytes supply False for every declared query.
 	read_boot_media : List(U8), List(Str) -> Try(Boot, Str)
-	read_boot_media = |bytes, queries| {
+	read_boot_media = |bytes, queries| Core.read_mount(bytes, queries).map_ok(|mounted| mounted.boot)
+
+	## Decode only app-visible sections after the engine-only framing has been
+	## separated. This preserves Boot's public shape and section diagnostics.
+	read_environment : List(U8), List(Str) -> Try(Boot, Str)
+	read_environment = |bytes, queries| {
 		initial : Boot
 		initial = { media: queries.map(|query| (query, False)) }
 		var $boot = initial
@@ -2358,7 +2421,12 @@ Core := [].{
 	## Encode all boot sections in wire order. Harnesses supply only values
 	## consistent with their program's declared storage keys.
 	write_boot : Boot -> List(U8)
-	write_boot = |boot| {
+	write_boot = |boot| Core.write_mount(boot, Core.default_mount_root)
+
+	## Encode an app environment beside engine-only root facts. Harnesses retain
+	## both, while app code is handed only Boot. The root body has a 64 KiB bound.
+	write_mount : Boot, MountRoot -> List(U8)
+	write_mount = |boot, mount_root| {
 		location = put_section([], 1, put_str([], boot.url))
 		var $storage = put_u32([if (boot.storage_available) 1 else 0], boot.storage.len().to_u32_wrap())
 		for (key, value) in boot.storage {
@@ -2378,7 +2446,12 @@ Core := [].{
 		}
 		zone_bytes = put_section(put_section(seed, 9, languages), 10, $offsets)
 		body = boot.session.fold(put_u32([if (boot.session_available) 1 else 0], boot.session.len().to_u32_wrap()), |bytes, (key, value)| put_str(put_str(bytes, key), value))
-		put_section(zone_bytes, 11, body)
+		environment = put_section(zone_bytes, 11, body)
+		root_body = put_expanded_name([], mount_root.namespace, mount_root.prefix, mount_root.local)
+		if root_body.len() > 65_536 {
+			crash "contract: boot section 13 (mount-root) exceeds 65536 bytes"
+		}
+		put_section(environment, 13, root_body)
 	}
 
 	## The boot value of a declared storage key, or `Missing` if it has none.
@@ -2430,8 +2503,13 @@ Core := [].{
 	## `element(tag, attrs, children)`: an HTML element. `Html` offers typed
 	## helpers for common elements and controls.
 	element : Str, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
-	element = |tag, attrs, kids| Element(
-		tag,
+	element = |tag, attrs, kids| Core.element_named(Web.Tag.from_str(tag) ?? crash "internal: invalid element name", attrs, kids)
+
+	## Keep checked construction facts whole until the enclosing context resolves
+	## raw namespace inheritance. Only Engine calls this name-preserving boundary.
+	element_named : Web.Tag, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
+	element_named = |tag, attrs, kids| Element(
+		{ name: tag, container: 0 },
 		attrs.fold(
 			[],
 			|out, attribute| match attribute {
@@ -2459,6 +2537,25 @@ Core := [].{
 		props.children,
 	)
 
+	## Preserve an authored literal comment as data. It occupies a child position
+	## but never contributes to text content, diagnostics or routing.
+	comment : Str -> Elem(ctx)
+	comment = |value| Comment(value)
+
+	## Select an HTML template's inert content fragment for its authored children.
+	## The choice belongs to the description; ordinary element construction keeps
+	## ordinary children, even on a template. Name validation waits for resolution.
+	template_content : Elem(ctx) -> Elem(ctx)
+	template_content = |elem| match elem {
+		Element(description, attrs, kids) => Element({ ..description, container: 1 }, attrs, kids)
+		_ => crash "contract: template_content requires one element description"
+	}
+
+	## A literal fragment's finite placement requirement, checked at construction.
+	## This wraps a description without allocating another reactive site.
+	require_parent : Elem(ctx), List([Svg]) -> Elem(ctx)
+	require_parent = |elem, allowed| Placed(allowed, elem)
+
 	## A static text node.
 	text : Str -> Elem(ctx)
 	text = |s| Text(s)
@@ -2471,36 +2568,49 @@ Core := [].{
 	## Set a static attribute to literal text, keeping an empty nonboolean
 	## attribute present. Use a property builder for names a control claims.
 	attr : Str, Str -> Attr(ctx)
-	attr = |name, value| Static(name, value)
+	attr = |name, value| Core.attr_named(Web.AttrName.from_str(name) ?? crash "internal: invalid attribute name", value)
+
+	## Preserve a checked attribute's expanded identity and exact-case intent.
+	attr_named : Web.AttrName, Str -> Attr(ctx)
+	attr_named = |name, value| Static(name, value)
 
 	## Follow a signal with an attribute, writing only when it changes. An
 	## empty string keeps a nonboolean attribute present. Names claimed by
 	## an element property are rejected on that property's elements; use
 	## `prop_s` for live control state.
 	attr_s : Str, Signal(ctx, Str) -> Attr(ctx)
-	attr_s = |name, v| Dyn(name, v.map(|encoded| Present(encoded)))
+	attr_s = |name, v| Core.attr_named_s(Web.AttrName.from_str(name) ?? crash "internal: invalid attribute name", v)
+
+	## One ordinary attribute reader with an explicitly checked name.
+	attr_named_s : Web.AttrName, Signal(ctx, Str) -> Attr(ctx)
+	attr_named_s = |name, value| Dyn(name, value.map(|encoded| Present(encoded)))
 
 	## Follow explicit attribute presence. `Present("")` keeps an empty
 	## nonboolean attribute; `Absent` removes it. The same hole and equality
 	## cutoff serve both this builder and `attr_s`.
 	attr_presence : Str, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
-	attr_presence = |name, value| Dyn(name, value)
+	attr_presence = |name, value| Core.attr_named_presence(Web.AttrName.from_str(name) ?? crash "internal: invalid attribute name", value)
+
+	## Explicit presence shares the ordinary reader and equality cutoff while
+	## retaining the complete name through static and template construction.
+	attr_named_presence : Web.AttrName, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
+	attr_named_presence = |name, value| Dyn(name, value)
 
 	## A static `class` attribute.
 	class : Str -> Attr(ctx)
-	class = |c| Static("class", c)
+	class = |c| Core.attr("class", c)
 
 	## A `class` attribute that follows a value.
 	class_s : Signal(ctx, Str) -> Attr(ctx)
-	class_s = |v| Dyn("class", v.map(|encoded| Present(encoded)))
+	class_s = |v| Core.attr_s("class", v)
 
 	## A static `data-testid` attribute, for spec locators.
 	test_id : Str -> Attr(ctx)
-	test_id = |v| Static("data-testid", v)
+	test_id = |v| Core.attr("data-testid", v)
 
 	## A `data-testid` attribute that follows a value.
 	test_id_s : Signal(ctx, Str) -> Attr(ctx)
-	test_id_s = |v| Dyn("data-testid", v.map(|encoded| Present(encoded)))
+	test_id_s = |v| Core.attr_s("data-testid", v)
 
 	## Static dispatch policies, checked by the compiler. Prevention and
 	## propagation must be decided before an event's synchronous window closes.
@@ -2915,7 +3025,7 @@ Core := [].{
 			$out = $out.append(work_get(a.tx.work, $i))
 			$i = $i + 1
 		}
-		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42), work_get(a.tx.work, 43), a.tx.fx.observed.live, work_get(a.tx.work, 45), work_get(a.tx.work, 46), work_get(a.tx.work, 47)])
+		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42), work_get(a.tx.work, 43), a.tx.fx.observed.live, work_get(a.tx.work, 45), work_get(a.tx.work, 46), work_get(a.tx.work, 47), work_get(a.tx.work, 48)])
 	}
 
 	# ------------------------------------------------------------------
@@ -2967,7 +3077,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 17
+	protocol_version = 18
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -3256,7 +3366,11 @@ Core := [].{
 				declarations.fold([], |bytes, section| put_section(bytes, section.tag, (section.write)()))
 			},
 			init: |names, boot| {
-				b = decode_boot(boot, names.media)
+				mounted = match Core.read_mount(boot, names.media) {
+					Ok(value) => value
+					Err(message) => crash message
+				}
+				b = mounted.boot
 				match check_boot_keys(b, cfg.storage_keys) {
 					Ok(_) => {}
 					Err(message) => crash message
@@ -3266,7 +3380,7 @@ Core := [].{
 						crash "contract: boot section 11 (session-storage) pair for undeclared key \"${key}\""
 					}
 				}
-				finish(mount_start(cfg.max_inflight, names, start(b), view(b)), [], [])
+				finish(mount_start_in(cfg.max_inflight, names, start(b), view(b), enclosing_root(mounted.root)), [], [])
 			},
 			event: |inst, buf, wbuf, node, handler, payload| {
 				{ store, root, tx, programs } = inst
@@ -3327,9 +3441,16 @@ eff_mask = |v| v.mask.bitwise_or(sel_mask(v.sel))
 ## `sole`: the site is the only child of `parent` and sits at its end.
 ## `cap` != 0: a known superset of what the site can read; the site may
 ## report it instead of computing its reads (set inside each rows).
-Args : { depth : U64, path : List(U32), parent : U32, before : U32, sole : Bool, cap : U128 }
+Args : { depth : U64, path : List(U32), parent : U32, before : U32, sole : Bool, cap : U128, enclosing : Enclosing }
 
-Scope : { cap : U128 }
+## Actual parent identity and the raw constructor's child namespace travel
+## through sites, never recovered by walking the engine tree or the DOM.
+Enclosing : { namespace : Web.Namespace, prefix : Web.Prefix, local : Str, raw_namespace : Web.Namespace }
+
+Scope : { cap : U128, enclosing : Enclosing }
+
+root_enclosing : Enclosing
+root_enclosing = { namespace: Html, prefix: Unprefixed, local: "div", raw_namespace: Html }
 
 Mount(ctx) := [Mount((ctx, Args, Tx -> (Inst(ctx), U128, Tx)))]
 
@@ -3717,15 +3838,15 @@ w_port_sends = 40
 ## released registrations (43), live observations (44), marked batches (45),
 ## guard commands (46) and accepted transfer progress turns (47).
 w_record_count : U64
-w_record_count = w_count + 16
+w_record_count = w_count + 17
 
 ## The work counters as plain fields (`c01` is counter 1): bumping one
 ## updates a value in the accumulator and never allocates, so counting
 ## cannot cost an allocation or a copy on any path.
-Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64, c45 : U64, c46 : U64, c47 : U64 }
+Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64, c45 : U64, c46 : U64, c47 : U64, c48 : U64 }
 
 work_zero : Work
-work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0, c45: 0, c46: 0, c47: 0 }
+work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0, c45: 0, c46: 0, c47: 0, c48: 0 }
 
 ## Add `n` to counter `i`; counter 0 (and any index past the last) is the
 ## unused sink.
@@ -3769,6 +3890,7 @@ add_work = |w, i, n| match i {
 	45 => { ..w, c45: w.c45 + n }
 	46 => { ..w, c46: w.c46 + n }
 	47 => { ..w, c47: w.c47 + n }
+	48 => { ..w, c48: w.c48 + n }
 	_ => w
 }
 
@@ -3813,10 +3935,11 @@ work_get = |w, i| match i {
 	45 => w.c45
 	46 => w.c46
 	47 => w.c47
+	48 => w.c48
 	_ => 0
 }
 
-Hole(ctx) : { node : U32, mask : U128, attr : Str, reference : [NotReference, Reference(List(U32), Bool)], property : U8, read : (ctx -> [Absent, Present(Str)]), last : [Absent, Present(Str)], dirty : Bool }
+Hole(ctx) : { node : U32, mask : U128, attr : [NoAttribute, Attribute(Web.AttrName)], reference : [NotReference, Reference(List(U32), Bool)], property : U8, read : (ctx -> [Absent, Present(Str)]), last : [Absent, Present(Str)], dirty : Bool }
 
 Block(ctx) : {
 	holes : List(Hole(ctx)),
@@ -3865,7 +3988,7 @@ put_presence = |bytes, presence| match presence {
 ## opcode is counted in the work counters; property commands use the
 ## dedicated PROP and HPROP slots (design.md, "Work assertions").
 emit_op : Tx, U8, (List(U8) -> List(U8)) -> Tx
-emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else if (op == 25) 46 else op.to_u64(), 1), paths, site_free, observations, fx }
+emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else if (op == 25) 46 else if (op == 26) 48 else op.to_u64(), 1), paths, site_free, observations, fx }
 
 ## Add `n` to work counter `i`.
 bump : Tx, U64, U64 -> Tx
@@ -4379,6 +4502,7 @@ bounded_element_hint = |text| {
 first_static_text : Elem(ctx) -> Str
 first_static_text = |elem| match elem {
 	Text(text) => text.trim()
+	Element(description, _, _) if description.container == 1 => ""
 	Element(_, _, kids) | Fragment(kids) => {
 		for kid in kids {
 			text = first_static_text(kid)
@@ -4388,7 +4512,8 @@ first_static_text = |elem| match elem {
 		}
 		""
 	}
-	TextV(_) | Site(_, _) => ""
+	Comment(_) | TextV(_) | Site(_, _) => ""
+	Placed(_, child) => first_static_text(child)
 }
 
 ## Prefer explicit static addresses in a fixed order, then static text. A
@@ -4400,7 +4525,7 @@ element_hint = |elem| {
 			for name in ["data-testid", "id", "aria-label", "name"] {
 				for attr in attrs {
 					match attr {
-						Static(authored, value) if html_attribute_is(authored, name) and !value.is_empty() => return bounded_element_hint(value)
+						Static(authored, value) if ordinary_attribute_is(authored, name) and !value.is_empty() => return bounded_element_hint(value)
 						_ => {}
 					}
 				}
@@ -4417,13 +4542,14 @@ element_hint = |elem| {
 static_element_path : Elem(ctx), U64 -> [Found(List(U64)), Remaining(U64)]
 static_element_path = |elem, ordinal| match elem {
 	Site(_, _) => Remaining(ordinal)
+	Placed(_, child) => static_element_path(child, ordinal)
 	Fragment(kids) => static_child_path(kids, ordinal)
 	Element(_, _, kids) => if ordinal == 0 {
 		Found([])
 	} else {
 		static_child_path(kids, ordinal - 1)
 	}
-	Text(_) | TextV(_) => if ordinal == 0 {
+	Text(_) | Comment(_) | TextV(_) => if ordinal == 0 {
 		Found([])
 	} else {
 		Remaining(ordinal - 1)
@@ -4473,8 +4599,10 @@ static_element_place = |root, ordinal, elem| match static_element_path(root, ord
 ## bare event type, no retired suffixes, and properties used only on their
 ## declared elements without duplicates or claimed ordinary attributes.
 ## Both plain blocks and row templates use this construction-site check.
-check_element_attrs : List(Attr(ctx)), Str, Str, List(U32), (() -> Str) -> {}
-check_element_attrs = |attrs, tag, placed, path, describe| {
+check_element_attrs : List(Attr(ctx)), Web.Tag, Str, List(U32), (() -> Str) -> {}
+check_element_attrs = |attrs, resolved, placed, path, describe| {
+	tag = resolved.local()
+	html = resolved.namespace() == Explicit(Html)
 	location = || "${placed} at site ${show_path(path)}${describe()}"
 	controlled = attrs.any(
 		|attribute| match attribute {
@@ -4486,8 +4614,8 @@ check_element_attrs = |attrs, tag, placed, path, describe| {
 		for attribute in attrs {
 			match attribute {
 				On(event, _) if event.event == "beforetoggle" => crash "contract: beforetoggle is not supported on a controlled shown element${location()}"
-				Static(name, _) | Dyn(name, _) if tag == "dialog" and (html_attribute_is(name, "popover") or html_attribute_is(name, "closedby")) => crash "contract: popover and closedby are not supported on a controlled dialog${location()}"
-				Static(name, _) | Dyn(name, _) if tag == "dialog" and html_attribute_is(name, "open") => crash "contract: attribute open is owned by the controlled dialog${location()}"
+				Static(name, _) | Dyn(name, _) if tag == "dialog" and (ordinary_attribute_is(name, "popover") or ordinary_attribute_is(name, "closedby")) => crash "contract: popover and closedby are not supported on a controlled dialog${location()}"
+				Static(name, _) | Dyn(name, _) if tag == "dialog" and ordinary_attribute_is(name, "open") => crash "contract: attribute open is owned by the controlled dialog${location()}"
 				_ => {}
 			}
 		}
@@ -4500,13 +4628,13 @@ check_element_attrs = |attrs, tag, placed, path, describe| {
 	) {
 		static_popovers = attrs.keep_if(
 			|attribute| match attribute {
-				Static(name, _) if html_attribute_is(name, "popover") => True
+				Static(name, _) if ordinary_attribute_is(name, "popover") => True
 				_ => False
 			},
 		).len()
 		if static_popovers != 1 or attrs.any(
 			|attribute| match attribute {
-				Dyn(name, _) if html_attribute_is(name, "popover") => True
+				Dyn(name, _) if ordinary_attribute_is(name, "popover") => True
 				_ => False
 			},
 		) {
@@ -4526,7 +4654,7 @@ check_element_attrs = |attrs, tag, placed, path, describe| {
 			}
 			Property(index, _) | PropertyV(index, _) => {
 				row = property_row(index)
-				if !row.elements.is_empty() and !row.elements.contains(tag) {
+				if !row.elements.is_empty() and (!html or !row.elements.contains(tag)) {
 					crash "contract: property \"${row.name}\" is not allowed on <${tag}>${location()}"
 				}
 				if $properties.contains(index) {
@@ -4537,8 +4665,8 @@ check_element_attrs = |attrs, tag, placed, path, describe| {
 			Static(name, _) | Dyn(name, _) => {
 				for index in [1.U8, 2] {
 					row = property_row(index)
-					if row.elements.contains(tag) and row.name == name {
-						crash "contract: attribute \"${name}\" on <${tag}> is claimed by a property${location()}; use prop or prop_s"
+					if html and row.elements.contains(tag) and name.namespace() == None and row.name == name.local() {
+						crash "contract: attribute \"${name.text()}\" on <${tag}> is claimed by a property${location()}; use prop or prop_s"
 					}
 				}
 			}
@@ -4555,25 +4683,36 @@ mount_elem : Block(ctx), ctx, Elem(ctx), Elem(ctx), U64, List(U32), U32, U32, Bo
 mount_elem = |block, env, root_elem, elem, depth, path, parent, before, top, sole, scope, tx| {
 	at = if (top) before else 0
 	match elem {
-		Element(tag, attrs, kids) => {
+		Element(authored, attrs, kids) => {
+			tag = resolve_element(authored.name, scope.enclosing)
+			container = checked_container(tag, authored.container)
 			check_element_attrs(attrs, tag, "", path, || static_element_place(root_elem, block.nodes.len(), elem))
 			(id, tx1) = alloc_id(tx)
-			tx2 = emit_op(tx1, 8, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), tag))
+			tx2 = emit_op(tx1, 8, |c| put_element_name(put_u32(put_u32(put_u32(c, id), parent), at), tag).append(container))
 			var $b = add_node(block, id, top)
 			var $t = tx2
 			value_control = declares_value(attrs)
 			for attr in attrs {
-				(b2, t2) = mount_attr($b, env, attr, id, path, value_control, $t)
+				(b2, t2) = mount_attr($b, env, attr, id, path, value_control, tag, $t)
 				$b = b2
 				$t = t2
 			}
 			kid_sole = kids.len() == 1
 			for kid in kids {
-				(b3, t3) = mount_elem($b, env, root_elem, kid, depth, path, id, 0, False, kid_sole, scope, $t)
+				(b3, t3) = mount_elem($b, env, root_elem, kid, depth, path, id, 0, False, kid_sole, { ..scope, enclosing: child_enclosing(tag) }, $t)
 				$b = b3
 				$t = t3
 			}
 			($b, $t)
+		}
+		Placed(allowed, child) => {
+			check_parent(allowed, scope.enclosing, path)
+			mount_elem(block, env, root_elem, child, depth, path, parent, before, top, sole, scope, tx)
+		}
+		Comment(value) => {
+			(id, tx1) = alloc_id(tx)
+			tx2 = emit_op(tx1, 26, |commands| put_str(put_u32(put_u32(put_u32(commands, id), parent), at), value))
+			(add_node(block, id, top), tx2)
 		}
 		Fragment(children) => children.fold((block, tx), |(held, acc), child| mount_elem(held, env, root_elem, child, depth, path, parent, at, top, sole and children.len() == 1, scope, acc))
 		Text(s) => {
@@ -4587,32 +4726,36 @@ mount_elem = |block, env, root_elem, elem, depth, path, parent, before, top, sol
 			s = read(env)
 			tx2 = emit_op(count_evals(tx1, 1), 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
 			b1 = add_node(block, id, top)
-			(add_hole(b1, { node: id, mask: eff_mask(v), attr: "", reference: NotReference, property: 0, read: |context| Present(read(context)), last: Present(s), dirty: False }), tx2)
+			(add_hole(b1, { node: id, mask: eff_mask(v), attr: NoAttribute, reference: NotReference, property: 0, read: |context| Present(read(context)), last: Present(s), dirty: False }), tx2)
 		}
 		Site(Mount(mount), _) => {
 			k = block.children.len().to_u32_wrap()
-			(inst, reads, tx1) = mount(env, { depth, path: path.append(k), parent, before: at, sole: sole and !top, cap: scope.cap }, tx)
+			(inst, reads, tx1) = mount(env, { depth, path: path.append(k), parent, before: at, sole: sole and !top, cap: scope.cap, enclosing: scope.enclosing }, tx)
 			(add_child(block, inst, reads, top), tx1)
 		}
 	}
 }
 
-mount_attr : Block(ctx), ctx, Attr(ctx), U32, List(U32), Bool, Tx -> (Block(ctx), Tx)
-mount_attr = |block, env, attr, id, path, value_control, tx| {
+mount_attr : Block(ctx), ctx, Attr(ctx), U32, List(U32), Bool, Web.Tag, Tx -> (Block(ctx), Tx)
+mount_attr = |block, env, attr, id, path, value_control, element_name, tx| {
 	match attr {
 		KeyOn(_, _, _) | ShownOn(_, _, _, _) => crash "internal: paired declaration was not lowered by element"
-		Static(name, value) => (block, emit_op(tx, 9, |c| put_presence(put_str(put_u32(c, id), name), Present(value))))
-		Dyn(name, v) => {
+		Static(authored, value) => {
+			name = resolve_attribute(authored, element_name)
+			(block, emit_op(tx, 9, |c| put_presence(put_attribute_name(put_u32(c, id), name), Present(value))))
+		}
+		Dyn(authored, v) => {
+			name = resolve_attribute(authored, element_name)
 			read = v.read
 			value = read(env)
-			tx1 = emit_op(count_evals(tx, 1), 9, |c| put_presence(put_str(put_u32(c, id), name), value))
-			(add_hole(block, { node: id, mask: eff_mask(v), attr: name, reference: NotReference, property: 0, read, last: value, dirty: False }), tx1)
+			tx1 = emit_op(count_evals(tx, 1), 9, |c| put_presence(put_attribute_name(put_u32(c, id), name), value))
+			(add_hole(block, { node: id, mask: eff_mask(v), attr: Attribute(name), reference: NotReference, property: 0, read, last: value, dirty: False }), tx1)
 		}
 		Property(index, value) => (block, emit_op(count_property(tx, index), 21, |commands| put_str(put_u32(commands, id).append(index), value)))
 		PropertyV(index, value) => {
 			encoded = (value.read)(env)
 			next = shown_fact(emit_op(count_property(count_evals(tx, 1), index), 21, |commands| put_str(put_u32(commands, id).append(index), encoded)), id, 256, index, encoded)
-			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: NotReference, property: index, read: |context| Present((value.read)(context)), last: Present(encoded), dirty: False }), next)
+			(add_hole(block, { node: id, mask: eff_mask(value), attr: NoAttribute, reference: NotReference, property: index, read: |context| Present((value.read)(context)), last: Present(encoded), dirty: False }), next)
 		}
 		On(ev, handler) => {
 			tx0 = if ev.policies.bitwise_and(16) != 0 {
@@ -4629,7 +4772,7 @@ mount_attr = |block, env, attr, id, path, value_control, tx| {
 		Ref(value) => {
 			ref_path = path.append(block.holes.len().to_u32_wrap())
 			name = (value.read)(env)
-			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: Reference(ref_path, value_control), property: 0, read: |context| Present((value.read)(context)), last: Present(name), dirty: False }), with_fx(count_evals(tx, 1), |fx| add_ref(fx, { name, node: id, path: ref_path, value_control })))
+			(add_hole(block, { node: id, mask: eff_mask(value), attr: NoAttribute, reference: Reference(ref_path, value_control), property: 0, read: |context| Present((value.read)(context)), last: Present(name), dirty: False }), with_fx(count_evals(tx, 1), |fx| add_ref(fx, { name, node: id, path: ref_path, value_control })))
 		}
 	}
 }
@@ -4683,7 +4826,7 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 	while $i < $holes.len() {
 		hm = $holes.get($i).map_ok(|h| h.mask) ?? 0
 		if all or hm.bitwise_and(mask) != 0 or ($holes.get($i).map_ok(|hole| hole.dirty) ?? False) {
-			{ list, prev } = $holes.replace($i, { node: 0, mask: 0, attr: "", reference: NotReference, property: 0, read: |_| Absent, last: Absent, dirty: False }) ?? crash "hole"
+			{ list, prev } = $holes.replace($i, { node: 0, mask: 0, attr: NoAttribute, reference: NotReference, property: 0, read: |_| Absent, last: Absent, dirty: False }) ?? crash "hole"
 			{ node, mask: m, attr, reference, property, read, last, dirty: _ } = prev
 			v = read(env)
 			t1 = count_evals($tx, 1)
@@ -4695,10 +4838,9 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 					shown_fact(emit_op(count_property(t1, property), 21, |commands| put_str(put_u32(commands, node).append(property), observed_text(v))), node, 256, property, observed_text(v))
 				} else match reference {
 					Reference(path, value_control) => with_fx(t1, |fx| add_ref(drop_name(fx, { node, name: observed_text(last), path }), { name: observed_text(v), node, path, value_control }))
-					NotReference => if attr.is_empty() {
-						emit_op(t1, 12, |c| put_str(put_u32(c, node), observed_text(v)))
-					} else {
-						emit_op(t1, 9, |c| put_presence(put_str(put_u32(c, node), attr), v))
+					NotReference => match attr {
+						NoAttribute => emit_op(t1, 12, |c| put_str(put_u32(c, node), observed_text(v)))
+						Attribute(name) => emit_op(t1, 9, |c| put_presence(put_attribute_name(put_u32(c, node), name), v))
 					}
 				}
 				$holes = list.set($i, { node, mask: m, attr, reference, property, read, last: v, dirty: False }) ?? crash "hole"
@@ -4759,7 +4901,7 @@ fire_leaf = |block, env, h, payload, site, tx| {
 					open = (open_kind.decode)(payload, site)
 					value = if (open) echo.showing else if (echo.property == 6) "hidden" else "false"
 					{ holes, handlers, children, child_reads, child_top, nodes, tops, reads } = block
-					{ list, prev } = holes.replace(echo.hole, { node: 0, mask: 0, attr: "", reference: NotReference, property: 0, read: |_| Absent, last: Absent, dirty: False }) ?? crash "internal: paired shown hole"
+					{ list, prev } = holes.replace(echo.hole, { node: 0, mask: 0, attr: NoAttribute, reference: NotReference, property: 0, read: |_| Absent, last: Absent, dirty: False }) ?? crash "internal: paired shown hole"
 					next = { ..prev, last: Present(value), dirty: True }
 					fact = shown_fact(tx, prev.node, 256, echo.property, value)
 					({ holes: list.set(echo.hole, next) ?? crash "internal: paired shown hole", handlers, children, child_reads, child_top, nodes, tops, reads }, OpenState(open), { ..fact, observations: { ..fact.observations, echo: True } })
@@ -5022,7 +5164,7 @@ state_inst = |s0, block0, depth0, waits0| {
 }
 
 ## A conditional site. The branch is rebuilt when the condition changes.
-When(ctx) : { cond : Signal(ctx, Bool), yes : (() -> Elem(ctx)), no : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128 }
+When(ctx) : { cond : Signal(ctx, Bool), yes : (() -> Elem(ctx)), no : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128, enclosing : Enclosing }
 
 ## `adopted`: orphans reparented to this site when a branch it disposed
 ## left admitted requests behind.
@@ -5044,7 +5186,7 @@ when_inst = |w0, cur0, adopted0, block0| {
 						} else {
 							(orph, t2) = dispose_block(block, env, True, bump(bump(t1, w_scopes_disposed, 1), w_scopes_created, 1))
 							elem = if (c) (w.yes)() else (w.no)()
-							(b3, t3) = mount_block(env, elem, w.depth, w.path, 0, w.anchor, { cap: w.cap }, fx_adopt(t2, w.path, orph))
+							(b3, t3) = mount_block(env, elem, w.depth, w.path, 0, w.anchor, { cap: w.cap, enclosing: w.enclosing }, fx_adopt(t2, w.path, orph))
 							(when_inst(w, c, adopted.concat(orph), b3), Done, t3)
 						}
 					} else {
@@ -5408,9 +5550,9 @@ index_remove = |{ hs, vals, count, bits, by_slot }, slot| {
 ## ------------------------------------------------------------------
 ## Row templates, compiled once per each site.
 ##
-## Template encoding: node := 1 tag:str nattr:u8 (name:str value:str)*
-## nchild:u8 node* | 2 text:str; then nholes:u8, each hole := kind:u8
-## depth:u8 path:u8*, followed by an attribute name, an event declaration
+## Template encoding: node := 1 expanded-name container:u8 nattr:u8
+## (expanded-name value:str)* nchild:u8 node* | 2 text:str | 3 comment:str;
+## then nholes:u8, each hole := kind:u8 depth:u8 (container:u8 index:u8)*, followed by an attribute name, an event declaration
 ## (handler index, bare event name, payload kind and policy bits), or a
 ## property index for those hole kinds.
 ## Hole kinds: 1 text, 2 attr, 3 event, 4 bind (placeholder for a nested
@@ -5437,8 +5579,8 @@ Plan(ctx) : {
 plan_empty : {} -> Plan(ctx)
 plan_empty = |_| { tree: [], htab: [], holes: [], handlers: [], mounts: [], ncols: 0, kreads: 0 }
 
-put_path : List(U8), U8, List(U8) -> List(U8)
-put_path = |buf, kind, path| buf.append(kind).append(narrow(path.len(), "nesting depth of a hole")).concat(path)
+put_path : List(U8), U8, List((U8, U8)) -> List(U8)
+put_path = |buf, kind, path| path.fold(buf.append(kind).append(narrow(path.len(), "nesting depth of a hole")), |out, (container, index)| out.append(container).append(index))
 
 ## A count the template encoding carries in one byte (design.md, Appendix
 ## B). Beyond 255 it is a resource limit, never a wrap.
@@ -5458,11 +5600,13 @@ val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, valu
 	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
 }
 
-compile_elem : Plan(ctx), Elem(ctx), List(U8), U64, List(U32), Str -> Plan(ctx)
-compile_elem = |plan, elem, path, depth, site, placed| {
+compile_elem : Plan(ctx), Elem(ctx), List((U8, U8)), U64, List(U32), Str, Enclosing -> Plan(ctx)
+compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 	match elem {
-		Element(tag, attrs, kids) => {
-			check_element_attrs(attrs, tag, placed, site, || element_place(elem, path.map(|index| index.to_u64())))
+		Element(authored, attrs, kids) => {
+			tag = resolve_element(authored.name, enclosing)
+			container = checked_container(tag, authored.container)
+			check_element_attrs(attrs, tag, placed, site, || element_place(elem, path.map(|(_, index)| index.to_u64())))
 			value_control = declares_value(attrs)
 			var $nstatic = 0.U64
 			for a0 in attrs {
@@ -5476,7 +5620,7 @@ compile_elem = |plan, elem, path, depth, site, placed| {
 			nstatic = $nstatic
 			var $p = plan
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = $p
-			var $tree = put_str(tree.append(1), tag).append(narrow(nstatic, "static attributes on one element"))
+			var $tree = put_element_name(tree.append(1), tag).append(container).append(narrow(nstatic, "static attributes on one element"))
 			var $htab = htab
 			var $holes = holes
 			var $handlers = handlers
@@ -5485,10 +5629,10 @@ compile_elem = |plan, elem, path, depth, site, placed| {
 				match a {
 					KeyOn(_, _, _) | ShownOn(_, _, _, _) => crash "internal: paired declaration was not lowered by element"
 					Static(name, value) => {
-						$tree = put_str(put_str($tree, name), value)
+						$tree = put_str(put_attribute_name($tree, resolve_attribute(name, tag)), value)
 					}
 					Dyn(name, v) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 2, value: v, extra: put_str(put_path([], 2, path), name), counter: 0, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 2, value: v, extra: put_attribute_name(put_path([], 2, path), resolve_attribute(name, tag)), counter: 0, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
@@ -5523,11 +5667,16 @@ compile_elem = |plan, elem, path, depth, site, placed| {
 			$p = { tree: $tree, htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads }
 			var $i = 0.U8
 			for kid in kids {
-				$p = compile_elem($p, kid, path.append($i), depth, site, placed)
+				$p = compile_elem($p, kid, path.append((container, $i)), depth, site, placed, child_enclosing(tag))
 				$i = $i + 1
 			}
 			$p
 		}
+		Placed(allowed, child) => {
+			check_parent(allowed, enclosing, site)
+			compile_elem(plan, child, path, depth, site, placed, enclosing)
+		}
+		Comment(value) => { ..plan, tree: put_str(plan.tree.append(3), value) }
 		Fragment(_) => crash "internal: a fragment is only a dynamic branch, never a row template node"
 		Text(s) => {
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
@@ -5541,16 +5690,20 @@ compile_elem = |plan, elem, path, depth, site, placed| {
 		Site(m, rf) => {
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
 			hole = { is_observation: False, evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0, value_control: False, property: 0 }
-			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(m), ncols, kreads: kreads.bitwise_or(rf(depth)) }
+			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(mount_in_context(m, enclosing)), ncols, kreads: kreads.bitwise_or(rf(depth)) }
 		}
 	}
 }
 
 ## Compile an `each` row template for the each site at `site`.
-compile : Elem(ctx), U64, List(U32), Str -> Plan(ctx)
-compile = |elem, depth, site, kind| {
+compile : Elem(ctx), U64, List(U32), Str, Enclosing -> Plan(ctx)
+compile = |elem, depth, site, kind, enclosing| {
 	match elem {
-		Element(_, _, _) => compile_elem(plan_empty({}), elem, [], depth, site, " in the row template of ${kind}")
+		Element(_, _, _) => compile_elem(plan_empty({}), elem, [], depth, site, " in the row template of ${kind}", enclosing)
+		Placed(allowed, child) => {
+			check_parent(allowed, enclosing, site)
+			compile(child, depth, site, kind, enclosing)
+		}
 		_ => crash "contract: ${kind} row template must be a single element at site ${show_path(site)}"
 	}
 }
@@ -5964,7 +6117,7 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 				Mount(f) => f
 			}
 			bid = $bound.get($j) ?? crash "bind"
-			(inst, reads, t4) = mount(row_env, { depth: cfg.depth, path: cfg.path.concat([slot, $j.to_u32_wrap()]), parent: 0, before: bid, sole: False, cap: cfg.plan.kreads.bitwise_or(upto(cfg.depth).bitwise_not()) }, $tx)
+			(inst, reads, t4) = mount(row_env, { depth: cfg.depth, path: cfg.path.concat([slot, $j.to_u32_wrap()]), parent: 0, before: bid, sole: False, cap: cfg.plan.kreads.bitwise_or(upto(cfg.depth).bitwise_not()), enclosing: root_enclosing }, $tx)
 			$insts = $insts.append(inst)
 			$km = $km.bitwise_or(reads)
 			$tx = t4
@@ -7053,7 +7206,8 @@ elem_reads = |elem, depth| match elem {
 		$m
 	}
 	Fragment(children) => children.fold(0, |mask, child| mask.bitwise_or(elem_reads(child, depth)))
-	Text(_) => 0
+	Text(_) | Comment(_) => 0
+	Placed(_, child) => elem_reads(child, depth)
 	TextV(v) => eff_mask(v)
 	Site(_, rf) => rf(depth)
 }
@@ -7074,7 +7228,7 @@ state_handle = |depth| {
 ## value `k` of `sel`, rebuilt when it changes. `cases` lists every value
 ## `sel` can take; the site's static reads are the union over them (so it
 ## listens exactly), and a value outside `cases` is a contract error.
-Switch(ctx, k) : { sel : Signal(ctx, k), cases : List(k), body : (k -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128 }
+Switch(ctx, k) : { sel : Signal(ctx, k), cases : List(k), body : (k -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128, enclosing : Enclosing }
 
 switch_reads : Signal(ctx, k), List(k), (k -> Elem(ctx)), U64 -> U128
 switch_reads = |sel, cases, body, d| {
@@ -7109,7 +7263,7 @@ switch_inst = |w0, cur0, adopted0, block0| {
 							(switch_inst(w, cur, adopted, b2), Done, t2)
 						} else {
 							(orph, t2) = dispose_block(block, env, True, bump(bump(t1, w_scopes_disposed, 1), w_scopes_created, 1))
-							(b3, t3) = mount_block(env, (w.body)(k), w.depth, w.path, 0, w.anchor, { cap: w.cap }, fx_adopt(t2, w.path, orph))
+							(b3, t3) = mount_block(env, (w.body)(k), w.depth, w.path, 0, w.anchor, { cap: w.cap, enclosing: w.enclosing }, fx_adopt(t2, w.path, orph))
 							(switch_inst(w, k, adopted.concat(orph), b3), Done, t3)
 						}
 					} else {
@@ -7150,7 +7304,7 @@ switch_inst = |w0, cur0, adopted0, block0| {
 
 ## A `remount_on` site's fixed part: its key, its body, its anchor
 ## and where the body mounts.
-Remount(ctx, k) : { key : Signal(ctx, k), body : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128 }
+Remount(ctx, k) : { key : Signal(ctx, k), body : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128, enclosing : Enclosing }
 
 ## A `remount_on` site holding the body built for key `cur`.
 ## `adopted`: orphans reparented to this site when a body it disposed left
@@ -7173,7 +7327,7 @@ remount_inst = |w0, cur0, adopted0, block0| {
 							(remount_inst(w, cur, adopted, b2), Done, t2)
 						} else {
 							(orph, t2) = dispose_block(block, env, True, bump(bump(t1, w_scopes_disposed, 1), w_scopes_created, 1))
-							(b3, t3) = mount_block(env, (w.body)(), w.depth, w.path, 0, w.anchor, { cap: w.cap }, fx_adopt(t2, w.path, orph))
+							(b3, t3) = mount_block(env, (w.body)(), w.depth, w.path, 0, w.anchor, { cap: w.cap, enclosing: w.enclosing }, fx_adopt(t2, w.path, orph))
 							(remount_inst(w, k, adopted.concat(orph), b3), Done, t3)
 						}
 					} else {
@@ -7375,10 +7529,15 @@ mount_in = |max, programs, st, elem| mount_start(max, programs, { st, tables: []
 ## `mount_in` for a root whose store starts as `start`: the root
 ## site also takes what it needs of the store's table cells.
 mount_start : U64, Catalogue, Core.Start(st), Elem(Root(st)) -> App(st)
-mount_start = |max, programs, { st, tables }, elem| {
+mount_start = |max, programs, start, elem| mount_start_in(max, programs, start, elem, root_enclosing)
+
+## The program boundary supplies measured finite root facts without giving
+## them to an app's Boot reader or retaining another copy of its store.
+mount_start_in : U64, Catalogue, Core.Start(st), Elem(Root(st)), Enclosing -> App(st)
+mount_start_in = |max, programs, { st, tables }, elem, enclosing| {
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = new_tx([])
 	tx0 = { cmds, next, free, routes, work, paths, site_free, observations, fx: { ..fx, max } }
-	(block, tx) = mount_block(Root.{ store: st }, elem, 0, [], 0, 0, { cap: 0 }, tx0)
+	(block, tx) = mount_block(Root.{ store: st }, elem, 0, [], 0, 0, { cap: 0, enclosing }, tx0)
 	written = tables.fold(0.U128, |acc, t| acc.bitwise_or(cell_bit(t.cell)))
 	{ store, root, tx: mounted, programs: catalogue } = drain({ store: st, root: store_inst({ cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs })
 	{ store, root, tx: with_fx(mounted, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), programs: catalogue }
@@ -9395,11 +9554,6 @@ check_boot_keys = |boot, keys| {
 
 ## Mount's narrow boundary turns a structural decoding error into a classified
 ## contract fault. Harnesses use `read_boot` to inspect arbitrary bytes safely.
-decode_boot : List(U8), List(Str) -> Boot
-decode_boot = |bytes, queries| match Core.read_boot_media(bytes, queries) {
-	Ok(boot) => boot
-	Err(message) => crash message
-}
 
 ## A routed call reserves its header before running any turn. A stale call
 ## leaves its recycled buffer empty and allocates no header. Scratch buffers stay empty.
@@ -9622,6 +9776,7 @@ work_bytes = |inst, buf| {
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, 43)), fx.observed.live), work_get(counters, 45))
 	$b = put_u64($b, work_get(counters, 46))
 	$b = put_u64($b, work_get(counters, 47))
+	$b = put_u64($b, work_get(counters, 48))
 	runs = inst.tx.fx.cleanups
 	$b = put_u32($b, runs.len().to_u32_wrap())
 	for (name, k) in runs {
@@ -9859,7 +10014,7 @@ expect {
 			),
 	)
 	(taken, cmds) = Core.take_cmds(mount_in(32, { workers: [], ports: ports_of([]), media: [] }, {}, elem), [])
-	mounted = put_str(put_u32(put_u32(put_u32([8], 1), 0), 0), "div").concat(put_str(put_u32(put_u32(put_u32([10], 2), 1), 0), ""))
+	mounted = put_str(put_str(put_u32(put_u32(put_u32([8], 1), 0), 0).append(0), ""), "div").append(0).concat(put_str(put_u32(put_u32(put_u32([10], 2), 1), 0), ""))
 	cleaned = put_str([17], "a").concat(put_str(put_str([16, 1], "last"), "a")).concat(put_str([16, 2], "draft"))
 	replaced = put_str(put_u32(put_u32(put_u32([10], 3), 0), 2), "")
 	cmds == [0].concat(mounted).concat(cleaned).concat(replaced) and taken.tx.fx.cleanups == [("closing", 1)]
@@ -10104,9 +10259,9 @@ expect {
 	h : Handler({})
 	h = { run: |e, _, _| (e, no_layers) }
 	distinct : List(Attr({}))
-	distinct = [Core.on("click", h), Static("class", "x"), Core.on("input", h), Ref(Core.const("r"))]
+	distinct = [Core.on("click", h), Core.attr("class", "x"), Core.on("input", h), Ref(Core.const("r"))]
 	twice : List(Attr({}))
-	twice = [Core.on("click", h), Core.on("input", h), Dyn("title", Core.const(Present("t"))), Core.on("click", h)]
+	twice = [Core.on("click", h), Core.on("input", h), Core.attr_presence("title", Core.const(Present("t"))), Core.on("click", h)]
 	(twice_handled(distinct), twice_handled(twice)) == (Err(Distinct), Ok("click"))
 }
 
@@ -10144,10 +10299,10 @@ expect {
 expect {
 	row : Elem(Row(Root({}), Str))
 	row = Core.element("button", [Core.ref_s(Core.const("cell"))], [])
-	plan = compile(row, 1, [0], "an each")
+	plan = compile(row, 1, [0], "an each", root_enclosing)
 	actual = { bytes: template_bytes(plan), kind: plan.holes.first().map_ok(|hole| hole.kind), columns: plan.ncols }
 	actual == {
-		bytes: put_str([1], "button").concat([0, 0, 1, 5, 0]),
+		bytes: put_str(put_str([1, 0], ""), "button").concat([0, 0, 0, 1, 5, 0]),
 		kind: Ok(5),
 		columns: 0,
 	}
@@ -10210,7 +10365,7 @@ expect {
 		),
 	)
 	(_, commands) = Core.take_cmds(mounted, [])
-	element = put_str(put_u32(put_u32(put_u32([8], 1), 0), 0), "input")
+	element = put_str(put_str(put_u32(put_u32(put_u32([8], 1), 0), 0).append(0), ""), "input").append(0)
 	value = put_str(put_u32([21], 1).append(1), "draft")
 	checked = put_str(put_u32([21], 1).append(2), "true")
 	listen = put_u32(put_str(put_u32(put_u32([11], 1), 0), "change").append(1), 3)
@@ -10224,8 +10379,10 @@ expect {
 expect {
 	row : Elem(Row(Root({}), Str))
 	row = Core.element("input", [Core.attr("type", "checkbox"), Core.prop_s(Core.Prop.checked, Core.const(Bool.True))], [])
-	plan = compile(row, 1, [0], "an each")
-	expected = put_str(put_str(put_str([1], "input").append(1), "type"), "checkbox").concat([0, 1, 6, 0, 2])
+	plan = compile(row, 1, [0], "an each", root_enclosing)
+	element = put_str(put_str([1, 0], ""), "input").concat([0, 1])
+	attribute = put_str(put_str(element.append(3), ""), "type")
+	expected = put_str(attribute, "checkbox").concat([0, 1, 6, 0, 2])
 	template_bytes(plan) == expected
 }
 
@@ -10276,7 +10433,7 @@ expect {
 	(same, same_commands) = Core.take_cmds(Core.event(empty, 1, 0, ""), [])
 	(named, named_commands) = Core.take_cmds(Core.event(same, 1, 0, "name"), [])
 	(absent, absent_commands) = Core.take_cmds(Core.event(named, 1, 0, "remove"), [])
-	prefix = put_str(put_u32([0, 9], 1), "title")
+	prefix = put_str(put_str(put_u32([0, 9], 1).append(3), ""), "title")
 	actual = {
 		empty: empty_commands,
 		same: same_commands,
@@ -10439,7 +10596,7 @@ expect encode_keymap(Core.Keymap.prevent([Core.Chord.plain("")]).concat(Core.Key
 expect read_key(put_str(put_str(put_str([0], "Escape"), "").append(0), "")).is_err()
 
 ## Serialized work retains RELEASE at counter 43 and starts the cleanup table
-## after all 48 counters, including a multibyte cleanup name and its run count.
+## after all 49 counters, including a multibyte cleanup name and its run count.
 expect {
 	mounted = Core.mount(
 		Core.state(
@@ -10469,7 +10626,7 @@ expect {
 	(name, after_name) = get_str(bytes, cleanup_at + 4, "cleanup name")
 	runs = get_u64(bytes, after_name, "cleanup runs")
 	{ count, counters_match: $decoded == counters, released: $decoded.get(43), names, name, runs, consumed: after_name + 8 == bytes.len() } == {
-		count: 48,
+		count: 49,
 		counters_match: True,
 		released: Ok(1),
 		names: 1,
@@ -11196,4 +11353,251 @@ expect {
 	two = Core.join_text([{ prefix: "", value: selected }, { prefix: "", value: selected }], "")
 	mixed = Core.join_text([{ prefix: "", value: selected }, { prefix: "", value: other }], "")
 	{ two_mask: two.mask, two_selection: sel_mask(two.sel), mixed_mask: mixed.mask, mixed_selection: sel_mask(mixed.sel), text: (mixed.read)(3) } == { two_mask: 8.U128, two_selection: 0.U128, mixed_mask: 10.U128, mixed_selection: 0.U128, text: "33" }
+}
+
+## Resolve raw construction once, using finite inherited facts. Explicit
+## expanded names already carry their identity and are never reclassified.
+resolve_element : Web.Tag, Enclosing -> Web.Tag
+resolve_element = |name, enclosing| match name.namespace() {
+	Explicit(_) => name
+	Inherit => {
+		namespace = if (name.local() == "svg") Svg else enclosing.raw_namespace
+		if namespace == Html {
+			local = ascii_name_lower(name.local())
+			(Web.Tag.from_str(local) ?? crash "internal: folded HTML name").in_namespace(Html, Unprefixed) ?? crash "internal: unprefixed HTML name"
+		} else {
+			parts = name.local().split_on(":")
+			(prefix, local) = if parts.len() == 1 {
+				(Unprefixed, name.local())
+			} else {
+				(Prefix(parts.first() ?? crash "internal: qualified name has a prefix"), Str.join_with(parts.drop_first(1), ":"))
+			}
+			local_name = Web.Tag.from_str(local) ?? crash "contract: raw foreign element has an invalid local name"
+			local_name.in_namespace(namespace, prefix) ?? crash "contract: raw foreign element has an invalid namespace qualification"
+		}
+	}
+}
+
+## Descendants inherit the raw API's SVG/foreignObject rule. Actual parent
+## identity stays available separately for literal placement checks.
+child_enclosing : Web.Tag -> Enclosing
+child_enclosing = |name| {
+	namespace = match name.namespace() {
+		Explicit(value) => value
+		Inherit => crash "internal: child context requires a resolved element"
+	}
+	{ namespace, prefix: name.prefix(), local: name.local(), raw_namespace: if (namespace == Svg and name.local() != "foreignObject") Svg else Html }
+}
+
+## Raw attributes follow HTML's ASCII name folding. Explicit qualification
+## preserves parser-provided case, even when its namespace is None.
+resolve_attribute : Web.AttrName, Web.Tag -> Web.AttrName
+resolve_attribute = |name, element| {
+	if name.is_qualified() {
+		return name
+	}
+	local = if (element.namespace() == Explicit(Html)) ascii_name_lower(name.local()) else name.local()
+	(Web.AttrName.from_str(local) ?? crash "internal: folded attribute name").in_namespace(None, Unprefixed) ?? crash "internal: ordinary raw attribute name"
+}
+
+## Only ordinary unnamespaced attributes can claim a control's HTML names.
+ordinary_attribute_is : Web.AttrName, Str -> Bool
+ordinary_attribute_is = |name, expected| name.namespace() == None and name.prefix() == Unprefixed and html_attribute_is(name.local(), expected)
+
+## ASCII folding is construction work only; attribute values remain verbatim.
+ascii_name_lower : Str -> Str
+ascii_name_lower = |text| Str.from_utf8(text.to_utf8().map(|byte| if (byte >= 'A' and byte <= 'Z') byte + 32 else byte)) ?? crash "internal: ASCII folding preserves UTF-8"
+
+## A compact namespace tag followed by an exact URI for extensions. URI
+## identity, not a catalogue entry or prefix, identifies the namespace.
+put_namespace : List(U8), Web.Namespace -> List(U8)
+put_namespace = |bytes, namespace| match namespace {
+	Html => bytes.append(0)
+	Svg => bytes.append(1)
+	MathML => bytes.append(2)
+	None => bytes.append(3)
+	Uri(value) => put_str(bytes.append(4), value)
+}
+
+## Element and attribute names share framing, not construction semantics.
+## Empty prefix means no prefix; a local colon remains local data.
+put_expanded_name : List(U8), Web.Namespace, Web.Prefix, Str -> List(U8)
+put_expanded_name = |bytes, namespace, prefix, local| {
+	written_prefix = match prefix {
+		Unprefixed => ""
+		Prefix(value) => value
+	}
+	put_str(put_str(put_namespace(bytes, namespace), written_prefix), local)
+}
+
+## The emitted element name is resolved before this boundary; no receiver
+## chooses a namespace, prefix or case from an ancestor or tag spelling.
+put_element_name : List(U8), Web.Tag -> List(U8)
+put_element_name = |bytes, name| match name.namespace() {
+	Explicit(namespace) => put_expanded_name(bytes, namespace, name.prefix(), name.local())
+	Inherit => crash "internal: unresolved element reached the command stream"
+}
+
+## Attribute identity and exact case are likewise decided before encoding.
+put_attribute_name : List(U8), Web.AttrName -> List(U8)
+put_attribute_name = |bytes, name| put_expanded_name(bytes, name.namespace(), name.prefix(), name.local())
+
+## Literal fragment requirements inspect one retained context, never a parent
+## chain. A foreignObject's HTML child context does not admit SVG fragments.
+check_parent : List([Svg]), Enclosing, List(U32) -> {}
+check_parent = |allowed, enclosing, site| {
+	if allowed.contains(Svg) and enclosing.raw_namespace == Svg {
+		return {}
+	}
+	crash "contract: SVG markup fragment requires an SVG enclosing context at site ${show_path(site)}"
+}
+
+## A template retains each nested site's finite context once. The row mount
+## supplies routing and lifetime arguments while this wrapper supplies facts.
+mount_in_context : Mount(ctx), Enclosing -> Mount(ctx)
+mount_in_context = |Mount(mount), enclosing| Mount(|env, args, tx| mount(env, { ..args, enclosing }, tx))
+
+## Root identity decoding follows actual DOM facts, not factory-specific
+## validate-and-extract restrictions. In particular xmlns and local colons can
+## already exist without prefixes, including at an externally supplied root.
+read_mount_root : List(U8) -> Try(Core.MountRoot, Str)
+read_mount_root = |bytes| {
+	code = bytes.first() ? |_| "missing namespace kind"
+	(namespace, prefix_at) = match code {
+		0 => (Html, 1)
+		1 => (Svg, 1)
+		2 => (MathML, 1)
+		3 => (None, 1)
+		4 => {
+			(uri, next) = boot_str(bytes, 1)?
+			if uri.is_empty() {
+				return Err("explicit namespace URI is empty")
+			}
+			(Uri(uri), next)
+		}
+		_ => return Err("unknown namespace kind")
+	}
+	(prefix_text, local_at) = boot_str(bytes, prefix_at)?
+	(local, end) = boot_str(bytes, local_at)?
+	if end != bytes.len() {
+		return Err("trailing root bytes")
+	}
+	_ = Web.Tag.from_str(local).map_err(|NotATag(message)| message)?
+	prefix = if prefix_text.is_empty() {
+		Unprefixed
+	} else {
+		if prefix_text.to_utf8().any(|unit| unit == ':' or unit == 0 or unit == '/' or unit == '>' or is_mount_space(unit)) {
+			return Err("invalid namespace prefix")
+		}
+		if namespace == None {
+			return Err("namespace prefix without namespace")
+		}
+		if prefix_text == "xml" and namespace_uri(namespace) != "http://www.w3.org/XML/1998/namespace" {
+			return Err("xml prefix requires XML namespace")
+		}
+		if prefix_text == "xmlns" and namespace_uri(namespace) != "http://www.w3.org/2000/xmlns/" {
+			return Err("xmlns prefix requires XMLNS namespace")
+		}
+		Prefix(prefix_text)
+	}
+	Ok({ namespace, prefix, local })
+}
+
+## ASCII whitespace is forbidden in a DOM prefix; other punctuation may occur.
+is_mount_space : U8 -> Bool
+is_mount_space = |unit| [9.U8, 10, 12, 13, 32].contains(unit)
+
+## Namespace URI equality makes named and explicit URI representations aliases.
+namespace_uri : Web.Namespace -> Str
+namespace_uri = |namespace| match namespace {
+	Html => "http://www.w3.org/1999/xhtml"
+	Svg => "http://www.w3.org/2000/svg"
+	MathML => "http://www.w3.org/1998/Math/MathML"
+	None => ""
+	Uri(value) => value
+}
+
+## Actual root identity is preserved; only raw child construction uses the
+## legacy SVG/foreignObject rule. MathML does not become a raw tag inference.
+enclosing_root : Core.MountRoot -> Enclosing
+enclosing_root = |root| {
+	namespace = match namespace_uri(root.namespace) {
+		"http://www.w3.org/1999/xhtml" => Html
+		"http://www.w3.org/2000/svg" => Svg
+		"http://www.w3.org/1998/Math/MathML" => MathML
+		"" => None
+		other => Uri(other)
+	}
+	{ namespace, prefix: root.prefix, local: root.local, raw_namespace: if (namespace == Svg and root.local != "foreignObject") Svg else Html }
+}
+
+## Root facts round-trip beside Boot without becoming an app-visible field.
+expect {
+	root = { namespace: Svg, prefix: Unprefixed, local: "svg" }
+	decoded = Core.read_mount(Core.write_mount({ url: "/route" }, root), [])?
+	decoded.root == root and decoded.boot.url == "/route" and Core.read_boot(Core.write_mount({ url: "/route" }, root)) == Ok(decoded.boot)
+}
+
+## Existing roots can contain identities which NS creation factories cannot
+## reconstruct. Root decoding checks facts rather than imposing factory limits.
+expect {
+	roots = [{ namespace: Uri("urn:entry"), prefix: Unprefixed, local: "xmlns" }, { namespace: Svg, prefix: Unprefixed, local: "h:div" }]
+	roots.all(|root| Core.read_mount(Core.write_mount({}, root), []).map_ok(|value| value.root) == Ok(root))
+}
+
+## The raw namespace rule depends on measured root context. The fixed byte
+## position is the ELEM namespace operand, independently asserted here.
+expect {
+	program = Core.driver(Core.program(|| Core.element("path", [], [])))
+	roots = [{ namespace: Svg, prefix: Unprefixed, local: "svg" }, { namespace: Svg, prefix: Unprefixed, local: "foreignObject" }, { namespace: MathML, prefix: Unprefixed, local: "math" }]
+	actual = roots.map(
+		|root| {
+			(state, commands, _) = (program.init)(Core.write_mount({}, root))
+			if Core.settled(state).is_err() {
+				crash "root-context program did not settle"
+			}
+			commands.get(14)
+		},
+	)
+	actual == [Ok(1), Ok(0), Ok(0)]
+}
+
+## Reserved prefixes cannot misstate their namespace, while the local name
+## xmlns without a prefix remains a valid existing custom-namespace root.
+expect {
+	invalid = { namespace: Uri("urn:entry"), prefix: Prefix("xmlns"), local: "entry" }
+	valid = { namespace: Uri("urn:entry"), prefix: Unprefixed, local: "xmlns" }
+	Core.read_mount(Core.write_mount({}, invalid), []).is_err() and Core.read_mount(Core.write_mount({}, valid), []).is_ok()
+}
+
+## Container intent is checked after namespace inheritance resolves. This is
+## construction policy, never inferred by the browser from an element's tag.
+checked_container : Web.Tag, U8 -> U8
+checked_container = |name, container| {
+	if container == 0 {
+		return 0
+	}
+	if container == 1 and name.namespace() == Explicit(Html) and name.local() == "template" {
+		return 1
+	}
+	crash "contract: template content requires an HTML template element"
+}
+
+## Ordinary and parsed template descriptions differ only by the decided child
+## container operand; no second scope, route or emitted fragment node is added.
+expect {
+	view = || Core.element("template", [], [Core.text("inert")])
+	ordinary = Core.driver(Core.program(view))
+	parsed = Core.driver(Core.program(|| Core.template_content(view())))
+	(raw_state, raw_commands, raw_work) = (ordinary.init)([])
+	(parsed_state, parsed_commands, parsed_work) = (parsed.init)([])
+	var $changed = 0.U64
+	var $index = 0.U64
+	while $index < raw_commands.len() {
+		if raw_commands.get($index) != parsed_commands.get($index) {
+			$changed = $changed + 1
+		}
+		$index = $index + 1
+	}
+	$changed == 1 and raw_commands.len() == parsed_commands.len() and raw_work == parsed_work and Core.settled(raw_state).is_ok() and Core.settled(parsed_state).is_ok()
 }

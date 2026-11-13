@@ -891,6 +891,11 @@ const STEPS = {
     if (!escape) throw new Error("dismiss has no parser Escape definition");
     return press(page, { key: { key: escape.key, code: escape.code, ctrl: false, alt: false, meta: false, shift: false } }, state);
   },
+  "expect-element": async (page, step) => {
+    await need(page, step.loc);
+    const found = await onEl(page, step.loc, element => ({ namespace: element.namespaceURI ?? "", name: element.localName }));
+    if (found.namespace !== step.namespace || found.name !== step.name) throw new Error(`${showLoc(step.loc)} element is ${JSON.stringify(found)}, expected namespace ${JSON.stringify(step.namespace)} local ${JSON.stringify(step.name)}`);
+  },
   "expect-shown": async (page, step) => {
     await need(page, step.loc);
     const actual = await onEl(page, step.loc, (element) => element.tagName === "DIALOG"
@@ -1286,6 +1291,7 @@ const SETUP = {
   // The parser resolves these forms into spec.environment. Keeping their
   // entries here makes grammar coverage explicit without interpreting twice.
   "initial-location": () => {},
+  "mount-root": () => {},
   "local-storage": () => {},
   "local-storage-unavailable": () => {},
   "session-storage": () => {},
@@ -1327,8 +1333,9 @@ function checkGrammar(file) {
 }
 
 function setupOf(spec) {
-  const out = { environment: spec.environment, files: new Map(), mount: {} };
+  const out = { environment: spec.environment, mountRoot: spec.mount_root, files: new Map(), mount: {} };
   if (!out.environment) throw new Error("the parser did not supply the resolved environment");
+  if (!out.mountRoot) throw new Error("the parser did not supply resolved mount-root facts");
   for (const s of spec.setup) {
     const h = SETUP[s.op];
     if (h === undefined) throw new Error(`setup ${s.op} has no handler in this runner`);
@@ -1397,9 +1404,10 @@ const ENVIRONMENT_SECTIONS = {
 
 async function installEnvironment(page, state, seed = false) {
   if (state.environmentScript !== null) await page.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: state.environmentScript });
-  const install = (environment, mount, seed, appliers) => {
+  const install = (environment, mount, seed, appliers, mountRoot) => {
     window.__env = environment;
     window.__mountOptions = { ...mount, environment: {} };
+    window.__mountRoot = mountRoot;
     window.__manualFx = true;
     for (const source of appliers) eval(`(${source})`)(environment, seed);
     for (const [name, full] of [["localStorage", mount.manualLocalStorageFull], ["sessionStorage", mount.manualSessionStorageFull]]) {
@@ -1413,7 +1421,7 @@ async function installEnvironment(page, state, seed = false) {
   // current document unchanged; an exhausted future seed fails its reader
   // at mount rather than falling back to real entropy or wrapping to zero.
   const environment = { ...state.environment, seed: seed ? state.environment.seed : (BigInt(state.environment.seed) + 1n).toString() };
-  const args = [environment, state.mount, seed, Object.values(ENVIRONMENT_SECTIONS).map(String)];
+  const args = [environment, state.mount, seed, Object.values(ENVIRONMENT_SECTIONS).map(String), state.mountRoot];
   const result = await page.send("Page.addScriptToEvaluateOnNewDocument", { source: `(${install})(...${JSON.stringify(args)})` });
   state.environmentScript = result.identifier;
 }
@@ -1534,7 +1542,7 @@ for (const spec of specs) {
   try {
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
-    const state = { context, stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null, holdingReports: false, pointers: new Map(), activationTable: spec.activation_table, keyTable: spec.key_table, keyDefaults: spec.unmodelled_key_defaults, keyControlTypes: spec.key_control_types };
+    const state = { context, stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mountRoot: setup.mountRoot, mount: setup.mount, environmentScript: null, holdingReports: false, pointers: new Map(), activationTable: spec.activation_table, keyTable: spec.key_table, keyDefaults: spec.unmodelled_key_defaults, keyControlTypes: spec.key_control_types };
     if (!Array.isArray(state.activationTable) || state.activationTable.length !== Object.keys(STEPS).length ||
       new Set(state.activationTable.map((row) => row.op)).size !== state.activationTable.length ||
       state.activationTable.some((row) => !Object.hasOwn(STEPS, row.op))) throw new Error("parser activation table does not name every replay step exactly once");

@@ -17,7 +17,11 @@ Dom := [].{
 	## A model node has a lifetime index independent of its engine aliases.
 	## Routing ids, rendered attributes, live properties and pending browser work
 	## stay separate so id reuse or a user edit cannot overwrite another meaning.
-	DNode : { svg : Bool, tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
+	## Expanded attribute identity is namespace URI plus local name; prefix is
+	## retained for exact serialization but never aliases another namespace.
+	ExpandedName : { namespace : Str, prefix : Str, local : Str }
+
+	DNode : { namespace : Str, prefix : Str, kind : U8, container : U8, content : [None, Some(U64)], svg : Bool, tag : Str, text : Str, attrs : List((ExpandedName, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
 
 	## Browser top-layer state, separate from the value a property decided.
 	Shown : [Hidden, Open, Modal, Popover]
@@ -338,7 +342,7 @@ Dom := [].{
 	## A template hole describes its static child path and kind-specific wire
 	## operands. Paths are resolved when a row is instantiated, before nested
 	## sites can shift its child positions.
-	THole : { kind : U8, path : List(U8), name : Str, handler : U8, payload_kind : U8, policies : U32, property : U8 }
+	THole : { kind : U8, path : List(U8), name : Str, attribute : ExpandedName, handler : U8, payload_kind : U8, policies : U32, property : U8 }
 
 	## A stored template owns its wire bytes and ordered hole plan. Instances
 	## reuse that immutable description, while resolved hole targets belong to
@@ -382,7 +386,7 @@ Dom := [].{
 	## No engine aliases, templates, document listeners or observations survive
 	## from an earlier model.
 	new : {} -> Model
-	new = |_| { nodes: [{ svg: False, tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0, transitions: { count: 0, oldest: 0, bytes: 0, records: Dict.empty(), exhausted: False } }
+	new = |_| { nodes: [{ namespace: Dom.html_namespace, prefix: "", kind: 1, container: 0, content: None, svg: False, tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0, transitions: { count: 0, oldest: 0, bytes: 0, records: Dict.empty(), exhausted: False } }
 
 	## Read a little-endian command operand independently of the engine's
 	## encoder. Every byte is bounds checked; a short operand is an executor
@@ -513,7 +517,7 @@ Dom := [].{
 	## serving fixtures, it lets modify move a record out of its list before
 	## changing nested storage without retaining a second holder.
 	empty_node : DNode
-	empty_node = { svg: False, tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
+	empty_node = { namespace: Dom.html_namespace, prefix: "", kind: 1, container: 0, content: None, svg: False, tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
 
 	## Update node i in place (the node is moved out of the list first, so
 	## its kid list stays uniquely owned).
@@ -592,7 +596,12 @@ Dom := [].{
 			crash "executor: document key handler detached without RELEASE"
 		}
 		var $d = dom
-		for child in owned.kids {
+		for child in owned.kids.concat(
+			match owned.content {
+				None => []
+				Some(fragment) => [fragment]
+			},
+		) {
 			$d = Dom.forget_subtree($d, child)
 		}
 		for id in owned.ids {
@@ -616,12 +625,12 @@ Dom := [].{
 				dom,
 				n.parent - 1,
 				|p| {
-					{ svg, tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
+					{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 					kept = match kids.find_last_index(|k| k == i) {
 						Ok(pos) => kids.drop_at(pos)
 						Err(_) => kids
 					}
-					{ svg, tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
+					{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 				},
 			)
 			Dom.modify(d1, i, |m| { ..m, parent: 0, detach_count: m.detach_count + 1 })
@@ -636,7 +645,7 @@ Dom := [].{
 			d0,
 			parent,
 			|p| {
-				{ svg, tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
+				{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 				kids2 = match before {
 					Err(End) => kids.append(i)
 					Ok(b) => {
@@ -644,7 +653,7 @@ Dom := [].{
 						kids.sublist({ start: 0, len: pos }).append(i).concat(kids.sublist({ start: pos, len: kids.len() - pos }))
 					}
 				}
-				{ svg, tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
+				{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 			},
 		)
 		Dom.modify(d1, i, |n| { ..n, parent: parent + 1 })
@@ -654,7 +663,7 @@ Dom := [].{
 	place : Model, U64, U32, U32 -> Model
 	place = |dom, i, parent, before| {
 		if before == 0 {
-			Dom.insert(dom, Dom.lookup(dom, parent), i, Err(End))
+			Dom.insert(dom, if (parent == 0) dom.root else Dom.child_target(dom, Dom.lookup(dom, parent), Dom.node(dom, Dom.lookup(dom, parent)).container), i, Err(End))
 		} else {
 			b = Dom.lookup(dom, before)
 			bp = Dom.node(dom, b).parent
@@ -665,86 +674,75 @@ Dom := [].{
 		}
 	}
 
-	## Namespace is fixed when a node is created, including a row template’s
-	## insertion context. Moving a node never changes its namespace. Read only
-	## the insertion parent, before allocating, rather than walking ancestors.
-	insertion_svg : Model, U32, U32 -> Bool
-	insertion_svg = |dom, parent, before| {
-		index = if (before == 0) Dom.lookup(dom, parent) else {
-			owner = Dom.node(dom, Dom.lookup(dom, before)).parent
-			if owner == 0 {
-				crash "insert before a detached node"
-			}
-			owner - 1
+	## Build a template from its explicit names. Insertion context has no role
+	## in decoding and moving a row never reclassifies an element.
+	build : Model, List(U8), U64 -> (Model, U64, U64)
+	build = |dom, bytes, at| {
+		kind = Dom.byte(bytes, at)
+		if kind == 2 or kind == 3 {
+			(value, next) = Dom.str(bytes, at + 1)
+			(next_dom, index) = Dom.add_node(dom, { ..Dom.empty_node, namespace: "", kind, tag: "", text: value })
+			return (next_dom, index, next)
 		}
-		n = Dom.node(dom, index)
-		n.svg and n.tag != "foreignObject"
+		if kind != 1 {
+			crash "executor: unknown template node kind"
+		}
+		(name, name_end) = Dom.expanded_name(bytes, at + 1, True)
+		container = Dom.container(bytes, name_end, name)
+		count = Dom.byte(bytes, name_end + 1).to_u64()
+		var $at = name_end + 2
+		var $attrs = []
+		var $attribute_index = 0.U64
+		while $attribute_index < count {
+			$attribute_index = $attribute_index + 1
+			(attribute, value_at) = Dom.expanded_name(bytes, $at, False)
+			(value, next) = Dom.str(bytes, value_at)
+			$attrs = Dom.assign_attribute($attrs, attribute, value)
+			$at = next
+		}
+		children = Dom.byte(bytes, $at).to_u64()
+		$at = $at + 1
+		(next_dom, index) = Dom.create_node(dom, { ..Dom.empty_node, namespace: name.namespace, prefix: name.prefix, tag: name.local, container, svg: name.namespace == Dom.svg_namespace, attrs: $attrs })
+		var $dom = next_dom
+		var $child_index = 0.U64
+		while $child_index < children {
+			$child_index = $child_index + 1
+			(child_dom, child, next) = Dom.build($dom, bytes, $at)
+			$dom = Dom.insert(child_dom, Dom.child_target(child_dom, index, container), child, Err(End))
+			$at = next
+		}
+		($dom, index, $at)
 	}
 
-	## Parse one template node, creating nodes; returns the index.
-	build : Model, List(U8), U64, Bool -> (Model, U64, U64)
-	build = |dom, b, at, under_svg| {
-		kind = Dom.byte(b, at)
-		if kind == 2 {
-			(t, next) = Dom.str(b, at + 1)
-			(d1, i) = Dom.add_node(dom, { svg: False, tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] })
-			(d1, i, next)
-		} else {
-			(raw_tag, a1) = Dom.str(b, at + 1)
-			svg = raw_tag == "svg" or under_svg
-			tag = if (svg) raw_tag else MarkupHtml.ascii_lower(raw_tag)
-			na = Dom.byte(b, a1).to_u64()
-			var $at = a1 + 1
-			var $attrs = []
-			var $k = 0.U64
-			while $k < na {
-				(name, n1) = Dom.str(b, $at)
-				(value, n2) = Dom.str(b, n1)
-				if !Dom.bool_attrs.contains(name) or (value != "" and value != "false") {
-					$attrs = $attrs.append((name, value))
-				}
-				$at = n2
-				$k = $k + 1
-			}
-			nk = Dom.byte(b, $at).to_u64()
-			$at = $at + 1
-			(d1, i) = Dom.add_node(dom, { svg, tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] })
-			var $d = d1
-			$k = 0
-			while $k < nk {
-				(d2, c, next) = Dom.build($d, b, $at, svg and tag != "foreignObject")
-				$d = Dom.insert(d2, i, c, Err(End))
-				$at = next
-				$k = $k + 1
-			}
-			($d, i, $at)
-		}
-	}
-
-	## Skip one template node.
+	## Validate and skip the exact same node framing before reading hole metadata.
+	## No model tree or insertion namespace is needed for this bounded byte walk.
 	skip : List(U8), U64 -> U64
-	skip = |b, at| {
-		kind = Dom.byte(b, at)
-		if kind == 2 {
-			Dom.str(b, at + 1).1
-		} else {
-			(_, a1) = Dom.str(b, at + 1)
-			na = Dom.byte(b, a1).to_u64()
-			var $at = a1 + 1
-			var $k = 0.U64
-			while $k < na {
-				$at = Dom.str(b, Dom.str(b, $at).1).1
-				$k = $k + 1
-			}
-			nk = Dom.byte(b, $at).to_u64()
-			$at = $at + 1
-			$k = 0
-			while $k < nk {
-				$at = Dom.skip(b, $at)
-				$k = $k + 1
-			}
-			$at
+	skip = |bytes, at| {
+		kind = Dom.byte(bytes, at)
+		if kind == 2 or kind == 3 {
+			return Dom.str(bytes, at + 1).1
 		}
+		if kind != 1 {
+			crash "executor: unknown template node kind"
+		}
+		(name, name_end) = Dom.expanded_name(bytes, at + 1, True)
+		_ = Dom.container(bytes, name_end, name)
+		count = Dom.byte(bytes, name_end + 1).to_u64()
+		var $at = name_end + 2
+		var $attribute_index = 0.U64
+		while $attribute_index < count {
+			$attribute_index = $attribute_index + 1
+			(_, value_at) = Dom.expanded_name(bytes, $at, False)
+			$at = Dom.str(bytes, value_at).1
+		}
+		children = Dom.byte(bytes, $at).to_u64()
+		$at = $at + 1
+		var $child_index = 0.U64
+		while $child_index < children {
+			$child_index = $child_index + 1
+			$at = Dom.skip(bytes, $at)
+		}
+		$at
 	}
 
 	## Decode and validate a template's hole plan after walking its static
@@ -760,11 +758,11 @@ Dom := [].{
 		while $k < n {
 			kind = Dom.byte(b, $at)
 			depth = Dom.byte(b, $at + 1).to_u64()
-			path = b.sublist({ start: $at + 2, len: depth })
-			$at = $at + 2 + depth
+			path = b.sublist({ start: $at + 2, len: depth * 2 })
+			$at = $at + 2 + depth * 2
 			if kind == 2 {
-				(name, next) = Dom.str(b, $at)
-				$holes = $holes.append({ kind, path, name, handler: 0, payload_kind: 0, policies: 0, property: 0 })
+				(attribute, next) = Dom.expanded_name(b, $at, False)
+				$holes = $holes.append({ kind, path, name: "", attribute, handler: 0, payload_kind: 0, policies: 0, property: 0 })
 				$at = next
 			} else if kind == 3 {
 				hb = Dom.byte(b, $at)
@@ -772,15 +770,15 @@ Dom := [].{
 				payload_kind = Dom.byte(b, next)
 				policies = Dom.u32(b, next + 1)
 				Dom.check_listener({ event: ev, kind: payload_kind, policies })
-				$holes = $holes.append({ kind, path, name: ev, handler: hb, payload_kind, policies, property: 0 })
+				$holes = $holes.append({ kind, path, name: ev, attribute: Dom.empty_name, handler: hb, payload_kind, policies, property: 0 })
 				$at = next + 5
 			} else if kind == 6 {
 				property = Dom.byte(b, $at)
 				_ = Dom.property_name(property)
-				$holes = $holes.append({ kind, path, name: "", handler: 0, payload_kind: 0, policies: 0, property })
+				$holes = $holes.append({ kind, path, name: "", attribute: Dom.empty_name, handler: 0, payload_kind: 0, policies: 0, property })
 				$at = $at + 1
 			} else if kind == 1 or kind == 4 or kind == 5 {
-				$holes = $holes.append({ kind, path, name: "", handler: 0, payload_kind: 0, policies: 0, property: 0 })
+				$holes = $holes.append({ kind, path, name: "", attribute: Dom.empty_name, handler: 0, payload_kind: 0, policies: 0, property: 0 })
 			} else {
 				crash "unknown template hole kind ${kind.to_str()}"
 			}
@@ -798,49 +796,33 @@ Dom := [].{
 	walk : Model, U64, List(U8) -> U64
 	walk = |dom, root, path| {
 		var $n = root
-		for k in path {
-			$n = Dom.node(dom, $n).kids.get(k.to_u64()) ?? crash "template path"
+		var $at = 0.U64
+		while $at < path.len() {
+			parent = Dom.child_target(dom, $n, Dom.byte(path, $at))
+			$n = Dom.node(dom, parent).kids.get(Dom.byte(path, $at + 1).to_u64()) ?? crash "template path"
+			$at = $at + 2
 		}
 		$n
 	}
 
-	## The legacy transport absence convention includes six HTML booleans and
-	## enumerated hidden; ordinary names retain all text, including empty text.
-	bool_attrs : List(Str)
-	bool_attrs = Protocol.bool_attrs
-
-	## Remove an attribute explicitly, without interpreting any text as absence.
+	## Remove an ordinary unnamespaced attribute without interpreting its text.
 	remove_attr_on : Model, U64, Str -> Model
-	remove_attr_on = |dom, i, name| Dom.modify(dom, i, |n| { ..n, attrs: n.attrs.keep_if(|(key, _)| key != name), shown: if (n.tag == "dialog" and name == "open") Hidden else n.shown })
+	remove_attr_on = |dom, index, local| Dom.remove_expanded_on(dom, index, Dom.unqualified(local))
 
-	## Apply the presence carried by an attribute command or row operand.
+	## Apply an ordinary unnamespaced attribute's explicit presence.
 	set_presence_on : Model, U64, Str, [Absent, Present(Str)] -> Model
-	set_presence_on = |dom, i, name, presence| match presence {
-		Absent => Dom.remove_attr_on(dom, i, name)
-		Present(text) => Dom.set_attr_on(dom, i, name, text)
-	}
+	set_presence_on = |dom, index, local, presence| Dom.set_expanded_presence(dom, index, Dom.unqualified(local), presence)
 
-	## Update the rendered attribute list, applying the closed boolean names'
-	## empty/false convention while retaining that text on ordinary attributes.
-	## An open attribute also keeps a dialog's modeled shown state consistent.
+	## Preserve every present value verbatim, including empty and false text.
 	set_attr_on : Model, U64, Str, Str -> Model
-	set_attr_on = |dom, i, name, value| {
-		if Dom.bool_attrs.contains(name) and (value == "" or value == "false") {
-			return Dom.remove_attr_on(dom, i, name)
-		}
-		n = Dom.node(dom, i)
-		attrs = if (n.attrs.any(|(k, _)| k == name)) n.attrs.map(|(k, v)| if (k == name) (k, value) else (k, v)) else n.attrs.append((name, value))
-		Dom.set_node(dom, i, { ..n, attrs, shown: if (n.tag == "dialog" and name == "open" and n.shown == Hidden) Open else n.shown })
-	}
+	set_attr_on = |dom, index, local, value| Dom.set_expanded_on(dom, index, Dom.unqualified(local), value)
 
-	## Only the closed boolean names interpret empty or false text as absence.
-	## Ordinary attributes keep both values and explicit removal is separate.
+	## Present empty/false text remains distinct from explicit removal, even for
+	## boolean and enumerated HTML names.
 	expect {
 		(d1, i) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div" })
-		d2 = Dom.set_attr_on(Dom.set_attr_on(d1, i, "alt", ""), i, "checked", "false")
-		d3 = Dom.set_attr_on(Dom.set_attr_on(d2, i, "hidden", "true"), i, "hidden", "")
-		d4 = Dom.set_attr_on(Dom.set_attr_on(d3, i, "open", "true"), i, "open", "false")
-		Dom.node(d4, i).attrs == [("alt", ""), ("checked", "false")]
+		d2 = Dom.set_attr_on(Dom.set_attr_on(d1, i, "disabled", ""), i, "hidden", "false")
+		Dom.has_attr(Dom.node(d2, i), "disabled") and Dom.attr_of(Dom.node(d2, i), "hidden") == "false" and !Dom.has_attr(Dom.node(Dom.remove_attr_on(d2, i, "disabled"), i), "disabled")
 	}
 
 	## Browser input changes live properties independently of attributes.
@@ -858,7 +840,7 @@ Dom := [].{
 
 	## Whether an event target carries the Boolean checked property for kind 5.
 	checked_input : DNode -> Bool
-	checked_input = |n| !n.svg and MarkupHtml.ascii_lower(n.tag) == "input" and ["checkbox", "radio"].contains(Dom.input_type(n))
+	checked_input = |n| Dom.html_tag(n, "input") and ["checkbox", "radio"].contains(Dom.input_type(n))
 
 	## A control's property value, including defaults before its first write.
 	live_value : DNode, Str -> Str
@@ -937,11 +919,11 @@ Dom := [].{
 	## HTML interprets an input's type without ASCII case. Keep the raw
 	## attribute for assertions while applying the browser's file-input rule.
 	is_file_input : DNode -> Bool
-	is_file_input = |n| n.tag == "input" and Dom.input_type(n) == "file"
+	is_file_input = |n| Dom.html_tag(n, "input") and Dom.input_type(n) == "file"
 
 	## The browser's file-input guard recognizes every ASCII spelling while
 	## leaving other input types available for value properties.
-	expect ["file", "FILE", "FiLe", "text", "filex"].map(|kind| Dom.is_file_input({ ..Dom.empty_node, tag: "input", attrs: [("type", kind)] })) == [Bool.True, Bool.True, Bool.True, Bool.False, Bool.False]
+	expect ["file", "FILE", "FiLe", "text", "filex"].map(|kind| Dom.is_file_input({ ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)]) })) == [Bool.True, Bool.True, Bool.True, Bool.False, Bool.False]
 
 	## Apply one declared property in stream order, preserving the mirror
 	## attribute used by browser update observations. A file input rejects a
@@ -1206,8 +1188,7 @@ Dom := [].{
 				site_id = Dom.u32(b, $at + 12).to_u64()
 				tpl = $d.tpls.get(site_id) ?? crash "unknown template"
 				$at = $at + 16
-				context_svg = Dom.insertion_svg($d, parent, before)
-				(d1, root, _) = Dom.build($d, tpl.bytes, 0, context_svg)
+				(d1, root, _) = Dom.build($d, tpl.bytes, 0)
 				r = Dom.node(d1, root)
 				# Hole targets are resolved once, here: content a nested site
 				# inserts into the row later shifts sibling indices.
@@ -1225,7 +1206,7 @@ Dom := [].{
 					} else if hole.kind == 2 {
 						(presence, next) = Dom.attr_presence(b, $at)
 						$at = next
-						$dd = Dom.set_presence_on($dd, target, hole.name, presence)
+						$dd = Dom.set_expanded_presence($dd, target, hole.attribute, presence)
 					} else if hole.kind == 6 {
 						(v, next) = Dom.str(b, $at)
 						$at = next
@@ -1271,7 +1252,7 @@ Dom := [].{
 					if hole.kind != 2 {
 						crash "executor: HATTR names a non-attribute hole"
 					}
-					Dom.set_presence_on($d, target, hole.name, presence)
+					Dom.set_expanded_presence($d, target, hole.attribute, presence)
 				} else {
 					v = match presence {
 						Present(text) => text
@@ -1312,7 +1293,9 @@ Dom := [].{
 				i = Dom.lookup($d, id)
 				$d = Dom.detach(Dom.forget_subtree($d, i), i)
 			} else if op == 6 {
-				p = Dom.lookup($d, Dom.u32(b, $at))
+				parent_id = Dom.u32(b, $at)
+				owner = Dom.lookup($d, parent_id)
+				p = if (parent_id == 0) owner else Dom.child_target($d, owner, Dom.node($d, owner).container)
 				site = Dom.u32(b, $at + 4).to_u64()
 				$at = $at + 8
 				old_kids = Dom.node($d, p).kids
@@ -1344,23 +1327,27 @@ Dom := [].{
 				# ancestor are forgotten, as the runtime does, or its next CLEAR
 				# would unbind node ids reused since.
 				$d = { nodes, statics, rows: $r.set(tpl, Dict.empty()) ?? $r, tpls: $t.set(tpl, t) ?? $t, root, documents, observed_count, transitions }
-			} else if op == 8 or op == 10 {
+			} else if op == 8 or op == 10 or op == 26 {
 				nid = Dom.u32(b, $at)
 				parent = Dom.u32(b, $at + 4)
 				before = Dom.u32(b, $at + 8)
-				(s, next) = Dom.str(b, $at + 12)
+				(fresh, next) = if op == 8 {
+					(name, end) = Dom.expanded_name(b, $at + 12, True)
+					({ ..Dom.empty_node, namespace: name.namespace, prefix: name.prefix, tag: name.local, container: Dom.container(b, end, name), svg: name.namespace == Dom.svg_namespace }, end + 1)
+				} else {
+					(value, end) = Dom.str(b, $at + 12)
+					({ ..Dom.empty_node, namespace: "", kind: if (op == 10) 2 else 3, tag: "", text: value }, end)
+				}
 				$at = next
-				svg = op == 8 and (s == "svg" or Dom.insertion_svg($d, parent, before))
-				fresh = if (op == 8) { svg, tag: if (svg) s else MarkupHtml.ascii_lower(s), text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] } else { svg: False, tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
-				(d1, i) = Dom.add_node($d, fresh)
+				(d1, i) = Dom.create_node($d, fresh)
 				$d = Dom.bind(Dom.place(d1, i, parent, before), nid, i)
 			} else if op == 9 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
-				(name, n1) = Dom.str(b, $at + 4)
+				(name, n1) = Dom.expanded_name(b, $at + 4, False)
 				(presence, n2) = Dom.attr_presence(b, n1)
 				$at = n2
 				$written = $written.append(i)
-				$d = Dom.set_presence_on($d, i, name, presence)
+				$d = Dom.set_expanded_presence($d, i, name, presence)
 			} else if op == 23 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
 				$at = $at + 4
@@ -1751,10 +1738,12 @@ Dom := [].{
 	render : Model, U64 -> Str
 	render = |dom, i| {
 		n = Dom.node(dom, i)
-		if n.tag == "" {
+		if n.kind == 3 {
+			"<!--${n.text}-->"
+		} else if n.kind == 2 {
 			n.text
 		} else {
-			attrs = n.attrs.map(|(k, v)| " ${k}=\"${v}\"")
+			attrs = n.attrs.map(|(k, v)| " ${Dom.written_name(k)}=\"${v}\"")
 			inner = n.kids.map(|k| Dom.render(dom, k))
 			"<${n.tag}${Str.join_with(attrs, "")}>${Str.join_with(inner, "")}</${n.tag}>"
 		}
@@ -1766,18 +1755,18 @@ Dom := [].{
 	text_of : Model, U64 -> Str
 	text_of = |dom, i| {
 		n = Dom.node(dom, i)
-		if (n.tag == "") n.text else Str.join_with(n.kids.map(|k| Dom.text_of(dom, k)), "")
+		if (n.kind == 3) "" else if (n.kind == 2) n.text else Str.join_with(n.kids.map(|k| Dom.text_of(dom, k)), "")
 	}
 
 	## Attribute presence is independent of its text: an empty value is present.
 	has_attr : DNode, Str -> Bool
-	has_attr = |element, name| element.attrs.any(|(key, _)| key == name)
+	has_attr = |element, name| element.attrs.any(|(key, _)| key.namespace.is_empty() and key.local == name)
 
 	## Read the first stored value for an attribute, using empty text when
 	## absent. A caller testing presence must also use has_attr, because present
 	## empty text is a valid ordinary attribute value.
 	attr_of : DNode, Str -> Str
-	attr_of = |n, name| n.attrs.find_first(|(k, _)| k == name).map_ok(|(_, v)| v) ?? ""
+	attr_of = |n, name| n.attrs.find_first(|(key, _)| key.namespace.is_empty() and key.local == name).map_ok(|(_, v)| v) ?? ""
 
 	## First node (depth-first) satisfying `pred`.
 	find : Model, U64, (DNode -> Bool) -> Try(U64, [NotFound])
@@ -1820,8 +1809,8 @@ Dom := [].{
 	expect {
 		le32 = |n| [n.bitwise_and(0xFF).to_u8_wrap(), n.shr_zf_wrap(8).bitwise_and(0xFF).to_u8_wrap(), 0, 0]
 		lstr = |t| le32(t.to_utf8().len().to_u32_wrap()).concat(t.to_utf8())
-		elem = |id, tag| [8.U8].concat(le32(id)).concat(le32(0.U32)).concat(le32(0.U32)).concat(lstr(tag))
-		tpl_bytes = [1.U8].concat(lstr("li")).concat([0, 0, 0])
+		elem = |id, tag| [8.U8].concat(le32(id)).concat(le32(0.U32)).concat(le32(0.U32)).concat([0]).concat(lstr("")).concat(lstr(tag)).append(0)
+		tpl_bytes = [1.U8, 0].concat(lstr("")).concat(lstr("li")).concat([0, 0, 0, 0])
 		template = [7.U8].concat(le32(0.U32)).concat(le32(tpl_bytes.len().to_u32_wrap())).concat(tpl_bytes)
 		cmds =
 			elem(1.U32, "ul")
@@ -1863,6 +1852,172 @@ Dom := [].{
 		actual == { parent: 0, row: 0, ref: 0, members: 0 }
 	}
 
+	## Namespace URIs are identity data, independent from the engine's namespace
+	## choices and from the parser's current element vocabulary.
+	html_namespace : Str
+	html_namespace = "http://www.w3.org/1999/xhtml"
+	svg_namespace : Str
+	svg_namespace = "http://www.w3.org/2000/svg"
+
+	## Unused hole metadata has no name; this sentinel never reaches a DOM write.
+	empty_name : ExpandedName
+	empty_name = { namespace: "", prefix: "", local: "" }
+
+	## Ordinary model services address unnamespaced attributes by exact local text.
+	unqualified : Str -> ExpandedName
+	unqualified = |local| { namespace: "", prefix: "", local }
+
+	## Test fixtures and browser-model services use the same expanded attribute
+	## representation as decoded commands, without inventing namespaces.
+	attributes : List((Str, Str)) -> List((ExpandedName, Str))
+	attributes = |pairs| pairs.map(|(local, value)| (Dom.unqualified(local), value))
+
+	## Qualified spelling is only serialization; it is never an attribute key.
+	written_name : ExpandedName -> Str
+	written_name = |name| if (name.prefix.is_empty()) name.local else "${name.prefix}:${name.local}"
+
+	## HTML interface behavior requires both its namespace and exact local name.
+	## Resolved raw HTML case has already been supplied by the command stream.
+	html_tag : DNode, Str -> Bool
+	html_tag = |element, local| element.kind == 1 and element.namespace == Dom.html_namespace and element.tag == local
+
+	## Read one explicit namespace and expanded name. Framing and DOM grammar
+	## are checked independently from Core; unlisted names remain accepted.
+	expanded_name : List(U8), U64, Bool -> (ExpandedName, U64)
+	expanded_name = |bytes, at, element| {
+		code = Dom.byte(bytes, at)
+		(namespace, prefix_at) = match code {
+			0 => (Dom.html_namespace, at + 1)
+			1 => (Dom.svg_namespace, at + 1)
+			2 => ("http://www.w3.org/1998/Math/MathML", at + 1)
+			3 => ("", at + 1)
+			4 => {
+				(uri, next) = Dom.str(bytes, at + 1)
+				if uri.is_empty() {
+					crash "executor: explicit namespace URI is empty"
+				}
+				(uri, next)
+			}
+			_ => crash "executor: unknown namespace kind"
+		}
+		(prefix, local_at) = Dom.str(bytes, prefix_at)
+		(local, next) = Dom.str(bytes, local_at)
+		name = { namespace, prefix, local }
+		Dom.validate_name(name, element)
+		(name, next)
+	}
+
+	## Modern DOM local/prefix rules are broader than XML NCNames. Explicit
+	## expanded parts must also be representable without a different first-colon
+	## split. Ordinary raw HTML and unnamespaced attributes retain local colons.
+	validate_name : ExpandedName, Bool -> {}
+	validate_name = |name, element| {
+		if !dom_local_valid(name.local, element) {
+			crash "executor: invalid namespace-dependent local name"
+		}
+		prefix = name.prefix
+		if !prefix.is_empty() {
+			if prefix.to_utf8().any(|unit| [0.U8, 9, 10, 12, 13, 32, 47, 58, 62].contains(unit)) {
+				crash "executor: invalid namespace prefix"
+			}
+			if name.namespace.is_empty() {
+				crash "executor: namespace prefix without namespace"
+			}
+			if prefix == "xml" and name.namespace != "http://www.w3.org/XML/1998/namespace" {
+				crash "executor: xml prefix requires XML namespace"
+			}
+		} else if name.local.contains(":") and !((element and (name.namespace == Dom.html_namespace or name.namespace.is_empty())) or (!element and name.namespace.is_empty())) {
+			crash "executor: unrepresentable unprefixed local name"
+		}
+		ordinary = prefix.is_empty() and ((element and (name.namespace == Dom.html_namespace or name.namespace.is_empty())) or (!element and name.namespace.is_empty()))
+		declares = prefix == "xmlns" or Dom.written_name(name) == "xmlns"
+		if !ordinary and (name.namespace == "http://www.w3.org/2000/xmlns/") != declares {
+			crash "executor: invalid xmlns namespace pairing"
+		}
+	}
+
+	## DOM updates identify an attribute by URI/local and preserve its existing
+	## prefix when only its value changes, as setAttributeNS does in Chrome.
+	assign_attribute : List((ExpandedName, Str)), ExpandedName, Str -> List((ExpandedName, Str))
+	assign_attribute = |entries, name, value| {
+		found = entries.any(|(key, _)| key.namespace == name.namespace and key.local == name.local)
+		if found {
+			entries.map(|(key, prior)| if (key.namespace == name.namespace and key.local == name.local) (key, value) else (key, prior))
+		} else entries.append((name, value))
+	}
+
+	## Removal ignores prefixes and never removes another namespace's namesake.
+	remove_expanded_on : Model, U64, ExpandedName -> Model
+	remove_expanded_on = |dom, index, name| Dom.modify(
+		dom,
+		index,
+		|element| {
+			attrs = element.attrs.keep_if(|(key, _)| key.namespace != name.namespace or key.local != name.local)
+			{ ..element, attrs, shown: if (Dom.html_tag(element, "dialog") and name.namespace.is_empty() and name.local == "open") Hidden else element.shown }
+		},
+	)
+
+	## Present text is literal data; only the presence tag removes an attribute.
+	set_expanded_presence : Model, U64, ExpandedName, [Absent, Present(Str)] -> Model
+	set_expanded_presence = |dom, index, name, presence| match presence {
+		Absent => Dom.remove_expanded_on(dom, index, name)
+		Present(value) => Dom.set_expanded_on(dom, index, name, value)
+	}
+
+	## Keep attribute text and the dialog's browser state consistent by presence.
+	set_expanded_on : Model, U64, ExpandedName, Str -> Model
+	set_expanded_on = |dom, index, name, value| Dom.modify(
+		dom,
+		index,
+		|element| {
+			attrs = Dom.assign_attribute(element.attrs, name, value)
+			{ ..element, attrs, shown: if (Dom.html_tag(element, "dialog") and name.namespace.is_empty() and name.local == "open" and element.shown == Hidden) Open else element.shown }
+		},
+	)
+
+	## An intrinsic template fragment is a DOM node, not an emitted engine node.
+	## Its parent chain ends here, so inert descendants never bubble through the
+	## template owner. The owner still visits it when disposing owned addresses.
+	create_node : Model, DNode -> (Model, U64)
+	create_node = |dom, element| {
+		(d1, index) = Dom.add_node(dom, element)
+		if !Dom.html_tag(element, "template") {
+			return (d1, index)
+		}
+		(d2, fragment) = Dom.add_node(d1, { ..Dom.empty_node, namespace: "", kind: 4, tag: "" })
+		(Dom.modify(d2, index, |owner| { ..owner, content: Some(fragment) }), index)
+	}
+
+	## Decode child ownership independently of namespace construction. Both
+	## choices are legal on HTML templates; Content is illegal on other nodes.
+	container : List(U8), U64, ExpandedName -> U8
+	container = |bytes, at, name| {
+		mode = Dom.byte(bytes, at)
+		if mode == 0 {
+			return 0
+		}
+		if mode == 1 and name.namespace == Dom.html_namespace and name.local == "template" {
+			return 1
+		}
+		crash "executor: invalid child container"
+	}
+
+	## Follow only the explicit container step. No namespace inheritance or
+	## literal provenance is reconstructed while applying a command or hole path.
+	child_target : Model, U64, U8 -> U64
+	child_target = |dom, index, mode| {
+		if mode == 0 {
+			return index
+		}
+		if mode == 1 {
+			return match Dom.node(dom, index).content {
+				Some(fragment) => fragment
+				None => crash "executor: content path requires an HTML template"
+			}
+		}
+		crash "executor: unknown child container"
+	}
+
 }
 
 ## A keymap gives exact labels priority over an earlier physical fallback;
@@ -1896,12 +2051,12 @@ expect ["?", "`", "€", "💡", "л", "é", " ", "á", "ArrowDown"].map(Dom.ke
 ## OutsideText follows HTML enumeration and inheritance rather than treating
 ## an arbitrary contenteditable attribute as true or a raw input type as text.
 expect {
-	(d1, parent) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", attrs: [("contenteditable", "TRUE")] })
-	(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "span", attrs: [("contenteditable", "invalid")] })
+	(d1, parent) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", attrs: Dom.attributes([("contenteditable", "TRUE")]) })
+	(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "span", attrs: Dom.attributes([("contenteditable", "invalid")]) })
 	dom = Dom.insert(Dom.insert(d2, d2.root, parent, Err(End)), parent, child, Err(End))
 	stopped = Dom.set_attr_on(dom, child, "contenteditable", "FALSE")
 	false_parent = Dom.set_attr_on(dom, parent, "contenteditable", "FALSE")
-	(d3, checkbox) = Dom.add_node(dom, { ..Dom.empty_node, tag: "input", attrs: [("type", "CHECKBOX")] })
+	(d3, checkbox) = Dom.add_node(dom, { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", "CHECKBOX")]) })
 	{ inherited: Dom.text_entry(dom, child), stopped: Dom.text_entry(stopped, child), inherited_false: Dom.text_entry(false_parent, child), checkbox: Dom.text_entry(d3, checkbox) } == { inherited: Bool.True, stopped: Bool.False, inherited_false: Bool.False, checkbox: Bool.False }
 }
 
@@ -1955,13 +2110,13 @@ expect {
 ## Input classification folds only ASCII and leaves raw attributes intact.
 expect {
 	kinds = ["CHECKBOX", "Text", "FILE", "Radio", "txet", "", "TÉXT"]
-	nodes = kinds.map(|kind| { ..Dom.empty_node, tag: "input", attrs: [("type", kind)] })
+	nodes = kinds.map(|kind| { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)]) })
 	nodes.map(Dom.input_type) == ["checkbox", "text", "file", "radio", "txet", "", "tÉxt"] and nodes.map(|node| Dom.attr_of(node, "type")) == kinds and Dom.input_type(Dom.empty_node) == ""
 }
 
 ## The transport's six ordinary boolean names belong to the parser's HTML
 ## vocabulary. Hidden has a different grammar and is checked separately.
-expect Protocol.bool_attrs.keep_if(|attribute| attribute != "hidden").all(|attribute| MarkupHtml.boolean_attributes.contains(attribute)) and !MarkupHtml.boolean_attributes.contains("hidden")
+expect ["disabled", "selected", "readonly", "required", "multiple", "open"].all(|attribute| MarkupHtml.boolean_attributes.contains(attribute)) and !MarkupHtml.boolean_attributes.contains("hidden")
 
 ## Preserve the legacy wire convention without describing hidden as a boolean
 ## attribute or applying a browser default to its explicit enumeration.
@@ -1974,3 +2129,59 @@ expect MarkupHtml.attribute_keywords({ element: "input", attribute: "type" }).ma
 ## The controlled popover policy deliberately supports auto/manual, while
 ## the parser's complete grammar also describes empty and hint spellings.
 expect MarkupHtml.attribute_keywords({ element: "div", attribute: "popover" }) == Ok(["", "auto", "manual", "hint"])
+
+## Independent DOM local-name grammar. UTF-8 validity is established by str;
+## no XML Unicode-name ranges or engine construction helpers are shared.
+dom_local_valid : Str, Bool -> Bool
+dom_local_valid = |text, element| {
+	bytes = text.to_utf8()
+	first = bytes.first() ?? return False
+	space = [0.U8, 9, 10, 12, 13, 32, 47, 62]
+	if !element {
+		return !bytes.any(|byte| space.contains(byte) or byte == '=')
+	}
+	letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".to_utf8()
+	if letters.contains(first) {
+		return !bytes.any(|byte| space.contains(byte))
+	}
+	if first < 128 and first != ':' and first != '_' {
+		return False
+	}
+	allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-.:_".to_utf8()
+	bytes.all(|byte| byte >= 128 or allowed.contains(byte))
+}
+
+## Comment nodes retain their data and child position while remaining absent
+## from textContent, independently of any engine constructor or byte encoder.
+expect {
+	word = |n| [n.to_u8_wrap(), 0.U8, 0, 0]
+	text = |value| word(value.count_utf8_bytes()).concat(value.to_utf8())
+	parent = [8.U8].concat(word(1.U64)).concat(word(0.U64)).concat(word(0.U64)).concat([0]).concat(text("")).concat(text("div")).append(0)
+	leaf = |op, id, value| [op].concat(word(id)).concat(word(1.U64)).concat(word(0.U64)).concat(text(value))
+	commands = [0].concat(parent).concat(leaf(10.U8, 2.U64, "before")).concat(leaf(26.U8, 3.U64, "identity:row:7")).concat(leaf(10.U8, 4.U64, "after"))
+	dom = Dom.apply(Dom.new({}), commands)
+	root = Dom.node(dom, Dom.lookup(dom, 1))
+	root.kids.map(|index| Dom.node(dom, index).kind) == [2, 3, 2] and Dom.node(dom, Dom.lookup(dom, 3)).text == "identity:row:7" and Dom.text_of(dom, Dom.lookup(dom, 1)) == "beforeafter"
+}
+
+## A template owns an intrinsic disconnected fragment even when ordinary raw
+## construction selects childNodes. Content placement never changes that mode.
+expect {
+	(d1, ordinary) = Dom.create_node(Dom.new({}), { ..Dom.empty_node, tag: "template" })
+	(d2, inert) = Dom.create_node(d1, { ..Dom.empty_node, tag: "template", container: 1 })
+	(d3, text) = Dom.add_node(d2, { ..Dom.empty_node, namespace: "", kind: 2, text: "inert" })
+	fragment = Dom.child_target(d3, inert, 1)
+	dom = Dom.insert(d3, fragment, text, Err(End))
+	Dom.node(dom, ordinary).kids == [] and Dom.node(dom, inert).kids == [] and Dom.text_of(dom, inert) == "" and Dom.text_of(dom, fragment) == "inert" and Dom.node(dom, text).parent == fragment + 1 and Dom.node(dom, fragment).parent == 0 and Dom.node(dom, fragment).kind == 4 and Dom.node(dom, fragment).ids == []
+}
+
+## Disposing the template removes addresses in its disconnected content through
+## ownership, while ordinary DOM traversal and text observations remain inert.
+expect {
+	(d1, owner) = Dom.create_node(Dom.new({}), { ..Dom.empty_node, tag: "template", container: 1 })
+	(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "span" })
+	fragment = Dom.child_target(d2, owner, 1)
+	d3 = Dom.bind(Dom.insert(d2, fragment, child, Err(End)), 5, child)
+	dom = Dom.forget_subtree(d3, owner)
+	Dom.node(dom, child).ids == [] and (dom.statics.get(5) ?? 0) == 0 and Dom.node(dom, owner).kids == []
+}

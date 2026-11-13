@@ -171,7 +171,7 @@ SpecRunner := [].{
 		failure_queue : List({ id : U32, payload : List(U8), ready : Bool }),
 		failure_scheduled : Bool,
 		failure_active : Bool,
-		settings : { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64 },
+		settings : { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64, mount_root : Scm.MountRoot },
 		guard : Bool,
 		sticky_activation : Bool,
 		clipboard : { text : Str, html : Str, writes : U64, exhausted : Bool },
@@ -513,7 +513,12 @@ SpecRunner := [].{
 	## Encode the resolved browser facts as the mandatory boot sections. The
 	## caller filters local storage to the program's declared keys first.
 	encode_boot : Scm.Environment -> List(U8)
-	encode_boot = |env| {
+	encode_boot = |env| SpecRunner.encode_mount(env, Scm.default_mount_root)
+
+	## The engine-only root section follows the app environment but never becomes
+	## an app-visible Boot field. This encoder is independent of Core's reader.
+	encode_mount : Scm.Environment, Scm.MountRoot -> List(U8)
+	encode_mount = |env, mount_root| {
 		var $storage = SpecRunner.put_u32([SpecRunner.flag_byte(env.storage_available)], env.storage.len().to_u32_wrap())
 		for (key, value) in env.storage {
 			$storage = SpecRunner.put_str(SpecRunner.put_str($storage, key), value)
@@ -543,7 +548,25 @@ SpecRunner := [].{
 			{ tag: 9, body: languages },
 			{ tag: 10, body: $offsets },
 			{ tag: 11, body: env.session.fold(SpecRunner.put_u32([SpecRunner.flag_byte(env.session_available)], env.session.len().to_u32_wrap()), |bytes, (key, value)| SpecRunner.put_str(SpecRunner.put_str(bytes, key), value)) },
-		].fold([], SpecRunner.put_section)
+		].fold([], SpecRunner.put_section).concat(SpecRunner.put_section([], { tag: 13, body: SpecRunner.root_bytes(mount_root) }))
+	}
+
+	## Canonical namespace tags preserve the actual wrapper's URI, prefix and
+	## local identity. Names are already resolved and checked by the parser.
+	root_bytes : Scm.MountRoot -> List(U8)
+	root_bytes = |root| {
+		namespace = match root.namespace {
+			"http://www.w3.org/1999/xhtml" => [0.U8]
+			"http://www.w3.org/2000/svg" => [1]
+			"http://www.w3.org/1998/Math/MathML" => [2]
+			"" => [3]
+			uri => SpecRunner.put_str([4], uri)
+		}
+		body = SpecRunner.put_str(SpecRunner.put_str(namespace, root.prefix), root.local)
+		if body.len() > 65_536 {
+			crash "contract: mount-root exceeds 65536 encoded bytes"
+		}
+		body
 	}
 
 	## An HTTP result payload: tag 1, `status:u16 n:u32 (name:str value:str)* body:rest`.
@@ -651,7 +674,7 @@ SpecRunner := [].{
 				if i < before {
 					$w = $w.set(i, ($w.get(i) ?? 0) + 1) ?? $w
 					n = Dom.node(r.dom, i)
-					if n.tag == "" and n.parent != 0 {
+					if n.kind == 2 and n.parent != 0 {
 						$w = $w.set(n.parent - 1, ($w.get(n.parent - 1) ?? 0) + 1) ?? $w
 					}
 				}
@@ -752,7 +775,9 @@ SpecRunner := [].{
 	adopt : state, List(U8), Str, List({ key : Str, value : Str }) -> S(state)
 	adopt = |inst, cmds, url, storage| {
 		browser = SpecRunner.fresh_browser({ url, storage: storage.map(|kv| (kv.key, kv.value)) })
-		s0 = SpecRunner.fresh(inst, browser)
+		initial = SpecRunner.fresh(inst, browser)
+		root = browser.settings.mount_root
+		s0 = { ..initial, dom: Dom.modify(initial.dom, initial.dom.root, |element| { ..element, namespace: root.namespace, prefix: root.prefix, tag: root.local, svg: root.namespace == Dom.svg_namespace }) }
 		SpecRunner.take_batch(s0, inst, cmds)
 	}
 
@@ -770,7 +795,7 @@ SpecRunner := [].{
 		failure_queue: [],
 		failure_scheduled: False,
 		failure_active: False,
-		settings: { local_full: False, session_full: False, clipboard_denied: False, max_paste: 4194304 },
+		settings: { local_full: False, session_full: False, clipboard_denied: False, max_paste: 4194304, mount_root: Scm.default_mount_root },
 		guard: False,
 		sticky_activation: False,
 		clipboard: { text: "", html: "", writes: 0, exhausted: False },
@@ -802,7 +827,7 @@ SpecRunner := [].{
 
 	## A runner state for instance `inst` before its first batch.
 	fresh : state, Browser -> S(state)
-	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 26), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, after_batch: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
+	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, Protocol.ops.len() + 1), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, after_batch: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
 
 	## Replace a browser-storage fixture’s pair at a key, leaving other keys
 	## in order. This is linear in the fixture pairs and does not write a Roc cell.
@@ -979,7 +1004,7 @@ SpecRunner := [].{
 		}
 		var $files = []
 		var $max_output = SpecRunner.max_output_bytes
-		var $settings = (SpecRunner.fresh_browser({})).settings
+		var $settings = { ..(SpecRunner.fresh_browser({})).settings, mount_root: spec.mount_root }
 		for entry in spec.setup {
 			match entry.item {
 				File({ name, mime, text, repeat }) => {
@@ -1003,7 +1028,7 @@ SpecRunner := [].{
 				MaxPasteBytes(max_paste) => {
 					$settings = { ..$settings, max_paste }
 				}
-				SessionStorage(_) | SessionStorageUnavailable | InitialLocation(_) | LocalStorage(_) | InitialOnline(_) | InitialVisibility(_) | InitialMedia(_) | InitialTime(_) | Seed(_) | Languages(_) | TimeZone(_) | LocalStorageUnavailable => {}
+				MountRoot(_) | SessionStorage(_) | SessionStorageUnavailable | InitialLocation(_) | LocalStorage(_) | InitialOnline(_) | InitialVisibility(_) | InitialMedia(_) | InitialTime(_) | Seed(_) | Languages(_) | TimeZone(_) | LocalStorageUnavailable => {}
 			}
 		}
 		queries = SpecRunner.decode_declarations((program.keys)()).media
@@ -1028,7 +1053,7 @@ SpecRunner := [].{
 	mount_in = |program, env| SpecRunner.mount_config(program, env, (SpecRunner.fresh_browser({})).settings)
 
 	## Install fixture service behavior before mount emits any storage command.
-	mount_config : Program(state), Scm.Environment, { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64 } -> S(state)
+	mount_config : Program(state), Scm.Environment, { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64, mount_root : Scm.MountRoot } -> S(state)
 	mount_config = |program, initial_env, settings| {
 		env = { ..initial_env, url: SpecRunner.serialize_reference(initial_env.url) }
 		declared = SpecRunner.decode_declarations((program.keys)())
@@ -1040,9 +1065,11 @@ SpecRunner := [].{
 			}
 		}
 		media = declared.media.map(|query| (query, env.media.find_first(|(name, _)| name == query).map_ok(|(_, matches)| matches) ?? False))
-		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot({ ..env, url: SpecRunner.serialize_location(env.url), media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }))
+		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_mount({ ..env, url: SpecRunner.serialize_location(env.url), media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }, settings.mount_root))
 		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declared.latest_ports, settings }
-		s0 = SpecRunner.fresh(inst, browser)
+		initial = SpecRunner.fresh(inst, browser)
+		root = settings.mount_root
+		s0 = { ..initial, dom: Dom.modify(initial.dom, initial.dom.root, |element| { ..element, namespace: root.namespace, prefix: root.prefix, tag: root.local, svg: root.namespace == Dom.svg_namespace }) }
 		{ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s0, draining: Bool.True }, inst, cmds, wbuf))), draining: Bool.False }
 	}
 
@@ -1468,30 +1495,27 @@ SpecRunner := [].{
 
 	# ---------------------------------------------------------------- focus
 
-	## A boolean attribute (`disabled`, `hidden`, ...) is present for any value
-	## other than "" and "false", as the runtime sets it.
+	## Boolean presence and hidden enumeration states depend on presence, never
+	## on a special empty/false text convention.
 	flag_on : Dom.DNode, Str -> Bool
-	flag_on = |n, name| {
-		v = Dom.attr_of(n, name)
-		v != "" and v != "false"
-	}
+	flag_on = |n, name| Dom.has_attr(n, name)
 
 	## Read the model’s effective disabled flag for native input eligibility.
 	## Ordinary raw attribute text is observed separately by attribute assertions.
 	disabled : Dom.DNode -> Bool
-	disabled = |n| SpecRunner.flag_on(n, "disabled")
+	disabled = |n| n.namespace == Dom.html_namespace and ["button", "input", "select", "textarea", "option", "optgroup", "fieldset"].contains(n.tag) and Dom.has_attr(n, "disabled")
 
 	## Whether Chrome focuses node `n` when it is clicked or `.focus()`ed.
 	focusable : Dom.DNode -> Bool
 	focusable = |n| {
 		editable = Dom.has_attr(n, "contenteditable") and ["", "true", "plaintext-only"].contains(Dom.enum_attr(n, "contenteditable"))
-		(SpecRunner.intrinsic_focusable(n) or editable) and !SpecRunner.disabled(n) and !SpecRunner.flag_on(n, "hidden") and !(n.tag == "input" and Dom.input_type(n) == "hidden")
+		(SpecRunner.intrinsic_focusable(n) or editable) and !SpecRunner.disabled(n) and !SpecRunner.flag_on(n, "hidden") and !(Dom.html_tag(n, "input") and Dom.input_type(n) == "hidden")
 	}
 
 	## Native controls, links and tabindex retain focus independently of an
 	## editable ancestor; other editable nodes focus only as editing hosts.
 	intrinsic_focusable : Dom.DNode -> Bool
-	intrinsic_focusable = |n| n.tag == "button" or n.tag == "input" or n.tag == "select" or n.tag == "textarea" or (n.tag == "a" and Dom.has_attr(n, "href")) or Dom.has_attr(n, "tabindex")
+	intrinsic_focusable = |n| Dom.html_tag(n, "button") or Dom.html_tag(n, "input") or Dom.html_tag(n, "select") or Dom.html_tag(n, "textarea") or (n.tag == "a" and Dom.has_attr(n, "href")) or Dom.has_attr(n, "tabindex")
 
 	## Focus cannot enter a detached or hidden subtree. The oracle checks
 	## declared HTML attributes; CSS layout remains the browser's domain.
@@ -1507,7 +1531,7 @@ SpecRunner := [].{
 		var $at = i
 		while True {
 			n = Dom.node(dom, $at)
-			if SpecRunner.flag_on(n, "hidden") or ((n.tag == "dialog" or Dom.has_attr(n, "popover")) and n.shown == Hidden) {
+			if SpecRunner.flag_on(n, "hidden") or ((Dom.html_tag(n, "dialog") or Dom.has_attr(n, "popover")) and n.shown == Hidden) {
 				return Bool.False
 			}
 			if $at == dom.root {
@@ -1536,7 +1560,7 @@ SpecRunner := [].{
 
 	## A control whose edits fire `change` when it loses focus.
 	text_control : Dom.DNode -> Bool
-	text_control = |n| n.tag == "textarea" or (n.tag == "input" and SpecRunner.fillable.contains(Dom.input_type(n)))
+	text_control = |n| Dom.html_tag(n, "textarea") or (Dom.html_tag(n, "input") and SpecRunner.fillable.contains(Dom.input_type(n)))
 
 	## The input types `fill` types into, as Playwright's `fill` allows.
 	fillable : List(Str)
@@ -1592,7 +1616,7 @@ SpecRunner := [].{
 		var $at = i + 1
 		while $at != 0 {
 			n = Dom.node(s.dom, $at - 1)
-			if SpecRunner.flag_on(n, "hidden") or ((n.tag == "dialog" or Dom.has_attr(n, "popover")) and n.shown == Hidden) {
+			if SpecRunner.flag_on(n, "hidden") or ((Dom.html_tag(n, "dialog") or Dom.has_attr(n, "popover")) and n.shown == Hidden) {
 				return False
 			}
 			$at = n.parent
@@ -1697,8 +1721,8 @@ SpecRunner := [].{
 		s = $s
 		b = s.browser
 		n = Dom.node(s.dom, i)
-		attrs = if n.tag == "dialog" {
-			if (value == Hidden) n.attrs.keep_if(|(key, _)| key != "open") else n.attrs.keep_if(|(key, _)| key != "open").append(("open", ""))
+		attrs = if Dom.html_tag(n, "dialog") {
+			if (value == Hidden) n.attrs.keep_if(|(key, _)| !key.namespace.is_empty() or key.local != "open") else n.attrs.keep_if(|(key, _)| !key.namespace.is_empty() or key.local != "open").append((Dom.unqualified("open"), ""))
 		} else n.attrs
 		dom = Dom.modify(s.dom, i, |current| { ..current, shown: value, attrs })
 		changed = { ..s, dom, browser: { ..b, top_layer: if (value == Modal or value == Popover) b.top_layer.keep_if(|other| other != i).append(i) else b.top_layer.keep_if(|other| other != i), openers: if (value == Hidden) b.openers.remove(i) else b.openers.insert(i, s.focused) } }
@@ -1712,14 +1736,14 @@ SpecRunner := [].{
 				# is restored, including a modal re-shown after its row moved.
 				SpecRunner.queue_focus(queued, 0)
 			} else queued
-			if n.tag == "dialog" {
+			if Dom.html_tag(n, "dialog") {
 				SpecRunner.queue_ui(restored, Close(i))
 			} else restored
 		} else {
 			autofocus = Dom.find(queued.dom, i, |child| Dom.has_attr(child, "autofocus"))
 			chosen = match autofocus {
 				Ok(target) if SpecRunner.focusable_in(queued.dom, target) => target + 1
-				_ if n.tag == "dialog" => SpecRunner.focus_order(queued.dom, i).first().map_ok(|target| target + 1) ?? i + 1
+				_ if Dom.html_tag(n, "dialog") => SpecRunner.focus_order(queued.dom, i).first().map_ok(|target| target + 1) ?? i + 1
 				_ => 0
 			}
 			if (chosen == 0) queued else SpecRunner.queue_focus(queued, chosen)
@@ -1890,10 +1914,10 @@ SpecRunner := [].{
 	matches : Dom.Model, Dom.DNode, Scm.Loc -> Bool
 	matches = |dom, n, loc|
 		match loc {
-			Label(x) => n.tag != "" and Dom.has_attr(n, "aria-label") and Dom.attr_of(n, "aria-label") == x
-			TestId(x) => n.tag != "" and Dom.has_attr(n, "data-testid") and Dom.attr_of(n, "data-testid") == x
-			Role({ role, name }) => n.tag != "" and SpecRunner.implicit_role(n) == role and SpecRunner.accessible_name(dom, n) == name
-			Text(x) => n.tag == "" and n.text == x
+			Label(x) => n.kind == 1 and Dom.has_attr(n, "aria-label") and Dom.attr_of(n, "aria-label") == x
+			TestId(x) => n.kind == 1 and Dom.has_attr(n, "data-testid") and Dom.attr_of(n, "data-testid") == x
+			Role({ role, name }) => n.kind == 1 and SpecRunner.implicit_role(n) == role and SpecRunner.accessible_name(dom, n) == name
+			Text(x) => n.kind == 2 and n.text == x
 		}
 
 	## The element a locator names (a `text` locator names the element holding
@@ -1902,7 +1926,7 @@ SpecRunner := [].{
 	find = |dom, loc| {
 		i = Dom.find(dom, dom.root, |n| SpecRunner.matches(dom, n, loc))?
 		n = Dom.node(dom, i)
-		if (n.tag == "" and n.parent != 0) Ok(n.parent - 1) else Ok(i)
+		if (n.kind == 2 and n.parent != 0) Ok(n.parent - 1) else Ok(i)
 	}
 
 	## Resolve a required locator and report its authored spelling when absent.
@@ -1926,11 +1950,11 @@ SpecRunner := [].{
 	value_of = |dom, i| {
 		n = Dom.node(dom, i)
 		v = Dom.live_value(n, "value")
-		if n.tag == "option" {
+		if Dom.html_tag(n, "option") {
 			if (Dom.has_attr(n, "value")) Dom.attr_of(n, "value") else Dom.text_of(dom, i)
-		} else if n.tag == "select" and !SpecRunner.has_option(dom, { root: i, value: v }) {
+		} else if Dom.html_tag(n, "select") and !SpecRunner.has_option(dom, { root: i, value: v }) {
 			""
-		} else if n.tag == "input" and ["checkbox", "radio"].contains(Dom.input_type(n)) and !Dom.has_attr(n, "value") {
+		} else if Dom.html_tag(n, "input") and ["checkbox", "radio"].contains(Dom.input_type(n)) and !Dom.has_attr(n, "value") {
 			"on"
 		} else v
 	}
@@ -1940,7 +1964,7 @@ SpecRunner := [].{
 	has_option : Dom.Model, { root : U64, value : Str } -> Bool
 	has_option = |dom, { root, value }| {
 		n = Dom.node(dom, root)
-		if n.tag == "option" and SpecRunner.value_of(dom, root) == value {
+		if Dom.html_tag(n, "option") and SpecRunner.value_of(dom, root) == value {
 			return Bool.True
 		}
 		n.kids.any(|child| SpecRunner.has_option(dom, { root: child, value }))
@@ -1955,23 +1979,16 @@ SpecRunner := [].{
 	attr_value = |dom, i, name| {
 		n = Dom.node(dom, i)
 		raw = Dom.attr_of(n, name)
-		if name == "checked" and n.tag == "input" {
+		if name == "checked" and Dom.html_tag(n, "input") {
 			Ok(SpecRunner.bool_str(Dom.live_value(n, "checked") == "true"))
 		} else if name == "disabled" {
 			Ok(SpecRunner.bool_str(SpecRunner.disabled(n)))
 		} else if name == "value" and ["input", "textarea", "select", "option"].contains(n.tag) {
 			Ok(SpecRunner.value_of(dom, i))
-		} else if SpecRunner.bool_attrs.contains(name) {
-			if (Dom.has_attr(n, name)) Ok(if (raw == "true") "" else raw) else Err(Absent)
 		} else if Dom.has_attr(n, name) {
 			Ok(raw)
 		} else Err(Absent)
 	}
-
-	## Names governed by the platform's legacy absence convention, excluding
-	## disabled because the runner reads that control's live state separately.
-	bool_attrs : List(Str)
-	bool_attrs = Protocol.bool_attrs.keep_if(|name| name != "disabled")
 
 	# ----------------------------------------------------------------- steps
 
@@ -2014,7 +2031,7 @@ SpecRunner := [].{
 		# Every issued request is one FX command and every cancelled one a
 		# CANCEL (design.md, "Counters"), so the effect counters must agree
 		# with the commands too.
-		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent"), (41, 21, "properties set"), (42, 22, "row properties set"), (43, 23, "registrations released"), (45, 24, "view transitions"), (46, 25, "leave guard commands")] {
+		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent"), (41, 21, "properties set"), (42, 22, "row properties set"), (43, 23, "registrations released"), (45, 24, "view transitions"), (46, 25, "leave guard commands"), (48, 26, "comments created")] {
 			engine = s.work.counters.get(counter) ?? 0
 			oracle = s.ops.get(op) ?? 0
 			if engine != oracle {
@@ -2048,7 +2065,7 @@ SpecRunner := [].{
 				first = match r.written.first() {
 					Ok(i) => {
 						n = Dom.node(r.dom, i)
-						el = if (n.tag == "" and n.parent != 0) n.parent - 1 else i
+						el = if (n.kind == 2 and n.parent != 0) n.parent - 1 else i
 						was = if (el < s.dom.nodes.len()) Dom.render(s.dom, el) else "(new)"
 						"; first write: ${was} -> ${Dom.render(r.dom, el)}${SpecRunner.landmark(r.dom, el)}"
 					}
@@ -2199,6 +2216,11 @@ SpecRunner := [].{
 		check = |ok, msg| if (ok) Ok(s) else Err(msg)
 		match op {
 			Dismiss => SpecRunner.press_key(program, s, { target: Focused, key: { key: "Escape", code: "Escape", ctrl: False, alt: False, shift: False, meta: False } })
+			ExpectElement({ target, namespace, name }) => {
+				i = SpecRunner.need(dom, target)?
+				found = Dom.node(dom, i)
+				check(found.kind == 1 and found.namespace == namespace and found.tag == name, "${Scm.show_loc(target)} element is namespace ${Str.inspect(found.namespace)} local ${Str.inspect(found.tag)}, expected namespace ${Str.inspect(namespace)} local ${Str.inspect(name)}")
+			}
 			ExpectShown(loc, want) => {
 				i = SpecRunner.need(dom, loc)?
 				check(Dom.node(dom, i).shown == want, "${Scm.show_loc(loc)} is ${Str.inspect(Dom.node(dom, i).shown)}, expected ${Str.inspect(want)}")
@@ -2312,7 +2334,7 @@ SpecRunner := [].{
 				i = SpecRunner.need(dom, loc)?
 				n = Dom.node(dom, i)
 				kind = Dom.input_type(n)
-				if n.tag == "input" and (kind == "radio" or kind == "checkbox") {
+				if Dom.html_tag(n, "input") and (kind == "radio" or kind == "checkbox") {
 					if SpecRunner.value_of(dom, i) != v {
 						return Err("${Scm.show_loc(loc)} has value ${JsonOut.quote(SpecRunner.value_of(dom, i))}, not ${JsonOut.quote(v)}")
 					}
@@ -2678,7 +2700,7 @@ SpecRunner := [].{
 		i = SpecRunner.need(s.dom, loc)?
 		n = Dom.node(s.dom, i)
 		kind = Dom.input_type(n)
-		if !(n.tag == "textarea" or (n.tag == "input" and SpecRunner.fillable.contains(kind))) {
+		if !(Dom.html_tag(n, "textarea") or (Dom.html_tag(n, "input") and SpecRunner.fillable.contains(kind))) {
 			return Err("${Scm.show_loc(loc)} cannot be filled")
 		}
 		if SpecRunner.disabled(n) {
@@ -2715,11 +2737,11 @@ SpecRunner := [].{
 	key_unmodelled = |dom, i, key| {
 		n = Dom.node(dom, i)
 		kind = Dom.input_type(n)
-		text = n.tag == "textarea" or (n.tag == "input" and !Scm.key_control_types.text_input_excluded.contains(kind)) or Dom.content_editable(dom, i)
-		choice = n.tag == "select" or (n.tag == "input" and Scm.key_control_types.choice_input_types.contains(kind))
+		text = Dom.html_tag(n, "textarea") or (Dom.html_tag(n, "input") and !Scm.key_control_types.text_input_excluded.contains(kind)) or Dom.content_editable(dom, i)
+		choice = Dom.html_tag(n, "select") or (Dom.html_tag(n, "input") and Scm.key_control_types.choice_input_types.contains(kind))
 		Scm.unmodelled_key_defaults.any(
 			|row| {
-				applies = (row.control == "text" and text) or (row.control == "textarea" and n.tag == "textarea") or (row.control == "choice" and choice) or (row.control == "link" and n.tag == "a" and Dom.has_attr(n, "href")) or (row.control == "editable" and Dom.content_editable(dom, i))
+				applies = (row.control == "text" and text) or (row.control == "textarea" and Dom.html_tag(n, "textarea")) or (row.control == "choice" and choice) or (row.control == "link" and n.tag == "a" and Dom.has_attr(n, "href")) or (row.control == "editable" and Dom.content_editable(dom, i))
 				applies and row.keys.any(
 					|rule| {
 						if rule == "printable" {
@@ -2786,7 +2808,7 @@ SpecRunner := [].{
 	implicit_inputs : Dom.Model, U64 -> U64
 	implicit_inputs = |dom, i| {
 		n = Dom.node(dom, i)
-		own = if (n.tag == "input" and ["", "text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"].contains(Dom.input_type(n))) 1 else 0
+		own = if (Dom.html_tag(n, "input") and ["", "text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"].contains(Dom.input_type(n))) 1 else 0
 		n.kids.fold(own, |count, child| count + SpecRunner.implicit_inputs(dom, child))
 	}
 
@@ -2845,16 +2867,16 @@ SpecRunner := [].{
 			}
 			else if key.key == "Enter" {
 				n = Dom.node($s.dom, down_index)
-				if (n.tag == "a" and Dom.has_attr(n, "href")) or (!key.ctrl and !key.meta and (n.tag == "button" or (n.tag == "input" and ["button", "submit", "reset"].contains(Dom.input_type(n))))) {
+				if (n.tag == "a" and Dom.has_attr(n, "href")) or (!key.ctrl and !key.meta and (Dom.html_tag(n, "button") or (Dom.html_tag(n, "input") and ["button", "submit", "reset"].contains(Dom.input_type(n))))) {
 					$s = SpecRunner.key_activate(program, $s, down_index)?
 				}
-				else if n.tag == "input" and !key.ctrl and !key.meta and ["file", "color"].contains(Dom.input_type(n)) {
+				else if Dom.html_tag(n, "input") and !key.ctrl and !key.meta and ["file", "color"].contains(Dom.input_type(n)) {
 					$s = SpecRunner.key_activate(program, $s, down_index)?
 				}
-				else if n.tag == "input" and !key.ctrl and !key.meta {
-					match SpecRunner.ancestor($s.dom, down_index, |m| m.tag == "form") {
+				else if Dom.html_tag(n, "input") and !key.ctrl and !key.meta {
+					match SpecRunner.ancestor($s.dom, down_index, |m| Dom.html_tag(m, "form")) {
 						Ok(form) => {
-							button = Dom.find($s.dom, form, |m| (m.tag == "button" and ["", "submit"].contains(Dom.input_type(m))) or (m.tag == "input" and Dom.input_type(m) == "submit"))
+							button = Dom.find($s.dom, form, |m| (Dom.html_tag(m, "button") and ["", "submit"].contains(Dom.input_type(m))) or (Dom.html_tag(m, "input") and Dom.input_type(m) == "submit"))
 							$s = match button {
 								Ok(i) => SpecRunner.key_activate(program, $s, i)?
 								Err(_) => if (SpecRunner.implicit_inputs($s.dom, form) <= 1) SpecRunner.submit_form(program, $s, form) else $s
@@ -2879,7 +2901,7 @@ SpecRunner := [].{
 		# or disposal cannot transfer that activation to the keyup target.
 		if key.key == " " and $s.browser.doc == document and !prevented and !up_prevented and up_index == down_index and $s.focused == down_index + 1 and SpecRunner.attached($s.dom, down_index) and activation_path.all(|p| Dom.node($s.dom, p.node).detach_count == p.count) {
 			n = Dom.node($s.dom, up_index)
-			if n.tag == "button" or (n.tag == "input" and ["button", "submit", "reset", "checkbox", "radio"].contains(Dom.input_type(n))) {
+			if Dom.html_tag(n, "button") or (Dom.html_tag(n, "input") and ["button", "submit", "reset", "checkbox", "radio"].contains(Dom.input_type(n))) {
 				$s = SpecRunner.key_activate(program, $s, up_index)?
 			}
 		}
@@ -2917,7 +2939,7 @@ SpecRunner := [].{
 	set_checked = |program, s, loc, want| {
 		i = SpecRunner.need(s.dom, loc)?
 		n = Dom.node(s.dom, i)
-		kind = if (n.tag == "input") Dom.input_type(n) else ""
+		kind = if (Dom.html_tag(n, "input")) Dom.input_type(n) else ""
 		if kind != "checkbox" and kind != "radio" {
 			return Err("${Scm.show_loc(loc)} is not a checkbox or radio button")
 		}
@@ -2943,7 +2965,7 @@ SpecRunner := [].{
 			var $k = 0.U64
 			while $k < $d.nodes.len() {
 				m = Dom.node($d, $k)
-				if $k != i and m.tag == "input" and Dom.input_type(m) == "radio" and Dom.attr_of(m, "name") == group and Dom.live_value(m, "checked") == "true" {
+				if $k != i and Dom.html_tag(m, "input") and Dom.input_type(m) == "radio" and Dom.attr_of(m, "name") == group and Dom.live_value(m, "checked") == "true" {
 					$d = Dom.set_live_on($d, $k, "checked", "false")
 				}
 				$k = $k + 1
@@ -3268,19 +3290,19 @@ SpecRunner := [].{
 		n = Dom.node(s.dom, i)
 		kind = Dom.input_type(n)
 		on_value = SpecRunner.value_of(s.dom, i)
-		if n.tag == "input" and kind == "checkbox" {
+		if Dom.html_tag(n, "input") and kind == "checkbox" {
 			want = Dom.live_value(n, "checked") != "true"
 			s1 = SpecRunner.fire_if(program, SpecRunner.set_attr(s, i, "checked", SpecRunner.bool_str(want)), i, "input", on_value)
 			Ok(SpecRunner.fire_if(program, s1, i, "change", SpecRunner.bool_str(want)))
-		} else if n.tag == "input" and kind == "radio" {
+		} else if Dom.html_tag(n, "input") and kind == "radio" {
 			if Dom.live_value(n, "checked") == "true" {
 				Ok(s)
 			} else {
 				s1 = SpecRunner.fire_if(program, SpecRunner.check_on(s, i), i, "input", on_value)
 				Ok(SpecRunner.fire_if(program, s1, i, "change", "true"))
 			}
-		} else if (n.tag == "button" and (kind == "" or kind == "submit")) or (n.tag == "input" and kind == "submit") {
-			match SpecRunner.ancestor(s.dom, i, |m| m.tag == "form") {
+		} else if (Dom.html_tag(n, "button") and (kind == "" or kind == "submit")) or (Dom.html_tag(n, "input") and kind == "submit") {
+			match SpecRunner.ancestor(s.dom, i, |m| Dom.html_tag(m, "form")) {
 				Ok(form) => Ok(SpecRunner.submit_form(program, s, form))
 				Err(_) => Ok(s)
 			}
@@ -3325,7 +3347,7 @@ SpecRunner := [].{
 	## to enabled controls. Other HTML constraints are outside this helper’s model.
 	invalid : Dom.DNode -> Bool
 	invalid = |n| {
-		control = n.tag == "input" or n.tag == "textarea" or n.tag == "select"
+		control = Dom.html_tag(n, "input") or Dom.html_tag(n, "textarea") or Dom.html_tag(n, "select")
 		if !control or SpecRunner.disabled(n) {
 			Bool.False
 		} else {
@@ -3988,7 +4010,7 @@ SpecRunner := [].{
 		} else if ev == "change" {
 			if Dom.input_type(n) == "checkbox" {
 				if (Dom.live_value(n, "checked") == "true") "false" else "true"
-			} else if n.tag == "select" {
+			} else if Dom.html_tag(n, "select") {
 				opts = n.kids.map(|k| SpecRunner.value_of(dom, k))
 				if (opts.is_empty()) "" else pick(opts)
 			} else {
@@ -4801,7 +4823,7 @@ SpecRunner := [].{
 
 ## Wire encoding: strings are length-prefixed, integers little-endian, and
 ## each boot section is tagged and length-bounded in ascending order.
-expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1, 6, 0, 0, 0, 0, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 13, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 101, 110, 45, 85, 83, 10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 11, 5, 0, 0, 0, 1, 0, 0, 0, 0]
+expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1, 6, 0, 0, 0, 0, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 13, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 101, 110, 45, 85, 83, 10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 11, 5, 0, 0, 0, 1, 0, 0, 0, 0, 13, 12, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 'd', 'i', 'v']
 
 ## An HTTP result carries status, headers and the body as the rest.
 expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6, 0x01, 1, 0, 0, 0, 1, 0, 0, 0, 'a', 1, 0, 0, 0, 'b', 'x']
@@ -4939,7 +4961,7 @@ expect {
 		keys: || [],
 		init: |_| ([], [], []),
 		event: |seen, _buf, _work, id, _handler, _payload| {
-			cmds = if (id == 1) SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([5], 2).append(8), 2), 0), 0), "input") else []
+			cmds = if (id == 1) SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([5], 2).append(8), 2), 0), 0).append(0), ""), "input").append(0) else []
 			(seen.append(id), [0].concat(cmds), List.repeat(0, 8))
 		},
 		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
@@ -4974,7 +4996,7 @@ expect {
 		live: |_| [],
 	}
 	var $dom = Dom.new({})
-	for item in [{ id: 1.U32, tag: "input", attrs: [] }, { id: 2, tag: "input", attrs: [("type", "hidden")] }, { id: 3, tag: "input", attrs: [("hidden", "true")] }, { id: 4, tag: "div", attrs: [("hidden", "true")] }, { id: 5, tag: "input", attrs: [] }] {
+	for item in [{ id: 1.U32, tag: "input", attrs: [] }, { id: 2, tag: "input", attrs: Dom.attributes([("type", "hidden")]) }, { id: 3, tag: "input", attrs: Dom.attributes([("hidden", "true")]) }, { id: 4, tag: "div", attrs: Dom.attributes([("hidden", "true")]) }, { id: 5, tag: "input", attrs: [] }] {
 		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: item.tag, attrs: item.attrs })
 		parent = if (item.id == 5) Dom.lookup(d, 4) else d.root
 		$dom = Dom.bind(Dom.insert(d, parent, i, Err(End)), item.id, i)
@@ -4989,7 +5011,7 @@ expect {
 ## A declaration's kind and policy bits survive the wire independently of
 ## its event name. Property commands retain their live values and mirrors.
 expect {
-	element = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([8], 1), 0), 0), "input")
+	element = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([8], 1), 0), 0).append(0), ""), "input").append(0)
 	listener = SpecRunner.put_u32(SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32([11], 1), 7), "change").append(2), 2)
 	value = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(1), "first")
 	checked = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(2), "true")
@@ -5010,7 +5032,7 @@ expect {
 ## A property template hole consumes one value at INST and HPROP updates
 ## that same resolved element. Its sibling event hole keeps its own kind.
 expect {
-	tree = SpecRunner.put_str([1], "input").concat([0, 0])
+	tree = SpecRunner.put_str(SpecRunner.put_str([1, 0], ""), "input").concat([0, 0, 0])
 	holes = SpecRunner.put_u32(SpecRunner.put_str([2, 6, 0, 2, 3, 0, 0], "change").append(1), 1)
 	template = tree.concat(holes)
 	define = SpecRunner.put_u32(SpecRunner.put_u32([7], 0), template.len().to_u32_wrap()).concat(template)
@@ -5031,7 +5053,7 @@ expect {
 expect {
 	(d1, i) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "custom-field", props: [("value", "live")] })
 	dom = Dom.bind(d1, 1, i)
-	attribute = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), "value").append(1), "attribute")
+	attribute = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1).append(3), ""), "value").append(1), "attribute")
 	decoded = Dom.apply(dom, [0].concat(attribute))
 	{ attr: SpecRunner.attr_value(decoded, i, "value")?, value: SpecRunner.value_of(decoded, i) } == { attr: "attribute", value: "live" }
 }
@@ -5040,15 +5062,15 @@ expect {
 ## same distinction survives static template attributes, INST operands and
 ## HATTR updates, without changing ordinary checked attributes into properties.
 expect {
-	element = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([8], 1), 0), 0), "img")
-	empty_alt = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), "alt").append(1), "")
-	removed_alt = SpecRunner.put_str(SpecRunner.put_u32([9], 1), "alt").append(0)
-	ordinary_checked = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), "checked").append(1), "")
+	element = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([8], 1), 0), 0).append(0), ""), "img").append(0)
+	empty_alt = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1).append(3), ""), "alt").append(1), "")
+	removed_alt = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1).append(3), ""), "alt").append(0)
+	ordinary_checked = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1).append(3), ""), "checked").append(1), "")
 	present = Dom.apply(Dom.new({}), [0].concat(element).concat(empty_alt).concat(ordinary_checked))
 	i = Dom.lookup(present, 1)
 	removed = Dom.apply(present, [0].concat(removed_alt))
-	static_attrs = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str([1], "img").append(1), "alt"), "")
-	template = SpecRunner.put_str(static_attrs.concat([0, 1, 2, 0]), "aria-label")
+	static_attrs = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str([1, 0], ""), "img").concat([0, 1, 3]), ""), "alt"), "")
+	template = SpecRunner.put_str(SpecRunner.put_str(static_attrs.concat([0, 1, 2, 0, 3]), ""), "aria-label")
 	define = SpecRunner.put_u32(SpecRunner.put_u32([7], 0), template.len().to_u32_wrap()).concat(template)
 	instance = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([1], 2), 0), 0), 0).append(1), "")
 	row_present = Dom.apply(removed, [0].concat(define).concat(instance))
@@ -5072,7 +5094,7 @@ expect {
 expect {
 	dom = Dom.new({})
 	plain = { ..Dom.empty_node, tag: "a" }
-	empty = { ..plain, attrs: [("aria-label", ""), ("data-testid", ""), ("href", "")] }
+	empty = { ..plain, attrs: Dom.attributes([("aria-label", ""), ("data-testid", ""), ("href", "")]) }
 	actual = {
 		missing_label: SpecRunner.matches(dom, plain, Label("")),
 		empty_label: SpecRunner.matches(dom, empty, Label("")),
@@ -5090,7 +5112,7 @@ expect {
 expect {
 	(d1, select) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "select" })
 	(d2, option) = Dom.add_node(d1, { ..Dom.empty_node, tag: "option" })
-	(d3, text) = Dom.add_node(d2, { ..Dom.empty_node, text: "All works" })
+	(d3, text) = Dom.add_node(d2, { ..Dom.empty_node, namespace: "", kind: 2, text: "All works" })
 	(d4, input) = Dom.add_node(d3, { ..Dom.empty_node, tag: "input" })
 	tree = Dom.insert(Dom.insert(d4, select, option, Err(End)), option, text, Err(End))
 	values = Dom.set_property_on(Dom.set_property_on(tree, option, 1, "", 2), select, 1, "", 1)
@@ -5103,7 +5125,7 @@ expect {
 		select_mirror: Dom.node(checked, select).attrs,
 		unchecked_mirror: Dom.node(checked, input).attrs,
 	}
-	actual == { fallback: "All works", empty_option: "", select_match: Bool.True, option_mirror: [("value", "")], select_mirror: [("value", "")], unchecked_mirror: [] }
+	actual == { fallback: "All works", empty_option: "", select_match: Bool.True, option_mirror: Dom.attributes([("value", "")]), select_mirror: Dom.attributes([("value", "")]), unchecked_mirror: [] }
 }
 
 ## A checkbox without a declared value has the browser's default "on".
@@ -5120,8 +5142,8 @@ expect {
 		settled: |_| Ok({}),
 		live: |_| [],
 	}
-	(d1, checkbox) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", rn: 1, attrs: [("type", "checkbox"), ("aria-label", "Raw checkbox")], hs: [{ event: "change", handler: 0, kind: 1, policies: 0 }] })
-	(d2, button) = Dom.add_node(d1, { ..Dom.empty_node, tag: "button", rn: 2, attrs: [("value", "button payload"), ("aria-label", "Value button")], hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
+	(d1, checkbox) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", rn: 1, attrs: Dom.attributes([("type", "checkbox"), ("aria-label", "Raw checkbox")]), hs: [{ event: "change", handler: 0, kind: 1, policies: 0 }] })
+	(d2, button) = Dom.add_node(d1, { ..Dom.empty_node, tag: "button", rn: 2, attrs: Dom.attributes([("value", "button payload"), ("aria-label", "Value button")]), hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
 	dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, checkbox, Err(End)), d2.root, button, Err(End)), 1, checkbox), 2, button)
 	s = SpecRunner.fresh([], SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
 	changed = SpecRunner.one(program, { ..s, dom }, Change(Label("Raw checkbox"), "on"))?
@@ -5148,7 +5170,7 @@ expect {
 		settled: |_| Ok({}),
 		live: |_| [],
 	}
-	(d1, input) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", rn: 1, attrs: [("type", "FILE"), ("aria-label", "Choice")], hs: [{ event: "change", handler: 0, kind: 2, policies: 0 }] })
+	(d1, input) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", rn: 1, attrs: Dom.attributes([("type", "FILE"), ("aria-label", "Choice")]), hs: [{ event: "change", handler: 0, kind: 2, policies: 0 }] })
 	dom = Dom.bind(Dom.insert(d1, d1.root, input, Err(End)), 1, input)
 	base = SpecRunner.fresh({ events: [], files: 0 }, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
 	s = { ..base, dom, browser: { ..base.browser, files: [{ name: "a.txt", mime: "text/plain", bytes: [65] }] } }
@@ -5319,12 +5341,12 @@ pointer_probe = |_props| {
 expect {
 	program = pointer_probe({})
 	base = SpecRunner.mount_in(program, {})
-	(d1, old) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "a", rn: 1, attrs: [("data-testid", "old"), ("href", "/phantom")], props: [("pointer_zone", "old")], hs: [{ event: "pointerdown", handler: 1, kind: 3, policies: 4 }, { event: "pointerup", handler: 2, kind: 3, policies: 0 }, { event: "click", handler: 3, kind: 1, policies: 0 }] })
-	(d2, outside) = Dom.add_node(d1, { ..Dom.empty_node, tag: "div", rn: 2, attrs: [("data-testid", "outside")], hs: [{ event: "pointerup", handler: 4, kind: 3, policies: 0 }] })
+	(d1, old) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "a", rn: 1, attrs: Dom.attributes([("data-testid", "old"), ("href", "/phantom")]), props: [("pointer_zone", "old")], hs: [{ event: "pointerdown", handler: 1, kind: 3, policies: 4 }, { event: "pointerup", handler: 2, kind: 3, policies: 0 }, { event: "click", handler: 3, kind: 1, policies: 0 }] })
+	(d2, outside) = Dom.add_node(d1, { ..Dom.empty_node, tag: "div", rn: 2, attrs: Dom.attributes([("data-testid", "outside")]), hs: [{ event: "pointerup", handler: 4, kind: 3, policies: 0 }] })
 	dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, old, Err(End)), d2.root, outside, Err(End)), 1, old), 2, outside)
 	down = SpecRunner.one(program, { ..base, dom }, PointerDown({ target: TestId("old"), at: Centre, id: 1, kind: Mouse, button: Main, modifiers: 0 }))?
 	detached = Dom.detach(Dom.forget_subtree(down.dom, old), old)
-	(d3, replacement) = Dom.add_node(detached, { ..Dom.empty_node, tag: "a", rn: 1, attrs: [("href", "/replacement")], hs: [{ event: "pointerup", handler: 5, kind: 3, policies: 0 }, { event: "click", handler: 6, kind: 1, policies: 0 }] })
+	(d3, replacement) = Dom.add_node(detached, { ..Dom.empty_node, tag: "a", rn: 1, attrs: Dom.attributes([("href", "/replacement")]), hs: [{ event: "pointerup", handler: 5, kind: 3, policies: 0 }, { event: "click", handler: 6, kind: 1, policies: 0 }] })
 	up = SpecRunner.one(program, { ..down, dom: Dom.bind(Dom.insert(d3, d3.root, replacement, Err(End)), 1, replacement) }, PointerUp({ target: TestId("outside"), at: Centre, id: 1 }))?
 	{ handlers: up.inst.map(|event| event.handler), url: up.browser.env.url, active: up.browser.pointers.len() } == { handlers: [1, 4], url: "/", active: 0 }
 }
@@ -5334,7 +5356,7 @@ expect {
 expect {
 	program = pointer_probe({})
 	base = SpecRunner.mount_in(program, {})
-	(d1, zone) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: [("data-testid", "zone")], props: [("pointer_zone", "zone")], hs: [{ event: "pointerdown", handler: 1, kind: 3, policies: 4 }, { event: "pointerup", handler: 2, kind: 3, policies: 0 }, { event: "mousemove", handler: 4, kind: 1, policies: 0 }, { event: "mousedown", handler: 5, kind: 1, policies: 0 }, { event: "mouseup", handler: 6, kind: 1, policies: 0 }, { event: "click", handler: 7, kind: 1, policies: 0 }] })
+	(d1, zone) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: Dom.attributes([("data-testid", "zone")]), props: [("pointer_zone", "zone")], hs: [{ event: "pointerdown", handler: 1, kind: 3, policies: 4 }, { event: "pointerup", handler: 2, kind: 3, policies: 0 }, { event: "mousemove", handler: 4, kind: 1, policies: 0 }, { event: "mousedown", handler: 5, kind: 1, policies: 0 }, { event: "mouseup", handler: 6, kind: 1, policies: 0 }, { event: "click", handler: 7, kind: 1, policies: 0 }] })
 	s = { ..base, dom: Dom.bind(Dom.insert(d1, d1.root, zone, Err(End)), 1, zone) }
 	press = { target: TestId("zone"), at: Centre, id: 2, kind: Touch, button: Main, modifiers: 0 }
 	a = SpecRunner.one(program, s, PointerDown(press))?
@@ -5384,7 +5406,7 @@ expect {
 expect {
 	probe = pointer_probe({})
 	base = SpecRunner.fresh([], SpecRunner.fresh_browser({}))
-	(d1, input) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "input", rn: 1, attrs: [("value", "rendered")], props: [("value", "draft")] })
+	(d1, input) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "input", rn: 1, attrs: Dom.attributes([("value", "rendered")]), props: [("value", "draft")] })
 	dom = Dom.bind(Dom.insert(d1, d1.root, input, Err(End)), 1, input)
 	state = { ..base, dom, focused: input + 1, after_batch: [Ref({ node: 1, action: Focus(4), target: Dom.lookup(dom, 1) })] }
 	after = SpecRunner.drain_focus(probe, state)
@@ -5401,8 +5423,8 @@ expect {
 			probe = pointer_probe({})
 			program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) [0].concat(batch) else [], List.repeat(0, 8)) }
 			base = SpecRunner.mount_in(program, {})
-			(d1, a) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, attrs: [("type", "button")], keymaps: Dict.empty().insert("keydown", Dom.parse_keymap("a*")), hs: [{ event: "keydown", handler: 9, kind: 4, policies: 0 }, { event: "click", handler: 6, kind: 1, policies: 0 }] })
-			(d2, b) = Dom.add_node(d1, { ..Dom.empty_node, tag: "button", rn: 2, attrs: [("type", "button")], keymaps: Dict.empty().insert("keyup", Dom.parse_keymap("a*")), hs: [{ event: "keyup", handler: 8, kind: 4, policies: 0 }, { event: "click", handler: 7, kind: 1, policies: 0 }] })
+			(d1, a) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, attrs: Dom.attributes([("type", "button")]), keymaps: Dict.empty().insert("keydown", Dom.parse_keymap("a*")), hs: [{ event: "keydown", handler: 9, kind: 4, policies: 0 }, { event: "click", handler: 6, kind: 1, policies: 0 }] })
+			(d2, b) = Dom.add_node(d1, { ..Dom.empty_node, tag: "button", rn: 2, attrs: Dom.attributes([("type", "button")]), keymaps: Dict.empty().insert("keyup", Dom.parse_keymap("a*")), hs: [{ event: "keyup", handler: 8, kind: 4, policies: 0 }, { event: "click", handler: 7, kind: 1, policies: 0 }] })
 			dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, a, Err(End)), d2.root, b, Err(End)), 1, a), 2, b)
 			after = SpecRunner.press_key(program, { ..base, dom, focused: a + 1 }, { target: Focused, key: { key: " ", code: "Space", ctrl: False, alt: False, shift: False, meta: False } })?
 			Ok(after.inst.map(|event| event.handler))
@@ -5415,7 +5437,7 @@ expect {
 expect {
 	probe = pointer_probe({})
 	base = SpecRunner.mount_in(probe, {})
-	(d1, button) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, attrs: [("type", "button")], hs: [{ event: "click", handler: 7, kind: 1, policies: 0 }] })
+	(d1, button) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, attrs: Dom.attributes([("type", "button")]), hs: [{ event: "click", handler: 7, kind: 1, policies: 0 }] })
 	dom = Dom.bind(Dom.insert(d1, d1.root, button, Err(End)), 1, button)
 	state = { ..base, dom, focused: button + 1 }
 	keys = [
@@ -5432,7 +5454,7 @@ expect {
 ## Modified link Enter is refused from the shared parser data because its
 ## current-document, new-context or download default depends on the system.
 expect {
-	(d1, link) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "a", attrs: [("href", "#next")] })
+	(d1, link) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "a", attrs: Dom.attributes([("href", "#next")]) })
 	plain = { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False }
 	[plain, { ..plain, ctrl: True }, { ..plain, alt: True }, { ..plain, shift: True }, { ..plain, meta: True }].map(|key| SpecRunner.key_unmodelled(d1, link, key)) == [Bool.False, Bool.True, Bool.True, Bool.True, Bool.True]
 }
@@ -5445,8 +5467,8 @@ expect {
 			probe = pointer_probe({})
 			base = SpecRunner.mount_in(probe, {})
 			(d1, form) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "form", rn: 1, hs: [{ event: "submit", handler: 9, kind: 1, policies: 0 }] })
-			(d2, input) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", rn: 2, attrs: [("type", kind)], hs: [{ event: "click", handler: 3, kind: 1, policies: 0 }] })
-			(d3, submit) = Dom.add_node(d2, { ..Dom.empty_node, tag: "button", rn: 3, attrs: [("type", "submit")] })
+			(d2, input) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", rn: 2, attrs: Dom.attributes([("type", kind)]), hs: [{ event: "click", handler: 3, kind: 1, policies: 0 }] })
+			(d3, submit) = Dom.add_node(d2, { ..Dom.empty_node, tag: "button", rn: 3, attrs: Dom.attributes([("type", "submit")]) })
 			dom = Dom.bind(Dom.bind(Dom.bind(Dom.insert(Dom.insert(Dom.insert(d3, d3.root, form, Err(End)), form, input, Err(End)), form, submit, Err(End)), 1, form), 2, input), 3, submit)
 			after = SpecRunner.press_key(probe, { ..base, dom, focused: input + 1 }, { target: Focused, key: { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False } })?
 			Ok(after.inst.map(|event| event.handler))
@@ -5457,20 +5479,20 @@ expect {
 ## Contenteditable focus belongs to an editing host. Inherited, invalid and
 ## nested editable descendants need tabindex; a false island starts a host.
 expect {
-	(d1, host) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", parent: 1, attrs: [("contenteditable", "TRUE")] })
+	(d1, host) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", parent: 1, attrs: Dom.attributes([("contenteditable", "TRUE")]) })
 	(d2, inherited) = Dom.add_node(d1, { ..Dom.empty_node, tag: "span", parent: host + 1 })
-	(d3, nested) = Dom.add_node(d2, { ..Dom.empty_node, tag: "div", parent: host + 1, attrs: [("contenteditable", "true")] })
-	(d4, invalid) = Dom.add_node(d3, { ..Dom.empty_node, tag: "span", parent: host + 1, attrs: [("contenteditable", "invalid")] })
-	(d5, barrier) = Dom.add_node(d4, { ..Dom.empty_node, tag: "div", parent: host + 1, attrs: [("contenteditable", "false")] })
-	(d6, island) = Dom.add_node(d5, { ..Dom.empty_node, tag: "div", parent: barrier + 1, attrs: [("contenteditable", "plaintext-only")] })
-	(d7, tabbed) = Dom.add_node(d6, { ..Dom.empty_node, tag: "div", parent: host + 1, attrs: [("contenteditable", "true"), ("tabindex", "0")] })
+	(d3, nested) = Dom.add_node(d2, { ..Dom.empty_node, tag: "div", parent: host + 1, attrs: Dom.attributes([("contenteditable", "true")]) })
+	(d4, invalid) = Dom.add_node(d3, { ..Dom.empty_node, tag: "span", parent: host + 1, attrs: Dom.attributes([("contenteditable", "invalid")]) })
+	(d5, barrier) = Dom.add_node(d4, { ..Dom.empty_node, tag: "div", parent: host + 1, attrs: Dom.attributes([("contenteditable", "false")]) })
+	(d6, island) = Dom.add_node(d5, { ..Dom.empty_node, tag: "div", parent: barrier + 1, attrs: Dom.attributes([("contenteditable", "plaintext-only")]) })
+	(d7, tabbed) = Dom.add_node(d6, { ..Dom.empty_node, tag: "div", parent: host + 1, attrs: Dom.attributes([("contenteditable", "true"), ("tabindex", "0")]) })
 	[host, inherited, nested, invalid, barrier, island, tabbed].map(|i| SpecRunner.focusable_in(d7, i)) == [Bool.True, Bool.False, Bool.False, Bool.False, Bool.False, Bool.True, Bool.True]
 }
 
 ## Enter and printable input on an editable host are refused by the same
 ## rule data the browser runner consumes; named inert keys remain available.
 expect {
-	(d1, host) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", attrs: [("contenteditable", "true")] })
+	(d1, host) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", attrs: Dom.attributes([("contenteditable", "true")]) })
 	base = { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False }
 	[base, { ..base, key: "j", code: "KeyJ" }, { ..base, key: "F2", code: "F2" }].map(|key| SpecRunner.key_unmodelled(d1, host, key)) == [Bool.True, Bool.True, Bool.False]
 }
@@ -5516,7 +5538,7 @@ expect {
 expect {
 	program = pointer_probe({})
 	base = SpecRunner.mount_in(program, {})
-	(d1, popover) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: [("popover", "manual")], hs: [{ event: "toggle", handler: 5, kind: 5, policies: 0 }] })
+	(d1, popover) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: Dom.attributes([("popover", "manual")]), hs: [{ event: "toggle", handler: 5, kind: 5, policies: 0 }] })
 	dom = Dom.bind(Dom.insert(d1, d1.root, popover, Err(End)), 1, popover)
 	shown = SpecRunner.change_shown({ ..base, dom }, popover, Popover)
 	hidden = SpecRunner.change_shown(shown, popover, Hidden)
@@ -5586,7 +5608,7 @@ expect {
 expect {
 	program = pointer_probe({})
 	base = SpecRunner.mount_in(program, {})
-	(d1, dialog) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "dialog", attrs: [("popover", "manual")] })
+	(d1, dialog) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "dialog", attrs: Dom.attributes([("popover", "manual")]) })
 	dom = Dom.bind(Dom.insert(d1, d1.root, dialog, Err(End)), 1, dialog)
 	prop = |property, value| SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(property), value)
 	done = SpecRunner.drain_focus(program, SpecRunner.take_batch({ ..base, dom }, base.inst, [0].concat(prop(6, "modal")).concat(prop(7, "false"))))
@@ -5635,7 +5657,7 @@ expect {
 expect {
 	program = pointer_probe({})
 	base = SpecRunner.mount_in(program, {})
-	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: [("aria-label", "List")], hs: [{ event: "scroll", handler: 2, kind: 6, policies: 8 }, { event: "size", handler: 3, kind: 7, policies: 8 }, { event: "seen", handler: 4, kind: 8, policies: 40 }] })
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: Dom.attributes([("aria-label", "List")]), hs: [{ event: "scroll", handler: 2, kind: 6, policies: 8 }, { event: "size", handler: 3, kind: 7, policies: 8 }, { event: "seen", handler: 4, kind: 8, policies: 40 }] })
 	placed = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
 	dom = Dom.observe(Dom.observe(placed, { owner: index, target: index, kind: 7 }), { owner: index, target: index, kind: 8 })
 	start = SpecRunner.one(program, { ..base, dom }, HoldReports)?
@@ -5684,7 +5706,7 @@ expect {
 expect {
 	program = pointer_probe({})
 	base = SpecRunner.mount_in(program, {})
-	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: [("aria-label", "List")], hs: [{ event: "scroll", handler: 2, kind: 1, policies: 0 }, { event: "size", handler: 3, kind: 7, policies: 8 }] })
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: Dom.attributes([("aria-label", "List")]), hs: [{ event: "scroll", handler: 2, kind: 1, policies: 0 }, { event: "size", handler: 3, kind: 7, policies: 8 }] })
 	placed = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
 	dom = Dom.observe(placed, { owner: index, target: index, kind: 7 })
 	held = SpecRunner.one(program, { ..base, dom }, HoldReports)?
@@ -5714,7 +5736,7 @@ expect {
 expect {
 	program = pointer_probe({})
 	base = SpecRunner.mount_in(program, {})
-	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: [("aria-label", "List")] })
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: Dom.attributes([("aria-label", "List")]) })
 	dom = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
 	state = { ..base, dom }
 	spec = Scm.parse("(test \"undeclared\" (setup (initial-media \"dark\" true)) (steps (mark-metrics)))")?
@@ -5798,7 +5820,7 @@ expect {
 
 ## Failed writes share one bounded task FIFO; no subscriber means no retained work.
 expect {
-	initial = { ..SpecRunner.fresh_browser({}), settings: { local_full: True, session_full: False, clipboard_denied: False, max_paste: 4194304 } }
+	initial = { ..SpecRunner.fresh_browser({}), settings: { local_full: True, session_full: False, clipboard_denied: False, max_paste: 4194304, mount_root: Scm.default_mount_root } }
 	subscribed = SpecRunner.absorb(initial, [StorageFailures(1)])
 	full = SpecRunner.absorb(subscribed, List.repeat(Set("draft", "value"), 4096))
 	overflow = SpecRunner.absorb(full, [Set("draft", "another")])
@@ -5860,7 +5882,7 @@ expect {
 ## excludes that span even before the first activation, retaining ordinary buttons.
 expect {
 	base = SpecRunner.fresh(0.U64, SpecRunner.fresh_browser({}))
-	(first, anchor) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "a", attrs: [("href", "/next")] })
+	(first, anchor) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "a", attrs: Dom.attributes([("href", "/next")]) })
 	(second, span) = Dom.add_node(first, { ..Dom.empty_node, tag: "span", hs: [{ event: "click", handler: 0, kind: 1, policies: 0 }] })
 	(third, button) = Dom.add_node(second, { ..Dom.empty_node, tag: "button", hs: [{ event: "click", handler: 1, kind: 1, policies: 0 }] })
 	dom = Dom.insert(Dom.insert(Dom.insert(third, third.root, anchor, Err(End)), anchor, span, Err(End)), third.root, button, Err(End))
@@ -5914,7 +5936,7 @@ expect {
 ## Raw mixed-case text controls use the same fill classification as lowercase;
 ## this does not repair an invalid keyword or change a missing type's default.
 expect {
-	["Text", "EMAIL", "password", "txet", ""].map(|kind| SpecRunner.text_control({ ..Dom.empty_node, tag: "input", attrs: [("type", kind)] })) == [True, True, True, False, True]
+	["Text", "EMAIL", "password", "txet", ""].map(|kind| SpecRunner.text_control({ ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)]) })) == [True, True, True, False, True]
 }
 
 ## The three WHATWG component sets differ: apostrophes stay in path and

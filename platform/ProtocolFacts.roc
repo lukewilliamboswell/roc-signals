@@ -5,7 +5,7 @@ import Protocol
 ## port has a release. It contains metadata only, never command semantics.
 ProtocolFacts := [].{
 
-	## Encode all nine fields in their required order. A field has a byte tag,
+	## Encode all eleven fields in their required order. A field has a byte tag,
 	## a little-endian u32 body length and its body. Counts and UTF-8 lengths
 	## inside each body are u32; codes are u8 except policy bits, which are u32.
 	encode : Protocol.Facts -> List(U8)
@@ -17,9 +17,11 @@ ProtocolFacts := [].{
 			facts.properties.fold(count(facts.properties.len()), |out, row| strings(text(out.append(row.index), row.name), row.elements)),
 			codes(facts.http_cache),
 			codes(facts.http_credentials),
-			strings([], facts.bool_attrs),
+			codes(facts.namespaces),
 			strings([], facts.text_entry_excluded),
 			strings([], facts.fault_classes),
+			codes(facts.template_nodes),
+			codes(facts.child_containers),
 		]
 		var $out = []
 		var $tag = 1.U8
@@ -49,13 +51,15 @@ ProtocolFacts := [].{
 		(properties, s4) = field(s3, 4, |state| rows(state, read_property, 64))?
 		(http_cache, s5) = field(s4, 5, read_codes)?
 		(http_credentials, s6) = field(s5, 6, read_codes)?
-		(bool_attrs, s7) = field(s6, 7, read_names)?
+		(namespaces, s7) = field(s6, 7, read_codes)?
 		(text_entry_excluded, s8) = field(s7, 8, read_names)?
-		(fault_classes, end) = field(s8, 9, read_names)?
+		(fault_classes, s9) = field(s8, 9, read_names)?
+		(template_nodes, s10) = field(s9, 10, read_codes)?
+		(child_containers, end) = field(s10, 11, read_codes)?
 		if end.at != bytes.len() {
 			return Err(TrailingBytes)
 		}
-		facts = { ops, kinds, policies, properties, http_cache, http_credentials, bool_attrs, text_entry_excluded, fault_classes }
+		facts = { ops, kinds, policies, properties, http_cache, http_credentials, namespaces, template_nodes, child_containers, text_entry_excluded, fault_classes }
 		if !valid_facts(facts) {
 			return Err(Malformed)
 		}
@@ -97,7 +101,7 @@ codes = |entries| entries.fold(count(entries.len()), |out, row| text(out.append(
 ## reordered fields cannot be mistaken for another table's contents.
 expect {
 	bytes = ProtocolFacts.encode(Protocol.facts)
-	bytes.first() == Ok(1) and bytes.len() < 65_536 and bytes.take_last(12) == [8, 0, 0, 0, 'e', 'x', 'e', 'c', 'u', 't', 'o', 'r']
+	bytes.first() == Ok(1) and bytes.len() < 65_536 and bytes.take_last(21) == [1, 16, 0, 0, 0, 'T', 'E', 'M', 'P', 'L', 'A', 'T', 'E', '_', 'C', 'O', 'N', 'T', 'E', 'N', 'T']
 }
 
 # The reader carries one bounded immutable slice plus an offset. Each nested
@@ -224,8 +228,11 @@ field = |state, expected, read| {
 unique = |values| values.fold(Dict.empty(), |seen, value| seen.insert(value, {})).len() == values.len()
 
 dense : List(U8) -> Bool
-dense = |numbers| {
-	var $expected = 1.U64
+dense = |numbers| dense_from(numbers, 1)
+
+dense_from : List(U8), U64 -> Bool
+dense_from = |numbers, start| {
+	var $expected = start
 	for code in numbers {
 		if code.to_u64() != $expected {
 			return False
@@ -237,9 +244,9 @@ dense = |numbers| {
 
 valid_facts : Protocol.Facts -> Bool
 valid_facts = |facts| {
-	groups = [facts.ops.map(|row| row.name), facts.kinds.map(|row| row.name), facts.policies.map(|row| row.name), facts.properties.map(|row| row.name), facts.http_cache.map(|row| row.name), facts.http_credentials.map(|row| row.name)]
+	groups = [facts.ops.map(|row| row.name), facts.kinds.map(|row| row.name), facts.policies.map(|row| row.name), facts.properties.map(|row| row.name), facts.http_cache.map(|row| row.name), facts.http_credentials.map(|row| row.name), facts.namespaces.map(|row| row.name), facts.template_nodes.map(|row| row.name), facts.child_containers.map(|row| row.name)]
 	bits = facts.policies.map(|row| row.bit)
-	groups.all(|values| !values.is_empty() and unique(values)) and !facts.fault_classes.is_empty() and dense(facts.ops.map(|row| row.code)) and dense(facts.kinds.map(|row| row.code)) and dense(facts.properties.map(|row| row.index)) and dense(facts.http_cache.map(|row| row.code)) and dense(facts.http_credentials.map(|row| row.code)) and unique(bits) and bits.all(|bit| bit > 0 and bit.bitwise_and(bit - 1) == 0)
+	groups.all(|values| !values.is_empty() and unique(values)) and !facts.fault_classes.is_empty() and dense(facts.ops.map(|row| row.code)) and dense(facts.kinds.map(|row| row.code)) and dense(facts.properties.map(|row| row.index)) and dense(facts.http_cache.map(|row| row.code)) and dense(facts.http_credentials.map(|row| row.code)) and dense_from(facts.namespaces.map(|row| row.code), 0) and dense(facts.template_nodes.map(|row| row.code)) and dense_from(facts.child_containers.map(|row| row.code), 0) and unique(bits) and bits.all(|bit| bit > 0 and bit.bitwise_and(bit - 1) == 0)
 }
 
 expect ProtocolFacts.decode(ProtocolFacts.encode(Protocol.facts)) == Ok(Protocol.facts)
@@ -254,7 +261,7 @@ expect ProtocolFacts.decode([1, 4, 0, 0, 0, 255, 255, 255, 255]) == Err(Malforme
 expect ProtocolFacts.decode([1, 10, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 255]) == Err(InvalidUtf8)
 
 ## A vocabulary cannot overwrite an earlier name when consumers build maps.
-expect ProtocolFacts.decode(ProtocolFacts.encode({ ..Protocol.facts, bool_attrs: ["open", "open"] })) == Err(Malformed)
+expect ProtocolFacts.decode(ProtocolFacts.encode({ ..Protocol.facts, namespaces: [{ code: 0, name: "HTML" }, { code: 1, name: "HTML" }] })) == Err(Malformed)
 
 ## Numbered dispatch tables retain canonical, dense one-based codes.
 expect ProtocolFacts.decode(ProtocolFacts.encode({ ..Protocol.facts, ops: [{ code: 2, name: "INST" }] })) == Err(Malformed)
@@ -263,4 +270,8 @@ expect ProtocolFacts.decode(ProtocolFacts.encode({ ..Protocol.facts, ops: [{ cod
 expect ProtocolFacts.decode(ProtocolFacts.encode({ ..Protocol.facts, policies: [{ bit: 3, name: "PREVENT" }] })) == Err(Malformed)
 
 ## A NUL-bearing spelling cannot enter a browser lookup table.
-expect ProtocolFacts.decode(ProtocolFacts.encode({ ..Protocol.facts, bool_attrs: [Str.from_utf8([111, 0, 112, 101, 110]) ?? crash "fixed UTF-8 name"] })) == Err(Malformed)
+expect ProtocolFacts.decode(ProtocolFacts.encode({ ..Protocol.facts, namespaces: [{ code: 0, name: Str.from_utf8([72, 0, 84, 77, 76]) ?? crash "fixed UTF-8 name" }] })) == Err(Malformed)
+
+## Namespace codes begin at zero while template kinds have a separate dense
+## one-based space. Missing, duplicate or shifted rows fail structurally.
+expect ProtocolFacts.decode(ProtocolFacts.encode({ ..Protocol.facts, namespaces: [{ code: 1, name: "HTML" }] })) == Err(Malformed) and ProtocolFacts.decode(ProtocolFacts.encode({ ..Protocol.facts, template_nodes: [{ code: 0, name: "ELEMENT" }] })) == Err(Malformed)

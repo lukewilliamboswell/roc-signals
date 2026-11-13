@@ -5,7 +5,7 @@ Protocol := [].{
 
 	## A consumer's supported framing version, checked independently of Core.
 	version : U32
-	version = 17
+	version = 18
 
 	## One named byte value; the name carries no executable protocol behavior.
 	Code : { code : U8, name : Str }
@@ -50,6 +50,7 @@ Protocol := [].{
 		{ code: 23, name: "RELEASE" },
 		{ code: 24, name: "TRANSITION" },
 		{ code: 25, name: "GUARD" },
+		{ code: 26, name: "COMMENT" },
 	]
 
 	## Trace labels do not validate commands. A decoder rejects unknown bytes at
@@ -123,10 +124,19 @@ Protocol := [].{
 	http_credentials : List(Code)
 	http_credentials = [{ code: 1, name: "same-origin" }, { code: 2, name: "include" }]
 
-	## This seven-name absence rule is the platform's current convention, not
-	## HTML's complete boolean vocabulary. Parser facts independently check it.
-	bool_attrs : List(Str)
-	bool_attrs = ["disabled", "selected", "readonly", "required", "hidden", "multiple", "open"]
+	## Expanded-name namespace tags. URI carries an explicit nonempty URI;
+	## aliases compare by their resulting URI, never by this compact spelling.
+	namespaces : List(Code)
+	namespaces = [{ code: 0, name: "HTML" }, { code: 1, name: "SVG" }, { code: 2, name: "MATHML" }, { code: 3, name: "NONE" }, { code: 4, name: "URI" }]
+
+	## Template node kinds occupy their own number space, separate from holes.
+	template_nodes : List(Code)
+	template_nodes = [{ code: 1, name: "ELEMENT" }, { code: 2, name: "TEXT" }, { code: 3, name: "COMMENT" }]
+
+	## The explicit destination of an element's child commands and template nodes.
+	## Consumers independently guard the HTML template-only Content destination.
+	child_containers : List(Code)
+	child_containers = [{ code: 0, name: "CHILDREN" }, { code: 1, name: "TEMPLATE_CONTENT" }]
 
 	## OutsideText excludes these input types; this is platform policy. The
 	## parser's separate vocabulary checks that each is an HTML type keyword.
@@ -140,7 +150,7 @@ Protocol := [].{
 
 	## One bounded metadata item appended to the module's declarations. It holds
 	## no app values and supplies no command layout or execution policy.
-	Facts : { ops : List(Code), kinds : List(Kind), policies : List(Policy), properties : List(Property), http_cache : List(Code), http_credentials : List(Code), bool_attrs : List(Str), text_entry_excluded : List(Str), fault_classes : List(Str) }
+	Facts : { ops : List(Code), kinds : List(Kind), policies : List(Policy), properties : List(Property), http_cache : List(Code), http_credentials : List(Code), namespaces : List(Code), template_nodes : List(Code), child_containers : List(Code), text_entry_excluded : List(Str), fault_classes : List(Str) }
 
 	## Consumers build their lookup tables after receiving the complete item.
 	facts : Facts
@@ -151,7 +161,9 @@ Protocol := [].{
 		properties: Protocol.properties,
 		http_cache: Protocol.http_cache,
 		http_credentials: Protocol.http_credentials,
-		bool_attrs: Protocol.bool_attrs,
+		namespaces: Protocol.namespaces,
+		template_nodes: Protocol.template_nodes,
+		child_containers: Protocol.child_containers,
 		text_entry_excluded: Protocol.text_entry_excluded,
 		fault_classes: Protocol.fault_classes,
 	}
@@ -172,7 +184,9 @@ expect [
 	Protocol.properties.map(|row| row.name),
 	Protocol.http_cache.map(|row| row.name),
 	Protocol.http_credentials.map(|row| row.name),
-	Protocol.bool_attrs,
+	Protocol.namespaces.map(|row| row.name),
+	Protocol.template_nodes.map(|row| row.name),
+	Protocol.child_containers.map(|row| row.name),
 	Protocol.text_entry_excluded,
 	Protocol.fault_classes,
 ].concat(Protocol.kinds.map(|row| row.events)).concat(Protocol.properties.map(|row| row.elements)).all(is_unique_names)
@@ -187,3 +201,6 @@ expect {
 ## Empty sets are valid for unrestricted rows; an actual name must be nonempty.
 is_unique_names : List(Str) -> Bool
 is_unique_names = |names| names.all(|name| !name.is_empty()) and names.fold(Dict.empty(), |seen, name| seen.insert(name, {})).len() == names.len()
+
+## Namespace zero is HTML; template node kinds are independently one-based.
+expect Protocol.namespaces.map(|row| row.code) == [0, 1, 2, 3, 4] and Protocol.template_nodes.map(|row| row.code) == [1, 2, 3]
