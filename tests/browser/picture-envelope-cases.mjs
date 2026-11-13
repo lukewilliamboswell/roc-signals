@@ -102,6 +102,20 @@ export function pictureEnvelopeCases(decode) {
   const utf8Data = valid.slice(); const marker = [...new TextEncoder().encode("textarea logical")]; const dataOffset = utf8Data.findIndex((_, i) => marker.every((value, j) => utf8Data[i + j] === value)); utf8Data[dataOffset] = 255; reject("constructed data UTF-8 is strict", utf8Data);
   check("exact configured depth boundary is accepted", decode(valid, { maxDepth: 3 }).physicalCount === 10);
   check("empty picture permits zero node and depth caps", decode(encode(empty), { maxNodes: 0, maxDepth: 0 }).physicalCount === 0);
+  for (const [target, label] of [[3, "constructed text"], [4, "constructed comment"]]) {
+    const rootLeaf = structuredClone(empty); rootLeaf.logical = [[target, 0, 0, "leaf"]];
+    reject(`${label} under Mount exceeds depth zero`, encode(rootLeaf), { maxDepth: 0 });
+    check(`${label} under Mount fits depth one`, decode(encode(rootLeaf), { maxDepth: 1 }).logical.length === 1);
+    const nested = structuredClone(control); nested.logical[1][0] = target;
+    reject(`${label} below a depth-one element exceeds depth one`, encode(nested), { maxDepth: 1 });
+    check(`${label} below a depth-one element fits depth two`, decode(encode(nested), { maxDepth: 2 }).logical.length === 2);
+  }
+  const omittedRoot = structuredClone(empty); omittedRoot.logical = [[2, 0, 0]]; omittedRoot.runs = [[0, 0, null, [[0, 0]]]];
+  reject("omitted zero text under Mount exceeds depth zero", encode(omittedRoot), { maxDepth: 0 });
+  check("omitted zero text under Mount fits depth one", decode(encode(omittedRoot), { maxDepth: 1 }).logical.length === 1);
+  const omittedNested = structuredClone(control); omittedNested.logical[1] = [2, 0, 0]; omittedNested.runs = [[1, 0, null, [[1, 0]]]]; omittedNested.scaffolds = [];
+  reject("omitted zero text below a depth-one element exceeds depth one", encode(omittedNested), { maxDepth: 1 });
+  check("omitted zero text below a depth-one element fits depth two", decode(encode(omittedNested), { maxDepth: 2 }).logical.length === 2);
   reject("bounded depth", valid, { maxDepth: 2 });
   reject("bounded nodes", valid, { maxNodes: 9 });
   reject("bounded envelope bytes", valid, { maxBytes: valid.length - 1 });

@@ -5907,6 +5907,14 @@ export function decodePictureEnvelope(bytes, limits = {}) {
   }
   for (let i = 1; i < containers.length; i++) if (kinds[containers[i].owner] !== 1) fail("container owner is not an element");
   for (const scaffold of scaffolds) if (kinds[scaffold.owner] !== 1) fail("scaffold owner is not an element");
+  // Empty/constructed leaves need not occupy a physical node. They still add
+  // one level beneath their declared owner in the final logical tree.
+  for (const entry of logical) {
+    if (entry.target < 2) continue;
+    const owner = containers[entry.target === 2 ? runs[entry.run].container : entry.container].owner;
+    const depth = owner === 0xffffffff ? 1 : depths[owner] + 1;
+    if (depth > settings.maxDepth) fail("logical depth limit");
+  }
   return { root, batch_bytes, mountFingerprint, expectedDigest, physicalCount, containers, logical, runs, bindings, scaffolds };
 }
 
