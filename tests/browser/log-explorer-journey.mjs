@@ -18,6 +18,9 @@
 //    page's memory must not grow by the file, the worker's must stay below
 //    the file's size (it keeps the index, not the text), and the page's
 //    thread must stay live.
+//    The log exceeds the viewer's spacer cap: Last reaches the final line
+//    and greatest scroll offset, a jump asks for one window despite its
+//    scroll echo, and native scrolling survives leaving and returning.
 // 2. A new file prepares afresh, and the first file's state is let go.
 // 3. A file the browser can no longer read, and a file that is not a log,
 //    each reach the page as the preparation's error, which the app matched;
@@ -125,6 +128,12 @@ function install() {
       tick();
     });
   window.__answer = (id, prefix) => window.__until(() => (window.__text(id) ?? "").startsWith(prefix) && window.__text(id), `${id} ${prefix}`);
+  // Let native scroll reports and their resulting paint finish before
+  // counting jobs. An answer alone would miss a later jump echo.
+  window.__paint = async () => {
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  };
   // The finished jobs, in order: [task, prepared or reused, instance].
   window.__jobs = () =>
     window.__rt.monitor
@@ -264,6 +273,42 @@ const BIG = 64 * MIB + 1;
     window.__click("Last");
     const last = await window.__answer("viewer-status", `Lines ${(made.lines - capacity + 1).toLocaleString("en-US")}–`);
     const viewed = performance.now() - t;
+    await window.__paint();
+    const tail = {
+      spacer: viewport.scrollHeight,
+      top: viewport.scrollTop,
+      greatest: viewport.scrollHeight - viewport.clientHeight,
+      finalLine: !!viewport.querySelector(`[data-testid="line-${made.lines}"]`),
+    };
+    const windowIssues = () => window.__events.filter((e) => e.kind === "job-issue" && window.__taskOf(e) === `${TASK}window`).length;
+    const jumpLine = 123457;
+    const beforeJump = windowIssues();
+    const input = window.__root.querySelector('[aria-label="Go to line"]');
+    input.value = String(jumpLine);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    const jumped = await window.__answer("viewer-status", `Lines ${jumpLine.toLocaleString("en-US")}–`);
+    await window.__paint();
+    const jump = {
+      line: jumpLine,
+      answer: jumped,
+      firstDrawn: !!viewport.querySelector(`[data-testid="line-${jumpLine}"]`),
+      issues: windowIssues() - beforeJump,
+      top: viewport.scrollTop,
+    };
+    // Move the native scrollbar, letting Chrome deliver the real scroll
+    // event rather than synthesising an event payload for the app.
+    const manualTop = Math.floor(tail.greatest * 0.625);
+    viewport.scrollTop = manualTop;
+    const manualFirst = Math.round(manualTop / tail.greatest * (made.lines - capacity));
+    const scrolled = await window.__answer("viewer-status", `Lines ${(manualFirst + 1).toLocaleString("en-US")}–`);
+    await window.__paint();
+    const scroll = { answer: scrolled, first: manualFirst + 1, top: viewport.scrollTop };
+    window.__click("Overview");
+    const beforeReturn = windowIssues();
+    window.__click("Viewer");
+    const returned = await window.__answer("viewer-status", `Lines ${(manualFirst + 1).toLocaleString("en-US")}–`);
+    await window.__paint();
+    const restored = { answer: returned, top: window.__root.querySelector('[data-testid="viewer-viewport"]').scrollTop, issues: windowIssues() - beforeReturn };
     // The overview was asked once, above the tabs: going back asks nothing.
     // A click on its chart opens the viewer at that minute's first line.
     window.__click("Overview");
@@ -271,7 +316,8 @@ const BIG = 64 * MIB + 1;
     window.__pick("2026-11-11 08:03");
     const picked = await window.__answer("viewer-status", `Lines ${made.minuteLines[3].toLocaleString("en-US")}–`);
     const issuedByPick = window.__events.filter((e) => e.kind === "job-issue").length - issuedBefore;
-    await window.__until(() => window.__rt.monitor.snapshot().jobs.done === 7, "the viewer at the picked minute");
+    await window.__until(() => window.__rt.monitor.snapshot().jobs.done >= 10, "the viewer at the picked minute");
+    await window.__paint();
     const longest = stop();
     const s = rt.monitor.snapshot();
     const superseded = s.recent.find((x) => x.id === started.id);
@@ -285,6 +331,10 @@ const BIG = 64 * MIB + 1;
       matched,
       capacity,
       rowHeight,
+      tail,
+      jump,
+      scroll,
+      restored,
       issuedByPick,
       prepareShown: { text: prepareShown, ms: rec("overview")[0].prepareMs },
       jobs: window.__jobs(),
@@ -294,7 +344,7 @@ const BIG = 64 * MIB + 1;
         prepareWall: prepared,
         prepare: rec("overview")[0].prepareMs,
         overviewTask: rec("overview")[0].ms.compute,
-        pickTotal: rec("window")[2].ms.total,
+        pickTotal: rec("window")[5].ms.total,
         searchWall: searched,
         searchCompute: rec("search")[1].ms.compute,
         viewerWall: viewed,
@@ -307,6 +357,7 @@ const BIG = 64 * MIB + 1;
   }, TASK);
   const { made } = r;
   const n = (x) => x.toLocaleString("en-US");
+  check("the generated log exceeds the 400,000-line spacer cap", made.lines > 400000, true);
   check(`a ${(made.size / MIB).toFixed(1)} MiB log: the overview counts what the generator wrote`, [r.answers.overview.split(", from")[0], r.answers.errors], [`${n(made.lines)} lines, ${n(made.entries)} entries`, n(made.errors)]);
   check("a listing, two searches and the last page of the viewer answer from the prepared index", [r.answers.listing, r.answers.search, r.answers.again, r.answers.last], [
     `${n(made.lines)} matching lines, page 1 of ${n(Math.ceil(made.lines / 25))}.`,
@@ -315,6 +366,9 @@ const BIG = 64 * MIB + 1;
     `Lines ${n(made.lines - r.capacity + 1)}–${n(made.lines)} of ${n(made.lines)}.`,
   ]);
   check("the viewer draws the fixed height its observed capacity assumes", r.rowHeight, 20);
+  check("Last reaches the final line and greatest offset of the capped spacer", [r.tail.spacer, r.tail.finalLine, r.tail.top], [8000000, true, r.tail.greatest]);
+  check("Go to line preserves its exact line and asks for one window despite its scroll echo", [r.jump.answer, r.jump.firstDrawn, r.jump.issues, r.jump.top > 0 && r.jump.top < r.tail.greatest], [`Lines ${n(r.jump.line)}–${n(r.jump.line + r.capacity - 1)} of ${n(made.lines)}.`, true, 1, true]);
+  check("native scrolling changes the window and returning to Viewer restores its offset", [r.scroll.answer, r.scroll.top !== r.jump.top, r.restored], [`Lines ${n(r.scroll.first)}–${n(r.scroll.first + r.capacity - 1)} of ${n(made.lines)}.`, true, { answer: r.scroll.answer, top: r.scroll.top, issues: 1 }]);
   const holder = r.jobs[0][2];
   check("the log is prepared once: every later question reuses the state on the worker that holds it", r.jobs, [
     ["overview", "prepare", holder],
@@ -324,12 +378,15 @@ const BIG = 64 * MIB + 1;
     ["window", "reuse", holder],
     ["window", "reuse", holder],
     ["window", "reuse", holder],
+    ["window", "reuse", holder],
+    ["window", "reuse", holder],
+    ["window", "reuse", holder],
   ]);
   check("the timeline counts every error a minute, and a search's matches a minute, from the index", [r.timeline.errors, r.timeline.points, r.matched.matches], [made.errors, made.minuteLines, made.resets]);
   check("a click on the timeline opens the viewer at that minute's first line, asking only the viewer's task", [r.answers.picked.split("–")[0], r.issuedByPick], [`Lines ${n(made.line3)}`, 1]);
   const shownMs = Math.round(r.prepareShown.ms).toLocaleString("en-US");
   check("the example's timings element shows the preparation's time the monitor recorded", r.prepareShown.text.includes(`${r.prepareShown.ms < 10 ? r.prepareShown.ms.toFixed(1) : shownMs} ms`), true);
-  check("the superseded search finished (on_cancel: Finish) and no worker was ended by a cancel", [r.superseded, r.counts], [{ outcome: "cancelled", finished: true }, { prepared: 1, reused: 6, endedByCancel: 0 }]);
+  check("the superseded search finished (on_cancel: Finish) and no worker was ended by a cancel", [r.superseded, r.counts], [{ outcome: "cancelled", finished: true }, { prepared: 1, reused: 9, endedByCancel: 0 }]);
   check("the page's memory does not hold the file (grows by less than 4 MiB)", r.page.memAfter - r.page.memBefore < 4 * MIB && r.page.liveAfter - r.page.liveBefore < 4 * MIB, true);
   check("the holder keeps the index, not the text (its memory is below the file's size)", r.worker.peak < made.size, true);
   // Relative to the preparation the run measured, so a loaded machine
