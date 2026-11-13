@@ -1320,7 +1320,7 @@ Core := [].{
 				q = (props.query.read)(env)
 				window = (props.window.read)(env)
 				rows = get(env)
-				view = View.build(rows, { query: (props.plan)(q), window, limit: view_chunk })
+				view = View.build(rows, { query: (props.plan)(q), window, limit: view_chunk, site: show_path(args.path) })
 				# The query, the window, and one placement for every row of the table.
 				(cols, slots, tx4) = view_enter(cfg, cols_empty(plan.ncols, plan.holes.len()), |_, key| Row.{ outer: env, key: "", item: key }, view.shown_keys(), count_evals(tx3, 2 + rows.len()))
 				reads = cell_bit(source.cell).bitwise_or(eff_mask(props.query)).bitwise_or(eff_mask(props.window)).bitwise_or(outer_mask).bitwise_or(plan.kreads.bitwise_and(above_bits(depth)))
@@ -6890,7 +6890,7 @@ view_check : EachCfg(Row(ctx, k), {}), Shows(ctx, q, k, v, s), q, View(k, v, s),
 view_check = |cfg, shows, q, view, cols, table, env| {
 	asked = (shows.query.read)(env)
 	window = (shows.window.read)(env)
-	fresh = View.build(table, { query: (shows.plan)(asked), window, limit: view_chunk })
+	fresh = View.build(table, { query: (shows.plan)(asked), window, limit: view_chunk, site: show_path(cfg.path) })
 	drawn = cols.order.map(|slot| cols.items.get(slot.to_u64()) ?? crash "internal: a view row without its key")
 	drift =
 		if !TableCore.is_ready(table) {

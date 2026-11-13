@@ -30,7 +30,7 @@ const fixtures = [
   ["popover-duplicate", ["one static popover", "site"]],
   ["popover-dynamic-popover", ["one static popover", "site"]],
   ["media-undeclared", ["missing-media", "site"]],
-  ["table-order-same", ["two rows of a table view compare Same", "total"]],
+  ["table-order-same", ["two rows of a table view compare Same", "total", "site /0"]],
   ["signal-text-manual-arity", ["Signal.from_interpolation", "parts", "segments"]],
   ["keep-current-subscription", ["keep_current", "subscription", "site"]],
   ["interval-zero", ["Interval(0) has no period"]],

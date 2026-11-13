@@ -81,6 +81,7 @@ Checks := [].{
 			{ name: "port-record-duplicate", expectation: ConstantCrash({ at: "registrations = Port.registrations(ports)", rules: ["port \"test/duplicate\" is declared twice"] }) },
 			{ name: "port-module-duplicate", expectation: ConstantCrash({ at: "main = program", rules: ["port \"test/across-modules\" is declared twice"] }) },
 			{ name: "port-record-data", expectation: ConstantCrash({ at: "registrations = Port.registrations(ports)", rules: ["Port.registrations: field \"actions.label\" is not a port"] }) },
+			{ name: "mount-table-order-same", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two rows of a table view compare Same", "site /0"] }) },
 			{ name: "mount-table-key", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two rows have the same key"] }) },
 			{ name: "mount-two-handlers", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two handlers", "site /0", "Save"] }) },
 			{ name: "mount-empty-row-handlers", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two handlers", "row template", "site /0"] }) },

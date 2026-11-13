@@ -26,6 +26,7 @@ import TableCore exposing [Table]
 ## different rows, so a sort value includes the key when the sorted field can
 ## tie. Two rows comparing `Same` is a contract error.
 View(k, v, s) :: {
+	site : Str,
 	query : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] },
 	seq : Seq(k, s),
 	window : { start : U64, count : U64 },
@@ -35,11 +36,12 @@ View(k, v, s) :: {
 
 	## Build a view from scratch, in the size of the table: a pass to filter
 	## and a sort of what is kept. `limit` is the chunk size of the ordered
-	## keys (see `Seq`).
-	build : Table(k, v), { query : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }, window : { start : U64, count : U64 }, limit : U64 } -> View(k, v, s)
-	build = |table, { query, window, limit }| {
-		seq = scratch(table, query, limit)
-		{ query, seq, window, shown: seq.slice(window), version: TableCore.version(table) }
+	## keys (see `Seq`). The construction site is retained only for contract
+	## diagnostics, so rebuilds and incremental insertions name the same site.
+	build : Table(k, v), { query : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }, window : { start : U64, count : U64 }, limit : U64, site : Str } -> View(k, v, s)
+	build = |table, { query, window, limit, site }| {
+		seq = scratch(table, query, limit, site)
+		{ site, query, seq, window, shown: seq.slice(window), version: TableCore.version(table) }
 	}
 
 	## Bring the ordered keys up to date with the table, leaving the rows
@@ -101,10 +103,10 @@ View(k, v, s) :: {
 		if view.version != TableCore.version(table) {
 			crash "View.draw: follow the table before drawing the view"
 		} else {
-			{ query: held, seq: old_seq, shown, version, .. } = view
+			{ site, query: held, seq: old_seq, shown, version, .. } = view
 			(query, seq) = match asked {
 				Same => (held, old_seq)
-				New(next) => (next, scratch(table, next, old_seq.limit_of()))
+				New(next) => (next, scratch(table, next, old_seq.limit_of(), site))
 			}
 			next_shown = seq.slice(window)
 			changes = match wrote {
@@ -112,7 +114,7 @@ View(k, v, s) :: {
 				Rows(record) => window_changes(shown.map(|e| e.key), next_shown.map(|e| e.key), |key| record.contains(key))
 				EveryRow => window_changes(shown.map(|e| e.key), next_shown.map(|e| e.key), |_| True)
 			}
-			{ view: { query, seq, window, shown: next_shown, version }, changes }
+			{ view: { site, query, seq, window, shown: next_shown, version }, changes }
 		}
 
 	## The rows just before and just after `key` in the view, as their keys and
@@ -199,8 +201,8 @@ place = |keys, key, before| match before {
 }
 
 ## The ordered entries of the rows that pass the query's filter.
-scratch : Table(k, v), { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }, U64 -> Seq(k, s)
-scratch = |table, { keep, sort, compare }, limit| {
+scratch : Table(k, v), { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }, U64, Str -> Seq(k, s)
+scratch = |table, { keep, sort, compare }, limit, site| {
 	kept = table.fold(
 		List.with_capacity(table.len()),
 		|acc, key, row| if (keep(key, row)) acc.append({ sort: sort(key, row), key }) else acc,
@@ -213,7 +215,7 @@ scratch = |table, { keep, sort, compare }, limit| {
 			_ => crash "View.scratch: index"
 		}
 		if tie {
-			crash "contract: two rows of a table view compare Same; a table view's order must be total, so its sort value must break ties by key"
+			crash "contract: two rows of a table view compare Same; a table view's order must be total, so its sort value must break ties by key at site ${site}"
 		} else {
 			{}
 		}
@@ -226,14 +228,14 @@ scratch = |table, { keep, sort, compare }, limit| {
 ## version. The rows drawn are left as they were.
 resorted : View(k, v, s), Table(k, v) -> View(k, v, s)
 resorted = |view, table| {
-	{ query, seq: old_seq, window, shown, .. } = view
-	{ query, seq: scratch(table, query, old_seq.limit_of()), window, shown, version: TableCore.version(table) }
+	{ site, query, seq: old_seq, window, shown, .. } = view
+	{ site, query, seq: scratch(table, query, old_seq.limit_of(), site), window, shown, version: TableCore.version(table) }
 }
 
 absorb : View(k, v, s), Table(k, v), Dict(k, [Absent, Was(v)]) -> { view : View(k, v, s), reached : Bool, touched : List(k), placed : U64 }
 	where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 absorb = |view, table, record| {
-	{ query, seq, window, shown, .. } = view
+	{ site, query, seq, window, shown, .. } = view
 	{ keep, sort, compare } = query
 	full = shown.len() >= window.count
 	first = shown.first()
@@ -270,19 +272,19 @@ absorb = |view, table, record| {
 						{ seq: acc.seq, moved: acc.moved, touched: if (in_window(b)) acc.touched.append(key) else acc.touched, placed: count }
 					} else {
 						{
-							seq: acc.seq.remove(a, compare).insert({ sort: b, key }, compare),
+							seq: acc.seq.remove(a, compare).insert({ sort: b, key }, compare, site),
 							moved: acc.moved or reaches_window(a) or reaches_window(b),
 							touched: acc.touched,
 							placed: count,
 						}
 					}
 				(Placed(a), Out) => { seq: acc.seq.remove(a, compare), moved: acc.moved or reaches_window(a), touched: acc.touched, placed: count }
-				(Out, Placed(b)) => { seq: acc.seq.insert({ sort: b, key }, compare), moved: acc.moved or reaches_window(b), touched: acc.touched, placed: count }
+				(Out, Placed(b)) => { seq: acc.seq.insert({ sort: b, key }, compare, site), moved: acc.moved or reaches_window(b), touched: acc.touched, placed: count }
 				(Out, Out) => { seq: acc.seq, moved: acc.moved, touched: acc.touched, placed: count }
 			}
 		},
 	)
-	{ view: { query, seq: step.seq, window, shown, version: TableCore.version(table) }, reached: step.moved, touched: if (step.moved) [] else step.touched, placed: step.placed }
+	{ view: { site, query, seq: step.seq, window, shown, version: TableCore.version(table) }, reached: step.moved, touched: if (step.moved) [] else step.touched, placed: step.placed }
 }
 
 ## The changes that turn the window `old` into `new`: `Left` for rows that
@@ -408,7 +410,7 @@ expect {
 ## it again.
 expect {
 	table = Table.from_list(numbered(10, 20))
-	view = View.build(table, { query: by_key(U64.highest), window: { start: 0, count: 4 }, limit: 8 })
+	view = View.build(table, { query: by_key(U64.highest), window: { start: 0, count: 4 }, limit: 8, site: "view expect" })
 	written = table.insert(5, 5)
 	followed = view.follow(written)
 	once = followed.view.draw(written, { query: Same, window: { start: 1, count: 4 }, wrote: followed.wrote })
@@ -426,7 +428,7 @@ expect {
 ## the table. Changes large next to the table cause a rebuild.
 expect {
 	table = Table.from_list(numbered(0, 200))
-	view = View.build(table, { query: by_key(10), window: { start: 0, count: U64.highest }, limit: 8 })
+	view = View.build(table, { query: by_key(10), window: { start: 0, count: U64.highest }, limit: 8, site: "view expect" })
 	few = numbered(0, 10).fold(table, |acc, { key, row }| acc.put(key, row + 1))
 	many = numbered(0, 40).fold(table, |acc, { key, row }| acc.put(key, row + 1))
 	absorbed = view.follow(few)
