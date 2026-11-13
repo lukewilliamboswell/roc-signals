@@ -1,4 +1,5 @@
 (test "Typed controls deliver checked bits and current keyed choices"
+  (setup (initial-location "/#typed-controls"))
   (steps
     (expect-text (test-id "typed-checked") "unchecked:0")
     (check (label "Typed checkbox"))

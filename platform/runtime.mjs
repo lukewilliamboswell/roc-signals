@@ -995,7 +995,7 @@ const PAYLOAD_APPLIERS = {
     payload(event) {
       const element = event.target;
       if (event.type === "change") {
-        if (element.tagName !== "INPUT" || !["checkbox", "radio"].includes(element.type)) return null;
+        if (element.namespaceURI !== "http://www.w3.org/1999/xhtml" || element.tagName !== "INPUT" || !["checkbox", "radio"].includes(element.type)) return null;
         return new Uint8Array([element.checked ? 1 : 0]);
       }
       if (event.type === "close") {

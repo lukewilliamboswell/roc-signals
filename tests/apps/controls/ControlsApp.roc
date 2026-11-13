@@ -197,14 +197,13 @@ ControlsApp := [].{
 			Engine.element("p", [Engine.test_id("state")], [Engine.text_s(st.signal().map(|s| "${s.plain}|${s.upper}"))]),
 			Engine.element("pre", [Engine.test_id("log")], [Engine.text_s(st.signal().map(|s| Str.join_with(s.log, "|")))]),
 			ControlsApp.properties({}),
-			TypedControlsApp.view({}),
 		],
 	)
 
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner, and `fuzz-controls.roc` drives as a roc-fuzz target.
 	program : Engine.Program
-	program = Engine.program_boot({}, |boot| if (boot.url.ends_with("#rendering")) RenderingApp.view({}) else if (boot.url.ends_with("#raw-input")) RawInputApp.view({}) else if (boot.url.ends_with("#pointer")) PointerApp.view({}) else if (boot.url.ends_with("#top-layer")) TopLayerApp.view({}) else ControlsApp.main({}))
+	program = Engine.program_boot({}, |boot| if (boot.url.ends_with("#typed-controls")) TypedControlsApp.view({}) else if (boot.url.ends_with("#rendering")) RenderingApp.view({}) else if (boot.url.ends_with("#raw-input")) RawInputApp.view({}) else if (boot.url.ends_with("#pointer")) PointerApp.view({}) else if (boot.url.ends_with("#top-layer")) TopLayerApp.view({}) else ControlsApp.main({}))
 
 	main : {} -> Elem(Root)
 	main = |_| Engine.state({ plain: "hello world", upper: "", log: [], ask: { serial: 0, req: None }, rows: [], twice: Neither }, |st| ControlsApp.view(st))

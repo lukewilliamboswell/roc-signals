@@ -764,7 +764,7 @@ for (const mode of ["initial", "changed"]) {
 }
 
 {
-  const { page, ctx } = await open();
+  const { page, ctx } = await open("#typed-controls");
   const got = await page.evaluate(() => {
     const rt = window.__rt;
     const checkbox = document.querySelector('[aria-label="Typed checkbox"]');
@@ -781,6 +781,13 @@ for (const mode of ["initial", "changed"]) {
     radio.checked = true;
     radio.dispatchEvent(new Event("change", { bubbles: true }));
     text.dispatchEvent(new Event("change", { bubbles: true }));
+    const forged = document.createElementNS("http://www.w3.org/2000/svg", "INPUT");
+    forged.type = "radio";
+    forged.checked = true;
+    forged.__rn = checkbox.__rn;
+    forged.__h = { change: declaration };
+    checkbox.parentNode.append(forged);
+    forged.dispatchEvent(new Event("change", { bubbles: true }));
     rt.deliver = deliver;
     return { declaration: [declaration.kind, declaration.policies], calls };
   });
