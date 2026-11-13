@@ -5615,6 +5615,7 @@ RHole(ctx) : { is_observation : Bool, evaluated : Bool, kind : U8, mask : U128, 
 
 Plan(ctx) : {
 	tree : List(U8),
+	node_kinds : PictureCapture.NodeKinds,
 	htab : List(U8),
 	holes : List(RHole(ctx)),
 	handlers : List(RoutedHandler(ctx)),
@@ -5624,7 +5625,7 @@ Plan(ctx) : {
 }
 
 plan_empty : {} -> Plan(ctx)
-plan_empty = |_| { tree: [], htab: [], holes: [], handlers: [], mounts: [], ncols: 0, kreads: 0 }
+plan_empty = |_| { tree: [], node_kinds: PictureCapture.empty_nodes, htab: [], holes: [], handlers: [], mounts: [], ncols: 0, kreads: 0 }
 
 put_path : List(U8), U8, List({ container : U8, index : U8 }) -> List(U8)
 put_path = |buf, kind, path| path.fold(buf.append(kind).append(narrow(path.len(), "nesting depth of a hole")), |out, step| out.append(step.container).append(step.index))
@@ -5635,7 +5636,7 @@ narrow : U64, Str -> U8
 narrow = |n, what| if (n > 255) crash "resource_limit: a row template's ${what} is ${n.to_str()}; the template encoding allows at most 255" else n.to_u8_wrap()
 
 val_hole : Plan(ctx), { kind : U8, value : Signal(ctx, [Absent, Present(Str)]), extra : List(U8), counter : U64, evaluated : Bool } -> Plan(ctx)
-val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, value: v, extra, counter, evaluated }| {
+val_hole = |{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads }, { kind, value: v, extra, counter, evaluated }| {
 	{ mask, read, sel } = v
 	(smask, skey) = match sel {
 		NoSel => (0, |_| "")
@@ -5644,7 +5645,7 @@ val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, valu
 	property = if (kind == 6) extra.last() ?? crash "internal: property row has an index" else 0
 	live = mask.bitwise_or(smask) != 0 or property == 6 or property == 7
 	hole = { is_observation: False, evaluated, kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else counter, value_control: kind == 5 and counter == 1, property }
-	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
+	{ tree, node_kinds, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
 }
 
 compile_elem : Plan(ctx), Elem(ctx), List({ container : U8, index : U8 }), U64, List(U32), Str, Enclosing -> Plan(ctx)
@@ -5667,7 +5668,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 			}
 			nstatic = $nstatic
 			var $p = plan
-			{ tree, htab, holes, handlers, mounts, ncols, kreads } = $p
+			{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads } = $p
 			var $tree = put_element_name(tree.append(1), tag).append(container).append(narrow(nstatic, "static attributes on one element"))
 			var $htab = htab
 			var $holes = holes
@@ -5680,19 +5681,19 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 						$tree = put_str(put_attribute_name($tree, resolve_attribute(name, tag)), value)
 					}
 					Dyn(name, v) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 2, value: v, extra: put_attribute_name(put_path([], 2, path), resolve_attribute(name, tag)), counter: 0, evaluated: True })
+						r = val_hole({ tree: [], node_kinds: PictureCapture.empty_nodes, htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 2, value: v, extra: put_attribute_name(put_path([], 2, path), resolve_attribute(name, tag)), counter: 0, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
 					}
 					Property(index, encoded) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: Core.const(Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: False })
+						r = val_hole({ tree: [], node_kinds: PictureCapture.empty_nodes, htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: Core.const(Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: False })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
 					}
 					PropertyV(index, value) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: value.map(|encoded| Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: True })
+						r = val_hole({ tree: [], node_kinds: PictureCapture.empty_nodes, htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: value.map(|encoded| Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
@@ -5704,7 +5705,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 						$handlers = $handlers.append(bound)
 					}
 					Ref(value) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 5, value: value.map(|encoded| Present(encoded)), extra: put_path([], 5, path), counter: if (value_control) 1 else 0, evaluated: True })
+						r = val_hole({ tree: [], node_kinds: PictureCapture.empty_nodes, htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 5, value: value.map(|encoded| Present(encoded)), extra: put_path([], 5, path), counter: if (value_control) 1 else 0, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
@@ -5712,7 +5713,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 				}
 			}
 			$tree = $tree.append(narrow(kids.len(), "children of one element"))
-			$p = { tree: $tree, htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads }
+			$p = { tree: $tree, node_kinds: PictureCapture.add_node(node_kinds, Element), htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads }
 			var $i = 0.U8
 			for kid in kids {
 				$p = compile_elem($p, kid, path.append({ container, index: $i }), depth, site, placed, children_context)
@@ -5726,26 +5727,27 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 		}
 		Comment(value) => {
 			check_construction_text(enclosing.construction, { value: "", site, placement: "${placed} (comment)" })
-			{ ..plan, tree: put_str(plan.tree.append(3), value) }
+			{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads } = plan
+			{ tree: put_str(tree.append(3), value), node_kinds: PictureCapture.add_node(node_kinds, Comment), htab, holes, handlers, mounts, ncols, kreads }
 		}
 		Fragment(_) => crash "internal: a fragment is only a dynamic branch, never a row template node"
 		Text(s) => {
 			check_construction_text(enclosing.construction, { value: s, site, placement: placed })
-			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
-			{ tree: put_str(tree.append(2), s), htab, holes, handlers, mounts, ncols, kreads }
+			{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads } = plan
+			{ tree: put_str(tree.append(2), s), node_kinds: PictureCapture.add_node(node_kinds, Text), htab, holes, handlers, mounts, ncols, kreads }
 		}
 		TextV(v) => {
 			check_construction_text(enclosing.construction, { value: "", site, placement: placed })
 			checked = checked_text_read(v.read, { context: enclosing.construction, site, placement: placed })
-			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
+			{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads } = plan
 			t2 = put_str(tree.append(2), "")
-			val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads }, { kind: 1, value: { ..v.map(|encoded| Present(encoded)), read: |context| Present(checked(context)) }, extra: put_path([], 1, path), counter: 0, evaluated: True })
+			val_hole({ tree: t2, node_kinds: PictureCapture.add_node(node_kinds, Text), htab, holes, handlers, mounts, ncols, kreads }, { kind: 1, value: { ..v.map(|encoded| Present(encoded)), read: |context| Present(checked(context)) }, extra: put_path([], 1, path), counter: 0, evaluated: True })
 		}
 		Site(m, rf) => {
 			check_construction_text(enclosing.construction, { value: "", site, placement: "${placed} (nested site anchor)" })
-			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
+			{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads } = plan
 			hole = { is_observation: False, evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0, value_control: False, property: 0 }
-			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(mount_in_context(m, enclosing)), ncols, kreads: kreads.bitwise_or(rf(depth)) }
+			{ tree: put_str(tree.append(2), ""), node_kinds: PictureCapture.add_node(node_kinds, Text), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(mount_in_context(m, enclosing)), ncols, kreads: kreads.bitwise_or(rf(depth)) }
 		}
 	}
 }
@@ -6169,7 +6171,7 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 			if !PictureCapture.is_collecting(capture) {
 				return capture
 			}
-			var $capture = PictureCapture.command(capture, { at: command_at, end: $c.len(), opcode: 1, address: node, slot: cfg.site })
+			var $capture = PictureCapture.nodes(PictureCapture.command(capture, { at: command_at, end: $c.len(), opcode: 1, address: node, slot: cfg.site }), { at: command_at, end: $c.len(), row: node, kinds: cfg.plan.node_kinds })
 			var $hole = 0.U32
 			var $reference = cfg.plan.mounts.len()
 			for hole in cfg.plan.holes {
@@ -11948,7 +11950,7 @@ expect {
 	).with_ports([Core.port_declaration("test/command", Command), Core.port_declaration("test/call", Call), Core.port_declaration("test/subscription", Subscription(Latest))])
 	picture = Core.init_picture(program, [])
 	frames = picture.capture?
-	commands = frames.keep_if(|frame| frame.opcode != 0 and frame.opcode != 255)
+	commands = frames.keep_if(|frame| frame.opcode != 0 and frame.opcode != 254 and frame.opcode != 255)
 	var $end = 1.U32
 	var $matches = True
 	for frame in commands {

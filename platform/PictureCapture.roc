@@ -9,7 +9,8 @@ PictureCapture :: [].{
 	max_records = 262144
 
 	## A command's original boundary and its fixed-prefix address. Opcode zero
-	## denotes a secondary INST alias;255 describes a row hole without giving it
+	## denotes a secondary INST alias;254 describes a compiled node and255 a row
+	## hole without giving either
 	## a new address. Both carry the INST boundary, hole index and exact kind.
 	Frame : { at : U32, end : U32, opcode : U8, address : U32, slot : U32, kind : U8 }
 
@@ -91,6 +92,54 @@ PictureCapture :: [].{
 			Refused(InvalidBoundary)
 		} else {
 			append(Collecting(parts), { at: target.at.to_u32_wrap(), end: target.end.to_u32_wrap(), opcode: 255, address: target.row, slot: target.index, kind: target.kind })
+		}
+	}
+
+	## Compiled node kinds are immutable template facts, never instance storage.
+	## An oversized template drops this optional description instead of changing
+	## ordinary compilation or retaining an unbounded capture-only list.
+	NodeKind : [Element, Text, Comment]
+	NodeKinds :: [Kinds(List(NodeKind)), TooMany]
+	## A fresh template starts with no compiled node facts.
+	empty_nodes : NodeKinds
+	empty_nodes = Kinds([])
+
+	## Stop retaining optional compile facts at the shared protocol ceiling;
+	## the overflow marker later refuses capture without refusing ordinary UI.
+	add_node : NodeKinds, NodeKind -> NodeKinds
+	add_node = |nodes, kind| match nodes {
+		TooMany => TooMany
+		Kinds(kinds) => if kinds.len() >= PictureCapture.max_records {
+			TooMany
+		} else {
+			Kinds(kinds.append(kind))
+		}
+	}
+
+	## Opcode254 is internal metadata for every original template node, in
+	## preorder including the row root. Intrinsic Content fragments have no fact.
+	nodes : Capture, { at : U64, end : U64, row : U32, kinds : NodeKinds } -> Capture
+	nodes = |capture, props| match capture {
+		Disabled | Refused(_) => capture
+		Collecting(_) => match props.kinds {
+			TooMany => PictureCapture.refuse_limit(capture)
+			Kinds(kinds) => {
+				if props.at == 0 or props.end <= props.at or props.end > 4294967295 or props.row == 0 {
+					return Refused(InvalidBoundary)
+				}
+				var $capture = capture
+				var $index = 0.U32
+				for kind in kinds {
+					code = match kind {
+						Element => 1
+						Text => 2
+						Comment => 3
+					}
+					$capture = append($capture, { at: props.at.to_u32_wrap(), end: props.end.to_u32_wrap(), opcode: 254, address: props.row, slot: $index, kind: code })
+					$index = $index + 1
+				}
+				$capture
+			}
 		}
 	}
 
@@ -266,4 +315,15 @@ expect {
 	frames = PictureCapture.finish(PictureCapture.seal($capture, [{ at: 1, bytes: 9, opcode: 19 }]))?
 	facts = frames.keep_if(|frame| frame.opcode == 255)
 	facts.len() == 6 and facts.map(|frame| frame.kind) == [1, 2, 3, 4, 5, 6] and facts.all(|frame| frame.at == 10 and frame.end == 33 and frame.address == 7 and frame.slot == (frame.kind - 1).to_u32())
+}
+
+## Template-node facts share the command/alias/hole budget. Refusal drops the
+## optional plan rather than truncating ordinary bytes or allocating more facts.
+expect {
+	kinds = PictureCapture.add_node(PictureCapture.add_node(PictureCapture.empty_nodes, Element), Text)
+	capture = PictureCapture.command(PictureCapture.start({ max_records: 3 })?, { at: 1, end: 20, opcode: 1, address: 7, slot: 2 })
+	nodes = PictureCapture.nodes(capture, { at: 1, end: 20, row: 7, kinds })
+	facts = PictureCapture.finish(nodes)?
+	refused = PictureCapture.hole(nodes, { at: 1, end: 20, row: 7, index: 0, kind: 1 })
+	facts.map(|frame| { opcode: frame.opcode, slot: frame.slot, kind: frame.kind }) == [{ opcode: 1, slot: 2, kind: 0 }, { opcode: 254, slot: 0, kind: 1 }, { opcode: 254, slot: 1, kind: 2 }] and PictureCapture.finish(refused) == Err(CaptureLimit)
 }

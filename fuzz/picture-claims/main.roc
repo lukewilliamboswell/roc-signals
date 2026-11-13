@@ -8,6 +8,7 @@ import pf.Core
 import pf.Dom
 import pf.PictureClaims
 import pf.PictureCodec
+import pf.PicturePlan
 import Vectors
 
 ## Generated first frames exercise final aliases, omitted text, content
@@ -29,7 +30,9 @@ view = |props| match props.mode {
 	5 => Core.element("select", [Core.prop(Core.Prop.value, "present")], [Core.element("option", [Core.prop(Core.Prop.value, "present"), Core.attr("selected", "authored")], [Core.text(props.text)])])
 	6 => Core.state(True, |visible| Core.element("main", [], [Core.when(visible.signal(), || Core.element("section", [], [Core.text("gone")]), || Core.element("section", [], [Core.text(props.text)])), Core.watch(Core.const({}), |_| [Core.again({})], visible.on_result(|_, _, _| False))]))
 	7 => Core.element("template", [], [])
-	_ => Core.element("select", [Core.prop(Core.Prop.value, "missing")], [Core.element("option", [Core.attr("selected", ""), Core.attr("data-x", "x"), Core.prop(Core.Prop.value, "present")], [])])
+	8 => Core.element("select", [Core.prop(Core.Prop.value, "missing")], [Core.element("option", [Core.attr("selected", ""), Core.attr("data-x", "x"), Core.prop(Core.Prop.value, "present")], [])])
+	9 => Core.each(Core.const([0.U64, 1]), |key| key.to_str(), |row| Core.element("article", [Core.ref_s(row.item().map(|key| "static-${key.to_str()}"))], [Core.text(""), Core.comment("static"), Core.template_content(Core.element("template", [], [Core.element("span", [], [Core.text_s(row.item().map(U64.to_str))])])), Core.element("textarea", [Core.prop(Core.Prop.value, props.text)], [Core.text("authored"), Core.comment("original")])]))
+	_ => Core.state(True, |visible| Core.element("main", [], [Core.each(visible.signal().map(|shown| if (shown) [0.U64, 1] else [1, 2]), |key| key.to_str(), |row| Core.element("article", [Core.ref_s(row.item().map(|key| "reuse-${key.to_str()}"))], [Core.text_s(row.item().map(U64.to_str)), Core.comment("kept")])), Core.watch(Core.const({}), |_| [Core.again({})], visible.on_result(|_, _, _| False))]))
 }
 
 ## A deliberately small reference checks every returned binding against the
@@ -37,7 +40,7 @@ view = |props| match props.mode {
 ## all final principals and holes rather than merely accepting returned claims.
 test : List(U8) -> Fuzz.Outcome
 test = |bytes| {
-	mode = (bytes.get(0) ?? 0) % 9
+	mode = (bytes.get(0) ?? 0) % 11
 	count = (bytes.get(1) ?? 0).to_u64() % 5 + 1
 	text = match (bytes.get(2) ?? 0) % 4 {
 		0 => ""
@@ -53,6 +56,25 @@ test = |bytes| {
 	rendered = Dom.render(dom, { root: dom.root, scope: Contents, mode: Picture, limits: { max_bytes: 1048576, max_nodes: 1024, max_depth: 32 } }) ?? crash "picture-claims: independent render refused valid frame"
 	envelope = PictureClaims.assemble({ dom, rendered, frames, batch: picture.commands, fingerprint: List.repeat(17, 32), expected: List.repeat(34, 32), limits: {} }) ?? crash "picture-claims: valid final frame refused"
 	parts = PictureCodec.parts(envelope)
+	# This test derives finite allocation facts from the independent native
+	# address map, never by reading the engine's App storage.
+	var $frontier = 1.U32
+	for frame in frames {
+		if frame.address >= $frontier {
+			$frontier = frame.address + 1
+		}
+	}
+	var $free = []
+	for address in 1.U32..<$frontier {
+		if (dom.statics.get(address.to_u64()) ?? 0).bitwise_and(1099511627775) == 0 {
+			$free = $free.append(address)
+		}
+	}
+	plan = PicturePlan.build({ batch: picture.commands, frames, next: $frontier, free: $free, envelope }) ?? crash "picture-claims: fresh oracle ownership rejected by plan"
+	if PicturePlan.operations(plan).len() != frames.keep_if(|frame| frame.opcode != 0 and frame.opcode != 254 and frame.opcode != 255).len() {
+		crash "picture-claims: plan omitted an ordinary command"
+	}
+
 	match frames.find_first(|frame| frame.opcode == 255) {
 		Err(_) => {}
 		Ok(first_hole) => {
@@ -87,13 +109,23 @@ test = |bytes| {
 			}
 		}
 	}
-	if parts.bindings.keep_if(|binding| binding.role != Hole).len() != $expected_principals or parts.bindings.keep_if(|binding| binding.role == Hole).len() != $expected_holes {
+	if parts.bindings.keep_if(|binding| binding.role != Hole and binding.role != TemplateNode).len() != $expected_principals or parts.bindings.keep_if(|binding| binding.role == Hole).len() != $expected_holes {
 		crash "picture-claims: omitted or duplicate final binding"
+	}
+	if parts.bindings.keep_if(|binding| binding.role == Static or binding.role == TemplateNode).len() != rendered.logical.len() {
+		crash "picture-claims: construction ownership is not exhaustive"
 	}
 	for binding in parts.bindings {
 		logical = rendered.logical.get(binding.logical.to_u64()) ?? crash "picture-claims: unknown logical claim"
 		model = Dom.lookup(dom, binding.address)
-		if binding.role == Hole {
+		if binding.role == TemplateNode {
+			match Dom.node(dom, model).template_nodes {
+				Cloned(nodes) => if nodes.get(binding.slot.to_u64()) != Ok(logical.model) {
+					crash "picture-claims: template node names another lifetime"
+				}
+				_ => crash "picture-claims: missing bounded clone cache"
+			}
+		} else if binding.role == Hole {
 			row = Dom.node(dom, model)
 			if row.ht.get(binding.slot.to_u64()) != Ok(logical.model) {
 				crash "picture-claims: row hole names another lifetime"
@@ -154,6 +186,8 @@ fixed_cases = [
 	{ name: "no-selection-scaffold", revision: "1", make: || [4, 0, 1] },
 	{ name: "selected-attribute-override", revision: "1", make: || [5, 0, 1] },
 	{ name: "followup-disposal-id-reuse", revision: "1", make: || [6, 0, 1] },
+	{ name: "row-static-empty-comments-content-control", revision: "1", make: || [9, 0, 1] },
+	{ name: "row-followup-disposal-id-reuse", revision: "1", make: || [10, 0, 1] },
 	{ name: "selected-original-first-attribute", revision: "1", make: || [8, 0, 0] },
 	{ name: "raw-template-children-empty", revision: "1", make: || [7, 0, 0] },
 ]

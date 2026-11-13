@@ -113,6 +113,18 @@ test = |input| {
 		Replace(DifferentMeasurement) => {}
 		_ => crash "Roc did not replace a changed measured digest"
 	}
+	# Every supplied logical leaf must come from the fresh program, even when
+	# its physical projection is empty and both supplied digests would match.
+	extra_parts = { ..plain_parts, logical: plain_parts.logical.append(ConstructedText({ container: 0, logical_child_index: plain_parts.logical.len().to_u32_wrap(), data: "extra" })) }
+	extra = PictureCodec.make({ ..extra_parts, fingerprint }, {}) ?? crash "unbound logical mutation remains framing-valid"
+	if PicturePlan.build({ batch: $batch, frames, next: 9, free: $free, envelope: extra }).is_ok() {
+		crash "plan accepted an unconstructed logical leaf"
+	}
+	extra_picture = PictureBoot.present({ measured: extra_parts.expected, envelope: PictureCodec.encode(extra) }) ?? crash "bounded extra logical transport"
+	match PictureVerdict.parts(PictureVerdict.decide({ picture: extra_picture, root_name: plain_parts.root_name, batch: $batch, capture: Ok(frames), next: 9, free: $free }, {}) ?? crash "valid extra logical verdict limits") {
+		Replace(DifferentClaims) => {}
+		_ => crash "verdict adopted a leaf absent from the fresh mount"
+	}
 	actual = PicturePlan.operations(plan)
 	if actual.len() != $events.len() {
 		crash "plan omitted a command boundary"
@@ -154,6 +166,7 @@ test = |input| {
 fixed_cases : List({ name : Str, revision : Str, make : () -> List(U8) })
 fixed_cases = [
 	{ name: "empty", revision: "1", make: || [] },
+	{ name: "unbound-constructed-text-regression", revision: "1", make: || [] },
 	{ name: "one-live-text", revision: "1", make: || [0] },
 	{ name: "same-address-generations", revision: "1", make: || [0, 40, 80, 120] },
 	{ name: "writes-before-and-after-clear", revision: "1", make: || [1, 41, 3, 81, 121] },

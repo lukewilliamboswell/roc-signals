@@ -165,6 +165,7 @@ assemble_claims = |props| {
 	captured = final_births(props.frames, props.batch)?
 	latest = captured.latest
 	var $bindings = []
+	var $template_owners = Dict.empty()
 	var $row_birth = { at: 0.U32, end: 0.U32, opcode: 0.U8, address: 0.U32, slot: 0.U32, kind: 0.U8 }
 	for frame in props.frames {
 		if frame.opcode == 1 {
@@ -187,7 +188,7 @@ assemble_claims = |props| {
 							parent_row = props.dom.nodes.get(parent_lifetime1 - 1) ? |_| InvalidClaims("alias row lifetime missing")
 							parent_template = props.dom.tpls.get($row_birth.slot.to_u64()) ? |_| InvalidClaims("alias template missing")
 							hole = parent_template.holes.get(frame.slot.to_u64()) ? |_| InvalidClaims("alias hole missing")
-							if hole.kind != frame.kind or parent_row.ht.get(frame.slot.to_u64()) != Ok(model) {
+							if hole.kind != frame.kind or parent_row.ht.get(frame.slot.to_u64()) != Ok(model) or $template_owners.get(model) != Ok({ birth: $row_birth.at, row: $row_birth.address }) {
 								return Err(InvalidClaims("alias differs from final resolved row hole"))
 							}
 						}
@@ -214,6 +215,27 @@ assemble_claims = |props| {
 							if captured.hole_counts.get({ birth: frame.at, row: frame.address }) != Ok(template.holes.len()) or row.ht.len() != template.holes.len() {
 								return Err(InvalidClaims("row hole cache differs from template"))
 							}
+							cloned = match row.template_nodes {
+								Cloned(nodes) => nodes
+								NotARow | TooMany => return Err(InvalidClaims("final row has no bounded clone-node cache"))
+							}
+							if captured.node_counts.get({ birth: frame.at, row: frame.address }) != Ok(cloned.len()) {
+								return Err(InvalidClaims("captured template-node count differs from clone"))
+							}
+							var $node_index = 0.U32
+							for node_model in cloned {
+								node = props.dom.nodes.get(node_model) ? |_| InvalidClaims("cached template lifetime missing")
+								if captured.nodes.get({ birth: frame.at, row: frame.address, slot: $node_index }) != Ok(node.kind) {
+									return Err(InvalidClaims("captured template-node index or kind differs"))
+								}
+								if $template_owners.contains(node_model) {
+									return Err(InvalidClaims("template lifetime has two row owners"))
+								}
+								$template_owners = $template_owners.insert(node_model, { birth: frame.at, row: frame.address })
+								target = $models.get(node_model) ? |_| InvalidClaims("original template node has no final logical target")
+								$bindings = append_binding($bindings, { maximum: props.limits.codec.max_bytes // 18, binding: { birth_offset: frame.at, role: TemplateNode, address: frame.address, slot: $node_index, kind: Unused, logical: target } })?
+								$node_index = $node_index + 1
+							}
 							var $hole = 0.U32
 							for hole in template.holes {
 								if captured.holes.get({ birth: frame.at, row: frame.address, slot: $hole }) != Ok(hole.kind) {
@@ -221,6 +243,9 @@ assemble_claims = |props| {
 								}
 								target_model = row.ht.get($hole.to_u64()) ?? crash "PictureClaims.assemble: checked hole cache"
 								target = $models.get(target_model) ? |_| InvalidClaims("live row hole has no final logical target")
+								if $template_owners.get(target_model) != Ok({ birth: frame.at, row: frame.address }) {
+									return Err(InvalidClaims("row hole is not owned by its template"))
+								}
 								$bindings = append_binding($bindings, { maximum: props.limits.codec.max_bytes // 18, binding: { birth_offset: frame.at, role: Hole, address: frame.address, slot: $hole, kind: binding_kind(hole.kind)?, logical: target } })?
 								$hole = $hole + 1
 							}
@@ -229,6 +254,18 @@ assemble_claims = |props| {
 				}
 			}
 		}
+	}
+	var $owners = Dict.empty()
+	for binding in $bindings {
+		if binding.role == Static or binding.role == TemplateNode {
+			if $owners.contains(binding.logical) {
+				return Err(InvalidClaims("logical node has two construction owners"))
+			}
+			$owners = $owners.insert(binding.logical, {})
+		}
+	}
+	if $owners.len() != $logical.len() {
+		return Err(InvalidClaims("logical node has no construction owner"))
 	}
 	Ok(PictureCodec.make({ root_name, batch_bytes, fingerprint: props.fingerprint, expected: props.expected, physical_count: narrow(props.rendered.physical.len())?, containers: $containers, logical: $logical, runs: $runs, bindings: $bindings, scaffolds: $scaffolds }, props.limits.codec) ? Codec)
 }
@@ -271,7 +308,7 @@ HoleKey : { birth : U32, row : U32, slot : U32 }
 
 RowBirth : { birth : U32, row : U32 }
 
-Captured : { latest : Dict(U32, PictureCapture.Frame), holes : Dict(HoleKey, U8), hole_counts : Dict(RowBirth, U64) }
+Captured : { latest : Dict(U32, PictureCapture.Frame), holes : Dict(HoleKey, U8), hole_counts : Dict(RowBirth, U64), nodes : Dict(HoleKey, U8), node_counts : Dict(RowBirth, U64) }
 
 final_births : List(PictureCapture.Frame), List(U8) -> Try(Captured, PictureClaims.Error)
 final_births = |frames, batch| {
@@ -280,13 +317,23 @@ final_births = |frames, batch| {
 	var $latest = Dict.empty()
 	var $holes = Dict.empty()
 	var $hole_counts = Dict.empty()
+	var $nodes = Dict.empty()
+	var $node_counts = Dict.empty()
 	var $aliases = []
 	for frame in frames {
-		if frame.opcode == 0 or frame.opcode == 255 {
+		if frame.opcode == 0 or frame.opcode == 254 or frame.opcode == 255 {
 			if $row.opcode != 1 or frame.at != $row.at or frame.end != $row.end {
 				return Err(InvalidClaims("row metadata outside its INST boundary"))
 			}
-			if frame.opcode == 255 {
+			if frame.opcode == 254 {
+				row_key = { birth: frame.at, row: frame.address }
+				index = $node_counts.get(row_key) ?? 0
+				if frame.address != $row.address or frame.kind < 1 or frame.kind > 3 or frame.slot.to_u64() != index {
+					return Err(InvalidClaims("compiled template nodes are not complete preorder facts"))
+				}
+				$nodes = $nodes.insert({ birth: frame.at, row: frame.address, slot: frame.slot }, frame.kind)
+				$node_counts = $node_counts.insert(row_key, index + 1)
+			} else if frame.opcode == 255 {
 				if frame.address != $row.address or frame.kind < 1 or frame.kind > 6 {
 					return Err(InvalidClaims("invalid captured row hole"))
 				}
@@ -311,6 +358,7 @@ final_births = |frames, batch| {
 			$row = frame
 			if frame.opcode == 1 {
 				$hole_counts = $hole_counts.insert({ birth: frame.at, row: frame.address }, 0)
+				$node_counts = $node_counts.insert({ birth: frame.at, row: frame.address }, 0)
 			}
 		}
 		if is_birth(frame) {
@@ -332,7 +380,7 @@ final_births = |frames, batch| {
 			return Err(InvalidClaims("alias does not match a captured row hole"))
 		}
 	}
-	Ok({ latest: $latest, holes: $holes, hole_counts: $hole_counts })
+	Ok({ latest: $latest, holes: $holes, hole_counts: $hole_counts, nodes: $nodes, node_counts: $node_counts })
 }
 
 ## u32 framing is explicitly little endian in both independent hash domains.

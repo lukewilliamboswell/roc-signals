@@ -22,7 +22,10 @@ Dom := [].{
 	## retained for exact serialization but never aliases another namespace.
 	ExpandedName : { namespace : Str, prefix : Str, local : Str }
 
-	DNode : { namespace : Str, prefix : Str, kind : U8, container : U8, content : [None, Some(U64)], svg : Bool, tag : Str, text : Str, attrs : List((ExpandedName, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
+	## Original clone lifetimes stay in template preorder even after dynamic
+	## insertions. Oversized caches refuse picture production, not ordinary DOM.
+	CloneNodes : [NotARow, Cloned(List(U64)), TooMany]
+	DNode : { namespace : Str, prefix : Str, kind : U8, container : U8, content : [None, Some(U64)], svg : Bool, tag : Str, text : Str, attrs : List((ExpandedName, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), template_nodes : CloneNodes, ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
 
 	## Explicit cold-render limits are supplied by the caller's build or display
 	## policy. They never change the app's live node or propagation limits.
@@ -421,7 +424,7 @@ Dom := [].{
 	## No engine aliases, templates, document listeners or observations survive
 	## from an earlier model.
 	new : {} -> Model
-	new = |_| { nodes: [{ namespace: Dom.html_namespace, prefix: "", kind: 1, container: 0, content: None, svg: False, tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0, transitions: { count: 0, oldest: 0, bytes: 0, records: Dict.empty(), exhausted: False } }
+	new = |_| { nodes: [{ namespace: Dom.html_namespace, prefix: "", kind: 1, container: 0, content: None, svg: False, tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], template_nodes: NotARow, ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0, transitions: { count: 0, oldest: 0, bytes: 0, records: Dict.empty(), exhausted: False } }
 
 	## Read a little-endian command operand independently of the engine's
 	## encoder. Every byte is bounds checked; a short operand is an executor
@@ -552,7 +555,7 @@ Dom := [].{
 	## serving fixtures, it lets modify move a record out of its list before
 	## changing nested storage without retaining a second holder.
 	empty_node : DNode
-	empty_node = { namespace: Dom.html_namespace, prefix: "", kind: 1, container: 0, content: None, svg: False, tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
+	empty_node = { namespace: Dom.html_namespace, prefix: "", kind: 1, container: 0, content: None, svg: False, tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], template_nodes: NotARow, ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
 
 	## Update node i in place (the node is moved out of the list first, so
 	## its kid list stays uniquely owned).
@@ -660,12 +663,12 @@ Dom := [].{
 				dom,
 				n.parent - 1,
 				|p| {
-					{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
+					{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids, parent, rn, hs, ht, template_nodes, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 					kept = match kids.find_last_index(|k| k == i) {
 						Ok(pos) => kids.drop_at(pos)
 						Err(_) => kids
 					}
-					{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
+					{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids: kept, parent, rn, hs, ht, template_nodes, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 				},
 			)
 			Dom.modify(d1, i, |m| { ..m, parent: 0, detach_count: m.detach_count + 1 })
@@ -680,7 +683,7 @@ Dom := [].{
 			d0,
 			parent,
 			|p| {
-				{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
+				{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids, parent: pp, rn, hs, ht, template_nodes, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 				kids2 = match before {
 					Err(End) => kids.append(i)
 					Ok(b) => {
@@ -688,7 +691,7 @@ Dom := [].{
 						kids.sublist({ start: 0, len: pos }).append(i).concat(kids.sublist({ start: pos, len: kids.len() - pos }))
 					}
 				}
-				{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
+				{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, template_nodes, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 			},
 		)
 		Dom.modify(d1, i, |n| { ..n, parent: parent + 1 })
@@ -1227,7 +1230,23 @@ Dom := [].{
 				site_id = Dom.u32(b, $at + 12).to_u64()
 				tpl = $d.tpls.get(site_id) ?? crash "unknown template"
 				$at = $at + 16
+				clone_start = $d.nodes.len()
 				(d1, root, _) = Dom.build($d, tpl.bytes, 0)
+				var $template_nodes = Cloned([])
+				var $clone_index = clone_start
+				while $clone_index < d1.nodes.len() and $template_nodes != TooMany {
+					if Dom.node(d1, $clone_index).kind != 4 {
+						$template_nodes = match $template_nodes {
+							Cloned(nodes) => if nodes.len() >= 262144 {
+								TooMany
+							} else {
+								Cloned(nodes.append($clone_index))
+							}
+							_ => crash "Dom.INST: active bounded clone cache"
+						}
+					}
+					$clone_index = $clone_index + 1
+				}
 				r = Dom.node(d1, root)
 				# Hole targets are resolved once, here: content a nested site
 				# inserts into the row later shifts sibling indices.
@@ -1235,7 +1254,7 @@ Dom := [].{
 				for hole0 in tpl.holes {
 					$ht = $ht.append(Dom.walk(d1, root, hole0.path))
 				}
-				var $dd = Dom.set_node(d1, root, { ..r, rn: nid, ht: $ht })
+				var $dd = Dom.set_node(d1, root, { ..r, rn: nid, ht: $ht, template_nodes: $template_nodes })
 				for hole in tpl.holes {
 					target = Dom.walk($dd, root, hole.path)
 					if hole.kind == 1 {

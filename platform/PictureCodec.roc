@@ -26,9 +26,10 @@ PictureCodec :: [].{
 	## Codes remain closed symbolic data until the writer's boundary. Unused
 	## is valid only where the selected role carries no hole-kind operand.
 	BindingKind : [Unused, Text, Attribute, Event, Bind, Reference, Property]
-	BindingRole : [Static, Row, Hole, Alias]
+	BindingRole : [Static, Row, Hole, Alias, TemplateNode]
 	Binding : { birth_offset : U32, role : BindingRole, address : U32, slot : U32, kind : BindingKind, logical : U32 }
 	Presence : [Absent, Present(Str)]
+
 	## Attribute restoration retains its original ordered slot; absence leaves
 	## that index unused at zero. Actual attribute-count bounds are measured later.
 	Scaffold : [ControlText({ owner : U32, container : U32, physical : Physical }), AttributeOverride({ owner : U32, name : Name, logical_index : U32, original : Presence, physical : Presence }), NoSelectionOption({ owner : U32, physical_option : U32 })]
@@ -433,6 +434,7 @@ decode = |bytes, limits| {
 			1 => Row
 			2 => Hole
 			3 => Alias
+			4 => TemplateNode
 			_ => return Err(Malformed({ at: $cursor.at - 1, rule: "unknown binding role" }))
 		}
 		address_field = read_u32($cursor)?
@@ -700,6 +702,7 @@ validate = |value, limits| {
 	}
 	var $principals = Dict.empty()
 	var $holes = Dict.empty()
+	var $template_nodes = Dict.empty()
 	for binding in value.bindings {
 		if binding.birth_offset == 0 or binding.birth_offset >= value.batch_bytes {
 			return Err(InvalidParts("binding birth outside ordinary batch"))
@@ -714,6 +717,12 @@ validate = |value, limits| {
 				return Err(InvalidParts("duplicate Hole binding"))
 			}
 			$holes = $holes.insert(key, {})
+		} else if binding.role == TemplateNode {
+			key = { birth_offset: binding.birth_offset, address: binding.address, slot: binding.slot }
+			if $template_nodes.contains(key) {
+				return Err(InvalidParts("duplicate TemplateNode binding"))
+			}
+			$template_nodes = $template_nodes.insert(key, {})
 		} else {
 			key = { birth_offset: binding.birth_offset, address: binding.address }
 			if $principals.contains(key) {
@@ -1008,6 +1017,7 @@ encode_parts = |value, allocated| {
 			Row => 1
 			Hole => 2
 			Alias => 3
+			TemplateNode => 4
 		}
 		$out = put_u32(put_u32(put_u32(put_u32($out, binding.birth_offset).append(role), binding.address), binding.slot).append(binding_kind_byte(binding.kind)), binding.logical)
 	}
@@ -1072,6 +1082,7 @@ rich_fixture = |_| {
 		{ birth_offset: 2, role: Alias, address: 3, slot: 1, kind: Reference, logical: 8 },
 		{ birth_offset: 2, role: Hole, address: 2, slot: 1, kind: Reference, logical: 8 },
 		{ birth_offset: 31, role: Static, address: 4, slot: 0, kind: Unused, logical: 6 },
+		{ birth_offset: 2, role: TemplateNode, address: 2, slot: 0, kind: Unused, logical: 5 },
 	],
 	scaffolds: [
 		ControlText({ owner: 4, container: 3, physical: Physical(5) }),
@@ -1448,7 +1459,7 @@ golden_rich = [
 	0,
 	0,
 	0,
-	6,
+	7,
 	0,
 	0,
 	0,
@@ -1557,6 +1568,24 @@ golden_rich = [
 	0,
 	0,
 	6,
+	0,
+	0,
+	0,
+	2,
+	0,
+	0,
+	0,
+	4,
+	2,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	5,
 	0,
 	0,
 	0,
@@ -1756,7 +1785,7 @@ expect {
 ## Independent byte offsets pin the distinct role/presence/birth fields, so
 ## an encoder and decoder sharing a wrong field order cannot pass by agreement.
 expect {
-	bad = [golden_rich.set(117, 2)?, golden_rich.set(203, 5)?, golden_rich.set(254, 255)?, golden_rich.set(370, 0)?, golden_rich.set(370, 32)?, golden_rich.set(374, 4)?, golden_rich.set(383, 7)?, golden_rich.set(482, 3)?, golden_rich.set(491, 2)?]
+	bad = [golden_rich.set(117, 2)?, golden_rich.set(203, 5)?, golden_rich.set(254, 255)?, golden_rich.set(370, 0)?, golden_rich.set(370, 32)?, golden_rich.set(374, 5)?, golden_rich.set(383, 7)?, golden_rich.set(500, 3)?, golden_rich.set(509, 2)?]
 	bad.all(|bytes| PictureCodec.read(bytes, {}).is_err())
 }
 
@@ -1825,7 +1854,7 @@ expect {
 check_binding_fields : { role : PictureCodec.BindingRole, slot : U32, kind : PictureCodec.BindingKind } -> Try({}, PictureCodec.Error)
 check_binding_fields = |binding| match binding.role {
 	Static if binding.slot != 0 or binding.kind != Unused => Err(InvalidParts("Static binding unused fields"))
-	Row if binding.kind != Unused => Err(InvalidParts("Row binding unused kind"))
+	Row | TemplateNode if binding.kind != Unused => Err(InvalidParts("Row binding unused kind"))
 	Hole if binding.kind == Unused => Err(InvalidParts("Hole requires a kind"))
 	Alias if binding.kind != Bind and binding.kind != Reference => Err(InvalidParts("Alias kind"))
 	_ => Ok({})
@@ -1872,4 +1901,18 @@ expect {
 	bad = PictureCodec.make({ ..base, scaffolds: base.scaffolds.set(1, AttributeOverride({ ..override, original: Absent, logical_index: 1 }))? }, {})
 	actual = { first: PictureCodec.parts(PictureCodec.read(PictureCodec.encode(first), {})?).scaffolds.get(1)?, last: PictureCodec.parts(PictureCodec.read(PictureCodec.encode(last), {})?).scaffolds.get(1)?, unused_nonzero: bad.is_err() }
 	actual == { first: AttributeOverride(override), last: AttributeOverride({ ..override, logical_index: 4294967295 }), unused_nonzero: True }
+}
+
+## Template-node identity is scoped by the row birth and preorder slot. It
+## may share Row/Hole addresses but cannot repeat a slot or carry a hole kind.
+expect {
+	base = rich_fixture({})
+	node = base.bindings.last()?
+	valid = PictureCodec.make(base, {})?
+	actual = {
+		wire: PictureCodec.encode(valid).sublist({ start: 478, len: 18 }),
+		duplicate: PictureCodec.make({ ..base, bindings: base.bindings.append({ ..node, logical: 1 }) }, {}).is_err(),
+		kind: PictureCodec.make({ ..base, bindings: base.bindings.set(6, { ..node, kind: Text })? }, {}).is_err(),
+	}
+	actual == { wire: [2, 0, 0, 0, 4, 2, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0], duplicate: True, kind: True }
 }

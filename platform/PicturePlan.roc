@@ -7,7 +7,7 @@ PicturePlan :: [].{
 
 	## Actions preserve the ordinary command order. A kept picture already has
 	## final placement, so moves and clears must not replay physical mutations.
-	Action : [Apply, Skip, ClaimStatic(U32), ClaimRow({ binding : U32, holes : List(U32), aliases : List(U32) }), ClearSite(U32), KeepPlacement]
+	Action : [Apply, Skip, ClaimStatic(U32), ClaimRow({ binding : U32, nodes : List(U32), holes : List(U32), aliases : List(U32) }), ClearSite(U32), KeepPlacement]
 	Operation : { at : U32, end : U32, action : Action }
 	Error : [PlanLimit, BadCapture(Str), ClaimsDiffer(Str)]
 	Props : { batch : List(U8), frames : List(PictureCapture.Frame), next : U32, free : List(U32), envelope : PictureCodec.Envelope }
@@ -15,7 +15,8 @@ PicturePlan :: [].{
 
 	## Every live birth and compiled hole must have exactly one matching claim.
 	## Recycled numeric addresses are compared by their command birth offset;
-	## a free address is never made live by a supplied envelope.
+	## a free address is never made live by a supplied envelope. This establishes
+	## exhaustive construction ownership, not exact names, values or topology.
 	build : Props -> Try(Plan, Error)
 	build = |props| build_plan(props)
 
@@ -32,6 +33,8 @@ RowKey : { birth : U32, address : U32 }
 TargetKind : [Element, Text, Comment]
 
 Expected : { target : TargetKind, owner : [Standalone, InRow(RowKey)] }
+
+LogicalOwner : [Unowned, Standalone, Template({ row : RowKey, index : U32 })]
 
 ## Fixed-prefix reads are independent of variable-size effect payloads. Their
 ## capture boundary is checked before any word can be indexed.
@@ -100,16 +103,22 @@ check_capture = |props| {
 	var $cursor = 1.U32
 	var $row = { at: 0.U32, end: 0.U32, address: 0.U32 }
 	var $hole = 0.U32
+	var $node = 0.U32
 	var $last_hole = { slot: 0.U32, kind: 0.U8 }
 	for frame in props.frames {
 		if frame.at == 0 or frame.end <= frame.at or frame.end.to_u64() > props.batch.len() {
 			return Err(BadCapture("capture boundary outside ordinary batch"))
 		}
-		if frame.opcode == 0 or frame.opcode == 255 {
+		if frame.opcode == 0 or frame.opcode == 254 or frame.opcode == 255 {
 			if frame.at != $row.at or frame.end != $row.end or $row.address == 0 {
 				return Err(BadCapture("row metadata has no matching INST"))
 			}
-			if frame.opcode == 255 {
+			if frame.opcode == 254 {
+				if frame.address != $row.address or frame.slot != $node or frame.kind < 1 or frame.kind > 3 {
+					return Err(BadCapture("compiled nodes are not complete in preorder"))
+				}
+				$node = $node + 1
+			} else if frame.opcode == 255 {
 				if frame.address != $row.address or frame.slot != $hole {
 					return Err(BadCapture("row holes are not complete in compiled order"))
 				}
@@ -126,6 +135,7 @@ check_capture = |props| {
 			$cursor = frame.end
 			$row = if (frame.opcode == 1) { at: frame.at, end: frame.end, address: frame.address } else { at: 0, end: 0, address: 0 }
 			$hole = 0
+			$node = 0
 			$last_hole = { slot: 0, kind: 0 }
 			address = match frame.opcode {
 				1 | 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 12 | 21 | 22 | 23 | 26 => word(props.batch, { at: frame.at.to_u64() + 1, end: frame.end.to_u64() })?
@@ -163,6 +173,7 @@ frame_key = |frame| {
 		0 => Alias
 		1 => Row
 		255 => Hole
+		254 => TemplateNode
 		8 | 10 | 26 => Static
 		_ => return Err(BadCapture("non-birth has no binding key"))
 	}
@@ -200,7 +211,7 @@ build_plan = |props| {
 		if frame.opcode == 1 {
 			$owner = { birth: frame.at, address: frame.address }
 		}
-		live = if frame.opcode == 255 {
+		live = if frame.opcode == 255 or frame.opcode == 254 {
 			match $final.get(frame.address) {
 				Ok(birth) => birth.at == frame.at and birth.opcode == 1
 				Err(_) => False
@@ -211,7 +222,7 @@ build_plan = |props| {
 			if $expected.contains(key) {
 				return Err(BadCapture("duplicate expected binding"))
 			}
-			owner = if (frame.opcode == 0 or frame.opcode == 255) InRow($owner) else Standalone
+			owner = if (frame.opcode == 0 or frame.opcode == 254 or frame.opcode == 255) InRow($owner) else Standalone
 			if frame.opcode == 0 {
 				match $final.get($owner.address) {
 					Ok(row) if row.opcode == 1 and row.at == $owner.birth => {}
@@ -219,6 +230,12 @@ build_plan = |props| {
 				}
 			}
 			target = match frame.opcode {
+				254 => match frame.kind {
+					1 => Element
+					2 => Text
+					3 => Comment
+					_ => return Err(BadCapture("unknown compiled node kind"))
+				}
 				10 => Text
 				26 => Comment
 				0 | 255 if frame.kind == 1 or frame.kind == 4 => Text
@@ -230,6 +247,10 @@ build_plan = |props| {
 		}
 	}
 	var $accepted = Dict.empty()
+	empty_owners : List(LogicalOwner)
+	empty_owners = List.repeat(Unowned, parts.logical.len())
+	var $owners = empty_owners
+	var $references = []
 	var $binding_index = 0.U32
 	for binding in parts.bindings {
 		key = { birth: binding.birth_offset, role: binding.role, address: binding.address, slot: binding.slot, kind: binding.kind }
@@ -238,6 +259,30 @@ build_plan = |props| {
 		if logical_kind(logical) != expected.target {
 			return Err(ClaimsDiffer("claim changes the logical node kind"))
 		}
+		if binding.role == Static or binding.role == TemplateNode {
+			owner = if binding.role == Static {
+				Standalone
+			} else {
+				match expected.owner {
+					InRow(row) => Template({ row, index: binding.slot })
+					Standalone => return Err(ClaimsDiffer("template node has no owning row"))
+				}
+			}
+			if $owners.get(binding.logical.to_u64()) != Ok(Unowned) {
+				return Err(ClaimsDiffer("logical node has two construction owners"))
+			}
+			$owners = $owners.set(binding.logical.to_u64(), owner) ?? crash "PicturePlan: checked logical owner"
+		} else {
+			row = if binding.role == Row {
+				{ birth: binding.birth_offset, address: binding.address }
+			} else {
+				match expected.owner {
+					InRow(owner) => owner
+					Standalone => return Err(ClaimsDiffer("row reference has no owning row"))
+				}
+			}
+			$references = $references.append({ logical: binding.logical, row, requirement: if (binding.role == Row) Root else AnyNode })
+		}
 		$expected = $expected.remove(key)
 		$accepted = $accepted.insert(key, $binding_index)
 		$binding_index = $binding_index + 1
@@ -245,15 +290,29 @@ build_plan = |props| {
 	if !$expected.is_empty() {
 		return Err(ClaimsDiffer("a final birth or compiled hole has no claim"))
 	}
+	for owner in $owners {
+		if owner == Unowned {
+			return Err(ClaimsDiffer("logical node has no construction owner"))
+		}
+	}
+	for reference in $references {
+		match $owners.get(reference.logical.to_u64()) ?? crash "PicturePlan: checked referenced logical node" {
+			Template(owner) if owner.row == reference.row and (reference.requirement == AnyNode or owner.index == 0) => {}
+			_ => return Err(ClaimsDiffer("row reference names a node outside its compiled construction owner"))
+		}
+	}
+	var $nodes = Dict.empty()
 	var $holes = Dict.empty()
 	var $aliases = Dict.empty()
 	for frame in props.frames {
 		if frame.opcode == 1 {
 			$owner = { birth: frame.at, address: frame.address }
-		} else if frame.opcode == 0 or frame.opcode == 255 {
+		} else if frame.opcode == 0 or frame.opcode == 254 or frame.opcode == 255 {
 			key = frame_key(frame)?
 			match $accepted.get(key) {
-				Ok(binding) => if frame.opcode == 0 {
+				Ok(binding) => if frame.opcode == 254 {
+					$nodes = $nodes.insert($owner, ($nodes.get($owner) ?? []).append(binding))
+				} else if frame.opcode == 0 {
 					$aliases = $aliases.insert($owner, ($aliases.get($owner) ?? []).append(binding))
 				} else {
 					$holes = $holes.insert($owner, ($holes.get($owner) ?? []).append(binding))
@@ -269,7 +328,7 @@ build_plan = |props| {
 		if is_birth(frame.opcode) {
 			$current = $current.insert(frame.address, frame.at)
 		}
-		if frame.opcode != 0 and frame.opcode != 255 {
+		if frame.opcode != 0 and frame.opcode != 254 and frame.opcode != 255 {
 			live = match $current.get(frame.address) {
 				Ok(at) => match $final.get(frame.address) {
 					Ok(birth) => birth.at == at
@@ -283,7 +342,7 @@ build_plan = |props| {
 					if frame.opcode == 1 {
 						$live_rows = $live_rows.insert(frame.slot, ($live_rows.get(frame.slot) ?? 0.U64) + 1)
 						owner = { birth: frame.at, address: frame.address }
-						ClaimRow({ binding, holes: $holes.get(owner) ?? [], aliases: $aliases.get(owner) ?? [] })
+						ClaimRow({ binding, nodes: $nodes.get(owner) ?? [], holes: $holes.get(owner) ?? [], aliases: $aliases.get(owner) ?? [] })
 					} else ClaimStatic(binding)
 				} else Skip
 			} else if frame.opcode == 6 {
@@ -422,7 +481,7 @@ text_envelope = |props| {
 expect {
 	fixture = row_fixture({})?
 	plan = PicturePlan.build({ batch: fixture.batch, frames: fixture.frames, next: 4, free: [], envelope: fixture.envelope })?
-	PicturePlan.operations(plan).map(|operation| operation.action) == [ClaimRow({ binding: 0, holes: [1, 2, 3, 4, 5, 6], aliases: [7, 8] })]
+	PicturePlan.operations(plan).map(|operation| operation.action) == [ClaimRow({ binding: 0, nodes: [1, 2, 3], holes: [4, 5, 6, 7, 8, 9], aliases: [10, 11] })]
 }
 
 ## Framing-valid hole mutations cannot change a compiled kind or discard an
@@ -430,9 +489,9 @@ expect {
 expect {
 	fixture = row_fixture({})?
 	parts = PictureCodec.parts(fixture.envelope)
-	hole = parts.bindings.get(2)?
+	hole = parts.bindings.get(5)?
 	variants = [
-		{ ..parts, bindings: parts.bindings.set(2, { ..hole, kind: Event })? },
+		{ ..parts, bindings: parts.bindings.set(5, { ..hole, kind: Event })? },
 		{ ..parts, bindings: parts.bindings.drop_last(1) },
 	]
 	variants.all(
@@ -450,6 +509,10 @@ row_fixture = |_unused| {
 	batch = [0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 5, 0, 0, 0, 102, 97, 108, 115, 101]
 	var $frames = [{ at: 1, end: 40, opcode: 1, address: 1, slot: 7, kind: 0 }]
 	var $bindings = [{ birth_offset: 1, role: Row, address: 1, slot: 7, kind: Unused, logical: 0 }]
+	for node in [{ index: 0.U32, kind: 1.U8 }, { index: 1, kind: 2 }, { index: 2, kind: 1 }] {
+		$frames = $frames.append({ at: 1, end: 40, opcode: 254, address: 1, slot: node.index, kind: node.kind })
+		$bindings = $bindings.append({ birth_offset: 1, role: TemplateNode, address: 1, slot: node.index, kind: Unused, logical: node.index })
+	}
 	var $index = 0.U32
 	for specification in [{ kind: Text, logical: 1.U32 }, { kind: Attribute, logical: 0 }, { kind: Event, logical: 2 }, { kind: Bind, logical: 1 }, { kind: Reference, logical: 2 }, { kind: Property, logical: 2 }] {
 		kind = ($index + 1).to_u8_wrap()
@@ -482,4 +545,59 @@ expect {
 			PicturePlan.build({ batch: changed.batch, frames: fixture.frames.append(changed.frame), next: 4, free: [], envelope }).is_err()
 		},
 	)
+}
+
+## Even an empty ordinary mount cannot own an invented constructed leaf,
+## an omitted text part or a physical element merely because framing is valid.
+expect {
+	base = PictureCodec.parts(text_envelope({ batch_bytes: 0, births: [] })?)
+	variants = [
+		{ ..base, logical: [ConstructedText({ container: 0, logical_child_index: 0, data: "extra" })] },
+		{ ..base, logical: [TextPart({ run: 0, part: 0 })], runs: [{ container: 0, child_index: 0, physical: Omitted, parts: [{ logical: 0, utf16_units: 0 }] }] },
+		{ ..base, physical_count: 1, containers: [{ owner: Mount, role: Children, children: [0] }, { owner: Element(0), role: Children, children: [] }], logical: [ExistingElement(0)] },
+	]
+	variants.all(
+		|parts| {
+			envelope = PictureCodec.make(parts, {}) ?? crash "unowned counterexample must pass framing"
+			PicturePlan.build({ batch: [], frames: [], next: 1, free: [], envelope }).is_err()
+		},
+	)
+}
+
+## Two actual births cannot share one construction owner, and a row's root
+## must reference its preorder-zero template node rather than a same-kind peer.
+expect {
+	text = [10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+	second = text.set(1, 2)?
+	batch = [0].concat(text).concat(second)
+	frames = [{ at: 1, end: 18, opcode: 10, address: 1, slot: 0, kind: 0 }, { at: 18, end: 35, opcode: 10, address: 2, slot: 0, kind: 0 }]
+	parts = PictureCodec.parts(text_envelope({ batch_bytes: 35, births: [{ address: 1, at: 1 }, { address: 2, at: 18 }] })?)
+	last = parts.bindings.last()?
+	duplicate = PictureCodec.make({ ..parts, bindings: parts.bindings.set(1, { ..last, logical: 0 })? }, {})?
+	row = row_fixture({})?
+	row_parts = PictureCodec.parts(row.envelope)
+	root_node = row_parts.bindings.get(1)?
+	peer_node = row_parts.bindings.get(3)?
+	redirected = PictureCodec.make({ ..row_parts, bindings: row_parts.bindings.set(1, { ..root_node, logical: 2 })?.set(3, { ..peer_node, logical: 0 })? }, {})?
+	actual = {
+		duplicate: PicturePlan.build({ batch, frames, next: 3, free: [], envelope: duplicate }).is_err(),
+		root: PicturePlan.build({ batch: row.batch, frames: row.frames, next: 4, free: [], envelope: redirected }).is_err(),
+		missing: PicturePlan.build({ batch: row.batch, frames: row.frames, next: 4, free: [], envelope: PictureCodec.make({ ..row_parts, bindings: row_parts.bindings.keep_if(|binding| binding.role != TemplateNode or binding.slot != 1) }, {})? }).is_err(),
+	}
+	actual == { duplicate: True, root: True, missing: True }
+}
+
+## A Text hole cannot steal a same-kind standalone leaf; owning every node
+## once is necessary, but row references must also stay within their own clone.
+expect {
+	row = row_fixture({})?
+	batch = row.batch.concat([10, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+	frames = row.frames.append({ at: 40, end: 57, opcode: 10, address: 4, slot: 0, kind: 0 })
+	base = PictureCodec.parts(row.envelope)
+	parts = { ..base, batch_bytes: 57, logical: base.logical.append(TextPart({ run: 1, part: 0 })), runs: base.runs.append({ container: 0, child_index: 1, physical: Omitted, parts: [{ logical: 3, utf16_units: 0 }] }), bindings: base.bindings.append({ birth_offset: 40, role: Static, address: 4, slot: 0, kind: Unused, logical: 3 }) }
+	envelope = PictureCodec.make(parts, {})?
+	_ = PicturePlan.build({ batch, frames, next: 5, free: [], envelope })?
+	hole = parts.bindings.get(4)?
+	wrong = PictureCodec.make({ ..parts, bindings: parts.bindings.set(4, { ..hole, logical: 3 })? }, {})?
+	PicturePlan.build({ batch, frames, next: 5, free: [], envelope: wrong }).is_err()
 }
