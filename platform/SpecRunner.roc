@@ -2031,7 +2031,14 @@ SpecRunner := [].{
 	## do not flush a held frame, and an unchanged fact raises no report.
 	is_occurrence : S(state), Scm.Op -> Bool
 	is_occurrence = |s, op| match op {
-		Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | PasteText(_, _) | LeavePage(_) | RunEffect(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
+		Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | LeavePage(_) | RunEffect(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
+		PasteText(loc, _) => match SpecRunner.find(s.dom, loc) {
+			Err(_) => False
+			Ok(node) => match Dom.target(s.dom, node, "paste", True) {
+				Ok(target) => target.kind == 1 or target.kind == 9
+				Err(_) => False
+			}
+		}
 		PointerDown(_) | PointerUp(_) | PointerCancel(_) => Bool.True
 		PointerMove(place) => !SpecRunner.paced_move(s, place)
 		EmitPort({ port, .. }) => !s.browser.latest_ports.contains(port)
