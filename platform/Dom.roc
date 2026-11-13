@@ -7,7 +7,7 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 6
+	protocol_version = 7
 
 	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)) }
 
@@ -52,6 +52,18 @@ Dom := [].{
 			crash "short byte string"
 		}
 		(bytes, at + 4 + n)
+	}
+
+	## Attribute operands distinguish an omitted attribute from present text,
+	## including empty text. Only the two protocol flags are accepted.
+	attr_presence : List(U8), U64 -> ([Absent, Present(Str)], U64)
+	attr_presence = |bytes, at| match Dom.byte(bytes, at) {
+		0 => (Absent, at + 1)
+		1 => {
+			(text, next) = Dom.str(bytes, at + 1)
+			(Present(text), next)
+		}
+		_ => crash "executor: invalid attribute presence flag"
 	}
 
 	byte : List(U8), U64 -> U8
@@ -236,7 +248,9 @@ Dom := [].{
 			while $k < na {
 				(name, n1) = Dom.str(b, $at)
 				(value, n2) = Dom.str(b, n1)
-				$attrs = $attrs.append((name, value))
+				if !Dom.bool_attrs.contains(name) or (value != "" and value != "false") {
+					$attrs = $attrs.append((name, value))
+				}
 				$at = n2
 				$k = $k + 1
 			}
@@ -332,11 +346,40 @@ Dom := [].{
 		$n
 	}
 
+	## The boolean names have HTML presence semantics; ordinary names retain
+	## all text, including the empty string.
+	bool_attrs : List(Str)
+	bool_attrs = ["disabled", "selected", "readonly", "required", "hidden", "multiple", "open"]
+
+	## Remove an attribute explicitly, without interpreting any text as absence.
+	remove_attr_on : Model, U64, Str -> Model
+	remove_attr_on = |dom, i, name| Dom.modify(dom, i, |n| { ..n, attrs: n.attrs.keep_if(|(key, _)| key != name) })
+
+	## Apply the presence carried by an attribute command or row operand.
+	set_presence_on : Model, U64, Str, [Absent, Present(Str)] -> Model
+	set_presence_on = |dom, i, name, presence| match presence {
+		Absent => Dom.remove_attr_on(dom, i, name)
+		Present(text) => Dom.set_attr_on(dom, i, name, text)
+	}
+
 	set_attr_on : Model, U64, Str, Str -> Model
 	set_attr_on = |dom, i, name, value| {
+		if Dom.bool_attrs.contains(name) and (value == "" or value == "false") {
+			return Dom.remove_attr_on(dom, i, name)
+		}
 		n = Dom.node(dom, i)
 		attrs = if (n.attrs.any(|(k, _)| k == name)) n.attrs.map(|(k, v)| if (k == name) (k, value) else (k, v)) else n.attrs.append((name, value))
 		Dom.set_node(dom, i, { ..n, attrs })
+	}
+
+	## Only the closed boolean names interpret empty or false text as absence.
+	## Ordinary attributes keep both values and explicit removal is separate.
+	expect {
+		(d1, i) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div" })
+		d2 = Dom.set_attr_on(Dom.set_attr_on(d1, i, "alt", ""), i, "checked", "false")
+		d3 = Dom.set_attr_on(Dom.set_attr_on(d2, i, "hidden", "true"), i, "hidden", "")
+		d4 = Dom.set_attr_on(Dom.set_attr_on(d3, i, "open", "true"), i, "open", "false")
+		Dom.node(d4, i).attrs == [("alt", ""), ("checked", "false")]
 	}
 
 	## Browser input changes live properties independently of attributes.
@@ -405,7 +448,8 @@ Dom := [].{
 		if !allowed {
 			crash "executor: property ${name} on unsupported element ${n.tag}"
 		}
-		Dom.set_live_on(Dom.set_attr_on(dom, i, name, value), i, name, value)
+		mirrored = if (property == 2 and value == "false") Dom.remove_attr_on(dom, i, name) else Dom.set_attr_on(dom, i, name, value)
+		Dom.set_live_on(mirrored, i, name, value)
 	}
 
 	set_text_on : Model, U64, Str -> Model
@@ -580,11 +624,9 @@ Dom := [].{
 						$at = next
 						$dd = Dom.set_text_on($dd, target, v)
 					} else if hole.kind == 2 {
-						(v, next) = Dom.str(b, $at)
+						(presence, next) = Dom.attr_presence(b, $at)
 						$at = next
-						if v != "" or hole.name != "class" {
-							$dd = Dom.set_attr_on($dd, target, hole.name, v)
-						}
+						$dd = Dom.set_presence_on($dd, target, hole.name, presence)
 					} else if hole.kind == 6 {
 						(v, next) = Dom.str(b, $at)
 						$at = next
@@ -607,24 +649,40 @@ Dom := [].{
 			} else if op == 2 or op == 3 or op == 22 {
 				nid = Dom.u32(b, $at)
 				h = Dom.byte(b, $at + 4).to_u64()
-				(v, next) = Dom.str(b, $at + 5)
+				(presence, next) = if op == 3 {
+					Dom.attr_presence(b, $at + 5)
+				} else {
+					(text, after) = Dom.str(b, $at + 5)
+					(Present(text), after)
+				}
 				$at = next
 				row = Dom.lookup($d, nid)
 				tpl = $d.tpls.get(Dom.site_of($d, nid) ?? crash "TEXT/HATTR on a non-row node") ?? crash "unknown template"
 				hole = tpl.holes.get(h) ?? crash "unknown hole"
 				target = Dom.node($d, row).ht.get(h) ?? crash "hole target"
 				$written = $written.append(target)
-				if op == 22 and hole.property == 1 {
-					$values = $values.append((target, v))
-				}
-				$d = if op == 2 {
-					Dom.set_text_on($d, target, v)
-				} else if op == 22 {
-					if hole.kind != 6 {
-						crash "executor: HPROP names a non-property hole"
+				$d = if op == 3 {
+					if hole.kind != 2 {
+						crash "executor: HATTR names a non-attribute hole"
 					}
-					Dom.set_property_on($d, target, hole.property, v, nid)
-				} else Dom.set_attr_on($d, target, hole.name, v)
+					Dom.set_presence_on($d, target, hole.name, presence)
+				} else {
+					v = match presence {
+						Present(text) => text
+						Absent => crash "internal: a text or property operand is present"
+					}
+					if op == 22 and hole.property == 1 {
+						$values = $values.append((target, v))
+					}
+					if op == 2 {
+						Dom.set_text_on($d, target, v)
+					} else {
+						if hole.kind != 6 {
+							crash "executor: HPROP names a non-property hole"
+						}
+						Dom.set_property_on($d, target, hole.property, v, nid)
+					}
+				}
 			} else if op == 4 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
 				before = Dom.u32(b, $at + 4)
@@ -684,10 +742,10 @@ Dom := [].{
 			} else if op == 9 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
 				(name, n1) = Dom.str(b, $at + 4)
-				(value, n2) = Dom.str(b, n1)
+				(presence, n2) = Dom.attr_presence(b, n1)
 				$at = n2
 				$written = $written.append(i)
-				$d = Dom.set_attr_on($d, i, name, value)
+				$d = Dom.set_presence_on($d, i, name, presence)
 			} else if op == 21 {
 				id = Dom.u32(b, $at)
 				property = Dom.byte(b, $at + 4)
@@ -977,6 +1035,10 @@ Dom := [].{
 		if (n.tag == "") n.text else Str.join_with(n.kids.map(|k| Dom.text_of(dom, k)), "")
 	}
 
+	## Attribute presence is independent of its text: an empty value is present.
+	has_attr : DNode, Str -> Bool
+	has_attr = |element, name| element.attrs.any(|(key, _)| key == name)
+
 	attr_of : DNode, Str -> Str
 	attr_of = |n, name| n.attrs.find_first(|(k, _)| k == name).map_ok(|(_, v)| v) ?? ""
 
@@ -999,7 +1061,7 @@ Dom := [].{
 	}
 
 	by_attr : Model, Str, Str -> Try(U64, [NotFound])
-	by_attr = |dom, name, value| Dom.find(dom, dom.root, |n| Dom.attr_of(n, name) == value)
+	by_attr = |dom, name, value| Dom.find(dom, dom.root, |n| Dom.has_attr(n, name) and Dom.attr_of(n, name) == value)
 
 	## Every node (depth-first) whose text content equals `t` and has a handler.
 	click_target : Model, U64 -> Try(Target, [NoHandler])

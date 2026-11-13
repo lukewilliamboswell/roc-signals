@@ -91,10 +91,10 @@ Tools := [].{
 		Failed(message) => message
 	}
 
-	preview_src : Shown -> Str
+	preview_src : Shown -> [Absent, Present(Str)]
 	preview_src = |shown| match shown {
-		Preview(_, url) => url
-		_ => ""
+		Preview(_, url) => Present(url)
+		_ => Absent
 	}
 
 	view : State(In(Root, S), S) -> Elem(In(Root, S))
@@ -120,7 +120,7 @@ Tools := [].{
 						"result",
 						[
 							Html.p_s(shown.map(Tools.describe), [Engine.test_id("result")]),
-							Engine.element("img", [Engine.attr_s("src", shown.map(Tools.preview_src)), Engine.attr("alt", "")], []),
+							Engine.element("img", [Engine.attr_presence("src", shown.map(Tools.preview_src)), Engine.attr("alt", "")], []),
 						],
 					),
 				),

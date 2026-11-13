@@ -180,10 +180,10 @@ FileEffectsApp := [].{
 		other => FileEffectsApp.show_op(other)
 	}
 
-	url_of : Op -> Str
+	url_of : Op -> [Absent, Present(Str)]
 	url_of = |op| match op {
-		Answered(url) if url.starts_with("blob:") => url
-		_ => ""
+		Answered(url) if url.starts_with("blob:") => Present(url)
+		_ => Absent
 	}
 
 	first_text : List(File) -> Ask
@@ -254,7 +254,7 @@ FileEffectsApp := [].{
 						"preview",
 						[
 							Html.p_s(r.map(FileEffectsApp.url_state), [Engine.test_id("shown")]),
-							Engine.element("a", [Engine.attr_s("href", r.map(FileEffectsApp.url_of)), Engine.test_id("preview")], [Engine.text("preview")]),
+							Engine.element("a", [Engine.attr_presence("href", r.map(FileEffectsApp.url_of)), Engine.test_id("preview")], [Engine.text("preview")]),
 						],
 					),
 				),

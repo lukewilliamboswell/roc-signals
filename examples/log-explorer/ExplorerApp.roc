@@ -279,12 +279,12 @@ ExplorerApp := [].{
 						# time, in its value and a change event.
 						Engine.attr("data-click", "x"),
 						Engine.attr_s("aria-label", answered.map(|a| a.map_ok(|{ o, over_time }| ExplorerApp.timeline_label(o, over_time)) ?? "Timeline")),
-						Engine.attr_s(
+						Engine.attr_presence(
 							"data-figure",
 							answered.map(
 								|a| match a {
 									Ok({ o, over_time }) => TimelineChart.figure({ timeline: o.timeline, matches: over_time, revision: "${o.size.to_str()}/${o.lines.to_str()}" })
-									Err(NoAnswer) => ""
+									Err(NoAnswer) => Absent
 								},
 							),
 						),
