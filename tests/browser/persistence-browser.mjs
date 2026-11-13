@@ -256,6 +256,47 @@ try {
       return { prevented, payloads, zeroPayloads, invalid };
     });
     check("paste text prevents default and checks UTF-8 bytes before staging", result, { prevented: [true, true], payloads: [[0, 195, 169, 195, 169], [1]], zeroPayloads: [[0], [1]], invalid: [true, true, true] });
+    const unicode = await page.evaluate(() => {
+      const f = window.__fixture({ maxPasteBytes: 4 });
+      f.raw(f.join(new Uint8Array([0, 8]), f.u32(1), f.u32(0), f.u32(0), f.str("div"), new Uint8Array([11]), f.u32(1), f.u32(7), f.str("paste"), new Uint8Array([9]), f.u32(0)));
+      const paste = text => {
+        const event = new Event("paste", { bubbles: true, cancelable: true });
+        // Preserve the browser API's DOMString boundary without repairing
+        // the fixture's deliberate lone surrogates before dispatch.
+        Object.defineProperty(event, "clipboardData", { value: { getData: () => text } });
+        f.root.firstChild.dispatchEvent(event); return event.defaultPrevented;
+      };
+      const oversized = "\ud800".repeat(8);
+      const wellFormed = String.prototype.isWellFormed, encode = TextEncoder.prototype.encode;
+      let scans = 0, encodings = 0, refused;
+      try {
+        String.prototype.isWellFormed = function () { if (this.valueOf() === oversized) scans += 1; return wellFormed.call(this); };
+        TextEncoder.prototype.encode = function (text) { if (text === oversized) encodings += 1; return encode.call(this, text); };
+        refused = [paste(oversized), f.calls.map(call => call.payload), scans, encodings, f.rt.poisoned];
+      } finally {
+        String.prototype.isWellFormed = wellFormed; TextEncoder.prototype.encode = encode;
+      }
+      paste("\ud800");
+      const contained = [f.rt.poisoned?.class, f.calls.length]; f.end();
+      return { refused, contained };
+    });
+    check("oversized Unicode is refused before scanning or encoding; in-bound malformed text is contained", unicode, { refused: [true, [[1]], 0, 0, null], contained: ["executor", 1] });
+    const unhandled = await page.evaluate(() => {
+      const f = window.__fixture();
+      f.raw(f.join(new Uint8Array([0, 8]), f.u32(1), f.u32(0), f.u32(0), f.str("div"), new Uint8Array([8]), f.u32(2), f.u32(0), f.u32(0), f.str("div"), new Uint8Array([11]), f.u32(2), f.u32(7), f.str("paste"), new Uint8Array([9]), f.u32(0)));
+      f.rt.perform({ op: "storagechanges", id: 10, key: "document" });
+      window.dispatchEvent(new StorageEvent("storage", { storageArea: localStorage, key: "document", newValue: "waiting" }));
+      const before = [f.calls.length, f.rt.queue.length];
+      const data = new DataTransfer(); data.setData("text/plain", "ignored");
+      // A sibling's handler installs the delegated paste listener. This
+      // target still routes no event, so its paste cannot flush the report.
+      f.root.firstChild.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+      const afterPaste = [f.calls.length, f.rt.queue.length];
+      f.rt.releaseReports();
+      const afterRelease = [f.calls.map(call => [call.handler, call.payload]), f.rt.queue.length]; f.end();
+      return { before, afterPaste, afterRelease };
+    });
+    check("production routing leaves held reports pending when paste has no listener", unhandled, { before: [0, 1], afterPaste: [0, 1], afterRelease: [[[10, [3, ...new TextEncoder().encode("waiting")]]], 0] });
     const bad = await page.evaluate(() => [2, 255].map(value => { const f = window.__fixture(); f.raw(new Uint8Array([0, 25, value])); const rejected = f.rt.poisoned?.class === "executor"; f.end(); return rejected; }));
     check("invalid GUARD operands are executor faults", bad, [true, true]);
     const malformed = await page.evaluate(() => {
@@ -448,7 +489,7 @@ try {
   // Negative cases use the same Roc parser and must fail the action that
   // opened a forbidden dialog. Positive cases really answer Chrome's dialog.
   {
-    const fixtures = ["guarded-navigate", "guarded-link", "guarded-stay", "guarded-leave", "disposed-guard", "storage-area-available", "storage-area-unavailable"].map(name => path.join(here, "../apps/services/contracts", `${name}.scm`));
+    const fixtures = ["guarded-navigate", "guarded-link", "guarded-stay", "guarded-leave", "disposed-guard", "storage-area-available", "storage-area-unavailable", "paste-no-handler", "paste-no-report-flush"].map(name => path.join(here, "../apps/services/contracts", `${name}.scm`));
     const emitted = spawnSync(opts.runner, ["--emit-steps", ...fixtures], { encoding: "utf8", timeout: 30000 });
     if (emitted.status !== 0) throw new Error(`could not parse guarded-navigation contracts: ${emitted.stderr}`);
     const native = spawnSync(opts.runner, fixtures, { encoding: "utf8", timeout: 30000 });
@@ -457,7 +498,7 @@ try {
       const steps = path.join(directory, "steps.jsonl"); fs.writeFileSync(steps, emitted.stdout);
       const replay = spawnSync(process.execPath, [path.join(here, "replay.mjs"), "--wasm", opts.wasm, "--runtime", opts.runtime, "--steps", steps, "--chrome", opts.chrome, "--json-lines"], { encoding: "utf8", timeout: 60000 });
       const rows = output => output.split("\n").filter(Boolean).map(line => JSON.parse(line));
-      const wanted = ["failed", "failed", "passed", "passed", "passed", "passed", "passed"];
+      const wanted = ["failed", "failed", "passed", "passed", "passed", "passed", "passed", "passed", "passed"];
       const nativeRows = rows(native.stdout), browserRows = rows(replay.stdout);
       check("guarded navigation/link failures and deliberate stay/leave/disposal agree in both runners", [native.status, nativeRows.map(row => row.status), replay.status, browserRows.map(row => row.status)], [1, wanted, 1, wanted]);
       check("a dialog outside leave-page fails exactly its navigate or click step", [nativeRows.slice(0, 2).every(row => row.failure?.message.includes("leave-page")), browserRows.slice(0, 2).map(row => [row.failure?.step, row.failure?.message.includes("leave-page")])], [true, [[1, true], [1, true]]]);

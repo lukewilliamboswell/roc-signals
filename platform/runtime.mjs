@@ -2783,9 +2783,14 @@ export class RocEngineRuntime {
           const source = (handler.policies & POLICY_PACED) !== 0 ? this.pointerSource(declaring, handler, event.pointerId) : undefined;
           this.dispatch(node.__rn, handler.h, pointer.bytes, node, source);
         } else if (handler.kind === KIND_PASTE) {
-          // getData is the only browser API for this string. Count its UTF-8
-          // bytes before allocating an encoded copy or staging any text in Wasm.
+          // getData returns the whole DOMString; the browser exposes no
+          // pre-read size check. UTF-8 needs at least one byte per UTF-16
+          // code unit, so reject this lower bound before any Unicode scan.
           const text = event.clipboardData?.getData("text/plain") ?? "";
+          if (text.length > this.maxPasteBytes) {
+            this.dispatch(node.__rn, handler.h, new Uint8Array([1]), node);
+            return;
+          }
           if (!text.isWellFormed()) throw new Error("paste text is not well-formed Unicode");
           let bytes = 0;
           for (const character of text) {

@@ -1214,6 +1214,16 @@ async function isOccurrence(page, step) {
   if (step.op.startsWith("expect-")) return false;
   if (["hold-reports", "release-reports", "mark-metrics", "stub-http", "stub-http-reject", "set-online", "set-visibility", "scroll", "report-size", "report-seen", "set-media", "storage-elsewhere", "storage-elsewhere-removed", "storage-elsewhere-cleared"].includes(step.op)) return false;
   if (step.op === "emit-port") return page.evaluate((port) => window.__rt.portDecls.get(port)?.delivery !== 2, step.port);
+  if (step.op === "paste-text") return page.evaluate(loc => {
+    const root = window.__rt.root;
+    for (let element = window.__loc(loc); element && element !== root; element = element.parentElement) {
+      const handler = element.__h?.paste;
+      // This step supplies only plain text, so a files-kind handler emits
+      // no occurrence. Unhandled paste likewise leaves held reports pending.
+      if (handler) return handler.kind === 1 || handler.kind === 9;
+    }
+    return false;
+  }, step.loc);
   if (step.op === "pointer-move") return page.evaluate(({ loc, id }) => {
     const root = window.__rt.root;
     const capture = window.__pointerCaptures?.get(id);
