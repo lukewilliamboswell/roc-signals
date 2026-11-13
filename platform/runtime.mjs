@@ -2674,10 +2674,49 @@ function httpResult(status, body, headers = []) {
   return concat(parts);
 }
 
+// The deployment marks the mount wrapper explicitly. No descendant spelling
+// assigns an engine address or an adoption role.
+const PICTURE_MARKER = "data-roc-picture";
+const PICTURE_FAILED = "data-roc-failed";
+
+function markedPicture(root) {
+  return root?.nodeType === 1 && root.hasAttribute(PICTURE_MARKER);
+}
+
+function holdPicture(root) {
+  root.setAttribute("inert", "");
+}
+
+function failPicture(root) {
+  root.setAttribute(PICTURE_FAILED, "");
+}
+
+function finishPicture(runtime) {
+  if (!runtime.picturePending) return;
+  runtime.picturePending = false;
+  runtime.root.removeAttribute(PICTURE_MARKER);
+  runtime.root.removeAttribute(PICTURE_FAILED);
+  runtime.root.removeAttribute("inert");
+}
+
+// A module can fail before there is a runtime whose containment path can
+// report it. Keep the document's picture and use the same fault vocabulary.
+function pictureLoadFault(root, error, onFault) {
+  holdPicture(root);
+  failPicture(root);
+  const message = String(error?.message ?? error);
+  const fault = { class: "executor", code: 0, message, trap: String(error) };
+  console.error(`roc engine fault [executor]: ${message}`);
+  if (onFault) onFault(fault);
+}
+
 export class RocEngineRuntime {
   constructor(exports, root, options = {}) {
     this.x = exports;
     this.root = root;
+    this.pictureManaged = markedPicture(root);
+    this.picturePending = this.pictureManaged;
+    if (this.picturePending) holdPicture(root);
     this.doc = options.document ?? globalThis.document;
     this.statics = [];
     this.sites = [];
@@ -2687,8 +2726,8 @@ export class RocEngineRuntime {
     this.documentKeys = new Map();
     this.documentListeners = new Map();
     this.heardKeys = new WeakSet();
-    this.onEvent = (event) => { if (event.bubbles) this.guard(() => this.handle(event)); };
-    this.onCapture = (event) => { if (!event.bubbles) this.guard(() => this.handle(event)); };
+    this.onEvent = (event) => { if (!this.picturePending && event.bubbles) this.guard(() => this.handle(event)); };
+    this.onCapture = (event) => { if (!this.picturePending && !event.bubbles) this.guard(() => this.handle(event)); };
     this.busy = false;
     this.pendingTransition = null;
     this.transitionIdle = Promise.resolve();
@@ -2902,24 +2941,29 @@ export class RocEngineRuntime {
   // sections. A module that speaks another protocol is refused before
   // anything runs: the runtime throws and never applies an unreadable command.
   mount() {
-    const version = typeof this.x.protocol_version === "function" ? this.x.protocol_version() : 0;
-    if (version !== PROTOCOL_VERSION) {
-      throw new Error(`roc engine protocol ${version} is not the protocol ${PROTOCOL_VERSION} this runtime implements`);
+    try {
+      const version = typeof this.x.protocol_version === "function" ? this.x.protocol_version() : 0;
+      if (version !== PROTOCOL_VERSION) {
+        throw new Error(`roc engine protocol ${version} is not the protocol ${PROTOCOL_VERSION} this runtime implements`);
+      }
+      // The app's port declarations, checked against options.ports before
+      // anything mounts: a mismatch throws, and nothing runs.
+      const boot = readDeclarations(this.x);
+      this.protocol = boot.bindings;
+      this.bootKeys = boot.keys;
+      this.sessionKeys = boot.sessionKeys;
+      this.mediaQueries = boot.media;
+      this.zoneDays = boot.zoneDays;
+      this.portDecls = new Map(boot.decls.map((d) => [d.name, d]));
+      checkPortHandlers(boot.decls, this.ports, this.manual);
+      const bytes = this.bootBytes();
+      this.monitor.runtimeMounted();
+      this.guard(() => this.mountInner(bytes));
+      this.drainQueue();
+    } catch (error) {
+      if (this.pictureManaged && !this.poisoned) this.contain(error, "executor");
+      throw error;
     }
-    // The app's port declarations, checked against options.ports before
-    // anything mounts: a mismatch throws, and nothing runs.
-    const boot = readDeclarations(this.x);
-    this.protocol = boot.bindings;
-    this.bootKeys = boot.keys;
-    this.sessionKeys = boot.sessionKeys;
-    this.mediaQueries = boot.media;
-    this.zoneDays = boot.zoneDays;
-    this.portDecls = new Map(boot.decls.map((d) => [d.name, d]));
-    checkPortHandlers(boot.decls, this.ports, this.manual);
-    const bytes = this.bootBytes();
-    this.monitor.runtimeMounted();
-    this.guard(() => this.mountInner(bytes));
-    this.drainQueue();
   }
 
   bootBytes() {
@@ -2987,6 +3031,13 @@ export class RocEngineRuntime {
     this.busy = true;
     try {
       x.init();
+      if (this.picturePending) {
+        const length = x.cmd_len();
+        if (length && new Uint8Array(x.memory.buffer, x.cmd_ptr(), length)[0] !== 0) throw new Error("picture mount batch must be unmarked");
+        // Init has succeeded. Replacement and its first batch are synchronous;
+        // the previous picture remains available if anything before init fails.
+        this.root.replaceChildren();
+      }
       this.apply();
     } finally {
       this.busy = this.pendingTransition !== null;
@@ -3021,6 +3072,8 @@ export class RocEngineRuntime {
   contain(error, klass = null) {
     this.cancelTransition();
     if (this.poisoned) return;
+    if (this.pictureManaged) failPicture(this.root);
+    if (this.picturePending) holdPicture(this.root);
     let code = 0;
     let message = String(error && error.message ? error.message : error);
     if (klass !== null) {
@@ -3077,6 +3130,12 @@ export class RocEngineRuntime {
     if (!this.module) throw new Error("recover() needs the compiled module (mountRocEngineApp keeps it)");
     const instance = await WebAssembly.instantiate(this.module, pageImports(this.module));
     this.x = instance.exports;
+    if (this.pictureManaged) {
+      this.picturePending = false;
+      this.root.removeAttribute(PICTURE_MARKER);
+      this.root.removeAttribute(PICTURE_FAILED);
+      this.root.removeAttribute("inert");
+    }
     this.root.textContent = "";
     this.statics = [];
     this.sites = [];
@@ -3155,8 +3214,9 @@ export class RocEngineRuntime {
   nativeEventListeners() {
     if (!this.manual) return;
     const on = (type, callback) => {
-      this.root.addEventListener(type, callback, true);
-      this.internal.push([type, callback]);
+      const listener = event => { if (!this.picturePending) callback(event); };
+      this.root.addEventListener(type, listener, true);
+      this.internal.push([type, listener]);
     };
     on("beforetoggle", (event) => {
       const element = event.target;
@@ -3197,8 +3257,9 @@ export class RocEngineRuntime {
   // (capture) and independently of the app's own handlers.
   controlListeners() {
     const on = (type, fn) => {
-      this.root.addEventListener(type, fn, true);
-      this.internal.push([type, fn]);
+      const listener = event => { if (!this.picturePending) fn(event); };
+      this.root.addEventListener(type, listener, true);
+      this.internal.push([type, listener]);
     };
     on("compositionstart", (e) => {
       e.target.__composing = true;
@@ -3244,6 +3305,7 @@ export class RocEngineRuntime {
       // A drop target that takes files lets the drop happen (see "Handler
       // event names" above); this helper itself dispatches no app event.
       const over = (event) => {
+        if (this.picturePending) return;
         for (let node = event.target; node && node !== this.root; node = node.parentNode) {
           const h = node.__h && node.__h.drop;
           if (h !== undefined) {
@@ -3343,7 +3405,7 @@ export class RocEngineRuntime {
     for (const type of ["keydown", "keyup"]) {
       this.documentKeys.set(type, []);
       const listener = (event) => this.guard(() => {
-        if (this.heardKeys.has(event)) return;
+        if (this.picturePending || this.heardKeys.has(event)) return;
         const live = this.documentKeys.get(type);
         for (let i = live.length - 1; i >= 0; i -= 1) {
           const { el: declaring, handler: h } = live[i];
@@ -3598,6 +3660,10 @@ export class RocEngineRuntime {
   // Reports replace only their own source's entry from the current epoch.
   // The linked queue makes appending and draining constant work per entry.
   dispatch(node, handler, payload, el, source) {
+    if (this.picturePending) {
+      if (source?.dom) source.retire();
+      return;
+    }
     if (this.poisoned || this.ending) {
       this.refused += 1;
       if (source?.dom) source.retire();
@@ -4034,13 +4100,14 @@ export class RocEngineRuntime {
 
   apply() {
     const len = this.x.cmd_len();
-    if (!len) { this.releaseFiles(); return 0; }
+    if (!len) { finishPicture(this); this.releaseFiles(); return 0; }
     const flags = new Uint8Array(this.x.memory.buffer, this.x.cmd_ptr(), len)[0];
     if (flags !== 0 && flags !== 1) throw new Error(`invalid command batch flags ${flags}`);
     const animate = flags === 1 && this.viewTransitions === "document" && this.doc.visibilityState !== "hidden" && typeof this.doc.startViewTransition === "function";
     if (!animate) {
       const batch = { types: null };
       this.applyBatch("normal", batch);
+      finishPicture(this);
       this.flushEffects();
       if (this.poisoned || this.ending) return len;
       this.releaseFiles();
@@ -5874,11 +5941,23 @@ function manualPortPayload(answer) {
 }
 
 export async function mountRocEngineApp({ wasmUrl, root, ...options }) {
-  const response = await fetch(wasmUrl);
-  if (!response.ok) throw new Error(`failed to fetch ${wasmUrl}: ${response.status}`);
-  const module = await WebAssembly.compile(await response.arrayBuffer());
-  const instance = await WebAssembly.instantiate(module, pageImports(module));
-  const runtime = new RocEngineRuntime(instance.exports, root, { ...options, module });
-  runtime.mount();
-  return runtime;
+  const picture = markedPicture(root);
+  if (picture) holdPicture(root);
+  let runtime = null;
+  try {
+    const response = await fetch(wasmUrl);
+    if (!response.ok) throw new Error(`failed to fetch ${wasmUrl}: ${response.status}`);
+    const module = await WebAssembly.compile(await response.arrayBuffer());
+    const instance = await WebAssembly.instantiate(module, pageImports(module));
+    runtime = new RocEngineRuntime(instance.exports, root, { ...options, module });
+    runtime.mount();
+    return runtime;
+  } catch (error) {
+    if (picture) {
+      if (runtime) {
+        if (!runtime.poisoned) runtime.contain(error, "executor");
+      } else pictureLoadFault(root, error, options.onFault);
+    }
+    throw error;
+  }
 }
