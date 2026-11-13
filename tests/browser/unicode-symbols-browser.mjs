@@ -5,7 +5,7 @@ import http from "node:http";
 import path from "node:path";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
-const options = parseArgs(process.argv.slice(2), ["oracle"]);
+const options = parseArgs(process.argv.slice(2), ["oracle"], ["runtime"]);
 if (!options.oracle) throw new Error("--oracle PATH to the native unicode-symbols output is required");
 const bytes = fs.readFileSync(options.oracle);
 assert.equal(bytes.length, 139264, "the native oracle must supply one bit per Unicode code point");

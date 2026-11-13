@@ -15,7 +15,7 @@ import path from "node:path";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
 
-const opts = parseArgs(process.argv.slice(2));
+const opts = parseArgs(process.argv.slice(2), [], ["runtime"]);
 const files = runtimeFiles(opts.runtime);
 const MIB = 1024 * 1024;
 const BODY_BYTES = 32 * MIB;

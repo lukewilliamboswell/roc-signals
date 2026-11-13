@@ -5,7 +5,7 @@ import path from "node:path";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
 import { protocolFixtureSection } from "./protocol-fixture.mjs";
-const options = parseArgs(process.argv.slice(2));
+const options = parseArgs(process.argv.slice(2), [], ["runtime"]);
 const files = runtimeFiles(options.runtime);
 const server = http.createServer((request, response) => {
   const file = files[path.basename(new URL(request.url, "http://x").pathname)];
