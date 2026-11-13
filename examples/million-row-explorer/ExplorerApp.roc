@@ -59,7 +59,7 @@ ExplorerApp := [].{
 				Engine.watch(
 					Explorer.question({}).map(Explorer.sampling),
 					|sampling| match sampling {
-						Waiting => [Timer(Explorer.sample_ms)]
+						Waiting => [Engine.timer(Explorer.sample_ms)]
 						Asked => []
 					},
 					Engine.react_by(cells.shown.signal(), |shown, _, _| Explorer.sampled(shown)),
@@ -69,10 +69,10 @@ ExplorerApp := [].{
 				Engine.watch_latest(
 					{ flow: cells.flow.signal(), rate: cells.rate.signal() }.Signal,
 					|{ flow, rate }| match flow {
-						Live => [Feed.orders.subscribe({ per_second: rate })]
+						Live => [Feed.orders.ask({ per_second: rate })]
 						Paused => []
 					},
-					Engine.react(|_, res| Explorer.received(Feed.orders.message(res))),
+					Engine.react(|_, res| Explorer.received(res)),
 				),
 			],
 		)
