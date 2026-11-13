@@ -13,7 +13,7 @@ import { readFile } from "node:fs/promises";
 
 const PROTOCOL_VERSION = 12;
 const WORK_METRIC_BASE = 16;
-const OPCODES = ["", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "FOCUS"];
+const OPCODES = ["", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF"];
 const FAULTS = ["none", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed"];
 
 const path = process.argv[2];
@@ -40,8 +40,25 @@ console.log(`protocol ${version}`);
 if (version !== PROTOCOL_VERSION) process.exit(1);
 
 let trapped = false;
+let mediaCount = null;
 try {
   x.boot_keys();
+  // Boot carries flags in declaration order, so explicit defaults need one
+  // False byte for every declared query, including apps with preferences.
+  const declarations = new DataView(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
+  for (let at = 0; at < declarations.byteLength;) {
+    const tag = declarations.getUint8(at);
+    const length = declarations.getUint32(at + 1, true);
+    const body = at + 5;
+    if (body + length > declarations.byteLength) throw new Error("truncated declaration section");
+    if (tag === 6) {
+      if (mediaCount !== null || length < 4) throw new Error("invalid media declaration section");
+      mediaCount = declarations.getUint32(body, true);
+      if (mediaCount > 32) throw new Error("media declaration exceeds the protocol bound");
+    }
+    at = body + length;
+  }
+  if (mediaCount === null) throw new Error("missing media declaration section");
   x.payload_reserve(0);
   x.init();
 } catch (_) {
@@ -66,6 +83,7 @@ const defaults = new Uint8Array([
   2, 5, 0, 0, 0, 1, 0, 0, 0, 0,
   3, 1, 0, 0, 0, 1,
   4, 1, 0, 0, 0, 1,
+  6, mediaCount, 0, 0, 0, ...new Array(mediaCount).fill(0),
 ]);
 const other = (await WebAssembly.instantiate(module, { env })).exports;
 other.boot_keys();
