@@ -1424,7 +1424,7 @@ ingress and batch focus work. Its answer is then an occurrence. The native
 runner likewise defers the read itself, so a queued occurrence that writes
 storage before the callback is reflected in the answer.
 
-`CANCEL` makes all waiting reports of its subscription dead and removes
+`CANCEL` makes all waiting reports of its request or subscription dead and removes
 its source index entry. Draining skips them without delivery or stale
 counts. A waiting DOM report follows the
 existing element and node identity checks; a new element with a recycled
@@ -3349,6 +3349,7 @@ bound and a declared behaviour at the bound:
 | Follow-up turns of depth 1 per host call | One for each request the external turn issued past the in-flight cap, and one for each `Self` it asked for | All run |
 | Follow-up turns of depth 2 or more per host call | 64 per in-flight slot, at least 4096 | `resource_limit` poison |
 | HTTP timeout, work timeout | 600 s | Capped |
+| Transfer progress sampler | One latest sample and one timer per request that asks for progress | Reports no more often than the requested interval (floor 16 ms); final, failure, timeout or cancel clears the timer |
 | A cancelled job that finishes (`on_cancel: Finish`) | Its timeout, else 600 s after it was performed | Its worker is terminated as at a timeout |
 | Worker catalogue | 64 names (a preparation's and its tasks' each count) | `contract` poison |
 | Port catalogue | 64 ports, names 1–128 bytes | `contract` poison |

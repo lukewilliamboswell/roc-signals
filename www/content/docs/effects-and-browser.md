@@ -579,7 +579,8 @@ itself is one decision. [Conduit](@/examples/conduit.md) is built this way.
 ## Subscriptions and lifetime
 
 Connectivity, visibility, media, other documents' storage writes, a
-port's `Latest` messages and transfer progress report current state. They wait for the next animation frame; a newer waiting report
+port's `Latest` messages and transfer progress report current state. They
+wait for the next animation frame; a newer waiting report
 from the same source replaces the earlier one in place. A visible
 page given no frames drains within 100 ms, and a hidden page drains at the
 end of the reporting task.
@@ -593,7 +594,7 @@ turn comes; reports raised while it waited in the port's own queue come
 first.
 
 The runtime captures a report's value when it arrives. Cancelling its
-subscription drops waiting reports without delivering them. Use
+request or subscription drops waiting reports without delivering them. Use
 [`hold-reports` and `release-reports`](@/docs/testing.md#reports) in a spec
 to state what a frame of reports should do.
 
