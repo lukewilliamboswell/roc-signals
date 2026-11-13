@@ -526,9 +526,6 @@ Engine := [].{
 	## under the page's `maxFileBytes` ceiling.
 	ReadProps : Core.ReadProps
 
-	## How `File.upload` sends a file: `url` (required), `method` (`"POST"`
-	## by default), `headers` (none by default) and `timeout` (`Unlimited`
-	## by default, or `Ms(ms)`).
 	## Browser cache policy for HTTP and downloaded files.
 	Cache : Core.Cache
 
@@ -542,6 +539,10 @@ Engine := [].{
 	http : HttpProps -> Request
 	http = Core.http
 
+	## How `File.upload` sends a file: `url` (required), `method` (`"POST"`
+	## by default), `headers` (none by default) and `timeout` (`Unlimited`
+	## by default, or `Ms(ms)`).
+	## Credentials default to SameOrigin; Include permits credentials across origins.
 	UploadProps : Core.UploadProps
 
 	## A piece of state as context `ctx` sees it, holding an `s`.
@@ -988,6 +989,9 @@ Engine := [].{
 	## `with_progress(props, handler)` attaches a separate sampled transfer
 	## reaction to this site’s HTTP, upload and fetch requests. The handler
 	## receives the original issued-for item; a report keeps its request live.
+	## Composing attached reactions with `also` runs their progress writes in
+	## operand order, atomically, at the smaller requested interval. Calling
+	## `with_progress` again replaces the resulting attachment.
 	Reaction(ctx, a) : Core.Reaction(ctx, a)
 
 	## A sampled count from one transfer, with a truthful known or unknown total.

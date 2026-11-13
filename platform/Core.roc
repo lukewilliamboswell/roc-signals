@@ -3444,7 +3444,8 @@ w_port_sends = 40
 
 ## The number of counters in the work record: the work counters, the eight
 ## effect counters, port commands (40), property commands (41–42), and
-## released registrations (43), live observations (44), and marked batches (45).
+## released registrations (43), live observations (44), marked batches (45),
+## guard commands (46) and accepted transfer progress turns (47).
 w_record_count : U64
 w_record_count = w_count + 16
 
@@ -7663,10 +7664,7 @@ max_breadth = |inflight| max_turns * (if (inflight > max_turns) inflight else ma
 ## the list of requests issued for that value.
 Owned(a) : { id : U32, sub : Bool, keep : Bool, a : a, at : U64 }
 
-## Fixed per effect site: `plan` gives the requests for the value at
-## mount, and `step` those for a change from the value last seen to a new
-## one at the site's path (`plan` of the new value, except for `on_post`,
-## which checks the change).
+## Internal input for a request’s ordinary turn: final result or sampled progress.
 EffectInput : [Final(Result), Progress(Core.Transfer)]
 
 ProgressHandler(ctx, a) : [NoProgress, Reporting({ every_ms : U32, run : (ctx, a, Core.Transfer, List(U32) -> (ctx, Layers)) })]
@@ -7730,6 +7728,10 @@ put_http_options = |bytes, cache, credentials, progress_ms| {
 	put_u32(bytes.append(cache_code).append(credentials_code), progress_ms)
 }
 
+## Fixed per effect site: `plan` gives the requests for the value at
+## mount, and `step` those for a change from the value last seen to a new
+## one at the site's path (`plan` of the new value, except for `on_post`,
+## which checks the change).
 EffectCfg(ctx, a) : { v : Signal(ctx, a), plan : (ctx, a -> List(Request)), step : (ctx, a, a, List(U32) -> List(Request)), react : Reaction(ctx, a), path : List(U32) }
 
 ## The `step` of a site that issues `plan` of each new value.
@@ -10311,5 +10313,39 @@ expect {
 		pending: [1],
 		reports: Ok(1),
 		final: 0,
+	}
+}
+
+## Composed progress handlers write the same local state in operand order and
+## settle their store writes together, as exactly one counted progress turn.
+expect {
+	store = Core.store_of({}, Core.cell(0.U64))
+	cell = store.cells()
+	view = Core.state(
+		1.U64,
+		|local| Core.element(
+			"main",
+			[],
+			[
+				Core.text_s(Core.Signal.map2(local.signal(), cell.signal(), |value, shared| "${value.to_str()}/${shared.to_str()}")),
+				Core.watch(
+					Core.const({}),
+					|_| [Core.http({ url: "/composed" })],
+					Core.ignore({}).with_progress({ every_ms: 300 }, local.on_progress(|value, _, _| value + 1))
+						.also(Core.ignore({}).with_progress({ every_ms: 100 }, local.on_progress(|value, _, _| value * 2)))
+						.also(Core.ignore({}).with_progress({ every_ms: 200 }, Core.store_progress(|_, transfer| [cell.set(transfer.done)]))),
+				),
+			],
+		),
+	)
+	(before, mount) = Core.take_cmds(Core.mount_store(32, store.initial(), view), [])
+	(after, commands) = Core.take_cmds(Core.progress(before, 1, { direction: Receiving, done: 9, total: Unknown }), [])
+	{ interval: mount.drop_first(mount.len() - 4), commands, writes: Core.work_counters(after).get(27), progress: Core.work_counters(after).get(47), delivered: Core.fx_stats(after).delivered, settled: Core.settled(after).is_ok() } == {
+		interval: [100, 0, 0, 0],
+		commands: [0, 12, 2, 0, 0, 0, 3, 0, 0, 0, '4', '/', '9'],
+		writes: Ok(2),
+		progress: Ok(1),
+		delivered: 0,
+		settled: True,
 	}
 }
