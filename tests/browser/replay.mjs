@@ -727,9 +727,12 @@ async function press(page, step, state) {
 // storage event rather than a synthetic callback or a driver-invented value.
 async function storageElsewhere(page, step, state) {
   const source = await page.evaluate(() => location.origin);
-  const other = await state.context.newPage();
+  if (!state.storagePage) {
+    state.storagePage = await state.context.newPage();
+    await state.storagePage.goto(`${source}/storage-driver.html`);
+  }
+  const other = state.storagePage;
   try {
-    await other.goto(`${source}/storage-driver.html`);
     await page.evaluate(key => {
       let resolve;
       const promise = new Promise(done => { resolve = done; });
@@ -758,7 +761,6 @@ async function storageElsewhere(page, step, state) {
     });
   } finally {
     await page.evaluate(() => { if (window.__storageStep) window.removeEventListener("storage", window.__storageStep.listener); delete window.__storageStep; });
-    await other.closeTarget();
   }
   return settle(page);
 }

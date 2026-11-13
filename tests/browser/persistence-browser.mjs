@@ -4,13 +4,23 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
 
-const opts = parseArgs(process.argv.slice(2));
+const opts = parseArgs(process.argv.slice(2), ["runner"]);
+if (!opts.runner) throw new Error("--runner SERVICES_RUNNER is required for guarded-navigation replay contracts");
+const here = path.dirname(fileURLToPath(import.meta.url));
 const files = { ...runtimeFiles(opts.runtime), "app.wasm": opts.wasm };
 const server = http.createServer((req, res) => {
-  const name = path.basename(new URL(req.url, "http://fixture").pathname);
+  const url = new URL(req.url, "http://fixture");
+  const name = path.basename(url.pathname);
+  if (url.pathname.startsWith("/activation/")) {
+    res.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" });
+    res.end('<!doctype html><button>Activate</button><script>window.documentToken=crypto.randomUUID();addEventListener("beforeunload",event=>{event.preventDefault();event.returnValue=true})</script>'); return;
+  }
   if (files[name]) {
     res.writeHead(200, { "content-type": name.endsWith(".wasm") ? "application/wasm" : "text/javascript" }); res.end(fs.readFileSync(files[name]));
   } else { res.writeHead(200, { "content-type": "text/html" }); res.end('<!doctype html><title>Persistence contract</title><button id="activate">Activate</button><a id="leave" href="/after">Leave</a><div id="app"></div>'); }
@@ -318,6 +328,31 @@ try {
     check("real engine disposal and remount update the guard without an awaited slot", lifetime, [true, true, true, true]);
     await context.close();
   }
+  // Chromium carries sticky activation through renderer-initiated,
+  // same-origin top-frame navigation. Transient activation resets. Observe
+  // real documents and real dialogs; the driver never sets CDP userGesture.
+  // Chromium's rule: navigation_request.cc, should_have_sticky_user_activation.
+  {
+    const context = await browser.createBrowserContext(); const page = await context.newPage();
+    const frames = [], dialogs = [];
+    page.conn.on(page.sessionId, "Page.frameNavigated", event => { if (!event.frame.parentId) frames.push({ id: event.frame.id, loader: event.frame.loaderId }); });
+    page.conn.on(page.sessionId, "Page.javascriptDialogOpening", async event => { dialogs.push(event.type); await page.send("Page.handleJavaScriptDialog", { accept: true }); });
+    const activation = () => page.evaluate(() => ({ token: window.documentToken, timeOrigin: performance.timeOrigin, active: navigator.userActivation.isActive, sticky: navigator.userActivation.hasBeenActive }));
+    const navigate = async url => {
+      await page.evaluate(url => { setTimeout(() => location.assign(url), 0); }, url);
+      await page.waitForFunction(`location.pathname === ${JSON.stringify(url)}`);
+    };
+    await page.goto(`${base}/activation/start`); const initial = await activation();
+    await navigate("/activation/unactivated"); const fresh = await activation(); const unasked = dialogs.length;
+    await page.clickAt(await page.evaluate(() => { const r = document.querySelector("button").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }));
+    const clicked = await activation();
+    await navigate("/activation/next"); const next = await activation();
+    await navigate("/activation/last"); const last = await activation();
+    check("fresh documents start unactivated; same-origin navigation preserves sticky but resets transient activation", [initial.active, initial.sticky, fresh.active, fresh.sticky, clicked.active, clicked.sticky, next.active, next.sticky, last.active, last.sticky], [false, false, false, false, true, true, false, true, false, true]);
+    check("same-origin carry belongs to fresh documents with distinct tokens, time origins and loaders", [new Set([initial.token, fresh.token, next.token, last.token]).size, new Set([initial.timeOrigin, fresh.timeOrigin, next.timeOrigin, last.timeOrigin]).size, new Set(frames.map(frame => frame.loader)).size, new Set(frames.map(frame => frame.id)).size], [4, 4, 4, 1]);
+    check("a fresh guard leaves unasked, then both guarded same-origin documents ask after activation", [unasked, dialogs], [0, ["beforeunload", "beforeunload"]]);
+    await context.close();
+  }
   // Each case gets a fresh document, so a previous activation cannot mask
   // the browser's sticky-activation requirement for beforeunload.
   for (const mode of ["unactivated", "on", "off", "poison", "unmount", "recover", "link"]) {
@@ -341,6 +376,25 @@ try {
     await page.waitForFunction('location.pathname === "/after"');
     check(`real beforeunload policy (${mode})`, dialogs, ["on", "poison", "link"].includes(mode) ? ["beforeunload"] : []);
     await context.close();
+  }
+  // Negative cases use the same Roc parser and must fail the action that
+  // opened a forbidden dialog. Positive cases really answer Chrome's dialog.
+  {
+    const fixtures = ["guarded-navigate", "guarded-link", "guarded-stay", "guarded-leave", "disposed-guard"].map(name => path.join(here, "../apps/services/contracts", `${name}.scm`));
+    const emitted = spawnSync(opts.runner, ["--emit-steps", ...fixtures], { encoding: "utf8", timeout: 30000 });
+    if (emitted.status !== 0) throw new Error(`could not parse guarded-navigation contracts: ${emitted.stderr}`);
+    const native = spawnSync(opts.runner, fixtures, { encoding: "utf8", timeout: 30000 });
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-persistence-contract-"));
+    try {
+      const steps = path.join(directory, "steps.jsonl"); fs.writeFileSync(steps, emitted.stdout);
+      const replay = spawnSync(process.execPath, [path.join(here, "replay.mjs"), "--wasm", opts.wasm, "--runtime", opts.runtime, "--steps", steps, "--chrome", opts.chrome, "--json-lines"], { encoding: "utf8", timeout: 60000 });
+      const rows = output => output.split("\n").filter(Boolean).map(line => JSON.parse(line));
+      const wanted = ["failed", "failed", "passed", "passed", "passed"];
+      const nativeRows = rows(native.stdout), browserRows = rows(replay.stdout);
+      check("guarded navigation/link failures and deliberate stay/leave/disposal agree in both runners", [native.status, nativeRows.map(row => row.status), replay.status, browserRows.map(row => row.status)], [1, wanted, 1, wanted]);
+      check("a dialog outside leave-page fails exactly its navigate or click step", [nativeRows.slice(0, 2).every(row => row.failure?.message.includes("leave-page")), browserRows.slice(0, 2).map(row => [row.failure?.step, row.failure?.message.includes("leave-page")])], [true, [[1, true], [1, true]]]);
+      if (JSON.stringify(browserRows.map(row => row.status)) !== JSON.stringify(wanted)) console.log(replay.stderr);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   }
 } finally { await browser.close(); server.close(); }
 console.log(`== persistence browser: ${checks - failures}/${checks} pass`);
