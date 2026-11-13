@@ -691,7 +691,7 @@ encode_res = |res| match res {
 	Timeout => [7]
 	Value(v) => [3].concat(Str.to_utf8(v))
 	Missing => [4]
-	Fired => [5]
+	Fired(at_ms) => SpecRunner.put_u64([5], at_ms.to_u64_wrap())
 	Location(u) => [6].concat(Str.to_utf8(u))
 	Work({ output, files: [] }) => SpecRunner.encode_answer(output)
 	WorkLost(AppCrash) => [11, 4]
@@ -829,7 +829,7 @@ run_program! = |prog| {
 			# and its `Ok` flag) or a lost job for an arbitrary id: a tick is an
 			# equal fold for R and "other" for logs.
 			id = (arg.to_u32() % $m.next) + 1
-			res = if (arg % 4 == 1) Work({ output: [arg, 0], files: [] }) else if (arg % 4 == 3) WorkLost(AppCrash) else Fired
+			res = if (arg % 4 == 1) Work({ output: [arg, 0], files: [] }) else if (arg % 4 == 3) WorkLost(AppCrash) else Fired(arg.to_i64())
 			(deliver!($s, id, res), model_deliver(m0, id, res), "result ${id.to_str()}")
 		}
 		check!("step ${($i // 2).to_str()} ${what}", e, m2)

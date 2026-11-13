@@ -46,7 +46,7 @@ long_exit = |_| Engine.state(
 					|book| if (book.leaving) [Timer(1500)] else [],
 					books.lift_row().on_result(
 						|current, issued, result| match result {
-							Fired | Refused => current.keep_if(|book| book.id != issued.id)
+							Fired(_) | Refused => current.keep_if(|book| book.id != issued.id)
 							_ => current
 						},
 					),

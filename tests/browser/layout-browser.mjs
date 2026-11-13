@@ -68,7 +68,7 @@ try {
     window.__mediaFixture = (queries, environment, declarationOverride) => {
       const memory = new WebAssembly.Memory({ initial: 2 });
       let staged = null, initialized = false;
-      const declarations = declarationOverride ?? join(section(2, u32(0)), section(5, u32(0)), section(6, join(u32(queries.length), ...queries.map(str))));
+      const declarations = declarationOverride ?? join(section(2, u32(0)), section(5, u32(0)), section(6, join(u32(queries.length), ...queries.map(str))), section(10, new Uint8Array([110, 1])));
       new Uint8Array(memory.buffer).set(declarations);
       const exports = { memory, protocol_version: () => PROTOCOL_VERSION, boot_keys: () => {}, cmd_ptr: () => 0, cmd_len: () => initialized ? 0 : declarations.length, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {},
         payload_reserve: (length) => { staged = { start: 65536, length }; return staged.start; }, init: () => { initialized = true; } };
@@ -165,7 +165,9 @@ try {
     const query = new EventTarget(); Object.defineProperty(query, "matches", { get: () => { reads += 1; return reads === 1 ? false : true; } });
     const f = __mediaFixture(["q"], { matchMedia: () => query }); f.rt.mount();
     const bytes = new Uint8Array(f.memory.buffer, f.staged.start, f.staged.length);
-    const result = [reads, bytes.at(-1)]; f.end(); return result;
+    let at = 0, flag;
+    while (at < bytes.length) { const size = new DataView(bytes.buffer, bytes.byteOffset + at + 1, 4).getUint32(0, true); if (bytes[at] === 6) flag = bytes[at + 5]; at += size + 5; }
+    const result = [reads, flag]; f.end(); return result;
   });
   check("a media boot snapshot reads and validates its match exactly once", mediaSnapshot, [1, 0]);
 

@@ -13,6 +13,8 @@ import Notes
 ##   readers.
 ## - `hide_synced`: whether the list leaves out the notes that have
 ##   synced.
+## - `clock`: the last sample, read only where a relative time is shown.
+## - `stamps` and `refreshes`: posted requests for fresh clock samples.
 ##
 ## The store stands apart from the page (`NotesApp`) so that what the app
 ## shares and how it changes are read, and tested, without the markup.
@@ -29,6 +31,9 @@ AppStore := [FieldNotes].{
 			board: Engine.cell(Notes.initial([], False)),
 			draft: Engine.cell(""),
 			hide_synced: Engine.cell(False),
+			clock: Engine.cell(0.I64),
+			stamps: Engine.cell(Engine.outbox({})),
+			refreshes: Engine.cell(Engine.outbox({})),
 		}.Engine.Cells,
 	)
 
@@ -38,7 +43,7 @@ AppStore := [FieldNotes].{
 	## The store a session starts with: the notes kept in local storage on
 	## a board that knows whether the browser is online.
 	start : Engine.Boot -> Engine.Store(_, _)
-	start = |boot| AppStore.store.with_initial(AppStore.cells.board, Notes.initial(Notes.stored_notes(boot.storage), boot.online))
+	start = |boot| AppStore.store.with_initial(AppStore.cells.board, Notes.seeded(Notes.initial(Notes.stored_notes(boot.storage), boot.online), boot.seed)).with_initial(AppStore.cells.clock, boot.now_ms)
 
 	## The reader types in the new note's box.
 	drafted : Str -> List(Engine.Write(_))
@@ -46,13 +51,41 @@ AppStore := [FieldNotes].{
 
 	## The reader saves `draft`: it joins the board as a note and the box
 	## is cleared, in one transition. A blank draft writes nothing.
-	saved : Str -> List(Engine.Write(_))
-	saved = |draft|
-		if Notes.draft_body(draft) == "" {
+	saved : { draft : Str, id : Str, has_room : Bool } -> List(Engine.Write(_))
+	saved = |{ draft, id, has_room }|
+		if Notes.draft_body(draft) == "" or !has_room {
 			[]
 		} else {
-			[AppStore.cells.board.update(|board| Notes.save_note(board, draft)), AppStore.cells.draft.set("")]
+			[
+				AppStore.cells.board.update(|board| Notes.save_note(board, draft)),
+				AppStore.cells.draft.set(""),
+				AppStore.cells.stamps.update(|outbox| outbox.post(id)),
+			]
 		}
+
+	## The capture timer answers for its own posted id, independently of any
+	## later save or edit. A refused timer uses the clock cell's last sample.
+	stamped : { id : Str, at_ms : I64 } -> List(Engine.Write(_))
+	stamped = |stamp| [AppStore.cells.board.update(|board| Notes.stamped(board, stamp))]
+
+	## Timer refusal keeps the capture usable with the most recent sample;
+	## successful callbacks always take their own newly sampled time.
+	capture_answer : { id : Str, clock : I64, result : Engine.Result } -> List(Engine.Write(_))
+	capture_answer = |{ id, clock, result }| match result {
+		Fired(at_ms) => AppStore.stamped({ id, at_ms })
+		Refused => AppStore.stamped({ id, at_ms: clock })
+		_ => []
+	}
+
+	## Clock samples are separate from the board, so ticks reach only holes
+	## that show time and never rebuild the note list or its sync lanes.
+	clocked : I64 -> List(Engine.Write(_))
+	clocked = |at_ms| [AppStore.cells.clock.set(at_ms)]
+
+	## Returning to a visible page asks for a fresh sample through Timer(0).
+	## The visibility report itself is not a clock read.
+	visibility_changed : Bool -> List(Engine.Write(_))
+	visibility_changed = |visible| if (visible) [AppStore.cells.refreshes.update(|outbox| outbox.post({}))] else []
 
 	## The reader edits the body of the note `id`, which queues it again
 	## if it had synced.
@@ -97,7 +130,7 @@ AppStore := [FieldNotes].{
 stored : Engine.Store(_, _)
 stored = AppStore.store.with_initial(
 	AppStore.cells.board,
-	Notes.initial([{ id: "n0", slot: 0, body: "Generator hours", queued: True, rev: "r7" }, { id: "n1", slot: 1, body: "Fence line check", queued: False, rev: "r7" }], True),
+	Notes.initial([{ id: "n0", slot: 0, body: "Generator hours", queued: True, rev: "r7", captured: Unknown }, { id: "n1", slot: 1, body: "Fence line check", queued: False, rev: "r7", captured: Unknown }], True),
 )
 
 ## The ids of a store's notes, in drain order.
@@ -115,14 +148,14 @@ status = |at, id| match Notes.board_rows(at.read(AppStore.cells.board)).find_fir
 ## a blank draft writes neither cell.
 expect {
 	typed = stored.after(AppStore.drafted(" Pump | pressure "))
-	saved = typed.after(AppStore.saved(typed.read(AppStore.cells.draft)))
+	saved = typed.after(AppStore.saved({ draft: typed.read(AppStore.cells.draft), id: Notes.next_id(typed.read(AppStore.cells.board)), has_room: True }))
 	blank = stored.after(AppStore.drafted("  ;  "))
-	unsaved = blank.after(AppStore.saved(blank.read(AppStore.cells.draft)))
+	unsaved = blank.after(AppStore.saved({ draft: blank.read(AppStore.cells.draft), id: Notes.next_id(blank.read(AppStore.cells.board)), has_room: True }))
 	actual =
-		\\saved: ${Str.inspect(ids(saved))} "${saved.read(AppStore.cells.draft)}" ${status(saved, "s1")}
+		\\saved: ${Str.inspect(ids(saved))} "${saved.read(AppStore.cells.draft)}" ${status(saved, "n-e220a8397b1dcdaf")}
 		\\blank: ${Str.inspect(ids(unsaved))} "${unsaved.read(AppStore.cells.draft)}"
 	expected =
-		\\saved: ["n0", "n1", "s1"] "" Draft
+		\\saved: ["n0", "n1", "n-e220a8397b1dcdaf"] "" Draft
 		\\blank: ["n0", "n1"] "  ;  "
 	actual == expected
 }
@@ -204,4 +237,32 @@ expect {
 expect {
 	hidden = stored.after(AppStore.synced_hidden(True))
 	(hidden.read(AppStore.cells.hide_synced), hidden.read(AppStore.cells.board) == stored.read(AppStore.cells.board)) == (True, True)
+}
+
+## A capture posts its own generated id; stamping it and ticking the clock
+## write different cells, and a full board cannot silently clear a draft.
+expect {
+	fresh = AppStore.start({ seed: 7, now_ms: 1234 })
+	id = Notes.next_id(fresh.read(AppStore.cells.board))
+	saved = fresh.after(AppStore.saved({ draft: "one", id, has_room: True }))
+	stamped = saved.after(AppStore.stamped({ id, at_ms: 5678 }))
+	ticked = stamped.after(AppStore.clocked(-1))
+	refused = saved.after(AppStore.saved({ draft: "two", id: Notes.next_id(saved.read(AppStore.cells.board)), has_room: False }))
+	{ post: saved.read(AppStore.cells.stamps).last(), captured: stamped.read(AppStore.cells.board).notes.map(|note| note.captured), clock: ticked.read(AppStore.cells.clock), board_unchanged: ticked.read(AppStore.cells.board) == stamped.read(AppStore.cells.board), full_unchanged: refused.read(AppStore.cells.board) == saved.read(AppStore.cells.board) } == {
+		post: Posted(id),
+		captured: [At(5678)],
+		clock: -1,
+		board_unchanged: True,
+		full_unchanged: True,
+	}
+}
+
+## Refusing the fresh timer records the last sampled time, including a
+## negative wall clock, and never leaves the saved note without a time.
+expect {
+	initial = AppStore.start({ seed: 7, now_ms: -1 })
+	id = Notes.next_id(initial.read(AppStore.cells.board))
+	saved = initial.after(AppStore.saved({ draft: "one", id, has_room: True }))
+	answered = saved.after(AppStore.capture_answer({ id, clock: saved.read(AppStore.cells.clock), result: Refused }))
+	answered.read(AppStore.cells.board).notes.map(|note| note.captured) == [At(-1)]
 }

@@ -228,12 +228,54 @@ ServicesApp := [].{
 		),
 	)
 
+	## Environment facts stay fixed while timer results carry a fresh wall clock.
+	environment_probe : Engine.Boot -> Elem(ctx)
+	environment_probe = |boot| Engine.state(
+		{ request: 0.U64, clock: boot.now_ms },
+		|st| Engine.element(
+			"div",
+			[],
+			[
+				Html.p_s(Engine.const(boot.now_ms.to_str()), [Engine.test_id("boot-time")]),
+				Html.p_s(Engine.const(boot.seed.to_str()), [Engine.test_id("boot-seed")]),
+				Html.p_s(Engine.const(Str.join_with(boot.languages, ",")), [Engine.test_id("boot-languages")]),
+				Html.p_s(Engine.const(boot.zone.name), [Engine.test_id("boot-zone")]),
+				Html.p_s(st.signal().map(|s| s.clock.to_str()), [Engine.test_id("sample-time")]),
+				Engine.watch(
+					st.signal().map(|s| s.request),
+					|_| [Timer(0)],
+					st.on_result(
+						|s, _, result| match result {
+							Fired(clock) => { ..s, clock }
+							Refused => s
+							_ => crash "environment probe expected a timer result"
+						},
+					),
+				),
+				Engine.watch(
+					Engine.const({}),
+					|_| [Interval(1000)],
+					st.on_result(
+						|s, _, result| match result {
+							Fired(clock) => { ..s, clock }
+							Refused => s
+							_ => crash "environment probe expected an interval result"
+						},
+					),
+				),
+				Html.button("Sample clock", [], st.update(|s| { ..s, request: s.request + 1 })),
+			],
+		),
+	)
+
 	## The program both hosts run.
 	program : Engine.Program
 	program = Engine.program_boot(
 		{ storage_keys: [], max_inflight: 8 },
 		|boot|
-			if boot.url.ends_with("#limit-children") {
+			if boot.url.ends_with("#environment") {
+				ServicesApp.environment_probe(boot)
+			} else if boot.url.ends_with("#limit-children") {
 				ServicesApp.too_wide({})
 			} else {
 				Engine.state(ServicesApp.initial(boot), |st| ServicesApp.view(st))

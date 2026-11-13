@@ -1,10 +1,10 @@
 (test "Field notes — initial mount"
   (setup
+    (seed 7)
     ; Field Notes: offline capture, outbox drain, rollback, and restore.
     ;
-    ; Storage format is "id|slot|queued|rev|body" per note, notes joined by ";".
-    ; Notes captured in this session get session ids ("s<n>"). Every operation is
-    ; idempotent, so replaying the log over the value it just persisted is stable.
+    ; These five-field fixtures exercise restoration of notes captured before
+    ; timestamps were stored. New notes use the document seed and sampled time.
 
     (initial-online offline)
     (local-storage "field-notes:notes" "n0|0|1|r7|Generator hours;n1|1|0|r7|Fence line check")
@@ -34,17 +34,21 @@
     (expect-visible (role region :name "Notes"))
     (expect-visible (role region :name "Note n0"))
     (expect-value (label "Body n0") "Generator hours")
+    (expect-text (test-id "captured-n0") "Capture time unknown")
+    (expect-no-attr (test-id "captured-n0") datetime)
     (expect-text (test-id "status-n0") "Queued")
     (expect-attr (role region :name "Note n0") data-status "queued")
     (expect-disabled (role button :name "Queue note n0") true)
     (expect-disabled (role button :name "Retry note n0") true)
     (expect-visible (role region :name "Note n1"))
     (expect-value (label "Body n1") "Fence line check")
+    (expect-text (test-id "captured-n1") "Capture time unknown")
+    (expect-no-attr (test-id "captured-n1") datetime)
     (expect-text (test-id "status-n1") "Draft")
     (expect-attr (role region :name "Note n1") data-status "draft")
     (expect-disabled (role button :name "Queue note n1") false)
     (expect-disabled (role button :name "Retry note n1") true)
-    (expect-absent (role region :name "Note s1"))
+    (expect-absent (role region :name "Note n-63cbe1e459320dd7"))
     ; Offline means nothing is started even though a restored note is queued.
     (expect-pending-effects 0)
   )

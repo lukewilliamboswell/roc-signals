@@ -261,6 +261,10 @@ Scm := [].{
 		InitialVisibility(Visibility),
 		InitialOnline(Online),
 		InitialMedia({ query : Str, matches : Bool }),
+		InitialTime(I64),
+		Seed(U128),
+		Languages(List(Str)),
+		TimeZone(Core.Zone),
 		LocalStorage({ key : Str, value : Str }),
 
 		## Local storage cannot be used at all: every access throws, as in a
@@ -291,6 +295,10 @@ Scm := [].{
 		for { item, pos } in setup {
 			env = $env
 			$env = match item {
+				InitialTime(now_ms) => { ..env, now_ms }
+				Seed(seed) => { ..env, seed }
+				Languages(languages) => { ..env, languages }
+				TimeZone(zone) => { ..env, zone }
 				InitialLocation(url) => { ..env, url }
 				InitialOnline(value) => { ..env, online: value == Online }
 				InitialVisibility(value) => { ..env, visible: value == Visible }
@@ -313,15 +321,112 @@ Scm := [].{
 		Ok($env)
 	}
 
-	## Facts that survive a new document unchanged. Features with a per-document
-	## value extend this hook instead of giving either runner its own reset rule.
-	next_document : Environment -> Environment
-	next_document = |env| env
+	## Carry the current clock and browser facts into the next document while
+	## advancing its reproducible seed. Exhaustion is a diagnostic, never a wrap.
+	next_document : Environment -> Try(Environment, Str)
+	next_document = |env| {
+		if env.seed == 340282366920938463463374607431768211455 {
+			return Err("spec seed exhausted the U128 document sequence")
+		}
+		Ok({ ..env, seed: env.seed + 1 })
+	}
 
 	## Every environment section by its wire-table name. The browser replay's
 	## appliers must cover exactly this list, checked with the rest of its grammar.
 	environment_sections : List(Str)
-	environment_sections = ["location", "local-storage", "connectivity", "visibility", "media"]
+	environment_sections = ["location", "local-storage", "connectivity", "visibility", "media", "time", "seed", "languages", "time-zone"]
+
+	## Full-width seeds are decimal data; larger numeric atoms remain symbols
+	## in the generic s-expression parser and are interpreted only here.
+	seed_value : Sx -> Try(U128, Problem)
+	seed_value = |sx| match sx {
+		Int(n, _) if n >= 0 => Ok(n.to_u64_wrap().to_u128())
+		Unsigned(n, _) => Ok(n.to_u128())
+		Sym(text, _) => Ok(U128.from_str(text) ? |_| Scm.bad(sx, "the seed must be an integer in U128"))
+		_ => Err(Scm.bad(sx, "the seed must be a non-negative integer in U128"))
+	}
+
+	## A language list is bounded data, not a second BCP47 implementation.
+	read_languages : Sx, List(Sx) -> Try(List(Str), Problem)
+	read_languages = |form, args| {
+		if args.is_empty() or args.len() > 16 {
+			return Err(Scm.bad(form, "languages takes 1 to 16 tags"))
+		}
+		var $languages = []
+		for sx in args {
+			language = Scm.string(sx, "a language tag")?
+			if language.count_utf8_bytes() > 64 {
+				return Err(Scm.bad(sx, "a language tag must be at most 64 UTF-8 bytes"))
+			}
+			$languages = $languages.append(language)
+		}
+		Ok($languages)
+	}
+
+	## Specs state an initial offset followed by exact UTC-millisecond
+	## transitions. Their table covers all I64 time, independently of a probe.
+	time_zone : Sx, List(Sx) -> Try(Core.Zone, Problem)
+	time_zone = |form, args| {
+		if args.len() < 2 or args.len() > 129 {
+			return Err(Scm.bad(form, "time-zone takes a name, an offset and at most 127 transitions"))
+		}
+		name = Scm.string(Scm.arg(args, 0), "the zone name")?
+		if name.count_utf8_bytes() > 64 {
+			return Err(Scm.bad(form, "the zone name must be at most 64 UTF-8 bytes"))
+		}
+		minutes = Scm.zone_minutes(Scm.arg(args, 1))?
+		var $offsets = [{ from_ms: -9223372036854775808.I64, minutes }]
+		var $previous = -9223372036854775808.I64
+		for sx in args.drop_first(2) {
+			pair = match sx {
+				List(parts, _) => Scm.arity(sx, parts, 2)?
+				_ => return Err(Scm.bad(sx, "a zone transition is (milliseconds minutes)"))
+			}
+			from_ms = Scm.integer(Scm.arg(pair, 0), "the zone transition time")?
+			if from_ms <= $previous {
+				return Err(Scm.bad(sx, "zone transitions must start in strictly ascending order"))
+			}
+			$offsets = $offsets.append({ from_ms, minutes: Scm.zone_minutes(Scm.arg(pair, 1))? })
+			$previous = from_ms
+		}
+		Ok({ name, from_ms: -9223372036854775808, until_ms: 9223372036854775807, offsets: $offsets })
+	}
+
+	zone_minutes : Sx -> Try(I32, Problem)
+	zone_minutes = |sx| {
+		value = Scm.integer(sx, "the zone offset")?
+		if value < -2147483648 or value > 2147483647 {
+			return Err(Scm.bad(sx, "the zone offset must fit I32"))
+		}
+		Ok(value.to_i32_wrap())
+	}
+
+	## Clock forms accept an I64 timestamp or the one portable UTC spelling.
+	time_ms : Sx -> Try(I64, Problem)
+	time_ms = |sx| match sx {
+		Int(value, _) => Ok(value)
+		Str(text, _) => Ok(utc_milliseconds(text) ? |_| Scm.bad(sx, "time must be YYYY-MM-DDTHH:MM:SS[.sss]Z with a valid UTC date"))
+		_ => Err(Scm.bad(sx, "time must be an I64 millisecond timestamp or UTC text"))
+	}
+
+	## Wide arithmetic makes an advance across the epoch exact and refuses an
+	## exhausted clock rather than wrapping it into another date.
+	advance_clock : I64, U64 -> Try(I64, Str)
+	advance_clock = |now_ms, duration| {
+		advanced = now_ms.to_i128() + duration.to_i128()
+		if advanced > 9223372036854775807 {
+			return Err("advance-time exceeds the I64 clock range")
+		}
+		Ok(advanced.to_i64_wrap())
+	}
+
+	zone_json : Core.Zone -> JsonOut.Value
+	zone_json = |zone| Object([
+		JsonOut.field("name", Text(zone.name)),
+		JsonOut.field("from_ms", Text(zone.from_ms.to_str())),
+		JsonOut.field("until_ms", Text(zone.until_ms.to_str())),
+		JsonOut.field("offsets", Array(zone.offsets.map(|offset| Object([JsonOut.field("from_ms", Text(offset.from_ms.to_str())), JsonOut.field("minutes", Int(offset.minutes.to_i64()))])))),
+	])
 
 	## Pointer steps carry a zone-relative percentage or ask for the located
 	## element's centre. The runner rejects an ambiguous centre inside a zone.
@@ -466,6 +571,8 @@ Scm := [].{
 		ReportSize({ target : Loc, width : U32, height : U32 }),
 		ReportSeen({ target : Loc, intersecting : Bool, ratio_permille : U16 }),
 		SetMedia({ query : Str, matches : Bool }),
+		SetTime(I64),
+		AdvanceTime(U64),
 		ExpectObserved(U64),
 		ExpectMediaSubscriptions({ query : Str, count : U64 }),
 		Focus(Loc),
@@ -987,6 +1094,10 @@ Scm := [].{
 	## accepts exactly these; anything else is an unknown setup form.
 	setup_forms : List({ name : Str, parse : (Sx, List(Sx) -> Try(Setup, Problem)) })
 	setup_forms = [
+		{ name: "initial-time", parse: |form, args| Ok(InitialTime(Scm.time_ms(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "seed", parse: |form, args| Ok(Seed(Scm.seed_value(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "languages", parse: |form, args| Ok(Languages(Scm.read_languages(form, args)?)) },
+		{ name: "time-zone", parse: |form, args| Ok(TimeZone(Scm.time_zone(form, args)?)) },
 		{ name: "initial-location", parse: |form, args| Ok(InitialLocation(Scm.location(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
 		{ name: "initial-visibility", parse: |form, args| Ok(InitialVisibility(Scm.visibility(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
 		{ name: "initial-online", parse: |form, args| Ok(InitialOnline(Scm.online(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
@@ -1235,6 +1346,8 @@ Scm := [].{
 				Ok(ReportSeen({ target: Scm.locator(Scm.arg(args, 0))?, intersecting, ratio_permille: ratio.to_u16_wrap() }))
 			},
 		},
+		{ name: "set-time", parse: |form, args| Ok(SetTime(Scm.time_ms(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "advance-time", parse: |form, args| Ok(AdvanceTime(Scm.scroll_count(Scm.arg(Scm.arity(form, args, 1)?, 0), "the clock advance")?)) },
 		{ name: "set-media", parse: |form, args| Scm.media_fact(form, args).map_ok(|fact| SetMedia(fact)) },
 		{ name: "expect-observed", parse: |form, args| Ok(ExpectObserved(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the observation count")?)) },
 		{
@@ -1585,6 +1698,8 @@ Scm := [].{
 	## Browser replay consumes the emitted table; the native runner reads it here.
 	activation_table : List({ op : Str, grant : Activation })
 	activation_table = [
+		{ op: "set-time", grant: Never },
+		{ op: "advance-time", grant: Never },
 		{ op: "press", grant: KeyboardPress },
 		{ op: "dismiss", grant: Never },
 		{ op: "expect-shown", grant: Never },
@@ -1705,6 +1820,8 @@ Scm := [].{
 			Scroll(_) => "scroll"
 			ReportSize(_) => "report-size"
 			ReportSeen(_) => "report-seen"
+			SetTime(_) => "set-time"
+			AdvanceTime(_) => "advance-time"
 			SetMedia(_) => "set-media"
 			ExpectObserved(_) => "expect-observed"
 			ExpectMediaSubscriptions(_) => "expect-media-subscriptions"
@@ -1819,6 +1936,10 @@ Scm := [].{
 	environment_json : Environment -> JsonOut.Value
 	environment_json = |env| Object([
 		JsonOut.field("url", Text(env.url)),
+		JsonOut.field("now_ms", Text(env.now_ms.to_str())),
+		JsonOut.field("seed", Text(env.seed.to_str())),
+		JsonOut.field("languages", Array(env.languages.map(|language| Text(language)))),
+		JsonOut.field("zone", Scm.zone_json(env.zone)),
 		JsonOut.field("storage", Array(env.storage.map(|(key, value)| Array([Text(key), Text(value)])))),
 		JsonOut.field("storage_available", Bool(env.storage_available)),
 		JsonOut.field("online", Bool(env.online)),
@@ -1871,6 +1992,10 @@ Scm := [].{
 	setup_json : { item : Setup, pos : Pos } -> JsonOut.Value
 	setup_json = |{ item, pos }| {
 		(op, args) = match item {
+			InitialTime(at_ms) => ("initial-time", [JsonOut.field("at_ms", Text(at_ms.to_str()))])
+			Seed(seed) => ("seed", [JsonOut.field("seed", Text(seed.to_str()))])
+			Languages(languages) => ("languages", [JsonOut.field("languages", Array(languages.map(|language| Text(language))))])
+			TimeZone(zone) => ("time-zone", [JsonOut.field("zone", Scm.zone_json(zone))])
 			InitialLocation(url) => ("initial-location", [JsonOut.field("text", Text(url))])
 			InitialVisibility(v) => ("initial-visibility", [JsonOut.field("text", Text(Scm.visibility_name(v)))])
 			InitialOnline(o) => ("initial-online", [JsonOut.field("text", Text(Scm.online_name(o)))])
@@ -1946,6 +2071,8 @@ Scm := [].{
 			Scroll({ target, top, left }) => [loc(target), JsonOut.field("top", Nat(top.to_u64())), JsonOut.field("left", Nat(left.to_u64()))]
 			ReportSize({ target, width, height }) => [loc(target), JsonOut.field("width", Nat(width.to_u64())), JsonOut.field("height", Nat(height.to_u64()))]
 			ReportSeen({ target, intersecting, ratio_permille }) => [loc(target), JsonOut.field("intersecting", Bool(intersecting)), JsonOut.field("ratio_permille", Nat(ratio_permille.to_u64()))]
+			SetTime(at_ms) => [JsonOut.field("at_ms", Text(at_ms.to_str()))]
+			AdvanceTime(ms) => [JsonOut.field("ms", Text(ms.to_str()))]
 			SetMedia({ query, matches }) => [JsonOut.field("query", Text(query)), JsonOut.field("matches", Bool(matches))]
 			ExpectObserved(count) => [JsonOut.field("count", Nat(count))]
 			ExpectMediaSubscriptions({ query, count }) => [JsonOut.field("query", Text(query)), JsonOut.field("count", Nat(count))]
@@ -2097,7 +2224,7 @@ expect {
 		\\${JsonOut.render(Scm.spec_fields("w", spec))}
 	expected =
 		\\[LoseWork({ fault: AppCrash, occurrence: 1 }), TimeOutWork(2), ExpectPendingWork({ count: 3, task: "example.org/search/filter" })]
-		\\{"id":"w","name":"work","setup":[],"environment":{"url":"/","storage":[],"storage_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
+		\\{"id":"w","name":"work","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
 	actual == expected
 }
 
@@ -2231,7 +2358,7 @@ expect {
 expect {
 	spec = Scm.parse("(test \"j\" (setup (local-storage \"k\" \"v\")) (steps (expect-checked (role checkbox :name \"A\") true)))")?
 	actual = JsonOut.render(Scm.spec_fields("j-file", spec))
-	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"environment\":{\"url\":\"/\",\"storage\":[[\"k\",\"v\"]],\"storage_available\":true,\"online\":true,\"visible\":true,\"media\":[]},\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
+	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"environment\":{\"url\":\"/\",\"now_ms\":\"0\",\"seed\":\"0\",\"languages\":[\"en-US\"],\"zone\":{\"name\":\"UTC\",\"from_ms\":\"-9223372036854775808\",\"until_ms\":\"9223372036854775807\",\"offsets\":[{\"from_ms\":\"-9223372036854775808\",\"minutes\":0}]},\"storage\":[[\"k\",\"v\"]],\"storage_available\":true,\"online\":true,\"visible\":true,\"media\":[]},\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
 }
 
 ## Metric names are checked: an unknown one is a parse error, and a known one
@@ -2243,7 +2370,7 @@ expect {
 		\\${JsonOut.render(Scm.spec_fields("m", spec))}
 	expected =
 		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, registrations_released, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped, view_transitions
-		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","storage":[],"storage_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
+		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
 }
 
@@ -2308,7 +2435,7 @@ expect {
 	spec = Scm.parse("(test \"resolved\" (setup (initial-location \"/a\") (initial-online offline) (initial-visibility hidden) (local-storage \"a\" \"old\") (local-storage \"b\" \"b\") (local-storage \"a\" \"new\")) (steps (mark-metrics)))")?
 	expected : Scm.Environment
 	expected = { url: "/a", online: Bool.False, visible: Bool.False, storage: [("b", "b"), ("a", "new")] }
-	{ resolved: spec.environment, next: Scm.next_document(spec.environment) } == { resolved: expected, next: expected }
+	{ resolved: spec.environment, next: Scm.next_document(spec.environment)? } == { resolved: expected, next: { ..expected, seed: 1 } }
 }
 
 ## Either order of seeding unavailable storage is a parser error at the
@@ -2477,3 +2604,76 @@ expect {
 
 ## Missing, negative, overflowing and zero transition ordinals are errors.
 expect ["(expect-transition)", "(expect-transition 0)", "(expect-transition -1)", "(expect-transition 18446744073709551616)", "(expect-transitions 18446744073709551616)", "(expect-transition 1 nope)", "(expect-transitions 1 2)"].map(|form| Scm.parse("(test \"bad\" (steps ${form}))").is_err()) == List.repeat(True, 7)
+
+## Parse the spec grammar's fixed UTC spelling, with Gregorian date checks.
+utc_milliseconds : Str -> Try(I64, [InvalidUtc])
+utc_milliseconds = |text| {
+	bytes = text.to_utf8()
+	if bytes.len() != 20 and bytes.len() != 24 {
+		return Err(InvalidUtc)
+	}
+	if bytes.get(4) != Ok('-') or bytes.get(7) != Ok('-') or bytes.get(10) != Ok('T') or bytes.get(13) != Ok(':') or bytes.get(16) != Ok(':') {
+		return Err(InvalidUtc)
+	}
+	if (bytes.len() == 20 and bytes.get(19) != Ok('Z')) or (bytes.len() == 24 and (bytes.get(19) != Ok('.') or bytes.get(23) != Ok('Z'))) {
+		return Err(InvalidUtc)
+	}
+	digits = |start, count| {
+		var $value = 0.I64
+		for byte in bytes.sublist({ start, len: count }) {
+			if byte < '0' or byte > '9' {
+				return Err(InvalidUtc)
+			}
+			$value = $value * 10 + (byte - '0').to_i64()
+		}
+		Ok($value)
+	}
+	year = digits(0, 4)?
+	month = digits(5, 2)?
+	day = digits(8, 2)?
+	hour = digits(11, 2)?
+	minute = digits(14, 2)?
+	second = digits(17, 2)?
+	milliseconds = if (bytes.len() == 24) digits(20, 3)? else 0
+	if month < 1 or month > 12 or hour > 23 or minute > 59 or second > 59 {
+		return Err(InvalidUtc)
+	}
+	leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+	month_days = [31.I64, if (leap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31].get((month - 1).to_u64_wrap()) ?? crash "internal: UTC month"
+	if day < 1 or day > month_days {
+		return Err(InvalidUtc)
+	}
+	adjusted_year = year - (if (month <= 2) 1 else 0)
+	era = (if (adjusted_year >= 0) adjusted_year else adjusted_year - 399) // 400
+	year_of_era = adjusted_year - era * 400
+	shifted_month = month + (if (month > 2) -3 else 9)
+	day_of_year = (153 * shifted_month + 2) // 5 + day - 1
+	day_of_era = year_of_era * 365 + year_of_era // 4 - year_of_era // 100 + day_of_year
+	days = era * 146097 + day_of_era - 719468
+	Ok(((days * 24 + hour) * 60 + minute) * 60000 + second * 1000 + milliseconds)
+}
+
+## Portable UTC parsing checks Gregorian dates and preserves negative epochs.
+expect {
+	valid = ["1970-01-01T00:00:00Z", "1969-12-31T23:59:59.999Z", "2000-02-29T00:00:00Z", "0000-01-01T00:00:00Z"]
+	invalid = ["1900-02-29T00:00:00Z", "2000-02-30T00:00:00Z", "1970-01-01T00:00:60Z", "1970-01-01T24:00:00Z", "1970-01-01T00:00:00.1Z", "1970-01-01T00:00:00+00:00"]
+	valid.map(utc_milliseconds) == [Ok(0), Ok(-1), Ok(951782400000), Ok(-62167219200000)] and invalid.all(|text| utc_milliseconds(text).is_err())
+}
+
+## Full-width seeds and signed clock forms resolve once; only a new document
+## advances the seed, and exhausting either integer produces an error.
+expect {
+	spec = Scm.parse("(test \"facts\" (setup (initial-time \"1969-12-31T23:59:59.999Z\") (seed 340282366920938463463374607431768211455) (languages \"\" \"en-AU\") (time-zone \"test\" -60 (0 90))) (steps (set-time -100) (advance-time 18446744073709551615)))")?
+	{ now: spec.environment.now_ms, seed: spec.environment.seed, language: spec.environment.languages, at_zero: Core.zone_offset(spec.environment.zone, 0), exhausted: Scm.next_document(spec.environment).is_err(), advance: Scm.advance_clock(-9223372036854775808, 18446744073709551615), overflow: Scm.advance_clock(9223372036854775807, 1).is_err() } == {
+		now: -1,
+		seed: 340282366920938463463374607431768211455,
+		language: ["", "en-AU"],
+		at_zero: Ok(90),
+		exhausted: Bool.True,
+		advance: Ok(9223372036854775807),
+		overflow: Bool.True,
+	}
+}
+
+## Invalid environment setup is rejected by the shared parser.
+expect ["(seed -1)", "(seed 340282366920938463463374607431768211456)", "(languages)", "(time-zone \"x\" 2147483648)", "(time-zone \"x\" 0 (1 20) (1 30))", "(initial-time \"2001-02-29T00:00:00Z\")"].all(|form| Scm.parse("(test \"bad\" (setup ${form}) (steps (mark-metrics)))").is_err())

@@ -178,6 +178,9 @@ async function navigating(page, state, act, known = undefined) {
       await new Promise((r) => setTimeout(r, 10));
     }
     await mounted(page);
+    // The new document's preinstalled reader advances its seed before the
+    // app mounts. Carry that exact environment forward for another document.
+    state.environment = await page.evaluate(() => window.__env);
     await installEnvironment(page, state);
     state.doc = await docToken(page);
     if (state.doc === before) throw new Error("expected a new document after the navigation");
@@ -1022,6 +1025,22 @@ const STEPS = {
     // Any other navigation loads a new document: the app mounts afresh.
     return navigating(page, state, () => page.evaluate((url) => location.assign(url), s.text), { cross: true, href: s.text });
   },
+  "set-time": async (page, s, state) => {
+    const value = BigInt(s.at_ms);
+    if (value < -(1n << 63n) || value > (1n << 63n) - 1n) throw new Error("set-time is outside I64");
+    state.environment.now_ms = value.toString();
+    await page.evaluate(value => { window.__env.now_ms = value; }, value.toString());
+    await installEnvironment(page, state);
+  },
+  "advance-time": async (page, s, state) => {
+    const duration = BigInt(s.ms);
+    if (duration < 0n || duration > (1n << 64n) - 1n) throw new Error("advance-time duration is outside U64");
+    const value = BigInt(state.environment.now_ms) + duration;
+    if (value < -(1n << 63n) || value > (1n << 63n) - 1n) throw new Error("advance-time exceeds I64");
+    state.environment.now_ms = value.toString();
+    await page.evaluate(value => { window.__env.now_ms = value; }, value.toString());
+    await installEnvironment(page, state);
+  },
   "set-online": async (page, s, state) => {
     const online = s.text === "online";
     if (state.environment.online === online) return;
@@ -1120,6 +1139,10 @@ const SETUP = {
   "initial-online": () => {},
   "initial-visibility": () => {},
   "initial-media": () => {},
+  "initial-time": () => {},
+  seed: () => {},
+  languages: () => {},
+  "time-zone": () => {},
   file: (out, s) => {
     if (out.files.has(s.name)) throw new Error(`file ${JSON.stringify(s.name)} is declared twice`);
     out.files.set(s.name, { type: s.type, text: s.text, count: s.count });
@@ -1173,6 +1196,23 @@ const ENVIRONMENT_SECTIONS = {
   },
   connectivity: (env) => { window.__mountOptions.environment.online = () => window.__env.online; },
   visibility: (env) => { window.__mountOptions.environment.visible = () => window.__env.visible; },
+  time: () => { window.__mountOptions.environment.now = () => BigInt(window.__env.now_ms); },
+  seed: () => {
+    window.__mountOptions.environment.seed = () => {
+      let value = BigInt(window.__env.seed);
+      if (value < 0n || value >= (1n << 128n)) throw new Error("the spec seed is exhausted at the next document");
+      const bytes = new Uint8Array(16);
+      for (let index = 0; index < bytes.length; index++) { bytes[index] = Number(value & 255n); value >>= 8n; }
+      return bytes;
+    };
+  },
+  languages: () => { window.__mountOptions.environment.languages = () => window.__env.languages; },
+  "time-zone": () => {
+    window.__mountOptions.environment.timeZone = () => {
+      const zone = window.__env.zone;
+      return { name: zone.name, from_ms: BigInt(zone.from_ms), until_ms: BigInt(zone.until_ms), offsets: zone.offsets.map(offset => ({ from_ms: BigInt(offset.from_ms), minutes: offset.minutes })) };
+    };
+  },
   media: (env) => {
     window.__mediaQueries = new Map();
     window.__mountOptions.environment.matchMedia = (query) => {
@@ -1195,7 +1235,11 @@ async function installEnvironment(page, state, seed = false) {
     window.__manualFx = true;
     for (const source of appliers) eval(`(${source})`)(environment, seed);
   };
-  const args = [state.environment, state.mount, seed, Object.values(ENVIRONMENT_SECTIONS).map(String)];
+  // Future documents get the next seed before their app starts. Keep the
+  // current document unchanged; an exhausted future seed fails its reader
+  // at mount rather than falling back to real entropy or wrapping to zero.
+  const environment = { ...state.environment, seed: seed ? state.environment.seed : (BigInt(state.environment.seed) + 1n).toString() };
+  const args = [environment, state.mount, seed, Object.values(ENVIRONMENT_SECTIONS).map(String)];
   const result = await page.send("Page.addScriptToEvaluateOnNewDocument", { source: `(${install})(...${JSON.stringify(args)})` });
   state.environmentScript = result.identifier;
 }
@@ -1272,6 +1316,7 @@ const files = {
   "runtime.mjs": opts.runtime,
   // The runtime's worker script, which it loads from beside itself.
   "worker.mjs": path.join(path.dirname(opts.runtime), "worker.mjs"),
+  "environment.mjs": path.join(path.dirname(opts.runtime), "environment.mjs"),
   "app.wasm": opts.wasm,
 };
 const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };

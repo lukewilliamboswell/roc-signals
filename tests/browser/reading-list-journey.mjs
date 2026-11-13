@@ -36,7 +36,7 @@ const server = http.createServer((req, res) => {
   res.end(fs.readFileSync(f));
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
-// 127.0.0.1 is a secure context, so crypto.randomUUID is there.
+// The runtime reads the browser seed and clock; the port only stores Roc data.
 const base = `http://127.0.0.1:${server.address().port}/reading-list/`;
 const browser = await launch({ executablePath: opts.chrome });
 
@@ -142,17 +142,17 @@ const has = (name) => window.__has(name);
 const first = await open();
 await until(first, "a new store opens empty", status, "No books yet. Add the first one above.");
 await first.evaluate(() => window.__add("Dune", "Frank Herbert"));
-await until(first, "the store numbers the first book", status, "1 book");
+await until(first, "Roc mints and stamps the first book", status, "1 book");
 await first.evaluate(() => window.__add("Piranesi", "Susanna Clarke"));
 await until(first, "and the second, newest first", titles, ["Piranesi", "Dune"]);
 await first.evaluate(() => window.__click("Start reading Dune"));
 await until(first, "moving a book shows at once", has, true, "Finish Dune");
 await until(
   first,
-  "IndexedDB holds each book as the port's JSON: a tag's name for the shelf, a U64 as digits, the store's own id",
+  "IndexedDB holds each book as the port's JSON: a tag's name for the shelf, an I64 as signed digits, Roc's seeded id",
   async () =>
     (await window.__stored())
-      .map((b) => ({ title: b.title, author: b.author, shelf: b.shelf, added: /^[0-9]+$/.test(b.added_ms), id: /^[0-9a-f-]{36}$/.test(b.id) }))
+      .map((b) => ({ title: b.title, author: b.author, shelf: b.shelf, added: /^-?[0-9]+$/.test(b.added_ms), id: /^b-[0-9a-f]{16}$/.test(b.id) }))
       .sort((a, b) => a.title.localeCompare(b.title)),
   [
     { title: "Dune", author: "Frank Herbert", shelf: "Reading", added: true, id: true },

@@ -1,0 +1,22 @@
+(test "A clock and an action timestamp read the manual clock at different times"
+  (setup
+    (initial-time "2026-11-13T00:40:00Z")
+    (seed 7)
+    (languages "en-AU")
+    (time-zone "Australia/Brisbane" 600))
+  (steps
+    (expect-text (test-id "clock") "1794530400000")
+    (expect-text (test-id "local") "10:40")
+    (advance-time 180000)
+    (expect-text (test-id "clock") "1794530400000")
+    (click (role button :name "Stamp an action"))
+    (expect-text (test-id "action") "Waiting for timer")
+    (run-effect 1)
+    (expect-text (test-id "action") "1794530580000")
+    (tick-interval 30000)
+    (expect-text (test-id "clock") "1794530580000")
+    (expect-text (test-id "local") "10:43")
+    (click (role button :name "Generate id"))
+    (expect-text (test-id "id") "63cbe1e459320dd7")
+    (click (role button :name "Generate id"))
+    (expect-text (test-id "id") "044c3cd7f43c661c")))

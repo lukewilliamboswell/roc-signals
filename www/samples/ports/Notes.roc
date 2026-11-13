@@ -10,8 +10,8 @@ Notes := [].{
 
 	# region ports
 	## A note as it crosses: JavaScript sees an object with these fields
-	## (`saved_ms` as a decimal string, since it is a `U64`).
-	Note : { id : Str, title : Str, saved_ms : U64 }
+	## (`saved_ms` as a signed decimal string, since it is an `I64`).
+	Note : { id : Str, title : Str, saved_ms : I64 }
 
 	## Every note whose title starts with `prefix`, at `revision`.
 	list : Port.Call({ prefix : Str, revision : U64 }, List(Note))
@@ -26,13 +26,29 @@ Notes := [].{
 	changed = Port.subscription({ name: "example.org/notes/changed", delivery: Latest })
 	# endregion ports
 
-	S : { prefix : Str, draft : Str, revision : U64, saves : U64, save : Note, error : Str }
+	S : { prefix : Str, draft : Str, revision : U64, saves : U64, clock : I64, stamping : Engine.Outbox(Note), save : Note, error : Str }
 
-	## The draft as the next note to save.
+	## A new document starts with its supplied clock and no pending save.
+	initial : I64 -> S
+	initial = |clock| { prefix: "", draft: "", revision: 0, saves: 0, clock, stamping: Engine.outbox({}), save: { id: "", title: "", saved_ms: 0 }, error: "" }
+
+	## Post the next note for its save's time sample, clearing the draft.
 	saved : S -> S
 	saved = |s| {
 		saves = s.saves + 1
-		{ ..s, saves, save: { id: "n${saves.to_str()}", title: s.draft, saved_ms: 0 }, draft: "" }
+		{ ..s, saves, stamping: s.stamping.post({ id: "n${saves.to_str()}", title: s.draft, saved_ms: s.clock }), draft: "" }
+	}
+
+	## The timer supplies the action's time. Refusal uses the last sample,
+	## and the IndexedDB port receives the complete record without minting time.
+	stamped : S, { note : Note, result : Engine.Result } -> S
+	stamped = |s, { note, result }| {
+		clock = match result {
+			Fired(at_ms) => at_ms
+			Refused => s.clock
+			_ => crash "Notes.stamped: Timer(0) returned another result"
+		}
+		{ ..s, clock, save: { ..note, saved_ms: clock } }
 	}
 
 	shown : Engine.Remote(List(Note), Port.Error) -> Str
@@ -63,7 +79,8 @@ Notes := [].{
 				),
 				Html.text_input(Engine.const("Note"), "text", v.map(|s| s.draft), [], st.set_value(|s, t| { ..s, draft: t })),
 				Html.button("Save", [], st.update(Notes.saved)),
-				# A save is kept even if the user leaves the view mid-way.
+				Engine.on_post(v.map(|s| s.stamping), |_| [Timer(0)], st.on_result(|s, note, result| Notes.stamped(s, { note, result }))),
+				# Once stamped, hand the complete note to its storage call.
 				Engine.watch_changes(
 					v.map(|s| s.save),
 					|note| [Notes.put.request(note)],
@@ -86,7 +103,20 @@ Notes := [].{
 	# region program
 	program : Engine.Program
 	program =
-		Engine.program(|| Engine.state({ prefix: "", draft: "", revision: 0, saves: 0, save: { id: "", title: "", saved_ms: 0 }, error: "" }, Notes.view))
+		Engine.program_boot({}, |boot| Engine.state(Notes.initial(boot.now_ms), Notes.view))
 			.with_ports([Notes.list.registration(), Notes.put.registration(), Notes.changed.registration()])
 	# endregion program
+}
+
+## A timer answer supplies signed time; refusal keeps the last sample and
+## never asks the storage port to replace it with a real-page clock read.
+expect {
+	start = Notes.initial(10)
+	note = { id: "n1", title: "Draft", saved_ms: 10 }
+	fired = Notes.stamped(start, { note, result: Fired(-1) })
+	refused = Notes.stamped(fired, { note: { ..note, id: "n2" }, result: Refused })
+	{ fired: fired.save, refused: refused.save } == {
+		fired: { ..note, saved_ms: -1 },
+		refused: { ..note, id: "n2", saved_ms: -1 },
+	}
 }

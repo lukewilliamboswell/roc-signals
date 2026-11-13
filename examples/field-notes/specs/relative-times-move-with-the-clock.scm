@@ -1,0 +1,21 @@
+(test "Field notes — relative times move with the clock"
+  (setup
+    (seed 7)
+    (initial-online offline)
+    (initial-time 0)
+    (languages "en-AU"))
+  (steps
+    (fill (label "Note body") "Pump pressure")
+    (click (role button :name "Save note"))
+    (run-effect 1)
+    (expect-text (test-id "captured-n-63cbe1e459320dd7") "Captured 00:00 · just now")
+    (advance-time 180000)
+    (expect-text (test-id "captured-n-63cbe1e459320dd7") "Captured 00:00 · just now")
+    (tick-interval 30000)
+    (expect-text (test-id "captured-n-63cbe1e459320dd7") "Captured 00:00 · 3 min ago")
+    (expect-updates (test-id "status-n-63cbe1e459320dd7") 1)
+    (expect-updates (label "Body n-63cbe1e459320dd7") 1)
+    (expect-updates (test-id "capacity") 2)
+    (expect-updates (test-id "outbox-count") 1)
+    (tick-interval 30000)
+    (expect-updates (test-id "captured-n-63cbe1e459320dd7") 4)))
