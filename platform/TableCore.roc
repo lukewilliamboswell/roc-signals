@@ -14,15 +14,15 @@ TableCore := [].{
 		phase : [Ready, Writing],
 	}.{
 
-		## A table of `entries`, for a cell's starting value or a whole
-		## rewrite. Two rows with one key are a contract error.
+		## Build an unassigned, ready table with no recorded writes. Duplicate
+		## keys fail here before a cell can admit ambiguous identity.
 		from_list : List({ key : k, row : v }) -> Table(k, v)
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		from_list = |entries| { rows: rows_of(entries), record: Dict.empty(), whole: Keyed, version: 0, start: 0, id: 0, phase: Ready }
 
-		## Replace every row with `entries`: a whole rewrite. Every view of the
-		## table rebuilds, in the size of the table. Two rows with one key are
-		## a contract error.
+		## Replace rows and discard keyed history while preserving cell identity
+		## and recording phase. The incremented version forces a view rebuild;
+		## constructing the dictionary is linear in entries.
 		load : Table(k, v), List({ key : k, row : v }) -> Table(k, v)
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		load = |table, entries| {
@@ -30,11 +30,12 @@ TableCore := [].{
 			{ rows: rows_of(entries), record: if (record.is_empty()) record else Dict.empty(), whole: Rewritten, version: now + 1, start, id, phase }
 		}
 
-		## The number of rows.
+		## Read the dictionary count without walking rows or the change record.
 		len : Table(k, v) -> U64
 		len = |table| table.rows.len()
 
-		## The row at `key`.
+		## Look up by the key's own hash and equality. Returning a row may share
+		## its storage with the table; callers must consume such readings before writes.
 		get : Table(k, v), k -> Try(v, [Missing])
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		get = |table, key| match table.rows.get(key) {
@@ -42,14 +43,14 @@ TableCore := [].{
 			Err(_) => Err(Missing)
 		}
 
-		## Whether the table holds a row at `key`: what a decision asks before
-		## an `insert`, which refuses a key already present.
+		## Test membership through the dictionary without retaining a row
+		## alias across a later write.
 		contains : Table(k, v), k -> Bool
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		contains = |table, key| table.rows.contains(key)
 
-		## Add a row under a new key. A key already present is a contract
-		## error: use `put` to insert or replace.
+		## Reject duplicate identity before recording an absent key. The shared
+		## write path retains only the first pre-write state of this key.
 		insert : Table(k, v), k, v -> Table(k, v)
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		insert = |table, key, row| match table.rows.get(key) {
@@ -57,7 +58,8 @@ TableCore := [].{
 			Err(_) => write(table, key, Absent, Ok(row))
 		}
 
-		## Insert the row, or replace the row already at `key`.
+		## Capture the current row or absence for the shared write path, which
+		## keeps the first earlier row even when this key is written again.
 		put : Table(k, v), k, v -> Table(k, v)
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		put = |table, key, row| match table.rows.get(key) {
@@ -65,8 +67,8 @@ TableCore := [].{
 			Err(_) => write(table, key, Absent, Ok(row))
 		}
 
-		## Replace the row at `key`. A missing key leaves the table unchanged:
-		## an earlier write of the same event may have removed it.
+		## Record and replace an existing row. A missing key is inert because
+		## an earlier operation in the same event may have removed it.
 		replace : Table(k, v), k, v -> Table(k, v)
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		replace = |table, key, row| match table.rows.get(key) {
@@ -74,8 +76,8 @@ TableCore := [].{
 			Err(_) => table
 		}
 
-		## Change the row at `key` by a function. A missing key leaves the
-		## table unchanged.
+		## Apply the modifier to the current row while preserving the first
+		## earlier row for this turn. A missing key invokes no modifier.
 		update : Table(k, v), k, (v -> v) -> Table(k, v)
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		update = |table, key, change| match table.rows.get(key) {
@@ -83,7 +85,8 @@ TableCore := [].{
 			Err(_) => table
 		}
 
-		## Remove the row at `key`. A missing key leaves the table unchanged.
+		## Record an existing row before deletion, retaining it in the change
+		## record until the next recording phase or holder disposal.
 		remove : Table(k, v), k -> Table(k, v)
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		remove = |table, key| match table.rows.get(key) {
@@ -91,41 +94,37 @@ TableCore := [].{
 			Err(_) => table
 		}
 
-		## Change every row by a function: a whole rewrite, like `load`, so
-		## every view rebuilds and the turn has no per-key changes. Costs the
-		## size of the table.
+		## Map every row and replace keyed history with Rewritten. Preserve
+		## cell identity and phase while advancing the version; work is linear
+		## in rows, plus releasing the preceding change record.
 		update_all : Table(k, v), (k, v -> v) -> Table(k, v)
 		update_all = |table, change| {
 			{ rows, record, version: now, start, id, phase, .. } = table
 			{ rows: rows.map(change), record: if (record.is_empty()) record else Dict.empty(), whole: Rewritten, version: now + 1, start, id, phase }
 		}
 
-		## Fold over every row, in no particular order.
+		## Walk the dictionary once in unspecified order, threading the
+		## accumulator without constructing an intermediate row list.
 		fold : Table(k, v), state, (state, k, v -> state) -> state
 		fold = |table, init, step| table.rows.fold(init, step)
 
-		## Every row with its key, in no particular order: the order can differ
-		## between two tables that hold the same rows, so sort the list before
-		## anything that shows or compares it. Costs the size of the table.
+		## Allocate one list entry per dictionary row. Its unspecified order
+		## is unsuitable as table-view identity or ordering.
 		to_list : Table(k, v) -> List({ key : k, row : v })
 		to_list = |table| table.rows.fold(List.with_capacity(table.rows.len()), |held, key, row| held.append({ key, row }))
 
-		## The writes since the changes were last cleared: each written key with
-		## its row as it was then (`Was(row)`, or `Absent`), or `Rewritten` if
-		## a whole rewrite replaced the rows. A mounted table retains its last
-		## writing turn's changes across unrelated turns, so a signal may read
-		## them. In a pure test (`Store.after`) they name the recorded writes.
+		## Expose the retained first-earlier-row record without copying it.
+		## Readers can share its rows, so dropping the table's record releases
+		## only that holder; the next writing phase determines its replacement.
 		changes : Table(k, v) -> [Keyed(Dict(k, [Absent, Was(v)])), Rewritten]
 		changes = |table| match table.whole {
 			Keyed => Keyed(table.record)
 			Rewritten => Rewritten
 		}
 
-		## The writes that undo every write since the last clear, or
-		## `Rewritten` when a whole rewrite left no per-key changes. A later
-		## handler may read the last writing turn's inverse before its own first
-		## write clears that record, and apply it to undo that turn. A history
-		## that must outlive the next write keeps the inverse in its own cell.
+		## Translate the retained record into one inverse operation per key.
+		## The traversal and output are linear in recorded keys; whole rewrites
+		## have no per-key inverse. Returned rows become independent holders.
 		inverse : Table(k, v) -> Try(List([Put(k, v), Remove(k)]), [Rewritten])
 		inverse = |table| match table.whole {
 			Rewritten => Err(Rewritten)
@@ -141,7 +140,9 @@ TableCore := [].{
 				)
 		}
 
-		## Apply a list of writes in order, recording each.
+		## Replay writes in list order through the same keyed write path.
+		## Repeated keys retain their first earlier row, preserving one inverse
+		## for the complete sequence.
 		apply : Table(k, v), List([Put(k, v), Remove(k)]) -> Table(k, v)
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		apply = |table, writes| writes.fold(

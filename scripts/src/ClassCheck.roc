@@ -1,4 +1,5 @@
 import parser.RocSyntax
+import SourceText
 import cli.Path
 import SpecSuite
 import Proc
@@ -14,7 +15,7 @@ ClassCheck := [].{
 
 	## One decoded byte with its original source offset. Escape decoding must
 	## not move diagnostics onto a different source line.
-	Point : { byte : U8, at : U64 }
+	Point : SourceText.Point
 
 	## Check only examples, after Tailwind, without adding a stylesheet input
 	## to application compilation. Every missing class names its source line.
@@ -164,10 +165,6 @@ ClassCheck := [].{
 	is_initial_name_byte : U8 -> Bool
 	is_initial_name_byte = |b| b >= 128 or b == '_' or (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z')
 
-	## Decode one CSS or Roc escape digit; absence terminates the CSS hex run.
-	hex : U8 -> Try(U32, [NotHex])
-	hex = |b| if (b >= '0' and b <= '9') Ok((b - '0').to_u32()) else if (b >= 'a' and b <= 'f') Ok((b - 'a' + 10).to_u32()) else if (b >= 'A' and b <= 'F') Ok((b - 'A' + 10).to_u32()) else Err(NotHex)
-
 	## CSS escapes use up to six hexadecimal digits and one optional CSS
 	## whitespace character. Invalid escaped scalar values become U+FFFD.
 	identifier : List(U8), U64 -> (Str, U64)
@@ -181,7 +178,7 @@ ClassCheck := [].{
 				var $value = 0.U32
 				var $digits = 0
 				while $digits < 6 and $at < bytes.len() {
-					match ClassCheck.hex(bytes.get($at) ?? 0) {
+					match SourceText.hex(bytes.get($at) ?? 0) {
 						Ok(digit) => {
 							$value = $value * 16 + digit
 							$digits = $digits + 1
@@ -194,7 +191,7 @@ ClassCheck := [].{
 					scalar = if $value == 0 or $value > 0x10FFFF or ($value >= 0xD800 and $value <= 0xDFFF) {
 						0xFFFD
 					} else $value
-					$name = $name.concat(ClassCheck.utf8(scalar))
+					$name = $name.concat(SourceText.utf8(scalar))
 					if ClassCheck.is_space(bytes.get($at) ?? 0) {
 						cr = bytes.get($at) == Ok(13)
 						$at = $at + 1
@@ -216,21 +213,6 @@ ClassCheck := [].{
 			}
 		}
 		(Str.from_utf8_lossy($name), $at)
-	}
-
-	## Encode an already validated Unicode scalar. CSS escape decoding replaces
-	## invalid scalars before calling this; the Roc parser validates quoted escapes.
-	utf8 : U32 -> List(U8)
-	utf8 = |v| {
-		if v < 128 {
-			[v.to_u8_wrap()]
-		} else if v < 2048 {
-			[(192 + v / 64).to_u8_wrap(), (128 + v % 64).to_u8_wrap()]
-		} else if v < 65536 {
-			[(224 + v / 4096).to_u8_wrap(), (128 + v / 64 % 64).to_u8_wrap(), (128 + v % 64).to_u8_wrap()]
-		} else {
-			[(240 + v / 262144).to_u8_wrap(), (128 + v / 4096 % 64).to_u8_wrap(), (128 + v / 64 % 64).to_u8_wrap(), (128 + v % 64).to_u8_wrap()]
-		}
 	}
 
 	## Resolve the syntax node’s direct children. Only call arguments and
@@ -324,7 +306,7 @@ ClassCheck := [].{
 				points = if literal.kind == MultilineStringLiteral {
 					bytes.map_with_index(|byte, offset| { byte, at: part.start + offset })
 				} else {
-					ClassCheck.roc_segment(bytes, part.start)
+					SourceText.quoted(bytes, part.start)
 				}
 				previous = if (index == 0) part else parts.get(index - 1) ?? part
 				next = parts.get(index + 1) ?? part
@@ -334,46 +316,6 @@ ClassCheck := [].{
 			}
 		}
 		$uses
-	}
-
-	## Decode escapes in a validated quoted string, retaining each decoded
-	## byte’s original offset. Raw multiline segments bypass this conversion.
-	roc_segment : List(U8), U64 -> List(Point)
-	roc_segment = |bytes, start| {
-		var $at = 0
-		var $out = []
-		while $at < bytes.len() {
-			origin = start + $at
-			b = bytes.get($at) ?? 0
-			$at = $at + 1
-			decoded = if b != '\\' {
-				[b]
-			} else {
-				next = bytes.get($at) ?? 0
-				$at = $at + 1
-				if next == 'u' {
-					$at = $at + 1
-					var $value = 0.U32
-					while $at < bytes.len() and bytes.get($at) != Ok(')') {
-						$value = $value * 16 + (ClassCheck.hex(bytes.get($at) ?? 0) ?? 0)
-						$at = $at + 1
-					}
-					$at = $at + 1
-					ClassCheck.utf8($value)
-				} else {
-					[
-						match next {
-							'n' => 10
-							'r' => 13
-							't' => 9
-							_ => next
-						},
-					]
-				}
-			}
-			$out = $out.concat(decoded.map(|byte| { byte, at: origin }))
-		}
-		$out
 	}
 
 	## Split complete class words using HTML whitespace and retain their

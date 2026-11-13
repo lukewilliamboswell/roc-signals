@@ -1,4 +1,5 @@
 import parser.RocSyntax
+import SourceText
 
 ## Read declarations from the same Roc syntax tree used by site tooling.
 ## Only associated blocks publish members; function bodies are never walked.
@@ -21,6 +22,49 @@ ApiSurface := [].{
 		if names.is_empty() or names.fold(Dict.empty(), |seen, name| seen.insert(name, {})).len() != names.len() {
 			Err(BadExposes)
 		} else Ok(names)
+	}
+
+	## Determine whether a real dependency field names the internal root.
+	## Quoted escapes are decoded after syntax validation; comments and source
+	## strings elsewhere cannot accidentally trigger this repository check.
+	has_internal_dependency : Str -> Try(Bool, _)
+	has_internal_dependency = |source| {
+		parsed = RocSyntax.validate({ source, name: "source dependency audit", lints: { placeholders: False } })?
+		root = parsed.nodes.get(parsed.root)?
+		for header in children(parsed, root).keep_if(|node| node.kind == Header) {
+			for dependencies in children(parsed, header).keep_if(|node| node.kind == Dependencies) {
+				for field in children(parsed, dependencies).keep_if(|node| node.kind == DependencyField) {
+					value = match children(parsed, field) {
+						[_, expression] => expression
+						_ => return Err(BadDependency)
+					}
+					literal = if value.kind == PlatformReference {
+						match children(parsed, value) {
+							[inner] => inner
+							_ => return Err(BadDependency)
+						}
+					} else value
+					segment = match children(parsed, literal) {
+						[part] if literal.kind == StringLiteral and part.kind == StringSegment => part
+						_ => return Err(BadDependency)
+					}
+					decoded = SourceText.quoted(parsed.source.sublist({ start: segment.start, len: segment.end - segment.start }), segment.start)
+					url = Str.from_utf8(decoded.map(|point| point.byte)) ?? crash "ApiSurface: validated dependency UTF-8"
+					if url == "main-fuzz.roc" or url.ends_with("/main-fuzz.roc") {
+						return Ok(True)
+					}
+				}
+			}
+		}
+		Ok(False)
+	}
+
+	## Only the platform's declared target locations may name its internal root.
+	is_platform_target : Str -> Bool
+	is_platform_target = |file| match file.split_on("/") {
+		["fuzz", _, "main.roc"] => True
+		["tests", "apps", _, name] => name.starts_with("fuzz-") and name.ends_with(".roc")
+		_ => False
 	}
 
 	## Every method reachable through a public declaration, including methods
@@ -63,18 +107,35 @@ children = |parsed, node| parsed.children.sublist({ start: node.children_start, 
 ## The contiguous doc-comment lines immediately before a declaration.
 documentation : RocSyntax.Parsed, U64 -> Str
 documentation = |parsed, start| {
-	prefix = Str.from_utf8(parsed.source.take_first(start)) ?? crash "ApiSurface: declaration boundary must preserve UTF-8"
-	lines = prefix.split_on("\n").drop_last(1)
-	var $at = lines.len()
+	var $at = start
+	while $at > 0 and parsed.source.get($at - 1) != Ok('\n') {
+		byte = parsed.source.get($at - 1) ?? crash "ApiSurface: declaration prefix"
+		if byte != ' ' and byte != '\t' {
+			return ""
+		}
+		$at = $at - 1
+	}
+	if $at == 0 {
+		return ""
+	}
+	var $end = $at - 1
 	var $doc = []
 	var $done = False
-	while $at > 0 and !$done {
-		$at = $at - 1
-		line = (lines.get($at) ?? crash "ApiSurface: preceding line index").trim()
+	while !$done {
+		var $first = $end
+		while $first > 0 and parsed.source.get($first - 1) != Ok('\n') {
+			$first = $first - 1
+		}
+		line = (Str.from_utf8(parsed.source.sublist({ start: $first, len: $end - $first })) ?? crash "ApiSurface: preceding line UTF-8").trim()
 		if line.starts_with("##") {
 			$doc = [line.drop_prefix("##").trim_start()].concat($doc)
 		} else {
 			$done = True
+		}
+		if $first == 0 {
+			$done = True
+		} else {
+			$end = $first - 1
 		}
 	}
 	Str.join_with($doc, "\n")
@@ -187,3 +248,22 @@ expect {
 
 ## A cyclic alias cannot make the documentation walk recurse forever.
 expect ApiSurface.reachable([{ name: "Cycle", declarations: [{ name: "Cycle.Type", doc: "Cycle.", alias: "Cycle.Type" }] }], [{ name: "Public.Type", doc: "Alias.", alias: "Cycle.Type" }]).is_err()
+
+## An internal dependency is detected or rejected as unsupported syntax,
+## including escaped spellings. Prose mentioning it is not a dependency.
+expect {
+	{
+		named: ApiSurface.has_internal_dependency("app [main] { cli: platform \"cli.roc\", pf: \"../platform/main-fuzz.roc\" }\nmain = 0")?,
+		escaped: match ApiSurface.has_internal_dependency("app [main] { cli: platform \"cli.roc\", pf: \"../platform/main\\u(002d)fuzz.roc\" }\nmain = 0") {
+			Ok(False) => False
+			_ => True
+		},
+		prose: ApiSurface.has_internal_dependency("# main-fuzz.roc\nvalue = \"main-fuzz.roc\"")?,
+	} == { named: True, escaped: True, prose: False }
+}
+
+## Applications, examples' pure fuzzers and ordinary test entry points cannot
+## borrow the engine package merely by having a filename resembling a target.
+expect {
+	["fuzz/table-view/main.roc", "tests/apps/controls/fuzz-controls.roc"].all(ApiSurface.is_platform_target) and ["examples/todos/fuzz-todos.roc", "examples/todos/main.roc", "tests/apps/controls/main.roc", "cli/main.roc"].all(|file| !ApiSurface.is_platform_target(file))
+}

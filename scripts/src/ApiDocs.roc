@@ -3,6 +3,7 @@ import cli.Http
 import ApiSurface
 import Proc
 import SpecSuite
+import Targets
 
 ## Build the authoring API from the platform root, and check its source
 ## comments, public reachability and rendered members together.
@@ -26,6 +27,23 @@ ApiDocs := [].{
 	is_module_name = |name| match name.to_utf8() {
 		[first, .. as rest] => first >= 'A' and first <= 'Z' and rest.all(|byte| (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_')
 		[] => False
+	}
+
+	## Audit tracked and nonignored Roc files, including newly added sources.
+	## Generated build trees are outside Git's source list. Only dependencies
+	## in parsed headers count; the platform and tooling own their internal use.
+	internal_roots! : SpecSuite.Options => Try(List(Str), _)
+	internal_roots! = |o| {
+		bytes = Proc.capture!({ program: "git", args: ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.roc"], cwd: o.root })?
+		files = (Str.from_utf8(bytes)?).split_on("\u(0000)").keep_if(|file| !file.is_empty() and !file.starts_with("platform/") and !file.starts_with("scripts/"))
+		var $problems = []
+		for file in files {
+			source = Path.read_utf8!(Path.utf8("${o.root}/${file}"))?
+			if ApiSurface.has_internal_dependency(source)? and !(ApiSurface.is_platform_target(file) and Targets.fuzz_targets.any(|target| target.main == file)) {
+				$problems = $problems.append("${file}: main-fuzz.roc is internal; only the platform's fuzz targets may name it")
+			}
+		}
+		Ok($problems)
 	}
 
 	## Compare against the actual latest published platform bundle. Discovery

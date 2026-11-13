@@ -194,12 +194,12 @@
   its Roc code and carried on the request; what a deployment allows is a
   `max…` mount option that caps whatever a request asks for. Do not move an
   app's meaning into a mount option, or a deployment's limit into app code.
-- Keep the engine's operations on an exposed type out of an app's reach.
-  Roc has no visibility between a module's own and everyone's, so an
-  operation an exposed type must offer the engine and must not offer an app,
-  such as giving a table its cell's identity, takes an `EngineOnly`: a
-  value only a module of the platform can make. Do not add such an
-  operation without it, and do not expose the module that makes the value.
+- Keep app-facing surface separate from platform machinery. Everything an app
+  can name through a module `platform/main.roc` exposes, including members of
+  aliased types and types in public signatures, is public. Nothing there may
+  mention, require or return a type an app cannot name. An operation only the
+  platform may perform belongs to an unexposed module's namespace, never to a
+  type an app can name. A witness value is not the mechanism for hiding it.
 - Reject programmer and contract errors at the narrowest trustworthy boundary
   with a classified diagnostic that names the rule and the construction site.
   Do not repair invalid input, substitute values, or continue after state may
@@ -209,7 +209,7 @@
 
 - Put scheduling, reconciliation, identity, effect lifecycle and containment
   policy in `platform/Core.roc` and the platform's Roc modules; a table, its
-  table views and their ordered keys are `Table.roc`, `View.roc` and `Seq.roc`. The
+  table views and their ordered keys are `TableCore.roc`, `View.roc` and `Seq.roc`. The
   host,
   `runtime.mjs` and `worker.mjs` adapt the engine to the browser; they do not
   implement its semantics. The native spec runner drives the same engine; it
@@ -386,11 +386,14 @@
   public behavior in reference or module documentation, and local invariants
   beside the code they constrain.
 - Review documentation as part of every pull request, including every added or
-  changed doc comment on an exposed Roc function and every Zig `pub fn` or
-  `export fn`. Each comment must be well written and give a helpful narrative
-  explanation of the function's purpose and, where relevant, its contract,
-  ownership, failure behavior, or architectural role. Reject comments that
-  merely restate the name or signature.
+  changed Roc doc comment and every Zig `pub fn` or `export fn`. On anything
+  an app can name, write for an app author: purpose, when to use it, contract,
+  errors and how to meet them, in the guide's vocabulary. On internal items,
+  write for a platform contributor: invariants, ownership, cost, wire and oracle
+  obligations, architectural rationale and compiler workarounds, in the engine's
+  vocabulary. A comment for the wrong reader is a defect; an app-facing item
+  whose honest comment is internal belongs in an unexposed module. Reject
+  comments that merely restate the name or signature.
 - Track reproducible compiler limitations in upstream GitHub issues. Once
   filed, link the issue beside any local workaround, keep the workaround narrow
   and identifiable, list it in `design.md`'s compiler limitations, and remove it

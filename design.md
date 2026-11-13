@@ -198,8 +198,8 @@ The layers, in order of preference:
 
 1. **Impossible to write.** A type rules the mistake out and the compiler
    rejects it: opaque types, typed props records with defaults, closed tag
-   unions, a payload type that fixes which handler an event takes,
-   `EngineOnly`. A later layer is right only when no type expresses the
+   unions, a payload type that fixes which handler an event takes, and
+   internal operations absent from app-facing types. A later layer is right only when no type expresses the
    rule.
 2. **A value the app must handle.** A failure of the outside world arrives
    as typed data the app matches (`Refused`, `Timeout`, `Network`,
@@ -422,7 +422,7 @@ that row's — is the documented pattern that keeps app work local.
 
 ```mermaid
 flowchart LR
-    App["app: App.roc<br/>Elem tree of typed sites,<br/>a store of cells and tables"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, the store, each columns,<br/>tables and their table views (Table.roc, View.roc, Seq.roc),<br/>effects, command encoding"]
+    App["app: App.roc<br/>Elem tree of typed sites,<br/>a store of cells and tables"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, the store, each columns,<br/>tables and their table views (TableCore.roc, View.roc, Seq.roc),<br/>effects, command encoding"]
     Engine --> Main["platform/main.roc<br/>keys · init · event · files · drop ·<br/>work · prepare · ask · forget"]
     Main --> Host["platform/host/host.zig<br/>allocator · Box(Core.App), today wrapped as Box(Iter(Core.App)) (roc-lang/roc#12953 workaround), or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · fault class"]
     Host --> Wire["command bytes in linear memory"]
@@ -438,12 +438,12 @@ flowchart LR
     Parser -->|"emitted steps"| Browser["replay in Chrome"]
 ```
 
-The engine is `Core.roc` and three modules of its own for tables: `Table.roc`
-(rows by key and the changes from a turn, which an app imports
-to write a table), `View.roc` (a sorted, filtered, windowed view kept up to
+The engine is `Core.roc` and three modules of its own for tables: `TableCore.roc`
+(rows by key and the changes from a turn), `View.roc` (a sorted, filtered, windowed view kept up to
 date from those changes) and `Seq.roc` (a table view's ordered keys). `Engine.roc` is
-the authoring API over them. `EngineOnly.roc` holds the one value that lets
-the engine, and no app, call a table's bookkeeping.
+the authoring API over them. Its opaque `Table` wraps the internal table;
+bookkeeping is a function of the unexposed `TableCore` namespace, never a
+member of a type an app can name.
 
 The repository has one platform (`platform/main.roc`), web only, shipped as
 one release bundle. An app has one entry, `main.roc`, binding its `program`
@@ -883,11 +883,10 @@ The changes' bookkeeping is the engine's alone: clearing them, giving a table
 its cell's identity, judging what a write of the cell left, and reading the
 two counts. An app that gave another table the cell's identity would pass
 it off as the cell's own, and every view would go on showing rows the table
-no longer has. Roc has no visibility between a module's own and
-everyone's, so each of these operations takes an `EngineOnly` as its last
-argument: a value of an opaque type in a module the platform does not
-expose, which an app can neither make nor name. The operations are listed
-with the type, and an app cannot call them.
+no longer has. These operations are functions of the unexposed `TableCore`
+namespace, separate from the members of `Engine.Table`. Roc's associated
+members are public through aliases too; keeping bookkeeping off every
+app-facing type makes it impossible for an app to call it.
 
 **Known limits.**
 
@@ -2998,8 +2997,8 @@ Placement and anchor positioning are ordinary authored CSS, not engine
 geometry or an application JavaScript callback.
 
 The shown rows and open-state codec are private to these helpers. The
-Engine bridges they use require the unexposed `EngineOnly` witness; an app
-cannot render a row without its echo handler. A controlled dialog reserves
+Engine record forms take the complete props, including the echo handler,
+just as the Html helpers do. A controlled dialog reserves
 `open`, `popover` and `closedby`; a controlled popover owns its one static
 `popover` declaration. Extra or dynamic declarations are mount `contract`
 errors, with HTML's ASCII-insensitive attribute names. `beforetoggle`
@@ -4072,6 +4071,7 @@ of them is platform semantics.
 
 | Issue | Defect | Effect on the engine |
 |---|---|---|
+| [roc-lang/roc#13005](https://github.com/roc-lang/roc/issues/13005) | A top-level annotated constant using a missing method can crash `roc check` in `boxy_lowering` instead of reporting the missing item | The table-bookkeeping rejection fixture uses the unannotated spelling and links the issue. It still requires the compiler's missing-method diagnostic; an annotated spelling may crash until the compiler is fixed |
 | [roc-lang/roc#13011](https://github.com/roc-lang/roc/issues/13011) | `nightly-2026-11-12-ce942d6` assigns callable evidence scope to a non-function stored value in an open-tag initializer test, leaving a child call without evidence during Mono and Boxy lowering | Log Explorer initializes its theme through the full union constructor and its viewer geometry through a typed producer, and the time sample closes its action initializer through its typed producer; their pure tests remain enabled |
 | [roc-lang/roc#13018](https://github.com/roc-lang/roc/issues/13018) | `roc docs` on `nightly-2026-11-12-ce942d6` omits associated methods reachable through a public alias of an internal type | `ApiDocs` derives the inherited members and their comments from the source syntax tree and renders them in the API front page and PDF; coverage checks both direct module entries and this generated companion. Remove the companion when the compiler renders the inherited members |
 | [roc-lang/roc#13017](https://github.com/roc-lang/roc/issues/13017) | `nightly-2026-11-12-ce942d6` development Wasm allocates backing for an empty `Str.to_utf8()` result with zero capacity; consuming it through `List.concat` leaks its four-byte reference count | `PortJson` writes an empty string directly as two quotes before conversion, preserving the exact JSON bytes; the real-port Reading List journey checks empty and nonempty authors return to zero live allocations and bytes after unmount |
@@ -4104,7 +4104,7 @@ In-place writes of large values in shipping builds are tracked against
 ## Measures of Effectiveness
 
 1. **One engine, thin host.** All reactive and structural logic is in the
-   engine's Roc modules (`Core.roc`, with `Table.roc`, `View.roc` and
+   engine's Roc modules (`Core.roc`, with `TableCore.roc`, `View.roc` and
    `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
    *Holds when:* the same engine runs in the browser module and the native spec runner with
    the same command stream.
@@ -4174,8 +4174,11 @@ These are unresolved mechanism choices within the contracts above.
 The authoring API as it stands (`Engine.roc`). Types are abbreviated; `ctx` is
 the context a value or handler is used in.
 
-**The authoring API is the whole public surface.** The reactive and storage
-types `Signal`, `State`, `HandlerOf`, `Prop`, `RowRef`, `Cell`, `Cells` and `Store` are
+**The authoring API is the whole public surface.** It is everything reachable
+through the modules `platform/main.roc` exposes, including members inherited
+through aliases. Nothing in it mentions, requires or returns a type an app
+cannot name. The reactive and storage
+types `Signal`, `State`, `HandlerOf`, `Prop`, `RowRef`, `Cell`, `Cells`, `Store` and `Table` are
 opaque wrappers whose methods are documented here, and the contexts, `Elem`,
 `Attr`, `Keyed`, `Write`, `Reach`, `Stored`, `Reaction`, `Program`,
 `Registration` and `Outbox` are aliases of opaque types in the internal
@@ -4187,11 +4190,11 @@ authoring API and nothing else. `Request`, `Command`, `Result`, `WorkFault`,
 `FileError`, `HttpError`, `Pointer`, `Key`, `QueryPlan` and `Window` are plain data and
 stay structural; `Boot` and `ProgramProps` are nominal records with defaulted
 fields, built and read as records. `Remote` is a transparent nominal type over a record, so an app
-reads and builds it as the record and calls its methods. `Table` is an
-opaque type in a module of its own, which an app imports to write a table.
-The operations of `Table` that only the engine may call take an
-`EngineOnly`, an opaque value of a module the platform does not expose, so
-they are outside the surface too.
+reads and builds it as the record and calls its methods. Every member of an
+aliased type is public. Operations only the engine may perform are functions
+of internal namespaces such as `Core` and `TableCore`, never members of types
+an app can name. Apps import `Table` from `Engine`; its representation and
+bookkeeping remain internal.
 
 `Handler(ctx)` and `FilesHandler(ctx)` are aliases of `HandlerOf` at
 `Str` and `Received`, so both use one family of reducers, decisions and
@@ -4470,7 +4473,7 @@ Clipboard.written : Result -> Try({}, [NotAllowed, Unavailable, Refused])
 Html.on_paste_text : HandlerOf(ctx, Paste) -> Attr(ctx)
 ```
 
-`Table` (`platform/Table.roc`) is the value a table cell holds. Its key type
+`Engine.Table` (`platform/Engine.roc`) is the value a table cell holds. Its key type
 has `is_eq` and `to_hash`:
 
 ```roc
@@ -4491,17 +4494,9 @@ Table.to_list : Table(k, v) -> List({ key : k, row : v })               # in no 
 Table.changes : Table(k, v) -> [Keyed(Dict(k, [Absent, Was(v)])), Rewritten]   # the last writing turn's changes
 Table.inverse : Table(k, v) -> Try(List([Put(k, v), Remove(k)]), [Rewritten])   # undoes the retained writing turn
 Table.apply : Table(k, v), List([Put(k, v), Remove(k)]) -> Table(k, v)
-# The engine's bookkeeping of the changes. An app cannot make an EngineOnly, so it cannot call these:
-Table.version, Table.changes_start : Table(k, v), EngineOnly -> U64
-Table.clear_changes : Table(k, v), EngineOnly -> Table(k, v)
-Table.begin_changes, Table.finish_changes : Table(k, v), EngineOnly -> Table(k, v)
-Table.is_ready : Table(k, v), EngineOnly -> Bool
-Table.with_id : Table(k, v), U64, EngineOnly -> Table(k, v)
-Table.mark : Table(k, v), EngineOnly -> { id : U64, start : U64, version : U64 }
-Table.kept : Table(k, v), { id : U64, start : U64, version : U64 }, EngineOnly -> Table(k, v)
 ```
 
-The operations before the bookkeeping comment are for apps. `changes`,
+These operations are for apps. `changes`,
 `inverse` and `apply` read and replay the retained writing turn. A later event
 may read its inverse before writing; a history keeps an inverse that must
 survive the next write. A pure test reads which rows its transition recorded.

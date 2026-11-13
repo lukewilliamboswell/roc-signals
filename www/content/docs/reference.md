@@ -1,6 +1,6 @@
 +++
 title = "Reference"
-description = "The Engine, Table, Html, Layout, Clipboard, Worker, Wire, Port and PortJson APIs at a glance, the platform's limits, and its error classes."
+description = "The Engine, Files, Html, Layout, Clipboard, Worker, Wire, Port and PortJson APIs at a glance, the platform's limits, and its error classes."
 weight = 19
 template = "page.html"
 +++
@@ -8,9 +8,9 @@ template = "page.html"
 # Reference
 
 The [API documentation](../../api/api/) is generated from the platform's source
-and documents every public symbol of `Engine`, `Table`, `Html`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port` and `PortJson`:
-the authoring API. Platform-only bridges on exposed types require an
-unexposed `EngineOnly` witness, so apps cannot call them. The engine's storage and executable values are opaque; its implementation
+and documents every public symbol of `Engine`, `Files`, `Html`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port` and `PortJson`,
+including members inherited through public aliases: the authoring API.
+Operations only the engine may perform belong to unexposed modules. The engine's storage and executable values are opaque; its implementation
 and the interfaces its hosts and test harnesses use live in the platform's
 internal `Core` module, which apps cannot import. This page is the map of it. The spec language is in [Testing](@/docs/testing.md).
 
@@ -68,7 +68,7 @@ Pure tests can name only the fields they use:
 ## Table
 
 `Table(k, v)` is the value a table cell holds: rows by a key that has
-equality and a hash (`import pf.Table`). A decision changes it inside
+equality and a hash (`import pf.Engine exposing [Table]`). A decision changes it inside
 `cell.update(...)` with these operations, and each names the rows it
 touches; see [Tables and Table Views](@/docs/tables-and-views.md).
 
@@ -84,10 +84,8 @@ The changes serve an undo history and tests: in a pure test,
 `store.after(writes).read(table).inverse()` tells which rows a transition
 wrote.
 
-The module's remaining functions (`version`, `changes_start`,
-`clear_changes`, `with_id`, `mark`, `kept`) are the engine's bookkeeping of
-the changes. Each takes an `EngineOnly` as its last argument, a value only
-the platform can make, so an app cannot call them.
+Table bookkeeping belongs to the internal `TableCore` module and is absent
+from `Engine.Table`.
 
 ## Html
 

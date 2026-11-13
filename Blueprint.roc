@@ -50,7 +50,7 @@ config = [
 	# `tar`, which GNU tar cannot read; the pinned recipe is ready
 	# below as `chrome` and replaces this Expect once blueprint unpacks zips on
 	# Linux.
-	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["roc", "curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome", "zip"])]),
+	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["roc", "git", "curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome", "zip"])]),
 	# Building the documentation site, its API docs and its live examples.
 	Environment("site", [Programs([roc_stable_program, zig_program, zola_program, roc_docs_program, node_program, Fetch("tailwindcss", tailwind)]), Expect(["roc", "google-chrome"])]),
 	# Building the release assets, API docs included.

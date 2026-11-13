@@ -54,6 +54,7 @@ main! = |_args| {
 
 	Proc.note!("== API docs")
 	$problems = $problems.concat(ApiDocs.check!({})?)
+	$problems = $problems.concat(ApiDocs.internal_roots!(o)?)
 	$problems = $problems.concat(ApiDocs.bump!(o)?)
 
 	Proc.note!("== roc test")

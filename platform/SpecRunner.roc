@@ -95,6 +95,8 @@ SpecRunner := [].{
 		live : state -> List(U32),
 	}
 
+	## A native subscription records the browser source it listens to, separately
+	## from its request id. The runner drives these sources explicitly through specs.
 	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub, MediaSub(Str), PortSub(Str, Str), StorageSub(Str), StorageFailures]
 
 	## A history entry: its URL and the document it belongs to.
@@ -222,6 +224,9 @@ SpecRunner := [].{
 
 	## Browser task-source entries keep only never-reused model lifetimes.
 	UiTask : [Toggle(U64), Close(U64), Cancelled]
+
+	## A performed scroll retains its monotonic ordinal and model lifetime.
+	## Reusing an engine id cannot make an older observation belong to a new node.
 	ScrollRecord : { ordinal : U64, target : U64, action : Dom.RefAction }
 
 	## A setup file: its name, media type and contents.
@@ -263,11 +268,23 @@ SpecRunner := [].{
 	## Request ids and DOM pointer sources cannot alias. A DOM source follows
 	## its declaring element's lifetime, handler and pointer independently.
 	ReportSource := [Request(U32), Pointer({ element : U64, handler : U32, pointer : U32 }), Scroll({ element : U64, handler : U32 }), Observation({ element : U64, kind : U8 })].{
+
+		## Coalescing keys compare the complete source identity, including the
+		## model lifetime and handler where present, rather than an engine id alone.
 		is_eq : _
+
+		## Equal source identities choose the same hash bucket. Dictionary
+		## equality still distinguishes collisions before replacing a waiting report.
 		to_hash : _
 	}
 
+	## A pointer either has no in-zone point or carries the resolved zone and
+	## encoded coordinates. No browser layout is invented by this record.
 	PointerAt : [Outside, In({ zone : Str, x : U16, y : U16 })]
+
+	## Gesture state keeps model lifetimes for the press and capture targets,
+	## using index-plus-one so zero means absent. Device policy and placement survive
+	## across moves until release or cancellation completes the gesture.
 	PointerState : { id : U32, kind : [Mouse, Pen, Touch], button : [Main, Middle, Secondary], modifiers : U8, primary : Bool, down : U64, capture : U64, moved : Bool, suppress_mouse : Bool, at : PointerAt }
 
 	## A control value held back while its control has focus (design.md,
@@ -286,18 +303,26 @@ SpecRunner := [].{
 
 	# ------------------------------------------------------------ wire bytes
 
+	## Append one little-endian protocol operand to an owned payload buffer.
+	## This is the native driver’s encoder, independent of command decoding in Dom.
 	put_u32 : List(U8), U32 -> List(U8)
 	put_u32 = |b, n| b.concat([n.bitwise_and(0xFF).to_u8_wrap(), n.shr_zf_wrap(8).bitwise_and(0xFF).to_u8_wrap(), n.shr_zf_wrap(16).bitwise_and(0xFF).to_u8_wrap(), n.shr_zf_wrap(24).to_u8_wrap()])
 
+	## Append a full-width protocol operand as two little-endian words. Handle
+	## tokens and byte ranges retain their bits without a floating-point conversion.
 	put_u64 : List(U8), U64 -> List(U8)
 	put_u64 = |b, n| SpecRunner.put_u32(SpecRunner.put_u32(b, n.to_u32_wrap()), n.shr_zf_wrap(32).to_u32_wrap())
 
+	## Append UTF-8 text with its byte length as the protocol’s U32 prefix.
+	## The input buffer is consumed, allowing subsequent appends to reuse its storage.
 	put_str : List(U8), Str -> List(U8)
 	put_str = |b, s| {
 		bytes = s.to_utf8()
 		SpecRunner.put_u32(b, bytes.len().to_u32_wrap()).concat(bytes)
 	}
 
+	## Read a complete little-endian operand or answer Short. The enclosing
+	## reader chooses the diagnostic instead of accepting a partial value.
 	get_u32 : List(U8), U64 -> Try(U32, [Short])
 	get_u32 = |b, at| {
 		b0 = b.get(at) ? |_| Short
@@ -475,6 +500,7 @@ SpecRunner := [].{
 		{ keys: $keys, latest_ports: $latest_ports, media: $queries, zone_days: days, session_keys: $session }
 	}
 
+	## Encode a resolved boolean using the wire’s exact zero/one vocabulary.
 	flag_byte : Bool -> U8
 	flag_byte = |b| if (b) 1 else 0
 
@@ -577,6 +603,8 @@ SpecRunner := [].{
 		}
 	}
 
+	## Build the ordinary effect-result payload for a fixture failure. Timeout
+	## is a bare result tag; a network failure carries its detail as trailing UTF-8.
 	encode_reject : Scm.RejectKind, Str -> List(U8)
 	encode_reject = |kind, detail|
 		match kind {
@@ -775,6 +803,8 @@ SpecRunner := [].{
 	fresh : state, Browser -> S(state)
 	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 26), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, after_batch: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
 
+	## Replace a browser-storage fixture’s pair at a key, leaving other keys
+	## in order. This is linear in the fixture pairs and does not write a Roc cell.
 	set_store : List((Str, Str)), Str, Str -> List((Str, Str))
 	set_store = |l, key, value| l.keep_if(|(name, _)| name != key).append((key, value))
 
@@ -1398,6 +1428,8 @@ SpecRunner := [].{
 	tick : Program(state), S(state), U64 -> S(state)
 	tick = |program, s, ms| SpecRunner.broadcast(program, s, |x| x.sub == Interval(ms.to_u32_wrap()), SpecRunner.put_u64([5], s.browser.env.now_ms.to_u64_wrap()))
 
+	## Count registered native interval sources for a wire period. A request’s
+	## callback is driven separately by tick-interval rather than by wall-clock time.
 	live_intervals : S(state), U64 -> U64
 	live_intervals = |s, ms| s.browser.subs.count_if(|x| x.sub == Interval(ms.to_u32_wrap()))
 
@@ -1411,6 +1443,8 @@ SpecRunner := [].{
 		v != "" and v != "false"
 	}
 
+	## Read the model’s effective disabled flag for native input eligibility.
+	## Ordinary raw attribute text is observed separately by attribute assertions.
 	disabled : Dom.DNode -> Bool
 	disabled = |n| SpecRunner.flag_on(n, "disabled")
 
@@ -1790,6 +1824,8 @@ SpecRunner := [].{
 
 	# ------------------------------------------------------------- locators
 
+	## Prefer an explicit role, otherwise use the runner’s closed element
+	## fallbacks. This is the supported locator vocabulary, not a full ARIA tree.
 	implicit_role : Dom.DNode -> Str
 	implicit_role = |n| {
 		explicit = Dom.attr_of(n, "role")
@@ -1808,12 +1844,16 @@ SpecRunner := [].{
 		}
 	}
 
+	## Prefer a nonempty aria-label, otherwise join child text in DOM order.
+	## Role locators use this supported naming rule without consulting layout.
 	accessible_name : Dom.Model, Dom.DNode -> Str
 	accessible_name = |dom, n| {
 		l = Dom.attr_of(n, "aria-label")
 		if (l != "") l else Str.join_with(n.kids.map(|k| Dom.text_of(dom, k)), "")
 	}
 
+	## Compare one model node with a semantic locator. Attribute locators require
+	## presence independently of text; a text locator addresses an exact text leaf.
 	matches : Dom.Model, Dom.DNode, Scm.Loc -> Bool
 	matches = |dom, n, loc|
 		match loc {
@@ -1832,12 +1872,18 @@ SpecRunner := [].{
 		if (n.tag == "" and n.parent != 0) Ok(n.parent - 1) else Ok(i)
 	}
 
+	## Resolve a required locator and report its authored spelling when absent.
+	## Input and positive assertions share this failure instead of becoming no-ops.
 	need : Dom.Model, Scm.Loc -> Try(U64, Str)
 	need = |dom, loc| SpecRunner.find(dom, loc).map_err(|_| "no element ${Scm.show_loc(loc)}")
 
+	## Produce the true/false text used by control-state observations and
+	## legacy text payloads; it does not choose attribute presence.
 	bool_str : Bool -> Str
 	bool_str = |b| if (b) "true" else "false"
 
+	## Model a browser edit without emitting or counting an engine command.
+	## Value and checked update live control properties; other names update attributes.
 	set_attr : S(state), U64, Str, Str -> S(state)
 	set_attr = |s, i, name, v| { ..s, dom: if (name == "value" or name == "checked") Dom.set_live_on(s.dom, i, name, v) else Dom.set_attr_on(s.dom, i, name, v) }
 
@@ -2556,12 +2602,16 @@ SpecRunner := [].{
 	encode_port_reply : Str -> List(U8)
 	encode_port_reply = |json| SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_str([14], json), 0), 0)
 
+	## Select only subscriptions of the named port. Other source families
+	## cannot contribute to a port-subscription assertion.
 	on_port : Sub, Str -> Bool
 	on_port = |sub, port| match sub {
 		PortSub(p, _) => p == port
 		_ => Bool.False
 	}
 
+	## Count registered subscriptions for a port across its arguments.
+	## Message delivery and queued messages remain separate from this source count.
 	port_subscriptions : S(state), Str -> U64
 	port_subscriptions = |s, port| s.browser.subs.count_if(|x| SpecRunner.on_port(x.sub, port))
 
@@ -2887,9 +2937,13 @@ SpecRunner := [].{
 		listener.kind == 3 and listener.policies.bitwise_and(8) != 0
 	}
 
+	## Create an unpressed mouse identity with no target or capture. A real
+	## press supplies the device and policy before any movement is delivered.
 	idle_pointer : U32 -> PointerState
 	idle_pointer = |id| { id, kind: Mouse, button: Main, modifiers: 0, primary: Bool.True, down: 0, capture: 0, moved: Bool.False, suppress_mouse: Bool.False, at: Outside }
 
+	## Honor capture only while that exact model lifetime is attached.
+	## A stale or absent capture falls back to the step’s already-resolved target.
 	pointer_target : S(state), { pointer : PointerState, target : U64 } -> U64
 	pointer_target = |s, { pointer, target }| if (pointer.capture != 0 and SpecRunner.attached(s.dom, pointer.capture - 1)) pointer.capture - 1 else target
 
@@ -2904,6 +2958,8 @@ SpecRunner := [].{
 		(Ok(zone), Percent({ x, y })) => Ok(In({ zone: zone.key, x: x * 100, y: y * 100 }))
 	}
 
+	## Encode the shared pointer button discriminant and held-buttons mask.
+	## Middle and secondary use different mask ordering from the discriminant.
 	pointer_button : [Main, Middle, Secondary] -> { code : U8, held : U16 }
 	pointer_button = |button| match button {
 		Main => { code: 1, held: 1 }
@@ -3024,6 +3080,8 @@ SpecRunner := [].{
 		$out
 	}
 
+	## Find the click target shared by press and release paths. Only those
+	## ancestor chains are traversed; unrelated subtrees are not searched.
 	common_ancestor : Dom.Model, { pressed : U64, released : U64 } -> U64
 	common_ancestor = |dom, { pressed, released }| {
 		parents = SpecRunner.pressed_path(dom, pressed).fold(Dict.empty(), |found, p| found.insert(p.node, {}))
@@ -3229,6 +3287,8 @@ SpecRunner := [].{
 	form_valid : Dom.Model, U64 -> Bool
 	form_valid = |dom, i| Dom.find(dom, i, |n| SpecRunner.invalid(n)).is_err()
 
+	## Apply the explicitly modeled required, email and numeric-range rules
+	## to enabled controls. Other HTML constraints are outside this helper’s model.
 	invalid : Dom.DNode -> Bool
 	invalid = |n| {
 		control = n.tag == "input" or n.tag == "textarea" or n.tag == "select"
@@ -3266,6 +3326,8 @@ SpecRunner := [].{
 			_ => Bool.False
 		}
 
+	## Recognize ASCII letters and digits for the native email-validation
+	## rule; bytes outside that set do not gain ASCII letter meaning.
 	alnum : U8 -> Bool
 	alnum = |c| (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')
 
@@ -4429,6 +4491,8 @@ SpecRunner := [].{
 	## file's steps.
 	Options : { filter : Str, emit_steps : Bool, grammar : Bool, soak : [NoSoak, Soak({ cycles : U64, warm : U64 })], walk : [NoWalk, Walk({ steps : U64, seed : U64 })], files : List(Str) }
 
+	## The runner’s command synopsis names its ordinary, recorded, generated
+	## and grammar modes without changing the executable spec vocabulary.
 	usage : Str
 	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --walk STEPS [--seed N] FILE.scm...\n       RUNNER --grammar\n"
 
@@ -4436,6 +4500,9 @@ SpecRunner := [].{
 	count_arg : List(Str), U64, Str -> Try(U64, Str)
 	count_arg = |args, i, option| U64.from_str(args.get(i + 1) ?? "").map_err(|_| "${option} needs a count")
 
+	## Validate runner modes, numeric options and required spec files before
+	## loading a program. Unknown options and incompatible walk/soak/emission modes
+	## return a command-line error; grammar mode needs no spec files.
 	parse_args : List(Str) -> Try(Options, Str)
 	parse_args = |args| {
 		var $o = { filter: "*", emit_steps: Bool.False, grammar: Bool.False, soak: NoSoak, walk: NoWalk, files: [] }
@@ -4512,6 +4579,8 @@ SpecRunner := [].{
 	glob : Str, Str -> Bool
 	glob = |pattern, text| SpecRunner.glob_bytes(pattern.to_utf8(), text.to_utf8())
 
+	## Match the runner’s small star/question-mark filter over UTF-8 bytes.
+	## This only selects named specs; it never alters a selected story’s steps.
 	glob_bytes : List(U8), List(U8) -> Bool
 	glob_bytes = |p, t|
 		match p {
@@ -4521,6 +4590,8 @@ SpecRunner := [].{
 			[c, .. as rest] => t.first() == Ok(c) and SpecRunner.glob_bytes(rest, t.drop_first(1))
 		}
 
+	## Preserve the failure phase, classification, step and authored source
+	## position in machine-readable output. All diagnostic text goes through JsonOut.
 	failure_json : Str, Str, Str, U64, Scm.Pos -> JsonOut.Value
 	failure_json = |phase, kind, message, step, pos|
 		Object([
@@ -4532,6 +4603,9 @@ SpecRunner := [].{
 			JsonOut.field("column", Nat(pos.column)),
 		])
 
+	## Emit one complete versioned result line, including duration and the
+	## structured failure or null. The shared schema lets tooling tally real runner
+	## results without reparsing human-facing diagnostics.
 	result_line : { id : Str, name : Str, status : Str, duration_ns : U64, failure : JsonOut.Value } -> Str
 	result_line = |r|
 		JsonOut.render(

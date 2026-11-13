@@ -42,7 +42,7 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The platform (`main.roc`): the engine (`Core.roc`, with a table, its views and their ordered keys in `Table.roc`, `View.roc` and `Seq.roc`, and in `EngineOnly.roc` the value that keeps a table's bookkeeping out of an app's reach), the authoring API (`Engine.roc`, `Table.roc`, `Html.roc`, the plain layout payloads in `Layout.roc`, clipboard requests in `Clipboard.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs`, its fact-reader helper `environment.mjs` and worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, with its walks and soaks, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also `main-fuzz.roc`, a package root over the same pure modules (all but `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc`) that the platform's own fuzz targets depend on |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`, with a table, its views and their ordered keys in `TableCore.roc`, `View.roc` and `Seq.roc`), the authoring API (`Engine.roc`, including its opaque `Table`, `Html.roc`, the plain layout payloads in `Layout.roc`, clipboard requests in `Clipboard.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs`, its fact-reader helper `environment.mjs` and worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, with its walks and soaks, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also `main-fuzz.roc`, a package root over the same pure modules (all but `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc`) that the platform's own fuzz targets depend on |
 | `tests/` | Native lifetime contracts, browser contract tests and the apps they drive (`tests/apps/`, for example `store` for cells read and written at depth, `writes` for decisions, resets and `also`, `table` for a table and its table views, `remount` for `remount_on`, `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations, `tasks` for jobs that read and build files, `outbox` for posting requests and `gather` for one question split over several jobs, with the platform's fuzz targets of the effect channel and the controls beside their test apps as `fuzz-<subject>.roc`), the Chrome spec replay, and the release check helper |
 | `fuzz/` | The platform's fuzz targets of the shared support (the spec, wire and port formats, generated site trees, and tables with their views) |
 | `examples/` | The example apps, each with its specs, any fuzz targets of its own pure logic (`fuzz-<subject>.roc`), and any JavaScript of its own beside it (the port handlers of the Reading List, the Status Page and the Million-Row Explorer, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`; the Log Explorer's `log-timings` element, `timings.mjs`, the Status Page's `latency-feed-monitor`, `feed-monitor.mjs`, and the Million-Row Explorer's `query-meter`, `meter.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
@@ -51,11 +51,12 @@ recipe ready.
 | `scripts/` | Roc scripts behind the tasks; shared modules in `scripts/src/` |
 | `www/` | This website; `www/samples/` holds every code sample the docs show, each a file `check` compiles and, for a sample app, tests |
 
-A module added to `platform/` for apps to import is listed in four places:
+A module added to `platform/` for apps to import is listed in three places:
 `exposes` in `platform/main.roc`, the package's list in `platform/main-fuzz.roc`
-unless it reaches a hosted function, the release bundle's files in
-`scripts/src/Release.roc`, and the API reference's modules in
-`scripts/src/ApiDocs.roc`. A file added to the browser runtime is listed
+unless it reaches a hosted function, and the release bundle's files in
+`scripts/src/Release.roc`. `ApiDocs` reads the public modules from the
+platform root, follows members inherited through aliases, and checks their
+source comments and rendered documentation. A file added to the browser runtime is listed
 in `SpecSuite.runtime_files` (`scripts/src/SpecSuite.roc`) and in
 `RUNTIME_FILES` (`tests/browser/args.mjs`), which every copy site and
 browser test reads.
@@ -298,6 +299,30 @@ A change to the wire protocol changes the engine's encoder and decoders,
 `platform/host/spec.zig`), `platform/runtime.mjs`, `platform/environment.mjs`, `platform/worker.mjs`,
 the contract tests under `tests/` and Appendix B of `design.md` together,
 and bumps the protocol version.
+
+## App-facing or internal
+
+Decide which reader an item serves before adding it. App-facing means
+reachable through a module `platform/main.roc` exposes, including members of
+wrapped or aliased types and types in public signatures. Write its comment
+for an app author: purpose, use, contract and errors, in the guide's vocabulary.
+Public signatures spell public names such as `Engine.File`. Wrap an internal
+representation when its methods must remain internal, as `Engine.Table` does.
+Every member inherited through an alias is part of the public API too.
+
+Internal operations belong to an unexposed module's namespace, beside the
+type they work on. Write for a contributor: invariants, ownership, cost,
+boundary obligations and rationale. An operation only the engine may perform
+must not be a member of a type an app can name. A witness argument does not
+make a public member internal.
+
+`check` audits source comments, generated API coverage and dependencies on
+`platform/main-fuzz.roc`. Only registered platform fuzz targets may name that
+internal package outside the platform and tooling. Type-error fixtures under
+`tests/type-errors/` verify that apps cannot reach internal operations.
+`blueprint run api` builds and audits the reference without building examples.
+The release API comparison uses the actual published platform bundle; extraction
+failures fail the comparison and do not count as a compatible change.
 
 ## New capabilities
 
