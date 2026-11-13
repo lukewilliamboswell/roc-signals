@@ -309,8 +309,7 @@ reference is stale and adds no performed scroll.
 
 The manual scroll history keeps the newest 4096 commands, with absolute
 U64 ordinals and element identity rather than reusable engine ids. An
-assertion for an overwritten command fails explicitly. The count resets
-with the document. At ordinal exhaustion, observation fails without
+assertion for an overwritten command fails explicitly. The history and count reset with a new document, unmount or recovery. At ordinal exhaustion, observation fails without
 stopping the app or suppressing its scroll. The browser history uses weak
 element references so it cannot retain removed subtrees.
 
@@ -598,8 +597,9 @@ pass over a copy of the instance, as if every local state and every cell had
 changed: every text and attribute is re-read, every `when`, `switch` and
 `remount_on` decides again, every `each` reconciles, every `derive`,
 `resource` and effect site re-reads its input, and the pass reaches into
-every row. Each of those compares with what it last emitted, so after a
-complete turn the pass emits nothing. If a write never reached one of its
+every row. Each compares with its last observation: the emitted value, or
+for a shown property the browser-echoed state. After a complete turn the
+pass emits nothing. If a write never reached one of its
 readers, the pass emits the update the turn should have, and the step fails
 naming it:
 

@@ -1533,7 +1533,9 @@ Rules:
   skip commands. Its only state is the id → DOM node tables, parsed templates
   and live effect handles the commands told it to keep, plus the ingress
   queue and its index of report sources, the keymaps rendered on nodes and
-  the document-key registrations commands registered. `RELEASE`, teardown
+  the document-key registrations commands registered. Manual mode also keeps
+  the bounded passive scroll and native-callback observation data described
+  below. `RELEASE`, teardown
   and poisoning remove those registrations. Input delivery applies a declared
   policy; it does not decide application meaning. The controlled-value guard
   and the shown-property live-state table below are explicit protocol guards,
@@ -2544,8 +2546,9 @@ dispatched, rather than from an older event's state strings. `close` echoes
 whether the dialog is open; `toggle` echoes whether the popover is shown.
 Before its handler, the engine updates the paired hole's last observation:
 false is hidden; true retains a dialog's declared showing mode. It marks
-that hole for the event's ordinary settlement. An accepted close emits
-nothing; an ignored close re-evaluates the signal and reopens the control.
+that hole for the event's ordinary settlement. When state agrees, no additional shown property write is emitted; accepting
+a close can still dispose dialog content or update other UI. An ignored
+close re-evaluates the signal and reopens the control.
 A delayed close dispatched after reopening carries true. This rule applies
 to constant properties and template property holes too, without a second
 propagation mechanism or a static handler write mask.
@@ -3192,15 +3195,16 @@ contains printable ASCII, Enter, Escape, Tab, Space, Backspace, Delete,
 arrows, Home, End, PageUp, PageDown and F1–F12. Write `Shift+?` and
 `Shift+A`; `?`, `A` without Shift and `Shift+a` are parse errors.
 
-Unprevented Tab follows positive tabindex then DOM order, skipping disabled
-and hidden elements. Enter activates a button or link and supports implicit
+Unprevented Tab follows positive tabindex then DOM order, skipping disabled,
+hidden and inert elements. Enter activates a button or link and supports implicit
 form submission. Enter on a file or color input clicks that control instead
 of submitting; the chooser UI is outside the DOM model, as for a mouse click.
 Ctrl or Meta suppresses button, file/color and implicit-form activation;
 Alt and Shift retain it. Space activates buttons, checkboxes and radios on
 keyup, including with modifiers, only while the original pressed control
 still holds focus and its pressed ancestry has not been detached.
-Escape, function keys and caret-only movement have no modelled change.
+Escape performs native dialog and auto-popover dismissal unless prevented;
+function keys and caret-only movement have no modelled change.
 Modified Enter on a link has platform-dependent navigation, download or
 new-context defaults. Both runners refuse it unless the app prevented the
 default, for any Ctrl, Alt, Shift or Meta modifier. Plain Enter remains

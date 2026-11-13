@@ -198,7 +198,10 @@ A modal initially focuses its autofocus descendant, otherwise its first
 focusable descendant, otherwise the dialog itself. It makes background
 controls inert. `Html.on_cancel(handler)` hears the text-kind `cancel`
 event; use a preventing policy on `Engine.on_with("cancel", ...)` when the
-app must refuse dismissal. Forms never navigate or close a dialog through
+app asks to refuse dismissal. Native cancellation is limited by user
+activation: after one prevented request, another Escape can close without
+a cancelable event until new activation. Use a preventing keymap when Escape
+itself must be suppressed. Forms never navigate or close a dialog through
 `method="dialog"`: the runtime prevents every submit from mount onward.
 
 A popover keeps its children mounted while hidden:
