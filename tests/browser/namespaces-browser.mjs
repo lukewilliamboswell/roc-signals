@@ -156,7 +156,7 @@ try {
     factoryId++;
     // Negative framing uses fresh real mounts, so a poison never serves as
     // permission to continue another case and every malformed operand is reached.
-    const fresh = wrapper => {
+    const fresh = (wrapper, doc = document) => {
       const memory = new WebAssembly.Memory({ initial: 2 });
       let length = 0, reserved = 0, initCalls = 0, boot;
       const x = { memory, protocol_version: () => 18,
@@ -166,9 +166,31 @@ try {
         init() { initCalls++; boot = [...new Uint8Array(memory.buffer, 65536, reserved)]; new Uint8Array(memory.buffer)[0] = 0; length = 1; },
         files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
       };
-      const rt = new RocEngineRuntime(x, wrapper, { manualEffects: true });
+      const rt = new RocEngineRuntime(x, wrapper, { manualEffects: true, document: doc });
       return { rt, get initCalls() { return initCalls; }, get boot() { return boot; }, raw(bytes) { new Uint8Array(memory.buffer).set([0, ...bytes]); length = bytes.length + 1; rt.guard(() => rt.applyBatch()); } };
     };
+    // Target-document syntax must not choose the empty factory's grammar.
+    const xmlTarget = document.implementation.createDocument(null, "mount");
+    const xmlRun = fresh(xmlTarget.documentElement, xmlTarget); xmlRun.rt.mount();
+    for (const [id, code, uri, local, type] of [
+      [1, 1, svg, "h:div", SVGElement], [2, 2, math, "m:row", MathMLElement],
+      [3, 0, html, "h:div", HTMLUnknownElement], [4, 0, html, "xmlns", HTMLUnknownElement],
+      [5, 4, "urn:entry", "xmlns", Element],
+    ]) {
+      xmlRun.raw(element(id, 0, name(code, local, "", uri)));
+      const node = xmlRun.rt.lookup(id);
+      check(`XML target factory preserves full empty identity ${id}`, node?.namespaceURI === uri && node.prefix === null && node.localName === local && node.ownerDocument === xmlTarget && Object.getPrototypeOf(node) === type.prototype && node.attributes.length === 0 && node.childNodes.length === 0);
+    }
+    xmlRun.rt.unmount();
+    // Ordinary factories retain their previous identity-only result checks.
+    const normalRoot = document.createElement("div"); document.body.append(normalRoot);
+    const normalRun = fresh(normalRoot); normalRun.rt.mount();
+    const directCreate = document.createElementNS;
+    document.createElementNS = function (...args) { const node = directCreate.apply(this, args); node.appendChild(this.createComment("ordinary-result")); return node; };
+    try { normalRun.raw(element(1, 0, name(0, "div"))); }
+    finally { document.createElementNS = directCreate; }
+    check("ordinary factory is not subjected to empty-fallback shape checks", !normalRun.rt.poisoned && normalRun.rt.lookup(1)?.firstChild?.data === "ordinary-result");
+    normalRun.rt.unmount(); normalRoot.remove();
     const invalid = [
       ["unknown namespace byte", [8, ...word(1), ...word(0), ...word(0), 255, ...text(""), ...text("div"), 0]],
       ["xml prefix with wrong namespace", elem(1, 0, name(1, "entry", "xml"), 0)],

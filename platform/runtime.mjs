@@ -412,7 +412,7 @@ function mountRootBytes(root, protocol) {
 function checkFactoryElement(element, name, realm, interfaceName = null) {
   if (element?.nodeType !== 1 || element.namespaceURI !== name.namespace || element.prefix !== name.prefix || element.localName !== name.local) throw new Error("element factory changed expanded identity");
   if (interfaceName !== null && Object.getPrototypeOf(element) !== realm[interfaceName].prototype) throw new Error("element factory changed DOM interface");
-  if (element.attributes.length !== 0 || element.childNodes.length !== 0) throw new Error("element factory returned nonempty data");
+  if (interfaceName !== null && (element.attributes.length !== 0 || element.childNodes.length !== 0)) throw new Error("element factory returned nonempty data");
   return element;
 }
 
@@ -421,7 +421,7 @@ function createResolvedElement(doc, name) {
   let element, interfaceName = null;
   if (name.prefix === null && name.local.includes(":") && (name.namespace === SVG_NS || name.namespace === MATHML_NS)) {
     const wrapper = name.namespace === SVG_NS ? "svg" : "math";
-    const source = doc.createElement("template");
+    const source = doc.implementation.createHTMLDocument("").createElement("template");
     source.innerHTML = `<${wrapper}><${name.local}></${name.local}></${wrapper}>`;
     const outer = source.content.firstChild;
     if (source.content.childNodes.length !== 1 || outer?.namespaceURI !== name.namespace || outer.prefix !== null || outer.localName !== wrapper || outer.attributes.length !== 0 || outer.childNodes.length !== 1) throw new Error("foreign empty-node factory changed its wrapper");
@@ -445,10 +445,14 @@ function createResolvedElement(doc, name) {
     checkFactoryElement(candidate, name, realm, "Element");
     element = doc.importNode(candidate, false);
     interfaceName = "Element";
+  } else if (name.namespace === HTML_NS && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")) {
+    const source = doc.implementation.createHTMLDocument("");
+    const candidate = source.createElement(name.local);
+    interfaceName = "HTMLUnknownElement";
+    checkFactoryElement(candidate, name, realm, interfaceName);
+    element = doc.importNode(candidate, false);
   } else {
-    element = name.namespace === HTML_NS && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")
-      ? doc.createElement(name.local)
-      : doc.createElementNS(name.namespace, name.qualified);
+    element = doc.createElementNS(name.namespace, name.qualified);
   }
   checkFactoryElement(element, name, realm, interfaceName);
   if (element.ownerDocument !== doc) throw new Error("element factory returned another document's node");
