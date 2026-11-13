@@ -15,6 +15,13 @@ import pf.Html
 ## - A flood: 100 rows that each fetch at mount, far past the in-flight
 ##   bound of 32, so one turn queues 68 refusals; each reaction counts its
 ##   answer at the top level.
+## - A deluge, offered only at the address `/?offers=deluge`: 5000 rows
+##   that each fetch at mount, so one turn queues thousands of refusals,
+##   more follow-up turns than the breadth bound allows one call. The bound
+##   counts only the follow-ups that follow-ups queue, so the turn
+##   completes. The rows and the tally of their answers are two local
+##   states of the deluge's own, so a refusal's turn writes the tally and
+##   never reads the list.
 ## - A `state` below a `derive` and below a `resource`, mounted with the
 ##   page, and layers that exist only in a branch mounted after the first
 ##   (two `when`s that start closed, a `switch` that starts on a plain case, and a `when`
@@ -193,8 +200,64 @@ SupersedeApp := [].{
 		$keys
 	}
 
-	view : State(Ctx, S) -> Elem(Ctx)
-	view = |st| {
+	## What the page offers, chosen by the address it boots at. The deluge is
+	## offered at `/?offers=deluge` alone: once its 5000 rows are drawn, every
+	## later step of a walk would check 5000 rows, and a walk mounts at `/`.
+	Offer : [Standard, WithDeluge]
+
+	offer_at : Str -> Offer
+	offer_at = |url| if (url == "/?offers=deluge") WithDeluge else Standard
+
+	## How many rows a deluge draws: with 32 requests admitted, more refusals
+	## than the breadth bound's 4096 follow-up turns.
+	deluge_size : U64
+	deluge_size = 5000
+
+	## The deluge: its rows' keys in one local state and, below it, the
+	## tally of their answers in another, which each row's reaction writes.
+	deluge : {} -> Elem(Ctx)
+	deluge = |_| Engine.state(
+		[],
+		|keys| Engine.state(
+			{ refused: 0.U64, answered: 0.U64 },
+			|tally| Engine.element(
+				"div",
+				[],
+				[
+					Html.button("Deluge", [], keys.lift().update(|_| SupersedeApp.flood_keys(SupersedeApp.deluge_size))),
+					Html.p_s(tally.signal().map(|t| "refused ${t.refused.to_str()}, answered ${t.answered.to_str()}"), [Engine.test_id("deluge")]),
+					Html.ul(
+						[],
+						[
+							Engine.each(
+								keys.signal().lift(),
+								|k| k,
+								|row| Html.li(
+									[],
+									[
+										Engine.watch(
+											row.key(),
+											|k| [Http({ method: "GET", url: "/deluge/${k}", headers: [], body: "", timeout_ms: 0 })],
+											tally.lift_row().on_result(
+												|t, _, r| match r {
+													Refused => { ..t, refused: t.refused + 1 }
+													_ => { ..t, answered: t.answered + 1 }
+												},
+											),
+										),
+										Engine.text_s(row.key()),
+									],
+								),
+							),
+						],
+					),
+				],
+			),
+		),
+	)
+
+	view : State(Ctx, S), Offer -> Elem(Ctx)
+	view = |st, offer| {
 		v = st.signal()
 		Html.div(
 			"supersede",
@@ -274,6 +337,10 @@ SupersedeApp := [].{
 						),
 					],
 				),
+				match offer {
+					WithDeluge => SupersedeApp.deluge({})
+					Standard => Engine.text("")
+				},
 				Html.button("Toggle solo", [], st.update(|s| { ..s, solo: !s.solo })),
 				Engine.when(v.map(|s| s.solo), || SupersedeApp.solo_branch({}), || Engine.text("solo closed")),
 				Html.button("Toggle late", [], st.update(|s| { ..s, late: !s.late })),
@@ -295,5 +362,5 @@ SupersedeApp := [].{
 
 	## The program both hosts run.
 	program : Engine.Program
-	program = Engine.program(|| Engine.state(SupersedeApp.initial, |st| SupersedeApp.view(st)))
+	program = Engine.program_boot({ storage_keys: [], max_inflight: 32 }, |boot| Engine.state(SupersedeApp.initial, |st| SupersedeApp.view(st, SupersedeApp.offer_at(boot.url))))
 }

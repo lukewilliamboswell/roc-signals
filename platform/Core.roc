@@ -5605,7 +5605,8 @@ derive_settle = |input, block, depth, out, tx| {
 #   depth d is depth d + 1. A chain deeper than `max_turns` is a contract
 #   error (an effect feedback loop) naming the depth and the site; a turn
 #   that fans out into many independent follow-ups is not. `max_breadth`
-#   bounds the follow-up turns of one host call (see `drain`).
+#   bounds the follow-up turns of depth 2 or more of one host call, so a
+#   loop that multiplies is stopped too (see `drain`).
 #
 # Command stream additions:
 #  13 FX      id kind:u8 ... 1 HTTP method:str url:str n:u32 (name:str value:str)* body:str timeout_ms:u32
@@ -6238,11 +6239,13 @@ fx_node = 4294967295
 max_turns : U64
 max_turns = 64
 
-## The most follow-up turns one host call may run: 64 for each in-flight
-## slot, and at least 64 x 64. The depth bound alone stops every chain, but
-## a feedback loop in which each follow-up queues two or more would grow
-## exponentially before reaching it; this backstop stops that while leaving
-## room for any fan-out up to 64 times the app's own `max_inflight`.
+## The most follow-up turns of depth 2 or more one host call may run: 64
+## for each in-flight slot, and at least 64 x 64. The depth bound alone
+## stops every chain, but a feedback loop in which each follow-up queues two
+## or more would grow exponentially before reaching it; this backstop stops
+## that. The follow-ups of depth 1 are not counted (see `drain`): the
+## external turn queued them itself, so their number is what that one turn
+## issued, however many rows it drew, and never the work of a loop.
 max_breadth : U64 -> U64
 max_breadth = |inflight| max_turns * (if (inflight > max_turns) inflight else max_turns)
 
@@ -7116,13 +7119,20 @@ flush_turn = |tx, programs| {
 ## by a depth-d turn and opens depth d + 1, whose threshold is the counters
 ## at that moment. O(1) per turn.
 ##
-## Total work is bounded too: at most `max_breadth(max_inflight)` turns per
-## host call, which a chain-free fan-out reaches only by refusing more than
-## 64 requests for every slot of the in-flight table.
+## Total work is bounded too. The turns of depth 1 are bounded by the
+## external turn: it queued one follow-up for each request it issued past
+## the in-flight bound and one for each `Self` it asked for, and nothing
+## adds to them once it has returned, since whatever a follow-up's turn
+## queues is deeper. Their number follows what the turn drew (a refusal for
+## each of thousands of rows that fetch at mount), so they are not counted:
+## a count that follows an app's data is not a loop. The turns of depth 2
+## or more are counted, at most `max_breadth(max_inflight)` per host call:
+## a loop in which each follow-up queues two or more reaches that long
+## before it reaches the depth bound.
 drain : App -> App
 drain = |app0| {
 	var $app = app0
-	var $turns = 0.U64
+	var $deep_turns = 0.U64
 	var $depth = 1.U64
 	var $below_next = app0.tx.fx.next
 	var $below_inner = app0.tx.fx.inner
@@ -7139,12 +7149,14 @@ drain = |app0| {
 				crash "contract: an effect follow-up chain reached depth 65 at site ${show_path(q.path)}: each follow-up's turn queued another, more than 64 deep in one call (feedback loop)"
 			}
 		}
-		if $turns >= breadth {
-			crash "resource_limit: effect follow-up turns in one call exceeded 64 per in-flight slot (at least 4096); follow-ups are multiplying (feedback loop) or a fan-out is far past the in-flight bound (raise max_inflight)"
+		if $depth > 1 {
+			if $deep_turns >= breadth {
+				crash "resource_limit: the follow-up turns that follow-ups queued in one call exceeded 64 per in-flight slot (at least 4096) at site ${show_path(q.path)}: follow-ups are multiplying (feedback loop), or a follow-up's own turn issued far more requests than the in-flight bound admits (raise max_inflight)"
+			}
+			$deep_turns = $deep_turns + 1
 		}
 		tx1 = with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_first(1) })
 		$app = turn({ root, tx: tx1, programs }, q.path, q.id, Fx(q.res))
-		$turns = $turns + 1
 	}
 	$app
 }
@@ -7310,6 +7322,27 @@ expect {
 	mounted = mount_in(32, { workers: ["t/echo"], ports: no_ports }, {}, elem)
 	s = Core.fx_stats(mounted)
 	[s.issued, s.cancelled, s.live, s.reparented] == [1, 1, 0, 0]
+}
+
+## The breadth bound does not count the follow-ups an external turn queued
+## itself. A mount that asks for 4200 timers with 4 slots is refused 4196
+## times, more follow-up turns than the bound of 4096, and every refusal
+## reaches its reaction; a follow-up each of the first 100 reactions asks for
+## is depth 2, and those are well within the bound.
+expect {
+	elem = Core.state(
+		0.U64,
+		|seen| Core.element(
+			"div",
+			[],
+			[
+				Core.watch(Core.const({}), |_| List.repeat(Timer(1), 4200), seen.on_result(|n, _, _| n + 1)),
+				Core.watch(seen.signal(), |n| if (n >= 1 and n <= 100) [Self] else [], Core.ignore({})),
+			],
+		),
+	)
+	stats = Core.fx_stats(Core.mount_with(4, elem))
+	[stats.issued, stats.refused, stats.delivered, stats.live] == [4, 4196, 4296, 4]
 }
 
 ## A page read's result: bytes as they are; text only when it is UTF-8, which

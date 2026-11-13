@@ -6,8 +6,9 @@
 // site superseding a real fetch (aborted, its timeout timer released) and
 // an interval, the follow-up budget (a fan-out of 66 refusals from one
 // turn completes; a refusal retried while the table is full is a chain that
-// poisons with class `contract`), and an embedder's `fetch` option, which
-// may answer synchronously.
+// poisons with class `contract`; a loop whose follow-ups each queue two
+// more poisons with class `resource_limit`), and an embedder's `fetch`
+// option, which may answer synchronously.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -173,6 +174,22 @@ const stats = (page) => page.evaluate(() => ({ live: [...window.__rt.live.keys()
       return p && [p.class, p.message.startsWith("contract: an effect follow-up chain reached depth 65 at site /")];
     }),
     ["contract", true],
+  );
+  await ctx.close();
+}
+{
+  // The breadth bound counts the follow-ups that follow-ups queue. A loop in
+  // which every follow-up's turn queues two more doubles at each depth, so
+  // it reaches that bound long before its chain is 64 deep.
+  const { page, ctx } = await open(true);
+  await click(page, "multiply");
+  check(
+    "multiply: follow-ups that each queue two more poison at the breadth bound",
+    await page.evaluate(() => {
+      const p = window.__rt.poisoned;
+      return p && [p.class, p.message.startsWith("resource_limit: the follow-up turns that follow-ups queued in one call exceeded 64 per in-flight slot (at least 4096) at site /")];
+    }),
+    ["resource_limit", true],
   );
   await ctx.close();
 }

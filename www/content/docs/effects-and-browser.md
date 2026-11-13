@@ -291,8 +291,14 @@ click on its timeline names this way.
   a follow-up whose reaction leads to another follow-up, and so on. A deeper
   chain is a feedback loop, such as retrying a refused request while the
   table is still full, and stops the app with a contract error. How many
-  follow-ups one turn queues does not count: a hundred rows that each fetch
-  at mount, most of them refused, are fine. As a backstop, one event runs at
-  most 64 follow-up turns per in-flight slot (at least 4096).
+  follow-ups one turn queues does not count: thousands of rows that each
+  fetch at mount, nearly all of them refused, are fine.
+- As a backstop against a loop that multiplies, where each follow-up leads
+  to two or more, one event runs at most 64 follow-up turns per in-flight
+  slot (at least 4096) beyond those its own turn queued. More is a resource
+  limit. The follow-ups the event's own turn queued are never counted, so
+  the bound is reached only by follow-ups that lead to follow-ups: a loop,
+  or a reaction to a follow-up that itself mounts thousands of rows that
+  fetch.
 - An HTTP timeout is capped at 600 seconds.
 - An outbox takes one post per turn; a second is a contract error.

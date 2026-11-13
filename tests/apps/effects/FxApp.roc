@@ -30,6 +30,9 @@ import pf.Worker
 ##   appends to the root log.
 ## - A follow-up loop that only the browser contract test arms ("loop"): a
 ##   refused request whose reaction issues it again.
+## - A loop that multiplies, armed the same way ("multiply"): a site over a
+##   local count that asks for two `Self` follow-ups, each of which raises
+##   the count, so every follow-up's turn queues two more.
 ## - P, a `latest` site over the counter `p`, shown or hidden by a `when`:
 ##   for a nonzero `p` a port call (kept when P is disposed) and a port
 ##   subscription (scoped, ended by its JavaScript with `Closed` or
@@ -332,6 +335,20 @@ FxApp := [].{
 							Refused => { ..s, n: s.n + 1 }
 							_ => s
 						},
+					),
+				),
+				# A loop that multiplies, never armed by the fuzz model: once
+				# "multiply" is pressed, each follow-up raises the count, and the
+				# site asks for two more follow-ups for the new count.
+				Engine.state(
+					0.U64,
+					|count| Engine.element(
+						"span",
+						[],
+						[
+							Html.button("multiply", [], count.update(|_| 1)),
+							Engine.watch(count.signal(), |c| if (c == 0) [] else [Self, Self], count.on_result(|c, _, _| c + 1)),
+						],
 					),
 				),
 				Html.button("query", [], st.update(|s| { ..s, q: s.q + 1 })),

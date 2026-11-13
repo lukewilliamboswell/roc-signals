@@ -1758,11 +1758,18 @@ deployment allows is a mount option, named `max…Bytes` or `maxWorkers`
   each of a hundred rows that fetch at mount: they are all depth 1.
 - **Follow-up breadth.** A loop in which each follow-up queues two or more
   would grow exponentially before it reached depth 64, so one host call runs
-  at most 64 follow-up turns per in-flight slot, and at least 4096. Only a
-  multiplying loop, or a fan-out refusing more than 64 requests per slot of
-  the in-flight table, reaches it; it is a `resource_limit` error. The total
-  is in the app's hands: it is set by `max_inflight` and by how many requests
-  its sites issue in one turn.
+  at most 64 follow-up turns of depth 2 or more per in-flight slot, and at
+  least 4096; one more is a `resource_limit` error naming the site. The
+  follow-ups of depth 1 are not counted. The external turn queued them
+  itself, one for each request it issued past the in-flight bound and one
+  for each `Self`, and nothing adds to them once that turn has returned, so
+  their number is bounded by what the one turn issued. It follows the app's
+  data: a turn that mounts five thousand rows that each fetch is refused
+  about five thousand times. A count that follows the rows drawn is no
+  loop, and a poison there is what
+  [How failure is controlled](#how-failure-is-controlled) rules out. What
+  reaches the bound is a loop that multiplies, or a follow-up whose own turn
+  fans out past it.
 - **HTTP timeout.** Each request carries `timeout_ms` (0 = none), capped at
   600 s. A timeout delivers `Timeout`; the runtime arms at most one timer per
   admitted request and clears it on completion, failure, timeout or cancel.
@@ -2301,7 +2308,8 @@ bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
 **Resource limits:** node ids (2³² − 2 live nodes); any count the template
 encoding carries in one byte —
 static attributes, children, holes, hole path depth, row handlers — above 255;
-more follow-up turns in one host call than the breadth backstop allows.
+more follow-up turns of depth 2 or more in one host call than the breadth
+backstop allows.
 Each is checked before it could wrap. The runtime adds `resource_limit` for
 ingress-queue overflow and refuses a module of another protocol version
 before running it, and a page whose port handlers do not match the
@@ -2329,7 +2337,8 @@ bound and a declared behaviour at the bound:
 |---|---|---|
 | Awaited requests in flight | 32 (per-program setting) | Typed `Refused` follow-up |
 | Follow-up chain depth per host call | 64 | `contract` poison |
-| Follow-up turns per host call | 64 per in-flight slot, at least 4096 | `resource_limit` poison |
+| Follow-up turns of depth 1 per host call | One for each request the external turn issued past the in-flight cap, and one for each `Self` it asked for | All run |
+| Follow-up turns of depth 2 or more per host call | 64 per in-flight slot, at least 4096 | `resource_limit` poison |
 | HTTP timeout, work timeout | 600 s | Capped |
 | A cancelled job that finishes (`on_cancel: Finish`) | Its timeout, else 600 s after it was performed | Its worker is terminated as at a timeout |
 | Worker catalogue | 64 names (a preparation's and its tasks' each count) | `contract` poison |

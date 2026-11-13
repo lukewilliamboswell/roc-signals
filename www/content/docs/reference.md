@@ -183,7 +183,7 @@ them.
 |---|---|---|
 | Awaited requests in flight | 32 (`max_inflight`) | The reaction receives `Refused` |
 | Follow-up chain depth per event | 64 | Contract error |
-| Follow-up turns per event | 64 per in-flight slot, at least 4096 | Resource limit |
+| Follow-up turns per event that follow-ups led to (those the event's own turn queued are not counted) | 64 per in-flight slot, at least 4096 | Resource limit |
 | HTTP timeout | 600 s | Capped |
 | Handlers for one event on one element | 1 | Contract error at mount; make one handler of two with `also` |
 | Static attributes, children or holes per row template element | 255 | Resource limit |
