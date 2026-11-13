@@ -258,7 +258,13 @@ measured_round! = |engine, route, round| Fuzz.measure!("reader-retirement", || o
 
 ownership! : U64 => {}
 ownership! = |rounds| {
-	program = Engine.program_boot({ storage_keys: [], max_inflight: 1 }, |_| ownership_view({})).with_ports([feed.registration()])
+	program = Engine.program_boot({ storage_keys: [], max_inflight: 1 }, |_| ownership_view({})).with_ports(
+		Port.registrations(
+			{
+				feed
+			},
+		),
+	)
 	(mounted, batch, _) = (Core.driver(program).init)([])
 	dom = Dom.apply(Dom.new({}), batch)
 	index = SpecRunner.find(dom, Text("post")) ?? crash "ownership post absent"

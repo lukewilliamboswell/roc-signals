@@ -271,7 +271,8 @@ export async function instantiateEngineWasm(url) {
   return instantiateEngineBytes(await response.arrayBuffer());
 }
 
-const utf8 = new TextDecoder("utf-8", { fatal: true });
+// Wire strings are length-delimited data; a leading U+FEFF is not a file BOM.
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 // Reject incomplete or invalid text before the ASCII fast path can fabricate
 // characters from missing bytes or a decoder can replace invalid UTF-8.
@@ -1196,7 +1197,7 @@ function parseKeymap(value) {
     if (at === start || bytes[at++] !== 58 || (at - start > 2 && bytes[start] === 48)) throw new Error("invalid keymap key length");
     const length = Number(new TextDecoder().decode(bytes.subarray(start, at - 1)));
     if (!Number.isSafeInteger(length) || length > bytes.length - at) throw new Error("invalid keymap key length");
-    const key = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(at, at + length));
+    const key = utf8.decode(bytes.subarray(at, at + length));
     at += length;
     const entry = { key, modifiers, outside: place === 111, prevent: policy === 112 };
     add(exact, chordIndex(key, modifiers), entry);

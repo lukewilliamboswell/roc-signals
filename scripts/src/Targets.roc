@@ -30,6 +30,7 @@ Targets := [].{
 		{ name: "result-readers", main: "fuzz/result-readers/main.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc" },
 		{ name: "url", main: "fuzz/url/main.roc" },
+		{ name: "names", main: "fuzz/names/main.roc" },
 		{ name: "form-builder", main: "examples/form-builder/fuzz-rules.roc" },
 		{ name: "kanban-board", main: "examples/kanban-board/fuzz-board.roc" },
 		{ name: "data-grid", main: "examples/data-grid/fuzz-rows.roc" },
@@ -167,6 +168,7 @@ Targets := [].{
 		Path.write_bytes!(Path.utf8(unicode_bits), bits)?
 		Ok(
 			Targets.browser!(o, "protocol-facts-browser.mjs", [])?
+				.concat(Targets.browser!(o, "names-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "unicode-symbols-browser.mjs", ["--oracle", unicode_bits])?)
 				.concat(Targets.browser!(o, "fx-browser.mjs", ["--wasm", fx])?)
 				.concat(Targets.browser!(o, "controls-browser.mjs", ["--wasm", controls])?)

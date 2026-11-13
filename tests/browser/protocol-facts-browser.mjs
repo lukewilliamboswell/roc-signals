@@ -60,6 +60,8 @@ try {
     reject("unsupported property implementation refuses before init", encode(unknownProperty));
     const unknownOpcode = fields.map((value, i) => i === 0 ? [...value.slice(0, -10), 25, ...text("BOGUS")] : value);
     reject("unknown opcode name refuses before init", encode(unknownOpcode), 'unknown opcode name "BOGUS"');
+    const bomOpcode = fields.map((value, i) => i === 0 ? [...value.slice(0, 5), ...text("\uFEFFINST"), ...value.slice(13)] : value);
+    reject("a leading BOM cannot disguise an unknown opcode name", encode(bomOpcode));
     const missingOpcode = fields.map((value, i) => i === 0 ? [...word(24), ...value.slice(4, -10)] : value);
     reject("missing opcode name refuses before init", encode(missingOpcode), 'missing opcode name "GUARD"');
     const unknownPolicy = fields.map((value, i) => i === 2 ? [...value.slice(0, -13), ...word(32), ...text("BOGUS")] : value);
@@ -91,6 +93,17 @@ try {
     second.raw([0, 10, ...word(1), ...word(0), ...word(0), ...text("span")]);
     check("a second mount cannot replace the first module's opcode bindings", first.root.firstChild?.tagName === "DIV" && second.root.firstChild?.tagName === "SPAN");
     check("mounts retain distinct immutable facts and dispatch tables", first.runtime.protocol !== second.runtime.protocol && first.runtime.protocol.PROPS !== second.runtime.protocol.PROPS && Object.isFrozen(first.runtime.protocol.facts.ops));
+    for (const [id, length] of [[2, 2], [3, 48]]) {
+      const name = "\uFEFF" + "a".repeat(length);
+      const value = "\uFEFF" + "v".repeat(length);
+      const data = "\uFEFF" + "t".repeat(length);
+      first.raw([0, 8, ...word(id), ...word(0), ...word(0), ...text(name),
+        9, ...word(id), ...text(name), 1, ...text(value),
+        10, ...word(id + 10), ...word(id), ...word(0), ...text(data)]);
+      const element = first.root.lastElementChild;
+      check(`leading U+FEFF survives ${length <= 32 ? "short" : "long"} command names and values`,
+        element.localName === name && element.getAttribute(name) === value && element.textContent === data);
+    }
     first.end(); second.end();
     return checks;
   }, [...protocolFixtureSection]);

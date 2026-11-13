@@ -93,6 +93,10 @@ a signal of the chords it hears:
 `Engine.on_key` takes `{ keymap, on, stop }`. Only `keymap` is required;
 `on` defaults to `Down` and can be `Up`, and `stop` defaults to false.
 Use the ordinary reducers, decisions and `also` at the `Key` payload type.
+Text-event names are `Engine.EventType` values (also `Web.EventType`). Literals
+are checked while compiling; computed nonempty names use `from_str`, and custom
+events need no catalogue.
+
 The old `Html.on_keydown` is removed; text handlers on keydown or keyup are
 contract errors naming `on_key`.
 

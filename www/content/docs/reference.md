@@ -8,7 +8,7 @@ template = "page.html"
 # Reference
 
 The [API documentation](../../api/api/) is generated from the platform's source
-and documents every public symbol of `Engine`, `Files`, `Html`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port`, `PortJson`, `Order` and `Url`,
+and documents every public symbol of `Engine`, `Files`, `Html`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port`, `PortJson`, `Order`, `Url` and `Web`,
 including members inherited through public aliases: the authoring API.
 Operations only the engine may perform belong to unexposed modules. The engine's storage and executable values are opaque; its implementation
 and the interfaces its hosts and test harnesses use live in the platform's
@@ -203,6 +203,27 @@ that does not bubble, so its own target can still receive it.
 HTML checkbox or radio. `Html.select` delivers `Chose(value)` from its current
 offered list, or `NotOffered`. These typed payloads use `HandlerOf(ctx, p)`;
 `from_payload_by` converts an incoming payload using a current signal reading.
+
+## Browser names and methods
+
+`Web` owns `Tag`, `AttrName`, `EventType` and `Method`; `Engine` provides aliases
+for convenience. Names in literals are checked while compiling. For text built
+by an app, handle `from_str`'s result; `text` returns the exact original spelling.
+Tag and attribute values check context-free DOM name grammar. Namespace rules
+also depend on where an element is constructed. A well-formed computed name
+remains available when a vocabulary does not yet list it.
+
+Attribute literals `class` and `data-testid` point to `class`/`class_s` and
+`test_id`/`test_id_s`. `EventType` accepts any nonempty computed type, including
+custom events. Literals reject retired suffixes and text key handlers with the
+typed builder to use; computed types still face those checks at mount.
+
+`Method` checks HTTP-token grammar and refuses CONNECT, TRACE and TRACK in any
+ASCII case. A literal containing lowercase is accepted only for the six methods
+Fetch normalizes: DELETE, GET, HEAD, OPTIONS, POST and PUT. Computed custom
+methods retain their spelling. HTTP requests and File factories share this one
+type; their GET and POST defaults remain checked values. Uploading a file with
+any ASCII spelling of GET or HEAD is a contract error before admission.
 
 ## Attribute values
 

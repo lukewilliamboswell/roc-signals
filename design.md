@@ -2905,10 +2905,15 @@ on its target. The runtime then finds the nearest element carrying a routing
 node id and dispatches `(node, handler, payload)`. A row reference's command
 id does not change routing: its events still use the row's id.
 
-The set of event types is open, so `Engine.on` takes text. A misspelt type,
+The set of event types is open, so `Engine.on` takes an `EventType`.
+Any nonempty computed type is available through `from_str`; the nonempty
+rule is the platform's, since the DOM accepts an empty event type. A misspelt type,
 or an event declared on an element that never raises it, reaches nothing.
 Nothing reports that silent outcome: an earlier check would need a closed
 list kept in step with every browser and custom element.
+Literals also reject retired policy/file suffixes and text handlers on
+`keydown` or `keyup`, with the typed builder to use. Computed types retain
+those mount-time checks. No known-event catalogue restricts custom events.
 Typed attach functions cover the events of `Html`'s controls and helpers;
 a spec that expects a handler to run fails in both runners.
 
@@ -3499,7 +3504,7 @@ interval longer than 2,147,483,647 milliseconds;
 an effect follow-up chain deeper than 64;
 a result reader given a raw result of the wrong kind; a worker catalogue with a
 duplicate name or more than 64 names; work issued for a task the
-catalogue does not hold; an upload whose method is `GET` or `HEAD`;
+catalogue does not hold; an upload whose method is any ASCII spelling of `GET` or `HEAD`;
 a port catalogue with a duplicate name, more than
 64 ports, a name that is empty or longer than 128 bytes or an `Every` bound
 outside 1–1024; a request for an undeclared port or for a port of another
@@ -4411,6 +4416,24 @@ text, not a universal fetch reference: an absolute URL retains its origin
 through `to_str`, including when its path begins `//`. Request URL fields remain text.
 
 
+`Web` owns the opaque `Tag`, `AttrName`, `EventType` and `Method` primitives;
+`Engine` aliases them beside its builders. Their literals are checked while
+compiling. `from_str` returns a typed refusal for computed text, and `text`
+retains the original spelling. Tag and attribute grammar is context-free;
+namespace-specific validity is checked where the namespace is known. Raw
+well-formed names remain available independently of vocabulary checks at
+literals. Attribute literals `class` and `data-testid` direct an author to
+their dedicated builders; computed names apply grammar only.
+
+A `Method` is a nonempty HTTP token excluding `CONNECT`, `TRACE` and `TRACK`
+in every ASCII case. A literal containing lowercase is refused unless Fetch
+would normalize it: DELETE, GET, HEAD, OPTIONS, POST and PUT. Computed methods
+retain Fetch's grammar and forbidden-method check, including an explicitly
+computed lowercase custom method. Requests, File factories and defaulted props
+hold this one concrete Method type. Uploads refuse every ASCII spelling of
+GET or HEAD at admission, where the file body is known; that contextual rule
+never rewrites the retained method.
+
 The authoring API as it stands (`Engine.roc`). Types are abbreviated; `ctx` is
 the context a value or handler is used in.
 
@@ -4537,8 +4560,17 @@ State.lift, State.lift_row, HandlerOf.lift, HandlerOf.lift_row
 HandlerOf.also : HandlerOf(ctx, p), HandlerOf(ctx, p) -> HandlerOf(ctx, p)  # both for one event, in order
 Reaction.also : Reaction(ctx, a, result), Reaction(ctx, a, result) -> Reaction(ctx, a, result)
 
+# Browser names (public Web module, with Engine aliases)
+Tag, AttrName, EventType, Method             # opaque; retain authored spelling
+Web.Tag.from_str : Str -> Try(Tag, [NotATag(Str)])
+Web.AttrName.from_str : Str -> Try(AttrName, [NotAnAttribute(Str)])
+Web.EventType.from_str : Str -> Try(EventType, [NotAnEventType(Str)])
+Web.Method.from_str : Str -> Try(Method, [NotAMethod(Str)])
+# Each has from_quote : Str -> Try(Self, [BadQuotedBytes(Str)]),
+# text : Self -> Str and is_eq : Self, Self -> Bool.
+
 # Structure
-element : Str, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
+element : Tag, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 text : Str -> Elem(ctx)
 text_s : Signal(ctx, Str) -> Elem(ctx)
 when : Signal(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
@@ -4577,12 +4609,14 @@ Window : { start : U64, count : U64 }
 every_row : Window                            # the window that draws every row a view keeps
 
 # Attributes and events
-attr, attr_s, class, class_s, test_id, test_id_s
-attr_presence : Str, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
+attr : AttrName, Str -> Attr(ctx)
+attr_s : AttrName, Signal(ctx, Str) -> Attr(ctx)
+class, class_s, test_id, test_id_s
+attr_presence : AttrName, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
                                               # explicit presence; empty text remains present
-on : Str, Handler(ctx) -> Attr(ctx)          # bare event type; text kind, no policy
+on : EventType, Handler(ctx) -> Attr(ctx)          # bare event type; text kind, no policy
 Policy := { prevent : Bool ?? False, stop : Bool ?? False }
-on_with : Str, Policy, Handler(ctx) -> Attr(ctx)
+on_with : EventType, Policy, Handler(ctx) -> Attr(ctx)
 on_click : Handler(ctx) -> Attr(ctx)
 Pointer : { id : U32, kind : [Mouse, Pen, Touch, Other],
             button : [None, Main, Middle, Secondary, Back, Forward, Other(U8)],
@@ -4634,7 +4668,7 @@ File.read_bytes : File, ReadProps -> Ask(List(U8), FileError)
 File.read_utf8 : File, ReadProps -> Ask(Str, FileError)
 ReadProps := { max_bytes : U64 ?? 8388608 }    # under the page's maxFileBytes
 File.upload : File, UploadProps -> Ask(Response, HttpFailure)        # the file as an HTTP body
-UploadProps := { url : Str, method : Str ?? "POST", headers : List((Str, Str)) ?? [],
+UploadProps := { url : Str, method : Method ?? "POST", headers : List((Str, Str)) ?? [],
                  timeout : [Unlimited, Ms(U32)] ?? Unlimited, credentials : Credentials ?? SameOrigin }
 File.sha256 : File -> Ask(List(U8), FileError)      # 32 digest bytes
 File.object_url : File -> Ask(Str, FileError)       # URL valid while the handle lives
@@ -4642,7 +4676,7 @@ File.save : File, { name : [Same, Named(Str)] ?? Same }
             -> [Save({ file : File, name : Str })]   # a command: a download; typed by its one tag,
                                               # use command(...) in a typed plan; cleanup takes List(Command)
 File.fetch : File.FetchProps -> Ask(Fetched, FetchFailure)
-File.FetchProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [],
+File.FetchProps := { url : Str, method : Method ?? "GET", headers : List((Str, Str)) ?? [],
                 timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default,
                 credentials : Credentials ?? SameOrigin }
 Fetched : { status : U16, headers : List((Str, Str)), body : File }
@@ -4664,7 +4698,7 @@ on_files : [Change, Drop, Paste], FilesHandler(ctx) -> Attr(ctx)
 # Effects
 Cache : [Default, NoStore, Reload, NoCache, ForceCache]
 Credentials : [SameOrigin, Include]
-HttpProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [], body : Str ?? "",
+HttpProps := { url : Str, method : Method ?? "GET", headers : List((Str, Str)) ?? [], body : Str ?? "",
                timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
 Ask(output, error)                             # opaque: request and retained reader
 Ask.map_ok : Ask(a, e), (a -> b) -> Ask(b, e)
@@ -4706,7 +4740,7 @@ on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> 
 ignore : {} -> Reaction(ctx, a, result)
 on_cleanup : Str, Signal(ctx, a), (a -> List(Command)) -> Elem(ctx)   # an awaited request does not compile
 cleanup : Str -> Elem(ctx)
-Request : [Http({ method, url, headers, body, timeout_ms, cache, credentials }), StorageGet(Str), SessionStorageGet(Str), Timer(U32),
+Request : [Http({ method : Method, url, headers, body, timeout_ms, cache, credentials }), StorageGet(Str), SessionStorageGet(Str), Timer(U32),
        Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32,
               on_dispose : [Stop, Keep], on_cancel : [Stop, Finish],
               prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
@@ -4718,10 +4752,10 @@ Request : [Http({ method, url, headers, body, timeout_ms, cache, credentials }),
        ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
        StorageSet(Str, Str), StorageRemove(Str), SessionStorageSet(Str, Str), SessionStorageRemove(Str), ReadBytes({ file, max_bytes }),
        ReadUtf8({ file, max_bytes }),
-       Upload({ method, url, headers, body : File, timeout_ms, credentials }), Sha256(File), ObjectUrl(File),
+       Upload({ method : Method, url, headers, body : File, timeout_ms, credentials }), Sha256(File), ObjectUrl(File),
        PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
        PortSubscribe({ port, message }),
-       Save({ file : File, name : Str }), Fetch({ method, url, headers, timeout_ms, cache, credentials }),
+       Save({ file : File, name : Str }), Fetch({ method : Method, url, headers, timeout_ms, cache, credentials }),
        ViewTransition(List(Str))]
 Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str), FocusInPlace(Str),
        ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
@@ -4898,6 +4932,10 @@ touches the wire, an Appendix B entry.
 
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
+These are data bytes, not files with an encoding signature: decoding preserves
+a leading U+FEFF in names and values, including a worker's hosted arguments.
+Unknown closed-vocabulary names cannot become known names by dropping that
+character. Invalid UTF-8 is rejected at each strict protocol boundary.
 
 This appendix is protocol version **17**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
