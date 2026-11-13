@@ -5900,15 +5900,15 @@ export function decodePictureEnvelope(bytes, limits = {}) {
     if (entry.target === 2 && !textParts[i]) fail("missing text part");
     if ((entry.target === 3 || entry.target === 4) && entry.logical_child_index >= logicalChildren[entry.container]) fail("constructed position");
   }
-  const bindings = [], principals = new Set(), holes = new Set();
+  const bindings = [], principals = new Set(), holes = new Set(), templateNodes = new Set();
   const bindingCount = count(18, Math.floor(bytes.length / 18), "binding");
   for (let i = 0; i < bindingCount; i++) {
     const birthOffset = u32(), role = u8(), address = u32(), slot = u32(), kind = u8(), target = u32();
     logicalReference(target);
-    if (birthOffset === 0 || birthOffset >= batch_bytes || address === 0 || address === 0xffffffff || role > 3) fail("binding address, birth or role");
-    if ((role === 0 && (slot !== 0 || kind !== 0)) || (role === 1 && kind !== 0) || (role === 2 && (kind < 1 || kind > 6)) || (role === 3 && kind !== 4 && kind !== 5)) fail("binding fields");
-    const index = role === 2 ? holes : principals;
-    const key = role === 2 ? `${birthOffset}:${address}:${slot}` : `${birthOffset}:${address}`;
+    if (birthOffset === 0 || birthOffset >= batch_bytes || address === 0 || address === 0xffffffff || role > 4) fail("binding address, birth or role");
+    if ((role === 0 && (slot !== 0 || kind !== 0)) || (role === 1 && kind !== 0) || (role === 2 && (kind < 1 || kind > 6)) || (role === 3 && kind !== 4 && kind !== 5) || (role === 4 && kind !== 0)) fail("binding fields");
+    const index = role === 2 ? holes : role === 4 ? templateNodes : principals;
+    const key = role === 2 || role === 4 ? `${birthOffset}:${address}:${slot}` : `${birthOffset}:${address}`;
     if (index.has(key)) fail("duplicate binding role");
     index.add(key); bindings.push({ birthOffset, role, address, slot, kind, logical: target });
   }

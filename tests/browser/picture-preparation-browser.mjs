@@ -131,6 +131,10 @@ try {
     check("preparation does not remove a declared NoSelectionOption scaffold", (await prepare(selection)).picture !== null && option.parentNode === select && option.attributes.length === 3);
     const attributeRecords = { ...structuredClone(selectionRecords), logical: [[0, 0], [0, 1]], scaffolds: [[1, 1, ["", "", "selected"], 0, null, ""]] };
     const attribute = fixture({ data: JSON.stringify([...measurementEnvelope(attributeRecords)]) }); const select2 = attribute.doc.createElement("select"), option2 = attribute.doc.createElement("option"); option2.setAttribute("selected", ""); select2.append(option2); attribute.root.append(select2);
+    attributeRecords.batch_bytes = 20;
+    attributeRecords.bindings = [[1, 1, 1, 7, 0, 0], [1, 4, 1, 0, 0, 0], [1, 4, 1, 1, 0, 1]];
+    attribute.descriptor.firstChild.data = JSON.stringify([...measurementEnvelope(attributeRecords)]);
+    check("preparation stages TemplateNode records without deciding ownership", (await prepare(attribute)).measurement.envelope.bindings.filter(b => b.role === 4).length === 2);
     check("preparation does not restore or alter AttributeOverride scaffolds", (await prepare(attribute)).picture !== null && option2.getAttribute("selected") === "");
     const cap = await prepare(fixture(), { maxBytes: bytes.length }); check("exact envelope byte cap permits valid preparation", cap.picture?.envelope.length === bytes.length);
     check("measurement allocation cap is reported without an init/verdict", (await prepare(fixture(), { max_measurement_bytes: 94 })).diagnostic?.code === "measurement");

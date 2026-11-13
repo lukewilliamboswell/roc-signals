@@ -127,6 +127,12 @@ export async function pictureMeasurementCases(api, build, vectors) {
   await reject("present physical selected does not add an extra logical attribute position", () => measure(presentOriginal));
   const anotherPosition = structuredClone(orderedAttribute); anotherPosition.envelope.scaffolds[0][3] = 0;
   check("logical original attribute position is committed by the canonical digest", hex((await measure(anotherPosition)).digest) !== hex(orderedResult.digest));
+  const templateClaims = attributeCase(); templateClaims.envelope.batch_bytes = 20;
+  templateClaims.envelope.bindings = [[1, 1, 1, 7, 0, 0], [1, 4, 1, 0, 0, 0], [1, 4, 1, 1, 0, 1]];
+  const templateClaimResult = await measure(templateClaims);
+  check("TemplateNode references are measured data without a pre-init ownership verdict", templateClaimResult.envelope.bindings.filter(b => b.role === 4).map(b => b.slot).join() === "0,1");
+  const changedTemplateSlot = structuredClone(templateClaims); changedTemplateSlot.envelope.bindings[2][3] = 2;
+  check("canonical digest includes TemplateNode preorder references", hex(templateClaimResult.digest) !== hex((await measure(changedTemplateSlot)).digest));
   const wrongAttribute = attributeCase(); wrongAttribute.envelope.scaffolds[0][5] = "false"; await reject("AttributeOverride physical presence/value is verified", () => measure(wrongAttribute));
   const wrongAttributeRole = attributeCase(); wrongAttributeRole.envelope.scaffolds[0][2][2] = "value"; await reject("AttributeOverride role is specifically selected", () => measure(wrongAttributeRole));
   check("prefixed HTML select direct empty NoSelectionOption is measured", (await measure(selectionCase())).envelope.scaffolds[0].role === 2);

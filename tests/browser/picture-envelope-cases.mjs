@@ -12,7 +12,7 @@ function fixture() {
     containers: [[0xffffffff, 0, [0, 6, 8]], [0, 0, [1, 2, 3]], [3, 0, [4]], [3, 1, [5]], [5, 0, []], [6, 0, [7]], [8, 0, [9]], [9, 0, []]],
     logical: [[0, 0], [2, 0, 0], [2, 0, 1], [2, 0, 2], [1, 2], [0, 3], [1, 4], [0, 5], [0, 6], [3, 5, 0, "textarea logical"], [4, 5, 1, "textarea comment"], [0, 8], [3, 6, 0, ""], [2, 1, 0]],
     runs: [[1, 0, 1, [[1, 0], [2, 1], [3, 2]]], [0, 3, null, [[13, 0]]]],
-    bindings: [[1, 0, 1, 0, 0, 0], [20, 1, 2, 7, 0, 5], [20, 2, 2, 0, 1, 2], [20, 3, 3, 1, 5, 7], [20, 2, 2, 1, 5, 7], [99, 0, 4, 0, 0, 9]],
+    bindings: [[1, 0, 1, 0, 0, 0], [20, 1, 2, 7, 0, 5], [20, 2, 2, 0, 1, 2], [20, 3, 3, 1, 5, 7], [20, 2, 2, 1, 5, 7], [99, 0, 4, 0, 0, 9], [20, 4, 2, 0, 0, 5]],
     scaffolds: [[0, 6, 5, 7], [1, 6, ["", "", "value"], 0, null, "edited"], [2, 8, 9]],
   };
 }
@@ -28,7 +28,7 @@ function encode(f) {
 export function pictureEnvelopeCases(decode) {
   const checks = [], check = (label, ok) => checks.push([label, !!ok]);
   const valid = encode(fixture()), decoded = decode(valid);
-  check("independent topology and every declared logical/scaffold variant decode", decoded.physicalCount === 10 && decoded.containers.length === 8 && decoded.logical.length === 14 && decoded.runs.length === 2 && decoded.bindings.length === 6 && decoded.scaffolds.length === 3);
+  check("independent topology and every declared logical/scaffold variant decode", decoded.physicalCount === 10 && decoded.containers.length === 8 && decoded.logical.length === 14 && decoded.runs.length === 2 && decoded.bindings.length === 7 && decoded.scaffolds.length === 3);
   check("logical constructed positions remain distinct from physical child indices", decoded.logical[10].logical_child_index === 1 && decoded.containers[5].children.length === 1);
   check("zero and astral text part lengths are retained for later DOM checks", decoded.runs[0].parts.map(p => p.utf16Units).join() === "0,1,2" && decoded.runs[0].utf16Units === 3 && decoded.runs[1].physical === null);
   check("digests decode as data without certifying either hash", decoded.mountFingerprint.length === 32 && decoded.mountFingerprint[0] === 17 && decoded.expectedDigest[0] === 34);
@@ -69,20 +69,29 @@ export function pictureEnvelopeCases(decode) {
   mutate("binding cannot address mount root", f => { f.bindings[0][2] = 0; });
   mutate("binding cannot address effect sentinel", f => { f.bindings[0][2] = 0xffffffff; });
   mutate("birth cannot name flags byte", f => { f.bindings[0][0] = 0; });
-  check("batch_bytes includes the ordinary flags byte and accepts the last offset", decoded.batch_bytes === 100 && decoded.bindings.at(-1).birthOffset === 99);
+  check("batch_bytes includes the ordinary flags byte and accepts the last offset", decoded.batch_bytes === 100 && decoded.bindings.some(b => b.birthOffset === 99));
   mutate("binding at batch length is out of range", f => { f.bindings[0][0] = 100; });
   mutate("binding beyond batch length is out of range", f => { f.bindings[0][0] = 101; });
   mutate("empty ordinary batch cannot have a binding", f => { f.batch_bytes = 0; });
   mutate("flags-only ordinary batch cannot have a binding", f => { f.batch_bytes = 1; });
   const flagsOnly = structuredClone(empty); flagsOnly.batch_bytes = 1; check("flags-only batch without bindings remains valid", decode(encode(flagsOnly)).batch_bytes === 1);
   const firstCommand = fixture(); firstCommand.batch_bytes = 2; firstCommand.bindings = [[1, 0, 1, 0, 0, 0]]; check("first command byte is a valid birth inside a two-byte batch", decode(encode(firstCommand)).bindings[0].birthOffset === 1);
-  mutate("unknown binding role", f => { f.bindings[0][1] = 4; });
+  mutate("unknown binding role", f => { f.bindings[0][1] = 5; });
   mutate("Static unused slot", f => { f.bindings[0][3] = 1; });
   mutate("Row unused kind", f => { f.bindings[1][4] = 1; });
   mutate("Hole kind bounds", f => { f.bindings[2][4] = 7; });
   mutate("Alias kind bounds", f => { f.bindings[3][4] = 3; });
   mutate("binding logical bounds", f => { f.bindings[0][5] = 14; });
   mutate("duplicate principal birth/address across roles", f => { f.bindings[3][0] = 20; f.bindings[3][2] = 2; });
+  check("TemplateNode index zero is distinct from Row and Hole roles at the same birth/address", decoded.bindings[6].role === 4 && decoded.bindings[6].slot === 0 && decoded.bindings[6].kind === 0 && decoded.bindings[6].logical === decoded.bindings[1].logical);
+  mutate("TemplateNode kind must remain Unused", f => { f.bindings[6][4] = 1; });
+  mutate("duplicate TemplateNode birth/row/preorder slot", f => { f.bindings.push([...f.bindings[6]]); });
+  const anotherTemplateNode = fixture(); anotherTemplateNode.bindings.push([20, 4, 2, 1, 0, 7]);
+  check("different TemplateNode preorder slots retain distinct records", decode(encode(anotherTemplateNode)).bindings.length === 8);
+  const independentRow = fixture(); independentRow.bindings.push([21, 4, 2, 0, 0, 5]);
+  check("TemplateNode identity includes the row birth incarnation", decode(encode(independentRow)).bindings.length === 8);
+  const unusedSlot = fixture(); unusedSlot.bindings[6][3] = 0xffffffff;
+  check("data-only TemplateNode slot bounds remain a fresh-template plan obligation", decode(encode(unusedSlot)).bindings[6].slot === 0xffffffff);
   mutate("duplicate hole birth/row/slot", f => { f.bindings[4][3] = 0; });
   mutate("unknown scaffold role", f => { f.scaffolds[0][0] = 3; });
   mutate("scaffold owner must be an Element", f => { f.scaffolds[1][1] = 2; });
@@ -142,4 +151,17 @@ export function pictureEnvelopeCases(decode) {
   const hugeCount = encode(empty); const containerOffset = 12 + name(empty.root).length + 4 + 64 + 4;
   hugeCount.set([255, 255, 255, 255], containerOffset); reject("count bomb rejected before allocation", hugeCount);
   return checks;
+}
+
+// Fixed bytes are independently framed, not round-tripped through this decoder.
+export function pictureEnvelopeVectors(decode, vectors) {
+  return vectors.flatMap(vector => {
+    const bytes = Uint8Array.from(vector.hex.match(/../g).map(pair => Number.parseInt(pair, 16)));
+    const decoded = decode(bytes), node = decoded.bindings.find(b => b.role === 4), attribute = decoded.scaffolds.find(s => s.role === 1);
+    return [
+      [`independent rich envelope byte length ${vector.name}`, bytes.length === vector.bytes],
+      [`independent rich TemplateNode record ${vector.name}`, JSON.stringify(node) === JSON.stringify(vector.template_node)],
+      [`independent rich AttributeOverride index offset ${vector.name}`, attribute.logical_index === vector.attribute_logical_index],
+    ];
+  });
 }
