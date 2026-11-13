@@ -5774,7 +5774,7 @@ export function decodePictureEnvelope(bytes, limits = {}) {
   const digest = () => { need(32); const value = bytes.slice(at, at + 32); at += 32; return value; };
   for (const value of [83, 80, 67, 49]) if (u8() !== value) fail("magic");
   if (u16() !== 1 || u16() !== 19 || u32() !== 0) fail("schema, protocol or flags");
-  const root = name(), batch_bytes = u32(), mountFingerprint = digest(), expectedDigest = digest();
+  const root = name(), batch_bytes = u32(), hash_offset = at, mountFingerprint = digest(), expectedDigest = digest();
   const physicalCount = u32();
   if (physicalCount > settings.maxNodes || physicalCount > Math.floor((bytes.length - at) / 4)) fail("physical node limit");
   const parent = new Int32Array(physicalCount); parent.fill(-1);
@@ -5915,7 +5915,226 @@ export function decodePictureEnvelope(bytes, limits = {}) {
     const depth = owner === 0xffffffff ? 1 : depths[owner] + 1;
     if (depth > settings.maxDepth) fail("logical depth limit");
   }
-  return { root, batch_bytes, mountFingerprint, expectedDigest, physicalCount, containers, logical, runs, bindings, scaffolds };
+  return { root, batch_bytes, hash_offset, mountFingerprint, expectedDigest, physicalCount, containers, logical, runs, bindings, scaffolds };
+}
+
+// Measurement is passive and temporary. Its byte budget is independent of the
+// envelope/HTML caps: all domains, framing and physical facts count toward it.
+const PICTURE_HASH_DOMAIN = "roc-signals/picture/19/1\0";
+const MOUNT_HASH_DOMAIN = "roc-signals/mount/19/1\0";
+class PictureMeasurementError extends Error {
+  constructor(rule) { super(`picture measurement: ${rule}`); this.rule = rule; }
+}
+
+function pictureMeasurementLimit(limits, allowEnvelope) {
+  if (!limits || typeof limits !== "object" || Array.isArray(limits)) throw new PictureMeasurementError("invalid limits");
+  for (const key of Object.keys(limits)) {
+    if (key !== "max_measurement_bytes" && !(allowEnvelope && ["maxBytes", "maxNodes", "maxDepth"].includes(key))) throw new PictureMeasurementError(`unknown limit ${key}`);
+  }
+  const maximum = Object.hasOwn(limits, "max_measurement_bytes") ? limits.max_measurement_bytes : 64 * 1024 * 1024;
+  if (!Number.isInteger(maximum) || maximum < 0 || maximum > 64 * 1024 * 1024) throw new PictureMeasurementError("invalid max_measurement_bytes");
+  return maximum;
+}
+
+function pictureUtf8Length(value, remaining) {
+  if (typeof value !== "string") throw new PictureMeasurementError("expected DOM text");
+  if (value.length > remaining) throw new PictureMeasurementError("measurement byte limit");
+  let bytes = 0;
+  for (let i = 0; i < value.length; i++) {
+    const unit = value.charCodeAt(i);
+    if (unit < 128) bytes++;
+    else if (unit < 2048) bytes += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(++i);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) throw new PictureMeasurementError("unpaired surrogate");
+      bytes += 4;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) throw new PictureMeasurementError("unpaired surrogate");
+    else bytes += 3;
+    if (bytes > remaining) throw new PictureMeasurementError("measurement byte limit");
+  }
+  return bytes;
+}
+
+// One grammar writes first to a bounded sizer, then into its exact allocation.
+// String lengths are retained as numbers, avoiding encoded string temporaries.
+function pictureCanonicalBytes(grammar, maximum) {
+  let length = 0;
+  const lengths = [];
+  const reserve = n => {
+    if (!Number.isSafeInteger(n) || n < 0 || n > maximum - length) throw new PictureMeasurementError("measurement byte limit");
+    length += n;
+  };
+  const sizer = {
+    byte() { reserve(1); }, word() { reserve(4); },
+    raw(bytes) { reserve(bytes.byteLength); },
+    text(value) { const n = pictureUtf8Length(value, maximum - length); reserve(n); lengths.push(n); },
+    string(value) { reserve(4); sizer.text(value); },
+  };
+  grammar(sizer);
+  const bytes = new Uint8Array(length), view = new DataView(bytes.buffer);
+  let at = 0, textIndex = 0;
+  const writer = {
+    byte(value) { bytes[at++] = value; },
+    word(value) { view.setUint32(at, value, true); at += 4; },
+    raw(value) { bytes.set(value, at); at += value.byteLength; },
+    text(value) {
+      const size = lengths[textIndex++];
+      const result = utf8enc.encodeInto(value, bytes.subarray(at, at + size));
+      if (result.read !== value.length || result.written !== size) throw new PictureMeasurementError("canonical string changed");
+      at += size;
+    },
+    string(value) { writer.word(lengths[textIndex]); writer.text(value); },
+  };
+  grammar(writer);
+  if (at !== length || textIndex !== lengths.length) throw new PictureMeasurementError("canonical length changed");
+  return bytes;
+}
+
+async function pictureSha256(bytes) {
+  const crypto = globalThis.crypto;
+  if (!crypto?.subtle || typeof crypto.subtle.digest !== "function") throw new PictureMeasurementError("SHA-256 unavailable");
+  let digest;
+  try { digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)); } catch (_) { throw new PictureMeasurementError("SHA-256 failed"); }
+  if (digest.length !== 32) throw new PictureMeasurementError("invalid SHA-256 result");
+  return digest;
+}
+
+// Hash the exact ordinary batch, including its flags when present. Oversize
+// input refuses picture preparation; it does not change normal mount commands.
+export async function pictureMountFingerprint(batchBytes, limits = {}) {
+  const maximum = pictureMeasurementLimit(limits, false);
+  if (!(batchBytes instanceof Uint8Array) || batchBytes.length > 0xffffffff) throw new PictureMeasurementError("invalid ordinary batch");
+  try { new DataView(batchBytes.buffer, batchBytes.byteOffset, batchBytes.byteLength); } catch (_) { throw new PictureMeasurementError("unreadable ordinary batch"); }
+  const canonical = pictureCanonicalBytes(sink => {
+    sink.text(MOUNT_HASH_DOMAIN); sink.word(batchBytes.length); sink.raw(batchBytes);
+  }, maximum);
+  return pictureSha256(canonical);
+}
+
+function pictureNodeName(node) {
+  const namespace = node.namespaceURI ?? null, prefix = node.prefix ?? null, local = node.localName;
+  if ((namespace !== null && typeof namespace !== "string") || (prefix !== null && typeof prefix !== "string") || typeof local !== "string" || local.length === 0) throw new PictureMeasurementError("invalid actual name");
+  return { namespace, prefix, local };
+}
+
+function pictureSameName(a, b) { return a.namespace === b.namespace && a.prefix === b.prefix && a.local === b.local; }
+function pictureHtmlName(node, local) { return node?.nodeType === 1 && node.namespaceURI === HTML_NS && node.localName === local; }
+
+// Resolve the validated ordinal topology once, without a factory, selector or
+// mutation. max_measurement_bytes is an inclusive independent cap (default
+// and ceiling 64 MiB), covering the whole canonical hash input. UTF-8 sizes are
+// checked before encoded strings, the final buffer or WebCrypto are allocated.
+// Returned references are only mount preparation data; their caller
+// releases them after the verdict/claim path rather than retaining a DOM model.
+export async function measurePicture(root, envelopeBytes, limits = {}) {
+  const maximum = pictureMeasurementLimit(limits, true);
+  const envelopeLimits = {};
+  for (const key of ["maxBytes", "maxNodes", "maxDepth"]) if (Object.hasOwn(limits, key)) envelopeLimits[key] = limits[key];
+  const envelope = decodePictureEnvelope(envelopeBytes, envelopeLimits);
+  if (root?.nodeType !== 1 || !pictureSameName(pictureNodeName(root), envelope.root)) throw new PictureMeasurementError("external root name");
+  const framingBytes = PICTURE_HASH_DOMAIN.length + 4 + envelopeBytes.length - 64 + 4;
+  if (framingBytes > maximum) throw new PictureMeasurementError("measurement byte limit");
+  const nodes = new Array(envelope.physicalCount), targets = new Array(envelope.containers.length), childContainers = new Int32Array(envelope.physicalCount), contentContainers = new Int32Array(envelope.physicalCount);
+  childContainers.fill(-1); contentContainers.fill(-1);
+  for (let i = 1; i < envelope.containers.length; i++) {
+    const c = envelope.containers[i]; (c.role === 0 ? childContainers : contentContainers)[c.owner] = i;
+  }
+  const kinds = new Uint8Array(envelope.physicalCount);
+  for (const entry of envelope.logical) if (entry.target === 0 || entry.target === 1) kinds[entry.physical] = entry.target === 0 ? 1 : 8;
+  for (const run of envelope.runs) if (run.physical !== null) kinds[run.physical] = 3;
+  for (const scaffold of envelope.scaffolds) {
+    if (scaffold.role === 0 && scaffold.physical !== null) kinds[scaffold.physical] = 3;
+    if (scaffold.role === 2) kinds[scaffold.physical] = 1;
+  }
+  const seen = new Set();
+  const resolve = (ordinal, target) => {
+    const c = envelope.containers[ordinal], actual = target?.childNodes;
+    if (!actual || actual.length !== c.children.length) throw new PictureMeasurementError("container child count");
+    targets[ordinal] = target;
+    for (let i = 0; i < actual.length; i++) {
+      const node = actual[i], physical = c.children[i];
+      if (!node || nodes[physical] || seen.has(node)) throw new PictureMeasurementError("physical coverage changed");
+      nodes[physical] = node; seen.add(node);
+    }
+  };
+  resolve(0, root);
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    if (!node || node.nodeType !== kinds[i]) throw new PictureMeasurementError("physical node kind");
+    if (node.nodeType === 1) {
+      resolve(childContainers[i], node);
+      if (pictureHtmlName(node, "template")) {
+        if (contentContainers[i] < 0 || node.content?.nodeType !== 11) throw new PictureMeasurementError("missing intrinsic template Content");
+        resolve(contentContainers[i], node.content);
+      } else if (contentContainers[i] >= 0) throw new PictureMeasurementError("Content requires HTML template");
+    }
+  }
+  for (const run of envelope.runs) {
+    if (run.physical === null) continue;
+    const data = nodes[run.physical].data;
+    if (typeof data !== "string" || data.length !== run.utf16Units) throw new PictureMeasurementError("text run UTF-16 length");
+    let offset = 0;
+    for (const part of run.parts) {
+      offset += part.utf16Units;
+      const before = data.charCodeAt(offset - 1), after = data.charCodeAt(offset);
+      if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) throw new PictureMeasurementError("text part splits surrogate pair");
+    }
+  }
+  for (const scaffold of envelope.scaffolds) {
+    const owner = nodes[scaffold.owner];
+    if (scaffold.role === 0) {
+      if (!pictureHtmlName(owner, "textarea") || envelope.containers[scaffold.container].role !== 0) throw new PictureMeasurementError("ControlText owner");
+    } else if (scaffold.role === 1) {
+      if (!pictureHtmlName(owner, "option") || scaffold.name.namespace !== null || scaffold.name.prefix !== null || scaffold.name.local !== "selected") throw new PictureMeasurementError("AttributeOverride target");
+      const attribute = owner.getAttributeNodeNS(null, "selected");
+      if (scaffold.value === null ? attribute !== null : attribute === null || attribute.prefix !== null || attribute.value !== scaffold.value) throw new PictureMeasurementError("AttributeOverride physical value");
+    } else {
+      const option = nodes[scaffold.physical];
+      if (!pictureHtmlName(owner, "select") || !pictureHtmlName(option, "option") || option.parentNode !== owner || option.childNodes.length !== 0 || option.attributes.length !== 3) throw new PictureMeasurementError("NoSelectionOption shape");
+      const expected = ["hidden", "selected", "value"];
+      for (let i = 0; i < expected.length; i++) {
+        const attribute = option.attributes[i];
+        if (attribute.namespaceURI !== null || attribute.prefix !== null || attribute.localName !== expected[i] || attribute.value !== "") throw new PictureMeasurementError("NoSelectionOption attributes");
+      }
+    }
+  }
+  // Snapshot only immutable fact values for the two encoder passes. DOM refs
+  // remain separate, and no browser property, layout or external attribute is
+  // part of this canonical stream.
+  const facts = [];
+  let factBudget = maximum - framingBytes;
+  const accountString = value => { const n = pictureUtf8Length(value, factBudget - 4); factBudget -= 4 + n; };
+  const accountName = name => { accountString(name.namespace ?? ""); accountString(name.prefix ?? ""); accountString(name.local); };
+  for (const node of nodes) {
+    factBudget -= 1;
+    if (factBudget < 0) throw new PictureMeasurementError("measurement byte limit");
+    if (node.nodeType === 1) {
+      factBudget -= 4;
+      if (factBudget < 0) throw new PictureMeasurementError("measurement byte limit");
+      const name = pictureNodeName(node); accountName(name);
+      const attributes = [], count = node.attributes.length;
+      if (count > Math.floor(factBudget / 16)) throw new PictureMeasurementError("measurement byte limit");
+      for (let i = 0; i < count; i++) {
+        const attribute = node.attributes[i], name = pictureNodeName(attribute), value = attribute.value;
+        accountName(name); accountString(value); attributes.push({ name, value });
+      }
+      facts.push({ kind: 1, name, attributes });
+    } else { const data = node.data; accountString(data); facts.push({ kind: node.nodeType === 3 ? 2 : 3, data }); }
+  }
+  const canonical = pictureCanonicalBytes(sink => {
+    const name = value => { sink.string(value.namespace ?? ""); sink.string(value.prefix ?? ""); sink.string(value.local); };
+    sink.text(PICTURE_HASH_DOMAIN); sink.word(envelopeBytes.length - 64);
+    sink.raw(envelopeBytes.subarray(0, envelope.hash_offset)); sink.raw(envelopeBytes.subarray(envelope.hash_offset + 64));
+    sink.word(facts.length);
+    for (const fact of facts) {
+      sink.byte(fact.kind);
+      if (fact.kind === 1) {
+        name(fact.name); sink.word(fact.attributes.length);
+        for (const attribute of fact.attributes) { name(attribute.name); sink.string(attribute.value); }
+      } else sink.string(fact.data);
+    }
+  }, maximum);
+  return { envelope, digest: await pictureSha256(canonical), physical: nodes, containers: targets, canonical_bytes: canonical.length };
 }
 
 // Read one bounded protocol-facts item. Field order, lengths and uniqueness are
