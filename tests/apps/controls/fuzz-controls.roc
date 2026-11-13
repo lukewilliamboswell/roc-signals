@@ -681,6 +681,10 @@ top_layer_history = |events| {
 			}
 			$state = SpecRunner.drain_focus(program, SpecRunner.deliver_ui(program, { ..$state, draining: False, turns: 0 }))
 			$tasks = $tasks + 1
+			match SpecRunner.check_settled(base, $state) {
+				Ok(_) => {}
+				Err(message) => crash "top layer callback: ${message}"
+			}
 		}
 		if $no_focus {
 			if $state.focused != 0 {
