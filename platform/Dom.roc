@@ -149,6 +149,12 @@ Dom := [].{
 	enum_attr : DNode, Str -> Str
 	enum_attr = |node, name| Str.from_utf8(Dom.attr_of(node, name).to_utf8().map(|c| if (c >= 'A' and c <= 'Z') c + 32 else c)) ?? crash "Dom.enum_attr: ASCII folding preserves UTF-8"
 
+	## The raw type keyword with HTML's ASCII case rule. Missing and invalid
+	## values stay as written apart from case; this does not apply defaults.
+	input_type : DNode -> Str
+	# TODO(roc-parser#118): use its public HTML enumeration API when exposed.
+	input_type = |node| Dom.enum_attr(node, "type")
+
 	## OutsideText is about the event target, including inherited editability.
 	text_entry : Model, U64 -> Bool
 	text_entry = |dom, i| {
@@ -156,7 +162,7 @@ Dom := [].{
 		if ["textarea", "select"].contains(n.tag) {
 			return Bool.True
 		}
-		if n.tag == "input" and !["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "range", "color", "image"].contains(Dom.enum_attr(n, "type")) {
+		if n.tag == "input" and !["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "range", "color", "image"].contains(Dom.input_type(n)) {
 			return Bool.True
 		}
 		Dom.content_editable(dom, i)
@@ -1245,7 +1251,7 @@ Dom := [].{
 	## HTML interprets an input's type without ASCII case. Keep the raw
 	## attribute for assertions while applying the browser's file-input rule.
 	is_file_input : DNode -> Bool
-	is_file_input = |n| n.tag == "input" and Dom.enum_attr(n, "type") == "file"
+	is_file_input = |n| n.tag == "input" and Dom.input_type(n) == "file"
 
 	## The browser's file-input guard recognizes every ASCII spelling while
 	## leaving other input types available for value properties.
@@ -2231,4 +2237,11 @@ expect {
 	maxed = { ..oversize, transitions: { ..oversize.transitions, count: 18446744073709551615 } }
 	exhausted = Dom.transition(maxed, [])
 	{ count: counted.transitions.count, old: counted.transitions.records.contains(1), len: counted.transitions.records.len(), byte_len: b.transitions.records.len(), bytes: b.transitions.bytes, oversize: oversize.transitions.records.len(), total: oversize.transitions.count, exhausted: exhausted.transitions.exhausted } == { count: 4097, old: False, len: 4096, byte_len: 1, bytes: 524293, oversize: 0, total: 4100, exhausted: True }
+}
+
+## Input classification folds only ASCII and leaves raw attributes intact.
+expect {
+	kinds = ["CHECKBOX", "Text", "FILE", "Radio", "txet", "", "TÉXT"]
+	nodes = kinds.map(|kind| { ..Dom.empty_node, tag: "input", attrs: [("type", kind)] })
+	nodes.map(Dom.input_type) == ["checkbox", "text", "file", "radio", "txet", "", "tÉxt"] and nodes.map(|node| Dom.attr_of(node, "type")) == kinds and Dom.input_type(Dom.empty_node) == ""
 }

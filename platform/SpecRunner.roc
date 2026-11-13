@@ -1415,7 +1415,7 @@ SpecRunner := [].{
 	focusable : Dom.DNode -> Bool
 	focusable = |n| {
 		editable = Dom.has_attr(n, "contenteditable") and ["", "true", "plaintext-only"].contains(Dom.enum_attr(n, "contenteditable"))
-		(SpecRunner.intrinsic_focusable(n) or editable) and !SpecRunner.disabled(n) and !SpecRunner.flag_on(n, "hidden") and !(n.tag == "input" and Dom.enum_attr(n, "type") == "hidden")
+		(SpecRunner.intrinsic_focusable(n) or editable) and !SpecRunner.disabled(n) and !SpecRunner.flag_on(n, "hidden") and !(n.tag == "input" and Dom.input_type(n) == "hidden")
 	}
 
 	## Native controls, links and tabindex retain focus independently of an
@@ -1466,7 +1466,7 @@ SpecRunner := [].{
 
 	## A control whose edits fire `change` when it loses focus.
 	text_control : Dom.DNode -> Bool
-	text_control = |n| n.tag == "textarea" or (n.tag == "input" and SpecRunner.fillable.contains(Dom.attr_of(n, "type")))
+	text_control = |n| n.tag == "textarea" or (n.tag == "input" and SpecRunner.fillable.contains(Dom.input_type(n)))
 
 	## The input types `fill` types into, as Playwright's `fill` allows.
 	fillable : List(Str)
@@ -1848,7 +1848,7 @@ SpecRunner := [].{
 			if (Dom.has_attr(n, "value")) Dom.attr_of(n, "value") else Dom.text_of(dom, i)
 		} else if n.tag == "select" and !SpecRunner.has_option(dom, { root: i, value: v }) {
 			""
-		} else if n.tag == "input" and ["checkbox", "radio"].contains(Dom.attr_of(n, "type")) and !Dom.has_attr(n, "value") {
+		} else if n.tag == "input" and ["checkbox", "radio"].contains(Dom.input_type(n)) and !Dom.has_attr(n, "value") {
 			"on"
 		} else v
 	}
@@ -2227,7 +2227,7 @@ SpecRunner := [].{
 			Change(loc, v) => {
 				i = SpecRunner.need(dom, loc)?
 				n = Dom.node(dom, i)
-				kind = Dom.attr_of(n, "type")
+				kind = Dom.input_type(n)
 				if n.tag == "input" and (kind == "radio" or kind == "checkbox") {
 					if SpecRunner.value_of(dom, i) != v {
 						return Err("${Scm.show_loc(loc)} has value ${JsonOut.quote(SpecRunner.value_of(dom, i))}, not ${JsonOut.quote(v)}")
@@ -2585,7 +2585,7 @@ SpecRunner := [].{
 	fill = |program, s, loc, v| {
 		i = SpecRunner.need(s.dom, loc)?
 		n = Dom.node(s.dom, i)
-		kind = Dom.attr_of(n, "type")
+		kind = Dom.input_type(n)
 		if !(n.tag == "textarea" or (n.tag == "input" and SpecRunner.fillable.contains(kind))) {
 			return Err("${Scm.show_loc(loc)} cannot be filled")
 		}
@@ -2622,7 +2622,7 @@ SpecRunner := [].{
 	key_unmodelled : Dom.Model, U64, Scm.Key -> Bool
 	key_unmodelled = |dom, i, key| {
 		n = Dom.node(dom, i)
-		kind = Dom.enum_attr(n, "type")
+		kind = Dom.input_type(n)
 		text = n.tag == "textarea" or (n.tag == "input" and !Scm.key_control_types.text_input_excluded.contains(kind)) or Dom.content_editable(dom, i)
 		choice = n.tag == "select" or (n.tag == "input" and Scm.key_control_types.choice_input_types.contains(kind))
 		Scm.unmodelled_key_defaults.any(
@@ -2694,7 +2694,7 @@ SpecRunner := [].{
 	implicit_inputs : Dom.Model, U64 -> U64
 	implicit_inputs = |dom, i| {
 		n = Dom.node(dom, i)
-		own = if (n.tag == "input" and ["", "text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"].contains(Dom.enum_attr(n, "type"))) 1 else 0
+		own = if (n.tag == "input" and ["", "text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"].contains(Dom.input_type(n))) 1 else 0
 		n.kids.fold(own, |count, child| count + SpecRunner.implicit_inputs(dom, child))
 	}
 
@@ -2753,16 +2753,16 @@ SpecRunner := [].{
 			}
 			else if key.key == "Enter" {
 				n = Dom.node($s.dom, down_index)
-				if (n.tag == "a" and Dom.has_attr(n, "href")) or (!key.ctrl and !key.meta and (n.tag == "button" or (n.tag == "input" and ["button", "submit", "reset"].contains(Dom.enum_attr(n, "type"))))) {
+				if (n.tag == "a" and Dom.has_attr(n, "href")) or (!key.ctrl and !key.meta and (n.tag == "button" or (n.tag == "input" and ["button", "submit", "reset"].contains(Dom.input_type(n))))) {
 					$s = SpecRunner.key_activate(program, $s, down_index)?
 				}
-				else if n.tag == "input" and !key.ctrl and !key.meta and ["file", "color"].contains(Dom.enum_attr(n, "type")) {
+				else if n.tag == "input" and !key.ctrl and !key.meta and ["file", "color"].contains(Dom.input_type(n)) {
 					$s = SpecRunner.key_activate(program, $s, down_index)?
 				}
 				else if n.tag == "input" and !key.ctrl and !key.meta {
 					match SpecRunner.ancestor($s.dom, down_index, |m| m.tag == "form") {
 						Ok(form) => {
-							button = Dom.find($s.dom, form, |m| (m.tag == "button" and ["", "submit"].contains(Dom.enum_attr(m, "type"))) or (m.tag == "input" and Dom.enum_attr(m, "type") == "submit"))
+							button = Dom.find($s.dom, form, |m| (m.tag == "button" and ["", "submit"].contains(Dom.input_type(m))) or (m.tag == "input" and Dom.input_type(m) == "submit"))
 							$s = match button {
 								Ok(i) => SpecRunner.key_activate(program, $s, i)?
 								Err(_) => if (SpecRunner.implicit_inputs($s.dom, form) <= 1) SpecRunner.submit_form(program, $s, form) else $s
@@ -2787,7 +2787,7 @@ SpecRunner := [].{
 		# or disposal cannot transfer that activation to the keyup target.
 		if key.key == " " and $s.browser.doc == document and !prevented and !up_prevented and up_index == down_index and $s.focused == down_index + 1 and SpecRunner.attached($s.dom, down_index) and activation_path.all(|p| Dom.node($s.dom, p.node).detach_count == p.count) {
 			n = Dom.node($s.dom, up_index)
-			if n.tag == "button" or (n.tag == "input" and ["button", "submit", "reset", "checkbox", "radio"].contains(Dom.enum_attr(n, "type"))) {
+			if n.tag == "button" or (n.tag == "input" and ["button", "submit", "reset", "checkbox", "radio"].contains(Dom.input_type(n))) {
 				$s = SpecRunner.key_activate(program, $s, up_index)?
 			}
 		}
@@ -2825,7 +2825,7 @@ SpecRunner := [].{
 	set_checked = |program, s, loc, want| {
 		i = SpecRunner.need(s.dom, loc)?
 		n = Dom.node(s.dom, i)
-		kind = if (n.tag == "input") Dom.attr_of(n, "type") else ""
+		kind = if (n.tag == "input") Dom.input_type(n) else ""
 		if kind != "checkbox" and kind != "radio" {
 			return Err("${Scm.show_loc(loc)} is not a checkbox or radio button")
 		}
@@ -2846,12 +2846,12 @@ SpecRunner := [].{
 	check_on = |s, i| {
 		n = Dom.node(s.dom, i)
 		group = Dom.attr_of(n, "name")
-		s1 = if Dom.attr_of(n, "type") == "radio" and group != "" {
+		s1 = if Dom.input_type(n) == "radio" and group != "" {
 			var $d = s.dom
 			var $k = 0.U64
 			while $k < $d.nodes.len() {
 				m = Dom.node($d, $k)
-				if $k != i and m.tag == "input" and Dom.attr_of(m, "type") == "radio" and Dom.attr_of(m, "name") == group and Dom.live_value(m, "checked") == "true" {
+				if $k != i and m.tag == "input" and Dom.input_type(m) == "radio" and Dom.attr_of(m, "name") == group and Dom.live_value(m, "checked") == "true" {
 					$d = Dom.set_live_on($d, $k, "checked", "false")
 				}
 				$k = $k + 1
@@ -3166,7 +3166,7 @@ SpecRunner := [].{
 			Healthy => {}
 		}
 		n = Dom.node(s.dom, i)
-		kind = Dom.attr_of(n, "type")
+		kind = Dom.input_type(n)
 		on_value = SpecRunner.value_of(s.dom, i)
 		if n.tag == "input" and kind == "checkbox" {
 			want = Dom.live_value(n, "checked") != "true"
@@ -3227,7 +3227,7 @@ SpecRunner := [].{
 		if !control or SpecRunner.disabled(n) {
 			Bool.False
 		} else {
-			kind = Dom.attr_of(n, "type")
+			kind = Dom.input_type(n)
 			v = Dom.live_value(n, "value")
 			missing = if (kind == "checkbox" or kind == "radio") Dom.live_value(n, "checked") != "true" else v == ""
 			bound = |name, out_of_range|
@@ -3803,7 +3803,7 @@ SpecRunner := [].{
 		if ev == "input" {
 			typed()
 		} else if ev == "change" {
-			if Dom.attr_of(n, "type") == "checkbox" {
+			if Dom.input_type(n) == "checkbox" {
 				if (Dom.live_value(n, "checked") == "true") "false" else "true"
 			} else if n.tag == "select" {
 				opts = n.kids.map(|k| SpecRunner.value_of(dom, k))
@@ -4097,7 +4097,7 @@ SpecRunner := [].{
 			(i, ev) = cs.get(pick.to_u64() % cs.len()) ?? crash "SpecRunner.walk_step!: a candidate"
 			payload = SpecRunner.payload_for(bk, s.dom, i, ev, b)
 			s1 = if ev == "input" or ev == "change" {
-				name = if (Dom.attr_of(Dom.node(s.dom, i), "type") == "checkbox") "checked" else "value"
+				name = if (Dom.input_type(Dom.node(s.dom, i)) == "checkbox") "checked" else "value"
 				SpecRunner.set_attr(s, i, name, payload)
 			} else {
 				s
@@ -4953,7 +4953,7 @@ expect {
 		settled: |_| Ok({}),
 		live: |_| [],
 	}
-	(d1, input) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", rn: 1, attrs: [("type", "file"), ("aria-label", "Choice")], hs: [{ event: "change", handler: 0, kind: 2, policies: 0 }] })
+	(d1, input) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", rn: 1, attrs: [("type", "FILE"), ("aria-label", "Choice")], hs: [{ event: "change", handler: 0, kind: 2, policies: 0 }] })
 	dom = Dom.bind(Dom.insert(d1, d1.root, input, Err(End)), 1, input)
 	base = SpecRunner.fresh({ events: [], files: 0 }, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
 	s = { ..base, dom, browser: { ..base.browser, files: [{ name: "a.txt", mime: "text/plain", bytes: [65] }] } }
@@ -4962,7 +4962,11 @@ expect {
 	with_text = SpecRunner.give_files(program, { ..s, dom: text }, op, [])?
 	empty_text = SpecRunner.give_files(program, with_text, ChooseFiles(Label("Choice"), []), [])?
 	empty_files = SpecRunner.give_files(program, s, ChooseFiles(Label("Choice"), []), [])?
-	{ files_count: SpecRunner.file_count(dom, op)?, text_count: SpecRunner.file_count(text, op)?, events: empty_text.inst.events, files: empty_files.inst.files } == {
+	accepted = SpecRunner.give_files(program, s, op, [])?
+	wrong_type = Dom.set_attr_on(dom, input, "type", "Text")
+	refused = SpecRunner.give_files(program, { ..s, dom: wrong_type }, op, [])
+	too_many = SpecRunner.give_files(program, s, ChooseFiles(Label("Choice"), ["a.txt", "a.txt"]), [])
+	accepted.inst.files == 1 and refused.is_err() and too_many.is_err() and { files_count: SpecRunner.file_count(dom, op)?, text_count: SpecRunner.file_count(text, op)?, events: empty_text.inst.events, files: empty_files.inst.files } == {
 		files_count: 1,
 		text_count: 0,
 		events: ["C:\\fakepath\\a.txt", ""],
@@ -5710,4 +5714,10 @@ expect {
 	timer = SpecRunner.fresh({}, { ..browser, stub: Staged(Reject({ kind: Timeout, detail: "" })), issued: [1], pending: [{ id: 1, url: "timer", body: "", kind: TimerRequest }] })
 	network = { ..timer, browser: { ..timer.browser, pending: [{ id: 1, url: "/request", body: "", kind: HttpRequest }] } }
 	{ timer: SpecRunner.is_occurrence(timer, RunEffect(1)), network: SpecRunner.is_occurrence(network, RunEffect(1)), unissued: SpecRunner.is_occurrence(network, RunEffect(2)) } == { timer: True, network: False, unissued: True }
+}
+
+## Raw mixed-case text controls use the same fill classification as lowercase;
+## this does not repair an invalid keyword or change a missing type's default.
+expect {
+	["Text", "EMAIL", "password", "txet", ""].map(|kind| SpecRunner.text_control({ ..Dom.empty_node, tag: "input", attrs: [("type", kind)] })) == [True, True, True, False, True]
 }
