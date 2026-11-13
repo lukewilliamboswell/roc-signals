@@ -801,8 +801,13 @@ Dom := [].{
 	set_node : Model, U64, DNode -> Model
 	set_node = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, i, n| { nodes: nodes.set(i, n) ?? crash "node index", statics, rows, tpls, root, documents, observed_count, transitions }
 
+	## Record the append-only index before consuming the node list. No read
+	## of the previous list may retain it across append in template decoding.
 	add_node : Model, DNode -> (Model, U64)
-	add_node = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, n| ({ nodes: nodes.append(n), statics, rows, tpls, root, documents, observed_count, transitions }, nodes.len())
+	add_node = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, n| {
+		index = nodes.len()
+		({ nodes: nodes.append(n), statics, rows, tpls, root, documents, observed_count, transitions }, index)
+	}
 
 	set_static : Model, U32, U64 -> Model
 	set_static = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, id, idx| {
