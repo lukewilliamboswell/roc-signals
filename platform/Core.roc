@@ -3055,9 +3055,10 @@ w_port_sends : U64
 w_port_sends = 40
 
 ## The number of counters in the work record: the work counters, the eight
-## effect counters, port commands (40), and property commands (41–42).
+## effect counters, port commands (40), property commands (41–42), and
+## released registrations (43).
 w_record_count : U64
-w_record_count = w_count + 11
+w_record_count = w_count + 12
 
 ## The work counters as plain fields (`c01` is counter 1): bumping one
 ## updates a value in the accumulator and never allocates, so counting
@@ -7833,6 +7834,7 @@ work_bytes = |inst, buf| {
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.issued), fx.delivered), fx.stale), fx.refused)
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.cancelled), fx.reparented), fx.skipped), fx.live.len())
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, w_port_sends)), work_get(counters, 41)), work_get(counters, 42))
+	$b = put_u64($b, work_get(counters, 43))
 	runs = inst.tx.fx.cleanups
 	$b = put_u32($b, runs.len().to_u32_wrap())
 	for (name, k) in runs {
@@ -8541,3 +8543,44 @@ expect encode_keymap(Core.Keymap.prevent([Core.Chord.plain("")]).concat(Core.Key
 ## A heard chord cannot be empty: neither a declared empty entry nor every
 ## can have matched it to a valid browser key.
 expect read_key(put_str(put_str(put_str([0], "Escape"), "").append(0), "")).is_err()
+
+## Serialized work retains RELEASE at counter 43 and starts the cleanup table
+## after all 44 counters, including a multibyte cleanup name and its run count.
+expect {
+	mounted = Core.mount(
+		Core.state(
+			True,
+			|visible| Core.element(
+				"main",
+				[],
+				[
+					Core.element("button", [Core.on_click(visible.update(|_| False))], []),
+					Core.when(visible.signal(), || Core.element("div", [Core.on_document_key({ keymap: Core.const(Core.Keymap.keep([Core.Chord.plain("Escape")])) }, visible.update(|value| value))], [Core.cleanup("doc-λ")]), || Core.text("")),
+				],
+			),
+		),
+	)
+	disposed = Core.event(mounted, 2, 0, "")
+	bytes = work_bytes(disposed, [255, 255])
+	count = get_u32(bytes, 0, "work record").to_u64()
+	counters = Core.work_counters(disposed)
+	var $decoded = []
+	var $i = 0.U64
+	while $i < count {
+		$decoded = $decoded.append(get_u64(bytes, 4 + $i * 8, "work counter"))
+		$i = $i + 1
+	}
+	cleanup_at = 4 + count * 8
+	names = get_u32(bytes, cleanup_at, "cleanup count")
+	(name, after_name) = get_str(bytes, cleanup_at + 4, "cleanup name")
+	runs = get_u64(bytes, after_name, "cleanup runs")
+	{ count, counters_match: $decoded == counters, released: $decoded.get(43), names, name, runs, consumed: after_name + 8 == bytes.len() } == {
+		count: 44,
+		counters_match: True,
+		released: Ok(1),
+		names: 1,
+		name: "doc-λ",
+		runs: 1,
+		consumed: True,
+	}
+}

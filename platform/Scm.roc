@@ -1393,6 +1393,7 @@ Scm := [].{
 		{ name: "set_value", counters: [19] },
 		{ name: "set_checked", counters: [20] },
 		{ name: "bind_event", counters: [11] },
+		{ name: "registrations_released", counters: [43] },
 		{ name: "set_metadata", counters: [17] },
 		{ name: "patches_emitted", counters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 41, 42] },
 		{ name: "derived_calls_into_roc", counters: [21] },
@@ -1941,7 +1942,7 @@ expect {
 		\\${problem_of("(test \"t\" (steps (expect-metric-delta-at-most rows_painted 0)))")}
 		\\${JsonOut.render(Scm.spec_fields("m", spec))}
 	expected =
-		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped
+		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, registrations_released, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped
 		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","storage":[],"storage_available":true,"online":true,"visible":true},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
 }
