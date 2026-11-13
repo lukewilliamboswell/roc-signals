@@ -2154,6 +2154,7 @@ export class RocEngineRuntime {
     this.pendingTransition = null;
     this.transitionIdle = Promise.resolve();
     this.transitionIdleState = null;
+    this.transitionEpoch = {};
     this.viewTransitions = options.viewTransitions ?? "document";
     if (this.viewTransitions !== "document" && this.viewTransitions !== "off") throw new TypeError('viewTransitions must be "document" or "off"');
     this.queue = { head: null, tail: null, length: 0 };
@@ -3322,6 +3323,7 @@ export class RocEngineRuntime {
   }
 
   cancelTransition() {
+    this.transitionEpoch = {};
     const idle = this.transitionIdleState;
     this.transitionIdleState = null;
     idle?.resolve();
@@ -3331,7 +3333,7 @@ export class RocEngineRuntime {
     this.pendingTransition = null;
     clearTimeout(pending.timer);
     pending.cancelled = true;
-    pending.batch.definitions.clear(); pending.batch.spans.clear(); pending.batch.effects.clear(); pending.batch.types = null;
+    pending.batch.definitions.clear(); pending.batch.spans.clear(); pending.batch.types = null;
     this.skipTransition(pending);
     pending.resolve();
   }
@@ -3347,27 +3349,24 @@ export class RocEngineRuntime {
 
   apply() {
     const len = this.x.cmd_len();
-    if (!len) return 0;
+    if (!len) { this.releaseFiles(); return 0; }
     const flags = new Uint8Array(this.x.memory.buffer, this.x.cmd_ptr(), len)[0];
     if (flags !== 0 && flags !== 1) throw new Error(`invalid command batch flags ${flags}`);
     const animate = flags === 1 && this.viewTransitions === "document" && this.doc.visibilityState !== "hidden" && typeof this.doc.startViewTransition === "function";
     if (!animate) {
-      const batch = { definitions: new Map(), spans: new Map(), effects: new Map(), types: null, deferredEffects: true };
-      this.applyBatch("early", batch);
-      this.fxOut = [];
-      this.applyBatch("update", batch);
+      const batch = { types: null };
+      this.applyBatch("normal", batch);
       this.flushEffects();
       if (this.poisoned || this.ending) return len;
       this.releaseFiles();
       if (flags) { this.transitionLog?.add(batch.types, "none"); this.transitionEvent("applied", { cause: "none", typeCount: batch.types.length }); }
       return len;
     }
-    const batch = { definitions: new Map(), spans: new Map(), effects: new Map(), types: null };
+    const batch = { definitions: new Map(), spans: new Map(), types: null };
     this.applyBatch("early", batch);
     // No effect runs until the complete marked batch has passed framing checks.
     this.flushEffects();
     if (this.poisoned || this.ending) return len;
-    batch.effects.clear();
     // All callers share one outstanding idle promise. A document transition
     // supersedes the preceding animation, so only the newest token completes
     // it; stale browser promise handlers cannot affect a later generation.
@@ -3379,6 +3378,8 @@ export class RocEngineRuntime {
       this.transitionIdleState = state;
       this.transitionIdle = promise;
     }
+    const epoch = this.transitionEpoch;
+    const isCurrent = () => this.transitionEpoch === epoch && !this.poisoned && !this.ending;
     let pending;
     const resolve = () => {
       if (this.transitionIdleState !== state || state.token !== pending) return;
@@ -3390,7 +3391,7 @@ export class RocEngineRuntime {
     this.pendingTransition = pending;
     this.busy = true;
     const update = (cause = "callback") => {
-      if (pending.cancelled || pending.applied || this.pendingTransition !== pending) return;
+      if (!isCurrent() || pending.cancelled || pending.applied || this.pendingTransition !== pending) return;
       pending.applied = true;
       pending.phase = "applying";
       clearTimeout(pending.timer);
@@ -3404,7 +3405,7 @@ export class RocEngineRuntime {
       });
       // Browser animation promises retain only their small lifecycle token,
       // never completed requests' files or parsed template trees.
-      batch.definitions.clear(); batch.spans.clear(); batch.effects.clear(); batch.types = null;
+      batch.definitions.clear(); batch.spans.clear(); batch.types = null;
       if (this.pendingTransition === pending) this.pendingTransition = null;
       this.busy = false;
       if (cause !== "callback" || this.manual || this.poisoned) {
@@ -3424,12 +3425,12 @@ export class RocEngineRuntime {
       }
       const transition = pending.transition;
       if (pending.skipRequested || pending.applied && (this.manual || this.poisoned)) this.skipTransition(pending);
-      const rejected = (state, error) => this.transitionEvent(state, { message: String(error?.message ?? error).slice(0, 1024) });
+      const rejected = (state, error) => { if (isCurrent()) this.transitionEvent(state, { message: String(error?.message ?? error).slice(0, 1024) }); };
       Promise.resolve(transition?.ready).catch(error => rejected("ready-rejected", error));
-      const finished = () => { pending.finished = true; if (pending.applied || pending.cancelled) resolve(); };
+      const finished = () => { if (!isCurrent()) return; pending.finished = true; if (pending.applied || pending.cancelled) resolve(); };
       Promise.resolve(transition?.finished).then(finished, error => { rejected("finished-rejected", error); finished(); });
     } catch (error) {
-      this.transitionEvent("start-rejected", { message: String(error?.message ?? error).slice(0, 1024) });
+      if (isCurrent()) this.transitionEvent("start-rejected", { message: String(error?.message ?? error).slice(0, 1024) });
       update("none");
       resolve();
     }
@@ -3449,7 +3450,7 @@ export class RocEngineRuntime {
     const flags = u8[0];
     if (flags !== 0 && flags !== 1) throw new Error(`invalid command batch flags ${flags}`);
     let marked = false;
-    const shadow = new Map();
+    const shadow = mode === "early" ? new Map() : null;
     const skipString = () => { const n = dv.getUint32(at, true); at += 4 + n; };
     const skipAttribute = () => { const present = u8[at++]; if (present === 1) skipString(); else if (present !== 0) throw new Error(`invalid attribute presence ${present}`); };
     // Attribute absence is an explicit wire case. An empty present string
@@ -3479,10 +3480,8 @@ export class RocEngineRuntime {
         break;
       }
       if (mode === "update" && batch.spans.has(offset)) {
-        if (batch.deferredEffects) this.fxOut.push(...batch.effects.get(offset));
         at = batch.spans.get(offset); continue;
       }
-      const effectsStart = this.fxOut.length;
       if (mode === "early") {
         let skipped = true;
         switch (op) {
@@ -3902,10 +3901,7 @@ export class RocEngineRuntime {
           throw new Error(`unknown engine command ${op} at byte ${at - 1}`);
       }
       if (at > len) throw new Error("command exceeds batch length");
-      if (mode === "early") {
-        batch.spans.set(offset, at);
-        batch.effects.set(offset, this.fxOut.slice(effectsStart));
-      }
+      if (mode === "early") batch.spans.set(offset, at);
     }
     if (at !== len || (flags === 1) !== marked) throw new Error("command batch flag/TRANSITION mismatch");
     return len;

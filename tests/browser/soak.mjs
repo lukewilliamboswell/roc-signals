@@ -137,19 +137,25 @@ async function open() {
 // stay quiet for QUIET consecutive checks (a write, then the read that
 // reports it).
 const QUIET = portsModule ? 10 : 0;
-const settle = (page) => page.evaluate((quiet) => new Promise((r) => {
+const settle = (page) => page.evaluate(async (quiet) => {
   const rt = window.__rt;
-  const t0 = performance.now();
+  const deadline = performance.now() + 2000;
   let calm = 0;
-  const tick = () => {
+  for (;;) {
+    let timer;
+    try {
+      await Promise.race([rt.idle(), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("soak timed out waiting for transition idle")), Math.max(1, deadline - performance.now()));
+      })]);
+    } finally { clearTimeout(timer); }
     // A held job is not waited for: the soak runs it (`__runWork`).
     const busy = [...rt.live.values()].some((e) => e.kind === "http" || e.kind === "fetch" || e.kind === "file" || e.kind === "portcall" || (e.kind === "work" && e.running));
-    calm = !busy && rt.queue.length === 0 ? calm + 1 : 0;
-    if (calm > quiet || performance.now() - t0 > 2000) r();
-    else setTimeout(tick, 5);
-  };
-  setTimeout(tick, 0);
-}), QUIET);
+    calm = !busy && !rt.busy && rt.queue.length === 0 && rt.nativeEventsReady() ? calm + 1 : 0;
+    if (calm > quiet) return;
+    if (performance.now() >= deadline) throw new Error("soak timed out waiting for a quiet runtime");
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}, QUIET);
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
