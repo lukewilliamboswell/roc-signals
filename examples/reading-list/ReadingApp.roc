@@ -17,6 +17,7 @@ import Store
 ## writes, one asks the database to add each book the reader posts, and one
 ## sends each change's posted commands. Two change-only sites mark shelf
 ## and book-count changes for browser view transitions; the app owns their CSS.
+## An additional site samples the clock before Roc mints a new book.
 ReadingApp := [].{
 
 	## The page, and the four effect sites that connect the store to the
@@ -51,7 +52,17 @@ ReadingApp := [].{
 				|_| [Store.stored.subscribe({})],
 				Engine.react(|_, res| ReadingList.restocked(Store.stored.message(res))),
 			),
-			# A new book, which the database numbers. `on_post` never stops
+			# Read the time a task after submission. Refusal uses the last
+			# sampled clock; each answer mints its own complete book in Roc.
+			Engine.on_post(
+				ReadingList.cells.stamping.signal(),
+				|_| [Timer(0)],
+				Engine.react_by(
+					{ state: ReadingList.cells.id_state.signal(), clock: ReadingList.cells.clock.signal() }.Signal,
+					|at, form, result| ReadingList.stamped({ at, form, result }),
+				),
+			),
+			# A new book, ready to store. `on_post` never stops
 			# an earlier add for a later one: each answer arrives.
 			Engine.on_post(ReadingList.cells.adding.signal(), |asked| [Store.add.request(asked)], Engine.react(|asked, res| ReadingList.added(asked, Store.add.result(res)))),
 			# Every change's commands, sent in the turn of the click that
@@ -65,7 +76,7 @@ ReadingApp := [].{
 	## it.
 	program : Engine.Program
 	program =
-		Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_| ReadingList.store, |_| ReadingApp.view({}))
+		Engine.program_store({ storage_keys: [], max_inflight: 32 }, ReadingList.start, |_| ReadingApp.view({}))
 			.with_ports(Store.registrations)
 }
 
@@ -132,7 +143,7 @@ book = |id, row| {
 		[
 			Engine.class("book card flex flex-wrap items-center justify-between gap-3 p-3"),
 			Engine.attr_s("aria-label", title),
-			# The database gives UUIDs; the prefix makes digit-leading keys CSS identifiers.
+			# App keys name snapshots; the prefix also supports older UUID keys.
 			Engine.attr_s("style", id.map(|key| "view-transition-name: book-${key}")),
 		],
 		[

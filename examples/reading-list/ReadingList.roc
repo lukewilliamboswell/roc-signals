@@ -26,7 +26,9 @@ import Store
 ##   cannot.
 ## - `showing`: which shelf the list shows, the view's query.
 ## - `form`: the book being typed.
-## - `adding`: the books the reader asks to add, posted for the database.
+## - `stamping`: submitted forms whose zero-delay timer will sample the time.
+## - `adding`: complete books Roc minted, posted for the database.
+## - `id_state`, `clock`: the id stream and last sampled wall-clock time.
 ## - `writes`: each change's commands, posted for the database.
 ## - `note`: the latest thing that went wrong, for the reader.
 ##
@@ -46,13 +48,16 @@ ReadingList := [Books].{
 	## Where a book stands in the list: newest first, and by id among books
 	## added in the same millisecond, so no two books tie and every tab
 	## orders them alike.
-	Place : { added_ms : U64, id : Str }
+	Place : { added_ms : I64, id : Str }
 
 	## How many books are on each shelf.
 	Tally : { want_to_read : U64, reading : U64, finished : U64 }
 
 	## What the form and the copy say when the reader asks to add a book.
 	Asking : { form : Store.NewBook, copy : Copy }
+
+	## The id stream and last sampled time when an add's timer answers.
+	StampReading : { state : U64, clock : I64 }
 
 	## A form with nothing typed.
 	blank : Store.NewBook
@@ -67,7 +72,10 @@ ReadingList := [Books].{
 			copy: Engine.cell(Loading),
 			showing: Engine.cell(Everything),
 			form: Engine.cell(ReadingList.blank),
+			stamping: Engine.cell(Engine.outbox({})),
 			adding: Engine.cell(Engine.outbox({})),
+			id_state: Engine.cell(0.U64),
+			clock: Engine.cell(0.I64),
 			writes: Engine.cell(Engine.outbox({})),
 			note: Engine.cell(""),
 		}.Engine.Cells,
@@ -75,6 +83,14 @@ ReadingList := [Books].{
 
 	## The store's cells.
 	cells = ReadingList.store.cells()
+
+	## A document starts its own id stream from the boot seed. The last
+	## sampled clock is the mount time until a successful timer reads it again.
+	start : Engine.Boot -> Engine.Store(_, _)
+	start = |boot|
+		ReadingList.store
+			.with_initial(ReadingList.cells.id_state, boot.seed.to_u64_wrap().bitwise_xor(boot.seed.shr_zf_wrap(64).to_u64_wrap()))
+			.with_initial(ReadingList.cells.clock, boot.now_ms)
 
 	## How a shelf selects and orders the books: the `plan` of the list's
 	## view.
@@ -165,15 +181,35 @@ ReadingList := [Books].{
 	submitted = |at|
 		if ReadingList.can_add(at) {
 			book = { title: at.form.title.trim(), author: at.form.author.trim() }
-			[ReadingList.cells.adding.update(|box| box.post(book)), ReadingList.cells.form.set(ReadingList.blank), ReadingList.cells.note.set("")]
+			[ReadingList.cells.stamping.update(|box| box.post(book)), ReadingList.cells.form.set(ReadingList.blank), ReadingList.cells.note.set("")]
 		} else {
 			[]
 		}
 
+	## A zero-delay timer supplies the action's time, a task after submission.
+	## Refusal uses the last sample instead. Roc supplies the complete book;
+	## the database only stores it. Every answer consumes a fresh stream word.
+	stamped : { at : StampReading, form : Store.NewBook, result : Engine.Result } -> List(Engine.Write(_))
+	stamped = |{ at, form, result }| {
+		time = match result {
+			Fired(now) => now
+			Refused => at.clock
+			_ => crash "ReadingList.stamped: Timer(0) returned another result"
+		}
+		next = next_id(at.state)
+		book : Store.Book
+		book = { id: next.id, title: form.title, author: form.author, shelf: WantToRead, added_ms: time }
+		[
+			ReadingList.cells.id_state.set(next.state),
+			ReadingList.cells.clock.set(time),
+			ReadingList.cells.adding.update(|box| box.post(book)),
+		]
+	}
+
 	## The database's answer to `add`: the book as stored, which joins the
 	## app's copy (or replaces itself there, if a `stored` message brought
 	## it first).
-	added : Store.NewBook, Try(Store.Book, Port.Error) -> List(Engine.Write(_))
+	added : Store.Book, Try(Store.Book, Port.Error) -> List(Engine.Write(_))
 	added = |asked, answer|
 		match answer {
 			Ok(book) => [ReadingList.cells.books.update(|table| table.put(book.id, book))]
@@ -284,6 +320,25 @@ ReadingList := [Books].{
 			Reading => { label: "Finish", name: "Finish ${book.title}" }
 			Finished => { label: "Read again", name: "Read ${book.title} again" }
 		}
+}
+
+## SplitMix64 belongs to this app, not the platform. Its 64-bit stream is
+## deterministic for tests and is not suitable for cryptographic secrets.
+next_id : U64 -> { state : U64, id : Str }
+next_id = |state| {
+	advanced = state.plus_wrap(0x9E3779B97F4A7C15)
+	first = advanced.bitwise_xor(advanced.shr_zf_wrap(30)).times_wrap(0xBF58476D1CE4E5B9)
+	second = first.bitwise_xor(first.shr_zf_wrap(27)).times_wrap(0x94D049BB133111EB)
+	word = second.bitwise_xor(second.shr_zf_wrap(31))
+	digits = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+	var $parts = []
+	var $shift = 64.U8
+	while $shift > 0 {
+		$shift = $shift - 4
+		index = word.shr_zf_wrap($shift).bitwise_and(15)
+		$parts = $parts.append(digits.get(index) ?? crash "ReadingList.next_id: a nibble is outside 0 through 15")
+	}
+	{ state: advanced, id: "b-${Str.join_with($parts, "")}" }
 }
 
 ## The write that makes the app's copy the database's.
@@ -412,16 +467,48 @@ expect {
 	once = submit(ready, { title: " Dune ", author: "Frank Herbert" })
 	again = submit(once, { title: "Dune", author: "Frank Herbert" })
 	actual =
-		\\loading: ${Str.inspect(submit(ReadingList.store, { title: "Dune", author: "" }).read(ReadingList.cells.adding).last())}
-		\\blank: ${Str.inspect(submit(ready, { title: "  ", author: "" }).read(ReadingList.cells.adding).last())}
-		\\once: ${Str.inspect(once.read(ReadingList.cells.adding).last())} "${once.read(ReadingList.cells.form).title}"
-		\\again: ${Str.inspect(again.read(ReadingList.cells.adding).last())} ${Str.inspect(again.read(ReadingList.cells.adding) == once.read(ReadingList.cells.adding))}
+		\\loading: ${Str.inspect(submit(ReadingList.store, { title: "Dune", author: "" }).read(ReadingList.cells.stamping).last())}
+		\\blank: ${Str.inspect(submit(ready, { title: "  ", author: "" }).read(ReadingList.cells.stamping).last())}
+		\\once: ${Str.inspect(once.read(ReadingList.cells.stamping).last())} "${once.read(ReadingList.cells.form).title}"
+		\\again: ${Str.inspect(again.read(ReadingList.cells.stamping).last())} ${Str.inspect(again.read(ReadingList.cells.stamping) == once.read(ReadingList.cells.stamping))}
 	expected =
 		\\loading: Unposted
 		\\blank: Unposted
 		\\once: Posted({ author: "Frank Herbert", title: "Dune" }) ""
 		\\again: Posted({ author: "Frank Herbert", title: "Dune" }) False
 	actual == expected
+}
+
+## A seed fixes the id stream. Timers supply signed time, while refusal
+## uses the last sample and still consumes the next id rather than reusing one.
+expect {
+	ready = after_load(ReadingList.start({ seed: 7, now_ms: -900 }), Ok([]))
+	stamp : Engine.Store(_, _), Engine.Result -> Engine.Store(_, _)
+	stamp = |at, result| at.after(ReadingList.stamped({ at: { state: at.read(ReadingList.cells.id_state), clock: at.read(ReadingList.cells.clock) }, form: { title: "Dune", author: "" }, result }))
+	first = stamp(ready, Fired(10))
+	refused = stamp(first, Refused)
+	backwards = stamp(refused, Fired(-2))
+	actual =
+		\\first: ${Str.inspect(first.read(ReadingList.cells.adding).last())}
+		\\refused: ${Str.inspect(refused.read(ReadingList.cells.adding).last())}
+		\\backwards: ${Str.inspect(backwards.read(ReadingList.cells.adding).last())}
+		\\clock: ${backwards.read(ReadingList.cells.clock).to_str()}
+	expected =
+		\\first: Posted({ added_ms: 10, author: "", id: "b-63cbe1e459320dd7", shelf: WantToRead, title: "Dune" })
+		\\refused: Posted({ added_ms: 10, author: "", id: "b-044c3cd7f43c661c", shelf: WantToRead, title: "Dune" })
+		\\backwards: Posted({ added_ms: -2, author: "", id: "b-e6984080bab12a02", shelf: WantToRead, title: "Dune" })
+		\\clock: -2
+	actual == expected
+}
+
+## Both halves of the boot seed initialize the stream; refusal before the
+## first timer sample uses the actual mount time, including a negative time.
+expect {
+	seed : U128
+	seed = 7
+	ready = ReadingList.start({ seed: seed.shl_wrap(64), now_ms: -900 })
+	stamped = ready.after(ReadingList.stamped({ at: { state: ready.read(ReadingList.cells.id_state), clock: ready.read(ReadingList.cells.clock) }, form: { title: "Dune", author: "" }, result: Refused }))
+	stamped.read(ReadingList.cells.adding).last() == Posted({ id: "b-63cbe1e459320dd7", title: "Dune", author: "", shelf: WantToRead, added_ms: -900 })
 }
 
 ## Moving and deleting change the app's copy at once and post their
@@ -453,8 +540,8 @@ expect {
 ## which book.
 expect {
 	s = after_load(ReadingList.store, Ok([dune]))
-	echoed = s.after(ReadingList.restocked(Ok([dune, piranesi]))).after(ReadingList.added({ title: "Piranesi", author: "" }, Ok(piranesi)))
-	failed = s.after(ReadingList.added({ title: "Piranesi", author: "" }, Err(Threw("QuotaExceededError"))))
+	echoed = s.after(ReadingList.restocked(Ok([dune, piranesi]))).after(ReadingList.added(piranesi, Ok(piranesi)))
+	failed = s.after(ReadingList.added(piranesi, Err(Threw("QuotaExceededError"))))
 	closed = s.after(ReadingList.restocked(Err(Closed)))
 	actual =
 		\\echoed: ${Str.inspect(titles(echoed))}
