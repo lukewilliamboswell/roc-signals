@@ -408,6 +408,8 @@ command_request = |command| match command {
 	ScrollTo(value, props) => ScrollTo(value, props)
 	StorageSet(key, value) => StorageSet(key, value)
 	StorageRemove(value) => StorageRemove(value)
+	SessionStorageSet(key, value) => SessionStorageSet(key, value)
+	SessionStorageRemove(key) => SessionStorageRemove(key)
 	PortCommand(value) => PortCommand(value)
 	Save(value) => Save(value)
 }
