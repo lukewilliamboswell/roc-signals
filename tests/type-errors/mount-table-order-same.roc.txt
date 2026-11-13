@@ -11,7 +11,7 @@ main = Engine.program_store({}, |_| store, |_| Engine.table_view(store.cells(), 
  query: Engine.const({}),
  plan: |_| { keep: |_, _| Bool.True, sort: |_, row| row, compare: |_, _| Same },
  window: Engine.const(Engine.every_row),
-}, |_, row| Html.li([], [Engine.text_s(row.field(U64.to_str))])))
+}, |_, row| Html.li([], [Engine.text_s(row.signal().map(U64.to_str))])))
 
 ## The table's generated store storage type.
 Store : Engine.Stored(Tag, Engine.Table(U64, U64))
