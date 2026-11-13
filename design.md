@@ -305,7 +305,9 @@ reconsidered.
   never holds a JavaScript value, and is never called by it; every message is
   data in a declared encoding with the channel's id, bound, scope and
   lifetime. A capability the platform models (HTTP, storage, timers, history,
-  focus, workers, files, layout observation and media queries) is not a port's business, and nothing that needs a
+  focus, workers, files, layout observation, media queries, time, entropy,
+  the user's languages and time zone) is not a port's business. Formatting
+  with the browser's CLDR data is not modelled and may use a port. Nothing that needs a
   synchronous answer (a default to prevent, a layout measurement inside a
   turn) can be one. The hosted effects a worker task calls (see
   [Workers](#workers)) are not an FFI either: they are a closed, typed
@@ -1652,7 +1654,7 @@ A removed row survives only as a browser snapshot. `REMOVE` and `CLEAR`
 detach nodes and release identity normally; keeping an outgoing node would
 let a recycled id route input to its new owner and make the oracle disagree
 with the browser. For a long exit that must retain real content, the app
-keeps an explicit leaving row and removes it on a scoped timer's `Fired` or
+keeps an explicit leaving row and removes it on a scoped timer's `Fired(_)` or
 `Refused` result. Entrance CSS can use `@starting-style`; `MOVE` remains
 `insertBefore` and may replay it. `Element.moveBefore` would change focus
 semantics and is not adopted. No frame subscription is introduced: CSS
@@ -2008,7 +2010,7 @@ are all of that kind.
   `stale`. The owning site also checks that it holds the id, so a successor
   site at the same path never receives its predecessor's results.
 - Results are typed: `Http({ status, headers, body })`, `Network(message)`,
-  `Timeout`, `Value`, `Missing`, `Fired`, `Location`, `Online(Bool)`,
+  `Timeout`, `Value`, `Missing`, `Fired(I64)`, `Location`, `Online(Bool)`,
   `Visible(Bool)`, `Now`, `Refused`, `Work({ output, files })`,
   `WorkLost(fault)`, `Fetched({ status, headers, body })`,
   `FileBytes(bytes)`, `FileText(text)`, `Digest(bytes)`, `FileUrl(url)`,
@@ -2255,17 +2257,100 @@ fact or skips the event to conceal that failure.
 The spec parser resolves one `Environment` with stated defaults and owns
 cross-form checks; both runners mount from it, and emitted spec JSON
 includes it. A cross-document mount carries the current environment
-through `next_document`, initially the identity. Replay installs readers
+through `next_document`, incrementing the document seed with an explicit
+diagnostic at U128 exhaustion. Replay installs readers
 over that value in each new document and seeds storage without an
 app-visible marker. A step that sets an unchanged fact dispatches nothing.
-A nondeterministic fact added later reaches either runner only from the
-spec or its fixed default, never a real clock or entropy source.
+Nondeterministic facts reach either runner only from the spec or their fixed
+defaults, never a real clock or entropy source.
 
 A value steps can change is set up with `initial-<name>` and changed by
 `set-<name>`; a value fixed for the document uses `(<name> …)`.
 Storage predates this naming rule: `local-storage` seeds it and the app's
 writes change it. File fixtures and deployment limits are not environment
 facts.
+
+### Time, entropy and locale
+
+The boot data includes `now_ms : I64` (milliseconds since the Unix epoch),
+`seed : U128`, ordered `languages : List(Str)` and a `Zone` offset table.
+Their defaults are 0, 0, `["en-US"]` and `utc`. They are inputs fixed for the
+instance; the engine never reads a clock or makes entropy. A mount and the
+same inputs therefore still produce the same command bytes.
+
+The environment readers supply these facts: `now()` defaults to `Date.now()`,
+`seed()` to sixteen bytes from `crypto.getRandomValues`, `languages()` to the
+browser's preferred languages, and `timeZone(days)` to the probe below.
+Signed times accept a safe-integer JavaScript Number or an I64 BigInt,
+without rounding. The seed reader returns `Uint8Array(16)` in little-endian
+order. There is no entropy fallback: an unavailable or failing source
+refuses mount. The default language reader keeps the first sixteen tags
+that fit the 64-byte limit and supplies `["en-US"]` when none remain;
+injected readers must already meet the bounds.
+
+`Fired(at_ms)` carries the same reader's time when a timer or interval
+callback runs. Counting ticks would drift when the browser delays them.
+`Self` still answers the unrelated, bare `Now`: it reads no clock. There is
+no additional clock request and no timestamp on every turn.
+
+A displayed clock is a cell initialized from `boot.now_ms`, then written by
+an `Interval` reaction. It is as old as its last sample. A decision that
+stamps an action instead posts to an outbox whose site issues `Timer(0)`;
+its reaction writes the supplied `Fired(t)` time. That sample is a task after
+the action and can be delayed further by background throttling or suspension.
+It occupies an in-flight slot; `Refused` must be handled, as the examples do
+by using their clock cell. Decisions remain pure functions of supplied data.
+The wall clock may move backwards; apps handle that rather than assuming a
+monotonic clock.
+
+A zone is `{ name, from_ms, until_ms, offsets }`. Each offset gives
+`{ from_ms, minutes }`, minutes east of UTC. Its span is inclusive; one to
+128 entries are strictly ascending, the first starts at the span's beginning,
+and every entry lies within it. `zone_offset(zone, time)` returns
+`OutsideZone` outside that span. It checks a hand-built table's contract,
+bounded by 128 entries, then uses binary search. It never guesses from the
+nearest offset beyond the stated span. `utc` has one zero offset over the
+whole I64 range. A zone name has at most 64 UTF-8 bytes; an unknown browser
+name is the empty string.
+
+The program declares `zone_days : U16` (366 by default, at most 7305) on each
+side of mount. This is app meaning, carried in its declarations, not a
+mount limit. The default probe uses the captured mount time, samples
+`-new Date(t).getTimezoneOffset()` daily in both directions, and bisects each
+detected change to a millisecond. It reads the browser service and encodes
+facts; it decides no reactive meaning. If more offsets than fit are found,
+both ends are shortened until the table fits, still containing mount time.
+The returned bounds state exactly what was probed. A requested span outside
+the browser's Date range refuses mount; injected I64 time and a valid
+injected zone may still cover that time.
+
+The probe's work is bounded: at most 14,611 daily samples and at most 27
+bisection reads per detected change before the offset cap is reached.
+The environment contract tests run the default and maximum declared spans
+under UTC and Australia/Sydney and record reads and elapsed time; a dense
+synthetic zone checks truncation and its bounds. Probe work belongs to the
+mount's startup cost, never to an update path.
+
+Languages and the zone stay as mounted until reload. There is no subscription
+to a language or zone change. A worker never mounts or gets these services;
+a job that needs time or randomness takes them as input so its answer remains
+a function of that input.
+
+Formatting is pure app Roc. The platform ships no calendar or PRNG; the time
+sample shows civil dates and a SplitMix64 stream seeded from both halves of
+the boot seed. Browser CLDR formatting can be requested through a port, never
+synchronously from a hole. Field Notes uses a 30-second clock for relative
+ages and `Timer(0)` for capture times, including refusal and backwards time.
+Reading List sends its database a whole book with an id and time minted in Roc.
+
+Both spec runners use the parser's manual clock, initially 0. `set-time` and
+`advance-time` deliver nothing; `run-effect` and `tick-interval` stamp their
+`Fired` with the current clock without moving it. Cross-document navigation
+keeps that clock and mounts document k with seed N + k, checked for overflow.
+The spec's zone is true for all time and its languages are fixed. JSON carries
+I64/U128 values as decimal strings. Only the app's readers are controlled:
+page JavaScript and port handlers still read their real clock, so an example
+that needs deterministic stamps makes them in Roc.
 
 ### Connectivity, visibility and media
 
@@ -2452,8 +2537,6 @@ in this channel, each landed whole (see
 [When a capability is built](#when-a-capability-is-built)):
 
 - session storage alongside local storage, declared at boot the same way;
-- an entropy seed in the boot bytes;
-- sampled time, if an app needs wall-clock values rather than timer ticks;
 - a save destination the user picks (`showSaveFilePicker`, Chromium only and
   needing a gesture), as a request answering `[Canceled, Chosen(handle)]`.
 
@@ -3059,7 +3142,11 @@ bytes or an effect result that do not follow Appendix B (truncated, trailing
 bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
 Boot faults include unknown, repeated, missing or out-of-order sections,
 storage pairs while storage is unavailable, and a pair for a key the
-program did not declare; the diagnostic names the section.
+program did not declare; language counts or lengths outside their bounds;
+and a zone with an invalid span, count, order or offset range. The diagnostic
+names the section. A program declaring more than 7305 zone days is a
+contract error when it is built. A bare result tag 5 is truncated, never a
+timer answer with an invented time.
 **Resource limits:** node ids (2³² − 2 live nodes); any count the template
 encoding carries in one byte —
 static attributes, children, holes, hole path depth, row handlers — above 255;
@@ -3134,6 +3221,9 @@ bound and a declared behaviour at the bound:
 | Transition observation history | Newest 4096 records and 1 MiB encoded type bytes, absolute U64 ordinals | Evicted or oversized records fail observation only; oversized entries clear prior history; exhaustion disables observation, never app progress |
 | Live document-key handlers | 32 per instance, structurally outside rows | `contract` at mount naming the site |
 | Declared media queries | 32 distinct queries, 1–256 UTF-8 bytes each | `contract` at catalogue construction |
+| Boot languages | 1–16 strings, at most 64 UTF-8 bytes each | Default reader retains the first that fit, or `en-US`; invalid injected readers refuse mount and invalid bytes are a named section contract fault |
+| Zone table | `zone_days` each side of mount (366 by default, at most 7305); 1–128 offsets | Default probe shortens both ends to fit, retaining mount time; outside the stated span `zone_offset` returns `OutsideZone` |
+| Zone name | 64 UTF-8 bytes | Unknown or oversized browser name is empty; invalid injected data refuses mount |
 | Live observations | One registration per observed element and kind; follows live nodes | Node resource bound; no fixed data-sized cap |
 | Manual scroll history | Newest 4096 performed records per document, weak target identities, cumulative U64 ordinal | Older assertions fail retained-history diagnostics; ordinal exhaustion disables observation, never scrolling |
 | Manual native-UI readiness | Live controlled nodes; per-node U64 close count or coalesced toggle mark; 20 s observation deadline | Explicit observation failure, never app poison |
@@ -3266,8 +3356,27 @@ oracle and never defines a meaning of its own. In particular:
   browser may restore a cached page rather than mount afresh;
 - the parser resolves the spec's environment once: location `/`, local
   storage available with no seeded pairs, online and visible unless a
-  setup form says otherwise. `set-online` and `set-visibility` carry their
-  current values into a later document and dispatch nothing when unchanged.
+  setup form says otherwise. Time defaults to 0, seed to 0, languages to
+  `["en-US"]` and zone to UTC. `set-online`, `set-visibility` and the current
+  clock carry into a later document; its seed is N + k, document k from 0.
+  Setting an unchanged connectivity or visibility fact dispatches nothing.
+
+### Manual clock and document facts
+
+`initial-time` and `set-time` accept I64 milliseconds or exactly
+`YYYY-MM-DDTHH:MM:SS[.sss]Z` UTC text with a valid calendar date. `advance-time`
+takes a nonnegative U64 duration and rejects an I64 overflow. These clock
+steps deliver nothing and fire no timer. `run-effect` and `tick-interval`
+use the clock as it stands; timer order is issue order, never time order.
+
+`(seed N)` takes a U128; each new document uses the next checked value.
+`(languages TAG ...)` supplies one to sixteen strings of at most 64 UTF-8
+bytes. `(time-zone NAME MINUTES (AT MINUTES) ...)` gives a first offset
+from the start of I64 time and ascending changes, true over all I64 time.
+The parser owns these bounds, UTC parsing and cross-form checks. Replay
+installs them through the ordinary readers, not CDP overrides or a global
+Date patch. Walks advance the clock by a second to a day, sometimes backwards;
+an interval tick advances it by that period before firing.
 
 ### Transition assertions
 
@@ -3534,7 +3643,7 @@ metric: soak plateaus assert it.
 | `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters"): awaited requests issued (one `FX` each), results delivered to a reaction, stale results dropped, requests refused at the in-flight cap, requests cancelled (one `CANCEL` each), requests reparented to a surviving ancestor, and reparented writes skipped because their state was retired |
 | `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it, and `PROP`/`HPROP` whose row claims an attribute; natively from the oracle, in Chrome from a MutationObserver of the mirrored attributes |
 | `expect-interval ms n` | Live `INTERVAL` subscriptions with period `ms` |
-| `tick-interval ms` | Deliver `Fired` to every live interval with period `ms`; a step with none live fails. `tick-interval-if-active` is a no-op when none is live |
+| `tick-interval ms` | Deliver `Fired(current_clock)` to every live interval with period `ms`; a step with none live fails. `tick-interval-if-active` is a no-op when none is live |
 | `expect-cleanup name n` | Runs of `on_cleanup` sites named `name` |
 | `expect-files n` | File handles live in the app's instance after the last call: natively from the native host's heap, in Chrome from `metric(6)` |
 
@@ -3695,7 +3804,7 @@ of them is platform semantics.
 
 | Issue | Defect | Effect on the engine |
 |---|---|---|
-| [roc-lang/roc#13011](https://github.com/roc-lang/roc/issues/13011) | `nightly-2026-11-12-ce942d6` assigns callable evidence scope to a non-function stored value in an open-tag initializer test, leaving a child call without evidence during Mono and Boxy lowering | Log Explorer initializes its theme through the full union constructor; both pure tests remain enabled |
+| [roc-lang/roc#13011](https://github.com/roc-lang/roc/issues/13011) | `nightly-2026-11-12-ce942d6` assigns callable evidence scope to a non-function stored value in an open-tag initializer test, leaving a child call without evidence during Mono and Boxy lowering | Log Explorer initializes its theme through the full union constructor, and the time sample closes its action initializer through its typed producer; their pure tests remain enabled |
 | [roc-lang/roc#12978](https://github.com/roc-lang/roc/issues/12978) | Since `nightly-2026-11-11-7679cc5`, a method's nominal defaulted props reject `{}` inside a callback stored in a record passed to a generic function | The File Effects test app gives its empty read props the explicit `Engine.ReadProps` type before constructing the callback, preserving the default read bound and every spec |
 | [roc-lang/roc#12949](https://github.com/roc-lang/roc/pull/12949) | Native links now require PIC libraries and PIE startup; roc-fuzz 0.6.0's immutable Linux inputs predate that requirement | The platform builds matching PIC musl inputs with its pinned Zig. Fuzz examples and campaigns always attempt their requested targets; compiler, linker and runtime failures fail the task. Linux needs matching PIC roc-fuzz inputs, and affected engine targets also need the optimizer fix below |
 | [roc-lang/roc#12976](https://github.com/roc-lang/roc/issues/12976) | `nightly-2026-11-11-7679cc5` crashes in `spec_constr` optimizing a function that returns a value beside a closure capturing it; every store example reaches this shape | On that exact nightly the site builds the examples with `--opt=dev`, and optimized walks, browser soaks and worker scaling explicitly report `SKIP`. Ordinary native/browser specs and dev native soaks remain enabled. The next nightly retries optimized builds automatically |
@@ -3823,14 +3932,19 @@ through an attach function rather than supplying an unchecked codec.
 ```roc
 # Program entry
 program : (() -> Elem(Root)) -> Program
-ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32, media : List(Str) ?? [] }
+ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32,
+                  media : List(Str) ?? [], zone_days : U16 ?? 366 }
 program_boot : ProgramProps, (Boot -> Elem(Root)) -> Program
 program_store : ProgramProps, (Boot -> Store(st, h)),
                 (Boot -> Elem(StoreRoot(st))) -> Program             # the store start(boot) gives, held at the root
 Root                                          # the top context of a program without a store
 StoreRoot(st)                                 # the top context of a program whose store's storage is st
 Boot := { url : Str ?? "/", storage : List((Str, Str)) ?? [], online : Bool ?? True,
-          visible : Bool ?? True, storage_available : Bool ?? True, media : List((Str, Bool)) ?? [] }
+          visible : Bool ?? True, storage_available : Bool ?? True, media : List((Str, Bool)) ?? [],
+          now_ms : I64 ?? 0, seed : U128 ?? 0, languages : List(Str) ?? ["en-US"], zone : Zone ?? utc }
+Zone : { name : Str, from_ms : I64, until_ms : I64, offsets : List({ from_ms : I64, minutes : I32 }) }
+utc : Zone
+zone_offset : Zone, I64 -> Try(I32, [OutsideZone])
 boot_media : Boot, Str -> Try(Bool, [Undeclared])
 Program                                       # opaque; the app binds it as `main`
 Program.with_workers : Program, List(Registration) -> Program   # the worker catalogue
@@ -4040,7 +4154,7 @@ Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectTex
        StorageSet(Str, Str), StorageRemove(Str), PortCommand({ port, message }),
        Save({ file : File, name : Str }), ViewTransition(List(Str))]     # the requests that await nothing: a cleanup's plan
 Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
-       Fired, Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused,
+       Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused,
        Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError),
        FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str),
        PortAnswer(PortMessage), PortFailed(PortFailure),
@@ -4192,7 +4306,7 @@ Html.popover : Str, Html.PopoverProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> 
 Html.on_cancel : Handler(ctx) -> Attr(ctx)
 ```
 
-**Target vocabulary.** An `Svg` module and a typed style API, session storage, an entropy seed, and handler-level
+**Target vocabulary.** An `Svg` module and a typed style API, session storage, and handler-level
 request occurrences. Each lands with an engine change,
 a native spec, a runtime contract test, a demonstration and, where it
 touches the wire, an Appendix B entry.
@@ -4202,7 +4316,7 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **13**. The engine declares it
+This appendix is protocol version **14**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -4221,7 +4335,7 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (13) |
+| `roc_engine_version` | `() -> u32` | The protocol version (14) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -4307,9 +4421,13 @@ space. A dash means that section does not occur in that direction.
 | 4 | visibility | — | `visible:u8` | `environment.visible()`, otherwise the browser; true |
 | 5 | ports | `n:u32 (name:str kind:u8 delivery:u8 bound:u32)*n` | — | `Program.with_ports`; empty catalogue |
 | 6 | media | `n:u32 (query:str)*n` | `matches:u8` for each declared query, in declaration order | `environment.matchMedia(query)`; no queries, and false for an unspecified spec query |
+| 7 | time | — | `now_ms:i64` | `environment.now()`, default `Date.now()`; 0 in a spec |
+| 8 | seed | — | Sixteen little-endian bytes | `environment.seed()`, default `crypto.getRandomValues`; 0 in a spec |
+| 9 | languages | — | `n:u32 (language:str)*n` | `environment.languages()`, default preferred browser languages; `["en-US"]` in a spec |
+| 10 | time zone | `days:u16` | `name:str from_ms:i64 until_ms:i64 n:u32 (from_ms:i64 minutes:i32)*n` | `environment.timeZone(days)`; default probe, UTC in a spec |
 
 Each applicable section is required exactly once, in ascending tag order:
-boot has 1–4 and 6; declarations have 2, 5 and 6. Unknown, repeated, out-of-order
+boot has 1–4 and 6–10; declarations have 2, 5, 6 and 10. Unknown, repeated, out-of-order
 or missing sections are errors; tags are not a compatibility mechanism.
 The length bounds the body exactly, with no trailing bytes. Flags are
 strictly `0` or `1`; strings must be UTF-8. A body that overruns its section,
@@ -4318,7 +4436,13 @@ did not declare is a `contract` fault naming the section. Unreadable
 declarations refuse mount before `init()`.
 
 Empty boot bytes alone mean all defaults, including URL `/`. Empty
-declarations are invalid: sections 2, 5 and 6 occur even for empty lists.
+declarations are invalid: sections 2, 5, 6 and 10 occur even for empty lists.
+The zone declaration is two bytes and at most 7305 days. Languages carry
+1–16 strings of at most 64 UTF-8 bytes. A zone name has at most 64 bytes, its
+span has `from_ms <= until_ms`, and its 1–128 offsets are strictly ascending,
+inside the inclusive span, with the first exactly at `from_ms`. Each section
+is consumed exactly. Empty boot defaults include time 0, seed 0, `en-US` and
+UTC across the entire I64 range.
 Storage declarations have no additional bound or duplicate check; declaring
 a key twice reads it twice. Only existing keys are included in boot pairs.
 `Core.read_boot_media(bytes, queries)` is the total structural decoder; its
@@ -4392,7 +4516,7 @@ An event is `event(node, handler)` with the payload staged first:
 | 2 | `message:rest` | `Network` |
 | 3 | `value:rest` | `Value` (storage hit) |
 | 4 | — | `Missing` (storage miss) |
-| 5 | — | `Fired` (timer or interval) |
+| 5 | `at_ms:i64` | `Fired(I64)` (timer or interval), sampled when its callback runs |
 | 6 | `url:rest` | `Location` (popstate) |
 | 7 | — | `Timeout` (an HTTP timeout, or a work timeout that stopped its worker) |
 | 8 | `online:u8` | `Online(Bool)` (connectivity change) |

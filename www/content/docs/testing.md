@@ -156,6 +156,10 @@ Without setup forms its values are:
 | Connectivity | Online |
 | Visibility | Visible |
 | Declared media query | False unless setup gives its match |
+| Clock | 0 ms (1970-01-01T00:00:00Z) |
+| Seed | 0, plus the zero-based document number |
+| Languages | `("en-US")` |
+| Time zone | UTC, zero offset over all I64 time |
 
 Both runners use these values, including when Chrome's real browser facts
 differ. A value that later steps can change uses `initial-…` in setup and
@@ -170,6 +174,10 @@ deployment limit.
 | `(initial-online online)` | Boot connectivity, `online` or `offline` |
 | `(initial-visibility hidden)` | Boot page visibility, `visible` or `hidden` |
 | `(initial-media "QUERY" BOOL)` | A declared media query's boot match |
+| `(initial-time TIME)` | Clock at mount: I64 milliseconds or strict UTC text |
+| `(seed N)` | U128 seed; document k from 0 uses N + k |
+| `(languages "TAG" ...)` | One to sixteen language strings, at most 64 UTF-8 bytes each |
+| `(time-zone "NAME" MINUTES (FROM_MS MINUTES) ...)` | Initial I32 offset and ascending changes at I64 integer milliseconds, true for all I64 time; at most 128 offsets, name at most 64 UTF-8 bytes |
 | `(local-storage "key" "value")` | Seed local storage before mount |
 | `(local-storage-unavailable)` | Every local-storage access throws, as with site data disabled. Seeding storage in the same setup is a spec error |
 | `(file "name" "type" "text" [REPEAT])` | Declare a file the steps can give the app: its name, its MIME type, and its contents, `text` repeated `REPEAT` times (once without it) |
@@ -535,6 +543,32 @@ This spec checks the auto-refresh interval: it mounts with the checkbox,
 ticks, answers the refetch, and is gone when unchecked.
 
 {{ sample(file="search/specs/auto-refresh.scm", syntax="scheme") }}
+
+### Time and document facts
+
+`TIME` is an I64 integer or exactly `YYYY-MM-DDTHH:MM:SS[.sss]Z` with a valid
+UTC date. Other zones and malformed dates are spec errors. Clock steps are:
+
+| Step | What happens |
+|---|---|
+| `(set-time TIME)` | Set the wall clock, forwards or backwards; deliver nothing |
+| `(advance-time MS)` | Add a nonnegative U64 duration; fail on I64 overflow; deliver nothing |
+
+Only those steps move the clock. `run-effect` on a timer and `tick-interval`
+read its current value for `Fired(at_ms)` without advancing it. Timers still
+fire in issue order, never time order. Write `(advance-time 30000)` then
+`(tick-interval 30000)` when thirty seconds pass and the interval fires.
+
+The current clock survives a new document, whose seed is the next checked
+U128 value. Seed exhaustion is a spec error rather than wrapping. Languages
+and the supplied zone stay fixed; a spec zone covers all time, so the
+platform and probe contract tests check `OutsideZone` separately. Emitted
+JSON uses decimal strings for I64 times and U128 seeds.
+
+Chrome uses the ordinary environment readers for these values, not a CDP
+zone override or a global Date patch. JavaScript the page supplies, including
+port handlers and simulated services, still reads its real time. An example
+that needs deterministic stamps makes them in Roc, as Reading List does.
 
 ### Files
 

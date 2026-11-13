@@ -143,8 +143,8 @@ list is on, say), lift that state in and map both:
 |---|---|
 | `Http({ method, url, headers, body, timeout_ms })` | `Http({ status, headers, body })`, `Network(message)` or `Timeout` |
 | `StorageGet(key)` | `Value(text)` or `Missing` |
-| `Timer(ms)` | `Fired`, once |
-| `Interval(ms)` | `Fired`, until the site is disposed |
+| `Timer(ms)` | `Fired(at_ms)`, once; I64 wall-clock milliseconds |
+| `Interval(ms)` | `Fired(at_ms)` at each callback, until the site is disposed |
 | `Popstate` | `Location(url)` on every back or forward |
 | `OnlineChanges` | `Online(Bool)`, the newest reported state per frame |
 | `VisibilityChanges` | `Visible(Bool)`, the newest reported state per frame |
@@ -257,7 +257,7 @@ page, model leaving in the app:
 
 Here the keyed row stays mounted with a `leaving` class while its row-scoped
 1500 ms timer waits. CSS gives that class the matching exit animation. Both
-`Fired` and `Refused` remove it, so an exhausted in-flight allowance cannot
+`Fired(_)` and `Refused` remove it, so an exhausted in-flight allowance cannot
 leave it stuck. Specs can assert this intermediate state in either runner.
 
 No animation-frame subscription is needed. CSS transitions interpolate
@@ -284,8 +284,8 @@ and hands the boot data both to the function that starts the store and to
 the view (see [Shared State](@/docs/shared-state.md#starting-values-from-the-boot-data)).
 
 Both functions accept defaulted `ProgramProps`: omit `storage_keys` for
-none, `max_inflight` for 32 and `media` for no queries, or pass `{}` for
-all defaults.
+none, `max_inflight` for 32, `media` for no queries and `zone_days` for
+366 days each side of mount, or pass `{}` for all defaults.
 
 A page embedding an app can supply `environment.online()` and `visible()`
 readers, called at boot and when the corresponding browser event answers a
@@ -306,6 +306,95 @@ comes from the document's location, and `max…` options cap deployment work.
 Unknown environment keys, non-functions and failed boot reads refuse
 mount; a reader that throws or returns the wrong type later stops the
 instance with an `executor` fault.
+
+## Time, randomness and the user's locale
+
+The first paint has `boot.now_ms` (I64 milliseconds since the Unix epoch),
+`boot.seed` (U128), `boot.languages` in preference order and `boot.zone`.
+They are fixed inputs for the document. A timer or interval answers
+`Fired(at_ms)` with the wall-clock time its callback ran.
+
+### A clock for what is shown
+
+Initialize a clock cell from boot and write each interval sample into it:
+
+{{ sample(file="time/TimeApp.roc", region="clock") }}
+
+Counting ticks drifts when the browser delays them. This cell is as old as
+its last sample; use it for relative ages such as "3 min ago". Field Notes
+samples every thirty seconds, with a separate clock cell so only time-reading
+holes refresh. It also requests a fresh sample on returning visible.
+
+### A sample for an action
+
+An action posts to an outbox; its site issues `Timer(0)` and the reaction
+uses that timer's sample:
+
+{{ sample(file="time/TimeApp.roc", region="stamp") }}
+
+The sample arrives a task after the action, rather than inside its turn.
+Background throttling can delay it by seconds or minutes, and suspension can
+delay it further. The timer holds an in-flight slot until it answers; handle
+`Refused`, here by using the last clock sample. The wall clock may jump
+backwards. Field Notes then shows "just now" rather than a negative age.
+Pure decisions take these values as data, so their tests need no real clock.
+`Self` still answers bare `Now`, which carries no time.
+
+### Local dates and language
+
+`boot.zone` holds a name, inclusive `from_ms` and `until_ms`, and one to 128
+ascending offsets in minutes east of UTC. `Engine.zone_offset(zone, time)`
+returns `OutsideZone` beyond that span; handle it without guessing an offset:
+
+{{ sample(file="time/TimeApp.roc", region="zone") }}
+
+Ask for the span in the program's `zone_days` (366 by default, at most 7305
+on each side of mount). The browser probes offsets daily and bisects changes
+to the millisecond. If more changes than fit are found, the span is shortened
+from both ends, still including mount time. Its returned bounds remain true.
+The zone and languages stay as mounted until reload, even if the user's
+settings change while the page stays open.
+
+Formatting belongs to the app. This sample's pure civil-date conversion is:
+
+{{ sample(file="time/Time.roc", region="calendar") }}
+
+The app chooses its own pattern: Field Notes uses twelve hours for its first
+language `en-US`, twenty-four otherwise. This is an app rule, not CLDR.
+Browser CLDR formatting can use a batched port call; a hole never calls
+`Intl` synchronously. The platform ships no calendar or formatting package.
+
+### Ids from the seed
+
+Keep a generator's state in a cell, or with the value whose parts must agree
+with it. The sample chooses a pure, non-cryptographic SplitMix64 stream and
+folds both halves of the boot seed into it:
+
+{{ sample(file="time/Time.roc", region="seed") }}
+
+The platform provides entropy, not an id generator or a collision guarantee.
+Field Notes chooses `n-` plus sixteen hex digits; Reading List chooses `b-`
+and sends its database a whole book, including id and sampled time, minted
+in Roc. The database port stores those values unchanged.
+
+### Readers and deterministic specs
+
+`environment.now()` defaults to `Date.now()` and is read at mount and when
+each timer or interval fires. It accepts a safe-integer Number or an I64
+BigInt. `seed()` returns sixteen little-endian bytes as `Uint8Array(16)`, defaulting to
+`crypto.getRandomValues`; absence or failure refuses mount. `languages()`
+defaults to the browser's first sixteen language strings that fit 64 UTF-8
+bytes each, or `["en-US"]` when none remain. `timeZone(days)` returns the zone
+table; timestamp fields accept safe integers or I64 BigInts. Injected readers
+must already meet the bounds. An unavailable or overlong default browser
+zone name becomes `""`, while malformed reader data refuses mount. A failing
+`now()` after boot is an `executor` fault, never a fabricated timestamp.
+
+Specs control these readers through their manual clock, seed, languages and
+zone ([Testing](@/docs/testing.md#time-and-document-facts)). Advancing that
+clock fires nothing. Page JavaScript still has its real clock; a port must
+not mint these app timestamps. Workers get no boot or clock service: send
+any time or randomness a job needs in its ordinary input.
 
 ## Navigation
 

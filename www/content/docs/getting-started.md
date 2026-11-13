@@ -121,7 +121,8 @@ runtime:
 
 {{ sample(file="counter/index.html", syntax="html") }}
 
-The server supplies `runtime.mjs` (with `worker.mjs`, which the runtime
+The server supplies `runtime.mjs` and its `environment.mjs` readers (with
+`worker.mjs`, which the runtime
 starts [workers](@/docs/workers.md) from) and `app.wasm`, the app's
 development build; your other files are served as they are. When port 8000
 is taken it uses the next free one and says so; `--port N` chooses another.
@@ -189,6 +190,7 @@ Built the app into dist/:
   dist/index.html
   dist/assets/5e711d3a91d0f155/app.wasm
   dist/assets/5e711d3a91d0f155/runtime.mjs
+  dist/assets/5e711d3a91d0f155/environment.mjs
   dist/assets/5e711d3a91d0f155/worker.mjs
 ```
 
@@ -207,11 +209,12 @@ Both modes write the same deployment layout:
 - `dist/index.html`, your page, with each quoted relative URL that names
   one of the files below pointed into the hashed directory. Nothing else in
   it changes.
-- `dist/assets/<hash>/`: the module, the platform's runtime and worker
-  script, and the app's other files (its scripts, styles and images, in
+- `dist/assets/<hash>/`: the module, the platform's runtime, its environment
+  helper and worker script, and the app's other files (its scripts, styles and images, in
   their own folders). The directory's name is a hash of everything in it, so
   a browser may cache it for ever. The files keep their places relative to
-  each other, so the runtime still finds `worker.mjs` beside it.
+  each other, so the runtime still imports `environment.mjs` and finds
+  `worker.mjs` beside it.
 - Everything under `public/`, copied to the top of `dist/` under its own
   name: put there a file something names by a fixed URL, such as data the
   app's Roc code downloads, `robots.txt` or a favicon.

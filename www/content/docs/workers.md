@@ -675,16 +675,16 @@ returns add code too, usually far less than the task itself.
 
 ## Serving the app
 
-The runtime starts its workers from `worker.mjs`, which it loads from beside
-`runtime.mjs`, so the two are served together, from the same origin as the
-page. `roc signals.roc serve` does this, and `roc signals.roc build` puts
-both beside the app's module in `dist/` (see
+The runtime starts its workers from `worker.mjs`, beside `runtime.mjs`.
+It also imports `environment.mjs` for browser facts. Serve all three together,
+from the same origin as the page. `roc signals.roc serve` does this, and `roc signals.roc build` puts
+the runtime files beside the app's module in `dist/` (see
 [Getting Started](@/docs/getting-started.md#build-it-for-deployment)).
-Serving the files yourself, copy both from the release, or from `platform/`
+Serving the files yourself, copy all three from the release, or from `platform/`
 in a checkout:
 
 ```sh
-cp platform/runtime.mjs platform/worker.mjs my-site/
+cp platform/runtime.mjs platform/environment.mjs platform/worker.mjs my-site/
 ```
 
 A worker receives the module the page already compiled, so `app.wasm` is not

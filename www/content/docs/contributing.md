@@ -32,7 +32,7 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The platform (`main.roc`): the engine (`Core.roc`, with a table, its views and their ordered keys in `Table.roc`, `View.roc` and `Seq.roc`, and in `EngineOnly.roc` the value that keeps a table's bookkeeping out of an app's reach), the authoring API (`Engine.roc`, `Table.roc`, `Html.roc`, the plain layout payloads in `Layout.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, with its walks and soaks, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also `main-fuzz.roc`, a package root over the same pure modules (all but `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc`) that the platform's own fuzz targets depend on |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`, with a table, its views and their ordered keys in `Table.roc`, `View.roc` and `Seq.roc`, and in `EngineOnly.roc` the value that keeps a table's bookkeeping out of an app's reach), the authoring API (`Engine.roc`, `Table.roc`, `Html.roc`, the plain layout payloads in `Layout.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs`, its fact-reader helper `environment.mjs` and worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, with its walks and soaks, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also `main-fuzz.roc`, a package root over the same pure modules (all but `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc`) that the platform's own fuzz targets depend on |
 | `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `store` for cells read and written at depth, `writes` for decisions, resets and `also`, `table` for a table and its table views, `remount` for `remount_on`, `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations, `tasks` for jobs that read and build files, `outbox` for posting requests and `gather` for one question split over several jobs, with the platform's fuzz targets of the effect channel and the controls beside their test apps as `fuzz-<subject>.roc`), the Chrome spec replay, and the release check helper |
 | `fuzz/` | The platform's fuzz targets of the shared support (the spec, wire and port formats, generated site trees, and tables with their views) |
 | `examples/` | The example apps, each with its specs, any fuzz targets of its own pure logic (`fuzz-<subject>.roc`), and any JavaScript of its own beside it (the port handlers of the Reading List, the Status Page and the Million-Row Explorer, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`; the Log Explorer's `log-timings` element, `timings.mjs`, the Status Page's `latency-feed-monitor`, `feed-monitor.mjs`, and the Million-Row Explorer's `query-meter`, `meter.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
@@ -191,7 +191,7 @@ for example to run two tasks at once.
    against the example's own simulated backend
    (`examples/conduit/backend.mjs`).
 7. The js-framework-benchmark check.
-8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the
+8. The release dry run: the bundle, `runtime.mjs`, `environment.mjs` and `worker.mjs`, the
    `signals.roc` tool's package and app, the examples archive with every app
    mounted by its check helper, and the release notes.
 9. The tool, end to end (`scripts/src/ToolCheck.roc`): the dry run's
@@ -278,7 +278,7 @@ tests with explicitly constructed `File`s for arbitrary MIME metadata.
 
 A change to the wire protocol changes the engine's encoder and decoders,
 `platform/Dom.roc`, both hosts (`platform/host/host.zig`,
-`platform/host/spec.zig`), `platform/runtime.mjs`, `platform/worker.mjs`,
+`platform/host/spec.zig`), `platform/runtime.mjs`, `platform/environment.mjs`, `platform/worker.mjs`,
 the contract tests under `tests/` and Appendix B of `design.md` together,
 and bumps the protocol version.
 
@@ -592,7 +592,7 @@ assets with `blueprint run release` and creates a draft GitHub release with:
   one platform whose `main.roc` builds for `wasm32` (the browser module) and
   `x64musl`, `arm64mac`, `x64mac` and `x64win` (the native spec runner),
   with the link inputs of each;
-- `runtime.mjs` and its worker script, `worker.mjs`, served beside it;
+- `runtime.mjs`, its `environment.mjs` fact readers and `worker.mjs`, served together;
 - `signals-<hash>.tar.zst`, the `signals.roc` tool's package, and
   `signals.roc`, the small app an author downloads to run it: it names
   basic-cli and that package, and pins no compiler;

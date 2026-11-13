@@ -245,8 +245,9 @@
   it never decides reactive meaning, never touches the DOM the engine owns,
   and never calls into Roc or holds a Roc value. A service the platform
   models (HTTP, storage, timers, history, focus, workers, files, layout
-  observation and media queries) is not a
-  port's business.
+  observation, media queries, time, entropy, the user's languages and time
+  zone) is not a port's business. Formatting with the browser's CLDR data is
+  not modelled and may use a port.
 - Keep observation passive. The runtime's monitor reports what the runtime
   and its pool did after they acted and never decides scheduling, a result
   or an order; everything it keeps is bounded, and an observer that

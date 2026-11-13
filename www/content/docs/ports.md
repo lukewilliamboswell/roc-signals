@@ -98,8 +98,8 @@ as calls, and `writes`, each change's writes, sent as commands
 
 ## The JavaScript side
 
-The platform supplies the runtime, `runtime.mjs` and the `worker.mjs`
-beside it. They are the same for every app and know nothing of your ports.
+The platform supplies `runtime.mjs`, its `environment.mjs` fact readers,
+and `worker.mjs` beside it. They are the same for every app and know nothing of your ports.
 You write two things: the handlers, a module of plain functions, and the
 page that mounts your app with them. The page passes one handler per
 declared port in the `ports` option of `mountRocEngineApp`:
@@ -143,8 +143,9 @@ export default {
 The sample's complete handlers, IndexedDB included, are
 `www/samples/ports/notes-ports.mjs`, and the Reading List's are
 `examples/reading-list/ports.mjs`. Keep them with your app: they are your
-code, not the platform's. Store a record exactly as it crosses (a `U64` as
-its string of digits, a tag by its name), so what a handler stores is what
+code, not the platform's. Roc samples a note's time through `Timer(0)`;
+the IndexedDB handler stores the record unchanged. Store a record exactly
+as it crosses (wide integers as decimal strings, a tag by its name), so what a handler stores is what
 it answers and no conversion between them can drift.
 
 The runtime checks the handlers against the app's declarations before
