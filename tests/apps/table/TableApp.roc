@@ -639,7 +639,7 @@ expect {
 }
 
 ## Snapshot helpers preserve the pure Store path: with_initial clears its
-## changes, while chained after calls retain exactly the rows they wrote.
+## changes, while chained after calls retain only the latest writing turn.
 expect {
 	setup = { rows: 3, window: 30, draws: Everything }
 	cleared = TableApp.snapshot(setup, AfterInitial)
@@ -657,5 +657,5 @@ expect {
 		},
 		chain_title: chained.get(3)?.title,
 	}
-	actual == { cleared_rows: 2, cleared_changes: 0, chain_rows: 3, chain_keys: [0, 3], chain_title: "Snapshot row" }
+	actual == { cleared_rows: 2, cleared_changes: 0, chain_rows: 3, chain_keys: [3], chain_title: "Snapshot row" }
 }

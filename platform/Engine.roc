@@ -487,10 +487,12 @@ Engine := [].{
 		## expect store.after(signed_out(at)).read(cells.session) == Anonymous
 		## ```
 		##
-		## The writes are applied and no turn ends, so a table keeps its
-		## changes describing them: `store.after(writes).read(table).inverse()` tells
-		## which rows a transition wrote. Across chained `after`s the changes
-		## holds the rows all of them wrote.
+		## Each call is one turn. A table's first write replaces its preceding
+		## writing turn's changes; later updates in this list keep the first
+		## earlier row per key. A table this list does not write keeps its
+		## changes, so `read(table).inverse()` describes its last writing turn.
+		## Read that inverse before building writes to undo the preceding turn;
+		## inside the first update it already describes the new turn.
 		after : Store(st, h), List(Write(st)) -> Store(st, h)
 		after = |{ s }, writes| { s: s.after(writes) }
 

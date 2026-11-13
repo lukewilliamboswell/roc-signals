@@ -397,13 +397,18 @@ Core := [].{
 		initial : Store(st, h) -> Start(st)
 		initial = |s| { st: s.tables.fold(s.init, |st, t| (t.live)((t.clear)(st))), tables: s.tables }
 
-		## The same store after `writes`, applied as a decision's are
-		## (`store_writes`), for a pure `expect` on a transition. No turn
-		## ends here, so a table keeps its changes for the writes.
+		## Apply one pure turn, validating the same-cell rule before any write.
+		## Generated table modifiers begin recording once; the live root's
+		## end-of-turn fold rearms only the exact table cells these writes name.
+		## Unwritten tables retain their records. The metadata folds visit table
+		## descriptors, never their rows; a first modifier may reclaim the
+		## previous writing turn's recorded keys before applying its function.
 		after : Store(st, h), List(Write(st)) -> Store(st, h)
-		after = |s, writes| {
-			_ = writes_cells(writes, After)
-			{ init: writes.fold(s.init, |st, w| (w.apply)(st)), cells: s.cells, tables: s.tables }
+		after = |{ init, cells: handles, tables }, writes| {
+			wrote = writes_cells(writes, After)
+			written = tables.fold(0.U128, |bits, descriptor| bits.bitwise_or(cell_bit(descriptor.cell)))
+			next = writes.fold(init, |st, w| (w.apply)(st))
+			{ init: end_tables(next, { cells: tables, written }, wrote), cells: handles, tables }
 		}
 
 		## What `c` holds in the store's starting storage: with `after`, what
@@ -9644,6 +9649,112 @@ expect {
 	(untouched, _) = end_tables((edited, edited), tables, one_layer(6))
 	actual = { changes: (changed(first), changed(second), changed(untouched)), ready: (TableCore.is_ready(first), TableCore.is_ready(second), TableCore.is_ready(untouched)) }
 	actual == { changes: (1, 1, 1), ready: (False, True, False) }
+}
+
+## Each pure after is one turn: the decision can read the preceding inverse,
+## but its first modifier sees an empty new record. Two updates keep the first
+## earlier row, unrelated writes retain it, and the next writing turn replaces it.
+expect {
+	store = Core.store_of({}, { items: Core.table([{ key: 1.U64, row: 10.U64 }, { key: 2, row: 20 }]), note: Core.cell(0.U64) }.Core.Cells)
+	cells = store.cells()
+	first = store.after([cells.items.update(|table| table.put(1, 11))])
+	preceding = first.read(cells.items).inverse()?
+	second = first.after([
+		cells.items.update(
+			|table| {
+				seen = match table.inverse() {
+					Ok(undo) => undo.len()
+					Err(Rewritten) => 999
+				}
+				table.put(1, seen)
+			},
+		),
+		cells.items.update(|table| table.update(1, |row| row + 1).update(2, |row| row + 1)),
+	])
+	unrelated = second.after([cells.note.set(7)]).after([])
+	third = unrelated.after([cells.items.update(|table| table.update(2, |row| row + 1))])
+	{
+		preceding,
+		inside_first: second.read(cells.items).get(1)?,
+		second: second.read(cells.items).changes(),
+		unrelated: unrelated.read(cells.items).changes(),
+		third: third.read(cells.items).changes(),
+		ready: TableCore.is_ready(third.read(cells.items)),
+	} == {
+		preceding: [Put(1, 10)],
+		inside_first: 1,
+		second: Keyed(Dict.empty().insert(1, Was(11)).insert(2, Was(20))),
+		unrelated: Keyed(Dict.empty().insert(1, Was(11)).insert(2, Was(20))),
+		third: Keyed(Dict.empty().insert(2, Was(21))),
+		ready: True,
+	}
+}
+
+## A reset and its refinements are one pure turn. The rewrite remains whole
+## through the refinements; a later keyed writing turn starts its own record.
+expect {
+	description = { items: Core.table([{ key: 1.U64, row: 10.U64 }]), count: Core.cell(0.U64) }.Core.Cells.with_reset(|cells, reset| { cells, reset })
+	store = Core.store_of({}, description)
+	group = store.cells()
+	cells = group.cells
+	changed = store.after([cells.items.update(|table| table.put(1, 11)), cells.count.set(5)])
+	refined = changed.after([group.reset, cells.items.update(|table| table.update(1, |row| row + 2)), cells.items.update(|table| table.insert(2, 20)), cells.count.set(7)])
+	later = refined.after([cells.items.update(|table| table.put(1, 13))])
+	{
+		rows: refined.read(cells.items).to_list().sort_with(|a, b| if (a.key < b.key) Before else if (a.key > b.key) After else Same),
+		count: refined.read(cells.count),
+		refined: refined.read(cells.items).changes(),
+		later: later.read(cells.items).changes(),
+		ready: TableCore.is_ready(refined.read(cells.items)),
+	} == {
+		rows: [{ key: 1, row: 12 }, { key: 2, row: 20 }],
+		count: 7,
+		refined: Rewritten,
+		later: Keyed(Dict.empty().insert(1, Was(12))),
+		ready: True,
+	}
+}
+
+## A pure turn writing one table leaves another table's last writing record
+## intact. Boot initialization still clears both records without a write.
+expect {
+	store = Core.store_of({}, { left: Core.table([{ key: 1.U64, row: 10.U64 }]), right: Core.table([{ key: 1.U64, row: 20.U64 }]), note: Core.cell(0.U64) }.Core.Cells)
+	cells = store.cells()
+	both = store.after([cells.left.update(|table| table.put(1, 11)), cells.right.update(|table| table.put(1, 21))])
+	left = both.after([cells.left.update(|table| table.put(1, 12))])
+	initialized = left.with_initial(cells.note, 7)
+	{
+		left: left.read(cells.left).changes(),
+		right: left.read(cells.right).changes(),
+		left_ready: TableCore.is_ready(left.read(cells.left)),
+		right_ready: TableCore.is_ready(left.read(cells.right)),
+		initialized: (initialized.read(cells.left).changes(), initialized.read(cells.right).changes()),
+	} == {
+		left: Keyed(Dict.empty().insert(1, Was(11))),
+		right: Keyed(Dict.empty().insert(1, Was(20))),
+		left_ready: True,
+		right_ready: True,
+		initialized: (Keyed(Dict.empty()), Keyed(Dict.empty())),
+	}
+}
+
+## A chained pure snapshot cannot impersonate a mounted table whose next
+## record starts at the same count. Loading it remains a whole rewrite.
+expect {
+	store = Core.store_of({}, Core.table([{ key: 1.U64, row: 10.U64 }, { key: 2, row: 20 }]))
+	cell = store.cells()
+	snapshot = store.after([cell.update(|table| table.put(1, 11))]).after([cell.update(|table| table.put(2, 21))]).read(cell)
+	live = (cell.modify)(store.initial().st, |table| table.put(1, 111))
+	ended = store.tables.fold(live, |st, descriptor| (descriptor.finish)(st))
+	before = TableCore.mark((cell.get)(ended))
+	loaded = (cell.get)((cell.modify)(ended, |_| snapshot))
+	{
+		matching_start: TableCore.mark(snapshot).start == before.version,
+		disjoint: TableCore.mark(snapshot).id != before.id,
+		loaded: loaded.changes(),
+		row: loaded.get(1)?,
+		identity: TableCore.mark(loaded).id,
+	} == { matching_start: True, disjoint: True, loaded: Rewritten, row: 11, identity: before.id }
 }
 
 ## A row's `item` reads the whole item and listens to the row's layer, as a

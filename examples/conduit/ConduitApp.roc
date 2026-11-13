@@ -1145,3 +1145,21 @@ expect {
 
 ## A rejected sign-in records the answer and nothing else.
 expect ConduitApp.auth_answered(Pages.init(""), Pages.no_submit, Ok({ status: 422, headers: [], body: "{\"errors\":{\"body\":[\"bad\"]}}" })).len() == 1
+
+## A typed sign-in rejection changes only its own form: settings, editor,
+## profile and loads keep their state, and no session or navigation is posted.
+expect {
+	pages = Pages.init("")
+	after = AppStore.store.after(ConduitApp.auth_answered(pages, Pages.no_submit, Ok({ status: 422, headers: [], body: "{\"errors\":{\"body\":[\"bad\"]}}" })))
+	{
+		pages: after.read(AppStore.cells.pages),
+		session: after.read(AppStore.cells.session),
+		incoming: after.read(AppStore.cells.incoming),
+		navigation: after.read(AppStore.cells.nav).last(),
+	} == {
+		pages: { ..pages, auth: { ..pages.auth, result: AuthRejected(["body bad"]) } },
+		session: Session.Anonymous,
+		incoming: Session.Anonymous,
+		navigation: Unposted,
+	}
+}

@@ -75,9 +75,11 @@ expect {
 	{
 		drag: after.read(cells.drag),
 		lanes: Kanban.all_columns.map(|column| Kanban.lane(after.read(cells.cards).to_list(), column)),
+		written_cards: after.read(cells.cards).inverse()?.len(),
 	} == {
 		drag: Board.idle_drag,
 		lanes: [["Design login screen"], ["Draft onboarding copy", "Ship search filters"], ["Audit billing events"], ["Rotate API keys"]],
+		written_cards: 3,
 	}
 }
 
@@ -137,4 +139,19 @@ expect {
 		\\now first: Ok({ column: Backlog, flags: 0, place: 0 })
 		\\written: 2 cards
 	actual == expected
+}
+
+## A move inside a column writes two keyed cards, a move past its top
+## writes none, and a later turn records only its own cards after an earlier move.
+expect {
+	cards = AppStore.cells.cards
+	up = AppStore.store.after(Board.moved_within(cards, { title: "Design login screen", toward: Upward }))
+	top = AppStore.store.after(Board.moved_within(cards, { title: "Draft onboarding copy", toward: Upward }))
+	across = AppStore.store.after(Board.moved_across(cards, { title: "Draft onboarding copy", toward: Rightward }))
+	within = across.after(Board.moved_within(cards, { title: "Ship search filters", toward: Downward }))
+	{
+		up: up.read(cards).inverse()?.len(),
+		top: top.read(cards).inverse()?.len(),
+		chained: within.read(cards).inverse()?.len(),
+	} == { up: 2, top: 0, chained: 2 }
 }

@@ -130,3 +130,14 @@ expect {
 	moved = typed.after(AppStore.moved({ loc: first, session: Session.Anonymous }, second))
 	moved.read(AppStore.cells.article.cells.form) == CommentForm.init.typed("x") and moved.read(AppStore.cells.article.cells.story).slug() == "b"
 }
+
+## Leaving a page kind starts every page's state again, including drafts,
+## submissions and loads outside the article page's own cells.
+expect {
+	login = Route.to_url(Route.login_location)
+	pages = Pages.init(login)
+	dirty = { ..pages, auth: { ..pages.auth, username: "kim" }, settings: { ..pages.settings, bio: "draft bio" }, editor: { ..pages.editor, title: "draft article" }, prof: { ..pages.prof, refetch: 3 }, loads: { ..pages.loads, feed: { key: "old feed", value: Loading } } }
+	typed = AppStore.store.after([AppStore.cells.loc.set(login), AppStore.cells.pages.set(dirty)])
+	home = typed.after(AppStore.moved({ loc: login, session: Session.Anonymous }, AppStore.home_url))
+	home.read(AppStore.cells.pages) == Pages.init(AppStore.home_url)
+}
