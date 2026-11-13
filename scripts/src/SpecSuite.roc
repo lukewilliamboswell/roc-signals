@@ -176,7 +176,7 @@ SpecSuite := [].{
 			Path.create_all!(Path.utf8("${o.build_dir}/wasm/${name}"))?
 			$jobs = $jobs.append(SpecSuite.build_job(o, opt, "${dir}/main.roc", "wasm32", SpecSuite.wasm_of(o, name)))
 		}
-		results = Proc.parallel!($jobs, Proc.cpus!())?
+		results = Proc.parallel!($jobs, Proc.compiler_jobs!()?)?
 		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| code != 0)
 		match failed.first() {
 			Ok((job, code)) => Err(BuildFailed("${Proc.show(job)} exited with ${code.to_str()}"))

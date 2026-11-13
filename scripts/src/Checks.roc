@@ -35,7 +35,7 @@ Checks := [].{
 	app_expects! : SpecSuite.Options => Try(List(Str), _)
 	app_expects! = |o| {
 		dirs = SpecSuite.app_dirs!()?
-		results = Proc.parallel!(dirs.map(|dir| { program: o.compiler, args: ["test", "${dir}/main.roc"], cwd: o.root }), Proc.cpus!())?
+		results = Proc.parallel!(dirs.map(|dir| { program: o.compiler, args: ["test", "${dir}/main.roc"], cwd: o.root }), Proc.compiler_jobs!()?)?
 		negatives = Checks.key_type_errors!(o)?
 		Ok(List.map2(dirs, results, |dir, r| if (r.code == 0) [] else ["roc test ${dir}/main.roc failed: ${r.output.trim()}"]).join().concat(negatives))
 	}

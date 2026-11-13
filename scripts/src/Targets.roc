@@ -57,7 +57,7 @@ Targets := [].{
 			SpecSuite.fresh_dir!("${o.build_dir}/fuzz/${t.name}")?
 			$jobs = $jobs.append({ program: o.compiler, args: ["build", "--fuzz", "--opt=speed", t.main, "--output=${Targets.exe_of(o, t)}"], cwd: o.root })
 		}
-		results = Proc.parallel!($jobs, Proc.cpus!())?
+		results = Proc.parallel!($jobs, Proc.compiler_jobs!()?)?
 		match List.map2(fuzzes, results, |t, r| (t, r.code)).keep_if(|(_, c)| c != 0).first() {
 			Ok((t, c)) => Err(BuildFailed("fuzz ${t.name}: build exited with ${c.to_str()}"))
 			Err(_) => Ok({})
@@ -109,6 +109,7 @@ Targets := [].{
 	runtime_unit! : SpecSuite.Options => Try(List(Str), _)
 	runtime_unit! = |o| {
 		var $failures = []
+		Proc.run!({ program: o.tooling, args: ["scripts/test_parallel.roc"], cwd: o.root })?
 		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs"] {
 			code = Proc.status!({ program: o.node, args: ["tests/runtime/${script}"], cwd: o.root })?
 			if code != 0 {

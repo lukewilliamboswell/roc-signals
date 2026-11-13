@@ -236,7 +236,7 @@ cross_links! = |o| {
 		Path.create_all!(Path.utf8(dir))?
 		$jobs = $jobs.append(SpecSuite.build_job(o, "dev", "tests/apps/tasks/main.roc", host.target, "${dir}/runner"))
 	}
-	results = Proc.parallel!($jobs, Proc.cpus!())?
+	results = Proc.parallel!($jobs, Proc.compiler_jobs!()?)?
 	Ok(List.map2(PlatformTest.spec_hosts, results, |host, r| (host.target, r)).keep_if(|(_, r)| r.code != 0).map(|(target, r)| "spec runner for ${target} does not link: ${r.output.trim()}"))
 }
 

@@ -106,7 +106,7 @@ Slow := [].{
 			Path.create_all!(Path.utf8("${o.build_dir}/walk/${name}"))?
 			$builds = $builds.append(SpecSuite.build_job(o, "speed", "${SpecSuite.dir_of(name)}/main.roc", SpecSuite.native_target, Slow.walker_of(o, name)))
 		}
-		built = Proc.parallel!($builds, Proc.cpus!())?
+		built = Proc.parallel!($builds, Proc.compiler_jobs!()?)?
 		match List.map2(Slow.walk_apps, built, |name, r| (name, r.code)).keep_if(|(_, c)| c != 0).first() {
 			Ok((name, c)) => return Err(BuildFailed("walk runner ${name}: build exited with ${c.to_str()}"))
 			Err(_) => {}
