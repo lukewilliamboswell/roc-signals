@@ -629,7 +629,7 @@ const navigationTarget = (page, input) => page.evaluate(input => {
   const target = new URL(input, location.href);
   return {
     href: target.pathname + target.search + target.hash,
-    sameDocument: target.href.includes("#") && target.pathname + target.search === location.pathname + location.search,
+    sameDocument: target.href.includes("#") && target.href.split("#")[0] === location.href.split("#")[0],
   };
 }, input);
 
@@ -1449,7 +1449,7 @@ function install(attrOfSource) {
       return;
     }
     // href retains an explicit empty fragment that hash reports as empty.
-    const same = to.href.includes("#") && to.pathname === here.pathname && to.search === here.search;
+    const same = to.href.includes("#") && to.href.split("#")[0] === here.href.split("#")[0];
     window.__nav = same ? null : { cross: true, href: to.pathname + to.search + to.hash };
     if (!same && (window.__reportsHeld || window.__pointersActive)) e.preventDefault();
   });

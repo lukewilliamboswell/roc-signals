@@ -42,6 +42,7 @@ LocationApp := [].{
 				Html.button("Push empty fragment", [], st.update(|s| { ..s, empty_fragments: s.empty_fragments + 1 })),
 				Engine.watch_changes(st.signal().map(|s| s.empty_fragments), |_| [Push("#")], Engine.ignore({})),
 				Html.link("Follow empty fragment", "#", [Engine.attr("style", "display:block")]),
+				Html.link("Drop empty query", "/url-probe/query#link", [Engine.attr("style", "display:block")]),
 				Html.link("Follow raw fragment", "#l=café au lait\"<>`{}'?#", [Engine.attr("style", "display:block")]),
 				Html.link("Follow raw relative path", "next café?word=ça va'\"#tag=é \"`", [Engine.attr("style", "display:block")]),
 			],

@@ -155,6 +155,8 @@ SpecRunner := [].{
 	## a cross-document navigation mounts the app afresh in the next one. `env`
 	## starts as the parser's resolved facts and holds their current values.
 	Browser : {
+		# URL references retain empty delimiters here and in history. Boot,
+		# popstate and assertions report them through serialize_location.
 		env : Scm.Environment,
 		doc : U64,
 		back : List(Entry),
@@ -997,7 +999,7 @@ SpecRunner := [].{
 	## Install fixture service behavior before mount emits any storage command.
 	mount_config : Program(state), Scm.Environment, { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64 } -> S(state)
 	mount_config = |program, initial_env, settings| {
-		env = { ..initial_env, url: SpecRunner.serialize_location(initial_env.url) }
+		env = { ..initial_env, url: SpecRunner.serialize_reference(initial_env.url) }
 		declared = SpecRunner.decode_declarations((program.keys)())
 		boot_kvs = declared.keys.keep_oks(|key| env.storage.find_first(|(name, _)| name == key))
 		boot_session = declared.session_keys.keep_oks(|key| env.session.find_first(|(name, _)| name == key))
@@ -1007,7 +1009,7 @@ SpecRunner := [].{
 			}
 		}
 		media = declared.media.map(|query| (query, env.media.find_first(|(name, _)| name == query).map_ok(|(_, matches)| matches) ?? False))
-		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot({ ..env, media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }))
+		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot({ ..env, url: SpecRunner.serialize_location(env.url), media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }))
 		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declared.latest_ports, settings }
 		s0 = SpecRunner.fresh(inst, browser)
 		{ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s0, draining: Bool.True }, inst, cmds, wbuf))), draining: Bool.False }
@@ -1291,7 +1293,7 @@ SpecRunner := [].{
 	## The browser moved to `browser.env.url` on its own: every popstate
 	## subscription hears it.
 	popstate : Program(state), S(state) -> S(state)
-	popstate = |program, s| SpecRunner.broadcast(program, s, |x| x.sub == Pop, SpecRunner.encode_location(s.browser.env.url))
+	popstate = |program, s| SpecRunner.broadcast(program, s, |x| x.sub == Pop, SpecRunner.encode_location(SpecRunner.serialize_location(s.browser.env.url)))
 
 	## The bytes of a handle's range, from the setup file it was given under.
 	file_bytes : Browser, { token : U64, start : U64, len : U64 } -> List(U8)
@@ -2289,7 +2291,10 @@ SpecRunner := [].{
 				got = 1 + (s.writes.get(i) ?? 0)
 				check(got == n, "${Scm.show_loc(loc)} was written ${got.to_str()} times (its creation and every later update), expected ${n.to_str()}")
 			}
-			ExpectLocation(want) => check(b.env.url == want, "location ${JsonOut.quote(b.env.url)}, expected ${JsonOut.quote(want)}")
+			ExpectLocation(want) => {
+				got = SpecRunner.serialize_location(b.env.url)
+				check(got == want, "location ${JsonOut.quote(got)}, expected ${JsonOut.quote(want)}")
+			}
 			ExpectTitle(want) => check(b.title == want, "title ${JsonOut.quote(b.title)}, expected ${JsonOut.quote(want)}")
 			ExpectLocalStorage({ key, value }) => {
 				got = b.env.storage.find_first(|(name, _)| name == key).map_ok(|(_, stored)| JsonOut.quote(stored)) ?? "<missing>"
@@ -2389,7 +2394,7 @@ SpecRunner := [].{
 			StorageElsewhereRemoved(key) => SpecRunner.storage_elsewhere(program, s, { key: Present(key), value: Absent })
 			StorageElsewhereCleared => SpecRunner.storage_elsewhere(program, s, { key: Absent, value: Absent })
 			LeavePage({ url: raw_url, outcome }) => {
-				url = SpecRunner.serialize_location(raw_url)
+				url = SpecRunner.serialize_reference(raw_url)
 				if SpecRunner.same_document(s.browser.env.url, raw_url) {
 					return Err("leave-page requires a different document")
 				}
@@ -3289,23 +3294,31 @@ SpecRunner := [].{
 	## query/fragment delimiters are omitted, as location.search/hash report.
 	serialize_location : Str -> Str
 	serialize_location = |url| {
+		reference = SpecRunner.serialize_reference(url)
+		fragment_parts = reference.split_on("#")
+		query_parts = (fragment_parts.first() ?? "").split_on("?")
+		path = query_parts.first() ?? ""
+		query = Str.join_with(query_parts.drop_first(1), "?")
+		fragment = Str.join_with(fragment_parts.drop_first(1), "#")
+		"${path}${if (query.is_empty()) "" else "?${query}"}${if (fragment.is_empty()) "" else "#${fragment}"}"
+	}
+
+	## Retain empty component delimiters in the browser's stored reference.
+	## In particular an empty query differs from no query for document identity,
+	## though location.search reports both as empty. Only reporting drops them.
+	serialize_reference : Str -> Str
+	serialize_reference = |url| {
 		hex = "0123456789ABCDEF".to_utf8()
 		var $part = Path
-		var $started = True
 		var $bytes = []
 		for byte in SpecRunner.location_input(url).to_utf8() {
 			if byte == '#' and $part != Fragment {
 				$part = Fragment
-				$started = False
+				$bytes = $bytes.append(byte)
 			} else if byte == '?' and $part == Path {
 				$part = Query
-				$started = False
+				$bytes = $bytes.append(byte)
 			} else {
-				# Location.search/hash omit an empty component's delimiter.
-				if !$started {
-					$bytes = $bytes.append(if ($part == Query) '?' else '#')
-					$started = True
-				}
 				encoded = byte <= ' ' or byte > '~' or match $part {
 					Path => ['"', '<', '>', '`', '{', '}'].contains(byte)
 					Query => ['"', '<', '>', '\''].contains(byte)
@@ -3360,7 +3373,7 @@ SpecRunner := [].{
 	## The History API keeps the current URL for an exactly empty argument;
 	## a nonempty argument that preprocesses to empty is instead resolved.
 	resolve_in_document : Str, Str -> Str
-	resolve_in_document = |base, url| if (url.is_empty()) base else SpecRunner.resolve(base, url) ?? crash "contract: the app pushed ${url}, which leaves the app"
+	resolve_in_document = |base, url| if (url.is_empty()) base else SpecRunner.serialize_reference(SpecRunner.resolve_target(base, url) ?? crash "contract: the app pushed ${url}, which leaves the app")
 
 	## The part of `s` before the first `sep`.
 	before : Str, Str -> Str
@@ -3369,14 +3382,14 @@ SpecRunner := [].{
 	## The HTML same-document rule: `to` has a fragment and differs from
 	## `from` only in it.
 	same_document : Str, Str -> Bool
-	same_document = |from, to| SpecRunner.location_input(to).contains("#") and SpecRunner.before(SpecRunner.serialize_location(from), "#") == SpecRunner.before(SpecRunner.serialize_location(to), "#")
+	same_document = |from, to| SpecRunner.location_input(to).contains("#") and SpecRunner.before(SpecRunner.serialize_reference(from), "#") == SpecRunner.before(SpecRunner.serialize_reference(to), "#")
 
 	## Navigate to `url` as a user would: within the document, a new history
 	## entry and a popstate; otherwise the app mounts afresh at `url` in a new
 	## document, with the same local storage, connectivity and visibility.
 	navigate : Program(state), S(state), Str -> Try(S(state), Str)
 	navigate = |program, s, raw_url| {
-		url = SpecRunner.serialize_location(raw_url)
+		url = SpecRunner.serialize_reference(raw_url)
 		b = s.browser
 		entry = { url: b.env.url, doc: b.doc }
 		if SpecRunner.same_document(b.env.url, raw_url) {
@@ -5865,4 +5878,18 @@ expect {
 		empty_fragment: True,
 		retained_delimiter: Ok("/dir/leaf?old#"),
 	}
+}
+
+## The browser stores empty-query presence through history even though boot,
+## popstate and location assertions report no question mark for that query.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, { url: "/x?" })
+	{
+		stored: initial.browser.env.url,
+		reported: SpecRunner.one(program, initial, ExpectLocation("/x")).is_ok(),
+		query_removed: SpecRunner.same_document("/x?", "/x#next"),
+		query_kept: SpecRunner.same_document("/x?", "/x?#next"),
+		query_added: SpecRunner.same_document("/x", "/x?#next"),
+	} == { stored: "/x?", reported: True, query_removed: False, query_kept: True, query_added: False }
 }
