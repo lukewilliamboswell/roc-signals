@@ -4,14 +4,14 @@
 // output must match the case recorded in `spec.json` exactly.
 //
 // It mounts the app the way platform/runtime.mjs does, without a DOM: it
-// checks the protocol version, mounts with empty boot bytes (no storage,
-// online, visible), and prints the fault state and the mount's commands by
+// checks the protocol version, mounts with empty boot bytes (URL "/", no storage,
+// online, visible, storage available), and prints the fault state and the mount's commands by
 // kind from the engine's work record (design.md, Appendix B). Those counts
 // are decided by the engine and the app, not by the compiler, so a nightly
 // that changes them has changed behaviour.
 import { readFile } from "node:fs/promises";
 
-const PROTOCOL_VERSION = 4;
+const PROTOCOL_VERSION = 8;
 const WORK_METRIC_BASE = 16;
 const OPCODES = ["", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "FOCUS"];
 const FAULTS = ["none", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed"];
@@ -58,3 +58,24 @@ for (let op = 1; op < OPCODES.length; op += 1) {
   const n = x.metric(WORK_METRIC_BASE + op);
   if (n > 0n) console.log(`${OPCODES[op]} ${n}`);
 }
+
+// Check the empty-byte shorthand against every explicit default section.
+// This stays silent on success because spec.json records this helper's output.
+const defaults = new Uint8Array([
+  1, 5, 0, 0, 0, 1, 0, 0, 0, 47,
+  2, 5, 0, 0, 0, 1, 0, 0, 0, 0,
+  3, 1, 0, 0, 0, 1,
+  4, 1, 0, 0, 0, 1,
+]);
+const other = (await WebAssembly.instantiate(module, { env })).exports;
+other.boot_keys();
+const p = other.payload_reserve(defaults.length);
+new Uint8Array(other.memory.buffer, p, defaults.length).set(defaults);
+other.init();
+const commands = (e) => Buffer.from(new Uint8Array(e.memory.buffer, e.cmd_ptr(), e.cmd_len()));
+const work = (e) => Buffer.from(new Uint8Array(e.memory.buffer, e.work_ptr(), e.work_len()));
+if (!commands(x).equals(commands(other)) || !work(x).equals(work(other))) {
+  console.error('empty boot bytes differ from the default sections (URL "/")');
+  process.exit(1);
+}
+other.drop();

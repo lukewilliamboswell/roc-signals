@@ -243,7 +243,10 @@ function runJob(x, m) {
   return { output, objects: out, call, ret, prepareMs };
 }
 
+const PROTOCOL_VERSION = 8;
+
 async function start(module, version) {
+  if (version !== PROTOCOL_VERSION) throw new Error(`page runtime protocol ${version} is not the protocol ${PROTOCOL_VERSION} this worker implements`);
   const instStart = performance.now();
   const instance = await WebAssembly.instantiate(module, { env: taskImportsFor(module) });
   const instEnd = performance.now();
