@@ -5,6 +5,9 @@ app [target] {
 
 import fz.Fuzz
 import pf.PictureCapture
+import pf.PictureBoot
+import pf.PictureHash
+import pf.PictureVerdict
 import pf.PictureCodec
 import pf.PicturePlan
 
@@ -91,8 +94,25 @@ test = |input| {
 		$ordinal = $ordinal + 1
 	}
 	envelope = PictureCodec.make({ root_name: { namespace: "http://www.w3.org/1999/xhtml", prefix: "", local: "main" }, batch_bytes: $batch.len().to_u32_wrap(), fingerprint: List.repeat(0, 32), expected: List.repeat(0, 32), physical_count: if ($order.is_empty()) 0 else 1, containers: [{ owner: Mount, role: Children, children: if ($order.is_empty()) [] else [0] }], logical: $logical, runs: if ($order.is_empty()) [] else [{ container: 0, child_index: 0, physical: Physical(0), parts: $parts }], bindings: $bindings, scaffolds: [] }, {}) ?? crash "valid model picture framing"
+	plain_parts = PictureCodec.parts(envelope)
+	fingerprint = PictureHash.digest(word("roc-signals/mount/19/1".to_utf8().append(0), $batch.len().to_u32_wrap()).concat($batch))
+	checked_envelope = PictureCodec.make({ ..plain_parts, fingerprint }, {}) ?? crash "matching fingerprint retains checked topology"
+	picture = PictureBoot.present({ measured: plain_parts.expected, envelope: PictureCodec.encode(checked_envelope) }) ?? crash "bounded picture transport"
 	frames = $events.map(|event| event.frame)
 	plan = PicturePlan.build({ batch: $batch, frames, next: 9, free: $free, envelope }) ?? crash "plan refused valid generated program"
+	verdict = PictureVerdict.decide({ picture, root_name: plain_parts.root_name, batch: $batch, capture: Ok(frames), next: 9, free: $free }, {}) ?? crash "valid verdict limits"
+	match PictureVerdict.parts(verdict) {
+		Adopt(accepted) => if PicturePlan.operations(accepted) != PicturePlan.operations(plan) {
+			crash "Roc verdict changed the accepted operation plan"
+		}
+		Replace(_) => crash "Roc replaced matching measured and fresh mount facts"
+	}
+	changed = PictureBoot.present({ measured: List.repeat(1, 32), envelope: PictureCodec.encode(checked_envelope) }) ?? crash "bounded disturbed measurement"
+	refused = PictureVerdict.decide({ picture: changed, root_name: plain_parts.root_name, batch: $batch, capture: Ok(frames), next: 9, free: $free }, {}) ?? crash "valid disturbed verdict limits"
+	match PictureVerdict.parts(refused) {
+		Replace(DifferentMeasurement) => {}
+		_ => crash "Roc did not replace a changed measured digest"
+	}
 	actual = PicturePlan.operations(plan)
 	if actual.len() != $events.len() {
 		crash "plan omitted a command boundary"
