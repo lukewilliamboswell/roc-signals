@@ -7,7 +7,7 @@ import PrerenderApp
 main : Engine.Program
 main = PrerenderApp.program
 
-## No store or externally supplied boot value determines this first frame.
+## The store is empty; an explicit Boot URL selects the root fixture.
 Store : {}
 
 ## Its default first page is checked during compilation like every test app.

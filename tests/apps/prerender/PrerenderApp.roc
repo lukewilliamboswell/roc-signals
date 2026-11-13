@@ -31,9 +31,13 @@ PrerenderApp := [].{
 	## A real SVG-root view uses the same counter and event path. The host's
 	## explicit inert parent changes neither this namespace nor the app's root.
 	foreign_view : Engine.State(Ctx, I64) -> Engine.Elem(Ctx)
-	foreign_view = |count| Engine.element("g", [Engine.test_id("foreign-frame")], [
-		Engine.element("g", [Engine.test_id("foreign-increment"), Engine.attr("role", "button"), Engine.attr("aria-label", "Foreign increment"), Engine.attr("tabindex", "0"), Engine.on_click(count.update(|value| value + 1))], [Engine.element("text", [Engine.attr("x", "0"), Engine.attr("y", "20")], [Engine.text("+")])]),
-		Engine.element("g", [Engine.test_id("foreign-decrement"), Engine.attr("role", "button"), Engine.attr("aria-label", "Foreign decrement"), Engine.attr("tabindex", "0"), Engine.on_click(count.update(|value| value - 1))], [Engine.element("text", [Engine.attr("x", "30"), Engine.attr("y", "20")], [Engine.text("-")])]),
-		Engine.element("text", [Engine.test_id("foreign-count"), Engine.attr("x", "60"), Engine.attr("y", "20")], [Engine.text_s(count.signal().map(|value| value.to_str()))]),
-	])
+	foreign_view = |count| Engine.element(
+		"g",
+		[Engine.test_id("foreign-frame")],
+		[
+			Engine.element("g", [Engine.test_id("foreign-increment"), Engine.attr("role", "button"), Engine.attr("aria-label", "Foreign increment"), Engine.attr("tabindex", "0"), Engine.on_click(count.update(|value| value + 1))], [Engine.element("text", [Engine.attr("x", "0"), Engine.attr("y", "20")], [Engine.text("+")])]),
+			Engine.element("g", [Engine.test_id("foreign-decrement"), Engine.attr("role", "button"), Engine.attr("aria-label", "Foreign decrement"), Engine.attr("tabindex", "0"), Engine.on_click(count.update(|value| value - 1))], [Engine.element("text", [Engine.attr("x", "30"), Engine.attr("y", "20")], [Engine.text("-")])]),
+			Engine.element("text", [Engine.test_id("foreign-count"), Engine.attr("x", "60"), Engine.attr("y", "20")], [Engine.text_s(count.signal().map(|value| value.to_str()))]),
+		],
+	)
 }

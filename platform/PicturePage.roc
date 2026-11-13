@@ -219,13 +219,15 @@ authored_span = |node, label| match node.origin {
 }
 
 opening_token : Markup.Source, Markup.Span -> Try(Markup.Span, [InvalidTemplate(Str)])
-opening_token = |source, span| source.tokens.find_first(|token| token.kind == Tag and token.span.start == span.start).map_ok(|token| token.span) ? |_| InvalidTemplate("the selected element has no authored opening-tag token")
+opening_token = |source, span| source.tokens.find_first(|token| token.kind == Tag and token.span.start == span.start).map_ok(|token| token.span).map_err(|_| InvalidTemplate("the selected element has no authored opening-tag token"))
 
 parent_of : Markup.Tree, U64 -> [Document, Parent(U64)]
 parent_of = |tree, child| {
 	var $at = 0.U64
 	for node in tree.nodes {
-		if node.children.contains(child) { return Parent($at) }
+		if node.children.contains(child) {
+			return Parent($at)
+		}
 		$at = $at + 1
 	}
 	Document
@@ -248,8 +250,10 @@ json_descriptor = |node| match node.kind {
 inert_owner : Markup.Parsed, { root : U64, parent : [Document, Parent(U64)], root_span : Markup.Span } -> Try([RootOwner, ParentOwner([AuthoredInert, AddInert(U64)])], [InvalidTemplate(Str)])
 inert_owner = |parsed, { root, parent, root_span }| {
 	root_node = parsed.tree.nodes.get(root) ?? crash "PicturePage: root index"
-	root_name = match root_node.kind { Element(name) => name
-		_ => crash "PicturePage: selected root kind" }
+	root_name = match root_node.kind {
+		Element(name) => name
+		_ => crash "PicturePage: selected root kind"
+	}
 	if root_name.namespace == Uri(Markup.html_namespace) {
 		if plain_attribute(root_node, "data-roc-picture-inert").is_ok() {
 			return Err(InvalidTemplate("data-roc-picture-inert is reserved on the inert owner for the builder's restoration fact"))
@@ -257,7 +261,7 @@ inert_owner = |parsed, { root, parent, root_span }| {
 		return Ok(RootOwner)
 	}
 	index = match parent {
-		Parent(index) => index
+		Parent(parent_index) => parent_index
 		Document => return Err(InvalidTemplate("a non-HTML picture root requires its explicitly marked immediate HTML parent"))
 	}
 	owner = parsed.tree.nodes.get(index) ?? crash "PicturePage: owner index"
@@ -268,8 +272,12 @@ inert_owner = |parsed, { root, parent, root_span }| {
 	if !valid_parent or plain_attribute(owner, "data-roc-picture-inert-parent") != Ok("") {
 		return Err(InvalidTemplate("a non-HTML picture root requires its explicitly marked immediate ordinary HTML parent"))
 	}
-	children = owner.children.keep_if(|child| match (parsed.tree.nodes.get(child) ?? crash "PicturePage: sibling index").kind { Element(_) => True
-		_ => False })
+	children = owner.children.keep_if(
+		|child| match (parsed.tree.nodes.get(child) ?? crash "PicturePage: sibling index").kind {
+			Element(_) => True
+			_ => False
+		},
+	)
 	valid_children = match children {
 		[one] => one == root
 		[one, descriptor] => one == root and json_descriptor(parsed.tree.nodes.get(descriptor) ?? crash "PicturePage: descriptor index")
@@ -286,7 +294,11 @@ inert_owner = |parsed, { root, parent, root_span }| {
 	if opening.end <= opening.start or opening.end > root_span.start or parsed.source.bytes.get(opening.end - 1) != Ok('>') {
 		return Err(InvalidTemplate("the explicit inert parent requires an ordinary authored opening-tag boundary before its root"))
 	}
-	if plain_attribute(owner, "inert").is_ok() { Ok(ParentOwner(AuthoredInert)) } else { Ok(ParentOwner(AddInert(opening.end - 1))) }
+	if plain_attribute(owner, "inert").is_ok() {
+		Ok(ParentOwner(AuthoredInert))
+	} else {
+		Ok(ParentOwner(AddInert(opening.end - 1)))
+	}
 }
 
 ## An authored owner's inert value remains exact. Foreign-root attributes are
