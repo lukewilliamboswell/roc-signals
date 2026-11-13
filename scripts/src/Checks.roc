@@ -66,6 +66,8 @@ Checks := [].{
 			{ name: "layout-size-text", expectation: Rejected(["width: U32"]) },
 			{ name: "layout-seen-text", expectation: Rejected(["ratio_permille: U16"]) },
 			{ name: "timeout-zero", expectation: Rejected(["a timeout of Ms(0)"]) },
+			{ name: "checkbox-text-payload", expectation: Rejected(["This string literal is being used where a non-string type is needed", "Bool"]) },
+			{ name: "select-text-payload", expectation: Rejected(["The sixth argument", "[Chose(Str), NotOffered]"]) },
 			{ name: "worker-module-duplicate", expectation: ConstantCrash({ at: "main = Engine.program(|| Engine.text(\"\")).with_workers([job.registration()]).with_workers([job.registration()])", rules: ["worker task \"test/duplicate-worker\" is registered twice"] }) },
 			{ name: "port-record-duplicate", expectation: ConstantCrash({ at: "registrations = Port.registrations(ports)", rules: ["port \"test/duplicate\" is declared twice"] }) },
 			{ name: "port-module-duplicate", expectation: ConstantCrash({ at: "main = program", rules: ["port \"test/across-modules\" is declared twice"] }) },

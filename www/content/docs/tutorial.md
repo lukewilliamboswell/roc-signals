@@ -191,7 +191,7 @@ handed the row's key and a `State` of the row:
 
 {{ sample(file="todos/Todos.roc", region="row") }}
 
-The checkbox reads and writes its own row through `todo`: it cannot touch
+The checkbox delivers a Boolean checked state and reads and writes its own row through `todo`: it cannot touch
 another row. Removing a row changes the table itself, so the button's
 handler is a decision over the table's cell, given the row's key when it is
 pressed. Each control's accessible name includes the title, which is how

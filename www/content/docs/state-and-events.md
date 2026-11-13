@@ -48,12 +48,13 @@ a `State` and attached to an element:
 | `st.set_value(f)` | the state and the event's payload |
 | `st.set_value_by(v, f)` | the state, `v`'s value and the payload |
 
-The handler's declaration chooses its payload kind. For text events, an `input` carries the control's new text, a
-`change` on a checkbox or radio carries `"true"` or `"false"`, a `change` on a
-select carries the chosen option's value, and a
-click or submit carries nothing. `Html` attaches the usual ones for you:
-`text_input` and `textarea` listen to `input`, `checkbox` and `select` to
-`change`.
+The handler's declaration chooses its payload kind. `Html.text_input` and
+`textarea` deliver the control's text on `input`. `Html.checkbox` delivers
+its Boolean checked state on `change`. `Html.select` delivers `Chose(value)`
+from its current offered choices, or `NotOffered` when a removed or foreign
+key arrives. A click or submit handler receives empty text. Raw text-kind
+`Engine.on("change", handler)` retains its string payload; use `on_checked`
+when attaching a Boolean handler to a checkbox or radio yourself.
 
 `HandlerOf(ctx, p)` is the generic family: `Handler(ctx)` is its text
 alias, and `FilesHandler(ctx)` takes the `Received` of a file event. The
@@ -262,8 +263,21 @@ stale. During composition the command waits for `compositionend`, so it
 does not cut an IME composition. Use it only when replacing the user's draft
 is the intended action; ordinary updates keep the guard.
 
-An empty option value remains empty, so `Html.option` can offer an empty
-choice such as "All works" without a sentinel value.
+A select's choices are application values. Supply a selected-value signal,
+an offered-list signal and `Html.Choices(a)` with stable `key` and `label`
+functions. The helper owns ordinary keyed option rows; duplicate keys are
+contract errors. An empty key is a real empty option value, not a sentinel.
+On change it finds the key in the current offered list, in O(choices), and
+returns that current value. Reusing a key with refreshed data delivers the
+refreshed value. A missing key returns `NotOffered` without the raw text;
+the decision explicitly chooses whether to write anything. A no-write arm
+can leave the browser showing no choice until a later state write.
+
+`handler.from_payload_by(reading, convert)` maps an arriving payload using
+a signal read before that handler writes. In `also`, the second handler
+reads after the first handler's writes, as with `handle_by`. To share a
+handler between controls with different payload types, bind a function that
+returns it: one Roc value has one payload type.
 
 `Html` controls set these properties for you. On a raw element use
 `Engine.prop` or `prop_s` with `Engine.Prop.value` (text) or

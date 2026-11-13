@@ -4297,6 +4297,12 @@ fields. A payload kind and its decoder are Core-only: an app chooses one
 through an attach function rather than supplying an unchecked codec.
 
 ```roc
+HandlerOf.from_payload_by : HandlerOf(ctx, q), Signal(ctx, b), (b, p -> q) -> HandlerOf(ctx, p)
+on_checked : HandlerOf(ctx, Bool) -> Attr(ctx)
+Html.Choices(a) := { key : a -> Str, label : a -> Str }
+Html.checkbox : Signal(ctx, Str), Signal(ctx, Bool), List(Attr(ctx)), HandlerOf(ctx, Bool) -> Elem(ctx)
+Html.select : Signal(ctx, Str), Signal(ctx, a), Signal(ctx, List(a)), Html.Choices(a), List(Attr(ctx)), HandlerOf(ctx, [Chose(a), NotOffered]) -> Elem(ctx) where [a.is_eq : a, a -> Bool]
+
 # Program entry
 program : (() -> Elem(Root)) -> Program({})
 ProgramProps := { storage_keys : List(Str) ?? [], session_keys : List(Str) ?? [], max_inflight : U64 ?? 32,
@@ -5167,7 +5173,7 @@ site; an unknown kind number in commands is an `executor` fault.
 | 2 Files | `minted:u32 refused:u32 (size:u64 name:str type:str)*minted`, with staged handles in order | `event_files` | `change`, `drop`, `paste`; no files means no dispatch. `drop` prevents both its default and `dragover`'s default |
 | 3 Pointer | `id:u32 kind:u8 button:u8 buttons:u16 mods:u8 primary:u8 at:u8 [x:u16 y:u16 zone:str]` | `event` | `pointerdown`, `pointermove`, `pointerup`, `pointercancel` |
 | 4 Key | `flags:u8 key:str code:str heard:u8 heard_key:str` | `event` | `keydown`, `keyup`; pass over a local handler whose keymap hears nothing |
-| 5 OpenState | One byte, strictly `0` or `1` | `event` | Helper-paired dialog `close` or popover `toggle` |
+| 5 OpenState | One byte, strictly `0` or `1` | `event` | Helper-paired dialog `close`, popover `toggle`, or HTML checkbox/radio `change` |
 | 6 Scroll | `top:u32 left:u32` | `event` | `scroll`, paced |
 | 7 Size | `width:u32 height:u32` | `event` | `size`, observation report |
 | 8 Seen | `intersecting:u8 ratio:u16` | `event` | `seen`, observation report |
@@ -5187,11 +5193,17 @@ invalid on these layout declarations.
 
 Kind **5 OpenState** is one byte, strictly `0` or `1`, delivered by
 `event`. Its private helper declaration pairs `close` with shown property 6
-and `toggle` with popover property 7. The runtime reads `dialog.open` or
+and `toggle` with popover property 7. The same Boolean layout also serves
+`change` on an HTML input whose ASCII-folded type is checkbox or radio, reading
+its checked property. On another element or namespace that change dispatch is
+suppressed. The native oracle records namespace at creation, including template
+insertion and foreignObject context; moving a node never reclassifies it.
+For the helper-paired shown events, the runtime reads `dialog.open` or
 `:popover-open` at dispatch. The engine records that value in the paired
 hole before the Boolean handler and settles it once as described above.
 `cancel` remains text-kind with an empty payload. Malformed Boolean bytes
-are a routed-site contract fault; authors cannot attach this codec alone.
+are a routed-site contract fault. A shown-state echo still comes only from
+its controlled helper.
 
 Key kind **4** is allowed only on `keydown` and `keyup`, delivered by
 `event`. Its payload is `flags:u8 key:str code:str heard:u8 heard_key:str`.

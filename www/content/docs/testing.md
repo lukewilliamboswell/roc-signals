@@ -233,6 +233,12 @@ number.
 | `(set-media "QUERY" BOOL)` | Report a declared media query's new match |
 | `(focus LOC)` / `(blur LOC)` | Move focus, delivering `blur` and `focus` to handlers that listen. Focusing an element that cannot take focus does nothing |
 
+For a typed `Html.select`, ordinary `select-option` chooses by the stable
+choice key and delivers its current application value. A scripted `change`
+with a foreign or removed key exercises `NotOffered`; the spec then checks
+the decision's explicit behavior. Checkbox helpers receive `Bool`, including
+when `check` or `uncheck` performs their native change sequence.
+
 Focus follows Chrome in both runners: a text control the user changed gets
 `change` when it loses focus, and a controlled input's rewritten value waits
 for blur while it has focus. The engine's `Focus`, `Blur` and `SelectText`

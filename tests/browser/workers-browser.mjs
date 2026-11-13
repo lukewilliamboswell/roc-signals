@@ -431,7 +431,7 @@ async function results(options) {
     const { RocEngineRuntime, PROTOCOL_VERSION } = await import("/runtime.mjs");
     let refused = "";
     try {
-      new RocEngineRuntime({ protocol_version: () => 3 }, document.createElement("div")).mount();
+      new RocEngineRuntime({ protocol_version: () => 16 }, document.createElement("div")).mount();
     } catch (e) {
       refused = String(e.message);
     }
@@ -439,15 +439,15 @@ async function results(options) {
     const answer = new Promise((res) => {
       w.onmessage = (e) => res(e.data);
     });
-    w.postMessage({ type: "init", module: window.__rt.module, version: 3 });
+    w.postMessage({ type: "init", module: window.__rt.module, version: 16 });
     const payload = new TextEncoder().encode("xxxx");
     w.postMessage({ type: "job", payload: payload.buffer }, [payload.buffer]);
     const m = await answer;
     w.terminate();
     return { refused, version: PROTOCOL_VERSION, worker: [m.type, m.code, m.message] };
   });
-  check("the runtime refuses a protocol 3 module", r.refused, `roc engine protocol 3 is not the protocol ${r.version} this runtime implements`);
-  check("the worker script refuses a page of another protocol", r.worker, ["fault", 0, `worker could not start: page runtime protocol 3 is not the protocol ${r.version} this worker implements`]);
+  check("the runtime refuses a protocol 16 module", r.refused, `roc engine protocol 16 is not the protocol ${r.version} this runtime implements`);
+  check("the worker script refuses a page of another protocol", r.worker, ["fault", 0, `worker could not start: page runtime protocol 16 is not the protocol ${r.version} this worker implements`]);
   await ctx.close();
 }
 

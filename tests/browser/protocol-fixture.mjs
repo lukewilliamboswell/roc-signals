@@ -10,7 +10,7 @@ const fields = [
   codes(["INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD"]),
   list([
     ["TEXT", []], ["FILES", ["change", "drop", "paste"]], ["POINTER", ["pointerdown", "pointermove", "pointerup", "pointercancel"]],
-    ["KEY", ["keydown", "keyup"]], ["OPEN_STATE", ["close", "toggle"]], ["SCROLL", ["scroll"]], ["SIZE", ["size"]], ["SEEN", ["seen"]], ["PASTE", ["paste"]],
+    ["KEY", ["keydown", "keyup"]], ["OPEN_STATE", ["close", "toggle", "change"]], ["SCROLL", ["scroll"]], ["SIZE", ["size"]], ["SEEN", ["seen"]], ["PASTE", ["paste"]],
   ].map(([name, events], i) => [i + 1, ...text(name), ...names(events)])),
   list(["PREVENT", "STOP", "CAPTURE", "PACED", "DOCUMENT", "AHEAD"].map((name, i) => [...word(1 << i), ...text(name)])),
   list([
