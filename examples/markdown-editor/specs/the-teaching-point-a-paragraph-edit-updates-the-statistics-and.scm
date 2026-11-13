@@ -24,9 +24,10 @@
     ; relabelled.
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
-    ; Exactly five patches: the textarea value, the word count, the character
-    ; count, the summary line, and the edited paragraph's text. The outline emits
-    ; nothing at all, and the reading estimate is still 1 min so it stays quiet.
+    ; Six patches: the textarea, word count, character count, summary, edited
+    ; paragraph and first unsaved-status change. The outline emits nothing,
+    ; and the reading estimate stays 1 min. Guard and draft commands are not DOM patches.
+    (expect-metric-delta patches_emitted 6)
     (expect-visible (test-id "toc:roc-signals-field-guide"))
     (expect-visible (test-id "toc:performance"))
     (expect-attr (test-id "toc:performance") data-level "2")
