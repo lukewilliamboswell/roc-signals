@@ -51,8 +51,9 @@ import pf.Worker
 ## fires; a worker job is answered by its task's stand-in (`triple`), or is lost
 ## (`WorkLost(AppCrash)`) or times out. Oracles:
 ## - every step leaves the engine settled (`Core.settled`);
-## - no reader sees an event half applied: a turn writes a node at most
-##   once and never writes a node it created, and every title a `Pair` sets
+## - no reader sees an event half applied: a turn updates a node at most
+##   once and never updates a node it created (ordinary constructor attributes
+##   and properties initialize each field once), and every title a `Pair` sets
 ##   names a derived value that follows its layer. A reader evaluated
 ##   between two of an event's writes, or before a `derive` above it has
 ##   followed one of them, breaks one of the two;
@@ -467,7 +468,7 @@ mount = |tree, pure, init| {
 ## (`half_seen`).
 absorb : S, Core.App, List(U8), Str -> S
 absorb = |s, a, c, what| {
-	{ dom, fx, written, .. } = Dom.apply_full(s.dom, c)
+	{ dom, fx, written } = batch_writes(s.dom, c)
 	observed = Core.work_counters(a).get(44) ?? crash "structure: observation gauge is missing"
 	if observed != dom.observed_count {
 		crash "${what}: engine observation gauge ${observed.to_str()} differs from oracle ${dom.observed_count.to_str()}"
@@ -493,6 +494,47 @@ absorb = |s, a, c, what| {
 	{ ..s, eng: a, dom, jobs }
 }
 
+## Classify ordinary constructors separately from reader updates. ELEM does
+## not carry attributes or properties, so its first ATTR per name and PROP
+## per property initialize fields. A second setter for that same field is an
+## update, even on a new node. TEXTNODE and INST already carry initial values,
+## so their later text and hole setters are always updates. Keep Dom.written
+## unchanged: the spec runner observes every write, including initialization.
+batch_writes : Dom.Model, List(U8) -> { dom : Dom.Model, fx : List(Dom.FxCmd), written : List(U64) }
+batch_writes = |before, bytes| {
+	var $dom = before
+	var $at = 0.U64
+	var $fx = []
+	var $written = []
+	var $initialized = []
+	var $ordinary = []
+	while $at < bytes.len() {
+		command_at = if ($at == 0) 1 else $at
+		next_index = $dom.nodes.len()
+		r = Dom.apply_next($dom, bytes, $at)
+		op = r.ops.first() ?? 0
+		if op == 8 {
+			$ordinary = $ordinary.append(next_index)
+		}
+		for index in r.written {
+			if $ordinary.contains(index) and (op == 9 or op == 21) {
+				field = { index, kind: op, name: if (op == 9) Dom.str(bytes, command_at + 5).0 else Dom.byte(bytes, command_at + 5).to_str() }
+				if $initialized.contains(field) {
+					$written = $written.append(index)
+				} else {
+					$initialized = $initialized.append(field)
+				}
+			} else {
+				$written = $written.append(index)
+			}
+		}
+		$dom = r.dom
+		$fx = $fx.concat(r.fx)
+		$at = r.next
+	}
+	{ dom: $dom, fx: $fx, written: $written }
+}
+
 ## The index of the turns counter in the engine's work record (design.md,
 ## Appendix B).
 turns_at : U64
@@ -500,7 +542,7 @@ turns_at = 30
 
 ## What in one step's batch shows a reader that saw the step half applied.
 ## `held` is how many nodes the oracle held before the batch, `written` the
-## node each text or attribute command wrote, in order, and `turns` how many
+## node each reader update wrote after constructor classification, in order, and `turns` how many
 ## turns the call ran. A title is judged whatever the batch holds. The node
 ## rules are one turn's: a call that also delivers refusals queued behind
 ## the step runs a turn for each, and a later turn may write a node again.
@@ -686,6 +728,7 @@ target = Fuzz.target_with!({
 		# that writes both; 1 and 2 write one each; 0 the root.
 		ex("pairs", 1, [1, 5, 0, 1, 5, 0, 3, 12, 1, 2, 10, 2, 1, 10, 1, 2], [0, 3, 0, 3, 0, 1, 0, 3, 0, 2, 0, 3, 0, 0, 0, 3]),
 		ex("document-release", 0, [1, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
+		ex("properties-in-late-branch", 0, [1, 3, 0, 0, 1, 20, 0], [0, 0, 0, 0]),
 		ex("properties-in-rows", 0, [1, 7, 0, 1, 20, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
 		ex("observation-release", 3, [], []),
 		ex("observations-in-rows", 0, [1, 7, 0, 1, 2, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
@@ -762,3 +805,75 @@ observation_release_case = |_props| {
 ## The independent oracle and the engine both reach zero after a nested
 ## observed branch, its template descendants and its row states are disposed.
 expect observation_release_case({}) == {}
+
+## The branch first mounts controls on a later turn. Their ordinary ATTR and
+## PROP initialize fields rather than observing an earlier half-settled value.
+expect {
+	bytes = [1.U8, 3, 0, 0, 1, 20, 0]
+	match decode(bytes) {
+		[When(0, [], [Control(0)])] => run(decode(bytes), True, [0, 0, 0, 0]) == {}
+		_ => False
+	}
+}
+
+## Construction can set distinct ordinary fields once. Repeating an ATTR
+## name or PROP kind remains a second reader write, including on a new node.
+expect {
+	element = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([8], 1), 0), 0), "input")
+	attribute = |name, value| SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), name).append(1), value)
+	property = |kind, value| SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(kind), value)
+	initial = [0].concat(element).concat(attribute("type", "text")).concat(attribute("aria-label", "Control")).concat(property(1, "first")).concat(property(2, "true"))
+	check = |bytes| {
+		r = batch_writes(Dom.new({}), bytes)
+		half_seen(1, r.written, r.fx, 1)
+	}
+	{ initial: check(initial), attribute: check(initial.concat(attribute("type", "checkbox"))), property: check(initial.concat(property(1, "second"))) } == {
+		initial: Ok({}),
+		attribute: Err("node 1 was created by the turn and then written again by it"),
+		property: Err("node 1 was created by the turn and then written again by it"),
+	}
+}
+
+## TEXTNODE embeds its initial text; a later SETTEXT is an update. Existing
+## nodes still reject two updates even when they name distinct properties.
+expect {
+	text = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([0, 10], 1), 0), 0), "initial")
+	update = SpecRunner.put_str(SpecRunner.put_u32([12], 1), "later")
+	created = batch_writes(Dom.new({}), text.concat(update))
+	(d, index) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input" })
+	dom = Dom.bind(d, 1, index)
+	value = SpecRunner.put_str(SpecRunner.put_u32([0, 21], 1).append(1), "value")
+	checked = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(2), "true")
+	existing = batch_writes(dom, value.concat(checked))
+	{ created: half_seen(1, created.written, created.fx, 1), existing: half_seen(dom.nodes.len(), existing.written, existing.fx, 1) } == {
+		created: Err("node 1 was created by the turn and then written again by it"),
+		existing: Err("node 1 was written twice in one turn"),
+	}
+}
+
+## INST carries each hole's initial value. Its first later text, attribute
+## or property setter is an update, even when addressed by an ordinary id.
+expect {
+	input = SpecRunner.put_str([1], "input").concat([0, 0])
+	text = SpecRunner.put_str([2], "initial").concat([1, 1, 0])
+	attribute = input.concat(SpecRunner.put_str([1, 2, 0], "aria-label"))
+	property = input.concat([1, 6, 0, 1])
+	row = SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([1], 1), 0), 0), 0)
+	text_update = SpecRunner.put_str(SpecRunner.put_u32([2], 1).append(0), "later")
+	attribute_update = SpecRunner.put_str(SpecRunner.put_u32([3], 1).concat([0, 1]), "later")
+	property_update = SpecRunner.put_str(SpecRunner.put_u32([22], 1).append(0), "later")
+	ordinary_property = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(1), "later")
+	cases = [
+		{ template: text, initial: SpecRunner.put_str(row, "initial"), update: text_update },
+		{ template: attribute, initial: SpecRunner.put_str(row.append(1), "initial"), update: attribute_update },
+		{ template: property, initial: SpecRunner.put_str(row, "initial"), update: property_update },
+		{ template: property, initial: SpecRunner.put_str(row, "initial"), update: ordinary_property },
+	]
+	cases.map(
+		|test| {
+			define = SpecRunner.put_u32(SpecRunner.put_u32([0, 7], 0), test.template.len().to_u32_wrap()).concat(test.template)
+			r = batch_writes(Dom.new({}), define.concat(test.initial).concat(test.update))
+			half_seen(1, r.written, r.fx, 1)
+		},
+	) == List.repeat(Err("node 1 was created by the turn and then written again by it"), 4)
+}

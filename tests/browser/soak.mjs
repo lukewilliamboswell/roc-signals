@@ -30,6 +30,11 @@ const repo = path.resolve(here, "../..");
 const opts = parseArgs(process.argv.slice(2), ["app", "events", "cycles"]);
 const app = opts.app;
 const EVENTS = Number(opts.events ?? 3000);
+const WARMUP_CYCLES = 3;
+const NCYC = Number(opts.cycles ?? 30);
+if (!Number.isSafeInteger(NCYC) || NCYC < WARMUP_CYCLES + 2) {
+  throw new Error(`--cycles must be an integer of at least ${WARMUP_CYCLES + 2}: ${WARMUP_CYCLES} warm-up cycles and two nonempty comparison halves`);
+}
 // Apps with a simulated service run against the example's own module (its
 // `backend` in www/data/examples.toml), served over HTTP below: Conduit's
 // RealWorld API, Field Notes' sync endpoint (every third sync fails) and the
@@ -183,33 +188,33 @@ const check = (name, ok, detail = "") => {
       const cands = [];
       const walk = (el) => {
         for (let c = el.firstElementChild; c; c = c.nextElementSibling) {
-          if (c.__h !== undefined && !c.disabled) cands.push(c);
+          const h = c.__h;
+          if (h !== undefined && !c.disabled) {
+            // Filter before choosing: focus-only and file-only declarations
+            // cannot consume one of the walk's requested input events.
+            const op = h.input !== undefined && !h.input.files && c.type !== "file" ? "input"
+              : h.change !== undefined && !h.change.files && c.type !== "file" ? "change"
+              : h.click !== undefined ? "click" : null;
+            if (op !== null) cands.push({ el: c, op });
+          }
           walk(c);
         }
       };
       walk(root);
       if (cands.length === 0) break;
-      const el = cands[rnd() % cands.length];
-      const h = el.__h;
-      // A control that takes files (a file input, a drop target) has no
-      // text to type; the walk gives the app none.
-      if ((h.change !== undefined && h.change.files) || (h.drop !== undefined && h.drop.files)) continue;
-      if (h.input !== undefined) {
+      const { el, op } = cands[rnd() % cands.length];
+      if (op === "input") {
         el.focus();
         el.value = POOL[rnd() % POOL.length];
         el.dispatchEvent(new Event("input", { bubbles: true }));
-      } else if (h.change !== undefined) {
+      } else if (op === "change") {
         if (el.type === "checkbox" || el.type === "radio") el.click();
         else {
           if (el.tagName === "SELECT" && el.options.length > 0) el.value = el.options[rnd() % el.options.length].value;
           else el.value = POOL[rnd() % POOL.length];
           el.dispatchEvent(new Event("change", { bubbles: true }));
         }
-      } else if (h.click !== undefined) {
-        el.click();
-      } else {
-        continue;
-      }
+      } else el.click();
       fired += 1;
       if (workers) jobs += await window.__runWork();
       if (served && i % 10 === 9) await new Promise((r) => setTimeout(r, 0));
@@ -222,7 +227,7 @@ const check = (name, ok, detail = "") => {
     await settle(page);
   }
   const fault = await page.evaluate(() => window.__rt.poisoned);
-  check(`random walk: ${done.fired} events in ${Date.now() - t0} ms, no fault`, done.fired >= Math.min(EVENTS, 1000) && fault === null && errors.length === 0, JSON.stringify({ fault, errors: errors.slice(0, 3) }));
+  check(`random walk: ${done.fired} events in ${Date.now() - t0} ms, no fault`, done.fired === EVENTS && fault === null && errors.length === 0, JSON.stringify({ fault, errors: errors.slice(0, 3) }));
   const stats = await page.evaluate(() => ({ pages: window.__rt.x.memory.buffer.byteLength / 65536, live: Number(window.__rt.x.metric(4)) }));
   console.log(`   after walk: ${stats.pages} pages, ${stats.live} live allocations`);
   if (workers) {
@@ -286,7 +291,6 @@ const SCENES = { "status-page": [["click", ["role", "button", "Pause the feed"]]
   const { ctx, page } = await open();
   if (served) await settle(page);
   const cycle = CYCLES[app];
-  const NCYC = Number(opts.cycles ?? 30);
   const samples = [];
   const workerSamples = [];
   for (let c = 0; c < NCYC; c += 1) {
@@ -323,7 +327,7 @@ const SCENES = { "status-page": [["click", ["role", "button", "Pause the feed"]]
   // Flat: identical pages; live allocations with no growth (the later half
   // never exceeds the earlier half). Exact equality is also reported: an
   // async effect app may jitter by an allocation depending on timing.
-  const tail = samples.slice(3);
+  const tail = samples.slice(WARMUP_CYCLES);
   const half = Math.floor(tail.length / 2);
   const maxOf = (xs, i) => Math.max(...xs.map((s) => s[i]));
   const pagesFlat = tail.every((s) => s[0] === tail[0][0]);
@@ -336,7 +340,7 @@ const SCENES = { "status-page": [["click", ["role", "button", "Pause the feed"]]
     // The worker instance runs the same jobs every cycle: after warm-up its
     // memory is identical and its live allocations and bytes never grow; the
     // pool is that one instance, idle, with every job answered.
-    const wt = workerSamples.slice(3);
+    const wt = workerSamples.slice(WARMUP_CYCLES);
     const wh = Math.floor(wt.length / 2);
     const wmax = (xs, k) => Math.max(...xs.map((s) => s[k]));
     const memFlat = wt.every((s) => s.mem === wt[0].mem);
