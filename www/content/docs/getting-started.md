@@ -228,6 +228,46 @@ Both modes write the same deployment layout:
 `.mjs` files as `text/javascript` and `app.wasm` as `application/wasm`, with
 `index.html` not cached. No other headers are needed.
 
+## Build a first page
+
+The scaffold marks its HTML mount element with `data-roc-picture`. To include
+an initial view in the HTML sent by your static server, choose explicit URLs:
+
+```sh
+roc signals.roc build --picture / '/tasks/?open=1#list'
+```
+
+This writes `dist/index.html` and `dist/tasks/index.html`, alongside the same
+hashed assets. HTTP(S) URLs are accepted too; their pathname, query and
+fragment supply the app's initial location. No origin or user session is
+invented. Query or fragment variants of one path cannot share an output file,
+so the build refuses a list containing both `/tasks?open=1` and `/tasks?open=2`.
+
+The native runner initializes the actual app once per URL and renders its
+ordinary first command batch. Network, storage, worker and timer answers,
+focus and layout arrive later in the running browser. The HTML frame stays
+inert while the module loads. The runtime replaces those built nodes with its
+ordinary mount, releases the inertness the builder added, then performs the
+batch's effects. An `inert` attribute you authored on the mount remains intact.
+
+A template needs exactly one authored `data-roc-picture` mount root. The
+builder reserves `data-roc-picture-inert` on that root to record temporary
+inertness; leave it out of the template. That spelling on an app descendant
+remains ordinary data. Asset URLs are projected before the app's rendered
+markup is inserted, so an app value such as a title containing `app.wasm`
+remains unchanged.
+
+The scaffold includes a `noscript` notice and styles `data-roc-failed` on the
+mount when startup fails. A failed first page stays inert until a successful
+retry or recovery. First-picture interaction suppression for SVG, MathML and
+other non-HTML mount elements is not implemented yet; their normal live-mount
+support is unchanged.
+
+The complete output is staged before publication. A refused route or invalid
+frame leaves the published `dist/` intact. Replacing an existing directory
+uses a backup and rename with rollback, rather than an atomic directory
+exchange. This mode requires one of the native-runner systems listed above.
+
 ## Working in a checkout
 
 To work on roc-signals itself, or to run this page's counter from

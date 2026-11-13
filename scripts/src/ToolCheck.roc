@@ -15,6 +15,7 @@ import ToolRelease
 ## on the Worker Lab; every failure the tool explains (a misused command
 ## line, a missing `main.roc`, `index.html` or spec, a failing spec, a build
 ## error, no `roc` on the PATH, a compiler other than the release's); the
+## explicit first pictures, route-collision publication refusal, and the
 ## built `dist/` mounting from a plain static server in Chrome with a worker
 ## running jobs (`tests/browser/tool-dist.mjs`); and `serve` in Chrome
 ## (`tests/browser/tool-serve.mjs`).
@@ -88,6 +89,7 @@ ToolCheck := [].{
 		$problems = $problems.concat(judge(run_tool!(tool, counter, ["test"])?, { code: 0, says: ["Running 1 spec:", "  passed  the counter counts both ways", "The spec passed."] }))
 		$problems = $problems.concat(judge(run_tool!(tool, counter, ["build"])?, { code: 0, says: ["Built the app into dist/:", "  dist/index.html", "/app.wasm", "/runtime.mjs", "/worker.mjs", "/environment.mjs"] }))
 		$problems = $problems.concat(dist_problems!(o, counter)?)
+		$problems = $problems.concat(ToolCheck.picture_builds!(o, { tool, dir: counter })?)
 
 		# What the tool says when something is missing or wrong.
 		Path.rename!(Path.utf8("${counter}/index.html"), Path.utf8("${counter}/away.html"))?
@@ -153,6 +155,29 @@ ToolCheck := [].{
 		Ok($problems)
 	}
 
+	## Exercise explicit root/nested routes and one failed publication on the
+	## small scaffold app. The full prior output is compared after the collision;
+	## the browser independently checks painted markup and the real mount.
+	picture_builds! : SpecSuite.Options, { tool : Tool, dir : Str } => Try(List(Str), _)
+	picture_builds! = |o, { tool, dir }| {
+		built = run_tool!(tool, dir, ["build", "--picture", "/", "/nested/?open=1#list"])?
+		var $problems = ToolCheck.judge(built, { code: 0, says: ["Built the app into dist/:", "dist/index.html", "dist/nested/index.html"] })
+		if built.code != 0 { return Ok($problems) }
+		page = Path.read_utf8!(Path.utf8("${dir}/dist/index.html"))?
+		nested = Path.read_utf8!(Path.utf8("${dir}/dist/nested/index.html"))?
+		if !page.contains("data-roc-picture-inert=\"added\"") or !nested.contains("data-roc-picture-inert=\"added\"") or !nested.contains("../assets/") {
+			$problems = $problems.append("picture build must emit owned inert first frames and nested relative asset URLs")
+		}
+		before = dist_snapshot!("${dir}/dist")?
+		collision = run_tool!(tool, dir, ["build", "--picture", "/nested/?open=1", "/nested/?open=2#other"])?
+		$problems = $problems.concat(ToolCheck.judge(collision, { code: 1, says: ["both write nested/index.html", "query and fragment variants"] }))
+		if dist_snapshot!("${dir}/dist")? != before {
+			$problems = $problems.append("a refused picture route collision changed the published dist tree")
+		}
+		code = Proc.status!({ program: o.node, args: ["tests/browser/tool-picture.mjs", "--dist", "${dir}/dist", "--chrome", o.chrome], cwd: o.root })?
+		Ok(if (code == 0) $problems else $problems.append("tests/browser/tool-picture.mjs failed (exit ${code.to_str()})"))
+	}
+
 	## The package URL `signals.roc` names.
 	package_of : Str -> Try(Str, [NoPackage])
 	package_of = |text|
@@ -200,6 +225,17 @@ run_tool! = |tool, dir, args| {
 		Signaled(_) => -1
 	}
 	Ok({ code, output: text, args })
+}
+
+## Snapshot only the bounded scaffold fixture's published files. This is a
+## test oracle for publication atomicity, never a production cache or identity.
+dist_snapshot! : Str => Try(List({ path : Str, bytes : List(U8) }), _)
+dist_snapshot! = |dir| {
+	var $files = []
+	for path in SpecSuite.files_under!(dir, "")?.sort_with(SpecSuite.compare_str) {
+		$files = $files.append({ path: path.drop_prefix("${dir}/"), bytes: Path.read_bytes!(Path.utf8(path))? })
+	}
+	Ok($files)
 }
 
 ## The built `dist/` of the app in `dir`: its page names the hashed

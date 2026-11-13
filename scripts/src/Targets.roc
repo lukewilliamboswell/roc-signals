@@ -151,6 +151,23 @@ Targets := [].{
 		Ok(if (code == 0) [] else ["native file lifetime contracts failed (exit ${code.to_str()})"])
 	}
 
+	## Build the deliberately crashing app only for its native query contract.
+	## The query must avoid init; the same runner's prerender path proves that
+	## init is not silently disabled. The real app supplies native and Wasm frames.
+	prerender_contract! : SpecSuite.Options => Try(List(Str), _)
+	prerender_contract! = |o| {
+		dir = "${o.build_dir}/prerender-query"
+		Path.create_all!(Path.utf8(dir))?
+		fixture = Path.read_utf8!(Path.utf8("${o.root}/tests/key-contracts/picture-path-no-init.roc.txt"))?
+		up = Str.join_with(List.repeat("..", dir.split_on("/").keep_if(|part| !part.is_empty()).len()), "/")
+		main = "${dir}/main.roc"
+		runner = "${dir}/runner"
+		Path.write_utf8!(Path.utf8(main), fixture.replace_each("<PLATFORM>", "${up}/${o.root.drop_prefix("/")}/platform/main.roc"))?
+		build = SpecSuite.build_job(o, "dev", main, SpecSuite.native_target, runner)
+		Proc.run!({ ..build, args: build.args.append("--timings") })?
+		Targets.browser!(o, "prerender-stage1-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "prerender"), "--runner", SpecSuite.runner_of(o, "prerender"), "--no-init-runner", runner, "--template", "tests/apps/prerender/index.html"])
+	}
+
 	## The runtime contract tests in Chrome (test apps built by `SpecSuite.build!`): the effect channel (tests/apps/effects),
 	## controlled inputs, focus and containment (tests/apps/controls), an
 	## outbox posted twice in one turn (tests/apps/outbox), worker
@@ -186,6 +203,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "picture-envelope-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "picture-measurement-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "picture-preparation-browser.mjs", [])?)
+				.concat(Targets.prerender_contract!(o)?)
 				.concat(Targets.browser!(o, "names-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "namespaces-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "unicode-symbols-browser.mjs", ["--oracle", unicode_bits])?)

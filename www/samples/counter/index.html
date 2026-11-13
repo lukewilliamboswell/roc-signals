@@ -3,9 +3,14 @@
   <head>
     <meta charset="utf-8">
     <title>Counter</title>
+    <style>
+      #app[data-roc-failed] { border: 1px solid #a00; padding: 1rem; }
+      #app[data-roc-failed]::before { content: "The app could not start. Reload to try again."; display: block; }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app" data-roc-picture></div>
+    <noscript><p>JavaScript is needed to interact with this app.</p></noscript>
     <script type="module">
       import { mountRocEngineApp } from "./runtime.mjs";
 
