@@ -4325,7 +4325,9 @@ authority reference needs an absolute base to supply its scheme. Parsed dot
 segments normalize and other empty segments remain distinct. A normalized
 root-relative path beginning `//` is refused as `MissingScheme`, because its
 standalone text would mean an authority reference. This strict subset does
-not accept every possible browser pathname. Request URL fields remain text.
+not accept every possible browser pathname. `request_target` is HTTP origin-form
+text, not a universal fetch reference: an absolute URL retains its origin
+through `to_str`, including when its path begins `//`. Request URL fields remain text.
 
 
 The authoring API as it stands (`Engine.roc`). Types are abbreviated; `ctx` is

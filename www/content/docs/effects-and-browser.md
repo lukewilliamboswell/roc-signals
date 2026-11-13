@@ -201,7 +201,9 @@ runtime's monitor; see [Monitoring Workers](@/docs/worker-monitoring.md).
 Build request URLs from decoded text with `Url`, as the search sample does.
 A checked root-relative literal needs no invented origin. `append_query_param`
 keeps a search value in one query pair, and `request_target` emits the path
-and query HTTP sends, without a fragment or origin.
+and query HTTP sends, without a fragment or origin. Use `to_str()` when
+passing an absolute URL to a browser request: its origin must be retained,
+and a valid absolute path beginning `//` would otherwise be read as another host.
 
 For a path name, handle the result of `append_path_segments`: an empty name,
 `.` or `..` has no safe target. To read a location, parse it once and use
