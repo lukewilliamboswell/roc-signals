@@ -79,9 +79,9 @@ Notes := {}.{
 		is_eq : _
 	}
 
-	## Restored five-field notes have no capture sample. New notes remain
-	## unknown only until their own timer answers.
-	Captured : [Unknown, At(I64)]
+	## Restored notes without a sample have an unknown capture time. Only a
+	## newly saved note awaiting its own timer can claim to be just captured.
+	Captured : [Unknown, Awaiting, At(I64)]
 
 	Note : { id : Str, slot : U64, body : Str, queued : Bool, rev : Str, captured : Captured }
 
@@ -162,6 +162,7 @@ Notes := {}.{
 		}
 		captured_text = match note.captured {
 			Unknown => "unknown"
+			Awaiting => "unknown"
 			At(at_ms) => at_ms.to_str()
 		}
 		"${note.id}|${note.slot.to_str()}|${queued_text}|${note.rev}|${captured_text}|${note.body}"
@@ -170,8 +171,8 @@ Notes := {}.{
 	encode_notes : List(Note) -> Str
 	encode_notes = |notes| Str.join_with(notes.map(Notes.encode_note), ";")
 
-	## Storage keeps every field of a note, ids included, so decoding a value this
-	## app just wrote reproduces exactly the notes it encoded.
+	## Storage keeps the sampled capture time, never an outstanding timer's
+	## intent. Unsampled notes restore as Unknown in a new instance.
 	decode_note : Str -> List(Note)
 	decode_note = |chunk| {
 		parts = chunk.split_on("|")
@@ -285,7 +286,7 @@ Notes := {}.{
 	draft_body = |draft| Notes.sanitize(draft).trim()
 
 	## Save a nonblank draft in the first free slot under the next generated
-	## id. Its capture time is unknown until the posted Timer(0) answers.
+	## id. Its capture time awaits the posted Timer(0)'s answer.
 	save_note : Board, Str -> Board
 	save_note = |board, draft| {
 		body = Notes.draft_body(draft)
@@ -294,7 +295,7 @@ Notes := {}.{
 			board
 		} else {
 			generated = Time.next(board.rng)
-			note = { id: "n-${Time.hex(generated.value)}", slot, body, queued: False, rev: "r0", captured: Unknown }
+			note = { id: "n-${Time.hex(generated.value)}", slot, body, queued: False, rev: "r0", captured: Awaiting }
 			Notes.settle({ ..board, rng: generated.state, notes: board.notes.append(note) })
 		}
 	}
@@ -309,7 +310,7 @@ Notes := {}.{
 		board = Notes.seeded(Notes.initial([{ id: "n0", slot: 1, body: "one", queued: True, rev: "r7", captured: Unknown }], False), 7)
 		saved = Notes.save_note(board, "  Pump | pressure; log ")
 		blank = Notes.save_note(board, " | ")
-		(saved.notes.drop_first(1), blank == board) == ([{ id: "n-63cbe1e459320dd7", slot: 0, body: "Pump   pressure  log", queued: False, rev: "r0", captured: Unknown }], True)
+		(saved.notes.drop_first(1), blank == board) == ([{ id: "n-63cbe1e459320dd7", slot: 0, body: "Pump   pressure  log", queued: False, rev: "r0", captured: Awaiting }], True)
 	}
 
 	## A second save takes the next generated id. A new document's seed makes
@@ -328,7 +329,7 @@ Notes := {}.{
 	expect {
 		board = Notes.save_note(Notes.save_note(Notes.seeded(Notes.initial([], False), 7), "one"), "two")
 		at = Notes.stamped(board, { id: "n-63cbe1e459320dd7", at_ms: -1 })
-		at.notes.map(|note| note.captured) == [At(-1), Unknown]
+		at.notes.map(|note| note.captured) == [At(-1), Awaiting]
 	}
 
 	## An edit gives the note its next revision, which no lane has settled,
@@ -632,3 +633,12 @@ expect {
 
 ## A malformed timestamp is not repaired into a date or an unknown sample.
 expect Notes.decode_notes("bad|0|0|r0|tomorrow|body").is_empty()
+
+## Only this instance can await its timer: storage loses that pending
+## intent, while a timer that answers before reload preserves its sample.
+expect {
+	saved = Notes.save_note(Notes.seeded(Notes.initial([], False), 7), "one")
+	id = saved.notes.first()?.id
+	stamped = Notes.stamped(saved, { id, at_ms: -1 })
+	{ pending: saved.notes.map(|note| note.captured), reloaded_pending: Notes.decode_notes(Notes.encode_notes(saved.notes)).map(|note| note.captured), reloaded_stamped: Notes.decode_notes(Notes.encode_notes(stamped.notes)).map(|note| note.captured) } == { pending: [Awaiting], reloaded_pending: [Unknown], reloaded_stamped: [At(-1)] }
+}

@@ -9,6 +9,7 @@
     (fill (label "Note body") "Pump pressure")
     (click (role button :name "Save note"))
     (expect-text (test-id "captured-n-63cbe1e459320dd7") "just now")
+    (expect-no-attr (test-id "captured-n-63cbe1e459320dd7") datetime)
     (run-effect 1)
     (expect-text (test-id "captured-n-63cbe1e459320dd7") "Captured 10:40 · just now")
     (expect-attr (test-id "captured-n-63cbe1e459320dd7") datetime "2026-11-13T00:40:00Z")

@@ -16,7 +16,8 @@ import Notes
 ##
 ## After every step:
 ##
-## - the notes the board would store decode back to exactly those notes;
+## - stored notes decode back exactly, except an in-instance Awaiting
+##   capture restores as Unknown because no pending timer survives reload;
 ## - no two notes share an id or a slot, and every slot is a lane;
 ## - a lane asks to send only while the app is online with auto-sync on,
 ##   and then exactly the lane of the head of the outbox (the first queued
@@ -54,7 +55,13 @@ note_id = |board, b| match board.notes.get(b.to_u64() % (board.notes.len() + 1))
 rules : Notes.Board -> Try({}, Str)
 rules = |board| {
 	stored = Notes.encode_notes(board.notes)
-	if Notes.decode_notes(stored) != board.notes {
+	expected_notes = board.notes.map(
+		|note| match note.captured {
+			Awaiting => { ..note, captured: Unknown }
+			_ => note
+		},
+	)
+	if Notes.decode_notes(stored) != expected_notes {
 		return Err("the notes store as ${Str.inspect(stored)}, which decodes as ${Str.inspect(Notes.decode_notes(stored))}")
 	}
 	ids = board.notes.map(|n| n.id)

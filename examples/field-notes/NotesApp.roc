@@ -204,6 +204,7 @@ note_card = |locale, row| {
 						row.field(
 							|note| match note.captured {
 								Unknown => Absent
+								Awaiting => Absent
 								At(at_ms) => match Time.utc_text(at_ms) {
 									Ok(text) => Present(text)
 									Err(_) => Absent
@@ -370,7 +371,8 @@ captured_notes = |{ rows, zone, language }| {
 ## its small calendar explicitly, without guessing a current offset.
 capture_caption : { captured : Notes.Captured, now_ms : I64, zone : Engine.Zone, language : Str } -> Str
 capture_caption = |{ captured, now_ms, zone, language }| match captured {
-	Unknown => "just now"
+	Unknown => "Capture time unknown"
+	Awaiting => "just now"
 	At(at_ms) => {
 		age = Time.relative({ now_ms, captured_ms: at_ms })
 		match Engine.zone_offset(zone, at_ms) {
@@ -381,4 +383,10 @@ capture_caption = |{ captured, now_ms, zone, language }| match captured {
 			}
 		}
 	}
+}
+
+## A missing old sample is honest about its age; only a new pending save
+## uses the provisional caption while its timer can still answer.
+expect {
+	[Unknown, Awaiting].map(|captured| capture_caption({ captured, now_ms: 180000, zone: Engine.utc, language: "en-AU" })) == ["Capture time unknown", "just now"]
 }
