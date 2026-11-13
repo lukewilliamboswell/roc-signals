@@ -55,7 +55,7 @@ Designer := [].{
 		"Field designer",
 		"panel",
 		[
-			Engine.on_post(props.focus.signal(), |name| [Focus(name)], Engine.ignore({})),
+			Engine.on_post(props.focus.signal(), |name| [Engine.command(Focus(name))], Engine.ignore({})),
 			Html.div("panel-head", [Html.h2("Field designer", "panel-title"), Html.p("Definition", "hint")]),
 			Html.div(
 				"panel-body",

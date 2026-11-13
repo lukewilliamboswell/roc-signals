@@ -86,7 +86,7 @@ Preview := [].{
 			[
 				Engine.on_post(
 					props.ui.reveal.signal(),
-					|name| [Engine.scroll_into_view(name, { block: Center, behavior: Smooth }), FocusInPlace(name)],
+					|name| [Engine.command(Engine.scroll_into_view(name, { block: Center, behavior: Smooth })), Engine.command(FocusInPlace(name))],
 					Engine.ignore({}),
 				),
 				Html.div(
