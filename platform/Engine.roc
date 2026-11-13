@@ -648,6 +648,10 @@ Engine := [].{
 	## Why a fetch produced no response file.
 	FetchFailure : Core.FetchFailure
 
+	## Errors for an app that explicitly classifies a fetched response's status
+	## and keeps only a 2xx file body. File.fetch itself returns every status.
+	FetchError : Core.FetchError
+
 	## Ask through a declared request/result protocol, retaining its reader once.
 	ask_of : asker, input -> Ask(output, error)
 		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error)]

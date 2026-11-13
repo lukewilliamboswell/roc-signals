@@ -87,14 +87,14 @@ Port := [].{
 		ask : Call(input, output), input -> Engine.Ask(output, Error)
 		ask = |port, input| Engine.ask_of(port, input)
 
-		## A request that calls the JavaScript with `value`, for an effect
-		## site's plan. The value is a snapshot, encoded when the request is
-		## issued.
+		## The raw request that calls JavaScript with `value`, for the asker
+		## protocol and pure tests. The value is encoded now; `ask` retains
+		## this request with its reader for a typed effect plan.
 		request : Call(input, output), input -> Engine.Request
 		request = |p, value| PortCall({ port: p.name, message: (p.encode)(value), timeout_ms: p.timeout_ms })
 
-		## The answer to a `request`, for an effect site's reaction: the
-		## JavaScript's answer as an `output`, or why there is none. A result
+		## Read a raw result through the call's declared protocol: JavaScript's
+		## answer as an `output`, or why there is none. A result
 		## that is not from a port request is a contract error.
 		result : Call(input, output), Engine.Result -> Try(output, Error)
 		result = |p, res| answer_of(p.name, p.decode, res)
@@ -113,7 +113,8 @@ Port := [].{
 		ask : Subscription(arg, msg), arg -> Engine.Ask(msg, Error)
 		ask = |port, arg| Core.make_ask(port.subscribe(arg), |result| port.message(result))
 
-		## A request that subscribes with `arg`, for an effect site's plan.
+		## The raw subscription request, for protocol inspection and pure tests.
+		## Use `ask` to pair it with its message reader in a typed plan.
 		## The JavaScript's `subscribe` handler receives `arg` and an `emit`
 		## function; each message it emits is a result turn for the site.
 		## Disposing the site, or a `watch_latest` site moving to a new value,
@@ -121,8 +122,8 @@ Port := [].{
 		subscribe : Subscription(arg, msg), arg -> Engine.Request
 		subscribe = |p, arg| PortSubscribe({ port: p.name, message: (p.encode)(arg) })
 
-		## One message of the subscription, for an effect site's reaction, or
-		## why there is none. After `Closed` or `Threw` no more messages come.
+		## Read one raw subscription result, or why there is no message.
+		## After `Closed` or `Threw` no more messages come.
 		## A result that is not from a port request is a contract error.
 		message : Subscription(arg, msg), Engine.Result -> Try(msg, Error)
 		message = |p, res| answer_of(p.name, p.decode, res)

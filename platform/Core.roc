@@ -10661,3 +10661,20 @@ read_storage = |result| match result {
 	Refused => Err(Refused)
 	_ => crash "contract: storage ask received a non-storage result"
 }
+
+## Mapping an ask preserves its request and transforms only its typed result.
+expect {
+	Core.Ask.({ request, read }) = Core.http_body({ url: "/mapped" })
+		.map_ok(|body| body.count_utf8_bytes())
+		.map_err(Str.inspect)
+		.map(|answer| answer.map_ok(|length| length + 1))
+	actual = {
+		request,
+		answers: [read(Http({ status: 201, headers: [], body: "abc" })), read(Http({ status: 503, headers: [], body: "ignored" })), read(Refused)],
+	}
+	expected = {
+		request: Http({ method: "GET", url: "/mapped", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin }),
+		answers: [Ok(4), Err("Status(503)"), Err("Refused")],
+	}
+	actual == expected
+}

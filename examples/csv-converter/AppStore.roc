@@ -55,7 +55,7 @@ AppStore := [Converter].{
 
 	## The sample's download answered: with the file to convert, or with
 	## why there is none.
-	sample_arrived : Try(File, [Network(Str), Timeout, Status(U16), TooLarge, Refused]) -> List(Engine.Write(_))
+	sample_arrived : Try(File, Engine.FetchError) -> List(Engine.Write(_))
 	sample_arrived = |answer| [
 		AppStore.cells.source.update(
 			|source| match answer {

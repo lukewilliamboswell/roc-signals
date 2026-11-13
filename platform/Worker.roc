@@ -142,8 +142,8 @@ Worker := [].{
 		name : Task(input, output, error) -> Str
 		name = |t| t.name
 
-		## A request for a job of the task on `input`, for an effect site's
-		## plan. The input is a snapshot: it is encoded when the request is
+		## The raw request of a job on `input`, for the asker protocol and pure
+		## tests. Use `ask` in a typed plan. The input is encoded when the request is
 		## issued, and later changes to the state it came from do not reach
 		## the job. The files it holds travel as handles.
 		request : Task(input, output, error), input -> Engine.Request
@@ -152,7 +152,7 @@ Worker := [].{
 			Work({ task: t.name, input: bytes, files, timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: Unprepared })
 		}
 
-		## The answer to a `request`, for an effect site's reaction: the
+		## Read a raw result through the task's declared protocol: the
 		## task's output, whose files are now handles the page holds, or why
 		## there is none (see [Error]). A result that is not from a worker
 		## request is a contract error.
@@ -400,13 +400,13 @@ Worker := [].{
 		name : PreparedTask(init, state, input, output, error) -> Str
 		name = |t| t.name
 
-		## A request to run the task on `input` over the preparation's
-		## `init`, for an effect site's plan. Both are snapshots, encoded
 		## Ask over a preparation with this task's own result reader retained.
 		ask : PreparedTask(init, state, input, output, error), Question(init, input) -> Engine.Ask(output, Error(error))
 		ask = |t, input| Engine.ask_of(t, input)
 
-		## when the request is issued.
+		## The raw request to run the task on `input` over the preparation's
+		## `init`, for the asker protocol and pure tests. Both are snapshots,
+		## encoded when the request is made. Use `ask` in a typed plan.
 		request : PreparedTask(init, state, input, output, error), Question(init, input) -> Engine.Request
 		request = |t, { init, input }| {
 			initialized = (t.send_init)(init)
@@ -654,5 +654,18 @@ expect {
 		\\name: test/lines/nth
 		\\request: ("test/lines/nth", [3, 97, 10, 98, 1, 0, 0, 0, 0, 0, 0, 0], 40, Finish, Prepared({ input_files: 0, input_len: 4, name: "test/lines" }))
 		\\answer: Ok("b")
+	actual == expected
+}
+
+## Both task forms expose an ask with the protocol's exact request data.
+expect {
+	task : Worker.Task(U64, U64, Worker.Never)
+	task = Worker.task({ name: "test/ask", run!: |n| Ok(n + 1) })
+	preparation : Worker.Preparation(Str, U64, Worker.Never)
+	preparation = Worker.preparation({ name: "test/ask-prepared", prepare!: |text| Ok(text.count_utf8_bytes()) })
+	prepared = preparation.task({ name: "test/ask-prepared/add", run!: |length, n| Ok(length + n) })
+	question = { init: "input", input: 7.U64 }
+	actual = { task: task.ask(7).sent(), prepared: prepared.ask(question).sent() }
+	expected = { task: task.request(7), prepared: prepared.request(question) }
 	actual == expected
 }
