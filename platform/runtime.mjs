@@ -19,11 +19,11 @@
 // all (it is not when reaching or reading it throws); the `OnlineChanges` and
 // `VisibilityChanges` subscriptions (FX kinds 6 and 7) report later changes.
 //
-// Ingress: events raised while a batch is applied are queued, at most
-// MAX_QUEUED of them. Exceeding the bound poisons the runtime with class
-// `resource_limit` (a feedback loop between the DOM and the engine); queued
-// work is never dropped silently. A drain also delivers at most MAX_QUEUED
-// turns before idle, so a loop raising one event per turn is bounded too.
+// Ingress: declared reports wait for the frame, with one replaceable entry
+// per source. Occurrences pin earlier reports and drain them synchronously.
+// At MAX_QUEUED entries an idle runtime drains early; exceeding that bound
+// while busy poisons with `resource_limit`. A drain also delivers at most
+// MAX_QUEUED turns before idle, bounding a one-event-per-turn feedback loop.
 //
 // Effects (see "Effects" in Engine.roc): the engine emits FX requests with
 // ids, CANCEL, NAV, STORAGE and TITLE commands. They are collected while a
@@ -118,15 +118,15 @@
 // { subscribe(arg, { emit, close, signal, port }) } returning an optional
 // unsubscribe function, or { push: true } for a subscription fed by
 // runtime.emitPort(name, value). The engine lists the app's declarations
-// after its storage keys; the runtime refuses to mount (it throws) when a
+// in declaration sections; the runtime refuses to mount (it throws) when a
 // declared port has no handler of its shape or a handler names a port the
 // app does not declare. A command (opcode 19 PORT) is performed after the
 // batch like NAV; a call (FX kind 9) is answered once (result tag 14 or
 // 15), aborted on CANCEL or at its timeout (Timeout); a subscription (FX
-// kind 10) delivers each emitted message as its own turn, never
-// synchronously, with at most one message per subscription in the ingress
-// queue: `Latest` keeps the newest undelivered message, `Every(n)` keeps n
-// and `emit` returns false beyond them. close() ends it with Closed,
+// kind 10) declares its delivery: `Latest` reports the newest waiting value
+// at the frame; `Every(n)` keeps n and `emit` returns false beyond them.
+// Every queues at most one message per subscription in ingress while the
+// next waits for its turn. close() ends it with Closed,
 // close(error) with Threw. Messages are PortJson text with `{"$bytes":N}`
 // and `{"$file":N}` markers, revived into Uint8Arrays and Files for the
 // handler; an answer is serialised strictly (null, booleans, finite
@@ -152,6 +152,9 @@ export const PROTOCOL_VERSION = 8;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
+
+// A visible page whose browser supplies no frames must still make progress.
+export const FRAME_WAIT_MS = 100;
 
 // The engine's work counters start at this `metric` index (design.md,
 // Appendix B); `workRecord()` decodes the whole record.
@@ -1761,7 +1764,12 @@ export class RocEngineRuntime {
     this.onEvent = (event) => { if (event.bubbles) this.handle(event); };
     this.onCapture = (event) => { if (!event.bubbles) this.handle(event); };
     this.busy = false;
-    this.queue = [];
+    this.queue = { head: null, tail: null, length: 0 };
+    this.reportSources = new Map();
+    this.reportEpoch = {};
+    this.reportsReplaced = 0;
+    this.reportDrain = null;
+    this.reportDue = false;
     this.poisoned = null;
     this.refused = 0;
     this.onFault = options.onFault ?? null;
@@ -1976,12 +1984,12 @@ export class RocEngineRuntime {
         // teardown is best effort and never re-enters Wasm
       }
     }
+    this.clearIngress();
     this.live.clear();
     this.pushSubs.clear();
     this.stopWorkers();
     this.files.clear();
     this.revokeUrls();
-    this.queue = [];
     this.fxOut = [];
     this.monitor.runtimeEnded("poisoned", this.poisoned);
     console.error(`roc engine fault [${this.poisoned.class}]: ${message}`);
@@ -1997,11 +2005,13 @@ export class RocEngineRuntime {
     this.statics = [];
     this.sites = [];
     this.templates = [];
+    this.clearIngress();
     this.live = new Map();
     this.files = new Map();
     this.revokeUrls();
     this.issued = [];
-    this.queue = [];
+    this.reportEpoch = {};
+    this.reportsReplaced = 0;
     this.fxOut = [];
     this.busy = false;
     this.poisoned = null;
@@ -2016,6 +2026,7 @@ export class RocEngineRuntime {
   unmount() {
     this.monitor.runtimeEnding("unmount");
     this.ending = "unmounted";
+    this.clearIngress();
     for (const id of [...this.live.keys()]) this.cancel(id);
     this.pushSubs.clear();
     this.stopWorkers();
@@ -2121,37 +2132,119 @@ export class RocEngineRuntime {
     }
   }
 
-  // Events raised while a batch is being applied (or while Wasm runs) are
-  // queued and delivered in order after it; they never re-enter.
-  // `el` (DOM events only): a queued event is dropped if its element left
-  // the DOM or its node id was recycled meanwhile (ids are reused).
-  dispatch(node, handler, payload, el) {
-    if (this.poisoned) {
+  // An occurrence pins every earlier report in O(1) by advancing the epoch.
+  // Reports replace only their own source's entry from the current epoch.
+  // The linked queue makes appending and draining constant work per entry.
+  dispatch(node, handler, payload, el, source) {
+    if (this.poisoned || this.ending) {
       this.refused += 1;
       return;
     }
-    if (this.busy) {
-      if (this.queue.length >= MAX_QUEUED) {
+    const report = source !== undefined;
+    const owner = report ? this.live.get(source) : null;
+    if (report) {
+      if (owner === undefined) return;
+      const waiting = this.reportSources.get(source);
+      if (waiting !== undefined && waiting.epoch === this.reportEpoch) {
+        waiting.payload = payload;
+        this.reportsReplaced += 1;
+        this.guard(() => this.scheduleReports());
+        return true;
+      }
+    }
+    if (!report) this.reportEpoch = {};
+    // Keep an idle occurrence synchronous, including its user activation.
+    if (!report && !this.busy && this.queue.length === 0) {
+      this.busy = true;
+      try {
+        this.guard(() => this.deliver(node, handler, payload));
+      } finally {
+        this.busy = false;
+      }
+      this.drainQueue();
+      return false;
+    }
+    let active = null;
+    if (this.queue.length >= MAX_QUEUED) {
+      if (this.busy) {
         this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} events queued behind one batch (an event feedback loop)`), "resource_limit");
         return;
       }
-      this.queue.push([node, handler, payload, el]);
-      return;
+      if (report) this.drainQueue(true);
+      // Make room for the occurrence before delivering anything. Reports
+      // raised by that first turn then queue behind the occurrence.
+      else active = this.takeIngress();
+      if (this.poisoned) return;
+      if (report && this.live.get(source) !== owner) return;
     }
-    this.busy = true;
-    try {
-      this.guard(() => this.deliver(node, handler, payload));
-    } finally {
-      this.busy = false;
+    const entry = { node, handler, payload, el, source, owner, epoch: this.reportEpoch, next: null };
+    if (this.queue.tail === null) this.queue.head = entry;
+    else this.queue.tail.next = entry;
+    this.queue.tail = entry;
+    this.queue.length += 1;
+    if (report) {
+      this.reportSources.set(source, entry);
+      if (!owner.reports) owner.reports = new Set();
+      owner.reports.add(entry);
+      this.guard(() => this.scheduleReports());
+    } else {
+      if (active !== null) {
+        const first = this.takePayload(active);
+        if (first !== null) {
+          this.busy = true;
+          try {
+            this.guard(() => this.deliver(active.node, active.handler, first));
+          } finally {
+            this.busy = false;
+          }
+        }
+      }
+      this.drainQueue();
     }
-    this.drainQueue();
+    return false;
   }
 
-  drainQueue() {
+  // Taking the head retires just that entry's index and ownership links.
+  takeIngress() {
+    const entry = this.queue.head;
+    this.queue.head = entry.next;
+    this.queue.length -= 1;
+    if (this.queue.length === 0) this.queue.tail = null;
+    if (entry.source !== undefined) {
+      if (this.reportSources.get(entry.source) === entry) this.reportSources.delete(entry.source);
+      entry.owner.reports.delete(entry);
+    }
+    return entry;
+  }
+
+  // A disposed source or recycled DOM id never receives its queued input.
+  // Clear the payload even on a dropped entry so no browser files linger.
+  takePayload(entry) {
+    const { node, payload, el } = entry;
+    entry.payload = null;
+    if (payload === null || (entry.owner && this.live.get(entry.source) !== entry.owner)) return null;
+    if (el !== undefined && (!el.isConnected || el.__rn !== node)) return null;
+    if (payload.isLive && !payload.isLive()) return null;
+    return payload;
+  }
+
+  // A report's payload was captured at arrival, never read again here.
+  // Current-epoch reports wait; an occurrence has pinned older epochs.
+  drainQueue(reports = false) {
+    if (this.busy) {
+      if (reports) this.reportDue = true;
+      return;
+    }
+    reports ||= this.reportDue;
+    this.reportDue = false;
+    if (reports) this.cancelReportDrain();
     let turns = 0;
     while (!this.busy && !this.poisoned && this.queue.length > 0) {
-      const [n, h, p, el] = this.queue.shift();
-      if (el !== undefined && (!el.isConnected || el.__rn !== n)) continue;
+      const entry = this.queue.head;
+      if (entry.source !== undefined && entry.epoch === this.reportEpoch && !reports && entry.payload !== null) break;
+      this.takeIngress();
+      const payload = this.takePayload(entry);
+      if (payload === null) continue;
       if (turns >= MAX_QUEUED) {
         this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} turns delivered without returning to idle (an event feedback loop)`), "resource_limit");
         return;
@@ -2159,11 +2252,68 @@ export class RocEngineRuntime {
       turns += 1;
       this.busy = true;
       try {
-        this.guard(() => this.deliver(n, h, p));
+        this.guard(() => this.deliver(entry.node, entry.handler, payload));
       } finally {
         this.busy = false;
       }
     }
+    if (this.queue.length === 0) this.cancelReportDrain();
+    else if (!this.poisoned) this.guard(() => this.scheduleReports());
+  }
+
+  // Manual replay supplies the frame; manualWork/manualIntervals do not.
+  releaseReports() {
+    this.drainQueue(true);
+  }
+
+  // One drain for all report sources, paced by a frame or its liveness
+  // timer. Hidden pages use a microtask because their frames may stop.
+  scheduleReports() {
+    if (this.manual || this.poisoned || this.ending) return;
+    const hidden = !this.isVisible();
+    if (this.reportDrain !== null) {
+      if (!hidden || this.reportDrain.hidden) return;
+      this.cancelReportDrain();
+    }
+    const drain = { hidden, frame: null, timer: null };
+    this.reportDrain = drain;
+    const run = () => {
+      if (this.reportDrain !== drain) return;
+      this.cancelReportDrain();
+      this.drainQueue(true);
+    };
+    if (hidden) queueMicrotask(run);
+    else {
+      if (typeof this.win?.requestAnimationFrame === "function") drain.frame = this.win.requestAnimationFrame(run);
+      drain.timer = setTimeout(run, FRAME_WAIT_MS);
+    }
+  }
+
+  cancelReportDrain() {
+    const drain = this.reportDrain;
+    if (drain === null) return;
+    this.reportDrain = null;
+    if (drain.frame !== null) this.win.cancelAnimationFrame(drain.frame);
+    if (drain.timer !== null) clearTimeout(drain.timer);
+  }
+
+  // A source owns its queued entries, including pinned earlier reports.
+  // CANCEL visits only that source, releases payloads immediately and lets
+  // the ordinary drain skip the dead queue cells without scanning others.
+  dropReports(id, owner) {
+    this.reportSources.delete(id);
+    if (owner.reports) {
+      for (const entry of owner.reports) entry.payload = null;
+      owner.reports.clear();
+    }
+  }
+
+  clearIngress() {
+    this.cancelReportDrain();
+    this.queue = { head: null, tail: null, length: 0 };
+    this.reportSources.clear();
+    this.reportDue = false;
+    for (const owner of this.live.values()) if (owner.reports) owner.reports.clear();
   }
 
   // One engine call for an event: a files-kind event stages its handles and
@@ -2250,6 +2400,7 @@ export class RocEngineRuntime {
   // effects performed) only when the monitor wants it: a job's result turn,
   // or every turn while a subscriber asked for `turn` events.
   deliver(node, handler, payload) {
+    if (payload.before) payload.before();
     if (globalThis.__trace) console.log("event", node, handler, JSON.stringify(payload));
     const m = this.monitor;
     if (!m.timesTurn(node, handler)) {
@@ -2742,6 +2893,10 @@ export class RocEngineRuntime {
     this.dispatch(FX_NODE, id, bytes);
   }
 
+  report(id, payload) {
+    return this.dispatch(FX_NODE, id, payload, undefined, id);
+  }
+
   // A request's file, `token:u64 start:u64 len:u64` at `at`, resolved while
   // the batch's released handles still name their files (see "Files"): the
   // browser's `File`, the range, and the range as a Blob of the file's type.
@@ -2867,7 +3022,7 @@ export class RocEngineRuntime {
         return;
       }
       case "online": {
-        const fn = () => this.guard(() => this.result(fx.id, new Uint8Array([RES_ONLINE, this.isOnline() ? 1 : 0])));
+        const fn = () => this.guard(() => this.report(fx.id, new Uint8Array([RES_ONLINE, this.isOnline() ? 1 : 0])));
         w.addEventListener("online", fn);
         w.addEventListener("offline", fn);
         this.live.set(fx.id, {
@@ -2882,7 +3037,7 @@ export class RocEngineRuntime {
       }
       case "visibility": {
         const doc = this.doc;
-        const fn = () => this.guard(() => this.result(fx.id, new Uint8Array([RES_VISIBLE, this.isVisible() ? 1 : 0])));
+        const fn = () => this.guard(() => this.report(fx.id, new Uint8Array([RES_VISIBLE, this.isVisible() ? 1 : 0])));
         doc.addEventListener("visibilitychange", fn);
         this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => doc.removeEventListener("visibilitychange", fn) });
         return;
@@ -3319,7 +3474,7 @@ export class RocEngineRuntime {
     sub.entry = {
       kind: "portsub",
       req: fx,
-      backlog: () => sub.queue.length,
+      backlog: () => sub.latest ? sub.entry.reports?.size ?? 0 : sub.queue.length,
       cancel: () => {
         sub.ended = true;
         sub.queue = [];
@@ -3361,9 +3516,10 @@ export class RocEngineRuntime {
   // data is the emitter's error, thrown back to it.
   portEmit(sub, value) {
     if (sub.ended || this.live.get(sub.id) !== sub.entry) return false;
-    let payload;
+    let payload, data;
     try {
-      payload = portReplyPayload(portData(value));
+      data = portData(value);
+      payload = portReplyPayload(data);
     } catch (e) {
       if (e instanceof PortDataError) throw new TypeError(`port "${sub.port}": emit was given something that is not JSON data: ${e.message}`);
       throw e;
@@ -3371,12 +3527,18 @@ export class RocEngineRuntime {
     if (payload.size > this.maxPortBytes) {
       this.portCount(sub.port, "tooLarge");
       payload = portFailed(2);
+    } else if (sub.latest && data.blobs.length > 0) {
+      // A report is a snapshot at emit, even if its caller later mutates a
+      // byte array. Files are immutable browser objects and stay by reference.
+      payload = portReplyPayload({ ...data, blobs: data.blobs.map((bytes) => bytes.slice()) });
     }
     if (sub.latest) {
-      if (sub.queue.length > 0) {
-        sub.queue[0] = { payload, terminal: false };
-        this.portCount(sub.port, "coalesced");
-      } else sub.queue.push({ payload, terminal: false });
+      const replaced = this.report(sub.id, {
+        ...payload,
+        before: () => { if (payload.parts[0][0] === RES_PORT_ANSWER) this.portCount(sub.port, "messages"); },
+      });
+      if (replaced) this.portCount(sub.port, "coalesced");
+      return true;
     } else {
       if (sub.queue.length >= sub.bound) {
         this.portCount(sub.port, "refusedEmits");
@@ -3394,6 +3556,17 @@ export class RocEngineRuntime {
     sub.ended = true;
     this.portCount(sub.port, threw ? "threw" : "closed");
     const payload = threw ? portFailed(1, String(error && error.message !== undefined ? error.message : error)) : portFailed(3);
+    if (sub.latest) {
+      this.result(sub.id, {
+        ...payload,
+        isLive: () => this.live.get(sub.id) === sub.entry,
+        before: () => {
+          this.live.delete(sub.id);
+          this.dropPushSub(sub);
+        },
+      });
+      return;
+    }
     sub.queue.push({ payload, terminal: true });
     this.portPump(sub);
   }
@@ -3511,8 +3684,16 @@ export class RocEngineRuntime {
     let n = 0;
     for (const [id, e] of [...this.live]) {
       if (e.kind !== "portsub" || e.req.port !== port || (arg !== undefined && e.req.msg.json !== arg)) continue;
-      if (answer.closed || answer.threw !== undefined) this.live.delete(id);
-      this.result(id, manualPortPayload(answer));
+      const terminal = answer.closed || answer.threw !== undefined;
+      const payload = manualPortPayload(answer);
+      if (!terminal && this.portDecls.get(port).delivery === 2) this.report(id, payload);
+      else {
+        this.result(id, {
+          ...payload,
+          isLive: () => this.live.get(id) === e,
+          before: () => { if (terminal) this.live.delete(id); },
+        });
+      }
       n += 1;
     }
     return n;
@@ -3646,6 +3827,7 @@ export class RocEngineRuntime {
   cancel(id) {
     const e = this.live.get(id);
     if (e === undefined) return;
+    this.dropReports(id, e);
     this.live.delete(id);
     e.cancel();
   }

@@ -181,6 +181,17 @@ SpecRunner := [].{
 		## The most bytes a task's job may append to its builders (the
 		## `max-output-bytes` setup, else the runtime's default).
 		max_output : U64,
+
+		## The catalogue chooses which port messages report a current value.
+		latest_ports : List(Str),
+
+		## Live report sources are indexed so cancelling or delivering one
+		## never searches the full subscription set.
+		report_sources : Dict(U32, {}),
+
+		## One source index and epoch over the same ingress queue as focus
+		## callbacks. Slots are absolute while a drain removes its prefix.
+		reports : { held : Bool, replaced : U64, epoch : U64, head : U64, index : Dict(U32, { epoch : U64, slot : U64 }) },
 	}
 
 	## A setup file: its name, media type and contents.
@@ -209,12 +220,15 @@ SpecRunner := [].{
 		focus_value : Str,
 		deferred : Deferred,
 		focus_commands : List({ mode : U8, node : U32 }),
-		event_queue : List({ node : U32, handler : U32, payload : List(U8), owner : U64 }),
+		event_queue : List(Input),
 		applying_focus : Bool,
 		draining : Bool,
 		turns : U64,
 		fault : [Healthy, Poisoned(Str)],
 	}
+
+	## One ingress entry; its source fixes replacement, never its payload.
+	Input : { node : U32, handler : U32, payload : List(U8), owner : U64, source : [Occurrence, Report(U32)] }
 
 	## A control value held back while its control has focus (design.md,
 	## "Controlled inputs").
@@ -275,7 +289,12 @@ SpecRunner := [].{
 	## wrote. Both mandatory declaration sections are consumed exactly, including
 	## the port catalogue the native runner does not otherwise need.
 	decode_keys : List(U8) -> List(Str)
-	decode_keys = |b| {
+	decode_keys = |b| SpecRunner.decode_declarations(b).keys
+
+	## Decode both declaration sections once: only the catalogue decides
+	## whether a subscription's messages are reports.
+	decode_declarations : List(U8) -> { keys : List(Str), latest_ports : List(Str) }
+	decode_declarations = |b| {
 		if b.first() != Ok(2) {
 			crash "contract: declaration section 2 (local-storage) is missing"
 		}
@@ -317,6 +336,7 @@ SpecRunner := [].{
 		$at = 4
 		$i = 0
 		var $names = []
+		var $latest_ports = []
 		while $i < count {
 			name_len = (SpecRunner.get_u32(ports, $at) ?? crash "contract: declaration section 5 (ports) has a short name").to_u64()
 			if name_len < 1 or name_len > 128 or name_len > ports.len() - $at - 4 {
@@ -339,13 +359,16 @@ SpecRunner := [].{
 			if !is_shape {
 				crash "contract: declaration section 5 (ports) has an invalid shape"
 			}
+			if kind == 3 and delivery == 2 {
+				$latest_ports = $latest_ports.append(name)
+			}
 			$at = $at + 6
 			$i = $i + 1
 		}
 		if $at != ports.len() {
 			crash "contract: declaration section 5 (ports) has trailing body bytes"
 		}
-		$keys
+		{ keys: $keys, latest_ports: $latest_ports }
 	}
 
 	flag_byte : Bool -> U8
@@ -568,6 +591,9 @@ SpecRunner := [].{
 		port_log: [],
 		saves: [],
 		max_output: SpecRunner.max_output_bytes,
+		latest_ports: [],
+		report_sources: Dict.empty(),
+		reports: { held: Bool.False, replaced: 0, epoch: 0, head: 0, index: Dict.empty() },
 	}
 
 	## A runner state for instance `inst` before its first batch.
@@ -590,9 +616,9 @@ SpecRunner := [].{
 				Work(id, job) => { ..b, pending: b.pending.append({ id, url: "work", body: "", kind: WorkRequest(job) }), issued: b.issued.append(id) }
 				Interval(id, ms) => { ..b, subs: b.subs.append({ id, sub: Interval(ms) }) }
 				Pop(id) => { ..b, subs: b.subs.append({ id, sub: Pop }) }
-				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }) }
-				VisibilitySub(id) => { ..b, subs: b.subs.append({ id, sub: VisibilitySub }) }
-				Cancel(id) => { ..b, pending: b.pending.keep_if(|p| p.id != id), subs: b.subs.keep_if(|x| x.id != id) }
+				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }), report_sources: b.report_sources.insert(id, {}) }
+				VisibilitySub(id) => { ..b, subs: b.subs.append({ id, sub: VisibilitySub }), report_sources: b.report_sources.insert(id, {}) }
+				Cancel(id) => { ..b, pending: b.pending.keep_if(|p| p.id != id), subs: b.subs.keep_if(|x| x.id != id), reports: { ..b.reports, index: b.reports.index.remove(id) }, report_sources: b.report_sources.remove(id) }
 				Push(url) => { ..b, back: b.back.append({ url: b.env.url, doc: b.doc }), env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) }, fwd: [] }
 				Replace(url) => { ..b, env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) } }
 				# Writes to unavailable storage fail in the browser and persist nothing.
@@ -606,7 +632,7 @@ SpecRunner := [].{
 				FileUrl(id, file) => { ..b, pending: b.pending.append({ id, url: "url", body: "", kind: UrlRequest(file) }), issued: b.issued.append(id) }
 				PortSend(port, msg) => { ..b, port_log: b.port_log.append({ port, json: msg.json }) }
 				PortCall(id, port, msg, timeout_ms) => { ..b, pending: b.pending.append({ id, url: "port", body: "", kind: PortRequest({ port, json: msg.json, timeout_ms }) }), issued: b.issued.append(id) }
-				PortListen(id, port, msg) => { ..b, subs: b.subs.append({ id, sub: PortSub(port, msg.json) }) }
+				PortListen(id, port, msg) => { ..b, subs: b.subs.append({ id, sub: PortSub(port, msg.json) }), report_sources: if (b.latest_ports.contains(port)) b.report_sources.insert(id, {}) else b.report_sources }
 				Fetch(id, _, url, _, _) => { ..b, pending: b.pending.append({ id, url, body: "", kind: FetchRequest }), issued: b.issued.append(id) }
 				# The runtime resolves a save's file when it applies the batch,
 				# while a handle the batch released still names its file.
@@ -652,10 +678,11 @@ SpecRunner := [].{
 	## program declared. The browser retains all storage for later requests.
 	mount_in : Program(state), Scm.Environment -> S(state)
 	mount_in = |program, env| {
-		declared = SpecRunner.decode_keys((program.keys)())
-		boot_kvs = declared.keep_oks(|key| env.storage.find_first(|(name, _)| name == key))
+		declared = SpecRunner.decode_declarations((program.keys)())
+		boot_kvs = declared.keys.keep_oks(|key| env.storage.find_first(|(name, _)| name == key))
 		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot({ ..env, storage: if (env.storage_available) boot_kvs else [] }))
-		s0 = SpecRunner.fresh(inst, SpecRunner.fresh_browser(env))
+		browser = { ..SpecRunner.fresh_browser(env), latest_ports: declared.latest_ports }
+		s0 = SpecRunner.fresh(inst, browser)
 		{ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s0, draining: Bool.True }, inst, cmds, wbuf))), draining: Bool.False }
 	}
 
@@ -680,12 +707,31 @@ SpecRunner := [].{
 		if s.fault != Healthy {
 			return s
 		}
-		if s.applying_focus {
+		if s.applying_focus or !s.event_queue.is_empty() {
+			input = { node, handler: h, payload, owner: if (node == SpecRunner.fx_node) 0 else Dom.lookup(s.dom, node), source: Occurrence }
 			if s.event_queue.len() >= 4096 {
-				return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], focus_commands: [] }
+				if s.applying_focus or s.draining {
+					return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], focus_commands: [] }
+				}
+				# Free one slot without delivering: the occurrence must pin the
+				# remaining reports before the oldest turn can raise callbacks.
+				{ input: oldest, rest } = SpecRunner.pop_input(s)
+				b = rest.browser
+				queued = { ..rest, draining: Bool.True, turns: 0, event_queue: rest.event_queue.append(input), browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } }
+				active = SpecRunner.deliver_input(program, { state: queued, input: oldest })
+				return SpecRunner.release_reports(program, { ..active, draining: Bool.False })
 			}
-			return { ..s, event_queue: s.event_queue.append({ node, handler: h, payload, owner: Dom.lookup(s.dom, node) }) }
+			b = s.browser
+			queued = { ..s, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } }, event_queue: s.event_queue.append(input) }
+			return if (s.applying_focus or s.draining) queued else SpecRunner.release_reports(program, queued)
 		}
+		SpecRunner.send_now(program, { state: s, node: node, handler: h, payload: payload })
+	}
+
+	## Run an entry already selected for delivery, without queuing it again.
+	## Its batch's focus and storage callbacks still pass through ingress.
+	send_now : Program(state), { state : S(state), node : U32, handler : U32, payload : List(U8) } -> S(state)
+	send_now = |program, { state: s, node, handler: h, payload }| {
 		outer = !s.draining
 		active = if (outer) { ..s, draining: Bool.True, turns: 0 } else s
 		if !outer and active.turns >= 4096 {
@@ -703,7 +749,7 @@ SpecRunner := [].{
 	drain_focus : Program(state), S(state) -> S(state)
 	drain_focus = |program, s0| {
 		var $s = { ..s0, draining: Bool.True }
-		while $s.fault == Healthy and (!$s.focus_commands.is_empty() or !$s.event_queue.is_empty()) {
+		while $s.fault == Healthy and (!$s.focus_commands.is_empty() or !$s.event_queue.is_empty() or !$s.browser.gets.is_empty()) {
 			while $s.fault == Healthy and !$s.focus_commands.is_empty() {
 				command = $s.focus_commands.first() ?? crash "SpecRunner.drain_focus: not empty"
 				s = { ..$s, applying_focus: Bool.True, focus_commands: $s.focus_commands.drop_first(1) }
@@ -718,16 +764,83 @@ SpecRunner := [].{
 				}
 				$s = { ..applied, applying_focus: Bool.False }
 			}
-			match $s.event_queue.first() {
-				Ok(event) => {
-					pending = { ..$s, event_queue: $s.event_queue.drop_first(1) }
-					current = (pending.dom.statics.get(event.node.to_u64()) ?? 0).bitwise_and(1099511627775)
-					$s = if (current == event.owner + 1 and SpecRunner.attached(pending.dom, event.owner)) SpecRunner.send(program, pending, event.node, event.handler, event.payload) else pending
-				}
-				Err(_) => {}
+			if !$s.event_queue.is_empty() {
+				{ input, rest } = SpecRunner.pop_input($s)
+				$s = SpecRunner.deliver_input(program, { state: rest, input: input })
+			} else {
+				$s = SpecRunner.answer_gets(program, $s)
 			}
 		}
-		{ ..$s, draining: s0.draining }
+		b = $s.browser
+		{ ..$s, draining: s0.draining, browser: { ..b, reports: { ..b.reports, head: 0, index: Dict.empty() } } }
+	}
+
+	## Pop exactly one ingress slot and remove only the index that still
+	## names it. A later report from a pinned source has its own slot.
+	pop_input : S(state) -> { input : Input, rest : S(state) }
+	pop_input = |s| {
+		input = s.event_queue.first() ?? crash "SpecRunner.pop_input: queue is not empty"
+		b = s.browser
+		reports = b.reports
+		index = match input.source {
+			Report(id) => match reports.index.get(id) {
+				Ok(position) if position.slot == reports.head => reports.index.remove(id)
+				_ => reports.index
+			}
+			Occurrence => reports.index
+		}
+		{ input, rest: { ..s, event_queue: s.event_queue.drop_first(1), browser: { ..b, reports: { ..reports, head: reports.head + 1, index } } } }
+	}
+
+	## A cancelled source or a DOM lifetime that ended cannot receive its
+	## queued input. Valid entries use the same ordinary turn path.
+	deliver_input : Program(state), { state : S(state), input : Input } -> S(state)
+	deliver_input = |program, { state: s, input }| {
+		live = match input.source {
+			Report(id) => s.browser.report_sources.contains(id)
+			Occurrence => {
+				current = (s.dom.statics.get(input.node.to_u64()) ?? 0).bitwise_and(1099511627775)
+				input.node == SpecRunner.fx_node or (current == input.owner + 1 and SpecRunner.attached(s.dom, input.owner))
+			}
+		}
+		if (live) SpecRunner.send_now(program, { state: s, node: input.node, handler: input.handler, payload: input.payload }) else s
+	}
+
+	## Queue a frozen report, replacing only its source's entry in this
+	## epoch. A full idle queue drains early instead of refusing data-sized
+	## source sets; occurrences use the same queue and pin by advancing it.
+	report : Program(state), { state : S(state), id : U32, payload : List(U8) } -> S(state)
+	report = |program, { state: s, id, payload }| {
+		if s.fault != Healthy or !s.browser.report_sources.contains(id) {
+			return s
+		}
+		b = s.browser
+		reports = b.reports
+		match reports.index.get(id) {
+			Ok(position) if position.epoch == reports.epoch => {
+				at = position.slot - reports.head
+				prior = s.event_queue.get(at) ?? crash "SpecRunner.report: index names a queued report"
+				{ list, .. } = s.event_queue.replace(at, { ..prior, payload }) ?? crash "SpecRunner.report: queued slot exists"
+				return { ..s, event_queue: list, browser: { ..b, reports: { ..reports, replaced: reports.replaced + 1 } } }
+			}
+			_ => {}
+		}
+		if s.event_queue.len() >= 4096 {
+			if s.applying_focus or s.draining {
+				return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], focus_commands: [], browser: { ..b, reports: { ..reports, head: 0, index: Dict.empty() } } }
+			}
+			return SpecRunner.report(program, { state: SpecRunner.release_reports(program, s), id: id, payload: payload })
+		}
+		slot = reports.head + s.event_queue.len()
+		{ ..s, event_queue: s.event_queue.append({ node: SpecRunner.fx_node, handler: id, payload, owner: 0, source: Report(id) }), browser: { ..b, reports: { ..reports, index: reports.index.insert(id, { epoch: reports.epoch, slot }) } } }
+	}
+
+	## Deliver the waiting ingress entries as ordinary turns. A held frame
+	## remains held after an occurrence drains it.
+	release_reports : Program(state), S(state) -> S(state)
+	release_reports = |program, s| {
+		b = s.browser
+		SpecRunner.drain_focus(program, { ..s, turns: 0, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } })
 	}
 
 	## Answer every storage read waiting for its turn: the stored value, or
@@ -735,7 +848,7 @@ SpecRunner := [].{
 	answer_gets : Program(state), S(state) -> S(state)
 	answer_gets = |program, s0| {
 		var $s = s0
-		while !$s.browser.gets.is_empty() {
+		while !$s.browser.gets.is_empty() and $s.event_queue.is_empty() and $s.focus_commands.is_empty() {
 			b = $s.browser
 			g = b.gets.first() ?? crash "SpecRunner.answer_gets: not empty"
 			found = if (b.env.storage_available) b.env.storage.find_first(|(key, _)| key == g.key) else Err(NotFound)
@@ -757,7 +870,12 @@ SpecRunner := [].{
 	broadcast = |program, s0, pick, payload| {
 		var $s = s0
 		for x in s0.browser.subs.keep_if(pick) {
-			$s = SpecRunner.deliver(program, $s, x.id, payload)
+			is_report = match x.sub {
+				OnlineSub | VisibilitySub => Bool.True
+				PortSub(port, _) => s0.browser.latest_ports.contains(port)
+				_ => Bool.False
+			}
+			$s = if (is_report) SpecRunner.report(program, { state: $s, id: x.id, payload: payload }) else SpecRunner.deliver(program, SpecRunner.release_reports(program, $s), x.id, payload)
 		}
 		$s
 	}
@@ -1174,10 +1292,31 @@ SpecRunner := [].{
 	## has a case here (the match has no catch-all).
 	one : Program(state), S(state), Scm.Op -> Try(S(state), Str)
 	one = |program, s, op| {
+		ready = if (SpecRunner.is_occurrence(s.browser, op)) SpecRunner.release_reports(program, s) else s
+		next = SpecRunner.one_ready(program, ready, op)?
+		Ok(if (next.browser.reports.held) next else SpecRunner.release_reports(program, next))
+	}
+
+	## Classify only declarations and step meanings. Assertions and fixtures
+	## do not flush a held frame, and an unchanged fact raises no report.
+	is_occurrence : Browser, Scm.Op -> Bool
+	is_occurrence = |browser, op| match op {
+		Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | RunEffect(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
+		EmitPort({ port, .. }) => !browser.latest_ports.contains(port)
+		_ => Bool.False
+	}
+
+	## Interpret a step after its occurrence boundary has drained. Keeping
+	## this match exhaustive makes every parser extension visible here.
+	one_ready : Program(state), S(state), Scm.Op -> Try(S(state), Str)
+	one_ready = |program, s, op| {
 		dom = s.dom
 		b = s.browser
 		check = |ok, msg| if (ok) Ok(s) else Err(msg)
 		match op {
+			HoldReports => if (b.reports.held) Err("hold-reports while reports are already held") else Ok({ ..s, browser: { ..b, reports: { ..b.reports, held: Bool.True } } })
+			ReleaseReports => if (!b.reports.held) Err("release-reports while reports are not held") else Ok(SpecRunner.release_reports(program, { ..s, browser: { ..b, reports: { ..b.reports, held: Bool.False } } }))
+			ExpectReportsReplaced(count) => check(b.reports.replaced == count, "reports replaced ${b.reports.replaced.to_str()} times, expected ${count.to_str()}")
 			Click(loc) => {
 				i = SpecRunner.need(dom, loc)?
 				# A browser delivers no click to a disabled control.
@@ -1459,13 +1598,15 @@ SpecRunner := [].{
 	## terminal `payload`: each leaves the browser's live set, as the runtime
 	## forgets it, and receives it as its last turn.
 	end_port : Program(state), S(state), Str, List(U8) -> Try(S(state), Str)
-	end_port = |program, s, port, payload| {
+	end_port = |program, initial, port, payload| {
+		s = SpecRunner.release_reports(program, initial)
 		b = s.browser
 		ending = b.subs.keep_if(|x| SpecRunner.on_port(x.sub, port))
 		if ending.is_empty() {
 			return Err("no live subscription on port ${JsonOut.quote(port)}")
 		}
-		var $s = { ..s, browser: { ..b, subs: b.subs.keep_if(|x| !SpecRunner.on_port(x.sub, port)) } }
+		report_sources = ending.fold(b.report_sources, |sources, sub| sources.remove(sub.id))
+		var $s = { ..s, browser: { ..b, subs: b.subs.keep_if(|x| !SpecRunner.on_port(x.sub, port)), report_sources } }
 		for x in ending {
 			$s = SpecRunner.deliver(program, $s, x.id, payload)
 		}
@@ -1747,6 +1888,9 @@ SpecRunner := [].{
 		if SpecRunner.same_document(b.env.url, url) {
 			Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.append(entry), env: { ..b.env, url }, fwd: [] } }))
 		} else {
+			if b.reports.held {
+				return Err("cross-document navigation while reports are held")
+			}
 			s1 = SpecRunner.mount_in(program, Scm.next_document({ ..b.env, url }))
 			b1 = s1.browser
 			Ok({ ..s1, mark: s.mark, browser: { ..b1, doc: b.doc + 1, back: b.back.append(entry), fwd: [], files: b.files, given: b.given, max_output: b.max_output } })
@@ -2059,6 +2203,9 @@ SpecRunner := [].{
 			}
 			$i = $i + 1
 		}
+		if $s.browser.reports.held {
+			return Err({ step: spec.steps.len() - 1, at: spec.steps.last() ?? crash "a parsed spec has steps", message: "spec ended while reports were held" })
+		}
 		Ok($s)
 	}
 
@@ -2067,7 +2214,8 @@ SpecRunner := [].{
 	## file given through handles it mints, a digest it computes, the live
 	## handle count) through `host`, every other step through `one`.
 	step! : Program(state), Host, S(state), Scm.Op => Try(S(state), Str)
-	step! = |program, host, s, op|
+	step! = |program, host, initial, op| {
+		s = if (SpecRunner.is_occurrence(initial.browser, op)) SpecRunner.release_reports(program, initial) else initial
 		match (SpecRunner.file_count(s.dom, op), op) {
 			(Ok(n), _) => SpecRunner.give_files(program, s, op, (host.mint_files!)(n))
 			(_, ExpectFiles(n)) => {
@@ -2084,6 +2232,7 @@ SpecRunner := [].{
 					(_, Err(NoDigest)) => SpecRunner.one(program, s, op)
 				}
 		}
+	}
 
 	# ----------------------------------------------------------------- walks
 
@@ -2209,7 +2358,7 @@ SpecRunner := [].{
 	## a pending request, tick a live interval, change visibility or
 	## connectivity for a live subscription, or deliver a message the specs
 	## emit on a port with a live subscription.
-	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str)]
+	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str), BurstOnline, BurstVisibility, BurstPort(Str)]
 
 	## Every service the browser can do now, in a fixed order.
 	services : Book, S(state) -> List(Service)
@@ -2238,8 +2387,9 @@ SpecRunner := [].{
 			}
 		}
 		$out = $out.concat($ticks.map(|ms| Tick(ms))).concat($ports.map(|p| Emit(p)))
-		$out = if ($vis) $out.append(ToggleVisibility) else $out
-		if ($online) $out.append(ToggleOnline) else $out
+		$out = $out.concat($ports.keep_if(|port| b.latest_ports.contains(port)).map(|port| BurstPort(port)))
+		$out = if ($vis) $out.append(ToggleVisibility).append(BurstVisibility) else $out
+		if ($online) $out.append(ToggleOnline).append(BurstOnline) else $out
 	}
 
 	## The answer a walk gives an HTTP request (or an upload or a fetch):
@@ -2284,6 +2434,26 @@ SpecRunner := [].{
 	serve! = |program, host, bk, s, service, v| {
 		b = s.browser
 		match service {
+			BurstOnline | BurstVisibility | BurstPort(_) => {
+				var $s = SpecRunner.one(program, s, HoldReports)?
+				var $count = 0.U64
+				while $count < 2 + v % 2 {
+					current = $s.browser
+					op = match service {
+						BurstOnline => SetOnline(if (current.env.online) Offline else Online)
+						BurstVisibility => SetVisibility(if (current.env.visible) Hidden else Visible)
+						BurstPort(port) => {
+							messages = bk.messages.keep_if(|m| m.port == port)
+							json = (messages.get((v + $count) % messages.len().max(1)) ?? { port, json: "null" }).json
+							EmitPort({ port, json })
+						}
+						_ => crash "SpecRunner.serve!: a burst service"
+					}
+					$s = SpecRunner.one(program, $s, op)?
+					$count = $count + 1
+				}
+				Ok((SpecRunner.one(program, $s, ReleaseReports)?, { what: "report burst", kind: Service }))
+			}
 			Answer(p) => {
 				n = (b.issued.find_first_index(|id| id == p.id) ? |_| "a pending request was never issued") + 1
 				staged = |stub| { ..s, browser: { ..b, stub: Staged(stub) } }
@@ -3209,5 +3379,136 @@ expect {
 		text_count: 0,
 		events: ["C:\\fakepath\\a.txt", ""],
 		files: 0,
+	}
+}
+
+## A protocol probe records delivered inputs without reactive semantics;
+## the ingress tests can distinguish frozen payloads and exact turn order.
+report_probe : {} -> SpecRunner.Program(List({ id : U32, payload : List(U8) }))
+report_probe = |_| {
+	version: Dom.protocol_version,
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0],
+	init: |_| ([], [13, 1, 0, 0, 0, 6, 13, 2, 0, 0, 0, 7], List.repeat(0, 8)),
+	event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), [], List.repeat(0, 8)),
+	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+	settled: |_| Ok({}),
+	live: |_| [],
+}
+
+## A source keeps its first queue position while replacement freezes its
+## newest payload; assertions inside the held frame observe no turn.
+expect {
+	program = report_probe({})
+	s = SpecRunner.mount_in(program, {})
+	a = SpecRunner.one(program, s, HoldReports)?
+	b = SpecRunner.one(program, a, SetOnline(Offline))?
+	c = SpecRunner.one(program, b, SetVisibility(Hidden))?
+	d = SpecRunner.one(program, c, SetOnline(Online))?
+	_ = SpecRunner.one(program, d, ExpectReportsReplaced(1))?
+	before = d.inst
+	after = SpecRunner.one(program, d, ReleaseReports)?
+	{ before, delivered: after.inst, indexed: after.browser.reports.index.len() } == {
+		before: [],
+		delivered: [{ id: 1, payload: [8, 1] }, { id: 2, payload: [9, 0] }],
+		indexed: 0,
+	}
+}
+
+## An occurrence pins reports in constant work by advancing the epoch;
+## later reports begin behind it and cannot overwrite the earlier payload.
+expect {
+	program = report_probe({})
+	s = SpecRunner.mount_in(program, {})
+	a = SpecRunner.report(program, { state: s, id: 1, payload: [8, 0] })
+	b = SpecRunner.send(program, { ..a, applying_focus: Bool.True }, SpecRunner.fx_node, 9, [5])
+	c = SpecRunner.report(program, { state: b, id: 1, payload: [8, 1] })
+	d = SpecRunner.report(program, { state: c, id: 1, payload: [8, 0] })
+	after = SpecRunner.release_reports(program, { ..d, applying_focus: Bool.False })
+	{ seen: after.inst, replacements: after.browser.reports.replaced, indexed: after.browser.reports.index.len() } == {
+		seen: [{ id: 1, payload: [8, 0] }, { id: 9, payload: [5] }, { id: 1, payload: [8, 0] }],
+		replacements: 1,
+		indexed: 0,
+	}
+}
+
+## Cancelling a source discards both pinned and replaceable reports; a
+## later report from the cancelled source neither queues nor counts.
+expect {
+	program = report_probe({})
+	s = SpecRunner.mount_in(program, {})
+	a = SpecRunner.report(program, { state: s, id: 1, payload: [8, 0] })
+	b = SpecRunner.send(program, { ..a, applying_focus: Bool.True }, SpecRunner.fx_node, 9, [5])
+	c = SpecRunner.report(program, { state: b, id: 1, payload: [8, 1] })
+	cancelled = { ..c, applying_focus: Bool.False, browser: SpecRunner.absorb(c.browser, [Cancel(1)]) }
+	after = SpecRunner.release_reports(program, SpecRunner.report(program, { state: cancelled, id: 1, payload: [8, 0] }))
+	{ seen: after.inst, replacements: after.browser.reports.replaced, indexed: after.browser.reports.index.len(), live_sources: after.browser.report_sources.len() } == {
+		seen: [{ id: 9, payload: [5] }],
+		replacements: 0,
+		indexed: 0,
+		live_sources: 1,
+	}
+}
+
+## A hold belongs to one document: nested holds, unmatched releases and a
+## new document during a hold fail before they can change that contract.
+expect {
+	program = report_probe({})
+	s = SpecRunner.mount_in(program, {})
+	held = SpecRunner.one(program, s, HoldReports)?
+	{ nested: SpecRunner.one(program, held, HoldReports).map_ok(|_| {}), unmatched: SpecRunner.one(program, s, ReleaseReports).map_ok(|_| {}), navigation: SpecRunner.one(program, held, Navigate("/next")).map_ok(|_| {}) } == {
+		nested: Err("hold-reports while reports are already held"),
+		unmatched: Err("release-reports while reports are not held"),
+		navigation: Err("cross-document navigation while reports are held"),
+	}
+}
+
+## At the idle ingress bound, an occurrence pins the waiting reports before
+## the oldest runs, and all 4096 remaining entries fit and deliver normally.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, {})
+	var $sources = initial.browser.report_sources
+	var $id = 1.U32
+	while $id <= 4096 {
+		$sources = $sources.insert($id, {})
+		$id = $id + 1
+	}
+	var $s = { ..initial, browser: { ..initial.browser, report_sources: $sources } }
+	$id = 1
+	while $id <= 4096 {
+		$s = SpecRunner.report(program, { state: $s, id: $id, payload: [8, 0] })
+		$id = $id + 1
+	}
+	after = SpecRunner.send(program, $s, SpecRunner.fx_node, 9000, [5])
+	{ fault: after.fault, delivered: after.inst.len(), last: after.inst.last()?, queued: after.event_queue.len(), indexed: after.browser.reports.index.len() } == {
+		fault: Healthy,
+		delivered: 4097,
+		last: { id: 9000, payload: [5] },
+		queued: 0,
+		indexed: 0,
+	}
+}
+
+## Storage is read when its later task runs, after preceding ingress and
+## batch focus effects: a queued occurrence's write must precede the read.
+expect {
+	base = report_probe({})
+	program = {
+		..base,
+		event: |seen, _buf, _work, _node, id, payload| {
+			commands = match id {
+				1 => SpecRunner.put_str([13, 3, 0, 0, 0, 2], "k")
+				9 => SpecRunner.put_str(SpecRunner.put_str([16, 1], "k"), "new")
+				_ => []
+			}
+			(seen.append({ id, payload }), commands, List.repeat(0, 8))
+		},
+	}
+	initial = SpecRunner.mount_in(program, { storage: [("k", "old")] })
+	queued = SpecRunner.report(program, { state: initial, id: 1, payload: [8, 0] })
+	after = SpecRunner.send(program, queued, SpecRunner.fx_node, 9, [])
+	{ delivered: after.inst, pending_reads: after.browser.gets } == {
+		delivered: [{ id: 1, payload: [8, 0] }, { id: 9, payload: [] }, { id: 3, payload: [3, 'n', 'e', 'w'] }],
+		pending_reads: [],
 	}
 }

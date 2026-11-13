@@ -36,6 +36,8 @@
 // intervals), and connectivity and visibility change only through
 // `set-online` and `set-visibility`, which update the runtime's environment readers and
 // dispatch the browser's own events only when a value changes.
+// A report step supplies its own frame unless `hold-reports` is active;
+// assertions leave that frame pending and occurrences deliver it first.
 //
 // Work assertions read the engine's work counters through the `metric` export
 // (each metric step names the counters it sums; the parser emits them), the
@@ -121,6 +123,7 @@ async function navigating(page, state, act, known = undefined) {
     })
     .catch(() => ({ cross: true, href: "?" }));
   if (nav && nav.cross) {
+    if (state.holdingReports) throw new Error("a cross-document navigation cannot leave while reports are held");
     if (nav.external) throw new Error(`the click navigates to ${nav.href}, which leaves the app`);
     const t0 = Date.now();
     while (state.loads === loads) {
@@ -448,6 +451,21 @@ const sameDocument = (from, to) => to.includes("#") && from.split("#")[0] === to
 // One handler per step form of the grammar (`Scm.step_forms`).
 const STEPS = {
   ...PORT_STEPS,
+  "hold-reports": async (page, _s, state) => {
+    if (state.holdingReports) throw new Error("reports are already held");
+    state.holdingReports = true;
+    await page.evaluate(() => { window.__reportsHeld = true; });
+  },
+  "release-reports": async (page, _s, state) => {
+    if (!state.holdingReports) throw new Error("reports are not held");
+    await releaseReports(page);
+    state.holdingReports = false;
+    await page.evaluate(() => { window.__reportsHeld = false; });
+  },
+  "expect-reports-replaced": async (page, s) => {
+    const count = await page.evaluate(() => window.__rt.reportsReplaced);
+    if (count !== s.count) throw new Error(`${count} reports were replaced, expected ${s.count}`);
+  },
   click: (page, s, state) => click(page, state, s.loc, false),
   "real-click": (page, s, state) => click(page, state, s.loc, true),
   fill: (page, s) => fill(page, s.loc, s.text),
@@ -645,6 +663,7 @@ const STEPS = {
   navigate: async (page, s, state) => {
     const from = await page.evaluate(() => location.pathname + location.search + location.hash);
     if (sameDocument(from, s.text)) return popstateAfter(page, `location.assign(${JSON.stringify(s.text)})`);
+    if (state.holdingReports) throw new Error("a cross-document navigation cannot leave while reports are held");
     // Any other navigation loads a new document: the app mounts afresh.
     return navigating(page, state, () => page.evaluate((url) => location.assign(url), s.text), { cross: true, href: s.text });
   },
@@ -709,6 +728,21 @@ const STEPS = {
     if (n !== s.count) throw new Error(`the app saved ${n} files, expected ${s.count}`);
   },
 };
+
+// Assertions inspect a held frame without delivering it. An occurrence's
+// target and pending request must be resolved only after earlier reports
+// have reached the app, since a report may change either of them.
+async function isOccurrence(page, step) {
+  if (step.op.startsWith("expect-")) return false;
+  if (["hold-reports", "release-reports", "mark-metrics", "stub-http", "stub-http-reject", "set-online", "set-visibility"].includes(step.op)) return false;
+  if (step.op === "emit-port") return page.evaluate((port) => window.__rt.portDecls.get(port)?.delivery !== 2, step.port);
+  return true;
+}
+
+async function releaseReports(page) {
+  await page.evaluate(() => window.__rt.releaseReports());
+  return settle(page);
+}
 
 // One handler per setup form of the grammar (`Scm.setup_forms`).
 const SETUP = {
@@ -800,6 +834,7 @@ function install(attrOfSource) {
   window.__doc = `${Date.now()}-${Math.random()}`;
   window.__attrOf = eval(`(${attrOfSource})`);
   window.__nav = null;
+  window.__reportsHeld = false;
   // Bubbling, on window: after the runtime's delegated listener has decided
   // whether to prevent the click's default action.
   window.addEventListener("click", (e) => {
@@ -815,6 +850,7 @@ function install(attrOfSource) {
     }
     const same = to.hash !== "" && to.pathname === here.pathname && to.search === here.search;
     window.__nav = same ? null : { cross: true, href: to.pathname + to.search + to.hash };
+    if (!same && window.__reportsHeld) e.preventDefault();
   });
   let cb = 0;
   const born = (n) => {
@@ -892,7 +928,7 @@ for (const spec of specs) {
   try {
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
-    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null };
+    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null, holdingReports: false };
     await installEnvironment(page, state, true);
     await page.evaluateOnNewDocument(install, attrOf.toString());
     await page.goto(`http://127.0.0.1:${port}${setup.environment.url}`);
@@ -906,9 +942,12 @@ for (const spec of specs) {
       const s = spec.steps[i];
       const h = STEPS[s.op];
       if (h === undefined) throw new Error(`${s.op} has no handler in this runner`);
+      if (await isOccurrence(page, s)) await releaseReports(page);
       await h(page, s, state);
+      if (!state.holdingReports) await releaseReports(page);
       if (pageErrors(page).length) throw new Error(`page error: ${pageErrors(page).join("; ")}`);
     }
+    if (state.holdingReports) throw new Error("the spec ended while reports were held");
   } catch (e) {
     const wasmErr = await page
       .evaluate(() => {

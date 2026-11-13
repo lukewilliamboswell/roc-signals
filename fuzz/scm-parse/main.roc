@@ -29,6 +29,8 @@ target = Fuzz.target_with({
 		Fuzz.example({ name: "unterminated", revision: "1", make: || "(test \"t\" (steps" }),
 		Fuzz.example({ name: "worker-steps", revision: "1", make: || "(test \"w\" (steps (expect-pending-work \"p/q\" 2) (lose-work 1 app_crash) (time-out-work 2) (expect-metric-delta effects_refused 0)))" }),
 		Fuzz.example({ name: "file-steps", revision: "1", make: || "(test \"f\" (setup (file \"a.txt\" \"text/plain\" \"ab\" 3) (file \"b.png\" \"image/png\" \"\")) (steps (choose-files (label \"Upload\") \"a.txt\" \"b.png\") (drop-files (test-id \"zone\") \"a.txt\") (paste-files (text \"here\") \"b.png\") (expect-files 3)))" }),
+		Fuzz.example({ name: "report-frame", revision: "1", make: || "(test \"reports\" (steps (hold-reports) (set-online offline) (set-online online) (expect-reports-replaced 1) (release-reports)))" }),
+		Fuzz.example({ name: "report-bad-count", revision: "1", make: || "(test \"reports\" (steps (expect-reports-replaced -1)))" }),
 	],
 	name: "scm-parse",
 	generator: Fuzz.str,

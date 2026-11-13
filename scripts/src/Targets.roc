@@ -154,6 +154,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "file-effects-browser.mjs", ["--wasm", file_effects])?)
 				.concat(Targets.browser!(o, "prepared-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "prepared")])?)
 				.concat(Targets.browser!(o, "ports-browser.mjs", ["--wasm", ports])?)
+				.concat(Targets.browser!(o, "reports-browser.mjs", ["--wasm", ports])?)
 				.concat(Targets.browser!(o, "tasks-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "tasks")])?)
 				.concat(Targets.browser!(o, "reading-list-journey.mjs", ["--wasm", SpecSuite.wasm_of(o, "reading-list")])?)
 				.concat(Targets.browser!(o, "status-page-journey.mjs", ["--wasm", SpecSuite.wasm_of(o, "status-page")])?)
