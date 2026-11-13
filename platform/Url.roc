@@ -109,8 +109,19 @@ Url :: {
 
 	## Identify a page-relative URL or the explicit HTTP(S) origin it names.
 	## No origin is invented when a URL starts with a single slash.
+	## IPv6 host text omits brackets; serialization supplies them around the host.
 	origin : Url -> [Relative, Absolute({ scheme : [Http, Https], host : Str, port : [None, Some(U16)] })]
-	origin = |url| url.origin
+	origin = |url| match url.origin {
+		Relative => Relative
+		Absolute(origin) => Absolute({
+			..origin,
+			host: if starts_with(origin.host, "[") {
+				trim_brackets(origin.host)
+			} else {
+				origin.host
+			},
+		})
+	}
 
 	## Return the encoded path and query an HTTP request sends, without a fragment.
 	request_target : Url -> Str
@@ -1133,7 +1144,7 @@ expect
 ## Parsing expands and canonicalizes an IPv6 loopback address.
 expect
 	match Url.parse("http://[::1]:8080/") {
-		Ok(url) => Url.origin(url) == Absolute({ scheme: Http, host: "[0:0:0:0:0:0:0:1]", port: Some(8080) }) and Url.to_str(url) == "http://[0:0:0:0:0:0:0:1]:8080/"
+		Ok(url) => Url.origin(url) == Absolute({ scheme: Http, host: "0:0:0:0:0:0:0:1", port: Some(8080) }) and Url.to_str(url) == "http://[0:0:0:0:0:0:0:1]:8080/"
 		Err(_) => False
 	}
 
@@ -1316,14 +1327,14 @@ expect Url.parse("https://example.com.") == Err(InvalidHost("example.com."))
 ## Parsing canonicalizes full IPv6 addresses.
 expect
 	match Url.parse("http://[2001:0DB8:0000:0000:0000:ff00:0042:8329]/") {
-		Ok(url) => Url.origin(url) == Absolute({ scheme: Http, host: "[2001:db8:0:0:0:ff00:42:8329]", port: None }) and Url.to_str(url) == "http://[2001:db8:0:0:0:ff00:42:8329]/"
+		Ok(url) => Url.origin(url) == Absolute({ scheme: Http, host: "2001:db8:0:0:0:ff00:42:8329", port: None }) and Url.to_str(url) == "http://[2001:db8:0:0:0:ff00:42:8329]/"
 		Err(_) => False
 	}
 
 ## Parsing expands an all-zero IPv6 address.
 expect
 	match Url.parse("http://[::]/") {
-		Ok(url) => Url.origin(url) == Absolute({ scheme: Http, host: "[0:0:0:0:0:0:0:0]", port: None })
+		Ok(url) => Url.origin(url) == Absolute({ scheme: Http, host: "0:0:0:0:0:0:0:0", port: None })
 		Err(_) => False
 	}
 
