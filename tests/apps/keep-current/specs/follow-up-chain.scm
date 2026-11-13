@@ -3,6 +3,7 @@
     (mark-metrics)
     (fill (label "Question") "redirect")
     (expect-current-location "/current/next")
+    (blur (label "Question"))
     (expect-value (label "Question") "after")
     (expect-text (test-id "answers") "redirect:follow")
     (expect-pending-effects 1)

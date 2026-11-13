@@ -14,7 +14,7 @@
     (click (role button :name "Hide and choose B"))
     (expect-text (test-id "site-status") "hidden")
     (mark-metrics)
-    (progress-effect 2 receiving 8 unknown)
+    (progress-effect 1 receiving 8 unknown)
     (stub-http "abandoned A" :url "/current/A/0" :status 200 :body "wrong")
     (run-effect 2)
     (expect-text (test-id "answers") "A:0:kept")
