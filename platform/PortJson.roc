@@ -1203,6 +1203,11 @@ write_digits = |out, text| write(out, |t| t.append(quote).concat(Str.to_utf8(tex
 ## other character as it is.
 write_string : List(U8), Str -> List(U8)
 write_string = |text, value| {
+	# The dev Wasm backend gives an empty UTF-8 conversion allocated storage
+	# with zero capacity, which concat does not release: https://github.com/roc-lang/roc/issues/13017.
+	if value.is_empty() {
+		return text.append(quote).append(quote)
+	}
 	bytes = Str.to_utf8(value)
 	if !bytes.any(|b| b == quote or b == backslash or b < 32) {
 		return text.append(quote).concat(bytes).append(quote)
@@ -1365,6 +1370,9 @@ expect {
 	raw = from_text("\"a\nb\"")
 	text == "\"q\\\" b\\\\ n\\n t\\t c\\u0001 é 😀 /\"" and decoded == Ok("a\"b\\c/d\né😀\u(8)\u(C)\r\t") and lone.is_err() and raw == Err(Syntax(2)) and round_trips("") and round_trips("héllo 🦊\u(0)")
 }
+
+## Empty and nonempty strings preserve their exact JSON bytes in one message.
+expect json_of(["", "An author", ""]) == "[\"\",\"An author\",\"\"]"
 
 ## Records are objects with keys in field order; an absent optional field is
 ## left out, and absent or `null` reads back as `Missing`.
