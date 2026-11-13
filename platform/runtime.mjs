@@ -355,6 +355,486 @@ function checkValueControl(el, node) {
   if (el.tagName === "INPUT" && el.type === "file") throw new ContractFault(`contract: value property on file input at node ${node}`);
 }
 
+// Stateless command implementations are the semantic roles supported by this
+// runtime. Mount binds metadata codes to these actual functions, not to another
+// number table. A reader belongs only to its guarded applyBatch invocation.
+function applyHoleCommand(reader) {
+  const { dv, u8, op } = reader;
+  let at = reader.at;
+  const node = dv.getUint32(at, true);
+  const row = this.lookup(node);
+  const hole = this.templates[row.__site].holes[u8[at + 4]];
+  const n = dv.getUint32(at + 5, true);
+  const target = row.__ht[u8[at + 4]];
+  const v = readStr(u8, at + 9, n);
+  if (op === this.protocol.OP_TEXT) target.nodeValue = v;
+  else {
+    if (hole.kind !== HOLE_PROP) throw new Error("HPROP names a non-property hole");
+    setProp(target, hole.prop, v, node, this);
+  }
+  at += 9 + n;
+  return at;
+}
+function applyNodeCommand(reader) {
+  const { dv, u8, doc, op } = reader;
+  let at = reader.at;
+  const node = dv.getUint32(at, true);
+  const parent = dv.getUint32(at + 4, true);
+  const before = dv.getUint32(at + 8, true);
+  const n = dv.getUint32(at + 12, true);
+  const s = readStr(u8, at + 16, n);
+  at += 16 + n;
+  const parentEl = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
+  const el = op === this.protocol.OP_ELEM ? createIn(doc, s, parentEl) : doc.createTextNode(s);
+  // Command addresses do not route events; only LISTEN assigns __rn.
+  el.__id = node;
+  this.place(el, parent, before);
+  if (op === this.protocol.OP_ELEM && el.tagName === "OPTION") settleSelect(el.parentNode);
+  this.statics[node] = el;
+  return at;
+}
+
+const COMMAND_APPLIERS = {
+  INST(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const node = dv.getUint32(at, true);
+    const parent = dv.getUint32(at + 4, true);
+    const before = dv.getUint32(at + 8, true);
+    const site = dv.getUint32(at + 12, true);
+    const tpl = this.templates[site];
+    at += 16;
+    if (!tpl.svg && tpl.root.namespaceURI !== SVG_NS) {
+      const p = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
+      if (p.namespaceURI === SVG_NS && p.tagName !== "foreignObject") {
+        const bytes = tpl.bytes;
+        tpl.root = this.parseTemplate(bytes, new DataView(bytes.buffer), 0, bytes.length, p).root;
+        tpl.svg = true;
+      }
+    }
+    const el = tpl.root.cloneNode(true);
+    el.__rn = node;
+    const holes = tpl.holes;
+    // Hole targets are resolved once, here: a nested site inserting
+    // content into the row later shifts sibling indices.
+    const targets = new Array(holes.length);
+    for (let i = 0; i < holes.length; i += 1) targets[i] = walk(el, holes[i].path);
+    el.__ht = targets;
+    el.__aliases = [];
+    for (let i = 0; i < holes.length; i += 1) {
+      const hole = holes[i];
+      const target = targets[i];
+      if (hole.kind === HOLE_TEXT) {
+        const n = dv.getUint32(at, true);
+        target.nodeValue = readStr(u8, at + 4, n);
+        at += 4 + n;
+      } else if (hole.kind === HOLE_ATTR) {
+        at = applyAttribute(this, u8, dv, at, target, hole.name);
+      } else if (hole.kind === HOLE_PROP) {
+        const n = dv.getUint32(at, true);
+        setProp(target, hole.prop, readStr(u8, at + 4, n), node, this);
+        at += 4 + n;
+      } else if (hole.kind === HOLE_CLICK) {
+        checkHandlerElement(target, hole.name, hole.entry, this.protocol);
+        if (target.__h === undefined) target.__h = {};
+        target.__h[hole.name] = hole.entry;
+        this.registerLayout(target, hole.name, hole.entry, el);
+      } else if (hole.kind === HOLE_BIND || hole.kind === HOLE_REF) {
+        const id = dv.getUint32(at, true);
+        this.statics[id] = target;
+        el.__aliases.push(id);
+        at += 4;
+      } else throw new Error(`unknown template hole kind ${hole.kind}`);
+    }
+    this.place(el, parent, before);
+    if (el.tagName === "OPTION") settleSelect(el.parentNode);
+    el.__site = site;
+    this.statics[node] = el;
+    this.sites[site].add(node);
+    return at;
+  },
+  HATTR(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const row = this.lookup(dv.getUint32(at, true));
+    const index = u8[at + 4];
+    const hole = this.templates[row.__site].holes[index];
+    if (hole.kind !== HOLE_ATTR) throw new Error("HATTR names a non-attribute hole");
+    at += 5;
+    at = applyAttribute(this, u8, dv, at, row.__ht[index], hole.name);
+    return at;
+  },
+  TEXT: applyHoleCommand,
+  HPROP: applyHoleCommand,
+  MOVE(reader) {
+    const { dv } = reader;
+    let at = reader.at;
+    const el = this.lookup(dv.getUint32(at, true));
+    const before = dv.getUint32(at + 4, true);
+    el.parentNode.insertBefore(el, before === 0 ? null : this.lookup(before));
+    at += 8;
+    return at;
+  },
+  RELEASE(reader) {
+    const { dv } = reader;
+    let at = reader.at;
+    this.releaseNode(this.lookup(dv.getUint32(at, true)));
+    at += 4;
+    return at;
+  },
+  REMOVE(reader) {
+    const { dv } = reader;
+    let at = reader.at;
+    const node = dv.getUint32(at, true);
+    const el = this.lookup(node);
+    this.forgetSubtree(el);
+    el.parentNode.removeChild(el);
+    this.statics[node] = undefined;
+    at += 4;
+    return at;
+  },
+  CLEAR(reader) {
+    const { dv } = reader;
+    let at = reader.at;
+    const parent = this.lookup(dv.getUint32(at, true));
+    const site = dv.getUint32(at + 4, true);
+    for (let child = parent.firstChild; child; child = child.nextSibling) this.forgetSubtree(child);
+    this.sites[site] = new Set();
+    parent.textContent = "";
+    at += 8;
+    return at;
+  },
+  TEMPLATE(reader) {
+    const { dv, u8, mode, batch, offset } = reader;
+    let at = reader.at;
+    const tpl = dv.getUint32(at, true);
+    const n = dv.getUint32(at + 4, true);
+    this.templates[tpl] = mode === "update" ? batch.definitions.get(offset) : this.parseTemplate(u8, dv, at + 8, n);
+    this.sites[tpl] = new Set();
+    at += 8 + n;
+    return at;
+  },
+  ELEM: applyNodeCommand,
+  TEXTNODE: applyNodeCommand,
+  ATTR(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const el = this.lookup(dv.getUint32(at, true));
+    const n = dv.getUint32(at + 4, true);
+    const name = readStr(u8, at + 8, n);
+    at += 8 + n;
+    at = applyAttribute(this, u8, dv, at, el, name);
+    return at;
+  },
+  PROP(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const node = dv.getUint32(at, true);
+    const prop = u8[at + 4];
+    const n = dv.getUint32(at + 5, true);
+    setProp(this.lookup(node), prop, readStr(u8, at + 9, n), node, this);
+    at += 9 + n;
+    return at;
+  },
+  LISTEN(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const node = dv.getUint32(at, true);
+    const el = this.statics[node];
+    const n = dv.getUint32(at + 8, true);
+    const type = readStr(u8, at + 12, n);
+    el.__rn = node;
+    if (el.__h === undefined) el.__h = {};
+    const h = dv.getUint32(at + 4, true);
+    const kind = u8[at + 12 + n];
+    const policies = dv.getUint32(at + 13 + n, true);
+    const entry = handlerEntry(h, kind, policies, type, this.protocol);
+    checkHandlerElement(el, type, entry, this.protocol);
+    el.__h[type] = entry;
+    if (policies & this.protocol.POLICY_DOCUMENT) this.registerDocumentKey(el, type, entry);
+    else if (kind !== this.protocol.KIND_SIZE && kind !== this.protocol.KIND_SEEN) this.listen(type);
+    this.registerLayout(el, type, entry, el);
+    at += 17 + n;
+    return at;
+  },
+  SETTEXT(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const el = this.lookup(dv.getUint32(at, true));
+    const n = dv.getUint32(at + 4, true);
+    el.nodeValue = readStr(u8, at + 8, n);
+    at += 8 + n;
+    return at;
+  },
+  FX(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const id = dv.getUint32(at, true);
+    const kind = u8[at + 4];
+    at += 5;
+    const str = () => {
+      const n = dv.getUint32(at, true);
+      const v = readStr(u8, at + 4, n);
+      at += 4 + n;
+      return v;
+    };
+    const httpOptions = () => {
+      const cacheByte = u8[at++], credentialsByte = u8[at++];
+      const cache = this.protocol.HTTP_CACHE[cacheByte];
+      const credentials = this.protocol.HTTP_CREDENTIALS[credentialsByte];
+      if (!cache || !credentials || (kind === 12 && cacheByte !== 1)) throw new ContractFault("invalid HTTP cache or credentials");
+      const progressMs = dv.getUint32(at, true); at += 4;
+      if (progressMs !== 0 && progressMs < 16) throw new ContractFault("progress interval must be zero or at least 16 ms");
+      return { cache, credentials, progressMs };
+    };
+    if (kind === 1) {
+      const method = str();
+      const url = str();
+      const headers = [];
+      let n = dv.getUint32(at, true);
+      at += 4;
+      for (; n > 0; n -= 1) headers.push([str(), str()]);
+      const body = str();
+      const timeout = dv.getUint32(at, true);
+      at += 4;
+      this.fxOut.push({ op: "http", id, method, url, headers, body, timeout, ...httpOptions() });
+    } else if (kind === 2) {
+      this.fxOut.push({ op: "get", id, key: str() });
+    } else if (kind === 3 || kind === 4) {
+      this.fxOut.push({ op: kind === 3 ? "timer" : "interval", id, ms: dv.getUint32(at, true) });
+      at += 4;
+    } else if (kind === 5) {
+      this.fxOut.push({ op: "popstate", id });
+    } else if (kind === 6) {
+      this.fxOut.push({ op: "online", id });
+    } else if (kind === 7) {
+      this.fxOut.push({ op: "visibility", id });
+    } else if (kind === 8) {
+      const task = str();
+      const n = dv.getUint32(at, true);
+      // Copied out: linear memory may move before the job is posted.
+      const input = u8.slice(at + 4, at + 4 + n);
+      at += 4 + n;
+      // The files the job names, resolved now, while the handles the
+      // batch released still name their files (see "Files").
+      // Its files cross whole, as handles the worker mints, and the job
+      // reads their ranges itself; nothing is read before it runs.
+      const refs = dv.getUint32(at, true);
+      at += 4;
+      const files = [];
+      const ranges = [];
+      for (let i = 0; i < refs; i += 1) {
+        const token = tokenAt(dv, 0, at);
+        const start = tokenAt(dv, 0, at + 8);
+        const len = tokenAt(dv, 0, at + 16);
+        const file = this.files.get(token);
+        if (file === undefined) throw new Error(`a work request names file handle ${token}, which this runtime does not hold`);
+        files.push(file);
+        ranges.push(token, start, len);
+        at += 24;
+      }
+      const timeout = dv.getUint32(at, true);
+      const cancel = u8[at + 4];
+      const flag = u8[at + 5];
+      at += 6;
+      if (cancel !== 1 && cancel !== 2) throw new Error(`work request cancel policy ${cancel} is not 1 or 2`);
+      // A preparation's task (design.md, "Prepared state"): which
+      // preparation answers it, and where its input lies in `input`.
+      let prep = null;
+      if (flag === 1) {
+        const name = str();
+        const initLen = dv.getUint32(at, true);
+        const initFiles = dv.getUint32(at + 4, true);
+        at += 8;
+        if (initLen > input.length || initFiles > refs) throw new Error(`malformed preparation operands for worker task ${task}`);
+        prep = { name, initLen, initFiles, ranges: ranges.slice(0, 3 * initFiles) };
+      } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0 or 1`);
+      this.fxOut.push({ op: "work", id, task, input, files, timeout, finish: cancel === 2, prep });
+    } else if (kind === 11) {
+      const mode = u8[at];
+      if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
+      const maxBytes = tokenAt(dv, 0, at + 25);
+      this.fxOut.push({ op: "read", id, mode, maxBytes, ...this.fileRef(dv, at + 1) });
+      at += 33;
+    } else if (kind === 12) {
+      const method = str();
+      const url = str();
+      const headers = [];
+      let n = dv.getUint32(at, true);
+      at += 4;
+      for (; n > 0; n -= 1) headers.push([str(), str()]);
+      const ref = this.fileRef(dv, at);
+      const timeout = dv.getUint32(at + 24, true);
+      at += 28;
+      this.fxOut.push({ op: "upload", id, method, url, headers, ...ref, timeout, ...httpOptions() });
+    } else if (kind === 13) {
+      const algorithm = u8[at];
+      if (algorithm !== 1) throw new Error(`unknown digest algorithm ${algorithm}`);
+      this.fxOut.push({ op: "digest", id, algorithm, ...this.fileRef(dv, at + 1) });
+      at += 25;
+    } else if (kind === 14) {
+      this.fxOut.push({ op: "url", id, ...this.fileRef(dv, at) });
+      at += 24;
+    } else if (kind === 9) {
+      const port = str();
+      const m = this.readPortMessage(u8, dv, at);
+      at = m.at;
+      const timeout = dv.getUint32(at, true);
+      at += 4;
+      this.fxOut.push({ op: "portcall", id, port, msg: m.msg, timeout });
+    } else if (kind === 10) {
+      const port = str();
+      const m = this.readPortMessage(u8, dv, at);
+      at = m.at;
+      this.fxOut.push({ op: "portsub", id, port, msg: m.msg });
+    } else if (kind === 15) {
+      const method = str();
+      const url = str();
+      const headers = [];
+      let n = dv.getUint32(at, true);
+      at += 4;
+      for (; n > 0; n -= 1) headers.push([str(), str()]);
+      const timeout = dv.getUint32(at, true);
+      at += 4;
+      this.fxOut.push({ op: "fetch", id, method, url, headers, body: "", timeout, ...httpOptions() });
+    } else if (kind === 16) {
+      this.fxOut.push({ op: "media", id, query: str() });
+    } else if (kind === 17) {
+      this.fxOut.push({ op: "sessionget", id, key: str() });
+    } else if (kind === 18) {
+      this.fxOut.push({ op: "storagechanges", id, key: str() });
+    } else if (kind === 19) {
+      const text = str(), htmlFlag = u8[at++];
+      if (htmlFlag !== 0 && htmlFlag !== 1) throw new Error(`invalid clipboard HTML flag ${htmlFlag}`);
+      this.fxOut.push({ op: "clipboard", id, text, html: htmlFlag ? str() : null });
+    } else if (kind === 20) {
+      this.fxOut.push({ op: "storagefailures", id });
+    } else throw new Error(`unknown effect kind ${kind}`);
+    return at;
+  },
+  SAVE(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    // Resolved now, while a handle the batch released still names its
+    // file; the download is made after the batch.
+    const ref = this.fileRef(dv, at);
+    const n = dv.getUint32(at + 24, true);
+    const name = readStr(u8, at + 28, n);
+    at += 28 + n;
+    this.fxOut.push({ op: "save", name, blob: ref.blob, type: ref.file.type });
+    return at;
+  },
+  CANCEL(reader) {
+    const { dv } = reader;
+    let at = reader.at;
+    this.fxOut.push({ op: "cancel", id: dv.getUint32(at, true) });
+    at += 4;
+    return at;
+  },
+  NAV(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const mode = u8[at];
+    const n = dv.getUint32(at + 1, true);
+    this.fxOut.push({ op: mode === 1 ? "push" : "replace", url: readStr(u8, at + 5, n) });
+    at += 5 + n;
+    return at;
+  },
+  GUARD(reader) {
+    const { u8 } = reader;
+    let at = reader.at;
+    const on = u8[at++];
+    if (on !== 0 && on !== 1) throw new Error(`invalid leave guard flag ${on}`);
+    this.fxOut.push({ op: "guardleave", on: on === 1 });
+    return at;
+  },
+  STORAGE(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const mode = u8[at];
+    if (mode < 1 || mode > 4) throw new Error(`unknown storage operation ${mode}`);
+    const n = dv.getUint32(at + 1, true);
+    const key = readStr(u8, at + 5, n);
+    at += 5 + n;
+    if (mode === 1 || mode === 3) {
+      const m = dv.getUint32(at, true);
+      this.fxOut.push({ op: "set", session: mode === 3, key, value: readStr(u8, at + 4, m) });
+      at += 4 + m;
+    } else this.fxOut.push({ op: "remove", session: mode === 4, key });
+    return at;
+  },
+  REF(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const mode = u8[at], node = dv.getUint32(at + 1, true);
+    if (mode < 1 || mode > 7) throw new Error(`unknown reference operation ${mode}`);
+    at += 5;
+    const command = { op: "ref", mode, node, element: this.lookup(node) };
+    if (mode === 6) {
+      const block = u8[at++], inline = u8[at++], behavior = u8[at++];
+      if (block > 3 || inline > 3 || behavior > 2 || behavior === undefined) throw new Error("invalid scroll-into-view operands");
+      command.options = { block: ["start", "center", "end", "nearest"][block], inline: ["start", "center", "end", "nearest"][inline], behavior: ["auto", "instant", "smooth"][behavior] };
+    } else if (mode === 7) {
+      const edge = () => {
+        const tag = u8[at++];
+        if (tag === 0) return { kind: "keep" };
+        if (tag === 1) return { kind: "start" };
+        if (tag === 2) return { kind: "end" };
+        if (tag !== 3) throw new Error(`invalid scroll edge ${tag}`);
+        const pixels = dv.getUint32(at, true); at += 4;
+        return { kind: "px", pixels };
+      };
+      const top = edge(), left = edge(), behavior = u8[at++];
+      if (behavior > 2 || behavior === undefined) throw new Error("invalid scroll-to behavior");
+      command.top = top; command.left = left; command.behavior = ["auto", "instant", "smooth"][behavior];
+    }
+    this.fxOut.push(command);
+    return at;
+  },
+  TITLE(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const n = dv.getUint32(at, true);
+    this.fxOut.push({ op: "title", text: readStr(u8, at + 4, n) });
+    at += 4 + n;
+    return at;
+  },
+  PORT(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const n = dv.getUint32(at, true);
+    const port = readStr(u8, at + 4, n);
+    const m = this.readPortMessage(u8, dv, at + 4 + n);
+    at = m.at;
+    this.fxOut.push({ op: "port", port, msg: m.msg });
+    return at;
+  },
+  TRANSITION(reader) {
+    const { mode, len, flags, dv, u8, batch } = reader;
+    let at = reader.at;
+    if (mode === "update") { reader.marked = true; return len; }
+    if (!flags || reader.marked) throw new Error("TRANSITION requires a marked batch and must occur once, last");
+    reader.marked = true;
+    const count = dv.getUint32(at, true); at += 4;
+    const types = [];
+    for (let i = 0; i < count; i += 1) { const n = dv.getUint32(at, true); types.push(readStr(u8, at + 4, n)); at += 4 + n; }
+    if (at !== len) throw new Error("TRANSITION must be last");
+    batch.types = types;
+    return at;
+  },
+};
+
+function applyAttribute(runtime, u8, dv, at, el, name) {
+  const present = u8[at++];
+  if (present === 0) el.removeAttribute(name);
+  else if (present === 1) {
+    const n = dv.getUint32(at, true);
+    setAttr(el, name, readStr(u8, at + 4, n), runtime.protocol.BOOL_ATTRS);
+    at += 4 + n;
+  } else throw new Error(`invalid attribute presence ${present}`);
+  return at;
+}
+
 const PROPERTY_APPLIERS = {
   value: {
     apply(el, value, node) {
@@ -418,22 +898,52 @@ function settleSelect(parent) {
 const DOM_EVENT = { focus: "focusin", blur: "focusout" };
 const APP_EVENT = { focusin: "focus", focusout: "blur" };
 
+// Policy roles own their actual validation or browser action. Their keys are
+// also the complete semantic roles mount requires; bit numbers come from facts.
+// Validation order preserves the existing diagnostic priority.
+const POLICY_APPLIERS = {
+  CAPTURE: {
+    validate(kind, type, policies, p) {
+      if ((policies & p.POLICY_CAPTURE) && (kind !== p.KIND_POINTER || type !== "pointerdown")) throw new Error("capture policy requires a pointerdown pointer handler");
+    },
+  },
+  PACED: {
+    validate(kind, type, policies, p) {
+      if ((policies & p.POLICY_PACED) && !((kind === p.KIND_POINTER && type === "pointermove") || [p.KIND_SCROLL, p.KIND_SIZE, p.KIND_SEEN].includes(kind))) throw new Error("paced policy requires pointermove or a layout handler");
+      if ([p.KIND_SCROLL, p.KIND_SIZE, p.KIND_SEEN].includes(kind) && !(policies & p.POLICY_PACED)) throw new Error("layout handlers require paced delivery");
+    },
+  },
+  AHEAD: {
+    validate(kind, _type, policies, p) {
+      if ((policies & p.POLICY_AHEAD) && kind !== p.KIND_SEEN) throw new Error("ahead policy requires a seen handler");
+      if ((kind === p.KIND_SIZE || kind === p.KIND_SEEN) && (policies & ~(p.POLICY_PACED | p.POLICY_AHEAD))) throw new Error("observation handlers have no DOM event policies");
+    },
+  },
+  DOCUMENT: {
+    validate(kind, _type, policies, p) {
+      if ((policies & p.POLICY_DOCUMENT) && kind !== p.KIND_KEY) throw new Error("document policy requires a key handler");
+    },
+  },
+  PREVENT: {
+    validate(kind, _type, policies, p) {
+      if (kind === p.KIND_KEY && (policies & p.POLICY_PREVENT)) throw new Error("key prevention belongs to its keymap");
+    },
+    perform(event) { event.preventDefault(); },
+  },
+  STOP: {
+    perform(event) { event.stopPropagation(); },
+  },
+};
+
 // Validate the closed declaration tables before retaining a listener. An
 // unknown number or bit is a producer/consumer mismatch, contained as executor.
 function handlerEntry(h, kind, policies, type, protocol) {
-  const { KIND_KEY, KIND_POINTER, KIND_SCROLL, KIND_SEEN, KIND_SIZE, KIND_TEXT, PAYLOAD_KINDS, POLICY_AHEAD, POLICY_CAPTURE, POLICY_DOCUMENT, POLICY_PACED, POLICY_PREVENT, POLICY_STOP } = protocol;
-  const row = PAYLOAD_KINDS[kind];
+  const row = protocol.PAYLOAD_KINDS[kind];
   if (!row) throw new Error(`unknown event payload kind ${kind}`);
   if (row.events && !row.events.includes(type)) throw new Error(`event payload kind ${kind} does not apply to ${type}`);
-  if ((policies & ~(POLICY_PREVENT | POLICY_STOP | POLICY_CAPTURE | POLICY_PACED | POLICY_DOCUMENT | POLICY_AHEAD)) !== 0) throw new Error(`unknown event policy bits ${policies}`);
-  if ((policies & POLICY_CAPTURE) && (kind !== KIND_POINTER || type !== "pointerdown")) throw new Error("capture policy requires a pointerdown pointer handler");
-  if ((policies & POLICY_PACED) && !((kind === KIND_POINTER && type === "pointermove") || [KIND_SCROLL, KIND_SIZE, KIND_SEEN].includes(kind))) throw new Error("paced policy requires pointermove or a layout handler");
-  if ([KIND_SCROLL, KIND_SIZE, KIND_SEEN].includes(kind) && !(policies & POLICY_PACED)) throw new Error("layout handlers require paced delivery");
-  if ((policies & POLICY_AHEAD) && kind !== KIND_SEEN) throw new Error("ahead policy requires a seen handler");
-  if ((kind === KIND_SIZE || kind === KIND_SEEN) && (policies & ~(POLICY_PACED | POLICY_AHEAD))) throw new Error("observation handlers have no DOM event policies");
-  if ((policies & POLICY_DOCUMENT) && kind !== KIND_KEY) throw new Error("document policy requires a key handler");
-  if (kind === KIND_KEY && (policies & POLICY_PREVENT)) throw new Error("key prevention belongs to its keymap");
-  if (kind === KIND_TEXT && (type === "keydown" || type === "keyup")) throw new Error("text key handler requires on_key");
+  if ((policies & ~protocol.policy_mask) !== 0) throw new Error(`unknown event policy bits ${policies}`);
+  for (const validate of protocol.policyValidators) validate(kind, type, policies, protocol);
+  if (kind === protocol.KIND_TEXT && (type === "keydown" || type === "keyup")) throw new Error("text key handler requires on_key");
   return { h, kind, policies };
 }
 
@@ -513,19 +1023,25 @@ function bindProtocolFacts(facts) {
   protocol.LOST_CLASSES = facts.fault_classes;
   protocol.HTTP_CACHE = Object.fromEntries(facts.http_cache.map(row => [row.code, row.name]));
   protocol.HTTP_CREDENTIALS = Object.fromEntries(facts.http_credentials.map(row => [row.code, row.name]));
-  const bind = (rows, implementations, key, make) => {
-    if (rows.length !== Object.keys(implementations).length) throw new Error("protocol metadata implementation count differs");
-    return Object.fromEntries(rows.map(row => {
-      if (!Object.hasOwn(implementations, row.name)) throw new Error(`protocol metadata has no implementation for ${row.name}`);
-      return [row[key], Object.freeze(make(row, implementations[row.name]))];
-    }));
+  const bind = (rows, implementations, key, make, label) => {
+    const names = new Set(rows.map(row => row.name));
+    for (const row of rows) if (!Object.hasOwn(implementations, row.name)) throw new Error(`unknown ${label} name ${JSON.stringify(row.name)}`);
+    for (const name of Object.keys(implementations)) if (!names.has(name)) throw new Error(`missing ${label} name ${JSON.stringify(name)}`);
+    return Object.freeze(Object.fromEntries(rows.map(row => [row[key], Object.freeze(make(row, implementations[row.name]))])));
   };
+  protocol.COMMANDS = bind(facts.ops, COMMAND_APPLIERS, "code", (_row, implementation) => implementation, "opcode");
+  protocol.POLICIES = bind(facts.policies, POLICY_APPLIERS, "bit", (_row, implementation) => implementation, "policy");
+  protocol.policyValidators = Object.freeze(Object.keys(POLICY_APPLIERS).flatMap(name => {
+    const implementation = protocol.POLICIES[protocol[`POLICY_${name}`]];
+    return implementation.validate ? [implementation.validate] : [];
+  }));
+  protocol.policy_mask = facts.policies.reduce((mask, row) => mask | row.bit, 0);
   protocol.PROPS = bind(facts.properties, PROPERTY_APPLIERS, "index", (row, implementation) => ({
     name: row.name, elements: row.elements.length ? row.elements.map(name => name.toUpperCase()) : null, apply: implementation.apply,
-  }));
+  }), "property");
   protocol.PAYLOAD_KINDS = bind(facts.kinds, PAYLOAD_APPLIERS, "code", (row, implementation) => ({
     events: row.events.length ? row.events : null, payload: implementation.payload,
-  }));
+  }), "payload kind");
   return Object.freeze(protocol);
 }
 
@@ -2629,10 +3145,10 @@ export class RocEngineRuntime {
         }
       }
       if (node.__rn !== undefined && handler !== null) {
-        if (heard?.prevent || (handler.policies & this.protocol.POLICY_PREVENT) !== 0 || (handler.kind === this.protocol.KIND_FILES && type === "drop") || handler.kind === this.protocol.KIND_PASTE) event.preventDefault();
+        if (heard?.prevent || (handler.policies & this.protocol.POLICY_PREVENT) !== 0 || (handler.kind === this.protocol.KIND_FILES && type === "drop") || handler.kind === this.protocol.KIND_PASTE) this.protocol.POLICIES[this.protocol.POLICY_PREVENT].perform(event);
         // A non-bubbling event is heard during capture; stopping it there
         // would prevent its target's own listeners from running.
-        if (event.bubbles && (handler.policies & this.protocol.POLICY_STOP) !== 0) event.stopPropagation();
+        if (event.bubbles && (handler.policies & this.protocol.POLICY_STOP) !== 0) this.protocol.POLICIES[this.protocol.POLICY_STOP].perform(event);
         if ((handler.policies & this.protocol.POLICY_CAPTURE) !== 0) {
           try { declaring.setPointerCapture(event.pointerId); }
           catch (_) {
@@ -2700,7 +3216,7 @@ export class RocEngineRuntime {
           const heard = matchKey(type === "keydown" ? declaring.__keymapDown : declaring.__keymapUp, event, this.protocol.text_entry_excluded);
           if (!heard) continue;
           if (heard.prevent) event.preventDefault();
-          if (h.policies & this.protocol.POLICY_STOP) event.stopPropagation();
+          if (h.policies & this.protocol.POLICY_STOP) this.protocol.POLICIES[this.protocol.POLICY_STOP].perform(event);
           this.heardKeys.add(event);
           this.dispatch(declaring.__rn, h.h, keyPayload(event, heard), declaring);
           return;
@@ -3497,30 +4013,16 @@ export class RocEngineRuntime {
     const shadow = mode === "early" ? new Map() : null;
     const skipString = () => { const n = dv.getUint32(at, true); at += 4 + n; };
     const skipAttribute = () => { const present = u8[at++]; if (present === 1) skipString(); else if (present !== 0) throw new Error(`invalid attribute presence ${present}`); };
-    // Attribute absence is an explicit wire case. An empty present string
-    // reaches setAttr unchanged, including during row instantiation.
-    const attribute = (el, name) => {
-      const present = u8[at++];
-      if (present === 0) el.removeAttribute(name);
-      else if (present === 1) {
-        const n = dv.getUint32(at, true);
-        setAttr(el, name, readStr(u8, at + 4, n), this.protocol.BOOL_ATTRS);
-        at += 4 + n;
-      } else throw new Error(`invalid attribute presence ${present}`);
-    };
+    // One reader per batch; no implementation retains it or its memory views.
+    const reader = { u8, dv, doc, mode, batch, len, flags, at: 1, op: 0, offset: 0, marked: false };
     while (at < len) {
       const offset = at;
       const op = u8[at];
       at += 1;
       if (op === this.protocol.OP_TRANSITION) {
-        if (mode === "update") { marked = true; at = len; break; }
-        if (!flags || marked) throw new Error("TRANSITION requires a marked batch and must occur once, last");
-        marked = true;
-        const count = dv.getUint32(at, true); at += 4;
-        const types = [];
-        for (let i = 0; i < count; i += 1) { const n = dv.getUint32(at, true); types.push(readStr(u8, at + 4, n)); at += 4 + n; }
-        if (at !== len) throw new Error("TRANSITION must be last");
-        batch.types = types;
+        reader.at = at; reader.marked = marked;
+        at = this.protocol.COMMANDS[op].call(this, reader);
+        marked = reader.marked;
         break;
       }
       if (mode === "update" && batch.spans.has(offset)) {
@@ -3565,412 +4067,10 @@ export class RocEngineRuntime {
         if (at > len) throw new Error("command exceeds batch length");
         if (skipped) continue;
       }
-      switch (op) {
-        case this.protocol.OP_INST: {
-          const node = dv.getUint32(at, true);
-          const parent = dv.getUint32(at + 4, true);
-          const before = dv.getUint32(at + 8, true);
-          const site = dv.getUint32(at + 12, true);
-          const tpl = this.templates[site];
-          at += 16;
-          if (!tpl.svg && tpl.root.namespaceURI !== SVG_NS) {
-            const p = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
-            if (p.namespaceURI === SVG_NS && p.tagName !== "foreignObject") {
-              const bytes = tpl.bytes;
-              tpl.root = this.parseTemplate(bytes, new DataView(bytes.buffer), 0, bytes.length, p).root;
-              tpl.svg = true;
-            }
-          }
-          const el = tpl.root.cloneNode(true);
-          el.__rn = node;
-          const holes = tpl.holes;
-          // Hole targets are resolved once, here: a nested site inserting
-          // content into the row later shifts sibling indices.
-          const targets = new Array(holes.length);
-          for (let i = 0; i < holes.length; i += 1) targets[i] = walk(el, holes[i].path);
-          el.__ht = targets;
-          el.__aliases = [];
-          for (let i = 0; i < holes.length; i += 1) {
-            const hole = holes[i];
-            const target = targets[i];
-            if (hole.kind === HOLE_TEXT) {
-              const n = dv.getUint32(at, true);
-              target.nodeValue = readStr(u8, at + 4, n);
-              at += 4 + n;
-            } else if (hole.kind === HOLE_ATTR) {
-              attribute(target, hole.name);
-            } else if (hole.kind === HOLE_PROP) {
-              const n = dv.getUint32(at, true);
-              setProp(target, hole.prop, readStr(u8, at + 4, n), node, this);
-              at += 4 + n;
-            } else if (hole.kind === HOLE_CLICK) {
-              checkHandlerElement(target, hole.name, hole.entry, this.protocol);
-              if (target.__h === undefined) target.__h = {};
-              target.__h[hole.name] = hole.entry;
-              this.registerLayout(target, hole.name, hole.entry, el);
-            } else if (hole.kind === HOLE_BIND || hole.kind === HOLE_REF) {
-              const id = dv.getUint32(at, true);
-              this.statics[id] = target;
-              el.__aliases.push(id);
-              at += 4;
-            } else throw new Error(`unknown template hole kind ${hole.kind}`);
-          }
-          this.place(el, parent, before);
-          if (el.tagName === "OPTION") settleSelect(el.parentNode);
-          el.__site = site;
-          this.statics[node] = el;
-          this.sites[site].add(node);
-          break;
-        }
-        case this.protocol.OP_HATTR: {
-          const row = this.lookup(dv.getUint32(at, true));
-          const index = u8[at + 4];
-          const hole = this.templates[row.__site].holes[index];
-          if (hole.kind !== HOLE_ATTR) throw new Error("HATTR names a non-attribute hole");
-          at += 5;
-          attribute(row.__ht[index], hole.name);
-          break;
-        }
-        case this.protocol.OP_TEXT:
-        case this.protocol.OP_HPROP: {
-          const node = dv.getUint32(at, true);
-          const row = this.lookup(node);
-          const hole = this.templates[row.__site].holes[u8[at + 4]];
-          const n = dv.getUint32(at + 5, true);
-          const target = row.__ht[u8[at + 4]];
-          const v = readStr(u8, at + 9, n);
-          if (op === this.protocol.OP_TEXT) target.nodeValue = v;
-          else {
-            if (hole.kind !== HOLE_PROP) throw new Error("HPROP names a non-property hole");
-            setProp(target, hole.prop, v, node, this);
-          }
-          at += 9 + n;
-          break;
-        }
-        case this.protocol.OP_MOVE: {
-          const el = this.lookup(dv.getUint32(at, true));
-          const before = dv.getUint32(at + 4, true);
-          el.parentNode.insertBefore(el, before === 0 ? null : this.lookup(before));
-          at += 8;
-          break;
-        }
-        case this.protocol.OP_RELEASE: {
-          this.releaseNode(this.lookup(dv.getUint32(at, true)));
-          at += 4;
-          break;
-        }
-        case this.protocol.OP_REMOVE: {
-          const node = dv.getUint32(at, true);
-          const el = this.lookup(node);
-          this.forgetSubtree(el);
-          el.parentNode.removeChild(el);
-          this.statics[node] = undefined;
-          at += 4;
-          break;
-        }
-        case this.protocol.OP_CLEAR: {
-          const parent = this.lookup(dv.getUint32(at, true));
-          const site = dv.getUint32(at + 4, true);
-          for (let child = parent.firstChild; child; child = child.nextSibling) this.forgetSubtree(child);
-          this.sites[site] = new Set();
-          parent.textContent = "";
-          at += 8;
-          break;
-        }
-        case this.protocol.OP_TEMPLATE: {
-          const tpl = dv.getUint32(at, true);
-          const n = dv.getUint32(at + 4, true);
-          this.templates[tpl] = mode === "update" ? batch.definitions.get(offset) : this.parseTemplate(u8, dv, at + 8, n);
-          this.sites[tpl] = new Set();
-          at += 8 + n;
-          break;
-        }
-        case this.protocol.OP_ELEM:
-        case this.protocol.OP_TEXTNODE: {
-          const node = dv.getUint32(at, true);
-          const parent = dv.getUint32(at + 4, true);
-          const before = dv.getUint32(at + 8, true);
-          const n = dv.getUint32(at + 12, true);
-          const s = readStr(u8, at + 16, n);
-          at += 16 + n;
-          const parentEl = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
-          const el = op === this.protocol.OP_ELEM ? createIn(doc, s, parentEl) : doc.createTextNode(s);
-          // Command addresses do not route events; only LISTEN assigns __rn.
-          el.__id = node;
-          this.place(el, parent, before);
-          if (op === this.protocol.OP_ELEM && el.tagName === "OPTION") settleSelect(el.parentNode);
-          this.statics[node] = el;
-          break;
-        }
-        case this.protocol.OP_ATTR: {
-          const el = this.lookup(dv.getUint32(at, true));
-          const n = dv.getUint32(at + 4, true);
-          const name = readStr(u8, at + 8, n);
-          at += 8 + n;
-          attribute(el, name);
-          break;
-        }
-        case this.protocol.OP_PROP: {
-          const node = dv.getUint32(at, true);
-          const prop = u8[at + 4];
-          const n = dv.getUint32(at + 5, true);
-          setProp(this.lookup(node), prop, readStr(u8, at + 9, n), node, this);
-          at += 9 + n;
-          break;
-        }
-        case this.protocol.OP_LISTEN: {
-          const node = dv.getUint32(at, true);
-          const el = this.statics[node];
-          const n = dv.getUint32(at + 8, true);
-          const type = readStr(u8, at + 12, n);
-          el.__rn = node;
-          if (el.__h === undefined) el.__h = {};
-          const h = dv.getUint32(at + 4, true);
-          const kind = u8[at + 12 + n];
-          const policies = dv.getUint32(at + 13 + n, true);
-          const entry = handlerEntry(h, kind, policies, type, this.protocol);
-          checkHandlerElement(el, type, entry, this.protocol);
-          el.__h[type] = entry;
-          if (policies & this.protocol.POLICY_DOCUMENT) this.registerDocumentKey(el, type, entry);
-          else if (kind !== this.protocol.KIND_SIZE && kind !== this.protocol.KIND_SEEN) this.listen(type);
-          this.registerLayout(el, type, entry, el);
-          at += 17 + n;
-          break;
-        }
-        case this.protocol.OP_SETTEXT: {
-          const el = this.lookup(dv.getUint32(at, true));
-          const n = dv.getUint32(at + 4, true);
-          el.nodeValue = readStr(u8, at + 8, n);
-          at += 8 + n;
-          break;
-        }
-        case this.protocol.OP_FX: {
-          const id = dv.getUint32(at, true);
-          const kind = u8[at + 4];
-          at += 5;
-          const str = () => {
-            const n = dv.getUint32(at, true);
-            const v = readStr(u8, at + 4, n);
-            at += 4 + n;
-            return v;
-          };
-          const httpOptions = () => {
-            const cacheByte = u8[at++], credentialsByte = u8[at++];
-            const cache = this.protocol.HTTP_CACHE[cacheByte];
-            const credentials = this.protocol.HTTP_CREDENTIALS[credentialsByte];
-            if (!cache || !credentials || (kind === 12 && cacheByte !== 1)) throw new ContractFault("invalid HTTP cache or credentials");
-            const progressMs = dv.getUint32(at, true); at += 4;
-            if (progressMs !== 0 && progressMs < 16) throw new ContractFault("progress interval must be zero or at least 16 ms");
-            return { cache, credentials, progressMs };
-          };
-          if (kind === 1) {
-            const method = str();
-            const url = str();
-            const headers = [];
-            let n = dv.getUint32(at, true);
-            at += 4;
-            for (; n > 0; n -= 1) headers.push([str(), str()]);
-            const body = str();
-            const timeout = dv.getUint32(at, true);
-            at += 4;
-            this.fxOut.push({ op: "http", id, method, url, headers, body, timeout, ...httpOptions() });
-          } else if (kind === 2) {
-            this.fxOut.push({ op: "get", id, key: str() });
-          } else if (kind === 3 || kind === 4) {
-            this.fxOut.push({ op: kind === 3 ? "timer" : "interval", id, ms: dv.getUint32(at, true) });
-            at += 4;
-          } else if (kind === 5) {
-            this.fxOut.push({ op: "popstate", id });
-          } else if (kind === 6) {
-            this.fxOut.push({ op: "online", id });
-          } else if (kind === 7) {
-            this.fxOut.push({ op: "visibility", id });
-          } else if (kind === 8) {
-            const task = str();
-            const n = dv.getUint32(at, true);
-            // Copied out: linear memory may move before the job is posted.
-            const input = u8.slice(at + 4, at + 4 + n);
-            at += 4 + n;
-            // The files the job names, resolved now, while the handles the
-            // batch released still name their files (see "Files").
-            // Its files cross whole, as handles the worker mints, and the job
-            // reads their ranges itself; nothing is read before it runs.
-            const refs = dv.getUint32(at, true);
-            at += 4;
-            const files = [];
-            const ranges = [];
-            for (let i = 0; i < refs; i += 1) {
-              const token = tokenAt(dv, 0, at);
-              const start = tokenAt(dv, 0, at + 8);
-              const len = tokenAt(dv, 0, at + 16);
-              const file = this.files.get(token);
-              if (file === undefined) throw new Error(`a work request names file handle ${token}, which this runtime does not hold`);
-              files.push(file);
-              ranges.push(token, start, len);
-              at += 24;
-            }
-            const timeout = dv.getUint32(at, true);
-            const cancel = u8[at + 4];
-            const flag = u8[at + 5];
-            at += 6;
-            if (cancel !== 1 && cancel !== 2) throw new Error(`work request cancel policy ${cancel} is not 1 or 2`);
-            // A preparation's task (design.md, "Prepared state"): which
-            // preparation answers it, and where its input lies in `input`.
-            let prep = null;
-            if (flag === 1) {
-              const name = str();
-              const initLen = dv.getUint32(at, true);
-              const initFiles = dv.getUint32(at + 4, true);
-              at += 8;
-              if (initLen > input.length || initFiles > refs) throw new Error(`malformed preparation operands for worker task ${task}`);
-              prep = { name, initLen, initFiles, ranges: ranges.slice(0, 3 * initFiles) };
-            } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0 or 1`);
-            this.fxOut.push({ op: "work", id, task, input, files, timeout, finish: cancel === 2, prep });
-          } else if (kind === 11) {
-            const mode = u8[at];
-            if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
-            const maxBytes = tokenAt(dv, 0, at + 25);
-            this.fxOut.push({ op: "read", id, mode, maxBytes, ...this.fileRef(dv, at + 1) });
-            at += 33;
-          } else if (kind === 12) {
-            const method = str();
-            const url = str();
-            const headers = [];
-            let n = dv.getUint32(at, true);
-            at += 4;
-            for (; n > 0; n -= 1) headers.push([str(), str()]);
-            const ref = this.fileRef(dv, at);
-            const timeout = dv.getUint32(at + 24, true);
-            at += 28;
-            this.fxOut.push({ op: "upload", id, method, url, headers, ...ref, timeout, ...httpOptions() });
-          } else if (kind === 13) {
-            const algorithm = u8[at];
-            if (algorithm !== 1) throw new Error(`unknown digest algorithm ${algorithm}`);
-            this.fxOut.push({ op: "digest", id, algorithm, ...this.fileRef(dv, at + 1) });
-            at += 25;
-          } else if (kind === 14) {
-            this.fxOut.push({ op: "url", id, ...this.fileRef(dv, at) });
-            at += 24;
-          } else if (kind === 9) {
-            const port = str();
-            const m = this.readPortMessage(u8, dv, at);
-            at = m.at;
-            const timeout = dv.getUint32(at, true);
-            at += 4;
-            this.fxOut.push({ op: "portcall", id, port, msg: m.msg, timeout });
-          } else if (kind === 10) {
-            const port = str();
-            const m = this.readPortMessage(u8, dv, at);
-            at = m.at;
-            this.fxOut.push({ op: "portsub", id, port, msg: m.msg });
-          } else if (kind === 15) {
-            const method = str();
-            const url = str();
-            const headers = [];
-            let n = dv.getUint32(at, true);
-            at += 4;
-            for (; n > 0; n -= 1) headers.push([str(), str()]);
-            const timeout = dv.getUint32(at, true);
-            at += 4;
-            this.fxOut.push({ op: "fetch", id, method, url, headers, body: "", timeout, ...httpOptions() });
-          } else if (kind === 16) {
-            this.fxOut.push({ op: "media", id, query: str() });
-          } else if (kind === 17) {
-            this.fxOut.push({ op: "sessionget", id, key: str() });
-          } else if (kind === 18) {
-            this.fxOut.push({ op: "storagechanges", id, key: str() });
-          } else if (kind === 19) {
-            const text = str(), htmlFlag = u8[at++];
-            if (htmlFlag !== 0 && htmlFlag !== 1) throw new Error(`invalid clipboard HTML flag ${htmlFlag}`);
-            this.fxOut.push({ op: "clipboard", id, text, html: htmlFlag ? str() : null });
-          } else if (kind === 20) {
-            this.fxOut.push({ op: "storagefailures", id });
-          } else throw new Error(`unknown effect kind ${kind}`);
-          break;
-        }
-        case this.protocol.OP_SAVE: {
-          // Resolved now, while a handle the batch released still names its
-          // file; the download is made after the batch.
-          const ref = this.fileRef(dv, at);
-          const n = dv.getUint32(at + 24, true);
-          const name = readStr(u8, at + 28, n);
-          at += 28 + n;
-          this.fxOut.push({ op: "save", name, blob: ref.blob, type: ref.file.type });
-          break;
-        }
-        case this.protocol.OP_CANCEL:
-          this.fxOut.push({ op: "cancel", id: dv.getUint32(at, true) });
-          at += 4;
-          break;
-        case this.protocol.OP_NAV: {
-          const mode = u8[at];
-          const n = dv.getUint32(at + 1, true);
-          this.fxOut.push({ op: mode === 1 ? "push" : "replace", url: readStr(u8, at + 5, n) });
-          at += 5 + n;
-          break;
-        }
-        case this.protocol.OP_GUARD: {
-          const on = u8[at++];
-          if (on !== 0 && on !== 1) throw new Error(`invalid leave guard flag ${on}`);
-          this.fxOut.push({ op: "guardleave", on: on === 1 });
-          break;
-        }
-        case this.protocol.OP_STORAGE: {
-          const mode = u8[at];
-          if (mode < 1 || mode > 4) throw new Error(`unknown storage operation ${mode}`);
-          const n = dv.getUint32(at + 1, true);
-          const key = readStr(u8, at + 5, n);
-          at += 5 + n;
-          if (mode === 1 || mode === 3) {
-            const m = dv.getUint32(at, true);
-            this.fxOut.push({ op: "set", session: mode === 3, key, value: readStr(u8, at + 4, m) });
-            at += 4 + m;
-          } else this.fxOut.push({ op: "remove", session: mode === 4, key });
-          break;
-        }
-        case this.protocol.OP_REF: {
-          const mode = u8[at], node = dv.getUint32(at + 1, true);
-          if (mode < 1 || mode > 7) throw new Error(`unknown reference operation ${mode}`);
-          at += 5;
-          const command = { op: "ref", mode, node, element: this.lookup(node) };
-          if (mode === 6) {
-            const block = u8[at++], inline = u8[at++], behavior = u8[at++];
-            if (block > 3 || inline > 3 || behavior > 2 || behavior === undefined) throw new Error("invalid scroll-into-view operands");
-            command.options = { block: ["start", "center", "end", "nearest"][block], inline: ["start", "center", "end", "nearest"][inline], behavior: ["auto", "instant", "smooth"][behavior] };
-          } else if (mode === 7) {
-            const edge = () => {
-              const tag = u8[at++];
-              if (tag === 0) return { kind: "keep" };
-              if (tag === 1) return { kind: "start" };
-              if (tag === 2) return { kind: "end" };
-              if (tag !== 3) throw new Error(`invalid scroll edge ${tag}`);
-              const pixels = dv.getUint32(at, true); at += 4;
-              return { kind: "px", pixels };
-            };
-            const top = edge(), left = edge(), behavior = u8[at++];
-            if (behavior > 2 || behavior === undefined) throw new Error("invalid scroll-to behavior");
-            command.top = top; command.left = left; command.behavior = ["auto", "instant", "smooth"][behavior];
-          }
-          this.fxOut.push(command);
-          break;
-        }
-        case this.protocol.OP_TITLE: {
-          const n = dv.getUint32(at, true);
-          this.fxOut.push({ op: "title", text: readStr(u8, at + 4, n) });
-          at += 4 + n;
-          break;
-        }
-        case this.protocol.OP_PORT: {
-          const n = dv.getUint32(at, true);
-          const port = readStr(u8, at + 4, n);
-          const m = this.readPortMessage(u8, dv, at + 4 + n);
-          at = m.at;
-          this.fxOut.push({ op: "port", port, msg: m.msg });
-          break;
-        }
-        default:
-          throw new Error(`unknown engine command ${op} at byte ${at - 1}`);
-      }
+      reader.at = at; reader.op = op; reader.offset = offset;
+      const apply = this.protocol.COMMANDS[op];
+      if (!apply) throw new Error(`unknown engine command ${op} at byte ${at - 1}`);
+      at = apply.call(this, reader);
       if (at > len) throw new Error("command exceeds batch length");
       if (mode === "early") batch.spans.set(offset, at);
     }
@@ -5372,7 +5472,11 @@ export function readProtocolFacts(bytes) {
     return r;
   };
   const unique = (values, label) => {
-    if (new Set(values).size !== values.length) throw new Error(`duplicate protocol ${label}`);
+    const seen = new Set();
+    for (const value of values) {
+      if (seen.has(value)) throw new Error(`duplicate protocol ${label} ${JSON.stringify(value)}`);
+      seen.add(value);
+    }
     return values;
   };
   const names = (r, maximum = 64) => unique(r.rows(s => s.name(), maximum), "names");

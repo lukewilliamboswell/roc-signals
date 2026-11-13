@@ -42,9 +42,9 @@ try {
       return { runtime, root, get initCalls() { return initCalls; }, raw(bytes) { new Uint8Array(memory.buffer).set(bytes); length = bytes.length; runtime.apply(); }, end() { runtime.unmount(); root.remove(); } };
     };
     const checks = [], check = (name, ok) => { checks.push([name, !!ok]); };
-    const reject = (name, item) => {
+    const reject = (name, item, detail = null) => {
       const fixture = make(Uint8Array.from([...prefix, ...item]));
-      let refused = false; try { fixture.runtime.mount(); } catch (error) { refused = error.message.includes("declaration section 12 (protocol)"); }
+      let refused = false; try { fixture.runtime.mount(); } catch (error) { refused = error.message.includes("declaration section 12 (protocol)") && (detail === null || error.message.includes(detail)); }
       check(name, refused && fixture.initCalls === 0); fixture.root.remove();
     };
     reject("missing facts refuses before init", []);
@@ -58,6 +58,14 @@ try {
     reject("invalid UTF-8 refuses before init", encode(invalidUtf8));
     const unknownProperty = fields.map((value, i) => i === 3 ? [...value.slice(0, 5), ...text("unknown"), ...value.slice(14)] : value);
     reject("unsupported property implementation refuses before init", encode(unknownProperty));
+    const unknownOpcode = fields.map((value, i) => i === 0 ? [...value.slice(0, -10), 25, ...text("BOGUS")] : value);
+    reject("unknown opcode name refuses before init", encode(unknownOpcode), 'unknown opcode name "BOGUS"');
+    const missingOpcode = fields.map((value, i) => i === 0 ? [...word(24), ...value.slice(4, -10)] : value);
+    reject("missing opcode name refuses before init", encode(missingOpcode), 'missing opcode name "GUARD"');
+    const unknownPolicy = fields.map((value, i) => i === 2 ? [...value.slice(0, -13), ...word(32), ...text("BOGUS")] : value);
+    reject("unknown policy name refuses before init", encode(unknownPolicy), 'unknown policy name "BOGUS"');
+    const missingPolicy = fields.map((value, i) => i === 2 ? [...word(5), ...value.slice(4, -13)] : value);
+    reject("missing policy name refuses before init", encode(missingPolicy), 'missing policy name "AHEAD"');
     const first = make(Uint8Array.from([...prefix, ...fixture])); first.runtime.mount();
     // Exchange the ELEM and TEXTNODE names, retaining the independently owned
     // numeric row codes. Both operand layouts are node,parent,before,string.
