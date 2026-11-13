@@ -33,11 +33,13 @@ test = |bytes| {
 		Ok(text) => match Url.parse(text) {
 			Err(_) => {}
 			Ok(url) => {
-				if Url.parse(url.to_str()) != Ok(url) {
+				again = Url.parse(url.to_str()) ?? crash "accepted URL serialization was refused"
+				if again != url {
 					crash "accepted URL is not canonically stable"
 				}
-				_ = url.path_segments()
-				_ = url.query_pairs()
+				if again.path_segments() != url.path_segments() or again.query_pairs() != url.query_pairs() {
+					crash "canonical URL lost decoded reader values"
+				}
 			}
 		}
 	}
