@@ -137,8 +137,9 @@ this document and the implementation are tracked in issues.
     function however many pieces of state it spans.
 11. **The first frame comes with the document.** A page can show its first
     frame before its module arrives: the build renders it from the app's own
-    mount, and the engine adopts it at boot only when its mount fingerprint
-    and the measured tree digest agree with the built frame.
+    mount. Startup replaces the built nodes with the ordinary mount before
+    effects run. **Target:** the engine may instead adopt them only when its
+    mount fingerprint and the measured tree digest agree with the built frame.
 
 ### Success criteria
 
@@ -156,10 +157,12 @@ this document and the implementation are tracked in issues.
 - **External evidence:** the keyed js-framework-benchmark run against declared
   comparison frameworks, Conduit passing its journey against a RealWorld
   backend in Chrome, and recorded compressed size budgets.
-- **First frame:** every maintained example's picture adopts in Chrome and
-  in the native runner, and the adopted page equals one built from nothing.
-  A picture's first paint does not wait for the module; its size still
-  determines when the page becomes interactive.
+- **First frame:** the built page paints before the module arrives, stays
+  inert until ordinary mounting, and behaves like an unprerendered mount
+  after replacement. Native and Chrome specs cover the same app behavior.
+  **Target adoption:** every maintained example's picture adopts in Chrome
+  and in the native runner, and the adopted page equals one built from
+  nothing. The module's size still determines when it becomes interactive.
 
 ### When a capability is built
 
@@ -1687,19 +1690,22 @@ engine-decided value rather than inferring control state from a name.
 
 ### A prerendered first page
 
-**Target.** An app may opt in to a first frame rendered at build time inside
+An app may opt in to a first frame rendered at build time inside
 its marked mount root. The native runner mounts the actual program for the
 requested boot, consumes its command batch through the independent oracle,
 and renders that model as a document. This is a rendering of the engine's
 output, not a second engine or an application view run in JavaScript. One
-configured oracle renderer handles diagnostics, documents and the canonical
-shape used for measurement. The first frame arrives with the document;
-the module's arrival decides when it becomes interactive.
+configured oracle renderer handles diagnostics and documents. The first
+frame arrives with the document; the module's arrival decides when it
+becomes interactive.
 
-The first stage replaces the picture immediately before applying the mount
-batch, in the same task. The picture is inert until then. The runtime removes
-inertness before performing the batch's effects, so focus and reference
-commands observe the mounted page. An HTML mount root owns its inertness.
+Startup replaces the picture immediately before applying the ordinary mount
+batch, in the same task. The producer renders one init batch without delivering
+host answers; the browser initializes the app normally for its live mount.
+The generated page carries no adoption claims or measured boot facts. The
+picture is inert until replacement. The runtime removes inertness before
+performing the batch's effects, so focus and reference commands observe the
+mounted page. An HTML mount root owns its inertness.
 A non-HTML mount root requires an explicitly marked immediate ordinary HTML
 parent with the no-namespace `data-roc-picture-inert-parent=""` attribute.
 That parent has exactly the root and, optionally, its following HTML JSON
@@ -1721,6 +1727,36 @@ root. These bootstrap facts use exact no-namespace attribute identity; the
 same spelling elsewhere or in another namespace remains data. The app
 chooses the routes to render; no origin, user session or hash route is
 invented by the build.
+
+A picture is accepted only when the parser preserves the structure and text
+that the oracle rendered. The parser and its browser comparisons are the
+independent check of the renderer. HTML repair is also a construction contract
+error for the declared bounded subset, in live and prerendered views alike:
+paragraph closure, repaired table placement, nested anchors/forms/buttons,
+direct list/option/heading closure, children of voids and element children
+inside text-content elements. Legal insertion-mode exceptions come from the
+parser's grammar. These checks retain finite scope facts and the immediate
+parent, never an ancestor list or a scan of the existing tree. Unknown raw
+names retain their grammar-only escape; vocabulary checks belong at literals.
+
+Dynamic sites receive the context of their enclosing element. Row templates
+are checked once at site construction even for an empty list or table view;
+branches and drawn rows are checked when mounted. Restricted table text is
+checked when created and when replaced, in the size of the new text, without
+retaining an earlier value. The bounded constructor check is not a claim of
+complete HTML parsing: the independent full parsed-picture check covers
+repairs outside its declared subset. A default mount reaching a construction
+error fails at the app's compile-time mount declaration; later paths fail in
+the ordinary contained turn.
+
+No event queue accepts interaction with an inert picture before mount. If the
+module or scripting cannot run, the picture remains inert; the root exposes
+its failed state when the runtime can report it, and the app's document gives
+its failure styling and noscript notice.
+
+**Target — adoption.** Preserving built node objects is a future capability,
+separate from ordinary replacement. It must meet the following requirements
+before it can replace that startup path.
 
 Adoption preserves the existing nodes only on the engine's command. The
 build writes versioned node and row-hole claims separately from the owned
@@ -1766,33 +1802,8 @@ It then reapplies the ordinary control properties before effects. The runtime
 never recognizes a scaffold from its name or chooses a control value. Existing
 nodes which already represent the logical frame retain their identity.
 
-A picture is accepted only when the parser preserves the structure and text
-that the oracle rendered. The parser and its browser comparisons are the
-independent check of the renderer. HTML repair is also a construction contract
-error for the declared bounded subset, in live and prerendered views alike:
-paragraph closure, repaired table placement, nested anchors/forms/buttons,
-direct list/option/heading closure, children of voids and element children
-inside text-content elements. Legal insertion-mode exceptions come from the
-parser's grammar. These checks retain finite scope facts and the immediate
-parent, never an ancestor list or a scan of the existing tree. Unknown raw
-names retain their grammar-only escape; vocabulary checks belong at literals.
-
-Dynamic sites receive the context of their enclosing element. Row templates
-are checked once at site construction even for an empty list or table view;
-branches and drawn rows are checked when mounted. Restricted table text is
-checked when created and when replaced, in the size of the new text, without
-retaining an earlier value. The bounded constructor check is not a claim of
-complete HTML parsing: the full parsed-picture check and Chrome digest cover
-repairs outside its declared subset. A default mount reaching a construction
-error fails at the app's compile-time mount declaration; later paths fail in
-the ordinary contained turn.
-
-No event queue accepts interaction with an inert picture before mount. If the
-module or scripting cannot run, the picture remains inert; the root exposes
-its failed state when the runtime can report it, and the app's document gives
-its failure styling and noscript notice. A malformed picture marker is
-reported and staged as absent so a normal mount replaces it. A picture for a
-different boot, a stale frame or a changed measured tree is replaced by Roc's
+A malformed adoption marker is reported and staged as absent so a normal mount
+replaces it. A picture for a different boot, a stale frame or a changed measured tree is replaced by Roc's
 verdict. Both spec runners stage these same facts and assert the verdict;
 the browser additionally proves that parsed markup and adopted nodes agree.
 

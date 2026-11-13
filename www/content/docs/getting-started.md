@@ -248,7 +248,9 @@ ordinary first command batch. Network, storage, worker and timer answers,
 focus and layout arrive later in the running browser. The HTML frame stays
 inert while the module loads. The runtime replaces those built nodes with its
 ordinary mount, releases the inertness the builder added, then performs the
-batch's effects. An `inert` attribute you authored on the mount remains intact.
+batch's effects. This is ordinary replacement: built node objects are not
+adopted or reused. Adoption is a future capability. An `inert` attribute you
+authored on the inert owner remains intact.
 
 A template needs exactly one authored `data-roc-picture` mount root. An HTML
 root owns its temporary inertness. For an SVG, MathML or other non-HTML root,

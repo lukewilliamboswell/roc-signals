@@ -303,14 +303,15 @@ foreign-root fixture uses an explicit immediate HTML inert parent while the
 paired spec keeps the actual SVG mount root. Pure template checks cover the
 parent/descriptor edge, reserved owner facts and aggregate output bounds;
 parent attributes are inserted only at a public parser opening-token boundary.
-The
-raw startup contracts cover producer-owned inertness across failure, retry
+The raw startup contracts cover producer-owned inertness across failure, retry
 and recovery. The tool's end-to-end check builds root and nested pictures and
 compares the complete published tree after a route-collision refusal.
 
 The production workflow is `roc signals.roc build --picture URL...` from an
 app directory; it renders only the ordinary init batch, without delivering
-host answers. It does not emit adoption claims. Changes to this producer or
+host answers. Startup uses ordinary replacement; it does not emit adoption
+claims, stage measured adoption facts or reuse the built node objects.
+Adoption remains a future Target in `design.md`. Changes to this producer or
 to the native oracle retain applicable actual optimized roc-fuzz fixed-example
 replays as well as native and Chrome contracts; frontend checks supplement
 those gates.
@@ -502,16 +503,10 @@ scratch, over keyed writes, whole rewrites and events that write the table,
 the query and the window together (`fuzz/table-view`), the `.scm`
 parser (`fuzz/scm-parse`), boot sections (`fuzz/boot`, whose total decoder
 accepts only the exact encoding of its decoded value or the empty default
-shorthand), the worker wire format's decoder (`fuzz/wire`)
-the port message format's decoder (`fuzz/port-json`), mount command capture
-(`fuzz/picture-capture`, checked against a direct stream model across port
-insertions, row aliases, address reuse and follow-up turn boundaries), picture
-envelope framing and topology (`fuzz/picture-codec`), and fresh claim
-incarnations checked against a generation model (`fuzz/picture-plan`), native
-picture claims joined to independent oracle lifetimes, including row statics,
-text boundaries, template content and control scaffolds (`fuzz/picture-claims`),
-URL parsing, builders and readers (`fuzz/url`), and DOM/Fetch name grammar (`fuzz/names`). Every target that
-drives the engine runs the settle check after every step.
+shorthand), the worker wire format's decoder (`fuzz/wire`),
+the port message format's decoder (`fuzz/port-json`), URL parsing, builders
+and readers (`fuzz/url`), and DOM/Fetch name grammar (`fuzz/names`). Every
+target that drives the engine runs the settle check after every step.
 
 An example's targets check its own pure logic and import nothing of the
 platform: `fuzz-<subject>.roc` beside the modules it imports, named for
