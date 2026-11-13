@@ -8289,16 +8289,18 @@ fx_dispose = |tx, react, owned, site| {
 	run = |env, a, input, path| run_reaction(react, env, a, input, path)
 	fx_dispose_by(
 		tx,
-		owned,
-		|entry| {
-			a = entry.a
-			{
-				id: entry.id,
-				run: |current, input| {
-					(next, wrote) = run(current, a, input, site)
-					(next, wrote, 0)
-				},
-			}
+		{
+			owned,
+			orphan: |entry| {
+				a = entry.a
+				{
+					id: entry.id,
+					run: |current, input| {
+						(next, wrote) = run(current, a, input, site)
+						(next, wrote, 0)
+					},
+				}
+			},
 		},
 	)
 }
@@ -8335,17 +8337,19 @@ effect_dispose = |cfg, { tx, owned }| match cfg.only {
 		path = cfg.path
 		fx_dispose_by(
 			tx,
-			owned,
-			|entry| if ids.contains(entry.id) {
-				asked = entry.a
-				{
-					id: entry.id,
-					run: |current, input| if question(current, asked) {
-						(next, wrote) = run_reaction(react, current, asked, input, path)
-						(next, wrote, 0)
-					} else (current, no_layers, 0),
-				}
-			} else { id: entry.id, run: |current, _input| (current, no_layers, 0) },
+			{
+				owned,
+				orphan: |entry| if ids.contains(entry.id) {
+					asked = entry.a
+					{
+						id: entry.id,
+						run: |current, input| if question(current, asked) {
+							(next, wrote) = run_reaction(react, current, asked, input, path)
+							(next, wrote, 0)
+						} else (current, no_layers, 0),
+					}
+				} else { id: entry.id, run: |current, _input| (current, no_layers, 0) },
+			},
 		)
 	}
 }
