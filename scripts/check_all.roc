@@ -90,6 +90,9 @@ main! = |_args| {
 	}
 	$problems = $problems.concat($native.problems).concat($browser.problems)
 
+	Proc.note!("== native lifetime contracts")
+	$problems = $problems.concat(Targets.native_contracts!(o)?)
+
 	Proc.note!("== short walks")
 	$problems = $problems.concat(Slow.short_walks!(o)?)
 

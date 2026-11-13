@@ -115,6 +115,14 @@ Targets := [].{
 		Ok($failures)
 	}
 
+	## Run file specs in deliberate process-local orders so a page's teardown
+	## and worker answers cannot consume the next page's handle capacity.
+	native_contracts! : SpecSuite.Options => Try(List(Str), _)
+	native_contracts! = |o| {
+		code = Proc.status!({ program: o.node, args: ["tests/native/file-lifetimes.mjs", "--runner", SpecSuite.runner_of(o, "files")], cwd: o.root })?
+		Ok(if (code == 0) [] else ["native file lifetime contracts failed (exit ${code.to_str()})"])
+	}
+
 	## The runtime contract tests in Chrome (test apps built by `SpecSuite.build!`): the effect channel (tests/apps/effects),
 	## controlled inputs, focus and containment (tests/apps/controls), an
 	## outbox posted twice in one turn (tests/apps/outbox), worker
