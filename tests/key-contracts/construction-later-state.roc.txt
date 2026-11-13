@@ -1,0 +1,23 @@
+app [main] {
+    pf: platform "<PLATFORM>",
+    oracle: "<ORACLE>",
+}
+
+import pf.Engine
+import oracle.Core
+
+## Drive the same later-turn constructor shape as ConstructionApp through
+## the native engine before this fixture can produce its dummy page.
+main : Engine.Program
+main = Engine.program(|| {
+    view = Core.state(Bool.False, |changed| Core.element("main", [], [
+        Core.element("button", [Core.on_click(changed.update(|_| Bool.True))], [Core.text("Trigger construction")]),
+        Core.element("p", [], [Core.when(changed.signal(), || Core.state(0.U64, |_local| Core.element("div", [], [])), || Core.text(""))]),
+    ]))
+    (ready, _) = Core.take_cmds(Core.mount(view), [])
+    changed = Core.event(ready, 2, 0, "")
+    Engine.text(Core.work_counters(changed).len().to_str())
+})
+
+## No shared store or hosted effects are involved in this failure.
+Store : {}

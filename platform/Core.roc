@@ -2,6 +2,9 @@ import Web
 import Layout
 import TableCore exposing [Table]
 import View
+import MarkupAdvice
+import parser.Html as ParsedHtml
+import parser.Markup
 
 ## The reactive engine behind the roc-signals web platform, written in Roc:
 ## the platform's internal module, which apps never import.
@@ -1221,6 +1224,7 @@ Core := [].{
 				(anchor, tx3) = if args.sole {
 					(0, tx2)
 				} else {
+					check_construction_text(args.enclosing.construction, { value: "", site: args.path, placement: " (row anchor)" })
 					(a, t) = alloc_id(tx2)
 					before = args.before
 					(a, emit_op(t, 10, |c| put_str(put_u32(put_u32(put_u32(c, a), args.parent), before), "")))
@@ -1309,6 +1313,7 @@ Core := [].{
 				(anchor, tx3) = if args.sole {
 					(0, tx2)
 				} else {
+					check_construction_text(args.enclosing.construction, { value: "", site: args.path, placement: " (row anchor)" })
 					(a, t) = alloc_id(tx2)
 					before = args.before
 					(a, emit_op(t, 10, |c| put_str(put_u32(put_u32(put_u32(c, a), args.parent), before), "")))
@@ -1345,6 +1350,7 @@ Core := [].{
 	when = |cond, yes, no| Site(
 		Mount(
 			|env, args, tx| {
+				check_construction_text(args.enclosing.construction, { value: "", site: args.path, placement: " (branch anchor)" })
 				(anchor, tx1) = alloc_id(tx)
 				before = args.before
 				tx2 = emit_op(tx1, 10, |c| put_str(put_u32(put_u32(put_u32(c, anchor), args.parent), before), ""))
@@ -1375,6 +1381,7 @@ Core := [].{
 	switch = |sel, cases, body| Site(
 		Mount(
 			|env, args, tx| {
+				check_construction_text(args.enclosing.construction, { value: "", site: args.path, placement: " (branch anchor)" })
 				(anchor, tx1) = alloc_id(tx)
 				before = args.before
 				tx2 = emit_op(tx1, 10, |c| put_str(put_u32(put_u32(put_u32(c, anchor), args.parent), before), ""))
@@ -1407,6 +1414,7 @@ Core := [].{
 	remount_on = |key, body| Site(
 		Mount(
 			|env, args, tx| {
+				check_construction_text(args.enclosing.construction, { value: "", site: args.path, placement: " (branch anchor)" })
 				(anchor, tx1) = alloc_id(tx)
 				before = args.before
 				tx2 = emit_op(tx1, 10, |c| put_str(put_u32(put_u32(put_u32(c, anchor), args.parent), before), ""))
@@ -3465,12 +3473,12 @@ Args : { depth : U64, path : List(U32), parent : U32, before : U32, sole : Bool,
 
 ## Actual parent identity and the raw constructor's child namespace travel
 ## through sites, never recovered by walking the engine tree or the DOM.
-Enclosing : { namespace : Web.Namespace, prefix : Web.Prefix, local : Str, raw_namespace : Web.Namespace }
+Enclosing : { namespace : Web.Namespace, prefix : Web.Prefix, local : Str, raw_namespace : Web.Namespace, construction : ParsedHtml.Construction.Context }
 
 Scope : { cap : U128, enclosing : Enclosing }
 
 root_enclosing : Enclosing
-root_enclosing = { namespace: Html, prefix: Unprefixed, local: "div", raw_namespace: Html }
+root_enclosing = enclosing_root({ namespace: Html, prefix: Unprefixed, local: "div" })
 
 Mount(ctx) := [Mount((ctx, Args, Tx -> (Inst(ctx), U128, Tx)))]
 
@@ -4680,6 +4688,7 @@ mount_elem = |block, env, root_elem, elem, depth, path, parent, before, top, sol
 		Element(authored, attrs, kids) => {
 			tag = resolve_element(authored.name, scope.enclosing)
 			container = checked_container(tag, authored.container)
+			children_context = child_enclosing(scope.enclosing, { name: tag, site: path, placement: "", describe: || static_element_place(root_elem, block.nodes.len(), elem) })
 			check_element_attrs(attrs, tag, "", path, || static_element_place(root_elem, block.nodes.len(), elem))
 			(id, tx1) = alloc_id(tx)
 			tx2 = emit_op(tx1, 8, |c| put_element_name(put_u32(put_u32(put_u32(c, id), parent), at), tag).append(container))
@@ -4693,7 +4702,7 @@ mount_elem = |block, env, root_elem, elem, depth, path, parent, before, top, sol
 			}
 			kid_sole = kids.len() == 1
 			for kid in kids {
-				(b3, t3) = mount_elem($b, env, root_elem, kid, depth, path, id, 0, False, kid_sole, { ..scope, enclosing: child_enclosing(tag) }, $t)
+				(b3, t3) = mount_elem($b, env, root_elem, kid, depth, path, id, 0, False, kid_sole, { ..scope, enclosing: children_context }, $t)
 				$b = b3
 				$t = t3
 			}
@@ -4704,19 +4713,21 @@ mount_elem = |block, env, root_elem, elem, depth, path, parent, before, top, sol
 			mount_elem(block, env, root_elem, child, depth, path, parent, before, top, sole, scope, tx)
 		}
 		Comment(value) => {
+			check_construction_text(scope.enclosing.construction, { value: "", site: path, placement: " (comment)" })
 			(id, tx1) = alloc_id(tx)
 			tx2 = emit_op(tx1, 26, |commands| put_str(put_u32(put_u32(put_u32(commands, id), parent), at), value))
 			(add_node(block, id, top), tx2)
 		}
 		Fragment(children) => children.fold((block, tx), |(held, acc), child| mount_elem(held, env, root_elem, child, depth, path, parent, at, top, sole and children.len() == 1, scope, acc))
 		Text(s) => {
+			check_construction_text(scope.enclosing.construction, { value: s, site: path, placement: "" })
 			(id, tx1) = alloc_id(tx)
 			tx2 = emit_op(tx1, 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
 			(add_node(block, id, top), tx2)
 		}
 		TextV(v) => {
 			(id, tx1) = alloc_id(tx)
-			read = v.read
+			read = checked_text_read(v.read, { context: scope.enclosing.construction, site: path, placement: "" })
 			s = read(env)
 			tx2 = emit_op(count_evals(tx1, 1), 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
 			b1 = add_node(block, id, top)
@@ -5600,6 +5611,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 		Element(authored, attrs, kids) => {
 			tag = resolve_element(authored.name, enclosing)
 			container = checked_container(tag, authored.container)
+			children_context = child_enclosing(enclosing, { name: tag, site, placement: placed, describe: || element_place(elem, path.map(|step| step.index.to_u64())) })
 			check_element_attrs(attrs, tag, placed, site, || element_place(elem, path.map(|step| step.index.to_u64())))
 			value_control = declares_value(attrs)
 			var $nstatic = 0.U64
@@ -5661,7 +5673,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 			$p = { tree: $tree, htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads }
 			var $i = 0.U8
 			for kid in kids {
-				$p = compile_elem($p, kid, path.append({ container, index: $i }), depth, site, placed, child_enclosing(tag))
+				$p = compile_elem($p, kid, path.append({ container, index: $i }), depth, site, placed, children_context)
 				$i = $i + 1
 			}
 			$p
@@ -5670,18 +5682,25 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 			check_parent(allowed, enclosing, site)
 			compile_elem(plan, child, path, depth, site, placed, enclosing)
 		}
-		Comment(value) => { ..plan, tree: put_str(plan.tree.append(3), value) }
+		Comment(value) => {
+			check_construction_text(enclosing.construction, { value: "", site, placement: "${placed} (comment)" })
+			{ ..plan, tree: put_str(plan.tree.append(3), value) }
+		}
 		Fragment(_) => crash "internal: a fragment is only a dynamic branch, never a row template node"
 		Text(s) => {
+			check_construction_text(enclosing.construction, { value: s, site, placement: placed })
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
 			{ tree: put_str(tree.append(2), s), htab, holes, handlers, mounts, ncols, kreads }
 		}
 		TextV(v) => {
+			check_construction_text(enclosing.construction, { value: "", site, placement: placed })
+			checked = checked_text_read(v.read, { context: enclosing.construction, site, placement: placed })
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
 			t2 = put_str(tree.append(2), "")
-			val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads }, { kind: 1, value: v.map(|encoded| Present(encoded)), extra: put_path([], 1, path), counter: 0, evaluated: True })
+			val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads }, { kind: 1, value: { ..v.map(|encoded| Present(encoded)), read: |context| Present(checked(context)) }, extra: put_path([], 1, path), counter: 0, evaluated: True })
 		}
 		Site(m, rf) => {
+			check_construction_text(enclosing.construction, { value: "", site, placement: "${placed} (nested site anchor)" })
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
 			hole = { is_observation: False, evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0, value_control: False, property: 0 }
 			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(mount_in_context(m, enclosing)), ncols, kreads: kreads.bitwise_or(rf(depth)) }
@@ -11371,13 +11390,27 @@ resolve_element = |name, enclosing| match name.namespace() {
 
 ## Descendants inherit the raw API's SVG/foreignObject rule. Actual parent
 ## identity stays available separately for literal placement checks.
-child_enclosing : Web.Tag -> Enclosing
-child_enclosing = |name| {
+child_enclosing : Enclosing, { name : Web.Tag, site : List(U32), placement : Str, describe : () -> Str } -> Enclosing
+child_enclosing = |parent, { name, site, placement, describe }| {
+	construction = match ParsedHtml.Construction.enter(
+		parent.construction,
+		construction_name({
+			namespace: match name.namespace() {
+				Explicit(value) => value
+				Inherit => crash "internal: construction requires a resolved name"
+			},
+			prefix: name.prefix(),
+			local: name.local(),
+		}),
+	) {
+		Ok(context) => context
+		Err(Repair(repair)) => crash "contract: ${construction_advice(repair)}${placement} at site ${show_path(site)}${describe()}"
+	}
 	namespace = match name.namespace() {
 		Explicit(value) => value
 		Inherit => crash "internal: child context requires a resolved element"
 	}
-	{ namespace, prefix: name.prefix(), local: name.local(), raw_namespace: if (namespace == Svg and name.local() != "foreignObject") Svg else Html }
+	{ namespace, prefix: name.prefix(), local: name.local(), raw_namespace: if (namespace == Svg and name.local() != "foreignObject") Svg else Html, construction }
 }
 
 ## Raw attributes follow HTML's ASCII name folding. Explicit qualification
@@ -11519,7 +11552,7 @@ enclosing_root = |root| {
 		"" => None
 		other => Uri(other)
 	}
-	{ namespace, prefix: root.prefix, local: root.local, raw_namespace: if (namespace == Svg and root.local != "foreignObject") Svg else Html }
+	{ namespace, prefix: root.prefix, local: root.local, raw_namespace: if (namespace == Svg and root.local != "foreignObject") Svg else Html, construction: ParsedHtml.Construction.root({ parent: construction_name(root) }) }
 }
 
 ## Root facts round-trip beside Boot without becoming an app-visible field.
@@ -11624,3 +11657,135 @@ expect {
 	foreign = raw.in_namespace({ namespace: Uri("urn:attr"), prefix: Prefix("a") })?
 	Core.attribute_claim(element, resolve_attribute(raw, element)) == Claimed("value") and Core.attribute_claim(element, exact) == Unclaimed and Core.attribute_claim(element, foreign) == Unclaimed
 }
+
+## Translate expanded identity without recovering a prefix from local text.
+construction_name : { namespace : Web.Namespace, prefix : Web.Prefix, local : Str } -> Markup.Name
+construction_name = |name| {
+	uri = namespace_uri(name.namespace)
+	{
+		local: name.local,
+		namespace: if (uri.is_empty()) NoNamespace else Uri(uri),
+		prefix: match name.prefix {
+			Unprefixed => Unprefixed
+			Prefix(value) => Prefix(value)
+		},
+	}
+}
+
+## Keep the parser's rule and the shared wording; the boundary adds its site.
+construction_advice : Markup.ConstructionRepair -> Str
+construction_advice = |repair| MarkupAdvice.repair(
+	repair.rule,
+	{
+		parent: "<${repair.parent.local}>",
+		child: match repair.child {
+			Element(name) => "<${name.local}>"
+			Text => "text"
+		},
+	},
+)
+
+## Only restricted table text scans the new value. No earlier value is held.
+check_construction_text : ParsedHtml.Construction.Context, { value : Str, site : List(U32), placement : Str } -> {}
+check_construction_text = |context, { value, site, placement }| match ParsedHtml.Construction.text(context, value) {
+	Ok(_) => {}
+	Err(Repair(repair)) => crash "contract: ${construction_advice(repair)}${placement} at site ${show_path(site)}"
+}
+
+## Text holes retain finite enclosing facts beside their existing reader,
+## never an element description or another copy of application storage.
+checked_text_read : (ctx -> Str), { context : ParsedHtml.Construction.Context, site : List(U32), placement : Str } -> (ctx -> Str)
+checked_text_read = |read, facts| |environment| {
+	value = read(environment)
+	check_construction_text(facts.context, { value, site: facts.site, placement: facts.placement })
+	value
+}
+
+## Expanded-name aliases reach the parser with one URI identity and exact
+## local/prefix data. Construction never splits a colon-bearing local name.
+expect {
+	construction_name({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Prefix("h"), local: "DIV" }) == { namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Prefix("h"), local: "DIV" }
+}
+
+## Each sibling resumes the parent's bounded context. A nested paragraph
+## restriction persists through a span, while a button scope ends it.
+expect {
+	paragraph = ParsedHtml.Construction.enter(root_enclosing.construction, construction_name({ namespace: Html, prefix: Unprefixed, local: "p" }))?
+	span = ParsedHtml.Construction.enter(paragraph, construction_name({ namespace: Html, prefix: Unprefixed, local: "span" }))?
+	button = ParsedHtml.Construction.enter(paragraph, construction_name({ namespace: Html, prefix: Unprefixed, local: "button" }))?
+	block = construction_name({ namespace: Html, prefix: Unprefixed, local: "div" })
+	{
+		nested: ParsedHtml.Construction.enter(span, block).is_err(),
+		outside: ParsedHtml.Construction.enter(root_enclosing.construction, block).is_ok(),
+		button_scope: ParsedHtml.Construction.enter(button, block).is_ok(),
+	} == { nested: True, outside: True, button_scope: True }
+}
+
+## Restricted table text accepts HTML whitespace only, including the empty
+## anchor; a nonbreaking space is content which the parser would relocate.
+expect {
+	table = ParsedHtml.Construction.root({ parent: construction_name({ namespace: Html, prefix: Unprefixed, local: "table" }) })
+	{
+		empty: ParsedHtml.Construction.text(table, "").is_ok(),
+		space: ParsedHtml.Construction.text(table, " \t\r\n").is_ok(),
+		content: ParsedHtml.Construction.text(table, "row").is_err(),
+		nbsp: ParsedHtml.Construction.text(table, "\u(00A0)").is_err(),
+	} == { empty: True, space: True, content: True, nbsp: True }
+}
+
+## Real mounting accepts sibling paragraphs, parser-defined table delegation
+## and unknown raw names without adding an authoring-vocabulary restriction.
+expect {
+	view = Core.element(
+		"main",
+		[],
+		[
+			Core.element("p", [], [Core.element("span", [], [Core.text("one")])]),
+			Core.element("div", [], [Core.text("sibling")]),
+			Core.element("table", [], [Core.element("tbody", [], [Core.element("tr", [], [Core.element("td", [], [Core.text("cell")])])]), Core.element("script", [], [Core.text("let answer = 42;")]), Core.template_content(Core.element("template", [], [Core.element("p", [], [Core.text("inert")])]))]),
+			Core.element("raw-unknown", [], [Core.text("available")]),
+		],
+	)
+	Core.settled(Core.mount(view)).is_ok()
+}
+
+## A kept row's restricted text reader checks its new value and remains an
+## ordinary hole. Legal whitespace changes settle through the normal turn.
+expect {
+	view = Core.state(
+		False,
+		|changed| Core.element(
+			"main",
+			[],
+			[
+				Core.element("button", [Core.on_click(changed.update(|value| !value))], []),
+				Core.each(changed.signal().map(|value| [if (value) "\t" else " "]), |_| "one", |row| Core.element("table", [], [Core.text_s(row.item())])),
+			],
+		),
+	)
+	(before, _) = Core.take_cmds(Core.mount(view), [])
+	after = Core.event(before, 2, 0, "")
+	Core.settled(after).is_ok()
+}
+
+## A deferred branch keeps the context at its site; a legal table section
+## can mount after an earlier empty branch and preserve the settled guard.
+expect {
+	view = Core.state(
+		False,
+		|shown| Core.element(
+			"main",
+			[],
+			[
+				Core.element("button", [Core.on_click(shown.update(|value| !value))], []),
+				Core.element("table", [], [Core.when(shown.signal(), || Core.element("tbody", [], [Core.element("tr", [], [Core.element("td", [], [Core.text("later")])])]), || Core.text(""))]),
+			],
+		),
+	)
+	(before, _) = Core.take_cmds(Core.mount(view), [])
+	Core.settled(Core.event(before, 2, 0, "")).is_ok()
+}
+
+## An effect-only site emits no child node, so placing it in a void element
+## does not trigger the rule for anchors or authored text children.
+expect Core.settled(Core.mount(Core.element("input", [], [Core.guard_leave(Core.const(False))]))).is_ok()
