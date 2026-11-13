@@ -157,7 +157,7 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // are present for any value other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 14;
+export const PROTOCOL_VERSION = 15;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -194,6 +194,7 @@ const OP_PROP = 21;
 const OP_HPROP = 22;
 const OP_RELEASE = 23;
 const OP_TRANSITION = 24;
+const OP_GUARD = 25;
 const TRANSITION_WAIT_MS = 1000;
 
 // Effect results are events on this node; the handler number is the id.
@@ -233,6 +234,9 @@ const RES_PORT_ANSWER = 14;
 const RES_PORT_FAILED = 15;
 const RES_FETCHED = 21;
 const RES_MATCHES = 22;
+const RES_COPIED = 23;
+const RES_CLIPBOARD_FAILED = 24;
+const RES_STORAGE_FAILED = 25;
 
 // The default and largest bound on one port answer or message, JSON text
 // and bytes together (options.maxPortBytes).
@@ -260,6 +264,7 @@ const KIND_OPEN = 5;
 const KIND_SCROLL = 6;
 const KIND_SIZE = 7;
 const KIND_SEEN = 8;
+const KIND_PASTE = 9;
 const POLICY_PREVENT = 1;
 const POLICY_STOP = 2;
 const POLICY_CAPTURE = 4;
@@ -513,6 +518,7 @@ function payloadOf(event) {
 
 const PAYLOAD_KINDS = {
   [KIND_TEXT]: { payload: payloadOf },
+  [KIND_PASTE]: { events: ["paste"] },
   [KIND_FILES]: {
     events: ["change", "drop", "paste"],
     payload(event) {
@@ -2255,6 +2261,23 @@ export class RocEngineRuntime {
     this.portLog = [];
     this.portCounts = new Map();
     this.ending = null;
+    this.leaveGuard = false;
+    this.leaveListener = null;
+    this.storageChanges = new Map();
+    this.storageListener = null;
+    this.storageFailureHead = null;
+    this.storageFailureTail = null;
+    this.storageFailureEpoch = {};
+    this.storageFailureSubscribers = new Map();
+    this.storageFailureCount = 0;
+    this.storageFailureTask = null;
+    this.clipboardText = "";
+    this.clipboardHtml = "";
+    this.clipboardWrites = 0n;
+    this.clipboardObservationError = null;
+    this.manualClipboardDenied = options.manualClipboardDenied ?? false;
+    this.maxPasteBytes = options.maxPasteBytes ?? 4 * 1024 * 1024;
+    if (!Number.isSafeInteger(this.maxPasteBytes) || this.maxPasteBytes < 0) throw new Error("maxPasteBytes must be a nonnegative safe integer");
     // Observation of jobs, workers and turns (options.monitor; see "The
     // monitor" above). It never changes what this runtime does.
     this.monitor = new WorkMonitor(options.monitor ?? {}, {
@@ -2270,6 +2293,77 @@ export class RocEngineRuntime {
         return null;
       }
     })();
+    this.sessionStorage = options.sessionStorage ?? (() => {
+      try { return this.win.sessionStorage; }
+      catch { return null; }
+    })();
+  }
+
+  // The last applied GUARD is the complete policy. This listener never
+  // enters Roc and deliberately survives poisoning of the visible page.
+  setLeaveGuard(on) {
+    if (on === this.leaveGuard) return;
+    this.leaveGuard = on;
+    if (on) {
+      this.leaveListener = event => { event.preventDefault(); event.returnValue = true; };
+      this.win.addEventListener("beforeunload", this.leaveListener);
+    } else if (this.leaveListener !== null) {
+      this.win.removeEventListener("beforeunload", this.leaveListener);
+      this.leaveListener = null;
+    }
+  }
+
+  // Manual assertions observe the last successful write and an exact count,
+  // never retain earlier clipboard contents or affect request performance.
+  clipboardSnapshot() {
+    if (this.clipboardObservationError) throw new Error(this.clipboardObservationError);
+    return { text: this.clipboardText, html: this.clipboardHtml, writes: this.clipboardWrites.toString() };
+  }
+
+  unlinkStorageFailure(item) {
+    if (item.previous) item.previous.next = item.next;
+    else this.storageFailureHead = item.next;
+    if (item.next) item.next.previous = item.previous;
+    else this.storageFailureTail = item.previous;
+    item.owner.pendingFailures.delete(item);
+    item.next = null; item.previous = null;
+    this.storageFailureCount -= 1;
+  }
+
+  clearStorageFailures() {
+    if (this.storageFailureTask !== null) clearTimeout(this.storageFailureTask);
+    this.storageFailureTask = null;
+    while (this.storageFailureHead) this.unlinkStorageFailure(this.storageFailureHead);
+    this.storageFailureEpoch = {};
+  }
+
+  storageWriteFailed(fx, error) {
+    if (this.storageFailureSubscribers.size === 0) return;
+    if (this.storageFailureCount + this.storageFailureSubscribers.size + this.queue.length > MAX_QUEUED) {
+      this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} pending storage failures and ingress entries`), "resource_limit");
+      return;
+    }
+    const payload = concat([new Uint8Array([RES_STORAGE_FAILED, fx.session ? 2 : 1, error?.name === "QuotaExceededError" ? 1 : 2]), utf8enc.encode(fx.key)]);
+    for (const [id, owner] of this.storageFailureSubscribers) {
+      const item = { id, owner, payload, epoch: this.storageFailureEpoch, previous: this.storageFailureTail, next: null };
+      if (this.storageFailureTail) this.storageFailureTail.next = item;
+      else this.storageFailureHead = item;
+      this.storageFailureTail = item;
+      owner.pendingFailures.add(item);
+      this.storageFailureCount += 1;
+    }
+    if (this.storageFailureTask === null) this.storageFailureTask = setTimeout(() => {
+      this.storageFailureTask = null;
+      const epoch = this.storageFailureEpoch;
+      this.storageFailureEpoch = {};
+      // A write made by a delivered failure belongs to the next task, even
+      // when it appends while this callback is draining earlier failures.
+      while (this.storageFailureHead?.epoch === epoch && !this.poisoned && !this.ending) {
+        const item = this.storageFailureHead;
+        this.unlinkStorageFailure(item);
+        if (this.live.get(item.id) === item.owner) this.result(item.id, item.payload);
+      }
+    }, 0);
   }
 
   // Boot: check the protocol version and declaration sections, then read
@@ -2285,6 +2379,7 @@ export class RocEngineRuntime {
     // anything mounts: a mismatch throws, and nothing runs.
     const boot = readDeclarations(this.x);
     this.bootKeys = boot.keys;
+    this.sessionKeys = boot.sessionKeys;
     this.mediaQueries = boot.media;
     this.zoneDays = boot.zoneDays;
     this.portDecls = new Map(boot.decls.map((d) => [d.name, d]));
@@ -2312,6 +2407,14 @@ export class RocEngineRuntime {
       }
     }
     if (!storageOk) pairs.length = 0;
+    let sessionOk = !!this.sessionStorage && typeof this.sessionStorage.getItem === "function";
+    const session = [];
+    for (const key of this.sessionKeys) {
+      if (!sessionOk) break;
+      try { const value = this.sessionStorage.getItem(key); if (value !== null) session.push([key, value]); }
+      catch { sessionOk = false; }
+    }
+    if (!sessionOk) session.length = 0;
     const loc = this.win ? this.win.location : null;
     const url = loc ? loc.pathname + loc.search + loc.hash : "/";
     // The default zone probe uses this exact mount sample rather than
@@ -2331,6 +2434,7 @@ export class RocEngineRuntime {
       { tag: 8, write: () => seed },
       { tag: 9, write: () => concat([u32(languages.length), ...languages.map(encStr)]) },
       { tag: 10, write: () => concat([encStr(zone.name), i64Bytes(zone.from_ms), i64Bytes(zone.until_ms), u32(zone.offsets.length), ...zone.offsets.flatMap(offset => [i64Bytes(offset.from_ms), i32Bytes(offset.minutes)])]) },
+      { tag: 11, write: () => concat([new Uint8Array([sessionOk ? 1 : 0]), u32(session.length), ...session.flatMap(([key, value]) => [encStr(key), encStr(value)])]) },
     ];
     return concat(sections.map(({ tag, write }) => {
       const body = write();
@@ -2416,6 +2520,7 @@ export class RocEngineRuntime {
       }
     }
     this.clearIngress();
+    this.clearStorageFailures();
     this.live.clear();
     this.pushSubs.clear();
     this.stopWorkers();
@@ -2433,6 +2538,9 @@ export class RocEngineRuntime {
   // A fresh instance from the same module; the poisoned one is abandoned.
   async recover() {
     this.cancelTransition();
+    this.setLeaveGuard(false);
+    this.clearStorageFailures();
+    for (const id of [...this.live.keys()]) this.cancel(id);
     if (!this.module) throw new Error("recover() needs the compiled module (mountRocEngineApp keeps it)");
     const instance = await WebAssembly.instantiate(this.module, pageImports(this.module));
     this.x = instance.exports;
@@ -2456,6 +2564,10 @@ export class RocEngineRuntime {
     this.pushSubs = new Map();
     this.portLog = [];
     this.saveLog = [];
+    this.clipboardText = "";
+    this.clipboardHtml = "";
+    this.clipboardWrites = 0n;
+    this.clipboardObservationError = null;
     this.scrollLog = this.manual ? new ScrollHistory() : null;
     this.transitionLog = this.manual ? new TransitionHistory() : null;
     this.modalOrder = this.manual ? new ModalOrder() : null;
@@ -2470,6 +2582,8 @@ export class RocEngineRuntime {
 
   unmount() {
     this.cancelTransition();
+    this.setLeaveGuard(false);
+    this.clearStorageFailures();
     this.monitor.runtimeEnding("unmount");
     this.ending = "unmounted";
     this.clearIngress();
@@ -2632,7 +2746,7 @@ export class RocEngineRuntime {
         }
       }
       if (node.__rn !== undefined && handler !== null) {
-        if (heard?.prevent || (handler.policies & POLICY_PREVENT) !== 0 || (handler.kind === KIND_FILES && type === "drop")) event.preventDefault();
+        if (heard?.prevent || (handler.policies & POLICY_PREVENT) !== 0 || (handler.kind === KIND_FILES && type === "drop") || handler.kind === KIND_PASTE) event.preventDefault();
         // A non-bubbling event is heard during capture; stopping it there
         // would prevent its target's own listeners from running.
         if (event.bubbles && (handler.policies & POLICY_STOP) !== 0) event.stopPropagation();
@@ -2657,6 +2771,19 @@ export class RocEngineRuntime {
           }
           const source = (handler.policies & POLICY_PACED) !== 0 ? this.pointerSource(declaring, handler, event.pointerId) : undefined;
           this.dispatch(node.__rn, handler.h, pointer.bytes, node, source);
+        } else if (handler.kind === KIND_PASTE) {
+          // getData is the only browser API for this string. Count its UTF-8
+          // bytes before allocating an encoded copy or staging any text in Wasm.
+          const text = event.clipboardData?.getData("text/plain") ?? "";
+          if (!text.isWellFormed()) throw new Error("paste text is not well-formed Unicode");
+          let bytes = 0;
+          for (const character of text) {
+            const point = character.codePointAt(0);
+            bytes += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+            if (bytes > this.maxPasteBytes) break;
+          }
+          const payload = bytes > this.maxPasteBytes ? new Uint8Array([1]) : concat([new Uint8Array([0]), utf8enc.encode(text)]);
+          this.dispatch(node.__rn, handler.h, payload, node);
         } else if (handler.kind === KIND_SCROLL) {
           this.observeManualScroll(declaring);
           const position = this.scrollPosition(declaring);
@@ -2963,6 +3090,10 @@ export class RocEngineRuntime {
         }
         this.drainQueue();
         return false;
+      }
+      if (this.storageFailureCount > 0 && this.queue.length + this.storageFailureCount >= MAX_QUEUED) {
+        this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} pending storage failures and ingress entries`), "resource_limit");
+        return;
       }
       let active = null, waiting = null;
       if (this.queue.length >= MAX_QUEUED && this.pendingTransition?.phase === "waiting") {
@@ -3845,6 +3976,16 @@ export class RocEngineRuntime {
             this.fxOut.push({ op: "fetch", id, method, url, headers, body: "", timeout });
           } else if (kind === 16) {
             this.fxOut.push({ op: "media", id, query: str() });
+          } else if (kind === 17) {
+            this.fxOut.push({ op: "sessionget", id, key: str() });
+          } else if (kind === 18) {
+            this.fxOut.push({ op: "storagechanges", id, key: str() });
+          } else if (kind === 19) {
+            const text = str(), htmlFlag = u8[at++];
+            if (htmlFlag !== 0 && htmlFlag !== 1) throw new Error(`invalid clipboard HTML flag ${htmlFlag}`);
+            this.fxOut.push({ op: "clipboard", id, text, html: htmlFlag ? str() : null });
+          } else if (kind === 20) {
+            this.fxOut.push({ op: "storagefailures", id });
           } else throw new Error(`unknown effect kind ${kind}`);
           break;
         }
@@ -3869,16 +4010,23 @@ export class RocEngineRuntime {
           at += 5 + n;
           break;
         }
+        case OP_GUARD: {
+          const on = u8[at++];
+          if (on !== 0 && on !== 1) throw new Error(`invalid leave guard flag ${on}`);
+          this.fxOut.push({ op: "guardleave", on: on === 1 });
+          break;
+        }
         case OP_STORE: {
           const mode = u8[at];
+          if (mode < 1 || mode > 4) throw new Error(`unknown storage operation ${mode}`);
           const n = dv.getUint32(at + 1, true);
           const key = readStr(u8, at + 5, n);
           at += 5 + n;
-          if (mode === 1) {
+          if (mode === 1 || mode === 3) {
             const m = dv.getUint32(at, true);
-            this.fxOut.push({ op: "set", key, value: readStr(u8, at + 4, m) });
+            this.fxOut.push({ op: "set", session: mode === 3, key, value: readStr(u8, at + 4, m) });
             at += 4 + m;
-          } else this.fxOut.push({ op: "remove", key });
+          } else this.fxOut.push({ op: "remove", session: mode === 4, key });
           break;
         }
         case OP_REF: {
@@ -4072,6 +4220,9 @@ export class RocEngineRuntime {
   perform(fx) {
     const w = this.win;
     switch (fx.op) {
+      case "guardleave":
+        this.setLeaveGuard(fx.on);
+        return;
       case "push":
         w.history.pushState(null, "", fx.url);
         return;
@@ -4137,11 +4288,13 @@ export class RocEngineRuntime {
       case "set":
       case "remove":
         try {
-          if (fx.op === "set") this.storage.setItem(fx.key, fx.value);
-          else this.storage.removeItem(fx.key);
-        } catch (e) {
-          // A storage write failure is a host diagnostic, not an app result.
-          console.warn(`storage ${fx.op} ${fx.key} failed: ${e}`);
+          const store = fx.session ? this.sessionStorage : this.storage;
+          if (!store) throw new Error("storage is unavailable");
+          if (fx.op === "set") store.setItem(fx.key, fx.value);
+          else store.removeItem(fx.key);
+        } catch (error) {
+          console.warn(`${fx.session ? "session" : "local"} storage ${fx.op} ${fx.key} failed: ${error}`);
+          this.storageWriteFailed(fx, error);
         }
         return;
       case "cancel":
@@ -4199,13 +4352,93 @@ export class RocEngineRuntime {
         this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => clearInterval(h) });
         return;
       }
+      case "storagechanges": {
+        let ids = this.storageChanges.get(fx.key);
+        if (!ids) { ids = new Set(); this.storageChanges.set(fx.key, ids); }
+        ids.add(fx.id);
+        if (this.storageListener === null) {
+          this.storageListener = event => this.guard(() => {
+            if (!this.storage || event.storageArea !== this.storage) return;
+            const payload = event.key === null || event.newValue === null ? new Uint8Array([RES_MISSING]) : concat([new Uint8Array([RES_VALUE]), utf8enc.encode(event.newValue)]);
+            // Reporting can drain an already-full ingress queue. Fix the
+            // recipients before that delivery can dispose or mount a site.
+            const recipients = event.key === null ? [...this.storageChanges.values()].flatMap(ids => [...ids]) : [...(this.storageChanges.get(event.key) ?? [])];
+            for (const id of recipients) this.report(id, payload);
+          });
+          w.addEventListener("storage", this.storageListener);
+        }
+        this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => {
+          ids.delete(fx.id);
+          if (ids.size === 0) this.storageChanges.delete(fx.key);
+          if (this.storageChanges.size === 0 && this.storageListener !== null) {
+            w.removeEventListener("storage", this.storageListener);
+            this.storageListener = null;
+          }
+        } });
+        return;
+      }
+      case "storagefailures": {
+        const entry = { kind: "sub", req: fx, pendingFailures: new Set(), cancel: () => {
+          this.storageFailureSubscribers.delete(fx.id);
+          for (const item of entry.pendingFailures) this.unlinkStorageFailure(item);
+          if (this.storageFailureCount === 0 && this.storageFailureTask !== null) {
+            clearTimeout(this.storageFailureTask); this.storageFailureTask = null;
+          }
+        } };
+        this.storageFailureSubscribers.set(fx.id, entry);
+        this.live.set(fx.id, entry);
+        return;
+      }
+      case "clipboard": {
+        const entry = { kind: "clipboard", req: fx, cancel: () => { entry.active = false; }, active: true };
+        this.live.set(fx.id, entry);
+        const finish = payload => {
+          if (!entry.active || this.live.get(fx.id) !== entry || this.poisoned || this.ending) return;
+          this.live.delete(fx.id);
+          this.result(fx.id, payload);
+        };
+        if (this.manual) {
+          // The write is performed with this batch. Cancellation can suppress
+          // its later answer but cannot undo successful clipboard contents.
+          const denied = this.manualClipboardDenied;
+          if (!denied) {
+            this.clipboardText = fx.text;
+            this.clipboardHtml = fx.html ?? "";
+            if (this.clipboardWrites === U64_MAX) this.clipboardObservationError = "clipboard write observation exhausted its U64 count";
+            else this.clipboardWrites += 1n;
+          }
+          const task = setTimeout(() => finish(new Uint8Array(denied ? [RES_CLIPBOARD_FAILED, 1] : [RES_COPIED])), 0);
+          entry.cancel = () => { entry.active = false; clearTimeout(task); };
+          return;
+        }
+        const clipboard = w?.navigator?.clipboard;
+        if (!clipboard || (fx.html === null ? typeof clipboard.writeText !== "function" : typeof clipboard.write !== "function" || typeof w.ClipboardItem !== "function")) {
+          // Every answer is a later turn, even a synchronously unavailable API.
+          const task = setTimeout(() => finish(new Uint8Array([RES_CLIPBOARD_FAILED, 2])), 0);
+          entry.cancel = () => { entry.active = false; clearTimeout(task); };
+          return;
+        }
+        try {
+          const written = fx.html === null ? clipboard.writeText(fx.text) : clipboard.write([new w.ClipboardItem({
+            "text/plain": new w.Blob([fx.text], { type: "text/plain" }),
+            "text/html": new w.Blob([fx.html], { type: "text/html" }),
+          })]);
+          Promise.resolve(written).then(() => finish(new Uint8Array([RES_COPIED])), error => finish(new Uint8Array([RES_CLIPBOARD_FAILED, error?.name === "NotAllowedError" ? 1 : 2])));
+        } catch (error) {
+          const task = setTimeout(() => finish(new Uint8Array([RES_CLIPBOARD_FAILED, error?.name === "NotAllowedError" ? 1 : 2])), 0);
+          entry.cancel = () => { entry.active = false; clearTimeout(task); };
+        }
+        return;
+      }
+      case "sessionget":
       case "get": {
         // One turn later, never inside the current call.
         const h = setTimeout(() => {
           this.live.delete(fx.id);
           let v = null;
           try {
-            v = this.storage ? this.storage.getItem(fx.key) : null;
+            const store = fx.op === "sessionget" ? this.sessionStorage : this.storage;
+            v = store ? store.getItem(fx.key) : null;
           } catch (_) {
             v = null;
           }
@@ -5161,7 +5394,7 @@ export class RocEngineRuntime {
 function readDeclarations(x) {
   x.boot_keys();
   const bytes = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
-  const out = { keys: [], decls: [], media: [], zoneDays: 366 };
+  const out = { keys: [], sessionKeys: [], decls: [], media: [], zoneDays: 366 };
   const sections = [
     { tag: 2, name: "local-storage", read: (r) => {
       for (let n = r.u32(); n > 0; n -= 1) out.keys.push(r.str());
@@ -5192,6 +5425,9 @@ function readDeclarations(x) {
     { tag: 10, name: "time-zone", read: (r) => {
       out.zoneDays = r.u16();
       if (out.zoneDays > 7305) throw new Error("zone_days is greater than 7305");
+    } },
+    { tag: 11, name: "session-storage", read: r => {
+      for (let n = r.u32(); n > 0; n -= 1) out.sessionKeys.push(r.str());
     } },
   ];
   let at = 0;
