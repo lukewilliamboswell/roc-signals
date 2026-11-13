@@ -2283,7 +2283,10 @@ SpecRunner := [].{
 				}
 			PasteText(loc, text) => {
 				i = SpecRunner.find(s.dom, loc) ? |_| "paste target was not found"
-				declaration = Dom.target(s.dom, i, "paste", True) ? |_| "no paste handler"
+				declaration = match Dom.target(s.dom, i, "paste", True) {
+					Ok(target) => target
+					Err(_) => return Ok(s)
+				}
 				if declaration.kind == 9 {
 					payload = if (text.count_utf8_bytes() > s.browser.settings.max_paste) [1] else [0].concat(text.to_utf8())
 					Ok(SpecRunner.send(program, s, declaration.node, declaration.handler, payload))
