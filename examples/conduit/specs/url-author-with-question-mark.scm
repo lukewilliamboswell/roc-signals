@@ -1,8 +1,14 @@
 (test "Conduit URL — author with question mark"
-  (setup (initial-location "/roc-signals/examples/conduit/#/profile/anna%3Fx"))
+  (setup (initial-location "/roc-signals/examples/conduit/#/"))
   (steps
-    (stub-http "exact profile" :url "/api/profiles/anna%3Fx" :status 200 :body "{\"profile\":{\"username\":\"anna?x\",\"bio\":\"Reserved name\",\"image\":\"\",\"following\":false}}")
+    (stub-http "feed" :url "/api/articles?limit=20&offset=0" :status 200 :body "{\"articles\":[{\"slug\":\"a b?c\",\"title\":\"Exact reserved slug\",\"description\":\"Reserved description\",\"tagList\":[],\"createdAt\":\"2026-06-01T08:00:00.000Z\",\"favorited\":false,\"favoritesCount\":0,\"author\":{\"username\":\"anna?x\",\"bio\":\"Reserved name\",\"image\":\"\",\"following\":false}}],\"articlesCount\":1}")
     (run-effect 1)
+    (stub-http "tags" :url "/api/tags" :status 200 :body "{\"tags\":[]}")
+    (run-effect 2)
+    (click (role link :name "anna?x"))
+    (expect-current-location "/roc-signals/examples/conduit/#/profile/anna%3Fx")
+    (stub-http "exact profile" :url "/api/profiles/anna%3Fx" :status 200 :body "{\"profile\":{\"username\":\"anna?x\",\"bio\":\"Reserved name\",\"image\":\"\",\"following\":false}}")
+    (run-effect 3)
     (expect-document-title "@anna?x - Conduit")
     (expect-visible (text "Reserved name"))
     (expect-request 1 :url "/api/articles?limit=20&offset=0&author=anna%3Fx")
