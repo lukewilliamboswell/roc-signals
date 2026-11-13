@@ -209,8 +209,8 @@ run_sequence = |bytes| {
 		op = byte % 6
 		argument = (byte // 6).to_u64()
 		m = { ..$model, fx: [] }
-		id = argument.to_u32_wrap() % m.next
-		status = 100 + argument
+		id = if (argument % 4 == 0 or m.live.is_empty()) argument.to_u32_wrap() % m.next else (m.live.get(argument % m.live.len()) ?? crash "CurrentModel: bounded live selection").id
+		status = 200 + argument
 		before_evaluations = Core.evals($engine)
 		var $withheld = False
 		(engine, next) = if op == 3 or op == 4 {
@@ -262,3 +262,29 @@ run_sequence = |bytes| {
 ## ABA, empty and command-only steps, refusal, synchronous follow-up
 ## supersession, progress, reparenting, remount and stale results share a model.
 expect CurrentModel.run([18, 22, 12, 27, 30, 3, 10, 1, 8, 39, 1, 6, 5, 4, 9, 15, 21, 24, 27]) == {}
+
+## An old A cannot replace a newer A of the same still-live construction.
+expect CurrentModel.run([18, 12, 9, 18, 9, 15]) == {}
+
+## All requests of one step are current, including answers taken in reverse order.
+expect CurrentModel.run([12, 9, 9]) == {}
+
+## A command and two Self results admit the first reaction, whose new step
+## withholds the second; old progress still counts without reaching its reader.
+expect CurrentModel.run([18, 6, 16, 10, 15, 9]) == {}
+
+## A current orphan can answer while its ancestor still asks the same question.
+expect CurrentModel.run([18, 1, 10, 9]) == {}
+
+## Changing the question while hidden makes both progress and final data inert.
+expect CurrentModel.run([18, 1, 12, 10, 9]) == {}
+
+## An older step never regains standing after disposal, even when its question returns.
+expect CurrentModel.run([18, 12, 1, 18, 16, 15, 10, 9]) == {}
+
+## A remount is a new scope; an old current orphan keeps its frozen standing
+## under the same-question rule, rather than sharing the new site's generation.
+expect CurrentModel.run([18, 1, 1, 9, 9]) == {}
+
+## Empty and command-only steps invalidate every earlier live request.
+expect CurrentModel.run([12, 24, 15, 9, 18, 30, 9]) == {}

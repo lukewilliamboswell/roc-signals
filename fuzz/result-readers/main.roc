@@ -284,6 +284,95 @@ ownership! = |rounds| {
 	{}
 }
 
+## Replanning a current step retains the older readers until their requests
+## terminate. Withheld progress and wrong-kind finals cannot run those readers;
+## terminal delivery must free both the large capture and its handle box.
+current_ownership_view : {} -> Engine.Elem(Engine.Root)
+current_ownership_view = |_| Engine.state(
+	{ query: 0.U64, last: [] },
+	|state| Engine.element(
+		"main",
+		[],
+		[
+			Engine.element("button", [Engine.on_click(state.update(|s| { ..s, query: s.query + 1 }))], [Engine.text("issue current")]),
+			Engine.keep_current(
+				state.signal().map(|s| s.query),
+				|query| if query == 0 {
+					[]
+				} else {
+					[0.U64, 1].map(
+						|offset| {
+							buffer = List.repeat((query + offset).to_u8_wrap(), 16384)
+							file = Core.held_file(Box.box(query * 2 + offset))
+							Engine.http({ url: "/current-reader" }).map(|_| Ok({ checksum: buffer.fold(0.U64, |sum, byte| sum + byte.to_u64()), file, offset, message: 0.U64 }))
+						},
+					)
+				},
+				state.on_result(
+					|s, query, answer| {
+						capture = capture_of(answer)
+						if capture.checksum != (query + capture.offset).to_u8_wrap().to_u64() * 16384 {
+							crash "current reader used another step's capture"
+						}
+						{ ..s, last: [capture.file] }
+					},
+				).with_progress({}, state.on_progress(|s, _, _| s)),
+			),
+			Engine.watch_changes(state.signal().map(|s| s.last), |files| files.map(|file| Engine.command(Engine.File.save(file, {}))), Engine.ignore({})),
+		],
+	),
+)
+
+current_round : Core.App, Dom.Target -> Core.App
+current_round = |engine, route| {
+	(first, _) = Core.take_cmds(Core.event(engine, route.node, route.handler, ""), [])
+	old = Core.fx_live(first)
+	(second, _) = Core.take_cmds(Core.event(first, route.node, route.handler, ""), [])
+	live = Core.fx_live(second)
+	if old.len() != 2 or live.len() != 4 {
+		crash "current requests were cancelled or not admitted"
+	}
+	var $engine = second
+	for id in live {
+		$engine = Core.progress($engine, id, { direction: Receiving, done: 1, total: Unknown })
+		# A withheld request's typed HTTP reader rejects this wrong-kind data
+		# if policy checks accidentally run after decoding the result.
+		result = if (old.contains(id)) FileBytes([7]) else Timeout
+		(taken, _) = Core.take_cmds(Core.result($engine, id, result), [])
+		$engine = taken
+	}
+	if !Core.fx_live($engine).is_empty() or Core.settled($engine).is_err() {
+		crash "current reader retirement left live or unsettled work"
+	}
+	$engine
+}
+
+current_ownership! : U64 => {}
+current_ownership! = |rounds| {
+	(mounted, batch) = Core.take_cmds(Core.mount_with(4, current_ownership_view({})), [])
+	dom = Dom.apply(Dom.new({}), batch)
+	index = SpecRunner.find(dom, Text("issue current")) ?? crash "current ownership button absent"
+	route = Dom.target(dom, index, "click", True) ?? crash "current ownership route absent"
+	var $engine = mounted
+	var $bytes = 0.U64
+	var $allocs = 0.U64
+	for round in 0..<rounds {
+		engine = $engine
+		measured = Fuzz.measure!("current-reader-retirement", || current_round(engine, route))
+		if round > 3 and (measured.stats.exit_live_bytes != $bytes or measured.stats.exit_live_allocs != $allocs) {
+			crash "current reader captures retained while mounted: ${Str.inspect(measured.stats)} previous ${$bytes.to_str()}/${$allocs.to_str()}"
+		}
+		$bytes = measured.stats.exit_live_bytes
+		$allocs = measured.stats.exit_live_allocs
+		$engine = measured.value
+	}
+	stats = Core.fx_stats($engine)
+	if stats.issued != rounds * 4 or stats.delivered != rounds * 4 or stats.cancelled != 0 or stats.stale != 0 {
+		crash "current retirement changed request accounting: ${Str.inspect(stats)}"
+	}
+	{}
+}
+
 expect sequence({ mode: Posted, bytes: [1, 0, 0, 1, 4, 3, 2, 8, 9, 2, 1, 13, 14, 2, 18] }) == {}
 expect sequence({ mode: Latest, bytes: [1, 0, 0, 1, 4, 3, 2, 8, 9, 2, 1, 13, 14, 2, 18] }) == {}
 expect sequence({ mode: Resource, bytes: [1, 0, 0, 1, 4, 3, 2, 8, 9, 2, 1, 13, 14, 2, 18] }) == {}
@@ -333,6 +422,7 @@ test! = |input| {
 	rounds = 8 + input.bytes.len()
 	sequence(input)
 	ownership!(rounds)
+	current_ownership!(rounds)
 	resource_plan!()
 	Fuzz.keep
 }

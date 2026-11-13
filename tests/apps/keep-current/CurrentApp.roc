@@ -16,7 +16,9 @@ CurrentApp := [].{
 	requests : Question -> List(Engine.Ask(Str, Engine.HttpError))
 	requests = |asked| {
 		var $requests = []
-		if !asked.text.is_empty() {
+		if asked.text == "redirect" {
+			$requests = [Engine.command(Replace("/current/next")), Engine.again({}).map_ok(|_| "follow"), Engine.again({}).map_ok(|_| "follow")]
+		} else if !asked.text.is_empty() {
 			for slot in 0..<asked.slots {
 				$requests = $requests.append(Engine.http_body({ url: "/current/${asked.text}/${slot.to_str()}" }).map_ok(|body| "${slot.to_str()}:${body}"))
 			}
@@ -30,7 +32,7 @@ CurrentApp := [].{
 			Ok(body) => body
 			Err(error) => Str.inspect(error)
 		}
-		{ ..s, answers: s.answers.append("${asked.text}:${answer}") }
+		{ ..s, question: if (asked.text == "redirect") "after" else s.question, answers: s.answers.append("${asked.text}:${answer}") }
 	}
 
 	local_view : {} -> Elem(ctx)

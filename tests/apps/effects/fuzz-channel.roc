@@ -1089,6 +1089,10 @@ target = Fuzz.target_with!({
 	name: "fx-channel",
 	examples: [
 		ex("keep-current-lifecycle", 1, [18, 22, 12, 27, 30, 3, 10, 1, 8, 39, 1, 6, 5, 4, 9, 15, 21, 24, 27]),
+		ex("keep-current-aba", 1, [18, 12, 9, 18, 9, 15]),
+		ex("keep-current-follow-ups", 1, [18, 6, 16, 10, 15, 9]),
+		ex("keep-current-orphans", 1, [18, 1, 10, 9, 1, 12, 1, 18, 16, 15, 10, 9]),
+		ex("keep-current-empty-step", 1, [12, 24, 15, 9, 18, 30, 9]),
 		ex("progress-lifecycle", 1, [0, 4, 3, 8, 1, 3, 2, 0, 5, 6, 12, 3, 16, 3, 9]),
 		ex("post-send-time-reading", 1, [12, 0, 4, 0, 12, 0, 4, 0, 12, 0, 2, 5, 2, 6, 2, 7]),
 		ex("persistence-lifetimes", 1, [3, 0, 2, 4, 1, 5, 1, 0, 8, 11, 0, 14, 1, 17, 1]),
