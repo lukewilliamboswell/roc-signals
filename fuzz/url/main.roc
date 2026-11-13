@@ -52,7 +52,16 @@ test = |bytes| {
 	if built.path_segments() != names or built.query_pairs() != pairs {
 		crash "builder lost decoded names or pairs"
 	}
-	match Url.parse(fragment_encoding(built.to_str())) {
+	encoded_fragment = fragment_encoding(built.to_str())
+	location = Url.parse("/demo/#${encoded_fragment}") ?? crash "browser location was refused"
+	if location.fragment() != Some(encoded_fragment) {
+		crash "outer fragment reader decoded URL text prematurely"
+	}
+	hash = match location.fragment() {
+		Some(value) => value
+		None => crash "browser fragment was lost"
+	}
+	match Url.parse(hash) {
 		Err(error) => crash "browser-encoded fragment was refused: ${Str.inspect(error)}"
 		Ok(read) => if read.path_segments() != names or read.query_pairs() != pairs {
 			crash "browser fragment lost names or pairs"
