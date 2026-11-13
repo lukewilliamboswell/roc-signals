@@ -171,6 +171,17 @@ const check = (name, ok, detail = "") => {
 // 1. Random walk.
 {
   const { ctx, page, errors } = await open();
+  // A file chooser cannot be populated by the walk. Open a small log through
+  // the app's generator so its search and viewer can ask meaningful questions.
+  if (app === "log-explorer") await page.evaluate(async () => {
+    const entries = window.__loc(["label", "Entries"]);
+    entries.value = "300";
+    entries.dispatchEvent(new Event("input", { bubbles: true }));
+    window.__loc(["role", "button", "Generate a sample log"]).click();
+    await window.__runWork();
+    window.__loc(["role", "button", "Search"]).click();
+    await window.__runWork();
+  });
   const t0 = Date.now();
   const done = await page.evaluate(async (n, served, workers) => {
     const POOL = ["", "a", "Ada", "10", "-3", "2x", "x@y.z", "Lorem ipsum dolor", "Node-0007", "# Title", "Renamed"];
@@ -276,7 +287,7 @@ const CYCLES = {
   "csv-converter": [["click", ["role", "button", "Load the sample"]]],
   // A sample log written by its task, then prepared for the overview: each
   // new log replaces the last, whose file and prepared state are let go.
-  "log-explorer": [["fill", ["label", "Entries"], "300"], ["click", ["role", "button", "Generate a sample log"]]],
+  "log-explorer": [["fill", ["label", "Entries"], "300"], ["click", ["role", "button", "Generate a sample log"]], ["click", ["role", "button", "Viewer"]], ["scroll", ["test-id", "viewer-viewport"], 1000], ["scroll", ["test-id", "viewer-viewport"], 0], ["click", ["role", "button", "Overview"]]],
   // A book added (the store answers it) and removed (a command), each write
   // followed by the store's copy.
   "reading-list": [["fill", ["label", "Title"], "Soak book"], ["click", ["role", "button", "Add book"]], ["click", ["role", "button", "Remove Soak book"]]],
@@ -295,11 +306,14 @@ const SCENES = { "status-page": [["click", ["role", "button", "Pause the feed"]]
   const workerSamples = [];
   for (let c = 0; c < NCYC; c += 1) {
     for (const [op, loc, v] of c === 0 ? (SCENES[app] ?? []).concat(cycle) : cycle) {
-      const r = await page.evaluate((op, loc, v) => {
+      const r = await page.evaluate(async (op, loc, v) => {
         const el = window.__loc(loc);
         if (!el) return `no element ${JSON.stringify(loc)}`;
         if (op === "click") el.click();
-        else {
+        else if (op === "scroll") {
+          el.scrollTop = v;
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        } else {
           el.value = v;
           // A select reports a choice with `change`, a text field with `input`.
           el.dispatchEvent(new Event(el.tagName === "SELECT" ? "change" : "input", { bubbles: true }));
@@ -310,6 +324,8 @@ const SCENES = { "status-page": [["click", ["role", "button", "Pause the feed"]]
       // A response may issue a job (a fetched file sent to a task), and a
       // job's answer may issue a request (a read of the file it built).
       if (served) await settle(page);
+      // Let the viewer's real size/scroll observations arrive before draining jobs.
+      if (app === "log-explorer") await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       if (workers) await page.evaluate(() => window.__runWork());
       if (served) await settle(page);
     }

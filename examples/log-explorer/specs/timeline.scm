@@ -14,7 +14,11 @@
     (change (test-id "timeline") "2026-11-11 12:01")
     (report-size (test-id "viewer-viewport") 800 1000)
     (expect-pending-work "roc-signals.example/log-explorer/window" 1)
+    (expect-scrolls 0)
     (run-effect 2)
+    (expect-scrolls 1)
+    (expect-scroll 1 (test-id "viewer-viewport") to)
+    (expect-pending-effects 0)
     (expect-text (test-id "viewer-status") "Lines 3–52 of 90.")
     (expect-value (label "Go to line") "3")
     ; A minute with no entries opens at the next one that has some.

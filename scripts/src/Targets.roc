@@ -38,6 +38,7 @@ Targets := [].{
 		{ name: "controls", main: "tests/apps/controls/fuzz-controls.roc" },
 		{ name: "csv-converter", main: "examples/csv-converter/fuzz-csv.roc" },
 		{ name: "log-explorer", main: "examples/log-explorer/fuzz-index.roc" },
+		{ name: "log-scroll-map", main: "examples/log-explorer/fuzz-scroll-map.roc" },
 		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc" },
 	]
 

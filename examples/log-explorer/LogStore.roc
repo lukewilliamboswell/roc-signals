@@ -34,6 +34,14 @@ LogStore := [Explorer].{
 	## not a number the generator writes, or its task did not finish.
 	Note : [NoNote, NotACount, NotWritten(Worker.Error(Engine.FileError))]
 
+	## Geometry belongs to the chosen immutable file. Before its first window
+	## answers, a requested line remains intent and has no proportional offset.
+	Geometry : [Awaiting, Ready(Log.ScrollMap)]
+
+	## Close the initial union before it is stored (roc-lang/roc#13011).
+	awaiting_geometry : Geometry
+	awaiting_geometry = Awaiting
+
 	## The most entries the sample generator writes.
 	most_entries : U64
 	most_entries = 2000000
@@ -47,8 +55,11 @@ LogStore := [Explorer].{
 			place: {
 				page: Engine.cell(0.U64),
 				first: Engine.cell(0.U64),
-			}.Engine.Cells.with_reset(|cells, reset| { page: cells.page, first: cells.first, reset }),
+				asked: Engine.cell(0.U32),
+				geometry: Engine.cell(LogStore.awaiting_geometry),
+			}.Engine.Cells.with_reset(|cells, reset| { page: cells.page, first: cells.first, asked: cells.asked, geometry: cells.geometry, reset }),
 			viewport: Engine.cell(Log.Viewport.waiting),
+			scrolling: Engine.cell(Engine.outbox({})),
 			# Construct the full union: an open Light initializer crashes monotype
 			# across store tests (https://github.com/roc-lang/roc/issues/13011).
 			theme: Engine.cell(TimelineChart.preferred_theme(Bool.False)),
@@ -71,7 +82,8 @@ LogStore := [Explorer].{
 		Err(Undeclared) => crash "LogStore.start: color-scheme query was not declared"
 	}
 
-	## A size report changes only the viewer's requested capacity.
+	## A size report supplies both capacity and the scroll map's height. The
+	## viewer reconciles its offset when the resulting geometry settles.
 	viewer_sized : U32 -> List(Engine.Write(_))
 	viewer_sized = |height| [LogStore.cells.viewport.set(Log.Viewport.for_height(height))]
 
@@ -105,7 +117,7 @@ LogStore := [Explorer].{
 
 	## The log is closed, and its file let go.
 	closed : List(Engine.Write(_))
-	closed = [LogStore.cells.log.set(NoLog)]
+	closed = [LogStore.cells.log.set(NoLog), LogStore.cells.place.reset]
 
 	## Ask for a sample of the entries typed, or say why not.
 	sample_asked : Str -> List(Engine.Write(_))
@@ -129,24 +141,44 @@ LogStore := [Explorer].{
 	turned_to : Tab -> List(Engine.Write(_))
 	turned_to = |tab| [LogStore.cells.tab.set(tab)]
 
-	## The viewer, opened at a line (from 0).
-	shown_at : U64 -> List(Engine.Write(_))
-	shown_at = |line| [LogStore.cells.tab.set(Viewer), LogStore.cells.place.first.set(line)]
+	## The viewer, opened at a line (from 0). A known geometry places its
+	## scrollbar immediately; an unmeasured log keeps the line until it can.
+	shown_at : Geometry, U64 -> List(Engine.Write(_))
+	shown_at = |geometry, line| [LogStore.cells.tab.set(Viewer)].concat(LogStore.moved_to(geometry, Ok(line)))
 
-	## The viewer, opened at the time a click on the timeline reports: at
-	## the first line of that bucket, or of the next one with entries. A
-	## time the timeline cannot place, or a timeline not yet answered,
-	## changes nothing.
-	timeline_clicked : Try(Log.Overview, [NoAnswer]), Str -> List(Engine.Write(_))
-	timeline_clicked = |answered, clicked|
-		match (answered, Log.minute_of(clicked.to_utf8())) {
-			(Ok(overview), Ok(minute)) =>
-				match Log.first_line_from(overview.timeline, minute) {
-					Ok(line) => LogStore.shown_at(line)
-					Err(NoLaterEntry) => []
-				}
-			_ => []
+	## The chart's point names the first line of that minute or the next
+	## bucket with entries. An unanswered timeline or an invalid time is inert.
+	timeline_clicked : { answered : Try(Log.Overview, [NoAnswer]), geometry : Geometry, clicked : Str } -> List(Engine.Write(_))
+	timeline_clicked = |{ answered, geometry, clicked }| match (answered, Log.minute_of(clicked.to_utf8())) {
+		(Ok(overview), Ok(minute)) => match Log.first_line_from(overview.timeline, minute) {
+			Ok(line) => LogStore.shown_at(geometry, line)
+			Err(NoLaterEntry) => []
 		}
+		_ => []
+	}
+
+	## A newly known line count, a remount or a changed height reconciles the
+	## current line intent. Only small geometry is retained, never log contents.
+	geometry_ready : { total : U64, height : U32, first : U64, previous : Geometry, asked : U32 } -> List(Engine.Write(_))
+	geometry_ready = |{ total, height, first, previous, asked }| {
+		map = { total, viewport_height: height, line_height: Log.line_height }
+		offset = if (previous == Ready(map)) asked else Log.offset_of(map, first)
+		[LogStore.cells.place.geometry.set(Ready(map)), LogStore.cells.place.asked.set(offset), LogStore.cells.scrolling.update(|box| box.post(offset))]
+	}
+
+	## A scroll echo can be rounded one pixel from the requested offset. It
+	## writes nothing; a hand scroll keeps its actual offset beside its line.
+	scrolled : { geometry : Geometry, asked : U32 }, U32 -> List(Engine.Write(_))
+	scrolled = |{ geometry, asked }, top| {
+		distance = if (top >= asked) top - asked else asked - top
+		if distance <= 1 {
+			return []
+		}
+		match geometry {
+			Ready(map) => [LogStore.cells.place.first.set(Log.first_at(map, top)), LogStore.cells.place.asked.set(top)]
+			Awaiting => []
+		}
+	}
 
 	## The search's text as typed: a new search starts from its first page.
 	searched : Str -> List(Engine.Write(_))
@@ -174,19 +206,32 @@ LogStore := [Explorer].{
 		Err(NoAnswer) => []
 	}
 
-	## The viewer moved to a line (from 0), when there is one to move to.
-	moved_to : Try(U64, [NoAnswer]) -> List(Engine.Write(_))
-	moved_to = |line| match line {
-		Ok(first) => [LogStore.cells.place.first.set(first)]
+	## A jump is one decision over line intent and physical offset. When the
+	## count is not known, no guessed offset is sent to the browser.
+	moved_to : Geometry, Try(U64, [NoAnswer]) -> List(Engine.Write(_))
+	moved_to = |geometry, line| match line {
+		Ok(first) => {
+			asked = match geometry {
+				Ready(map) => Log.offset_of(map, first)
+				Awaiting => 0
+			}
+			[LogStore.cells.place.first.set(first), LogStore.cells.place.asked.set(asked)].concat(
+				match geometry {
+					Ready(_) => [LogStore.cells.scrolling.update(|box| box.post(asked))]
+					Awaiting => []
+				},
+			)
+		}
 		Err(NoAnswer) => []
 	}
 
-	## The viewer sent to the line typed (from 1); anything else is ignored.
-	went_to : Str -> List(Engine.Write(_))
-	went_to = |typed| match U64.from_str(typed.trim()) {
-		Ok(line) if line >= 1 => [LogStore.cells.place.first.set(line - 1)]
+	## The viewer sent to a one-based line typed by its reader.
+	went_to : Geometry, Str -> List(Engine.Write(_))
+	went_to = |geometry, typed| match U64.from_str(typed.trim()) {
+		Ok(line) if line >= 1 => LogStore.moved_to(geometry, Ok(line - 1))
 		_ => []
 	}
+
 }
 
 ## Where a store's reader is: the tab, the search's page and the viewer's
@@ -202,7 +247,7 @@ expect {
 		.after(LogStore.sample_asked("none"))
 		.after(LogStore.searched("reset"))
 		.after(LogStore.paged_on(Ok({ matches: 200, lines: [], over_time: NotCounted })))
-		.after(LogStore.shown_at(41))
+		.after(LogStore.shown_at(LogStore.awaiting_geometry, 41))
 	begun = left.after(LogStore.fresh)
 	actual =
 		\\left: ${place_in(left)}, ${Str.inspect(left.read(LogStore.cells.note))}
@@ -262,14 +307,14 @@ expect {
 expect {
 	text = "2026-11-11T12:00:10Z INFO api: one\n2026-11-11T12:00:40Z INFO api: two\n2026-11-11T12:03:00Z ERROR api: three\n"
 	overview = Log.overview(Log.finish(Log.feed(Log.indexer, text.to_utf8())))
-	clicked = |time| place_in(LogStore.store.after(LogStore.timeline_clicked(Ok(overview), time)))
+	clicked = |time| place_in(LogStore.store.after(LogStore.timeline_clicked({ answered: Ok(overview), geometry: LogStore.awaiting_geometry, clicked: time })))
 	actual =
 		\\that minute: ${clicked("2026-11-11 12:00")}
 		\\the next with entries: ${clicked("2026-11-11 12:01")}
 		\\after the last: ${clicked("2026-11-11 13:00")}
 		\\not a time: ${clicked("soon")}
-		\\unanswered: ${place_in(LogStore.store.after(LogStore.timeline_clicked(Err(NoAnswer), "2026-11-11 12:03")))}
-		\\typed: ${place_in(LogStore.store.after(LogStore.went_to("7")))}, ${place_in(LogStore.store.after(LogStore.went_to("0")))}
+		\\unanswered: ${place_in(LogStore.store.after(LogStore.timeline_clicked({ answered: Err(NoAnswer), geometry: LogStore.awaiting_geometry, clicked: "2026-11-11 12:03" })))}
+		\\typed: ${place_in(LogStore.store.after(LogStore.went_to(LogStore.awaiting_geometry, "7")))}, ${place_in(LogStore.store.after(LogStore.went_to(LogStore.awaiting_geometry, "0")))}
 	expected =
 		\\that minute: Viewer page 0 line 0
 		\\the next with entries: Viewer page 0 line 2
@@ -288,7 +333,7 @@ expect {
 
 ## Resizing retains the reader's place and changing media retains capacity.
 expect {
-	before = LogStore.store.after(LogStore.shown_at(99))
+	before = LogStore.store.after(LogStore.shown_at(LogStore.awaiting_geometry, 99))
 	fitted = before.after(LogStore.viewer_sized(400))
 	dark = fitted.after(LogStore.media_changed(Matches(Bool.True)))
 	actual = {
@@ -299,4 +344,55 @@ expect {
 		refused: LogStore.media_changed(Refused).len(),
 	}
 	actual == { count: 20, first: 99, theme: Dark, light: Light, refused: 0 }
+}
+
+## A measured jump writes both facts; its echo is inert and a hand scroll
+## writes the mapped line and the offset it actually reported.
+expect {
+	geometry = Ready({ total: 2000000, line_height: 20, viewport_height: 400 })
+	jumped = LogStore.store.after(LogStore.moved_to(geometry, Ok(123456)))
+	asked = jumped.read(LogStore.cells.place.asked)
+	hand = jumped.after(LogStore.scrolled({ geometry, asked }, 4000000))
+	{ first: jumped.read(LogStore.cells.place.first), asked, echo: LogStore.scrolled({ geometry, asked }, asked + 1).len(), hand_first: hand.read(LogStore.cells.place.first), hand_asked: hand.read(LogStore.cells.place.asked) } == {
+		first: 123456,
+		asked: Log.offset_of({ total: 2000000, line_height: 20, viewport_height: 400 }, 123456),
+		echo: 0,
+		hand_first: Log.first_at({ total: 2000000, line_height: 20, viewport_height: 400 }, 4000000),
+		hand_asked: 4000000,
+	}
+}
+
+## A line chosen before geometry exists is placed once that geometry arrives;
+## a partial-height resize changes the offset without moving the line intent.
+expect {
+	intent = LogStore.store.after(LogStore.shown_at(LogStore.awaiting_geometry, 99))
+	ready = intent.after(LogStore.geometry_ready({ total: 100, height: 39, first: intent.read(LogStore.cells.place.first), previous: intent.read(LogStore.cells.place.geometry), asked: intent.read(LogStore.cells.place.asked) }))
+	resized = ready.after(LogStore.viewer_sized(19)).after(LogStore.geometry_ready({ total: 100, height: 19, first: ready.read(LogStore.cells.place.first), previous: ready.read(LogStore.cells.place.geometry), asked: ready.read(LogStore.cells.place.asked) }))
+	{ before: intent.read(LogStore.cells.place.asked), ready: ready.read(LogStore.cells.place.asked), resized: resized.read(LogStore.cells.place.asked), first: resized.read(LogStore.cells.place.first) } == { before: 0, ready: 1961, resized: 1980, first: 99 }
+}
+
+## Entering the viewer before a capped log's first answer retains exact line
+## intent, then places it using the real geometry. Opening a new log resets it.
+expect {
+	intent = LogStore.store.after(LogStore.shown_at(LogStore.awaiting_geometry, 123456))
+	ready = intent.after(LogStore.geometry_ready({ total: 2000000, height: 400, first: intent.read(LogStore.cells.place.first), previous: intent.read(LogStore.cells.place.geometry), asked: intent.read(LogStore.cells.place.asked) }))
+	fresh = ready.after(LogStore.fresh)
+	{ intent: intent.read(LogStore.cells.place.first), before: intent.read(LogStore.cells.place.asked), placed: ready.read(LogStore.cells.place.asked), reset_first: fresh.read(LogStore.cells.place.first), reset_asked: fresh.read(LogStore.cells.place.asked), reset_geometry: fresh.read(LogStore.cells.place.geometry) } == {
+		intent: 123456,
+		before: 0,
+		placed: Log.offset_of({ total: 2000000, line_height: 20, viewport_height: 400 }, 123456),
+		reset_first: 0,
+		reset_asked: 0,
+		reset_geometry: Awaiting,
+	}
+}
+
+## Returning to an unchanged geometry restores a hand scroll's actual pixel,
+## which need not be the canonical pixel of its nearest line on a capped map.
+expect {
+	map = { total: 2000000, line_height: 20, viewport_height: 400 }
+	asked = 4999824
+	first = Log.first_at(map, asked)
+	returned = LogStore.store.after(LogStore.geometry_ready({ total: map.total, height: map.viewport_height, first, previous: Ready(map), asked }))
+	returned.read(LogStore.cells.place.asked) == asked
 }
