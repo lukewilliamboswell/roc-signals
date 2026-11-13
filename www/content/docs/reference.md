@@ -226,7 +226,7 @@ optional.
 | `storage` | the page's `localStorage` | The storage `StorageGet` and `StorageSet` use (an object with `localStorage`'s methods) | [Effects and the Browser](@/docs/effects-and-browser.md) |
 | `environment` | browser fact readers | Optional `online()` and `visible()` functions, read at boot and on the browser's subscription events; `visible()` also chooses report drain scheduling. Both return booleans | [Effects and the Browser](@/docs/effects-and-browser.md) |
 | `fetch` | the global `fetch` | The function HTTP requests go through, for a page that scripts its own backend | [Effects and the Browser](@/docs/effects-and-browser.md) |
-| `manualEffects` | `false` | Requests wait until the caller answers or runs them (`runEffect`); used by the spec runner in Chrome | [Testing](@/docs/testing.md) |
+| `manualEffects` | `false` | Requests wait for the caller (`runEffect`); reports wait for `releaseReports()`. Used by the spec runner in Chrome | [Testing](@/docs/testing.md) |
 | `manualWork` | `false` | Only worker jobs wait for `runEffect`; every other effect runs on its own; used by the repository's long sessions in Chrome | [Contributing](@/docs/contributing.md#walks-and-soaks) |
 
 An unknown environment key or a non-function refuses mount. A reader that
@@ -268,7 +268,7 @@ them.
 | URLs one file gives | 16 ranges, revoked when the file is let go | `FileFailed(TooLarge)` |
 | Ports a program declares | 64, names 1 to 128 bytes | Contract error at mount |
 | A port's answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | `TooLarge` |
-| Undelivered messages per port subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` keeps the newest; `Every` refuses the JavaScript's `emit` |
+| Replaceable `Latest` report or `Every` backlog per subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` replaces; reports pinned by occurrences count within ingress. `Every` refuses the JavaScript's `emit` |
 | Port call timeout | 600 s | Capped |
 | Payload nesting | 512 containers | The job is `Lost(Contract)`: an input fails to decode in the worker, an answer is refused there before it is sent |
 | Bytes a job appends to its builders | `maxOutputBytes` (default 256 MiB); files appended by reference do not count | `append!` answers `Err(TooLarge)` |

@@ -1291,9 +1291,10 @@ the DOM and the engine can fill it. That overflow is not refused event by
 event (which would drop non-lossy input or strand an in-flight id): it
 poisons the runtime with class `resource_limit`, reported like any other fault.
 
-A drain also delivers at most 4096 turns before the runtime returns to
-idle. A loop that raises only one further event per turn never fills the
-queue, but still cannot settle: a 4097th turn poisons with `resource_limit`.
+After its initiating turn, a drain delivers at most 4096 further turns
+before the runtime returns to idle. A loop that raises only one further
+event per turn never fills the queue, but still cannot settle: a 4097th
+further turn poisons with `resource_limit`.
 The native runner applies the same bound to the turns one step raises.
 
 ### Reports and occurrences
@@ -1332,6 +1333,12 @@ The runtime applies the declared delivery policy through one ingress queue:
    queuing. The number of sources can follow app data and never causes a
    poison merely because reports waited for a frame.
 
+An occurrence arriving at a full idle queue also drains in order. The
+oldest report becomes the initiating turn, outside the following drain's
+4096-turn budget; the occurrence occupies its freed slot and pins earlier
+reports before that initiating turn runs. This preserves both the queue
+bound and the order of reports raised during delivery.
+
 An occurrence follows every report queued before it, each with its newest
 value from before the occurrence, and precedes every report raised after
 it joined. Sources keep the order of their first report since the drain.
@@ -1339,6 +1346,11 @@ it joined. Sources keep the order of their first report since the drain.
 not when the handler emits: a report raised between emit and that turn is
 delivered first. This retains the bound on port traffic; an app needing a
 single order sends both values on one subscription.
+
+A `StorageGet` callback reads storage when it runs, after the preceding
+ingress and batch focus work. Its answer is then an occurrence. The native
+runner likewise defers the read itself, so a queued occurrence that writes
+storage before the callback is reflected in the answer.
 
 `CANCEL` makes all waiting reports of its subscription dead and removes
 its source index entry. Draining skips them without delivery or stale
@@ -2571,7 +2583,7 @@ bound and a declared behaviour at the bound:
 | Worker catalogue | 64 names (a preparation's and its tasks' each count) | `contract` poison |
 | Port catalogue | 64 ports, names 1–128 bytes | `contract` poison |
 | A port answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | Typed `PortFailed(TooLarge)` |
-| Undelivered messages per port subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` replaces; `Every` refuses `emit` |
+| Replaceable `Latest` report or `Every` backlog per subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` replaces; `Every` refuses `emit`; reports pinned by occurrences count within ingress |
 | `Every` port messages in the ingress queue | 1 per subscription | The next waits for its turn |
 | Replaceable reports per source | 1 | A newer report replaces its payload in place |
 | Report entries per source | 1 plus entries pinned by queued occurrences | Counted within ingress |
