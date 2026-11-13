@@ -1,4 +1,5 @@
-import Engine exposing [Attr, Elem, FilesHandler, Handler, Signal]
+import Engine exposing [Attr, Elem, FilesHandler, Handler, HandlerOf, Signal]
+import EngineOnly
 
 ## Typed helpers for common HTML elements, attributes and events, built on
 ## `Engine.element`, `Engine.attr` and `Engine.on`.
@@ -9,6 +10,26 @@ import Engine exposing [Attr, Elem, FilesHandler, Handler, Signal]
 ## `role` locators match. Signals keep the DOM in step with state; plain
 ## `Str` arguments are static.
 Html := [].{
+
+	## A dialog's controlled state and the handler that accepts browser closes.
+	DialogProps(ctx) := { open : Signal(ctx, Bool), on_close : HandlerOf(ctx, Bool), modal : [Modal, NonModal] ?? Modal }
+
+	## A named dialog whose content lives only while open. Native modality
+	## supplies focus and inertness; on_close receives the state at dispatch.
+	dialog : Str, DialogProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
+	dialog = |label, props, attrs, children| Engine.dialog_element({ label, open: props.open, on_close: props.on_close, modal: props.modal, attrs, children }, EngineOnly.witness({}))
+
+	## A popover's controlled state, toggle echo and automatic dismissal policy.
+	PopoverProps(ctx) := { open : Signal(ctx, Bool), on_toggle : HandlerOf(ctx, Bool), dismiss : [Auto, Manual] ?? Auto }
+
+	## A named div in the browser's popover layer. Its static mode is owned
+	## by this helper; use Manual when several unrelated popovers stay shown.
+	popover : Str, PopoverProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
+	popover = |label, props, attrs, children| Engine.popover_element({ label, open: props.open, on_toggle: props.on_toggle, dismiss: props.dismiss, attrs, children }, EngineOnly.witness({}))
+
+	## Hear a dialog's native close request; prevention follows browser policy.
+	on_cancel : Handler(ctx) -> Attr(ctx)
+	on_cancel = |handler| Engine.on("cancel", handler)
 
 	## A `div` with a static class.
 	div : Str, List(Elem(ctx)) -> Elem(ctx)

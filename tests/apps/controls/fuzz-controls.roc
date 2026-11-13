@@ -11,6 +11,7 @@ import pf.Scm
 import pf.SpecRunner
 import ControlsApp
 import ManyApp
+import TopLayerApp
 
 ## The engine and the oracle's DOM, driven through the engine directly.
 S : { eng : Core.App, dom : Dom.Model, steps : U64 }
@@ -63,11 +64,11 @@ focus! = |_| {
 	plain = node_of(s0, Label("Plain"))
 	upper = node_of(s0, Label("Upper"))
 	(s1, f1) = fire!(s0, Role({ role: "button", name: "Focus upper" }), "click", "")
-	expect_fx!("focus upper", f1, [Focus(1, upper)])
+	expect_fx!("focus upper", f1, [Ref({ node: upper, target: Dom.lookup(s0.dom, upper), action: Focus(1) })])
 	(s2, f2) = fire!(s1, Role({ role: "button", name: "Select plain" }), "click", "")
-	expect_fx!("select plain", f2, [Focus(3, plain)])
+	expect_fx!("select plain", f2, [Ref({ node: plain, target: Dom.lookup(s1.dom, plain), action: Focus(3) })])
 	(s3, f3) = fire!(s2, Role({ role: "button", name: "Blur plain" }), "click", "")
-	expect_fx!("blur plain", f3, [Focus(2, plain)])
+	expect_fx!("blur plain", f3, [Ref({ node: plain, target: Dom.lookup(s2.dom, plain), action: Focus(2) })])
 	stale0 = Core.fx_stats(s3.eng).stale
 	(s4, f4) = fire!(s3, Role({ role: "button", name: "Focus missing" }), "click", "")
 	expect_fx!("missing ref", f4, [])
@@ -384,6 +385,91 @@ pointer_history! = |events| {
 	Fuzz.keep
 }
 
+## Generated histories check controlled shown state, keyed disposal and reference work.
+## This program has at most two row dialogs plus one modal, so sixteen UI tasks
+## per generated input is an explicit test-program bound rather than app policy.
+top_layer_history! : List(U8) => Fuzz.Outcome
+top_layer_history! = |events| {
+	program = Core.driver(Engine.program(|| TopLayerApp.view({})))
+	var $state = SpecRunner.mount_in(program, {})
+	var $modal = False
+	var $rows = ["a", "b"]
+	var $row_open = False
+	var $scrolls = 0.U64
+	for event in events {
+		var $name = ""
+		var $dismiss = False
+		if $modal {
+			if event % 2 == 0 {
+				$name = "Close modal"
+			} else {
+				$dismiss = True
+			}
+			$modal = False
+		} else {
+			match event % 8 {
+				0 => {
+					$name = "Open modal"
+					$modal = True
+				}
+				1 => {
+					$dismiss = True
+				}
+				2 => {
+					$name = "Open row dialogs"
+					$row_open = True
+				}
+				3 => {
+					$name = "Reverse shown rows"
+					$rows = $rows.fold([], |out, key| [key].concat(out))
+				}
+				4 => {
+					$name = "Remove shown rows"
+					$rows = []
+					$row_open = False
+				}
+				5 => {
+					$name = "Restore shown rows"
+					$rows = ["a", "b"]
+				}
+				6 => {
+					$name = "Scroll into target"
+					$scrolls = $scrolls + 1
+				}
+				_ => {
+					$name = "Scroll to target"
+					$scrolls = $scrolls + 1
+				}
+			}
+		}
+		op = if ($dismiss) Dismiss else Click(Role({ role: "button", name: $name }))
+		$state = SpecRunner.one(program, $state, op) ?? crash "top layer: step failed"
+		var $tasks = 0.U64
+		while !$state.browser.ui_tasks.is_empty() {
+			if $tasks >= 16 {
+				crash "top layer test program exceeded its finite UI-task bound"
+			}
+			$state = SpecRunner.drain_focus(program, SpecRunner.deliver_ui(program, { ..$state, draining: False, turns: 0 }))
+			$tasks = $tasks + 1
+			match SpecRunner.check_settled(program, $state) {
+				Ok(_) => {}
+				Err(message) => crash "top layer: ${message}"
+			}
+		}
+		$state = SpecRunner.one(program, $state, ExpectShown(Label("Modal"), if ($modal) Modal else Hidden)) ?? crash "top layer: modal differs from model"
+		$state = SpecRunner.one(program, $state, ExpectScrolls($scrolls)) ?? crash "top layer: scroll count differs from model"
+		for key in ["a", "b"] {
+			loc = TestId("dialog-${key}")
+			$state = SpecRunner.one(program, $state, if ($rows.contains(key)) ExpectShown(loc, if ($row_open) Open else Hidden) else ExpectAbsent(loc)) ?? crash "top layer: keyed dialog differs from model"
+		}
+		match SpecRunner.check_counters($state) {
+			Ok(_) => {}
+			Err(message) => crash "top layer: ${message}"
+		}
+	}
+	Fuzz.keep
+}
+
 Input : { mode : U8, pad : U8, events : List(U8) }
 
 target = Fuzz.target_with!({
@@ -393,12 +479,13 @@ target = Fuzz.target_with!({
 		Fuzz.example({ name: "many-sites", revision: "2", make: || { mode: 1, pad: 0, events: [] } }),
 		Fuzz.example({ name: "attribute-history", revision: "1", make: || { mode: 3, pad: 0, events: [0, 0, 1, 3, 4, 2, 5, 0, 4, 1, 5, 2] } }),
 		Fuzz.example({ name: "reference-history", revision: "1", make: || { mode: 2, pad: 0, events: [0, 2, 0, 3, 0, 4, 0, 5, 8, 6, 8, 2, 8, 7, 8, 9, 10] } }),
+		Fuzz.example({ name: "top-layer-history", revision: "1", make: || { mode: 5, pad: 0, events: [0, 1, 2, 3, 6, 4, 5, 2, 3, 7, 0, 0, 4, 5] } }),
 		Fuzz.example({ name: "pointer-reports", revision: "1", make: || { mode: 4, pad: 0, events: [0, 2, 1, 4, 1, 3, 2, 0, 1, 3, 4] } }),
 	],
 	generator: {
 		mode: |arbitrary| {
 			next = Fuzz.u8(arbitrary)
-			{ state: next.state, value: 2 + next.value % 3 }
+			{ state: next.state, value: 2 + next.value % 4 }
 		},
 		pad: Fuzz.constant(0),
 		events: Fuzz.list(Fuzz.u8, 64),
@@ -408,7 +495,8 @@ target = Fuzz.target_with!({
 		1 => many!(5000 + pad.to_u64())
 		2 => reference_focus!(events)
 		3 => attribute_presence!(events)
-		_ => pointer_history!(events)
+		4 => pointer_history!(events)
+		_ => top_layer_history!(events)
 	},
 	show: Str.inspect,
 })

@@ -1,5 +1,6 @@
-// Mount deliberate engine errors through the real Wasm host, and require
-// classified diagnostics and listener cleanup at the browser boundary.
+// Mount element declarations through the real Wasm host. Controlled helpers
+// reject conflicting declarations; ordinary elements retain their attributes.
+// Failed mounts and unmount both release every browser listener.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -18,6 +19,17 @@ const fixtures = [
   ["document-bound", ["more than 32", "site"]],
   ["apply-noncontrol", ["ApplyValue", "reference \"bad\"", "site"]],
   ["apply-without-value", ["ApplyValue", "reference \"bad\"", "site"]],
+  ["dialog-open", ["owned by the controlled dialog", "site"]],
+  ["dialog-dynamic-open", ["owned by the controlled dialog", "site"]],
+  ["dialog-popover", ["popover and closedby", "site"]],
+  ["dialog-dynamic-popover", ["popover and closedby", "site"]],
+  ["dialog-closedby", ["popover and closedby", "site"]],
+  ["dialog-dynamic-closedby", ["popover and closedby", "site"]],
+  ["controlled-beforetoggle", ["beforetoggle", "site"]],
+  ["popover-beforetoggle", ["beforetoggle", "site"]],
+  ["popover-duplicate", ["one static popover", "site"]],
+  ["popover-dynamic-popover", ["one static popover", "site"]],
+  ["raw-controlled-attributes", [], false],
 ];
 const runtime = runtimeFiles(options.runtime);
 const server = http.createServer((request, response) => {
@@ -33,7 +45,7 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const browser = await launch({ executablePath: options.chrome });
 let failures = 0;
 try {
-  for (const [fixture, needles] of fixtures) {
+  for (const [fixture, needles, rejected = true] of fixtures) {
     const context = await browser.createBrowserContext();
     try {
       const page = await context.newPage();
@@ -43,13 +55,13 @@ try {
         const faults = [];
         const runtime = await mountRocEngineApp({ wasmUrl: `/${fixture}/app.wasm`, root: document.getElementById("app"), onFault: (fault) => faults.push(fault) });
         const fault = runtime.poisoned;
-        const result = { class: fault?.class, message: fault?.message, faults: faults.length, rootListeners: runtime.listening.size, documentListeners: runtime.documentListeners.size, documentHandlers: runtime.documentKeys.size };
         runtime.unmount();
+        const result = { class: fault?.class, message: fault?.message, faults: faults.length, rootListeners: runtime.listening.size, documentListeners: runtime.documentListeners.size, documentHandlers: runtime.documentKeys.size };
         return result;
       }, fixture);
-      const pass = result.class === "contract" && needles.every((needle) => result.message.includes(needle)) && result.faults === 1 && result.rootListeners === 0 && result.documentListeners === 0 && result.documentHandlers === 0;
+      const pass = (rejected ? result.class === "contract" && needles.every((needle) => result.message.includes(needle)) && result.faults === 1 : result.class === undefined && result.faults === 0) && result.rootListeners === 0 && result.documentListeners === 0 && result.documentHandlers === 0;
       if (!pass) failures += 1;
-      console.log(`${pass ? "ok  " : "FAIL"} ${fixture}: real Core contract diagnostic and listener cleanup${pass ? "" : ` ${JSON.stringify(result)}`}`);
+      console.log(`${pass ? "ok  " : "FAIL"} ${fixture}: ${rejected ? "real Core contract diagnostic" : "raw attributes remain ordinary"} and listener cleanup${pass ? "" : ` ${JSON.stringify(result)}`}`);
     } finally { await context.close(); }
   }
 } finally { await browser.close(); await new Promise((resolve) => server.close(resolve)); }

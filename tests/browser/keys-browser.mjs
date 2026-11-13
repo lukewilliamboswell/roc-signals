@@ -227,13 +227,13 @@ try {
     });
   });
   const table = [
-    { key: "Tab", code: "Tab", named: true, needs_shift: false },
-    { key: "Enter", code: "Enter", named: true, needs_shift: false },
-    { key: " ", code: "Space", named: true, needs_shift: false },
-    { key: "Escape", code: "Escape", named: true, needs_shift: false },
-    { key: "F2", code: "F2", named: true, needs_shift: false },
-    { key: "ArrowLeft", code: "ArrowLeft", named: true, needs_shift: false },
-    { key: "ArrowUp", code: "ArrowUp", named: true, needs_shift: false },
+    { key: "Tab", code: "Tab", vk: 9, named: true, needs_shift: false },
+    { key: "Enter", code: "Enter", vk: 13, named: true, needs_shift: false },
+    { key: " ", code: "Space", vk: 32, named: true, needs_shift: false },
+    { key: "Escape", code: "Escape", vk: 27, named: true, needs_shift: false },
+    { key: "F2", code: "F2", vk: 113, named: true, needs_shift: false },
+    { key: "ArrowLeft", code: "ArrowLeft", vk: 37, named: true, needs_shift: false },
+    { key: "ArrowUp", code: "ArrowUp", vk: 38, named: true, needs_shift: false },
   ];
   const press = (key, extra = {}) => page.pressSpec({ key, code: table.find((entry) => entry.key === key).code, ctrl: false, alt: false, shift: false, meta: false, ...extra }, table);
   await page.evaluate(() => { document.body.tabIndex = -1; document.body.focus(); document.body.removeAttribute("tabindex"); });

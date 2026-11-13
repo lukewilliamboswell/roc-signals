@@ -148,7 +148,7 @@
 // are present for any value other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 10;
+export const PROTOCOL_VERSION = 11;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -178,7 +178,7 @@ const OP_CANCEL = 14;
 const OP_NAV = 15;
 const OP_STORE = 16;
 const OP_TITLE = 17;
-const OP_FOCUS = 18;
+const OP_REF = 18;
 const OP_PORT = 19;
 const OP_SAVE = 20;
 const OP_PROP = 21;
@@ -244,6 +244,7 @@ const KIND_TEXT = 1;
 const KIND_FILES = 2;
 const KIND_POINTER = 3;
 const KIND_KEY = 4;
+const KIND_OPEN = 5;
 const POLICY_PREVENT = 1;
 const POLICY_STOP = 2;
 const POLICY_CAPTURE = 4;
@@ -413,14 +414,27 @@ const PROPS = [null, {
 }, {
   name: "keymap_up", elements: null,
   apply(el, value) { el.__keymapUp = parseKeymap(value); },
+}, {
+  name: "shown", elements: ["DIALOG"],
+  apply(el, value, node, runtime) {
+    if (!["hidden", "open", "modal"].includes(value)) throw new Error(`invalid shown property value ${JSON.stringify(value)}`);
+    runtime.decideShown(el, 6, value, node);
+  },
+}, {
+  name: "popover_shown", elements: null,
+  apply(el, value, node, runtime) {
+    if (value !== "true" && value !== "false") throw new Error(`invalid popover_shown property value ${JSON.stringify(value)}`);
+    if (!["auto", "manual"].includes(el.getAttribute("popover"))) throw new Error("popover_shown requires a static auto or manual popover");
+    runtime.decideShown(el, 7, value, node);
+  },
 }];
 
-function setProp(el, prop, value, node) {
+function setProp(el, prop, value, node, runtime) {
   const row = PROPS[prop];
   if (!row) throw new Error(`unknown element property ${prop}`);
   if (el.nodeType !== 1) throw new Error(`element property ${row.name} requires an element`);
   if (row.elements && !row.elements.includes(el.tagName)) throw new Error(`element property ${row.name} does not apply to ${el.tagName}`);
-  row.apply(el, value, node);
+  row.apply(el, value, node, runtime);
 }
 
 // A <select>'s value can only be set once its options exist: re-apply the
@@ -447,6 +461,12 @@ function handlerEntry(h, kind, policies, type) {
   if (kind === KIND_KEY && (policies & POLICY_PREVENT)) throw new Error("key prevention belongs to its keymap");
   if (kind === KIND_TEXT && (type === "keydown" || type === "keyup")) throw new Error("text key handler requires on_key");
   return { h, kind, policies };
+}
+
+function checkHandlerElement(element, type, handler) {
+  if (handler.kind !== KIND_OPEN) return;
+  if (type === "close" && element.tagName !== "DIALOG") throw new Error("open-state close requires a dialog");
+  if (type === "toggle" && !["auto", "manual"].includes(element.getAttribute("popover"))) throw new Error("open-state toggle requires a popover");
 }
 
 // The files a files-kind event carries, captured before the browser clears
@@ -483,7 +503,87 @@ const PAYLOAD_KINDS = {
   },
   [KIND_POINTER]: { events: ["pointerdown", "pointermove", "pointerup", "pointercancel"] },
   [KIND_KEY]: { events: ["keydown", "keyup"] },
+  [KIND_OPEN]: {
+    events: ["close", "toggle"],
+    payload(event) {
+      const element = event.target;
+      if (event.type === "close") {
+        if (element.tagName !== "DIALOG") throw new Error("open-state close requires a dialog");
+        return new Uint8Array([element.open ? 1 : 0]);
+      }
+      if (!["auto", "manual"].includes(element.getAttribute("popover"))) throw new Error("open-state toggle requires a popover");
+      return new Uint8Array([element.matches(":popover-open") ? 1 : 0]);
+    },
+  },
 };
+
+const SCROLL_HISTORY = 4096;
+const U64_MAX = (1n << 64n) - 1n;
+
+// Observation retains weak identities rather than nodes or recycled command
+// addresses. Exhaustion disables observation, never the command it observes.
+class ScrollHistory {
+  constructor(maximum = U64_MAX) {
+    this.maximum = maximum;
+    this.clear();
+  }
+
+  clear() { this.count = 0n; this.exhausted = false; this.records = []; }
+
+  add(element, kind) {
+    if (this.exhausted) return;
+    if (this.count === this.maximum) { this.exhausted = true; this.records = []; return; }
+    this.count += 1n;
+    this.records[Number((this.count - 1n) % BigInt(SCROLL_HISTORY))] = { ordinal: this.count, target: new WeakRef(element), kind };
+  }
+
+  total() {
+    if (this.exhausted) throw new Error("scroll history ordinal exhausted");
+    return this.count;
+  }
+
+  at(ordinal) {
+    this.total();
+    if (ordinal < 1n || ordinal > this.count) throw new Error(`scroll command ${ordinal} was not performed`);
+    if (this.count - ordinal >= BigInt(SCROLL_HISTORY)) throw new Error(`scroll command ${ordinal} is outside retained scroll history (newest ${SCROLL_HISTORY})`);
+    const record = this.records[Number((ordinal - 1n) % BigInt(SCROLL_HISTORY))];
+    if (record.ordinal !== ordinal) throw new Error("scroll history has an incoherent ordinal");
+    return record;
+  }
+}
+
+// This manual-driver observer records actual modal entry, not DOM order or
+// the value an app requested. Neither links nor the reverse index own a node.
+class ModalOrder {
+  constructor() { this.clear(); }
+  clear() { this.byElement = new WeakMap(); this.head = null; this.tail = null; }
+  remove(element) {
+    const entry = this.byElement.get(element);
+    if (!entry) return;
+    if (entry.before) entry.before.after = entry.after; else this.head = entry.after;
+    if (entry.after) entry.after.before = entry.before; else this.tail = entry.before;
+    this.byElement.delete(element);
+  }
+  add(element) {
+    this.remove(element);
+    const entry = { element: new WeakRef(element), before: this.tail, after: null };
+    if (this.tail) this.tail.after = entry; else this.head = entry;
+    this.tail = entry;
+    this.byElement.set(element, entry);
+  }
+  top(root) {
+    while (this.tail) {
+      const element = this.tail.element.deref();
+      if (element?.isConnected && root.contains(element) && element.matches(":modal")) return element;
+      if (element) this.remove(element);
+      else {
+        this.tail = this.tail.before;
+        if (this.tail) this.tail.after = null; else this.head = null;
+      }
+    }
+    return null;
+  }
+}
 
 // A rendered map is indexed once. Dispatch visits only the matching chord's
 // entries, preserving the first declaration whose place applies.
@@ -2070,6 +2170,10 @@ export class RocEngineRuntime {
     // Manual mode: the files the app saved (`SAVE`), in order, as
     // { name, blob }, for a spec to read.
     this.saveLog = [];
+    this.scrollLog = this.manual ? new ScrollHistory() : null;
+    this.modalOrder = this.manual ? new ModalOrder() : null;
+    this.nativeTasks = new Map();
+    this.nativeObservationError = null;
     // Ports (see "Ports" above): the page's handlers, the app's declared
     // ports (read at mount), push subscriptions by port, the command log of
     // manual mode, and per-port counters for the monitor.
@@ -2155,8 +2259,10 @@ export class RocEngineRuntime {
 
   mountInner(bytes) {
     this.controlListeners();
+    this.nativeEventListeners();
     this.documentKeyListeners();
     this.listen("click");
+    this.listen("submit");
     const x = this.x;
     this.stage(bytes);
     this.busy = true;
@@ -2233,6 +2339,9 @@ export class RocEngineRuntime {
     this.files.clear();
     this.revokeUrls();
     this.fxOut = [];
+    this.nativeObservationError = null;
+    this.nativeTasks.clear();
+    if (this.modalOrder) this.modalOrder.clear();
     this.monitor.runtimeEnded("poisoned", this.poisoned);
     console.error(`roc engine fault [${this.poisoned.class}]: ${message}`);
     if (this.onFault) this.onFault(this.poisoned);
@@ -2263,6 +2372,10 @@ export class RocEngineRuntime {
     this.pushSubs = new Map();
     this.portLog = [];
     this.saveLog = [];
+    this.scrollLog = this.manual ? new ScrollHistory() : null;
+    this.modalOrder = this.manual ? new ModalOrder() : null;
+    this.nativeTasks = new Map();
+    this.nativeObservationError = null;
     this.mount();
     return this;
   }
@@ -2290,6 +2403,52 @@ export class RocEngineRuntime {
     this.statics = [];
     this.sites = [];
     this.templates = [];
+    if (this.scrollLog) this.scrollLog.clear();
+    this.nativeTasks.clear();
+    if (this.modalOrder) this.modalOrder.clear();
+    this.nativeObservationError = null;
+  }
+
+  // Only the manual driver observes native queued UI callbacks. This does
+  // not deliver or schedule a turn: the browser's actual callbacks do that.
+  nativeEventListeners() {
+    if (!this.manual) return;
+    const on = (type, callback) => {
+      this.root.addEventListener(type, callback, true);
+      this.internal.push([type, callback]);
+    };
+    on("beforetoggle", (event) => {
+      const element = event.target;
+      const property = element.__shownControl ? 6 : element.__popoverControl ? 7 : 0;
+      if (!property) return;
+      const slot = property === 6 ? "__shownControl" : "__popoverControl";
+      const control = element[slot];
+      queueMicrotask(() => {
+        if (this.poisoned || this.ending || !element.isConnected || !this.root.contains(element) || element[slot] !== control || (event.cancelable && event.defaultPrevented)) return;
+        if (property === 6 && !element.matches(":modal")) this.modalOrder.remove(element);
+        const pending = this.nativeTasks.get(element) ?? { control, close: 0n, toggle: false };
+        if (property === 6 && event.newState === "closed") {
+          if (pending.close === U64_MAX) this.nativeObservationError = "native UI callback observation exhausted";
+          else pending.close += 1n;
+        }
+        if (property === 7 || element.__h?.toggle) pending.toggle = true;
+        if (pending.close || pending.toggle) this.nativeTasks.set(element, pending);
+      });
+    });
+    const completed = (event) => {
+      const pending = this.nativeTasks.get(event.target);
+      if (!pending) return;
+      if (event.type === "close" && pending.close) pending.close -= 1n;
+      if (event.type === "toggle") pending.toggle = false;
+      if (!pending.close && !pending.toggle) this.nativeTasks.delete(event.target);
+    };
+    on("close", completed);
+    on("toggle", completed);
+  }
+
+  nativeEventsReady() {
+    if (this.nativeObservationError) throw new Error(this.nativeObservationError);
+    return this.nativeTasks.size === 0;
   }
 
   // Controlled-input bookkeeping: composition flags, deferred values applied
@@ -2823,6 +2982,10 @@ export class RocEngineRuntime {
     const pending = [el];
     while (pending.length > 0) {
       const node = pending.pop();
+      this.nativeTasks.delete(node);
+      if (this.modalOrder) this.modalOrder.remove(node);
+      node.__shownControl = undefined;
+      node.__popoverControl = undefined;
       for (let child = node.firstChild; child; child = child.nextSibling) pending.push(child);
       if (node.__site !== undefined) {
         this.sites[node.__site].delete(node.__rn);
@@ -2966,9 +3129,10 @@ export class RocEngineRuntime {
               attribute(target, hole.name);
             } else if (hole.kind === HOLE_PROP) {
               const n = dv.getUint32(at, true);
-              setProp(target, hole.prop, readStr(u8, at + 4, n), node);
+              setProp(target, hole.prop, readStr(u8, at + 4, n), node, this);
               at += 4 + n;
             } else if (hole.kind === HOLE_CLICK) {
+              checkHandlerElement(target, hole.name, hole.entry);
               if (target.__h === undefined) target.__h = {};
               target.__h[hole.name] = hole.entry;
             } else if (hole.kind === HOLE_BIND || hole.kind === HOLE_REF) {
@@ -3005,7 +3169,7 @@ export class RocEngineRuntime {
           if (op === OP_TEXT) target.nodeValue = v;
           else {
             if (hole.kind !== HOLE_PROP) throw new Error("HPROP names a non-property hole");
-            setProp(target, hole.prop, v, node);
+            setProp(target, hole.prop, v, node, this);
           }
           at += 9 + n;
           break;
@@ -3077,7 +3241,7 @@ export class RocEngineRuntime {
           const node = dv.getUint32(at, true);
           const prop = u8[at + 4];
           const n = dv.getUint32(at + 5, true);
-          setProp(this.lookup(node), prop, readStr(u8, at + 9, n), node);
+          setProp(this.lookup(node), prop, readStr(u8, at + 9, n), node, this);
           at += 9 + n;
           break;
         }
@@ -3092,6 +3256,7 @@ export class RocEngineRuntime {
           const kind = u8[at + 12 + n];
           const policies = dv.getUint32(at + 13 + n, true);
           const entry = handlerEntry(h, kind, policies, type);
+          checkHandlerElement(el, type, entry);
           el.__h[type] = entry;
           if (policies & POLICY_DOCUMENT) this.registerDocumentKey(el, type, entry);
           else this.listen(type);
@@ -3261,9 +3426,30 @@ export class RocEngineRuntime {
           } else this.fxOut.push({ op: "remove", key });
           break;
         }
-        case OP_FOCUS: {
-          this.fxOut.push({ op: "focus", mode: u8[at], node: dv.getUint32(at + 1, true) });
+        case OP_REF: {
+          const mode = u8[at], node = dv.getUint32(at + 1, true);
+          if (mode < 1 || mode > 7) throw new Error(`unknown reference operation ${mode}`);
           at += 5;
+          const command = { op: "ref", mode, node, element: this.lookup(node) };
+          if (mode === 6) {
+            const block = u8[at++], inline = u8[at++], behavior = u8[at++];
+            if (block > 3 || inline > 3 || behavior > 2 || behavior === undefined) throw new Error("invalid scroll-into-view operands");
+            command.options = { block: ["start", "center", "end", "nearest"][block], inline: ["start", "center", "end", "nearest"][inline], behavior: ["auto", "instant", "smooth"][behavior] };
+          } else if (mode === 7) {
+            const edge = () => {
+              const tag = u8[at++];
+              if (tag === 0) return { kind: "keep" };
+              if (tag === 1) return { kind: "start" };
+              if (tag === 2) return { kind: "end" };
+              if (tag !== 3) throw new Error(`invalid scroll edge ${tag}`);
+              const pixels = dv.getUint32(at, true); at += 4;
+              return { kind: "px", pixels };
+            };
+            const top = edge(), left = edge(), behavior = u8[at++];
+            if (behavior > 2 || behavior === undefined) throw new Error("invalid scroll-to behavior");
+            command.top = top; command.left = left; command.behavior = ["auto", "instant", "smooth"][behavior];
+          }
+          this.fxOut.push(command);
           break;
         }
         case OP_TITLE: {
@@ -3376,6 +3562,55 @@ export class RocEngineRuntime {
     throw new Error(`unknown file operation ${fx.op}`);
   }
 
+  // A later decision invalidates a deferred show, including a hide already
+  // applied in stream order. Object tokens have no generation that can wrap.
+  decideShown(element, property, value, node) {
+    const control = property === 6 ? "__shownControl" : "__popoverControl";
+    if (!element[control]) element[control] = {};
+    const intent = {};
+    element[property === 6 ? "__shownIntent" : "__popoverIntent"] = intent;
+    if ((property === 6 && value === "hidden") || (property === 7 && value === "false")) this.applyShown(element, property, value, node);
+    else this.fxOut.push({ op: "shown", element, property, value, node, intent });
+  }
+
+  applyShown(element, property, value, node) {
+    try {
+      if (property === 6) {
+        const modal = element.matches(":modal");
+        if (value === "hidden") { if (element.open) element.close(); }
+        else if (value === "modal") {
+          if (!modal) { if (element.open) element.close(); element.showModal(); }
+        } else if (!element.open || modal) {
+          if (element.open) element.close();
+          element.show();
+        }
+        const actual = !element.open ? "hidden" : element.matches(":modal") ? "modal" : "open";
+        if (actual !== value) throw new Error(`dialog stayed ${actual} after ${value}`);
+        if (this.modalOrder) {
+          if (actual !== "modal") this.modalOrder.remove(element);
+          else if (!modal) this.modalOrder.add(element);
+        }
+      } else {
+        const wanted = value === "true";
+        if (element.matches(":popover-open") !== wanted) {
+          if (wanted) element.showPopover(); else element.hidePopover();
+        }
+        if (element.matches(":popover-open") !== wanted) throw new Error("popover did not reach its decided shown state");
+      }
+    } catch (error) {
+      throw new Error(`shown property at node ${node}: ${error.message}`);
+    }
+  }
+
+  // Manual observations use decimal ordinals at the JSON boundary. Reading
+  // old or exhausted history fails the assertion without stopping the app.
+  topModal() { return this.modalOrder ? this.modalOrder.top(this.root) : null; }
+  scrollCount() { return this.scrollLog ? this.scrollLog.total() : 0n; }
+  scrollRecord(ordinal) {
+    if (!this.scrollLog) throw new Error("scroll history requires manualEffects");
+    return this.scrollLog.at(BigInt(ordinal));
+  }
+
   perform(fx) {
     const w = this.win;
     switch (fx.op) {
@@ -3388,16 +3623,36 @@ export class RocEngineRuntime {
       case "title":
         w.document.title = fx.text;
         return;
-      case "focus": {
+      case "shown": {
+        const { element, property, value, intent } = fx;
+        if (!element.isConnected || !this.root.contains(element) || element[property === 6 ? "__shownIntent" : "__popoverIntent"] !== intent) return;
+        this.applyShown(element, property, value, fx.node);
+        return;
+      }
+      case "ref": {
         // After the batch: the element exists. Focus events this raises are
         // queued (busy) and delivered as their own turns.
-        const el = this.lookup(fx.node);
-        if (!el) return;
+        const el = fx.element;
+        if (!el || this.lookup(fx.node) !== el || !this.root.contains(el)) return;
         if (fx.mode === 4) {
           checkValueControl(el, fx.node);
           if (el.__composing) el.__applyValue = el.value !== el.__renderedValue;
           else applyRenderedValue(el);
         } else if (fx.mode === 2) el.blur();
+        else if (fx.mode === 5) el.focus({ preventScroll: true });
+        else if (fx.mode === 6) {
+          el.scrollIntoView(fx.options);
+          if (this.scrollLog) this.scrollLog.add(el, "into-view");
+        } else if (fx.mode === 7) {
+          const options = { behavior: fx.behavior };
+          for (const axis of ["top", "left"]) {
+            const edge = fx[axis];
+            if (edge.kind === "keep") continue;
+            options[axis] = edge.kind === "start" ? 0 : edge.kind === "end" ? (axis === "top" ? el.scrollHeight : el.scrollWidth) : edge.pixels;
+          }
+          el.scrollTo(options);
+          if (this.scrollLog) this.scrollLog.add(el, "to");
+        }
         else {
           el.focus();
           if (fx.mode === 3 && typeof el.select === "function") el.select();

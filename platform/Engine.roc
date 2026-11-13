@@ -1,4 +1,5 @@
 import Core
+import EngineOnly
 import Table
 
 ## The authoring API of the roc-signals web platform: the reactive engine as an
@@ -764,6 +765,9 @@ Engine := [].{
 		Blur(Str),
 		SelectText(Str),
 		ApplyValue(Str),
+		FocusInPlace(Str),
+		ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
+		ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
 		ReadBytes({ file : File, max_bytes : U64 }),
@@ -808,6 +812,9 @@ Engine := [].{
 		Blur(Str),
 		SelectText(Str),
 		ApplyValue(Str),
+		FocusInPlace(Str),
+		ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
+		ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
 		PortCommand({ port : Str, message : PortMessage }),
@@ -1122,6 +1129,16 @@ Engine := [].{
 	element : Str, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 	element = |tag, attrs, kids| Core.element(tag, attrs, kids)
 
+	## Platform vocabulary construction: keep a controlled dialog's private
+	## property and echo handler together. Platform modules supply the witness.
+	dialog_element : { label : Str, open : Signal(ctx, Bool), on_close : HandlerOf(ctx, Bool), modal : [Modal, NonModal], attrs : List(Attr(ctx)), children : List(Elem(ctx)) }, EngineOnly -> Elem(ctx)
+	dialog_element = |props, _witness| Core.controlled_dialog({ label: props.label, open: props.open.v, on_close: props.on_close.h, modal: props.modal, attrs: props.attrs, children: props.children })
+
+	## Platform vocabulary construction with one owned popover mode and echo.
+	## The EngineOnly witness keeps partial construction out of app code.
+	popover_element : { label : Str, open : Signal(ctx, Bool), on_toggle : HandlerOf(ctx, Bool), dismiss : [Auto, Manual], attrs : List(Attr(ctx)), children : List(Elem(ctx)) }, EngineOnly -> Elem(ctx)
+	popover_element = |props, _witness| Core.controlled_popover({ label: props.label, open: props.open.v, on_toggle: props.on_toggle.h, dismiss: props.dismiss, attrs: props.attrs, children: props.children })
+
 	## A static text node.
 	text : Str -> Elem(ctx)
 	text = |s| Core.text(s)
@@ -1259,6 +1276,23 @@ Engine := [].{
 	## Follow a signal with a property, writing only when its value changes.
 	prop_s : Prop(a), Signal(ctx, a) -> Attr(ctx)
 	prop_s = |{ p }, { v }| Core.prop_s(p, v)
+
+	## Where the browser aligns a target within its scrolling ancestors.
+	Align : [Start, Center, End, Nearest]
+
+	## One axis of an explicit scroll; End is resolved by the browser.
+	Edge : [Keep, Start, End, Px(U32)]
+
+	## Whether a scroll uses CSS behavior, moves instantly or animates.
+	ScrollBehavior : [Auto, Instant, Smooth]
+
+	## Scroll alignment with nearest-edge behavior unless the caller chooses otherwise.
+	ScrollProps := { block : Align ?? Nearest, inline : Align ?? Nearest, behavior : ScrollBehavior ?? Auto }
+
+	## Scroll a named element after the batch; a missing name counts as stale.
+	## Its narrow tag also fits a cleanup plan.
+	scroll_into_view : Str, ScrollProps -> [ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior })]
+	scroll_into_view = |name, props| ScrollIntoView(name, { block: props.block, inline: props.inline, behavior: props.behavior })
 
 	## Name this element as a focus reference for `Focus`, `Blur` and `SelectText`
 	## requests, so the app never handles engine node ids. Names are unique

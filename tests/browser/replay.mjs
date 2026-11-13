@@ -93,9 +93,36 @@ const onEl = (page, loc, fn, ...args) =>
     `((loc, args) => { const e = window.__loc(loc); return (${fn})(e, ...args); })(${JSON.stringify(loc)}, ${JSON.stringify(args)})`,
   );
 
-// Let queued work run: the runtime delivers storage reads and queued events
-// on a timer of 0 ms.
-const settle = (page) => page.evaluate(() => new Promise((r) => setTimeout(r, 0)));
+// Native close/toggle tasks can run after a zero-delay timer. Observe their
+// actual completion; the tracker never causes a callback or an app turn.
+async function settle(page) {
+  const deadline = Date.now() + 20000;
+  for (;;) {
+    const observation = await page.evaluate(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      try { return { ready: window.__rt?.nativeEventsReady() ?? true }; }
+      catch (error) { return { error: error.message }; }
+    });
+    if (observation.error) throw new Error(`native UI observation failed: ${observation.error}`);
+    if (observation.ready) return;
+    if (Date.now() >= deadline) throw new Error("native UI observation timed out waiting for actual callbacks");
+  }
+}
+
+// These are oracle-known top-layer facts, without layout or hit testing.
+async function reachable(page, loc) {
+  await need(page, loc);
+  const reason = await onEl(page, loc, (element) => {
+    const modal = window.__rt.topModal();
+    if (modal && !modal.contains(element)) return "is outside the topmost modal dialog";
+    for (let ancestor = element; ancestor && ancestor !== window.__rt.root; ancestor = ancestor.parentElement) {
+      if (ancestor.tagName === "DIALOG" && !ancestor.open) return "is inside a hidden dialog";
+      if (ancestor.hasAttribute("popover") && !ancestor.matches(":popover-open")) return "is inside a hidden popover";
+    }
+    return null;
+  });
+  if (reason) throw new Error(`${showLoc(loc)} ${reason}`);
+}
 
 // The current document's token, set before any script runs (see `install`):
 // a cross-document navigation replaces it.
@@ -151,7 +178,7 @@ async function navigating(page, state, act, known = undefined) {
 // form, a link navigates). A browser delivers no click to a disabled
 // control: `click` then does nothing, and `real-click` fails.
 async function click(page, state, loc, real) {
-  await need(page, loc);
+  await reachable(page, loc);
   const box = await onEl(page, loc, (e) => {
     e.scrollIntoView({ block: "center", inline: "center" });
     const r = e.getBoundingClientRect();
@@ -173,7 +200,7 @@ async function click(page, state, loc, real) {
 // Locate a spec point without asking the engine to invent layout. The
 // oracle can name only a zone's fractions or the centre outside any zone.
 async function pointerPoint(page, loc, at, click = false) {
-  await need(page, loc);
+  await reachable(page, loc);
   const result = await onEl(page, loc, (element, at, click) => {
     element.scrollIntoView({ block: "center", inline: "center" });
     const root = window.__rt.root;
@@ -308,7 +335,7 @@ const FILLABLE = ["", "text", "password", "email", "search", "tel", "url", "numb
 // the value is empty and the control is not), so the app sees one `input`
 // with the whole value, exactly as the native runner delivers it.
 async function fill(page, loc, v) {
-  await need(page, loc);
+  await reachable(page, loc);
   const r = await onEl(
     page,
     loc,
@@ -343,7 +370,7 @@ function popstateAfter(page, action) {
 // `check`/`uncheck`: a click on a checkbox or radio that is not in the wanted
 // state, which must then be in it.
 async function setChecked(page, state, loc, want) {
-  await need(page, loc);
+  await reachable(page, loc);
   const kind = await onEl(page, loc, (e) => (e.tagName === "INPUT" ? (e.getAttribute("type") ?? "").toLowerCase() : ""));
   if (kind !== "checkbox" && kind !== "radio") throw new Error(`${showLoc(loc)} is not a checkbox or radio button`);
   if (kind === "radio" && !want) throw new Error(`${showLoc(loc)} is a radio button, which cannot be unchecked`);
@@ -395,7 +422,7 @@ process.on("exit", () => {
 // the spec declares.
 async function chooseFiles(page, s, state) {
   const files = setupFiles(state, s.files);
-  await need(page, s.loc);
+  await reachable(page, s.loc);
   const r = await onEl(page, s.loc, (e, n) => {
     if (e.tagName !== "INPUT" || (e.getAttribute("type") ?? "").toLowerCase() !== "file") return { error: "is not a file input" };
     if (e.disabled) return { error: "is disabled" };
@@ -427,7 +454,7 @@ async function chooseFiles(page, s, state) {
 // drop needs a `dragover` that the page prevented, as in a real drag.
 async function giveFiles(page, s, state, kind) {
   const files = setupFiles(state, s.files);
-  await need(page, s.loc);
+  await reachable(page, s.loc);
   const r = await onEl(page, s.loc, (e, kind, files) => {
     const dt = new DataTransfer();
     for (const f of files) dt.items.add(new File([f.text.repeat(f.count)], f.name, { type: f.type }));
@@ -626,7 +653,7 @@ async function flushKeyInput(page) {
 // binding preserves its prevented flag even when a key activates navigation.
 async function press(page, step, state) {
   if (step.loc) {
-    await need(page, step.loc);
+    await reachable(page, step.loc);
     await onEl(page, step.loc, (element) => element.focus());
     await settle(page);
   }
@@ -680,6 +707,32 @@ async function press(page, step, state) {
 // One handler per step form of the grammar (`Scm.step_forms`).
 const STEPS = {
   press,
+  dismiss: (page, _step, state) => {
+    const escape = state.keyTable.find((entry) => entry.name === "Escape");
+    if (!escape) throw new Error("dismiss has no parser Escape definition");
+    return press(page, { key: { key: escape.key, code: escape.code, ctrl: false, alt: false, meta: false, shift: false } }, state);
+  },
+  "expect-shown": async (page, step) => {
+    await need(page, step.loc);
+    const actual = await onEl(page, step.loc, (element) => element.tagName === "DIALOG"
+      ? !element.open ? "hidden" : element.matches(":modal") ? "modal" : "open"
+      : element.hasAttribute("popover") ? element.matches(":popover-open") ? "popover" : "hidden" : "unsupported");
+    if (actual !== step.shown) throw new Error(`${showLoc(step.loc)} is ${actual}, expected ${step.shown}`);
+  },
+  "expect-scrolls": async (page, step) => {
+    const actual = await page.evaluate(() => window.__rt.scrollCount().toString());
+    if (actual !== step.count) throw new Error(`${actual} scroll commands, expected ${step.count}`);
+  },
+  "expect-scroll": async (page, step) => {
+    await need(page, step.loc);
+    const error = await page.evaluate((step) => {
+      const record = window.__rt.scrollRecord(step.ordinal);
+      if (record.target.deref() !== window.__loc(step.loc)) return "target differs";
+      if (record.kind !== step.kind) return `kind is ${record.kind}, expected ${step.kind}`;
+      return null;
+    }, step);
+    if (error) throw new Error(`scroll ${step.ordinal} ${error}`);
+  },
   "pointer-down": pointerStep,
   "pointer-move": pointerStep,
   "pointer-up": pointerStep,
@@ -706,7 +759,7 @@ const STEPS = {
   check: (page, s, state) => setChecked(page, state, s.loc, true),
   uncheck: (page, s, state) => setChecked(page, state, s.loc, false),
   "select-option": async (page, s) => {
-    await need(page, s.loc);
+    await reachable(page, s.loc);
     const r = await onEl(
       page,
       s.loc,
@@ -724,17 +777,17 @@ const STEPS = {
     return settle(page);
   },
   focus: async (page, s) => {
-    await need(page, s.loc);
+    await reachable(page, s.loc);
     await onEl(page, s.loc, (e) => e.focus());
     return settle(page);
   },
   blur: async (page, s) => {
-    await need(page, s.loc);
+    await reachable(page, s.loc);
     await onEl(page, s.loc, (e) => e.blur());
     return settle(page);
   },
   change: async (page, s) => {
-    await need(page, s.loc);
+    await reachable(page, s.loc);
     const r = await onEl(
       page,
       s.loc,
@@ -752,7 +805,7 @@ const STEPS = {
     return settle(page);
   },
   submit: async (page, s) => {
-    await need(page, s.loc);
+    await reachable(page, s.loc);
     const r = await onEl(page, s.loc, (e) => {
       if (e.tagName !== "FORM") return "is not a <form>";
       e.requestSubmit();
@@ -1177,7 +1230,10 @@ for (const spec of specs) {
   try {
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
-    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null, holdingReports: false, pointers: new Map(), keyTable: spec.key_table, keyDefaults: spec.unmodelled_key_defaults, keyControlTypes: spec.key_control_types };
+    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null, holdingReports: false, pointers: new Map(), activationTable: spec.activation_table, keyTable: spec.key_table, keyDefaults: spec.unmodelled_key_defaults, keyControlTypes: spec.key_control_types };
+    if (!Array.isArray(state.activationTable) || state.activationTable.length !== Object.keys(STEPS).length ||
+      new Set(state.activationTable.map((row) => row.op)).size !== state.activationTable.length ||
+      state.activationTable.some((row) => !Object.hasOwn(STEPS, row.op))) throw new Error("parser activation table does not name every replay step exactly once");
     await installEnvironment(page, state, true);
     await page.evaluateOnNewDocument(install, attrOf.toString());
     await page.goto(`http://127.0.0.1:${port}${setup.environment.url}`);

@@ -186,6 +186,15 @@ SpecRunner := [].{
 		latest_ports : List(Str),
 		pointers : Dict(U32, PointerState),
 		touch_multi : Bool,
+		top_layer : List(U64),
+		openers : Dict(U64, U64),
+		ui_tasks : List(UiTask),
+		ui_head : U64,
+		ui_exhausted : Bool,
+		cancel_allowed : Bool,
+		scrolls : List(ScrollRecord),
+		scroll_count : U64,
+		scroll_exhausted : Bool,
 
 		## Live report sources are indexed so cancelling or delivering one
 		## never searches the full subscription set.
@@ -195,6 +204,10 @@ SpecRunner := [].{
 		## callbacks. Slots are absolute while a drain removes its prefix.
 		reports : { held : Bool, replaced : U64, epoch : U64, head : U64, index : Dict(ReportSource, { epoch : U64, slot : U64 }) },
 	}
+
+	## Browser task-source entries keep only never-reused model lifetimes.
+	UiTask : [Toggle(U64), Close(U64), Cancelled]
+	ScrollRecord : { ordinal : U64, target : U64, action : Dom.RefAction }
 
 	## A setup file: its name, media type and contents.
 	SetupFile : { name : Str, mime : Str, bytes : List(U8) }
@@ -221,7 +234,7 @@ SpecRunner := [].{
 		focused : U64,
 		focus_value : Str,
 		deferred : Deferred,
-		focus_commands : List({ mode : U8, node : U32 }),
+		after_batch : List(Dom.AfterCmd),
 		event_queue : List(Input),
 		applying_focus : Bool,
 		draining : Bool,
@@ -492,47 +505,66 @@ SpecRunner := [].{
 	take_batch : S(state), state, List(U8) -> S(state)
 	take_batch = |s, inst, cmds| {
 		before = s.dom.nodes.len()
-		r = Dom.apply_full(s.dom, cmds)
-		var $ops = s.ops
-		for op in r.ops {
-			$ops = $ops.set(op.to_u64(), ($ops.get(op.to_u64()) ?? 0) + 1) ?? $ops
-		}
-		var $w = s.writes
-		while $w.len() < r.dom.nodes.len() {
-			$w = $w.append(0)
-		}
-		for i in r.written {
-			# A node written in the batch that created it counts its creation
-			# only.
-			if i < before {
-				$w = $w.set(i, ($w.get(i) ?? 0) + 1) ?? $w
-				n = Dom.node(r.dom, i)
-				if n.tag == "" and n.parent != 0 {
-					$w = $w.set(n.parent - 1, ($w.get(n.parent - 1) ?? 0) + 1) ?? $w
+		var $s = { ..s, inst, buf: cmds }
+		var $at = 0.U64
+		while $at < cmds.len() {
+			prior = $s
+			r = Dom.apply_next(prior.dom, cmds, $at)
+			$at = r.next
+			var $ops = prior.ops
+			for op in r.ops {
+				$ops = $ops.set(op.to_u64(), ($ops.get(op.to_u64()) ?? 0) + 1) ?? $ops
+			}
+			var $w = prior.writes
+			while $w.len() < r.dom.nodes.len() {
+				$w = $w.append(0)
+			}
+			for i in r.written {
+				if i < before {
+					$w = $w.set(i, ($w.get(i) ?? 0) + 1) ?? $w
+					n = Dom.node(r.dom, i)
+					if n.tag == "" and n.parent != 0 {
+						$w = $w.set(n.parent - 1, ($w.get(n.parent - 1) ?? 0) + 1) ?? $w
+					}
 				}
 			}
+			focused = if (prior.focused != 0 and !SpecRunner.attached(r.dom, prior.focused - 1)) 0 else prior.focused
+			held = SpecRunner.hold_focused({ ..prior, focused }, r.dom, r.values)
+			$s = { ..prior, dom: held.dom, focused, deferred: held.deferred, browser: prior.browser, ops: $ops, writes: $w }
+			for fx in r.fx {
+				match fx {
+					Ref(command) => {
+						$s = { ..$s, after_batch: $s.after_batch.append(Ref(command)) }
+					}
+					Shown(command) => {
+						# Closing happens now, before a following REMOVE can erase content.
+						if command.value == Hidden {
+							$s = SpecRunner.change_shown($s, command.target, Hidden)
+						}
+						else {
+							$s = { ..$s, after_batch: $s.after_batch.append(Show(command)) }
+						}
+					}
+					_ => {
+						$s = { ..$s, after_batch: $s.after_batch.append(Effect(fx)) }
+					}
+				}
+			}
+			if r.ops == [4] {
+				for i in $s.browser.top_layer {
+					if Dom.node(prior.dom, i).detach_count != Dom.node($s.dom, i).detach_count or SpecRunner.pressed_path($s.dom, i).any(|p| Dom.node(prior.dom, p.node).detach_count != p.count) {
+						value = if (Dom.node($s.dom, i).shown == Modal) Open else Hidden
+						$s = { ..$s, dom: Dom.modify($s.dom, i, |n| { ..n, shown: value }), focused: if ($s.focused != 0 and SpecRunner.inside($s.dom, $s.focused - 1, i)) 0 else $s.focused }
+					}
+				}
+				b = $s.browser
+				$s = { ..$s, browser: { ..b, top_layer: b.top_layer.keep_if(|i| Dom.node($s.dom, i).shown == Modal or Dom.node($s.dom, i).shown == Popover) } }
+			}
+			# Detached top-layer lifetimes do not restore focus or invent close events.
+			b = $s.browser
+			$s = { ..$s, browser: { ..b, top_layer: b.top_layer.keep_if(|i| SpecRunner.attached($s.dom, i)) } }
 		}
-		focused = if (s.focused != 0 and !SpecRunner.attached(r.dom, s.focused - 1)) 0 else s.focused
-		held = SpecRunner.hold_focused({ ..s, focused }, r.dom, r.values)
-		{
-			..s,
-			inst,
-			buf: cmds,
-			dom: held.dom,
-			focused,
-			deferred: held.deferred,
-			browser: SpecRunner.absorb(s.browser, r.fx),
-			focus_commands: s.focus_commands.concat(
-				r.fx.keep_oks(
-					|fx| match fx {
-						Focus(mode, node) => Ok({ mode, node })
-						_ => Err(NotFocus)
-					},
-				),
-			),
-			ops: $ops,
-			writes: $w,
-		}
+		$s
 	}
 
 	## Whether a model node still belongs to the mounted document. Removing a
@@ -606,13 +638,22 @@ SpecRunner := [].{
 		latest_ports: [],
 		pointers: Dict.empty(),
 		touch_multi: Bool.False,
+		top_layer: [],
+		openers: Dict.empty(),
+		ui_tasks: [],
+		ui_head: 0,
+		ui_exhausted: False,
+		cancel_allowed: Bool.False,
+		scrolls: [],
+		scroll_count: 0,
+		scroll_exhausted: Bool.False,
 		report_sources: Dict.empty(),
 		reports: { held: Bool.False, replaced: 0, epoch: 0, head: 0, index: Dict.empty() },
 	}
 
 	## A runner state for instance `inst` before its first batch.
 	fresh : state, Browser -> S(state)
-	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 24), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, focus_commands: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
+	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 24), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, after_batch: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
 
 	set_store : List((Str, Str)), Str, Str -> List((Str, Str))
 	set_store = |l, key, value| l.keep_if(|(name, _)| name != key).append((key, value))
@@ -639,7 +680,7 @@ SpecRunner := [].{
 				Set(k, v) => if (b.env.storage_available) { ..b, env: { ..b.env, storage: SpecRunner.set_store(b.env.storage, k, v) } } else b
 				Remove(k) => if (b.env.storage_available) { ..b, env: { ..b.env, storage: b.env.storage.keep_if(|(key, _)| key != k) } } else b
 				Title(t) => { ..b, title: t }
-				Focus(_, _) => b
+				Ref(_) | Shown(_) => b
 				FileRead(id, mode, file, max_bytes) => { ..b, pending: b.pending.append({ id, url: "read", body: "", kind: ReadRequest({ mode, file, max_bytes }) }), issued: b.issued.append(id) }
 				Upload(id, _, url, _, file, _) => { ..b, pending: b.pending.append({ id, url, body: "", kind: UploadRequest(file) }), issued: b.issued.append(id) }
 				Digest(id, _, file) => { ..b, pending: b.pending.append({ id, url: "digest", body: "", kind: DigestRequest(file) }), issued: b.issued.append(id) }
@@ -727,7 +768,7 @@ SpecRunner := [].{
 			input = { node, handler: h, payload, owner: if (node == SpecRunner.fx_node) 0 else Dom.lookup(s.dom, node), source: Occurrence }
 			if s.event_queue.len() >= 4096 {
 				if s.applying_focus or s.draining {
-					return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], focus_commands: [] }
+					return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [] }
 				}
 				# Free one slot without delivering: the occurrence must pin the
 				# remaining reports before the oldest turn can raise callbacks.
@@ -751,7 +792,7 @@ SpecRunner := [].{
 		outer = !s.draining
 		active = if (outer) { ..s, draining: Bool.True, turns: 0 } else s
 		if !outer and active.turns >= 4096 {
-			return { ..active, fault: Poisoned("resource_limit: more than 4096 turns delivered without returning to idle (an event feedback loop)"), event_queue: [], focus_commands: [] }
+			return { ..active, fault: Poisoned("resource_limit: more than 4096 turns delivered without returning to idle (an event feedback loop)"), event_queue: [], after_batch: [] }
 		}
 		counted = { ..active, turns: active.turns + if (outer) 0 else 1 }
 		(inst, cmds, wbuf) = (program.event)(counted.inst, counted.buf, counted.wbuf, node, h, payload)
@@ -759,33 +800,38 @@ SpecRunner := [].{
 		if (outer) { ..SpecRunner.drain_focus(program, next), draining: Bool.False } else next
 	}
 
-	## Apply every focus command of a batch before delivering the events it
-	## raises. Those events retain their routes and join the bounded ingress
-	## queue, so two focus effects cannot observe a partly applied batch.
+	## Apply deferred effects, showing values and reference commands in stream order.
+	## Their synchronous callbacks retain their routes and join ordinary ingress,
+	## so no callback observes a partly applied command batch.
 	drain_focus : Program(state), S(state) -> S(state)
 	drain_focus = |program, s0| {
 		var $s = { ..s0, draining: Bool.True }
-		while $s.fault == Healthy and (!$s.focus_commands.is_empty() or !$s.event_queue.is_empty() or !$s.browser.gets.is_empty()) {
-			while $s.fault == Healthy and !$s.focus_commands.is_empty() {
-				command = $s.focus_commands.first() ?? crash "SpecRunner.drain_focus: not empty"
-				s = { ..$s, applying_focus: Bool.True, focus_commands: $s.focus_commands.drop_first(1) }
-				index1 = (s.dom.statics.get(command.node.to_u64()) ?? 0).bitwise_and(1099511627775)
-				applied = if (index1 == 0) s else {
-					i = index1 - 1
-					if command.mode == 4 {
-						{ ..s, dom: Dom.apply_value(s.dom, i, command.node), deferred: if (s.focused == i + 1) NoValue else s.deferred }
-					} else if command.mode == 2 {
-						if (s.focused == i + 1) SpecRunner.move_focus(program, s, 0) else s
-					} else if SpecRunner.focusable_in(s.dom, i) {
-						SpecRunner.move_focus(program, s, i + 1)
-					} else s
+		while $s.fault == Healthy and (!$s.after_batch.is_empty() or !$s.event_queue.is_empty() or !$s.browser.gets.is_empty()) {
+			while $s.fault == Healthy and !$s.after_batch.is_empty() {
+				command = $s.after_batch.first() ?? crash "SpecRunner.drain_focus: not empty"
+				s = { ..$s, applying_focus: Bool.True, after_batch: $s.after_batch.drop_first(1) }
+				applied = match command {
+					Effect(fx) => { ..s, browser: SpecRunner.absorb(s.browser, [fx]) }
+					Show(show) => if (SpecRunner.attached(s.dom, show.target) and (if (show.property == 6) Dom.node(s.dom, show.target).shown_intent.dialog else Dom.node(s.dom, show.target).shown_intent.popover) == show.intent) SpecRunner.change_shown(s, show.target, show.value) else s
+					Ref(ref) => {
+						i = ref.target
+						live = SpecRunner.attached(s.dom, i) and (s.dom.statics.get(ref.node.to_u64()) ?? 0).bitwise_and(1099511627775) == i + 1
+						if !live {
+							s
+						} else match ref.action {
+							Focus(4) => { ..s, dom: Dom.apply_value(s.dom, i, ref.node), deferred: if (s.focused == i + 1) NoValue else s.deferred }
+							Focus(2) => if (s.focused == i + 1) SpecRunner.move_focus(program, s, 0) else s
+							Focus(_) => if (SpecRunner.focusable_in(s.dom, i) and SpecRunner.reachable(s, i)) SpecRunner.move_focus(program, s, i + 1) else s
+							IntoView(_) | To(_) => SpecRunner.record_scroll(s, i, ref.action)
+						}
+					}
 				}
 				$s = { ..applied, applying_focus: Bool.False }
 			}
 			if !$s.event_queue.is_empty() {
 				{ input, rest } = SpecRunner.pop_input($s)
 				$s = SpecRunner.deliver_input(program, { state: rest, input: input })
-			} else {
+			} else if !$s.browser.gets.is_empty() {
 				$s = SpecRunner.answer_gets(program, $s)
 			}
 		}
@@ -860,7 +906,7 @@ SpecRunner := [].{
 		}
 		if s.event_queue.len() >= 4096 {
 			if s.applying_focus or s.draining {
-				return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], focus_commands: [], browser: { ..b, reports: { ..reports, head: 0, index: Dict.empty() } } }
+				return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [], browser: { ..b, reports: { ..reports, head: 0, index: Dict.empty() } } }
 			}
 			return SpecRunner.queue_report(program, { state: SpecRunner.release_reports(program, s), source, node, handler, owner, payload })
 		}
@@ -881,7 +927,7 @@ SpecRunner := [].{
 	answer_gets : Program(state), S(state) -> S(state)
 	answer_gets = |program, s0| {
 		var $s = s0
-		while !$s.browser.gets.is_empty() and $s.event_queue.is_empty() and $s.focus_commands.is_empty() {
+		while !$s.browser.gets.is_empty() and $s.event_queue.is_empty() and $s.after_batch.is_empty() {
 			b = $s.browser
 			g = b.gets.first() ?? crash "SpecRunner.answer_gets: not empty"
 			found = if (b.env.storage_available) b.env.storage.find_first(|(key, _)| key == g.key) else Err(NotFound)
@@ -1063,7 +1109,7 @@ SpecRunner := [].{
 		var $at = i
 		while True {
 			n = Dom.node(dom, $at)
-			if SpecRunner.flag_on(n, "hidden") {
+			if SpecRunner.flag_on(n, "hidden") or ((n.tag == "dialog" or Dom.has_attr(n, "popover")) and n.shown == Hidden) {
 				return Bool.False
 			}
 			if $at == dom.root {
@@ -1106,6 +1152,9 @@ SpecRunner := [].{
 	## only when a handler listens. Nothing happens when focus stays.
 	move_focus : Program(state), S(state), U64 -> S(state)
 	move_focus = |program, s0, to| {
+		if s0.applying_focus {
+			return SpecRunner.queue_focus(s0, to)
+		}
 		if s0.focused == to {
 			s0
 		} else {
@@ -1124,6 +1173,213 @@ SpecRunner := [].{
 			s2 = if (from == 0) s1 else SpecRunner.fire_if(program, s1, from - 1, "blur", SpecRunner.value_of(s1.dom, from - 1))
 			if (to == 0) s2 else SpecRunner.fire_if(program, s2, to - 1, "focus", SpecRunner.value_of(s2.dom, to - 1))
 		}
+	}
+
+	## Browser state uses parent paths and modal lifetimes, independent of engine sites.
+	inside : Dom.Model, U64, U64 -> Bool
+	inside = |dom, i, ancestor| {
+		var $at = i + 1
+		while $at != 0 {
+			if $at == ancestor + 1 {
+				return True
+			}
+			$at = Dom.node(dom, $at - 1).parent
+		}
+		False
+	}
+
+	## Native actions reject only browser reachability facts the oracle models.
+	reachable : S(state), U64 -> Bool
+	reachable = |s, i| {
+		var $at = i + 1
+		while $at != 0 {
+			n = Dom.node(s.dom, $at - 1)
+			if SpecRunner.flag_on(n, "hidden") or ((n.tag == "dialog" or Dom.has_attr(n, "popover")) and n.shown == Hidden) {
+				return False
+			}
+			$at = n.parent
+		}
+		modal = s.browser.top_layer.find_last(|index| Dom.node(s.dom, index).shown == Modal)
+		match modal {
+			Ok(index) => SpecRunner.inside(s.dom, i, index)
+			Err(_) => True
+		}
+	}
+
+	## Freeze non-bubbling focus callbacks while a batch is still being applied.
+	queue_event : S(state), U64, Str, Str -> S(state)
+	queue_event = |s, i, event, payload| {
+		if !SpecRunner.attached(s.dom, i) {
+			return s
+		}
+		match Dom.target(s.dom, i, event, False) {
+			Ok(target) if target.kind == 1 and s.event_queue.len() >= 4096 => { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [] }
+			Ok(target) if target.kind == 1 => {
+				b = s.browser
+				{ ..s, event_queue: s.event_queue.append({ node: target.node, handler: target.handler, payload: payload.to_utf8(), owner: Dom.lookup(s.dom, target.node), source: Occurrence }), browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } }
+			}
+			_ => s
+		}
+	}
+
+	## Focus restoration must happen while a closing dialog's contents still exist.
+	queue_focus : S(state), U64 -> S(state)
+	queue_focus = |s, to| {
+		if s.focused == to {
+			return s
+		}
+		from = s.focused
+		changed = if from != 0 and SpecRunner.text_control(Dom.node(s.dom, from - 1)) and SpecRunner.value_of(s.dom, from - 1) != s.focus_value {
+			SpecRunner.queue_event(s, from - 1, "change", SpecRunner.value_of(s.dom, from - 1))
+		} else s
+		landed = match changed.deferred {
+			Held(value) if from != 0 => { ..changed, dom: Dom.set_live_on(changed.dom, from - 1, "value", value) }
+			_ => changed
+		}
+		moved = { ..landed, focused: to, deferred: NoValue, focus_value: if (to == 0) "" else SpecRunner.value_of(landed.dom, to - 1) }
+		blurred = if (from == 0) moved else SpecRunner.queue_event(moved, from - 1, "blur", SpecRunner.value_of(moved.dom, from - 1))
+		if (to == 0) blurred else SpecRunner.queue_event(blurred, to - 1, "focus", SpecRunner.value_of(blurred.dom, to - 1))
+	}
+
+	## Appending native task observations never wraps a slot or poisons the app.
+	queue_ui : S(state), UiTask -> S(state)
+	queue_ui = |s, task| {
+		b = s.browser
+		if b.ui_exhausted {
+			return s
+		}
+		if b.ui_head > 18446744073709551615 - b.ui_tasks.len() {
+			return { ..s, browser: { ..b, ui_exhausted: True } }
+		}
+		{ ..s, browser: { ..b, ui_tasks: b.ui_tasks.append(task) } }
+	}
+
+	## Replacing a toggle cancels its old task and queues it at the new task position.
+	## A direct slot avoids scanning unrelated browser tasks during coalescing.
+	queue_toggle : S(state), U64 -> S(state)
+	queue_toggle = |s, i| {
+		b = s.browser
+		n = Dom.node(s.dom, i)
+		if b.ui_exhausted {
+			return s
+		}
+		if b.ui_head > 18446744073709551615 - b.ui_tasks.len() {
+			return { ..s, browser: { ..b, ui_exhausted: True } }
+		}
+		slot = b.ui_head + b.ui_tasks.len()
+		tasks = if (n.pending_toggle) b.ui_tasks.set(n.toggle_slot - b.ui_head, Cancelled) ?? crash "native toggle task slot" else b.ui_tasks
+		marked = { ..s, dom: Dom.modify(s.dom, i, |element| { ..element, pending_toggle: True, toggle_slot: slot }), browser: { ..b, ui_tasks: tasks } }
+		SpecRunner.queue_ui(marked, Toggle(i))
+	}
+
+	## Native show/close defaults maintain a distinct live top-layer state.
+	change_shown : S(state), U64, Dom.Shown -> S(state)
+	change_shown = |s0, i, value| {
+		old = Dom.node(s0.dom, i).shown
+		if old == value {
+			return s0
+		}
+		var $s = s0
+		if value == Modal or (value == Popover and Dom.enum_attr(Dom.node($s.dom, i), "popover") == "auto") {
+			for other in $s.browser.top_layer {
+				if other != i and Dom.node($s.dom, other).shown == Popover and Dom.enum_attr(Dom.node($s.dom, other), "popover") == "auto" and !SpecRunner.inside($s.dom, i, other) {
+					$s = SpecRunner.change_shown($s, other, Hidden)
+				}
+			}
+		}
+		# Changing a dialog's display mode closes it before invoking the new method.
+		if old != Hidden and value != Hidden {
+			$s = SpecRunner.change_shown($s, i, Hidden)
+		}
+		s = $s
+		b = s.browser
+		n = Dom.node(s.dom, i)
+		attrs = if n.tag == "dialog" {
+			if (value == Hidden) n.attrs.keep_if(|(key, _)| key != "open") else n.attrs.keep_if(|(key, _)| key != "open").append(("open", ""))
+		} else n.attrs
+		dom = Dom.modify(s.dom, i, |current| { ..current, shown: value, attrs })
+		changed = { ..s, dom, browser: { ..b, top_layer: if (value == Modal or value == Popover) b.top_layer.keep_if(|other| other != i).append(i) else b.top_layer.keep_if(|other| other != i), openers: if (value == Hidden) b.openers.remove(i) else b.openers.insert(i, s.focused) } }
+		queued = SpecRunner.queue_toggle(changed, i)
+		if value == Hidden {
+			opener = b.openers.get(i) ?? 0
+			restored = if (opener != 0 and (old == Modal or (s.focused != 0 and SpecRunner.inside(s.dom, s.focused - 1, i))) and SpecRunner.attached(queued.dom, opener - 1) and SpecRunner.focusable_in(queued.dom, opener - 1)) SpecRunner.queue_focus(queued, opener) else queued
+			if n.tag == "dialog" {
+				SpecRunner.queue_ui(restored, Close(i))
+			} else restored
+		} else {
+			autofocus = Dom.find(queued.dom, i, |child| Dom.has_attr(child, "autofocus"))
+			chosen = match autofocus {
+				Ok(target) if SpecRunner.focusable_in(queued.dom, target) => target + 1
+				_ if n.tag == "dialog" => SpecRunner.focus_order(queued.dom, i).first().map_ok(|target| target + 1) ?? i + 1
+				_ => 0
+			}
+			if (chosen == 0) queued else SpecRunner.queue_focus(queued, chosen)
+		}
+	}
+
+	## UI tasks read live state at delivery, then enter the ordinary event path.
+	deliver_ui : Program(state), S(state) -> S(state)
+	deliver_ui = |program, s| {
+		task = s.browser.ui_tasks.first() ?? crash "SpecRunner.deliver_ui: pending task"
+		b = s.browser
+		rest = b.ui_tasks.drop_first(1)
+		next = { ..s, browser: { ..b, ui_tasks: rest, ui_head: if (rest.is_empty()) 0 else b.ui_head + 1 } }
+		if task == Cancelled {
+			return next
+		}
+		(index, event) = match task {
+			Toggle(i) => (i, "toggle")
+			Close(i) => (i, "close")
+			Cancelled => crash "native UI task was already skipped"
+		}
+		cleared = match task {
+			Toggle(_) => { ..next, dom: Dom.modify(next.dom, index, |n| { ..n, pending_toggle: False }) }
+			Close(_) => next
+			Cancelled => crash "native UI task was already skipped"
+		}
+		if !SpecRunner.attached(cleared.dom, index) {
+			return cleared
+		}
+		match Dom.target(cleared.dom, index, event, False) {
+			Ok(target) => {
+				payload = if (target.kind == 5) [if (Dom.node(cleared.dom, index).shown == Hidden) 0.U8 else 1] else []
+				SpecRunner.send(program, cleared, target.node, target.handler, payload)
+			}
+			Err(_) => cleared
+		}
+	}
+
+	## Escape consumes the newest close watcher; cancellation needs fresh activation.
+	dismiss_ui : Program(state), S(state) -> S(state)
+	dismiss_ui = |program, s| {
+		i = s.browser.top_layer.find_last(|target| Dom.node(s.dom, target).shown == Modal or (Dom.node(s.dom, target).shown == Popover and Dom.enum_attr(Dom.node(s.dom, target), "popover") == "auto")) ?? return s
+		n = Dom.node(s.dom, i)
+		if n.shown == Popover {
+			if (Dom.enum_attr(n, "popover") == "auto") SpecRunner.change_shown(s, i, Hidden) else s
+		} else if n.shown == Modal {
+			prevent = s.browser.cancel_allowed and (Dom.target(s.dom, i, "cancel", False).map_ok(|target| target.policies.bitwise_and(1) != 0) ?? False)
+			next = match Dom.target(s.dom, i, "cancel", False) {
+				Ok(target) => SpecRunner.send(program, s, target.node, target.handler, [])
+				Err(_) => s
+			}
+			used = { ..next, browser: { ..next.browser, cancel_allowed: False } }
+			if (prevent) used else SpecRunner.change_shown(used, i, Hidden)
+		} else s
+	}
+
+	## Scroll observation is bounded and cannot suppress the performed command.
+	record_scroll : S(state), U64, Dom.RefAction -> S(state)
+	record_scroll = |s, i, action| {
+		b = s.browser
+		if b.scroll_exhausted {
+			return s
+		}
+		if b.scroll_count == 18446744073709551615 {
+			return { ..s, browser: { ..b, scroll_exhausted: True } }
+		}
+		ordinal = b.scroll_count + 1
+		history = b.scrolls.append({ ordinal, target: i, action })
+		{ ..s, browser: { ..b, scroll_count: ordinal, scrolls: if (history.len() > 4096) history.drop_first(1) else history } }
 	}
 
 	# ------------------------------------------------------------- locators
@@ -1220,7 +1476,7 @@ SpecRunner := [].{
 		} else if name == "value" and ["input", "textarea", "select", "option"].contains(n.tag) {
 			Ok(SpecRunner.value_of(dom, i))
 		} else if SpecRunner.bool_attrs.contains(name) {
-			if (SpecRunner.flag_on(n, name)) Ok("") else Err(Absent)
+			if (Dom.has_attr(n, name)) Ok("") else Err(Absent)
 		} else if Dom.has_attr(n, name) {
 			Ok(raw)
 		} else Err(Absent)
@@ -1334,16 +1590,49 @@ SpecRunner := [].{
 	## has a case here (the match has no catch-all).
 	one : Program(state), S(state), Scm.Op -> Try(S(state), Str)
 	one = |program, s, op| {
-		ready = if (SpecRunner.is_occurrence(s, op)) SpecRunner.release_reports(program, s) else s
+		activated = SpecRunner.activate_step(s, op)
+		ready = if (SpecRunner.is_occurrence(activated, op)) SpecRunner.release_reports(program, activated) else activated
 		next = SpecRunner.one_ready(program, ready, op)?
 		Ok(if (next.browser.reports.held) next else SpecRunner.release_reports(program, next))
+	}
+
+	## Activation policy comes from the same complete grammar table emitted for Chrome.
+	activate_step : S(state), Scm.Op -> S(state)
+	activate_step = |s, op| {
+		grant = match Scm.activation_for(op) {
+			Never => False
+			Always => True
+			WhenClicked => match op {
+				Click(loc) => SpecRunner.find(s.dom, loc).map_ok(|i| !SpecRunner.disabled(Dom.node(s.dom, i))) ?? False
+				Check(loc) => SpecRunner.find(s.dom, loc).map_ok(|i| Dom.live_value(Dom.node(s.dom, i), "checked") != "true") ?? False
+				Uncheck(loc) => SpecRunner.find(s.dom, loc).map_ok(|i| Dom.live_value(Dom.node(s.dom, i), "checked") == "true") ?? False
+				_ => crash "activation table: clicked policy requires check or uncheck"
+			}
+			WhenTyped => match op {
+				Fill(_, value) => value != ""
+				_ => crash "activation table: typed policy requires fill"
+			}
+			KeyboardPress => match op {
+				Press(press) => press.key.key != "Escape"
+				_ => crash "activation table: keyboard policy requires press"
+			}
+			PointerPress => match op {
+				PointerDown(press) => press.kind != Touch
+				_ => crash "activation table: pointer-down policy requires pointer-down"
+			}
+			PointerRelease => match op {
+				PointerUp(place) => s.browser.pointers.get(place.id).map_ok(|pointer| pointer.kind == Touch) ?? False
+				_ => crash "activation table: pointer-up policy requires pointer-up"
+			}
+		}
+		if (grant) { ..s, browser: { ..s.browser, cancel_allowed: True } } else s
 	}
 
 	## Classify only declarations and step meanings. Assertions and fixtures
 	## do not flush a held frame, and an unchanged fact raises no report.
 	is_occurrence : S(state), Scm.Op -> Bool
 	is_occurrence = |s, op| match op {
-		Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | RunEffect(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
+		Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | RunEffect(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
 		PointerDown(_) | PointerUp(_) | PointerCancel(_) => Bool.True
 		PointerMove(place) => !SpecRunner.paced_move(s, place)
 		EmitPort({ port, .. }) => !s.browser.latest_ports.contains(port)
@@ -1354,10 +1643,64 @@ SpecRunner := [].{
 	## this match exhaustive makes every parser extension visible here.
 	one_ready : Program(state), S(state), Scm.Op -> Try(S(state), Str)
 	one_ready = |program, s, op| {
+		match op {
+			Click(loc) | RealClick(loc) | Fill(loc, _) | Focus(loc) | Blur(loc) | Check(loc) | Uncheck(loc) | SelectOption(loc, _) | Change(loc, _) | Submit(loc) | ChooseFiles(loc, _) | DropFiles(loc, _) | PasteFiles(loc, _) => {
+				i = SpecRunner.need(s.dom, loc)?
+				if !SpecRunner.reachable(s, i) {
+					return Err("${Scm.show_loc(loc)} is unreachable: hidden dialog/popover or outside the topmost modal")
+				}
+			}
+			PointerDown(press) => {
+				i = SpecRunner.need(s.dom, press.target)?
+				if !SpecRunner.reachable(s, i) {
+					return Err("pointer target is unreachable: hidden dialog/popover or outside the topmost modal")
+				}
+			}
+			PointerMove(place) | PointerUp(place) => {
+				i = SpecRunner.need(s.dom, place.target)?
+				if !SpecRunner.reachable(s, i) {
+					return Err("pointer target is unreachable: hidden dialog/popover or outside the topmost modal")
+				}
+			}
+			Press({ target: At(loc), .. }) => {
+				i = SpecRunner.need(s.dom, loc)?
+				if !SpecRunner.reachable(s, i) {
+					return Err("press target is unreachable: hidden dialog/popover or outside the topmost modal")
+				}
+			}
+			_ => {}
+		}
 		dom = s.dom
 		b = s.browser
 		check = |ok, msg| if (ok) Ok(s) else Err(msg)
 		match op {
+			Dismiss => SpecRunner.press_key(program, s, { target: Focused, key: { key: "Escape", code: "Escape", ctrl: False, alt: False, shift: False, meta: False } })
+			ExpectShown(loc, want) => {
+				i = SpecRunner.need(dom, loc)?
+				check(Dom.node(dom, i).shown == want, "${Scm.show_loc(loc)} is ${Str.inspect(Dom.node(dom, i).shown)}, expected ${Str.inspect(want)}")
+			}
+			ExpectScrolls(count) => {
+				if b.scroll_exhausted {
+					Err("scroll observation ordinal exhausted")
+				}
+				else check(b.scroll_count == count, "scroll commands performed ${b.scroll_count.to_str()}, expected ${count.to_str()}")
+			}
+			ExpectScroll({ ordinal, target, kind }) => {
+				if b.scroll_exhausted {
+					return Err("scroll observation ordinal exhausted")
+				}
+				if ordinal <= b.scroll_count and b.scroll_count - ordinal >= 4096 {
+					return Err("scroll ordinal ${ordinal.to_str()} is older than retained history (newest 4096)")
+				}
+				record = b.scrolls.find_first(|r| r.ordinal == ordinal) ? |_| "scroll ordinal ${ordinal.to_str()} was not performed"
+				i = SpecRunner.need(dom, target)?
+				actual = match record.action {
+					IntoView(_) => IntoView
+					To(_) => To
+					Focus(_) => crash "scroll history contains focus"
+				}
+				check(record.target == i and actual == kind, "scroll ordinal ${ordinal.to_str()} does not name ${Scm.show_loc(target)} with ${Str.inspect(kind)}")
+			}
 			HoldReports => if (b.reports.held) Err("hold-reports while reports are already held") else Ok({ ..s, browser: { ..b, reports: { ..b.reports, held: Bool.True } } })
 			ReleaseReports => if (!b.reports.held) Err("release-reports while reports are not held") else Ok(SpecRunner.release_reports(program, { ..s, browser: { ..b, reports: { ..b.reports, held: Bool.False } } }))
 			ExpectReportsReplaced(count) => check(b.reports.replaced == count, "reports replaced ${b.reports.replaced.to_str()} times, expected ${count.to_str()}")
@@ -1744,7 +2087,8 @@ SpecRunner := [].{
 	## end of the sequence focuses the body as Chrome does.
 	key_tab : Program(state), S(state), Bool -> S(state)
 	key_tab = |program, s, backwards| {
-		ordered = SpecRunner.focus_order(s.dom, s.dom.root).fold([], |out, i| out.append({ index: i, order: out.len(), tab: U64.from_str(Dom.attr_of(Dom.node(s.dom, i), "tabindex")) ?? 0 })).sort_with(
+		modal = s.browser.top_layer.find_last(|i| Dom.node(s.dom, i).shown == Modal)
+		ordered = SpecRunner.focus_order(s.dom, modal ?? s.dom.root).fold([], |out, i| out.append({ index: i, order: out.len(), tab: U64.from_str(Dom.attr_of(Dom.node(s.dom, i), "tabindex")) ?? 0 })).sort_with(
 			|a, b| {
 				if a.tab == b.tab {
 					if (a.order < b.order) Before else if (a.order > b.order) After else Same
@@ -1797,16 +2141,30 @@ SpecRunner := [].{
 
 	## A press focuses its optional locator, raises down and up, and models
 	## only defaults whose meaning does not need a caret or browser layout.
+	Pressed : { key : Scm.Key, document : U64, down_index : U64, activation_path : List({ node : U64, parent : U64, count : U64 }), prevented : Bool }
+
+	## Pure drivers can take both phases when no browser task needs servicing.
 	press_key : Program(state), S(state), Scm.KeyPress -> Try(S(state), Str)
-	press_key = |program, s0, press| {
+	press_key = |program, s, press| {
+		(down, context) = SpecRunner.press_down(program, s, press)?
+		SpecRunner.press_up(program, down, context)
+	}
+
+	## Save only physical press evidence across the browser's intervening tasks.
+	press_down : Program(state), S(state), Scm.KeyPress -> Try((S(state), Pressed), Str)
+	press_down = |program, s0, press| {
 		var $s = match press.target {
 			Focused => s0
 			At(loc) => {
 				i = SpecRunner.need(s0.dom, loc)?
+				if !SpecRunner.reachable(s0, i) {
+					return Err("press target is unreachable: hidden dialog/popover or outside the topmost modal")
+				}
 				if (SpecRunner.focusable_in(s0.dom, i)) SpecRunner.move_focus(program, s0, i + 1) else s0
 			}
 		}
 		key = press.key
+		document = $s.browser.doc
 		down_index = if ($s.focused == 0) $s.dom.root else $s.focused - 1
 		activation_path = SpecRunner.pressed_path($s.dom, down_index)
 		unmodelled = SpecRunner.key_unmodelled($s.dom, down_index, key)
@@ -1816,7 +2174,10 @@ SpecRunner := [].{
 			return Err("press ${key.key} has an unmodelled browser default; use fill for text input or prevent it with a keymap")
 		}
 		if !prevented {
-			if key.key == "Tab" and !key.ctrl and !key.alt and !key.meta {
+			if key.key == "Escape" {
+				$s = SpecRunner.dismiss_ui(program, $s)
+			}
+			else if key.key == "Tab" and !key.ctrl and !key.alt and !key.meta {
 				$s = SpecRunner.key_tab(program, $s, key.shift)
 			}
 			else if key.key == "Enter" {
@@ -1841,12 +2202,19 @@ SpecRunner := [].{
 				}
 			}
 		}
+		Ok((SpecRunner.drain_focus(program, $s), { key, document, down_index, activation_path, prevented }))
+	}
+
+	## Key-up resolves the live focused element after navigation and native UI tasks.
+	press_up : Program(state), S(state), Pressed -> Try(S(state), Str)
+	press_up = |program, s0, { key, document, down_index, activation_path, prevented }| {
+		var $s = s0
 		up_index = if ($s.focused == 0) $s.dom.root else $s.focused - 1
 		(up, up_prevented) = SpecRunner.key_phase(program, $s, "keyup", key)
 		$s = up
 		# Space arms only the element that received its down. A focus change
 		# or disposal cannot transfer that activation to the keyup target.
-		if key.key == " " and !prevented and !up_prevented and up_index == down_index and $s.focused == down_index + 1 and SpecRunner.attached($s.dom, down_index) and activation_path.all(|p| Dom.node($s.dom, p.node).detach_count == p.count) {
+		if key.key == " " and $s.browser.doc == document and !prevented and !up_prevented and up_index == down_index and $s.focused == down_index + 1 and SpecRunner.attached($s.dom, down_index) and activation_path.all(|p| Dom.node($s.dom, p.node).detach_count == p.count) {
 			n = Dom.node($s.dom, up_index)
 			if n.tag == "button" or (n.tag == "input" and ["button", "submit", "reset", "checkbox", "radio"].contains(Dom.enum_attr(n, "type"))) {
 				$s = SpecRunner.key_activate(program, $s, up_index)?
@@ -2108,7 +2476,8 @@ SpecRunner := [].{
 		had_capture = pointer.capture != 0 and SpecRunner.attached(s.dom, pointer.capture - 1)
 		pressed = if (had_capture) pointer.capture - 1 else pointer.down - 1
 		path = SpecRunner.pressed_path(s.dom, pressed)
-		after_up = SpecRunner.fire_pointer(program, s, { target, pointer, event: "pointerup", at })
+		dismissed = if (pointer.button == Main) SpecRunner.light_dismiss(s, pointer.down - 1, i) else s
+		after_up = SpecRunner.fire_pointer(program, dismissed, { target, pointer, event: "pointerup", at })
 		b = after_up.browser
 		remaining = b.pointers.remove(pointer.id)
 		touch_multi = b.touch_multi
@@ -2141,6 +2510,18 @@ SpecRunner := [].{
 		prevented = SpecRunner.prevents($next.dom, click_target, event)
 		$next = SpecRunner.fire_if(program, $next, click_target, event, "")
 		if (prevented or pointer.button != Main) Ok($next) else SpecRunner.default_action(program, $next, click_target)
+	}
+
+	## Light dismissal uses both actual press and release targets, never layout guesses.
+	light_dismiss : S(state), U64, U64 -> S(state)
+	light_dismiss = |s0, down, up| {
+		var $s = s0
+		for i in s0.browser.top_layer {
+			if Dom.node($s.dom, i).shown == Popover and Dom.enum_attr(Dom.node($s.dom, i), "popover") == "auto" and !SpecRunner.inside($s.dom, down, i) and !SpecRunner.inside($s.dom, up, i) {
+				$s = SpecRunner.change_shown($s, i, Hidden)
+			}
+		}
+		$s
 	}
 
 	## CDP cancellation ends its whole touch set, so a named cancel is valid
@@ -2415,6 +2796,9 @@ SpecRunner := [].{
 		}
 		dom = s.dom
 		i = SpecRunner.need(dom, loc)?
+		if !SpecRunner.reachable(s, i) {
+			return Err("${Scm.show_loc(loc)} is unreachable: hidden dialog/popover or outside the topmost modal")
+		}
 		n = Dom.node(dom, i)
 		if ev == "change" {
 			if !Dom.is_file_input(n) {
@@ -2627,8 +3011,26 @@ SpecRunner := [].{
 
 	## The host services a replay uses: running a worker job in a child
 	## process, minting and counting file handles in the host's heap, and
-	## digesting bytes.
-	Host : { work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64 }
+	## digesting bytes, and a monotonic clock for observation deadlines.
+	Host : { now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64 }
+
+	## Native observation yields between browser tasks and never changes app fault state.
+	pump_ui! : Program(state), Host, S(state) => Try(S(state), Str)
+	pump_ui! = |program, host, initial| {
+		started = (host.now_ns!)()
+		var $s = initial
+		while !$s.browser.ui_tasks.is_empty() or $s.browser.ui_exhausted {
+			if $s.browser.ui_exhausted {
+				return Err("UI observation task slots exhausted")
+			}
+			if (host.now_ns!)() - started >= 20000000000 {
+				return Err("UI observation did not reach idle within 20 seconds")
+			}
+			# A browser task starts a fresh ingress turn budget.
+			$s = SpecRunner.drain_focus(program, SpecRunner.deliver_ui(program, { ..$s, draining: False, turns: 0 }))
+		}
+		Ok($s)
+	}
 
 	## Where a spec failed: the step's index, the step, and why.
 	Failure : { step : U64, at : Scm.Step, message : Str }
@@ -2652,6 +3054,7 @@ SpecRunner := [].{
 			Ok(s) => s
 			Err(message) => return Err({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })
 		}
+		$s = SpecRunner.pump_ui!(program, host, $s).map_err(|message| { step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })?
 		match SpecRunner.check_settled(program, $s) {
 			Ok(_) => {}
 			Err(message) => return Err({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message: "after mount, ${message}" })
@@ -2687,22 +3090,36 @@ SpecRunner := [].{
 	step! : Program(state), Host, S(state), Scm.Op => Try(S(state), Str)
 	step! = |program, host, initial, op| {
 		s = if (SpecRunner.is_occurrence(initial, op)) SpecRunner.release_reports(program, initial) else initial
-		match (SpecRunner.file_count(s.dom, op), op) {
-			(Ok(n), _) => SpecRunner.give_files(program, s, op, (host.mint_files!)(n))
-			(_, ExpectFiles(n)) => {
-				live = (host.live_files!)()
-				if (live == n) Ok(s) else Err("expected ${n.to_str()} live file handles, found ${live.to_str()}")
+		result = match op {
+			Press(press) => {
+				activated = SpecRunner.activate_step(s, op)
+				(down, context) = SpecRunner.press_down(program, activated, press)?
+				ready = SpecRunner.pump_ui!(program, host, down)?
+				SpecRunner.press_up(program, ready, context)
 			}
-			_ =>
-				match (SpecRunner.held_of(s, op), SpecRunner.digest_of(s, op)) {
-					(Ok(WorkJob(job)), _) => SpecRunner.deliver_work!(program, s, job.id, (host.work!)(job.payload, job.files, job.prepare, job.prepare_files, job.max_output), host.mint_files!)
-					(Ok(FetchAnswer({ id, stub })), _) => SpecRunner.deliver_fetch!(program, s, id, stub, host.mint_files!)
-					(Err(message), _) if message != "not held" => Err(message)
-					(_, Ok({ id, bytes: Digest(bytes) })) => Ok(SpecRunner.deliver_digest(program, s, id, [18].concat((host.sha256!)(bytes))))
-					(_, Ok({ id, bytes: TooLarge })) => Ok(SpecRunner.deliver_digest(program, s, id, [13, 2]))
-					(_, Err(NoDigest)) => SpecRunner.one(program, s, op)
+			Dismiss => {
+				(down, context) = SpecRunner.press_down(program, s, { target: Focused, key: { key: "Escape", code: "Escape", ctrl: False, alt: False, shift: False, meta: False } })?
+				ready = SpecRunner.pump_ui!(program, host, down)?
+				SpecRunner.press_up(program, ready, context)
+			}
+			_ => match (SpecRunner.file_count(s.dom, op), op) {
+				(Ok(n), _) => SpecRunner.give_files(program, s, op, (host.mint_files!)(n))
+				(_, ExpectFiles(n)) => {
+					live = (host.live_files!)()
+					if (live == n) Ok(s) else Err("expected ${n.to_str()} live file handles, found ${live.to_str()}")
 				}
+				_ =>
+					match (SpecRunner.held_of(s, op), SpecRunner.digest_of(s, op)) {
+						(Ok(WorkJob(job)), _) => SpecRunner.deliver_work!(program, s, job.id, (host.work!)(job.payload, job.files, job.prepare, job.prepare_files, job.max_output), host.mint_files!)
+						(Ok(FetchAnswer({ id, stub })), _) => SpecRunner.deliver_fetch!(program, s, id, stub, host.mint_files!)
+						(Err(message), _) if message != "not held" => Err(message)
+						(_, Ok({ id, bytes: Digest(bytes) })) => Ok(SpecRunner.deliver_digest(program, s, id, [18].concat((host.sha256!)(bytes))))
+						(_, Ok({ id, bytes: TooLarge })) => Ok(SpecRunner.deliver_digest(program, s, id, [13, 2]))
+						(_, Err(NoDigest)) => SpecRunner.one(program, s, op)
+					}
+			}
 		}
+		SpecRunner.pump_ui!(program, host, result?)
 	}
 
 	# ----------------------------------------------------------------- walks
@@ -3445,7 +3862,7 @@ SpecRunner := [].{
 						(io.stdout!)("${JsonOut.render(Scm.to_json(id, spec))}\n")
 					}
 					Ok(spec) => {
-						host = { work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes! }
+						host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes! }
 						outcome = match opts.soak {
 							NoSoak => SpecRunner.run!(program, host, spec)
 							Soak(soak) =>
@@ -3522,7 +3939,7 @@ SpecRunner := [].{
 				return 2
 			}
 		}
-		host = { work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes! }
+		host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes! }
 		t0 = (io.now_ns!)()
 		allocations = (host.live_allocations!)()
 		bytes = (host.live_bytes!)()
@@ -3631,8 +4048,8 @@ expect {
 	dom_root = base.root
 	dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, dom_root, a, Err(End)), dom_root, b, Err(End)), 1, a), 2, b)
 	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
-	done = SpecRunner.drain_focus(program, { ..s, dom, draining: Bool.True, focus_commands: [{ mode: 1, node: 1 }] })
-	{ count: done.inst, turns: done.turns, queued: done.focus_commands.len(), focused: done.focused } == { count: 4096, turns: 4096, queued: 0, focused: b + 1 }
+	done = SpecRunner.drain_focus(program, { ..s, dom, draining: Bool.True, after_batch: [Ref({ action: Focus(1), node: 1, target: Dom.lookup(dom, 1) })] })
+	{ count: done.inst, turns: done.turns, queued: done.after_batch.len(), focused: done.focused } == { count: 4096, turns: 4096, queued: 0, focused: b + 1 }
 }
 
 ## Both focus effects in one batch land before either handler runs. A focus
@@ -3654,7 +4071,7 @@ expect {
 		$dom = Dom.bind(Dom.insert(d, d.root, i, Err(End)), id, i)
 	}
 	s = SpecRunner.fresh([], SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
-	done = SpecRunner.drain_focus(program, { ..s, dom: $dom, focus_commands: [{ mode: 1, node: 1 }, { mode: 1, node: 2 }] })
+	done = SpecRunner.drain_focus(program, { ..s, dom: $dom, after_batch: [Ref({ action: Focus(1), node: 1, target: Dom.lookup($dom, 1) }), Ref({ action: Focus(1), node: 2, target: Dom.lookup($dom, 2) })] })
 	{ seen: done.inst, focused: done.focused } == { seen: [1, 2, 3], focused: Dom.lookup(done.dom, 3) + 1 }
 }
 
@@ -3677,7 +4094,7 @@ expect {
 		$dom = Dom.bind(Dom.insert(d, d.root, i, Err(End)), id, i)
 	}
 	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
-	stopped = SpecRunner.drain_focus(program, { ..s, dom: $dom, focus_commands: [{ mode: 1, node: 1 }] })
+	stopped = SpecRunner.drain_focus(program, { ..s, dom: $dom, after_batch: [Ref({ action: Focus(1), node: 1, target: Dom.lookup($dom, 1) })] })
 	refused = SpecRunner.send(program, stopped, 1, 0, [])
 	{ count: refused.inst, turns: refused.turns, check: SpecRunner.check_settled(program, refused) } == { count: 4096, turns: 4096, check: Err("resource_limit: more than 4096 turns delivered without returning to idle (an event feedback loop)") }
 }
@@ -3708,7 +4125,7 @@ expect {
 	dom = Dom.insert(d1, Dom.lookup(d1, 10), child, Err(End))
 	s = SpecRunner.fresh([], SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
 	bubbled = SpecRunner.fire(program, { ..s, dom }, child, "focus", "")?
-	done = SpecRunner.drain_focus(program, { ..s, dom, focus_commands: [{ mode: 1, node: 1 }, { mode: 1, node: 2 }] })
+	done = SpecRunner.drain_focus(program, { ..s, dom, after_batch: [Ref({ action: Focus(1), node: 1, target: Dom.lookup(dom, 1) }), Ref({ action: Focus(1), node: 2, target: Dom.lookup(dom, 2) })] })
 	{ ancestor: bubbled.inst, seen: done.inst, focused: done.focused, turns: done.turns } == { ancestor: [10], seen: [1], focused: 0, turns: 1 }
 }
 
@@ -3733,10 +4150,10 @@ expect {
 		$dom = Dom.bind(Dom.insert(d, parent, i, Err(End)), item.id, i)
 	}
 	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
-	focused = SpecRunner.drain_focus(program, { ..s, dom: $dom, focus_commands: [1.U32, 2, 3, 5].map(|id| { mode: 1, node: id }) })
+	focused = SpecRunner.drain_focus(program, { ..s, dom: $dom, after_batch: [1.U32, 2, 3, 5].map(|id| Ref({ action: Focus(1), node: id, target: Dom.lookup($dom, id) })) })
 	cmds = SpecRunner.put_u32([18, 1], 1).concat(SpecRunner.put_u32([5], 1))
 	removed = SpecRunner.drain_focus(program, SpecRunner.take_batch(focused, 0, cmds))
-	{ kept: focused.focused, removed: removed.focused, calls: removed.inst, waiting: removed.focus_commands.len() } == { kept: Dom.lookup(focused.dom, 1) + 1, removed: 0, calls: 0, waiting: 0 }
+	{ kept: focused.focused, removed: removed.focused, calls: removed.inst, waiting: removed.after_batch.len() } == { kept: Dom.lookup(focused.dom, 1) + 1, removed: 0, calls: 0, waiting: 0 }
 }
 
 ## A declaration's kind and policy bits survive the wire independently of
@@ -4135,7 +4552,7 @@ expect {
 	base = SpecRunner.fresh([], SpecRunner.fresh_browser({}))
 	(d1, input) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "input", rn: 1, attrs: [("value", "rendered")], props: [("value", "draft")] })
 	dom = Dom.bind(Dom.insert(d1, d1.root, input, Err(End)), 1, input)
-	state = { ..base, dom, focused: input + 1, focus_commands: [{ node: 1, mode: 4 }] }
+	state = { ..base, dom, focused: input + 1, after_batch: [Ref({ node: 1, action: Focus(4), target: Dom.lookup(dom, 1) })] }
 	after = SpecRunner.drain_focus(probe, state)
 	{ shown: Dom.live_value(Dom.node(after.dom, input), "value"), focus: after.focused, held: after.deferred } == { shown: "rendered", focus: input + 1, held: NoValue }
 }
@@ -4222,4 +4639,136 @@ expect {
 	(d1, host) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", attrs: [("contenteditable", "true")] })
 	base = { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False }
 	[base, { ..base, key: "j", code: "KeyJ" }, { ..base, key: "F2", code: "F2" }].map(|key| SpecRunner.key_unmodelled(d1, host, key)) == [Bool.True, Bool.True, Bool.False]
+}
+
+## A bounded scroll observer keeps newest ordinals and never aliases a recycled id.
+expect {
+	base = SpecRunner.mount_in(pointer_probe({}), {})
+	(d1, old) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button" })
+	dom = Dom.bind(Dom.insert(d1, d1.root, old, Err(End)), 1, old)
+	var $s = { ..base, dom }
+	for _ in List.repeat({}, 4097) {
+		$s = SpecRunner.record_scroll($s, old, IntoView({ block: 3, inline: 3, behavior: 0 }))
+	}
+	retained = $s
+	removed = Dom.detach(Dom.forget_subtree(retained.dom, old), old)
+	(d2, fresh) = Dom.add_node(removed, { ..Dom.empty_node, tag: "button" })
+	rebound = Dom.bind(Dom.insert(d2, d2.root, fresh, Err(End)), 1, fresh)
+	maxed = { ..retained, dom: rebound, browser: { ..retained.browser, scroll_count: 18446744073709551615 } }
+	exhausted = SpecRunner.record_scroll(maxed, fresh, To({ top: End, left: Keep, behavior: 1 }))
+	{
+		count: retained.browser.scroll_count,
+		length: retained.browser.scrolls.len(),
+		oldest: retained.browser.scrolls.first().map_ok(|r| r.ordinal),
+		identity: retained.browser.scrolls.last().map_ok(|r| r.target != fresh),
+		exhausted: exhausted.browser.scroll_exhausted,
+		wrapped: exhausted.browser.scroll_count,
+		fault: exhausted.fault,
+	} == { count: 4097, length: 4096, oldest: Ok(2), identity: Ok(True), exhausted: True, wrapped: 18446744073709551615, fault: Healthy }
+}
+
+## Every private shown decision supersedes an earlier deferred show in its batch.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, dialog) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "dialog" })
+	dom = Dom.bind(Dom.insert(d1, d1.root, dialog, Err(End)), 1, dialog)
+	prop = |value| SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(6), value)
+	done = SpecRunner.drain_focus(program, SpecRunner.take_batch({ ..base, dom }, base.inst, prop("modal").concat(prop("hidden"))))
+	{ shown: Dom.node(done.dom, dialog).shown, tasks: done.browser.ui_tasks.len(), focus: done.focused } == { shown: Hidden, tasks: 0, focus: 0 }
+}
+
+## Toggle task coalescing preserves a scalar lifetime and reads state on delivery.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, popover) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: [("popover", "manual")], hs: [{ event: "toggle", handler: 5, kind: 5, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, popover, Err(End)), 1, popover)
+	shown = SpecRunner.change_shown({ ..base, dom }, popover, Popover)
+	hidden = SpecRunner.change_shown(shown, popover, Hidden)
+	delivered = SpecRunner.deliver_ui(program, SpecRunner.deliver_ui(program, hidden))
+	{ tasks: hidden.browser.ui_tasks.count_if(|task| task != Cancelled), pending: Dom.node(delivered.dom, popover).pending_toggle, payloads: delivered.inst.map(|event| event.payload) } == { tasks: 1, pending: False, payloads: [[0]] }
+}
+
+## Modal focus, inertness, and non-modal restoration follow native browser defaults.
+expect {
+	base = SpecRunner.mount_in(pointer_probe({}), {})
+	(d1, opener) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button" })
+	(d2, dialog) = Dom.add_node(d1, { ..Dom.empty_node, tag: "dialog" })
+	(d3, input) = Dom.add_node(d2, { ..Dom.empty_node, tag: "input" })
+	dom = Dom.insert(Dom.insert(Dom.insert(d3, d3.root, opener, Err(End)), d3.root, dialog, Err(End)), dialog, input, Err(End))
+	shown = SpecRunner.change_shown({ ..base, dom, focused: opener + 1 }, dialog, Modal)
+	hidden = SpecRunner.change_shown(shown, dialog, Hidden)
+	inline = SpecRunner.change_shown({ ..base, dom, focused: opener + 1 }, dialog, Open)
+	removed = { ..inline, dom: Dom.detach(inline.dom, input), focused: 0 }
+	closed_inline = SpecRunner.change_shown(removed, dialog, Hidden)
+	{ focused: shown.focused, inert: SpecRunner.reachable(shown, opener), inside: SpecRunner.reachable(shown, input), restored: hidden.focused, removed: closed_inline.focused } == { focused: input + 1, inert: False, inside: True, restored: opener + 1, removed: 0 }
+}
+
+## A queued close samples the live reopened dialog in either legal task-source order.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, dialog) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "dialog", rn: 1, shown: Modal, hs: [{ event: "close", handler: 6, kind: 5, policies: 0 }, { event: "toggle", handler: 7, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, dialog, Err(End)), 1, dialog)
+	[[Close(dialog), Toggle(dialog)], [Toggle(dialog), Close(dialog)]].map(
+		|tasks| {
+			queued = { ..base, dom, browser: { ..base.browser, ui_tasks: tasks } }
+			done = SpecRunner.deliver_ui(program, SpecRunner.deliver_ui(program, queued))
+			{
+				shown: Dom.node(done.dom, dialog).shown,
+				close: done.inst.find_first(|event| event.handler == 6).map_ok(|event| event.payload),
+				toggles: done.inst.count_if(|event| event.handler == 7),
+			}
+		},
+	) == List.repeat({ shown: Modal, close: Ok([1.U8]), toggles: 1 }, 2)
+}
+
+## Observer diagnostics distinguish retained history and exhaustion from app faults.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	old = { ..base, browser: { ..base.browser, scroll_count: 4097 } }
+	maxed = { ..base, browser: { ..base.browser, scroll_exhausted: True } }
+	{
+		old: SpecRunner.one(program, old, ExpectScroll({ ordinal: 1, target: TestId("unused"), kind: IntoView })).map_ok(|_| {}),
+		max: SpecRunner.one(program, maxed, ExpectScrolls(0)).map_ok(|_| {}),
+		fault: maxed.fault,
+	} == { old: Err("scroll ordinal 1 is older than retained history (newest 4096)"), max: Err("scroll observation ordinal exhausted"), fault: Healthy }
+}
+
+## An ordinary open attribute keeps raw dialogs non-modal and their controls reachable.
+expect {
+	base = SpecRunner.mount_in(pointer_probe({}), {})
+	(d1, dialog) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "dialog" })
+	(d2, input) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input" })
+	dom = Dom.insert(Dom.insert(d2, d2.root, dialog, Err(End)), dialog, input, Err(End))
+	opened = Dom.set_attr_on(dom, dialog, "open", "true")
+	hidden = Dom.remove_attr_on(opened, dialog, "open")
+	{ shown: Dom.node(opened, dialog).shown, reached: SpecRunner.reachable({ ..base, dom: opened }, input), focus: SpecRunner.focusable_in(opened, input), hidden: SpecRunner.reachable({ ..base, dom: hidden }, input) } == { shown: Open, reached: True, focus: True, hidden: False }
+}
+
+## Intent supersession belongs to one property; an unrelated private row cannot cancel it.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, dialog) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "dialog", attrs: [("popover", "manual")] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, dialog, Err(End)), 1, dialog)
+	prop = |property, value| SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(property), value)
+	done = SpecRunner.drain_focus(program, SpecRunner.take_batch({ ..base, dom }, base.inst, prop(6, "modal").concat(prop(7, "false"))))
+	Dom.node(done.dom, dialog).shown == Modal
+}
+
+## A new document cannot inherit a Space activation even when model indices coincide.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, button) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, hs: [{ event: "click", handler: 7, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, button, Err(End)), 1, button)
+	old = { ..base, dom, focused: button + 1 }
+	(_, context) = SpecRunner.press_down(program, old, { target: Focused, key: { key: " ", code: "Space", ctrl: False, alt: False, shift: False, meta: False } })?
+	# Fresh documents may allocate exactly the same model indices and detach counts.
+	fresh = { ..base, dom, focused: button + 1, browser: { ..base.browser, doc: 1 } }
+	done = SpecRunner.press_up(program, fresh, context)?
+	Ok(done.inst.is_empty()) == Ok(True)
 }
