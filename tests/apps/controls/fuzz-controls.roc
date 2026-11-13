@@ -385,65 +385,295 @@ pointer_history! = |events| {
 	Fuzz.keep
 }
 
-## Generated histories check controlled shown state, keyed disposal and reference work.
-## This program has at most two row dialogs plus one modal, so sixteen UI tasks
-## per generated input is an explicit test-program bound rather than app policy.
-top_layer_history! : List(U8) => Fuzz.Outcome
-top_layer_history! = |events| {
-	program = Core.driver(Engine.program(|| TopLayerApp.view({})))
-	var $state = SpecRunner.mount_in(program, {})
-	var $modal = False
+## A reorder may re-show only the live shown controls below the rows it moved.
+## The input-side model supplies those controls; the independent decoder supplies
+## actual command targets. Hidden controls and retired/reused ids are never eligible.
+check_moved_shown : Dom.Model, { commands : List(U8), live : List(U64) } -> {}
+check_moved_shown = |before, { commands, live }| {
+	var $dom = before
+	var $at = 0.U64
+	var $moved = []
+	var $shown = []
+	while $at < commands.len() {
+		offset = $at
+		decoded = Dom.apply_next($dom, commands, offset)
+		if decoded.ops == [4] {
+			$moved = $moved.append(
+				Dom.lookup(
+					$dom,
+					Dom.u32(
+						commands,
+						offset + if offset == 0 {
+							2
+						} else {
+							1
+						},
+					),
+				),
+			)
+		}
+		for effect in decoded.fx {
+			match effect {
+				Shown(show) => {
+					if !live.contains(show.target) or $shown.contains(show.target) {
+						crash "top layer: MOVE re-show names a hidden, retired or repeated control"
+					}
+					$shown = $shown.append(show.target)
+				}
+				_ => {}
+			}
+		}
+		$dom = decoded.dom
+		$at = decoded.next
+	}
+	wanted = live.keep_if(|target| $moved.any(|root| has_ancestor(before, { target, root })))
+	if $shown.len() != wanted.len() or !$shown.all(|target| wanted.contains(target)) {
+		crash "top layer: MOVE did not re-show exactly its live shown descendants"
+	}
+	{}
+}
+
+## Command addresses are resolved once; ancestry here is only the test oracle's tree.
+has_ancestor : Dom.Model, { target : U64, root : U64 } -> Bool
+has_ancestor = |dom, { target, root }| {
+	var $at = target
+	while $at != root {
+		parent = Dom.node(dom, $at).parent
+		if parent == 0 {
+			return False
+		}
+		$at = parent - 1
+	}
+	True
+}
+
+## Generated top-layer sessions use only actionable fixture controls. Expected
+## focus comes from browser contracts: showing a dialog focuses its first control
+## (or the dialog); closing restores a surviving visible opener, disposal does not.
+## Sibling/modal showing hides an auto popover without restoring its opener;
+## focus in that hidden content falls back to body (real Chrome contract). Clicking an already
+## open popover's outside opener light-dismisses it before its queued echo.
+## Non-modal row dialogs
+## stay open through insertion; moved modals are re-shown and refocus their first
+## control. A moved modal loses its old opener; close and dismissal then leave
+## focus on body. Unmoved closes restore the still-visible opener.
+## The finite fixture has fewer than sixteen native callbacks per generated action.
+top_layer_history : List(U8) -> {}
+top_layer_history = |events| {
+	base = Core.driver(Engine.program(|| TopLayerApp.view({})))
+	button = |name| Role({ role: "button", name })
+	var $state = SpecRunner.mount_in(base, {})
+	var $modal = NoModal
+	var $opener = button("Open modal")
+	var $page_has_opener = True
 	var $rows = ["a", "b"]
 	var $row_open = False
+	var $row_opener_lost = False
+	var $popover = NoPopover
+	var $popover_opener = button("Open auto A")
+	var $popover_has_opener = True
 	var $scrolls = 0.U64
+	var $stale = 0.U64
 	for event in events {
 		var $name = ""
 		var $dismiss = False
-		if $modal {
-			if event % 2 == 0 {
+		var $focus = []
+		var $no_focus = False
+		var $reorder = False
+		match $modal {
+			PageModal => {
+				$dismiss = event % 2 == 1
 				$name = "Close modal"
-			} else {
-				$dismiss = True
+				$focus = if $page_has_opener {
+					[$opener]
+				} else {
+					[]
+				}
+				$no_focus = !$page_has_opener
+				$modal = NoModal
 			}
-			$modal = False
-		} else {
-			match event % 8 {
+			RowModal => match event % 4 {
 				0 => {
-					$name = "Open modal"
-					$modal = True
+					$name = "Reverse modal rows"
+					$rows = $rows.fold([], |out, key| [key].concat(out))
+					$focus = [button($name)]
+					$reorder = True
 				}
 				1 => {
-					$dismiss = True
-				}
-				2 => {
-					$name = "Open row dialogs"
-					$row_open = True
-				}
-				3 => {
-					$name = "Reverse shown rows"
-					$rows = $rows.fold([], |out, key| [key].concat(out))
-				}
-				4 => {
-					$name = "Remove shown rows"
+					$name = "Dispose modal rows"
 					$rows = []
-					$row_open = False
-				}
-				5 => {
-					$name = "Restore shown rows"
-					$rows = ["a", "b"]
-				}
-				6 => {
-					$name = "Scroll into target"
-					$scrolls = $scrolls + 1
+					$modal = NoModal
+					$no_focus = True
 				}
 				_ => {
-					$name = "Scroll to target"
-					$scrolls = $scrolls + 1
+					$name = "Close row modal"
+					$dismiss = event % 4 == 3
+					$modal = NoModal
+					$focus = if $row_opener_lost {
+						[]
+					} else {
+						[button("Open row modal")]
+					}
+					$no_focus = $row_opener_lost
+				}
+			}
+			NoModal => {
+				# Every outside click light-dismisses an auto popover; the two
+				# inside buttons instead exercise native sibling/modal hiding.
+				operation = event % 16
+				previous_popover = $popover
+				$popover = NoPopover
+				match operation {
+					0 => {
+						$name = "Open modal"
+						$opener = button($name)
+						$page_has_opener = True
+						$modal = PageModal
+						$focus = [Label("Modal first")]
+					}
+					1 => {
+						$dismiss = True
+						$focus = if previous_popover == NoPopover {
+							[]
+						} else {
+							if $popover_has_opener {
+								[$popover_opener]
+							} else {
+								[]
+							}
+						}
+						$no_focus = previous_popover != NoPopover and !$popover_has_opener
+					}
+					2 => {
+						$name = "Open row dialogs"
+						$focus = if !$row_open and !$rows.is_empty() {
+							[TestId("dialog-${$rows.last() ?? crash "top layer: row order"}")]
+						} else [button($name)]
+						$row_open = True
+					}
+					3 => {
+						$name = "Reverse shown rows"
+						$rows = $rows.fold([], |out, key| [key].concat(out))
+						$focus = [button($name)]
+						$reorder = True
+					}
+					4 => {
+						$name = "Remove shown rows"
+						$rows = []
+						$row_open = False
+					}
+					5 => {
+						$name = "Restore shown rows"
+						$focus = if $rows.is_empty() and $row_open {
+							[TestId("dialog-b")]
+						} else [button($name)]
+						$rows = ["a", "b"]
+					}
+					6 => {
+						$name = "Scroll into target"
+						$scrolls = $scrolls + 1
+						$focus = [button("Target")]
+					}
+					7 => {
+						$name = "Scroll to target"
+						$scrolls = $scrolls + 1
+					}
+					8 => {
+						$name = "Open auto A"
+						$popover_opener = button($name)
+						$popover_has_opener = True
+						$popover = if previous_popover == AutoA {
+							NoPopover
+						} else {
+							AutoA
+						}
+					}
+					9 => {
+						$name = if previous_popover == AutoA {
+							"Open B from A"
+						} else "Open auto B"
+						$popover_opener = button($name)
+						$popover_has_opener = previous_popover != AutoA
+						$focus = if $popover_has_opener {
+							[$popover_opener]
+						} else {
+							[]
+						}
+						$no_focus = !$popover_has_opener
+						$popover = if previous_popover == AutoB {
+							NoPopover
+						} else {
+							AutoB
+						}
+					}
+					10 => {
+						$name = if previous_popover == AutoB {
+							"Open modal from B"
+						} else "Open modal"
+						$opener = button($name)
+						$page_has_opener = previous_popover != AutoB
+						$modal = PageModal
+						$focus = [Label("Modal first")]
+					}
+					11 => {
+						$name = "Scroll missing"
+						$stale = $stale + 1
+					}
+					12 => {
+						$name = "Focus target in place"
+						$focus = [button("Target")]
+					}
+					13 if !$rows.is_empty() => {
+						$name = "Open row modal"
+						$row_opener_lost = False
+						$modal = RowModal
+						$focus = [button("Reverse modal rows")]
+					}
+					_ => {
+						$name = "Outside"
+					}
+				}
+				if !$dismiss and !$no_focus and $focus.is_empty() {
+					$focus = [button($name)]
 				}
 			}
 		}
-		op = if ($dismiss) Dismiss else Click(Role({ role: "button", name: $name }))
-		$state = SpecRunner.one(program, $state, op) ?? crash "top layer: step failed"
+		before = $state.dom
+		live = if $reorder {
+			rows_live = if $row_open {
+				$rows.map(|key| SpecRunner.find(before, TestId("dialog-${key}")) ?? crash "top layer: missing live row")
+			} else []
+			if $modal == RowModal {
+				rows_live.append(SpecRunner.find(before, TestId("modal-row-a")) ?? crash "top layer: missing row modal")
+			} else rows_live
+		} else []
+		program = {
+			..base,
+			event: |inst, buf, wbuf, node, handler, payload| {
+				(next, commands, work) = (base.event)(inst, buf, wbuf, node, handler, payload)
+				if $reorder {
+					check_moved_shown(before, { commands, live })
+				}
+				(next, commands, work)
+			},
+		}
+		op = if ($dismiss) Dismiss else Click(button($name))
+		$state = SpecRunner.one(program, $state, op) ?? crash "top layer: action ${Str.inspect(op)} failed"
+		if $modal == RowModal and $reorder {
+			# MOVE is an observable browser detach. Follow only the modal's
+			# ancestor path, never the runner's opener or focus bookkeeping.
+			var $ancestor = SpecRunner.find(before, TestId("modal-row-a")) ?? crash "top layer: row modal missing before move"
+			while True {
+				if Dom.node(before, $ancestor).detach_count != Dom.node($state.dom, $ancestor).detach_count {
+					$row_opener_lost = True
+				}
+				parent = Dom.node(before, $ancestor).parent
+				if parent == 0 {
+					break
+				}
+				$ancestor = parent - 1
+			}
+		}
 		var $tasks = 0.U64
 		while !$state.browser.ui_tasks.is_empty() {
 			if $tasks >= 16 {
@@ -451,23 +681,66 @@ top_layer_history! = |events| {
 			}
 			$state = SpecRunner.drain_focus(program, SpecRunner.deliver_ui(program, { ..$state, draining: False, turns: 0 }))
 			$tasks = $tasks + 1
-			match SpecRunner.check_settled(program, $state) {
-				Ok(_) => {}
-				Err(message) => crash "top layer: ${message}"
+		}
+		if $no_focus {
+			if $state.focused != 0 {
+				crash "top layer: ${Str.inspect(op)} retained focus ${$state.focused.to_str()} instead of body"
+			}
+		} else if !$focus.is_empty() {
+			if !$focus.any(|loc| (SpecRunner.find($state.dom, loc) ?? crash "top layer: expected focus target missing") + 1 == $state.focused) {
+				crash "top layer: action ${Str.inspect(op)} focused ${$state.focused.to_str()}, expected ${Str.inspect($focus)}"
 			}
 		}
-		$state = SpecRunner.one(program, $state, ExpectShown(Label("Modal"), if ($modal) Modal else Hidden)) ?? crash "top layer: modal differs from model"
-		$state = SpecRunner.one(program, $state, ExpectScrolls($scrolls)) ?? crash "top layer: scroll count differs from model"
+		$state = SpecRunner.one(base, $state, ExpectShown(Label("Modal"), if ($modal == PageModal) Modal else Hidden)) ?? crash "top layer: modal differs from model"
+		$state = SpecRunner.one(base, $state, ExpectShown(Label("Auto A"), if ($popover == AutoA) Popover else Hidden)) ?? crash "top layer: auto A differs from model"
+		$state = SpecRunner.one(base, $state, ExpectShown(Label("Auto B"), if ($popover == AutoB) Popover else Hidden)) ?? crash "top layer: auto B differs after ${Str.inspect(op)} from ${Str.inspect(events)}"
+		$state = SpecRunner.one(base, $state, ExpectScrolls($scrolls)) ?? crash "top layer: scroll count differs from model"
+		if Core.fx_stats($state.inst).stale != $stale {
+			crash "top layer: stale-reference count differs from model"
+		}
 		for key in ["a", "b"] {
 			loc = TestId("dialog-${key}")
-			$state = SpecRunner.one(program, $state, if ($rows.contains(key)) ExpectShown(loc, if ($row_open) Open else Hidden) else ExpectAbsent(loc)) ?? crash "top layer: keyed dialog differs from model"
+			$state = SpecRunner.one(base, $state, if ($rows.contains(key)) ExpectShown(loc, if ($row_open) Open else Hidden) else ExpectAbsent(loc)) ?? crash "top layer: keyed dialog differs from model"
+			modal_loc = TestId("modal-row-${key}")
+			$state = SpecRunner.one(base, $state, if ($rows.contains(key)) ExpectShown(modal_loc, if ($modal == RowModal and key == "a") Modal else Hidden) else ExpectAbsent(modal_loc)) ?? crash "top layer: keyed modal differs from model"
+		}
+		match SpecRunner.check_settled(base, $state) {
+			Ok(_) => {}
+			Err(message) => crash "top layer: ${message}"
 		}
 		match SpecRunner.check_counters($state) {
 			Ok(_) => {}
 			Err(message) => crash "top layer: ${message}"
 		}
 	}
-	Fuzz.keep
+	{}
+}
+
+## Popover sibling/modal hiding, focus restoration and missing references share a session.
+expect top_layer_history([8, 9, 10, 1, 11, 12, 0, 0, 8, 1, 9, 1]) == {}
+
+## Shown and hidden rows move, dispose, reuse their ids, reopen, and move a modal.
+expect top_layer_history([2, 3, 4, 5, 2, 3, 13, 0, 2, 13, 1, 5, 2, 3, 6, 7, 11]) == {}
+
+## Every byte drives a valid action from the state left by its predecessors.
+expect {
+	var $bytes = []
+	for byte in 0.U16..<256 {
+		$bytes = $bytes.append(byte.to_u8_wrap())
+	}
+	top_layer_history($bytes) == {}
+}
+
+## Mixed byte histories exercise every action after varied live and retired scopes.
+expect {
+	for seed in 0.U16..<32 {
+		var $bytes = []
+		for index in 0.U16..<64 {
+			$bytes = $bytes.append((seed * 73 + index * 31 + index * index).to_u8_wrap())
+		}
+		top_layer_history($bytes)
+	}
+	True
 }
 
 Input : { mode : U8, pad : U8, events : List(U8) }
@@ -479,7 +752,9 @@ target = Fuzz.target_with!({
 		Fuzz.example({ name: "many-sites", revision: "2", make: || { mode: 1, pad: 0, events: [] } }),
 		Fuzz.example({ name: "attribute-history", revision: "1", make: || { mode: 3, pad: 0, events: [0, 0, 1, 3, 4, 2, 5, 0, 4, 1, 5, 2] } }),
 		Fuzz.example({ name: "reference-history", revision: "1", make: || { mode: 2, pad: 0, events: [0, 2, 0, 3, 0, 4, 0, 5, 8, 6, 8, 2, 8, 7, 8, 9, 10] } }),
-		Fuzz.example({ name: "top-layer-history", revision: "1", make: || { mode: 5, pad: 0, events: [0, 1, 2, 3, 6, 4, 5, 2, 3, 7, 0, 0, 4, 5] } }),
+		Fuzz.example({ name: "top-layer-history", revision: "2", make: || { mode: 5, pad: 0, events: [8, 9, 10, 1, 11, 2, 3, 4, 5, 2, 3, 13, 0, 2, 13, 1, 5, 2, 3, 6, 7, 12, 11, 0, 0] } }),
+		Fuzz.example({ name: "top-layer-openers", revision: "1", make: || { mode: 5, pad: 0, events: [8, 9, 10, 1, 11, 0, 0, 9, 1, 8, 1] } }),
+		Fuzz.example({ name: "top-layer-row-lifetimes", revision: "1", make: || { mode: 5, pad: 0, events: [13, 2, 13, 3, 2, 3, 4, 5, 2, 3, 13, 0, 1, 5, 2, 3, 11, 12] } }),
 		Fuzz.example({ name: "pointer-reports", revision: "1", make: || { mode: 4, pad: 0, events: [0, 2, 1, 4, 1, 3, 2, 0, 1, 3, 4] } }),
 	],
 	generator: {
@@ -496,7 +771,10 @@ target = Fuzz.target_with!({
 		2 => reference_focus!(events)
 		3 => attribute_presence!(events)
 		4 => pointer_history!(events)
-		_ => top_layer_history!(events)
+		_ => {
+			top_layer_history(events)
+			Fuzz.keep
+		}
 	},
 	show: Str.inspect,
 })
