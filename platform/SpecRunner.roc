@@ -2041,8 +2041,17 @@ SpecRunner := [].{
 	## do not flush a held frame, and an unchanged fact raises no report.
 	is_occurrence : S(state), Scm.Op -> Bool
 	is_occurrence = |s, op| match op {
-		RunEffect(_) => match s.browser.stub {
-			Staged(Reject({ kind: Timeout, .. })) => False
+		RunEffect(n) => match s.browser.stub {
+			Staged(Reject({ kind: Timeout, .. })) if n > 0 => match s.browser.issued.get(n - 1) {
+				Ok(id) => match s.browser.pending.find_first(|request| request.id == id) {
+					Ok(request) => match request.kind {
+						HttpRequest | UploadRequest(_) | FetchRequest => False
+						_ => True
+					}
+					Err(_) => True
+				}
+				Err(_) => True
+			}
 			_ => True
 		}
 		Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | LeavePage(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
@@ -5681,4 +5690,13 @@ expect {
 		scheduled: False,
 		active: False,
 	}
+}
+
+## A timeout stub changes only a network result’s ordering; running an unrelated
+## timer remains an occurrence that delivers earlier held reports first.
+expect {
+	browser = SpecRunner.fresh_browser({})
+	timer = SpecRunner.fresh({}, { ..browser, stub: Staged(Reject({ kind: Timeout, detail: "" })), issued: [1], pending: [{ id: 1, url: "timer", body: "", kind: TimerRequest }] })
+	network = { ..timer, browser: { ..timer.browser, pending: [{ id: 1, url: "/request", body: "", kind: HttpRequest }] } }
+	{ timer: SpecRunner.is_occurrence(timer, RunEffect(1)), network: SpecRunner.is_occurrence(network, RunEffect(1)), unissued: SpecRunner.is_occurrence(network, RunEffect(2)) } == { timer: True, network: False, unissued: True }
 }
