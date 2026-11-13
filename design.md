@@ -1668,8 +1668,10 @@ does not by itself prove independence from its enclosing element.
 representation: ordinary DOM children and an HTML template's `content` are
 distinct targets. Roc chooses the container before encoding; the runtime
 applies that choice. `Engine.element` keeps its ordinary DOM-child behavior,
-while a parsed markup literal places template contents in the explicit
-content target. Row templates and hole paths preserve that distinction too.
+while HTML-parsed markup places template contents in the explicit content
+target. An XML-parsed XHTML template retains its ordinary DOM children;
+namespace and local name alone do not choose the container. Row templates
+and hole paths preserve that distinction too.
 Template content remains owned by the engine's ordinary scopes and is
 disposed with them, but does not contribute to the template element's
 `textContent` or ordinary descendant locators. The independent oracle models
