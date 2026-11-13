@@ -56,6 +56,18 @@ try {
   const plain = await validateReport(fixture().options), covered = await validateReport(fixture({ profile: "default" }).options);
   assert.equal(compareProfiles(covered, plain).fixed_examples, 2); checks++;
   const empty = await validateReport(fixture({ empty: true }).options); assert.equal(empty.fixed_examples, 0); checks++;
+  const siblings = fixture();
+  for (const [index, example] of siblings.report.examples.entries()) {
+    const outer = example.observations[0];
+    const extra = [[2, 1, "same", 1], [3, 2, "same", 1], [4, 1, "other", 1], [5, 1, "same", 2], [6, 4, "same", 1]];
+    example.observations.push(...extra.map(([id, parent_id, name, occurrence]) => ({ ...structuredClone(outer), id, parent_id, name, occurrence })));
+    write(path.join(siblings.reportDir, `example-${index}.json`), { format: "roc-fuzz-worker/1", metric_version: "roc-fuzz-allocations/1", accepted: true, metric_valid: true, trace_rules_passed: true, capture_complete: true, observations: example.observations, diagnostics: example.diagnostics });
+  }
+  write(path.join(siblings.reportDir, "report.json"), siblings.report);
+  await validateReport(siblings.options); checks++;
+  siblings.report.examples[0].observations[5].occurrence = 2;
+  write(path.join(siblings.reportDir, "report.json"), siblings.report);
+  await assert.rejects(() => validateReport(siblings.options), /region occurrence mismatch/); checks++;
   const large = await validateReport(fixture({ large: true }).options);
   assert.equal(large.semantics[0].observations[0].stats.allocs, 9007199254740993n);
   assert.equal(large.semantics[0].observations[0].stats.requested_bytes, 18446744073709551615n); checks++;

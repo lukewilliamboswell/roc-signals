@@ -113,8 +113,9 @@ Targets := [].{
 	smoke_build_job = |o, t| { program: o.compiler, args: ["build", "--opt=speed", "--timings", t.main, "--output=${Targets.smoke_exe_of(o, t)}"], cwd: o.root }
 
 	## Check every declared example of each selected target. A failed build
-	## blocks only its own replay and remains a failure; every independent
-	## successfully built target is checked. Durable reports, saved input
+	## result blocks only its own replay; other built targets are checked.
+	## Process spawn/poll and filesystem errors remain fatal batch errors,
+	## as in Proc.parallel!. Durable reports, saved input
 	## hashes, traces and outer allocation balance are judged by one helper.
 	## Compiler and replay batch wall times are reported separately; neither
 	## is a per-target timing when the scheduler admits several processes.

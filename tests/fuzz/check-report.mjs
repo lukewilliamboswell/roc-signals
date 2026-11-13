@@ -51,11 +51,15 @@ function cleanTermination(value) {
 }
 function checkRegions(regions) {
   need(Array.isArray(regions) && regions.length > 0, "missing observation regions");
+  const occurrences = new Map();
   for (const [index, region] of regions.entries()) {
     const id = integer(region.id, "region id"), parent = integer(region.parent_id, "region parent");
     need(id === BigInt(index + 1) && parent < id && region.complete === true, "invalid/incomplete region topology");
     need(typeof region.name === "string" && region.name.length > 0, "missing region name");
-    const occurrence = 1 + regions.slice(0, index).filter(previous => previous.name === region.name && integer(previous.parent_id, "region parent") === parent).length;
+    let siblings = occurrences.get(parent);
+    if (siblings === undefined) { siblings = new Map(); occurrences.set(parent, siblings); }
+    const occurrence = (siblings.get(region.name) ?? 0) + 1;
+    siblings.set(region.name, occurrence);
     need(integer(region.occurrence, "region occurrence") === BigInt(occurrence), "region occurrence mismatch");
     need(region.stats && isDeepStrictEqual(Object.keys(region.stats).sort(), [...STATS].sort()), "invalid allocation stats schema");
     const stats = Object.fromEntries(STATS.map(key => [key, integer(region.stats[key], key)]));
