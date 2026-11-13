@@ -8,9 +8,12 @@ import Proc
 ## a CSS selector reader decodes their names without treating declarations,
 ## comments, quoted values or at-rule preludes as selectors.
 ClassCheck := [].{
+
+	## A complete static class token and the original source line that wrote it.
 	Use : { name : Str, line : U64 }
-	# Decoding can change byte lengths; retain the original offset so a
-	# missing class still reports the source line that wrote it.
+
+	## One decoded byte with its original source offset. Escape decoding must
+	## not move diagnostics onto a different source line.
 	Point : { byte : U8, at : U64 }
 
 	## Check only examples, after Tailwind, without adding a stylesheet input
@@ -89,13 +92,13 @@ ClassCheck := [].{
 					$at_rule = True
 					$first = False
 					$at = end
-				} else if b == '.' and !$at_rule and ClassCheck.name_start(bytes, $at + 1) {
+				} else if b == '.' and !$at_rule and ClassCheck.is_name_start(bytes, $at + 1) {
 					(name, end) = ClassCheck.identifier(bytes, $at + 1)
 					$names = $names.insert(name, {})
 					$first = False
 					$at = end
 				} else {
-					if !ClassCheck.space(b) {
+					if !ClassCheck.is_space(b) {
 						$first = False
 					}
 					$at = $at + 1
@@ -107,6 +110,8 @@ ClassCheck := [].{
 		$names
 	}
 
+	## Skip a CSS comment through its closing delimiter. Tailwind supplies the
+	## stylesheet; an unterminated trailing comment contributes no selectors.
 	comment_end : List(U8), U64 -> U64
 	comment_end = |bytes, start| {
 		var $at = start
@@ -119,6 +124,8 @@ ClassCheck := [].{
 		$at
 	}
 
+	## Skip a CSS quoted value, honoring escaped delimiters so periods inside
+	## attribute values and declaration strings cannot invent class names.
 	quoted_end : List(U8), U64, U8 -> U64
 	quoted_end = |bytes, start, quote| {
 		var $at = start
@@ -134,21 +141,30 @@ ClassCheck := [].{
 		$at
 	}
 
-	space : U8 -> Bool
-	space = |b| [9, 10, 12, 13, 32].contains(b)
+	## HTML class-token whitespace is ASCII TAB, LF, FF, CR or space. Other
+	## Unicode spaces remain part of a class name.
+	is_space : U8 -> Bool
+	is_space = |b| [9, 10, 12, 13, 32].contains(b)
 
-	name_byte : U8 -> Bool
-	name_byte = |b| b >= 128 or b == '_' or b == '-' or (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z') or (b >= '0' and b <= '9')
+	## The unescaped continuation bytes admitted by a CSS identifier. UTF-8
+	## bytes pass through together; backslash escapes are handled by identifier.
+	is_name_byte : U8 -> Bool
+	is_name_byte = |b| b >= 128 or b == '_' or b == '-' or (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z') or (b >= '0' and b <= '9')
 
-	name_start : List(U8), U64 -> Bool
-	name_start = |bytes, at| {
+	## Recognize a CSS identifier after a selector dot, including escaped
+	## digits and a valid leading hyphen. Numeric declaration values are excluded.
+	is_name_start : List(U8), U64 -> Bool
+	is_name_start = |bytes, at| {
 		b = bytes.get(at) ?? 0
-		b == '\\' or b >= 128 or b == '_' or (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z') or (b == '-' and (bytes.get(at + 1) == Ok('-') or bytes.get(at + 1) == Ok('\\') or ClassCheck.initial_name_byte(bytes.get(at + 1) ?? 0)))
+		b == '\\' or b >= 128 or b == '_' or (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z') or (b == '-' and (bytes.get(at + 1) == Ok('-') or bytes.get(at + 1) == Ok('\\') or ClassCheck.is_initial_name_byte(bytes.get(at + 1) ?? 0)))
 	}
 
-	initial_name_byte : U8 -> Bool
-	initial_name_byte = |b| b >= 128 or b == '_' or (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z')
+	## The unescaped first byte after a leading hyphen. A digit requires
+	## a CSS escape rather than starting an ordinary class identifier.
+	is_initial_name_byte : U8 -> Bool
+	is_initial_name_byte = |b| b >= 128 or b == '_' or (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z')
 
+	## Decode one CSS or Roc escape digit; absence terminates the CSS hex run.
 	hex : U8 -> Try(U32, [NotHex])
 	hex = |b| if (b >= '0' and b <= '9') Ok((b - '0').to_u32()) else if (b >= 'a' and b <= 'f') Ok((b - 'a' + 10).to_u32()) else if (b >= 'A' and b <= 'F') Ok((b - 'A' + 10).to_u32()) else Err(NotHex)
 
@@ -179,7 +195,7 @@ ClassCheck := [].{
 						0xFFFD
 					} else $value
 					$name = $name.concat(ClassCheck.utf8(scalar))
-					if ClassCheck.space(bytes.get($at) ?? 0) {
+					if ClassCheck.is_space(bytes.get($at) ?? 0) {
 						cr = bytes.get($at) == Ok(13)
 						$at = $at + 1
 						if cr and bytes.get($at) == Ok(10) {
@@ -192,7 +208,7 @@ ClassCheck := [].{
 				} else {
 					break
 				}
-			} else if ClassCheck.name_byte(b) {
+			} else if ClassCheck.is_name_byte(b) {
 				$name = $name.append(b)
 				$at = $at + 1
 			} else {
@@ -202,6 +218,8 @@ ClassCheck := [].{
 		(Str.from_utf8_lossy($name), $at)
 	}
 
+	## Encode an already validated Unicode scalar. CSS escape decoding replaces
+	## invalid scalars before calling this; the Roc parser validates quoted escapes.
 	utf8 : U32 -> List(U8)
 	utf8 = |v| {
 		if v < 128 {
@@ -215,12 +233,18 @@ ClassCheck := [].{
 		}
 	}
 
+	## Resolve the syntax node’s direct children. Only call arguments and
+	## literal segments are walked, never a second source-text grammar.
 	children : RocSyntax.Parsed, RocSyntax.Node -> List(RocSyntax.Node)
 	children = |parsed, node| parsed.children.sublist({ start: node.children_start, len: node.children_len }).keep_oks(|index| parsed.nodes.get(index))
 
+	## Read an exact spelling from a node’s source span, without normalizing
+	## whitespace, quotes or interpolation bytes.
 	text : RocSyntax.Parsed, RocSyntax.Node -> Str
 	text = |parsed, node| Str.from_utf8_lossy(parsed.source.sublist({ start: node.start, len: node.end - node.start }))
 
+	## Read a qualified call target, allowing redundant parentheses. Dynamic
+	## callees return no name and cannot be mistaken for a checked constructor.
 	function_name : RocSyntax.Parsed, RocSyntax.Node -> Str
 	function_name = |parsed, node| match node.kind {
 		Identifier => ClassCheck.text(parsed, node)
@@ -235,6 +259,8 @@ ClassCheck := [].{
 	uses : Str -> Try(List(Use), U64)
 	uses = |source| ClassCheck.analyze(source).map_ok(|scanned| scanned.uses)
 
+	## Parse every example before counting literals, retaining byte-to-line
+	## positions once for diagnostics. A syntax diagnostic fails the check.
 	analyze : Str -> Try({ uses : List(Use), literals : U64 }, U64)
 	analyze = |source| {
 		parsed = RocSyntax.parse_str(source)
@@ -264,6 +290,8 @@ ClassCheck := [].{
 		Ok({ uses: $uses, literals: $literals })
 	}
 
+	## Select the literal at each supported constructor’s class argument.
+	## A dynamic expression remains outside the static class check.
 	class_literal : RocSyntax.Parsed, RocSyntax.Node -> Try(RocSyntax.Node, [NotClassLiteral])
 	class_literal = |parsed, call| {
 		args = ClassCheck.children(parsed, call)
@@ -284,13 +312,20 @@ ClassCheck := [].{
 		Ok($literal)
 	}
 
+	## Extract complete static tokens around interpolation holes. Multiline
+	## segments keep raw backslashes and their implicit line boundary.
 	literal_uses : RocSyntax.Parsed, RocSyntax.Node, List(U64) -> List(Use)
 	literal_uses = |parsed, literal, lines| {
 		parts = ClassCheck.children(parsed, literal)
 		var $uses = []
 		for (index, part) in parts.map_with_index(|part, index| (index, part)) {
 			if part.kind == StringSegment {
-				points = ClassCheck.roc_segment(parsed.source.sublist({ start: part.start, len: part.end - part.start }), part.start)
+				bytes = parsed.source.sublist({ start: part.start, len: part.end - part.start })
+				points = if literal.kind == MultilineStringLiteral {
+					bytes.map_with_index(|byte, offset| { byte, at: part.start + offset })
+				} else {
+					ClassCheck.roc_segment(bytes, part.start)
+				}
 				previous = if (index == 0) part else parts.get(index - 1) ?? part
 				next = parts.get(index + 1) ?? part
 				left = previous.kind != Interpolation or (literal.kind == MultilineStringLiteral and lines.get(part.start) != lines.get(previous.end))
@@ -301,6 +336,8 @@ ClassCheck := [].{
 		$uses
 	}
 
+	## Decode escapes in a validated quoted string, retaining each decoded
+	## byte’s original offset. Raw multiline segments bypass this conversion.
 	roc_segment : List(U8), U64 -> List(Point)
 	roc_segment = |bytes, start| {
 		var $at = 0
@@ -339,16 +376,18 @@ ClassCheck := [].{
 		$out
 	}
 
+	## Split complete class words using HTML whitespace and retain their
+	## source line. A partial word adjacent to a dynamic hole is not static.
 	words : List(Point), { left : Bool, right : Bool }, List(U64) -> List(Use)
 	words = |points, complete, lines| {
 		var $at = 0
 		var $out = []
 		while $at < points.len() {
-			if ClassCheck.space((points.get($at) ?? crash "within points").byte) {
+			if ClassCheck.is_space((points.get($at) ?? crash "within points").byte) {
 				$at = $at + 1
 			} else {
 				start = $at
-				while $at < points.len() and !ClassCheck.space((points.get($at) ?? crash "within points").byte) {
+				while $at < points.len() and !ClassCheck.is_space((points.get($at) ?? crash "within points").byte) {
 					$at = $at + 1
 				}
 				if (start > 0 or complete.left) and ($at < points.len() or complete.right) {
@@ -431,4 +470,11 @@ expect {
 expect {
 	source = "value = Engine.class(\n  \\\\head \${dynamic}\n  \\\\tail\n)\n"
 	ClassCheck.uses(source)?.map(|use| use.name) == ["head", "tail"]
+}
+
+## Multiline strings preserve literal backslashes. A spelling that looks
+## like a quoted-string escape remains one class word, not a newline.
+expect {
+	source = "value = Engine.class(\n  \\\\literal\\nname\n)\n"
+	ClassCheck.uses(source)? == [{ name: "literal\\nname", line: 2 }]
 }

@@ -151,6 +151,11 @@ CI's `blueprint run site` build to GitHub Pages.
 Builds go to `.build/`; set `ROC_SIGNALS_BUILD_DIR` to use another directory,
 for example to run two tasks at once.
 
+After Tailwind writes `www/static/signals.css`, the `site` task checks the
+examples' literal class arguments against that stylesheet. An undefined class
+fails the build with its source file and line. Complete static words around
+an interpolation are checked; dynamically built class names remain the app's.
+
 ## What `check` runs
 
 1. Every script names the `roc-stable` nightly that `Blueprint.roc` pins, and
