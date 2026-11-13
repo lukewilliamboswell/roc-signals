@@ -95,7 +95,7 @@ SpecRunner := [].{
 		live : state -> List(U32),
 	}
 
-	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub, MediaSub(Str), PortSub(Str, Str)]
+	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub, MediaSub(Str), PortSub(Str, Str), StorageSub(Str), StorageFailures]
 
 	## A history entry: its URL and the document it belongs to.
 	Entry : { url : Str, doc : U64 }
@@ -162,7 +162,15 @@ SpecRunner := [].{
 		title : Str,
 		pending : List(Pending),
 		issued : List(U32),
-		gets : List({ id : U32, key : Str }),
+		gets : List([Read({ id : U32, key : Str, session : Bool }), Answer({ id : U32, payload : List(U8), scoped : Bool }), Failures]),
+		failure_queue : List({ id : U32, payload : List(U8), ready : Bool }),
+		failure_scheduled : Bool,
+		failure_active : Bool,
+		settings : { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64 },
+		guard : Bool,
+		sticky_activation : Bool,
+		clipboard : { text : Str, html : Str, writes : U64, exhausted : Bool },
+		deferred_error : Str,
 		subs : List({ id : U32, sub : Sub }),
 		stub : [NoStub, Staged(Scm.Stub)],
 
@@ -319,7 +327,7 @@ SpecRunner := [].{
 
 	## Decode both declaration sections once: only the catalogue decides
 	## whether a subscription's messages are reports.
-	decode_declarations : List(U8) -> { keys : List(Str), latest_ports : List(Str), media : List(Str), zone_days : U16 }
+	decode_declarations : List(U8) -> { keys : List(Str), latest_ports : List(Str), media : List(Str), zone_days : U16, session_keys : List(Str) }
 	decode_declarations = |b| {
 		if b.first() != Ok(2) {
 			crash "contract: declaration section 2 (local-storage) is missing"
@@ -431,14 +439,34 @@ SpecRunner := [].{
 			crash "contract: declaration section 10 (time-zone) is missing or out of order"
 		}
 		zone_len = SpecRunner.get_u32(b, zone_at + 1) ?? crash "contract: declaration section 10 (time-zone) has a short header"
-		if zone_len != 2 or zone_at + 7 != b.len() {
+		if zone_len != 2 {
 			crash "contract: declaration section 10 (time-zone) needs exactly two days bytes"
 		}
 		days = (b.get(zone_at + 5) ?? crash "contract: declaration section 10 truncated days").to_u16() + (b.get(zone_at + 6) ?? crash "contract: declaration section 10 truncated days").to_u16().shl_wrap(8)
 		if days > 7305 {
 			crash "contract: declaration section 10 (time-zone) days exceed 7305"
 		}
-		{ keys: $keys, latest_ports: $latest_ports, media: $queries, zone_days: days }
+		session_at = zone_at + 7
+		if b.get(session_at) != Ok(11) {
+			crash "contract: declaration section11 session-storage missing"
+		}
+		length = (SpecRunner.get_u32(b, session_at + 1) ?? crash "contract: session-storage short length").to_u64()
+		if session_at + 5 + length != b.len() {
+			crash "contract: session-storage length mismatch"
+		}
+		session_body = b.sublist({ start: session_at + 5, len: length })
+		session_count = (SpecRunner.get_u32(session_body, 0) ?? crash "contract: session-storage missing key session_count").to_u64()
+		var $session_cursor = 4.U64
+		var $session = []
+		while $session.len() < session_count {
+			(key, next) = Dom.str(session_body, $session_cursor)
+			$session_cursor = next
+			$session = $session.append(key)
+		}
+		if $session_cursor != session_body.len() {
+			crash "contract: session-storage trailing bytes"
+		}
+		{ keys: $keys, latest_ports: $latest_ports, media: $queries, zone_days: days, session_keys: $session }
 	}
 
 	flag_byte : Bool -> U8
@@ -481,6 +509,7 @@ SpecRunner := [].{
 			{ tag: 8, body: $seed },
 			{ tag: 9, body: languages },
 			{ tag: 10, body: $offsets },
+			{ tag: 11, body: env.session.fold(SpecRunner.put_u32([SpecRunner.flag_byte(env.session_available)], env.session.len().to_u32_wrap()), |bytes, (key, value)| SpecRunner.put_str(SpecRunner.put_str(bytes, key), value)) },
 		].fold([], SpecRunner.put_section)
 	}
 
@@ -703,6 +732,14 @@ SpecRunner := [].{
 		pending: [],
 		issued: [],
 		gets: [],
+		failure_queue: [],
+		failure_scheduled: False,
+		failure_active: False,
+		settings: { local_full: False, session_full: False, clipboard_denied: False, max_paste: 4194304 },
+		guard: False,
+		sticky_activation: False,
+		clipboard: { text: "", html: "", writes: 0, exhausted: False },
+		deferred_error: "",
 		subs: [],
 		stub: NoStub,
 		files: [],
@@ -729,20 +766,49 @@ SpecRunner := [].{
 
 	## A runner state for instance `inst` before its first batch.
 	fresh : state, Browser -> S(state)
-	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 25), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, after_batch: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
+	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 26), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, after_batch: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
 
 	set_store : List((Str, Str)), Str, Str -> List((Str, Str))
 	set_store = |l, key, value| l.keep_if(|(name, _)| name != key).append((key, value))
 
 	## Apply one batch's effect commands to the modelled browser.
 	absorb : Browser, List(Dom.FxCmd) -> Browser
-	absorb = |b0, fx| {
+	absorb = |browser, commands| SpecRunner.absorb_limit(browser, commands, 4096)
+
+	## Failure callbacks share the ingress capacity, including while effects run.
+	absorb_limit : Browser, List(Dom.FxCmd), U64 -> Browser
+	absorb_limit = |b0, fx, capacity| {
 		var $b = b0
 		for c in fx {
+			if !$b.deferred_error.is_empty() {
+				break
+			}
 			b = $b
 			$b = match c {
 				Http(id, _, url, _, body, _) => { ..b, pending: b.pending.append({ id, url, body, kind: HttpRequest }), issued: b.issued.append(id) }
-				Get(id, key) => { ..b, gets: b.gets.append({ id, key }) }
+				Guard(on) => { ..b, guard: on }
+				SessionGet(id, key) => { ..b, gets: b.gets.append(Read({ id, key, session: True })) }
+				StorageSub(id, key) => { ..b, subs: b.subs.append({ id, sub: StorageSub(key) }), report_sources: b.report_sources.insert(id, {}) }
+				StorageFailures(id) => { ..b, subs: b.subs.append({ id, sub: StorageFailures }) }
+				Clipboard(id, value) => {
+					denied = b.settings.clipboard_denied
+					{
+						..b,
+						clipboard: if (denied) b.clipboard else {
+							text: value.text,
+							html: match value.html {
+								Plain => ""
+								Html(markup) => markup
+							},
+							writes: if (b.clipboard.writes == 18446744073709551615) b.clipboard.writes else b.clipboard.writes + 1,
+							exhausted: b.clipboard.exhausted or b.clipboard.writes == 18446744073709551615,
+						},
+						gets: b.gets.append(Answer({ id, payload: if (denied) [24, 1] else [23], scoped: False })),
+					}
+				}
+				SessionSet(key, value) => SpecRunner.storage_write(b, { capacity, session: True, key, value: Present(value) })
+				SessionRemove(key) => SpecRunner.storage_write(b, { capacity, session: True, key, value: Absent })
+				Get(id, key) => { ..b, gets: b.gets.append(Read({ id, key, session: False })) }
 				Timer(id, _) => { ..b, pending: b.pending.append({ id, url: "timer", body: "", kind: TimerRequest }), issued: b.issued.append(id) }
 				Work(id, job) => { ..b, pending: b.pending.append({ id, url: "work", body: "", kind: WorkRequest(job) }), issued: b.issued.append(id) }
 				Interval(id, ms) => { ..b, subs: b.subs.append({ id, sub: Interval(ms) }) }
@@ -750,12 +816,22 @@ SpecRunner := [].{
 				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }), report_sources: b.report_sources.insert(id, {}) }
 				VisibilitySub(id) => { ..b, subs: b.subs.append({ id, sub: VisibilitySub }), report_sources: b.report_sources.insert(id, {}) }
 				MediaSub(id, query) => { ..b, subs: b.subs.append({ id, sub: MediaSub(query) }), report_sources: b.report_sources.insert(id, {}) }
-				Cancel(id) => { ..b, pending: b.pending.keep_if(|p| p.id != id), subs: b.subs.keep_if(|x| x.id != id), reports: { ..b.reports, index: b.reports.index.remove(Request(id)) }, report_sources: b.report_sources.remove(id) }
+				Cancel(id) => {
+					failures = b.failure_queue.keep_if(|entry| entry.id != id)
+					tasks = b.gets.keep_if(
+						|task| match task {
+							Answer(answer) => answer.id != id
+							Read(read) => read.id != id
+							Failures => !failures.is_empty()
+						},
+					)
+					{ ..b, pending: b.pending.keep_if(|request| request.id != id), subs: b.subs.keep_if(|entry| entry.id != id), gets: tasks, failure_queue: failures, failure_scheduled: b.failure_scheduled and !failures.is_empty(), reports: { ..b.reports, index: b.reports.index.remove(Request(id)) }, report_sources: b.report_sources.remove(id) }
+				}
 				Push(url) => { ..b, back: b.back.append({ url: b.env.url, doc: b.doc }), env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) }, fwd: [] }
 				Replace(url) => { ..b, env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) } }
 				# Writes to unavailable storage fail in the browser and persist nothing.
-				Set(k, v) => if (b.env.storage_available) { ..b, env: { ..b.env, storage: SpecRunner.set_store(b.env.storage, k, v) } } else b
-				Remove(k) => if (b.env.storage_available) { ..b, env: { ..b.env, storage: b.env.storage.keep_if(|(key, _)| key != k) } } else b
+				Set(key, value) => SpecRunner.storage_write(b, { capacity, session: False, key, value: Present(value) })
+				Remove(key) => SpecRunner.storage_write(b, { capacity, session: False, key, value: Absent })
 				Title(t) => { ..b, title: t }
 				Ref(_) | Shown(_) => b
 				FileRead(id, mode, file, max_bytes) => { ..b, pending: b.pending.append({ id, url: "read", body: "", kind: ReadRequest({ mode, file, max_bytes }) }), issued: b.issued.append(id) }
@@ -774,6 +850,89 @@ SpecRunner := [].{
 		$b
 	}
 
+	## Count only retained non-lossy storage failures; storage reads and copies
+	## already have the in-flight table's separate bound.
+	failure_tasks : Browser -> U64
+	failure_tasks = |browser| browser.failure_queue.len()
+
+	## The one failure timer is a task source beside individual read and copy
+	## tasks. A callback's current recipients remain separate from its next task.
+	callbacks_waiting : Browser -> Bool
+	callbacks_waiting = |browser| !browser.gets.is_empty() or browser.failure_active
+
+	## Containment forgets every scheduled answer while retaining the last guard.
+	clear_callbacks : Browser -> Browser
+	clear_callbacks = |browser| { ..browser, gets: [], failure_queue: [], failure_scheduled: False, failure_active: False }
+
+	## A write persists atomically or records an occurrence for each subscriber
+	## present at failure. Removal ignores quota, as the browser does.
+	storage_write : Browser, { capacity : U64, session : Bool, key : Str, value : [Absent, Present(Str)] } -> Browser
+	storage_write = |browser, { capacity, session, key, value }| {
+		available = if (session) browser.env.session_available else browser.env.storage_available
+		full = if (session) browser.settings.session_full else browser.settings.local_full
+		fails = !available or (full and value != Absent)
+		if fails {
+			payload = [25, if (session) 2 else 1, if (available) 1 else 2].concat(key.to_utf8())
+			answers = browser.subs.keep_if(|sub| sub.sub == StorageFailures).map(|sub| { id: sub.id, payload, ready: False })
+			if SpecRunner.failure_tasks(browser) + answers.len() > capacity {
+				{ ..browser, deferred_error: "resource_limit: storage failure recipients and ingress exceed 4096" }
+			} else { ..browser, failure_queue: browser.failure_queue.concat(answers), gets: if (browser.failure_scheduled or answers.is_empty()) browser.gets else browser.gets.append(Failures), failure_scheduled: browser.failure_scheduled or !answers.is_empty() }
+		} else {
+			pairs = if (session) browser.env.session else browser.env.storage
+			next = match value {
+				Absent => pairs.keep_if(|(name, _)| name != key)
+				Present(text) => SpecRunner.set_store(pairs, key, text)
+			}
+			{ ..browser, env: if (session) { ..browser.env, session: next } else { ..browser.env, storage: next } }
+		}
+	}
+
+	## Model one genuine other-document write. The event's value is fixed now;
+	## delivery through broadcast uses the ordinary replaceable report source.
+	storage_elsewhere : Program(state), S(state), { key : [Absent, Present(Str)], value : [Absent, Present(Str)] } -> Try(S(state), Str)
+	storage_elsewhere = |program, state, { key, value }| {
+		b = state.browser
+		pairs = b.env.storage
+		changed = match key {
+			Absent => !pairs.is_empty()
+			Present(name) => match value {
+				Absent => pairs.any(|(k, _)| k == name)
+				Present(text) => pairs.find_first(|(k, _)| k == name).map_ok(|(_, prior)| prior != text) ?? True
+			}
+		}
+		if !changed {
+			return Ok(state)
+		}
+		next = match key {
+			Absent => []
+			Present(name) => match value {
+				Absent => pairs.keep_if(|(k, _)| k != name)
+				Present(text) => SpecRunner.set_store(pairs, name, text)
+			}
+		}
+		# The unavailable fixture removes the storage getter itself. A real event
+		# still changes the other document's store, but no local area identity is
+		# available to classify it for this instance.
+		if !b.env.storage_available {
+			return Ok({ ..state, browser: { ..b, env: { ..b.env, storage: next } } })
+		}
+		payload = match value {
+			Absent => [4]
+			Present(text) => [3].concat(text.to_utf8())
+		}
+		Ok(
+			SpecRunner.broadcast(
+				program,
+				{ ..state, browser: { ..b, env: { ..b.env, storage: next } } },
+				|subscription| match subscription.sub {
+					StorageSub(name) => key == Absent or key == Present(name)
+					_ => False
+				},
+				payload,
+			),
+		)
+	}
+
 	## Mount the app with the spec's setup.
 	start : Program(state), Scm.Spec -> Try(S(state), Str)
 	start = |program, spec| {
@@ -782,6 +941,7 @@ SpecRunner := [].{
 		}
 		var $files = []
 		var $max_output = SpecRunner.max_output_bytes
+		var $settings = (SpecRunner.fresh_browser({})).settings
 		for entry in spec.setup {
 			match entry.item {
 				File({ name, mime, text, repeat }) => {
@@ -793,7 +953,19 @@ SpecRunner := [].{
 				MaxOutputBytes(n) => {
 					$max_output = n
 				}
-				InitialLocation(_) | LocalStorage(_) | InitialOnline(_) | InitialVisibility(_) | InitialMedia(_) | InitialTime(_) | Seed(_) | Languages(_) | TimeZone(_) | LocalStorageUnavailable => {}
+				LocalStorageFull => {
+					$settings = { ..$settings, local_full: True }
+				}
+				SessionStorageFull => {
+					$settings = { ..$settings, session_full: True }
+				}
+				ClipboardDenied => {
+					$settings = { ..$settings, clipboard_denied: True }
+				}
+				MaxPasteBytes(max_paste) => {
+					$settings = { ..$settings, max_paste }
+				}
+				SessionStorage(_) | SessionStorageUnavailable | InitialLocation(_) | LocalStorage(_) | InitialOnline(_) | InitialVisibility(_) | InitialMedia(_) | InitialTime(_) | Seed(_) | Languages(_) | TimeZone(_) | LocalStorageUnavailable => {}
 			}
 		}
 		queries = SpecRunner.decode_declarations((program.keys)()).media
@@ -802,7 +974,7 @@ SpecRunner := [].{
 				return Err("initial-media query ${JsonOut.quote(query)} is not declared")
 			}
 		}
-		s0 = SpecRunner.mount_in(program, spec.environment)
+		s0 = SpecRunner.mount_config(program, spec.environment, $settings)
 		b0 = s0.browser
 		Ok({ ..s0, browser: { ..b0, files: $files, max_output: $max_output } })
 	}
@@ -815,17 +987,22 @@ SpecRunner := [].{
 	## Mount from facts the parser resolved, selecting only storage keys the
 	## program declared. The browser retains all storage for later requests.
 	mount_in : Program(state), Scm.Environment -> S(state)
-	mount_in = |program, env| {
+	mount_in = |program, env| SpecRunner.mount_config(program, env, (SpecRunner.fresh_browser({})).settings)
+
+	## Install fixture service behavior before mount emits any storage command.
+	mount_config : Program(state), Scm.Environment, { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64 } -> S(state)
+	mount_config = |program, env, settings| {
 		declared = SpecRunner.decode_declarations((program.keys)())
 		boot_kvs = declared.keys.keep_oks(|key| env.storage.find_first(|(name, _)| name == key))
+		boot_session = declared.session_keys.keep_oks(|key| env.session.find_first(|(name, _)| name == key))
 		for (query, _) in env.media {
 			if !declared.media.contains(query) {
 				crash "contract: initial-media query ${JsonOut.quote(query)} is not declared"
 			}
 		}
 		media = declared.media.map(|query| (query, env.media.find_first(|(name, _)| name == query).map_ok(|(_, matches)| matches) ?? False))
-		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot({ ..env, media, storage: if (env.storage_available) boot_kvs else [] }))
-		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declared.latest_ports }
+		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot({ ..env, media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }))
+		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declared.latest_ports, settings }
 		s0 = SpecRunner.fresh(inst, browser)
 		{ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s0, draining: Bool.True }, inst, cmds, wbuf))), draining: Bool.False }
 	}
@@ -855,9 +1032,9 @@ SpecRunner := [].{
 		}
 		if s.applying_focus or !s.event_queue.is_empty() {
 			input = { node, handler: h, payload, owner: if (node == SpecRunner.fx_node) 0 else Dom.lookup(s.dom, node), source: Occurrence }
-			if s.event_queue.len() >= 4096 {
+			if s.event_queue.len() + SpecRunner.failure_tasks(s.browser) >= 4096 {
 				if s.applying_focus or s.draining {
-					return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [] }
+					return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [], browser: SpecRunner.clear_callbacks(s.browser) }
 				}
 				# Free one slot without delivering: the occurrence must pin the
 				# remaining reports before the oldest turn can raise callbacks.
@@ -881,7 +1058,7 @@ SpecRunner := [].{
 		outer = !s.draining
 		active = if (outer) { ..s, draining: Bool.True, turns: 0 } else s
 		if !outer and active.turns >= 4096 {
-			return { ..active, fault: Poisoned("resource_limit: more than 4096 turns delivered without returning to idle (an event feedback loop)"), event_queue: [], after_batch: [] }
+			return { ..active, fault: Poisoned("resource_limit: more than 4096 turns delivered without returning to idle (an event feedback loop)"), event_queue: [], after_batch: [], browser: SpecRunner.clear_callbacks(active.browser) }
 		}
 		counted = { ..active, turns: active.turns + if (outer) 0 else 1 }
 		(inst, cmds, wbuf) = (program.event)(counted.inst, counted.buf, counted.wbuf, node, h, payload)
@@ -895,8 +1072,8 @@ SpecRunner := [].{
 	drain_focus : Program(state), S(state) -> S(state)
 	drain_focus = |program, s0| {
 		var $s = { ..s0, draining: Bool.True }
-		while $s.fault == Healthy and (!$s.after_batch.is_empty() or !$s.event_queue.is_empty() or !$s.browser.gets.is_empty()) {
-			if !$s.browser.gets.is_empty() and !$s.event_queue.is_empty() and !SpecRunner.head_ready($s) {
+		while $s.fault == Healthy and (!$s.after_batch.is_empty() or !$s.event_queue.is_empty() or SpecRunner.callbacks_waiting($s.browser)) {
+			if SpecRunner.callbacks_waiting($s.browser) and !$s.event_queue.is_empty() and !SpecRunner.head_ready($s) {
 				b = $s.browser
 				$s = { ..$s, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } }
 			}
@@ -904,7 +1081,10 @@ SpecRunner := [].{
 				command = $s.after_batch.first() ?? crash "SpecRunner.drain_focus: not empty"
 				s = { ..$s, applying_focus: Bool.True, after_batch: $s.after_batch.drop_first(1) }
 				applied = match command {
-					Effect(fx) => { ..s, browser: SpecRunner.absorb(s.browser, [fx]) }
+					Effect(fx) => {
+						browser = SpecRunner.absorb_limit(s.browser, [fx], 4096 - s.event_queue.len())
+						if (browser.deferred_error.is_empty()) { ..s, browser } else { ..s, browser: SpecRunner.clear_callbacks(browser), fault: Poisoned(browser.deferred_error), event_queue: [], after_batch: [] }
+					}
 					Show(show) => if (SpecRunner.attached(s.dom, show.target) and (if (show.property == 6) Dom.node(s.dom, show.target).shown_intent.dialog else Dom.node(s.dom, show.target).shown_intent.popover) == show.intent) SpecRunner.change_shown(s, show.target, show.value) else s
 					Ref(ref) => {
 						i = ref.target
@@ -924,7 +1104,7 @@ SpecRunner := [].{
 			if !$s.event_queue.is_empty() and SpecRunner.head_ready($s) {
 				{ input, rest } = SpecRunner.pop_input($s)
 				$s = SpecRunner.deliver_input(program, { state: rest, input: input })
-			} else if !$s.browser.gets.is_empty() {
+			} else if SpecRunner.callbacks_waiting($s.browser) {
 				$s = SpecRunner.answer_gets(program, $s)
 			} else {
 				break
@@ -1020,9 +1200,9 @@ SpecRunner := [].{
 			}
 			_ => {}
 		}
-		if s.event_queue.len() >= 4096 {
+		if s.event_queue.len() + SpecRunner.failure_tasks(s.browser) >= 4096 {
 			if s.applying_focus or s.draining {
-				return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [], browser: { ..b, reports: { ..reports, head: 0, index: Dict.empty() } } }
+				return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [], browser: { ..SpecRunner.clear_callbacks(b), reports: { ..reports, head: 0, index: Dict.empty() } } }
 			}
 			return SpecRunner.queue_report(program, { state: SpecRunner.release_reports(program, s), source, node, handler, owner, payload })
 		}
@@ -1044,15 +1224,36 @@ SpecRunner := [].{
 	answer_gets : Program(state), S(state) -> S(state)
 	answer_gets = |program, s0| {
 		var $s = s0
-		while !$s.browser.gets.is_empty() and $s.event_queue.is_empty() and $s.after_batch.is_empty() {
+		while $s.fault == Healthy and SpecRunner.callbacks_waiting($s.browser) and $s.event_queue.is_empty() and $s.after_batch.is_empty() {
 			b = $s.browser
-			g = b.gets.first() ?? crash "SpecRunner.answer_gets: not empty"
-			found = if (b.env.storage_available) b.env.storage.find_first(|(key, _)| key == g.key) else Err(NotFound)
-			payload = match found {
-				Ok((_, value)) => [3].concat(value.to_utf8())
-				Err(_) => [4]
+			if b.failure_active {
+				match b.failure_queue.first() {
+					Ok(recipient) if recipient.ready => {
+						next = { ..$s, browser: { ..b, failure_queue: b.failure_queue.drop_first(1) } }
+						$s = if (b.subs.any(|entry| entry.id == recipient.id and entry.sub == StorageFailures)) SpecRunner.deliver(program, next, recipient.id, recipient.payload) else next
+					}
+					_ => {
+						$s = { ..$s, browser: { ..b, failure_active: False } }
+					}
+				}
+			} else {
+				task = b.gets.first() ?? crash "SpecRunner.answer_gets: a callback is pending"
+				next = { ..$s, browser: { ..b, gets: b.gets.drop_first(1) } }
+				$s = match task {
+					Read({ id, key, session }) => {
+						available = if (session) b.env.session_available else b.env.storage_available
+						pairs = if (session) b.env.session else b.env.storage
+						found = if (available) pairs.find_first(|(name, _)| name == key) else Err(NotFound)
+						payload = match found {
+							Ok((_, value)) => [3].concat(value.to_utf8())
+							Err(_) => [4]
+						}
+						SpecRunner.deliver(program, next, id, payload)
+					}
+					Answer({ id, payload, scoped }) => if (!scoped or b.subs.any(|entry| entry.id == id)) SpecRunner.deliver(program, next, id, payload) else next
+					Failures => { ..next, browser: { ..next.browser, failure_scheduled: False, failure_active: True, failure_queue: b.failure_queue.map(|entry| { ..entry, ready: True }) } }
+				}
 			}
-			$s = SpecRunner.deliver(program, { ..$s, browser: { ..b, gets: b.gets.drop_first(1) } }, g.id, payload)
 		}
 		$s
 	}
@@ -1067,7 +1268,7 @@ SpecRunner := [].{
 		var $s = s0
 		for x in s0.browser.subs.keep_if(pick) {
 			is_report = match x.sub {
-				OnlineSub | VisibilitySub | MediaSub(_) => Bool.True
+				OnlineSub | VisibilitySub | MediaSub(_) | StorageSub(_) => Bool.True
 				PortSub(port, _) => s0.browser.latest_ports.contains(port)
 				_ => Bool.False
 			}
@@ -1330,7 +1531,7 @@ SpecRunner := [].{
 			return s
 		}
 		match Dom.target(s.dom, i, event, False) {
-			Ok(target) if target.kind == 1 and s.event_queue.len() >= 4096 => { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [] }
+			Ok(target) if target.kind == 1 and s.event_queue.len() + SpecRunner.failure_tasks(s.browser) >= 4096 => { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [], browser: SpecRunner.clear_callbacks(s.browser) }
 			Ok(target) if target.kind == 1 => {
 				b = s.browser
 				{ ..s, event_queue: s.event_queue.append({ node: target.node, handler: target.handler, payload: payload.to_utf8(), owner: Dom.lookup(s.dom, target.node), source: Occurrence }), browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } }
@@ -1708,7 +1909,7 @@ SpecRunner := [].{
 		# Every issued request is one FX command and every cancelled one a
 		# CANCEL (design.md, "Counters"), so the effect counters must agree
 		# with the commands too.
-		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent"), (41, 21, "properties set"), (42, 22, "row properties set"), (43, 23, "registrations released"), (45, 24, "view transitions")] {
+		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent"), (41, 21, "properties set"), (42, 22, "row properties set"), (43, 23, "registrations released"), (45, 24, "view transitions"), (46, 25, "leave guard commands")] {
 			engine = s.work.counters.get(counter) ?? 0
 			oracle = s.ops.get(op) ?? 0
 			if engine != oracle {
@@ -1778,6 +1979,11 @@ SpecRunner := [].{
 	## has a case here (the match has no catch-all).
 	one : Program(state), S(state), Scm.Op -> Try(S(state), Str)
 	one = |program, s, op| {
+		match op {
+			LeavePage(_) if s.browser.reports.held => return Err("leave-page cannot navigate while reports are held")
+			LeavePage(_) if !s.browser.pointers.is_empty() => return Err("leave-page cannot navigate while a pointer is down")
+			_ => {}
+		}
 		activated = SpecRunner.activate_step(s, op)
 		ready = if (SpecRunner.is_occurrence(activated, op)) SpecRunner.release_reports(program, activated) else activated
 		next = SpecRunner.one_ready(program, ready, op)?
@@ -1818,14 +2024,14 @@ SpecRunner := [].{
 				_ => crash "activation table: pointer-up policy requires pointer-up"
 			}
 		}
-		if (grant) { ..s, browser: { ..s.browser, cancel_allowed: True } } else s
+		if (grant) { ..s, browser: { ..s.browser, cancel_allowed: True, sticky_activation: True } } else s
 	}
 
 	## Classify only declarations and step meanings. Assertions and fixtures
 	## do not flush a held frame, and an unchanged fact raises no report.
 	is_occurrence : S(state), Scm.Op -> Bool
 	is_occurrence = |s, op| match op {
-		Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | RunEffect(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
+		Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | PasteText(_, _) | LeavePage(_) | RunEffect(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
 		PointerDown(_) | PointerUp(_) | PointerCancel(_) => Bool.True
 		PointerMove(place) => !SpecRunner.paced_move(s, place)
 		EmitPort({ port, .. }) => !s.browser.latest_ports.contains(port)
@@ -1837,7 +2043,7 @@ SpecRunner := [].{
 	one_ready : Program(state), S(state), Scm.Op -> Try(S(state), Str)
 	one_ready = |program, s, op| {
 		match op {
-			Click(loc) | RealClick(loc) | Fill(loc, _) | Focus(loc) | Blur(loc) | Check(loc) | Uncheck(loc) | SelectOption(loc, _) | Change(loc, _) | Submit(loc) | ChooseFiles(loc, _) | DropFiles(loc, _) | PasteFiles(loc, _) => {
+			Click(loc) | RealClick(loc) | Fill(loc, _) | Focus(loc) | Blur(loc) | Check(loc) | Uncheck(loc) | SelectOption(loc, _) | Change(loc, _) | Submit(loc) | ChooseFiles(loc, _) | DropFiles(loc, _) | PasteFiles(loc, _) | PasteText(loc, _) => {
 				i = SpecRunner.need(s.dom, loc)?
 				if !SpecRunner.reachable(s, i) {
 					return Err("${Scm.show_loc(loc)} is unreachable: hidden dialog/popover or outside the topmost modal")
@@ -2075,6 +2281,40 @@ SpecRunner := [].{
 					NoStub => Ok({ ..s, browser: { ..b, stub: Staged(stub) } })
 					Staged(_) => Err("a stub is already staged; run-effect answers one at a time")
 				}
+			PasteText(loc, text) => {
+				i = SpecRunner.find(s.dom, loc) ? |_| "paste target was not found"
+				declaration = Dom.target(s.dom, i, "paste", True) ? |_| "no paste handler"
+				if declaration.kind == 9 {
+					payload = if (text.count_utf8_bytes() > s.browser.settings.max_paste) [1] else [0].concat(text.to_utf8())
+					Ok(SpecRunner.send(program, s, declaration.node, declaration.handler, payload))
+				} else if declaration.kind == 1 {
+					Ok(SpecRunner.send(program, s, declaration.node, declaration.handler, []))
+				} else Ok(s)
+			}
+			StorageElsewhere({ key, value }) => SpecRunner.storage_elsewhere(program, s, { key: Present(key), value: Present(value) })
+			StorageElsewhereRemoved(key) => SpecRunner.storage_elsewhere(program, s, { key: Present(key), value: Absent })
+			StorageElsewhereCleared => SpecRunner.storage_elsewhere(program, s, { key: Absent, value: Absent })
+			LeavePage({ url, outcome }) => {
+				if SpecRunner.same_document(s.browser.env.url, url) {
+					return Err("leave-page requires a different document")
+				}
+				asks = s.browser.guard and s.browser.sticky_activation
+				if asks {
+					match outcome {
+						Stay => Ok(s)
+						Leave => SpecRunner.navigate(program, { ..s, browser: { ..s.browser, guard: False } }, url)
+						Unasked => Err("leave-page expected no question but the guard asks")
+					}
+				} else if (outcome == Unasked) SpecRunner.navigate(program, s, url) else Err("leave-page expected a question but the browser does not ask")
+			}
+			ExpectSessionStorage({ key, value }) => {
+				found = s.browser.env.session.find_first(|(name, _)| name == key).map_ok(|(_, text)| text)
+				if (found == Ok(value)) Ok(s) else Err("session storage ${JsonOut.quote(key)} differs: ${Str.inspect(found)}")
+			}
+			ExpectNoSessionStorage(key) => if (s.browser.env.session.any(|(name, _)| name == key)) Err("session storage ${JsonOut.quote(key)} unexpectedly has a value") else Ok(s)
+			ExpectClipboard(text) => if (s.browser.clipboard.exhausted) Err("clipboard observation ordinal exhausted") else if (s.browser.clipboard.text == text) Ok(s) else Err("clipboard text differs")
+			ExpectClipboardHtml(html) => if (s.browser.clipboard.exhausted) Err("clipboard observation ordinal exhausted") else if (s.browser.clipboard.html == html) Ok(s) else Err("clipboard HTML differs")
+			ExpectClipboardWrites(count) => if (s.browser.clipboard.exhausted) Err("clipboard observation ordinal exhausted") else if (s.browser.clipboard.writes == count) Ok(s) else Err("clipboard write count differs: ${s.browser.clipboard.writes.to_str()}")
 			Navigate(url) => SpecRunner.navigate(program, s, url)
 			HistoryBack =>
 				match b.back.last() {
@@ -2976,15 +3216,18 @@ SpecRunner := [].{
 		if SpecRunner.same_document(b.env.url, url) {
 			Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.append(entry), env: { ..b.env, url }, fwd: [] } }))
 		} else {
+			if b.guard and b.sticky_activation {
+				return Err("guarded cross-document navigation must use leave-page")
+			}
 			if !b.pointers.is_empty() {
 				return Err("cross-document navigation while a pointer is down")
 			}
 			if b.reports.held {
 				return Err("cross-document navigation while reports are held")
 			}
-			s1 = SpecRunner.mount_in(program, Scm.next_document({ ..b.env, url })?)
+			s1 = SpecRunner.mount_config(program, Scm.next_document({ ..b.env, url })?, b.settings)
 			b1 = s1.browser
-			Ok({ ..s1, mark: s.mark, browser: { ..b1, doc: b.doc + 1, back: b.back.append(entry), fwd: [], files: b.files, given: b.given, max_output: b.max_output } })
+			Ok({ ..s1, mark: s.mark, browser: { ..b1, doc: b.doc + 1, sticky_activation: b.sticky_activation, back: b.back.append(entry), fwd: [], files: b.files, given: b.given, max_output: b.max_output } })
 		}
 	}
 
@@ -3444,6 +3687,11 @@ SpecRunner := [].{
 		$out
 	}
 
+	## A walk cannot accept a leave dialog. Skip click targets inside anchors
+	## while a guard is on; that click could itself grant sticky activation.
+	walk_candidates : S(state) -> List((U64, Str))
+	walk_candidates = |state| SpecRunner.candidates(state.dom).keep_if(|(index, event)| !(state.browser.guard and event == "click" and SpecRunner.ancestor(state.dom, index, |entry| entry.tag == "a" and Dom.has_attr(entry, "href")).is_ok()))
+
 	## The payload a browser would send for event `ev` on node `i`. For
 	## text, half the time a value the specs typed into a control the same
 	## locator finds, when they typed one, so a form's fields are often
@@ -3746,7 +3994,7 @@ SpecRunner := [].{
 	walk_step! : Program(state), Host, Book, S(state), U8, U8 => Try((S(state), Did), Str)
 	walk_step! = |program, host, bk, s, pick, b| {
 		offered = SpecRunner.services(bk, s)
-		cs = SpecRunner.candidates(s.dom)
+		cs = SpecRunner.walk_candidates(s)
 		if pick >= 0xC0 and !offered.is_empty() {
 			x = b.to_u64()
 			service = offered.get(x % offered.len()) ?? crash "SpecRunner.walk_step!: a service"
@@ -4266,7 +4514,7 @@ SpecRunner := [].{
 
 ## Wire encoding: strings are length-prefixed, integers little-endian, and
 ## each boot section is tagged and length-bounded in ascending order.
-expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1, 6, 0, 0, 0, 0, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 13, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 101, 110, 45, 85, 83, 10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0]
+expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1, 6, 0, 0, 0, 0, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 13, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 101, 110, 45, 85, 83, 10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 11, 5, 0, 0, 0, 1, 0, 0, 0, 0]
 
 ## An HTTP result carries status, headers and the body as the rest.
 expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6, 0x01, 1, 0, 0, 0, 1, 0, 0, 0, 'a', 1, 0, 0, 0, 'b', 'x']
@@ -4275,7 +4523,7 @@ expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6
 expect SpecRunner.encode_reject(Timeout, "") == [7] and SpecRunner.encode_reject(Network, "offline") == [2, 'o', 'f', 'f', 'l', 'i', 'n', 'e']
 
 ## Declared storage keys decode from `count:u32 (key:str)*`.
-expect SpecRunner.decode_keys([2, 15, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c', 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1]) == ["a", "bc"]
+expect SpecRunner.decode_keys([2, 15, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c', 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0]) == ["a", "bc"]
 
 ## Filters match ids shell-style.
 expect {
@@ -4635,7 +4883,7 @@ expect {
 report_probe : {} -> SpecRunner.Program(List({ id : U32, payload : List(U8) }))
 report_probe = |_| {
 	version: Dom.protocol_version,
-	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1],
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0],
 	init: |_| ([], [0, 13, 1, 0, 0, 0, 6, 13, 2, 0, 0, 0, 7], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
@@ -4766,7 +5014,7 @@ expect {
 pointer_probe : {} -> SpecRunner.Program(List({ handler : U32, payload : List(U8) }))
 pointer_probe = |_props| {
 	version: Dom.protocol_version,
-	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1],
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0],
 	init: |_| ([], [], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
@@ -5073,7 +5321,7 @@ expect {
 expect {
 	query_body = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([], 2), "wide"), "dark")
 	base = pointer_probe({})
-	program = { ..base, keys: || SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: query_body }).concat([10, 2, 0, 0, 0, 110, 1]), init: |boot| ([{ handler: 0.U32, payload: boot }], [], List.repeat(0.U8, 8)) }
+	program = { ..base, keys: || SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: query_body }).concat([10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0]), init: |boot| ([{ handler: 0.U32, payload: boot }], [], List.repeat(0.U8, 8)) }
 	mounted = SpecRunner.mount_in(program, { media: [("dark", True)] })
 	{ media: mounted.browser.env.media, flags: mounted.inst.first()?.payload.sublist({ start: 37, len: 2 }) } == { media: [("wide", False), ("dark", True)], flags: [0.U8, 1] }
 }
@@ -5197,7 +5445,7 @@ expect {
 ## drops waiting answers while retaining the query's environment value.
 expect {
 	base_program = pointer_probe({})
-	declarations = SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "dark") }).concat([10, 2, 0, 0, 0, 110, 1])
+	declarations = SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "dark") }).concat([10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0])
 	listen = SpecRunner.put_str(SpecRunner.put_u32([13], 1).append(16), "dark")
 	program = { ..base_program, keys: || declarations, init: |_boot| ([], [0].concat(listen), List.repeat(0.U8, 8)) }
 	base = SpecRunner.mount_in(program, {})
@@ -5255,4 +5503,110 @@ expect {
 	set = SpecRunner.one(program, start, SetTime(-9223372036854775808))?
 	advanced = SpecRunner.one(program, set, AdvanceTime(18446744073709551615))?
 	{ seen: advanced.inst, now: advanced.browser.env.now_ms, overflow: SpecRunner.one(program, advanced, AdvanceTime(1)).is_err() } == { seen: [], now: 9223372036854775807, overflow: True }
+}
+
+## Failed writes share one bounded task FIFO; no subscriber means no retained work.
+expect {
+	initial = { ..SpecRunner.fresh_browser({}), settings: { local_full: True, session_full: False, clipboard_denied: False, max_paste: 4194304 } }
+	subscribed = SpecRunner.absorb(initial, [StorageFailures(1)])
+	full = SpecRunner.absorb(subscribed, List.repeat(Set("draft", "value"), 4096))
+	overflow = SpecRunner.absorb(full, [Set("draft", "another")])
+	canceled = SpecRunner.absorb(full, [Cancel(1), StorageFailures(2), Set("draft", "new")])
+	combined = SpecRunner.absorb_limit(subscribed, List.repeat(Set("draft", "value"), 4096), 4095)
+	silent = SpecRunner.absorb(initial, [Set("draft", "value")])
+	{ full: SpecRunner.failure_tasks(full), fits: full.deferred_error.is_empty(), overflow: !overflow.deferred_error.is_empty(), retained: SpecRunner.failure_tasks(overflow), freed: SpecRunner.failure_tasks(canceled), successor: canceled.deferred_error.is_empty(), combined: !combined.deferred_error.is_empty(), silent: silent.gets.is_empty() } == { full: 4096, fits: True, overflow: True, retained: 4096, freed: 1, successor: True, combined: True, silent: True }
+}
+
+## The clipboard's observation ordinal can exhaust without refusing the actual copy.
+expect {
+	program = report_probe({})
+	state = SpecRunner.mount_in(program, {})
+	before = { ..state.browser, clipboard: { text: "old", html: "", writes: 18446744073709551614, exhausted: False } }
+	last = SpecRunner.absorb(before, [Clipboard(1, { text: "last counted", html: Plain })])
+	exhausted = SpecRunner.absorb(last, [Clipboard(2, { text: "still copied", html: Html("<p>still copied</p>") })])
+	observed = { ..state, browser: exhausted }
+	{ last: last.clipboard.writes, last_valid: !last.clipboard.exhausted, text: exhausted.clipboard.text, exhausted: exhausted.clipboard.exhausted, callbacks: exhausted.gets.len(), assertion: SpecRunner.one(program, observed, ExpectClipboard("still copied")).is_err(), fault: observed.fault } == { last: 18446744073709551615, last_valid: True, text: "still copied", exhausted: True, callbacks: 2, assertion: True, fault: Healthy }
+}
+
+## A canceled clipboard answer is forgotten after the write has happened.
+expect {
+	browser = SpecRunner.absorb(SpecRunner.fresh_browser({}), [Clipboard(1, { text: "kept", html: Plain }), Cancel(1)])
+	{ text: browser.clipboard.text, writes: browser.clipboard.writes, callbacks: browser.gets.len() } == { text: "kept", writes: 1, callbacks: 0 }
+}
+
+## Sticky leave activation survives consumption of a CloseWatcher opportunity.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, {})
+	activated = SpecRunner.activate_step(initial, Press({ target: Focused, key: { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False } }))
+	consumed = { ..activated, browser: { ..activated.browser, cancel_allowed: False, guard: True } }
+	{ stays: SpecRunner.one(program, consumed, LeavePage({ url: "/next", outcome: Stay })).is_ok(), ordinary: SpecRunner.one(program, consumed, Navigate("/next")).is_err(), no_question: SpecRunner.one(program, consumed, LeavePage({ url: "/next", outcome: Unasked })).is_err() } == { stays: True, ordinary: True, no_question: True }
+}
+
+## A supported same-origin navigation inherits sticky activation but resets
+## the CloseWatcher opportunity; a later dirty document can therefore ask again.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, {})
+	activated = SpecRunner.activate_step(initial, Press({ target: Focused, key: { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False } }))
+	next = SpecRunner.one(program, activated, Navigate("/next"))?
+	guarded = { ..next, browser: { ..next.browser, guard: True } }
+	held = SpecRunner.one(program, guarded, HoldReports)?
+	{ fresh: initial.browser.sticky_activation, inherited: next.browser.sticky_activation, close_allowance: next.browser.cancel_allowed, document: next.browser.doc, asks: SpecRunner.one(program, guarded, LeavePage({ url: "/later", outcome: Stay })).is_ok(), held_refused: SpecRunner.one(program, held, LeavePage({ url: "/later", outcome: Stay })).is_err() } == { fresh: False, inherited: True, close_allowance: False, document: 1, asks: True, held_refused: True }
+}
+
+## A scripted guarded stay still rejects a physical press in progress before
+## routing or draining anything, just as the Chrome navigation driver does.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, {})
+	pointer = { id: 1.U32, kind: Mouse, button: Main, modifiers: 0.U8, primary: True, down: 0.U64, capture: 0.U64, moved: False, suppress_mouse: False, at: Outside }
+	pressed = { ..initial, browser: { ..initial.browser, pointers: initial.browser.pointers.insert(1, pointer), guard: True, sticky_activation: True } }
+	SpecRunner.one(program, pressed, LeavePage({ url: "/next", outcome: Stay })).is_err()
+}
+
+## A nested click handler can follow its ancestor link, so a guarded walk
+## excludes that span even before the first activation, retaining ordinary buttons.
+expect {
+	base = SpecRunner.fresh(0.U64, SpecRunner.fresh_browser({}))
+	(first, anchor) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "a", attrs: [("href", "/next")] })
+	(second, span) = Dom.add_node(first, { ..Dom.empty_node, tag: "span", hs: [{ event: "click", handler: 0, kind: 1, policies: 0 }] })
+	(third, button) = Dom.add_node(second, { ..Dom.empty_node, tag: "button", hs: [{ event: "click", handler: 1, kind: 1, policies: 0 }] })
+	dom = Dom.insert(Dom.insert(Dom.insert(third, third.root, anchor, Err(End)), anchor, span, Err(End)), third.root, button, Err(End))
+	guarded = { ..base, dom, browser: { ..base.browser, guard: True } }
+	{ ordinary: SpecRunner.candidates(dom), guarded: SpecRunner.walk_candidates(guarded), sticky: guarded.browser.sticky_activation } == { ordinary: [(span, "click"), (button, "click")], guarded: [(button, "click")], sticky: False }
+}
+
+## A getter-unavailable fixture still permits the other document's write,
+## but cannot identify its local area for reports; its backing value is retained.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, { storage_available: False })
+	subscribed = { ..initial, browser: SpecRunner.absorb(initial.browser, [StorageSub(3, "document")]) }
+	changed = SpecRunner.one(program, subscribed, StorageElsewhere({ key: "document", value: "remote" }))?
+	{ pairs: changed.browser.env.storage, available: changed.browser.env.storage_available, delivered: changed.inst } == { pairs: [("document", "remote")], available: False, delivered: [] }
+}
+
+## One failure task batches its original recipients ahead of an already
+## scheduled read; a failed write raised by its first answer waits for the next task.
+expect {
+	base_program = report_probe({})
+	program = {
+		..base_program,
+		event: |seen, _buffer, _work, _node, id, payload| {
+			commands = if (seen.is_empty()) [0, 16, 1, 1, 0, 0, 0, 'd', 1, 0, 0, 0, 'x'] else []
+			(seen.append({ id, payload }), commands, List.repeat(0.U8, 8))
+		},
+	}
+	initial = SpecRunner.mount_in(program, {})
+	configured = { ..initial.browser, settings: { ..initial.browser.settings, local_full: True } }
+	browser = SpecRunner.absorb(configured, [StorageFailures(9), Set("a", "x"), Get(10, "missing"), Set("c", "x")])
+	queued = { ..initial, browser }
+	done = SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, queued))
+	{ delivered: done.inst, remaining: SpecRunner.failure_tasks(done.browser), scheduled: done.browser.failure_scheduled, active: done.browser.failure_active } == {
+		delivered: [{ id: 9, payload: [25, 1, 1, 'a'] }, { id: 9, payload: [25, 1, 1, 'c'] }, { id: 10, payload: [4] }, { id: 9, payload: [25, 1, 1, 'd'] }],
+		remaining: 0,
+		scheduled: False,
+		active: False,
+	}
 }

@@ -26,7 +26,7 @@ test = |bytes| {
 				if !bytes.is_empty() and Core.write_boot(boot) != bytes {
 					crash "boot decoder accepted a noncanonical encoding"
 				}
-				if !boot.storage_available and !boot.storage.is_empty() {
+				if (!boot.storage_available and !boot.storage.is_empty()) or (!boot.session_available and !boot.session.is_empty()) {
 					crash "unavailable storage carried pairs"
 				}
 				if boot.media.map(|(query, _)| query) != catalogue {
@@ -42,9 +42,11 @@ target = Fuzz.target_with({
 	examples: [
 		Fuzz.example({ name: "empty-defaults", revision: "1", make: || [] }),
 		Fuzz.example({ name: "sections-defaults", revision: "1", make: || Core.write_boot({}) }),
-		Fuzz.example({ name: "all-facts", revision: "2", make: || Core.write_boot({ url: "/a?b#c", storage: [("a", ""), ("a", "two")], online: False, visible: False, now_ms: -123, seed: 340282366920938463463374607431768211455, languages: ["", "en-AU"], zone: { name: "test", from_ms: -500, until_ms: 500, offsets: [{ from_ms: -500, minutes: -60 }, { from_ms: 0, minutes: 90 }] } }) }),
+		Fuzz.example({ name: "all-facts", revision: "2", make: || Core.write_boot({ url: "/a?b#c", storage: [("a", ""), ("a", "two")], session: [("draft", "λ")], online: False, visible: False, now_ms: -123, seed: 340282366920938463463374607431768211455, languages: ["", "en-AU"], zone: { name: "test", from_ms: -500, until_ms: 500, offsets: [{ from_ms: -500, minutes: -60 }, { from_ms: 0, minutes: 90 }] } }) }),
 		Fuzz.example({ name: "storage-unavailable", revision: "1", make: || Core.write_boot({ storage_available: False }) }),
 		Fuzz.example({ name: "invalid-unavailable-pairs", revision: "1", make: || Core.write_boot({ storage_available: False, storage: [("a", "b")] }) }),
+		Fuzz.example({ name: "session-unavailable", revision: "1", make: || Core.write_boot({ session_available: False }) }),
+		Fuzz.example({ name: "invalid-unavailable-session-pairs", revision: "1", make: || Core.write_boot({ session_available: False, session: [("draft", "lost")] }) }),
 		Fuzz.example({ name: "media-first-paint", revision: "1", make: || Core.write_boot({ media: [("(prefers-color-scheme: dark)", True)] }) }),
 		Fuzz.example({ name: "media-order", revision: "1", make: || Core.write_boot({ media: [("a", False), ("b", True)] }) }),
 		Fuzz.example({ name: "invalid-media-flag", revision: "1", make: || Core.write_boot({ media: [("a", False), ("b", True)] }).take_first(37).append(2).concat(Core.write_boot({ media: [("a", False), ("b", True)] }).drop_first(38)) }),

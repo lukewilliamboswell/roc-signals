@@ -65,6 +65,7 @@ import pf.Worker
 
 Node := [
 	Show(U64),
+	Guard(U64),
 	Control(U64),
 	Bump(U64),
 	Bump2(U64, U64),
@@ -105,7 +106,9 @@ node = |d0, depth| {
 	(i, d2) = next(d1)
 	match b % 10 {
 		0 | 1 =>
-			if b >= 20 {
+			if b >= 100 {
+				(Guard(i), d2)
+			} else if b >= 20 {
 				(Control(i), d2)
 			} else if (b // 10) % 2 == 0 {
 				(Show(i), d2)
@@ -196,6 +199,10 @@ flat_list = |ns, g, inner| Core.element("div", [], ns.map(|n| flat(n, g, inner))
 flat : Node, G(ctx), Inner(ctx) -> Core.Elem(ctx)
 flat = |n, g, inner| match n {
 	Show(i) => show(val_of(g, i))
+	Guard(i) => {
+		flag = val_of(g, i).map(|value| value % 2 == 0)
+		Core.element("span", [Core.attr_s("data-guard", flag.map(|on| if (on) "on" else "off"))], [Core.guard_leave(flag)])
+	}
 	Control(i) => Core.element(
 		"div",
 		[],
@@ -451,7 +458,7 @@ view = |tree, pure, init| Core.state(
 
 ## The engine, the oracle's DOM, the clicks so far, and the worker jobs
 ## issued and not yet answered or cancelled (id and input).
-S : { eng : Core.App, dom : Dom.Model, clicks : U64, jobs : List((U32, List(U8))) }
+S : { eng : Core.App, dom : Dom.Model, clicks : U64, jobs : List((U32, List(U8))), guard : Bool }
 
 ## Mount through the program's driver, so the worker catalogue is the one
 ## a host would see.
@@ -459,7 +466,7 @@ mount : List(Node), Bool, U64 -> S
 mount = |tree, pure, init| {
 	program = Core.program(|| view(tree, pure, init)).with_workers([tripler.registration()])
 	(a, c, _) = (Core.driver(program).init)([])
-	absorb({ eng: a, dom: Dom.new({}), clicks: 0, jobs: [] }, a, c, "")
+	absorb({ eng: a, dom: Dom.new({}), clicks: 0, jobs: [], guard: False }, a, c, "")
 }
 
 ## Apply one batch to the oracle, keeping track of the worker jobs it issued
@@ -491,7 +498,17 @@ absorb = |s, a, c, what| {
 			_ => acc
 		},
 	)
-	{ ..s, eng: a, dom, jobs }
+	guard = fx.fold(
+		s.guard,
+		|prior, command| match command {
+			Guard(on) => on
+			_ => prior
+		},
+	)
+	if guard != guard_model(dom, dom.root) {
+		crash "${what}: leave guard differs from live generated guards"
+	}
+	{ ..s, eng: a, dom, jobs, guard }
 }
 
 ## Classify ordinary constructors separately from reader updates. ELEM does
@@ -741,6 +758,7 @@ fixed_cases = [
 	# watch read each with a derive of the other. Clicks 3 is the button
 	# that writes both; 1 and 2 write one each; 0 the root.
 	ex("pairs", 1, [1, 5, 0, 1, 5, 0, 3, 12, 1, 2, 10, 2, 1, 10, 1, 2], [0, 3, 0, 3, 0, 1, 0, 3, 0, 2, 0, 3, 0, 0, 0, 3]),
+	ex("guard-swaps-and-rows", 0, [3, 100, 0, 3, 0, 1, 100, 0, 1, 100, 0, 7, 0, 1, 100, 1], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
 	ex("document-release", 0, [1, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
 	ex("clicks-with-observers", 0, [1, 2, 0], [0, 2, 0, 3, 0, 255, 0, 0]),
 	ex("properties-in-late-branch", 0, [1, 3, 0, 0, 1, 20, 0], [0, 0, 0, 0]),
@@ -909,4 +927,12 @@ expect {
 	held = mount([Bump(0)], True, 0)
 	clicks = click_candidates(held.dom)
 	clicks.len() == 2 and SpecRunner.candidates(held.dom).len() > clicks.len() and clicks.keep_if(|(_, event)| event != "click").is_empty() and run(decode([1, 3, 0, 1, 0, 0, 1, 5, 0, 2, 0, 1, 2, 1]), False, [0, 0, 0, 1, 0, 2, 0, 1, 0, 0, 0, 1]) == {}
+}
+
+## The model reads the target's independent rendered guard facts and their
+## live structure. It shares no engine count or cached site Boolean.
+guard_model : Dom.Model, U64 -> Bool
+guard_model = |dom, index| {
+	entry = Dom.node(dom, index)
+	Dom.attr_of(entry, "data-guard") == "on" or entry.kids.any(|child| guard_model(dom, child))
 }

@@ -153,8 +153,8 @@ FxApp := [].{
 	}
 
 	## O's request for the item posted.
-	plan_o : U64 -> List(Engine.Request)
-	plan_o = |item| [Http({ method: "GET", url: "/o/${item.to_str()}", headers: [], body: "", timeout_ms: 0 })]
+	plan_o : U64, U64 -> List(Engine.Request)
+	plan_o = |query, item| [Http({ method: "GET", url: "/o/${item.to_str()}?q=${query.to_str()}", headers: [], body: "", timeout_ms: 0 })]
 
 	## P's ports: a call and a subscription, each sent `p`.
 	port_call : Port.Call(U64, Str)
@@ -379,7 +379,7 @@ FxApp := [].{
 					|| Engine.text(""),
 				),
 				Html.button("post", [], st.update(|s| { ..s, posts: s.posts + 1, out: s.out.post((s.posts + 1) // 2) })),
-				Engine.on_post(st.signal().map(|s| s.out), FxApp.plan_o, st.on_result(|s, item, r| FxApp.log_line(s, FxApp.describe(12, item, r)))),
+				Engine.on_post_by(st.signal().map(|s| s.out), st.signal().map(|s| s.q), FxApp.plan_o, st.on_result(|s, item, r| FxApp.log_line(s, FxApp.describe(12, item, r)))),
 			],
 		),
 	)

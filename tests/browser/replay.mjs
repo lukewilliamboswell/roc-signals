@@ -156,6 +156,7 @@ async function navigating(page, state, act, known = undefined) {
   const before = state.doc;
   const loads = state.loads;
   await act();
+  if (state.dialogError) throw new Error(state.dialogError);
   // The click may already have replaced its document, whose installer has
   // reset __nav. Read the intent and token together so that replacement is
   // still observed even when the old document's intent is no longer present.
@@ -174,6 +175,7 @@ async function navigating(page, state, act, known = undefined) {
     if (nav?.external) throw new Error(`the click navigates to ${nav.href}, which leaves the app`);
     const t0 = Date.now();
     while (state.loads === loads) {
+      if (state.dialogError) throw new Error(state.dialogError);
       if (Date.now() - t0 > 20000) throw new Error(`timed out waiting for the navigation to ${href}`);
       await new Promise((r) => setTimeout(r, 10));
     }
@@ -721,7 +723,109 @@ async function press(page, step, state) {
 }
 
 // One handler per step form of the grammar (`Scm.step_forms`).
+// A second page performs actual writes, so the app receives the browser's
+// storage event rather than a synthetic callback or a driver-invented value.
+async function storageElsewhere(page, step, state) {
+  const source = await page.evaluate(() => location.origin);
+  if (!state.storagePage) {
+    state.storagePage = await state.context.newPage();
+    await state.storagePage.goto(`${source}/storage-driver.html`);
+  }
+  const other = state.storagePage;
+  try {
+    await page.evaluate(key => {
+      let resolve;
+      const promise = new Promise(done => { resolve = done; });
+      const listener = event => {
+        if (event.storageArea === (window.__localStorage ?? localStorage) && event.key === key) resolve();
+      };
+      window.addEventListener("storage", listener);
+      window.__storageStep = { promise, listener };
+    }, step.op === "storage-elsewhere-cleared" ? null : step.key);
+    const changed = await other.evaluate(s => {
+      if (s.op === "storage-elsewhere") {
+        const changed = localStorage.getItem(s.key) !== s.text;
+        localStorage.setItem(s.key, s.text); return changed;
+      }
+      if (s.op === "storage-elsewhere-removed") {
+        const changed = localStorage.getItem(s.key) !== null;
+        localStorage.removeItem(s.key); return changed;
+      }
+      const changed = localStorage.length !== 0;
+      localStorage.clear(); return changed;
+    }, step);
+    if (changed) await page.evaluate(async () => {
+      let timer;
+      try { await Promise.race([window.__storageStep.promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("the other document's storage event did not arrive")), 20000); })]); }
+      finally { clearTimeout(timer); }
+    });
+  } finally {
+    await page.evaluate(() => { if (window.__storageStep) window.removeEventListener("storage", window.__storageStep.listener); delete window.__storageStep; });
+  }
+  return settle(page);
+}
+
+async function leavePage(page, step, state) {
+  if (state.holdingReports) throw new Error("a cross-document navigation cannot leave while reports are held");
+  if (state.pointers.size) throw new Error("a cross-document navigation cannot leave while a pointer is down");
+  const from = await page.evaluate(() => location.pathname + location.search + location.hash);
+  if (sameDocument(from, step.text)) throw new Error("leave-page requires a cross-document URL");
+  const intent = { outcome: step.outcome, dialogs: 0, handled: false };
+  state.leave = intent;
+  try {
+    if (step.outcome !== "stay") {
+      await navigating(page, state, () => page.evaluate(url => { setTimeout(() => location.assign(url), 0); }, step.text), { cross: true, href: step.text });
+      if (intent.dialogs !== (step.outcome === "leave" ? 1 : 0)) throw new Error(`leave-page expected ${step.outcome === "leave" ? "one dialog" : "no dialog"}, saw ${intent.dialogs}`);
+    } else {
+      const before = state.doc;
+      await page.evaluate(url => { setTimeout(() => location.assign(url), 0); }, step.text);
+      const start = Date.now();
+      while (!intent.handled) {
+        if (state.dialogError) throw new Error(state.dialogError);
+        if (await docToken(page) !== before) throw new Error("leave-page stay expected a dialog, but the browser left unasked");
+        if (Date.now() - start >= 20000) throw new Error("leave-page stay expected a beforeunload dialog, but none opened");
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      if (intent.dialogs !== 1 || await docToken(page) !== before) throw new Error("leave-page stay did not preserve its document after one declined dialog");
+      await settle(page);
+    }
+  } finally { state.leave = null; }
+}
+
 const STEPS = {
+  "paste-text": async (page, step) => {
+    await reachable(page, step.loc);
+    await onEl(page, step.loc, (element, text) => {
+      const data = new DataTransfer();
+      data.setData("text/plain", text);
+      element.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    }, step.text);
+    return settle(page);
+  },
+  "storage-elsewhere": storageElsewhere,
+  "storage-elsewhere-removed": storageElsewhere,
+  "storage-elsewhere-cleared": storageElsewhere,
+  "leave-page": leavePage,
+  "expect-session-storage": async (page, step) => {
+    const value = await page.evaluate(key => (window.__sessionStorage ?? sessionStorage).getItem(key), step.key);
+    if (value !== step.text) throw new Error(`session storage ${JSON.stringify(step.key)} is ${JSON.stringify(value)}, expected ${JSON.stringify(step.text)}`);
+  },
+  "expect-no-session-storage": async (page, step) => {
+    const value = await page.evaluate(key => (window.__sessionStorage ?? sessionStorage).getItem(key), step.key);
+    if (value !== null) throw new Error(`session storage ${JSON.stringify(step.key)} is present`);
+  },
+  "expect-clipboard": async (page, step) => {
+    const value = await page.evaluate(() => window.__rt.clipboardSnapshot().text);
+    if (value !== step.text) throw new Error(`clipboard text is ${JSON.stringify(value)}, expected ${JSON.stringify(step.text)}`);
+  },
+  "expect-clipboard-html": async (page, step) => {
+    const value = await page.evaluate(() => window.__rt.clipboardSnapshot().html);
+    if (value !== step.text) throw new Error(`clipboard HTML is ${JSON.stringify(value)}, expected ${JSON.stringify(step.text)}`);
+  },
+  "expect-clipboard-writes": async (page, step) => {
+    const count = await page.evaluate(() => window.__rt.clipboardSnapshot().writes);
+    if (BigInt(count) !== BigInt(step.count)) throw new Error(`clipboard has ${count} successful writes, expected ${step.count}; denied attempts do not count`);
+  },
   scroll: async (page, s) => {
     await need(page, s.loc);
     await onEl(page, s.loc, (element, top, left) => {
@@ -1108,7 +1212,7 @@ const STEPS = {
 // have reached the app, since a report may change either of them.
 async function isOccurrence(page, step) {
   if (step.op.startsWith("expect-")) return false;
-  if (["hold-reports", "release-reports", "mark-metrics", "stub-http", "stub-http-reject", "set-online", "set-visibility", "scroll", "report-size", "report-seen", "set-media"].includes(step.op)) return false;
+  if (["hold-reports", "release-reports", "mark-metrics", "stub-http", "stub-http-reject", "set-online", "set-visibility", "scroll", "report-size", "report-seen", "set-media", "storage-elsewhere", "storage-elsewhere-removed", "storage-elsewhere-cleared"].includes(step.op)) return false;
   if (step.op === "emit-port") return page.evaluate((port) => window.__rt.portDecls.get(port)?.delivery !== 2, step.port);
   if (step.op === "pointer-move") return page.evaluate(({ loc, id }) => {
     const root = window.__rt.root;
@@ -1136,6 +1240,12 @@ const SETUP = {
   "initial-location": () => {},
   "local-storage": () => {},
   "local-storage-unavailable": () => {},
+  "session-storage": () => {},
+  "session-storage-unavailable": () => {},
+  "session-storage-full": out => { out.mount.manualSessionStorageFull = true; },
+  "local-storage-full": out => { out.mount.manualLocalStorageFull = true; },
+  "clipboard-denied": out => { out.mount.manualClipboardDenied = true; },
+  "max-paste-bytes": (out, step) => { out.mount.maxPasteBytes = step.count; },
   "initial-online": () => {},
   "initial-visibility": () => {},
   "initial-media": () => {},
@@ -1194,6 +1304,16 @@ const ENVIRONMENT_SECTIONS = {
       });
     }
   },
+  "session-storage": (env, seed) => {
+    if (seed) for (const [key, value] of env.session) sessionStorage.setItem(key, value);
+    if (!env.session_available) {
+      window.__sessionStorage = sessionStorage;
+      Object.defineProperty(window, "sessionStorage", {
+        get: () => { throw new DOMException("The operation is insecure.", "SecurityError"); },
+        configurable: true,
+      });
+    }
+  },
   connectivity: (env) => { window.__mountOptions.environment.online = () => window.__env.online; },
   visibility: (env) => { window.__mountOptions.environment.visible = () => window.__env.visible; },
   time: () => { window.__mountOptions.environment.now = () => BigInt(window.__env.now_ms); },
@@ -1234,6 +1354,12 @@ async function installEnvironment(page, state, seed = false) {
     window.__mountOptions = { ...mount, environment: {} };
     window.__manualFx = true;
     for (const source of appliers) eval(`(${source})`)(environment, seed);
+    for (const [name, full] of [["localStorage", mount.manualLocalStorageFull], ["sessionStorage", mount.manualSessionStorageFull]]) {
+      if (!full) continue;
+      const store = name === "localStorage" ? (window.__localStorage ?? localStorage) : (window.__sessionStorage ?? sessionStorage);
+      // Seed reads the existing store before its writes become over quota.
+      Object.defineProperty(store, "setItem", { value: () => { throw new DOMException("The quota has been exceeded.", "QuotaExceededError"); }, configurable: true });
+    }
   };
   // Future documents get the next seed before their app starts. Keep the
   // current document unchanged; an exhausted future seed fails its reader
@@ -1324,6 +1450,9 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/ja
 // e.g. /roc-signals/examples/conduit/), and a directory as index.html.
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
+  if (u.pathname === "/storage-driver.html") {
+    res.writeHead(200, { "content-type": "text/html" }); res.end("<!doctype html><title>storage driver</title>"); return;
+  }
   const f = u.pathname.endsWith("/") || path.extname(u.pathname) === "" ? files["index.html"] : files[path.basename(u.pathname)];
   if (!f || !fs.existsSync(f)) {
     res.writeHead(u.pathname === "/favicon.ico" ? 204 : 404);
@@ -1348,17 +1477,32 @@ for (const spec of specs) {
     if (opts.jsonLines) process.stdout.write(`${JSON.stringify({ ...spec, status: "failed" })}\n`);
     continue;
   }
-  const page = await browser.newPage();
+  const context = await browser.createBrowserContext();
+  const page = await context.newPage();
   const t0 = Date.now();
   let failed = null;
   let i = 0;
   try {
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
-    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null, holdingReports: false, pointers: new Map(), activationTable: spec.activation_table, keyTable: spec.key_table, keyDefaults: spec.unmodelled_key_defaults, keyControlTypes: spec.key_control_types };
+    const state = { context, stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null, holdingReports: false, pointers: new Map(), activationTable: spec.activation_table, keyTable: spec.key_table, keyDefaults: spec.unmodelled_key_defaults, keyControlTypes: spec.key_control_types };
     if (!Array.isArray(state.activationTable) || state.activationTable.length !== Object.keys(STEPS).length ||
       new Set(state.activationTable.map((row) => row.op)).size !== state.activationTable.length ||
       state.activationTable.some((row) => !Object.hasOwn(STEPS, row.op))) throw new Error("parser activation table does not name every replay step exactly once");
+    state.leave = null;
+    state.dialogError = null;
+    page.conn.on(page.sessionId, "Page.javascriptDialogOpening", async event => {
+      const intent = state.leave;
+      if (event.type !== "beforeunload" || intent === null) {
+        state.dialogError = `${event.type} dialog opened outside leave-page; use leave-page for a guarded document`;
+        await page.send("Page.handleJavaScriptDialog", { accept: false });
+        return;
+      }
+      intent.dialogs += 1;
+      if (intent.outcome === "unasked") state.dialogError = "leave-page unasked opened a beforeunload dialog";
+      await page.send("Page.handleJavaScriptDialog", { accept: intent.outcome === "leave" });
+      intent.handled = true;
+    });
     await installEnvironment(page, state, true);
     await page.evaluateOnNewDocument(install, attrOf.toString());
     await page.goto(`http://127.0.0.1:${port}${setup.environment.url}`);
@@ -1374,6 +1518,7 @@ for (const spec of specs) {
       if (h === undefined) throw new Error(`${s.op} has no handler in this runner`);
       if (await isOccurrence(page, s)) await releaseReports(page);
       await h(page, s, state);
+      if (state.dialogError) throw new Error(state.dialogError);
       if (!state.holdingReports) await releaseReports(page);
       if (pageErrors(page).length) throw new Error(`page error: ${pageErrors(page).join("; ")}`);
     }
@@ -1402,7 +1547,7 @@ for (const spec of specs) {
     const line = { protocol: "roc-signals/spec-result/v2", id: spec.id, name: spec.name, status, duration_ns: ms * 1e6, failure };
     process.stdout.write(`${JSON.stringify(line)}\n`);
   }
-  await page.close();
+  await context.close();
 }
 await browser.close();
 server.close();

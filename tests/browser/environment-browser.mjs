@@ -35,7 +35,7 @@ try {
     const sections = bytes => { const parts=new Map(); for(let at=0;at<bytes.length;) { const tag=bytes[at],n=new DataView(bytes.buffer,bytes.byteOffset+at+1,4).getUint32(0,true); parts.set(tag,bytes.slice(at+5,at+5+n)); at+=5+n; } return parts; };
     function capture(environment={}, manual=false, days=366) {
       const memory=new WebAssembly.Memory({initial:2});
-      const declarations=join([section(2,u32(0)),section(5,u32(0)),section(6,u32(0)),section(10,new Uint8Array([days&255,days>>8]))]);
+      const declarations=join([section(2,u32(0)),section(5,u32(0)),section(6,u32(0)),section(10,new Uint8Array([days&255,days>>8])),section(11,u32(0))]);
       new Uint8Array(memory.buffer).set(declarations);
       let mounted=false, length=0, boot;
       const x={ memory,protocol_version:()=>PROTOCOL_VERSION,boot_keys:()=>{},cmd_ptr:()=>0,cmd_len:()=>mounted?0:declarations.length,
@@ -52,7 +52,7 @@ try {
     const owned=new Uint8Array(Array.from({length:16},(_,i)=>i));
     const f=capture({now:()=>{reads++;return min;},seed:()=>owned,languages:()=>["", "é".repeat(32)],timeZone:days=>{daysSeen=days;return {name:"x",from_ms:1n,until_ms:1n,offsets:[{from_ms:1n,minutes:-2147483648}]};}});
     const parts=sections(f.boot);
-    check("boot sections are ordered and carry exact signed I64 and owned seed bytes", [...parts.keys()].join()==="1,2,3,4,6,7,8,9,10" && new DataView(parts.get(7).buffer).getBigInt64(0,true)===min && parts.get(8).every((b,i)=>b===i) && reads===1 && daysSeen===366);
+    check("boot sections are ordered and carry exact signed I64 and owned seed bytes", [...parts.keys()].join()==="1,2,3,4,6,7,8,9,10,11" && new DataView(parts.get(7).buffer).getBigInt64(0,true)===min && parts.get(8).every((b,i)=>b===i) && reads===1 && daysSeen===366);
     check("injected point zone need not contain mount time", !f.runtime.poisoned && parts.get(10).length===37);
     f.close();
     let defaultReads=0;

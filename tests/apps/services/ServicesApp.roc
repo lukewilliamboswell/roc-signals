@@ -268,12 +268,79 @@ ServicesApp := [].{
 		),
 	)
 
+	## Exercise guard lifetime and paste decoding against the actual engine.
+	persistence_probe : {} -> Elem(ctx)
+	persistence_probe = |_| Engine.state(
+		{ enabled: False, mounted: True, pasted: "" },
+		|state| Engine.element(
+			"main",
+			[],
+			[
+				Html.button("Guard on", [], state.update(|value| { ..value, enabled: True })),
+				Html.button("Guard off", [], state.update(|value| { ..value, enabled: False })),
+				Html.button("Dispose guard", [], state.update(|value| { ..value, mounted: False })),
+				Html.button("Mount guard", [], state.update(|value| { ..value, mounted: True })),
+				Engine.when(state.signal().map(|value| value.mounted), || Engine.guard_leave(state.signal().map(|value| value.enabled)), || Engine.text("")),
+				Engine.element(
+					"div",
+					[
+						Html.aria_label("Paste text"),
+						Engine.attr("tabindex", "0"),
+						Html.on_paste_text(
+							state.set_value(
+								|value, pasted| {
+									..value,
+									pasted: match pasted {
+										Text(text) => text
+										TooLarge => "too large"
+									},
+								},
+							),
+						),
+					],
+					[],
+				),
+				Html.p_s(state.signal().map(|value| value.pasted), [Engine.test_id("pasted")]),
+				Html.link("Leave link", "/after-leaving", []),
+			],
+		),
+	)
+
+	## A storage event supplies its captured value without a later read. The
+	## unavailable-getter fixture has no area identity from which to classify it.
+	storage_probe : {} -> Elem(ctx)
+	storage_probe = |_| Engine.state(
+		"initial",
+		|state| Engine.element(
+			"main",
+			[],
+			[
+				Engine.watch(
+					Engine.const({}),
+					|_| [StorageChanges("document")],
+					state.on_result(
+						|prior, _, result| match result {
+							Value(value) => value
+							Missing => "missing"
+							_ => prior
+						},
+					),
+				),
+				Html.p_s(state.signal(), [Engine.test_id("storage-change")]),
+			],
+		),
+	)
+
 	## The program both hosts run.
 	program : Engine.Program
 	program = Engine.program_boot(
 		{ storage_keys: [], max_inflight: 8 },
 		|boot|
-			if boot.url.ends_with("#environment") {
+			if boot.url.ends_with("#storage") {
+				ServicesApp.storage_probe({})
+			} else if boot.url.ends_with("#persistence") {
+				ServicesApp.persistence_probe({})
+			} else if boot.url.ends_with("#environment") {
 				ServicesApp.environment_probe(boot)
 			} else if boot.url.ends_with("#limit-children") {
 				ServicesApp.too_wide({})

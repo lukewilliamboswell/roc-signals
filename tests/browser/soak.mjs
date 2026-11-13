@@ -244,7 +244,7 @@ const CYCLES = {
   "data-grid": [["fill", ["label", "Filter"], "Node-0007"], ["fill", ["label", "Filter"], ""], ["click", ["role", "button", "Next page"]], ["click", ["role", "button", "Previous page"]]],
   // Append + remove a section is not an exact inverse in this app (one more
   // trailing newline per trip): load two fixed documents instead.
-  "markdown-editor": [["click", ["role", "button", "Load heading drill"]], ["click", ["role", "button", "Load document without headings"]]],
+  "markdown-editor": [["click", ["role", "button", "Load heading drill"]], ["click", ["role", "button", "Save"]], ["click", ["role", "button", "Copy as HTML"]], ["click", ["role", "button", "Load document without headings"]], ["click", ["role", "button", "Save"]], ["click", ["role", "button", "Copy as markdown"]]],
   conduit: [["click", ["role", "link", "Sign in"]], ["click", ["role", "link", "Home"]]],
   "field-notes": [
     ["fill", ["label", "Note body"], "Soak note"],

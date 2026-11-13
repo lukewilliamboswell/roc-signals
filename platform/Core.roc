@@ -1383,6 +1383,10 @@ Core := [].{
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
 		StorageGet(Str),
+		SessionStorageGet(Str),
+		StorageChanges(Str),
+		StorageWriteFailures,
+		ClipboardWrite({ text : Str, html : [Plain, Html(Str)] }),
 		Timer(U32),
 		Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
 		Interval(U32),
@@ -1414,6 +1418,8 @@ Core := [].{
 		ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
+		SessionStorageSet(Str, Str),
+		SessionStorageRemove(Str),
 		ReadBytes({ file : File, max_bytes : U64 }),
 		ReadUtf8({ file : File, max_bytes : U64 }),
 		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32 }),
@@ -1464,6 +1470,8 @@ Core := [].{
 		ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
+		SessionStorageSet(Str, Str),
+		SessionStorageRemove(Str),
 		PortCommand({ port : Str, message : PortMessage }),
 		Save({ file : File, name : Str }),
 	]
@@ -1480,7 +1488,7 @@ Core := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
@@ -1682,6 +1690,20 @@ Core := [].{
 		|_| 0,
 	)
 
+	## Keep the native leave warning while this site is mounted and its signal
+	## is true. The turn settles all guards once; this site takes no awaited id.
+	guard_leave : Signal(ctx, Bool) -> Elem(ctx)
+	guard_leave = |value| Site(
+		Mount(
+			|env, _args, tx| {
+				on = (value.read)(env)
+				next = if (on) with_fx(tx, |fx| { ..fx, guard: { ..fx.guard, live: fx.guard.live + 1 } }) else tx
+				(guard_inst(value, on), eff_mask(value), count_evals(next, 1))
+			},
+		),
+		|_| eff_mask(value),
+	)
+
 	## A cleanup site that issues nothing and only counts its runs under `name`.
 	cleanup : Str -> Elem(ctx)
 	cleanup = |name| Core.on_cleanup(name, Core.const({}), |_| [])
@@ -1716,7 +1738,7 @@ Core := [].{
 		Mount(
 			|env, args, tx| {
 				a = (v.read)(env)
-				cfg = { v, plan, step: replanned(plan), react, path: args.path }
+				cfg = { v, plan: |_, value| plan(value), step: |_, old, value, path| replanned(plan)(old, value, path), react, path: args.path }
 				(t1, owned) = issue(count_evals(tx, 1), args.path, plan(a), a, [])
 				(latest_inst(cfg, a, owned), eff_mask(v), t1)
 			},
@@ -1853,6 +1875,15 @@ Core := [].{
 	on_post : Signal(ctx, Outbox(item)), (item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
 	on_post = |v, plan, react| effect(v, False, |_| [], posted_step(plan), posted_reaction(react))
 
+	## Issue a small posted intent using a reading sampled only when it is sent.
+	## Both signals declare reads, but the site's retained value and each result's
+	## issued-for value are the outbox item alone, never this transient reading.
+	on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
+	on_post_by = |box, reading, plan, react| {
+		watched = { ..box, mask: eff_mask(box).bitwise_or(eff_mask(reading)), sel: NoSel }
+		effect_reading(watched, False, |_, _| [], |env, before, value, path| posted_step(|item| plan((reading.read)(env), item))(before, value, path), posted_reaction(react))
+	}
+
 	## The `resource` configuration of a layer that follows the answer to one
 	## request for its input, for anything with `request` and `result` (a
 	## worker task, a preparation's task, a port call). A new input
@@ -1975,6 +2006,8 @@ Core := [].{
 		online : Bool ?? True,
 		visible : Bool ?? True,
 		storage_available : Bool ?? True,
+		session : List((Str, Str)) ?? [],
+		session_available : Bool ?? True,
 		media : List((Str, Bool)) ?? [],
 		now_ms : I64 ?? 0,
 		seed : U128 ?? 0,
@@ -2019,8 +2052,8 @@ Core := [].{
 			$at = start + length.to_u64()
 		}
 		if $at != bytes.len() {
-			tag = bytes.get($at) ? |_| "contract: boot section after time-zone missing tag"
-			return Err("contract: boot section ${tag.to_str()} after section 10 (time-zone): unexpected section")
+			tag = bytes.get($at) ? |_| "contract: boot section after session-storage missing tag"
+			return Err("contract: boot section ${tag.to_str()} after section 11 (session-storage): unexpected section")
 		}
 		Ok($boot)
 	}
@@ -2046,13 +2079,22 @@ Core := [].{
 		for offset in zone.offsets {
 			$offsets = put_u32(put_u64($offsets, offset.from_ms.to_u64_wrap()), offset.minutes.to_u32_wrap())
 		}
-		put_section(put_section(seed, 9, languages), 10, $offsets)
+		zone_bytes = put_section(put_section(seed, 9, languages), 10, $offsets)
+		body = boot.session.fold(put_u32([if (boot.session_available) 1 else 0], boot.session.len().to_u32_wrap()), |bytes, (key, value)| put_str(put_str(bytes, key), value))
+		put_section(zone_bytes, 11, body)
 	}
 
 	## The boot value of a declared storage key, or `Missing` if it has none.
 	boot_storage : Boot, Str -> Try(Str, [Missing])
 	boot_storage = |boot, key| match boot.storage.find_first(|(k, _)| k == key) {
 		Ok((_, v)) => Ok(v)
+		Err(_) => Err(Missing)
+	}
+
+	## The session draft read before mount, or Missing when that key was absent.
+	boot_session : Boot, Str -> Try(Str, [Missing])
+	boot_session = |boot, key| match boot.session.find_first(|(name, _)| name == key) {
+		Ok((_, value)) => Ok(value)
 		Err(_) => Err(Missing)
 	}
 
@@ -2327,6 +2369,13 @@ Core := [].{
 	on_pointer_paced : HandlerOf(ctx, Pointer) -> Attr(ctx)
 	on_pointer_paced = |handler| attach_kind("pointermove", pointer_kind(Move), 8, handler)
 
+	## Text captured during a paste, or a refusal before it enters Wasm.
+	Paste : [Text(Str), TooLarge]
+
+	## Attach the bounded text-paste codec; its element prevents the native paste.
+	on_paste_text : HandlerOf(ctx, Paste) -> Attr(ctx)
+	on_paste_text = |handler| attach_kind("paste", paste_kind, 1, handler)
+
 	## Follow this element's scroll offsets as a report at the next frame.
 	on_scroll : HandlerOf(ctx, Layout.Scroll) -> Attr(ctx)
 	on_scroll = |handler| attach_kind("scroll", scroll_kind, 8, handler)
@@ -2506,7 +2555,7 @@ Core := [].{
 	take_cmds : App, List(U8) -> (App, List(U8))
 	take_cmds = |{ root, tx, programs }, buf| {
 		{ cmds, next, free, routes, work, paths, site_free, observations, fx } = tx
-		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch } = fx
+		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch } = fx
 		{ mounting, asked, types, seen: _ } = batch
 		var $cmds = cmds
 		if asked {
@@ -2518,7 +2567,7 @@ Core := [].{
 		} else if $cmds.len() == 1 {
 			$cmds = $cmds.clear()
 		}
-		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
+		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
 		({ root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2 }, programs }, $cmds)
 	}
 
@@ -2537,7 +2586,7 @@ Core := [].{
 			$out = $out.append(work_get(a.tx.work, $i))
 			$i = $i + 1
 		}
-		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42), work_get(a.tx.work, 43), a.tx.fx.observed.live, work_get(a.tx.work, 45)])
+		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42), work_get(a.tx.work, 43), a.tx.fx.observed.live, work_get(a.tx.work, 45), work_get(a.tx.work, 46)])
 	}
 
 	# ------------------------------------------------------------------
@@ -2588,7 +2637,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 14
+	protocol_version = 15
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -2660,6 +2709,7 @@ Core := [].{
 		ports : Ports,
 		media : List(Str),
 		zone_days : U16,
+		session_keys : List(Str),
 	}.{
 
 		## Declare the ports the program's effect sites use (see [PortDecl]):
@@ -2694,9 +2744,10 @@ Core := [].{
 		media = p.media
 		keys = p.keys
 		zone_days = p.zone_days
+		session_keys = p.session_keys
 		{
 			version: p.version,
-			keys: || put_section(put_media_table((ports.table)(keys(), (ports.ready)(ports.decls)), media), 10, [zone_days.to_u8_wrap(), zone_days.shr_zf_wrap(8).to_u8_wrap()]),
+			keys: || put_section(put_section(put_media_table((ports.table)(keys(), (ports.ready)(ports.decls)), media), 10, [zone_days.to_u8_wrap(), zone_days.shr_zf_wrap(8).to_u8_wrap()]), 11, session_keys.fold(put_u32([], session_keys.len().to_u32_wrap()), put_str)),
 			init: |boot| init({ workers: catalogue_names(workers), ports: { ..ports, decls: (ports.ready)(ports.decls) }, media }, boot),
 			event: p.event,
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
@@ -2824,7 +2875,7 @@ Core := [].{
 	## what differs, and let later boot declarations leave existing apps intact.
 	## zone_days declares the zone probe span on each side of mount (default
 	## 366, at most 7305); zero requests only the offset at mount.
-	ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32, media : List(Str) ?? [], zone_days : U16 ?? 366 }
+	ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32, media : List(Str) ?? [], zone_days : U16 ?? 366, session_keys : List(Str) ?? [] }
 
 	## The [Program] for an app that needs no boot data: mount `view()` with the
 	## default in-flight bound of 32.
@@ -2873,6 +2924,11 @@ Core := [].{
 					Ok(_) => {}
 					Err(message) => crash message
 				}
+				for (key, _) in b.session {
+					if !cfg.session_keys.contains(key) {
+						crash "contract: boot section 11 (session-storage) pair for undeclared key \"${key}\""
+					}
+				}
 				finish(mount_start(cfg.max_inflight, names, start(b), view(b)), [], [])
 			},
 			event: |inst, buf, wbuf, node, handler, payload| {
@@ -2889,6 +2945,7 @@ Core := [].{
 			ports: no_ports,
 			media,
 			zone_days: cfg.zone_days,
+			session_keys: cfg.session_keys,
 		}
 	}
 }
@@ -3322,15 +3379,15 @@ w_port_sends = 40
 ## effect counters, port commands (40), property commands (41–42), and
 ## released registrations (43), live observations (44), and marked batches (45).
 w_record_count : U64
-w_record_count = w_count + 14
+w_record_count = w_count + 15
 
 ## The work counters as plain fields (`c01` is counter 1): bumping one
 ## updates a value in the accumulator and never allocates, so counting
 ## cannot cost an allocation or a copy on any path.
-Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64, c45 : U64 }
+Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64, c45 : U64, c46 : U64 }
 
 work_zero : Work
-work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0, c45: 0 }
+work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0, c45: 0, c46: 0 }
 
 ## Add `n` to counter `i`; counter 0 (and any index past the last) is the
 ## unused sink.
@@ -3372,6 +3429,7 @@ add_work = |w, i, n| match i {
 	42 => { ..w, c42: w.c42 + n }
 	43 => { ..w, c43: w.c43 + n }
 	45 => { ..w, c45: w.c45 + n }
+	46 => { ..w, c46: w.c46 + n }
 	_ => w
 }
 
@@ -3414,6 +3472,7 @@ work_get = |w, i| match i {
 	42 => w.c42
 	43 => w.c43
 	45 => w.c45
+	46 => w.c46
 	_ => 0
 }
 
@@ -3466,7 +3525,7 @@ put_presence = |bytes, presence| match presence {
 ## opcode is counted in the work counters; property commands use the
 ## dedicated PROP and HPROP slots (design.md, "Work assertions").
 emit_op : Tx, U8, (List(U8) -> List(U8)) -> Tx
-emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else op.to_u64(), 1), paths, site_free, observations, fx }
+emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else if (op == 25) 46 else op.to_u64(), 1), paths, site_free, observations, fx }
 
 ## Add `n` to work counter `i`.
 bump : Tx, U64, U64 -> Tx
@@ -3551,9 +3610,9 @@ release_node = |tx, owner| {
 ## Move the registration index out before modifying it, leaving no second
 ## holder in Fx that would make each observed-node change copy the index.
 with_registrations : Fx, (List(U32), LiveObservations -> (List(U32), LiveObservations)) -> Fx
-with_registrations = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch }, change| {
+with_registrations = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }, change| {
 	(documents, observations) = change(document_nodes, observed)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups, batch }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups, guard, batch }
 }
 
 ## Release a static node id and its route.
@@ -3613,9 +3672,9 @@ drop_name = |fx, { node, name, path }| if (name.is_empty()) fx else with_refs(
 ## Move the reference indexes and pending checks out of the accumulator so
 ## updates retain one holder for each map, list and reverse-index column.
 with_refs : Fx, (RefMap, List(List(RefOwned)), List(TurnEnd) -> (RefMap, List(List(RefOwned)), List(TurnEnd))) -> Fx
-with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch }, change| {
+with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }, change| {
 	(names, positions, checks) = change(refs, ref_pos, focus)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups, batch }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups, guard, batch }
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
@@ -7101,6 +7160,19 @@ decode_res_with = |b, port_res| {
 		Online(flag())
 	} else if tag == 9 {
 		Visible(flag())
+	} else if tag == 23 {
+		bare(Copied)
+	} else if tag == 24 {
+		match b {
+			[_, 1] => ClipboardFailed(NotAllowed)
+			[_, 2] => ClipboardFailed(Unavailable)
+			_ => crash "contract: ClipboardFailed needs one reason byte, 1 or 2"
+		}
+	} else if tag == 25 {
+		match b {
+			[_, store, reason, ..] if (store == 1 or store == 2) and (reason == 1 or reason == 2) => StorageFailed({ store: if (store == 1) Local else Session, reason: if (reason == 1) Quota else Unavailable, key: text(3) })
+			_ => crash "contract: StorageFailed needs store and reason bytes, each 1 or 2"
+		}
 	} else if tag == 22 {
 		Matches(flag())
 	} else if tag == 11 {
@@ -7412,6 +7484,7 @@ Fx : {
 
 	## `on_cleanup` runs, by name, in first-run order.
 	cleanups : List((Str, U64)),
+	guard : { live : U64, emitted : Bool },
 
 	## Types accumulated across every turn of one host call, never across calls.
 	batch : TransitionBatch,
@@ -7450,12 +7523,12 @@ PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe
 TransitionBatch : { mounting : Bool, asked : Bool, types : List(Str), seen : Dict(Str, {}) }
 
 fx_empty : Fx
-fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
+fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
 
 ## Collect a request without allocating an awaited id. Removing the batch from
 ## its holder before updating keeps its hash set and ordered list unique.
 collect_transition : Fx, List(Str) -> Fx
-collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch }, names| {
+collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }, names| {
 	{ mounting, asked, types, seen } = batch
 	var $types = types
 	var $seen = seen
@@ -7467,7 +7540,7 @@ collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale,
 			}
 		}
 	}
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen } }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen } }
 }
 
 ## The first follow-up id: follow-ups are a space of their own, above
@@ -7505,7 +7578,7 @@ Owned(a) : { id : U32, sub : Bool, keep : Bool, a : a, at : U64 }
 ## mount, and `step` those for a change from the value last seen to a new
 ## one at the site's path (`plan` of the new value, except for `on_post`,
 ## which checks the change).
-EffectCfg(ctx, a) : { v : Signal(ctx, a), plan : (a -> List(Request)), step : (a, a, List(U32) -> List(Request)), react : Reaction(ctx, a), path : List(U32) }
+EffectCfg(ctx, a) : { v : Signal(ctx, a), plan : (ctx, a -> List(Request)), step : (ctx, a, a, List(U32) -> List(Request)), react : Reaction(ctx, a), path : List(U32) }
 
 ## The `step` of a site that issues `plan` of each new value.
 replanned : (a -> List(Request)) -> (a, a, List(U32) -> List(Request))
@@ -7530,6 +7603,8 @@ is_sub = |req| match req {
 	OnlineChanges => True
 	VisibilityChanges => True
 	MediaChanges(_) => True
+	StorageChanges(_) => True
+	StorageWriteFailures => True
 	PortSubscribe(_) => True
 	_ => False
 }
@@ -7544,6 +7619,8 @@ is_kept = |req| match req {
 	Http(_) => True
 	Upload(_) => True
 	StorageGet(_) => True
+	SessionStorageGet(_) => True
+	ClipboardWrite(_) => True
 	PortCall(_) => True
 	Fetch(_) => True
 	_ => False
@@ -7572,6 +7649,13 @@ put_fx = |c, id, req| {
 			put_u32(put_str($b, body), min_u32(timeout_ms, max_timeout_ms))
 		}
 		StorageGet(k) => put_str(head.append(2), k)
+		SessionStorageGet(key) => put_str(head.append(17), key)
+		StorageChanges(key) => put_str(head.append(18), key)
+		StorageWriteFailures => head.append(20)
+		ClipboardWrite({ text, html }) => match html {
+			Plain => put_str(head.append(19), text).append(0)
+			Html(markup) => put_str(put_str(head.append(19), text).append(1), markup)
+		}
 		Timer(ms) => put_u32(head.append(3), ms)
 		Interval(ms) => put_u32(head.append(4), ms)
 		Popstate => head.append(5)
@@ -7609,12 +7693,12 @@ fx_admit : Tx, List(U32), Request -> (U32, Tx)
 fx_admit = |tx, path, req| {
 	# A port request's bytes are written at the end of the turn.
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = turn_end_later(tx, path, req)
-	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch } = fx
+	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch } = fx
 	if live.len() >= max {
-		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch }
+		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
 		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2 })
 	} else {
-		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch }
+		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
 		(id, { cmds: put_req(cmds, id, req), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2 })
 	}
 }
@@ -7686,6 +7770,12 @@ issue = |tx, path, reqs, a, owned| {
 			}
 			StorageSet(k, v) => {
 				$tx = emit_op($tx, 16, |c| put_str(put_str(c.append(1), k), v))
+			}
+			SessionStorageSet(key, value) => {
+				$tx = emit_op($tx, 16, |bytes| put_str(put_str(bytes.append(3), key), value))
+			}
+			SessionStorageRemove(key) => {
+				$tx = emit_op($tx, 16, |bytes| put_str(bytes.append(4), key))
 			}
 			StorageRemove(k) => {
 				$tx = emit_op($tx, 16, |c| put_str(c.append(2), k))
@@ -7854,14 +7944,20 @@ take_dropped = |cols, depth| {
 ## An effect site. `initial`: also issue for the value at mount.
 effect : Signal(ctx, a), Bool, (a -> List(Request)), (a, a, List(U32) -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
 	where [a.is_eq : a, a -> Bool]
-effect = |v, initial, plan, step, react| Site(
+effect = |v, initial, plan, step, react| effect_reading(v, initial, |_, value| plan(value), |_, before, value, path| step(before, value, path), react)
+
+## The plan borrows the current environment only while issuing. The site
+## retains its watched value, never a reading used to construct the requests.
+effect_reading : Signal(ctx, a), Bool, (ctx, a -> List(Request)), (ctx, a, a, List(U32) -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
+	where [a.is_eq : a, a -> Bool]
+effect_reading = |v, initial, plan, step, react| Site(
 	Mount(
 		|env, args, tx| {
 			a = (v.read)(env)
 			cfg = { v, plan, step, react, path: args.path }
 			t1 = count_evals(tx, 1)
 			if initial {
-				(t2, owned) = issue(t1, args.path, plan(a), a, [])
+				(t2, owned) = issue(t1, args.path, plan(env, a), a, [])
 				(effect_inst(cfg, a, owned), eff_mask(v), t2)
 			} else {
 				(effect_inst(cfg, a, []), eff_mask(v), t1)
@@ -7905,6 +8001,8 @@ command_request = |command| match command {
 	ScrollTo(name, props) => ScrollTo(name, props)
 	StorageSet(key, value) => StorageSet(key, value)
 	StorageRemove(key) => StorageRemove(key)
+	SessionStorageSet(key, value) => SessionStorageSet(key, value)
+	SessionStorageRemove(key) => SessionStorageRemove(key)
 	PortCommand(sent) => PortCommand(sent)
 	Save(saved) => Save(saved)
 }
@@ -7935,7 +8033,7 @@ effect_inst = |cfg0, last0, owned0| {
 						if a == last {
 							(effect_inst(cfg, last, owned), Done, t1)
 						} else {
-							(t2, owned2) = issue(t1, cfg.path, (cfg.step)(last, a, cfg.path), a, owned)
+							(t2, owned2) = issue(t1, cfg.path, (cfg.step)(env, last, a, cfg.path), a, owned)
 							(effect_inst(cfg, a, owned2), Done, t2)
 						}
 					}
@@ -8021,7 +8119,7 @@ latest_inst = |cfg0, last0, owned0| {
 						if a == last {
 							(latest_inst(cfg, last, owned), Done, t1)
 						} else {
-							(t2, owned2) = issue(fx_supersede(t1, owned), cfg.path, (cfg.plan)(a), a, [])
+							(t2, owned2) = issue(fx_supersede(t1, owned), cfg.path, (cfg.plan)(env, a), a, [])
 							(latest_inst(cfg, a, owned2), Done, t2)
 						}
 					}
@@ -8406,6 +8504,29 @@ boot_sections = |queries| [
 			Ok({ ..boot, zone })
 		},
 	},
+	{
+		tag: 11,
+		name: "session-storage",
+		read: |boot, body| {
+			available = boot_flag(body, 0)?
+			count = boot_u32(body, 1)?.to_u64()
+			var $at = 5.U64
+			var $pairs = []
+			var $index = 0.U64
+			while $index < count {
+				(key, next) = boot_str(body, $at)?
+				(value, end) = boot_str(body, next)?
+				$pairs = $pairs.append((key, value))
+				$at = end
+				$index = $index + 1
+			}
+			boot_end(body, $at)?
+			if !available and !$pairs.is_empty() {
+				return Err("pairs while storage is unavailable")
+			}
+			Ok({ ..boot, session: $pairs, session_available: available })
+		},
+	},
 ]
 
 ## The zone shape is checked at the boot boundary and for a hand-built
@@ -8565,7 +8686,10 @@ turn = |{ root, tx, programs }, path, h, payload| {
 ## against the instance's `programs`, in issue order, and then the bytes of
 ## the turn's port requests, each where it was issued (see [PortAt]).
 flush_turn : Tx, Catalogue -> Tx
-flush_turn = |tx, programs| {
+flush_turn = |incoming, programs| {
+	guard = incoming.fx.guard
+	on = guard.live > 0
+	tx = if (on == guard.emitted) incoming else emit_op(with_fx(incoming, |fx| { ..fx, guard: { live: guard.live, emitted: on } }), 25, |bytes| bytes.append(if (on) 1 else 0))
 	if tx.fx.focus.is_empty() {
 		{ ..tx, observations: { echo: False, shown: tx.observations.shown.clear() } }
 	} else {
@@ -8733,6 +8857,7 @@ work_bytes = |inst, buf| {
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.cancelled), fx.reparented), fx.skipped), fx.live.len())
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, w_port_sends)), work_get(counters, 41)), work_get(counters, 42))
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, 43)), fx.observed.live), work_get(counters, 45))
+	$b = put_u64($b, work_get(counters, 46))
 	runs = inst.tx.fx.cleanups
 	$b = put_u32($b, runs.len().to_u32_wrap())
 	for (name, k) in runs {
@@ -8756,6 +8881,7 @@ settle_note = |a, b| {
 		},
 	)
 	pairs = [
+		("live leave guards", a.guard.live, b.guard.live),
 		("issued", a.issued, b.issued),
 		("refused", a.refused, b.refused),
 		("stale", a.stale, b.stale),
@@ -9352,7 +9478,7 @@ expect {
 expect {
 	program = Core.driver(Core.program_boot({ storage_keys: ["theme", "theme"] }, |_| Core.text("")))
 	keys = put_str(put_str(put_u32([], 2), "theme"), "theme")
-	(program.keys)() == put_section(put_media_table(put_section(put_section([], 2, keys), 5, put_u32([], 0)), []), 10, [110, 1])
+	(program.keys)() == put_section(put_section(put_media_table(put_section(put_section([], 2, keys), 5, put_u32([], 0)), []), 10, [110, 1]), 11, put_u32([], 0))
 }
 
 ## A storage declaration and every port shape retain their bodies inside
@@ -9369,7 +9495,7 @@ expect {
 	command = put_u32(put_str(put_u32([], 3), "command").concat([1, 0]), 0)
 	call_bytes = put_u32(put_str(command, "call").concat([2, 0]), 0)
 	ports = put_u32(put_str(call_bytes, "updates").concat([3, 1]), 3)
-	(program.keys)() == put_section(put_media_table(put_section(put_section([], 2, keys), 5, ports), []), 10, [110, 1])
+	(program.keys)() == put_section(put_section(put_media_table(put_section(put_section([], 2, keys), 5, ports), []), 10, [110, 1]), 11, put_u32([], 0))
 }
 
 ## Pointer bytes retain the browser's button, modifier and zone facts without
@@ -9443,7 +9569,7 @@ expect encode_keymap(Core.Keymap.prevent([Core.Chord.plain("")]).concat(Core.Key
 expect read_key(put_str(put_str(put_str([0], "Escape"), "").append(0), "")).is_err()
 
 ## Serialized work retains RELEASE at counter 43 and starts the cleanup table
-## after all 46 counters, including a multibyte cleanup name and its run count.
+## after all 47 counters, including a multibyte cleanup name and its run count.
 expect {
 	mounted = Core.mount(
 		Core.state(
@@ -9473,7 +9599,7 @@ expect {
 	(name, after_name) = get_str(bytes, cleanup_at + 4, "cleanup name")
 	runs = get_u64(bytes, after_name, "cleanup runs")
 	{ count, counters_match: $decoded == counters, released: $decoded.get(43), names, name, runs, consumed: after_name + 8 == bytes.len() } == {
-		count: 46,
+		count: 47,
 		counters_match: True,
 		released: Ok(1),
 		names: 1,
@@ -9836,4 +9962,100 @@ expect {
 		{ ..base, zone: { name: "x", from_ms: 0, until_ms: 1, offsets: [{ from_ms: 0, minutes: 0 }, { from_ms: 2, minutes: 1 }] } },
 	]
 	bad.all(|boot| Core.read_boot(Core.write_boot(boot)).is_err()) and Core.read_boot(Core.write_boot({ zone: { name: "", from_ms: 0, until_ms: 0, offsets: [{ from_ms: 0, minutes: -2147483648 }] } })).is_ok()
+}
+
+## One guard owns just its last Boolean, so a flip or disposal adjusts the
+## instance count in constant work. Publication waits for the turn to finish.
+guard_inst : Signal(ctx, Bool), Bool -> Inst(ctx)
+guard_inst = |value, last| Inst(
+	|env, msg, tx| match msg {
+		Changed(mask) => {
+			if eff_mask(value).bitwise_and(mask) == 0 {
+				(guard_inst(value, last), Done, tx)
+			} else {
+				on = (value.read)(env)
+				next = if (on == last) tx else with_fx(tx, |fx| { ..fx, guard: { ..fx.guard, live: if (on) fx.guard.live + 1 else fx.guard.live - 1 } })
+				(guard_inst(value, on), Done, count_evals(next, 1))
+			}
+		}
+		Fire(_, _, _, _) => (guard_inst(value, last), Pending(env, no_layers), tx)
+		Dispose(_) => (noop({}), Orphaned([]), if (last) with_fx(tx, |fx| { ..fx, guard: { ..fx.guard, live: fx.guard.live - 1 } }) else tx)
+	},
+)
+
+paste_kind : Core.Kind(Core.Paste)
+paste_kind = {
+	code: 9,
+	decode: |payload, site| match payload {
+		Ev([0, .. as bytes]) => Text(Str.from_utf8(bytes) ?? crash "contract: paste text is not UTF-8 at site ${show_path(site)}")
+		Ev([1]) => TooLarge
+		_ => crash "contract: malformed paste-text payload at site ${show_path(site)}"
+	},
+}
+
+## A guard takes no node id or awaited slot, and only a changed aggregate emits.
+expect {
+	mounted = Core.mount(Core.guard_leave(Core.const(True)))
+	(state, commands) = Core.take_cmds(mounted, [])
+	(idle, empty) = Core.take_cmds(state, [])
+	{ commands, empty, pending: Core.fx_live(idle), count: Core.work_counters(idle).get(46), settled: Core.settled(idle).is_ok() } == { commands: [0, 25, 1], empty: [], pending: [], count: Ok(1), settled: True }
+}
+
+## Replacing one true guard with another within a turn never toggles the warning.
+expect {
+	initial = Core.mount(Core.state(True, |selected| Core.element("main", [], [Core.element("button", [Core.on_click(selected.update(|on| !on))], []), Core.when(selected.signal(), || Core.guard_leave(Core.const(True)), || Core.guard_leave(Core.const(True)))])))
+	(ready, _) = Core.take_cmds(initial, [])
+	changed = Core.event(ready, 2, 0, "")
+	(settled, commands) = Core.take_cmds(changed, [])
+	{ guards: settled.tx.fx.guard.live, commands: Core.work_counters(settled).get(46), settled: Core.settled(settled).is_ok(), nonempty: !commands.is_empty() } == { guards: 1, commands: Ok(1), settled: True, nonempty: False }
+}
+
+## False signals and scope disposal remove exactly their own guard contribution.
+expect {
+	initial = Core.mount(Core.state(True, |on| Core.element("main", [], [Core.element("button", [Core.on_click(on.update(|value| !value))], []), Core.guard_leave(on.signal()), Core.when(on.signal(), || Core.guard_leave(Core.const(True)), || Core.text(""))])))
+	(ready, _) = Core.take_cmds(initial, [])
+	changed = Core.event(ready, 2, 0, "")
+	{ guards: changed.tx.fx.guard.live, emitted: changed.tx.fx.guard.emitted, commands: Core.work_counters(changed).get(46), pending: Core.fx_live(changed), settled: Core.settled(changed).is_ok() } == { guards: 0, emitted: False, commands: Ok(2), pending: [], settled: True }
+}
+
+## Session values retain their own availability, independent of local storage.
+expect {
+	boot = Core.read_boot(Core.write_boot({ storage: [("saved", "old")], session: [("draft", "new λ")] }))?
+	{ session: Core.boot_session(boot, "draft"), local: Core.boot_storage(boot, "saved"), missing: Core.boot_session(boot, "absent"), unavailable: Core.read_boot(Core.write_boot({ session_available: False, session: [("draft", "x")] })).is_err() } == { session: Ok("new λ"), local: Ok("old"), missing: Err(Missing), unavailable: True }
+}
+
+## A selected-row reading contributes its selection dependency even though
+## its ordinary mask is zero, without being sampled while the site is built.
+expect {
+	selection : Signal(Root({}), Str)
+	selection = { mask: 8, read: |_| "chosen", sel: NoSel }
+	row : RowRef(Root({}), Str)
+	row = { depth: 1 }
+	reading = row.select(Core.keyed(selection, 11.U64, 22.U64))
+	box : Signal(Row(Root({}), Str), Outbox(U64))
+	box = { mask: 2, read: |_| Core.outbox({}), sel: NoSel }
+	elem_reads(Core.on_post_by(box, reading, |_, _| [], Core.ignore({})), 1) == 10
+}
+
+## A normal reading is not evaluated at mount or for a reading-only write;
+## posting samples its settled value and retains the small marker alone.
+expect {
+	initial = Core.mount(
+		Core.state(
+			{ out: Core.outbox({}), value: 0.U64 },
+			|state| Core.element(
+				"main",
+				[],
+				[
+					Core.element("button", [Core.on_click(state.update(|value| { ..value, value: 1 }))], []),
+					Core.element("button", [Core.on_click(state.update(|value| { ..value, value: 2, out: value.out.post(7.U64) }))], []),
+					Core.on_post_by(state.signal().map(|value| value.out), state.signal().map(|value| if (value.value == 2) value.value else crash "reading sampled without a post"), |value, item| [Title("${value.to_str()}:${item.to_str()}")], Core.ignore({})),
+				],
+			),
+		),
+	)
+	(ready, _) = Core.take_cmds(initial, [])
+	(changed, empty) = Core.take_cmds(Core.event(ready, 2, 0, ""), [])
+	(posted, commands) = Core.take_cmds(Core.event(changed, 3, 1, ""), [])
+	{ empty, commands, settled: Core.settled(posted).is_ok() } == { empty: [], commands: put_str([0, 17], "2:7"), settled: True }
 }

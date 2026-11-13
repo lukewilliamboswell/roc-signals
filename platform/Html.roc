@@ -28,6 +28,10 @@ Html := [].{
 	popover : Str, PopoverProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 	popover = |label, props, attrs, children| Engine.popover_element({ label, open: props.open, on_toggle: props.on_toggle, dismiss: props.dismiss, attrs, children }, EngineOnly.witness({}))
 
+	## Import bounded plain text from a paste, with the native paste prevented.
+	on_paste_text : HandlerOf(ctx, Engine.Paste) -> Attr(ctx)
+	on_paste_text = |handler| Engine.on_paste_text(handler)
+
 	## Hear a dialog's native close request; prevention follows browser policy.
 	on_cancel : Handler(ctx) -> Attr(ctx)
 	on_cancel = |handler| Engine.on("cancel", handler)

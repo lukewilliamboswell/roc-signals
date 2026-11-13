@@ -748,6 +748,10 @@ Engine := [].{
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
 		StorageGet(Str),
+		SessionStorageGet(Str),
+		StorageChanges(Str),
+		StorageWriteFailures,
+		ClipboardWrite({ text : Str, html : [Plain, Html(Str)] }),
 		Timer(U32),
 		Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
 		Interval(U32),
@@ -779,6 +783,8 @@ Engine := [].{
 		ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
+		SessionStorageSet(Str, Str),
+		SessionStorageRemove(Str),
 		ReadBytes({ file : File, max_bytes : U64 }),
 		ReadUtf8({ file : File, max_bytes : U64 }),
 		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32 }),
@@ -831,6 +837,8 @@ Engine := [].{
 		ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
+		SessionStorageSet(Str, Str),
+		SessionStorageRemove(Str),
 		PortCommand({ port : Str, message : PortMessage }),
 		Save({ file : File, name : Str }),
 	]
@@ -848,7 +856,7 @@ Engine := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name and the files its `{"$file":N}` markers
@@ -1121,16 +1129,24 @@ Engine := [].{
 	on_post : Signal(ctx, Outbox(a)), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
 	on_post = |box, plan, reaction| Core.on_post(box.v, plan, reaction)
 
-	## What the host knows before the first render: the URL, the declared storage
-	## keys' values (missing keys are absent), whether the browser is online and
-	## the page visible, and whether local storage is available at all. When it is
-	## not, the storage list is empty and `StorageSet`/`StorageRemove` do not
-	## persist, so an app that relies on reloads surviving can say so. All
-	## fields have defaults: a URL of `/`, empty available storage, online
-	## and visible, with no media queries, time and seed zero, en-US and full-range
-	## UTC. The wall time, entropy seed, languages and zone are fixed facts for
-	## this instance; a fresh clock sample arrives on Fired. Declared media
-	## values arrive before first paint; boot_media reads one or reports Undeclared.
+	## Send a posted intent with a reading taken only when its plan runs. The
+	## site and its requests retain the small item, not the reading; the reaction
+	## receives that same posted item. Two posts in a turn remain a contract error.
+	on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
+	on_post_by = |box, reading, plan, reaction| Core.on_post_by(box.v, reading.v, plan, reaction)
+
+	## What the host knows before the first render: the URL, independently
+	## declared local and session storage keys' values (missing keys are absent),
+	## whether each storage service is available, and whether the browser is
+	## online and the page visible. An unavailable service has an empty list;
+	## writes to it do not persist and report through StorageWriteFailures.
+	## Read declared session keys with boot_session, and local keys with boot_storage.
+	## All fields have defaults: a URL of `/`, empty available local and session
+	## storage, online and visible, with no media queries, time and seed zero,
+	## en-US and full-range UTC. The wall time, entropy seed, languages and zone
+	## are fixed facts for this instance; a fresh clock sample arrives on Fired.
+	## Declared media values arrive before first paint; boot_media reads one or
+	## reports Undeclared.
 	Boot : Core.Boot
 
 	## The user's UTC offsets over an inclusive millisecond span. Boot supplies
@@ -1145,6 +1161,22 @@ Engine := [].{
 	## guess beyond the table's span; malformed hand-built tables are contracts.
 	zone_offset : Zone, I64 -> Try(I32, [OutsideZone])
 	zone_offset = |zone, at_ms| Core.zone_offset(zone, at_ms)
+
+	## A session draft read before mount, or Missing when no value was stored.
+	boot_session : Boot, Str -> Try(Str, [Missing])
+	boot_session = |boot, key| Core.boot_session(boot, key)
+
+	## Keep the browser's leave warning while any live guard reads True.
+	## This site renders nothing, takes no in-flight slot and settles once per turn.
+	guard_leave : Signal(ctx, Bool) -> Elem(ctx)
+	guard_leave = |value| Core.guard_leave(value.v)
+
+	## Text from the native paste event, or a refusal at the deployment's bound.
+	Paste : Core.Paste
+
+	## Attach text paste through the typed payload codec, preventing its default.
+	on_paste_text : HandlerOf(ctx, Paste) -> Attr(ctx)
+	on_paste_text = |{ h }| Core.on_paste_text(h)
 
 	## The boot value of a declared storage key, or `Missing` if it has none.
 	boot_storage : Boot, Str -> Try(Str, [Missing])
