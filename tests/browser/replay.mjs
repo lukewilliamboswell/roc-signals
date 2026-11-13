@@ -623,7 +623,15 @@ async function traverse(page, delta, what) {
 
 // The same-document rule of the HTML standard: a navigation to a URL that
 // has a fragment and differs from the current one only in the fragment.
-const sameDocument = (from, to) => to.includes("#") && from.split("#")[0] === to.split("#")[0];
+// Let Chrome resolve and serialize the raw input. An explicitly empty
+// fragment still means same-document navigation although location.hash is empty.
+const navigationTarget = (page, input) => page.evaluate(input => {
+  const target = new URL(input, location.href);
+  return {
+    href: target.pathname + target.search + target.hash,
+    sameDocument: target.href.includes("#") && target.pathname + target.search === location.pathname + location.search,
+  };
+}, input);
 
 async function observeKeyInput(page, state) {
   await page.evaluate((defaults, types) => {
@@ -773,13 +781,13 @@ async function storageElsewhere(page, step, state) {
 async function leavePage(page, step, state) {
   if (state.holdingReports) throw new Error("a cross-document navigation cannot leave while reports are held");
   if (state.pointers.size) throw new Error("a cross-document navigation cannot leave while a pointer is down");
-  const from = await page.evaluate(() => location.pathname + location.search + location.hash);
-  if (sameDocument(from, step.text)) throw new Error("leave-page requires a cross-document URL");
+  const target = await navigationTarget(page, step.text);
+  if (target.sameDocument) throw new Error("leave-page requires a cross-document URL");
   const intent = { outcome: step.outcome, dialogs: 0, handled: false };
   state.leave = intent;
   try {
     if (step.outcome !== "stay") {
-      await navigating(page, state, () => page.evaluate(url => { setTimeout(() => location.assign(url), 0); }, step.text), { cross: true, href: step.text });
+      await navigating(page, state, () => page.evaluate(url => { setTimeout(() => location.assign(url), 0); }, step.text), { cross: true, href: target.href });
       if (intent.dialogs !== (step.outcome === "leave" ? 1 : 0)) throw new Error(`leave-page expected ${step.outcome === "leave" ? "one dialog" : "no dialog"}, saw ${intent.dialogs}`);
     } else {
       const before = state.doc;
@@ -1145,12 +1153,12 @@ const STEPS = {
     if (BigInt(n) !== BigInt(s.count)) throw new Error(`cleanup ${JSON.stringify(s.name)} ran ${n} times, expected ${s.count}`);
   },
   navigate: async (page, s, state) => {
-    const from = await page.evaluate(() => location.pathname + location.search + location.hash);
-    if (sameDocument(from, s.text)) return popstateAfter(page, `location.assign(${JSON.stringify(s.text)})`);
+    const target = await navigationTarget(page, s.text);
+    if (target.sameDocument) return popstateAfter(page, `location.assign(${JSON.stringify(s.text)})`);
     if (state.holdingReports) throw new Error("a cross-document navigation cannot leave while reports are held");
     if (state.pointers.size) throw new Error("a cross-document navigation cannot leave while a pointer is down");
     // Any other navigation loads a new document: the app mounts afresh.
-    return navigating(page, state, () => page.evaluate((url) => location.assign(url), s.text), { cross: true, href: s.text });
+    return navigating(page, state, () => page.evaluate((url) => location.assign(url), s.text), { cross: true, href: target.href });
   },
   "set-time": async (page, s, state) => {
     const value = BigInt(s.at_ms);
@@ -1440,7 +1448,8 @@ function install(attrOfSource) {
       window.__nav = { cross: true, external: true, href: to.href };
       return;
     }
-    const same = to.hash !== "" && to.pathname === here.pathname && to.search === here.search;
+    // href retains an explicit empty fragment that hash reports as empty.
+    const same = to.href.includes("#") && to.pathname === here.pathname && to.search === here.search;
     window.__nav = same ? null : { cross: true, href: to.pathname + to.search + to.hash };
     if (!same && (window.__reportsHeld || window.__pointersActive)) e.preventDefault();
   });

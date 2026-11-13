@@ -1,5 +1,6 @@
 import pf.Engine exposing [Elem, In, Root, State]
 import pf.Html
+import LocationApp
 
 ## Browser-services test app: one control per browser service, each with a
 ## spec in `specs/` run natively and in Chrome.
@@ -336,7 +337,9 @@ ServicesApp := [].{
 	program = Engine.program_boot(
 		{ storage_keys: [], max_inflight: 8 },
 		|boot|
-			if boot.url.ends_with("#storage") {
+			if boot.url.starts_with("/url-probe") {
+				LocationApp.view(boot)
+			} else if boot.url.ends_with("#storage") {
 				ServicesApp.storage_probe({})
 			} else if boot.url.ends_with("#persistence") {
 				ServicesApp.persistence_probe({})

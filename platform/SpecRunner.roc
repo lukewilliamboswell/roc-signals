@@ -996,7 +996,8 @@ SpecRunner := [].{
 
 	## Install fixture service behavior before mount emits any storage command.
 	mount_config : Program(state), Scm.Environment, { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64 } -> S(state)
-	mount_config = |program, env, settings| {
+	mount_config = |program, initial_env, settings| {
+		env = { ..initial_env, url: SpecRunner.serialize_location(initial_env.url) }
 		declared = SpecRunner.decode_declarations((program.keys)())
 		boot_kvs = declared.keys.keep_oks(|key| env.storage.find_first(|(name, _)| name == key))
 		boot_session = declared.session_keys.keep_oks(|key| env.session.find_first(|(name, _)| name == key))
@@ -2387,8 +2388,9 @@ SpecRunner := [].{
 			StorageElsewhere({ key, value }) => SpecRunner.storage_elsewhere(program, s, { key: Present(key), value: Present(value) })
 			StorageElsewhereRemoved(key) => SpecRunner.storage_elsewhere(program, s, { key: Present(key), value: Absent })
 			StorageElsewhereCleared => SpecRunner.storage_elsewhere(program, s, { key: Absent, value: Absent })
-			LeavePage({ url, outcome }) => {
-				if SpecRunner.same_document(s.browser.env.url, url) {
+			LeavePage({ url: raw_url, outcome }) => {
+				url = SpecRunner.serialize_location(raw_url)
+				if SpecRunner.same_document(s.browser.env.url, raw_url) {
 					return Err("leave-page requires a different document")
 				}
 				asks = s.browser.guard and s.browser.sticky_activation
@@ -3189,7 +3191,7 @@ SpecRunner := [].{
 			match SpecRunner.ancestor(s.dom, i, |m| m.tag == "a" and Dom.has_attr(m, "href")) {
 				Ok(a) => {
 					href = Dom.attr_of(Dom.node(s.dom, a), "href")
-					url = SpecRunner.resolve(s.browser.env.url, href) ? |_| "the click navigates to ${href}, which leaves the app"
+					url = SpecRunner.resolve_target(s.browser.env.url, href) ? |_| "the click navigates to ${href}, which leaves the app"
 					SpecRunner.navigate(program, s, url)
 				}
 				Err(_) => Ok(s)
@@ -3262,33 +3264,103 @@ SpecRunner := [].{
 	alnum : U8 -> Bool
 	alnum = |c| (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')
 
+	## WHATWG URL input preprocessing happens before resolving a relative
+	## reference: trim C0/space at both edges, then remove TAB, LF and CR.
+	## Interior controls outside those three bytes remain for percent encoding.
+	location_input : Str -> Str
+	location_input = |url| {
+		bytes = url.to_utf8()
+		var $first = 0
+		var $end = bytes.len()
+		while $first < $end and (bytes.get($first) ?? ' ') <= ' ' {
+			$first = $first + 1
+		}
+		while $end > $first and (bytes.get($end - 1) ?? ' ') <= ' ' {
+			$end = $end - 1
+		}
+		Str.from_utf8(bytes.sublist({ start: $first, len: $end - $first }).keep_if(|byte| !['\t', '\n', '\r'].contains(byte))) ?? crash "URL input preprocessing preserves UTF-8"
+	}
+
+	## Apply Chrome's path, special-query and fragment percent-encode sets
+	## to a one-origin location. Existing escapes are kept. This is not a
+	## URL parser: dot segments, backslashes and hosts are not modelled.
+	## Input preprocessing trims C0/space edges and removes tabs, LF and CR
+	## globally before applying the three component-specific sets. Empty
+	## query/fragment delimiters are omitted, as location.search/hash report.
+	serialize_location : Str -> Str
+	serialize_location = |url| {
+		hex = "0123456789ABCDEF".to_utf8()
+		var $part = Path
+		var $started = True
+		var $bytes = []
+		for byte in SpecRunner.location_input(url).to_utf8() {
+			if byte == '#' and $part != Fragment {
+				$part = Fragment
+				$started = False
+			} else if byte == '?' and $part == Path {
+				$part = Query
+				$started = False
+			} else {
+				# Location.search/hash omit an empty component's delimiter.
+				if !$started {
+					$bytes = $bytes.append(if ($part == Query) '?' else '#')
+					$started = True
+				}
+				encoded = byte <= ' ' or byte > '~' or match $part {
+					Path => ['"', '<', '>', '`', '{', '}'].contains(byte)
+					Query => ['"', '<', '>', '\''].contains(byte)
+					Fragment => ['"', '<', '>', '`'].contains(byte)
+				}
+				if encoded {
+					$bytes = $bytes.append('%').append(hex.get((byte / 16).to_u64()) ?? crash "URL high nibble").append(hex.get((byte % 16).to_u64()) ?? crash "URL low nibble")
+				} else {
+					$bytes = $bytes.append(byte)
+				}
+			}
+		}
+		Str.from_utf8($bytes) ?? crash "URL serialization produces ASCII"
+	}
+
 	## `url` resolved against `base`, both path-absolute: a fragment, a query or
 	## an absolute path; a relative path resolves against `base`'s directory.
 	## A URL with a scheme or an authority leaves the app.
 	resolve : Str, Str -> Try(Str, [External])
-	resolve = |base, url| {
+	resolve = |base, url| Ok(SpecRunner.serialize_location(SpecRunner.resolve_target(base, url)?))
+
+	## Resolve a reference while retaining empty component delimiters: an
+	## explicit empty fragment still selects same-document navigation even
+	## though the reported location omits its hash.
+	resolve_target : Str, Str -> Try(Str, [External])
+	resolve_target = |base, raw_url| {
+		url = SpecRunner.location_input(raw_url)
+		if url.contains("://") or url.starts_with("//") {
+			return Err(External)
+		}
 		path_q = SpecRunner.before(base, "#")
 		path = SpecRunner.before(path_q, "?")
-		if url.contains("://") or url.starts_with("//") {
-			Err(External)
+		resolved = if url.is_empty() {
+			path_q
 		} else if url.starts_with("#") {
-			Ok("${path_q}${url}")
+			"${path_q}${url}"
 		} else if url.starts_with("?") {
-			Ok("${path}${url}")
+			"${path}${url}"
 		} else if url.starts_with("/") {
-			Ok(url)
+			url
 		} else {
 			dir = match path.split_on("/").drop_last(1) {
 				[] => ""
 				parts => Str.join_with(parts, "/")
 			}
-			Ok("${dir}/${url}")
+			"${dir}/${url}"
 		}
+		Ok(resolved)
 	}
 
 	## A history URL the app pushed or replaced: it stays in the document.
+	## The History API keeps the current URL for an exactly empty argument;
+	## a nonempty argument that preprocesses to empty is instead resolved.
 	resolve_in_document : Str, Str -> Str
-	resolve_in_document = |base, url| SpecRunner.resolve(base, url) ?? crash "contract: the app pushed ${url}, which leaves the app"
+	resolve_in_document = |base, url| if (url.is_empty()) base else SpecRunner.resolve(base, url) ?? crash "contract: the app pushed ${url}, which leaves the app"
 
 	## The part of `s` before the first `sep`.
 	before : Str, Str -> Str
@@ -3297,16 +3369,17 @@ SpecRunner := [].{
 	## The HTML same-document rule: `to` has a fragment and differs from
 	## `from` only in it.
 	same_document : Str, Str -> Bool
-	same_document = |from, to| to.contains("#") and SpecRunner.before(from, "#") == SpecRunner.before(to, "#")
+	same_document = |from, to| SpecRunner.location_input(to).contains("#") and SpecRunner.before(SpecRunner.serialize_location(from), "#") == SpecRunner.before(SpecRunner.serialize_location(to), "#")
 
 	## Navigate to `url` as a user would: within the document, a new history
 	## entry and a popstate; otherwise the app mounts afresh at `url` in a new
 	## document, with the same local storage, connectivity and visibility.
 	navigate : Program(state), S(state), Str -> Try(S(state), Str)
-	navigate = |program, s, url| {
+	navigate = |program, s, raw_url| {
+		url = SpecRunner.serialize_location(raw_url)
 		b = s.browser
 		entry = { url: b.env.url, doc: b.doc }
-		if SpecRunner.same_document(b.env.url, url) {
+		if SpecRunner.same_document(b.env.url, raw_url) {
 			Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.append(entry), env: { ..b.env, url }, fwd: [] } }))
 		} else {
 			if b.guard and b.sticky_activation {
@@ -5721,4 +5794,75 @@ expect {
 ## this does not repair an invalid keyword or change a missing type's default.
 expect {
 	["Text", "EMAIL", "password", "txet", ""].map(|kind| SpecRunner.text_control({ ..Dom.empty_node, tag: "input", attrs: [("type", kind)] })) == [True, True, True, False, True]
+}
+
+## The three WHATWG component sets differ: apostrophes stay in path and
+## fragment, while backticks and braces stay in a special-scheme query.
+expect [
+	SpecRunner.serialize_location("/x/#/?tag=café au lait") == "/x/#/?tag=caf%C3%A9%20au%20lait",
+	SpecRunner.serialize_location("/p\"<>`{}?q=\"<>'`{}#f=\"<>`{}' ?#") == "/p%22%3C%3E%60%7B%7D?q=%22%3C%3E%27`{}#f=%22%3C%3E%60{}'%20?#",
+	SpecRunner.serialize_location("/p%26?q=%26#%26") == "/p%26?q=%26#%26",
+	SpecRunner.serialize_location("/a\u(0000)b?q=\u(0001)#\u(007f)") == "/a%00b?q=%01#%7F",
+].all(|answer| answer)
+
+## Chrome preprocesses URL input before determining whether it is a query,
+## fragment or relative path. Interior TAB/LF/CR disappear; other C0 bytes
+## are encoded unless they are part of the trimmed edges.
+expect {
+	actual = [
+		SpecRunner.serialize_location("/a\tb\nc\rd?q=x\ty#z\nw"),
+		SpecRunner.serialize_location(" \u(0001)/x?q#f\u(001f) "),
+		SpecRunner.resolve("/dir/leaf?old#start", " \u(0001)\t?new=ca\tfé au\r lait\n#é\u(001f) ") ?? "external",
+		SpecRunner.resolve("/dir/leaf?old#start", " \t child café\r ") ?? "external",
+	]
+	actual == ["/abcd?q=xy#zw", "/x?q#f", "/dir/leaf?new=caf%C3%A9%20au%20lait#%C3%A9", "/dir/child%20caf%C3%A9"]
+}
+
+## Existing escapes and their spelling survive repeated ingress unchanged.
+expect {
+	urls = ["/x%2f?q=%26#%zz", "/x/#/?tag=café au lait", "/p\"<>`{}?q=\"<>'`{}#f=\"<>`{}' ?#"]
+	urls.all(|url| SpecRunner.serialize_location(SpecRunner.serialize_location(url)) == SpecRunner.serialize_location(url))
+}
+
+## Initial documents and both navigation paths retain serialized locations.
+## A same-document leave target is classified only after serialization.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, { url: "/with space#old" })
+	navigated = SpecRunner.one(program, initial, Navigate(" /next café?word=ça va'\"#é ` "))?
+	left = SpecRunner.one(program, navigated, LeavePage({ url: "/last café?word=ça va'\"#é `", outcome: Unasked }))?
+	{
+		initial: initial.browser.env.url,
+		navigated: navigated.browser.env.url,
+		left: left.browser.env.url,
+		same_document_refused: SpecRunner.one(program, initial, LeavePage({ url: "/with space#new", outcome: Unasked })).is_err(),
+	} == {
+		initial: "/with%20space#old",
+		navigated: "/next%20caf%C3%A9?word=%C3%A7a%20va%27%22#%C3%A9%20%60",
+		left: "/last%20caf%C3%A9?word=%C3%A7a%20va%27%22#%C3%A9%20%60",
+		same_document_refused: True,
+	}
+}
+
+## Location reporting omits empty query and fragment delimiters without
+## losing the fact an explicit empty fragment is same-document navigation.
+expect {
+	base = "/dir/leaf?old#start"
+	{
+		reported: ["/x?", "/x#", "/x?#", "/x?#?", "/x??#", "/x##"].map(SpecRunner.serialize_location),
+		resolved_empty: SpecRunner.resolve(base, ""),
+		resolved_blank: SpecRunner.resolve(base, " \t\n\r "),
+		history_empty: SpecRunner.resolve_in_document(base, ""),
+		history_blank: SpecRunner.resolve_in_document(base, " \t\n\r "),
+		empty_fragment: SpecRunner.same_document(base, "/dir/leaf?old#"),
+		retained_delimiter: SpecRunner.resolve_target(base, "#"),
+	} == {
+		reported: ["/x", "/x", "/x", "/x#?", "/x??", "/x##"],
+		resolved_empty: Ok("/dir/leaf?old"),
+		resolved_blank: Ok("/dir/leaf?old"),
+		history_empty: "/dir/leaf?old#start",
+		history_blank: "/dir/leaf?old",
+		empty_fragment: True,
+		retained_delimiter: Ok("/dir/leaf?old#"),
+	}
 }
