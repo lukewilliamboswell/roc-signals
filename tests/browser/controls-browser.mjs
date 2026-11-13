@@ -763,6 +763,32 @@ for (const mode of ["initial", "changed"]) {
   await ctx.close();
 }
 
+{
+  const { page, ctx } = await open();
+  const got = await page.evaluate(() => {
+    const rt = window.__rt;
+    const checkbox = document.querySelector('[aria-label="Typed checkbox"]');
+    const radio = document.querySelector('[aria-label="Typed radio"]');
+    const text = document.querySelector('[aria-label="Wrong checked target"]');
+    const calls = [];
+    const deliver = rt.deliver;
+    rt.deliver = (node, handler, payload) => calls.push(Array.from(payload));
+    const declaration = checkbox.__h.change;
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    checkbox.checked = false;
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    radio.checked = true;
+    radio.dispatchEvent(new Event("change", { bubbles: true }));
+    text.dispatchEvent(new Event("change", { bubbles: true }));
+    rt.deliver = deliver;
+    return { declaration: [declaration.kind, declaration.policies], calls };
+  });
+  check("checkbox LISTEN uses open-state kind and dispatches exact Boolean bytes; invalid targets dispatch nothing", got,
+    { declaration: [5, 0], calls: [[1], [0], [1]] });
+  await ctx.close();
+}
+
 await browser.close();
 server.close();
 console.log(failures === 0 ? "== controls: all pass" : `== controls: ${failures} failures`);

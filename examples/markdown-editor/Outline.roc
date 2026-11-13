@@ -150,7 +150,7 @@ Outline := {}.{
 						"panel-head",
 						[
 							Html.h2("Table of contents", "panel-title"),
-							Html.div("check-row", [Html.checkbox(Engine.const("Number the outline"), numbered.signal(), [Engine.class("checkbox")], numbered.set_value(|_, checked| checked == "true")), Html.p("Number the outline", "")]),
+							Html.div("check-row", [Html.checkbox(Engine.const("Number the outline"), numbered.signal(), [Engine.class("checkbox")], numbered.set_value(|_, checked| checked)), Html.p("Number the outline", "")]),
 						],
 					),
 					Html.div(

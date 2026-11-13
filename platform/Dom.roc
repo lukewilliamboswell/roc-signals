@@ -17,7 +17,7 @@ Dom := [].{
 	## A model node has a lifetime index independent of its engine aliases.
 	## Routing ids, rendered attributes, live properties and pending browser work
 	## stay separate so id reuse or a user edit cannot overwrite another meaning.
-	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
+	DNode : { svg : Bool, tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
 
 	## Browser top-layer state, separate from the value a property decided.
 	Shown : [Hidden, Open, Modal, Popover]
@@ -382,7 +382,7 @@ Dom := [].{
 	## No engine aliases, templates, document listeners or observations survive
 	## from an earlier model.
 	new : {} -> Model
-	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0, transitions: { count: 0, oldest: 0, bytes: 0, records: Dict.empty(), exhausted: False } }
+	new = |_| { nodes: [{ svg: False, tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0, transitions: { count: 0, oldest: 0, bytes: 0, records: Dict.empty(), exhausted: False } }
 
 	## Read a little-endian command operand independently of the engine's
 	## encoder. Every byte is bounds checked; a short operand is an executor
@@ -513,7 +513,7 @@ Dom := [].{
 	## serving fixtures, it lets modify move a record out of its list before
 	## changing nested storage without retaining a second holder.
 	empty_node : DNode
-	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
+	empty_node = { svg: False, tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
 
 	## Update node i in place (the node is moved out of the list first, so
 	## its kid list stays uniquely owned).
@@ -616,12 +616,12 @@ Dom := [].{
 				dom,
 				n.parent - 1,
 				|p| {
-					{ tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
+					{ svg, tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 					kept = match kids.find_last_index(|k| k == i) {
 						Ok(pos) => kids.drop_at(pos)
 						Err(_) => kids
 					}
-					{ tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
+					{ svg, tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 				},
 			)
 			Dom.modify(d1, i, |m| { ..m, parent: 0, detach_count: m.detach_count + 1 })
@@ -636,7 +636,7 @@ Dom := [].{
 			d0,
 			parent,
 			|p| {
-				{ tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
+				{ svg, tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 				kids2 = match before {
 					Err(End) => kids.append(i)
 					Ok(b) => {
@@ -644,7 +644,7 @@ Dom := [].{
 						kids.sublist({ start: 0, len: pos }).append(i).concat(kids.sublist({ start: pos, len: kids.len() - pos }))
 					}
 				}
-				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
+				{ svg, tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 			},
 		)
 		Dom.modify(d1, i, |n| { ..n, parent: parent + 1 })
@@ -665,16 +665,34 @@ Dom := [].{
 		}
 	}
 
+	## Namespace is fixed when a node is created, including a row template’s
+	## insertion context. Moving a node never changes its namespace. Read only
+	## the insertion parent, before allocating, rather than walking ancestors.
+	insertion_svg : Model, U32, U32 -> Bool
+	insertion_svg = |dom, parent, before| {
+		index = if (before == 0) Dom.lookup(dom, parent) else {
+			owner = Dom.node(dom, Dom.lookup(dom, before)).parent
+			if owner == 0 {
+				crash "insert before a detached node"
+			}
+			owner - 1
+		}
+		n = Dom.node(dom, index)
+		n.svg and n.tag != "foreignObject"
+	}
+
 	## Parse one template node, creating nodes; returns the index.
-	build : Model, List(U8), U64 -> (Model, U64, U64)
-	build = |dom, b, at| {
+	build : Model, List(U8), U64, Bool -> (Model, U64, U64)
+	build = |dom, b, at, under_svg| {
 		kind = Dom.byte(b, at)
 		if kind == 2 {
 			(t, next) = Dom.str(b, at + 1)
-			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] })
+			(d1, i) = Dom.add_node(dom, { svg: False, tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] })
 			(d1, i, next)
 		} else {
-			(tag, a1) = Dom.str(b, at + 1)
+			(raw_tag, a1) = Dom.str(b, at + 1)
+			svg = raw_tag == "svg" or under_svg
+			tag = if (svg) raw_tag else MarkupHtml.ascii_lower(raw_tag)
 			na = Dom.byte(b, a1).to_u64()
 			var $at = a1 + 1
 			var $attrs = []
@@ -690,11 +708,11 @@ Dom := [].{
 			}
 			nk = Dom.byte(b, $at).to_u64()
 			$at = $at + 1
-			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] })
+			(d1, i) = Dom.add_node(dom, { svg, tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] })
 			var $d = d1
 			$k = 0
 			while $k < nk {
-				(d2, c, next) = Dom.build($d, b, $at)
+				(d2, c, next) = Dom.build($d, b, $at, svg and tag != "foreignObject")
 				$d = Dom.insert(d2, i, c, Err(End))
 				$at = next
 				$k = $k + 1
@@ -838,6 +856,10 @@ Dom := [].{
 		},
 	)
 
+	## Whether an event target carries the Boolean checked property for kind 5.
+	checked_input : DNode -> Bool
+	checked_input = |n| !n.svg and MarkupHtml.ascii_lower(n.tag) == "input" and ["checkbox", "radio"].contains(Dom.input_type(n))
+
 	## A control's property value, including defaults before its first write.
 	live_value : DNode, Str -> Str
 	live_value = |n, name| n.props.find_first(|(key, _)| key == name).map_ok(|(_, value)| value) ?? if (name == "checked") "false" else if (name == "value" and n.tag == "button") Dom.attr_of(n, "value") else ""
@@ -872,7 +894,7 @@ Dom := [].{
 			crash "executor: paste text requires paste and prevention"
 		}
 		if kind == 5 and !row.events.contains(event) {
-			crash "executor: open-state payload requires close or toggle"
+			crash "executor: open-state payload requires close, toggle or change"
 		}
 		if kind == 4 and !row.events.contains(event) {
 			crash "executor: key payload requires keydown or keyup"
@@ -1184,7 +1206,8 @@ Dom := [].{
 				site_id = Dom.u32(b, $at + 12).to_u64()
 				tpl = $d.tpls.get(site_id) ?? crash "unknown template"
 				$at = $at + 16
-				(d1, root, _) = Dom.build($d, tpl.bytes, 0)
+				context_svg = Dom.insertion_svg($d, parent, before)
+				(d1, root, _) = Dom.build($d, tpl.bytes, 0, context_svg)
 				r = Dom.node(d1, root)
 				# Hole targets are resolved once, here: content a nested site
 				# inserts into the row later shifts sibling indices.
@@ -1327,7 +1350,8 @@ Dom := [].{
 				before = Dom.u32(b, $at + 8)
 				(s, next) = Dom.str(b, $at + 12)
 				$at = next
-				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
+				svg = op == 8 and (s == "svg" or Dom.insertion_svg($d, parent, before))
+				fresh = if (op == 8) { svg, tag: if (svg) s else MarkupHtml.ascii_lower(s), text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] } else { svg: False, tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
 				(d1, i) = Dom.add_node($d, fresh)
 				$d = Dom.bind(Dom.place(d1, i, parent, before), nid, i)
 			} else if op == 9 {

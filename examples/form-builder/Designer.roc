@@ -166,7 +166,7 @@ editor = |props, { key, field }| {
 											Html.div(
 												"check-row",
 												[
-													Html.checkbox(local_name("Required"), local_definition.map(|now| now.required), [Engine.class("checkbox")], local_field.set_value(|now, checked| Form.set_required(now, checked == "true"))),
+													Html.checkbox(local_name("Required"), local_definition.map(|now| now.required), [Engine.class("checkbox")], local_field.set_value(|now, checked| Form.set_required(now, checked))),
 													Engine.text("Required"),
 												],
 											),

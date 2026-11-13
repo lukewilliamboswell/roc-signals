@@ -146,18 +146,28 @@ Lab := [].{
 
 	# ------------------------------------------------------------ parameters
 
-	workload_from_str : Str -> Workload
-	workload_from_str = |text|
-		match text {
-			"tiles" => Tiles
-			"faulty" => Faulty
-			"draw" => Draw
-			_ => Primes
-		}
+	## The workloads offered in the menu, in presentation order.
+	workloads : List(Workload)
+	workloads = [Primes, Tiles, Faulty, Draw]
+
+	workload_label : Workload -> Str
+	workload_label = |workload| match workload {
+		Primes => "Count primes"
+		Tiles => "Draw tiles"
+		Faulty => "Count primes, every fourth job crashing"
+		Draw => "Draw the Mandelbrot set"
+	}
+
+	## A foreign selection preserves the current form.
+	workload_picked : Form, [Chose(Workload), NotOffered] -> Form
+	workload_picked = |form_value, picked| match picked {
+		Chose(workload) => { ..form_value, workload }
+		NotOffered => form_value
+	}
 
 	## The `select` value, and the only place it is spelled.
-	workload_to_str : Workload -> Str
-	workload_to_str = |workload|
+	workload_key : Workload -> Str
+	workload_key = |workload|
 		match workload {
 			Primes => "primes"
 			Tiles => "tiles"
@@ -984,3 +994,6 @@ expect {
 	typed = { ..Lab.form, workload: Draw, jobs_text: "61" }
 	Lab.problem(typed) == "A picture has from 1 to 60 strips: the page holds every strip, and the picture, as a file."
 }
+
+## A foreign workload leaves the authored form intact, including its numeric drafts.
+expect Lab.workload_picked({ ..Lab.form, workload: Tiles, jobs_text: "12" }, NotOffered) == { ..Lab.form, workload: Tiles, jobs_text: "12" }

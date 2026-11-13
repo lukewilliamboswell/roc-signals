@@ -12,6 +12,7 @@ import pf.SpecRunner
 import ControlsApp
 import ManyApp
 import TopLayerApp
+import TypedControlsApp
 
 ## The engine and the oracle's DOM, driven through the engine directly.
 S : { eng : Core.App({}), dom : Dom.Model, steps : U64 }
@@ -747,11 +748,102 @@ expect {
 	True
 }
 
+## The input-side model keeps keys and revisions, independently of the select's
+## lookup. Every event checks the chosen value, refused choices and checked bit,
+## then the ordinary settle and work counters. Refresh keeps keys but replaces
+## values; remove/reorder histories must never resolve an obsolete choice.
+typed_history : List(U8) -> {}
+typed_history = |events| {
+	program = Core.driver(Engine.program(|| TypedControlsApp.view({})))
+	var $state = SpecRunner.mount_in(program, {})
+	var $teal = True
+	var $revision = 0.U64
+	var $selected = "amber:0"
+	var $status = "initial"
+	var $checked = False
+	var $checks = 0.U64
+	for byte in events {
+		step = match byte % 12 {
+			0 => {
+				$checked = !$checked
+				$checks = $checks + 1
+				if ($checked) Check(Label("Typed checkbox")) else Uncheck(Label("Typed checkbox"))
+			}
+			1 => {
+				$teal = False
+				Click(Role({ role: "button", name: "Remove teal choice" }))
+			}
+			2 => {
+				$teal = True
+				$revision = $revision + 1
+				Click(Role({ role: "button", name: "Refresh choices" }))
+			}
+			3 => Click(Role({ role: "button", name: "Reverse choices" }))
+			4 => {
+				if $teal {
+					$selected = "teal:${$revision.to_str()}"
+					$status = "chose:${$selected}"
+				} else {
+					$status = "not-offered"
+				}
+				Change(Label("Typed choice"), "teal")
+			}
+			5 => {
+				$status = "not-offered"
+				Change(Label("Typed choice"), "foreign")
+			}
+			6 => {
+				$selected = "plum:${$revision.to_str()}"
+				$status = "chose:${$selected}"
+				SelectOption(Label("Typed choice"), "plum")
+			}
+			7 => Change(Label("Wrong checked target"), "ignored")
+			8 => Change(Label("SVG checked target"), "on")
+			9 => Change(Label("SVG row checked target"), "on")
+			10 => Change(Label("Nested SVG checked target"), "on")
+			_ => {
+				$status = "foreign-object-fired"
+				Change(Label("Foreign object checked target"), "on")
+			}
+		}
+		$state = SpecRunner.one(program, $state, step) ?? crash "typed control action failed"
+		for assertion in [ExpectText(TestId("typed-selected"), $selected), ExpectText(TestId("typed-choice-status"), $status), ExpectText(TestId("typed-checked"), "${if ($checked) "checked" else "unchecked"}:${$checks.to_str()}")] {
+			$state = SpecRunner.one(program, $state, assertion) ?? crash "typed control differs from input model"
+		}
+		SpecRunner.check_settled(program, $state) ?? crash "typed controls left a stale reader"
+		SpecRunner.check_counters($state) ?? crash "typed control counters disagree"
+	}
+}
+
+## A fixed removed-choice and refresh history holds without a browser.
+expect typed_history([0, 0, 4, 1, 4, 5, 2, 3, 4, 6, 7, 8, 9, 10, 11]) == {}
+
+## Static and row-template nodes keep creation namespace through moves.
+## foreignObject returns to HTML and an inner svg enters SVG again.
+expect {
+	state = start(TypedControlsApp.view({}))
+	svg_input = SpecRunner.find(state.dom, Label("SVG checked target"))?
+	row_input = SpecRunner.find(state.dom, Label("SVG row checked target"))?
+	nested_input = SpecRunner.find(state.dom, Label("Nested SVG checked target"))?
+	html_input = SpecRunner.find(state.dom, Label("Foreign object checked target"))?
+	svg_parent = Dom.node(state.dom, svg_input).parent - 1
+	moved_svg = Dom.insert(state.dom, state.dom.root, svg_input, Err(End))
+	moved_html = Dom.insert(moved_svg, svg_parent, html_input, Err(End))
+	{
+		svg: [svg_input, row_input, nested_input].map(|index| Dom.node(state.dom, index).svg),
+		html: Dom.checked_input(Dom.node(state.dom, html_input)),
+		tag: Dom.node(state.dom, html_input).tag,
+		moved_svg: Dom.checked_input(Dom.node(moved_html, svg_input)),
+		moved_html: Dom.checked_input(Dom.node(moved_html, html_input)),
+	} == { svg: [True, True, True], html: True, tag: "input", moved_svg: False, moved_html: True }
+}
+
 Input : { mode : U8, pad : U8, events : List(U8) }
 
 target = Fuzz.target_with!({
 	name: "controls",
 	examples: [
+		Fuzz.example({ name: "typed-controls", revision: "1", make: || { mode: 6, pad: 0, events: [0, 0, 4, 1, 4, 5, 2, 3, 4, 6, 7, 8, 9, 10, 11, 0] } }),
 		Fuzz.example({ name: "focus", revision: "2", make: || { mode: 0, pad: 0, events: [] } }),
 		Fuzz.example({ name: "many-sites", revision: "2", make: || { mode: 1, pad: 0, events: [] } }),
 		Fuzz.example({ name: "attribute-history", revision: "1", make: || { mode: 3, pad: 0, events: [0, 0, 1, 3, 4, 2, 5, 0, 4, 1, 5, 2] } }),
@@ -764,7 +856,7 @@ target = Fuzz.target_with!({
 	generator: {
 		mode: |arbitrary| {
 			next = Fuzz.u8(arbitrary)
-			{ state: next.state, value: 2 + next.value % 4 }
+			{ state: next.state, value: 2 + next.value % 5 }
 		},
 		pad: Fuzz.constant(0),
 		events: Fuzz.list(Fuzz.u8, 64),
@@ -775,6 +867,10 @@ target = Fuzz.target_with!({
 		2 => reference_focus!(events)
 		3 => attribute_presence!(events)
 		4 => pointer_history!(events)
+		6 => {
+			typed_history(events)
+			Fuzz.keep
+		}
 		_ => {
 			top_layer_history(events)
 			Fuzz.keep

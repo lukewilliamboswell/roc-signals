@@ -994,6 +994,10 @@ const PAYLOAD_APPLIERS = {
   OPEN_STATE: {
     payload(event) {
       const element = event.target;
+      if (event.type === "change") {
+        if (element.tagName !== "INPUT" || !["checkbox", "radio"].includes(element.type)) return null;
+        return new Uint8Array([element.checked ? 1 : 0]);
+      }
       if (event.type === "close") {
         if (element.tagName !== "DIALOG") throw new Error("open-state close requires a dialog");
         return new Uint8Array([element.open ? 1 : 0]);

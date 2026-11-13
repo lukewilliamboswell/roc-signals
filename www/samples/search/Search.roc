@@ -60,7 +60,7 @@ Search := [].{
 						Html.submit_button("Search", []),
 					],
 				),
-				Html.checkbox(Engine.const("Auto-refresh"), v.map(|s| s.live), [], st.set_value(|s, p| { ..s, live: p == "true" })),
+				Html.checkbox(Engine.const("Auto-refresh"), v.map(|s| s.live), [], st.set_value(|s, p| { ..s, live: p })),
 				Engine.when(
 					v.map(|s| s.live),
 					|| Engine.watch(Engine.const({}), |_| [Engine.interval(30000)], st.on_result(|s, _, _| { ..s, round: s.round + 1 })),

@@ -4,6 +4,7 @@ import PointerApp
 import TopLayerApp
 import RawInputApp
 import RenderingApp
+import TypedControlsApp
 
 ## Controlled inputs, focus and containment test app.
 ## - "Plain": a controlled text input whose state is exactly what was typed.
@@ -196,6 +197,7 @@ ControlsApp := [].{
 			Engine.element("p", [Engine.test_id("state")], [Engine.text_s(st.signal().map(|s| "${s.plain}|${s.upper}"))]),
 			Engine.element("pre", [Engine.test_id("log")], [Engine.text_s(st.signal().map(|s| Str.join_with(s.log, "|")))]),
 			ControlsApp.properties({}),
+			TypedControlsApp.view({}),
 		],
 	)
 

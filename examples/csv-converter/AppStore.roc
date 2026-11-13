@@ -77,14 +77,12 @@ AppStore := [Converter].{
 		Unknown => "Fetching sample: ${megabytes(transfer.done)} MB"
 	}
 
-	## The reader picks a format by the value of its option.
-	format_picked : Str -> List(Engine.Write(_))
-	format_picked = |value| [AppStore.cells.format.set(AppStore.format_of(value))]
-
-	## The format an option's value names, and the value of a format's
-	## option.
-	format_of : Str -> Csv.Format
-	format_of = |value| if (value == "jsonl") JsonLines else Tsv
+	## A current format choice is applied; a foreign value leaves it unchanged.
+	format_picked : [Chose(Csv.Format), NotOffered] -> List(Engine.Write(_))
+	format_picked = |picked| match picked {
+		Chose(format) => [AppStore.cells.format.set(format)]
+		NotOffered => []
+	}
 
 	option_of : Csv.Format -> Str
 	option_of = |format| match format {
@@ -104,20 +102,10 @@ expect {
 	(asked.read(AppStore.cells.source).sample, failed.read(AppStore.cells.source)) == (Loading, { file: Nothing, sample: Idle, note: "the sample did not load: Status(404)" })
 }
 
-## A format is picked by its option's value; a value no option has is TSV.
+## Both offered formats are selected directly; an unknown choice preserves JSON lines.
 expect {
-	picked = |value| AppStore.store.after(AppStore.format_picked(value)).read(AppStore.cells.format)
-	actual =
-		\\jsonl: ${Str.inspect(picked("jsonl"))}
-		\\tsv: ${Str.inspect(picked("tsv"))}
-		\\another value: ${Str.inspect(picked("?"))}
-		\\options: ${Str.inspect([Tsv, JsonLines].map(AppStore.option_of))}
-	expected =
-		\\jsonl: JsonLines
-		\\tsv: Tsv
-		\\another value: Tsv
-		\\options: ["tsv", "jsonl"]
-	actual == expected
+	picked = AppStore.store.after(AppStore.format_picked(Chose(JsonLines)))
+	(picked.read(AppStore.cells.format), picked.after(AppStore.format_picked(NotOffered)).read(AppStore.cells.format), picked.after(AppStore.format_picked(Chose(Tsv))).read(AppStore.cells.format)) == (JsonLines, JsonLines, Tsv)
 }
 
 ## An event that carries no file writes nothing, so the source stays as it was.

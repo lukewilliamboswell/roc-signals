@@ -130,8 +130,8 @@ Engine := [].{
 	Write(st) : Core.Write(st)
 
 	## `handle(decide)` is a handler that writes the cells `decide` names,
-	## given the event's payload (an input's value, `"true"`/`"false"` for a
-	## checkbox, `""` for a click): one pure function decides a transition
+	## given the event's payload (an input's text, a checkbox's Boolean checked
+	## state or `""` for a click): one pure function decides a transition
 	## that spans cells.
 	##
 	## ```
@@ -575,6 +575,11 @@ Engine := [].{
 	## `on_click` or an `Html` control. A handler runs once per event, in the
 	## turn that delivers it.
 	HandlerOf(ctx, p) :: { h : Core.HandlerOf(ctx, p) }.{
+
+		## Convert an incoming payload using a signal read when the event arrives,
+		## before this handler applies any writes. The signal keeps its context.
+		from_payload_by : HandlerOf(ctx, q), Signal(ctx, b), (b, p -> q) -> HandlerOf(ctx, p)
+		from_payload_by = |{ h }, { v }, convert| { h: h.from_payload_by(v, convert) }
 
 		## Use a handler from the enclosing context inside a `state` or `derive` body
 		## nested in it.
@@ -1392,6 +1397,10 @@ Engine := [].{
 
 	## Text from the native paste event, or a refusal at the deployment's bound.
 	Paste : Core.Paste
+
+	## Deliver a checkbox’s or radio’s Boolean checked state on change.
+	on_checked : HandlerOf(ctx, Bool) -> Attr(ctx)
+	on_checked = |{ h }| Core.on_checked(h)
 
 	## Attach text paste through the typed payload codec, preventing its default.
 	on_paste_text : HandlerOf(ctx, Paste) -> Attr(ctx)

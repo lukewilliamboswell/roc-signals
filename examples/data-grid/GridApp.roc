@@ -252,5 +252,5 @@ GridApp := [].{
 }
 
 ## What a checkbox's event says: `"true"` when it was ticked.
-selection_of : Str -> GridData.Selection
-selection_of = |checked| if (checked == "true") Selected else Unselected
+selection_of : Bool -> GridData.Selection
+selection_of = |checked| if (checked) Selected else Unselected

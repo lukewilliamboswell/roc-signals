@@ -58,13 +58,12 @@ Stats := {}.{
 		}
 	}
 
-	parse_wpm : Str -> U64
-	parse_wpm = |value|
-		match value {
-			"100" => 100
-			"300" => 300
-			_ => 200
-		}
+	## A foreign selection leaves the reading speed unchanged.
+	speed_picked : U64, [Chose(U64), NotOffered] -> U64
+	speed_picked = |current, picked| match picked {
+		Chose(speed) => speed
+		NotOffered => current
+	}
 
 	## What the panel is drawn over, in a store whose type is `st`: the
 	## document's source text, which it only reads.
@@ -83,11 +82,11 @@ Stats := {}.{
 	view = |props, heading_count| Engine.derive(
 		props.source.signal().map(Stats.counts),
 		|tally| Engine.state(
-			"200",
+			200.U64,
 			|speed| {
 				found = tally.lift()
 				headed = heading_count.lift().lift()
-				minutes = found.map2(speed.signal(), |c, wpm| Stats.reading_minutes(c.words, Stats.parse_wpm(wpm)))
+				minutes = found.map2(speed.signal(), |c, wpm| Stats.reading_minutes(c.words, wpm))
 				summary = { count: found, headings: headed, minutes }.Signal.map(|r| "${r.count.words.to_str()} words | ${r.count.characters.to_str()} characters | ${r.headings.to_str()} headings | ${r.minutes.to_str()} min")
 				Engine.element(
 					"section",
@@ -110,7 +109,21 @@ Stats := {}.{
 									"field sm:max-w-xs",
 									[
 										Html.p("Reading speed", "field-label"),
-										Html.select(Engine.const("Reading speed"), speed.signal(), [Engine.class("input")], [Html.option("100", "Careful (100 wpm)"), Html.option("200", "Average (200 wpm)"), Html.option("300", "Fast (300 wpm)")], speed.set_value(|_, chosen| chosen)),
+										Html.select(
+											Engine.const("Reading speed"),
+											speed.signal(),
+											Engine.const([100, 200, 300]),
+											{
+												key: |wpm| wpm.to_str(),
+												label: |wpm| match wpm {
+													100 => "Careful (100 wpm)"
+													300 => "Fast (300 wpm)"
+													_ => "Average (200 wpm)"
+												},
+											},
+											[Engine.class("input")],
+											speed.set_value(Stats.speed_picked),
+										),
 										Html.p("The estimate is a fan-in of the word count and this speed; it never touches the preview or the outline.", "hint"),
 									],
 								),
@@ -153,8 +166,6 @@ expect Stats.reading_minutes(401, 200) == 3
 ## default speed instead of crashing.
 expect Stats.reading_minutes(200, 0) == 1
 
-## A speed the select offers is read back as that number.
-expect Stats.parse_wpm("100") == 100
-
-## Anything else falls back to the default speed.
-expect Stats.parse_wpm("nonsense") == 200
+## A current choice changes the speed; a foreign choice preserves it.
+expect Stats.speed_picked(200, Chose(100)) == 100
+expect Stats.speed_picked(300, NotOffered) == 300

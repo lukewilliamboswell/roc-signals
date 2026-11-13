@@ -15,9 +15,15 @@ main = Engine.program(
 				Html.select(
 					Engine.const("Works"),
 					state.signal().map(|s| s.selected),
+					Engine.const(["", "a"]),
+					{ key: |value| value, label: |value| if (value == "") "All works" else "Work A" },
 					[],
-					[Html.option("", "All works"), Html.option("a", "Work A")],
-					state.set_value(|s, value| { ..s, selected: value }),
+					state.set_value(
+						|s, picked| match picked {
+							Chose(value) => { ..s, selected: value }
+							NotOffered => s
+						},
+					),
 				),
 				Html.p_s(state.signal().map(|s| if (s.selected == "") "All works" else "Work A"), [Engine.test_id("selection")]),
 				Engine.element("img", [Engine.attr("alt", ""), Engine.test_id("decoration")], []),

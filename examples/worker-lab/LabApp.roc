@@ -190,7 +190,7 @@ LabApp := [].{
 			cells = LabStore.cells
 			typed = form.signal()
 			jobs = cells.work.jobs.signal()
-			restart = Engine.handle_by({ typed, run: cells.run.signal(), going: jobs.map(Lab.active) }.Signal, |at, _| LabStore.edited(at))
+			restart = |{}| Engine.handle_by({ typed, run: cells.run.signal(), going: jobs.map(Lab.active) }.Signal, |at, _| LabStore.edited(at))
 			Html.section(
 				"Run",
 				"panel grid gap-4 p-5",
@@ -205,16 +205,17 @@ LabApp := [].{
 									Html.p("Workload", "field-label"),
 									Html.select(
 										Engine.const("Workload"),
-										typed.map(|f| Lab.workload_to_str(f.workload)),
+										typed.map(|f| f.workload),
+										Engine.const(Lab.workloads),
+										{ key: Lab.workload_key, label: Lab.workload_label },
 										[Engine.class("input")],
-										[Html.option("primes", "Count primes"), Html.option("tiles", "Draw tiles"), Html.option("faulty", "Count primes, every fourth job crashing"), Html.option("draw", "Draw the Mandelbrot set")],
-										form.set_value(|f, text| { ..f, workload: Lab.workload_from_str(text) }).also(restart),
+										form.set_value(Lab.workload_picked).also(restart({})),
 									),
 								],
 							),
-							LabApp.field("Jobs", typed.map(|f| f.jobs_text), form.set_value(|f, text| { ..f, jobs_text: text }).also(restart)),
-							LabApp.field("Weight", typed.map(|f| f.weight_text), form.set_value(|f, text| { ..f, weight_text: text }).also(restart)),
-							LabApp.field("Timeout (ms)", typed.map(|f| f.timeout_text), form.set_value(|f, text| { ..f, timeout_text: text }).also(restart)),
+							LabApp.field("Jobs", typed.map(|f| f.jobs_text), form.set_value(|f, text| { ..f, jobs_text: text }).also(restart({}))),
+							LabApp.field("Weight", typed.map(|f| f.weight_text), form.set_value(|f, text| { ..f, weight_text: text }).also(restart({}))),
+							LabApp.field("Timeout (ms)", typed.map(|f| f.timeout_text), form.set_value(|f, text| { ..f, timeout_text: text }).also(restart({}))),
 						],
 					),
 					Html.p_s(typed.map(Lab.problem), [Engine.class("hint text-red-700"), Engine.test_id("problem")]),

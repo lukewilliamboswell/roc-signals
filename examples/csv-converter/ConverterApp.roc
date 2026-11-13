@@ -170,9 +170,10 @@ ConverterApp := [].{
 								Html.label_for("Format", "converter-format", [Engine.class("field-label")]),
 								Html.select(
 									Engine.const("Format"),
-									AppStore.cells.format.signal().map(AppStore.option_of),
+									AppStore.cells.format.signal(),
+									Engine.const([Tsv, JsonLines]),
+									{ key: AppStore.option_of, label: |format| if (format == Tsv) "TSV" else "JSON lines" },
 									[Engine.class("input"), Engine.attr("id", "converter-format")],
-									[Html.option("tsv", "TSV"), Html.option("jsonl", "JSON lines")],
 									Engine.handle(AppStore.format_picked),
 								),
 							],

@@ -29,6 +29,13 @@ Preview := [].{
 	answered_text : Cell(st, Form.Answers), { key : U64, text : Str } -> List(Engine.Write(st))
 	answered_text = |answers, { key, text }| [answers.update(|held| Form.set_answer_text(held, key, text))]
 
+	## A current choice writes its value; a removed or foreign choice is inert.
+	answered_choice : Cell(st, Form.Answers), { key : U64, picked : [Chose(Str), NotOffered] } -> List(Engine.Write(st))
+	answered_choice = |answers, { key, picked }| match picked {
+		Chose(text) => Preview.answered_text(answers, { key, text })
+		NotOffered => []
+	}
+
 	## What ticking a field's checkbox writes: the flag of that field's
 	## answer.
 	answered_flag : Cell(st, Form.Answers), { key : U64, flag : Bool } -> List(Engine.Write(st))
@@ -186,7 +193,7 @@ answer_row = |answers, { key, field, attempted }| {
 							named("Answer"),
 							answer.map(|now| now.flag),
 							[Engine.class("checkbox"), invalid, reference],
-							Engine.handle_by(key, |number, checked| Preview.answered_flag(answers, { key: number, flag: checked == "true" })),
+							Engine.handle_by(key, |number, checked| Preview.answered_flag(answers, { key: number, flag: checked })),
 						),
 						Engine.text("Yes"),
 					],
@@ -196,12 +203,10 @@ answer_row = |answers, { key, field, attempted }| {
 					|| Html.select(
 						named("Answer"),
 						text,
+						defined.map(|now| [""].concat(Form.options_of(now.options_text))),
+						{ key: |option| option, label: |option| if (option == "") "Choose..." else option },
 						[Engine.class("input"), invalid, reference],
-						[
-							Html.option("", "Choose..."),
-							Engine.each(defined.map(|now| Form.options_of(now.options_text)), |option| option, |option| Html.option_s(option.key())),
-						],
-						write_text,
+						Engine.handle_by(key, |number, picked| Preview.answered_choice(answers, { key: number, picked })),
 					),
 					|| Html.text_input(
 						named("Answer"),

@@ -68,7 +68,7 @@ OutboxApp := [].{
 				Engine.const("Sending"),
 				st.signal().map(|s| s.sending == Sending),
 				[],
-				st.set_value(|s, checked| { ..s, sending: if (checked == "true") Sending else Paused }),
+				st.set_value(|s, checked| { ..s, sending: if (checked) Sending else Paused }),
 			),
 			Engine.when(
 				st.signal().map(|s| s.sending == Sending),

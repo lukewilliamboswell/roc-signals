@@ -128,7 +128,7 @@ Todos := [TodoList].{
 					title.map(|text| "Done: ${text}"),
 					todo.signal().map(|held| held.status == Done),
 					[],
-					todo.set_value(|held, checked| { ..held, status: if (checked == "true") Done else Open }),
+					todo.set_value(|held, checked| { ..held, status: if (checked) Done else Open }),
 				),
 				Engine.text_s(title),
 				Html.icon_button(

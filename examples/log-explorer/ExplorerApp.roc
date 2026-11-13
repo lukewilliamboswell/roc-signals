@@ -408,14 +408,19 @@ ExplorerApp := [].{
 						Html.text_input(Engine.const("Text to find"), "search", query.map(|typed| typed.text), [Engine.class("input"), Engine.attr("placeholder", "Text to find, any case")], Engine.handle(LogStore.searched)),
 						Html.select(
 							Engine.const("Level"),
-							query.map(
-								|typed| match typed.filter {
+							query.map(|typed| typed.filter),
+							Engine.const([Everything].concat(Log.levels.map(|level| Only(level)))),
+							{
+								key: |filter| match filter {
 									Everything => "any"
 									Only(level) => Log.level_name(level)
 								},
-							),
+								label: |filter| match filter {
+									Everything => "Any level"
+									Only(level) => Log.level_name(level)
+								},
+							},
 							[Engine.class("input")],
-							[Html.option("any", "Any level")].concat(Log.levels.map(|level| Html.option(Log.level_name(level), Log.level_name(level)))),
 							Engine.handle(LogStore.filtered),
 						),
 					],

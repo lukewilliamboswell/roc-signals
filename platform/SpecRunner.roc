@@ -1054,7 +1054,7 @@ SpecRunner := [].{
 			Err("event target is detached")
 		} else match Dom.target(s.dom, i, ev, Bool.True) {
 			Err(_) => Err("no ${ev} handler")
-			Ok(target) => if (target.kind == 1) Ok(SpecRunner.send(program, s, target.node, target.handler, payload.to_utf8())) else Ok(s)
+			Ok(_) => Ok(SpecRunner.fire_if(program, s, i, ev, payload))
 		}
 
 	## Dispatch `ev` if a handler listens for it on the way up from node `i`.
@@ -1065,6 +1065,7 @@ SpecRunner := [].{
 		}
 		match Dom.target(s.dom, i, ev, Bool.True) {
 			Ok(target) if target.kind == 1 => SpecRunner.send(program, s, target.node, target.handler, payload.to_utf8())
+			Ok(target) if target.kind == 5 and ev == "change" and Dom.checked_input(Dom.node(s.dom, i)) => SpecRunner.send(program, s, target.node, target.handler, [if (Dom.live_value(Dom.node(s.dom, i), "checked") == "true") 1 else 0])
 			_ => s
 		}
 	}

@@ -160,3 +160,10 @@ expect {
 		next: 3,
 	}
 }
+
+## A choice removed between drawing and delivery preserves the existing answer.
+expect {
+	answers = AppStore.cells.answers
+	before = AppStore.store.after(Preview.answered_choice(answers, { key: 1, picked: Chose("Ada") }))
+	before.after(Preview.answered_choice(answers, { key: 1, picked: NotOffered })).read(answers) == before.read(answers)
+}

@@ -184,15 +184,12 @@ LogStore := [Explorer].{
 	searched : Str -> List(Engine.Write(_))
 	searched = |text| [LogStore.cells.query.update(|query| { ..query, text }), LogStore.cells.place.page.set(0)]
 
-	## The level the search keeps, by the name the menu sends; any other
-	## name keeps every level. A new search starts from its first page.
-	filtered : Str -> List(Engine.Write(_))
-	filtered = |name| {
-		filter = match Log.levels.find_first(|level| Log.level_name(level) == name) {
-			Ok(level) => Only(level)
-			Err(_) => Everything
-		}
-		[LogStore.cells.query.update(|query| { ..query, filter }), LogStore.cells.place.page.set(0)]
+	## A current level choice starts a new search from its first page.
+	## A foreign value leaves both the filter and page unchanged.
+	filtered : [Chose(Log.Filter), NotOffered] -> List(Engine.Write(_))
+	filtered = |picked| match picked {
+		Chose(filter) => [LogStore.cells.query.update(|query| { ..query, filter }), LogStore.cells.place.page.set(0)]
+		NotOffered => []
 	}
 
 	## The search's page before this one, or the first.
@@ -289,11 +286,11 @@ expect {
 	second = LogStore.store.after(LogStore.paged_on(found))
 	third = second.after(LogStore.paged_on(found))
 	back = third.after(LogStore.paged_back).after(LogStore.paged_back)
-	levelled = second.after(LogStore.filtered("ERROR"))
+	levelled = second.after(LogStore.filtered(Chose(Only(Error))))
 	actual =
 		\\pages: ${page_in(second)} ${page_in(third)} ${page_in(back)} ${page_in(LogStore.store.after(LogStore.paged_on(Err(NoAnswer))))}
 		\\typed: ${page_in(second.after(LogStore.searched("pool")))}
-		\\levelled: ${page_in(levelled)} ${Str.inspect(levelled.read(LogStore.cells.query).filter)} ${Str.inspect(levelled.after(LogStore.filtered("any")).read(LogStore.cells.query).filter)}
+		\\levelled: ${page_in(levelled)} ${Str.inspect(levelled.read(LogStore.cells.query).filter)} ${Str.inspect(levelled.after(LogStore.filtered(Chose(Everything))).read(LogStore.cells.query).filter)}
 	expected =
 		\\pages: 1 1 0 0
 		\\typed: 0
@@ -395,4 +392,11 @@ expect {
 	first = Log.first_at(map, asked)
 	returned = LogStore.store.after(LogStore.geometry_ready({ total: map.total, height: map.viewport_height, first, previous: Ready(map), asked }))
 	returned.read(LogStore.cells.place.asked) == asked
+}
+
+## A removed or foreign choice does not reset the current filter or search page.
+expect {
+	before = LogStore.store.after(LogStore.filtered(Chose(Only(Error)))).after([LogStore.cells.place.page.set(3)])
+	after = before.after(LogStore.filtered(NotOffered))
+	(after.read(LogStore.cells.query), after.read(LogStore.cells.place.page)) == (before.read(LogStore.cells.query), 3)
 }

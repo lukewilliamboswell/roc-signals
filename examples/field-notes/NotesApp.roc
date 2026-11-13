@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Handler, Row, RowRef, Signal]
+import pf.Engine exposing [Elem, Row, RowRef, Signal]
 import pf.Html
 import AppStore
 import Notes
@@ -156,7 +156,7 @@ stat = |{ label, value, id }| Html.div("stat", [Html.p(label, "stat-label"), Htm
 
 ## A checkbox draws no caption of its own, so the visible label is next to
 ## it.
-check_row : Str, Signal(ctx, Bool), Handler(ctx) -> Elem(ctx)
+check_row : Str, Signal(ctx, Bool), Engine.HandlerOf(ctx, Bool) -> Elem(ctx)
 check_row = |label, checked, changed| Html.div("check-row", [Html.checkbox(Engine.const(label), checked, [Engine.class("checkbox")], changed), Engine.text(label)])
 
 ## One note, a row of the list. Its handlers name the note by the row's
@@ -279,8 +279,8 @@ sync_status = |storage_available, rows| {
 					Html.div(
 						toolbar_class,
 						[
-							check_row("Sync automatically", auto, Engine.handle(|checked| AppStore.auto_set(checked == "true"))),
-							check_row("Hide synced notes", AppStore.cells.hide_synced.signal(), Engine.handle(|checked| AppStore.synced_hidden(checked == "true"))),
+							check_row("Sync automatically", auto, Engine.handle(|checked| AppStore.auto_set(checked))),
+							check_row("Hide synced notes", AppStore.cells.hide_synced.signal(), Engine.handle(|checked| AppStore.synced_hidden(checked))),
 						],
 					),
 					Html.div(

@@ -898,7 +898,7 @@ Core := [].{
 	FilesHandler(ctx) : HandlerOf(ctx, Received)
 
 	## An event handler usable in context `ctx`: what an event writes, given its
-	## payload (an input's value, `"true"`/`"false"` for a checkbox, `""` for a
+	## payload (an input's text, a checkbox's Boolean checked state or `""` for a
 	## click). Make one with the [State] methods or with `store_handler`, and
 	## attach it with `on`, `on_click` or an `Html` control. A handler runs once
 	## per event, in the turn that delivers it.
@@ -910,6 +910,12 @@ Core := [].{
 	## handler that decides what to write from what it reads (`store_handler`)
 	## reports only the writes it made.
 	HandlerOf(ctx, p) := { run : (ctx, p, List(U32) -> (ctx, Layers)) }.{
+
+		## Map an incoming payload using a reading taken before this handler writes.
+		from_payload_by : HandlerOf(ctx, q), Signal(ctx, b), (b, p -> q) -> HandlerOf(ctx, p)
+		from_payload_by = |{ run }, { read, .. }, convert| {
+			run: |env, payload, site| run(env, convert(read(env), payload), site),
+		}
 
 		## Use a handler from the enclosing context inside a `state` or `derive` body
 		## nested in it.
@@ -2607,6 +2613,10 @@ Core := [].{
 	## Listen for text with static prevention and propagation policies.
 	on_with : Str, Policy, Handler(ctx) -> Attr(ctx)
 	on_with = |event, policy, handler| attach_kind(event, text_kind, policy_bits(policy), handler)
+
+	## Read a checkbox's or radio's checked state as a Boolean on change.
+	on_checked : HandlerOf(ctx, Bool) -> Attr(ctx)
+	on_checked = |handler| attach_kind("change", open_kind, 0, handler)
 
 	## Receive a pointer record from one of the four pointer event types.
 	## Every move is an occurrence unless `on_pointer_paced` declares otherwise.
@@ -11064,4 +11074,16 @@ expect {
 		text: "First",
 		place: " (element /1/1, \"Save\")",
 	}
+}
+
+## Payload conversion reads the arriving environment before the target handler
+## writes it, and preserves that handler's exact write set.
+expect {
+	handler : Core.HandlerOf({ count : U64 }, U64)
+	handler = { run: |env, amount, _| ({ count: env.count + amount }, { lo: 2, hi: [], cells: 4, more: [] }) }
+	reading : Core.Signal({ count : U64 }, U64)
+	reading = { mask: 1, read: |env| env.count, sel: NoSel }
+	mapped = handler.from_payload_by(reading, |before, text| before + (U64.from_str(text) ?? 0))
+	(after, wrote) = (mapped.run)({ count: 10 }, "2", [])
+	after.count == 22 and wrote.lo == 2 and wrote.cells == 4
 }

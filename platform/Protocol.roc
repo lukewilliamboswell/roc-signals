@@ -65,7 +65,7 @@ Protocol := [].{
 		{ code: 2, name: "FILES", events: ["change", "drop", "paste"] },
 		{ code: 3, name: "POINTER", events: ["pointerdown", "pointermove", "pointerup", "pointercancel"] },
 		{ code: 4, name: "KEY", events: ["keydown", "keyup"] },
-		{ code: 5, name: "OPEN_STATE", events: ["close", "toggle"] },
+		{ code: 5, name: "OPEN_STATE", events: ["close", "toggle", "change"] },
 		{ code: 6, name: "SCROLL", events: ["scroll"] },
 		{ code: 7, name: "SIZE", events: ["size"] },
 		{ code: 8, name: "SEEN", events: ["seen"] },

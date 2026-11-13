@@ -143,7 +143,7 @@ ServicesApp := [].{
 				Html.radio("Small", "size", "s", v.map(|s| s.size), [], st.update(|s| { ..s, size: "s" })),
 				Html.radio("Medium", "size", "m", v.map(|s| s.size), [], st.update(|s| { ..s, size: "m" })),
 				Html.p_s(v.map(|s| s.size), [Engine.test_id("size")]),
-				Html.checkbox(Engine.const("Agree"), v.map(|s| s.agree), [], st.set_value(|s, p| { ..s, agree: p == "true" })),
+				Html.checkbox(Engine.const("Agree"), v.map(|s| s.agree), [], st.set_value(|s, p| { ..s, agree: p })),
 				Engine.element("button", [Html.aria_label("Press"), ServicesApp.press(st, "focus"), ServicesApp.press(st, "mousedown"), ServicesApp.press(st, "mouseup"), ServicesApp.press(st, "click")], [Engine.text("Press")]),
 				Html.p_s(v.map(|s| Str.join_with(s.presses, ",")), [Engine.test_id("presses")]),
 				# A form
@@ -159,14 +159,32 @@ ServicesApp := [].{
 				Html.p_s(v.map(|s| s.submitted.to_str()), [Engine.test_id("submitted")]),
 				# Selects: static options, and options an `each` mounts after
 				# the select's value is set.
-				Html.select(Engine.const("Fruit"), v.map(|s| s.fruit), [], [Html.option("apple", "Apple"), Html.option("pear", "Pear")], st.set_value(|s, f| { ..s, fruit: f })),
+				Html.select(
+					Engine.const("Fruit"),
+					v.map(|s| s.fruit),
+					Engine.const(["apple", "pear"]),
+					{ key: |fruit| fruit, label: |fruit| if (fruit == "apple") "Apple" else "Pear" },
+					[],
+					st.set_value(
+						|s, picked| match picked {
+							Chose(fruit) => { ..s, fruit }
+							NotOffered => s
+						},
+					),
+				),
 				Html.p_s(v.map(|s| s.fruit), [Engine.test_id("fruit")]),
 				Html.select(
 					Engine.const("Shade"),
 					v.map(|s| s.shade),
+					Engine.const(["amber", "teal", "plum"]),
+					{ key: |shade| shade, label: |shade| shade },
 					[],
-					[Engine.each(Engine.const(["amber", "teal", "plum"]), |k| k, |row| Engine.element("option", [Engine.prop_s(Engine.Prop.value, row.key())], [Engine.text_s(row.key())]))],
-					st.set_value(|s, c| { ..s, shade: c }),
+					st.set_value(
+						|s, picked| match picked {
+							Chose(shade) => { ..s, shade }
+							NotOffered => s
+						},
+					),
 				),
 				# HTTP results as typed errors
 				Html.button("Fetch", [], st.update(|s| { ..s, fetches: s.fetches + 1 })),

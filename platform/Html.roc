@@ -188,23 +188,36 @@ Html := [].{
 	on_pointer_cancel : Engine.HandlerOf(ctx, Engine.Pointer) -> Attr(ctx)
 	on_pointer_cancel = |handler| Engine.on_pointer(Cancel, handler)
 
-	## `checkbox(name, checked, attrs, handler)`: a checkbox that follows
-	## `checked`. `handler` receives `"true"` or `"false"` on `change`.
-	checkbox : Signal(ctx, Str), Signal(ctx, Bool), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
-	checkbox = |name, v, attrs, h| Engine.element("input", [Engine.attr_s("aria-label", name), Engine.attr("type", "checkbox"), Engine.prop_s(Engine.Prop.checked, v), Engine.on("change", h)].concat(attrs), [])
+	## A checkbox that follows `checked` and delivers its Boolean state on change.
+	checkbox : Signal(ctx, Str), Signal(ctx, Bool), List(Attr(ctx)), HandlerOf(ctx, Bool) -> Elem(ctx)
+	checkbox = |name, v, attrs, h| Engine.element("input", [Engine.attr_s("aria-label", name), Engine.attr("type", "checkbox"), Engine.prop_s(Engine.Prop.checked, v), Engine.on_checked(h)].concat(attrs), [])
 
-	## `select(name, value, attrs, options, handler)`: a drop-down that shows
-	## `value`. `handler` receives the chosen option's value on `change`.
-	select : Signal(ctx, Str), Signal(ctx, Str), List(Attr(ctx)), List(Elem(ctx)), Handler(ctx) -> Elem(ctx)
-	select = |name, v, attrs, opts, h| Engine.element("select", [Engine.attr_s("aria-label", name), Engine.prop_s(Engine.Prop.value, v), Engine.on("change", h)].concat(attrs), opts)
+	## Stable keys identify choices; labels are the text shown in their options.
+	Choices(a) := { key : a -> Str, label : a -> Str }
 
-	## `option(value, label)`: an option for `select`.
-	option : Str, Str -> Elem(ctx)
-	option = |value, label| Engine.element("option", [Engine.prop(Engine.Prop.value, value)], [Engine.text(label)])
-
-	## An option whose value and label both follow a value.
-	option_s : Signal(ctx, Str) -> Elem(ctx)
-	option_s = |v| Engine.element("option", [Engine.prop_s(Engine.Prop.value, v)], [Engine.text_s(v)])
+	## A select whose keyed options follow `choices`. Change delivers the current
+	## choice with that key, or `NotOffered` if no current choice has it. Duplicate
+	## keys are the ordinary `each` contract error. Lookup is linear in choices.
+	select : Signal(ctx, Str), Signal(ctx, a), Signal(ctx, List(a)), Choices(a), List(Attr(ctx)), HandlerOf(ctx, [Chose(a), NotOffered]) -> Elem(ctx)
+		where [a.is_eq : a, a -> Bool]
+	select = |name, value, choices, { key, label }, attrs, handler| Engine.element(
+		"select",
+		[
+			Engine.attr_s("aria-label", name),
+			Engine.prop_s(Engine.Prop.value, value.map(key)),
+			Engine.on(
+				"change",
+				handler.from_payload_by(
+					choices,
+					|offered, text| match offered.find_first(|choice| key(choice) == text) {
+						Ok(choice) => Chose(choice)
+						Err(_) => NotOffered
+					},
+				),
+			),
+		].concat(attrs),
+		[Engine.each(choices, key, |row| Engine.element("option", [Engine.prop_s(Engine.Prop.value, row.key())], [Engine.text_s(row.field(label))]))],
+	)
 
 	# ------------------------------------------------------------ structure
 
@@ -348,10 +361,6 @@ Html := [].{
 		].concat(attrs),
 		[],
 	)
-
-	## An option with extra attributes.
-	option_attrs : Str, Str, List(Attr(ctx)) -> Elem(ctx)
-	option_attrs = |value, label, attrs| Engine.element("option", [Engine.prop(Engine.Prop.value, value)].concat(attrs), [Engine.text(label)])
 }
 
 bool_str : Bool -> Str

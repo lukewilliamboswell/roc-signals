@@ -134,9 +134,10 @@ ExplorerApp := [].{
 						),
 						Html.select(
 							Engine.const("Live orders a second"),
-							cells.rate.signal().map(|rate| rate.to_str()),
+							cells.rate.signal(),
+							Engine.const(Explorer.rates),
+							{ key: |rate| rate.to_str(), label: |rate| "${Explorer.grouped(rate.to_u64())} a second" },
 							[Engine.class("input")],
-							Explorer.rates.map(|rate| Html.option(rate.to_str(), "${Explorer.grouped(rate.to_u64())} a second")),
 							Engine.handle(Explorer.paced),
 						),
 						Html.p_s({ flow: cells.flow.signal(), rate: cells.rate.signal(), live: cells.live.signal() }.Signal.map(Explorer.live_text), [Engine.class("hint"), Engine.test_id("live")]),

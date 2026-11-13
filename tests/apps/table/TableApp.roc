@@ -261,7 +261,7 @@ TableApp := [Todos].{
 			[],
 			[
 				Html.span_s(key.map(|k| "${k.to_str()}:"), []),
-				Html.checkbox(named("Done"), todo.signal().map(|t| t.status == Done), [], todo.set_value(|t, checked| { ..t, status: if (checked == "true") Done else Open })),
+				Html.checkbox(named("Done"), todo.signal().map(|t| t.status == Done), [], todo.set_value(|t, checked| { ..t, status: if (checked) Done else Open })),
 				Html.text_input(named("Title"), "text", todo.signal().map(|t| t.title), [], todo.set_value(|t, title| { ..t, title })),
 				Html.span_s(todo.signal().map(|t| t.qty.to_str()), [Html.aria_label_s(named("Qty"))]),
 				TableApp.action(named("Bump"), raise(1)),
