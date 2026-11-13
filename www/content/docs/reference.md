@@ -28,7 +28,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Structure | `Elem`, `element`, `text`, `text_s`, `when`, `switch`, `remount_on`, `derive`, `resource`, `Remote(output, error)` (`request`: `Idle`, `Pending`; `answer`: `Unanswered`, `Answered(output)`, `Failed(error)`; `remote.answered()`, the latest answer as `Try(output, [NoAnswer])`), `gather` (one request per input), `Gathered(output, error)` (`jobs`: a `JobState` per input, `Working`, `Answered(output)` or `Failed(error)`; `all`: a `Remote` of the whole list) | [Conditionals and Lists](@/docs/dynamic-structure.md) |
 | Lists | `each`, `RowRef`, `RowRef.key`, `RowRef.field`, `RowRef.item` (the whole item), `RowRef.select`, `keyed`, `Keyed` | [Conditionals and Lists](@/docs/dynamic-structure.md#keyed-lists) |
 | Table views | `table_view`, `TableViewProps` (`query`, `plan`, `window`), `QueryPlan(k, v, s)` (`keep`, `sort`, `compare`), `Window` (`start`, `count`), `every_row` (the window that draws every row) | [Tables and Table Views](@/docs/tables-and-views.md) |
-| Attributes | `Attr`, `attr`, `attr_s`, `class`, `class_s`, `test_id`, `test_id_s`, `ref`, `ref_s` (a signal of the reference's name, including in a row; the empty name names nothing) | [Effects and the Browser](@/docs/effects-and-browser.md#focus) |
+| Attributes | `Attr`, `attr`, `attr_s` (present text, including empty), `attr_presence` (a signal of `Absent` or `Present(text)`), `class`, `class_s`, `test_id`, `test_id_s`, `ref`, `ref_s` (a signal of the reference's name, including in a row; the empty name names nothing) | [Attribute values](#attribute-values), [Focus](@/docs/effects-and-browser.md#focus) |
 | Events | `on` (bare event type, text payload), `on_with` (text payload and typed `Policy`: `prevent` and `stop`, both false by default), `on_click`, `on_files` (`Change`, `Drop` or `Paste`, files payload) | [Local State, Events, and Forms](@/docs/state-and-events.md#handlers) |
 | Properties | `Prop(a)`, `Prop.value` (`Str`), `Prop.checked` (`Bool`), `prop`, `prop_s` | [Element properties](#element-properties) |
 | Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.spans` (the `{ start, len }` ranges of `n` bytes that cover a file, for `read!`), `Received`, `FilesHandler` (the generic handler family at `Received`), `on_files` | [Files](@/docs/files.md) |
@@ -155,8 +155,17 @@ that does not bubble, so its own target can still receive it.
 
 ## Attribute values
 
-An empty value removes the attribute. `disabled`, `selected`, `readonly`, `required`, `hidden` and
-`multiple` are present for any value other than `""` and `"false"`.
+`attr` and `attr_s` keep an attribute whose value is empty. Use
+`attr_presence(name, signal)` to choose `Absent` or `Present(text)`;
+`Present("")` is distinct from absence and both cases prune equal updates
+without replacing the element, including in a row template.
+
+Only the boolean attributes `disabled`, `selected`, `readonly`, `required`,
+`hidden`, `multiple` and `open` treat `""` and `"false"` as absent; every
+other value makes them present. `Html.flag_maybe` omits an attribute when
+false through explicit `Absent`.
+
+{{ sample(file="attributes/main.roc", region="presence") }}
 
 ## Element properties
 
@@ -169,8 +178,9 @@ pruned, including in a row template. `Html` controls set them for you.
 | `Engine.Prop.value` | `Str` | `input`, `textarea`, `select`, `option` | Live value, guarded while focused or composing; a select settles after option changes | `value` |
 | `Engine.Prop.checked` | `Bool` | `input` | Live checked state | `checked` |
 
-Both mirror their attribute; an empty value removes that mirrored
-attribute. A claimed name used through `attr` or `attr_s` is a contract
+Both mirror their attribute; an empty `value` keeps `value=""`, including
+on an option, while false `checked` removes its mirrored attribute.
+A claimed name used through an attribute constructor is a contract
 error on the row's elements. On another element, such as a custom element
 or `<progress>`, `attr("value", ...)` sets only the attribute. A property
 on an element its row does not allow, or declared twice, is a contract

@@ -2169,6 +2169,29 @@ expressed as a declared policy over a value the engine has already rendered
 (never decided after the event); pointer coordinates and form-data payloads.
 Each is a protocol change with a contract test.
 
+## Attributes
+
+An attribute's text and its presence are separate facts. `attr(name, text)`
+and `attr_s(name, signal)` set a present attribute, including when its text
+is empty. Empty text has HTML meaning: `alt=""` marks a decorative image,
+and an option's `value=""` is a real empty choice rather than its text.
+Only the boolean attributes in Appendix B retain the empty/`"false"`
+absence rule.
+
+`attr_presence(name, signal)` takes a signal of `[Absent, Present(Str)]`.
+`Absent` removes the attribute; `Present("")` keeps it with empty text.
+This is one attribute mechanism: the string constructors wrap their value
+as `Present`, and the same hole owns its reader and last observation.
+The reader runs once, and equality pruning compares presence as well as
+text, including in row templates. A change between absent and empty emits
+one attribute command without changing the element's identity.
+
+A conditional URL or chart attribute expresses its missing case as
+`Absent`. The runtime never guesses absence from an empty string or a
+name. `Html.flag_maybe` is `Present("true")` while its flag is true and
+`Absent` otherwise. A static attribute that should not exist is normally
+omitted from its element's attributes.
+
 ## Controlled Inputs
 
 The `value` property is a guarded update, not a blind assignment:
@@ -3019,6 +3042,8 @@ every_row : Window                            # the window that draws every row 
 
 # Attributes and events
 attr, attr_s, class, class_s, test_id, test_id_s
+attr_presence : Str, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
+                                              # explicit presence; empty text remains present
 on : Str, Handler(ctx) -> Attr(ctx)          # bare event type; text kind, no policy
 Policy := { prevent : Bool ?? False, stop : Bool ?? False }
 on_with : Str, Policy, Handler(ctx) -> Attr(ctx)
@@ -3232,7 +3257,7 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **6**. The engine declares it
+This appendix is protocol version **7**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -3251,7 +3276,7 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (6) |
+| `roc_engine_version` | `() -> u32` | The protocol version (7) |
 | `roc_engine_keys` | `() -> List(U8)` | Declared storage keys, then the port table: `count:u32 (key:str)* nports:u32 (name:str kind:u8 delivery:u8 bound:u32)*`, where `kind` is `1` command, `2` call, `3` subscription, `delivery` is `0` (not a subscription), `1` every or `2` latest, and `bound` is n for every, `1` for latest, `0` otherwise. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -3437,15 +3462,15 @@ a `contract` fault.
 
 | Op | Name | Operands |
 |---|---|---|
-| 1 | `INST` | `node parent before tpl`, then per template hole in order: text/attr/property → `str`; event → nothing; nested site → `u32` node id for its placeholder; reference → `u32` command node id for its element |
+| 1 | `INST` | `node parent before tpl`, then per template hole in order: text/property → `str`; attribute → `presence:u8 [value:str]`; event → nothing; nested site → `u32` node id for its placeholder; reference → `u32` command node id for its element |
 | 2 | `TEXT` | `node hole:u8 str` — row text hole |
-| 3 | `HATTR` | `node hole:u8 str` — row attribute hole |
+| 3 | `HATTR` | `node hole:u8 presence:u8 [value:str]` — row attribute hole |
 | 4 | `MOVE` | `node before` (`0` = append to the parent's end) |
 | 5 | `REMOVE` | `node` |
 | 6 | `CLEAR` | `parent site` — remove all children; forget the site's rows |
 | 7 | `TEMPLATE` | `tpl len bytes` — define a row template |
 | 8 | `ELEM` | `node parent before tag:str` |
-| 9 | `ATTR` | `node name:str value:str` |
+| 9 | `ATTR` | `node name:str presence:u8 [value:str]` |
 | 10 | `TEXTNODE` | `node parent before text:str` |
 | 11 | `LISTEN` | `node handler:u32 type:str kind:u8 policies:u32` |
 | 12 | `SETTEXT` | `node text:str` |
@@ -3510,9 +3535,17 @@ name. Its `INST` operand assigns its element an id for commands such as
 `FOCUS`, freed with the row. The runtime keeps that command address separate
 from event routing, which still uses the row's id.
 
-**Attribute values.** `""` removes the attribute. `disabled`, `selected`,
-`readonly`, `required`, `hidden` and `multiple` are present for any value other
-than `""` and `"false"`. `class` on an SVG element is set as an attribute.
+**Attribute presence and values.** In `ATTR`, `HATTR` and an attribute
+hole's `INST` operand, `presence` is `0` (remove, with no value operand)
+or `1` (set, followed by `value:str`). Any other flag is an `executor`
+fault. The static attributes in a template's node tree are always present
+and remain plain name/value strings; they use the same value rules.
+
+An empty value keeps a non-boolean attribute present. `disabled`,
+`selected`, `readonly`, `required`, `hidden`, `multiple` and `open` are present
+for any value other than `""` and `"false"`; those two values remove
+them. `class` on an SVG element is set as an attribute, including when
+empty. Explicit absence removes any attribute.
 
 **Payload kinds.** A handler's declaration chooses its payload, decoded once
 at its routed site. A malformed payload is a `contract` fault naming that
@@ -3541,8 +3574,10 @@ listened as `focusin` and `focusout`.
 
 **Element properties.** `PROP`, `HPROP` and property holes use this closed
 table. Each encoded value is a `str`; the row decides its type and meaning.
-Both rows apply in stream order and mirror their attribute. An empty value
-sets the live value to empty text and removes the mirrored attribute.
+Both rows apply in stream order and mirror their attribute. An empty
+`value` sets the live value to empty text and keeps `value=""`, so an
+option remains the empty choice. A false `checked` removes its mirrored
+attribute; true keeps it present.
 
 | Index | Property | Elements | Type and encoding | Claims attribute |
 |---|---|---|---|---|

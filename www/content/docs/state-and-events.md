@@ -121,6 +121,9 @@ your app changes while the user is typing (clearing a draft after submit, for
 example) appears when focus leaves the box. Checkboxes take `checked` as a
 property, and a select re-applies its value when its options change.
 
+An empty option value remains empty, so `Html.option` can offer an empty
+choice such as "All works" without a sentinel value.
+
 `Html` controls set these properties for you. On a raw element use
 `Engine.prop` or `prop_s` with `Engine.Prop.value` (text) or
 `Engine.Prop.checked` (`Bool`). Properties prune equal values and work in

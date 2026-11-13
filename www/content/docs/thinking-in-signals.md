@@ -35,6 +35,12 @@ The parts that can change are *sites*. A site is one of:
 
 Between them sit *holes*: text, attributes and element properties whose content comes from a signal.
 
+Attribute text can be empty without being absent. `attr_s` always sets a
+present value; `attr_presence` takes a signal of `Absent` or `Present(text)`
+when the attribute should come and go. The hole compares both presence and
+text, so changing between absent and empty is an update, while repeating
+either is pruned.
+
 Your view function is not called again after mount. There is no second tree
 to compare with the first: the engine knows, from how the description was
 built, which holes and sites read which state, and an event goes straight to
