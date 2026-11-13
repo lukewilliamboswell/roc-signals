@@ -425,7 +425,8 @@ beside the two test apps whose engine sequences they generate. They decode
 arbitrary bytes into valid programs and check the engine against a model:
 the effect channel's lifecycle including worker jobs, port calls and
 subscriptions, a gather's jobs settling at their positions and an outbox's
-posts (`fx-channel`, `tests/apps/effects/fuzz-channel.roc`), controlled inputs
+posts (`fx-channel`, `tests/apps/effects/fuzz-channel.roc`), controlled inputs,
+pointer gestures with held reports checked against an input-side model,
 and more than 4,095 `each` sites (`controls`,
 `tests/apps/controls/fuzz-controls.roc`), generated site trees
 (`fuzz/structure`, whose pure mode also compares the page with a fresh
@@ -442,7 +443,9 @@ drives the engine runs the settle check after every step.
 An example's targets check its own pure logic and import nothing of the
 platform: `fuzz-<subject>.roc` beside the modules it imports, named for
 what it checks (the CSV Converter's `fuzz-csv.roc`, the Spreadsheet's
-`fuzz-formulas.roc`, the Million-Row Explorer's `fuzz-aggregates.roc`), each
+`fuzz-formulas.roc`, the Million-Row Explorer's `fuzz-aggregates.roc`,
+and Kanban's `fuzz-board.roc`, whose independent column-list model checks
+drops, dense places, card identity and no edit for the current gap), each
 against a model, a round trip or an invariant over generated sequences. The
 logic a target reaches is therefore in modules that import nothing from
 `pf`: a component's module imports the platform for its view, so operations
