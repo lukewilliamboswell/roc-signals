@@ -1735,6 +1735,17 @@ A claim's structural position locates an already-decided engine address,
 not an application identity. Temporary claim and text-run data is bounded
 and released when mount completes or faults.
 
+Controlled textarea and select values can require physical markup which differs
+from their ordinary logical children or attributes. The renderer declares any
+control-value text, selected-attribute override or empty-selection option as a
+scaffold, with explicit restoration facts in the measured claim envelope. These
+nodes and attributes have no application identity. On adoption, Roc commands
+removal of declared scaffolds, restoration of logical attributes and construction
+of logical text or comments which the picture could not represent directly.
+It then reapplies the ordinary control properties before effects. The runtime
+never recognizes a scaffold from its name or chooses a control value. Existing
+nodes which already represent the logical frame retain their identity.
+
 A picture is accepted only when the parser preserves the structure and text
 that the oracle rendered. The parser and its browser comparisons are the
 independent check of the renderer. HTML repair is also a construction contract

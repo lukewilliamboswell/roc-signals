@@ -161,6 +161,23 @@ Checks := [].{
 			{ name: "markup-property-uppercase", expectation: Rejected(["line 1", "Engine.Prop.value"]) },
 			{ name: "markup-property-option", expectation: Rejected(["line 1", "Engine.Prop.value"]) },
 			{ name: "markup-property-foreign", expectation: Compiles },
+			{ name: "construction-paragraph", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the paragraph first", "site"] }) },
+			{ name: "construction-insert-table-section", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["insert a table section first", "site"] }) },
+			{ name: "construction-invalid-table-child", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["move it outside the table", "site"] }) },
+			{ name: "construction-table-part-outside", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["a table part needs its table context", "site"] }) },
+			{ name: "construction-nested-anchor", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the earlier anchor first", "site"] }) },
+			{ name: "construction-nested-form", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["ignore the nested form", "site"] }) },
+			{ name: "construction-nested-button", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the earlier button first", "site"] }) },
+			{ name: "construction-list-item", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the earlier list item first", "site"] }) },
+			{ name: "construction-description-item", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the earlier description item first", "site"] }) },
+			{ name: "construction-option", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the earlier option first", "site"] }) },
+			{ name: "construction-heading", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the earlier heading first", "site"] }) },
+			{ name: "construction-void", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["a void element cannot hold children", "site"] }) },
+			{ name: "construction-text-content", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["reads this content as text", "site"] }) },
+			{ name: "construction-foster-table-text", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["move the text outside the table", "site"] }) },
+			{ name: "construction-empty-each", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["insert a table section first", "site"] }) },
+			{ name: "construction-empty-row-void-text", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["a void element cannot hold children", "site"] }) },
+			{ name: "construction-empty-table-view", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["insert a table section first", "site"] }) },
 		]
 		dir = "${o.build_dir}/key-type-errors"
 		SpecSuite.fresh_dir!(dir)?
@@ -239,6 +256,11 @@ Checks := [].{
 			{ name: "oracle-namespace", rejection: "unknown namespace kind", prefix: "executor:", code: 70 },
 			{ name: "oracle-content-container", rejection: "invalid child container", prefix: "executor:", code: 70 },
 			{ name: "raw-uppercase-value", rejection: "claimed by a property", prefix: "contract:", code: 70 },
+			{ name: "construction-later-branch", rejection: "close the paragraph first", prefix: "contract:", code: 70 },
+			{ name: "construction-later-row", rejection: "close the paragraph first", prefix: "contract:", code: 70 },
+			{ name: "construction-later-state", rejection: "close the paragraph first", prefix: "contract:", code: 70 },
+			{ name: "construction-later-text", rejection: "move the text outside the table", prefix: "contract:", code: 70 },
+			{ name: "construction-later-row-text", rejection: "move the text outside the table", prefix: "contract:", code: 70 },
 		]
 		dir = "${o.build_dir}/key-contracts"
 		SpecSuite.fresh_dir!(dir)?
