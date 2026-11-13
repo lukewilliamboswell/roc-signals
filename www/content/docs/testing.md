@@ -146,6 +146,23 @@ models it. `LOC` is a locator, `"…"` a string, `N` a non-negative integer,
 
 ### Setup forms
 
+The parser resolves one environment before either runner mounts the app.
+Without setup forms its values are:
+
+| Value | Default |
+|---|---|
+| Location | `/` |
+| Local storage | Available, with no seeded pairs |
+| Connectivity | Online |
+| Visibility | Visible |
+
+Both runners use these values, including when Chrome's real browser facts
+differ. A value that later steps can change uses `initial-…` in setup and
+`set-…` in steps; a value fixed for the document uses its name directly.
+Storage predates that naming rule: `local-storage` seeds it and the app's
+own writes change it. Files are fixtures and `max-output-bytes` is a
+deployment limit.
+
 | Form | Effect |
 |---|---|
 | `(initial-location "/path?q#h")` | The URL the app boots at; must start with `/`. Without it, `/` |
@@ -259,9 +276,14 @@ input loses its job under `run-effect`, with the class `app_crash`, in both
 runners. A job cancelled by disposing its site is no longer pending, and the
 `effects_cancelled` metric below counts it.
 
-In Chrome, `set-online` and `set-visibility` override `navigator.onLine` and
-`document.visibilityState` and dispatch the browser's own events, so the
-runtime's real listeners run.
+In Chrome, `set-online` and `set-visibility` update the runtime's
+`environment` readers and dispatch the browser's own events, so the
+runtime's real listeners run. Setting an unchanged value dispatches nothing
+and causes no turn. The current environment carries into a later document:
+setting offline and then following a link boots the next document offline.
+Storage is seeded once per spec, so app writes and removals also survive
+navigation. Nondeterministic browser facts must come from a spec or its
+stated defaults in both runners.
 
 This spec checks the auto-refresh interval: it mounts with the checkbox,
 ticks, answers the refetch, and is gone when unchecked.

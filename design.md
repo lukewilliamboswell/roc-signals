@@ -1950,9 +1950,53 @@ Its cost is a few clock reads per job, and none for a turn nobody asked to
 see. The engine's own account stays the work record: the monitor reads it
 and adds nothing to it.
 
+### The environment at boot
+
+Boot bytes and program declarations use tagged, length-bounded sections in
+one tag space (Appendix B). Each table row states its declaration body,
+boot body, source and default. Every section applicable to that direction
+is required once, in ascending tag order; tags do not provide compatibility
+or permission to skip unknown data. Empty boot bytes mean all defaults,
+including location `/`. Declarations must contain their sections even when
+their lists are empty.
+
+A value an app reads at boot is declared through the defaulted
+`ProgramProps`; a catalogue of request kinds is a `with_…` method. `Boot`
+is a defaulted nominal record, built and read as ordinary record data, so
+a later field breaks neither a program nor a pure test that builds one.
+
+The mount's `environment` option supplies read-only fact readers, currently
+`online()` and `visible()`. They are called at boot and when the browser's
+own event answers a live subscription. Their defaults read `navigator`
+and `document` through the runtime's existing window and document options.
+Services remain separate: `storage`, `fetch` and `ports` perform requests
+and writes. The URL comes from the document's location, which navigation
+commands write, and deployment limits remain `max…` options.
+
+Unknown environment keys and non-functions refuse mount. A reader that
+throws or returns the wrong type refuses mount when boot is being read;
+after boot it is an `executor` fault. The runtime never keeps a stale
+fact or skips the event to conceal that failure.
+
+The spec parser resolves one `Environment` with stated defaults and owns
+cross-form checks; both runners mount from it, and emitted spec JSON
+includes it. A cross-document mount carries the current environment
+through `next_document`, initially the identity. Replay installs readers
+over that value in each new document and seeds storage without an
+app-visible marker. A step that sets an unchanged fact dispatches nothing.
+A nondeterministic fact added later reaches either runner only from the
+spec or its fixed default, never a real clock or entropy source.
+
+A value steps can change is set up with `initial-<name>` and changed by
+`set-<name>`; a value fixed for the document uses `(<name> …)`.
+Storage predates this naming rule: `local-storage` seeds it and the app's
+writes change it. File fixtures and deployment limits are not environment
+facts.
+
 ### Connectivity and visibility
 
-Whether the browser is online and the page visible is part of the boot bytes
+As sections of [the environment at boot](#the-environment-at-boot), whether
+the browser is online and the page visible is part of the boot bytes
 (`Boot.online`, `Boot.visible`), and the `OnlineChanges` and
 `VisibilityChanges` subscriptions deliver every later change as
 `Online(Bool)` or `Visible(Bool)` from the browser's `online`/`offline` and
@@ -1961,7 +2005,7 @@ their site stops them.
 
 ### Storage availability
 
-Whether local storage can be used at all is part of the boot bytes too
+Whether local storage can be used at all is part of the boot environment too
 (`Boot.storage_available`). The runtime reports it unavailable when there is
 no `localStorage`, reaching it throws, or reading a declared key throws (as in
 a browser with site data disabled); the boot storage is then empty rather than
@@ -2403,6 +2447,9 @@ row does not allow, a property declared twice on an element, or an
 attribute with a name a property row claims on that element; boot
 bytes or an effect result that do not follow Appendix B (truncated, trailing
 bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
+Boot faults include unknown, repeated, missing or out-of-order sections,
+storage pairs while storage is unavailable, and a pair for a key the
+program did not declare; the diagnostic names the section.
 **Resource limits:** node ids (2³² − 2 live nodes); any count the template
 encoding carries in one byte —
 static attributes, children, holes, hole path depth, row handlers — above 255;
@@ -2486,8 +2533,8 @@ assert it.
 
 `.scm` specs are the platform's Playwright-style test language and the single
 source of truth for application-visible behaviour. A spec names a test, an
-optional setup (initial location, local storage and its availability,
-connectivity, visibility, the files the spec can give the app), and a list
+optional setup (the environment resolved by the parser with stated
+defaults, and the files and limits the spec gives the app), and a list
 of steps written against the rendered UI:
 
 - **Locators** — `role` (implicit or explicit role plus accessible name),
@@ -2591,7 +2638,10 @@ oracle and never defines a meaning of its own. In particular:
   fragment stays in the document; any other mounts the app afresh in a new
   document. History traversal across documents is refused, because a
   browser may restore a cached page rather than mount afresh;
-- a spec without `initial-location` starts at `/`.
+- the parser resolves the spec's environment once: location `/`, local
+  storage available with no seeded pairs, online and visible unless a
+  setup form says otherwise. `set-online` and `set-visibility` carry their
+  current values into a later document and dispatch nothing when unchanged.
 
 There are no native-only or Chrome-only steps. Hover is outside the grammar:
 neither runner delivers `pointerover`, `pointerout`, `pointerenter`,
@@ -2660,9 +2710,9 @@ metric: soak plateaus assert it.
 | `expect-files n` | File handles live in the app's instance after the last call: natively from the native host's heap, in Chrome from `metric(6)` |
 
 The browser runner holds intervals for `tick-interval` (they never fire on
-their own during a replay) and drives `set-online` and `set-visibility` by
-overriding `navigator.onLine` and `document.visibilityState` and dispatching
-the browser's own events, so the runtime's real listeners are exercised.
+their own during a replay) and drives `set-online` and `set-visibility`
+through the runtime's `environment` readers. It dispatches the browser's
+own events only when the value changes, exercising the real listeners.
 `local-storage-unavailable` makes `window.localStorage` throw before the app
 loads; seeding storage in the same setup is a spec error in both runners.
 
@@ -2915,8 +2965,8 @@ These are unresolved mechanism choices within the contracts above.
 The authoring API as it stands (`Engine.roc`). Types are abbreviated; `ctx` is
 the context a value or handler is used in.
 
-**The authoring API is the whole public surface.** Every `Engine` type is
-opaque: `Signal`, `State`, `HandlerOf`, `Prop`, `RowRef`, `Cell`, `Cells` and `Store` are
+**The authoring API is the whole public surface.** The reactive and storage
+types `Signal`, `State`, `HandlerOf`, `Prop`, `RowRef`, `Cell`, `Cells` and `Store` are
 opaque wrappers whose methods are documented here, and the contexts, `Elem`,
 `Attr`, `Keyed`, `Write`, `Reach`, `Stored`, `Reaction`, `Program`,
 `Registration` and `Outbox` are aliases of opaque types in the internal
@@ -2925,8 +2975,9 @@ app can neither name a representation nor call the interfaces only hosts and
 harnesses use (`Core.driver`, `mount`, `event`, `result`, `take_cmds`,
 `settled`, the effect and work counters); the generated API docs list the
 authoring API and nothing else. `Request`, `Command`, `Result`, `WorkFault`,
-`FileError`, `HttpError`, `Boot`, `QueryPlan` and `Window` are plain data and
-stay structural; `Remote` is a transparent nominal type over a record, so an app
+`FileError`, `HttpError`, `QueryPlan` and `Window` are plain data and
+stay structural; `Boot` and `ProgramProps` are nominal records with defaulted
+fields, built and read as records. `Remote` is a transparent nominal type over a record, so an app
 reads and builds it as the record and calls its methods. `Table` is an
 opaque type in a module of its own, which an app imports to write a table.
 The operations of `Table` that only the engine may call take an
@@ -2942,12 +2993,14 @@ through an attach function rather than supplying an unchecked codec.
 ```roc
 # Program entry
 program : (() -> Elem(Root)) -> Program
-program_boot : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Elem(Root)) -> Program
-program_store : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Store(st, h)),
+ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32 }
+program_boot : ProgramProps, (Boot -> Elem(Root)) -> Program
+program_store : ProgramProps, (Boot -> Store(st, h)),
                 (Boot -> Elem(StoreRoot(st))) -> Program             # the store start(boot) gives, held at the root
 Root                                          # the top context of a program without a store
 StoreRoot(st)                                 # the top context of a program whose store's storage is st
-Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool, storage_available : Bool }
+Boot := { url : Str ?? "/", storage : List((Str, Str)) ?? [], online : Bool ?? True,
+          visible : Bool ?? True, storage_available : Bool ?? True }
 Program                                       # opaque; the app binds it as `main`
 Program.with_workers : Program, List(Registration) -> Program   # the worker catalogue
 Registration                                  # opaque: a task or preparation; Worker makes one
@@ -3257,7 +3310,7 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **7**. The engine declares it
+This appendix is protocol version **8**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -3276,8 +3329,8 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (7) |
-| `roc_engine_keys` | `() -> List(U8)` | Declared storage keys, then the port table: `count:u32 (key:str)* nports:u32 (name:str kind:u8 delivery:u8 bound:u32)*`, where `kind` is `1` command, `2` call, `3` subscription, `delivery` is `0` (not a subscription), `1` every or `2` latest, and `bound` is n for every, `1` for latest, `0` otherwise. An invalid port catalogue is a `contract` crash |
+| `roc_engine_version` | `() -> u32` | The protocol version (8) |
+| `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
 | `roc_engine_files` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A files-kind event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port answer (14) or a fetched file (21) |
@@ -3318,7 +3371,7 @@ warm-up neither allocates.
 
 | Export | Meaning |
 |---|---|
-| `boot_keys()` | Before mount: make the declared key list readable through `cmd_ptr`/`cmd_len` |
+| `boot_keys()` | Before mount: make the program's declaration sections readable through `cmd_ptr`/`cmd_len` |
 | `payload_reserve(len) -> ptr` | Allocate the next call's payload (`0` for `len = 0`); JS writes `len` bytes at `ptr` after refreshing its memory view |
 | `init()` | Mount with the staged boot bytes; mount commands become readable |
 | `event(node, handler)` | One turn with the staged payload; its commands become readable |
@@ -3345,16 +3398,43 @@ allocations since reset; that is a measurement probe, not protocol.
 
 ### Boot
 
-1. `boot_keys()`; read `count:u32 (key:str)*`.
-2. Read each key from storage; stage the boot bytes with `payload_reserve`:
-   `url:str count:u32 (key:str value:str)* online:u8 visible:u8
-   storage:u8`, listing only keys that exist. `url` is `pathname + search +
-   hash`; `online` is `navigator.onLine`, `visible` is
-   `document.visibilityState != "hidden"`, and `storage` is whether local
-   storage is available (no key/value pairs when it is not), each `0` or `1`.
-   Empty boot bytes mean no boot data (online, visible, storage available).
-   Anything else that does not follow this layout is a `contract` fault.
+1. `boot_keys()`; read and validate the declaration sections below, including
+   the port table, before calling `init()`.
+2. Read the declared storage keys and environment facts; stage the boot
+   sections with `payload_reserve`.
 3. `init()`; apply the mount batch.
+
+Both buffers are sequences of `tag:u8 len:u32 body:len`. They share one tag
+space. A dash means that section does not occur in that direction.
+
+| Tag | Section | Declaration body | Boot body | Source and default |
+|---|---|---|---|---|
+| 1 | location | — | `url:str` | Document `pathname + search + hash`; `/` |
+| 2 | local-storage | `n:u32 (key:str)*n` | `available:u8 n:u32 (key:str value:str)*n` | `storage` service; available, no pairs |
+| 3 | connectivity | — | `online:u8` | `environment.online()`, otherwise the browser; true |
+| 4 | visibility | — | `visible:u8` | `environment.visible()`, otherwise the browser; true |
+| 5 | ports | `n:u32 (name:str kind:u8 delivery:u8 bound:u32)*n` | — | `Program.with_ports`; empty catalogue |
+
+Each applicable section is required exactly once, in ascending tag order:
+boot has 1–4 and declarations have 2 and 5. Unknown, repeated, out-of-order
+or missing sections are errors; tags are not a compatibility mechanism.
+The length bounds the body exactly, with no trailing bytes. Flags are
+strictly `0` or `1`; strings must be UTF-8. A body that overruns its section,
+an unavailable storage section with pairs, or a pair for a key the program
+did not declare is a `contract` fault naming the section. Unreadable
+declarations refuse mount before `init()`.
+
+Empty boot bytes alone mean all defaults, including URL `/`. Empty
+declarations are invalid: sections 2 and 5 occur even for empty lists.
+Storage declarations have no additional bound or duplicate check; declaring
+a key twice reads it twice. Only existing keys are included in boot pairs.
+`Core.read_boot` is the total structural decoder used by harnesses; mount
+also checks storage-key membership against the program's declarations.
+
+In the port table, `kind` is `1` command, `2` call, `3` subscription;
+`delivery` is `0` for a command or call, `1` every or `2` latest;
+`bound` is n for every, `1` for latest, `0` otherwise. The catalogue's
+existing bounds and validation apply within its section.
 
 ### Work record
 

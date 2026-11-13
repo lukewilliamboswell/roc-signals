@@ -190,6 +190,23 @@ and writes persist nothing, so the app can tell the user.
 and hands the boot data both to the function that starts the store and to
 the view (see [Shared State](@/docs/shared-state.md#starting-values-from-the-boot-data)).
 
+Both functions accept defaulted `ProgramProps`: omit `storage_keys` for
+none and `max_inflight` for 32, or pass `{}` for both defaults.
+
+A page embedding an app can supply the `environment` mount option with
+`online()` and `visible()` readers. The runtime calls them at boot and when
+the browser's `online`, `offline` or `visibilitychange` event answers a
+live subscription. Each returns a boolean; omitted readers use the
+browser through the runtime's window and document. This also lets a test
+provide fixed facts while exercising the real subscription listeners.
+
+Keep services in their own options: `storage` provides reads and writes,
+`fetch` performs HTTP requests and `ports` supplies port handlers. The URL
+comes from the document's location, and `max…` options cap deployment work.
+Unknown environment keys, non-functions and failed boot reads refuse
+mount; a reader that throws or returns the wrong type later stops the
+instance with an `executor` fault.
+
 ## Navigation
 
 {{ sample(file="effects.roc", region="routing") }}

@@ -247,7 +247,7 @@
   misbehaves is dropped rather than obeyed. Meet a measurement need by
   observing more, never by letting an observer steer.
 - Treat the command stream, event records, effect payloads, worker payloads,
-  port messages, boot bytes (with the port table after the storage keys) and
+  port messages, boot bytes and the program's declarations, and
   Wasm exports as one versioned protocol. Change the Roc encoder
   and decoders, `platform/Dom.roc`, both hosts (`host.zig`, `spec.zig`),
   `runtime.mjs`, `worker.mjs`, the contract tests in `tests/` and Appendix B of

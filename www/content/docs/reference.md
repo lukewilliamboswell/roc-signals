@@ -9,7 +9,7 @@ template = "page.html"
 
 The [API documentation](../../api/api/) is generated from the platform's source
 and documents every public symbol of `Engine`, `Table`, `Html`, `Worker`, `Wire`, `Port` and `PortJson`:
-the authoring API, and nothing else. Every `Engine` type is opaque; the engine's implementation
+the authoring API, and nothing else. The engine's storage and executable values are opaque; its implementation
 and the interfaces its hosts and test harnesses use live in the platform's
 internal `Core` module, which apps cannot import. This page is the map of it. The spec language is in [Testing](@/docs/testing.md).
 
@@ -17,7 +17,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 
 | Area | Symbols | Guide |
 |---|---|---|
-| Programs | `program`, `program_boot`, `program_store` (an app with a store: the configuration, `Boot -> Store` and `Boot -> Elem(StoreRoot(_))`), `Program`, `Program.with_workers`, `Registration` (made by a `Worker` task's or preparation's `registration`), `Program.with_ports`, `PortRegistration`, `Boot`, `boot_storage` | [Getting Started](@/docs/getting-started.md) |
+| Programs | `program`, `program_boot`, `program_store` (an app with a store: `ProgramProps`, `Boot -> Store` and `Boot -> Elem(StoreRoot(_))`), `Program`, `Program.with_workers`, `Registration` (made by a `Worker` task's or preparation's `registration`), `Program.with_ports`, `PortRegistration`, `Boot`, `boot_storage` | [Getting Started](@/docs/getting-started.md) |
 | Contexts | `Root`, `StoreRoot(st)` (the top of an app with a store), `In(outer, s)`, `Row(outer, item)`, `Reach(ctx, st)` (how a context reaches the store; a function that uses cells asks `where [ctx.store : () -> Engine.Reach(ctx, _)]`) | [Thinking in Signals](@/docs/thinking-in-signals.md#contexts) |
 | Signals | `Signal`, `const`, `Signal.map`, `Signal.map2` (which Roc's record builder calls: `{ a: va, b: vb }.Engine.Signal` is a signal of the record, the way a decision reads several cells), `Signal.lift`, `Signal.lift_row` | [Thinking in Signals](@/docs/thinking-in-signals.md#signals-declare-what-they-read) |
 | The store | `cell`, `table`, `Cells(whole, st, h)` (a description, built with the record builder: `{ a: .., b: .. }.Engine.Cells`; a store of one cell is `Engine.cell(init).map(\|c\| { c: c })`), `Cells.map`, `Cells.map2`, `Cells.with_reset`, `store`, `Stored(tag, st)`, `Store(st, h)`, `Store.cells`, `Store.with_initial`, `Store.after`, `Store.read` | [Shared State](@/docs/shared-state.md) |
@@ -39,6 +39,19 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 
 A component is not an API of its own: it is a type module whose view is
 handed the cells it uses ([Components](@/docs/components.md)).
+
+`program_boot` and `program_store` take `ProgramProps`, a record whose
+fields default to `storage_keys: []` and `max_inflight: 32`. Pass only the
+fields the app needs:
+
+{{ sample(file="program-props.roc", region="program") }}
+
+Boot values an app declares belong in these props; catalogues of request
+kinds use `Program.with_workers` and `Program.with_ports`. `Boot` is also a
+record with defaults: URL `/`, empty storage, storage available, online
+and visible. Pure tests can name only the fields they use:
+
+{{ sample(file="program-props.roc", region="boot") }}
 
 ## Table
 
@@ -211,9 +224,15 @@ optional.
 | `onPortFault` | none | Called when a command handler or an unsubscribe function fails | [Ports](@/docs/ports.md) |
 | `monitor` | `{ history: 128, userTiming: false, payloads: false }` | What the work monitor keeps and reports | [Monitoring Workers](@/docs/worker-monitoring.md) |
 | `storage` | the page's `localStorage` | The storage `StorageGet` and `StorageSet` use (an object with `localStorage`'s methods) | [Effects and the Browser](@/docs/effects-and-browser.md) |
+| `environment` | browser fact readers | Optional `online()` and `visible()` functions, read at boot and on the browser's subscription events; both must return booleans | [Effects and the Browser](@/docs/effects-and-browser.md) |
 | `fetch` | the global `fetch` | The function HTTP requests go through, for a page that scripts its own backend | [Effects and the Browser](@/docs/effects-and-browser.md) |
 | `manualEffects` | `false` | Requests wait until the caller answers or runs them (`runEffect`); used by the spec runner in Chrome | [Testing](@/docs/testing.md) |
 | `manualWork` | `false` | Only worker jobs wait for `runEffect`; every other effect runs on its own; used by the repository's long sessions in Chrome | [Contributing](@/docs/contributing.md#walks-and-soaks) |
+
+An unknown environment key or a non-function refuses mount. A reader that
+throws or returns the wrong type refuses mount at boot, or reports an
+`executor` fault on a later event. URL reads still use the document's
+location; services and deployment limits use their own options.
 
 The browser tests also pass `manualIntervals` (intervals tick only when the
 test says), `window` and `document`; an app's page has no reason to set
@@ -293,6 +312,6 @@ it mounts.
 
 ## Protocol
 
-The command stream, event records and boot bytes are versioned together. The
+The command stream, event records, boot bytes and program declarations are versioned together. The
 full wire protocol is Appendix B of
 [design.md](https://github.com/lukewilliamboswell/roc-signals/blob/main/design.md).
