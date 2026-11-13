@@ -28,7 +28,7 @@ platform ""
 	requires {
 		main : Engine.Program
 	}
-	exposes [Engine, Files, Html, Port, PortJson, Table, Wire, Worker]
+	exposes [Engine, Files, Html, Layout, Port, PortJson, Table, Wire, Worker]
 	packages {}
 	provides {
 		"roc_engine_ask": ask_for_host!,
@@ -82,6 +82,7 @@ import Engine
 import Files
 import Hosted
 import Html
+import Layout
 import Port
 import PortJson
 import SpecRunner

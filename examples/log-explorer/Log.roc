@@ -88,7 +88,27 @@ Log := [].{
 
 	## A page of the viewer: its first line (from 0), the log's line count
 	## and the lines.
-	Window : { first : U64, total : U64, lines : List(Line) }
+	Window : { first : U64, total : U64, count : U64, lines : List(Line) }
+
+	## A viewer waits for layout before asking a worker for its first window.
+	## Only a size report supplies a capacity, always at least one line.
+	Viewport :: [Unmeasured, Fitted(U64)].{
+
+		## The state before the first size report.
+		waiting : Viewport
+		waiting = Unmeasured
+
+		## The fixed-height lines this content box can draw.
+		for_height : U32 -> Viewport
+		for_height = |height| Fitted(Log.lines_that_fit(height))
+
+		## A request can be made only after layout has supplied a capacity.
+		capacity : Viewport -> Try(U64, [Unmeasured])
+		capacity = |viewport| match viewport {
+			Unmeasured => Err(Unmeasured)
+			Fitted(count) => Ok(count)
+		}
+	}
 
 	## What the overview shows.
 	Overview : {
@@ -107,9 +127,14 @@ Log := [].{
 	page_lines : U64
 	page_lines = 25
 
-	## How many lines a page of the viewer holds.
-	window_lines : U64
-	window_lines = 50
+	## The viewer draws each line at this height in CSS pixels. Its observed
+	## content height determines the number of complete lines to request.
+	line_height : U32
+	line_height = 20
+
+	## Even a temporarily hidden or very small viewer requests one line.
+	lines_that_fit : U32 -> U64
+	lines_that_fit = |height| (height / Log.line_height).max(1).to_u64()
 
 	## How much of a line's start the header is looked for in.
 	header_bytes : U64
@@ -471,9 +496,9 @@ Log := [].{
 
 	## The first line (from 0) of the viewer's page that is `wanted` in a
 	## log of `lines` lines: no further than the last full page's.
-	window_first : { lines : U64, wanted : U64 } -> U64
-	window_first = |{ lines, wanted }| {
-		last = if (lines > Log.window_lines) lines - Log.window_lines else 0
+	window_first : { lines : U64, wanted : U64, count : U64 } -> U64
+	window_first = |{ lines, wanted, count }| {
+		last = if (lines > count) lines - count else 0
 		if (wanted > last) last else wanted
 	}
 
@@ -991,7 +1016,19 @@ expect {
 }
 
 ## The viewer's first line stops at the last page.
-expect [0, 60, 100].map(|wanted| Log.window_first({ lines: 120, wanted })) == [0, 60, 70]
+expect [0, 60, 100].map(|wanted| Log.window_first({ lines: 120, wanted, count: 50 })) == [0, 60, 70]
 
 ## A log shorter than a page always starts at its first line.
-expect Log.window_first({ lines: 10, wanted: 7 }) == 0
+expect Log.window_first({ lines: 10, wanted: 7, count: 50 }) == 0
+
+## Fitting uses only complete fixed-height lines, with one while hidden.
+expect [0, 19, 20, 39, 400, 1000].map(Log.lines_that_fit) == [1, 1, 1, 1, 20, 50]
+
+## A changed viewport moves the last full page without changing its rules.
+expect [1, 20, 50, 200].map(|count| Log.window_first({ lines: 120, wanted: 110, count })) == [110, 100, 70, 0]
+
+## An unmeasured viewer asks for nothing; its first size supplies capacity.
+expect {
+	count = Log.Viewport.for_height(400).capacity()?
+	{ waiting: Log.Viewport.waiting.capacity(), count } == { waiting: Err(Unmeasured), count: 20 }
+}

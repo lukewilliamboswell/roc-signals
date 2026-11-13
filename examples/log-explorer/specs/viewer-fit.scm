@@ -1,0 +1,27 @@
+(test "Log Explorer — the viewer fits its observed height and releases its observation with its tab"
+  (setup
+    (file "entry.txt" "text/plain" "2026-11-11T12:00:00Z INFO sample: a line\n" 100))
+  (steps
+    (expect-observed 0)
+    (choose-files (label "Log file") "entry.txt")
+    (run-effect 1)
+    (click (role button :name "Viewer"))
+    (expect-observed 1)
+    (expect-pending-work "roc-signals.example/log-explorer/window" 0)
+    ; The first report supplies complete 20px lines before any window job.
+    (report-size (test-id "viewer-viewport") 800 400)
+    (run-effect 2)
+    (expect-text (test-id "viewer-status") "Lines 1–20 of 100.")
+    (expect-visible (test-id "line-20"))
+    (expect-absent (test-id "line-21"))
+    (report-size (test-id "viewer-viewport") 800 60)
+    (run-effect 3)
+    (expect-text (test-id "viewer-status") "Lines 1–3 of 100.")
+    (click (role button :name "Overview"))
+    (expect-observed 0)
+    (click (role button :name "Viewer"))
+    (expect-observed 1)
+    (run-effect 4)
+    (expect-text (test-id "viewer-status") "Lines 1–3 of 100.")
+    (click (role button :name "Overview"))
+    (expect-observed 0)))

@@ -15,9 +15,9 @@
 // forms are app-managed and never navigate the page.
 //
 // Boot bytes carry the URL, the declared storage values, whether the browser
-// is online and the page visible, and whether local storage is available at
-// all (it is not when reaching or reading it throws); the `OnlineChanges` and
-// `VisibilityChanges` subscriptions (FX kinds 6 and 7) report later changes.
+// is online and the page visible, each declared media query's match, and
+// whether local storage is available at all (it is not when reaching or
+// reading it throws). Scoped environment subscriptions report later changes.
 //
 // Ingress: declared reports wait for the frame, with one replaceable entry
 // per source. Occurrences pin earlier reports and drain them synchronously.
@@ -73,10 +73,13 @@
 // runtime report to it after they act; it decides nothing.
 //
 // Each handler declaration carries a payload kind and static policy bits.
-// The closed kind table builds text or files; event names are bare names,
-// including custom names containing colons. Policies prevent the default or
+// The closed kind table builds typed input and layout facts; event names are
+// bare names, including custom names containing colons. Policies prevent the default or
 // stop bubbling above the mount. The files kind's drop rule also prevents
 // dragover's default so the browser permits the drop.
+// Size and seen declarations start shared browser observers instead of DOM
+// listeners. Registrations belong to their node (a row root for a template
+// descendant), and RELEASE unobserves only that owner's registrations.
 //
 // Files (design.md, "Files"): the runtime holds each file the app was given
 // as the browser's own `File`, under the token of the handle the host minted
@@ -148,7 +151,7 @@
 // are present for any value other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 11;
+export const PROTOCOL_VERSION = 12;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -221,6 +224,7 @@ const MAX_TIMEOUT_MS = 600000;
 const RES_PORT_ANSWER = 14;
 const RES_PORT_FAILED = 15;
 const RES_FETCHED = 21;
+const RES_MATCHES = 22;
 
 // The default and largest bound on one port answer or message, JSON text
 // and bytes together (options.maxPortBytes).
@@ -245,11 +249,15 @@ const KIND_FILES = 2;
 const KIND_POINTER = 3;
 const KIND_KEY = 4;
 const KIND_OPEN = 5;
+const KIND_SCROLL = 6;
+const KIND_SIZE = 7;
+const KIND_SEEN = 8;
 const POLICY_PREVENT = 1;
 const POLICY_STOP = 2;
 const POLICY_CAPTURE = 4;
 const POLICY_PACED = 8;
 const POLICY_DOCUMENT = 16;
+const POLICY_AHEAD = 32;
 
 
 export async function instantiateEngineBytes(bytes) {
@@ -454,9 +462,12 @@ function handlerEntry(h, kind, policies, type) {
   const row = PAYLOAD_KINDS[kind];
   if (!row) throw new Error(`unknown event payload kind ${kind}`);
   if (row.events && !row.events.includes(type)) throw new Error(`event payload kind ${kind} does not apply to ${type}`);
-  if ((policies & ~(POLICY_PREVENT | POLICY_STOP | POLICY_CAPTURE | POLICY_PACED | POLICY_DOCUMENT)) !== 0) throw new Error(`unknown event policy bits ${policies}`);
+  if ((policies & ~(POLICY_PREVENT | POLICY_STOP | POLICY_CAPTURE | POLICY_PACED | POLICY_DOCUMENT | POLICY_AHEAD)) !== 0) throw new Error(`unknown event policy bits ${policies}`);
   if ((policies & POLICY_CAPTURE) && (kind !== KIND_POINTER || type !== "pointerdown")) throw new Error("capture policy requires a pointerdown pointer handler");
-  if ((policies & POLICY_PACED) && (kind !== KIND_POINTER || type !== "pointermove")) throw new Error("paced policy requires a pointermove pointer handler");
+  if ((policies & POLICY_PACED) && !((kind === KIND_POINTER && type === "pointermove") || [KIND_SCROLL, KIND_SIZE, KIND_SEEN].includes(kind))) throw new Error("paced policy requires pointermove or a layout handler");
+  if ([KIND_SCROLL, KIND_SIZE, KIND_SEEN].includes(kind) && !(policies & POLICY_PACED)) throw new Error("layout handlers require paced delivery");
+  if ((policies & POLICY_AHEAD) && kind !== KIND_SEEN) throw new Error("ahead policy requires a seen handler");
+  if ((kind === KIND_SIZE || kind === KIND_SEEN) && (policies & ~(POLICY_PACED | POLICY_AHEAD))) throw new Error("observation handlers have no DOM event policies");
   if ((policies & POLICY_DOCUMENT) && kind !== KIND_KEY) throw new Error("document policy requires a key handler");
   if (kind === KIND_KEY && (policies & POLICY_PREVENT)) throw new Error("key prevention belongs to its keymap");
   if (kind === KIND_TEXT && (type === "keydown" || type === "keyup")) throw new Error("text key handler requires on_key");
@@ -503,6 +514,9 @@ const PAYLOAD_KINDS = {
   },
   [KIND_POINTER]: { events: ["pointerdown", "pointermove", "pointerup", "pointercancel"] },
   [KIND_KEY]: { events: ["keydown", "keyup"] },
+  [KIND_SCROLL]: { events: ["scroll"] },
+  [KIND_SIZE]: { events: ["size"] },
+  [KIND_SEEN]: { events: ["seen"] },
   [KIND_OPEN]: {
     events: ["close", "toggle"],
     payload(event) {
@@ -2131,10 +2145,19 @@ export class RocEngineRuntime {
     const environment = options.environment === undefined ? {} : options.environment;
     if (typeof environment !== "object" || environment === null || Array.isArray(environment)) throw new Error("options.environment must be an object of readers");
     for (const key of Object.keys(environment)) {
-      if (!["online", "visible"].includes(key)) throw new Error(`options.environment has an unknown reader "${key}"`);
+      if (!["online", "visible", "matchMedia"].includes(key)) throw new Error(`options.environment has an unknown reader "${key}"`);
       if (typeof environment[key] !== "function") throw new Error(`options.environment.${key} must be a function`);
     }
     this.environment = environment;
+    // One registration per live observed element and kind. The reverse index
+    // releases only an owning node's registrations, including row descendants.
+    this.observations = new Map();
+    this.observationOwners = new Map();
+    this.layoutObservers = new Map();
+    this.mediaQueries = [];
+    this.manualScrollers = this.manual ? new Map() : null;
+    this.pendingManualScrolls = new Set();
+    this.manualScrollError = null;
     // HTTP requests go through options.fetch when one is given (an embedding
     // page's scripted backend; it may answer synchronously), else the
     // global fetch.
@@ -2218,6 +2241,7 @@ export class RocEngineRuntime {
     // anything mounts: a mismatch throws, and nothing runs.
     const boot = readDeclarations(this.x);
     this.bootKeys = boot.keys;
+    this.mediaQueries = boot.media;
     this.portDecls = new Map(boot.decls.map((d) => [d.name, d]));
     checkPortHandlers(boot.decls, this.ports, this.manual);
     const bytes = this.bootBytes();
@@ -2250,6 +2274,7 @@ export class RocEngineRuntime {
       { tag: 2, write: () => concat([new Uint8Array([storageOk ? 1 : 0]), u32(pairs.length), ...pairs.flatMap(([k, v]) => [encStr(k), encStr(v)])]) },
       { tag: 3, write: () => new Uint8Array([this.isOnline() ? 1 : 0]) },
       { tag: 4, write: () => new Uint8Array([this.isVisible() ? 1 : 0]) },
+      { tag: 6, write: () => new Uint8Array(this.mediaQueries.map((query) => this.mediaMatch(this.mediaQuery(query)) ? 1 : 0)) },
     ];
     return concat(sections.map(({ tag, write }) => {
       const body = write();
@@ -2321,6 +2346,7 @@ export class RocEngineRuntime {
     }
     this.listening.clear();
     this.clearDocumentKeys();
+    this.clearObservations();
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
     this.internal = [];
     this.monitor.runtimeEnding("contained");
@@ -2376,6 +2402,9 @@ export class RocEngineRuntime {
     this.modalOrder = this.manual ? new ModalOrder() : null;
     this.nativeTasks = new Map();
     this.nativeObservationError = null;
+    this.manualScrollers = this.manual ? new Map() : null;
+    this.pendingManualScrolls.clear();
+    this.manualScrollError = null;
     this.mount();
     return this;
   }
@@ -2394,6 +2423,7 @@ export class RocEngineRuntime {
     }
     this.listening.clear();
     this.clearDocumentKeys();
+    this.clearObservations();
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
     this.internal = [];
     this.x.drop();
@@ -2407,6 +2437,9 @@ export class RocEngineRuntime {
     this.nativeTasks.clear();
     if (this.modalOrder) this.modalOrder.clear();
     this.nativeObservationError = null;
+    if (this.manualScrollers) this.manualScrollers.clear();
+    this.pendingManualScrolls.clear();
+    this.manualScrollError = null;
   }
 
   // Only the manual driver observes native queued UI callbacks. This does
@@ -2563,7 +2596,12 @@ export class RocEngineRuntime {
           }
           const source = (handler.policies & POLICY_PACED) !== 0 ? this.pointerSource(declaring, handler, event.pointerId) : undefined;
           this.dispatch(node.__rn, handler.h, pointer.bytes, node, source);
+        } else if (handler.kind === KIND_SCROLL) {
+          this.observeManualScroll(declaring);
+          const position = this.scrollPosition(declaring);
+          this.dispatch(node.__rn, handler.h, concat([u32(position.top), u32(position.left)]), node, this.elementReportSource(declaring, type, handler));
         } else {
+          if (type === "scroll") this.observeManualScroll(declaring);
           const payload = PAYLOAD_KINDS[handler.kind].payload(event);
           if (payload !== null) this.dispatch(node.__rn, handler.h, payload, node);
         }
@@ -2602,6 +2640,7 @@ export class RocEngineRuntime {
   }
 
   releaseNode(el) {
+    this.releaseObservations(el);
     for (const [type, entries] of this.documentKeys) {
       this.documentKeys.set(type, entries.filter((entry) => entry.el !== el));
     }
@@ -2612,6 +2651,162 @@ export class RocEngineRuntime {
     this.documentListeners.clear();
     this.documentKeys.clear();
     this.heardKeys = new WeakSet();
+  }
+
+  // Observation routes use the owning element's id. A template descendant
+  // is owned by its row root even when it also has a reference address.
+  registerLayout(element, type, handler, owner) {
+    if (this.manualScrollers && type === "scroll") {
+      this.manualScrollers.set(element, { expected: this.scrollPosition(element), allowed: false });
+    }
+    if (handler.kind !== KIND_SIZE && handler.kind !== KIND_SEEN) return;
+    let kinds = this.observations.get(element);
+    if (!kinds) this.observations.set(element, kinds = new Map());
+    if (kinds.has(handler.kind)) throw new Error("duplicate layout observation");
+    const registration = { element, owner, type, handler, observer: null };
+    kinds.set(handler.kind, registration);
+    let owned = this.observationOwners.get(owner);
+    if (!owned) this.observationOwners.set(owner, owned = new Set());
+    owned.add(registration);
+    if (this.manual) return;
+    const key = handler.kind === KIND_SIZE ? "size" : handler.policies & POLICY_AHEAD ? "ahead" : "seen";
+    let observer = this.layoutObservers.get(key);
+    if (!observer) {
+      const callback = (entries) => this.guard(() => {
+        for (const entry of entries) {
+          const current = this.observations.get(entry.target)?.get(handler.kind);
+          if (!current || current.observer !== observer || !entry.target.isConnected) continue;
+          const value = handler.kind === KIND_SIZE
+            ? { width: this.layoutPixel(entry.contentRect.width), height: this.layoutPixel(entry.contentRect.height) }
+            : { intersecting: entry.isIntersecting, ratio_permille: Math.max(0, Math.min(1000, Math.round(entry.intersectionRatio * 1000))) };
+          this.deliverObservation(current, value);
+        }
+        // ResizeObserver runs after the frame's normal report drain. Its
+        // completed callback must settle this frame's sizes before paint.
+        if (handler.kind === KIND_SIZE) this.drainQueue(true);
+      });
+      observer = key === "size"
+        ? new this.win.ResizeObserver(callback)
+        : new this.win.IntersectionObserver(callback, key === "ahead" ? { rootMargin: "100%", scrollMargin: "100%" } : {});
+      this.layoutObservers.set(key, observer);
+    }
+    registration.observer = observer;
+    observer.observe(element);
+  }
+
+  releaseObservations(owner) {
+    const owned = this.observationOwners.get(owner);
+    if (!owned) return;
+    for (const registration of owned) {
+      const { element, handler, observer } = registration;
+      if (observer) observer.unobserve(element);
+      const kinds = this.observations.get(element);
+      kinds.delete(handler.kind);
+      if (kinds.size === 0) this.observations.delete(element);
+      const source = element.__layoutReports?.get(handler.kind);
+      if (source) { this.dropReports(source, source); source.retire(); }
+    }
+    this.observationOwners.delete(owner);
+  }
+
+  clearObservations() {
+    for (const observer of this.layoutObservers.values()) observer.disconnect();
+    this.layoutObservers.clear();
+    this.observations.clear();
+    this.observationOwners.clear();
+    if (this.manualScrollers) this.manualScrollers.clear();
+    this.pendingManualScrolls.clear();
+    this.manualScrollError = null;
+  }
+
+  // Reports capture values at arrival. The element owns the source while
+  // its declaration lives, and RELEASE cancels its queued observations.
+  elementReportSource(element, type, handler) {
+    const sources = element.__layoutReports ??= new Map();
+    let source = sources.get(handler.kind);
+    if (!source || !source.isLive()) {
+      source = { dom: true, dispatching: 0, reports: new Set(),
+        isLive: () => element.isConnected && element.__h?.[type] === handler &&
+          (handler.kind !== KIND_SIZE && handler.kind !== KIND_SEEN || this.observations.get(element)?.get(handler.kind)?.handler === handler),
+        retire: () => { if (source.dispatching === 0 && source.reports.size === 0 && sources.get(handler.kind) === source) sources.delete(handler.kind); } };
+      sources.set(handler.kind, source);
+    }
+    return source;
+  }
+
+  deliverObservation(registration, value) {
+    const { element, owner, type, handler } = registration;
+    const bytes = handler.kind === KIND_SIZE ? concat([u32(value.width), u32(value.height)]) : new Uint8Array(3);
+    if (handler.kind === KIND_SEEN) {
+      if (typeof value.intersecting !== "boolean" || !Number.isInteger(value.ratio_permille) || value.ratio_permille < 0 || value.ratio_permille > 1000) throw new Error("invalid seen observation");
+      bytes[0] = value.intersecting ? 1 : 0;
+      new DataView(bytes.buffer).setUint16(1, value.ratio_permille, true);
+    }
+    this.dispatch(owner.__rn, handler.h, bytes, owner, this.elementReportSource(element, type, handler));
+  }
+
+  // Manual specs inject the same facts a real observer reports. They never
+  // measure Chrome's layout to invent an answer the native oracle lacks.
+  injectLayout(element, kind, value) {
+    if (!this.manual) throw new Error("layout injection requires manualEffects");
+    const registration = this.observations.get(element)?.get(kind);
+    if (!registration) throw new Error(`element has no ${kind === KIND_SIZE ? "size" : "seen"} observation`);
+    if (kind === KIND_SIZE) {
+      const size = { width: value.width, height: value.height };
+      for (const dimension of Object.values(size)) if (!Number.isInteger(dimension) || dimension < 0 || dimension > 0xffffffff) throw new Error("invalid size observation");
+      this.deliverObservation(registration, size);
+    } else this.deliverObservation(registration, { intersecting: value.intersecting, ratio_permille: value.ratio_permille });
+  }
+
+  layoutPixel(value) {
+    if (!Number.isFinite(value)) throw new Error("layout dimension is not finite");
+    return Math.max(0, Math.min(0xffffffff, Math.round(value)));
+  }
+
+  scrollCoordinates(element) {
+    const direction = this.win.getComputedStyle(element).direction;
+    const top = element.scrollTop, left = direction === "rtl" ? -element.scrollLeft : element.scrollLeft;
+    if (!Number.isFinite(top) || !Number.isFinite(left)) throw new Error("scroll position is not finite");
+    return { top, left };
+  }
+
+  scrollPosition(element) {
+    const coordinates = this.scrollCoordinates(element);
+    return { top: this.layoutPixel(coordinates.top), left: this.layoutPixel(coordinates.left) };
+  }
+
+  // The replay observes only scrollers a step or command touched. Any real
+  // unannounced scroll records a step failure rather than changing input.
+  observeManualScroll(element) {
+    const observed = this.manualScrollers?.get(element);
+    if (!observed) return;
+    const position = this.scrollCoordinates(element);
+    if (!observed.allowed && (position.top !== observed.expected.top || position.left !== observed.expected.left)) {
+      this.manualScrollError ??= `scrolling ${element.getAttribute("aria-label") || element.tagName} moved without a scroll step or modelled ScrollTo; scroll first`;
+    }
+    this.pendingManualScrolls.add(element);
+  }
+
+  expectManualScroll(element, position) {
+    const expected = { top: position.top, left: position.left };
+    for (const distance of Object.values(expected)) if (!Number.isInteger(distance) || distance < 0 || distance > 0xffffffff) throw new Error("scroll position must be unsigned U32 CSS pixels");
+    const observed = this.manualScrollers?.get(element);
+    if (!observed) throw new Error("element has no scroll handler");
+    observed.expected = expected;
+    observed.allowed = true;
+    this.pendingManualScrolls.add(element);
+  }
+
+  checkManualScrolls() {
+    if (this.manualScrollError) throw new Error(this.manualScrollError);
+    for (const element of this.pendingManualScrolls) {
+      const observed = this.manualScrollers?.get(element);
+      if (!observed) continue;
+      const actual = this.scrollCoordinates(element);
+      if (actual.top !== observed.expected.top || actual.left !== observed.expected.left) throw new Error(`scrolling ${element.getAttribute("aria-label") || element.tagName} did not retain requested position ${observed.expected.top}, ${observed.expected.left}; got ${actual.top}, ${actual.left}`);
+      observed.allowed = false;
+    }
+    this.pendingManualScrolls.clear();
   }
 
   // A hit test ignores capture, and returns only the nearest nonempty zone
@@ -2983,6 +3178,8 @@ export class RocEngineRuntime {
     while (pending.length > 0) {
       const node = pending.pop();
       this.nativeTasks.delete(node);
+      if (this.manualScrollers) this.manualScrollers.delete(node);
+      this.pendingManualScrolls.delete(node);
       if (this.modalOrder) this.modalOrder.remove(node);
       node.__shownControl = undefined;
       node.__popoverControl = undefined;
@@ -3046,7 +3243,7 @@ export class RocEngineRuntime {
         const policies = dv.getUint32(at, true);
         at += 4;
         hole.entry = handlerEntry(hole.handler, payloadKind, policies, hole.name);
-        this.listen(hole.name);
+        if (payloadKind !== KIND_SIZE && payloadKind !== KIND_SEEN) this.listen(hole.name);
       } else if (kind === HOLE_PROP) {
         hole.prop = u8[at++];
         if (!PROPS[hole.prop]) throw new Error(`unknown element property ${hole.prop}`);
@@ -3135,6 +3332,7 @@ export class RocEngineRuntime {
               checkHandlerElement(target, hole.name, hole.entry);
               if (target.__h === undefined) target.__h = {};
               target.__h[hole.name] = hole.entry;
+              this.registerLayout(target, hole.name, hole.entry, el);
             } else if (hole.kind === HOLE_BIND || hole.kind === HOLE_REF) {
               const id = dv.getUint32(at, true);
               this.statics[id] = target;
@@ -3259,7 +3457,8 @@ export class RocEngineRuntime {
           checkHandlerElement(el, type, entry);
           el.__h[type] = entry;
           if (policies & POLICY_DOCUMENT) this.registerDocumentKey(el, type, entry);
-          else this.listen(type);
+          else if (kind !== KIND_SIZE && kind !== KIND_SEEN) this.listen(type);
+          this.registerLayout(el, type, entry, el);
           at += 17 + n;
           break;
         }
@@ -3390,6 +3589,8 @@ export class RocEngineRuntime {
             const timeout = dv.getUint32(at, true);
             at += 4;
             this.fxOut.push({ op: "fetch", id, method, url, headers, body: "", timeout });
+          } else if (kind === 16) {
+            this.fxOut.push({ op: "media", id, query: str() });
           } else throw new Error(`unknown effect kind ${kind}`);
           break;
         }
@@ -3641,15 +3842,32 @@ export class RocEngineRuntime {
         } else if (fx.mode === 2) el.blur();
         else if (fx.mode === 5) el.focus({ preventScroll: true });
         else if (fx.mode === 6) {
+          if (this.manualScrollers) {
+            for (let ancestor = el.parentElement; ancestor && ancestor !== this.root; ancestor = ancestor.parentElement) {
+              if (this.manualScrollers.has(ancestor)) this.manualScrollError = "ScrollIntoView inside an element that handles scroll needs layout the native oracle does not have; use a scroll step";
+            }
+          }
           el.scrollIntoView(fx.options);
           if (this.scrollLog) this.scrollLog.add(el, "into-view");
         } else if (fx.mode === 7) {
           const options = { behavior: fx.behavior };
+          const handled = this.manualScrollers?.has(el);
+          const unmodelled = handled && (fx.top.kind === "end" || fx.left.kind === "end");
+          if (unmodelled) this.manualScrollError = "ScrollTo End on an element that handles scroll needs layout the native oracle does not have; use a scroll step";
+          if (handled && !unmodelled) {
+            this.observeManualScroll(el);
+            const position = this.manualScrollers.get(el).expected;
+            this.expectManualScroll(el, {
+              top: fx.top.kind === "keep" ? position.top : fx.top.kind === "start" ? 0 : fx.top.pixels,
+              left: fx.left.kind === "keep" ? position.left : fx.left.kind === "start" ? 0 : fx.left.pixels,
+            });
+          }
           for (const axis of ["top", "left"]) {
             const edge = fx[axis];
             if (edge.kind === "keep") continue;
             options[axis] = edge.kind === "start" ? 0 : edge.kind === "end" ? (axis === "top" ? el.scrollHeight : el.scrollWidth) : edge.pixels;
           }
+          if (options.left !== undefined && this.win.getComputedStyle(el).direction === "rtl") options.left = -options.left;
           el.scrollTo(options);
           if (this.scrollLog) this.scrollLog.add(el, "to");
         }
@@ -3700,6 +3918,18 @@ export class RocEngineRuntime {
         const fn = () => this.guard(() => this.report(fx.id, new Uint8Array([RES_VISIBLE, this.isVisible() ? 1 : 0])));
         doc.addEventListener("visibilitychange", fn);
         this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => doc.removeEventListener("visibilitychange", fn) });
+        return;
+      }
+      case "media": {
+        if (!this.mediaQueries.includes(fx.query)) throw new Error(`undeclared media query ${JSON.stringify(fx.query)}`);
+        const query = this.mediaQuery(fx.query);
+        this.mediaMatch(query);
+        const fn = () => this.guard(() => {
+          const matches = this.mediaMatch(query);
+          this.report(fx.id, new Uint8Array([RES_MATCHES, matches ? 1 : 0]));
+        });
+        query.addEventListener("change", fn);
+        this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => query.removeEventListener("change", fn) });
         return;
       }
       case "interval": {
@@ -4591,6 +4821,20 @@ export class RocEngineRuntime {
     return value;
   }
 
+  // MediaQueryList is the browser fact and event source. Check the reader's
+  // shape at boot and at subscription, before retaining a listener.
+  mediaQuery(query) {
+    const value = this.environment.matchMedia ? this.environment.matchMedia(query) : this.win.matchMedia(query);
+    if (!value || typeof value.addEventListener !== "function" || typeof value.removeEventListener !== "function") throw new Error("options.environment.matchMedia must answer an object with boolean matches and change listener methods");
+    return value;
+  }
+
+  mediaMatch(query) {
+    const matches = query.matches;
+    if (typeof matches !== "boolean") throw new Error("options.environment.matchMedia must answer an object with boolean matches");
+    return matches;
+  }
+
   // Live interval subscriptions with period `ms`, in issue order.
   intervals(ms) {
     const out = [];
@@ -4649,7 +4893,7 @@ export class RocEngineRuntime {
 function readDeclarations(x) {
   x.boot_keys();
   const bytes = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
-  const out = { keys: [], decls: [] };
+  const out = { keys: [], decls: [], media: [] };
   const sections = [
     { tag: 2, name: "local-storage", read: (r) => {
       for (let n = r.u32(); n > 0; n -= 1) out.keys.push(r.str());
@@ -4665,6 +4909,16 @@ function readDeclarations(x) {
         if (![1, 2, 3].includes(kind) || (kind !== 3 ? delivery !== 0 || bound !== 0 : delivery === 1 ? bound < 1 || bound > 1024 : delivery !== 2 || bound !== 1)) throw new Error("invalid port shape or delivery");
         names.add(name);
         out.decls.push({ name, kind, delivery, bound });
+      }
+    } },
+    { tag: 6, name: "media", read: (r) => {
+      const count = r.u32();
+      if (count > 32) throw new Error("more than 32 media queries");
+      const queries = new Set();
+      for (let n = count; n > 0; n -= 1) {
+        const query = r.str(), length = utf8enc.encode(query).length;
+        if (length < 1 || length > 256 || queries.has(query)) throw new Error("invalid or duplicate media query");
+        queries.add(query); out.media.push(query);
       }
     } },
   ];

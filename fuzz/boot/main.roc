@@ -14,18 +14,28 @@ import pf.Core
 ## declaration catalogue; it is not a structural property of these bytes.
 test : List(U8) -> Fuzz.Outcome
 test = |bytes| {
-	match Core.read_boot(bytes) {
-		Err(_) => Fuzz.keep
-		Ok(boot) => {
-			if !bytes.is_empty() and Core.write_boot(boot) != bytes {
-				crash "boot decoder accepted a noncanonical encoding"
+	var $many = []
+	for index in 0.U64..<32 {
+		$many = $many.append("q${index.to_str()}")
+	}
+	queries = [[], ["(prefers-color-scheme: dark)"], ["a", "b"], $many]
+	for catalogue in queries {
+		match Core.read_boot_media(bytes, catalogue) {
+			Err(_) => {}
+			Ok(boot) => {
+				if !bytes.is_empty() and Core.write_boot(boot) != bytes {
+					crash "boot decoder accepted a noncanonical encoding"
+				}
+				if !boot.storage_available and !boot.storage.is_empty() {
+					crash "unavailable storage carried pairs"
+				}
+				if boot.media.map(|(query, _)| query) != catalogue {
+					crash "media flags lost declaration order"
+				}
 			}
-			if !boot.storage_available and !boot.storage.is_empty() {
-				crash "unavailable storage carried pairs"
-			}
-			Fuzz.keep
 		}
 	}
+	Fuzz.keep
 }
 
 target = Fuzz.target_with({
@@ -35,6 +45,9 @@ target = Fuzz.target_with({
 		Fuzz.example({ name: "all-facts", revision: "1", make: || Core.write_boot({ url: "/a?b#c", storage: [("a", ""), ("a", "two")], online: False, visible: False }) }),
 		Fuzz.example({ name: "storage-unavailable", revision: "1", make: || Core.write_boot({ storage_available: False }) }),
 		Fuzz.example({ name: "invalid-unavailable-pairs", revision: "1", make: || Core.write_boot({ storage_available: False, storage: [("a", "b")] }) }),
+		Fuzz.example({ name: "media-first-paint", revision: "1", make: || Core.write_boot({ media: [("(prefers-color-scheme: dark)", True)] }) }),
+		Fuzz.example({ name: "media-order", revision: "1", make: || Core.write_boot({ media: [("a", False), ("b", True)] }) }),
+		Fuzz.example({ name: "invalid-media-flag", revision: "1", make: || Core.write_boot({ media: [("a", False), ("b", True)] }).drop_last(1).append(2) }),
 		Fuzz.example({ name: "truncated", revision: "1", make: || Core.write_boot({}).drop_last(1) }),
 		Fuzz.example({ name: "extra-tag", revision: "1", make: || Core.write_boot({}).concat([5, 0, 0, 0, 0]) }),
 	],

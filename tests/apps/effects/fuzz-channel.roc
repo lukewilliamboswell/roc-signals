@@ -839,6 +839,180 @@ run_program! = |prog| {
 	}
 }
 
+## Media subscriptions share cancellation, supersession, refusal and stale
+## result rules with every other subscription. This independent model runs
+## a generated history with a cap of one and a two-request plan, so each
+## subscription generation also exercises a typed refusal.
+MediaChoice : [NoQuery, Dark, Motion]
+
+MediaState : { query : MediaChoice, shown : Bool, answers : Str }
+
+MediaModel : { query : MediaChoice, shown : Bool, next : U32, current : U32, answers : Str, issued : U64, delivered : U64, stale : U64, refused : U64, cancelled : U64 }
+
+MediaStep : [Choose(MediaChoice), Toggle, Answer(U32, Bool)]
+
+media_query : MediaChoice -> Str
+media_query = |query| match query {
+	Dark => "(prefers-color-scheme: dark)"
+	Motion => "(prefers-reduced-motion: reduce)"
+	NoQuery => crash "media_query: no query was selected"
+}
+
+media_transition : MediaModel, MediaStep -> { model : MediaModel, fx : List(Dom.FxCmd) }
+media_transition = |before, step| match step {
+	Answer(id, matches) => {
+		model = if id == before.current and id != 0 {
+			{ ..before, delivered: before.delivered + 1, answers: "${before.answers}${if (matches) "T" else "F"}" }
+		} else {
+			{ ..before, stale: before.stale + 1 }
+		}
+		{ model, fx: [] }
+	}
+	_ => {
+		changed = match step {
+			Choose(query) => { ..before, query }
+			Toggle => { ..before, shown: !before.shown }
+			Answer(_, _) => before
+		}
+		if changed.query == before.query and changed.shown == before.shown {
+			return { model: before, fx: [] }
+		}
+		var $model = changed
+		var $fx = []
+		if before.current != 0 {
+			$model = { ..$model, current: 0, cancelled: $model.cancelled + 1 }
+			$fx = $fx.append(Cancel(before.current))
+		}
+		if changed.shown and changed.query != NoQuery {
+			id = $model.next
+			$model = { ..$model, current: id, next: id + 2, issued: $model.issued + 1, refused: $model.refused + 1, delivered: $model.delivered + 1, answers: "${$model.answers}R" }
+			$fx = $fx.append(MediaSub(id, media_query(changed.query)))
+		}
+		{ model: $model, fx: $fx }
+	}
+}
+
+media_program : {} -> Engine.Program
+media_program = |_args| {
+	initial : MediaState
+	initial = { query: NoQuery, shown: True, answers: "" }
+	Engine.program_boot(
+		{ media: [media_query(Dark), media_query(Motion)], max_inflight: 1 },
+		|_boot| Engine.state(
+			initial,
+			|state| Engine.element(
+				"section",
+				[],
+				[
+					Engine.element("button", [Engine.attr("aria-label", "media one"), Engine.on_click(state.update(|value| { ..value, query: Dark }))], []),
+					Engine.element("button", [Engine.attr("aria-label", "media two"), Engine.on_click(state.update(|value| { ..value, query: Motion }))], []),
+					Engine.element("button", [Engine.attr("aria-label", "media none"), Engine.on_click(state.update(|value| { ..value, query: NoQuery }))], []),
+					Engine.element("button", [Engine.attr("aria-label", "media toggle"), Engine.on_click(state.update(|value| { ..value, shown: !value.shown }))], []),
+					Engine.element("p", [Engine.test_id("media answers")], [Engine.text_s(state.signal().map(|value| value.answers))]),
+					Engine.when(
+						state.signal().map(|value| value.shown),
+						|| Engine.watch_latest(
+							state.signal().map(|value| value.query),
+							|query| if (query == NoQuery) [] else [MediaChanges(media_query(query)), MediaChanges(media_query(query))],
+							state.on_result(
+								|value, _query, result| {
+									..value,
+									answers: "${value.answers}${
+										match result {
+											Matches(True) => "T"
+											Matches(False) => "F"
+											Refused => "R"
+											_ => crash "unexpected media answer"
+										}
+									}",
+								},
+							),
+						),
+						|| Engine.text(""),
+					),
+				],
+			),
+		),
+	)
+}
+
+## Compare commands, counters, live ids and rendered answers after every
+## transition. The model never reads the engine's state or live request data.
+media_apply : { eng : Core.App, dom : Dom.Model, model : MediaModel }, MediaStep -> { eng : Core.App, dom : Dom.Model, model : MediaModel }
+media_apply = |held, step| {
+	{ eng, dom, model } = held
+	expected = media_transition(model, step)
+	changed = match step {
+		Answer(id, matches) => Core.result(eng, id, Core.decode_res([22, if (matches) 1 else 0]))
+		_ => {
+			name = match step {
+				Choose(NoQuery) => "media none"
+				Choose(Dark) => "media one"
+				Choose(_) => "media two"
+				Toggle => "media toggle"
+				Answer(_, _) => crash "answer already handled"
+			}
+			found = SpecRunner.find(dom, Role({ role: "button", name })) ?? crash "missing media control"
+			target = Dom.target(dom, found, "click", True) ?? crash "missing media handler"
+			Core.event(eng, target.node, target.handler, "")
+		}
+	}
+	(next, commands) = Core.take_cmds(changed, [])
+	(drawn, _, effects) = Dom.apply_fx(dom, commands)
+	stats = Core.fx_stats(next)
+	want = expected.model
+	actual_counts = [stats.issued, stats.delivered, stats.stale, stats.refused, stats.cancelled, stats.reparented, stats.skipped, stats.live]
+	expected_counts = [want.issued, want.delivered, want.stale, want.refused, want.cancelled, 0, 0, if (want.current == 0) 0 else 1]
+	if effects != expected.fx or actual_counts != expected_counts {
+		crash "media commands/counters disagree with model: ${Str.inspect(effects)} vs ${Str.inspect(expected.fx)}; ${Str.inspect(actual_counts)} vs ${Str.inspect(expected_counts)}"
+	}
+	live = if (want.current == 0) [] else [want.current]
+	if Core.fx_live(next) != live {
+		crash "media live ids disagree with model"
+	}
+	answers = Dom.text_of(drawn, SpecRunner.find(drawn, TestId("media answers")) ?? crash "missing media answers")
+	if answers != want.answers {
+		crash "media answer history disagrees with model"
+	}
+	if Core.settled(next).is_err() {
+		crash "media result left a reader stale"
+	}
+	{ eng: next, dom: drawn, model: want }
+}
+
+run_media : List(U8) -> {}
+run_media = |program| {
+	driver = Core.driver(media_program({}))
+	(initial, commands, _) = (driver.init)([])
+	var $held = { eng: initial, dom: Dom.apply(Dom.new({}), commands), model: { query: NoQuery, shown: True, next: 1.U32, current: 0.U32, answers: "", issued: 0.U64, delivered: 0.U64, stale: 0.U64, refused: 0.U64, cancelled: 0.U64 } }
+	var $at = 0.U64
+	while $at + 1 < program.len() {
+		op = (program.get($at) ?? 0) % 6
+		arg = program.get($at + 1) ?? 0
+		step = match op {
+			0 => Choose(Dark)
+			1 => Choose(Motion)
+			2 => Choose(NoQuery)
+			3 => Toggle
+			4 => Answer((arg.to_u32() % $held.model.next) + 1, arg % 2 == 0)
+			_ => Answer(if ($held.model.current == 0) $held.model.next - 1 else $held.model.current, arg % 2 == 0)
+		}
+		$held = media_apply($held, step)
+		$at = $at + 2
+	}
+	if $held.model.shown {
+		$held = media_apply($held, Toggle)
+	}
+	if !Core.fx_live($held.eng).is_empty() {
+		crash "disposed media scope retained a subscription"
+	}
+	{}
+}
+
+## One history repeats reports, supersedes, disposes, delivers stale results,
+## remounts and removes the subscription again, with refusals at every mount.
+expect run_media([0, 0, 5, 1, 5, 0, 1, 0, 4, 0, 3, 0, 5, 0, 3, 0, 5, 1, 2, 0]) == {}
+
 Input : { mode : U8, program : List(U8) }
 
 test! : Input => Fuzz.Outcome
@@ -847,6 +1021,7 @@ test! = |{ mode, program }| {
 		Fuzz.reject
 	} else {
 		run_program!(program)
+		run_media(program)
 		Fuzz.keep
 	}
 }
@@ -857,6 +1032,7 @@ ex = |name, mode, program| Fuzz.example({ name, revision: "1", make: || { mode, 
 target = Fuzz.target_with!({
 	name: "fx-channel",
 	examples: [
+		ex("media-lifecycle", 1, [0, 0, 5, 1, 5, 0, 1, 0, 4, 0, 3, 0, 5, 0, 3, 0, 5, 1, 2, 0]),
 		# issue 0 x3 (third refused + self), deliver, toggle 0 (cancel), deliver cancelled, show again
 		ex("lifecycle", 1, [0, 0, 0, 0, 0, 0, 2, 1, 1, 0, 2, 2, 1, 0, 3, 7, 0, 1, 0, 2]),
 		# saturate across sites, popstate, stale and never-issued ids

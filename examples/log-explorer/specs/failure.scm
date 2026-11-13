@@ -21,6 +21,7 @@
     (expect-text (test-id "search-status") "This does not look like a log: no line starts with a timestamp and a level.")
     (expect-no-attr (test-id "timeline") data-figure)
     (click (role button :name "Viewer"))
+    (report-size (test-id "viewer-viewport") 800 1000)
     (run-effect 4)
     (expect-text (test-id "viewer-status") "This does not look like a log: no line starts with a timestamp and a level.")
     ; A worker that crashes loses only its job: the overview's job for the

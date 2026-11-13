@@ -7,9 +7,9 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 11
+	protocol_version = 12
 
-	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64 }
+	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
 
 	## Browser top-layer state, separate from the value a property decided.
 	Shown : [Hidden, Open, Modal, Popover]
@@ -707,10 +707,10 @@ Dom := [].{
 
 	Tpl : { bytes : List(U8), root_at : U64, holes : List(THole) }
 
-	Model : { nodes : List(DNode), statics : List(U64), rows : List(Dict(U64, {})), tpls : List(Tpl), root : U64, documents : List({ index : U64, event : Str }) }
+	Model : { nodes : List(DNode), statics : List(U64), rows : List(Dict(U64, {})), tpls : List(Tpl), root : U64, documents : List({ index : U64, event : Str }), observed_count : U64 }
 
 	new : {} -> Model
-	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0 }], statics: [], rows: [], tpls: [], root: 0, documents: [] }
+	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0 }
 
 	u32 : List(U8), U64 -> U32
 	u32 = |b, at| {
@@ -775,24 +775,24 @@ Dom := [].{
 	node = |dom, i| dom.nodes.get(i) ?? crash "node index"
 
 	set_node : Model, U64, DNode -> Model
-	set_node = |{ nodes, statics, rows, tpls, root, documents }, i, n| { nodes: nodes.set(i, n) ?? crash "node index", statics, rows, tpls, root, documents }
+	set_node = |{ nodes, statics, rows, tpls, root, documents, observed_count }, i, n| { nodes: nodes.set(i, n) ?? crash "node index", statics, rows, tpls, root, documents, observed_count }
 
 	add_node : Model, DNode -> (Model, U64)
-	add_node = |{ nodes, statics, rows, tpls, root, documents }, n| ({ nodes: nodes.append(n), statics, rows, tpls, root, documents }, nodes.len())
+	add_node = |{ nodes, statics, rows, tpls, root, documents, observed_count }, n| ({ nodes: nodes.append(n), statics, rows, tpls, root, documents, observed_count }, nodes.len())
 
 	set_static : Model, U32, U64 -> Model
-	set_static = |{ nodes, statics, rows, tpls, root, documents }, id, idx| {
+	set_static = |{ nodes, statics, rows, tpls, root, documents, observed_count }, id, idx| {
 		var $s = statics
 		while $s.len() <= id.to_u64() {
 			$s = $s.append(0)
 		}
-		{ nodes, statics: $s.set(id.to_u64(), idx + 1) ?? crash "static", rows, tpls, root, documents }
+		{ nodes, statics: $s.set(id.to_u64(), idx + 1) ?? crash "static", rows, tpls, root, documents, observed_count }
 	}
 
 	## Bind a row element: its node index, its site (recorded with the id and
 	## in the site's row list, so CLEAR can forget the site's rows).
 	set_row : Model, U32, U64, U64 -> Model
-	set_row = |{ nodes, statics, rows, tpls, root, documents }, id, idx, site| {
+	set_row = |{ nodes, statics, rows, tpls, root, documents, observed_count }, id, idx, site| {
 		var $s = statics
 		while $s.len() <= id.to_u64() {
 			$s = $s.append(0)
@@ -803,7 +803,7 @@ Dom := [].{
 		}
 		{ list, prev } = $r.replace(site, Dict.empty()) ?? crash "row"
 		packed = (idx + 1).bitwise_or((site + 1).shl_wrap(40))
-		dom = { nodes, statics: $s.set(id.to_u64(), packed) ?? crash "static", rows: list.set(site, prev.insert(id.to_u64(), {})) ?? crash "row", tpls, root, documents }
+		dom = { nodes, statics: $s.set(id.to_u64(), packed) ?? crash "static", rows: list.set(site, prev.insert(id.to_u64(), {})) ?? crash "row", tpls, root, documents, observed_count }
 		Dom.modify(dom, idx, |n| { ..n, ids: n.ids.append(id) })
 	}
 
@@ -815,31 +815,64 @@ Dom := [].{
 	}
 
 	empty_node : DNode
-	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0 }
+	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
 
 	## Update node i in place (the node is moved out of the list first, so
 	## its kid list stays uniquely owned).
 	modify : Model, U64, (DNode -> DNode) -> Model
-	modify = |{ nodes, statics, rows, tpls, root, documents }, i, f| {
+	modify = |{ nodes, statics, rows, tpls, root, documents, observed_count }, i, f| {
 		{ list, prev } = nodes.replace(i, Dom.empty_node) ?? crash "node index"
-		{ nodes: list.set(i, f(prev)) ?? crash "node index", statics, rows, tpls, root, documents }
+		{ nodes: list.set(i, f(prev)) ?? crash "node index", statics, rows, tpls, root, documents, observed_count }
 	}
 
 	bind : Model, U32, U64 -> Model
 	bind = |dom, id, idx| Dom.modify(Dom.set_static(dom, id, idx), idx, |n| { ..n, ids: n.ids.append(id) })
 
 	unbind : Model, U32 -> Model
-	unbind = |{ nodes, statics, rows, tpls, root, documents }, id| {
+	unbind = |{ nodes, statics, rows, tpls, root, documents, observed_count }, id| {
 		packed = statics.get(id.to_u64()) ?? 0
 		statics2 = statics.set(id.to_u64(), 0) ?? statics
 		site1 = packed.shr_zf_wrap(40)
 		if site1 == 0 {
-			{ nodes, statics: statics2, rows, tpls, root, documents }
+			{ nodes, statics: statics2, rows, tpls, root, documents, observed_count }
 		} else {
 			site = site1 - 1
 			{ list, prev } = rows.replace(site, Dict.empty()) ?? crash "row"
-			{ nodes, statics: statics2, rows: list.set(site, prev.remove(id.to_u64())) ?? crash "row", tpls, root, documents }
+			{ nodes, statics: statics2, rows: list.set(site, prev.remove(id.to_u64())) ?? crash "row", tpls, root, documents, observed_count }
 		}
+	}
+
+	## Register one observation under the command owner that must release it.
+	## Template descendants share their row root; targets retain kind flags so
+	## removal itself independently rejects a missing RELEASE.
+	observe : Model, { owner : U64, target : U64, kind : U8 } -> Model
+	observe = |dom, { owner, target, kind }| {
+		if kind != 7 and kind != 8 {
+			return dom
+		}
+		bit = if (kind == 7) 1.U8 else 2
+		n = Dom.node(dom, target)
+		if n.observing.bitwise_and(bit) != 0 {
+			crash "executor: duplicate observation"
+		}
+		registered = Dom.modify(dom, target, |target_node| { ..target_node, observing: target_node.observing.bitwise_or(bit) })
+		owned = if n.observing == 0 {
+			Dom.modify(registered, owner, |owner_node| { ..owner_node, observed: owner_node.observed.append(target) })
+		} else registered
+		{ ..owned, observed_count: owned.observed_count + 1 }
+	}
+
+	## Release exactly the targets indexed under this owner, before any detach.
+	release_observed : Model, U64 -> Model
+	release_observed = |dom, owner| {
+		var $dom = dom
+		for target in Dom.node(dom, owner).observed {
+			flags = Dom.node($dom, target).observing
+			count = (if (flags.bitwise_and(1) != 0) 1.U64 else 0) + (if (flags.bitwise_and(2) != 0) 1 else 0)
+			cleared = Dom.modify($dom, target, |target_node| { ..target_node, observing: 0 })
+			$dom = { ..cleared, observed_count: cleared.observed_count - count }
+		}
+		Dom.modify($dom, owner, |owner_node| { ..owner_node, observed: [] })
 	}
 
 	## Forget command aliases and row membership owned by a removed subtree.
@@ -848,6 +881,9 @@ Dom := [].{
 	forget_subtree : Model, U64 -> Model
 	forget_subtree = |dom, i| {
 		owned = Dom.node(dom, i)
+		if owned.observing != 0 or !owned.observed.is_empty() {
+			crash "executor: observation detached without RELEASE"
+		}
 		if dom.documents.any(|d| d.index == i) {
 			crash "executor: document key handler detached without RELEASE"
 		}
@@ -873,12 +909,12 @@ Dom := [].{
 				dom,
 				n.parent - 1,
 				|p| {
-					{ tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot } = p
+					{ tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 					kept = match kids.find_last_index(|k| k == i) {
 						Ok(pos) => kids.drop_at(pos)
 						Err(_) => kids
 					}
-					{ tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot }
+					{ tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 				},
 			)
 			Dom.modify(d1, i, |m| { ..m, parent: 0, detach_count: m.detach_count + 1 })
@@ -893,7 +929,7 @@ Dom := [].{
 			d0,
 			parent,
 			|p| {
-				{ tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot } = p
+				{ tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 				kids2 = match before {
 					Err(End) => kids.append(i)
 					Ok(b) => {
@@ -901,7 +937,7 @@ Dom := [].{
 						kids.sublist({ start: 0, len: pos }).append(i).concat(kids.sublist({ start: pos, len: kids.len() - pos }))
 					}
 				}
-				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot }
+				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 			},
 		)
 		Dom.modify(d1, i, |n| { ..n, parent: parent + 1 })
@@ -928,7 +964,7 @@ Dom := [].{
 		kind = Dom.byte(b, at)
 		if kind == 2 {
 			(t, next) = Dom.str(b, at + 1)
-			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0 })
+			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] })
 			(d1, i, next)
 		} else {
 			(tag, a1) = Dom.str(b, at + 1)
@@ -947,7 +983,7 @@ Dom := [].{
 			}
 			nk = Dom.byte(b, $at).to_u64()
 			$at = $at + 1
-			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0 })
+			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] })
 			var $d = d1
 			$k = 0
 			while $k < nk {
@@ -1094,7 +1130,7 @@ Dom := [].{
 	## Invalid numbers come from a protocol mismatch, never an app event.
 	check_listener : { event : Str, kind : U8, policies : U32 } -> {}
 	check_listener = |{ event, kind, policies }| {
-		if kind != 1 and kind != 2 and kind != 3 and kind != 4 and kind != 5 {
+		if kind < 1 or kind > 8 {
 			crash "executor: unknown payload kind ${kind.to_str()}"
 		}
 		if kind == 2 and !["change", "drop", "paste"].contains(event) {
@@ -1106,8 +1142,23 @@ Dom := [].{
 		if policies.bitwise_and(4) != 0 and (kind != 3 or event != "pointerdown") {
 			crash "executor: capture policy requires a pointerdown pointer handler"
 		}
-		if policies.bitwise_and(8) != 0 and (kind != 3 or event != "pointermove") {
+		if policies.bitwise_and(8) != 0 and !((kind == 3 and event == "pointermove") or kind >= 6) {
 			crash "executor: paced policy requires a pointermove pointer handler"
+		}
+		if policies.bitwise_and(32) != 0 and kind != 8 {
+			crash "executor: ahead policy requires a seen observation"
+		}
+		if kind >= 6 {
+			expected = match kind {
+				6 => "scroll"
+				7 => "size"
+				8 => "seen"
+				_ => crash "executor: invalid layout kind"
+			}
+			allowed = if (kind == 8) 40.U32 else 8
+			if event != expected or policies.bitwise_and(8) == 0 or policies.bitwise_and(allowed.bitwise_not()) != 0 {
+				crash "executor: layout payload requires its matching paced declaration"
+			}
 		}
 		if kind == 5 and !["close", "toggle"].contains(event) {
 			crash "executor: open-state payload requires close or toggle"
@@ -1121,7 +1172,7 @@ Dom := [].{
 		if kind == 4 and policies.bitwise_and(1) != 0 {
 			crash "executor: key prevention belongs to its keymap"
 		}
-		if policies.bitwise_and(0xFFFFFFE0) != 0 {
+		if policies.bitwise_and(0xFFFFFFC0) != 0 {
 			crash "executor: unknown event policy bits ${policies.to_str()}"
 		}
 	}
@@ -1255,6 +1306,7 @@ Dom := [].{
 		Pop(U32),
 		OnlineSub(U32),
 		VisibilitySub(U32),
+		MediaSub(U32, Str),
 
 		## A worker job (`FX` kind 8): its id, then its task's name, input
 		## bytes, the files it names (each a handle's token and a range of its
@@ -1417,6 +1469,7 @@ Dom := [].{
 					} else if hole.kind == 3 {
 						t = Dom.node($dd, target)
 						$dd = Dom.set_node($dd, target, { ..t, hs: t.hs.append({ event: hole.name, handler: hole.handler.to_u32(), kind: hole.payload_kind, policies: hole.policies }) })
+						$dd = Dom.observe($dd, { owner: root, target, kind: hole.payload_kind })
 					} else if hole.kind == 4 or hole.kind == 5 {
 						# Site placeholders and references carry command ids; neither
 						# replaces the row root's event routing id.
@@ -1509,7 +1562,7 @@ Dom := [].{
 				bytes = b.sublist({ start: $at + 8, len: n })
 				$at = $at + 8 + n
 				t = Dom.parse_tpl(bytes)
-				{ nodes, statics, rows, tpls, root, documents } = $d
+				{ nodes, statics, rows, tpls, root, documents, observed_count } = $d
 				var $t = tpls
 				while $t.len() <= tpl {
 					$t = $t.append({ bytes: [], root_at: 0, holes: [] })
@@ -1522,14 +1575,14 @@ Dom := [].{
 				# recycled): rows of an earlier site that was disposed with an
 				# ancestor are forgotten, as the runtime does, or its next CLEAR
 				# would unbind node ids reused since.
-				$d = { nodes, statics, rows: $r.set(tpl, Dict.empty()) ?? $r, tpls: $t.set(tpl, t) ?? $t, root, documents }
+				$d = { nodes, statics, rows: $r.set(tpl, Dict.empty()) ?? $r, tpls: $t.set(tpl, t) ?? $t, root, documents, observed_count }
 			} else if op == 8 or op == 10 {
 				nid = Dom.u32(b, $at)
 				parent = Dom.u32(b, $at + 4)
 				before = Dom.u32(b, $at + 8)
 				(s, next) = Dom.str(b, $at + 12)
 				$at = next
-				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0 } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0 }
+				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
 				(d1, i) = Dom.add_node($d, fresh)
 				$d = Dom.bind(Dom.place(d1, i, parent, before), nid, i)
 			} else if op == 9 {
@@ -1542,7 +1595,7 @@ Dom := [].{
 			} else if op == 23 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
 				$at = $at + 4
-				$d = { ..$d, documents: $d.documents.keep_if(|d| d.index != i) }
+				$d = Dom.release_observed({ ..$d, documents: $d.documents.keep_if(|d| d.index != i) }, i)
 			} else if op == 21 {
 				id = Dom.u32(b, $at)
 				property = Dom.byte(b, $at + 4)
@@ -1571,6 +1624,7 @@ Dom := [].{
 				i = Dom.lookup($d, id)
 				n = Dom.node($d, i)
 				$d = Dom.set_node($d, i, { ..n, rn: id, hs: n.hs.append({ event: ev, handler: h, kind, policies }) })
+				$d = Dom.observe($d, { owner: i, target: i, kind })
 				if policies.bitwise_and(16) != 0 {
 					$d = { ..$d, documents: $d.documents.append({ index: i, event: ev }) }
 				}
@@ -1693,6 +1747,10 @@ Dom := [].{
 					(msg, a2) = Dom.port_msg(b, a1)
 					$fx = $fx.append(PortListen(id, port, msg))
 					$at = a2
+				} else if kind == 16 {
+					(query, next) = Dom.str(b, $at)
+					$at = next
+					$fx = $fx.append(MediaSub(id, query))
 				} else if kind == 15 {
 					(method, a1) = Dom.str(b, $at)
 					(url, a2) = Dom.str(b, a1)

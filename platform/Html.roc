@@ -1,5 +1,6 @@
 import Engine exposing [Attr, Elem, FilesHandler, Handler, HandlerOf, Signal]
 import EngineOnly
+import Layout
 
 ## Typed helpers for common HTML elements, attributes and events, built on
 ## `Engine.element`, `Engine.attr` and `Engine.on`.
@@ -30,6 +31,21 @@ Html := [].{
 	## Hear a dialog's native close request; prevention follows browser policy.
 	on_cancel : Handler(ctx) -> Attr(ctx)
 	on_cancel = |handler| Engine.on("cancel", handler)
+
+	## Follow this element's scroll offsets at the next report drain.
+	on_scroll : HandlerOf(ctx, Layout.Scroll) -> Attr(ctx)
+	on_scroll = |handler| Engine.on_scroll(handler)
+
+	## Observe the content box; the scope releases its registration on disposal.
+	on_size : HandlerOf(ctx, Layout.Size) -> Attr(ctx)
+	on_size = |handler| Engine.on_size(handler)
+
+	## Report intersection one screen early when ahead is True.
+	SeenProps : Engine.SeenProps
+
+	## Observe visibility with the browser's default intersection threshold.
+	on_seen : SeenProps, HandlerOf(ctx, Layout.Seen) -> Attr(ctx)
+	on_seen = |props, handler| Engine.on_seen(props, handler)
 
 	## A `div` with a static class.
 	div : Str, List(Elem(ctx)) -> Elem(ctx)

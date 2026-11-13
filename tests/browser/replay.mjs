@@ -104,7 +104,14 @@ async function settle(page) {
       catch (error) { return { error: error.message }; }
     });
     if (observation.error) throw new Error(`native UI observation failed: ${observation.error}`);
-    if (observation.ready) return;
+    if (observation.ready) {
+      await page.evaluate(async () => {
+        const rt = window.__rt;
+        if (rt?.manualScrollers?.size) await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+        rt?.checkManualScrolls();
+      });
+      return;
+    }
     if (Date.now() >= deadline) throw new Error("native UI observation timed out waiting for actual callbacks");
   }
 }
@@ -133,6 +140,7 @@ async function mounted(page) {
   await page.waitForFunction("window.__ready || window.__error");
   const err = await page.evaluate(() => window.__error ?? null);
   if (err) throw new Error(`mount failed: ${err}`);
+  await settle(page);
 }
 
 // Run `act`, which may start a navigation, then wait for its outcome: a
@@ -180,7 +188,7 @@ async function navigating(page, state, act, known = undefined) {
 async function click(page, state, loc, real) {
   await reachable(page, loc);
   const box = await onEl(page, loc, (e) => {
-    e.scrollIntoView({ block: "center", inline: "center" });
+    e.scrollIntoView({ block: "nearest", inline: "nearest" });
     const r = e.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2, disabled: e.disabled === true };
   });
@@ -202,7 +210,7 @@ async function click(page, state, loc, real) {
 async function pointerPoint(page, loc, at, click = false) {
   await reachable(page, loc);
   const result = await onEl(page, loc, (element, at, click) => {
-    element.scrollIntoView({ block: "center", inline: "center" });
+    element.scrollIntoView({ block: "nearest", inline: "nearest" });
     const root = window.__rt.root;
     let zone = element;
     while (zone && zone !== root && !zone.__pointerZone) zone = zone.parentElement;
@@ -706,6 +714,52 @@ async function press(page, step, state) {
 
 // One handler per step form of the grammar (`Scm.step_forms`).
 const STEPS = {
+  scroll: async (page, s) => {
+    await need(page, s.loc);
+    await onEl(page, s.loc, (element, top, left) => {
+      const rt = window.__rt;
+      if (rt.manualScrollers.has(element)) rt.expectManualScroll(element, { top, left });
+      const rtl = getComputedStyle(element).direction === "rtl";
+      element.scrollTo({ top, left: rtl ? -left : left, behavior: "instant" });
+    }, s.top, s.left);
+    await settle(page);
+    const position = await onEl(page, s.loc, (element) => window.__rt.scrollPosition(element));
+    if (position.top !== s.top || position.left !== s.left) throw new Error(`${showLoc(s.loc)} could not retain scroll position ${s.top}, ${s.left}; got ${position.top}, ${position.left}`);
+  },
+  "report-size": async (page, s) => {
+    await need(page, s.loc);
+    await onEl(page, s.loc, (element, width, height) => window.__rt.injectLayout(element, 7, { width, height }), s.width, s.height);
+    return settle(page);
+  },
+  "report-seen": async (page, s) => {
+    await need(page, s.loc);
+    await onEl(page, s.loc, (element, intersecting, ratio_permille) => window.__rt.injectLayout(element, 8, { intersecting, ratio_permille }), s.intersecting, s.ratio_permille);
+    return settle(page);
+  },
+  "set-media": async (page, s, state) => {
+    const declared = await page.evaluate((query) => window.__rt.mediaQueries.includes(query), s.query);
+    if (!declared) throw new Error(`undeclared media query ${JSON.stringify(s.query)}`);
+    const values = new Map(state.environment.media);
+    if ((values.get(s.query) ?? false) === s.matches) return;
+    values.set(s.query, s.matches);
+    state.environment.media = [...values];
+    await installEnvironment(page, state);
+    await page.evaluate(({ query, matches }) => {
+      const current = window.__mediaQueries.get(query);
+      current.matches = matches;
+      current.dispatchEvent(new Event("change"));
+      window.__env.media = [...new Map(window.__env.media).set(query, matches)];
+    }, s);
+    return settle(page);
+  },
+  "expect-observed": async (page, s) => {
+    const count = await page.evaluate(() => Number(window.__rt.x.metric(16 + 44)));
+    if (count !== s.count) throw new Error(`expected ${s.count} live observations, got ${count}`);
+  },
+  "expect-media-subscriptions": async (page, s) => {
+    const count = await page.evaluate((query) => [...window.__rt.live.values()].filter((entry) => entry.req?.op === "media" && entry.req.query === query).length, s.query);
+    if (count !== s.count) throw new Error(`expected ${s.count} media subscriptions for ${JSON.stringify(s.query)}, got ${count}`);
+  },
   press,
   dismiss: (page, _step, state) => {
     const escape = state.keyTable.find((entry) => entry.name === "Escape");
@@ -1022,7 +1076,7 @@ const STEPS = {
 // have reached the app, since a report may change either of them.
 async function isOccurrence(page, step) {
   if (step.op.startsWith("expect-")) return false;
-  if (["hold-reports", "release-reports", "mark-metrics", "stub-http", "stub-http-reject", "set-online", "set-visibility"].includes(step.op)) return false;
+  if (["hold-reports", "release-reports", "mark-metrics", "stub-http", "stub-http-reject", "set-online", "set-visibility", "scroll", "report-size", "report-seen", "set-media"].includes(step.op)) return false;
   if (step.op === "emit-port") return page.evaluate((port) => window.__rt.portDecls.get(port)?.delivery !== 2, step.port);
   if (step.op === "pointer-move") return page.evaluate(({ loc, id }) => {
     const root = window.__rt.root;
@@ -1052,6 +1106,7 @@ const SETUP = {
   "local-storage-unavailable": () => {},
   "initial-online": () => {},
   "initial-visibility": () => {},
+  "initial-media": () => {},
   file: (out, s) => {
     if (out.files.has(s.name)) throw new Error(`file ${JSON.stringify(s.name)} is declared twice`);
     out.files.set(s.name, { type: s.type, text: s.text, count: s.count });
@@ -1105,6 +1160,18 @@ const ENVIRONMENT_SECTIONS = {
   },
   connectivity: (env) => { window.__mountOptions.environment.online = () => window.__env.online; },
   visibility: (env) => { window.__mountOptions.environment.visible = () => window.__env.visible; },
+  media: (env) => {
+    window.__mediaQueries = new Map();
+    window.__mountOptions.environment.matchMedia = (query) => {
+      let current = window.__mediaQueries.get(query);
+      if (!current) {
+        current = new EventTarget();
+        current.matches = new Map(window.__env.media).get(query) ?? false;
+        window.__mediaQueries.set(query, current);
+      }
+      return current;
+    };
+  },
 };
 
 async function installEnvironment(page, state, seed = false) {

@@ -1,4 +1,5 @@
 import EngineOnly
+import Layout
 import Table
 import View
 
@@ -1392,6 +1393,9 @@ Core := [].{
 		## `Online(Bool)` or `Visible(Bool)`; the value at mount is in `Boot`.
 		OnlineChanges,
 		VisibilityChanges,
+
+		## Observe one declared media query; its first value is already in Boot.
+		MediaChanges(Str),
 		Self,
 		Push(Str),
 		Replace(Str),
@@ -1466,7 +1470,7 @@ Core := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
@@ -1918,13 +1922,15 @@ Core := [].{
 	## not, the storage list is empty and `StorageSet`/`StorageRemove` do not
 	## persist, so an app that relies on reloads surviving can say so. All
 	## fields have defaults: a URL of `/`, empty available storage, online
-	## and visible. Pure tests may name only the facts they need.
+	## and visible, with no media queries. Pure tests may name only the facts
+	## they need; a program supplies declared queries in their declaration order.
 	Boot := {
 		url : Str ?? "/",
 		storage : List((Str, Str)) ?? [],
 		online : Bool ?? True,
 		visible : Bool ?? True,
 		storage_available : Bool ?? True,
+		media : List((Str, Bool)) ?? [],
 	}.{
 		is_eq : _
 	}
@@ -1933,15 +1939,20 @@ Core := [].{
 	## otherwise every section must occur once in ascending order. Membership
 	## of storage keys is checked separately when a program mounts.
 	read_boot : List(U8) -> Try(Boot, Str)
-	read_boot = |bytes| {
+	read_boot = |bytes| Core.read_boot_media(bytes, [])
+
+	## Decode media flags against the declared query order; no names cross in
+	## the media boot body. Empty bytes supply False for every declared query.
+	read_boot_media : List(U8), List(Str) -> Try(Boot, Str)
+	read_boot_media = |bytes, queries| {
 		initial : Boot
-		initial = {}
+		initial = { media: queries.map(|query| (query, False)) }
 		var $boot = initial
 		if bytes.is_empty() {
 			return Ok($boot)
 		}
 		var $at = 0.U64
-		for section in boot_sections {
+		for section in boot_sections(queries) {
 			context = "contract: boot section ${section.tag.to_str()} (${section.name})"
 			if $at == bytes.len() {
 				return Err("${context} missing section")
@@ -1959,8 +1970,8 @@ Core := [].{
 			$at = start + length.to_u64()
 		}
 		if $at != bytes.len() {
-			tag = bytes.get($at) ? |_| "contract: boot section after visibility missing tag"
-			return Err("contract: boot section ${tag.to_str()} after section 4 (visibility): unexpected section")
+			tag = bytes.get($at) ? |_| "contract: boot section after media missing tag"
+			return Err("contract: boot section ${tag.to_str()} after section 6 (media): unexpected section")
 		}
 		Ok($boot)
 	}
@@ -1976,7 +1987,8 @@ Core := [].{
 		}
 		local = put_section(location, 2, $storage)
 		online = put_section(local, 3, [if (boot.online) 1 else 0])
-		put_section(online, 4, [if (boot.visible) 1 else 0])
+		visible = put_section(online, 4, [if (boot.visible) 1 else 0])
+		put_section(visible, 6, boot.media.map(|(_, matches)| if (matches) 1 else 0))
 	}
 
 	## The boot value of a declared storage key, or `Missing` if it has none.
@@ -1984,6 +1996,34 @@ Core := [].{
 	boot_storage = |boot, key| match boot.storage.find_first(|(k, _)| k == key) {
 		Ok((_, v)) => Ok(v)
 		Err(_) => Err(Missing)
+	}
+
+	## Read a declared media query's boot value. An undeclared query is an
+	## explicit error, so a pure test can catch a misspelt declaration.
+	boot_media : Boot, Str -> Try(Bool, [Undeclared])
+	boot_media = |boot, query| match boot.media.find_first(|(name, _)| name == query) {
+		Ok((_, matches)) => Ok(matches)
+		Err(_) => Err(Undeclared)
+	}
+
+	## Validate program text before mounting: at most 32 distinct nonempty
+	## media queries, each no longer than 256 UTF-8 bytes.
+	media_catalogue : List(Str) -> Try(List(Str), Str)
+	media_catalogue = |queries| {
+		var $seen = []
+		for query in queries {
+			if $seen.len() >= 32 {
+				return Err("contract: more than 32 declared media queries (query \"${query}\" is over the bound)")
+			}
+			if query.is_empty() or query.count_utf8_bytes() > 256 {
+				return Err("contract: media query \"${query}\" must be 1 to 256 UTF-8 bytes")
+			}
+			if $seen.contains(query) {
+				return Err("contract: media query \"${query}\" is declared twice")
+			}
+			$seen = $seen.append(query)
+		}
+		Ok(queries)
 	}
 
 	## A value that never changes. It reads no layer, so it never triggers a refresh.
@@ -2229,6 +2269,21 @@ Core := [].{
 	on_pointer_paced : HandlerOf(ctx, Pointer) -> Attr(ctx)
 	on_pointer_paced = |handler| attach_kind("pointermove", pointer_kind(Move), 8, handler)
 
+	## Follow this element's scroll offsets as a report at the next frame.
+	on_scroll : HandlerOf(ctx, Layout.Scroll) -> Attr(ctx)
+	on_scroll = |handler| attach_kind("scroll", scroll_kind, 8, handler)
+
+	## Observe the element's content box until its owning scope is disposed.
+	on_size : HandlerOf(ctx, Layout.Size) -> Attr(ctx)
+	on_size = |handler| attach_kind("size", size_kind, 8, handler)
+
+	## Whether visibility should also report one screen ahead of the element.
+	SeenProps := { ahead : Bool ?? False }
+
+	## Observe intersection changes, optionally before the element is on screen.
+	on_seen : SeenProps, HandlerOf(ctx, Layout.Seen) -> Attr(ctx)
+	on_seen = |props, handler| attach_kind("seen", seen_kind, if (props.ahead) 40 else 8, handler)
+
 	## Where the browser aligns a target within its scrolling ancestors.
 	Align : [Start, Center, End, Nearest]
 
@@ -2289,7 +2344,7 @@ Core := [].{
 	## (never in the turn, whose every field costs code at each site
 	## that rebuilds it): the worker catalogue's names and the port
 	## declarations with the port code that serves them.
-	Catalogue : { workers : List(Str), ports : Ports }
+	Catalogue : { workers : List(Str), ports : Ports, media : List(Str) }
 
 	## A program's ports: the declarations, and every piece of port code the
 	## engine runs outside the typed layer, reached only through these
@@ -2324,13 +2379,13 @@ Core := [].{
 	## For test platforms and harnesses: mount with an explicit in-flight effect
 	## bound, running any follow-up turns the mount queued.
 	mount_with : U64, Elem(Root({})) -> App
-	mount_with = |max, elem| mount_in(max, { workers: [], ports: no_ports }, {}, elem)
+	mount_with = |max, elem| mount_in(max, { workers: [], ports: no_ports, media: [] }, {}, elem)
 
 	## For test platforms and harnesses: mount an app whose root holds
 	## the store that starts as `start` (`Store.initial`), with an explicit
 	## in-flight bound.
 	mount_store : U64, Start(st), Elem(Root(st)) -> App
-	mount_store = |max, start, elem| mount_start(max, { workers: [], ports: no_ports }, start, elem)
+	mount_store = |max, start, elem| mount_start(max, { workers: [], ports: no_ports, media: [] }, start, elem)
 
 	## For test platforms and harnesses: deliver a DOM event to `node` and its
 	## handler number with the event's payload, as one turn (plus any
@@ -2411,7 +2466,7 @@ Core := [].{
 			$out = $out.append(work_get(a.tx.work, $i))
 			$i = $i + 1
 		}
-		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42), work_get(a.tx.work, 43)])
+		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42), work_get(a.tx.work, 43), a.tx.fx.observed.live])
 	}
 
 	# ------------------------------------------------------------------
@@ -2461,7 +2516,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 11
+	protocol_version = 12
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -2531,6 +2586,7 @@ Core := [].{
 		event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)),
 		workers : List(Registration),
 		ports : Ports,
+		media : List(Str),
 	}.{
 
 		## Declare the ports the program's effect sites use (see [PortDecl]):
@@ -2562,11 +2618,12 @@ Core := [].{
 		init = p.init
 		workers = p.workers
 		ports = p.ports
+		media = p.media
 		keys = p.keys
 		{
 			version: p.version,
-			keys: || (ports.table)(keys(), (ports.ready)(ports.decls)),
-			init: |boot| init({ workers: catalogue_names(workers), ports: { ..ports, decls: (ports.ready)(ports.decls) } }, boot),
+			keys: || put_media_table((ports.table)(keys(), (ports.ready)(ports.decls)), media),
+			init: |boot| init({ workers: catalogue_names(workers), ports: { ..ports, decls: (ports.ready)(ports.decls) }, media }, boot),
 			event: p.event,
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
 				{ root, tx, programs } = inst
@@ -2691,7 +2748,7 @@ Core := [].{
 	## Values read at boot are declared here; request catalogues are added
 	## with `with_ports` or `with_workers`. Defaults let a caller name only
 	## what differs, and let later boot declarations leave existing apps intact.
-	ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32 }
+	ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32, media : List(Str) ?? [] }
 
 	## The [Program] for an app that needs no boot data: mount `view()` with the
 	## default in-flight bound of 32.
@@ -2710,42 +2767,49 @@ Core := [].{
 	## and `view` the UI over it.
 	program_store : ProgramProps, (Boot -> Start(st)), (Boot -> Elem(Root(st))) -> Program
 	program_store = |cfg, start, view| {
-		version: Core.protocol_version,
-		keys: || {
-			declarations = [
-				{
-					tag: 2.U8,
-					write: || {
-						var $body = put_u32([], cfg.storage_keys.len().to_u32_wrap())
-						for key in cfg.storage_keys {
-							$body = put_str($body, key)
-						}
-						$body
+		media = match Core.media_catalogue(cfg.media) {
+			Ok(queries) => queries
+			Err(message) => crash message
+		}
+		{
+			version: Core.protocol_version,
+			keys: || {
+				declarations = [
+					{
+						tag: 2.U8,
+						write: || {
+							var $body = put_u32([], cfg.storage_keys.len().to_u32_wrap())
+							for key in cfg.storage_keys {
+								$body = put_str($body, key)
+							}
+							$body
+						},
 					},
-				},
-			]
-			declarations.fold([], |bytes, section| put_section(bytes, section.tag, (section.write)()))
-		},
-		init: |names, boot| {
-			b = decode_boot(boot)
-			match check_boot_keys(b, cfg.storage_keys) {
-				Ok(_) => {}
-				Err(message) => crash message
-			}
-			finish(mount_start(cfg.max_inflight, names, start(b), view(b)), [], [])
-		},
-		event: |inst, buf, wbuf, node, handler, payload| {
-			{ root, tx, programs } = inst
-			{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
-			fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
-			if node == fx_node {
-				finish(Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
-			} else {
-				finish(deliver(fresh, node, handler, Ev(payload)), [], wbuf)
-			}
-		},
-		workers: [],
-		ports: no_ports,
+				]
+				declarations.fold([], |bytes, section| put_section(bytes, section.tag, (section.write)()))
+			},
+			init: |names, boot| {
+				b = decode_boot(boot, names.media)
+				match check_boot_keys(b, cfg.storage_keys) {
+					Ok(_) => {}
+					Err(message) => crash message
+				}
+				finish(mount_start(cfg.max_inflight, names, start(b), view(b)), [], [])
+			},
+			event: |inst, buf, wbuf, node, handler, payload| {
+				{ root, tx, programs } = inst
+				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
+				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
+				if node == fx_node {
+					finish(Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
+				} else {
+					finish(deliver(fresh, node, handler, Ev(payload)), [], wbuf)
+				}
+			},
+			workers: [],
+			ports: no_ports,
+			media,
+		}
 	}
 }
 
@@ -2865,6 +2929,62 @@ files_kind = {
 		}
 		_ => crash "contract: event payload does not match files kind at site ${show_path(site)}"
 	},
+}
+
+## Layout reports carry only their fixed record, with no staging or handles.
+scroll_kind : Core.Kind(Layout.Scroll)
+scroll_kind = {
+	code: 6,
+	decode: |payload, site| {
+		pair = match payload {
+			Ev(bytes) => read_layout_pair(bytes) ?? crash "contract: event payload does not match scroll kind at site ${show_path(site)}"
+			_ => crash "contract: event payload does not match scroll kind at site ${show_path(site)}"
+		}
+		{ top: pair.first, left: pair.second }
+	},
+}
+
+size_kind : Core.Kind(Layout.Size)
+size_kind = {
+	code: 7,
+	decode: |payload, site| {
+		pair = match payload {
+			Ev(bytes) => read_layout_pair(bytes) ?? crash "contract: event payload does not match size kind at site ${show_path(site)}"
+			_ => crash "contract: event payload does not match size kind at site ${show_path(site)}"
+		}
+		{ width: pair.first, height: pair.second }
+	},
+}
+
+seen_kind : Core.Kind(Layout.Seen)
+seen_kind = {
+	code: 8,
+	decode: |payload, site| match payload {
+		Ev(bytes) => read_seen(bytes) ?? crash "contract: event payload does not match seen kind at site ${show_path(site)}"
+		_ => crash "contract: event payload does not match seen kind at site ${show_path(site)}"
+	},
+}
+
+## Two little-endian U32 fields, consumed exactly, never truncated or wrapped.
+read_layout_pair : List(U8) -> Try({ first : U32, second : U32 }, [InvalidLayout])
+read_layout_pair = |bytes| if bytes.len() != 8 {
+	Err(InvalidLayout)
+} else {
+	Ok({ first: get_u32(bytes, 0, "layout report"), second: get_u32(bytes, 4, "layout report") })
+}
+
+## Intersection accepts a strict flag and a ratio in thousandths.
+read_seen : List(U8) -> Try(Layout.Seen, [InvalidSeen])
+read_seen = |bytes| match bytes {
+	[flag, low, high] if flag <= 1 => {
+		ratio = low.to_u16() + high.to_u16().shl_wrap(8)
+		if ratio > 1000 {
+			Err(InvalidSeen)
+		} else {
+			Ok({ intersecting: flag == 1, ratio_permille: ratio })
+		}
+	}
+	_ => Err(InvalidSeen)
 }
 
 ## The event tag fixes which browser event can carry this typed record.
@@ -3120,9 +3240,9 @@ w_port_sends = 40
 
 ## The number of counters in the work record: the work counters, the eight
 ## effect counters, port commands (40), property commands (41–42), and
-## released registrations (43).
+## released registrations (43), and live observations (44).
 w_record_count : U64
-w_record_count = w_count + 12
+w_record_count = w_count + 13
 
 ## The work counters as plain fields (`c01` is counter 1): bumping one
 ## updates a value in the accumulator and never allocates, so counting
@@ -3311,6 +3431,49 @@ alloc_id = |{ cmds, next, free, routes, work, paths, site_free, observations, fx
 	}
 }
 
+## A command address owns its registrations. The owner is the element's id
+## in a block, or the row root for a static template observation.
+observe_node : Tx, U32 -> Tx
+observe_node = |tx, owner| with_fx(
+	tx,
+	|fx| with_registrations(
+		fx,
+		|documents, { owners, live }| {
+			count = owners.get(owner) ?? 0
+			(documents, { owners: owners.insert(owner, count + 1), live: live + 1 })
+		},
+	),
+)
+
+## Release only this owner's registrations before any ancestor is detached.
+## The direct count index keeps disposal proportional to its own scope.
+release_node : Tx, U32 -> Tx
+release_node = |tx, owner| {
+	count = tx.fx.observed.owners.get(owner) ?? 0
+	document = tx.fx.document_nodes.contains(owner)
+	if count == 0 and !document {
+		return tx
+	}
+	with_fx(
+		emit_op(tx, 23, |commands| put_u32(commands, owner)),
+		|fx| with_registrations(
+			fx,
+			|documents, { owners, live }| (
+				if (document) documents.keep_if(|node| node != owner) else documents,
+				{ owners: owners.remove(owner), live: live - count },
+			),
+		),
+	)
+}
+
+## Move the registration index out before modifying it, leaving no second
+## holder in Fx that would make each observed-node change copy the index.
+with_registrations : Fx, (List(U32), LiveObservations -> (List(U32), LiveObservations)) -> Fx
+with_registrations = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups }, change| {
+	(documents, observations) = change(document_nodes, observed)
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups }
+}
+
 ## Release a static node id and its route.
 free_id : Tx, U32 -> Tx
 free_id = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, id| {
@@ -3368,9 +3531,9 @@ drop_name = |fx, { node, name, path }| if (name.is_empty()) fx else with_refs(
 ## Move the reference indexes and pending checks out of the accumulator so
 ## updates retain one holder for each map, list and reverse-index column.
 with_refs : Fx, (RefMap, List(List(RefOwned)), List(TurnEnd) -> (RefMap, List(List(RefOwned)), List(TurnEnd))) -> Fx
-with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, refs, focus, ref_pos, cleanups }, change| {
+with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups }, change| {
 	(names, positions, checks) = change(refs, ref_pos, focus)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, refs: names, focus: checks, ref_pos: positions, cleanups }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups }
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
@@ -3867,7 +4030,8 @@ mount_attr = |block, env, attr, id, path, value_control, tx| {
 				with_fx(tx, |fx| { ..fx, document_nodes: fx.document_nodes.append(id) })
 			} else tx
 			h = block.handlers.len().to_u32_wrap()
-			tx1 = emit_op(tx0, 11, |c| put_u32(put_str(put_u32(put_u32(c, id), h), ev.event).append(ev.kind), ev.policies))
+			registered = if (ev.kind == 7 or ev.kind == 8) observe_node(tx0, id) else tx0
+			tx1 = emit_op(registered, 11, |c| put_u32(put_str(put_u32(put_u32(c, id), h), ev.event).append(ev.kind), ev.policies))
 			(add_handler(block, bind_block_echo(handler, block.holes)), set_route(tx1, id, path, h))
 		}
 		Ref(value) => {
@@ -4070,9 +4234,7 @@ dispose_block = |{ holes: _, handlers: _, children, child_reads: _, child_top, n
 		$j = $j + 1
 	}
 	for id in nodes {
-		if $tx.fx.document_nodes.contains(id) {
-			$tx = with_fx(emit_op($tx, 23, |commands| put_u32(commands, id)), |fx| { ..fx, document_nodes: fx.document_nodes.keep_if(|node| node != id) })
-		}
+		$tx = release_node($tx, id)
 	}
 	if remove {
 		for id in tops {
@@ -4662,7 +4824,7 @@ index_remove = |{ hs, vals, count, bits, by_slot }, slot| {
 ## `ctl`: the work counter a property hole's updates also count in
 ## (`w_set_value`, `w_set_checked`), or 0; for a reference, its index
 ## among reference holes, after the nested-site ids in the row's bindings.
-RHole(ctx) : { evaluated : Bool, kind : U8, mask : U128, smask : U128, skey : (ctx -> Str), read : (ctx -> [Absent, Present(Str)]), col : U64, live : Bool, ctl : U64, value_control : Bool, property : U8 }
+RHole(ctx) : { is_observation : Bool, evaluated : Bool, kind : U8, mask : U128, smask : U128, skey : (ctx -> Str), read : (ctx -> [Absent, Present(Str)]), col : U64, live : Bool, ctl : U64, value_control : Bool, property : U8 }
 
 Plan(ctx) : {
 	tree : List(U8),
@@ -4694,7 +4856,7 @@ val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, valu
 	}
 	property = if (kind == 6) extra.last() ?? crash "internal: property row has an index" else 0
 	live = mask.bitwise_or(smask) != 0 or property == 6 or property == 7
-	hole = { evaluated, kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else counter, value_control: kind == 5 and counter == 1, property }
+	hole = { is_observation: False, evaluated, kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else counter, value_control: kind == 5 and counter == 1, property }
 	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
 }
 
@@ -4748,7 +4910,7 @@ compile_elem = |plan, elem, path, depth, site| {
 					On(ev, handler) => {
 						bound = bind_row_echo(handler, $holes)
 						$htab = put_u32(put_str(put_path($htab, 3, path).append(narrow($handlers.len(), "event handler count")), ev.event).append(ev.kind), ev.policies)
-						$holes = $holes.append({ evaluated: False, kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: $handlers.len(), live: False, ctl: 0, value_control: False, property: 0 })
+						$holes = $holes.append({ is_observation: ev.kind == 7 or ev.kind == 8, evaluated: False, kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: $handlers.len(), live: False, ctl: 0, value_control: False, property: 0 })
 						$handlers = $handlers.append(bound)
 					}
 					Ref(value) => {
@@ -4780,7 +4942,7 @@ compile_elem = |plan, elem, path, depth, site| {
 		}
 		Site(m, rf) => {
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
-			hole = { evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0, value_control: False, property: 0 }
+			hole = { is_observation: False, evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0, value_control: False, property: 0 }
 			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(m), ncols, kreads: kreads.bitwise_or(rf(depth)) }
 		}
 	}
@@ -5179,6 +5341,8 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 			if hole.smask != 0 and !known {
 				$sels = $sels.set($hi, (hole.skey)(row_env)) ?? $sels
 			}
+		} else if hole.is_observation {
+			$t = observe_node($t, node)
 		} else if hole.kind == 4 {
 			(bid, t2) = alloc_id($t)
 			$t = t2
@@ -5236,9 +5400,8 @@ remove_row = |cfg, cols, env, slot, remove, tx| {
 	pend2 = pend.set(si, 0) ?? pend
 	node = nodes.get(si) ?? crash "internal: row node"
 	rnodes = nodes.set(si, 0) ?? nodes
-	t0 = if (remove) emit_op(tx, 5, |c| put_u32(c, node)) else tx
-	# A row removed by reconciliation: its scope is disposed.
-	t1 = bump(bump(free_id(t0, node), w_rows_removed, 1), w_scopes_disposed, 1)
+	# Child scopes and their registrations are disposed before the row's DOM.
+	t1 = bump(bump(tx, w_rows_removed, 1), w_scopes_disposed, 1)
 	if cfg.dynamic {
 		{ list: kl, prev: row_kids } = kids.replace(si, []) ?? crash "kids"
 		{ list: bl, prev: row_binds } = binds.replace(si, []) ?? crash "binds"
@@ -5259,10 +5422,15 @@ remove_row = |cfg, cols, env, slot, remove, tx| {
 		for b in row_binds {
 			$t = free_id($t, b)
 		}
+		$t = release_node($t, node)
+		$t = if (remove) emit_op($t, 5, |commands| put_u32(commands, node)) else $t
+		$t = free_id($t, node)
 		dropped2 = if ($orph.is_empty()) dropped else dropped.append({ key, item, orphans: $orph })
 		({ items, keys, order, free: free.append(slot), index, lasts, kids: kl, binds: bl, pend: pend2, dirty, sels, known, kid_mask, dropped: dropped2, shown: shown.set(si, shown_empty) ?? shown, pending_echo: clear_row_echo(pending_echo, slot), rnodes }, $t)
 	} else {
-		({ items, keys, order, free: free.append(slot), index, lasts, kids, binds, pend: pend2, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }, t1)
+		released = release_node(t1, node)
+		removed = if (remove) emit_op(released, 5, |commands| put_u32(commands, node)) else released
+		({ items, keys, order, free: free.append(slot), index, lasts, kids, binds, pend: pend2, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }, free_id(removed, node))
 	}
 }
 
@@ -5343,7 +5511,7 @@ free_rows : Cols(r, item), Tx -> Tx
 free_rows = |cols, tx| {
 	var $tx = bump(tx, w_scopes_disposed, cols.order.len())
 	for slot in cols.order {
-		$tx = free_id($tx, node_of(cols, slot))
+		$tx = free_id(release_node($tx, node_of(cols, slot)), node_of(cols, slot))
 	}
 	$tx
 }
@@ -5353,18 +5521,6 @@ clear_rows : EachCfg(r, find), Cols(r, item), (Str, item -> r), Bool, Tx -> (Col
 clear_rows = |cfg, cols, env, dom, tx| {
 	var $tx = bump(tx, w_scopes_disposed, cols.order.len())
 	var $dropped = []
-	if !dom {
-		{}
-	} else if cfg.sole {
-		$tx = emit_op($tx, 6, |c| put_u32(put_u32(c, cfg.parent), cfg.site))
-	} else {
-		for slot in cols.order {
-			$tx = emit_op($tx, 5, |c| put_u32(c, node_of(cols, slot)))
-		}
-	}
-	for slot in cols.order {
-		$tx = free_id($tx, node_of(cols, slot))
-	}
 	if cfg.dynamic {
 		var $i = 0.U64
 		while $i < cols.kids.len() {
@@ -5395,6 +5551,22 @@ clear_rows = |cfg, cols, env, dom, tx| {
 			}
 			$i = $i + 1
 		}
+	}
+	for slot in cols.order {
+		$tx = release_node($tx, node_of(cols, slot))
+	}
+
+	if !dom {
+		{}
+	} else if cfg.sole {
+		$tx = emit_op($tx, 6, |c| put_u32(put_u32(c, cfg.parent), cfg.site))
+	} else {
+		for slot in cols.order {
+			$tx = emit_op($tx, 5, |c| put_u32(c, node_of(cols, slot)))
+		}
+	}
+	for slot in cols.order {
+		$tx = free_id($tx, node_of(cols, slot))
 	}
 	{ sels, known, kid_mask, lasts, dropped: dropped0, shown: _, pending_echo: _, items: _, keys: _, order: _, free: _, index: _, kids: _, binds: _, pend: _, dirty: _, rnodes: _ } = cols
 	dropped = dropped0.concat($dropped)
@@ -6784,6 +6956,11 @@ put_port_table = |keys, decls| {
 	put_section(keys, 5, $b)
 }
 
+## Media follows ports in the common section order; its query order is also
+## the order of the flags read from boot section 6.
+put_media_table : List(U8), List(Str) -> List(U8)
+put_media_table = |bytes, queries| put_section(bytes, 6, queries.fold(put_u32([], queries.len().to_u32_wrap()), |body, query| put_str(body, query)))
+
 ## A port's shape as its declaration numbers it.
 port_kind_name : U8 -> Str
 port_kind_name = |kind| match kind {
@@ -6838,6 +7015,8 @@ decode_res_with = |b, port_res| {
 		Online(flag())
 	} else if tag == 9 {
 		Visible(flag())
+	} else if tag == 22 {
+		Matches(flag())
 	} else if tag == 11 {
 		match b {
 			[_, class] => WorkLost(work_fault(class))
@@ -7114,6 +7293,9 @@ RefMap : Dict(Str, List({ node : U32, path : List(U32), value_control : Bool }))
 
 RefOwned : { name : Str, path : List(U32) }
 
+## Registration owners are node addresses, not application data or identity.
+LiveObservations : { owners : Dict(U32, U64), live : U64 }
+
 Fx : {
 	next : U32,
 	inner : U32,
@@ -7131,6 +7313,10 @@ Fx : {
 	## Focus names and their live nodes with construction sites, and the checks awaiting the end of the
 	## turn (see [TurnEnd]).
 	document_nodes : List(U32),
+
+	## The registrations owned by each addressed node, and their live gauge.
+	## A row owns every observation in its static template.
+	observed : LiveObservations,
 	refs : RefMap,
 	focus : List(TurnEnd),
 
@@ -7158,7 +7344,7 @@ Fx : {
 ## settle check (`Core.settled`) when the view it holds is not the one its
 ## table gives from scratch; the check reports it, and the pass it ran in
 ## is discarded.
-TurnEnd : [CheckRef(Str), Focus(U8, Str), ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }), ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }), CheckTask(Str, List(U32)), Port(PortAt), Drift(Str)]
+TurnEnd : [CheckRef(Str), Focus(U8, Str), ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }), ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }), CheckTask(Str, List(U32)), CheckMedia(Str, List(U32)), Port(PortAt), Drift(Str)]
 
 ## A port request waiting for the end of its turn (see [Ports]): the
 ## request, the site that issued it, and where its bytes go: at offset `at`
@@ -7173,7 +7359,7 @@ PortAt : { req : PortRequest, path : List(U32), slot : [At(U64, U32), Refused] }
 PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe(Str, PortMessage)]
 
 fx_empty : Fx
-fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [] }
+fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [] }
 
 ## The first follow-up id: follow-ups are a space of their own, above
 ## every request id.
@@ -7234,6 +7420,7 @@ is_sub = |req| match req {
 	Popstate => True
 	OnlineChanges => True
 	VisibilityChanges => True
+	MediaChanges(_) => True
 	PortSubscribe(_) => True
 	_ => False
 }
@@ -7281,6 +7468,7 @@ put_fx = |c, id, req| {
 		Popstate => head.append(5)
 		OnlineChanges => head.append(6)
 		VisibilityChanges => head.append(7)
+		MediaChanges(query) => put_str(head.append(16), query)
 		Work({ task, input, files, timeout_ms, on_cancel, prepared, .. }) => put_work(head, task, input, files, timeout_ms, on_cancel, prepared)
 		ReadBytes({ file, max_bytes }) => put_u64(put_file(head.append(11).append(1), file), max_bytes)
 		ReadUtf8({ file, max_bytes }) => put_u64(put_file(head.append(11).append(2), file), max_bytes)
@@ -7312,12 +7500,12 @@ fx_admit : Tx, List(U32), Request -> (U32, Tx)
 fx_admit = |tx, path, req| {
 	# A port request's bytes are written at the end of the turn.
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = turn_end_later(tx, path, req)
-	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, refs, focus, ref_pos, cleanups } = fx
+	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups } = fx
 	if live.len() >= max {
-		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, refs, focus, ref_pos, cleanups }
+		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups }
 		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2 })
 	} else {
-		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, refs, focus, ref_pos, cleanups }
+		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups }
 		(id, { cmds: put_req(cmds, id, req), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2 })
 	}
 }
@@ -7341,6 +7529,7 @@ turn_end_later = |tx, path, req| {
 		PortCommand({ port, message }) => Port({ req: Command(port, message), path, slot: At(at, 0) })
 		PortCall({ port, message, timeout_ms }) => Port({ req: Call(port, message, timeout_ms), path, slot })
 		PortSubscribe({ port, message }) => Port({ req: Subscribe(port, message), path, slot })
+		MediaChanges(query) => CheckMedia(query, path)
 		_ => Skip
 	}
 	match entry {
@@ -7349,6 +7538,7 @@ turn_end_later = |tx, path, req| {
 		ScrollIntoView(n, props) => with_fx(tx, |fx| { ..fx, focus: fx.focus.append(ScrollIntoView(n, props)) })
 		ScrollTo(n, props) => with_fx(tx, |fx| { ..fx, focus: fx.focus.append(ScrollTo(n, props)) })
 		Port(p) => with_fx(tx, |fx| { ..fx, focus: fx.focus.append(Port(p)) })
+		CheckMedia(query, site) => with_fx(tx, |fx| { ..fx, focus: fx.focus.append(CheckMedia(query, site)) })
 	}
 }
 
@@ -7968,8 +8158,8 @@ get_str = |b, at, what| {
 ## The boot section decoders consume bounded bodies, so a malformed field
 ## cannot shift the following section. This table is the extension point for
 ## browser facts; every nonempty payload must contain each row, in order.
-boot_sections : List({ tag : U8, name : Str, read : Boot, List(U8) -> Try(Boot, Str) })
-boot_sections = [
+boot_sections : List(Str) -> List({ tag : U8, name : Str, read : Boot, List(U8) -> Try(Boot, Str) })
+boot_sections = |queries| [
 	{
 		tag: 1,
 		name: "location",
@@ -8018,6 +8208,23 @@ boot_sections = [
 			visible = boot_flag(body, 0)?
 			boot_end(body, 1)?
 			Ok({ ..boot, visible })
+		},
+	},
+	{
+		tag: 6,
+		name: "media",
+		read: |boot, body| {
+			if body.len() != queries.len() {
+				return Err("media flag count differs from declared query count")
+			}
+			var $pairs = []
+			var $at = 0.U64
+			for query in queries {
+				matches = boot_flag(body, $at)?
+				$pairs = $pairs.append((query, matches))
+				$at = $at + 1
+			}
+			Ok({ ..boot, media: $pairs })
 		},
 	},
 ]
@@ -8072,8 +8279,8 @@ check_boot_keys = |boot, keys| {
 
 ## Mount's narrow boundary turns a structural decoding error into a classified
 ## contract fault. Harnesses use `read_boot` to inspect arbitrary bytes safely.
-decode_boot : List(U8) -> Boot
-decode_boot = |bytes| match Core.read_boot(bytes) {
+decode_boot : List(U8), List(Str) -> Boot
+decode_boot = |bytes, queries| match Core.read_boot_media(bytes, queries) {
 	Ok(boot) => boot
 	Err(message) => crash message
 }
@@ -8166,6 +8373,9 @@ flush_turn = |tx, programs| {
 					if !programs.workers.contains(task) {
 						crash "contract: worker task \"${task}\" is not registered; add its registration to with_workers (site ${show_path(path)})"
 					}
+				CheckMedia(query, path) => if !programs.media.contains(query) {
+					crash "contract: media query \"${query}\" is not declared (site ${show_path(path)})"
+				}
 				Port(at) => (programs.ports.check)(programs.ports.decls, at)
 				Drift(_) | CheckRef(_) => {}
 			}
@@ -8281,7 +8491,7 @@ work_bytes = |inst, buf| {
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.issued), fx.delivered), fx.stale), fx.refused)
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.cancelled), fx.reparented), fx.skipped), fx.live.len())
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, w_port_sends)), work_get(counters, 41)), work_get(counters, 42))
-	$b = put_u64($b, work_get(counters, 43))
+	$b = put_u64(put_u64($b, work_get(counters, 43)), fx.observed.live)
 	runs = inst.tx.fx.cleanups
 	$b = put_u32($b, runs.len().to_u32_wrap())
 	for (name, k) in runs {
@@ -8397,7 +8607,7 @@ expect {
 				],
 			),
 	)
-	mounted = mount_in(32, { workers: ["t/echo"], ports: no_ports }, {}, elem)
+	mounted = mount_in(32, { workers: ["t/echo"], ports: no_ports, media: [] }, {}, elem)
 	s = Core.fx_stats(mounted)
 	[s.issued, s.cancelled, s.live, s.reparented] == [1, 1, 0, 0]
 }
@@ -8480,7 +8690,7 @@ expect {
 	msg = { json: "{\"a\":1}", blobs: [[7, 8]], files: [] }
 	ports = [Core.port_declaration("t/c", Command), Core.port_declaration("t/k", Call), Core.port_declaration("t/s", Subscription(Every(4)))]
 	elem = Core.watch(Core.const({}), |_| [PortCommand({ port: "t/c", message: msg }), PortCall({ port: "t/k", message: msg, timeout_ms: 700000 }), PortSubscribe({ port: "t/s", message: msg })], Core.ignore({}))
-	mounted = mount_in(32, { workers: [], ports: ports_of(ports) }, {}, elem)
+	mounted = mount_in(32, { workers: [], ports: ports_of(ports), media: [] }, {}, elem)
 	(taken, cmds) = Core.take_cmds(mounted, [])
 	body = put_u32(put_u32(put_u32(put_str([], "{\"a\":1}"), 1), 2).concat([7, 8]), 0)
 	want = put_str([19], "t/c").concat(body).concat(put_u32(put_str(put_u32([13], 1).append(9), "t/k").concat(body), 600000)).concat(put_str(put_u32([13], 2).append(10), "t/s").concat(body))
@@ -8517,7 +8727,7 @@ expect {
 				],
 			),
 	)
-	(taken, cmds) = Core.take_cmds(mount_in(32, { workers: [], ports: ports_of([]) }, {}, elem), [])
+	(taken, cmds) = Core.take_cmds(mount_in(32, { workers: [], ports: ports_of([]), media: [] }, {}, elem), [])
 	mounted = put_str(put_u32(put_u32(put_u32([8], 1), 0), 0), "div").concat(put_str(put_u32(put_u32(put_u32([10], 2), 1), 0), ""))
 	cleaned = put_str([17], "a").concat(put_str(put_str([16, 1], "last"), "a")).concat(put_str([16, 2], "draft"))
 	replaced = put_str(put_u32(put_u32(put_u32([10], 3), 0), 2), "")
@@ -8542,8 +8752,8 @@ expect {
 				],
 			),
 	)
-	disposed = Core.fx_stats(mount_in(32, { workers: [], ports: ports_of(ports) }, {}, elem))
-	open = mount_in(32, { workers: [], ports: ports_of(ports) }, {}, Core.watch(Core.const({}), |_| [PortSubscribe({ port: "t/s", message: msg })], Core.ignore({})))
+	disposed = Core.fx_stats(mount_in(32, { workers: [], ports: ports_of(ports), media: [] }, {}, elem))
+	open = mount_in(32, { workers: [], ports: ports_of(ports), media: [] }, {}, Core.watch(Core.const({}), |_| [PortSubscribe({ port: "t/s", message: msg })], Core.ignore({})))
 	id = Core.fx_live(open).first() ?? 0
 	kept = Core.fx_stats(Core.result(open, id, PortAnswer(msg)))
 	closed = Core.result(open, id, PortFailed(Closed))
@@ -8897,11 +9107,11 @@ expect {
 }
 
 ## Declarations contain only their mandatory direction-specific sections:
-## local-storage keys followed by the port table, each length-bounded.
+## local-storage keys, the port table and media, each length-bounded.
 expect {
 	program = Core.driver(Core.program_boot({ storage_keys: ["theme", "theme"] }, |_| Core.text("")))
 	keys = put_str(put_str(put_u32([], 2), "theme"), "theme")
-	(program.keys)() == put_section(put_section([], 2, keys), 5, put_u32([], 0))
+	(program.keys)() == put_media_table(put_section(put_section([], 2, keys), 5, put_u32([], 0)), [])
 }
 
 ## A storage declaration and every port shape retain their bodies inside
@@ -8918,7 +9128,7 @@ expect {
 	command = put_u32(put_str(put_u32([], 3), "command").concat([1, 0]), 0)
 	call_bytes = put_u32(put_str(command, "call").concat([2, 0]), 0)
 	ports = put_u32(put_str(call_bytes, "updates").concat([3, 1]), 3)
-	(program.keys)() == put_section(put_section([], 2, keys), 5, ports)
+	(program.keys)() == put_media_table(put_section(put_section([], 2, keys), 5, ports), [])
 }
 
 ## Pointer bytes retain the browser's button, modifier and zone facts without
@@ -8992,7 +9202,7 @@ expect encode_keymap(Core.Keymap.prevent([Core.Chord.plain("")]).concat(Core.Key
 expect read_key(put_str(put_str(put_str([0], "Escape"), "").append(0), "")).is_err()
 
 ## Serialized work retains RELEASE at counter 43 and starts the cleanup table
-## after all 44 counters, including a multibyte cleanup name and its run count.
+## after all 45 counters, including a multibyte cleanup name and its run count.
 expect {
 	mounted = Core.mount(
 		Core.state(
@@ -9022,7 +9232,7 @@ expect {
 	(name, after_name) = get_str(bytes, cleanup_at + 4, "cleanup name")
 	runs = get_u64(bytes, after_name, "cleanup runs")
 	{ count, counters_match: $decoded == counters, released: $decoded.get(43), names, name, runs, consumed: after_name + 8 == bytes.len() } == {
-		count: 44,
+		count: 45,
 		counters_match: True,
 		released: Ok(1),
 		names: 1,
@@ -9250,4 +9460,87 @@ expect {
 		$at = $at + 51
 	}
 	$ok and Core.settled(moved).is_ok()
+}
+
+## Media boot flags retain the declared order, and empty bytes supply each
+## declared query's False default before the first render.
+expect {
+	queries = ["(prefers-color-scheme: dark)", "(prefers-reduced-motion: reduce)"]
+	boot : Core.Boot
+	boot = { media: [(queries.get(0)?, True), (queries.get(1)?, False)] }
+	decoded = Core.read_boot_media(Core.write_boot(boot), queries)?
+	defaults = Core.read_boot_media([], queries)?
+	{ values: decoded.media, defaults: defaults.media, undeclared: Core.boot_media(decoded, "absent") } == {
+		values: boot.media,
+		defaults: [(queries.get(0)?, False), (queries.get(1)?, False)],
+		undeclared: Err(Undeclared),
+	}
+}
+
+## A media body has one strict flag per declared query, with no ignored tail.
+expect {
+	bytes = Core.write_boot({ media: [("a", True)] })
+	[Core.read_boot_media(bytes, []).is_err(), Core.read_boot_media(bytes, ["a", "b"]).is_err(), Core.read_boot_media(bytes.drop_last(1).append(2), ["a"]).is_err(), Core.read_boot_media(bytes.append(0), ["a"]).is_err()] == [True, True, True, True]
+}
+
+## The media catalogue's bounds follow program text, and reject a duplicate
+## rather than silently making two declarations one.
+expect {
+	var $queries = []
+	for index in 0.U64..<32 {
+		$queries = $queries.append("q${index.to_str()}")
+	}
+	queries = $queries
+	{ full: Core.media_catalogue(queries).is_ok(), excess: Core.media_catalogue(queries.append("last")).is_err(), empty: Core.media_catalogue([""]).is_err(), long: Core.media_catalogue([Str.repeat("x", 257)]).is_err(), duplicate: Core.media_catalogue(["a", "a"]).is_err() } == {
+		full: True,
+		excess: True,
+		empty: True,
+		long: True,
+		duplicate: True,
+	}
+}
+
+## The media request and answer use their own closed wire entries.
+expect {
+	request = put_fx([], 7, MediaChanges("(color)"))
+	{ request, answer: Core.decode_res([22, 1]) } == { request: [13, 7, 0, 0, 0, 16, 7, 0, 0, 0, 40, 99, 111, 108, 111, 114, 41], answer: Matches(True) }
+}
+
+## Layout records consume exactly two words; offsets keep the whole U32 range.
+expect {
+	pair = read_layout_pair([0, 0, 0, 0, 255, 255, 255, 255])?
+	{ pair, short: read_layout_pair([0]).is_err(), extra: read_layout_pair(List.repeat(0, 9)).is_err() } == { pair: { first: 0, second: 4_294_967_295 }, short: True, extra: True }
+}
+
+## Intersection accepts both endpoints and refuses unknown flags, ratios
+## beyond a thousand, truncation and trailing bytes.
+expect {
+	low = read_seen([0, 0, 0])?
+	high = read_seen([1, 232, 3])?
+	{ low, high, invalid: [[2, 0, 0], [1, 233, 3], [1, 0], [0, 0, 0, 0]].map(|bytes| read_seen(bytes).is_err()) } == {
+		low: { intersecting: False, ratio_permille: 0 },
+		high: { intersecting: True, ratio_permille: 1000 },
+		invalid: [True, True, True, True],
+	}
+}
+
+## Two observation kinds on one element share one RELEASE owner, while
+## their gauge counts each observation and returns to zero on disposal.
+expect {
+	mounted = Core.mount(
+		Core.state(
+			True,
+			|visible| Core.element(
+				"main",
+				[],
+				[
+					Core.element("button", [Core.on_click(visible.update(|_| False))], []),
+					Core.when(visible.signal(), || Core.element("div", [Core.on_size(visible.update(|value| value)), Core.on_seen({}, visible.update(|value| value))], []), || Core.text("")),
+				],
+			),
+		),
+	)
+	before = Core.work_counters(mounted).get(44)?
+	closed = Core.event(mounted, 2, 0, "")
+	{ before, after: Core.work_counters(closed).get(44)?, releases: Core.work_counters(closed).get(43)? } == { before: 2, after: 0, releases: 1 }
 }
