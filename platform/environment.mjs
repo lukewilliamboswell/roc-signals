@@ -100,8 +100,9 @@ export function probeTimeZone(days, at_ms, readers = {}) {
   };
   let name;
   if (readers.name !== undefined) name = readers.name;
-  else name = typeof globalThis.Intl?.DateTimeFormat === "function" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "";
-  if (typeof name !== "string" || !name.isWellFormed() || encoder.encode(name).length > 64) name = "";
+  else name = typeof globalThis.Intl?.DateTimeFormat === "function" ? (Intl.DateTimeFormat().resolvedOptions().timeZone ?? "") : "";
+  if (typeof name !== "string" || !name.isWellFormed()) throw new Error("browser time-zone name must be a well-formed string");
+  if (encoder.encode(name).length > 64) name = "";
   const middle = offset(at);
   let left = { time: at, minutes: middle }, right = left;
   let transitions = [];

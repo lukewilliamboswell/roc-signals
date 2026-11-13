@@ -102,6 +102,9 @@ check("a zone with no browser name remains unknown without inventing offsets", (
   const zone = probeTimeZone(0, at, { name: "x".repeat(65), offsetAt: () => 345 });
   assert.deepEqual(zone, { name: "", from_ms: at, until_ms: at, offsets: [{ from_ms: at, minutes: 345 }] });
 });
+check("a malformed browser zone name refuses the probe instead of becoming unknown", () => {
+  for (const name of ["\ud800", 42, null]) assert.throws(() => probeTimeZone(0, at, { name, offsetAt: () => 0 }), /time-zone name/);
+});
 check("an unrepresentable Date span is refused before any probe", () => {
   let reads = 0;
   for (const [days, time] of [[1, 8640000000000000n], [0, I64_MAX]]) assert.throws(() => probeTimeZone(days, time, { offsetAt() { reads++; return 0; } }), /Date range/);
