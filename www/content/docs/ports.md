@@ -8,7 +8,8 @@ template = "page.html"
 # Ports
 
 The platform models the browser services most apps need: HTTP, local
-storage, timers, history, focus, connectivity, workers and files. When your
+and session storage, timers, history, focus, connectivity, workers, files
+and clipboard writes. When your
 app needs one it does not model, such as IndexedDB, a save-file picker, a
 WebSocket or a payment sheet, reach it through a **port**.
 

@@ -142,7 +142,10 @@ list is on, say), lift that state in and map both:
 | Request | Result |
 |---|---|
 | `Http({ method, url, headers, body, timeout_ms })` | `Http({ status, headers, body })`, `Network(message)` or `Timeout` |
-| `StorageGet(key)` | `Value(text)` or `Missing` |
+| `StorageGet(key)`, `SessionStorageGet(key)` | `Value(text)` or `Missing` |
+| `StorageChanges(key)` | Another document's local-storage `Value(text)` or `Missing`, the newest report per frame |
+| `StorageWriteFailures` | `StorageFailed({ store, key, reason })` for a refused local or session write; `store` is `Local` or `Session`, `reason` is `Quota` or `Unavailable` |
+| `ClipboardWrite({ text, html })` | `Copied` or `ClipboardFailed(NotAllowed)` / `ClipboardFailed(Unavailable)`; use the typed `Clipboard` helpers below |
 | `Timer(ms)` | `Fired(at_ms)`, once; I64 wall-clock milliseconds |
 | `Interval(ms)` | `Fired(at_ms)` at each callback, until the site is disposed |
 | `Popstate` | `Location(url)` on every back or forward |
@@ -157,7 +160,7 @@ list is on, say), lift that state in and map both:
 | `PortCall({ port, message, timeout_ms })` | `PortAnswer(message)` or `PortFailed(failure)`, once. Made by a typed [port](@/docs/ports.md) call |
 | `PortSubscribe({ port, message })` | `PortAnswer(message)` for every message, or `PortFailed(failure)`, until the site is disposed or the JavaScript ends it. Made by a typed port subscription |
 | `Self` | `Now`, in a follow-up turn |
-| `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)`, `ApplyValue(ref)`, `FocusInPlace(ref)`, `ScrollIntoView(ref, props)`, `ScrollTo(ref, props)`, `Save({ file, name })` (made with `File.save`), `PortCommand({ port, message })` (made by a typed port command), `ViewTransition(types)` | None: commands, the tags of `Engine.Command` |
+| `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `SessionStorageSet(key, value)`, `SessionStorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)`, `ApplyValue(ref)`, `FocusInPlace(ref)`, `ScrollIntoView(ref, props)`, `ScrollTo(ref, props)`, `Save({ file, name })` (made with `File.save`), `PortCommand({ port, message })` (made by a typed port command), `ViewTransition(types)` | None: commands, the tags of `Engine.Command` |
 
 `Engine.http_text(res)` reads an HTTP result as the body of a 2xx response,
 or a typed `HttpError`: `Network(message)`, `Timeout`, `Status(code)` or
@@ -276,15 +279,18 @@ storage usable:
 {{ sample(file="effects.roc", region="boot") }}
 
 When local storage is unavailable (disabled site data, a throwing
-`localStorage`), `boot.storage_available` is false, the boot storage is empty
-and writes persist nothing, so the app can tell the user.
+`localStorage`), `boot.storage_available` is false and `boot.storage` is empty.
+Session storage has the same rule: declare `session_keys`, read them with
+`Engine.boot_session(boot, key)`, and check `boot.session_available`.
+`boot.session` is empty when that service is unavailable. Each service is
+independent, so one can work while the other cannot.
 
 `Engine.program_store` takes the same configuration for an app with a store,
 and hands the boot data both to the function that starts the store and to
 the view (see [Shared State](@/docs/shared-state.md#starting-values-from-the-boot-data)).
 
-Both functions accept defaulted `ProgramProps`: omit `storage_keys` for
-none, `max_inflight` for 32, `media` for no queries and `zone_days` for
+Both functions accept defaulted `ProgramProps`: omit `storage_keys` and
+`session_keys` for none, `max_inflight` for 32, `media` for no queries and `zone_days` for
 366 days each side of mount, or pass `{}` for all defaults.
 
 A page embedding an app can supply `environment.online()` and `visible()`
@@ -300,12 +306,102 @@ Report scheduling also reads `visible()` to choose a frame or the hidden
 page's microtask drain. Tests can supply fixed facts while exercising the
 real subscription listeners.
 
-Keep services in their own options: `storage` provides reads and writes,
+Keep services in their own options: `storage` and `sessionStorage` provide
+local and session reads and writes,
 `fetch` performs HTTP requests and `ports` supplies port handlers. The URL
 comes from the document's location, and `max…` options cap deployment work.
 Unknown environment keys, non-functions and failed boot reads refuse
 mount; a reader that throws or returns the wrong type later stops the
 instance with an `executor` fault.
+
+## Drafts and other tabs
+
+Session storage survives a reload in the same tab. Use it for a draft,
+with local storage for the saved document. On boot, choose the draft before
+the saved document. The Markdown Editor demonstrates that choice. It keeps
+the draft even after Save, so a failed local write cannot discard the safety
+net. After a reload it treats a restored draft as unsaved until Save, without
+comparing two potentially large documents.
+
+{{ sample(file="effects.roc", region="session") }}
+
+`SessionStorageSet` and `SessionStorageRemove` are commands, like their
+local counterparts. A successful write adds no result turn. A write that
+cannot persist warns in the console; mount `StorageWriteFailures` when the
+app must tell its reader. Each failure arrives in a separate turn, one
+task after its batch, as `StorageFailed({ store, key, reason })`. A full
+store reports `Quota`; an unavailable one reports `Unavailable`. Handle
+`Refused` too: that means the subscription could not take an in-flight slot,
+so it will report no failed writes.
+
+`StorageChanges(key)` subscribes to another document's writes to a local
+key. A `storage` event captures its `newValue` immediately, or `Missing`
+for removal or `clear()`. These are reports: several waiting writes to
+one subscription replace its queued value in place. A `clear()` reports
+`Missing` to every subscription. This document's own writes never echo,
+and session storage has no cross-tab subscription.
+
+The app decides what another tab's value means. A clean editor can load it;
+a dirty editor can ask whether to load theirs or keep its own. A report
+can describe a value this tab has already replaced with a later write.
+Local storage cannot order concurrent writes; use an app-level revision
+when convergence matters. Another mount in the same document also raises
+no `storage` event; use an app's port over `BroadcastChannel` if those
+mounts must communicate.
+
+## Warning before leaving
+
+`Engine.guard_leave(dirty)` renders no DOM. While any mounted guard reads
+true, the runtime asks the browser to confirm leaving the document:
+
+{{ sample(file="effects.roc", region="guard") }}
+
+The engine settles all guards once at the end of the turn. Replacing one
+true guard with another keeps the warning on, with no off/on gap. The site
+uses no in-flight slot and cannot be refused. False signals and disposal
+remove their contribution. Unmount and recovery remove the listener; a
+poisoned app keeps its last applied warning while its page remains visible.
+
+This is a courtesy, with no custom message. Browsers require prior user
+interaction and may skip the dialog, particularly on mobile. A same-origin
+reload can preserve that interaction, so a restored dirty draft can still
+ask before the reader leaves again. Keep a session draft as the safety net. In-app navigation is already the app's own `Push`
+decision, so this guard adds no in-app router callback.
+
+## Copying and pasting text
+
+`Clipboard.text(text)` writes plain text. `Clipboard.html({ html, text })`
+writes both representations in one item, so an app never relies on a
+browser accepting two writes in one gesture. Post the request from the
+button's turn to keep that gesture's activation:
+
+{{ sample(file="effects.roc", region="clipboard") }}
+
+`on_post_by(box, reading, plan, reaction)` retains only the posted marker.
+It samples `reading` when the post issues and gives `plan` that reading and
+the item. Changes to the reading alone issue nothing. This keeps a large
+document in its source cell, rather than retaining it in an old outbox post.
+The reaction still receives the posted item; put any identity the answer
+needs in that item explicitly.
+
+`Clipboard.written(result)` returns success or `NotAllowed`, `Unavailable`
+or `Refused`. `NotAllowed` covers denied permission, missing activation or
+an unfocused page; `Unavailable` covers an absent clipboard service.
+Outside a click's turn Chrome usually permits a focused page, while
+Firefox and Safari require activation. The write cannot be aborted, so its
+request is kept when its site is disposed, like an HTTP request.
+
+`Html.on_paste_text(handler)` receives `Text(text)` or `TooLarge`, and
+prevents the paste's default on that element:
+
+{{ sample(file="effects.roc", region="paste") }}
+
+The runtime reads plain text during dispatch. `maxPasteBytes` caps its UTF-8
+size, 4 MiB by default; over the bound the app receives `TooLarge`. An
+element takes pasted text or pasted files, since it has one handler per
+event type. An ordinary `on("paste", ...)` still receives its ordinary
+empty text payload. Reading the clipboard on demand remains a port's
+business; the paste event covers text the user chooses to paste.
 
 ## Time, randomness and locale
 
@@ -413,7 +509,8 @@ itself is one decision. [Conduit](@/examples/conduit.md) is built this way.
 
 ## Subscriptions and lifetime
 
-Connectivity, visibility, media and a port's `Latest` messages report current
+Connectivity, visibility, media, other documents' storage writes and a
+port's `Latest` messages report current
 state. They wait for the next animation frame; a newer waiting report
 from the same subscription replaces the earlier one in place. A visible
 page given no frames drains within 100 ms, and a hidden page drains at the
@@ -433,7 +530,7 @@ subscription drops waiting reports without delivering them. Use
 to state what a frame of reports should do.
 
 Subscriptions (`Interval`, `Popstate`, `OnlineChanges`, `VisibilityChanges`,
-`MediaChanges`,
+`MediaChanges`, `StorageChanges`, `StorageWriteFailures`,
 a port subscription), timers, operations on files on the page (`ReadBytes`,
 `ReadUtf8`, `Sha256`, `ObjectUrl`) and worker jobs belong to their site.
 Disposing the site — because its branch switched or its row left a list —
@@ -442,7 +539,8 @@ cancels them:
 {{ sample(file="effects.roc", region="subscriptions") }}
 
 Requests whose answer may matter after the site has gone are not cancelled
-when it goes: `Http`, `Upload`, `Fetch`, `StorageGet`, port calls, and the
+when it goes: `Http`, `Upload`, `Fetch`, `StorageGet`, `SessionStorageGet`,
+`ClipboardWrite`, port calls, and the
 jobs of a task that says `on_dispose: Keep` (see
 [Workers](@/docs/workers.md#lifetimes)). They are handed to the nearest
 surviving ancestor, and the reaction runs there when the answer arrives.

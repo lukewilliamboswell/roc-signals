@@ -246,7 +246,8 @@
   and never calls into Roc or holds a Roc value. A service the platform
   models (HTTP, storage, timers, history, focus, workers, files, layout
   observation, media queries, time, entropy, the user's languages and time
-  zone) is not a port's business. Formatting with the browser's CLDR data is
+  zone, and writing the clipboard) is not a port's business. Reading the
+  clipboard on demand remains a port. Formatting with the browser's CLDR data is
   not modelled and may use a port.
 - Keep observation passive. The runtime's monitor reports what the runtime
   and its pool did after they acted and never decides scheduling, a result

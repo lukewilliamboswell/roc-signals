@@ -306,7 +306,8 @@ reconsidered.
   data in a declared encoding with the channel's id, bound, scope and
   lifetime. A capability the platform models (HTTP, storage, timers, history,
   focus, workers, files, layout observation, media queries, time, entropy,
-  the user's languages and time zone) is not a port's business. Formatting
+  the user's languages and time zone, and writing the clipboard) is not a
+  port's business. Reading the clipboard on demand remains a port. Formatting
   with the browser's CLDR data is not modelled and may use a port. Nothing that needs a
   synchronous answer (a default to prevent, a layout measurement inside a
   turn) can be one. The hosted effects a worker task calls (see
@@ -919,6 +920,16 @@ with the type, and an app cannot call them.
   case changes. It is how local state that belongs to one key, such as a
   draft for the open message, starts again when the key does. The
   site keeps the key to compare, so a key is small, such as an id.
+
+`guard_leave(dirty)` is a site that renders no DOM and owns no id or
+in-flight slot. Its closure keeps its last Boolean and contributes one to
+the engine's count while mounted and true. A signal change or disposal
+updates that count. At the end of the turn, like focus, the root emits at
+most one `GUARD on` command, only when whether any guard is true differs
+from the last value emitted. Disposing one true guard and mounting another
+in one turn therefore emits nothing. While any guard is on, the runtime
+asks the browser to confirm leaving; the flag, decided by the last batch,
+is the policy, so `beforeunload` needs no turn. No app callback runs there.
 
 ### In-place ownership
 
@@ -1560,7 +1571,8 @@ Rules:
   effects that name no node precede its DOM, and node effects follow it, each
   class in stream order. Its only state is the id → DOM node tables, parsed templates
   and live effect handles the commands told it to keep, plus the ingress
-  queue and its index of report sources, the keymaps rendered on nodes and
+  queue and its index of report sources, the guard flag the last `GUARD`
+  command set, the keymaps rendered on nodes and
   the document-key registrations commands registered, and the elements
   commands told it to observe, released by `RELEASE`, teardown or poisoning. Manual mode also keeps
   the bounded passive scroll, transition and native-callback observation data
@@ -1604,7 +1616,7 @@ hidden and `document.startViewTransition` exists, application has two reads:
 
 1. Read the whole buffer in place, retain `TEMPLATE` definitions and collect
    effects and types, without changing the live DOM. After framing validation,
-   perform `FX`, `CANCEL`, `NAV`, `STORAGE`, `TITLE`, `PORT` and `SAVE` in
+   perform `FX`, `CANCEL`, `NAV`, `STORAGE`, `TITLE`, `PORT`, `SAVE` and `GUARD` in
    stream order. These effects name no node. Saves and port commands issued
    in a click's turn still run in its listener's stack.
 2. Ask `document.startViewTransition({ update, types })`, falling back to
@@ -1714,7 +1726,7 @@ reducer or the decision sees both what changed and what is sent.
 ### Request kinds
 
 - **Commands** are emitted and forgotten: history `Push`/`Replace` (`NAV`),
-  `Title` (`TITLE`), `StorageSet`/`StorageRemove` (`STORAGE`), and
+  `Title` (`TITLE`), local and session storage set/remove (`STORAGE`), and
   `Focus`/`Blur`/`SelectText`/`ApplyValue`/`FocusInPlace`, `ScrollIntoView`
   and `ScrollTo` on a named reference (`REF`, resolved at the
   end of the turn). With a port's command and a save, below, they are the
@@ -1723,7 +1735,8 @@ reducer or the decision sees both what changed and what is sent.
 - **`ViewTransition(types)`** is also a command: it marks the call's batch,
   never the mount batch, and merges types in first-issue order as described
   in [Applied in a view transition](#applied-in-a-view-transition).
-- **Awaited requests** get an id: `Http`, `StorageGet`, `Timer`, `Work` and
+- **Awaited requests** get an id: `Http`, `StorageGet`, `SessionStorageGet`,
+  `ClipboardWrite`, `Timer`, `Work` and
   the operations on a file the app holds (see [Files](#files)) deliver one
   result; `Interval` and `Popstate` are subscriptions that deliver any number
   of results until stopped.
@@ -2014,7 +2027,8 @@ are all of that kind.
   `Visible(Bool)`, `Now`, `Refused`, `Work({ output, files })`,
   `WorkLost(fault)`, `Fetched({ status, headers, body })`,
   `FileBytes(bytes)`, `FileText(text)`, `Digest(bytes)`, `FileUrl(url)`,
-  `FileFailed(reason)`, `PortAnswer(message)` and `PortFailed(Threw(text) |
+  `FileFailed(reason)`, `Copied`, `ClipboardFailed(NotAllowed | Unavailable)`,
+  `StorageFailed({ store, key, reason })`, `PortAnswer(message)` and `PortFailed(Threw(text) |
   TooLarge | Closed)`. A subscription ends at its first `Threw` or `Closed`,
   which retires its id like a cancel; `TooLarge` reports one message and the
   subscription goes on.
@@ -2113,7 +2127,8 @@ rendered the control:
   computing an answer nobody will read is only cost. A task decides for
   itself, because its job may have an effect worth keeping: one that says
   `on_dispose: Keep` is kept and reparents like `Http`.
-- **Admitted requests (`Http`, `Upload`, `Fetch`, `StorageGet`, port calls,
+- **Admitted requests (`Http`, `Upload`, `Fetch`, `StorageGet`,
+  `SessionStorageGet`, `ClipboardWrite`, port calls,
   jobs of tasks that say `Keep`) reparent** to the nearest surviving
   ancestor site — the `when`, `switch` or `remount_on` that replaced its
   body, or the `each` or view site that removed the row. When the result
@@ -2382,14 +2397,96 @@ query objects the driver can change. `set-media` changes the app's fact,
 not the page's CSS media rules. Cross-document mounts carry these facts as
 they do connectivity and visibility.
 
+`on_post_by(box, reading, plan, reaction)` is the same effect site as
+`on_post`, with a declared reading sampled only when a new post issues.
+Both signals contribute declared read dependencies, so the reading has
+settled before the plan runs. Only the outbox's item is retained and used
+for post equality and issued-for identity; the reading is transient and is
+not stored for comparison or for the result. A change to the reading alone
+issues nothing, nor does mount. The plan receives `(reading, item)` and
+the reaction still receives `item`. It preserves the two-post contract and
+same-turn issuance, including browser activation. An editor posts a small
+revision or format marker and samples its document at issue, avoiding a
+second long-lived reference that would make later edits copy the source.
+An app that needs answer identity carries that identity in the item.
+
 ### Storage availability
 
-Whether local storage can be used at all is part of the boot environment too
-(`Boot.storage_available`). The runtime reports it unavailable when there is
-no `localStorage`, reaching it throws, or reading a declared key throws (as in
-a browser with site data disabled); the boot storage is then empty rather than
-partial, and storage writes persist nothing. Availability is fixed for the
-instance, so an app that promises reloads survive can say when they will not.
+Local and session storage are independent services. The program declares
+`storage_keys` and `session_keys`; their boot sections carry pairs and
+`Boot.storage_available` / `Boot.session_available`. `boot_storage` and
+`boot_session` read a key or return `Missing`. The runtime's `storage` and
+`sessionStorage` options default to the browser services. A service is
+unavailable when absent, when reaching it throws, or when reading a declared
+key throws. Its boot pairs are then empty rather than partial. Availability
+is fixed for the instance. Session storage survives a reload in the same
+tab; a new tab has its own session.
+
+A set or remove is a command and consumes no awaited slot. A successful
+write adds no result turn. A failed write persists nothing and warns in
+the console. Each live `StorageWriteFailures` subscription receives
+`StorageFailed({ store, key, reason })` one task after that write's batch:
+`store` is `Local` or `Session`, `reason` is `Quota` or `Unavailable`.
+These are occurrences, never replaceable reports. One scheduled task holds
+the pending failure recipients. It freezes that task's group before delivering
+its results; a failure caused by a result waits for a later task. Failures
+already gathered for that group are delivered before a storage-read task
+scheduled between the failed writes. Each recipient still enters through
+its own ordinary turn; no result is coalesced. The native browser model
+keeps this grouping separate from its read and clipboard tasks.
+An app with no subscription learns nothing except the warning: a command carries no result, and making
+each keystroke's draft write awaited would add a slot and a second turn.
+The author can instead subscribe and check `(session-storage-full)` or
+`(local-storage-full)` in a spec. The subscription itself can be `Refused`
+at the in-flight bound, which the app must handle.
+
+### Other documents' storage
+
+`StorageChanges(key)` subscribes to a local-storage key, without requiring
+a boot declaration. A real `storage` event for that service reports its
+`newValue` as `Value(text)`, or `Missing` for a removal or `clear()`. The
+value is captured at arrival, never read again at delivery. It is a report
+source: one replaceable queued entry per subscription, with the ordinary
+frame ordering and cancellation rules. A `clear()` reaches every live
+subscription. One window listener serves all live storage-change ids and
+is removed at the last cancellation or teardown. Session storage has no
+cross-tab subscription. The runtime classifies an event by the captured
+storage service's identity. If it could not acquire that object, it cannot
+identify a local event and does not guess from an unrelated storage area.
+A failed read from an acquired object can still make boot availability
+false while leaving that identity available for reports. The spec's
+unavailable-store setup specifically makes the window getter throw;
+`storage-elsewhere` still changes the other document's underlying store,
+but that setup's receiver has no identifiable local report source.
+
+A document's own write raises no event, including a write by another mount
+in that document. Mounts that must communicate there can use an app's port
+over `BroadcastChannel`. Another tab's write can race this tab's own later
+write; a report still carries the other tab's value even if the store no
+longer holds it. Local storage has no transaction that could order these
+writes. The app decides whether to take theirs or keep its own, through
+pure decisions with `Store.after` tests; an app that must converge keeps a
+revision in its stored value.
+
+### Clipboard and leaving
+
+`ClipboardWrite({ text, html })` writes plain text or one item containing
+both text and HTML, using `Clipboard.text` or `Clipboard.html`. It answers
+`Copied`, `ClipboardFailed(NotAllowed)` or `ClipboardFailed(Unavailable)`;
+`Clipboard.written` also includes the in-flight `Refused` outcome. A denied
+permission, absent activation or unfocused page is `NotAllowed`; an absent
+clipboard service is `Unavailable`. The browser operation cannot be aborted,
+so the request is kept through disposal and its reaction moves to the nearest
+surviving ancestor, like HTTP. Reading the clipboard on demand remains a
+port; paste text is the user's offered input.
+
+The guard's `beforeunload` listener reads only the last applied flag,
+calls `preventDefault()` and sets `returnValue = true`. It never enters
+Roc. It is installed only while on, uses no message text and needs sticky
+activation. Browsers may skip it, especially on mobile, so it is a courtesy;
+a session draft is the safety net. The last applied guard survives poisoning,
+when unsaved state can no longer be saved; unmount and recovery remove it.
+In-app navigation remains the app's own `Push` decision.
 
 ### Files
 
@@ -2507,7 +2604,9 @@ Digests and URLs are pure in effect, like a read, so they are scoped.
   browser tells the page nothing when it does, so no layer can report it
   and no spec can see it. A save issued in the turn of the click that asks
   for it carries the user's gesture. The save picker (`showSaveFilePicker`)
-  is not built.
+  is not built. The same synchronous turn preserves activation for
+  `ClipboardWrite` and an app's port command; a later result turn has no
+  such guarantee.
 - `File.fetch` is an HTTP request whose response body becomes a file the
   page holds (`Fetch`, FX kind 15, answered `Fetched({ status, headers,
   body })`, result tag 21 with one staged handle). The body is the
@@ -2536,7 +2635,6 @@ the runtime's handle table holds only the files of live handles.
 in this channel, each landed whole (see
 [When a capability is built](#when-a-capability-is-built)):
 
-- session storage alongside local storage, declared at boot the same way;
 - a save destination the user picks (`showSaveFilePicker`, Chromium only and
   needing a gesture), as a request answering `[Canceled, Chosen(handle)]`.
 
@@ -2563,7 +2661,13 @@ a spec that expects a handler to run fails in both runners.
 What an event carries is decided by its handler's declaration: a payload
 kind from a closed, versioned set (Appendix B). The text kind carries UTF-8
 text decided by event type, and the files kind carries the files the event
-holds. A handler is generic over its payload, and a kind is attached only
+holds. The paste-text kind, attached by `Html.on_paste_text`, is allowed only
+on `paste`. It reads `clipboardData.getData("text/plain")` during dispatch,
+prevents the element's paste default and delivers `Text(Str)` or `TooLarge`.
+`maxPasteBytes` is a deployment bound, 4 MiB by default; an over-bound string
+is never staged into Wasm. An element has one handler per event type, so
+it accepts pasted files or pasted text. An ordinary text-kind `paste`
+continues to carry its ordinary empty string. A handler is generic over its payload, and a kind is attached only
 to the event types its row allows. Decoding happens once, after routing,
 and a malformed payload is a `contract` fault naming the site.
 
@@ -3077,9 +3181,10 @@ immediately, and only `fault`, `err_ptr`/`err_len`, `metric` and `cmd_len`
 answer. `drop` is idempotent at the containment boundary.
 
 The runtime catches every trap, reads the class and diagnostic through fresh
-memory views, reports them, detaches its listeners and cancels its effects,
+memory views, reports them, detaches its input listeners and cancels its effects,
 drops queued events and staged effects, keeps the last applied DOM as fallback,
-and refuses later calls without entering Wasm. An executor failure (a bug in
+and refuses later calls without entering Wasm. The leave guard its last
+applied batch left stays until unmount or recovery. An executor failure (a bug in
 applying a command, including an external listener preventing a controlled
 show from reaching its requested state) is contained the same way with
 class `executor`.
@@ -3225,6 +3330,11 @@ bound and a declared behaviour at the bound:
 | Zone table | `zone_days` each side of mount (366 by default, at most 7305); 1–128 offsets | Default probe shortens both ends to fit, retaining mount time; outside the stated span `zone_offset` returns `OutsideZone` |
 | Zone name | 64 UTF-8 bytes | Unknown or oversized browser name is empty; invalid injected data refuses mount |
 | Live observations | One registration per observed element and kind; follows live nodes | Node resource bound; no fixed data-sized cap |
+| Leave guards | Live sites contribute a count; one runtime flag and at most one listener | No in-flight slot or refusal; unmount/recovery clear the flag, poisoning retains it |
+| Storage-change reports | One replaceable waiting entry per live subscription | New event value replaces the old entry in place |
+| Deferred storage-write failures | Pending recipient occurrences plus ingress entries at most 4096; one FIFO and scheduled task | `resource_limit` on overflow; cancel drops its pending identities, poison/unmount clear the queue |
+| Manual clipboard observation | Last successful text and HTML plus a U64 count per document | Remount resets observation; count exhaustion fails observation only, never the write |
+| Paste text | `maxPasteBytes`, 4 MiB by default | `TooLarge`, without staging the string into Wasm |
 | Manual scroll history | Newest 4096 performed records per document, weak target identities, cumulative U64 ordinal | Older assertions fail retained-history diagnostics; ordinal exhaustion disables observation, never scrolling |
 | Manual native-UI readiness | Live controlled nodes; per-node U64 close count or coalesced toggle mark; 20 s observation deadline | Explicit observation failure, never app poison |
 | Manual pointer log | 4096 dispatch records, taken after each input step | `resource_limit` on overflow; production retains no log |
@@ -3278,7 +3388,8 @@ of steps written against the rendered UI:
   `set-visibility`, `set-online`. A fetch takes the staged `stub-http`
   answer, its body becoming the file. `(max-output-bytes N)` in the setup is
   the runtime's
-  `maxOutputBytes`; `expect-saved K NAME TEXT` asserts the K-th file the app
+  `maxOutputBytes`; `(max-paste-bytes N)` likewise sets `maxPasteBytes`.
+  `expect-saved K NAME TEXT` asserts the K-th file the app
   saved in this document (its name and contents) and `expect-saves N` how
   many it saved.
 - **Ports** — neither runner calls the page's port handlers; port traffic
@@ -3361,6 +3472,58 @@ oracle and never defines a meaning of its own. In particular:
   clock carry into a later document; its seed is N + k, document k from 0.
   Setting an unchanged connectivity or visibility fact dispatches nothing.
 
+### Drafts, storage events and leaving
+
+Setup forms `session-storage` and `session-storage-unavailable` follow local
+storage's seed and availability rules. A seed with an unavailable store is
+a spec error. `session-storage-full` and `local-storage-full` make sets fail
+with `Quota`, while reads and removals still work; seeding a full store is
+allowed. `clipboard-denied` answers each clipboard write `NotAllowed`.
+Session storage survives cross-document navigation in the same tab.
+
+`storage-elsewhere`, `storage-elsewhere-removed` and
+`storage-elsewhere-cleared` change the model as another document would,
+raising a report only for a real change. A clear of nonempty local storage
+reports `Missing` to every live key subscription; an empty clear raises
+nothing. Chrome uses a second page of the origin, so these are real storage
+events. They honour `hold-reports`. Each report retains its event's value,
+independent of a later local write.
+
+`paste-text` dispatches a `ClipboardEvent` with a `DataTransfer` and delivers
+the text through its declared payload kind. Session assertions are
+`expect-session-storage` and `expect-no-session-storage`. Clipboard
+assertions are `expect-clipboard`, `expect-clipboard-html` and
+`expect-clipboard-writes`. A clipboard write and a `StorageFailed` answer
+by themselves in the following turn, as a storage read does, and take no
+`run-effect` occurrence number. Clipboard assertions observe successful
+writes in the current document rather than reading the OS clipboard; like
+SAVE observations they reset on remount. A denied copy changes neither
+contents nor count. Exhausting the U64 count fails observation only.
+
+`leave-page URL stay|leave|unasked` alone may leave a guarded, activated
+document. `stay` must see a dialog and decline it; `leave` must see a dialog
+and accept it; `unasked` must see none. Acceptance mounts the app afresh at
+URL. Chrome calls `location.assign` and handles the real beforeunload
+dialog; an unexpected or missing dialog fails. A dialog outside this step
+fails the step that caused it. Natively any other action, including a
+link's click or `navigate`, that would leave while guard and sticky
+activation are on fails and names `leave-page`. The walk takes no such
+step. Sticky activation follows the parser's activation table and carries
+across the supported same-origin document navigations and reloads;
+`paste-text`, the three storage-elsewhere steps and `leave-page` grant none.
+A fresh tab starts false. The native model preserves this browser fact,
+separately from a new document's reset CloseWatcher cancellation allowance.
+
+This carry-over deliberately corrects the earlier assumption that all
+activation resets on a new document. A plain-HTML Chrome contract verifies
+new document identity, expired transient activation, retained sticky
+activation and the later real leave dialog. It agrees with the
+[upstream same-origin activation test](https://github.com/web-platform-tests/wpt/blob/master/html/user-activation/navigate-to-sameorigin.html)
+and the [proposed HTML carry-over rules](https://github.com/whatwg/html/pull/11454).
+No browser state is patched to make a spec pass; cross-origin navigation,
+redirects and cross-document history traversal remain outside the runners'
+supported app navigation.
+
 ### Manual clock and document facts
 
 `initial-time` and `set-time` accept I64 milliseconds or exactly
@@ -3411,8 +3574,13 @@ by both runners. Actual clicks (including check/uncheck only when clicking),
 nonempty fill, press except Escape, mouse/pen down and touch up grant
 activation. Disabled/no-op clicks, empty fill, pointer move/cancel,
 mouse/pen up and scripted change/select/submit/focus do not. A new document
-starts without it. A prevented cancel consumes the opportunity until the
-next actual activation. Native callbacks preserve each task source's order
+starts without the CloseWatcher cancellation allowance; a prevented cancel
+consumes that opportunity until the next actual activation. Sticky activation
+for a leave guard is separate: it starts false in a fresh tab and is retained
+across the supported same-origin document navigations and reloads. Existing
+same-document history traversal preserves it too; cross-document history
+traversal remains unsupported by the runners. It is
+not consumed by a prevented cancel. Native callbacks preserve each task source's order
 and toggle coalescing without promising cross-source ordering.
 
 ### Layout and media steps
@@ -3586,10 +3754,9 @@ inputs. These key/control rules and their input-type selectors are data in
 key is allowed. Use `fill` to enter text. Composition remains a runtime contract
 test, not a spec step. Escape grants no user activation.
 
-Inputs no runner implements — composition and custom events,
-and session storage — are
-not part of the grammar: IME composition is covered by the runtime's
-contract tests, and session storage is a **Target** service. An unknown step
+Inputs no runner implements — composition and custom events — are not
+part of the grammar: IME composition is covered by the runtime's
+contract tests. An unknown step
 is a hard parse error in both runners, and neither runner may weaken a step;
 it fails. Coverage is checked: the native runner's step dispatch is an
 exhaustive `match`, and `check` compares the browser runner's handler table
@@ -3685,7 +3852,8 @@ know nothing of the platform.
   once, against a model that filters and sorts the table from scratch and
   takes each view from the window before an event to the window after it
   in one change), effect lifecycle (issue, supersede, dispose,
-  reparent, deliver, refuse, cancel, stale), generated site trees, and the
+  reparent, deliver, refuse, cancel, stale), generated site trees with guard
+  sites checked against whether any live guard reads true, and the
   spec, wire and port formats. Their oracles, not their inputs, carry the
   value.
 - **Walks.** The native spec runner walks an app (`RUNNER --walk STEPS
@@ -3701,6 +3869,7 @@ know nothing of the platform.
   Every other request is answered from the app's own specs: an HTTP request
   with an HTTP response they give its URL (else its path), a 503 or a timeout; a
   port call with an answer they give that port, a throw or its timeout.
+  A walk takes no step that leaves a guarded, activated document.
   After every step the settle check must pass and the counters must agree
   with the commands; at the end the walk must leave no allocation, byte or
   file handle live. A walk needs nothing written for it, so it covers every
@@ -3932,7 +4101,7 @@ through an attach function rather than supplying an unchecked codec.
 ```roc
 # Program entry
 program : (() -> Elem(Root)) -> Program
-ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32,
+ProgramProps := { storage_keys : List(Str) ?? [], session_keys : List(Str) ?? [], max_inflight : U64 ?? 32,
                   media : List(Str) ?? [], zone_days : U16 ?? 366 }
 program_boot : ProgramProps, (Boot -> Elem(Root)) -> Program
 program_store : ProgramProps, (Boot -> Store(st, h)),
@@ -3941,11 +4110,15 @@ Root                                          # the top context of a program wit
 StoreRoot(st)                                 # the top context of a program whose store's storage is st
 Boot := { url : Str ?? "/", storage : List((Str, Str)) ?? [], online : Bool ?? True,
           visible : Bool ?? True, storage_available : Bool ?? True, media : List((Str, Bool)) ?? [],
-          now_ms : I64 ?? 0, seed : U128 ?? 0, languages : List(Str) ?? ["en-US"], zone : Zone ?? utc }
+          now_ms : I64 ?? 0, seed : U128 ?? 0, languages : List(Str) ?? ["en-US"], zone : Zone ?? utc,
+          session : List((Str, Str)) ?? [], session_available : Bool ?? True }
 Zone : { name : Str, from_ms : I64, until_ms : I64, offsets : List({ from_ms : I64, minutes : I32 }) }
 utc : Zone
 zone_offset : Zone, I64 -> Try(I32, [OutsideZone])
 boot_media : Boot, Str -> Try(Bool, [Undeclared])
+boot_session : Boot, Str -> Try(Str, [Missing])
+guard_leave : Signal(ctx, Bool) -> Elem(ctx)
+Paste : [Text(Str), TooLarge]
 Program                                       # opaque; the app binds it as `main`
 Program.with_workers : Program, List(Registration) -> Program   # the worker catalogue
 Registration                                  # opaque: a task or preparation; Worker makes one
@@ -4130,18 +4303,21 @@ outbox : {} -> Outbox(item)
 Outbox.post : Outbox(item), item -> Outbox(item)   # one post per turn; a second is a contract error
 Outbox.last : Outbox(item) -> [Unposted, Posted(item)]
 on_post : Signal(ctx, Outbox(item)), (item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
+on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
 ignore : {} -> Reaction(ctx, a)
 on_cleanup : Str, Signal(ctx, a), (a -> List(Command)) -> Elem(ctx)   # an awaited request does not compile
 cleanup : Str -> Elem(ctx)
-Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(U32),
+Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), SessionStorageGet(Str), Timer(U32),
        Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32,
               on_dispose : [Stop, Keep], on_cancel : [Stop, Finish],
               prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
-       Interval(U32), Popstate, OnlineChanges, VisibilityChanges, MediaChanges(Str), Self, Push(Str),
+       Interval(U32), Popstate, OnlineChanges, VisibilityChanges, MediaChanges(Str),
+       StorageChanges(Str), StorageWriteFailures,
+       ClipboardWrite({ text : Str, html : [Plain, Html(Str)] }), Self, Push(Str),
        Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str), FocusInPlace(Str),
        ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
        ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
-       StorageSet(Str, Str), StorageRemove(Str), ReadBytes({ file, max_bytes }),
+       StorageSet(Str, Str), StorageRemove(Str), SessionStorageSet(Str, Str), SessionStorageRemove(Str), ReadBytes({ file, max_bytes }),
        ReadUtf8({ file, max_bytes }),
        Upload({ method, url, headers, body : File, timeout_ms }), Sha256(File), ObjectUrl(File),
        PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
@@ -4151,13 +4327,15 @@ Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Ti
 Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str), FocusInPlace(Str),
        ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
        ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
-       StorageSet(Str, Str), StorageRemove(Str), PortCommand({ port, message }),
+       StorageSet(Str, Str), StorageRemove(Str), SessionStorageSet(Str, Str), SessionStorageRemove(Str), PortCommand({ port, message }),
        Save({ file : File, name : Str }), ViewTransition(List(Str))]     # the requests that await nothing: a cleanup's plan
 Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused,
        Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError),
        FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str),
-       PortAnswer(PortMessage), PortFailed(PortFailure),
+       PortAnswer(PortMessage), PortFailed(PortFailure), Copied,
+       ClipboardFailed([NotAllowed, Unavailable]),
+       StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] }),
        Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
 PortMessage : { json : Str, blobs : List(List(U8)), files : List(File) }
@@ -4166,6 +4344,15 @@ PortDelivery : [Latest, Every(U32)]
 WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 HttpError : [Network(Str), Timeout, Status(U16), Refused]
 http_text : Result -> Try(Str, HttpError)
+```
+
+`Clipboard` builds one clipboard item with its plain-text representation:
+
+```roc
+Clipboard.text : Str -> Request
+Clipboard.html : { html : Str, text : Str } -> Request
+Clipboard.written : Result -> Try({}, [NotAllowed, Unavailable, Refused])
+Html.on_paste_text : HandlerOf(ctx, Paste) -> Attr(ctx)
 ```
 
 `Table` (`platform/Table.roc`) is the value a table cell holds. Its key type
@@ -4306,7 +4493,7 @@ Html.popover : Str, Html.PopoverProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> 
 Html.on_cancel : Handler(ctx) -> Attr(ctx)
 ```
 
-**Target vocabulary.** An `Svg` module and a typed style API, session storage, and handler-level
+**Target vocabulary.** An `Svg` module and a typed style API, and handler-level
 request occurrences. Each lands with an engine change,
 a native spec, a runtime contract test, a demonstration and, where it
 touches the wire, an Appendix B entry.
@@ -4316,7 +4503,7 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **14**. The engine declares it
+This appendix is protocol version **15**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -4335,7 +4522,7 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (14) |
+| `roc_engine_version` | `() -> u32` | The protocol version (15) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -4425,9 +4612,10 @@ space. A dash means that section does not occur in that direction.
 | 8 | seed | — | Sixteen little-endian bytes | `environment.seed()`, default `crypto.getRandomValues`; 0 in a spec |
 | 9 | languages | — | `n:u32 (language:str)*n` | `environment.languages()`, default preferred browser languages; `["en-US"]` in a spec |
 | 10 | time zone | `days:u16` | `name:str from_ms:i64 until_ms:i64 n:u32 (from_ms:i64 minutes:i32)*n` | `environment.timeZone(days)`; default probe, UTC in a spec |
+| 11 | session-storage | `n:u32 (key:str)*n` | `available:u8 n:u32 (key:str value:str)*n` | `sessionStorage` service; available, no pairs |
 
 Each applicable section is required exactly once, in ascending tag order:
-boot has 1–4 and 6–10; declarations have 2, 5, 6 and 10. Unknown, repeated, out-of-order
+boot has 1–4 and 6–11; declarations have 2, 5, 6, 10 and 11. Unknown, repeated, out-of-order
 or missing sections are errors; tags are not a compatibility mechanism.
 The length bounds the body exactly, with no trailing bytes. Flags are
 strictly `0` or `1`; strings must be UTF-8. A body that overruns its section,
@@ -4436,7 +4624,7 @@ did not declare is a `contract` fault naming the section. Unreadable
 declarations refuse mount before `init()`.
 
 Empty boot bytes alone mean all defaults, including URL `/`. Empty
-declarations are invalid: sections 2, 5, 6 and 10 occur even for empty lists.
+declarations are invalid: sections 2, 5, 6, 10 and 11 occur even for empty lists.
 The zone declaration is two bytes and at most 7305 days. Languages carry
 1–16 strings of at most 64 UTF-8 bytes. A zone name has at most 64 bytes, its
 span has `from_ms <= until_ms`, and its 1–128 offsets are strictly ascending,
@@ -4485,6 +4673,7 @@ that has run, in first-run order, with its run count.
 | 43 | `RELEASE` commands (`registrations_released`; opcode 23, counted here rather than as rows reused; excluded from `patches_emitted`) |
 | 44 | Live observations (`observations_live`), a gauge |
 | 45 | Marked batches (`view_transitions`; `TRANSITION`, opcode 24), excluded from `patches_emitted` |
+| 46 | Guard commands (`GUARD`, opcode 25), excluded from `patches_emitted` |
 
 Index 0 is unused; the record has 46 counters. The metric names the spec
 language accepts map onto these indices (`platform/Scm.roc`, `metric_names`).
@@ -4534,6 +4723,9 @@ An event is `event(node, handler)` with the payload staged first:
 | 20 | — | Free |
 | 21 | `status:u16 n:u32 (name:str value:str)*n size:u64 name:str type:str` | `Fetched({ status, headers, body })`, delivered through `event_files` with exactly one staged handle, the body |
 | 22 | `matches:u8` | `Matches(Bool)` for media query changes |
+| 23 | — | `Copied`; no trailing bytes |
+| 24 | `reason:u8` | `ClipboardFailed`: `1` NotAllowed, `2` Unavailable |
+| 25 | `store:u8 reason:u8 key:rest` | `StorageFailed`: store `1` Local, `2` Session; reason `1` Quota, `2` Unavailable |
 
 A result payload that does not follow this table (unknown tag, bytes after a
 bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file
@@ -4590,7 +4782,7 @@ command batches and have no header.
 | 13 | `FX` | `id kind:u8 …` (below) |
 | 14 | `CANCEL` | `id` |
 | 15 | `NAV` | `mode:u8 url:str` (`1` push, `2` replace) |
-| 16 | `STORAGE` | `op:u8 key:str [value:str]` (`1` set with value, `2` remove) |
+| 16 | `STORAGE` | `op:u8 key:str [value:str]` (`1` local set, `2` local remove, `3` session set, `4` session remove; set carries value) |
 | 17 | `TITLE` | `text:str` |
 | 18 | `REF` | `op:u8 node` then operands: `1` focus, `2` blur, `3` focus and select text, `4` apply rendered value, `5` focus without scrolling; `6` scroll into view with `block:u8 inline:u8 behavior:u8`; `7` scroll to with `top:edge left:edge behavior:u8` |
 | 19 | `PORT` | `port:str message` — a port command; `message` is `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32 (token:u64 start:u64 len:u64)*` |
@@ -4599,12 +4791,13 @@ command batches and have no header.
 | 22 | `HPROP` | `node hole:u8 value:str` — set a row property hole |
 | 23 | `RELEASE` | `node` — release document-key and size/seen registrations owned by this node before removal; a row root owns observations on its template elements |
 | 24 | `TRANSITION` | `n:u32 (type:str)*n` — last command of a marked batch; types deduplicated in first-issue order |
+| 25 | `GUARD` | `on:u8`, strictly `0` or `1`; performed with effects, at most once per turn |
 
 `before = 0` appends to `parent`; otherwise the node is inserted before
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
 the batch is applied and performed after it, as are 19 and 20 (a save's
 file is resolved when the batch is applied). For a marked batch starting a
-view transition, the first read instead performs 13–17, 19 and 20 before
+view transition, the first read instead performs 13–17, 19, 20 and 25 before
 DOM application; the second read applies DOM and then performs `REF` and
 queued shown-property work, each class in stream order. See
 [Applied in a view transition](#applied-in-a-view-transition) for the
@@ -4637,6 +4830,10 @@ an earlier command. Scroll end is resolved at perform time.
 | 14 | `token:u64 start:u64 len:u64` | A URL that shows a file's range (tag 19) |
 | 15 | `method:str url:str n:u32 (name:str value:str)* timeout_ms:u32` | HTTP whose response body becomes a file (tag 21; failures as kind 1, a body over `maxFileBytes` tag 13 reason 2) |
 | 16 | `query:str` | MediaChanges subscription; answered with tag 22 |
+| 17 | `key:str` | Session storage read, answered one task later |
+| 18 | `key:str` | StorageChanges report subscription; event values use tags 3 and 4 |
+| 19 | `text:str html:u8 [html:str]` | Clipboard write; flag `0` plain text, `1` text and HTML; answers tag 23 or 24 |
+| 20 | — | StorageWriteFailures occurrence subscription; answers tag 25 one task after a failed write |
 
 **Template encoding** (`TEMPLATE` bytes): a node tree, then a hole table.
 
@@ -4689,6 +4886,12 @@ site; an unknown kind number in commands is an `executor` fault.
 | 6 Scroll | `top:u32 left:u32` | `event` | `scroll`, paced |
 | 7 Size | `width:u32 height:u32` | `event` | `size`, observation report |
 | 8 Seen | `intersecting:u8 ratio:u16` | `event` | `seen`, observation report |
+| 9 Paste | `status:u8 [text:rest]` | `event` | `paste`; `0` Text with UTF-8 body, `1` TooLarge with no body; prevents default |
+
+Kind **9** rejects any status except 0 or 1, trailing bytes after TooLarge
+and invalid UTF-8 text as routed-site contract faults. Unknown clipboard or
+storage failure reasons, or storage selectors outside 1 and 2, are also
+contract faults; invalid GUARD operands are executor faults.
 
 Kinds **6** and **7** require exactly eight bytes. Kind **8** requires
 exactly three: an intersecting flag strictly 0 or 1, then a ratio no greater

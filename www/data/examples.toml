@@ -21,7 +21,8 @@
 # `features` are its chips, drawn from one vocabulary so a reader can follow
 # a feature across examples: Store, Tables and views, Derived values, Keyed
 # lists, Components, Forms, HTTP, Local storage, Intervals, Routing, Custom
-# elements, Ports, Workers, Cancellation, Files, Preparations, View transitions, Time and locale.
+# elements, Ports, Workers, Cancellation, Files, Preparations, View transitions,
+# Time and locale, Session storage, Clipboard.
 # `what_to_try` is one line telling a reader what to do to see the point of the example,
 # where that helps; `featured = true` draws an example as its section's wide
 # card.
@@ -49,12 +50,13 @@ blurb = "Roc tasks running in Web Workers, and files that never pass through the
 [[examples]]
 slug = "markdown-editor"
 title = "Markdown Editor"
-description = "One markdown document, the single cell of the app's store, feeding four views derived from it: preview, outline, statistics, and reading time."
+description = "A markdown document with a session draft, a leave warning, cross-tab save notices, copy as text or HTML and paste to import, feeding a preview, outline and statistics."
 source = "examples/markdown-editor/main.roc"
 specs = "examples/markdown-editor/specs"
 public = true
 section = "basics"
-features = ["Store", "Derived values", "Keyed lists", "Components"]
+features = ["Store", "Derived values", "Keyed lists", "Components", "Local storage", "Session storage", "Clipboard"]
+what_to_try = "Edit a draft and reload this tab, save it and open another tab, or copy the document as markdown or HTML. Paste text into the import zone to replace it."
 
 [[examples]]
 slug = "form-builder"

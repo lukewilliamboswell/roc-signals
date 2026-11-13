@@ -153,6 +153,8 @@ Without setup forms its values are:
 |---|---|
 | Location | `/` |
 | Local storage | Available, with no seeded pairs |
+| Session storage | Available, with no seeded pairs; retained across same-tab navigation |
+| Clipboard | Empty text and HTML, no writes; writes allowed |
 | Connectivity | Online |
 | Visibility | Visible |
 | Declared media query | False unless setup gives its match |
@@ -180,13 +182,21 @@ deployment limit.
 | `(time-zone "NAME" MINUTES (FROM_MS MINUTES) ...)` | Initial I32 offset and ascending changes at I64 integer milliseconds, true for all I64 time; at most 128 offsets, name at most 64 UTF-8 bytes |
 | `(local-storage "key" "value")` | Seed local storage before mount |
 | `(local-storage-unavailable)` | Every local-storage access throws, as with site data disabled. Seeding storage in the same setup is a spec error |
+| `(session-storage "key" "value")` | Seed session storage before mount |
+| `(session-storage-unavailable)` | Session storage is unavailable; seeding it is a spec error |
+| `(local-storage-full)`, `(session-storage-full)` | Writes to that store fail with `Quota`; reads and removals work. Seeded values are allowed |
+| `(clipboard-denied)` | Clipboard writes answer `ClipboardFailed(NotAllowed)` |
+| `(max-paste-bytes N)` | The deployment's paste-text byte limit, 4 MiB by default; 0 through 9007199254740991 |
 | `(file "name" "type" "text" [REPEAT])` | Declare a file the steps can give the app: its name, its MIME type, and its contents, `text` repeated `REPEAT` times (once without it) |
 | `(max-output-bytes N)` | The most bytes a [task](@/docs/workers.md)'s job may append to its builders, the runtime's `maxOutputBytes` mount option (256 MiB without it) |
 
 Effects never run on their own in a spec: HTTP requests, timers and worker
 jobs wait for `run-effect`, and intervals for `tick-interval`. A worker
 job's timeout never expires on its own either: `time-out-work` expires it.
-Storage reads answer by themselves, from storage.
+Storage reads and clipboard writes answer by themselves in the following
+turn. A storage write failure is also delivered then, to each live
+`StorageWriteFailures` subscription. None takes a `run-effect` occurrence
+number.
 
 ### Actions
 
@@ -342,8 +352,11 @@ click or already-satisfied check does not. Nonempty `fill` grants it,
 while empty `fill` does not. Every supported `press` except Escape grants
 it. Mouse/pen pointer down and touch pointer up grant it; move, cancel,
 mouse/pen up, scripted changes, selects, submits and focus do not. A new
-document starts without activation. This matters to native dismissal:
-preventing one `cancel` can consume the activation that allowed it.
+document resets the CloseWatcher cancellation allowance; preventing one
+`cancel` can consume that allowance until the next interaction. Sticky
+activation for a leave warning is separate and survives the supported
+same-origin document navigation and reload. Existing same-document history
+traversal preserves it; cross-document history traversal is still unsupported.
 
 ### View transitions
 
@@ -543,6 +556,50 @@ This spec checks the auto-refresh interval: it mounts with the checkbox,
 ticks, answers the refetch, and is gone when unchecked.
 
 {{ sample(file="search/specs/auto-refresh.scm", syntax="scheme") }}
+
+### Drafts, other tabs and the clipboard
+
+| Step | Meaning |
+|---|---|
+| `(expect-session-storage "key" "value")` | The session store holds exactly that text |
+| `(expect-no-session-storage "key")` | The session store has no value for the key |
+| `(storage-elsewhere "key" "value")` | Another document changes a local key; report its new value |
+| `(storage-elsewhere-removed "key")` | Another document removes a local key |
+| `(storage-elsewhere-cleared)` | Another document clears local storage; report `Missing` to all subscriptions when anything was stored |
+| `(paste-text LOC "text")` | Dispatch a plain-text paste at the located element |
+| `(expect-clipboard "text")` | Last successful plain-text write observed in this document |
+| `(expect-clipboard-html "html")` | HTML of that write, empty for a plain-text write |
+| `(expect-clipboard-writes N)` | Successful writes observed in this document |
+| `(leave-page "/url" stay)` | The browser must ask before leaving; decline and retain the current document |
+| `(leave-page "/url" leave)` | The browser must ask; accept and mount afresh at the URL |
+| `(leave-page "/url" unasked)` | The browser must not ask; mount afresh at the URL |
+
+Clipboard assertions observe writes, like the saved-file assertions; they
+never read the OS clipboard. A new document resets that observation to
+empty text, empty HTML and zero writes. A denied copy leaves it unchanged.
+U64 write-count exhaustion fails observation without stopping the app's copy.
+
+Storage changes honour `hold-reports`: several writes to one subscription
+before release become one report carrying the last event's value. A write
+that changes nothing raises no event, nor does removal of a missing key or
+clearing an empty store. Chrome performs these writes in a second page of
+the origin, exercising the browser's real `storage` event.
+
+`local-storage-unavailable` makes this app's window getter throw. Another
+document can still write the origin's store, and storage assertions can
+observe that write, but this app acquired no local storage-area identity
+with which to classify and report its event. This differs from an injected
+store object whose reads throw: the object still has an identity, so its
+matching events can be reported. The runtime never guesses that an
+unidentified storage event is local rather than session storage.
+
+A guard asks only after sticky activation: a prior step actually interacted
+with this tab's same-origin document. That fact survives same-origin
+navigation and reload; it starts false in a fresh tab. `paste-text`, `storage-elsewhere` and its removal/clear
+variants, and `leave-page` grant none. Any other step that tries to leave a
+guarded, activated document fails and names `leave-page`; a dialog outside
+that step also fails. Chrome navigates with `location.assign` and answers
+the real dialog. The native runner checks the same guard and activation.
 
 ### Time and document facts
 

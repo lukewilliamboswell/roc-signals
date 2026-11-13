@@ -1,6 +1,6 @@
 +++
 title = "Reference"
-description = "The Engine, Table, Html, Layout, Worker, Wire, Port and PortJson APIs at a glance, the platform's limits, and its error classes."
+description = "The Engine, Table, Html, Layout, Clipboard, Worker, Wire, Port and PortJson APIs at a glance, the platform's limits, and its error classes."
 weight = 18
 template = "page.html"
 +++
@@ -8,7 +8,7 @@ template = "page.html"
 # Reference
 
 The [API documentation](../../api/api/) is generated from the platform's source
-and documents every public symbol of `Engine`, `Table`, `Html`, `Layout`, `Worker`, `Wire`, `Port` and `PortJson`:
+and documents every public symbol of `Engine`, `Table`, `Html`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port` and `PortJson`:
 the authoring API. Platform-only bridges on exposed types require an
 unexposed `EngineOnly` witness, so apps cannot call them. The engine's storage and executable values are opaque; its implementation
 and the interfaces its hosts and test harnesses use live in the platform's
@@ -18,7 +18,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 
 | Area | Symbols | Guide |
 |---|---|---|
-| Programs | `program`, `program_boot`, `program_store` (an app with a store: `ProgramProps`, `Boot -> Store` and `Boot -> Elem(StoreRoot(_))`), `Program`, `Program.with_workers`, `Registration` (made by a `Worker` task's or preparation's `registration`), `Program.with_ports`, `PortRegistration`, `Boot`, `boot_storage`, `boot_media` | [Getting Started](@/docs/getting-started.md) |
+| Programs | `program`, `program_boot`, `program_store` (an app with a store: `ProgramProps`, `Boot -> Store` and `Boot -> Elem(StoreRoot(_))`), `Program`, `Program.with_workers`, `Registration` (made by a `Worker` task's or preparation's `registration`), `Program.with_ports`, `PortRegistration`, `Boot`, `boot_storage`, `boot_session`, `boot_media` | [Getting Started](@/docs/getting-started.md) |
 | Contexts | `Root`, `StoreRoot(st)` (the top of an app with a store), `In(outer, s)`, `Row(outer, item)`, `Reach(ctx, st)` (how a context reaches the store; a function that uses cells asks `where [ctx.store : () -> Engine.Reach(ctx, _)]`) | [Thinking in Signals](@/docs/thinking-in-signals.md#contexts) |
 | Signals | `Signal`, `const`, `Signal.map`, `Signal.map2` (which Roc's record builder calls: `{ a: va, b: vb }.Engine.Signal` is a signal of the record, the way a decision reads several cells), `Signal.lift`, `Signal.lift_row` | [Thinking in Signals](@/docs/thinking-in-signals.md#signals-declare-what-they-read) |
 | The store | `cell`, `table`, `Cells(whole, st, h)` (a description, built with the record builder: `{ a: .., b: .. }.Engine.Cells`; a store of one cell is `Engine.cell(init).map(\|c\| { c: c })`), `Cells.map`, `Cells.map2`, `Cells.with_reset`, `store`, `Stored(tag, st)`, `Store(st, h)`, `Store.cells`, `Store.with_initial`, `Store.after`, `Store.read` | [Shared State](@/docs/shared-state.md) |
@@ -35,19 +35,20 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Key data | `Key` (`key`, `code`, `ctrl`, `alt`, `shift`, `meta`, `repeat`, `composing`, `heard`), `Chord` (`plain`, `with_ctrl`, `with_alt`, `with_shift`, `with_meta`, `primary`), `Keymap` (`prevent`, `keep`, `every`, `concat`, `outside_text`) | [Keys and shortcuts](@/docs/state-and-events.md#keys-and-shortcuts) |
 | Reference commands | `Focus`, `Blur`, `SelectText`, `ApplyValue`, `FocusInPlace`, `ScrollIntoView`, `ScrollTo`; `scroll_into_view`, `ScrollProps` (`block ?? Nearest`, `inline ?? Nearest`, `behavior ?? Auto`), `Align` (`Start`, `Center`, `End`, `Nearest`), `Edge` (`Keep`, `Start`, `End`, `Px(U32)`), `ScrollBehavior` (`Auto`, `Instant`, `Smooth`) | [Focus and scrolling](@/docs/effects-and-browser.md#focus) |
 | Time and locale | `Boot.now_ms : I64`, `Boot.seed : U128`, `Boot.languages`, `Boot.zone`; `Zone`, `utc`, `zone_offset : Zone, I64 -> Try(I32, [OutsideZone])`; `Fired(I64)` | [Time, randomness and locale](@/docs/effects-and-browser.md#time-randomness-and-locale) |
+| Drafts and clipboard | `SessionStorageGet`, `SessionStorageSet`, `SessionStorageRemove`, `StorageChanges`, `StorageWriteFailures`; `guard_leave : Signal(ctx, Bool) -> Elem(ctx)`; `Clipboard.text`, `Clipboard.html`, `Clipboard.written`; `Paste`, `Html.on_paste_text` | [Drafts](@/docs/effects-and-browser.md#drafts-and-other-tabs), [Clipboard](@/docs/effects-and-browser.md#copying-and-pasting-text) |
 | Animation | `ViewTransition(List(Str))`, a command in both `Request` and `Command`; marks one complete host-call batch, merges types in issue order, never marks mount | [Animation](@/docs/effects-and-browser.md#animation) |
 | Pointer data | `Pointer`: `id`, `kind`, `button`, `buttons`, `modifiers`, `primary`, `at` (`Outside` or `In({ zone, x, y })` with fractions 0–10000) | [Pointer input and dragging](@/docs/state-and-events.md#pointer-input-and-dragging) |
 | Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.spans` (the `{ start, len }` ranges of `n` bytes that cover a file, for `read!`), `Received`, `FilesHandler` (the generic handler family at `Received`), `on_files` | [Files](@/docs/files.md) |
 | Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) | [Files](@/docs/files.md) |
 | Saving and downloading | `File.save` (a download command; `SaveProps`: `name : [Same, Named(Str)]`), `File.fetch` (`FetchProps`: `url`, `method`, `headers`, `timeout : [Unlimited, Ms(U32)]`), `fetched`, `FetchError` (`Network`, `Timeout`, `Status`, `TooLarge`, `Refused`) | [Files in Tasks](@/docs/files-in-tasks.md) |
 | Effects in a worker job | `File.read!` (`{ start, len }`) and `File.contents!`, answering `Try(_, [Unreadable])`, and `File.contents_utf8!`, `Try(Str, [Unreadable, InvalidUtf8])`; `Files.build!` (`import pf.Files`; `BuildProps`: `name`, `mime : [Auto, Mime(Str)] ?? Auto`, `start_from : [Empty, From(File)] ?? Empty`), `Builder`, `Builder.append!` (`Try({}, [TooLarge])`), `Builder.append_file!`, `Builder.finish!` | [Files in Tasks](@/docs/files-in-tasks.md) |
-| Effects | `watch`, `watch_changes`, `watch_latest`, `on_post`, `Outbox(item)` (`outbox({})`, `box.post(item)`, `box.last()`: `Unposted` or `Posted(item)`), `Reaction`, `State.on_result`, `react`, `react_by`, `Reaction.also` (two reactions to one result), `ignore`, `on_cleanup`, `cleanup`, `Request`, `Command` (the requests that await no result, which is what a cleanup's plan returns), `Result`, `HttpError`, `http_text`, `WorkFault`, `FileError`, and the plain data of port requests, `PortMessage`, `PortFailure` and `PortDelivery`, which the typed `Port` module wraps | [Effects and the Browser](@/docs/effects-and-browser.md) |
+| Effects | `watch`, `watch_changes`, `watch_latest`, `on_post`, `on_post_by` (sample a declared reading only when issuing the post), `Outbox(item)` (`outbox({})`, `box.post(item)`, `box.last()`: `Unposted` or `Posted(item)`), `Reaction`, `State.on_result`, `react`, `react_by`, `Reaction.also` (two reactions to one result), `ignore`, `on_cleanup`, `cleanup`, `Request`, `Command` (the requests that await no result, which is what a cleanup's plan returns), `Result`, `HttpError`, `http_text`, `WorkFault`, `FileError`, and the plain data of port requests, `PortMessage`, `PortFailure` and `PortDelivery`, which the typed `Port` module wraps | [Effects and the Browser](@/docs/effects-and-browser.md) |
 
 A component is not an API of its own: it is a type module whose view is
 handed the cells it uses ([Components](@/docs/components.md)).
 
 `program_boot` and `program_store` take `ProgramProps`, a record whose
-fields default to `storage_keys: []`, `max_inflight: 32`, `media: []` and
+fields default to `storage_keys: []`, `session_keys: []`, `max_inflight: 32`, `media: []` and
 `zone_days: 366` (at most 7305 days each side of mount). Pass only the
 fields the app needs:
 
@@ -56,7 +57,8 @@ fields the app needs:
 Boot values an app declares belong in these props; catalogues of request
 kinds use `Program.with_workers` and `Program.with_ports`. `Boot` is also a
 record with defaults: URL `/`, empty storage, storage available, online
-and visible, with no media pairs, time 0, seed 0, `["en-US"]` and `utc`.
+and visible, empty available session storage, with no media pairs, time 0,
+seed 0, `["en-US"]` and `utc`.
 Pure tests can name only the fields they use:
 
 {{ sample(file="program-props.roc", region="boot") }}
@@ -270,6 +272,8 @@ optional.
 | `onPortFault` | none | Called when a command handler or an unsubscribe function fails | [Ports](@/docs/ports.md) |
 | `monitor` | `{ history: 128, userTiming: false, payloads: false }` | What the work monitor keeps and reports | [Monitoring Workers](@/docs/worker-monitoring.md) |
 | `storage` | the page's `localStorage` | The storage `StorageGet` and `StorageSet` use (an object with `localStorage`'s methods) | [Effects and the Browser](@/docs/effects-and-browser.md) |
+| `sessionStorage` | the page's `sessionStorage` | The independent service for declared session keys and session get/set/remove | [Drafts](@/docs/effects-and-browser.md#drafts-and-other-tabs) |
+| `maxPasteBytes` | 4 MiB | Nonnegative safe integer; UTF-8 bytes accepted by `Html.on_paste_text`, beyond it `TooLarge`; zero permits only empty text | [Paste text](@/docs/effects-and-browser.md#copying-and-pasting-text) |
 | `environment` | browser fact readers | `now()` (safe integer or I64 BigInt), `seed()` (`Uint8Array(16)`), `languages()` and `timeZone(days)` supply boot facts; `now()` also stamps timer and interval callbacks. Optional Boolean `online()` and `visible()` readers at boot and on their events; `visible()` also chooses report drain scheduling. `matchMedia(query)` runs at boot and subscription creation; its object supplies Boolean `matches` and change listener methods, and is retained for that subscription | [Effects and the Browser](@/docs/effects-and-browser.md) |
 | `fetch` | the global `fetch` | The function HTTP requests go through, for a page that scripts its own backend | [Effects and the Browser](@/docs/effects-and-browser.md) |
 | `manualEffects` | `false` | Requests wait for the caller (`runEffect`); reports wait for `releaseReports()`. Used by the spec runner in Chrome | [Testing](@/docs/testing.md) |
@@ -297,6 +301,8 @@ them.
 | Live document-key handlers | 32 per instance; compile-time exclusion under rows | Contract error at mount naming the site |
 | Declared media queries | 32 distinct queries of 1–256 UTF-8 bytes | Contract error naming the query |
 | Live observations | One per element and kind, structurally bounded by live nodes | Node resource bound; no fixed row-count cap |
+| Leave guards | One runtime flag and at most one listener, decided by live sites | No slot or refusal; retained on poison, cleared on unmount/recovery |
+| Deferred storage-write failures | Pending recipient occurrences plus ingress entries at most 4096 | `resource_limit`; cancellation drops its pending identities, teardown clears the queue |
 | Boot languages | 1–16 strings, at most 64 UTF-8 bytes each | Default reader keeps the first that fit or `en-US`; invalid injected values refuse mount |
 | Zone span and offsets | `zone_days` each side (366 by default, at most 7305), 1–128 offsets | Default probe shortens both ends to fit; `OutsideZone` beyond its inclusive span |
 | Zone name | 64 UTF-8 bytes | Unavailable or overlong default browser name is empty; invalid injected data refuses mount |
@@ -374,8 +380,9 @@ it mounts.
 ## Protocol
 
 The command stream, event records, boot bytes and program declarations are versioned together. The
-current protocol is version 14: every nonempty page batch starts with a flags
+current protocol is version 15: every nonempty page batch starts with a flags
 byte, and a marked batch ends with `TRANSITION` (opcode 24). Worker answers
-have no page-batch header. Boot adds time, seed, languages and zone sections;
-result tag 5 carries an I64 callback time. The full wire protocol is Appendix B of
+have no page-batch header. Session storage adds section 11, and `GUARD` is
+opcode 25. Clipboard and failed storage writes have typed results; paste
+text has its own payload kind. The full wire protocol is Appendix B of
 [design.md](https://github.com/lukewilliamboswell/roc-signals/blob/main/design.md).
