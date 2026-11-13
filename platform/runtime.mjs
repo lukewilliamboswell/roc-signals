@@ -5924,10 +5924,11 @@ export function decodePictureEnvelope(bytes, limits = {}) {
       if (scaffoldKeys.has(key)) fail("duplicate scaffold");
       scaffoldKeys.add(key); scaffolds.push({ role, owner, container: target, physical: node });
     } else if (role === 1) {
-      const attribute = name(), original = presence() ? string() : null, value = presence() ? string() : null;
+      const attribute = name(), logical_index = u32(), original = presence() ? string() : null, value = presence() ? string() : null;
+      if (original === null && logical_index !== 0) fail("absent scaffold attribute index");
       const key = JSON.stringify([owner, attribute.namespace, attribute.local]);
       if (scaffoldKeys.has(key)) fail("duplicate scaffold attribute");
-      scaffoldKeys.add(key); scaffolds.push({ role, owner, name: attribute, original, value });
+      scaffoldKeys.add(key); scaffolds.push({ role, owner, name: attribute, logical_index, original, value });
     } else if (role === 2) {
       const node = physical(u32());
       if (parent[node] < 0 || containers[parent[node]].owner !== owner || containers[parent[node]].role !== 0) fail("selection option parent");
@@ -6135,6 +6136,8 @@ export async function measurePicture(root, envelopeBytes, limits = {}) {
       if (!pictureHtmlName(owner, "option") || scaffold.name.namespace !== null || scaffold.name.prefix !== null || scaffold.name.local !== "selected") throw new PictureMeasurementError("AttributeOverride target");
       const attribute = owner.getAttributeNodeNS(null, "selected");
       if (scaffold.value === null ? attribute !== null : attribute === null || attribute.prefix !== null || attribute.value !== scaffold.value) throw new PictureMeasurementError("AttributeOverride physical value");
+      const originalCount = owner.attributes.length + (attribute === null ? 1 : 0);
+      if (scaffold.original !== null && scaffold.logical_index >= originalCount) throw new PictureMeasurementError("AttributeOverride logical index");
     } else {
       const option = nodes[scaffold.physical];
       if (!pictureHtmlName(owner, "select") || !pictureHtmlName(option, "option") || option.parentNode !== owner || option.childNodes.length !== 0 || option.attributes.length !== 3) throw new PictureMeasurementError("NoSelectionOption shape");

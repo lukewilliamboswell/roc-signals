@@ -129,7 +129,7 @@ try {
     const selectionRecords = { ...structuredClone(empty), physicalCount: 2, containers: [[0xffffffff, 0, [0]], [0, 0, [1]], [1, 0, []]], logical: [[0, 0]], scaffolds: [[2, 0, 1]] };
     const selection = fixture({ data: JSON.stringify([...measurementEnvelope(selectionRecords)]) }); const select = selection.doc.createElement("select"), option = selection.doc.createElement("option"); for (const name of ["hidden", "selected", "value"]) option.setAttribute(name, ""); select.append(option); selection.root.append(select);
     check("preparation does not remove a declared NoSelectionOption scaffold", (await prepare(selection)).picture !== null && option.parentNode === select && option.attributes.length === 3);
-    const attributeRecords = { ...structuredClone(selectionRecords), logical: [[0, 0], [0, 1]], scaffolds: [[1, 1, ["", "", "selected"], null, ""]] };
+    const attributeRecords = { ...structuredClone(selectionRecords), logical: [[0, 0], [0, 1]], scaffolds: [[1, 1, ["", "", "selected"], 0, null, ""]] };
     const attribute = fixture({ data: JSON.stringify([...measurementEnvelope(attributeRecords)]) }); const select2 = attribute.doc.createElement("select"), option2 = attribute.doc.createElement("option"); option2.setAttribute("selected", ""); select2.append(option2); attribute.root.append(select2);
     check("preparation does not restore or alter AttributeOverride scaffolds", (await prepare(attribute)).picture !== null && option2.getAttribute("selected") === "");
     const cap = await prepare(fixture(), { maxBytes: bytes.length }); check("exact envelope byte cap permits valid preparation", cap.picture?.envelope.length === bytes.length);

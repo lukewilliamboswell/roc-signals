@@ -15,7 +15,7 @@ export function measurementEnvelope(f) {
     ...list(f.logical, ([target, a, b, data]) => [target, ...word(a), ...(target === 2 ? word(b) : target >= 3 ? [...word(b), ...text(data)] : [])]),
     ...list(f.runs, ([container, index, physical, parts]) => [...word(container), ...word(index), ...(physical === null ? [0] : [1, ...word(physical)]), ...list(parts, ([logical, units]) => [...word(logical), ...word(units)])]),
     ...list(f.bindings, ([birth, role, address, slot, kind, logical]) => [...word(birth), role, ...word(address), ...word(slot), kind, ...word(logical)]),
-    ...list(f.scaffolds, ([role, owner, a, b, c]) => [role, ...word(owner), ...(role === 0 ? [...word(a), ...(b === null ? [0] : [1, ...word(b)])] : role === 1 ? [...name(a), ...optional(b), ...optional(c)] : word(a))]),
+    ...list(f.scaffolds, ([role, owner, a, b, c, d]) => [role, ...word(owner), ...(role === 0 ? [...word(a), ...(b === null ? [0] : [1, ...word(b)])] : role === 1 ? [...name(a), ...word(b), ...optional(c), ...optional(d)] : word(a))]),
   ]);
 }
 function textCase(data = "é😀\r", parts = [1, 2, 1]) {
@@ -31,7 +31,7 @@ function controlCase() {
   return { tree: root([element("textarea", [{ text: "rendered" }], [], html, "h")]), envelope: records(2, [[0xffffffff, 0, [0]], [0, 0, [1]]], [[0, 0], [3, 1, 0, "old"], [4, 1, 1, "logical comment"]], [], [[0, 0, 1, 1]]) };
 }
 function attributeCase() {
-  return { tree: root([element("select", [element("option", [], [[["", "", "selected"], ""]], html, "h")], [], html, "h")]), envelope: records(2, [[0xffffffff, 0, [0]], [0, 0, [1]], [1, 0, []]], [[0, 0], [0, 1]], [], [[1, 1, ["", "", "selected"], null, ""]]) };
+  return { tree: root([element("select", [element("option", [], [[["", "", "selected"], ""]], html, "h")], [], html, "h")]), envelope: records(2, [[0xffffffff, 0, [0]], [0, 0, [1]], [1, 0, []]], [[0, 0], [0, 1]], [], [[1, 1, ["", "", "selected"], 0, null, ""]]) };
 }
 function selectionCase() {
   return { tree: root([element("select", [element("option", [], ["hidden", "selected", "value"].map(local => [["", "", local], ""]), html, "h")], [], html, "h")]), envelope: records(2, [[0xffffffff, 0, [0]], [0, 0, [1]], [1, 0, []]], [[0, 0]], [], [[2, 0, 1]]) };
@@ -109,7 +109,25 @@ export async function pictureMeasurementCases(api, build, vectors) {
   const valueOnly = build(control.tree), controlBytes = measurementEnvelope(control.envelope), controlBefore = await measurePicture(valueOnly, controlBytes); valueOnly.childNodes[0].value = "unhashed browser property";
   check("live control properties do not enter the canonical hash", hex((await measurePicture(valueOnly, controlBytes)).digest) === hex(controlBefore.digest));
   check("prefixed HTML option selected AttributeOverride is measured", (await measure(attributeCase())).envelope.scaffolds[0].role === 1);
-  const wrongAttribute = attributeCase(); wrongAttribute.envelope.scaffolds[0][4] = "false"; await reject("AttributeOverride physical presence/value is verified", () => measure(wrongAttribute));
+  const orderedAttribute = attributeCase(), orderedOption = orderedAttribute.tree.children[0].children[0];
+  orderedOption.attrs = [[["", "", "data-before"], "a"], [["", "", "data-after"], "b"]];
+  orderedAttribute.envelope.scaffolds[0] = [1, 1, ["", "", "selected"], 1, "authored", null];
+  const orderedRoot = build(orderedAttribute.tree), orderedNode = orderedRoot.childNodes[0].childNodes[0], beforeAttrs = [...orderedNode.attributes];
+  const orderedResult = await measurePicture(orderedRoot, measurementEnvelope(orderedAttribute.envelope));
+  check("removed selected at original middle position is retained without restoring or reordering DOM", orderedResult.envelope.scaffolds[0].logical_index === 1 && orderedNode.attributes.length === 2 && beforeAttrs.every((a, i) => orderedNode.attributes[i] === a) && orderedNode.getAttributeNodeNS(null, "selected") === null);
+  for (const index of [0, 2]) {
+    const positioned = structuredClone(orderedAttribute); positioned.envelope.scaffolds[0][3] = index;
+    check(`removed original selected position ${index} is in bounds`, (await measure(positioned)).envelope.scaffolds[0].logical_index === index);
+  }
+  const beyondRemoved = structuredClone(orderedAttribute); beyondRemoved.envelope.scaffolds[0][3] = 3;
+  await reject("removed original selected index cannot exceed logical attribute count", () => measure(beyondRemoved));
+  const presentOriginal = attributeCase(); presentOriginal.envelope.scaffolds[0][4] = "authored";
+  check("present original selected at first position is legal", (await measure(presentOriginal)).envelope.scaffolds[0].logical_index === 0);
+  presentOriginal.envelope.scaffolds[0][3] = 1;
+  await reject("present physical selected does not add an extra logical attribute position", () => measure(presentOriginal));
+  const anotherPosition = structuredClone(orderedAttribute); anotherPosition.envelope.scaffolds[0][3] = 0;
+  check("logical original attribute position is committed by the canonical digest", hex((await measure(anotherPosition)).digest) !== hex(orderedResult.digest));
+  const wrongAttribute = attributeCase(); wrongAttribute.envelope.scaffolds[0][5] = "false"; await reject("AttributeOverride physical presence/value is verified", () => measure(wrongAttribute));
   const wrongAttributeRole = attributeCase(); wrongAttributeRole.envelope.scaffolds[0][2][2] = "value"; await reject("AttributeOverride role is specifically selected", () => measure(wrongAttributeRole));
   check("prefixed HTML select direct empty NoSelectionOption is measured", (await measure(selectionCase())).envelope.scaffolds[0].role === 2);
   const selectionAttrs = selectionCase(); selectionAttrs.tree.children[0].children[0].attrs.reverse(); await reject("NoSelectionOption uses exact generated ordered attributes", () => measure(selectionAttrs));

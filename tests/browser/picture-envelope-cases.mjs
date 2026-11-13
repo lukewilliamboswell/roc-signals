@@ -13,7 +13,7 @@ function fixture() {
     logical: [[0, 0], [2, 0, 0], [2, 0, 1], [2, 0, 2], [1, 2], [0, 3], [1, 4], [0, 5], [0, 6], [3, 5, 0, "textarea logical"], [4, 5, 1, "textarea comment"], [0, 8], [3, 6, 0, ""], [2, 1, 0]],
     runs: [[1, 0, 1, [[1, 0], [2, 1], [3, 2]]], [0, 3, null, [[13, 0]]]],
     bindings: [[1, 0, 1, 0, 0, 0], [20, 1, 2, 7, 0, 5], [20, 2, 2, 0, 1, 2], [20, 3, 3, 1, 5, 7], [20, 2, 2, 1, 5, 7], [99, 0, 4, 0, 0, 9]],
-    scaffolds: [[0, 6, 5, 7], [1, 6, ["", "", "value"], null, "edited"], [2, 8, 9]],
+    scaffolds: [[0, 6, 5, 7], [1, 6, ["", "", "value"], 0, null, "edited"], [2, 8, 9]],
   };
 }
 function encode(f) {
@@ -22,7 +22,7 @@ function encode(f) {
     ...list(f.logical, ([target, a, b, data]) => [target, ...word(a), ...(target === 2 ? word(b) : target >= 3 ? [...word(b), ...string(data)] : [])]),
     ...list(f.runs, ([container, index, physical, parts]) => [...word(container), ...word(index), ...(physical === null ? [0] : [1, ...word(physical)]), ...list(parts, ([logical, units]) => [...word(logical), ...word(units)])]),
     ...list(f.bindings, ([birth, role, address, slot, kind, logical]) => [...word(birth), role, ...word(address), ...word(slot), kind, ...word(logical)]),
-    ...list(f.scaffolds, ([role, owner, a, b, c]) => [role, ...word(owner), ...(role === 0 ? [...word(a), ...(b === null ? [0] : [1, ...word(b)])] : role === 1 ? [...name(a), ...optional(b), ...optional(c)] : word(a))]),
+    ...list(f.scaffolds, ([role, owner, a, b, c, d]) => [role, ...word(owner), ...(role === 0 ? [...word(a), ...(b === null ? [0] : [1, ...word(b)])] : role === 1 ? [...name(a), ...word(b), ...optional(c), ...optional(d)] : word(a))]),
   ]);
 }
 export function pictureEnvelopeCases(decode) {
@@ -89,7 +89,12 @@ export function pictureEnvelopeCases(decode) {
   mutate("control text container belongs to declared owner", f => { f.scaffolds[0][2] = 1; });
   mutate("control text physical node must belong to container", f => { f.scaffolds[0][3] = 1; });
   mutate("duplicate physical scaffold claim", f => { f.scaffolds.push([2, 8, 9]); });
-  mutate("attribute override identity excludes prefix", f => { f.scaffolds[1][2] = ["urn:attr", "a", "key"]; f.scaffolds.push([1, 6, ["urn:attr", "b", "key"], null, "other"]); });
+  mutate("absent original attribute requires unused logical index zero", f => { f.scaffolds[1][3] = 1; });
+  const firstAttribute = fixture(); firstAttribute.scaffolds[1][4] = "original";
+  check("present original attribute can have logical index zero", decode(encode(firstAttribute)).scaffolds[1].logical_index === 0);
+  firstAttribute.scaffolds[1][3] = 0xffffffff;
+  check("data-only decoder leaves present index bounds to actual measurement", decode(encode(firstAttribute)).scaffolds[1].logical_index === 0xffffffff);
+  mutate("attribute override identity excludes prefix", f => { f.scaffolds[1][2] = ["urn:attr", "a", "key"]; f.scaffolds.push([1, 6, ["urn:attr", "b", "key"], 0, null, "other"]); });
   mutate("selection scaffold cannot be nested under another owner", f => {
     f.physicalCount = 11; f.containers[7][2] = [10]; f.containers.push([10, 0, []]); f.logical.push([0, 9]); f.scaffolds[2][2] = 10;
   });
@@ -98,7 +103,7 @@ export function pictureEnvelopeCases(decode) {
   const omittedMixed = structuredClone(control); omittedMixed.physicalCount = 2; omittedMixed.containers[1][2] = [1]; omittedMixed.logical.push([1, 1]); reject("omitted control text container must be physically empty", encode(omittedMixed));
   const presentMixed = structuredClone(control); presentMixed.physicalCount = 3; presentMixed.containers[1][2] = [1, 2]; presentMixed.logical.push([1, 2]); presentMixed.scaffolds[0][3] = 1; reject("present control text cannot coexist with other physical children", encode(presentMixed));
   const runMixed = structuredClone(control); runMixed.physicalCount = 2; runMixed.containers[1][2] = [1]; runMixed.logical[1] = [2, 0, 0]; runMixed.runs = [[1, 0, null, [[1, 0]]]]; runMixed.scaffolds[0][3] = 1; reject("ControlText source originals cannot use TextPart runs", encode(runMixed));
-  const badPresence = encode({ ...control, logical: [[0, 0]], scaffolds: [[1, 0, ["", "", "value"], null, null]] }); badPresence[badPresence.length - 1] = 2; reject("presence is strictly zero or one", badPresence);
+  const badPresence = encode({ ...control, logical: [[0, 0]], scaffolds: [[1, 0, ["", "", "value"], 0, null, null]] }); badPresence[badPresence.length - 1] = 2; reject("presence is strictly zero or one", badPresence);
   const utf8Data = valid.slice(); const marker = [...new TextEncoder().encode("textarea logical")]; const dataOffset = utf8Data.findIndex((_, i) => marker.every((value, j) => utf8Data[i + j] === value)); utf8Data[dataOffset] = 255; reject("constructed data UTF-8 is strict", utf8Data);
   check("exact configured depth boundary is accepted", decode(valid, { maxDepth: 3 }).physicalCount === 10);
   check("empty picture permits zero node and depth caps", decode(encode(empty), { maxNodes: 0, maxDepth: 0 }).physicalCount === 0);

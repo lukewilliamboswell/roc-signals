@@ -67,6 +67,14 @@ try {
       const measured = await api.measurePicture(existing, bytes);
       result.push([`existing factory-gap root tuple measures without reconstruction ${existing.localName}`, measured.digest.length === 32 && measured.envelope.root.local === existing.localName && measured.envelope.root.prefix === null]);
     }
+    const orderedRoot = document.createElementNS(null, "x"), orderedSelect = document.createElement("select"), orderedOption = document.createElement("option");
+    orderedRoot.append(orderedSelect); orderedSelect.append(orderedOption);
+    orderedOption.setAttribute("data-before", "a"); orderedOption.setAttribute("selected", "authored"); orderedOption.setAttribute("data-after", "b");
+    const originalAttributes = [...orderedOption.attributes], originalPosition = originalAttributes.findIndex(a => a.localName === "selected");
+    orderedOption.removeAttribute("selected");
+    const orderedBytes = measurementEnvelope({ batch_bytes: 0, physicalCount: 2, containers: [[0xffffffff, 0, [0]], [0, 0, [1]], [1, 0, []]], logical: [[0, 0], [0, 1]], runs: [], bindings: [], scaffolds: [[1, 1, ["", "", "selected"], originalPosition, "authored", null]] });
+    const orderedMeasurement = await api.measurePicture(orderedRoot, orderedBytes);
+    result.push(["actual original middle selected position survives measurement with suffix Attr identity intact", originalPosition === 1 && orderedMeasurement.envelope.scaffolds[0].logical_index === 1 && orderedOption.attributes[0] === originalAttributes[0] && orderedOption.attributes[1] === originalAttributes[2] && orderedOption.attributes.length === 2]);
     const guardControl = build({ name: ["", "", "x"], children: [], attrs: [] }); let detected = false;
     try { await passive(async target => { target.textContent = "deliberate observer control"; await Promise.resolve(); }, [guardControl]); }
     catch (error) { detected = error.message === "measurement changed the actual DOM"; }
