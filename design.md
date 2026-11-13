@@ -1699,7 +1699,13 @@ the module's arrival decides when it becomes interactive.
 The first stage replaces the picture immediately before applying the mount
 batch, in the same task. The picture is inert until then. The runtime removes
 inertness before performing the batch's effects, so focus and reference
-commands observe the mounted page. The app chooses the routes to render;
+commands observe the mounted page. The native producer marks only inertness
+it added with the root-only `data-roc-picture-inert="added"` restoration fact.
+An authored template root cannot supply that reserved fact; authored `inert`
+text without it is preserved. The runtime retains the fact and its bounded
+hold across startup failure and retry, then consumes them after successful
+replacement or recovery. The spelling has no meaning on descendants or in
+another attribute namespace. The app chooses the routes to render;
 no origin, user session or hash route is invented by the build.
 
 Adoption preserves the existing nodes only on the engine's command. The

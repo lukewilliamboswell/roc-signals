@@ -26,8 +26,10 @@ PicturePage := [].{
 		overlay : Template, Dom.Model -> Dom.Model
 		overlay = |template, model| {
 			name = template.root_name
-			attrs = template.attributes.keep_if(|(attribute, _)| !(attribute.namespace.is_empty() and attribute.prefix.is_empty() and (attribute.local == "inert" or attribute.local == "data-roc-picture")))
-			Dom.modify(model, model.root, |node| { ..node, namespace: name.namespace, prefix: name.prefix, tag: name.local, svg: name.namespace == Dom.svg_namespace, attrs: attrs.concat([({ namespace: "", prefix: "", local: "inert" }, ""), ({ namespace: "", prefix: "", local: "data-roc-picture" }, "")]) })
+			attrs = template.attributes.keep_if(|(attribute, _)| !(attribute.namespace.is_empty() and attribute.prefix.is_empty() and attribute.local == "data-roc-picture"))
+			authored_inert = attrs.any(|(attribute, _)| attribute.namespace.is_empty() and attribute.prefix.is_empty() and attribute.local == "inert")
+			added = if authored_inert [] else [({ namespace: "", prefix: "", local: "inert" }, ""), ({ namespace: "", prefix: "", local: "data-roc-picture-inert" }, "added")]
+			Dom.modify(model, model.root, |node| { ..node, namespace: name.namespace, prefix: name.prefix, tag: name.local, svg: name.namespace == Dom.svg_namespace, attrs: attrs.concat(added).append(({ namespace: "", prefix: "", local: "data-roc-picture" }, "")) })
 		}
 
 		## Substitute only the parser-identified root range. The supplied markup
@@ -59,6 +61,9 @@ PicturePage := [].{
 		name = match selected.node.kind {
 			Element(value) => expanded(value)
 			_ => return Err(InvalidTemplate("the picture mount root must be an element"))
+		}
+		if selected.node.attributes.any(|attribute| attribute.name.namespace == NoNamespace and attribute.name.prefix == Unprefixed and attribute.name.local == "data-roc-picture-inert") {
+			return Err(InvalidTemplate("data-roc-picture-inert is reserved on the picture mount root for the builder's inert restoration fact"))
 		}
 		span = match selected.node.origin {
 			Authored(value) => value
@@ -181,3 +186,17 @@ expect {
 	resolved = PicturePage.resolve("https://example.test/a/../tasks?open=1#list")?
 	resolved == { path: "tasks/index.html", boot_url: "/tasks?open=1#list" }
 }
+
+## The producer marks only the inertness it adds. Authored inert text stays
+## exact, and descendants with the same attribute spelling remain ordinary data.
+expect {
+	make = |attrs| PicturePage.parse("<!doctype html><html><head></head><body><div data-roc-picture${attrs}><i data-roc-picture-inert=\"child data\"></i></div></body></html>")
+	fresh_template = make("")?
+	authored_template = make(" inert=\"false\"")?
+	fresh = fresh_template.overlay(Dom.new({}))
+	authored = authored_template.overlay(Dom.new({}))
+	Dom.attr_of(Dom.node(fresh, fresh.root), "data-roc-picture-inert") == "added" and Dom.attr_of(Dom.node(fresh, fresh.root), "inert") == "" and Dom.has_attr(Dom.node(fresh, fresh.root), "inert") and Dom.attr_of(Dom.node(authored, authored.root), "inert") == "false" and !Dom.has_attr(Dom.node(authored, authored.root), "data-roc-picture-inert")
+}
+
+## A selected host root cannot forge the builder's restoration ownership fact.
+expect PicturePage.parse("<!doctype html><html><head></head><body><div data-roc-picture data-roc-picture-inert=\"added\"></div></body></html>").is_err()

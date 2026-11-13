@@ -47,6 +47,13 @@ try {
   check(picture.protocol === "roc-signals/prerender/v1" && picture.url === input && picture.path === route.path && Array.isArray(picture.metadata) && picture.metadata.length === 0, "stage 1 returns a full page without fake adoption metadata");
   const source = fs.readFileSync(template, "utf8");
   check(picture.page.startsWith(source.slice(0, source.indexOf('<div id="app"'))) && picture.page.endsWith(source.slice(source.indexOf("<!--host-after-->"))), "native preserves host bytes before and after its parser-selected root");
+  const authoredTemplate = path.join(scratch, "authored-inert.html");
+  fs.writeFileSync(authoredTemplate, source.replace("data-roc-picture", 'data-roc-picture inert="author"'));
+  const authoredPicture = decoded(run(options.runner, ["--prerender", input, "--template", authoredTemplate]));
+  const reservedTemplate = path.join(scratch, "reserved-inert.html");
+  fs.writeFileSync(reservedTemplate, source.replace("data-roc-picture", 'data-roc-picture data-roc-picture-inert="added"'));
+  const reserved = run(options["no-init-runner"], ["--prerender", "/", "--template", reservedTemplate]);
+  check(reserved.status === 1 && reserved.stdout === "" && reserved.stderr.includes("reserved"), "a preexisting producer ownership fact is rejected before init");
   const missing = path.join(scratch, "missing-root.html");
   fs.writeFileSync(missing, source.replace(" data-roc-picture", ""));
   const refusal = run(options.runner, ["--prerender", "/", "--template", missing]);
@@ -61,6 +68,9 @@ try {
     } else if (files[name]) {
       response.writeHead(200, { "content-type": "text/javascript" });
       response.end(fs.readFileSync(files[name]));
+    } else if (name === "authored") {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end(authoredPicture.page);
     } else if (name === "nested") {
       response.writeHead(200, { "content-type": "text/html" });
       response.end(picture.page);
@@ -79,20 +89,29 @@ try {
     const comments = [];
     const walk = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
     for (let comment; (comment = walk.nextNode());) comments.push(comment.data);
-    return { inert: root.hasAttribute("inert"), count: root.querySelector('[data-testid="count"]').textContent, value: root.querySelector("input").value, title: root.querySelector('[data-testid="asset-looking-data"]').getAttribute("title"), comments, focusSuppressed: document.activeElement !== window.pictureButton };
+    return { inert: root.hasAttribute("inert"), producerInert: root.getAttribute("data-roc-picture-inert"), count: root.querySelector('[data-testid="count"]').textContent, value: root.querySelector("input").value, title: root.querySelector('[data-testid="asset-looking-data"]').getAttribute("title"), comments, focusSuppressed: document.activeElement !== window.pictureButton };
   });
-  check(JSON.stringify(before) === JSON.stringify({ inert: true, count: "0", value: "<&\"'", title: "app.wasm", comments: ["roc:node=9", "roc:node=9"], focusSuppressed: true }), "the actual parsed first frame paints before Wasm and remains inert", JSON.stringify(before));
+  check(JSON.stringify(before) === JSON.stringify({ inert: true, producerInert: "added", count: "0", value: "<&\"'", title: "app.wasm", comments: ["roc:node=9", "roc:node=9"], focusSuppressed: true }), "the actual parsed first frame paints before Wasm and remains inert", JSON.stringify(before));
   releaseWasm();
   await page.evaluate(async () => { window.runtime = await window.mounted; });
   const after = await page.evaluate(() => {
     const root = document.getElementById("app");
     const replaced = root.querySelector("button") !== window.pictureButton;
     [...root.querySelectorAll("button")].find((button) => button.textContent === "Increment").click();
-    return { inert: root.hasAttribute("inert"), replaced, count: root.querySelector('[data-testid="count"]').textContent, poisoned: window.runtime.poisoned };
+    return { inert: root.hasAttribute("inert"), producerInert: root.hasAttribute("data-roc-picture-inert"), replaced, count: root.querySelector('[data-testid="count"]').textContent, poisoned: window.runtime.poisoned };
   });
-  check(!after.inert && after.replaced && after.count === "1" && after.poisoned === null, "stage 1 replaces the picture, lifts inert and dispatches through the real engine", JSON.stringify(after));
+  check(!after.inert && !after.producerInert && after.replaced && after.count === "1" && after.poisoned === null, "stage 1 replaces the picture, lifts inert and dispatches through the real engine", JSON.stringify(after));
   check(errors.length === 0, "no page errors", JSON.stringify(errors));
   await page.evaluate(() => window.runtime.unmount());
+  const authoredPage = await browser.newPage();
+  await authoredPage.goto(`http://127.0.0.1:${server.address().port}/authored`);
+  const authored = await authoredPage.evaluate(async () => {
+    const runtime = await window.mounted;
+    const root = document.getElementById("app"); root.querySelector("button").focus();
+    const facts = { inert: root.getAttribute("inert"), producerInert: root.hasAttribute("data-roc-picture-inert"), focusSuppressed: document.activeElement !== root.querySelector("button"), poisoned: runtime.poisoned };
+    runtime.unmount(); return facts;
+  });
+  check(authored.inert === "author" && !authored.producerInert && authored.focusSuppressed && authored.poisoned === null, "real producer and runtime preserve authored inert text after replacement", JSON.stringify(authored));
 } finally {
   releaseWasm();
   if (browser) await browser.close();

@@ -62,10 +62,13 @@ try {
     const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const checks = [], check = (name, ok) => checks.push([name, !!ok]);
-    const fixture = ({ marked = true, batch = [0], version = 18, trap = false, authoredInert = null, beforeInit = () => {} } = {}) => {
+    const fixture = ({ marked = true, batch = [0], version = 18, trap = false, authoredInert = null, ownedInert = false, invalidInert = false, namespacedInert = false, beforeInit = () => {} } = {}) => {
       const root = document.createElement("div");
       if (marked) root.setAttribute("data-roc-picture", "");
       if (authoredInert !== null) root.setAttribute("inert", authoredInert);
+      if (ownedInert) { root.setAttribute("inert", ""); root.setAttribute("data-roc-picture-inert", "added"); }
+      if (invalidInert) root.setAttribute("data-roc-picture-inert", "other");
+      if (namespacedInert) root.setAttributeNS("urn:author", "data-roc-picture-inert", "added");
       const old = document.createElement("input"), comment = document.createComment("picture"), oldText = document.createTextNode("picture text");
       root.append(old, comment, oldText); document.body.append(root);
       const memory = new WebAssembly.Memory({ initial: 2 });
@@ -179,23 +182,38 @@ try {
     check("holding a direct picture preserves authored inert text", authored.root.getAttribute("inert") === "author"); authored.runtime.mount();
     check("direct marked mount restores authored inert before effects", authored.root.getAttribute("inert") === "author" && document.activeElement !== authored.root.firstChild && !authored.runtime.picturePending);
     authored.cleanup();
+    const owned = fixture({ ownedInert: true, batch: [0, ...elem, ...focus] });
+    check("producer-owned inertness is held before init", owned.root.inert && owned.root.getAttribute("data-roc-picture-inert") === "added"); owned.runtime.mount();
+    check("producer-owned inertness is removed before reference effects", !owned.root.inert && !owned.root.hasAttribute("data-roc-picture-inert") && document.activeElement === owned.root.firstChild && !owned.runtime.poisoned); owned.cleanup();
+    const invalidOwned = fixture({ authoredInert: "false", invalidInert: true }); invalidOwned.runtime.mount();
+    check("an unknown producer-fact value cannot erase authored inertness", invalidOwned.root.getAttribute("inert") === "false" && !invalidOwned.root.hasAttribute("data-roc-picture-inert")); invalidOwned.cleanup();
+    const namespacedOwned = fixture({ authoredInert: "true", namespacedInert: true }); namespacedOwned.runtime.mount();
+    check("an attribute in another namespace is data rather than an inert ownership fact", namespacedOwned.root.getAttribute("inert") === "true" && namespacedOwned.root.getAttributeNS("urn:author", "data-roc-picture-inert") === "added"); namespacedOwned.cleanup();
+    const dataFlag = [9, ...word(1), 3, ...text(""), ...text("data-roc-picture-inert"), 1, ...text("added")];
+    const descendantOwned = fixture({ batch: [0, ...elem, ...dataFlag] }); descendantOwned.runtime.mount();
+    check("the producer spelling on an app descendant stays ordinary data", !descendantOwned.root.inert && descendantOwned.root.firstChild.getAttribute("data-roc-picture-inert") === "added"); descendantOwned.cleanup();
     const inertRoot = document.createElement("div"); inertRoot.setAttribute("data-roc-picture", ""); inertRoot.setAttribute("inert", "author loader"); inertRoot.append(document.createElement("input")); document.body.append(inertRoot);
     const inertRuntime = await mountRocEngineApp({ wasmUrl: "/fresh.wasm", root: inertRoot, manualEffects: true });
     check("loader captures authored inert before holding the picture", inertRoot.getAttribute("inert") === "author loader" && !inertRuntime.picturePending);
     inertRuntime.contain(new Error("later inert fault"), "executor"); await inertRuntime.recover();
     check("recovery preserves authored inert after successful replacement", inertRoot.getAttribute("inert") === "author loader" && !inertRuntime.poisoned);
     inertRuntime.unmount(); inertRoot.remove();
-    for (const authored of [null, "author retry"]) {
+    for (const [label, authored, producer] of [["absent", null, false], ["authored", "author retry", false], ["producer-owned", null, true]]) {
       const retryRoot = document.createElement("div"); retryRoot.setAttribute("data-roc-picture", ""); if (authored !== null) retryRoot.setAttribute("inert", authored);
+      if (producer) { retryRoot.setAttribute("inert", ""); retryRoot.setAttribute("data-roc-picture-inert", "added"); }
       const old = document.createElement("input"); retryRoot.append(old); document.body.append(retryRoot); const symbols = Object.getOwnPropertySymbols(retryRoot).length;
       const faults = []; const first = mountRocEngineApp({ wasmUrl: "/missing.wasm", root: retryRoot, onFault: fault => faults.push(fault) });
-      check(`prefetch hold preserves ${authored === null ? "absent" : "authored"} inert state without changing authored text`, retryRoot.firstChild === old && retryRoot.getAttribute("inert") === (authored ?? ""));
+      check(`prefetch hold preserves ${label} inert state without changing authored text`, retryRoot.firstChild === old && retryRoot.getAttribute("inert") === (authored ?? ""));
       try { await first; } catch (_) { /* the preserved fallback is retried below */ }
-      const same = retryRoot.firstChild === old && retryRoot.inert && faults.length === 1;
+      const same = retryRoot.firstChild === old && retryRoot.inert && faults.length === 1 && (!producer || retryRoot.getAttribute("data-roc-picture-inert") === "added");
       const retried = await mountRocEngineApp({ wasmUrl: "/fresh.wasm", root: retryRoot, manualEffects: true });
-      check(`fetch failure then same-root retry restores original ${authored === null ? "absence" : "value"}`, same && !retried.poisoned && !old.isConnected && retryRoot.getAttribute("inert") === authored && Object.getOwnPropertySymbols(retryRoot).length === symbols);
+      check(`fetch failure then same-root retry restores original ${label} state`, same && !retried.poisoned && !old.isConnected && retryRoot.getAttribute("inert") === authored && !retryRoot.hasAttribute("data-roc-picture-inert") && Object.getOwnPropertySymbols(retryRoot).length === symbols);
       retried.unmount(); retryRoot.remove();
     }
+    const failedOwned = fixture({ ownedInert: true, trap: true }); failedOwned.runtime.mount();
+    check("an init fault retains the producer restoration fact", failedOwned.root.getAttribute("data-roc-picture-inert") === "added" && failedOwned.root.inert);
+    failedOwned.runtime.module = await WebAssembly.compile(await (await fetch("/fresh.wasm")).arrayBuffer()); await failedOwned.runtime.recover();
+    check("pre-init recovery consumes the producer fact and restores absence", !failedOwned.root.inert && !failedOwned.root.hasAttribute("data-roc-picture-inert") && !failedOwned.runtime.poisoned); failedOwned.cleanup();
     const failedInert = fixture({ authoredInert: "author failed", trap: true }); failedInert.runtime.mount();
     failedInert.runtime.module = await WebAssembly.compile(await (await fetch("/fresh.wasm")).arrayBuffer()); await failedInert.runtime.recover();
     check("pre-init recovery restores authored inert from the same hold", failedInert.root.getAttribute("inert") === "author failed" && !failedInert.runtime.poisoned);
