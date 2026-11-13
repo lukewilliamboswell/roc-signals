@@ -1,3 +1,4 @@
+import { installProtocolFixture } from "./protocol-fixture.mjs";
 // Browser facts cross the ordinary boot and effect boundaries. These cases
 // independently inspect bytes, callback-time sampling and malformed wire data.
 import http from "node:http";
@@ -20,6 +21,7 @@ try {
   const ctx = await browser.createBrowserContext();
   const page = await ctx.newPage();
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await installProtocolFixture(page);
   const results = await page.evaluate(async () => {
     const { RocEngineRuntime, PROTOCOL_VERSION, pageImports } = await import("./runtime.mjs");
     const out = [];
@@ -35,7 +37,7 @@ try {
     const sections = bytes => { const parts=new Map(); for(let at=0;at<bytes.length;) { const tag=bytes[at],n=new DataView(bytes.buffer,bytes.byteOffset+at+1,4).getUint32(0,true); parts.set(tag,bytes.slice(at+5,at+5+n)); at+=5+n; } return parts; };
     function capture(environment={}, manual=false, days=366) {
       const memory=new WebAssembly.Memory({initial:2});
-      const declarations=join([section(2,u32(0)),section(5,u32(0)),section(6,u32(0)),section(10,new Uint8Array([days&255,days>>8])),section(11,u32(0))]);
+      const declarations=join([section(2,u32(0)),section(5,u32(0)),section(6,u32(0)),section(10,new Uint8Array([days&255,days>>8])),section(11,u32(0)), __protocolFixtureSection]);
       new Uint8Array(memory.buffer).set(declarations);
       let mounted=false, length=0, boot;
       const x={ memory,protocol_version:()=>PROTOCOL_VERSION,boot_keys:()=>{},cmd_ptr:()=>0,cmd_len:()=>mounted?0:declarations.length,

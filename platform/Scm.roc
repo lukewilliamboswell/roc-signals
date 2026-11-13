@@ -1,3 +1,4 @@
+import Protocol
 import JsonOut
 import Core
 
@@ -217,7 +218,7 @@ Scm := [].{
 	## Runners consume this data rather than maintaining two refusal lists.
 	key_control_types : { text_input_excluded : List(Str), choice_input_types : List(Str) }
 	key_control_types = {
-		text_input_excluded: ["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "hidden", "image"],
+		text_input_excluded: Protocol.text_entry_excluded,
 		choice_input_types: ["radio", "number", "range", "date", "time", "month", "week", "datetime-local"],
 	}
 

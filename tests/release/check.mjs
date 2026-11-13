@@ -11,10 +11,7 @@
 // that changes them has changed behaviour.
 import { readFile } from "node:fs/promises";
 
-const PROTOCOL_VERSION = 14;
-const WORK_METRIC_BASE = 16;
-const OPCODES = ["", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF"];
-const FAULTS = ["none", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed"];
+import { PROTOCOL_VERSION, WORK_METRIC_BASE, readDeclarations } from "./runtime.mjs";
 
 const path = process.argv[2];
 if (!path) {
@@ -41,39 +38,28 @@ if (version !== PROTOCOL_VERSION) process.exit(1);
 
 let trapped = false;
 let mediaCount = null;
+let facts = null;
 try {
-  x.boot_keys();
-  // Boot carries flags in declaration order, so explicit defaults need one
-  // False byte for every declared query, including apps with preferences.
-  const declarations = new DataView(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
-  for (let at = 0; at < declarations.byteLength;) {
-    const tag = declarations.getUint8(at);
-    const length = declarations.getUint32(at + 1, true);
-    const body = at + 5;
-    if (body + length > declarations.byteLength) throw new Error("truncated declaration section");
-    if (tag === 6) {
-      if (mediaCount !== null || length < 4) throw new Error("invalid media declaration section");
-      mediaCount = declarations.getUint32(body, true);
-      if (mediaCount > 32) throw new Error("media declaration exceeds the protocol bound");
-    }
-    at = body + length;
-  }
-  if (mediaCount === null) throw new Error("missing media declaration section");
+  const declarations = readDeclarations(x);
+  mediaCount = declarations.media.length;
+  facts = declarations.protocol;
   x.payload_reserve(0);
   x.init();
 } catch (_) {
   trapped = true;
 }
 const fault = x.fault();
-console.log(`fault ${FAULTS[fault] ?? fault}`);
+console.log(`fault ${facts?.fault_classes[fault] ?? fault}`);
 if (trapped || fault !== 0) {
   const text = new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len()));
   console.log(text);
   process.exit(1);
 }
-for (let op = 1; op < OPCODES.length; op += 1) {
-  const n = x.metric(WORK_METRIC_BASE + op);
-  if (n > 0n) console.log(`${OPCODES[op]} ${n}`);
+// Work counters 1–18 are the opcode prefix; later counter positions have
+// other meanings and must never be labelled as additional command opcodes.
+for (const { code, name } of facts.ops.filter(row => row.code <= 18)) {
+  const n = x.metric(WORK_METRIC_BASE + code);
+  if (n > 0n) console.log(`${name} ${n}`);
 }
 
 // Check the empty-byte shorthand against every explicit default section.

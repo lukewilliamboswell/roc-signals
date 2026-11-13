@@ -152,12 +152,12 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // messagePort(), and commands are logged in portLog.
 //
 // Attributes carry explicit presence; a present empty string stays present.
-// Element properties have their own commands and a closed table. Boolean
-// attributes (disabled, selected, readonly, required, hidden, multiple, open)
-// are present for any value other than "" and "false".
+// Element properties have their own commands and a closed table. Names in
+// the platform's legacy absence convention are present for any value other
+// than "" and "false"; that metadata includes the enumerated hidden attribute.
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 16;
+export const PROTOCOL_VERSION = 17;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -169,32 +169,7 @@ export const FRAME_WAIT_MS = 100;
 // Appendix B); `workRecord()` decodes the whole record.
 export const WORK_METRIC_BASE = 16;
 
-const OP_INST = 1;
-const OP_TEXT = 2;
-const OP_HATTR = 3;
-const OP_MOVE = 4;
-const OP_REMOVE = 5;
-const OP_CLEAR = 6;
-const OP_TEMPLATE = 7;
-const OP_ELEM = 8;
-const OP_ATTR = 9;
-const OP_TEXTNODE = 10;
-const OP_LISTEN = 11;
-const OP_SETTEXT = 12;
 
-const OP_FX = 13;
-const OP_CANCEL = 14;
-const OP_NAV = 15;
-const OP_STORE = 16;
-const OP_TITLE = 17;
-const OP_REF = 18;
-const OP_PORT = 19;
-const OP_SAVE = 20;
-const OP_PROP = 21;
-const OP_HPROP = 22;
-const OP_RELEASE = 23;
-const OP_TRANSITION = 24;
-const OP_GUARD = 25;
 const TRANSITION_WAIT_MS = 1000;
 
 // Effect results are events on this node; the handler number is the id.
@@ -248,7 +223,6 @@ export const MAX_PORT_BYTES = 64 * 1024 * 1024;
 // Result tag 11's class byte: an instance's fault code (1-5) is its class.
 const LOST_UNAVAILABLE = 6;
 const LOST_EXECUTOR = 7;
-const LOST_CLASSES = ["", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed", "unavailable", "executor"];
 
 const HOLE_TEXT = 1;
 const HOLE_ATTR = 2;
@@ -257,21 +231,6 @@ const HOLE_BIND = 4;
 const HOLE_REF = 5;
 const HOLE_PROP = 6;
 
-const KIND_TEXT = 1;
-const KIND_FILES = 2;
-const KIND_POINTER = 3;
-const KIND_KEY = 4;
-const KIND_OPEN = 5;
-const KIND_SCROLL = 6;
-const KIND_SIZE = 7;
-const KIND_SEEN = 8;
-const KIND_PASTE = 9;
-const POLICY_PREVENT = 1;
-const POLICY_STOP = 2;
-const POLICY_CAPTURE = 4;
-const POLICY_PACED = 8;
-const POLICY_DOCUMENT = 16;
-const POLICY_AHEAD = 32;
 
 
 export async function instantiateEngineBytes(bytes) {
@@ -339,7 +298,6 @@ function walk(root, path) {
   return node;
 }
 
-const BOOL_ATTRS = new Set(["disabled", "selected", "readonly", "required", "hidden", "multiple", "open"]);
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -368,8 +326,8 @@ function setValue(el, value) {
   el.value = value;
 }
 
-function setAttr(el, name, value) {
-  if (BOOL_ATTRS.has(name)) {
+function setAttr(el, name, value, booleanAttributes) {
+  if (booleanAttributes.has(name)) {
     if (value === "" || value === "false") el.removeAttribute(name);
     else el.setAttribute(name, value === "true" ? "" : value);
   } else if (name === "class" && el.namespaceURI !== SVG_NS) {
@@ -397,54 +355,52 @@ function checkValueControl(el, node) {
   if (el.tagName === "INPUT" && el.type === "file") throw new ContractFault(`contract: value property on file input at node ${node}`);
 }
 
-const PROPS = [null, {
-  name: "value",
-  elements: ["INPUT", "TEXTAREA", "SELECT", "OPTION"],
-  apply(el, value, node) {
-    checkValueControl(el, node);
-    el.__renderedValueNode = node;
-    el.__renderedValue = value;
-    setValue(el, value);
-    if (el.tagName === "SELECT") el.__v = value;
-    el.setAttribute("value", value);
-    if (el.tagName === "OPTION") settleSelect(el.parentNode);
+const PROPERTY_APPLIERS = {
+  value: {
+    apply(el, value, node) {
+      checkValueControl(el, node);
+      el.__renderedValueNode = node;
+      el.__renderedValue = value;
+      setValue(el, value);
+      if (el.tagName === "SELECT") el.__v = value;
+      el.setAttribute("value", value);
+      if (el.tagName === "OPTION") settleSelect(el.parentNode);
+    },
   },
-}, {
-  name: "checked",
-  elements: ["INPUT"],
-  apply(el, value) {
-    if (value !== "true" && value !== "false") throw new Error(`invalid checked property value ${JSON.stringify(value)}`);
-    el.checked = value === "true";
-    if (el.checked) el.setAttribute("checked", "");
-    else el.removeAttribute("checked");
+  checked: {
+    apply(el, value) {
+      if (value !== "true" && value !== "false") throw new Error(`invalid checked property value ${JSON.stringify(value)}`);
+      el.checked = value === "true";
+      if (el.checked) el.setAttribute("checked", "");
+      else el.removeAttribute("checked");
+    },
   },
-}, {
-  name: "pointer_zone",
-  elements: null,
-  apply(el, value) { el.__pointerZone = value; },
-}, {
-  name: "keymap_down", elements: null,
-  apply(el, value) { el.__keymapDown = parseKeymap(value); },
-}, {
-  name: "keymap_up", elements: null,
-  apply(el, value) { el.__keymapUp = parseKeymap(value); },
-}, {
-  name: "shown", elements: ["DIALOG"],
-  apply(el, value, node, runtime) {
-    if (!["hidden", "open", "modal"].includes(value)) throw new Error(`invalid shown property value ${JSON.stringify(value)}`);
-    runtime.decideShown(el, 6, value, node);
+  pointer_zone: {
+    apply(el, value) { el.__pointerZone = value; },
   },
-}, {
-  name: "popover_shown", elements: null,
-  apply(el, value, node, runtime) {
-    if (value !== "true" && value !== "false") throw new Error(`invalid popover_shown property value ${JSON.stringify(value)}`);
-    if (!["auto", "manual"].includes(el.getAttribute("popover"))) throw new Error("popover_shown requires a static auto or manual popover");
-    runtime.decideShown(el, 7, value, node);
+  keymap_down: {
+    apply(el, value) { el.__keymapDown = parseKeymap(value); },
   },
-}];
+  keymap_up: {
+    apply(el, value) { el.__keymapUp = parseKeymap(value); },
+  },
+  shown: {
+    apply(el, value, node, runtime) {
+      if (!["hidden", "open", "modal"].includes(value)) throw new Error(`invalid shown property value ${JSON.stringify(value)}`);
+      runtime.decideShown(el, 6, value, node);
+    },
+  },
+  popover_shown: {
+    apply(el, value, node, runtime) {
+      if (value !== "true" && value !== "false") throw new Error(`invalid popover_shown property value ${JSON.stringify(value)}`);
+      if (!["auto", "manual"].includes(el.getAttribute("popover"))) throw new Error("popover_shown requires a static auto or manual popover");
+      runtime.decideShown(el, 7, value, node);
+    },
+  },
+};
 
 function setProp(el, prop, value, node, runtime) {
-  const row = PROPS[prop];
+  const row = runtime.protocol.PROPS[prop];
   if (!row) throw new Error(`unknown element property ${prop}`);
   if (el.nodeType !== 1) throw new Error(`element property ${row.name} requires an element`);
   if (row.elements && !row.elements.includes(el.tagName)) throw new Error(`element property ${row.name} does not apply to ${el.tagName}`);
@@ -464,7 +420,8 @@ const APP_EVENT = { focusin: "focus", focusout: "blur" };
 
 // Validate the closed declaration tables before retaining a listener. An
 // unknown number or bit is a producer/consumer mismatch, contained as executor.
-function handlerEntry(h, kind, policies, type) {
+function handlerEntry(h, kind, policies, type, protocol) {
+  const { KIND_KEY, KIND_POINTER, KIND_SCROLL, KIND_SEEN, KIND_SIZE, KIND_TEXT, PAYLOAD_KINDS, POLICY_AHEAD, POLICY_CAPTURE, POLICY_DOCUMENT, POLICY_PACED, POLICY_PREVENT, POLICY_STOP } = protocol;
   const row = PAYLOAD_KINDS[kind];
   if (!row) throw new Error(`unknown event payload kind ${kind}`);
   if (row.events && !row.events.includes(type)) throw new Error(`event payload kind ${kind} does not apply to ${type}`);
@@ -480,8 +437,9 @@ function handlerEntry(h, kind, policies, type) {
   return { h, kind, policies };
 }
 
-function checkHandlerElement(element, type, handler) {
-  if (handler.kind !== KIND_OPEN) return;
+function checkHandlerElement(element, type, handler, protocol) {
+  const { KIND_OPEN_STATE } = protocol;
+  if (handler.kind !== KIND_OPEN_STATE) return;
   if (type === "close" && element.tagName !== "DIALOG") throw new Error("open-state close requires a dialog");
   if (type === "toggle" && !["auto", "manual"].includes(element.getAttribute("popover"))) throw new Error("open-state toggle requires a popover");
 }
@@ -509,23 +467,21 @@ function payloadOf(event) {
   }
 }
 
-const PAYLOAD_KINDS = {
-  [KIND_TEXT]: { payload: payloadOf },
-  [KIND_PASTE]: { events: ["paste"] },
-  [KIND_FILES]: {
-    events: ["change", "drop", "paste"],
+const PAYLOAD_APPLIERS = {
+  TEXT: { payload: payloadOf },
+  PASTE: {},
+  FILES: {
     payload(event) {
       const files = filesOf(event);
       return files.length === 0 ? null : { files };
     },
   },
-  [KIND_POINTER]: { events: ["pointerdown", "pointermove", "pointerup", "pointercancel"] },
-  [KIND_KEY]: { events: ["keydown", "keyup"] },
-  [KIND_SCROLL]: { events: ["scroll"] },
-  [KIND_SIZE]: { events: ["size"] },
-  [KIND_SEEN]: { events: ["seen"] },
-  [KIND_OPEN]: {
-    events: ["close", "toggle"],
+  POINTER: {},
+  KEY: {},
+  SCROLL: {},
+  SIZE: {},
+  SEEN: {},
+  OPEN_STATE: {
     payload(event) {
       const element = event.target;
       if (event.type === "close") {
@@ -537,6 +493,41 @@ const PAYLOAD_KINDS = {
     },
   },
 };
+
+// Build tables only after the complete metadata item has been validated. Each
+// runtime holds its own bindings; mounting another module cannot change them.
+function bindProtocolFacts(facts) {
+  for (const rows of Object.values(facts)) {
+    for (const row of rows) if (typeof row === "object") {
+      for (const value of Object.values(row)) if (Array.isArray(value)) Object.freeze(value);
+      Object.freeze(row);
+    }
+    Object.freeze(rows);
+  }
+  Object.freeze(facts);
+  const protocol = { facts, text_entry_excluded: facts.text_entry_excluded };
+  for (const row of facts.ops) protocol[`OP_${row.name}`] = row.code;
+  for (const row of facts.kinds) protocol[`KIND_${row.name}`] = row.code;
+  for (const row of facts.policies) protocol[`POLICY_${row.name}`] = row.bit;
+  protocol.BOOL_ATTRS = new Set(facts.bool_attrs);
+  protocol.LOST_CLASSES = facts.fault_classes;
+  protocol.HTTP_CACHE = Object.fromEntries(facts.http_cache.map(row => [row.code, row.name]));
+  protocol.HTTP_CREDENTIALS = Object.fromEntries(facts.http_credentials.map(row => [row.code, row.name]));
+  const bind = (rows, implementations, key, make) => {
+    if (rows.length !== Object.keys(implementations).length) throw new Error("protocol metadata implementation count differs");
+    return Object.fromEntries(rows.map(row => {
+      if (!Object.hasOwn(implementations, row.name)) throw new Error(`protocol metadata has no implementation for ${row.name}`);
+      return [row[key], Object.freeze(make(row, implementations[row.name]))];
+    }));
+  };
+  protocol.PROPS = bind(facts.properties, PROPERTY_APPLIERS, "index", (row, implementation) => ({
+    name: row.name, elements: row.elements.length ? row.elements.map(name => name.toUpperCase()) : null, apply: implementation.apply,
+  }));
+  protocol.PAYLOAD_KINDS = bind(facts.kinds, PAYLOAD_APPLIERS, "code", (row, implementation) => ({
+    events: row.events.length ? row.events : null, payload: implementation.payload,
+  }));
+  return Object.freeze(protocol);
+}
 
 const SCROLL_HISTORY = 4096;
 const U64_MAX = (1n << 64n) - 1n;
@@ -642,132 +633,18 @@ function keyModifiers(event) {
 }
 function asciiLetter(key) { return /^[A-Za-z]$/.test(key); }
 function asciiAlnum(key) { return /^[A-Za-z0-9]$/.test(key); }
-// Unicode 18.0.0 UnicodeData.txt, general categories P* and S*.
-// SHA-256: 0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950
-// Source: https://www.unicode.org/Public/18.0.0/ucd/UnicodeData.txt
-// Unicode data license: https://www.unicode.org/license.txt
-/*
-UNICODE LICENSE V3
-
-COPYRIGHT AND PERMISSION NOTICE
-
-Copyright © 1991-2026 Unicode, Inc.
-
-NOTICE TO USER: Carefully read the following legal agreement. BY
-DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
-SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
-TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
-DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of data files and any associated documentation (the "Data Files") or
-software and any associated documentation (the "Software") to deal in the
-Data Files or Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, and/or sell
-copies of the Data Files or Software, and to permit persons to whom the
-Data Files or Software are furnished to do so, provided that either (a)
-this copyright and permission notice appear with all copies of the Data
-Files or Software, or (b) this copyright and permission notice appear in
-associated Documentation.
-
-THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
-KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
-THIRD PARTY RIGHTS.
-
-IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
-BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
-OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
-WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
-ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
-FILES OR SOFTWARE.
-
-Except as contained in this notice, the name of a copyright holder shall
-not be used in advertising or otherwise to promote the sale, use or other
-dealings in these Data Files or Software without prior written
-authorization of the copyright holder.
-*/
-const SYMBOL_RANGES = [
-  [0x21, 0x2f], [0x3a, 0x40], [0x5b, 0x60], [0x7b, 0x7e], [0xa1, 0xa9], [0xab, 0xac],
-  [0xae, 0xb1], [0xb4, 0xb4], [0xb6, 0xb8], [0xbb, 0xbb], [0xbf, 0xbf], [0xd7, 0xd7],
-  [0xf7, 0xf7], [0x2c2, 0x2c5], [0x2d2, 0x2df], [0x2e5, 0x2eb], [0x2ed, 0x2ed], [0x2ef, 0x2ff],
-  [0x375, 0x375], [0x37e, 0x37e], [0x384, 0x385], [0x387, 0x387], [0x3f6, 0x3f6], [0x482, 0x482],
-  [0x55a, 0x55f], [0x589, 0x58a], [0x58d, 0x58f], [0x5be, 0x5be], [0x5c0, 0x5c0], [0x5c3, 0x5c3],
-  [0x5c6, 0x5c6], [0x5f3, 0x5f4], [0x606, 0x60f], [0x61b, 0x61b], [0x61d, 0x61f], [0x66a, 0x66d],
-  [0x6d4, 0x6d4], [0x6de, 0x6de], [0x6e9, 0x6e9], [0x6fd, 0x6fe], [0x700, 0x70d], [0x7f6, 0x7f9],
-  [0x7fe, 0x7ff], [0x830, 0x83e], [0x85e, 0x85e], [0x888, 0x888], [0x964, 0x965], [0x970, 0x970],
-  [0x9f2, 0x9f3], [0x9fa, 0x9fb], [0x9fd, 0x9fd], [0xa76, 0xa76], [0xaf0, 0xaf1], [0xb70, 0xb70],
-  [0xbf3, 0xbfa], [0xc77, 0xc77], [0xc7f, 0xc7f], [0xc84, 0xc84], [0xd4f, 0xd4f], [0xd79, 0xd79],
-  [0xdf4, 0xdf4], [0xe3f, 0xe3f], [0xe4f, 0xe4f], [0xe5a, 0xe5b], [0xf01, 0xf17], [0xf1a, 0xf1f],
-  [0xf34, 0xf34], [0xf36, 0xf36], [0xf38, 0xf38], [0xf3a, 0xf3d], [0xf85, 0xf85], [0xfbe, 0xfc5],
-  [0xfc7, 0xfcc], [0xfce, 0xfda], [0x104a, 0x104f], [0x109e, 0x109f], [0x10fb, 0x10fb], [0x1360, 0x1368],
-  [0x1390, 0x1399], [0x1400, 0x1400], [0x166d, 0x166e], [0x169b, 0x169c], [0x16eb, 0x16ed], [0x1735, 0x1736],
-  [0x17d4, 0x17d6], [0x17d8, 0x17db], [0x1800, 0x180a], [0x1940, 0x1940], [0x1944, 0x1945], [0x19de, 0x19ff],
-  [0x1a1e, 0x1a1f], [0x1aa0, 0x1aa6], [0x1aa8, 0x1aad], [0x1b4e, 0x1b4f], [0x1b5a, 0x1b6a], [0x1b74, 0x1b7f],
-  [0x1bfc, 0x1bff], [0x1c3b, 0x1c3f], [0x1c7e, 0x1c7f], [0x1cc0, 0x1cc7], [0x1cd3, 0x1cd3], [0x1fbd, 0x1fbd],
-  [0x1fbf, 0x1fc1], [0x1fcd, 0x1fcf], [0x1fdd, 0x1fdf], [0x1fed, 0x1fef], [0x1ffd, 0x1ffe], [0x2010, 0x2027],
-  [0x2030, 0x205e], [0x207a, 0x207e], [0x208a, 0x208e], [0x20a0, 0x20c4], [0x2100, 0x2101], [0x2103, 0x2106],
-  [0x2108, 0x2109], [0x2114, 0x2114], [0x2116, 0x2118], [0x211e, 0x2123], [0x2125, 0x2125], [0x2127, 0x2127],
-  [0x2129, 0x2129], [0x212e, 0x212e], [0x213a, 0x213b], [0x2140, 0x2144], [0x214a, 0x214d], [0x214f, 0x214f],
-  [0x218a, 0x218b], [0x2190, 0x2429], [0x2440, 0x244a], [0x249c, 0x24e9], [0x2500, 0x2775], [0x2794, 0x2b73],
-  [0x2b76, 0x2bff], [0x2ce5, 0x2cea], [0x2cf9, 0x2cfc], [0x2cfe, 0x2cff], [0x2d70, 0x2d70], [0x2e00, 0x2e2e],
-  [0x2e30, 0x2e5d], [0x2e60, 0x2e63], [0x2e80, 0x2e99], [0x2e9b, 0x2ef3], [0x2f00, 0x2fd5], [0x2ff0, 0x2fff],
-  [0x3001, 0x3004], [0x3008, 0x3020], [0x3030, 0x3030], [0x3036, 0x3037], [0x303d, 0x303f], [0x309b, 0x309c],
-  [0x30a0, 0x30a0], [0x30fb, 0x30fb], [0x3190, 0x3191], [0x3196, 0x319f], [0x31c0, 0x31e5], [0x31ef, 0x31ef],
-  [0x3200, 0x321e], [0x322a, 0x3247], [0x3250, 0x3250], [0x3260, 0x327f], [0x328a, 0x32b0], [0x32c0, 0x33ff],
-  [0x4dc0, 0x4dff], [0xa490, 0xa4c6], [0xa4fe, 0xa4ff], [0xa60d, 0xa60f], [0xa673, 0xa673], [0xa67e, 0xa67e],
-  [0xa6f2, 0xa6f7], [0xa700, 0xa716], [0xa720, 0xa721], [0xa789, 0xa78a], [0xa828, 0xa82b], [0xa836, 0xa839],
-  [0xa874, 0xa877], [0xa8ce, 0xa8cf], [0xa8f8, 0xa8fa], [0xa8fc, 0xa8fc], [0xa92e, 0xa92f], [0xa95f, 0xa95f],
-  [0xa9c1, 0xa9cd], [0xa9de, 0xa9df], [0xaa5c, 0xaa5f], [0xaa77, 0xaa79], [0xaade, 0xaadf], [0xaaf0, 0xaaf1],
-  [0xab5b, 0xab5b], [0xab6a, 0xab6b], [0xabeb, 0xabeb], [0xfb29, 0xfb29], [0xfbb2, 0xfbd2], [0xfd3e, 0xfd4f],
-  [0xfd90, 0xfd91], [0xfdc8, 0xfdcf], [0xfdfc, 0xfdff], [0xfe10, 0xfe19], [0xfe30, 0xfe52], [0xfe54, 0xfe66],
-  [0xfe68, 0xfe6b], [0xff01, 0xff0f], [0xff1a, 0xff20], [0xff3b, 0xff40], [0xff5b, 0xff65], [0xffe0, 0xffe6],
-  [0xffe8, 0xffee], [0xfffc, 0xfffd], [0x10100, 0x10102], [0x10137, 0x1013f], [0x10179, 0x10189], [0x1018c, 0x1018e],
-  [0x10190, 0x1019c], [0x101a0, 0x101a0], [0x101d0, 0x101fc], [0x1039f, 0x1039f], [0x103d0, 0x103d0], [0x1056f, 0x1056f],
-  [0x10857, 0x10857], [0x10877, 0x10878], [0x1091f, 0x1091f], [0x1093f, 0x1093f], [0x10a50, 0x10a58], [0x10a7f, 0x10a7f],
-  [0x10ac8, 0x10ac8], [0x10af0, 0x10af6], [0x10b39, 0x10b3f], [0x10b99, 0x10b9c], [0x10d6e, 0x10d6e], [0x10d8e, 0x10d8f],
-  [0x10ead, 0x10ead], [0x10ec9, 0x10eca], [0x10ed0, 0x10ed8], [0x10f55, 0x10f59], [0x10f86, 0x10f89], [0x11047, 0x1104d],
-  [0x110bb, 0x110bc], [0x110be, 0x110c1], [0x11140, 0x11143], [0x11174, 0x11175], [0x111c5, 0x111c8], [0x111cd, 0x111cd],
-  [0x111db, 0x111db], [0x111dd, 0x111df], [0x11238, 0x1123d], [0x112a9, 0x112a9], [0x113d4, 0x113d5], [0x113d7, 0x113d8],
-  [0x1144b, 0x1144f], [0x1145a, 0x1145b], [0x1145d, 0x1145d], [0x114c6, 0x114c6], [0x115c1, 0x115d7], [0x11641, 0x11643],
-  [0x11660, 0x1166c], [0x116b9, 0x116b9], [0x1173c, 0x1173f], [0x1183b, 0x1183b], [0x11944, 0x11946], [0x119e2, 0x119e2],
-  [0x11a3f, 0x11a46], [0x11a9a, 0x11a9c], [0x11a9e, 0x11aa2], [0x11b00, 0x11b09], [0x11be1, 0x11be1], [0x11c41, 0x11c45],
-  [0x11c70, 0x11c71], [0x11ef7, 0x11ef8], [0x11f43, 0x11f4f], [0x11fd5, 0x11ff1], [0x11fff, 0x11fff], [0x12470, 0x12474],
-  [0x12ff1, 0x12ff2], [0x16a6e, 0x16a6f], [0x16af5, 0x16af5], [0x16b37, 0x16b3f], [0x16b44, 0x16b45], [0x16d6d, 0x16d6f],
-  [0x16e97, 0x16e9a], [0x16fe2, 0x16fe2], [0x1bc9c, 0x1bc9c], [0x1bc9f, 0x1bc9f], [0x1cc00, 0x1ccef], [0x1ccfa, 0x1ccfc],
-  [0x1cd00, 0x1ceb3], [0x1ceba, 0x1ced0], [0x1ced2, 0x1ced4], [0x1cedd, 0x1cefd], [0x1cf50, 0x1cfc3], [0x1d000, 0x1d0f5],
-  [0x1d100, 0x1d126], [0x1d129, 0x1d164], [0x1d16a, 0x1d16c], [0x1d183, 0x1d184], [0x1d18c, 0x1d1a9], [0x1d1ae, 0x1d241],
-  [0x1d245, 0x1d245], [0x1d253, 0x1d25a], [0x1d25d, 0x1d25e], [0x1d260, 0x1d27f], [0x1d300, 0x1d356], [0x1d6c1, 0x1d6c1],
-  [0x1d6db, 0x1d6db], [0x1d6fb, 0x1d6fb], [0x1d715, 0x1d715], [0x1d735, 0x1d735], [0x1d74f, 0x1d74f], [0x1d76f, 0x1d76f],
-  [0x1d789, 0x1d789], [0x1d7a9, 0x1d7a9], [0x1d7c3, 0x1d7c3], [0x1d800, 0x1d9ff], [0x1da37, 0x1da3a], [0x1da6d, 0x1da74],
-  [0x1da76, 0x1da83], [0x1da85, 0x1da8b], [0x1db00, 0x1db1c], [0x1e14f, 0x1e14f], [0x1e2ff, 0x1e2ff], [0x1e5ff, 0x1e5ff],
-  [0x1e95e, 0x1e95f], [0x1ecac, 0x1ecac], [0x1ecb0, 0x1ecb0], [0x1ed2e, 0x1ed2e], [0x1eef0, 0x1eef1], [0x1f000, 0x1f02b],
-  [0x1f030, 0x1f093], [0x1f0a0, 0x1f0ae], [0x1f0b1, 0x1f0bf], [0x1f0c1, 0x1f0cf], [0x1f0d1, 0x1f0f5], [0x1f10d, 0x1f1ae],
-  [0x1f1e6, 0x1f202], [0x1f210, 0x1f23b], [0x1f240, 0x1f248], [0x1f250, 0x1f251], [0x1f260, 0x1f265], [0x1f300, 0x1f6d9],
-  [0x1f6dc, 0x1f6ec], [0x1f6f0, 0x1f6fc], [0x1f700, 0x1f7db], [0x1f7e0, 0x1f7eb], [0x1f7f0, 0x1f80b], [0x1f810, 0x1f847],
-  [0x1f850, 0x1f859], [0x1f860, 0x1f887], [0x1f890, 0x1f8ad], [0x1f8b0, 0x1f8bb], [0x1f8c0, 0x1f8c1], [0x1f8d0, 0x1f8d8],
-  [0x1f900, 0x1fa57], [0x1fa60, 0x1fa6d], [0x1fa70, 0x1fa7c], [0x1fa80, 0x1fac6], [0x1fac8, 0x1fac8], [0x1facc, 0x1fadd],
-  [0x1fadf, 0x1faeb], [0x1faef, 0x1fafa], [0x1fb00, 0x1fb92], [0x1fb94, 0x1fbef], [0x1fbfa, 0x1fbfa],
-];
+// The browser supplies Unicode categories; the native oracle independently
+// uses roc-lang/unicode. The all-scalar browser contract checks their agreement.
 function symbolKey(key) {
-  const scalar = key.codePointAt(0);
-  if (scalar === undefined || String.fromCodePoint(scalar) !== key) return false;
-  let low = 0, high = SYMBOL_RANGES.length;
-  while (low < high) {
-    const middle = (low + high) >>> 1, [start, end] = SYMBOL_RANGES[middle];
-    if (scalar < start) high = middle;
-    else if (scalar > end) low = middle + 1;
-    else return true;
-  }
-  return false;
+  return /^[\p{P}\p{S}]$/u.test(key);
 }
 function chordIndex(key, modifiers) {
   return `${symbolKey(key) ? modifiers & ~4 : modifiers}:${asciiLetter(key) ? key.toLowerCase() : key}`;
 }
-function textEntry(target) {
+function textEntry(target, excluded) {
   if (target?.nodeType !== 1) target = target?.parentElement;
   return !!target && (target.tagName === "TEXTAREA" || target.tagName === "SELECT" ||
-    (target.tagName === "INPUT" && !["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "hidden", "image"].includes(target.type)) || target.isContentEditable);
+    (target.tagName === "INPUT" && !excluded.includes(target.type)) || target.isContentEditable);
 }
 function parseKeymap(value) {
   const bytes = utf8enc.encode(value);
@@ -810,9 +687,9 @@ function parseKeymap(value) {
   }
   return { exact, physical, every };
 }
-function matchKey(map, event) {
+function matchKey(map, event, excluded) {
   if (!map || typeof event.key !== "string" || event.key === "") return null;
-  const outside = !textEntry(event.target);
+  const outside = !textEntry(event.target, excluded);
   const first = (entries) => entries?.find((entry) => !entry.outside || outside) ?? null;
   if (!event.isComposing && event.keyCode !== 229) {
     const modifiers = keyModifiers(event);
@@ -1650,7 +1527,8 @@ export class WorkMonitor {
 // it, and the next job prepares again. Placement never changes an answer:
 // a job's answer is what preparing afresh would give.
 class WorkPool {
-  constructor({ module, url, max, inline, Worker: W, monitor, maxBytes = Infinity, live = () => true }) {
+  constructor({ module, url, max, inline, Worker: W, monitor, faultClasses, maxBytes = Infinity, live = () => true }) {
+    this.LOST_CLASSES = faultClasses;
     this.module = module;
     this.url = url;
     this.max = Math.max(1, max);
@@ -1935,7 +1813,7 @@ class WorkPool {
   // The worker can no longer be trusted: discard it and lose its job.
   lose(slot, lost, message) {
     const job = slot.job;
-    this.discard(slot, lost === LOST_EXECUTOR ? "executor" : "fault", { class: LOST_CLASSES[lost], message });
+    this.discard(slot, lost === LOST_EXECUTOR ? "executor" : "fault", { class: this.LOST_CLASSES[lost], message });
     if (job !== null) {
       job.slot = null;
       this.settle(job, { lost, message });
@@ -2085,7 +1963,7 @@ class WorkPool {
           this.inlineKey = null;
           this.inlineHeld.clear();
           this.terminated += 1;
-          mon.instanceEnded(this.inlineSeq, lost === LOST_EXECUTOR ? "executor" : "fault", { class: LOST_CLASSES[lost], message });
+          mon.instanceEnded(this.inlineSeq, lost === LOST_EXECUTOR ? "executor" : "fault", { class: this.LOST_CLASSES[lost], message });
           this.settle(job, { lost, message });
         }
       }
@@ -2382,6 +2260,8 @@ export class RocEngineRuntime {
     // The app's port declarations, checked against options.ports before
     // anything mounts: a mismatch throws, and nothing runs.
     const boot = readDeclarations(this.x);
+    try { this.protocol = bindProtocolFacts(boot.protocol); }
+    catch (error) { throw new Error(`contract: declaration section 12 (protocol): ${error.message}`); }
     this.bootKeys = boot.keys;
     this.sessionKeys = boot.sessionKeys;
     this.mediaQueries = boot.media;
@@ -2491,11 +2371,10 @@ export class RocEngineRuntime {
   contain(error, klass = null) {
     this.cancelTransition();
     if (this.poisoned) return;
-    const CLASSES = ["executor", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed"];
     let code = 0;
     let message = String(error && error.message ? error.message : error);
     if (klass !== null) {
-      code = CLASSES.indexOf(klass);
+      code = klass === "executor" ? 0 : this.protocol.LOST_CLASSES.indexOf(klass);
     } else {
       try {
         code = this.x.fault();
@@ -2504,7 +2383,7 @@ export class RocEngineRuntime {
         code = 0;
       }
     }
-    this.poisoned = { class: CLASSES[code] ?? "unknown", code, message, trap: String(error) };
+    this.poisoned = { class: code === 0 ? "executor" : this.protocol.LOST_CLASSES[code] ?? "unknown", code, message, trap: String(error) };
     for (const [type, listeners] of this.listening) {
       this.root.removeEventListener(type, listeners.bubble);
       if (listeners.capture) this.root.removeEventListener(type, listeners.capture, true);
@@ -2718,7 +2597,7 @@ export class RocEngineRuntime {
         for (let node = event.target; node && node !== this.root; node = node.parentNode) {
           const h = node.__h && node.__h.drop;
           if (h !== undefined) {
-            if (h.kind === KIND_FILES) event.preventDefault();
+            if (h.kind === this.protocol.KIND_FILES) event.preventDefault();
             return;
           }
         }
@@ -2744,38 +2623,38 @@ export class RocEngineRuntime {
     while (node && node !== this.root) {
       if (handler === null && (event.bubbles || node === event.target) && node.__h !== undefined) {
         const h = node.__h[type];
-        if (h !== undefined && !(h.policies & POLICY_DOCUMENT)) {
-          const match = h.kind === KIND_KEY ? matchKey(type === "keydown" ? node.__keymapDown : node.__keymapUp, event) : null;
-          if (h.kind !== KIND_KEY || match) { handler = h; declaring = node; heard = match; }
+        if (h !== undefined && !(h.policies & this.protocol.POLICY_DOCUMENT)) {
+          const match = h.kind === this.protocol.KIND_KEY ? matchKey(type === "keydown" ? node.__keymapDown : node.__keymapUp, event, this.protocol.text_entry_excluded) : null;
+          if (h.kind !== this.protocol.KIND_KEY || match) { handler = h; declaring = node; heard = match; }
         }
       }
       if (node.__rn !== undefined && handler !== null) {
-        if (heard?.prevent || (handler.policies & POLICY_PREVENT) !== 0 || (handler.kind === KIND_FILES && type === "drop") || handler.kind === KIND_PASTE) event.preventDefault();
+        if (heard?.prevent || (handler.policies & this.protocol.POLICY_PREVENT) !== 0 || (handler.kind === this.protocol.KIND_FILES && type === "drop") || handler.kind === this.protocol.KIND_PASTE) event.preventDefault();
         // A non-bubbling event is heard during capture; stopping it there
         // would prevent its target's own listeners from running.
-        if (event.bubbles && (handler.policies & POLICY_STOP) !== 0) event.stopPropagation();
-        if ((handler.policies & POLICY_CAPTURE) !== 0) {
+        if (event.bubbles && (handler.policies & this.protocol.POLICY_STOP) !== 0) event.stopPropagation();
+        if ((handler.policies & this.protocol.POLICY_CAPTURE) !== 0) {
           try { declaring.setPointerCapture(event.pointerId); }
           catch (_) {
             this.captureRefused += 1;
             this.monitor.emit({ kind: "pointer-capture-refused", pointer: event.pointerId, at: this.monitor.tick() });
           }
         }
-        if (handler.kind === KIND_KEY) {
+        if (handler.kind === this.protocol.KIND_KEY) {
           this.heardKeys.add(event);
           this.dispatch(node.__rn, handler.h, keyPayload(event, heard), node);
-        } else if (handler.kind === KIND_POINTER) {
+        } else if (handler.kind === this.protocol.KIND_POINTER) {
           const pointer = this.pointerPayload(event);
           if (this.manual) {
             if (this.pointerLog.length >= MAX_QUEUED) {
               this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} pointer dispatches before the replay drained its log`), "resource_limit");
               return;
             }
-            this.pointerLog.push({ type, id: event.pointerId, kind: event.pointerType || "other", at: pointer.at, paced: (handler.policies & POLICY_PACED) !== 0 });
+            this.pointerLog.push({ type, id: event.pointerId, kind: event.pointerType || "other", at: pointer.at, paced: (handler.policies & this.protocol.POLICY_PACED) !== 0 });
           }
-          const source = (handler.policies & POLICY_PACED) !== 0 ? this.pointerSource(declaring, handler, event.pointerId) : undefined;
+          const source = (handler.policies & this.protocol.POLICY_PACED) !== 0 ? this.pointerSource(declaring, handler, event.pointerId) : undefined;
           this.dispatch(node.__rn, handler.h, pointer.bytes, node, source);
-        } else if (handler.kind === KIND_PASTE) {
+        } else if (handler.kind === this.protocol.KIND_PASTE) {
           // getData returns the whole DOMString; the browser exposes no
           // pre-read size check. UTF-8 needs at least one byte per UTF-16
           // code unit, so reject this lower bound before any Unicode scan.
@@ -2793,13 +2672,13 @@ export class RocEngineRuntime {
           }
           const payload = bytes > this.maxPasteBytes ? new Uint8Array([1]) : concat([new Uint8Array([0]), utf8enc.encode(text)]);
           this.dispatch(node.__rn, handler.h, payload, node);
-        } else if (handler.kind === KIND_SCROLL) {
+        } else if (handler.kind === this.protocol.KIND_SCROLL) {
           this.observeManualScroll(declaring);
           const position = this.scrollPosition(declaring);
           this.dispatch(node.__rn, handler.h, concat([u32(position.top), u32(position.left)]), node, this.elementReportSource(declaring, type, handler));
         } else {
           if (type === "scroll") this.observeManualScroll(declaring);
-          const payload = PAYLOAD_KINDS[handler.kind].payload(event);
+          const payload = this.protocol.PAYLOAD_KINDS[handler.kind].payload(event);
           if (payload !== null) this.dispatch(node.__rn, handler.h, payload, node);
         }
         return;
@@ -2818,10 +2697,10 @@ export class RocEngineRuntime {
         const live = this.documentKeys.get(type);
         for (let i = live.length - 1; i >= 0; i -= 1) {
           const { el: declaring, handler: h } = live[i];
-          const heard = matchKey(type === "keydown" ? declaring.__keymapDown : declaring.__keymapUp, event);
+          const heard = matchKey(type === "keydown" ? declaring.__keymapDown : declaring.__keymapUp, event, this.protocol.text_entry_excluded);
           if (!heard) continue;
           if (heard.prevent) event.preventDefault();
-          if (h.policies & POLICY_STOP) event.stopPropagation();
+          if (h.policies & this.protocol.POLICY_STOP) event.stopPropagation();
           this.heardKeys.add(event);
           this.dispatch(declaring.__rn, h.h, keyPayload(event, heard), declaring);
           return;
@@ -2856,7 +2735,7 @@ export class RocEngineRuntime {
     if (this.manualScrollers && type === "scroll") {
       this.manualScrollers.set(element, { expected: this.scrollPosition(element), allowed: false });
     }
-    if (handler.kind !== KIND_SIZE && handler.kind !== KIND_SEEN) return;
+    if (handler.kind !== this.protocol.KIND_SIZE && handler.kind !== this.protocol.KIND_SEEN) return;
     let kinds = this.observations.get(element);
     if (!kinds) this.observations.set(element, kinds = new Map());
     if (kinds.has(handler.kind)) throw new Error("duplicate layout observation");
@@ -2866,21 +2745,21 @@ export class RocEngineRuntime {
     if (!owned) this.observationOwners.set(owner, owned = new Set());
     owned.add(registration);
     if (this.manual) return;
-    const key = handler.kind === KIND_SIZE ? "size" : handler.policies & POLICY_AHEAD ? "ahead" : "seen";
+    const key = handler.kind === this.protocol.KIND_SIZE ? "size" : handler.policies & this.protocol.POLICY_AHEAD ? "ahead" : "seen";
     let observer = this.layoutObservers.get(key);
     if (!observer) {
       const callback = (entries) => this.guard(() => {
         for (const entry of entries) {
           const current = this.observations.get(entry.target)?.get(handler.kind);
           if (!current || current.observer !== observer || !entry.target.isConnected) continue;
-          const value = handler.kind === KIND_SIZE
+          const value = handler.kind === this.protocol.KIND_SIZE
             ? { width: this.layoutPixel(entry.contentRect.width), height: this.layoutPixel(entry.contentRect.height) }
             : { intersecting: entry.isIntersecting, ratio_permille: Math.max(0, Math.min(1000, Math.round(entry.intersectionRatio * 1000))) };
           this.deliverObservation(current, value);
         }
         // ResizeObserver runs after the frame's normal report drain. Its
         // completed callback must settle this frame's sizes before paint.
-        if (handler.kind === KIND_SIZE) this.drainQueue(true);
+        if (handler.kind === this.protocol.KIND_SIZE) this.drainQueue(true);
       });
       observer = key === "size"
         ? new this.win.ResizeObserver(callback)
@@ -2924,7 +2803,7 @@ export class RocEngineRuntime {
     if (!source || !source.isLive()) {
       source = { dom: true, dispatching: 0, reports: new Set(),
         isLive: () => element.isConnected && element.__h?.[type] === handler &&
-          (handler.kind !== KIND_SIZE && handler.kind !== KIND_SEEN || this.observations.get(element)?.get(handler.kind)?.handler === handler),
+          (handler.kind !== this.protocol.KIND_SIZE && handler.kind !== this.protocol.KIND_SEEN || this.observations.get(element)?.get(handler.kind)?.handler === handler),
         retire: () => { if (source.dispatching === 0 && source.reports.size === 0 && sources.get(handler.kind) === source) sources.delete(handler.kind); } };
       sources.set(handler.kind, source);
     }
@@ -2933,8 +2812,8 @@ export class RocEngineRuntime {
 
   deliverObservation(registration, value) {
     const { element, owner, type, handler } = registration;
-    const bytes = handler.kind === KIND_SIZE ? concat([u32(value.width), u32(value.height)]) : new Uint8Array(3);
-    if (handler.kind === KIND_SEEN) {
+    const bytes = handler.kind === this.protocol.KIND_SIZE ? concat([u32(value.width), u32(value.height)]) : new Uint8Array(3);
+    if (handler.kind === this.protocol.KIND_SEEN) {
       if (typeof value.intersecting !== "boolean" || !Number.isInteger(value.ratio_permille) || value.ratio_permille < 0 || value.ratio_permille > 1000) throw new Error("invalid seen observation");
       bytes[0] = value.intersecting ? 1 : 0;
       new DataView(bytes.buffer).setUint16(1, value.ratio_permille, true);
@@ -2947,8 +2826,8 @@ export class RocEngineRuntime {
   injectLayout(element, kind, value) {
     if (!this.manual) throw new Error("layout injection requires manualEffects");
     const registration = this.observations.get(element)?.get(kind);
-    if (!registration) throw new Error(`element has no ${kind === KIND_SIZE ? "size" : "seen"} observation`);
-    if (kind === KIND_SIZE) {
+    if (!registration) throw new Error(`element has no ${kind === this.protocol.KIND_SIZE ? "size" : "seen"} observation`);
+    if (kind === this.protocol.KIND_SIZE) {
       const size = { width: value.width, height: value.height };
       for (const dimension of Object.values(size)) if (!Number.isInteger(dimension) || dimension < 0 || dimension > 0xffffffff) throw new Error("invalid size observation");
       this.deliverObservation(registration, size);
@@ -3435,7 +3314,7 @@ export class RocEngineRuntime {
       const attrs = u8[at++];
       for (let i = 0; i < attrs; i += 1) {
         const name = str();
-        setAttr(el, name, str());
+        setAttr(el, name, str(), this.protocol.BOOL_ATTRS);
       }
       const children = u8[at++];
       for (let i = 0; i < children; i += 1) el.appendChild(node(el));
@@ -3460,11 +3339,11 @@ export class RocEngineRuntime {
         const payloadKind = u8[at++];
         const policies = dv.getUint32(at, true);
         at += 4;
-        hole.entry = handlerEntry(hole.handler, payloadKind, policies, hole.name);
-        if (payloadKind !== KIND_SIZE && payloadKind !== KIND_SEEN) this.listen(hole.name);
+        hole.entry = handlerEntry(hole.handler, payloadKind, policies, hole.name, this.protocol);
+        if (payloadKind !== this.protocol.KIND_SIZE && payloadKind !== this.protocol.KIND_SEEN) this.listen(hole.name);
       } else if (kind === HOLE_PROP) {
         hole.prop = u8[at++];
-        if (!PROPS[hole.prop]) throw new Error(`unknown element property ${hole.prop}`);
+        if (!this.protocol.PROPS[hole.prop]) throw new Error(`unknown element property ${hole.prop}`);
       } else if (kind !== HOLE_TEXT && kind !== HOLE_BIND && kind !== HOLE_REF) throw new Error(`unknown template hole kind ${kind}`);
       holes.push(hole);
     }
@@ -3625,7 +3504,7 @@ export class RocEngineRuntime {
       if (present === 0) el.removeAttribute(name);
       else if (present === 1) {
         const n = dv.getUint32(at, true);
-        setAttr(el, name, readStr(u8, at + 4, n));
+        setAttr(el, name, readStr(u8, at + 4, n), this.protocol.BOOL_ATTRS);
         at += 4 + n;
       } else throw new Error(`invalid attribute presence ${present}`);
     };
@@ -3633,7 +3512,7 @@ export class RocEngineRuntime {
       const offset = at;
       const op = u8[at];
       at += 1;
-      if (op === OP_TRANSITION) {
+      if (op === this.protocol.OP_TRANSITION) {
         if (mode === "update") { marked = true; at = len; break; }
         if (!flags || marked) throw new Error("TRANSITION requires a marked batch and must occur once, last");
         marked = true;
@@ -3650,12 +3529,12 @@ export class RocEngineRuntime {
       if (mode === "early") {
         let skipped = true;
         switch (op) {
-          case OP_TEMPLATE: {
+          case this.protocol.OP_TEMPLATE: {
             const site = dv.getUint32(at, true), n = dv.getUint32(at + 4, true);
             const template = this.parseTemplate(u8, dv, at + 8, n);
             shadow.set(site, template); batch.definitions.set(offset, template); at += 8 + n; break;
           }
-          case OP_INST: {
+          case this.protocol.OP_INST: {
             const site = dv.getUint32(at + 12, true), template = shadow.get(site) ?? this.templates[site];
             if (!template) throw new Error(`INST names unknown template ${site}`);
             at += 16;
@@ -3666,15 +3545,15 @@ export class RocEngineRuntime {
             }
             break;
           }
-          case OP_HATTR: at += 5; skipAttribute(); break;
-          case OP_TEXT: case OP_HPROP: case OP_PROP: at += 5; skipString(); break;
-          case OP_MOVE: case OP_CLEAR: at += 8; break;
-          case OP_RELEASE: case OP_REMOVE: at += 4; break;
-          case OP_ELEM: case OP_TEXTNODE: at += 12; skipString(); break;
-          case OP_ATTR: at += 4; skipString(); skipAttribute(); break;
-          case OP_LISTEN: { const n = dv.getUint32(at + 8, true); at += 17 + n; break; }
-          case OP_SETTEXT: at += 4; skipString(); break;
-          case OP_REF: {
+          case this.protocol.OP_HATTR: at += 5; skipAttribute(); break;
+          case this.protocol.OP_TEXT: case this.protocol.OP_HPROP: case this.protocol.OP_PROP: at += 5; skipString(); break;
+          case this.protocol.OP_MOVE: case this.protocol.OP_CLEAR: at += 8; break;
+          case this.protocol.OP_RELEASE: case this.protocol.OP_REMOVE: at += 4; break;
+          case this.protocol.OP_ELEM: case this.protocol.OP_TEXTNODE: at += 12; skipString(); break;
+          case this.protocol.OP_ATTR: at += 4; skipString(); skipAttribute(); break;
+          case this.protocol.OP_LISTEN: { const n = dv.getUint32(at + 8, true); at += 17 + n; break; }
+          case this.protocol.OP_SETTEXT: at += 4; skipString(); break;
+          case this.protocol.OP_REF: {
             const kind = u8[at]; at += 5;
             if (kind < 1 || kind > 7) throw new Error(`unknown reference operation ${kind}`);
             if (kind === 6) { if (u8[at] > 3 || u8[at + 1] > 3 || u8[at + 2] > 2) throw new Error("invalid scroll-into-view operands"); at += 3; }
@@ -3687,7 +3566,7 @@ export class RocEngineRuntime {
         if (skipped) continue;
       }
       switch (op) {
-        case OP_INST: {
+        case this.protocol.OP_INST: {
           const node = dv.getUint32(at, true);
           const parent = dv.getUint32(at + 4, true);
           const before = dv.getUint32(at + 8, true);
@@ -3725,7 +3604,7 @@ export class RocEngineRuntime {
               setProp(target, hole.prop, readStr(u8, at + 4, n), node, this);
               at += 4 + n;
             } else if (hole.kind === HOLE_CLICK) {
-              checkHandlerElement(target, hole.name, hole.entry);
+              checkHandlerElement(target, hole.name, hole.entry, this.protocol);
               if (target.__h === undefined) target.__h = {};
               target.__h[hole.name] = hole.entry;
               this.registerLayout(target, hole.name, hole.entry, el);
@@ -3743,7 +3622,7 @@ export class RocEngineRuntime {
           this.sites[site].add(node);
           break;
         }
-        case OP_HATTR: {
+        case this.protocol.OP_HATTR: {
           const row = this.lookup(dv.getUint32(at, true));
           const index = u8[at + 4];
           const hole = this.templates[row.__site].holes[index];
@@ -3752,15 +3631,15 @@ export class RocEngineRuntime {
           attribute(row.__ht[index], hole.name);
           break;
         }
-        case OP_TEXT:
-        case OP_HPROP: {
+        case this.protocol.OP_TEXT:
+        case this.protocol.OP_HPROP: {
           const node = dv.getUint32(at, true);
           const row = this.lookup(node);
           const hole = this.templates[row.__site].holes[u8[at + 4]];
           const n = dv.getUint32(at + 5, true);
           const target = row.__ht[u8[at + 4]];
           const v = readStr(u8, at + 9, n);
-          if (op === OP_TEXT) target.nodeValue = v;
+          if (op === this.protocol.OP_TEXT) target.nodeValue = v;
           else {
             if (hole.kind !== HOLE_PROP) throw new Error("HPROP names a non-property hole");
             setProp(target, hole.prop, v, node, this);
@@ -3768,19 +3647,19 @@ export class RocEngineRuntime {
           at += 9 + n;
           break;
         }
-        case OP_MOVE: {
+        case this.protocol.OP_MOVE: {
           const el = this.lookup(dv.getUint32(at, true));
           const before = dv.getUint32(at + 4, true);
           el.parentNode.insertBefore(el, before === 0 ? null : this.lookup(before));
           at += 8;
           break;
         }
-        case OP_RELEASE: {
+        case this.protocol.OP_RELEASE: {
           this.releaseNode(this.lookup(dv.getUint32(at, true)));
           at += 4;
           break;
         }
-        case OP_REMOVE: {
+        case this.protocol.OP_REMOVE: {
           const node = dv.getUint32(at, true);
           const el = this.lookup(node);
           this.forgetSubtree(el);
@@ -3789,7 +3668,7 @@ export class RocEngineRuntime {
           at += 4;
           break;
         }
-        case OP_CLEAR: {
+        case this.protocol.OP_CLEAR: {
           const parent = this.lookup(dv.getUint32(at, true));
           const site = dv.getUint32(at + 4, true);
           for (let child = parent.firstChild; child; child = child.nextSibling) this.forgetSubtree(child);
@@ -3798,7 +3677,7 @@ export class RocEngineRuntime {
           at += 8;
           break;
         }
-        case OP_TEMPLATE: {
+        case this.protocol.OP_TEMPLATE: {
           const tpl = dv.getUint32(at, true);
           const n = dv.getUint32(at + 4, true);
           this.templates[tpl] = mode === "update" ? batch.definitions.get(offset) : this.parseTemplate(u8, dv, at + 8, n);
@@ -3806,8 +3685,8 @@ export class RocEngineRuntime {
           at += 8 + n;
           break;
         }
-        case OP_ELEM:
-        case OP_TEXTNODE: {
+        case this.protocol.OP_ELEM:
+        case this.protocol.OP_TEXTNODE: {
           const node = dv.getUint32(at, true);
           const parent = dv.getUint32(at + 4, true);
           const before = dv.getUint32(at + 8, true);
@@ -3815,15 +3694,15 @@ export class RocEngineRuntime {
           const s = readStr(u8, at + 16, n);
           at += 16 + n;
           const parentEl = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
-          const el = op === OP_ELEM ? createIn(doc, s, parentEl) : doc.createTextNode(s);
+          const el = op === this.protocol.OP_ELEM ? createIn(doc, s, parentEl) : doc.createTextNode(s);
           // Command addresses do not route events; only LISTEN assigns __rn.
           el.__id = node;
           this.place(el, parent, before);
-          if (op === OP_ELEM && el.tagName === "OPTION") settleSelect(el.parentNode);
+          if (op === this.protocol.OP_ELEM && el.tagName === "OPTION") settleSelect(el.parentNode);
           this.statics[node] = el;
           break;
         }
-        case OP_ATTR: {
+        case this.protocol.OP_ATTR: {
           const el = this.lookup(dv.getUint32(at, true));
           const n = dv.getUint32(at + 4, true);
           const name = readStr(u8, at + 8, n);
@@ -3831,7 +3710,7 @@ export class RocEngineRuntime {
           attribute(el, name);
           break;
         }
-        case OP_PROP: {
+        case this.protocol.OP_PROP: {
           const node = dv.getUint32(at, true);
           const prop = u8[at + 4];
           const n = dv.getUint32(at + 5, true);
@@ -3839,7 +3718,7 @@ export class RocEngineRuntime {
           at += 9 + n;
           break;
         }
-        case OP_LISTEN: {
+        case this.protocol.OP_LISTEN: {
           const node = dv.getUint32(at, true);
           const el = this.statics[node];
           const n = dv.getUint32(at + 8, true);
@@ -3849,23 +3728,23 @@ export class RocEngineRuntime {
           const h = dv.getUint32(at + 4, true);
           const kind = u8[at + 12 + n];
           const policies = dv.getUint32(at + 13 + n, true);
-          const entry = handlerEntry(h, kind, policies, type);
-          checkHandlerElement(el, type, entry);
+          const entry = handlerEntry(h, kind, policies, type, this.protocol);
+          checkHandlerElement(el, type, entry, this.protocol);
           el.__h[type] = entry;
-          if (policies & POLICY_DOCUMENT) this.registerDocumentKey(el, type, entry);
-          else if (kind !== KIND_SIZE && kind !== KIND_SEEN) this.listen(type);
+          if (policies & this.protocol.POLICY_DOCUMENT) this.registerDocumentKey(el, type, entry);
+          else if (kind !== this.protocol.KIND_SIZE && kind !== this.protocol.KIND_SEEN) this.listen(type);
           this.registerLayout(el, type, entry, el);
           at += 17 + n;
           break;
         }
-        case OP_SETTEXT: {
+        case this.protocol.OP_SETTEXT: {
           const el = this.lookup(dv.getUint32(at, true));
           const n = dv.getUint32(at + 4, true);
           el.nodeValue = readStr(u8, at + 8, n);
           at += 8 + n;
           break;
         }
-        case OP_FX: {
+        case this.protocol.OP_FX: {
           const id = dv.getUint32(at, true);
           const kind = u8[at + 4];
           at += 5;
@@ -3877,8 +3756,8 @@ export class RocEngineRuntime {
           };
           const httpOptions = () => {
             const cacheByte = u8[at++], credentialsByte = u8[at++];
-            const cache = [null, "default", "no-store", "reload", "no-cache", "force-cache"][cacheByte];
-            const credentials = [null, "same-origin", "include"][credentialsByte];
+            const cache = this.protocol.HTTP_CACHE[cacheByte];
+            const credentials = this.protocol.HTTP_CREDENTIALS[credentialsByte];
             if (!cache || !credentials || (kind === 12 && cacheByte !== 1)) throw new ContractFault("invalid HTTP cache or credentials");
             const progressMs = dv.getUint32(at, true); at += 4;
             if (progressMs !== 0 && progressMs < 16) throw new ContractFault("progress interval must be zero or at least 16 ms");
@@ -4009,7 +3888,7 @@ export class RocEngineRuntime {
           } else throw new Error(`unknown effect kind ${kind}`);
           break;
         }
-        case OP_SAVE: {
+        case this.protocol.OP_SAVE: {
           // Resolved now, while a handle the batch released still names its
           // file; the download is made after the batch.
           const ref = this.fileRef(dv, at);
@@ -4019,24 +3898,24 @@ export class RocEngineRuntime {
           this.fxOut.push({ op: "save", name, blob: ref.blob, type: ref.file.type });
           break;
         }
-        case OP_CANCEL:
+        case this.protocol.OP_CANCEL:
           this.fxOut.push({ op: "cancel", id: dv.getUint32(at, true) });
           at += 4;
           break;
-        case OP_NAV: {
+        case this.protocol.OP_NAV: {
           const mode = u8[at];
           const n = dv.getUint32(at + 1, true);
           this.fxOut.push({ op: mode === 1 ? "push" : "replace", url: readStr(u8, at + 5, n) });
           at += 5 + n;
           break;
         }
-        case OP_GUARD: {
+        case this.protocol.OP_GUARD: {
           const on = u8[at++];
           if (on !== 0 && on !== 1) throw new Error(`invalid leave guard flag ${on}`);
           this.fxOut.push({ op: "guardleave", on: on === 1 });
           break;
         }
-        case OP_STORE: {
+        case this.protocol.OP_STORAGE: {
           const mode = u8[at];
           if (mode < 1 || mode > 4) throw new Error(`unknown storage operation ${mode}`);
           const n = dv.getUint32(at + 1, true);
@@ -4049,7 +3928,7 @@ export class RocEngineRuntime {
           } else this.fxOut.push({ op: "remove", session: mode === 4, key });
           break;
         }
-        case OP_REF: {
+        case this.protocol.OP_REF: {
           const mode = u8[at], node = dv.getUint32(at + 1, true);
           if (mode < 1 || mode > 7) throw new Error(`unknown reference operation ${mode}`);
           at += 5;
@@ -4075,13 +3954,13 @@ export class RocEngineRuntime {
           this.fxOut.push(command);
           break;
         }
-        case OP_TITLE: {
+        case this.protocol.OP_TITLE: {
           const n = dv.getUint32(at, true);
           this.fxOut.push({ op: "title", text: readStr(u8, at + 4, n) });
           at += 4 + n;
           break;
         }
-        case OP_PORT: {
+        case this.protocol.OP_PORT: {
           const n = dv.getUint32(at, true);
           const port = readStr(u8, at + 4, n);
           const m = this.readPortMessage(u8, dv, at + 4 + n);
@@ -5266,7 +5145,7 @@ export class RocEngineRuntime {
   // [CLASS]` prefix is stable: the browser spec runner tells these reports
   // from page errors by it.
   reportLost(fx, code, message) {
-    const klass = LOST_CLASSES[code] ?? "executor";
+    const klass = this.protocol.LOST_CLASSES[code] ?? "executor";
     console.error(`roc worker fault [${klass}] in task "${fx.task}": ${message}`);
     if (this.onWorkerFault) this.onWorkerFault({ id: fx.id, task: fx.task, class: klass, message });
     return klass;
@@ -5275,7 +5154,7 @@ export class RocEngineRuntime {
   workPool() {
     if (this.pool === null) {
       const W = (this.win && this.win.Worker) ?? globalThis.Worker;
-      this.pool = new WorkPool({ module: this.module, url: this.workerUrl, max: this.maxWorkers, inline: this.workerMode === "inline", Worker: W, monitor: this.monitor, maxBytes: this.maxWorkerBytes, live: (token) => this.files.has(token) });
+      this.pool = new WorkPool({ module: this.module, url: this.workerUrl, max: this.maxWorkers, inline: this.workerMode === "inline", Worker: W, monitor: this.monitor, faultClasses: this.protocol.LOST_CLASSES, maxBytes: this.maxWorkerBytes, live: (token) => this.files.has(token) });
     }
     return this.pool;
   }
@@ -5341,12 +5220,12 @@ export class RocEngineRuntime {
   }
 
   // Manual mode: answer pending work job `id` as lost with fault class
-  // `klass` ("contract" ... "executor", the names of LOST_CLASSES) without
+  // `klass` ("contract" ... "executor", the module's fault names) without
   // running it, reported as a real loss is. Returns false when `id` is not a
   // pending job or `klass` is not a class.
   loseEffect(id, klass) {
     const e = this.live.get(id);
-    const code = LOST_CLASSES.indexOf(klass);
+    const code = this.protocol.LOST_CLASSES.indexOf(klass);
     if (this.poisoned || e === undefined || e.kind !== "work" || e.running || code < 1) return false;
     this.live.delete(id);
     const reported = this.reportLost(e.req, code, "lost by the spec");
@@ -5475,9 +5354,64 @@ export class RocEngineRuntime {
 // ---------------------------------------------------------------------
 // Port data (see "Ports" above).
 
+// Read one bounded protocol-facts item. Field order, lengths and uniqueness are
+// checked before any lookup table is constructed or app code is initialized.
+export function readProtocolFacts(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length > 65536) throw new Error("protocol facts exceed 65536 bytes");
+  const reader = (body) => {
+    let at = 0;
+    const need = (n) => { if (n > body.length - at) throw new Error("short protocol facts body"); };
+    const r = {
+      u8() { need(1); return body[at++]; },
+      u32() { need(4); const value = new DataView(body.buffer, body.byteOffset + at, 4).getUint32(0, true); at += 4; return value; },
+      bytes(n) { need(n); const value = body.subarray(at, at + n); at += n; return value; },
+      name() { const n = r.u32(); if (n < 1 || n > 128) throw new Error("invalid protocol fact name length"); const value = utf8.decode(r.bytes(n)); if (value.includes("\0")) throw new Error("NUL in protocol fact name"); return value; },
+      rows(read, maximum = 64) { const n = r.u32(); if (n > maximum || n > body.length - at) throw new Error("invalid protocol fact row count"); return Array.from({ length: n }, () => read(r)); },
+      done() { if (at !== body.length) throw new Error("trailing protocol facts bytes"); },
+    };
+    return r;
+  };
+  const unique = (values, label) => {
+    if (new Set(values).size !== values.length) throw new Error(`duplicate protocol ${label}`);
+    return values;
+  };
+  const names = (r, maximum = 64) => unique(r.rows(s => s.name(), maximum), "names");
+  const codeRows = r => r.rows(s => ({ code: s.u8(), name: s.name() }));
+  const nestedRows = (r, key, nested) => r.rows(s => ({ [key]: s.u8(), name: s.name(), [nested]: names(s, 32) }));
+  const fields = [
+    ["ops", codeRows],
+    ["kinds", r => nestedRows(r, "code", "events")],
+    ["policies", r => r.rows(s => ({ bit: s.u32(), name: s.name() }))],
+    ["properties", r => nestedRows(r, "index", "elements")],
+    ["http_cache", codeRows], ["http_credentials", codeRows],
+    ["bool_attrs", names], ["text_entry_excluded", names], ["fault_classes", names],
+  ];
+  const outer = reader(bytes), facts = {};
+  for (let i = 0; i < fields.length; i += 1) {
+    const tag = outer.u8();
+    if (tag !== i + 1) throw new Error(`expected protocol fact field ${i + 1}, found ${tag}`);
+    const body = reader(outer.bytes(outer.u32()));
+    facts[fields[i][0]] = fields[i][1](body);
+    body.done();
+  }
+  outer.done();
+  for (const field of ["ops", "kinds", "policies", "properties", "http_cache", "http_credentials"]) {
+    const rows = facts[field];
+    if (rows.length === 0) throw new Error(`empty protocol ${field}`);
+    unique(rows.map(row => row.name), `${field} names`);
+    const key = field === "policies" ? "bit" : field === "properties" ? "index" : "code";
+    unique(rows.map(row => row[key]), `${field} codes`);
+    if (field === "policies") {
+      if (rows.some(row => row.bit === 0 || (row.bit & (row.bit - 1)) !== 0)) throw new Error("invalid protocol policy bit");
+    } else if (rows.some((row, i) => row[key] !== i + 1)) throw new Error(`non-dense protocol ${field}`);
+  }
+  if (facts.fault_classes.length === 0) throw new Error("empty protocol fault classes");
+  return facts;
+}
+
 // Declaration sections are decoded inside their own lengths. A module that
 // omitted or malformed a section is refused before any app code mounts.
-function readDeclarations(x) {
+export function readDeclarations(x) {
   x.boot_keys();
   const bytes = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
   const out = { keys: [], sessionKeys: [], decls: [], media: [], zoneDays: 366 };
@@ -5515,6 +5449,7 @@ function readDeclarations(x) {
     { tag: 11, name: "session-storage", read: r => {
       for (let n = r.u32(); n > 0; n -= 1) out.sessionKeys.push(r.str());
     } },
+    { tag: 12, name: "protocol", read: r => { out.protocol = readProtocolFacts(r.bytes(r.remaining())); } },
   ];
   let at = 0;
   for (const section of sections) {
@@ -5531,6 +5466,8 @@ function readDeclarations(x) {
       let pos = 0;
       const need = (n) => { if (n > body.length - pos) throw new Error("has a short body"); };
       const reader = {
+        remaining: () => body.length - pos,
+        bytes: n => { need(n); const value = body.subarray(pos, pos + n); pos += n; return value; },
         u8: () => { need(1); return body[pos++]; },
         u16: () => { need(2); const value = new DataView(body.buffer, body.byteOffset + pos, 2).getUint16(0, true); pos += 2; return value; },
         u32: () => { need(4); const value = new DataView(body.buffer, body.byteOffset + pos, 4).getUint32(0, true); pos += 4; return value; },

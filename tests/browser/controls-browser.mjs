@@ -1,3 +1,4 @@
+import { installProtocolFixture } from "./protocol-fixture.mjs";
 // controls-browser.mjs --wasm APP.wasm --runtime runtime.mjs --chrome PATH -- controlled
 // inputs, focus and containment in headless Chrome against tests/apps/controls (design.md "Controlled Inputs",
 // "Error Containment").
@@ -44,6 +45,7 @@ async function open(hash = "") {
     if (m.type() === "error") errors.push(m.text());
   });
   await page.goto(`${base}${hash}`);
+  await installProtocolFixture(page);
   await page.waitForFunction("window.__ready || window.__error");
   return { page, ctx, errors };
 }
@@ -239,6 +241,7 @@ for (const [button, where] of [
     parent.__rn = 101;
     parent.__h = { close: { h: 1, kind: 1, policies: 0 }, scroll: { h: 2, kind: 1, policies: 0 }, cancel: { h: 3, kind: 1, policies: 0 } };
     const rt = new RocEngineRuntime({}, root);
+    __bindProtocolFixture(rt);
     const calls = [];
     rt.deliver = (node, handler) => calls.push([node, handler]);
     for (const type of ["close", "scroll", "cancel"]) rt.listen(type);
@@ -291,6 +294,7 @@ for (const [button, where] of [
     const memory = new WebAssembly.Memory({ initial: 1 });
     const x = { memory, cmd_ptr: () => 0, cmd_len: () => batch.length };
     const rt = new RocEngineRuntime(x, root);
+    __bindProtocolFixture(rt);
     rt.statics[0] = root;
     rt.sites[1] = new Set();
     const calls = [];
@@ -347,6 +351,7 @@ for (const [button, where] of [
       a.__rn = 1; b.__rn = 2;
       a.__h = b.__h = { focus: { h: 0, kind: 1, policies: 0 } };
       const rt = new RocEngineRuntime({}, root);
+      __bindProtocolFixture(rt);
       rt.listen("focus");
       let delivered = 0;
       rt.deliver = (node) => {
@@ -517,6 +522,7 @@ for (const mode of ["initial", "changed"]) {
       let bytes = [];
       const x = { memory, cmd_ptr: () => 0, cmd_len: () => bytes.length, fault: () => 0 };
       const rt = new RocEngineRuntime(x, root);
+      __bindProtocolFixture(rt);
       rt.statics[0] = root;
       const byte = (n) => bytes.push(n);
       const word = (n) => bytes.push(n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255);
@@ -726,6 +732,7 @@ for (const mode of ["initial", "changed"]) {
         const root = document.createElement("div"); document.body.append(root);
         const memory = new WebAssembly.Memory({ initial: 1 }); let bytes = [];
         const rt = new RocEngineRuntime({ memory, cmd_ptr: () => 0, cmd_len: () => bytes.length, drop() {} }, root);
+        __bindProtocolFixture(rt);
         rt.statics[0] = root;
         const word = (n) => bytes.push(n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255);
         const str = (s) => { const b = new TextEncoder().encode(s); word(b.length); bytes.push(...b); };

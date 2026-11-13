@@ -28,7 +28,7 @@ platform ""
 		[Store : st] for main : Engine.Program(st)
 	}
 	exposes [Clipboard, Engine, Files, Html, Layout, Port, PortJson, Wire, Worker]
-	packages {}
+	packages { parser: "../../roc-parser/package/main.roc", unicode: "https://github.com/roc-lang/unicode/releases/download/4.3.2/3gvgiWm6BShjHKbNV2zRH6fhC5ZvScZgWF7AnVDWHSdd.tar.zst" }
 	provides {
 		"roc_engine_ask": ask_for_host!,
 		"roc_engine_drop": drop_for_host,
@@ -85,6 +85,7 @@ import Html
 import Layout
 import Port
 import PortJson
+import ProtocolFacts
 import SpecRunner
 import Wire
 import Worker
@@ -140,7 +141,7 @@ version_for_host = || Core.driver(main).version
 ## The storage keys the app declares, encoded count:u32 (key:str)*; the host
 ## reads their values before mount.
 keys_for_host : () -> List(U8)
-keys_for_host = || (Core.driver(main).keys)()
+keys_for_host = || ProtocolFacts.append_declaration((Core.driver(main).keys)())
 
 ## Mount with the boot bytes (URL and declared storage values).
 init_for_host : List(U8) -> Step

@@ -1,3 +1,4 @@
+import { installProtocolFixture } from "./protocol-fixture.mjs";
 // Pointer payload, geometry, capture and paced ingress contracts. The raw
 // command fixture isolates the adapter; the controls app runs the Roc decoder.
 import http from "node:http";
@@ -22,6 +23,7 @@ const browser = await launch({ executablePath: options.chrome });
 const context = await browser.createBrowserContext();
 const page = await context.newPage();
 await page.goto(`http://127.0.0.1:${server.address().port}/`);
+await installProtocolFixture(page);
 let failures = 0;
 const check = (name, actual, expected) => {
   const pass = JSON.stringify(actual) === JSON.stringify(expected);
@@ -78,6 +80,7 @@ await page.evaluate(async () => {
     const frames = new Map(); let nextFrame = 0;
     const win = { requestAnimationFrame: (callback) => { frames.set(++nextFrame, callback); return nextFrame; }, cancelAnimationFrame: (id) => frames.delete(id) };
     const rt = new RocEngineRuntime(x, root, { manualEffects: manual, window: win, environment: { visible: () => true } });
+    __bindProtocolFixture(rt);
     const raw = (commands) => { const bytes = join([0], commands); new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.applyBatch(); length = 0; };
     const calls = [];
     rt.deliver = (node, handler, payload) => { calls.push({ node, handler, bytes: Array.from(payload) }); };
@@ -298,6 +301,7 @@ check("a cross-document default action preserves old-document dispatch evidence"
 
 // The Roc decoder's wrong-record failures remain at its routed site.
 await page.goto(`http://127.0.0.1:${server.address().port}/?pointer#pointer`);
+await installProtocolFixture(page);
 const decoder = await page.evaluate(async () => {
   const { instantiateEngineWasm, RocEngineRuntime } = await import("/runtime.mjs");
   const { module } = await instantiateEngineWasm("/app.wasm");

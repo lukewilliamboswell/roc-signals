@@ -1,3 +1,4 @@
+import Protocol
 import Dom
 import Scm
 import JsonOut
@@ -1952,9 +1953,10 @@ SpecRunner := [].{
 		} else Err(Absent)
 	}
 
-	## The attributes the runtime treats as boolean (design.md, Appendix B).
+	## Names governed by the platform's legacy absence convention, excluding
+	## disabled because the runner reads that control's live state separately.
 	bool_attrs : List(Str)
-	bool_attrs = ["selected", "readonly", "required", "hidden", "multiple", "open"]
+	bool_attrs = Protocol.bool_attrs.keep_if(|name| name != "disabled")
 
 	# ----------------------------------------------------------------- steps
 

@@ -1,3 +1,4 @@
+import { installProtocolFixture } from "./protocol-fixture.mjs";
 // Layout wire declarations, observation ownership and real browser reports.
 // The engine's decoders and the native model are checked independently.
 import http from "node:http";
@@ -31,6 +32,7 @@ const check = (name, actual, expected) => {
 try {
   const page = await browser.newPage();
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await installProtocolFixture(page);
   await page.evaluate(async () => {
     const { RocEngineRuntime, PROTOCOL_VERSION } = await import("/runtime.mjs");
     const encoder = new TextEncoder();
@@ -43,6 +45,7 @@ try {
       const memory = new WebAssembly.Memory({ initial: 2 }); let length = 0;
       const exports = { memory, cmd_ptr: () => 0, cmd_len: () => length, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
       const rt = new RocEngineRuntime(exports, root, options);
+      __bindProtocolFixture(rt);
       const calls = []; rt.deliver = (node, handler, bytes) => calls.push({ node, handler, bytes: typeof bytes === "string" ? bytes : [...bytes] });
       const raw = (...parts) => { const bytes = join([0], ...parts); if (bytes.length > memory.buffer.byteLength) memory.grow(Math.ceil((bytes.length - memory.buffer.byteLength) / 65536)); new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.busy = true; try { rt.apply(); } finally { rt.busy = false; length = 0; } rt.drainQueue(); };
       const elem = (id, parent, tag) => join([8], u32(id), u32(parent), u32(0), str(tag));
@@ -68,7 +71,7 @@ try {
     window.__mediaFixture = (queries, environment, declarationOverride) => {
       const memory = new WebAssembly.Memory({ initial: 2 });
       let staged = null, initialized = false;
-      const declarations = declarationOverride ?? join(section(2, u32(0)), section(5, u32(0)), section(6, join(u32(queries.length), ...queries.map(str))), section(10, new Uint8Array([110, 1])), section(11, u32(0)));
+      const declarations = declarationOverride ?? join(section(2, u32(0)), section(5, u32(0)), section(6, join(u32(queries.length), ...queries.map(str))), section(10, new Uint8Array([110, 1])), section(11, u32(0)), __protocolFixtureSection);
       new Uint8Array(memory.buffer).set(declarations);
       const exports = { memory, protocol_version: () => PROTOCOL_VERSION, boot_keys: () => {}, cmd_ptr: () => 0, cmd_len: () => initialized ? 0 : declarations.length, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {},
         payload_reserve: (length) => { staged = { start: 65536, length }; return staged.start; }, init: () => { initialized = true; } };

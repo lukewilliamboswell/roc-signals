@@ -1,3 +1,4 @@
+import { installProtocolFixture } from "./protocol-fixture.mjs";
 // services-browser.mjs --wasm services.wasm --runtime runtime.mjs --chrome PATH
 // -- runtime and host contract cases with tests/apps/services in headless
 // Chrome:
@@ -53,6 +54,7 @@ async function open(prelude = "") {
   page.on("pageerror", (e) => console.log("pageerror", String(e)));
   if (prelude) await page.evaluateOnNewDocument(prelude);
   await page.goto(`${base}/app/`);
+  await installProtocolFixture(page);
   await page.waitForFunction("window.__ready || window.__error");
   return { page, ctx };
 }
@@ -165,7 +167,7 @@ async function open(prelude = "") {
     // Capture staging independently of command application.
     const empty = await fresh();
     let emptyBytes, declarationsPtr, initialized = false;
-    const declarations = join([section(2, join([u32(1), str("saved")])), section(5, u32(0)), section(6, u32(0)), section(10, new Uint8Array([110, 1])), section(11, u32(0))]);
+    const declarations = join([section(2, join([u32(1), str("saved")])), section(5, u32(0)), section(6, u32(0)), section(10, new Uint8Array([110, 1])), section(11, u32(0)), __protocolFixtureSection]);
     const capture = { ...empty,
       boot_keys: () => { declarationsPtr = empty.payload_reserve(declarations.length); new Uint8Array(empty.memory.buffer, declarationsPtr, declarations.length).set(declarations); },
       cmd_ptr: () => declarationsPtr,

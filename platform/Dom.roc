@@ -1,3 +1,8 @@
+import Protocol
+import parser.Html as MarkupHtml
+import unicode.GeneralCategory
+import unicode.Scalar
+
 ## An independent decoder of the engine's command stream into a small DOM
 ## model, used as the test and fuzz oracle. It shares no code with the
 ## engine. Nodes live in one list; engine ids map to node indices (+1).
@@ -7,7 +12,7 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 16
+	protocol_version = Protocol.version
 
 	## A model node has a lifetime index independent of its engine aliases.
 	## Routing ids, rendered attributes, live properties and pending browser work
@@ -178,7 +183,7 @@ Dom := [].{
 	## HTML enumerated attributes use ASCII case-insensitive keywords. An
 	## invalid contenteditable keyword inherits its nearest valid ancestor.
 	enum_attr : DNode, Str -> Str
-	enum_attr = |node, name| Str.from_utf8(Dom.attr_of(node, name).to_utf8().map(|c| if (c >= 'A' and c <= 'Z') c + 32 else c)) ?? crash "Dom.enum_attr: ASCII folding preserves UTF-8"
+	enum_attr = |node, name| MarkupHtml.ascii_lower(Dom.attr_of(node, name))
 
 	## The raw type keyword with HTML's ASCII case rule. Missing and invalid
 	## values stay as written apart from case; this does not apply defaults.
@@ -193,7 +198,7 @@ Dom := [].{
 		if ["textarea", "select"].contains(n.tag) {
 			return Bool.True
 		}
-		if n.tag == "input" and !["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "range", "color", "image"].contains(Dom.input_type(n)) {
+		if n.tag == "input" and !Protocol.text_entry_excluded.contains(Dom.input_type(n)) {
 			return Bool.True
 		}
 		Dom.content_editable(dom, i)
@@ -207,12 +212,10 @@ Dom := [].{
 		while True {
 			item = Dom.node(dom, $at)
 			if Dom.has_attr(item, "contenteditable") {
-				value = Dom.enum_attr(item, "contenteditable")
-				if value == "false" {
-					return Bool.False
-				}
-				if ["", "true", "plaintext-only"].contains(value) {
-					return Bool.True
+				match MarkupHtml.attribute_keyword({ element: item.tag, attribute: "contenteditable", value: Dom.attr_of(item, "contenteditable") }) {
+					Ok("false") => return Bool.False
+					Ok(_) => return Bool.True
+					Err(_) => {}
 				}
 			}
 			if item.parent == 0 {
@@ -221,411 +224,6 @@ Dom := [].{
 			$at = item.parent - 1
 		}
 	}
-
-	# UNICODE LICENSE V3
-	#
-	# COPYRIGHT AND PERMISSION NOTICE
-	#
-	# Copyright © 1991-2026 Unicode, Inc.
-	#
-	# NOTICE TO USER: Carefully read the following legal agreement. BY
-	# DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
-	# SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
-	# TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
-	# DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
-	#
-	# Permission is hereby granted, free of charge, to any person obtaining a
-	# copy of data files and any associated documentation (the "Data Files") or
-	# software and any associated documentation (the "Software") to deal in the
-	# Data Files or Software without restriction, including without limitation
-	# the rights to use, copy, modify, merge, publish, distribute, and/or sell
-	# copies of the Data Files or Software, and to permit persons to whom the
-	# Data Files or Software are furnished to do so, provided that either (a)
-	# this copyright and permission notice appear with all copies of the Data
-	# Files or Software, or (b) this copyright and permission notice appear in
-	# associated Documentation.
-	#
-	# THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
-	# KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-	# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
-	# THIRD PARTY RIGHTS.
-	#
-	# IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
-	# BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
-	# OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
-	# WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
-	# ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
-	# FILES OR SOFTWARE.
-	#
-	# Except as contained in this notice, the name of a copyright holder shall
-	# not be used in advertising or otherwise to promote the sale, use or other
-	# dealings in these Data Files or Software without prior written
-	# authorization of the copyright holder.
-	## Frozen Unicode 18.0.0 punctuation and symbols, independently decoded
-	## from UnicodeData.txt (Unicode license: https://www.unicode.org/license.txt).
-	## SHA-256: 0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950.
-	key_symbol_ranges : List((U32, U32))
-	key_symbol_ranges = [
-		(33, 47),
-		(58, 64),
-		(91, 96),
-		(123, 126),
-		(161, 169),
-		(171, 172),
-		(174, 177),
-		(180, 180),
-		(182, 184),
-		(187, 187),
-		(191, 191),
-		(215, 215),
-		(247, 247),
-		(706, 709),
-		(722, 735),
-		(741, 747),
-		(749, 749),
-		(751, 767),
-		(885, 885),
-		(894, 894),
-		(900, 901),
-		(903, 903),
-		(1014, 1014),
-		(1154, 1154),
-		(1370, 1375),
-		(1417, 1418),
-		(1421, 1423),
-		(1470, 1470),
-		(1472, 1472),
-		(1475, 1475),
-		(1478, 1478),
-		(1523, 1524),
-		(1542, 1551),
-		(1563, 1563),
-		(1565, 1567),
-		(1642, 1645),
-		(1748, 1748),
-		(1758, 1758),
-		(1769, 1769),
-		(1789, 1790),
-		(1792, 1805),
-		(2038, 2041),
-		(2046, 2047),
-		(2096, 2110),
-		(2142, 2142),
-		(2184, 2184),
-		(2404, 2405),
-		(2416, 2416),
-		(2546, 2547),
-		(2554, 2555),
-		(2557, 2557),
-		(2678, 2678),
-		(2800, 2801),
-		(2928, 2928),
-		(3059, 3066),
-		(3191, 3191),
-		(3199, 3199),
-		(3204, 3204),
-		(3407, 3407),
-		(3449, 3449),
-		(3572, 3572),
-		(3647, 3647),
-		(3663, 3663),
-		(3674, 3675),
-		(3841, 3863),
-		(3866, 3871),
-		(3892, 3892),
-		(3894, 3894),
-		(3896, 3896),
-		(3898, 3901),
-		(3973, 3973),
-		(4030, 4037),
-		(4039, 4044),
-		(4046, 4058),
-		(4170, 4175),
-		(4254, 4255),
-		(4347, 4347),
-		(4960, 4968),
-		(5008, 5017),
-		(5120, 5120),
-		(5741, 5742),
-		(5787, 5788),
-		(5867, 5869),
-		(5941, 5942),
-		(6100, 6102),
-		(6104, 6107),
-		(6144, 6154),
-		(6464, 6464),
-		(6468, 6469),
-		(6622, 6655),
-		(6686, 6687),
-		(6816, 6822),
-		(6824, 6829),
-		(6990, 6991),
-		(7002, 7018),
-		(7028, 7039),
-		(7164, 7167),
-		(7227, 7231),
-		(7294, 7295),
-		(7360, 7367),
-		(7379, 7379),
-		(8125, 8125),
-		(8127, 8129),
-		(8141, 8143),
-		(8157, 8159),
-		(8173, 8175),
-		(8189, 8190),
-		(8208, 8231),
-		(8240, 8286),
-		(8314, 8318),
-		(8330, 8334),
-		(8352, 8388),
-		(8448, 8449),
-		(8451, 8454),
-		(8456, 8457),
-		(8468, 8468),
-		(8470, 8472),
-		(8478, 8483),
-		(8485, 8485),
-		(8487, 8487),
-		(8489, 8489),
-		(8494, 8494),
-		(8506, 8507),
-		(8512, 8516),
-		(8522, 8525),
-		(8527, 8527),
-		(8586, 8587),
-		(8592, 9257),
-		(9280, 9290),
-		(9372, 9449),
-		(9472, 10101),
-		(10132, 11123),
-		(11126, 11263),
-		(11493, 11498),
-		(11513, 11516),
-		(11518, 11519),
-		(11632, 11632),
-		(11776, 11822),
-		(11824, 11869),
-		(11872, 11875),
-		(11904, 11929),
-		(11931, 12019),
-		(12032, 12245),
-		(12272, 12287),
-		(12289, 12292),
-		(12296, 12320),
-		(12336, 12336),
-		(12342, 12343),
-		(12349, 12351),
-		(12443, 12444),
-		(12448, 12448),
-		(12539, 12539),
-		(12688, 12689),
-		(12694, 12703),
-		(12736, 12773),
-		(12783, 12783),
-		(12800, 12830),
-		(12842, 12871),
-		(12880, 12880),
-		(12896, 12927),
-		(12938, 12976),
-		(12992, 13311),
-		(19904, 19967),
-		(42128, 42182),
-		(42238, 42239),
-		(42509, 42511),
-		(42611, 42611),
-		(42622, 42622),
-		(42738, 42743),
-		(42752, 42774),
-		(42784, 42785),
-		(42889, 42890),
-		(43048, 43051),
-		(43062, 43065),
-		(43124, 43127),
-		(43214, 43215),
-		(43256, 43258),
-		(43260, 43260),
-		(43310, 43311),
-		(43359, 43359),
-		(43457, 43469),
-		(43486, 43487),
-		(43612, 43615),
-		(43639, 43641),
-		(43742, 43743),
-		(43760, 43761),
-		(43867, 43867),
-		(43882, 43883),
-		(44011, 44011),
-		(64297, 64297),
-		(64434, 64466),
-		(64830, 64847),
-		(64912, 64913),
-		(64968, 64975),
-		(65020, 65023),
-		(65040, 65049),
-		(65072, 65106),
-		(65108, 65126),
-		(65128, 65131),
-		(65281, 65295),
-		(65306, 65312),
-		(65339, 65344),
-		(65371, 65381),
-		(65504, 65510),
-		(65512, 65518),
-		(65532, 65533),
-		(65792, 65794),
-		(65847, 65855),
-		(65913, 65929),
-		(65932, 65934),
-		(65936, 65948),
-		(65952, 65952),
-		(66000, 66044),
-		(66463, 66463),
-		(66512, 66512),
-		(66927, 66927),
-		(67671, 67671),
-		(67703, 67704),
-		(67871, 67871),
-		(67903, 67903),
-		(68176, 68184),
-		(68223, 68223),
-		(68296, 68296),
-		(68336, 68342),
-		(68409, 68415),
-		(68505, 68508),
-		(68974, 68974),
-		(69006, 69007),
-		(69293, 69293),
-		(69321, 69322),
-		(69328, 69336),
-		(69461, 69465),
-		(69510, 69513),
-		(69703, 69709),
-		(69819, 69820),
-		(69822, 69825),
-		(69952, 69955),
-		(70004, 70005),
-		(70085, 70088),
-		(70093, 70093),
-		(70107, 70107),
-		(70109, 70111),
-		(70200, 70205),
-		(70313, 70313),
-		(70612, 70613),
-		(70615, 70616),
-		(70731, 70735),
-		(70746, 70747),
-		(70749, 70749),
-		(70854, 70854),
-		(71105, 71127),
-		(71233, 71235),
-		(71264, 71276),
-		(71353, 71353),
-		(71484, 71487),
-		(71739, 71739),
-		(72004, 72006),
-		(72162, 72162),
-		(72255, 72262),
-		(72346, 72348),
-		(72350, 72354),
-		(72448, 72457),
-		(72673, 72673),
-		(72769, 72773),
-		(72816, 72817),
-		(73463, 73464),
-		(73539, 73551),
-		(73685, 73713),
-		(73727, 73727),
-		(74864, 74868),
-		(77809, 77810),
-		(92782, 92783),
-		(92917, 92917),
-		(92983, 92991),
-		(92996, 92997),
-		(93549, 93551),
-		(93847, 93850),
-		(94178, 94178),
-		(113820, 113820),
-		(113823, 113823),
-		(117760, 117999),
-		(118010, 118012),
-		(118016, 118451),
-		(118458, 118480),
-		(118482, 118484),
-		(118493, 118525),
-		(118608, 118723),
-		(118784, 119029),
-		(119040, 119078),
-		(119081, 119140),
-		(119146, 119148),
-		(119171, 119172),
-		(119180, 119209),
-		(119214, 119361),
-		(119365, 119365),
-		(119379, 119386),
-		(119389, 119390),
-		(119392, 119423),
-		(119552, 119638),
-		(120513, 120513),
-		(120539, 120539),
-		(120571, 120571),
-		(120597, 120597),
-		(120629, 120629),
-		(120655, 120655),
-		(120687, 120687),
-		(120713, 120713),
-		(120745, 120745),
-		(120771, 120771),
-		(120832, 121343),
-		(121399, 121402),
-		(121453, 121460),
-		(121462, 121475),
-		(121477, 121483),
-		(121600, 121628),
-		(123215, 123215),
-		(123647, 123647),
-		(124415, 124415),
-		(125278, 125279),
-		(126124, 126124),
-		(126128, 126128),
-		(126254, 126254),
-		(126704, 126705),
-		(126976, 127019),
-		(127024, 127123),
-		(127136, 127150),
-		(127153, 127167),
-		(127169, 127183),
-		(127185, 127221),
-		(127245, 127406),
-		(127462, 127490),
-		(127504, 127547),
-		(127552, 127560),
-		(127568, 127569),
-		(127584, 127589),
-		(127744, 128729),
-		(128732, 128748),
-		(128752, 128764),
-		(128768, 128987),
-		(128992, 129003),
-		(129008, 129035),
-		(129040, 129095),
-		(129104, 129113),
-		(129120, 129159),
-		(129168, 129197),
-		(129200, 129211),
-		(129216, 129217),
-		(129232, 129240),
-		(129280, 129623),
-		(129632, 129645),
-		(129648, 129660),
-		(129664, 129734),
-		(129736, 129736),
-		(129740, 129757),
-		(129759, 129771),
-		(129775, 129786),
-		(129792, 129938),
-		(129940, 130031),
-		(130042, 130042),
-	]
 
 	## Shift is ignored only for one Unicode punctuation or symbol scalar.
 	key_symbol : Str -> Bool
@@ -640,20 +238,11 @@ Dom := [].{
 		for byte in bs.drop_first(1) {
 			$scalar = $scalar * 64 + byte.to_u32().bitwise_and(63)
 		}
-		var $lo = 0.U64
-		var $hi = Dom.key_symbol_ranges.len()
-		while $lo < $hi {
-			mid = $lo + ($hi - $lo) / 2
-			(start, end) = Dom.key_symbol_ranges.get(mid) ?? crash "Dom.key_symbol: bounded index"
-			if $scalar < start {
-				$hi = mid
-			} else if $scalar > end {
-				$lo = mid + 1
-			} else {
-				return Bool.True
-			}
+		scalar = Scalar.from_u32($scalar) ?? return Bool.False
+		match GeneralCategory.of_scalar(scalar) {
+			Pc | Pd | Ps | Pe | Pi | Pf | Po | Sm | Sc | Sk | So => Bool.True
+			_ => Bool.False
 		}
-		Bool.False
 	}
 
 	## Exact entries win over all physical fallbacks; every is tried last,
@@ -1197,10 +786,10 @@ Dom := [].{
 		$n
 	}
 
-	## The boolean names have HTML presence semantics; ordinary names retain
-	## all text, including the empty string.
+	## The legacy transport absence convention includes six HTML booleans and
+	## enumerated hidden; ordinary names retain all text, including empty text.
 	bool_attrs : List(Str)
-	bool_attrs = ["disabled", "selected", "readonly", "required", "hidden", "multiple", "open"]
+	bool_attrs = Protocol.bool_attrs
 
 	## Remove an attribute explicitly, without interpreting any text as absence.
 	remove_attr_on : Model, U64, Str -> Model
@@ -1257,13 +846,11 @@ Dom := [].{
 	## Invalid numbers come from a protocol mismatch, never an app event.
 	check_listener : { event : Str, kind : U8, policies : U32 } -> {}
 	check_listener = |{ event, kind, policies }| {
-		if kind < 1 or kind > 9 {
-			crash "executor: unknown payload kind ${kind.to_str()}"
-		}
-		if kind == 2 and !["change", "drop", "paste"].contains(event) {
+		row = Protocol.kind(kind) ?? crash "executor: unknown payload kind ${kind.to_str()}"
+		if kind == 2 and !row.events.contains(event) {
 			crash "executor: files payload kind on unsupported event ${event}"
 		}
-		if kind == 3 and !["pointerdown", "pointermove", "pointerup", "pointercancel"].contains(event) {
+		if kind == 3 and !row.events.contains(event) {
 			crash "executor: pointer payload kind on unsupported event ${event}"
 		}
 		if policies.bitwise_and(4) != 0 and (kind != 3 or event != "pointerdown") {
@@ -1276,24 +863,18 @@ Dom := [].{
 			crash "executor: ahead policy requires a seen observation"
 		}
 		if kind >= 6 and kind <= 8 {
-			expected = match kind {
-				6 => "scroll"
-				7 => "size"
-				8 => "seen"
-				_ => crash "executor: invalid layout kind"
-			}
 			allowed = if (kind == 8) 40.U32 else 8
-			if event != expected or policies.bitwise_and(8) == 0 or policies.bitwise_and(allowed.bitwise_not()) != 0 {
+			if !row.events.contains(event) or policies.bitwise_and(8) == 0 or policies.bitwise_and(allowed.bitwise_not()) != 0 {
 				crash "executor: layout payload requires its matching paced declaration"
 			}
 		}
-		if kind == 9 and (event != "paste" or policies != 1) {
+		if kind == 9 and (!row.events.contains(event) or policies != 1) {
 			crash "executor: paste text requires paste and prevention"
 		}
-		if kind == 5 and !["close", "toggle"].contains(event) {
+		if kind == 5 and !row.events.contains(event) {
 			crash "executor: open-state payload requires close or toggle"
 		}
-		if kind == 4 and !["keydown", "keyup"].contains(event) {
+		if kind == 4 and !row.events.contains(event) {
 			crash "executor: key payload requires keydown or keyup"
 		}
 		if policies.bitwise_and(16) != 0 and kind != 4 {
@@ -1302,7 +883,7 @@ Dom := [].{
 		if kind == 4 and policies.bitwise_and(1) != 0 {
 			crash "executor: key prevention belongs to its keymap"
 		}
-		if policies.bitwise_and(0xFFFFFFC0) != 0 {
+		if policies.bitwise_and(Protocol.policy_mask.bitwise_not()) != 0 {
 			crash "executor: unknown event policy bits ${policies.to_str()}"
 		}
 	}
@@ -1329,16 +910,7 @@ Dom := [].{
 
 	## The independent property table fixes each wire index's claimed name.
 	property_name : U8 -> Str
-	property_name = |property| match property {
-		1 => "value"
-		2 => "checked"
-		3 => "pointer_zone"
-		4 => "keymap_down"
-		5 => "keymap_up"
-		6 => "shown"
-		7 => "popover_shown"
-		_ => crash "executor: unknown property index ${property.to_str()}"
-	}
+	property_name = |property| (Protocol.property(property) ?? crash "executor: unknown property index ${property.to_str()}").name
 
 	## HTML interprets an input's type without ASCII case. Keep the raw
 	## attribute for assertions while applying the browser's file-input rule.
@@ -1354,11 +926,12 @@ Dom := [].{
 	## value where it is applied because its type may change during a turn.
 	set_property_on : Model, U64, U8, Str, U32 -> Model
 	set_property_on = |dom, i, property, value, command_node| {
-		name = Dom.property_name(property)
+		row = Protocol.property(property) ?? crash "executor: unknown property index ${property.to_str()}"
+		name = row.name
 		if property == 6 or property == 7 {
 			n = Dom.node(dom, i)
 			_ = Dom.shown_value(property, value)
-			if (property == 6 and n.tag != "dialog") or (property == 7 and !["auto", "manual"].contains(Dom.enum_attr(n, "popover"))) {
+			if (property == 6 and !row.elements.contains(n.tag)) or (property == 7 and !(MarkupHtml.attribute_keyword({ element: n.tag, attribute: "popover", value: Dom.attr_of(n, "popover") }).map_ok(|keyword| ["auto", "manual"].contains(keyword)) ?? False)) {
 				crash "executor: shown property on unsupported element at node ${command_node.to_str()}"
 			}
 			return Dom.set_live_on(dom, i, name, value)
@@ -1380,7 +953,7 @@ Dom := [].{
 		if property == 2 and value != "true" and value != "false" {
 			crash "executor: invalid checked property value"
 		}
-		allowed = if (property == 1) ["input", "textarea", "select", "option"].contains(n.tag) else n.tag == "input"
+		allowed = row.elements.contains(n.tag)
 		if !allowed {
 			crash "executor: property ${name} on unsupported element ${n.tag}"
 		}
@@ -1416,19 +989,17 @@ Dom := [].{
 	## does not validate a command; decode_commands rejects unknown wire opcodes
 	## before any caller can treat them as performed work.
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD"].get(op.to_u64()) ?? "?"
+	op_name = |op| Protocol.op_name(op)
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
 	describe = |ops| {
 		var $parts = []
-		var $op = 1.U8
-		while $op <= 24 {
-			n = ops.count_if(|o| o == $op)
+		for row in Protocol.ops {
+			n = ops.count_if(|op| op == row.code)
 			if n > 0 {
-				$parts = $parts.append("${Dom.op_name($op)}=${n.to_str()}")
+				$parts = $parts.append("${row.name}=${n.to_str()}")
 			}
-			$op = $op + 1
 		}
 		Str.join_with($parts, " ")
 	}
@@ -1439,19 +1010,13 @@ Dom := [].{
 	## Validate the closed policy bytes, including upload’s fixed default cache.
 	http_options : List(U8), U64, Bool -> HttpOptions
 	http_options = |bytes, at, upload| {
-		cache = match Dom.byte(bytes, at) {
-			1 => "default"
-			2 if !upload => "no-store"
-			3 if !upload => "reload"
-			4 if !upload => "no-cache"
-			5 if !upload => "force-cache"
-			_ => crash "invalid HTTP cache policy"
+		cache_code = Dom.byte(bytes, at)
+		if upload and cache_code != 1 {
+			crash "invalid HTTP cache policy"
 		}
-		credentials = match Dom.byte(bytes, at + 1) {
-			1 => "same-origin"
-			2 => "include"
-			_ => crash "invalid HTTP credentials policy"
-		}
+		cache = (Protocol.http_cache.find_first(|row| row.code == cache_code) ?? crash "invalid HTTP cache policy").name
+		credentials_code = Dom.byte(bytes, at + 1)
+		credentials = (Protocol.http_credentials.find_first(|row| row.code == credentials_code) ?? crash "invalid HTTP credentials policy").name
 		progress_ms = Dom.u32(bytes, at + 2)
 		if progress_ms > 0 and progress_ms < 16 {
 			crash "invalid HTTP progress interval"
@@ -2369,3 +1934,19 @@ expect {
 	nodes = kinds.map(|kind| { ..Dom.empty_node, tag: "input", attrs: [("type", kind)] })
 	nodes.map(Dom.input_type) == ["checkbox", "text", "file", "radio", "txet", "", "tÉxt"] and nodes.map(|node| Dom.attr_of(node, "type")) == kinds and Dom.input_type(Dom.empty_node) == ""
 }
+
+## The transport's six ordinary boolean names belong to the parser's HTML
+## vocabulary. Hidden has a different grammar and is checked separately.
+expect Protocol.bool_attrs.keep_if(|attribute| attribute != "hidden").all(|attribute| MarkupHtml.boolean_attributes.contains(attribute)) and !MarkupHtml.boolean_attributes.contains("hidden")
+
+## Preserve the legacy wire convention without describing hidden as a boolean
+## attribute or applying a browser default to its explicit enumeration.
+expect MarkupHtml.attribute_keywords({ element: "div", attribute: "hidden" }) == Ok(["", "hidden", "until-found"])
+
+## OutsideText is platform policy over real HTML input keywords; the parser
+## does not choose the policy or repair an unknown type into a known one.
+expect MarkupHtml.attribute_keywords({ element: "input", attribute: "type" }).map_ok(|keywords| Protocol.text_entry_excluded.all(|keyword| keywords.contains(keyword))) == Ok(True)
+
+## The controlled popover policy deliberately supports auto/manual, while
+## the parser's complete grammar also describes empty and hint spellings.
+expect MarkupHtml.attribute_keywords({ element: "div", attribute: "popover" }) == Ok(["", "auto", "manual", "hint"])

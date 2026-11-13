@@ -1,3 +1,4 @@
+import { installProtocolFixture } from "./protocol-fixture.mjs";
 // Wire, report-lifetime and real Fetch/XHR transport contracts. Bounded blobs
 // pin the browser-owned path without treating heap snapshots as a benchmark.
 import http from "node:http";
@@ -54,11 +55,13 @@ function check(name, got, expected = true) {
 try {
   const page = await browser.newPage();
   await page.goto(base);
+  await installProtocolFixture(page);
   await page.evaluate(async () => {
     const { RocEngineRuntime } = await import("/runtime.mjs");
     window.make = (options = {}) => {
       const memory = new WebAssembly.Memory({ initial: 2 });
       const rt = new RocEngineRuntime({ memory, cmd_ptr: () => 0, cmd_len: () => rt.bytes?.length ?? 0 }, document.body, { manualEffects: true, ...options });
+      __bindProtocolFixture(rt);
       rt.log = [];
       rt.deliver = (_node, id, payload) => { payload.before?.(); rt.log.push({ id, tag: payload.parts?.[0]?.[0] ?? payload[0], bytes: payload.parts ? null : [...payload], files: payload.files, payload }); };
       return rt;

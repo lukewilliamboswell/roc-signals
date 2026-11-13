@@ -1,3 +1,4 @@
+import { installProtocolFixture } from "./protocol-fixture.mjs";
 // Controlled top-layer properties and reference commands against raw protocol
 // batches. The pure engine and native oracle are checked independently.
 import http from "node:http";
@@ -30,6 +31,7 @@ const check = (name, actual, expected) => {
 try {
   const page = await browser.newPage();
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await installProtocolFixture(page);
   await page.evaluate(async () => {
     const { RocEngineRuntime } = await import("/runtime.mjs");
     const encoder = new TextEncoder();
@@ -41,6 +43,7 @@ try {
       const memory = new WebAssembly.Memory({ initial: 2 }); let length = 0;
       const exports = { memory, cmd_ptr: () => 0, cmd_len: () => length, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
       const rt = new RocEngineRuntime(exports, root, { manualEffects: true });
+      __bindProtocolFixture(rt);
       rt.controlListeners(); rt.nativeEventListeners(); rt.documentKeyListeners(); rt.listen("submit");
       const calls = []; rt.deliver = (node, handler, bytes) => calls.push({ node, handler, payload: [...bytes] });
       const raw = (...parts) => { const bytes = join([0], ...parts); new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.busy = true; try { rt.apply(); } finally { rt.busy = false; length = 0; } rt.drainQueue(); };

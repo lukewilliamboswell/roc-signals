@@ -1,3 +1,4 @@
+import { installProtocolFixture } from "./protocol-fixture.mjs";
 // A fixed 32 MiB transport retention proof, not a throughput benchmark.
 // Chunked EOF is held while the real runtime is in flight. CDP's byte events
 // prove complete renderer arrival for XHR and streamed Fetch. Native Fetch.blob
@@ -85,12 +86,14 @@ try {
       const errors = [];
       page.on("pageerror", error => errors.push(String(error)));
       await page.goto(base);
+      await installProtocolFixture(page);
       await page.evaluate(async () => {
         const { RocEngineRuntime } = await import("/runtime.mjs");
         const memory = new WebAssembly.Memory({ initial: 2 });
         // Like the HTTP contracts, isolate transport behavior with lightweight
         // exports. The unmodified runtime owns transport and request lifetime.
         window.rt = new RocEngineRuntime({ memory, cmd_ptr: () => 0, cmd_len: () => 0, drop: () => {} }, document.body, {});
+        __bindProtocolFixture(window.rt);
         window.calls = { blob: 0, reader: 0, xhr: 0 };
         const blob = Response.prototype.blob, reader = ReadableStream.prototype.getReader, send = XMLHttpRequest.prototype.send;
         Response.prototype.blob = function (...args) { window.calls.blob++; return blob.apply(this, args); };

@@ -1,3 +1,4 @@
+import { installProtocolFixture } from "./protocol-fixture.mjs";
 // Report delivery contracts: real browser tasks and the runtime's ingress,
 // followed by the existing ports app to check the engine's result turns.
 import http from "node:http";
@@ -24,6 +25,7 @@ const browser = await launch({ executablePath: opts.chrome });
 const ctx = await browser.createBrowserContext();
 const page = await ctx.newPage();
 await page.goto(`http://127.0.0.1:${server.address().port}/`);
+await installProtocolFixture(page);
 let failures = 0;
 const check = (name, got, want) => {
   const ok = JSON.stringify(got) === JSON.stringify(want);
@@ -40,6 +42,7 @@ const ingress = await page.evaluate(async () => {
     const frames = new Map(); let frameId = 0, visible = true;
     const win = { requestAnimationFrame: (callback) => { frames.set(++frameId, callback); return frameId; }, cancelAnimationFrame: (id) => frames.delete(id) };
     const rt = new RocEngineRuntime({ drop: () => {} }, root, { window: win, environment: { visible: () => visible }, ...options });
+    __bindProtocolFixture(rt);
     const calls = [];
     rt.deliver = (node, handler, payload) => { if (payload.before) payload.before(); calls.push({ node, handler, payload }); };
     const add = (id) => rt.live.set(id, { cancel: () => {} });

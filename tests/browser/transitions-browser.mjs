@@ -1,3 +1,4 @@
+import { installProtocolFixture } from "./protocol-fixture.mjs";
 // The runtime's transition boundary, independently driven by wire fixtures.
 import http from "node:http";
 import fs from "node:fs";
@@ -23,6 +24,7 @@ const check = (name, actual, expected) => {
 try {
   const page = await browser.newPage();
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await installProtocolFixture(page);
   await page.evaluate(async () => {
     const { RocEngineRuntime } = await import("/runtime.mjs");
     const enc = new TextEncoder();
@@ -50,6 +52,7 @@ try {
         const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
       } });
       const rt = new RocEngineRuntime(x, root, { manualEffects: true, ...options, document: doc });
+      __bindProtocolFixture(rt);
       const original = rt.perform.bind(rt);
       rt.perform = fx => { effects.push([fx.op, root.childNodes.length]); original(fx); };
       rt.deliver = (node, handler, payload) => calls.push([node, handler, payload]);

@@ -1,3 +1,4 @@
+import { installProtocolFixture } from "./protocol-fixture.mjs";
 // Keyboard dispatch against raw wire commands isolates the browser adapter
 // from the engine's separately checked payload decoder and authoring API.
 import http from "node:http";
@@ -25,6 +26,7 @@ const check = (name, actual, expected) => {
 try {
   const page = await browser.newPage();
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await installProtocolFixture(page);
   await page.evaluate(async () => {
     const { RocEngineRuntime } = await import("/runtime.mjs");
     const utf8 = new TextEncoder();
@@ -43,6 +45,7 @@ try {
       const memory = new WebAssembly.Memory({ initial: 2 }); let length = 0;
       const exports = { memory, cmd_ptr: () => 0, cmd_len: () => length, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
       const rt = new RocEngineRuntime(exports, root, { manualEffects: true });
+      __bindProtocolFixture(rt);
       rt.controlListeners();
       rt.documentKeyListeners();
       const calls = [];
@@ -84,6 +87,19 @@ try {
     const result = [inside, outside, f.calls.length - before, f.calls.at(-1).heardKey]; f.end(); return result;
   });
   check("OutsideText duplicates retain order and every respects place", places, [false, true, 1, "x"]);
+  const inputPlaces = await page.evaluate(() => {
+    // This browser-owned input-type list is independent of the Roc facts.
+    const excluded = ["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "range", "color", "image"];
+    return [...excluded, "text", "search", "number", "date", "unknown"].map(type => {
+      const f = __keyFixture();
+      f.raw(f.elem(1, 0, "div"), f.elem(2, 1, "input"), f.prop(1, 4, f.entry("Escape", "----", "p", "o")), f.listen(1, 0));
+      f.rt.statics[2].type = type;
+      f.emit(2, "Escape");
+      const answer = [type, f.calls.length]; f.end(); return answer;
+    });
+  });
+  check("OutsideText matches every excluded input type and excludes text-entry controls", inputPlaces,
+    ["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "range", "color", "image"].map(type => [type, 1]).concat(["text", "search", "number", "date", "unknown"].map(type => [type, 0])));
   const modifiers = await page.evaluate(() => {
     const f = __keyFixture(); const { elem, prop, listen, entry } = f;
     f.raw(elem(1, 0, "div"), prop(1, 4, entry("?") + entry("é") + entry("л") + entry(" ") + entry("a", "--S-")), listen(1, 0));

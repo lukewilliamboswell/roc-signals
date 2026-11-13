@@ -1,3 +1,4 @@
+import { installProtocolFixture } from "./protocol-fixture.mjs";
 // Browser contracts for session drafts, cross-document storage reports,
 // leave guards, clipboard writes and bounded paste-text input. The fixture
 // consumes real protocol bytes; browser services and input remain real.
@@ -39,6 +40,7 @@ async function fixture() {
   const context = await browser.createBrowserContext();
   const page = await context.newPage();
   await page.goto(base);
+  await installProtocolFixture(page);
   await page.evaluate(async () => {
     const { RocEngineRuntime, PROTOCOL_VERSION, MAX_QUEUED } = await import("./runtime.mjs");
     const encoder = new TextEncoder();
@@ -48,7 +50,7 @@ async function fixture() {
     const section = (tag, bytes) => join(new Uint8Array([tag]), u32(bytes.length), bytes);
     window.__fixture = (options = {}, sessionKeys = [], localKeys = []) => {
       const memory = new WebAssembly.Memory({ initial: 4 });
-      const declarations = join(section(2, join(u32(localKeys.length), ...localKeys.map(str))), section(5, u32(0)), section(6, u32(0)), section(10, new Uint8Array([0, 0])), section(11, join(u32(sessionKeys.length), ...sessionKeys.map(str))));
+      const declarations = join(section(2, join(u32(localKeys.length), ...localKeys.map(str))), section(5, u32(0)), section(6, u32(0)), section(10, new Uint8Array([0, 0])), section(11, join(u32(sessionKeys.length), ...sessionKeys.map(str))), __protocolFixtureSection);
       new Uint8Array(memory.buffer).set(declarations);
       let length = declarations.length, payloadLength = 0, boot;
       const exports = { memory, protocol_version: () => PROTOCOL_VERSION, boot_keys: () => {}, cmd_ptr: () => 0, cmd_len: () => length,
@@ -451,7 +453,8 @@ try {
       await page.evaluate(url => { setTimeout(() => location.assign(url), 0); }, url);
       await page.waitForFunction(`location.pathname === ${JSON.stringify(url)}`);
     };
-    await page.goto(`${base}/activation/start`); const initial = await activation();
+    await page.goto(`${base}/activation/start`);
+    await installProtocolFixture(page); const initial = await activation();
     await navigate("/activation/unactivated"); const fresh = await activation(); const unasked = dialogs.length;
     await page.clickAt(await page.evaluate(() => { const r = document.querySelector("button").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }));
     const clicked = await activation();
