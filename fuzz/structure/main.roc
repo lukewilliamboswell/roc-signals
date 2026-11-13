@@ -227,7 +227,7 @@ flat = |n, g, inner| match n {
 			|d| {
 				tied = layer_i.lift().map2(d, |x, twice| "${x.to_str()}~${twice.to_str()}")
 				seen = tied.map2(layer_j.lift(), |both, y| "${pair_mark}${both}~${y.to_str()}")
-				Core.element("p", [], [Core.text_s(seen), Core.watch(seen, |text| [Title(text)], Core.ignore({}))])
+				Core.element("p", [], [Core.text_s(seen), Core.watch(seen, |text| [Core.command(Title(text))], Core.ignore({}))])
 			},
 		)
 	}
@@ -255,7 +255,7 @@ flat = |n, g, inner| match n {
 			} else if k == 2 or pure {
 				Core.resource(v, { init: 0.U64, pending: |_, a| a + 7, plan: |_| [], resolve: |s, _, _| s }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
 			} else if k == 3 {
-				Core.resource(v, { init: 0.U64, pending: |_, a| a * 10, plan: |_| [Timer(10)], resolve: |s, _, _| s + 1 }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+				Core.resource(v, { init: 0.U64, pending: |_, a| a * 10, plan: |_| [Core.timer(10)], resolve: |s, _, _| s + 1 }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
 			} else {
 				Core.resource(v, job_cfg, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
 			}
@@ -285,7 +285,7 @@ flat = |n, g, inner| match n {
 	}
 	Watch(k, i) => {
 		v = val_of(g, i)
-		plan = |x| [Title("t${x.to_str()}")]
+		plan = |x| [Core.command(Title("t${x.to_str()}"))]
 		if k % 3 == 0 {
 			Core.watch(v, plan, Core.ignore({}))
 		} else if k % 3 == 1 {
@@ -333,14 +333,19 @@ tripled = |input| {
 
 ## A layer that follows a worker job for its input: the output's byte sum,
 ## or a marker for a lost or timed-out job.
-job_cfg : { init : U64, pending : (U64, U64 -> U64), plan : (U64 -> List(Core.Request)), resolve : (U64, U64, Core.Result -> U64) }
+raw_result : Try(Core.Result, []) -> Core.Result
+raw_result = |answer| match answer {
+	Ok(result) => result
+}
+
+job_cfg : { init : U64, pending : (U64, U64 -> U64), plan : (U64 -> List(Core.Ask(Core.Result, []))), resolve : (U64, U64, Try(Core.Result, []) -> U64) }
 job_cfg = {
 	init: 0,
 	pending: |_, a| a + 3,
-	plan: |a| [tripler.request(Wire.Bytes.from_list([a.to_u8_wrap(), 1]))],
-	resolve: |s, _, res| match res {
+	plan: |a| [Core.raw(tripler.request(Wire.Bytes.from_list([a.to_u8_wrap(), 1])))],
+	resolve: |s, _, raw| match raw_result(raw) {
 		Work(_) =>
-			match tripler.result(res) {
+			match tripler.result(raw_result(raw)) {
 				Ok(out) => out.to_list().fold(0, |acc, x| acc + x.to_u64())
 				Err(_) => s + 3000
 			}

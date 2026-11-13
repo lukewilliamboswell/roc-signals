@@ -163,7 +163,7 @@ Todos := [TodoList].{
 				Engine.when(todos.map(|table| table.len() == 0), || Html.p("Nothing to do.", "empty"), || Engine.text("")),
 				Html.span_s(todos.map(Todos.remaining), [Engine.test_id("remaining")]),
 				# region persist
-				Engine.watch_changes(todos.map(Todos.encode), |text| [StorageSet("todos", text)], Engine.ignore({})),
+				Engine.watch_changes(todos.map(Todos.encode), |text| [Engine.command(StorageSet("todos", text))], Engine.ignore({})),
 				# endregion persist
 			],
 		)

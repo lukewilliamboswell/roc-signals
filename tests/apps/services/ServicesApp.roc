@@ -77,8 +77,8 @@ ServicesApp := [].{
 	press : State(Ctx, S), Str -> Engine.Attr(Ctx)
 	press = |st, ev| Engine.on(ev, st.update(|s| { ..s, presses: s.presses.append(ev) }))
 
-	shown : Engine.Result -> Str
-	shown = |r| match Engine.http_text(r) {
+	shown : Try(Str, Engine.HttpError) -> Str
+	shown = |r| match r {
 		Ok(body) => "ok:${body}"
 		Err(e) => Str.inspect(e)
 	}
@@ -95,20 +95,20 @@ ServicesApp := [].{
 			[
 				Engine.watch(
 					Engine.const({}),
-					|_| [OnlineChanges],
+					|_| [Engine.online_changes({})],
 					st.on_result(
 						|s, _, r| match r {
-							Online(on) => { ..s, online: on }
+							Ok(on) => { ..s, online: on }
 							_ => s
 						},
 					),
 				),
 				Engine.watch(
 					Engine.const({}),
-					|_| [VisibilityChanges],
+					|_| [Engine.visibility_changes({})],
 					st.on_result(
 						|s, _, r| match r {
-							Visible(vis) => { ..s, visible: vis }
+							Ok(vis) => { ..s, visible: vis }
 							_ => s
 						},
 					),
@@ -118,7 +118,7 @@ ServicesApp := [].{
 				Html.p_s(v.map(|s| if (s.storage_available) "storage available" else "storage unavailable"), [Engine.test_id("storage")]),
 				Engine.when(
 					v.map(|s| s.visible),
-					|| Engine.element("span", [], [Engine.watch(Engine.const({}), |_| [Interval(5000)], st.on_result(|s, _, _| { ..s, polls: s.polls + 1 }))]),
+					|| Engine.element("span", [], [Engine.watch(Engine.const({}), |_| [Engine.interval(5000)], st.on_result(|s, _, _| { ..s, polls: s.polls + 1 }))]),
 					|| Engine.text(""),
 				),
 				Html.p_s(v.map(|s| s.polls.to_str()), [Engine.test_id("polls")]),
@@ -131,7 +131,7 @@ ServicesApp := [].{
 						"span",
 						[Engine.test_id("clock")],
 						[
-							Engine.watch(Engine.const({}), |_| [Interval(1000)], st.on_result(|s, _, _| { ..s, ticks: s.ticks + 1 })),
+							Engine.watch(Engine.const({}), |_| [Engine.interval(1000)], st.on_result(|s, _, _| { ..s, ticks: s.ticks + 1 })),
 							Engine.on_cleanup("clock cleanup", v.map(|s| s.ticks), ServicesApp.stopped),
 							Engine.text("running"),
 						],
@@ -172,7 +172,7 @@ ServicesApp := [].{
 				Html.button("Fetch", [], st.update(|s| { ..s, fetches: s.fetches + 1 })),
 				Engine.watch_changes(
 					v.map(|s| s.fetches),
-					|n| [Engine.http({ url: "/api/item/${n.to_str()}", timeout: Ms(100) })],
+					|n| [Engine.http_body({ url: "/api/item/${n.to_str()}", timeout: Ms(100) })],
 					st.on_result(|s, _, r| { ..s, fetched: ServicesApp.shown(r) }),
 				),
 				Html.p_s(v.map(|s| s.fetched), [Engine.test_id("fetched")]),
@@ -188,7 +188,19 @@ ServicesApp := [].{
 				Engine.element("input", [Html.aria_label("Commit"), Engine.attr("type", "text"), Html.on_change(st.set_value(|s, t| { ..s, committed: t }))], []),
 				Html.p_s(v.map(|s| s.committed), [Engine.test_id("committed")]),
 				Html.button("Delay", [], st.update(|s| { ..s, delays: s.delays + 1 })),
-				Engine.watch_changes(v.map(|s| s.delays), |_| [Timer(1000)], st.on_result(|s, _, r| { ..s, delayed: Str.inspect(r) })),
+				Engine.watch_changes(
+					v.map(|s| s.delays),
+					|_| [Engine.timer(1000)],
+					st.on_result(
+						|s, _, r| {
+							..s,
+							delayed: match r {
+								Ok(at) => Str.inspect(Fired(at))
+								Err(Refused) => "Refused"
+							},
+						},
+					),
+				),
 				Html.p_s(v.map(|s| s.delayed), [Engine.test_id("delayed")]),
 				ServicesApp.two_states({}),
 				ServicesApp.transition_probe({}),
@@ -204,7 +216,7 @@ ServicesApp := [].{
 			"div",
 			[],
 			[
-				Engine.watch(st.signal(), |_| [ViewTransition(["services"])], st.on_result(|s, _, _| s)),
+				Engine.watch(st.signal(), |_| [Engine.command(ViewTransition(["services"]))], st.on_result(|s, _, _| s)),
 				Html.button("Animate turn", [], st.update(|n| n + 1)),
 			],
 		),
@@ -244,22 +256,22 @@ ServicesApp := [].{
 				Html.p_s(st.signal().map(|s| s.clock.to_str()), [Engine.test_id("sample-time")]),
 				Engine.watch(
 					st.signal().map(|s| s.request),
-					|_| [Timer(0)],
+					|_| [Engine.timer(0)],
 					st.on_result(
 						|s, _, result| match result {
-							Fired(clock) => { ..s, clock }
-							Refused => s
+							Ok(clock) => { ..s, clock }
+							Err(Refused) => s
 							_ => crash "environment probe expected a timer result"
 						},
 					),
 				),
 				Engine.watch(
 					Engine.const({}),
-					|_| [Interval(1000)],
+					|_| [Engine.interval(1000)],
 					st.on_result(
 						|s, _, result| match result {
-							Fired(clock) => { ..s, clock }
-							Refused => s
+							Ok(clock) => { ..s, clock }
+							Err(Refused) => s
 							_ => crash "environment probe expected an interval result"
 						},
 					),
@@ -318,11 +330,11 @@ ServicesApp := [].{
 			[
 				Engine.watch(
 					Engine.const({}),
-					|_| [StorageChanges("document")],
+					|_| [Engine.storage_changes("document")],
 					state.on_result(
 						|prior, _, result| match result {
-							Value(value) => value
-							Missing => "missing"
+							Ok(Set(value)) => value
+							Ok(Removed) => "missing"
 							_ => prior
 						},
 					),

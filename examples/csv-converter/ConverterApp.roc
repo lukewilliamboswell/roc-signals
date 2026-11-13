@@ -199,10 +199,17 @@ ConverterApp := [].{
 				Engine.watch_latest(
 					source.map(|s| s.sample),
 					|sample| match sample {
-						Loading => [File.fetch({ url: "sample.csv" })]
+						Loading => [
+							File.fetch({ url: "sample.csv" }).map(
+								|response| match response {
+									Ok({ status: code, body, .. }) => if (code >= 200 and code < 300) Ok(body) else Err(Status(code))
+									Err(error) => Err(error)
+								},
+							),
+						]
 						Idle => []
 					},
-					Engine.react(|_, res| AppStore.sample_arrived(Engine.fetched(res))).with_progress({}, Engine.react_progress(|_, transfer| AppStore.sample_progress(transfer))),
+					Engine.react(|_, res| AppStore.sample_arrived(res)).with_progress({}, Engine.react_progress(|_, transfer| AppStore.sample_progress(transfer))),
 				),
 				Html.p_s(source.map(|s| s.note), [Engine.class("muted"), Engine.test_id("note")]),
 			],
@@ -255,7 +262,7 @@ preview = |output| Engine.state(
 					Err(NoAnswer) => []
 				},
 				lines.on_result(
-					|_, _, res| match Engine.file_bytes(res) {
+					|_, _, res| match res {
 						Ok(bytes) => ConverterApp.first_lines(bytes, 6)
 						Err(_) => ""
 					},
@@ -303,7 +310,7 @@ result = |{}| Worker.resource_when(
 					),
 					preview(remote.map(|latest| latest.answered().map_ok(|c| c.output))),
 					# Saving, in the turn of the click that asked for it.
-					Engine.on_post(save.signal(), |out| [File.save(out, {})], Engine.ignore({})),
+					Engine.on_post(save.signal(), |out| [Engine.command(File.save(out, {}))], Engine.ignore({})),
 				],
 			)
 		},

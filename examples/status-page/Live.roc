@@ -90,10 +90,10 @@ Live :: {
 
 	## A timer fires a new attempt. Refusal stops here, rather than
 	## retrying into the same full in-flight table.
-	retried : Live, Engine.Result -> Live
+	retried : Live, Try(I64, [Refused]) -> Live
 	retried = |live, result| match (live.retry, result) {
-		(Waiting({ attempt, delay_ms: _ }), Fired(_)) => { ..live, retry: Connecting(attempt), generation: live.generation + 1, after: last_seq(live.window) }
-		(Waiting(_), Refused) => { ..live, retry: GaveUp, stopped: Refused }
+		(Waiting({ attempt, delay_ms: _ }), Ok(_)) => { ..live, retry: Connecting(attempt), generation: live.generation + 1, after: last_seq(live.window) }
+		(Waiting(_), Err(Refused)) => { ..live, retry: GaveUp, stopped: Refused }
 		_ => live
 	}
 
@@ -230,8 +230,8 @@ panel = |live, visible| {
 							),
 							|| Engine.watch_latest(
 								lv.map(|l| { generation: l.generation, after: l.after }),
-								|issue| [Latency.readings.subscribe({ seed: Latency.seed, after: issue.after })],
-								live.on_result(|l, _, res| Live.receive(l, Latency.readings.message(res))),
+								|issue| [Latency.readings.ask({ seed: Latency.seed, after: issue.after })],
+								live.on_result(|l, _, res| Live.receive(l, res)),
 							),
 							|| Html.div("hidden", []),
 						),
@@ -249,7 +249,7 @@ panel = |live, visible| {
 										_ => 0
 									},
 								),
-								|ms| [Timer(ms)],
+								|ms| [Engine.timer(ms)],
 								live.on_result(|l, _, res| Live.retried(l, res)),
 							),
 							|| Html.div("hidden", []),
@@ -261,15 +261,15 @@ panel = |live, visible| {
 									_ => True
 								},
 							),
-							|| Engine.watch(Engine.const(Live.redraw_ms), |ms| [Interval(ms)], live.on_result(|l, _, _| Live.draw(l))),
+							|| Engine.watch(Engine.const(Live.redraw_ms), |ms| [Engine.interval(ms)], live.on_result(|l, _, _| Live.draw(l))),
 							|| Html.div("hidden", []),
 						),
 					],
 				),
 				|| Html.div("hidden", []),
 			),
-			Engine.on_post(lv.map(|l| l.outage), |cut| [Latency.drop.send(cut)], Engine.ignore({})),
-			Engine.watch_changes(visible, |_| [Self], live.on_result(|l, showing, _| Live.shown(l, showing))),
+			Engine.on_post(lv.map(|l| l.outage), |cut| [Engine.command(Latency.drop.send(cut))], Engine.ignore({})),
+			Engine.watch_changes(visible, |_| [Engine.again({})], live.on_result(|l, showing, _| Live.shown(l, showing))),
 		],
 	)
 }
@@ -333,7 +333,7 @@ expect {
 ## A refusal stops retries and tells the truth about why they stopped.
 expect {
 	waiting = Live.receive(Live.init, Err(Closed))
-	stopped = Live.retried(waiting, Refused)
+	stopped = Live.retried(waiting, Err(Refused))
 	(stopped.retry, Live.status_text(stopped)) == (GaveUp, "Reconnect stopped: too many requests were in flight")
 }
 
@@ -341,7 +341,7 @@ expect {
 expect {
 	var $live = Live.receive(Live.init, Err(Closed))
 	for _attempt in 1..=5 {
-		$live = Live.receive(Live.retried($live, Fired(0)), Err(Closed))
+		$live = Live.receive(Live.retried($live, Ok(0)), Err(Closed))
 	}
 	($live.retry, Live.status_text($live), Live.reconnect($live).retry) == (GaveUp, "Gave up after 5 attempts", Connecting(0))
 }

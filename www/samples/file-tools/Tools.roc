@@ -27,12 +27,27 @@ Tools := [].{
 	## The request for what the user asked. Upload, digest and preview act on
 	## the file where the browser keeps it; only `read_utf8` brings its bytes
 	## into the page.
-	plan : Doing -> List(Engine.Request)
+	plan : Doing -> List(Engine.Ask(Shown, Shown))
 	plan = |doing| match doing {
-		Uploading(file) => [file.upload({ url: "/files/${file.name()}", method: "PUT", headers: [("content-type", file.mime())], timeout: Ms(60000) })]
-		Digesting(file) => [file.sha256()]
-		Previewing(file) => [file.object_url()]
-		Reading(file) => [file.read_utf8({})]
+		Uploading(file) => [
+			file.upload({ url: "/files/${file.name()}", method: "PUT", headers: [("content-type", file.mime())], timeout: Ms(60000) }).map(
+				|result| match result {
+					Ok({ status, body, .. }) => if (status >= 200 and status < 300) Ok(Uploaded(body)) else Err(Failed("The upload failed: ${Str.inspect(Status(status))}"))
+					Err(error) => Err(Failed("The upload failed: ${Str.inspect(error)}"))
+				},
+			),
+		]
+		Digesting(file) => [file.sha256().map_ok(|bytes| Digest(Tools.hex(bytes))).map_err(|error| Failed("No digest: ${Str.inspect(error)}"))]
+		Previewing(file) => [file.object_url().map_ok(|url| Preview(file, url)).map_err(|error| Failed("No preview: ${Str.inspect(error)}"))]
+		Reading(file) => [
+			file.read_utf8({}).map_ok(|text| Text(text)).map_err(
+				|error| match error {
+					TooLarge => Failed("The file is too large to read on the page.")
+					InvalidUtf8 => Failed("The file is not text.")
+					other => Failed("The file could not be read: ${Str.inspect(other)}")
+				},
+			),
+		]
 		Nothing => []
 	}
 	# endregion requests
@@ -42,31 +57,10 @@ Tools := [].{
 	## URL: the URL works while some value holds the file.
 	Shown : [Idle, Busy, Uploaded(Str), Digest(Str), Preview(File, Str), Text(Str), Failed(Str)]
 
-	answer : Doing, Engine.Result -> Shown
-	answer = |doing, res| match doing {
-		Uploading(_) =>
-			match Engine.http_text(res) {
-				Ok(body) => Uploaded(body)
-				Err(e) => Failed("The upload failed: ${Str.inspect(e)}")
-			}
-		Digesting(_) =>
-			match Engine.file_digest(res) {
-				Ok(bytes) => Digest(Tools.hex(bytes))
-				Err(e) => Failed("No digest: ${Str.inspect(e)}")
-			}
-		Previewing(file) =>
-			match Engine.file_url(res) {
-				Ok(url) => Preview(file, url)
-				Err(e) => Failed("No preview: ${Str.inspect(e)}")
-			}
-		Reading(_) =>
-			match Engine.file_text(res) {
-				Ok(text) => Text(text)
-				Err(TooLarge) => Failed("The file is too large to read on the page.")
-				Err(InvalidUtf8) => Failed("The file is not text.")
-				Err(e) => Failed("The file could not be read: ${Str.inspect(e)}")
-			}
-		Nothing => Idle
+	answer : Try(Shown, Shown) -> Shown
+	answer = |result| match result {
+		Ok(shown) => shown
+		Err(shown) => shown
 	}
 	# endregion answers
 
@@ -114,7 +108,7 @@ Tools := [].{
 						init: Idle,
 						pending: |_, doing| if (doing == Nothing) Idle else Busy,
 						plan: Tools.plan,
-						resolve: |_, doing, res| Tools.answer(doing, res),
+						resolve: |_, _, res| Tools.answer(res),
 					},
 					|shown| Html.div(
 						"result",

@@ -188,12 +188,11 @@ ReadingList := [Books].{
 	## A zero-delay timer supplies the action's time, a task after submission.
 	## Refusal uses the last sample instead. Roc supplies the complete book;
 	## the database only stores it. Every answer consumes a fresh stream word.
-	stamped : { at : StampReading, form : BookStorage.NewBook, result : Engine.Result } -> List(Engine.Write(_))
+	stamped : { at : StampReading, form : BookStorage.NewBook, result : Try(I64, [Refused]) } -> List(Engine.Write(_))
 	stamped = |{ at, form, result }| {
 		time = match result {
-			Fired(now) => now
-			Refused => at.clock
-			_ => crash "ReadingList.stamped: Timer(0) returned another result"
+			Ok(now) => now
+			Err(Refused) => at.clock
 		}
 		next = next_id(at.state)
 		book : BookStorage.Book
@@ -255,12 +254,12 @@ ReadingList := [Books].{
 	send = |commands| ReadingList.cells.writes.update(|box| box.post(commands))
 
 	## The requests for one change's commands.
-	requests : List(Command) -> List(Engine.Request)
+	requests : List(Command) -> List(Engine.Ask(output, error))
 	requests = |commands|
 		commands.map(
 			|command| match command {
-				Put(book) => BookStorage.put.send(book)
-				Delete(id) => BookStorage.remove.send({ id: id })
+				Put(book) => Engine.command(BookStorage.put.send(book))
+				Delete(id) => Engine.command(BookStorage.remove.send({ id: id }))
 			},
 		)
 
@@ -482,11 +481,11 @@ expect {
 ## uses the last sample and still consumes the next id rather than reusing one.
 expect {
 	ready = after_load(ReadingList.start({ seed: 7, now_ms: -900 }), Ok([]))
-	stamp : Engine.Store(_, _), Engine.Result -> Engine.Store(_, _)
+	stamp : Engine.Store(_, _), Try(I64, [Refused]) -> Engine.Store(_, _)
 	stamp = |at, result| at.after(ReadingList.stamped({ at: { state: at.read(ReadingList.cells.id_state), clock: at.read(ReadingList.cells.clock) }, form: { title: "Dune", author: "" }, result }))
-	first = stamp(ready, Fired(10))
-	refused = stamp(first, Refused)
-	backwards = stamp(refused, Fired(-2))
+	first = stamp(ready, Ok(10))
+	refused = stamp(first, Err(Refused))
+	backwards = stamp(refused, Ok(-2))
 	actual =
 		\\first: ${Str.inspect(first.read(ReadingList.cells.adding).last())}
 		\\refused: ${Str.inspect(refused.read(ReadingList.cells.adding).last())}
@@ -506,7 +505,7 @@ expect {
 	seed : U128
 	seed = 7
 	ready = ReadingList.start({ seed: seed.shl_wrap(64), now_ms: -900 })
-	stamped = ready.after(ReadingList.stamped({ at: { state: ready.read(ReadingList.cells.id_state), clock: ready.read(ReadingList.cells.clock) }, form: { title: "Dune", author: "" }, result: Refused }))
+	stamped = ready.after(ReadingList.stamped({ at: { state: ready.read(ReadingList.cells.id_state), clock: ready.read(ReadingList.cells.clock) }, form: { title: "Dune", author: "" }, result: Err(Refused) }))
 	stamped.read(ReadingList.cells.adding).last() == Posted({ id: "b-63cbe1e459320dd7", title: "Dune", author: "", shelf: WantToRead, added_ms: -900 })
 }
 

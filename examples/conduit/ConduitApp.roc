@@ -175,23 +175,23 @@ ConduitApp := [].{
 	## A load site: issue a GET whenever the request record changes; store
 	## the decoded result only while it is still the current request, which
 	## `store` decides from where the reader is when the answer arrives.
-	load_site : Signal(Engine.StoreRoot(_), LoadReq), (M, Here, LoadReq, Engine.Result -> M) -> Elem(Engine.StoreRoot(_))
+	load_site : Signal(Engine.StoreRoot(_), LoadReq), (M, Here, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M) -> Elem(Engine.StoreRoot(_))
 	load_site = |req, store| Engine.watch(
 		req,
 		|r| if (r.uri.is_empty()) [] else [Api.get_request(r.uri, r.token)],
 		Engine.react_by(ConduitApp.here, |at, asked, res| [ConduitApp.pages.update(|m| store(m, at, asked, res))]),
 	)
 
-	store_feed : M, Here, LoadReq, Engine.Result -> M
+	store_feed : M, Here, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M
 	store_feed = |m, w, r, res| if (ConduitApp.feed_req(w).key != r.key) m else ConduitApp.set_loads(m, |l| { ..l, feed: { key: r.key, value: Api.decode_feed_response(Api.response_of(res)) } })
 
-	store_tags : M, Here, LoadReq, Engine.Result -> M
+	store_tags : M, Here, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M
 	store_tags = |m, _, r, res| ConduitApp.set_loads(m, |l| { ..l, tags: { key: r.key, value: Api.decode_get(Api.response_of(res), Api.decode_tags) } })
 
-	store_profile : M, Here, LoadReq, Engine.Result -> M
+	store_profile : M, Here, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M
 	store_profile = |m, w, r, res| if (ConduitApp.profile_req(w, m).key != r.key) m else ConduitApp.set_loads(m, |l| { ..l, profile: { key: r.key, value: Api.decode_get(Api.response_of(res), Api.decode_profile) } })
 
-	store_articles : M, Here, LoadReq, Engine.Result -> M
+	store_articles : M, Here, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M
 	store_articles = |m, w, r, res| if (ConduitApp.articles_req(w).key != r.key) m else ConduitApp.set_loads(m, |l| { ..l, articles: { key: r.key, value: Api.decode_get(Api.response_of(res), Api.decode_feed) } })
 
 	feed_remote : Here, M -> Api.Remote(Api.FeedPage)
@@ -203,13 +203,13 @@ ConduitApp := [].{
 		if (slug.is_empty()) ConduitApp.no_req else { key: Api.article_uri(slug), uri: Api.article_uri(slug), token: "" }
 	}
 
-	store_edit : M, Here, LoadReq, Engine.Result -> M
+	store_edit : M, Here, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M
 	store_edit = |m, w, r, res| if (ConduitApp.edit_req(w).key != r.key) m else ConduitApp.set_loads(m, |l| { ..l, article: { key: r.key, value: Api.decode_get(Api.response_of(res), Api.decode_article) } })
 
 	## ------------------------------------------------------------------
 	## Mutations.
 
-	plan_submit : Submit -> List(Engine.Request)
+	plan_submit : Submit -> List(Engine.Ask(Engine.Response, Engine.HttpFailure))
 	plan_submit = |s| {
 		if s.serial == 0 {
 			[]
@@ -223,7 +223,7 @@ ConduitApp := [].{
 	next : Submit, Str, Str, Str, Str -> Submit
 	next = |prev, method, url, body, token| { serial: prev.serial + 1, method, url, body, token }
 
-	submit_site : Signal(Engine.StoreRoot(_), Submit), Reaction(Engine.StoreRoot(_), Submit) -> Elem(Engine.StoreRoot(_))
+	submit_site : Signal(Engine.StoreRoot(_), Submit), Reaction(Engine.StoreRoot(_), Submit, Try(Engine.Response, Engine.HttpFailure)) -> Elem(Engine.StoreRoot(_))
 	submit_site = |sub, react| Engine.watch(sub, ConduitApp.plan_submit, react)
 
 	classify_favorite : Api.ResponseState, Str -> FavoriteResult
@@ -300,7 +300,7 @@ ConduitApp := [].{
 	## a root follow-up turn (`incoming`): home mounts anonymous (feed and
 	## tags) and then asks for the feed again with the token. The sign-in
 	## spec pins that order.
-	auth_answered : M, Submit, Engine.Result -> List(Engine.Write(_))
+	auth_answered : M, Submit, Try(Engine.Response, Engine.HttpFailure) -> List(Engine.Write(_))
 	auth_answered = |m, req, res| {
 		if req.serial != m.auth.sub.serial {
 			[]
@@ -323,7 +323,7 @@ ConduitApp := [].{
 		{ ..m, settings: { ..s, sub: ConduitApp.next(s.sub, "PUT", "/api/user", ConduitApp.update_body(s), ConduitApp.token_of(w.session)) } }
 	}
 
-	react_settings : M, Submit, Engine.Result -> M
+	react_settings : M, Submit, Try(Engine.Response, Engine.HttpFailure) -> M
 	react_settings = |m, req, res| if (req.serial != m.settings.sub.serial) m else { ..m, settings: { ..m.settings, result: Api.classify_auth(Api.response_of(res)) } }
 
 	parse_tags : Str -> List(Str)
@@ -347,7 +347,7 @@ ConduitApp := [].{
 	## What an answer to a published article writes: the form records it,
 	## and an accepted article is where the reader asks to go next. An
 	## answer to anything but the latest submission writes nothing.
-	editor_answered : M, Submit, Engine.Result -> List(Engine.Write(_))
+	editor_answered : M, Submit, Try(Engine.Response, Engine.HttpFailure) -> List(Engine.Write(_))
 	editor_answered = |m, req, res| {
 		if req.serial != m.editor.sub.serial {
 			[]
@@ -373,7 +373,7 @@ ConduitApp := [].{
 		_ => m
 	}
 
-	react_follow : M, Submit, Engine.Result -> M
+	react_follow : M, Submit, Try(Engine.Response, Engine.HttpFailure) -> M
 	react_follow = |m, req, res| {
 		if req.serial != m.prof.follow.serial {
 			m
@@ -399,7 +399,7 @@ ConduitApp := [].{
 		"${prefix} ${article.title} (${article.favorites_count.to_str()})"
 	}
 
-	react_row_fav : FavState, Submit, Engine.Result -> FavState
+	react_row_fav : FavState, Submit, Try(Engine.Response, Engine.HttpFailure) -> FavState
 	react_row_fav = |s, req, res| if (req.serial != s.req.serial) s else { ..s, result: ConduitApp.classify_favorite(Api.response_of(res), "The server response could not be read.") }
 
 	## Pagination.
@@ -1069,10 +1069,13 @@ ConduitApp := [].{
 	all_kinds : List(Route.Kind)
 	all_kinds = [Home, Login, Register, Settings, EditorNew, EditorEdit, Article, Profile, ProfileFavorites, NotFound]
 
-	storage_plan : Session -> List(Engine.Request)
-	storage_plan = |s| match s {
-		SignedIn(u) => [StorageSet(AppStore.jwt_key, u.token), StorageSet(AppStore.username_key, u.username)]
-		Anonymous => [StorageRemove(AppStore.jwt_key), StorageRemove(AppStore.username_key)]
+	storage_plan : Session -> List(Engine.Ask(output, error))
+	storage_plan = |session| {
+		commands = match session {
+			SignedIn(u) => [StorageSet(AppStore.jwt_key, u.token), StorageSet(AppStore.username_key, u.username)]
+			Anonymous => [StorageRemove(AppStore.jwt_key), StorageRemove(AppStore.username_key)]
+		}
+		commands.map(Engine.command)
 	}
 
 	## The whole app. Who is signed in, where the reader is, the navigation
@@ -1088,23 +1091,23 @@ ConduitApp := [].{
 				## Root effects: popstate, history push, guard redirect, title, session storage.
 				Engine.watch(
 					Engine.const(0.U8),
-					|_| [Popstate],
+					|_| [Engine.popstate({})],
 					Engine.react_by(
 						ConduitApp.here,
 						|at, _, res| match res {
-							Location(url) => AppStore.moved(at, url)
-							_ => []
+							Ok(url) => AppStore.moved(at, url)
+							Err(Refused) => []
 						},
 					),
 				),
-				Engine.on_post(AppStore.cells.nav.signal(), |url| [Push(url), Self], Engine.react_by(ConduitApp.here, |at, url, _| AppStore.moved(at, url))),
-				Engine.watch(ConduitApp.here.map(|w| ConduitApp.guard_for(w.loc, w.session)), |u| if (u.is_empty()) [] else [Replace(u), Self], Engine.react_by(ConduitApp.here, |at, u, _| if (!u.is_empty() and ConduitApp.guard_for(at.loc, at.session) == u) AppStore.moved(at, u) else [])),
-				Engine.watch(ConduitApp.here.map2(AppStore.cells.article.cells.story.signal(), ConduitApp.title_of), |t| [Title(t)], Engine.ignore({})),
+				Engine.on_post(AppStore.cells.nav.signal(), |url| [Engine.command(Push(url)), Engine.again({})], Engine.react_by(ConduitApp.here, |at, url, _| AppStore.moved(at, url))),
+				Engine.watch(ConduitApp.here.map(|w| ConduitApp.guard_for(w.loc, w.session)), |u| if (u.is_empty()) [] else [Engine.command(Replace(u)), Engine.again({})], Engine.react_by(ConduitApp.here, |at, u, _| if (!u.is_empty() and ConduitApp.guard_for(at.loc, at.session) == u) AppStore.moved(at, u) else [])),
+				Engine.watch(ConduitApp.here.map2(AppStore.cells.article.cells.story.signal(), ConduitApp.title_of), |t| [Engine.command(Title(t))], Engine.ignore({})),
 				Engine.watch_changes(session, ConduitApp.storage_plan, Engine.ignore({})),
 				Engine.watch_changes(
 					AppStore.cells.incoming.signal(),
 					|s| match s {
-						SignedIn(_) => [Self]
+						SignedIn(_) => [Engine.again({})]
 						Anonymous => []
 					},
 					Engine.react(|s, _| [AppStore.cells.session.set(s), AppStore.cells.incoming.set(Anonymous)]),
@@ -1131,14 +1134,14 @@ ConduitApp := [].{
 }
 
 ## An answer to an older sign-in writes nothing.
-expect ConduitApp.auth_answered(Pages.init(""), { ..Pages.no_submit, serial: 7 }, Timeout).is_empty()
+expect ConduitApp.auth_answered(Pages.init(""), { ..Pages.no_submit, serial: 7 }, Err(Timeout)).is_empty()
 
 ## An accepted sign-in records the answer, asks to go home and brings the user in.
 expect {
 	body = "{\"user\":{\"email\":\"kim@conduit.test\",\"token\":\"jwt\",\"username\":\"kim\",\"bio\":\"\",\"image\":\"\"}}"
-	after = AppStore.store.after(ConduitApp.auth_answered(Pages.init(""), Pages.no_submit, Http({ status: 200, headers: [], body })))
+	after = AppStore.store.after(ConduitApp.auth_answered(Pages.init(""), Pages.no_submit, Ok({ status: 200, headers: [], body })))
 	after.read(AppStore.cells.incoming) == Session.SignedIn({ token: "jwt", username: "kim" }) and after.read(AppStore.cells.nav).last() == Posted(AppStore.home_url)
 }
 
 ## A rejected sign-in records the answer and nothing else.
-expect ConduitApp.auth_answered(Pages.init(""), Pages.no_submit, Http({ status: 422, headers: [], body: "{\"errors\":{\"body\":[\"bad\"]}}" })).len() == 1
+expect ConduitApp.auth_answered(Pages.init(""), Pages.no_submit, Ok({ status: 422, headers: [], body: "{\"errors\":{\"body\":[\"bad\"]}}" })).len() == 1

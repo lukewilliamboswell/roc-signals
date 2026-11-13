@@ -70,11 +70,10 @@ AppStore := [FieldNotes].{
 
 	## Timer refusal keeps the capture usable with the most recent sample;
 	## successful callbacks always take their own newly sampled time.
-	capture_answer : { id : Str, clock : I64, result : Engine.Result } -> List(Engine.Write(_))
+	capture_answer : { id : Str, clock : I64, result : Try(I64, [Refused]) } -> List(Engine.Write(_))
 	capture_answer = |{ id, clock, result }| match result {
-		Fired(at_ms) => AppStore.stamped({ id, at_ms })
-		Refused => AppStore.stamped({ id, at_ms: clock })
-		_ => []
+		Ok(at_ms) => AppStore.stamped({ id, at_ms })
+		Err(Refused) => AppStore.stamped({ id, at_ms: clock })
 	}
 
 	## Clock samples are separate from the board, so ticks reach only holes
@@ -263,6 +262,6 @@ expect {
 	initial = AppStore.start({ seed: 7, now_ms: -1 })
 	id = Notes.next_id(initial.read(AppStore.cells.board))
 	saved = initial.after(AppStore.saved({ draft: "one", id, has_room: True }))
-	answered = saved.after(AppStore.capture_answer({ id, clock: saved.read(AppStore.cells.clock), result: Refused }))
+	answered = saved.after(AppStore.capture_answer({ id, clock: saved.read(AppStore.cells.clock), result: Err(Refused) }))
 	answered.read(AppStore.cells.board).notes.map(|note| note.captured) == [At(-1)]
 }

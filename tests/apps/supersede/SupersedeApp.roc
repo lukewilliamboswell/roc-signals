@@ -61,8 +61,8 @@ SupersedeApp := [].{
 	initial : S
 	initial = { query: "", results: "", rate: 0, ticks: 0, item: "", rows: [], panel: False, picked: "1", solo: False, late: False, inner: False, case: "plain", flood: [], refused: 0, answered: 0 }
 
-	answer_of : Str, Engine.Result -> Str
-	answer_of = |id, res| match Engine.http_text(res) {
+	answer_of : Str, Try(Str, Engine.HttpError) -> Str
+	answer_of = |id, res| match res {
 		Ok(body) => "${id}:${body}"
 		Err(e) => "${id}:${Str.inspect(e)}"
 	}
@@ -70,14 +70,15 @@ SupersedeApp := [].{
 	## The resource configuration every item view uses: a request and a 2 s
 	## slow-answer timer per item. The timer's tick after the answer changes
 	## nothing, so its fold returns the layer unchanged and readers prune.
-	item_cfg : { init : Load, pending : (Load, Str -> Load), plan : (Str -> List(Engine.Request)), resolve : (Load, Str, Engine.Result -> Load) }
+	item_cfg : { init : Load, pending : (Load, Str -> Load), plan : (Str -> List(Engine.Ask([Body(Str), Slow], Engine.HttpError))), resolve : (Load, Str, Try([Body(Str), Slow], Engine.HttpError) -> Load) }
 	item_cfg = {
 		init: SupersedeApp.idle,
 		pending: |s, id| { ..s, pending: id, slow: False },
-		plan: |id| if (id == "") [] else [Engine.http({ url: "/item/${id}", timeout: Ms(1000) }), Timer(2000)],
+		plan: |id| if (id == "") [] else [Engine.http_body({ url: "/item/${id}", timeout: Ms(1000) }).map_ok(|body| Body(body)), Engine.timer(2000).map_ok(|_| Slow)],
 		resolve: |s, id, res| match res {
-			Fired(_) => if (s.pending == "") s else { ..s, slow: True }
-			_ => { pending: "", answer: SupersedeApp.answer_of(id, res), previous: s.answer, slow: False }
+			Ok(Slow) => if (s.pending == "") s else { ..s, slow: True }
+			Ok(Body(body)) => { pending: "", answer: SupersedeApp.answer_of(id, Ok(body)), previous: s.answer, slow: False }
+			Err(error) => { pending: "", answer: SupersedeApp.answer_of(id, Err(error)), previous: s.answer, slow: False }
 		},
 	}
 
@@ -107,7 +108,7 @@ SupersedeApp := [].{
 				{
 					init: "",
 					pending: |_, (k, v)| "loading ${k}/${v.to_str()}",
-					plan: |(k, v)| [Engine.http({ url: "/row/${k}/${v.to_str()}" })],
+					plan: |(k, v)| [Engine.http_body({ url: "/row/${k}/${v.to_str()}" })],
 					resolve: |_, (k, v), res| SupersedeApp.answer_of("${k}/${v.to_str()}", res),
 				},
 				|l| Html.span_s(l, [Engine.test_id_s(key.lift().map(|k| "row ${k}"))]),
@@ -140,7 +141,7 @@ SupersedeApp := [].{
 			[
 				Html.button("Inc late", [], c.update(|n| n + 1)),
 				Html.p_s(c.signal().map(|n| "late ${n.to_str()}"), [Engine.test_id("late")]),
-				Engine.watch_changes(c.signal(), |n| [Title("late ${n.to_str()}")], Engine.ignore({})),
+				Engine.watch_changes(c.signal(), |n| [Engine.command(Title("late ${n.to_str()}"))], Engine.ignore({})),
 			],
 		),
 	)
@@ -155,7 +156,7 @@ SupersedeApp := [].{
 			Engine.derive(Engine.const(2.U64), |_| SupersedeApp.counter("derived")),
 			Engine.resource(
 				Engine.const("r"),
-				{ init: 0.U64, pending: |n, _| n, plan: |_| [Timer(50)], resolve: |n, _, _| n + 1 },
+				{ init: 0.U64, pending: |n, _| n, plan: |_| [Engine.timer(50)], resolve: |n, _, _| n + 1 },
 				|l| Engine.element(
 					"div",
 					[],
@@ -237,10 +238,10 @@ SupersedeApp := [].{
 									[
 										Engine.watch(
 											row.key(),
-											|k| [Engine.http({ url: "/deluge/${k}" })],
+											|k| [Engine.http_body({ url: "/deluge/${k}" })],
 											tally.lift_row().on_result(
 												|t, _, r| match r {
-													Refused => { ..t, refused: t.refused + 1 }
+													Err(Refused) => { ..t, refused: t.refused + 1 }
 													_ => { ..t, answered: t.answered + 1 }
 												},
 											),
@@ -268,7 +269,7 @@ SupersedeApp := [].{
 				Html.button("Clear", [], st.update(|s| { ..s, query: "" })),
 				Engine.watch_latest(
 					v.map(|s| s.query),
-					|q| if (q == "") [] else [Engine.http({ url: "/search?q=${q}", timeout: Ms(1000) })],
+					|q| if (q == "") [] else [Engine.http_body({ url: "/search?q=${q}", timeout: Ms(1000) })],
 					st.on_result(|s, q, r| { ..s, results: SupersedeApp.answer_of(q, r) }),
 				),
 				Html.p_s(v.map(|s| s.results), [Engine.test_id("results")]),
@@ -278,7 +279,7 @@ SupersedeApp := [].{
 				Html.button("Pause", [], st.update(|s| { ..s, rate: 0 })),
 				Engine.watch_latest(
 					v.map(|s| s.rate),
-					|r| if (r == 0) [] else [Interval(r)],
+					|r| if (r == 0) [] else [Engine.interval(r)],
 					st.on_result(|s, _, _| { ..s, ticks: s.ticks + 1 }),
 				),
 				Html.p_s(v.map(|s| s.ticks.to_str()), [Engine.test_id("ticks")]),
@@ -323,10 +324,10 @@ SupersedeApp := [].{
 								[
 									Engine.watch(
 										row.key(),
-										|k| [Engine.http({ url: "/flood/${k}" })],
+										|k| [Engine.http_body({ url: "/flood/${k}" })],
 										st.lift_row().on_result(
 											|s, _, r| match r {
-												Refused => { ..s, refused: s.refused + 1 }
+												Err(Refused) => { ..s, refused: s.refused + 1 }
 												_ => { ..s, answered: s.answered + 1 }
 											},
 										),

@@ -7,7 +7,7 @@ main = Engine.program_boot(
 	{},
 	|boot| {
 		initial = boot.url.count_utf8_bytes().to_u32_wrap()
-		Engine.watch(Engine.const(initial), |length| [Interval(length - length)], Engine.ignore({}))
+		Engine.watch(Engine.const(initial), |length| [Engine.interval(length - length)], Engine.ignore({}))
 	},
 )
 

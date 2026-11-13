@@ -41,12 +41,11 @@ Notes := [].{
 
 	## The timer supplies the action's time. Refusal uses the last sample,
 	## and the IndexedDB port receives the complete record without minting time.
-	stamped : S, { note : Note, result : Engine.Result } -> S
+	stamped : S, { note : Note, result : Try(I64, [Refused]) } -> S
 	stamped = |s, { note, result }| {
 		clock = match result {
-			Fired(at_ms) => at_ms
-			Refused => s.clock
-			_ => crash "Notes.stamped: Timer(0) returned another result"
+			Ok(at_ms) => at_ms
+			Err(Refused) => s.clock
 		}
 		{ ..s, clock, save: { ..note, saved_ms: clock } }
 	}
@@ -69,9 +68,9 @@ Notes := [].{
 				# Any tab's write moves the revision, which lists the notes again.
 				Engine.watch(
 					Engine.const({}),
-					|_| [Notes.changed.subscribe({})],
+					|_| [Notes.changed.ask({})],
 					st.on_result(
-						|s, _, res| match Notes.changed.message(res) {
+						|s, _, res| match res {
 							Ok(revision) => { ..s, revision }
 							Err(e) => { ..s, error: Str.inspect(e) }
 						},
@@ -79,13 +78,13 @@ Notes := [].{
 				),
 				Html.text_input(Engine.const("Note"), "text", v.map(|s| s.draft), [], st.set_value(|s, t| { ..s, draft: t })),
 				Html.button("Save", [], st.update(Notes.saved)),
-				Engine.on_post(v.map(|s| s.stamping), |_| [Timer(0)], st.on_result(|s, note, result| Notes.stamped(s, { note, result }))),
+				Engine.on_post(v.map(|s| s.stamping), |_| [Engine.timer(0)], st.on_result(|s, note, result| Notes.stamped(s, { note, result }))),
 				# Once stamped, hand the complete note to its storage call.
 				Engine.watch_changes(
 					v.map(|s| s.save),
-					|note| [Notes.put.request(note)],
+					|note| [Notes.put.ask(note)],
 					st.on_result(
-						|s, _, res| match Notes.put.result(res) {
+						|s, _, res| match res {
 							Ok({}) => s
 							Err(e) => { ..s, error: Str.inspect(e) }
 						},
@@ -113,8 +112,8 @@ Notes := [].{
 expect {
 	start = Notes.initial(10)
 	note = { id: "n1", title: "Draft", saved_ms: 10 }
-	fired = Notes.stamped(start, { note, result: Fired(-1) })
-	refused = Notes.stamped(fired, { note: { ..note, id: "n2" }, result: Refused })
+	fired = Notes.stamped(start, { note, result: Ok(-1) })
+	refused = Notes.stamped(fired, { note: { ..note, id: "n2" }, result: Err(Refused) })
 	{ fired: fired.save, refused: refused.save } == {
 		fired: { ..note, saved_ms: -1 },
 		refused: { ..note, id: "n2", saved_ms: -1 },

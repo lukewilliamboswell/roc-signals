@@ -65,8 +65,8 @@ StatusApp := [].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	poll = |url, answered| Engine.watch_latest(
 		StatusStore.cells.serial.signal(),
-		|_| [Engine.http({ url, cache: NoStore })],
-		Engine.react(|_serial, res| answered(Engine.http_text(res))),
+		|_| [Engine.http_body({ url, cache: NoStore })],
+		Engine.react(|_serial, res| answered(res)),
 	)
 
 	## One component row: name on the left, uptime and a state badge on the
@@ -225,7 +225,7 @@ StatusApp := [].{
 				# disposes the interval. Already-admitted checks finish.
 				Engine.when(
 					visible,
-					|| Html.div("hidden", [Engine.watch(Engine.const({}), |_| [Interval(5000)], Engine.react(|_, _| StatusStore.refreshed))]),
+					|| Html.div("hidden", [Engine.watch(Engine.const({}), |_| [Engine.interval(5000)], Engine.react(|_, _| StatusStore.refreshed))]),
 					|| Html.div("hidden", []),
 				),
 				StatusApp.poll("/api/status/api", |answer| StatusStore.answered(Api, Status.check_of(answer))),
@@ -235,11 +235,11 @@ StatusApp := [].{
 				StatusApp.poll("/api/status/incidents", |answer| [cells.feed.set(Status.feed_of(answer))]),
 				Engine.watch(
 					Engine.const({}),
-					|_| [VisibilityChanges],
+					|_| [Engine.visibility_changes({})],
 					Engine.react_by(
 						visible,
 						|was, _, res| match res {
-							Visible(now) => StatusStore.shown(was, now)
+							Ok(now) => StatusStore.shown(was, now)
 							_ => []
 						},
 					),

@@ -913,16 +913,15 @@ media_program = |_args| {
 						state.signal().map(|value| value.shown),
 						|| Engine.watch_latest(
 							state.signal().map(|value| value.query),
-							|query| if (query == NoQuery) [] else [MediaChanges(media_query(query)), MediaChanges(media_query(query))],
+							|query| if (query == NoQuery) [] else [Engine.media_changes(media_query(query)), Engine.media_changes(media_query(query))],
 							state.on_result(
 								|value, _query, result| {
 									..value,
 									answers: "${value.answers}${
 										match result {
-											Matches(True) => "T"
-											Matches(False) => "F"
-											Refused => "R"
-											_ => crash "unexpected media answer"
+											Ok(True) => "T"
+											Ok(False) => "F"
+											Err(Refused) => "R"
 										}
 									}",
 								},
@@ -1026,7 +1025,7 @@ run_transitions = |program| {
 			[
 				Core.watch(
 					st.signal(),
-					|n| if (n == 0) [] else if (n == 1) [ViewTransition(["odd", "shared", "odd"]), Self] else if (n == 3) [ViewTransition([])] else [ViewTransition([if (n % 2 == 0) "even" else "odd", "shared"])],
+					|n| if (n == 0) [] else if (n == 1) [Core.command(ViewTransition(["odd", "shared", "odd"])), Core.again({})] else if (n == 3) [Core.command(ViewTransition([]))] else [Core.command(ViewTransition([if (n % 2 == 0) "even" else "odd", "shared"]))],
 					st.on_result(|before, _, _| if (before == 1) 2 else before),
 				),
 			],
@@ -1194,7 +1193,7 @@ run_persistence = |bytes| {
 			[
 				Core.element("button", [Core.on_click(state.update(|value| { ..value, query: value.query + 1 }))], [Core.text("query")]),
 				Core.element("button", [Core.on_click(state.update(|value| { ..value, shown: !value.shown }))], [Core.text("toggle")]),
-				Core.when(state.signal().map(|value| value.shown), || Core.watch_latest(state.signal().map(|value| value.query), persist_plan, Core.ignore({})), || Core.text("")),
+				Core.when(state.signal().map(|value| value.shown), || Core.watch_latest(state.signal().map(|value| value.query), |query| persist_plan(query).map(Core.raw), Core.ignore({})), || Core.text("")),
 			],
 		),
 	)

@@ -52,7 +52,7 @@ CommentForm :: { body : Str, sub : Fetch.Submit, result : Outcome }.{
 
 	## The form after the answer to `sent`, and whether that answer posted a
 	## comment. An answer to anything but the latest POST changes nothing.
-	answered : CommentForm, Fetch.Submit, Engine.Result -> { form : CommentForm, posted : Bool }
+	answered : CommentForm, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure) -> { form : CommentForm, posted : Bool }
 	answered = |form, sent, res| {
 		if sent.serial != form.sub.serial {
 			{ form, posted: False }
@@ -73,7 +73,7 @@ CommentForm :: { body : Str, sub : Fetch.Submit, result : Outcome }.{
 	## The box, drawn over a state that holds a form. `target` is read when
 	## the button is pressed. `answer` is the owner's reaction to the POST's
 	## answer: the owner decides what else an accepted comment changes.
-	view : State(ctx, CommentForm), Signal(ctx, Target), Engine.Reaction(ctx, Fetch.Submit) -> Elem(ctx)
+	view : State(ctx, CommentForm), Signal(ctx, Target), Engine.Reaction(ctx, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure)) -> Elem(ctx)
 	view = |form, target, answer| Engine.element(
 		"form",
 		[Engine.class("mb-8 grid gap-3 border border-zinc-950 bg-zinc-50 p-4")],

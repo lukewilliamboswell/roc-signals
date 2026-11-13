@@ -938,7 +938,8 @@ Engine := [].{
 	## turn; a reference that is not mounted then is counted stale). With
 	## `PortCommand` and `Save` they are the tags of [Command].
 	##
-	## Awaited requests deliver results to the site's [Reaction]: `Http`,
+	## In an [Ask], awaited requests deliver typed results to the site's
+	## [Reaction]. The underlying request kinds `Http`,
 	## `StorageGet` and `Timer` deliver one; `Interval`, `Popstate`,
 	## `OnlineChanges` and `VisibilityChanges` are subscriptions that deliver any
 	## number until their site is disposed. `Self` asks for a follow-up turn whose

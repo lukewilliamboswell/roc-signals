@@ -164,11 +164,11 @@ Convert := [].{
 				Engine.watch_latest(
 					v.map(|s| s.logging),
 					|logging| match logging {
-						Append(input) => [Convert.log_line.request(input)]
+						Append(input) => [Convert.log_line.ask(input)]
 						Idle => []
 					},
 					st.on_result(
-						|s, _, res| match Convert.log_line.result(res) {
+						|s, _, res| match res {
 							Ok(log) => { ..s, log: [log], logging: Idle }
 							Err(Failed(e)) => { ..s, status: "log failed: ${Str.inspect(e)}", logging: Idle }
 							Err(e) => { ..s, status: "log lost: ${Str.inspect(e)}", logging: Idle }
@@ -189,8 +189,9 @@ Convert := [].{
 						Idle => []
 					},
 					st.on_result(
-						|s, _, res| match Engine.fetched(res) {
-							Ok(body) => { ..s, downloaded: [body], download: Idle }
+						|s, _, res| match res {
+							Ok({ status, body, .. }) if status >= 200 and status < 300 => { ..s, downloaded: [body], download: Idle }
+							Ok({ status, .. }) => { ..s, status: "download failed: ${Str.inspect(Status(status))}", download: Idle }
 							Err(e) => { ..s, status: "download failed: ${Str.inspect(e)}", download: Idle }
 						},
 					),
@@ -212,7 +213,7 @@ Convert := [].{
 				# region save
 				# The save command, issued in the turn of the click that
 				# posted the file, so the browser sees the user's gesture.
-				Engine.on_post(v.map(|s| s.save), |f| [File.save(f, {})], Engine.ignore({})),
+				Engine.on_post(v.map(|s| s.save), |f| [Engine.command(File.save(f, {}))], Engine.ignore({})),
 				# endregion save
 				Html.p_s(v.map(|s| s.status), [Engine.test_id("status")]),
 			],

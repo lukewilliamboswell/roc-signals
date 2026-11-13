@@ -7,7 +7,7 @@ call : Port.Call({}, Str)
 call = Port.call({ name: "test.roc-signals/zero-timeout", timeout: Ms(0) })
 
 main : Engine.Program
-main = Engine.program(|| Engine.watch(Engine.const({}), |_| [call.request({})], Engine.ignore({}))).with_ports([call.registration()])
+main = Engine.program(|| Engine.watch(Engine.const({}), |_| [call.ask({})], Engine.ignore({}))).with_ports([call.registration()])
 
 ## No shared store is declared by this contract fixture.
 Store : {}

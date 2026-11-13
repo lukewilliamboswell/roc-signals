@@ -42,21 +42,21 @@ ReadingApp := [].{
 			# it arrives.
 			Engine.watch(
 				Engine.const({}),
-				|_| [BookStorage.load.request({})],
-				Engine.react_by(ReadingList.cells.copy.signal(), |copy, _, res| ReadingList.loaded(copy, BookStorage.load.result(res))),
+				|_| [BookStorage.load.ask({})],
+				Engine.react_by(ReadingList.cells.copy.signal(), |copy, _, res| ReadingList.loaded(copy, res)),
 			),
 			# The database's books again after any tab writes, for as long
 			# as the app runs.
 			Engine.watch(
 				Engine.const({}),
-				|_| [BookStorage.stored.subscribe({})],
-				Engine.react(|_, res| ReadingList.restocked(BookStorage.stored.message(res))),
+				|_| [BookStorage.stored.ask({})],
+				Engine.react(|_, res| ReadingList.restocked(res)),
 			),
 			# Read the time a task after submission. Refusal uses the last
 			# sampled clock; each answer mints its own complete book in Roc.
 			Engine.on_post(
 				ReadingList.cells.stamping.signal(),
-				|_| [Timer(0)],
+				|_| [Engine.timer(0)],
 				Engine.react_by(
 					{ state: ReadingList.cells.id_state.signal(), clock: ReadingList.cells.clock.signal() }.Signal,
 					|at, form, result| ReadingList.stamped({ at, form, result }),
@@ -64,7 +64,7 @@ ReadingApp := [].{
 			),
 			# A new book, ready to store. `on_post` never stops
 			# an earlier add for a later one: each answer arrives.
-			Engine.on_post(ReadingList.cells.adding.signal(), |asked| [BookStorage.add.request(asked)], Engine.react(|asked, res| ReadingList.added(asked, BookStorage.add.result(res)))),
+			Engine.on_post(ReadingList.cells.adding.signal(), |asked| [BookStorage.add.ask(asked)], Engine.react(ReadingList.added)),
 			# Every change's commands, sent in the turn of the click that
 			# made them.
 			Engine.on_post(ReadingList.cells.writes.signal(), ReadingList.requests, Engine.ignore({})),
@@ -191,8 +191,8 @@ shelves = |{}| {
 				[
 					# These values choose the animation, including changes from a port result.
 					# Neither marks mount; typing touches neither value.
-					Engine.watch_changes(showing, |_| [ViewTransition(["shelf"])], Engine.ignore({})),
-					Engine.watch_changes(counted, |_| [ViewTransition(["books"])], Engine.ignore({})),
+					Engine.watch_changes(showing, |_| [Engine.command(ViewTransition(["shelf"]))], Engine.ignore({})),
+					Engine.watch_changes(counted, |_| [Engine.command(ViewTransition(["books"]))], Engine.ignore({})),
 					Html.div(
 						"toolbar",
 						[

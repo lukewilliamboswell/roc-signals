@@ -94,7 +94,7 @@ HandlersApp := [].{
 			[
 				HandlersApp.reader("count", count.lift().signal().map(|v| v.to_str())),
 				HandlersApp.reader("log", log.signal()),
-				Engine.watch(Engine.const("tick"), |_| [Timer(10)], count.lift().on_result(|c, _, _| c + 1).also(log.on_result(|l, a, _| "${l}${a};"))),
+				Engine.watch(Engine.const("tick"), |_| [Engine.timer(10)], count.lift().on_result(|c, _, _| c + 1).also(log.on_result(|l, a, _| "${l}${a};"))),
 			],
 		),
 	)
@@ -118,7 +118,7 @@ HandlersApp := [].{
 						[
 							HandlersApp.reader("pair", seen),
 							Html.button("Raise both", [], inner.update(|n| n + 1).also(outer.lift().lift().update(|n| n + 1))),
-							Engine.watch_changes(seen, |text| [Title("pair ${text}"), Timer(10)], Engine.ignore({})),
+							Engine.watch_changes(seen, |text| [Engine.command(Title("pair ${text}")), Engine.timer(10)], Engine.ignore({})),
 						],
 					)
 				},
@@ -154,7 +154,7 @@ HandlersApp := [].{
 								[
 									HandlersApp.reader("mixed", seen),
 									Html.button("Raise outer and inner", [], inner.lift().update(|n| n + 1).also(outer.lift().lift().update(|n| n + 1))),
-									Engine.watch_changes(seen, |text| [Title("mixed ${text}"), Timer(10)], Engine.ignore({})),
+									Engine.watch_changes(seen, |text| [Engine.command(Title("mixed ${text}")), Engine.timer(10)], Engine.ignore({})),
 								],
 							)
 						},
@@ -196,7 +196,7 @@ HandlersApp := [].{
 										[
 											Html.p_s(seen, [Engine.test_id_s(r.key().lift())]),
 											Html.button_s(r.key().lift().map(|k| "Rate ${k}"), [], clicks.update(|n| n + 1).also(rows.lift_row().lift().update_by(r.key().lift(), HandlersApp.starred))),
-											Engine.watch_changes(seen.map2(r.key().lift(), |text, k| "${k} ${text}"), |text| [Title("rated ${text}"), Timer(10)], Engine.ignore({})),
+											Engine.watch_changes(seen.map2(r.key().lift(), |text, k| "${k} ${text}"), |text| [Engine.command(Title("rated ${text}")), Engine.timer(10)], Engine.ignore({})),
 										],
 									)
 								},
@@ -294,7 +294,7 @@ HandlersApp := [].{
 					Engine.element("a", [Html.aria_label("Unprevented shortcut link"), Engine.attr("href", "#shortcut")], [Engine.text("Unprevented shortcut link")]),
 					Engine.element("a", [Html.aria_label("Prevented shortcut link"), Engine.attr("href", "#shortcut"), Engine.on_key({ keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("Enter").with_ctrl()])) }, append("link"))], [Engine.text("Prevented shortcut link")]),
 					Engine.element("input", [Html.aria_label("Keyboard text"), Engine.ref("key-value"), Engine.prop_s(Engine.Prop.value, state.signal().map(|s| s.value)), Html.on_input(state.set_value(|s, value| { ..s, value })), Engine.on_key({ keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("Escape")])) }, state.update(|s| { ..s, value: "initial", out: s.out.post(ApplyValue("key-value")) }))], []),
-					Engine.on_post(state.signal().map(|s| s.out), |request| [request], Engine.ignore({})),
+					Engine.on_post(state.signal().map(|s| s.out), |request| [Engine.command(request)], Engine.ignore({})),
 				],
 			)
 		},

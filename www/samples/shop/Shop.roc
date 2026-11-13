@@ -61,9 +61,9 @@ Shop := [CornerShop].{
 	## What the server's answer to an order of `total` writes. An accepted
 	## order is counted and starts the basket again; a refused one leaves
 	## the basket as it was.
-	ordered : U64, Engine.Result -> List(Engine.Write(_))
+	ordered : U64, Try(Str, Engine.HttpError) -> List(Engine.Write(_))
 	ordered = |total, res|
-		match Engine.http_text(res) {
+		match res {
 			Ok(_) => [
 				Shop.cells.orders.update(|count| count + 1),
 				Shop.cells.basket.reset,
@@ -79,7 +79,7 @@ Shop := [CornerShop].{
 	ordering = |{}|
 		Engine.on_post(
 			Shop.cells.sending.signal(),
-			|total| [Engine.http({ method: "POST", url: "/api/orders", body: total.to_str(), timeout: Ms(5000) })],
+			|total| [Engine.http_body({ method: "POST", url: "/api/orders", body: total.to_str(), timeout: Ms(5000) })],
 			Engine.react(Shop.ordered),
 		)
 	# endregion answer
@@ -152,8 +152,8 @@ expect Shop.checked_out(Cart.empty).len() == 0
 expect {
 	basket = Shop.cells.basket.cells
 	filled = Shop.store.after(Shop.added({ name: "Tea", price: 4 })).after([basket.note.set("Leave it by the door")])
-	placed = filled.after(Shop.ordered(4, Http({ status: 201, headers: [], body: "" })))
-	refused = filled.after(Shop.ordered(4, Timeout))
+	placed = filled.after(Shop.ordered(4, Ok("")))
+	refused = filled.after(Shop.ordered(4, Err(Timeout)))
 
 	actual =
 		\\placed: ${placed.read(Shop.cells.orders).to_str()} orders, ${placed.read(basket.cart).size().to_str()} in the cart, note "${placed.read(basket.note)}"

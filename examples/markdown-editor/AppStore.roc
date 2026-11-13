@@ -1,5 +1,4 @@
 import pf.Engine
-import pf.Clipboard
 import Edit
 
 ## The editor's document and decisions. Revision numbers describe writes, so
@@ -124,13 +123,12 @@ AppStore := [Editor].{
 	## A clean document follows the other tab. A dirty one preserves its text
 	## and presents the reported value as an explicit choice. Missing means the
 	## other tab removed the saved document, so its candidate is an empty text.
-	heard_elsewhere : { revision : U64, saved_revision : SavedRevision }, Engine.Result -> List(Engine.Write(_))
+	heard_elsewhere : { revision : U64, saved_revision : SavedRevision }, Try([Set(Str), Removed], [Refused]) -> List(Engine.Write(_))
 	heard_elsewhere = |reading, result| {
 		text = match result {
-			Value(value) => value
-			Missing => ""
-			Refused => return []
-			_ => crash "Markdown Editor.heard_elsewhere: a storage subscription answered another result"
+			Ok(Set(value)) => value
+			Ok(Removed) => ""
+			Err(Refused) => return []
 		}
 		if AppStore.is_dirty(reading) {
 			[AppStore.cells.elsewhere.set(Changed(text))]
@@ -163,10 +161,10 @@ AppStore := [Editor].{
 	]
 
 	## Copy outcomes are values the page shows; none changes its document.
-	copy_answered : Engine.Result -> List(Engine.Write(_))
+	copy_answered : Try({}, [NotAllowed, Unavailable, Refused]) -> List(Engine.Write(_))
 	copy_answered = |result| [
 		AppStore.cells.copy_status.set(
-			match Clipboard.written(result) {
+			match result {
 				Ok({}) => Copied
 				Err(NotAllowed) => Blocked
 				Err(Unavailable) => Unavailable
@@ -185,9 +183,9 @@ AppStore := [Editor].{
 
 	## Write failures cannot be treated as saved. Session quota and unavailable
 	## storage have distinct messages; a failed local Save restores the warning.
-	storage_failed : Engine.Result -> List(Engine.Write(_))
+	storage_failed : Try({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] }, [Refused]) -> List(Engine.Write(_))
 	storage_failed = |result| match result {
-		StorageFailed({ store: Session, key: "md.draft", reason }) => [
+		Ok({ store: Session, key: "md.draft", reason }) => [
 			AppStore.cells.draft_status.set(
 				match reason {
 					Quota => TooLarge
@@ -195,7 +193,7 @@ AppStore := [Editor].{
 				},
 			),
 		]
-		StorageFailed({ store: Local, key: "md.document", reason }) => [
+		Ok({ store: Local, key: "md.document", reason }) => [
 			AppStore.cells.saved_revision.set(NotSaved),
 			AppStore.cells.save_status.set(
 				match reason {
@@ -204,9 +202,8 @@ AppStore := [Editor].{
 				},
 			),
 		]
-		StorageFailed(_) => []
-		Refused => []
-		_ => crash "Markdown Editor.storage_failed: a failure subscription answered another result"
+		Ok(_) => []
+		Err(Refused) => []
 	}
 }
 
@@ -255,14 +252,14 @@ expect {
 
 ## A clean document takes the reported version and advances its saved revision too.
 expect {
-	store = AppStore.store.after(AppStore.heard_elsewhere({ revision: 3, saved_revision: Saved(3) }, Value("theirs")))
+	store = AppStore.store.after(AppStore.heard_elsewhere({ revision: 3, saved_revision: Saved(3) }, Ok(Set("theirs"))))
 	(store.read(AppStore.cells.source), store.read(AppStore.cells.revision), store.read(AppStore.cells.saved_revision), store.read(AppStore.cells.elsewhere)) == ("theirs", 4, Saved(4), Same)
 }
 
 ## A dirty document keeps its draft until the reader accepts the offered version.
 expect {
 	mine = AppStore.store.after(AppStore.replaced("mine"))
-	offered = mine.after(AppStore.heard_elsewhere({ revision: 1, saved_revision: Saved(0) }, Value("theirs")))
+	offered = mine.after(AppStore.heard_elsewhere({ revision: 1, saved_revision: Saved(0) }, Ok(Set("theirs"))))
 	kept = offered.after(AppStore.kept_mine({}))
 	taken = offered.after(AppStore.took_theirs({ revision: 1, elsewhere: Changed("theirs") }))
 	(kept.read(AppStore.cells.source), kept.read(AppStore.cells.elsewhere), taken.read(AppStore.cells.source), taken.read(AppStore.cells.saved_revision), taken.read(AppStore.cells.drafts).last()) == ("mine", Same, "theirs", Saved(2), Posted({}))
@@ -277,7 +274,7 @@ expect {
 ## A failed local save preserves its draft and restores the leave warning.
 expect {
 	draft = AppStore.store.after(AppStore.replaced("mine"))
-	store = draft.after(AppStore.saved(1)).after(AppStore.storage_failed(StorageFailed({ store: Local, key: "md.document", reason: Quota }))).after(AppStore.copy_answered(Refused))
+	store = draft.after(AppStore.saved(1)).after(AppStore.storage_failed(Ok({ store: Local, key: "md.document", reason: Quota }))).after(AppStore.copy_answered(Err(Refused)))
 	(store.read(AppStore.cells.source), store.read(AppStore.cells.drafts).last(), store.read(AppStore.cells.saved_revision), store.read(AppStore.cells.copy_status), AppStore.is_dirty({ revision: 1, saved_revision: store.read(AppStore.cells.saved_revision) })) == ("mine", Posted({}), NotSaved, Refused, True)
 }
 
@@ -303,15 +300,15 @@ expect {
 
 ## A removed saved document is an empty candidate, and a refused subscription writes nothing.
 expect {
-	removed = AppStore.store.after(AppStore.heard_elsewhere({ revision: 0, saved_revision: Saved(0) }, Missing))
-	refused = AppStore.store.after(AppStore.heard_elsewhere({ revision: 0, saved_revision: Saved(0) }, Refused))
+	removed = AppStore.store.after(AppStore.heard_elsewhere({ revision: 0, saved_revision: Saved(0) }, Ok(Removed)))
+	refused = AppStore.store.after(AppStore.heard_elsewhere({ revision: 0, saved_revision: Saved(0) }, Err(Refused)))
 	(removed.read(AppStore.cells.source), removed.read(AppStore.cells.saved_revision), refused.read(AppStore.cells.source)) == ("", Saved(1), AppStore.sample_document)
 }
 
 ## Accepting another tab's smaller document makes a fresh draft attempt, clearing an old quota notice.
 expect {
 	draft = AppStore.store.after(AppStore.replaced("a draft the browser refused"))
-	failed = draft.after(AppStore.storage_failed(StorageFailed({ store: Session, key: "md.draft", reason: Quota })))
+	failed = draft.after(AppStore.storage_failed(Ok({ store: Session, key: "md.draft", reason: Quota })))
 	accepted = failed.after(AppStore.took_theirs({ revision: 1, elsewhere: Changed("small") }))
 	(failed.read(AppStore.cells.draft_status), accepted.read(AppStore.cells.draft_status), accepted.read(AppStore.cells.source), accepted.read(AppStore.cells.saved_revision), accepted.read(AppStore.cells.drafts).last()) == (TooLarge, Ready, "small", Saved(2), Posted({}))
 }

@@ -25,10 +25,10 @@ main = Engine.program_boot(
 					Html.p_s(dark.signal().map(|matches| if (matches) "Dark colors" else "Light colors"), []),
 					Engine.watch(
 						Engine.const({}),
-						|_| [MediaChanges(color_query)],
+						|_| [Engine.media_changes(color_query)],
 						dark.on_result(
 							|before, _issued, result| match result {
-								Matches(matches) => matches
+								Ok(matches) => matches
 								_ => before
 							},
 						),

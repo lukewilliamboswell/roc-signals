@@ -23,9 +23,9 @@ Media := [].{
 					state.signal().map(|s| s.enabled),
 					|| Engine.watch(
 						Engine.const({}),
-						|_| [Media.camera.subscribe({})],
+						|_| [Media.camera.ask({})],
 						state.on_result(
-							|s, _, result| match Media.camera.message(result) {
+							|s, _, result| match result {
 								Ok(value) => { ..s, text: Str.inspect(value) }
 								Err(Threw(message)) => { ..s, enabled: False, text: "Camera stopped: ${message}" }
 								Err(Closed) => { ..s, enabled: False, text: "Camera ended" }

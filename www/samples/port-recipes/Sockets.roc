@@ -46,11 +46,10 @@ Sockets := [].{
 		{ ..model, attempt, random: random.state, retry: Waiting(delay), message: "Reconnecting in ${delay.to_str()} ms (attempt ${attempt.to_str()})" }
 	}
 
-	waited : Model, Engine.Result -> Model
+	waited : Model, Try(I64, [Refused]) -> Model
 	waited = |model, result| match result {
-		Fired(_) => { ..model, retry: Connecting, generation: model.generation + 1, resume: model.after, message: "Connecting" }
-		Refused => { ..model, retry: GaveUp, message: "Retry refused; reconnect manually" }
-		_ => crash "Sockets.waited: a timer answered another result"
+		Ok(_) => { ..model, retry: Connecting, generation: model.generation + 1, resume: model.after, message: "Connecting" }
+		Err(Refused) => { ..model, retry: GaveUp, message: "Retry refused; reconnect manually" }
 	}
 	# endregion reconnect
 
@@ -83,7 +82,7 @@ Sockets := [].{
 					Html.button("Connect WebSocket", [], state.update(|s| Sockets.started(s, WebSocket))),
 					Html.button("Pause connection", [], state.update(|s| { ..s, following: False, message: "Connection paused" })),
 					Html.button("Send greeting", [], state.update(|s| { ..s, sent: s.sent.post({}) })),
-					Engine.on_post(v.map(|s| s.sent), |_| [Sockets.send.send({ connection: "primary", data: "hello" })], Engine.ignore({})),
+					Engine.on_post(v.map(|s| s.sent), |_| [Engine.command(Sockets.send.send({ connection: "primary", data: "hello" }))], Engine.ignore({})),
 					Engine.when(
 						v.map(|s| s.following),
 						|| Html.div(
@@ -98,8 +97,8 @@ Sockets := [].{
 									),
 									|| Engine.watch_latest(
 										v.map(|s| { generation: s.generation, transport: s.transport, resume: s.resume }),
-										|wanted| [if (wanted.transport == Sse) Sockets.sse.subscribe({ url: "/events", after: wanted.resume }) else Sockets.websocket.subscribe({ url: "/socket", after: wanted.resume })],
-										state.on_result(|s, wanted, result| Sockets.received(s, if (wanted.transport == Sse) Sockets.sse.message(result) else Sockets.websocket.message(result))),
+										|wanted| [if (wanted.transport == Sse) Sockets.sse.ask({ url: "/events", after: wanted.resume }) else Sockets.websocket.ask({ url: "/socket", after: wanted.resume })],
+										state.on_result(|s, _, result| Sockets.received(s, result)),
 									),
 									|| Engine.text(""),
 								),
@@ -117,7 +116,7 @@ Sockets := [].{
 												_ => crash "Sockets: wait scope without a delay"
 											},
 										),
-										|delay| [Timer(delay)],
+										|delay| [Engine.timer(delay)],
 										state.on_result(|s, _, result| Sockets.waited(s, result)),
 									),
 									|| Engine.text(""),
@@ -137,7 +136,7 @@ Sockets := [].{
 expect {
 	initial = Sockets.started(Sockets.initial(7), Sse)
 	lost = Sockets.lost(initial)
-	refused = Sockets.waited(lost, Refused)
+	refused = Sockets.waited(lost, Err(Refused))
 	received = Sockets.received(initial, Ok(Event({ seq: 5, data: "ready", dropped: 0 })))
 	(refused.retry, received.after, received.retry) == (GaveUp, 5, Live)
 }

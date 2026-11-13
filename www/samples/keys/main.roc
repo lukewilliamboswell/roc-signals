@@ -29,10 +29,12 @@ main = Engine.program(
 					Engine.on_post(
 						editor.signal().map(|state| state.commands),
 						|commands| commands.map(
-							|command| match command {
-								Focus(name) => Focus(name)
-								ApplyValue(name) => ApplyValue(name)
-							},
+							|command| Engine.command(
+								match command {
+									Focus(name) => Focus(name)
+									ApplyValue(name) => ApplyValue(name)
+								},
+							),
 						),
 						Engine.ignore({}),
 					),

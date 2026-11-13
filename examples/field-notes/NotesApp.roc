@@ -52,7 +52,7 @@ NotesApp := [].{
 				sync_lane(3),
 				Engine.on_post(
 					AppStore.cells.stamps.signal(),
-					|_| [Timer(0)],
+					|_| [Engine.timer(0)],
 					Engine.react_by(
 						AppStore.cells.clock.signal(),
 						|clock, id, result| AppStore.capture_answer({ id, clock, result }),
@@ -60,30 +60,30 @@ NotesApp := [].{
 				),
 				Engine.watch(
 					Engine.const({}),
-					|_| [Interval(30000)],
+					|_| [Engine.interval(30000)],
 					Engine.react(
 						|_, result| match result {
-							Fired(at_ms) => AppStore.clocked(at_ms)
+							Ok(at_ms) => AppStore.clocked(at_ms)
 							_ => []
 						},
 					),
 				),
 				Engine.watch(
 					Engine.const({}),
-					|_| [VisibilityChanges],
+					|_| [Engine.visibility_changes({})],
 					Engine.react(
 						|_, result| match result {
-							Visible(visible) => AppStore.visibility_changed(visible)
+							Ok(visible) => AppStore.visibility_changed(visible)
 							_ => []
 						},
 					),
 				),
 				Engine.on_post(
 					AppStore.cells.refreshes.signal(),
-					|_| [Timer(0)],
+					|_| [Engine.timer(0)],
 					Engine.react(
 						|_, result| match result {
-							Fired(at_ms) => AppStore.clocked(at_ms)
+							Ok(at_ms) => AppStore.clocked(at_ms)
 							_ => []
 						},
 					),
@@ -91,16 +91,16 @@ NotesApp := [].{
 				# The browser's connectivity, for as long as the app runs.
 				Engine.watch(
 					Engine.const({}),
-					|_| [OnlineChanges],
+					|_| [Engine.online_changes({})],
 					Engine.react(
 						|_, res| match res {
-							Online(on) => AppStore.connected(on)
+							Ok(on) => AppStore.connected(on)
 							_ => []
 						},
 					),
 				),
 				# The notes, written back to local storage whenever they change.
-				Engine.watch_changes(AppStore.cells.board.signal().map(|b| Notes.encode_notes(b.notes)), |text| [StorageSet(Notes.notes_key, text)], Engine.ignore({})),
+				Engine.watch_changes(AppStore.cells.board.signal().map(|b| Notes.encode_notes(b.notes)), |text| [Engine.command(StorageSet(Notes.notes_key, text))], Engine.ignore({})),
 			],
 		),
 	)
@@ -236,12 +236,12 @@ sync_lane : U64 -> Elem(ctx)
 sync_lane = |slot| Engine.watch(
 	AppStore.cells.board.signal().map(|b| Notes.issue_at(b, slot)),
 	|issue| match issue.request {
-		Send(token) => [Engine.http({ method: "POST", url: "/api/notes/sync", headers: [], body: token })]
+		Send(token) => [Engine.http_body({ method: "POST", url: "/api/notes/sync", headers: [], body: token })]
 		Idle => []
 	},
 	Engine.react(
 		|issue, res| {
-			accepted = match (issue.request, Engine.http_text(res)) {
+			accepted = match (issue.request, res) {
 				(Send(token), Ok(body)) => body == token
 				_ => False
 			}

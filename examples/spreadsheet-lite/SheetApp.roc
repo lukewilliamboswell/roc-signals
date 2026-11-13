@@ -307,7 +307,7 @@ SheetApp := [].{
 					Html.p("A quarterly budget on an 8 by 12 sheet, where every formula is a dependency edge. Editing a cell recomputes only the cells that transitively depend on it.", "app-subtitle"),
 				],
 			),
-			Engine.on_post(SheetStore.cells.keyboard.signal().map(|keyboard| keyboard.commands), |commands| commands.map(command_request), Engine.ignore({})),
+			Engine.on_post(SheetStore.cells.keyboard.signal().map(|keyboard| keyboard.commands), |commands| commands.map(Engine.command), Engine.ignore({})),
 			SheetApp.formula_bar({}),
 			SheetApp.controls({}),
 			SheetApp.grid({}),
@@ -390,26 +390,4 @@ expect SheetApp.tone_class(Text, Unselected).contains("text-left")
 expect {
 	ring = " relative z-10 bg-accent-50 ring-2 ring-inset ring-accent-600"
 	(SheetApp.tone_class(Text, Selected).ends_with(ring), SheetApp.tone_class(Text, Unselected).contains("bg-accent-50")) == (True, False)
-}
-
-## Cleanup commands and posted commands share the request channel's command tags.
-command_request : Engine.Command -> Engine.Request
-command_request = |command| match command {
-	Push(value) => Push(value)
-	Replace(value) => Replace(value)
-	Title(value) => Title(value)
-	ViewTransition(types) => ViewTransition(types)
-	Focus(value) => Focus(value)
-	Blur(value) => Blur(value)
-	SelectText(value) => SelectText(value)
-	ApplyValue(value) => ApplyValue(value)
-	FocusInPlace(value) => FocusInPlace(value)
-	ScrollIntoView(value, props) => ScrollIntoView(value, props)
-	ScrollTo(value, props) => ScrollTo(value, props)
-	StorageSet(key, value) => StorageSet(key, value)
-	StorageRemove(value) => StorageRemove(value)
-	SessionStorageSet(key, value) => SessionStorageSet(key, value)
-	SessionStorageRemove(key) => SessionStorageRemove(key)
-	PortCommand(value) => PortCommand(value)
-	Save(value) => Save(value)
 }

@@ -52,7 +52,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 	}
 
 	## Keep an answer only if it is for the load wanted now.
-	stored : Story, Fetch.LoadReq, Engine.Result -> Story
+	stored : Story, Fetch.LoadReq, Try(Engine.Response, Engine.HttpFailure) -> Story
 	stored = |s, sent, res| if (Story.req(s).key != sent.key) s else { ..s, article: { key: sent.key, value: Api.decode_get(Api.response_of(res), Api.decode_article) } }
 
 	## What to show now: the article, a failure, or loading.
@@ -96,7 +96,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 		{ ..s, fav: Fetch.next(s.fav, method, Api.favorite_uri(s.slug), "", session.token()), fav_result: FavoriteIdle }
 	}
 
-	favorite_answered : Story, Fetch.Submit, Engine.Result -> Story
+	favorite_answered : Story, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure) -> Story
 	favorite_answered = |s, sent, res| {
 		if sent.serial != s.fav.serial {
 			s
@@ -115,7 +115,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 
 	## The story after the answer to a deletion, and whether the article is
 	## gone. Its owner decides where to go when it is.
-	delete_answered : Story, Fetch.Submit, Engine.Result -> { story : Story, deleted : Bool }
+	delete_answered : Story, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure) -> { story : Story, deleted : Bool }
 	delete_answered = |s, sent, res| {
 		if sent.serial != s.del.serial {
 			{ story: s, deleted: False }
@@ -135,7 +135,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 
 	## The site that sends a deletion. `answer` is the owner's reaction,
 	## because a deleted article changes more than the story.
-	delete_site : State(ctx, Story), Engine.Reaction(ctx, Fetch.Submit) -> Elem(ctx)
+	delete_site : State(ctx, Story), Engine.Reaction(ctx, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure)) -> Elem(ctx)
 	delete_site = |story, answer| Fetch.submit_site(story.signal().map(|s| s.del), answer)
 
 	## The article, drawn over its cell, with `below` under it.

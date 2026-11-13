@@ -378,7 +378,7 @@ Worker := [].{
 
 	## A task of a preparation, from a `Question(init, input)` to `output`,
 	## failing with the preparation's `error`. Use it as a [Task] is used:
-	## `request` and `result` in an effect site, or `Worker.resource` and
+	## `ask` in an effect site, or `Worker.resource` and
 	## `Worker.resource_when`.
 	PreparedTask(init, state, input, output, error) :: {
 		name : Str,

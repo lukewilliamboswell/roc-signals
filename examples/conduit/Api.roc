@@ -170,18 +170,15 @@ Api := {}.{
 
 	## The status and text of an effect result, as page classifiers consume
 	## it: any response (the pages classify 4xx envelopes themselves), or a
-	## failure shown as its inspected `Engine.HttpError` (`Network("offline")`,
+	## failure shown as its inspected `Engine.HttpFailure` (`Network("offline")`,
 	## `Timeout`, `Refused`).
-	response_of : Engine.Result -> Api.ResponseState
+	response_of : Try(Engine.Response, Engine.HttpFailure) -> Api.ResponseState
 	response_of = |res| match res {
-		Http({ status, headers: _, body }) => { status, body, error: "", ready: True }
-		Network(message) => Api.failure(Network(message))
-		Timeout => Api.failure(Timeout)
-		Refused => Api.failure(Refused)
-		_ => crash "contract: a Conduit request reaction received a result that is not an HTTP result"
+		Ok({ status, headers: _, body }) => { status, body, error: "", ready: True }
+		Err(error) => Api.failure(error)
 	}
 
-	failure : Engine.HttpError -> Api.ResponseState
+	failure : Engine.HttpFailure -> Api.ResponseState
 	failure = |err| { status: 0, body: "", error: Str.inspect(err), ready: True }
 
 	## Per-request HTTP timeout (a typed Timeout result when it fires).
@@ -203,16 +200,16 @@ Api := {}.{
 			[("content-type", "application/json"), ("authorization", "Token ${token}")]
 		}
 
-	get_request : Str, Str -> Engine.Request
+	get_request : Str, Str -> Engine.Ask(Engine.Response, Engine.HttpFailure)
 	get_request = |uri, token| Engine.http({ method: "GET", url: uri, headers: auth_headers(token), body: "", timeout: Ms(Api.timeout_ms) })
 
-	post_request : Str, Str, Str -> Engine.Request
+	post_request : Str, Str, Str -> Engine.Ask(Engine.Response, Engine.HttpFailure)
 	post_request = |uri, body, token| Engine.http({ method: "POST", url: uri, headers: json_headers(token), body, timeout: Ms(Api.timeout_ms) })
 
-	put_request : Str, Str, Str -> Engine.Request
+	put_request : Str, Str, Str -> Engine.Ask(Engine.Response, Engine.HttpFailure)
 	put_request = |uri, body, token| Engine.http({ method: "PUT", url: uri, headers: json_headers(token), body, timeout: Ms(Api.timeout_ms) })
 
-	delete_request : Str, Str -> Engine.Request
+	delete_request : Str, Str -> Engine.Ask(Engine.Response, Engine.HttpFailure)
 	delete_request = |uri, token| Engine.http({ method: "DELETE", url: uri, headers: auth_headers(token), body: "", timeout: Ms(Api.timeout_ms) })
 
 	## A GET whose body decodes into a page resource.

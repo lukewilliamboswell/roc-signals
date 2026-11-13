@@ -15,7 +15,7 @@ main = Engine.program(
 			[
 				Html.button("Details", [], show_details.update(|visible| !visible)),
 				Engine.when(show_details.signal(), || Html.p("More about this book", ""), || Html.p("Book summary", "")),
-				Engine.watch_changes(show_details.signal(), |_| [ViewTransition(["shelf"])], Engine.ignore({})),
+				Engine.watch_changes(show_details.signal(), |_| [Engine.command(ViewTransition(["shelf"]))], Engine.ignore({})),
 				long_exit({}),
 			],
 		),
@@ -43,11 +43,10 @@ long_exit = |_| Engine.state(
 				Html.button("Remove slowly", [], books.lift_row().update_by(row.key(), |current, id| current.map(|book| if (book.id == id) { ..book, leaving: True } else book))),
 				Engine.watch_changes(
 					row.item(),
-					|book| if (book.leaving) [Timer(1500)] else [],
+					|book| if (book.leaving) [Engine.timer(1500)] else [],
 					books.lift_row().on_result(
 						|current, issued, result| match result {
-							Fired(_) | Refused => current.keep_if(|book| book.id != issued.id)
-							_ => current
+							Ok(_) | Err(Refused) => current.keep_if(|book| book.id != issued.id)
 						},
 					),
 				),

@@ -98,13 +98,11 @@ FileEffectsApp := [].{
 		Answered(text) => text
 	}
 
-	sent : Result -> Str
-	sent = |res| match Engine.http_text(res) {
-		Ok(body) => "sent ${body}"
+	sent : Try(Engine.Response, Engine.HttpFailure) -> Str
+	sent = |res| match res {
+		Ok({ status, body, .. }) => if (status >= 200 and status < 300) "sent ${body}" else "send failed ${Str.inspect(Status(status))}"
 		Err(e) => "send failed ${Str.inspect(e)}"
 	}
-
-	Result : Engine.Result
 
 	## A `resource` that reads what `ask` names into the page.
 	reader : Engine.Signal(ctx, Ask), (Engine.Signal(In(ctx, Shown), Shown) -> Elem(In(ctx, Shown))) -> Elem(ctx)
@@ -123,15 +121,19 @@ FileEffectsApp := [].{
 					_ => Reading
 				},
 				plan: |a| match a {
-					Bytes(f) => [f.read_bytes(defaults)]
-					Text(f) => [f.read_utf8(defaults)]
-					Large(f) => [f.read_bytes({ max_bytes: 64 * 1024 * 1024 })]
+					Bytes(f) => [f.read_bytes(defaults).map_ok(|bytes| Bytes(bytes))]
+					Text(f) => [f.read_utf8(defaults).map_ok(|text| Text(text))]
+					Large(f) => [f.read_bytes({ max_bytes: 64 * 1024 * 1024 }).map_ok(|bytes| Bytes(bytes))]
 					Skip => []
 				},
-				resolve: |_, a, res| match a {
-					Bytes(_) | Large(_) => GotBytes(Engine.file_bytes(res))
-					Text(_) => GotText(Engine.file_text(res))
-					Skip => NotRead
+				resolve: |_, a, res| match res {
+					Ok(Bytes(bytes)) => GotBytes(Ok(bytes))
+					Ok(Text(text)) => GotText(Ok(text))
+					Err(error) => match a {
+						Text(_) => GotText(Err(error))
+						Bytes(_) | Large(_) => GotBytes(Err(error))
+						Skip => NotRead
+					}
 				},
 			},
 			body,
@@ -140,7 +142,7 @@ FileEffectsApp := [].{
 
 	## A `resource` that runs `request` on the file `pick` names and shows its
 	## answer with `answer`.
-	operation : Engine.Signal(ctx, Pick), (File -> Engine.Request), (Result -> Str), (Engine.Signal(In(ctx, Op), Op) -> Elem(In(ctx, Op))) -> Elem(ctx)
+	operation : Engine.Signal(ctx, Pick), (File -> Engine.Ask(output, error)), (Try(output, error) -> Str), (Engine.Signal(In(ctx, Op), Op) -> Elem(In(ctx, Op))) -> Elem(ctx)
 	operation = |pick, request, answer, body|
 		Engine.resource(
 			pick,
@@ -159,17 +161,17 @@ FileEffectsApp := [].{
 			body,
 		)
 
-	upload : File -> Engine.Request
+	upload : File -> Engine.Ask(Engine.Response, Engine.HttpFailure)
 	upload = |f| f.upload({ url: "/upload", headers: [("x-name", f.name())], credentials: Include })
 
-	digested : Result -> Str
-	digested = |res| match Engine.file_digest(res) {
+	digested : Try(List(U8), Engine.FileError) -> Str
+	digested = |res| match res {
 		Ok(bytes) => "sha256 ${FileEffectsApp.hex(bytes)}"
 		Err(e) => "digest failed ${Str.inspect(e)}"
 	}
 
-	shown_url : Result -> Str
-	shown_url = |res| match Engine.file_url(res) {
+	shown_url : Try(Str, Engine.FileError) -> Str
+	shown_url = |res| match res {
 		Ok(url) => url
 		Err(e) => "failed ${Str.inspect(e)}"
 	}

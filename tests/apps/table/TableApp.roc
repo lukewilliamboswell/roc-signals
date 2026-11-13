@@ -367,8 +367,8 @@ TableApp := [Todos].{
 					),
 				],
 			),
-			Engine.on_post(TableApp.cells.scroll_request.signal(), |top| [ScrollTo("scrolled-todos", { top: Px(top), left: Keep, behavior: Instant })], Engine.ignore({})),
-			Engine.on_post(TableApp.cells.scroll_focus.signal(), |name| [Focus(name)], Engine.ignore({})),
+			Engine.on_post(TableApp.cells.scroll_request.signal(), |top| [Engine.command(ScrollTo("scrolled-todos", { top: Px(top), left: Keep, behavior: Instant }))], Engine.ignore({})),
+			Engine.on_post(TableApp.cells.scroll_focus.signal(), |name| [Engine.command(Focus(name))], Engine.ignore({})),
 		],
 	)
 

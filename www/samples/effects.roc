@@ -39,13 +39,13 @@ search : State(Ctx, Model) -> Elem(Ctx)
 search = |model|
 	Engine.watch_changes(
 		model.signal().map(|m| m.query),
-		|q| [Engine.http({ url: "/api/search?q=${q}", timeout: Ms(5000) })],
+		|q| [Engine.http_body({ url: "/api/search?q=${q}", timeout: Ms(5000) })],
 		model.on_result(
 			|m, q, res|
 				if q != m.query {
 					m
 				} else {
-					match Engine.http_text(res) {
+					match res {
 						Ok(body) => { ..m, results: Loaded(body) }
 						Err(err) => { ..m, results: Failed(err) }
 					}
@@ -64,10 +64,10 @@ save = |model| [
 	Html.button("Save search", [], model.update(|m| { ..m, saving: m.saving.post(m.query) })),
 	Engine.on_post(
 		model.signal().map(|m| m.saving),
-		|q| [Engine.http({ method: "POST", url: "/api/saved", body: q, timeout: Ms(5000) })],
+		|q| [Engine.http_body({ method: "POST", url: "/api/saved", body: q, timeout: Ms(5000) })],
 		model.on_result(
 			|m, q, res|
-				match Engine.http_text(res) {
+				match res {
 					Ok(_) => { ..m, saved: m.saved.append(q) }
 					Err(_) => m
 				},
@@ -84,8 +84,8 @@ commands : State(Ctx, Model) -> List(Elem(Ctx))
 commands = |model| {
 	query = model.signal().map(|m| m.query)
 	[
-		Engine.watch(query, |q| [Title(if (q.is_empty()) "Search" else "Search: ${q}")], Engine.ignore({})),
-		Engine.watch_changes(query, |q| [StorageSet("query", q)], Engine.ignore({})),
+		Engine.watch(query, |q| [Engine.command(Title(if (q.is_empty()) "Search" else "Search: ${q}"))], Engine.ignore({})),
+		Engine.watch_changes(query, |q| [Engine.command(StorageSet("query", q))], Engine.ignore({})),
 	]
 }
 
@@ -99,15 +99,15 @@ go = |m, url| { ..m, url, nav: m.nav.post(url) }
 
 routing : State(Ctx, Model) -> List(Elem(Ctx))
 routing = |model| [
-	Engine.on_post(model.signal().map(|m| m.nav), |url| [Push(url)], Engine.ignore({})),
+	Engine.on_post(model.signal().map(|m| m.nav), |url| [Engine.command(Push(url))], Engine.ignore({})),
 	Html.button("Settings", [], model.update(|m| go(m, "/settings"))),
 	Engine.watch(
 		Engine.const({}),
-		|_| [Popstate],
+		|_| [Engine.popstate({})],
 		model.on_result(
 			|m, _, res|
 				match res {
-					Location(url) => { ..m, url }
+					Ok(url) => { ..m, url }
 					_ => m
 				},
 		),
@@ -124,18 +124,18 @@ subscriptions : State(Ctx, Model) -> List(Elem(Ctx))
 subscriptions = |model| [
 	Engine.watch(
 		Engine.const({}),
-		|_| [OnlineChanges],
+		|_| [Engine.online_changes({})],
 		model.on_result(
 			|m, _, res|
 				match res {
-					Online(online) => { ..m, online }
+					Ok(online) => { ..m, online }
 					_ => m
 				},
 		),
 	),
 	Engine.when(
 		model.signal().map(|m| m.online),
-		|| Engine.watch(Engine.const({}), |_| [Interval(30000)], model.on_result(|m, _, _| { ..m, ticks: m.ticks + 1 })),
+		|| Engine.watch(Engine.const({}), |_| [Engine.interval(30000)], model.on_result(|m, _, _| { ..m, ticks: m.ticks + 1 })),
 		|| Engine.text(""),
 	),
 ]
@@ -150,7 +150,7 @@ search_box = |model| {
 	query = model.signal().map(|m| m.query)
 	[
 		Html.text_input(Engine.const("Search"), "search", query, [Engine.ref("search")], model.set_value(|m, q| { ..m, query: q, results: Loading, draft_status: "", drafts: m.drafts.post({}) })),
-		Engine.watch_changes(query, |_| [Focus("search")], Engine.ignore({})),
+		Engine.watch_changes(query, |_| [Engine.command(Focus("search"))], Engine.ignore({})),
 	]
 }
 
@@ -199,7 +199,7 @@ reveal_problem : Engine.Signal(Ctx, Bool) -> Elem(Ctx)
 reveal_problem = |invalid| Engine.watch_changes(
 	invalid,
 	|has_problem| if has_problem {
-		[Engine.scroll_into_view("problem", { block: Center, behavior: Instant }), FocusInPlace("problem")]
+		[Engine.command(Engine.scroll_into_view("problem", { block: Center, behavior: Instant })), Engine.command(FocusInPlace("problem"))]
 	} else {
 		[]
 	},
@@ -217,15 +217,15 @@ restore_scroll = |signal| Engine.on_cleanup("restore page position", signal, |_|
 ## the failure subscription also hears refused writes to local storage.
 drafts : State(Ctx, Model) -> List(Elem(Ctx))
 drafts = |model| [
-	Engine.on_post_by(model.signal().map(|m| m.drafts), model.signal().map(|m| m.query), |query, _| [SessionStorageSet("query.draft", query)], Engine.ignore({})),
+	Engine.on_post_by(model.signal().map(|m| m.drafts), model.signal().map(|m| m.query), |query, _| [Engine.command(SessionStorageSet("query.draft", query))], Engine.ignore({})),
 	Engine.watch(
 		Engine.const({}),
-		|_| [StorageWriteFailures],
+		|_| [Engine.storage_write_failures({})],
 		model.on_result(
 			|m, _, result| match result {
-				StorageFailed({ store: _, key, reason: Quota }) => { ..m, draft_status: "Not kept: ${key} is over the storage quota" }
-				StorageFailed({ store: _, key, reason: Unavailable }) => { ..m, draft_status: "Not kept: storage for ${key} is unavailable" }
-				Refused => { ..m, draft_status: "Storage failures cannot be reported" }
+				Ok({ store: _, key, reason: Quota }) => { ..m, draft_status: "Not kept: ${key} is over the storage quota" }
+				Ok({ store: _, key, reason: Unavailable }) => { ..m, draft_status: "Not kept: storage for ${key} is unavailable" }
+				Err(Refused) => { ..m, draft_status: "Storage failures cannot be reported" }
 				_ => m
 			},
 		),
@@ -256,7 +256,7 @@ copy_search = |model| [
 		|text, _| [Clipboard.text(text)],
 		model.on_result(
 			|m, _, result| {
-				copy_status = match Clipboard.written(result) {
+				copy_status = match result {
 					Ok(_) => "Copied"
 					Err(NotAllowed) => "Copy blocked by the browser"
 					Err(Unavailable) => "The clipboard is unavailable"
@@ -305,11 +305,11 @@ progress_search = |_| Engine.state(
 			Html.button("Download report", [], state.update(|s| { ..s, sent: s.sent.post({}), caption: "Starting…" })),
 			Engine.on_post(
 				state.signal().map(|s| s.sent),
-				|_| [Engine.http({ url: "/api/report", cache: NoStore, credentials: Include, timeout: Ms(30000) })],
+				|_| [Engine.http_body({ url: "/api/report", cache: NoStore, credentials: Include, timeout: Ms(30000) })],
 				state.on_result(
 					|s, _, result| {
 						..s,
-						caption: match Engine.http_text(result) {
+						caption: match result {
 							Ok(_) => "Report received"
 							Err(error) => "Report failed: ${Str.inspect(error)}"
 						},

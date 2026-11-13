@@ -28,12 +28,12 @@ Display := [].{
 			[
 				CommandView.view({ label: "Enter fullscreen", port: Display.fullscreen, argument: Engine.const({}) }),
 				Html.button("Toggle wake lock", [], state.update(|s| { ..s, wake: s.wake.post(!s.awake) })),
-				Engine.on_post(state.signal().map(|s| s.wake), |wanted| [Display.wake.send(wanted)], Engine.ignore({})),
+				Engine.on_post(state.signal().map(|s| s.wake), |wanted| [Engine.command(Display.wake.send(wanted))], Engine.ignore({})),
 				Engine.watch(
 					Engine.const({}),
-					|_| [Display.fullscreen_state.subscribe({})],
+					|_| [Display.fullscreen_state.ask({})],
 					state.on_result(
-						|s, _, result| match Display.fullscreen_state.message(result) {
+						|s, _, result| match result {
 							Ok(active) => { ..s, fullscreen: active }
 							Err(_) => s
 						},
@@ -41,9 +41,9 @@ Display := [].{
 				),
 				Engine.watch(
 					Engine.const({}),
-					|_| [Display.wake_state.subscribe({})],
+					|_| [Display.wake_state.ask({})],
 					state.on_result(
-						|s, _, result| match Display.wake_state.message(result) {
+						|s, _, result| match result {
 							Ok(active) => { ..s, awake: active }
 							Err(_) => s
 						},

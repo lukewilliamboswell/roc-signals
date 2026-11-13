@@ -10,7 +10,7 @@ main = Engine.program_boot(
 		length = boot.url.count_utf8_bytes().to_u32_wrap()
 		call : Port.Call({}, Str)
 		call = Port.call({ name: "test.roc-signals/zero-timeout", timeout: Ms(length - length) })
-		Engine.watch(Engine.const({}), |_| [call.request({})], Engine.ignore({}))
+		Engine.watch(Engine.const({}), |_| [call.ask({})], Engine.ignore({}))
 	},
 )
 

@@ -557,20 +557,20 @@ ExplorerApp := [].{
 								),
 							],
 						),
-						Engine.on_post(cells.scrolling.signal(), |top| [ScrollTo("log-viewer", { top: Px(top), left: Keep, behavior: Instant })], Engine.ignore({})),
+						Engine.on_post(cells.scrolling.signal(), |top| [Engine.command(ScrollTo("log-viewer", { top: Px(top), left: Keep, behavior: Instant }))], Engine.ignore({})),
 						# Mount and geometry changes restore the current intent. Self is an
 						# ordinary follow-up, settled before this call publishes its batch.
 						Engine.watch(
 							geometry,
 							|map| match map {
-								Ready(_) => [Self]
+								Ready(_) => [Engine.again({})]
 								Awaiting => []
 							},
 							Engine.react_by(
 								{ first: cells.place.first.signal(), previous: cells.place.geometry.signal(), asked: cells.place.asked.signal() }.Signal,
 								|at, map, result| match (map, result) {
-									(Ready(known), Now) => LogStore.geometry_ready({ total: known.total, height: known.viewport_height, first: at.first, previous: at.previous, asked: at.asked })
-									_ => crash "ExplorerApp.viewer_for_log: geometry follow-up was not Now"
+									(Ready(known), Ok({})) => LogStore.geometry_ready({ total: known.total, height: known.viewport_height, first: at.first, previous: at.previous, asked: at.asked })
+									_ => crash "ExplorerApp.viewer_for_log: geometry follow-up was not successful"
 								},
 							),
 						),
@@ -653,7 +653,7 @@ ExplorerApp := [].{
 						Html.p("Open a log of any size: a worker indexes it once, and the overview, the search and the viewer ask that index their own questions, reading only the lines they need. The file never comes into the page.", "app-subtitle"),
 					],
 				),
-				Engine.watch(Engine.const({}), |_| [MediaChanges(LogStore.dark_query)], Engine.react(|_, result| LogStore.media_changed(result))),
+				Engine.watch(Engine.const({}), |_| [Engine.media_changes(LogStore.dark_query)], Engine.react(|_, result| LogStore.media_changed(result))),
 				ExplorerApp.opener({}),
 				Html.div(
 					"toolbar",
@@ -694,10 +694,10 @@ ExplorerApp := [].{
 				Engine.watch_latest(
 					cells.generating.signal(),
 					|generating| match generating {
-						Generating(entries) => [ExplorerApp.generate.request(entries)]
+						Generating(entries) => [ExplorerApp.generate.ask(entries)]
 						Idle => []
 					},
-					Engine.react(|_, res| LogStore.sample_written(ExplorerApp.generate.result(res))),
+					Engine.react(|_, res| LogStore.sample_written(res)),
 				),
 			],
 		)

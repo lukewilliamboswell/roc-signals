@@ -15,8 +15,8 @@ import pf.Html
 RemountApp := [].{
 
 	## What one message's load writes into the pane.
-	loaded : Str, Str, Engine.Result -> Str
-	loaded = |_, id, res| match Engine.http_text(res) {
+	loaded : Str, Str, Try(Str, Engine.HttpError) -> Str
+	loaded = |_, id, res| match res {
 		Ok(body) => "${id}:${body}"
 		Err(problem) => "${id}:${Str.inspect(problem)}"
 	}
@@ -39,10 +39,10 @@ RemountApp := [].{
 							Html.p_s(body.signal(), [Engine.test_id("body")]),
 							Engine.watch(
 								id.lift().lift(),
-								|i| [Engine.http({ url: "/messages/${i}" })],
+								|i| [Engine.http_body({ url: "/messages/${i}" })],
 								body.on_result(RemountApp.loaded),
 							),
-							Engine.watch(Engine.const("reminder"), |_| [Timer(60000)], Engine.ignore({})),
+							Engine.watch(Engine.const("reminder"), |_| [Engine.timer(60000)], Engine.ignore({})),
 						],
 					),
 				),

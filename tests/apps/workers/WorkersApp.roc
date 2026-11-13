@@ -125,8 +125,8 @@ WorkersApp := [].{
 	}
 
 	## A request for a job of a bytes task on `input`.
-	job : Bytes, List(U8) -> Engine.Request
-	job = |task, input| task.request(Wire.Bytes.from_list(input))
+	job : Bytes, List(U8) -> Engine.Ask(Wire.Bytes, Worker.Error(Worker.Never))
+	job = |task, input| task.ask(Wire.Bytes.from_list(input))
 
 	## A job's result as the log shows it; a task that cannot fail has no
 	## `Failed` arm.
@@ -139,18 +139,18 @@ WorkersApp := [].{
 	}
 
 	## A bytes task's result, its output as text.
-	describe : Bytes, Engine.Result -> Str
-	describe = |task, r| WorkersApp.described(task.result(r), |out| Str.from_utf8(out.to_list()) ?? "bytes")
+	describe : Try(Wire.Bytes, Worker.Error(Worker.Never)) -> Str
+	describe = |r| WorkersApp.described(r, |out| Str.from_utf8(out.to_list()) ?? "bytes")
 
 	log_line : S, Str -> S
 	log_line = |s, line| { ..s, log: s.log.append(line) }
 
-	logs : State(Ctx, S), Str, (Engine.Result -> Str) -> Engine.Reaction(Ctx, a)
+	logs : State(Ctx, S), Str, (result -> Str) -> Engine.Reaction(Ctx, a, result)
 	logs = |st, label, shown| st.on_result(|s, _, r| WorkersApp.log_line(s, "${label}:${shown(r)}"))
 
 	## The reaction of a bytes task's site, logging under `label`.
-	logs_of : State(Ctx, S), Str, Bytes -> Engine.Reaction(Ctx, a)
-	logs_of = |st, label, task| WorkersApp.logs(st, label, |r| WorkersApp.describe(task, r))
+	logs_of : State(Ctx, S), Str -> Engine.Reaction(Ctx, a, Try(Wire.Bytes, Worker.Error(Worker.Never)))
+	logs_of = |st, label| WorkersApp.logs(st, label, WorkersApp.describe)
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
@@ -159,12 +159,12 @@ WorkersApp := [].{
 			"workers",
 			[
 				Html.button("Upper", [], st.update(|s| { ..s, upper: s.upper + 1 })),
-				Engine.watch_changes(v.map(|s| s.upper), |n| [WorkersApp.job(WorkersApp.upper, "job ${n.to_str()}".to_utf8())], WorkersApp.logs_of(st, "upper", WorkersApp.upper)),
+				Engine.watch_changes(v.map(|s| s.upper), |n| [WorkersApp.job(WorkersApp.upper, "job ${n.to_str()}".to_utf8())], WorkersApp.logs_of(st, "upper")),
 				Html.button("Batch", [], st.update(|s| { ..s, batch: s.batch + 1 })),
 				Engine.watch_changes(
 					v.map(|s| s.batch),
 					|n| [1.U64, 2, 3, 4].map(|i| WorkersApp.job(WorkersApp.upper, "b${n.to_str()}-${i.to_str()}".to_utf8())),
-					WorkersApp.logs_of(st, "batch", WorkersApp.upper),
+					WorkersApp.logs_of(st, "batch"),
 				),
 				Html.button("Panel", [], st.update(|s| { ..s, panel: !s.panel })),
 				Engine.when(
@@ -173,7 +173,7 @@ WorkersApp := [].{
 						"section",
 						[Html.aria_label("panel")],
 						[
-							Engine.watch(Engine.const({}), |_| [WorkersApp.job(WorkersApp.spin, "400000000".to_utf8())], WorkersApp.logs_of(st, "panel", WorkersApp.spin)),
+							Engine.watch(Engine.const({}), |_| [WorkersApp.job(WorkersApp.spin, "400000000".to_utf8())], WorkersApp.logs_of(st, "panel")),
 							Engine.text("panel open"),
 						],
 					),
@@ -183,19 +183,19 @@ WorkersApp := [].{
 				# Each press posts the rounds it was made with, so editing
 				# "Rounds" alone issues nothing and pressing twice runs twice.
 				Html.button("Spin", [], st.update(|s| { ..s, spin: s.spin.post(s.rounds) })),
-				Engine.on_post(v.map(|s| s.spin), |rounds| [WorkersApp.job(WorkersApp.spin, rounds.to_utf8())], WorkersApp.logs_of(st, "spin", WorkersApp.spin)),
+				Engine.on_post(v.map(|s| s.spin), |rounds| [WorkersApp.job(WorkersApp.spin, rounds.to_utf8())], WorkersApp.logs_of(st, "spin")),
 				Html.button("Slow", [], st.update(|s| { ..s, slow: s.slow.post(s.rounds) })),
-				Engine.on_post(v.map(|s| s.slow), |rounds| [WorkersApp.job(WorkersApp.slow, rounds.to_utf8())], WorkersApp.logs_of(st, "slow", WorkersApp.slow)),
+				Engine.on_post(v.map(|s| s.slow), |rounds| [WorkersApp.job(WorkersApp.slow, rounds.to_utf8())], WorkersApp.logs_of(st, "slow")),
 				Html.button("Crash", [], st.update(|s| { ..s, crashes: s.crashes + 1 })),
-				Engine.watch_changes(v.map(|s| s.crashes), |_| [WorkersApp.job(WorkersApp.crasher, [])], WorkersApp.logs_of(st, "crash", WorkersApp.crasher)),
+				Engine.watch_changes(v.map(|s| s.crashes), |_| [WorkersApp.job(WorkersApp.crasher, [])], WorkersApp.logs_of(st, "crash")),
 				Html.button("Tail", [], st.update(|s| { ..s, tails: s.tails + 1 })),
-				Engine.watch_changes(v.map(|s| s.tails), |n| [WorkersApp.job(WorkersApp.tail, "xtail ${n.to_str()}".to_utf8())], WorkersApp.logs_of(st, "tail", WorkersApp.tail)),
+				Engine.watch_changes(v.map(|s| s.tails), |n| [WorkersApp.job(WorkersApp.tail, "xtail ${n.to_str()}".to_utf8())], WorkersApp.logs_of(st, "tail")),
 				Html.button("Missing", [], st.update(|s| { ..s, missing: s.missing + 1 })),
-				Engine.watch_changes(v.map(|s| s.missing), |_| [WorkersApp.job(WorkersApp.missing, [])], WorkersApp.logs_of(st, "missing", WorkersApp.missing)),
+				Engine.watch_changes(v.map(|s| s.missing), |_| [WorkersApp.job(WorkersApp.missing, [])], WorkersApp.logs_of(st, "missing")),
 				Html.button("Grow", [], st.update(|s| { ..s, grows: s.grows + 1 })),
-				Engine.watch_changes(v.map(|s| s.grows), |_| [WorkersApp.job(WorkersApp.grow, "16777216".to_utf8())], WorkersApp.logs_of(st, "grow", WorkersApp.grow)),
+				Engine.watch_changes(v.map(|s| s.grows), |_| [WorkersApp.job(WorkersApp.grow, "16777216".to_utf8())], WorkersApp.logs_of(st, "grow")),
 				Html.button("Deep", [], st.update(|s| { ..s, deeps: s.deeps + 1 })),
-				Engine.watch_changes(v.map(|s| s.deeps), |_| [WorkersApp.deep.request(600)], WorkersApp.logs(st, "deep", |r| WorkersApp.described(WorkersApp.deep.result(r), |_| "chain"))),
+				Engine.watch_changes(v.map(|s| s.deeps), |_| [WorkersApp.deep.ask(600)], WorkersApp.logs(st, "deep", |r| WorkersApp.described(r, |_| "chain"))),
 				Html.p_s(v.map(|s| Str.join_with(s.log, "|")), [Engine.test_id("log")]),
 			],
 		)

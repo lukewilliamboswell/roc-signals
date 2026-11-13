@@ -113,10 +113,10 @@ TopLayerApp := [].{
 				Engine.on_post(
 					st.signal().map(|s| s.requests),
 					|request| match request {
-						Into => [Engine.scroll_into_view("target", {}), FocusInPlace("target")]
-						To => [ScrollTo("target", { top: End, left: Px(7), behavior: Instant })]
-						Missing => [Engine.scroll_into_view("missing", {})]
-						Focus => [FocusInPlace("target")]
+						Into => [Engine.command(Engine.scroll_into_view("target", {})), Engine.command(FocusInPlace("target"))]
+						To => [Engine.command(ScrollTo("target", { top: End, left: Px(7), behavior: Instant }))]
+						Missing => [Engine.command(Engine.scroll_into_view("missing", {}))]
+						Focus => [Engine.command(FocusInPlace("target"))]
 					},
 					Engine.ignore({}),
 				),

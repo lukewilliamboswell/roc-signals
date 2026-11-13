@@ -123,9 +123,9 @@ persistence_sites : {} -> List(Elem(ctx))
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 persistence_sites = |_| [
 	Engine.guard_leave(dirty({})),
-	Engine.on_post_by(AppStore.cells.drafts.signal(), AppStore.cells.source.signal(), |text, _| [SessionStorageSet("md.draft", text)], Engine.ignore({})),
-	Engine.on_post_by(AppStore.cells.saves.signal(), AppStore.cells.source.signal(), |text, _| [StorageSet("md.document", text)], Engine.ignore({})),
-	Engine.on_post(AppStore.cells.apply_source.signal(), |_| [ApplyValue("md.source")], Engine.ignore({})),
+	Engine.on_post_by(AppStore.cells.drafts.signal(), AppStore.cells.source.signal(), |text, _| [Engine.command(SessionStorageSet("md.draft", text))], Engine.ignore({})),
+	Engine.on_post_by(AppStore.cells.saves.signal(), AppStore.cells.source.signal(), |text, _| [Engine.command(StorageSet("md.document", text))], Engine.ignore({})),
+	Engine.on_post(AppStore.cells.apply_source.signal(), |_| [Engine.command(ApplyValue("md.source"))], Engine.ignore({})),
 	Engine.on_post_by(
 		AppStore.cells.copies.signal(),
 		AppStore.cells.source.signal(),
@@ -139,13 +139,13 @@ persistence_sites = |_| [
 	),
 	Engine.watch(
 		Engine.const({}),
-		|_| [StorageChanges("md.document")],
+		|_| [Engine.storage_changes("md.document")],
 		Engine.react_by(
 			{ revision: AppStore.cells.revision.signal(), saved_revision: AppStore.cells.saved_revision.signal() }.Engine.Signal,
 			|current, _, result| AppStore.heard_elsewhere(current, result),
 		),
 	),
-	Engine.watch(Engine.const({}), |_| [StorageWriteFailures], Engine.react(|_, result| AppStore.storage_failed(result))),
+	Engine.watch(Engine.const({}), |_| [Engine.storage_write_failures({})], Engine.react(|_, result| AppStore.storage_failed(result))),
 ]
 
 readout : Str, Engine.Signal(ctx, Str) -> Elem(ctx)

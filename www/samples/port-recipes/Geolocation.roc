@@ -31,9 +31,9 @@ Geolocation := [].{
 							state.signal().map(|s| s.following),
 							|| Engine.watch(
 								Engine.const({}),
-								|_| [Geolocation.positions.subscribe({})],
+								|_| [Geolocation.positions.ask({})],
 								state.on_result(
-									|s, _, result| match Geolocation.positions.message(result) {
+									|s, _, result| match result {
 										Ok(position) => { ..s, text: show(position) }
 										Err(Threw(message)) => { ..s, following: False, text: "Location stopped: ${message}" }
 										Err(Closed) => { ..s, following: False, text: "Location watch ended" }

@@ -28,10 +28,10 @@ TimeApp := [Demo].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	clock_site = |_props| Engine.watch(
 		Engine.const({}),
-		|_| [Interval(30000)],
+		|_| [Engine.interval(30000)],
 		Engine.react(
 			|_, result| match result {
-				Fired(at_ms) => [TimeApp.cells.clock.set(at_ms)]
+				Ok(at_ms) => [TimeApp.cells.clock.set(at_ms)]
 				_ => []
 			},
 		),
@@ -48,12 +48,12 @@ TimeApp := [Demo].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	stamp_site = |_props| Engine.on_post(
 		TimeApp.cells.stamps.signal(),
-		|_| [Timer(0)],
+		|_| [Engine.timer(0)],
 		Engine.react_by(
 			TimeApp.cells.clock.signal(),
 			|clock, _, result| match result {
-				Fired(at_ms) => [TimeApp.cells.action.set(Stamped(at_ms))]
-				Refused => [TimeApp.cells.action.set(Stamped(clock))]
+				Ok(at_ms) => [TimeApp.cells.action.set(Stamped(at_ms))]
+				Err(Refused) => [TimeApp.cells.action.set(Stamped(clock))]
 				_ => []
 			},
 		),

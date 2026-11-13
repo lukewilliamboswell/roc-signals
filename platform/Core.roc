@@ -563,10 +563,10 @@ Core := [].{
 		## A request to read the file's bytes into the page, for an effect
 		## site's plan: `file.read_bytes({})`, or `file.read_bytes({ max_bytes })`
 		## to change how much the app accepts (see [ReadProps]). Its result is
-		## `FileBytes(bytes)`, or `FileFailed` with `TooLarge` (more than
+		## `Ok(bytes)`, or `Err` with `TooLarge` (more than
 		## `max_bytes`, or than the page's `maxFileBytes` mount option allows;
 		## nothing is read) or `Unreadable` (the user's file changed or went
-		## away); read it with `file_bytes`. The browser reads the file on the
+		## away). The browser reads the file on the
 		## page's thread into a buffer of its own and the bytes are copied once
 		## into the page's memory, so keep it for small files and send large
 		## ones to a worker task. The request holds the file until it is
@@ -575,8 +575,8 @@ Core := [].{
 		read_bytes = |f, ReadProps.({ max_bytes })| Core.make_ask(ReadBytes({ file: f, max_bytes }), Core.file_bytes)
 
 		## A request to read the file into the page as text: as `read_bytes`,
-		## answered `FileText(text)`, or `FileFailed(InvalidUtf8)` when the bytes
-		## are not UTF-8. A byte-order mark is kept. Read it with `file_text`.
+		## answered `Ok(text)`, or `Err(InvalidUtf8)` when the bytes
+		## are not UTF-8. A byte-order mark is kept.
 		read_utf8 : File, ReadProps -> Ask(Str, FileError)
 		read_utf8 = |f, ReadProps.({ max_bytes })| Core.make_ask(ReadUtf8({ file: f, max_bytes }), Core.file_text)
 
@@ -584,8 +584,8 @@ Core := [].{
 		## request, for an effect site's plan:
 		## `file.upload({ url: "/upload" })` (see [UploadProps]). The browser
 		## streams it from the file: its bytes never enter the page's memory.
-		## It is answered as any HTTP request is (`Http`, `Network`, `Timeout`;
-		## read it with `http_text`), and like one it is kept when its site is
+		## Its typed result retains the response status, headers and text body,
+		## or an HTTP failure. Like HTTP, it is kept when its site is
 		## disposed and answered to the nearest surviving ancestor. A file the
 		## browser can no longer read fails the request, which the browser
 		## reports as a network failure.
@@ -596,23 +596,23 @@ Core := [].{
 		}
 
 		## A request for the SHA-256 digest of the file, or its range: answered
-		## `Digest(bytes)` with its 32 bytes, read with `file_digest`. The
+		## `Ok(bytes)` with its 32 bytes. The
 		## browser reads the range into a buffer of its own, off the page's
 		## memory, and digests it with WebCrypto. A range over the
 		## `maxFileBytes` mount option (256 MiB by default) is
-		## `FileFailed(TooLarge)`, a browser without WebCrypto (a page not
-		## served over HTTPS or from localhost) `FileFailed(Unavailable)`. Like a
+		## `Err(TooLarge)`, a browser without WebCrypto (a page not
+		## served over HTTPS or from localhost) `Err(Unavailable)`. Like a
 		## timer it belongs to its site.
 		sha256 : File -> Ask(List(U8), FileError)
 		sha256 = |f| Core.make_ask(Sha256(f), Core.file_digest)
 
 		## A request for a URL the page can show the file, or its range, by:
-		## an `<img>`'s or a `<video>`'s `src`. Answered `FileUrl(url)`, read with
-		## `file_url`. The URL is valid exactly as long as the file's handle:
+		## an `<img>`'s or a `<video>`'s `src`. Answered `Ok(url)`.
+		## The URL is valid exactly as long as the file's handle:
 		## when no value holds the file any more, the browser forgets the URL,
 		## so keep the file beside the URL for as long as it is shown. Asking
 		## twice for the same range answers the same URL; a file gives at most
-		## 16 ranges URLs, and a 17th is `FileFailed(TooLarge)`. Like a timer it
+		## 16 ranges URLs, and a 17th is `Err(TooLarge)`. Like a timer it
 		## belongs to its site.
 		object_url : File -> Ask(Str, FileError)
 		object_url = |f| Core.make_ask(ObjectUrl(f), Core.file_url)
@@ -692,10 +692,9 @@ Core := [].{
 		## A request for an HTTP response whose body becomes a [File], for an
 		## effect site's plan: the body stays outside Wasm, and the file can be read, digested, shown,
 		## uploaded, saved or sent to a task like any other. It is answered
-		## `Fetched({ status, headers, body })` for any status, or as an HTTP
-		## request fails (`Network`, `Timeout`), or `FileFailed(TooLarge)` for
-		## a body over the `maxFileBytes` mount option; read it with
-		## `fetched`. Like an HTTP request it is kept when its site is
+		## `Ok({ status, headers, body })` for any status, or an HTTP failure,
+		## or `Err(TooLarge)` for a body over the `maxFileBytes` mount option.
+		## Like an HTTP request it is kept when its site is
 		## disposed and answered to the nearest surviving ancestor. With progress,
 		## Default cache uses the browser’s Blob path; other cache policies collect
 		## streamed chunks in JavaScript, bounded by maxFileBytes.

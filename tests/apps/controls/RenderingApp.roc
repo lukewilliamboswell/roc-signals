@@ -46,7 +46,7 @@ RenderingApp := [].{
 				Html.button("Restore SVG rows", [], state.update(|s| { ..s, rows: ["a", "b"] })),
 				Html.button("Change SVG length", [], state.update(|s| { ..s, length: "20" })),
 				Html.button("Animate SVG mount", [], state.update(|s| { ..s, animated: True })),
-				Engine.watch_changes(state.signal().map(|s| s.animated), |_| [ViewTransition(["rendering"])], Engine.ignore({})),
+				Engine.watch_changes(state.signal().map(|s| s.animated), |_| [Engine.command(ViewTransition(["rendering"]))], Engine.ignore({})),
 				RenderingApp.scene(state.signal().map(|s| s.rows), state.signal().map(|s| s.length), "plain-svg"),
 				Engine.when(
 					state.signal().map(|s| s.animated),

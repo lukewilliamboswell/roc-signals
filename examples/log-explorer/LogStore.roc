@@ -88,9 +88,9 @@ LogStore := [Explorer].{
 	viewer_sized = |height| [LogStore.cells.viewport.set(Log.Viewport.for_height(height))]
 
 	## The subscription changes chart presentation without touching the log.
-	media_changed : Engine.Result -> List(Engine.Write(_))
+	media_changed : Try(Bool, [Refused]) -> List(Engine.Write(_))
 	media_changed = |result| match result {
-		Matches(matches) => [LogStore.cells.theme.set(TimelineChart.preferred_theme(matches))]
+		Ok(matches) => [LogStore.cells.theme.set(TimelineChart.preferred_theme(matches))]
 		_ => []
 	}
 
@@ -335,13 +335,13 @@ expect {
 expect {
 	before = LogStore.store.after(LogStore.shown_at(LogStore.awaiting_geometry, 99))
 	fitted = before.after(LogStore.viewer_sized(400))
-	dark = fitted.after(LogStore.media_changed(Matches(Bool.True)))
+	dark = fitted.after(LogStore.media_changed(Ok(Bool.True)))
 	actual = {
 		count: dark.read(LogStore.cells.viewport).capacity()?,
 		first: dark.read(LogStore.cells.place.first),
 		theme: dark.read(LogStore.cells.theme),
-		light: dark.after(LogStore.media_changed(Matches(Bool.False))).read(LogStore.cells.theme),
-		refused: LogStore.media_changed(Refused).len(),
+		light: dark.after(LogStore.media_changed(Ok(Bool.False))).read(LogStore.cells.theme),
+		refused: LogStore.media_changed(Err(Refused)).len(),
 	}
 	actual == { count: 20, first: 99, theme: Dark, light: Light, refused: 0 }
 }

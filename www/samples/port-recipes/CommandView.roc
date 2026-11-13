@@ -12,7 +12,7 @@ CommandView := [].{
 			"recipe-command",
 			[
 				Html.button(props.label, [], state.update(|box| box.post({}))),
-				Engine.on_post_by(state.signal(), props.argument.lift(), |argument, _| [props.port.send(argument)], Engine.ignore({})),
+				Engine.on_post_by(state.signal(), props.argument.lift(), |argument, _| [Engine.command(props.port.send(argument))], Engine.ignore({})),
 			],
 		),
 	)

@@ -111,7 +111,7 @@ ControlsApp := [].{
 				Html.button("Start focus loop", [], references.update(|s| { ..s, requests: s.requests.post("loop-left") })),
 				Engine.element("input", [Html.aria_label("Loop left"), Engine.ref("loop-left"), Html.on_focus(references.update(|s| { ..s, requests: s.requests.post("loop-right") }))], []),
 				Engine.element("input", [Html.aria_label("Loop right"), Engine.ref("loop-right"), Html.on_focus(references.update(|s| { ..s, requests: s.requests.post("loop-left") }))], []),
-				Engine.on_post(references.signal().map(|s| s.requests), |name| [Focus(name)], Engine.ignore({})),
+				Engine.on_post(references.signal().map(|s| s.requests), |name| [Engine.command(Focus(name))], Engine.ignore({})),
 			],
 		),
 	)
@@ -161,9 +161,9 @@ ControlsApp := [].{
 			Engine.watch_changes(
 				st.signal().map(|s| s.ask),
 				|a| match a.req {
-					F(n) => [Focus(n)]
-					B(n) => [Blur(n)]
-					Sel(n) => [SelectText(n)]
+					F(n) => [Engine.command(Focus(n))]
+					B(n) => [Engine.command(Blur(n))]
+					Sel(n) => [Engine.command(SelectText(n))]
 					None => []
 				},
 				Engine.ignore({}),

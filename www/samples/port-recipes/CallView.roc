@@ -17,10 +17,10 @@ CallView := [].{
 				Engine.on_post_by(
 					state.signal().map(|s| s.sent),
 					props.argument.lift(),
-					|argument, _| [props.port.request(argument)],
+					|argument, _| [props.port.ask(argument)],
 					state.on_result(
 						|s, _, result| {
-							text = match props.port.result(result) {
+							text = match result {
 								Ok(value) => (props.show)(value)
 								Err(error) => "Unavailable: ${Str.inspect(error)}"
 							}

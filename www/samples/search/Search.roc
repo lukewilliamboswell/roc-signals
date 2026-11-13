@@ -19,18 +19,18 @@ Search := [].{
 
 	# region requests
 	## One GET per search or refresh; nothing before the first search.
-	requests : { query : Str, round : U64 } -> List(Engine.Request)
+	requests : { query : Str, round : U64 } -> List(Engine.Ask(Str, Engine.HttpError))
 	requests = |{ query, .. }|
 		if query == "" {
 			[]
 		} else {
-			[Engine.http({ url: "/api/search?q=${query}", timeout: Ms(5000) })]
+			[Engine.http_body({ url: "/api/search?q=${query}", timeout: Ms(5000) })]
 		}
 
 	## Keep the body of a successful response, or the typed failure.
-	answered : S, { query : Str, round : U64 }, Engine.Result -> S
+	answered : S, { query : Str, round : U64 }, Try(Str, Engine.HttpError) -> S
 	answered = |s, _, res|
-		match Engine.http_text(res) {
+		match res {
 			Ok(body) => { ..s, status: Found(body) }
 			Err(err) => { ..s, status: Failed(err) }
 		}
@@ -63,7 +63,7 @@ Search := [].{
 				Html.checkbox(Engine.const("Auto-refresh"), v.map(|s| s.live), [], st.set_value(|s, p| { ..s, live: p == "true" })),
 				Engine.when(
 					v.map(|s| s.live),
-					|| Engine.watch(Engine.const({}), |_| [Interval(30000)], st.on_result(|s, _, _| { ..s, round: s.round + 1 })),
+					|| Engine.watch(Engine.const({}), |_| [Engine.interval(30000)], st.on_result(|s, _, _| { ..s, round: s.round + 1 })),
 					|| Engine.text(""),
 				),
 				Engine.watch_changes(v.map(|s| { query: s.query, round: s.round }), Search.requests, st.on_result(Search.answered)),
