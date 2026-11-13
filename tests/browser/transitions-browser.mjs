@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
-const options = parseArgs(process.argv.slice(2));
+const options = parseArgs(process.argv.slice(2), [], ["runtime"]);
 const files = runtimeFiles(options.runtime);
 const server = http.createServer((req, res) => {
   const name = path.basename(new URL(req.url, "http://x").pathname);
@@ -31,7 +31,7 @@ try {
     const join = (...parts) => { const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let at = 0; for (const p of parts) { out.set(p, at); at += p.length; } return out; };
     const u32 = n => { const out = new Uint8Array(4); new DataView(out.buffer).setUint32(0, n, true); return out; };
     const str = s => { const b = enc.encode(s); return join(u32(b.length), b); };
-    const elem = (id, tag = "div") => join([8], u32(id), u32(0), u32(0), str(tag));
+    const elem = (id, tag = "div") => join([8], u32(id), u32(0), u32(0), [0], str(""), str(tag), [0]);
     const text = (id, value) => join([12], u32(id), str(value));
     const title = value => join([17], str(value));
     const mark = (...types) => join([24], u32(types.length), ...types.map(str));
@@ -277,7 +277,7 @@ try {
   check("file-bearing completions retain browser data without page staging in the gap", staged, [[0, 1, null], [1, true, 1, null]]);
   const templates = await page.evaluate(() => {
     const f = __transitionFixture();
-    const template = f.join([1], f.str("p"), [0, 1, 2], f.str(""), [1, 1, 1, 0]);
+    const template = f.join([1, 0], f.str(""), f.str("p"), [0, 0, 1, 2], f.str(""), [1, 1, 1, 0, 0]);
     let parses = 0; const original = f.rt.parseTemplate.bind(f.rt); f.rt.parseTemplate = (...args) => { parses++; return original(...args); };
     f.raw(1, f.join([7], f.u32(1), f.u32(template.length), template), f.join([1], f.u32(2), f.u32(0), f.u32(0), f.u32(1), f.str("row")), f.title("once"), f.mark());
     const before = [parses, f.root.textContent, f.effects.length]; f.starts[0].update();

@@ -7,7 +7,7 @@ import path from "node:path";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
 
-const options = parseArgs(process.argv.slice(2));
+const options = parseArgs(process.argv.slice(2), [], ["runtime"]);
 const files = runtimeFiles(options.runtime);
 const server = http.createServer((request, response) => {
   const name = path.basename(new URL(request.url, "http://x").pathname);
@@ -47,8 +47,8 @@ try {
       rt.controlListeners(); rt.nativeEventListeners(); rt.documentKeyListeners(); rt.listen("submit");
       const calls = []; rt.deliver = (node, handler, bytes) => calls.push({ node, handler, payload: [...bytes] });
       const raw = (...parts) => { const bytes = join([0], ...parts); new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.busy = true; try { rt.apply(); } finally { rt.busy = false; length = 0; } rt.drainQueue(); };
-      const elem = (id, parent, tag) => join([8], u32(id), u32(parent), u32(0), str(tag));
-      const attr = (id, name, value) => join([9], u32(id), str(name), [1], str(value));
+      const elem = (id, parent, tag) => join([8], u32(id), u32(parent), u32(0), [0], str(""), str(tag), [0]);
+      const attr = (id, name, value) => join([9], u32(id), [3], str(""), str(name), [1], str(value));
       const prop = (id, kind, value) => join([21], u32(id), [kind], str(value));
       const listen = (id, handler, type, kind = 5, policies = 0) => join([11], u32(id), u32(handler), str(type), [kind], u32(policies));
       const ref = (id, mode, ...extra) => join([18, mode], u32(id), ...extra);

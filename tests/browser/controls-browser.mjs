@@ -283,10 +283,10 @@ for (const [button, where] of [
     const str = (s) => { const b = new TextEncoder().encode(s); word(b.length); bytes.push(...b); };
     // <div><input/></div>, holes: reference and click on the input.
     const tpl = [];
-    byte(1); str("div"); byte(0); byte(1);
-    byte(1); str("input"); byte(0); byte(0);
-    byte(2); byte(5); byte(1); byte(0);
-    byte(3); byte(1); byte(0); byte(7); str("click"); byte(1); word(0);
+    byte(1); byte(0); str(""); str("div"); byte(0); byte(0); byte(1);
+    byte(1); byte(0); str(""); str("input"); byte(0); byte(0); byte(0);
+    byte(2); byte(5); byte(1); byte(0); byte(0);
+    byte(3); byte(1); byte(0); byte(0); byte(7); str("click"); byte(1); word(0);
     tpl.push(...bytes); bytes.length = 0;
     byte(7); word(1); word(tpl.length); bytes.push(...tpl);
     byte(1); word(10); word(0); word(0); word(1); word(11);
@@ -313,8 +313,8 @@ for (const [button, where] of [
     const cleared = rt.statics[11] === undefined && root.childNodes.length === 0;
     // A static ancestor can remove a row without a separate row REMOVE.
     bytes.length = 0;
-    byte(8); word(30); word(0); word(0); str("section");
-    byte(8); word(31); word(30); word(0); str("div");
+    byte(8); word(30); word(0); word(0); byte(0); str(""); str("section"); byte(0);
+    byte(8); word(31); word(30); word(0); byte(0); str(""); str("div"); byte(0);
     byte(10); word(32); word(31); word(0); str("static child");
     byte(1); word(10); word(31); word(0); word(1); word(11);
     batch = Uint8Array.from([0, ...bytes]); apply();
@@ -324,10 +324,10 @@ for (const [button, where] of [
     // references, while leaving another live site alone.
     bytes.length = 0;
     byte(7); word(2); word(tpl.length); bytes.push(...tpl);
-    byte(8); word(50); word(0); word(0); str("section");
+    byte(8); word(50); word(0); word(0); byte(0); str(""); str("section"); byte(0);
     byte(1); word(10); word(50); word(0); word(1); word(11);
     byte(1); word(20); word(10); word(0); word(2); word(21);
-    byte(8); word(40); word(0); word(0); str("section");
+    byte(8); word(40); word(0); word(0); byte(0); str(""); str("section"); byte(0);
     byte(1); word(41); word(40); word(0); word(2); word(42);
     batch = Uint8Array.from([0, ...bytes]); apply();
     batch = Uint8Array.from([0, 6, 50, 0, 0, 0, 1, 0, 0, 0]); apply();
@@ -527,14 +527,14 @@ for (const mode of ["initial", "changed"]) {
       const byte = (n) => bytes.push(n);
       const word = (n) => bytes.push(n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255);
       const str = (s) => { const b = new TextEncoder().encode(s); word(b.length); bytes.push(...b); };
-      const elem = (id, tag, parent = 0) => { byte(8); word(id); word(parent); word(0); str(tag); };
-      const attr = (id, name, value, present = 1) => { byte(9); word(id); str(name); byte(present); if (present === 1) str(value); };
+      const elem = (id, tag, parent = 0, namespace = 0) => { byte(8); word(id); word(parent); word(0); byte(namespace); str(""); str(tag); byte(0); };
+      const attr = (id, name, value, present = 1) => { byte(9); word(id); byte(3); str(""); str(name); byte(present); if (present === 1) str(value); };
       const prop = (id, index, value) => { byte(21); word(id); byte(index); str(value); };
       const listen = (id, type, kind = 1, policies = 0) => { byte(11); word(id); word(7); str(type); byte(kind); word(policies); };
       const apply = () => { bytes.unshift(0); new Uint8Array(memory.buffer).set(bytes); rt.guard(() => rt.applyBatch()); bytes = []; };
       const template = (id, tag, property) => {
         const outer = bytes; bytes = [];
-        byte(1); str(tag); byte(0); byte(0);
+        byte(1); byte(0); str(""); str(tag); byte(0); byte(0); byte(0);
         byte(1); byte(6); byte(0); byte(property);
         const tpl = bytes; bytes = outer;
         byte(7); word(id); word(tpl.length); bytes.push(...tpl);
@@ -543,8 +543,8 @@ for (const mode of ["initial", "changed"]) {
       const hprop = (id, hole, value) => { byte(22); word(id); byte(hole); str(value); };
       const attrTemplate = (id) => {
         const outer = bytes; bytes = [];
-        byte(1); str("img"); byte(2); str("alt"); str(""); str("data-static"); str(""); byte(0);
-        byte(1); byte(2); byte(0); str("aria-label");
+        byte(1); byte(0); str(""); str("img"); byte(0); byte(2); byte(3); str(""); str("alt"); str(""); byte(3); str(""); str("data-static"); str(""); byte(0);
+        byte(1); byte(2); byte(0); byte(3); str(""); str("aria-label");
         const tpl = bytes; bytes = outer;
         byte(7); word(id); word(tpl.length); bytes.push(...tpl);
       };
@@ -588,7 +588,7 @@ for (const mode of ["initial", "changed"]) {
     attributes.elem(20, "select"); attributes.prop(20, 1, "");
     attributes.elem(21, "option", 20); attributes.prop(21, 1, "");
     attributes.byte(10); attributes.word(22); attributes.word(21); attributes.word(0); attributes.str("All works");
-    attributes.elem(30, "svg"); attributes.attr(30, "class", "");
+    attributes.elem(30, "svg", 0, 1); attributes.attr(30, "class", "");
     attributes.apply();
     const image = attributes.rt.statics[1];
     const row = attributes.rt.statics[10];
@@ -626,7 +626,7 @@ for (const mode of ["initial", "changed"]) {
         const bad = harness();
         if (command === "ATTR") {
           bad.elem(1, "img"); bad.apply();
-          bad.byte(9); bad.word(1); bad.str("alt");
+          bad.byte(9); bad.word(1); bad.byte(3); bad.str(""); bad.str("alt");
         } else {
           bad.attrTemplate(1);
           if (command === "HATTR") bad.attrInst(10, 1, 1);
@@ -648,7 +648,7 @@ for (const mode of ["initial", "changed"]) {
   check("property commands preserve controls and select settling; ordinary value attributes do not assign custom properties", got.state, ["hello", "hello", true, "attribute", "original", "0.5", "b", true]);
   check("HPROP applies checkbox and option holes", got.changed, [false, "c"]);
   check("typed prevent/stop hide a bubbling custom name above the mount, while non-bubbling stop leaves the target listener running", got.dispatch, [[[1, 7, ""], [1, 7, ""]], true, 0, 1]);
-  check("empty ordinary attributes survive plain commands, static templates and INST; booleans keep their existing absence rule", got.emptyAttrs, ["", "", false, false, false, true, "", "", "", false, ""]);
+  check("empty ordinary attributes survive plain commands, static templates and INST; every present text stays present", got.emptyAttrs, ["", "", false, true, true, true, "", "", "", false, ""]);
   check("HATTR distinguishes removal from an empty present value and option value mirrors preserve the empty select choice", got.attrChanges, [false, "", true, "", "", ""]);
   check("unknown declarations and property encodings are executor faults; file input values are contract faults with the node", got.failures, [
     ["attribute-presence", "executor", null], ["hole-presence", "executor", null], ["inst-presence", "executor", null],
@@ -703,16 +703,16 @@ for (const mode of ["initial", "changed"]) {
   });
   await click("Animate SVG mount");
   check("a real Chrome transition's early/update template paths preserve SVG", await snapshot("animated-svg"), expected(20));
-  check("the animated site parses its original bytes once early and once under its SVG parent", await page.evaluate(() => [window.__nativeTransitions, window.__templateParses]), [1, [null, svgNS]]);
+  check("the animated site parses explicit namespace bytes once before its guarded update", await page.evaluate(() => [window.__nativeTransitions, window.__templateParses]), [1, [null]]);
   const hidden = () => page.evaluate(() => {
     const el = document.querySelector('[data-testid="findable"]'), css = getComputedStyle(el);
     return [el.getAttribute("hidden"), el.hidden, css.display === "none", css.contentVisibility];
   });
   check("until-found remains the browser's content-visibility state", await hidden(), ["until-found", "until-found", false, "hidden"]);
   await click("Show findable");
-  check("the existing false convention makes hidden absent", await hidden(), [null, false, false, "visible"]);
+  check("explicit absence makes hidden absent", await hidden(), [null, false, false, "visible"]);
   await click("Hide findable");
-  check("true keeps the existing empty hidden attribute", await hidden(), ["", true, true, "visible"]);
+  check("explicit presence keeps an empty hidden attribute", await hidden(), ["", true, true, "visible"]);
   await click("Findable until found");
   check("an attribute update restores until-found", await hidden(), ["until-found", "until-found", false, "hidden"]);
   check("rendering paths produce no browser or runtime faults", errors, []);
@@ -737,13 +737,13 @@ for (const mode of ["initial", "changed"]) {
         const word = (n) => bytes.push(n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255);
         const str = (s) => { const b = new TextEncoder().encode(s); word(b.length); bytes.push(...b); };
         const apply = () => { bytes.unshift(0); new Uint8Array(memory.buffer).set(bytes); rt.applyBatch(); bytes = []; };
-        bytes.push(8); word(1); word(0); word(0); str("div");
-        bytes.push(9); word(1); str(name); bytes.push(1); str(value);
+        bytes.push(8); word(1); word(0); word(0); bytes.push(0); str(""); str("div"); bytes.push(0);
+        bytes.push(9); word(1); bytes.push(3); str(""); str(name); bytes.push(1); str(value);
         const outer = bytes; bytes = [];
-        bytes.push(1); str("div"); bytes.push(0, 2);
-        bytes.push(1); str("div"); bytes.push(1); str(name); str(value); bytes.push(0);
-        bytes.push(1); str("div"); bytes.push(0, 0);
-        bytes.push(1, 2, 1, 1); str(name);
+        bytes.push(1, 0); str(""); str("div"); bytes.push(0, 0, 2);
+        bytes.push(1, 0); str(""); str("div"); bytes.push(0, 1, 3); str(""); str(name); str(value); bytes.push(0);
+        bytes.push(1, 0); str(""); str("div"); bytes.push(0, 0, 0);
+        bytes.push(1, 2, 1, 0, 1, 3); str(""); str(name);
         const template = bytes; bytes = outer;
         bytes.push(7); word(1); word(template.length); bytes.push(...template);
         bytes.push(1); word(2); word(0); word(0); word(1); bytes.push(1); str(value);
@@ -757,8 +757,8 @@ for (const mode of ["initial", "changed"]) {
     }
     return results;
   });
-  const cases = [["", null], ["false", null], ["true", ""], ["until-found", "until-found"]];
-  check("every boolean name preserves its four text cases in every attribute render path", got,
+  const cases = [["", ""], ["false", "false"], ["true", "true"], ["until-found", "until-found"]];
+  check("every legacy special name preserves literal text in every attribute render path", got,
     ["disabled", "selected", "readonly", "required", "hidden", "multiple", "open"].flatMap((name) => cases.map(([value, rendered], index) => [name, value, Array(3).fill(rendered), cases[(index + 1) % cases.length][1]])));
   await ctx.close();
 }

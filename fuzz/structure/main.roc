@@ -541,7 +541,13 @@ batch_writes = |before, bytes| {
 		}
 		for index in r.written {
 			if $ordinary.contains(index) and (op == 9 or op == 21) {
-				field = { index, kind: op, name: if (op == 9) Dom.str(bytes, command_at + 5).0 else Dom.byte(bytes, command_at + 5).to_str() }
+				field = {
+					index,
+					field: if op == 9 {
+						expanded = Dom.expanded_name(bytes, command_at + 5, False).0
+						Attribute({ namespace: expanded.namespace, local: expanded.local })
+					} else Property(Dom.byte(bytes, command_at + 5)),
+				}
 				if $initialized.contains(field) {
 					$written = $written.append(index)
 				} else {
@@ -595,17 +601,25 @@ half_seen = |held, written, fx, turns| {
 	Ok({})
 }
 
-## The DOM as markup with each element's attributes sorted, so two models
-## built along different paths compare by content.
+## A canonical tree picture compares expanded identities and both child
+## containers. Explicit text/comment markers and inspected strings keep data
+## from impersonating structure; engine addresses never enter the comparison.
 render : Dom.Model, U64 -> Str
 render = |dom, i| {
 	n = Dom.node(dom, i)
-	if n.tag == "" {
-		n.text
-	} else {
-		attrs = n.attrs.sort_with(|(a, _), (b, _)| compare_bytes(a.to_utf8(), b.to_utf8())).map(|(k, v)| " ${k}=\"${v}\"")
-		"<${n.tag}${Str.join_with(attrs, "")}>${Str.join_with(n.kids.map(|k| render(dom, k)), "")}</${n.tag}>"
+	if n.kind == 2 {
+		return "text:${Str.inspect(n.text)}"
 	}
+	if n.kind == 3 {
+		return "comment:${Str.inspect(n.text)}"
+	}
+	attrs = n.attrs.sort_with(|(left, _), (right, _)| compare_bytes(Str.inspect(left).to_utf8(), Str.inspect(right).to_utf8())).map(|(name, value)| Str.inspect({ name, value }))
+	children = Str.join_with(n.kids.map(|child| render(dom, child)), ",")
+	content = match n.content {
+		None => "none"
+		Some(fragment) => "[${Str.join_with(Dom.node(dom, fragment).kids.map(|child| render(dom, child)), ",")}]"
+	}
+	"element:${Str.inspect({ namespace: n.namespace, prefix: n.prefix, local: n.tag })};attrs:[${Str.join_with(attrs, ",")}];children:[${children}];content:${content}"
 }
 
 ## Lexicographic order of two byte strings.
@@ -940,8 +954,8 @@ expect {
 ## Construction can set distinct ordinary fields once. Repeating an ATTR
 ## name or PROP kind remains a second reader write, including on a new node.
 expect {
-	element = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([8], 1), 0), 0), "input")
-	attribute = |name, value| SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), name).append(1), value)
+	element = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([8], 1), 0), 0).append(0), ""), "input").append(0)
+	attribute = |name, value| SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1).append(3), ""), name).append(1), value)
 	property = |kind, value| SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(kind), value)
 	initial = [0].concat(element).concat(attribute("type", "text")).concat(attribute("aria-label", "Control")).concat(property(1, "first")).concat(property(2, "true"))
 	check = |bytes| {
@@ -975,9 +989,9 @@ expect {
 ## INST carries each hole's initial value. Its first later text, attribute
 ## or property setter is an update, even when addressed by an ordinary id.
 expect {
-	input = SpecRunner.put_str([1], "input").concat([0, 0])
+	input = SpecRunner.put_str(SpecRunner.put_str([1, 0], ""), "input").concat([0, 0, 0])
 	text = SpecRunner.put_str([2], "initial").concat([1, 1, 0])
-	attribute = input.concat(SpecRunner.put_str([1, 2, 0], "aria-label"))
+	attribute = input.concat(SpecRunner.put_str(SpecRunner.put_str([1, 2, 0, 3], ""), "aria-label"))
 	property = input.concat([1, 6, 0, 1])
 	row = SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([1], 1), 0), 0), 0)
 	text_update = SpecRunner.put_str(SpecRunner.put_u32([2], 1).append(0), "later")
@@ -1014,4 +1028,18 @@ guard_model : Dom.Model, U64 -> Bool
 guard_model = |dom, index| {
 	entry = Dom.node(dom, index)
 	Dom.attr_of(entry, "data-guard") == "on" or entry.kids.any(|child| guard_model(dom, child))
+}
+
+## Attribute initialization identity is URI plus local name, independent of
+## framing code and prefix. Equal-length different names remain separate fields.
+expect {
+	element = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([0, 8], 1), 0), 0).append(0), ""), "div").append(0)
+	ordinary = |name| SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1).append(3), ""), name).append(1), "value")
+	builtin = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1).append(0), "a"), "key").append(1), "before")
+	alias = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1).append(4), "http://www.w3.org/1999/xhtml"), "b"), "key").append(1), "after")
+	classify = |bytes| {
+		result = batch_writes(Dom.new({}), bytes)
+		half_seen(1, result.written, result.fx, 1)
+	}
+	classify(element.concat(ordinary("data-aa")).concat(ordinary("data-bb"))) == Ok({}) and classify(element.concat(builtin).concat(alias)) == Err("node 1 was created by the turn and then written again by it")
 }

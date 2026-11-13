@@ -64,8 +64,8 @@ await page.evaluate(async () => {
   const join = (...parts) => { const bytes = new Uint8Array(parts.reduce((n, part) => n + part.length, 0)); let at = 0; for (const part of parts) { bytes.set(part, at); at += part.length; } return bytes; };
   const u32 = (value) => { const bytes = new Uint8Array(4); new DataView(bytes.buffer).setUint32(0, value, true); return bytes; };
   const str = (text) => { const bytes = encoder.encode(text); return join(u32(bytes.length), bytes); };
-  const element = (style, children = []) => join([1], str("div"), [1], str("style"), str(style), [children.length], ...children);
-  const hole = (kind, path, extra) => join([kind, path.length], path, extra);
+  const element = (style, children = []) => join([1, 0], str(""), str("div"), [0, 1, 3], str(""), str("style"), str(style), [children.length], ...children);
+  const hole = (kind, path, extra) => join([kind, path.length], path.flatMap(index => [0, index]), extra);
   const event = (handler, type, policies) => join([handler], str(type), [3], u32(policies));
   const template = join(element("position:relative;width:600px;height:300px", [element("position:absolute;left:20px;top:20px;width:100px;height:100px;touch-action:none")]), [7],
     hole(6, [], [3]), hole(6, [0], [3]), hole(5, [0], []),
@@ -199,8 +199,8 @@ for (const captured of [false, true]) for (const mutation of ["remove", "clear",
     const f = window.__pointerFixture(); window.__pf = f;
     const encoder = new TextEncoder();
     const str = (value) => { const bytes = encoder.encode(value); return f.join(f.u32(bytes.length), bytes); };
-    const element = (id, parent) => f.join([8], f.u32(id), f.u32(parent), f.u32(0), str("div"));
-    const style = (id, value) => f.join([9], f.u32(id), str("style"), [1], str(value));
+    const element = (id, parent) => f.join([8], f.u32(id), f.u32(parent), f.u32(0), [0], str(""), str("div"), [0]);
+    const style = (id, value) => f.join([9], f.u32(id), [3], str(""), str("style"), [1], str(value));
     const listen = (id, handler, type, kind = 1, policies = 0) => f.join([11], f.u32(id), f.u32(handler), str(type), [kind], f.u32(policies));
     f.raw(f.join(element(9, 0), style(9, "position:absolute;left:0;top:0;width:500px;height:300px;z-index:2"),
       element(10, 9), style(10, "position:absolute;left:20px;top:20px;width:100px;height:100px"),

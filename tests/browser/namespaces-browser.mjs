@@ -69,6 +69,10 @@ try {
     const namespaced = exact.getAttributeNodeNS("urn:attr", "key");
     apply(attr(3, name(4, "key", "b", "urn:attr"), "second"));
     check("URI/local attribute replacement retains first prefix and identity", exact.getAttributeNodeNS("urn:attr", "key") === namespaced && namespaced.prefix === "a" && namespaced.value === "second");
+    apply(attr(3, name(0, "alias-key", "a"), "first"));
+    const aliasAttribute = exact.getAttributeNodeNS(html, "alias-key");
+    apply(attr(3, name(4, "alias-key", "b", html), "second"));
+    check("builtin namespace and explicit URI alias replace one attribute identity", exact.getAttributeNodeNS(html, "alias-key") === aliasAttribute && aliasAttribute.prefix === "a" && aliasAttribute.value === "second");
     apply(attr(3, name(3, "hidden"), "until-found"), attr(3, name(3, "aria-hidden"), "false"));
     check("enumerated and false text values remain present exactly", exact.getAttribute("hidden") === "until-found" && exact.getAttribute("aria-hidden") === "false");
     apply(attr(3, name(3, "hidden"), ""));
@@ -77,6 +81,10 @@ try {
     check("only explicit absence removes an attribute", !exact.hasAttribute("hidden") && exact.getAttribute("aria-hidden") === "false");
     apply([26, ...word(5), ...word(3), ...word(0), ...text("author <!-- data -->")], [10, ...word(6), ...word(3), ...word(0), ...text("visible")]);
     check("comment data occupies childNodes without contributing textContent", exact.childNodes.length === 2 && exact.firstChild.nodeType === 8 && exact.firstChild.data === "author <!-- data -->" && exact.textContent === "visible");
+    apply(element(7, 0, name(0, "input")), attr(7, name(3, "VALUE"), "exact attribute"),
+      element(8, 0, name(0, "dialog")), attr(8, name(3, "OPEN"), ""), attr(8, name(3, "PoPoVeR"), "manual"), [21, ...word(8), 6, ...text("hidden")]);
+    check("exact uppercase VALUE is distinct from an input's live value", runtime.lookup(7).getAttributeNS(null, "VALUE") === "exact attribute" && runtime.lookup(7).value === "");
+    check("exact uppercase OPEN and mixed-case PoPoVeR do not claim controlled dialog state", runtime.lookup(8).getAttributeNS(null, "OPEN") === "" && runtime.lookup(8).getAttributeNS(null, "PoPoVeR") === "manual" && runtime.lookup(8).open === false && !runtime.lookup(8).hasAttributeNS(null, "open"));
     // These bytes distinguish explicit ordinary children from inert content;
     // neither the raw API nor the executor infers intent from the template tag.
     const elem = (id, parent, expanded, container) => [8, ...word(id), ...word(parent), ...word(0), ...expanded, container];
@@ -88,24 +96,71 @@ try {
     const tree = [1, ...name(0, "div"), 0, 0, 1,
       1, ...name(0, "template"), 1, 0, 2,
         3, ...text("clone comment"), 1, ...name(0, "span"), 0, 0, 1, 2, ...text(""),
-      3, // three holes: text, attribute, and a command alias for nested insertion
+      4, // text, attribute, command alias and a row-owned inert observation
       1, 3, 0, 0, 1, 1, 0, 0,
       2, 2, 0, 0, 1, 1, ...name(3, "title"),
-      5, 1, 0, 0];
+      5, 1, 0, 0,
+      3, 2, 0, 0, 1, 1, 0, ...text("size"), 7, ...word(8)];
     const instance = (id, alias, value) => [1, ...word(id), ...word(0), ...word(0), ...word(0), ...text(value), 1, ...text(value + " title"), ...word(alias)];
     apply([7, ...word(0), ...word(tree.length), ...tree], instance(30, 31, "first"), instance(40, 41, "second"));
     const row = runtime.lookup(30), cloned = runtime.lookup(31), other = runtime.lookup(41), span = cloned.content.lastChild;
+    check("inert content observations retain explicit row ownership", runtime.observationOwners.get(row)?.size === 1 && runtime.observations.has(span) && !span.isConnected);
     check("template clone preserves static comments and resolves content hole paths", cloned.childNodes.length === 0 && cloned.content.firstChild.data === "clone comment" && span.textContent === "first" && span.getAttribute("title") === "first title" && other.content.lastChild.textContent === "second");
     apply([2, ...word(30), 0, ...text("changed")], [3, ...word(30), 1, 1, ...text("changed title")], [10, ...word(32), ...word(31), ...word(0), ...text("nested")]);
     check("cloned content target metadata supports hole updates and nested insertion", span.textContent === "changed" && span.getAttribute("title") === "changed title" && cloned.content.lastChild === runtime.lookup(32) && cloned.content.textContent === "changednested");
     apply([4, ...word(30), ...word(0)]);
     check("moving a row preserves exact content nodes and cached hole targets", runtime.lookup(30) === row && runtime.lookup(31) === cloned && cloned.content.firstChild.data === "clone comment" && row.lastChild === cloned);
-    apply([5, ...word(30)]);
+    apply([23, ...word(30)], [5, ...word(30)]);
     check("removing a row forgets aliases and dynamically inserted content addresses", runtime.lookup(30) === undefined && runtime.lookup(31) === undefined && runtime.lookup(32) === undefined && !row.isConnected);
+    check("row RELEASE retires inert registrations and preserves another row's", !runtime.observations.has(span) && !runtime.observationOwners.has(row) && runtime.observationOwners.get(runtime.lookup(40))?.size === 1);
     apply(instance(30, 31, "reused"));
     check("disposed row and alias IDs reopen with fresh content", runtime.lookup(30) !== row && runtime.lookup(31) !== cloned && runtime.lookup(31).content.lastChild.textContent === "reused");
-    apply([6, ...word(31), ...word(99)]);
+    apply([23, ...word(30)], [6, ...word(31), ...word(99)]);
     check("CLEAR selects explicit content and preserves the owning template", runtime.lookup(31).content.childNodes.length === 0 && runtime.lookup(31).childNodes.length === 0);
+    // Negative framing uses fresh real mounts, so a poison never serves as
+    // permission to continue another case and every malformed operand is reached.
+    const fresh = wrapper => {
+      const memory = new WebAssembly.Memory({ initial: 2 });
+      let length = 0, reserved = 0, initCalls = 0, boot;
+      const x = { memory, protocol_version: () => 18,
+        boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
+        cmd_ptr: () => 0, cmd_len: () => length,
+        payload_reserve(size) { reserved = size; return 65536; },
+        init() { initCalls++; boot = [...new Uint8Array(memory.buffer, 65536, reserved)]; new Uint8Array(memory.buffer)[0] = 0; length = 1; },
+        files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
+      };
+      const rt = new RocEngineRuntime(x, wrapper, { manualEffects: true });
+      return { rt, get initCalls() { return initCalls; }, get boot() { return boot; }, raw(bytes) { new Uint8Array(memory.buffer).set([0, ...bytes]); length = bytes.length + 1; rt.guard(() => rt.applyBatch()); } };
+    };
+    const invalid = [
+      ["unknown namespace byte", [8, ...word(1), ...word(0), ...word(0), 255, ...text(""), ...text("div"), 0]],
+      ["xml prefix with wrong namespace", elem(1, 0, name(1, "entry", "xml"), 0)],
+      ["unknown child container", elem(1, 0, name(0, "div"), 2)],
+      ["content container on HTML div", elem(1, 0, name(0, "div"), 1)],
+      ["content container on SVG template", elem(1, 0, name(1, "template"), 1)],
+    ];
+    const badPath = container => [1, ...name(0, "div"), 0, 0, 1, 2, ...text("x"), 1, 1, 1, container, 0];
+    for (const [label, code] of [["unknown hole container", 2], ["content path on ordinary element", 1]]) {
+      const body = badPath(code); invalid.push([label, [7, ...word(0), ...word(body.length), ...body]]);
+    }
+    for (const [label, bytes] of invalid) {
+      const wrapper = document.createElement("div"); document.body.append(wrapper);
+      const f = fresh(wrapper); f.rt.mount(); f.raw(bytes);
+      check(`${label} is an executor fault before publication`, f.rt.poisoned?.class === "executor" && wrapper.childNodes.length === 0);
+      f.rt.unmount(); wrapper.remove();
+    }
+    for (const uri of ["u".repeat(65536), "é".repeat(32768)]) {
+      const wrapper = document.createElementNS(uri, "entry"); document.body.append(wrapper);
+      const f = fresh(wrapper);
+      let refused = false; try { f.rt.mount(); } catch (error) { refused = error.message.includes("65536"); }
+      check(`mount-root ${uri[0] === "u" ? "structural" : "UTF-8"} byte bound refuses before init`, f.initCalls === 0 && (refused || f.rt.poisoned?.message.includes("65536")));
+      f.rt.unmount(); wrapper.remove();
+    }
+    const wrapper = document.createElementNS(svg, "s:foreignObject"); document.body.append(wrapper);
+    const measured = fresh(wrapper); measured.rt.mount();
+    const expectedRoot = [13, ...word(1 + text("s").length + text("foreignObject").length), 1, ...text("s"), ...text("foreignObject")];
+    check("boot carries the actual wrapper URI prefix and exact local in engine-only section13", JSON.stringify(measured.boot.slice(-expectedRoot.length)) === JSON.stringify(expectedRoot));
+    measured.rt.unmount(); wrapper.remove();
     runtime.unmount(); root.remove();
     return checks;
   }, [...protocolFixtureSection]);

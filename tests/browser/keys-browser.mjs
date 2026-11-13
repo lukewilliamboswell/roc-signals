@@ -7,7 +7,7 @@ import path from "node:path";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
 
-const options = parseArgs(process.argv.slice(2));
+const options = parseArgs(process.argv.slice(2), [], ["runtime"]);
 const files = runtimeFiles(options.runtime);
 const server = http.createServer((request, response) => {
   const name = path.basename(new URL(request.url, "http://x").pathname);
@@ -33,7 +33,7 @@ try {
     const join = (...parts) => { const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0)); let at = 0; for (const part of parts) { out.set(part, at); at += part.length; } return out; };
     const u32 = (n) => { const out = new Uint8Array(4); new DataView(out.buffer).setUint32(0, n, true); return out; };
     const str = (s) => { const bytes = utf8.encode(s); return join(u32(bytes.length), bytes); };
-    const elem = (id, parent, tag) => join([8], u32(id), u32(parent), u32(0), str(tag));
+    const elem = (id, parent, tag) => join([8], u32(id), u32(parent), u32(0), [0], str(""), str(tag), [0]);
     const prop = (id, kind, value) => join([21], u32(id), [kind], str(value));
     const listen = (id, handler, type = "keydown", flags = 0, kind = 4) => join([11], u32(id), u32(handler), str(type), [kind], u32(flags));
     const release = (id) => join([23], u32(id));

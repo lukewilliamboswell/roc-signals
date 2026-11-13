@@ -48,8 +48,8 @@ try {
       __bindProtocolFixture(rt);
       const calls = []; rt.deliver = (node, handler, bytes) => calls.push({ node, handler, bytes: typeof bytes === "string" ? bytes : [...bytes] });
       const raw = (...parts) => { const bytes = join([0], ...parts); if (bytes.length > memory.buffer.byteLength) memory.grow(Math.ceil((bytes.length - memory.buffer.byteLength) / 65536)); new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.busy = true; try { rt.apply(); } finally { rt.busy = false; length = 0; } rt.drainQueue(); };
-      const elem = (id, parent, tag) => join([8], u32(id), u32(parent), u32(0), str(tag));
-      const attr = (id, name, value) => join([9], u32(id), str(name), [1], str(value));
+      const elem = (id, parent, tag) => join([8], u32(id), u32(parent), u32(0), [0], str(""), str(tag), [0]);
+      const attr = (id, name, value) => join([9], u32(id), [3], str(""), str(name), [1], str(value));
       const listen = (id, handler, type, kind, policies = 8) => join([11], u32(id), u32(handler), str(type), [kind], u32(policies));
       const release = (id) => join([23], u32(id));
       const remove = (id) => join([5], u32(id));
@@ -100,9 +100,9 @@ try {
   const routing = await page.evaluate(() => {
     const fake = __fakeLayout(), f = __layoutFixture({ window: fake.window });
     const { join, str, u32 } = f;
-    const tree = join([1], str("section"), [0, 1, 1], str("div"), [0, 0]);
-    const hole = (handler, type, kind) => join([3, 1, 0, handler], str(type), [kind], u32(8));
-    const reference = [5, 1, 0];
+    const tree = join([1, 0], str(""), str("section"), [0, 0, 1, 1, 0], str(""), str("div"), [0, 0, 0]);
+    const hole = (handler, type, kind) => join([3, 1, 0, 0, handler], str(type), [kind], u32(8));
+    const reference = [5, 1, 0, 0];
     const template = join(tree, [3], hole(0, "size", 7), hole(1, "seen", 8), reference);
     f.raw(join([7], u32(1), u32(template.length), template), join([1], u32(7), u32(0), u32(0), u32(1), u32(9)));
     const target = f.rt.statics[9], owner = f.rt.statics[7];

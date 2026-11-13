@@ -25,6 +25,15 @@ const namespaceCases = fs.readFileSync(new URL("../../fuzz/names/namespaces.tsv"
   if (!/^[01]{2}$/.test(flags) || !/^(?:[0-9a-f]{2})*$/.test(namespaceHex) || !/^(?:[0-9a-f]{2})*$/.test(qualifiedHex)) throw new Error("invalid namespace corpus row");
   return { name, namespace: utf8.decode(Buffer.from(namespaceHex, "hex")), qualified: utf8.decode(Buffer.from(qualifiedHex, "hex")), expected: { element: flags[0] === "1", attribute: flags[1] === "1" } };
 });
+// Expanded identity facts include parser-created names which a namespace-aware
+// factory alone cannot express. These empty-node constructions are test-only
+// evidence; this contract never authorizes parsing in the production executor.
+const expandedCases = fs.readFileSync(new URL("../../fuzz/names/expanded.tsv", import.meta.url), "utf8").trimEnd().split("\n").map(line => {
+  const [name, flags, namespace, prefix, local] = line.split("\t");
+  if (!/^[01]{2}$/.test(flags) || ![namespace, local, ...(prefix === "-" ? [] : [prefix])].every(value => /^(?:[0-9a-f]{2})*$/.test(value))) throw new Error("invalid expanded-name corpus row");
+  const decode = value => utf8.decode(Buffer.from(value, "hex"));
+  return { name, namespace: decode(namespace) || null, prefix: prefix === "-" ? null : decode(prefix), local: decode(local), expected: { tag: flags[0] === "1", attribute: flags[1] === "1" } };
+});
 if (cases.length === 0 || new Set(cases.map((entry) => entry.name)).size !== cases.length) throw new Error("the name corpus must be nonempty with unique names");
 const browser = await launch({ executablePath: options.chrome });
 let failed = 0;
@@ -62,6 +71,40 @@ try {
       console.log(`FAIL namespace ${expected.name}: got ${JSON.stringify(result.result)}, expected ${JSON.stringify(expected.expected)}`);
     }
   }
+  const expandedActual = await page.evaluate(inputs => inputs.map(input => {
+    const exact = node => node.namespaceURI === input.namespace && node.prefix === input.prefix && node.localName === input.local;
+    const qualified = input.prefix === null ? input.local : `${input.prefix}:${input.local}`;
+    const html = "http://www.w3.org/1999/xhtml", svg = "http://www.w3.org/2000/svg", math = "http://www.w3.org/1998/Math/MathML";
+    const accepts = factory => { try { return exact(factory()); } catch { return false; } };
+    const element = () => {
+      if (input.prefix === null && input.namespace === null) return document.implementation.createDocument(null, "").createElement(input.local);
+      if (input.prefix === null && input.namespace === html && (input.local.includes(":") || input.local === "xmlns")) return document.createElement(input.local);
+      if (input.prefix === null && [svg, math].includes(input.namespace) && input.local.includes(":")) {
+        const wrapper = document.createElement("template"), outer = input.namespace === svg ? "svg" : "math";
+        wrapper.innerHTML = `<${outer}><${input.local}></${input.local}></${outer}>`;
+        return wrapper.content.firstChild.firstChild;
+      }
+      if (input.prefix === null && input.local === "xmlns" && input.namespace !== "http://www.w3.org/2000/xmlns/") {
+        const escape = text => text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll("\t", "&#9;").replaceAll("\n", "&#10;").replaceAll("\r", "&#13;");
+        const parsed = new DOMParser().parseFromString(`<xmlns xmlns="${escape(input.namespace)}"/>`, "application/xml");
+        const node = parsed.documentElement;
+        node.removeAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns");
+        return node;
+      }
+      return document.createElementNS(input.namespace, qualified);
+    };
+    const attribute = () => input.prefix === null && input.namespace === null
+      ? document.implementation.createDocument(null, "").createAttribute(input.local)
+      : document.createAttributeNS(input.namespace, qualified);
+    return { name: input.name, result: { tag: accepts(element), attribute: accepts(attribute) } };
+  }), expandedCases);
+  for (let index = 0; index < expandedCases.length; index += 1) {
+    const expected = expandedCases[index], actual = expandedActual[index];
+    if (actual.name !== expected.name || JSON.stringify(actual.result) !== JSON.stringify(expected.expected)) {
+      failed += 1;
+      console.log(`FAIL expanded ${expected.name}: got ${JSON.stringify(actual.result)}, expected ${JSON.stringify(expected.expected)}`);
+    }
+  }
   const namespaceIdentities = await page.evaluate(() => {
     const html = "http://www.w3.org/1999/xhtml", xlink = "http://www.w3.org/1999/xlink";
     const identity = node => ({ namespace: node.namespaceURI, prefix: node.prefix, local: node.localName, interface: node.constructor.name });
@@ -88,6 +131,7 @@ try {
     failed += 1;
     console.log(`FAIL namespace identity: ${JSON.stringify(namespaceIdentities)}`);
   }
+  console.log(`expanded identity corpus: ${expandedCases.length} cases checked`);
   const facts = await page.evaluate(() => {
     const target = new EventTarget();
     let heard = 0;
@@ -100,7 +144,7 @@ try {
     console.log(`FAIL browser rule attribution: ${JSON.stringify(facts)}`);
   }
   await context.close();
-  console.log(JSON.stringify({ corpus: options.corpus, cases: cases.length, namespaceCases: namespaceCases.length, failed, facts }));
+  console.log(JSON.stringify({ corpus: options.corpus, cases: cases.length, namespaceCases: namespaceCases.length, expandedCases: expandedCases.length, failed, facts }));
 } finally {
   await browser.close();
 }

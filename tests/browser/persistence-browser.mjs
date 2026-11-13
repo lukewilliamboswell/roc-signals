@@ -246,7 +246,7 @@ try {
     const { context, page } = await fixture();
     const result = await page.evaluate(() => {
       const f = window.__fixture({ maxPasteBytes: 4 });
-      f.raw(f.join(new Uint8Array([0, 8]), f.u32(1), f.u32(0), f.u32(0), f.str("div"), new Uint8Array([11]), f.u32(1), f.u32(7), f.str("paste"), new Uint8Array([9]), f.u32(0)));
+      f.raw(f.join(new Uint8Array([0, 8]), f.u32(1), f.u32(0), f.u32(0), new Uint8Array([0]), f.str(""), f.str("div"), new Uint8Array([0]), new Uint8Array([11]), f.u32(1), f.u32(7), f.str("paste"), new Uint8Array([9]), f.u32(0)));
       const element = f.root.firstChild;
       const paste = text => { const data = new DataTransfer(); data.setData("text/plain", text); const event = new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }); element.dispatchEvent(event); return event.defaultPrevented; };
       const prevented = [paste("éé"), paste("ééx")];
@@ -260,7 +260,7 @@ try {
     check("paste text prevents default and checks UTF-8 bytes before staging", result, { prevented: [true, true], payloads: [[0, 195, 169, 195, 169], [1]], zeroPayloads: [[0], [1]], invalid: [true, true, true] });
     const unicode = await page.evaluate(() => {
       const f = window.__fixture({ maxPasteBytes: 4 });
-      f.raw(f.join(new Uint8Array([0, 8]), f.u32(1), f.u32(0), f.u32(0), f.str("div"), new Uint8Array([11]), f.u32(1), f.u32(7), f.str("paste"), new Uint8Array([9]), f.u32(0)));
+      f.raw(f.join(new Uint8Array([0, 8]), f.u32(1), f.u32(0), f.u32(0), new Uint8Array([0]), f.str(""), f.str("div"), new Uint8Array([0]), new Uint8Array([11]), f.u32(1), f.u32(7), f.str("paste"), new Uint8Array([9]), f.u32(0)));
       const paste = text => {
         const event = new Event("paste", { bubbles: true, cancelable: true });
         // Preserve the browser API's DOMString boundary without repairing
@@ -285,7 +285,7 @@ try {
     check("oversized Unicode is refused before scanning or encoding; in-bound malformed text is contained", unicode, { refused: [true, [[1]], 0, 0, null], contained: ["executor", 1] });
     const unhandled = await page.evaluate(() => {
       const f = window.__fixture();
-      f.raw(f.join(new Uint8Array([0, 8]), f.u32(1), f.u32(0), f.u32(0), f.str("div"), new Uint8Array([8]), f.u32(2), f.u32(0), f.u32(0), f.str("div"), new Uint8Array([11]), f.u32(2), f.u32(7), f.str("paste"), new Uint8Array([9]), f.u32(0)));
+      f.raw(f.join(new Uint8Array([0, 8]), f.u32(1), f.u32(0), f.u32(0), new Uint8Array([0]), f.str(""), f.str("div"), new Uint8Array([0]), new Uint8Array([8]), f.u32(2), f.u32(0), f.u32(0), new Uint8Array([0]), f.str(""), f.str("div"), new Uint8Array([0]), new Uint8Array([11]), f.u32(2), f.u32(7), f.str("paste"), new Uint8Array([9]), f.u32(0)));
       f.rt.perform({ op: "storagechanges", id: 10, key: "document" });
       window.dispatchEvent(new StorageEvent("storage", { storageArea: localStorage, key: "document", newValue: "waiting" }));
       const before = [f.calls.length, f.rt.queue.length];
@@ -350,7 +350,7 @@ try {
       document.getElementById("activate").addEventListener("click", () => {
         window.__copyActive = navigator.userActivation.isActive;
         if (!window.__copyHtml) f.raw(f.join(new Uint8Array([0]), f.fx(1, 19, f.str("real clipboard"), new Uint8Array([0]))));
-        else f.raw(f.join(new Uint8Array([1]), f.fx(2, 19, f.str("real HTML"), new Uint8Array([1]), f.str("<b>real HTML</b>")), new Uint8Array([8]), f.u32(1), f.u32(0), f.u32(0), f.str("span"), new Uint8Array([24]), f.u32(0)));
+        else f.raw(f.join(new Uint8Array([1]), f.fx(2, 19, f.str("real HTML"), new Uint8Array([1]), f.str("<b>real HTML</b>")), new Uint8Array([8]), f.u32(1), f.u32(0), f.u32(0), new Uint8Array([0]), f.str(""), f.str("span"), new Uint8Array([0]), new Uint8Array([24]), f.u32(0)));
       });
     });
     await page.clickAt(await page.evaluate(() => { const r = document.getElementById("activate").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }));

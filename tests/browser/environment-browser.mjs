@@ -54,7 +54,7 @@ try {
     const owned=new Uint8Array(Array.from({length:16},(_,i)=>i));
     const f=capture({now:()=>{reads++;return min;},seed:()=>owned,languages:()=>["", "é".repeat(32)],timeZone:days=>{daysSeen=days;return {name:"x",from_ms:1n,until_ms:1n,offsets:[{from_ms:1n,minutes:-2147483648}]};}});
     const parts=sections(f.boot);
-    check("boot sections are ordered and carry exact signed I64 and owned seed bytes", [...parts.keys()].join()==="1,2,3,4,6,7,8,9,10,11" && new DataView(parts.get(7).buffer).getBigInt64(0,true)===min && parts.get(8).every((b,i)=>b===i) && reads===1 && daysSeen===366);
+    check("boot sections are ordered and carry exact signed I64 and owned seed bytes", [...parts.keys()].join()==="1,2,3,4,6,7,8,9,10,11,13" && new DataView(parts.get(7).buffer).getBigInt64(0,true)===min && parts.get(8).every((b,i)=>b===i) && reads===1 && daysSeen===366);
     check("injected point zone need not contain mount time", !f.runtime.poisoned && parts.get(10).length===37);
     f.close();
     let defaultReads=0;

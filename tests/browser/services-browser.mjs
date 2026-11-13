@@ -87,7 +87,7 @@ async function open(prelude = "") {
     const section = (tag, body) => join([new Uint8Array([tag]), u32(body.length), body]);
     const i64 = (value) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigInt64(0, value, true); return b; };
     const utc = { name: "UTC", from_ms: -(1n << 63n), until_ms: (1n << 63n) - 1n, offsets: [{ from_ms: -(1n << 63n), minutes: 0 }] };
-    const facts = [section(7, i64(0n)), section(8, new Uint8Array(16)), section(9, join([u32(1), str("en-US")])), section(10, join([str("UTC"), i64(utc.from_ms), i64(utc.until_ms), u32(1), i64(utc.from_ms), u32(0)])), section(11, new Uint8Array([1, 0, 0, 0, 0]))];
+    const facts = [section(7, i64(0n)), section(8, new Uint8Array(16)), section(9, join([u32(1), str("en-US")])), section(10, join([str("UTC"), i64(utc.from_ms), i64(utc.until_ms), u32(1), i64(utc.from_ms), u32(0)])), section(11, new Uint8Array([1, 0, 0, 0, 0])), section(13, join([new Uint8Array([0]), str(""), str("div")]))];
     const bootBytes = (url = "/", storage = [1, 0, 0, 0, 0]) => join([section(1, str(url)), section(2, new Uint8Array(storage)), section(3, new Uint8Array([1])), section(4, new Uint8Array([1])), section(6, new Uint8Array()), ...facts]);
     // Malformed boot bytes: a section header that runs past the end.
     const x1 = await fresh();
@@ -350,7 +350,7 @@ async function open(prelude = "") {
     const viaMetric = rt.x.metric(16 + 12);
     return [after.length, String(after[12] - before[12]), String(viaMetric) === String(after[12]), String(after[1])];
   });
-  check("work record: 48 counters (work, effects, ports, properties, releases, observations, guards and progress); one SETTEXT for one click; metric(16 + k) reads counter k", work, [48, "1", true, "3"]);
+  check("work record: 49 counters (work, effects, ports, properties, releases, observations, guards, progress and comments); one SETTEXT for one click; metric(16 + k) reads counter k", work, [49, "1", true, "3"]);
   await ctx.close();
 }
 
