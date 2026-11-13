@@ -6,3 +6,6 @@ answered = |before, _, _| before
 
 main : Engine.Program
 main = Engine.program(|| Engine.state(0.U64, |state| Engine.watch(Engine.const({}), |_| [Engine.timer(1)], state.on_result(answered))))
+
+## This fixture uses local state only.
+Store : {}

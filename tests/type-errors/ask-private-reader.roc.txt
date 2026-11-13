@@ -6,3 +6,6 @@ main = Engine.program(|| {
  answer = Engine.Ask.read(Engine.timer(1), Fired(1))
  Engine.text(Str.inspect(answer))
 })
+
+## This fixture uses local state only.
+Store : {}
