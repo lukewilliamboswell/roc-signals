@@ -1664,7 +1664,7 @@ proof that a mounted state is fixed must account for these inputs as well as
 the program and any app-visible boot values; an entry that reads no `Boot`
 does not by itself prove independence from its enclosing element.
 
-**Target.** An element's child container is explicit in the command
+An element's child container is explicit in the command
 representation: ordinary DOM children and an HTML template's `content` are
 distinct targets. Roc chooses the container before encoding; the runtime
 applies that choice. `Engine.element` keeps its ordinary DOM-child behavior,
@@ -1680,8 +1680,8 @@ children.
 
 Element properties, such as a control's live value, are their own commands,
 from a closed table in Appendix B. Attribute commands set attributes, and
-the runtime interprets only how a boolean attribute or SVG `class` is
-written. Each property row fixes its value type, encoding, allowed elements
+the runtime preserves each attribute's decided name, presence and text.
+Each property row fixes its value type, encoding, allowed elements
 and the attribute name it claims, if any; the runtime applies the
 engine-decided value rather than inferring control state from a name.
 
@@ -4982,7 +4982,7 @@ a leading U+FEFF in names and values, including a worker's hosted arguments.
 Unknown closed-vocabulary names cannot become known names by dropping that
 character. Invalid UTF-8 is rejected at each strict protocol boundary.
 
-This appendix is protocol version **17**. The engine declares it
+This appendix is protocol version **18**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -5009,7 +5009,7 @@ roc-lang/roc#12953 workaround (see [Compiler Limitations](#compiler-limitations)
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (17) |
+| `roc_engine_version` | `() -> u32` | The protocol version (18) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Handle, List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -5101,17 +5101,20 @@ space. A dash means that section does not occur in that direction.
 | 10 | time zone | `days:u16` | `name:str from_ms:i64 until_ms:i64 n:u32 (from_ms:i64 minutes:i32)*n` | `environment.timeZone(days)`; default probe, UTC in a spec |
 | 11 | session-storage | `n:u32 (key:str)*n` | `available:u8 n:u32 (key:str value:str)*n` | `sessionStorage` service; available, no pairs |
 | 12 | protocol | The bounded metadata item below | — | ProtocolFacts appended by the platform root; mandatory |
+| 13 | mount-root | — | `expanded-name` | The actual mount element's namespace URI, optional prefix and exact local name; an HTML `div` for empty driver boot |
 
 Section 12 uses the temporary length-delimited fallback until the owner's
 roc-cbor port has a compatible pinned release. A future codec change requires
-a coordinated protocol revision. Its nine fields are `tag:u8 length:u32 body`,
+a coordinated protocol revision. Its eleven fields are `tag:u8 length:u32 body`,
 in tag order: opcodes, payload kinds, policy bits, properties, HTTP cache modes,
-HTTP credential modes, legacy absence-rule attributes, OutsideText excluded
-input types and fault classes. Each table starts with `count:u32`; strings use
+HTTP credential modes, namespaces, OutsideText excluded input types, fault
+classes, template node kinds and child containers. Each table starts with
+`count:u32`; strings use
 `UTF-8-byte-count:u32 bytes`. Opcode/cache/credential rows are `code:u8 name:str`;
 kind rows add `events:(count:u32 str*)`; policy rows are `bit:u32 name:str`;
-property rows are `index:u8 name:str elements:(count:u32 str*)`. The last three
-fields contain strings only. Empty element lists mean unrestricted elements
+property rows are `index:u8 name:str elements:(count:u32 str*)`. Namespace,
+template-node and child-container rows are also `code:u8 name:str`; fields
+8 and 9 contain strings only. Empty element lists mean unrestricted elements
 subject to independent guards. Empty event lists mean the generic bare-event
 vocabulary, with key events independently forbidden for text payloads.
 
@@ -5122,16 +5125,12 @@ numbered tables, zero or non-single policy bits, empty required numbered tables
 or fault labels, incorrect field order, truncation and trailing bytes. The
 runtime binds each validated role to its actual implementation and rejects
 unknown or missing roles before init. Bindings are immutable per instance;
-one module cannot change another's tables.
-
-The seven-name absence convention includes hidden, which HTML treats as an
-enumeration. Parser facts validate the six actual boolean names separately
-from hidden's enumeration, without applying HTML defaults or changing SVG
-comparison. This preserves the current wire convention pending its explicit
-replacement.
+one module cannot change another's tables. Namespace and child-container
+codes are dense from zero; the other numbered tables are dense from one.
+Template node kinds and hole kinds are separate number spaces.
 
 Each applicable section is required exactly once, in ascending tag order:
-boot has 1–4 and 6–11; compiled-module declarations have 2, 5, 6, 10, 11 and 12. The pure engine driver
+boot has 1–4, 6–11 and 13; compiled-module declarations have 2, 5, 6, 10, 11 and 12. The pure engine driver
 retains its internal sections 2, 5, 6, 10 and 11; the native runner reads
 consumer facts directly. Unknown, repeated, out-of-order
 or missing sections are errors; tags are not a compatibility mechanism.
@@ -5141,7 +5140,16 @@ an unavailable storage section with pairs, or a pair for a key the program
 did not declare is a `contract` fault naming the section. Unreadable
 declarations refuse mount before `init()`.
 
-Empty boot bytes alone mean all defaults, including URL `/`. Empty
+The mount-root body is at most 65,536 encoded bytes and is bounded before
+decoding its strings. It is engine-only input, separate from app-visible
+`Boot`. JavaScript measures the actual root without scanning its ancestors;
+native and browser specs supply the same facts. Invalid or oversized measured
+root facts refuse mount before `init`; malformed staged bytes are a
+`contract` fault naming section 13. Existing roots are validated as DOM
+identities, without requiring that a creation factory reconstruct them.
+
+Empty boot bytes alone mean all defaults, including URL `/` and the HTML
+`div` root. Empty
 declarations are invalid: sections 2, 5, 6, 10 and 11 occur even for empty lists.
 The zone declaration is two bytes and at most 7305 days. Languages carry
 1–16 strings of at most 64 UTF-8 bytes. A zone name has at most 64 bytes, its
@@ -5193,8 +5201,9 @@ that has run, in first-run order, with its run count.
 | 45 | Marked batches (`view_transitions`; `TRANSITION`, opcode 24), excluded from `patches_emitted` |
 | 46 | Guard commands (`GUARD`, opcode 25), excluded from `patches_emitted` |
 | 47 | Transfer progress reports delivered (`effects_progress`); excludes replaced reports and does not increment final results (`effects_delivered`) |
+| 48 | `COMMENT` commands emitted (opcode 26), counted separately from text-node commands |
 
-Index 0 is unused; the record has 48 entries, indices 0 through 47. The metric
+Index 0 is unused; the record has 49 entries, indices 0 through 48. The metric
 names the spec language accepts map onto these indices (`platform/Scm.roc`, `metric_names`).
 
 ### Event records
@@ -5262,7 +5271,7 @@ ordinary id rule.
 ### Node ids
 
 - `0` is the mount root.
-- Every other node the engine creates — elements, text nodes, anchors,
+- Every other node the engine creates — elements, text nodes, comments, anchors,
   nested-site placeholders and row roots alike — takes a `u32` id from one
   dense pool, `1 … 2³² − 2`. A removed node's id returns to a free list and is
   reused. Running out is a `resource_limit` poison.
@@ -5279,6 +5288,8 @@ ordinary id rule.
   has left the document or whose id now names a different element, before it
   reaches the engine.
 - `0xffffffff` is the effect node and never names a DOM node.
+- An HTML template's intrinsic content fragment has no engine id. Commands
+  address its owning element and explicitly select that child container.
 
 ### Commands
 
@@ -5299,8 +5310,8 @@ command batches and have no header.
 | 5 | `REMOVE` | `node` |
 | 6 | `CLEAR` | `parent site` — remove all children; forget the site's rows |
 | 7 | `TEMPLATE` | `tpl len bytes` — define a row template |
-| 8 | `ELEM` | `node parent before tag:str` |
-| 9 | `ATTR` | `node name:str presence:u8 [value:str]` |
+| 8 | `ELEM` | `node parent before expanded-name child-container:u8` |
+| 9 | `ATTR` | `node expanded-name presence:u8 [value:str]` |
 | 10 | `TEXTNODE` | `node parent before text:str` |
 | 11 | `LISTEN` | `node handler:u32 type:str kind:u8 policies:u32` |
 | 12 | `SETTEXT` | `node text:str` |
@@ -5317,8 +5328,10 @@ command batches and have no header.
 | 23 | `RELEASE` | `node` — release document-key and size/seen registrations owned by this node before removal; a row root owns observations on its template elements |
 | 24 | `TRANSITION` | `n:u32 (type:str)*n` — last command of a marked batch; types deduplicated in first-issue order |
 | 25 | `GUARD` | `on:u8`, strictly `0` or `1`; performed with effects, at most once per turn |
+| 26 | `COMMENT` | `node parent before data:str` — an authored static comment |
 
-`before = 0` appends to `parent`; otherwise the node is inserted before
+`before = 0` appends to `parent`'s explicitly selected child container;
+otherwise the node is inserted before
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
 the batch is applied and performed after it, as are 19 and 20 (a save's
 file is resolved when the batch is applied). For a marked batch starting a
@@ -5370,12 +5383,13 @@ credentials through to a mount's fetch.
 **Template encoding** (`TEMPLATE` bytes): a node tree, then a hole table.
 
 ```text
-node  := 1 tag:str nattr:u8 (name:str value:str)* nchild:u8 node*
+node  := 1 expanded-name child-container:u8 nattr:u8 (expanded-name value:str)* nchild:u8 node*
        | 2 text:str
+       | 3 comment:str
 holes := nholes:u8 hole*
-hole  := kind:u8 depth:u8 path:u8{depth} extra
+hole  := kind:u8 depth:u8 (container:u8 child-index:u8){depth} extra
 extra := (kind 1, text)   —
-       | (kind 2, attr)   name:str
+       | (kind 2, attr)   expanded-name
        | (kind 3, event)  handler:u8 type:str kind:u8 policies:u32
        | (kind 4, site)   —
        | (kind 5, reference) —
@@ -5383,7 +5397,9 @@ extra := (kind 1, text)   —
 ```
 
 Text and nested-site holes have an empty text node in the tree as their
-placeholder. `path` is child indices from the template root. Hole targets are
+placeholder. Each path step selects ordinary children or template content,
+then a child index, starting at the template root. Both the depth and child
+index retain their 255 bounds. Hole targets are
 resolved once per row at `INST`, so later insertions by nested sites do not
 shift them.
 
@@ -5396,15 +5412,13 @@ from event routing, which still uses the row's id.
 hole's `INST` operand, `presence` is `0` (remove, with no value operand)
 or `1` (set, followed by `value:str`). Any other flag is an `executor`
 fault. The static attributes in a template's node tree are always present
-and remain plain name/value strings; they use the same value rules.
+and carry their expanded names and literal values.
 
-An empty value keeps a non-boolean attribute present. `disabled`,
-`selected`, `readonly`, `required`, `hidden`, `multiple` and `open` are present
-for any value other than `""` and `"false"`; those two values remove
-them. A present `"true"` is written as `""`; any other present value is
-written as given, including `hidden="until-found"`. `class` on an SVG
-element is set as an attribute, including when empty. Explicit absence
-removes any attribute.
+Every present value is written exactly, including `""`, `"false"` and
+`"true"`. Only explicit absence removes an attribute. Typed Boolean helpers
+and bare Boolean markup literals encode absence or present-empty before
+this boundary. Enumerated values such as `hidden="until-found"` and raw
+text values are not normalized by consumers.
 
 **Payload kinds.** A handler's declaration chooses its payload, decoded once
 at its routed site. A malformed payload is a `contract` fault naming that
@@ -5530,17 +5544,64 @@ nothing. For example prevent Ctrl+backquote is
 `paC---1:` followed by the backquote byte. A malformed encoding is an
 `executor` fault. Parsing counts UTF-8 bytes, never UTF-16 code units.
 
-A property on another element, one declared twice, and an attribute using
-a name claimed by a row on that element are `contract` errors at mount.
+A property on another element, one declared twice, and an ordinary
+no-namespace attribute using a name claimed by a row on that HTML element
+are `contract` errors at mount. The check uses the resolved attribute
+identity: raw HTML names fold before checking, while explicitly qualified
+case-preserved or namespaced attributes retain their distinct identities.
+Markup literals reject the same claims at their source position.
 A `value` property on an input whose current `type` is `file` is a
 `contract` error when applied, naming the node, in the runtime and oracle.
 The type can follow a signal, so this check cannot be made at mount.
 An unknown index or a value outside its row's encoding is contained as
 `executor`.
 
-**Namespaces.** `<svg>` and its descendants are created in the SVG namespace,
-with HTML children inside `foreignObject`. A row template first instantiated
-under an SVG parent is parsed again from its retained bytes under that parent,
-keeping element and attribute names' exact case; later rows clone that parsed
-template. The early pass of a marked batch and its update share the same
-template definition, including its one owned copy of the bytes.
+**Expanded names and child containers.** Element and attribute names share
+this framing:
+
+```text
+expanded-name := namespace:u8 [uri:str] prefix:str local:str
+```
+
+The namespace is `0` HTML, `1` SVG, `2` MathML, `3` no namespace or `4` an
+explicit nonempty URI, with `uri` present only for `4`. HTML, SVG and MathML
+mean their standard namespace URIs; explicit aliases compare by URI identity.
+An empty prefix means no prefix. A colon in an unprefixed local name remains
+local data; receivers never split it to invent a prefix or namespace.
+
+Roc resolves raw HTML case and the raw constructor's inherited namespace
+before encoding. The raw rule opens SVG at `svg`, inherits SVG below an SVG
+parent except `foreignObject`, and otherwise creates HTML. It does not infer
+MathML or implement every integration point of HTML parsing. Parsed literal
+names carry their full resolved identities. No literal/raw provenance flag
+crosses the wire.
+
+Receivers preserve the namespace URI, optional prefix and exact local name,
+using a DOM operation that preserves that tuple. Invalid framing, grammar,
+namespace pairing or a creation operation that changes identity is an
+`executor` fault. Vocabulary membership is a literal check, not a consumer
+restriction on well-formed raw names. XML source retains the parser's XML
+grammar; computed DOM names follow the DOM boundary's grammar.
+
+Attributes are looked up and removed by namespace URI and local name. A
+replacement retains the existing attribute's prefix and order, as the DOM
+does. Raw no-namespace `xlink:href` and qualified XLink `href` are distinct and
+can coexist. Namespace declarations are ordinary explicit attributes; they
+do not instruct the executor to infer another node's identity.
+
+Child-container `0` means ordinary children and `1` means an HTML template's
+intrinsic `content` fragment. The latter is valid only for an exact HTML
+namespace/local `template`, with or without a prefix. Both choices are legal
+on such an element. Parsed HTML and XML template contents use the explicit
+content target; raw ordinary construction keeps ordinary children. Unknown
+roles or content on another element are executor faults. Neither the fragment
+nor selecting it adds an engine node id or command.
+
+A row template is decoded once under its already-decided names and container
+roles. Cloning preserves both ordinary children and content. The executor
+restores explicitly declared content-owner targets on the clone and resolves
+hole paths once; it does not reparse retained bytes under a later parent.
+Removal and release include owned content, while text content, page locators,
+focus and event reachability follow actual DOM parentage and do not cross an
+inert content fragment's absent parent link. No scope or reactive mechanism
+is added for that fragment.
