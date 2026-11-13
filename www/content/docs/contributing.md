@@ -267,6 +267,15 @@ is a parse error, and both runners implement every step, with Chrome as the
 reference for what it means. The language is
 documented in [Testing](@/docs/testing.md).
 
+For a setup file given through `choose-files`, choose an extension whose
+MIME type Chrome recognizes on every supported system, such as `.txt`
+with `text/plain` or `.csv` with `text/csv`. The chooser's `File.type`
+comes from the system's filename mapping, and the replay must match it
+against the declared type. Extensions such as `.log` and `.bin` have
+different mappings across systems. Keep byte-processing fixtures portable
+without changing their bytes or weakening that check; use runtime contract
+tests with explicitly constructed `File`s for arbitrary MIME metadata.
+
 A change to the wire protocol changes the engine's encoder and decoders,
 `platform/Dom.roc`, both hosts (`platform/host/host.zig`,
 `platform/host/spec.zig`), `platform/runtime.mjs`, `platform/worker.mjs`,
