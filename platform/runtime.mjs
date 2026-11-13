@@ -157,7 +157,7 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // are present for any value other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 15;
+export const PROTOCOL_VERSION = 16;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -237,6 +237,7 @@ const RES_MATCHES = 22;
 const RES_COPIED = 23;
 const RES_CLIPBOARD_FAILED = 24;
 const RES_STORAGE_FAILED = 25;
+const RES_PROGRESS = 26;
 
 // The default and largest bound on one port answer or message, JSON text
 // and bytes together (options.maxPortBytes).
@@ -2194,7 +2195,7 @@ export class RocEngineRuntime {
     // Work jobs wait for runEffect(id) while every other effect runs on its
     // own (soak walks hold workers so results arrive in issue order).
     this.manualWork = options.manualWork ?? false;
-    // Armed HTTP timeout timers (for tests: must return to 0).
+    // Armed request timeout and progress timers (must return to zero).
     this.timers = 0;
     this.fxOut = [];
     // id -> { kind, req, cancel } for every effect this runtime holds.
@@ -3880,6 +3881,15 @@ export class RocEngineRuntime {
             at += 4 + n;
             return v;
           };
+          const httpOptions = () => {
+            const cacheByte = u8[at++], credentialsByte = u8[at++];
+            const cache = [null, "default", "no-store", "reload", "no-cache", "force-cache"][cacheByte];
+            const credentials = [null, "same-origin", "include"][credentialsByte];
+            if (!cache || !credentials || (kind === 12 && cacheByte !== 1)) throw new ContractFault("invalid HTTP cache or credentials");
+            const progressMs = dv.getUint32(at, true); at += 4;
+            if (progressMs !== 0 && progressMs < 16) throw new ContractFault("progress interval must be zero or at least 16 ms");
+            return { cache, credentials, progressMs };
+          };
           if (kind === 1) {
             const method = str();
             const url = str();
@@ -3890,7 +3900,7 @@ export class RocEngineRuntime {
             const body = str();
             const timeout = dv.getUint32(at, true);
             at += 4;
-            this.fxOut.push({ op: "http", id, method, url, headers, body, timeout });
+            this.fxOut.push({ op: "http", id, method, url, headers, body, timeout, ...httpOptions() });
           } else if (kind === 2) {
             this.fxOut.push({ op: "get", id, key: str() });
           } else if (kind === 3 || kind === 4) {
@@ -3959,7 +3969,7 @@ export class RocEngineRuntime {
             const ref = this.fileRef(dv, at);
             const timeout = dv.getUint32(at + 24, true);
             at += 28;
-            this.fxOut.push({ op: "upload", id, method, url, headers, ...ref, timeout });
+            this.fxOut.push({ op: "upload", id, method, url, headers, ...ref, timeout, ...httpOptions() });
           } else if (kind === 13) {
             const algorithm = u8[at];
             if (algorithm !== 1) throw new Error(`unknown digest algorithm ${algorithm}`);
@@ -3989,7 +3999,7 @@ export class RocEngineRuntime {
             for (; n > 0; n -= 1) headers.push([str(), str()]);
             const timeout = dv.getUint32(at, true);
             at += 4;
-            this.fxOut.push({ op: "fetch", id, method, url, headers, body: "", timeout });
+            this.fxOut.push({ op: "fetch", id, method, url, headers, body: "", timeout, ...httpOptions() });
           } else if (kind === 16) {
             this.fxOut.push({ op: "media", id, query: str() });
           } else if (kind === 17) {
@@ -4503,55 +4513,7 @@ export class RocEngineRuntime {
           this.live.set(fx.id, { kind: "timer", cancel: () => clearTimeout(h) });
           return;
         }
-        // One abort controller and at most one timeout timer per admitted
-        // request (bounded by the engine's in-flight cap); the timer is
-        // cleared on completion, failure, timeout or cancel.
-        const ctl = new AbortController();
-        let timer = null;
-        const done = () => {
-          if (timer === null) return;
-          clearTimeout(timer);
-          timer = null;
-          this.timers -= 1;
-        };
-        if (fx.timeout > 0) {
-          this.timers += 1;
-          timer = setTimeout(() => {
-            if (!this.live.has(fx.id)) return;
-            this.live.delete(fx.id);
-            done();
-            ctl.abort();
-            this.result(fx.id, new Uint8Array([RES_TIMEOUT]));
-          }, fx.timeout);
-        }
-        this.live.set(fx.id, {
-          kind: "http",
-          req: fx,
-          cancel: () => {
-            done();
-            ctl.abort();
-          },
-        });
-        const init = { method: fx.method, headers: fx.headers, signal: ctl.signal };
-        // An upload's body is its file's range, which the browser streams
-        // from the file; the request holds the file until it is answered.
-        if (fx.op === "upload") init.body = fx.blob;
-        else if (fx.method !== "GET" && fx.method !== "HEAD" && fx.body !== "") init.body = fx.body;
-        const send = this.fetch ?? globalThis.fetch;
-        new Promise((resolve) => resolve(send(fx.url, init)))
-          .then(async (r) => {
-            const body = await r.text();
-            if (!this.live.has(fx.id)) return;
-            this.live.delete(fx.id);
-            done();
-            this.result(fx.id, httpResult(r.status, body, [...r.headers]));
-          })
-          .catch((e) => {
-            if (!this.live.has(fx.id)) return; // cancelled or timed out
-            this.live.delete(fx.id);
-            done();
-            this.result(fx.id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(String(e))]));
-          });
+        this.startTransfer(fx);
         return;
       }
       case "save":
@@ -4563,7 +4525,7 @@ export class RocEngineRuntime {
           this.issued.push(fx.id);
           return;
         }
-        this.startFetch(fx);
+        this.startTransfer(fx);
         return;
       }
       case "port":
@@ -4611,62 +4573,171 @@ export class RocEngineRuntime {
     }
   }
 
-  // FX kind 15: an HTTP request whose body becomes a file the page holds
-  // (result tag 21), never entering linear memory: the body is the
-  // browser's `Blob`, which a large response keeps on disk. A body over
-  // options.maxFileBytes is FileFailed(TooLarge); a failure or a timeout is
-  // answered as an HTTP request's. Held, cancelled and timed out as an HTTP
-  // request is.
-  startFetch(fx) {
-    const ctl = new AbortController();
-    let timer = null;
-    const done = () => {
-      if (timer === null) return;
-      clearTimeout(timer);
-      timer = null;
-      this.timers -= 1;
-    };
-    const entry = {
-      kind: "fetch",
-      req: fx,
-      running: true,
-      cancel: () => {
-        done();
-        ctl.abort();
-      },
-    };
-    this.live.set(fx.id, entry);
-    const settle = (payload) => {
-      if (this.live.get(fx.id) !== entry) return;
-      this.live.delete(fx.id);
-      done();
-      this.result(fx.id, payload);
-    };
-    if (fx.timeout > 0) {
+  // HTTP, upload and file-fetch share lifetime and timeout handling. A
+  // terminal occurrence retains its source until delivery so already queued
+  // reports remain valid; cancellation and timeout explicitly discard them.
+  finishTransfer(id, entry, payload, discard = false) {
+    if (this.live.get(id) !== entry || entry.terminal) return false;
+    entry.terminal = true;
+    entry.stop?.();
+    if (discard) this.dropReports(id, entry);
+    payload.isLive = () => this.live.get(id) === entry;
+    payload.before = () => this.live.delete(id);
+    this.result(id, payload);
+    return true;
+  }
+
+  // Exactly one timer samples each request's latest counts. Split long U32
+  // waits at the browser's signed timer limit rather than allowing overflow
+  // to turn a many-day interval into a one-millisecond loop.
+  transferSampler(fx, entry) {
+    let timer = null, latest = null, deadline = 0;
+    const now = () => performance.now();
+    const clear = () => { if (timer !== null) { clearTimeout(timer); timer = null; this.timers -= 1; } latest = null; };
+    const arm = () => {
       this.timers += 1;
       timer = setTimeout(() => {
-        timer = null;
-        this.timers -= 1;
-        if (this.live.get(fx.id) !== entry) return;
-        this.live.delete(fx.id);
-        ctl.abort();
-        this.result(fx.id, new Uint8Array([RES_TIMEOUT]));
+        timer = null; this.timers -= 1;
+        if (this.live.get(fx.id) !== entry || entry.terminal) return;
+        if (now() < deadline) { arm(); return; }
+        const payload = latest; latest = null;
+        if (payload !== null) this.report(fx.id, payload);
+      }, Math.min(0x7fffffff, Math.max(0, Math.ceil(deadline - now()))));
+    };
+    return { clear, sample: (direction, done, total) => {
+      if (!fx.progressMs || entry.terminal || this.live.get(fx.id) !== entry) return;
+      latest = this.transferPayload(direction, done, total);
+      if (timer === null) { deadline = now() + fx.progressMs; arm(); }
+    } };
+  }
+
+  transferPayload(direction, done, total) {
+    const integer = value => {
+      if (typeof value === "number" && (!Number.isSafeInteger(value) || value < 0)) throw new Error("transfer count is not an exact unsigned integer");
+      if (typeof value !== "bigint" && typeof value !== "number" && !(typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value))) throw new Error("transfer count is not an unsigned integer");
+      const n = BigInt(value);
+      if (n < 0n || n > U64_MAX) throw new Error("transfer count is outside U64");
+      return n;
+    };
+    const dir = direction === "sending" ? 1 : direction === "receiving" ? 2 : 0;
+    if (dir === 0) throw new Error("invalid transfer direction");
+    const bytes = new Uint8Array(19), view = new DataView(bytes.buffer);
+    bytes[0] = RES_PROGRESS; bytes[1] = dir;
+    view.setBigUint64(2, integer(done), true);
+    bytes[10] = total === null ? 0 : 1;
+    view.setBigUint64(11, total === null ? 0n : integer(total), true);
+    return bytes;
+  }
+
+  // Manual replay reports the same bytes and uses the same ingress source as
+  // a transport, without a sampling timer or retiring the pending request.
+  progressEffect(id, direction, done, total) {
+    const entry = this.live.get(id);
+    if (this.poisoned || !entry || entry.terminal || !entry.req?.progressMs || !["http", "upload", "fetch"].includes(entry.req.op)) return false;
+    this.report(id, this.transferPayload(direction, done, total));
+    return true;
+  }
+
+  startTransfer(fx) {
+    const ctl = new AbortController();
+    let timeout = null, xhr = null;
+    const entry = { kind: fx.op === "fetch" ? "fetch" : "http", req: fx, running: true, terminal: false };
+    this.live.set(fx.id, entry);
+    const sampler = this.transferSampler(fx, entry);
+    entry.stop = () => {
+      sampler.clear();
+      if (timeout !== null) { clearTimeout(timeout); timeout = null; this.timers -= 1; }
+    };
+    entry.cancel = () => { entry.stop(); ctl.abort(); xhr?.abort(); };
+    const finish = payload => this.finishTransfer(fx.id, entry, payload);
+    const fail = error => finish(concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(String(error))]));
+    if (fx.timeout > 0) {
+      this.timers += 1;
+      timeout = setTimeout(() => {
+        if (!this.finishTransfer(fx.id, entry, new Uint8Array([RES_TIMEOUT]), true)) return;
+        ctl.abort(); xhr?.abort();
       }, fx.timeout);
     }
+    // XHR's blob response keeps file bytes in the browser. An explicit fetch
+    // backend always wins; nondefault cache needs Fetch's RequestInit.
+    if (fx.progressMs && this.fetch === null && (fx.op === "upload" || (fx.op === "fetch" && fx.cache === "default"))) {
+      try {
+        xhr = new this.win.XMLHttpRequest();
+        xhr.open(fx.method, fx.url);
+        xhr.withCredentials = fx.credentials === "include";
+        // Decode an HTTP answer as UTF-8, as Fetch.text does, regardless of
+        // the response header's charset. File bytes remain a browser Blob.
+        xhr.responseType = fx.op === "fetch" ? "blob" : "arraybuffer";
+        for (const [name, value] of fx.headers) xhr.setRequestHeader(name, value);
+        const progress = event => this.guard(() => {
+          if (fx.op === "fetch" && event.loaded > this.maxFileBytes) {
+            finish(new Uint8Array([RES_FILE_FAILED, FILE_TOO_LARGE])); xhr.abort(); return;
+          }
+          const sameOrigin = new URL(xhr.responseURL || fx.url, this.doc.baseURI).origin === this.win.location.origin;
+          const known = fx.op === "upload" || (sameOrigin && !xhr.getResponseHeader("content-encoding"));
+          sampler.sample(fx.op === "upload" ? "sending" : "receiving", event.loaded, known && event.lengthComputable ? event.total : null);
+        });
+        if (fx.op === "upload") xhr.upload.addEventListener("progress", progress);
+        else xhr.addEventListener("progress", progress);
+        xhr.onload = () => {
+          const headers = new Headers();
+          for (const line of xhr.getAllResponseHeaders().trim().split(/[\r\n]+/)) {
+            if (!line) continue;
+            const colon = line.indexOf(":");
+            if (colon < 1) { fail("invalid response header"); return; }
+            headers.append(line.slice(0, colon), line.slice(colon + 1).trim());
+          }
+          finish(fx.op === "fetch" ? this.fetchedPayload(fx.url, xhr.status, [...headers], xhr.response) : httpResult(xhr.status, new TextDecoder().decode(xhr.response), [...headers]));
+        };
+        xhr.onerror = () => fail("XMLHttpRequest network error");
+        xhr.onabort = () => fail("XMLHttpRequest aborted");
+        xhr.send(fx.op === "upload" ? fx.blob : null);
+      } catch (error) { fail(error); }
+      return;
+    }
+    const init = { method: fx.method, headers: fx.headers, signal: ctl.signal, cache: fx.cache, credentials: fx.credentials };
+    if (fx.op === "upload") init.body = fx.blob;
+    else if (fx.method !== "GET" && fx.method !== "HEAD" && fx.body !== "") init.body = fx.body;
     const send = this.fetch ?? globalThis.fetch;
-    new Promise((resolve) => resolve(send(fx.url, { method: fx.method, headers: fx.headers, signal: ctl.signal })))
-      .then(async (r) => {
-        const blob = await r.blob();
-        if (this.live.get(fx.id) !== entry) return;
-        settle(this.fetchedPayload(fx.url, r.status, [...r.headers], blob));
-      })
-      .catch((e) => settle(concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(String(e))])));
+    new Promise(resolve => resolve(send(fx.url, init))).then(async response => {
+      if (this.live.get(fx.id) !== entry || entry.terminal) return;
+      // Fetch exposes no sent-byte events. A supplied backend gets one coarse
+      // complete Sending report when its response confirms the send finished.
+      if (fx.op === "upload" && fx.progressMs) this.report(fx.id, this.transferPayload("sending", fx.blob.size, fx.blob.size));
+      const headers = [...response.headers];
+      let body;
+      if (fx.progressMs && fx.op !== "upload") {
+        const length = response.headers.get("content-length"), encoding = response.headers.get("content-encoding");
+        const total = response.type !== "cors" && !encoding && length !== null && /^(0|[1-9][0-9]*)$/.test(length) && BigInt(length) <= U64_MAX ? BigInt(length) : null;
+        const reader = response.body?.getReader();
+        const chunks = [];
+        let done = 0n;
+        if (reader) {
+          try {
+            for (;;) {
+              const next = await reader.read();
+              if (this.live.get(fx.id) !== entry || entry.terminal) { await reader.cancel(); return; }
+              if (next.done) break;
+              done += BigInt(next.value.byteLength);
+              if (fx.op === "fetch" && done > BigInt(this.maxFileBytes)) {
+                finish(new Uint8Array([RES_FILE_FAILED, FILE_TOO_LARGE])); await reader.cancel(); return;
+              }
+              chunks.push(next.value);
+              sampler.sample("receiving", done, total);
+            }
+          } finally { reader.releaseLock(); }
+        }
+        const blob = new Blob(chunks);
+        body = fx.op === "fetch" ? blob : await blob.text();
+      } else body = fx.op === "fetch" ? await response.blob() : await response.text();
+      finish(fx.op === "fetch" ? this.fetchedPayload(fx.url, response.status, headers, body) : httpResult(response.status, body, headers));
+    }).catch(fail);
   }
 
   // A fetched body as result tag 21 with its file, or FileFailed(TooLarge).
   fetchedPayload(url, status, headers, blob) {
     if (blob.size > this.maxFileBytes) return new Uint8Array([RES_FILE_FAILED, FILE_TOO_LARGE]);
-    const type = (headers.find(([k]) => k.toLowerCase() === "content-type") ?? [null, blob.type])[1];
+    const type = (headers.find(([k]) => k.toLowerCase() === "content-type") ?? [null, ""])[1];
     const file = new File([blob], urlFileName(url), { type });
     const parts = [new Uint8Array([RES_FETCHED, status & 0xff, (status >>> 8) & 0xff]), u32(headers.length)];
     for (const [k, v] of headers) parts.push(encStr(k), encStr(v));
@@ -5232,7 +5303,7 @@ export class RocEngineRuntime {
 
   // Manual mode: awaited requests still pending, in issue order.
   pendingEffects() {
-    return this.issued.filter((id) => this.live.has(id) && !this.live.get(id).running).map((id) => this.live.get(id).req ?? { id });
+    return this.issued.filter((id) => this.live.has(id) && !this.live.get(id).running && !this.live.get(id).terminal).map((id) => this.live.get(id).req ?? { id });
   }
 
   // Manual mode: answer pending request `id` with an HTTP response
@@ -5245,7 +5316,7 @@ export class RocEngineRuntime {
   runEffect(id, answer = {}) {
     if (this.poisoned || !this.live.has(id)) return false;
     const e = this.live.get(id);
-    if (e.running || e.kind === "portcall") return false;
+    if (e.running || e.terminal || e.kind === "portcall") return false;
     if (e.kind === "work") {
       this.live.delete(id);
       return new Promise((resolve) => this.startWork(e.req, () => resolve(true)));
@@ -5259,15 +5330,19 @@ export class RocEngineRuntime {
     // A fetch answered with a response: its body becomes the file, as a
     // real response's Blob does.
     if (e.kind === "fetch" && answer.status !== undefined) {
-      this.live.delete(id);
-      this.result(id, this.fetchedPayload(e.req.url, answer.status, answer.headers ?? [], new Blob([answer.body ?? ""])));
+      this.finishTransfer(id, e, this.fetchedPayload(e.req.url, answer.status, answer.headers ?? [], new Blob([answer.body ?? ""])));
       return true;
     }
-    this.live.delete(id);
-    if (answer.timeout) this.result(id, new Uint8Array([RES_TIMEOUT]));
-    else if (answer.network !== undefined) this.result(id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]));
-    else if (answer.status !== undefined) this.result(id, httpResult(answer.status, answer.body ?? "", answer.headers ?? []));
-    else this.guard(() => this.result(id, this.firedPayload()));
+    if (e.req?.progressMs) {
+      const payload = answer.timeout ? new Uint8Array([RES_TIMEOUT]) : answer.network !== undefined ? concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]) : httpResult(answer.status, answer.body ?? "", answer.headers ?? []);
+      this.finishTransfer(id, e, payload, !!answer.timeout);
+    } else {
+      this.live.delete(id);
+      if (answer.timeout) this.result(id, new Uint8Array([RES_TIMEOUT]));
+      else if (answer.network !== undefined) this.result(id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]));
+      else if (answer.status !== undefined) this.result(id, httpResult(answer.status, answer.body ?? "", answer.headers ?? []));
+      else this.guard(() => this.result(id, this.firedPayload()));
+    }
     return true;
   }
 

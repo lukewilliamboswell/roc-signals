@@ -348,7 +348,7 @@ async function open(prelude = "") {
     const viaMetric = rt.x.metric(16 + 12);
     return [after.length, String(after[12] - before[12]), String(viaMetric) === String(after[12]), String(after[1])];
   });
-  check("work record: 47 counters (work, effects, ports, properties, releases, observations and guards); one SETTEXT for one click; metric(16 + k) reads counter k", work, [47, "1", true, "3"]);
+  check("work record: 48 counters (work, effects, ports, properties, releases, observations, guards and progress); one SETTEXT for one click; metric(16 + k) reads counter k", work, [48, "1", true, "3"]);
   await ctx.close();
 }
 

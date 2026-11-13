@@ -566,6 +566,11 @@ const PORT_STEPS = {
   "emit-port": (page, s) => portMessage(page, s.port, { json: s.json }),
   "close-port": (page, s) => portMessage(page, s.port, { closed: true }),
   "fail-port": (page, s) => portMessage(page, s.port, { threw: s.text }),
+  "expect-port-subscription-arg": async (page, s) => {
+    const args = await page.evaluate(port => [...window.__rt.live.values()].filter(e => e.kind === "portsub" && e.req.port === port).map(e => e.req.msg.json), s.port);
+    if (s.n < 1 || s.n > args.length) throw new Error(`no current subscription ${s.n} on port ${JSON.stringify(s.port)} (${args.length} active)`);
+    if (args[s.n - 1] !== s.json) throw new Error(`subscription ${s.n} on port ${JSON.stringify(s.port)} carried ${JSON.stringify(args[s.n - 1])}, expected ${JSON.stringify(s.json)}`);
+  },
   "expect-port-subscriptions": async (page, s) => {
     const got = await page.evaluate((port) => window.__rt.portSubscriptions(port), s.port);
     if (got !== s.count) throw new Error(`${got} live subscriptions on port ${JSON.stringify(s.port)}, expected ${s.count}`);
@@ -1073,6 +1078,24 @@ const STEPS = {
     if (r.used) state.stub = null;
     return settle(page);
   },
+  "expect-request": async (page, s) => {
+    const got = await page.evaluate(n => {
+      const rt = window.__rt, id = rt.issued[n - 1], e = rt.live.get(id);
+      if (id === undefined || !e || e.running || e.terminal) return { error: `effect occurrence ${n} is not pending` };
+      if (!["http", "upload", "fetch"].includes(e.req?.op)) return { error: `effect occurrence ${n} is not HTTP` };
+      return { method: e.req.method, url: e.req.url, cache: e.req.cache, credentials: e.req.credentials };
+    }, s.n);
+    if (got.error) throw new Error(got.error);
+    for (const key of ["method", "url", "cache", "credentials"]) if (s[key] !== undefined && s[key] !== got[key]) throw new Error(`request ${s.n} ${key} is ${JSON.stringify(got[key])}, expected ${JSON.stringify(s[key])}`);
+  },
+  "progress-effect": async (page, s) => {
+    const ok = await page.evaluate((n, direction, done, total) => {
+      const rt = window.__rt, id = rt.issued[n - 1];
+      return id !== undefined && rt.progressEffect(id, direction, done, total);
+    }, s.n, s.direction, s.done, s.total);
+    if (!ok) throw new Error(`effect occurrence ${s.n} is not a pending transfer that requested progress`);
+    return settle(page);
+  },
   "expect-pending-effects": async (page, s) => {
     const got = await page.evaluate(() => window.__rt.pendingEffects().map((r) => r.url ?? r.op));
     if (got.length !== s.count) throw new Error(`expected ${s.count} pending effects, got ${got.length} ${JSON.stringify(got)}`);
@@ -1212,7 +1235,7 @@ const STEPS = {
 // have reached the app, since a report may change either of them.
 async function isOccurrence(page, step) {
   if (step.op.startsWith("expect-")) return false;
-  if (["hold-reports", "release-reports", "mark-metrics", "stub-http", "stub-http-reject", "set-online", "set-visibility", "scroll", "report-size", "report-seen", "set-media", "storage-elsewhere", "storage-elsewhere-removed", "storage-elsewhere-cleared"].includes(step.op)) return false;
+  if (["hold-reports", "release-reports", "mark-metrics", "stub-http", "stub-http-reject", "set-online", "set-visibility", "scroll", "report-size", "report-seen", "set-media", "progress-effect", "storage-elsewhere", "storage-elsewhere-removed", "storage-elsewhere-cleared"].includes(step.op)) return false;
   if (step.op === "emit-port") return page.evaluate((port) => window.__rt.portDecls.get(port)?.delivery !== 2, step.port);
   if (step.op === "paste-text") return page.evaluate(loc => {
     const root = window.__rt.root;
