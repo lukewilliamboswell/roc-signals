@@ -773,7 +773,8 @@ const COMMAND_APPLIERS = {
       const task = str();
       const n = dv.getUint32(at, true);
       // Copied out: linear memory may move before the job is posted.
-      const input = u8.slice(at + 4, at + 4 + n);
+      if (n > u8.length - at - 4) throw new Error("truncated work input");
+      const input = reader.mode === "preflight" ? null : u8.slice(at + 4, at + 4 + n);
       at += 4 + n;
       // The files the job names, resolved now, while the handles the
       // batch released still name their files (see "Files").
@@ -784,13 +785,10 @@ const COMMAND_APPLIERS = {
       const files = [];
       const ranges = [];
       for (let i = 0; i < refs; i += 1) {
-        const token = tokenAt(dv, 0, at);
-        const start = tokenAt(dv, 0, at + 8);
-        const len = tokenAt(dv, 0, at + 16);
+        const { token, start, len } = fileRange(dv, at);
         const file = reader.mode === "preflight" ? undefined : this.files.get(token);
         if (reader.mode !== "preflight" && file === undefined) throw new Error(`a work request names file handle ${token}, which this runtime does not hold`);
-        files.push(file);
-        ranges.push(token, start, len);
+        if (reader.mode !== "preflight") { files.push(file); ranges.push(token, start, len); }
         at += 24;
       }
       const timeout = dv.getUint32(at, true);
@@ -806,8 +804,8 @@ const COMMAND_APPLIERS = {
         const initLen = dv.getUint32(at, true);
         const initFiles = dv.getUint32(at + 4, true);
         at += 8;
-        if (initLen > input.length || initFiles > refs) throw new Error(`malformed preparation operands for worker task ${task}`);
-        prep = { name, initLen, initFiles, ranges: ranges.slice(0, 3 * initFiles) };
+        if (initLen > n || initFiles > refs) throw new Error(`malformed preparation operands for worker task ${task}`);
+        if (reader.mode !== "preflight") prep = { name, initLen, initFiles, ranges: ranges.slice(0, 3 * initFiles) };
       } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0 or 1`);
       queueEffect(this, reader, { op: "work", id, task, input, files, timeout, finish: cancel === 2, prep });
     } else if (kind === 11) {
@@ -1416,6 +1414,12 @@ function tokenAt(dv, i, at = 0) {
   return dv.getUint32(at + 8 * i, true) + dv.getUint32(at + 8 * i + 4, true) * 0x100000000;
 }
 
+
+function fileRange(dv, at) {
+  const token = tokenAt(dv, 0, at), start = tokenAt(dv, 0, at + 8), len = tokenAt(dv, 0, at + 16);
+  if (![token, start, len, start + len].every(Number.isSafeInteger)) throw new Error("file range exceeds the safe integer boundary");
+  return { token, start, len };
+}
 
 // Storage uses UTF-16 strings. Refuse unrepresentable text rather than
 // letting TextEncoder silently replace a lone surrogate at the Roc boundary.
@@ -2713,23 +2717,24 @@ function httpResult(status, body, headers = []) {
 // assigns an engine address or an adoption role.
 const PICTURE_MARKER = "data-roc-picture";
 const PICTURE_FAILED = "data-roc-failed";
+const PICTURE_HOLD = Symbol("roc-picture-hold");
 
 function markedPicture(root) {
   return root?.nodeType === 1 && root.hasAttribute(PICTURE_MARKER);
 }
 
 function holdPicture(root) {
-  const hold = { inert: root.getAttribute("inert") };
-  root.setAttribute("inert", "");
-  return hold;
+  // A failed loader has no runtime to retain the hold. The one token stays
+  // with its root across retries and becomes unreachable with that root.
+  if (!root[PICTURE_HOLD]) root[PICTURE_HOLD] = { inert: root.hasAttribute("inert") };
+  if (!root.hasAttribute("inert")) root.setAttribute("inert", "");
 }
 
 function restorePictureHold(runtime) {
-  const hold = runtime.pictureHold;
-  if (hold === null) return;
-  runtime.pictureHold = null;
-  if (hold.inert === null) runtime.root.removeAttribute("inert");
-  else runtime.root.setAttribute("inert", hold.inert);
+  const hold = runtime.root[PICTURE_HOLD];
+  if (!hold) return;
+  delete runtime.root[PICTURE_HOLD];
+  if (!hold.inert) runtime.root.removeAttribute("inert");
 }
 
 function failPicture(root) {
@@ -2756,12 +2761,12 @@ function pictureLoadFault(root, error, onFault) {
 }
 
 export class RocEngineRuntime {
-  constructor(exports, root, options = {}, pictureHold = null) {
+  constructor(exports, root, options = {}) {
     this.x = exports;
     this.root = root;
     this.pictureManaged = markedPicture(root);
     this.picturePending = this.pictureManaged;
-    this.pictureHold = this.picturePending ? pictureHold ?? holdPicture(root) : null;
+    if (this.picturePending) holdPicture(root);
     this.doc = options.document ?? globalThis.document;
     this.statics = [];
     this.sites = [];
@@ -4362,10 +4367,8 @@ export class RocEngineRuntime {
   // request is answered.
   // Preflight checks the range's framing without resolving a browser file.
   fileRef(dv, at, dry = false) {
-    if (dry) { dv.getBigUint64(at + 16, true); return {}; }
-    const token = tokenAt(dv, 0, at);
-    const start = tokenAt(dv, 0, at + 8);
-    const len = tokenAt(dv, 0, at + 16);
+    const { token, start, len } = fileRange(dv, at);
+    if (dry) return {};
     const file = this.files.get(token);
     if (file === undefined) throw new Error(`a request names file handle ${token}, which this runtime does not hold`);
     const blob = start === 0 && len === file.size ? file : file.slice(start, start + len, file.type);
@@ -5003,16 +5006,15 @@ export class RocEngineRuntime {
     at += 4;
     for (let i = 0; i < nblobs; i += 1) {
       const len = dv.getUint32(at, true);
-      blobs.push(u8.slice(at + 4, at + 4 + len));
+      if (len > u8.length - at - 4) throw new Error("truncated port blob");
+      if (!dry) blobs.push(u8.slice(at + 4, at + 4 + len));
       at += 4 + len;
     }
     const files = [];
     const nfiles = dv.getUint32(at, true);
     at += 4;
     for (let i = 0; i < nfiles; i += 1) {
-      const token = tokenAt(dv, 0, at);
-      const start = tokenAt(dv, 0, at + 8);
-      const len = tokenAt(dv, 0, at + 16);
+      const { token, start, len } = fileRange(dv, at);
       if (!dry) {
         const file = this.files.get(token);
         if (file === undefined) throw new Error(`a port message names file handle ${token}, which this runtime does not hold`);
@@ -6011,14 +6013,14 @@ function manualPortPayload(answer) {
 
 export async function mountRocEngineApp({ wasmUrl, root, ...options }) {
   const picture = markedPicture(root);
-  const pictureHold = picture ? holdPicture(root) : null;
+  if (picture) holdPicture(root);
   let runtime = null;
   try {
     const response = await fetch(wasmUrl);
     if (!response.ok) throw new Error(`failed to fetch ${wasmUrl}: ${response.status}`);
     const module = await WebAssembly.compile(await response.arrayBuffer());
     const instance = await WebAssembly.instantiate(module, pageImports(module));
-    runtime = new RocEngineRuntime(instance.exports, root, { ...options, module }, pictureHold);
+    runtime = new RocEngineRuntime(instance.exports, root, { ...options, module });
     runtime.mount();
     return runtime;
   } catch (error) {

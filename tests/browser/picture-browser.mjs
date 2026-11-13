@@ -125,11 +125,33 @@ try {
     let slices = 0;
     const file = new File(["abcdef"], "source.txt"); const slice = file.slice.bind(file); file.slice = (...args) => { slices++; return slice(...args); };
     const save = [20, ...word(1), ...word(0), ...word(1), ...word(0), ...word(2), ...word(0), ...text("saved.txt")];
-    const malformedFile = fixture({ batch: [0, ...save, 255] }); malformedFile.runtime.files.set(1n, file); malformedFile.runtime.mount();
+    const malformedFile = fixture({ batch: [0, ...save, 255] }); malformedFile.runtime.files.set(1, file); malformedFile.runtime.mount();
     check("pure preflight does not resolve file slices or stage effects", slices === 0 && malformedFile.runtime.fxOut.length === 0 && malformedFile.root.firstChild === malformedFile.old && malformedFile.runtime.poisoned?.class === "executor"); malformedFile.cleanup();
     const portFile = [19, ...text("any"), ...text("null"), ...word(0), ...word(1), ...word(1), ...word(0), ...word(1), ...word(0), ...word(2), ...word(0)];
-    const malformedPort = fixture({ batch: [0, ...portFile, 255] }); malformedPort.runtime.files.set(1n, file); malformedPort.runtime.mount();
+    const malformedPort = fixture({ batch: [0, ...portFile, 255] }); malformedPort.runtime.files.set(1, file); malformedPort.runtime.mount();
     check("pure preflight does not materialize port files", slices === 0 && malformedPort.runtime.fxOut.length === 0 && malformedPort.root.firstChild === malformedPort.old && malformedPort.runtime.poisoned?.class === "executor"); malformedPort.cleanup();
+    for (const [label, command] of [
+      ["port blob", [19, ...text("any"), ...text("null"), ...word(1), ...word(4), 1, 2, 3, 4, ...word(0)]],
+      ["prepared work input", [13, ...word(1), 8, ...text("job"), ...word(4), 1, 2, 3, 4, ...word(0), ...word(0), 1, 1, ...text("prepared"), ...word(2), ...word(0)]],
+    ]) {
+      const f = fixture({ batch: [0, ...command, 255] }); let copies = 0;
+      const original = Uint8Array.prototype.slice;
+      Uint8Array.prototype.slice = function (...args) { if (this.buffer === f.runtime.x.memory.buffer) copies++; return original.apply(this, args); };
+      try { f.runtime.mount(); } finally { Uint8Array.prototype.slice = original; }
+      check(`pure preflight bounds-checks ${label} without copying payload bytes`, copies === 0 && f.root.firstChild === f.old && f.runtime.poisoned?.class === "executor"); f.cleanup();
+    }
+    const scalar = (low, high = 0) => [...word(low), ...word(high)];
+    for (const [label, range] of [
+      ["token", [...scalar(0, 0x200000), ...scalar(0), ...scalar(1)]],
+      ["start", [...scalar(1), ...scalar(0, 0x200000), ...scalar(1)]],
+      ["length", [...scalar(1), ...scalar(0), ...scalar(0, 0x200000)]],
+      ["end", [...scalar(1), ...scalar(0xffffffff, 0x1fffff), ...scalar(1)]],
+    ]) {
+      const f = fixture({ batch: [0, 20, ...range, ...text("invalid.txt")] }); let lookups = 0;
+      f.runtime.files.set(1, file); const get = f.runtime.files.get.bind(f.runtime.files); f.runtime.files.get = key => { lookups++; return get(key); };
+      f.runtime.mount();
+      check(`unsafe file ${label} is refused before lookup and picture replacement`, lookups === 0 && slices === 0 && f.root.firstChild === f.old && f.runtime.poisoned?.message.includes("safe integer")); f.cleanup();
+    }
     let titleAtFocus = null;
     const onFocus = () => { titleAtFocus = document.title; };
     document.addEventListener("focusin", onFocus);
@@ -153,7 +175,8 @@ try {
       let rejected = false; try { await promise; } catch (_) { rejected = true; }
       check(`${url} rejection preserves the picture with one classified fault`, rejected && root.firstChild === old && root.inert && root.hasAttribute("data-roc-failed") && faults.length === 1 && faults[0].class === "executor"); root.remove();
     }
-    const authored = fixture({ authoredInert: "author", batch: [0, ...elem, ...focus] }); authored.runtime.mount();
+    const authored = fixture({ authoredInert: "author", batch: [0, ...elem, ...focus] });
+    check("holding a direct picture preserves authored inert text", authored.root.getAttribute("inert") === "author"); authored.runtime.mount();
     check("direct marked mount restores authored inert before effects", authored.root.getAttribute("inert") === "author" && document.activeElement !== authored.root.firstChild && !authored.runtime.picturePending);
     authored.cleanup();
     const inertRoot = document.createElement("div"); inertRoot.setAttribute("data-roc-picture", ""); inertRoot.setAttribute("inert", "author loader"); inertRoot.append(document.createElement("input")); document.body.append(inertRoot);
@@ -162,6 +185,17 @@ try {
     inertRuntime.contain(new Error("later inert fault"), "executor"); await inertRuntime.recover();
     check("recovery preserves authored inert after successful replacement", inertRoot.getAttribute("inert") === "author loader" && !inertRuntime.poisoned);
     inertRuntime.unmount(); inertRoot.remove();
+    for (const authored of [null, "author retry"]) {
+      const retryRoot = document.createElement("div"); retryRoot.setAttribute("data-roc-picture", ""); if (authored !== null) retryRoot.setAttribute("inert", authored);
+      const old = document.createElement("input"); retryRoot.append(old); document.body.append(retryRoot); const symbols = Object.getOwnPropertySymbols(retryRoot).length;
+      const faults = []; const first = mountRocEngineApp({ wasmUrl: "/missing.wasm", root: retryRoot, onFault: fault => faults.push(fault) });
+      check(`prefetch hold preserves ${authored === null ? "absent" : "authored"} inert state without changing authored text`, retryRoot.firstChild === old && retryRoot.getAttribute("inert") === (authored ?? ""));
+      try { await first; } catch (_) { /* the preserved fallback is retried below */ }
+      const same = retryRoot.firstChild === old && retryRoot.inert && faults.length === 1;
+      const retried = await mountRocEngineApp({ wasmUrl: "/fresh.wasm", root: retryRoot, manualEffects: true });
+      check(`fetch failure then same-root retry restores original ${authored === null ? "absence" : "value"}`, same && !retried.poisoned && !old.isConnected && retryRoot.getAttribute("inert") === authored && Object.getOwnPropertySymbols(retryRoot).length === symbols);
+      retried.unmount(); retryRoot.remove();
+    }
     const failedInert = fixture({ authoredInert: "author failed", trap: true }); failedInert.runtime.mount();
     failedInert.runtime.module = await WebAssembly.compile(await (await fetch("/fresh.wasm")).arrayBuffer()); await failedInert.runtime.recover();
     check("pre-init recovery restores authored inert from the same hold", failedInert.root.getAttribute("inert") === "author failed" && !failedInert.runtime.poisoned);
