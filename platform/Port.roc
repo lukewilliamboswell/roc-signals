@@ -83,6 +83,10 @@ Port := [].{
 	## Make one with `call`.
 	Call(input, output) :: { name : Str, timeout_ms : U32, encode : (input -> Engine.PortMessage), decode : (Engine.PortMessage -> Try(output, Str)) }.{
 
+		## Ask the call and retain its declared result reader with this input.
+		ask : Call(input, output), input -> Engine.Ask(output, Error)
+		ask = |port, input| Engine.ask_of(port, input)
+
 		## A request that calls the JavaScript with `value`, for an effect
 		## site's plan. The value is a snapshot, encoded when the request is
 		## issued.
@@ -103,6 +107,11 @@ Port := [].{
 	## A port that sends an `arg` to JavaScript once and receives any number
 	## of `msg`s. Make one with `subscription`.
 	Subscription(arg, msg) :: { name : Str, delivery : Delivery, encode : (arg -> Engine.PortMessage), decode : (Engine.PortMessage -> Try(msg, Str)) }.{
+
+		## Subscribe with the reader of each message. A subscription deliberately
+		## has no request/result protocol for single-answer resource layers.
+		ask : Subscription(arg, msg), arg -> Engine.Ask(msg, Error)
+		ask = |port, arg| Core.make_ask(port.subscribe(arg), |result| port.message(result))
 
 		## A request that subscribes with `arg`, for an effect site's plan.
 		## The JavaScript's `subscribe` handler receives `arg` and an `emit`

@@ -132,6 +132,10 @@ Worker := [].{
 		registration : Task(input, output, error) -> Engine.Registration
 		registration = |t| Core.registration(t.name, t.entry!)
 
+		## Ask for a job and carry this task's output reader with its input.
+		ask : Task(input, output, error), input -> Engine.Ask(output, Error(error))
+		ask = |t, input| Engine.ask_of(t, input)
+
 		## The task's name, as the props record gave it: what a request
 		## carries, what the monitor and a spec's `expect-pending-work` name
 		## the task's jobs by, and what a stand-in dispatches on.
@@ -398,6 +402,10 @@ Worker := [].{
 
 		## A request to run the task on `input` over the preparation's
 		## `init`, for an effect site's plan. Both are snapshots, encoded
+		## Ask over a preparation with this task's own result reader retained.
+		ask : PreparedTask(init, state, input, output, error), Question(init, input) -> Engine.Ask(output, Error(error))
+		ask = |t, input| Engine.ask_of(t, input)
+
 		## when the request is issued.
 		request : PreparedTask(init, state, input, output, error), Question(init, input) -> Engine.Request
 		request = |t, { init, input }| {
@@ -534,9 +542,9 @@ expect {
 	double = Worker.task({ name: "test/double", run!: |n| Ok(n * 2) })
 	follow = Core.follow_when(double)
 	first = (follow.pending)(follow.init, Run(1))
-	answered_now = (follow.resolve)(first, Run(1), Work({ output: Wire.encode(2.U64).append(0), files: [] }))
+	answered_now = (follow.resolve)(first, Run(1), Ok(2))
 	again = (follow.pending)(answered_now, Run(2))
-	failed = (follow.resolve)(again, Run(2), Refused)
+	failed = (follow.resolve)(again, Run(2), Err(Refused))
 	skipped = (follow.pending)(failed, Skip)
 	actual =
 		\\first: ${Str.inspect(first)}
@@ -593,9 +601,9 @@ expect {
 	double : Worker.Task(U64, U64, [Odd])
 	double = Worker.task({ name: "test/double-even", run!: |n| if (n % 2 == 0) Ok(n * 2) else Err(Odd) })
 	gather = Core.gather(double)
-	answer : U64 -> Engine.Result
-	answer = |n| Work({ output: Wire.encode(n).append(0), files: [] })
-	odd = Work({ output: Wire.encode(Odd).append(1), files: [] })
+	answer : U64 -> Try(U64, Worker.Error([Odd]))
+	answer = |n| Ok(n)
+	odd = Err(Failed(Odd))
 	asked = (gather.pending)(gather.init, [2, 4, 6])
 	last = (gather.resolve)(asked, [2, 4, 6], 2, answer(12))
 	first = (gather.resolve)(last, [2, 4, 6], 0, answer(4))
@@ -603,7 +611,7 @@ expect {
 	again = (gather.pending)(all, [1, 2])
 	one = (gather.resolve)(again, [1, 2], 1, answer(4))
 	failed = (gather.resolve)(one, [1, 2], 0, odd)
-	refused = (gather.resolve)((gather.pending)(failed, [2, 4]), [2, 4], 1, Refused)
+	refused = (gather.resolve)((gather.pending)(failed, [2, 4]), [2, 4], 1, Err(Refused))
 	show : Engine.Gathered(U64, Worker.Error([Odd])) -> Str
 	show = |g| "${Str.inspect(g.jobs)} ${Str.inspect(g.all)}"
 	actual =

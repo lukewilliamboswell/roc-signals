@@ -182,7 +182,7 @@ Engine := [].{
 	## `react(decide)` is an effect site's [Reaction] that writes the cells
 	## `decide` names, given the value the request was issued for and its
 	## result: an answer's whole transition, as `handle` is an event's.
-	react : (r, Result -> List(Write(st))) -> Reaction(ctx, r)
+	react : (r, result -> List(Write(st))) -> Reaction(ctx, r, result)
 		where [ctx.store : () -> Reach(ctx, st)]
 	react = |decide| Core.store_reaction(decide)
 
@@ -190,7 +190,7 @@ Engine := [].{
 	## the result arrives and before any of this decision's own writes.
 	## Composed after another reaction (`Reaction.also`), the reading is
 	## taken after that reaction has written.
-	react_by : Signal(ctx, b), (b, r, Result -> List(Write(st))) -> Reaction(ctx, r)
+	react_by : Signal(ctx, b), (b, r, result -> List(Write(st))) -> Reaction(ctx, r, result)
 		where [ctx.store : () -> Reach(ctx, st)]
 	react_by = |b, decide| Core.store_reaction_by(b.v, decide)
 
@@ -632,11 +632,115 @@ Engine := [].{
 	## Whether requests include cross-origin credentials.
 	Credentials : Core.Credentials
 
+	## A request with the reader chosen when it is issued. Only transformations
+	## and sent-request inspection are public members; the platform owns reading.
+	Ask(output, error) : Core.Ask(output, error)
+
+	## An HTTP response at any status, for applications that classify statuses.
+	Response : Core.Response
+
+	## Why an HTTP request produced no response.
+	HttpFailure : Core.HttpFailure
+
+	## A fetched response, with its body retained as a file handle.
+	Fetched : Core.Fetched
+
+	## Why a fetch produced no response file.
+	FetchFailure : Core.FetchFailure
+
+	## Ask through a declared request/result protocol, retaining its reader once.
+	ask_of : asker, input -> Ask(output, error)
+		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error)]
+	ask_of = Core.ask_of
+
+	## Keep the whole Result union deliberately for a protocol-level reaction.
+	raw : Request -> Ask(Result, [])
+	raw = Core.raw
+
+	## Issue a command, which has no result, alongside a plan's typed asks.
+	command : Command -> Ask(output, error)
+	command = Core.command
+
+	## Ask for a 2xx response body, treating other statuses as HttpError.Status.
+	http_body : HttpProps -> Ask(Str, HttpError)
+	http_body = Core.http_body
+
+	## Sample the wall clock once after the delay; Timer(0) is a legal sample.
+	timer : U32 -> Ask(I64, [Refused])
+	timer = Core.timer
+
+	## Sample the wall clock on each interval tick until its site is disposed.
+	interval : U32 -> Ask(I64, [Refused])
+	interval = Core.interval
+
+	## Queue a follow-up in this turn, answered with an empty value.
+	again : {} -> Ask({}, error)
+	again = Core.again
+
+	## Follow matching changes for a declared browser media query.
+	media_changes : Str -> Ask(Bool, [Refused])
+	media_changes = Core.media_changes
+
+	## Follow the current location after history traversal.
+	popstate : {} -> Ask(Str, [Refused])
+	popstate = Core.popstate
+
+	## Read one local-storage key, distinguishing absence from empty text.
+	storage_get : Str -> Ask(Str, [Missing, Refused])
+	storage_get = Core.storage_get
+
+	## Read one session-storage key with the same absence semantics.
+	session_get : Str -> Ask(Str, [Missing, Refused])
+	session_get = Core.session_get
+
+	## Follow another document's changes to a local-storage key.
+	storage_changes : Str -> Ask([Set(Str), Removed], [Refused])
+	storage_changes = Core.storage_changes
+
+	## Follow browser failures of writes to local/session storage.
+	storage_write_failures : {} -> Ask({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] }, [Refused])
+	storage_write_failures = Core.storage_write_failures
+
+	## Follow browser connectivity changes.
+	online_changes : {} -> Ask(Bool, [Refused])
+	online_changes = Core.online_changes
+
+	## Follow document visibility changes.
+	visibility_changes : {} -> Ask(Bool, [Refused])
+	visibility_changes = Core.visibility_changes
+
+	## Ask for a URL backed by the file's retained browser handle.
+	object_url : File -> Ask(Str, FileError)
+	object_url = |file| file.object_url()
+
+	## Ask for the digest of the file or range, without copying it into the page.
+	sha256 : File -> Ask(List(U8), FileError)
+	sha256 = |file| file.sha256()
+
+	## Read a bounded file or range into the page as bytes.
+	read_bytes : File, ReadProps -> Ask(List(U8), FileError)
+	read_bytes = |file, props| file.read_bytes(props)
+
+	## Read a bounded file or range into the page as UTF-8 text.
+	read_utf8 : File, ReadProps -> Ask(Str, FileError)
+	read_utf8 = |file, props| file.read_utf8(props)
+
+	## Send a file or range as the body of an HTTP request.
+	upload : File, UploadProps -> Ask(Response, HttpFailure)
+	upload = |file, props| file.upload(props)
+
+	## Fetch an HTTP response whose body stays outside the page as a file.
+	fetch : FetchProps -> Ask(Fetched, FetchFailure)
+	fetch = Core.File.fetch
+
+	## Browser fetch options; only the URL is required.
+	FetchProps : Core.File.FetchProps
+
 	## HTTP options; only the URL is required.
 	HttpProps : Core.HttpProps
 
 	## Construct a request with explicit browser cache and credential policies.
-	http : HttpProps -> Request
+	http : HttpProps -> Ask(Response, HttpFailure)
 	http = Core.http
 
 	## How `File.upload` sends a file: `url` (required), `method` (`"POST"`
@@ -676,7 +780,7 @@ Engine := [].{
 		## the value the request was issued for and its [Result]. If the state has been
 		## disposed by the time a reparented result arrives, the write is skipped and
 		## counted (`skipped`).
-		on_result : State(ctx, s), (s, a, Result -> s) -> Reaction(ctx, a)
+		on_result : State(ctx, s), (s, a, result -> s) -> Reaction(ctx, a, result)
 		on_result = |{ s }, f| s.on_result(f)
 
 		## Reduce progress in an ordinary turn; retired local writes are skipped.
@@ -1011,36 +1115,12 @@ Engine := [].{
 	##   without WebCrypto, which a page served over plain HTTP from another
 	##   host than localhost does not have);
 	## - `Refused`: the in-flight bound turned the request away, as the typed
-	##   readers (`file_bytes`, `file_text`, `file_digest`, `file_url`) report
+	##   asks report
 	##   it (a raw result is `Refused` itself).
 	##
 	## A task's job reads files with effects that answer it too, and a task
 	## that passes it on answers `Worker.Error`'s `Failed`.
 	FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
-
-	## A `File.read_bytes` result as the file's bytes or a typed [FileError]:
-	## `TooLarge`, `Unreadable` or `Refused`. Any other result is a contract
-	## error.
-	file_bytes : Result -> Try(List(U8), FileError)
-	file_bytes = |res| Core.file_bytes(res)
-
-	## A `File.read_utf8` result as the file's text or a typed [FileError]:
-	## `InvalidUtf8`, `TooLarge`, `Unreadable` or `Refused`. Any other result
-	## is a contract error.
-	file_text : Result -> Try(Str, FileError)
-	file_text = |res| Core.file_text(res)
-
-	## A `File.sha256` result as the digest's 32 bytes or a typed [FileError]:
-	## `TooLarge`, `Unavailable`, `Unreadable` or `Refused`. Any other result
-	## is a contract error.
-	file_digest : Result -> Try(List(U8), FileError)
-	file_digest = |res| Core.file_digest(res)
-
-	## A `File.object_url` result as the URL or a typed [FileError]: `TooLarge`
-	## (a 17th range of one file) or `Refused`. Any other result is a contract
-	## error.
-	file_url : Result -> Try(Str, FileError)
-	file_url = |res| Core.file_url(res)
 
 	## Why a `Work` request produced no answer: the worker's instance faulted
 	## running the job (`Contract`, `ResourceLimit`, `OutOfMemory`, `AppCrash`
@@ -1052,29 +1132,12 @@ Engine := [].{
 	## result.
 	WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 
-	## Why an HTTP request did not produce a successful response, as `http_text`
+	## Why an HTTP request did not produce a successful response, as `http_body`
 	## reports it: the browser could not reach the server (`Network`, with the
 	## browser's message), the request's `timeout_ms` expired (`Timeout`), the
 	## server answered outside 2xx (`Status`), or the in-flight bound refused the
 	## request (`Refused`).
 	HttpError : [Network(Str), Timeout, Status(U16), Refused]
-
-	## An HTTP result as the body of a 2xx response or a typed [HttpError]. Apps
-	## that classify statuses themselves match on `Http` directly. Any result that
-	## is not from an HTTP request is a contract error.
-	http_text : Result -> Try(Str, HttpError)
-	http_text = |res| Core.http_text(res)
-
-	## Why a `File.fetch` produced no file: `Network`, `Timeout`, a status
-	## outside 2xx (`Status`), a body over the `maxFileBytes` mount option
-	## (`TooLarge`), or the in-flight bound (`Refused`).
-	FetchError : Core.FetchError
-
-	## A `File.fetch` result as the body of a 2xx response, a file the page
-	## holds, or a typed [FetchError]. To read the status or the headers,
-	## match on `Fetched` instead. Any other result is a contract error.
-	fetched : Result -> Try(File, FetchError)
-	fetched = |res| Core.fetched(res)
 
 	## A file a task's job is writing: make one with `Files.build!`, append
 	## to it with `append!` and `append_file!`, and `finish!` it into a
@@ -1082,7 +1145,7 @@ Engine := [].{
 	Builder : Core.Builder
 
 	## What an effect site does with a result: what it writes, given the value
-	## the request was issued for and the [Result]. Make one with `State.on_result`
+	## the request was issued for and its typed result. Make one with `State.on_result`
 	## for local state or with `react` for the store's cells, or use `ignore`.
 	## `first.also(second)` runs both on one result, in order, as one atomic
 	## transition, the second seeing the first's writes, like `Handler.also`.
@@ -1092,7 +1155,7 @@ Engine := [].{
 	## Composing attached reactions with `also` runs their progress writes in
 	## operand order, atomically, at the smaller requested interval. Calling
 	## `with_progress` again replaces the resulting attachment.
-	Reaction(ctx, a) : Core.Reaction(ctx, a)
+	Reaction(ctx, a, result) : Core.Reaction(ctx, a, result)
 
 	## A sampled count from one transfer, with a truthful known or unknown total.
 	Transfer : Core.Transfer
@@ -1109,7 +1172,7 @@ Engine := [].{
 	react_progress = Core.store_progress
 
 	## A reaction that discards every result, for sites that only issue commands.
-	ignore : {} -> Reaction(ctx, a)
+	ignore : {} -> Reaction(ctx, a, result)
 	ignore = |_| Core.ignore({})
 
 	## `on_cleanup(name, v, plan)` runs `plan` on `v`, read in the scope's last
@@ -1135,13 +1198,13 @@ Engine := [].{
 	## surviving ancestor instead. At most 32 requests are
 	## in flight by default (see `program_boot`); beyond that a request is answered
 	## with `Refused`.
-	watch : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
+	watch : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	watch = |v, plan, reaction| Core.watch(v.v, plan, reaction)
 
 	## Like `watch`, but issues only when `v` changes after mount, never for its
 	## initial value.
-	watch_changes : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
+	watch_changes : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	watch_changes = |v, plan, reaction| Core.watch_changes(v.v, plan, reaction)
 
@@ -1161,7 +1224,7 @@ Engine := [].{
 	## stop, and admitted `Http` and `StorageGet` requests of the current value
 	## are delivered to the nearest surviving ancestor. A change costs one read of
 	## `v` plus work linear in the requests the site owns.
-	watch_latest : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
+	watch_latest : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	watch_latest = |v, plan, reaction| Core.watch_latest(v.v, plan, reaction)
 
@@ -1187,7 +1250,7 @@ Engine := [].{
 	## the site's scoped requests, and reparents admitted requests to the
 	## nearest surviving ancestor, where writes to the retired state are
 	## skipped and counted. Signals from outside enter `body` with `lift`.
-	resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Request)), resolve : (s, a, Result -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+	resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Ask(output, error))), resolve : (s, a, Try(output, error) -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 	resource = |input, cfg, body| Core.resource(input.v, cfg, |v| body({ v: v }))
 
@@ -1264,13 +1327,13 @@ Engine := [].{
 	## Use it for a request the user's action asks for: a save, an add, a
 	## write to a store. The reducer that changes the state posts in the
 	## same step, so an `expect` sees both.
-	on_post : Signal(ctx, Outbox(a)), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
+	on_post : Signal(ctx, Outbox(a)), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 	on_post = |box, plan, reaction| Core.on_post(box.v, plan, reaction)
 
 	## Send a posted intent with a reading taken only when its plan runs. The
 	## site and its requests retain the small item, not the reading; the reaction
 	## receives that same posted item. Two posts in a turn remain a contract error.
-	on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
+	on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Ask(output, error))), Reaction(ctx, item, Try(output, error)) -> Elem(ctx)
 	on_post_by = |box, reading, plan, reaction| Core.on_post_by(box.v, reading.v, plan, reaction)
 
 	## What the host knows before the first render: the URL, independently

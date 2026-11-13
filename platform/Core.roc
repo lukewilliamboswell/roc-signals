@@ -224,7 +224,7 @@ Core := [].{
 
 	## An effect site's [Reaction] that writes the cells `decide` names for
 	## the value the request was issued for and its result.
-	store_reaction : (r, Result -> List(Write(st))) -> Reaction(ctx, r)
+	store_reaction : (r, result -> List(Write(st))) -> Reaction(ctx, r, result)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_reaction = |decide| {
 		## The context's type, named so its method can be called.
@@ -235,7 +235,7 @@ Core := [].{
 
 	## As `store_reaction`, where `decide` also receives `v`, read once when
 	## the result arrives, before any write of this decision.
-	store_reaction_by : Signal(ctx, b), (b, r, Result -> List(Write(st))) -> Reaction(ctx, r)
+	store_reaction_by : Signal(ctx, b), (b, r, result -> List(Write(st))) -> Reaction(ctx, r, result)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_reaction_by = |v, decide| {
 		## The context's type, named so its method can be called.
@@ -571,14 +571,14 @@ Core := [].{
 		## into the page's memory, so keep it for small files and send large
 		## ones to a worker task. The request holds the file until it is
 		## answered, and disposing its site cancels it.
-		read_bytes : File, ReadProps -> Request
-		read_bytes = |f, ReadProps.({ max_bytes })| ReadBytes({ file: f, max_bytes })
+		read_bytes : File, ReadProps -> Ask(List(U8), FileError)
+		read_bytes = |f, ReadProps.({ max_bytes })| Core.make_ask(ReadBytes({ file: f, max_bytes }), Core.file_bytes)
 
 		## A request to read the file into the page as text: as `read_bytes`,
 		## answered `FileText(text)`, or `FileFailed(InvalidUtf8)` when the bytes
 		## are not UTF-8. A byte-order mark is kept. Read it with `file_text`.
-		read_utf8 : File, ReadProps -> Request
-		read_utf8 = |f, ReadProps.({ max_bytes })| ReadUtf8({ file: f, max_bytes })
+		read_utf8 : File, ReadProps -> Ask(Str, FileError)
+		read_utf8 = |f, ReadProps.({ max_bytes })| Core.make_ask(ReadUtf8({ file: f, max_bytes }), Core.file_text)
 
 		## A request that sends the file, or its range, as the body of an HTTP
 		## request, for an effect site's plan:
@@ -589,10 +589,10 @@ Core := [].{
 		## disposed and answered to the nearest surviving ancestor. A file the
 		## browser can no longer read fails the request, which the browser
 		## reports as a network failure.
-		upload : File, UploadProps -> Request
+		upload : File, UploadProps -> Ask(Response, HttpFailure)
 		upload = |f, UploadProps.({ url, method, headers, timeout, credentials })| {
 			timeout_ms = Core.timeout_wire(timeout)
-			Upload({ method, url, headers, body: f, timeout_ms, credentials })
+			Core.make_ask(Upload({ method, url, headers, body: f, timeout_ms, credentials }), read_http_response)
 		}
 
 		## A request for the SHA-256 digest of the file, or its range: answered
@@ -603,8 +603,8 @@ Core := [].{
 		## `FileFailed(TooLarge)`, a browser without WebCrypto (a page not
 		## served over HTTPS or from localhost) `FileFailed(Unavailable)`. Like a
 		## timer it belongs to its site.
-		sha256 : File -> Request
-		sha256 = |f| Sha256(f)
+		sha256 : File -> Ask(List(U8), FileError)
+		sha256 = |f| Core.make_ask(Sha256(f), Core.file_digest)
 
 		## A request for a URL the page can show the file, or its range, by:
 		## an `<img>`'s or a `<video>`'s `src`. Answered `FileUrl(url)`, read with
@@ -614,8 +614,8 @@ Core := [].{
 		## twice for the same range answers the same URL; a file gives at most
 		## 16 ranges URLs, and a 17th is `FileFailed(TooLarge)`. Like a timer it
 		## belongs to its site.
-		object_url : File -> Request
-		object_url = |f| ObjectUrl(f)
+		object_url : File -> Ask(Str, FileError)
+		object_url = |f| Core.make_ask(ObjectUrl(f), Core.file_url)
 
 		## Equal when they are the same range of the same file.
 		is_eq : File, File -> Bool
@@ -699,11 +699,11 @@ Core := [].{
 		## disposed and answered to the nearest surviving ancestor. With progress,
 		## Default cache uses the browser’s Blob path; other cache policies collect
 		## streamed chunks in JavaScript, bounded by maxFileBytes.
-		fetch : FetchProps -> Request
+		fetch : FetchProps -> Ask(Fetched, FetchFailure)
 		fetch = |props| {
 			{ url, method, headers, timeout, cache, credentials } = props
 			timeout_ms = Core.timeout_wire(timeout)
-			Fetch({ method, url, headers, timeout_ms, cache, credentials })
+			Core.make_ask(Fetch({ method, url, headers, timeout_ms, cache, credentials }), read_fetch_response)
 		}
 
 		## Write the file with the format's `encode_file`: in a worker request
@@ -854,16 +854,19 @@ Core := [].{
 	HttpProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [], body : Str ?? "", timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
 
 	## Build an HTTP request without repeating its default method, body or policies.
-	http : HttpProps -> Request
-	http = |props| Http({
-		method: props.method,
-		url: props.url,
-		headers: props.headers,
-		body: props.body,
-		timeout_ms: Core.timeout_wire(props.timeout),
-		cache: props.cache,
-		credentials: props.credentials,
-	})
+	http : HttpProps -> Ask(Response, HttpFailure)
+	http = |props| Core.make_ask(
+		Http({
+			method: props.method,
+			url: props.url,
+			headers: props.headers,
+			body: props.body,
+			timeout_ms: Core.timeout_wire(props.timeout),
+			cache: props.cache,
+			credentials: props.credentials,
+		}),
+		read_http_response,
+	)
 
 	## How to send a file as an HTTP body (`File.upload`):
 	##
@@ -990,10 +993,10 @@ Core := [].{
 		}
 
 		## An effect site's [Reaction] that writes this state: the reducer receives
-		## the value the request was issued for and its [Result]. If the state has been
+		## the value the request was issued for and its typed result. If the state has been
 		## disposed by the time a reparented result arrives, the write is skipped and
 		## counted (`skipped`).
-		on_result : State(ctx, s), (s, a, Result -> s) -> Reaction(ctx, a)
+		on_result : State(ctx, s), (s, a, result -> s) -> Reaction(ctx, a, result)
 		on_result = |{ mask: _, writes: wrote, get: _, modify }, f| {
 			{ run: |e, a, r, _| (modify(e, |s| f(s, a, r)), wrote), progress: NoProgress }
 		}
@@ -1523,6 +1526,45 @@ Core := [].{
 		Save({ file : File, name : Str }),
 	]
 
+	## A request paired with its own result reader. Construct one with the
+	## typed request functions, or use raw when the whole Result is intended.
+	Ask(output, error) :: { request : Request, read : (Result -> Try(output, error)) }.{
+
+		## Transform a successful answer without changing the request or its errors.
+		map_ok : Ask(a, e), (a -> b) -> Ask(b, e)
+		map_ok = |{ request, read }, f| { request, read: |result| read(result).map_ok(f) }
+
+		## Transform an error without changing the request or its answer type.
+		map_err : Ask(o, a), (a -> b) -> Ask(o, b)
+		map_err = |{ request, read }, f| { request, read: |result| read(result).map_err(f) }
+
+		## Classify the whole typed result, for example an HTTP status as an error.
+		map : Ask(a, e), (Try(a, e) -> Try(b, f)) -> Ask(b, f)
+		map = |{ request, read }, f| { request, read: |result| f(read(result)) }
+
+		## The request as data, for pure tests of a plan's URL, payload and policies.
+		sent : Ask(o, e) -> Request
+		sent = |{ request, read: _ }| request
+	}
+
+	## Internal construction for the platform's typed request modules. The
+	## public Ask exposes only transformations and inspection of what it sends.
+	make_ask : Request, (Result -> Try(output, error)) -> Ask(output, error)
+	make_ask = |request, read| { request, read }
+
+	## Deliberately keep every raw result arm for a protocol-level reaction.
+	raw : Request -> Ask(Result, [])
+	raw = |request| { request, read: |result| Ok(result) }
+
+	## Pair an asker's request with its declared reader once, when it is asked.
+	ask_of : asker, input -> Ask(output, error)
+		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error)]
+	ask_of = |asker, input| { request: asker.request(input), read: |result| asker.result(result) }
+
+	## A command has no answer, so it fits any result type a plan shares.
+	command : Command -> Ask(output, error)
+	command = |value| { request: command_request(value), read: |_| crash "contract: a command received a result" }
+
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
 	## a network failure (`Network`) or `Timeout`, a storage `Value` or `Missing`, a
 	## timer or interval tick (`Fired`), the URL after `Popstate` (`Location`), a
@@ -1655,6 +1697,120 @@ Core := [].{
 	## result.
 	WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 
+	## An HTTP answer at any status; classification of statuses belongs to the app.
+	Response : { status : U16, headers : List((Str, Str)), body : Str }
+
+	## Why an HTTP request produced no response.
+	HttpFailure : [Network(Str), Timeout, Refused]
+
+	## A fetched response retains its status and headers beside the file handle.
+	Fetched : { status : U16, headers : List((Str, Str)), body : File }
+
+	## Why a fetch produced no response file.
+	FetchFailure : [Network(Str), Timeout, TooLarge, Refused]
+
+	## Ask for the body of a successful HTTP response; non-2xx statuses are errors.
+	http_body : HttpProps -> Ask(Str, HttpError)
+	http_body = |props| Core.http(props).map(
+		|result| match result {
+			Ok(response) => if (response.status >= 200 and response.status < 300) Ok(response.body) else Err(Status(response.status))
+			Err(error) => Err(error)
+		},
+	)
+
+	## Sample the wall clock once after the given delay; zero is legal.
+	timer : U32 -> Ask(I64, [Refused])
+	timer = |ms| Core.make_ask(Timer(ms), read_fired)
+
+	## Sample the wall clock at every tick until the site's interval is cancelled.
+	interval : U32 -> Ask(I64, [Refused])
+	interval = |ms| Core.make_ask(Interval(ms), read_fired)
+
+	## Queue one follow-up in the same turn; it has no failure result.
+	again : {} -> Ask({}, error)
+	again = |_| Core.make_ask(
+		Self,
+		|result| match result {
+			Now => Ok({})
+			_ => crash "contract: again received a result other than Now"
+		},
+	)
+
+	## Follow matching changes for the declared media query.
+	media_changes : Str -> Ask(Bool, [Refused])
+	media_changes = |query| Core.make_ask(
+		MediaChanges(query),
+		|result| match result {
+			Matches(value) => Ok(value)
+			Refused => Err(Refused)
+			_ => crash "contract: media_changes received a non-media result"
+		},
+	)
+
+	## Follow the current location after browser history traversal.
+	popstate : {} -> Ask(Str, [Refused])
+	popstate = |_| Core.make_ask(
+		Popstate,
+		|result| match result {
+			Location(value) => Ok(value)
+			Refused => Err(Refused)
+			_ => crash "contract: popstate received a non-location result"
+		},
+	)
+
+	## Read one local-storage key, distinguishing absence from an empty value.
+	storage_get : Str -> Ask(Str, [Missing, Refused])
+	storage_get = |key| Core.make_ask(StorageGet(key), read_storage)
+
+	## Read one session-storage key with the same absence semantics.
+	session_get : Str -> Ask(Str, [Missing, Refused])
+	session_get = |key| Core.make_ask(SessionStorageGet(key), read_storage)
+
+	## Follow another document's writes to the key, including removal.
+	storage_changes : Str -> Ask([Set(Str), Removed], [Refused])
+	storage_changes = |key| Core.make_ask(
+		StorageChanges(key),
+		|result| match result {
+			Value(value) => Ok(Set(value))
+			Missing => Ok(Removed)
+			Refused => Err(Refused)
+			_ => crash "contract: storage_changes received a non-storage result"
+		},
+	)
+
+	## Follow failed local/session writes reported by the browser service.
+	storage_write_failures : {} -> Ask({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] }, [Refused])
+	storage_write_failures = |_| Core.make_ask(
+		StorageWriteFailures,
+		|result| match result {
+			StorageFailed(value) => Ok(value)
+			Refused => Err(Refused)
+			_ => crash "contract: storage_write_failures received another result"
+		},
+	)
+
+	## Follow browser connectivity changes.
+	online_changes : {} -> Ask(Bool, [Refused])
+	online_changes = |_| Core.make_ask(
+		OnlineChanges,
+		|result| match result {
+			Online(value) => Ok(value)
+			Refused => Err(Refused)
+			_ => crash "contract: online_changes received another result"
+		},
+	)
+
+	## Follow document visibility changes.
+	visibility_changes : {} -> Ask(Bool, [Refused])
+	visibility_changes = |_| Core.make_ask(
+		VisibilityChanges,
+		|result| match result {
+			Visible(value) => Ok(value)
+			Refused => Err(Refused)
+			_ => crash "contract: visibility_changes received another result"
+		},
+	)
+
 	## Why an HTTP request did not produce a successful response, as `http_text`
 	## reports it: the browser could not reach the server (`Network`, with the
 	## browser's message), the request's `timeout_ms` expired (`Timeout`), the
@@ -1713,15 +1869,15 @@ Core := [].{
 	}
 
 	## What an effect site does with a result: what it writes, given the value
-	## the request was issued for and the [Result]. Make one with `State.on_result`
+	## the request was issued for and its typed result. Make one with `State.on_result`
 	## or `store_reaction`, or use `ignore`. Like a handler's, its `run` is
 	## also given the path of the site whose reaction it is, and returns the
 	## set it wrote.
-	Reaction(ctx, a) :: { run : (ctx, a, Result, List(U32) -> (ctx, Layers)), progress : ProgressHandler(ctx, a) }.{
+	Reaction(ctx, a, result) :: { run : (ctx, a, result, List(U32) -> (ctx, Layers)), progress : ProgressHandler(ctx, a) }.{
 
 		## Ask every HTTP transfer issued by this site to sample progress, using
 		## the original issued-for item and ordinary turn settlement.
-		with_progress : Reaction(ctx, a), ProgressProps, ProgressReaction(ctx, a) -> Reaction(ctx, a)
+		with_progress : Reaction(ctx, a, result), ProgressProps, ProgressReaction(ctx, a) -> Reaction(ctx, a, result)
 		with_progress = |reaction, props, progress| { ..reaction, progress: Reporting({ every_ms: if (props.every_ms < 16) 16 else props.every_ms, run: progress.run }) }
 
 		## One reaction that runs `first` and then `second` on the same
@@ -1729,7 +1885,7 @@ Core := [].{
 		## `first` returned, so it sees `first`'s writes, and the result's
 		## turn reports the union of both write sets, which settle outermost
 		## first. Costs one closure call more per result.
-		also : Reaction(ctx, a), Reaction(ctx, a) -> Reaction(ctx, a)
+		also : Reaction(ctx, a, result), Reaction(ctx, a, result) -> Reaction(ctx, a, result)
 		also = |first, second| {
 			run_first = first.run
 			run_second = second.run
@@ -1745,7 +1901,7 @@ Core := [].{
 	}
 
 	## A reaction that discards every result, for sites that only issue commands.
-	ignore : {} -> Reaction(ctx, a)
+	ignore : {} -> Reaction(ctx, a, result)
 	ignore = |_| { run: |e, _, _, _| (e, no_layers), progress: NoProgress }
 
 	## `on_cleanup(name, v, plan)` runs `plan` on `v`, read in the scope's last
@@ -1786,13 +1942,13 @@ Core := [].{
 	## delivered to the nearest surviving ancestor instead. At most 32 requests are
 	## in flight by default (see `program_boot`); beyond that a request is answered
 	## with `Refused`.
-	watch : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
+	watch : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	watch = |v, plan, react| effect(v, True, plan, replanned(plan), react)
 
 	## Like `watch`, but issues only when `v` changes after mount, never for its
 	## initial value.
-	watch_changes : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
+	watch_changes : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	watch_changes = |v, plan, react| effect(v, False, plan, replanned(plan), react)
 
@@ -1803,14 +1959,14 @@ Core := [].{
 	## follow-ups and refusals (counted `stale`), so a late answer for an earlier
 	## value never reaches `react`. A `plan` that returns `[]` makes a change a
 	## pure cancel. Disposal follows `watch`'s rules.
-	watch_latest : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
+	watch_latest : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	watch_latest = |v, plan, react| Site(
 		Mount(
 			|env, args, tx| {
 				a = (v.read)(env)
-				cfg = { v, plan: |_, value| plan(value), step: |_, old, value, path| replanned(plan)(old, value, path), react, path: args.path }
-				(t1, owned) = issue_progress(count_evals(tx, 1), args.path, plan(a), a, [], progress_interval(react))
+				cfg = { v, plan: |_, value| hold_asks(value, plan(value)), step: |_, old, value, path| hold_asks(value, replanned(plan)(old, value, path)), react: held_reaction(react), path: args.path }
+				(t1, owned) = issue_progress(count_evals(tx, 1), args.path, (cfg.plan)(env, a), [], progress_interval(cfg.react))
 				(latest_inst(cfg, a, owned), eff_mask(v), t1)
 			},
 		),
@@ -1827,7 +1983,7 @@ Core := [].{
 	## the request was issued for. Readers inside `body` do no work while the
 	## layer is equal to its previous value. Disposal follows `watch`'s rules; a
 	## reparented answer's write to the retired layer is skipped and counted.
-	resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Request)), resolve : (s, a, Result -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+	resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Ask(output, error))), resolve : (s, a, Try(output, error) -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 	resource = |input, cfg, body| {
 		resolve = cfg.resolve
@@ -1837,29 +1993,32 @@ Core := [].{
 	## `resource` whose `resolve` is also told the position, in the list
 	## `plan(a)` returned, of the request a result answers: how a `gather`
 	## layer knows which job answered.
-	resource_at : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Request)), resolve : (s, a, U64, Result -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+	resource_at : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Ask(output, error))), resolve : (s, a, U64, Try(output, error) -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
-	resource_at = |input, cfg, body| Site(
-		Mount(
-			|env, args, tx| {
-				depth = layer(args.depth)
-				a = (input.read)(env)
-				s = (cfg.pending)(cfg.init, a)
-				(t1, owned) = issue(count_evals(tx, 1), args.path, (cfg.plan)(a), a, [])
-				elem = body({ mask: bit(depth), read: |e| e.value, sel: NoSel })
-				(block, t2) = mount_block(In.{ outer: env, value: s }, elem, depth, args.path, args.parent, args.before, { cap: args.cap }, t1)
-				# Like a state's, the reads include this layer and those below
-				# it, for a conditional whose unmounted branch holds this site.
-				reads = block.reads.bitwise_or(eff_mask(input))
-				rc = { input, pending: cfg.pending, plan: cfg.plan, resolve: cfg.resolve, path: args.path, depth }
-				(resource_inst(rc, a, s, owned, block), reads, t2)
+	resource_at = |input, cfg, body| {
+		plan = cfg.plan
+		resolve = cfg.resolve
+		planned = |value| hold_asks(value, plan(value))
+		Site(
+			Mount(
+				|env, args, tx| {
+					depth = layer(args.depth)
+					a = (input.read)(env)
+					s = (cfg.pending)(cfg.init, a)
+					(t1, owned) = issue(count_evals(tx, 1), args.path, planned(a), [])
+					elem = body({ mask: bit(depth), read: |e| e.value, sel: NoSel })
+					(block, t2) = mount_block(In.{ outer: env, value: s }, elem, depth, args.path, args.parent, args.before, { cap: args.cap }, t1)
+					reads = block.reads.bitwise_or(eff_mask(input))
+					rc = { input, pending: cfg.pending, plan: planned, resolve: |value, held, at, result| resolve(value, held.value, at, (held.read)(result)), path: args.path, depth }
+					(resource_inst(rc, a, s, owned, block), reads, t2)
+				},
+			),
+			|d| {
+				d1 = layer(d)
+				eff_mask(input).bitwise_or(elem_reads(body({ mask: bit(d1), read: |e| e.value, sel: NoSel }), d1))
 			},
-		),
-		|d| {
-			d1 = layer(d)
-			eff_mask(input).bitwise_or(elem_reads(body({ mask: bit(d1), read: |e| e.value, sel: NoSel }), d1))
-		},
-	)
+		)
+	}
 
 	## What a layer following one answer holds (`Engine.Remote`): whether a
 	## request for the current input is in flight, and the latest answer.
@@ -1892,7 +2051,7 @@ Core := [].{
 	## every job `Working` and `all` `Pending`, keeping its answer; each
 	## result settles the job at its position, and once none is working
 	## `all` settles too. An empty list is answered at once with `[]`.
-	gather : asker -> { init : Gathered(output, error), pending : (Gathered(output, error), List(input) -> Gathered(output, error)), plan : (List(input) -> List(Request)), resolve : (Gathered(output, error), List(input), U64, Result -> Gathered(output, error)) }
+	gather : asker -> { init : Gathered(output, error), pending : (Gathered(output, error), List(input) -> Gathered(output, error)), plan : (List(input) -> List(Ask(output, error))), resolve : (Gathered(output, error), List(input), U64, Try(output, error) -> Gathered(output, error)) }
 		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error)]
 	gather = |asker| {
 		init: { all: { request: Idle, answer: Unanswered }, jobs: [] },
@@ -1902,9 +2061,9 @@ Core := [].{
 			} else {
 				{ all: { ..gathered.all, request: Pending }, jobs: inputs.map(|_| Working) }
 			},
-		plan: |inputs| inputs.map(|input| asker.request(input)),
+		plan: |inputs| inputs.map(|input| Core.ask_of(asker, input)),
 		resolve: |gathered, _inputs, at, res| {
-			job = match asker.result(res) {
+			job = match res {
 				Ok(output) => Answered(output)
 				Err(error) => Failed(error)
 			}
@@ -1946,13 +2105,13 @@ Core := [].{
 	## item. Nothing is issued at mount and nothing is cancelled, as with
 	## `watch_changes`. Two posts to one outbox in one turn are a contract
 	## error, since the first would never be sent.
-	on_post : Signal(ctx, Outbox(item)), (item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
+	on_post : Signal(ctx, Outbox(item)), (item -> List(Ask(output, error))), Reaction(ctx, item, Try(output, error)) -> Elem(ctx)
 	on_post = |v, plan, react| effect(v, False, |_| [], posted_step(plan), posted_reaction(react))
 
 	## Issue a small posted intent using a reading sampled only when it is sent.
 	## Both signals declare reads, but the site's retained value and each result's
 	## issued-for value are the outbox item alone, never this transient reading.
-	on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
+	on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Ask(output, error))), Reaction(ctx, item, Try(output, error)) -> Elem(ctx)
 	on_post_by = |box, reading, plan, react| {
 		watched = { ..box, mask: eff_mask(box).bitwise_or(eff_mask(reading)), sel: NoSel }
 		effect_reading(watched, False, |_, _| [], |env, before, value, path| posted_step(|item| plan((reading.read)(env), item))(before, value, path), posted_reaction(react))
@@ -1964,18 +2123,18 @@ Core := [].{
 	## marks the layer `Pending` and keeps the previous answer; each result
 	## settles it as `Answered` or `Failed`. `Worker.resource` and `Port.resource`
 	## are this, so the policy has one home.
-	follow : asker -> { init : Remote(output, error), pending : (Remote(output, error), input -> Remote(output, error)), plan : (input -> List(Request)), resolve : (Remote(output, error), input, Result -> Remote(output, error)) }
+	follow : asker -> { init : Remote(output, error), pending : (Remote(output, error), input -> Remote(output, error)), plan : (input -> List(Ask(output, error))), resolve : (Remote(output, error), input, Try(output, error) -> Remote(output, error)) }
 		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error)]
 	follow = |asker| {
 		init: { request: Idle, answer: Unanswered },
 		pending: |remote, _| { ..remote, request: Pending },
-		plan: |input| [asker.request(input)],
-		resolve: |_, _, res| settled_remote(asker.result(res)),
+		plan: |input| [Core.ask_of(asker, input)],
+		resolve: |_, _, res| settled_remote(res),
 	}
 
 	## Like `follow`, for an input that is sometimes not a question: `Run(i)`
 	## asks about `i`, and `Skip` asks nothing and clears the answer.
-	follow_when : asker -> { init : Remote(output, error), pending : (Remote(output, error), [Run(input), Skip] -> Remote(output, error)), plan : ([Run(input), Skip] -> List(Request)), resolve : (Remote(output, error), [Run(input), Skip], Result -> Remote(output, error)) }
+	follow_when : asker -> { init : Remote(output, error), pending : (Remote(output, error), [Run(input), Skip] -> Remote(output, error)), plan : ([Run(input), Skip] -> List(Ask(output, error))), resolve : (Remote(output, error), [Run(input), Skip], Try(output, error) -> Remote(output, error)) }
 		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error)]
 	follow_when = |asker| {
 		init: { request: Idle, answer: Unanswered },
@@ -1984,10 +2143,10 @@ Core := [].{
 			Skip => { request: Idle, answer: Unanswered }
 		},
 		plan: |want| match want {
-			Run(input) => [asker.request(input)]
+			Run(input) => [Core.ask_of(asker, input)]
 			Skip => []
 		},
-		resolve: |_, _, res| settled_remote(asker.result(res)),
+		resolve: |_, _, res| settled_remote(res),
 	}
 
 	## For test platforms and harnesses: the instance's effect counters (issued,
@@ -2639,8 +2798,9 @@ Core := [].{
 			Ok(entry) => {
 				# A subscription stays live until it is cancelled, unless its
 				# JavaScript ended it (a port's `Closed` or `Threw`).
-				tx1 = if (entry.sub and !(programs.ports.ends)(res)) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
-				drain(turn({ store, root, tx: start_batch(tx1), programs }, entry.path, id, Fx(Final(res))))
+				live = entry.sub and !(programs.ports.ends)(res)
+				tx1 = if (live) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
+				drain(turn({ store, root, tx: start_batch(tx1), programs }, entry.path, id, Fx(Final(res, live))))
 			}
 		}
 	}
@@ -7706,22 +7866,53 @@ max_breadth : U64 -> U64
 max_breadth = |inflight| max_turns * (if (inflight > max_turns) inflight else max_turns)
 
 ## A request the site owns: its id, whether it is a subscription, whether
-## it is kept on disposal, the value it was issued for, and its position in
-## the list of requests issued for that value.
+## it is kept on disposal, its held snapshot and position in the plan. Typed
+## asks keep the issued-for value and reader together in that snapshot.
 Owned(a) : { id : U32, sub : Bool, keep : Bool, a : a, at : U64 }
 
-## Internal input for a request’s ordinary turn: final result or sampled progress.
-EffectInput : [Final(Result), Progress(Core.Transfer)]
+## Every issued request keeps the value and reader chosen by its plan.
+## The reader is consumed only by a final result, never a progress report.
+Held(a, output, error) : { value : a, read : (Result -> Try(output, error)) }
+
+Planned(h) : { request : Request, held : h }
+
+hold_asks : a, List(Core.Ask(output, error)) -> List(Planned(Held(a, output, error)))
+hold_asks = |value, asks| asks.map(|{ request, read }| { request, held: { value, read } })
+
+held_reaction : Core.Reaction(ctx, a, Try(output, error)) -> Core.Reaction(ctx, Held(a, output, error), Result)
+held_reaction = |reaction| {
+	run = reaction.run
+	{
+		run: |env, held, result, site| run(env, held.value, (held.read)(result), site),
+		progress: match reaction.progress {
+			NoProgress => NoProgress
+			Reporting(report) => Reporting({ every_ms: report.every_ms, run: |env, held, transfer, site| (report.run)(env, held.value, transfer, site) })
+		},
+	}
+}
+
+## Internal input for a request’s ordinary turn. A final result carries the
+## liveness decision already made at ingress; progress keeps the id live.
+EffectInput : [Final(Result, Bool), Progress(Core.Transfer)]
 
 ProgressHandler(ctx, a) : [NoProgress, Reporting({ every_ms : U32, run : (ctx, a, Core.Transfer, List(U32) -> (ctx, Layers)) })]
 
 is_progress : EffectInput -> Bool
 is_progress = |input| match input {
 	Progress(_) => True
-	Final(_) => False
+	Final(_, _) => False
 }
 
-progress_interval : Core.Reaction(ctx, a) -> U32
+## The result ingress already decided whether the id remains live. Carry
+## that fact through routing, including a terminal subscription or refusal,
+## so retirement releases its reader without another in-flight lookup.
+keeps_owned : EffectInput -> Bool
+keeps_owned = |input| match input {
+	Final(_, live) => live
+	Progress(_) => True
+}
+
+progress_interval : Core.Reaction(ctx, a, result) -> U32
 progress_interval = |reaction| match reaction.progress {
 	NoProgress => 0
 	Reporting(report) => report.every_ms
@@ -7736,9 +7927,9 @@ supports_progress = |request| match request {
 count_delivery : Tx, EffectInput -> Tx
 count_delivery = |tx, input| if (is_progress(input)) bump(tx, 47, 1) else fx_count(tx, Delivered)
 
-run_reaction : Core.Reaction(ctx, a), ctx, a, EffectInput, List(U32) -> (ctx, Layers)
+run_reaction : Core.Reaction(ctx, a, Result), ctx, a, EffectInput, List(U32) -> (ctx, Layers)
 run_reaction = |reaction, env, a, input, site| match input {
-	Final(result) => (reaction.run)(env, a, result, site)
+	Final(result, _) => (reaction.run)(env, a, result, site)
 	Progress(transfer) => match reaction.progress {
 		Reporting(report) => (report.run)(env, a, transfer, site)
 		NoProgress => crash "contract: progress requires a reaction with_progress at site ${show_path(site)}"
@@ -7778,10 +7969,10 @@ put_http_options = |bytes, cache, credentials, progress_ms| {
 ## mount, and `step` those for a change from the value last seen to a new
 ## one at the site's path (`plan` of the new value, except for `on_post`,
 ## which checks the change).
-EffectCfg(ctx, a) : { v : Signal(ctx, a), plan : (ctx, a -> List(Request)), step : (ctx, a, a, List(U32) -> List(Request)), react : Reaction(ctx, a), path : List(U32) }
+EffectCfg(ctx, a, h) : { v : Signal(ctx, a), plan : (ctx, a -> List(Planned(h))), step : (ctx, a, a, List(U32) -> List(Planned(h))), react : Reaction(ctx, h, Result), path : List(U32) }
 
 ## The `step` of a site that issues `plan` of each new value.
-replanned : (a -> List(Request)) -> (a, a, List(U32) -> List(Request))
+replanned : (a -> List(request)) -> (a, a, List(U32) -> List(request))
 replanned = |plan| |_, a, _| plan(a)
 
 with_fx : Tx, (Fx -> Fx) -> Tx
@@ -7962,15 +8153,17 @@ fx_follow = |tx, path, res| {
 }
 
 ## Issue a site's requests for value `a`.
-issue : Tx, List(U32), List(Request), a, List(Owned(a)) -> (Tx, List(Owned(a)))
-issue = |tx, path, reqs, a, owned| issue_progress(tx, path, reqs, a, owned, 0)
+issue : Tx, List(U32), List(Planned(h)), List(Owned(h)) -> (Tx, List(Owned(h)))
+issue = |tx, path, reqs, owned| issue_progress(tx, path, reqs, owned, 0)
 
-issue_progress : Tx, List(U32), List(Request), a, List(Owned(a)), U32 -> (Tx, List(Owned(a)))
-issue_progress = |tx, path, reqs, a, owned, progress_ms| {
+issue_progress : Tx, List(U32), List(Planned(h)), List(Owned(h)), U32 -> (Tx, List(Owned(h)))
+issue_progress = |tx, path, reqs, owned, progress_ms| {
 	var $tx = tx
 	var $owned = owned
 	var $at = 0
-	for req in reqs {
+	for planned in reqs {
+		req = planned.request
+		a = planned.held
 		at = $at
 		$at = $at + 1
 		match req {
@@ -8035,7 +8228,7 @@ issue_progress = |tx, path, reqs, a, owned, progress_ms| {
 ## reparent to the nearest surviving ancestor;
 ## subscriptions, intervals and timers are stopped (CANCEL) and forgotten;
 ## queued follow-ups it would have received are dropped and counted stale.
-fx_dispose : Tx, Reaction(ctx, a), List(Owned(a)), List(U32) -> (List(Orphan(ctx)), Tx)
+fx_dispose : Tx, Reaction(ctx, a, Result), List(Owned(a)), List(U32) -> (List(Orphan(ctx)), Tx)
 fx_dispose = |tx, react, owned, site| {
 	var $tx = tx
 	var $orph = []
@@ -8103,7 +8296,7 @@ adopt_deliver = |adopted, env, id, res, tx| {
 		Ok(i) => {
 			o = adopted.get(i) ?? crash "adopted"
 			run = o.run
-			kept = if (is_progress(res)) adopted else adopted.drop_at(i)
+			kept = if (keeps_owned(res)) adopted else adopted.drop_at(i)
 			(e2, m, sk) = run(env, res)
 			(kept, Pending(e2, m), with_fx(count_delivery(tx, res), |fx| { ..fx, skipped: fx.skipped + sk }))
 		}
@@ -8164,22 +8357,22 @@ take_dropped = |cols, depth| {
 }
 
 ## An effect site. `initial`: also issue for the value at mount.
-effect : Signal(ctx, a), Bool, (a -> List(Request)), (a, a, List(U32) -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
+effect : Signal(ctx, a), Bool, (a -> List(Core.Ask(output, error))), (a, a, List(U32) -> List(Core.Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 	where [a.is_eq : a, a -> Bool]
 effect = |v, initial, plan, step, react| effect_reading(v, initial, |_, value| plan(value), |_, before, value, path| step(before, value, path), react)
 
 ## The plan borrows the current environment only while issuing. The site
 ## retains its watched value, never a reading used to construct the requests.
-effect_reading : Signal(ctx, a), Bool, (ctx, a -> List(Request)), (ctx, a, a, List(U32) -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
+effect_reading : Signal(ctx, a), Bool, (ctx, a -> List(Core.Ask(output, error))), (ctx, a, a, List(U32) -> List(Core.Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 	where [a.is_eq : a, a -> Bool]
 effect_reading = |v, initial, plan, step, react| Site(
 	Mount(
 		|env, args, tx| {
 			a = (v.read)(env)
-			cfg = { v, plan, step, react, path: args.path }
+			cfg = { v, plan: |current, value| hold_asks(value, plan(current, value)), step: |current, before, value, path| hold_asks(value, step(current, before, value, path)), react: held_reaction(react), path: args.path }
 			t1 = count_evals(tx, 1)
 			if initial {
-				(t2, owned) = issue_progress(t1, args.path, plan(env, a), a, [], progress_interval(react))
+				(t2, owned) = issue_progress(t1, args.path, (cfg.plan)(env, a), [], progress_interval(cfg.react))
 				(effect_inst(cfg, a, owned), eff_mask(v), t2)
 			} else {
 				(effect_inst(cfg, a, []), eff_mask(v), t1)
@@ -8199,7 +8392,7 @@ cleanup_inst = |name, v, plan| Inst(
 			Fire(_, _, _, _) => (cleanup_inst(name, v, plan), Pending(env, no_layers), tx)
 			Dispose(_) => {
 				commands = plan((v.read)(env))
-				(t1, _) = issue(bump(count_evals(tx, 1), w_cleanups, 1), [], commands.map(command_request), {}, [])
+				(t1, _) = issue(bump(count_evals(tx, 1), w_cleanups, 1), [], commands.map(|command| { request: command_request(command), held: {} }), [])
 				(noop({}), Orphaned([]), with_fx(t1, |fx| { ..fx, cleanups: count_name(fx.cleanups, name) }))
 			}
 		}
@@ -8238,7 +8431,7 @@ count_name = |runs, name| match runs.find_first_index(|(n, _)| n == name) {
 	Err(_) => runs.append((name, 1))
 }
 
-effect_inst : EffectCfg(ctx, a), a, List(Owned(a)) -> Inst(ctx)
+effect_inst : EffectCfg(ctx, a, h), a, List(Owned(h)) -> Inst(ctx)
 	where [a.is_eq : a, a -> Bool]
 effect_inst = |cfg0, last0, owned0| {
 	held = { cfg: cfg0, last: last0, owned: owned0 }
@@ -8255,7 +8448,7 @@ effect_inst = |cfg0, last0, owned0| {
 						if a == last {
 							(effect_inst(cfg, last, owned), Done, t1)
 						} else {
-							(t2, owned2) = issue_progress(t1, cfg.path, (cfg.step)(env, last, a, cfg.path), a, owned, progress_interval(cfg.react))
+							(t2, owned2) = issue_progress(t1, cfg.path, (cfg.step)(env, last, a, cfg.path), owned, progress_interval(cfg.react))
 							(effect_inst(cfg, a, owned2), Done, t2)
 						}
 					}
@@ -8279,13 +8472,13 @@ effect_inst = |cfg0, last0, owned0| {
 	)
 }
 
-effect_deliver : EffectCfg(ctx, a), a, List(Owned(a)), ctx, U32, EffectInput, Tx -> (Inst(ctx), Out(ctx), Tx)
+effect_deliver : EffectCfg(ctx, a, h), a, List(Owned(h)), ctx, U32, EffectInput, Tx -> (Inst(ctx), Out(ctx), Tx)
 	where [a.is_eq : a, a -> Bool]
 effect_deliver = |cfg, last, owned, env, id, res, tx| {
 	match owned.find_first_index(|o| o.id == id) {
 		Ok(i) => {
 			entry = owned.get(i) ?? crash "owned"
-			kept = if (entry.sub or is_progress(res)) owned else owned.drop_at(i)
+			kept = if (keeps_owned(res)) owned else owned.drop_at(i)
 			react = cfg.react
 			next = effect_inst(cfg, last, kept)
 			(env2, wrote) = run_reaction(react, env, entry.a, res, cfg.path)
@@ -8324,7 +8517,7 @@ fx_supersede = |tx, owned| {
 
 ## A `watch_latest` site: an effect site that supersedes its requests whenever
 ## its watched value changes. Results and disposal are an effect site's.
-latest_inst : EffectCfg(ctx, a), a, List(Owned(a)) -> Inst(ctx)
+latest_inst : EffectCfg(ctx, a, h), a, List(Owned(h)) -> Inst(ctx)
 	where [a.is_eq : a, a -> Bool]
 latest_inst = |cfg0, last0, owned0| {
 	held = { cfg: cfg0, last: last0, owned: owned0 }
@@ -8341,7 +8534,7 @@ latest_inst = |cfg0, last0, owned0| {
 						if a == last {
 							(latest_inst(cfg, last, owned), Done, t1)
 						} else {
-							(t2, owned2) = issue_progress(fx_supersede(t1, owned), cfg.path, (cfg.plan)(env, a), a, [], progress_interval(cfg.react))
+							(t2, owned2) = issue_progress(fx_supersede(t1, owned), cfg.path, (cfg.plan)(env, a), [], progress_interval(cfg.react))
 							(latest_inst(cfg, a, owned2), Done, t2)
 						}
 					}
@@ -8361,13 +8554,13 @@ latest_inst = |cfg0, last0, owned0| {
 	)
 }
 
-latest_deliver : EffectCfg(ctx, a), a, List(Owned(a)), ctx, U32, EffectInput, Tx -> (Inst(ctx), Out(ctx), Tx)
+latest_deliver : EffectCfg(ctx, a, h), a, List(Owned(h)), ctx, U32, EffectInput, Tx -> (Inst(ctx), Out(ctx), Tx)
 	where [a.is_eq : a, a -> Bool]
 latest_deliver = |cfg, last, owned, env, id, res, tx| {
 	match owned.find_first_index(|o| o.id == id) {
 		Ok(i) => {
 			entry = owned.get(i) ?? crash "owned"
-			kept = if (entry.sub or is_progress(res)) owned else owned.drop_at(i)
+			kept = if (keeps_owned(res)) owned else owned.drop_at(i)
 			react = cfg.react
 			next = latest_inst(cfg, last, kept)
 			(env2, wrote) = run_reaction(react, env, entry.a, res, cfg.path)
@@ -8407,7 +8600,7 @@ gathered_all = |all, jobs| {
 ## requests for the new post. The serial moves by one for each post, so a
 ## jump of more than one means a handler posted again before the site saw
 ## the first post, which would never be sent: a contract error.
-posted_step : (item -> List(Request)) -> (Core.Outbox(item), Core.Outbox(item), List(U32) -> List(Request))
+posted_step : (item -> List(request)) -> (Core.Outbox(item), Core.Outbox(item), List(U32) -> List(request))
 posted_step = |plan| |last, box, path| {
 	{ serial: was, posted: _ } = last
 	{ serial, posted } = box
@@ -8421,7 +8614,7 @@ posted_step = |plan| |last, box, path| {
 }
 
 ## A reaction to a post's results, given the item posted.
-posted_reaction : Core.Reaction(ctx, item) -> Core.Reaction(ctx, Core.Outbox(item))
+posted_reaction : Core.Reaction(ctx, item, result) -> Core.Reaction(ctx, Core.Outbox(item), result)
 posted_reaction = |react| {
 	run = react.run
 	{
@@ -8450,11 +8643,11 @@ settled_remote = |outcome| match outcome {
 }
 
 ## Fixed per `resource` site.
-ResourceCfg(ctx, a, s) : {
+ResourceCfg(ctx, a, s, h) : {
 	input : Signal(ctx, a),
 	pending : (s, a -> s),
-	plan : (a -> List(Request)),
-	resolve : (s, a, U64, Result -> s),
+	plan : (a -> List(Planned(h))),
+	resolve : (s, h, U64, Result -> s),
 	path : List(U32),
 	depth : U64,
 }
@@ -8464,7 +8657,7 @@ ResourceCfg(ctx, a, s) : {
 ## previous value only while its replacement is compared with it, so
 ## `pending` and `resolve` receive it shared: they should build a fresh value
 ## rather than update a large one in place.
-resource_inst : ResourceCfg(ctx, a, s), a, s, List(Owned(a)), Block(In(ctx, s)) -> Inst(ctx)
+resource_inst : ResourceCfg(ctx, a, s, h), a, s, List(Owned(h)), Block(In(ctx, s)) -> Inst(ctx)
 	where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 resource_inst = |rc0, last0, s0, owned0, block0| {
 	held = { rc: rc0, last: last0, s: s0, owned: owned0, block: block0 }
@@ -8486,7 +8679,7 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 							# Supersede, start the layer for the new input and issue,
 							# all before the block below reads the layer.
 							s2 = (rc.pending)(s, a)
-							(t2, owned2) = issue(fx_supersede(t1, owned), rc.path, (rc.plan)(a), a, [])
+							(t2, owned2) = issue(fx_supersede(t1, owned), rc.path, (rc.plan)(a), [])
 							if s2 == s {
 								(b3, t3) = refresh(block, In.{ outer: env, value: s2 }, mask, t2)
 								(resource_inst(rc, a, s2, owned2, b3), Done, t3)
@@ -8499,7 +8692,7 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 				}
 				Fire(path, pos, h, payload) => {
 					match leaf_fx(path, pos, payload) {
-						Ok(Final(res)) => resource_deliver(rc, last, s, owned, block, env, h, res, tx)
+						Ok(Final(res, live)) => resource_deliver(rc, last, s, owned, block, env, h, res, live, tx)
 						Ok(Progress(_)) => crash "contract: progress delivered to a resource without a progress reaction"
 						Err(_) => {
 							match fire_target(block, path, pos) {
@@ -8542,13 +8735,13 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 ## value changes nothing. Otherwise the site refreshes its own subtree
 ## now: the answer writes nothing else, so nothing above has a pass to
 ## run first.
-resource_deliver : ResourceCfg(ctx, a, s), a, s, List(Owned(a)), Block(In(ctx, s)), ctx, U32, Result, Tx -> (Inst(ctx), Out(ctx), Tx)
+resource_deliver : ResourceCfg(ctx, a, s, h), a, s, List(Owned(h)), Block(In(ctx, s)), ctx, U32, Result, Bool, Tx -> (Inst(ctx), Out(ctx), Tx)
 	where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
-resource_deliver = |rc, last, s, owned, block, env, id, res, tx| {
+resource_deliver = |rc, last, s, owned, block, env, id, res, live, tx| {
 	match owned.find_first_index(|o| o.id == id) {
 		Ok(i) => {
 			entry = owned.get(i) ?? crash "owned"
-			kept = if (entry.sub) owned else owned.drop_at(i)
+			kept = if (live) owned else owned.drop_at(i)
 			s2 = (rc.resolve)(s, entry.a, entry.at, res)
 			t1 = fx_count(tx, Delivered)
 			if s2 == s {
@@ -8565,7 +8758,7 @@ resource_deliver = |rc, last, s, owned, block, env, id, res, tx| {
 
 ## An asynchronous layer has no write handle, so an event below it can only
 ## have changed an outer layer (which will refresh this site) or nothing.
-resource_settle : ResourceCfg(ctx, a, s), a, List(Owned(a)), Block(In(ctx, s)), Out(In(ctx, s)), Tx -> (Inst(ctx), Out(ctx), Tx)
+resource_settle : ResourceCfg(ctx, a, s, h), a, List(Owned(h)), Block(In(ctx, s)), Out(In(ctx, s)), Tx -> (Inst(ctx), Out(ctx), Tx)
 	where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 resource_settle = |rc, last, owned, block, out, tx| {
 	match out {
@@ -9043,7 +9236,7 @@ drain = |app0| {
 			$deep_turns = $deep_turns + 1
 		}
 		tx1 = with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_first(1) })
-		$app = turn({ store, root, tx: tx1, programs }, q.path, q.id, Fx(Final(q.res)))
+		$app = turn({ store, root, tx: tx1, programs }, q.path, q.id, Fx(Final(q.res, False)))
 	}
 	$app
 }
@@ -9206,8 +9399,8 @@ expect {
 				"div",
 				[],
 				[
-					Core.when(st.signal(), || Core.watch(Core.const({}), |_| [Work({ task: "t/echo", input: [1], files: [], timeout_ms: 0, on_dispose: Stop, on_cancel: Stop, prepared: Unprepared })], Core.ignore({})), || Core.text("")),
-					Core.watch(Core.const({}), |_| [Self], st.on_result(|_, _, _| Bool.False)),
+					Core.when(st.signal(), || Core.watch(Core.const({}), |_| [Work({ task: "t/echo", input: [1], files: [], timeout_ms: 0, on_dispose: Stop, on_cancel: Stop, prepared: Unprepared })].map(Core.raw), Core.ignore({})), || Core.text("")),
+					Core.watch(Core.const({}), |_| [Core.again({})], st.on_result(|_, _, _| Bool.False)),
 				],
 			),
 	)
@@ -9228,8 +9421,8 @@ expect {
 			"div",
 			[],
 			[
-				Core.watch(Core.const({}), |_| List.repeat(Timer(1), 4200), seen.on_result(|n, _, _| n + 1)),
-				Core.watch(seen.signal(), |n| if (n >= 1 and n <= 100) [Self] else [], Core.ignore({})),
+				Core.watch(Core.const({}), |_| List.repeat(Core.timer(1), 4200), seen.on_result(|n, _, _| n + 1)),
+				Core.watch(seen.signal(), |n| if (n >= 1 and n <= 100) [Core.again({})] else [], Core.ignore({})),
 			],
 		),
 	)
@@ -9293,7 +9486,7 @@ expect {
 expect {
 	msg = { json: "{\"a\":1}", blobs: [[7, 8]], files: [] }
 	ports = [Core.port_declaration("t/c", Command), Core.port_declaration("t/k", Call), Core.port_declaration("t/s", Subscription(Every(4)))]
-	elem = Core.watch(Core.const({}), |_| [PortCommand({ port: "t/c", message: msg }), PortCall({ port: "t/k", message: msg, timeout_ms: 700000 }), PortSubscribe({ port: "t/s", message: msg })], Core.ignore({}))
+	elem = Core.watch(Core.const({}), |_| [PortCommand({ port: "t/c", message: msg }), PortCall({ port: "t/k", message: msg, timeout_ms: 700000 }), PortSubscribe({ port: "t/s", message: msg })].map(Core.raw), Core.ignore({}))
 	mounted = mount_in(32, { workers: [], ports: ports_of(ports), media: [] }, {}, elem)
 	(taken, cmds) = Core.take_cmds(mounted, [])
 	body = put_u32(put_u32(put_u32(put_str([], "{\"a\":1}"), 1), 2).concat([7, 8]), 0)
@@ -9327,7 +9520,7 @@ expect {
 				[],
 				[
 					Core.when(st.signal(), || Core.on_cleanup("closing", Core.const("a"), |name| [Title(name), StorageSet("last", name), StorageRemove("draft")]), || Core.text("")),
-					Core.watch(Core.const({}), |_| [Self], st.on_result(|_, _, _| Bool.False)),
+					Core.watch(Core.const({}), |_| [Core.again({})], st.on_result(|_, _, _| Bool.False)),
 				],
 			),
 	)
@@ -9351,13 +9544,13 @@ expect {
 				"div",
 				[],
 				[
-					Core.when(st.signal(), || Core.watch(Core.const({}), |_| [PortCall({ port: "t/k", message: msg, timeout_ms: 0 }), PortSubscribe({ port: "t/s", message: msg })], Core.ignore({})), || Core.text("")),
-					Core.watch(Core.const({}), |_| [Self], st.on_result(|_, _, _| Bool.False)),
+					Core.when(st.signal(), || Core.watch(Core.const({}), |_| [PortCall({ port: "t/k", message: msg, timeout_ms: 0 }), PortSubscribe({ port: "t/s", message: msg })].map(Core.raw), Core.ignore({})), || Core.text("")),
+					Core.watch(Core.const({}), |_| [Core.again({})], st.on_result(|_, _, _| Bool.False)),
 				],
 			),
 	)
 	disposed = Core.fx_stats(mount_in(32, { workers: [], ports: ports_of(ports), media: [] }, {}, elem))
-	open = mount_in(32, { workers: [], ports: ports_of(ports), media: [] }, {}, Core.watch(Core.const({}), |_| [PortSubscribe({ port: "t/s", message: msg })], Core.ignore({})))
+	open = mount_in(32, { workers: [], ports: ports_of(ports), media: [] }, {}, Core.watch(Core.const({}), |_| [PortSubscribe({ port: "t/s", message: msg })].map(Core.raw), Core.ignore({})))
 	id = Core.fx_live(open).first() ?? 0
 	kept = Core.fx_stats(Core.result(open, id, PortAnswer(msg)))
 	closed = Core.result(open, id, PortFailed(Closed))
@@ -10158,8 +10351,8 @@ expect {
 			"button",
 			[Core.on_click(st.update(|n| n + 1))],
 			[
-				Core.watch(st.signal(), |_| [ViewTransition(["shelf", "books", "shelf"]), ViewTransition([])], Core.ignore({})),
-				Core.watch(st.signal(), |_| [ViewTransition(["books", "detail"])], Core.ignore({})),
+				Core.watch(st.signal(), |_| [ViewTransition(["shelf", "books", "shelf"]), ViewTransition([])].map(Core.command), Core.ignore({})),
+				Core.watch(st.signal(), |_| [ViewTransition(["books", "detail"])].map(Core.command), Core.ignore({})),
 			],
 		),
 	)
@@ -10286,7 +10479,7 @@ expect {
 				[
 					Core.element("button", [Core.on_click(state.update(|value| { ..value, value: 1 }))], []),
 					Core.element("button", [Core.on_click(state.update(|value| { ..value, value: 2, out: value.out.post(7.U64) }))], []),
-					Core.on_post_by(state.signal().map(|value| value.out), state.signal().map(|value| if (value.value == 2) value.value else crash "reading sampled without a post"), |value, item| [Title("${value.to_str()}:${item.to_str()}")], Core.ignore({})),
+					Core.on_post_by(state.signal().map(|value| value.out), state.signal().map(|value| if (value.value == 2) value.value else crash "reading sampled without a post"), |value, item| [Core.command(Title("${value.to_str()}:${item.to_str()}"))], Core.ignore({})),
 				],
 			),
 		),
@@ -10343,7 +10536,7 @@ expect {
 ## The HTTP builder preserves explicit policy choices and defaults only what
 ## was omitted; progress is requested by a reaction rather than request data.
 expect {
-	request = Core.http({ url: "/status", cache: NoStore, credentials: Include, timeout: Ms(300) })
+	request = Core.http({ url: "/status", cache: NoStore, credentials: Include, timeout: Ms(300) }).sent()
 	request == Http({ method: "GET", url: "/status", headers: [], body: "", timeout_ms: 300, cache: NoStore, credentials: Include })
 }
 
@@ -10430,8 +10623,42 @@ expect {
 ## still capped by the existing ten-minute wire policy when they are issued.
 expect {
 	raw = Http({ method: "GET", url: "/timeout", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin })
-	wide = Core.http({ url: "/timeout", timeout: Ms(4294967295) })
+	wide = Core.http({ url: "/timeout", timeout: Ms(4294967295) }).sent()
 	unlimited = put_fx([], 1, raw)
 	capped = put_fx([], 1, wide)
-	unlimited.drop_first(unlimited.len() - 10) == [0, 0, 0, 0, 1, 1, 0, 0, 0, 0] and capped.drop_first(capped.len() - 10) == [192, 39, 9, 0, 1, 1, 0, 0, 0, 0] and Core.http({ url: "/timeout" }) == raw
+	unlimited.drop_first(unlimited.len() - 10) == [0, 0, 0, 0, 1, 1, 0, 0, 0, 0] and capped.drop_first(capped.len() - 10) == [192, 39, 9, 0, 1, 1, 0, 0, 0, 0] and Core.http({ url: "/timeout" }).sent() == raw
+}
+
+read_http_response : Result -> Try(Core.Response, Core.HttpFailure)
+read_http_response = |result| match result {
+	Http(response) => Ok(response)
+	Network(message) => Err(Network(message))
+	Timeout => Err(Timeout)
+	Refused => Err(Refused)
+	_ => crash "contract: HTTP ask received a non-HTTP result"
+}
+
+read_fetch_response : Result -> Try(Core.Fetched, Core.FetchFailure)
+read_fetch_response = |result| match result {
+	Fetched(response) => Ok(response)
+	Network(message) => Err(Network(message))
+	Timeout => Err(Timeout)
+	FileFailed(_) => Err(TooLarge)
+	Refused => Err(Refused)
+	_ => crash "contract: fetch ask received a non-fetch result"
+}
+
+read_fired : Result -> Try(I64, [Refused])
+read_fired = |result| match result {
+	Fired(at) => Ok(at)
+	Refused => Err(Refused)
+	_ => crash "contract: timer ask received a non-timer result"
+}
+
+read_storage : Result -> Try(Str, [Missing, Refused])
+read_storage = |result| match result {
+	Value(value) => Ok(value)
+	Missing => Err(Missing)
+	Refused => Err(Refused)
+	_ => crash "contract: storage ask received a non-storage result"
 }
