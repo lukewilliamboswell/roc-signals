@@ -29,8 +29,9 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Lists | `each`, `RowRef`, `RowRef.key`, `RowRef.field`, `RowRef.item` (the whole item), `RowRef.select`, `keyed`, `Keyed` | [Conditionals and Lists](@/docs/dynamic-structure.md#keyed-lists) |
 | Table views | `table_view`, `TableViewProps` (`query`, `plan`, `window`), `QueryPlan(k, v, s)` (`keep`, `sort`, `compare`), `Window` (`start`, `count`), `every_row` (the window that draws every row) | [Tables and Table Views](@/docs/tables-and-views.md) |
 | Attributes | `Attr`, `attr`, `attr_s` (present text, including empty), `attr_presence` (a signal of `Absent` or `Present(text)`), `class`, `class_s`, `test_id`, `test_id_s`, `ref`, `ref_s` (a signal of the reference's name, including in a row; the empty name names nothing) | [Attribute values](#attribute-values), [Focus](@/docs/effects-and-browser.md#focus) |
-| Events | `on` (bare event type, text payload), `on_with` (text payload and typed `Policy`: `prevent` and `stop`, both false by default), `on_click`, `on_files` (`Change`, `Drop` or `Paste`, files payload) | [Local State, Events, and Forms](@/docs/state-and-events.md#handlers) |
-| Properties | `Prop(a)`, `Prop.value` (`Str`), `Prop.checked` (`Bool`), `prop`, `prop_s` | [Element properties](#element-properties) |
+| Events | `on` (bare event type, text payload), `on_with` (text payload and typed `Policy`: `prevent` and `stop`, both false by default), `on_click`, `on_files` (`Change`, `Drop` or `Paste`, files payload), `on_pointer` (`Down`, `Move`, `Up`, `Cancel`, `Pointer` payload), `on_pointer_capture`, `on_pointer_paced` | [Local State, Events, and Forms](@/docs/state-and-events.md#handlers) |
+| Properties | `Prop(a)`, `Prop.value` (`Str`), `Prop.checked` (`Bool`), `Prop.pointer_zone` (`Str`), `prop`, `prop_s` | [Element properties](#element-properties) |
+| Pointer data | `Pointer`: `id`, `kind`, `button`, `buttons`, `modifiers`, `primary`, `at` (`Outside` or `In({ zone, x, y })` with fractions 0–10000) | [Pointer input and dragging](@/docs/state-and-events.md#pointer-input-and-dragging) |
 | Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.spans` (the `{ start, len }` ranges of `n` bytes that cover a file, for `read!`), `Received`, `FilesHandler` (the generic handler family at `Received`), `on_files` | [Files](@/docs/files.md) |
 | Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) | [Files](@/docs/files.md) |
 | Saving and downloading | `File.save` (a download command; `SaveProps`: `name : [Same, Named(Str)]`), `File.fetch` (`FetchProps`: `url`, `method`, `headers`, `timeout : [Unlimited, Ms(U32)]`), `fetched`, `FetchError` (`Network`, `Timeout`, `Status`, `TooLarge`, `Refused`) | [Files in Tasks](@/docs/files-in-tasks.md) |
@@ -89,7 +90,8 @@ takes a constant; `Html.p_s` takes reactive text, for example.
 | Structure | `div`, `div_s`, `div_attrs`, `section`, `section_s`, `section_attrs`, `h1`, `h2`, `h2_s`, `h3`, `p`, `p_s`, `p_attrs`, `span_s`, `pre_s`, `ul`, `li`, `link`, `label_for` |
 | Controls | `button`, `button_s`, `icon_button`, `action_button`, `submit_button`, `text_input`, `number_input`, `textarea`, `checkbox`, `radio`, `select`, `option`, `option_s`, `option_attrs`, `form`, `file_input` (`FileInputProps`: `selection : [Single, Multiple] ?? Single`, `accept : [Any, Types(Str)] ?? Any`) |
 | Attributes | `aria_label`, `aria_label_s`, `aria_describedby`, `aria_invalid`, `disabled`, `flag`, `flag_maybe` |
-| Events | `on_input`, `on_change`, `on_focus`, `on_blur`, `on_keydown`, `on_submit`, `on_drop_files`, `on_paste_files` |
+| Events | `on_input`, `on_change`, `on_focus`, `on_blur`, `on_keydown`, `on_submit`, `on_drop_files`, `on_paste_files`, `on_pointer_down`, `on_pointer_down_capture`, `on_pointer_move`, `on_pointer_move_paced`, `on_pointer_up`, `on_pointer_cancel` |
+| Zones | `zone`, `zone_s` (pointer-zone keys, with empty text marking no zone) |
 
 `section(name, class, children)` names a region for assistive technology
 and the spec locators (`aria-label`); it renders no heading, so put one
@@ -190,8 +192,9 @@ pruned, including in a row template. `Html` controls set them for you.
 |---|---|---|---|---|
 | `Engine.Prop.value` | `Str` | `input`, `textarea`, `select`, `option` | Live value, guarded while focused or composing; a select settles after option changes | `value` |
 | `Engine.Prop.checked` | `Bool` | `input` | Live checked state | `checked` |
+| `Engine.Prop.pointer_zone` | `Str` | Any element | Pointer hit-test zone; empty text marks no zone; no attribute mirror | None |
 
-Both mirror their attribute; an empty `value` keeps `value=""`, including
+`value` and `checked` mirror their attribute; an empty `value` keeps `value=""`, including
 on an option, while false `checked` removes its mirrored attribute.
 A claimed name used through an attribute constructor is a contract
 error on the row's elements. On another element, such as a custom element
@@ -252,6 +255,8 @@ them.
 | Ingress entries (occurrences and reports) | 4096 | A report drains a full queue early while idle; overflow while a batch applies is a resource limit |
 | Replaceable reports per source | 1 | A newer report replaces the waiting payload in place |
 | Wait for a report's frame | 100 ms | Timer drains a visible page given no frames; hidden pages use a microtask |
+| Manual pointer log | 4096 records, taken after each input step | Resource limit on overflow |
+| Spec driver pointers | One mouse/pen gesture or up to 16 touches, without overlap between modes | Step error before input; production pointer dispatch has no driver limit |
 | Turns delivered before the runtime returns to idle | 4096 | Resource limit; bounds a focus feedback loop even when only one event waits at a time |
 | Payload kinds, element properties | Closed tables with one-byte indices | Unknown numbers on the wire are contained as `executor` |
 | Event policies | Closed table of 32 bits | Unknown fields do not compile; unknown wire bits are contained as `executor` |

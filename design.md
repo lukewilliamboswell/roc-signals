@@ -84,7 +84,9 @@ this document and the implementation are tracked in issues.
 1. **The idiomatic way is the correct way.** The simplest thing an author can
    write must be the thing the platform is designed for. An encoding trick, a
    positional convention, or boilerplate the platform could derive is a defect
-   of the API, not of the author.
+   of the API, not of the author. A pointer zone's key is an application
+   name handed back unchanged, not a workaround encoding: the platform
+   never resolves the key or looks anything up by it.
 2. **Composition is first-class.** UI is built from typed, reusable
    components: a type, its pure operations, and a view that is handed the
    shared state it uses and owns its local state and effects. A component
@@ -140,7 +142,8 @@ this document and the implementation are tracked in issues.
   `Dom.roc` oracle, roc-fuzz property targets, long seeded walks of every
   app in the native spec runner, and soak runs with flat live allocations
   and Wasm pages.
-- **Author outcomes:** maintained apps contain no workaround encodings; a
+- **Author outcomes:** maintained apps contain no workaround encodings
+  (pointer zone keys are names the platform only hands back unchanged); a
   write to one store cell wakes the readers of that cell, wherever they sit,
   and not the rest of the tree; a write to one row of a table costs the same
   engine work whatever the table's size; a one-row change in a keyed list
@@ -1303,6 +1306,10 @@ A report source states a current value. `OnlineChanges`,
 `VisibilityChanges` and port subscriptions declared `Latest` are report
 sources, identified by request id. Other sources join only through a
 declaration that states their identity and which results are reports.
+An `on_pointer_paced` move is identified by its declaring element, handler
+number and pointer id. Element identity, rather than a recycled node id,
+keeps a new element's reports separate; two pointers never replace each
+other's moves.
 Clicks, key presses, input, change, submit, focus and file events, final
 request results, `Every` port messages, subscription `Closed` and `Threw`,
 interval ticks and `Popstate` are occurrences. Their repeated occurrences
@@ -1354,7 +1361,7 @@ storage before the callback is reflected in the answer.
 
 `CANCEL` makes all waiting reports of its subscription dead and removes
 its source index entry. Draining skips them without delivery or stale
-counts. A waiting DOM report, when a declaration adds one, follows the
+counts. A waiting DOM report follows the
 existing element and node identity checks; a new element with a recycled
 id cannot replace an old element's report. Poison and unmount discard the
 queue and index and cancel scheduled drains.
@@ -1386,6 +1393,7 @@ keys a turn wrote in a table.
 | Operation | Budget | Forbidden |
 |---|---|---|
 | Route an event to its handler | O(path depth) | scanning nodes or sites |
+| Build a pointer's zone payload | One browser hit test, then O(ancestor depth) to the nearest zone | scanning every zone or keeping a registry of zone values |
 | Write a local state | O(R) evaluations, plus the static structure on the path to them, all inside that state's subtree | visiting the readers of a sibling state |
 | Write a store cell | O(R) evaluations, plus the static structure on the path to them, whatever the depth of the writer | carrying the cell through the scopes between; comparing the cell's value |
 | Write several things in one event (`also`) | One evaluation of each reader of any of them, O(R) over them all, plus a walk of the event's path, O(path depth), for a written layer the pass did not reach | evaluating a reader of two of them twice; visiting the readers of a sibling layer at a written layer's depth |
@@ -2275,6 +2283,66 @@ holds. A handler is generic over its payload, and a kind is attached only
 to the event types its row allows. Decoding happens once, after routing,
 and a malformed payload is a `contract` fault naming the site.
 
+### Pointer input
+
+`on_pointer` chooses `[Down, Move, Up, Cancel]` and a
+`HandlerOf(ctx, Pointer)`. The pointer record carries its id, kind, changed
+button, held buttons, modifiers, whether it is primary, and
+`at: Outside` or `In({ zone, x, y })`. The fractions `x` and `y` are in
+1/10000 of a zone's box, from 0 to 10000. No pixels or element size reach
+Roc. A drag's target is therefore pure arithmetic, reproducible by the
+native oracle. A splitter or swipe can use fractions; a drag ghost that
+follows the pointer in pixels is outside this API.
+
+`Prop.pointer_zone`, set through `prop` or `prop_s`, marks any element with
+a zone key. It claims and mirrors no attribute. An empty key marks no
+zone and is passed over. At each pointer dispatch the runtime calls
+`document.elementFromPoint`, unaffected by capture, and walks up to the
+nearest nonempty zone inside the mount. It rounds and clamps fractions
+of that zone's box. This is one hit test per raised event, including a
+move later replaced before delivery; a report never reads layout again
+at delivery. A nearest zone with non-positive width or height has no
+representable point and reports `Outside`; the runtime does not choose
+another ancestor zone. Event coordinates and box coordinates must be
+finite, never converted from invalid numbers to invented fractions.
+`pointercancel` always carries `Outside`.
+
+The key is application text. The platform hands it back unchanged and
+never resolves it, while an app parses it with one pure, tested function.
+It has no role in site or table identity and needs no value registry.
+
+`on_pointer_capture` attaches a `pointerdown` that calls
+`setPointerCapture(pointerId)` on the declaring element before dispatch,
+even when its turn must wait in ingress. Waiting for a Roc result would
+miss the browser's synchronous window. The browser releases capture at
+up or cancel; the runtime holds none. A refused capture still dispatches
+and is reported by the monitor's `page.captureRefused` count and passive
+`pointer-capture-refused` event. Reporting never changes dispatch.
+
+`on_pointer_paced` attaches a `pointermove` as a report source: the newest
+waiting move for each declaring element, handler and pointer replaces
+the earlier one. Down, up and cancel are occurrences, so an up cannot
+overtake its waiting move. An app drawing a stroke chooses ordinary
+`on_pointer(Move, …)` when each sample matters.
+
+The event tag and separate capture and pacing attach functions make a
+misspelt event, capture on a move, pacing on a press or another payload's
+handler impossible to attach. Public `Policy` remains the record of
+`prevent` and `stop`; capture and pacing cross as the private bits of
+those typed declarations. Capture here is pointer capture, distinct from
+the DOM's listener phase.
+
+Disposing a capturing element can lose its up. An app where that can
+happen supplies up and cancel handlers on a stable ancestor, knowing it
+will also hear ordinary pointer events there. The platform cannot infer
+which state a lost event should reset. Kanban instead keeps its grip
+stable during a drag and supplies all four handlers; the drop itself
+writes the cards and clears the drag together, with the keyboard buttons
+still available. Its target markers are read through a per-lane `derive`,
+so a move does not wake every card's marker reader.
+
+### Other event policies
+
 A declaration may carry policies from a closed table, as a record the
 compiler checks (`{ prevent: True }`). They are static, because the
 browser's synchronous response window closes before the engine could
@@ -2300,7 +2368,7 @@ file input needs no policy: its chooser opens on the user's own click.
 
 **Target:** dynamic `preventDefault`
 expressed as a declared policy over a value the engine has already rendered
-(never decided after the event); pointer coordinates and form-data payloads.
+(never decided after the event); form-data payloads.
 Each is a protocol change with a contract test.
 
 ## Attributes
@@ -2609,6 +2677,8 @@ bound and a declared behaviour at the bound:
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | A table's changes | One earlier row for each distinct key one turn writes | Cleared when the turn ends |
 | Runtime ingress queue | 4096 occurrences and reports | A report drains a full queue early while idle; overflow while busy is `resource_limit` poison |
+| Manual pointer log | 4096 dispatch records, taken after each input step | `resource_limit` on overflow; production retains no log |
+| Spec driver pointers | One mouse/pen gesture or up to 16 touches, without overlap between modes | Step error before input; no such limit on production pointer dispatch |
 | Turns one drain delivers | 4096 | `resource_limit` poison |
 | Payload kinds and element properties | Closed tables with one-byte indices | Unknown wire numbers are contained as `executor` |
 | Event policies | Closed table of 32 bits | Unknown fields do not compile; unknown wire bits are contained as `executor` |
@@ -2739,6 +2809,87 @@ oracle and never defines a meaning of its own. In particular:
   setup form says otherwise. `set-online` and `set-visibility` carry their
   current values into a later document and dispatch nothing when unchanged.
 
+### Pointer steps
+
+`pointer-down LOC` accepts `:at X Y`, `:button main|middle|secondary`,
+`:pointer mouse|pen|touch`, `:id N` and `:modifiers (shift ctrl alt meta)`.
+`pointer-move LOC` and `pointer-up LOC` accept `:at X Y` and `:id N`;
+`pointer-cancel` accepts `:id N` and only a touch pointer. Down defaults
+to main, mouse and no modifiers, with id 1 for mouse or 2 for pen and
+touch. Move and up default to id 1, and cancel to id 2; they never guess
+the current pointer. Mouse always uses id 1 and nonmouse pointers cannot
+use that id. A pointer already down, an up or cancel for one not down,
+or a cancel for a nontouch pointer is a step error. A buttonless mouse
+move is allowed.
+
+The automation channel supports only one active non-touch press, mouse or
+pen. Overlapping mouse/pen presses share a compatibility-mouse target in
+Chrome, so both runners reject a second non-touch gesture before input.
+Touch and non-touch gestures also share compatibility-mouse state, so
+they cannot overlap in a spec. The driver supports either one mouse/pen
+gesture or up to 16 touch pointers. A 17th touch fails before input, as
+the browser driver refuses it and can otherwise leave its input state
+incoherent. Replay maps full U32 local aliases to small reusable driver
+contact slots; it never wraps the aliases. Browser-assigned pointer ids
+are separate. These bounds apply to the spec driver, not production input.
+
+Ids track active pointers, not persistent objects. Native nonmouse ids
+are the spec's names; Chrome assigns its own and replay maps them back
+only when checking the pointer log. App logic can compare active ids;
+specs must not assert the browser's numeric choices.
+
+`X Y` are integer percentages, 0–100, of the nearest nonempty zone at or
+above LOC. Without `:at`, a zone's centre is 50 50 and an element in no
+zone is outside. LOC inside another element's zone requires `:at` in
+that zone, because the oracle cannot locate its centre. Chrome computes
+the point from the zone's box and checks that its hit test finds LOC or
+a descendant with the same nearest zone. A nested zone covering the
+point, a box without positive area or another hit fails the step rather
+than changing the target. Its logged fraction must equal `X × 100` and
+`Y × 100` exactly.
+
+A click's pointer sequence follows the same centre rule only when it
+reaches a pointer-kind handler. A click that reaches none is unaffected
+by its zones. A paced pointer move is a report step, released at the end
+of the step unless held; an up first delivers its waiting moves.
+
+The native model keeps each pointer's buttons, down target and capture
+target. Capture retargets events but not the zone beneath the point.
+Touch captures implicitly. Mouse and pen produce compatibility mouse
+events and focus; a main-button up produces click, while a nonmain up
+produces auxclick. A single-contact touch tap produces mousemove, mousedown, mouseup and
+click after its up; preventing its down suppresses those compatibility
+mouse events while click still occurs. A touch that moved produces none.
+Once a touch set has contained multiple contacts, none of its releases
+produces compatibility mouse events or click; this state ends only when
+the last contact ends. Chrome checks `touch-action:none` before a touch
+down. An unchanged logical touch move fails in
+both runners, and Chrome also refuses physical movement within its tap
+slop, which the oracle's layout-free model cannot measure.
+
+An up's click targets the capturing element, or the nearest common
+ancestor of the pressed and released elements without capture. If the
+up's turn removes or moves the pressed element or any ancestor, mouseup
+instead targets the old parent of the detached node and no click follows.
+`MOVE` counts because insertion removes and reinserts the node. The
+oracle records detach history and checks only the pressed ancestor path;
+it retains no earlier DOM and scans no whole tree.
+
+The browser's automation API cancels all active touches together. To
+preserve the meaning of `pointer-cancel :id`, both runners refuse it when
+more than one touch is active; they never cancel unnamed pointers or
+fabricate a per-pointer event. Cross-document navigation with a pointer
+down is also a step error, since a physical press can outlive the old
+document while the native browser model starts afresh. Same-document
+navigation keeps the gesture.
+
+Manual pointer logs hold at most 4096 records and are taken and cleared
+after each input step. Overflow is `resource_limit`, never silent loss;
+each document starts with an empty log. Walks drive complete pointer
+gestures over live zones, ending with up or a supported cancel.
+
+### Grammar boundaries
+
 There are no native-only or Chrome-only steps. Hover is outside the grammar:
 neither runner delivers `pointerover`, `pointerout`, `pointerenter`,
 `pointerleave` or their four mouse counterparts. The browser replay stops
@@ -2747,8 +2898,23 @@ after layout shifts needs layout the oracle lacks, and Chrome can raise
 these events without a step. Contract tests cover their dispatch, and an
 author can test a hover handler as a pure function.
 
-Inputs no runner implements — pointer input beyond the click sequence,
-keyboard, composition and custom events, and session storage — are
+`contextmenu` is also excluded from both runners. Chromium sends it on
+press on Mac/Linux and release on Windows, so one portable native meaning
+cannot reproduce it. Replay stops it at the window and prevents its
+default menu. Production runtime dispatch remains available and is
+covered by its contract tests. This is an explicit limit of pointer
+steps; secondary pointer payloads and auxclick remain in the grammar.
+The platform-dependent placement follows
+[Chromium's mouse-up implementation](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/blink/renderer/core/frame/web_frame_widget_impl.cc).
+
+`gotpointercapture` and `lostpointercapture` are likewise outside the
+spec grammar: its capture model drives the four pointer events above and
+their stated mouse and focus followers, rather than capture lifecycle
+callbacks. Replay filters them; production generic dispatch remains
+available and contract-tested.
+
+Inputs no runner implements — keyboard, composition and custom events,
+and session storage — are
 not part of the grammar: IME composition is covered by the runtime's
 contract tests, and session storage is a **Target** service. An unknown step
 is a hard parse error in both runners, and neither runner may weaken a step;
@@ -3070,7 +3236,7 @@ app can neither name a representation nor call the interfaces only hosts and
 harnesses use (`Core.driver`, `mount`, `event`, `result`, `take_cmds`,
 `settled`, the effect and work counters); the generated API docs list the
 authoring API and nothing else. `Request`, `Command`, `Result`, `WorkFault`,
-`FileError`, `HttpError`, `QueryPlan` and `Window` are plain data and
+`FileError`, `HttpError`, `Pointer`, `QueryPlan` and `Window` are plain data and
 stay structural; `Boot` and `ProgramProps` are nominal records with defaulted
 fields, built and read as records. `Remote` is a transparent nominal type over a record, so an app
 reads and builds it as the record and calls its methods. `Table` is an
@@ -3196,9 +3362,17 @@ on : Str, Handler(ctx) -> Attr(ctx)          # bare event type; text kind, no po
 Policy := { prevent : Bool ?? False, stop : Bool ?? False }
 on_with : Str, Policy, Handler(ctx) -> Attr(ctx)
 on_click : Handler(ctx) -> Attr(ctx)
+Pointer : { id : U32, kind : [Mouse, Pen, Touch, Other],
+            button : [None, Main, Middle, Secondary, Back, Forward, Other(U8)],
+            buttons : U16, modifiers : { shift : Bool, ctrl : Bool, alt : Bool, meta : Bool },
+            primary : Bool, at : [Outside, In({ zone : Str, x : U16, y : U16 })] }
+on_pointer : [Down, Move, Up, Cancel], HandlerOf(ctx, Pointer) -> Attr(ctx)
+on_pointer_capture : HandlerOf(ctx, Pointer) -> Attr(ctx)  # pointerdown; capture before dispatch
+on_pointer_paced : HandlerOf(ctx, Pointer) -> Attr(ctx)    # pointermove; newest report per pointer
 Prop(a)                                      # opaque: a closed property row and its value encoding
 Prop.value : Prop(Str)                        # input, textarea, select, option; guarded live value
 Prop.checked : Prop(Bool)                     # input's checked state
+Prop.pointer_zone : Prop(Str)                 # any element; empty key marks no zone; no attribute mirror
 prop : Prop(a), a -> Attr(ctx)
 prop_s : Prop(a), Signal(ctx, a) -> Attr(ctx)
 ref : Str -> Attr(ctx)                        # named focus reference
@@ -3391,11 +3565,13 @@ whose props are `FileInputProps := { selection : [Single, Multiple] ?? Single,
 accept : [Any, Types(Str)] ?? Any }`), accessibility attributes (`aria_label`,
 `aria_invalid`, `aria_describedby`) and event helpers (`on_input`, `on_change`,
 `on_focus`, `on_blur`, `on_keydown`, `on_submit`, `on_drop_files`,
-`on_paste_files`). Accessible names go in `aria-label`, which the spec locators
+`on_paste_files`, `on_pointer_down`, `on_pointer_down_capture`,
+`on_pointer_move`, `on_pointer_move_paced`, `on_pointer_up`,
+`on_pointer_cancel`) and zone properties (`zone`, `zone_s`). Accessible names go in `aria-label`, which the spec locators
 match.
 
 **Target vocabulary.** An `Svg` module and a typed style API, event policies
-beyond `prevent` and `stop`, session storage, an entropy seed, and handler-level
+that follow rendered values, session storage, an entropy seed, and handler-level
 request occurrences. Each lands with an engine change,
 a native spec, a runtime contract test, a demonstration and, where it
 touches the wire, an Appendix B entry.
@@ -3405,7 +3581,7 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **8**. The engine declares it
+This appendix is protocol version **9**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -3424,7 +3600,7 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (8) |
+| `roc_engine_version` | `() -> u32` | The protocol version (9) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -3730,6 +3906,20 @@ site; an unknown kind number in commands is an `executor` fault.
 |---|---|---|---|
 | 1 Text | UTF-8, with the per-type meanings in Event records | `event` | Any bare type |
 | 2 Files | `minted:u32 refused:u32 (size:u64 name:str type:str)*minted`, with staged handles in order | `event_files` | `change`, `drop`, `paste`; no files means no dispatch. `drop` prevents both its default and `dragover`'s default |
+| 3 Pointer | `id:u32 kind:u8 button:u8 buttons:u16 mods:u8 primary:u8 at:u8 [x:u16 y:u16 zone:str]` | `event` | `pointerdown`, `pointermove`, `pointerup`, `pointercancel` |
+
+In a pointer record, `kind` is `0` mouse, `1` pen, `2` touch or `3` other.
+`button` is the DOM button plus one: `0` none, `1` main, `2` middle,
+`3` secondary, `4` back, `5` forward; larger bytes denote other buttons.
+`buttons` is the DOM held-button mask. `mods` contains only `1` shift,
+`2` ctrl, `4` alt and `8` meta; `primary` is strictly `0` or `1`.
+`at` is `0` outside or `1` in a zone; only `1` carries the trailing fields.
+Fractions `x` and `y` are 0–10000 and the zone key is nonempty UTF-8.
+`pointercancel` must be outside. Unknown tags or bits, invalid flags,
+out-of-range fractions, empty zone keys, truncated or trailing bytes and
+invalid UTF-8 are a `contract` fault naming the routed site. Roc never
+clamps malformed wire fractions; rounding and clamping belong to the
+browser's conversion of a valid point and zone box.
 
 **Policies.** `policies:u32` is a bit set. Unknown bits are an `executor`
 fault. Policies are applied when the handler dispatches, never inferred
@@ -3739,6 +3929,12 @@ from the event type or decided by an engine result.
 |---|---|---|
 | 0 (`1`) | `prevent` | Call `preventDefault` |
 | 1 (`2`) | `stop` | Call `stopPropagation` only when `event.bubbles` is true; a non-bubbling event must still reach its target |
+| 2 (`4`) | `capture` | The typed capturing `pointerdown` calls `setPointerCapture(pointerId)` on its declaring element before dispatch; refusal still dispatches and is observed |
+| 3 (`8`) | `paced` | A typed paced `pointermove` is a report source keyed by declaring element, handler and pointer id |
+
+`capture` is valid only for pointer-kind `pointerdown` and `paced` only
+for pointer-kind `pointermove`. A known bit on another declaration is an
+`executor` fault, just as an unknown policy bit is.
 
 **Event declarations.** Types are bare text, keyed independently of their
 kind and policies. Two handlers for one type on one element are a
@@ -3749,7 +3945,8 @@ listened as `focusin` and `focusout`.
 
 **Element properties.** `PROP`, `HPROP` and property holes use this closed
 table. Each encoded value is a `str`; the row decides its type and meaning.
-Both rows apply in stream order and mirror their attribute. An empty
+All rows apply in stream order. `value` and `checked` mirror their
+attribute; `pointer_zone` has no attribute mirror. An empty
 `value` sets the live value to empty text and keeps `value=""`, so an
 option remains the empty choice. A false `checked` removes its mirrored
 attribute; true keeps it present.
@@ -3758,6 +3955,7 @@ attribute; true keeps it present.
 |---|---|---|---|---|
 | 1 | `value` | `input`, `textarea`, `select`, `option` | `Str`, UTF-8; the controlled-input guard and select settle apply | `value` |
 | 2 | `checked` | `input` | `Bool`, exactly `"true"` or `"false"` | `checked` |
+| 3 | `pointer_zone` | Any element | `Str`, UTF-8; empty key marks no zone | None |
 
 A property on another element, one declared twice, and an attribute using
 a name claimed by a row on that element are `contract` errors at mount.

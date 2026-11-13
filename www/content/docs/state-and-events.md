@@ -57,7 +57,7 @@ click or submit carries nothing. `Html` attaches the usual ones for you:
 
 `HandlerOf(ctx, p)` is the generic family: `Handler(ctx)` is its text
 alias, and `FilesHandler(ctx)` takes the `Received` of a file event. The
-same `set_value`, `handle` and `also` serve either kind; attaching a
+same `set_value`, `handle` and `also` serve every payload kind; attaching a
 handler through the wrong kind is a compile error.
 
 `update_by` is the tool for "which one": in a list row, `update_by(row.key(), f)`
@@ -132,6 +132,61 @@ contract error on that row's elements. Elsewhere, such as on a custom
 element, it is only an attribute. A property on an element its row does not allow, or declared
 twice, is a contract error at mount. A value property on a file input is
 rejected when applied, because its `type` can change through a signal.
+
+## Pointer input and dragging
+
+A pointer handler receives `Engine.Pointer`: its id, kind (mouse, pen,
+touch or other), changed button, held-button mask, modifiers, primary flag
+and the zone beneath it. Use the ordinary handler constructors at this
+payload type:
+
+{{ sample(file="pointer.roc", region="handlers") }}
+
+| Attach function | What it does |
+|---|---|
+| `Engine.on_pointer(Down\|Move\|Up\|Cancel, handler)` | Deliver every event of that kind |
+| `Engine.on_pointer_capture(handler)` | Capture on pointerdown before its turn runs |
+| `Engine.on_pointer_paced(handler)` | Report the newest pointermove per pointer at the frame |
+
+`Html` names the same choices `on_pointer_down`,
+`on_pointer_down_capture`, `on_pointer_move`, `on_pointer_move_paced`,
+`on_pointer_up` and `on_pointer_cancel`. Capture and pacing have their own
+attach functions; they are not fields of `Engine.Policy`.
+
+`Html.zone(key)` and `zone_s(signal)` set `Engine.Prop.pointer_zone`.
+The nearest zone beneath the actual point gives `pointer.at` as
+`In({ zone, x, y })`, with `x` and `y` in 1/10000 of its box: 5000 is
+halfway. Outside the mount, over no zone or over a zone with no positive
+area gives `Outside`; cancel also gives `Outside`. Empty text turns a
+zone off. Capture changes the event's target, while the zone still comes
+from the point beneath it.
+
+Interpret the key and fractions with a pure function:
+
+{{ sample(file="pointer.roc", region="zones") }}
+
+Zones provide fractions, so a drop target, splitter or swipe can be pure
+Roc logic and run in a native spec. They give no pixels, element sizes or
+drag ghost that follows the pointer. Only the nearest zone is reported.
+
+Choose pacing for a drag whose newest position is all that matters;
+choose ordinary moves for a stroke that needs every sample. A waiting
+move is delivered before an up. The payload is captured when the event
+arrives, including its zone and fractions.
+
+Start a drag only for the buttons the app accepts, update its target on
+move, and end it on both up and cancel. Put `touch-action:none` on a touch
+grip. If a result can dispose the grip during a drag, add up and cancel
+handlers on a stable ancestor; the engine cannot know which state a lost
+up should reset. The [Kanban board](@/examples/kanban-board.md) keeps its
+grip stable, decides the drop in Roc and preserves its Move buttons for
+keyboard use. A drop that moves the pressed row ends without a click.
+
+Capture is requested on the declaring element before dispatch. If the
+browser refuses it, the handler still runs; the runtime monitor records
+`page.captureRefused` and a `pointer-capture-refused` event. Pointer ids
+identify active pointers; they are not persistent identities or values
+whose numeric choice an app should interpret.
 
 ## Derived values
 

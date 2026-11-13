@@ -207,6 +207,69 @@ cannot model. Contract tests cover dispatch of those events, and a hover
 handler's pure logic can be tested as a function. The move events in the
 click sequence above are delivered in both runners.
 
+`contextmenu`, `gotpointercapture` and `lostpointercapture` are also outside
+the spec grammar. Context-menu timing differs by operating system; capture
+lifecycle callbacks are outside the four pointer events modeled below.
+The browser replay filters them, while production dispatch and its
+contract tests retain them.
+
+### Pointer gestures
+
+| Step | Meaning |
+|---|---|
+| `(pointer-down LOC ...)` | Press; options `:at X Y`, `:button main\|middle\|secondary`, `:pointer mouse\|pen\|touch`, `:id N`, `:modifiers (shift ctrl alt meta)` |
+| `(pointer-move LOC ...)` | Move; options `:at X Y` and `:id N` |
+| `(pointer-up LOC ...)` | Release; options `:at X Y` and `:id N` |
+| `(pointer-cancel ...)` | Cancel one touch; option `:id N` |
+
+Down defaults to main, mouse and no modifiers. Its id defaults to 1 for
+mouse or 2 for pen and touch. Move and up default to id 1; a nonmouse
+gesture names its id explicitly on them. Cancel defaults to id 2. Mouse
+always uses id 1, which nonmouse pointers cannot use. A second down for
+an active id, an up for one not down or a cancel for a nontouch pointer
+fails. A buttonless mouse move is allowed. Apps compare active pointer
+ids; specs do not assert the browser's numeric choices.
+
+Only one non-touch press (mouse or pen) can be active: Chrome's automation
+channel shares their compatibility-mouse target. A second non-touch
+gesture fails before input in both runners. Touch and non-touch gestures
+cannot overlap either: the driver supports one mouse/pen gesture or a
+set of up to 16 touch pointers. A 17th touch fails before input. Local ids
+can use the full U32 range: replay maps them to reusable driver contact
+slots and separately tracks the browser-assigned pointer ids. Production
+pointer dispatch has none of these automation limits.
+
+`X Y` are whole percentages, 0–100, in the nearest zone at or above LOC.
+Without `:at`, LOC must itself be a zone (its centre is 50 50) or lie in
+no zone (`Outside`). If it lies inside another element's zone, give
+`:at` explicitly. Chrome verifies that the point hits LOC or a descendant
+and the same nearest zone, and checks the reported fractions exactly.
+A nested zone covering the point or a box without positive area fails
+the step. A `click` reaching a pointer-kind handler follows the same
+centre rule; use pointer steps when it needs `:at`.
+
+A paced move is a [report](#reports): outside a hold it is one frame, and
+inside a hold only its newest waiting value per pointer reaches the app.
+An up delivers the waiting moves first. Capture changes the event target,
+while its reported zone remains the one beneath the point.
+
+Mouse and pen also deliver their mouse and focus events: a main release
+clicks, while a nonmain release delivers `auxclick`. A single-contact touch tap delivers
+compatibility mouse events after its up; preventing its down suppresses
+those mouse events while click still occurs. A moved touch produces none,
+as do releases from a set that has contained multiple contacts, until the
+last contact ends. Chrome checks `touch-action:none` before a touch
+press, and a touch move must change its
+logical point; Chrome also rejects a physical move inside its tap slop.
+If an up's turn moves or removes the pressed element or an ancestor,
+mouseup goes to that node's old parent and no click follows.
+
+The browser input API cancels all touches together. To keep a cancel
+specific to its named pointer, both runners reject it when more than one
+touch is active. A gesture also cannot cross into a new document: release
+or cancel before navigating there. Same-document navigation is allowed.
+These are step errors, with no fabricated release or cancellation.
+
 ### Assertions
 
 | Step | Passes when |
