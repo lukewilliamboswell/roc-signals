@@ -3485,6 +3485,14 @@ produces a typed list of steps. Both runners consume it:
 step means what it does in Chrome; the native runner models that against the
 oracle and never defines a meaning of its own. In particular:
 
+- a location an app or spec writes is reported as Chrome serializes it: URL
+  input first drops leading/trailing C0 controls and spaces, then removes TAB,
+  LF and CR throughout; path, special-query and fragment percent-encode sets
+  apply to the remaining bytes. Existing percent escapes are preserved. Empty
+  query and fragment delimiters are omitted from the reported location, while
+  the runner's existing URL/history strings retain them for document identity.
+  This bounded same-origin model does not resolve dot segments, normalize
+  backslashes or parse hosts;
 - effects are always manual: HTTP requests, timers and worker jobs wait for
   `run-effect`, which fires a timer, answers an HTTP request with the one
   staged answer, and runs a worker job — in Chrome in a real worker, the step

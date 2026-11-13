@@ -490,6 +490,21 @@ The sample checks Escape without losing focus and both ends of a Tab loop:
 App `Push` and `Replace` requests move the location without a popstate, as
 browsers do.
 
+A location the app reads at boot or after back and forward is the text Chrome
+serializes, with spaces, quotes and non-ASCII bytes percent-encoded. An app
+that puts its own text into a location decodes what it reads. URL input first
+trims C0 controls and spaces at the edges and removes TAB, LF and CR throughout.
+`expect-current-location` compares the reported pathname, search and hash;
+empty query and fragment delimiters are omitted. The native runner retains
+those delimiters in its existing URL/history strings and reports the location
+at boot, popstate and location assertions. This preserves the distinction
+between no query and an empty query for document identity. An explicit empty
+fragment still identifies a same-document navigation. An exactly empty argument
+to an app's `Push` or `Replace` keeps its current URL, including its fragment;
+a nonempty whitespace-only reference resolves against the current URL and drops
+its fragment. Dot segments, backslashes and hosts remain outside the native
+runner's location model.
+
 ### Effects
 
 | Step | Meaning |
