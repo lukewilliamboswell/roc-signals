@@ -2,7 +2,7 @@
   (steps
     (expect-text (test-id "podium") "Ada Ben Cy ")
     (expect-visible (text "Cy 20"))
-    (expect-absent (text "Di 15"))
+    (expect-absent (text "Di 15") :never-drawn)
     ; One point to Cy leaves it third: its text changes and nothing else does.
     (mark-metrics)
     (click (role button :name "Point to Cy"))

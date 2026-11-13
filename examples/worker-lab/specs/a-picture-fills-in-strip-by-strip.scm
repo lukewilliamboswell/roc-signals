@@ -19,6 +19,7 @@
     (tick-interval 100)
     (run-effect 1)
     (run-effect 5)
+    (expect-visible (test-id "strip-image-1"))
     (run-effect 2)
     (expect-text (test-id "job-1") "done: 4790-byte strip, hash 1781493c")
     (expect-text (test-id "job-2") "done: 4790-byte strip, hash 99ee8b8c")

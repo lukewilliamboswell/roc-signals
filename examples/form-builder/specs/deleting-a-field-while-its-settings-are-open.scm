@@ -1,5 +1,6 @@
 (test "Form Builder — confirm above Settings and remove its open modal with the row"
   (steps
+    (expect-visible (role region :name "Field f1"))
     (click (role button :name "Settings f1"))
     (expect-shown (test-id "settings-f1") modal)
     (click (role button :name "Delete from settings f1"))

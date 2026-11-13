@@ -1,6 +1,7 @@
 (test "Form builder — the empty form"
   (steps
     ; Bring the page to the state this spec starts from.
+    (expect-visible (role region :name "Preview field f1"))
     (fill (label "Answer f1") "Ada")
     (fill (label "Answer f2") "ada@example")
     (fill (label "Answer f2") "ada@example.com")

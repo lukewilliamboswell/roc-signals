@@ -7,6 +7,7 @@
   (steps
     ; Settings: authed update, then sign out clears the namespaced keys
 
+    (expect-visible (role link :name "Settings"))
     (expect-document-title "Settings - Conduit")
     (expect-visible (role heading :name "Settings"))
     (expect-visible (text "Signed in as kim"))

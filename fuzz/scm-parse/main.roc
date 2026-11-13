@@ -24,6 +24,12 @@ test = |text| {
 
 target = Fuzz.target_with({
 	examples: [
+		Fuzz.example({ name: "absence-before-and-after", revision: "1", make: || "(test \"absence\" (steps (expect-absent (test-id \"row-7\")) (expect-visible (test-id \"row-7\")) (expect-absent (test-id \"row-7\"))))" }),
+		Fuzz.example({ name: "absence-key-misspelling", revision: "1", make: || "(test \"typo\" (steps (expect-visible (test-id \"row-7\")) (expect-absent (test-id \"row-8\"))))" }),
+		Fuzz.example({ name: "absence-never-drawn", revision: "1", make: || "(test \"branch\" (steps (expect-absent (role button :name \"Reconnect\") :never-drawn)))" }),
+		Fuzz.example({ name: "absence-redundant-marker", revision: "1", make: || "(test \"marker\" (steps (expect-absent (label \"Dialog\") :never-drawn) (expect-shown (label \"Dialog\") hidden)))" }),
+		Fuzz.example({ name: "absence-layout-anchor", revision: "1", make: || "(test \"reports\" (steps (expect-absent (test-id \"end\")) (report-seen (test-id \"end\") yes 500)))" }),
+		Fuzz.example({ name: "absence-focused-press", revision: "1", make: || "(test \"focus\" (steps (press \"Escape\") (expect-absent (text \"wrong\"))))" }),
 		Fuzz.example({ name: "time-seed-locale", revision: "1", make: || "(test \"facts\" (setup (initial-time \"1969-12-31T23:59:59.999Z\") (seed 340282366920938463463374607431768211455) (languages \"en-AU\" \"\") (time-zone \"test\" -60 (0 90))) (steps (set-time -9223372036854775808) (advance-time 18446744073709551615)))" }),
 		Fuzz.example({ name: "drafts-and-clipboard", revision: "1", make: || "(test \"draft\" (setup (session-storage \"draft\" \"saved\") (session-storage-full) (clipboard-denied) (max-paste-bytes 2)) (steps (paste-text (label \"Import\") \"λ\") (storage-elsewhere \"doc\" \"new\") (storage-elsewhere-removed \"doc\") (storage-elsewhere-cleared) (leave-page \"/next\" stay) (expect-session-storage \"draft\" \"saved\") (expect-no-session-storage \"absent\") (expect-clipboard \"copy\") (expect-clipboard-html \"<p>copy</p>\") (expect-clipboard-writes 18446744073709551615)))" }),
 		Fuzz.example({ name: "minimal", revision: "1", make: || "(test \"t\" (steps (click (text \"a\"))))" }),

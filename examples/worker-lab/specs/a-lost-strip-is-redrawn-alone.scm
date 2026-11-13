@@ -36,6 +36,7 @@
     (run-effect 8)
     (expect-text (test-id "composed") "mandelbrot-128x87.bmp, 12214 bytes")
     (run-effect 9)
+    (expect-visible (test-id "picture-image"))
     (run-effect 10)
     (expect-text (test-id "digest") "SHA-256 b3be2ce941ff4178281bb1f673eb2ffc1306964cb0ae4f3b93d51592b2e93d5c")
     ; Cancelling a new drawing keeps what it drew; a retry resumes it.

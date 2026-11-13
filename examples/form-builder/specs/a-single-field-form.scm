@@ -69,6 +69,7 @@
     (click (role button :name "Delete"))
 
     ; a single field form
+    (expect-visible (text "No fields yet. Add a field to start designing."))
     (click (role button :name "Add text field"))
     (expect-text (test-id "designer-status") "1")
     (expect-text (test-id "preview-status") "0")

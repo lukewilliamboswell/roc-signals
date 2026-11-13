@@ -7,6 +7,7 @@
     (click (role button :name "Viewer"))
     (report-size (test-id "viewer-viewport") 800 400)
     (run-effect 2)
+    (expect-visible (test-id "line-1"))
     (expect-text (test-id "viewer-status") "Lines 1–20 of 200.")
     (expect-scrolls 1)
     (mark-metrics)

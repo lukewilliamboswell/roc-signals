@@ -48,7 +48,7 @@
     (expect-attr (role region :name "Note n1") data-status "draft")
     (expect-disabled (role button :name "Queue note n1") false)
     (expect-disabled (role button :name "Retry note n1") true)
-    (expect-absent (role region :name "Note n-63cbe1e459320dd7"))
+    (expect-absent (role region :name "Note n-63cbe1e459320dd7") :never-drawn)
     ; Offline means nothing is started even though a restored note is queued.
     (expect-pending-effects 0)
   )

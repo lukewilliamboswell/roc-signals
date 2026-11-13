@@ -748,6 +748,7 @@ Scm := [].{
 		}
 		var $setup = []
 		var $steps = []
+		var $never_drawn = []
 		var $saw_setup = Bool.False
 		var $saw_steps = Bool.False
 		for section in items.drop_first(2) {
@@ -773,7 +774,14 @@ Scm := [].{
 					return Err({ pos: spos, message: "steps must hold at least one step" })
 				}
 				for form in forms.drop_first(1) {
-					$steps = $steps.append(Scm.step_form(form)?)
+					step = Scm.step_form(form)?
+					$steps = $steps.append(step)
+					match form {
+						List([Sym("expect-absent", _), _, Sym(":never-drawn", _)], _) => {
+							$never_drawn = $never_drawn.append(step.pos)
+						}
+						_ => {}
+					}
 				}
 			} else {
 				return Err({ pos: Scm.pos_of(first), message: "unknown section ${Scm.show(first)}; expected setup or steps" })
@@ -782,7 +790,136 @@ Scm := [].{
 		if !$saw_steps {
 			return Err({ pos, message: "the test has no (steps ...) section" })
 		}
+		Scm.anchored($steps, $never_drawn)?
 		Ok({ name, setup: $setup, steps: $steps, environment: Scm.environment($setup)? })
+	}
+
+	## The locator a step must resolve to run. Absence itself cannot prove a
+	## spelling, and a press on the current focus names no locator. Keep this
+	## exhaustive: a new operation must state whether it requires a match.
+	required_loc : Op -> Try(Loc, [NoRequiredLocator])
+	required_loc = |op| match op {
+		Click(loc) => Ok(loc)
+		RealClick(loc) => Ok(loc)
+		PointerDown({ target, .. }) => Ok(target)
+		PointerMove({ target, .. }) => Ok(target)
+		PointerUp({ target, .. }) => Ok(target)
+		PointerCancel(_) => Err(NoRequiredLocator)
+		Press({ target, .. }) => match target {
+			At(loc) => Ok(loc)
+			Focused => Err(NoRequiredLocator)
+		}
+		Dismiss => Err(NoRequiredLocator)
+		ExpectShown(loc, _) => Ok(loc)
+		ExpectScroll({ target, .. }) => Ok(target)
+		ExpectScrolls(_) => Err(NoRequiredLocator)
+		ExpectTransitions(_) => Err(NoRequiredLocator)
+		ExpectTransition(_) => Err(NoRequiredLocator)
+		Scroll({ target, .. }) => Ok(target)
+		ReportSize({ target, .. }) => Ok(target)
+		ReportSeen({ target, .. }) => Ok(target)
+		SetMedia(_) => Err(NoRequiredLocator)
+		SetTime(_) => Err(NoRequiredLocator)
+		AdvanceTime(_) => Err(NoRequiredLocator)
+		ExpectObserved(_) => Err(NoRequiredLocator)
+		ExpectMediaSubscriptions(_) => Err(NoRequiredLocator)
+		Focus(loc) => Ok(loc)
+		Blur(loc) => Ok(loc)
+		Change(loc, _) => Ok(loc)
+		SelectOption(loc, _) => Ok(loc)
+		Submit(loc) => Ok(loc)
+		Fill(loc, _) => Ok(loc)
+		Check(loc) => Ok(loc)
+		Uncheck(loc) => Ok(loc)
+		ExpectText(loc, _) => Ok(loc)
+		ExpectVisible(loc) => Ok(loc)
+		ExpectFocused(loc) => Ok(loc)
+		ExpectNoFocus => Err(NoRequiredLocator)
+		ExpectAbsent(_) => Err(NoRequiredLocator)
+		ExpectValue(loc, _) => Ok(loc)
+		ExpectAttr({ target, .. }) => Ok(target)
+		ExpectNoAttr({ target, .. }) => Ok(target)
+		ExpectChecked(loc, _) => Ok(loc)
+		ExpectDisabled(loc, _) => Ok(loc)
+		ExpectUpdates(loc, _) => Ok(loc)
+		StubHttp(_) => Err(NoRequiredLocator)
+		RunEffect(_) => Err(NoRequiredLocator)
+		ExpectRequest(_) => Err(NoRequiredLocator)
+		ProgressEffect(_) => Err(NoRequiredLocator)
+		ExpectPortSubscriptionArg(_) => Err(NoRequiredLocator)
+		ExpectPendingEffects(_) => Err(NoRequiredLocator)
+		LoseWork(_) => Err(NoRequiredLocator)
+		TimeOutWork(_) => Err(NoRequiredLocator)
+		ExpectPendingWork(_) => Err(NoRequiredLocator)
+		ChooseFiles(loc, _) => Ok(loc)
+		DropFiles(loc, _) => Ok(loc)
+		PasteFiles(loc, _) => Ok(loc)
+		ExpectFiles(_) => Err(NoRequiredLocator)
+		TickInterval(_) => Err(NoRequiredLocator)
+		TickIntervalIfActive(_) => Err(NoRequiredLocator)
+		ExpectCleanup(_) => Err(NoRequiredLocator)
+		ExpectInterval(_) => Err(NoRequiredLocator)
+		Navigate(_) => Err(NoRequiredLocator)
+		SetVisibility(_) => Err(NoRequiredLocator)
+		SetOnline(_) => Err(NoRequiredLocator)
+		HoldReports => Err(NoRequiredLocator)
+		ReleaseReports => Err(NoRequiredLocator)
+		ExpectReportsReplaced(_) => Err(NoRequiredLocator)
+		HistoryBack => Err(NoRequiredLocator)
+		HistoryForward => Err(NoRequiredLocator)
+		ExpectLocation(_) => Err(NoRequiredLocator)
+		ExpectTitle(_) => Err(NoRequiredLocator)
+		ExpectLocalStorage(_) => Err(NoRequiredLocator)
+		ExpectNoLocalStorage(_) => Err(NoRequiredLocator)
+		ExpectSessionStorage(_) => Err(NoRequiredLocator)
+		ExpectNoSessionStorage(_) => Err(NoRequiredLocator)
+		PasteText(loc, _) => Ok(loc)
+		StorageElsewhere(_) => Err(NoRequiredLocator)
+		StorageElsewhereRemoved(_) => Err(NoRequiredLocator)
+		StorageElsewhereCleared => Err(NoRequiredLocator)
+		LeavePage(_) => Err(NoRequiredLocator)
+		ExpectClipboard(_) => Err(NoRequiredLocator)
+		ExpectClipboardHtml(_) => Err(NoRequiredLocator)
+		ExpectClipboardWrites(_) => Err(NoRequiredLocator)
+		MarkMetrics => Err(NoRequiredLocator)
+		ExpectMetricDelta(_) => Err(NoRequiredLocator)
+		ExpectMetricDeltaAtMost(_) => Err(NoRequiredLocator)
+		ExpectUpload(_) => Err(NoRequiredLocator)
+		ExpectPortCall(_) => Err(NoRequiredLocator)
+		AnswerPort(_) => Err(NoRequiredLocator)
+		ExpectPortSent(_) => Err(NoRequiredLocator)
+		ExpectPortSends(_) => Err(NoRequiredLocator)
+		EmitPort(_) => Err(NoRequiredLocator)
+		ClosePort(_) => Err(NoRequiredLocator)
+		FailPort(_) => Err(NoRequiredLocator)
+		ExpectPortSubscriptions(_) => Err(NoRequiredLocator)
+		ExpectSaved(_) => Err(NoRequiredLocator)
+		ExpectSaves(_) => Err(NoRequiredLocator)
+	}
+
+	## Relate absences to the whole story, including anchors that occur later.
+	## The marker positions are parser-only metadata: runners receive the same
+	## ExpectAbsent operation for both forms, with no protocol change.
+	anchored : List(Step), List(Pos) -> Try({}, Problem)
+	anchored = |steps, never_drawn| {
+		anchors = steps.keep_oks(|step| Scm.required_loc(step.op).map_ok(|loc| { loc, pos: step.pos }))
+		for step in steps {
+			match step.op {
+				ExpectAbsent(loc) => {
+					anchor = anchors.find_first(|candidate| candidate.loc == loc)
+					if never_drawn.contains(step.pos) {
+						match anchor {
+							Ok(found) => return Err({ pos: step.pos, message: "expect-absent ${Scm.show_loc(loc)} is matched at line ${found.pos.line.to_str()}; drop :never-drawn" })
+							Err(_) => {}
+						}
+					} else if anchor.is_err() {
+						return Err({ pos: step.pos, message: "expect-absent ${Scm.show_loc(loc)} names a locator that no step of this spec matches; show the element with a step that requires it (expect-visible, expect-text, click, ...) where the story draws it, so a misspelt or renamed locator is caught" })
+					}
+				}
+				_ => {}
+			}
+		}
+		Ok({})
 	}
 
 	## `path:line:column: message`, for reports.
@@ -1495,7 +1632,14 @@ Scm := [].{
 			},
 		},
 		{ name: "expect-visible", parse: |form, args| Ok(ExpectVisible(Scm.loc1(form, args)?)) },
-		{ name: "expect-absent", parse: |form, args| Ok(ExpectAbsent(Scm.loc1(form, args)?)) },
+		{
+			name: "expect-absent",
+			parse: |form, args| match args {
+				[loc] => Ok(ExpectAbsent(Scm.locator(loc)?))
+				[loc, Sym(":never-drawn", _)] => Ok(ExpectAbsent(Scm.locator(loc)?))
+				_ => Err(Scm.bad(form, "expect-absent takes a locator, optionally followed by :never-drawn"))
+			},
+		},
 		{ name: "expect-value", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| ExpectValue(l, t)) },
 		{
 			name: "expect-attr",
@@ -2931,4 +3075,171 @@ expect {
 expect {
 	forms = ["(expect-request)", "(expect-request 0)", "(expect-request 1 :cache only-if-cached)", "(expect-request 1 :mode \"cors\")", "(expect-request 1 :url \"/a\" :url \"/b\")", "(expect-request 1 :credentials omit)", "(progress-effect 1 sent 2 unknown)", "(progress-effect 1 receiving 18446744073709551616 unknown)", "(expect-port-subscription-arg \"feed\" 0 \"{}\")"]
 	forms.all(|form| Scm.parse("(test \"invalid\" (steps ${form}))").is_err())
+}
+
+## An absence relates to the whole spec, before or after its positive anchor.
+expect {
+	before = Scm.parse("(test \"t\" (steps (expect-visible (test-id \"row-7\")) (expect-absent (test-id \"row-7\"))))")
+	after = Scm.parse("(test \"t\" (steps (expect-absent (test-id \"row-7\")) (click (test-id \"row-7\"))))")
+	before.is_ok() and after.is_ok()
+}
+
+## Wrong spellings and key-built ids are distinct, and failures point at the
+## absence rather than its section or the otherwise valid positive step.
+expect {
+	text = "(test \"t\"\n  (steps\n    (expect-visible (test-id \"row-7\"))\n    (expect-absent (test-id \"row-8\"))))"
+	match Scm.parse(text) {
+		Err(problem) => problem.pos == { line: 4, column: 5 } and problem.message.contains("(test-id \"row-8\") names a locator that no step")
+		Ok(_) => Bool.False
+	}
+}
+
+## A never-drawn branch retains the ordinary emitted operation. A matching
+## step rejects the marker in either order and names its first anchor line.
+expect {
+	unmarked = Scm.step_form(Scm.read_one("(expect-absent (label \"Other\"))")?)?
+	marked = Scm.parse("(test \"t\" (steps (expect-absent (label \"Other\") :never-drawn)))")?
+	before = problem_of("(test \"t\"\n (steps\n  (focus (label \"Other\"))\n  (expect-absent (label \"Other\") :never-drawn)))")
+	after = problem_of("(test \"t\"\n (steps\n  (expect-absent (label \"Other\") :never-drawn)\n  (focus (label \"Other\"))))")
+	marked.steps.first()?.op == unmarked.op and before.contains("is matched at line 3; drop :never-drawn") and after.contains("is matched at line 4; drop :never-drawn")
+}
+
+## An absent locator never anchors itself, a differently written locator
+## never anchors it, and malformed markers do not become an unchecked guard.
+expect {
+	bad = [
+		"(expect-absent (text \"x\")) (expect-absent (text \"x\"))",
+		"(expect-visible (text \"x\")) (expect-absent (label \"x\"))",
+		"(press \"Escape\") (expect-absent (text \"x\"))",
+		"(expect-absent (text \"x\") :never)",
+		"(expect-absent (text \"x\") \":never-drawn\")",
+		"(expect-absent (text \"x\") :never-drawn :never-drawn)",
+	]
+	bad.all(|steps| Scm.parse("(test \"bad\" (steps ${steps}))").is_err())
+}
+
+## Every spelling is deliberately classified. Each requiring form is parsed
+## and checked against the exact locator, including hidden shown-state and
+## layout reports; a new alias or family must extend one of these tables.
+expect {
+	forms = [
+		"(click (test-id \"row-7\"))",
+		"(real-click (test-id \"row-7\"))",
+		"(focus (test-id \"row-7\"))",
+		"(blur (test-id \"row-7\"))",
+		"(submit (test-id \"row-7\"))",
+		"(check (test-id \"row-7\"))",
+		"(uncheck (test-id \"row-7\"))",
+		"(fill (test-id \"row-7\") \"x\")",
+		"(change (test-id \"row-7\") \"x\")",
+		"(select-option (test-id \"row-7\") \"x\")",
+		"(expect-text (test-id \"row-7\") \"x\")",
+		"(expect-visible (test-id \"row-7\"))",
+		"(expect-focused (test-id \"row-7\"))",
+		"(expect-shown (test-id \"row-7\") hidden)",
+		"(expect-value (test-id \"row-7\") \"x\")",
+		"(expect-attr (test-id \"row-7\") \"title\" \"x\")",
+		"(expect-no-attr (test-id \"row-7\") \"title\")",
+		"(expect-checked (test-id \"row-7\") true)",
+		"(expect-disabled (test-id \"row-7\") false)",
+		"(expect-updates (test-id \"row-7\") 0)",
+		"(choose-files (test-id \"row-7\") \"a\")",
+		"(drop-files (test-id \"row-7\") \"a\")",
+		"(paste-files (test-id \"row-7\") \"a\")",
+		"(paste-text (test-id \"row-7\") \"x\")",
+		"(pointer-down (test-id \"row-7\"))",
+		"(pointer-move (test-id \"row-7\"))",
+		"(pointer-up (test-id \"row-7\"))",
+		"(press (test-id \"row-7\") \"Escape\")",
+		"(scroll (test-id \"row-7\") 0 0)",
+		"(report-size (test-id \"row-7\") 1 1)",
+		"(report-seen (test-id \"row-7\") yes 1)",
+		"(expect-scroll 1 (test-id \"row-7\") to)",
+	]
+	nonrequiring = [
+		"storage-elsewhere",
+		"storage-elsewhere-removed",
+		"storage-elsewhere-cleared",
+		"leave-page",
+		"expect-session-storage",
+		"expect-no-session-storage",
+		"expect-clipboard",
+		"expect-clipboard-html",
+		"expect-clipboard-writes",
+		"dismiss",
+		"expect-transitions",
+		"expect-transition",
+		"expect-scrolls",
+		"set-time",
+		"advance-time",
+		"set-media",
+		"expect-observed",
+		"expect-media-subscriptions",
+		"pointer-cancel",
+		"hold-reports",
+		"release-reports",
+		"expect-reports-replaced",
+		"expect-no-focus",
+		"expect-absent",
+		"stub-http",
+		"stub-http-reject",
+		"run-effect",
+		"expect-request",
+		"progress-effect",
+		"expect-port-subscription-arg",
+		"expect-pending-effects",
+		"lose-work",
+		"time-out-work",
+		"expect-files",
+		"expect-pending-work",
+		"tick-interval",
+		"tick-interval-if-active",
+		"expect-cleanup",
+		"expect-interval",
+		"navigate",
+		"set-visibility",
+		"set-online",
+		"history-back",
+		"history-forward",
+		"expect-current-location",
+		"expect-document-title",
+		"expect-local-storage",
+		"expect-no-local-storage",
+		"mark-metrics",
+		"expect-metric-delta",
+		"expect-metric-delta-at-most",
+		"expect-upload",
+		"expect-port-call",
+		"answer-port",
+		"expect-port-sent",
+		"expect-port-sends",
+		"emit-port",
+		"close-port",
+		"fail-port",
+		"expect-port-subscriptions",
+		"expect-saved",
+		"expect-saves",
+	]
+	classified = forms.map(
+		|text| {
+			step = Scm.step_form(Scm.read_one(text).map_err(|_| {})?).map_err(|_| {})?
+			name = match Scm.read_one(text).map_err(|_| {})? {
+				List([Sym(head, _), ..], _) => head
+				_ => return Err({})
+			}
+			if Scm.required_loc(step.op) != Ok(TestId("row-7")) {
+				return Err({})
+			}
+			if !Scm.parse("(test \"t\" (steps ${text} (expect-absent (test-id \"row-7\"))))").is_ok() {
+				return Err({})
+			}
+			if !Scm.parse("(test \"t\" (steps (expect-absent (test-id \"row-7\") :never-drawn) ${text}))").is_err() {
+				return Err({})
+			}
+			Ok(name)
+		},
+	)
+	covered = classified.keep_oks(|item| item).concat(nonrequiring)
+	names = Scm.step_forms.map(|form| form.name)
+	classified.all(|item| item.is_ok()) and covered.len() == names.len() and covered.fold(Dict.empty(), |seen, name| seen.insert(name, {})).len() == names.len() and names.all(|name| covered.contains(name))
 }
