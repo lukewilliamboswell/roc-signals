@@ -708,7 +708,7 @@ run = |tree, pure, events| {
 ## and attributes. Its independent preorder model checks every title and text;
 ## zero sampled evaluations proves constants did not become dynamic holes.
 constant_caption : Node -> Str
-constant_caption = |node| match node {
+constant_caption = |branch| match branch {
 	Show(index) => "show-${index.to_str()}"
 	Guard(index) => "guard-${index.to_str()}"
 	Control(index) => "control-${index.to_str()}"
@@ -724,14 +724,14 @@ constant_caption = |node| match node {
 
 constant_elements : List(Node) -> List(Engine.Elem(Engine.Root))
 constant_elements = |tree| tree.map(
-	|node| {
-		children = match node {
+	|branch| {
+		children = match branch {
 			When(_, yes, no) => constant_elements(yes).concat(constant_elements(no))
 			Switch(_, first, second, third) => constant_elements(first).concat(constant_elements(second)).concat(constant_elements(third))
 			Layer(_, _, body) | Each(_, body) => constant_elements(body)
 			_ => []
 		}
-		caption = constant_caption(node)
+		caption = constant_caption(branch)
 		Engine.element("div", [Engine.attr_s("title", Engine.const(caption)), Engine.class_s("constant"), Engine.test_id_s("static-${Engine.const(caption)}")], [Engine.text_s("text ${Engine.const(caption)}")].concat(children))
 	},
 )
@@ -741,9 +741,9 @@ constant_elements = |tree| tree.map(
 constant_labels : List(Node) -> List(Str)
 constant_labels = |tree| {
 	var $labels = []
-	for node in tree {
-		$labels = $labels.append(constant_caption(node))
-		match node {
+	for branch in tree {
+		$labels = $labels.append(constant_caption(branch))
+		match branch {
 			When(_, yes, no) => {
 				$labels = $labels.concat(constant_labels(yes)).concat(constant_labels(no))
 			}
@@ -764,7 +764,7 @@ constant_tree_property = |tree| {
 	(engine, batch) = Core.take_cmds(Core.mount(Engine.element("main", [], constant_elements(tree))), [])
 	dom = Dom.apply(Dom.new({}), batch)
 	labels = constant_labels(tree)
-	actual = { labels: dom.nodes.keep_if(|node| node.tag == "div").map(|node| Dom.attr_of(node, "title")), text: Dom.text_of(dom, dom.root), evaluations: Core.evals(engine) }
+	actual = { labels: dom.nodes.keep_if(|branch| branch.tag == "div").map(|branch| Dom.attr_of(branch, "title")), text: Dom.text_of(dom, dom.root), evaluations: Core.evals(engine) }
 	wanted = { labels, text: Str.join_with(labels.map(|label| "text ${label}"), ""), evaluations: 0.U64 }
 	if actual != wanted {
 		crash "constant text tree differs: ${Str.inspect(actual)} expected ${Str.inspect(wanted)}"
