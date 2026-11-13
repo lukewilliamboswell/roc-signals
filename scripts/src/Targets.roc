@@ -53,12 +53,13 @@ Targets := [].{
 
 	## Build fuzz targets in parallel. `--fuzz` needs the LLVM backend, so
 	## these builds use `--opt=speed` (the compiler refuses `--opt=dev`).
+	## Phase timings distinguish compiler cost from fixed-example replay cost.
 	build_fuzz_all! : SpecSuite.Options, List(Fuzz) => Try({}, _)
 	build_fuzz_all! = |o, fuzzes| {
 		var $jobs = []
 		for t in fuzzes {
 			SpecSuite.fresh_dir!("${o.build_dir}/fuzz/${t.name}")?
-			$jobs = $jobs.append({ program: o.compiler, args: ["build", "--fuzz", "--opt=speed", t.main, "--output=${Targets.exe_of(o, t)}"], cwd: o.root })
+			$jobs = $jobs.append({ program: o.compiler, args: ["build", "--fuzz", "--opt=speed", "--timings", t.main, "--output=${Targets.exe_of(o, t)}"], cwd: o.root })
 		}
 		results = Proc.parallel!($jobs, Proc.compiler_jobs!()?)?
 		match List.map2(fuzzes, results, |t, r| (t, r.code)).keep_if(|(_, c)| c != 0).first() {

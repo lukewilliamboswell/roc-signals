@@ -514,6 +514,10 @@ Judge a target by its properties: state the rules the code must keep over
 generated sequences, and check them against a reference model. Its oracles,
 not its inputs, carry the value.
 
+Fuzz builds print compiler phase timings. Use those alongside the replay
+report to distinguish time spent compiling the optimized target from time
+spent running its fixed examples.
+
 Protocol consumer facts are checked against Appendix B. Runtime contracts
 reject malformed declarations before init, compare every valid Unicode scalar
 between the native oracle and Chrome, and check that one mounted module cannot
