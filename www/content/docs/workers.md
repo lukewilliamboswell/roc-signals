@@ -418,6 +418,14 @@ sources and a timeline of entries a minute; its overview and its chart are
 answered from the index alone, and its search and its viewer read only the
 lines they need.
 
+The viewer follows its native scrollbar, asking the worker for only the
+fixed-height lines that fit. Its spacer is capped at 8,000,000 pixels; for a
+taller log the scroll map is proportional, while paging and “Go to line”
+keep fine movement available. Jumps scroll instantly, and their scroll
+echoes write nothing, so one jump asks for one window. Superseded window
+jobs use `on_cancel: Finish` to keep the worker's prepared index for the
+next question.
+
 Two costs come with a state like this:
 
 - A question about the whole text, such as a search for a word, reads the

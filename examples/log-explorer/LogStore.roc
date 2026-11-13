@@ -38,7 +38,7 @@ LogStore := [Explorer].{
 	## answers, a requested line remains intent and has no proportional offset.
 	Geometry : [Awaiting, Ready(Log.ScrollMap)]
 
-	## Close the initial union before it is stored (roc-lang/roc#13011).
+	## Close the initial union before it is stored (https://github.com/roc-lang/roc/issues/13011).
 	awaiting_geometry : Geometry
 	awaiting_geometry = Awaiting
 
