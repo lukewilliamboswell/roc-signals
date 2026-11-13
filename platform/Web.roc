@@ -21,6 +21,11 @@ Web := [].{
 	## an unqualified HTML name does not establish a namespace or prefix.
 	Prefix : [Unprefixed, Prefix(Str)]
 
+	## Explicit expanded-name construction. The local name stays on the checked
+	## receiver; omitting prefix preserves an unprefixed identity, even if that
+	## local text itself contains a colon.
+	NameProps := { namespace : Namespace, prefix : Prefix ?? Unprefixed }
+
 	## An element name. Computed text checks DOM grammar; literals also use the
 	## parser's HTML and SVG vocabulary. Raw names inherit construction context;
 	## in_namespace supplies explicit namespace, prefix and local identity.
@@ -75,9 +80,10 @@ Web := [].{
 		## Qualify this local name with explicit namespace facts. This checks modern
 		## DOM name and reserved xml/xmlns rules, not XML QName vocabulary. Prefix
 		## and local spelling remain separate; malformed facts return a typed error.
-		in_namespace : Tag, Namespace, Prefix -> Try(Tag, [NotATag(Str)])
-		in_namespace = |Tag.(name), selected_namespace, selected_prefix| {
-			ns = normalized_namespace(selected_namespace)
+		in_namespace : Tag, NameProps -> Try(Tag, [NotATag(Str)])
+		in_namespace = |Tag.(name), props| {
+			ns = normalized_namespace(props.namespace)
+			selected_prefix = props.prefix
 			check_qualified(name.local, ns, selected_prefix, True).map_err(|note| NotATag(note))?
 			Ok(Tag.({ local: name.local, namespace: Explicit(ns), prefix: selected_prefix }))
 		}
@@ -137,9 +143,10 @@ Web := [].{
 
 		## Qualify a local attribute name without guessing a namespace from its
 		## text. Checks DOM namespace pairings; values and vocabulary stay separate.
-		in_namespace : AttrName, Namespace, Prefix -> Try(AttrName, [NotAnAttribute(Str)])
-		in_namespace = |AttrName.(name), selected_namespace, selected_prefix| {
-			ns = normalized_namespace(selected_namespace)
+		in_namespace : AttrName, NameProps -> Try(AttrName, [NotAnAttribute(Str)])
+		in_namespace = |AttrName.(name), props| {
+			ns = normalized_namespace(props.namespace)
+			selected_prefix = props.prefix
 			check_qualified(name.local, ns, selected_prefix, False).map_err(|note| NotAnAttribute(note))?
 			Ok(AttrName.({ local: name.local, namespace: ns, prefix: selected_prefix, exact: True }))
 		}
@@ -402,7 +409,7 @@ check_qualified = |local, namespace, prefix, element| {
 ## Explicit namespace qualification retains the prefix, URI and local name,
 ## including extension namespaces unknown to the HTML/SVG catalogue.
 expect {
-	name = Web.Tag.from_str("entry")?.in_namespace(Uri("urn:entry"), Prefix("e"))?
+	name = Web.Tag.from_str("entry")?.in_namespace({ namespace: Uri("urn:entry"), prefix: Prefix("e") })?
 	name.local() == "entry" and name.text() == "e:entry" and name.prefix() == Prefix("e") and name.namespace() == Explicit(Uri("urn:entry"))
 }
 
@@ -410,41 +417,41 @@ expect {
 ## explicitly qualified name retains a different local name and namespace.
 expect {
 	raw = Web.AttrName.from_str("xlink:href")?
-	qualified = Web.AttrName.from_str("href")?.in_namespace(Uri("http://www.w3.org/1999/xlink"), Prefix("xlink"))?
+	qualified = Web.AttrName.from_str("href")?.in_namespace({ namespace: Uri("http://www.w3.org/1999/xlink"), prefix: Prefix("xlink") })?
 	raw.text() == qualified.text() and raw.local() == "xlink:href" and qualified.local() == "href" and raw != qualified
 }
 
 ## Modern DOM accepts equals in element local names and numeric prefixes;
 ## qualification must not accidentally substitute XML NCName grammar.
 expect {
-	Web.Tag.from_str("a=b")?.in_namespace(Svg, Unprefixed).is_ok() and
-		Web.Tag.from_str("a")?.in_namespace(Svg, Prefix("1")).is_ok() and
-			Web.Tag.from_str("b:c")?.in_namespace(Svg, Prefix("a")).is_ok()
+	Web.Tag.from_str("a=b")?.in_namespace({ namespace: Svg }).is_ok() and
+		Web.Tag.from_str("a")?.in_namespace({ namespace: Svg, prefix: Prefix("1") }).is_ok() and
+			Web.Tag.from_str("b:c")?.in_namespace({ namespace: Svg, prefix: Prefix("a") }).is_ok()
 }
 
 ## Reserved namespace pairings fail as values before construction. XML's
 ## namespace may have another prefix; the reverse implication is not a rule.
 expect {
 	name = Web.AttrName.from_str("lang")?
-	name.in_namespace(Svg, Prefix("xml")).is_err() and
-		name.in_namespace(Uri("http://www.w3.org/XML/1998/namespace"), Prefix("xml")).is_ok() and
-			name.in_namespace(Uri("http://www.w3.org/XML/1998/namespace"), Prefix("p")).is_ok() and
-				name.in_namespace(None, Prefix("p")).is_err()
+	name.in_namespace({ namespace: Svg, prefix: Prefix("xml") }).is_err() and
+		name.in_namespace({ namespace: Uri("http://www.w3.org/XML/1998/namespace"), prefix: Prefix("xml") }).is_ok() and
+			name.in_namespace({ namespace: Uri("http://www.w3.org/XML/1998/namespace"), prefix: Prefix("p") }).is_ok() and
+				name.in_namespace({ namespace: None, prefix: Prefix("p") }).is_err()
 }
 
 ## XMLNS attributes retain their declaration identity, and empty URI follows
 ## the DOM's no-namespace conversion without changing the retained text.
 expect {
-	declaration = Web.AttrName.from_str("p")?.in_namespace(Uri("http://www.w3.org/2000/xmlns/"), Prefix("xmlns"))?
-	plain = Web.AttrName.from_str("name")?.in_namespace(Uri(""), Unprefixed)?
-	declaration.text() == "xmlns:p" and plain.namespace() == None and Web.AttrName.from_str("name")?.in_namespace(Uri("http://www.w3.org/2000/xmlns/"), Unprefixed).is_err()
+	declaration = Web.AttrName.from_str("p")?.in_namespace({ namespace: Uri("http://www.w3.org/2000/xmlns/"), prefix: Prefix("xmlns") })?
+	plain = Web.AttrName.from_str("name")?.in_namespace({ namespace: Uri("") })?
+	declaration.text() == "xmlns:p" and plain.namespace() == None and Web.AttrName.from_str("name")?.in_namespace({ namespace: Uri("http://www.w3.org/2000/xmlns/") }).is_err()
 }
 
 ## HTML local text containing a colon and a genuinely prefixed HTML name are
 ## distinct facts, even though their written qualified spelling is identical.
 expect {
-	local = Web.Tag.from_str("h:div")?.in_namespace(Html, Unprefixed)?
-	prefixed = Web.Tag.from_str("div")?.in_namespace(Html, Prefix("h"))?
+	local = Web.Tag.from_str("h:div")?.in_namespace({ namespace: Html })?
+	prefixed = Web.Tag.from_str("div")?.in_namespace({ namespace: Html, prefix: Prefix("h") })?
 	local.text() == prefixed.text() and local.local() == "h:div" and prefixed.local() == "div" and local != prefixed
 }
 
@@ -452,23 +459,30 @@ expect {
 ## changing only the public spelling must not create a different attribute.
 expect {
 	name = Web.AttrName.from_str("label")?
-	name.in_namespace(Svg, Unprefixed) == name.in_namespace(Uri("http://www.w3.org/2000/svg"), Unprefixed) and
-		Web.Tag.from_str("div")?.in_namespace(Html, Unprefixed) == Web.Tag.from_str("div")?.in_namespace(Uri("http://www.w3.org/1999/xhtml"), Unprefixed)
+	name.in_namespace({ namespace: Svg }) == name.in_namespace({ namespace: Uri("http://www.w3.org/2000/svg") }) and
+		Web.Tag.from_str("div")?.in_namespace({ namespace: Html }) == Web.Tag.from_str("div")?.in_namespace({ namespace: Uri("http://www.w3.org/1999/xhtml") })
 }
 
 ## Qualification supplies exact attribute case, even with no namespace; raw
 ## construction keeps the HTML attribute-name folding requested by setAttribute.
 expect {
 	raw = Web.AttrName.from_str("data-UPPER")?
-	exact = raw.in_namespace(None, Unprefixed)?
+	exact = raw.in_namespace({ namespace: None })?
 	!raw.is_qualified() and exact.is_qualified() and raw.local() == exact.local() and exact.local() == "data-UPPER"
 }
 
 ## Non-NS DOM factories preserve xmlns and colon local names without inventing
 ## a prefix. These identities must not inherit NS-factory reserved-name rules.
 expect {
-	Web.Tag.from_str("xmlns")?.in_namespace(None, Unprefixed).is_ok() and
-		Web.Tag.from_str("a:UPPER")?.in_namespace(None, Unprefixed).is_ok() and
-			Web.AttrName.from_str("xmlns")?.in_namespace(None, Unprefixed).is_ok() and
-				Web.Tag.from_str("a:UPPER")?.in_namespace(Html, Unprefixed).is_err()
+	Web.Tag.from_str("xmlns")?.in_namespace({ namespace: None }).is_ok() and
+		Web.Tag.from_str("a:UPPER")?.in_namespace({ namespace: None }).is_ok() and
+			Web.AttrName.from_str("xmlns")?.in_namespace({ namespace: None }).is_ok() and
+				Web.Tag.from_str("a:UPPER")?.in_namespace({ namespace: Html }).is_err()
+}
+
+## Omitting a prefix states an unprefixed identity rather than splitting local
+## colon text, and is equal to spelling Unprefixed explicitly.
+expect {
+	name = Web.Tag.from_str("h:div")?
+	name.in_namespace({ namespace: Html }) == name.in_namespace({ namespace: Html, prefix: Unprefixed })
 }

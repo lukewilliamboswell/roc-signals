@@ -8,18 +8,18 @@ NamespacesApp := [].{
 
 	## Every authored fixed name passes the same public checked boundary as a
 	## computed name. A failure here identifies an invalid test construction.
-	tag : Str, Web.Namespace, Web.Prefix -> Web.Tag
-	tag = |local, namespace, prefix| {
+	tag : Str, Web.NameProps -> Web.Tag
+	tag = |local, props| {
 		name = Web.Tag.from_str(local) ?? crash "invalid namespace fixture element local"
-		name.in_namespace(namespace, prefix) ?? crash "invalid namespace fixture element"
+		name.in_namespace(props) ?? crash "invalid namespace fixture element"
 	}
 
 	## Attribute text never guesses a namespace: the explicit qualifier carries
 	## the URI and prefix independently of its local spelling.
-	attribute : Str, Web.Namespace, Web.Prefix -> Web.AttrName
-	attribute = |local, namespace, prefix| {
+	attribute : Str, Web.NameProps -> Web.AttrName
+	attribute = |local, props| {
 		name = Web.AttrName.from_str(local) ?? crash "invalid namespace fixture attribute local"
-		name.in_namespace(namespace, prefix) ?? crash "invalid namespace fixture attribute"
+		name.in_namespace(props) ?? crash "invalid namespace fixture attribute"
 	}
 
 	view : {} -> Elem(Root)
@@ -32,28 +32,28 @@ NamespacesApp := [].{
 				[Engine.test_id("context-root")],
 				[
 					Engine.element(
-						NamespacesApp.tag("section", Html, Unprefixed),
+						NamespacesApp.tag("section", { namespace: Html }),
 						[],
 						[
 							Html.button("Change namespaced attribute", [], st.update(|state| { ..state, changed: !state.changed })),
 							Html.button("Toggle namespace subtree", [], st.update(|state| { ..state, drawn: !state.drawn })),
-							Engine.element("input", [Engine.test_id("exact-value"), Engine.attr(NamespacesApp.attribute("VALUE", None, Unprefixed), "exact attribute")], []),
-							Html.dialog("Exact attr dialog", { open: Engine.const(False), on_close: Engine.does([]) }, [Engine.test_id("exact-dialog"), Engine.attr(NamespacesApp.attribute("OPEN", None, Unprefixed), ""), Engine.attr(NamespacesApp.attribute("PoPoVeR", None, Unprefixed), "manual")], []),
-							Engine.element(NamespacesApp.tag("DIV", Html, Unprefixed), [Engine.test_id("exact-html")], [Engine.text("exact HTML")]),
-							Engine.element(NamespacesApp.tag("h:div", Html, Unprefixed), [Engine.test_id("colon-local")], [Engine.text("local colon")]),
-							Engine.element(NamespacesApp.tag("div", Html, Prefix("h")), [Engine.test_id("prefixed-html")], [Engine.text("prefixed HTML")]),
-							Engine.element(NamespacesApp.tag("entry", Uri("urn:entry"), Prefix("e")), [Engine.test_id("extension")], [Engine.text("extension")]),
-							Engine.element(NamespacesApp.tag("entry", None, Unprefixed), [Engine.test_id("no-namespace")], [Engine.text("no namespace")]),
-							Engine.element(NamespacesApp.tag("math", MathML, Unprefixed), [Engine.test_id("math")], [Engine.element(NamespacesApp.tag("mi", MathML, Unprefixed), [Engine.test_id("math-symbol")], [Engine.text("x")])]),
+							Engine.element("input", [Engine.test_id("exact-value"), Engine.attr(NamespacesApp.attribute("VALUE", { namespace: None }), "exact attribute")], []),
+							Html.dialog("Exact attr dialog", { open: Engine.const(False), on_close: Engine.does([]) }, [Engine.test_id("exact-dialog"), Engine.attr(NamespacesApp.attribute("OPEN", { namespace: None }), ""), Engine.attr(NamespacesApp.attribute("PoPoVeR", { namespace: None }), "manual")], []),
+							Engine.element(NamespacesApp.tag("DIV", { namespace: Html }), [Engine.test_id("exact-html")], [Engine.text("exact HTML")]),
+							Engine.element(NamespacesApp.tag("h:div", { namespace: Html }), [Engine.test_id("colon-local")], [Engine.text("local colon")]),
+							Engine.element(NamespacesApp.tag("div", { namespace: Html, prefix: Prefix("h") }), [Engine.test_id("prefixed-html")], [Engine.text("prefixed HTML")]),
+							Engine.element(NamespacesApp.tag("entry", { namespace: Uri("urn:entry"), prefix: Prefix("e") }), [Engine.test_id("extension")], [Engine.text("extension")]),
+							Engine.element(NamespacesApp.tag("entry", { namespace: None }), [Engine.test_id("no-namespace")], [Engine.text("no namespace")]),
+							Engine.element(NamespacesApp.tag("math", { namespace: MathML }), [Engine.test_id("math")], [Engine.element(NamespacesApp.tag("mi", { namespace: MathML }), [Engine.test_id("math-symbol")], [Engine.text("x")])]),
 							Engine.element(
-								NamespacesApp.tag("svg", Svg, Unprefixed),
+								NamespacesApp.tag("svg", { namespace: Svg }),
 								[Engine.test_id("svg")],
 								[
 									Engine.when(
 										st.signal().map(|state| state.drawn),
 										|| Engine.element(
-											NamespacesApp.tag("g", Svg, Unprefixed),
-											[Engine.test_id("svg-group"), Engine.attr_s(NamespacesApp.attribute("href", Uri("http://www.w3.org/1999/xlink"), Prefix("xlink")), changed.map(|value| if (value) "#after" else "#before")), Engine.attr("xlink:href", "raw")],
+											NamespacesApp.tag("g", { namespace: Svg }),
+											[Engine.test_id("svg-group"), Engine.attr_s(NamespacesApp.attribute("href", { namespace: Uri("http://www.w3.org/1999/xlink"), prefix: Prefix("xlink") }), changed.map(|value| if (value) "#after" else "#before")), Engine.attr("xlink:href", "raw")],
 											[Engine.element("linearGradient", [Engine.test_id("gradient")], []), Engine.element("foreignObject", [], [Engine.element("DIV", [Engine.test_id("foreign-html")], [Engine.text("foreign HTML")])])],
 										),
 										|| Engine.text(""),

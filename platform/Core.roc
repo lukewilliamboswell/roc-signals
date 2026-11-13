@@ -11355,7 +11355,7 @@ resolve_element = |name, enclosing| match name.namespace() {
 		namespace = if (name.local() == "svg") Svg else enclosing.raw_namespace
 		if namespace == Html {
 			local = ascii_name_lower(name.local())
-			(Web.Tag.from_str(local) ?? crash "internal: folded HTML name").in_namespace(Html, Unprefixed) ?? crash "internal: unprefixed HTML name"
+			(Web.Tag.from_str(local) ?? crash "internal: folded HTML name").in_namespace({ namespace: Html }) ?? crash "internal: unprefixed HTML name"
 		} else {
 			parts = name.local().split_on(":")
 			(prefix, local) = if parts.len() == 1 {
@@ -11364,7 +11364,7 @@ resolve_element = |name, enclosing| match name.namespace() {
 				(Prefix(parts.first() ?? crash "internal: qualified name has a prefix"), Str.join_with(parts.drop_first(1), ":"))
 			}
 			local_name = Web.Tag.from_str(local) ?? crash "contract: raw foreign element has an invalid local name"
-			local_name.in_namespace(namespace, prefix) ?? crash "contract: raw foreign element has an invalid namespace qualification"
+			local_name.in_namespace({ namespace, prefix }) ?? crash "contract: raw foreign element has an invalid namespace qualification"
 		}
 	}
 }
@@ -11388,7 +11388,7 @@ resolve_attribute = |name, element| {
 		return name
 	}
 	local = if (element.namespace() == Explicit(Html)) ascii_name_lower(name.local()) else name.local()
-	(Web.AttrName.from_str(local) ?? crash "internal: folded attribute name").in_namespace(None, Unprefixed) ?? crash "internal: ordinary raw attribute name"
+	(Web.AttrName.from_str(local) ?? crash "internal: folded attribute name").in_namespace({ namespace: None }) ?? crash "internal: ordinary raw attribute name"
 }
 
 ## Only ordinary unnamespaced attributes can claim a control's HTML names.
@@ -11598,16 +11598,16 @@ expect {
 expect {
 	input = resolve_element(Web.Tag.from_str("input")?, root_enclosing)
 	raw = Web.AttrName.from_str("VALUE")?
-	exact = raw.in_namespace(None, Unprefixed)?
-	namespaced = raw.in_namespace(Uri("urn:attribute"), Prefix("a"))?
+	exact = raw.in_namespace({ namespace: None })?
+	namespaced = raw.in_namespace({ namespace: Uri("urn:attribute"), prefix: Prefix("a") })?
 	ordinary_attribute_is(resolve_attribute(raw, input), "value") and !ordinary_attribute_is(resolve_attribute(exact, input), "value") and !ordinary_attribute_is(resolve_attribute(namespaced, input), "value")
 }
 
 ## Case-preserved uppercase attributes are distinct from the lower-case names
 ## owned by controlled dialog state, including dynamic attribute declarations.
 expect {
-	open = Web.AttrName.from_str("OPEN")?.in_namespace(None, Unprefixed)?
-	popover = Web.AttrName.from_str("PoPoVeR")?.in_namespace(None, Unprefixed)?
+	open = Web.AttrName.from_str("OPEN")?.in_namespace({ namespace: None })?
+	popover = Web.AttrName.from_str("PoPoVeR")?.in_namespace({ namespace: None })?
 	close : HandlerOf(Root({}), Bool)
 	close = { run: |env, _, _| (env, no_layers) }
 	program = Core.driver(Core.program(|| Core.controlled_dialog({ label: "Exact attributes", open: Core.const(False), on_close: close, modal: Modal, attrs: [Core.attr_named(open, ""), Core.attr_named_s(popover, Core.const("manual"))], children: [] })))
@@ -11620,7 +11620,7 @@ expect {
 expect {
 	element = resolve_element(Web.Tag.from_str("input")?, root_enclosing)
 	raw = Web.AttrName.from_str("VALUE")?
-	exact = raw.in_namespace(None, Unprefixed)?
-	foreign = raw.in_namespace(Uri("urn:attr"), Prefix("a"))?
+	exact = raw.in_namespace({ namespace: None })?
+	foreign = raw.in_namespace({ namespace: Uri("urn:attr"), prefix: Prefix("a") })?
 	Core.attribute_claim(element, resolve_attribute(raw, element)) == Claimed("value") and Core.attribute_claim(element, exact) == Unclaimed and Core.attribute_claim(element, foreign) == Unclaimed
 }
