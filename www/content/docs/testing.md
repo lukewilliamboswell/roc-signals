@@ -718,7 +718,7 @@ does not fail your spec.
 | `set_metadata` | Document title writes |
 | `set_text` | Text writes and text nodes created |
 | `set_value` / `set_checked` | Control `value` / `checked` the engine set |
-| `patches_emitted` | DOM commands; excludes `RELEASE` and `TRANSITION`, which do not change the DOM |
+| `patches_emitted` | DOM commands; excludes `RELEASE`, `TRANSITION` and `GUARD`, which do not change the DOM |
 | `registrations_released` | `RELEASE` commands emitted for nodes owning document-key registrations or layout observations |
 | `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values. For a table view: each read of its query or its window, and each row it places with the query's `keep` and `sort` (two for a written key, the row before and after; every row of the table for a mount or a rebuild) |
 | `scopes_created` / `scopes_disposed` | `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites, mounted / disposed |
