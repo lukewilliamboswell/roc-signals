@@ -377,7 +377,7 @@ Core := [].{
 
 	## A program's store, built once from its [Cells]: the storage it starts
 	## with, its cells, and the bookkeeping for its table cells.
-	Store(st, h) := { init : st, cells : h, tables : List(TableCell(st)) }.{
+	Store(st, h) := { init : st, cells : h, tables : Dict(U64, TableCell(st)), table_bits : U128 }.{
 
 		## The record of cells the [Cells] described.
 		cells : Store(st, h) -> h
@@ -392,27 +392,27 @@ Core := [].{
 		with_initial : Store(st, h), Cell(st, a), a -> Store(st, h)
 		with_initial = |s, c, value| {
 			m = c.modify
-			{ init: s.tables.fold(m(s.init, |_| value), |st, t| (t.clear)(st)), cells: s.cells, tables: s.tables }
+			{ init: s.tables.fold(m(s.init, |_| value), |st, _, t| (t.clear)(st)), cells: s.cells, tables: s.tables, table_bits: s.table_bits }
 		}
 
 		## What the root site starts with: storage whose tables have no changes
 		## and carry live identities, and its table-cell bookkeeping. Restamping
 		## only here keeps pure Store values out of the live identity space.
 		initial : Store(st, h) -> Start(st)
-		initial = |s| { st: s.tables.fold(s.init, |st, t| (t.live)((t.clear)(st))), tables: s.tables }
+		initial = |s| { st: s.tables.fold(s.init, |st, _, t| (t.live)((t.clear)(st))), tables: s.tables }
 
 		## Apply one pure turn, validating the same-cell rule before any write.
 		## Generated table modifiers begin recording once; the live root's
-		## end-of-turn fold rearms only the exact table cells these writes name.
-		## Unwritten tables retain their records. The metadata folds visit table
-		## descriptors, never their rows; a first modifier may reclaim the
-		## previous writing turn's recorded keys before applying its function.
+		## end-of-turn lookup rearms only table cells in the exact write set.
+		## Unwritten tables retain their records. The generated descriptor index
+		## is built once with the store, never rediscovered by scanning tables.
+		## A first modifier may reclaim its preceding writing turn's recorded
+		## keys before applying its function.
 		after : Store(st, h), List(Write(st)) -> Store(st, h)
-		after = |{ init, cells: handles, tables }, writes| {
+		after = |{ init, cells: handles, tables, table_bits }, writes| {
 			wrote = writes_cells(writes, After)
-			written = tables.fold(0.U128, |bits, descriptor| bits.bitwise_or(cell_bit(descriptor.cell)))
 			next = writes.fold(init, |st, w| (w.apply)(st))
-			{ init: end_tables(next, { cells: tables, written }, wrote), cells: handles, tables }
+			{ init: end_tables(next, { cells: tables, written: table_bits }, wrote), cells: handles, tables, table_bits }
 		}
 
 		## What `c` holds in the store's starting storage: with `after`, what
@@ -422,11 +422,11 @@ Core := [].{
 	}
 
 	## What a root site starts with (see `Store.initial`).
-	Start(st) : { st : st, tables : List(TableCell(st)) }
+	Start(st) : { st : st, tables : Dict(U64, TableCell(st)) }
 
 	## The start of a program without a store.
 	no_store : Start({})
-	no_store = { st: {}, tables: [] }
+	no_store = { st: {}, tables: Dict.empty() }
 
 	## The store the cells `d` describe, named by `tag`: a value of a type
 	## the app declares for this store and no other. Its storage is
@@ -441,8 +441,8 @@ Core := [].{
 			{ st: held } = w
 			{ st: f(held) }
 		}
-		tables = (d.tables)(0, over)
-		{ init: tables.fold({ st: d.init }, |st, t| (t.stamp)(st)), cells: m(0, |w| w.st, over), tables }
+		tables = (d.tables)(0, over).fold(Dict.empty(), |index, table| index.insert(table.cell, table))
+		{ init: tables.fold({ st: d.init }, |st, _, t| (t.stamp)(st)), cells: m(0, |w| w.st, over), tables, table_bits: tables.fold(0.U128, |bits, cell, _| bits.bitwise_or(cell_bit(cell))) }
 	}
 
 	# Nominal rather than opaque (`::`): with the pinned compiler an opaque
@@ -5329,19 +5329,46 @@ expect {
 
 ## The store's table cells, as the root site holds them: what it needs of
 ## each, and the signature bits of all of them.
-Tables(st) : { cells : List(Core.TableCell(st)), written : U128 }
+Tables(st) : { cells : Dict(U64, Core.TableCell(st)), written : U128 }
 
-## The end of a turn for the store's tables: rearm the recording phase of
-## every table the turn wrote, after its readers have refreshed, without
-## changing its last writing turn's record. `wrote` names cells exactly; a table whose
-## cell only shares a signature bit with a written one is left alone.
+## The end of a turn visits the existing exact write-set words, looking up
+## only their set cell IDs in the immutable generated descriptor index. This
+## costs O(write-set words + written cells), not O(tables in the store). Hash
+## lookup has its ordinary expected constant cost. No rows are inspected.
 end_tables : st, Tables(st), Layers -> st
 end_tables = |st, tables, wrote| {
 	if layers_sig(wrote).bitwise_and(tables.written) == 0 {
 		st
 	} else {
-		tables.cells.fold(st, |acc, t| if (layers_has_cell(wrote, t.cell)) (t.finish)(acc) else acc)
+		var $state = finish_table_word(st, tables.cells, { bits: wrote.cells, base: 0 })
+		var $base = 64.U64
+		for word in wrote.more {
+			$state = finish_table_word($state, tables.cells, { bits: word, base: $base })
+			$base = $base + 64
+		}
+		$state
 	}
+}
+
+## A word has at most 64 positions. Zero words require no lookup, and a set
+## bit that names an ordinary cell never invokes a table callback. Exact IDs
+## keep tables 64 cells apart independent despite their shared signature bit.
+finish_table_word : st, Dict(U64, Core.TableCell(st)), { bits : U64, base : U64 } -> st
+finish_table_word = |st, tables, { bits, base }| {
+	var $state = st
+	var $bits = bits
+	var $cell = base
+	while $bits != 0 {
+		if $bits.bitwise_and(1) != 0 {
+			match tables.get($cell) {
+				Ok(table) => $state = (table.finish)($state)
+				Err(_) => {}
+			}
+		}
+		$bits = $bits.shr_zf_wrap(1)
+		$cell = $cell + 1
+	}
+	$state
 }
 
 ## After an event, return its root environment intact to the instance and
@@ -7537,7 +7564,7 @@ max_answer_files = 16
 ## Mount `elem` with the in-flight bound `max` and the program's catalogue,
 ## running any follow-up turns the mount queued.
 mount_in : U64, Catalogue, st, Elem(Root(st)) -> App(st)
-mount_in = |max, programs, st, elem| mount_start(max, programs, { st, tables: [] }, elem)
+mount_in = |max, programs, st, elem| mount_start(max, programs, { st, tables: Dict.empty() }, elem)
 
 ## `mount_in` for a root whose store starts as `start`: the root
 ## site also takes what it needs of the store's table cells.
@@ -7551,7 +7578,7 @@ mount_start_in = |max, programs, { st, tables }, elem, enclosing| {
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = new_tx([])
 	tx0 = { cmds, next, free, routes, work, paths, site_free, observations, fx: { ..fx, max } }
 	(block, tx) = mount_block(Root.{ store: st }, elem, 0, [], 0, 0, { cap: 0, enclosing }, tx0)
-	written = tables.fold(0.U128, |acc, t| acc.bitwise_or(cell_bit(t.cell)))
+	written = tables.fold(0.U128, |acc, cell, _| acc.bitwise_or(cell_bit(cell)))
 	{ store, root, tx: mounted, programs: catalogue } = drain({ store: st, root: store_inst({ cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs })
 	{ store, root, tx: with_fx(mounted, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), programs: catalogue }
 }
@@ -10134,16 +10161,31 @@ expect {
 	}
 	edited = TableCore.begin_changes(Table.from_list([{ key: 1.U64, row: "a" }])).update(1, |row| "${row}!")
 	tables = {
-		cells: [
-			{ cell: 6, clear: |(a, b)| (TableCore.clear_changes(a), b), stamp: |st| st, live: |st| st, finish: |(a, b)| (TableCore.finish_changes(a), b) },
-			{ cell: 70, clear: |(a, b)| (a, TableCore.clear_changes(b)), stamp: |st| st, live: |st| st, finish: |(a, b)| (a, TableCore.finish_changes(b)) },
-		],
+		cells: Dict.empty()
+			.insert(6, { cell: 6, clear: |(a, b)| (TableCore.clear_changes(a), b), stamp: |st| st, live: |st| st, finish: |(a, b)| (TableCore.finish_changes(a), b) })
+			.insert(70, { cell: 70, clear: |(a, b)| (a, TableCore.clear_changes(b)), stamp: |st| st, live: |st| st, finish: |(a, b)| (a, TableCore.finish_changes(b)) }),
 		written: cell_bit(6),
 	}
 	(first, second) = end_tables((edited, edited), tables, one_cell(70))
 	(untouched, _) = end_tables((edited, edited), tables, one_layer(6))
 	actual = { changes: (changed(first), changed(second), changed(untouched)), ready: (TableCore.is_ready(first), TableCore.is_ready(second), TableCore.is_ready(untouched)) }
 	actual == { changes: (1, 1, 1), ready: (False, True, False) }
+}
+
+## Exact write-set iteration invokes each selected callback once, including
+## cells 64 apart, and never invokes an unwritten or merely aliased cell.
+expect {
+	index = Dict.empty()
+		.insert(6.U64, { cell: 6, clear: |st| st, stamp: |st| st, live: |st| st, finish: |(a, b)| (a + 1, b) })
+		.insert(70, { cell: 70, clear: |st| st, stamp: |st| st, live: |st| st, finish: |(a, b)| (a, b + 1) })
+		.insert(134, { cell: 134, clear: |st| st, stamp: |st| st, live: |st| st, finish: |_| crash "an unwritten table finalizer was invoked" })
+	tables = { cells: index, written: cell_bit(6) }
+	wrote = layers_or(one_cell(6), one_cell(70))
+	{
+		selected: end_tables((0.U64, 0.U64), tables, layers_or(wrote, wrote)),
+		ordinary: end_tables((0.U64, 0.U64), tables, one_cell(198)),
+		empty: end_tables((0.U64, 0.U64), tables, no_layers),
+	} == { selected: (1, 1), ordinary: (0, 0), empty: (0, 0) }
 }
 
 ## Each pure after is one turn: the decision can read the preceding inverse,
@@ -10240,7 +10282,7 @@ expect {
 	cell = store.cells()
 	snapshot = store.after([cell.update(|table| table.put(1, 11))]).after([cell.update(|table| table.put(2, 21))]).read(cell)
 	live = (cell.modify)(store.initial().st, |table| table.put(1, 111))
-	ended = store.tables.fold(live, |st, descriptor| (descriptor.finish)(st))
+	ended = store.tables.fold(live, |st, _, descriptor| (descriptor.finish)(st))
 	before = TableCore.mark((cell.get)(ended))
 	loaded = (cell.get)((cell.modify)(ended, |_| snapshot))
 	{
