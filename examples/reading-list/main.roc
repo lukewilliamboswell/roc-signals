@@ -13,3 +13,7 @@ main = ReadingApp.program
 
 ## The instance holds this store beside its site tree.
 Store : Engine.Stored(ReadingList, (Engine.Table(Str, BookStorage.Book), ([Loaded, Loading, Unreadable(Str)], ([Everything, Only(BookStorage.Shelf)], (BookStorage.NewBook, (Engine.Outbox({ author : Str, title : Str }), (Engine.Outbox(BookStorage.Book), (U64, (I64, (Engine.Outbox(List([Delete(Str), Put(BookStorage.Book)])), Str))))))))))
+
+## Check that the default first page mounts while this app compiles.
+mounted : U64
+mounted = Engine.mounts(main)

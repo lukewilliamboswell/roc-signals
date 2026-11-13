@@ -3006,7 +3006,13 @@ Core := [].{
 		## count) and each name once; anything else is a contract error when the
 		## catalogue is built.
 		with_workers : Program(st), List(Registration) -> Program(st)
-		with_workers = |p, registrations| { ..p, workers: p.workers.concat(registrations) }
+		with_workers = |p, registrations| {
+			combined = p.workers.concat(registrations)
+			match Core.catalogue(combined) {
+				Ok(_) => { ..p, workers: combined }
+				Err(message) => crash message
+			}
+		}
 	}
 
 	## For the platform's hosts and test harnesses: the entry points of a
@@ -8199,6 +8205,25 @@ is_kept = |req| match req {
 min_u32 : U32, U32 -> U32
 min_u32 = |a, b| if (a < b) a else b
 
+## Check request contracts before admission, while the issuing site's path
+## is available. The encoder only writes requests that passed this boundary.
+request_problem : Request -> Try({}, Str)
+request_problem = |request| match request {
+	Timer(ms) if ms > max_browser_timer_ms => Err("contract: Timer(${ms.to_str()}) is longer than a browser timer holds (2147483647 ms, about 24.8 days); the browser would fire it at once")
+	Interval(0) => Err("contract: Interval(0) has no period; the browser would fire it as fast as it can, a turn each time")
+	Interval(ms) if ms > max_browser_timer_ms => Err("contract: Interval(${ms.to_str()}) is longer than a browser timer holds (2147483647 ms, about 24.8 days); the browser would fire it as fast as it can, a turn each time")
+	Upload({ method, url, body, .. }) if method == "GET" or method == "HEAD" => Err("contract: File.upload of \"${body.name}\" to ${url} uses ${method}, which carries no body")
+	_ => Ok({})
+}
+
+## Timer limits are contracts before admission; zero is legal only for the
+## one-shot timer, and the browser's largest delay remains valid for both.
+expect {
+	request_problem(Timer(0)).is_ok() and request_problem(Interval(0)).is_err() and
+	request_problem(Timer(max_browser_timer_ms)).is_ok() and request_problem(Interval(max_browser_timer_ms)).is_ok() and
+	request_problem(Timer(max_browser_timer_ms + 1)).is_err() and request_problem(Interval(max_browser_timer_ms + 1)).is_err()
+}
+
 ## An admitted request's `FX` command (design.md, Appendix B). A port
 ## request's is written at the end of its turn instead (see [PortAt]).
 put_req : List(U8), U32, Request, U32 -> List(U8)
@@ -8229,21 +8254,8 @@ put_fx_progress = |c, id, req, progress_ms| {
 			Plain => put_str(head.append(19), text).append(0)
 			Html(markup) => put_str(put_str(head.append(19), text).append(1), markup)
 		}
-		Timer(ms) => {
-			if ms > max_browser_timer_ms {
-				crash "contract: Timer(${ms.to_str()}) is longer than a browser timer holds (2147483647 ms, about 24.8 days); the browser would fire it at once"
-			}
-			put_u32(head.append(3), ms)
-		}
-		Interval(ms) => {
-			if ms == 0 {
-				crash "contract: Interval(0) has no period; the browser would fire it as fast as it can, a turn each time"
-			}
-			if ms > max_browser_timer_ms {
-				crash "contract: Interval(${ms.to_str()}) is longer than a browser timer holds (2147483647 ms, about 24.8 days); the browser would fire it as fast as it can, a turn each time"
-			}
-			put_u32(head.append(4), ms)
-		}
+		Timer(ms) => put_u32(head.append(3), ms)
+		Interval(ms) => put_u32(head.append(4), ms)
 		Popstate => head.append(5)
 		OnlineChanges => head.append(6)
 		VisibilityChanges => head.append(7)
@@ -8252,9 +8264,6 @@ put_fx_progress = |c, id, req, progress_ms| {
 		ReadBytes({ file, max_bytes }) => put_u64(put_file(head.append(11).append(1), file), max_bytes)
 		ReadUtf8({ file, max_bytes }) => put_u64(put_file(head.append(11).append(2), file), max_bytes)
 		Upload({ method, url, headers, body, timeout_ms, credentials }) => {
-			if method == "GET" or method == "HEAD" {
-				crash "contract: File.upload of \"${body.name}\" to ${url} uses ${method}, which carries no body"
-			}
 			var $b = put_u32(put_str(put_str(head.append(12), method), url), headers.len().to_u32_wrap())
 			for (k, v) in headers {
 				$b = put_str(put_str($b, k), v)
@@ -8280,6 +8289,10 @@ fx_admit = |tx, path, req| fx_admit_progress(tx, path, req, 0)
 
 fx_admit_progress : Tx, List(U32), Request, U32 -> (U32, Tx)
 fx_admit_progress = |tx, path, req, progress_ms| {
+	match request_problem(req) {
+		Ok(_) => {}
+		Err(message) => crash "${message} (site ${show_path(path)})"
+	}
 	# A port request's bytes are written at the end of the turn.
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = turn_end_later(tx, path, req)
 	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch } = fx

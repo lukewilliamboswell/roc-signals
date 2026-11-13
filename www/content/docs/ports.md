@@ -50,9 +50,22 @@ made from a props record: `Port.command({ name })`,
 {{ sample(file="ports/Notes.roc", region="ports") }}
 
 Port names are global strings, so namespace them (`"example.org/notes/list"`).
-List every port's `registration()` in the program:
+Keep a module's ports in one annotated record. Its fields are `Port.Command`,
+`Port.Call`, `Port.Subscription`, or nested records of them. Derive every entry
+with `Port.registrations` and pass the catalogue to `with_ports`:
 
 {{ sample(file="ports/Notes.roc", region="program") }}
+
+The derived catalogue includes a new field automatically. A module omitted
+from the composing record can still be undeclared. Keep unrelated configuration
+outside it: a non-port field is a contract error naming its full field path.
+The catalogue allows at most 64 ports, unique names of 1–128 UTF-8 bytes, and
+`Every` bounds of 1–1024. `with_ports` checks the concatenated catalogue too,
+catching duplicates across modules. Top-level constants report these errors
+at compile time; dynamically built programs report them when built. JavaScript
+handler matching still happens at mount. Use a port's `name()` when a monitor
+or page needs its handler name. Derivation orders fields alphabetically;
+requests and handlers are addressed by name.
 
 And use them from effect sites, like any other request:
 
@@ -63,17 +76,11 @@ resource holding the answer for an input, an `Engine.Remote`, where a newer
 input stops the older call. `Port.resource_when` takes `[Run(input), Skip]`
 for an input that is sometimes not a question.
 
-Give each port its own effect site. A site's reaction receives every
-result of what its plan issued, and a `PortAnswer` does not say which port
-it came from, so a site that issued a call on one port and a subscription
-on another could not tell their results apart. One outbox whose item's tag
-names the port (`[Add(Book), Remove(Str)]`) works too: the reaction is
-given the item, so it knows which port answered.
-
-Decode a port's data into the app's own types at the door, in the
-reaction, and check the app's invariants there (an id that must be unique,
-a list that must be sorted), so nothing deeper takes the raw message on
-trust.
+A site's plan returns typed asks and its reaction receives their common
+result type. Use a port's `ask` or `subscribe` operation to decode its answer
+at that boundary. Validate application rules, such as uniqueness or ordering,
+in the decision before writing the result to cells. Use separate sites when
+different services need different result types.
 
 ### Sending when the user acts
 

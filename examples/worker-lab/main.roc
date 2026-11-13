@@ -14,3 +14,7 @@ main = LabApp.program
 
 ## The instance holds this store beside its site tree.
 Store : Engine.Stored(LabStore, (U64, (Engine.Table(U64, Lab.Job), (U64, (U64, Engine.Outbox(Engine.File))))))
+
+## Check that the default first page mounts while this app compiles.
+mounted : U64
+mounted = Engine.mounts(main)

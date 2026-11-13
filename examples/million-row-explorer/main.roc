@@ -17,3 +17,7 @@ main = ExplorerApp.program
 
 ## The instance holds this store beside its site tree.
 Store : Engine.Stored(Explorer, (Orders.Filter, (Orders.Filter, ([Live, Paused], (U32, ({ dropped : U32, orders : U64, tally : Orders.Tally }, Str))))))
+
+## Check that the default first page mounts while this app compiles.
+mounted : U64
+mounted = Engine.mounts(main)

@@ -10,3 +10,7 @@ main = Scores.program
 
 ## The instance holds this store beside its site tree.
 Store : Engine.Stored(Scores, ((Engine.Table(U64, Scores.Player), U64), ({ order : [Highest, Lowest], show : [Everyone, Team([Blue, Red])] }, ({ count : U64, start : U64 }, ({ count : U64, start : U64 }, Bool)))))
+
+## Check that the default first page mounts while this app compiles.
+mounted : U64
+mounted = Engine.mounts(main)

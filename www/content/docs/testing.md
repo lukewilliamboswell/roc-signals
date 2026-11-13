@@ -23,6 +23,21 @@ visibility, history and storage. And they can assert *how much* work an
 update did, so a change that makes a keystroke rebuild a whole list fails a
 test instead of slipping through.
 
+## Check the default first page
+
+Every program must mount at the default environment: `/`, empty local and
+session storage, online and visible, with the remaining boot defaults. A new
+app's `main.roc` binds `mounted = Engine.mounts(main)` as a `U64` constant. The
+compiler mounts that page and reports any reached contract error, crash or
+failed inline `expect` in the app's own file. An app's explicit crash or
+`expect` can point to that expression; engine contracts point to the constant.
+
+The check reaches only the default page. Specs still cover routes, later
+branches, rows and results. An app needing a session should draw a sign-in
+page there; an app rejecting `/` can draw a not-found page. Removing the
+constant disables this check. It costs work proportional to the default mount
+on each compilation; it creates no extra runtime mount or retained state.
+
 ## Decisions as functions
 
 A decision returns the list of writes its transition makes
@@ -40,9 +55,10 @@ values as a turn applies it, and `read(cell)` reads a cell of the result.
   that depends on the boot data is `store.with_initial(cell, value)`.
 - A table is read like any cell, and its rows with `get`:
   `store.after(writes).read(table).get(key)`.
-- `after` ends no turn, so a table keeps its changes:
-  `store.after(writes).read(table).inverse()` is one write for each row
-  the transition wrote. Chained `after`s add to the same changes.
+- Each `after` is one pure turn. A written table starts its changes before
+  its first modifier; `store.after(writes).read(table).inverse()` describes
+  that list's first earlier row for each written key. A table the list does
+  not write retains its last writing turn's changes.
 
 Run them with `roc test` in the app's directory; it runs every top-level
 `expect` in `main.roc` and the modules it imports.

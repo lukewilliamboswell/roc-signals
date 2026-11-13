@@ -14,3 +14,7 @@ main = GridApp.program
 
 ## The instance holds this store beside its site tree.
 Store : Engine.Stored(GridStore, (Engine.Table(U64, GridData.Row), (Str, (GridData.Sort, U64))))
+
+## Check that the default first page mounts while this app compiles.
+mounted : U64
+mounted = Engine.mounts(main)

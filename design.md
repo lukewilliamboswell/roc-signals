@@ -1840,8 +1840,16 @@ into a typed plan; `raw` deliberately exposes the whole raw Result union.
   carries a port name and a message: JSON text in the `PortJson` encoding,
   the byte blocks its `{"$bytes":N}` markers name and the files its
   `{"$file":N}` markers name, which travel beside the text and are never
-  encoded as text. The program declares each port with `with_ports` (at
-  most 64, each name once, 1 to 128 bytes), and a request for an undeclared
+  encoded as text. A module keeps its ports in one annotated record and
+  `Port.registrations` derives every field, including nested records. The
+  program combines those catalogues with `with_ports` (at most 64, each name
+  once, 1 to 128 bytes). Invalid catalogues fail where built, at compile time
+  for top-level constants. Record fields derive in lexical order, but handlers
+  and requests address ports by name. A complete module omitted from the
+  composing catalogue can still be undeclared. A non-port field names its full
+  field path in the diagnostic. The catalogue walk visits record fields and
+  authored nesting, with no runtime registry or browser object retained.
+  A request for an undeclared
   port, or for a port of another shape, is a `contract` error naming the port
   and the site, checked at the end of the turn like a worker task's name.
   The runtime refuses to mount a page whose `ports` option does not implement
@@ -3287,6 +3295,18 @@ holds.
 
 ## Error Containment
 
+Every program must mount at the default environment. An app may check its
+default first page while compiling with a top-level `Engine.mounts(main)`
+constant of type U64. It calls the ordinary driver with empty boot bytes and
+returns the mount batch's byte length. The check reports reached failures in
+the app's own file: engine contracts at the constant, and an app's explicit
+crash or inline `expect` at that expression when the compiler has its source.
+It checks no unvisited route, branch or future result. Removing the constant
+disables the check; the scaffold and maintained app entries include it.
+Mount-time element contracts name the site's path and element position; where
+available, a static test id, id, aria-label, name or first static descendant
+text adds a hint bounded to 64 UTF-8 bytes. Dynamic labels are not sampled.
+
 A Roc crash, a failed `expect`, or an allocation failure **poisons** the
 instance:
 
@@ -3345,6 +3365,8 @@ no field names); `Table.insert` of a key
 already present; a table built from two rows with one key; two rows of a
 view that compare `Same`; a table view's row read after its key left the table in
 the same event;
+a typed timeout of `Ms(0)`, an interval of zero milliseconds, or a timer or
+interval longer than 2,147,483,647 milliseconds;
 an effect follow-up chain deeper than 64;
 a result reader given a raw result of the wrong kind; a worker catalogue with a
 duplicate name or more than 64 names; work issued for a task the
@@ -3378,7 +3400,14 @@ and a zone with an invalid span, count, order or offset range. The diagnostic
 names the section. A program declaring more than 7305 zone days is a
 contract error when it is built. A bare result tag 5 is truncated, never a
 timer answer with an invented time.
-**Resource limits:** node ids (2³² − 2 live nodes); any count the template
+A timeout constant evaluated while compiling fails at that constant; a
+computed `Ms(0)` faults when constructed. Invalid timer and interval delays
+fault before admission, with their issuing site's path, before a command batch
+is published. These diagnostics name the value and rule; `Unlimited`
+explicitly requests no timeout.
+
+**Resource limits:** node ids (2³² − 2 live nodes); a store description with
+2³² or more cells; any count the template
 encoding carries in one byte —
 static attributes, children, holes, hole path depth, row handlers — above 255;
 more follow-up turns of depth 2 or more in one host call than the breadth
@@ -3416,7 +3445,9 @@ bound and a declared behaviour at the bound:
 | Follow-up chain depth per host call | 64 | `contract` poison |
 | Follow-up turns of depth 1 per host call | One for each request the external turn issued past the in-flight cap, and one for each `Self` it asked for | All run |
 | Follow-up turns of depth 2 or more per host call | 64 per in-flight slot, at least 4096 | `resource_limit` poison |
-| HTTP timeout, work timeout | 600 s | Capped |
+| HTTP timeout, work timeout | 600 s | Capped; typed `Ms(0)` is a contract error, `Unlimited` means none |
+| Timer delay / interval period | At most 2,147,483,647 ms; interval at least 1 ms | `contract` before admission and publication; `Timer(0)` remains legal |
+| Authored store description | Fewer than 2³² cells | `resource_limit` at construction, before assigning table identities |
 | Transfer progress sampler | One latest sample and one timer per request that asks for progress | Reports no more often than the requested interval (floor 16 ms); final, failure, timeout or cancel clears the timer |
 | A cancelled job that finishes (`on_cancel: Finish`) | Its timeout, else 600 s after it was performed | Its worker is terminated as at a timeout |
 | Worker catalogue | 64 names (a preparation's and its tasks' each count) | `contract` poison |
@@ -4145,6 +4176,8 @@ of them is platform semantics.
 | [roc-lang/roc#12869](https://github.com/roc-lang/roc/issues/12869) | An unused closure capturing a function passed to a branching self-recursive closure makes monotype lowering exponential: a lambda that hands a function to a site whose instance calls itself from several branches makes `roc check` take minutes or not finish. Fixed upstream in nightlies after 2026-11-10 | The view site's getter is a function of its own (`view_source` in `Core.roc`), and the Log Explorer's `stepped` handler is a function of its module instead of a local closure, only while a pinned compiler predates the fix |
 | [roc-lang/roc#12836](https://github.com/roc-lang/roc/issues/12836) | `Box.box` of a capture-free callable allocates on every call | Extra allocations per call |
 | [roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012) | Updating storage captured by a boxed closure can borrow that capture and copy it even in development builds | The instance holds its store as plain data beside boxed sites. Local state still lives in a site's closure and remains affected; extend the allocation guard to local state when the compiler is fixed |
+| [roc-lang/roc#13022](https://github.com/roc-lang/roc/issues/13022) | Format derivation cannot resolve inherited hooks through a public format alias | Port.Registering declares its safe format hooks directly; catalogue accumulation remains in the unexposed PortRegistry module |
+| [roc-lang/roc#13002](https://github.com/roc-lang/roc/issues/13002) | Compile-time Dict and Set work can be quadratic in the default page's rows | Engine.mounts has inherent default-mount work; the compiler's extra superlinear cost remains upstream. Removing the app constant disables the check |
 | [roc-lang/roc#13019](https://github.com/roc-lang/roc/issues/13019) | Optimized site writes still show table-size-dependent allocation when the engine never crosses a host box | The development sparse-write guard checks requested bytes at two table sizes. Shipping optimized allocation is not claimed flat; add an optimized guard when the compiler defect is fixed |
 | [roc-lang/roc#12953](https://github.com/roc-lang/roc/issues/12953) | Since roc-lang/roc#12887, the host boundary rejects an opaque `Box` of a value that contains functions, though it accepts the same value as `Box(Iter(...))` | The sites cross as `Box(Iter(Core.Sites(st)))` inside the one outer `Handle`, beside the plain store; `platform/main.roc` alone wraps and unwraps them. `Core.Kept` holds its task runner as a `Box` of its own |
 | [roc-lang/roc#12945](https://github.com/roc-lang/roc/issues/12945) | Under `--specialize=no`, a derived record decode leaks on every call | Worker instances grow per job in that build, so the scaling task's memory checks fail for it |
@@ -4286,6 +4319,7 @@ Paste : [Text(Str), TooLarge]
 Program(st)                                   # opaque; the app binds it as `main` and names st as Store
 Program.with_workers : Program(st), List(Registration) -> Program(st)   # the worker catalogue
 Registration                                  # opaque: a task or preparation; Worker makes one
+mounts : Program(st) -> U64                 # check the default first page at compile time
 Program.with_ports : Program(st), List(PortRegistration) -> Program(st) # the ports the page supplies
 PortRegistration                              # opaque: a port's name and shape; Port makes one
 
@@ -4635,7 +4669,8 @@ Port.call : CallProps -> Call(input, output)            where [input.PortJson.Se
 Port.CallProps := { name : Str, timeout : [Unlimited, Ms(U32)] ?? Unlimited }
 Port.subscription : SubscriptionProps -> Subscription(arg, msg)   where [arg.PortJson.Sendable, msg.PortJson.Sendable]
 Port.SubscriptionProps := { name : Str, delivery : Delivery }
-Command.registration, Call.registration, Subscription.registration : ... -> PortRegistration
+registrations : ports -> List(PortRegistration) # derive an annotated record, including nested records
+Command.name, Call.name, Subscription.name : ... -> Str
 Command.send : Command(output), output -> [PortCommand({ port : Str, message : PortMessage })]
                                               # typed by its one tag, as File.save is
 Call.ask : Call(input, output), input -> Ask(output, Port.Error)
@@ -5018,8 +5053,8 @@ an earlier command. Scroll end is resolved at perform time.
 |---|---|---|
 | 1 | `method:str url:str n:u32 (name:str value:str)* body:str timeout_ms:u32 cache:u8 credentials:u8 progress_ms:u32` | HTTP |
 | 2 | `key:str` | Storage read (answered one task later) |
-| 3 | `ms:u32` | Timer |
-| 4 | `ms:u32` | Interval (subscription) |
+| 3 | `ms:u32` | Timer, 0–2,147,483,647 ms; zero samples the time |
+| 4 | `ms:u32` | Interval (subscription), 1–2,147,483,647 ms |
 | 5 | — | Popstate (subscription) |
 | 6 | — | Connectivity (subscription; `online`/`offline` events) |
 | 7 | — | Visibility (subscription; `visibilitychange` events) |

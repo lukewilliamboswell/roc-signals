@@ -13,3 +13,7 @@ main = Todos.program
 
 ## The instance holds this store beside its site tree.
 Store : Engine.Stored(Todos, (Engine.Table(U64, Todos.Todo), (U64, Str)))
+
+## Check that the default first page mounts while this app compiles.
+mounted : U64
+mounted = Engine.mounts(main)
