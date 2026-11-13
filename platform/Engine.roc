@@ -1475,8 +1475,8 @@ Engine := [].{
 	const : a -> Signal(ctx, a)
 	const = |value| Fixed(value)
 
-	## `element(tag, attrs, children)`: an HTML element. `Html` offers typed
-	## helpers for common elements and controls.
+	## Build an element from a checked tag, attributes and children. `Html`
+	## offers typed helpers for common elements and controls.
 	element : Tag, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 	element = |tag, attrs, kids| Core.element(tag.text(), attrs, kids)
 

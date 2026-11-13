@@ -213,6 +213,13 @@ Tag and attribute values check context-free DOM name grammar. Namespace rules
 also depend on where an element is constructed. A well-formed computed name
 remains available when a vocabulary does not yet list it.
 
+A tag literal names a listed HTML element (case-insensitively), an exact-case
+SVG element, or a grammar-valid name with a hyphen. Literal names beginning
+exactly `aria-` use the parser's ARIA vocabulary. Unknowns suggest close spellings
+and explain the explicit `from_str` constructor; it still accepts well-formed
+names newer than that vocabulary. A name alone does not supply a namespace
+or promise that its children obey the element's content model.
+
 Attribute literals `class` and `data-testid` point to `class`/`class_s` and
 `test_id`/`test_id_s`. `EventType` accepts any nonempty computed type, including
 custom events. Literals reject retired suffixes and text key handlers with the

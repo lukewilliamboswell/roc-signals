@@ -4422,7 +4422,14 @@ compiling. `from_str` returns a typed refusal for computed text, and `text`
 retains the original spelling. Tag and attribute grammar is context-free;
 namespace-specific validity is checked where the namespace is known. Raw
 well-formed names remain available independently of vocabulary checks at
-literals. Attribute literals `class` and `data-testid` direct an author to
+literals. A tag literal accepts a listed HTML name (ASCII-insensitive), an
+exact-case SVG name, or a grammar-valid hyphenated name. An exact `aria-`
+prefix requires a listed ARIA spelling at a literal. The lists come from the
+public parser vocabulary; there is no platform copy. Unknown names explain
+the explicit raw constructor, with spelling suggestions up to two edits
+including an adjacent transposition. The hyphen rule precedes a MathML
+name diagnostic and does not supply a namespace. Attribute literals `class`
+and `data-testid` direct an author to
 their dedicated builders; computed names apply grammar only.
 
 A `Method` is a nonempty HTTP token excluding `CONNECT`, `TRACE` and `TRACK`

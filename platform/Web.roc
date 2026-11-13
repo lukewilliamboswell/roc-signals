@@ -11,8 +11,9 @@ import parser.MathML as MarkupMathML
 ## Each value retains its original spelling; these types never normalize it.
 Web := [].{
 
-	## An element local name. Validation checks the DOM grammar, not which
-	## elements a browser knows or the namespace in which one will be created.
+	## An element local name. Computed text checks DOM grammar; literals also
+	## use the parser's HTML and SVG vocabulary. The eventual construction
+	## context determines its namespace.
 	Tag :: Str.{
 
 		## Check an authored name without restricting unknown or custom elements.
