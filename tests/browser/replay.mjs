@@ -1233,7 +1233,14 @@ const STEPS = {
 // Assertions inspect a held frame without delivering it. An occurrence's
 // target and pending request must be resolved only after earlier reports
 // have reached the app, since a report may change either of them.
-async function isOccurrence(page, step) {
+async function isOccurrence(page, step, state) {
+  // Timeout discards this request's queued progress before its occurrence
+  // drains the remaining ingress. Pre-releasing reports would deliver the
+  // very sample the timeout must remove.
+  if (step.op === "run-effect" && state.stub?.timeout) return page.evaluate(n => {
+    const rt = window.__rt, entry = rt.live.get(rt.issued[n - 1]);
+    return entry?.kind !== "http" && entry?.kind !== "fetch";
+  }, step.count);
   if (step.op.startsWith("expect-")) return false;
   if (["hold-reports", "release-reports", "mark-metrics", "stub-http", "stub-http-reject", "set-online", "set-visibility", "scroll", "report-size", "report-seen", "set-media", "progress-effect", "storage-elsewhere", "storage-elsewhere-removed", "storage-elsewhere-cleared"].includes(step.op)) return false;
   if (step.op === "emit-port") return page.evaluate((port) => window.__rt.portDecls.get(port)?.delivery !== 2, step.port);
@@ -1549,7 +1556,7 @@ for (const spec of specs) {
       const s = spec.steps[i];
       const h = STEPS[s.op];
       if (h === undefined) throw new Error(`${s.op} has no handler in this runner`);
-      if (await isOccurrence(page, s)) await releaseReports(page);
+      if (await isOccurrence(page, s, state)) await releaseReports(page);
       await h(page, s, state);
       if (state.dialogError) throw new Error(state.dialogError);
       if (!state.holdingReports) await releaseReports(page);
