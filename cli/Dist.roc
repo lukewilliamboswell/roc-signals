@@ -1,4 +1,9 @@
 import cli.Path
+import cli.Cmd
+import cli.Env
+import cli.OsStr
+import cli.System
+import Specs
 import cli.Stdout
 import Bundle
 import Compiler
@@ -22,9 +27,17 @@ Dist :: [].{
 	## `dist/`, and its bytes.
 	Asset : { path : Str, bytes : List(U8) }
 
-	## Build `dist/`, replacing what was there.
-	run! : () => Try({}, _)
-	run! = || {
+	## Explicit first-page routes; an ordinary build emits no pictures.
+	Options := { pictures : List(Str) ?? [] }
+
+	## The native runner owns markup inspection and URL-to-output projection.
+	## JSON decoding is strict UTF-8 and uses Roc's built-in typed parser.
+	Picture : { protocol : Str, url : Str, path : Str, page : Str, metadata : List(U8) }
+
+	## Stage the complete output before publishing it. Replacing an existing
+	## directory uses backup/rename with rollback, rather than an atomic exchange.
+	run! : Options => Try({}, _)
+	run! = |options| {
 		if !(Path.exists!(Path.utf8("main.roc"))?) {
 			return Err(NoMainRoc)
 		}
@@ -63,19 +76,181 @@ Dist :: [].{
 		}
 		assets = $assets
 		directory = "assets/${Dist.hash(assets)}"
-		page = Dist.rewrite(Path.read_utf8!(Path.utf8("index.html"))?, { names: assets.map(|a| a.path), directory })
-		if Path.exists!(Path.utf8("dist"))? {
-			Path.delete_all!(Path.utf8("dist"))?
+		template = Path.read_utf8!(Path.utf8("index.html"))?
+		staging = ".signals/build/dist-next"
+		previous = ".signals/build/dist-previous"
+		if Path.exists!(Path.utf8(previous))? {
+			return Err(PublicationInterrupted(previous))
 		}
-		written = [{ path: "index.html", bytes: page.to_utf8() }]
-			.concat(assets.map(|a| { ..a, path: "${directory}/${a.path}" }))
-			.concat($public)
-		for file in written {
-			target = "dist/${file.path}"
-			Path.create_all!(Path.utf8(Str.join_with(target.split_on("/").drop_last(1), "/")))?
-			Path.write_bytes!(Path.utf8(target), file.bytes)?
+		if Path.exists!(Path.utf8(staging))? {
+			Path.delete_all!(Path.utf8(staging))?
 		}
-		Stdout.line!(Dist.summary(written))?
+		Path.create_all!(Path.utf8(staging))?
+		resources = assets.map(|a| { ..a, path: "${directory}/${a.path}" }).concat($public)
+		Dist.validate_outputs(resources)?
+		for file in resources {
+			Dist.stage_file!(file, { staging })?
+		}
+		written = resources.map(|file| { path: file.path, bytes: file.bytes.len() })
+		pages = if options.pictures.is_empty() {
+			page = { path: "index.html", bytes: Dist.rewrite(template, { names: assets.map(|a| a.path), directory }).to_utf8() }
+			Dist.validate_outputs([{ ..page, bytes: [] }].concat(resources))?
+			Dist.stage_file!(page, { staging })?
+			[{ path: page.path, bytes: page.bytes.len() }]
+		} else {
+			Dist.stage_pictures!(options.pictures, { staging, names: assets.map(|a| a.path), directory, reserved: resources.map(|file| file.path), template })?
+		}
+		all_outputs = pages.concat(written)
+		had_previous = Path.exists!(Path.utf8("dist"))?
+		if had_previous {
+			Path.rename!(Path.utf8("dist"), Path.utf8(previous))?
+		}
+		match Path.rename!(Path.utf8(staging), Path.utf8("dist")) {
+			Ok(_) => {}
+			Err(problem) => {
+				if had_previous {
+					Path.rename!(Path.utf8(previous), Path.utf8("dist")) ? |_| PublicationRollbackFailed(previous)
+				}
+				return Err(problem)
+			}
+		}
+		if had_previous {
+			Path.delete_all!(Path.utf8(previous)) ? |_| PublicationCleanupFailed(previous)
+		}
+		Stdout.line!(Dist.summary(all_outputs))?
+		Ok({})
+	}
+
+	## Run one real native app mount for each explicit route. All responses
+	## are captured and validated before the existing dist directory is touched.
+	stage_pictures! : List(Str), { staging : Str, names : List(Str), directory : Str, reserved : List(Str), template : Str } => Try(List({ path : Str, bytes : U64 }), _)
+	stage_pictures! = |urls, { staging, names, directory, reserved, template }| {
+		target = Specs.target_of(System.target!())
+		if !Bundle.spec_targets.contains(target) {
+			return Err(PictureUnsupported(target))
+		}
+		runner = ".signals/build/picture-runner${if target.ends_with("win") ".exe" else ""}"
+		version = Compiler.version!()?
+		match Compiler.build!({ target, opt: "dev", output: runner })? {
+			Built(_) => {}
+			Failed(report) => return Err(BuildFailed({ report, version }))
+		}
+		program = "${Project.with_slashes(Path.display(Env.cwd!()?))}/${runner}"
+		var $routes = []
+		var $outputs = reserved.map(|path| { path, bytes: [] })
+		var $written = []
+		for url in urls {
+			output = Cmd.new(OsStr.from_str(program)).args(["--picture-path", url].map(OsStr.from_str)).stdout(Capture).stderr(Capture).output_limit(MaxBytes(1048576)).run!() ? |problem| PictureRunnerFailed({ url, reason: match problem {
+				CmdErr(error) => error.to_str()
+				Interrupted => "command interrupted"
+			} })
+			if output.status != Exited(0) {
+				return Err(PictureFailed({ url, report: Str.from_utf8_lossy(output.stderr_bytes) }))
+			}
+			text = Str.from_utf8(output.stdout_bytes) ? |_| PictureResponseInvalid(url)
+			route : { protocol : Str, url : Str, path : Str }
+			route = Json.parse(text) ? |_| PictureResponseInvalid(url)
+			if route.protocol != "roc-signals/picture-path/v1" or route.url != url {
+				return Err(PictureResponseInvalid(url))
+			}
+			Dist.validate_output_path(route.path)?
+			if $routes.any(|prior| Dist.output_key(prior.path) == Dist.output_key(route.path)) {
+				return Err(PictureRouteCollision({ first: $routes.find_first(|prior| Dist.output_key(prior.path) == Dist.output_key(route.path)).map_ok(|prior| prior.url) ?? crash "Dist.stage_pictures!: prior route exists", second: url, path: route.path }))
+			}
+			$routes = $routes.append({ path: route.path, url })
+			$outputs = $outputs.append({ path: route.path, bytes: [] })
+		}
+		Dist.validate_outputs($outputs)?
+		projected = ".signals/build/picture-template.html"
+		for route in $routes {
+			url = route.url
+			depth = route.path.split_on("/").len() - 1
+			prefix = Str.repeat("../", depth)
+			# Rewrite only the original host template. A rendered app attribute
+			# or text which resembles an asset name must remain untouched.
+			Path.write_utf8!(Path.utf8(projected), Dist.rewrite(template, { names, directory: "${prefix}${directory}" }))?
+			output = Cmd.new(OsStr.from_str(program)).args(["--prerender", url, "--template", projected].map(OsStr.from_str)).stdout(Capture).stderr(Capture).output_limit(MaxBytes(134217728)).run!() ? |problem| PictureRunnerFailed({ url, reason: match problem {
+				CmdErr(error) => error.to_str()
+				Interrupted => "command interrupted"
+			} })
+			if output.status != Exited(0) {
+				return Err(PictureFailed({ url, report: Str.from_utf8_lossy(output.stderr_bytes) }))
+			}
+			text = Str.from_utf8(output.stdout_bytes) ? |_| PictureResponseInvalid(url)
+			picture : Picture
+			picture = Json.parse(text) ? |_| PictureResponseInvalid(url)
+			if picture.protocol != "roc-signals/prerender/v1" or picture.url != url or picture.path != route.path or picture.page.is_empty() or picture.page.count_utf8_bytes() > 16777216 or !picture.metadata.is_empty() {
+				return Err(PictureResponseInvalid(url))
+			}
+			# Stage 1 emits no envelope; no fake adoption metadata is accepted.
+			page = { path: picture.path, bytes: picture.page.to_utf8() }
+			Dist.stage_file!(page, { staging })?
+			$written = $written.append({ path: page.path, bytes: page.bytes.len() })
+		}
+		Path.delete!(Path.utf8(projected))?
+
+		Ok($written)
+	}
+
+	## Write only inside the unpublished tree. An existing target here is a
+	## filesystem alias collision, even if its Unicode/case spelling differs.
+	stage_file! : Asset, { staging : Str } => Try({}, _)
+	stage_file! = |file, { staging }| {
+		target = "${staging}/${file.path}"
+		if Path.exists!(Path.utf8(target))? {
+			return Err(OutputCollision({ first: "already staged filesystem target", second: file.path }))
+		}
+		Path.create_all!(Path.utf8(Str.join_with(target.split_on("/").drop_last(1), "/")))?
+		Path.write_bytes!(Path.utf8(target), file.bytes)?
+		Ok({})
+	}
+
+	## Refuse path traversal, separators hidden inside an authored component,
+	## drive syntax and filesystem-reserved spellings before writing a file.
+	validate_output_path : Str -> Try({}, [UnsafeOutputPath(Str)])
+	validate_output_path = |path| {
+		parts = path.split_on("/")
+		if parts.is_empty() or parts.any(|part| part.is_empty() or part == "." or part == ".." or part.ends_with(".") or part.ends_with(" ") or part.to_utf8().any(|byte| byte < 32 or byte == 127 or [':', '\\', '<', '>', '"', '|', '?', '*'].contains(byte))) {
+			return Err(UnsafeOutputPath(path))
+		}
+		for part in parts {
+			stem = Dist.output_key(part.split_on(".").first() ?? crash "Dist.validate_output_path: nonempty component")
+			if ["con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9", "com¹", "com²", "com³", "lpt¹", "lpt²", "lpt³"].contains(stem) {
+				return Err(UnsafeOutputPath(path))
+			}
+		}
+		Ok({})
+	}
+
+	## Compare output locations conservatively across supported filesystems.
+	## This is path collision detection, never application or row identity.
+	output_key : Str -> Str
+	output_key = |path| Str.from_utf8(path.to_utf8().map(|byte| if byte >= 'A' and byte <= 'Z' byte + 32 else byte)) ?? crash "Dist.output_key: ASCII folding preserves UTF-8"
+
+	## Files cannot overwrite one another or be both a file and a directory.
+	## Check pages, hashed assets and public files as one publication plan.
+	validate_outputs : List(Asset) -> Try({}, [UnsafeOutputPath(Str), OutputCollision({ first : Str, second : Str })])
+	validate_outputs = |files| {
+		var $known = Dict.empty()
+		for file in files {
+			Dist.validate_output_path(file.path)?
+			key = Dist.output_key(file.path)
+			match $known.get(key) {
+				Ok(first) => return Err(OutputCollision({ first, second: file.path }))
+				Err(_) => {}
+			}
+			$known = $known.insert(key, file.path)
+		}
+		for file in files {
+			var $prefix = ""
+			for part in Dist.output_key(file.path).split_on("/").drop_last(1) {
+				$prefix = if $prefix.is_empty() part else "${$prefix}/${part}"
+				match $known.get($prefix) {
+					Ok(first) => return Err(OutputCollision({ first, second: file.path }))
+					Err(_) => {}
+				}
+			}
+		}
 		Ok({})
 	}
 
@@ -112,10 +287,10 @@ Dist :: [].{
 
 	## What `build` prints: every file it wrote, with its size, and how to
 	## serve them.
-	summary : List(Asset) -> Str
+	summary : List({ path : Str, bytes : U64 }) -> Str
 	summary = |files| {
 		width = files.map(|f| f.path.count_utf8_bytes()).fold(0, |a, b| if (a > b) a else b)
-		rows = files.map(|f| "  dist/${f.path}${Str.repeat(" ", width - f.path.count_utf8_bytes())}  ${size(f.bytes.len())}")
+		rows = files.map(|f| "  dist/${f.path}${Str.repeat(" ", width - f.path.count_utf8_bytes())}  ${size(f.bytes)}")
 		"Built the app into dist/:\n\n${Str.join_with(rows, "\n")}\n\nServe dist/ from any static file server: .mjs files as text/javascript and app.wasm as application/wasm. The files under assets/ never change under their names, so they may be cached for ever; index.html should not be cached."
 	}
 }
@@ -171,3 +346,20 @@ expect {
 		\\name changed: False
 	actual == expected
 }
+
+## Route pages, assets and public files share one namespace, including file
+## versus directory prefixes and case aliases on supported deployment hosts.
+expect {
+    Dist.validate_outputs([{ path: "a/index.html", bytes: [] }, { path: "a", bytes: [] }]).is_err() and
+    Dist.validate_outputs([{ path: "Assets/A", bytes: [] }, { path: "assets/a", bytes: [] }]).is_err()
+}
+
+## Root traversal, Windows drive syntax and reserved names cannot become output.
+expect ["../index.html", "/index.html", "a//index.html", "C:/index.html", "a/CON.txt", "a/COM¹.log", "a./index.html", "a\\b/index.html"].all(|path| Dist.validate_output_path(path).is_err())
+
+## Adjacent sibling pages do not overlap their common directory.
+expect Dist.validate_outputs([{ path: "a/one/index.html", bytes: [] }, { path: "a/two/index.html", bytes: [] }]).is_ok()
+
+
+## A lexical neighbour cannot hide an earlier file/directory prefix conflict.
+expect Dist.validate_outputs([{ path: "a", bytes: [] }, { path: "a-file", bytes: [] }, { path: "a/b/index.html", bytes: [] }]).is_err()

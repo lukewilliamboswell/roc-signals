@@ -2,6 +2,7 @@ import Protocol
 import Dom
 import Scm
 import JsonOut
+import PicturePage
 
 ## The native `.scm` spec runner.
 ##
@@ -1944,14 +1945,14 @@ SpecRunner := [].{
 	set_attr : S(state), U64, Str, Str -> S(state)
 	set_attr = |s, i, name, v| { ..s, dom: if (name == "value" or name == "checked") Dom.set_live_on(s.dom, i, name, v) else Dom.set_attr_on(s.dom, i, name, v) }
 
-	## A control's live value: a `<select>` shows the value only when one of
-	## its options has it.
+	## Read an option through its DOM value getter, including collapsed fallback
+	## text. A select exposes its live value only when one of its options has it.
 	value_of : Dom.Model, U64 -> Str
 	value_of = |dom, i| {
 		n = Dom.node(dom, i)
 		v = Dom.live_value(n, "value")
 		if Dom.html_tag(n, "option") {
-			if (Dom.has_attr(n, "value")) Dom.attr_of(n, "value") else Dom.text_of(dom, i)
+			Dom.option_value(dom, i)
 		} else if Dom.html_tag(n, "select") and !SpecRunner.has_option(dom, { root: i, value: v }) {
 			""
 		} else if Dom.html_tag(n, "input") and ["checkbox", "radio"].contains(Dom.input_type(n)) and !Dom.has_attr(n, "value") {
@@ -1959,8 +1960,8 @@ SpecRunner := [].{
 		} else v
 	}
 
-	## Options whose value attribute is absent use their text. A present empty
-	## value remains empty. Search only this select's descendants.
+	## Option matching uses the same explicit-value or fallback-text getter as
+	## value assertions. A present empty value remains a real empty choice.
 	has_option : Dom.Model, { root : U64, value : Str } -> Bool
 	has_option = |dom, { root, value }| {
 		n = Dom.node(dom, root)
@@ -4546,6 +4547,76 @@ SpecRunner := [].{
 		Err(problem) => "(diagnostic rendering refused: ${Str.inspect(problem)})"
 	}
 
+	## Keep the picture command separate from spec-selection options. An exact
+	## mode consumes no spec files and cannot accidentally run a soak or walk.
+	prerender_args : List(Str) -> Try([Specs, PicturePath(Str), Picture({ url : Str, template : Str })], Str)
+	prerender_args = |args| match args {
+		["--picture-path", url] if !url.starts_with("--") => Ok(PicturePath(url))
+		["--prerender", url, "--template", template] if !url.starts_with("--") and !template.starts_with("--") => Ok(Picture({ url, template }))
+		_ if args.contains("--prerender") or args.contains("--template") or args.contains("--picture-path") => Err("use RUNNER --prerender URL --template FILE, or RUNNER --picture-path URL, with no spec or other mode options")
+		_ => Ok(Specs)
+	}
+
+	## Project a route before template URL rewriting. This reads no app state,
+	## declarations or file and calls neither init nor an effect/result path.
+	picture_path_line : Str -> Try(Str, Str)
+	picture_path_line = |url| {
+		path = PicturePage.route(url) ? |InvalidRoute(message)| message
+		Ok(JsonOut.render(Object([
+			JsonOut.field("protocol", Text("roc-signals/picture-path/v1")),
+			JsonOut.field("url", Text(url)),
+			JsonOut.field("path", Text(path)),
+		])))
+	}
+
+	## Render only the engine's ordinary init batch. Storage answers, focus
+	## delivery and other host inputs are later turns and never enter this frame.
+	## The host adapter only reads the template and prints the completed JSON.
+	prerender_main! : Program(state), { io : Io, options : { url : Str, template : Str } } => I32
+	prerender_main! = |program, { io, options }| match SpecRunner.prerender_page!(program, { io, url: options.url, template: options.template }) {
+		Ok(json) => {
+			(io.stdout!)("${json}\n")
+			0
+		}
+		Err(message) => {
+			(io.stderr!)("${message}\n")
+			1
+		}
+	}
+
+	## Gather one complete response before stdout can expose a partial page.
+	## There is one init call and no later host input in this fallible workflow.
+	prerender_page! : Program(state), { io : Io, url : Str, template : Str } => Try(Str, Str)
+	prerender_page! = |program, { io, url, template: path_to_template }| {
+		resolved = PicturePage.resolve(url) ? |InvalidRoute(message)| message
+		bytes = (io.read_file!)(path_to_template)
+		if bytes.len() > 16777216 {
+			return Err("picture template exceeds 16777216 bytes")
+		}
+		text = Str.from_utf8(bytes) ? |_| "picture template is not valid UTF-8"
+		template = PicturePage.parse(text) ? |InvalidTemplate(message)| message
+		if program.version != Dom.protocol_version {
+			return Err("picture program and oracle protocol versions differ")
+		}
+		declared = SpecRunner.decode_declarations((program.keys)())
+		environment : Scm.Environment
+		environment = { url: SpecRunner.serialize_location(resolved.boot_url), media: declared.media.map(|query| (query, False)) }
+		# init drains its own engine follow-ups. Do not call mount_config,
+		# answer_gets, drain_focus or pump_ui here: those deliver later inputs.
+		(inst, commands, _work) = (program.init)(SpecRunner.encode_mount(environment, template.root()))
+		(program.settled)(inst) ? |failure| "after picture mount, a reader was left stale: ${failure.note}"
+		model = Dom.apply(template.overlay(Dom.new({})), commands)
+		rendered = Dom.render(model, { root: model.root, scope: MountEnvelope, mode: Picture, enclosing: template.parent(), limits: { max_bytes: 16777216, max_nodes: 262144, max_depth: 1024 } }) ? |problem| "picture renderer refused the frame: ${Str.inspect(problem)}"
+		page = template.page({ markup: rendered.markup, max_bytes: 16777216 }) ? |PageLimit({ maximum, required })| "picture page needs ${required.to_str()} UTF-8 bytes; maximum is ${maximum.to_str()} bytes"
+		Ok(JsonOut.render(Object([
+			JsonOut.field("protocol", Text("roc-signals/prerender/v1")),
+			JsonOut.field("url", Text(url)),
+			JsonOut.field("path", Text(resolved.path)),
+			JsonOut.field("page", Text(page)),
+			JsonOut.field("metadata", Array([])),
+		])))
+	}
+
 	## The command line: which specs, whether to emit their steps or the
 	## grammar instead, and whether to soak them (`soak` cycles of the round
 	## trip after `warm` warm-up cycles; `NoSoak` runs each spec once).
@@ -4558,7 +4629,7 @@ SpecRunner := [].{
 	## The runner’s command synopsis names its ordinary, recorded, generated
 	## and grammar modes without changing the executable spec vocabulary.
 	usage : Str
-	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --walk STEPS [--seed N] FILE.scm...\n       RUNNER --grammar\n"
+	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --walk STEPS [--seed N] FILE.scm...\n       RUNNER --grammar\n       RUNNER --prerender URL --template FILE\n       RUNNER --picture-path URL\n"
 
 	## The number after an option, as a count.
 	count_arg : List(Str), U64, Str -> Try(U64, Str)
@@ -4690,6 +4761,26 @@ SpecRunner := [].{
 	## browser runner's `--check-grammar`.
 	main! : Program(state), Io, List(Str) => I32
 	main! = |program, io, args| {
+		match SpecRunner.prerender_args(args) {
+			Ok(PicturePath(url)) => {
+				match SpecRunner.picture_path_line(url) {
+					Ok(json) => {
+						(io.stdout!)("${json}\n")
+						return 0
+					}
+					Err(message) => {
+						(io.stderr!)("${message}\n")
+						return 1
+					}
+				}
+			}
+			Ok(Picture(options)) => return SpecRunner.prerender_main!(program, { io, options })
+			Ok(Specs) => {}
+			Err(message) => {
+				(io.stderr!)("${message}\n")
+				return 2
+			}
+		}
 		opts = match SpecRunner.parse_args(args) {
 			Ok(o) => o
 			Err(msg) => {
@@ -6030,4 +6121,51 @@ expect {
 		query_kept: SpecRunner.same_document("/x?", "/x?#next"),
 		query_added: SpecRunner.same_document("/x", "/x?#next"),
 	} == { stored: "/x?", reported: True, query_removed: False, query_kept: True, query_added: False }
+}
+
+
+## Prerender is one exact command, never mixed with ordinary spec options.
+expect SpecRunner.prerender_args(["--prerender", "/tasks?open=1#list", "--template", "index.html"]) == Ok(Picture({ url: "/tasks?open=1#list", template: "index.html" }))
+
+## Extra positional specs cannot turn a picture build into another runner mode.
+expect SpecRunner.prerender_args(["--prerender", "/", "--template", "index.html", "story.scm"]).is_err()
+
+## A missing URL or template is a usage failure before any template is read.
+expect SpecRunner.prerender_args(["--prerender", "/"]).is_err()
+
+## Existing ordinary spec argument parsing remains selected without new input.
+expect SpecRunner.prerender_args(["--filter", "round*", "round-trip.scm"]) == Ok(Specs)
+
+
+## Route projection is a separate no-init mode with one explicit URL.
+expect SpecRunner.prerender_args(["--picture-path", "/tasks?open=1#list"]) == Ok(PicturePath("/tasks?open=1#list"))
+
+## The path response echoes query/hash input without making them a filename.
+expect SpecRunner.picture_path_line("/tasks?open=1#list") == Ok("{\"protocol\":\"roc-signals/picture-path/v1\",\"url\":\"/tasks?open=1#list\",\"path\":\"tasks/index.html\"}")
+
+## Select matching and option assertions use collapsed fallback text rather
+## than raw textContent. Qualified value attributes and script text do not
+## impersonate the option's ordinary value getter.
+expect {
+	select = { ..Dom.empty_node, tag: "select", props: [("value", "A B")], kids: [1] }
+	option = { ..Dom.empty_node, tag: "option", attrs: [({ namespace: "urn:fields", prefix: "x", local: "value" }, "ignored")], kids: [2, 3, 4] }
+	first = { ..Dom.empty_node, namespace: "", kind: 2, text: " \tA " }
+	script = { ..Dom.empty_node, tag: "script", kids: [5] }
+	last = { ..Dom.empty_node, namespace: "", kind: 2, text: "\n B\r " }
+	ignored = { ..Dom.empty_node, namespace: "", kind: 2, text: "BAD" }
+	dom = { ..Dom.new({}), nodes: [select, option, first, script, last, ignored] }
+	wrong = Dom.set_live_on(dom, 0, "value", "A BAD B")
+	SpecRunner.value_of(dom, 1) == "A B" and SpecRunner.value_of(dom, 0) == "A B" and SpecRunner.value_of(wrong, 0) == "" and !SpecRunner.has_option(dom, { root: 0, value: "A BAD B" })
+}
+
+## Explicit empty or whitespace-bearing option values win over fallback text;
+## neither assertion nor select matching trims or substitutes their value.
+expect {
+	select = { ..Dom.empty_node, tag: "select", props: [("value", "")], kids: [1] }
+	option = { ..Dom.empty_node, tag: "option", attrs: Dom.attributes([("value", "")]), kids: [2] }
+	text = { ..Dom.empty_node, namespace: "", kind: 2, text: "fallback" }
+	dom = { ..Dom.new({}), nodes: [select, option, text] }
+	exact = " \t exact\n "
+	with_exact = Dom.set_attr_on(Dom.set_live_on(dom, 0, "value", exact), 1, "value", exact)
+	SpecRunner.value_of(dom, 1) == "" and SpecRunner.has_option(dom, { root: 0, value: "" }) and !SpecRunner.has_option(dom, { root: 0, value: "fallback" }) and SpecRunner.value_of(with_exact, 1) == exact and SpecRunner.value_of(with_exact, 0) == exact
 }

@@ -20,8 +20,12 @@ import Specs
 ## ```
 Signals :: [].{
 
+	## Explicit routes for the build command, visible through this package
+	## rather than an implementation-module type in command diagnostics.
+	BuildProps := { pictures : List(Str) ?? [] }
+
 	## What the user asked for.
-	Command : [Help, CommandHelp(Str), Init(Str), Serve({ port : U16 }), Build, Test]
+	Command : [Help, CommandHelp(Str), Init(Str), Serve({ port : U16 }), Build(BuildProps), Test]
 
 	## Run the tool on the arguments `roc signals.roc` passed it. Every
 	## failure is explained in a sentence on standard error and ends the
@@ -34,7 +38,7 @@ Signals :: [].{
 			Ok(CommandHelp(command)) => Stdout.line!(Signals.command_usage(command))
 			Ok(Init(dir)) => Init.run!(dir)
 			Ok(Serve(options)) => Serve.run!(options)
-			Ok(Build) => Dist.run!()
+			Ok(Build(options)) => Dist.run!({ pictures: options.pictures })
 			Ok(Test) => Specs.run!()
 			Err(problem) => Err(problem)
 		}
@@ -65,7 +69,8 @@ Signals :: [].{
 					Ok(port) if port > 0 => Ok(Serve({ port: port }))
 					_ => Err(BadPort(value))
 				}
-			["build"] => Ok(Build)
+			["build"] => Ok(Build({ pictures: [] }))
+			["build", "--picture", .. as pictures] if !pictures.is_empty() and !pictures.any(|url| url.starts_with("--")) => Ok(Build({ pictures }))
 			["test"] => Ok(Test)
 			[command, .. as extra] if ["init", "serve", "build", "test"].contains(command) => Err(UnexpectedArguments({ command, extra }))
 			[command, ..] => Err(UnknownCommand(command))
@@ -109,11 +114,14 @@ Signals :: [].{
 			"build" =>
 				\\Build the app for deployment to a static web host.
 				\\
-				\\Usage: roc signals.roc build
+				\\Usage: roc signals.roc build [--picture URL...]
 				\\
 				\\Run from the app's directory, containing main.roc and index.html.
 				\\The output replaces dist/. Serve that directory with a static HTTP server.
 				\\Normally uses --opt=size; a compiler workaround reports any change of mode.
+				\\--picture takes explicit HTTP(S) or root-relative URLs. Each writes its
+				\\first frame to PATH/index.html; query/hash variants of one path collide.
+				\\The template must mark exactly one mount root with data-roc-picture.
 			"test" =>
 				\\Run the app's specs with the native spec runner.
 				\\
@@ -146,6 +154,16 @@ Signals :: [].{
 				note = Compiler.mismatch_note(version)
 				{ code: 1, text: "${report.trim()}\n\nThe build failed: the compiler's report is above.${if (note.is_empty()) "" else "\n${note}"}" }
 			}
+			PictureUnsupported(target) => { code: 1, text: "Pictures require the app's native runner, which this release does not build for ${target}." }
+			PictureRunnerFailed({ url, reason }) => { code: 1, text: "The native picture runner for ${url} failed: ${reason}." }
+			PictureFailed({ url, report }) => { code: 1, text: "The picture for ${url} was refused:\n${report.trim()}" }
+			PictureResponseInvalid(url) => { code: 1, text: "The native picture runner returned an invalid response for ${url}." }
+			PictureRouteCollision({ first, second, path }) => { code: 1, text: "Picture routes ${first} and ${second} both write ${path}; query and fragment variants cannot share one output file." }
+			UnsafeOutputPath(path) => { code: 1, text: "The build refused unsafe output path ${path}." }
+			OutputCollision({ first, second }) => { code: 1, text: "Build outputs ${first} and ${second} overlap; dist was not changed." }
+			PublicationInterrupted(path) => { code: 1, text: "A previous build backup remains at ${path}. Inspect or restore it before publishing another build." }
+			PublicationCleanupFailed(path) => { code: 1, text: "The complete new dist was published, but the previous build backup could not be removed from ${path}. Inspect it before the next build." }
+			PublicationRollbackFailed(path) => { code: 1, text: "The new dist could not be published or the previous directory restored. The previous build remains at ${path}." }
 			BuildIoFailed(path) => { code: 1, text: "The build finished, but its output could not be moved into ${path}." }
 			PortsBusy({ first, last }) => { code: 1, text: "Ports ${first.to_str()} to ${last.to_str()} are all in use. Stop the server that holds them, or choose another port with --port N." }
 			InitWouldOverwrite(path) => { code: 1, text: "${path} already exists, so init changed nothing: it only creates files that are not there yet. Choose a new directory, for example `roc signals.roc init my-app`." }
@@ -159,6 +177,7 @@ Signals :: [].{
 		match command {
 			"init" => "Use it as `roc signals.roc init [DIR]`."
 			"serve" => "Use it as `roc signals.roc serve [--port N]`."
+			"build" => "Use it as `roc signals.roc build [--picture URL...]`."
 			_ => "Use it as `roc signals.roc ${command}`, with nothing after it."
 		}
 }
@@ -166,7 +185,7 @@ Signals :: [].{
 ## Each command line names its command, with the defaults filled in.
 expect {
 	actual = [["init"], ["init", "my-app"], ["serve"], ["serve", "--port", "9000"], ["build"], ["test"], [], ["help"]].map(Signals.parse)
-	expected = [Ok(Init(".")), Ok(Init("my-app")), Ok(Serve({ port: 8000 })), Ok(Serve({ port: 9000 })), Ok(Build), Ok(Test), Ok(Help), Ok(Help)]
+	expected = [Ok(Init(".")), Ok(Init("my-app")), Ok(Serve({ port: 8000 })), Ok(Serve({ port: 9000 })), Ok(Build({ pictures: [] })), Ok(Test), Ok(Help), Ok(Help)]
 	actual == expected
 }
 
@@ -200,3 +219,9 @@ expect {
 		},
 	)
 }
+
+## Picture URLs are explicit arguments; query and hash remain the runner's input.
+expect Signals.parse(["build", "--picture", "/", "/tasks?open=1#list"]) == Ok(Build({ pictures: ["/", "/tasks?open=1#list"] }))
+
+## A picture switch needs at least one URL and cannot swallow another option.
+expect Signals.parse(["build", "--picture"]).is_err() and Signals.parse(["build", "--picture", "/", "--watch"]).is_err()
