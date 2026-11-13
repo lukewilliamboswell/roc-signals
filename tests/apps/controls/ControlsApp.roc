@@ -12,6 +12,73 @@ import pf.Html
 ##   handlers, plainly or in an `each` row template: a contract error at
 ##   mount (`tests/browser/controls-browser.mjs` observes it).
 ControlsApp := [].{
+
+	## References follow row keys and selection without changing event routing.
+	## The fault buttons deliberately exercise duplicate names and a focus
+	## feedback loop; ordinary specs never press them.
+	references : {} -> Elem(ctx)
+	references = |_props| Engine.state(
+		{ rows: ["a", "b"], selected: "a", names: PerRow, requests: Engine.outbox({}), log: "", duplicate: False },
+		|references| Engine.element(
+			"section",
+			[],
+			[
+				Html.button("Focus row a", [], references.update(|s| { ..s, requests: s.requests.post("row-a") })),
+				Html.button("Focus row b", [], references.update(|s| { ..s, requests: s.requests.post("row-b") })),
+				Html.button("Focus current row", [], references.update(|s| { ..s, requests: s.requests.post("current") })),
+				Html.button("Focus empty name", [], references.update(|s| { ..s, requests: s.requests.post("") })),
+				Html.button("Focus paragraph", [], references.update(|s| { ..s, requests: s.requests.post("paragraph") })),
+				Html.button("Reverse reference rows", [], references.update(|s| { ..s, rows: s.rows.fold([], |reversed, key| [key].concat(reversed)) })),
+				Html.button("Remove row a", [], references.update(|s| { ..s, rows: s.rows.keep_if(|key| key != "a") })),
+				Html.button("Restore reference rows", [], references.update(|s| { ..s, rows: ["a", "b"] })),
+				Html.button("Use selected reference", [], references.update(|s| { ..s, names: Selected })),
+				Html.button("Select row b", [], references.update(|s| { ..s, selected: "b" })),
+				Html.button("Clear reference names", [], references.update(|s| { ..s, names: Unnamed })),
+				Engine.each(
+					references.signal().map(|s| s.rows),
+					|key| key,
+					|row| Engine.element(
+						"button",
+						[
+							Engine.attr("type", "button"),
+							Html.aria_label_s(row.key().map(|key| "Row ${key}")),
+							Engine.ref_s(
+								row.key().map2(
+									references.lift_row().signal(),
+									|key, s| match s.names {
+										PerRow => "row-${key}"
+										Selected => if (key == s.selected) "current" else ""
+										Unnamed => ""
+									},
+								),
+							),
+							Engine.on_click(references.lift_row().update_by(row.key(), |s, key| { ..s, log: key })),
+						],
+						[Engine.text_s(row.key())],
+					),
+				),
+				Html.p_s(references.signal().map(|s| s.log), [Engine.test_id("reference-log"), Engine.ref("paragraph")]),
+				Html.button("Duplicate references", [], references.update(|s| { ..s, duplicate: True })),
+				Engine.when(
+					references.signal().map(|s| s.duplicate),
+					|| Engine.element(
+						"div",
+						[],
+						[
+							Engine.element("input", [Engine.ref("duplicate")], []),
+							Engine.element("input", [Engine.ref("duplicate")], []),
+						],
+					),
+					|| Engine.text(""),
+				),
+				Html.button("Start focus loop", [], references.update(|s| { ..s, requests: s.requests.post("loop-left") })),
+				Engine.element("input", [Html.aria_label("Loop left"), Engine.ref("loop-left"), Html.on_focus(references.update(|s| { ..s, requests: s.requests.post("loop-right") }))], []),
+				Engine.element("input", [Html.aria_label("Loop right"), Engine.ref("loop-right"), Html.on_focus(references.update(|s| { ..s, requests: s.requests.post("loop-left") }))], []),
+				Engine.on_post(references.signal().map(|s| s.requests), |name| [Focus(name)], Engine.ignore({})),
+			],
+		),
+	)
+
 	S : { plain : Str, upper : Str, log : List(Str), ask : { serial : U64, req : [None, F(Str), B(Str), Sel(Str)] }, rows : List(Str), twice : [Neither, OnElement, InRow] }
 
 	Ctx : In(Root, S)
@@ -36,6 +103,7 @@ ControlsApp := [].{
 		"div",
 		[],
 		[
+			ControlsApp.references({}),
 			Html.text_input(
 				Engine.const("Plain"),
 				"text",
@@ -50,7 +118,7 @@ ControlsApp := [].{
 			Html.text_input(Engine.const("Upper"), "text", st.signal().map(|s| s.upper), [Engine.ref("upper")], st.set_value(|s, v| { ..s, upper: ControlsApp.upper_ascii(v) })),
 			Html.button("Focus upper", [], st.update(|s| ControlsApp.ask(s, F("upper")))),
 			Html.button("Select plain", [], st.update(|s| ControlsApp.ask(s, Sel("plain")))),
-			Html.button("Blur plain", [], st.update(|s| ControlsApp.ask(s, B("plain")))),
+			Html.button("Blur plain", [Engine.on("mousedown:prevent", Engine.does([]))], st.update(|s| ControlsApp.ask(s, B("plain")))),
 			Html.button("Focus missing", [], st.update(|s| ControlsApp.ask(s, F("nowhere")))),
 			Engine.watch_changes(
 				st.signal().map(|s| s.ask),

@@ -659,7 +659,7 @@ settle! = |a, dom|
 click! : S, Str => E
 click! = |s, name| {
 	i = SpecRunner.find(s.dom, Role({ role: "button", name })) ?? crash "no button ${name}"
-	(node, h) = Dom.target(s.dom, i, "click") ?? crash "no handler"
+	(node, h) = Dom.target(s.dom, i, "click", Bool.True) ?? crash "no handler"
 	(a, c) = Core.take_cmds(Core.event(s.eng, node, h, ""), [])
 	apply!(s, a, c)
 }

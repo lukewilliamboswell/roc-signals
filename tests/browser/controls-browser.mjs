@@ -178,6 +178,234 @@ for (const [button, where] of [
   check(`${button}: the fault reaches the console`, errors.some((e) => e.includes("roc engine fault [contract]")), true);
   await ctx.close();
 }
+{
+  const { page, ctx } = await open();
+  const button = (name) => page.evaluate((n) => [...document.querySelectorAll("button")].find((b) => b.textContent === n).click(), name);
+  const active = () => page.evaluate(() => document.activeElement.getAttribute("aria-label"));
+  await page.evaluate(() => { window.__rowA = document.querySelector('[aria-label="Row a"]'); });
+  await button("Focus row a");
+  check("row reference focuses its element", await active(), "Row a");
+  await button("Reverse reference rows");
+  await button("Focus row a");
+  check("a keyed reorder keeps the focused node and its reference", [await active(), await page.evaluate(() => window.__rowA === document.querySelector('[aria-label="Row a"]'))], ["Row a", true]);
+  await page.evaluate(() => document.querySelector('[aria-label="Row b"]').click());
+  check("a referenced row still routes its own click", await text(page, "reference-log"), "b");
+  await button("Remove row a");
+  const staleBefore = await page.evaluate(() => Number(window.__rt.workRecord().counters[34]));
+  await button("Focus row a");
+  check("a disposed row reference is stale", await page.evaluate((n) => Number(window.__rt.workRecord().counters[34]) - n, staleBefore), 1);
+  await button("Restore reference rows");
+  await button("Focus row a");
+  check("a fresh row may reuse its disposed reference", await active(), "Row a");
+  await button("Use selected reference");
+  await button("Focus current row");
+  check("the selected row holds a shared command address", await active(), "Row a");
+  await button("Select row b");
+  await button("Focus current row");
+  check("a reference can move between surviving rows in one turn", [await active(), await page.evaluate(() => window.__rt.poisoned)], ["Row b", null]);
+  await button("Clear reference names");
+  const unnamedBefore = await page.evaluate(() => Number(window.__rt.workRecord().counters[34]));
+  await button("Focus current row");
+  await button("Focus empty name");
+  check("empty names hold no references and never collide", [await active(), await page.evaluate((n) => Number(window.__rt.workRecord().counters[34]) - n, unnamedBefore), await page.evaluate(() => window.__rt.poisoned)], ["Row b", 2, null]);
+  await ctx.close();
+}
+{
+  const { page, ctx } = await open();
+  await page.evaluate(() => [...document.querySelectorAll("button")].find((b) => b.textContent === "Duplicate references").click());
+  const got = await page.evaluate(() => window.__rt.poisoned);
+  check("duplicate reference names fail with both construction sites", [got?.class, got?.message], ["contract", 'contract: duplicate reference "duplicate" at sites /0/0/1/0 and /0/0/1/1']);
+  await ctx.close();
+}
+{
+  const { page, ctx } = await open();
+  const before = await page.evaluate(() => Number(window.__rt.workRecord().counters[30]));
+  await page.evaluate(() => [...document.querySelectorAll("button")].find((b) => b.textContent === "Start focus loop").click());
+  check("an app's focus feedback loop poisons after its initiating turn and 4096 queued turns", await page.evaluate((n) => [window.__rt.poisoned?.class, Number(window.__rt.workRecord().counters[30]) - n, window.__rt.listening.size], before), ["resource_limit", 4097, 0]);
+  await ctx.close();
+}
+{
+  // Root delegation follows the actual event's bubbles flag, including
+  // two occurrences of one type with different flags (cancel).
+  const { page, ctx } = await open();
+  const got = await page.evaluate(async () => {
+    const { RocEngineRuntime } = await import("./runtime.mjs");
+    const root = document.createElement("div");
+    document.body.append(root);
+    const parent = document.createElement("div");
+    const target = document.createElement("div");
+    root.append(parent);
+    parent.append(target);
+    parent.__rn = 101;
+    parent.__h = { close: { h: 1 }, scroll: { h: 2 }, cancel: { h: 3 } };
+    const rt = new RocEngineRuntime({}, root);
+    const calls = [];
+    rt.deliver = (node, handler) => calls.push([node, handler]);
+    for (const type of ["close", "scroll", "cancel"]) rt.listen(type);
+    target.__h = { close: { h: 4 }, scroll: { h: 5 } };
+    target.dispatchEvent(new Event("close"));
+    target.dispatchEvent(new Event("scroll"));
+    target.__h = {};
+    target.dispatchEvent(new Event("close"));
+    target.dispatchEvent(new Event("scroll"));
+    target.dispatchEvent(new Event("cancel", { bubbles: true }));
+    target.dispatchEvent(new Event("cancel"));
+    parent.__h.drop = { h: 8, files: true };
+    parent.__h.dragover = { h: 6 };
+    rt.listen("drop");
+    rt.listen("dragover");
+    const over = new Event("dragover", { bubbles: true, cancelable: true });
+    target.dispatchEvent(over);
+    const dropAllows = over.defaultPrevented;
+    rt.contain(new Error("fixture done"), "executor");
+    target.__h = { close: { h: 4 } };
+    target.dispatchEvent(new Event("close"));
+    root.remove();
+    return [calls, dropAllows, rt.listening.size];
+  });
+  check("non-bubbling events reach only their target; bubbling cancel and explicit dragover reach an ancestor once, alongside the file-drop default policy", got, [[[101, 4], [101, 5], [101, 3], [101, 6]], true, 0]);
+  await ctx.close();
+}
+{
+  // A reference hole's id is an address for commands, never an event
+  // route. Removing or clearing its row must release that address too.
+  const { page, ctx } = await open();
+  const got = await page.evaluate(async () => {
+    const { RocEngineRuntime } = await import("./runtime.mjs");
+    const root = document.createElement("div");
+    document.body.append(root);
+    const bytes = [];
+    const byte = (n) => bytes.push(n);
+    const word = (n) => bytes.push(n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255);
+    const str = (s) => { const b = new TextEncoder().encode(s); word(b.length); bytes.push(...b); };
+    // <div><input/></div>, holes: reference and click on the input.
+    const tpl = [];
+    byte(1); str("div"); byte(0); byte(1);
+    byte(1); str("input"); byte(0); byte(0);
+    byte(2); byte(5); byte(1); byte(0);
+    byte(3); byte(1); byte(0); byte(7); str("click");
+    tpl.push(...bytes); bytes.length = 0;
+    byte(7); word(1); word(tpl.length); bytes.push(...tpl);
+    byte(1); word(10); word(0); word(0); word(1); word(11);
+    let batch = Uint8Array.from(bytes);
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const x = { memory, cmd_ptr: () => 0, cmd_len: () => batch.length };
+    const rt = new RocEngineRuntime(x, root);
+    rt.statics[0] = root;
+    rt.sites[1] = new Set();
+    const calls = [];
+    rt.deliver = (node, handler) => calls.push([node, handler]);
+    const apply = () => { new Uint8Array(memory.buffer).set(batch); rt.applyBatch(); };
+    apply();
+    const input = rt.statics[11];
+    input.dispatchEvent(new Event("click", { bubbles: true }));
+    const addressed = input === root.firstChild.firstChild;
+    batch = Uint8Array.from([5, 10, 0, 0, 0]); apply();
+    const removed = rt.statics[11] === undefined;
+    bytes.length = 0;
+    byte(1); word(10); word(0); word(0); word(1); word(11);
+    batch = Uint8Array.from(bytes); apply();
+    batch = Uint8Array.from([6, 0, 0, 0, 0, 1, 0, 0, 0]); apply();
+    const cleared = rt.statics[11] === undefined && root.childNodes.length === 0;
+    // A static ancestor can remove a row without a separate row REMOVE.
+    bytes.length = 0;
+    byte(8); word(30); word(0); word(0); str("section");
+    byte(8); word(31); word(30); word(0); str("div");
+    byte(10); word(32); word(31); word(0); str("static child");
+    byte(1); word(10); word(31); word(0); word(1); word(11);
+    batch = Uint8Array.from(bytes); apply();
+    batch = Uint8Array.from([5, 30, 0, 0, 0]); apply();
+    const ancestor = [10, 11, 30, 31, 32].every((id) => rt.statics[id] === undefined) && rt.sites[1].size === 0;
+    // Clearing an outer site must also forget a nested site's rows and
+    // references, while leaving another live site alone.
+    bytes.length = 0;
+    byte(7); word(2); word(tpl.length); bytes.push(...tpl);
+    byte(8); word(50); word(0); word(0); str("section");
+    byte(1); word(10); word(50); word(0); word(1); word(11);
+    byte(1); word(20); word(10); word(0); word(2); word(21);
+    byte(8); word(40); word(0); word(0); str("section");
+    byte(1); word(41); word(40); word(0); word(2); word(42);
+    batch = Uint8Array.from(bytes); apply();
+    batch = Uint8Array.from([6, 50, 0, 0, 0, 1, 0, 0, 0]); apply();
+    const nested = [10, 11, 20, 21].every((id) => rt.statics[id] === undefined) && rt.sites[1].size === 0 && [...rt.sites[2]].join() === "41" && rt.statics[42].isConnected;
+    rt.contain(new Error("fixture done"), "executor");
+    root.remove();
+    return [addressed, calls, removed, cleared, ancestor, nested];
+  });
+  check("reference INST operand addresses the element, preserves the row's event route, and is forgotten with its row", got, [true, [[10, 7]], true, true, true, true]);
+  await ctx.close();
+}
+{
+  const { page, ctx } = await open();
+  const got = await page.evaluate(async () => {
+    const { RocEngineRuntime, MAX_QUEUED } = await import("./runtime.mjs");
+    const run = (limit) => {
+      const root = document.createElement("div");
+      const a = document.createElement("input");
+      const b = document.createElement("input");
+      root.append(a, b); document.body.append(root);
+      a.__rn = 1; b.__rn = 2;
+      a.__h = b.__h = { focus: { h: 0 } };
+      const rt = new RocEngineRuntime({}, root);
+      rt.listen("focus");
+      let delivered = 0;
+      rt.deliver = (node) => {
+        delivered += 1;
+        if (delivered < limit) (node === 1 ? b : a).focus();
+      };
+      // Begin with focus raised during a batch, as a FOCUS command does.
+      rt.busy = true; a.focus(); rt.busy = false;
+      rt.drainQueue();
+      const result = [delivered, rt.poisoned?.class ?? null];
+      if (!rt.poisoned) rt.contain(new Error("fixture done"), "executor");
+      root.remove();
+      return result;
+    };
+    return [run(MAX_QUEUED), run(Infinity)];
+  });
+  check("4096 chained focus turns may finish; a focus loop is contained before its 4097th turn", got, [[4096, null], [4096, "resource_limit"]]);
+  await ctx.close();
+}
+{
+  // Record real CDP input, the reference for the native click sequence.
+  // Hover is recorded separately: specs suppress it because it depends on
+  // layout, while these contract cases still prove the browser delivers it.
+  const { page, ctx } = await open();
+  await page.evaluate(() => {
+    const panel = document.createElement("div");
+    panel.style.cssText = "position:fixed;inset:0;background:white;z-index:99999";
+    for (const name of ["a", "b", "prevented"]) {
+      const input = document.createElement("input");
+      input.id = `sequence-${name}`;
+      input.style.cssText = "display:block;width:100px;height:30px;margin:20px";
+      panel.append(input);
+    }
+    document.body.append(panel);
+    window.__sequence = [];
+    const types = ["pointerover", "pointerout", "pointerenter", "pointerleave", "mouseover", "mouseout", "mouseenter", "mouseleave", "pointermove", "mousemove", "pointerdown", "mousedown", "focusin", "pointerup", "mouseup", "click"];
+    for (const type of types) panel.addEventListener(type, (e) => {
+      if (e.target.id.startsWith("sequence-")) window.__sequence.push(e.type);
+    }, true);
+    document.getElementById("sequence-prevented").addEventListener("pointerdown", (e) => e.preventDefault());
+  });
+  const clickSequence = async (name) => {
+    await page.evaluate(() => { window.__sequence = []; });
+    await (await page.$(`#sequence-${name}`)).click();
+    return page.evaluate(() => window.__sequence);
+  };
+  const first = await clickSequence("a");
+  const other = await clickSequence("b");
+  const same = await clickSequence("b");
+  const prevented = await clickSequence("prevented");
+  const isHover = (type) => /^(pointer|mouse)(over|out|enter|leave)$/.test(type);
+  const press = ["pointermove", "mousemove", "pointerdown", "mousedown", "focusin", "pointerup", "mouseup", "click"];
+  check("a click at a new element: pointer and mouse press with focus in order", first.filter((t) => !isHover(t)), press);
+  check("clicking a different element: same press sequence", other.filter((t) => !isHover(t)), press);
+  check("clicking the same point: move and press again, no focus change", same.filter((t) => !isHover(t)), press.filter((t) => t !== "focusin"));
+  check("prevented pointerdown suppresses mouse press/release and focus, but still clicks", prevented.filter((t) => !isHover(t)), ["pointermove", "mousemove", "pointerdown", "pointerup", "click"]);
+  check("hover boundary events occur on entry and travel but not a resting second click", [first.some(isHover), other.some(isHover), same.some(isHover)], [true, true, false]);
+  await ctx.close();
+}
 await browser.close();
 server.close();
 console.log(failures === 0 ? "== controls: all pass" : `== controls: ${failures} failures`);

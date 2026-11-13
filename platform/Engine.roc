@@ -670,7 +670,7 @@ Engine := [].{
 
 	## An attribute, event listener or focus reference on an element, in context
 	## `ctx`. Make one with `attr`, `attr_s`, `class`, `class_s`, `test_id`,
-	## `test_id_s`, `on`, `on_click` or `ref`.
+	## `test_id_s`, `on`, `on_click`, `ref` or `ref_s`.
 	Attr(ctx) : Core.Attr(ctx)
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
@@ -697,8 +697,9 @@ Engine := [].{
 	## no work, and a changed item re-evaluates only that row's holes that read it.
 	##
 	## `template` runs once per site against a [RowRef] and must return a single
-	## element. A duplicate key is a contract error, as is a focus `ref` directly in
-	## the row template (put it in a nested site instead).
+	## element. A duplicate key is a contract error. A row may name an element
+	## with `ref_s`, usually from its key; reference names must be unique among
+	## live elements, and the empty name names nothing.
 	each : Signal(ctx, List(item)), (item -> Str), (RowRef(ctx, item) -> Elem(Row(ctx, item))) -> Elem(ctx)
 		where [item.is_eq : item, item -> Bool]
 	each = |rows, key, template| Core.each(rows.v, key, |r| template({ r: r }))
@@ -1204,12 +1205,17 @@ Engine := [].{
 	on = |ev, { h }| Core.on(ev, h)
 
 	## Name this element as a focus reference for `Focus`, `Blur` and `SelectText`
-	## requests, so the app never handles engine node ids. A name refers to one
-	## element at a time (the latest mounted wins) and is released when that
-	## element is removed. A `ref` directly in an `each` row template is a contract
-	## error; put it in a nested site.
+	## requests, so the app never handles engine node ids. Names are unique
+	## among live elements and released with the element. An empty name names
+	## nothing. Use `ref_s` when the name depends on a signal or row key.
 	ref : Str -> Attr(ctx)
 	ref = |name| Core.ref(name)
+
+	## Name this element from a signal, including a row key. An empty name
+	## registers nothing; two live elements with one name are a contract error
+	## checked at the end of the turn. Changing a name emits no DOM command.
+	ref_s : Signal(ctx, Str) -> Attr(ctx)
+	ref_s = |{ v }| Core.ref_s(v)
 
 	## A `click` listener; its payload is empty.
 	on_click : Handler(ctx) -> Attr(ctx)

@@ -1098,8 +1098,8 @@ Core := [].{
 
 	## An attribute, event listener or focus reference on an element, in context
 	## `ctx`. Make one with `attr`, `attr_s`, `class`, `class_s`, `test_id`,
-	## `test_id_s`, `on`, `on_click` or `ref`.
-	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Signal(ctx, Str)), On(Str, Handler(ctx)), Ref(Str)]
+	## `test_id_s`, `on`, `on_click`, `ref` or `ref_s`.
+	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Signal(ctx, Str)), On(Str, Handler(ctx)), Ref(Signal(ctx, Str))]
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
 	## (`state`, `derive`, `resource`, `when`, `switch`, `remount_on`, `each`,
@@ -1177,7 +1177,7 @@ Core := [].{
 				}
 				outer_mask = $om.bitwise_and(above_bits(depth))
 				smask_all = $sm
-				dynamic = !plan.mounts.is_empty()
+				dynamic = !plan.mounts.is_empty() or plan.holes.any(|hole| hole.kind == 5)
 				cfg = { site, parent: args.parent, anchor, sole: args.sole, depth, path: args.path, key, plan, dynamic, outer_mask, sel_mask: smask_all }
 				ncols = plan.ncols
 				nholes = plan.holes.len()
@@ -1261,7 +1261,7 @@ Core := [].{
 					$om = $om.bitwise_or(h.mask)
 				}
 				outer_mask = $om.bitwise_and(above_bits(depth))
-				dynamic = !plan.mounts.is_empty()
+				dynamic = !plan.mounts.is_empty() or plan.holes.any(|hole| hole.kind == 5)
 				cfg = { site, parent: args.parent, anchor, sole: args.sole, depth, path: args.path, key: {}, plan, dynamic, outer_mask, sel_mask: 0 }
 				q = (props.query.read)(env)
 				window = (props.window.read)(env)
@@ -2020,12 +2020,17 @@ Core := [].{
 	on = |ev, h| On(ev, h)
 
 	## Name this element as a focus reference for `Focus`, `Blur` and `SelectText`
-	## requests, so the app never handles engine node ids. A name refers to one
-	## element at a time (the latest mounted wins) and is released when that
-	## element is removed. A `ref` directly in an `each` row template is a contract
-	## error; put it in a nested site.
+	## requests, so the app never handles engine node ids. Names are unique
+	## among live elements and released with the element. An empty name names
+	## nothing. Use `ref_s` when the name depends on a signal or row key.
 	ref : Str -> Attr(ctx)
-	ref = |name| Ref(name)
+	ref = |name| Ref(Core.const(name))
+
+	## Name this element from a signal, including a row key. An empty name
+	## registers nothing; two live elements with one name are a contract error
+	## checked at the end of the turn. Changing a name emits no DOM command.
+	ref_s : Signal(ctx, Str) -> Attr(ctx)
+	ref_s = |value| Ref(value)
 
 	## A `click` listener; its payload is empty.
 	on_click : Handler(ctx) -> Attr(ctx)
@@ -2221,7 +2226,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 4
+	protocol_version = 5
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -2760,7 +2765,7 @@ work_get = |w, i| match i {
 	_ => 0
 }
 
-Hole(ctx) : { node : U32, mask : U128, attr : Str, read : (ctx -> Str), last : Str }
+Hole(ctx) : { node : U32, mask : U128, attr : Str, reference : [NotReference, Reference(List(U32))], read : (ctx -> Str), last : Str }
 
 Block(ctx) : {
 	holes : List(Hole(ctx)),
@@ -2833,59 +2838,62 @@ alloc_id = |{ cmds, next, free, routes, work, paths, site_free, fx }| {
 free_id : Tx, U32 -> Tx
 free_id = |{ cmds, next, free, routes, work, paths, site_free, fx }, id| {
 	routes2 = if (id.to_u64() < routes.len()) routes.set(id.to_u64(), NoRoute) ?? routes else routes
-	fx2 = if ((fx.ref_pos.get(id.to_u64()) ?? 0) == 0) fx else drop_ref(fx, id)
+	fx2 = if ((fx.ref_pos.get(id.to_u64()) ?? []).is_empty()) fx else drop_ref(fx, id)
 	{ cmds, next, free: free.append(id), routes: routes2, work, paths, site_free, fx: fx2 }
 }
 
-## Name `node` as focus reference `name`; a reference of the same name
-## on another live node moves here (the later mount wins).
-add_ref : Fx, Str, U32 -> Fx
-add_ref = |fx, name, node| with_refs(
+## Register a name with its node and construction site. The end-of-turn
+## check permits a departing and an entering element to share a name while
+## reconciliation is in progress. Empty names never enter either index.
+add_ref : Fx, { name : Str, node : U32, path : List(U32) } -> Fx
+add_ref = |fx, { name, node, path }| if (name.is_empty()) fx else with_refs(
 	fx,
-	|refs, ref_pos| {
-		var $at = ref_pos
-		while $at.len() <= node.to_u64() {
-			$at = $at.append(0)
+	|refs, ref_pos, focus| {
+		var $positions = ref_pos
+		while $positions.len() <= node.to_u64() {
+			$positions = $positions.append([])
 		}
-		match refs.find_first_index(|(n, _)| n == name) {
-			Ok(i) => {
-				(_, old) = refs.get(i) ?? crash "internal: ref"
-				at2 = $at.set(old.to_u64(), 0) ?? crash "internal: ref"
-				(refs.set(i, (name, node)) ?? crash "internal: ref", at2.set(node.to_u64(), (i + 1).to_u32_wrap()) ?? crash "internal: ref")
-			}
-			Err(_) => {
-				n = refs.len() + 1
-				(refs.append((name, node)), $at.set(node.to_u64(), n.to_u32_wrap()) ?? crash "internal: ref")
-			}
-		}
+		live = refs.get(name) ?? []
+		(refs.insert(name, live.append({ node, path })), $positions.set(node.to_u64(), ($positions.get(node.to_u64()) ?? []).append({ name, path })) ?? crash "internal: reference index", focus.append(CheckRef(name)))
 	},
 )
 
-## Forget the reference `node` carries: swap-remove it from `refs` and
-## re-point the entry that moved.
+## Remove only this node's claim to its name. The reverse index makes node
+## disposal one lookup; in a valid program the name's live list has one node.
 drop_ref : Fx, U32 -> Fx
 drop_ref = |fx, node| with_refs(
 	fx,
-	|refs, ref_pos| {
-		pos = (ref_pos.get(node.to_u64()) ?? 0).to_u64()
-		last = refs.len()
-		at1 = ref_pos.set(node.to_u64(), 0) ?? crash "internal: ref"
-		if pos == last {
-			(refs.drop_last(1), at1)
-		} else {
-			(lname, lnode) = refs.get(last - 1) ?? crash "internal: ref"
-			refs2 = (refs.set(pos - 1, (lname, lnode)) ?? crash "internal: ref").drop_last(1)
-			(refs2, at1.set(lnode.to_u64(), pos.to_u32_wrap()) ?? crash "internal: ref")
-		}
+	|refs, ref_pos, focus| {
+		names = ref_pos.get(node.to_u64()) ?? []
+		remaining = names.fold(
+			refs,
+			|index, owned| {
+				live = (index.get(owned.name) ?? []).keep_if(|claim| claim.node != node)
+				if (live.is_empty()) index.remove(owned.name) else index.insert(owned.name, live)
+			},
+		)
+		(remaining, if (names.is_empty()) ref_pos else ref_pos.set(node.to_u64(), []) ?? crash "internal: reference index", focus)
 	},
 )
 
-## Update the reference table with both lists moved out of `fx`, so
-## they stay uniquely owned and update in place.
-with_refs : Fx, (List((Str, U32)), List(U32) -> (List((Str, U32)), List(U32))) -> Fx
-with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }, f| {
-	(refs2, at2) = f(refs, ref_pos)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs: refs2, focus, ref_pos: at2, cleanups }
+## A rename releases just this hole's previous name. Other references on
+## the same element keep their addresses until they change or it is disposed.
+drop_name : Fx, { node : U32, name : Str, path : List(U32) } -> Fx
+drop_name = |fx, { node, name, path }| if (name.is_empty()) fx else with_refs(
+	fx,
+	|refs, ref_pos, focus| {
+		live = (refs.get(name) ?? []).keep_if(|claim| claim.node != node or claim.path != path)
+		names = (ref_pos.get(node.to_u64()) ?? []).keep_if(|prior| prior.path != path)
+		(if (live.is_empty()) refs.remove(name) else refs.insert(name, live), ref_pos.set(node.to_u64(), names) ?? crash "internal: reference index", focus)
+	},
+)
+
+## Move the reference indexes and pending checks out of the accumulator so
+## updates retain one holder for each map, list and reverse-index column.
+with_refs : Fx, (RefMap, List(List(RefOwned)), List(TurnEnd) -> (RefMap, List(List(RefOwned)), List(TurnEnd))) -> Fx
+with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }, change| {
+	(names, positions, checks) = change(refs, ref_pos, focus)
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs: names, focus: checks, ref_pos: positions, cleanups }
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
@@ -3242,7 +3250,7 @@ mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, t
 			s = read(env)
 			tx2 = emit_op(count_evals(tx1, 1), 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
 			b1 = add_node(block, id, top)
-			(add_hole(b1, { node: id, mask: eff_mask(v), attr: "", read, last: s }), tx2)
+			(add_hole(b1, { node: id, mask: eff_mask(v), attr: "", reference: NotReference, read, last: s }), tx2)
 		}
 		Site(Mount(mount), _) => {
 			k = block.children.len().to_u32_wrap()
@@ -3260,14 +3268,18 @@ mount_attr = |block, env, attr, id, path, tx| {
 			read = v.read
 			value = read(env)
 			tx1 = emit_op(count_attr(count_evals(tx, 1), name), 9, |c| put_str(put_str(put_u32(c, id), name), value))
-			(add_hole(block, { node: id, mask: eff_mask(v), attr: name, read, last: value }), tx1)
+			(add_hole(block, { node: id, mask: eff_mask(v), attr: name, reference: NotReference, read, last: value }), tx1)
 		}
 		On(ev, handler) => {
 			h = block.handlers.len().to_u32_wrap()
 			tx1 = emit_op(tx, 11, |c| put_str(put_u32(put_u32(c, id), h), ev))
 			(add_handler(block, handler), set_route(tx1, id, path, h))
 		}
-		Ref(name) => (block, with_fx(tx, |fx| add_ref(fx, name, id)))
+		Ref(value) => {
+			ref_path = path.append(block.holes.len().to_u32_wrap())
+			name = (value.read)(env)
+			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: Reference(ref_path), read: value.read, last: name }), with_fx(count_evals(tx, 1), |fx| add_ref(fx, { name, node: id, path: ref_path })))
+		}
 	}
 }
 
@@ -3320,20 +3332,23 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 	while $i < $holes.len() {
 		hm = $holes.get($i).map_ok(|h| h.mask) ?? 0
 		if all or hm.bitwise_and(mask) != 0 {
-			{ list, prev } = $holes.replace($i, { node: 0, mask: 0, attr: "", read: |_| "", last: "" }) ?? crash "hole"
-			{ node, mask: m, attr, read, last } = prev
+			{ list, prev } = $holes.replace($i, { node: 0, mask: 0, attr: "", reference: NotReference, read: |_| "", last: "" }) ?? crash "hole"
+			{ node, mask: m, attr, reference, read, last } = prev
 			v = read(env)
 			t1 = count_evals($tx, 1)
 			if v == last {
-				$holes = list.set($i, { node, mask: m, attr, read, last }) ?? crash "hole"
+				$holes = list.set($i, { node, mask: m, attr, reference, read, last }) ?? crash "hole"
 				$tx = t1
 			} else {
-				$tx = if attr.is_empty() {
-					emit_op(t1, 12, |c| put_str(put_u32(c, node), v))
-				} else {
-					emit_op(count_attr(t1, attr), 9, |c| put_str(put_str(put_u32(c, node), attr), v))
+				$tx = match reference {
+					Reference(path) => with_fx(t1, |fx| add_ref(drop_name(fx, { node, name: last, path }), { name: v, node, path }))
+					NotReference => if attr.is_empty() {
+						emit_op(t1, 12, |c| put_str(put_u32(c, node), v))
+					} else {
+						emit_op(count_attr(t1, attr), 9, |c| put_str(put_str(put_u32(c, node), attr), v))
+					}
 				}
-				$holes = list.set($i, { node, mask: m, attr, read, last: v }) ?? crash "hole"
+				$holes = list.set($i, { node, mask: m, attr, reference, read, last: v }) ?? crash "hole"
 			}
 		}
 		$i = $i + 1
@@ -3980,11 +3995,12 @@ index_remove = |{ hs, vals, count, bits, by_slot }, slot| {
 ## nchild:u8 node* | 2 text:str; then nholes:u8, each hole := kind:u8
 ## depth:u8 path:u8* [attr: name:str | click: handler:u8].
 ## Hole kinds: 1 text, 2 attr, 3 click, 4 bind (placeholder for a nested
-## site). `col` is the value column for text/attr holes whose value can
+## site), 5 reference (an element addressed by a minted node id). `col` is the value column for text/attr holes whose value can
 ## change (none for row-constant holes), the handler index for clicks and
 ## the mount index for binds.
 ## `ctl`: the work counter an attribute hole's updates also count in
-## (`w_set_value`, `w_set_checked`), or 0.
+## (`w_set_value`, `w_set_checked`), or 0; for a reference, its index
+## among reference holes, after the nested-site ids in the row's bindings.
 RHole(ctx) : { kind : U8, mask : U128, smask : U128, skey : (ctx -> Str), read : (ctx -> Str), col : U64, live : Bool, ctl : U64 }
 
 Plan(ctx) : {
@@ -4016,7 +4032,7 @@ val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, kind, name, 
 		Sel(m, k) => (m, k)
 	}
 	live = mask.bitwise_or(smask) != 0
-	hole = { kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: ctl_of(name) }
+	hole = { kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else ctl_of(name) }
 	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
 }
 
@@ -4058,7 +4074,12 @@ compile_elem = |plan, elem, path, depth, site| {
 						$holes = $holes.append({ kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| "", col: $handlers.len(), live: False, ctl: 0 })
 						$handlers = $handlers.append(handler)
 					}
-					Ref(_) => crash "contract: focus refs are not supported inside each rows (use one in a nested site)"
+					Ref(value) => {
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, 5, "", value, put_path([], 5, path))
+						$htab = $htab.concat(r.htab)
+						$holes = r.holes
+						$ncols = r.ncols
+					}
 				}
 			}
 			$tree = $tree.append(narrow(kids.len(), "children of one element"))
@@ -4248,7 +4269,7 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 	var $set_value = 0.U64
 	var $set_checked = 0.U64
 	var $t = { cmds: [], next, free: idfree, routes, work, paths, site_free, fx }
-	var $bound = []
+	var $bound = List.repeat(0.U32, cfg.plan.mounts.len())
 	var $hi = 0.U64
 	for hole in cfg.plan.holes {
 		if hole.kind == 1 or hole.kind == 2 {
@@ -4267,11 +4288,25 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 			if hole.smask != 0 and !known {
 				$sels = $sels.set($hi, (hole.skey)(row_env)) ?? $sels
 			}
+		} else if hole.kind == 5 {
+			(bid, t2) = alloc_id($t)
+			name = (hole.read)(row_env)
+			$t = with_fx(t2, |fx2| add_ref(fx2, { name, node: bid, path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }))
+			$c = put_u32($c, bid)
+			$bound = $bound.append(bid)
+			$ev = $ev + 1
+			if hole.live {
+				{ list, prev } = $lasts.replace(hole.col, []) ?? crash "lasts"
+				$lasts = list.set(hole.col, put_at(prev, si, name)) ?? crash "lasts"
+			}
+			if hole.smask != 0 and !known {
+				$sels = $sels.set($hi, (hole.skey)(row_env)) ?? $sels
+			}
 		} else if hole.kind == 4 {
 			(bid, t2) = alloc_id($t)
 			$t = t2
 			$c = put_u32($c, bid)
-			$bound = $bound.append(bid)
+			$bound = $bound.set(hole.col, bid) ?? crash "internal: bind index"
 		}
 		$hi = $hi + 1
 	}
@@ -4819,9 +4854,14 @@ settle = |cfg, cols, env, tx| {
 				if v == old {
 					$lasts = list.set(hole.col, prev) ?? crash "lasts"
 				} else {
-					op = if (hole.kind == 1) 2 else 3
-					hidx = $hi.to_u8_wrap()
-					$tx = emit_op(bump($tx, hole.ctl, 1), op, |c| put_str(put_u32(c, node).append(hidx), v))
+					if hole.kind == 5 {
+						id = (binds.get(si) ?? []).get(cfg.plan.mounts.len() + hole.ctl) ?? crash "internal: reference binding"
+						$tx = with_fx($tx, |fx| add_ref(drop_name(fx, { node: id, name: old, path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }), { name: v, node: id, path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }))
+					} else {
+						op = if (hole.kind == 1) 2 else 3
+						hidx = $hi.to_u8_wrap()
+						$tx = emit_op(bump($tx, hole.ctl, 1), op, |c| put_str(put_u32(c, node).append(hidx), v))
+					}
 					$lasts = list.set(hole.col, prev.set(si, v) ?? crash "lasts") ?? crash "lasts"
 				}
 			}
@@ -5333,7 +5373,7 @@ elem_reads = |elem, depth| match elem {
 		var $m = 0.U128
 		for a in attrs {
 			match a {
-				Dyn(_, v) => {
+				Dyn(_, v) | Ref(v) => {
 					$m = $m.bitwise_or(eff_mask(v))
 				}
 				_ => {}
@@ -6163,6 +6203,10 @@ Live : { id : U32, path : List(U32), sub : Bool }
 
 Queued : { id : U32, path : List(U32), res : Result }
 
+RefMap : Dict(Str, List({ node : U32, path : List(U32) }))
+
+RefOwned : { name : Str, path : List(U32) }
+
 Fx : {
 	next : U32,
 	inner : U32,
@@ -6177,14 +6221,14 @@ Fx : {
 	reparented : U64,
 	skipped : U64,
 
-	## Focus references (name, node), and the checks awaiting the end of the
+	## Focus names and their live nodes with construction sites, and the checks awaiting the end of the
 	## turn (see [TurnEnd]).
-	refs : List((Str, U32)),
+	refs : RefMap,
 	focus : List(TurnEnd),
 
-	## `ref_pos[node]`: the node's position in `refs` plus one (0: the node
-	## carries no reference), so freeing a node id is O(1).
-	ref_pos : List(U32),
+	## `ref_pos[node]`: the names the node carries, empty when it has none.
+	## This reverse index makes freeing a reference node O(1).
+	ref_pos : List(List(RefOwned)),
 
 	## `on_cleanup` runs, by name, in first-run order.
 	cleanups : List((Str, U64)),
@@ -6206,7 +6250,7 @@ Fx : {
 ## settle check (`Core.settled`) when the view it holds is not the one its
 ## table gives from scratch; the check reports it, and the pass it ran in
 ## is discarded.
-TurnEnd : [Focus(U8, Str), CheckTask(Str, List(U32)), Port(PortAt), Drift(Str)]
+TurnEnd : [CheckRef(Str), Focus(U8, Str), CheckTask(Str, List(U32)), Port(PortAt), Drift(Str)]
 
 ## A port request waiting for the end of its turn (see [Ports]): the
 ## request, the site that issued it, and where its bytes go: at offset `at`
@@ -6221,7 +6265,7 @@ PortAt : { req : PortRequest, path : List(U32), slot : [At(U64, U32), Refused] }
 PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe(Str, PortMessage)]
 
 fx_empty : Fx
-fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [], ref_pos: [], cleanups: [] }
+fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [] }
 
 ## The first follow-up id: follow-ups are a space of their own, above
 ## every request id.
@@ -7074,12 +7118,21 @@ flush_turn = |tx, programs| {
 		tx
 	} else {
 		reqs = tx.fx.focus
+		for check in reqs {
+			match check {
+				CheckRef(name) => match tx.fx.refs.get(name) ?? [] {
+					[first, second, ..] => crash "contract: duplicate reference \"${name}\" at sites ${show_path(first.path)} and ${show_path(second.path)}"
+					_ => {}
+				}
+				_ => {}
+			}
+		}
 		var $tx = with_fx(tx, |fx| { ..fx, focus: [] })
 		for entry in reqs {
 			match entry {
 				Focus(op, name) =>
-					match $tx.fx.refs.find_first(|(n, _)| n == name) {
-						Ok((_, node)) => {
+					match ($tx.fx.refs.get(name) ?? []).first() {
+						Ok({ node, path: _ }) => {
 							$tx = emit_op($tx, 18, |c| put_u32(c.append(op), node))
 						}
 						Err(_) => {
@@ -7091,7 +7144,7 @@ flush_turn = |tx, programs| {
 						crash "contract: worker task \"${task}\" is not registered; add its registration to with_workers (site ${show_path(path)})"
 					}
 				Port(at) => (programs.ports.check)(programs.ports.decls, at)
-				Drift(_) => {}
+				Drift(_) | CheckRef(_) => {}
 			}
 		}
 		(programs.ports.write)($tx, reqs)
@@ -7579,7 +7632,7 @@ expect {
 	h : Handler({})
 	h = { run: |e, _, _| (e, no_layers) }
 	distinct : List(Attr({}))
-	distinct = [On("click", h), Static("class", "x"), On("input", h), Ref("r")]
+	distinct = [On("click", h), Static("class", "x"), On("input", h), Ref(Core.const("r"))]
 	twice : List(Attr({}))
 	twice = [On("click", h), On("input", h), Dyn("title", Core.const("t")), On("click", h)]
 	(twice_handled(distinct), twice_handled(twice)) == (Err(Distinct), Ok("click"))
@@ -7590,4 +7643,106 @@ expect {
 expect {
 	actual = (own_bit(36), own_bit(100), above_bits(40), above_bits(104))
 	actual == (bit(36), 0, (bit(40) - 1).bitwise_or(all_cells), every_layer)
+}
+
+## A name is a map address, while disposal removes only that node's claim.
+## Replacing a row in one turn may temporarily hold two claims; the check
+## after reconciliation sees just the surviving element. Empty names hold none.
+expect {
+	first = add_ref(fx_empty, { name: "field", node: 1, path: [0] })
+	two = add_ref(first, { name: "field", node: 2, path: [1] })
+	kept = drop_ref(two, 1)
+	empty = add_ref(kept, { name: "", node: 3, path: [2] })
+	actual = {
+		claims: (two.refs.get("field") ?? []).len(),
+		kept: kept.refs.get("field"),
+		empty: empty.refs.len(),
+		retired: kept.ref_pos.get(1),
+	}
+	actual == {
+		claims: 2,
+		kept: Ok([{ node: 2, path: [1] }]),
+		empty: 1,
+		retired: Ok([]),
+	}
+}
+
+## A reference template hole has no extra bytes and carries its own node id
+## at INST, while a handler on that element still belongs to its row root.
+expect {
+	row : Elem(Row(Root({}), Str))
+	row = Core.element("button", [Core.ref_s(Core.const("cell"))], [])
+	plan = compile(row, 1, [0])
+	actual = { bytes: template_bytes(plan), kind: plan.holes.first().map_ok(|hole| hole.kind), columns: plan.ncols }
+	actual == {
+		bytes: put_str([1], "button").concat([0, 0, 1, 5, 0]),
+		kind: Ok(5),
+		columns: 0,
+	}
+}
+
+## Renaming and reordering row references preserves their nodes. A name may
+## transfer between rows during the pass, and disposing a row frees its
+## reference id for the row that replaces it; no retired name stays reachable.
+expect {
+	view = Core.state(
+		[{ key: "a", name: "first" }, { key: "b", name: "second" }],
+		|state| Core.element(
+			"div",
+			[Core.on_click(state.update(|_| [{ key: "b", name: "first" }, { key: "c", name: "third" }]))],
+			[
+				Core.each(state.signal(), |item| item.key, |row| Core.element("button", [Core.ref_s(row.field(|item| item.name))], [])),
+			],
+		),
+	)
+	before = Core.mount(view)
+	old = (before.tx.fx.refs.get("second") ?? []).first()?.node
+	old_next = before.tx.next
+	updated = Core.event(before, 1, 0, "")
+	actual = {
+		first: (updated.tx.fx.refs.get("first") ?? []).first()?.node,
+		recycled: updated.tx.next == old_next,
+		retired: updated.tx.fx.refs.contains("second"),
+		count: updated.tx.fx.refs.len(),
+		settled: Core.settled(updated).is_ok(),
+	}
+	actual == { first: old, recycled: Bool.True, retired: Bool.False, count: 2, settled: Bool.True }
+}
+
+## Two names on one element may swap in one turn. Each reference owns its
+## own claim, so renaming the second does not remove the first's new name.
+expect {
+	one = add_ref(fx_empty, { node: 1, name: "a", path: [0] })
+	two = add_ref(one, { node: 1, name: "b", path: [1] })
+	first = add_ref(drop_name(two, { node: 1, name: "a", path: [0] }), { node: 1, name: "b", path: [0] })
+	second = add_ref(drop_name(first, { node: 1, name: "b", path: [1] }), { node: 1, name: "a", path: [1] })
+	actual = { a: second.refs.get("a"), b: second.refs.get("b"), after_disposal: drop_ref(second, 1).refs.len() }
+	actual == { a: Ok([{ node: 1, path: [1] }]), b: Ok([{ node: 1, path: [0] }]), after_disposal: 0 }
+}
+
+## A table view names references from its typed key signal. A keyed removal
+## retires just that drawn row's name and preserves the other row's address.
+expect {
+	store = Core.store_of({}, Core.table([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }]))
+	cell = store.cells()
+	view = Core.element(
+		"div",
+		[Core.on_click(Core.store_handler(|_| [cell.update(|table| table.remove(1))]))],
+		[
+			Core.table_view(
+				cell,
+				{
+					query: Core.const({}),
+					plan: |_| { keep: |_, _| Bool.True, sort: |key, _| key, compare: |a, b| if (a < b) Before else if (a > b) After else Same },
+					window: Core.const({ start: 0, count: 18446744073709551615 }),
+				},
+				|key, _row| Core.element("button", [Core.ref_s(key.map(|value| "key-${value.to_str()}"))], []),
+			),
+		],
+	)
+	before = Core.mount_store(32, store.initial(), view)
+	kept = (before.tx.fx.refs.get("key-2") ?? []).first()?.node
+	after = Core.event(before, 1, 0, "")
+	actual = { removed: after.tx.fx.refs.contains("key-1"), kept: (after.tx.fx.refs.get("key-2") ?? []).first()?.node, settled: Core.settled(after).is_ok() }
+	actual == { removed: Bool.False, kept, settled: Bool.True }
 }

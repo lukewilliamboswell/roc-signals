@@ -515,6 +515,13 @@ const STEPS = {
     const got = await onEl(page, s.loc, (e) => e.value);
     if (got !== s.text) throw new Error(`${showLoc(s.loc)} value ${JSON.stringify(got)}, expected ${JSON.stringify(s.text)}`);
   },
+  "expect-focused": async (page, s) => {
+    await need(page, s.loc);
+    if (!(await onEl(page, s.loc, (e) => e === document.activeElement))) throw new Error(`${showLoc(s.loc)} is not focused`);
+  },
+  "expect-no-focus": async (page) => {
+    if (!(await page.evaluate(() => document.activeElement === document.body))) throw new Error("an element holds focus");
+  },
   "expect-checked": (page, s) => expectProp(page, s, "checked"),
   "expect-disabled": (page, s) => expectProp(page, s, "disabled"),
   "expect-visible": (page, s) => need(page, s.loc),
@@ -754,6 +761,11 @@ function setupOf(spec) {
 // page-side half of `expect-updates` (per node, the attribute and text
 // mutations after the callback that inserted it).
 function install(attrOfSource) {
+  // Hover depends on layout, outside the native oracle. Exclude it from
+  // every replay, including boundary events Chrome raises after a DOM change.
+  for (const type of ["pointerover", "pointerout", "pointerenter", "pointerleave", "mouseover", "mouseout", "mouseenter", "mouseleave"]) {
+    window.addEventListener(type, (e) => e.stopImmediatePropagation(), true);
+  }
   window.__doc = `${Date.now()}-${Math.random()}`;
   window.__attrOf = eval(`(${attrOfSource})`);
   window.__nav = null;

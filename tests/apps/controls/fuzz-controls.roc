@@ -41,7 +41,7 @@ settled = |eng, dom, value|
 fire! : S, Scm.Loc, Str, Str => (S, List(Dom.FxCmd))
 fire! = |s, loc, ev, payload| {
 	i = SpecRunner.find(s.dom, loc) ?? crash "no ${Scm.show_loc(loc)}"
-	(node, h) = Dom.target(s.dom, i, ev) ?? crash "no ${ev} handler on ${Scm.show_loc(loc)}"
+	(node, h) = Dom.target(s.dom, i, ev, Bool.True) ?? crash "no ${ev} handler on ${Scm.show_loc(loc)}"
 	(a, c) = Core.take_cmds(Core.event(s.eng, node, h, payload), [])
 	(d2, _, fx) = Dom.apply_fx(s.dom, c)
 	settled(a, d2, ({ eng: a, dom: d2, steps: s.steps + 1 }, fx))
@@ -107,15 +107,90 @@ many! = |n| {
 	Fuzz.keep
 }
 
-Input : { mode : U8, pad : U8 }
+## Generated reorder, disposal, recreation and rename histories are checked
+## against a reference model of which row owns each address. The runner
+## applies FOCUS commands, so each step checks the focused element, as well
+## as propagation and command counters, rather than only an emitted command.
+reference_focus! : List(U8) => Fuzz.Outcome
+reference_focus! = |events| {
+	program = Core.driver(ControlsApp.program)
+	var $s = SpecRunner.start(program, { name: "reference history", setup: [], steps: [] }) ?? crash "reference history did not mount"
+	var $has_a = True
+	var $names = PerRow
+	var $selected = "a"
+	for event in events {
+		button = |name| Role({ role: "button", name })
+		operation = event % 11
+		action = match operation {
+			0 => "Focus row a"
+			1 => "Focus row b"
+			2 => "Reverse reference rows"
+			3 => "Remove row a"
+			4 => "Restore reference rows"
+			5 => "Use selected reference"
+			6 => "Select row b"
+			7 => "Clear reference names"
+			8 => "Focus current row"
+			9 => "Focus empty name"
+			_ => ""
+		}
+		expected = match operation {
+			0 if $has_a and $names == PerRow => Label("Row a")
+			1 if $names == PerRow => Label("Row b")
+			8 if $names == Selected and ($selected == "b" or $has_a) => Label("Row ${$selected}")
+			10 => Label("Row b")
+			_ => button(action)
+		}
+		loc = if (operation == 10) Label("Row b") else button(action)
+		$s = SpecRunner.one(program, $s, Click(loc)) ?? crash "reference history: click failed on ${Scm.show_loc(loc)}"
+		focused = SpecRunner.find($s.dom, expected) ?? crash "reference history: expected target missing"
+		if $s.focused != focused + 1 {
+			crash "reference history: ${Scm.show_loc(loc)} should focus ${Scm.show_loc(expected)}"
+		}
+		match SpecRunner.check_settled(program, $s) {
+			Ok(_) => {}
+			Err(message) => crash "reference history: ${message}"
+		}
+		match SpecRunner.check_counters($s) {
+			Ok(_) => {}
+			Err(message) => crash "reference history: ${message}"
+		}
+		match operation {
+			3 => {
+				$has_a = False
+			}
+			4 => {
+				$has_a = True
+			}
+			5 => {
+				$names = Selected
+			}
+			6 => {
+				$selected = "b"
+			}
+			7 => {
+				$names = Unnamed
+			}
+			_ => {}
+		}
+	}
+	Fuzz.keep
+}
+
+Input : { mode : U8, pad : U8, events : List(U8) }
 
 target = Fuzz.target_with!({
 	name: "controls",
 	examples: [
-		Fuzz.example({ name: "focus", revision: "1", make: || { mode: 0, pad: 0 } }),
-		Fuzz.example({ name: "many-sites", revision: "1", make: || { mode: 1, pad: 0 } }),
+		Fuzz.example({ name: "focus", revision: "2", make: || { mode: 0, pad: 0, events: [] } }),
+		Fuzz.example({ name: "many-sites", revision: "2", make: || { mode: 1, pad: 0, events: [] } }),
+		Fuzz.example({ name: "reference-history", revision: "1", make: || { mode: 2, pad: 0, events: [0, 2, 0, 3, 0, 4, 0, 5, 8, 6, 8, 2, 8, 7, 8, 9, 10] } }),
 	],
-	generator: { mode: Fuzz.constant(0), pad: Fuzz.constant(0) }.Fuzz,
-	test!: |{ mode, pad }| if (mode == 1) many!(5000 + pad.to_u64()) else focus!({}),
+	generator: { mode: Fuzz.constant(2), pad: Fuzz.constant(0), events: Fuzz.list(Fuzz.u8, 64) }.Fuzz,
+	test!: |{ mode, pad, events }| match mode {
+		0 => focus!({})
+		1 => many!(5000 + pad.to_u64())
+		_ => reference_focus!(events)
+	},
 	show: Str.inspect,
 })

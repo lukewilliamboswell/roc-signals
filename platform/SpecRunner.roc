@@ -46,11 +46,14 @@ import JsonOut
 ##   (and fails when there is none); `set-online` and `set-visibility` change
 ##   the modelled browser and deliver the new value to every live
 ##   subscription of that kind.
-## - A click is a real mouse click: `mousedown`, focus moves to the nearest
-##   focusable element (or away), `mouseup`, `click`, then the default action
+## - A click delivers `pointermove`, `mousemove`, `pointerdown`, `mousedown`,
+##   focus moves to the nearest focusable element (or away), `pointerup`,
+##   `mouseup`, `click`, then the default action
 ##   unless the dispatched click handler prevented it: a checkbox toggles, a
 ##   radio checks (each with `input` and `change`), a submit button submits
-##   its form if the form's controls are valid, and a link navigates.
+##   its form if the form's controls are valid, and a link navigates. A prevented
+##   `pointerdown` suppresses `mousedown`, `mouseup` and the focus change.
+##   Hover boundary events are outside the spec language.
 ## - Focus moves as Chrome moves it, and each move delivers `change` to a text
 ##   control the user changed since it gained focus, then `blur` to the
 ##   element losing focus and `focus` to the one gaining it, when handlers
@@ -192,7 +195,9 @@ SpecRunner := [].{
 	## counters at the last `mark-metrics`, the focused node (index + 1, 0
 	## for none) and the value it showed when it gained focus, and the value
 	## the engine wrote to the focused control that the controlled-input rule
-	## holds back until blur.
+	## holds back until blur. Focus effects and their queued browser events
+	## share one iterative drain, bounded at 4096 events waiting and 4096
+	## turns delivered before returning to idle.
 	S(state) : {
 		inst : state,
 		buf : List(U8),
@@ -206,6 +211,12 @@ SpecRunner := [].{
 		focused : U64,
 		focus_value : Str,
 		deferred : Deferred,
+		focus_commands : List({ mode : U8, node : U32 }),
+		event_queue : List({ node : U32, handler : U32, payload : List(U8), owner : U64 }),
+		applying_focus : Bool,
+		draining : Bool,
+		turns : U64,
+		fault : [Healthy, Poisoned(Str)],
 	}
 
 	## A control value held back while its control has focus (design.md,
@@ -399,8 +410,42 @@ SpecRunner := [].{
 				}
 			}
 		}
-		held = SpecRunner.hold_focused(s, r.dom, r.values)
-		{ ..s, inst, buf: cmds, dom: held.dom, deferred: held.deferred, browser: SpecRunner.absorb(s.browser, r.fx), ops: $ops, writes: $w }
+		focused = if (s.focused != 0 and !SpecRunner.attached(r.dom, s.focused - 1)) 0 else s.focused
+		held = SpecRunner.hold_focused({ ..s, focused }, r.dom, r.values)
+		{
+			..s,
+			inst,
+			buf: cmds,
+			dom: held.dom,
+			focused,
+			deferred: held.deferred,
+			browser: SpecRunner.absorb(s.browser, r.fx),
+			focus_commands: s.focus_commands.concat(
+				r.fx.keep_oks(
+					|fx| match fx {
+						Focus(mode, node) => Ok({ mode, node })
+						_ => Err(NotFocus)
+					},
+				),
+			),
+			ops: $ops,
+			writes: $w,
+		}
+	}
+
+	## Whether a model node still belongs to the mounted document. Removing a
+	## focused subtree clears focus without raising blur, as the browser does.
+	attached : Dom.Model, U64 -> Bool
+	attached = |dom, i| {
+		var $at = i
+		while $at != dom.root {
+			parent = Dom.node(dom, $at).parent
+			if parent == 0 {
+				return Bool.False
+			}
+			$at = parent - 1
+		}
+		Bool.True
 	}
 
 	## The controlled-input rule, as the runtime applies it: a `value` write
@@ -464,7 +509,7 @@ SpecRunner := [].{
 
 	## A runner state for instance `inst` before its first batch.
 	fresh : state, Browser -> S(state)
-	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 20), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue }
+	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 20), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, focus_commands: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
 
 	set_store : List({ key : Str, value : Str }), Str, Str -> List({ key : Str, value : Str })
 	set_store = |l, key, value| l.keep_if(|kv| kv.key != key).append({ key, value })
@@ -568,14 +613,14 @@ SpecRunner := [].{
 		boot_kvs = declared.keep_oks(|k| storage.find_first(|kv| kv.key == k))
 		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot(url, if (storage_available) boot_kvs else [], { online, visible, storage_available }))
 		s0 = SpecRunner.fresh(inst, SpecRunner.fresh_browser({ url, storage, online, visible, storage_available }))
-		SpecRunner.answer_gets(program, SpecRunner.take(s0, inst, cmds, wbuf))
+		{ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s0, draining: Bool.True }, inst, cmds, wbuf))), draining: Bool.False }
 	}
 
 	## Dispatch event `ev` with `payload` from DOM node index `i`, as the
 	## runtime's delegated listener does.
 	fire : Program(state), S(state), U64, Str, Str -> Try(S(state), Str)
 	fire = |program, s, i, ev, payload|
-		match Dom.target(s.dom, i, ev) {
+		match Dom.target(s.dom, i, ev, Bool.True) {
 			Err(_) => Err("no ${ev} handler")
 			Ok((node, h)) => Ok(SpecRunner.send(program, s, node, h, payload.to_utf8()))
 		}
@@ -584,12 +629,62 @@ SpecRunner := [].{
 	fire_if : Program(state), S(state), U64, Str, Str -> S(state)
 	fire_if = |program, s, i, ev, payload| SpecRunner.fire(program, s, i, ev, payload) ?? s
 
-	## One host call, then the storage reads it issued, each answered in a turn
-	## of its own as the runtime answers them.
+	## One host call, then the storage reads and focus events it issued, each
+	## answered in a turn of its own as the runtime answers them. Reentrant
+	## focus callbacks wait until all of their batch's effects have landed.
 	send : Program(state), S(state), U32, U32, List(U8) -> S(state)
 	send = |program, s, node, h, payload| {
-		(inst, cmds, wbuf) = (program.event)(s.inst, s.buf, s.wbuf, node, h, payload)
-		SpecRunner.answer_gets(program, SpecRunner.take(s, inst, cmds, wbuf))
+		if s.fault != Healthy {
+			return s
+		}
+		if s.applying_focus {
+			if s.event_queue.len() >= 4096 {
+				return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], focus_commands: [] }
+			}
+			return { ..s, event_queue: s.event_queue.append({ node, handler: h, payload, owner: Dom.lookup(s.dom, node) }) }
+		}
+		outer = !s.draining
+		active = if (outer) { ..s, draining: Bool.True, turns: 0 } else s
+		if !outer and active.turns >= 4096 {
+			return { ..active, fault: Poisoned("resource_limit: more than 4096 turns delivered without returning to idle (an event feedback loop)"), event_queue: [], focus_commands: [] }
+		}
+		counted = { ..active, turns: active.turns + if (outer) 0 else 1 }
+		(inst, cmds, wbuf) = (program.event)(counted.inst, counted.buf, counted.wbuf, node, h, payload)
+		next = SpecRunner.answer_gets(program, SpecRunner.take(counted, inst, cmds, wbuf))
+		if (outer) { ..SpecRunner.drain_focus(program, next), draining: Bool.False } else next
+	}
+
+	## Apply every focus command of a batch before delivering the events it
+	## raises. Those events retain their routes and join the bounded ingress
+	## queue, so two focus effects cannot observe a partly applied batch.
+	drain_focus : Program(state), S(state) -> S(state)
+	drain_focus = |program, s0| {
+		var $s = { ..s0, draining: Bool.True }
+		while $s.fault == Healthy and (!$s.focus_commands.is_empty() or !$s.event_queue.is_empty()) {
+			while $s.fault == Healthy and !$s.focus_commands.is_empty() {
+				command = $s.focus_commands.first() ?? crash "SpecRunner.drain_focus: not empty"
+				s = { ..$s, applying_focus: Bool.True, focus_commands: $s.focus_commands.drop_first(1) }
+				index1 = (s.dom.statics.get(command.node.to_u64()) ?? 0).bitwise_and(1099511627775)
+				applied = if (index1 == 0) s else {
+					i = index1 - 1
+					if command.mode == 2 {
+						if (s.focused == i + 1) SpecRunner.move_focus(program, s, 0) else s
+					} else if SpecRunner.focusable_in(s.dom, i) {
+						SpecRunner.move_focus(program, s, i + 1)
+					} else s
+				}
+				$s = { ..applied, applying_focus: Bool.False }
+			}
+			match $s.event_queue.first() {
+				Ok(event) => {
+					pending = { ..$s, event_queue: $s.event_queue.drop_first(1) }
+					current = (pending.dom.statics.get(event.node.to_u64()) ?? 0).bitwise_and(1099511627775)
+					$s = if (current == event.owner + 1 and SpecRunner.attached(pending.dom, event.owner)) SpecRunner.send(program, pending, event.node, event.handler, event.payload) else pending
+				}
+				Err(_) => {}
+			}
+		}
+		{ ..$s, draining: s0.draining }
 	}
 
 	## Answer every storage read waiting for its turn: the stored value, or
@@ -752,7 +847,30 @@ SpecRunner := [].{
 	focusable : Dom.DNode -> Bool
 	focusable = |n| {
 		tag_ok = n.tag == "button" or n.tag == "input" or n.tag == "select" or n.tag == "textarea" or (n.tag == "a" and Dom.attr_of(n, "href") != "") or Dom.attr_of(n, "tabindex") != ""
-		tag_ok and !SpecRunner.disabled(n)
+		tag_ok and !SpecRunner.disabled(n) and !SpecRunner.flag_on(n, "hidden") and !(n.tag == "input" and Dom.attr_of(n, "type") == "hidden")
+	}
+
+	## Focus cannot enter a detached or hidden subtree. The oracle checks
+	## declared HTML attributes; CSS layout remains the browser's domain.
+	focusable_in : Dom.Model, U64 -> Bool
+	focusable_in = |dom, i| {
+		if !SpecRunner.focusable(Dom.node(dom, i)) {
+			return Bool.False
+		}
+		var $at = i
+		while True {
+			n = Dom.node(dom, $at)
+			if SpecRunner.flag_on(n, "hidden") {
+				return Bool.False
+			}
+			if $at == dom.root {
+				return Bool.True
+			}
+			if n.parent == 0 {
+				return Bool.False
+			}
+			$at = n.parent - 1
+		}
 	}
 
 	## The node a press on node `i` focuses (index + 1): the nearest focusable
@@ -760,7 +878,7 @@ SpecRunner := [].{
 	focus_target : Dom.Model, U64 -> U64
 	focus_target = |dom, i| {
 		n = Dom.node(dom, i)
-		if SpecRunner.focusable(n) {
+		if SpecRunner.focusable_in(dom, i) {
 			i + 1
 		} else if n.parent == 0 {
 			0
@@ -956,21 +1074,27 @@ SpecRunner := [].{
 	## commands that pass emitted and the first element they would change, as
 	## the oracle renders it now and after them.
 	check_settled : Program(state), S(state) -> Try({}, Str)
-	check_settled = |program, s| match (program.settled)(s.inst) {
-		Ok(_) => Ok({})
-		Err({ cmds, note }) => {
-			r = Dom.apply_full(s.dom, cmds)
-			first = match r.written.first() {
-				Ok(i) => {
-					n = Dom.node(r.dom, i)
-					el = if (n.tag == "" and n.parent != 0) n.parent - 1 else i
-					was = if (el < s.dom.nodes.len()) Dom.render(s.dom, el) else "(new)"
-					"; first write: ${was} -> ${Dom.render(r.dom, el)}${SpecRunner.landmark(r.dom, el)}"
+	check_settled = |program, s| {
+		match s.fault {
+			Poisoned(message) => return Err(message)
+			Healthy => {}
+		}
+		match (program.settled)(s.inst) {
+			Ok(_) => Ok({})
+			Err({ cmds, note }) => {
+				r = Dom.apply_full(s.dom, cmds)
+				first = match r.written.first() {
+					Ok(i) => {
+						n = Dom.node(r.dom, i)
+						el = if (n.tag == "" and n.parent != 0) n.parent - 1 else i
+						was = if (el < s.dom.nodes.len()) Dom.render(s.dom, el) else "(new)"
+						"; first write: ${was} -> ${Dom.render(r.dom, el)}${SpecRunner.landmark(r.dom, el)}"
+					}
+					Err(_) => if (r.fx.is_empty()) "" else "; first effect: ${Str.inspect(r.fx.first() ?? crash "not empty")}"
 				}
-				Err(_) => if (r.fx.is_empty()) "" else "; first effect: ${Str.inspect(r.fx.first() ?? crash "not empty")}"
+				effects = if (note.is_empty()) "" else "; effect channel: ${note}"
+				Err("a reader was left stale: a settle pass over every layer emitted ${Dom.describe(r.ops)}${first}${effects}")
 			}
-			effects = if (note.is_empty()) "" else "; effect channel: ${note}"
-			Err("a reader was left stale: a settle pass over every layer emitted ${Dom.describe(r.ops)}${first}${effects}")
 		}
 	}
 
@@ -1018,7 +1142,7 @@ SpecRunner := [].{
 			ExpectFiles(_) => Err("expect-files counts the handles live in the host; the spec command runs it, through its host")
 			Focus(loc) => {
 				i = SpecRunner.need(dom, loc)?
-				if (SpecRunner.focusable(Dom.node(dom, i))) Ok(SpecRunner.move_focus(program, s, i + 1)) else Ok(s)
+				if (SpecRunner.focusable_in(dom, i)) Ok(SpecRunner.move_focus(program, s, i + 1)) else Ok(s)
 			}
 			Blur(loc) => {
 				i = SpecRunner.need(dom, loc)?
@@ -1058,6 +1182,8 @@ SpecRunner := [].{
 				}
 				Ok(SpecRunner.submit_form(program, s, i))
 			}
+			ExpectFocused(loc) => check(s.focused == SpecRunner.need(dom, loc)? + 1, "${Scm.show_loc(loc)} does not hold focus")
+			ExpectNoFocus => check(s.focused == 0, "an element still holds focus")
 			ExpectText(loc, want) => {
 				got = Dom.text_of(dom, SpecRunner.need(dom, loc)?)
 				check(got == want, "${Scm.show_loc(loc)} text ${JsonOut.quote(got)}, expected ${JsonOut.quote(want)}")
@@ -1388,18 +1514,25 @@ SpecRunner := [].{
 		SpecRunner.set_attr(s1, i, "checked", "true")
 	}
 
-	## A real mouse click on node `i`, in Chrome's order: `mousedown`, then
-	## focus moves (the default action of the press), then `mouseup` and
-	## `click`, then the click's default action unless the dispatched click
-	## handler prevented it (design.md, "The `.scm` spec language").
+	## A click delivers Chrome's pointer and mouse sequence at the destination.
+	## Preventing pointerdown suppresses compatibility mouse press/release and
+	## its focus change; pointerup and click still arrive.
 	mouse_click : Program(state), S(state), U64 -> Try(S(state), Str)
 	mouse_click = |program, s0, i| {
-		s1 = SpecRunner.fire_if(program, s0, i, "mousedown", "")
-		s2 = SpecRunner.move_focus(program, s1, SpecRunner.focus_target(s1.dom, i))
-		s3 = SpecRunner.fire_if(program, s2, i, "mouseup", "")
-		prevented = Dom.prevents(s3.dom, i, "click")
-		s4 = SpecRunner.fire_if(program, s3, i, "click", "")
-		if (prevented) Ok(s4) else SpecRunner.default_action(program, s4, i)
+		s1 = SpecRunner.fire_if(program, s0, i, "pointermove", "")
+		s2 = SpecRunner.fire_if(program, s1, i, "mousemove", "")
+		press_prevented = Dom.prevents(s2.dom, i, "pointerdown")
+		s3 = SpecRunner.fire_if(program, s2, i, "pointerdown", "")
+		s4 = if (press_prevented) s3 else {
+			mouse_prevented = Dom.prevents(s3.dom, i, "mousedown")
+			pressed = SpecRunner.fire_if(program, s3, i, "mousedown", "")
+			if (mouse_prevented) pressed else SpecRunner.move_focus(program, pressed, SpecRunner.focus_target(pressed.dom, i))
+		}
+		s5 = SpecRunner.fire_if(program, s4, i, "pointerup", "")
+		s6 = if (press_prevented) s5 else SpecRunner.fire_if(program, s5, i, "mouseup", "")
+		prevented = Dom.prevents(s6.dom, i, "click")
+		s7 = SpecRunner.fire_if(program, s6, i, "click", "")
+		if (prevented) Ok(s7) else SpecRunner.default_action(program, s7, i)
 	}
 
 	## The browser's default action for a click on node `i`: a checkbox
@@ -1407,6 +1540,10 @@ SpecRunner := [].{
 	## button submits its form, and a link navigates.
 	default_action : Program(state), S(state), U64 -> Try(S(state), Str)
 	default_action = |program, s, i| {
+		match s.fault {
+			Poisoned(message) => return Err(message)
+			Healthy => {}
+		}
 		n = Dom.node(s.dom, i)
 		kind = Dom.attr_of(n, "type")
 		on_value = if (Dom.attr_of(n, "value") == "") "on" else Dom.attr_of(n, "value")
@@ -2683,3 +2820,134 @@ expect [AppCrash, Unavailable, Executor].map(SpecRunner.encode_lost) == [[11, 4]
 ## An answer with no files is result tag 10, a zero file count, then the
 ## answer's bytes.
 expect SpecRunner.encode_answer([42, 0]) == [10, 0, 0, 0, 0, 42, 0]
+
+## Exactly 4096 chained focus turns settle. Commands emitted by focus handlers
+## join the same drain, which stays iterative instead of growing the call stack.
+expect {
+	program : SpecRunner.Program(U64)
+	program = {
+		version: Dom.protocol_version,
+		keys: || [],
+		init: |_| (0, [], []),
+		event: |count, _buf, _work, node, _handler, _payload| {
+			next = count + 1
+			cmds = if (next == 4096) [] else SpecRunner.put_u32([18, 1], if (node == 1) 2 else 1)
+			(next, cmds, List.repeat(0, 8))
+		},
+		files: |count, _buf, _work, _node, _handler, _payload, _files| (count, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	base = Dom.new({})
+	(d1, a) = Dom.add_node(base, { ..Dom.empty_node, tag: "input", rn: 1, hs: [("focus", 0)] })
+	(d2, b) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", rn: 2, hs: [("focus", 0)] })
+	dom_root = base.root
+	dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, dom_root, a, Err(End)), dom_root, b, Err(End)), 1, a), 2, b)
+	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	done = SpecRunner.drain_focus(program, { ..s, dom, draining: Bool.True, focus_commands: [{ mode: 1, node: 1 }] })
+	{ count: done.inst, turns: done.turns, queued: done.focus_commands.len(), focused: done.focused } == { count: 4096, turns: 4096, queued: 0, focused: b + 1 }
+}
+
+## Both focus effects in one batch land before either handler runs. A focus
+## command from the first handler joins behind the second's queued event.
+expect {
+	program : SpecRunner.Program(List(U32))
+	program = {
+		version: Dom.protocol_version,
+		keys: || [],
+		init: |_| ([], [], []),
+		event: |seen, _buf, _work, node, _handler, _payload| (seen.append(node), if (node == 1) SpecRunner.put_u32([18, 1], 3) else [], List.repeat(0, 8)),
+		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	var $dom = Dom.new({})
+	for id in [1.U32, 2, 3] {
+		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input", rn: id, hs: [("focus", 0)] })
+		$dom = Dom.bind(Dom.insert(d, d.root, i, Err(End)), id, i)
+	}
+	s = SpecRunner.fresh([], SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	done = SpecRunner.drain_focus(program, { ..s, dom: $dom, focus_commands: [{ mode: 1, node: 1 }, { mode: 1, node: 2 }] })
+	{ seen: done.inst, focused: done.focused } == { seen: [1, 2, 3], focused: Dom.lookup(done.dom, 3) + 1 }
+}
+
+## A focus loop stops before its 4097th queued turn. The poisoned model
+## rejects later engine calls and reports the same classified fault as Chrome.
+expect {
+	program : SpecRunner.Program(U64)
+	program = {
+		version: Dom.protocol_version,
+		keys: || [],
+		init: |_| (0, [], []),
+		event: |count, _buf, _work, node, _handler, _payload| (count + 1, SpecRunner.put_u32([18, 1], if (node == 1) 2 else 1), List.repeat(0, 8)),
+		files: |count, _buf, _work, _node, _handler, _payload, _files| (count, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	var $dom = Dom.new({})
+	for id in [1.U32, 2] {
+		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input", rn: id, hs: [("focus", 0)] })
+		$dom = Dom.bind(Dom.insert(d, d.root, i, Err(End)), id, i)
+	}
+	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	stopped = SpecRunner.drain_focus(program, { ..s, dom: $dom, focus_commands: [{ mode: 1, node: 1 }] })
+	refused = SpecRunner.send(program, stopped, 1, 0, [])
+	{ count: refused.inst, turns: refused.turns, check: SpecRunner.check_settled(program, refused) } == { count: 4096, turns: 4096, check: Err("resource_limit: more than 4096 turns delivered without returning to idle (an event feedback loop)") }
+}
+
+## Focus uses bubbling focusin in the browser, so the app's focus name can
+## reach an ancestor. Queued focus keeps the old owner's identity: an earlier
+## handler removing it and recycling its id cannot fire its replacement.
+expect {
+	program : SpecRunner.Program(List(U32))
+	program = {
+		version: Dom.protocol_version,
+		keys: || [],
+		init: |_| ([], [], []),
+		event: |seen, _buf, _work, id, _handler, _payload| {
+			cmds = if (id == 1) SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([5], 2).append(8), 2), 0), 0), "input") else []
+			(seen.append(id), cmds, List.repeat(0, 8))
+		},
+		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	var $dom = Dom.new({})
+	for id in [1.U32, 2, 10] {
+		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input", rn: id, hs: [("focus", 0)] })
+		$dom = Dom.bind(Dom.insert(d, d.root, i, Err(End)), id, i)
+	}
+	(d1, child) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input" })
+	dom = Dom.insert(d1, Dom.lookup(d1, 10), child, Err(End))
+	s = SpecRunner.fresh([], SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	bubbled = SpecRunner.fire(program, { ..s, dom }, child, "focus", "")?
+	done = SpecRunner.drain_focus(program, { ..s, dom, focus_commands: [{ mode: 1, node: 1 }, { mode: 1, node: 2 }] })
+	{ ancestor: bubbled.inst, seen: done.inst, focused: done.focused, turns: done.turns } == { ancestor: [10], seen: [1], focused: 0, turns: 1 }
+}
+
+## A focus command cannot enter a hidden input, a hidden element or a hidden
+## ancestor. A later removal in the same batch can retire its resolved target;
+## applying that command then does nothing, as the browser's missing lookup does.
+expect {
+	program : SpecRunner.Program(U64)
+	program = {
+		version: Dom.protocol_version,
+		keys: || [],
+		init: |_| (0, [], []),
+		event: |seen, _buf, _work, _node, _handler, _payload| (seen + 1, [], List.repeat(0, 8)),
+		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	var $dom = Dom.new({})
+	for item in [{ id: 1.U32, tag: "input", attrs: [] }, { id: 2, tag: "input", attrs: [("type", "hidden")] }, { id: 3, tag: "input", attrs: [("hidden", "true")] }, { id: 4, tag: "div", attrs: [("hidden", "true")] }, { id: 5, tag: "input", attrs: [] }] {
+		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: item.tag, attrs: item.attrs })
+		parent = if (item.id == 5) Dom.lookup(d, 4) else d.root
+		$dom = Dom.bind(Dom.insert(d, parent, i, Err(End)), item.id, i)
+	}
+	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	focused = SpecRunner.drain_focus(program, { ..s, dom: $dom, focus_commands: [1.U32, 2, 3, 5].map(|id| { mode: 1, node: id }) })
+	cmds = SpecRunner.put_u32([18, 1], 1).concat(SpecRunner.put_u32([5], 1))
+	removed = SpecRunner.drain_focus(program, SpecRunner.take_batch(focused, 0, cmds))
+	{ kept: focused.focused, removed: removed.focused, calls: removed.inst, waiting: removed.focus_commands.len() } == { kept: Dom.lookup(focused.dom, 1) + 1, removed: 0, calls: 0, waiting: 0 }
+}
