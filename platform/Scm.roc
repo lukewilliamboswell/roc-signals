@@ -37,8 +37,20 @@ Scm := [].{
 	## Virtual key codes are physical: shifted partners share the code Chrome
 	## needs for native defaults such as Escape and Tab, beside key and code.
 	KeyEntry : { key : Str, name : Str, code : Str, vk : U32, needs_shift : Bool, named : Bool }
+
+	## A press resolves its logical label, physical code and modifiers once.
+	## Native delivery and browser CDP consume these fields instead of reparsing
+	## the chord text independently.
 	Key : { key : Str, code : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool }
+
+	## A press either addresses a semantic locator or uses the current focus.
+	## Only the explicit target requires a locator to match, which also determines
+	## whether this step can anchor an absence.
 	KeyPress : { target : [Focused, At(Loc)], key : Key }
+
+	## The portable US vocabulary includes printable characters and named-key
+	## aliases with their physical codes. Keeping Space's two spellings here lets
+	## both runners use one resolved key record and the same Shift rules.
 	key_table : List(KeyEntry)
 	key_table = [
 		{ key: " ", name: " ", code: "Space", vk: 32, needs_shift: Bool.False, named: Bool.False },
@@ -209,6 +221,9 @@ Scm := [].{
 		choice_input_types: ["radio", "number", "range", "date", "time", "month", "week", "datetime-local"],
 	}
 
+	## Default actions the portable press step must refuse are named by control
+	## group. This data is emitted for replay as well as read natively, so refusal
+	## does not depend on two independently maintained keyboard vocabularies.
 	unmodelled_key_defaults : List({ control : Str, keys : List(Str) })
 	unmodelled_key_defaults = [
 		{ control: "text", keys: ["printable", "Backspace", "Delete", "primary:A", "primary:C", "primary:V", "primary:X", "primary:Y", "primary:Z"] },
@@ -229,10 +244,19 @@ Scm := [].{
 		JsonOut.field("meta", Bool(k.meta)),
 	])
 
+	## The document visibility fact used by setup and report steps. It describes
+	## the browser input an app observes, independently of whether its own views
+	## happen to be drawn.
 	Visibility : [Visible, Hidden]
 
+	## The navigator connectivity fact used by setup and reports. Request
+	## outcomes still enter as explicit effect results, so this fact can be tested
+	## without manufacturing a network answer.
 	Online : [Online, Offline]
 
+	## A stub reply retains header names and values as ordered text pairs.
+	## The parser checks their shape without discarding duplicates or rewriting
+	## the fixture's spelling.
 	Header : { name : Str, value : Str }
 
 	## What a stubbed HTTP request answers with.
@@ -410,6 +434,9 @@ Scm := [].{
 		Ok({ name, from_ms: -9223372036854775808, until_ms: 9223372036854775807, offsets: $offsets })
 	}
 
+	## Check that a declared offset fits the boot protocol's signed minute
+	## field before narrowing it. The spec supplies the offset table; this parser
+	## does not consult a host time-zone database.
 	zone_minutes : Sx -> Try(I32, Problem)
 	zone_minutes = |sx| {
 		value = Scm.integer(sx, "the zone offset")?
@@ -438,6 +465,9 @@ Scm := [].{
 		Ok(advanced.to_i64_wrap())
 	}
 
+	## Emit the explicit zone table with millisecond boundaries as decimal
+	## text, preserving I64 precision in JavaScript. Offsets keep their checked
+	## I32 representation and their declared order.
 	zone_json : Core.Zone -> JsonOut.Value
 	zone_json = |zone| Object([
 		JsonOut.field("name", Text(zone.name)),
@@ -449,7 +479,15 @@ Scm := [].{
 	## Pointer steps carry a zone-relative percentage or ask for the located
 	## element's centre. The runner rejects an ambiguous centre inside a zone.
 	PointerPoint : [Centre, Percent({ x : U16, y : U16 })]
+
+	## Moves and releases carry the target, declared point and pointer identity
+	## of an ongoing gesture. Press-only device, button and modifier options are
+	## excluded from this record.
 	PointerPlace : { target : Loc, at : PointerPoint, id : U32 }
+
+	## A press fixes device, button and modifier facts alongside its located
+	## point and pointer id. Parsing checks the numeric bounds before these
+	## fields are narrowed or emitted for real browser input.
 	PointerPress : { target : Loc, at : PointerPoint, id : U32, kind : [Mouse, Pen, Touch], button : [Main, Middle, Secondary], modifiers : U8 }
 
 	## Parse pointer options exactly once. Press-only options are rejected on
@@ -535,6 +573,8 @@ Scm := [].{
 		Ok({ target, at: $at, id: if ($kind != Mouse and !$seen.contains(":id")) 2 else $id, kind: $kind, button: $button, modifiers: $modifiers })
 	}
 
+	## Reject negative or overflowing pointer identities before narrowing to
+	## the wire's U32 field. The original atom supplies the diagnostic position.
 	pointer_id : Sx -> Try(U32, Problem)
 	pointer_id = |sx| {
 		n = Scm.unsigned(sx, "the pointer id")?
@@ -544,6 +584,9 @@ Scm := [].{
 		Ok(n.to_u32_wrap())
 	}
 
+	## Cancellation carries pointer identity without resolving another target.
+	## Only its optional id is accepted; placement and press options cannot
+	## reinterpret the gesture being cancelled.
 	pointer_cancel : { form : Sx, args : List(Sx) } -> Try(Op, Problem)
 	pointer_cancel = |{ form, args }| match args {
 		[] => Ok(PointerCancel(2))
@@ -551,6 +594,9 @@ Scm := [].{
 		_ => Err(Scm.bad(form, "pointer-cancel takes only an optional :id N"))
 	}
 
+	## Emit the shared location, point and id fields for a press, move or
+	## release. A centre is represented by null, leaving real pixel geometry to
+	## the browser rather than inventing it in the parser.
 	pointer_place_json : PointerPlace -> List({ key : Str, value : JsonOut.Value })
 	pointer_place_json = |{ target, at, id }| [
 		JsonOut.field("loc", Scm.loc_json(target)),
@@ -726,6 +772,10 @@ Scm := [].{
 	## A parsed spec file and its resolved browser facts. The defaulted field
 	## also lets a pure harness construct a spec with Boot's default environment.
 	Spec := { name : Str, setup : List({ item : Setup, pos : Pos }), steps : List(Step), environment : Environment ?? {} }.{
+
+		## Structural equality includes source positions and resolved environment
+		## facts alongside setup and steps, allowing parser consistency tests to
+		## compare the whole parsed result.
 		is_eq : _
 	}
 
@@ -928,6 +978,9 @@ Scm := [].{
 
 	# ---------------------------------------------------------------- reader
 
+	## A reader cursor shares immutable source bytes while carrying its own
+	## byte offset and one-based diagnostic position. Parsing threads cursors
+	## explicitly instead of keeping hidden scanner state.
 	R : { bytes : List(U8), at : U64, line : U64, column : U64 }
 
 	## Read exactly one top-level s-expression.
@@ -945,9 +998,14 @@ Scm := [].{
 		Ok(sx)
 	}
 
+	## Capture the cursor's diagnostic position before consuming a form or
+	## argument. Opening positions remain available when a later delimiter or
+	## escape proves that form malformed.
 	here : R -> Pos
 	here = |r| { line: r.line, column: r.column }
 
+	## Inspect a source byte without advancing the cursor. End-of-input stays
+	## a typed result so each reader can name the construct that was unfinished.
 	peek : R -> Try(U8, [End])
 	peek = |r| r.bytes.get(r.at).map_err(|_| End)
 
@@ -961,6 +1019,9 @@ Scm := [].{
 			_ => { ..r, at: r.at + 1, column: r.column + 1 }
 		}
 
+	## Consume the grammar's whitespace and semicolon comments while advancing
+	## the original source position. Trivia never becomes a form or changes the
+	## spelling retained by an atom.
 	skip_trivia : R -> R
 	skip_trivia = |r0| {
 		var $r = r0
@@ -984,6 +1045,9 @@ Scm := [].{
 		$r
 	}
 
+	## Dispatch one expression after trivia from its leading byte. Unexpected
+	## closing parentheses and end-of-input are positioned failures, not empty
+	## expressions or implicit list terminators.
 	read_expr : R -> Try((Sx, R), Problem)
 	read_expr = |r0| {
 		r = Scm.skip_trivia(r0)
@@ -996,6 +1060,9 @@ Scm := [].{
 		}
 	}
 
+	## Read nested expressions until the matching close, retaining the opening
+	## position on the list. End-of-input reports an unterminated list at that
+	## opening rather than returning its partially accumulated children.
 	read_list : R -> Try((Sx, R), Problem)
 	read_list = |r0| {
 		start = Scm.here(r0)
@@ -1012,6 +1079,9 @@ Scm := [].{
 		Ok((List($items, start), Scm.advance($r)))
 	}
 
+	## Decode only the spec grammar's five escapes and require valid UTF-8.
+	## Literal line breaks, unknown escapes and missing closing quotes are hard
+	## errors; decoded text retains the string's opening position.
 	read_string : R -> Try((Sx, R), Problem)
 	read_string = |r0| {
 		start = Scm.here(r0)
@@ -1046,9 +1116,15 @@ Scm := [].{
 		Err({ pos: start, message: "unterminated string" })
 	}
 
+	## Define where an atom stops: the grammar's whitespace, parentheses,
+	## quote and comment marker. The reader leaves each delimiter for the
+	## appropriate list, string or trivia handler.
 	is_delimiter : U8 -> Bool
 	is_delimiter = |b| b == ' ' or b == '\t' or b == '\r' or b == '\n' or b == '(' or b == ')' or b == '"' or b == ';'
 
+	## Recognize boolean atoms, then I64 and U64 integers, retaining other text
+	## as a symbol. Wider decimal seeds stay intact for seed_value to validate
+	## as U128 instead of being truncated by the generic reader.
 	read_atom : R -> Try((Sx, R), Problem)
 	read_atom = |r0| {
 		start = Scm.here(r0)
@@ -1075,6 +1151,9 @@ Scm := [].{
 
 	# ------------------------------------------------------------ s-expr views
 
+	## Every expression retains its opening source position, including atoms
+	## not yet validated as arguments. Diagnostics can therefore point at a bad
+	## value without substituting the surrounding step's position.
 	pos_of : Sx -> Pos
 	pos_of = |sx|
 		match sx {
@@ -1086,6 +1165,8 @@ Scm := [].{
 			List(_, p) => p
 		}
 
+	## Match an exact bare-symbol spelling without coercing a quoted string.
+	## Keywords and form heads use this distinction as part of the grammar.
 	is_sym : Sx, Str -> Bool
 	is_sym = |sx, want|
 		match sx {
@@ -1105,9 +1186,15 @@ Scm := [].{
 			List(xs, _) => "(${Str.join_with(xs.map(Scm.show), " ")})"
 		}
 
+	## Attach a validation message to the expression that violated its rule.
+	## Callers choose the argument or whole form so later readers do not need to
+	## reconstruct a source location from rendered text.
 	bad : Sx, Str -> Problem
 	bad = |sx, message| { pos: Scm.pos_of(sx), message }
 
+	## Require quoted text at an argument position, preserving its decoded
+	## contents. Bare names are refused with the caller's description of the
+	## expected value, rather than silently becoming text.
 	string : Sx, Str -> Try(Str, Problem)
 	string = |sx, what|
 		match sx {
@@ -1115,6 +1202,9 @@ Scm := [].{
 			_ => Err(Scm.bad(sx, "${what} must be a string, got ${Scm.show(sx)}"))
 		}
 
+	## Require a bare grammar word or keyword, retaining its exact spelling.
+	## Quoted lookalikes remain text values and are diagnosed at their own source
+	## position instead of acquiring keyword meaning.
 	symbol : Sx, Str -> Try(Str, Problem)
 	symbol = |sx, what|
 		match sx {
@@ -1154,6 +1244,9 @@ Scm := [].{
 		Ok({ query: Scm.string(Scm.arg(values, 0), "the media query")?, matches: Scm.boolean(Scm.arg(values, 1), "the media match")? })
 	}
 
+	## Read a signed I64 atom without narrowing a wider unsigned literal.
+	## Forms using this helper retain the offending expression's position on a
+	## kind or range mismatch.
 	integer : Sx, Str -> Try(I64, Problem)
 	integer = |sx, what|
 		match sx {
@@ -1161,6 +1254,8 @@ Scm := [].{
 			_ => Err(Scm.bad(sx, "${what} must be an integer, got ${Scm.show(sx)}"))
 		}
 
+	## Require the reader's true/false atoms for boolean assertions. Text and
+	## numeric values never acquire truthiness that could weaken the assertion.
 	boolean : Sx, Str -> Try(Bool, Problem)
 	boolean = |sx, what|
 		match sx {
@@ -1218,6 +1313,9 @@ Scm := [].{
 			Err(Scm.bad(form, "${Scm.head_of(form)} takes ${n.to_str()} argument(s), got ${args.len().to_str()}"))
 		}
 
+	## Name a headed form in arity diagnostics, falling back to its rendered
+	## expression when no symbol head exists. Error reporting does not invent a
+	## step name for a malformed form.
 	head_of : Sx -> Str
 	head_of = |form|
 		match form {
@@ -1225,9 +1323,15 @@ Scm := [].{
 			_ => Scm.show(form)
 		}
 
+	## Index arguments only after an arity or length check established the
+	## position. A missing entry here is a parser implementation error and crashes
+	## instead of supplying a guessed argument.
 	arg : List(Sx), U64 -> Sx
 	arg = |args, i| args.get(i) ?? crash "Scm.arg: arity was checked first"
 
+	## Validate the visible/hidden keywords before environment resolution or
+	## report delivery. A misspelt state remains a source error rather than
+	## choosing a default visibility.
 	visibility : Sx -> Try(Visibility, Problem)
 	visibility = |sx|
 		match Scm.symbol(sx, "visibility")? {
@@ -1236,6 +1340,9 @@ Scm := [].{
 			other => Err(Scm.bad(sx, "visibility is visible or hidden, got ${other}"))
 		}
 
+	## Validate the online/offline connectivity vocabulary shared by setup and
+	## reports. This selects an observed browser fact while effect steps retain
+	## control of request outcomes.
 	online : Sx -> Try(Online, Problem)
 	online = |sx|
 		match Scm.symbol(sx, "connectivity")? {
@@ -1244,12 +1351,18 @@ Scm := [].{
 			other => Err(Scm.bad(sx, "connectivity is online or offline, got ${other}"))
 		}
 
+	## Keep storage keys and values as two quoted data arguments. Empty values
+	## remain representable, and the shared arity check prevents an omitted value
+	## from being confused with an empty one.
 	key_value : Sx, List(Sx) -> Try({ key : Str, value : Str }, Problem)
 	key_value = |form, args0| {
 		args = Scm.arity(form, args0, 2)?
 		Ok({ key: Scm.string(Scm.arg(args, 0), "the key")?, value: Scm.string(Scm.arg(args, 1), "the value")? })
 	}
 
+	## Require a nonempty list with a bare symbol head, returning its remaining
+	## arguments and opening position. Registry dispatch then decides whether that
+	## name belongs to setup or executable steps.
 	split_form : Sx -> Try((Str, List(Sx), Pos), Problem)
 	split_form = |form|
 		match form {
@@ -1324,6 +1437,9 @@ Scm := [].{
 		Ok((Scm.locator(Scm.arg(args, 0))?, $names))
 	}
 
+	## Dispatch through the setup registry and retain the original form
+	## position. Environment resolution can then locate cross-form contradictions
+	## without either runner reparsing the setup text.
 	setup_form : Sx -> Try({ item : Setup, pos : Pos }, Problem)
 	setup_form = |form| {
 		(head, args, pos) = Scm.split_form(form)?
@@ -1449,6 +1565,9 @@ Scm := [].{
 		Ok($out)
 	}
 
+	## Extract a required field after keyword framing has checked duplicates.
+	## A missing field points at its whole form; the returned value still carries
+	## its own position for the subsequent type check.
 	required : Sx, List({ key : Str, value : Sx }), Str -> Try(Sx, Problem)
 	required = |form, fields, key|
 		match fields.find_first(|f| f.key == key) {
@@ -1456,6 +1575,9 @@ Scm := [].{
 			Err(_) => Err(Scm.bad(form, "missing ${key}"))
 		}
 
+	## Validate a fixture's list of quoted name/value pairs with nonempty names.
+	## Order, duplicate entries and empty values are retained rather than
+	## canonicalized into a different response fixture.
 	header_list : Sx -> Try(List(Header), Problem)
 	header_list = |sx| {
 		items = match sx {
@@ -1852,6 +1974,9 @@ Scm := [].{
 		Ok(AnswerPort({ occurrence, answer }))
 	}
 
+	## Dispatch one executable form through the closed step registry and retain
+	## its position. Whole-story checks, including absence anchoring, run later in
+	## parse when every step is available.
 	step_form : Sx -> Try(Step, Problem)
 	step_form = |form| {
 		(head, args, pos) = Scm.split_form(form)?
@@ -1860,27 +1985,45 @@ Scm := [].{
 		Ok({ op, pos })
 	}
 
+	## Keep single-target steps on the same strict arity and semantic-locator
+	## grammar. A malformed target fails during parsing before either runner can
+	## attempt to resolve it against a page.
 	loc1 : Sx, List(Sx) -> Try(Loc, Problem)
 	loc1 = |form, args| Scm.locator(Scm.arg(Scm.arity(form, args, 1)?, 0))
 
+	## Parse the shared target-plus-text shape used by edits and text/value
+	## assertions. Text remains quoted data, and locator validation is identical
+	## to the single-target steps.
 	loc_text : Sx, List(Sx) -> Try((Loc, Str), Problem)
 	loc_text = |form, args| {
 		a = Scm.arity(form, args, 2)?
 		Ok((Scm.locator(Scm.arg(a, 0))?, Scm.string(Scm.arg(a, 1), "the text")?))
 	}
 
+	## Parse a locator and an explicit boolean for control-state assertions.
+	## False remains an expected value to test at the located element, not an
+	## instruction to omit that assertion.
 	loc_bool : Sx, List(Sx) -> Try((Loc, Bool), Problem)
 	loc_bool = |form, args| {
 		a = Scm.arity(form, args, 2)?
 		Ok((Scm.locator(Scm.arg(a, 0))?, Scm.boolean(Scm.arg(a, 1), "the expected value")?))
 	}
 
+	## Single-text steps share exact arity and quoted-string validation.
+	## The caller's label identifies the expected value in a positioned error;
+	## unquoted spellings are not converted for convenience.
 	text1 : Sx, List(Sx), Str -> Try(Str, Problem)
 	text1 = |form, args, what| Scm.string(Scm.arg(Scm.arity(form, args, 1)?, 0), what)
 
+	## Keep ordinary one-count forms consistent about arity and nonnegative
+	## integer syntax. Full-width observation ordinals instead use scroll_count,
+	## which explicitly accepts the reader's wider unsigned atom.
 	count1 : Sx, List(Sx), Str -> Try(U64, Problem)
 	count1 = |form, args, what| Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), what)
 
+	## Reject unknown metric names while the source position is available,
+	## then retain the signed expected delta. Whether execution established a
+	## mark is a runner check, separate from this static vocabulary check.
 	metric_args : Sx, List(Sx) -> Try({ metric : Str, delta : I64 }, Problem)
 	metric_args = |form, args| {
 		a = Scm.arity(form, args, 2)?
@@ -1903,6 +2046,9 @@ Scm := [].{
 	work_faults : List((Str, WorkFault))
 	work_faults = [("contract", Contract), ("resource_limit", ResourceLimit), ("out_of_memory", OutOfMemory), ("app_crash", AppCrash), ("expect_failed", ExpectFailed), ("unavailable", Unavailable), ("executor", Executor)]
 
+	## Accept only the declared loss-of-worker fault vocabulary. A task's own
+	## failure remains its answer, so an invented failure spelling cannot be
+	## substituted for a worker-loss result.
 	work_fault : Sx -> Try(WorkFault, Problem)
 	work_fault = |sx| {
 		name = Scm.symbol(sx, "the work fault")?
@@ -1916,6 +2062,9 @@ Scm := [].{
 	work_fault_name : WorkFault -> Str
 	work_fault_name = |fault| Scm.work_faults.find_first(|(_, f)| f == fault).map_ok(|(n, _)| n) ?? crash "Scm.work_faults names every fault"
 
+	## Assertions accept an attribute name as a bare word or quoted text and
+	## preserve it for the runner. This parser checks the argument kind without
+	## normalizing the element's attribute semantics.
 	attr_name : Sx -> Try(Str, Problem)
 	attr_name = |sx|
 		match sx {
@@ -2266,6 +2415,9 @@ Scm := [].{
 		JsonOut.field("media", Array(env.media.map(|(query, matches)| Array([Text(query), Bool(matches)])))),
 	])
 
+	## Emit a semantic address, never a resolved DOM node or engine id.
+	## The browser resolves this locator at its step, preserving the same timing
+	## and lifetime meaning as native execution.
 	loc_json : Loc -> JsonOut.Value
 	loc_json = |loc|
 		match loc {
@@ -2275,6 +2427,9 @@ Scm := [].{
 			TestId(x) => Object([JsonOut.field("kind", Text("test-id")), JsonOut.field("value", Text(x))])
 		}
 
+	## Produce the JSON fields for a typed reply or rejection fixture. Header,
+	## body and detail text are retained without rewriting, so the emitted fixture
+	## represents the same answer that native execution consumes.
 	stub_fields : { label : Str, stub : Stub } -> List({ key : Str, value : JsonOut.Value })
 	stub_fields = |{ label, stub }|
 		match stub {
@@ -2292,6 +2447,9 @@ Scm := [].{
 			]
 		}
 
+	## Use the grammar's closed network/timeout spellings in emitted fixtures.
+	## These request failures keep their own vocabulary, distinct from worker-loss
+	## fault names.
 	reject_kind_name : RejectKind -> Str
 	reject_kind_name = |kind|
 		match kind {
@@ -2299,15 +2457,27 @@ Scm := [].{
 			Timeout => "timeout"
 		}
 
+	## Emit the setup/report keyword for a document visibility value.
+	## The already-resolved environment carries its boolean fact separately, so
+	## replay does not have to derive defaults from this spelling.
 	visibility_name : Visibility -> Str
 	visibility_name = |v| if (v == Visible) "visible" else "hidden"
 
+	## Emit the grammar keyword for a connectivity value in setup or reports.
+	## Resolved environment data carries the corresponding browser fact without
+	## asking replay to reinterpret the original setup forms.
 	online_name : Online -> Str
 	online_name = |o| if (o == Online) "online" else "offline"
 
+	## Attach original one-based source coordinates to emitted setup and steps.
+	## Replay consumes JSON, but its failures must still identify the authored
+	## spec's line and column.
 	pos_fields : Pos -> List({ key : Str, value : JsonOut.Value })
 	pos_fields = |pos| [JsonOut.field("line", Nat(pos.line)), JsonOut.field("column", Nat(pos.column))]
 
+	## Retain typed setup forms and their origins for fixtures and diagnostics.
+	## Environment facts have already been resolved separately; this emission does
+	## not give replay another set of defaulting or conflict rules.
 	setup_json : { item : Setup, pos : Pos } -> JsonOut.Value
 	setup_json = |{ item, pos }| {
 		(op, args) = match item {
@@ -2333,9 +2503,16 @@ Scm := [].{
 		Object([JsonOut.field("op", Text(op))].concat(Scm.pos_fields(pos)).concat(args))
 	}
 
+	## Emit the work-record indices a parsed metric sums, so replay need not
+	## maintain its own mapping. Unknown names yield no indices here; metric_args
+	## rejects them before a source spec can reach this emission path.
 	counters_json : Str -> JsonOut.Value
 	counters_json = |metric| Array((Scm.metric_counters(metric) ?? []).map(|k| Nat(k)))
 
+	## Emit one typed operation with its source position and resolved arguments.
+	## The exhaustive match keeps replay's payload vocabulary aligned with native
+	## steps, including decimal text for full-width observation values and the
+	## counter indices chosen by metric validation.
 	step_json : Step -> JsonOut.Value
 	step_json = |{ op, pos }| {
 		loc = |l| JsonOut.field("loc", Scm.loc_json(l))

@@ -9,6 +9,9 @@ Dom := [].{
 	protocol_version : U32
 	protocol_version = 16
 
+	## A model node has a lifetime index independent of its engine aliases.
+	## Routing ids, rendered attributes, live properties and pending browser work
+	## stay separate so id reuse or a user edit cannot overwrite another meaning.
 	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
 
 	## Browser top-layer state, separate from the value a property decided.
@@ -16,18 +19,46 @@ Dom := [].{
 
 	## Scroll operands remain command data; layout belongs to the browser.
 	Edge : [Keep, Start, End, Px(U32)]
+
+	## A decoded reference action retains its legacy focus mode or scroll
+	## operands. Layout and execution belong to the runner; decoding preserves the
+	## request without inventing geometry.
 	RefAction : [Focus(U8), IntoView({ block : U8, inline : U8, behavior : U8 }), To({ top : Edge, left : Edge, behavior : U8 })]
 
 	## Deferred work captures a model lifetime, never a recycled engine id.
 	RefCmd : { node : U32, target : U64, action : RefAction }
+
+	## A shown-property write captures the target lifetime and its byte position
+	## in the batch. The runner can discard a superseded intent before changing
+	## top-layer state, even when an engine id has since been rebound.
 	ShownCmd : { target : U64, property : U8, value : Shown, intent : U64 }
+
+	## The runner's ordered work after command decoding. Distinct entries keep
+	## reference actions, shown changes and service effects recognizable while
+	## leaving their scheduling outside this independent DOM decoder.
 	AfterCmd : [Ref(RefCmd), Show(ShownCmd), Effect(FxCmd)]
 
 	## Parsed keymaps index canonical labels separately from physical fallback.
 	Chord : { key : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool }
+
+	## An incoming key keeps its logical label separate from its physical code.
+	## Composition suppresses explicit chords while still allowing an every-key
+	## policy to observe the occurrence.
 	Key : { key : Str, code : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool, composing : Bool }
+
+	## One rendered chord keeps its own prevention and outside-text policy.
+	## Lists retain declaration order, and a physical fallback still reports the
+	## chord the author declared.
 	KeyEntry : { chord : Chord, prevent : Bool, outside : Bool }
+
+	## Lookup groups include the non-Shift modifiers; Shift is checked inside
+	## the selected group using the punctuation rule. Exact labels, physical
+	## fallbacks and the final every-key policy remain distinct.
 	KeyIndex : { exact : Dict(Str, List(KeyEntry)), physical : Dict(Str, List(KeyEntry)), every : [None, Anywhere, OutsideText] }
+
+	## A selected key declaration supplies both its route and the chord heard
+	## by the handler. Its prevention decision is available before delivery, as
+	## required for the browser's synchronous default-action boundary.
 	KeyTarget : { target : Target, heard : Chord, prevent : Bool }
 
 	## Only ASCII letters fold. Non-Latin labels retain their exact spelling.
@@ -705,17 +736,32 @@ Dom := [].{
 	key_prevents : Model, U64, Str, Key -> Bool
 	key_prevents = |dom, i, event, key| Dom.key_target(dom, i, event, key).map_ok(|m| m.prevent) ?? Bool.False
 
+	## Rendered handler metadata stores the payload kind and policy bits beside
+	## the handler number. Stream decoding validates that closed vocabulary before
+	## installing the declaration.
 	Listener : { event : Str, handler : U32, kind : U8, policies : U32 }
 
+	## The declaring model node and the engine routing node are different
+	## addresses. A reference alias on a descendant must not replace the owning
+	## row's routing id when an event bubbles.
 	Target : { node : U32, handler : U32, event : Str, kind : U8, policies : U32, declaring : U64 }
 
+	## A template hole describes its static child path and kind-specific wire
+	## operands. Paths are resolved when a row is instantiated, before nested
+	## sites can shift its child positions.
 	THole : { kind : U8, path : List(U8), name : Str, handler : U8, payload_kind : U8, policies : U32, property : U8 }
 
+	## A stored template owns its wire bytes and ordered hole plan. Instances
+	## reuse that immutable description, while resolved hole targets belong to
+	## each row root's node record.
 	Tpl : { bytes : List(U8), root_at : U64, holes : List(THole) }
 
 	## Bounded passive observation of marked batches, independent of the engine.
 	TransitionHistory : { count : U64, oldest : U64, bytes : U64, records : Dict(U64, { types : List(Str), bytes : U64 }), exhausted : Bool }
 
+	## Record a performed transition without influencing DOM progress. Retain
+	## the newest 4096 records within one MiB of encoded type data; an oversized
+	## record clears retained detail, and ordinal exhaustion is remembered.
 	transition : Model, List(Str) -> Model
 	transition = |dom, types| {
 		prior = dom.transitions
@@ -737,11 +783,21 @@ Dom := [].{
 		{ ..dom, transitions: { ..h, count: ordinal, oldest: if (h.records.is_empty()) ordinal else h.oldest, bytes: h.bytes + bytes, records: h.records.insert(ordinal, { types, bytes }) } }
 	}
 
+	## The oracle keeps append-only node lifetimes, a packed engine-id index,
+	## per-template row membership and passive service observations. Root child
+	## links define the drawn tree; detached lifetimes remain available for stale
+	## work checks without reusing their indices.
 	Model : { nodes : List(DNode), statics : List(U64), rows : List(Dict(U64, {})), tpls : List(Tpl), root : U64, documents : List({ index : U64, event : Str }), observed_count : U64, transitions : TransitionHistory }
 
+	## Start a fresh oracle document with a synthetic root at index zero.
+	## No engine aliases, templates, document listeners or observations survive
+	## from an earlier model.
 	new : {} -> Model
 	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0, transitions: { count: 0, oldest: 0, bytes: 0, records: Dict.empty(), exhausted: False } }
 
+	## Read a little-endian command operand independently of the engine's
+	## encoder. Every byte is bounds checked; a short operand is an executor
+	## fault rather than a partially decoded value.
 	u32 : List(U8), U64 -> U32
 	u32 = |b, at| {
 		b0 = (b.get(at) ?? crash "executor: short command").to_u32()
@@ -751,6 +807,9 @@ Dom := [].{
 		b0 + b1.shl_wrap(8) + b2.shl_wrap(16) + b3.shl_wrap(24)
 	}
 
+	## Decode a length-prefixed UTF-8 operand and return the following byte
+	## offset. The length counts bytes, and either truncated data or invalid UTF-8
+	## fails the command instead of changing its text.
 	str : List(U8), U64 -> (Str, U64)
 	str = |b, at| {
 		n = Dom.u32(b, at).to_u64()
@@ -784,6 +843,9 @@ Dom := [].{
 		_ => crash "executor: invalid attribute presence flag"
 	}
 
+	## Bounds-check a raw command byte with the decoder's short-command
+	## failure. Callers use this for discriminants whose allowed values they
+	## validate at their own narrow boundary.
 	byte : List(U8), U64 -> U8
 	byte = |b, at| b.get(at) ?? crash "executor: short command"
 
@@ -801,9 +863,15 @@ Dom := [].{
 		r - 1
 	}
 
+	## Address a model lifetime directly, including detached nodes retained for
+	## stale-work checks. An out-of-range index is an oracle invariant failure;
+	## engine ids must first pass through lookup.
 	node : Model, U64 -> DNode
 	node = |dom, i| dom.nodes.get(i) ?? crash "node index"
 
+	## Replace one lifetime record while preserving the model's secondary
+	## indexes. Structural and registration changes use their dedicated helpers;
+	## this operation does not infer changes from the replacement record.
 	set_node : Model, U64, DNode -> Model
 	set_node = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, i, n| { nodes: nodes.set(i, n) ?? crash "node index", statics, rows, tpls, root, documents, observed_count, transitions }
 
@@ -815,6 +883,9 @@ Dom := [].{
 		({ nodes: nodes.append(n), statics, rows, tpls, root, documents, observed_count, transitions }, index)
 	}
 
+	## Bind an engine id to an index plus one, growing the alias array only as
+	## needed. Zero remains the unbound sentinel; row ownership is packed by
+	## set_row rather than inferred from a node's position.
 	set_static : Model, U32, U64 -> Model
 	set_static = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, id, idx| {
 		var $s = statics
@@ -849,6 +920,9 @@ Dom := [].{
 		if (v == 0) Err(Static) else Ok(v - 1)
 	}
 
+	## A neutral record holds no children, aliases or registrations. Besides
+	## serving fixtures, it lets modify move a record out of its list before
+	## changing nested storage without retaining a second holder.
 	empty_node : DNode
 	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
 
@@ -860,9 +934,15 @@ Dom := [].{
 		{ nodes: list.set(i, f(prev)) ?? crash "node index", statics, rows, tpls, root, documents, observed_count, transitions }
 	}
 
+	## Register a static command alias and remember it on the target lifetime
+	## for subtree teardown. This leaves the node's event-routing id unchanged,
+	## so references inside a row retain the row's route.
 	bind : Model, U32, U64 -> Model
 	bind = |dom, id, idx| Dom.modify(Dom.set_static(dom, id, idx), idx, |n| { ..n, ids: n.ids.append(id) })
 
+	## Clear an engine alias and its recorded row-site membership together.
+	## The model node remains available for lifetime checks; forgetting a subtree
+	## separately clears its reverse alias list.
 	unbind : Model, U32 -> Model
 	unbind = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, id| {
 		packed = statics.get(id.to_u64()) ?? 0
@@ -934,6 +1014,9 @@ Dom := [].{
 		Dom.modify($d, i, |n| { ..n, ids: [] })
 	}
 
+	## Remove one node from its parent's ordered children and count the
+	## detachment. Its subtree and aliases remain available for MOVE; lifetime
+	## removal also calls forget_subtree. Searching the sibling list is linear.
 	detach : Model, U64 -> Model
 	detach = |dom, i| {
 		n = Dom.node(dom, i)
@@ -1057,6 +1140,9 @@ Dom := [].{
 		}
 	}
 
+	## Decode and validate a template's hole plan after walking its static
+	## node bytes. Unknown hole kinds, invalid listener/property metadata and
+	## trailing bytes fail before the template can instantiate rows.
 	parse_tpl : List(U8) -> Tpl
 	parse_tpl = |b| {
 		var $at = Dom.skip(b, 0)
@@ -1099,6 +1185,9 @@ Dom := [].{
 		{ bytes: b, root_at: 0, holes: $holes }
 	}
 
+	## Resolve a template's child-ordinal path against its freshly built
+	## structure. Missing children fail the template contract; callers cache the
+	## result before dynamic insertions can change sibling positions.
 	walk : Model, U64, List(U8) -> U64
 	walk = |dom, root, path| {
 		var $n = root
@@ -1124,6 +1213,9 @@ Dom := [].{
 		Present(text) => Dom.set_attr_on(dom, i, name, text)
 	}
 
+	## Update the rendered attribute list, applying the closed boolean names'
+	## empty/false convention while retaining that text on ordinary attributes.
+	## An open attribute also keeps a dialog's modeled shown state consistent.
 	set_attr_on : Model, U64, Str, Str -> Model
 	set_attr_on = |dom, i, name, value| {
 		if Dom.bool_attrs.contains(name) and (value == "" or value == "false") {
@@ -1307,6 +1399,9 @@ Dom := [].{
 		Dom.set_live_on(dom, i, "value", Dom.attr_of(n, "value"))
 	}
 
+	## Replace the text carried by one lifetime without rebuilding its other
+	## metadata. Children are changed by structural commands, independently of
+	## this stored text operand.
 	set_text_on : Model, U64, Str -> Model
 	set_text_on = |dom, i, t| {
 		n = Dom.node(dom, i)
@@ -1317,6 +1412,9 @@ Dom := [].{
 	apply : Model, List(U8) -> Model
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
+	## Give command traces their diagnostic opcode labels. The fallback label
+	## does not validate a command; decode_commands rejects unknown wire opcodes
+	## before any caller can treat them as performed work.
 	op_name : U8 -> Str
 	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD"].get(op.to_u64()) ?? "?"
 
@@ -1490,6 +1588,10 @@ Dom := [].{
 	apply_next : Model, List(U8), U64 -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64), values : List((U64, Str)), next : U64 }
 	apply_next = |dom, bytes, at| Dom.decode_commands(dom, bytes, { start: at, one: Bool.True })
 
+	## The shared resumable batch reader updates the model and ordered command,
+	## write and effect traces. A zero start consumes the batch flag; one-command
+	## mode returns the next byte boundary. Unsupported or malformed wire data
+	## fails rather than being skipped, and no service effect is executed here.
 	decode_commands : Model, List(U8), { start : U64, one : Bool } -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64), values : List((U64, Str)), next : U64 }
 	decode_commands = |dom0, b, { start, one }| {
 		var $written = []
@@ -1971,6 +2073,9 @@ Dom := [].{
 	## independently of the engine that wrote it.
 	Work : { counters : List(U64), cleanups : List((Str, U64)) }
 
+	## Preserve counter order and cleanup names from one complete work record.
+	## The primitive readers reject short operands, and the final length check
+	## rejects trailing bytes that would otherwise hide a framing mismatch.
 	decode_work : List(U8) -> Work
 	decode_work = |b| {
 		n = Dom.u32(b, 0).to_u64()
@@ -1998,6 +2103,9 @@ Dom := [].{
 		{ counters: $cs, cleanups: $runs }
 	}
 
+	## Combine two little-endian words without a floating-point conversion.
+	## Handle tokens, ranges and work counters therefore retain all 64 bits in
+	## the oracle's decoded values.
 	u64 : List(U8), U64 -> U64
 	u64 = |b, at| Dom.u32(b, at).to_u64() + Dom.u32(b, at + 4).to_u64().shl_wrap(32)
 
@@ -2048,6 +2156,9 @@ Dom := [].{
 		Err(Outside)
 	}
 
+	## Render the modeled subtree as diagnostic HTML-like text in child order.
+	## Attribute and text values remain literal, without HTML escaping; this is
+	## an inspection of the oracle rather than the browser command executor.
 	render : Model, U64 -> Str
 	render = |dom, i| {
 		n = Dom.node(dom, i)
@@ -2060,6 +2171,9 @@ Dom := [].{
 		}
 	}
 
+	## Collect text-leaf contents through the subtree's ordered children.
+	## This models textContent for assertions, independently of layout,
+	## attributes and live control properties.
 	text_of : Model, U64 -> Str
 	text_of = |dom, i| {
 		n = Dom.node(dom, i)
@@ -2070,6 +2184,9 @@ Dom := [].{
 	has_attr : DNode, Str -> Bool
 	has_attr = |element, name| element.attrs.any(|(key, _)| key == name)
 
+	## Read the first stored value for an attribute, using empty text when
+	## absent. A caller testing presence must also use has_attr, because present
+	## empty text is a valid ordinary attribute value.
 	attr_of : DNode, Str -> Str
 	attr_of = |n, name| n.attrs.find_first(|(k, _)| k == name).map_ok(|(_, v)| v) ?? ""
 
@@ -2091,13 +2208,20 @@ Dom := [].{
 		Err(NotFound)
 	}
 
+	## Walk the attached tree for the first node with a present matching
+	## attribute. Checking presence separately prevents an empty expected value
+	## from matching a node that never had the attribute.
 	by_attr : Model, Str, Str -> Try(U64, [NotFound])
 	by_attr = |dom, name, value| Dom.find(dom, dom.root, |n| Dom.has_attr(n, name) and Dom.attr_of(n, name) == value)
 
-	## Every node (depth-first) whose text content equals `t` and has a handler.
+	## Resolve a click for an already located node through the ordinary
+	## bubbling listener route, retaining the owning row's engine address.
 	click_target : Model, U64 -> Try(Target, [NoHandler])
 	click_target = |dom, i| Dom.target(dom, i, "click", Bool.True)
 
+	## Find the first attached button with one child carrying the given stored
+	## text. This narrow fixture helper does not resolve nested text or accessible
+	## names; the spec runner's semantic locators handle those cases.
 	button_with_text : Model, Str -> Try(U64, [NotFound])
 	button_with_text = |dom, t| Dom.find(dom, dom.root, |n| n.tag == "button" and n.kids.len() == 1 and (Dom.node(dom, n.kids.get(0) ?? 0)).text == t)
 
