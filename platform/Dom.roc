@@ -7,7 +7,7 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 12
+	protocol_version = 13
 
 	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
 
@@ -707,17 +707,41 @@ Dom := [].{
 
 	Tpl : { bytes : List(U8), root_at : U64, holes : List(THole) }
 
-	Model : { nodes : List(DNode), statics : List(U64), rows : List(Dict(U64, {})), tpls : List(Tpl), root : U64, documents : List({ index : U64, event : Str }), observed_count : U64 }
+	## Bounded passive observation of marked batches, independent of the engine.
+	TransitionHistory : { count : U64, oldest : U64, bytes : U64, records : Dict(U64, { types : List(Str), bytes : U64 }), exhausted : Bool }
+
+	transition : Model, List(Str) -> Model
+	transition = |dom, types| {
+		prior = dom.transitions
+		if prior.count == 18446744073709551615 {
+			return { ..dom, transitions: { ..prior, exhausted: True } }
+		}
+		ordinal = prior.count + 1
+		bytes = types.fold(0.U64, |n, t| n + 4 + t.to_utf8().len())
+		if bytes > 1048576 {
+			return { ..dom, transitions: { ..prior, count: ordinal, oldest: ordinal, bytes: 0, records: Dict.empty() } }
+		}
+		var $history = prior
+		while !$history.records.is_empty() and ($history.records.len() >= 4096 or $history.bytes + bytes > 1048576) {
+			h = $history
+			record = h.records.get(h.oldest) ?? crash "transition history ordinal"
+			$history = { ..h, records: h.records.remove(h.oldest), oldest: h.oldest + 1, bytes: h.bytes - record.bytes }
+		}
+		h = $history
+		{ ..dom, transitions: { ..h, count: ordinal, oldest: if (h.records.is_empty()) ordinal else h.oldest, bytes: h.bytes + bytes, records: h.records.insert(ordinal, { types, bytes }) } }
+	}
+
+	Model : { nodes : List(DNode), statics : List(U64), rows : List(Dict(U64, {})), tpls : List(Tpl), root : U64, documents : List({ index : U64, event : Str }), observed_count : U64, transitions : TransitionHistory }
 
 	new : {} -> Model
-	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0 }
+	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0, transitions: { count: 0, oldest: 0, bytes: 0, records: Dict.empty(), exhausted: False } }
 
 	u32 : List(U8), U64 -> U32
 	u32 = |b, at| {
-		b0 = (b.get(at) ?? crash "short command").to_u32()
-		b1 = (b.get(at + 1) ?? crash "short command").to_u32()
-		b2 = (b.get(at + 2) ?? crash "short command").to_u32()
-		b3 = (b.get(at + 3) ?? crash "short command").to_u32()
+		b0 = (b.get(at) ?? crash "executor: short command").to_u32()
+		b1 = (b.get(at + 1) ?? crash "executor: short command").to_u32()
+		b2 = (b.get(at + 2) ?? crash "executor: short command").to_u32()
+		b3 = (b.get(at + 3) ?? crash "executor: short command").to_u32()
 		b0 + b1.shl_wrap(8) + b2.shl_wrap(16) + b3.shl_wrap(24)
 	}
 
@@ -726,9 +750,9 @@ Dom := [].{
 		n = Dom.u32(b, at).to_u64()
 		bytes = b.sublist({ start: at + 4, len: n })
 		if bytes.len() != n {
-			crash "short string"
+			crash "executor: short string"
 		}
-		(Str.from_utf8(bytes) ?? crash "bad utf8", at + 4 + n)
+		(Str.from_utf8(bytes) ?? crash "executor: bad utf8", at + 4 + n)
 	}
 
 	## A `u32` length and that many raw bytes (not necessarily UTF-8).
@@ -755,7 +779,7 @@ Dom := [].{
 	}
 
 	byte : List(U8), U64 -> U8
-	byte = |b, at| b.get(at) ?? crash "short command"
+	byte = |b, at| b.get(at) ?? crash "executor: short command"
 
 	## Engine id -> node index.
 	lookup : Model, U32 -> U64
@@ -775,24 +799,24 @@ Dom := [].{
 	node = |dom, i| dom.nodes.get(i) ?? crash "node index"
 
 	set_node : Model, U64, DNode -> Model
-	set_node = |{ nodes, statics, rows, tpls, root, documents, observed_count }, i, n| { nodes: nodes.set(i, n) ?? crash "node index", statics, rows, tpls, root, documents, observed_count }
+	set_node = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, i, n| { nodes: nodes.set(i, n) ?? crash "node index", statics, rows, tpls, root, documents, observed_count, transitions }
 
 	add_node : Model, DNode -> (Model, U64)
-	add_node = |{ nodes, statics, rows, tpls, root, documents, observed_count }, n| ({ nodes: nodes.append(n), statics, rows, tpls, root, documents, observed_count }, nodes.len())
+	add_node = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, n| ({ nodes: nodes.append(n), statics, rows, tpls, root, documents, observed_count, transitions }, nodes.len())
 
 	set_static : Model, U32, U64 -> Model
-	set_static = |{ nodes, statics, rows, tpls, root, documents, observed_count }, id, idx| {
+	set_static = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, id, idx| {
 		var $s = statics
 		while $s.len() <= id.to_u64() {
 			$s = $s.append(0)
 		}
-		{ nodes, statics: $s.set(id.to_u64(), idx + 1) ?? crash "static", rows, tpls, root, documents, observed_count }
+		{ nodes, statics: $s.set(id.to_u64(), idx + 1) ?? crash "static", rows, tpls, root, documents, observed_count, transitions }
 	}
 
 	## Bind a row element: its node index, its site (recorded with the id and
 	## in the site's row list, so CLEAR can forget the site's rows).
 	set_row : Model, U32, U64, U64 -> Model
-	set_row = |{ nodes, statics, rows, tpls, root, documents, observed_count }, id, idx, site| {
+	set_row = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, id, idx, site| {
 		var $s = statics
 		while $s.len() <= id.to_u64() {
 			$s = $s.append(0)
@@ -803,7 +827,7 @@ Dom := [].{
 		}
 		{ list, prev } = $r.replace(site, Dict.empty()) ?? crash "row"
 		packed = (idx + 1).bitwise_or((site + 1).shl_wrap(40))
-		dom = { nodes, statics: $s.set(id.to_u64(), packed) ?? crash "static", rows: list.set(site, prev.insert(id.to_u64(), {})) ?? crash "row", tpls, root, documents, observed_count }
+		dom = { nodes, statics: $s.set(id.to_u64(), packed) ?? crash "static", rows: list.set(site, prev.insert(id.to_u64(), {})) ?? crash "row", tpls, root, documents, observed_count, transitions }
 		Dom.modify(dom, idx, |n| { ..n, ids: n.ids.append(id) })
 	}
 
@@ -820,25 +844,25 @@ Dom := [].{
 	## Update node i in place (the node is moved out of the list first, so
 	## its kid list stays uniquely owned).
 	modify : Model, U64, (DNode -> DNode) -> Model
-	modify = |{ nodes, statics, rows, tpls, root, documents, observed_count }, i, f| {
+	modify = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, i, f| {
 		{ list, prev } = nodes.replace(i, Dom.empty_node) ?? crash "node index"
-		{ nodes: list.set(i, f(prev)) ?? crash "node index", statics, rows, tpls, root, documents, observed_count }
+		{ nodes: list.set(i, f(prev)) ?? crash "node index", statics, rows, tpls, root, documents, observed_count, transitions }
 	}
 
 	bind : Model, U32, U64 -> Model
 	bind = |dom, id, idx| Dom.modify(Dom.set_static(dom, id, idx), idx, |n| { ..n, ids: n.ids.append(id) })
 
 	unbind : Model, U32 -> Model
-	unbind = |{ nodes, statics, rows, tpls, root, documents, observed_count }, id| {
+	unbind = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, id| {
 		packed = statics.get(id.to_u64()) ?? 0
 		statics2 = statics.set(id.to_u64(), 0) ?? statics
 		site1 = packed.shr_zf_wrap(40)
 		if site1 == 0 {
-			{ nodes, statics: statics2, rows, tpls, root, documents, observed_count }
+			{ nodes, statics: statics2, rows, tpls, root, documents, observed_count, transitions }
 		} else {
 			site = site1 - 1
 			{ list, prev } = rows.replace(site, Dict.empty()) ?? crash "row"
-			{ nodes, statics: statics2, rows: list.set(site, prev.remove(id.to_u64())) ?? crash "row", tpls, root, documents, observed_count }
+			{ nodes, statics: statics2, rows: list.set(site, prev.remove(id.to_u64())) ?? crash "row", tpls, root, documents, observed_count, transitions }
 		}
 	}
 
@@ -1280,14 +1304,14 @@ Dom := [].{
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE"].get(op.to_u64()) ?? "?"
+	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION"].get(op.to_u64()) ?? "?"
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
 	describe = |ops| {
 		var $parts = []
 		var $op = 1.U8
-		while $op <= 23 {
+		while $op <= 24 {
 			n = ops.count_if(|o| o == $op)
 			if n > 0 {
 				$parts = $parts.append("${Dom.op_name($op)}=${n.to_str()}")
@@ -1425,7 +1449,14 @@ Dom := [].{
 		var $values = []
 		var $fx = []
 		var $d = dom0
-		var $at = start
+		flags = if (b.is_empty()) 0 else Dom.byte(b, 0)
+		if flags > 1 {
+			crash "executor: unknown command batch flags"
+		}
+		if b.len() == 1 and flags == 1 {
+			crash "executor: marked batch is missing TRANSITION"
+		}
+		var $at = if (start == 0 and !b.is_empty()) 1 else start
 		var $ops = []
 		while $at < b.len() and (!one or $ops.is_empty()) {
 			intent = $at
@@ -1562,7 +1593,7 @@ Dom := [].{
 				bytes = b.sublist({ start: $at + 8, len: n })
 				$at = $at + 8 + n
 				t = Dom.parse_tpl(bytes)
-				{ nodes, statics, rows, tpls, root, documents, observed_count } = $d
+				{ nodes, statics, rows, tpls, root, documents, observed_count, transitions } = $d
 				var $t = tpls
 				while $t.len() <= tpl {
 					$t = $t.append({ bytes: [], root_at: 0, holes: [] })
@@ -1575,7 +1606,7 @@ Dom := [].{
 				# recycled): rows of an earlier site that was disposed with an
 				# ancestor are forgotten, as the runtime does, or its next CLEAR
 				# would unbind node ids reused since.
-				$d = { nodes, statics, rows: $r.set(tpl, Dict.empty()) ?? $r, tpls: $t.set(tpl, t) ?? $t, root, documents, observed_count }
+				$d = { nodes, statics, rows: $r.set(tpl, Dict.empty()) ?? $r, tpls: $t.set(tpl, t) ?? $t, root, documents, observed_count, transitions }
 			} else if op == 8 or op == 10 {
 				nid = Dom.u32(b, $at)
 				parent = Dom.u32(b, $at + 4)
@@ -1832,8 +1863,29 @@ Dom := [].{
 				(name, a1) = Dom.str(b, $at + 24)
 				$at = a1
 				$fx = $fx.append(Save(file, name))
+			} else if op == 24 {
+				if flags != 1 {
+					crash "executor: TRANSITION requires marked batch"
+				}
+				n = Dom.u32(b, $at).to_u64()
+				$at = $at + 4
+				var $types = []
+				var $i = 0.U64
+				while $i < n {
+					(t, next) = Dom.str(b, $at)
+					$types = $types.append(t)
+					$at = next
+					$i = $i + 1
+				}
+				if $at != b.len() {
+					crash "executor: TRANSITION must be last"
+				}
+				$d = Dom.transition($d, $types)
 			} else {
-				crash "unknown command ${op.to_str()}"
+				crash "executor: unknown command ${op.to_str()}"
+			}
+			if $at == b.len() and flags == 1 and op != 24 {
+				crash "executor: marked batch is missing TRANSITION"
 			}
 		}
 		{ dom: $d, ops: $ops, fx: $fx, written: $written, values: $values, next: $at }
@@ -1997,7 +2049,7 @@ Dom := [].{
 				.concat(elem(3.U32, "ul"))
 				.concat(template)
 				.concat([6.U8].concat(le32(3.U32)).concat(le32(0.U32)))
-		dom = Dom.apply(Dom.new({}), cmds)
+		dom = Dom.apply(Dom.new({}), [0].concat(cmds))
 		(dom.statics.get(2) ?? 0) != 0
 	}
 
@@ -2084,9 +2136,35 @@ expect {
 	dom = Dom.bind(d1, 1, target)
 	legacy = [1.U8, 2, 3, 4, 5].fold([], |bytes, mode| bytes.concat([18, mode, 1, 0, 0, 0]))
 	bytes = legacy.concat([18, 6, 1, 0, 0, 0, 0, 1, 2, 18, 7, 1, 0, 0, 0, 3, 255, 0, 0, 0, 2, 1])
-	actual = Dom.apply_full(dom, bytes)
+	actual = Dom.apply_full(dom, [0].concat(bytes))
 	actual.fx == [1.U8, 2, 3, 4, 5].map(|mode| Ref({ node: 1, target, action: Focus(mode) })).concat([
 		Ref({ node: 1, target, action: IntoView({ block: 0, inline: 1, behavior: 2 }) }),
 		Ref({ node: 1, target, action: To({ top: Px(255), left: End, behavior: 1 }) }),
 	])
+}
+
+## Marked batches retain their exact ordered types without interpreting CSS.
+expect {
+	marked = [1.U8, 24, 2, 0, 0, 0, 5, 0, 0, 0].concat("shelf".to_utf8()).concat([3, 0, 0, 0]).concat("x y".to_utf8())
+	first = Dom.apply_full(Dom.new({}), marked)
+	second = Dom.apply(first.dom, [1, 24, 0, 0, 0, 0])
+	{ ops: first.ops, count: second.transitions.count, types: first.dom.transitions.records.get(1).map_ok(|r| r.types), empty: second.transitions.records.get(2).map_ok(|r| r.types) } == { ops: [24], count: 2, types: Ok(["shelf", "x y"]), empty: Ok([]) }
+}
+
+## Observation evicts at both retention limits and never stops DOM progress.
+expect {
+	var $dom = Dom.new({})
+	var $i = 0.U64
+	while $i < 4097 {
+		$dom = Dom.transition($dom, [])
+		$i = $i + 1
+	}
+	counted = $dom
+	large = Str.from_utf8(List.repeat(97.U8, 524289)) ?? crash "ASCII"
+	a = Dom.transition(counted, [large])
+	b = Dom.transition(a, [large])
+	oversize = Dom.transition(b, [large, large])
+	maxed = { ..oversize, transitions: { ..oversize.transitions, count: 18446744073709551615 } }
+	exhausted = Dom.transition(maxed, [])
+	{ count: counted.transitions.count, old: counted.transitions.records.contains(1), len: counted.transitions.records.len(), byte_len: b.transitions.records.len(), bytes: b.transitions.bytes, oversize: oversize.transitions.records.len(), total: oversize.transitions.count, exhausted: exhausted.transitions.exhausted } == { count: 4097, old: False, len: 4096, byte_len: 1, bytes: 524293, oversize: 0, total: 4100, exhausted: True }
 }

@@ -99,12 +99,17 @@ async function settle(page) {
   const deadline = Date.now() + 20000;
   for (;;) {
     const observation = await page.evaluate(async () => {
+      let timer;
+      try {
+        await Promise.race([window.__rt?.idle(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("transition idle timed out")), 20000); })]);
+      } catch (error) { return { error: error.message }; }
+      finally { clearTimeout(timer); }
       await new Promise((resolve) => setTimeout(resolve, 0));
-      try { return { ready: window.__rt?.nativeEventsReady() ?? true }; }
+      try { return { ready: window.__rt?.nativeEventsReady() ?? true, pending: !!window.__rt?.pendingTransition }; }
       catch (error) { return { error: error.message }; }
     });
     if (observation.error) throw new Error(`native UI observation failed: ${observation.error}`);
-    if (observation.ready) {
+    if (observation.ready && !observation.pending) {
       await page.evaluate(async () => {
         const rt = window.__rt;
         if (rt?.manualScrollers?.size) await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
@@ -772,6 +777,14 @@ const STEPS = {
       ? !element.open ? "hidden" : element.matches(":modal") ? "modal" : "open"
       : element.hasAttribute("popover") ? element.matches(":popover-open") ? "popover" : "hidden" : "unsupported");
     if (actual !== step.shown) throw new Error(`${showLoc(step.loc)} is ${actual}, expected ${step.shown}`);
+  },
+  "expect-transitions": async (page, step) => {
+    const actual = await page.evaluate(() => window.__rt.transitionLog.total().toString());
+    if (actual !== step.count) throw new Error(`${actual} view transitions, expected ${step.count}`);
+  },
+  "expect-transition": async (page, step) => {
+    const actual = await page.evaluate(at => window.__rt.transitionLog.at(BigInt(at)).types, step.at);
+    if (JSON.stringify(actual) !== JSON.stringify(step.types)) throw new Error(`transition ${step.at} types ${JSON.stringify(actual)}, expected ${JSON.stringify(step.types)}`);
   },
   "expect-scrolls": async (page, step) => {
     const actual = await page.evaluate(() => window.__rt.scrollCount().toString());

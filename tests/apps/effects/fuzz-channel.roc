@@ -1013,6 +1013,58 @@ run_media = |program| {
 ## remounts and removes the subscription again, with refusals at every mount.
 expect run_media([0, 0, 5, 1, 5, 0, 1, 0, 4, 0, 3, 0, 5, 0, 3, 0, 5, 1, 2, 0]) == {}
 
+## A generated history checks the batch boundary itself against a plain
+## value model: equality prunes, empty types still mark, and a Self result
+## joins its caller's types. Initial Self turns remain part of mount.
+run_transitions : List(U8) -> {}
+run_transitions = |program| {
+	view = Core.state(
+		1.U64,
+		|st| Core.element(
+			"button",
+			[Core.on_click(st.set_value(|_, payload| U64.from_str(payload) ?? 0))],
+			[
+				Core.watch(
+					st.signal(),
+					|n| if (n == 0) [] else if (n == 1) [ViewTransition(["odd", "shared", "odd"]), Self] else if (n == 3) [ViewTransition([])] else [ViewTransition([if (n % 2 == 0) "even" else "odd", "shared"])],
+					st.on_result(|before, _, _| if (before == 1) 2 else before),
+				),
+			],
+		),
+	)
+	(initial, mount_bytes) = Core.take_cmds(Core.mount(view), [])
+	if mount_bytes.get(0) != Ok(0) or Core.work_counters(initial).get(45) != Ok(0) {
+		crash "mount transition"
+	}
+	var $engine = initial
+	var $value = 2.U64
+	var $count = 0.U64
+	for byte in program {
+		next = byte.to_u64() % 6
+		marked = next != $value and next != 0
+		types = if (next == 1) ["odd", "shared", "even"] else if (next == 3) [] else [if (next % 2 == 0) "even" else "odd", "shared"]
+		var $want = if (marked) le32([1, 24], types.len()) else []
+		if marked {
+			$count = $count + 1
+			for name in types {
+				$want = wstr($want, name)
+			}
+		}
+		(after, commands) = Core.take_cmds(Core.event($engine, 1, 0, next.to_str()), [])
+		if commands != $want or Core.work_counters(after).get(45) != Ok($count) {
+			crash "transition batch disagrees with value model"
+		}
+		if Core.settled(after).is_err() {
+			crash "transition watcher left stale"
+		}
+		$engine = after
+		$value = if (next == 1) 2 else next
+	}
+	{}
+}
+
+expect run_transitions([2, 1, 1, 3, 3, 0, 5, 4, 0, 1]) == {}
+
 Input : { mode : U8, program : List(U8) }
 
 test! : Input => Fuzz.Outcome
@@ -1022,6 +1074,7 @@ test! = |{ mode, program }| {
 	} else {
 		run_program!(program)
 		run_media(program)
+		run_transitions(program)
 		Fuzz.keep
 	}
 }
@@ -1032,6 +1085,7 @@ ex = |name, mode, program| Fuzz.example({ name, revision: "1", make: || { mode, 
 target = Fuzz.target_with!({
 	name: "fx-channel",
 	examples: [
+		ex("transition-batches", 1, [2, 1, 1, 3, 3, 0, 5, 4, 0, 1]),
 		ex("media-lifecycle", 1, [0, 0, 5, 1, 5, 0, 1, 0, 4, 0, 3, 0, 5, 0, 3, 0, 5, 1, 2, 0]),
 		# issue 0 x3 (third refused + self), deliver, toggle 0 (cancel), deliver cancelled, show again
 		ex("lifecycle", 1, [0, 0, 0, 0, 0, 0, 2, 1, 1, 0, 2, 2, 1, 0, 3, 7, 0, 1, 0, 2]),

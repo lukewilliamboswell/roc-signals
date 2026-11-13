@@ -78,7 +78,7 @@ await page.evaluate(async () => {
     const frames = new Map(); let nextFrame = 0;
     const win = { requestAnimationFrame: (callback) => { frames.set(++nextFrame, callback); return nextFrame; }, cancelAnimationFrame: (id) => frames.delete(id) };
     const rt = new RocEngineRuntime(x, root, { manualEffects: manual, window: win, environment: { visible: () => true } });
-    const raw = (bytes) => { new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.applyBatch(); length = 0; };
+    const raw = (commands) => { const bytes = join([0], commands); new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.applyBatch(); length = 0; };
     const calls = [];
     rt.deliver = (node, handler, payload) => { calls.push({ node, handler, bytes: Array.from(payload) }); };
     raw(create);

@@ -472,6 +472,9 @@ absorb = |s, a, c, what| {
 	if observed != dom.observed_count {
 		crash "${what}: engine observation gauge ${observed.to_str()} differs from oracle ${dom.observed_count.to_str()}"
 	}
+	if (Core.work_counters(a).get(45) ?? 0) != dom.transitions.count {
+		crash "${what}: engine transition count differs from the independent oracle"
+	}
 	if !what.is_empty() {
 		turns = (Core.work_counters(a).get(turns_at) ?? 0) - (Core.work_counters(s.eng).get(turns_at) ?? 0)
 		match half_seen(s.dom.nodes.len(), written, fx, turns) {

@@ -1068,6 +1068,9 @@ fire = |s, at, event, payload| match Dom.target(s.dom, at, event, Bool.True) {
 	Ok(target) => {
 		(eng, cmds) = Core.take_cmds(Core.event(s.eng, target.node, target.handler, payload), [])
 		(dom, ops) = Dom.apply_ops(s.dom, cmds)
+		if (Core.work_counters(eng).get(45) ?? 0) != dom.transitions.count {
+			crash "table-view: engine transition count differs from the independent oracle"
+		}
 		({ eng, dom, model: s.model }, ops)
 	}
 	Err(NoHandler) => crash "table-view: node ${at.to_str()} has no ${event} handler"

@@ -82,6 +82,11 @@ Checks := [].{
 	key_contracts! : SpecSuite.Options => Try(List(Str), _)
 	key_contracts! = |o| {
 		cases = [
+			{ name: "oracle-flags", rejection: "unknown command batch flags", prefix: "executor:", code: 70 },
+			{ name: "oracle-missing-transition", rejection: "marked batch is missing TRANSITION", prefix: "executor:", code: 70 },
+			{ name: "oracle-unmarked-transition", rejection: "TRANSITION requires marked batch", prefix: "executor:", code: 70 },
+			{ name: "oracle-transition-trailing", rejection: "TRANSITION must be last", prefix: "executor:", code: 70 },
+			{ name: "oracle-transition-truncated", rejection: "short command", prefix: "executor:", code: 70 },
 			{ name: "oracle-leading-zero", rejection: "leading zero", prefix: "executor:", code: 70 },
 			{ name: "oracle-apply-file", rejection: "value property on file input", prefix: "contract:", code: 70 },
 			{ name: "text-key", rejection: "on_key", prefix: "contract:", code: 70 },

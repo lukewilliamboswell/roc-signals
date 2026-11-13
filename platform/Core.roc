@@ -1400,6 +1400,9 @@ Core := [].{
 		Push(Str),
 		Replace(Str),
 		Title(Str),
+
+		## Mark this call's batch for a document view transition; mount requests are ignored.
+		ViewTransition(List(Str)),
 		Focus(Str),
 		Blur(Str),
 		SelectText(Str),
@@ -1445,6 +1448,9 @@ Core := [].{
 		Push(Str),
 		Replace(Str),
 		Title(Str),
+
+		## Mark this call's batch for a document view transition; mount requests are ignored.
+		ViewTransition(List(Str)),
 		Focus(Str),
 		Blur(Str),
 		SelectText(Str),
@@ -2422,7 +2428,7 @@ Core := [].{
 		}
 		match target {
 			Err(Stale) => { root, tx, programs }
-			Ok((path, h)) => drain(turn({ root, tx, programs }, path, h, payload))
+			Ok((path, h)) => drain(turn({ root, tx: start_batch(tx), programs }, path, h, payload))
 		}
 	}
 
@@ -2437,18 +2443,31 @@ Core := [].{
 				# A subscription stays live until it is cancelled, unless its
 				# JavaScript ended it (a port's `Closed` or `Threw`).
 				tx1 = if (entry.sub and !(programs.ports.ends)(res)) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
-				drain(turn({ root, tx: tx1, programs }, entry.path, id, Fx(res)))
+				drain(turn({ root, tx: start_batch(tx1), programs }, entry.path, id, Fx(res)))
 			}
 		}
 	}
 
 	## For test platforms and harnesses: take the commands accumulated since the
-	## last call, leaving `buf` (cleared) in the instance to accumulate the next
-	## batch.
+	## last call, reusing `buf` (cleared) for the next batch.
+	## Finalization merges transition types into one terminal command.
 	take_cmds : App, List(U8) -> (App, List(U8))
 	take_cmds = |{ root, tx, programs }, buf| {
 		{ cmds, next, free, routes, work, paths, site_free, observations, fx } = tx
-		({ root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }, cmds)
+		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch } = fx
+		{ mounting, asked, types, seen: _ } = batch
+		var $cmds = cmds
+		if asked {
+			$cmds = $cmds.set(0, 1) ?? crash "internal: missing batch header"
+			$cmds = put_u32($cmds.append(24), types.len().to_u32_wrap())
+			for name in types {
+				$cmds = put_str($cmds, name)
+			}
+		} else if $cmds.len() == 1 {
+			$cmds = $cmds.clear()
+		}
+		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
+		({ root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2 }, programs }, $cmds)
 	}
 
 	## For test platforms and harnesses: how many app closures (holes, values,
@@ -2466,7 +2485,7 @@ Core := [].{
 			$out = $out.append(work_get(a.tx.work, $i))
 			$i = $i + 1
 		}
-		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42), work_get(a.tx.work, 43), a.tx.fx.observed.live])
+		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42), work_get(a.tx.work, 43), a.tx.fx.observed.live, work_get(a.tx.work, 45)])
 	}
 
 	# ------------------------------------------------------------------
@@ -2507,7 +2526,8 @@ Core := [].{
 	settled : App -> Try({}, { cmds : List(U8), note : Str })
 	settled = |{ root, tx, programs: _ }| {
 		before = tx.fx
-		(_, _, after) = call(root, Top, Changed(every_layer), { ..tx, cmds: [] })
+		scratch = with_fx(tx, |effects| { ..effects, batch: { mounting: False, asked: False, types: [], seen: Dict.empty() } })
+		(_, _, after) = call(root, Top, Changed(every_layer), { ..scratch, cmds: [] })
 		note = settle_note(before, after.fx)
 		if (after.cmds.is_empty() and note.is_empty()) Ok({}) else Err({ cmds: after.cmds, note })
 	}
@@ -2516,7 +2536,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 12
+	protocol_version = 13
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -2628,7 +2648,7 @@ Core := [].{
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
 				{ root, tx, programs } = inst
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
-				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
+				fresh = { root, tx: { cmds: buf.clear().append(0), next, free, routes, work, paths, site_free, observations, fx }, programs }
 				handles = blobs.map(|b| Blob.(b))
 				if node == fx_node {
 					# A result that carries files: a port's answer (result
@@ -2799,7 +2819,7 @@ Core := [].{
 			event: |inst, buf, wbuf, node, handler, payload| {
 				{ root, tx, programs } = inst
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
-				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
+				fresh = { root, tx: { cmds: buf.clear().append(0), next, free, routes, work, paths, site_free, observations, fx }, programs }
 				if node == fx_node {
 					finish(Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
 				} else {
@@ -3240,17 +3260,17 @@ w_port_sends = 40
 
 ## The number of counters in the work record: the work counters, the eight
 ## effect counters, port commands (40), property commands (41–42), and
-## released registrations (43), and live observations (44).
+## released registrations (43), live observations (44), and marked batches (45).
 w_record_count : U64
-w_record_count = w_count + 13
+w_record_count = w_count + 14
 
 ## The work counters as plain fields (`c01` is counter 1): bumping one
 ## updates a value in the accumulator and never allocates, so counting
 ## cannot cost an allocation or a copy on any path.
-Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64 }
+Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64, c45 : U64 }
 
 work_zero : Work
-work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0 }
+work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0, c45: 0 }
 
 ## Add `n` to counter `i`; counter 0 (and any index past the last) is the
 ## unused sink.
@@ -3291,6 +3311,7 @@ add_work = |w, i, n| match i {
 	41 => { ..w, c41: w.c41 + n }
 	42 => { ..w, c42: w.c42 + n }
 	43 => { ..w, c43: w.c43 + n }
+	45 => { ..w, c45: w.c45 + n }
 	_ => w
 }
 
@@ -3332,6 +3353,7 @@ work_get = |w, i| match i {
 	41 => w.c41
 	42 => w.c42
 	43 => w.c43
+	45 => w.c45
 	_ => 0
 }
 
@@ -3469,9 +3491,9 @@ release_node = |tx, owner| {
 ## Move the registration index out before modifying it, leaving no second
 ## holder in Fx that would make each observed-node change copy the index.
 with_registrations : Fx, (List(U32), LiveObservations -> (List(U32), LiveObservations)) -> Fx
-with_registrations = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups }, change| {
+with_registrations = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch }, change| {
 	(documents, observations) = change(document_nodes, observed)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups, batch }
 }
 
 ## Release a static node id and its route.
@@ -3531,9 +3553,9 @@ drop_name = |fx, { node, name, path }| if (name.is_empty()) fx else with_refs(
 ## Move the reference indexes and pending checks out of the accumulator so
 ## updates retain one holder for each map, list and reverse-index column.
 with_refs : Fx, (RefMap, List(List(RefOwned)), List(TurnEnd) -> (RefMap, List(List(RefOwned)), List(TurnEnd))) -> Fx
-with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups }, change| {
+with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch }, change| {
 	(names, positions, checks) = change(refs, ref_pos, focus)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups, batch }
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
@@ -6782,7 +6804,8 @@ mount_start = |max, programs, { st, tables }, elem| {
 	tx0 = { cmds, next, free, routes, work, paths, site_free, observations, fx: { ..fx, max } }
 	(block, tx) = mount_block(Root.{ store: st }, elem, 0, [], 0, 0, { cap: 0 }, tx0)
 	written = tables.fold(0.U128, |acc, t| acc.bitwise_or(cell_bit(t.cell)))
-	drain({ root: store_inst(st, { cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs })
+	{ root, tx: mounted, programs: catalogue } = drain({ root: store_inst(st, { cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs })
+	{ root, tx: with_fx(mounted, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), programs: catalogue }
 }
 
 ## A files-kind event's record (design.md, Appendix B), `count:u32
@@ -7326,6 +7349,9 @@ Fx : {
 
 	## `on_cleanup` runs, by name, in first-run order.
 	cleanups : List((Str, U64)),
+
+	## Types accumulated across every turn of one host call, never across calls.
+	batch : TransitionBatch,
 }
 
 ## What the end of a turn settles, in issue order: a focus command on a named
@@ -7358,8 +7384,28 @@ PortAt : { req : PortRequest, path : List(U32), slot : [At(U64, U32), Refused] }
 ## with its timeout, or a subscription, each with its port and message.
 PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe(Str, PortMessage)]
 
+TransitionBatch : { mounting : Bool, asked : Bool, types : List(Str), seen : Dict(Str, {}) }
+
 fx_empty : Fx
-fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [] }
+fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
+
+## Collect a request without allocating an awaited id. Removing the batch from
+## its holder before updating keeps its hash set and ordered list unique.
+collect_transition : Fx, List(Str) -> Fx
+collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch }, names| {
+	{ mounting, asked, types, seen } = batch
+	var $types = types
+	var $seen = seen
+	if !mounting {
+		for name in names {
+			if !$seen.contains(name) {
+				$seen = $seen.insert(name, {})
+				$types = $types.append(name)
+			}
+		}
+	}
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen } }
+}
 
 ## The first follow-up id: follow-ups are a space of their own, above
 ## every request id.
@@ -7500,12 +7546,12 @@ fx_admit : Tx, List(U32), Request -> (U32, Tx)
 fx_admit = |tx, path, req| {
 	# A port request's bytes are written at the end of the turn.
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = turn_end_later(tx, path, req)
-	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups } = fx
+	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch } = fx
 	if live.len() >= max {
-		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups }
+		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch }
 		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2 })
 	} else {
-		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups }
+		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, batch }
 		(id, { cmds: put_req(cmds, id, req), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2 })
 	}
 }
@@ -7559,6 +7605,9 @@ issue = |tx, path, reqs, a, owned| {
 		at = $at
 		$at = $at + 1
 		match req {
+			ViewTransition(types) => {
+				$tx = with_fx($tx, |fx| collect_transition(fx, types))
+			}
 			Push(url) => {
 				$tx = emit_op($tx, 15, |c| put_str(c.append(1), url))
 			}
@@ -7783,6 +7832,7 @@ command_request = |command| match command {
 	Push(url) => Push(url)
 	Replace(url) => Replace(url)
 	Title(text) => Title(text)
+	ViewTransition(types) => ViewTransition(types)
 	Focus(name) => Focus(name)
 	Blur(name) => Blur(name)
 	SelectText(name) => SelectText(name)
@@ -8285,8 +8335,15 @@ decode_boot = |bytes, queries| match Core.read_boot_media(bytes, queries) {
 	Err(message) => crash message
 }
 
+## Direct harness delivery starts a batch lazily; real host entry has already
+## reserved this byte in the recycled command buffer. Scratch buffers stay empty.
+start_batch : Tx -> Tx
+start_batch = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }| {
+	{ cmds: if (cmds.is_empty()) cmds.append(0) else cmds, next, free, routes, work, paths, site_free, observations, fx }
+}
+
 new_tx : List(U8) -> Tx
-new_tx = |cmds| { cmds, next: 1, free: [], routes: [], work: work_zero, paths: [[]], site_free: [], observations: { echo: False, shown: [] }, fx: fx_empty }
+new_tx = |cmds| { cmds: cmds.append(0), next: 1, free: [], routes: [], work: work_zero, paths: [[]], site_free: [], observations: { echo: False, shown: [] }, fx: fx_empty }
 
 ## One turn: fire down `path`; then the root's Changed pass for the cells
 ## the event wrote, which the layers it wrote with them join where the
@@ -8469,8 +8526,8 @@ out_writes = |out| match out {
 ## work record into `wbuf`.
 finish : App, List(U8), List(U8) -> (App, List(U8), List(U8))
 finish = |inst, buf, wbuf| {
-	w = work_bytes(inst, wbuf)
 	(a2, cmds) = Core.take_cmds(inst, buf)
+	w = work_bytes(a2, wbuf)
 	(a2, cmds, w)
 }
 
@@ -8491,7 +8548,7 @@ work_bytes = |inst, buf| {
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.issued), fx.delivered), fx.stale), fx.refused)
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.cancelled), fx.reparented), fx.skipped), fx.live.len())
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, w_port_sends)), work_get(counters, 41)), work_get(counters, 42))
-	$b = put_u64(put_u64($b, work_get(counters, 43)), fx.observed.live)
+	$b = put_u64(put_u64(put_u64($b, work_get(counters, 43)), fx.observed.live), work_get(counters, 45))
 	runs = inst.tx.fx.cleanups
 	$b = put_u32($b, runs.len().to_u32_wrap())
 	for (name, k) in runs {
@@ -8524,7 +8581,7 @@ settle_note = |a, b| {
 		("end-of-turn focus requests, program checks and port requests", a.focus.len(), b.focus.len() - drifts.len()),
 	]
 	changed = pairs.keep_if(|(_, x, y)| x != y).map(|(name, x, y)| "${name} ${x.to_str()} -> ${y.to_str()}")
-	Str.join_with(drifts.concat(changed), ", ")
+	Str.join_with(drifts.concat(changed).concat(if (b.batch.asked) ["view transition requested by settle check"] else []), ", ")
 }
 
 ## The worker catalogue lists its names in order, and a duplicate name or a
@@ -8695,7 +8752,7 @@ expect {
 	body = put_u32(put_u32(put_u32(put_str([], "{\"a\":1}"), 1), 2).concat([7, 8]), 0)
 	want = put_str([19], "t/c").concat(body).concat(put_u32(put_str(put_u32([13], 1).append(9), "t/k").concat(body), 600000)).concat(put_str(put_u32([13], 2).append(10), "t/s").concat(body))
 	counters = Core.work_counters(taken)
-	cmds == want and counters.get(19) == Ok(0) and counters.get(40) == Ok(1) and Core.fx_stats(taken).issued == 2
+	cmds == [0].concat(want) and counters.get(19) == Ok(0) and counters.get(40) == Ok(1) and Core.fx_stats(taken).issued == 2
 }
 
 ## A cleanup's commands issue the requests of the same tags, carrying the
@@ -8731,7 +8788,7 @@ expect {
 	mounted = put_str(put_u32(put_u32(put_u32([8], 1), 0), 0), "div").concat(put_str(put_u32(put_u32(put_u32([10], 2), 1), 0), ""))
 	cleaned = put_str([17], "a").concat(put_str(put_str([16, 1], "last"), "a")).concat(put_str([16, 2], "draft"))
 	replaced = put_str(put_u32(put_u32(put_u32([10], 3), 0), 2), "")
-	cmds == mounted.concat(cleaned).concat(replaced) and taken.tx.fx.cleanups == [("closing", 1)]
+	cmds == [0].concat(mounted).concat(cleaned).concat(replaced) and taken.tx.fx.cleanups == [("closing", 1)]
 }
 
 ## A call is kept when its site is disposed (it reparents, like HTTP) and a
@@ -8978,7 +9035,7 @@ expect {
 	checked = put_str(put_u32([21], 1).append(2), "true")
 	listen = put_u32(put_str(put_u32(put_u32([11], 1), 0), "change").append(1), 3)
 	actual = { bytes: commands, value: work_get(mounted.tx.work, 19), checked: work_get(mounted.tx.work, 20), properties: work_get(mounted.tx.work, 41), evaluations: work_get(mounted.tx.work, 21) }
-	actual == { bytes: element.concat(value).concat(checked).concat(listen), value: 1, checked: 1, properties: 2, evaluations: 0 }
+	actual == { bytes: [0].concat(element).concat(value).concat(checked).concat(listen), value: 1, checked: 1, properties: 2, evaluations: 0 }
 }
 
 ## A row property hole declares its property index once in the template.
@@ -9039,7 +9096,7 @@ expect {
 	(same, same_commands) = Core.take_cmds(Core.event(empty, 1, 0, ""), [])
 	(named, named_commands) = Core.take_cmds(Core.event(same, 1, 0, "name"), [])
 	(absent, absent_commands) = Core.take_cmds(Core.event(named, 1, 0, "remove"), [])
-	prefix = put_str(put_u32([9], 1), "title")
+	prefix = put_str(put_u32([0, 9], 1), "title")
 	actual = {
 		empty: empty_commands,
 		same: same_commands,
@@ -9202,7 +9259,7 @@ expect encode_keymap(Core.Keymap.prevent([Core.Chord.plain("")]).concat(Core.Key
 expect read_key(put_str(put_str(put_str([0], "Escape"), "").append(0), "")).is_err()
 
 ## Serialized work retains RELEASE at counter 43 and starts the cleanup table
-## after all 45 counters, including a multibyte cleanup name and its run count.
+## after all 46 counters, including a multibyte cleanup name and its run count.
 expect {
 	mounted = Core.mount(
 		Core.state(
@@ -9232,7 +9289,7 @@ expect {
 	(name, after_name) = get_str(bytes, cleanup_at + 4, "cleanup name")
 	runs = get_u64(bytes, after_name, "cleanup runs")
 	{ count, counters_match: $decoded == counters, released: $decoded.get(43), names, name, runs, consumed: after_name + 8 == bytes.len() } == {
-		count: 45,
+		count: 46,
 		counters_match: True,
 		released: Ok(1),
 		names: 1,
@@ -9284,7 +9341,7 @@ expect {
 	(clean, _) = Core.take_cmds(mounted, [])
 	closed = Core.event(clean, 1, 0, Str.from_utf8([0]) ?? crash "UTF8")
 	(_, commands) = Core.take_cmds(closed, [])
-	commands == put_str(put_u32([21], 1).append(6), "modal") and Core.evals(closed) == before + 1 and Core.settled(closed).is_ok()
+	commands.drop_first(1) == put_str(put_u32([21], 1).append(6), "modal") and Core.evals(closed) == before + 1 and Core.settled(closed).is_ok()
 }
 
 ## Row-constant shown properties own a cache column and use the same echo
@@ -9296,7 +9353,7 @@ expect {
 	(clean, _) = Core.take_cmds(mounted, [])
 	closed = Core.event(clean, 2, 0, Str.from_utf8([0]) ?? crash "UTF8")
 	(_, commands) = Core.take_cmds(closed, [])
-	commands == put_str(put_u32([22], 2).append(0), "true") and Core.evals(closed) == before + 1 and Core.settled(closed).is_ok()
+	commands.drop_first(1) == put_str(put_u32([22], 2).append(0), "true") and Core.evals(closed) == before + 1 and Core.settled(closed).is_ok()
 }
 
 ## A derive equality cutoff cannot strand the echoed hole below it. Its
@@ -9308,7 +9365,7 @@ expect {
 	(clean, _) = Core.take_cmds(mounted, [])
 	closed = Core.event(clean, 1, 0, Str.from_utf8([0]) ?? crash "UTF8")
 	(_, commands) = Core.take_cmds(closed, [])
-	commands == put_str(put_u32([21], 1).append(6), "modal") and Core.evals(closed) == before + 2 and Core.settled(closed).is_ok()
+	commands.drop_first(1) == put_str(put_u32([21], 1).append(6), "modal") and Core.evals(closed) == before + 2 and Core.settled(closed).is_ok()
 }
 
 ## When a close handler accepts the browser fact, equality prunes the shown
@@ -9320,7 +9377,7 @@ expect {
 	(clean, _) = Core.take_cmds(mounted, [])
 	closed = Core.event(clean, 1, 0, Str.from_utf8([0]) ?? crash "UTF8")
 	(_, commands) = Core.take_cmds(closed, [])
-	commands == put_u32([5], 3) and Core.evals(closed) == before + 2 and Core.settled(closed).is_ok()
+	commands.drop_first(1) == put_u32([5], 3) and Core.evals(closed) == before + 2 and Core.settled(closed).is_ok()
 }
 
 ## Moving a row reasserts the shown template descendants of that row at
@@ -9333,7 +9390,7 @@ expect {
 	moved = Core.event(clean, 1, 0, "")
 	(_, commands) = Core.take_cmds(moved, [])
 	expected = put_u32(put_u32([4], 4), 2).concat(put_str(put_u32([22], 4).append(1), "true")).concat(put_u32(put_u32([4], 2), 0)).concat(put_str(put_u32([22], 2).append(1), "true"))
-	commands == expected and Core.settled(moved).is_ok()
+	commands.drop_first(1) == expected and Core.settled(moved).is_ok()
 }
 
 ## Two written layers meet below a derive before the echoed property is
@@ -9345,7 +9402,7 @@ expect {
 	(clean, _) = Core.take_cmds(mounted, [])
 	closed = Core.event(clean, 1, 0, Str.from_utf8([0]) ?? crash "UTF8")
 	(_, commands) = Core.take_cmds(closed, [])
-	commands == put_str(put_u32([21], 1).append(7), "true") and Core.evals(closed) == before + 2 and Core.settled(closed).is_ok()
+	commands.drop_first(1) == put_str(put_u32([21], 1).append(7), "true") and Core.evals(closed) == before + 2 and Core.settled(closed).is_ok()
 }
 
 ## Reversing the derive's direction still observes the two writes once.
@@ -9356,7 +9413,7 @@ expect {
 	(clean, _) = Core.take_cmds(mounted, [])
 	closed = Core.event(clean, 1, 0, Str.from_utf8([0]) ?? crash "UTF8")
 	(_, commands) = Core.take_cmds(closed, [])
-	commands == put_str(put_u32([21], 1).append(7), "true") and Core.evals(closed) == before + 2 and Core.settled(closed).is_ok()
+	commands.drop_first(1) == put_str(put_u32([21], 1).append(7), "true") and Core.evals(closed) == before + 2 and Core.settled(closed).is_ok()
 }
 
 ## Disposing a nested shown node removes its address from the owning row.
@@ -9401,7 +9458,7 @@ expect {
 	(clean, _) = Core.take_cmds(closed, [])
 	moved = Core.event(clean, 1, 0, "")
 	(_, commands) = Core.take_cmds(moved, [])
-	commands.len() == 18 and commands.get(0) == Ok(4) and commands.get(9) == Ok(4) and Core.settled(moved).is_ok()
+	commands.len() == 19 and commands.get(0) == Ok(0) and commands.get(1) == Ok(4) and commands.get(10) == Ok(4) and Core.settled(moved).is_ok()
 }
 
 ## Reopened template addresses and nested plain owners share one row order.
@@ -9452,8 +9509,8 @@ expect {
 	(clean, echo_commands) = Core.take_cmds(echoed, [])
 	moved = Core.event(clean, 1, 0, "")
 	(_, commands) = Core.take_cmds(moved, [])
-	var $ok = echo_commands.is_empty() and commands.len() == 102
-	var $at = 0.U64
+	var $ok = echo_commands.is_empty() and commands.len() == 103
+	var $at = 1.U64
 	for nested in [first_nested, second_nested] {
 		row_node = get_u32(commands, $at + 1, "moved row")
 		$ok = $ok and commands.get($at) == Ok(4) and commands.get($at + 9) == Ok(22) and commands.get($at + 23) == Ok(21) and commands.get($at + 37) == Ok(22) and get_u32(commands, $at + 10, "first shown") == row_node and get_u32(commands, $at + 24, "nested shown") == nested and get_u32(commands, $at + 38, "last shown") == row_node and commands.get($at + 14) == Ok(0) and commands.get($at + 42) == Ok(4)
@@ -9543,4 +9600,25 @@ expect {
 	before = Core.work_counters(mounted).get(44)?
 	closed = Core.event(mounted, 2, 0, "")
 	{ before, after: Core.work_counters(closed).get(44)?, releases: Core.work_counters(closed).get(43)? } == { before: 2, after: 0, releases: 1 }
+}
+
+## Mount and its follow-ups never mark; later turns merge requests from
+## all effect sites, including empty type lists, into one terminal marker.
+expect {
+	view = Core.state(
+		0.U64,
+		|st| Core.element(
+			"button",
+			[Core.on_click(st.update(|n| n + 1))],
+			[
+				Core.watch(st.signal(), |_| [ViewTransition(["shelf", "books", "shelf"]), ViewTransition([])], Core.ignore({})),
+				Core.watch(st.signal(), |_| [ViewTransition(["books", "detail"])], Core.ignore({})),
+			],
+		),
+	)
+	(mounted, first) = Core.take_cmds(Core.mount(view), [])
+	(changed, commands) = Core.take_cmds(Core.event(mounted, 1, 0, ""), [])
+	(idle, empty) = Core.take_cmds(changed, [])
+	want = put_str(put_str(put_str(put_u32([1, 24], 3), "shelf"), "books"), "detail")
+	first.get(0) == Ok(0) and commands == want and empty.is_empty() and Core.work_counters(mounted).get(45) == Ok(0) and Core.work_counters(idle).get(45) == Ok(1) and Core.fx_stats(idle).issued == 0 and Core.settled(idle).is_ok()
 }

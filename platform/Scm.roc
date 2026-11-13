@@ -460,6 +460,8 @@ Scm := [].{
 		ExpectShown(Loc, [Hidden, Open, Modal, Popover]),
 		ExpectScroll({ ordinal : U64, target : Loc, kind : [IntoView, To] }),
 		ExpectScrolls(U64),
+		ExpectTransitions(U64),
+		ExpectTransition({ at : U64, types : List(Str) }),
 		Scroll({ target : Loc, top : U32, left : U32 }),
 		ReportSize({ target : Loc, width : U32, height : U32 }),
 		ReportSeen({ target : Loc, intersecting : Bool, ratio_permille : U16 }),
@@ -853,7 +855,7 @@ Scm := [].{
 			_ => Err(Scm.bad(sx, "${what} must be a non-negative integer, got ${Scm.show(sx)}"))
 		}
 
-	## Scroll observation ordinals use the whole U64 range and cross JSON as text.
+	## Observation counts and ordinals use the whole U64 range and cross JSON as text.
 	scroll_count : Sx, Str -> Try(U64, Problem)
 	scroll_count = |sx, what| match sx {
 		Unsigned(n, _) => Ok(n)
@@ -1179,6 +1181,24 @@ Scm := [].{
 					_ => return Err(Scm.bad(kind_sx, "the scroll kind must be into-view or to"))
 				}
 				Ok(ExpectScroll({ ordinal, target: Scm.locator(Scm.arg(values, 1))?, kind }))
+			},
+		},
+		{ name: "expect-transitions", parse: |form, args| Ok(ExpectTransitions(Scm.scroll_count(Scm.arg(Scm.arity(form, args, 1)?, 0), "the transition count")?)) },
+		{
+			name: "expect-transition",
+			parse: |form, args| {
+				if args.is_empty() {
+					return Err(Scm.bad(form, "expect-transition needs an ordinal"))
+				}
+				at = Scm.scroll_count(Scm.arg(args, 0), "the transition ordinal")?
+				if at == 0 {
+					return Err(Scm.bad(Scm.arg(args, 0), "the transition ordinal starts at one"))
+				}
+				var $types = []
+				for sx in args.drop_first(1) {
+					$types = $types.append(Scm.string(sx, "the transition type")?)
+				}
+				Ok(ExpectTransition({ at, types: $types }))
 			},
 		},
 		{ name: "expect-scrolls", parse: |form, args| Ok(ExpectScrolls(Scm.scroll_count(Scm.arg(Scm.arity(form, args, 1)?, 0), "the scroll count")?)) },
@@ -1539,6 +1559,7 @@ Scm := [].{
 		{ name: "effects_cancelled", counters: [36] },
 		{ name: "effects_reparented", counters: [37] },
 		{ name: "effects_skipped", counters: [38] },
+		{ name: "view_transitions", counters: [45] },
 	]
 
 	## The counters a metric name sums.
@@ -1569,6 +1590,8 @@ Scm := [].{
 		{ op: "expect-shown", grant: Never },
 		{ op: "expect-scroll", grant: Never },
 		{ op: "expect-scrolls", grant: Never },
+		{ op: "expect-transitions", grant: Never },
+		{ op: "expect-transition", grant: Never },
 		{ op: "scroll", grant: Never },
 		{ op: "report-size", grant: Never },
 		{ op: "report-seen", grant: Never },
@@ -1677,6 +1700,8 @@ Scm := [].{
 			ExpectShown(_, _) => "expect-shown"
 			ExpectScroll(_) => "expect-scroll"
 			ExpectScrolls(_) => "expect-scrolls"
+			ExpectTransitions(_) => "expect-transitions"
+			ExpectTransition(_) => "expect-transition"
 			Scroll(_) => "scroll"
 			ReportSize(_) => "report-size"
 			ReportSeen(_) => "report-seen"
@@ -1916,6 +1941,8 @@ Scm := [].{
 			]
 			ExpectScroll({ ordinal, target, kind }) => [loc(target), JsonOut.field("ordinal", Text(ordinal.to_str())), JsonOut.field("kind", Text(if (kind == IntoView) "into-view" else "to"))]
 			ExpectScrolls(count) => [JsonOut.field("count", Text(count.to_str()))]
+			ExpectTransitions(count) => [JsonOut.field("count", Text(count.to_str()))]
+			ExpectTransition({ at, types }) => [JsonOut.field("at", Text(at.to_str())), JsonOut.field("types", Array(types.map(|t| Text(t))))]
 			Scroll({ target, top, left }) => [loc(target), JsonOut.field("top", Nat(top.to_u64())), JsonOut.field("left", Nat(left.to_u64()))]
 			ReportSize({ target, width, height }) => [loc(target), JsonOut.field("width", Nat(width.to_u64())), JsonOut.field("height", Nat(height.to_u64()))]
 			ReportSeen({ target, intersecting, ratio_permille }) => [loc(target), JsonOut.field("intersecting", Bool(intersecting)), JsonOut.field("ratio_permille", Nat(ratio_permille.to_u64()))]
@@ -2215,7 +2242,7 @@ expect {
 		\\${problem_of("(test \"t\" (steps (expect-metric-delta-at-most rows_painted 0)))")}
 		\\${JsonOut.render(Scm.spec_fields("m", spec))}
 	expected =
-		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, registrations_released, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped
+		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, registrations_released, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped, view_transitions
 		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","storage":[],"storage_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
 }
@@ -2438,3 +2465,15 @@ expect {
 		"{\"op\":\"expect-media-subscriptions\",\"line\":2,\"column\":3,\"query\":\"dark\",\"count\":1}",
 	]
 }
+
+## Transition counts and ordinals preserve U64 precision in shared JSON.
+expect {
+	spec = Scm.parse("(test \"transitions\" (steps (expect-transitions 18446744073709551615) (expect-transition 18446744073709551615 \"shelf\" \"books\") (expect-transition 1)))")?
+	{ ops: spec.steps.map(|step| step.op), json: JsonOut.render(Scm.step_json(spec.steps.get(1)?)) } == {
+		ops: [ExpectTransitions(18446744073709551615), ExpectTransition({ at: 18446744073709551615, types: ["shelf", "books"] }), ExpectTransition({ at: 1, types: [] })],
+		json: "{\"op\":\"expect-transition\",\"line\":1,\"column\":70,\"at\":\"18446744073709551615\",\"types\":[\"shelf\",\"books\"]}",
+	}
+}
+
+## Missing, negative, overflowing and zero transition ordinals are errors.
+expect ["(expect-transition)", "(expect-transition 0)", "(expect-transition -1)", "(expect-transition 18446744073709551616)", "(expect-transitions 18446744073709551616)", "(expect-transition 1 nope)", "(expect-transitions 1 2)"].map(|form| Scm.parse("(test \"bad\" (steps ${form}))").is_err()) == List.repeat(True, 7)

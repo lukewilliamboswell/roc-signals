@@ -15,8 +15,8 @@ import Store
 ## Four effect sites connect the store to the database: one loads the
 ## books at start, one listens for the database's copy after any tab
 ## writes, one asks the database to add each book the reader posts, and one
-## sends each change's posted commands. Everything else is ordinary view
-## code.
+## sends each change's posted commands. Two change-only sites mark shelf
+## and book-count changes for browser view transitions; the app owns their CSS.
 ReadingApp := [].{
 
 	## The page, and the four effect sites that connect the store to the
@@ -25,6 +25,7 @@ ReadingApp := [].{
 	view = |{}| Html.div(
 		"app-shell app-shell-narrow",
 		[
+			Engine.element("style", [], [Engine.text(motion_css)]),
 			Html.section(
 				"Reading List",
 				"app-header",
@@ -128,7 +129,12 @@ book = |id, row| {
 	action = held.map(ReadingList.next_action)
 	Engine.element(
 		"li",
-		[Engine.class("card flex flex-wrap items-center justify-between gap-3 p-3"), Engine.attr_s("aria-label", title)],
+		[
+			Engine.class("book card flex flex-wrap items-center justify-between gap-3 p-3"),
+			Engine.attr_s("aria-label", title),
+			# The database gives UUIDs; the prefix makes digit-leading keys CSS identifiers.
+			Engine.attr_s("style", id.map(|key| "view-transition-name: book-${key}")),
+		],
 		[
 			Html.div(
 				"grid",
@@ -164,14 +170,18 @@ shelves : {} -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 shelves = |{}| {
 	books = ReadingList.cells.books
-	showing = ReadingList.cells.showing.signal()
 	Engine.derive(
 		books.signal().map(ReadingList.tally),
 		|counted| {
+			showing = ReadingList.cells.showing.signal()
 			Html.section(
 				"Shelves",
 				"panel grid gap-3 p-4",
 				[
+					# These values choose the animation, including changes from a port result.
+					# Neither marks mount; typing touches neither value.
+					Engine.watch_changes(showing, |_| [ViewTransition(["shelf"])], Engine.ignore({})),
+					Engine.watch_changes(counted, |_| [ViewTransition(["books"])], Engine.ignore({})),
 					Html.div(
 						"toolbar",
 						[
@@ -210,3 +220,54 @@ shelves = |{}| {
 		},
 	)
 }
+
+## The app carries one stylesheet in its DOM, so a standalone mount and the
+## documentation site use the same motion without app-specific runtime code.
+## Disposed books survive only as browser snapshots, never as retained nodes.
+## Only books are captured: the form and shelf controls stay interactive.
+## Controls inside a captured book wait until its animation finishes.
+motion_css : Str
+motion_css =
+	\\ :root { view-transition-name: none; }
+	\\ .book { view-transition-class: book; }
+	\\ ::view-transition { pointer-events: none; }
+	\\ ::view-transition-group(.book) {
+	\\   animation-duration: 220ms;
+	\\   animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+	\\ }
+	\\ ::view-transition-old(.book):only-child {
+	\\   animation: reading-book-leave 160ms ease-in both;
+	\\ }
+	\\ ::view-transition-new(.book):only-child {
+	\\   animation: reading-book-arrive 220ms ease-out both;
+	\\ }
+	\\ :root:active-view-transition-type(shelf)::view-transition-group(.book) {
+	\\   animation: none;
+	\\ }
+	\\ :root:active-view-transition-type(shelf)::view-transition-old(.book) {
+	\\   animation: reading-fade-out 120ms ease-out both;
+	\\ }
+	\\ :root:active-view-transition-type(shelf)::view-transition-new(.book) {
+	\\   animation: reading-fade-in 160ms ease-out both;
+	\\ }
+	\\ @keyframes reading-book-arrive {
+	\\   from { opacity: 0; translate: 0 0.5rem; }
+	\\   to { opacity: 1; translate: 0 0; }
+	\\ }
+	\\ @keyframes reading-book-leave {
+	\\   from { opacity: 1; translate: 0 0; }
+	\\   to { opacity: 0; translate: 0 -0.35rem; }
+	\\ }
+	\\ @keyframes reading-fade-in { from { opacity: 0; } to { opacity: 1; } }
+	\\ @keyframes reading-fade-out { from { opacity: 1; } to { opacity: 0; } }
+	\\ @supports not (view-transition-name: none) {
+	\\   .book { transition: opacity 180ms ease-out, translate 180ms ease-out; }
+	\\   @starting-style { .book { opacity: 0; translate: 0 0.5rem; } }
+	\\ }
+	\\ @media (prefers-reduced-motion: reduce) {
+	\\   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) {
+	\\     animation: none !important;
+	\\   }
+	\\   .book { transition: none; }
+	\\   @starting-style { .book { opacity: 1; translate: none; } }
+	\\ }
