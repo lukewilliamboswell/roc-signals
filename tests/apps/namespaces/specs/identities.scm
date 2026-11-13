@@ -2,6 +2,11 @@
   (steps
     (expect-text (test-id "context-root") "Change namespaced attributeToggle namespace subtreeexact HTMLlocal colonprefixed HTMLextensionno namespacexforeign HTML")
     (expect-element (test-id "context-root") html "div")
+    (expect-value (test-id "exact-value") "")
+    (expect-element (test-id "exact-value") html "input")
+    (expect-text (test-id "exact-dialog") "")
+    (expect-element (test-id "exact-dialog") html "dialog")
+    (expect-shown (test-id "exact-dialog") hidden)
     (expect-text (test-id "exact-html") "exact HTML")
     (expect-element (test-id "exact-html") html "DIV")
     (expect-text (test-id "colon-local") "local colon")

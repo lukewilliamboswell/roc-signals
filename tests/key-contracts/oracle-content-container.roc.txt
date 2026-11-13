@@ -1,0 +1,16 @@
+app [main] {
+    pf: platform "<PLATFORM>",
+    oracle: "<ORACLE>",
+}
+
+import pf.Engine
+import oracle.Dom
+
+main : Engine.Program
+main = Engine.program(|| {
+    decoded = Dom.apply(Dom.new({}), [0, 8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 'd', 'i', 'v', 1])
+    Engine.text(decoded.nodes.len().to_str())
+})
+
+## This malformed wire fixture needs no shared store.
+Store : {}

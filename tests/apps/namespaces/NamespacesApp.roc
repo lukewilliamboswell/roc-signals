@@ -37,6 +37,8 @@ NamespacesApp := [].{
 						[
 							Html.button("Change namespaced attribute", [], st.update(|state| { ..state, changed: !state.changed })),
 							Html.button("Toggle namespace subtree", [], st.update(|state| { ..state, drawn: !state.drawn })),
+							Engine.element("input", [Engine.test_id("exact-value"), Engine.attr(NamespacesApp.attribute("VALUE", None, Unprefixed), "exact attribute")], []),
+							Html.dialog("Exact attr dialog", { open: Engine.const(False), on_close: Engine.does([]) }, [Engine.test_id("exact-dialog"), Engine.attr(NamespacesApp.attribute("OPEN", None, Unprefixed), ""), Engine.attr(NamespacesApp.attribute("PoPoVeR", None, Unprefixed), "manual")], []),
 							Engine.element(NamespacesApp.tag("DIV", Html, Unprefixed), [Engine.test_id("exact-html")], [Engine.text("exact HTML")]),
 							Engine.element(NamespacesApp.tag("h:div", Html, Unprefixed), [Engine.test_id("colon-local")], [Engine.text("local colon")]),
 							Engine.element(NamespacesApp.tag("div", Html, Prefix("h")), [Engine.test_id("prefixed-html")], [Engine.text("prefixed HTML")]),

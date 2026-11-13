@@ -1520,13 +1520,14 @@ Engine := [].{
 		Varies(value) => Core.text_s(value)
 	}
 
-	## Set a static attribute to literal text, keeping an empty nonboolean
-	## attribute present. Use a property builder for names a control claims.
+	## Set literal attribute text, including empty and "false" text as present.
+	## Typed Html helpers decide absence upstream. Use a property builder for
+	## names a control claims.
 	attr : AttrName, Str -> Attr(ctx)
 	attr = |name, value| Core.attr_named(name, value)
 
 	## Follow a signal with an attribute, writing only when it changes. An
-	## empty string keeps a nonboolean attribute present. Names claimed by
+	## empty string or "false" keeps any attribute present. Names claimed by
 	## an element property are rejected on that property's elements; use
 	## `prop_s` for live control state.
 	attr_s : AttrName, Signal(ctx, Str) -> Attr(ctx)
@@ -1535,8 +1536,9 @@ Engine := [].{
 		Varies(value) => Core.attr_named_s(name, value)
 	}
 
-	## Follow explicit presence, keeping `Present("")` as an empty nonboolean
-	## attribute and removing the attribute for `Absent`. As with `attr_s`,
+	## Follow explicit presence: empty and "false" text remain present, and
+	## `Absent` alone removes an attribute. Typed Html helpers choose absence
+	## upstream. As with `attr_s`,
 	## names claimed by a property must use that property's builder instead.
 	attr_presence : AttrName, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
 	attr_presence = |name, signal| Core.attr_named_presence(name, core_signal(signal))

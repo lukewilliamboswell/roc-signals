@@ -1160,7 +1160,7 @@ Core := [].{
 	## An `Elem` is a description; the engine mounts it once and afterwards updates
 	## only what reads a changed layer.
 	Elem(ctx) :: [
-		Element({ name : Web.Tag, container : U8 }, List(Attr(ctx)), List(Elem(ctx))),
+		Element({ name : Web.Tag, container : [Children, TemplateContent] }, List(Attr(ctx)), List(Elem(ctx))),
 		Comment(Str),
 		Placed(List([Svg]), Elem(ctx)),
 		Text(Str),
@@ -2509,7 +2509,7 @@ Core := [].{
 	## raw namespace inheritance. Only Engine calls this name-preserving boundary.
 	element_named : Web.Tag, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 	element_named = |tag, attrs, kids| Element(
-		{ name: tag, container: 0 },
+		{ name: tag, container: Children },
 		attrs.fold(
 			[],
 			|out, attribute| match attribute {
@@ -2547,7 +2547,7 @@ Core := [].{
 	## ordinary children, even on a template. Name validation waits for resolution.
 	template_content : Elem(ctx) -> Elem(ctx)
 	template_content = |elem| match elem {
-		Element(description, attrs, kids) => Element({ ..description, container: 1 }, attrs, kids)
+		Element(description, attrs, kids) => Element({ ..description, container: TemplateContent }, attrs, kids)
 		_ => crash "contract: template_content requires one element description"
 	}
 
@@ -2565,8 +2565,9 @@ Core := [].{
 	text_s : Signal(ctx, Str) -> Elem(ctx)
 	text_s = |v| TextV(v)
 
-	## Set a static attribute to literal text, keeping an empty nonboolean
-	## attribute present. Use a property builder for names a control claims.
+	## Set literal attribute text, including empty and "false" text as present.
+	## Typed Html helpers decide absence upstream. Use a property builder for
+	## names a control claims.
 	attr : Str, Str -> Attr(ctx)
 	attr = |name, value| Core.attr_named(Web.AttrName.from_str(name) ?? crash "internal: invalid attribute name", value)
 
@@ -2575,18 +2576,37 @@ Core := [].{
 	attr_named = |name, value| Static(name, value)
 
 	## Follow a signal with an attribute, writing only when it changes. An
-	## empty string keeps a nonboolean attribute present. Names claimed by
+	## empty string or "false" keeps any attribute present. Names claimed by
 	## an element property are rejected on that property's elements; use
 	## `prop_s` for live control state.
 	attr_s : Str, Signal(ctx, Str) -> Attr(ctx)
 	attr_s = |name, v| Core.attr_named_s(Web.AttrName.from_str(name) ?? crash "internal: invalid attribute name", v)
+
+	## Classify an already-resolved attribute against the element's live property
+	## claims. Literal lowering uses the same policy before emission, with its own
+	## source position; the oracle implements its checks independently. This
+	## internal query never folds exact names or infers an attribute namespace.
+	attribute_claim : Web.Tag, Web.AttrName -> [Unclaimed, Claimed(Str)]
+	attribute_claim = |resolved, attribute| {
+		if resolved.namespace() != Explicit(Html) {
+			return Unclaimed
+		}
+		for index in [1.U8, 2] {
+			row = property_row(index)
+			if row.elements.contains(resolved.local()) and ordinary_attribute_is(attribute, row.name) {
+				return Claimed(row.name)
+			}
+		}
+		Unclaimed
+	}
 
 	## One ordinary attribute reader with an explicitly checked name.
 	attr_named_s : Web.AttrName, Signal(ctx, Str) -> Attr(ctx)
 	attr_named_s = |name, value| Dyn(name, value.map(|encoded| Present(encoded)))
 
 	## Follow explicit attribute presence. `Present("")` keeps an empty
-	## nonboolean attribute; `Absent` removes it. The same hole and equality
+	## attribute; `Absent` alone removes it. Names claimed by control properties
+	## require their property builder. The same hole and equality
 	## cutoff serve both this builder and `attr_s`.
 	attr_presence : Str, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
 	attr_presence = |name, value| Core.attr_named_presence(Web.AttrName.from_str(name) ?? crash "internal: invalid attribute name", value)
@@ -4457,31 +4477,6 @@ twice_handled = |attrs| {
 	Err(Distinct)
 }
 
-## HTML folds ASCII attribute names. Controlled-helper ownership must
-## recognize that spelling without rewriting the attributes an app authored.
-html_attribute_is : Str, Str -> Bool
-html_attribute_is = |authored, expected| {
-	left = authored.to_utf8()
-	right = expected.to_utf8()
-	if left.len() != right.len() {
-		return False
-	}
-	var $i = 0.U64
-	while $i < left.len() {
-		byte = left.get($i) ?? crash "attribute byte"
-		folded = if byte >= 65 and byte <= 90 {
-			byte + 32
-		} else {
-			byte
-		}
-		if folded != (right.get($i) ?? crash "attribute byte") {
-			return False
-		}
-		$i = $i + 1
-	}
-	True
-}
-
 ## Bound a diagnostic label by UTF-8 bytes without splitting a scalar. This
 ## runs only after a contract has failed, never while a valid element mounts.
 bounded_element_hint : Str -> Str
@@ -4502,7 +4497,7 @@ bounded_element_hint = |text| {
 first_static_text : Elem(ctx) -> Str
 first_static_text = |elem| match elem {
 	Text(text) => text.trim()
-	Element(description, _, _) if description.container == 1 => ""
+	Element(description, _, _) if description.container == TemplateContent => ""
 	Element(_, _, kids) | Fragment(kids) => {
 		for kid in kids {
 			text = first_static_text(kid)
@@ -4614,8 +4609,8 @@ check_element_attrs = |attrs, resolved, placed, path, describe| {
 		for attribute in attrs {
 			match attribute {
 				On(event, _) if event.event == "beforetoggle" => crash "contract: beforetoggle is not supported on a controlled shown element${location()}"
-				Static(name, _) | Dyn(name, _) if tag == "dialog" and (ordinary_attribute_is(name, "popover") or ordinary_attribute_is(name, "closedby")) => crash "contract: popover and closedby are not supported on a controlled dialog${location()}"
-				Static(name, _) | Dyn(name, _) if tag == "dialog" and ordinary_attribute_is(name, "open") => crash "contract: attribute open is owned by the controlled dialog${location()}"
+				Static(name, _) | Dyn(name, _) if tag == "dialog" and (ordinary_attribute_is(resolve_attribute(name, resolved), "popover") or ordinary_attribute_is(resolve_attribute(name, resolved), "closedby")) => crash "contract: popover and closedby are not supported on a controlled dialog${location()}"
+				Static(name, _) | Dyn(name, _) if tag == "dialog" and ordinary_attribute_is(resolve_attribute(name, resolved), "open") => crash "contract: attribute open is owned by the controlled dialog${location()}"
 				_ => {}
 			}
 		}
@@ -4628,13 +4623,13 @@ check_element_attrs = |attrs, resolved, placed, path, describe| {
 	) {
 		static_popovers = attrs.keep_if(
 			|attribute| match attribute {
-				Static(name, _) if ordinary_attribute_is(name, "popover") => True
+				Static(name, _) if ordinary_attribute_is(resolve_attribute(name, resolved), "popover") => True
 				_ => False
 			},
 		).len()
 		if static_popovers != 1 or attrs.any(
 			|attribute| match attribute {
-				Dyn(name, _) if ordinary_attribute_is(name, "popover") => True
+				Dyn(name, _) if ordinary_attribute_is(resolve_attribute(name, resolved), "popover") => True
 				_ => False
 			},
 		) {
@@ -4663,11 +4658,10 @@ check_element_attrs = |attrs, resolved, placed, path, describe| {
 				$properties = $properties.append(index)
 			}
 			Static(name, _) | Dyn(name, _) => {
-				for index in [1.U8, 2] {
-					row = property_row(index)
-					if html and row.elements.contains(tag) and name.namespace() == None and row.name == name.local() {
-						crash "contract: attribute \"${name.text()}\" on <${tag}> is claimed by a property${location()}; use prop or prop_s"
-					}
+				effective = resolve_attribute(name, resolved)
+				match Core.attribute_claim(resolved, effective) {
+					Claimed(_) => crash "contract: attribute \"${name.text()}\" on <${tag}> is claimed by a property${location()}; use prop or prop_s"
+					Unclaimed => {}
 				}
 			}
 			_ => {}
@@ -5579,8 +5573,8 @@ Plan(ctx) : {
 plan_empty : {} -> Plan(ctx)
 plan_empty = |_| { tree: [], htab: [], holes: [], handlers: [], mounts: [], ncols: 0, kreads: 0 }
 
-put_path : List(U8), U8, List((U8, U8)) -> List(U8)
-put_path = |buf, kind, path| path.fold(buf.append(kind).append(narrow(path.len(), "nesting depth of a hole")), |out, (container, index)| out.append(container).append(index))
+put_path : List(U8), U8, List({ container : U8, index : U8 }) -> List(U8)
+put_path = |buf, kind, path| path.fold(buf.append(kind).append(narrow(path.len(), "nesting depth of a hole")), |out, step| out.append(step.container).append(step.index))
 
 ## A count the template encoding carries in one byte (design.md, Appendix
 ## B). Beyond 255 it is a resource limit, never a wrap.
@@ -5600,13 +5594,13 @@ val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, valu
 	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
 }
 
-compile_elem : Plan(ctx), Elem(ctx), List((U8, U8)), U64, List(U32), Str, Enclosing -> Plan(ctx)
+compile_elem : Plan(ctx), Elem(ctx), List({ container : U8, index : U8 }), U64, List(U32), Str, Enclosing -> Plan(ctx)
 compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 	match elem {
 		Element(authored, attrs, kids) => {
 			tag = resolve_element(authored.name, enclosing)
 			container = checked_container(tag, authored.container)
-			check_element_attrs(attrs, tag, placed, site, || element_place(elem, path.map(|(_, index)| index.to_u64())))
+			check_element_attrs(attrs, tag, placed, site, || element_place(elem, path.map(|step| step.index.to_u64())))
 			value_control = declares_value(attrs)
 			var $nstatic = 0.U64
 			for a0 in attrs {
@@ -5667,7 +5661,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 			$p = { tree: $tree, htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads }
 			var $i = 0.U8
 			for kid in kids {
-				$p = compile_elem($p, kid, path.append((container, $i)), depth, site, placed, child_enclosing(tag))
+				$p = compile_elem($p, kid, path.append({ container, index: $i }), depth, site, placed, child_enclosing(tag))
 				$i = $i + 1
 			}
 			$p
@@ -9552,9 +9546,6 @@ check_boot_keys = |boot, keys| {
 	Ok({})
 }
 
-## Mount's narrow boundary turns a structural decoding error into a classified
-## contract fault. Harnesses use `read_boot` to inspect arbitrary bytes safely.
-
 ## A routed call reserves its header before running any turn. A stale call
 ## leaves its recycled buffer empty and allocates no header. Scratch buffers stay empty.
 start_batch : Tx -> Tx
@@ -11402,7 +11393,7 @@ resolve_attribute = |name, element| {
 
 ## Only ordinary unnamespaced attributes can claim a control's HTML names.
 ordinary_attribute_is : Web.AttrName, Str -> Bool
-ordinary_attribute_is = |name, expected| name.namespace() == None and name.prefix() == Unprefixed and html_attribute_is(name.local(), expected)
+ordinary_attribute_is = |name, expected| name.namespace() == None and name.prefix() == Unprefixed and name.local() == expected
 
 ## ASCII folding is construction work only; attribute values remain verbatim.
 ascii_name_lower : Str -> Str
@@ -11572,12 +11563,12 @@ expect {
 
 ## Container intent is checked after namespace inheritance resolves. This is
 ## construction policy, never inferred by the browser from an element's tag.
-checked_container : Web.Tag, U8 -> U8
+checked_container : Web.Tag, [Children, TemplateContent] -> U8
 checked_container = |name, container| {
-	if container == 0 {
+	if container == Children {
 		return 0
 	}
-	if container == 1 and name.namespace() == Explicit(Html) and name.local() == "template" {
+	if container == TemplateContent and name.namespace() == Explicit(Html) and name.local() == "template" {
 		return 1
 	}
 	crash "contract: template content requires an HTML template element"
@@ -11600,4 +11591,36 @@ expect {
 		$index = $index + 1
 	}
 	$changed == 1 and raw_commands.len() == parsed_commands.len() and raw_work == parsed_work and Core.settled(raw_state).is_ok() and Core.settled(parsed_state).is_ok()
+}
+
+## Semantic control claims use the actual encoded attribute identity. Raw HTML
+## names fold once; explicitly qualified and namespaced spellings remain exact.
+expect {
+	input = resolve_element(Web.Tag.from_str("input")?, root_enclosing)
+	raw = Web.AttrName.from_str("VALUE")?
+	exact = raw.in_namespace(None, Unprefixed)?
+	namespaced = raw.in_namespace(Uri("urn:attribute"), Prefix("a"))?
+	ordinary_attribute_is(resolve_attribute(raw, input), "value") and !ordinary_attribute_is(resolve_attribute(exact, input), "value") and !ordinary_attribute_is(resolve_attribute(namespaced, input), "value")
+}
+
+## Case-preserved uppercase attributes are distinct from the lower-case names
+## owned by controlled dialog state, including dynamic attribute declarations.
+expect {
+	open = Web.AttrName.from_str("OPEN")?.in_namespace(None, Unprefixed)?
+	popover = Web.AttrName.from_str("PoPoVeR")?.in_namespace(None, Unprefixed)?
+	close : HandlerOf(Root({}), Bool)
+	close = { run: |env, _, _| (env, no_layers) }
+	program = Core.driver(Core.program(|| Core.controlled_dialog({ label: "Exact attributes", open: Core.const(False), on_close: close, modal: Modal, attrs: [Core.attr_named(open, ""), Core.attr_named_s(popover, Core.const("manual"))], children: [] })))
+	(state, _, _) = (program.init)([])
+	Core.settled(state).is_ok()
+}
+
+## Literal and ordinary construction share property claims only after explicit
+## resolution. Exact uppercase and namespaced attributes are separate identities.
+expect {
+	element = resolve_element(Web.Tag.from_str("input")?, root_enclosing)
+	raw = Web.AttrName.from_str("VALUE")?
+	exact = raw.in_namespace(None, Unprefixed)?
+	foreign = raw.in_namespace(Uri("urn:attr"), Prefix("a"))?
+	Core.attribute_claim(element, resolve_attribute(raw, element)) == Claimed("value") and Core.attribute_claim(element, exact) == Unclaimed and Core.attribute_claim(element, foreign) == Unclaimed
 }
