@@ -200,33 +200,6 @@ as its own turn. A focus loop stops the instance with `resource_limit`
 after 4096 turns in one step. A handler with no listener for its event is not
 an error: the event simply reaches nothing, as in a browser.
 
-### Keyboard steps
-
-`press` uses exact `Control`, `Alt`, `Shift` and `Meta` prefixes. Its one
-US-key table is declared in `Scm.roc` and emitted for the browser runner:
-printable ASCII, Enter, Escape, Tab, Space, Backspace, Delete, arrows,
-Home, End, PageUp, PageDown and F1–F12. There is no `ControlOrMeta`.
-Write `Shift+?` and `Shift+A`; omitting required Shift is a parse error,
-as is `Shift+a` (use `Shift+A`). A named key may also carry Shift.
-
-Tab moves focus by positive tabindex then document order, skipping disabled
-and hidden elements. Enter activates a button or link or implicitly
-submits a form; Space activates buttons, checkboxes and radios on keyup.
-Prevention suppresses the default. Escape, function keys and caret-only
-movement have no modelled change.
-
-Use `fill` for text entry. A press refuses an unprevented default the native
-model cannot reproduce: printable keys and Space without Ctrl/Meta,
-Backspace/Delete and Ctrl/Meta+A/C/V/X/Y/Z in text entry, Enter in textarea,
-and arrows/Home/End/PageUp/PageDown in selects, radios and number, range,
-date or time inputs. The refusal pairs are also emitted from `Scm.roc`;
-Chrome checks the actual event's `defaultPrevented`. A keymap that prevents
-the default permits the step. Composition remains a browser contract test.
-
-The sample checks Escape without losing focus and both ends of a Tab loop:
-
-{{ sample(file="keys/specs/keys.scm", syntax="scheme") }}
-
 Hover is not driven by specs. Neither runner delivers `pointerover`,
 `pointerout`, `pointerenter`, `pointerleave` or their mouse counterparts;
 the browser replay filters them before the app sees them. Hover depends on
@@ -317,6 +290,45 @@ These are step errors, with no fabricated release or cancellation.
 including control values and checked state. Both runners count the same
 work: the native oracle reads the property commands, and Chrome observes
 their mirrored attributes. `patches_emitted` includes `PROP` and `HPROP`.
+
+### Keyboard steps
+
+`press` uses exact `Control`, `Alt`, `Shift` and `Meta` prefixes. Its one
+US-key table is declared in `Scm.roc` and emitted for the browser runner:
+printable ASCII, Enter, Escape, Tab, Space, Backspace, Delete, arrows,
+Home, End, PageUp, PageDown and F1–F12. There is no `ControlOrMeta`.
+Write `Shift+?` and `Shift+A`; omitting required Shift is a parse error,
+as is `Shift+a` (use `Shift+A`). A named key may also carry Shift.
+
+Tab moves focus by positive tabindex then document order, skipping disabled
+and hidden elements. Enter activates a button or link or implicitly
+submits a form. Enter on a file or color input clicks the control instead;
+the chooser UI is outside the DOM model, as for a mouse click. Ctrl/Meta
+suppresses button, file/color and implicit-form activation;
+Alt/Shift retains it. Space activates buttons, checkboxes and radios on keyup,
+with any modifiers, if the original control still holds focus and its
+pressed ancestry has not been detached.
+Prevention suppresses the default. Escape, function keys and caret-only
+movement have no modelled change.
+
+Unprevented modified Enter on a link is refused for any Control, Alt,
+Shift or Meta modifier: its navigation, download or new-context default
+varies by platform. A keymap that prevents it permits the step. Plain Enter
+on a link remains supported, and this driver restriction does not limit
+production keyboard handling.
+
+Use `fill` for text entry. A press refuses an unprevented default the native
+model cannot reproduce: printable keys and Space without Ctrl/Meta,
+Backspace/Delete and Ctrl/Meta+A/C/V/X/Y/Z in text entry, Enter in textarea
+or contenteditable, and arrows/Home/End/PageUp/PageDown in selects, radios
+and number, range, date, time, month, week or datetime-local inputs. The
+refusal rules and their input-type selectors are emitted from `Scm.roc`;
+Chrome checks the actual event's `defaultPrevented`. A keymap that prevents
+the default permits the step. Composition remains a browser contract test.
+
+The sample checks Escape without losing focus and both ends of a Tab loop:
+
+{{ sample(file="keys/specs/keys.scm", syntax="scheme") }}
 
 ### Location, history, title and storage
 
@@ -503,7 +515,8 @@ does not fail your spec.
 | `set_metadata` | Document title writes |
 | `set_text` | Text writes and text nodes created |
 | `set_value` / `set_checked` | Control `value` / `checked` the engine set |
-| `patches_emitted` | DOM commands of every kind |
+| `patches_emitted` | DOM commands; excludes `RELEASE`, which changes external registrations rather than the DOM |
+| `registrations_released` | `RELEASE` commands emitted for nodes owning document-key registrations |
 | `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values. For a table view: each read of its query or its window, and each row it places with the query's `keep` and `sort` (two for a written key, the row before and after; every row of the table for a mount or a rebuild) |
 | `scopes_created` / `scopes_disposed` | `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites, mounted / disposed |
 | `dirty_source_roots` | What a turn wrote: the local states and the cells. A decision that returns no write counts nothing |

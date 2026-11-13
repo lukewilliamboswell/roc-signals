@@ -2359,7 +2359,9 @@ Poisoning, unmount and recovery remove document listeners too.
 `stop` keeps its ordinary `stopPropagation` meaning. At the root it stops
 an event before document listeners; at the document it stops propagation
 to window. Other listeners on that same document still run. Each mount
-has its own document listener, called in mount order; no mount can undo a
+installs its keydown and keyup document listeners at initialization, even
+before a conditional declaration appears. These two instance-owned listeners
+run in mount order; no mount can undo a
 listener that already ran.
 
 Reserved browser chords cannot be prevented: Chrome's Ctrl/Cmd+N, T and W,
@@ -3023,15 +3025,24 @@ arrows, Home, End, PageUp, PageDown and F1–F12. Write `Shift+?` and
 
 Unprevented Tab follows positive tabindex then DOM order, skipping disabled
 and hidden elements. Enter activates a button or link and supports implicit
-form submission; Space activates buttons, checkboxes and radios on keyup.
+form submission. Enter on a file or color input clicks that control instead
+of submitting; the chooser UI is outside the DOM model, as for a mouse click.
+Ctrl or Meta suppresses button, file/color and implicit-form activation;
+Alt and Shift retain it. Space activates buttons, checkboxes and radios on
+keyup, including with modifiers, only while the original pressed control
+still holds focus and its pressed ancestry has not been detached.
 Escape, function keys and caret-only movement have no modelled change.
-The model does not type text or edit a caret. Both runners refuse an
-unprevented default they cannot model: printable keys or Space without
+Modified Enter on a link has platform-dependent navigation, download or
+new-context defaults. Both runners refuse it unless the app prevented the
+default, for any Ctrl, Alt, Shift or Meta modifier. Plain Enter remains
+supported. The model does not type text or edit a caret. Both runners
+refuse an unprevented default they cannot model: printable keys or Space without
 Ctrl/Meta, Backspace/Delete and Ctrl/Meta+A/C/V/X/Y/Z in text entry; Enter
-in textarea; arrows, Home, End and PageUp/PageDown in selects, radios and
-number, range, date or time inputs. These pairs are data in `Scm.roc`,
-emitted once for Chrome rather than restated there. A prevented key is
-allowed. Use `fill` to enter text. Composition remains a runtime contract
+in textarea or contenteditable; arrows, Home, End and PageUp/PageDown in
+selects, radios and number, range, date, time, month, week or datetime-local
+inputs. These key/control rules and their input-type selectors are data in
+`Scm.roc`, emitted once for Chrome rather than restated there. A prevented
+key is allowed. Use `fill` to enter text. Composition remains a runtime contract
 test, not a spec step. Escape grants no user activation.
 
 Inputs no runner implements — composition and custom events,
@@ -3869,7 +3880,7 @@ that has run, in first-run order, with its run count.
 | 39 | Live awaited ids now (a gauge, not cumulative) |
 | 40 | Port commands sent (`PORT`, opcode 19, which is counted here and not at index 19) |
 | 41, 42 | `PROP`, `HPROP` commands (opcodes 21, 22; counted here rather than by opcode) |
-| 43 | `RELEASE` commands (opcode 23, counted here rather than as rows reused) |
+| 43 | `RELEASE` commands (`registrations_released`; opcode 23, counted here rather than as rows reused; excluded from `patches_emitted`) |
 
 Index 0 is unused. The metric names the spec language accepts map onto these
 indices (`platform/Scm.roc`, `metric_names`).
