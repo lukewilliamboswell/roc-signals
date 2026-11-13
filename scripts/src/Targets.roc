@@ -28,6 +28,7 @@ Targets := [].{
 		{ name: "dom", main: "fuzz/dom/main.roc" },
 		{ name: "markup", main: "fuzz/markup/main.roc" },
 		{ name: "picture-capture", main: "fuzz/picture-capture/main.roc" },
+		{ name: "picture-codec", main: "fuzz/picture-codec/main.roc" },
 		{ name: "table-view", main: "fuzz/table-view/main.roc" },
 		{ name: "result-readers", main: "fuzz/result-readers/main.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc" },
@@ -171,6 +172,8 @@ Targets := [].{
 		Path.write_bytes!(Path.utf8(unicode_bits), bits)?
 		Ok(
 			Targets.browser!(o, "protocol-facts-browser.mjs", [])?
+				.concat(Targets.browser!(o, "picture-browser.mjs", [])?)
+				.concat(Targets.browser!(o, "picture-envelope-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "names-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "namespaces-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "unicode-symbols-browser.mjs", ["--oracle", unicode_bits])?)
