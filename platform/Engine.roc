@@ -1807,3 +1807,45 @@ interpolate_text = |segments, parts| {
 	suffix = Str.join_with($fixed, "")
 	if ($varying.is_empty()) Fixed(suffix) else Varies(Core.join_text($varying, suffix))
 }
+
+## Literal and all-fixed interpolation results stay fixed through mapping
+## and lifting, without inferring constants from a signal's mask.
+expect {
+	literal : Engine.Signal(Engine.Root, Str)
+	literal = "literal"
+	joined : Engine.Signal(Engine.Root, Str)
+	joined = "before ${Engine.const("fixed")} after"
+	mapped : Engine.Signal(Engine.Row(Engine.In(Engine.Root, {}), Str), Str)
+	mapped = literal.map(|text| "${text}!").lift().lift_row()
+	actual = match (mapped, joined) {
+		(Fixed(a), Fixed(b)) => { mapped: a, joined: b }
+		_ => { mapped: "varying", joined: "varying" }
+	}
+	actual == { mapped: "literal!", joined: "before fixed after" }
+}
+
+## Numeric interpolation uses one text signal reader and keeps the input's
+## declared dependencies; explicit text conversion combines differing types.
+expect {
+	count : Engine.Signal(U64, U64)
+	count = Varies({ mask: 1, read: |value| value, sel: NoSel })
+	caption : Engine.Signal(U64, Str)
+	caption = "count ${count}!"
+	mixed : Engine.Signal(U64, Str)
+	mixed = "${Engine.const("count")} ${count.to_text_signal()}"
+	value = core_signal(caption)
+	{ mask: value.mask, text: (value.read)(7), mixed: (core_signal(mixed).read)(7) } == { mask: 1.U128, text: "count 7!", mixed: "count 7" }
+}
+
+## map2 keeps a varying row's selection when its other input is truly fixed.
+expect {
+	selected : Engine.Signal(Str, Str)
+	selected = Varies({ mask: 0, read: |key| key, sel: Sel(8, |key| key) })
+	joined = selected.map2(Engine.const("!"), |key, ending| "${key}${ending}")
+	value = core_signal(joined)
+	selection = match value.sel {
+		Sel(mask, read) => { mask, key: read("A") }
+		NoSel => { mask: 0.U128, key: "none" }
+	}
+	{ selection, text: (value.read)("A") } == { selection: { mask: 8.U128, key: "A" }, text: "A!" }
+}

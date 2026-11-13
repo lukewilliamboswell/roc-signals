@@ -11129,3 +11129,36 @@ expect {
 	(after, wrote) = (mapped.run)({ count: 10 }, "2", [])
 	after.count == 22 and wrote.lo == 2 and wrote.cells == 4
 }
+
+## An interpolation without varying parts is the same no-read recipe as const.
+expect {
+	joined = Core.join_text([], "fixed")
+	{ mask: joined.mask, selection: sel_mask(joined.sel), text: (joined.read)(0.U64) } == { mask: 0.U128, selection: 0.U128, text: "fixed" }
+}
+
+## One keyed selection survives beside a row key, which reads no layer but
+## remains different for each row. Each part contributes its own text once.
+expect {
+	chosen : Core.Signal(Str, Str)
+	chosen = { mask: 0, read: |key| key, sel: Sel(8, |key| key) }
+	key : Core.Signal(Str, Str)
+	key = { mask: 0, read: |value| "key-${value}", sel: NoSel }
+	joined = Core.join_text([{ prefix: "pick ", value: chosen }, { prefix: "/", value: key }], ".")
+	selected = match joined.sel {
+		Sel(_, read) => read("A")
+		NoSel => "no selection"
+	}
+	{ mask: joined.mask, selection: sel_mask(joined.sel), selected, text: (joined.read)("A") } == { mask: 0.U128, selection: 8.U128, selected: "A", text: "pick A/key-A." }
+}
+
+## A second selected part or another part's ordinary dependency folds the
+## selection dependencies into the mask, matching Core.Signal.map2.
+expect {
+	selected : Core.Signal(U64, Str)
+	selected = { mask: 0, read: |value| value.to_str(), sel: Sel(8, |value| value.to_str()) }
+	other : Core.Signal(U64, Str)
+	other = { mask: 2, read: |value| value.to_str(), sel: NoSel }
+	two = Core.join_text([{ prefix: "", value: selected }, { prefix: "", value: selected }], "")
+	mixed = Core.join_text([{ prefix: "", value: selected }, { prefix: "", value: other }], "")
+	{ two_mask: two.mask, two_selection: sel_mask(two.sel), mixed_mask: mixed.mask, mixed_selection: sel_mask(mixed.sel), text: (mixed.read)(3) } == { two_mask: 8.U128, two_selection: 0.U128, mixed_mask: 10.U128, mixed_selection: 0.U128, text: "33" }
+}
