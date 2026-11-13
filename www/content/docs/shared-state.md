@@ -166,10 +166,44 @@ of the result:
 transition that wrote the wrong cell or left one out. The type checker
 cannot: two cells of one type are the same to it.
 
-`after` applies the writes and ends no turn. A table therefore keeps its
-changes, and `store.after(writes).read(table).inverse()` tells which
-rows the transition wrote. Across chained `after`s the changes hold the
-rows all of them wrote.
+Each `after` is one turn. Before a table's first write in that list, its
+preceding writing turn's changes are cleared. Further updates keep the first
+earlier row per key. A table the list does not write retains its last writing
+turn's changes through unrelated turns. Read
+`store.after(writes).read(table).inverse()` to see which rows that transition
+wrote; the next `after` writing that table starts its next recording turn.
+
+A decision may read the preceding inverse before returning writes. Inside its
+first table modifier the inverse already describes the new turn. Keep an
+inverse in its own cell if history must survive the next table write. A reset
+followed by refinements is one list and one turn; `with_initial` remains a
+start, with empty changes.
+
+### State a rule over a store
+
+State the rule as a pure function of a plain reading. Project only the cells
+the rule needs. A table has no order of its own: sort its rows by an explicit
+order before comparing readings. Read an outbox through `last()`, which names
+what was posted, rather than its internal serial.
+
+Compare readings with `==`. `Str.inspect` is for debugging, never equality or
+identity: opaque values can print alike while holding different data.
+
+Check the rule in a top-level `expect` on the path that matters: one transition
+or a few chained `after`s, checking after each relevant turn. To bound what a
+transition wrote, read its table's inverse after that `after`. Conduit's typed
+sign-in test checks which page's form changed; Kanban's tests check a move and
+a completed drop through their keyed inverse counts.
+
+An answer is a decision too. Supply the typed result its ask delivers, and
+state which request it answers and when it arrives. A keeping site can have
+several requests in flight; each result carries its own issued-for value even
+after newer posts. A test that keeps only the latest post omits those paths.
+
+An example's roc-fuzz target tests its platform-free domain rules. It imports
+nothing of the platform or another package of this repository. Decisions that
+return `Engine.Write` are checked by these pure `expect`s and the app's paired
+specs; they do not require the engine package in an example target.
 
 ## Results decide too
 

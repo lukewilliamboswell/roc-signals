@@ -1077,9 +1077,12 @@ State lives in three places, and each is written in its own way:
 - **A decision is tested as a function.** `store.after(writes)` applies a
   list to the store's starting storage as a turn applies it, the same-cell
   rule included, and `read(cell)` reads a cell of the result. A transition
-  is checked by a top-level `expect` with no engine and no browser. No turn
-  ends there, so a table keeps its changes, across chained
-  `after`s too: `read(table).inverse()` tells which rows a transition wrote.
+  is checked by a top-level `expect` with no engine and no browser. Each
+  `after` is one pure turn: a written table starts its record before its first
+  modifier and retains the first earlier row per key for the list. The turn
+  rearms exactly the table cells its writes name. Unrelated tables retain
+  their last writing turn's changes. A decision may read the preceding
+  inverse before building writes; the first modifier sees the new record.
 - **Equality is an observation contract.** A successful `==` lets the engine
   keep the last emitted value and skip every downstream observation. It must
   imply that no observation can distinguish the two values. A conservative
@@ -3949,9 +3952,14 @@ loads; seeding storage in the same setup is a spec error in both runners.
 A decision is a pure function, so a transition is tested by a top-level
 `expect` with no engine and no browser: `store.after(writes)` applies a list
 to the store's starting storage as a turn applies it, the same-cell rule
-included, and `read(cell)` reads a cell of the result. No turn ends there,
-so a table read from the result still holds its changes, and
-`read(table).inverse()` tells which rows the transition wrote. A component's
+included, and `read(cell)` reads a cell of the result. Each `after` is one
+pure turn. Generated modifiers start a written table's record before its
+first modifier, and retain its first earlier row per key across the list.
+The turn rearms exactly its written table cells; unrelated tables keep their
+last writing turn's record. `read(table).inverse()` describes that retained
+turn. The bounded metadata folds visit table-cell descriptors, never unrelated
+rows or change records. Reclaiming a written table's preceding record remains
+O(J_previous), as in a live turn. A component's
 operations on its own type are tested the same way. This is the check that
 sees a transition that left out a reset or wrote the wrong cell of the right
 type, which no propagation check can.
@@ -4279,8 +4287,8 @@ store : tag, Cells(Stored(tag, st), st, h) -> Store(Stored(tag, st), h)
 Stored(tag, st)                               # opaque: the type of the store `tag` names
 Store.cells : Store(st, h) -> h
 Store.with_initial : Store(st, h), Cell(st, a), a -> Store(st, h)   # a start: a table's changes stay empty
-Store.after : Store(st, h), List(Write(st)) -> Store(st, h)      # a decision's writes applied, for a pure expect;
-                                              # no turn ends, so a table keeps its changes
+Store.after : Store(st, h), List(Write(st)) -> Store(st, h)      # one pure turn; written tables record this list,
+                                              # unrelated tables retain their last writing turn
 Store.read : Store(st, h), Cell(st, a) -> a
 Reach(ctx, st)                                # opaque: how the context ctx reaches the store
 # Everything below that reads or writes a cell in a context asks of that context:
