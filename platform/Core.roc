@@ -6173,6 +6173,7 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 			var $hole = 0.U32
 			var $reference = cfg.plan.mounts.len()
 			for hole in cfg.plan.holes {
+				$capture = PictureCapture.hole($capture, { at: command_at, end: $c.len(), row: node, index: $hole, kind: hole.kind })
 				if hole.kind == 4 or hole.kind == 5 {
 					alias_index = if (hole.kind == 4) hole.col else $reference
 					address = $bound.get(alias_index) ?? crash "internal: captured INST alias is allocated"
@@ -11913,7 +11914,8 @@ expect {
 	frames = picture.capture?
 	row = frames.find_first(|frame| frame.opcode == 1)?
 	aliases = frames.keep_if(|frame| frame.opcode == 0)
-	aliases.len() == 2 and aliases.map(|frame| frame.kind).sort_with(
+	holes = frames.keep_if(|frame| frame.opcode == 255)
+	holes.len() == 2 and holes.all(|frame| frame.at == row.at and frame.end == row.end and frame.address == row.address) and aliases.len() == 2 and aliases.map(|frame| frame.kind).sort_with(
 		|left, right| if left < right {
 			Before
 		} else if left == right {
@@ -11946,7 +11948,7 @@ expect {
 	).with_ports([Core.port_declaration("test/command", Command), Core.port_declaration("test/call", Call), Core.port_declaration("test/subscription", Subscription(Latest))])
 	picture = Core.init_picture(program, [])
 	frames = picture.capture?
-	commands = frames.keep_if(|frame| frame.opcode != 0)
+	commands = frames.keep_if(|frame| frame.opcode != 0 and frame.opcode != 255)
 	var $end = 1.U32
 	var $matches = True
 	for frame in commands {

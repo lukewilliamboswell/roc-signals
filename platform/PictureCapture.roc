@@ -3,13 +3,14 @@
 ## without revisiting commands sealed by earlier follow-up turns.
 PictureCapture :: [].{
 
-	## A mount may capture at most this many commands and secondary INST aliases.
+	## A mount may capture at most this many commands, row holes and INST aliases.
 	## Exhaustion refuses picture planning; it never truncates the ordinary batch.
 	max_records : U64
 	max_records = 262144
 
 	## A command's original boundary and its fixed-prefix address. Opcode zero
-	## denotes a secondary INST alias, with its hole index and kind4 or5.
+	## denotes a secondary INST alias;255 describes a row hole without giving it
+	## a new address. Both carry the INST boundary, hole index and exact kind.
 	Frame : { at : U32, end : U32, opcode : U8, address : U32, slot : U32, kind : U8 }
 
 	## Disabled mounts allocate no records. Refused drops every captured record
@@ -76,6 +77,20 @@ PictureCapture :: [].{
 			Refused(InvalidBoundary)
 		} else {
 			append(Collecting(parts), { at: birth.at.to_u32_wrap(), end: birth.end.to_u32_wrap(), opcode: 0, address: birth.address, slot: birth.hole, kind: birth.kind })
+		}
+	}
+
+	## Every cached row hole belongs to its row birth, including attribute,
+	## event and property holes which allocate no separate command address.
+	## Recording the compiled kind lets Core validate claims without reparsing
+	## templates or borrowing the row's values.
+	hole : Capture, { at : U64, end : U64, row : U32, index : U32, kind : U8 } -> Capture
+	hole = |capture, target| match capture {
+		Disabled | Refused(_) => capture
+		Collecting(parts) => if target.at == 0 or target.end <= target.at or target.end > 4294967295 or target.row == 0 or target.kind < 1 or target.kind > 6 {
+			Refused(InvalidBoundary)
+		} else {
+			append(Collecting(parts), { at: target.at.to_u32_wrap(), end: target.end.to_u32_wrap(), opcode: 255, address: target.row, slot: target.index, kind: target.kind })
 		}
 	}
 
@@ -237,4 +252,18 @@ expect {
 		PictureCapture.alias(first, { at: 1, end: 10, address: 2, hole: 1, kind: 1 }),
 	]
 	cases.all(|capture| PictureCapture.finish(capture) == Err(InvalidBoundary)) and PictureCapture.start({ max_records: 0 }).is_err() and PictureCapture.start({ max_records: PictureCapture.max_records + 1 }).is_err()
+}
+
+## Hole facts are not births. Every compiled kind retains its row, index and
+## shared INST boundary when a port shifts the command before sealing.
+expect {
+	start = PictureCapture.start({ max_records: 8 })?
+	row = PictureCapture.command(start, { at: 1, end: 24, opcode: 1, address: 7, slot: 3 })
+	var $capture = row
+	for kind in 1.U8..=6 {
+		$capture = PictureCapture.hole($capture, { at: 1, end: 24, row: 7, index: (kind - 1).to_u32(), kind })
+	}
+	frames = PictureCapture.finish(PictureCapture.seal($capture, [{ at: 1, bytes: 9, opcode: 19 }]))?
+	facts = frames.keep_if(|frame| frame.opcode == 255)
+	facts.len() == 6 and facts.map(|frame| frame.kind) == [1, 2, 3, 4, 5, 6] and facts.all(|frame| frame.at == 10 and frame.end == 33 and frame.address == 7 and frame.slot == (frame.kind - 1).to_u32())
 }

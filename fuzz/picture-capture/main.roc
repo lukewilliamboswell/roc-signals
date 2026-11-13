@@ -37,8 +37,10 @@ test = |bytes| {
 				kind = if (byte % 8 == 2) 4.U8 else 5.U8
 				hole = byte.to_u32() % 5
 				$capture = PictureCapture.command($capture, { at: $ordinary, end: $ordinary + length, opcode: 1, address, slot: 7 })
+				$capture = PictureCapture.hole($capture, { at: $ordinary, end: $ordinary + length, row: address, index: hole, kind })
 				$capture = PictureCapture.alias($capture, { at: $ordinary, end: $ordinary + length, address: address + 16, hole, kind })
 				$expected = $expected.append({ at: $final.to_u32_wrap(), end: ($final + length).to_u32_wrap(), opcode: 1, address, slot: 7, kind: 0 })
+				$expected = $expected.append({ at: $final.to_u32_wrap(), end: ($final + length).to_u32_wrap(), opcode: 255, address, slot: hole, kind })
 				$expected = $expected.append({ at: $final.to_u32_wrap(), end: ($final + length).to_u32_wrap(), opcode: 0, address: address + 16, slot: hole, kind })
 				$ordinary = $ordinary + length
 				$final = $final + length
