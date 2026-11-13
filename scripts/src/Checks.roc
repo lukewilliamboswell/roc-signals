@@ -40,29 +40,40 @@ Checks := [].{
 		Ok(List.map2(dirs, results, |dir, r| if (r.code == 0) [] else ["roc test ${dir}/main.roc failed: ${r.output.trim()}"]).join().concat(negatives))
 	}
 
-	## Invalid typed declarations must remain impossible to author. Each probe
-	## is compiled as a complete app so context evidence is checked at use.
+	## Declaration and default-mount contracts are checked as complete apps.
+	## A constant failure must name its expected app declaration and every
+	## rule; a must-compile case guards code the default mount does not reach.
+	## Compiler process crashes and warning exits never count as rejections.
 	key_type_errors! : SpecSuite.Options => Try(List(Str), _)
 	key_type_errors! = |o| {
+		cases : List({ name : Str, expectation : [Rejected(List(Str)), ConstantCrash({ at : Str, rules : List(Str) }), ConstantExpect({ at : Str, rules : List(Str) }), Compiles] })
 		cases = [
-			{ name: "missing-keymap", rejection: "Engine.KeyProps" },
-			{ name: "key-prevent", rejection: "Engine.KeyProps" },
-			{ name: "document-row", rejection: "outside_rows" },
-			{ name: "document-state-in-row", rejection: "outside_rows" },
-			{ name: "dialog-open-text", rejection: "Bool" },
-			{ name: "dialog-close-text", rejection: "Bool" },
-			{ name: "popover-toggle-text", rejection: "Bool" },
-			{ name: "table-bookkeeping", rejection: "with_id" },
-			{ name: "internal-module", rejection: "does not name a public module" },
-			{ name: "ask-reaction-type", rejection: "type mismatch" },
-			{ name: "ask-mixed-plan", rejection: "incompatible types" },
-			{ name: "ask-await-command", rejection: "Engine.Command" },
-			{ name: "ask-private-constructor", rejection: "it is an alias" },
-			{ name: "ask-private-reader", rejection: "associated item named read" },
-			{ name: "layout-scroll-text", rejection: "top: U32" },
-			{ name: "layout-size-text", rejection: "width: U32" },
-			{ name: "layout-seen-text", rejection: "ratio_permille: U16" },
-			{ name: "timeout-zero", rejection: "a timeout of Ms(0)" },
+			{ name: "missing-keymap", expectation: Rejected(["Engine.KeyProps"]) },
+			{ name: "key-prevent", expectation: Rejected(["Engine.KeyProps"]) },
+			{ name: "document-row", expectation: Rejected(["outside_rows"]) },
+			{ name: "document-state-in-row", expectation: Rejected(["outside_rows"]) },
+			{ name: "dialog-open-text", expectation: Rejected(["Bool"]) },
+			{ name: "dialog-close-text", expectation: Rejected(["Bool"]) },
+			{ name: "popover-toggle-text", expectation: Rejected(["Bool"]) },
+			{ name: "table-bookkeeping", expectation: Rejected(["with_id"]) },
+			{ name: "internal-module", expectation: Rejected(["does not name a public module"]) },
+			{ name: "ask-reaction-type", expectation: Rejected(["type mismatch"]) },
+			{ name: "ask-mixed-plan", expectation: Rejected(["incompatible types"]) },
+			{ name: "ask-await-command", expectation: Rejected(["Engine.Command"]) },
+			{ name: "ask-private-constructor", expectation: Rejected(["it is an alias"]) },
+			{ name: "ask-private-reader", expectation: Rejected(["associated item named read"]) },
+			{ name: "layout-scroll-text", expectation: Rejected(["top: U32"]) },
+			{ name: "layout-size-text", expectation: Rejected(["width: U32"]) },
+			{ name: "layout-seen-text", expectation: Rejected(["ratio_permille: U16"]) },
+			{ name: "timeout-zero", expectation: Rejected(["a timeout of Ms(0)"]) },
+			{ name: "mount-table-key", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two rows have the same key"] }) },
+			{ name: "mount-two-handlers", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two handlers", "site /0", "Save"] }) },
+			{ name: "mount-empty-row-handlers", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two handlers", "row template", "site /0"] }) },
+			{ name: "mount-row-shape", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["row template must be a single element", "site /0"] }) },
+			{ name: "mount-table-row-shape", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["a table view row template must be a single element", "site /0"] }) },
+			{ name: "mount-app-crash", expectation: ConstantCrash({ at: "main = Engine.program(|| crash \"first page failed\")", rules: ["first page failed"] }) },
+			{ name: "mount-inline-expect", expectation: ConstantExpect({ at: "expect boot.url != \"/\"", rules: ["expect failed"] }) },
+			{ name: "mount-unreached-nested-row", expectation: Compiles },
 		]
 		dir = "${o.build_dir}/key-type-errors"
 		SpecSuite.fresh_dir!(dir)?
@@ -76,9 +87,27 @@ Checks := [].{
 			source = fixture.replace_each("<PLATFORM>", platform_path)
 			path = "${case_dir}/main.roc"
 			Path.write_utf8!(Path.utf8(path), source)?
-			{ code, stdout } = Proc.merged!({ program: o.compiler, args: ["check", path], cwd: o.root })?
-			if code == 0 or !Str.from_utf8_lossy(stdout).contains(test.rejection) {
-				$problems = $problems.append("typed declaration contract ${test.name}: expected rejection naming ${test.rejection}, got ${Str.from_utf8_lossy(stdout)}")
+			{ code, stdout } = Proc.merged!({ program: o.compiler, args: ["check", "--no-cache", path], cwd: o.root })?
+			output = Str.from_utf8_lossy(stdout)
+			diagnostic = Str.join_with(output.split_on("\n").map(|line| line.trim()), " ")
+			passed = match test.expectation {
+				Rejected(rules) => code == 1 and rules.all(|rule| diagnostic.contains(rule))
+				ConstantCrash(expected) | ConstantExpect(expected) => {
+					anchors = source.split_on("\n").map_with_index(|line, index| { text: line.trim(), number: index + 1 }).keep_if(|line| line.text == expected.at)
+					anchor = match anchors {
+						[line] => line.number
+						_ => crash "internal: a compile-time crash fixture must name one exact declaration line"
+					}
+					category = match test.expectation {
+						ConstantExpect(_) => "compile time expect failed"
+						_ => "compile time crash"
+					}
+					code == 1 and output.contains(category) and output.contains("main.roc:${anchor.to_str()}:") and expected.rules.all(|rule| diagnostic.contains(rule))
+				}
+				Compiles => code == 0
+			}
+			if !passed {
+				$problems = $problems.append("declaration contract ${test.name}: expected ${Str.inspect(test.expectation)}, exit ${code.to_str()}: ${output}")
 			}
 		}
 		Ok($problems)

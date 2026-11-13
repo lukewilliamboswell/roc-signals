@@ -62,6 +62,8 @@ config = [
 	# app's specs natively and in Chrome, the broken-spec self-check, the
 	# runtime contract tests, the jfb check and the release dry run.
 	Task("check", [Use("engine"), Run(["scripts/check_all.roc"])]),
+	# Declaration rejections and compile-time default-mount contracts.
+	Task("compile-fixtures", [Use("engine"), Run(["scripts/compile_fixtures.roc"])]),
 	# Too slow for every pull request: every fuzz target's examples and the
 	# leak-checked soaks, natively and in Chrome.
 	Task("check-slow", [Use("engine"), Run(["scripts/check_slow.roc"])]),

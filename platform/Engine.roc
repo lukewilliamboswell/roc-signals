@@ -1634,6 +1634,16 @@ Engine := [].{
 	## concrete type when that declaration is missing or out of date.
 	Program(st) : Core.Program(st)
 
+	## Check the default first page while the app compiles. Bind this call as
+	## a top-level constant in main.roc: a contract error or crash reached by
+	## that mount is then reported at the call. The result is the mount batch's
+	## byte length. Remove the constant to stop checking that default page.
+	mounts : Program(st) -> U64
+	mounts = |program| {
+		(_, commands, _) = (Core.driver(program).init)([])
+		commands.len()
+	}
+
 	## A worker task or preparation for `Program.with_workers`. Make one with
 	## a typed task's or preparation's `registration` (see `Worker`).
 	Registration : Core.Registration

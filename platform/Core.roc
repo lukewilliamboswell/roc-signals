@@ -1156,15 +1156,15 @@ Core := [].{
 	## no work, and a changed item re-evaluates only that row's holes that read it.
 	##
 	## `template` runs once per site against a [RowRef] and must return a single
-	## element. A duplicate key is a contract error, as is a focus `ref` directly in
-	## the row template (put it in a nested site instead).
+	## element. A duplicate key is a contract error. References in a template
+	## are evaluated for each drawn row and must have distinct live names.
 	each : Signal(ctx, List(item)), (item -> Str), (RowRef(ctx, item) -> Elem(Row(ctx, item))) -> Elem(ctx)
 		where [item.is_eq : item, item -> Bool]
 	each = |rows, key, template| Site(
 		Mount(
 			|env, args, tx| {
 				depth = layer(args.depth)
-				plan = compile(template(RowRef.{ depth }), depth, args.path)
+				plan = compile(template(RowRef.{ depth }), depth, args.path, "an each")
 				(site, tx1) = alloc_site(tx, args.path)
 				tpl = template_bytes(plan)
 				tx2 = emit_op(tx1, 7, |c| put_u32(put_u32(c, site), tpl.len().to_u32_wrap()).concat(tpl))
@@ -1251,7 +1251,7 @@ Core := [].{
 			|env, args, tx| {
 				get = view_source(source)
 				depth = layer(args.depth)
-				plan = compile(template(view_key({}), view_row(source, depth, args.path)), depth, args.path)
+				plan = compile(template(view_key({}), view_row(source, depth, args.path)), depth, args.path, "a table view")
 				(site, tx1) = alloc_site(tx, args.path)
 				tpl = template_bytes(plan)
 				tx2 = emit_op(tx1, 7, |c| put_u32(put_u32(c, site), tpl.len().to_u32_wrap()).concat(tpl))
@@ -4300,12 +4300,123 @@ html_attribute_is = |authored, expected| {
 	True
 }
 
+## Bound a diagnostic label by UTF-8 bytes without splitting a scalar. This
+## runs only after a contract has failed, never while a valid element mounts.
+bounded_element_hint : Str -> Str
+bounded_element_hint = |text| {
+	var $bytes = text.to_utf8().take_first(64)
+	while Bool.True {
+		match Str.from_utf8($bytes) {
+			Ok(value) => return value
+			Err(_) => {
+				$bytes = $bytes.drop_last(1)
+			}
+		}
+	}
+}
+
+## Find authored static text without evaluating a signal or entering a site.
+## A failed element may name its first static descendant, even below wrappers.
+first_static_text : Elem(ctx) -> Str
+first_static_text = |elem| match elem {
+	Text(text) => text.trim()
+	Element(_, _, kids) | Fragment(kids) => {
+		for kid in kids {
+			text = first_static_text(kid)
+			if !text.is_empty() {
+				return text
+			}
+		}
+		""
+	}
+	TextV(_) | Site(_, _) => ""
+}
+
+## Prefer explicit static addresses in a fixed order, then static text. A
+## dynamic label is not observed merely to improve a contract diagnostic.
+element_hint : Elem(ctx) -> Str
+element_hint = |elem| {
+	match elem {
+		Element(_, attrs, _) => {
+			for name in ["data-testid", "id", "aria-label", "name"] {
+				for attr in attrs {
+					match attr {
+						Static(authored, value) if html_attribute_is(authored, name) and !value.is_empty() => return bounded_element_hint(value)
+						_ => {}
+					}
+				}
+			}
+		}
+		_ => {}
+	}
+	bounded_element_hint(first_static_text(elem))
+}
+
+## Locate an ordinal in the static part of one block. Sites own separate
+## blocks and contribute no ordinal here. Only the failure path traverses
+## this tree; successful mounts carry just its root and an existing count.
+static_element_path : Elem(ctx), U64 -> [Found(List(U64)), Remaining(U64)]
+static_element_path = |elem, ordinal| match elem {
+	Site(_, _) => Remaining(ordinal)
+	Fragment(kids) => static_child_path(kids, ordinal)
+	Element(_, _, kids) => if ordinal == 0 {
+		Found([])
+	} else {
+		static_child_path(kids, ordinal - 1)
+	}
+	Text(_) | TextV(_) => if ordinal == 0 {
+		Found([])
+	} else {
+		Remaining(ordinal - 1)
+	}
+}
+
+## Count preceding static siblings without constructing paths for them. Only
+## the successful search builds the child-index path as recursion unwinds.
+static_child_path : List(Elem(ctx)), U64 -> [Found(List(U64)), Remaining(U64)]
+static_child_path = |kids, ordinal| {
+	var $left = ordinal
+	var $index = 0.U64
+	for kid in kids {
+		match static_element_path(kid, $left) {
+			Found(path) => return Found([$index].concat(path))
+			Remaining(left) => {
+				$left = left
+			}
+		}
+		$index = $index + 1
+	}
+	Remaining($left)
+}
+
+## Format a position and bounded authored hint only after a failed check.
+## These indices describe construction, never application or row identity.
+element_place : Elem(ctx), List(U64) -> Str
+element_place = |elem, path| {
+	position = "/${Str.join_with(path.map(|index| index.to_str()), "/")}"
+	hint = element_hint(elem)
+	if hint.is_empty() {
+		" (element ${position})"
+	} else {
+		" (element ${position}, ${Str.inspect(hint)})"
+	}
+}
+
+## The block's existing static-node count identifies the rejected element.
+## Resolve it only on failure, avoiding a growing path allocation per node.
+static_element_place : Elem(ctx), U64, Elem(ctx) -> Str
+static_element_place = |root, ordinal, elem| match static_element_path(root, ordinal) {
+	Found(path) => element_place(elem, path)
+	Remaining(_) => crash "internal: rejected element has no static construction position"
+}
+
 ## Reject element contracts before allocating its nodes: one handler per
 ## bare event type, no retired suffixes, and properties used only on their
 ## declared elements without duplicates or claimed ordinary attributes.
 ## Both plain blocks and row templates use this construction-site check.
-check_element_attrs : List(Attr(ctx)), Str, Str, List(U32) -> {}
-check_element_attrs = |attrs, tag, placed, path| {
+check_element_attrs : List(Attr(ctx)), Str, Str, List(U32), (() -> Str) -> {}
+check_element_attrs = |attrs, tag, placed, path, describe| {
+	location = || "${placed} at site ${show_path(path)}${describe()}"
 	controlled = attrs.any(
 		|attribute| match attribute {
 			PropertyV(index, _) => index == 6 or index == 7
@@ -4315,9 +4426,9 @@ check_element_attrs = |attrs, tag, placed, path| {
 	if controlled {
 		for attribute in attrs {
 			match attribute {
-				On(event, _) if event.event == "beforetoggle" => crash "contract: beforetoggle is not supported on a controlled shown element at site ${show_path(path)}"
-				Static(name, _) | Dyn(name, _) if tag == "dialog" and (html_attribute_is(name, "popover") or html_attribute_is(name, "closedby")) => crash "contract: popover and closedby are not supported on a controlled dialog at site ${show_path(path)}"
-				Static(name, _) | Dyn(name, _) if tag == "dialog" and html_attribute_is(name, "open") => crash "contract: attribute open is owned by the controlled dialog at site ${show_path(path)}"
+				On(event, _) if event.event == "beforetoggle" => crash "contract: beforetoggle is not supported on a controlled shown element${location()}"
+				Static(name, _) | Dyn(name, _) if tag == "dialog" and (html_attribute_is(name, "popover") or html_attribute_is(name, "closedby")) => crash "contract: popover and closedby are not supported on a controlled dialog${location()}"
+				Static(name, _) | Dyn(name, _) if tag == "dialog" and html_attribute_is(name, "open") => crash "contract: attribute open is owned by the controlled dialog${location()}"
 				_ => {}
 			}
 		}
@@ -4340,7 +4451,7 @@ check_element_attrs = |attrs, tag, placed, path| {
 				_ => False
 			},
 		) {
-			crash "contract: the controlled popover owns one static popover declaration at site ${show_path(path)}"
+			crash "contract: the controlled popover owns one static popover declaration${location()}"
 		}
 	}
 	var $properties = []
@@ -4348,19 +4459,19 @@ check_element_attrs = |attrs, tag, placed, path| {
 		match attribute {
 			On(declaration, _) => {
 				if declaration.kind == 1 and (declaration.event == "keydown" or declaration.event == "keyup") {
-					crash "contract: text handler on ${declaration.event} at site ${show_path(path)}; use on_key"
+					crash "contract: text handler on ${declaration.event}${location()}; use on_key"
 				}
 				if declaration.event.ends_with(":prevent") or declaration.event.ends_with(":files") {
-					crash "contract: retired event suffix in \"${declaration.event}\" at site ${show_path(path)}; use on_with for policies or on_files for files"
+					crash "contract: retired event suffix in \"${declaration.event}\"${location()}; use on_with for policies or on_files for files"
 				}
 			}
 			Property(index, _) | PropertyV(index, _) => {
 				row = property_row(index)
 				if !row.elements.is_empty() and !row.elements.contains(tag) {
-					crash "contract: property \"${row.name}\" is not allowed on <${tag}> at site ${show_path(path)}"
+					crash "contract: property \"${row.name}\" is not allowed on <${tag}>${location()}"
 				}
 				if $properties.contains(index) {
-					crash "contract: property \"${row.name}\" is declared twice on <${tag}> at site ${show_path(path)}"
+					crash "contract: property \"${row.name}\" is declared twice on <${tag}>${location()}"
 				}
 				$properties = $properties.append(index)
 			}
@@ -4368,7 +4479,7 @@ check_element_attrs = |attrs, tag, placed, path| {
 				for index in [1.U8, 2] {
 					row = property_row(index)
 					if row.elements.contains(tag) and row.name == name {
-						crash "contract: attribute \"${name}\" on <${tag}> is claimed by a property at site ${show_path(path)}; use prop or prop_s"
+						crash "contract: attribute \"${name}\" on <${tag}> is claimed by a property${location()}; use prop or prop_s"
 					}
 				}
 			}
@@ -4376,17 +4487,17 @@ check_element_attrs = |attrs, tag, placed, path| {
 		}
 	}
 	match twice_handled(attrs) {
-		Ok(ev) => crash "contract: two handlers for the \"${ev}\" event on one <${tag}>${placed} at site ${show_path(path)}: an element takes one handler per event; run both from one with Handler.also"
+		Ok(ev) => crash "contract: two handlers for the \"${ev}\" event on one <${tag}>${location()}: an element takes one handler per event; run both from one with Handler.also"
 		Err(Distinct) => {}
 	}
 }
 
-mount_elem : Block(ctx), ctx, Elem(ctx), U64, List(U32), U32, U32, Bool, Bool, Scope, Tx -> (Block(ctx), Tx)
-mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, tx| {
+mount_elem : Block(ctx), ctx, Elem(ctx), Elem(ctx), U64, List(U32), U32, U32, Bool, Bool, Scope, Tx -> (Block(ctx), Tx)
+mount_elem = |block, env, root_elem, elem, depth, path, parent, before, top, sole, scope, tx| {
 	at = if (top) before else 0
 	match elem {
 		Element(tag, attrs, kids) => {
-			check_element_attrs(attrs, tag, "", path)
+			check_element_attrs(attrs, tag, "", path, || static_element_place(root_elem, block.nodes.len(), elem))
 			(id, tx1) = alloc_id(tx)
 			tx2 = emit_op(tx1, 8, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), tag))
 			var $b = add_node(block, id, top)
@@ -4399,13 +4510,13 @@ mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, t
 			}
 			kid_sole = kids.len() == 1
 			for kid in kids {
-				(b3, t3) = mount_elem($b, env, kid, depth, path, id, 0, False, kid_sole, scope, $t)
+				(b3, t3) = mount_elem($b, env, root_elem, kid, depth, path, id, 0, False, kid_sole, scope, $t)
 				$b = b3
 				$t = t3
 			}
 			($b, $t)
 		}
-		Fragment(children) => children.fold((block, tx), |(held, acc), child| mount_elem(held, env, child, depth, path, parent, at, top, sole and children.len() == 1, scope, acc))
+		Fragment(children) => children.fold((block, tx), |(held, acc), child| mount_elem(held, env, root_elem, child, depth, path, parent, at, top, sole and children.len() == 1, scope, acc))
 		Text(s) => {
 			(id, tx1) = alloc_id(tx)
 			tx2 = emit_op(tx1, 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
@@ -4486,7 +4597,7 @@ add_child = |{ holes, handlers, children, child_reads, child_top, nodes, tops, r
 }
 
 mount_block : ctx, Elem(ctx), U64, List(U32), U32, U32, Scope, Tx -> (Block(ctx), Tx)
-mount_block = |env, elem, depth, path, parent, before, scope, tx| mount_elem(empty_block({}), env, elem, depth, path, parent, before, True, False, scope, tx)
+mount_block = |env, elem, depth, path, parent, before, scope, tx| mount_elem(empty_block({}), env, elem, elem, depth, path, parent, before, True, False, scope, tx)
 
 noop : {} -> Inst(ctx)
 noop = |_| Inst(
@@ -5288,11 +5399,11 @@ val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, valu
 	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
 }
 
-compile_elem : Plan(ctx), Elem(ctx), List(U8), U64, List(U32) -> Plan(ctx)
-compile_elem = |plan, elem, path, depth, site| {
+compile_elem : Plan(ctx), Elem(ctx), List(U8), U64, List(U32), Str -> Plan(ctx)
+compile_elem = |plan, elem, path, depth, site, placed| {
 	match elem {
 		Element(tag, attrs, kids) => {
-			check_element_attrs(attrs, tag, " in the row template of an each", site)
+			check_element_attrs(attrs, tag, placed, site, || element_place(elem, path.map(|index| index.to_u64())))
 			value_control = declares_value(attrs)
 			var $nstatic = 0.U64
 			for a0 in attrs {
@@ -5353,7 +5464,7 @@ compile_elem = |plan, elem, path, depth, site| {
 			$p = { tree: $tree, htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads }
 			var $i = 0.U8
 			for kid in kids {
-				$p = compile_elem($p, kid, path.append($i), depth, site)
+				$p = compile_elem($p, kid, path.append($i), depth, site, placed)
 				$i = $i + 1
 			}
 			$p
@@ -5377,11 +5488,11 @@ compile_elem = |plan, elem, path, depth, site| {
 }
 
 ## Compile an `each` row template for the each site at `site`.
-compile : Elem(ctx), U64, List(U32) -> Plan(ctx)
-compile = |elem, depth, site| {
+compile : Elem(ctx), U64, List(U32), Str -> Plan(ctx)
+compile = |elem, depth, site, kind| {
 	match elem {
-		Element(_, _, _) => compile_elem(plan_empty({}), elem, [], depth, site)
-		_ => crash "contract: an each row template must be a single element"
+		Element(_, _, _) => compile_elem(plan_empty({}), elem, [], depth, site, " in the row template of ${kind}")
+		_ => crash "contract: ${kind} row template must be a single element at site ${show_path(site)}"
 	}
 }
 
@@ -9933,7 +10044,7 @@ expect {
 expect {
 	row : Elem(Row(Root({}), Str))
 	row = Core.element("button", [Core.ref_s(Core.const("cell"))], [])
-	plan = compile(row, 1, [0])
+	plan = compile(row, 1, [0], "an each")
 	actual = { bytes: template_bytes(plan), kind: plan.holes.first().map_ok(|hole| hole.kind), columns: plan.ncols }
 	actual == {
 		bytes: put_str([1], "button").concat([0, 0, 1, 5, 0]),
@@ -10013,7 +10124,7 @@ expect {
 expect {
 	row : Elem(Row(Root({}), Str))
 	row = Core.element("input", [Core.attr("type", "checkbox"), Core.prop_s(Core.Prop.checked, Core.const(Bool.True))], [])
-	plan = compile(row, 1, [0])
+	plan = compile(row, 1, [0], "an each")
 	expected = put_str(put_str(put_str([1], "input").append(1), "type"), "checkbox").concat([0, 1, 6, 0, 2])
 	template_bytes(plan) == expected
 }
@@ -10907,4 +11018,37 @@ expect {
 		answers: [Ok(4), Err("Status(503)"), Err("Refused")],
 	}
 	actual == expected
+}
+
+## Explicit static addresses take priority over descendant text; dynamic
+## labels are not sampled to make an error more descriptive.
+expect {
+	node : Elem({})
+	node = Core.element("button", [Core.attr("id", "secondary"), Core.attr("data-testid", "primary"), Core.attr("aria-label", "spoken")], [Core.text("Save")])
+	dynamic : Elem({})
+	dynamic = Core.element("button", [Core.attr_s("aria-label", Core.const("dynamic"))], [Core.text("Static")])
+	{ explicit: element_hint(node), dynamic: element_hint(dynamic) } == { explicit: "primary", dynamic: "Static" }
+}
+
+## Diagnostic bounds preserve whole UTF-8 scalars and never exceed 64 bytes.
+expect {
+	{ ascii: bounded_element_hint(Str.repeat("x", 100)), paired: bounded_element_hint(Str.repeat("é", 40)), cut: bounded_element_hint("x${Str.repeat("é", 40)}") } == {
+		ascii: Str.repeat("x", 64),
+		paired: Str.repeat("é", 32),
+		cut: "x${Str.repeat("é", 31)}",
+	}
+}
+
+## Static positions exclude nested sites, whose factories are never run by
+## diagnostic lookup. Child indices remain useful without exposing engine ids.
+expect {
+	button : Elem({})
+	button = Core.element("button", [], [Core.text("Save")])
+	root : Elem({})
+	root = Core.element("section", [], [Core.when(Core.const(Bool.True), || crash "diagnostics must not enter a site", || Core.text("")), Core.element("div", [], [Core.text("First"), button])])
+	{ path: static_element_path(root, 3), text: first_static_text(root), place: static_element_place(root, 3, button) } == {
+		path: Found([1, 1]),
+		text: "First",
+		place: " (element /1/1, \"Save\")",
+	}
 }
