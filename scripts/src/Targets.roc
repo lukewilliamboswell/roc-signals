@@ -20,6 +20,7 @@ Targets := [].{
 
 	fuzz_targets : List(Fuzz)
 	fuzz_targets = [
+		{ name: "boot", main: "fuzz/boot/main.roc" },
 		{ name: "scm-parse", main: "fuzz/scm-parse/main.roc" },
 		{ name: "wire", main: "fuzz/wire/main.roc" },
 		{ name: "structure", main: "fuzz/structure/main.roc" },

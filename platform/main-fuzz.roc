@@ -11,7 +11,7 @@
 ## `.scm` parser, and the wire and port formats.
 ##
 ## Its only users are the platform's own targets: those under `fuzz/` (the
-## spec, wire and port format parsers and generated site trees) and those
+## spec, boot, wire and port format parsers and generated site trees) and those
 ## beside the test apps under `tests/apps/` that drive the engine (the
 ## effect channel's model and the controls). A target there is an ordinary
 ## roc-fuzz app:

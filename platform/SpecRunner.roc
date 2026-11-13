@@ -152,17 +152,14 @@ SpecRunner := [].{
 	max_fetch_bytes = 256 * 1024 * 1024
 
 	## The modelled browser around the DOM. `doc` numbers the current document;
-	## a cross-document navigation mounts the app afresh in the next one.
+	## a cross-document navigation mounts the app afresh in the next one. `env`
+	## starts as the parser's resolved facts and holds their current values.
 	Browser : {
-		loc : Str,
+		env : Scm.Environment,
 		doc : U64,
 		back : List(Entry),
 		fwd : List(Entry),
 		title : Str,
-		storage : List({ key : Str, value : Str }),
-		online : Bool,
-		visible : Bool,
-		storage_available : Bool,
 		pending : List(Pending),
 		issued : List(U32),
 		gets : List({ id : U32, key : Str }),
@@ -274,19 +271,79 @@ SpecRunner := [].{
 		(text, at + 4 + len)
 	}
 
-	## The declared storage keys: `count:u32 (key:str)*`.
+	## Read the local-storage declaration section the program's keys encoder
+	## wrote. Both mandatory declaration sections are consumed exactly, including
+	## the port catalogue the native runner does not otherwise need.
 	decode_keys : List(U8) -> List(Str)
 	decode_keys = |b| {
-		n = SpecRunner.get_u32(b, 0) ?? crash "contract: storage key list is truncated"
+		if b.first() != Ok(2) {
+			crash "contract: declaration section 2 (local-storage) is missing"
+		}
+		len = (SpecRunner.get_u32(b, 1) ?? crash "contract: declaration section 2 (local-storage) has a short header").to_u64()
+		if len > b.len() - 5 {
+			crash "contract: declaration section 2 (local-storage) has a short body"
+		}
+		body = b.sublist({ start: 5, len })
+		n = SpecRunner.get_u32(body, 0) ?? crash "contract: declaration section 2 (local-storage) has a short key count"
 		var $at = 4.U64
 		var $keys = []
 		var $i = 0.U32
 		while $i < n {
-			len = (SpecRunner.get_u32(b, $at) ?? crash "contract: storage key list is truncated").to_u64()
-			key = Str.from_utf8(b.sublist({ start: $at + 4, len })) ?? crash "contract: storage key is not UTF-8"
+			key_len = (SpecRunner.get_u32(body, $at) ?? crash "contract: declaration section 2 (local-storage) has a short key").to_u64()
+			if key_len > body.len() - $at - 4 {
+				crash "contract: declaration section 2 (local-storage) has a short key"
+			}
+			key = Str.from_utf8(body.sublist({ start: $at + 4, len: key_len })) ?? crash "contract: declaration section 2 (local-storage) key is not UTF-8"
 			$keys = $keys.append(key)
-			$at = $at + 4 + len
+			$at = $at + 4 + key_len
 			$i = $i + 1
+		}
+		if $at != body.len() {
+			crash "contract: declaration section 2 (local-storage) has trailing bytes"
+		}
+		port_at = 5 + len
+		if b.get(port_at) != Ok(5) {
+			crash "contract: declaration section 5 (ports) is missing or out of order"
+		}
+		port_len = (SpecRunner.get_u32(b, port_at + 1) ?? crash "contract: declaration section 5 (ports) has a short header").to_u64()
+		if port_len != b.len() - port_at - 5 {
+			crash "contract: declaration section 5 (ports) has a short body or trailing bytes"
+		}
+		ports = b.sublist({ start: port_at + 5, len: port_len })
+		count = SpecRunner.get_u32(ports, 0) ?? crash "contract: declaration section 5 (ports) has a short count"
+		if count > 64 {
+			crash "contract: declaration section 5 (ports) has more than 64 ports"
+		}
+		$at = 4
+		$i = 0
+		var $names = []
+		while $i < count {
+			name_len = (SpecRunner.get_u32(ports, $at) ?? crash "contract: declaration section 5 (ports) has a short name").to_u64()
+			if name_len < 1 or name_len > 128 or name_len > ports.len() - $at - 4 {
+				crash "contract: declaration section 5 (ports) has an invalid name length"
+			}
+			name = Str.from_utf8(ports.sublist({ start: $at + 4, len: name_len })) ?? crash "contract: declaration section 5 (ports) name is not UTF-8"
+			if $names.contains(name) {
+				crash "contract: declaration section 5 (ports) has a duplicate name"
+			}
+			$names = $names.append(name)
+			$at = $at + 4 + name_len
+			kind = ports.get($at) ?? crash "contract: declaration section 5 (ports) has a short kind"
+			delivery = ports.get($at + 1) ?? crash "contract: declaration section 5 (ports) has a short delivery"
+			bound = SpecRunner.get_u32(ports, $at + 2) ?? crash "contract: declaration section 5 (ports) has a short bound"
+			is_shape = match kind {
+				1 | 2 => delivery == 0 and bound == 0
+				3 => (delivery == 1 and bound >= 1 and bound <= 1024) or (delivery == 2 and bound == 1)
+				_ => Bool.False
+			}
+			if !is_shape {
+				crash "contract: declaration section 5 (ports) has an invalid shape"
+			}
+			$at = $at + 6
+			$i = $i + 1
+		}
+		if $at != ports.len() {
+			crash "contract: declaration section 5 (ports) has trailing body bytes"
 		}
 		$keys
 	}
@@ -294,15 +351,25 @@ SpecRunner := [].{
 	flag_byte : Bool -> U8
 	flag_byte = |b| if (b) 1 else 0
 
-	## Boot bytes: `url:str count:u32 (key:str value:str)* online:u8
-	## visible:u8 storage:u8`, declared keys that hold a value only.
-	encode_boot : Str, List({ key : Str, value : Str }), { online : Bool, visible : Bool, storage_available : Bool } -> List(U8)
-	encode_boot = |url, kvs, { online, visible, storage_available }| {
-		var $b = SpecRunner.put_u32(SpecRunner.put_str([], url), kvs.len().to_u32_wrap())
-		for { key, value } in kvs {
-			$b = SpecRunner.put_str(SpecRunner.put_str($b, key), value)
+	## One length-bounded boot section. The runner writes every section in
+	## protocol order; its encoder is independent of the engine's decoder.
+	put_section : List(U8), { tag : U8, body : List(U8) } -> List(U8)
+	put_section = |bytes, { tag, body }| SpecRunner.put_u32(bytes.append(tag), body.len().to_u32_wrap()).concat(body)
+
+	## Encode the resolved browser facts as the mandatory boot sections. The
+	## caller filters local storage to the program's declared keys first.
+	encode_boot : Scm.Environment -> List(U8)
+	encode_boot = |env| {
+		var $storage = SpecRunner.put_u32([SpecRunner.flag_byte(env.storage_available)], env.storage.len().to_u32_wrap())
+		for (key, value) in env.storage {
+			$storage = SpecRunner.put_str(SpecRunner.put_str($storage, key), value)
 		}
-		$b.append(SpecRunner.flag_byte(online)).append(SpecRunner.flag_byte(visible)).append(SpecRunner.flag_byte(storage_available))
+		[
+			{ tag: 1, body: SpecRunner.put_str([], env.url) },
+			{ tag: 2, body: $storage },
+			{ tag: 3, body: [SpecRunner.flag_byte(env.online)] },
+			{ tag: 4, body: [SpecRunner.flag_byte(env.visible)] },
+		].fold([], SpecRunner.put_section)
 	}
 
 	## An HTTP result payload: tag 1, `status:u16 n:u32 (name:str value:str)* body:rest`.
@@ -478,23 +545,19 @@ SpecRunner := [].{
 	## that calls the engine directly), at `url` with `storage`.
 	adopt : state, List(U8), Str, List({ key : Str, value : Str }) -> S(state)
 	adopt = |inst, cmds, url, storage| {
-		browser = SpecRunner.fresh_browser({ url, storage, online: Bool.True, visible: Bool.True, storage_available: Bool.True })
+		browser = SpecRunner.fresh_browser({ url, storage: storage.map(|kv| (kv.key, kv.value)) })
 		s0 = SpecRunner.fresh(inst, browser)
 		SpecRunner.take_batch(s0, inst, cmds)
 	}
 
 	## The modelled browser of a fresh document at `url`.
-	fresh_browser : { url : Str, storage : List({ key : Str, value : Str }), online : Bool, visible : Bool, storage_available : Bool } -> Browser
-	fresh_browser = |{ url, storage, online, visible, storage_available }| {
-		loc: url,
+	fresh_browser : Scm.Environment -> Browser
+	fresh_browser = |env| {
+		env,
 		doc: 0,
 		back: [],
 		fwd: [],
 		title: "",
-		storage,
-		online,
-		visible,
-		storage_available,
 		pending: [],
 		issued: [],
 		gets: [],
@@ -511,8 +574,8 @@ SpecRunner := [].{
 	fresh : state, Browser -> S(state)
 	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 23), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, focus_commands: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
 
-	set_store : List({ key : Str, value : Str }), Str, Str -> List({ key : Str, value : Str })
-	set_store = |l, key, value| l.keep_if(|kv| kv.key != key).append({ key, value })
+	set_store : List((Str, Str)), Str, Str -> List((Str, Str))
+	set_store = |l, key, value| l.keep_if(|(name, _)| name != key).append((key, value))
 
 	## Apply one batch's effect commands to the modelled browser.
 	absorb : Browser, List(Dom.FxCmd) -> Browser
@@ -530,11 +593,11 @@ SpecRunner := [].{
 				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }) }
 				VisibilitySub(id) => { ..b, subs: b.subs.append({ id, sub: VisibilitySub }) }
 				Cancel(id) => { ..b, pending: b.pending.keep_if(|p| p.id != id), subs: b.subs.keep_if(|x| x.id != id) }
-				Push(url) => { ..b, back: b.back.append({ url: b.loc, doc: b.doc }), loc: SpecRunner.resolve_in_document(b.loc, url), fwd: [] }
-				Replace(url) => { ..b, loc: SpecRunner.resolve_in_document(b.loc, url) }
+				Push(url) => { ..b, back: b.back.append({ url: b.env.url, doc: b.doc }), env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) }, fwd: [] }
+				Replace(url) => { ..b, env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) } }
 				# Writes to unavailable storage fail in the browser and persist nothing.
-				Set(k, v) => if (b.storage_available) { ..b, storage: SpecRunner.set_store(b.storage, k, v) } else b
-				Remove(k) => if (b.storage_available) { ..b, storage: b.storage.keep_if(|kv| kv.key != k) } else b
+				Set(k, v) => if (b.env.storage_available) { ..b, env: { ..b.env, storage: SpecRunner.set_store(b.env.storage, k, v) } } else b
+				Remove(k) => if (b.env.storage_available) { ..b, env: { ..b.env, storage: b.env.storage.keep_if(|(key, _)| key != k) } } else b
 				Title(t) => { ..b, title: t }
 				Focus(_, _) => b
 				FileRead(id, mode, file, max_bytes) => { ..b, pending: b.pending.append({ id, url: "read", body: "", kind: ReadRequest({ mode, file, max_bytes }) }), issued: b.issued.append(id) }
@@ -559,30 +622,10 @@ SpecRunner := [].{
 		if program.version != Dom.protocol_version {
 			return Err("the program speaks protocol ${program.version.to_str()}; this runner decodes ${Dom.protocol_version.to_str()}")
 		}
-		var $url = "/"
-		var $storage = []
-		var $online = Bool.True
-		var $visible = Bool.True
-		var $storage_available = Bool.True
 		var $files = []
 		var $max_output = SpecRunner.max_output_bytes
 		for entry in spec.setup {
 			match entry.item {
-				InitialLocation(url) => {
-					$url = url
-				}
-				LocalStorage({ key, value }) => {
-					$storage = SpecRunner.set_store($storage, key, value)
-				}
-				InitialOnline(o) => {
-					$online = o == Online
-				}
-				InitialVisibility(v) => {
-					$visible = v == Visible
-				}
-				LocalStorageUnavailable => {
-					$storage_available = Bool.False
-				}
 				File({ name, mime, text, repeat }) => {
 					if $files.any(|f| f.name == name) {
 						return Err("file \"${name}\" is declared twice")
@@ -592,12 +635,10 @@ SpecRunner := [].{
 				MaxOutputBytes(n) => {
 					$max_output = n
 				}
+				InitialLocation(_) | LocalStorage(_) | InitialOnline(_) | InitialVisibility(_) | LocalStorageUnavailable => {}
 			}
 		}
-		if !$storage_available and !$storage.is_empty() {
-			return Err("local-storage seeds storage that local-storage-unavailable says the app cannot read")
-		}
-		s0 = SpecRunner.mount_in(program, { url: $url, storage: $storage, online: $online, visible: $visible, storage_available: $storage_available })
+		s0 = SpecRunner.mount_in(program, spec.environment)
 		b0 = s0.browser
 		Ok({ ..s0, browser: { ..b0, files: $files, max_output: $max_output } })
 	}
@@ -605,14 +646,16 @@ SpecRunner := [].{
 	## Mount the app at `url` with `storage` as local storage; the app's
 	## declared keys that hold a value become its boot storage.
 	mount : Program(state), Str, List({ key : Str, value : Str }) -> S(state)
-	mount = |program, url, storage| SpecRunner.mount_in(program, { url, storage, online: Bool.True, visible: Bool.True, storage_available: Bool.True })
+	mount = |program, url, storage| SpecRunner.mount_in(program, { url, storage: storage.map(|kv| (kv.key, kv.value)) })
 
-	mount_in : Program(state), { url : Str, storage : List({ key : Str, value : Str }), online : Bool, visible : Bool, storage_available : Bool } -> S(state)
-	mount_in = |program, { url, storage, online, visible, storage_available }| {
+	## Mount from facts the parser resolved, selecting only storage keys the
+	## program declared. The browser retains all storage for later requests.
+	mount_in : Program(state), Scm.Environment -> S(state)
+	mount_in = |program, env| {
 		declared = SpecRunner.decode_keys((program.keys)())
-		boot_kvs = declared.keep_oks(|k| storage.find_first(|kv| kv.key == k))
-		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot(url, if (storage_available) boot_kvs else [], { online, visible, storage_available }))
-		s0 = SpecRunner.fresh(inst, SpecRunner.fresh_browser({ url, storage, online, visible, storage_available }))
+		boot_kvs = declared.keep_oks(|key| env.storage.find_first(|(name, _)| name == key))
+		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot({ ..env, storage: if (env.storage_available) boot_kvs else [] }))
+		s0 = SpecRunner.fresh(inst, SpecRunner.fresh_browser(env))
 		{ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s0, draining: Bool.True }, inst, cmds, wbuf))), draining: Bool.False }
 	}
 
@@ -695,9 +738,9 @@ SpecRunner := [].{
 		while !$s.browser.gets.is_empty() {
 			b = $s.browser
 			g = b.gets.first() ?? crash "SpecRunner.answer_gets: not empty"
-			found = if (b.storage_available) b.storage.find_first(|kv| kv.key == g.key) else Err(NotFound)
+			found = if (b.env.storage_available) b.env.storage.find_first(|(key, _)| key == g.key) else Err(NotFound)
 			payload = match found {
-				Ok(kv) => [3].concat(kv.value.to_utf8())
+				Ok((_, value)) => [3].concat(value.to_utf8())
 				Err(_) => [4]
 			}
 			$s = SpecRunner.deliver(program, { ..$s, browser: { ..b, gets: b.gets.drop_first(1) } }, g.id, payload)
@@ -719,10 +762,10 @@ SpecRunner := [].{
 		$s
 	}
 
-	## The browser moved to `browser.loc` on its own: every popstate
+	## The browser moved to `browser.env.url` on its own: every popstate
 	## subscription hears it.
 	popstate : Program(state), S(state) -> S(state)
-	popstate = |program, s| SpecRunner.broadcast(program, s, |x| x.sub == Pop, SpecRunner.encode_location(s.browser.loc))
+	popstate = |program, s| SpecRunner.broadcast(program, s, |x| x.sub == Pop, SpecRunner.encode_location(s.browser.env.url))
 
 	## The bytes of a handle's range, from the setup file it was given under.
 	file_bytes : Browser, { token : U64, start : U64, len : U64 } -> List(U8)
@@ -1232,13 +1275,13 @@ SpecRunner := [].{
 				got = 1 + (s.writes.get(i) ?? 0)
 				check(got == n, "${Scm.show_loc(loc)} was written ${got.to_str()} times (its creation and every later update), expected ${n.to_str()}")
 			}
-			ExpectLocation(want) => check(b.loc == want, "location ${JsonOut.quote(b.loc)}, expected ${JsonOut.quote(want)}")
+			ExpectLocation(want) => check(b.env.url == want, "location ${JsonOut.quote(b.env.url)}, expected ${JsonOut.quote(want)}")
 			ExpectTitle(want) => check(b.title == want, "title ${JsonOut.quote(b.title)}, expected ${JsonOut.quote(want)}")
 			ExpectLocalStorage({ key, value }) => {
-				got = b.storage.find_first(|kv| kv.key == key).map_ok(|kv| JsonOut.quote(kv.value)) ?? "<missing>"
+				got = b.env.storage.find_first(|(name, _)| name == key).map_ok(|(_, stored)| JsonOut.quote(stored)) ?? "<missing>"
 				check(got == JsonOut.quote(value), "local storage ${key} = ${got}, expected ${JsonOut.quote(value)}")
 			}
-			ExpectNoLocalStorage(key) => check(!b.storage.any(|kv| kv.key == key), "local storage ${key} is present")
+			ExpectNoLocalStorage(key) => check(!b.env.storage.any(|(name, _)| name == key), "local storage ${key} is present")
 			ExpectPendingEffects(n) => check(b.pending.len() == n, "expected ${n.to_str()} pending effects, got ${b.pending.len().to_str()}")
 			RunEffect(n) => SpecRunner.run_effect(program, s, n)
 			LoseWork({ occurrence, fault }) => {
@@ -1271,13 +1314,13 @@ SpecRunner := [].{
 			HistoryBack =>
 				match b.back.last() {
 					Ok(prev) if prev.doc != b.doc => Err("history-back crosses documents, which specs do not model")
-					Ok(prev) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.drop_last(1), fwd: [{ url: b.loc, doc: b.doc }].concat(b.fwd), loc: prev.url } }))
+					Ok(prev) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.drop_last(1), fwd: [{ url: b.env.url, doc: b.doc }].concat(b.fwd), env: { ..b.env, url: prev.url } } }))
 					Err(_) => Err("history-back with no history")
 				}
 			HistoryForward =>
 				match b.fwd.first() {
 					Ok(next) if next.doc != b.doc => Err("history-forward crosses documents, which specs do not model")
-					Ok(next) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, fwd: b.fwd.drop_first(1), back: b.back.append({ url: b.loc, doc: b.doc }), loc: next.url } }))
+					Ok(next) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, fwd: b.fwd.drop_first(1), back: b.back.append({ url: b.env.url, doc: b.doc }), env: { ..b.env, url: next.url } } }))
 					Err(_) => Err("history-forward with no forward entry")
 				}
 			TickInterval(ms) =>
@@ -1297,19 +1340,19 @@ SpecRunner := [].{
 			}
 			SetOnline(o) => {
 				on = o == Online
-				if on == b.online {
+				if on == b.env.online {
 					Ok(s)
 				} else {
-					s1 = { ..s, browser: { ..b, online: on } }
+					s1 = { ..s, browser: { ..b, env: { ..b.env, online: on } } }
 					Ok(SpecRunner.broadcast(program, s1, |x| x.sub == OnlineSub, [8, SpecRunner.flag_byte(on)]))
 				}
 			}
 			SetVisibility(v) => {
 				vis = v == Visible
-				if vis == b.visible {
+				if vis == b.env.visible {
 					Ok(s)
 				} else {
-					s1 = { ..s, browser: { ..b, visible: vis } }
+					s1 = { ..s, browser: { ..b, env: { ..b.env, visible: vis } } }
 					Ok(SpecRunner.broadcast(program, s1, |x| x.sub == VisibilitySub, [9, SpecRunner.flag_byte(vis)]))
 				}
 			}
@@ -1584,7 +1627,7 @@ SpecRunner := [].{
 			match SpecRunner.ancestor(s.dom, i, |m| m.tag == "a" and Dom.has_attr(m, "href")) {
 				Ok(a) => {
 					href = Dom.attr_of(Dom.node(s.dom, a), "href")
-					url = SpecRunner.resolve(s.browser.loc, href) ? |_| "the click navigates to ${href}, which leaves the app"
+					url = SpecRunner.resolve(s.browser.env.url, href) ? |_| "the click navigates to ${href}, which leaves the app"
 					SpecRunner.navigate(program, s, url)
 				}
 				Err(_) => Ok(s)
@@ -1700,11 +1743,11 @@ SpecRunner := [].{
 	navigate : Program(state), S(state), Str -> Try(S(state), Str)
 	navigate = |program, s, url| {
 		b = s.browser
-		entry = { url: b.loc, doc: b.doc }
-		if SpecRunner.same_document(b.loc, url) {
-			Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.append(entry), loc: url, fwd: [] } }))
+		entry = { url: b.env.url, doc: b.doc }
+		if SpecRunner.same_document(b.env.url, url) {
+			Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.append(entry), env: { ..b.env, url }, fwd: [] } }))
 		} else {
-			s1 = SpecRunner.mount_in(program, { url, storage: b.storage, online: b.online, visible: b.visible, storage_available: b.storage_available })
+			s1 = SpecRunner.mount_in(program, Scm.next_document({ ..b.env, url }))
 			b1 = s1.browser
 			Ok({ ..s1, mark: s.mark, browser: { ..b1, doc: b.doc + 1, back: b.back.append(entry), fwd: [], files: b.files, given: b.given, max_output: b.max_output } })
 		}
@@ -2267,8 +2310,8 @@ SpecRunner := [].{
 				Ok((s2, { what: "${Scm.op_name(op)} ${n.to_str()} ${p.url}", kind }))
 			}
 			Tick(ms) => Ok((SpecRunner.one(program, s, TickInterval(ms.to_u64()))?, { what: "tick-interval ${ms.to_str()}", kind: Service }))
-			ToggleVisibility => Ok((SpecRunner.one(program, s, SetVisibility(if (b.visible) Hidden else Visible))?, { what: "set-visibility", kind: Service }))
-			ToggleOnline => Ok((SpecRunner.one(program, s, SetOnline(if (b.online) Offline else Online))?, { what: "set-online", kind: Service }))
+			ToggleVisibility => Ok((SpecRunner.one(program, s, SetVisibility(if (b.env.visible) Hidden else Visible))?, { what: "set-visibility", kind: Service }))
+			ToggleOnline => Ok((SpecRunner.one(program, s, SetOnline(if (b.env.online) Offline else Online))?, { what: "set-online", kind: Service }))
 			Emit(port) => {
 				messages = bk.messages.keep_if(|m| m.port == port)
 				json = (messages.get(v % messages.len().max(1)) ?? { port, json: "null" }).json
@@ -2804,8 +2847,8 @@ SpecRunner := [].{
 }
 
 ## Wire encoding: strings are length-prefixed, integers little-endian, and
-## the boot bytes end with the online, visible and storage flags.
-expect SpecRunner.encode_boot("/a", [{ key: "k", value: "v" }], { online: Bool.False, visible: Bool.True, storage_available: Bool.False }) == [2, 0, 0, 0, '/', 'a', 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 0, 1, 0]
+## each boot section is tagged and length-bounded in ascending order.
+expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1]
 
 ## An HTTP result carries status, headers and the body as the rest.
 expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6, 0x01, 1, 0, 0, 0, 1, 0, 0, 0, 'a', 1, 0, 0, 0, 'b', 'x']
@@ -2814,7 +2857,7 @@ expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6
 expect SpecRunner.encode_reject(Timeout, "") == [7] and SpecRunner.encode_reject(Network, "offline") == [2, 'o', 'f', 'f', 'l', 'i', 'n', 'e']
 
 ## Declared storage keys decode from `count:u32 (key:str)*`.
-expect SpecRunner.decode_keys([2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c']) == ["a", "bc"]
+expect SpecRunner.decode_keys([2, 15, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c', 5, 4, 0, 0, 0, 0, 0, 0, 0]) == ["a", "bc"]
 
 ## Filters match ids shell-style.
 expect {

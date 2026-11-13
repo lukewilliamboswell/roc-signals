@@ -1,4 +1,5 @@
 import JsonOut
+import Core
 
 ## The `.scm` spec language: the one parser both spec runners use.
 ##
@@ -78,6 +79,51 @@ Scm := [].{
 		## not say).
 		MaxOutputBytes(U64),
 	]
+
+	## The browser facts a spec starts from. Boot owns their fixed defaults, so
+	## empty boot bytes, a pure Boot literal and a spec agree on every value.
+	Environment : Core.Boot
+
+	## Resolve the environment forms once, retaining the source position of a
+	## cross-form error. Fixtures and deployment limits do not set browser facts.
+	environment : List({ item : Setup, pos : Pos }) -> Try(Environment, Problem)
+	environment = |setup| {
+		initial : Environment
+		initial = {}
+		var $env = initial
+		for { item, pos } in setup {
+			env = $env
+			$env = match item {
+				InitialLocation(url) => { ..env, url }
+				InitialOnline(value) => { ..env, online: value == Online }
+				InitialVisibility(value) => { ..env, visible: value == Visible }
+				LocalStorage({ key, value }) => {
+					if !env.storage_available {
+						return Err({ pos, message: "local-storage seeds storage that local-storage-unavailable says the app cannot read" })
+					}
+					{ ..env, storage: env.storage.keep_if(|(name, _)| name != key).append((key, value)) }
+				}
+				LocalStorageUnavailable => {
+					if !env.storage.is_empty() {
+						return Err({ pos, message: "local-storage seeds storage that local-storage-unavailable says the app cannot read" })
+					}
+					{ ..env, storage_available: Bool.False }
+				}
+				File(_) | MaxOutputBytes(_) => env
+			}
+		}
+		Ok($env)
+	}
+
+	## Facts that survive a new document unchanged. Features with a per-document
+	## value extend this hook instead of giving either runner its own reset rule.
+	next_document : Environment -> Environment
+	next_document = |env| env
+
+	## Every environment section by its wire-table name. The browser replay's
+	## appliers must cover exactly this list, checked with the rest of its grammar.
+	environment_sections : List(Str)
+	environment_sections = ["location", "local-storage", "connectivity", "visibility"]
 
 	## A step a test takes, in order. Both runners implement every step
 	## (design.md, "The `.scm` spec language"): the native runner's `one` matches
@@ -199,8 +245,11 @@ Scm := [].{
 	## A step with the position of its form.
 	Step : { op : Op, pos : Pos }
 
-	## A parsed spec file.
-	Spec : { name : Str, setup : List({ item : Setup, pos : Pos }), steps : List(Step) }
+	## A parsed spec file and its resolved browser facts. The defaulted field
+	## also lets a pure harness construct a spec with Boot's default environment.
+	Spec := { name : Str, setup : List({ item : Setup, pos : Pos }), steps : List(Step), environment : Environment ?? {} }.{
+		is_eq : _
+	}
 
 	## Parse one spec file's text.
 	parse : Str -> Try(Spec, Problem)
@@ -255,7 +304,7 @@ Scm := [].{
 		if !$saw_steps {
 			return Err({ pos, message: "the test has no (steps ...) section" })
 		}
-		Ok({ name, setup: $setup, steps: $steps })
+		Ok({ name, setup: $setup, steps: $steps, environment: Scm.environment($setup)? })
 	}
 
 	## `path:line:column: message`, for reports.
@@ -967,12 +1016,13 @@ Scm := [].{
 		Ok({ metric: name, delta: Scm.integer(Scm.arg(a, 1), "the delta")? })
 	}
 
-	## The grammar's form names as one JSON object, `{"steps": [...],
-	## "setup": [...]}`, for `replay.mjs --check-grammar`.
+	## The grammar's form and environment-section names, for the browser
+	## replay to check its handlers and appliers cover the parser completely.
 	grammar_json : JsonOut.Value
 	grammar_json = Object([
 		JsonOut.field("steps", Array(Scm.step_forms.map(|f| Text(f.name)))),
 		JsonOut.field("setup", Array(Scm.setup_forms.map(|f| Text(f.name)))),
+		JsonOut.field("environment_sections", Array(Scm.environment_sections.map(|name| Text(name)))),
 	])
 
 	## Every work fault by its spelling.
@@ -1130,7 +1180,8 @@ Scm := [].{
 	# ------------------------------------------------------------------ JSON
 
 	## The spec as one JSON object, for the browser runner:
-	## `{"id", "name", "setup": [...], "steps": [...]}`. Each step carries
+	## `{"id", "name", "setup", "environment", "steps"}`. Environment facts
+	## have already been resolved by the parser. Each step carries
 	## `op` (its spec spelling), `line`, `column`, and its arguments under
 	## fixed names (`loc`, `text`, `value`, `count`, ...).
 	to_json : Str, Spec -> JsonOut.Value
@@ -1139,8 +1190,20 @@ Scm := [].{
 			JsonOut.field("id", Text(id)),
 			JsonOut.field("name", Text(spec.name)),
 			JsonOut.field("setup", Array(spec.setup.map(|s| Scm.setup_json(s)))),
+			JsonOut.field("environment", Scm.environment_json(spec.environment)),
 			JsonOut.field("steps", Array(spec.steps.map(|s| Scm.step_json(s)))),
 		])
+
+	## The already-resolved facts, without defaults or setup rules for a runner
+	## to interpret. Storage pairs retain Boot's declared data representation.
+	environment_json : Environment -> JsonOut.Value
+	environment_json = |env| Object([
+		JsonOut.field("url", Text(env.url)),
+		JsonOut.field("storage", Array(env.storage.map(|(key, value)| Array([Text(key), Text(value)])))),
+		JsonOut.field("storage_available", Bool(env.storage_available)),
+		JsonOut.field("online", Bool(env.online)),
+		JsonOut.field("visible", Bool(env.visible)),
+	])
 
 	loc_json : Loc -> JsonOut.Value
 	loc_json = |loc|
@@ -1354,7 +1417,7 @@ expect {
 		\\${JsonOut.render(Scm.to_json("w", spec))}
 	expected =
 		\\[LoseWork({ fault: AppCrash, occurrence: 1 }), TimeOutWork(2), ExpectPendingWork({ count: 3, task: "example.org/search/filter" })]
-		\\{"id":"w","name":"work","setup":[],"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
+		\\{"id":"w","name":"work","setup":[],"environment":{"url":"/","storage":[],"storage_available":true,"online":true,"visible":true},"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
 	actual == expected
 }
 
@@ -1488,7 +1551,7 @@ expect {
 expect {
 	spec = Scm.parse("(test \"j\" (setup (local-storage \"k\" \"v\")) (steps (expect-checked (role checkbox :name \"A\") true)))")?
 	actual = JsonOut.render(Scm.to_json("j-file", spec))
-	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
+	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"environment\":{\"url\":\"/\",\"storage\":[[\"k\",\"v\"]],\"storage_available\":true,\"online\":true,\"visible\":true},\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
 }
 
 ## Metric names are checked: an unknown one is a parse error, and a known one
@@ -1500,7 +1563,7 @@ expect {
 		\\${JsonOut.render(Scm.to_json("m", spec))}
 	expected =
 		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped
-		\\{"id":"m","name":"m","setup":[],"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
+		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","storage":[],"storage_available":true,"online":true,"visible":true},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
 }
 
@@ -1549,4 +1612,33 @@ expect {
 	missing = Scm.parse("(test \"t\" (steps (expect-focused)))")
 	extra = Scm.parse("(test \"t\" (steps (expect-no-focus (label \"Name\"))))")
 	missing.is_err() and extra.is_err()
+}
+
+## Unset specs use Boot's defaults, with no independent runner default.
+expect {
+	spec = Scm.parse("(test \"defaults\" (steps (mark-metrics)))")?
+	boot : Core.Boot
+	boot = {}
+	spec.environment == boot
+}
+
+## The parser resolves repeated facts and storage keys in setup order; the
+## emitted environment is data and the next-document hook preserves it.
+expect {
+	spec = Scm.parse("(test \"resolved\" (setup (initial-location \"/a\") (initial-online offline) (initial-visibility hidden) (local-storage \"a\" \"old\") (local-storage \"b\" \"b\") (local-storage \"a\" \"new\")) (steps (mark-metrics)))")?
+	expected : Scm.Environment
+	expected = { url: "/a", online: Bool.False, visible: Bool.False, storage: [("b", "b"), ("a", "new")] }
+	{ resolved: spec.environment, next: Scm.next_document(spec.environment) } == { resolved: expected, next: expected }
+}
+
+## Either order of seeding unavailable storage is a parser error at the
+## second conflicting form; runners never have to reconstruct this rule.
+expect {
+	before = Scm.parse("(test \"bad\" (setup (local-storage \"a\" \"v\") (local-storage-unavailable)) (steps (mark-metrics)))")
+	after = Scm.parse("(test \"bad\" (setup (local-storage-unavailable) (local-storage \"a\" \"v\")) (steps (mark-metrics)))")
+	message = "local-storage seeds storage that local-storage-unavailable says the app cannot read"
+	{ before, after } == {
+		before: Err({ pos: { line: 1, column: 44 }, message }),
+		after: Err({ pos: { line: 1, column: 48 }, message }),
+	}
 }

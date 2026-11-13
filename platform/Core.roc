@@ -1330,7 +1330,7 @@ Core := [].{
 	## A request from an effect site.
 	##
 	## Commands are emitted and forgotten: `Push` and `Replace` (history), `Title`,
-	## `StorageSet` and `StorageRemove` (local storage), and `Focus`, `Blur` and
+	## `StorageSet` and `StorageRemove` (local-storage), and `Focus`, `Blur` and
 	## `SelectText` on a reference named with `ref` (resolved at the end of the
 	## turn; a reference that is not mounted then is counted stale). With
 	## `PortCommand` and `Save` they are the tags of [Command].
@@ -1894,8 +1894,68 @@ Core := [].{
 	## keys' values (missing keys are absent), whether the browser is online and
 	## the page visible, and whether local storage is available at all. When it is
 	## not, the storage list is empty and `StorageSet`/`StorageRemove` do not
-	## persist, so an app that relies on reloads surviving can say so.
-	Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool, storage_available : Bool }
+	## persist, so an app that relies on reloads surviving can say so. All
+	## fields have defaults: a URL of `/`, empty available storage, online
+	## and visible. Pure tests may name only the facts they need.
+	Boot := {
+		url : Str ?? "/",
+		storage : List((Str, Str)) ?? [],
+		online : Bool ?? True,
+		visible : Bool ?? True,
+		storage_available : Bool ?? True,
+	}.{
+		is_eq : _
+	}
+
+	## Decode boot sections without crashing. Empty bytes mean `Boot {}`;
+	## otherwise every section must occur once in ascending order. Membership
+	## of storage keys is checked separately when a program mounts.
+	read_boot : List(U8) -> Try(Boot, Str)
+	read_boot = |bytes| {
+		initial : Boot
+		initial = {}
+		var $boot = initial
+		if bytes.is_empty() {
+			return Ok($boot)
+		}
+		var $at = 0.U64
+		for section in boot_sections {
+			context = "contract: boot section ${section.tag.to_str()} (${section.name})"
+			if $at == bytes.len() {
+				return Err("${context} missing section")
+			}
+			tag = bytes.get($at) ? |_| "${context} missing tag"
+			if tag != section.tag {
+				return Err("${context} expected tag ${section.tag.to_str()}, got ${tag.to_str()} (unknown, repeated or out-of-order section)")
+			}
+			length = boot_u32(bytes, $at + 1) ? |reason| "${context} ${reason}"
+			start = $at + 5
+			if length.to_u64() > bytes.len() - start {
+				return Err("${context} truncated body")
+			}
+			$boot = (section.read)($boot, bytes.sublist({ start, len: length.to_u64() })) ? |reason| "${context} ${reason}"
+			$at = start + length.to_u64()
+		}
+		if $at != bytes.len() {
+			tag = bytes.get($at) ? |_| "contract: boot section after visibility missing tag"
+			return Err("contract: boot section ${tag.to_str()} after section 4 (visibility): unexpected section")
+		}
+		Ok($boot)
+	}
+
+	## Encode all boot sections in wire order. Harnesses supply only values
+	## consistent with their program's declared storage keys.
+	write_boot : Boot -> List(U8)
+	write_boot = |boot| {
+		location = put_section([], 1, put_str([], boot.url))
+		var $storage = put_u32([if (boot.storage_available) 1 else 0], boot.storage.len().to_u32_wrap())
+		for (key, value) in boot.storage {
+			$storage = put_str(put_str($storage, key), value)
+		}
+		local = put_section(location, 2, $storage)
+		online = put_section(local, 3, [if (boot.online) 1 else 0])
+		put_section(online, 4, [if (boot.visible) 1 else 0])
+	}
 
 	## The boot value of a declared storage key, or `Missing` if it has none.
 	boot_storage : Boot, Str -> Try(Str, [Missing])
@@ -2207,7 +2267,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 7
+	protocol_version = 8
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -2263,7 +2323,7 @@ Core := [].{
 	## the plain box is accepted again.
 	Kept :: { prep : Str, ask! : Box((Str, List(U8), List(Box(U64)) => List(U8))) }
 
-	## What the host drives: the protocol version, the declared storage keys (read
+	## What the host drives: the protocol version, the declaration sections (read
 	## before mount), mount once with the boot bytes, then one turn per
 	## event or effect result. Each call returns the state, the command batch and
 	## the work record, and the host lends both buffers back on the next call so
@@ -2434,33 +2494,50 @@ Core := [].{
 		Ok($names)
 	}
 
+	## Values read at boot are declared here; request catalogues are added
+	## with `with_ports` or `with_workers`. Defaults let a caller name only
+	## what differs, and let later boot declarations leave existing apps intact.
+	ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32 }
+
 	## The [Program] for an app that needs no boot data: mount `view()` with the
 	## default in-flight bound of 32.
 	program : (() -> Elem(Root({}))) -> Program
-	program = |view| Core.program_boot({ storage_keys: [], max_inflight: 32 }, |_| view())
+	program = |view| Core.program_boot({}, |_| view())
 
 	## The [Program] for an app that reads boot data: the host reads
 	## `storage_keys` from local storage before mount, and `view` receives them in
 	## the [Boot] with the URL and connectivity. `max_inflight` bounds the awaited
 	## requests in flight at once.
-	program_boot : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Elem(Root({}))) -> Program
+	program_boot : ProgramProps, (Boot -> Elem(Root({}))) -> Program
 	program_boot = |cfg, view| Core.program_store(cfg, |_| Core.no_store, view)
 
 	## The [Program] for an app with a root store: `start` gives what
 	## the store starts with at mount (`Store.initial`), from the boot data,
 	## and `view` the UI over it.
-	program_store : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Start(st)), (Boot -> Elem(Root(st))) -> Program
+	program_store : ProgramProps, (Boot -> Start(st)), (Boot -> Elem(Root(st))) -> Program
 	program_store = |cfg, start, view| {
 		version: Core.protocol_version,
 		keys: || {
-			var $b = put_u32([], cfg.storage_keys.len().to_u32_wrap())
-			for k in cfg.storage_keys {
-				$b = put_str($b, k)
-			}
-			$b
+			declarations = [
+				{
+					tag: 2.U8,
+					write: || {
+						var $body = put_u32([], cfg.storage_keys.len().to_u32_wrap())
+						for key in cfg.storage_keys {
+							$body = put_str($body, key)
+						}
+						$body
+					},
+				},
+			]
+			declarations.fold([], |bytes, section| put_section(bytes, section.tag, (section.write)()))
 		},
 		init: |names, boot| {
 			b = decode_boot(boot)
+			match check_boot_keys(b, cfg.storage_keys) {
+				Ok(_) => {}
+				Err(message) => crash message
+			}
 			finish(mount_start(cfg.max_inflight, names, start(b), view(b)), [], [])
 		},
 		event: |inst, buf, wbuf, node, handler, payload| {
@@ -5952,15 +6029,15 @@ ports_checked = |decls| match Core.port_catalogue(decls) {
 	Err(message) => crash message
 }
 
-## The boot key list followed by the port table (design.md, Appendix B):
+## Append declaration section 5, the port catalogue (design.md, Appendix B):
 ## `nports:u32 (name:str kind:u8 delivery:u8 bound:u32)*`.
 put_port_table : List(U8), List(PortDecl) -> List(U8)
 put_port_table = |keys, decls| {
-	var $b = put_u32(keys, decls.len().to_u32_wrap())
+	var $b = put_u32([], decls.len().to_u32_wrap())
 	for d in decls {
 		$b = put_u32(put_str($b, d.name).append(d.kind).append(d.delivery), d.bound)
 	}
-	$b
+	put_section(keys, 5, $b)
 }
 
 ## A port's shape as its declaration numbers it.
@@ -6127,7 +6204,7 @@ no_ports : Ports
 no_ports = {
 	decls: [],
 	ready: |decls| decls,
-	table: |keys, _| put_u32(keys, 0),
+	table: |keys, _| put_section(keys, 5, put_u32([], 0)),
 	check: |_, { req, path, .. }| crash "contract: port \"${port_name(req)}\" is not declared; add its declaration to with_ports (site ${show_path(path)})",
 	write: |tx, _| tx,
 	decode: |_, _| crash "contract: a port result (effect result tag 14 or 15) reached an app that declares no ports",
@@ -7130,40 +7207,117 @@ get_str = |b, at, what| {
 	(Str.from_utf8(bytes) ?? crash "contract: ${what} text is not UTF-8", at + 4 + n)
 }
 
-## Boot bytes: `url:str count:u32 (key:str value:str)* online:u8
-## visible:u8 storage:u8`. Empty bytes mean no boot data (online, visible,
-## storage available). Anything else that does not follow the encoding is
-## a contract error.
-decode_boot : List(U8) -> Boot
-decode_boot = |b| {
-	if b.is_empty() {
-		{ url: "", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }
-	} else {
-		(url, a1) = get_str(b, 0, "boot bytes")
-		n = get_u32(b, a1, "boot bytes").to_u64()
-		var $at = a1 + 4
-		var $kv = []
-		var $i = 0.U64
-		while $i < n {
-			(k, a2) = get_str(b, $at, "boot bytes")
-			(v, a3) = get_str(b, a2, "boot bytes")
-			$kv = $kv.append((k, v))
-			$at = a3
-			$i = $i + 1
-		}
-		flag = |at| match b.get(at) {
-			Ok(0) => Bool.False
-			Ok(1) => Bool.True
-			_ => crash "contract: boot bytes end without online, visible and storage flags (0 or 1)"
-		}
-		online = flag($at)
-		visible = flag($at + 1)
-		storage_available = flag($at + 2)
-		if b.len() != $at + 3 {
-			crash "contract: boot bytes carry ${(b.len() - $at - 3).to_str()} unexpected trailing bytes"
-		}
-		{ url, storage: $kv, online, visible, storage_available }
+## The boot section decoders consume bounded bodies, so a malformed field
+## cannot shift the following section. This table is the extension point for
+## browser facts; every nonempty payload must contain each row, in order.
+boot_sections : List({ tag : U8, name : Str, read : Boot, List(U8) -> Try(Boot, Str) })
+boot_sections = [
+	{
+		tag: 1,
+		name: "location",
+		read: |boot, body| {
+			(url, at) = boot_str(body, 0)?
+			boot_end(body, at)?
+			Ok({ ..boot, url })
+		},
+	},
+	{
+		tag: 2,
+		name: "local-storage",
+		read: |boot, body| {
+			available = boot_flag(body, 0)?
+			count = boot_u32(body, 1)?.to_u64()
+			var $at = 5.U64
+			var $pairs = []
+			var $index = 0.U64
+			while $index < count {
+				(key, next) = boot_str(body, $at)?
+				(value, end) = boot_str(body, next)?
+				$pairs = $pairs.append((key, value))
+				$at = end
+				$index = $index + 1
+			}
+			boot_end(body, $at)?
+			if !available and !$pairs.is_empty() {
+				return Err("pairs while storage is unavailable")
+			}
+			Ok({ ..boot, storage: $pairs, storage_available: available })
+		},
+	},
+	{
+		tag: 3,
+		name: "connectivity",
+		read: |boot, body| {
+			online = boot_flag(body, 0)?
+			boot_end(body, 1)?
+			Ok({ ..boot, online })
+		},
+	},
+	{
+		tag: 4,
+		name: "visibility",
+		read: |boot, body| {
+			visible = boot_flag(body, 0)?
+			boot_end(body, 1)?
+			Ok({ ..boot, visible })
+		},
+	},
+]
+
+## Read a little-endian length without trapping, including at an empty tail.
+boot_u32 : List(U8), U64 -> Try(U32, Str)
+boot_u32 = |bytes, at| match bytes.sublist({ start: at, len: 4 }) {
+	[a, b, c, d] => Ok(a.to_u32() + b.to_u32().shl_wrap(8) + c.to_u32().shl_wrap(16) + d.to_u32().shl_wrap(24))
+	_ => Err("truncated length")
+}
+
+## Text is validated within the section that owns it, never lossily repaired.
+boot_str : List(U8), U64 -> Try((Str, U64), Str)
+boot_str = |bytes, at| {
+	count = boot_u32(bytes, at)?.to_u64()
+	start = at + 4
+	if count > bytes.len() - start {
+		return Err("truncated text")
 	}
+	text = Str.from_utf8(bytes.sublist({ start, len: count })) ? |_| "text is not UTF-8"
+	Ok((text, start + count))
+}
+
+## Browser flags have exactly two encodings.
+boot_flag : List(U8), U64 -> Try(Bool, Str)
+boot_flag = |bytes, at| match bytes.get(at) {
+	Ok(0) => Ok(False)
+	Ok(1) => Ok(True)
+	_ => Err("expected a flag (0 or 1)")
+}
+
+## Each section consumes its body exactly, including its final field.
+boot_end : List(U8), U64 -> Try({}, Str)
+boot_end = |bytes, at| if (at == bytes.len()) Ok({}) else Err("unexpected trailing bytes in body")
+
+## Length-prefix a section shared by boot and declaration encoders.
+put_section : List(U8), U8, List(U8) -> List(U8)
+put_section = |bytes, tag, body| put_u32(bytes.append(tag), body.len().to_u32_wrap()).concat(body)
+
+## Reject values the runtime could not have supplied for this program. The
+## structural parser has no program catalogue, so membership is checked here,
+## before either the store or the view sees boot data.
+check_boot_keys : Boot, List(Str) -> Try({}, Str)
+check_boot_keys = |boot, keys| {
+	for (key, _) in boot.storage {
+		if !keys.contains(key) {
+			return Err("contract: boot section 2 (local-storage) pair for undeclared key \"${key}\"")
+		}
+	}
+	Ok({})
+}
+
+## Mount's narrow boundary turns a structural decoding error into a classified
+## contract fault. Harnesses use `read_boot` to inspect arbitrary bytes safely.
+decode_boot : List(U8) -> Boot
+decode_boot = |bytes| match Core.read_boot(bytes) {
+	Ok(boot) => boot
+	Err(message) => crash message
 }
 
 new_tx : List(U8) -> Tx
@@ -7900,4 +8054,84 @@ expect {
 		settled: Core.settled(absent).is_ok(),
 	}
 	actual == { empty: put_str(prefix.append(1), ""), same: [], named: put_str(prefix.append(1), "name"), absent: prefix.append(0), evaluations: 4, settled: Bool.True }
+}
+
+## Empty boot bytes and a partial Boot record share the public defaults.
+expect {
+	boot = Core.read_boot([])?
+	partial : Boot
+	partial = { url: "/a" }
+	{ boot, partial } == { boot: Boot.{}, partial: Boot.{ url: "/a", online: True, visible: True, storage_available: True, storage: [] } }
+}
+
+## Every accepted nonempty payload is the exact encoding of its boot value.
+expect {
+	boot : Boot
+	boot = { url: "/a?q#b", storage: [("theme", "")], online: False, visible: False }
+	encoded = Core.write_boot(boot)
+	decoded = Core.read_boot(encoded)?
+	{ boot: decoded, bytes: Core.write_boot(decoded) } == { boot, bytes: encoded }
+}
+
+## Sections reject unknown, repeated, out-of-order and missing tags at the
+## section that could not be read, rather than shifting the following fields.
+expect {
+	location = put_section([], 1, put_str([], "/"))
+	local = put_section([], 2, put_u32([1], 0))
+	actual = [Core.read_boot([9]), Core.read_boot(location.concat(location)), Core.read_boot(local), Core.read_boot(location)]
+	actual == [
+		Err("contract: boot section 1 (location) expected tag 1, got 9 (unknown, repeated or out-of-order section)"),
+		Err("contract: boot section 2 (local-storage) expected tag 2, got 1 (unknown, repeated or out-of-order section)"),
+		Err("contract: boot section 1 (location) expected tag 1, got 2 (unknown, repeated or out-of-order section)"),
+		Err("contract: boot section 2 (local-storage) missing section"),
+	]
+}
+
+## Lengths, UTF-8 and trailing bytes are checked inside their owning section.
+expect {
+	actual = [Core.read_boot([1]), Core.read_boot([1, 9, 0, 0, 0]), Core.read_boot(put_section([], 1, put_str([], "/").append(0))), Core.read_boot(put_section([], 1, [1, 0, 0, 0, 255]))]
+	actual == [
+		Err("contract: boot section 1 (location) truncated length"),
+		Err("contract: boot section 1 (location) truncated body"),
+		Err("contract: boot section 1 (location) unexpected trailing bytes in body"),
+		Err("contract: boot section 1 (location) text is not UTF-8"),
+	]
+}
+
+## Unavailable storage cannot carry pairs, and a program rejects undeclared
+## keys before its start callback or view can observe the boot value.
+expect {
+	boot : Boot
+	boot = { storage: [("secret", "value")] }
+	unavailable = Core.write_boot({ ..boot, storage_available: False })
+	{ unavailable: Core.read_boot(unavailable), undeclared: check_boot_keys(boot, []), declared: check_boot_keys(boot, ["secret", "secret"]) } == {
+		unavailable: Err("contract: boot section 2 (local-storage) pairs while storage is unavailable"),
+		undeclared: Err("contract: boot section 2 (local-storage) pair for undeclared key \"secret\""),
+		declared: Ok({}),
+	}
+}
+
+## Declarations contain only their mandatory direction-specific sections:
+## local-storage keys followed by the port table, each length-bounded.
+expect {
+	program = Core.driver(Core.program_boot({ storage_keys: ["theme", "theme"] }, |_| Core.text("")))
+	keys = put_str(put_str(put_u32([], 2), "theme"), "theme")
+	(program.keys)() == put_section(put_section([], 2, keys), 5, put_u32([], 0))
+}
+
+## A storage declaration and every port shape retain their bodies inside
+## their own sections; the driver adds the catalogue after storage keys.
+expect {
+	program = Core.driver(
+		Core.program_boot({ storage_keys: ["saved"] }, |_| Core.text("")).with_ports([
+			Core.port_declaration("command", Command),
+			Core.port_declaration("call", Call),
+			Core.port_declaration("updates", Subscription(Every(3))),
+		]),
+	)
+	keys = put_str(put_u32([], 1), "saved")
+	command = put_u32(put_str(put_u32([], 3), "command").concat([1, 0]), 0)
+	call_bytes = put_u32(put_str(command, "call").concat([2, 0]), 0)
+	ports = put_u32(put_str(call_bytes, "updates").concat([3, 1]), 3)
+	(program.keys)() == put_section(put_section([], 2, keys), 5, ports)
 }

@@ -148,7 +148,7 @@
 // are present for any value other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -1780,6 +1780,13 @@ export class RocEngineRuntime {
     // Manual mode: awaited non-subscription requests in issue order.
     this.issued = [];
     this.win = options.window ?? globalThis.window;
+    const environment = options.environment === undefined ? {} : options.environment;
+    if (typeof environment !== "object" || environment === null || Array.isArray(environment)) throw new Error("options.environment must be an object of readers");
+    for (const key of Object.keys(environment)) {
+      if (!["online", "visible"].includes(key)) throw new Error(`options.environment has an unknown reader "${key}"`);
+      if (typeof environment[key] !== "function") throw new Error(`options.environment.${key} must be a function`);
+    }
+    this.environment = environment;
     // HTTP requests go through options.fetch when one is given (an embedding
     // page's scripted backend; it may answer synchronously), else the
     // global fetch.
@@ -1846,11 +1853,10 @@ export class RocEngineRuntime {
     })();
   }
 
-  // Boot: check the protocol version, read the app's declared storage keys,
-  // stage the URL, their values and the online, visibility and storage
-  // flags, then
-  // mount. A module that speaks another protocol is refused before anything
-  // runs: the runtime throws and never applies a command it cannot read.
+  // Boot: check the protocol version and declaration sections, then read
+  // browser facts through the checked environment seam and stage their
+  // sections. A module that speaks another protocol is refused before
+  // anything runs: the runtime throws and never applies an unreadable command.
   mount() {
     const version = typeof this.x.protocol_version === "function" ? this.x.protocol_version() : 0;
     if (version !== PROTOCOL_VERSION) {
@@ -1858,20 +1864,17 @@ export class RocEngineRuntime {
     }
     // The app's port declarations, checked against options.ports before
     // anything mounts: a mismatch throws, and nothing runs.
-    const boot = this.guard(() => readBootKeys(this.x));
-    if (this.poisoned) return;
+    const boot = readDeclarations(this.x);
     this.bootKeys = boot.keys;
     this.portDecls = new Map(boot.decls.map((d) => [d.name, d]));
     checkPortHandlers(boot.decls, this.ports, this.manual);
+    const bytes = this.bootBytes();
     this.monitor.runtimeMounted();
-    this.guard(() => this.mountInner());
+    this.guard(() => this.mountInner(bytes));
     this.drainQueue();
   }
 
-  mountInner() {
-    this.controlListeners();
-    this.listen("click");
-    const x = this.x;
+  bootBytes() {
     // Read before mount with the port table (see mount()).
     const keys = this.bootKeys;
     // Storage is unavailable when there is none or any read throws; then
@@ -1889,11 +1892,24 @@ export class RocEngineRuntime {
     }
     if (!storageOk) pairs.length = 0;
     const loc = this.win ? this.win.location : null;
-    const url = loc ? loc.pathname + loc.search + loc.hash : "";
-    const parts = [encStr(url), u32(pairs.length)];
-    for (const [k, v] of pairs) parts.push(encStr(k), encStr(v));
-    parts.push(new Uint8Array([this.isOnline() ? 1 : 0, this.isVisible() ? 1 : 0, storageOk ? 1 : 0]));
-    this.stage(concat(parts));
+    const url = loc ? loc.pathname + loc.search + loc.hash : "/";
+    const sections = [
+      { tag: 1, write: () => encStr(url) },
+      { tag: 2, write: () => concat([new Uint8Array([storageOk ? 1 : 0]), u32(pairs.length), ...pairs.flatMap(([k, v]) => [encStr(k), encStr(v)])]) },
+      { tag: 3, write: () => new Uint8Array([this.isOnline() ? 1 : 0]) },
+      { tag: 4, write: () => new Uint8Array([this.isVisible() ? 1 : 0]) },
+    ];
+    return concat(sections.map(({ tag, write }) => {
+      const body = write();
+      return concat([new Uint8Array([tag]), u32(body.length), body]);
+    }));
+  }
+
+  mountInner(bytes) {
+    this.controlListeners();
+    this.listen("click");
+    const x = this.x;
+    this.stage(bytes);
     this.busy = true;
     try {
       x.init();
@@ -2851,7 +2867,7 @@ export class RocEngineRuntime {
         return;
       }
       case "online": {
-        const fn = () => this.result(fx.id, new Uint8Array([RES_ONLINE, this.isOnline() ? 1 : 0]));
+        const fn = () => this.guard(() => this.result(fx.id, new Uint8Array([RES_ONLINE, this.isOnline() ? 1 : 0])));
         w.addEventListener("online", fn);
         w.addEventListener("offline", fn);
         this.live.set(fx.id, {
@@ -2866,7 +2882,7 @@ export class RocEngineRuntime {
       }
       case "visibility": {
         const doc = this.doc;
-        const fn = () => this.result(fx.id, new Uint8Array([RES_VISIBLE, this.isVisible() ? 1 : 0]));
+        const fn = () => this.guard(() => this.result(fx.id, new Uint8Array([RES_VISIBLE, this.isVisible() ? 1 : 0])));
         doc.addEventListener("visibilitychange", fn);
         this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => doc.removeEventListener("visibilitychange", fn) });
         return;
@@ -3722,11 +3738,15 @@ export class RocEngineRuntime {
 
   isOnline() {
     const nav = this.win ? this.win.navigator : null;
-    return nav ? nav.onLine !== false : true;
+    const value = this.environment.online ? this.environment.online() : nav ? nav.onLine !== false : true;
+    if (typeof value !== "boolean") throw new Error("options.environment.online must answer a boolean");
+    return value;
   }
 
   isVisible() {
-    return !this.doc || this.doc.visibilityState !== "hidden";
+    const value = this.environment.visible ? this.environment.visible() : !this.doc || this.doc.visibilityState !== "hidden";
+    if (typeof value !== "boolean") throw new Error("options.environment.visible must answer a boolean");
+    return value;
   }
 
   // Live interval subscriptions with period `ms`, in issue order.
@@ -3782,30 +3802,58 @@ export class RocEngineRuntime {
 // ---------------------------------------------------------------------
 // Port data (see "Ports" above).
 
-// The app's declared storage keys and, after them, its port declarations
-// (design.md, Appendix B): { keys, decls }.
-function readBootKeys(x) {
+// Declaration sections are decoded inside their own lengths. A module that
+// omitted or malformed a section is refused before any app code mounts.
+function readDeclarations(x) {
   x.boot_keys();
-  const u8 = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
-  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
-  const keys = [];
-  let at = 4;
-  for (let i = dv.getUint32(0, true); i > 0; i -= 1) {
-    const n = dv.getUint32(at, true);
-    keys.push(readStr(u8, at + 4, n));
-    at += 4 + n;
+  const bytes = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
+  const out = { keys: [], decls: [] };
+  const sections = [
+    { tag: 2, name: "local-storage", read: (r) => {
+      for (let n = r.u32(); n > 0; n -= 1) out.keys.push(r.str());
+    } },
+    { tag: 5, name: "ports", read: (r) => {
+      const names = new Set();
+      const count = r.u32();
+      if (count > 64) throw new Error("more than 64 ports");
+      for (let n = count; n > 0; n -= 1) {
+        const name = r.str();
+        const kind = r.u8(), delivery = r.u8(), bound = r.u32();
+        if (utf8enc.encode(name).length < 1 || utf8enc.encode(name).length > 128 || names.has(name)) throw new Error("invalid or duplicate port name");
+        if (![1, 2, 3].includes(kind) || (kind !== 3 ? delivery !== 0 || bound !== 0 : delivery === 1 ? bound < 1 || bound > 1024 : delivery !== 2 || bound !== 1)) throw new Error("invalid port shape or delivery");
+        names.add(name);
+        out.decls.push({ name, kind, delivery, bound });
+      }
+    } },
+  ];
+  let at = 0;
+  for (const section of sections) {
+    const prefix = `contract: declaration section ${section.tag} (${section.name})`;
+    try {
+      if (at === bytes.length) throw new Error("is missing");
+      const tag = bytes[at];
+      if (tag !== section.tag) throw new Error(`expected tag ${section.tag}, found ${tag} (unknown, repeated or out of order)`);
+      if (bytes.length - at < 5) throw new Error("has a short header");
+      const len = new DataView(bytes.buffer, bytes.byteOffset + at + 1, 4).getUint32(0, true);
+      at += 5;
+      if (len > bytes.length - at) throw new Error("has a short body");
+      const body = bytes.subarray(at, at + len);
+      let pos = 0;
+      const need = (n) => { if (n > body.length - pos) throw new Error("has a short body"); };
+      const reader = {
+        u8: () => { need(1); return body[pos++]; },
+        u32: () => { need(4); const value = new DataView(body.buffer, body.byteOffset + pos, 4).getUint32(0, true); pos += 4; return value; },
+        str: () => { const n = reader.u32(); need(n); const value = readStr(body, pos, n); pos += n; return value; },
+      };
+      section.read(reader);
+      if (pos !== body.length) throw new Error("has bytes left over");
+      at += len;
+    } catch (error) {
+      throw new Error(`${prefix}: ${error.message}`);
+    }
   }
-  const decls = [];
-  let n = dv.getUint32(at, true);
-  at += 4;
-  for (; n > 0; n -= 1) {
-    const len = dv.getUint32(at, true);
-    const name = readStr(u8, at + 4, len);
-    at += 4 + len;
-    decls.push({ name, kind: u8[at], delivery: u8[at + 1], bound: dv.getUint32(at + 2, true) });
-    at += 6;
-  }
-  return { keys, decls };
+  if (at !== bytes.length) throw new Error(`contract: declaration section ${bytes[at]} (unknown, repeated or out of order): unexpected section`);
+  return out;
 }
 
 const PORT_SHAPES = ["", "command", "call", "subscription"];

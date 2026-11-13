@@ -34,8 +34,8 @@
 //
 // Intervals tick only through `tick-interval` (the runtime's manual
 // intervals), and connectivity and visibility change only through
-// `set-online` and `set-visibility`, which override `navigator.onLine` and
-// `document.visibilityState` and dispatch the browser's own events.
+// `set-online` and `set-visibility`, which update the runtime's environment readers and
+// dispatch the browser's own events only when a value changes.
 //
 // Work assertions read the engine's work counters through the `metric` export
 // (each metric step names the counters it sums; the parser emits them), the
@@ -128,6 +128,7 @@ async function navigating(page, state, act, known = undefined) {
       await new Promise((r) => setTimeout(r, 10));
     }
     await mounted(page);
+    await installEnvironment(page, state);
     state.doc = await docToken(page);
     if (state.doc === before) throw new Error("expected a new document after the navigation");
     state.stub = null;
@@ -647,19 +648,26 @@ const STEPS = {
     // Any other navigation loads a new document: the app mounts afresh.
     return navigating(page, state, () => page.evaluate((url) => location.assign(url), s.text), { cross: true, href: s.text });
   },
-  "set-online": async (page, s) => {
+  "set-online": async (page, s, state) => {
+    const online = s.text === "online";
+    if (state.environment.online === online) return;
+    state.environment.online = online;
+    await installEnvironment(page, state);
     await page.evaluate((on) => {
-      Object.defineProperty(navigator, "onLine", { get: () => on, configurable: true });
+      window.__env.online = on;
       window.dispatchEvent(new Event(on ? "online" : "offline"));
-    }, s.text === "online");
+    }, online);
     return settle(page);
   },
-  "set-visibility": async (page, s) => {
+  "set-visibility": async (page, s, state) => {
+    const visible = s.text === "visible";
+    if (state.environment.visible === visible) return;
+    state.environment.visible = visible;
+    await installEnvironment(page, state);
     await page.evaluate((vis) => {
-      Object.defineProperty(document, "visibilityState", { get: () => vis, configurable: true });
-      Object.defineProperty(document, "hidden", { get: () => vis === "hidden", configurable: true });
+      window.__env.visible = vis;
       document.dispatchEvent(new Event("visibilitychange"));
-    }, s.text);
+    }, visible);
     return settle(page);
   },
   "history-back": (page) => traverse(page, -1, "history-back"),
@@ -704,21 +712,13 @@ const STEPS = {
 
 // One handler per setup form of the grammar (`Scm.setup_forms`).
 const SETUP = {
-  "initial-location": (out, s) => {
-    out.location = s.text;
-  },
-  "local-storage": (out, s) => {
-    out.storage.push([s.key, s.text]);
-  },
-  "local-storage-unavailable": (out) => {
-    out.storageAvailable = false;
-  },
-  "initial-online": (out, s) => {
-    out.online = s.text === "online";
-  },
-  "initial-visibility": (out, s) => {
-    out.visibility = s.text;
-  },
+  // The parser resolves these forms into spec.environment. Keeping their
+  // entries here makes grammar coverage explicit without interpreting twice.
+  "initial-location": () => {},
+  "local-storage": () => {},
+  "local-storage-unavailable": () => {},
+  "initial-online": () => {},
+  "initial-visibility": () => {},
   file: (out, s) => {
     if (out.files.has(s.name)) throw new Error(`file ${JSON.stringify(s.name)} is declared twice`);
     out.files.set(s.name, { type: s.type, text: s.text, count: s.count });
@@ -738,21 +738,53 @@ function checkGrammar(file) {
     for (const f of have) if (!want.includes(f)) out.push(`replay.mjs handles ${kind} form ${f}, which the grammar does not have`);
     return out;
   };
-  const problems = [...diff("step", g.steps, Object.keys(STEPS)), ...diff("setup", g.setup, Object.keys(SETUP))];
+  const problems = [...diff("step", g.steps, Object.keys(STEPS)), ...diff("setup", g.setup, Object.keys(SETUP)), ...diff("environment section", g.environment_sections, Object.keys(ENVIRONMENT_SECTIONS))];
   for (const p of problems) console.error(p);
   console.error(problems.length === 0 ? `== replay.mjs handles all ${g.steps.length} step and ${g.setup.length} setup forms` : `== ${problems.length} grammar mismatches`);
   process.exit(problems.length === 0 ? 0 : 1);
 }
 
 function setupOf(spec) {
-  const out = { location: "/", storage: [], storageAvailable: true, online: true, visibility: "visible", files: new Map(), mount: {} };
+  const out = { environment: spec.environment, files: new Map(), mount: {} };
+  if (!out.environment) throw new Error("the parser did not supply the resolved environment");
   for (const s of spec.setup) {
     const h = SETUP[s.op];
     if (h === undefined) throw new Error(`setup ${s.op} has no handler in this runner`);
     h(out, s);
   }
-  if (!out.storageAvailable && out.storage.length) throw new Error("local-storage seeds storage that local-storage-unavailable says the app cannot read");
   return out;
+}
+
+// Each parser section has one document applier. Storage is seeded on the
+// first document only: the browser preserves the app's subsequent writes and
+// removals across navigation without any marker in app-visible storage.
+const ENVIRONMENT_SECTIONS = {
+  location: () => {},
+  "local-storage": (env, seed) => {
+    if (seed) for (const [key, value] of env.storage) localStorage.setItem(key, value);
+    if (!env.storage_available) {
+      window.__localStorage = localStorage;
+      Object.defineProperty(window, "localStorage", {
+        get: () => { throw new DOMException("The operation is insecure.", "SecurityError"); },
+        configurable: true,
+      });
+    }
+  },
+  connectivity: (env) => { window.__mountOptions.environment.online = () => window.__env.online; },
+  visibility: (env) => { window.__mountOptions.environment.visible = () => window.__env.visible; },
+};
+
+async function installEnvironment(page, state, seed = false) {
+  if (state.environmentScript !== null) await page.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: state.environmentScript });
+  const install = (environment, mount, seed, appliers) => {
+    window.__env = environment;
+    window.__mountOptions = { ...mount, environment: {} };
+    window.__manualFx = true;
+    for (const source of appliers) eval(`(${source})`)(environment, seed);
+  };
+  const args = [state.environment, state.mount, seed, Object.values(ENVIRONMENT_SECTIONS).map(String)];
+  const result = await page.send("Page.addScriptToEvaluateOnNewDocument", { source: `(${install})(...${JSON.stringify(args)})` });
+  state.environmentScript = result.identifier;
 }
 
 // Installed in every document before the app loads: the document token, the
@@ -829,7 +861,7 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/ja
 // e.g. /roc-signals/examples/conduit/), and a directory as index.html.
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
-  const f = u.pathname.endsWith("/") ? files["index.html"] : files[path.basename(u.pathname)];
+  const f = u.pathname.endsWith("/") || path.extname(u.pathname) === "" ? files["index.html"] : files[path.basename(u.pathname)];
   if (!f || !fs.existsSync(f)) {
     res.writeHead(u.pathname === "/favicon.ico" ? 204 : 404);
     res.end();
@@ -860,42 +892,15 @@ for (const spec of specs) {
   try {
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
-    await page.evaluateOnNewDocument(
-      (storage, storageAvailable, online, visibility, mount) => {
-        window.__mountOptions = mount;
-        if (!sessionStorage.getItem("__seeded")) {
-          for (const [k, v] of storage) localStorage.setItem(k, v);
-          sessionStorage.setItem("__seeded", "1");
-        }
-        if (!storageAvailable) {
-          window.__localStorage = localStorage;
-          Object.defineProperty(window, "localStorage", {
-            get: () => {
-              throw new DOMException("The operation is insecure.", "SecurityError");
-            },
-            configurable: true,
-          });
-        }
-        window.__manualFx = true;
-        if (!online) Object.defineProperty(navigator, "onLine", { get: () => false, configurable: true });
-        if (visibility !== "visible") {
-          Object.defineProperty(document, "visibilityState", { get: () => visibility, configurable: true });
-          Object.defineProperty(document, "hidden", { get: () => true, configurable: true });
-        }
-      },
-      setup.storage,
-      setup.storageAvailable,
-      setup.online,
-      setup.visibility,
-      setup.mount,
-    );
+    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null };
+    await installEnvironment(page, state, true);
     await page.evaluateOnNewDocument(install, attrOf.toString());
-    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files };
-    await page.goto(`http://127.0.0.1:${port}${setup.location}`);
+    await page.goto(`http://127.0.0.1:${port}${setup.environment.url}`);
     page.conn.on(page.sessionId, "Page.loadEventFired", () => {
       state.loads += 1;
     });
     await mounted(page);
+    await installEnvironment(page, state);
     state.doc = await docToken(page);
     for (; i < spec.steps.length; i += 1) {
       const s = spec.steps[i];

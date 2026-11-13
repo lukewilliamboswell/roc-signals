@@ -1102,8 +1102,10 @@ Engine := [].{
 	## keys' values (missing keys are absent), whether the browser is online and
 	## the page visible, and whether local storage is available at all. When it is
 	## not, the storage list is empty and `StorageSet`/`StorageRemove` do not
-	## persist, so an app that relies on reloads surviving can say so.
-	Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool, storage_available : Bool }
+	## persist, so an app that relies on reloads surviving can say so. All
+	## fields have defaults: a URL of `/`, empty available storage, online
+	## and visible. Pure tests may name only the facts they need.
+	Boot : Core.Boot
 
 	## The boot value of a declared storage key, or `Missing` if it has none.
 	boot_storage : Boot, Str -> Try(Str, [Missing])
@@ -1245,18 +1247,23 @@ Engine := [].{
 	program : (() -> Elem(Root)) -> Program
 	program = |view| Core.program(view)
 
+	## Declare values the app reads at boot. Every field has a default, so
+	## callers name only what differs. Request catalogues instead use
+	## `with_ports` and `with_workers` on the resulting program.
+	ProgramProps : Core.ProgramProps
+
 	## The [Program] for an app that reads boot data: the host reads
 	## `storage_keys` from local storage before mount, and `view` receives them in
 	## the [Boot] with the URL and connectivity. `max_inflight` bounds the awaited
 	## requests in flight at once.
-	program_boot : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Elem(Root)) -> Program
+	program_boot : ProgramProps, (Boot -> Elem(Root)) -> Program
 	program_boot = |cfg, view| Core.program_boot(cfg, view)
 
 	## The [Program] for an app with a [Store]: as `program_boot`, with the
 	## store `start` gives for the boot data held at the root, where every
 	## context of `view` reaches its cells. `start` is usually the app's store
 	## with the cells that depend on the boot data set (`Store.with_initial`).
-	program_store : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Store(st, h)), (Boot -> Elem(StoreRoot(st))) -> Program
+	program_store : ProgramProps, (Boot -> Store(st, h)), (Boot -> Elem(StoreRoot(st))) -> Program
 	program_store = |cfg, start, view| Core.program_store(cfg, |boot| start(boot).s.initial(), view)
 }
 
