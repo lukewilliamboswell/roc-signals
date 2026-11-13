@@ -5732,10 +5732,7 @@ class PictureEnvelopeError extends Error {
   constructor(rule) { super(`picture envelope: ${rule}`); this.rule = rule; }
 }
 
-// Read one bounded deployment envelope before any DOM allocation or claim
-// execution. A classified malformed result is separate from a picture verdict;
-// callers still measure actual names, text boundaries and hashes independently.
-export function decodePictureEnvelope(bytes, limits = {}) {
+function pictureEnvelopeLimits(limits) {
   const ceiling = 16 * 1024 * 1024 - 37;
   const settings = { maxBytes: ceiling, maxNodes: 262144, maxDepth: 1024 };
   if (!limits || typeof limits !== "object" || Array.isArray(limits)) throw new PictureEnvelopeError("invalid limits");
@@ -5745,6 +5742,14 @@ export function decodePictureEnvelope(bytes, limits = {}) {
     if (!Number.isInteger(value) || value < 0 || value > maximum) throw new PictureEnvelopeError(`invalid limit ${key}`);
     settings[key] = value;
   }
+  return settings;
+}
+
+// Read one bounded deployment envelope before any DOM allocation or claim
+// execution. A classified malformed result is separate from a picture verdict;
+// callers still measure actual names, text boundaries and hashes independently.
+export function decodePictureEnvelope(bytes, limits = {}) {
+  const settings = pictureEnvelopeLimits(limits);
   const fail = rule => { throw new PictureEnvelopeError(rule); };
   if (!(bytes instanceof Uint8Array) || bytes.length > settings.maxBytes) fail("byte limit");
   let view;
@@ -6135,6 +6140,105 @@ export async function measurePicture(root, envelopeBytes, limits = {}) {
     }
   }, maximum);
   return { envelope, digest: await pictureSha256(canonical), physical: nodes, containers: targets, canonical_bytes: canonical.length };
+}
+
+class PicturePreparationError extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+
+function picturePreparationLimits(limits) {
+  if (!limits || typeof limits !== "object" || Array.isArray(limits)) throw new PicturePreparationError("limits", "picture preparation limits must be a record");
+  const measurement = {};
+  for (const key of Object.keys(limits)) {
+    if (key === "max_descriptor_fragments") continue;
+    if (!["maxBytes", "maxNodes", "maxDepth", "max_measurement_bytes"].includes(key)) throw new PicturePreparationError("limits", `unknown picture preparation limit ${key}`);
+    measurement[key] = limits[key];
+  }
+  const envelope = {};
+  for (const key of ["maxBytes", "maxNodes", "maxDepth"]) if (Object.hasOwn(measurement, key)) envelope[key] = measurement[key];
+  const checked = pictureEnvelopeLimits(envelope);
+  pictureMeasurementLimit(measurement, true);
+  const fragments = Object.hasOwn(limits, "max_descriptor_fragments") ? limits.max_descriptor_fragments : 262144;
+  if (!Number.isInteger(fragments) || fragments < 0 || fragments > 262144) throw new PicturePreparationError("limits", "invalid max_descriptor_fragments");
+  return { measurement, maximumBytes: checked.maxBytes, maximumFragments: fragments };
+}
+
+function pictureDescriptorBytes(descriptor, maximumBytes, maximumFragments) {
+  const children = descriptor.childNodes, maximumText = 4 * maximumBytes + 2;
+  if (children.length > maximumFragments) throw new PicturePreparationError("descriptor_fragments", "picture descriptor has too many character-data fragments");
+  let length = 0;
+  const pieces = [];
+  for (let i = 0; i < children.length; i++) {
+    const node = children[i];
+    if (node.nodeType !== 3 && node.nodeType !== 4) throw new PicturePreparationError("descriptor_children", "picture descriptor requires direct character-data children");
+    const piece = node.data;
+    if (typeof piece !== "string") throw new PicturePreparationError("descriptor_children", "picture descriptor has invalid character data");
+    if (piece.length > maximumText - length) throw new PicturePreparationError("descriptor_size", "picture descriptor exceeds its text bound");
+    length += piece.length; pieces.push(piece);
+  }
+  // Count possible flat-array elements before JSON.parse can allocate a number
+  // array. The standard parser still decides number syntax and parsed values.
+  let opened = false, closed = false, commas = 0, number = false;
+  for (const piece of pieces) for (let i = 0; i < piece.length; i++) {
+    const code = piece.charCodeAt(i);
+    if (code > 127) throw new PicturePreparationError("ascii", "picture descriptor must contain ASCII JSON");
+    if (code === 32 || code === 9 || code === 10 || code === 13) continue;
+    if (!opened) {
+      if (code !== 91) throw new PicturePreparationError("json", "picture descriptor must be a JSON byte array");
+      opened = true; continue;
+    }
+    if (closed || code === 91) throw new PicturePreparationError("json", "picture descriptor must be one flat JSON byte array");
+    if (code === 93) { closed = true; continue; }
+    if (code === 44) {
+      commas++;
+      if (commas >= maximumBytes) throw new PicturePreparationError("byte_count", "picture descriptor exceeds its byte count");
+    } else if ((code >= 48 && code <= 57) || code === 101 || code === 69 || code === 43 || code === 45 || code === 46) number = true;
+    else throw new PicturePreparationError("json", "picture descriptor contains a non-number item");
+  }
+  if (!opened || !closed) throw new PicturePreparationError("json", "picture descriptor is not a complete JSON array");
+  if (number && commas + 1 > maximumBytes) throw new PicturePreparationError("byte_count", "picture descriptor exceeds its byte count");
+  let values;
+  try { values = JSON.parse(pieces.join("")); } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw new PicturePreparationError("json", "picture descriptor has invalid JSON syntax");
+  }
+  if (!Array.isArray(values) || values.length > maximumBytes) throw new PicturePreparationError("byte_count", "picture descriptor exceeds its byte count");
+  for (const value of values) if (!Number.isInteger(value) || value < 0 || value > 255) throw new PicturePreparationError("byte_value", "picture descriptor items must be integer bytes");
+  const bytes = new Uint8Array(values.length);
+  for (let i = 0; i < values.length; i++) bytes[i] = values[i];
+  return bytes;
+}
+
+// The deployment associates its descriptor by one explicit sibling edge. This
+// helper neither discovers app roles by spelling nor changes DOM or a verdict.
+// Only the marker 19:1 with the exact HTML script/type/role sibling supplies facts;
+// an absent or empty marker supplies no metadata. Descriptor character-data
+// fragments have an independent 262144 default/ceiling, with a lower deployment
+// cap allowed. Text is bounded by four times maxBytes plus two before joining.
+// Malformed metadata returns Absent plus a bounded diagnostic; invalid caller
+// limits throw. Temporary descriptor/measurement references are released by the
+// later mount/fault owner, never retained in a registry here.
+export async function preparePicture(root, limits = {}) {
+  const checked = picturePreparationLimits(limits);
+  let descriptor = null;
+  const absent = diagnostic => ({ picture: null, descriptor, measurement: null, diagnostic });
+  if (root?.nodeType !== 1) return absent({ code: "root", message: "picture root must be an Element" });
+  const marker = root.getAttributeNS(null, PICTURE_MARKER);
+  if (marker === null || marker === "") return absent(null);
+  if (marker !== "19:1") return absent({ code: "marker", message: "picture marker must be 19:1" });
+  const candidate = root.nextElementSibling;
+  if (candidate?.nodeType !== 1 || candidate.namespaceURI !== HTML_NS || candidate.localName !== "script" || candidate.getAttributeNS(null, "type") !== "application/json" || candidate.getAttributeNS(null, "data-roc-picture-envelope") !== "1") return absent({ code: "locator", message: "picture descriptor must be the explicitly marked next HTML script sibling" });
+  descriptor = candidate;
+  try {
+    const envelope = pictureDescriptorBytes(descriptor, checked.maximumBytes, checked.maximumFragments);
+    const measurement = await measurePicture(root, envelope, checked.measurement);
+    return { picture: { measured: measurement.digest, envelope }, descriptor, measurement, diagnostic: null };
+  } catch (error) {
+    if (error instanceof PicturePreparationError) return absent({ code: error.code, message: error.message });
+    if (error instanceof PictureEnvelopeError) return absent({ code: "binary", message: error.message });
+    if (error instanceof PictureMeasurementError) return absent({ code: "measurement", message: error.message });
+    throw error;
+  }
 }
 
 // Read one bounded protocol-facts item. Field order, lengths and uniqueness are
