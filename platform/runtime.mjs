@@ -289,6 +289,21 @@ function readStr(u8, at, n) {
   return utf8.decode(u8.subarray(at, at + n));
 }
 
+// Preflight retains only the declared template shape, never DOM nodes. Both
+// shape reading and construction use templateNode's one wire grammar.
+function walkShape(root, path, protocol) {
+  let node = root;
+  for (let i = 0; i < path.length; i += 2) {
+    const container = protocol.CONTAINERS[path[i]];
+    if (!container) throw new Error(`unknown hole container ${path[i]}`);
+    const children = container === CONTAINER_APPLIERS.TEMPLATE_CONTENT ? node.content : node.children;
+    if (!children) throw new Error("template path requires the declared container");
+    node = children[path[i + 1]];
+    if (!node) throw new Error("template path does not address a child");
+  }
+  return node;
+}
+
 function walk(root, path, protocol) {
   let node = root;
   for (let i = 0; i < path.length; i += 2) {
@@ -411,21 +426,35 @@ function readContainer(reader, element) {
 
 const TEMPLATE_NODE_APPLIERS = {
   ELEMENT(reader) {
-    const element = createNamedElement(reader.doc, expandedName(reader, true));
-    const { code, target } = readContainer(reader, element);
-    if (target !== element) reader.contentOwners.push(reader.path.slice());
+    const name = expandedName(reader, true);
+    const element = reader.dry
+      ? { children: [], content: name.namespace === HTML_NS && name.local === "template" ? [] : null }
+      : createNamedElement(reader.doc, name);
+    let code, target;
+    if (reader.dry) {
+      code = reader.u8[reader.at++];
+      const container = reader.protocol.CONTAINERS[code];
+      if (!container) throw new Error(`unknown child container ${code}`);
+      target = container === CONTAINER_APPLIERS.TEMPLATE_CONTENT ? element.content : element.children;
+      if (!target) throw new Error("template content requires an HTML template");
+    } else ({ code, target } = readContainer(reader, element));
+    if (reader.dry ? target === element.content : target !== element) reader.contentOwners.push(reader.path.slice());
     const attributes = reader.u8[reader.at++];
-    for (let index = 0; index < attributes; index += 1) setAttr(element, expandedName(reader, false), nameString(reader));
+    for (let index = 0; index < attributes; index += 1) {
+      const attribute = expandedName(reader, false), value = nameString(reader);
+      if (!reader.dry) setAttr(element, attribute, value);
+    }
     const children = reader.u8[reader.at++];
     for (let index = 0; index < children; index += 1) {
       reader.path.push(code, index);
-      target.appendChild(templateNode(reader));
+      const child = templateNode(reader);
+      if (reader.dry) target.push(child); else target.appendChild(child);
       reader.path.length -= 2;
     }
     return element;
   },
-  TEXT: reader => reader.doc.createTextNode(nameString(reader)),
-  COMMENT: reader => reader.doc.createComment(nameString(reader)),
+  TEXT(reader) { const value = nameString(reader); return reader.dry ? {} : reader.doc.createTextNode(value); },
+  COMMENT(reader) { const value = nameString(reader); return reader.dry ? {} : reader.doc.createComment(value); },
 };
 
 function templateNode(reader) {
@@ -522,6 +551,12 @@ function applyNodeCommand(reader) {
   if (element && el.namespaceURI === HTML_NS && el.localName === "option") settleSelect(el.parentNode);
   this.statics[node] = el;
   return reader.at;
+}
+
+// The pure first-batch pass consumes the same effect operands without
+// retaining work. Ordinary application preserves the stream's effect order.
+function queueEffect(runtime, reader, effect) {
+  if (reader.mode !== "preflight") runtime.fxOut.push(effect);
 }
 
 const COMMAND_APPLIERS = {
@@ -722,18 +757,18 @@ const COMMAND_APPLIERS = {
       const body = str();
       const timeout = dv.getUint32(at, true);
       at += 4;
-      this.fxOut.push({ op: "http", id, method, url, headers, body, timeout, ...httpOptions() });
+      queueEffect(this, reader, { op: "http", id, method, url, headers, body, timeout, ...httpOptions() });
     } else if (kind === 2) {
-      this.fxOut.push({ op: "get", id, key: str() });
+      queueEffect(this, reader, { op: "get", id, key: str() });
     } else if (kind === 3 || kind === 4) {
-      this.fxOut.push({ op: kind === 3 ? "timer" : "interval", id, ms: dv.getUint32(at, true) });
+      queueEffect(this, reader, { op: kind === 3 ? "timer" : "interval", id, ms: dv.getUint32(at, true) });
       at += 4;
     } else if (kind === 5) {
-      this.fxOut.push({ op: "popstate", id });
+      queueEffect(this, reader, { op: "popstate", id });
     } else if (kind === 6) {
-      this.fxOut.push({ op: "online", id });
+      queueEffect(this, reader, { op: "online", id });
     } else if (kind === 7) {
-      this.fxOut.push({ op: "visibility", id });
+      queueEffect(this, reader, { op: "visibility", id });
     } else if (kind === 8) {
       const task = str();
       const n = dv.getUint32(at, true);
@@ -752,8 +787,8 @@ const COMMAND_APPLIERS = {
         const token = tokenAt(dv, 0, at);
         const start = tokenAt(dv, 0, at + 8);
         const len = tokenAt(dv, 0, at + 16);
-        const file = this.files.get(token);
-        if (file === undefined) throw new Error(`a work request names file handle ${token}, which this runtime does not hold`);
+        const file = reader.mode === "preflight" ? undefined : this.files.get(token);
+        if (reader.mode !== "preflight" && file === undefined) throw new Error(`a work request names file handle ${token}, which this runtime does not hold`);
         files.push(file);
         ranges.push(token, start, len);
         at += 24;
@@ -774,12 +809,12 @@ const COMMAND_APPLIERS = {
         if (initLen > input.length || initFiles > refs) throw new Error(`malformed preparation operands for worker task ${task}`);
         prep = { name, initLen, initFiles, ranges: ranges.slice(0, 3 * initFiles) };
       } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0 or 1`);
-      this.fxOut.push({ op: "work", id, task, input, files, timeout, finish: cancel === 2, prep });
+      queueEffect(this, reader, { op: "work", id, task, input, files, timeout, finish: cancel === 2, prep });
     } else if (kind === 11) {
       const mode = u8[at];
       if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
       const maxBytes = tokenAt(dv, 0, at + 25);
-      this.fxOut.push({ op: "read", id, mode, maxBytes, ...this.fileRef(dv, at + 1) });
+      queueEffect(this, reader, { op: "read", id, mode, maxBytes, ...this.fileRef(dv, at + 1, reader.mode === "preflight") });
       at += 33;
     } else if (kind === 12) {
       const method = str();
@@ -788,30 +823,30 @@ const COMMAND_APPLIERS = {
       let n = dv.getUint32(at, true);
       at += 4;
       for (; n > 0; n -= 1) headers.push([str(), str()]);
-      const ref = this.fileRef(dv, at);
+      const ref = this.fileRef(dv, at, reader.mode === "preflight");
       const timeout = dv.getUint32(at + 24, true);
       at += 28;
-      this.fxOut.push({ op: "upload", id, method, url, headers, ...ref, timeout, ...httpOptions() });
+      queueEffect(this, reader, { op: "upload", id, method, url, headers, ...ref, timeout, ...httpOptions() });
     } else if (kind === 13) {
       const algorithm = u8[at];
       if (algorithm !== 1) throw new Error(`unknown digest algorithm ${algorithm}`);
-      this.fxOut.push({ op: "digest", id, algorithm, ...this.fileRef(dv, at + 1) });
+      queueEffect(this, reader, { op: "digest", id, algorithm, ...this.fileRef(dv, at + 1, reader.mode === "preflight") });
       at += 25;
     } else if (kind === 14) {
-      this.fxOut.push({ op: "url", id, ...this.fileRef(dv, at) });
+      queueEffect(this, reader, { op: "url", id, ...this.fileRef(dv, at, reader.mode === "preflight") });
       at += 24;
     } else if (kind === 9) {
       const port = str();
-      const m = this.readPortMessage(u8, dv, at);
+      const m = this.readPortMessage(u8, dv, at, reader.mode === "preflight");
       at = m.at;
       const timeout = dv.getUint32(at, true);
       at += 4;
-      this.fxOut.push({ op: "portcall", id, port, msg: m.msg, timeout });
+      queueEffect(this, reader, { op: "portcall", id, port, msg: m.msg, timeout });
     } else if (kind === 10) {
       const port = str();
-      const m = this.readPortMessage(u8, dv, at);
+      const m = this.readPortMessage(u8, dv, at, reader.mode === "preflight");
       at = m.at;
-      this.fxOut.push({ op: "portsub", id, port, msg: m.msg });
+      queueEffect(this, reader, { op: "portsub", id, port, msg: m.msg });
     } else if (kind === 15) {
       const method = str();
       const url = str();
@@ -821,19 +856,19 @@ const COMMAND_APPLIERS = {
       for (; n > 0; n -= 1) headers.push([str(), str()]);
       const timeout = dv.getUint32(at, true);
       at += 4;
-      this.fxOut.push({ op: "fetch", id, method, url, headers, body: "", timeout, ...httpOptions() });
+      queueEffect(this, reader, { op: "fetch", id, method, url, headers, body: "", timeout, ...httpOptions() });
     } else if (kind === 16) {
-      this.fxOut.push({ op: "media", id, query: str() });
+      queueEffect(this, reader, { op: "media", id, query: str() });
     } else if (kind === 17) {
-      this.fxOut.push({ op: "sessionget", id, key: str() });
+      queueEffect(this, reader, { op: "sessionget", id, key: str() });
     } else if (kind === 18) {
-      this.fxOut.push({ op: "storagechanges", id, key: str() });
+      queueEffect(this, reader, { op: "storagechanges", id, key: str() });
     } else if (kind === 19) {
       const text = str(), htmlFlag = u8[at++];
       if (htmlFlag !== 0 && htmlFlag !== 1) throw new Error(`invalid clipboard HTML flag ${htmlFlag}`);
-      this.fxOut.push({ op: "clipboard", id, text, html: htmlFlag ? str() : null });
+      queueEffect(this, reader, { op: "clipboard", id, text, html: htmlFlag ? str() : null });
     } else if (kind === 20) {
-      this.fxOut.push({ op: "storagefailures", id });
+      queueEffect(this, reader, { op: "storagefailures", id });
     } else throw new Error(`unknown effect kind ${kind}`);
     return at;
   },
@@ -842,17 +877,17 @@ const COMMAND_APPLIERS = {
     let at = reader.at;
     // Resolved now, while a handle the batch released still names its
     // file; the download is made after the batch.
-    const ref = this.fileRef(dv, at);
+    const ref = this.fileRef(dv, at, reader.mode === "preflight");
     const n = dv.getUint32(at + 24, true);
     const name = readStr(u8, at + 28, n);
     at += 28 + n;
-    this.fxOut.push({ op: "save", name, blob: ref.blob, type: ref.file.type });
+    queueEffect(this, reader, { op: "save", name, blob: ref.blob, type: ref.file?.type });
     return at;
   },
   CANCEL(reader) {
     const { dv } = reader;
     let at = reader.at;
-    this.fxOut.push({ op: "cancel", id: dv.getUint32(at, true) });
+    queueEffect(this, reader, { op: "cancel", id: dv.getUint32(at, true) });
     at += 4;
     return at;
   },
@@ -861,7 +896,7 @@ const COMMAND_APPLIERS = {
     let at = reader.at;
     const mode = u8[at];
     const n = dv.getUint32(at + 1, true);
-    this.fxOut.push({ op: mode === 1 ? "push" : "replace", url: readStr(u8, at + 5, n) });
+    queueEffect(this, reader, { op: mode === 1 ? "push" : "replace", url: readStr(u8, at + 5, n) });
     at += 5 + n;
     return at;
   },
@@ -870,7 +905,7 @@ const COMMAND_APPLIERS = {
     let at = reader.at;
     const on = u8[at++];
     if (on !== 0 && on !== 1) throw new Error(`invalid leave guard flag ${on}`);
-    this.fxOut.push({ op: "guardleave", on: on === 1 });
+    queueEffect(this, reader, { op: "guardleave", on: on === 1 });
     return at;
   },
   STORAGE(reader) {
@@ -883,9 +918,9 @@ const COMMAND_APPLIERS = {
     at += 5 + n;
     if (mode === 1 || mode === 3) {
       const m = dv.getUint32(at, true);
-      this.fxOut.push({ op: "set", session: mode === 3, key, value: readStr(u8, at + 4, m) });
+      queueEffect(this, reader, { op: "set", session: mode === 3, key, value: readStr(u8, at + 4, m) });
       at += 4 + m;
-    } else this.fxOut.push({ op: "remove", session: mode === 4, key });
+    } else queueEffect(this, reader, { op: "remove", session: mode === 4, key });
     return at;
   },
   REF(reader) {
@@ -913,14 +948,14 @@ const COMMAND_APPLIERS = {
       if (behavior > 2 || behavior === undefined) throw new Error("invalid scroll-to behavior");
       command.top = top; command.left = left; command.behavior = ["auto", "instant", "smooth"][behavior];
     }
-    this.fxOut.push(command);
+    queueEffect(this, reader, command);
     return at;
   },
   TITLE(reader) {
     const { dv, u8 } = reader;
     let at = reader.at;
     const n = dv.getUint32(at, true);
-    this.fxOut.push({ op: "title", text: readStr(u8, at + 4, n) });
+    queueEffect(this, reader, { op: "title", text: readStr(u8, at + 4, n) });
     at += 4 + n;
     return at;
   },
@@ -929,9 +964,9 @@ const COMMAND_APPLIERS = {
     let at = reader.at;
     const n = dv.getUint32(at, true);
     const port = readStr(u8, at + 4, n);
-    const m = this.readPortMessage(u8, dv, at + 4 + n);
+    const m = this.readPortMessage(u8, dv, at + 4 + n, reader.mode === "preflight");
     at = m.at;
-    this.fxOut.push({ op: "port", port, msg: m.msg });
+    queueEffect(this, reader, { op: "port", port, msg: m.msg });
     return at;
   },
   TRANSITION(reader) {
@@ -2684,7 +2719,17 @@ function markedPicture(root) {
 }
 
 function holdPicture(root) {
+  const hold = { inert: root.getAttribute("inert") };
   root.setAttribute("inert", "");
+  return hold;
+}
+
+function restorePictureHold(runtime) {
+  const hold = runtime.pictureHold;
+  if (hold === null) return;
+  runtime.pictureHold = null;
+  if (hold.inert === null) runtime.root.removeAttribute("inert");
+  else runtime.root.setAttribute("inert", hold.inert);
 }
 
 function failPicture(root) {
@@ -2696,7 +2741,7 @@ function finishPicture(runtime) {
   runtime.picturePending = false;
   runtime.root.removeAttribute(PICTURE_MARKER);
   runtime.root.removeAttribute(PICTURE_FAILED);
-  runtime.root.removeAttribute("inert");
+  restorePictureHold(runtime);
 }
 
 // A module can fail before there is a runtime whose containment path can
@@ -2711,12 +2756,12 @@ function pictureLoadFault(root, error, onFault) {
 }
 
 export class RocEngineRuntime {
-  constructor(exports, root, options = {}) {
+  constructor(exports, root, options = {}, pictureHold = null) {
     this.x = exports;
     this.root = root;
     this.pictureManaged = markedPicture(root);
     this.picturePending = this.pictureManaged;
-    if (this.picturePending) holdPicture(root);
+    this.pictureHold = this.picturePending ? pictureHold ?? holdPicture(root) : null;
     this.doc = options.document ?? globalThis.document;
     this.statics = [];
     this.sites = [];
@@ -3031,13 +3076,6 @@ export class RocEngineRuntime {
     this.busy = true;
     try {
       x.init();
-      if (this.picturePending) {
-        const length = x.cmd_len();
-        if (length && new Uint8Array(x.memory.buffer, x.cmd_ptr(), length)[0] !== 0) throw new Error("picture mount batch must be unmarked");
-        // Init has succeeded. Replacement and its first batch are synchronous;
-        // the previous picture remains available if anything before init fails.
-        this.root.replaceChildren();
-      }
       this.apply();
     } finally {
       this.busy = this.pendingTransition !== null;
@@ -3134,7 +3172,7 @@ export class RocEngineRuntime {
       this.picturePending = false;
       this.root.removeAttribute(PICTURE_MARKER);
       this.root.removeAttribute(PICTURE_FAILED);
-      this.root.removeAttribute("inert");
+      restorePictureHold(this);
     }
     this.root.textContent = "";
     this.statics = [];
@@ -4017,7 +4055,7 @@ export class RocEngineRuntime {
     }
   }
 
-  parseTemplate(u8, dv, start, len) {
+  parseTemplate(u8, dv, start, len, dry = false) {
     let at = start;
     const doc = this.doc;
     const str = () => {
@@ -4027,7 +4065,7 @@ export class RocEngineRuntime {
       at += n;
       return s;
     };
-    const reader = { u8, dv, at, doc, protocol: this.protocol, path: [], contentOwners: [] };
+    const reader = { u8, dv, at, doc, protocol: this.protocol, path: [], contentOwners: [], dry };
     const root = templateNode(reader);
     at = reader.at;
     const holes = [];
@@ -4037,7 +4075,7 @@ export class RocEngineRuntime {
       const depth = u8[at++];
       const path = Array.from(u8.subarray(at, at + depth * 2));
       at += depth * 2;
-      walk(root, path, this.protocol);
+      if (dry) walkShape(root, path, this.protocol); else walk(root, path, this.protocol);
       const hole = { kind, path, name: null, handler: 0, prop: 0, entry: null };
       if (kind === HOLE_ATTR) { reader.at = at; hole.name = expandedName(reader, false); at = reader.at; }
       else if (kind === HOLE_CLICK) {
@@ -4047,7 +4085,7 @@ export class RocEngineRuntime {
         const policies = dv.getUint32(at, true);
         at += 4;
         hole.entry = handlerEntry(hole.handler, payloadKind, policies, hole.name, this.protocol);
-        if (payloadKind !== this.protocol.KIND_SIZE && payloadKind !== this.protocol.KIND_SEEN) this.listen(hole.name);
+        if (!dry && payloadKind !== this.protocol.KIND_SIZE && payloadKind !== this.protocol.KIND_SEEN) this.listen(hole.name);
       } else if (kind === HOLE_PROP) {
         hole.prop = u8[at++];
         if (!this.protocol.PROPS[hole.prop]) throw new Error(`unknown element property ${hole.prop}`);
@@ -4100,9 +4138,29 @@ export class RocEngineRuntime {
 
   apply() {
     const len = this.x.cmd_len();
-    if (!len) { finishPicture(this); this.releaseFiles(); return 0; }
+    if (!len) {
+      if (this.picturePending) this.root.replaceChildren();
+      finishPicture(this); this.releaseFiles(); return 0;
+    }
     const flags = new Uint8Array(this.x.memory.buffer, this.x.cmd_ptr(), len)[0];
     if (flags !== 0 && flags !== 1) throw new Error(`invalid command batch flags ${flags}`);
+    if (this.picturePending) {
+      if (flags !== 0) throw new Error("picture mount batch must be unmarked");
+      const batch = { definitions: new Map() };
+      try {
+        // The shared wire reader builds only temporary template shapes. DOM
+        // factories and effect registration run once, after framing succeeds.
+        this.applyBatch("preflight", batch);
+        this.root.replaceChildren();
+        this.applyBatch("normal", batch);
+        finishPicture(this);
+        this.flushEffects();
+        if (!this.poisoned && !this.ending) this.releaseFiles();
+        return len;
+      } finally {
+        batch.definitions.clear();
+      }
+    }
     const animate = flags === 1 && this.viewTransitions === "document" && this.doc.visibilityState !== "hidden" && typeof this.doc.startViewTransition === "function";
     if (!animate) {
       const batch = { types: null };
@@ -4202,8 +4260,9 @@ export class RocEngineRuntime {
     const flags = u8[0];
     if (flags !== 0 && flags !== 1) throw new Error(`invalid command batch flags ${flags}`);
     let marked = false;
-    const shadow = mode === "early" ? new Map() : null;
-    const skipString = () => { const n = dv.getUint32(at, true); at += 4 + n; };
+    const scanning = mode === "early" || mode === "preflight";
+    const shadow = scanning ? new Map() : null;
+    const skipString = () => { const n = dv.getUint32(at, true); if (mode === "preflight") readStr(u8, at + 4, n); at += 4 + n; };
     const skipAttribute = () => { const present = u8[at++]; if (present === 1) skipString(); else if (present !== 0) throw new Error(`invalid attribute presence ${present}`); };
     // One reader per batch; no implementation retains it or its memory views.
     const reader = { u8, dv, doc, protocol: this.protocol, mode, batch, len, flags, at: 1, op: 0, offset: 0, marked: false };
@@ -4220,12 +4279,12 @@ export class RocEngineRuntime {
       if (mode === "update" && batch.spans.has(offset)) {
         at = batch.spans.get(offset); continue;
       }
-      if (mode === "early") {
+      if (scanning) {
         let skipped = true;
         switch (op) {
           case this.protocol.OP_TEMPLATE: {
             const site = dv.getUint32(at, true), n = dv.getUint32(at + 4, true);
-            const template = this.parseTemplate(u8, dv, at + 8, n);
+            const template = this.parseTemplate(u8, dv, at + 8, n, mode === "preflight");
             shadow.set(site, template); batch.definitions.set(offset, template); at += 8 + n; break;
           }
           case this.protocol.OP_INST: {
@@ -4240,7 +4299,9 @@ export class RocEngineRuntime {
             break;
           }
           case this.protocol.OP_HATTR: at += 5; skipAttribute(); break;
-          case this.protocol.OP_TEXT: case this.protocol.OP_HPROP: case this.protocol.OP_PROP: at += 5; skipString(); break;
+          case this.protocol.OP_TEXT: case this.protocol.OP_HPROP: case this.protocol.OP_PROP:
+            if (mode === "preflight" && op === this.protocol.OP_PROP && !this.protocol.PROPS[u8[at + 4]]) throw new Error(`unknown element property ${u8[at + 4]}`);
+            at += 5; skipString(); break;
           case this.protocol.OP_MOVE: case this.protocol.OP_CLEAR: at += 8; break;
           case this.protocol.OP_RELEASE: case this.protocol.OP_REMOVE: at += 4; break;
           case this.protocol.OP_ELEM: {
@@ -4254,7 +4315,11 @@ export class RocEngineRuntime {
           }
           case this.protocol.OP_TEXTNODE: case this.protocol.OP_COMMENT: at += 12; skipString(); break;
           case this.protocol.OP_ATTR: at += 4; reader.at = at; expandedName(reader, false); at = reader.at; skipAttribute(); break;
-          case this.protocol.OP_LISTEN: { const n = dv.getUint32(at + 8, true); at += 17 + n; break; }
+          case this.protocol.OP_LISTEN: {
+            const n = dv.getUint32(at + 8, true);
+            if (mode === "preflight") handlerEntry(dv.getUint32(at + 4, true), u8[at + 12 + n], dv.getUint32(at + 13 + n, true), readStr(u8, at + 12, n), this.protocol);
+            at += 17 + n; break;
+          }
           case this.protocol.OP_SETTEXT: at += 4; skipString(); break;
           case this.protocol.OP_REF: {
             const kind = u8[at]; at += 5;
@@ -4295,7 +4360,9 @@ export class RocEngineRuntime {
   // browser's `File`, the range, and the range as a Blob of the file's type.
   // The request holds them, so the file outlives its handle until the
   // request is answered.
-  fileRef(dv, at) {
+  // Preflight checks the range's framing without resolving a browser file.
+  fileRef(dv, at, dry = false) {
+    if (dry) { dv.getBigUint64(at + 16, true); return {}; }
     const token = tokenAt(dv, 0, at);
     const start = tokenAt(dv, 0, at + 8);
     const len = tokenAt(dv, 0, at + 16);
@@ -4926,7 +4993,7 @@ export class RocEngineRuntime {
   // copied out of linear memory (it may move before the handler runs) and
   // the files resolved now, while the handles the batch released still name
   // their files.
-  readPortMessage(u8, dv, at0) {
+  readPortMessage(u8, dv, at0, dry = false) {
     let at = at0;
     const n = dv.getUint32(at, true);
     const json = readStr(u8, at + 4, n);
@@ -4946,9 +5013,11 @@ export class RocEngineRuntime {
       const token = tokenAt(dv, 0, at);
       const start = tokenAt(dv, 0, at + 8);
       const len = tokenAt(dv, 0, at + 16);
-      const file = this.files.get(token);
-      if (file === undefined) throw new Error(`a port message names file handle ${token}, which this runtime does not hold`);
-      files.push(start === 0 && len === file.size ? file : new File([file.slice(start, start + len)], file.name ?? "", { type: file.type }));
+      if (!dry) {
+        const file = this.files.get(token);
+        if (file === undefined) throw new Error(`a port message names file handle ${token}, which this runtime does not hold`);
+        files.push(start === 0 && len === file.size ? file : new File([file.slice(start, start + len)], file.name ?? "", { type: file.type }));
+      }
       at += 24;
     }
     return { msg: { json, blobs, files }, at };
@@ -5942,14 +6011,14 @@ function manualPortPayload(answer) {
 
 export async function mountRocEngineApp({ wasmUrl, root, ...options }) {
   const picture = markedPicture(root);
-  if (picture) holdPicture(root);
+  const pictureHold = picture ? holdPicture(root) : null;
   let runtime = null;
   try {
     const response = await fetch(wasmUrl);
     if (!response.ok) throw new Error(`failed to fetch ${wasmUrl}: ${response.status}`);
     const module = await WebAssembly.compile(await response.arrayBuffer());
     const instance = await WebAssembly.instantiate(module, pageImports(module));
-    runtime = new RocEngineRuntime(instance.exports, root, { ...options, module });
+    runtime = new RocEngineRuntime(instance.exports, root, { ...options, module }, pictureHold);
     runtime.mount();
     return runtime;
   } catch (error) {

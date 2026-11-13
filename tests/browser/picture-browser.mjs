@@ -62,9 +62,10 @@ try {
     const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const checks = [], check = (name, ok) => checks.push([name, !!ok]);
-    const fixture = ({ marked = true, batch = [0], version = 18, trap = false, beforeInit = () => {} } = {}) => {
+    const fixture = ({ marked = true, batch = [0], version = 18, trap = false, authoredInert = null, beforeInit = () => {} } = {}) => {
       const root = document.createElement("div");
       if (marked) root.setAttribute("data-roc-picture", "");
+      if (authoredInert !== null) root.setAttribute("inert", authoredInert);
       const old = document.createElement("input"), comment = document.createComment("picture"), oldText = document.createTextNode("picture text");
       root.append(old, comment, oldText); document.body.append(root);
       const memory = new WebAssembly.Memory({ initial: 2 });
@@ -104,11 +105,42 @@ try {
     fresh.click();
     check("post-mount input uses the normal event turn", mounted.events === 1);
     mounted.cleanup();
+    const template = [1, 0, ...text(""), ...text("div"), 0, 0, 1, 2, ...text(""), 1, 1, 1, 0, 0];
+    const row = fixture({ batch: [0, 7, ...word(0), ...word(template.length), ...template, 1, ...word(1), ...word(0), ...word(0), ...word(0), ...text("prepared row")] }); row.runtime.mount();
+    check("first-batch pure preflight validates template shapes before construction", !row.runtime.poisoned && row.root.firstChild?.textContent === "prepared row" && row.runtime.templates[0]?.holes.length === 1); row.cleanup();
+    let timingRoot, trace = [];
+    customElements.define("picture-timing", class extends HTMLElement {
+      constructor() { super(); trace.push(["construct", this.parentNode === null, timingRoot.childNodes.length, timingRoot.firstChild?.getAttribute?.("title") ?? null]); }
+      connectedCallback() { trace.push(["connected", this.parentNode === timingRoot, timingRoot.childNodes.length, timingRoot.firstChild?.getAttribute?.("title") ?? null]); }
+    });
+    const first = [8, ...word(1), ...word(0), ...word(0), 0, ...text(""), ...text("span"), 0];
+    const attribute = value => [9, ...word(1), 3, ...text(""), ...text("title"), 1, ...text(value)];
+    const ceTemplate = [1, 0, ...text(""), ...text("picture-timing"), 0, 0, 0, 0];
+    const ceCommands = [...first, ...attribute("before"), 7, ...word(0), ...word(ceTemplate.length), ...ceTemplate, 1, ...word(2), ...word(0), ...word(0), ...word(0), ...attribute("after"), 8, ...word(3), ...word(0), ...word(0), 0, ...text(""), ...text("p"), 0];
+    const normalCE = fixture({ marked: false, batch: [0, ...ceCommands] }); normalCE.root.replaceChildren(); timingRoot = normalCE.root; normalCE.runtime.mount(); const normalTrace = trace; trace = []; normalCE.cleanup();
+    const pictureCE = fixture({ batch: [0, ...ceCommands] }); timingRoot = pictureCE.root; pictureCE.runtime.mount();
+    check("custom constructors and connected callbacks retain ordinary command timing", !pictureCE.runtime.poisoned && normalTrace.length === 3 && JSON.stringify(trace) === JSON.stringify(normalTrace) && trace[0][2] === 1 && trace[0][3] === "before" && trace[2][0] === "connected" && trace[2][2] === 2 && trace[2][3] === "before"); pictureCE.cleanup(); trace = [];
+    const malformedCE = fixture({ batch: [0, ...ceCommands, 255] }); timingRoot = malformedCE.root; malformedCE.runtime.mount();
+    check("malformed first batch runs no custom constructor or connected callback", trace.length === 0 && malformedCE.root.firstChild === malformedCE.old && malformedCE.runtime.poisoned?.class === "executor"); malformedCE.cleanup();
+    let slices = 0;
+    const file = new File(["abcdef"], "source.txt"); const slice = file.slice.bind(file); file.slice = (...args) => { slices++; return slice(...args); };
+    const save = [20, ...word(1), ...word(0), ...word(1), ...word(0), ...word(2), ...word(0), ...text("saved.txt")];
+    const malformedFile = fixture({ batch: [0, ...save, 255] }); malformedFile.runtime.files.set(1n, file); malformedFile.runtime.mount();
+    check("pure preflight does not resolve file slices or stage effects", slices === 0 && malformedFile.runtime.fxOut.length === 0 && malformedFile.root.firstChild === malformedFile.old && malformedFile.runtime.poisoned?.class === "executor"); malformedFile.cleanup();
+    const portFile = [19, ...text("any"), ...text("null"), ...word(0), ...word(1), ...word(1), ...word(0), ...word(1), ...word(0), ...word(2), ...word(0)];
+    const malformedPort = fixture({ batch: [0, ...portFile, 255] }); malformedPort.runtime.files.set(1n, file); malformedPort.runtime.mount();
+    check("pure preflight does not materialize port files", slices === 0 && malformedPort.runtime.fxOut.length === 0 && malformedPort.root.firstChild === malformedPort.old && malformedPort.runtime.poisoned?.class === "executor"); malformedPort.cleanup();
+    let titleAtFocus = null;
+    const onFocus = () => { titleAtFocus = document.title; };
+    document.addEventListener("focusin", onFocus);
+    const ordered = fixture({ batch: [0, ...elem, 17, ...text("before focus"), ...focus, 17, ...text("after focus")] }); ordered.runtime.mount();
+    document.removeEventListener("focusin", onFocus);
+    check("preflight preserves service and reference effect order without duplicates", titleAtFocus === "before focus" && document.title === "after focus" && ordered.runtime.fxOut.length === 0 && !ordered.runtime.poisoned); ordered.cleanup();
     const empty = fixture({ batch: [] }); empty.runtime.mount();
     check("empty mount still replaces and releases the picture", empty.root.childNodes.length === 0 && !empty.root.inert && !empty.runtime.poisoned); empty.cleanup();
     const ordinary = fixture({ marked: false }); ordinary.root.inert = true; ordinary.runtime.mount();
     check("unmarked mount preserves existing children and embedder inertness", ordinary.root.firstChild === ordinary.old && ordinary.root.inert && !ordinary.root.hasAttribute("data-roc-failed")); ordinary.cleanup();
-    for (const [name, args] of [["init trap", { trap: true }], ["marked first batch", { batch: [1] }], ["protocol mismatch", { version: 0 }]]) {
+    for (const [name, args] of [["init trap", { trap: true }], ["marked first batch", { batch: [1] }], ["protocol mismatch", { version: 0 }], ["truncated ELEM", { batch: [0, 8, 1] }], ["truncated tail after valid ELEM", { batch: [0, ...elem, 10, 2] }], ["unknown command after valid ELEM", { batch: [0, ...elem, 255] }], ["truncated REF", { batch: [0, ...elem, 18, 1] }], ["unknown LISTEN payload", { batch: [0, ...elem, 11, ...word(1), ...word(7), ...text("click"), 255, ...word(0)] }], ["invalid property code", { batch: [0, ...elem, 21, ...word(1), 255, ...text("bad")] }]]) {
       const f = fixture(args); let thrown = false; try { f.runtime.mount(); } catch (_) { thrown = true; }
       check(`${name} retains the exact fallback and reports one styled fault`, (thrown || f.runtime.poisoned) && f.root.firstChild === f.old && f.root.childNodes[1] === f.comment && f.root.childNodes[2] === f.oldText && f.root.inert && f.root.hasAttribute("data-roc-failed") && f.faults.length === 1 && f.faults[0].class === "executor");
       check(`${name} removes runtime registrations and queued work`, f.runtime.listening.size === 0 && f.runtime.internal.length === 0 && f.runtime.documentListeners.size === 0 && f.runtime.live.size === 0 && f.events === 0);
@@ -121,6 +153,19 @@ try {
       let rejected = false; try { await promise; } catch (_) { rejected = true; }
       check(`${url} rejection preserves the picture with one classified fault`, rejected && root.firstChild === old && root.inert && root.hasAttribute("data-roc-failed") && faults.length === 1 && faults[0].class === "executor"); root.remove();
     }
+    const authored = fixture({ authoredInert: "author", batch: [0, ...elem, ...focus] }); authored.runtime.mount();
+    check("direct marked mount restores authored inert before effects", authored.root.getAttribute("inert") === "author" && document.activeElement !== authored.root.firstChild && !authored.runtime.picturePending);
+    authored.cleanup();
+    const inertRoot = document.createElement("div"); inertRoot.setAttribute("data-roc-picture", ""); inertRoot.setAttribute("inert", "author loader"); inertRoot.append(document.createElement("input")); document.body.append(inertRoot);
+    const inertRuntime = await mountRocEngineApp({ wasmUrl: "/fresh.wasm", root: inertRoot, manualEffects: true });
+    check("loader captures authored inert before holding the picture", inertRoot.getAttribute("inert") === "author loader" && !inertRuntime.picturePending);
+    inertRuntime.contain(new Error("later inert fault"), "executor"); await inertRuntime.recover();
+    check("recovery preserves authored inert after successful replacement", inertRoot.getAttribute("inert") === "author loader" && !inertRuntime.poisoned);
+    inertRuntime.unmount(); inertRoot.remove();
+    const failedInert = fixture({ authoredInert: "author failed", trap: true }); failedInert.runtime.mount();
+    failedInert.runtime.module = await WebAssembly.compile(await (await fetch("/fresh.wasm")).arrayBuffer()); await failedInert.runtime.recover();
+    check("pre-init recovery restores authored inert from the same hold", failedInert.root.getAttribute("inert") === "author failed" && !failedInert.runtime.poisoned);
+    failedInert.cleanup();
     const failed = fixture({ trap: true }); failed.runtime.mount();
     failed.runtime.module = await WebAssembly.compile(await (await fetch("/fresh.wasm")).arrayBuffer());
     await failed.runtime.recover();
