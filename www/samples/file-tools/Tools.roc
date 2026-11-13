@@ -1,4 +1,5 @@
 import pf.Engine exposing [Elem, File, In, Root, State]
+import pf.Url
 import pf.Html
 
 ## One chosen file, and four things to do with it on the page: upload it,
@@ -23,20 +24,27 @@ Tools := [].{
 		None => s
 	}
 
+	files_url : Url
+	files_url = "/files"
+
 	# region requests
 	## The request for what the user asked. Upload, digest and preview act on
 	## the file where the browser keeps it; only `read_utf8` brings its bytes
 	## into the page.
 	plan : Doing -> List(Engine.Ask(Shown, Shown))
 	plan = |doing| match doing {
-		Uploading(file) => [
-			file.upload({ url: "/files/${file.name()}", method: "PUT", headers: [("content-type", file.mime())], timeout: Ms(60000) }).map(
-				|result| match result {
-					Ok({ status, body, .. }) => if (status >= 200 and status < 300) Ok(Uploaded(body)) else Err(Failed("The upload failed: ${Str.inspect(Status(status))}"))
-					Err(error) => Err(Failed("The upload failed: ${Str.inspect(error)}"))
-				},
-			),
-		]
+		Uploading(file) => match files_url.append_path_segments([file.name()]) {
+			# Empty and dot names could select another resource; do not upload them.
+			Err(_) => []
+			Ok(target) => [
+				file.upload({ url: target.request_target(), method: "PUT", headers: [("content-type", file.mime())], timeout: Ms(60000) }).map(
+					|result| match result {
+						Ok({ status, body, .. }) => if (status >= 200 and status < 300) Ok(Uploaded(body)) else Err(Failed("The upload failed: ${Str.inspect(Status(status))}"))
+						Err(error) => Err(Failed("The upload failed: ${Str.inspect(error)}"))
+					},
+				),
+			]
+		}
 		Digesting(file) => [file.sha256().map_ok(|bytes| Digest(Tools.hex(bytes))).map_err(|error| Failed("No digest: ${Str.inspect(error)}"))]
 		Previewing(file) => [file.object_url().map_ok(|url| Preview(file, url)).map_err(|error| Failed("No preview: ${Str.inspect(error)}"))]
 		Reading(file) => [

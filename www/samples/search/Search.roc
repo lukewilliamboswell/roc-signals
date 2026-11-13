@@ -1,4 +1,5 @@
 import pf.Engine exposing [Elem, In, Root, State]
+import pf.Url
 import pf.Html
 
 ## A search box. Submitting the form fetches results over HTTP; while
@@ -17,6 +18,9 @@ Search := [].{
 	program : Engine.Program
 	program = Engine.program(|| Engine.state({ draft: "", query: "", round: 0, live: Bool.False, status: Idle }, Search.view))
 
+	search_url : Url
+	search_url = "/api/search"
+
 	# region requests
 	## One GET per search or refresh; nothing before the first search.
 	requests : { query : Str, round : U64 } -> List(Engine.Ask(Str, Engine.HttpError))
@@ -24,7 +28,7 @@ Search := [].{
 		if query == "" {
 			[]
 		} else {
-			[Engine.http_body({ url: "/api/search?q=${query}", timeout: Ms(5000) })]
+			[Engine.http_body({ url: search_url.append_query_param("q", query).request_target(), timeout: Ms(5000) })]
 		}
 
 	## Keep the body of a successful response, or the typed failure.

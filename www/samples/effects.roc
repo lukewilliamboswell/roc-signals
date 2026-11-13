@@ -1,6 +1,7 @@
 app [main] { pf: platform "../../platform/main.roc" }
 
 import pf.Engine exposing [Elem, In, Root, State]
+import pf.Url
 import pf.Html
 import pf.Clipboard
 
@@ -31,6 +32,9 @@ Ctx : In(Root, Model)
 
 # endregion model
 
+search_url : Url
+search_url = "/api/search"
+
 # region http
 ## Issue a request whenever the query changes. The reaction receives the
 ## query the request was issued for, so a late answer to an old query is
@@ -39,7 +43,7 @@ search : State(Ctx, Model) -> Elem(Ctx)
 search = |model|
 	Engine.watch_changes(
 		model.signal().map(|m| m.query),
-		|q| [Engine.http_body({ url: "/api/search?q=${q}", timeout: Ms(5000) })],
+		|q| [Engine.http_body({ url: search_url.append_query_param("q", q).request_target(), timeout: Ms(5000) })],
 		model.on_result(
 			|m, q, res|
 				if q != m.query {

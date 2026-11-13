@@ -1,0 +1,15 @@
+(test "Conduit URL — back forward to an accented tag"
+  (setup (initial-location "/roc-signals/examples/conduit/#/?tag=caf%C3%A9+au+lait"))
+  (steps
+    (expect-visible (text "Tag: café au lait"))
+    (click (role link :name "Global Feed"))
+    (expect-current-location "/roc-signals/examples/conduit/#/")
+    (history-back)
+    (expect-visible (text "Tag: café au lait"))
+    (history-forward)
+    (expect-current-location "/roc-signals/examples/conduit/#/")
+    (history-back)
+    (expect-visible (text "Tag: café au lait"))
+    (expect-current-location "/roc-signals/examples/conduit/#/?tag=caf%C3%A9+au+lait")
+  )
+)

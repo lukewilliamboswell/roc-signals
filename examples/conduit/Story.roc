@@ -7,6 +7,7 @@ import MarkdownView
 import Nav
 import Parts
 import Route
+import Locations
 import Session
 import Styles
 
@@ -46,8 +47,10 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 		if s.slug.is_empty() {
 			Fetch.no_req
 		} else {
-			uri = Api.article_uri(s.slug)
-			{ key: "${uri}#${s.refetch.to_str()}", uri, token: "" }
+			match Api.article_uri(s.slug) {
+				Ok(uri) => { key: "${uri}#${s.refetch.to_str()}", uri, token: "" }
+				Err(_) => Fetch.no_req
+			}
 		}
 	}
 
@@ -214,7 +217,7 @@ delete_error : Story -> Str
 delete_error = |s| Fetch.delete_error(s.del_result)
 
 profile_url : Str -> Str
-profile_url = |name| Route.to_url(Route.profile_location(name))
+profile_url = |name| Locations.to_url(Locations.profile_location(name))
 
 expect Story.init("s").req().key == "/api/articles/s#0"
 expect Story.init("s").deleting(Session.SignedIn({ token: "t", username: "kim" })).del.method == "DELETE"

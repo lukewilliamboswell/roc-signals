@@ -3,6 +3,7 @@
 ## the spec), and the Remote loading/ready/failed shape every fetch surface
 ## renders from.
 import pf.Engine
+import pf.Url
 import Route
 
 Api := {}.{
@@ -50,46 +51,68 @@ Api := {}.{
 	page_count : U64 -> U64
 	page_count = |total| (total + page_size - 1) // page_size
 
+	articles : Url
+	articles = "/api/articles"
+
+	profiles : Url
+	profiles = "/api/profiles"
+
+	## Build the feed query from decoded fields, without allowing a field to add a parameter.
 	feed_uri : Route.Feed -> Str
 	feed_uri = |feed| {
-		offset = (feed.page - 1) * page_size
-		path = match feed.source {
-			Global => "/api/articles"
-			Yours => "/api/articles/feed"
+		base : Url
+		base = if feed.source == Yours {
+			"/api/articles/feed"
+		} else {
+			articles
 		}
-		base = "${path}?limit=${page_size.to_str()}&offset=${offset.to_str()}"
+		page = base.append_query_param("limit", page_size.to_str()).append_query_param("offset", ((feed.page - 1) * page_size).to_str())
 		match feed.tag {
-			Tagged(tag) => "${base}&tag=${tag}"
-			AllTags => base
+			Tagged(tag) => page.append_query_param("tag", tag).request_target()
+			AllTags => page.request_target()
 		}
 	}
 
+	## Author names are query values, including text that looks like another pair.
 	author_articles_uri : Str -> Str
-	author_articles_uri = |username| "/api/articles?limit=${page_size.to_str()}&offset=0&author=${username}"
+	author_articles_uri = |username| articles.append_query_param("limit", page_size.to_str()).append_query_param("offset", "0").append_query_param("author", username).request_target()
 
 	favorited_articles_uri : Str -> Str
-	favorited_articles_uri = |username| "/api/articles?limit=${page_size.to_str()}&offset=0&favorited=${username}"
+	favorited_articles_uri = |username| articles.append_query_param("limit", page_size.to_str()).append_query_param("offset", "0").append_query_param("favorited", username).request_target()
 
-	article_uri : Str -> Str
-	article_uri = |slug| "/api/articles/${slug}"
+	## Refused segment names have no target; request plans must retain the refusal.
+	article_uri : Str -> Try(Str, Url.SegmentErr)
+	article_uri = |slug| articles.append_path_segments([slug]).map_ok(Url.request_target)
 
-	favorite_uri : Str -> Str
-	favorite_uri = |slug| "/api/articles/${slug}/favorite"
+	favorite_uri : Str -> Try(Str, Url.SegmentErr)
+	favorite_uri = |slug| articles.append_path_segments([slug, "favorite"]).map_ok(Url.request_target)
 
-	comments_uri : Str -> Str
-	comments_uri = |slug| "/api/articles/${slug}/comments"
+	comments_uri : Str -> Try(Str, Url.SegmentErr)
+	comments_uri = |slug| articles.append_path_segments([slug, "comments"]).map_ok(Url.request_target)
 
-	comment_uri : Str, U64 -> Str
-	comment_uri = |slug, id| "/api/articles/${slug}/comments/${id.to_str()}"
+	comment_uri : Str, U64 -> Try(Str, Url.SegmentErr)
+	comment_uri = |slug, id| articles.append_path_segments([slug, "comments", id.to_str()]).map_ok(Url.request_target)
 
-	profile_uri : Str -> Str
-	profile_uri = |username| "/api/profiles/${username}"
+	profile_uri : Str -> Try(Str, Url.SegmentErr)
+	profile_uri = |username| profiles.append_path_segments([username]).map_ok(Url.request_target)
 
-	follow_uri : Str -> Str
-	follow_uri = |username| "/api/profiles/${username}/follow"
+	follow_uri : Str -> Try(Str, Url.SegmentErr)
+	follow_uri = |username| profiles.append_path_segments([username, "follow"]).map_ok(Url.request_target)
+
+	tags : Url
+	tags = "/api/tags"
+
+	users : Url
+	users = "/api/users"
+
+	login : Url
+	login = "/api/users/login"
+
+	user : Url
+	user = "/api/user"
 
 	tags_uri : Str
-	tags_uri = "/api/tags"
+	tags_uri = tags.request_target()
 
 	decode_feed : Str -> Api.Remote(Api.FeedPage)
 	decode_feed = |body| {
@@ -333,3 +356,15 @@ expect Api.decode_tags("{\"tags\":[\"two\\nlines\",\"a \\\"quoted\\\" word\"]}")
 
 ## A body with no "errors" key falls back to a single generic rejection sentence.
 expect Api.parse_errors("{\"message\":\"nope\"}") == ["The request was rejected."]
+
+## Tags remain one form value, including literal plus, percent, and delimiters.
+expect {
+	values = [("c&c", "c%26c"), ("a?b", "a%3Fb"), ("c++", "c%2B%2B"), ("c#", "c%23"), ("%41", "%2541"), ("a b", "a+b")]
+	values.all(|(value, encoded)| Api.feed_uri({ page: 1, tag: Tagged(value), source: Global }) == "/api/articles?limit=20&offset=0&tag=${encoded}")
+}
+
+## Usernames cannot inject another author filter and remain one path segment.
+expect Api.author_articles_uri("x&favorited=anna") == "/api/articles?limit=20&offset=0&author=x%26favorited%3Danna" and Api.profile_uri("anna?x") == Ok("/api/profiles/anna%3Fx") and Api.profile_uri("a/b") == Ok("/api/profiles/a%2Fb")
+
+## Unsafe supplied resource names retain their typed refusal.
+expect Api.article_uri("..") == Err(DotSegment("..")) and Api.profile_uri(".") == Err(DotSegment(".")) and Api.comments_uri("") == Err(EmptySegment)

@@ -1,4 +1,5 @@
 import pf.Engine exposing [Cell, Elem, Reaction, Row, RowRef, Signal, State]
+import pf.Url
 import pf.Html
 import Api
 import AppStore
@@ -8,6 +9,7 @@ import Pages
 import Session
 import Story
 import Route
+import Locations
 import Format
 import Links
 import Styles
@@ -80,7 +82,7 @@ ConduitApp := [].{
 	home_url = AppStore.home_url
 
 	route_of : Here -> Route
-	route_of = |w| Route.of_url(w.loc)
+	route_of = |w| Locations.of_url(w.loc)
 
 	token_of : Session -> Str
 	token_of = |s| s.token()
@@ -94,12 +96,12 @@ ConduitApp := [].{
 	## Where a visitor at `loc` must be sent instead, or `""`.
 	guard_for : Str, Session -> Str
 	guard_for = |loc, session| {
-		kind = Route.kind(Route.of_url(loc))
+		kind = Route.kind(Locations.of_url(loc))
 		signed_in = session.is_signed_in()
 		requires_auth = kind == Settings or kind == EditorNew or kind == EditorEdit
 		anonymous_only = kind == Login or kind == Register
 		if requires_auth and !signed_in {
-			Route.to_url(Route.login_location)
+			Locations.to_url(Locations.login_location)
 		} else if anonymous_only and signed_in {
 			ConduitApp.home_url
 		} else {
@@ -150,8 +152,10 @@ ConduitApp := [].{
 		if name.is_empty() {
 			ConduitApp.no_req
 		} else {
-			uri = Api.profile_uri(name)
-			{ key: "${uri}#${m.prof.refetch.to_str()}", uri, token: "" }
+			match Api.profile_uri(name) {
+				Ok(uri) => { key: "${uri}#${m.prof.refetch.to_str()}", uri, token: "" }
+				Err(_) => ConduitApp.no_req
+			}
 		}
 	}
 
@@ -199,7 +203,10 @@ ConduitApp := [].{
 	edit_req : Here -> LoadReq
 	edit_req = |w| {
 		slug = Route.article_slug(ConduitApp.route_of(w))
-		if (slug.is_empty()) ConduitApp.no_req else { key: Api.article_uri(slug), uri: Api.article_uri(slug), token: "" }
+		match Api.article_uri(slug) {
+			Ok(uri) => { key: uri, uri, token: "" }
+			Err(_) => ConduitApp.no_req
+		}
 	}
 
 	store_edit : M, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M
@@ -211,15 +218,21 @@ ConduitApp := [].{
 	plan_submit : Submit -> List(Engine.Ask(Engine.Response, Engine.HttpFailure))
 	plan_submit = |s| {
 		if s.serial == 0 {
-			[]
-		} else if s.method == "GET" or s.method == "DELETE" {
-			[Engine.http({ method: s.method, url: s.url, headers: Api.auth_headers(s.token), body: s.body, timeout: Ms(Api.timeout_ms) })]
-		} else {
-			[Engine.http({ method: s.method, url: s.url, headers: Api.json_headers(s.token), body: s.body, timeout: Ms(Api.timeout_ms) })]
+			return []
+		}
+		match s.url {
+			Err(_) => []
+			Ok(url) => {
+				headers = if s.method == "GET" or s.method == "DELETE" {
+					Api.auth_headers(s.token)
+				} else {
+					Api.json_headers(s.token)
+				}
+				[Engine.http({ method: s.method, url, headers, body: s.body, timeout: Ms(Api.timeout_ms) })]
+			}
 		}
 	}
-
-	next : Submit, Str, Str, Str, Str -> Submit
+	next : Submit, Str, Try(Str, Url.SegmentErr), Str, Str -> Submit
 	next = |prev, method, url, body, token| { serial: prev.serial + 1, method, url, body, token }
 
 	submit_site : Signal(Engine.StoreRoot(_), Submit), Reaction(Engine.StoreRoot(_), Submit, Try(Engine.Response, Engine.HttpFailure)) -> Elem(Engine.StoreRoot(_))
@@ -286,8 +299,8 @@ ConduitApp := [].{
 	submit_auth : M, Bool -> M
 	submit_auth = |m, is_register| {
 		a = m.auth
-		(url, body) = if (is_register) ("/api/users", Api.register_body(a.username, a.email, a.password)) else ("/api/users/login", Api.login_body(a.email, a.password))
-		{ ..m, auth: { ..a, sub: ConduitApp.next(a.sub, "POST", url, body, "") } }
+		(url, body) = if (is_register) (Api.users.request_target(), Api.register_body(a.username, a.email, a.password)) else (Api.login.request_target(), Api.login_body(a.email, a.password))
+		{ ..m, auth: { ..a, sub: ConduitApp.next(a.sub, "POST", Ok(url), body, "") } }
 	}
 
 	## Writes for a current sign-in or sign-up result: record the form's
@@ -314,7 +327,7 @@ ConduitApp := [].{
 	submit_settings : M, Here -> M
 	submit_settings = |m, w| {
 		s = m.settings
-		{ ..m, settings: { ..s, sub: ConduitApp.next(s.sub, "PUT", "/api/user", ConduitApp.update_body(s), ConduitApp.token_of(w.session)) } }
+		{ ..m, settings: { ..s, sub: ConduitApp.next(s.sub, "PUT", Ok(Api.user.request_target()), ConduitApp.update_body(s), ConduitApp.token_of(w.session)) } }
 	}
 
 	react_settings : M, Submit, Try(Engine.Response, Engine.HttpFailure) -> M
@@ -334,7 +347,7 @@ ConduitApp := [].{
 		e = m.editor
 		body = ConduitApp.article_body(e.title.trim(), e.description.trim(), e.body, ConduitApp.parse_tags(e.tags))
 		slug = Route.article_slug(ConduitApp.route_of(w))
-		(method, url) = if (slug.is_empty()) ("POST", "/api/articles") else ("PUT", Api.article_uri(slug))
+		(method, url) = if (slug.is_empty()) ("POST", Ok(Api.articles.request_target())) else ("PUT", Api.article_uri(slug))
 		{ ..m, editor: { ..e, sub: ConduitApp.next(e.sub, method, url, body, ConduitApp.token_of(w.session)) } }
 	}
 
@@ -346,7 +359,7 @@ ConduitApp := [].{
 		result = ConduitApp.classify_article(Api.response_of(res))
 		recorded = ConduitApp.pages.update(|p| { ..p, editor: { ..p.editor, result } })
 		match result {
-			ArticleAccepted(article) => [recorded, AppStore.asking(Route.to_url(Route.article_location(article.slug)))]
+			ArticleAccepted(article) => [recorded, AppStore.asking(Locations.to_url(Locations.article_location(article.slug)))]
 			_ => [recorded]
 		}
 	}
@@ -425,21 +438,21 @@ ConduitApp := [].{
 			|split| {
 				page = U64.from_str(split.before) ?? 1
 				tag = if (split.after.is_empty()) AllTags else Tagged(split.after)
-				Route.feed_location({ page, tag, source: Global })
+				Locations.feed_location({ page, tag, source: Global })
 			},
 		)
-			?? Route.home_location
-		Route.to_url(loc)
+			?? Locations.home_location
+		Locations.to_url(loc)
 	}
 
 	tag_url : Str -> Str
-	tag_url = |tag| Route.to_url(Route.feed_location({ page: 1, tag: Tagged(tag), source: Global }))
+	tag_url = |tag| Locations.to_url(Locations.feed_location({ page: 1, tag: Tagged(tag), source: Global }))
 
 	profile_url : Str -> Str
-	profile_url = |name| Route.to_url(Route.profile_location(name))
+	profile_url = |name| Locations.to_url(Locations.profile_location(name))
 
 	article_url : Str -> Str
-	article_url = |slug| Route.to_url(Route.article_location(slug))
+	article_url = |slug| Locations.to_url(Locations.article_location(slug))
 
 	keyed_lines : List(Str) -> List({ key : Str, text : Str })
 	keyed_lines = |lines| {
@@ -693,7 +706,7 @@ ConduitApp := [].{
 									[
 										Engine.when(
 											signed_in,
-											|| Links.link_c("Your Feed", feed.map(|f| if (f.source == Yours) active else idle), Route.to_url(Route.feed_location({ page: 1, tag: AllTags, source: Yours }))),
+											|| Links.link_c("Your Feed", feed.map(|f| if (f.source == Yours) active else idle), Locations.to_url(Locations.feed_location({ page: 1, tag: AllTags, source: Yours }))),
 											|| Engine.text(""),
 										),
 										Links.link_c("Global Feed", feed.map(|f| if (f.source == Global and f.tag == AllTags) active else idle), ConduitApp.home_url),
@@ -766,9 +779,9 @@ ConduitApp := [].{
 					"mb-7 mt-2 text-center",
 					[
 						if is_register {
-							Links.link("Have an account?", "font-medium text-emerald-700", Route.to_url(Route.login_location))
+							Links.link("Have an account?", "font-medium text-emerald-700", Locations.to_url(Locations.login_location))
 						} else {
-							Links.link("Need an account?", "font-medium text-emerald-700", Route.to_url(Route.register_location))
+							Links.link("Need an account?", "font-medium text-emerald-700", Locations.to_url(Locations.register_location))
 						},
 					],
 				),
@@ -978,7 +991,7 @@ ConduitApp := [].{
 							"flex",
 							[
 								Links.link_s("My Articles", if (favorites) idle else active, username.map(ConduitApp.profile_url)),
-								Links.link_s("Favorited Articles", if (favorites) active else idle, username.map(|u| Route.to_url(Route.profile_favorites_location(u)))),
+								Links.link_s("Favorited Articles", if (favorites) active else idle, username.map(|u| Locations.to_url(Locations.profile_favorites_location(u)))),
 							],
 						),
 					],
@@ -1033,16 +1046,16 @@ ConduitApp := [].{
 							|| Html.div(
 								"inline-flex",
 								[
-									Links.link("New Article", item, Route.to_url(Route.location_for("/editor", ""))),
-									Links.link("Settings", item, Route.to_url(Route.location_for("/settings", ""))),
+									Links.link("New Article", item, Locations.to_url(Locations.to_location(EditorNew))),
+									Links.link("Settings", item, Locations.to_url(Locations.to_location(Settings))),
 									Links.link_s(username, "px-3 py-2 text-emerald-700 no-underline", username.map(ConduitApp.profile_url)),
 								],
 							),
 							|| Html.div(
 								"inline-flex",
 								[
-									Links.link("Sign in", item, Route.to_url(Route.login_location)),
-									Links.link("Sign up", item, Route.to_url(Route.register_location)),
+									Links.link("Sign in", item, Locations.to_url(Locations.login_location)),
+									Links.link("Sign up", item, Locations.to_url(Locations.register_location)),
 								],
 							),
 						),
@@ -1099,7 +1112,7 @@ ConduitApp := [].{
 					Engine.react(|s, _| [AppStore.cells.session.set(s), AppStore.cells.incoming.set(Anonymous)]),
 				),
 				ConduitApp.header({}),
-				Engine.element("main", [Engine.class(Styles.main)], [Engine.switch(loc.map(|url| Route.kind(Route.of_url(url))), ConduitApp.all_kinds, |k| ConduitApp.page(k))]),
+				Engine.element("main", [Engine.class(Styles.main)], [Engine.switch(loc.map(|url| Route.kind(Locations.of_url(url))), ConduitApp.all_kinds, |k| ConduitApp.page(k))]),
 				Engine.element(
 					"footer",
 					[Engine.class(Styles.footer)],
@@ -1146,4 +1159,3 @@ expect {
 		navigation: Unposted,
 	}
 }
-

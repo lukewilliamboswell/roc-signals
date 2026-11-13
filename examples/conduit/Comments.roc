@@ -32,8 +32,10 @@ Comments :: { slug : Str, loaded : Fetch.Loaded(List(Api.Comment)), refetch : U6
 		if c.slug.is_empty() {
 			Fetch.no_req
 		} else {
-			uri = Api.comments_uri(c.slug)
-			{ key: "${uri}#${c.refetch.to_str()}", uri, token: "" }
+			match Api.comments_uri(c.slug) {
+				Ok(uri) => { key: "${uri}#${c.refetch.to_str()}", uri, token: "" }
+				Err(_) => Fetch.no_req
+			}
 		}
 	}
 
@@ -144,4 +146,4 @@ delete_error = |c| Fetch.delete_error(c.del_result)
 
 expect Comments.init("s").req().key == "/api/articles/s/comments#0"
 expect Comments.init("s").refetched().req().key == "/api/articles/s/comments#1"
-expect Comments.init("s").deleting({ key: "7", token: "t" }).del.url == "/api/articles/s/comments/7"
+expect Comments.init("s").deleting({ key: "7", token: "t" }).del.url == Ok("/api/articles/s/comments/7")

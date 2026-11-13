@@ -1,3 +1,4 @@
+import pf.Url
 import pf.Engine exposing [Elem, Signal]
 import Api
 
@@ -11,7 +12,7 @@ Fetch := [].{
 	## A mutation as a click wrote it. Serial 0 means nothing was submitted;
 	## each submission takes the next serial, so an answer to an older one
 	## can be told from an answer to the latest.
-	Submit : { serial : U64, method : Str, url : Str, body : Str, token : Str }
+	Submit : { serial : U64, method : Str, url : Try(Str, Url.SegmentErr), body : Str, token : Str }
 
 	## A load. `key` is what a stored value must match to be shown.
 	LoadReq : { key : Str, uri : Str, token : Str }
@@ -23,10 +24,10 @@ Fetch := [].{
 	DeleteResult : [DeleteIdle, DeleteAccepted, DeleteRejected(Str)]
 
 	no_submit : Submit
-	no_submit = { serial: 0, method: "", url: "", body: "", token: "" }
+	no_submit = { serial: 0, method: "", url: Err(EmptySegment), body: "", token: "" }
 
 	## The submission after `prev`.
-	next : Submit, Str, Str, Str, Str -> Submit
+	next : Submit, Str, Try(Str, Url.SegmentErr), Str, Str -> Submit
 	next = |prev, method, url, body, token| { serial: prev.serial + 1, method, url, body, token }
 
 	no_req : LoadReq
@@ -43,14 +44,20 @@ Fetch := [].{
 	plan_submit : Submit -> List(Engine.Ask(Engine.Response, Engine.HttpFailure))
 	plan_submit = |s| {
 		if s.serial == 0 {
-			[]
-		} else if s.method == "GET" or s.method == "DELETE" {
-			[Engine.http({ method: s.method, url: s.url, headers: Api.auth_headers(s.token), body: s.body, timeout: Ms(Api.timeout_ms) })]
-		} else {
-			[Engine.http({ method: s.method, url: s.url, headers: Api.json_headers(s.token), body: s.body, timeout: Ms(Api.timeout_ms) })]
+			return []
+		}
+		match s.url {
+			Err(_) => []
+			Ok(url) => {
+				headers = if s.method == "GET" or s.method == "DELETE" {
+					Api.auth_headers(s.token)
+				} else {
+					Api.json_headers(s.token)
+				}
+				[Engine.http({ method: s.method, url, headers, body: s.body, timeout: Ms(Api.timeout_ms) })]
+			}
 		}
 	}
-
 	classify_delete : Api.ResponseState, Str -> DeleteResult
 	classify_delete = |response, what| {
 		if !response.error.is_empty() {
@@ -86,5 +93,8 @@ Fetch := [].{
 	submit_site = |sub, answered| Engine.keep_current(sub, Fetch.plan_submit, answered)
 }
 
-expect Fetch.next(Fetch.no_submit, "POST", "/x", "", "").serial == 1
+expect Fetch.next(Fetch.no_submit, "POST", Ok("/x"), "", "").serial == 1
 expect Fetch.remote({ key: "a", value: Ready(1.U64) }, "b") == Loading
+
+## A refused target cannot become an HTTP request through the submission plan.
+expect Fetch.plan_submit(Fetch.next(Fetch.no_submit, "POST", Err(DotSegment("..")), "", "")).is_empty()
