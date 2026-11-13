@@ -149,6 +149,7 @@ const stop = runtime.monitor.subscribe((e) => console.log(e.kind, e));
 | `instance-end` | `instance`, `cause`, `fault` (`{ class, message }` or `null`), `jobs`, `busyMs`, `memBytes`, `at` |
 | `state-evict` | `instance`, `prep` (the preparation's name), `cause` (`replaced`, `released`), `at` |
 | `turn` | `node`, `handler`, `fx` (the job id for a job's result turn), `eventMs`, `applyMs`, `bytes`, `at`. Only for subscribers that pass `{ turns: true }` |
+| `transition` | `state` (`applied`, `start-rejected`, `ready-rejected`, `finished-rejected`), `at`; `applied` carries `cause` (`callback`, `timer`, `queue`, `none`) and `typeCount`; rejections carry a diagnostic `message` of at most 1024 characters |
 | `runtime` | `state` (`mounted`, `poisoned`, `unmounted`), `generation`, `fault`, `at` |
 
 What a listener can rely on:
@@ -172,6 +173,14 @@ What a listener can rely on:
 - When the page's runtime is poisoned or unmounted, every job and instance
   still live ends with that cause, then the `runtime` event follows. Nothing
   more is reported until `recover()` mounts a new generation.
+
+Transition events are passive: a rejected browser animation does not poison
+the app or change the applied DOM. They retain no animation history in the
+monitor. A `turn` event's `applyMs` measures synchronous work after the call,
+including a marked batch's first read and early effects; it does not include
+the wait for the browser callback or its later DOM update. Manual replay
+keeps its separate bounded transition observations
+([Testing](@/docs/testing.md#view-transitions)).
 
 A listener must only observe: it may call `snapshot()`, but not drive the
 runtime. A listener that throws is reported on the console and unsubscribed.
@@ -225,7 +234,8 @@ Everything the monitor keeps has a bound:
 
 - A job costs eight clock reads on the page and five in its worker, plus a
   few counter and histogram updates.
-- A turn that delivers no job result reads no clock at all.
+- An unmarked turn that delivers no job result reads no clock at all.
+  A marked batch reads the clock for each passive transition event.
 
 **When someone is looking:**
 

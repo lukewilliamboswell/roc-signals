@@ -337,6 +337,32 @@ mouse/pen up, scripted changes, selects, submits and focus do not. A new
 document starts without activation. This matters to native dismissal:
 preventing one `cancel` can consume the activation that allowed it.
 
+### View transitions
+
+| Step | Checks |
+|---|---|
+| `(expect-transitions N)` | Exactly N marked batches have been applied in this document |
+| `(expect-transition K TYPE ...)` | The one-based K-th marked batch has exactly these types, in this order; an empty type list is allowed |
+
+These assert the engine's request to animate, whether or not the browser
+supports transitions or the deployment enables them. Mount never adds a
+transition. `view_transitions` checks the same intent as a work counter.
+
+Native and browser observations retain the newest 4096 records and at most
+1 MiB of encoded type bytes (four length bytes plus UTF-8 bytes for each
+type). Counts and ordinals are absolute U64 values; their JSON representation
+is a decimal string. An overwritten ordinal fails with a retained-history
+diagnostic. A record larger than that byte allowance clears older history
+and is itself unavailable, while the total count still advances. Exhausting
+U64 fails observation. None of these limits stops the app or caps the types
+it may actually ask the browser to animate.
+
+Chrome replay skips the animation once its update has run and awaits the
+runtime's `idle()` until `finished` settles before the next step. Thus a
+replayed click meets the final DOM without an overlay. Real animation,
+capture boundaries and input during animation are runtime contract tests;
+application specs assert the final DOM and transition intent.
+
 ### Layout and media
 
 `(initial-media "QUERY" BOOL)` in setup supplies a query's boot match. A
@@ -595,13 +621,14 @@ does not fail your spec.
 | `rows_reused` | Old rows an `each` reconciliation kept; a reconciliation whose list equals the old one counts nothing. A table view compares no list and counts nothing here |
 | `rows_updated` | Rows kept whose content was written: a row of an `each` whose item changed, and a drawn row a table view draws before and after the event whose row in the table was written. Pinned beside `rows_created`, `rows_removed` and `rows_moved`, it says exactly which drawn rows of a table view a write woke |
 | `rows_moved` | Rows moved |
+| `view_transitions` | Host-call batches marked for animation, including result turns; never mount |
 | `create_element` | Elements created |
 | `bind_event` | Event listeners bound |
 | `set_metadata` | Document title writes |
 | `set_text` | Text writes and text nodes created |
 | `set_value` / `set_checked` | Control `value` / `checked` the engine set |
-| `patches_emitted` | DOM commands; excludes `RELEASE`, which changes external registrations rather than the DOM |
-| `registrations_released` | `RELEASE` commands emitted for nodes owning document-key registrations |
+| `patches_emitted` | DOM commands; excludes `RELEASE` and `TRANSITION`, which do not change the DOM |
+| `registrations_released` | `RELEASE` commands emitted for nodes owning document-key registrations or layout observations |
 | `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values. For a table view: each read of its query or its window, and each row it places with the query's `keep` and `sort` (two for a written key, the row before and after; every row of the table for a mount or a rebuild) |
 | `scopes_created` / `scopes_disposed` | `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites, mounted / disposed |
 | `dirty_source_roots` | What a turn wrote: the local states and the cells. A decision that returns no write counts nothing |
@@ -639,7 +666,9 @@ changed: every text and attribute is re-read, every `when`, `switch` and
 `resource` and effect site re-reads its input, and the pass reaches into
 every row. Each compares with its last observation: the emitted value, or
 for a shown property the browser-echoed state. After a complete turn the
-pass emits nothing. If a write never reached one of its
+pass emits nothing. The scratch transition collection starts empty, and a
+new request fails the check even if its types duplicate the real call's.
+If a write never reached one of its
 readers, the pass emits the update the turn should have, and the step fails
 naming it:
 

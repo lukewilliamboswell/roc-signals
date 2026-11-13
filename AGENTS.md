@@ -154,8 +154,10 @@
   act where the browser object lives; its contents cross into Wasm only
   through a read the app asks for. A request resolves the handle to its
   browser object when its batch is applied and holds it until it is
-  answered or cancelled, and anything the runtime makes from one (an object
-  URL) lives exactly as long as its handle.
+  answered or cancelled. When a marked batch starts a view transition, effects
+  that name no node run and resolve their handles when the call returns, before the
+  deferred DOM update. Anything the runtime makes from one (an object URL)
+  lives exactly as long as its handle.
   Handles cross between instances by token: each instance mints its own box
   for the browser object, so either side letting go cannot invalidate the
   other's. A file a job builds is immutable once finished, and its builder
@@ -167,10 +169,13 @@
   and answer, a file read into the page as a result), establish
   who owns it before the call, after it, and when the instance is poisoned or
   dropped.
-- Publish atomically. A command batch becomes visible only when its call
+- Publish atomically. A command batch becomes visible only after its call
   returns; a trap discards it. JavaScript reads command bytes only after the
   call, refreshes memory views after every call that can allocate, and applies
-  effects only after the whole batch is applied.
+  effects after the whole batch is applied, except that a marked batch starting
+  a view transition performs effects that name no node when the call returns.
+  Its DOM and node effects follow in the guarded update callback; no page-instance Roc
+  call or payload staging may invalidate the waiting command buffer.
 - Bound host-retained and in-flight work. Define the bound and the behavior at
   the bound — typed refusal, classified diagnostic, cancellation, teardown —
   before adding a queue, table, request kind, timer class or runtime registry.

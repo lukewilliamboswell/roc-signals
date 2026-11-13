@@ -1133,6 +1133,11 @@ inferred from a reused key, and there is no implicit `keep_alive`.
 
 ## Explicit Scopes and Disposal
 
+A removal is animated only through a browser view-transition snapshot. The
+runtime never retains a node after its `REMOVE` or `CLEAR`, because its id
+may already name a new owner. A long exit that retains a live node is app
+state, disposed by a later write.
+
 Every site is a scope. Disposing it:
 
 1. disposes its children in order (each child disposes its own);
@@ -1326,6 +1331,9 @@ reports drains early. While the runtime is busy, a feedback loop between
 the DOM and the engine can fill it. That overflow is not refused event by
 event (which would drop non-lossy input or strand an in-flight id): it
 poisons the runtime with class `resource_limit`, reported like any other fault.
+A full queue while a marked batch waits for its view-transition callback
+instead forces that batch to apply and drains the queue. Early effects and
+DOM application retain the ordinary busy overflow rule.
 
 After its initiating turn, a drain delivers at most 4096 further turns
 before the runtime returns to idle. A loop that raises only one further
@@ -1431,6 +1439,7 @@ keys a turn wrote in a table.
 
 | Operation | Budget | Forbidden |
 |---|---|---|
+| Apply a marked view-transition batch | Two reads of the command bytes; browser capture follows the document and each named element | claiming browser capture costs only the changed set |
 | Route an event to its handler | O(path depth) | scanning nodes or sites |
 | Dispatch a document key | O(live document-key handlers), at most 32; matching is linear in the keymap inspected | scanning nodes or scopes |
 | Build a pointer's zone payload | One browser hit test, then O(ancestor depth) to the nearest zone | scanning every zone or keeping a registry of zone values |
@@ -1529,9 +1538,10 @@ host as the call's result; the host keeps it readable through `cmd_ptr` and
 
 Rules:
 
-- **Atomic publication.** A batch becomes visible only when the call returns
+- **Atomic publication.** A batch becomes visible only after the call returns
   successfully. A trap discards it; JavaScript never observes a prefix of a
-  failed call.
+  failed call. A marked view-transition batch is published whole later than
+  the call returns, never earlier.
 - **Apply, then perform.** The runtime applies DOM commands in stream order and
   collects effect commands, then performs the effects after the whole batch is
   applied, so an effect never observes a half-applied DOM. A shown property
@@ -1541,14 +1551,20 @@ Rules:
   hide. The runtime checks the captured element and per-property intent
   token before performing it; a removed or superseded target is skipped.
   Other surviving shows, effects and reference commands keep stream order.
+  A marked batch that starts a view transition is the exception described below.
 - **Decided, not interpreted.** The runtime does not diff, reorder, coalesce or
-  skip commands. Its only state is the id → DOM node tables, parsed templates
+  skip commands, except for the protocol-defined partition of a marked batch
+  that starts a view transition:
+  effects that name no node precede its DOM, and node effects follow it, each
+  class in stream order. Its only state is the id → DOM node tables, parsed templates
   and live effect handles the commands told it to keep, plus the ingress
   queue and its index of report sources, the keymaps rendered on nodes and
   the document-key registrations commands registered, and the elements
   commands told it to observe, released by `RELEASE`, teardown or poisoning. Manual mode also keeps
-  the bounded passive scroll and native-callback observation data described
-  below. `RELEASE`, teardown
+  the bounded passive scroll, transition and native-callback observation data
+  described below. At most one transition batch waits for its update callback,
+  with its parsed templates and effect metadata; its command bytes stay in
+  the host-owned buffer, without a copy. `RELEASE`, teardown
   and poisoning remove those registrations. Input delivery applies a declared
   policy; it does not decide application meaning. The controlled-value guard
   and the shown-property live-state table below are explicit protocol guards,
@@ -1566,6 +1582,103 @@ the runtime interprets only how a boolean attribute or SVG `class` is
 written. Each property row fixes its value type, encoding, allowed elements
 and the attribute name it claims, if any; the runtime applies the
 engine-decided value rather than inferring control state from a name.
+
+### Applied in a view transition
+
+`ViewTransition(types)` is a command issued by an ordinary effect site over
+what changed, so result turns animate by the same rule as DOM events. It
+awaits no result and occupies no in-flight slot. The unit is the complete
+batch of one host call: requests from its turns, including `Self` follow-ups,
+merge through a hash set in first-issue order. The mount call, including its
+follow-ups, is always unmarked. No CSS identifier validation or type-count
+cap is imposed; the command buffer's structural bound is the bound.
+
+Every nonempty page batch has a flags byte. A marked batch ends with one
+`TRANSITION` holding the collected types (Appendix B). The engine decides
+this mark; the runtime never infers it from DOM changes.
+
+When `viewTransitions: "document"` (the default), the actual document is not
+hidden and `document.startViewTransition` exists, application has two reads:
+
+1. Read the whole buffer in place, retain `TEMPLATE` definitions and collect
+   effects and types, without changing the live DOM. After framing validation,
+   perform `FX`, `CANCEL`, `NAV`, `STORAGE`, `TITLE`, `PORT` and `SAVE` in
+   stream order. These effects name no node. Saves and port commands issued
+   in a click's turn still run in its listener's stack.
+2. Ask `document.startViewTransition({ update, types })`, falling back to
+   its function form without types if the options form throws. In its guarded
+   update callback, read the buffer again and apply DOM commands in stream
+   order, without redefining templates or repeating early effects. Perform
+   node effects (`REF` and queued shown-property work) in their stream order,
+   drain released file handles, clear busy and drain queued inputs.
+
+This partition deliberately changes cross-class effect order: a reference
+command issued before an HTTP request runs after it. An early effect sees
+the old DOM; a node effect sees the completed new DOM. Neither sees a
+half-applied batch. Resolve files when their effect is performed and hold
+the browser object until result or cancellation; releases still drain only
+after DOM application and remaining effects.
+
+While the callback waits, no page-instance Roc call or payload staging is
+allowed. The host's command buffer stays valid and is never copied. Inputs
+queue against the old page, and are delivered after the update; queued DOM
+events whose element was removed or whose id was recycled are dropped.
+The callback runs at most once. After 1000 ms without it, apply directly and
+skip the transition; a later callback does nothing. A full ingress queue
+while waiting also forces application and draining, rather than poisoning.
+This exception applies only to the waiting gap: overflow during early effects
+or DOM application keeps the ordinary busy feedback-loop bound. Unmount,
+poisoning and recovery invalidate old callbacks and release pending metadata.
+
+With the API absent, the option `"off"`, or actual
+`document.visibilityState === "hidden"`, read once and apply directly with
+effects after the DOM. The app's `environment.visible()` is not this browser
+safety check.
+If starting a transition throws after early effects ran, apply directly
+without repeating them. An early-effect fault leaves the old DOM and drops
+the batch; effects already performed stand. A callback fault is contained as
+`executor`, and skips the animation. Rejected `ready` or `finished` promises
+are bounded passive monitor diagnostics, never application faults.
+
+A transition belongs to the document: it can capture the page and each named
+element, holds rendering until the update, and replaces any preceding
+transition, including another mount's, at its final state. This browser cost
+follows the page and named elements, rather than the changed set. An embedder
+that does not own the page chooses `viewTransitions: "off"`. The engine's
+propagation work is unchanged. Names come from app keys and CSS; duplicate
+live names can lose the animation without losing the update.
+
+A removed row survives only as a browser snapshot. `REMOVE` and `CLEAR`
+detach nodes and release identity normally; keeping an outgoing node would
+let a recycled id route input to its new owner and make the oracle disagree
+with the browser. For a long exit that must retain real content, the app
+keeps an explicit leaving row and removes it on a scoped timer's `Fired` or
+`Refused` result. Entrance CSS can use `@starting-style`; `MOVE` remains
+`insertBefore` and may replay it. `Element.moveBefore` would change focus
+semantics and is not adopted. No frame subscription is introduced: CSS
+interpolates values, `Interval` supplies coarse progress, and a custom
+canvas element owns any drawing frame loop.
+
+The transition overlay's `pointer-events: none` permits input to uncaptured
+UI, but captured subtrees remain unavailable to hit testing until their
+snapshots finish. Reading List disables the root capture, names book rows
+by their table keys, and keeps its form and shelf buttons outside captures;
+controls inside books still incur that browser cost. Its shared app CSS
+handles reduced motion and uses `@starting-style` only as the fallback where
+view transitions are unsupported. The runtime does not alter the app's CSS.
+
+Manual mode records applied marked batches, skips each animation once its
+update ran, and exposes `idle()` until `finished` settles. Replay waits for
+it before the next step, so native and Chrome specs see the same final DOM
+without an overlay intercepting input. Both runners retain transition
+observations under the same bounds: newest 4096 records and at most 1 MiB
+of encoded type bytes (four length bytes plus UTF-8 bytes per type).
+Ordinals and the total count are absolute U64 values, represented as decimal
+strings at the JSON boundary. Eviction makes an old ordinal unavailable;
+an oversized record clears older history and is itself unavailable. Neither
+changes app progress or the total count. U64 exhaustion disables observation
+with an explicit diagnostic, never app execution. This bounded observation
+history does not cap types in an actual batch.
 
 ## The Effect Channel
 
@@ -1605,6 +1718,9 @@ reducer or the decision sees both what changed and what is sent.
   end of the turn). With a port's command and a save, below, they are the
   tags of `Command`, the type a cleanup's plan returns (see
   [Explicit Scopes and Disposal](#explicit-scopes-and-disposal)).
+- **`ViewTransition(types)`** is also a command: it marks the call's batch,
+  never the mount batch, and merges types in first-issue order as described
+  in [Applied in a view transition](#applied-in-a-view-transition).
 - **Awaited requests** get an id: `Http`, `StorageGet`, `Timer`, `Work` and
   the operations on a file the app holds (see [Files](#files)) deliver one
   result; `Interval` and `Popstate` are subscriptions that deliver any number
@@ -1698,7 +1814,8 @@ because an error left to inference does not resolve.
   they take a request.
 - **Handles cross by token.** A file in a job's input is not read before the
   job runs. The request names its handle and range (FX kind 8); the runtime
-  resolves the handle to the browser's `File` when it applies the batch and
+  resolves the handle to the browser's `File` when it applies the batch (when
+  the call returns for a marked transition's early effect) and
   posts the whole file with the job, by reference; the worker's host mints
   a handle of its own for each (`files_stage`), in the request's order, and
   the job's `File` values hold those local handles, with the names and
@@ -2296,7 +2413,9 @@ Digests and URLs are pure in effect, like a read, so they are scoped.
   as a download under its own name or another. The runtime resolves the
   handle when it applies the batch and, after the batch, clicks a link
   with a `download` attribute over an object URL it revokes a moment
-  later. A save issued in a click's turn runs inside that click's listener,
+  later. For a marked batch starting a view transition, resolution and the
+  download happen when the call returns, before its deferred DOM update.
+  A save issued in a click's turn runs inside that click's listener,
   so the browser sees the user's gesture; a save issued later (from a
   task's answer) runs without one, and Chrome may hold back a second
   automatic download, which the platform documents rather than hides. The
@@ -2319,8 +2438,9 @@ a composite handle, while a task's builder already joins files by reference
 with `append_file!`.
 
 **A request holds its browser file until it is answered.** The runtime
-resolves every handle a request names when it applies the batch, before it
-drains the handles the batch released, and the request keeps that `File`
+resolves every handle a request names when it applies the batch, or when
+the call returns for a marked transition's early effect, before it drains
+the handles the batch released, and the request keeps that `File`
 (or its slice) until its answer is delivered or it is cancelled. A request
 can therefore name a file whose last handle Roc drops in the same batch, and
 the runtime's handle table holds only the files of live handles.
@@ -2880,6 +3000,11 @@ and refuses later calls without entering Wasm. An executor failure (a bug in
 applying a command, including an external listener preventing a controlled
 show from reaching its requested state) is contained the same way with
 class `executor`.
+A fault while a marked batch's early effects run drops its unapplied DOM
+commands and keeps the page before the batch; performed effects stand.
+A fault in the guarded transition update is an `executor` fault and skips
+the animation. Transition promise rejections are passive monitor diagnostics.
+
 `recover()` mounts a fresh instance from the same module; it never resumes a
 poisoned one. External effects already performed are not undone. Poisoning
 or unmounting the page's runtime terminates every worker it started and
@@ -3003,7 +3128,10 @@ bound and a declared behaviour at the bound:
 | Bytes of one fetched body | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)` |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | A table's changes | One earlier row for each distinct key one turn writes | Cleared when the turn ends |
-| Runtime ingress queue | 4096 occurrences and reports | A report drains a full queue early while idle; overflow while busy is `resource_limit` poison |
+| Runtime ingress queue | 4096 occurrences and reports | A report drains a full queue early while idle; a waiting transition applies and drains; other busy overflow is `resource_limit` poison |
+| Transition batches waiting for update | 1 | Inputs queue; a full queue forces apply and drain |
+| Wait for transition update | 1000 ms | Apply directly and skip animation |
+| Transition observation history | Newest 4096 records and 1 MiB encoded type bytes, absolute U64 ordinals | Evicted or oversized records fail observation only; oversized entries clear prior history; exhaustion disables observation, never app progress |
 | Live document-key handlers | 32 per instance, structurally outside rows | `contract` at mount naming the site |
 | Declared media queries | 32 distinct queries, 1–256 UTF-8 bytes each | `contract` at catalogue construction |
 | Live observations | One registration per observed element and kind; follows live nodes | Node resource bound; no fixed data-sized cap |
@@ -3140,6 +3268,17 @@ oracle and never defines a meaning of its own. In particular:
   storage available with no seeded pairs, online and visible unless a
   setup form says otherwise. `set-online` and `set-visibility` carry their
   current values into a later document and dispatch nothing when unchanged.
+
+### Transition assertions
+
+`(expect-transitions N)` checks the absolute number of applied marked batches
+in the document; `(expect-transition K TYPE ...)` checks the exact ordered
+types of the one-based K-th batch. Both runners decode independently and
+retain the bounded history described above. An assertion of an overwritten
+or oversized record fails with a retained-history diagnostic. Manual Chrome
+replay skips animations after update and waits for `idle()` before another
+step. The runtime contract tests exercise real snapshots and input during
+animation; specs assert engine intent and final DOM.
 
 ### Native UI and scrolling steps
 
@@ -3353,8 +3492,9 @@ with the parser's form tables (`replay.mjs --check-grammar`).
 the engine: it shares no code with `Core.roc`. Every native assertion reads
 that model, never engine state. It mirrors the runtime's delegated dispatch
 (nearest handler, then nearest engine id) and decodes effect commands in
-stream order, so specs can model a browser — location and history, title,
-storage, pending requests, live subscriptions — driven only by what the engine
+stream order, partitioning marked batches into early no-node effects and
+node effects after the DOM, as the runtime does. Thus specs can model a
+browser — location and history, title, storage, pending requests, live subscriptions — driven only by what the engine
 emitted. Because the oracle sees only the wire, a spec that passes natively
 exercises the same protocol the browser runtime consumes.
 
@@ -3382,6 +3522,7 @@ metric: soak plateaus assert it.
 | `rows_reused` | Old rows an `each` reconciliation kept. A reconciliation whose list is equal to the old one (nothing created, removed, moved or changed) counts nothing, and a view, which compares no list, counts none |
 | `rows_updated` | Rows kept whose content was written: a row of an `each` site whose item changed, and a row a view draws before and after the turn whose row in the table was written. With `rows_created`, `rows_removed` and `rows_moved` it says exactly what a turn did to the rows a view draws |
 | `rows_moved` | `MOVE` commands |
+| `view_transitions` | Host-call batches marked for transition, regardless of browser support or deployment choice; never mount |
 | `create_element`, `bind_event`, `set_metadata` | `ELEM`, `LISTEN` and `TITLE` commands |
 | `set_text` | `SETTEXT` and `TEXT` commands |
 | `set_value`, `set_checked` | Control state the engine set: `PROP` and `HPROP` for the `value` / `checked` rows, and `INST` property holes of those rows |
@@ -3461,8 +3602,10 @@ know nothing of the platform.
   runner applies it after every step (`Core.settled`). After a turn, a root
   `Changed` pass that names every layer and every cell, run on a copy of the
   instance that is then dropped, must emit no command and change nothing in
-  the effect channel. That pass re-evaluates every hole and descends into
-  every child whatever the read signatures say, and the sites that settle
+  the effect channel. Its scratch transition collection starts empty, and
+  any newly issued request fails the check even if its types duplicate those
+  already issued in the real call. That pass re-evaluates every hole and
+  descends into every child whatever the read signatures say, and the sites that settle
   their own layers pass it inward whole. Since every observation point
   prunes against what it last emitted or holds, a complete turn leaves it
   nothing to do, and a reader the turn missed (a signature or a write set
@@ -3889,12 +4032,13 @@ Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Ti
        Upload({ method, url, headers, body : File, timeout_ms }), Sha256(File), ObjectUrl(File),
        PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
        PortSubscribe({ port, message }),
-       Save({ file : File, name : Str }), Fetch({ method, url, headers, timeout_ms })]
+       Save({ file : File, name : Str }), Fetch({ method, url, headers, timeout_ms }),
+       ViewTransition(List(Str))]
 Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str), FocusInPlace(Str),
        ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
        ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
        StorageSet(Str, Str), StorageRemove(Str), PortCommand({ port, message }),
-       Save({ file : File, name : Str })]     # the requests that await nothing: a cleanup's plan
+       Save({ file : File, name : Str }), ViewTransition(List(Str))]     # the requests that await nothing: a cleanup's plan
 Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        Fired, Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused,
        Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError),
@@ -4058,7 +4202,7 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **12**. The engine declares it
+This appendix is protocol version **13**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -4077,7 +4221,7 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (12) |
+| `roc_engine_version` | `() -> u32` | The protocol version (13) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -4216,9 +4360,10 @@ that has run, in first-run order, with its run count.
 | 41, 42 | `PROP`, `HPROP` commands (opcodes 21, 22; counted here rather than by opcode) |
 | 43 | `RELEASE` commands (`registrations_released`; opcode 23, counted here rather than as rows reused; excluded from `patches_emitted`) |
 | 44 | Live observations (`observations_live`), a gauge |
+| 45 | Marked batches (`view_transitions`; `TRANSITION`, opcode 24), excluded from `patches_emitted` |
 
-Index 0 is unused. The metric names the spec language accepts map onto these
-indices (`platform/Scm.roc`, `metric_names`).
+Index 0 is unused; the record has 46 counters. The metric names the spec
+language accepts map onto these indices (`platform/Scm.roc`, `metric_names`).
 
 ### Event records
 
@@ -4296,6 +4441,14 @@ a `contract` fault.
 
 ### Commands
 
+Every nonempty page command batch starts with `flags:u8`, strictly `0`
+(unmarked) or `1` (view transition). A marked batch has exactly one terminal
+`TRANSITION`; an unmarked batch has none. Unknown flags, a missing terminal
+mark, a repeated or nonterminal `TRANSITION`, or trailing operands are an
+`executor` fault in the runtime and a protocol error in the independent
+`Dom.roc` decoder. Empty batches have no header; worker answers are not page
+command batches and have no header.
+
 | Op | Name | Operands |
 |---|---|---|
 | 1 | `INST` | `node parent before tpl`, then per template hole in order: text/property → `str`; attribute → `presence:u8 [value:str]`; event → nothing; nested site → `u32` node id for its placeholder; reference → `u32` command node id for its element |
@@ -4321,11 +4474,17 @@ a `contract` fault.
 | 21 | `PROP` | `node prop:u8 value:str` — set an element property from the closed table below |
 | 22 | `HPROP` | `node hole:u8 value:str` — set a row property hole |
 | 23 | `RELEASE` | `node` — release document-key and size/seen registrations owned by this node before removal; a row root owns observations on its template elements |
+| 24 | `TRANSITION` | `n:u32 (type:str)*n` — last command of a marked batch; types deduplicated in first-issue order |
 
 `before = 0` appends to `parent`; otherwise the node is inserted before
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
 the batch is applied and performed after it, as are 19 and 20 (a save's
-file is resolved when the batch is applied).
+file is resolved when the batch is applied). For a marked batch starting a
+view transition, the first read instead performs 13–17, 19 and 20 before
+DOM application; the second read applies DOM and then performs `REF` and
+queued shown-property work, each class in stream order. See
+[Applied in a view transition](#applied-in-a-view-transition) for the
+`viewTransitions` mount option, direct fallbacks and bounds.
 
 For REF, alignment is `0` Start, `1` Center, `2` End, `3` Nearest;
 behavior is `0` Auto, `1` Instant, `2` Smooth. An edge is tag `0` Keep,

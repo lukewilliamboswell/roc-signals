@@ -34,6 +34,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Properties | `Prop(a)`, `Prop.value` (`Str`), `Prop.checked` (`Bool`), `Prop.pointer_zone` (`Str`), `prop`, `prop_s` | [Element properties](#element-properties) |
 | Key data | `Key` (`key`, `code`, `ctrl`, `alt`, `shift`, `meta`, `repeat`, `composing`, `heard`), `Chord` (`plain`, `with_ctrl`, `with_alt`, `with_shift`, `with_meta`, `primary`), `Keymap` (`prevent`, `keep`, `every`, `concat`, `outside_text`) | [Keys and shortcuts](@/docs/state-and-events.md#keys-and-shortcuts) |
 | Reference commands | `Focus`, `Blur`, `SelectText`, `ApplyValue`, `FocusInPlace`, `ScrollIntoView`, `ScrollTo`; `scroll_into_view`, `ScrollProps` (`block ?? Nearest`, `inline ?? Nearest`, `behavior ?? Auto`), `Align` (`Start`, `Center`, `End`, `Nearest`), `Edge` (`Keep`, `Start`, `End`, `Px(U32)`), `ScrollBehavior` (`Auto`, `Instant`, `Smooth`) | [Focus and scrolling](@/docs/effects-and-browser.md#focus) |
+| Animation | `ViewTransition(List(Str))`, a command in both `Request` and `Command`; marks one complete host-call batch, merges types in issue order, never marks mount | [Animation](@/docs/effects-and-browser.md#animation) |
 | Pointer data | `Pointer`: `id`, `kind`, `button`, `buttons`, `modifiers`, `primary`, `at` (`Outside` or `In({ zone, x, y })` with fractions 0–10000) | [Pointer input and dragging](@/docs/state-and-events.md#pointer-input-and-dragging) |
 | Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.spans` (the `{ start, len }` ranges of `n` bytes that cover a file, for `read!`), `Received`, `FilesHandler` (the generic handler family at `Received`), `on_files` | [Files](@/docs/files.md) |
 | Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) | [Files](@/docs/files.md) |
@@ -253,6 +254,7 @@ optional.
 | Option | Default | What it sets or bounds | Guide |
 |---|---|---|---|
 | `onFault` | none | Called with the diagnostic when the app breaks a contract and stops | [Getting Started](@/docs/getting-started.md) |
+| `viewTransitions` | `"document"` | `"document"` allows marked batches to start document-wide browser view transitions; `"off"` applies directly. Other values refuse mount | [Animation](@/docs/effects-and-browser.md#animation) |
 | `maxWorkers` | the core count, at most 8 | Workers alive at once; further jobs wait in order | [Workers](@/docs/workers.md#serving-the-app) |
 | `workers` | `"worker"` | `"inline"` runs jobs on the page's thread instead, one at a time | [Workers](@/docs/workers.md#serving-the-app) |
 | `workerUrl` | `worker.mjs` beside `runtime.mjs` | Where the worker script is served | [Workers](@/docs/workers.md#serving-the-app) |
@@ -293,7 +295,10 @@ them.
 | Declared media queries | 32 distinct queries of 1–256 UTF-8 bytes | Contract error naming the query |
 | Live observations | One per element and kind, structurally bounded by live nodes | Node resource bound; no fixed row-count cap |
 | Live DOM nodes | 2³² − 2 | Resource limit |
-| Ingress entries (occurrences and reports) | 4096 | A report drains a full queue early while idle; overflow while a batch applies is a resource limit |
+| Ingress entries (occurrences and reports) | 4096 | A report drains a full queue early while idle; a waiting transition applies and drains; overflow in other busy phases is a resource limit |
+| Transition batches waiting for update | 1 | Inputs queue; a full queue forces application and draining |
+| Wait for transition update | 1000 ms | Apply directly and skip the animation |
+| Transition observation history | Newest 4096 records and 1 MiB encoded type bytes, absolute U64 count | Overwritten or oversized records fail observation; an oversized record clears prior history. Counter exhaustion disables observation; app execution continues |
 | Replaceable reports per source | 1 | A newer report replaces the waiting payload in place |
 | Wait for a report's frame | 100 ms | Timer drains a visible page given no frames; hidden pages use a microtask |
 | Manual scroll history | Newest 4096 commands, absolute U64 count | Overwritten ordinals and counter exhaustion fail observation; app execution continues |
@@ -363,5 +368,7 @@ it mounts.
 ## Protocol
 
 The command stream, event records, boot bytes and program declarations are versioned together. The
-full wire protocol is Appendix B of
+current protocol is version 13: every nonempty page batch starts with a flags
+byte, and a marked batch ends with `TRANSITION` (opcode 24). Worker answers
+have no page-batch header. The full wire protocol is Appendix B of
 [design.md](https://github.com/lukewilliamboswell/roc-signals/blob/main/design.md).

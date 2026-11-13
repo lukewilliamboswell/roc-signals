@@ -157,7 +157,7 @@ list is on, say), lift that state in and map both:
 | `PortCall({ port, message, timeout_ms })` | `PortAnswer(message)` or `PortFailed(failure)`, once. Made by a typed [port](@/docs/ports.md) call |
 | `PortSubscribe({ port, message })` | `PortAnswer(message)` for every message, or `PortFailed(failure)`, until the site is disposed or the JavaScript ends it. Made by a typed port subscription |
 | `Self` | `Now`, in a follow-up turn |
-| `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)`, `ApplyValue(ref)`, `FocusInPlace(ref)`, `ScrollIntoView(ref, props)`, `ScrollTo(ref, props)`, `Save({ file, name })` (made with `File.save`), `PortCommand({ port, message })` (made by a typed port command) | None: commands, the tags of `Engine.Command` |
+| `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)`, `ApplyValue(ref)`, `FocusInPlace(ref)`, `ScrollIntoView(ref, props)`, `ScrollTo(ref, props)`, `Save({ file, name })` (made with `File.save`), `PortCommand({ port, message })` (made by a typed port command), `ViewTransition(types)` | None: commands, the tags of `Engine.Command` |
 
 `Engine.http_text(res)` reads an HTTP result as the body of a 2xx response,
 or a typed `HttpError`: `Network(message)`, `Timeout`, `Status(code)` or
@@ -173,6 +173,98 @@ runtime's monitor; see [Monitoring Workers](@/docs/worker-monitoring.md).
 Commands are emitted and forgotten, so their reaction is `Engine.ignore({})`:
 
 {{ sample(file="effects.roc", region="commands") }}
+
+## Animation
+
+Ask for `ViewTransition(types)` from an effect site watching the value whose
+change should animate. A result turn then animates just as a click does:
+
+{{ sample(file="transitions.roc", region="transition") }}
+
+It marks the complete batch of one host call, including its follow-up turns.
+Several requests merge their types in first-issue order, removing duplicates.
+The command awaits no result, occupies no in-flight slot, and never marks the
+mount batch, even if a `watch` asks for it there. `watch_changes` expresses
+that intention directly. Types are passed to the browser as supplied; use CSS
+identifiers matched by `:active-view-transition-type()`.
+
+Style the browser's snapshots with CSS. Give each independently moving row a
+unique `view-transition-name` derived from its stable app key, with an identifier
+prefix such as `book-`. A shared `view-transition-class` lets many uniquely
+named rows share animation rules. Reading List demonstrates moves, entries
+and removals, with different active types for shelf and book changes. Its CSS
+lives with its Roc view, so every mount uses the same rules.
+
+A transition captures at document scope and there is only one running per
+document. A later one replaces the previous animation at its final state,
+including animations from another mount. The browser's capture cost follows
+the page and its named elements, rather than how many rows changed. Name only
+what should move independently. If your app is embedded in a page it does not
+own, mount with `viewTransitions: "off"`; the default is `"document"`.
+
+The browser calls the update asynchronously. Until then the old page remains
+and inputs queue; once the update runs, its DOM commands and node commands
+such as focus run together, then queued inputs drain. An event for a removed
+element is dropped. Effects that name no node, including saves, port commands,
+HTTP and storage, run immediately when the call returns, preserving a click's
+user gesture. This deliberately puts them before focus and other node commands
+in a marked batch, even if issued later. The API being absent, an actually
+hidden document or the mount option `"off"` applies directly with the usual
+DOM-before-effects order. A missing callback falls back after 1000 ms, and a
+full queue while waiting forces the update sooner.
+
+### Input and reduced motion
+
+`::view-transition { pointer-events: none; }` lets input reach **uncaptured**
+parts of the page. Elements inside a captured subtree remain unavailable to
+hit testing until their snapshots finish. Reading List sets the root's
+`view-transition-name` to `none` and captures book rows only: its form and
+shelf buttons stay interactive, while controls inside a transitioning book
+wait for its snapshots to finish. This is a browser cost the app's capture
+boundaries and animation duration must account for. See the browser's
+[guide to groups of named elements](https://developer.chrome.com/docs/modern-web-guidance/guides/ui-behaviors/group-element-transitions).
+
+Honor `prefers-reduced-motion` in the app's CSS. For example, turn off the
+snapshot animations:
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) { animation: none !important; }
+}
+```
+
+An app that wants not to ask can also declare a
+[media preference](#media-preferences) and gate its request plan. The runtime
+never guesses a motion preference. Duplicate live transition names can reject
+the animation; the update still applies and the monitor reports the rejection.
+
+### Entries and long exits
+
+`@starting-style` supplies a newly inserted element's initial CSS, including
+on mount. A moved row uses `insertBefore` and can replay that entrance. Inside
+a view transition, style entering snapshots through
+`::view-transition-new(...):only-child` instead. Reading List limits its
+`@starting-style` fallback to `@supports not (view-transition-name: none)`.
+
+Removing a row still removes its real DOM, routes, state and scoped requests
+in the ordinary turn. Its old snapshot can fade after removal; the runtime
+keeps no outgoing node. For a long exit that must keep real content on the
+page, model leaving in the app:
+
+{{ sample(file="transitions.roc", region="leaving") }}
+
+Here the keyed row stays mounted with a `leaving` class while its row-scoped
+1500 ms timer waits. CSS gives that class the matching exit animation. Both
+`Fired` and `Refused` remove it, so an exhausted in-flight allowance cannot
+leave it stuck. Specs can assert this intermediate state in either runner.
+
+No animation-frame subscription is needed. CSS transitions interpolate
+progress between values written by an `Interval`; a countdown uses an
+`Interval` directly. A custom canvas element can own its drawing frame loop
+and read the latest state from an attribute, without making Roc compute a
+turn for every frame.
 
 ## Startup data
 
@@ -313,8 +405,10 @@ tag fits both a request plan and a cleanup's command plan.
 edge is `Keep`, `Start`, `End` or `Px(U32)`. Left is distance from the
 logical start edge, including RTL; the browser resolves `End` when
 it performs the command. Both scroll commands run after the whole batch,
-in order with focus and other commands. They use the same reference map
-and stale-name count as focus, and await no result. Layout stays in the
+in order with focus and other node commands. A marked view-transition
+batch starting a transition performs effects that name no node earlier,
+before its DOM update. Both scroll commands use the same reference map and
+stale-name count as focus, and await no result. Layout stays in the
 browser. Specs assert the command performed with
 [`expect-scroll`](@/docs/testing.md#dialogs-popovers-and-scrolling).
 
