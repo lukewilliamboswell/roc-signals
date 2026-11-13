@@ -70,7 +70,9 @@ inside it. The runtime never decides anything: it does what the commands say.
    changes from this turn, then its query and its window, and
    changes the rows it draws once, from the window before the event to the
    window after it.
-7. The changes of the tables the turn wrote are cleared, the reference names
+7. The tables the turn wrote are rearmed for their next writing turn without
+   changing their recorded changes. Those changes are cleared before that
+   next turn's first modifier runs. The reference names
    the turn mounted or renamed are checked for duplicates, focus requests
    are resolved, and the call returns the command batch and the work record. The
    runtime applies the DOM commands in order, then performs any effects.
@@ -117,8 +119,13 @@ records and tables in place rather than copying them. That is also why the
 engine never keeps an earlier copy of a state or a cell to compare with: the
 copy would be a second holder, and every write would then copy what it
 changes. What changed comes from the write. The one earlier state the engine
-keeps is a table's changes: for each row a turn wrote, that row as it was,
-dropped when the turn ends.
+keeps is a table's changes: one earlier row per distinct key its last writing
+turn wrote. Unrelated turns retain them; the next writing turn releases them
+before its first modifier runs, or disposal of the holder releases them.
+There is no time bound and no earlier whole table is kept. Freeing that record
+costs its previous writing turn's recorded keys, even if the next turn writes
+only one key; this is delayed cleanup proportional to recorded keys over the
+session.
 
 Disposing a site drops its closure, and reference counting frees what it
 held. The repository's long-session tests walk every example for thousands

@@ -46,8 +46,10 @@
   keeps the previous value of a state, a cell or a table to compare against.
   A table's changes are this rule at the grain of rows, not a
   second reactive mechanism: they say only which rows a turn wrote, its table views
-  are reached by the ordinary `Changed` pass, and they live one turn, cleared
-  by the root when that pass has run.
+  are reached by the ordinary `Changed` pass. They retain the last writing
+  turn's earlier rows until the next writing turn's first modifier clears
+  them; unrelated turns leave them intact. After the pass the root rearms
+  only the exact table cells written, without changing public observations.
 - Dependencies are declared by read signatures on values, the layers and the
   store cells a value reads, built before anything runs. Preserve glitch-free
   propagation: every write of a turn is applied before anything is observed,
@@ -67,8 +69,8 @@
   again, and a row the turn never shows would be created, with its state and
   its requests.
 - A DOM event, an effect result and a follow-up enter through the same turn:
-  route, fire, settle, Changed pass, end of turn (the changes of the tables
-  written are cleared, then focus). Do not create a side channel that
+  route, fire, settle, Changed pass, end of turn (the tables written are
+  rearmed for their next writing turn, then focus). Do not create a side channel that
   bypasses routing, pruning, scope ownership, the in-flight table or the
   counters.
 - Keep one way to write shared state. A write to a store cell is a value
@@ -126,8 +128,12 @@
   closure references a site's storage, the root site alone holds the store,
   and environments move through handlers rather than being shared. No second
   reference is kept for convenience or for comparison; the one earlier state
-  the design allows is a table's changes, one earlier row for each row a turn
-  wrote, dropped when the turn ends. A change that makes a column, a state, a
+  the design allows is a table's changes, one earlier row per distinct key
+  its last writing turn wrote, dropped before the next writing turn's first
+  modifier or when its holder is disposed. There is no time bound on those
+  earlier rows and no earlier whole table is retained. State the delayed
+  O(J_previous) reclamation cost of the next writing turn; do not advertise
+  that turn as worst-case O(J_current) only. A change that makes a column, a state, a
   cell or a table copy on every update is a regression even when output is
   correct, and per-event allocation counts and the soak's flat round trips
   must catch it.

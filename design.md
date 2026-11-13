@@ -737,9 +737,9 @@ names the rows it touches.
   `contains` and `len` read, and so do `fold` and `to_list`, which visit
   every row in no particular order. A table has no order of its own: an
   order the user chooses is a field of the row that a view sorts by.
-- **This turn's changes.** Beside its rows a table keeps, for every key
-  written in the current turn, the row as it was when the turn began, or the
-  fact that it was absent. A key written twice keeps its first entry, so the
+- **The last writing turn's changes.** Beside its rows a table keeps, for
+  every key its last writing turn wrote, the row as it was before that turn's
+  first write of the key, or the fact that it was absent. A key written twice keeps its first entry, so the
   changes are bounded by the distinct keys one turn writes. An operation that
   replaces every row does not record per key: it marks the changes as a whole
   rewrite. The changes are how a keyed write says which rows it touched, and
@@ -852,12 +852,18 @@ keeps, in the query's order, and of those only the rows inside a window.
   that starts at a layer's site afterwards finds the view up to date. The
   site checks all the same: drawing from a view the turn's writes have
   passed would name rows the table no longer has.
-- **Cleared when the turn ends.** After the turn's one `Changed` pass the
-  root site clears the changes of each table the turn wrote (see
-  [One turn](#one-turn)). Every view of a table, wherever it is mounted,
-  reads the same changes in that pass; kept longer, the changes would describe
-  rows relative to a state no view remembers, and would go on holding their
-  earlier values.
+- **Cleared before the next writing turn.** Every view reads the same
+  changes in the turn's one `Changed` pass. After it, the root rearms the
+  recording phase of exactly the table cells the turn wrote, without changing
+  the record. Before the next writing turn's first modifier runs, that
+  generated modifier clears the record; further modifiers and `also` handlers
+  in the same event retain its first earlier row per key. A turn that does
+  not write the table leaves the record unchanged. Rearming has no public
+  observation and starts no second propagation pass (see [One turn](#one-turn)). Clearing
+  can reclaim the previous writing turn's J earlier rows before this turn's
+  modifier, costing O(J_previous) even when the current turn writes one key.
+  This moves reclamation from the previous turn's end; over a session its
+  work is proportional to recorded keys, not a worst-case O(J_current) bound.
 
 A plain reader of a table cell (`todos.signal().map(|t| t.len())`, one row by
 key) is an ordinary reader of the cell: it is evaluated on every write to the
@@ -866,9 +872,12 @@ alone.
 
 `Table.inverse` gives the writes that undo what the changes hold, and
 `Table.apply` applies such a list, recording each write like any other. The
-changes are gone when the turn ends, so an inverse is taken in the event that
-made the writes. `Table.changes` reads the changes themselves: each written key
-with its row as it was.
+changes remain until the next writing turn begins. A later event's decision
+may read the last writing turn's inverse before its writes begin, then apply
+it to undo that turn. An inverse taken inside a modifier describes the current
+writing turn instead. A history that must outlive the next table write keeps
+the inverse in its own cell. `Table.changes` reads the same retained record,
+so a signal over changes or inverse stays true through unrelated turns.
 
 The changes' bookkeeping is the engine's alone: clearing them, giving a table
 its cell's identity, judging what a write of the cell left, and reading the
@@ -952,11 +961,15 @@ ownership law that makes this hold is:
   second holder and every write would copy what it changes. What changed
   comes from the write. Pruning happens at holes, rows of a list and
   `derive`, where the values compared are small.
-- **The one earlier state the engine keeps is bounded and brief.** A table's
-  changes hold, for each row a turn wrote, that row as it was when the turn
-  began. It is one row per row written, never the table, and it is dropped
-  when the turn ends. A row that holds a large value and is written in part
-  is therefore copied once in a turn that writes it.
+- **Earlier rows are bounded by the last writing turn.** A table's changes
+  hold one earlier row per distinct key that turn wrote, or a whole-rewrite
+  marker. Those rows may live until the next write of the table or disposal
+  of its holder; there is no time bound and no earlier whole table is kept.
+  Clearing releases them before the next turn's first modifier receives the
+  uniquely held table. A row holding a large value is copied at most once
+  while recording the first earlier value for that key in one writing turn. The
+  next writing turn pays for releasing the previous record, O(J_previous);
+  retaining changes delays that cleanup rather than making it constant.
 
 Patterns that hold this law against current compiler behaviour (wrapping a
 site's captures in a single-tag `Held`, returning a rebuilt site from each
@@ -1258,11 +1271,11 @@ Every external input — a DOM event or an effect result — is one *turn*:
    after all writes and derives above it. With no writes and no echo, a turn
    runs no pass. No sibling is visited to discover an echo.
 5. **End of turn.** When the pass has refreshed every reader, the root site
-   clears the changes of each table the pass named. When it named none, that
-   is one test of the pass's signature against the tables' bits. A table
-   whose cell shares a bit with another written cell is cleared too; its
-   changes are empty already. A table the turn wrote is cleared whether or not
-   a view draws it. The reference names the turn mounted or renamed are
+   rearms exactly the table cells the turn wrote, retaining their changes
+   until the next writing turn's first modifier. When no table was written,
+   that is one test of the turn's signature against the tables' bits. Sharing
+   a signature bit does not rearm an unrelated cell. A table the turn wrote
+   is rearmed whether or not a view draws it. The reference names the turn mounted or renamed are
    checked for duplicates, after every departing reference has been removed
    and before focus is resolved. Then focus requests made during the turn are resolved to
    node ids and emitted, and follow-up turns queued by the turn run next, in
@@ -3378,7 +3391,7 @@ bound and a declared behaviour at the bound:
 | Handles one job holds at once | 64 (the worker's heap) | `resource_limit` fault of that worker |
 | Bytes of one fetched body | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)` |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
-| A table's changes | One earlier row for each distinct key one turn writes | Cleared when the turn ends |
+| A table's changes | One earlier row per distinct key its last writing turn wrote, or a whole-rewrite marker | Released before the next writing turn's first modifier or disposal of the holder; unrelated turns retain them, with no time bound |
 | Runtime ingress queue | 4096 occurrences and reports | A report drains a full queue early while idle; a waiting transition applies and drains; other busy overflow is `resource_limit` poison |
 | Transition batches waiting for update | 1 | Inputs queue; a full queue forces apply and drain |
 | Wait for transition update | 1000 ms | Apply directly and skip animation |
@@ -4471,21 +4484,23 @@ Table.contains : Table(k, v), k -> Bool
 Table.len : Table(k, v) -> U64
 Table.fold : Table(k, v), state, (state, k, v -> state) -> state       # in no particular order
 Table.to_list : Table(k, v) -> List({ key : k, row : v })               # in no particular order
-Table.changes : Table(k, v) -> [Keyed(Dict(k, [Absent, Was(v)])), Rewritten]   # this turn's changes
-Table.inverse : Table(k, v) -> Try(List([Put(k, v), Remove(k)]), [Rewritten])   # undoes this turn's writes
+Table.changes : Table(k, v) -> [Keyed(Dict(k, [Absent, Was(v)])), Rewritten]   # the last writing turn's changes
+Table.inverse : Table(k, v) -> Try(List([Put(k, v), Remove(k)]), [Rewritten])   # undoes the retained writing turn
 Table.apply : Table(k, v), List([Put(k, v), Remove(k)]) -> Table(k, v)
 # The engine's bookkeeping of the changes. An app cannot make an EngineOnly, so it cannot call these:
 Table.version, Table.changes_start : Table(k, v), EngineOnly -> U64
 Table.clear_changes : Table(k, v), EngineOnly -> Table(k, v)
+Table.begin_changes, Table.finish_changes : Table(k, v), EngineOnly -> Table(k, v)
+Table.is_ready : Table(k, v), EngineOnly -> Bool
 Table.with_id : Table(k, v), U64, EngineOnly -> Table(k, v)
 Table.mark : Table(k, v), EngineOnly -> { id : U64, start : U64, version : U64 }
 Table.kept : Table(k, v), { id : U64, start : U64, version : U64 }, EngineOnly -> Table(k, v)
 ```
 
-Everything above the last six lines is for apps. `changes`, `inverse` and
-`apply` read and replay the changes of the current turn: an undo history
-takes an inverse in the event that made the writes, and a pure test reads
-which rows a transition wrote.
+The operations before the bookkeeping comment are for apps. `changes`,
+`inverse` and `apply` read and replay the retained writing turn. A later event
+may read its inverse before writing; a history keeps an inverse that must
+survive the next write. A pure test reads which rows its transition recorded.
 
 `Worker` (`platform/Worker.roc`) is the typed layer over `Work` requests, and
 `Wire` (`platform/Wire.roc`) the payload format it derives:

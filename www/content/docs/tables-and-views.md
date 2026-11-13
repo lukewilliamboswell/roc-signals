@@ -256,10 +256,19 @@ list is sorted or filtered on the page, or when it is long.
   nothing: an earlier write of the same event may have removed the row.
 - A row read after its key left the table in the same event is a contract
   error.
-- `Table.inverse` gives the writes that undo what this turn wrote, and
-  `Table.apply` applies such a list, for an undo history. The changes from a
-  turn are gone when the turn ends, so take the inverse in the event
-  that made the writes.
+- `Table.changes` retains the last turn that wrote this table, including
+  across unrelated turns. The next writing turn clears it before its first
+  modifier runs; further writes in that event keep the first earlier row
+  per key. A signal can read these changes like any other part of the cell.
+- `Table.inverse` gives writes that undo those retained changes, and
+  `Table.apply` applies them. A later event's decision can read the inverse
+  before its writes begin and use it to undo the last writing turn. Inside
+  a modifier the inverse describes that event's writes instead. Keep an
+  inverse in a history cell if it must survive the next write of the table.
+  Earlier rows are held until that next write or disposal of their holder;
+  there is no time bound, and no earlier whole table is kept. The next
+  writing turn pays for freeing those earlier rows, so a single keyed write
+  can also pay cleanup proportional to the previous turn's recorded keys.
 
 Three compiler defects touch tables today, each with its upstream issue:
 
