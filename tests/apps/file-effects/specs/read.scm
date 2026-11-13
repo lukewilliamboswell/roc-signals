@@ -1,10 +1,10 @@
 (test "File effects — the page reads a file's text and bytes, and a range of one"
   (setup
     (file "a.txt" "text/plain" "héllo")
-    (file "b.bin" "application/octet-stream" "xy" 3))
+    (file "b.csv" "text/csv" "xy" 3))
   (steps
-    (choose-files (label "Upload") "a.txt" "b.bin")
-    (expect-text (test-id "files") "a.txt:6:text/plain|b.bin:6:application/octet-stream")
+    (choose-files (label "Upload") "a.txt" "b.csv")
+    (expect-text (test-id "files") "a.txt:6:text/plain|b.csv:6:text/csv")
     (click (role button :name "Read text"))
     (expect-text (test-id "read") "reading")
     (expect-pending-effects 1)

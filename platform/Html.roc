@@ -44,7 +44,7 @@ Html := [].{
 	span_s : Signal(ctx, Str), List(Attr(ctx)) -> Elem(ctx)
 	span_s = |v, attrs| Engine.element("span", attrs, [Engine.text_s(v)])
 
-	## A boolean attribute rendered `"true"` or `"false"` (such as `checked` or
+	## A boolean attribute rendered `"true"` or `"false"` (such as `disabled` or
 	## `aria-pressed`).
 	flag : Str, Signal(ctx, Bool) -> Attr(ctx)
 	flag = |name, v| Engine.attr_s(name, v.map(bool_str))
@@ -69,7 +69,7 @@ Html := [].{
 	## `input` event. While the input is focused, the user's draft wins over a
 	## differing `value`; it is applied on blur.
 	text_input : Signal(ctx, Str), Str, Signal(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
-	text_input = |name, kind, v, attrs, h| Engine.element("input", [Engine.attr_s("aria-label", name), Engine.attr("type", kind), Engine.attr_s("value", v), Engine.on("input", h)].concat(attrs), [])
+	text_input = |name, kind, v, attrs, h| Engine.element("input", [Engine.attr_s("aria-label", name), Engine.attr("type", kind), Engine.prop_s(Engine.Prop.value, v), Engine.on("input", h)].concat(attrs), [])
 
 	## What a file input lets the user choose.
 	##
@@ -88,10 +88,10 @@ Html := [].{
 	## is `name`, as `file_input(Engine.const("Document"), {}, handler)` or
 	## `file_input(name, { selection: Multiple }, handler)`. The browser opens
 	## its own chooser when the user activates it; `handler`
-	## (`State.on_files`) receives the chosen files as handles.
+	## (`State.set_value`) receives the chosen files as handles.
 	file_input : Signal(ctx, Str), FileInputProps, FilesHandler(ctx) -> Elem(ctx)
 	file_input = |name, FileInputProps.({ selection, accept }), h| {
-		attrs = [Engine.attr_s("aria-label", name), Engine.attr("type", "file"), Engine.on_files("change", h)]
+		attrs = [Engine.attr_s("aria-label", name), Engine.attr("type", "file"), Engine.on_files(Change, h)]
 		with_accept = match accept {
 			Any => attrs
 			Types(types) => attrs.append(Engine.attr("accept", types))
@@ -103,35 +103,35 @@ Html := [].{
 		Engine.element("input", with_selection, [])
 	}
 
-	## Make the element a drop target for files: `handler` (`State.on_files`)
+	## Make the element a drop target for files: `handler` (`State.set_value`)
 	## receives the files dropped on it or a descendant, and the browser does
 	## not open them.
 	on_drop_files : FilesHandler(ctx) -> Attr(ctx)
-	on_drop_files = |h| Engine.on_files("drop", h)
+	on_drop_files = |h| Engine.on_files(Drop, h)
 
-	## `handler` (`State.on_files`) receives the files pasted into the element
+	## `handler` (`State.set_value`) receives the files pasted into the element
 	## or a descendant (an image copied from another app, say). A paste that
 	## carries no files reaches no handler.
 	on_paste_files : FilesHandler(ctx) -> Attr(ctx)
-	on_paste_files = |h| Engine.on_files("paste", h)
+	on_paste_files = |h| Engine.on_files(Paste, h)
 
 	## `checkbox(name, checked, attrs, handler)`: a checkbox that follows
 	## `checked`. `handler` receives `"true"` or `"false"` on `change`.
 	checkbox : Signal(ctx, Str), Signal(ctx, Bool), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
-	checkbox = |name, v, attrs, h| Engine.element("input", [Engine.attr_s("aria-label", name), Engine.attr("type", "checkbox"), Html.flag("checked", v), Engine.on("change", h)].concat(attrs), [])
+	checkbox = |name, v, attrs, h| Engine.element("input", [Engine.attr_s("aria-label", name), Engine.attr("type", "checkbox"), Engine.prop_s(Engine.Prop.checked, v), Engine.on("change", h)].concat(attrs), [])
 
 	## `select(name, value, attrs, options, handler)`: a drop-down that shows
 	## `value`. `handler` receives the chosen option's value on `change`.
 	select : Signal(ctx, Str), Signal(ctx, Str), List(Attr(ctx)), List(Elem(ctx)), Handler(ctx) -> Elem(ctx)
-	select = |name, v, attrs, opts, h| Engine.element("select", [Engine.attr_s("aria-label", name), Engine.attr_s("value", v), Engine.on("change", h)].concat(attrs), opts)
+	select = |name, v, attrs, opts, h| Engine.element("select", [Engine.attr_s("aria-label", name), Engine.prop_s(Engine.Prop.value, v), Engine.on("change", h)].concat(attrs), opts)
 
 	## `option(value, label)`: an option for `select`.
 	option : Str, Str -> Elem(ctx)
-	option = |value, label| Engine.element("option", [Engine.attr("value", value)], [Engine.text(label)])
+	option = |value, label| Engine.element("option", [Engine.prop(Engine.Prop.value, value)], [Engine.text(label)])
 
 	## An option whose value and label both follow a value.
 	option_s : Signal(ctx, Str) -> Elem(ctx)
-	option_s = |v| Engine.element("option", [Engine.attr_s("value", v)], [Engine.text_s(v)])
+	option_s = |v| Engine.element("option", [Engine.prop_s(Engine.Prop.value, v)], [Engine.text_s(v)])
 
 	# ------------------------------------------------------------ structure
 
@@ -255,7 +255,7 @@ Html := [].{
 	## `textarea(name, value, attrs, handler)`: a multi-line text box; behaves like
 	## `text_input`.
 	textarea : Signal(ctx, Str), Signal(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
-	textarea = |name, v, attrs, h| Engine.element("textarea", [Engine.attr_s("aria-label", name), Engine.attr_s("value", v), Engine.on("input", h)].concat(attrs), [])
+	textarea = |name, v, attrs, h| Engine.element("textarea", [Engine.attr_s("aria-label", name), Engine.prop_s(Engine.Prop.value, v), Engine.on("input", h)].concat(attrs), [])
 
 	## `number_input(name, value, attrs, handler)`: a number box. `handler`
 	## receives the draft text on every `input`; the app parses it, so a partial
@@ -273,8 +273,8 @@ Html := [].{
 			Engine.attr("aria-label", name),
 			Engine.attr("type", "radio"),
 			Engine.attr("name", group),
-			Engine.attr("value", value),
-			Html.flag("checked", selected.map(|cur| cur == value)),
+			Engine.prop(Engine.Prop.value, value),
+			Engine.prop_s(Engine.Prop.checked, selected.map(|cur| cur == value)),
 			Engine.on("change", h),
 		].concat(attrs),
 		[],
@@ -282,7 +282,7 @@ Html := [].{
 
 	## An option with extra attributes.
 	option_attrs : Str, Str, List(Attr(ctx)) -> Elem(ctx)
-	option_attrs = |value, label, attrs| Engine.element("option", [Engine.attr("value", value)].concat(attrs), [Engine.text(label)])
+	option_attrs = |value, label, attrs| Engine.element("option", [Engine.prop(Engine.Prop.value, value)].concat(attrs), [Engine.text(label)])
 }
 
 bool_str : Bool -> Str

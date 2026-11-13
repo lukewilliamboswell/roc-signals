@@ -7,18 +7,22 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 5
+	protocol_version = 6
 
-	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List((Str, U32)), ht : List(U64), ids : List(U32) }
+	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)) }
 
-	THole : { kind : U8, path : List(U8), name : Str, handler : U8 }
+	Listener : { event : Str, handler : U32, kind : U8, policies : U32 }
+
+	Target : { node : U32, handler : U32, event : Str, kind : U8, policies : U32 }
+
+	THole : { kind : U8, path : List(U8), name : Str, handler : U8, payload_kind : U8, policies : U32, property : U8 }
 
 	Tpl : { bytes : List(U8), root_at : U64, holes : List(THole) }
 
 	Model : { nodes : List(DNode), statics : List(U64), rows : List(Dict(U64, {})), tpls : List(Tpl), root : U64 }
 
 	new : {} -> Model
-	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [] }], statics: [], rows: [], tpls: [], root: 0 }
+	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [] }], statics: [], rows: [], tpls: [], root: 0 }
 
 	u32 : List(U8), U64 -> U32
 	u32 = |b, at| {
@@ -111,7 +115,7 @@ Dom := [].{
 	}
 
 	empty_node : DNode
-	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [] }
+	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [] }
 
 	## Update node i in place (the node is moved out of the list first, so
 	## its kid list stays uniquely owned).
@@ -166,12 +170,12 @@ Dom := [].{
 				dom,
 				n.parent - 1,
 				|p| {
-					{ tag, text, attrs, kids, parent, rn, hs, ht, ids } = p
+					{ tag, text, attrs, kids, parent, rn, hs, ht, ids, props } = p
 					kept = match kids.find_last_index(|k| k == i) {
 						Ok(pos) => kids.drop_at(pos)
 						Err(_) => kids
 					}
-					{ tag, text, attrs, kids: kept, parent, rn, hs, ht, ids }
+					{ tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props }
 				},
 			)
 			Dom.modify(d1, i, |m| { ..m, parent: 0 })
@@ -186,7 +190,7 @@ Dom := [].{
 			d0,
 			parent,
 			|p| {
-				{ tag, text, attrs, kids, parent: pp, rn, hs, ht, ids } = p
+				{ tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props } = p
 				kids2 = match before {
 					Err(End) => kids.append(i)
 					Ok(b) => {
@@ -194,7 +198,7 @@ Dom := [].{
 						kids.sublist({ start: 0, len: pos }).append(i).concat(kids.sublist({ start: pos, len: kids.len() - pos }))
 					}
 				}
-				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids }
+				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props }
 			},
 		)
 		Dom.modify(d1, i, |n| { ..n, parent: parent + 1 })
@@ -221,7 +225,7 @@ Dom := [].{
 		kind = Dom.byte(b, at)
 		if kind == 2 {
 			(t, next) = Dom.str(b, at + 1)
-			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [] })
+			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [] })
 			(d1, i, next)
 		} else {
 			(tag, a1) = Dom.str(b, at + 1)
@@ -238,7 +242,7 @@ Dom := [].{
 			}
 			nk = Dom.byte(b, $at).to_u64()
 			$at = $at + 1
-			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [] })
+			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [] })
 			var $d = d1
 			$k = 0
 			while $k < nk {
@@ -291,15 +295,23 @@ Dom := [].{
 			$at = $at + 2 + depth
 			if kind == 2 {
 				(name, next) = Dom.str(b, $at)
-				$holes = $holes.append({ kind, path, name, handler: 0 })
+				$holes = $holes.append({ kind, path, name, handler: 0, payload_kind: 0, policies: 0, property: 0 })
 				$at = next
 			} else if kind == 3 {
 				hb = Dom.byte(b, $at)
 				(ev, next) = Dom.str(b, $at + 1)
-				$holes = $holes.append({ kind, path, name: ev, handler: hb })
-				$at = next
+				payload_kind = Dom.byte(b, next)
+				policies = Dom.u32(b, next + 1)
+				Dom.check_listener({ event: ev, kind: payload_kind, policies })
+				$holes = $holes.append({ kind, path, name: ev, handler: hb, payload_kind, policies, property: 0 })
+				$at = next + 5
+			} else if kind == 6 {
+				property = Dom.byte(b, $at)
+				_ = Dom.property_name(property)
+				$holes = $holes.append({ kind, path, name: "", handler: 0, payload_kind: 0, policies: 0, property })
+				$at = $at + 1
 			} else if kind == 1 or kind == 4 or kind == 5 {
-				$holes = $holes.append({ kind, path, name: "", handler: 0 })
+				$holes = $holes.append({ kind, path, name: "", handler: 0, payload_kind: 0, policies: 0, property: 0 })
 			} else {
 				crash "unknown template hole kind ${kind.to_str()}"
 			}
@@ -327,6 +339,75 @@ Dom := [].{
 		Dom.set_node(dom, i, { ..n, attrs })
 	}
 
+	## Browser input changes live properties independently of attributes.
+	## Keeping both lets an ordinary attribute on a custom element remain an
+	## attribute without manufacturing the element's `value` property.
+	set_live_on : Model, U64, Str, Str -> Model
+	set_live_on = |dom, i, name, value| Dom.modify(
+		dom,
+		i,
+		|n| {
+			props = if (n.props.any(|(key, _)| key == name)) n.props.map(|(key, prior)| if (key == name) (key, value) else (key, prior)) else n.props.append((name, value))
+			{ ..n, props }
+		},
+	)
+
+	## A control's property value, including defaults before its first write.
+	live_value : DNode, Str -> Str
+	live_value = |n, name| n.props.find_first(|(key, _)| key == name).map_ok(|(_, value)| value) ?? if (name == "checked") "false" else if (name == "value" and n.tag == "button") Dom.attr_of(n, "value") else ""
+
+	## Only known payload kinds and policy bits can occur in a declaration.
+	## Invalid numbers come from a protocol mismatch, never an app event.
+	check_listener : { event : Str, kind : U8, policies : U32 } -> {}
+	check_listener = |{ event, kind, policies }| {
+		if kind != 1 and kind != 2 {
+			crash "executor: unknown payload kind ${kind.to_str()}"
+		}
+		if kind == 2 and !["change", "drop", "paste"].contains(event) {
+			crash "executor: files payload kind on unsupported event ${event}"
+		}
+		if policies.bitwise_and(0xFFFFFFFC) != 0 {
+			crash "executor: unknown event policy bits ${policies.to_str()}"
+		}
+	}
+
+	## The independent property table fixes each wire index's claimed name.
+	property_name : U8 -> Str
+	property_name = |property| match property {
+		1 => "value"
+		2 => "checked"
+		_ => crash "executor: unknown property index ${property.to_str()}"
+	}
+
+	## HTML interprets an input's type without ASCII case. Keep the raw
+	## attribute for assertions while applying the browser's file-input rule.
+	is_file_input : DNode -> Bool
+	is_file_input = |n| n.tag == "input" and Dom.attr_of(n, "type").to_utf8().map(|ascii| if (ascii >= 65 and ascii <= 90) ascii + 32 else ascii) == [102, 105, 108, 101]
+
+	## The browser's file-input guard recognizes every ASCII spelling while
+	## leaving other input types available for value properties.
+	expect ["file", "FILE", "FiLe", "text", "filex"].map(|kind| Dom.is_file_input({ ..Dom.empty_node, tag: "input", attrs: [("type", kind)] })) == [Bool.True, Bool.True, Bool.True, Bool.False, Bool.False]
+
+	## Apply one declared property in stream order, preserving the mirror
+	## attribute used by browser update observations. A file input rejects a
+	## value where it is applied because its type may change during a turn.
+	set_property_on : Model, U64, U8, Str, U32 -> Model
+	set_property_on = |dom, i, property, value, command_node| {
+		name = Dom.property_name(property)
+		n = Dom.node(dom, i)
+		if property == 1 and Dom.is_file_input(n) {
+			crash "contract: value property on file input at node ${command_node.to_str()}"
+		}
+		if property == 2 and value != "true" and value != "false" {
+			crash "executor: invalid checked property value"
+		}
+		allowed = if (property == 1) ["input", "textarea", "select", "option"].contains(n.tag) else n.tag == "input"
+		if !allowed {
+			crash "executor: property ${name} on unsupported element ${n.tag}"
+		}
+		Dom.set_live_on(Dom.set_attr_on(dom, i, name, value), i, name, value)
+	}
+
 	set_text_on : Model, U64, Str -> Model
 	set_text_on = |dom, i, t| {
 		n = Dom.node(dom, i)
@@ -338,14 +419,14 @@ Dom := [].{
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "FOCUS", "PORT", "SAVE"].get(op.to_u64()) ?? "?"
+	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "FOCUS", "PORT", "SAVE", "PROP", "HPROP"].get(op.to_u64()) ?? "?"
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
 	describe = |ops| {
 		var $parts = []
 		var $op = 1.U8
-		while $op <= 20 {
+		while $op <= 22 {
 			n = ops.count_if(|o| o == $op)
 			if n > 0 {
 				$parts = $parts.append("${Dom.op_name($op)}=${n.to_str()}")
@@ -458,9 +539,9 @@ Dom := [].{
 	}
 
 	## Apply one batch; also return its opcodes, its effect commands in
-	## stream order, the node indices each `ATTR`, `HATTR`, `SETTEXT` or
+	## stream order, the node indices each `ATTR`, `HATTR`, `PROP`, `HPROP`, `SETTEXT` or
 	## `TEXT` wrote (one entry per command, in order), and the `value`
-	## writes of `ATTR` and `HATTR` (node index and value, in order: the
+	## writes of `PROP` and `HPROP` (node index and value, in order: the
 	## spec runner defers them on a focused control as the runtime does).
 	## Node indices only grow, so a node created by this batch has an index
 	## at or above the model's node count before it.
@@ -504,9 +585,13 @@ Dom := [].{
 						if v != "" or hole.name != "class" {
 							$dd = Dom.set_attr_on($dd, target, hole.name, v)
 						}
+					} else if hole.kind == 6 {
+						(v, next) = Dom.str(b, $at)
+						$at = next
+						$dd = Dom.set_property_on($dd, target, hole.property, v, nid)
 					} else if hole.kind == 3 {
 						t = Dom.node($dd, target)
-						$dd = Dom.set_node($dd, target, { ..t, hs: t.hs.append((hole.name, hole.handler.to_u32())) })
+						$dd = Dom.set_node($dd, target, { ..t, hs: t.hs.append({ event: hole.name, handler: hole.handler.to_u32(), kind: hole.payload_kind, policies: hole.policies }) })
 					} else if hole.kind == 4 or hole.kind == 5 {
 						# Site placeholders and references carry command ids; neither
 						# replaces the row root's event routing id.
@@ -519,7 +604,7 @@ Dom := [].{
 				}
 				$dd = Dom.place($dd, root, parent, before)
 				$d = Dom.set_row($dd, nid, root, site_id)
-			} else if op == 2 or op == 3 {
+			} else if op == 2 or op == 3 or op == 22 {
 				nid = Dom.u32(b, $at)
 				h = Dom.byte(b, $at + 4).to_u64()
 				(v, next) = Dom.str(b, $at + 5)
@@ -529,10 +614,17 @@ Dom := [].{
 				hole = tpl.holes.get(h) ?? crash "unknown hole"
 				target = Dom.node($d, row).ht.get(h) ?? crash "hole target"
 				$written = $written.append(target)
-				if op == 3 and hole.name == "value" {
+				if op == 22 and hole.property == 1 {
 					$values = $values.append((target, v))
 				}
-				$d = if (op == 2) Dom.set_text_on($d, target, v) else Dom.set_attr_on($d, target, hole.name, v)
+				$d = if op == 2 {
+					Dom.set_text_on($d, target, v)
+				} else if op == 22 {
+					if hole.kind != 6 {
+						crash "executor: HPROP names a non-property hole"
+					}
+					Dom.set_property_on($d, target, hole.property, v, nid)
+				} else Dom.set_attr_on($d, target, hole.name, v)
 			} else if op == 4 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
 				before = Dom.u32(b, $at + 4)
@@ -586,7 +678,7 @@ Dom := [].{
 				before = Dom.u32(b, $at + 8)
 				(s, next) = Dom.str(b, $at + 12)
 				$at = next
-				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [] } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [] }
+				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [] } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [] }
 				(d1, i) = Dom.add_node($d, fresh)
 				$d = Dom.bind(Dom.place(d1, i, parent, before), nid, i)
 			} else if op == 9 {
@@ -595,18 +687,29 @@ Dom := [].{
 				(value, n2) = Dom.str(b, n1)
 				$at = n2
 				$written = $written.append(i)
-				if name == "value" {
+				$d = Dom.set_attr_on($d, i, name, value)
+			} else if op == 21 {
+				id = Dom.u32(b, $at)
+				property = Dom.byte(b, $at + 4)
+				(value, next) = Dom.str(b, $at + 5)
+				$at = next
+				i = Dom.lookup($d, id)
+				$written = $written.append(i)
+				if property == 1 {
 					$values = $values.append((i, value))
 				}
-				$d = Dom.set_attr_on($d, i, name, value)
+				$d = Dom.set_property_on($d, i, property, value, id)
 			} else if op == 11 {
 				id = Dom.u32(b, $at)
 				h = Dom.u32(b, $at + 4)
 				(ev, next) = Dom.str(b, $at + 8)
-				$at = next
+				kind = Dom.byte(b, next)
+				policies = Dom.u32(b, next + 1)
+				Dom.check_listener({ event: ev, kind, policies })
+				$at = next + 5
 				i = Dom.lookup($d, id)
 				n = Dom.node($d, i)
-				$d = Dom.set_node($d, i, { ..n, rn: id, hs: n.hs.append((ev, h)) })
+				$d = Dom.set_node($d, i, { ..n, rn: id, hs: n.hs.append({ event: ev, handler: h, kind, policies }) })
 			} else if op == 12 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
 				(t, next) = Dom.str(b, $at + 4)
@@ -828,91 +931,31 @@ Dom := [].{
 	u64 : List(U8), U64 -> U64
 	u64 = |b, at| Dom.u32(b, at).to_u64() + Dom.u32(b, at + 4).to_u64().shl_wrap(32)
 
-	## The (node, handler) pair an event `ev` on node index i dispatches, as
-	## the browser runtime computes it: the nearest handler for `ev` walking
-	## up when `bubbles` is true, or only the target otherwise, then the
-	## nearest node with an engine routing id. Reference ids do not route events.
-	target : Model, U64, Str, Bool -> Try((U32, U32), [NoHandler])
+	## Resolve the nearest declared handler and its payload kind and policy
+	## bits. Non-bubbling events inspect only the target; a reference's command
+	## id never replaces the owning row's routing id.
+	target : Model, U64, Str, Bool -> Try(Target, [NoHandler])
 	target = |dom, i, ev, bubbles| {
-		var $n = i
-		var $h = -1.I64
+		var $at = i
+		var $found = NoListener
 		while True {
-			n = Dom.node(dom, $n)
-			if $h < 0 and ($n == i or bubbles) {
-				# A handler name may carry a policy suffix ("click:prevent").
-				match n.hs.find_first(|(e, _)| e == ev or e.starts_with("${ev}:")) {
-					Ok((_, hh)) => {
-						$h = hh.to_i64()
+			n = Dom.node(dom, $at)
+			if $found == NoListener and ($at == i or bubbles) {
+				match n.hs.find_first(|listener| listener.event == ev) {
+					Ok(listener) => {
+						$found = Found(listener)
 					}
 					Err(_) => {}
 				}
 			}
-			if n.rn != 0 and $h >= 0 {
-				return Ok((n.rn, $h.to_u32_wrap()))
+			match $found {
+				Found(listener) if n.rn != 0 => return Ok({ node: n.rn, handler: listener.handler, event: listener.event, kind: listener.kind, policies: listener.policies })
+				_ => {}
 			}
 			if n.parent == 0 {
 				return Err(NoHandler)
 			}
-			$n = n.parent - 1
-		}
-	}
-
-	## The (node, handler) pair a `:files` event `ev` on node index i
-	## dispatches: as `target`, but the nearest handler for `ev` must take
-	## files (a `:files` suffix), as the runtime requires before it hands an
-	## event's files over.
-	files_target : Model, U64, Str -> Try((U32, U32), [NoHandler])
-	files_target = |dom, i, ev| {
-		var $n = i
-		var $h = -1.I64
-		while True {
-			n = Dom.node(dom, $n)
-			if $h < 0 {
-				match n.hs.find_first(|(e, _)| e == ev or e.starts_with("${ev}:")) {
-					Ok((e, hh)) => {
-						if !e.ends_with(":files") {
-							return Err(NoHandler)
-						}
-						$h = hh.to_i64()
-					}
-					Err(_) => {}
-				}
-			}
-			if n.rn != 0 and $h >= 0 {
-				return Ok((n.rn, $h.to_u32_wrap()))
-			}
-			if n.parent == 0 {
-				return Err(NoHandler)
-			}
-			$n = n.parent - 1
-		}
-	}
-
-	## Whether the handler event `ev` dispatches from node index i asks the
-	## browser to prevent the event's default action (a `:prevent` suffix), as
-	## the runtime decides it when it dispatches (design.md, "Browser events
-	## and policies"). An event that reaches no handler prevents nothing.
-	prevents : Model, U64, Str -> Bool
-	prevents = |dom, i, ev| {
-		var $n = i
-		var $name = ""
-		while True {
-			n = Dom.node(dom, $n)
-			if $name == "" {
-				match n.hs.find_first(|(e, _)| e == ev or e.starts_with("${ev}:")) {
-					Ok((e, _)) => {
-						$name = e
-					}
-					Err(_) => {}
-				}
-			}
-			if n.rn != 0 and $name != "" {
-				return $name.ends_with(":prevent") or $name.contains(":prevent:")
-			}
-			if n.parent == 0 {
-				return Bool.False
-			}
-			$n = n.parent - 1
+			$at = n.parent - 1
 		}
 	}
 
@@ -959,7 +1002,7 @@ Dom := [].{
 	by_attr = |dom, name, value| Dom.find(dom, dom.root, |n| Dom.attr_of(n, name) == value)
 
 	## Every node (depth-first) whose text content equals `t` and has a handler.
-	click_target : Model, U64 -> Try((U32, U32), [NoHandler])
+	click_target : Model, U64 -> Try(Target, [NoHandler])
 	click_target = |dom, i| Dom.target(dom, i, "click", Bool.True)
 
 	button_with_text : Model, Str -> Try(U64, [NotFound])
@@ -991,14 +1034,14 @@ Dom := [].{
 	## occurrence of the same type can reach the ancestor instead.
 	expect {
 		base = Dom.new({})
-		(d1, parent) = Dom.add_node(base, { ..Dom.empty_node, tag: "div", rn: 10, hs: [("cancel", 1), ("scroll", 2)] })
-		(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", parent: parent + 1, hs: [("close", 3)] })
+		(d1, parent) = Dom.add_node(base, { ..Dom.empty_node, tag: "div", rn: 10, hs: [{ event: "cancel", handler: 1, kind: 1, policies: 0 }, { event: "scroll", handler: 2, kind: 1, policies: 0 }] })
+		(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", parent: parent + 1, hs: [{ event: "close", handler: 3, kind: 1, policies: 0 }] })
 		actual = {
 			target: Dom.target(d2, child, "close", Bool.False),
 			ancestor: Dom.target(d2, child, "scroll", Bool.False),
 			bubbling: Dom.target(d2, child, "cancel", Bool.True),
 		}
-		actual == { target: Ok((10, 3)), ancestor: Err(NoHandler), bubbling: Ok((10, 1)) }
+		actual == { target: Ok({ node: 10, handler: 3, event: "close", kind: 1, policies: 0 }), ancestor: Err(NoHandler), bubbling: Ok({ node: 10, handler: 1, event: "cancel", kind: 1, policies: 0 }) }
 	}
 
 	## Removing an ancestor drops both a row's routing id and the command

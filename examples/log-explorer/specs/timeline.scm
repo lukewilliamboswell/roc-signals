@@ -1,8 +1,8 @@
 (test "Log Explorer — the timeline counts entries a minute, a search adds its matches, and a click opens the viewer at that time"
   (setup
-    (file "app.log" "text/x-log" "2026-11-11T12:00:10Z INFO api: GET /orders/1 answered 200\n2026-11-11T12:00:40Z INFO api: GET /orders/2 answered 200\n2026-11-11T12:01:05Z ERROR checkout: POST /checkout answered 503\n    at Payments.charge (payments.roc:64)\n2026-11-11T12:01:30Z ERROR checkout: POST /checkout answered 503\n    at Payments.charge (payments.roc:64)\n2026-11-11T12:01:50Z WARN checkout: slow request: POST /checkout took 4100 ms\n2026-11-11T12:03:00Z INFO api: GET /orders/3 answered 200\n2026-11-11T12:61:00Z INFO api: a clock that runs past the hour\n" 10))
+    (file "app.txt" "text/plain" "2026-11-11T12:00:10Z INFO api: GET /orders/1 answered 200\n2026-11-11T12:00:40Z INFO api: GET /orders/2 answered 200\n2026-11-11T12:01:05Z ERROR checkout: POST /checkout answered 503\n    at Payments.charge (payments.roc:64)\n2026-11-11T12:01:30Z ERROR checkout: POST /checkout answered 503\n    at Payments.charge (payments.roc:64)\n2026-11-11T12:01:50Z WARN checkout: slow request: POST /checkout took 4100 ms\n2026-11-11T12:03:00Z INFO api: GET /orders/3 answered 200\n2026-11-11T12:61:00Z INFO api: a clock that runs past the hour\n" 10))
   (steps
-    (choose-files (label "Log file") "app.log")
+    (choose-files (label "Log file") "app.txt")
     (run-effect 1)
     ; Timestamps are ordered as text, so the impossible 12:61 is the latest.
     (expect-text (test-id "overview") "90 lines, 70 entries, from 2026-11-11T12:00:10Z to 2026-11-11T12:61:00Z")

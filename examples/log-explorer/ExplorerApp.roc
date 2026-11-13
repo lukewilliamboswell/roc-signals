@@ -505,7 +505,7 @@ ExplorerApp := [].{
 		"20000",
 		|entries| {
 			cells = LogStore.cells
-			arrival = Engine.handle_files(LogStore.arrived)
+			arrival = Engine.handle(LogStore.arrived)
 			Engine.element(
 				"section",
 				[Engine.class("panel grid gap-3 p-4"), Html.aria_label("Open a log"), Html.on_drop_files(arrival)],

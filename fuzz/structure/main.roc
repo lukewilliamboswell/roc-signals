@@ -15,6 +15,9 @@ import pf.Worker
 ##
 ## The tree is at most 5 deep and 40 nodes, over every site kind; the only
 ## awaited requests are timers and worker jobs:
+## - `Control(i)`: text and checkbox properties reading a layer, including
+##   inside row templates; equality pruning is checked by the settle pass
+##   and their final values by the fresh-mount model;
 ## - `Show(i)`: a text reading a visible layer; `Bump(i)`: a button whose
 ##   click adds 1 to a writable layer (a `state`); `Bump2(i, j)`: a button
 ##   whose click adds 1 to two writable layers as one event, one handler
@@ -59,6 +62,7 @@ import pf.Worker
 
 Node := [
 	Show(U64),
+	Control(U64),
 	Bump(U64),
 	Bump2(U64, U64),
 	Pair(U64, U64),
@@ -98,7 +102,9 @@ node = |d0, depth| {
 	(i, d2) = next(d1)
 	match b % 10 {
 		0 | 1 =>
-			if (b // 10) % 2 == 0 {
+			if b >= 20 {
+				(Control(i), d2)
+			} else if (b // 10) % 2 == 0 {
 				(Show(i), d2)
 			} else {
 				(j, d3) = next(d2)
@@ -174,7 +180,7 @@ val_of = |g, i| pick(g.vals, i, Core.const(0))
 bump_button : G(ctx), U64 -> Core.Elem(ctx)
 bump_button = |g, i|
 	match g.wrs.get(i % g.wrs.len().max(1)) {
-		Ok(w) => Core.element("button", [Core.on_click(w.update(|n| n + 1))], [Core.text("+")])
+		Ok(w) => Core.element("button", [Core.on_with("click", { prevent: i % 2 == 0, stop: i % 3 == 0 }, w.update(|n| n + 1))], [Core.text("+")])
 		Err(_) => Core.text("-")
 	}
 
@@ -187,6 +193,14 @@ flat_list = |ns, g, inner| Core.element("div", [], ns.map(|n| flat(n, g, inner))
 flat : Node, G(ctx), Inner(ctx) -> Core.Elem(ctx)
 flat = |n, g, inner| match n {
 	Show(i) => show(val_of(g, i))
+	Control(i) => Core.element(
+		"div",
+		[],
+		[
+			Core.element("input", [Core.attr("type", "text"), Core.prop_s(Core.Prop.value, val_of(g, i).map(|value| value.to_str()))], []),
+			Core.element("input", [Core.attr("type", "checkbox"), Core.prop_s(Core.Prop.checked, val_of(g, i).map(|value| value % 2 == 0))], []),
+		],
+	)
 	Bump(i) => bump_button(g, i)
 	Bump2(i, j) => {
 		count = g.wrs.len().max(1)
@@ -550,9 +564,9 @@ step = |s, op, b| {
 		match cs.get(b % cs.len().max(1)) {
 			Ok((i, ev)) =>
 				match Dom.target(s.dom, i, ev, Bool.True) {
-					Ok((id, h)) => {
-						(a, c) = Core.take_cmds(Core.event(s.eng, id, h, ""), [])
-						named = "click node ${id.to_str()}"
+					Ok(target) => {
+						(a, c) = Core.take_cmds(Core.event(s.eng, target.node, target.handler, ""), [])
+						named = "click node ${target.node.to_str()}"
 						(absorb({ ..s, clicks: s.clicks + 1 }, a, c, named), named)
 					}
 					Err(_) => (s, "no handler")
@@ -626,6 +640,7 @@ target = Fuzz.target_with!({
 		# watch read each with a derive of the other. Clicks 3 is the button
 		# that writes both; 1 and 2 write one each; 0 the root.
 		ex("pairs", 1, [1, 5, 0, 1, 5, 0, 3, 12, 1, 2, 10, 2, 1, 10, 1, 2], [0, 3, 0, 3, 0, 1, 0, 3, 0, 2, 0, 3, 0, 0, 0, 3]),
+		ex("properties-in-rows", 0, [1, 7, 0, 1, 20, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
 		ex("series", 2, [], []),
 	],
 	generator: { mode: Fuzz.u8_in(0, 1), tree: Fuzz.list(Fuzz.u8, 80), events: Fuzz.list(Fuzz.u8, 80) }.Fuzz,

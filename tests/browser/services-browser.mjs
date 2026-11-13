@@ -201,7 +201,7 @@ async function open(prelude = "") {
     const viaMetric = rt.x.metric(16 + 12);
     return [after.length, String(after[12] - before[12]), String(viaMetric) === String(after[12]), String(after[1])];
   });
-  check("work record: 41 counters (work, the effect counters, port commands sent); one SETTEXT for one click; metric(16 + k) reads counter k", work, [41, "1", true, "3"]);
+  check("work record: 43 counters (work, effects, ports and property commands); one SETTEXT for one click; metric(16 + k) reads counter k", work, [43, "1", true, "3"]);
   await ctx.close();
 }
 

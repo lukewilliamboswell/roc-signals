@@ -222,7 +222,7 @@ chooser : {} -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 chooser = |{}| Engine.element(
 	"section",
-	[Engine.class("panel grid gap-4 border-dashed p-5"), Html.aria_label("Drop a CSV file"), Html.on_drop_files(Engine.handle_files(AppStore.chosen))],
+	[Engine.class("panel grid gap-4 border-dashed p-5"), Html.aria_label("Drop a CSV file"), Html.on_drop_files(Engine.handle(AppStore.chosen))],
 	[
 		Html.h2("Choose a CSV", "card-title"),
 		Html.p("Drop a CSV file here, choose one from your device, or load the sample.", "muted"),
@@ -231,7 +231,7 @@ chooser = |{}| Engine.element(
 			[Engine.class("field")],
 			[
 				Engine.element("span", [Engine.class("field-label")], [Engine.text("CSV file")]),
-				Html.file_input(Engine.const("CSV file"), { accept: Types(".csv,text/csv") }, Engine.handle_files(AppStore.chosen)),
+				Html.file_input(Engine.const("CSV file"), { accept: Types(".csv,text/csv") }, Engine.handle(AppStore.chosen)),
 			],
 		),
 		Html.div("toolbar", [Html.button("Load the sample", [Engine.class("button")], Engine.does(AppStore.sample_asked))]),

@@ -237,12 +237,12 @@ for (const [button, where] of [
     root.append(parent);
     parent.append(target);
     parent.__rn = 101;
-    parent.__h = { close: { h: 1 }, scroll: { h: 2 }, cancel: { h: 3 } };
+    parent.__h = { close: { h: 1, kind: 1, policies: 0 }, scroll: { h: 2, kind: 1, policies: 0 }, cancel: { h: 3, kind: 1, policies: 0 } };
     const rt = new RocEngineRuntime({}, root);
     const calls = [];
     rt.deliver = (node, handler) => calls.push([node, handler]);
     for (const type of ["close", "scroll", "cancel"]) rt.listen(type);
-    target.__h = { close: { h: 4 }, scroll: { h: 5 } };
+    target.__h = { close: { h: 4, kind: 1, policies: 0 }, scroll: { h: 5, kind: 1, policies: 0 } };
     target.dispatchEvent(new Event("close"));
     target.dispatchEvent(new Event("scroll"));
     target.__h = {};
@@ -250,15 +250,15 @@ for (const [button, where] of [
     target.dispatchEvent(new Event("scroll"));
     target.dispatchEvent(new Event("cancel", { bubbles: true }));
     target.dispatchEvent(new Event("cancel"));
-    parent.__h.drop = { h: 8, files: true };
-    parent.__h.dragover = { h: 6 };
+    parent.__h.drop = { h: 8, kind: 2, policies: 0 };
+    parent.__h.dragover = { h: 6, kind: 1, policies: 0 };
     rt.listen("drop");
     rt.listen("dragover");
     const over = new Event("dragover", { bubbles: true, cancelable: true });
     target.dispatchEvent(over);
     const dropAllows = over.defaultPrevented;
     rt.contain(new Error("fixture done"), "executor");
-    target.__h = { close: { h: 4 } };
+    target.__h = { close: { h: 4, kind: 1, policies: 0 } };
     target.dispatchEvent(new Event("close"));
     root.remove();
     return [calls, dropAllows, rt.listening.size];
@@ -283,7 +283,7 @@ for (const [button, where] of [
     byte(1); str("div"); byte(0); byte(1);
     byte(1); str("input"); byte(0); byte(0);
     byte(2); byte(5); byte(1); byte(0);
-    byte(3); byte(1); byte(0); byte(7); str("click");
+    byte(3); byte(1); byte(0); byte(7); str("click"); byte(1); word(0);
     tpl.push(...bytes); bytes.length = 0;
     byte(7); word(1); word(tpl.length); bytes.push(...tpl);
     byte(1); word(10); word(0); word(0); word(1); word(11);
@@ -345,7 +345,7 @@ for (const [button, where] of [
       const b = document.createElement("input");
       root.append(a, b); document.body.append(root);
       a.__rn = 1; b.__rn = 2;
-      a.__h = b.__h = { focus: { h: 0 } };
+      a.__h = b.__h = { focus: { h: 0, kind: 1, policies: 0 } };
       const rt = new RocEngineRuntime({}, root);
       rt.listen("focus");
       let delivered = 0;
@@ -404,6 +404,192 @@ for (const [button, where] of [
   check("clicking the same point: move and press again, no focus change", same.filter((t) => !isHover(t)), press.filter((t) => t !== "focusin"));
   check("prevented pointerdown suppresses mouse press/release and focus, but still clicks", prevented.filter((t) => !isHover(t)), ["pointermove", "mousemove", "pointerdown", "pointerup", "click"]);
   check("hover boundary events occur on entry and travel but not a resting second click", [first.some(isHover), other.some(isHover), same.some(isHover)], [true, true, false]);
+  await ctx.close();
+}
+{
+  // The kind decoder runs after routing, and reports the owning site for
+  // malformed bytes or an export that supplied the wrong payload kind.
+  const { page, ctx } = await open();
+  const got = await page.evaluate(async () => {
+    const { pageImports } = await import("./runtime.mjs");
+    const plain = document.querySelector('[aria-label="Plain"]');
+    const module = window.__rt.module;
+    const failures = [];
+    for (const mode of ["utf8", "files"]) {
+      const x = (await WebAssembly.instantiate(module, pageImports(module))).exports;
+      x.boot_keys(); x.payload_reserve(0); x.init();
+      const payload = mode === "utf8" ? [255] : [0, 0, 0, 0, 0, 0, 0, 0];
+      if (mode === "files") x.files_stage(0);
+      const ptr = x.payload_reserve(payload.length);
+      new Uint8Array(x.memory.buffer, ptr, payload.length).set(payload);
+      try {
+        if (mode === "files") x.event_files(plain.__rn, plain.__h.input.h);
+        else x.event(plain.__rn, plain.__h.input.h);
+        failures.push([mode, "accepted"]);
+      } catch (_) {
+        failures.push([mode, x.fault(), new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len())), x.cmd_len()]);
+      }
+    }
+    return failures;
+  });
+  check("routed kind decoders reject malformed text and files sent to a text handler, naming the owning site", got, [
+    ["utf8", 1, "contract: text event payload is not UTF-8 at site /0", 0],
+    ["files", 1, "contract: event payload does not match text kind at site /0", 0],
+  ]);
+  await ctx.close();
+}
+{
+  const { page, ctx } = await open();
+  const got = await page.evaluate(() => {
+    const rt = window.__rt;
+    const checkbox = document.querySelector('[aria-label="Property check a"]');
+    const rowId = checkbox.parentNode.__rn;
+    const original = rt.applyBatch;
+    let bytes;
+    rt.applyBatch = function () {
+      bytes = Array.from(new Uint8Array(this.x.memory.buffer, this.x.cmd_ptr(), this.x.cmd_len()));
+      return original.call(this);
+    };
+    const click = (name) => [...document.querySelectorAll("button")].find((b) => b.textContent === name).click();
+    click("Set row checks");
+    const changed = bytes;
+    click("Touch row metadata");
+    const equal = bytes;
+    rt.applyBatch = original;
+    document.querySelector('[aria-label="Custom colon event"]').dispatchEvent(new Event("x:y", { bubbles: true }));
+    const word = (n) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
+    return {
+      changed, expected: [22, ...word(rowId), 1, 4, 0, 0, 0, 116, 114, 117, 101],
+      equal, checked: checkbox.checked, same: checkbox === document.querySelector('[aria-label="Property check a"]'),
+      custom: document.querySelector('[data-testid="custom-event-log"]').textContent,
+      attrs: [document.querySelector('[data-testid="ordinary-progress"]').getAttribute("value"), document.querySelector('[data-testid="ordinary-custom-value"]').getAttribute("value"), document.querySelector('[data-testid="ordinary-custom-value"]').value ?? null],
+    };
+  });
+  check("producer emits the exact HPROP bytes for one row's checked property", got.changed, got.expected);
+  check("equal row properties emit nothing and retain their DOM node", [got.equal, got.checked, got.same], [[], true, true]);
+  check("a custom event type containing a colon reaches its declared handler", got.custom, "received");
+  check("ordinary value attributes remain attributes outside the property rows", got.attrs, ["0.5", "attribute only", null]);
+  await ctx.close();
+}
+for (const [button, expected] of [
+  ["Retired prevent suffix", 'contract: retired event suffix in "click:prevent" at site /0/5/1; use on_with for policies or on_files for files'],
+  ["Retired files suffix", 'contract: retired event suffix in "change:files" at site /0/5/1; use on_with for policies or on_files for files'],
+  ["Duplicate click policies", 'contract: two handlers for the "click" event on one <button> at site /0/5/1: an element takes one handler per event; run both from one with Handler.also'],
+  ["Duplicate change kinds", 'contract: two handlers for the "change" event on one <input> at site /0/5/1: an element takes one handler per event; run both from one with Handler.also'],
+  ["Checked property on div", 'contract: property "checked" is not allowed on <div> at site /0/5/1'],
+  ["Value attribute on input", 'contract: attribute "value" on <input> is claimed by a property at site /0/5/1; use prop or prop_s'],
+  ["Duplicate value property", 'contract: property "value" is declared twice on <input> at site /0/5/1'],
+]) {
+  const { page, ctx } = await open();
+  await page.evaluate((name) => [...document.querySelectorAll("button")].find((b) => b.textContent === name).click(), button);
+  check(`${button}: exact mount diagnostic`, await page.evaluate(() => [window.__rt.poisoned?.class, window.__rt.poisoned?.message]), ["contract", expected]);
+  await ctx.close();
+}
+for (const mode of ["initial", "changed"]) {
+  const { page, ctx } = await open();
+  const got = await page.evaluate((mode) => {
+    const click = (name) => [...document.querySelectorAll("button")].find((b) => b.textContent === name).click();
+    let node;
+    if (mode === "changed") {
+      node = document.querySelector('[aria-label="Dynamic file value"]').__id;
+      click("Make value input a file");
+      if (window.__rt.poisoned) return ["premature", window.__rt.poisoned.message];
+      click("Write file value");
+    } else {
+      click("Value property on file input");
+      node = [...document.querySelectorAll('input[type="file"]')].at(-1).__id;
+    }
+    return [window.__rt.poisoned?.class, window.__rt.poisoned?.message, `contract: value property on file input at node ${node}`];
+  }, mode);
+  check(`${mode} file-input value property: exact contract diagnostic from its current type`, got.slice(0, 2), ["contract", got[2]]);
+  await ctx.close();
+}
+{
+  // Independent wire fixtures cover declaration-driven dispatch and element
+  // properties, including invalid producer bytes and contract containment.
+  const { page, ctx } = await open();
+  const got = await page.evaluate(async () => {
+    const { RocEngineRuntime } = await import("./runtime.mjs");
+    const harness = () => {
+      const root = document.createElement("div"); document.body.append(root);
+      const memory = new WebAssembly.Memory({ initial: 1 });
+      let bytes = [];
+      const x = { memory, cmd_ptr: () => 0, cmd_len: () => bytes.length, fault: () => 0 };
+      const rt = new RocEngineRuntime(x, root);
+      rt.statics[0] = root;
+      const byte = (n) => bytes.push(n);
+      const word = (n) => bytes.push(n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255);
+      const str = (s) => { const b = new TextEncoder().encode(s); word(b.length); bytes.push(...b); };
+      const elem = (id, tag, parent = 0) => { byte(8); word(id); word(parent); word(0); str(tag); };
+      const attr = (id, name, value) => { byte(9); word(id); str(name); str(value); };
+      const prop = (id, index, value) => { byte(21); word(id); byte(index); str(value); };
+      const listen = (id, type, kind = 1, policies = 0) => { byte(11); word(id); word(7); str(type); byte(kind); word(policies); };
+      const apply = () => { new Uint8Array(memory.buffer).set(bytes); rt.guard(() => rt.applyBatch()); bytes = []; };
+      const template = (id, tag, property) => {
+        const outer = bytes; bytes = [];
+        byte(1); str(tag); byte(0); byte(0);
+        byte(1); byte(6); byte(0); byte(property);
+        const tpl = bytes; bytes = outer;
+        byte(7); word(id); word(tpl.length); bytes.push(...tpl);
+      };
+      const inst = (id, parent, tpl, value) => { byte(1); word(id); word(parent); word(0); word(tpl); str(value); };
+      const hprop = (id, hole, value) => { byte(22); word(id); byte(hole); str(value); };
+      const close = () => { if (!rt.poisoned) rt.contain(new Error("fixture done"), "executor"); root.remove(); };
+      return { root, rt, byte, word, str, elem, attr, prop, listen, apply, template, inst, hprop, close };
+    };
+    if (!customElements.get("property-probe")) customElements.define("property-probe", class extends HTMLElement { value = "original"; });
+    const h = harness();
+    const calls = [];
+    h.rt.deliver = (node, handler, payload) => calls.push([node, handler, payload]);
+    h.elem(1, "input"); h.prop(1, 1, "hello");
+    h.elem(2, "input"); h.attr(2, "type", "checkbox"); h.prop(2, 2, "true");
+    h.elem(3, "property-probe"); h.attr(3, "value", "attribute");
+    h.elem(4, "progress"); h.attr(4, "value", "0.5");
+    h.listen(1, "x:y", 1, 3); h.listen(1, "close", 1, 2);
+    h.elem(5, "select"); h.prop(5, 1, "b");
+    h.template(1, "option", 1); h.inst(40, 5, 1, "b");
+    h.template(2, "input", 2); h.inst(41, 0, 2, "true");
+    h.apply();
+    const state = [h.rt.statics[1].value, h.rt.statics[1].getAttribute("value"), h.rt.statics[2].checked, h.rt.statics[3].getAttribute("value"), h.rt.statics[3].value, h.rt.statics[4].getAttribute("value"), h.rt.statics[5].value, h.rt.statics[41].checked];
+    h.hprop(41, 0, "false"); h.hprop(40, 0, "c"); h.prop(5, 1, "c"); h.apply();
+    const changed = [h.rt.statics[41].checked, h.rt.statics[5].value];
+    let documentEvents = 0;
+    const observed = () => { documentEvents += 1; };
+    document.addEventListener("x:y", observed);
+    const custom = new Event("x:y", { bubbles: true, cancelable: true });
+    h.rt.statics[1].dispatchEvent(custom);
+    document.removeEventListener("x:y", observed);
+    let targetEvents = 0;
+    h.rt.statics[1].addEventListener("close", () => { targetEvents += 1; });
+    h.rt.statics[1].dispatchEvent(new Event("close"));
+    const dispatch = [calls, custom.defaultPrevented, documentEvents, targetEvents];
+    h.close();
+    const failures = [];
+    for (const fault of ["kind", "kind-event", "policy", "property", "wrong-element", "checked", "template", "file", "changed-file"]) {
+      const bad = harness();
+      bad.elem(9, fault === "wrong-element" ? "div" : "input");
+      if (fault === "kind") bad.listen(9, "click", 99, 0);
+      if (fault === "kind-event") bad.listen(9, "click", 2, 0);
+      if (fault === "policy") bad.listen(9, "click", 1, 4);
+      if (fault === "property") bad.prop(9, 99, "x");
+      if (fault === "wrong-element") bad.prop(9, 2, "true");
+      if (fault === "checked") bad.prop(9, 2, "yes");
+      if (fault === "template") bad.template(1, "input", 99);
+      if (fault === "file") { bad.attr(9, "type", "file"); bad.prop(9, 1, ""); }
+      if (fault === "changed-file") { bad.prop(9, 1, "draft"); bad.apply(); bad.attr(9, "type", "file"); bad.prop(9, 1, "next"); }
+      bad.apply();
+      failures.push([fault, bad.rt.poisoned?.class, fault.includes("file") ? bad.rt.poisoned?.message : null]);
+      bad.close();
+    }
+    return { state, changed, dispatch, failures };
+  });
+  check("property commands preserve controls and select settling; ordinary value attributes do not assign custom properties", got.state, ["hello", "hello", true, "attribute", "original", "0.5", "b", true]);
+  check("HPROP applies checkbox and option holes", got.changed, [false, "c"]);
+  check("typed prevent/stop hide a bubbling custom name above the mount, while non-bubbling stop leaves the target listener running", got.dispatch, [[[1, 7, ""], [1, 7, ""]], true, 0, 1]);
+  check("unknown declarations and property encodings are executor faults; file input values are contract faults with the node", got.failures, [
+    ["kind", "executor", null], ["kind-event", "executor", null], ["policy", "executor", null], ["property", "executor", null], ["wrong-element", "executor", null], ["checked", "executor", null], ["template", "executor", null],
+    ["file", "contract", "contract: value property on file input at node 9"], ["changed-file", "contract", "contract: value property on file input at node 9"],
+  ]);
   await ctx.close();
 }
 await browser.close();

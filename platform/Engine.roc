@@ -140,7 +140,7 @@ Engine := [].{
 	## `[]` wakes no one. It works at any depth with no `lift`, as cells do.
 	## To write local state in the same event, compose it with that state's
 	## handler (`Handler.also`).
-	handle : (Str -> List(Write(st))) -> Handler(ctx)
+	handle : (p -> List(Write(st))) -> HandlerOf(ctx, p)
 		where [ctx.store : () -> Reach(ctx, st)]
 	handle = |decide| { h: Core.store_handler(decide) }
 
@@ -158,7 +158,7 @@ Engine := [].{
 	## `first` has written: `draft.update(|_| "").also(Engine.handle_by(draft.signal(), ..))`
 	## reads the emptied draft. Put the decision first to read what the
 	## event found.
-	handle_by : Signal(ctx, b), (b, Str -> List(Write(st))) -> Handler(ctx)
+	handle_by : Signal(ctx, b), (b, p -> List(Write(st))) -> HandlerOf(ctx, p)
 		where [ctx.store : () -> Reach(ctx, st)]
 	handle_by = |b, decide| { h: Core.store_handler_by(b.v, decide) }
 
@@ -173,32 +173,9 @@ Engine := [].{
 	## The list is built where the handler is made, once, so it cannot
 	## depend on the payload or on a reading: a transition that does is a
 	## `handle` or a `handle_by`.
-	does : List(Write(st)) -> Handler(ctx)
+	does : List(Write(st)) -> HandlerOf(ctx, p)
 		where [ctx.store : () -> Reach(ctx, st)]
 	does = |writes| { h: Core.store_handler(|_| writes) }
-
-	## As `handle`, for the files an event carries: `decide` receives the
-	## files the user chose, dropped or pasted ([Received]) and returns
-	## every write the event makes, so a drop can keep the files, start a
-	## page again and clear a note as one transition. Attach it with
-	## `on_files` or an `Html` file control.
-	##
-	## ```
-	## Engine.on_files("drop", Engine.handle_files(|{ files, refused: _ }| [cells.attached.set(files), cells.page.reset, cells.note.set("")]))
-	## ```
-	##
-	## To write local state for the same files, compose it with that
-	## state's `on_files` handler (`FilesHandler.also`).
-	handle_files : (Received -> List(Write(st))) -> FilesHandler(ctx)
-		where [ctx.store : () -> Reach(ctx, st)]
-	handle_files = |decide| { h: Core.store_files_handler(decide) }
-
-	## As `handle_files`, where `decide` also receives `v`, read once when
-	## the files arrive and before any of this decision's own writes, as
-	## `handle_by` reads it.
-	handle_files_by : Signal(ctx, b), (b, Received -> List(Write(st))) -> FilesHandler(ctx)
-		where [ctx.store : () -> Reach(ctx, st)]
-	handle_files_by = |b, decide| { h: Core.store_files_handler_by(b.v, decide) }
 
 	## `react(decide)` is an effect site's [Reaction] that writes the cells
 	## `decide` names, given the value the request was issued for and its
@@ -488,21 +465,21 @@ Engine := [].{
 	}
 
 	## An event handler usable in context `ctx`: what an event writes, given
-	## its payload (an input's value, `"true"`/`"false"` for a checkbox, `""`
-	## for a click). Make one with the [State] methods for local state, or
+	## a payload of type `p`. An attach function chooses the payload kind, so
+	## text and received files use the same reducers, decisions and composition. Make one with the [State] methods for local state, or
 	## with `handle` for the store's cells, and attach it with `on`,
 	## `on_click` or an `Html` control. A handler runs once per event, in the
 	## turn that delivers it.
-	Handler(ctx) :: { h : Core.Handler(ctx) }.{
+	HandlerOf(ctx, p) :: { h : Core.HandlerOf(ctx, p) }.{
 
 		## Use a handler from the enclosing context inside a `state` or `derive` body
 		## nested in it.
-		lift : Handler(ctx) -> Handler(In(ctx, s))
+		lift : HandlerOf(ctx, p) -> HandlerOf(In(ctx, s), p)
 		lift = |{ h }| { h: h.lift() }
 
 		## Use a handler from the enclosing context inside an `each` row template
 		## nested in it.
-		lift_row : Handler(ctx) -> Handler(Row(ctx, item))
+		lift_row : HandlerOf(ctx, p) -> HandlerOf(Row(ctx, item), p)
 		lift_row = |{ h }| { h: h.lift_row() }
 
 		## `first.also(second)` is one handler that runs `first` and then
@@ -519,27 +496,15 @@ Engine := [].{
 		## ```
 		##
 		## It costs one closure call more per event.
-		also : Handler(ctx), Handler(ctx) -> Handler(ctx)
+		also : HandlerOf(ctx, p), HandlerOf(ctx, p) -> HandlerOf(ctx, p)
 		also = |first, second| { h: first.h.also(second.h) }
 	}
 
-	## A handler for the files an event carries: make one with
-	## `State.on_files` for local state or with `handle_files` for the
-	## store's cells, and attach it with `on_files`.
-	FilesHandler(ctx) :: { h : Core.FilesHandler(ctx) }.{
+	## Text events use the generic handler family with a text payload.
+	Handler(ctx) : HandlerOf(ctx, Str)
 
-		## `first.also(second)` is one handler that runs `first` and then
-		## `second` for the same files, as one atomic transition, exactly
-		## as `Handler.also` does for an event: `second` sees what `first`
-		## wrote. It is how a drop writes local state and also runs a
-		## decision:
-		##
-		## ```
-		## hover.on_files(|_, _| Idle).also(Engine.handle_files(|got| [cells.attached.set(got.files)]))
-		## ```
-		also : FilesHandler(ctx), FilesHandler(ctx) -> FilesHandler(ctx)
-		also = |first, second| { h: first.h.also(second.h) }
-	}
+	## File events use that same family with received handles and refusals.
+	FilesHandler(ctx) : HandlerOf(ctx, Received)
 
 	## A file the user gave the app, or a range of one (`File.slice`): a handle
 	## with its `name`, `size` and `mime` type, never its bytes on the page. Send
@@ -582,13 +547,13 @@ Engine := [].{
 
 		## A handler that replaces the state with `f` of it, ignoring the event's
 		## payload.
-		update : State(ctx, s), (s -> s) -> Handler(ctx)
+		update : State(ctx, s), (s -> s) -> HandlerOf(ctx, p)
 		update = |{ s }, f| { h: s.update(f) }
 
 		## A handler whose reducer also receives `v`, read in the handler's context
 		## when the event fires (typically the row key or a row field), so a row's
 		## handler needs no captured row.
-		update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> Handler(ctx)
+		update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> HandlerOf(ctx, p)
 		update_by = |{ s }, b, f| { h: s.update_by(b.v, f) }
 
 		## An effect site's [Reaction] that writes this state: the reducer receives
@@ -598,24 +563,15 @@ Engine := [].{
 		on_result : State(ctx, s), (s, a, Result -> s) -> Reaction(ctx, a)
 		on_result = |{ s }, f| s.on_result(f)
 
-		## A handler whose reducer receives the event's payload, such as an input's
-		## new value or `"true"`/`"false"` from a checkbox.
-		set_value : State(ctx, s), (s, Str -> s) -> Handler(ctx)
+		## A handler whose reducer receives its typed payload: text, received
+		## file handles, or another kind chosen by its attach function.
+		set_value : State(ctx, s), (s, p -> s) -> HandlerOf(ctx, p)
 		set_value = |{ s }, f| { h: s.set_value(f) }
 
 		## A handler whose reducer receives both `v`, read when the event fires, and
 		## the event's payload.
-		set_value_by : State(ctx, s), Signal(ctx, b), (s, b, Str -> s) -> Handler(ctx)
+		set_value_by : State(ctx, s), Signal(ctx, b), (s, b, p -> s) -> HandlerOf(ctx, p)
 		set_value_by = |{ s }, b, f| { h: s.set_value_by(b.v, f) }
-
-		## A handler for the files an event carries (attach it with `on_files`,
-		## or use `Html.file_input`): the reducer receives the files the user
-		## chose, dropped or pasted, each a handle with a name, size and type,
-		## and how many more there were than the instance can hold at once. A
-		## file stays available while any value holds it, so keep the ones the
-		## app needs in a state and drop the rest.
-		on_files : State(ctx, s), (s, Received -> s) -> FilesHandler(ctx)
-		on_files = |{ s }, f| { h: s.on_files(f) }
 
 		## Use state from the enclosing context inside a `state` or `derive`
 		## body nested in it.
@@ -1174,10 +1130,9 @@ Engine := [].{
 	attr : Str, Str -> Attr(ctx)
 	attr = |name, value| Core.attr(name, value)
 
-	## An attribute that follows a value; the DOM is written only when it changes.
-	## An empty string removes the attribute. `value` and `checked` update the
-	## control's live state (a focused text control keeps the user's draft until
-	## blur).
+	## Follow a signal with an attribute, writing only when it changes. An
+	## empty string removes it. Names claimed by an element property are
+	## rejected on that property's elements; use `prop_s` for live control state.
 	attr_s : Str, Signal(ctx, Str) -> Attr(ctx)
 	attr_s = |name, { v }| Core.attr_s(name, v)
 
@@ -1197,12 +1152,47 @@ Engine := [].{
 	test_id_s : Signal(ctx, Str) -> Attr(ctx)
 	test_id_s = |{ v }| Core.test_id_s(v)
 
-	## `on(event, handler)` listens for a DOM event by name (`"input"`, `"keydown"`,
-	## ...). A `:prevent` suffix (`"click:prevent"`) calls `preventDefault` when the
-	## handler runs. The handler's payload depends on the event type (design.md,
-	## Appendix B).
+	## Listen for an event's text payload by its bare event name. Custom names
+	## may contain a colon. Retired policy/file suffixes are a contract error
+	## at mount; use `on_with` for policies and `on_files` for file handles.
 	on : Str, Handler(ctx) -> Attr(ctx)
 	on = |ev, { h }| Core.on(ev, h)
+
+	## Browser policies fixed at declaration: prevention and stopping a
+	## bubbling event before it reaches listeners outside the mount.
+	Policy : Core.Policy
+
+	## Listen for text with policies whose fields the compiler checks.
+	## `prevent` prevents the default; `stop` keeps a bubbling event from
+	## listeners outside this mount. On a non-bubbling event `stop` does nothing,
+	## so the target's own browser listeners still run.
+	on_with : Str, Policy, Handler(ctx) -> Attr(ctx)
+	on_with = |event, policy, { h }| Core.on_with(event, policy, h)
+
+	## A typed row of the platform's closed element-property vocabulary.
+	Prop(a) :: { p : Core.Prop(a) }.{
+
+		## Live text on an input, textarea, select or option, mirrored as its
+		## value attribute. Text controls keep a focused or composing draft until
+		## blur. Applying this row to a file input is a contract error.
+		value : Prop(Str)
+		value = { p: Core.Prop.value }
+
+		## An input's checked state, set from a boolean and mirrored as its
+		## checked attribute. Other elements cannot declare this property.
+		checked : Prop(Bool)
+		checked = { p: Core.Prop.checked }
+	}
+
+	## Set an element property from a row that fixes its value type. A property
+	## on an unsupported element, a duplicate declaration, or an ordinary
+	## attribute with a name the row claims is a contract error at mount.
+	prop : Prop(a), a -> Attr(ctx)
+	prop = |{ p }, value| Core.prop(p, value)
+
+	## Follow a signal with a property, writing only when its value changes.
+	prop_s : Prop(a), Signal(ctx, a) -> Attr(ctx)
+	prop_s = |{ p }, { v }| Core.prop_s(p, v)
 
 	## Name this element as a focus reference for `Focus`, `Blur` and `SelectText`
 	## requests, so the app never handles engine node ids. Names are unique
@@ -1221,11 +1211,12 @@ Engine := [].{
 	on_click : Handler(ctx) -> Attr(ctx)
 	on_click = |{ h }| Core.on_click(h)
 
-	## `on_files(event, handler)` delivers the files an event carries: `"change"`
-	## on a file input, `"drop"` on a drop target (the runtime prevents the
-	## browser's default for `drop` and `dragover` there, so the file is not
-	## opened) and `"paste"`. See `Html.file_input`.
-	on_files : Str, FilesHandler(ctx) -> Attr(ctx)
+	## Receive handles from `Change` on a file input, `Drop` on a drop target,
+	## or `Paste`. `Drop` prevents the browser's default for drop and dragover
+	## on that target. An occurrence with no files runs no handler. Build the
+	## handler with the same generic decisions and reducers as a text handler;
+	## see `Html.file_input`.
+	on_files : [Change, Drop, Paste], FilesHandler(ctx) -> Attr(ctx)
 	on_files = |ev, { h }| Core.on_files(ev, h)
 
 	## What the host drives: an app built with `program` or `program_boot`, bound

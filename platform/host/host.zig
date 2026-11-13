@@ -580,7 +580,7 @@ export fn files_tokens() callconv(.c) usize {
     return @intFromPtr(&tokens);
 }
 
-/// A `:files` event (design.md, Appendix B): the staged payload is the
+/// A files-kind event (design.md, Appendix B): the staged payload is the
 /// event's file record and the staged handles its files, in order; both move
 /// into Roc for one turn, like `event`.
 export fn event_files(node: u32, handler: u32) callconv(.c) void {

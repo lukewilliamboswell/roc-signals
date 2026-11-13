@@ -83,7 +83,7 @@ editor = |{}| Engine.element(
 					"field",
 					[
 						Html.p("Markdown source", "field-label"),
-						Engine.element("textarea", [Engine.attr("aria-label", "Markdown source"), Engine.attr_s("value", AppStore.cells.source.signal()), Engine.class("input textarea font-mono min-h-96 text-sm"), Engine.on("input", Engine.handle(AppStore.replaced))], []),
+						Engine.element("textarea", [Engine.attr("aria-label", "Markdown source"), Engine.prop_s(Engine.Prop.value, AppStore.cells.source.signal()), Engine.class("input textarea font-mono min-h-96 text-sm"), Engine.on("input", Engine.handle(AppStore.replaced))], []),
 						Html.p("Headings, lists, fenced code, quotes, and links all render live in the preview.", "hint"),
 					],
 				),

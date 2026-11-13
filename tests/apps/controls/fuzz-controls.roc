@@ -41,8 +41,8 @@ settled = |eng, dom, value|
 fire! : S, Scm.Loc, Str, Str => (S, List(Dom.FxCmd))
 fire! = |s, loc, ev, payload| {
 	i = SpecRunner.find(s.dom, loc) ?? crash "no ${Scm.show_loc(loc)}"
-	(node, h) = Dom.target(s.dom, i, ev, Bool.True) ?? crash "no ${ev} handler on ${Scm.show_loc(loc)}"
-	(a, c) = Core.take_cmds(Core.event(s.eng, node, h, payload), [])
+	target = Dom.target(s.dom, i, ev, Bool.True) ?? crash "no ${ev} handler on ${Scm.show_loc(loc)}"
+	(a, c) = Core.take_cmds(Core.event(s.eng, target.node, target.handler, payload), [])
 	(d2, _, fx) = Dom.apply_fx(s.dom, c)
 	settled(a, d2, ({ eng: a, dom: d2, steps: s.steps + 1 }, fx))
 }

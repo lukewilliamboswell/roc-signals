@@ -508,10 +508,10 @@ ConduitApp := [].{
 	button_s = |label, cls, h| Engine.element("button", [Engine.attr("type", "button"), Engine.class(cls), Engine.on_click(h)], [Engine.text_s(label)])
 
 	input : Str, Str, Signal(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)
-	input = |name, kind, v, h| Engine.element("input", [Engine.attr("aria-label", name), Engine.attr("type", kind), Engine.class(Styles.field), Engine.attr_s("value", v), Engine.on("input", h)], [])
+	input = |name, kind, v, h| Engine.element("input", [Engine.attr("aria-label", name), Engine.attr("type", kind), Engine.class(Styles.field), Engine.prop_s(Engine.Prop.value, v), Engine.on("input", h)], [])
 
 	textarea : Str, Signal(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)
-	textarea = |name, v, h| Engine.element("textarea", [Engine.attr("aria-label", name), Engine.class(Styles.field), Engine.attr_s("value", v), Engine.on("input", h)], [])
+	textarea = |name, v, h| Engine.element("textarea", [Engine.attr("aria-label", name), Engine.class(Styles.field), Engine.prop_s(Engine.Prop.value, v), Engine.on("input", h)], [])
 
 	heading : Str, Str -> Elem(ctx)
 	heading = |t, cls| Engine.element("h1", [Engine.class(cls)], [Engine.text(t)])
@@ -536,7 +536,7 @@ ConduitApp := [].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	tag_pill = |row| {
 		key = row.key()
-		Engine.element("a", [Engine.class("border border-zinc-400 px-2 py-0.5 font-mono text-xs text-zinc-600 no-underline"), Engine.attr_s("href", key.map(ConduitApp.tag_url)), Engine.on("click:prevent", AppStore.go_by(key.map(ConduitApp.tag_url)))], [Engine.text_s(key)])
+		Engine.element("a", [Engine.class("border border-zinc-400 px-2 py-0.5 font-mono text-xs text-zinc-600 no-underline"), Engine.attr_s("href", key.map(ConduitApp.tag_url)), Engine.on_with("click", { prevent: True }, AppStore.go_by(key.map(ConduitApp.tag_url)))], [Engine.text_s(key)])
 	}
 
 	preview_body : Signal(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState), Api.ArticleSummary), State(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState), FavState) -> Elem(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState))
@@ -559,7 +559,7 @@ ConduitApp := [].{
 				),
 				Engine.element(
 					"a",
-					[Engine.class("block text-2xl font-semibold tracking-normal text-zinc-900 no-underline"), Engine.attr_s("href", art.map(|a| ConduitApp.article_url(a.slug))), Engine.on("click:prevent", AppStore.go_by(art.map(|a| ConduitApp.article_url(a.slug))))],
+					[Engine.class("block text-2xl font-semibold tracking-normal text-zinc-900 no-underline"), Engine.attr_s("href", art.map(|a| ConduitApp.article_url(a.slug))), Engine.on_with("click", { prevent: True }, AppStore.go_by(art.map(|a| ConduitApp.article_url(a.slug))))],
 					[Engine.text_s(shown.map(|a| a.title))],
 				),
 				Html.p_s(shown.map(|a| a.description), [Engine.class("mt-2 leading-7 text-zinc-600")]),
@@ -663,7 +663,7 @@ ConduitApp := [].{
 					|row| {
 						key = row.key()
 						cls = row.field(|i| if (i.active) "bg-emerald-600 px-3 py-2 text-sm font-medium text-white no-underline" else "border border-zinc-950 bg-white px-3 py-2 text-sm text-zinc-700 no-underline")
-						Engine.element("a", [Engine.class_s(cls), Engine.attr_s("href", key.map(ConduitApp.key_url)), Engine.on("click:prevent", AppStore.go_by(key.map(ConduitApp.key_url)))], [Engine.text_s(key.map(ConduitApp.page_label))])
+						Engine.element("a", [Engine.class_s(cls), Engine.attr_s("href", key.map(ConduitApp.key_url)), Engine.on_with("click", { prevent: True }, AppStore.go_by(key.map(ConduitApp.key_url)))], [Engine.text_s(key.map(ConduitApp.page_label))])
 					},
 				),
 			],

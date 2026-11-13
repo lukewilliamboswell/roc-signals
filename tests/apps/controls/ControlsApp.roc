@@ -118,7 +118,7 @@ ControlsApp := [].{
 			Html.text_input(Engine.const("Upper"), "text", st.signal().map(|s| s.upper), [Engine.ref("upper")], st.set_value(|s, v| { ..s, upper: ControlsApp.upper_ascii(v) })),
 			Html.button("Focus upper", [], st.update(|s| ControlsApp.ask(s, F("upper")))),
 			Html.button("Select plain", [], st.update(|s| ControlsApp.ask(s, Sel("plain")))),
-			Html.button("Blur plain", [Engine.on("mousedown:prevent", Engine.does([]))], st.update(|s| ControlsApp.ask(s, B("plain")))),
+			Html.button("Blur plain", [Engine.on_with("mousedown", { prevent: True }, Engine.does([]))], st.update(|s| ControlsApp.ask(s, B("plain")))),
 			Html.button("Focus missing", [], st.update(|s| ControlsApp.ask(s, F("nowhere")))),
 			Engine.watch_changes(
 				st.signal().map(|s| s.ask),
@@ -157,6 +157,7 @@ ControlsApp := [].{
 			),
 			Engine.element("p", [Engine.test_id("state")], [Engine.text_s(st.signal().map(|s| "${s.plain}|${s.upper}"))]),
 			Engine.element("pre", [Engine.test_id("log")], [Engine.text_s(st.signal().map(|s| Str.join_with(s.log, "|")))]),
+			ControlsApp.properties({}),
 		],
 	)
 
@@ -167,4 +168,88 @@ ControlsApp := [].{
 
 	main : {} -> Elem(Root)
 	main = |_| Engine.state({ plain: "hello world", upper: "", log: [], ask: { serial: 0, req: None }, rows: [], twice: Neither }, |st| ControlsApp.view(st))
+
+	## Property holes retain row identity and prune equal values even when
+	## another field of their row changed. Fault controls exercise the public
+	## declaration checks and the current-type check on a value command.
+	properties : {} -> Elem(ctx)
+	properties = |_props| Engine.state(
+		{ rows: [{ key: "a", checked: False, choice: "a", stamp: 0.U64 }, { key: "b", checked: True, choice: "b", stamp: 0 }], fault: Clean, input_type: "text", value: "draft", custom: "" },
+		|properties| Engine.element(
+			"section",
+			[],
+			[
+				Html.button("Set row checks", [], properties.update(|s| { ..s, rows: s.rows.map(|row| { ..row, checked: True }) })),
+				Html.button("Touch row metadata", [], properties.update(|s| { ..s, rows: s.rows.map(|row| { ..row, stamp: row.stamp.plus_wrap(1) }) })),
+				Engine.each(
+					properties.signal().map(|s| s.rows),
+					|row| row.key,
+					|row| Engine.element(
+						"div",
+						[],
+						[
+							Engine.element(
+								"input",
+								[
+									Engine.attr("type", "checkbox"),
+									Html.aria_label_s(row.key().map(|key| "Property check ${key}")),
+									Engine.prop_s(Engine.Prop.checked, row.field(|value| value.checked)),
+									Engine.on("change", properties.lift_row().set_value_by(row.key(), |s, key, value| { ..s, rows: s.rows.map(|entry| if (entry.key == key) { ..entry, checked: value == "true" } else entry) })),
+								],
+								[],
+							),
+							Engine.element(
+								"select",
+								[
+									Html.aria_label_s(row.key().map(|key| "Property option ${key}")),
+									Engine.prop_s(Engine.Prop.value, row.field(|value| value.choice)),
+									Engine.on("change", properties.lift_row().set_value_by(row.key(), |s, key, value| { ..s, rows: s.rows.map(|entry| if (entry.key == key) { ..entry, choice: value } else entry) })),
+								],
+								[
+									Engine.element("option", [Engine.prop_s(Engine.Prop.value, row.key())], [Engine.text_s(row.key())]),
+									Engine.element("option", [Engine.prop(Engine.Prop.value, "other")], [Engine.text("Other")]),
+								],
+							),
+						],
+					),
+				),
+				Engine.element("progress", [Engine.test_id("ordinary-progress"), Engine.attr("value", "0.5")], []),
+				Engine.element("custom-value", [Engine.test_id("ordinary-custom-value"), Engine.attr("value", "attribute only")], []),
+				Engine.element("button", [Html.aria_label("Custom colon event"), Engine.on("x:y", properties.update(|s| { ..s, custom: "received" }))], [Engine.text("Custom colon event")]),
+				Html.p_s(properties.signal().map(|s| s.custom), [Engine.test_id("custom-event-log")]),
+				Engine.element("input", [Html.aria_label("Dynamic file value"), Engine.attr_s("type", properties.signal().map(|s| s.input_type)), Engine.prop_s(Engine.Prop.value, properties.signal().map(|s| s.value))], []),
+				Html.button("Make value input a file", [], properties.update(|s| { ..s, input_type: "file" })),
+				Html.button("Write file value", [], properties.update(|s| { ..s, value: "changed" })),
+				Engine.element(
+					"div",
+					[],
+					[
+						{ name: "Retired prevent suffix", fault: RetiredPrevent },
+						{ name: "Retired files suffix", fault: RetiredFiles },
+						{ name: "Duplicate click policies", fault: ClickPolicies },
+						{ name: "Duplicate change kinds", fault: ChangeKinds },
+						{ name: "Checked property on div", fault: CheckedDiv },
+						{ name: "Value attribute on input", fault: AttributeValue },
+						{ name: "Duplicate value property", fault: DuplicateProperty },
+						{ name: "Value property on file input", fault: FileValue },
+					].map(|trigger| Html.button(trigger.name, [], properties.update(|s| { ..s, fault: trigger.fault }))),
+				),
+				Engine.switch(
+					properties.signal().map(|s| s.fault),
+					[Clean, RetiredPrevent, RetiredFiles, ClickPolicies, ChangeKinds, CheckedDiv, AttributeValue, DuplicateProperty, FileValue],
+					|fault| match fault {
+						Clean => Engine.text("")
+						RetiredPrevent => Engine.element("button", [Engine.on("click:prevent", properties.update(|s| s))], [])
+						RetiredFiles => Engine.element("input", [Engine.on("change:files", properties.update(|s| s))], [])
+						ClickPolicies => Engine.element("button", [Engine.on("click", properties.update(|s| s)), Engine.on_with("click", { prevent: True }, properties.update(|s| s))], [])
+						ChangeKinds => Engine.element("input", [Engine.on("change", properties.update(|s| s)), Engine.on_files(Change, properties.update(|s| s))], [])
+						CheckedDiv => Engine.element("div", [Engine.prop(Engine.Prop.checked, True)], [])
+						AttributeValue => Engine.element("input", [Engine.attr_s("value", Engine.const("not a property"))], [])
+						DuplicateProperty => Engine.element("input", [Engine.prop(Engine.Prop.value, "first"), Engine.prop(Engine.Prop.value, "second")], [])
+						FileValue => Engine.element("input", [Engine.attr("type", "file"), Engine.prop(Engine.Prop.value, "")], [])
+					},
+				),
+			],
+		),
+	)
 }

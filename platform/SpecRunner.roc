@@ -82,7 +82,7 @@ SpecRunner := [].{
 		init : List(U8) -> (state, List(U8), List(U8)),
 		event : state, List(U8), List(U8), U32, U32, List(U8) -> (state, List(U8), List(U8)),
 
-		## A `:files` event: its file record and the handles minted for it.
+		## An event carrying files: its file record and the handles minted for it.
 		files : state, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (state, List(U8), List(U8)),
 
 		## The engine's settle check (`Core.settled`): `Err` holds the
@@ -458,7 +458,7 @@ SpecRunner := [].{
 			return { dom, deferred: s.deferred }
 		}
 		i = s.focused - 1
-		shown = Dom.attr_of(Dom.node(s.dom, i), "value")
+		shown = Dom.live_value(Dom.node(s.dom, i), "value")
 		var $deferred = s.deferred
 		var $wrote = Bool.False
 		for (node, v) in values {
@@ -468,7 +468,7 @@ SpecRunner := [].{
 			}
 		}
 		if $wrote {
-			{ dom: Dom.set_attr_on(dom, i, "value", shown), deferred: $deferred }
+			{ dom: Dom.set_live_on(dom, i, "value", shown), deferred: $deferred }
 		} else {
 			{ dom, deferred: $deferred }
 		}
@@ -509,7 +509,7 @@ SpecRunner := [].{
 
 	## A runner state for instance `inst` before its first batch.
 	fresh : state, Browser -> S(state)
-	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 20), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, focus_commands: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
+	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 23), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, focus_commands: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
 
 	set_store : List({ key : Str, value : Str }), Str, Str -> List({ key : Str, value : Str })
 	set_store = |l, key, value| l.keep_if(|kv| kv.key != key).append({ key, value })
@@ -622,7 +622,7 @@ SpecRunner := [].{
 	fire = |program, s, i, ev, payload|
 		match Dom.target(s.dom, i, ev, Bool.True) {
 			Err(_) => Err("no ${ev} handler")
-			Ok((node, h)) => Ok(SpecRunner.send(program, s, node, h, payload.to_utf8()))
+			Ok(target) => if (target.kind == 1) Ok(SpecRunner.send(program, s, target.node, target.handler, payload.to_utf8())) else Ok(s)
 		}
 
 	## Dispatch `ev` if a handler listens for it on the way up from node `i`.
@@ -908,7 +908,7 @@ SpecRunner := [].{
 		} else {
 			from = s0.focused
 			changed = if from != 0 and SpecRunner.text_control(Dom.node(s0.dom, from - 1)) {
-				shown = Dom.attr_of(Dom.node(s0.dom, from - 1), "value")
+				shown = SpecRunner.value_of(s0.dom, from - 1)
 				if (shown != s0.focus_value) SpecRunner.fire_if(program, s0, from - 1, "change", shown) else s0
 			} else {
 				s0
@@ -917,9 +917,9 @@ SpecRunner := [].{
 				Held(v) if from != 0 => SpecRunner.set_attr(changed, from - 1, "value", v)
 				_ => changed
 			}
-			s1 = { ..landed, focused: to, deferred: NoValue, focus_value: if (to == 0) "" else Dom.attr_of(Dom.node(landed.dom, to - 1), "value") }
-			s2 = if (from == 0) s1 else SpecRunner.fire_if(program, s1, from - 1, "blur", Dom.attr_of(Dom.node(s1.dom, from - 1), "value"))
-			if (to == 0) s2 else SpecRunner.fire_if(program, s2, to - 1, "focus", Dom.attr_of(Dom.node(s2.dom, to - 1), "value"))
+			s1 = { ..landed, focused: to, deferred: NoValue, focus_value: if (to == 0) "" else SpecRunner.value_of(landed.dom, to - 1) }
+			s2 = if (from == 0) s1 else SpecRunner.fire_if(program, s1, from - 1, "blur", SpecRunner.value_of(s1.dom, from - 1))
+			if (to == 0) s2 else SpecRunner.fire_if(program, s2, to - 1, "focus", SpecRunner.value_of(s2.dom, to - 1))
 		}
 	}
 
@@ -974,19 +974,32 @@ SpecRunner := [].{
 	bool_str = |b| if (b) "true" else "false"
 
 	set_attr : S(state), U64, Str, Str -> S(state)
-	set_attr = |s, i, name, v| { ..s, dom: Dom.set_attr_on(s.dom, i, name, v) }
+	set_attr = |s, i, name, v| { ..s, dom: if (name == "value" or name == "checked") Dom.set_live_on(s.dom, i, name, v) else Dom.set_attr_on(s.dom, i, name, v) }
 
 	## A control's live value: a `<select>` shows the value only when one of
 	## its options has it.
 	value_of : Dom.Model, U64 -> Str
 	value_of = |dom, i| {
 		n = Dom.node(dom, i)
-		v = Dom.attr_of(n, "value")
-		if n.tag == "select" and Dom.find(dom, i, |o| o.tag == "option" and Dom.attr_of(o, "value") == v).is_err() {
+		v = Dom.live_value(n, "value")
+		if n.tag == "option" and Dom.attr_of(n, "value") == "" {
+			Dom.text_of(dom, i)
+		} else if n.tag == "select" and !SpecRunner.has_option(dom, { root: i, value: v }) {
 			""
-		} else {
-			v
+		} else if n.tag == "input" and ["checkbox", "radio"].contains(Dom.attr_of(n, "type")) and Dom.attr_of(n, "value") == "" {
+			"on"
+		} else v
+	}
+
+	## Options whose value attribute is absent use their text, including the
+	## existing empty-value mirror rule. Search only this select's descendants.
+	has_option : Dom.Model, { root : U64, value : Str } -> Bool
+	has_option = |dom, { root, value }| {
+		n = Dom.node(dom, root)
+		if n.tag == "option" and SpecRunner.value_of(dom, root) == value {
+			return Bool.True
 		}
+		n.kids.any(|child| SpecRunner.has_option(dom, { root: child, value }))
 	}
 
 	## What `expect-attr` reads, as the browser runner reads it: `checked` and
@@ -997,11 +1010,11 @@ SpecRunner := [].{
 	attr_value = |dom, i, name| {
 		n = Dom.node(dom, i)
 		raw = Dom.attr_of(n, name)
-		if name == "checked" {
-			Ok(SpecRunner.bool_str(raw == "true"))
+		if name == "checked" and n.tag == "input" {
+			Ok(SpecRunner.bool_str(Dom.live_value(n, "checked") == "true"))
 		} else if name == "disabled" {
 			Ok(SpecRunner.bool_str(SpecRunner.disabled(n)))
-		} else if name == "value" {
+		} else if name == "value" and ["input", "textarea", "select", "option"].contains(n.tag) {
 			Ok(SpecRunner.value_of(dom, i))
 		} else if SpecRunner.bool_attrs.contains(name) {
 			if (SpecRunner.flag_on(n, name)) Ok("") else Err(Absent)
@@ -1059,7 +1072,7 @@ SpecRunner := [].{
 		# Every issued request is one FX command and every cancelled one a
 		# CANCEL (design.md, "Counters"), so the effect counters must agree
 		# with the commands too.
-		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent")] {
+		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent"), (41, 21, "properties set"), (42, 22, "row properties set")] {
 			engine = s.work.counters.get(counter) ?? 0
 			oracle = s.ops.get(op) ?? 0
 			if engine != oracle {
@@ -1136,9 +1149,7 @@ SpecRunner := [].{
 				if (SpecRunner.disabled(Dom.node(dom, i))) Err("${Scm.show_loc(loc)} is disabled") else SpecRunner.mouse_click(program, s, i)
 			}
 			Fill(loc, v) => SpecRunner.fill(program, s, loc, v)
-			ChooseFiles(_, names) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, names.len()))
-			DropFiles(_, names) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, names.len()))
-			PasteFiles(_, names) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, names.len()))
+			ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, SpecRunner.file_count(dom, op) ?? 0))
 			ExpectFiles(_) => Err("expect-files counts the handles live in the host; the spec command runs it, through its host")
 			Focus(loc) => {
 				i = SpecRunner.need(dom, loc)?
@@ -1156,7 +1167,7 @@ SpecRunner := [].{
 				if n.tag != "select" {
 					return Err("${Scm.show_loc(loc)} is not a <select>")
 				}
-				if Dom.find(dom, i, |o| o.tag == "option" and Dom.attr_of(o, "value") == v).is_err() {
+				if !SpecRunner.has_option(dom, { root: i, value: v }) {
 					return Err("${Scm.show_loc(loc)} has no option ${JsonOut.quote(v)}")
 				}
 				s1 = SpecRunner.fire_if(program, SpecRunner.set_attr(s, i, "value", v), i, "input", v)
@@ -1167,8 +1178,8 @@ SpecRunner := [].{
 				n = Dom.node(dom, i)
 				kind = Dom.attr_of(n, "type")
 				if n.tag == "input" and (kind == "radio" or kind == "checkbox") {
-					if Dom.attr_of(n, "value") != v {
-						return Err("${Scm.show_loc(loc)} has value ${JsonOut.quote(Dom.attr_of(n, "value"))}, not ${JsonOut.quote(v)}")
+					if SpecRunner.value_of(dom, i) != v {
+						return Err("${Scm.show_loc(loc)} has value ${JsonOut.quote(SpecRunner.value_of(dom, i))}, not ${JsonOut.quote(v)}")
 					}
 					Ok(SpecRunner.fire_if(program, SpecRunner.check_on(s, i), i, "change", "true"))
 				} else {
@@ -1189,11 +1200,16 @@ SpecRunner := [].{
 				check(got == want, "${Scm.show_loc(loc)} text ${JsonOut.quote(got)}, expected ${JsonOut.quote(want)}")
 			}
 			ExpectValue(loc, want) => {
-				got = SpecRunner.value_of(dom, SpecRunner.need(dom, loc)?)
+				i = SpecRunner.need(dom, loc)?
+				n = Dom.node(dom, i)
+				if !["input", "textarea", "select", "option", "button"].contains(n.tag) and !n.props.any(|(key, _)| key == "value") {
+					return Err("${Scm.show_loc(loc)} has no live value property")
+				}
+				got = SpecRunner.value_of(dom, i)
 				check(got == want, "${Scm.show_loc(loc)} value ${JsonOut.quote(got)}, expected ${JsonOut.quote(want)}")
 			}
 			ExpectChecked(loc, want) => {
-				got = Dom.attr_of(Dom.node(dom, SpecRunner.need(dom, loc)?), "checked") == "true"
+				got = Dom.live_value(Dom.node(dom, SpecRunner.need(dom, loc)?), "checked") == "true"
 				check(got == want, "${Scm.show_loc(loc)} checked ${SpecRunner.bool_str(got)}, expected ${SpecRunner.bool_str(want)}")
 			}
 			ExpectDisabled(loc, want) => {
@@ -1437,7 +1453,7 @@ SpecRunner := [].{
 			return Err("${Scm.show_loc(loc)} cannot hold ${JsonOut.quote(v)}")
 		}
 		s1 = SpecRunner.move_focus(program, s, i + 1)
-		if v == "" and Dom.attr_of(Dom.node(s1.dom, i), "value") == "" {
+		if v == "" and Dom.live_value(Dom.node(s1.dom, i), "value") == "" {
 			return Ok(s1)
 		}
 		# An input that echoes the held value makes it moot.
@@ -1483,11 +1499,11 @@ SpecRunner := [].{
 		if kind == "radio" and !want {
 			return Err("${Scm.show_loc(loc)} is a radio button, which cannot be unchecked")
 		}
-		if (Dom.attr_of(n, "checked") == "true") == want {
+		if (Dom.live_value(n, "checked") == "true") == want {
 			return Ok(s)
 		}
 		s1 = if (SpecRunner.disabled(n)) s else SpecRunner.mouse_click(program, s, i)?
-		now = SpecRunner.find(s1.dom, loc).map_ok(|k| Dom.attr_of(Dom.node(s1.dom, k), "checked") == "true") ?? !want
+		now = SpecRunner.find(s1.dom, loc).map_ok(|k| Dom.live_value(Dom.node(s1.dom, k), "checked") == "true") ?? !want
 		if (now == want) Ok(s1) else Err("clicking ${Scm.show_loc(loc)} did not ${if (want) "check" else "uncheck"} it")
 	}
 
@@ -1502,8 +1518,8 @@ SpecRunner := [].{
 			var $k = 0.U64
 			while $k < $d.nodes.len() {
 				m = Dom.node($d, $k)
-				if $k != i and m.tag == "input" and Dom.attr_of(m, "type") == "radio" and Dom.attr_of(m, "name") == group and Dom.attr_of(m, "checked") == "true" {
-					$d = Dom.set_attr_on($d, $k, "checked", "false")
+				if $k != i and m.tag == "input" and Dom.attr_of(m, "type") == "radio" and Dom.attr_of(m, "name") == group and Dom.live_value(m, "checked") == "true" {
+					$d = Dom.set_live_on($d, $k, "checked", "false")
 				}
 				$k = $k + 1
 			}
@@ -1514,6 +1530,11 @@ SpecRunner := [].{
 		SpecRunner.set_attr(s1, i, "checked", "true")
 	}
 
+	## Default prevention is read from the nearest declaration's policy bits;
+	## a files drop also prevents by its payload kind's rule.
+	prevents : Dom.Model, U64, Str -> Bool
+	prevents = |dom, i, event| Dom.target(dom, i, event, Bool.True).map_ok(|target| target.policies.bitwise_and(1) != 0 or (target.kind == 2 and event == "drop")) ?? Bool.False
+
 	## A click delivers Chrome's pointer and mouse sequence at the destination.
 	## Preventing pointerdown suppresses compatibility mouse press/release and
 	## its focus change; pointerup and click still arrive.
@@ -1521,16 +1542,16 @@ SpecRunner := [].{
 	mouse_click = |program, s0, i| {
 		s1 = SpecRunner.fire_if(program, s0, i, "pointermove", "")
 		s2 = SpecRunner.fire_if(program, s1, i, "mousemove", "")
-		press_prevented = Dom.prevents(s2.dom, i, "pointerdown")
+		press_prevented = SpecRunner.prevents(s2.dom, i, "pointerdown")
 		s3 = SpecRunner.fire_if(program, s2, i, "pointerdown", "")
 		s4 = if (press_prevented) s3 else {
-			mouse_prevented = Dom.prevents(s3.dom, i, "mousedown")
+			mouse_prevented = SpecRunner.prevents(s3.dom, i, "mousedown")
 			pressed = SpecRunner.fire_if(program, s3, i, "mousedown", "")
 			if (mouse_prevented) pressed else SpecRunner.move_focus(program, pressed, SpecRunner.focus_target(pressed.dom, i))
 		}
 		s5 = SpecRunner.fire_if(program, s4, i, "pointerup", "")
 		s6 = if (press_prevented) s5 else SpecRunner.fire_if(program, s5, i, "mouseup", "")
-		prevented = Dom.prevents(s6.dom, i, "click")
+		prevented = SpecRunner.prevents(s6.dom, i, "click")
 		s7 = SpecRunner.fire_if(program, s6, i, "click", "")
 		if (prevented) Ok(s7) else SpecRunner.default_action(program, s7, i)
 	}
@@ -1546,13 +1567,13 @@ SpecRunner := [].{
 		}
 		n = Dom.node(s.dom, i)
 		kind = Dom.attr_of(n, "type")
-		on_value = if (Dom.attr_of(n, "value") == "") "on" else Dom.attr_of(n, "value")
+		on_value = SpecRunner.value_of(s.dom, i)
 		if n.tag == "input" and kind == "checkbox" {
-			want = Dom.attr_of(n, "checked") != "true"
+			want = Dom.live_value(n, "checked") != "true"
 			s1 = SpecRunner.fire_if(program, SpecRunner.set_attr(s, i, "checked", SpecRunner.bool_str(want)), i, "input", on_value)
 			Ok(SpecRunner.fire_if(program, s1, i, "change", SpecRunner.bool_str(want)))
 		} else if n.tag == "input" and kind == "radio" {
-			if Dom.attr_of(n, "checked") == "true" {
+			if Dom.live_value(n, "checked") == "true" {
 				Ok(s)
 			} else {
 				s1 = SpecRunner.fire_if(program, SpecRunner.check_on(s, i), i, "input", on_value)
@@ -1607,8 +1628,8 @@ SpecRunner := [].{
 			Bool.False
 		} else {
 			kind = Dom.attr_of(n, "type")
-			v = Dom.attr_of(n, "value")
-			missing = if (kind == "checkbox" or kind == "radio") Dom.attr_of(n, "checked") != "true" else v == ""
+			v = Dom.live_value(n, "value")
+			missing = if (kind == "checkbox" or kind == "radio") Dom.live_value(n, "checked") != "true" else v == ""
 			bound = |name, out_of_range|
 				match (F64.from_str(Dom.attr_of(n, name)), F64.from_str(v)) {
 					(Ok(limit), Ok(x)) => out_of_range(x, limit)
@@ -1708,22 +1729,27 @@ SpecRunner := [].{
 		$out
 	}
 
-	## How many files a file step gives the app.
-	file_count : Scm.Op -> Try(U64, [NoFiles])
-	file_count = |op|
-		match op {
-			ChooseFiles(_, names) => Ok(names.len())
-			DropFiles(_, names) => Ok(names.len())
-			PasteFiles(_, names) => Ok(names.len())
-			_ => Err(NoFiles)
+	## Only a files declaration stages handles. A text declaration, or no
+	## listener, leaves the selected browser files outside the Roc instance.
+	file_count : Dom.Model, Scm.Op -> Try(U64, [NoFiles])
+	file_count = |dom, op| {
+		(loc, event, count) = match op {
+			ChooseFiles(target, names) => (target, "change", names.len())
+			DropFiles(target, names) => (target, "drop", names.len())
+			PasteFiles(target, names) => (target, "paste", names.len())
+			_ => return Err(NoFiles)
 		}
+		i = SpecRunner.find(dom, loc) ?? return Ok(0)
+		declaration = Dom.target(dom, i, event, Bool.True) ?? return Ok(0)
+		Ok(if (declaration.kind == 2) count else 0)
+	}
 
 	## `choose-files`, `drop-files` and `paste-files`: the user gives the app
 	## the named setup files, as the browser's `change` on a file input,
 	## `drop` or `paste` event (design.md, "Files"). `handles` are the
 	## handles the host minted, as many as it had room for; the rest are
 	## refused, as the record says. The located element (or, for a drop or a
-	## paste, an ancestor) must have a `:files` handler for the event, and a
+	## paste, an ancestor) supplies the nearest declaration for the event, and a
 	## file input must take as many files as are chosen.
 	give_files : Program(state), S(state), Scm.Op, List(Box(U64)) -> Try(S(state), Str)
 	give_files = |program, s, op, handles| {
@@ -1737,7 +1763,7 @@ SpecRunner := [].{
 		i = SpecRunner.need(dom, loc)?
 		n = Dom.node(dom, i)
 		if ev == "change" {
-			if n.tag != "input" or Dom.attr_of(n, "type") != "file" {
+			if !Dom.is_file_input(n) {
 				return Err("${Scm.show_loc(loc)} is not a file input")
 			}
 			if SpecRunner.disabled(n) {
@@ -1747,12 +1773,29 @@ SpecRunner := [].{
 				return Err("${Scm.show_loc(loc)} takes one file, not ${names.len().to_str()}")
 			}
 		}
-		(node, h) = Dom.files_target(dom, i, ev) ? |_| "no ${ev} handler that takes files at ${Scm.show_loc(loc)}"
 		var $files = []
 		for name in names {
 			f = s.browser.files.find_first(|g| g.name == name) ? |_| "no setup file named \"${name}\""
 			$files = $files.append(f)
 		}
+		text = if ev == "change" {
+			match names.first() {
+				Ok(name) => "C:\\fakepath\\${name}"
+				Err(_) => ""
+			}
+		} else ""
+		selected = if (ev == "change") SpecRunner.set_attr(s, i, "value", text) else s
+		target = match Dom.target(dom, i, ev, Bool.True) {
+			Ok(declaration) => declaration
+			Err(_) => return Ok(selected)
+		}
+		if target.kind == 1 {
+			return Ok(SpecRunner.send(program, selected, target.node, target.handler, text.to_utf8()))
+		}
+		if names.is_empty() {
+			return Ok(selected)
+		}
+
 		minted = handles.len()
 		var $record = SpecRunner.put_u32(SpecRunner.put_u32([], minted.to_u32_wrap()), (names.len() - minted).to_u32_wrap())
 		var $given = s.browser.given
@@ -1763,10 +1806,10 @@ SpecRunner := [].{
 			$given = $given.append({ token: Box.unbox(handle), name: f.name })
 			$k = $k + 1
 		}
-		b = s.browser
-		s1 = { ..s, browser: { ..b, given: $given } }
-		(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, node, h, $record, handles)
-		Ok(SpecRunner.answer_gets(program, SpecRunner.take(s1, inst, cmds, wbuf)))
+		b = selected.browser
+		s1 = { ..selected, browser: { ..b, given: $given } }
+		(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, target.node, target.handler, $record, handles)
+		Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s1, draining: Bool.True, turns: 0 }, inst, cmds, wbuf))), draining: Bool.False })
 	}
 
 	## The pending worker job or fetch that step `op` answers, when `op` is
@@ -1870,7 +1913,7 @@ SpecRunner := [].{
 				rb = rest.browser
 				s1 = { ..rest, browser: { ..rb, files: $files, given: $given } }
 				(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, SpecRunner.fx_node, id, $payload.concat(output), handles)
-				Ok(SpecRunner.answer_gets(program, SpecRunner.take(s1, inst, cmds, wbuf)))
+				Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s1, draining: Bool.True, turns: 0 }, inst, cmds, wbuf))), draining: Bool.False })
 			}
 			_ => Ok(SpecRunner.deliver(program, rest, id, record))
 		}
@@ -1912,7 +1955,7 @@ SpecRunner := [].{
 				rb = rest.browser
 				s1 = { ..rest, browser: { ..rb, files: rb.files.append({ name: key, mime, bytes }), given: rb.given.append({ token: Box.unbox(handle), name: key }) } }
 				(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, SpecRunner.fx_node, id, record, handles)
-				Ok(SpecRunner.answer_gets(program, SpecRunner.take(s1, inst, cmds, wbuf)))
+				Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s1, draining: Bool.True, turns: 0 }, inst, cmds, wbuf))), draining: Bool.False })
 			}
 		}
 	}
@@ -1986,7 +2029,7 @@ SpecRunner := [].{
 	## handle count) through `host`, every other step through `one`.
 	step! : Program(state), Host, S(state), Scm.Op => Try(S(state), Str)
 	step! = |program, host, s, op|
-		match (SpecRunner.file_count(op), op) {
+		match (SpecRunner.file_count(s.dom, op), op) {
 			(Ok(n), _) => SpecRunner.give_files(program, s, op, (host.mint_files!)(n))
 			(_, ExpectFiles(n)) => {
 				live = (host.live_files!)()
@@ -2071,9 +2114,8 @@ SpecRunner := [].{
 			$stack = $stack.drop_last(1)
 			n = Dom.node(dom, i)
 			if Dom.attr_of(n, "disabled") != "true" {
-				for (ev, _) in n.hs {
-					base = ev.split_on(":").first() ?? ev
-					$out = $out.append((i, base))
+				for listener in n.hs {
+					$out = $out.append((i, listener.event))
 				}
 			}
 			var $k = n.kids.len()
@@ -2105,15 +2147,15 @@ SpecRunner := [].{
 			typed()
 		} else if ev == "change" {
 			if Dom.attr_of(n, "type") == "checkbox" {
-				if (Dom.attr_of(n, "checked") == "true") "false" else "true"
+				if (Dom.live_value(n, "checked") == "true") "false" else "true"
 			} else if n.tag == "select" {
-				opts = n.kids.map(|k| Dom.attr_of(Dom.node(dom, k), "value"))
+				opts = n.kids.map(|k| SpecRunner.value_of(dom, k))
 				if (opts.is_empty()) "" else pick(opts)
 			} else {
 				typed()
 			}
 		} else if ev == "focus" or ev == "blur" {
-			Dom.attr_of(n, "value")
+			SpecRunner.value_of(dom, i)
 		} else {
 			""
 		}
@@ -2349,7 +2391,7 @@ SpecRunner := [].{
 	## One call a spec made into the engine, as a soak records it: the node
 	## and handler (for a result, the request's place among those in flight,
 	## since a later cycle issues it under a new id), the payload, and the
-	## handles a `:files` call carried.
+	## handles an event carrying files held.
 	Call : { node : U32, handler : [Handler(U32), InFlight(U64)], payload : List(U8), files : [Event, Files(List(Box(U64)))] }
 
 	## An instance and the calls made into it since the recording began.
@@ -2839,8 +2881,8 @@ expect {
 		live: |_| [],
 	}
 	base = Dom.new({})
-	(d1, a) = Dom.add_node(base, { ..Dom.empty_node, tag: "input", rn: 1, hs: [("focus", 0)] })
-	(d2, b) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", rn: 2, hs: [("focus", 0)] })
+	(d1, a) = Dom.add_node(base, { ..Dom.empty_node, tag: "input", rn: 1, hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
+	(d2, b) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", rn: 2, hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
 	dom_root = base.root
 	dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, dom_root, a, Err(End)), dom_root, b, Err(End)), 1, a), 2, b)
 	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
@@ -2863,7 +2905,7 @@ expect {
 	}
 	var $dom = Dom.new({})
 	for id in [1.U32, 2, 3] {
-		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input", rn: id, hs: [("focus", 0)] })
+		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input", rn: id, hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
 		$dom = Dom.bind(Dom.insert(d, d.root, i, Err(End)), id, i)
 	}
 	s = SpecRunner.fresh([], SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
@@ -2886,7 +2928,7 @@ expect {
 	}
 	var $dom = Dom.new({})
 	for id in [1.U32, 2] {
-		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input", rn: id, hs: [("focus", 0)] })
+		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input", rn: id, hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
 		$dom = Dom.bind(Dom.insert(d, d.root, i, Err(End)), id, i)
 	}
 	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
@@ -2914,7 +2956,7 @@ expect {
 	}
 	var $dom = Dom.new({})
 	for id in [1.U32, 2, 10] {
-		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input", rn: id, hs: [("focus", 0)] })
+		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input", rn: id, hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
 		$dom = Dom.bind(Dom.insert(d, d.root, i, Err(End)), id, i)
 	}
 	(d1, child) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input" })
@@ -2950,4 +2992,113 @@ expect {
 	cmds = SpecRunner.put_u32([18, 1], 1).concat(SpecRunner.put_u32([5], 1))
 	removed = SpecRunner.drain_focus(program, SpecRunner.take_batch(focused, 0, cmds))
 	{ kept: focused.focused, removed: removed.focused, calls: removed.inst, waiting: removed.focus_commands.len() } == { kept: Dom.lookup(focused.dom, 1) + 1, removed: 0, calls: 0, waiting: 0 }
+}
+
+## A declaration's kind and policy bits survive the wire independently of
+## its event name. Property commands retain their live values and mirrors.
+expect {
+	element = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([8], 1), 0), 0), "input")
+	listener = SpecRunner.put_u32(SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32([11], 1), 7), "change").append(2), 2)
+	value = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(1), "first")
+	checked = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(2), "true")
+	decoded = Dom.apply_full(Dom.new({}), element.concat(listener).concat(value).concat(checked))
+	i = Dom.lookup(decoded.dom, 1)
+	target = Dom.target(decoded.dom, i, "change", Bool.True)?
+	n = Dom.node(decoded.dom, i)
+	{ target, value: Dom.live_value(n, "value"), checked: Dom.live_value(n, "checked"), mirror: Dom.attr_of(n, "value"), values: decoded.values, writes: decoded.written } == {
+		target: { node: 1, handler: 7, event: "change", kind: 2, policies: 2 },
+		value: "first",
+		checked: "true",
+		mirror: "first",
+		values: [(i, "first")],
+		writes: [i, i],
+	}
+}
+
+## A property template hole consumes one value at INST and HPROP updates
+## that same resolved element. Its sibling event hole keeps its own kind.
+expect {
+	tree = SpecRunner.put_str([1], "input").concat([0, 0])
+	holes = SpecRunner.put_u32(SpecRunner.put_str([2, 6, 0, 2, 3, 0, 0], "change").append(1), 1)
+	template = tree.concat(holes)
+	define = SpecRunner.put_u32(SpecRunner.put_u32([7], 0), template.len().to_u32_wrap()).concat(template)
+	instance = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([1], 1), 0), 0), 0), "false")
+	update = SpecRunner.put_str(SpecRunner.put_u32([22], 1).append(0), "true")
+	decoded = Dom.apply_full(Dom.new({}), define.concat(instance).concat(update))
+	i = Dom.lookup(decoded.dom, 1)
+	{ checked: Dom.live_value(Dom.node(decoded.dom, i), "checked"), target: Dom.target(decoded.dom, i, "change", Bool.True)?, writes: decoded.written, ops: decoded.ops } == {
+		checked: "true",
+		target: { node: 1, handler: 0, event: "change", kind: 1, policies: 1 },
+		writes: [i],
+		ops: [7, 1, 22],
+	}
+}
+
+## An ordinary value attribute on a custom element never overwrites its
+## own live property. The spec's attribute and value assertions see each.
+expect {
+	(d1, i) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "custom-field", props: [("value", "live")] })
+	dom = Dom.bind(d1, 1, i)
+	attribute = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), "value"), "attribute")
+	decoded = Dom.apply(dom, attribute)
+	{ attr: SpecRunner.attr_value(decoded, i, "value")?, value: SpecRunner.value_of(decoded, i) } == { attr: "attribute", value: "live" }
+}
+
+## A checkbox without a declared value has the browser's default "on".
+## A button's ordinary value attribute reflects its own standard property,
+## so its focus payload remains that value without a PROP declaration.
+expect {
+	program : SpecRunner.Program(List(Str))
+	program = {
+		version: Dom.protocol_version,
+		keys: || [],
+		init: |_| ([], [], []),
+		event: |seen, _buf, _work, _node, _handler, payload| (seen.append(Str.from_utf8(payload) ?? crash "test payload is UTF-8"), [], List.repeat(0, 8)),
+		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	(d1, checkbox) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", rn: 1, attrs: [("type", "checkbox"), ("aria-label", "Raw checkbox")], hs: [{ event: "change", handler: 0, kind: 1, policies: 0 }] })
+	(d2, button) = Dom.add_node(d1, { ..Dom.empty_node, tag: "button", rn: 2, attrs: [("value", "button payload"), ("aria-label", "Value button")], hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, checkbox, Err(End)), d2.root, button, Err(End)), 1, checkbox), 2, button)
+	s = SpecRunner.fresh([], SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	changed = SpecRunner.one(program, { ..s, dom }, Change(Label("Raw checkbox"), "on"))?
+	focused = SpecRunner.one(program, changed, Focus(Label("Value button")))?
+	{ events: focused.inst, checkbox: Dom.live_value(Dom.node(focused.dom, checkbox), "checked"), default: SpecRunner.value_of(focused.dom, checkbox), button: SpecRunner.value_of(focused.dom, button) } == {
+		events: ["true", "button payload"],
+		checkbox: "true",
+		default: "on",
+		button: "button payload",
+	}
+}
+
+## Only a files declaration stages handles. The same selected files reach a
+## text declaration as its ordinary file-input value, and an empty choice
+## reaches text but dispatches nothing to a files declaration.
+expect {
+	program : SpecRunner.Program({ events : List(Str), files : U64 })
+	program = {
+		version: Dom.protocol_version,
+		keys: || [],
+		init: |_| ({ events: [], files: 0 }, [], []),
+		event: |seen, _buf, _work, _node, _handler, payload| ({ ..seen, events: seen.events.append(Str.from_utf8(payload) ?? crash "test payload is UTF-8") }, [], List.repeat(0, 8)),
+		files: |seen, _buf, _work, _node, _handler, _payload, _files| ({ ..seen, files: seen.files + 1 }, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	(d1, input) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", rn: 1, attrs: [("type", "file"), ("aria-label", "Choice")], hs: [{ event: "change", handler: 0, kind: 2, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, input, Err(End)), 1, input)
+	base = SpecRunner.fresh({ events: [], files: 0 }, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	s = { ..base, dom, browser: { ..base.browser, files: [{ name: "a.txt", mime: "text/plain", bytes: [65] }] } }
+	op = ChooseFiles(Label("Choice"), ["a.txt"])
+	text = Dom.modify(dom, input, |n| { ..n, hs: [{ event: "change", handler: 0, kind: 1, policies: 0 }] })
+	with_text = SpecRunner.give_files(program, { ..s, dom: text }, op, [])?
+	empty_text = SpecRunner.give_files(program, with_text, ChooseFiles(Label("Choice"), []), [])?
+	empty_files = SpecRunner.give_files(program, s, ChooseFiles(Label("Choice"), []), [])?
+	{ files_count: SpecRunner.file_count(dom, op)?, text_count: SpecRunner.file_count(text, op)?, events: empty_text.inst.events, files: empty_files.inst.files } == {
+		files_count: 1,
+		text_count: 0,
+		events: ["C:\\fakepath\\a.txt", ""],
+		files: 0,
+	}
 }

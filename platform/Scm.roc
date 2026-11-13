@@ -1021,7 +1021,7 @@ Scm := [].{
 		{ name: "set_checked", counters: [20] },
 		{ name: "bind_event", counters: [11] },
 		{ name: "set_metadata", counters: [17] },
-		{ name: "patches_emitted", counters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+		{ name: "patches_emitted", counters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 41, 42] },
 		{ name: "derived_calls_into_roc", counters: [21] },
 		{ name: "scopes_created", counters: [25] },
 		{ name: "scopes_disposed", counters: [26] },

@@ -116,7 +116,7 @@ Convert := [].{
 		Html.div(
 			"convert",
 			[
-				Html.file_input(Engine.const("CSV file"), { accept: Types(".csv") }, st.on_files(Convert.chosen)),
+				Html.file_input(Engine.const("CSV file"), { accept: Types(".csv") }, st.set_value(Convert.chosen)),
 				# region derive
 				# The conversion follows the chosen file: a newer file stops
 				# the job for the older one. The answer's file is the page's.
