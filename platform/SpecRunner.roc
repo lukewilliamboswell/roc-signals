@@ -3969,7 +3969,7 @@ SpecRunner := [].{
 			i = $stack.last() ?? 0
 			$stack = $stack.drop_last(1)
 			n = Dom.node(dom, i)
-			if Dom.attr_of(n, "disabled") != "true" {
+			if !SpecRunner.disabled(n) {
 				for listener in n.hs {
 					if listener.kind != 3 {
 						$out = $out.append((i, listener.event))
@@ -6179,4 +6179,21 @@ expect {
 	exact = " \t exact\n "
 	with_exact = Dom.set_attr_on(Dom.set_live_on(dom, 0, "value", exact), 1, "value", exact)
 	SpecRunner.value_of(dom, 1) == "" and SpecRunner.has_option(dom, { root: 0, value: "" }) and !SpecRunner.has_option(dom, { root: 0, value: "fallback" }) and SpecRunner.value_of(with_exact, 1) == exact and SpecRunner.value_of(with_exact, 0) == exact
+}
+
+## Candidate selection skips disabled HTML controls by effective presence,
+## including option and fieldset handlers, without dropping an enabled peer.
+expect {
+	listener = { event: "click", handler: 0.U32, kind: 0.U8, policies: 0.U32 }
+	(d1, button) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "button", hs: [listener] })
+	(d2, option) = Dom.add_node(d1, { ..Dom.empty_node, tag: "option", hs: [listener] })
+	(d3, fieldset) = Dom.add_node(d2, { ..Dom.empty_node, tag: "fieldset", hs: [listener] })
+	(d4, enabled) = Dom.add_node(d3, { ..Dom.empty_node, tag: "button", hs: [listener] })
+	dom = [button, option, fieldset, enabled].fold(d4, |model, index| Dom.insert(model, model.root, index, Err(End)))
+	["", "named", "false"].all(
+		|value| {
+			disabled = [button, option, fieldset].fold(dom, |model, index| Dom.set_attr_on(model, index, "disabled", value))
+			SpecRunner.candidates(disabled) == [(enabled, "click")]
+		},
+	)
 }
