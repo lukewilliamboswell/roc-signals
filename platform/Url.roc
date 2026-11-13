@@ -235,13 +235,15 @@ Url :: {
 	##
 	## Plus signs decode as spaces, percent escapes decode as UTF-8 bytes,
 	## parameters without equals receive an empty value, and duplicates remain.
+	## Empty separator fields are skipped; an explicit = keeps its empty pair.
+	## query() still returns the original encoded component unchanged.
 	query_pairs : Url -> List((Str, Str))
 	query_pairs = |url|
 		match url.query {
 			None => []
 			Some("") => []
 			Some(query_str) =>
-				Str.split_on(query_str, "&").map(
+				Str.split_on(query_str, "&").keep_if(|field| !field.is_empty()).map(
 					|pair|
 						match split_first(pair, "=") {
 							Found({ before, after }) => (form_decode(before), form_decode(after))
@@ -1710,3 +1712,17 @@ expect {
 	base = "/a/file"
 	base.resolve("./name:part").map_ok(Url.to_str) == Ok("/a/name:part") and base.resolve("dir/name:part").map_ok(Url.to_str) == Ok("/a/dir/name:part")
 }
+
+## Form parsing skips empty separator fields without rewriting the raw query.
+expect {
+	match Url.parse("/?a=1&&b=2&") {
+		Ok(url) => url.query() == Some("a=1&&b=2&") and url.query_pairs() == [("a", "1"), ("b", "2")]
+		Err(_) => False
+	}
+}
+
+## An explicit empty key/value pair is real data while bare separators are not.
+expect Url.parse("/?&").map_ok(Url.query_pairs) == Ok([]) and Url.parse("/?=").map_ok(Url.query_pairs) == Ok([("", "")]) and Url.parse("/?=&=b&&a=").map_ok(Url.query_pairs) == Ok([("", ""), ("", "b"), ("a", "")])
+
+## An encoded ampersand is an empty-valued name, not a skipped separator.
+expect Url.parse("/?%26").map_ok(Url.query_pairs) == Ok([("&", "")])

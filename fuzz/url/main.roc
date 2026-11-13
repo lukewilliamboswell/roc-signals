@@ -15,7 +15,7 @@ fragment_encoding = |text| {
 		[],
 		|out, byte|
 			if byte <= 32 or byte >= 127 or byte == 34 or byte == 60 or byte == 62 or byte == 96 {
-				out.append(37).append(hex.get((byte // 16).to_u64()) ?? 48).append(hex.get((byte % 16).to_u64()) ?? 48)
+				out.append(37).append(hex.get((byte // 16).to_u64()) ?? crash "fragment model hex index must be within 0 through 15").append(hex.get((byte % 16).to_u64()) ?? crash "fragment model hex index must be within 0 through 15")
 			} else {
 				out.append(byte)
 			},
@@ -91,6 +91,7 @@ target = Fuzz.target_with({
 		example("split-utf8", "/%C3/%A9"),
 		example("encoded-dots", "/a/%2e/%2E%2e/b"),
 		example("empty-segments", "/a//b/"),
+		example("empty-query-fields", "/?a=1&&b=2&"),
 		example("relative", "/demo/#/?tag=caf%C3%A9+au+lait"),
 		example("absolute", "https://example.com/a%2Fb?tag=c%26c#route"),
 		Fuzz.example({ name: "arbitrary-invalid-bytes", revision: "1", make: || [255, 192, 0, 128] }),
