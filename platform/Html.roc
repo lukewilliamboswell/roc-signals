@@ -256,10 +256,6 @@ Html := [].{
 	on_change : Handler(ctx) -> Attr(ctx)
 	on_change = |h| Engine.on("change", h)
 
-	## Runs `handler` on `keydown`; the payload is the key's name (such as `"Enter"`).
-	on_keydown : Handler(ctx) -> Attr(ctx)
-	on_keydown = |h| Engine.on("keydown", h)
-
 	## Runs `handler` when the form is submitted. Forms are app-managed: the
 	## runtime always prevents the browser's default, so the page never navigates.
 	on_submit : Handler(ctx) -> Attr(ctx)

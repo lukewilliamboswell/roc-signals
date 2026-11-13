@@ -36,7 +36,77 @@ Checks := [].{
 	app_expects! = |o| {
 		dirs = SpecSuite.app_dirs!()?
 		results = Proc.parallel!(dirs.map(|dir| { program: o.compiler, args: ["test", "${dir}/main.roc"], cwd: o.root }), Proc.cpus!())?
-		Ok(List.map2(dirs, results, |dir, r| if (r.code == 0) [] else ["roc test ${dir}/main.roc failed: ${r.output.trim()}"]).join())
+		negatives = Checks.key_type_errors!(o)?
+		Ok(List.map2(dirs, results, |dir, r| if (r.code == 0) [] else ["roc test ${dir}/main.roc failed: ${r.output.trim()}"]).join().concat(negatives))
+	}
+
+	## Invalid key declarations must remain impossible to author. Each probe
+	## is compiled as a complete app so context evidence is checked at use.
+	key_type_errors! : SpecSuite.Options => Try(List(Str), _)
+	key_type_errors! = |o| {
+		cases = [
+			{ name: "missing-keymap", rejection: "Engine.KeyProps" },
+			{ name: "key-prevent", rejection: "Engine.KeyProps" },
+			{ name: "document-row", rejection: "outside_rows" },
+			{ name: "document-state-in-row", rejection: "outside_rows" },
+		]
+		dir = "${o.build_dir}/key-type-errors"
+		SpecSuite.fresh_dir!(dir)?
+		var $problems = []
+		for test in cases {
+			fixture = Path.read_utf8!(Path.utf8("${o.root}/tests/type-errors/${test.name}.roc.txt"))?
+			case_dir = "${dir}/${test.name}"
+			Path.create_all!(Path.utf8(case_dir))?
+			up = Str.join_with(List.repeat("..", case_dir.split_on("/").keep_if(|part| !part.is_empty()).len()), "/")
+			platform_path = "${up}/${o.root.drop_prefix("/")}/platform/main.roc"
+			source = fixture.replace_each("<PLATFORM>", platform_path)
+			path = "${case_dir}/main.roc"
+			Path.write_utf8!(Path.utf8(path), source)?
+			{ code, stdout } = Proc.merged!({ program: o.compiler, args: ["check", path], cwd: o.root })?
+			if code == 0 or !Str.from_utf8_lossy(stdout).contains(test.rejection) {
+				$problems = $problems.append("key type contract ${test.name}: expected rejection naming ${test.rejection}, got ${Str.from_utf8_lossy(stdout)}")
+			}
+		}
+		Ok($problems)
+	}
+
+	## Engine mistakes are mounted in isolated apps. A native crash must name
+	## the intended contract; the matching Wasm app is checked in Chrome.
+	key_contracts! : SpecSuite.Options => Try(List(Str), _)
+	key_contracts! = |o| {
+		cases = [
+			{ name: "oracle-leading-zero", rejection: "leading zero", prefix: "executor:" },
+			{ name: "oracle-apply-file", rejection: "value property on file input", prefix: "contract:" },
+			{ name: "text-key", rejection: "on_key", prefix: "contract:" },
+			{ name: "document-bound", rejection: "32", prefix: "contract:" },
+			{ name: "apply-noncontrol", rejection: "ApplyValue", prefix: "contract:" },
+			{ name: "apply-without-value", rejection: "ApplyValue", prefix: "contract:" },
+		]
+		dir = "${o.build_dir}/key-contracts"
+		SpecSuite.fresh_dir!(dir)?
+		var $problems = []
+		for test in cases {
+			case_dir = "${dir}/${test.name}"
+			Path.create_all!(Path.utf8(case_dir))?
+			fixture = Path.read_utf8!(Path.utf8("${o.root}/tests/key-contracts/${test.name}.roc.txt"))?
+			up = Str.join_with(List.repeat("..", case_dir.split_on("/").keep_if(|part| !part.is_empty()).len()), "/")
+			source = fixture.replace_each("<PLATFORM>", "${up}/${o.root.drop_prefix("/")}/platform/main.roc").replace_each("<ORACLE>", "${up}/${o.root.drop_prefix("/")}/platform/main-fuzz.roc")
+			main = "${case_dir}/main.roc"
+			runner = "${case_dir}/runner"
+			wasm = "${case_dir}/app.wasm"
+			Path.write_utf8!(Path.utf8(main), source)?
+			Proc.run!(SpecSuite.build_job(o, "dev", main, SpecSuite.native_target, runner))?
+			Proc.run!(SpecSuite.build_job(o, "dev", main, "wasm32", wasm))?
+			spec = "${case_dir}/contract.scm"
+			Path.write_utf8!(Path.utf8(spec), "(test \"contract\" (steps (mark-metrics)))")?
+			{ code, stdout } = Proc.merged!({ program: runner, args: [spec], cwd: case_dir })?
+			message = Str.from_utf8_lossy(stdout)
+			if code != 70 or !message.contains(test.prefix) or !message.contains(test.rejection) {
+				$problems = $problems.append("native key contract ${test.name}: expected ${test.prefix} ${test.rejection}, got ${code.to_str()}: ${message}")
+			}
+		}
+		{ code, .. } = Proc.output!({ program: o.node, args: ["tests/browser/key-contracts-browser.mjs", "--fixtures", dir, "--runtime", SpecSuite.runtime, "--chrome", o.chrome], cwd: o.root })?
+		Ok(if (code == 0) $problems else $problems.append("browser key contracts failed (see above)"))
 	}
 
 	## Run one app's specs natively, and in Chrome when `browser`, with the
@@ -81,6 +151,10 @@ Checks := [].{
 	## also hold both runners to rejecting an invalid hold lifecycle.
 	broken_specs : List(Broken)
 	broken_specs = [
+		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press (label \"Keyboard editable\") \"Enter\")", rejection: "unmodelled" },
+		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press (label \"Keyboard editable\") \"j\")", rejection: "unmodelled" },
+		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press (label \"Prevented shortcut link\") \"Control+Enter\")", bad: "(press (label \"Unprevented shortcut link\") \"Shift+Enter\")", rejection: "unmodelled" },
+		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press \"a\")", rejection: "unmodelled" },
 		{ example: "controls", spec: "tests/apps/controls/specs/pointer-many-touches.scm", good: "(pointer-up (test-id \"pointer-capture\") :id 2)", bad: "(pointer-down (test-id \"pointer-capture\") :pointer touch :id 18)", rejection: "at most 16" },
 		{ example: "controls", spec: "tests/apps/controls/specs/pointer-capture.scm", good: "(hold-reports)", bad: "(pointer-down (test-id \"pointer-plain\") :pointer touch :id 2)", rejection: "touch" },
 		{ example: "controls", spec: "tests/apps/controls/specs/pointer-capture.scm", good: "(hold-reports)", bad: "(pointer-down (test-id \"pointer-plain\") :pointer pen :id 2)", rejection: "mouse or pen" },
