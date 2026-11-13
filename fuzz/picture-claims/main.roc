@@ -52,6 +52,16 @@ test = |bytes| {
 	rendered = Dom.render(dom, { root: dom.root, scope: Contents, mode: Picture, limits: { max_bytes: 1048576, max_nodes: 1024, max_depth: 32 } }) ?? crash "picture-claims: independent render refused valid frame"
 	envelope = PictureClaims.assemble({ dom, rendered, frames, batch: picture.commands, fingerprint: List.repeat(17, 32), expected: List.repeat(34, 32), limits: {} }) ?? crash "picture-claims: valid final frame refused"
 	parts = PictureCodec.parts(envelope)
+	match frames.find_first(|frame| frame.opcode == 255) {
+		Err(_) => {}
+		Ok(first_hole) => {
+			missing = frames.keep_if(|frame| frame.opcode != 255 or frame.at != first_hole.at or frame.address != first_hole.address or frame.slot != first_hole.slot)
+			if PictureClaims.assemble({ dom, rendered, frames: missing, batch: picture.commands, fingerprint: List.repeat(17, 32), expected: List.repeat(34, 32), limits: {} }).is_ok() { crash "picture-claims: missing captured hole accepted" }
+			wrong = frames.map(|frame| if frame.opcode == 255 and frame.at == first_hole.at and frame.address == first_hole.address and frame.slot == first_hole.slot { { ..frame, kind: frame.kind % 6 + 1 } } else { frame })
+			if PictureClaims.assemble({ dom, rendered, frames: wrong, batch: picture.commands, fingerprint: List.repeat(17, 32), expected: List.repeat(34, 32), limits: {} }).is_ok() { crash "picture-claims: wrong captured hole kind accepted" }
+		}
+	}
+
 	var $expected_principals = 0.U64
 	var $expected_holes = 0.U64
 	for entry in rendered.logical {

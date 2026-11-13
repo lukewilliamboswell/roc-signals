@@ -162,7 +162,8 @@ assemble_claims = |props| {
 		}
 		$scaffolds = $scaffolds.append(converted)
 	}
-	latest = final_births(props.frames, props.batch)?
+	captured = final_births(props.frames, props.batch)?
+	latest = captured.latest
 	var $bindings = []
 	var $row_birth = { at: 0.U32, end: 0.U32, opcode: 0.U8, address: 0.U32, slot: 0.U32, kind: 0.U8 }
 	for frame in props.frames {
@@ -210,11 +211,12 @@ assemble_claims = |props| {
 							}
 							row = props.dom.nodes.get(model) ? |_| InvalidClaims("missing row lifetime")
 							template = props.dom.tpls.get(site1 - 1) ? |_| InvalidClaims("missing final row template")
-							if row.ht.len() != template.holes.len() {
+							if captured.hole_counts.get({ birth: frame.at, row: frame.address }) != Ok(template.holes.len()) or row.ht.len() != template.holes.len() {
 								return Err(InvalidClaims("row hole cache differs from template"))
 							}
 							var $hole = 0.U32
 							for hole in template.holes {
+								if captured.holes.get({ birth: frame.at, row: frame.address, slot: $hole }) != Ok(hole.kind) { return Err(InvalidClaims("captured row hole index or kind differs from oracle template")) }
 								target_model = row.ht.get($hole.to_u64()) ?? crash "PictureClaims.assemble: checked hole cache"
 								target = $models.get(target_model) ? |_| InvalidClaims("live row hole has no final logical target")
 								$bindings = append_binding($bindings, { maximum: props.limits.codec.max_bytes // 18, binding: { birth_offset: frame.at, role: Hole, address: frame.address, slot: $hole, kind: binding_kind(hole.kind)?, logical: target } })?
@@ -263,38 +265,49 @@ is_birth = |frame| frame.opcode == 0 or frame.opcode == 1 or frame.opcode == 8 o
 
 ## Capture must describe every ordinary command boundary in order. Secondary
 ## aliases follow the one INST with that exact extent, and carry no bytes.
-final_births : List(PictureCapture.Frame), List(U8) -> Try(Dict(U32, PictureCapture.Frame), PictureClaims.Error)
+HoleKey : { birth : U32, row : U32, slot : U32 }
+RowBirth : { birth : U32, row : U32 }
+Captured : { latest : Dict(U32, PictureCapture.Frame), holes : Dict(HoleKey, U8), hole_counts : Dict(RowBirth, U64) }
+
+final_births : List(PictureCapture.Frame), List(U8) -> Try(Captured, PictureClaims.Error)
 final_births = |frames, batch| {
 	var $next = if (batch.is_empty()) 0.U32 else 1.U32
 	var $row = { at: 0.U32, end: 0.U32, opcode: 0.U8, address: 0.U32, slot: 0.U32, kind: 0.U8 }
 	var $latest = Dict.empty()
+	var $holes = Dict.empty()
+	var $hole_counts = Dict.empty()
+	var $aliases = []
 	for frame in frames {
-		if frame.opcode == 0 {
-			if $row.opcode != 1 or frame.at != $row.at or frame.end != $row.end or (frame.kind != 4 and frame.kind != 5) {
-				return Err(InvalidClaims("alias outside its INST boundary"))
+		if frame.opcode == 0 or frame.opcode == 255 {
+			if $row.opcode != 1 or frame.at != $row.at or frame.end != $row.end { return Err(InvalidClaims("row metadata outside its INST boundary")) }
+			if frame.opcode == 255 {
+				if frame.address != $row.address or frame.kind < 1 or frame.kind > 6 { return Err(InvalidClaims("invalid captured row hole")) }
+				key = { birth: frame.at, row: frame.address, slot: frame.slot }
+				if $holes.contains(key) { return Err(InvalidClaims("duplicate captured row hole")) }
+				$holes = $holes.insert(key, frame.kind)
+				row_key = { birth: frame.at, row: frame.address }
+				$hole_counts = $hole_counts.insert(row_key, ($hole_counts.get(row_key) ?? 0) + 1)
+			} else {
+				if frame.kind != 4 and frame.kind != 5 { return Err(InvalidClaims("invalid captured alias kind")) }
+				$aliases = $aliases.append({ key: { birth: frame.at, row: $row.address, slot: frame.slot }, kind: frame.kind })
 			}
 		} else {
-			if frame.at != $next or frame.end <= frame.at or frame.end.to_u64() > batch.len() or batch.get(frame.at.to_u64()) != Ok(frame.opcode) {
-				return Err(InvalidClaims("capture differs from ordinary command boundaries"))
-			}
+			if frame.at != $next or frame.end <= frame.at or frame.end.to_u64() > batch.len() or batch.get(frame.at.to_u64()) != Ok(frame.opcode) { return Err(InvalidClaims("capture differs from ordinary command boundaries")) }
 			$next = frame.end
 			$row = frame
+			if frame.opcode == 1 { $hole_counts = $hole_counts.insert({ birth: frame.at, row: frame.address }, 0) }
 		}
 		if is_birth(frame) {
-			if frame.address == 0 or frame.address == 0xffffffff {
-				return Err(InvalidClaims("reserved birth address"))
-			}
-			match $latest.get(frame.address) {
-				Ok(previous) if previous.at == frame.at => return Err(InvalidClaims("duplicate address at one birth"))
-				_ => {}
-			}
+			if frame.address == 0 or frame.address == 0xffffffff { return Err(InvalidClaims("reserved birth address")) }
+			match $latest.get(frame.address) { Ok(previous) if previous.at == frame.at => return Err(InvalidClaims("duplicate address at one birth")), _ => {} }
 			$latest = $latest.insert(frame.address, frame)
 		}
 	}
-	if $next.to_u64() != batch.len() {
-		return Err(InvalidClaims("capture does not cover ordinary batch"))
+	if $next.to_u64() != batch.len() { return Err(InvalidClaims("capture does not cover ordinary batch")) }
+	for alias in $aliases {
+		if $holes.get(alias.key) != Ok(alias.kind) { return Err(InvalidClaims("alias does not match a captured row hole")) }
 	}
-	Ok($latest)
+	Ok({ latest: $latest, holes: $holes, hole_counts: $hole_counts })
 }
 
 ## u32 framing is explicitly little endian in both independent hash domains.
@@ -619,4 +632,39 @@ expect {
 		envelope,
 		{ rendered: rendered },
 	)? == [114, 111, 99, 45, 115, 105, 103, 110, 97, 108, 115, 47, 112, 105, 99, 116, 117, 114, 101, 47, 49, 57, 47, 49, 0, 64, 0, 0, 0, 83, 80, 67, 49, 1, 0, 19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 100, 105, 118, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+}
+
+## Internal hole facts consume no command bytes or address birth. All six
+## kinds retain their own index, while a secondary alias requires its exact
+## matching Bind/Reference hole; metadata ordering does not affect identity.
+expect {
+	batch = [0, 1, 0]
+	row = { at: 1.U32, end: 3.U32, opcode: 1.U8, address: 7.U32, slot: 2.U32, kind: 0.U8 }
+	var $frames = [row]
+	for kind in 1.U8..=6 { $frames = $frames.append({ ..row, opcode: 255, slot: (kind - 1).to_u32(), kind }) }
+	frames = $frames.append({ ..row, opcode: 0, address: 8, slot: 4, kind: 5 })
+	captured = final_births(frames, batch)?
+	actual = {
+		row_birth: captured.latest.get(7)?,
+		alias_birth: captured.latest.get(8)?.opcode,
+		holes: captured.hole_counts.get({ birth: 1, row: 7 })?,
+		property: captured.holes.get({ birth: 1, row: 7, slot: 5 })?,
+	}
+	actual == { row_birth: row, alias_birth: 0, holes: 6, property: 6 }
+}
+
+## Orphan, duplicate, wrong-row and wrong-kind facts fail without becoming
+## commands; an alias cannot be certified by a hole of another kind.
+expect {
+	batch = [0, 1, 0]
+	row = { at: 1.U32, end: 3.U32, opcode: 1.U8, address: 7.U32, slot: 2.U32, kind: 0.U8 }
+	hole = { ..row, opcode: 255, slot: 0, kind: 4 }
+	actual = {
+		orphan: final_births([hole], batch).is_err(),
+		duplicate: final_births([row, hole, hole], batch).is_err(),
+		wrong_row: final_births([row, { ..hole, address: 8 }], batch).is_err(),
+		wrong_kind: final_births([row, { ..hole, kind: 7 }], batch).is_err(),
+		alias: final_births([row, hole, { ..row, opcode: 0, address: 8, slot: 0, kind: 5 }], batch).is_err(),
+	}
+	actual == { orphan: True, duplicate: True, wrong_row: True, wrong_kind: True, alias: True }
 }
