@@ -250,18 +250,26 @@ inert while the module loads. The runtime replaces those built nodes with its
 ordinary mount, releases the inertness the builder added, then performs the
 batch's effects. An `inert` attribute you authored on the mount remains intact.
 
-A template needs exactly one authored `data-roc-picture` mount root. The
-builder reserves `data-roc-picture-inert` on that root to record temporary
-inertness; leave it out of the template. That spelling on an app descendant
-remains ordinary data. Asset URLs are projected before the app's rendered
-markup is inserted, so an app value such as a title containing `app.wasm`
+A template needs exactly one authored `data-roc-picture` mount root. An HTML
+root owns its temporary inertness. For an SVG, MathML or other non-HTML root,
+author an immediate HTML parent with `data-roc-picture-inert-parent=""`.
+Its only element child must be the mount root, optionally followed by an HTML
+`script` with `type="application/json"` and `data-roc-picture-envelope="1"`.
+Text and comments are allowed around those elements. A template content
+fragment cannot be the parent. The builder adds no wrapper and keeps the
+actual mount root unchanged.
+
+Leave `data-roc-picture-inert` out of the inert owner's authored attributes:
+the builder reserves it to record inertness it added. Authored `inert` text
+on the owner remains intact after startup. The parent marker also remains.
+These attributes use no-namespace identity; the same spelling on a descendant
+or in another namespace remains data. Asset URLs are projected before the
+app's rendered markup is inserted, so an app title containing `app.wasm`
 remains unchanged.
 
 The scaffold includes a `noscript` notice and styles `data-roc-failed` on the
-mount when startup fails. A failed first page stays inert until a successful
-retry or recovery. First-picture interaction suppression for SVG, MathML and
-other non-HTML mount elements is not implemented yet; their normal live-mount
-support is unchanged.
+actual mount root when startup fails. A failed first page stays inert until
+a successful retry or recovery.
 
 The complete output is staged before publication. A refused route or invalid
 frame leaves the published `dist/` intact. Replacing an existing directory

@@ -298,7 +298,12 @@ The first-page contracts build the `prerender` app for both runners and a
 separate native fixture whose init deliberately crashes. Its `--picture-path`
 query must succeed without init, while `--prerender` must reach that init. The
 browser holds the real app's Wasm response, checks the parsed inert frame,
-then checks replacement, interaction and authored inert preservation. The
+then checks replacement, interaction and authored inert preservation. Its
+foreign-root fixture uses an explicit immediate HTML inert parent while the
+paired spec keeps the actual SVG mount root. Pure template checks cover the
+parent/descriptor edge, reserved owner facts and aggregate output bounds;
+parent attributes are inserted only at a public parser opening-token boundary.
+The
 raw startup contracts cover producer-owned inertness across failure, retry
 and recovery. The tool's end-to-end check builds root and nested pictures and
 compares the complete published tree after a route-collision refusal.

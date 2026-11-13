@@ -10,7 +10,7 @@ PicturePage := [].{
 
 	## A checked host-page root and the exact source span it owns. Only parse
 	## creates this value; page replacement cannot select another source range.
-	Template :: { source : Markup.Source, span : Markup.Span, root_name : Dom.ExpandedName, attributes : List((Dom.ExpandedName, Str)), parent : [Document, Element(Dom.ExpandedName)] }.{
+	Template :: { source : Markup.Source, span : Markup.Span, root_name : Dom.ExpandedName, attributes : List((Dom.ExpandedName, Str)), parent : [Document, Element(Dom.ExpandedName)], owner : [RootOwner, ParentOwner([AuthoredInert, AddInert(U64)])] }.{
 
 		## Root facts are engine-only mount input, independent of app Boot.
 		root : Template -> Scm.MountRoot
@@ -21,31 +21,39 @@ PicturePage := [].{
 		parent : Template -> [Document, Element(Dom.ExpandedName)]
 		parent = |template| template.parent
 
-		## Overlay the host root's ordered attributes on the cold oracle model.
-		## inert and the explicit picture marker stay outside owned app children.
+		## Overlay only the actual mount root. An explicit external owner keeps
+		## its own attributes in the host source; it never becomes the app root.
 		overlay : Template, Dom.Model -> Dom.Model
 		overlay = |template, model| {
 			name = template.root_name
 			attrs = template.attributes.keep_if(|(attribute, _)| !(attribute.namespace.is_empty() and attribute.prefix.is_empty() and attribute.local == "data-roc-picture"))
 			authored_inert = attrs.any(|(attribute, _)| attribute.namespace.is_empty() and attribute.prefix.is_empty() and attribute.local == "inert")
-			added = if (authored_inert) [] else [({ namespace: "", prefix: "", local: "inert" }, ""), ({ namespace: "", prefix: "", local: "data-roc-picture-inert" }, "added")]
+			added = if (template.owner == RootOwner and !authored_inert) [({ namespace: "", prefix: "", local: "inert" }, ""), ({ namespace: "", prefix: "", local: "data-roc-picture-inert" }, "added")] else []
 			Dom.modify(model, model.root, |node| { ..node, namespace: name.namespace, prefix: name.prefix, tag: name.local, svg: name.namespace == Dom.svg_namespace, attrs: attrs.concat(added).append(({ namespace: "", prefix: "", local: "data-roc-picture" }, "")) })
 		}
 
-		## Substitute only the parser-identified root range. The supplied markup
-		## must come from Dom.render's configured whole-root walk, not a serializer
-		## assembled here. All other host-page bytes remain exactly authored.
-		page : Template, { markup : Str, max_bytes : U64 } -> Try(Str, [PageLimit({ maximum : U64, required : U64 })])
+		## Apply the checked root replacement and, when needed, one insertion
+		## at its declared parent's opening-token boundary. All other authored
+		## bytes remain untouched. The complete size is checked before joining.
+		page : Template, { markup : Str, max_bytes : U64 } -> Try(Str, [PageLimit({ maximum : U64, required : U128 })])
 		page = |template, { markup: rendered_root, max_bytes }| {
+			addition = match template.owner {
+				ParentOwner(AddInert(_)) => " inert data-roc-picture-inert=\"added\""
+				_ => ""
+			}
 			retained = template.source.bytes.len() - template.span.end + template.span.start
-			required = retained + rendered_root.count_utf8_bytes()
-			if required > max_bytes {
+			required = retained.to_u128() + rendered_root.count_utf8_bytes().to_u128() + addition.count_utf8_bytes().to_u128()
+			if required > max_bytes.to_u128() {
 				return Err(PageLimit({ maximum: max_bytes, required }))
 			}
-			before = Str.from_utf8(template.source.bytes.take_first(template.span.start)) ?? crash "PicturePage.page: parser span begins on a UTF-8 boundary"
-			after = Str.from_utf8(template.source.bytes.drop_first(template.span.end)) ?? crash "PicturePage.page: parser span ends on a UTF-8 boundary"
-			Ok("${before}${rendered_root}${after}")
+			after = source_text(template.source, { start: template.span.end, end: template.source.bytes.len() })
+			pieces = match template.owner {
+				ParentOwner(AddInert(at)) => [source_text(template.source, { start: 0, end: at }), addition, source_text(template.source, { start: at, end: template.span.start }), rendered_root, after]
+				_ => [source_text(template.source, { start: 0, end: template.span.start }), rendered_root, after]
+			}
+			Ok(Str.join_with(pieces, ""))
 		}
+
 	}
 
 	## Inspect one complete authored host page, permitting unknown vocabulary
@@ -62,23 +70,21 @@ PicturePage := [].{
 			Element(value) => expanded(value)
 			_ => return Err(InvalidTemplate("the picture mount root must be an element"))
 		}
-		if selected.node.attributes.any(|attribute| attribute.name.namespace == NoNamespace and attribute.name.prefix == Unprefixed and attribute.name.local == "data-roc-picture-inert") {
-			return Err(InvalidTemplate("data-roc-picture-inert is reserved on the picture mount root for the builder's inert restoration fact"))
+		span = authored_span(selected.node, "the picture mount root")?
+		opening = opening_token(parsed.source, span)?
+		if opening.end != span.end {
+			_ = parsed.source.tokens.find_first(|token| token.kind == Tag and token.span.end == span.end and token.span.start >= opening.end) ? |_| InvalidTemplate("the mount root has no authored closing-tag token")
 		}
-		span = match selected.node.origin {
-			Authored(value) => value
-			_ => return Err(InvalidTemplate("the picture mount root must have one authored source range"))
-		}
-		opening = parsed.source.tokens.find_first(|token| token.kind == Tag and token.span.start == span.start) ? |_| InvalidTemplate("the mount root has no authored opening-tag token")
-		if opening.span.end != span.end {
-			_ = parsed.source.tokens.find_first(|token| token.kind == Tag and token.span.end == span.end and token.span.start >= opening.span.end) ? |_| InvalidTemplate("the mount root has no authored closing-tag token")
-		}
-		parent = parsed.tree.nodes.find_first(|node| node.children.contains(selected.index)).map_ok(|node| node.kind)
+		parent = parent_of(parsed.tree, selected.index)
 		context = match parent {
-			Ok(Element(value)) => Element(expanded(value))
-			_ => Document
+			Document => Document
+			Parent(index) => match (parsed.tree.nodes.get(index) ?? crash "PicturePage.parse: parent index").kind {
+				Element(value) => Element(expanded(value))
+				_ => crash "PicturePage.parse: a parent with children must be an element"
+			}
 		}
-		Ok(Template.{ source: parsed.source, span, root_name: name, attributes: selected.node.attributes.map(|attribute| (expanded(attribute.name), attribute.value)), parent: context })
+		owner = inert_owner(parsed, { root: selected.index, parent, root_span: span })?
+		Ok(Template.{ source: parsed.source, span, root_name: name, attributes: selected.node.attributes.map(|attribute| (expanded(attribute.name), attribute.value)), parent: context, owner })
 	}
 
 	## Project only the explicit URL's decoded path to a static directory.
@@ -142,17 +148,17 @@ expect PicturePage.route("/a//b").is_err()
 ## Source tokens and the authored full span protect tag-like script text and
 ## every host byte outside the selected root's replacement range.
 expect {
-	template = PicturePage.parse("<!doctype html><html><head><title>host</title></head><body><svg data-roc-picture><g/></svg><script>const close = '</svg>';</script></body></html>")?
-	template.page({ markup: "replacement", max_bytes: 16777216 })? == "<!doctype html><html><head><title>host</title></head><body>replacement<script>const close = '</svg>';</script></body></html>"
+	template = PicturePage.parse("<!doctype html><html><head><title>host</title></head><body><div data-roc-picture><i></i></div><script>const close = '</div>';</script></body></html>")?
+	template.page({ markup: "replacement", max_bytes: 16777216 })? == "<!doctype html><html><head><title>host</title></head><body>replacement<script>const close = '</div>';</script></body></html>"
 }
 
-## A self-closed foreign root has one authored token range; the renderer can
-## replace that whole range without inventing an HTML closing-tag scanner.
+## A self-closed foreign root retains its exact identity and source range.
+## Only the explicitly marked HTML parent's opening token receives inertness.
 expect {
-	template = PicturePage.parse("<!doctype html><html><head></head><body><svg data-roc-picture/></body></html>")?
+	template = PicturePage.parse("<!doctype html><html><head></head><body><div title='>' data-roc-picture-inert-parent><!--before--><svg data-roc-picture/><!--after--></div></body></html>")?
 	{ root: template.root(), page: template.page({ markup: "replacement", max_bytes: 16777216 })? } == {
 		root: { namespace: Dom.svg_namespace, prefix: "", local: "svg" },
-		page: "<!doctype html><html><head></head><body>replacement</body></html>",
+		page: "<!doctype html><html><head></head><body><div title='>' data-roc-picture-inert-parent inert data-roc-picture-inert=\"added\"><!--before-->replacement<!--after--></div></body></html>",
 	}
 }
 
@@ -200,3 +206,138 @@ expect {
 
 ## A selected host root cannot forge the builder's restoration ownership fact.
 expect PicturePage.parse("<!doctype html><html><head></head><body><div data-roc-picture data-roc-picture-inert=\"added\"></div></body></html>").is_err()
+
+## Source slices use public parser ranges. No tag, quote or attribute scanner
+## is introduced by the producer's two-edit publication plan.
+source_text : Markup.Source, Markup.Span -> Str
+source_text = |source, span| Str.from_utf8(source.slice(span)) ?? crash "PicturePage: parser source boundary is not UTF-8"
+
+authored_span : Markup.Node, Str -> Try(Markup.Span, [InvalidTemplate(Str)])
+authored_span = |node, label| match node.origin {
+	Authored(span) => Ok(span)
+	_ => Err(InvalidTemplate("${label} must have one authored source range"))
+}
+
+opening_token : Markup.Source, Markup.Span -> Try(Markup.Span, [InvalidTemplate(Str)])
+opening_token = |source, span| source.tokens.find_first(|token| token.kind == Tag and token.span.start == span.start).map_ok(|token| token.span) ? |_| InvalidTemplate("the selected element has no authored opening-tag token")
+
+parent_of : Markup.Tree, U64 -> [Document, Parent(U64)]
+parent_of = |tree, child| {
+	var $at = 0.U64
+	for node in tree.nodes {
+		if node.children.contains(child) { return Parent($at) }
+		$at = $at + 1
+	}
+	Document
+}
+
+## Bootstrap attributes are exact no-namespace identities. A QName in another
+## namespace, or a raw local name containing a colon, cannot supply the fact.
+plain_attribute : Markup.Node, Str -> Try(Str, [Absent])
+plain_attribute = |node, local| node.attributes.find_first(|attribute| attribute.name.namespace == NoNamespace and attribute.name.prefix == Unprefixed and attribute.name.local == local).map_ok(|attribute| attribute.value).map_err(|_| Absent)
+
+json_descriptor : Markup.Node -> Bool
+json_descriptor = |node| match node.kind {
+	Element(name) => name.namespace == Uri(Markup.html_namespace) and name.local == "script" and plain_attribute(node, "type") == Ok("application/json") and plain_attribute(node, "data-roc-picture-envelope") == Ok("1")
+	_ => False
+}
+
+## HTML roots own their inertness. A foreign root must explicitly name its
+## immediate ordinary HTML parent; this validates one finite edge, never finds
+## an ancestor or wraps the app. Element siblings match the browser contract.
+inert_owner : Markup.Parsed, { root : U64, parent : [Document, Parent(U64)], root_span : Markup.Span } -> Try([RootOwner, ParentOwner([AuthoredInert, AddInert(U64)])], [InvalidTemplate(Str)])
+inert_owner = |parsed, { root, parent, root_span }| {
+	root_node = parsed.tree.nodes.get(root) ?? crash "PicturePage: root index"
+	root_name = match root_node.kind { Element(name) => name
+		_ => crash "PicturePage: selected root kind" }
+	if root_name.namespace == Uri(Markup.html_namespace) {
+		if plain_attribute(root_node, "data-roc-picture-inert").is_ok() {
+			return Err(InvalidTemplate("data-roc-picture-inert is reserved on the inert owner for the builder's restoration fact"))
+		}
+		return Ok(RootOwner)
+	}
+	index = match parent {
+		Parent(index) => index
+		Document => return Err(InvalidTemplate("a non-HTML picture root requires its explicitly marked immediate HTML parent"))
+	}
+	owner = parsed.tree.nodes.get(index) ?? crash "PicturePage: owner index"
+	valid_parent = match owner.kind {
+		Element(name) => name.namespace == Uri(Markup.html_namespace) and name.local != "template"
+		_ => False
+	}
+	if !valid_parent or plain_attribute(owner, "data-roc-picture-inert-parent") != Ok("") {
+		return Err(InvalidTemplate("a non-HTML picture root requires its explicitly marked immediate ordinary HTML parent"))
+	}
+	children = owner.children.keep_if(|child| match (parsed.tree.nodes.get(child) ?? crash "PicturePage: sibling index").kind { Element(_) => True
+		_ => False })
+	valid_children = match children {
+		[one] => one == root
+		[one, descriptor] => one == root and json_descriptor(parsed.tree.nodes.get(descriptor) ?? crash "PicturePage: descriptor index")
+		_ => False
+	}
+	if !valid_children {
+		return Err(InvalidTemplate("the inert parent must contain only its root and optional associated HTML JSON descriptor as element children"))
+	}
+	if plain_attribute(owner, "data-roc-picture-inert").is_ok() {
+		return Err(InvalidTemplate("data-roc-picture-inert is reserved on the inert owner for the builder's restoration fact"))
+	}
+	owner_span = authored_span(owner, "the explicit inert parent")?
+	opening = opening_token(parsed.source, owner_span)?
+	if opening.end <= opening.start or opening.end > root_span.start or parsed.source.bytes.get(opening.end - 1) != Ok('>') {
+		return Err(InvalidTemplate("the explicit inert parent requires an ordinary authored opening-tag boundary before its root"))
+	}
+	if plain_attribute(owner, "inert").is_ok() { Ok(ParentOwner(AuthoredInert)) } else { Ok(ParentOwner(AddInert(opening.end - 1))) }
+}
+
+## An authored owner's inert value remains exact. Foreign-root attributes are
+## not mistaken for owner facts, and an exact JSON descriptor may follow it.
+expect {
+	source = "<!doctype html><html><head></head><body><div data-roc-picture-inert-parent inert='false'> text<!--a--><math data-roc-picture inert='root data' data-roc-picture-inert='root data'></math><!--b--><script type='application/json' data-roc-picture-envelope='1'>[]</script></div></body></html>"
+	template = PicturePage.parse(source)?
+	model = template.overlay(Dom.new({}))
+	node = Dom.node(model, model.root)
+	template.root().namespace == "http://www.w3.org/1998/Math/MathML" and Dom.attr_of(node, "inert") == "root data" and Dom.attr_of(node, "data-roc-picture-inert") == "root data" and template.page({ markup: "replacement", max_bytes: 16777216 })? == "<!doctype html><html><head></head><body><div data-roc-picture-inert-parent inert='false'> text<!--a-->replacement<!--b--><script type='application/json' data-roc-picture-envelope='1'>[]</script></div></body></html>"
+}
+
+## The ownership edge is immediate, ordinary, exact and explicit. A different
+## descriptor spelling never widens the owner's allowed element children.
+expect {
+	pages = [
+		"<div><svg data-roc-picture></svg></div>",
+		"<div data-roc-picture-inert-parent='false'><svg data-roc-picture></svg></div>",
+		"<div data-roc-picture-inert-parent><section><svg data-roc-picture></svg></section></div>",
+		"<svg><g data-roc-picture-inert-parent><svg data-roc-picture></svg></g></svg>",
+		"<div data-roc-picture-inert-parent><i></i><svg data-roc-picture></svg></div>",
+		"<div data-roc-picture-inert-parent><svg data-roc-picture></svg><i></i></div>",
+		"<div data-roc-picture-inert-parent><svg data-roc-picture></svg><script type='application/ld+json' data-roc-picture-envelope='1'>[]</script></div>",
+		"<div data-roc-picture-inert-parent><svg data-roc-picture></svg><script type='application/json' data-roc-picture-envelope='2'>[]</script></div>",
+		"<div data-roc-picture-inert-parent><svg data-roc-picture></svg><span type='application/json' data-roc-picture-envelope='1'></span></div>",
+		"<div data-roc-picture-inert-parent><script type='application/json' data-roc-picture-envelope='1'>[]</script><svg data-roc-picture></svg></div>",
+		"<div data-roc-picture-inert-parent><svg data-roc-picture></svg><script type='application/json' data-roc-picture-envelope='1'>[]</script><i></i></div>",
+		"<template data-roc-picture-inert-parent><svg data-roc-picture></svg></template>",
+		"<div data-roc-picture-inert-parent data-roc-picture-inert='added'><svg data-roc-picture></svg></div>",
+	]
+	pages.all(|body| PicturePage.parse("<!doctype html><html><head></head><body>${body}</body></html>").is_err())
+}
+
+## HTML roots own themselves even when an unrelated parent has the marker.
+## No parent attributes or siblings are rewritten in that case.
+expect {
+	source = "<!doctype html><html><head></head><body><section data-roc-picture-inert-parent data-roc-picture-inert='parent data'><div data-roc-picture></div><p>outside</p></section></body></html>"
+	template = PicturePage.parse(source)?
+	model = template.overlay(Dom.new({}))
+	Dom.attr_of(Dom.node(model, model.root), "data-roc-picture-inert") == "added" and template.page({ markup: "replacement", max_bytes: 16777216 })? == "<!doctype html><html><head></head><body><section data-roc-picture-inert-parent data-roc-picture-inert='parent data'>replacement<p>outside</p></section></body></html>"
+}
+
+## The parent insertion contributes to the aggregate page bound before any
+## joined output is allocated, including when its opening tag contains a quoted greater-than sign.
+expect {
+	template = PicturePage.parse("<!doctype html><html><head></head><body><div title='>' data-roc-picture-inert-parent><svg data-roc-picture></svg></div></body></html>")?
+	page = template.page({ markup: "replacement", max_bytes: 16777216 })?
+	fits = template.page({ markup: "replacement", max_bytes: page.count_utf8_bytes() })
+	small = template.page({ markup: "replacement", max_bytes: page.count_utf8_bytes() - 1 })
+	fits == Ok(page) and match small {
+		Err(PageLimit({ maximum, required })) => required == page.count_utf8_bytes().to_u128() and maximum.to_u128() + 1 == required
+		_ => False
+	}
+}

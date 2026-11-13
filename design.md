@@ -1699,14 +1699,28 @@ the module's arrival decides when it becomes interactive.
 The first stage replaces the picture immediately before applying the mount
 batch, in the same task. The picture is inert until then. The runtime removes
 inertness before performing the batch's effects, so focus and reference
-commands observe the mounted page. The native producer marks only inertness
-it added with the root-only `data-roc-picture-inert="added"` restoration fact.
-An authored template root cannot supply that reserved fact; authored `inert`
-text without it is preserved. The runtime retains the fact and its bounded
-hold across startup failure and retry, then consumes them after successful
-replacement or recovery. The spelling has no meaning on descendants or in
-another attribute namespace. The app chooses the routes to render;
-no origin, user session or hash route is invented by the build.
+commands observe the mounted page. An HTML mount root owns its inertness.
+A non-HTML mount root requires an explicitly marked immediate ordinary HTML
+parent with the no-namespace `data-roc-picture-inert-parent=""` attribute.
+That parent has exactly the root and, optionally, its following HTML JSON
+descriptor as element children; text and comments may surround them. The
+descriptor has no-namespace `type="application/json"` and
+`data-roc-picture-envelope="1"` attributes. A template content fragment cannot
+supply this parent. The producer never inserts a wrapper or changes the
+actual mount root, its namespace or live mounting semantics.
+
+The producer adds no-namespace `inert` to this explicit owner only when it
+was absent, recording that addition with `data-roc-picture-inert="added"` on
+the owner. An authored owner cannot supply that reserved restoration fact;
+authored inert text is preserved exactly. The host template's public parser
+tokens bound any parent opening-tag insertion. The runtime retains the fact
+and its bounded hold across startup failure and retry, then removes the fact
+and only producer-added inertness after successful replacement or recovery.
+The parent marker persists; picture and failure markers belong to the actual
+root. These bootstrap facts use exact no-namespace attribute identity; the
+same spelling elsewhere or in another namespace remains data. The app
+chooses the routes to render; no origin, user session or hash route is
+invented by the build.
 
 Adoption preserves the existing nodes only on the engine's command. The
 build writes versioned node and row-hole claims separately from the owned
