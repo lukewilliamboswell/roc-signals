@@ -1080,20 +1080,20 @@ const STEPS = {
   },
   "expect-request": async (page, s) => {
     const got = await page.evaluate(n => {
-      const rt = window.__rt, id = rt.issued[n - 1], e = rt.live.get(id);
-      if (id === undefined || !e || e.running || e.terminal) return { error: `effect occurrence ${n} is not pending` };
-      if (!["http", "upload", "fetch"].includes(e.req?.op)) return { error: `effect occurrence ${n} is not HTTP` };
-      return { method: e.req.method, url: e.req.url, cache: e.req.cache, credentials: e.req.credentials };
+      const req = window.__rt.pendingEffects()[n - 1];
+      if (!req) return { error: `no current pending request ${n}` };
+      if (!["http", "upload", "fetch"].includes(req.op)) return { error: `pending request ${n} is not HTTP` };
+      return { method: req.method, url: req.url, cache: req.cache, credentials: req.credentials };
     }, s.n);
     if (got.error) throw new Error(got.error);
     for (const key of ["method", "url", "cache", "credentials"]) if (s[key] !== undefined && s[key] !== got[key]) throw new Error(`request ${s.n} ${key} is ${JSON.stringify(got[key])}, expected ${JSON.stringify(s[key])}`);
   },
   "progress-effect": async (page, s) => {
     const ok = await page.evaluate((n, direction, done, total) => {
-      const rt = window.__rt, id = rt.issued[n - 1];
-      return id !== undefined && rt.progressEffect(id, direction, done, total);
+      const rt = window.__rt, req = rt.pendingEffects()[n - 1];
+      return req !== undefined && rt.progressEffect(req.id, direction, done, total);
     }, s.n, s.direction, s.done, s.total);
-    if (!ok) throw new Error(`effect occurrence ${s.n} is not a pending transfer that requested progress`);
+    if (!ok) throw new Error(`current pending request ${s.n} is not a transfer that requested progress`);
     return settle(page);
   },
   "expect-pending-effects": async (page, s) => {
