@@ -56,7 +56,7 @@ CurrentApp := [].{
 			[
 				Html.text_input(Engine.const("Question"), "text", value.map(|s| s.question), [], state.set_value(|s, text| { ..s, question: text })),
 				Html.checkbox(Engine.const("Shown"), value.map(|s| s.shown), [], state.set_value(|s, shown| { ..s, shown })),
-				Html.checkbox(Engine.const("Two requests"), value.map(|s| s.multiple), [], state.set_value(|s, text| { ..s, multiple: text == "true" })),
+				Html.checkbox(Engine.const("Two requests"), value.map(|s| s.multiple), [], state.set_value(|s, multiple| { ..s, multiple })),
 				Html.button("Hide and choose B", [], state.update(|s| { ..s, shown: False, question: "B" })),
 				Html.button("Open local", [], state.update(|s| { ..s, local: True })),
 				Html.button("Close local", [], state.update(|s| { ..s, local: False })),
