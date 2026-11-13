@@ -345,6 +345,7 @@ async function open(options = {}) {
       10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67,
       0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127,
       1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0,
+      11, 5, 0, 0, 0, 1, 0, 0, 0, 0,
     ]);
     const other = (await WebAssembly.instantiate(module, pageImports(module))).exports;
     other.boot_keys();
