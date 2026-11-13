@@ -25,12 +25,12 @@ TimelineChart := [].{
 
 	## The chart's Plotly figure as JSON, for the element's `data-figure`.
 	## A log with no dated entries has no timeline, and its figure is
-	## empty, which the element draws as nothing.
-	figure : Props -> Str
+	## absent, which the element draws as nothing.
+	figure : Props -> [Absent, Present(Str)]
 	figure = |props|
 		match TimelineChart.chart(props) {
-			Ok(chart) => chart.to_json()
-			Err(_) => ""
+			Ok(chart) => Present(chart.to_json())
+			Err(_) => Absent
 		}
 
 	## The chart itself. It cannot fail for a timeline the index built
@@ -149,7 +149,10 @@ three_minutes = {
 ## start, and a line for a search's matches; its zoom is kept under the
 ## revision given.
 expect {
-	json = TimelineChart.figure({ timeline: three_minutes, matches: Counted([0, 7, 1]), revision: "app.log" })
+	json = match TimelineChart.figure({ timeline: three_minutes, matches: Counted([0, 7, 1]), revision: "app.log" }) {
+		Present(figure) => figure
+		Absent => crash "expected timeline figure"
+	}
 	actual = {
 		lines: ["\"INFO\"", "\"WARN\"", "\"ERROR\"", "\"Matches\""].map(|name| json.contains(name)),
 		absent: ["\"TRACE\"", "\"DEBUG\"", "\"FATAL\""].map(|name| json.contains(name)),
@@ -160,7 +163,7 @@ expect {
 }
 
 ## A log with no dated entries draws nothing.
-expect TimelineChart.figure({ timeline: Log.no_timeline, matches: NotCounted, revision: "" }) == ""
+expect TimelineChart.figure({ timeline: Log.no_timeline, matches: NotCounted, revision: "" }) == Absent
 
 ## The peak is the earliest highest bucket; all zeros have none.
 expect {

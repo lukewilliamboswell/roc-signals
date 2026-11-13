@@ -295,7 +295,7 @@ LabApp := [].{
 		number = index.map(|i| (i + 1).to_str())
 		Engine.element(
 			"div",
-			[Engine.class_s(look.map(Lab.look_class)), Engine.attr_s("style", job.map(Lab.strip_style)), Engine.test_id_s(number.map(|k| "strip-${k}"))],
+			[Engine.class_s(look.map(Lab.look_class)), Engine.attr_presence("style", job.map(Lab.strip_style)), Engine.test_id_s(number.map(|k| "strip-${k}"))],
 			[
 				Engine.when(
 					look.map(|l| Lab.look_url(l) != ""),

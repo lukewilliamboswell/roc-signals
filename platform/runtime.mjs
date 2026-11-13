@@ -142,13 +142,13 @@
 // never called: calls wait for answerPort(), subscriptions for
 // messagePort(), and commands are logged in portLog.
 //
-// Attribute values: "" removes the attribute. Element properties have their
-// own commands and a closed table. Boolean attributes (disabled,
-// selected, readonly, required, hidden, multiple) are present for any value
-// other than "" and "false".
+// Attributes carry explicit presence; a present empty string stays present.
+// Element properties have their own commands and a closed table. Boolean
+// attributes (disabled, selected, readonly, required, hidden, multiple, open)
+// are present for any value other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -280,9 +280,12 @@ export async function instantiateEngineWasm(url) {
   return instantiateEngineBytes(await response.arrayBuffer());
 }
 
-const utf8 = new TextDecoder();
+const utf8 = new TextDecoder("utf-8", { fatal: true });
 
+// Reject incomplete or invalid text before the ASCII fast path can fabricate
+// characters from missing bytes or a decoder can replace invalid UTF-8.
 function readStr(u8, at, n) {
+  if (!Number.isInteger(at) || !Number.isInteger(n) || at < 0 || n < 0 || at > u8.length || n > u8.length - at) throw new Error("truncated command string");
   if (n <= 32) {
     let s = "";
     for (let i = 0; i < n; i += 1) {
@@ -341,16 +344,11 @@ function setValue(el, value) {
 }
 
 function setAttr(el, name, value) {
-  if (name === "class" && el.namespaceURI === SVG_NS) {
-    if (value === "") el.removeAttribute("class");
-    else el.setAttribute("class", value);
-  } else if (name === "class") {
-    el.className = value;
-  } else if (BOOL_ATTRS.has(name)) {
+  if (BOOL_ATTRS.has(name)) {
     if (value === "" || value === "false") el.removeAttribute(name);
     else el.setAttribute(name, "");
-  } else if (value === "") {
-    el.removeAttribute(name);
+  } else if (name === "class" && el.namespaceURI !== SVG_NS) {
+    el.className = value;
   } else {
     el.setAttribute(name, value);
   }
@@ -368,8 +366,7 @@ const PROPS = [null, {
     if (el.tagName === "INPUT" && el.type === "file") throw new ContractFault(`contract: value property on file input at node ${node}`);
     setValue(el, value);
     if (el.tagName === "SELECT") el.__v = value;
-    if (value === "") el.removeAttribute("value");
-    else el.setAttribute("value", value);
+    el.setAttribute("value", value);
     if (el.tagName === "OPTION") settleSelect(el.parentNode);
   },
 }, {
@@ -2359,6 +2356,17 @@ export class RocEngineRuntime {
     const dv = new DataView(buffer, ptr, len);
     const doc = this.doc;
     let at = 0;
+    // Attribute absence is an explicit wire case. An empty present string
+    // reaches setAttr unchanged, including during row instantiation.
+    const attribute = (el, name) => {
+      const present = u8[at++];
+      if (present === 0) el.removeAttribute(name);
+      else if (present === 1) {
+        const n = dv.getUint32(at, true);
+        setAttr(el, name, readStr(u8, at + 4, n));
+        at += 4 + n;
+      } else throw new Error(`invalid attribute presence ${present}`);
+    };
     while (at < len) {
       const op = u8[at];
       at += 1;
@@ -2394,9 +2402,7 @@ export class RocEngineRuntime {
               target.nodeValue = readStr(u8, at + 4, n);
               at += 4 + n;
             } else if (hole.kind === HOLE_ATTR) {
-              const n = dv.getUint32(at, true);
-              setAttr(target, hole.name, readStr(u8, at + 4, n));
-              at += 4 + n;
+              attribute(target, hole.name);
             } else if (hole.kind === HOLE_PROP) {
               const n = dv.getUint32(at, true);
               setProp(target, hole.prop, readStr(u8, at + 4, n), node);
@@ -2418,8 +2424,16 @@ export class RocEngineRuntime {
           this.sites[site].add(node);
           break;
         }
+        case OP_HATTR: {
+          const row = this.lookup(dv.getUint32(at, true));
+          const index = u8[at + 4];
+          const hole = this.templates[row.__site].holes[index];
+          if (hole.kind !== HOLE_ATTR) throw new Error("HATTR names a non-attribute hole");
+          at += 5;
+          attribute(row.__ht[index], hole.name);
+          break;
+        }
         case OP_TEXT:
-        case OP_HATTR:
         case OP_HPROP: {
           const node = dv.getUint32(at, true);
           const row = this.lookup(node);
@@ -2428,10 +2442,10 @@ export class RocEngineRuntime {
           const target = row.__ht[u8[at + 4]];
           const v = readStr(u8, at + 9, n);
           if (op === OP_TEXT) target.nodeValue = v;
-          else if (op === OP_HPROP) {
+          else {
             if (hole.kind !== HOLE_PROP) throw new Error("HPROP names a non-property hole");
             setProp(target, hole.prop, v, node);
-          } else setAttr(target, hole.name, v);
+          }
           at += 9 + n;
           break;
         }
@@ -2490,9 +2504,7 @@ export class RocEngineRuntime {
           const n = dv.getUint32(at + 4, true);
           const name = readStr(u8, at + 8, n);
           at += 8 + n;
-          const m = dv.getUint32(at, true);
-          setAttr(el, name, readStr(u8, at + 4, m));
-          at += 4 + m;
+          attribute(el, name);
           break;
         }
         case OP_PROP: {

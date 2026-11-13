@@ -13,6 +13,39 @@ import pf.Html
 ##   mount (`tests/browser/controls-browser.mjs` observes it).
 ControlsApp := [].{
 
+	## Empty text and absence are different observations, in plain blocks and
+	## keyed row templates. The controls also exercise row reuse and disposal.
+	attributes : {} -> Elem(ctx)
+	attributes = |_props| Engine.state(
+		{ presence: Absent, rows: ["a", "b"] },
+		|attributes| Engine.element(
+			"section",
+			[],
+			[
+				Html.button("Empty attribute", [], attributes.update(|s| { ..s, presence: Present("") })),
+				Html.button("Text attribute", [], attributes.update(|s| { ..s, presence: Present("named") })),
+				Html.button("Absent attribute", [], attributes.update(|s| { ..s, presence: Absent })),
+				Html.button("Reverse attribute rows", [], attributes.update(|s| { ..s, rows: s.rows.fold([], |reversed, key| [key].concat(reversed)) })),
+				Html.button("Remove attribute row", [], attributes.update(|s| { ..s, rows: s.rows.keep_if(|key| key != "a") })),
+				Html.button("Restore attribute rows", [], attributes.update(|s| { ..s, rows: ["a", "b"] })),
+				Engine.element("img", [Engine.test_id("attribute-plain"), Engine.attr("alt", ""), Engine.attr_presence("title", attributes.signal().map(|s| s.presence))], []),
+				Engine.each(
+					attributes.signal().map(|s| s.rows),
+					|key| key,
+					|row| Engine.element(
+						"div",
+						[
+							Engine.test_id_s(row.key().map(|key| "attribute-row-${key}")),
+							Engine.attr("aria-label", ""),
+							Engine.attr_presence("title", attributes.lift_row().signal().map(|s| s.presence)),
+						],
+						[],
+					),
+				),
+			],
+		),
+	)
+
 	## References follow row keys and selection without changing event routing.
 	## The fault buttons deliberately exercise duplicate names and a focus
 	## feedback loop; ordinary specs never press them.
@@ -104,6 +137,7 @@ ControlsApp := [].{
 		[],
 		[
 			ControlsApp.references({}),
+			ControlsApp.attributes({}),
 			Html.text_input(
 				Engine.const("Plain"),
 				"text",

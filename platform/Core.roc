@@ -1033,9 +1033,10 @@ Core := [].{
 	}
 
 	## An attribute, event listener or focus reference on an element, in context
-	## `ctx`. Make one with `attr`, `attr_s`, `class`, `class_s`, `test_id`,
+	## `ctx`. Make one with `attr`, `attr_s`, `attr_presence`, `class`,
+	## `class_s`, `test_id`,
 	## `test_id_s`, `on`, `on_click`, `ref` or `ref_s`.
-	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Signal(ctx, Str)), On(EventDecl, RoutedHandler(ctx)), Property(U8, Str), PropertyV(U8, Signal(ctx, Str)), Ref(Signal(ctx, Str))]
+	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Signal(ctx, [Absent, Present(Str)])), On(EventDecl, RoutedHandler(ctx)), Property(U8, Str), PropertyV(U8, Signal(ctx, Str)), Ref(Signal(ctx, Str))]
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
 	## (`state`, `derive`, `resource`, `when`, `switch`, `remount_on`, `each`,
@@ -1921,15 +1922,23 @@ Core := [].{
 	text_s : Signal(ctx, Str) -> Elem(ctx)
 	text_s = |v| TextV(v)
 
-	## A static attribute.
+	## Set a static attribute to literal text, keeping an empty nonboolean
+	## attribute present. Use a property builder for names a control claims.
 	attr : Str, Str -> Attr(ctx)
 	attr = |name, value| Static(name, value)
 
 	## Follow a signal with an attribute, writing only when it changes. An
-	## empty string removes it. Names claimed by an element property are
-	## rejected on that property's elements; use `prop_s` for live control state.
+	## empty string keeps a nonboolean attribute present. Names claimed by
+	## an element property are rejected on that property's elements; use
+	## `prop_s` for live control state.
 	attr_s : Str, Signal(ctx, Str) -> Attr(ctx)
-	attr_s = |name, v| Dyn(name, v)
+	attr_s = |name, v| Dyn(name, v.map(|encoded| Present(encoded)))
+
+	## Follow explicit attribute presence. `Present("")` keeps an empty
+	## nonboolean attribute; `Absent` removes it. The same hole and equality
+	## cutoff serve both this builder and `attr_s`.
+	attr_presence : Str, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
+	attr_presence = |name, value| Dyn(name, value)
 
 	## A static `class` attribute.
 	class : Str -> Attr(ctx)
@@ -1937,7 +1946,7 @@ Core := [].{
 
 	## A `class` attribute that follows a value.
 	class_s : Signal(ctx, Str) -> Attr(ctx)
-	class_s = |v| Dyn("class", v)
+	class_s = |v| Dyn("class", v.map(|encoded| Present(encoded)))
 
 	## A static `data-testid` attribute, for spec locators.
 	test_id : Str -> Attr(ctx)
@@ -1945,7 +1954,7 @@ Core := [].{
 
 	## A `data-testid` attribute that follows a value.
 	test_id_s : Signal(ctx, Str) -> Attr(ctx)
-	test_id_s = |v| Dyn("data-testid", v)
+	test_id_s = |v| Dyn("data-testid", v.map(|encoded| Present(encoded)))
 
 	## Static dispatch policies, checked by the compiler. Prevention and
 	## propagation must be decided before an event's synchronous window closes.
@@ -2198,7 +2207,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 6
+	protocol_version = 7
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -2773,7 +2782,7 @@ work_get = |w, i| match i {
 	_ => 0
 }
 
-Hole(ctx) : { node : U32, mask : U128, attr : Str, reference : [NotReference, Reference(List(U32))], property : U8, read : (ctx -> Str), last : Str }
+Hole(ctx) : { node : U32, mask : U128, attr : Str, reference : [NotReference, Reference(List(U32))], property : U8, read : (ctx -> [Absent, Present(Str)]), last : [Absent, Present(Str)] }
 
 Block(ctx) : {
 	holes : List(Hole(ctx)),
@@ -2787,6 +2796,14 @@ Block(ctx) : {
 }
 
 ## ------------------------------------------------------------------
+## Attribute holes share the ordinary hole observation cache. Non-attribute
+## readers always produce `Present`; absence has meaning only for attributes.
+observed_text : [Absent, Present(Str)] -> Str
+observed_text = |observation| match observation {
+	Present(text) => text
+	Absent => crash "internal: absence in a non-attribute hole"
+}
+
 ## Command encoding.
 put_u32 : List(U8), U32 -> List(U8)
 put_u32 = |buf, v| buf.append(v.to_u8_wrap()).append(v.shr_zf_wrap(8).to_u8_wrap()).append(v.shr_zf_wrap(16).to_u8_wrap()).append(v.shr_zf_wrap(24).to_u8_wrap())
@@ -2801,6 +2818,13 @@ put_str = |buf, s| {
 		$b = $b.append(byte)
 	}
 	$b
+}
+
+## Presence is explicit on the wire, so empty text never encodes removal.
+put_presence : List(U8), [Absent, Present(Str)] -> List(U8)
+put_presence = |bytes, presence| match presence {
+	Absent => bytes.append(0)
+	Present(text) => put_str(bytes.append(1), text)
 }
 
 ## Append one command: its opcode, then the operands `write` adds. The
@@ -3285,7 +3309,7 @@ mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, t
 			s = read(env)
 			tx2 = emit_op(count_evals(tx1, 1), 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
 			b1 = add_node(block, id, top)
-			(add_hole(b1, { node: id, mask: eff_mask(v), attr: "", reference: NotReference, property: 0, read, last: s }), tx2)
+			(add_hole(b1, { node: id, mask: eff_mask(v), attr: "", reference: NotReference, property: 0, read: |context| Present(read(context)), last: Present(s) }), tx2)
 		}
 		Site(Mount(mount), _) => {
 			k = block.children.len().to_u32_wrap()
@@ -3298,18 +3322,18 @@ mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, t
 mount_attr : Block(ctx), ctx, Attr(ctx), U32, List(U32), Tx -> (Block(ctx), Tx)
 mount_attr = |block, env, attr, id, path, tx| {
 	match attr {
-		Static(name, value) => (block, emit_op(tx, 9, |c| put_str(put_str(put_u32(c, id), name), value)))
+		Static(name, value) => (block, emit_op(tx, 9, |c| put_presence(put_str(put_u32(c, id), name), Present(value))))
 		Dyn(name, v) => {
 			read = v.read
 			value = read(env)
-			tx1 = emit_op(count_evals(tx, 1), 9, |c| put_str(put_str(put_u32(c, id), name), value))
+			tx1 = emit_op(count_evals(tx, 1), 9, |c| put_presence(put_str(put_u32(c, id), name), value))
 			(add_hole(block, { node: id, mask: eff_mask(v), attr: name, reference: NotReference, property: 0, read, last: value }), tx1)
 		}
 		Property(index, value) => (block, emit_op(bump(tx, property_row(index).counter, 1), 21, |commands| put_str(put_u32(commands, id).append(index), value)))
 		PropertyV(index, value) => {
 			encoded = (value.read)(env)
 			next = emit_op(bump(count_evals(tx, 1), property_row(index).counter, 1), 21, |commands| put_str(put_u32(commands, id).append(index), encoded))
-			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: NotReference, property: index, read: value.read, last: encoded }), next)
+			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: NotReference, property: index, read: |context| Present((value.read)(context)), last: Present(encoded) }), next)
 		}
 		On(ev, handler) => {
 			h = block.handlers.len().to_u32_wrap()
@@ -3319,7 +3343,7 @@ mount_attr = |block, env, attr, id, path, tx| {
 		Ref(value) => {
 			ref_path = path.append(block.holes.len().to_u32_wrap())
 			name = (value.read)(env)
-			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: Reference(ref_path), property: 0, read: value.read, last: name }), with_fx(count_evals(tx, 1), |fx| add_ref(fx, { name, node: id, path: ref_path })))
+			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: Reference(ref_path), property: 0, read: |context| Present((value.read)(context)), last: Present(name) }), with_fx(count_evals(tx, 1), |fx| add_ref(fx, { name, node: id, path: ref_path })))
 		}
 	}
 }
@@ -3373,7 +3397,7 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 	while $i < $holes.len() {
 		hm = $holes.get($i).map_ok(|h| h.mask) ?? 0
 		if all or hm.bitwise_and(mask) != 0 {
-			{ list, prev } = $holes.replace($i, { node: 0, mask: 0, attr: "", reference: NotReference, property: 0, read: |_| "", last: "" }) ?? crash "hole"
+			{ list, prev } = $holes.replace($i, { node: 0, mask: 0, attr: "", reference: NotReference, property: 0, read: |_| Absent, last: Absent }) ?? crash "hole"
 			{ node, mask: m, attr, reference, property, read, last } = prev
 			v = read(env)
 			t1 = count_evals($tx, 1)
@@ -3382,13 +3406,13 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 				$tx = t1
 			} else {
 				$tx = if property != 0 {
-					emit_op(bump(t1, property_row(property).counter, 1), 21, |commands| put_str(put_u32(commands, node).append(property), v))
+					emit_op(bump(t1, property_row(property).counter, 1), 21, |commands| put_str(put_u32(commands, node).append(property), observed_text(v)))
 				} else match reference {
-					Reference(path) => with_fx(t1, |fx| add_ref(drop_name(fx, { node, name: last, path }), { name: v, node, path }))
+					Reference(path) => with_fx(t1, |fx| add_ref(drop_name(fx, { node, name: observed_text(last), path }), { name: observed_text(v), node, path }))
 					NotReference => if attr.is_empty() {
-						emit_op(t1, 12, |c| put_str(put_u32(c, node), v))
+						emit_op(t1, 12, |c| put_str(put_u32(c, node), observed_text(v)))
 					} else {
-						emit_op(t1, 9, |c| put_str(put_str(put_u32(c, node), attr), v))
+						emit_op(t1, 9, |c| put_presence(put_str(put_u32(c, node), attr), v))
 					}
 				}
 				$holes = list.set($i, { node, mask: m, attr, reference, property, read, last: v }) ?? crash "hole"
@@ -4048,7 +4072,7 @@ index_remove = |{ hs, vals, count, bits, by_slot }, slot| {
 ## `ctl`: the work counter a property hole's updates also count in
 ## (`w_set_value`, `w_set_checked`), or 0; for a reference, its index
 ## among reference holes, after the nested-site ids in the row's bindings.
-RHole(ctx) : { evaluated : Bool, kind : U8, mask : U128, smask : U128, skey : (ctx -> Str), read : (ctx -> Str), col : U64, live : Bool, ctl : U64 }
+RHole(ctx) : { evaluated : Bool, kind : U8, mask : U128, smask : U128, skey : (ctx -> Str), read : (ctx -> [Absent, Present(Str)]), col : U64, live : Bool, ctl : U64 }
 
 Plan(ctx) : {
 	tree : List(U8),
@@ -4071,7 +4095,7 @@ put_path = |buf, kind, path| buf.append(kind).append(narrow(path.len(), "nesting
 narrow : U64, Str -> U8
 narrow = |n, what| if (n > 255) crash "resource_limit: a row template's ${what} is ${n.to_str()}; the template encoding allows at most 255" else n.to_u8_wrap()
 
-val_hole : Plan(ctx), { kind : U8, value : Signal(ctx, Str), extra : List(U8), counter : U64, evaluated : Bool } -> Plan(ctx)
+val_hole : Plan(ctx), { kind : U8, value : Signal(ctx, [Absent, Present(Str)]), extra : List(U8), counter : U64, evaluated : Bool } -> Plan(ctx)
 val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, value: v, extra, counter, evaluated }| {
 	{ mask, read, sel } = v
 	(smask, skey) = match sel {
@@ -4117,24 +4141,24 @@ compile_elem = |plan, elem, path, depth, site| {
 						$ncols = r.ncols
 					}
 					Property(index, encoded) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: Core.const(encoded), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: False })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: Core.const(Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: False })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
 					}
 					PropertyV(index, value) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: value, extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: value.map(|encoded| Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
 					}
 					On(ev, handler) => {
 						$htab = put_u32(put_str(put_path($htab, 3, path).append(narrow($handlers.len(), "event handler count")), ev.event).append(ev.kind), ev.policies)
-						$holes = $holes.append({ evaluated: False, kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| "", col: $handlers.len(), live: False, ctl: 0 })
+						$holes = $holes.append({ evaluated: False, kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: $handlers.len(), live: False, ctl: 0 })
 						$handlers = $handlers.append(handler)
 					}
 					Ref(value) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 5, value, extra: put_path([], 5, path), counter: 0, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 5, value: value.map(|encoded| Present(encoded)), extra: put_path([], 5, path), counter: 0, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
@@ -4157,11 +4181,11 @@ compile_elem = |plan, elem, path, depth, site| {
 		TextV(v) => {
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
 			t2 = put_str(tree.append(2), "")
-			val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads }, { kind: 1, value: v, extra: put_path([], 1, path), counter: 0, evaluated: True })
+			val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads }, { kind: 1, value: v.map(|encoded| Present(encoded)), extra: put_path([], 1, path), counter: 0, evaluated: True })
 		}
 		Site(m, rf) => {
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
-			hole = { evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| "", col: mounts.len(), live: False, ctl: 0 }
+			hole = { evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0 }
 			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(m), ncols, kreads: kreads.bitwise_or(rf(depth)) }
 		}
 	}
@@ -4212,7 +4236,7 @@ Cols(r, item) : {
 	order : List(U32),
 	free : List(U32),
 	index : KeyIndex,
-	lasts : List(List(Str)),
+	lasts : List(List([Absent, Present(Str)])),
 	kids : List(List(Inst(r))),
 	binds : List(List(U32)),
 	pend : List(U128),
@@ -4338,7 +4362,7 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 			} else if hole.ctl == w_set_checked {
 				$set_checked = $set_checked + 1
 			}
-			$c = put_str($c, v)
+			$c = if (hole.kind == 2) put_presence($c, v) else put_str($c, observed_text(v))
 			if hole.live {
 				{ list, prev } = $lasts.replace(hole.col, []) ?? crash "lasts"
 				$lasts = list.set(hole.col, put_at(prev, si, v)) ?? crash "lasts"
@@ -4348,14 +4372,14 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 			}
 		} else if hole.kind == 5 {
 			(bid, t2) = alloc_id($t)
-			name = (hole.read)(row_env)
+			name = observed_text((hole.read)(row_env))
 			$t = with_fx(t2, |fx2| add_ref(fx2, { name, node: bid, path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }))
 			$c = put_u32($c, bid)
 			$bound = $bound.append(bid)
 			$ev = $ev + if (hole.evaluated) 1 else 0
 			if hole.live {
 				{ list, prev } = $lasts.replace(hole.col, []) ?? crash "lasts"
-				$lasts = list.set(hole.col, put_at(prev, si, name)) ?? crash "lasts"
+				$lasts = list.set(hole.col, put_at(prev, si, Present(name))) ?? crash "lasts"
 			}
 			if hole.smask != 0 and !known {
 				$sels = $sels.set($hi, (hole.skey)(row_env)) ?? $sels
@@ -4907,18 +4931,18 @@ settle = |cfg, cols, env, tx| {
 			if hole.live and hole.mask.bitwise_or(hole.smask).bitwise_and(m) != 0 {
 				v = (hole.read)(row_env)
 				{ list, prev } = $lasts.replace(hole.col, []) ?? crash "lasts"
-				old = prev.get(si) ?? ""
+				old = prev.get(si) ?? crash "internal: missing row hole observation"
 				$evals = $evals + 1
 				if v == old {
 					$lasts = list.set(hole.col, prev) ?? crash "lasts"
 				} else {
 					if hole.kind == 5 {
 						id = (binds.get(si) ?? []).get(cfg.plan.mounts.len() + hole.ctl) ?? crash "internal: reference binding"
-						$tx = with_fx($tx, |fx| add_ref(drop_name(fx, { node: id, name: old, path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }), { name: v, node: id, path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }))
+						$tx = with_fx($tx, |fx| add_ref(drop_name(fx, { node: id, name: observed_text(old), path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }), { name: observed_text(v), node: id, path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }))
 					} else {
 						op = if (hole.kind == 1) 2 else if (hole.kind == 6) 22 else 3
 						hidx = $hi.to_u8_wrap()
-						$tx = emit_op(bump($tx, hole.ctl, 1), op, |c| put_str(put_u32(c, node).append(hidx), v))
+						$tx = emit_op(bump($tx, hole.ctl, 1), op, |c| if (hole.kind == 2) put_presence(put_u32(c, node).append(hidx), v) else put_str(put_u32(c, node).append(hidx), observed_text(v)))
 					}
 					$lasts = list.set(hole.col, prev.set(si, v) ?? crash "lasts") ?? crash "lasts"
 				}
@@ -5431,7 +5455,10 @@ elem_reads = |elem, depth| match elem {
 		var $m = 0.U128
 		for a in attrs {
 			match a {
-				Dyn(_, v) | PropertyV(_, v) | Ref(v) => {
+				Dyn(_, v) => {
+					$m = $m.bitwise_or(eff_mask(v))
+				}
+				PropertyV(_, v) | Ref(v) => {
 					$m = $m.bitwise_or(eff_mask(v))
 				}
 				_ => {}
@@ -7693,7 +7720,7 @@ expect {
 	distinct : List(Attr({}))
 	distinct = [Core.on("click", h), Static("class", "x"), Core.on("input", h), Ref(Core.const("r"))]
 	twice : List(Attr({}))
-	twice = [Core.on("click", h), Core.on("input", h), Dyn("title", Core.const("t")), Core.on("click", h)]
+	twice = [Core.on("click", h), Core.on("input", h), Dyn("title", Core.const(Present("t"))), Core.on("click", h)]
 	(twice_handled(distinct), twice_handled(twice)) == (Err(Distinct), Ok("click"))
 }
 
@@ -7841,4 +7868,36 @@ expect {
 	after = Core.event(before, 1, 0, "")
 	actual = { removed: after.tx.fx.refs.contains("key-1"), kept: (after.tx.fx.refs.get("key-2") ?? []).first()?.node, settled: Core.settled(after).is_ok() }
 	actual == { removed: Bool.False, kept, settled: Bool.True }
+}
+
+## Empty text and absence have distinct attribute command operands. A
+## repeated observation prunes the write, while each transition evaluates
+## the signal once and leaves the engine settled.
+expect {
+	view = Core.state(
+		Absent,
+		|state| Core.element(
+			"div",
+			[
+				Core.on_click(state.set_value(|_, payload| if (payload == "remove") Absent else Present(payload))),
+				Core.attr_presence("title", state.signal()),
+			],
+			[],
+		),
+	)
+	(mounted, _) = Core.take_cmds(Core.mount(view), [])
+	(empty, empty_commands) = Core.take_cmds(Core.event(mounted, 1, 0, ""), [])
+	(same, same_commands) = Core.take_cmds(Core.event(empty, 1, 0, ""), [])
+	(named, named_commands) = Core.take_cmds(Core.event(same, 1, 0, "name"), [])
+	(absent, absent_commands) = Core.take_cmds(Core.event(named, 1, 0, "remove"), [])
+	prefix = put_str(put_u32([9], 1), "title")
+	actual = {
+		empty: empty_commands,
+		same: same_commands,
+		named: named_commands,
+		absent: absent_commands,
+		evaluations: work_get(absent.tx.work, 21) - work_get(mounted.tx.work, 21),
+		settled: Core.settled(absent).is_ok(),
+	}
+	actual == { empty: put_str(prefix.append(1), ""), same: [], named: put_str(prefix.append(1), "name"), absent: prefix.append(0), evaluations: 4, settled: Bool.True }
 }

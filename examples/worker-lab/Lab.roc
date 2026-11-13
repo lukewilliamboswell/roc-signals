@@ -922,11 +922,11 @@ Lab := [].{
 
 	## A strip's shape, so its band's placeholder takes the room the strip
 	## will. A job that draws no strip has none.
-	strip_style : Job -> Str
+	strip_style : Job -> [Absent, Present(Str)]
 	strip_style = |job|
 		match job.task {
-			Strip({ width, rows, .. }) => "aspect-ratio: ${width.to_str()} / ${rows.to_str()}"
-			_ => ""
+			Strip({ width, rows, .. }) => Present("aspect-ratio: ${width.to_str()} / ${rows.to_str()}")
+			_ => Absent
 		}
 }
 

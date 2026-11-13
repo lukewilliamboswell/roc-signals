@@ -177,6 +177,69 @@ reference_focus! = |events| {
 	Fuzz.keep
 }
 
+## Generated presence, reorder, removal and recreation histories must retain
+## exactly the model's attributes, including present empty text. Every turn
+## also checks propagation and the command work counters.
+attribute_presence! : List(U8) => Fuzz.Outcome
+attribute_presence! = |events| {
+	program = Core.driver(ControlsApp.program)
+	var $s = SpecRunner.start(program, { name: "attribute history", setup: [], steps: [] }) ?? crash "attribute history did not mount"
+	var $presence = Absent
+	var $has_a = True
+	for event in events {
+		operation = event % 6
+		action = match operation {
+			0 => "Empty attribute"
+			1 => "Text attribute"
+			2 => "Absent attribute"
+			3 => "Reverse attribute rows"
+			4 => "Remove attribute row"
+			_ => "Restore attribute rows"
+		}
+		match operation {
+			0 => {
+				$presence = Present("")
+			}
+			1 => {
+				$presence = Present("named")
+			}
+			2 => {
+				$presence = Absent
+			}
+			4 => {
+				$has_a = False
+			}
+			5 => {
+				$has_a = True
+			}
+			_ => {}
+		}
+		$s = SpecRunner.one(program, $s, Click(Role({ role: "button", name: action }))) ?? crash "attribute history: click failed"
+		for id in ["attribute-plain", "attribute-row-b"].concat(if ($has_a) ["attribute-row-a"] else []) {
+			i = SpecRunner.find($s.dom, TestId(id)) ?? crash "attribute history: missing ${id}"
+			got = match SpecRunner.attr_value($s.dom, i, "title") {
+				Ok(value) => Present(value)
+				Err(Absent) => Absent
+			}
+			if got != $presence {
+				crash "attribute history: ${id} has ${Str.inspect(got)}, expected ${Str.inspect($presence)}"
+			}
+		}
+		if !$has_a and SpecRunner.find($s.dom, TestId("attribute-row-a")).is_ok() {
+			crash "attribute history: removed row remains"
+		}
+		match SpecRunner.check_settled(program, $s) {
+			Ok(_) => {}
+			Err(message) => crash "attribute history: ${message}"
+		}
+		match SpecRunner.check_counters($s) {
+			Ok(_) => {}
+			Err(message) => crash "attribute history: ${message}"
+		}
+	}
+	Fuzz.keep
+}
+
 Input : { mode : U8, pad : U8, events : List(U8) }
 
 target = Fuzz.target_with!({
@@ -184,13 +247,22 @@ target = Fuzz.target_with!({
 	examples: [
 		Fuzz.example({ name: "focus", revision: "2", make: || { mode: 0, pad: 0, events: [] } }),
 		Fuzz.example({ name: "many-sites", revision: "2", make: || { mode: 1, pad: 0, events: [] } }),
+		Fuzz.example({ name: "attribute-history", revision: "1", make: || { mode: 3, pad: 0, events: [0, 0, 1, 3, 4, 2, 5, 0, 4, 1, 5, 2] } }),
 		Fuzz.example({ name: "reference-history", revision: "1", make: || { mode: 2, pad: 0, events: [0, 2, 0, 3, 0, 4, 0, 5, 8, 6, 8, 2, 8, 7, 8, 9, 10] } }),
 	],
-	generator: { mode: Fuzz.constant(2), pad: Fuzz.constant(0), events: Fuzz.list(Fuzz.u8, 64) }.Fuzz,
+	generator: {
+		mode: |arbitrary| {
+			next = Fuzz.u8(arbitrary)
+			{ state: next.state, value: 2 + next.value % 2 }
+		},
+		pad: Fuzz.constant(0),
+		events: Fuzz.list(Fuzz.u8, 64),
+	}.Fuzz,
 	test!: |{ mode, pad, events }| match mode {
 		0 => focus!({})
 		1 => many!(5000 + pad.to_u64())
-		_ => reference_focus!(events)
+		2 => reference_focus!(events)
+		_ => attribute_presence!(events)
 	},
 	show: Str.inspect,
 })

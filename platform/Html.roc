@@ -52,7 +52,7 @@ Html := [].{
 	## An attribute that is `"true"` while the value is true and absent otherwise
 	## (such as `aria-invalid`).
 	flag_maybe : Str, Signal(ctx, Bool) -> Attr(ctx)
-	flag_maybe = |name, v| Engine.attr_s(name, v.map(|b| if (b) "true" else ""))
+	flag_maybe = |name, v| Engine.attr_presence(name, v.map(|b| if (b) Present("true") else Absent))
 
 	## `button(label, attrs, handler)`: a button with a static label that runs
 	## `handler` on click.

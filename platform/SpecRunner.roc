@@ -846,7 +846,7 @@ SpecRunner := [].{
 	## Whether Chrome focuses node `n` when it is clicked or `.focus()`ed.
 	focusable : Dom.DNode -> Bool
 	focusable = |n| {
-		tag_ok = n.tag == "button" or n.tag == "input" or n.tag == "select" or n.tag == "textarea" or (n.tag == "a" and Dom.attr_of(n, "href") != "") or Dom.attr_of(n, "tabindex") != ""
+		tag_ok = n.tag == "button" or n.tag == "input" or n.tag == "select" or n.tag == "textarea" or (n.tag == "a" and Dom.has_attr(n, "href")) or Dom.has_attr(n, "tabindex")
 		tag_ok and !SpecRunner.disabled(n) and !SpecRunner.flag_on(n, "hidden") and !(n.tag == "input" and Dom.attr_of(n, "type") == "hidden")
 	}
 
@@ -952,8 +952,8 @@ SpecRunner := [].{
 	matches : Dom.Model, Dom.DNode, Scm.Loc -> Bool
 	matches = |dom, n, loc|
 		match loc {
-			Label(x) => n.tag != "" and Dom.attr_of(n, "aria-label") == x
-			TestId(x) => n.tag != "" and Dom.attr_of(n, "data-testid") == x
+			Label(x) => n.tag != "" and Dom.has_attr(n, "aria-label") and Dom.attr_of(n, "aria-label") == x
+			TestId(x) => n.tag != "" and Dom.has_attr(n, "data-testid") and Dom.attr_of(n, "data-testid") == x
 			Role({ role, name }) => n.tag != "" and SpecRunner.implicit_role(n) == role and SpecRunner.accessible_name(dom, n) == name
 			Text(x) => n.tag == "" and n.text == x
 		}
@@ -982,17 +982,17 @@ SpecRunner := [].{
 	value_of = |dom, i| {
 		n = Dom.node(dom, i)
 		v = Dom.live_value(n, "value")
-		if n.tag == "option" and Dom.attr_of(n, "value") == "" {
-			Dom.text_of(dom, i)
+		if n.tag == "option" {
+			if (Dom.has_attr(n, "value")) Dom.attr_of(n, "value") else Dom.text_of(dom, i)
 		} else if n.tag == "select" and !SpecRunner.has_option(dom, { root: i, value: v }) {
 			""
-		} else if n.tag == "input" and ["checkbox", "radio"].contains(Dom.attr_of(n, "type")) and Dom.attr_of(n, "value") == "" {
+		} else if n.tag == "input" and ["checkbox", "radio"].contains(Dom.attr_of(n, "type")) and !Dom.has_attr(n, "value") {
 			"on"
 		} else v
 	}
 
-	## Options whose value attribute is absent use their text, including the
-	## existing empty-value mirror rule. Search only this select's descendants.
+	## Options whose value attribute is absent use their text. A present empty
+	## value remains empty. Search only this select's descendants.
 	has_option : Dom.Model, { root : U64, value : Str } -> Bool
 	has_option = |dom, { root, value }| {
 		n = Dom.node(dom, root)
@@ -1005,7 +1005,7 @@ SpecRunner := [].{
 	## What `expect-attr` reads, as the browser runner reads it: `checked` and
 	## `disabled` as "true"/"false" from the live state, `value` as the live
 	## value, a boolean attribute as "" when present, `class` as set, and any
-	## other attribute as set unless the engine set it to "" (which removes it).
+	## other attribute as set, including an explicitly present empty string.
 	attr_value : Dom.Model, U64, Str -> Try(Str, [Absent])
 	attr_value = |dom, i, name| {
 		n = Dom.node(dom, i)
@@ -1018,13 +1018,9 @@ SpecRunner := [].{
 			Ok(SpecRunner.value_of(dom, i))
 		} else if SpecRunner.bool_attrs.contains(name) {
 			if (SpecRunner.flag_on(n, name)) Ok("") else Err(Absent)
-		} else if name == "class" {
-			if (n.attrs.any(|(k, _)| k == "class")) Ok(raw) else Err(Absent)
-		} else if raw == "" {
-			Err(Absent)
-		} else {
+		} else if Dom.has_attr(n, name) {
 			Ok(raw)
-		}
+		} else Err(Absent)
 	}
 
 	## The attributes the runtime treats as boolean (design.md, Appendix B).
@@ -1585,7 +1581,7 @@ SpecRunner := [].{
 				Err(_) => Ok(s)
 			}
 		} else {
-			match SpecRunner.ancestor(s.dom, i, |m| m.tag == "a" and Dom.attr_of(m, "href") != "") {
+			match SpecRunner.ancestor(s.dom, i, |m| m.tag == "a" and Dom.has_attr(m, "href")) {
 				Ok(a) => {
 					href = Dom.attr_of(Dom.node(s.dom, a), "href")
 					url = SpecRunner.resolve(s.browser.loc, href) ? |_| "the click navigates to ${href}, which leaves the app"
@@ -3039,9 +3035,79 @@ expect {
 expect {
 	(d1, i) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "custom-field", props: [("value", "live")] })
 	dom = Dom.bind(d1, 1, i)
-	attribute = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), "value"), "attribute")
+	attribute = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), "value").append(1), "attribute")
 	decoded = Dom.apply(dom, attribute)
 	{ attr: SpecRunner.attr_value(decoded, i, "value")?, value: SpecRunner.value_of(decoded, i) } == { attr: "attribute", value: "live" }
+}
+
+## Attribute commands retain empty text independently from absence. The
+## same distinction survives static template attributes, INST operands and
+## HATTR updates, without changing ordinary checked attributes into properties.
+expect {
+	element = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([8], 1), 0), 0), "img")
+	empty_alt = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), "alt").append(1), "")
+	removed_alt = SpecRunner.put_str(SpecRunner.put_u32([9], 1), "alt").append(0)
+	ordinary_checked = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), "checked").append(1), "")
+	present = Dom.apply(Dom.new({}), element.concat(empty_alt).concat(ordinary_checked))
+	i = Dom.lookup(present, 1)
+	removed = Dom.apply(present, removed_alt)
+	static_attrs = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str([1], "img").append(1), "alt"), "")
+	template = SpecRunner.put_str(static_attrs.concat([0, 1, 2, 0]), "aria-label")
+	define = SpecRunner.put_u32(SpecRunner.put_u32([7], 0), template.len().to_u32_wrap()).concat(template)
+	instance = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([1], 2), 0), 0), 0).append(1), "")
+	row_present = Dom.apply(removed, define.concat(instance))
+	row = Dom.lookup(row_present, 2)
+	row_absent = Dom.apply(row_present, SpecRunner.put_u32([3], 2).concat([0, 0]))
+	row_restored = Dom.apply(row_absent, SpecRunner.put_str(SpecRunner.put_u32([3], 2).concat([0, 1]), ""))
+	actual = {
+		plain_empty: SpecRunner.attr_value(present, i, "alt")?,
+		ordinary_checked: SpecRunner.attr_value(present, i, "checked")?,
+		plain_absent: SpecRunner.attr_value(removed, i, "alt"),
+		static_empty: SpecRunner.attr_value(row_present, row, "alt")?,
+		row_empty: SpecRunner.attr_value(row_present, row, "aria-label")?,
+		row_absent: SpecRunner.attr_value(row_absent, row, "aria-label"),
+		row_restored: SpecRunner.attr_value(row_restored, row, "aria-label")?,
+	}
+	actual == { plain_empty: "", ordinary_checked: "", plain_absent: Err(Absent), static_empty: "", row_empty: "", row_absent: Err(Absent), row_restored: "" }
+}
+
+## Locators and focusability use presence rather than nonempty text. Empty
+## labels and test ids locate only elements that actually declare them.
+expect {
+	dom = Dom.new({})
+	plain = { ..Dom.empty_node, tag: "a" }
+	empty = { ..plain, attrs: [("aria-label", ""), ("data-testid", ""), ("href", "")] }
+	actual = {
+		missing_label: SpecRunner.matches(dom, plain, Label("")),
+		empty_label: SpecRunner.matches(dom, empty, Label("")),
+		missing_id: SpecRunner.matches(dom, plain, TestId("")),
+		empty_id: SpecRunner.matches(dom, empty, TestId("")),
+		missing_href: SpecRunner.focusable(plain),
+		empty_href: SpecRunner.focusable(empty),
+	}
+	actual == { missing_label: Bool.False, empty_label: Bool.True, missing_id: Bool.False, empty_id: Bool.True, missing_href: Bool.False, empty_href: Bool.True }
+}
+
+## An empty option value is distinct from an absent one: only the absent
+## value falls back to the option's text. Empty controlled values retain their
+## mirrors, while checked false removes its mirror explicitly.
+expect {
+	(d1, select) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "select" })
+	(d2, option) = Dom.add_node(d1, { ..Dom.empty_node, tag: "option" })
+	(d3, text) = Dom.add_node(d2, { ..Dom.empty_node, text: "All works" })
+	(d4, input) = Dom.add_node(d3, { ..Dom.empty_node, tag: "input" })
+	tree = Dom.insert(Dom.insert(d4, select, option, Err(End)), option, text, Err(End))
+	values = Dom.set_property_on(Dom.set_property_on(tree, option, 1, "", 2), select, 1, "", 1)
+	checked = Dom.set_property_on(Dom.set_property_on(values, input, 2, "true", 3), input, 2, "false", 3)
+	actual = {
+		fallback: SpecRunner.value_of(tree, option),
+		empty_option: SpecRunner.value_of(checked, option),
+		select_match: SpecRunner.has_option(checked, { root: select, value: "" }),
+		option_mirror: Dom.node(checked, option).attrs,
+		select_mirror: Dom.node(checked, select).attrs,
+		unchecked_mirror: Dom.node(checked, input).attrs,
+	}
+	actual == { fallback: "All works", empty_option: "", select_match: Bool.True, option_mirror: [("value", "")], select_mirror: [("value", "")], unchecked_mirror: [] }
 }
 
 ## A checkbox without a declared value has the browser's default "on".

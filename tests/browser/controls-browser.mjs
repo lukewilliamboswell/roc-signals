@@ -472,13 +472,13 @@ for (const [button, where] of [
   await ctx.close();
 }
 for (const [button, expected] of [
-  ["Retired prevent suffix", 'contract: retired event suffix in "click:prevent" at site /0/5/1; use on_with for policies or on_files for files'],
-  ["Retired files suffix", 'contract: retired event suffix in "change:files" at site /0/5/1; use on_with for policies or on_files for files'],
-  ["Duplicate click policies", 'contract: two handlers for the "click" event on one <button> at site /0/5/1: an element takes one handler per event; run both from one with Handler.also'],
-  ["Duplicate change kinds", 'contract: two handlers for the "change" event on one <input> at site /0/5/1: an element takes one handler per event; run both from one with Handler.also'],
-  ["Checked property on div", 'contract: property "checked" is not allowed on <div> at site /0/5/1'],
-  ["Value attribute on input", 'contract: attribute "value" on <input> is claimed by a property at site /0/5/1; use prop or prop_s'],
-  ["Duplicate value property", 'contract: property "value" is declared twice on <input> at site /0/5/1'],
+  ["Retired prevent suffix", 'contract: retired event suffix in "click:prevent" at site /0/6/1; use on_with for policies or on_files for files'],
+  ["Retired files suffix", 'contract: retired event suffix in "change:files" at site /0/6/1; use on_with for policies or on_files for files'],
+  ["Duplicate click policies", 'contract: two handlers for the "click" event on one <button> at site /0/6/1: an element takes one handler per event; run both from one with Handler.also'],
+  ["Duplicate change kinds", 'contract: two handlers for the "change" event on one <input> at site /0/6/1: an element takes one handler per event; run both from one with Handler.also'],
+  ["Checked property on div", 'contract: property "checked" is not allowed on <div> at site /0/6/1'],
+  ["Value attribute on input", 'contract: attribute "value" on <input> is claimed by a property at site /0/6/1; use prop or prop_s'],
+  ["Duplicate value property", 'contract: property "value" is declared twice on <input> at site /0/6/1'],
 ]) {
   const { page, ctx } = await open();
   await page.evaluate((name) => [...document.querySelectorAll("button")].find((b) => b.textContent === name).click(), button);
@@ -521,7 +521,7 @@ for (const mode of ["initial", "changed"]) {
       const word = (n) => bytes.push(n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255);
       const str = (s) => { const b = new TextEncoder().encode(s); word(b.length); bytes.push(...b); };
       const elem = (id, tag, parent = 0) => { byte(8); word(id); word(parent); word(0); str(tag); };
-      const attr = (id, name, value) => { byte(9); word(id); str(name); str(value); };
+      const attr = (id, name, value, present = 1) => { byte(9); word(id); str(name); byte(present); if (present === 1) str(value); };
       const prop = (id, index, value) => { byte(21); word(id); byte(index); str(value); };
       const listen = (id, type, kind = 1, policies = 0) => { byte(11); word(id); word(7); str(type); byte(kind); word(policies); };
       const apply = () => { new Uint8Array(memory.buffer).set(bytes); rt.guard(() => rt.applyBatch()); bytes = []; };
@@ -534,8 +534,17 @@ for (const mode of ["initial", "changed"]) {
       };
       const inst = (id, parent, tpl, value) => { byte(1); word(id); word(parent); word(0); word(tpl); str(value); };
       const hprop = (id, hole, value) => { byte(22); word(id); byte(hole); str(value); };
+      const attrTemplate = (id) => {
+        const outer = bytes; bytes = [];
+        byte(1); str("img"); byte(2); str("alt"); str(""); str("data-static"); str(""); byte(0);
+        byte(1); byte(2); byte(0); str("aria-label");
+        const tpl = bytes; bytes = outer;
+        byte(7); word(id); word(tpl.length); bytes.push(...tpl);
+      };
+      const attrInst = (id, tpl, present, value = "") => { byte(1); word(id); word(0); word(0); word(tpl); byte(present); if (present === 1) str(value); };
+      const hattr = (id, present, value = "") => { byte(3); word(id); byte(0); byte(present); if (present === 1) str(value); };
       const close = () => { if (!rt.poisoned) rt.contain(new Error("fixture done"), "executor"); root.remove(); };
-      return { root, rt, byte, word, str, elem, attr, prop, listen, apply, template, inst, hprop, close };
+      return { root, rt, byte, word, str, elem, attr, prop, listen, apply, template, inst, hprop, attrTemplate, attrInst, hattr, close };
     };
     if (!customElements.get("property-probe")) customElements.define("property-probe", class extends HTMLElement { value = "original"; });
     const h = harness();
@@ -564,10 +573,33 @@ for (const mode of ["initial", "changed"]) {
     h.rt.statics[1].dispatchEvent(new Event("close"));
     const dispatch = [calls, custom.defaultPrevented, documentEvents, targetEvents];
     h.close();
+    const attributes = harness();
+    attributes.elem(1, "img"); attributes.attr(1, "alt", ""); attributes.attr(1, "aria-label", "");
+    attributes.attr(1, "data-cleared", "before"); attributes.attr(1, "data-cleared", "", 0);
+    attributes.attr(1, "hidden", ""); attributes.attr(1, "required", "false"); attributes.attr(1, "disabled", "true");
+    attributes.attrTemplate(3); attributes.attrInst(10, 3, 1); attributes.attrInst(11, 3, 0);
+    attributes.elem(20, "select"); attributes.prop(20, 1, "");
+    attributes.elem(21, "option", 20); attributes.prop(21, 1, "");
+    attributes.byte(10); attributes.word(22); attributes.word(21); attributes.word(0); attributes.str("All works");
+    attributes.elem(30, "svg"); attributes.attr(30, "class", "");
+    attributes.apply();
+    const image = attributes.rt.statics[1];
+    const row = attributes.rt.statics[10];
+    const emptyAttrs = [image.getAttribute("alt"), image.getAttribute("aria-label"), image.hasAttribute("data-cleared"), image.hasAttribute("hidden"), image.hasAttribute("required"), image.hasAttribute("disabled"), row.getAttribute("alt"), row.getAttribute("data-static"), row.getAttribute("aria-label"), attributes.rt.statics[11].hasAttribute("aria-label"), attributes.rt.statics[30].getAttribute("class")];
+    attributes.hattr(10, 1, "named"); attributes.apply();
+    attributes.hattr(10, 0); attributes.apply();
+    const removed = row.hasAttribute("aria-label");
+    attributes.hattr(10, 1, ""); attributes.apply();
+    const option = attributes.rt.statics[21];
+    const attrChanges = [removed, row.getAttribute("aria-label"), row === attributes.rt.statics[10], attributes.rt.statics[20].value, option.value, option.getAttribute("value")];
+    attributes.close();
     const failures = [];
-    for (const fault of ["kind", "kind-event", "policy", "property", "wrong-element", "checked", "template", "file", "changed-file"]) {
+    for (const fault of ["attribute-presence", "hole-presence", "inst-presence", "kind", "kind-event", "policy", "property", "wrong-element", "checked", "template", "file", "changed-file"]) {
       const bad = harness();
       bad.elem(9, fault === "wrong-element" ? "div" : "input");
+      if (fault === "attribute-presence") bad.attr(9, "alt", "", 2);
+      if (fault === "hole-presence") { bad.attrTemplate(1); bad.attrInst(10, 1, 1); bad.apply(); bad.hattr(10, 2); }
+      if (fault === "inst-presence") { bad.attrTemplate(1); bad.attrInst(10, 1, 2); }
       if (fault === "kind") bad.listen(9, "click", 99, 0);
       if (fault === "kind-event") bad.listen(9, "click", 2, 0);
       if (fault === "policy") bad.listen(9, "click", 1, 4);
@@ -581,15 +613,42 @@ for (const mode of ["initial", "changed"]) {
       failures.push([fault, bad.rt.poisoned?.class, fault.includes("file") ? bad.rt.poisoned?.message : null]);
       bad.close();
     }
-    return { state, changed, dispatch, failures };
+    const malformedAttributes = [];
+    for (const command of ["ATTR", "HATTR", "INST"]) {
+      for (const fault of ["missing-length", "truncated-ascii", "truncated-long", "invalid-utf8"]) {
+        const bad = harness();
+        if (command === "ATTR") {
+          bad.elem(1, "img"); bad.apply();
+          bad.byte(9); bad.word(1); bad.str("alt");
+        } else {
+          bad.attrTemplate(1);
+          if (command === "HATTR") bad.attrInst(10, 1, 1);
+          bad.apply();
+          if (command === "HATTR") { bad.byte(3); bad.word(10); bad.byte(0); }
+          else { bad.byte(1); bad.word(10); bad.word(0); bad.word(0); bad.word(1); }
+        }
+        bad.byte(1);
+        if (fault === "truncated-ascii") { bad.word(2); bad.byte(65); }
+        if (fault === "truncated-long") { bad.word(33); bad.byte(65); }
+        if (fault === "invalid-utf8") { bad.word(1); bad.byte(0x80); }
+        bad.apply();
+        malformedAttributes.push([command, fault, bad.rt.poisoned?.class]);
+        bad.close();
+      }
+    }
+    return { state, changed, dispatch, emptyAttrs, attrChanges, failures, malformedAttributes };
   });
   check("property commands preserve controls and select settling; ordinary value attributes do not assign custom properties", got.state, ["hello", "hello", true, "attribute", "original", "0.5", "b", true]);
   check("HPROP applies checkbox and option holes", got.changed, [false, "c"]);
   check("typed prevent/stop hide a bubbling custom name above the mount, while non-bubbling stop leaves the target listener running", got.dispatch, [[[1, 7, ""], [1, 7, ""]], true, 0, 1]);
+  check("empty ordinary attributes survive plain commands, static templates and INST; booleans keep their existing absence rule", got.emptyAttrs, ["", "", false, false, false, true, "", "", "", false, ""]);
+  check("HATTR distinguishes removal from an empty present value and option value mirrors preserve the empty select choice", got.attrChanges, [false, "", true, "", "", ""]);
   check("unknown declarations and property encodings are executor faults; file input values are contract faults with the node", got.failures, [
+    ["attribute-presence", "executor", null], ["hole-presence", "executor", null], ["inst-presence", "executor", null],
     ["kind", "executor", null], ["kind-event", "executor", null], ["policy", "executor", null], ["property", "executor", null], ["wrong-element", "executor", null], ["checked", "executor", null], ["template", "executor", null],
     ["file", "contract", "contract: value property on file input at node 9"], ["changed-file", "contract", "contract: value property on file input at node 9"],
   ]);
+  check("ATTR, HATTR and INST reject missing lengths, truncated present strings and invalid UTF-8", got.malformedAttributes, ["ATTR", "HATTR", "INST"].flatMap((command) => ["missing-length", "truncated-ascii", "truncated-long", "invalid-utf8"].map((fault) => [command, fault, "executor"])));
   await ctx.close();
 }
 await browser.close();
