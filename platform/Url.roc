@@ -123,7 +123,10 @@ Url :: {
 		})
 	}
 
-	## Return the encoded path and query an HTTP request sends, without a fragment.
+	## Return HTTP origin-form path and query, discarding the origin and fragment.
+	## A valid absolute path may start with //; that output would mean another
+	## authority if used as a browser fetch URL. Pass an absolute URL's to_str()
+	## when fetching its origin, rather than using request_target() as a conversion.
 	request_target : Url -> Str
 	request_target = |url| Str.concat(url.path, query_suffix(url.query))
 
@@ -1726,3 +1729,10 @@ expect Url.parse("/?&").map_ok(Url.query_pairs) == Ok([]) and Url.parse("/?=").m
 
 ## An encoded ampersand is an empty-valued name, not a skipped separator.
 expect Url.parse("/?%26").map_ok(Url.query_pairs) == Ok([("&", "")])
+
+## Origin-form output preserves double slashes while an absolute fetch URL keeps its host.
+expect {
+	url : Url
+	url = "https://host//b"
+	url.request_target() == "//b" and url.to_str() == "https://host//b"
+}
