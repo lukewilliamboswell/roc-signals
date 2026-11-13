@@ -2,6 +2,8 @@
 ## steps `--emit-steps` hands to the browser runner. Values are built as a
 ## small tree and rendered once, so every string goes through one escaper.
 JsonOut := [].{
+	## The result and replay JSON tree. Object fields retain caller order;
+	## every text value and key reaches quote before bytes are published.
 	Value := [Null, Bool(Bool), Int(I64), Nat(U64), Text(Str), Array(List(Value)), Object(List({ key : Str, value : Value }))]
 
 	## A JSON string literal for `text`, quotes included. Control characters,
@@ -31,6 +33,8 @@ JsonOut := [].{
 		Str.from_utf8($out) ?? crash "JsonOut.quote produced invalid UTF-8 from valid UTF-8"
 	}
 
+	## Escape one control-byte nibble as a lowercase JSON hexadecimal digit.
+	## quote passes only values below sixteen.
 	hex_digit : U8 -> U8
 	hex_digit = |n| if (n < 10) '0' + n else 'a' + n - 10
 

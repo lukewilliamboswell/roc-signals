@@ -1858,6 +1858,8 @@ Core := [].{
 	## What a layer following one answer holds (`Engine.Remote`): whether a
 	## request for the current input is in flight, and the latest answer.
 	Remote(output, error) := { request : [Idle, Pending], answer : [Unanswered, Answered(output), Failed(error)] }.{
+		## Compare the pending state and latest answer structurally, for pruning
+		## equal observations of a remote result.
 		is_eq : _
 
 		## The latest answer, kept while a newer request is pending, or
@@ -2079,6 +2081,8 @@ Core := [].{
 		languages : List(Str) ?? ["en-US"],
 		zone : Zone ?? utc,
 	}.{
+		## Compare all boot facts, including the initial storage and browser
+		## environment, when a test needs to assert an exact starting context.
 		is_eq : _
 	}
 
@@ -2320,6 +2324,8 @@ Core := [].{
 		## The Control and Meta alternatives for a platform primary shortcut.
 		primary : Chord -> List(Chord)
 		primary = |chord| [chord.with_ctrl(), chord.with_meta()]
+		## Compare the logical or physical key and every modifier exactly. A
+		## primary shortcut therefore has distinct Control and Meta chords.
 		is_eq : _
 	}
 
@@ -2359,6 +2365,8 @@ Core := [].{
 				Every(_) => Every(True)
 			},
 		}
+		## Compare the ordered entries and their prevention rules. Entry order
+		## is significant when several entries match the same keyboard event.
 		is_eq : _
 	}
 
