@@ -774,6 +774,14 @@ for (const mode of ["initial", "changed"]) {
     const deliver = rt.deliver;
     rt.deliver = (node, handler, payload) => calls.push(Array.from(payload));
     const declaration = checkbox.__h.change;
+    const word = (n) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
+    const expected = [11, ...word(checkbox.__rn), ...word(declaration.h), ...word(6), 99, 104, 97, 110, 103, 101, 5, ...word(0)];
+    // This fixture has no effects or observers, and no event has run since
+    // mount: the last call's command buffer is still the initial batch. Copy
+    // it from current memory before any dispatch or staging could allocate.
+    const bytes = Array.from(new Uint8Array(rt.x.memory.buffer, rt.x.cmd_ptr(), rt.x.cmd_len()));
+    const at = bytes.findIndex((_, index) => expected.every((byte, offset) => bytes[index + offset] === byte));
+    const listen = at < 0 ? null : bytes.slice(at, at + expected.length);
     checkbox.checked = true;
     checkbox.dispatchEvent(new Event("change", { bubbles: true }));
     checkbox.checked = false;
@@ -789,10 +797,11 @@ for (const mode of ["initial", "changed"]) {
     checkbox.parentNode.append(forged);
     forged.dispatchEvent(new Event("change", { bubbles: true }));
     rt.deliver = deliver;
-    return { declaration: [declaration.kind, declaration.policies], calls };
+    return { declaration: [declaration.kind, declaration.policies], calls, listen, expected };
   });
-  check("checkbox LISTEN uses open-state kind and dispatches exact Boolean bytes; invalid targets dispatch nothing", got,
+  check("checkbox LISTEN uses open-state kind and dispatches exact Boolean bytes; invalid targets dispatch nothing", { declaration: got.declaration, calls: got.calls },
     { declaration: [5, 0], calls: [[1], [0], [1]] });
+  check("producer pins exact checkbox LISTEN opcode, change text, Boolean kind and policy bytes", got.listen, got.expected);
   await ctx.close();
 }
 
