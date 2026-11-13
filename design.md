@@ -2627,7 +2627,27 @@ a session draft is the safety net. The last applied guard survives poisoning,
 when unsaved state can no longer be saved; unmount and recovery remove it.
 In-app navigation remains the app's own `Push` decision.
 
-### Files
+### URL utility (public Url module)
+Url                                  # opaque checked URL
+Url.ParseErr, Url.SegmentErr          # typed parse and builder refusals
+Url.parse : Str -> Try(Url, Url.ParseErr)
+Url.from_quote : Str -> Try(Url, [BadQuotedBytes(Str)])
+Url.to_str, Url.to_inspect : Url -> Str
+Url.is_eq : Url, Url -> Bool
+Url.to_hash : Url, Hasher -> Hasher
+Url.origin : Url -> [Relative, Absolute({ scheme : [Http, Https], host : Str, port : [None, Some(U16)] })]
+Url.request_target, Url.path : Url -> Str
+Url.path_segments : Url -> List(Str)
+Url.query, Url.fragment : Url -> [None, Some(Str)]
+Url.query_pairs : Url -> List((Str, Str))
+Url.without_fragment : Url -> Url
+Url.resolve : Url, Str -> Try(Url, Url.ParseErr)
+Url.append_path_segments : Url, List(Str) -> Try(Url, Url.SegmentErr)
+Url.append_query_param : Url, Str, Str -> Url
+Url.with_query, Url.with_fragment : Url, [None, Some(Str)] -> Try(Url, Url.ParseErr)
+Url.parser_for, Url.encoder_for       # generic string codecs, checked on parse
+
+# Files
 
 A file the user gives the app — chosen in a file input, dropped or pasted —
 reaches it as a **handle**, never as bytes on the page. The browser keeps
@@ -4295,6 +4315,18 @@ These are unresolved mechanism choices within the contracts above.
   close the startup gap that larger modules open.
 
 ## Appendix A: API Surface
+
+`Url` is a pure app utility; the engine does not use it. A checked value is
+root-relative or has an explicit HTTP(S) origin. Builders take decoded text;
+`append_path_segments` refuses empty and dot names, while `append_query_param`
+form-encodes a pair. Readers decode exactly, and parsing refuses malformed
+escapes and escaped invalid UTF-8. Resolving retains the base origin; an
+authority reference needs an absolute base to supply its scheme. Parsed dot
+segments normalize and other empty segments remain distinct. A normalized
+root-relative path beginning `//` is refused as `MissingScheme`, because its
+standalone text would mean an authority reference. This strict subset does
+not accept every possible browser pathname. Request URL fields remain text.
+
 
 The authoring API as it stands (`Engine.roc`). Types are abbreviated; `ctx` is
 the context a value or handler is used in.

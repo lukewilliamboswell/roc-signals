@@ -196,6 +196,20 @@ the runtime caps an armed timeout at ten minutes.
 To see where a worker job's time goes and how busy the pool is, read the
 runtime's monitor; see [Monitoring Workers](@/docs/worker-monitoring.md).
 
+### Building URLs
+
+Build request URLs from decoded text with `Url`, as the search sample does.
+A checked root-relative literal needs no invented origin. `append_query_param`
+keeps a search value in one query pair, and `request_target` emits the path
+and query HTTP sends, without a fragment or origin.
+
+For a path name, handle the result of `append_path_segments`: an empty name,
+`.` or `..` has no safe target. To read a location, parse it once and use
+`path_segments` and `query_pairs`; malformed escapes and escaped invalid UTF-8
+are typed errors. Parsing normalizes dot segments and retains other empty
+segments. The strict HTTP(S) subset rejects browser repairs and a root-relative
+path whose normalized text begins `//`, which would mean an authority reference.
+
 ### HTTP options
 
 Build a request with `Engine.http({ url })`. Its `HttpProps` default to

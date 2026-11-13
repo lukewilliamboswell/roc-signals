@@ -8,7 +8,7 @@ template = "page.html"
 # Reference
 
 The [API documentation](../../api/api/) is generated from the platform's source
-and documents every public symbol of `Engine`, `Files`, `Html`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port` and `PortJson`,
+and documents every public symbol of `Engine`, `Files`, `Html`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port`, `PortJson`, `Order` and `Url`,
 including members inherited through public aliases: the authoring API.
 Operations only the engine may perform belong to unexposed modules. The engine's storage and executable values are opaque; its implementation
 and the interfaces its hosts and test harnesses use live in the platform's
@@ -30,6 +30,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Lists | `each`, `RowRef`, `RowRef.key`, `RowRef.field`, `RowRef.item` (the whole item), `RowRef.select`, `keyed`, `Keyed` | [Conditionals and Lists](@/docs/dynamic-structure.md#keyed-lists) |
 | Table views | `table_view`, `TableViewProps` (`query`, `plan`, `window`), `sort_by` (the sort value's order, then the key's), `QueryPlan(k, v, s)` (the explicit `keep`, `sort`, `compare` form), `Window` (`start`, `count`), `every_row` (the window that draws every row) | [Tables and Table Views](@/docs/tables-and-views.md) |
 | Ordered values | `Order.pair`, `Order.asc`, `Order.desc`, `Order.directed`, `Order.utf8`, `Order.compare`; types whose `order_relative_to` also works with ordinary Roc sorting | [Tables and Table Views](@/docs/tables-and-views.md#the-query-is-data) |
+| URL values | `Url.parse`, checked literals, `append_path_segments`, `append_query_param`, `resolve`, `request_target`, `path_segments`, `query_pairs` | [Building URLs](@/docs/effects-and-browser.md#building-urls) |
 | Attributes | `Attr`, `attr`, `attr_s` (present text, including empty), `attr_presence` (a signal of `Absent` or `Present(text)`), `class`, `class_s`, `test_id`, `test_id_s`, `ref`, `ref_s` (a signal of the reference's name, including in a row; the empty name names nothing) | [Attribute values](#attribute-values), [Focus](@/docs/effects-and-browser.md#focus) |
 | Events | `on` (bare event type, text payload), `on_with` (text payload and typed `Policy`: `prevent` and `stop`, both false by default), `on_click`, `on_files` (`Change`, `Drop` or `Paste`, files payload), `on_pointer` (`Down`, `Move`, `Up`, `Cancel`, `Pointer` payload), `on_pointer_capture`, `on_pointer_paced`, `on_scroll`, `on_size`, `on_seen` (`SeenProps`), `on_key` (`KeyProps`), `on_document_key` (`DocumentKeyProps`, requires `OutsideRows(ctx)`) | [Local State, Events, and Forms](@/docs/state-and-events.md#handlers) |
 | Properties | `Prop(a)`, `Prop.value` (`Str`), `Prop.checked` (`Bool`), `Prop.pointer_zone` (`Str`), `prop`, `prop_s` | [Element properties](#element-properties) |
@@ -101,6 +102,7 @@ takes a constant; `Html.p_s` takes reactive text, for example.
 | Controls | `button`, `button_s`, `icon_button`, `action_button`, `submit_button`, `text_input`, `number_input`, `textarea`, `checkbox`, `radio`, `select` (`Choices(a)`, `Chose(a)` or `NotOffered`), `form`, `file_input` (`FileInputProps`: `selection : [Single, Multiple] ?? Single`, `accept : [Any, Types(Str)] ?? Any`) |
 | Dialogs and popovers | `dialog`, `DialogProps(ctx)` (`open`, `on_close : HandlerOf(ctx, Bool)`, `modal : [Modal, NonModal] ?? Modal`); `popover`, `PopoverProps(ctx)` (`open`, `on_toggle : HandlerOf(ctx, Bool)`, `dismiss : [Auto, Manual] ?? Auto`); both open fields are `Signal(ctx, Bool)` |
 | Ordered values | `Order.pair`, `Order.asc`, `Order.desc`, `Order.directed`, `Order.utf8`, `Order.compare`; types whose `order_relative_to` also works with ordinary Roc sorting | [Tables and Table Views](@/docs/tables-and-views.md#the-query-is-data) |
+| URL values | `Url.parse`, checked literals, `append_path_segments`, `append_query_param`, `resolve`, `request_target`, `path_segments`, `query_pairs` | [Building URLs](@/docs/effects-and-browser.md#building-urls) |
 | Attributes | `aria_label`, `aria_label_s`, `aria_describedby`, `aria_invalid`, `disabled`, `flag`, `flag_maybe` |
 | Events | `on_input`, `on_change`, `on_focus`, `on_blur`, `on_submit`, `on_cancel`, `on_drop_files`, `on_paste_files`, `on_pointer_down`, `on_pointer_down_capture`, `on_pointer_move`, `on_pointer_move_paced`, `on_pointer_up`, `on_pointer_cancel` |
 | Layout reports | `on_scroll`, `on_size`, `on_seen` (`SeenProps`: `ahead : Bool ?? False`) |

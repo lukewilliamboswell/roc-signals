@@ -29,6 +29,7 @@ Targets := [].{
 		{ name: "table-view", main: "fuzz/table-view/main.roc" },
 		{ name: "result-readers", main: "fuzz/result-readers/main.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc" },
+		{ name: "url", main: "fuzz/url/main.roc" },
 		{ name: "form-builder", main: "examples/form-builder/fuzz-rules.roc" },
 		{ name: "kanban-board", main: "examples/kanban-board/fuzz-board.roc" },
 		{ name: "data-grid", main: "examples/data-grid/fuzz-rows.roc" },
@@ -112,7 +113,7 @@ Targets := [].{
 		var $failures = []
 		Proc.run!({ program: o.tooling, args: ["scripts/test_parallel.roc"], cwd: o.root })?
 		Proc.run!({ program: o.tooling, args: ["scripts/test_protocol.roc"], cwd: o.root })?
-		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs", "protocol-facts.mjs"] {
+		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs", "protocol-facts.mjs", "conduit-urls.mjs"] {
 			code = Proc.status!({ program: o.node, args: ["tests/runtime/${script}"], cwd: o.root })?
 			if code != 0 {
 				$failures = $failures.append("${script} failed (exit ${code.to_str()})")
