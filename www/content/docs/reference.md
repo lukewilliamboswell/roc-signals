@@ -214,6 +214,19 @@ Tag and attribute values check context-free DOM name grammar. Namespace rules
 also depend on where an element is constructed. A well-formed computed name
 remains available when a vocabulary does not yet list it.
 
+`Web.Namespace` distinguishes `Html`, `Svg`, `MathML`, `None` and an explicit
+`Uri(text)`. `Tag.in_namespace` and `AttrName.in_namespace` take `Web.NameProps`:
+a required namespace and a prefix defaulting to `Unprefixed`. They return a
+checked result. `local`, `prefix` and `namespace` expose those retained facts;
+`text` gives their written qualified spelling. A colon in an ordinary raw name
+does not infer a namespace or prefix.
+
+Explicit names retain exact case. Raw constructors resolve HTML case and the
+SVG/`foreignObject` child context in Roc before commands reach the runtime.
+Attribute identity is namespace URI plus local name; replacing that identity
+retains its existing prefix. Builtin namespace tags and their explicit URI
+spellings denote the same identity.
+
 A tag literal names a listed HTML element (case-insensitively), an exact-case
 SVG element, or a grammar-valid name with a hyphen. Literal names beginning
 exactly `aria-` use the parser's ARIA vocabulary. Unknowns suggest close spellings
