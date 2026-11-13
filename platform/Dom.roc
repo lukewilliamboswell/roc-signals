@@ -7,7 +7,7 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 14
+	protocol_version = 15
 
 	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
 
@@ -1154,7 +1154,7 @@ Dom := [].{
 	## Invalid numbers come from a protocol mismatch, never an app event.
 	check_listener : { event : Str, kind : U8, policies : U32 } -> {}
 	check_listener = |{ event, kind, policies }| {
-		if kind < 1 or kind > 8 {
+		if kind < 1 or kind > 9 {
 			crash "executor: unknown payload kind ${kind.to_str()}"
 		}
 		if kind == 2 and !["change", "drop", "paste"].contains(event) {
@@ -1166,13 +1166,13 @@ Dom := [].{
 		if policies.bitwise_and(4) != 0 and (kind != 3 or event != "pointerdown") {
 			crash "executor: capture policy requires a pointerdown pointer handler"
 		}
-		if policies.bitwise_and(8) != 0 and !((kind == 3 and event == "pointermove") or kind >= 6) {
+		if policies.bitwise_and(8) != 0 and !((kind == 3 and event == "pointermove") or (kind >= 6 and kind <= 8)) {
 			crash "executor: paced policy requires a pointermove pointer handler"
 		}
 		if policies.bitwise_and(32) != 0 and kind != 8 {
 			crash "executor: ahead policy requires a seen observation"
 		}
-		if kind >= 6 {
+		if kind >= 6 and kind <= 8 {
 			expected = match kind {
 				6 => "scroll"
 				7 => "size"
@@ -1183,6 +1183,9 @@ Dom := [].{
 			if event != expected or policies.bitwise_and(8) == 0 or policies.bitwise_and(allowed.bitwise_not()) != 0 {
 				crash "executor: layout payload requires its matching paced declaration"
 			}
+		}
+		if kind == 9 and (event != "paste" or policies != 1) {
+			crash "executor: paste text requires paste and prevention"
 		}
 		if kind == 5 and !["close", "toggle"].contains(event) {
 			crash "executor: open-state payload requires close or toggle"
@@ -1304,7 +1307,7 @@ Dom := [].{
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION"].get(op.to_u64()) ?? "?"
+	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD"].get(op.to_u64()) ?? "?"
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
@@ -1325,6 +1328,13 @@ Dom := [].{
 	FxCmd : [
 		Http(U32, Str, Str, List((Str, Str)), Str, U32),
 		Get(U32, Str),
+		SessionGet(U32, Str),
+		StorageSub(U32, Str),
+		StorageFailures(U32),
+		Clipboard(U32, { text : Str, html : [Plain, Html(Str)] }),
+		Guard(Bool),
+		SessionSet(Str, Str),
+		SessionRemove(Str),
 		Timer(U32, U32),
 		Interval(U32, U32),
 		Pop(U32),
@@ -1778,6 +1788,22 @@ Dom := [].{
 					(msg, a2) = Dom.port_msg(b, a1)
 					$fx = $fx.append(PortListen(id, port, msg))
 					$at = a2
+				} else if kind == 17 or kind == 18 {
+					(key, next) = Dom.str(b, $at)
+					$at = next
+					$fx = $fx.append(if (kind == 17) SessionGet(id, key) else StorageSub(id, key))
+				} else if kind == 20 {
+					$fx = $fx.append(StorageFailures(id))
+				} else if kind == 19 {
+					(text, next) = Dom.str(b, $at)
+					flag = Dom.byte(b, next)
+					$at = next + 1
+					html = if (flag == 0) Plain else if flag == 1 {
+						(markup, end) = Dom.str(b, $at)
+						$at = end
+						Html(markup)
+					} else crash "executor: invalid ClipboardWrite representation flag"
+					$fx = $fx.append(Clipboard(id, { text, html }))
 				} else if kind == 16 {
 					(query, next) = Dom.str(b, $at)
 					$at = next
@@ -1810,13 +1836,13 @@ Dom := [].{
 			} else if op == 16 {
 				mode = Dom.byte(b, $at)
 				(key, a1) = Dom.str(b, $at + 1)
-				if mode == 1 {
+				if mode == 1 or mode == 3 {
 					(v, a2) = Dom.str(b, a1)
 					$at = a2
-					$fx = $fx.append(Set(key, v))
-				} else if mode == 2 {
+					$fx = $fx.append(if (mode == 1) Set(key, v) else SessionSet(key, v))
+				} else if mode == 2 or mode == 4 {
 					$at = a1
-					$fx = $fx.append(Remove(key))
+					$fx = $fx.append(if (mode == 2) Remove(key) else SessionRemove(key))
 				} else {
 					crash "unknown store op"
 				}
@@ -1863,6 +1889,13 @@ Dom := [].{
 				(name, a1) = Dom.str(b, $at + 24)
 				$at = a1
 				$fx = $fx.append(Save(file, name))
+			} else if op == 25 {
+				on = Dom.byte(b, $at)
+				if on > 1 {
+					crash "executor: GUARD needs a flag 0 or 1"
+				}
+				$at = $at + 1
+				$fx = $fx.append(Guard(on == 1))
 			} else if op == 24 {
 				if flags != 1 {
 					crash "executor: TRANSITION requires marked batch"

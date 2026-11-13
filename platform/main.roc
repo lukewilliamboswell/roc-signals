@@ -28,7 +28,7 @@ platform ""
 	requires {
 		main : Engine.Program
 	}
-	exposes [Engine, Files, Html, Layout, Port, PortJson, Table, Wire, Worker]
+	exposes [Clipboard, Engine, Files, Html, Layout, Port, PortJson, Table, Wire, Worker]
 	packages {}
 	provides {
 		"roc_engine_ask": ask_for_host!,
@@ -76,6 +76,7 @@ platform ""
 	}
 
 import Cli
+import Clipboard
 import Core
 import Effects
 import Engine

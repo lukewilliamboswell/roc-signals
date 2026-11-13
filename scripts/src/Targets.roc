@@ -30,6 +30,7 @@ Targets := [].{
 		{ name: "kanban-board", main: "examples/kanban-board/fuzz-board.roc" },
 		{ name: "data-grid", main: "examples/data-grid/fuzz-rows.roc" },
 		{ name: "markdown-editor", main: "examples/markdown-editor/fuzz-sections.roc" },
+		{ name: "markdown-html", main: "examples/markdown-editor/fuzz-html.roc" },
 		{ name: "conduit", main: "examples/conduit/fuzz-routes.roc" },
 		{ name: "field-notes", main: "examples/field-notes/fuzz-outbox.roc" },
 		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/fuzz-formulas.roc" },
@@ -143,6 +144,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "outbox-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "outbox")])?)
 				.concat(Targets.browser!(o, "services-browser.mjs", ["--wasm", services])?)
 				.concat(Targets.browser!(o, "environment-browser.mjs", ["--wasm", services])?)
+				.concat(Targets.browser!(o, "persistence-browser.mjs", ["--wasm", services, "--runner", SpecSuite.runner_of(o, "services")])?)
 				.concat(Targets.browser!(o, "transitions-browser.mjs", ["--wasm", services])?)
 				.concat(Targets.browser!(o, "workers-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "monitor-browser.mjs", ["--wasm", workers])?)

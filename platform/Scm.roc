@@ -270,6 +270,12 @@ Scm := [].{
 		## Local storage cannot be used at all: every access throws, as in a
 		## browser with site data disabled.
 		LocalStorageUnavailable,
+		SessionStorage({ key : Str, value : Str }),
+		SessionStorageUnavailable,
+		SessionStorageFull,
+		LocalStorageFull,
+		ClipboardDenied,
+		MaxPasteBytes(U64),
 
 		## A file the spec's file steps can give the app: its name, its media
 		## type, and its contents, `text` repeated `repeat` times.
@@ -315,7 +321,19 @@ Scm := [].{
 					}
 					{ ..env, storage_available: Bool.False }
 				}
-				File(_) | MaxOutputBytes(_) => env
+				SessionStorage({ key, value }) => {
+					if !env.session_available {
+						return Err({ pos, message: "session-storage seeds a store that session-storage-unavailable says the app cannot read" })
+					}
+					{ ..env, session: env.session.keep_if(|(name, _)| name != key).append((key, value)) }
+				}
+				SessionStorageUnavailable => {
+					if !env.session.is_empty() {
+						return Err({ pos, message: "session-storage seeds a store that session-storage-unavailable says the app cannot read" })
+					}
+					{ ..env, session_available: False }
+				}
+				File(_) | MaxOutputBytes(_) | SessionStorageFull | LocalStorageFull | ClipboardDenied | MaxPasteBytes(_) => env
 			}
 		}
 		Ok($env)
@@ -334,7 +352,7 @@ Scm := [].{
 	## Every environment section by its wire-table name. The browser replay's
 	## appliers must cover exactly this list, checked with the rest of its grammar.
 	environment_sections : List(Str)
-	environment_sections = ["location", "local-storage", "connectivity", "visibility", "media", "time", "seed", "languages", "time-zone"]
+	environment_sections = ["location", "local-storage", "connectivity", "visibility", "media", "time", "seed", "languages", "time-zone", "session-storage"]
 
 	## Full-width seeds are decimal data; larger numeric atoms remain symbols
 	## in the generic s-expression parser and are interpreted only here.
@@ -640,6 +658,16 @@ Scm := [].{
 		ExpectTitle(Str),
 		ExpectLocalStorage({ key : Str, value : Str }),
 		ExpectNoLocalStorage(Str),
+		ExpectSessionStorage({ key : Str, value : Str }),
+		ExpectNoSessionStorage(Str),
+		PasteText(Loc, Str),
+		StorageElsewhere({ key : Str, value : Str }),
+		StorageElsewhereRemoved(Str),
+		StorageElsewhereCleared,
+		LeavePage({ url : Str, outcome : [Stay, Leave, Unasked] }),
+		ExpectClipboard(Str),
+		ExpectClipboardHtml(Str),
+		ExpectClipboardWrites(U64),
 		MarkMetrics,
 		ExpectMetricDelta({ metric : Str, delta : I64 }),
 		ExpectMetricDeltaAtMost({ metric : Str, delta : I64 }),
@@ -1102,6 +1130,21 @@ Scm := [].{
 		{ name: "initial-visibility", parse: |form, args| Ok(InitialVisibility(Scm.visibility(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
 		{ name: "initial-online", parse: |form, args| Ok(InitialOnline(Scm.online(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
 		{ name: "initial-media", parse: |form, args| Scm.media_fact(form, args).map_ok(|fact| InitialMedia(fact)) },
+		{ name: "session-storage", parse: |form, args| Ok(SessionStorage(Scm.key_value(form, args)?)) },
+		{ name: "session-storage-unavailable", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| SessionStorageUnavailable) },
+		{ name: "session-storage-full", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| SessionStorageFull) },
+		{ name: "local-storage-full", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| LocalStorageFull) },
+		{ name: "clipboard-denied", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| ClipboardDenied) },
+		{
+			name: "max-paste-bytes",
+			parse: |form, args| {
+				n = Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the paste byte bound")?
+				if n > 9007199254740991 {
+					return Err(Scm.bad(form, "max-paste-bytes must be a nonnegative safe JavaScript integer"))
+				}
+				Ok(MaxPasteBytes(n))
+			},
+		},
 		{ name: "local-storage", parse: |form, args| Ok(LocalStorage(Scm.key_value(form, args)?)) },
 		{
 			name: "local-storage-unavailable",
@@ -1259,6 +1302,35 @@ Scm := [].{
 	## accepts exactly these; anything else is an unknown step.
 	step_forms : List({ name : Str, parse : (Sx, List(Sx) -> Try(Op, Problem)) })
 	step_forms = [
+		{
+			name: "paste-text",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 2)?
+				Ok(PasteText(Scm.locator(Scm.arg(values, 0))?, Scm.string(Scm.arg(values, 1), "the pasted text")?))
+			},
+		},
+		{ name: "storage-elsewhere", parse: |form, args| Ok(StorageElsewhere(Scm.key_value(form, args)?)) },
+		{ name: "storage-elsewhere-removed", parse: |form, args| Ok(StorageElsewhereRemoved(Scm.text1(form, args, "the key")?)) },
+		{ name: "storage-elsewhere-cleared", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| StorageElsewhereCleared) },
+		{
+			name: "leave-page",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 2)?
+				outcome_sx = Scm.arg(values, 1)
+				outcome = match Scm.symbol(outcome_sx, "the leave outcome")? {
+					"stay" => Stay
+					"leave" => Leave
+					"unasked" => Unasked
+					_ => return Err(Scm.bad(outcome_sx, "leave-page outcome must be stay, leave or unasked"))
+				}
+				Ok(LeavePage({ url: Scm.location(Scm.arg(values, 0))?, outcome }))
+			},
+		},
+		{ name: "expect-session-storage", parse: |form, args| Ok(ExpectSessionStorage(Scm.key_value(form, args)?)) },
+		{ name: "expect-no-session-storage", parse: |form, args| Ok(ExpectNoSessionStorage(Scm.text1(form, args, "the key")?)) },
+		{ name: "expect-clipboard", parse: |form, args| Ok(ExpectClipboard(Scm.text1(form, args, "the text")?)) },
+		{ name: "expect-clipboard-html", parse: |form, args| Ok(ExpectClipboardHtml(Scm.text1(form, args, "the HTML")?)) },
+		{ name: "expect-clipboard-writes", parse: |form, args| Ok(ExpectClipboardWrites(Scm.scroll_count(Scm.arg(Scm.arity(form, args, 1)?, 0), "the write count")?)) },
 		{ name: "press", parse: |form, args| Scm.key_press(form, args) },
 		{ name: "dismiss", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| Dismiss) },
 		{
@@ -1698,6 +1770,17 @@ Scm := [].{
 	## Browser replay consumes the emitted table; the native runner reads it here.
 	activation_table : List({ op : Str, grant : Activation })
 	activation_table = [
+		{ op: "paste-text", grant: Never },
+		{ op: "storage-elsewhere", grant: Never },
+		{ op: "storage-elsewhere-removed", grant: Never },
+		{ op: "storage-elsewhere-cleared", grant: Never },
+		{ op: "leave-page", grant: Never },
+		{ op: "expect-session-storage", grant: Never },
+		{ op: "expect-no-session-storage", grant: Never },
+		{ op: "expect-clipboard", grant: Never },
+		{ op: "expect-clipboard-html", grant: Never },
+		{ op: "expect-clipboard-writes", grant: Never },
+
 		{ op: "set-time", grant: Never },
 		{ op: "advance-time", grant: Never },
 		{ op: "press", grant: KeyboardPress },
@@ -1871,6 +1954,17 @@ Scm := [].{
 			ExpectTitle(_) => "expect-document-title"
 			ExpectLocalStorage(_) => "expect-local-storage"
 			ExpectNoLocalStorage(_) => "expect-no-local-storage"
+			PasteText(_, _) => "paste-text"
+			StorageElsewhere(_) => "storage-elsewhere"
+			StorageElsewhereRemoved(_) => "storage-elsewhere-removed"
+			StorageElsewhereCleared => "storage-elsewhere-cleared"
+			LeavePage(_) => "leave-page"
+			ExpectSessionStorage(_) => "expect-session-storage"
+			ExpectNoSessionStorage(_) => "expect-no-session-storage"
+			ExpectClipboard(_) => "expect-clipboard"
+			ExpectClipboardHtml(_) => "expect-clipboard-html"
+			ExpectClipboardWrites(_) => "expect-clipboard-writes"
+
 			MarkMetrics => "mark-metrics"
 			ExpectMetricDelta(_) => "expect-metric-delta"
 			ExpectMetricDeltaAtMost(_) => "expect-metric-delta-at-most"
@@ -1942,6 +2036,8 @@ Scm := [].{
 		JsonOut.field("zone", Scm.zone_json(env.zone)),
 		JsonOut.field("storage", Array(env.storage.map(|(key, value)| Array([Text(key), Text(value)])))),
 		JsonOut.field("storage_available", Bool(env.storage_available)),
+		JsonOut.field("session", Array(env.session.map(|(key, value)| Array([Text(key), Text(value)])))),
+		JsonOut.field("session_available", Bool(env.session_available)),
 		JsonOut.field("online", Bool(env.online)),
 		JsonOut.field("visible", Bool(env.visible)),
 		JsonOut.field("media", Array(env.media.map(|(query, matches)| Array([Text(query), Bool(matches)])))),
@@ -2002,6 +2098,12 @@ Scm := [].{
 			InitialMedia({ query, matches }) => ("initial-media", [JsonOut.field("query", Text(query)), JsonOut.field("matches", Bool(matches))])
 			LocalStorage({ key, value }) => ("local-storage", [JsonOut.field("key", Text(key)), JsonOut.field("text", Text(value))])
 			LocalStorageUnavailable => ("local-storage-unavailable", [])
+			SessionStorage({ key, value }) => ("session-storage", [JsonOut.field("key", Text(key)), JsonOut.field("text", Text(value))])
+			SessionStorageUnavailable => ("session-storage-unavailable", [])
+			SessionStorageFull => ("session-storage-full", [])
+			LocalStorageFull => ("local-storage-full", [])
+			ClipboardDenied => ("clipboard-denied", [])
+			MaxPasteBytes(n) => ("max-paste-bytes", [JsonOut.field("count", Nat(n))])
 			File({ name, mime, text, repeat }) => ("file", [JsonOut.field("name", Text(name)), JsonOut.field("type", Text(mime)), JsonOut.field("text", Text(text)), JsonOut.field("count", Nat(repeat))])
 			MaxOutputBytes(n) => ("max-output-bytes", [JsonOut.field("count", Nat(n))])
 		}
@@ -2120,6 +2222,25 @@ Scm := [].{
 			ExpectTitle(t) => [text(t)]
 			ExpectLocalStorage({ key, value }) => [JsonOut.field("key", Text(key)), text(value)]
 			ExpectNoLocalStorage(key) => [JsonOut.field("key", Text(key))]
+			PasteText(target, value) => [loc(target), text(value)]
+			StorageElsewhere({ key, value }) | ExpectSessionStorage({ key, value }) => [JsonOut.field("key", Text(key)), text(value)]
+			StorageElsewhereRemoved(key) | ExpectNoSessionStorage(key) => [JsonOut.field("key", Text(key))]
+			StorageElsewhereCleared => []
+			LeavePage({ url, outcome }) => [
+				text(url),
+				JsonOut.field(
+					"outcome",
+					Text(
+						match outcome {
+							Stay => "stay"
+							Leave => "leave"
+							Unasked => "unasked"
+						},
+					),
+				),
+			]
+			ExpectClipboard(value) | ExpectClipboardHtml(value) => [text(value)]
+			ExpectClipboardWrites(count) => [JsonOut.field("count", Text(count.to_str()))]
 			MarkMetrics => []
 			ExpectMetricDelta({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
 			ExpectMetricDeltaAtMost({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
@@ -2224,7 +2345,7 @@ expect {
 		\\${JsonOut.render(Scm.spec_fields("w", spec))}
 	expected =
 		\\[LoseWork({ fault: AppCrash, occurrence: 1 }), TimeOutWork(2), ExpectPendingWork({ count: 3, task: "example.org/search/filter" })]
-		\\{"id":"w","name":"work","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
+		\\{"id":"w","name":"work","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"session":[],"session_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
 	actual == expected
 }
 
@@ -2264,20 +2385,16 @@ expect {
 		\\${problem_of("(test \"t\" (steps (key-down (label \"a\") \"Enter\" false)))")}
 		\\${problem_of("(test \"t\" (steps (composition-start (label \"a\"))))")}
 		\\${problem_of("(test \"t\" (steps (custom-event (label \"a\") \"x\" \"\")))")}
-		\\${problem_of("(test \"t\" (steps (expect-session-storage \"k\" \"v\")))")}
 		\\${problem_of("(test \"t\" (steps (assert-current-location \"/\")))")}
 		\\${problem_of("(test \"t\" (setup (manual-effects)) (steps (mark-metrics)))")}
-		\\${problem_of("(test \"t\" (setup (session-storage \"k\" \"v\")) (steps (mark-metrics)))")}
 		\\${problem_of("(test \"t\" (setup (stub-http \"f\" :url \"/a\" :status 200 :body \"\")) (steps (mark-metrics)))")}
 	expected =
 		\\x.scm:1:18: unknown step pointer-hover
 		\\x.scm:1:18: unknown step key-down
 		\\x.scm:1:18: unknown step composition-start
 		\\x.scm:1:18: unknown step custom-event
-		\\x.scm:1:18: unknown step expect-session-storage
 		\\x.scm:1:18: unknown step assert-current-location
 		\\x.scm:1:18: unknown setup form manual-effects
-		\\x.scm:1:18: unknown setup form session-storage
 		\\x.scm:1:18: unknown setup form stub-http
 	actual == expected
 }
@@ -2358,7 +2475,7 @@ expect {
 expect {
 	spec = Scm.parse("(test \"j\" (setup (local-storage \"k\" \"v\")) (steps (expect-checked (role checkbox :name \"A\") true)))")?
 	actual = JsonOut.render(Scm.spec_fields("j-file", spec))
-	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"environment\":{\"url\":\"/\",\"now_ms\":\"0\",\"seed\":\"0\",\"languages\":[\"en-US\"],\"zone\":{\"name\":\"UTC\",\"from_ms\":\"-9223372036854775808\",\"until_ms\":\"9223372036854775807\",\"offsets\":[{\"from_ms\":\"-9223372036854775808\",\"minutes\":0}]},\"storage\":[[\"k\",\"v\"]],\"storage_available\":true,\"online\":true,\"visible\":true,\"media\":[]},\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
+	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"environment\":{\"url\":\"/\",\"now_ms\":\"0\",\"seed\":\"0\",\"languages\":[\"en-US\"],\"zone\":{\"name\":\"UTC\",\"from_ms\":\"-9223372036854775808\",\"until_ms\":\"9223372036854775807\",\"offsets\":[{\"from_ms\":\"-9223372036854775808\",\"minutes\":0}]},\"storage\":[[\"k\",\"v\"]],\"storage_available\":true,\"session\":[],\"session_available\":true,\"online\":true,\"visible\":true,\"media\":[]},\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
 }
 
 ## Metric names are checked: an unknown one is a parse error, and a known one
@@ -2370,7 +2487,7 @@ expect {
 		\\${JsonOut.render(Scm.spec_fields("m", spec))}
 	expected =
 		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, registrations_released, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped, view_transitions
-		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
+		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"session":[],"session_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
 }
 
@@ -2677,3 +2794,33 @@ expect {
 
 ## Invalid environment setup is rejected by the shared parser.
 expect ["(seed -1)", "(seed 340282366920938463463374607431768211456)", "(languages)", "(time-zone \"x\" 2147483648)", "(time-zone \"x\" 0 (1 20) (1 30))", "(initial-time \"2001-02-29T00:00:00Z\")"].all(|form| Scm.parse("(test \"bad\" (setup ${form}) (steps (mark-metrics)))").is_err())
+
+## Session setup resolves once, permits a full store's existing seed, and
+## every persistence action has an explicit non-activating grammar row.
+expect {
+	spec = Scm.parse(
+		\\(test "draft"
+		\\  (setup (session-storage "draft" "saved") (session-storage-full) (local-storage-full) (clipboard-denied) (max-paste-bytes 0))
+		\\  (steps (paste-text (label "Import") "") (storage-elsewhere "doc" "new") (storage-elsewhere-removed "doc") (storage-elsewhere-cleared) (leave-page "/next" stay) (expect-session-storage "draft" "saved") (expect-no-session-storage "absent") (expect-clipboard "copied") (expect-clipboard-html "<p>copied</p>") (expect-clipboard-writes 18446744073709551615)))
+	)?
+	{ session: spec.environment.session, available: spec.environment.session_available, activation: spec.steps.map(|step| Scm.activation_for(step.op)), writes: spec.steps.last()?.op } == {
+		session: [("draft", "saved")],
+		available: True,
+		activation: List.repeat(Never, 10),
+		writes: ExpectClipboardWrites(18446744073709551615),
+	}
+}
+
+## Unavailable session storage rejects seeds in either order; paste bounds
+## must remain exactly representable and leave outcomes have closed spelling.
+expect {
+	inputs = [
+		"(test \"t\" (setup (session-storage \"k\" \"v\") (session-storage-unavailable)) (steps (mark-metrics)))",
+		"(test \"t\" (setup (session-storage-unavailable) (session-storage \"k\" \"v\")) (steps (mark-metrics)))",
+		"(test \"t\" (setup (max-paste-bytes -1)) (steps (mark-metrics)))",
+		"(test \"t\" (setup (max-paste-bytes 9007199254740992)) (steps (mark-metrics)))",
+		"(test \"t\" (steps (leave-page \"/next\" maybe)))",
+		"(test \"t\" (steps (paste-text (label \"Import\"))))",
+	]
+	inputs.map(|source| Scm.parse(source).is_err()) == List.repeat(True, inputs.len())
+}

@@ -464,7 +464,7 @@ model_post : M -> M
 model_post = |m| {
 	posts = m.posts + 1
 	item = posts // 2
-	drain(admit_x({ ..m, posts }, k_o, item, Oh, |id| Http(id, "GET", "/o/${item.to_str()}", [], "", 0), RefO))
+	drain(admit_x({ ..m, posts }, k_o, item, Oh, |id| Http(id, "GET", "/o/${item.to_str()}?q=${m.q.to_str()}", [], "", 0), RefO))
 }
 
 ## The query changes (a click or L's own follow-up): L supersedes, then
@@ -1075,6 +1075,7 @@ test! = |{ mode, program }| {
 		run_program!(program)
 		run_media(program)
 		run_transitions(program)
+		run_persistence(program)
 		Fuzz.keep
 	}
 }
@@ -1085,6 +1086,8 @@ ex = |name, mode, program| Fuzz.example({ name, revision: "1", make: || { mode, 
 target = Fuzz.target_with!({
 	name: "fx-channel",
 	examples: [
+		ex("post-send-time-reading", 1, [12, 0, 4, 0, 12, 0, 4, 0, 12, 0, 2, 5, 2, 6, 2, 7]),
+		ex("persistence-lifetimes", 1, [3, 0, 2, 4, 1, 5, 1, 0, 8, 11, 0, 14, 1, 17, 1]),
 		ex("transition-batches", 1, [2, 1, 1, 3, 3, 0, 5, 4, 0, 1]),
 		ex("media-lifecycle", 1, [0, 0, 5, 1, 5, 0, 1, 0, 4, 0, 3, 0, 5, 0, 3, 0, 5, 1, 2, 0]),
 		# issue 0 x3 (third refused + self), deliver, toggle 0 (cancel), deliver cancelled, show again
@@ -1130,3 +1133,116 @@ target = Fuzz.target_with!({
 	test!,
 	show: Str.inspect,
 })
+
+## A second generated effect model exercises page persistence and clipboard
+## requests. It knows only their disposal classes, issued ids and subscription
+## lifetimes, independently of the engine's paths or effect-table representation.
+PersistLive : { id : U32, sub : Bool, keep : Bool, orphan : Bool }
+
+PersistModel : { next : U32, live : List(PersistLive), max : U64, shown : Bool, query : U64, issued : U64, delivered : U64, refused : U64, stale : U64, cancelled : U64, reparented : U64 }
+
+persist_plan : U64 -> List(Core.Request)
+persist_plan = |query| [SessionStorageGet("draft${query.to_str()}"), StorageChanges("saved${query.to_str()}"), StorageWriteFailures, ClipboardWrite({ text: query.to_str(), html: if (query % 2 == 0) Plain else Html("<p>${query.to_str()}</p>") })]
+
+persist_issue : PersistModel -> (PersistModel, List(Dom.FxCmd))
+persist_issue = |model| {
+	var $model = model
+	var $commands = []
+	for index in 0.U64..<4 {
+		prior = $model
+		id = prior.next
+		if prior.live.len() >= prior.max {
+			$model = { ..prior, next: id + 1, refused: prior.refused + 1, delivered: prior.delivered + 1 }
+		} else {
+			kept = index == 0 or index == 3
+			command = match index {
+				0 => SessionGet(id, "draft${prior.query.to_str()}")
+				1 => StorageSub(id, "saved${prior.query.to_str()}")
+				2 => StorageFailures(id)
+				_ => Clipboard(id, { text: prior.query.to_str(), html: if (prior.query % 2 == 0) Plain else Html("<p>${prior.query.to_str()}</p>") })
+			}
+			$commands = $commands.append(command)
+			$model = { ..prior, next: id + 1, issued: prior.issued + 1, live: prior.live.append({ id, sub: !kept, keep: kept, orphan: False }) }
+		}
+	}
+	($model, $commands)
+}
+
+persist_check : Core.App, List(Dom.FxCmd), PersistModel, List(Dom.FxCmd) -> {}
+persist_check = |engine, got, model, wanted| {
+	stats = Core.fx_stats(engine)
+	actual = { commands: got, live: Core.fx_live(engine), issued: stats.issued, delivered: stats.delivered, refused: stats.refused, stale: stats.stale, cancelled: stats.cancelled, reparented: stats.reparented }
+	expected = { commands: wanted, live: model.live.map(|entry| entry.id), issued: model.issued, delivered: model.delivered, refused: model.refused, stale: model.stale, cancelled: model.cancelled, reparented: model.reparented }
+	if actual != expected {
+		crash "persistence effect model differs: ${Str.inspect(actual)} expected ${Str.inspect(expected)}"
+	}
+	if Core.settled(engine).is_err() {
+		crash "persistence effect model left a reader stale"
+	}
+}
+
+run_persistence : List(U8) -> {}
+run_persistence = |bytes| {
+	max = 2 + (bytes.first() ?? 0).to_u64() % 4
+	view = Core.state(
+		{ shown: True, query: 0.U64 },
+		|state| Core.element(
+			"main",
+			[],
+			[
+				Core.element("button", [Core.on_click(state.update(|value| { ..value, query: value.query + 1 }))], [Core.text("query")]),
+				Core.element("button", [Core.on_click(state.update(|value| { ..value, shown: !value.shown }))], [Core.text("toggle")]),
+				Core.when(state.signal().map(|value| value.shown), || Core.watch_latest(state.signal().map(|value| value.query), persist_plan, Core.ignore({})), || Core.text("")),
+			],
+		),
+	)
+	(initial, commands) = Core.take_cmds(Core.mount_with(max, view), [])
+	(dom, _, emitted) = Dom.apply_fx(Dom.new({}), commands)
+	(first, wanted) = persist_issue({ next: 1, live: [], max, shown: True, query: 0, issued: 0, delivered: 0, refused: 0, stale: 0, cancelled: 0, reparented: 0 })
+	persist_check(initial, emitted, first, wanted)
+	var $engine = initial
+	var $dom = dom
+	var $model = first
+	for byte in bytes {
+		model = $model
+		var $wanted = []
+		(engine, next) = if byte % 3 == 2 {
+			id = byte.to_u32() % model.next + 1
+			payload = if (byte % 2 == 0) [23] else [25, 2, 1, 'd']
+			found = model.live.find_first(|entry| entry.id == id)
+			after = match found {
+				Ok(live) => { ..model, delivered: model.delivered + 1, live: if (live.sub) model.live else model.live.keep_if(|item| item.id != id) }
+				Err(_) => { ..model, stale: model.stale + 1 }
+			}
+			(Core.result($engine, id, Core.decode_res(payload)), after)
+		} else {
+			toggles = byte % 3 == 1
+			showing = if (toggles) !model.shown else model.shown
+			query = model.query + if (toggles) 0 else 1
+			owned = model.live.keep_if(|entry| !entry.orphan)
+			cancel = if (!toggles and model.shown) owned else if (toggles and model.shown) owned.keep_if(|entry| !entry.keep) else []
+			orphans = if (toggles and model.shown) owned.count_if(|entry| entry.keep) else 0
+			$wanted = cancel.map(|entry| Cancel(entry.id))
+			base = { ..model, shown: showing, query, live: model.live.keep_if(|entry| !cancel.any(|removed| removed.id == entry.id)).map(|entry| if (toggles and model.shown) { ..entry, orphan: True } else entry), cancelled: model.cancelled + cancel.len(), reparented: model.reparented + orphans }
+			after = if showing {
+				(issued, fresh) = persist_issue(base)
+				$wanted = $wanted.concat(fresh)
+				issued
+			} else base
+			label = if (toggles) "toggle" else "query"
+			index = SpecRunner.find($dom, Text(label)) ?? crash "persistence model button absent"
+			route = Dom.target($dom, index, "click", True) ?? crash "persistence model button has no handler"
+			(Core.event($engine, route.node, route.handler, ""), after)
+		}
+		(taken, batch) = Core.take_cmds(engine, [])
+		(dom2, _, got) = Dom.apply_fx($dom, batch)
+		persist_check(taken, got, next, $wanted)
+		$engine = taken
+		$dom = dom2
+		$model = next
+	}
+	{}
+}
+
+## Mixed refusals, supersession, repeated reports and reparenting use the same model.
+expect run_persistence([3, 0, 2, 4, 1, 5, 1, 0, 8, 11, 0, 14, 1, 17, 1]) == {}
