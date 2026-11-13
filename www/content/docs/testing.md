@@ -189,6 +189,7 @@ Storage reads answer by themselves, from storage.
 | `(select-option LOC "value")` | Choose an option of a `<select>`, firing `input` and `change`; the option must exist |
 | `(check LOC)` / `(uncheck LOC)` | Click a checkbox or radio that is not in that state; it must then be in it. A radio cannot be unchecked |
 | `(submit LOC)` | Submit a `<form>` as `requestSubmit` does: nothing is submitted while a control is invalid |
+| `(press LOC "Shift+ArrowDown")` / `(press "Escape")` | Focus the locator if supplied, then keydown and keyup; otherwise use current focus or body. See [Keyboard steps](#keyboard-steps) |
 | `(focus LOC)` / `(blur LOC)` | Move focus, delivering `blur` and `focus` to handlers that listen. Focusing an element that cannot take focus does nothing |
 
 Focus follows Chrome in both runners: a text control the user changed gets
@@ -198,6 +199,33 @@ commands also update focus and raise the same events after the batch, each
 as its own turn. A focus loop stops the instance with `resource_limit`
 after 4096 turns in one step. A handler with no listener for its event is not
 an error: the event simply reaches nothing, as in a browser.
+
+### Keyboard steps
+
+`press` uses exact `Control`, `Alt`, `Shift` and `Meta` prefixes. Its one
+US-key table is declared in `Scm.roc` and emitted for the browser runner:
+printable ASCII, Enter, Escape, Tab, Space, Backspace, Delete, arrows,
+Home, End, PageUp, PageDown and F1–F12. There is no `ControlOrMeta`.
+Write `Shift+?` and `Shift+A`; omitting required Shift is a parse error,
+as is `Shift+a` (use `Shift+A`). A named key may also carry Shift.
+
+Tab moves focus by positive tabindex then document order, skipping disabled
+and hidden elements. Enter activates a button or link or implicitly
+submits a form; Space activates buttons, checkboxes and radios on keyup.
+Prevention suppresses the default. Escape, function keys and caret-only
+movement have no modelled change.
+
+Use `fill` for text entry. A press refuses an unprevented default the native
+model cannot reproduce: printable keys and Space without Ctrl/Meta,
+Backspace/Delete and Ctrl/Meta+A/C/V/X/Y/Z in text entry, Enter in textarea,
+and arrows/Home/End/PageUp/PageDown in selects, radios and number, range,
+date or time inputs. The refusal pairs are also emitted from `Scm.roc`;
+Chrome checks the actual event's `defaultPrevented`. A keymap that prevents
+the default permits the step. Composition remains a browser contract test.
+
+The sample checks Escape without losing focus and both ends of a Tab loop:
+
+{{ sample(file="keys/specs/keys.scm", syntax="scheme") }}
 
 Hover is not driven by specs. Neither runner delivers `pointerover`,
 `pointerout`, `pointerenter`, `pointerleave` or their mouse counterparts;

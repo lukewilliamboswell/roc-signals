@@ -50,7 +50,7 @@ a `State` and attached to an element:
 
 The handler's declaration chooses its payload kind. For text events, an `input` carries the control's new text, a
 `change` on a checkbox or radio carries `"true"` or `"false"`, a `change` on a
-select carries the chosen option's value, `keydown` carries the key, and a
+select carries the chosen option's value, and a
 click or submit carries nothing. `Html` attaches the usual ones for you:
 `text_input` and `textarea` listen to `input`, `checkbox` and `select` to
 `change`.
@@ -80,6 +80,78 @@ above the mount root. For an event that does not bubble, `stop` does
 nothing, so its target still receives it. Policies are static, chosen
 before dispatch; a misspelt field does not compile. Event types are bare
 names: retired `:prevent` and `:files` suffixes are contract errors.
+
+## Keys and shortcuts
+
+A key handler receives `Engine.Key`: `key`, physical `code`, `ctrl`, `alt`,
+`shift`, `meta`, `repeat`, `composing` and `heard`. Attach it together with
+a signal of the chords it hears:
+
+{{ sample(file="keys/main.roc", region="keymap") }}
+
+`Engine.on_key` takes `{ keymap, on, stop }`. Only `keymap` is required;
+`on` defaults to `Down` and can be `Up`, and `stop` defaults to false.
+Use the ordinary reducers, decisions and `also` at the `Key` payload type.
+The old `Html.on_keydown` is removed; text handlers on keydown or keyup are
+contract errors naming `on_key`.
+
+`Chord.plain` builds a chord. `with_ctrl`, `with_alt`, `with_shift` and
+`with_meta` add modifiers; `primary` gives Ctrl and Cmd alternatives.
+`Keymap.prevent(chords)` hears and prevents those chords, while `keep`
+hears them with their default intact. `concat` lists the left entries
+first. An empty keymap hears nothing and costs no turns. An empty declared chord
+is valid but cannot match a browser key.
+
+Ctrl, Alt and Meta must match exactly. ASCII letters compare without case;
+Shift must match too, except for a single punctuation or symbol character.
+Thus `?` works whether a layout needs Shift for it, while Shift+Tab remains
+distinct from Tab. Punctuation and symbols use pinned Unicode 18.0.0 data
+in both runners. Space, digits, other letters and named keys compare Shift.
+
+For a shortcut naming an ASCII letter or digit, the physical code is a
+fallback when the event's key is not an ASCII letter or digit. Ctrl+K can
+therefore work on a Cyrillic layout; Dvorak keeps its labelled ASCII key.
+Exact matches anywhere in the list beat every fallback. Compare the
+payload's `heard` with your declared chord, rather than repeating these
+rules in a handler. It is the original chord that matched.
+
+`Keymap.outside_text()` restricts entries to targets outside text-entry
+inputs, textarea, select and contenteditable. It is useful for plain-key
+shortcuts such as `/`. `Keymap.every` catches anything no listed entry
+matches, including composing keys, and prevents nothing. Named entries
+never hear a composing event, so Enter cannot accidentally commit an IME
+composition. Concatenation keeps one `every`, heard anywhere if either
+side's is.
+
+An unmatched handler is passed over on the way to an ancestor. The nearest
+matching local handler wins. `on_document_key` instead hears keys reaching
+the document that no local handler of this mount dispatched, including
+when focus is outside the root:
+
+{{ sample(file="keys/main.roc", region="shortcuts") }}
+
+The newest mounted matching document handler wins, so a modal can own
+Escape and disposal restores the shell's handler. A document handler
+cannot compile under a list or table-view row, including within a state
+nested in one: it requires the context's `OutsideRows` evidence. There
+can be at most 32 live document handlers per instance.
+
+`stop` uses the ordinary propagation policy. At the root it blocks the
+document; at the document it blocks window listeners. Other listeners on
+the same document still run, in mount order across mounts. A queued event
+keeps the keymap match made when it arrived, even if a later batch changes
+the keymap before its turn. A handler still decides from its current state.
+
+Browser-reserved chords cannot be prevented, including Chrome's Ctrl/Cmd+N,
+T and W, and macOS Cmd+backquote and Cmd+Tab. macOS sends no keyup when a
+key is released while Cmd is held; Windows AltGr reports Ctrl+Alt.
+
+A focus trap prevents just the two boundary chords and posts focus commands:
+
+{{ sample(file="keys/main.roc", region="focus-trap") }}
+
+The [Spreadsheet](@/examples/spreadsheet-lite.md) demonstrates navigation,
+Shift+Arrow range selection, a changing grid keymap and document shortcuts.
 
 ## One event, one transition
 
@@ -120,6 +192,19 @@ In practice: state written from a keystroke flows straight back, and a value
 your app changes while the user is typing (clearing a draft after submit, for
 example) appears when focus leaves the box. Checkboxes take `checked` as a
 property, and a select re-applies its value when its options change.
+
+For Escape-to-revert, post `ApplyValue(reference)` after restoring the
+state. It applies the last rendered value while the control still has
+focus, including when equality pruning emitted no new property write:
+
+{{ sample(file="keys/main.roc", region="revert") }}
+
+The reference must name an input, textarea, select or option with an
+explicit `Prop.value` (as `Html` controls provide). Otherwise it is a
+contract error naming the reference and site. An absent reference counts
+stale. During composition the command waits for `compositionend`, so it
+does not cut an IME composition. Use it only when replacing the user's draft
+is the intended action; ordinary updates keep the guard.
 
 An empty option value remains empty, so `Html.option` can offer an empty
 choice such as "All works" without a sentinel value.

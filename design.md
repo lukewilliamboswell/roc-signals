@@ -537,9 +537,16 @@ Every context type also answers one method, `store`, with a
 with a function applied to the store. `Root` answers from what it carries;
 `In` and `Row` build theirs on the enclosing context's. A store *cell* is
 therefore read and written in any context, at any depth, with no `lift`, and
-reaching the store is the one thing a function asks of its context:
+a function that reaches the store asks of its context:
 `where [ctx.store : () -> Engine.Reach(ctx, st)]`. Reading and writing are
 one requirement, not two: a reach holds both.
+
+A function that must not occur under a row asks a separate question:
+`where [ctx.outside_rows : () -> Engine.OutsideRows(ctx)]`. `Root` answers
+it, and `In` forwards its enclosing context's evidence; `Row` does not.
+`OutsideRows(ctx)` is opaque, state-free evidence, with no environment or
+store reference. Thus `on_document_key` cannot compile in a row or in a
+layer nested within one, without a mount-time failure that follows row data.
 
 **Read signatures.** A `Signal(ctx, a)` is `{ mask, read, sel }`: a signature of
 what it reads, a reader from the environment, and an optional keyed selector.
@@ -1117,7 +1124,8 @@ inferred from a reused key, and there is no implicit `keep_alive`.
 Every site is a scope. Disposing it:
 
 1. disposes its children in order (each child disposes its own);
-2. emits `REMOVE` for its top-level nodes when its parent is not already
+2. releases registrations outside the node tables with `RELEASE`, before
+   emitting `REMOVE` for its top-level nodes when its parent is not already
    removing an ancestor (or `CLEAR` when an `each` or view site is the sole
    child of its parent);
 3. frees its node ids, routes, focus references and, for an `each` or view
@@ -1393,6 +1401,7 @@ keys a turn wrote in a table.
 | Operation | Budget | Forbidden |
 |---|---|---|
 | Route an event to its handler | O(path depth) | scanning nodes or sites |
+| Dispatch a document key | O(live document-key handlers), at most 32; matching is linear in the keymap inspected | scanning nodes or scopes |
 | Build a pointer's zone payload | One browser hit test, then O(ancestor depth) to the nearest zone | scanning every zone or keeping a registry of zone values |
 | Write a local state | O(R) evaluations, plus the static structure on the path to them, all inside that state's subtree | visiting the readers of a sibling state |
 | Write a store cell | O(R) evaluations, plus the static structure on the path to them, whatever the depth of the writer | carrying the cell through the scopes between; comparing the cell's value |
@@ -1496,7 +1505,9 @@ Rules:
 - **Decided, not interpreted.** The runtime does not diff, reorder, coalesce or
   skip commands. Its only state is the id → DOM node tables, parsed templates
   and live effect handles the commands told it to keep, plus the ingress
-  queue and its index of report sources. Input delivery applies a declared
+  queue and its index of report sources, the keymaps rendered on nodes and
+  the document-key registrations commands registered. `RELEASE`, teardown
+  and poisoning remove those registrations. Input delivery applies a declared
   policy; it does not decide application meaning.
 - **Fresh views.** Any call may grow Wasm memory. The runtime re-reads
   `memory.buffer` after every call that can allocate, including
@@ -1544,7 +1555,7 @@ reducer or the decision sees both what changed and what is sent.
 
 - **Commands** are emitted and forgotten: history `Push`/`Replace` (`NAV`),
   `Title` (`TITLE`), `StorageSet`/`StorageRemove` (`STORAGE`), and
-  `Focus`/`Blur`/`SelectText` on a named reference (`FOCUS`, resolved at the
+  `Focus`/`Blur`/`SelectText`/`ApplyValue` on a named reference (`FOCUS`, resolved at the
   end of the turn). With a port's command and a save, below, they are the
   tags of `Command`, the type a cleanup's plan returns (see
   [Explicit Scopes and Disposal](#explicit-scopes-and-disposal)).
@@ -2264,7 +2275,9 @@ The runtime installs two delegated listeners per event type on the mount root,
 one capturing and one bubbling, the first time a `LISTEN` command or a template
 event hole names that type. The event's own `bubbles` flag decides which acts.
 A bubbling event walks up from the target to the nearest element with a
-handler for that type. An event that does not bubble reaches only a handler
+handler for that type. A key handler is passed over unless its rendered
+keymap hears the key; document declarations are considered only by the
+document listener, never by this ancestor walk. An event that does not bubble reaches only a handler
 on its target. The runtime then finds the nearest element carrying a routing
 node id and dispatches `(node, handler, payload)`. A row reference's command
 id does not change routing: its events still use the row's id.
@@ -2282,6 +2295,77 @@ text decided by event type, and the files kind carries the files the event
 holds. A handler is generic over its payload, and a kind is attached only
 to the event types its row allows. Decoding happens once, after routing,
 and a malformed payload is a `contract` fault naming the site.
+
+### Keyboard input
+
+`on_key` attaches one `HandlerOf(ctx, Key)` with a required signal of
+`Keymap`, an optional `on: Down|Up` (default `Down`) and `stop` (default
+false). `Key` carries `key`, `code`, Ctrl, Alt, Shift, Meta, repeat and
+composing flags, and `heard`, the original declared `Chord` that matched.
+`Chord.plain` and its modifier methods build chords; `primary` returns
+Ctrl and Meta alternatives. The ordinary handler constructors and `also`
+serve this payload too. `Html.on_keydown` is removed: a text-kind
+`keydown` or `keyup` is a mount `contract` error naming `on_key`.
+
+`Keymap.prevent` and `keep` list ordered chords with their default policy.
+`concat` lists the left entries first; `outside_text` restricts entries to
+targets outside text-entry inputs, textarea, select and contenteditable.
+`every` catches all keys, including composing ones, and prevents nothing.
+Concatenation keeps one `every`, heard anywhere if either operand's is.
+An empty keymap hears nothing. A keymap is an ordinary rendered value,
+with equality pruning, including a property hole in a row template.
+
+Matching first filters entries by their target restriction. It then tries
+all exact matches in listed order, all physical fallbacks in listed order,
+and finally `every`. Ctrl, Alt and Meta must equal the chord's. One ASCII
+letter compares without case; other keys compare exactly. Shift must equal
+except when the chord is exactly one Unicode scalar with general category
+Punctuation or Symbol (`P*` or `S*`) in Unicode **18.0.0**. Space, digits,
+letters of other alphabets and named keys still compare Shift. Both
+implementations pin that Unicode data rather than using the host's version.
+The source is `UnicodeData.txt`, SHA-256
+`0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950`,
+under the [Unicode data license](https://www.unicode.org/license.txt).
+
+A physical fallback is available only to a chord naming one ASCII letter
+or digit, when the event's key is not an ASCII letter or digit and its code
+is the corresponding `KeyK` or `Digit1`. Thus Cyrillic Ctrl+K can match a
+Latin shortcut, whereas Dvorak's ASCII key keeps its labelled meaning.
+Exact matches outrank fallbacks anywhere in the list. Composing events
+(`isComposing` or keyCode 229) skip both and can reach only `every`.
+`heard` is the declared chord, so a handler never repeats these rules;
+under `every` it is the event's own chord. Missing or empty event keys do
+not dispatch; a heard event's key and code must be well-formed Unicode.
+
+A matching entry decides prevention synchronously. A policy is matched
+against the DOM the browser dispatched over; the turn that delivers the
+event can follow a later batch. The captured payload is never rematched.
+A key nobody hears costs no turn. A keymap has no separate size limit:
+like another rendered value, it can follow data; duplicate chords use the
+first entry whose restriction holds. An empty declared chord is valid but
+unhearable; browser event keys remain nonempty.
+
+`on_document_key` takes the same props and handler but asks for
+`outside_rows`. Its declaring element owns its lifetime. Of this mount's
+live document declarations, the most recently mounted matching one wins.
+It hears only events reaching the document that no local handler of this
+mount dispatched. Focus may be on the body or outside the root. Disposing
+a modal restores the shell's older shortcuts. At most 32 document handlers
+are live per instance; a 33rd is a mount `contract` error naming its site.
+`RELEASE node` removes its registrations before `REMOVE` or `CLEAR`.
+The independent oracle rejects a node leaving without that release.
+Poisoning, unmount and recovery remove document listeners too.
+
+`stop` keeps its ordinary `stopPropagation` meaning. At the root it stops
+an event before document listeners; at the document it stops propagation
+to window. Other listeners on that same document still run. Each mount
+has its own document listener, called in mount order; no mount can undo a
+listener that already ran.
+
+Reserved browser chords cannot be prevented: Chrome's Ctrl/Cmd+N, T and W,
+and macOS Cmd+backquote and Cmd+Tab. macOS emits no keyup for a key released
+while Cmd is held, and Windows AltGr reports Ctrl+Alt. An app must account
+for these limits; layout fallback does not turn reserved keys into app keys.
 
 ### Pointer input
 
@@ -2366,10 +2450,9 @@ its element, without another turn, so a file is dropped there rather than
 opened by the browser. An event carrying no files dispatches nothing. A
 file input needs no policy: its chooser opens on the user's own click.
 
-**Target:** dynamic `preventDefault`
-expressed as a declared policy over a value the engine has already rendered
-(never decided after the event); form-data payloads.
-Each is a protocol change with a contract test.
+Keymaps provide dynamic prevention over an engine-rendered value. Form-data
+payloads are declined: controlled inputs already write fields into state as
+they are typed, including browser autofill, so a submit reads that state.
 
 ## Attributes
 
@@ -2402,6 +2485,17 @@ The `value` property is a guarded update, not a blind assignment:
 - a differing value is deferred while the control is focused or composing
   (IME), and applied on blur, unless a later input echo already matched it.
 
+`ApplyValue(name)` explicitly applies the last rendered `Prop.value` at
+that reference after the whole turn, even while focused and even when an
+equal signal produced no new property command. The runtime retains that
+rendered value independently of the deferred write. A composing control
+waits until `compositionend`; an input that already equals it clears the
+pending write. This command is the app's explicit choice to replace a draft,
+not an exception for all key turns. A reference without a declared
+`Prop.value` on input, textarea, select or option is an end-of-turn
+`contract` error naming the reference and site. An absent reference is
+stale, as for focus. A file input still cannot take `Prop.value`.
+
 This applies to text-like controls (text inputs, number-input draft strings,
 textarea). The `checked` property takes a `Bool`. A `<select>`'s value is re-applied
 when an option is inserted below it or an option's value changes. Forms are
@@ -2409,7 +2503,7 @@ app-managed: the runtime prevents the default of every `submit` that reaches
 the mount root, so a submit never navigates the page.
 
 Focus is an explicit command on a named reference (`ref(name)` on an element;
-`Focus`/`Blur`/`SelectText` requests). A reference that is not mounted at the
+`Focus`/`Blur`/`SelectText`/`ApplyValue` requests). A reference that is not mounted at the
 end of the turn is counted stale: it may leave in the turn that asks for it,
 so rejecting the request would punish a race the app cannot avoid.
 `expect-focused` checks the resulting focus in both runners. Focusing an
@@ -2602,7 +2696,9 @@ and a job of a task its preparation does not list; event payload not
 valid for its handler's payload kind (for text, not UTF-8); an event type
 ending in a retired policy or files suffix; a property on an element its
 row does not allow, a property declared twice on an element, or an
-attribute with a name a property row claims on that element; boot
+attribute with a name a property row claims on that element; a text-kind
+key handler, a 33rd live document-key handler, or `ApplyValue` without a
+declared value property at its reference; boot
 bytes or an effect result that do not follow Appendix B (truncated, trailing
 bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
 Boot faults include unknown, repeated, missing or out-of-order sections,
@@ -2677,6 +2773,7 @@ bound and a declared behaviour at the bound:
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | A table's changes | One earlier row for each distinct key one turn writes | Cleared when the turn ends |
 | Runtime ingress queue | 4096 occurrences and reports | A report drains a full queue early while idle; overflow while busy is `resource_limit` poison |
+| Live document-key handlers | 32 per instance, structurally outside rows | `contract` at mount naming the site |
 | Manual pointer log | 4096 dispatch records, taken after each input step | `resource_limit` on overflow; production retains no log |
 | Spec driver pointers | One mouse/pen gesture or up to 16 touches, without overlap between modes | Step error before input; no such limit on production pointer dispatch |
 | Turns one drain delivers | 4096 | `resource_limit` poison |
@@ -2913,7 +3010,31 @@ their stated mouse and focus followers, rather than capture lifecycle
 callbacks. Replay filters them; production generic dispatch remains
 available and contract-tested.
 
-Inputs no runner implements — keyboard, composition and custom events,
+### Keyboard steps
+
+`(press LOC "Shift+ArrowDown")` focuses the locator, then raises keydown
+and keyup. `(press "Escape")` instead uses the current focus or body. Prefixes
+are `Control`, `Alt`, `Shift` and `Meta`, with exact modifiers. There is no
+platform-dependent `ControlOrMeta`. One US-key table in `Scm.roc` supplies
+key, code and modifiers to both runners through the emitted JSON. It
+contains printable ASCII, Enter, Escape, Tab, Space, Backspace, Delete,
+arrows, Home, End, PageUp, PageDown and F1–F12. Write `Shift+?` and
+`Shift+A`; `?`, `A` without Shift and `Shift+a` are parse errors.
+
+Unprevented Tab follows positive tabindex then DOM order, skipping disabled
+and hidden elements. Enter activates a button or link and supports implicit
+form submission; Space activates buttons, checkboxes and radios on keyup.
+Escape, function keys and caret-only movement have no modelled change.
+The model does not type text or edit a caret. Both runners refuse an
+unprevented default they cannot model: printable keys or Space without
+Ctrl/Meta, Backspace/Delete and Ctrl/Meta+A/C/V/X/Y/Z in text entry; Enter
+in textarea; arrows, Home, End and PageUp/PageDown in selects, radios and
+number, range, date or time inputs. These pairs are data in `Scm.roc`,
+emitted once for Chrome rather than restated there. A prevented key is
+allowed. Use `fill` to enter text. Composition remains a runtime contract
+test, not a spec step. Escape grants no user activation.
+
+Inputs no runner implements — composition and custom events,
 and session storage — are
 not part of the grammar: IME composition is covered by the runtime's
 contract tests, and session storage is a **Target** service. An unknown step
@@ -3236,7 +3357,7 @@ app can neither name a representation nor call the interfaces only hosts and
 harnesses use (`Core.driver`, `mount`, `event`, `result`, `take_cmds`,
 `settled`, the effect and work counters); the generated API docs list the
 authoring API and nothing else. `Request`, `Command`, `Result`, `WorkFault`,
-`FileError`, `HttpError`, `Pointer`, `QueryPlan` and `Window` are plain data and
+`FileError`, `HttpError`, `Pointer`, `Key`, `QueryPlan` and `Window` are plain data and
 stay structural; `Boot` and `ProgramProps` are nominal records with defaulted
 fields, built and read as records. `Remote` is a transparent nominal type over a record, so an app
 reads and builds it as the record and calls its methods. `Table` is an
@@ -3366,6 +3487,23 @@ Pointer : { id : U32, kind : [Mouse, Pen, Touch, Other],
             button : [None, Main, Middle, Secondary, Back, Forward, Other(U8)],
             buttons : U16, modifiers : { shift : Bool, ctrl : Bool, alt : Bool, meta : Bool },
             primary : Bool, at : [Outside, In({ zone : Str, x : U16, y : U16 })] }
+Key : { key : Str, code : Str, ctrl : Bool, alt : Bool, shift : Bool,
+        meta : Bool, repeat : Bool, composing : Bool, heard : Chord }
+Chord                                        # opaque; compares with ==
+Chord.plain : Str -> Chord
+Chord.with_ctrl, Chord.with_alt, Chord.with_shift, Chord.with_meta : Chord -> Chord
+Chord.primary : Chord -> List(Chord)         # Ctrl and Meta alternatives
+Keymap                                       # opaque ordered chords with policies
+Keymap.prevent, Keymap.keep : List(Chord) -> Keymap
+Keymap.every : Keymap
+Keymap.concat : Keymap, Keymap -> Keymap
+Keymap.outside_text : Keymap -> Keymap
+KeyProps(ctx) := { keymap : Signal(ctx, Keymap), on : [Down, Up] ?? Down, stop : Bool ?? False }
+DocumentKeyProps(ctx) := { keymap : Signal(ctx, Keymap), on : [Down, Up] ?? Down, stop : Bool ?? False }
+OutsideRows(ctx)                             # opaque state-free evidence; Root and In outside rows
+on_key : KeyProps(ctx), HandlerOf(ctx, Key) -> Attr(ctx)
+on_document_key : DocumentKeyProps(ctx), HandlerOf(ctx, Key) -> Attr(ctx)
+                                              where [ctx.outside_rows : () -> OutsideRows(ctx)]
 on_pointer : [Down, Move, Up, Cancel], HandlerOf(ctx, Pointer) -> Attr(ctx)
 on_pointer_capture : HandlerOf(ctx, Pointer) -> Attr(ctx)  # pointerdown; capture before dispatch
 on_pointer_paced : HandlerOf(ctx, Pointer) -> Attr(ctx)    # pointermove; newest report per pointer
@@ -3430,14 +3568,14 @@ Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Ti
               on_dispose : [Stop, Keep], on_cancel : [Stop, Finish],
               prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
        Interval(U32), Popstate, OnlineChanges, VisibilityChanges, Self, Push(Str),
-       Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str),
+       Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str),
        StorageSet(Str, Str), StorageRemove(Str), ReadBytes({ file, max_bytes }),
        ReadUtf8({ file, max_bytes }),
        Upload({ method, url, headers, body : File, timeout_ms }), Sha256(File), ObjectUrl(File),
        PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
        PortSubscribe({ port, message }),
        Save({ file : File, name : Str }), Fetch({ method, url, headers, timeout_ms })]
-Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str),
+Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str),
        StorageSet(Str, Str), StorageRemove(Str), PortCommand({ port, message }),
        Save({ file : File, name : Str })]     # the requests that await nothing: a cleanup's plan
 Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
@@ -3564,14 +3702,13 @@ controls (`button`, `action_button`, `text_input`, `number_input`, `textarea`,
 whose props are `FileInputProps := { selection : [Single, Multiple] ?? Single,
 accept : [Any, Types(Str)] ?? Any }`), accessibility attributes (`aria_label`,
 `aria_invalid`, `aria_describedby`) and event helpers (`on_input`, `on_change`,
-`on_focus`, `on_blur`, `on_keydown`, `on_submit`, `on_drop_files`,
+`on_focus`, `on_blur`, `on_submit`, `on_drop_files`,
 `on_paste_files`, `on_pointer_down`, `on_pointer_down_capture`,
 `on_pointer_move`, `on_pointer_move_paced`, `on_pointer_up`,
 `on_pointer_cancel`) and zone properties (`zone`, `zone_s`). Accessible names go in `aria-label`, which the spec locators
 match.
 
-**Target vocabulary.** An `Svg` module and a typed style API, event policies
-that follow rendered values, session storage, an entropy seed, and handler-level
+**Target vocabulary.** An `Svg` module and a typed style API, session storage, an entropy seed, and handler-level
 request occurrences. Each lands with an engine change,
 a native spec, a runtime contract test, a demonstration and, where it
 touches the wire, an Appendix B entry.
@@ -3581,7 +3718,7 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **9**. The engine declares it
+This appendix is protocol version **10**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -3600,7 +3737,7 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (9) |
+| `roc_engine_version` | `() -> u32` | The protocol version (10) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -3732,6 +3869,7 @@ that has run, in first-run order, with its run count.
 | 39 | Live awaited ids now (a gauge, not cumulative) |
 | 40 | Port commands sent (`PORT`, opcode 19, which is counted here and not at index 19) |
 | 41, 42 | `PROP`, `HPROP` commands (opcodes 21, 22; counted here rather than by opcode) |
+| 43 | `RELEASE` commands (opcode 23, counted here rather than as rows reused) |
 
 Index 0 is unused. The metric names the spec language accepts map onto these
 indices (`platform/Scm.roc`, `metric_names`).
@@ -3745,7 +3883,7 @@ An event is `event(node, handler)` with the payload staged first:
   hole. Payload (UTF-8): `click`/`submit` → empty (and the runtime prevents
   the default of every `submit` that reaches the mount root); `input` → the
   target's value; `change` → `"true"`/`"false"` for a checkbox or radio, else the value;
-  `keydown`/`keyup` → the key; `focus`/`blur` (listened as
+  `focus`/`blur` (listened as
   `focusin`/`focusout`) → the target's value.
 - **Files-kind DOM events:** a handler declared with the files kind on
   `change`, `drop` or `paste` receives the target's `files`, the drop's
@@ -3830,11 +3968,12 @@ a `contract` fault.
 | 15 | `NAV` | `mode:u8 url:str` (`1` push, `2` replace) |
 | 16 | `STORAGE` | `op:u8 key:str [value:str]` (`1` set with value, `2` remove) |
 | 17 | `TITLE` | `text:str` |
-| 18 | `FOCUS` | `op:u8 node` (`1` focus, `2` blur, `3` focus and select text) |
+| 18 | `FOCUS` | `op:u8 node` (`1` focus, `2` blur, `3` focus and select text, `4` apply rendered value) |
 | 19 | `PORT` | `port:str message` — a port command; `message` is `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32 (token:u64 start:u64 len:u64)*` |
 | 20 | `SAVE` | `token:u64 start:u64 len:u64 name:str` — save a file's range as a download named `name`; not counted by opcode (index 20 of the work record is `set_checked`) |
 | 21 | `PROP` | `node prop:u8 value:str` — set an element property from the closed table below |
 | 22 | `HPROP` | `node hole:u8 value:str` — set a row property hole |
+| 23 | `RELEASE` | `node` — release all document registrations for this node, before removal |
 
 `before = 0` appends to `parent`; otherwise the node is inserted before
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
@@ -3904,9 +4043,20 @@ site; an unknown kind number in commands is an `executor` fault.
 
 | Kind | Payload layout | Delivering export | Allowed event types |
 |---|---|---|---|
-| 1 Text | UTF-8, with the per-type meanings in Event records | `event` | Any bare type |
+| 1 Text | UTF-8, with the per-type meanings in Event records | `event` | Any bare type except `keydown` and `keyup` |
 | 2 Files | `minted:u32 refused:u32 (size:u64 name:str type:str)*minted`, with staged handles in order | `event_files` | `change`, `drop`, `paste`; no files means no dispatch. `drop` prevents both its default and `dragover`'s default |
 | 3 Pointer | `id:u32 kind:u8 button:u8 buttons:u16 mods:u8 primary:u8 at:u8 [x:u16 y:u16 zone:str]` | `event` | `pointerdown`, `pointermove`, `pointerup`, `pointercancel` |
+| 4 Key | `flags:u8 key:str code:str heard:u8 heard_key:str` | `event` | `keydown`, `keyup`; pass over a local handler whose keymap hears nothing |
+
+Key kind **4** is allowed only on `keydown` and `keyup`, delivered by
+`event`. Its payload is `flags:u8 key:str code:str heard:u8 heard_key:str`.
+`flags` contains Ctrl `1`, Alt `2`, Shift `4`, Meta `8`, repeat `16` and
+composing `32`. `heard` has only the first four modifier bits and names the
+original chord, or the event's chord for `every`. `key` and `heard_key` must be nonempty;
+code may be empty. Unknown bits, invalid UTF-8, truncation and trailing
+bytes are a routed-site `contract` fault. Dispatch passes over a local
+handler whose rendered keymap does not hear the event, as specified above;
+a document declaration participates only in the document registry.
 
 In a pointer record, `kind` is `0` mouse, `1` pen, `2` touch or `3` other.
 `button` is the DOM button plus one: `0` none, `1` main, `2` middle,
@@ -3931,9 +4081,11 @@ from the event type or decided by an engine result.
 | 1 (`2`) | `stop` | Call `stopPropagation` only when `event.bubbles` is true; a non-bubbling event must still reach its target |
 | 2 (`4`) | `capture` | The typed capturing `pointerdown` calls `setPointerCapture(pointerId)` on its declaring element before dispatch; refusal still dispatches and is observed |
 | 3 (`8`) | `paced` | A typed paced `pointermove` is a report source keyed by declaring element, handler and pointer id |
+| 4 (`16`) | `document` | Register a key-kind handler for document dispatch, owned by its declaring node |
 
 `capture` is valid only for pointer-kind `pointerdown` and `paced` only
-for pointer-kind `pointermove`. A known bit on another declaration is an
+for pointer-kind `pointermove`; `document` only for key-kind declarations.
+Key-kind prevention comes from the keymap, never a static prevent bit. A known bit on another declaration is an
 `executor` fault, just as an unknown policy bit is.
 
 **Event declarations.** Types are bare text, keyed independently of their
@@ -3956,6 +4108,18 @@ attribute; true keeps it present.
 | 1 | `value` | `input`, `textarea`, `select`, `option` | `Str`, UTF-8; the controlled-input guard and select settle apply | `value` |
 | 2 | `checked` | `input` | `Bool`, exactly `"true"` or `"false"` | `checked` |
 | 3 | `pointer_zone` | Any element | `Str`, UTF-8; empty key marks no zone | None |
+| 4 | `keymap_down` | Any element | Encoded keymap for its paired keydown handler | None |
+| 5 | `keymap_up` | Any element | Encoded keymap for its paired keyup handler | None |
+
+Rows 4 and 5 are private to `on_key` and `on_document_key`, never exposed
+as `Prop` constructors. Each entry concatenates policy `p` (prevent) or
+`k` (keep), place `a` (anywhere) or `o` (outside text), four modifier
+characters `C/- A/- S/- M/-` without spaces, canonical decimal UTF-8 byte length (zero, or no leading zero),
+`:`, then the key's bytes. `every` is a final `a*` or `o*`, at most once.
+Zero length is a valid, unhearable declared chord. The empty string hears
+nothing. For example prevent Ctrl+backquote is
+`paC---1:` followed by the backquote byte. A malformed encoding is an
+`executor` fault. Parsing counts UTF-8 bytes, never UTF-16 code units.
 
 A property on another element, one declared twice, and an attribute using
 a name claimed by a row on that element are `contract` errors at mount.

@@ -79,12 +79,12 @@ features = ["Store", "Tables and views", "Components", "Derived values"]
 [[examples]]
 slug = "spreadsheet-lite"
 title = "Spreadsheet Lite"
-description = "An 8x12 formula grid with cell references, precedence, SUM ranges, error propagation, and cycle detection over fixed-point arithmetic; its rows are a table, and an edit writes only the rows whose cells changed."
+description = "An 8x12 formula grid with cell references, precedence, SUM ranges, error propagation, and cycle detection over fixed-point arithmetic; its rows are a table, and an edit writes only the rows whose cells changed. Keyboard navigation, range selection, Escape-to-revert and document shortcuts share a rendered keymap."
 source = "examples/spreadsheet-lite/main.roc"
 specs = "examples/spreadsheet-lite/specs"
 public = true
 section = "basics"
-features = ["Store", "Tables and views", "Derived values", "Keyed lists"]
+features = ["Store", "Tables and views", "Derived values", "Keyed lists", "Keyboard input"]
 
 [[examples]]
 slug = "data-grid"
