@@ -57,13 +57,14 @@ Slow := [].{
 		Ok(List.map2(Slow.native_soaks, results, |s, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["native soak ${s.example} ${s.spec}: ${r.output.trim()}"]).join())
 	}
 
-	## The apps walked: every spec app but the three whose pages offer a
+	## The apps walked: every spec app but the four whose pages offer a
 	## contract error on purpose (a job of an unregistered task, a port used
-	## as the wrong kind, an outbox posted twice in a turn), which a walk
+	## as the wrong kind, an outbox posted twice in a turn, duplicate control
+	## references or a focus loop), which a walk
 	## reaches within a few hundred steps and which, as it must, poisons
 	## the instance. Their specs and Chrome contract tests cover them.
 	walk_apps : List(Str)
-	walk_apps = SpecSuite.spec_apps.drop_if(|name| ["workers", "ports", "outbox"].contains(name))
+	walk_apps = SpecSuite.spec_apps.drop_if(|name| ["workers", "ports", "outbox", "controls"].contains(name))
 
 	## One walk: an app, how many steps, and from which seed.
 	Walk : { name : Str, steps : U64, seed : U64 }

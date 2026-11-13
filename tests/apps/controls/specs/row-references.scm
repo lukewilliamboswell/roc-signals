@@ -1,0 +1,18 @@
+(test "Row references survive reordering and still route clicks by the row"
+  (steps
+    (click (role button :name "Focus row a"))
+    (expect-focused (label "Row a"))
+    (click (role button :name "Reverse reference rows"))
+    (click (role button :name "Focus row a"))
+    (expect-focused (label "Row a"))
+    (click (label "Row b"))
+    (expect-text (test-id "reference-log") "b")
+    (click (role button :name "Remove row a"))
+    (expect-absent (label "Row a"))
+    (mark-metrics)
+    (click (role button :name "Focus row a"))
+    (expect-focused (role button :name "Focus row a"))
+    (expect-metric-delta effects_stale 1)
+    (click (role button :name "Restore reference rows"))
+    (click (role button :name "Focus row a"))
+    (expect-focused (label "Row a"))))

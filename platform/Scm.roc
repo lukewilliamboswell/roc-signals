@@ -99,6 +99,8 @@ Scm := [].{
 		Uncheck(Loc),
 		ExpectText(Loc, Str),
 		ExpectVisible(Loc),
+		ExpectFocused(Loc),
+		ExpectNoFocus,
 		ExpectAbsent(Loc),
 		ExpectValue(Loc, Str),
 		ExpectAttr({ target : Loc, name : Str, value : Str }),
@@ -738,6 +740,14 @@ Scm := [].{
 		{ name: "change", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| Change(l, t)) },
 		{ name: "select-option", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| SelectOption(l, t)) },
 		{ name: "expect-text", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| ExpectText(l, t)) },
+		{ name: "expect-focused", parse: |form, args| Ok(ExpectFocused(Scm.loc1(form, args)?)) },
+		{
+			name: "expect-no-focus",
+			parse: |form, args| {
+				_ = Scm.arity(form, args, 0)?
+				Ok(ExpectNoFocus)
+			},
+		},
 		{ name: "expect-visible", parse: |form, args| Ok(ExpectVisible(Scm.loc1(form, args)?)) },
 		{ name: "expect-absent", parse: |form, args| Ok(ExpectAbsent(Scm.loc1(form, args)?)) },
 		{ name: "expect-value", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| ExpectValue(l, t)) },
@@ -1058,6 +1068,8 @@ Scm := [].{
 			Uncheck(_) => "uncheck"
 			ExpectText(_, _) => "expect-text"
 			ExpectVisible(_) => "expect-visible"
+			ExpectFocused(_) => "expect-focused"
+			ExpectNoFocus => "expect-no-focus"
 			ExpectAbsent(_) => "expect-absent"
 			ExpectValue(_, _) => "expect-value"
 			ExpectAttr(_) => "expect-attr"
@@ -1206,6 +1218,8 @@ Scm := [].{
 			Uncheck(l) => [loc(l)]
 			ExpectText(l, t) => [loc(l), text(t)]
 			ExpectVisible(l) => [loc(l)]
+			ExpectFocused(l) => [loc(l)]
+			ExpectNoFocus => []
 			ExpectAbsent(l) => [loc(l)]
 			ExpectValue(l, t) => [loc(l), text(t)]
 			ExpectAttr({ target, name, value }) => [loc(target), JsonOut.field("name", Text(name)), text(value)]
@@ -1521,4 +1535,18 @@ expect {
 		\\steps: [ExpectSaved({ index: 1, name: "out.txt", text: "AB" }), ExpectSaves(1)]
 		\\zero: x.scm:1:32: saves are counted from 1
 	actual == expected
+}
+
+## Focus assertions share the same locators and strict arities as the other
+## assertions, and emit the operations consumed by the browser runner.
+expect {
+	spec = Scm.parse("(test \"focus\" (steps (expect-focused (label \"Name\")) (expect-no-focus)))")?
+	spec.steps.map(|step| step.op) == [ExpectFocused(Label("Name")), ExpectNoFocus]
+}
+
+## A focus assertion's arguments are checked at parse time in both runners.
+expect {
+	missing = Scm.parse("(test \"t\" (steps (expect-focused)))")
+	extra = Scm.parse("(test \"t\" (steps (expect-no-focus (label \"Name\"))))")
+	missing.is_err() and extra.is_err()
 }

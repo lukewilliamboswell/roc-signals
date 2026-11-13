@@ -238,6 +238,7 @@ HandlersApp := [].{
 		|| Html.div(
 			"handlers",
 			[
+				HandlersApp.presses({}),
 				Engine.state("none", HandlersApp.owner),
 				HandlersApp.counter({}),
 				Engine.state(0.I64, HandlersApp.answers),
@@ -245,6 +246,22 @@ HandlersApp := [].{
 				HandlersApp.rated({}),
 				HandlersApp.closing({}),
 				HandlersApp.mixed({}),
+			],
+		),
+	)
+
+	## Both runners deliver the same click sequence, including pointer moves.
+	## A prevented pointerdown suppresses the compatibility mouse events and
+	## focus change while still delivering pointerup and click.
+	presses : {} -> Elem(ctx)
+	presses = |_props| Engine.state(
+		"",
+		|events| Html.div(
+			"",
+			[
+				Engine.element("button", ["pointermove", "mousemove", "pointerdown", "mousedown", "focus", "pointerup", "mouseup", "click"].map(|event| Engine.on(event, events.update(|log| "${log}${event};"))).concat([Html.aria_label("Record click")]), [Engine.text("Record click")]),
+				Engine.element("button", ["pointermove", "mousemove", "pointerdown:prevent", "mousedown", "focus", "pointerup", "mouseup", "click"].map(|event| Engine.on(event, events.update(|log| if (event == "pointerdown:prevent") "${log}pointerdown;" else "${log}${event};"))).concat([Html.aria_label("Record prevented click")]), [Engine.text("Record prevented click")]),
+				Html.p_s(events.signal(), [Engine.test_id("press-events")]),
 			],
 		),
 	)

@@ -549,7 +549,7 @@ step = |s, op, b| {
 		cs = SpecRunner.candidates(s.dom)
 		match cs.get(b % cs.len().max(1)) {
 			Ok((i, ev)) =>
-				match Dom.target(s.dom, i, ev) {
+				match Dom.target(s.dom, i, ev, Bool.True) {
 					Ok((id, h)) => {
 						(a, c) = Core.take_cmds(Core.event(s.eng, id, h, ""), [])
 						named = "click node ${id.to_str()}"

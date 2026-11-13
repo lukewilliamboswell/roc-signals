@@ -76,11 +76,13 @@ Checks := [].{
 	## kanban-board's initial render, and a crashing worker job expected to
 	## be lost to the wrong fault class (the native runner's child process and
 	## the browser's worker must both report the class the task's crash
-	## has).
+	## has), and a focus feedback loop that both runners must stop with
+	## resource_limit rather than hanging the replay.
 	broken_specs : List(Broken)
 	broken_specs = [
 		{ example: "kanban-board", spec: "examples/kanban-board/specs/initial-render.scm", good: "(expect-text (test-id \"board-total\") \"5\")", bad: "(expect-text (test-id \"board-total\") \"6\")", rejection: "expected \\\"6\\\"" },
 		{ example: "workers", spec: "tests/apps/workers/specs/crash.scm", good: "(expect-text (test-id \"log\") \"crash:lost AppCrash\")", bad: "(expect-text (test-id \"log\") \"crash:lost Contract\")", rejection: "expected \\\"crash:lost Contract\\\"" },
+		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(click (role button :name \"Start focus loop\"))", rejection: "resource_limit" },
 	]
 
 	## Each runner must reject each deliberately broken spec

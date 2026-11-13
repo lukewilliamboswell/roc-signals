@@ -22,7 +22,8 @@
 // Ingress: events raised while a batch is applied are queued, at most
 // MAX_QUEUED of them. Exceeding the bound poisons the runtime with class
 // `resource_limit` (a feedback loop between the DOM and the engine); queued
-// work is never dropped silently.
+// work is never dropped silently. A drain also delivers at most MAX_QUEUED
+// turns before idle, so a loop raising one event per turn is bounded too.
 //
 // Effects (see "Effects" in Engine.roc): the engine emits FX requests with
 // ids, CANCEL, NAV, STORAGE and TITLE commands. They are collected while a
@@ -148,7 +149,7 @@
 // other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -231,6 +232,7 @@ const HOLE_TEXT = 1;
 const HOLE_ATTR = 2;
 const HOLE_CLICK = 3;
 const HOLE_BIND = 4;
+const HOLE_REF = 5;
 
 
 export async function instantiateEngineBytes(bytes) {
@@ -1713,7 +1715,8 @@ export class RocEngineRuntime {
     this.templates = [];
     this.listening = new Map();
     this.internal = [];
-    this.onEvent = (event) => this.handle(event);
+    this.onEvent = (event) => { if (event.bubbles) this.handle(event); };
+    this.onCapture = (event) => { if (!event.bubbles) this.handle(event); };
     this.busy = false;
     this.queue = [];
     this.poisoned = null;
@@ -1897,7 +1900,10 @@ export class RocEngineRuntime {
       }
     }
     this.poisoned = { class: CLASSES[code] ?? "unknown", code, message, trap: String(error) };
-    for (const [type, fn] of this.listening) this.root.removeEventListener(type, fn);
+    for (const [type, listeners] of this.listening) {
+      this.root.removeEventListener(type, listeners.bubble);
+      if (listeners.capture) this.root.removeEventListener(type, listeners.capture, true);
+    }
     this.listening.clear();
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
     this.internal = [];
@@ -1954,7 +1960,10 @@ export class RocEngineRuntime {
     this.pushSubs.clear();
     this.stopWorkers();
     this.monitor.runtimeEnded("unmounted");
-    for (const [type, fn] of this.listening) this.root.removeEventListener(type, fn);
+    for (const [type, listeners] of this.listening) {
+      this.root.removeEventListener(type, listeners.bubble);
+      if (listeners.capture) this.root.removeEventListener(type, listeners.capture, true);
+    }
     this.listening.clear();
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
     this.internal = [];
@@ -1996,15 +2005,17 @@ export class RocEngineRuntime {
     });
   }
 
-  // One delegated listener per event type, added the first time a LISTEN
-  // command or template hole names that type.
+  // Two delegated listeners per event type, added the first time a LISTEN
+  // command or template hole names that type. The event's own bubbles flag
+  // selects exactly one; non-bubbling events only find their target's handler.
   // App "focus"/"blur" handlers listen to the bubbling focusin/focusout.
   listen(type) {
     const dom = DOM_EVENT[type] ?? type;
     if (this.listening.has(dom)) return;
-    this.listening.set(dom, this.onEvent);
+    this.listening.set(dom, { bubble: this.onEvent, capture: this.onCapture });
     this.root.addEventListener(dom, this.onEvent);
-    if (dom === "drop" && !this.listening.has("dragover")) {
+    this.root.addEventListener(dom, this.onCapture, true);
+    if (dom === "drop") {
       // A drop target that takes files lets the drop happen (see "Handler
       // event names" above); dragover reaches no app handler.
       const over = (event) => {
@@ -2016,13 +2027,15 @@ export class RocEngineRuntime {
           }
         }
       };
-      this.listening.set("dragover", over);
-      this.root.addEventListener("dragover", over);
+      // This default-action helper is independent of app delegation: a
+      // later LISTEN for dragover must still register its own handlers.
+      this.internal.push(["dragover", over]);
+      this.root.addEventListener("dragover", over, true);
     }
   }
 
-  // The nearest handler for this event type walking up from the target
-  // (bubbling), then the nearest node carrying an engine id.
+  // Find the target's handler, or for a bubbling event the nearest ancestor
+  // handler, then its nearest routing id. Reference ids never route events.
   handle(event) {
     const type = APP_EVENT[event.type] ?? event.type;
     // Forms are app-managed: a submit never navigates (design.md,
@@ -2031,7 +2044,7 @@ export class RocEngineRuntime {
     let node = event.target;
     let handler = null;
     while (node && node !== this.root) {
-      if (handler === null && node.__h !== undefined) {
+      if (handler === null && (event.bubbles || node === event.target) && node.__h !== undefined) {
         const h = node.__h[type];
         if (h !== undefined) handler = h;
       }
@@ -2076,9 +2089,15 @@ export class RocEngineRuntime {
   }
 
   drainQueue() {
+    let turns = 0;
     while (!this.busy && !this.poisoned && this.queue.length > 0) {
       const [n, h, p, el] = this.queue.shift();
       if (el !== undefined && (!el.isConnected || el.__rn !== n)) continue;
+      if (turns >= MAX_QUEUED) {
+        this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} turns delivered without returning to idle (an event feedback loop)`), "resource_limit");
+        return;
+      }
+      turns += 1;
       this.busy = true;
       try {
         this.guard(() => this.deliver(n, h, p));
@@ -2193,6 +2212,23 @@ export class RocEngineRuntime {
     return node === 0 ? this.root : this.statics[node];
   }
 
+  // Removing an ancestor also disposes the rows and command-only aliases
+  // beneath it. Walk only that subtree; the engine need not emit a REMOVE
+  // for each descendant when one ancestor removal already removes its DOM.
+  forgetSubtree(el) {
+    const pending = [el];
+    while (pending.length > 0) {
+      const node = pending.pop();
+      for (let child = node.firstChild; child; child = child.nextSibling) pending.push(child);
+      if (node.__site !== undefined) {
+        this.sites[node.__site].delete(node.__rn);
+        for (const id of node.__aliases) this.statics[id] = undefined;
+      }
+      if (node.__rn !== undefined) this.statics[node.__rn] = undefined;
+      if (node.__id !== undefined) this.statics[node.__id] = undefined;
+    }
+  }
+
   place(el, parent, before) {
     if (before === 0) this.lookup(parent).appendChild(el);
     else {
@@ -2296,6 +2332,7 @@ export class RocEngineRuntime {
           const targets = new Array(holes.length);
           for (let i = 0; i < holes.length; i += 1) targets[i] = walk(el, holes[i].path);
           el.__ht = targets;
+          el.__aliases = [];
           for (let i = 0; i < holes.length; i += 1) {
             const hole = holes[i];
             const target = targets[i];
@@ -2311,10 +2348,12 @@ export class RocEngineRuntime {
               if (target.__h === undefined) target.__h = {};
               const [type, ...policies] = hole.name.split(":");
               target.__h[type] = handlerEntry(hole.handler, policies);
-            } else {
-              this.statics[dv.getUint32(at, true)] = target;
+            } else if (hole.kind === HOLE_BIND || hole.kind === HOLE_REF) {
+              const id = dv.getUint32(at, true);
+              this.statics[id] = target;
+              el.__aliases.push(id);
               at += 4;
-            }
+            } else throw new Error(`unknown template hole kind ${hole.kind}`);
           }
           this.place(el, parent, before);
           if (el.tagName === "OPTION") settleSelect(el.parentNode);
@@ -2346,8 +2385,8 @@ export class RocEngineRuntime {
         case OP_REMOVE: {
           const node = dv.getUint32(at, true);
           const el = this.lookup(node);
+          this.forgetSubtree(el);
           el.parentNode.removeChild(el);
-          if (el.__site !== undefined) this.sites[el.__site].delete(node);
           this.statics[node] = undefined;
           at += 4;
           break;
@@ -2355,7 +2394,7 @@ export class RocEngineRuntime {
         case OP_CLEAR: {
           const parent = this.lookup(dv.getUint32(at, true));
           const site = dv.getUint32(at + 4, true);
-          for (const n of this.sites[site]) this.statics[n] = undefined;
+          for (let child = parent.firstChild; child; child = child.nextSibling) this.forgetSubtree(child);
           this.sites[site] = new Set();
           parent.textContent = "";
           at += 8;
@@ -2379,6 +2418,8 @@ export class RocEngineRuntime {
           at += 16 + n;
           const parentEl = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
           const el = op === OP_ELEM ? createIn(doc, s, parentEl) : doc.createTextNode(s);
+          // Command addresses do not route events; only LISTEN assigns __rn.
+          el.__id = node;
           this.place(el, parent, before);
           if (op === OP_ELEM && el.tagName === "OPTION") settleSelect(el.parentNode);
           this.statics[node] = el;

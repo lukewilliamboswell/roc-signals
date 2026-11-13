@@ -446,8 +446,8 @@ async function results(options) {
     w.terminate();
     return { refused, worker: [m.type, m.code, m.message] };
   });
-  check("the runtime refuses a protocol 3 module", r.refused, "roc engine protocol 3 is not the protocol 4 this runtime implements");
-  check("the worker script refuses a page of another protocol", r.worker, ["fault", 0, "worker could not start: roc engine protocol 4 is not the protocol 3 the page's runtime implements"]);
+  check("the runtime refuses a protocol 3 module", r.refused, "roc engine protocol 3 is not the protocol 5 this runtime implements");
+  check("the worker script refuses a page of another protocol", r.worker, ["fault", 0, "worker could not start: roc engine protocol 5 is not the protocol 3 the page's runtime implements"]);
   await ctx.close();
 }
 

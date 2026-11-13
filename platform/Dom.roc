@@ -7,18 +7,18 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 4
+	protocol_version = 5
 
-	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List((Str, U32)), ht : List(U64) }
+	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List((Str, U32)), ht : List(U64), ids : List(U32) }
 
 	THole : { kind : U8, path : List(U8), name : Str, handler : U8 }
 
 	Tpl : { bytes : List(U8), root_at : U64, holes : List(THole) }
 
-	Model : { nodes : List(DNode), statics : List(U64), rows : List(List(U64)), tpls : List(Tpl), root : U64 }
+	Model : { nodes : List(DNode), statics : List(U64), rows : List(Dict(U64, {})), tpls : List(Tpl), root : U64 }
 
 	new : {} -> Model
-	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [] }], statics: [], rows: [], tpls: [], root: 0 }
+	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [] }], statics: [], rows: [], tpls: [], root: 0 }
 
 	u32 : List(U8), U64 -> U32
 	u32 = |b, at| {
@@ -95,11 +95,12 @@ Dom := [].{
 		}
 		var $r = rows
 		while $r.len() <= site {
-			$r = $r.append([])
+			$r = $r.append(Dict.empty())
 		}
-		{ list, prev } = $r.replace(site, []) ?? crash "row"
+		{ list, prev } = $r.replace(site, Dict.empty()) ?? crash "row"
 		packed = (idx + 1).bitwise_or((site + 1).shl_wrap(40))
-		{ nodes, statics: $s.set(id.to_u64(), packed) ?? crash "static", rows: list.set(site, prev.append(id.to_u64())) ?? crash "row", tpls, root }
+		dom = { nodes, statics: $s.set(id.to_u64(), packed) ?? crash "static", rows: list.set(site, prev.insert(id.to_u64(), {})) ?? crash "row", tpls, root }
+		Dom.modify(dom, idx, |n| { ..n, ids: n.ids.append(id) })
 	}
 
 	## The site of a bound row element (Err for a static node).
@@ -110,7 +111,7 @@ Dom := [].{
 	}
 
 	empty_node : DNode
-	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [] }
+	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [] }
 
 	## Update node i in place (the node is moved out of the list first, so
 	## its kid list stays uniquely owned).
@@ -121,7 +122,7 @@ Dom := [].{
 	}
 
 	bind : Model, U32, U64 -> Model
-	bind = |dom, id, idx| Dom.set_static(dom, id, idx)
+	bind = |dom, id, idx| Dom.modify(Dom.set_static(dom, id, idx), idx, |n| { ..n, ids: n.ids.append(id) })
 
 	unbind : Model, U32 -> Model
 	unbind = |{ nodes, statics, rows, tpls, root }, id| {
@@ -132,9 +133,27 @@ Dom := [].{
 			{ nodes, statics: statics2, rows, tpls, root }
 		} else {
 			site = site1 - 1
-			{ list, prev } = rows.replace(site, []) ?? crash "row"
-			{ nodes, statics: statics2, rows: list.set(site, prev.keep_if(|r| r != id.to_u64())) ?? crash "row", tpls, root }
+			{ list, prev } = rows.replace(site, Dict.empty()) ?? crash "row"
+			{ nodes, statics: statics2, rows: list.set(site, prev.remove(id.to_u64())) ?? crash "row", tpls, root }
 		}
+	}
+
+	## Forget command aliases and row membership owned by a removed subtree.
+	## Walking only its nodes also removes references nested in static content;
+	## an id since rebound elsewhere is left with its current owner.
+	forget_subtree : Model, U64 -> Model
+	forget_subtree = |dom, i| {
+		owned = Dom.node(dom, i)
+		var $d = dom
+		for child in owned.kids {
+			$d = Dom.forget_subtree($d, child)
+		}
+		for id in owned.ids {
+			if ($d.statics.get(id.to_u64()) ?? 0).bitwise_and(1099511627775) == i + 1 {
+				$d = Dom.unbind($d, id)
+			}
+		}
+		Dom.modify($d, i, |n| { ..n, ids: [] })
 	}
 
 	detach : Model, U64 -> Model
@@ -147,12 +166,12 @@ Dom := [].{
 				dom,
 				n.parent - 1,
 				|p| {
-					{ tag, text, attrs, kids, parent, rn, hs, ht } = p
+					{ tag, text, attrs, kids, parent, rn, hs, ht, ids } = p
 					kept = match kids.find_last_index(|k| k == i) {
 						Ok(pos) => kids.drop_at(pos)
 						Err(_) => kids
 					}
-					{ tag, text, attrs, kids: kept, parent, rn, hs, ht }
+					{ tag, text, attrs, kids: kept, parent, rn, hs, ht, ids }
 				},
 			)
 			Dom.modify(d1, i, |m| { ..m, parent: 0 })
@@ -167,7 +186,7 @@ Dom := [].{
 			d0,
 			parent,
 			|p| {
-				{ tag, text, attrs, kids, parent: pp, rn, hs, ht } = p
+				{ tag, text, attrs, kids, parent: pp, rn, hs, ht, ids } = p
 				kids2 = match before {
 					Err(End) => kids.append(i)
 					Ok(b) => {
@@ -175,7 +194,7 @@ Dom := [].{
 						kids.sublist({ start: 0, len: pos }).append(i).concat(kids.sublist({ start: pos, len: kids.len() - pos }))
 					}
 				}
-				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht }
+				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids }
 			},
 		)
 		Dom.modify(d1, i, |n| { ..n, parent: parent + 1 })
@@ -202,7 +221,7 @@ Dom := [].{
 		kind = Dom.byte(b, at)
 		if kind == 2 {
 			(t, next) = Dom.str(b, at + 1)
-			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [] })
+			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [] })
 			(d1, i, next)
 		} else {
 			(tag, a1) = Dom.str(b, at + 1)
@@ -219,7 +238,7 @@ Dom := [].{
 			}
 			nk = Dom.byte(b, $at).to_u64()
 			$at = $at + 1
-			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [] })
+			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [] })
 			var $d = d1
 			$k = 0
 			while $k < nk {
@@ -279,8 +298,10 @@ Dom := [].{
 				(ev, next) = Dom.str(b, $at + 1)
 				$holes = $holes.append({ kind, path, name: ev, handler: hb })
 				$at = next
-			} else {
+			} else if kind == 1 or kind == 4 or kind == 5 {
 				$holes = $holes.append({ kind, path, name: "", handler: 0 })
+			} else {
+				crash "unknown template hole kind ${kind.to_str()}"
 			}
 			$k = $k + 1
 		}
@@ -486,10 +507,14 @@ Dom := [].{
 					} else if hole.kind == 3 {
 						t = Dom.node($dd, target)
 						$dd = Dom.set_node($dd, target, { ..t, hs: t.hs.append((hole.name, hole.handler.to_u32())) })
-					} else {
+					} else if hole.kind == 4 or hole.kind == 5 {
+						# Site placeholders and references carry command ids; neither
+						# replaces the row root's event routing id.
 						id = Dom.u32(b, $at)
 						$at = $at + 4
 						$dd = Dom.bind($dd, id, target)
+					} else {
+						crash "unknown template hole kind ${hole.kind.to_str()}"
 					}
 				}
 				$dd = Dom.place($dd, root, parent, before)
@@ -520,7 +545,8 @@ Dom := [].{
 			} else if op == 5 {
 				id = Dom.u32(b, $at)
 				$at = $at + 4
-				$d = Dom.unbind(Dom.detach($d, Dom.lookup($d, id)), id)
+				i = Dom.lookup($d, id)
+				$d = Dom.detach(Dom.forget_subtree($d, i), i)
 			} else if op == 6 {
 				p = Dom.lookup($d, Dom.u32(b, $at))
 				site = Dom.u32(b, $at + 4).to_u64()
@@ -528,14 +554,12 @@ Dom := [].{
 				old_kids = Dom.node($d, p).kids
 				var $dd = Dom.modify($d, p, |pn| { ..pn, kids: [] })
 				for k in old_kids {
-					$dd = Dom.modify($dd, k, |kn| { ..kn, parent: 0 })
+					$dd = Dom.modify(Dom.forget_subtree($dd, k), k, |kn| { ..kn, parent: 0 })
 				}
-				{ nodes, statics, rows, tpls, root } = $dd
-				var $st = statics
-				for rid in rows.get(site) ?? [] {
-					$st = $st.set(rid, 0) ?? $st
-				}
-				$d = { nodes, statics: $st, rows: if (site < rows.len()) rows.set(site, []) ?? rows else rows, tpls, root }
+				# Teardown removed this site's rows, including rows nested below
+				# them; membership is maintained per id, never by scanning nodes.
+				$d = $dd
+				_ = site
 			} else if op == 7 {
 				tpl = Dom.u32(b, $at).to_u64()
 				n = Dom.u32(b, $at + 4).to_u64()
@@ -549,20 +573,20 @@ Dom := [].{
 				}
 				var $r = rows
 				while $r.len() <= tpl {
-					$r = $r.append([])
+					$r = $r.append(Dict.empty())
 				}
 				# A TEMPLATE starts a new lifetime of this site id (ids are
 				# recycled): rows of an earlier site that was disposed with an
 				# ancestor are forgotten, as the runtime does, or its next CLEAR
 				# would unbind node ids reused since.
-				$d = { nodes, statics, rows: $r.set(tpl, []) ?? $r, tpls: $t.set(tpl, t) ?? $t, root }
+				$d = { nodes, statics, rows: $r.set(tpl, Dict.empty()) ?? $r, tpls: $t.set(tpl, t) ?? $t, root }
 			} else if op == 8 or op == 10 {
 				nid = Dom.u32(b, $at)
 				parent = Dom.u32(b, $at + 4)
 				before = Dom.u32(b, $at + 8)
 				(s, next) = Dom.str(b, $at + 12)
 				$at = next
-				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [] } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [] }
+				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [] } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [] }
 				(d1, i) = Dom.add_node($d, fresh)
 				$d = Dom.bind(Dom.place(d1, i, parent, before), nid, i)
 			} else if op == 9 {
@@ -806,14 +830,15 @@ Dom := [].{
 
 	## The (node, handler) pair an event `ev` on node index i dispatches, as
 	## the browser runtime computes it: the nearest handler for `ev` walking
-	## up (bubbling), then the nearest node with an engine id.
-	target : Model, U64, Str -> Try((U32, U32), [NoHandler])
-	target = |dom, i, ev| {
+	## up when `bubbles` is true, or only the target otherwise, then the
+	## nearest node with an engine routing id. Reference ids do not route events.
+	target : Model, U64, Str, Bool -> Try((U32, U32), [NoHandler])
+	target = |dom, i, ev, bubbles| {
 		var $n = i
 		var $h = -1.I64
 		while True {
 			n = Dom.node(dom, $n)
-			if $h < 0 {
+			if $h < 0 and ($n == i or bubbles) {
 				# A handler name may carry a policy suffix ("click:prevent").
 				match n.hs.find_first(|(e, _)| e == ev or e.starts_with("${ev}:")) {
 					Ok((_, hh)) => {
@@ -935,7 +960,7 @@ Dom := [].{
 
 	## Every node (depth-first) whose text content equals `t` and has a handler.
 	click_target : Model, U64 -> Try((U32, U32), [NoHandler])
-	click_target = |dom, i| Dom.target(dom, i, "click")
+	click_target = |dom, i| Dom.target(dom, i, "click", Bool.True)
 
 	button_with_text : Model, Str -> Try(U64, [NotFound])
 	button_with_text = |dom, t| Dom.find(dom, dom.root, |n| n.tag == "button" and n.kids.len() == 1 and (Dom.node(dom, n.kids.get(0) ?? 0)).text == t)
@@ -961,4 +986,32 @@ Dom := [].{
 		dom = Dom.apply(Dom.new({}), cmds)
 		(dom.statics.get(2) ?? 0) != 0
 	}
+
+	## A non-bubbling event reaches only its target's handler. A bubbling
+	## occurrence of the same type can reach the ancestor instead.
+	expect {
+		base = Dom.new({})
+		(d1, parent) = Dom.add_node(base, { ..Dom.empty_node, tag: "div", rn: 10, hs: [("cancel", 1), ("scroll", 2)] })
+		(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", parent: parent + 1, hs: [("close", 3)] })
+		actual = {
+			target: Dom.target(d2, child, "close", Bool.False),
+			ancestor: Dom.target(d2, child, "scroll", Bool.False),
+			bubbling: Dom.target(d2, child, "cancel", Bool.True),
+		}
+		actual == { target: Ok((10, 3)), ancestor: Err(NoHandler), bubbling: Ok((10, 1)) }
+	}
+
+	## Removing an ancestor drops both a row's routing id and the command
+	## aliases of its references; rebinding an id starts an independent owner.
+	expect {
+		(d1, parent) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div" })
+		(d2, row) = Dom.add_node(d1, { ..Dom.empty_node, tag: "li", rn: 2 })
+		(d3, ref_node) = Dom.add_node(d2, { ..Dom.empty_node, tag: "input" })
+		d4 = Dom.insert(Dom.insert(Dom.insert(d3, d3.root, parent, Err(End)), parent, row, Err(End)), row, ref_node, Err(End))
+		d5 = Dom.bind(Dom.set_row(Dom.bind(d4, 1, parent), 2, row, 0), 3, ref_node)
+		d6 = Dom.forget_subtree(d5, parent)
+		actual = { parent: d6.statics.get(1)?, row: d6.statics.get(2)?, ref: d6.statics.get(3)?, members: (d6.rows.get(0)?).len() }
+		actual == { parent: 0, row: 0, ref: 0, members: 0 }
+	}
+
 }
