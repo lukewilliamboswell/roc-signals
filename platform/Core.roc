@@ -323,8 +323,9 @@ Core := [].{
 	## What the root site needs of a table cell of the store `st`: the cell's
 	## position, `clear`, which forgets the table's changes at the
 	## end of a turn that wrote it, and `stamp`, which gives the table its
-	## cell's identity when the store is built.
-	TableCell(st) : { cell : U64, clear : (st -> st), stamp : (st -> st) }
+	## cell's value identity when the store is built. `live` gives mounted
+	## storage an identity no table read from a Store value carries.
+	TableCell(st) : { cell : U64, clear : (st -> st), stamp : (st -> st), live : (st -> st) }
 
 	## The description of one cell holding a [Table] of `rows`, by key. It
 	## is an ordinary cell: a decision changes it with `Cell.update` and the
@@ -363,7 +364,7 @@ Core := [].{
 				),
 			},
 			restart: |t| wrap(TableCore.kept(unwrap(init), TableCore.mark(unwrap(t)))),
-			tables: |base, modify| [{ cell: base, clear: |w| modify(w, |t| wrap(TableCore.clear_changes(unwrap(t)))), stamp: |w| modify(w, |t| wrap(TableCore.with_id(unwrap(t), base + 1))) }],
+			tables: |base, modify| [{ cell: base, clear: |w| modify(w, |t| wrap(TableCore.clear_changes(unwrap(t)))), stamp: |w| modify(w, |t| wrap(TableCore.with_id(unwrap(t), base + 1))), live: |w| modify(w, |t| wrap(TableCore.with_id(unwrap(t), base + 1 + live_ids))) }],
 		}
 	}
 
@@ -387,10 +388,11 @@ Core := [].{
 			{ init: s.tables.fold(m(s.init, |_| value), |st, t| (t.clear)(st)), cells: s.cells, tables: s.tables }
 		}
 
-		## What the root site starts with: the storage, each table with an
-		## no changes, and what the root needs of its table cells.
+		## What the root site starts with: storage whose tables have no changes
+		## and carry live identities, and its table-cell bookkeeping. Restamping
+		## only here keeps pure Store values out of the live identity space.
 		initial : Store(st, h) -> Start(st)
-		initial = |s| { st: s.tables.fold(s.init, |st, t| (t.clear)(st)), tables: s.tables }
+		initial = |s| { st: s.tables.fold(s.init, |st, t| (t.live)((t.clear)(st))), tables: s.tables }
 
 		## The same store after `writes`, applied as a decision's are
 		## (`store_writes`), for a pure `expect` on a transition. No turn
@@ -421,6 +423,7 @@ Core := [].{
 	## is given its cell's identity here.
 	store_of : tag, Cells(Stored(tag, st), st, h) -> Store(Stored(tag, st), h)
 	store_of = |_tag, d| {
+		check_store_cells(d.count) ?? crash "resource_limit: store description has ${d.count.to_str()} cells; authored store structure must have fewer than ${live_ids.to_str()} cells to keep live and value table identities disjoint"
 		m = d.make
 		over = |w, f| {
 			{ st: held } = w
@@ -4790,6 +4793,32 @@ store_inst = |st0, tables0, wrote0, block0| {
 			}
 		},
 	)
+}
+
+## Mounted table identities start above value identities. Store construction
+## keeps cell positions below this boundary; a Store.read snapshot cannot
+## impersonate a mounted table even when its write counts happen to match.
+live_ids : U64
+live_ids = 0x1_0000_0000
+
+## Reserve disjoint table identity ranges before making any cell lens. This
+## bound follows the authored store description, never table rows or input.
+check_store_cells : U64 -> Try({}, [TooManyCells])
+check_store_cells = |count| if (count < live_ids) Ok({}) else Err(TooManyCells)
+
+## The largest admitted store keeps every value identity below every live
+## identity; the first refused count and U64's limit cannot reach addition.
+expect {
+	largest = live_ids - 1
+	actual = {
+		empty: check_store_cells(0),
+		largest: check_store_cells(largest),
+		boundary: check_store_cells(live_ids),
+		maximum: check_store_cells(18_446_744_073_709_551_615),
+		disjoint: largest < live_ids + 1,
+		last_live: largest + live_ids,
+	}
+	actual == { empty: Ok({}), largest: Ok({}), boundary: Err(TooManyCells), maximum: Err(TooManyCells), disjoint: True, last_live: 0x1_ffff_ffff }
 }
 
 ## The store's table cells, as the root site holds them: what it needs of
@@ -9384,8 +9413,8 @@ expect {
 	edited = Table.from_list([{ key: 1.U64, row: "a" }]).update(1, |row| "${row}!")
 	tables = {
 		cells: [
-			{ cell: 6, clear: |(a, b)| (TableCore.clear_changes(a), b), stamp: |st| st },
-			{ cell: 70, clear: |(a, b)| (a, TableCore.clear_changes(b)), stamp: |st| st },
+			{ cell: 6, clear: |(a, b)| (TableCore.clear_changes(a), b), stamp: |st| st, live: |st| st },
+			{ cell: 70, clear: |(a, b)| (a, TableCore.clear_changes(b)), stamp: |st| st, live: |st| st },
 		],
 		written: cell_bit(6),
 	}

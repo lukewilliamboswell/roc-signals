@@ -34,7 +34,7 @@ import pf.Engine exposing [Elem, Signal, State, Table]
 ## A step is a decision or a click on a drawn row:
 ## - a decision is one event whose payload names every write it makes: how
 ##   the table's cell is replaced first, if at all (a new table, the reset
-##   of its group, a copy saved earlier, the other table), keyed writes in
+##   of its group, a copy saved earlier, the other table, a Store value), keyed writes in
 ##   order (insert, put, replace, update, remove; a run of up to 16 puts or
 ##   updates, which crosses the size at which a view rebuilds instead of
 ##   absorbing the changes; a whole rewrite by `load` or `update_all`; an
@@ -264,7 +264,9 @@ Op : [
 ## Everything one event writes.
 ## - `head`: how the cell of `rows` is replaced before `ops`: by a new table
 ##   (`Fresh(seed, count)`), by its group's reset, by the copy `saved`
-##   holds (`Restore`) or by `spare`'s table (`Borrow`). The last two need
+##   holds (`Restore`), by `spare`'s table (`Borrow`), or by a pure Store
+##   value with its own cleared history (`Snapshot(seed, count)`). Restore
+##   and Borrow need
 ##   a reading, so only the control that takes one applies them.
 ## - `ops`: writes of `rows`, in order, as one `update` for each (`split`)
 ##   or one `update` that folds them.
@@ -275,7 +277,7 @@ Op : [
 ## - `listing`, `window`, `lanes`: set those cells.
 ## - `local_listing`, `local_window`: what `b`'s control writes to its state.
 Decision : {
-	head : [Keep, Fresh(U64, U64), Reset, Restore, Borrow],
+	head : [Keep, Fresh(U64, U64), Reset, Restore, Borrow, Snapshot(U64, U64)],
 	ops : List(Op),
 	split : Bool,
 	spare : [Untouched, Wrote(Op)],
@@ -320,6 +322,7 @@ decision_of : List(U64) -> Decision
 decision_of = |words| {
 	w = |at| words.get(at) ?? 0
 	head = match w(0) % 16 {
+		11 => Snapshot(w(1), w(2) % (key_space + 1))
 		12 => Fresh(w(1), w(2) % (key_space + 1))
 		13 => Reset
 		14 => Restore
@@ -393,6 +396,7 @@ words_of = |d| {
 	head = match d.head {
 		Keep => [0, 0, 0]
 		Fresh(seed, count) => [12, seed, count]
+		Snapshot(seed, count) => [11, seed, count]
 		Reset => [13, 0, 0]
 		Restore => [14, 0, 0]
 		Borrow => [15, 0, 0]
@@ -527,6 +531,13 @@ writes_of = |d, reading| {
 	rows = cells.items.rows
 	head = match (d.head, reading) {
 		(Fresh(seed, count), _) => [rows.set(Table.from_list(entries(seed, count)))]
+		(Snapshot(seed, count), _) => {
+			snapshot = started({})
+				.after([rows.update(|table| table.load(entries(seed, count)))])
+				.with_initial(cells.items.serial, 0)
+				.read(rows)
+			[rows.set(snapshot)]
+		}
 		(Reset, _) => [cells.items.reset]
 		(Restore, Read({ kept, .. })) => [rows.set(kept)]
 		(Borrow, Read({ lent, .. })) => [rows.set(lent)]
@@ -853,7 +864,7 @@ decided = |m, control, d| {
 		_ => False
 	}
 	replaced = match d.head {
-		Fresh(seed, count) => Ok(entries(seed, count))
+		Fresh(seed, count) | Snapshot(seed, count) => Ok(entries(seed, count))
 		Reset => Ok(described)
 		Restore => if (has_reading) Ok(m.saved) else Err(Kept)
 		Borrow => if (has_reading) Ok(m.spare) else Err(Kept)
@@ -1556,6 +1567,20 @@ copy_steps = [
 	reads({ ..quiet, head: Restore }),
 ]
 
+## A pure Store value must never be mistaken for the mounted cell's table,
+## even when their cleared write counts match. Replacements include empty
+## and full tables, then keyed writes and undo in the replacing event.
+snapshot_steps : List(Step)
+snapshot_steps = [
+	wrote(Update(0, 1)),
+	plain({ ..quiet, head: Snapshot(4, 10) }),
+	Click(A, 0, Mark),
+	plain({ ..quiet, head: Snapshot(9, 5), ops: [Put(1, ranked(0, 1)), Undo], split: True }),
+	plain({ ..quiet, head: Snapshot(0, 0) }),
+	plain({ ..quiet, head: Snapshot(0, 16), ops: [Remove(0), Put(1, ranked(0, 2))] }),
+	wrote(Update(1, 1)),
+]
+
 ## A session written as steps. Its bytes must decode to the steps it was
 ## written as, so an example cannot quietly stop meaning what it says.
 ex : Str, List(Step) -> Fuzz.Example(Input)
@@ -1584,6 +1609,7 @@ target = Fuzz.target_with!({
 		ex("local", local_steps),
 		ex("marks", marks_steps),
 		ex("copies", copy_steps),
+		ex("store-snapshots", snapshot_steps),
 		ex("one-change", once_steps),
 		Fuzz.example({ name: "series", revision: "1", make: || { mode: 1, events: [] } }),
 	],

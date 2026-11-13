@@ -165,28 +165,27 @@ TableApp := [Todos].{
 		keys.fold(table, |acc, key| acc.update(key, |todo| { ..todo, title: "${todo.title}!" }))
 	}
 
-	store = Engine.store(
-		TableApp.Todos,
-		{
-			items: {
-				todos: Engine.table([]),
-				next: Engine.cell(0.U64),
-			}.Engine.Cells.with_reset(|cells, reset| { todos: cells.todos, next: cells.next, reset }),
-			shadow: Engine.table([]),
-			listing: Engine.cell({ show: Open, order: ByQty }),
-			window: Engine.cell({ start: 0.U64, count: 30.U64 }),
-			late: Engine.cell(Hidden),
-			few: Engine.cell(Hidden),
-			paged: Engine.cell(Hidden),
-			scrolled: Engine.cell(Hidden),
-			scroll_window: Engine.cell({ start: 0.U64, count: 5.U64 }),
-			scroll_position: Engine.cell({ top: 0.U32, left: 0.U32, turns: 0.U64 }),
-			scroll_loaded: Engine.cell(100.U64),
-			scroll_request: Engine.cell(Engine.outbox({})),
-			scroll_focus: Engine.cell(Engine.outbox({})),
-			observed_rows: Engine.cell([]),
-		}.Engine.Cells,
-	)
+	description = {
+		items: {
+			todos: Engine.table([]),
+			next: Engine.cell(0.U64),
+		}.Engine.Cells.with_reset(|cells, reset| { todos: cells.todos, next: cells.next, reset }),
+		shadow: Engine.table([]),
+		listing: Engine.cell({ show: Open, order: ByQty }),
+		window: Engine.cell({ start: 0.U64, count: 30.U64 }),
+		late: Engine.cell(Hidden),
+		few: Engine.cell(Hidden),
+		paged: Engine.cell(Hidden),
+		scrolled: Engine.cell(Hidden),
+		scroll_window: Engine.cell({ start: 0.U64, count: 5.U64 }),
+		scroll_position: Engine.cell({ top: 0.U32, left: 0.U32, turns: 0.U64 }),
+		scroll_loaded: Engine.cell(100.U64),
+		scroll_request: Engine.cell(Engine.outbox({})),
+		scroll_focus: Engine.cell(Engine.outbox({})),
+		observed_rows: Engine.cell([]),
+	}.Engine.Cells
+
+	store = Engine.store(TableApp.Todos, TableApp.description)
 
 	cells = TableApp.store.cells()
 
@@ -197,6 +196,27 @@ TableApp := [Todos].{
 		.with_initial(TableApp.cells.shadow, Table.from_list(TableApp.sample(setup.rows)))
 		.with_initial(TableApp.cells.items.next, setup.rows)
 		.with_initial(TableApp.cells.window, { start: 0, count: setup.window })
+
+	## Snapshots built outside the mounted store are ordinary values. Loading
+	## any of them is a whole rewrite, even if its cleared history happens to
+	## have the same write count as the live table.
+	snapshot : Setup, [AfterInitial, Chain, OtherStore] -> Table(U64, Todo)
+	snapshot = |setup, kind| {
+		todos = TableApp.cells.items.todos
+		match kind {
+			AfterInitial => TableApp.start(setup)
+				.after([todos.update(|table| table.remove(0))])
+				.with_initial(TableApp.cells.items.next, setup.rows)
+				.read(todos)
+			Chain => TableApp.start(setup)
+				.after([todos.update(|table| table.remove(0))])
+				.after([todos.update(|table| table.put(setup.rows, { title: "Snapshot row", status: Open, qty: -1 }))])
+				.read(todos)
+			OtherStore => Engine.store(TableApp.Todos, TableApp.description)
+				.with_initial(todos, Table.from_list(TableApp.sample(setup.rows).drop_if(|entry| entry.key == 0)))
+				.read(todos)
+		}
+	}
 
 	## What "Add" writes: a to-do under the key `key`, and the key after it
 	## as the next one.
@@ -392,6 +412,9 @@ TableApp := [Todos].{
 				Html.button("Edit 1000", [], edit(1000)),
 				Html.button("Toggle all", [], Engine.handle(|_| [todos.update(|table| table.update_all(|_, todo| TableApp.toggled(todo)))])),
 				Html.button("Reset", [], Engine.handle(|_| TableApp.restored(setup))),
+				Html.button("Load Store snapshot", [], Engine.handle(|_| [todos.set(TableApp.snapshot(setup, AfterInitial))])),
+				Html.button("Load Store chain", [], Engine.handle(|_| [todos.set(TableApp.snapshot(setup, Chain))])),
+				Html.button("Load second Store", [], Engine.handle(|_| [todos.set(TableApp.snapshot(setup, OtherStore))])),
 				Html.button("Start again", [], Engine.handle(|_| [TableApp.cells.items.reset])),
 				Html.button("Show open", [], show(Open)),
 				Html.button("Show all", [], show(All)),
@@ -574,4 +597,26 @@ expect {
 		\\next: 3, 0
 		\\changes: rewritten, rewritten
 	actual == expected
+}
+
+## Snapshot helpers preserve the pure Store path: with_initial clears its
+## changes, while chained after calls retain exactly the rows they wrote.
+expect {
+	setup = { rows: 3, window: 30, draws: Everything }
+	cleared = TableApp.snapshot(setup, AfterInitial)
+	chained = TableApp.snapshot(setup, Chain)
+	actual = {
+		cleared_rows: cleared.len(),
+		cleared_changes: match cleared.changes() {
+			Keyed(changes) => changes.len()
+			Rewritten => 99
+		},
+		chain_rows: chained.len(),
+		chain_keys: match chained.changes() {
+			Keyed(changes) => changes.keys().sort_with(|a, b| if (a < b) Before else if (a > b) After else Same)
+			Rewritten => []
+		},
+		chain_title: chained.get(3)?.title,
+	}
+	actual == { cleared_rows: 2, cleared_changes: 0, chain_rows: 3, chain_keys: [0, 3], chain_title: "Snapshot row" }
 }
