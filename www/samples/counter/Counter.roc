@@ -19,7 +19,7 @@ Counter := [].{
 			"counter",
 			[
 				Html.button("-", [Html.aria_label("Decrement")], count.update(|n| n - 1)),
-				Html.span_s(count.signal().map(|n| n.to_str()), [Engine.test_id("count")]),
+				Html.span_s("${count.signal()}", [Engine.test_id("count")]),
 				Html.button("+", [Html.aria_label("Increment")], count.update(|n| n + 1)),
 			],
 		)

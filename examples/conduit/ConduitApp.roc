@@ -559,7 +559,7 @@ ConduitApp := [].{
 								"border border-emerald-600 bg-white px-3 py-1.5 font-medium text-emerald-700",
 								fst.update_by(shown.map2(token, |a, t| (a, t)), |s, (a, t)| { ..s, req: ConduitApp.next(s.req, if (a.favorited) "DELETE" else "POST", Api.favorite_uri(a.slug), "", t) }),
 							),
-							|| Engine.text_s(shown.map(|a| "${a.favorites_count.to_str()} favorites")),
+							|| Engine.text_s("${shown.map(|a| a.favorites_count)} favorites"),
 						),
 						Engine.element("div", [Engine.class("flex flex-wrap gap-1")], [Engine.each(art.map(|a| a.tag_list), |t| t, |row| ConduitApp.tag_pill(row))]),
 					],
@@ -885,7 +885,7 @@ ConduitApp := [].{
 						|| Html.div(
 							"mb-4 space-y-1 border border-zinc-950 bg-zinc-50 p-3 text-sm text-zinc-700",
 							[
-								Html.p_s(current(|a| "Current title: ${a.title}"), []),
+								Html.p_s("Current title: ${current(|a| a.title)}", []),
 								Html.p_s(current(|a| "Current description: ${a.description}"), []),
 								Html.p_s(current(|a| "Current body: ${a.body}"), []),
 								Html.p_s(current(|a| "Current tags: ${Str.join_with(a.tag_list, ", ")}"), []),
@@ -935,7 +935,7 @@ ConduitApp := [].{
 							"div",
 							[Engine.attr("data-conduit", "profile"), Engine.class("mb-8 border border-zinc-950 bg-white p-6 text-center sm:p-8")],
 							[
-								Engine.element("h2", [Engine.class("text-3xl font-semibold tracking-normal text-zinc-950")], [Engine.text_s(field(|p| "@${p.username}"))]),
+								Engine.element("h2", [Engine.class("text-3xl font-semibold tracking-normal text-zinc-950")], [Engine.text_s("@${field(|p| p.username)}")]),
 								Html.p_s(field(|p| p.bio), [Engine.class("mx-auto mt-2 max-w-2xl leading-7 text-zinc-600")]),
 								Engine.when(
 									w.map2(
@@ -977,8 +977,8 @@ ConduitApp := [].{
 						Html.div(
 							"flex",
 							[
-								Links.link_s(Engine.const("My Articles"), if (favorites) idle else active, username.map(ConduitApp.profile_url)),
-								Links.link_s(Engine.const("Favorited Articles"), if (favorites) active else idle, username.map(|u| Route.to_url(Route.profile_favorites_location(u)))),
+								Links.link_s("My Articles", if (favorites) idle else active, username.map(ConduitApp.profile_url)),
+								Links.link_s("Favorited Articles", if (favorites) active else idle, username.map(|u| Route.to_url(Route.profile_favorites_location(u)))),
 							],
 						),
 					],

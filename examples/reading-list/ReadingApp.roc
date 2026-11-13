@@ -220,7 +220,7 @@ shelves = |{}| {
 						],
 					),
 					Html.action_button(
-						Engine.const("Remove finished books"),
+						"Remove finished books",
 						counted.map(|c| ReadingList.count(c, Only(Finished)) == 0),
 						[Engine.class("button-ghost button-sm justify-self-start")],
 						Engine.handle_by(books.signal().map(ReadingList.finished_ids), |ids, _| ReadingList.finished_removed(ids)),

@@ -150,7 +150,7 @@ Board := [].{
 					Html.div_attrs(
 						[Engine.class("panel-body"), Html.zone("lane:${slug}"), Engine.test_id("lane-${slug}")],
 						[
-							Html.p_s(size.map(|held| "${held.shown.to_str()} shown"), [Engine.class("hint numeric"), Engine.test_id("matching-${slug}")]),
+							Html.p_s("${size.map(|held| held.shown)} shown", [Engine.class("hint numeric"), Engine.test_id("matching-${slug}")]),
 							Engine.table_view(
 								props.cards,
 								{
@@ -278,7 +278,7 @@ card_row = |{ cards, drag, column, size, marker }, title, card| {
 					Engine.element("h3", [Engine.class("card-title min-w-0")], [Engine.text_s(title)]),
 					Engine.when(
 						held.map(|now| now.flags > 0),
-						|| Html.p_s(held.map(|now| if (now.flags == 1) "1 flag" else "${now.flags.to_str()} flags"), [Engine.class("badge badge-warn shrink-0"), Engine.test_id_s(title.map(|name| "card-flags-${name}"))]),
+						|| Html.p_s(held.map(|now| if (now.flags == 1) "1 flag" else "${now.flags.to_str()} flags"), [Engine.class("badge badge-warn shrink-0"), Engine.test_id_s("card-flags-${title}")]),
 						|| Engine.text(""),
 					),
 				],
