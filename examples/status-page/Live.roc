@@ -202,10 +202,10 @@ panel = |live, visible| {
 				[
 					Engine.when(
 						lv.map(|l| l.mode == Following),
-						|| Html.button("Pause the feed", [Engine.class("button-secondary")], live.update(Live.toggle_mode)),
+						|| Html.button("Pause the feed", [Engine.class("button-ghost")], live.update(Live.toggle_mode)),
 						|| Html.button("Resume the feed", [Engine.class("button-primary")], live.update(Live.toggle_mode)),
 					),
-					Html.button("Drop the connection", [Engine.class("button-secondary")], live.update(Live.drop_connection)),
+					Html.button("Drop the connection", [Engine.class("button-ghost")], live.update(Live.drop_connection)),
 					Engine.when(
 						lv.map(Live.has_ended),
 						|| Html.button("Reconnect", [Engine.class("button-primary")], live.update(Live.reconnect)),

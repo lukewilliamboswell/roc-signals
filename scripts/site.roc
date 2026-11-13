@@ -9,6 +9,7 @@ import cli.OsStr
 import cli.Path
 import src/ApiDocs
 import src/Checks
+import src/ClassCheck
 import src/DocSamples
 import src/ExampleFiles
 import src/Proc
@@ -55,6 +56,7 @@ main! = |raw_args| {
 	Proc.run!({ program: o.tooling, args: ["test", "scripts/site.roc"], cwd: o.root })?
 	SiteCode.build!()?
 	Proc.run!({ program: "tailwindcss", args: ["-c", "www/tailwind.config.js", "-i", "www/input.css", "-o", "www/static/signals.css", "--minify"], cwd: o.root })?
+	ClassCheck.run!(o.root)?
 	Proc.run!({ program: "zola", args: zola.concat(["check", "--skip-external-links"]), cwd: o.root })?
 	Proc.run!({ program: "zola", args: zola.concat(["build", "--output-dir", dist, "--force"]).concat(options.base_url), cwd: o.root })?
 	DocSamples.copy!({ root: o.root, dist, publish_roc: SiteCode.published_source })?

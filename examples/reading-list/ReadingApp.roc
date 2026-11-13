@@ -141,7 +141,7 @@ book = |id, row| {
 	Engine.element(
 		"li",
 		[
-			Engine.class("book card flex flex-wrap items-center justify-between gap-3 p-3"),
+			Engine.class("card flex flex-wrap items-center justify-between gap-3 p-3"),
 			Engine.attr_s("aria-label", title),
 			# App keys name snapshots; the prefix also supports older UUID keys.
 			Engine.attr_s("style", id.map(|key| "view-transition-name: book-${key}")),
