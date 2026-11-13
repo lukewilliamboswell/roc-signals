@@ -75,10 +75,12 @@ Checks := [].{
 	key_contracts! : SpecSuite.Options => Try(List(Str), _)
 	key_contracts! = |o| {
 		cases = [
-			{ name: "text-key", rejection: "on_key" },
-			{ name: "document-bound", rejection: "32" },
-			{ name: "apply-noncontrol", rejection: "ApplyValue" },
-			{ name: "apply-without-value", rejection: "ApplyValue" },
+			{ name: "oracle-leading-zero", rejection: "leading zero", prefix: "executor:" },
+			{ name: "oracle-apply-file", rejection: "value property on file input", prefix: "contract:" },
+			{ name: "text-key", rejection: "on_key", prefix: "contract:" },
+			{ name: "document-bound", rejection: "32", prefix: "contract:" },
+			{ name: "apply-noncontrol", rejection: "ApplyValue", prefix: "contract:" },
+			{ name: "apply-without-value", rejection: "ApplyValue", prefix: "contract:" },
 		]
 		dir = "${o.build_dir}/key-contracts"
 		SpecSuite.fresh_dir!(dir)?
@@ -88,7 +90,7 @@ Checks := [].{
 			Path.create_all!(Path.utf8(case_dir))?
 			fixture = Path.read_utf8!(Path.utf8("${o.root}/tests/key-contracts/${test.name}.roc.txt"))?
 			up = Str.join_with(List.repeat("..", case_dir.split_on("/").keep_if(|part| !part.is_empty()).len()), "/")
-			source = fixture.replace_each("<PLATFORM>", "${up}/${o.root.drop_prefix("/")}/platform/main.roc")
+			source = fixture.replace_each("<PLATFORM>", "${up}/${o.root.drop_prefix("/")}/platform/main.roc").replace_each("<ORACLE>", "${up}/${o.root.drop_prefix("/")}/platform/main-fuzz.roc")
 			main = "${case_dir}/main.roc"
 			runner = "${case_dir}/runner"
 			wasm = "${case_dir}/app.wasm"
@@ -99,8 +101,8 @@ Checks := [].{
 			Path.write_utf8!(Path.utf8(spec), "(test \"contract\" (steps (mark-metrics)))")?
 			{ code, stdout } = Proc.merged!({ program: runner, args: [spec], cwd: case_dir })?
 			message = Str.from_utf8_lossy(stdout)
-			if code != 70 or !message.contains("contract:") or !message.contains(test.rejection) {
-				$problems = $problems.append("native key contract ${test.name}: expected contract ${test.rejection}, got ${code.to_str()}: ${message}")
+			if code != 70 or !message.contains(test.prefix) or !message.contains(test.rejection) {
+				$problems = $problems.append("native key contract ${test.name}: expected ${test.prefix} ${test.rejection}, got ${code.to_str()}: ${message}")
 			}
 		}
 		{ code, .. } = Proc.output!({ program: o.node, args: ["tests/browser/key-contracts-browser.mjs", "--fixtures", dir, "--runtime", SpecSuite.runtime, "--chrome", o.chrome], cwd: o.root })?
@@ -149,6 +151,9 @@ Checks := [].{
 	## also hold both runners to rejecting an invalid hold lifecycle.
 	broken_specs : List(Broken)
 	broken_specs = [
+		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press (label \"Keyboard editable\") \"Enter\")", rejection: "unmodelled" },
+		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press (label \"Keyboard editable\") \"j\")", rejection: "unmodelled" },
+		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press (label \"Prevented shortcut link\") \"Control+Enter\")", bad: "(press (label \"Unprevented shortcut link\") \"Shift+Enter\")", rejection: "unmodelled" },
 		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press \"a\")", rejection: "unmodelled" },
 		{ example: "controls", spec: "tests/apps/controls/specs/pointer-many-touches.scm", good: "(pointer-up (test-id \"pointer-capture\") :id 2)", bad: "(pointer-down (test-id \"pointer-capture\") :pointer touch :id 18)", rejection: "at most 16" },
 		{ example: "controls", spec: "tests/apps/controls/specs/pointer-capture.scm", good: "(hold-reports)", bad: "(pointer-down (test-id \"pointer-plain\") :pointer touch :id 2)", rejection: "touch" },

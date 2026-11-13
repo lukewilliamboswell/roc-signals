@@ -15,4 +15,7 @@
     (fill (label "Keyboard text") "changed")
     (press "Escape")
     (expect-focused (label "Keyboard text"))
-    (expect-value (label "Keyboard text") "initial")))
+    (expect-value (label "Keyboard text") "initial")
+    (press (label "Prevented shortcut link") "Control+Enter")
+    (expect-text (test-id "key-log") "outer;inner;row;row;link;")
+    (expect-current-location "/")))

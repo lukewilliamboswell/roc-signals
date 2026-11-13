@@ -773,7 +773,7 @@ SpecRunner := [].{
 				applied = if (index1 == 0) s else {
 					i = index1 - 1
 					if command.mode == 4 {
-						{ ..s, dom: Dom.set_live_on(s.dom, i, "value", Dom.attr_of(Dom.node(s.dom, i), "value")), deferred: if (s.focused == i + 1) NoValue else s.deferred }
+						{ ..s, dom: Dom.apply_value(s.dom, i, command.node), deferred: if (s.focused == i + 1) NoValue else s.deferred }
 					} else if command.mode == 2 {
 						if (s.focused == i + 1) SpecRunner.move_focus(program, s, 0) else s
 					} else if SpecRunner.focusable_in(s.dom, i) {
@@ -1040,15 +1040,24 @@ SpecRunner := [].{
 	## Whether Chrome focuses node `n` when it is clicked or `.focus()`ed.
 	focusable : Dom.DNode -> Bool
 	focusable = |n| {
-		tag_ok = n.tag == "button" or n.tag == "input" or n.tag == "select" or n.tag == "textarea" or (n.tag == "a" and Dom.has_attr(n, "href")) or Dom.has_attr(n, "tabindex")
-		tag_ok and !SpecRunner.disabled(n) and !SpecRunner.flag_on(n, "hidden") and !(n.tag == "input" and Dom.attr_of(n, "type") == "hidden")
+		editable = Dom.has_attr(n, "contenteditable") and ["", "true", "plaintext-only"].contains(Dom.enum_attr(n, "contenteditable"))
+		(SpecRunner.intrinsic_focusable(n) or editable) and !SpecRunner.disabled(n) and !SpecRunner.flag_on(n, "hidden") and !(n.tag == "input" and Dom.enum_attr(n, "type") == "hidden")
 	}
+
+	## Native controls, links and tabindex retain focus independently of an
+	## editable ancestor; other editable nodes focus only as editing hosts.
+	intrinsic_focusable : Dom.DNode -> Bool
+	intrinsic_focusable = |n| n.tag == "button" or n.tag == "input" or n.tag == "select" or n.tag == "textarea" or (n.tag == "a" and Dom.has_attr(n, "href")) or Dom.has_attr(n, "tabindex")
 
 	## Focus cannot enter a detached or hidden subtree. The oracle checks
 	## declared HTML attributes; CSS layout remains the browser's domain.
 	focusable_in : Dom.Model, U64 -> Bool
 	focusable_in = |dom, i| {
-		if !SpecRunner.focusable(Dom.node(dom, i)) {
+		target = Dom.node(dom, i)
+		if !SpecRunner.focusable(target) {
+			return Bool.False
+		}
+		if !SpecRunner.intrinsic_focusable(target) and target.parent != 0 and Dom.content_editable(dom, target.parent - 1) {
 			return Bool.False
 		}
 		var $at = i
@@ -1700,15 +1709,18 @@ SpecRunner := [].{
 	key_unmodelled = |dom, i, key| {
 		n = Dom.node(dom, i)
 		kind = Dom.enum_attr(n, "type")
-		text = Dom.text_entry(dom, i) and n.tag != "select"
-		choice = n.tag == "select" or (n.tag == "input" and ["radio", "number", "range", "date", "time"].contains(kind))
+		text = n.tag == "textarea" or (n.tag == "input" and !Scm.key_control_types.text_input_excluded.contains(kind)) or Dom.content_editable(dom, i)
+		choice = n.tag == "select" or (n.tag == "input" and Scm.key_control_types.choice_input_types.contains(kind))
 		Scm.unmodelled_key_defaults.any(
 			|row| {
-				applies = (row.control == "text" and text) or (row.control == "textarea" and n.tag == "textarea") or (row.control == "choice" and choice)
+				applies = (row.control == "text" and text) or (row.control == "textarea" and n.tag == "textarea") or (row.control == "choice" and choice) or (row.control == "link" and n.tag == "a" and Dom.has_attr(n, "href")) or (row.control == "editable" and Dom.content_editable(dom, i))
 				applies and row.keys.any(
 					|rule| {
 						if rule == "printable" {
 							key.key.to_utf8().len() == 1 and !key.ctrl and !key.meta
+						}
+						else if rule.starts_with("modified:") {
+							(key.ctrl or key.alt or key.shift or key.meta) and key.key == (Str.from_utf8(rule.to_utf8().drop_first(9)) ?? crash "SpecRunner.key_unmodelled: ASCII rule")
 						}
 						else if rule.starts_with("primary:") {
 							(key.ctrl or key.meta) and Dom.key_label(key.key) == Dom.key_label(Str.from_utf8(rule.to_utf8().drop_first(8)) ?? crash "SpecRunner.key_unmodelled: ASCII rule")
@@ -1796,11 +1808,12 @@ SpecRunner := [].{
 		}
 		key = press.key
 		down_index = if ($s.focused == 0) $s.dom.root else $s.focused - 1
+		activation_path = SpecRunner.pressed_path($s.dom, down_index)
 		unmodelled = SpecRunner.key_unmodelled($s.dom, down_index, key)
 		(down, prevented) = SpecRunner.key_phase(program, $s, "keydown", key)
 		$s = down
 		if !prevented and unmodelled {
-			return Err("press ${key.key} has an unmodelled value-changing default; use fill or prevent this chord")
+			return Err("press ${key.key} has an unmodelled browser default; use fill for text input or prevent it with a keymap")
 		}
 		if !prevented {
 			if key.key == "Tab" and !key.ctrl and !key.alt and !key.meta {
@@ -1808,10 +1821,13 @@ SpecRunner := [].{
 			}
 			else if key.key == "Enter" {
 				n = Dom.node($s.dom, down_index)
-				if n.tag == "button" or (n.tag == "a" and Dom.has_attr(n, "href")) or (n.tag == "input" and ["button", "submit", "reset"].contains(Dom.enum_attr(n, "type"))) {
+				if (n.tag == "a" and Dom.has_attr(n, "href")) or (!key.ctrl and !key.meta and (n.tag == "button" or (n.tag == "input" and ["button", "submit", "reset"].contains(Dom.enum_attr(n, "type"))))) {
 					$s = SpecRunner.key_activate(program, $s, down_index)?
 				}
-				else if n.tag == "input" {
+				else if n.tag == "input" and !key.ctrl and !key.meta and ["file", "color"].contains(Dom.enum_attr(n, "type")) {
+					$s = SpecRunner.key_activate(program, $s, down_index)?
+				}
+				else if n.tag == "input" and !key.ctrl and !key.meta {
 					match SpecRunner.ancestor($s.dom, down_index, |m| m.tag == "form") {
 						Ok(form) => {
 							button = Dom.find($s.dom, form, |m| (m.tag == "button" and ["", "submit"].contains(Dom.enum_attr(m, "type"))) or (m.tag == "input" and Dom.enum_attr(m, "type") == "submit"))
@@ -1828,7 +1844,9 @@ SpecRunner := [].{
 		up_index = if ($s.focused == 0) $s.dom.root else $s.focused - 1
 		(up, up_prevented) = SpecRunner.key_phase(program, $s, "keyup", key)
 		$s = up
-		if key.key == " " and !prevented and !up_prevented and SpecRunner.attached($s.dom, up_index) {
+		# Space arms only the element that received its down. A focus change
+		# or disposal cannot transfer that activation to the keyup target.
+		if key.key == " " and !prevented and !up_prevented and up_index == down_index and $s.focused == down_index + 1 and SpecRunner.attached($s.dom, down_index) and activation_path.all(|p| Dom.node($s.dom, p.node).detach_count == p.count) {
 			n = Dom.node($s.dom, up_index)
 			if n.tag == "button" or (n.tag == "input" and ["button", "submit", "reset", "checkbox", "radio"].contains(Dom.enum_attr(n, "type"))) {
 				$s = SpecRunner.key_activate(program, $s, up_index)?
@@ -4120,4 +4138,88 @@ expect {
 	state = { ..base, dom, focused: input + 1, focus_commands: [{ node: 1, mode: 4 }] }
 	after = SpecRunner.drain_focus(probe, state)
 	{ shown: Dom.live_value(Dom.node(after.dom, input), "value"), focus: after.focused, held: after.deferred } == { shown: "rendered", focus: input + 1, held: NoValue }
+}
+
+## Space does not transfer an armed activation when its keydown focuses
+## another button, including when the original button is removed first.
+expect {
+	focus = SpecRunner.put_u32([18, 1], 2)
+	commands = [focus, SpecRunner.put_u32([5], 1).concat(focus)]
+	commands.map(
+		|batch| {
+			probe = pointer_probe({})
+			program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) batch else [], List.repeat(0, 8)) }
+			base = SpecRunner.mount_in(program, {})
+			(d1, a) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, attrs: [("type", "button")], keymaps: Dict.empty().insert("keydown", Dom.parse_keymap("a*")), hs: [{ event: "keydown", handler: 9, kind: 4, policies: 0 }, { event: "click", handler: 6, kind: 1, policies: 0 }] })
+			(d2, b) = Dom.add_node(d1, { ..Dom.empty_node, tag: "button", rn: 2, attrs: [("type", "button")], keymaps: Dict.empty().insert("keyup", Dom.parse_keymap("a*")), hs: [{ event: "keyup", handler: 8, kind: 4, policies: 0 }, { event: "click", handler: 7, kind: 1, policies: 0 }] })
+			dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, a, Err(End)), d2.root, b, Err(End)), 1, a), 2, b)
+			after = SpecRunner.press_key(program, { ..base, dom, focused: a + 1 }, { target: Focused, key: { key: " ", code: "Space", ctrl: False, alt: False, shift: False, meta: False } })?
+			Ok(after.inst.map(|event| event.handler))
+		},
+	) == [Ok([9, 8]), Ok([9, 8])]
+}
+
+## Control and Meta suppress Enter activation on a button; Alt and Shift
+## preserve it. Space remains an activation for each modifier on keyup.
+expect {
+	probe = pointer_probe({})
+	base = SpecRunner.mount_in(probe, {})
+	(d1, button) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, attrs: [("type", "button")], hs: [{ event: "click", handler: 7, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, button, Err(End)), 1, button)
+	state = { ..base, dom, focused: button + 1 }
+	keys = [
+		{ key: "Enter", code: "Enter", ctrl: True, alt: False, shift: False, meta: False },
+		{ key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: True },
+		{ key: "Enter", code: "Enter", ctrl: False, alt: True, shift: False, meta: False },
+		{ key: "Enter", code: "Enter", ctrl: False, alt: False, shift: True, meta: False },
+	]
+	enter = keys.map(|key| SpecRunner.press_key(probe, state, { target: Focused, key }).map_ok(|s| s.inst.map(|event| event.handler)))
+	space = keys.map(|key| SpecRunner.press_key(probe, state, { target: Focused, key: { ..key, key: " ", code: "Space" } }).map_ok(|s| s.inst.map(|event| event.handler)))
+	{ enter, space } == { enter: [Ok([]), Ok([]), Ok([7]), Ok([7])], space: [Ok([7]), Ok([7]), Ok([7]), Ok([7])] }
+}
+
+## Modified link Enter is refused from the shared parser data because its
+## current-document, new-context or download default depends on the system.
+expect {
+	(d1, link) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "a", attrs: [("href", "#next")] })
+	plain = { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False }
+	[plain, { ..plain, ctrl: True }, { ..plain, alt: True }, { ..plain, shift: True }, { ..plain, meta: True }].map(|key| SpecRunner.key_unmodelled(d1, link, key)) == [Bool.False, Bool.True, Bool.True, Bool.True, Bool.True]
+}
+
+## Enter on checkbox, radio and range can submit a form. File and color
+## instead activate their own input, without an implicit submit.
+expect {
+	["checkbox", "radio", "range", "file", "color"].map(
+		|kind| {
+			probe = pointer_probe({})
+			base = SpecRunner.mount_in(probe, {})
+			(d1, form) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "form", rn: 1, hs: [{ event: "submit", handler: 9, kind: 1, policies: 0 }] })
+			(d2, input) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", rn: 2, attrs: [("type", kind)], hs: [{ event: "click", handler: 3, kind: 1, policies: 0 }] })
+			(d3, submit) = Dom.add_node(d2, { ..Dom.empty_node, tag: "button", rn: 3, attrs: [("type", "submit")] })
+			dom = Dom.bind(Dom.bind(Dom.bind(Dom.insert(Dom.insert(Dom.insert(d3, d3.root, form, Err(End)), form, input, Err(End)), form, submit, Err(End)), 1, form), 2, input), 3, submit)
+			after = SpecRunner.press_key(probe, { ..base, dom, focused: input + 1 }, { target: Focused, key: { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False } })?
+			Ok(after.inst.map(|event| event.handler))
+		},
+	) == [Ok([9]), Ok([9]), Ok([9]), Ok([3]), Ok([3])]
+}
+
+## Contenteditable focus belongs to an editing host. Inherited, invalid and
+## nested editable descendants need tabindex; a false island starts a host.
+expect {
+	(d1, host) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", parent: 1, attrs: [("contenteditable", "TRUE")] })
+	(d2, inherited) = Dom.add_node(d1, { ..Dom.empty_node, tag: "span", parent: host + 1 })
+	(d3, nested) = Dom.add_node(d2, { ..Dom.empty_node, tag: "div", parent: host + 1, attrs: [("contenteditable", "true")] })
+	(d4, invalid) = Dom.add_node(d3, { ..Dom.empty_node, tag: "span", parent: host + 1, attrs: [("contenteditable", "invalid")] })
+	(d5, barrier) = Dom.add_node(d4, { ..Dom.empty_node, tag: "div", parent: host + 1, attrs: [("contenteditable", "false")] })
+	(d6, island) = Dom.add_node(d5, { ..Dom.empty_node, tag: "div", parent: barrier + 1, attrs: [("contenteditable", "plaintext-only")] })
+	(d7, tabbed) = Dom.add_node(d6, { ..Dom.empty_node, tag: "div", parent: host + 1, attrs: [("contenteditable", "true"), ("tabindex", "0")] })
+	[host, inherited, nested, invalid, barrier, island, tabbed].map(|i| SpecRunner.focusable_in(d7, i)) == [Bool.True, Bool.False, Bool.False, Bool.False, Bool.False, Bool.True, Bool.True]
+}
+
+## Enter and printable input on an editable host are refused by the same
+## rule data the browser runner consumes; named inert keys remain available.
+expect {
+	(d1, host) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", attrs: [("contenteditable", "true")] })
+	base = { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False }
+	[base, { ..base, key: "j", code: "KeyJ" }, { ..base, key: "F2", code: "F2" }].map(|key| SpecRunner.key_unmodelled(d1, host, key)) == [Bool.True, Bool.True, Bool.False]
 }

@@ -44,6 +44,7 @@ try {
       const exports = { memory, cmd_ptr: () => 0, cmd_len: () => length, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
       const rt = new RocEngineRuntime(exports, root, { manualEffects: true });
       rt.controlListeners();
+      rt.documentKeyListeners();
       const calls = [];
       rt.deliver = (node, handler, bytes) => {
         const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); let at = 1;
@@ -143,6 +144,23 @@ try {
     window.removeEventListener("keydown", observe); f.end(); return result;
   });
   check("document stop preserves mount listener order and hides window; teardown removes listeners", lifecycle, { prevented: true, stopped: [1, 1, 0], afterPoison: true, afterUnmount: false, windowCalls: 2, listeners: [0, 0] });
+  const late = await page.evaluate(() => {
+    const first = __keyFixture(), second = __keyFixture();
+    const order = [];
+    for (const [name, fixture] of [["first", first], ["second", second]]) {
+      const deliver = fixture.rt.deliver;
+      fixture.rt.deliver = (...args) => { order.push(name); deliver(...args); };
+      fixture.raw(fixture.elem(1, 0, "div"));
+    }
+    second.raw(second.prop(1, 4, "a*"), second.listen(1, 1, "keydown", 16));
+    first.raw(first.prop(1, 4, "a*"), first.listen(1, 0, "keydown", 16));
+    first.emit(0, "F2");
+    second.raw(second.prop(1, 5, "a*"), second.listen(1, 3, "keyup", 16));
+    first.raw(first.prop(1, 5, "a*"), first.listen(1, 2, "keyup", 16));
+    first.emit(0, "F2", { type: "keyup" });
+    first.end(); second.end(); return order;
+  });
+  check("late document declarations in either key phase preserve instance mount order", late, ["first", "second", "first", "second"]);
   const apply = await page.evaluate(() => {
     const f = __keyFixture(); const { elem, prop, focus } = f;
     f.raw(elem(1, 0, "input"), prop(1, 1, "original"), focus(1, 1));
@@ -176,6 +194,17 @@ try {
     const result = [pending, retained, input.value]; f.end(); return result;
   });
   check("an already matching composition value discharges ApplyValue before a newer draft", discharged, [false, "newer draft", "later draft"]);
+  const fileApply = await page.evaluate(() => ["", "rendered"].map((value) => {
+    const f = __keyFixture();
+    f.raw(f.elem(1, 0, "input"), f.prop(1, 1, value), f.focus(1, 1));
+    f.rt.statics[1].type = "file";
+    f.rt.guard(() => f.raw(f.focus(1, 4)));
+    const result = [f.rt.poisoned?.class, f.rt.poisoned?.message]; f.end(); return result;
+  }));
+  check("ApplyValue rejects a dynamic file input even when no new value PROP was emitted", fileApply, [
+    ["contract", "contract: value property on file input at node 1"],
+    ["contract", "contract: value property on file input at node 1"],
+  ]);
   const unchanged = await page.evaluate(() => {
     const f = __keyFixture();
     f.raw(f.elem(1, 0, "input"), f.prop(1, 1, "rendered"), f.focus(1, 1));
@@ -204,6 +233,7 @@ try {
     { key: "Escape", code: "Escape", named: true, needs_shift: false },
     { key: "F2", code: "F2", named: true, needs_shift: false },
     { key: "ArrowLeft", code: "ArrowLeft", named: true, needs_shift: false },
+    { key: "ArrowUp", code: "ArrowUp", named: true, needs_shift: false },
   ];
   const press = (key, extra = {}) => page.pressSpec({ key, code: table.find((entry) => entry.key === key).code, ctrl: false, alt: false, shift: false, meta: false, ...extra }, table);
   await page.evaluate(() => { document.body.tabIndex = -1; document.body.focus(); document.body.removeAttribute("tabindex"); });
@@ -236,6 +266,109 @@ try {
   await page.evaluate(() => { link.focus(); __defaults = []; });
   await press("Enter");
   check("physical Enter activates a link", await page.evaluate(() => [location.hash, __defaults]), ["#activated", [["keydown", "link"], ["click", "link"], ["keyup", "link"]]]);
+  const spaceTargets = [];
+  for (const mode of ["focus", "replace", "remove"]) {
+    await page.evaluate((mode) => {
+      document.body.innerHTML = '<button id="space-a">A</button><button id="space-b">B</button>';
+      window.__defaults = [];
+      document.getElementById("space-a").addEventListener("keydown", (event) => {
+        if (mode === "focus") document.getElementById("space-b").focus();
+        else {
+          event.target.remove();
+          if (mode === "replace") {
+            const replacement = document.createElement("button"); replacement.id = "space-c"; replacement.textContent = "C";
+            document.body.append(replacement); replacement.focus();
+          }
+        }
+      });
+      document.getElementById("space-a").focus();
+    }, mode);
+    await press(" ");
+    spaceTargets.push(await page.evaluate(() => __defaults));
+  }
+  check("Space never activates a different or replacement button after keydown changes its target", spaceTargets, [
+    [["keydown", "space-a"], ["keyup", "space-b"]],
+    [["keydown", "space-a"], ["keyup", "space-c"]],
+    [["keydown", "space-a"], ["keyup", ""]],
+  ]);
+  const modified = {};
+  await page.send("Page.setInterceptFileChooserDialog", { enabled: true });
+  for (const target of ["button", "input", "link", "checkbox", "radio", "file", "color"]) {
+    const key = target === "checkbox" || target === "radio" ? " " : "Enter";
+    const clicks = [];
+    for (const modifier of ["ctrl", "meta", "alt", "shift"]) {
+      await page.evaluate((target) => {
+        document.body.innerHTML = '<button id="button">Button</button><a id="link" href="#modified">Link</a><form id="form"><input id="input"><button id="submit">Submit</button></form><input id="checkbox" type="checkbox"><input id="radio" type="radio"><input id="file" type="file"><input id="color" type="color">';
+        window.__defaults = [];
+        // Isolate activation from a link's platform-specific choice of browsing context.
+        document.getElementById("link").addEventListener("click", (event) => event.preventDefault());
+        document.getElementById(target).focus();
+      }, target);
+      await press(key, { [modifier]: true });
+      clicks.push(await page.evaluate(() => __defaults.filter(([type]) => type === "click").length));
+    }
+    modified[target] = clicks;
+  }
+  check("modified Enter suppresses button and implicit submit only for Ctrl/Meta; links still activate", { button: modified.button, input: modified.input, link: modified.link, file: modified.file, color: modified.color }, { button: [0, 0, 1, 1], input: [0, 0, 1, 1], link: [1, 1, 1, 1], file: [0, 0, 1, 1], color: [0, 0, 1, 1] });
+  check("Space checkbox/radio activation retains every modifier", { checkbox: modified.checkbox, radio: modified.radio }, { checkbox: [1, 1, 1, 1], radio: [1, 1, 1, 1] });
+  const modifiedSpace = [];
+  for (const modifier of ["ctrl", "meta", "alt", "shift"]) {
+    await page.evaluate(() => { document.body.innerHTML = '<button id="space-modified">Button</button>'; window.__defaults = []; document.getElementById("space-modified").focus(); });
+    await press(" ", { [modifier]: true });
+    modifiedSpace.push(await page.evaluate(() => __defaults.filter(([type]) => type === "click").length));
+  }
+  check("Space button activation retains every modifier", modifiedSpace, [1, 1, 1, 1]);
+  const inputEnter = [];
+  await page.send("Page.setInterceptFileChooserDialog", { enabled: true });
+  for (const type of ["checkbox", "radio", "range", "file", "color", "text", "number", "date", "time"]) {
+    await page.evaluate((type) => {
+      document.body.innerHTML = `<form id="input-form"><input id="input-enter" type="${type}"><button id="input-submit">Submit</button></form>`;
+      window.__defaults = []; document.getElementById("input-enter").focus();
+    }, type);
+    await press("Enter");
+    inputEnter.push(await page.evaluate(() => __defaults.filter(([event]) => event === "click" || event === "submit")));
+  }
+  check("Enter submits ordinary input kinds while file/color activate their own control", inputEnter, [
+    [["click", "input-submit"], ["submit", "input-form"]],
+    [["click", "input-submit"], ["submit", "input-form"]],
+    [["click", "input-submit"], ["submit", "input-form"]],
+    [["click", "input-enter"]], [["click", "input-enter"]],
+    [["click", "input-submit"], ["submit", "input-form"]],
+    [["click", "input-submit"], ["submit", "input-form"]],
+    [["click", "input-submit"], ["submit", "input-form"]],
+    [["click", "input-submit"], ["submit", "input-form"]],
+  ]);
+  const editableFocus = await page.evaluate(() => {
+    document.body.innerHTML = '<div id="direct" contenteditable="true"><span id="inherited">Inherited</span><div id="nested" contenteditable="true">Nested</div><div id="invalid" contenteditable="x">Invalid</div><div contenteditable="false"><div id="island" contenteditable="true">Island</div></div><div id="tabbed" contenteditable="true" tabindex="0">Tabbed</div></div><div id="plain" contenteditable="plaintext-only">Plain</div><div id="empty" contenteditable>Empty</div><div id="upper" contenteditable="TRUE">Upper</div><div id="invalid-root" contenteditable="x">Invalid root</div>';
+    return ["direct", "inherited", "nested", "invalid", "island", "tabbed", "plain", "empty", "upper", "invalid-root"].map((id) => {
+      document.body.tabIndex = -1; document.body.focus(); document.body.removeAttribute("tabindex");
+      const element = document.getElementById(id); element.focus();
+      return [id, element.isContentEditable, document.activeElement.id];
+    });
+  });
+  check("editable hosts focus while inherited/nested editable descendants need tabindex", editableFocus, [
+    ["direct", true, "direct"], ["inherited", true, ""], ["nested", true, ""], ["invalid", true, ""],
+    ["island", true, "island"], ["tabbed", true, "tabbed"], ["plain", true, "plain"],
+    ["empty", true, "empty"], ["upper", true, "upper"], ["invalid-root", false, ""],
+  ]);
+  const dateArrow = [];
+  for (const [type, initial] of [["month", "2001-06"], ["week", "2001-W24"], ["datetime-local", "2001-06-15T12:30"]]) {
+    await page.evaluate((type, initial) => {
+      document.body.innerHTML = `<input id="date-arrow" type="${type}">`;
+      const input = document.getElementById("date-arrow"); input.value = initial; input.focus();
+    }, type, initial);
+    await press("ArrowUp");
+    dateArrow.push(await page.evaluate((initial) => document.getElementById("date-arrow").value !== initial, initial));
+  }
+  check("ArrowUp mutates month, week and datetime-local controls", dateArrow, [true, true, true]);
+  await page.evaluate(() => {
+    document.body.innerHTML = '<div id="editable-enter" contenteditable>before</div>';
+    const element = document.getElementById("editable-enter"); element.focus();
+    const range = document.createRange(); range.selectNodeContents(element); range.collapse(false);
+    getSelection().removeAllRanges(); getSelection().addRange(range);
+  });
+  await press("Enter");
+  check("Enter mutates an editable host's rendered contents", await page.evaluate(() => document.getElementById("editable-enter").innerHTML !== "before"), true);
   const implicit = [];
   for (const contents of ['<input id="implicit">', '<input id="implicit"><input>', '<input id="implicit"><input type="checkbox">', '<input id="implicit"><button disabled>Disabled submit</button>', '<input id="implicit"><input type="hidden">']) {
     await page.evaluate((contents) => {

@@ -589,7 +589,7 @@ async function press(page, step, state) {
   }
   page.keyFacts = [];
   page.keyFactsError = null;
-  await page.evaluate((defaults) => {
+  await page.evaluate((defaults, types) => {
     let pending = null;
     const flush = () => {
       if (!pending) return;
@@ -601,34 +601,46 @@ async function press(page, step, state) {
       const target = event.target;
       const input = target.tagName === "INPUT";
       const text = target.tagName === "TEXTAREA" || target.isContentEditable ||
-        (input && !["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "hidden", "image"].includes(target.type));
+        (input && !types.text_input_excluded.includes(target.type));
       const controls = new Set();
       if (text) controls.add("text");
       if (target.tagName === "TEXTAREA") controls.add("textarea");
-      if (target.tagName === "SELECT" || (input && ["radio", "number", "range", "date", "time"].includes(target.type))) controls.add("choice");
+      if (target.isContentEditable) controls.add("editable");
+      if (target.tagName === "A" && target.hasAttribute("href")) controls.add("link");
+      if (target.tagName === "SELECT" || (input && types.choice_input_types.includes(target.type))) controls.add("choice");
       const refused = defaults.some((row) => controls.has(row.control) && row.keys.some((key) => {
         if (key === "printable") return /^[ -~]$/.test(event.key) && !event.ctrlKey && !event.metaKey;
         if (key.startsWith("primary:")) return (event.ctrlKey || event.metaKey) && event.key.toUpperCase() === key.slice(8);
+        if (key.startsWith("modified:")) return (event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) && event.key === key.slice(9);
         return event.key === key;
       }));
       pending = { event, refused };
     };
     for (const type of ["keydown", "keyup"]) window.addEventListener(type, capture, true);
     window.addEventListener("beforeunload", flush);
+    window.__flushKeyInput = flush;
     window.__endKeyInput = () => {
       flush();
       for (const type of ["keydown", "keyup"]) window.removeEventListener(type, capture, true);
       window.removeEventListener("beforeunload", flush);
       delete window.__endKeyInput;
+      delete window.__flushKeyInput;
     };
-  }, state.keyDefaults);
+  }, state.keyDefaults, state.keyControlTypes);
   try {
-    await navigating(page, state, () => page.pressSpec(step.key, state.keyTable));
+    await navigating(page, state, async () => {
+      await page.pressSpec(step.key, state.keyTable);
+      await page.evaluate(() => window.__flushKeyInput?.()).catch((error) => {
+        if (!/Execution context was destroyed|Cannot find context/.test(error.message)) throw error;
+      });
+      if (page.keyFactsError) throw new Error(page.keyFactsError);
+      // The following keyup capture (or beforeunload) flushes the retained
+      // keydown, before waiting for any navigation its default initiated.
+      const down = page.keyFacts.find((fact) => fact.type === "keydown");
+      if (!down) throw new Error("press is missing physical keydown evidence");
+      if (down.refused && !down.prevented) throw new Error("press has an unmodelled browser default; use fill for text input or prevent it with a keymap");
+    });
     await page.evaluate(() => window.__endKeyInput?.());
-    if (page.keyFactsError) throw new Error(page.keyFactsError);
-    const down = page.keyFacts.find((fact) => fact.type === "keydown");
-    if (!down) throw new Error("press is missing physical keydown evidence");
-    if (down.refused && !down.prevented) throw new Error("press has an unmodelled default that changes a control's value; use fill or prevent it with a keymap");
   } finally { page.keyFacts = null; }
   await settle(page);
 }
@@ -1133,7 +1145,7 @@ for (const spec of specs) {
   try {
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
-    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null, holdingReports: false, pointers: new Map(), keyTable: spec.key_table, keyDefaults: spec.unmodelled_key_defaults };
+    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null, holdingReports: false, pointers: new Map(), keyTable: spec.key_table, keyDefaults: spec.unmodelled_key_defaults, keyControlTypes: spec.key_control_types };
     await installEnvironment(page, state, true);
     await page.evaluateOnNewDocument(install, attrOf.toString());
     await page.goto(`http://127.0.0.1:${port}${setup.environment.url}`);

@@ -367,6 +367,7 @@ function setAttr(el, name, value) {
 // ApplyValue uses the last rendered property even when equality pruning
 // emitted no new PROP and the user changed the live value meanwhile.
 function applyRenderedValue(el) {
+  checkValueControl(el, el.__renderedValueNode);
   if (typeof el.__renderedValue !== "string") throw new Error("ApplyValue requires a rendered value property");
   el.__deferred = undefined;
   if (el.value !== el.__renderedValue) el.value = el.__renderedValue;
@@ -377,11 +378,16 @@ function applyRenderedValue(el) {
 // the property can make this check against the current DOM state.
 class ContractFault extends Error {}
 
+function checkValueControl(el, node) {
+  if (el.tagName === "INPUT" && el.type === "file") throw new ContractFault(`contract: value property on file input at node ${node}`);
+}
+
 const PROPS = [null, {
   name: "value",
   elements: ["INPUT", "TEXTAREA", "SELECT", "OPTION"],
   apply(el, value, node) {
-    if (el.tagName === "INPUT" && el.type === "file") throw new ContractFault(`contract: value property on file input at node ${node}`);
+    checkValueControl(el, node);
+    el.__renderedValueNode = node;
     el.__renderedValue = value;
     setValue(el, value);
     if (el.tagName === "SELECT") el.__v = value;
@@ -2149,6 +2155,7 @@ export class RocEngineRuntime {
 
   mountInner(bytes) {
     this.controlListeners();
+    this.documentKeyListeners();
     this.listen("click");
     const x = this.x;
     this.stage(bytes);
@@ -2407,11 +2414,11 @@ export class RocEngineRuntime {
     }
   }
 
-  registerDocumentKey(el, type, handler) {
-    let entries = this.documentKeys.get(type);
-    if (!entries) { entries = []; this.documentKeys.set(type, entries); }
-    entries.push({ el, handler });
-    if (!this.documentListeners.has(type)) {
+  // Fix each instance's document-listener position at mount, independently
+  // of when conditional declarations first appear or which key phase they use.
+  documentKeyListeners() {
+    for (const type of ["keydown", "keyup"]) {
+      this.documentKeys.set(type, []);
       const listener = (event) => this.guard(() => {
         if (this.heardKeys.has(event)) return;
         const live = this.documentKeys.get(type);
@@ -2429,6 +2436,10 @@ export class RocEngineRuntime {
       this.documentListeners.set(type, listener);
       this.doc.addEventListener(type, listener);
     }
+  }
+
+  registerDocumentKey(el, type, handler) {
+    this.documentKeys.get(type).push({ el, handler });
   }
 
   releaseNode(el) {
@@ -3383,6 +3394,7 @@ export class RocEngineRuntime {
         const el = this.lookup(fx.node);
         if (!el) return;
         if (fx.mode === 4) {
+          checkValueControl(el, fx.node);
           if (el.__composing) el.__applyValue = el.value !== el.__renderedValue;
           else applyRenderedValue(el);
         } else if (fx.mode === 2) el.blur();

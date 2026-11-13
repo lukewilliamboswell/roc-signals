@@ -186,7 +186,7 @@ Scm := [].{
 		}
 		entry = Scm.key_table.find_first(|k| k.name == $rest) ? |_| Scm.bad(form, "press has unknown key ${$rest}")
 		shift = $mods.contains("Shift")
-		if !entry.named and shift != entry.needs_shift {
+		if !entry.named and entry.key != " " and shift != entry.needs_shift {
 			wanted = if entry.needs_shift {
 				"Shift+${entry.name}"
 			} else {
@@ -198,12 +198,21 @@ Scm := [].{
 		Ok(Press({ target, key: { key: entry.key, code: entry.code, ctrl: $mods.contains("Control"), alt: $mods.contains("Alt"), shift, meta: $mods.contains("Meta") } }))
 	}
 
-	## Defaults that edit values are deliberately outside the layout-free oracle.
+	## Defaults that edit values or open another browser context are outside
+	## the portable layout-free oracle.
 	## Runners consume this data rather than maintaining two refusal lists.
+	key_control_types : { text_input_excluded : List(Str), choice_input_types : List(Str) }
+	key_control_types = {
+		text_input_excluded: ["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "hidden", "image"],
+		choice_input_types: ["radio", "number", "range", "date", "time", "month", "week", "datetime-local"],
+	}
+
 	unmodelled_key_defaults : List({ control : Str, keys : List(Str) })
 	unmodelled_key_defaults = [
 		{ control: "text", keys: ["printable", "Backspace", "Delete", "primary:A", "primary:C", "primary:V", "primary:X", "primary:Y", "primary:Z"] },
 		{ control: "textarea", keys: ["Enter"] },
+		{ control: "link", keys: ["modified:Enter"] },
+		{ control: "editable", keys: ["Enter"] },
 		{ control: "choice", keys: ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"] },
 	]
 
@@ -1524,6 +1533,7 @@ Scm := [].{
 		}
 		Object(
 			fields.concat([
+				JsonOut.field("key_control_types", Object([JsonOut.field("text_input_excluded", Array(Scm.key_control_types.text_input_excluded.map(|kind| Text(kind)))), JsonOut.field("choice_input_types", Array(Scm.key_control_types.choice_input_types.map(|kind| Text(kind))))])),
 				JsonOut.field("key_table", Array(Scm.key_table.map(|k| Object([JsonOut.field("key", Text(k.key)), JsonOut.field("name", Text(k.name)), JsonOut.field("code", Text(k.code)), JsonOut.field("needs_shift", Bool(k.needs_shift)), JsonOut.field("named", Bool(k.named))])))),
 				JsonOut.field("unmodelled_key_defaults", Array(Scm.unmodelled_key_defaults.map(|r| Object([JsonOut.field("control", Text(r.control)), JsonOut.field("keys", Array(r.keys.map(|k| Text(k))))])))),
 			]),
@@ -2086,4 +2096,17 @@ expect {
 			_ => Bool.False
 		},
 	} == { printable: 95, unique: Bool.True, shifted: Bool.True, metadata: Bool.True }
+}
+
+## Raw Space and named Space carry the same key record, including an
+## explicit Shift; Shift remains mandatory for other shifted characters.
+expect {
+	spec = Scm.parse("(test \"space\" (steps (press \" \") (press \"Space\") (press \"Shift+ \") (press \"Shift+Space\")))")?
+	keys = spec.steps.map(
+		|step| match step.op {
+			Press(p) => p.key
+			_ => crash "space test contains only press steps"
+		},
+	)
+	{ plain: keys.get(0) == keys.get(1), shifted: keys.get(2) == keys.get(3), shift: (keys.get(2)?).shift } == { plain: Bool.True, shifted: Bool.True, shift: Bool.True }
 }

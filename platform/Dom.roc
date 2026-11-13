@@ -103,6 +103,9 @@ Dom := [].{
 					$length = $length * 10 + digit
 					$at = $at + 1
 				}
+				if $at - start > 1 and bs.get(start) == Ok('0') {
+					crash "executor: keymap key length has a leading zero"
+				}
 				if $at == start or $at >= bs.len() or Dom.byte(bs, $at) != ':' or $length > bs.len() - $at - 1 {
 					crash "executor: invalid keymap key length"
 				}
@@ -144,6 +147,13 @@ Dom := [].{
 		if n.tag == "input" and !["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "range", "color", "image"].contains(Dom.enum_attr(n, "type")) {
 			return Bool.True
 		}
+		Dom.content_editable(dom, i)
+	}
+
+	## Browser editability inherits through invalid enumeration values and
+	## stops at false; this does not make every editable descendant focusable.
+	content_editable : Model, U64 -> Bool
+	content_editable = |dom, i| {
 		var $at = i
 		while True {
 			item = Dom.node(dom, $at)
@@ -1115,7 +1125,7 @@ Dom := [].{
 	## HTML interprets an input's type without ASCII case. Keep the raw
 	## attribute for assertions while applying the browser's file-input rule.
 	is_file_input : DNode -> Bool
-	is_file_input = |n| n.tag == "input" and Dom.attr_of(n, "type").to_utf8().map(|ascii| if (ascii >= 65 and ascii <= 90) ascii + 32 else ascii) == [102, 105, 108, 101]
+	is_file_input = |n| n.tag == "input" and Dom.enum_attr(n, "type") == "file"
 
 	## The browser's file-input guard recognizes every ASCII spelling while
 	## leaving other input types available for value properties.
@@ -1150,6 +1160,17 @@ Dom := [].{
 		}
 		mirrored = if (property == 2 and value == "false") Dom.remove_attr_on(dom, i, name) else Dom.set_attr_on(dom, i, name, value)
 		Dom.set_live_on(mirrored, i, name, value)
+	}
+
+	## Explicit value application uses the last rendered mirror, including when
+	## no property changed this turn. A current file input is always forbidden.
+	apply_value : Model, U64, U32 -> Model
+	apply_value = |dom, i, command_node| {
+		n = Dom.node(dom, i)
+		if Dom.is_file_input(n) {
+			crash "contract: value property on file input at node ${command_node.to_str()}"
+		}
+		Dom.set_live_on(dom, i, "value", Dom.attr_of(n, "value"))
 	}
 
 	set_text_on : Model, U64, Str -> Model
@@ -1886,8 +1907,9 @@ expect {
 	(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "span", attrs: [("contenteditable", "invalid")] })
 	dom = Dom.insert(Dom.insert(d2, d2.root, parent, Err(End)), parent, child, Err(End))
 	stopped = Dom.set_attr_on(dom, child, "contenteditable", "FALSE")
+	false_parent = Dom.set_attr_on(dom, parent, "contenteditable", "FALSE")
 	(d3, checkbox) = Dom.add_node(dom, { ..Dom.empty_node, tag: "input", attrs: [("type", "CHECKBOX")] })
-	{ inherited: Dom.text_entry(dom, child), stopped: Dom.text_entry(stopped, child), checkbox: Dom.text_entry(d3, checkbox) } == { inherited: Bool.True, stopped: Bool.False, checkbox: Bool.False }
+	{ inherited: Dom.text_entry(dom, child), stopped: Dom.text_entry(stopped, child), inherited_false: Dom.text_entry(false_parent, child), checkbox: Dom.text_entry(d3, checkbox) } == { inherited: Bool.True, stopped: Bool.False, inherited_false: Bool.False, checkbox: Bool.False }
 }
 
 ## An empty declared chord is a valid inert entry, while an empty browser
