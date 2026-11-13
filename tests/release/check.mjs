@@ -44,6 +44,7 @@ console.log(`protocol ${version}`);
 if (version !== PROTOCOL_VERSION) process.exit(1);
 
 let trapped = false;
+let boundaryError = null;
 let mediaCount = null;
 let facts = null;
 try {
@@ -52,14 +53,15 @@ try {
   facts = declarations.protocol;
   x.payload_reserve(0);
   x.init();
-} catch (_) {
+} catch (error) {
   trapped = true;
+  boundaryError = error;
 }
 const fault = x.fault();
 console.log(`fault ${facts?.fault_classes[fault] ?? fault}`);
 if (trapped || fault !== 0) {
   const text = new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len()));
-  console.log(text);
+  console.log(text || String(boundaryError?.message ?? boundaryError ?? "unknown mount failure"));
   process.exit(1);
 }
 // Work counters 1–18 are the opcode prefix; later counter positions have

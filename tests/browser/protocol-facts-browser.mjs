@@ -18,7 +18,7 @@ try {
   const page = await browser.newPage();
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   const checks = await page.evaluate(async fixture => {
-    const { RocEngineRuntime } = await import("/runtime.mjs");
+    const { RocEngineRuntime, readDeclarations } = await import("/runtime.mjs");
     const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const section = (tag, body) => [tag, ...word(body.length), ...body];
@@ -66,6 +66,21 @@ try {
     reject("unknown policy name refuses before init", encode(unknownPolicy), 'unknown policy name "BOGUS"');
     const missingPolicy = fields.map((value, i) => i === 2 ? [...word(5), ...value.slice(4, -13)] : value);
     reject("missing policy name refuses before init", encode(missingPolicy), 'missing policy name "AHEAD"');
+    const metadataOnly = make(Uint8Array.from([...prefix, ...fixture]));
+    const createElement = document.createElement;
+    const objectKinds = ["Blob", "File", "Worker", "MutationObserver", "ResizeObserver", "IntersectionObserver"];
+    const constructors = new Map(objectKinds.map(name => [name, globalThis[name]]));
+    let browserObjects = 0, bindings;
+    try {
+      document.createElement = () => { browserObjects++; throw new Error("metadata binding created a DOM node"); };
+      for (const name of objectKinds) globalThis[name] = class { constructor() { browserObjects++; throw new Error(`metadata binding created ${name}`); } };
+      bindings = readDeclarations(metadataOnly.runtime.x).bindings;
+    } finally {
+      document.createElement = createElement;
+      for (const [name, constructor] of constructors) globalThis[name] = constructor;
+    }
+    check("declaration binding creates no DOM/browser objects and never initializes the app", browserObjects === 0 && metadataOnly.initCalls === 0 && typeof bindings.COMMANDS[1] === "function");
+    metadataOnly.root.remove();
     const first = make(Uint8Array.from([...prefix, ...fixture])); first.runtime.mount();
     // Exchange the ELEM and TEXTNODE names, retaining the independently owned
     // numeric row codes. Both operand layouts are node,parent,before,string.

@@ -2776,8 +2776,7 @@ export class RocEngineRuntime {
     // The app's port declarations, checked against options.ports before
     // anything mounts: a mismatch throws, and nothing runs.
     const boot = readDeclarations(this.x);
-    try { this.protocol = bindProtocolFacts(boot.protocol); }
-    catch (error) { throw new Error(`contract: declaration section 12 (protocol): ${error.message}`); }
+    this.protocol = boot.bindings;
     this.bootKeys = boot.keys;
     this.sessionKeys = boot.sessionKeys;
     this.mediaQueries = boot.media;
@@ -5585,6 +5584,8 @@ export function readDeclarations(x) {
     }
   }
   if (at !== bytes.length) throw new Error(`contract: declaration section ${bytes[at]} (unknown, repeated or out of order): unexpected section`);
+  try { out.bindings = bindProtocolFacts(out.protocol); }
+  catch (error) { throw new Error(`contract: declaration section 12 (protocol): ${error.message}`); }
   return out;
 }
 

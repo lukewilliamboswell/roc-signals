@@ -34,22 +34,32 @@ export async function installProtocolFixture(page) {
     const section = Uint8Array.from(sectionBytes);
     const base = [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0];
     const declarations = Uint8Array.from([...base, ...section]);
-    const memory = new WebAssembly.Memory({ initial: 2 });
-    let length = 0;
-    const x = {
-      memory, protocol_version: () => 17,
-      boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
-      cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
-      init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; },
-      files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop() {},
+    const byConstructor = new WeakMap();
+    const bind = Runtime => {
+      if (byConstructor.has(Runtime)) return byConstructor.get(Runtime);
+      const memory = new WebAssembly.Memory({ initial: 2 });
+      let length = 0;
+      const x = {
+        memory, protocol_version: () => 17,
+        boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
+        cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
+        init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; },
+        files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop() {},
+      };
+      const root = document.createElement("div");
+      const runtime = new Runtime(x, root, { manualEffects: true });
+      runtime.mount();
+      if (runtime.poisoned) throw new Error(`protocol fixture failed to mount: ${runtime.poisoned.message}`);
+      const bindings = runtime.protocol;
+      runtime.unmount();
+      byConstructor.set(Runtime, bindings);
+      return bindings;
     };
-    const root = document.createElement("div");
-    const runtime = new RocEngineRuntime(x, root, { manualEffects: true });
-    runtime.mount();
-    if (runtime.poisoned) throw new Error(`protocol fixture failed to mount: ${runtime.poisoned.message}`);
-    const bindings = runtime.protocol;
-    runtime.unmount();
+    bind(RocEngineRuntime);
     window.__protocolFixtureSection = section;
-    window.__bindProtocolFixture = fixture => { fixture.protocol = bindings; return fixture; };
+    // A relative/absolute URL can instantiate the same runtime source twice.
+    // Bind through the fixture's own class so its private fault constructors
+    // and the functions that throw them belong to that same module instance.
+    window.__bindProtocolFixture = fixture => { fixture.protocol = bind(fixture.constructor); return fixture; };
   }, [...protocolFixtureSection]);
 }
