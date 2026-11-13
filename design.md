@@ -95,11 +95,19 @@ this document and the implementation are tracked in issues.
    idiomatic code. Where a natural idiom would defeat it, the platform provides
    the primitive (`derive`, keyed selection, row templates, tables and their
    views) that restores it, and the property is pinned by observable counters.
-4. **Failure is legible.** Every contract violation — a duplicate key, a value
-   outside a switch's cases, an effect feedback loop, a malformed payload, an
-   exhausted resource — is reported as a classified, readable diagnostic naming
-   the rule and the construction site, identically natively and in the browser.
-   A bare trap or a silent no-op is never an acceptable way to fail.
+4. **Failure is controlled and legible.** An app that compiles and whose
+   specs pass does not fail at runtime for a reason the platform could have
+   told its author earlier, and what does fail is caught at the earliest
+   layer that can catch it (see
+   [How failure is controlled](#how-failure-is-controlled)). Every contract
+   violation — a duplicate key, a value outside a switch's cases, an effect
+   feedback loop, a malformed payload, an exhausted resource — is reported
+   as a classified, readable diagnostic naming the rule and the construction
+   site, identically natively and in the browser.
+   A bare trap is never an acceptable way to fail. A silent no-op is
+   acceptable only where this design names it, says why no earlier layer can
+   catch it and says what the author has in its place: a test that sees it,
+   or a rule that avoids it.
 5. **There is exactly one door to the outside.** Events enter, and effects
    leave, through the declared effect channel and the command stream. Apps do
    not call JavaScript. A service the platform does not model is reached
@@ -141,6 +149,118 @@ this document and the implementation are tracked in issues.
 - **External evidence:** the keyed js-framework-benchmark run against declared
   comparison frameworks, Conduit passing its journey against a RealWorld
   backend in Chrome, and recorded compressed size budgets.
+
+### When a capability is built
+
+The platform builds a browser capability when real applications are expected
+to need it. It does not wait for a maintained example to be blocked. What it
+requires is that the capability lands whole:
+
+- a stated use in real applications, and what an app must do today without
+  it;
+- an API in the platform's own vocabulary, with what it deliberately leaves
+  out;
+- bounds and the behaviour at each bound;
+- a failure analysis: each thing that can go wrong, the layer that takes it
+  and what happens (see
+  [How failure is controlled](#how-failure-is-controlled));
+- an Appendix B entry wherever it touches the wire;
+- the same meaning in both spec runners, for every step that drives it. An
+  input no runner can drive faithfully is named in
+  [The `.scm` spec language](#the-scm-spec-language) and held by a contract
+  test;
+- a runtime contract test;
+- a demonstration: an example upgraded to use it or, where no example fits,
+  a test app with specs.
+
+A capability is declined for a reason in this design, such as: it cannot
+mean the same in both runners, it needs a synchronous answer the engine
+cannot give, it crosses a Non-Goal, or a port serves it as well. It is never
+declined for want of an example.
+
+### How failure is controlled
+
+Failure is inevitable: the outside world fails, resources run out, and the
+platform, the compiler and the browser have bugs. Roc has no
+failure-and-unwind channel, so a crash is never caught and resumed: it
+poisons the instance. The platform therefore does not promise an app without
+runtime errors. It promises that:
+
+- an app that compiles and whose specs pass does not fail at runtime for a
+  reason the platform could have told its author earlier;
+- what does fail is caught at the earliest layer that can catch it, is
+  legible, and does not corrupt what is left.
+
+The layers, in order of preference:
+
+1. **Impossible to write.** A type rules the mistake out and the compiler
+   rejects it: opaque types, typed props records with defaults, closed tag
+   unions, a payload type that fixes which handler an event takes,
+   `EngineOnly`. A later layer is right only when no type expresses the
+   rule.
+2. **A value the app must handle.** A failure of the outside world arrives
+   as typed data the app matches (`Refused`, `Timeout`, `Network`,
+   `PortFailed(...)`, `FileFailed(...)`, `WorkLost(...)`, a `Try`), never as
+   an exception and never fabricated. A mistake in the program is the next
+   layer's: no value may disguise it.
+3. **A contract error at the narrowest boundary.** A programmer error no
+   type expresses, such as a duplicate key, is rejected where it is first
+   knowable (when the program or a catalogue is built, at mount, at the end
+   of the turn) with a classified diagnostic naming the rule and the
+   construction site. It poisons the instance, and recovery is a fresh one
+   (see [Error Containment](#error-containment)). How much outside input
+   arrives is a bound instead, the next layer's. Outside data that breaks a
+   rule the app must keep, such as two rows with one key in a server's
+   answer, is still this layer: the app checks data where it enters.
+4. **Bounded.** Every queue, table and buffer that grows with outside input
+   has a declared bound and a declared behaviour at it (see
+   [Boundedness](#boundedness)): a typed refusal where the work can be
+   refused, as the in-flight cap answers `Refused`, and poison only where
+   dropping would corrupt, as when a feedback loop fills the ingress queue.
+5. **Contained.** What still goes wrong is confined (see
+   [Error Containment](#error-containment)): a trap discards its batch and
+   never publishes a prefix, a poisoned instance keeps the last applied DOM
+   and refuses further calls, a worker fails alone, a port handler's throw
+   becomes a value, and an executor fault is contained like a crash. This is
+   the floor, never the plan for a failure an earlier layer can take, and it
+   does not undo an effect already performed.
+6. **Checked by tests the design requires.** An invariant no type expresses
+   is held by a test (see [Testing Architecture](#testing-architecture)):
+   roc-fuzz targets with reference models, the settle check after every
+   step, seeded walks, soaks with flat allocations, contract tests of the
+   runtime and the host against the wire, the independent `Dom.roc` oracle,
+   both spec runners meaning the same, and pure `expect`s over decisions. A
+   rule of an app's own logic, which the platform cannot model, is the last
+   layer's.
+7. **Left to the app's author.** This is allowed only as a stated
+   trade-off: what is left, why no earlier layer can reasonably catch it,
+   and what the platform gives the author in its place. That is usually a
+   pure test that sees it and, where no test can, a rule that avoids it.
+   Among those this design leaves: a component handed the wrong cell of the
+   right type, a transition that left out a reset, and a write to a key a
+   table does not hold.
+
+A failure is taken at the earliest layer that is **reasonably practicable**,
+and backed by later ones where they apply. That weighs API ergonomics, code
+size, the Roc compiler as it is and the cost of a check on a hot path. Two
+rules are firm:
+
+- **A rule the compiler can carry is never left to a check at mount.** A
+  contract error poisons the whole instance, and a check that runs only when
+  its site mounts ships a typo in a rarely opened branch.
+- **A bound whose count follows the app's data (rows drawn, messages
+  received) is never a poison where a typed refusal or a structural bound is
+  possible.**
+
+Fuzzing controls the engine's own invariants. Generated sequences, checked
+against reference models, hold propagation completeness, identity reuse,
+effect lifetime, table views equal to a rebuild, allocation balance and wire
+decoders that are total. A capability that adds an engine sequence adds it
+to a fuzz target.
+
+A capability's failure analysis is written against these layers, and is part
+of landing whole (see
+[When a capability is built](#when-a-capability-is-built)).
 
 ## Non-Goals
 
@@ -745,7 +865,9 @@ with the type, and an app cannot call them.
   of the same cell is still a keyed write, and copies the table.
 - A write to a key the table does not hold writes nothing and reports no
   error, so a row handler that names another table's cell by mistake is
-  silent.
+  silent. An error would punish a write that lost a race with its row's
+  removal, which no app can avoid. An `expect` over `Store.after` sees that
+  the transition wrote no row.
 
 ### State, derivation and conditionals
 
@@ -1234,8 +1356,10 @@ is compiled for each; that cost is carried with the compiler issues (see
 code size.
 
 What the types do not catch: a component handed the wrong cell of the right
-type compiles. Two cells of one type are told apart by a spec or by a pure
-test of the transition, not by the compiler.
+type compiles. A view generic over the store accepts any cell of the type it
+asks for, which is what lets a component be published (Goal 2). Two cells of
+one type are told apart by a spec or by a pure test of the transition, not
+by the compiler.
 
 ## The Command Stream Is the Only Output
 
@@ -1689,8 +1813,9 @@ rendered the control:
   arrives, the reaction runs in that ancestor's current environment.
   Disposed layers are snapshots there: a write to a retired state is skipped
   and counted (`skipped`), writes to surviving states commit, and the write
-  set names only surviving layers. A decision's writes to store cells always
-  commit, since the store outlives every scope.
+  set names only surviving layers. The scope that held the state is gone, so
+  there is nothing to write. A spec asserts `effects_skipped`. A decision's
+  writes to store cells always commit, since the store outlives every scope.
 - A reparented orphan retains a snapshot of its retired layers until its
   result arrives; the in-flight cap bounds that retention.
 - Only tearing down the instance invalidates delivery.
@@ -1917,7 +2042,10 @@ Digests and URLs are pure in effect, like a read, so they are scoped.
   so the browser sees the user's gesture; a save issued later (from a
   task's answer) runs without one, and Chrome may hold back a second
   automatic download, which the platform documents rather than hides. The
-  save picker (`showSaveFilePicker`) is not built.
+  browser tells the page nothing when it does, so no layer can report it
+  and no spec can see it. A save issued in the turn of the click that asks
+  for it carries the user's gesture. The save picker (`showSaveFilePicker`)
+  is not built.
 - `File.fetch` is an HTTP request whose response body becomes a file the
   page holds (`Fetch`, FX kind 15, answered `Fetched({ status, headers,
   body })`, result tag 21 with one staged handle). The body is the
@@ -1942,8 +2070,8 @@ the runtime's handle table holds only the files of live handles.
 ### Target effects
 
 **Target:** further browser services, each as a request kind or subscription
-in this channel with an Appendix B entry and a runtime contract test, when a
-maintained app needs it:
+in this channel, each landed whole (see
+[When a capability is built](#when-a-capability-is-built)):
 
 - session storage alongside local storage, declared at boot the same way;
 - an entropy seed in the boot bytes;
@@ -1977,8 +2105,8 @@ activation never depends on the engine.
 
 **Target:** `stopPropagation` as a static policy; dynamic `preventDefault`
 expressed as a declared policy over a value the engine has already rendered
-(never decided after the event); pointer coordinates and form-data payloads
-if maintained apps use them. Each is a protocol change with a contract test.
+(never decided after the event); pointer coordinates and form-data payloads.
+Each is a protocol change with a contract test.
 
 ## Controlled Inputs
 
@@ -2176,7 +2304,9 @@ something that is not JSON data (a `Map`, a function, a cycle, a NaN), answers
 its request `PortFailed(Threw(message))`, an answer that is too large answers
 it `PortFailed(TooLarge)`, and a command handler's failure is
 reported to the console and the `onPortFault` mount option. None of them
-poisons the instance.
+poisons the instance. A command has no result to carry a failure. An app
+that must know its message was handled declares a call, whose failure is a
+value.
 
 **Target:** the diagnostic names the construction path for every contract
 error (some messages lack it).
@@ -2960,8 +3090,8 @@ match.
 **Target vocabulary.** An `Svg` module and a typed style API, event policies
 beyond `:prevent`, session storage, an entropy seed, and handler-level
 request occurrences. Each lands with an engine change,
-a native spec, a runtime contract test and, where it touches the wire, an
-Appendix B entry.
+a native spec, a runtime contract test, a demonstration and, where it
+touches the wire, an Appendix B entry.
 
 ## Appendix B: Wire Protocol
 

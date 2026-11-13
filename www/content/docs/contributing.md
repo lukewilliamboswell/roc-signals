@@ -273,6 +273,54 @@ A change to the wire protocol changes the engine's encoder and decoders,
 the contract tests under `tests/` and Appendix B of `design.md` together,
 and bumps the protocol version.
 
+## New capabilities
+
+The platform builds a browser capability when real applications are expected
+to need it, and never declines one for want of an example (`design.md`,
+"When a capability is built"). What it requires is that the capability lands
+whole. A pull request for a new capability contains:
+
+- a stated use in real applications, and what an app must do today without
+  it;
+- an API in the platform's own vocabulary, with what it deliberately leaves
+  out;
+- bounds and the behaviour at each bound;
+- a failure analysis: each thing that can go wrong, the layer that takes it
+  and what happens (below);
+- an Appendix B entry wherever it touches the wire;
+- the same meaning in both spec runners, for every step that drives it. An
+  input no runner can drive faithfully is named in `design.md`'s "The `.scm`
+  spec language" and held by a contract test;
+- a runtime contract test;
+- a demonstration: an example upgraded to use it or, where no example fits,
+  a test app with specs.
+
+A capability that adds an engine sequence also adds it to a fuzz target
+(see [Fuzzing](#fuzzing)).
+
+The failure analysis is written against the seven layers of `design.md`'s
+"How failure is controlled", in their order of preference: impossible to
+write, a value the app must handle, a contract error at the narrowest
+boundary, bounded, contained, checked by tests the design requires, and
+left to the app's author. Every issue for a capability carries it as a
+`## Failure` section, in this form:
+
+```text
+## Failure
+
+| What can go wrong | Layer | What happens |
+|---|---|---|
+| One row for each mistake, outside failure, bound or platform fault | One of the seven names: the earliest layer that takes it | What the author or the user then sees: the compile error, the result, the diagnostic, the behaviour at the bound |
+| A row for each thing left to the author | Left to the app's author | What happens. **Justified:** what is left, why no earlier layer can reasonably catch it, and what the author has in its place: the test that sees it or the rule that avoids it |
+
+Covered by: the fuzz target, walk or contract test behind each "Checked by tests the design requires" row.
+```
+
+An issue is not ready while a "Left to the app's author" row has no
+justification, or while a row breaks a firm rule: a contract error for a
+rule the compiler can carry, or a poison at a bound that follows the app's
+data. An issue that changes only documents carries no such section.
+
 ## Docs samples
 
 Every Roc code block on this website comes from a file under `www/samples/`,

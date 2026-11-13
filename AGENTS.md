@@ -115,6 +115,11 @@
 
 ## Keep ownership and boundaries safe
 
+- Control each failure at the earliest layer of `design.md`'s "How failure
+  is controlled" that is reasonably practicable. Do not leave to a check at
+  mount a rule the compiler can carry, do not poison at a bound that follows
+  an app's data where a refusal or a structural bound is possible, and leave
+  nothing to an app's author without stating why and what test catches it.
 - Preserve in-place updates. Each piece of state has one holder: exactly one
   closure references a site's storage, the root site alone holds the store,
   and environments move through handlers rather than being shared. No second
@@ -265,7 +270,9 @@
   (`platform/main-fuzz.roc`), `host.zig`,
   `runtime.mjs`, `worker.mjs`, the native spec runner and oracle, specs,
   examples, generated or bundled artifacts, and maintained documentation
-  wherever each layer is affected.
+  wherever each layer is affected. A new capability lands whole, as
+  `design.md`'s "When a capability is built" lists, with its failure
+  analysis and a demonstration in an example or a test app.
 - Read the [Roc Style Guide](https://gist.github.com/lukewilliamboswell/241a4e8adb7c89c7e0e02f1d303a8fa1)
   before editing Roc. Follow it for naming, types, props records, function
   shape, errors, text, the host boundary and top-level `expect` tests; do not
