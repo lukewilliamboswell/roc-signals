@@ -26,7 +26,7 @@
     (expect-checked (label "Required f1") true)
     (expect-value (label "Minimum f1") "2")
     (expect-value (label "Maximum f1") "")
-    (expect-absent (label "Options f1"))
+    (expect-absent (label "Options f1") :never-drawn)
     (expect-value (label "Label f2") "Work email")
     (click (role button :name "Done f1"))
     (click (role button :name "Settings f2"))

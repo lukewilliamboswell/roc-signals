@@ -41,6 +41,8 @@
     (click (role button :name "Done f5"))
     (check (label "Answer f5"))
     (click (role button :name "Add text field"))
+    (expect-visible (role region :name "Field f6"))
+    (expect-visible (role region :name "Preview field f6"))
     (click (role button :name "Add email field"))
     (mark-metrics)
     (click (role button :name "Move up f2"))

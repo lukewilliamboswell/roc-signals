@@ -32,8 +32,8 @@
     (expect-visible (role region :name "Field f4"))
     (click (role button :name "Settings f4"))
     (expect-visible (label "Options f4"))
-    (expect-absent (label "Minimum f4"))
-    (expect-absent (label "Maximum f4"))
+    (expect-absent (label "Minimum f4") :never-drawn)
+    (expect-absent (label "Maximum f4") :never-drawn)
     ; a select with zero options can never be answered, so it blocks submission
     (expect-text (test-id "field-f4-summary") "Rule error: select has no options")
     (expect-text (test-id "preview-f4-verdict") "Rule error: select has no options")

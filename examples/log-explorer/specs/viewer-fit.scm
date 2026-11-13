@@ -13,7 +13,7 @@
     (run-effect 2)
     (expect-text (test-id "viewer-status") "Lines 1–20 of 100.")
     (expect-visible (test-id "line-20"))
-    (expect-absent (test-id "line-21"))
+    (expect-absent (test-id "line-21") :never-drawn)
     (report-size (test-id "viewer-viewport") 800 60)
     (run-effect 3)
     (expect-text (test-id "viewer-status") "Lines 1–3 of 100.")

@@ -7,5 +7,5 @@
     (expect-value (label "Markdown source") "# Remote")
     (expect-session-storage "md.draft" "# Remote")
     (expect-text (test-id "document-status") "Saved")
-    (expect-absent (role button :name "Keep mine")))
+    (expect-absent (role button :name "Keep mine") :never-drawn))
 )

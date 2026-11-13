@@ -14,7 +14,7 @@
     (run-effect 5)
     (expect-text (test-id "search-status") "20 matching lines, page 1 of 1.")
     (expect-text (test-id "line-2") "2026-11-11T08:00:01Z INFO api: order 125 paid")
-    (expect-absent (test-id "line-1"))
+    (expect-absent (test-id "line-1") :never-drawn)
     ; The chart draws the overview's timeline, which is still being asked
     ; for: until it answers there is no chart, and then the matches are
     ; drawn on it.

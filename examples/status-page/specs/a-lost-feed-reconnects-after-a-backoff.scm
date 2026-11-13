@@ -7,7 +7,7 @@
     (fail-port "roc-signals.example/status-page/latency" "connection dropped")
     (expect-text (test-id "live-status") "Connection lost: reconnecting in 1.160 s (attempt 1)")
     (expect-port-subscriptions "roc-signals.example/status-page/latency" 0)
-    (expect-absent (role button :name "Reconnect"))
+    (expect-absent (role button :name "Reconnect") :never-drawn)
     (run-effect 6)
     (expect-port-subscriptions "roc-signals.example/status-page/latency" 1)
     (expect-text (test-id "live-status") "Connecting to the latency feed")

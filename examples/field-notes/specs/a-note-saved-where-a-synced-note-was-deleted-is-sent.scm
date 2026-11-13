@@ -3,6 +3,7 @@
     (seed 7)
     (local-storage "field-notes:notes" "s1|0|1|s1:1|Pump pressure log"))
   (steps
+    (expect-visible (role region :name "Note s1"))
     (stub-http "sync old" :url "/api/notes/sync" :status 200 :body "s1#s1:1")
     (run-effect 1)
     (expect-text (test-id "status-s1") "Synced")
