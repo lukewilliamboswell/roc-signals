@@ -46,7 +46,7 @@ test = |bytes| {
 	text = Str.from_utf8_lossy(bytes)
 	# Prefixes make valid authored segments without excluding any text inside them.
 	names = ["name${text}", "second/${text}"]
-	pairs = [("key${text}", text), ("key${text}", " +%&#?${text}")]
+	pairs = [(text, text), (text, " +%&#?${text}")]
 	path = root.append_path_segments(names) ?? crash "generated nonempty nondot names were refused"
 	built = pairs.fold(path, |url, (name, value)| url.append_query_param(name, value))
 	if built.path_segments() != names or built.query_pairs() != pairs {
