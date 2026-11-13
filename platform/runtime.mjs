@@ -349,14 +349,6 @@ function createIn(doc, tag, parent) {
   return doc.createElement(tag);
 }
 
-function toSvg(doc, node) {
-  if (node.nodeType !== 1) return node.cloneNode(true);
-  const el = doc.createElementNS(SVG_NS, node.tagName.toLowerCase());
-  for (const a of node.attributes) el.setAttribute(a.name, a.value);
-  for (const c of node.childNodes) el.appendChild(toSvg(doc, c));
-  return el;
-}
-
 // Controlled text values (design.md, "Controlled inputs"): an equal value is
 // a no-op (caret and selection stay put); a differing value is deferred while
 // the control is focused or composing (IME) and applied on blur, unless a
@@ -379,7 +371,7 @@ function setValue(el, value) {
 function setAttr(el, name, value) {
   if (BOOL_ATTRS.has(name)) {
     if (value === "" || value === "false") el.removeAttribute(name);
-    else el.setAttribute(name, "");
+    else el.setAttribute(name, value === "true" ? "" : value);
   } else if (name === "class" && el.namespaceURI !== SVG_NS) {
     el.className = value;
   } else {
@@ -3426,7 +3418,7 @@ export class RocEngineRuntime {
     }
   }
 
-  parseTemplate(u8, dv, start, len) {
+  parseTemplate(u8, dv, start, len, under = null) {
     let at = start;
     const doc = this.doc;
     const str = () => {
@@ -3449,9 +3441,10 @@ export class RocEngineRuntime {
       for (let i = 0; i < children; i += 1) el.appendChild(node(el));
       return el;
     };
-    // Templates are parsed as HTML; a row template first placed under an SVG
-    // parent is re-created in the SVG namespace once (see INST).
-    const root = node(null);
+    // The original bytes preserve case until the first SVG parent is known.
+    // That first INST reparses under its parent, including foreignObject's
+    // return to HTML; later rows clone the resulting template (see INST).
+    const root = node(under);
     const holes = [];
     const count = u8[at++];
     for (let i = 0; i < count; i += 1) {
@@ -3476,7 +3469,7 @@ export class RocEngineRuntime {
       holes.push(hole);
     }
     if (at !== start + len) throw new Error("template length mismatch");
-    return { root, holes };
+    return { root, holes, bytes: under ? null : u8.slice(start, start + len) };
   }
 
   // One shared promise covers both a deferred update and its animation. Manual
@@ -3704,7 +3697,8 @@ export class RocEngineRuntime {
           if (!tpl.svg && tpl.root.namespaceURI !== SVG_NS) {
             const p = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
             if (p.namespaceURI === SVG_NS && p.tagName !== "foreignObject") {
-              tpl.root = toSvg(doc, tpl.root);
+              const bytes = tpl.bytes;
+              tpl.root = this.parseTemplate(bytes, new DataView(bytes.buffer), 0, bytes.length, p).root;
               tpl.svg = true;
             }
           }

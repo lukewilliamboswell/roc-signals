@@ -35,7 +35,7 @@ const check = (name, got, want) => {
   if (!ok) failures += 1;
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${ok ? "" : `: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`}`);
 };
-async function open() {
+async function open(hash = "") {
   const ctx = await browser.createBrowserContext();
   const page = await ctx.newPage();
   const errors = [];
@@ -43,7 +43,7 @@ async function open() {
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
   });
-  await page.goto(base);
+  await page.goto(`${base}${hash}`);
   await page.waitForFunction("window.__ready || window.__error");
   return { page, ctx, errors };
 }
@@ -652,6 +652,110 @@ for (const mode of ["initial", "changed"]) {
   check("ATTR, HATTR and INST reject missing lengths, truncated present strings and invalid UTF-8", got.malformedAttributes, ["ATTR", "HATTR", "INST"].flatMap((command) => ["missing-length", "truncated-ascii", "truncated-long", "invalid-utf8"].map((fault) => [command, fault, "executor"])));
   await ctx.close();
 }
+{
+  const { page, ctx, errors } = await open("#rendering");
+  const snapshot = (prefix) => page.evaluate((prefix) => {
+    const svg = document.querySelector(`[data-testid="${prefix}"]`);
+    const describe = (gradient, path, foreign) => ({
+      gradient: [gradient.namespaceURI, gradient.localName, gradient instanceof SVGLinearGradientElement, gradient.getAttribute("gradientUnits"), gradient.hasAttribute("gradientunits")],
+      path: [path.namespaceURI, path.localName, path instanceof SVGPathElement, path.getAttribute("pathLength"), path.pathLength.baseVal, path.hasAttribute("pathlength")],
+      foreign: foreign ? [foreign.namespaceURI, foreign.localName, foreign instanceof SVGForeignObjectElement, foreign.firstChild.namespaceURI, foreign.firstChild.localName, foreign.firstChild instanceof HTMLDivElement] : null,
+    });
+    return {
+      viewBox: svg.getAttribute("viewBox"),
+      static: describe(svg.querySelector(`[data-testid="${prefix}-static-gradient"]`), svg.querySelector(`[data-testid="${prefix}-static-path"]`)),
+      rows: [...svg.querySelectorAll(":scope > g")].map((row) => describe(row.children[0], row.children[1], row.children[3])),
+      lengths: [...svg.querySelectorAll(":scope > g")].map((row) => row.children[2].pathLength.baseVal),
+    };
+  }, prefix);
+  const svgNS = "http://www.w3.org/2000/svg", htmlNS = "http://www.w3.org/1999/xhtml";
+  const shape = {
+    gradient: [svgNS, "linearGradient", true, "userSpaceOnUse", false],
+    path: [svgNS, "path", true, "10", 10, false],
+    foreign: [svgNS, "foreignObject", true, htmlNS, "div", true],
+  };
+  const expected = (length) => ({ viewBox: "0 0 20 20", static: { ...shape, foreign: null }, rows: [shape, shape], lengths: [length, length] });
+  check("static SVG and every row preserve exact names, interfaces and foreignObject's HTML child", await snapshot("plain-svg"), expected(10));
+  await page.evaluate(() => { window.__svgRow = document.querySelector('[data-testid="plain-svg-row-a"]'); });
+  const click = async (name) => page.evaluate(async (name) => {
+    [...document.querySelectorAll("button")].find((button) => button.textContent === name).click();
+    await window.__rt.idle();
+  }, name);
+  await click("Reverse SVG rows");
+  check("SVG reorder preserves the keyed DOM node", await page.evaluate(() => window.__svgRow === document.querySelector('[data-testid="plain-svg-row-a"]')), true);
+  await click("Change SVG length");
+  check("SVG attribute holes update the real pathLength property", await snapshot("plain-svg"), expected(20));
+  await click("Remove SVG row"); await click("Restore SVG rows");
+  check("recreated SVG rows retain names and interfaces after command memory is reused", await snapshot("plain-svg"), expected(20));
+  await page.evaluate(() => {
+    window.__templateParses = [];
+    const rt = window.__rt, parse = rt.parseTemplate.bind(rt);
+    rt.parseTemplate = (...args) => { window.__templateParses.push(args[4]?.namespaceURI ?? null); return parse(...args); };
+    window.__nativeTransitions = 0;
+    const start = document.startViewTransition.bind(document);
+    document.startViewTransition = (...args) => { window.__nativeTransitions += 1; return start(...args); };
+  });
+  await click("Animate SVG mount");
+  check("a real Chrome transition's early/update template paths preserve SVG", await snapshot("animated-svg"), expected(20));
+  check("the animated site parses its original bytes once early and once under its SVG parent", await page.evaluate(() => [window.__nativeTransitions, window.__templateParses]), [1, [null, svgNS]]);
+  const hidden = () => page.evaluate(() => {
+    const el = document.querySelector('[data-testid="findable"]'), css = getComputedStyle(el);
+    return [el.getAttribute("hidden"), el.hidden, css.display === "none", css.contentVisibility];
+  });
+  check("until-found remains the browser's content-visibility state", await hidden(), ["until-found", "until-found", false, "hidden"]);
+  await click("Show findable");
+  check("the existing false convention makes hidden absent", await hidden(), [null, false, false, "visible"]);
+  await click("Hide findable");
+  check("true keeps the existing empty hidden attribute", await hidden(), ["", true, true, "visible"]);
+  await click("Findable until found");
+  check("an attribute update restores until-found", await hidden(), ["until-found", "until-found", false, "hidden"]);
+  check("rendering paths produce no browser or runtime faults", errors, []);
+  await ctx.close();
+}
+{
+  // Independent wire fixtures check all seven names and all four text cases
+  // through ATTR, static TEMPLATE, INST attributes and HATTR updates.
+  const { page, ctx } = await open();
+  const got = await page.evaluate(async () => {
+    const { RocEngineRuntime } = await import("./runtime.mjs");
+    const results = [];
+    for (const name of ["disabled", "selected", "readonly", "required", "hidden", "multiple", "open"]) {
+      const values = ["", "false", "true", "until-found"];
+      for (let index = 0; index < values.length; index++) {
+        const value = values[index], next = values[(index + 1) % values.length];
+        const root = document.createElement("div"); document.body.append(root);
+        const memory = new WebAssembly.Memory({ initial: 1 }); let bytes = [];
+        const rt = new RocEngineRuntime({ memory, cmd_ptr: () => 0, cmd_len: () => bytes.length, drop() {} }, root);
+        rt.statics[0] = root;
+        const word = (n) => bytes.push(n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255);
+        const str = (s) => { const b = new TextEncoder().encode(s); word(b.length); bytes.push(...b); };
+        const apply = () => { bytes.unshift(0); new Uint8Array(memory.buffer).set(bytes); rt.applyBatch(); bytes = []; };
+        bytes.push(8); word(1); word(0); word(0); str("div");
+        bytes.push(9); word(1); str(name); bytes.push(1); str(value);
+        const outer = bytes; bytes = [];
+        bytes.push(1); str("div"); bytes.push(0, 2);
+        bytes.push(1); str("div"); bytes.push(1); str(name); str(value); bytes.push(0);
+        bytes.push(1); str("div"); bytes.push(0, 0);
+        bytes.push(1, 2, 1, 1); str(name);
+        const template = bytes; bytes = outer;
+        bytes.push(7); word(1); word(template.length); bytes.push(...template);
+        bytes.push(1); word(2); word(0); word(0); word(1); bytes.push(1); str(value);
+        apply();
+        const row = rt.statics[2];
+        const initial = [rt.statics[1], row.children[0], row.children[1]].map((el) => el.getAttribute(name));
+        bytes.push(3); word(2); bytes.push(0, 1); str(next); apply();
+        results.push([name, value, initial, row.children[1].getAttribute(name)]);
+        rt.unmount(); root.remove();
+      }
+    }
+    return results;
+  });
+  const cases = [["", null], ["false", null], ["true", ""], ["until-found", "until-found"]];
+  check("every boolean name preserves its four text cases in every attribute render path", got,
+    ["disabled", "selected", "readonly", "required", "hidden", "multiple", "open"].flatMap((name) => cases.map(([value, rendered], index) => [name, value, Array(3).fill(rendered), cases[(index + 1) % cases.length][1]])));
+  await ctx.close();
+}
+
 await browser.close();
 server.close();
 console.log(failures === 0 ? "== controls: all pass" : `== controls: ${failures} failures`);

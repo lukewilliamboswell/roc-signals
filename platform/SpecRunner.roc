@@ -1866,8 +1866,9 @@ SpecRunner := [].{
 
 	## What `expect-attr` reads, as the browser runner reads it: `checked` and
 	## `disabled` as "true"/"false" from the live state, `value` as the live
-	## value, a boolean attribute as "" when present, `class` as set, and any
-	## other attribute as set, including an explicitly present empty string.
+	## value, and a boolean attribute's "true" as "" while preserving its
+	## other present text. `class` and ordinary attributes keep their text,
+	## including an explicitly present empty string.
 	attr_value : Dom.Model, U64, Str -> Try(Str, [Absent])
 	attr_value = |dom, i, name| {
 		n = Dom.node(dom, i)
@@ -1879,7 +1880,7 @@ SpecRunner := [].{
 		} else if name == "value" and ["input", "textarea", "select", "option"].contains(n.tag) {
 			Ok(SpecRunner.value_of(dom, i))
 		} else if SpecRunner.bool_attrs.contains(name) {
-			if (Dom.has_attr(n, name)) Ok("") else Err(Absent)
+			if (Dom.has_attr(n, name)) Ok(if (raw == "true") "" else raw) else Err(Absent)
 		} else if Dom.has_attr(n, name) {
 			Ok(raw)
 		} else Err(Absent)
