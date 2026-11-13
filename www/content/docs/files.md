@@ -138,19 +138,19 @@ other, which the runtime performs on the browser's own file:
   request's body. `method` (`"POST"` unless you say), `headers` (none) and
   `timeout` (`Unlimited`, or `Ms(ms)`) and `credentials` (`SameOrigin`, or
   `Include`) are optional. The browser streams it
-  from the file. Read the answer with `http_text`, as for any HTTP request; like
-  one, it is still answered when the site that made it is disposed. A file
+  from the file. Its typed answer is the full response, including status,
+  headers and text body. Map it when the app wants a particular status
+  policy. Like HTTP, it is still answered when its site is disposed. A file
   the browser can no longer read fails it as a network failure.
   Attach a [progress handler](@/docs/effects-and-browser.md#transfer-progress)
   to its reaction to report sending counts. Cross-origin upload progress
   requires the server to answer a CORS preflight.
-- `File.sha256(file)` answers the SHA-256 digest, 32 bytes, with
-  `file_digest`. The browser reads the range into a buffer of its own, not
+- `File.sha256(file)` answers `Ok(digest)`, 32 bytes. The browser reads the range into a buffer of its own, not
   the page's memory; more than `maxFileBytes` is `TooLarge`, and a page
   outside a secure context (plain HTTP from another host than localhost)
   has no WebCrypto and answers `Unavailable`.
 - `File.object_url(file)` answers a URL for an `<img>`'s or a `<video>`'s
-  `src`, with `file_url`. The URL works exactly as long as some value holds
+  `src`, delivered as `Ok(url)`. The URL works exactly as long as some value holds
   the file: keep the file beside the URL. Asking again for the same range
   answers the same URL; one file gives at most 16 ranges URLs.
 
@@ -166,7 +166,7 @@ cancelled when their site is disposed; an upload is kept.
 
 For a small file in a simple app, bringing its bytes into the page is
 acceptable: ask for them with `file.read_bytes({})` or `file.read_utf8({})`,
-and read the answer with `file_bytes` or `file_text`. It is a request, not a
+and receive `Try(List(U8), FileError)` or `Try(Str, FileError)` in the reaction. It is a request, not a
 value, because the bytes are not on the page until the browser has read
 them. Its cost is honest: the browser reads the file into a buffer on the
 page's thread, and the bytes are copied once into the page's memory, where

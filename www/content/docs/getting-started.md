@@ -97,6 +97,11 @@ point by hand, use the platform bundle URL from the
 
 {{ sample(file="counter/main.roc") }}
 
+The entry also declares `Store`, the type of the app's shared storage. This
+counter uses only local state, so its `Store` is `{}`. An app with cells
+names the type the compiler prints for its `program_store` result; keep
+that declaration in step with its store description.
+
 The platform builds this one file for two kinds of target:
 `--target=wasm32` gives the module the browser runs, and your system's
 native target gives the app's native spec runner: `x64musl` on Linux,

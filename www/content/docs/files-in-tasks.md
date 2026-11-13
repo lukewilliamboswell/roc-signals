@@ -137,8 +137,9 @@ is ready. Choosing where to save (a save dialog) is not built yet.
 
 `File.fetch({ url })` is an HTTP request whose response body becomes a file
 the page holds. Ordinarily the body stays in the browser (a large one on
-disk) and never enters Wasm memory; read the answer with `Engine.fetched`, or match
-`Fetched({ status, headers, body })` to read the status and headers. The
+disk) and never enters Wasm memory. Its typed success holds `status`,
+`headers` and a file `body` for every HTTP status. Map the response when
+the app wants only a 2xx body; `Status` is an explicit application policy. The
 file is a file like any other, so a task can process it:
 
 {{ sample(file="tasks/Convert.roc", region="fetch") }}

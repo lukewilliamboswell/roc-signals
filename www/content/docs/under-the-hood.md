@@ -114,8 +114,9 @@ checks that the counters agree with the commands it decoded.
 ## Memory
 
 Each piece of state has one holder. A site's storage is referenced by exactly
-one closure, and the root alone holds the store, so Roc updates lists,
-records and tables in place rather than copying them. That is also why the
+one closure; the instance holds the store as plain data beside the sites.
+The store moves into each root call and back, preserving unique ownership
+for updates. That is also why the
 engine never keeps an earlier copy of a state or a cell to compare with: the
 copy would be a second holder, and every write would then copy what it
 changes. What changed comes from the write. The one earlier state the engine

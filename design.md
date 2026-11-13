@@ -424,7 +424,7 @@ that row's — is the documented pattern that keeps app work local.
 flowchart LR
     App["app: App.roc<br/>Elem tree of typed sites,<br/>a store of cells and tables"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, the store, each columns,<br/>tables and their table views (TableCore.roc, View.roc, Seq.roc),<br/>effects, command encoding"]
     Engine --> Main["platform/main.roc<br/>keys · init · event · files · drop ·<br/>work · prepare · ask · forget"]
-    Main --> Host["platform/host/host.zig<br/>allocator · Box(Core.App), today wrapped as Box(Iter(Core.App)) (roc-lang/roc#12953 workaround), or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · fault class"]
+    Main --> Host["platform/host/host.zig<br/>allocator · one opaque Handle holding the store beside boxed sites, or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · fault class"]
     Host --> Wire["command bytes in linear memory"]
     Wire --> JS["platform/runtime.mjs (and worker.mjs in each worker)<br/>apply commands · perform effects ·<br/>delegate events · contain faults"]
     JS --> DOM["browser DOM and services"]
@@ -578,7 +578,7 @@ shared. It is a lens (`get`, `modify`) with what a read of it listens to
 and what a write through it reports. A `HandlerOf(ctx, p)` is an environment
 transformer over a typed payload that answers what it wrote,
 `(ctx, p) -> (ctx, written)` (`Handler(ctx)` is its text alias),
-and a `Reaction(ctx, a)` is the same for an effect result. The set is the
+and a `Reaction(ctx, a, result)` is the same for a typed effect result. The set is the
 handler's answer, not a property fixed before it runs, so a handler that
 decides what to write from what it reads reports only the writes it made,
 and nothing is declared twice.
@@ -629,12 +629,12 @@ to carry it.
   depends on the boot data, and `Engine.program_store(cfg, start, view)`
   mounts the view over the store `start(boot)` gives. A start is not a
   write: a table started this way has no changes.
-- **Held at the root.** The root site is the store's one holder. For an
-  event it moves the store into the root context and takes it back when the
-  event has unwound, exactly as a state site moves its value, so a write at
-  any depth receives its cell's value uniquely owned. The store sits behind
-  the root site's closure, like every site's storage, because the host holds
-  one type of box and that type cannot carry an application's storage type.
+- **Held beside the sites.** The instance is the store's one holder. It holds
+  the store as plain data beside its site tree, never inside a site's closure.
+  Each root call moves it into the root context and returns it with the write
+  set, so a write at any depth receives its cell's value uniquely owned. The
+  app's entry names that storage type as `Store`; the platform's `Program(st)`
+  carries it through mount and events without exposing engine state.
 - **Started again by a write.** A cell lives as long as the instance and is
   never disposed, so state that should start fresh, such as a page's form
   once the reader leaves the page, is started again on purpose.
@@ -948,9 +948,10 @@ The engine's speed depends on Roc updating each piece of state in place. The
 ownership law that makes this hold is:
 
 - **One holder per piece of state.** Exactly one closure references a site's
-  storage, and the root site alone references the store. Consuming the
-  closure and rebuilding it with the updated storage leaves the storage
-  uniquely owned, so list, record and table updates happen in place.
+  storage; the instance alone holds its plain store beside the site tree.
+  Consuming and rebuilding each holder leaves the updated storage uniquely
+  owned. The native runner also moves its instance out before an engine call,
+  so its bookkeeping cannot retain a second store reference during a write.
 - **The environment is moved, not shared.** A handler receives the context by
   value and returns it. A state's value moves into the environment for the
   reducer and comes back out, and the store moves into the root context and
@@ -1235,7 +1236,7 @@ Every external input — a DOM event or an effect result — is one *turn*:
 1. **Route.** A static node's route gives the site path and the handler number
    comes from the event record; a row node gives its site's path and the
    slot. An event for a freed node is dropped without touching state.
-2. **Fire.** The event travels down the path. The root site moves the store
+2. **Fire.** The event travels down the path. The instance moves the store
    into the root context, and each layer the event passes moves its value
    into the environment. The owning block runs the handler. A reducer is
    applied to the local state it names; a decision takes its reading and
@@ -1252,8 +1253,8 @@ Every external input — a DOM event or an effect result — is one *turn*:
    that has something written above it (an outer layer, or a cell) hands
    its write up and waits at its site for that write's pass. An
    asynchronous layer that an answer changed refreshes its own subtree at
-   its site. The root site takes the store back.
-4. **Changed pass.** If the turn wrote cells, the root runs one `Changed`
+   its site. The instance takes the store back from the root answer.
+4. **Changed pass.** If the turn wrote cells, the instance moves the store into one root `Changed`
    pass with their signature. Each site refreshes the holes that read
    something in it and descends only into children that read something in
    it. When the pass reaches the site of a layer that waits, the layer
@@ -1740,6 +1741,24 @@ moved by at most one since it last looked, and a larger step is a
 of a list. Because the outbox is ordinary state, a pure `expect` on the
 reducer or the decision sees both what changed and what is sent.
 
+An effect plan returns `List(Ask(output, error))`. Each ask pairs one request
+with the reader of its own raw result. The site retains that reader beside
+the request's issued-for value, separately for every admitted request, and
+its reaction receives `Try(output, error)`. `Ask.map_ok`, `map_err` and `map`
+adapt heterogeneous requests to one application answer vocabulary before the
+list is built. Only those transformations and sent-request inspection are
+public members; constructing or invoking the reader is internal machinery.
+A resource retains its reader too: receiving a result never recomputes its plan.
+
+Disposal reparents a kept request's issued-for value and reader together.
+Cancellation, supersession, terminal results and refusal drop that reader;
+progress and nonterminal subscription messages retain it. The in-flight
+table's existing terminal/liveness decision is authoritative, carried on
+internal delivery without another table search. Progress uses the original
+issued-for value without invoking its result reader. This adds no host-held
+Roc value, wire kind, queue or bound. `command` adapts an unawaited command
+into a typed plan; `raw` deliberately exposes the whole raw Result union.
+
 ### Request kinds
 
 - **Commands** are emitted and forgotten: history `Push`/`Replace` (`NAV`),
@@ -1758,7 +1777,7 @@ reducer or the decision sees both what changed and what is sent.
   result, preceded, when the site asks for it, by transfer progress reports
   that do not retire the id; `Interval` and `Popstate` are subscriptions that deliver any number
   of results until stopped.
-- **HTTP options.** `http(HttpProps)` builds `Http` with a required URL and
+- **HTTP options.** `http(HttpProps)` builds a typed ask carrying `Http` with a required URL and
   defaulted method (`GET`), headers and body (empty), timeout (`Unlimited`),
   cache (`Default`) and credentials (`SameOrigin`). Cache is `Default`,
   `NoStore`, `Reload`, `NoCache` or `ForceCache`; credentials is `SameOrigin`
@@ -2077,10 +2096,11 @@ are all of that kind.
   Application failures are values; contract violations are diagnostics,
   never fabricated results. A worker's diagnostic text goes to the page's
   console, never into its result.
-- `http_text` reads an HTTP result as the body of a 2xx response or a typed
-  `HttpError`: `Network(message)` (the browser could not reach the server),
-  `Timeout`, `Status(code)` (any other status) or `Refused` (the in-flight
-  bound). Apps that classify statuses themselves match on `Http` directly.
+- `http` and file upload deliver the full response at every status as
+  `Try(Response, HttpFailure)`. `http_body` explicitly selects a 2xx text body
+  and classifies other statuses as `HttpError.Status(code)`. File fetch
+  likewise delivers status, headers and a file body at every status; selecting
+  a 2xx body is an application's mapping, never an implicit transport policy.
 
 ### Bounds
 
@@ -2451,7 +2471,9 @@ they do connectivity and visibility.
 Both signals contribute declared read dependencies, so the reading has
 settled before the plan runs. Only the outbox's item is retained and used
 for post equality and issued-for identity; the reading is transient and is
-not stored for comparison or for the result. A change to the reading alone
+not stored for comparison. The plan's returned readers may explicitly
+capture values from that reading; each capture lives with its own request
+and cannot be changed by a later sample. A change to the reading alone
 issues nothing, nor does mount. The plan receives `(reading, item)` and
 the reaction still receives `item`. It preserves the two-post contract and
 same-turn issuance, including browser activation. An editor posts a small
@@ -2522,7 +2544,8 @@ revision in its stored value.
 `ClipboardWrite({ text, html })` writes plain text or one item containing
 both text and HTML, using `Clipboard.text` or `Clipboard.html`. It answers
 `Copied`, `ClipboardFailed(NotAllowed)` or `ClipboardFailed(Unavailable)`;
-`Clipboard.written` also includes the in-flight `Refused` outcome. A denied
+The typed ask reads these as `Ok({})` or the corresponding failure,
+including the in-flight `Refused` outcome. A denied
 permission, absent activation or unfocused page is `NotAllowed`; an absent
 clipboard service is `Unavailable`. The browser operation cannot be aborted,
 so the request is kept through disposal and its reaction moves to the nearest
@@ -3150,9 +3173,11 @@ offers no value property.
 
 The Zig host (`platform/host/host.zig`) owns exactly:
 
-- **one opaque `Box(Core.App)`** — the engine state between calls. Until
-  roc-lang/roc#12953 is resolved, the box crosses the boundary wrapped in a
-  one-item `Iter`, as `Box(Iter(Core.App))`, still one pointer to the host
+- **one opaque `Handle`** — the engine state between calls, a box containing
+  the plain store beside the boxed sites. `Core.split` and `Core.join` move
+  the parts only at this boundary. Until roc-lang/roc#12953 is resolved,
+  the sites cross inside a boxed one-item `Iter`; the outer handle is still
+  one pointer and the host inspects neither part
   (see [Compiler Limitations](#compiler-limitations));
 - **the command buffer** — the last call's `List(U8)`;
 - **one staged payload** — a Roc `List(U8)` allocated by `payload_reserve`;
@@ -3294,7 +3319,7 @@ already present; a table built from two rows with one key; two rows of a
 view that compare `Same`; a table view's row read after its key left the table in
 the same event;
 an effect follow-up chain deeper than 64;
-`http_text` given a non-HTTP result; a worker catalogue with a
+a result reader given a raw result of the wrong kind; a worker catalogue with a
 duplicate name or more than 64 names; work issued for a task the
 catalogue does not hold; an upload whose method is `GET` or `HEAD`;
 a port catalogue with a duplicate name, more than
@@ -4071,6 +4096,7 @@ of them is platform semantics.
 
 | Issue | Defect | Effect on the engine |
 |---|---|---|
+| [roc-lang/roc#13020](https://github.com/roc-lang/roc/issues/13020) | Development Wasm retains removed refcounted elements when `List.drop_last` produces an empty slice; `Dict.remove` is affected too | File-valued-table lifetime tests expose handles retained after rows and the preceding change record are empty. Direct-drop controls and ordinary instance teardown release them. No engine rebuild or host-forced release substitutes for the compiler's ownership; these lifetime checks remain failing on the affected pin |
 | [roc-lang/roc#13005](https://github.com/roc-lang/roc/issues/13005) | A top-level annotated constant using a missing method can crash `roc check` in `boxy_lowering` instead of reporting the missing item | The table-bookkeeping rejection fixture uses the unannotated spelling and links the issue. It still requires the compiler's missing-method diagnostic; an annotated spelling may crash until the compiler is fixed |
 | [roc-lang/roc#13011](https://github.com/roc-lang/roc/issues/13011) | `nightly-2026-11-12-ce942d6` assigns callable evidence scope to a non-function stored value in an open-tag initializer test, leaving a child call without evidence during Mono and Boxy lowering | Log Explorer initializes its theme through the full union constructor and its viewer geometry through a typed producer, and the time sample closes its action initializer through its typed producer; their pure tests remain enabled |
 | [roc-lang/roc#13018](https://github.com/roc-lang/roc/issues/13018) | `roc docs` on `nightly-2026-11-12-ce942d6` omits associated methods reachable through a public alias of an internal type | `ApiDocs` derives the inherited members and their comments from the source syntax tree and renders them in the API front page and PDF; coverage checks both direct module entries and this generated companion. Remove the companion when the compiler renders the inherited members |
@@ -4086,7 +4112,9 @@ of them is platform semantics.
 | [roc-lang/roc#12835](https://github.com/roc-lang/roc/issues/12835) | Annotated polymorphic recursion hangs `roc test`/`roc check` under `--specialize=yes` | Recursive site types annotated with care |
 | [roc-lang/roc#12869](https://github.com/roc-lang/roc/issues/12869) | An unused closure capturing a function passed to a branching self-recursive closure makes monotype lowering exponential: a lambda that hands a function to a site whose instance calls itself from several branches makes `roc check` take minutes or not finish. Fixed upstream in nightlies after 2026-11-10 | The view site's getter is a function of its own (`view_source` in `Core.roc`), and the Log Explorer's `stepped` handler is a function of its module instead of a local closure, only while a pinned compiler predates the fix |
 | [roc-lang/roc#12836](https://github.com/roc-lang/roc/issues/12836) | `Box.box` of a capture-free callable allocates on every call | Extra allocations per call |
-| [roc-lang/roc#12953](https://github.com/roc-lang/roc/issues/12953) | Since roc-lang/roc#12887, the host boundary rejects an opaque `Box` of a value that contains functions, though it accepts the same value as `Box(Iter(...))` | The engine state crosses as `Box(Iter(Core.App))`, wrapped and unwrapped in `platform/main.roc`; `Core.Kept` holds its task runner as a `Box` of its own |
+| [roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012) | Updating storage captured by a boxed closure can borrow that capture and copy it even in development builds | The instance holds its store as plain data beside boxed sites. Local state still lives in a site's closure and remains affected; extend the allocation guard to local state when the compiler is fixed |
+| [roc-lang/roc#13019](https://github.com/roc-lang/roc/issues/13019) | Optimized site writes still show table-size-dependent allocation when the engine never crosses a host box | The development sparse-write guard checks requested bytes at two table sizes. Shipping optimized allocation is not claimed flat; add an optimized guard when the compiler defect is fixed |
+| [roc-lang/roc#12953](https://github.com/roc-lang/roc/issues/12953) | Since roc-lang/roc#12887, the host boundary rejects an opaque `Box` of a value that contains functions, though it accepts the same value as `Box(Iter(...))` | The sites cross as `Box(Iter(Core.Sites(st)))` inside the one outer `Handle`, beside the plain store; `platform/main.roc` alone wraps and unwraps them. `Core.Kept` holds its task runner as a `Box` of its own |
 | [roc-lang/roc#12945](https://github.com/roc-lang/roc/issues/12945) | Under `--specialize=no`, a derived record decode leaks on every call | Worker instances grow per job in that build, so the scaling task's memory checks fail for it |
 | [roc-lang/roc#12951](https://github.com/roc-lang/roc/issues/12951) | A lambda passed to a generic function is rejected when its body uses `?` on a method of its own parameter and then `?` again | A task whose `run!` reads a file and then uses `?` again is written as a named function, not a lambda in the props record; the Workers guide says so |
 | [roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957) | In optimised builds (`--opt=size`, `--opt=speed`) a large value held by a closure that is itself kept in a list is copied on every write, a list and a `Dict` alike | Every site's storage and the store are held this way, so a write to a large state, cell or table copies it in a shipping build. There is no local workaround: the design assumes the fix (see [In-place ownership](#in-place-ownership)) |
@@ -4099,7 +4127,7 @@ of them is platform semantics.
 Code size is the main open cost of the architecture and is tracked against
 #12847 and #12848, with each over-budget app's size budget linking its issue.
 In-place writes of large values in shipping builds are tracked against
-#12957.
+#12957 and #13019; boxed local-state captures are also affected by #13012.
 
 ## Measures of Effectiveness
 
@@ -4111,8 +4139,8 @@ In-place writes of large values in shipping builds are tracked against
 2. **App semantics agree natively and in the browser.** Every maintained app's
    specs pass under both runners from one parser.
 3. **Work scales with change.** Work counters and command counts in specs
-   bound per-event work; sparse operations show identical allocation counts
-   across 10× data, and a keyed write to a table costs the same evaluations
+   bound per-event work; sparse operations compare requested bytes as well as
+   allocation counts across 10× data, and a keyed write to a table costs the same evaluations
    and commands whatever the table's size.
 4. **No leaks; reclamation is deterministic.** Live allocations, live effect
    ids and Wasm pages plateau across long sessions, natively and in Chrome.
@@ -4180,7 +4208,7 @@ through aliases. Nothing in it mentions, requires or returns a type an app
 cannot name. The reactive and storage
 types `Signal`, `State`, `HandlerOf`, `Prop`, `RowRef`, `Cell`, `Cells`, `Store` and `Table` are
 opaque wrappers whose methods are documented here, and the contexts, `Elem`,
-`Attr`, `Keyed`, `Write`, `Reach`, `Stored`, `Reaction`, `Program`,
+`Attr`, `Keyed`, `Write`, `Reach`, `Stored`, `Reaction`, `Program(st)`,
 `Registration` and `Outbox` are aliases of opaque types in the internal
 `Core` module, which holds the implementation. `Core` is not exposed, so an
 app can neither name a representation nor call the interfaces only hosts and
@@ -4204,12 +4232,12 @@ through an attach function rather than supplying an unchecked codec.
 
 ```roc
 # Program entry
-program : (() -> Elem(Root)) -> Program
+program : (() -> Elem(Root)) -> Program({})
 ProgramProps := { storage_keys : List(Str) ?? [], session_keys : List(Str) ?? [], max_inflight : U64 ?? 32,
                   media : List(Str) ?? [], zone_days : U16 ?? 366 }
-program_boot : ProgramProps, (Boot -> Elem(Root)) -> Program
+program_boot : ProgramProps, (Boot -> Elem(Root)) -> Program({})
 program_store : ProgramProps, (Boot -> Store(st, h)),
-                (Boot -> Elem(StoreRoot(st))) -> Program             # the store start(boot) gives, held at the root
+                (Boot -> Elem(StoreRoot(st))) -> Program(st)         # store held beside the sites
 Root                                          # the top context of a program without a store
 StoreRoot(st)                                 # the top context of a program whose store's storage is st
 Boot := { url : Str ?? "/", storage : List((Str, Str)) ?? [], online : Bool ?? True,
@@ -4223,10 +4251,10 @@ boot_media : Boot, Str -> Try(Bool, [Undeclared])
 boot_session : Boot, Str -> Try(Str, [Missing])
 guard_leave : Signal(ctx, Bool) -> Elem(ctx)
 Paste : [Text(Str), TooLarge]
-Program                                       # opaque; the app binds it as `main`
-Program.with_workers : Program, List(Registration) -> Program   # the worker catalogue
+Program(st)                                   # opaque; the app binds it as `main` and names st as Store
+Program.with_workers : Program(st), List(Registration) -> Program(st)   # the worker catalogue
 Registration                                  # opaque: a task or preparation; Worker makes one
-Program.with_ports : Program, List(PortRegistration) -> Program # the ports the page supplies
+Program.with_ports : Program(st), List(PortRegistration) -> Program(st) # the ports the page supplies
 PortRegistration                              # opaque: a port's name and shape; Port makes one
 
 # Signals
@@ -4267,8 +4295,8 @@ Write(st)                                     # opaque: one write to the store
 handle : (p -> List(Write(st))) -> HandlerOf(ctx, p)                # given the event's payload
 handle_by : Signal(ctx, b), (b, p -> List(Write(st))) -> HandlerOf(ctx, p)   # b read before the decision's own writes
 does : List(Write(st)) -> HandlerOf(ctx, p)                          # a list that needs neither payload nor reading
-react : (r, Result -> List(Write(st))) -> Reaction(ctx, r)          # given what the request was issued for
-react_by : Signal(ctx, b), (b, r, Result -> List(Write(st))) -> Reaction(ctx, r)
+react : (r, result -> List(Write(st))) -> Reaction(ctx, r, result)          # given what the request was issued for
+react_by : Signal(ctx, b), (b, r, result -> List(Write(st))) -> Reaction(ctx, r, result)
 
 # Local state and handlers
 state : s, (State(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
@@ -4280,10 +4308,10 @@ State.update : State(ctx, s), (s -> s) -> HandlerOf(ctx, p)
 State.update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> HandlerOf(ctx, p)
 State.set_value : State(ctx, s), (s, p -> s) -> HandlerOf(ctx, p)
 State.set_value_by : State(ctx, s), Signal(ctx, b), (s, b, p -> s) -> HandlerOf(ctx, p)
-State.on_result : State(ctx, s), (s, a, Result -> s) -> Reaction(ctx, a)
+State.on_result : State(ctx, s), (s, a, result -> s) -> Reaction(ctx, a, result)
 State.lift, State.lift_row, HandlerOf.lift, HandlerOf.lift_row
 HandlerOf.also : HandlerOf(ctx, p), HandlerOf(ctx, p) -> HandlerOf(ctx, p)  # both for one event, in order
-Reaction.also : Reaction(ctx, a), Reaction(ctx, a) -> Reaction(ctx, a)
+Reaction.also : Reaction(ctx, a, result), Reaction(ctx, a, result) -> Reaction(ctx, a, result)
 
 # Structure
 element : Str, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
@@ -4293,7 +4321,7 @@ when : Signal(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
 switch : Signal(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
 remount_on : Signal(ctx, k), (() -> Elem(ctx)) -> Elem(ctx)         # built again when the key changes; k has is_eq
 derive : Signal(ctx, a), (Signal(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
-resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Request)), resolve : (s, a, Result -> s) },
+resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Ask(o, e))), resolve : (s, a, Try(o, e) -> s) },
            (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 Remote(output, error) := { request : [Idle, Pending],                 # what Worker.resource and
                            answer : [Unanswered, Answered(output), Failed(error)] }  # Port.resource hold
@@ -4369,23 +4397,23 @@ File.name, File.mime : File -> Str
 File.size : File -> U64                       # bytes in this file or range
 File.slice : File, { start : U64, len : U64 } -> File   # contract error outside the file
 File.spans : File, U64 -> List({ start : U64, len : U64 })   # ranges of n bytes covering it, for read!
-File.read_bytes, File.read_utf8 : File, ReadProps -> Request   # awaited reads into the page
+File.read_bytes : File, ReadProps -> Ask(List(U8), FileError)
+File.read_utf8 : File, ReadProps -> Ask(Str, FileError)
 ReadProps := { max_bytes : U64 ?? 8388608 }    # under the page's maxFileBytes
-File.upload : File, UploadProps -> Request        # the file as an HTTP body
+File.upload : File, UploadProps -> Ask(Response, HttpFailure)        # the file as an HTTP body
 UploadProps := { url : Str, method : Str ?? "POST", headers : List((Str, Str)) ?? [],
                  timeout : [Unlimited, Ms(U32)] ?? Unlimited, credentials : Credentials ?? SameOrigin }
-File.sha256 : File -> Request                     # answered Digest(32 bytes)
-File.object_url : File -> Request                 # answered FileUrl(url), valid while the handle lives
-file_bytes, file_digest : Result -> Try(List(U8), FileError)
-file_text, file_url : Result -> Try(Str, FileError)
+File.sha256 : File -> Ask(List(U8), FileError)      # 32 digest bytes
+File.object_url : File -> Ask(Str, FileError)       # URL valid while the handle lives
 File.save : File, { name : [Same, Named(Str)] ?? Same }
             -> [Save({ file : File, name : Str })]   # a command: a download; typed by its one tag,
-                                              # so it fits a List(Request) and a List(Command)
-File.fetch : File.FetchProps -> Request             # answered Fetched
+                                              # use command(...) in a typed plan; cleanup takes List(Command)
+File.fetch : File.FetchProps -> Ask(Fetched, FetchFailure)
 File.FetchProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [],
                 timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default,
                 credentials : Credentials ?? SameOrigin }
-fetched : Result -> Try(File, FetchError)
+Fetched : { status : U16, headers : List((Str, Str)), body : File }
+FetchFailure : [Network(Str), Timeout, TooLarge, Refused]
 FetchError : [Network(Str), Timeout, Status(U16), TooLarge, Refused]
 # In a worker job only (a task's run!, a preparation's prepare!; effects):
 File.read! : File, { start : U64, len : U64 } => Try(List(U8), [Unreadable])
@@ -4405,24 +4433,43 @@ Cache : [Default, NoStore, Reload, NoCache, ForceCache]
 Credentials : [SameOrigin, Include]
 HttpProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [], body : Str ?? "",
                timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
-http : HttpProps -> Request
+Ask(output, error)                             # opaque: request and retained reader
+Ask.map_ok : Ask(a, e), (a -> b) -> Ask(b, e)
+Ask.map_err : Ask(o, a), (a -> b) -> Ask(o, b)
+Ask.map : Ask(a, e), (Try(a, e) -> Try(b, f)) -> Ask(b, f)
+Ask.sent : Ask(o, e) -> Request
+ask_of : asker, input -> Ask(output, error)     # request/result protocol, adapted once
+raw : Request -> Ask(Result, [])
+command : Command -> Ask(output, error)
+Response : { status : U16, headers : List((Str, Str)), body : Str }
+HttpFailure : [Network(Str), Timeout, Refused]
+http : HttpProps -> Ask(Response, HttpFailure)
+http_body : HttpProps -> Ask(Str, HttpError)
+timer, interval : U32 -> Ask(I64, [Refused])
+again : {} -> Ask({}, error)
+popstate : {} -> Ask(Str, [Refused])
+online_changes, visibility_changes : {} -> Ask(Bool, [Refused])
+media_changes : Str -> Ask(Bool, [Refused])
+storage_get, session_get : Str -> Ask(Str, [Missing, Refused])
+storage_changes : Str -> Ask([Set(Str), Removed], [Refused])
+storage_write_failures : {} -> Ask({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] }, [Refused])
 Transfer : { direction : [Sending, Receiving], done : U64, total : [Known(U64), Unknown] }
 ProgressReaction(ctx, a)                       # opaque: separate from a final-result reaction
 ProgressProps := { every_ms : U32 ?? 100 }     # floor 16 ms
 react_progress : (a, Transfer -> List(Write(st))) -> ProgressReaction(ctx, a)
                   where [ctx.store : () -> Reach(ctx, st)]
 State.on_progress : State(ctx, s), (s, a, Transfer -> s) -> ProgressReaction(ctx, a)
-Reaction.with_progress : Reaction(ctx, a), ProgressProps, ProgressReaction(ctx, a) -> Reaction(ctx, a)
-watch : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
-watch_changes : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
-watch_latest : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)   # supersedes
+Reaction.with_progress : Reaction(ctx, a, result), ProgressProps, ProgressReaction(ctx, a) -> Reaction(ctx, a, result)
+watch : Signal(ctx, a), (a -> List(Ask(o, e))), Reaction(ctx, a, Try(o, e)) -> Elem(ctx)
+watch_changes : Signal(ctx, a), (a -> List(Ask(o, e))), Reaction(ctx, a, Try(o, e)) -> Elem(ctx)
+watch_latest : Signal(ctx, a), (a -> List(Ask(o, e))), Reaction(ctx, a, Try(o, e)) -> Elem(ctx)   # supersedes
 Outbox(item)                                  # opaque: the latest post and its serial
 outbox : {} -> Outbox(item)
 Outbox.post : Outbox(item), item -> Outbox(item)   # one post per turn; a second is a contract error
 Outbox.last : Outbox(item) -> [Unposted, Posted(item)]
-on_post : Signal(ctx, Outbox(item)), (item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
-on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
-ignore : {} -> Reaction(ctx, a)
+on_post : Signal(ctx, Outbox(item)), (item -> List(Ask(o, e))), Reaction(ctx, item, Try(o, e)) -> Elem(ctx)
+on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Ask(o, e))), Reaction(ctx, item, Try(o, e)) -> Elem(ctx)
+ignore : {} -> Reaction(ctx, a, result)
 on_cleanup : Str, Signal(ctx, a), (a -> List(Command)) -> Elem(ctx)   # an awaited request does not compile
 cleanup : Str -> Elem(ctx)
 Request : [Http({ method, url, headers, body, timeout_ms, cache, credentials }), StorageGet(Str), SessionStorageGet(Str), Timer(U32),
@@ -4461,15 +4508,13 @@ PortFailure : [Threw(Str), TooLarge, Closed]
 PortDelivery : [Latest, Every(U32)]
 WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 HttpError : [Network(Str), Timeout, Status(U16), Refused]
-http_text : Result -> Try(Str, HttpError)
 ```
 
 `Clipboard` builds one clipboard item with its plain-text representation:
 
 ```roc
-Clipboard.text : Str -> Request
-Clipboard.html : { html : Str, text : Str } -> Request
-Clipboard.written : Result -> Try({}, [NotAllowed, Unavailable, Refused])
+Clipboard.text : Str -> Ask({}, [NotAllowed, Unavailable, Refused])
+Clipboard.html : { html : Str, text : Str } -> Ask({}, [NotAllowed, Unavailable, Refused])
 Html.on_paste_text : HandlerOf(ctx, Paste) -> Attr(ctx)
 ```
 
@@ -4512,6 +4557,7 @@ Worker.TaskProps(input, output, error) := { name : Str, run! : input => Try(outp
     on_cancel : [Stop, Finish] ?? Stop }
 Task.registration : Task(input, output, error) -> Registration
 Task.name : Task(input, output, error) -> Str                            # what requests and the monitor name its jobs by
+Task.ask : Task(input, output, error), input -> Ask(output, Worker.Error(error))
 Task.request : Task(input, output, error), input -> Request                 # a Work request
 Task.result : Task(input, output, error), Result -> Try(output, Worker.Error(error))
 Worker.Error(error) : [Failed(error), Timeout, Refused, Lost(WorkFault)]
@@ -4528,6 +4574,7 @@ Worker.PreparedTaskProps(state, input, output, error) := { name : Str,
 Preparation.registration : Preparation(init, state, error), List(PreparedTaskEntry(state)) -> Registration
 PreparedTask.registration : PreparedTask(init, state, input, output, error) -> PreparedTaskEntry(state)
 PreparedTask.name : PreparedTask(init, state, input, output, error) -> Str
+PreparedTask.ask : PreparedTask(init, state, input, output, error), Question(init, input) -> Ask(output, Worker.Error(error))
 PreparedTask.request : PreparedTask(init, state, input, output, error), Question(init, input) -> Request
 PreparedTask.result : PreparedTask(init, state, input, output, error), Result -> Try(output, Worker.Error(error))
 Worker.PreparedTaskEntry(state)               # opaque: a preparation's task, for its registration
@@ -4558,8 +4605,10 @@ Port.SubscriptionProps := { name : Str, delivery : Delivery }
 Command.registration, Call.registration, Subscription.registration : ... -> PortRegistration
 Command.send : Command(output), output -> [PortCommand({ port : Str, message : PortMessage })]
                                               # typed by its one tag, as File.save is
+Call.ask : Call(input, output), input -> Ask(output, Port.Error)
 Call.request : Call(input, output), input -> Request       # a PortCall
 Call.result : Call(input, output), Result -> Try(output, Port.Error)
+Subscription.ask : Subscription(arg, msg), arg -> Ask(msg, Port.Error)
 Subscription.subscribe : Subscription(arg, msg), arg -> Request   # a PortSubscribe
 Subscription.message : Subscription(arg, msg), Result -> Try(msg, Port.Error)
 Port.Error : [Refused, Timeout, Threw(Str), TooLarge, Closed, Undecodable(Str)]
@@ -4627,19 +4676,20 @@ change the protocol version.
 
 ### Roc ↔ host
 
-The platform provides (`platform/main.roc`). The engine state is
-`Box(Core.App)` by design; the signatures below show it as it crosses
-today, wrapped as `Box(Iter(Core.App))`, a workaround for
-roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
+The platform provides (`platform/main.roc`). The engine state crosses as
+one opaque `Handle`, a `Box({ store : Store, sites : Box(Iter(Core.Sites(Store))) })`.
+The instance's plain store and site tree move whole into Roc and back; the
+host sees one pointer. The sites' nested boxed one-item `Iter` is the narrow
+roc-lang/roc#12953 workaround (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
 | `roc_engine_version` | `() -> u32` | The protocol version (16) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
-| `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
-| `roc_engine_files` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A files-kind event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port answer (14) or a fetched file (21) |
-| `roc_engine_drop` | `Box(Iter(Core.App)), List(U8), List(U8) -> {}` | Teardown |
+| `roc_engine_event` | `Handle, List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
+| `roc_engine_files` | `Handle, List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A files-kind event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port answer (14) or a fetched file (21) |
+| `roc_engine_drop` | `Handle, List(U8), List(U8) -> {}` | Teardown |
 | `roc_engine_work` | `List(U8), List(Box(U64)) => List(U8)` | A worker instance's job (effectful): payload `name:str input:rest` and the handles the instance's host minted for the files the request named, in its order; returns the answer, `n:u32 (token:u64)*n output:rest`: the instance's tokens of the files the answer holds (in the order its payload refers to them), then the answer's bytes, a list of its own. `name` is a `str` (a `u32` length), while `input` is a `Wire` payload whose counts are LEB128, so a harness meets both encodings in one buffer. `output` is the `Wire` encoding of the job's `Ok` value or `Err` error followed by one byte, `0` or `1`, which the typed layer writes and reads. A name the catalogue does not hold, a preparation's name or a preparation's task's name, a payload without a name, or an answer holding more than 16 files, is a `contract` crash (it poisons that worker instance only) |
 | `roc_engine_prepare` | `List(U8), List(Box(U64)) => Box(Core.Kept)` | Prepare a state to keep (effectful): payload `prep:str init:rest` (the preparation's name and its own input) and the handles of the preparation's files; returns the state. A name that is not a preparation is a `contract` crash |
 | `roc_engine_ask` | `Box(Core.Kept), List(U8), List(Box(U64)) => { held, out }` | A job of a preparation's task on the kept state (effectful): payload `task:str input:rest` (the task's own input) and the handles of the task's own files; returns the state (`held`) and the answer (`out`, as `roc_engine_work`'s). A task the state's preparation does not list is a `contract` crash |

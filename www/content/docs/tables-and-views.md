@@ -280,8 +280,11 @@ Three compiler defects touch tables today, each with its upstream issue:
   it on with the key and the row, `|key, row| template(extra, key, row)`,
   not a function returned from a helper, which `roc check` rejects
   ([roc-lang/roc#12970](https://github.com/roc-lang/roc/issues/12970)).
-- An optimised build copies a large table on each write, where a development
-  build updates it in place
-  ([roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957)). The
+- An optimised build can still copy a large table on each write
+  ([roc-lang/roc#13019](https://github.com/roc-lang/roc/issues/13019), also
+  tracked by [roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957)).
+  The instance holds its store outside the site's boxed closure; a bounded
+  development-Wasm guard checks sparse-write bytes at two table sizes.
+  That development result does not establish flat shipping allocations. The
   platform is designed for the fix, and nothing in an app changes when it
   lands.

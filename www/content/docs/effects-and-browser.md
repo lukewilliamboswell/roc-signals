@@ -8,18 +8,17 @@ template = "page.html"
 # Effects and the Browser
 
 Apps never call JavaScript. Everything that reaches outside the page — a
-request, a timer, the URL, local storage, focus — is a value of type
-`Engine.Request` that an *effect site* asks for, and every result comes back as
-a value of type `Engine.Result` delivered in a turn of its own. A result is
-anything delivered for a request, including a timeout, refusal or timer firing.
-An answer is a result the other side produced, such as an HTTP response, a job's
-output or its own failure, or a port call's return. Most of the snippets come
-from `www/samples/effects.roc`, a search page that keeps its state in one local
-state.
+request, a timer, the URL, local storage, focus — goes through an effect site.
+An awaited request is an `Engine.Ask(output, error)`: it carries the request
+and the reader of its result together. Its reaction receives
+`Try(output, error)` in a turn of its own. A result includes a timeout,
+refusal or timer firing; an answer is one the other side produced, such as
+an HTTP response, a job's output or failure, or a port call's return.
+Most snippets come from `www/samples/effects.roc`, a search page with local state.
 
 ## Effect sites
 
-An effect site watches a signal and turns it into a list of requests:
+An effect site watches a signal and turns it into a list of typed asks:
 
 - `Engine.watch(v, plan, reaction)` issues `plan(value)` at mount and again
   every time `v` changes;
@@ -38,6 +37,17 @@ Passing the issued-for value is what makes out-of-order answers safe. If the
 user typed again before the first answer arrived, the reaction sees an old
 query and ignores the answer. Which answer wins is your decision, made in
 ordinary Roc.
+
+Each ask keeps the reader chosen when it is issued. A result uses that
+reader even if the signal has changed; a resource never runs its plan again
+to interpret an answer. If a plan mixes different successes or errors, map
+each ask into one application vocabulary with `map_ok`, `map_err` or `map`
+before building the list. The File Tools sample does this for upload,
+digest, preview and text reads.
+
+A kept request moves its issued-for value and reader together to the nearest
+surviving owner on disposal. Cancellation, supersession, a terminal result
+or refusal releases its reader; subscription messages and progress retain it.
 
 Because sites issue on *change*, two equal values in a row issue once. A
 request the user's action asks for, which must be sent again for an equal
@@ -139,34 +149,41 @@ list is on, say), lift that state in and map both:
 
 ## Requests
 
-| Request | Result |
-|---|---|
-| `Engine.http({ url, … })` | `Http({ status, headers, body })`, `Network(message)` or `Timeout` |
-| `StorageGet(key)`, `SessionStorageGet(key)` | `Value(text)` or `Missing` |
-| `StorageChanges(key)` | Another document's local-storage `Value(text)` or `Missing`, the newest report per frame |
-| `StorageWriteFailures` | `StorageFailed({ store, key, reason })` for a refused local or session write; `store` is `Local` or `Session`, `reason` is `Quota` or `Unavailable` |
-| `ClipboardWrite({ text, html })` | `Copied` or `ClipboardFailed(NotAllowed)` / `ClipboardFailed(Unavailable)`; use the typed `Clipboard` helpers below |
-| `Timer(ms)` | `Fired(at_ms)`, once; I64 wall-clock milliseconds |
-| `Interval(ms)` | `Fired(at_ms)` at each callback, until the site is disposed |
-| `Popstate` | `Location(url)` on every back or forward |
-| `OnlineChanges` | `Online(Bool)`, the newest reported state per frame |
-| `VisibilityChanges` | `Visible(Bool)`, the newest reported state per frame |
-| `MediaChanges(query)` | `Matches(Bool)`, the newest reported state per frame; query must be declared in `ProgramProps.media` |
-| `Work({ task, input, files, timeout_ms, on_dispose, on_cancel, prepared })` | `Work({ output, files })`, `WorkLost(fault)` or `Timeout`: a job of a registered task in a Web Worker. Apps use the typed `Worker` module instead; see [Workers](@/docs/workers.md) |
-| `ReadBytes({ file, max_bytes })`, `ReadUtf8({ file, max_bytes })` | `FileBytes(bytes)` or `FileText(text)`, or `FileFailed(error)`: a file read into the page. Made with `File.read_bytes` and `File.read_utf8`; see [Files](@/docs/files.md) |
-| `file.upload({ url, … })` | As `Http`, with a [file](@/docs/files.md) as the body; made with `File.upload` |
-| `Sha256(file)`, `ObjectUrl(file)` | `Digest(bytes)` or `FileUrl(url)`, or `FileFailed(error)`: made with `File.sha256` and `File.object_url`; see [Files](@/docs/files.md) |
-| `File.fetch({ url, … })` | `Fetched({ status, headers, body })` with the body as a [file](@/docs/files.md), `Network(message)`, `Timeout` or `FileFailed(TooLarge)`: made with `File.fetch`, read with `Engine.fetched`; see [Files in Tasks](@/docs/files-in-tasks.md) |
-| `PortCall({ port, message, timeout_ms })` | `PortAnswer(message)` or `PortFailed(failure)`, once. Made by a typed [port](@/docs/ports.md) call |
-| `PortSubscribe({ port, message })` | `PortAnswer(message)` for every message, or `PortFailed(failure)`, until the site is disposed or the JavaScript ends it. Made by a typed port subscription |
-| `Self` | `Now`, in a follow-up turn |
-| `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `SessionStorageSet(key, value)`, `SessionStorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)`, `ApplyValue(ref)`, `FocusInPlace(ref)`, `ScrollIntoView(ref, props)`, `ScrollTo(ref, props)`, `Save({ file, name })` (made with `File.save`), `PortCommand({ port, message })` (made by a typed port command), `ViewTransition(types)` | None: commands, the tags of `Engine.Command` |
+Plans return typed asks. The reaction receives the listed value inside `Ok`,
+or the ask's typed failure inside `Err`.
 
-`Engine.http_text(res)` reads an HTTP result as the body of a 2xx response,
-or a typed `HttpError`: `Network(message)`, `Timeout`, `Status(code)` or
-`Refused`. Match on `Http` directly when you need the headers or want to
-classify statuses yourself. `timeout_ms` of `0` means no timeout; the most the
-runtime will arm is ten minutes.
+| Ask | Success and failure |
+|---|---|
+| `Engine.http({ url, … })`, `file.upload({ url, … })` | A response with `status`, `headers` and text `body`, at every status; `Network(message)`, `Timeout` or `Refused` |
+| `Engine.http_body({ url, … })` | A 2xx text body; also classifies other statuses as `Status(code)` |
+| `Engine.storage_get(key)`, `Engine.session_get(key)` | Text, including an empty string; `Missing` or `Refused` |
+| `Engine.storage_changes(key)` | Another document's `Set(text)` or `Removed`, newest per frame; `Refused` |
+| `Engine.storage_write_failures({})` | `{ store, key, reason }`, where store is `Local` or `Session` and reason `Quota` or `Unavailable`; `Refused` |
+| `Clipboard.text(text)`, `Clipboard.html({ text, html })` | `{}`; `NotAllowed`, `Unavailable` or `Refused` |
+| `Engine.timer(ms)`, `Engine.interval(ms)` | I64 wall-clock milliseconds, once or repeatedly; `Refused` |
+| `Engine.popstate({})` | The URL on back or forward; `Refused` |
+| `Engine.online_changes({})`, `Engine.visibility_changes({})`, `Engine.media_changes(query)` | The corresponding boolean, newest per frame; `Refused`. A media query must be declared in `ProgramProps.media` |
+| `task.ask(input)` | The task's output or `Worker.Error(error)`; see [Workers](@/docs/workers.md) |
+| `file.read_bytes(props)`, `file.read_utf8(props)` | Bytes or text; `FileError`, including refusal |
+| `file.sha256()`, `file.object_url()` | Digest bytes or a URL; `FileError` |
+| `File.fetch({ url, … })` | A response with `status`, `headers` and a file `body`, at every status; `Network(message)`, `Timeout`, `TooLarge` or `Refused` |
+| `call.ask(input)`, `subscription.ask(input)` | The declared port output or message; `Port.Error` |
+| `Engine.again({})` | `{}` in a follow-up turn |
+
+Commands such as `Title`, `Push`, `Replace`, storage writes, focus, scrolling,
+file saves and port sends await no result. Put one in a typed plan with
+`Engine.command(command)`. Cleanup plans still return `List(Command)`.
+
+`Engine.ask_of(protocol, input)` adapts a request/result protocol once, when
+issuing it. Task and port request/result methods remain useful for pure
+protocol tests and resource adapters. `ask.sent()` exposes the request for
+such tests. `Engine.raw(request)` deliberately receives the whole
+`Engine.Result` union; ordinary app reactions use the typed constructors.
+
+`Engine.http` leaves HTTP status policy to the app. Use `http_body` when a
+non-2xx response is a failure, or map the full response yourself when headers
+or another policy matter. Public timeout props are `Unlimited` or `Ms(ms)`;
+the runtime caps an armed timeout at ten minutes.
 
 To see where a worker job's time goes and how busy the pool is, read the
 runtime's monitor; see [Monitoring Workers](@/docs/worker-monitoring.md).
@@ -445,15 +462,18 @@ button's turn to keep that gesture's activation:
 
 {{ sample(file="effects.roc", region="clipboard") }}
 
-`on_post_by(box, reading, plan, reaction)` retains only the posted marker.
+`on_post_by(box, reading, plan, reaction)` keeps the posted marker as its
+equality input.
 It samples `reading` when the post issues and gives `plan` that reading and
 the item. Changes to the reading alone issue nothing. This keeps a large
 document in its source cell, rather than retaining it in an old outbox post.
 The reaction still receives the posted item; put any identity the answer
-needs in that item explicitly.
+needs in that item explicitly. A reader returned by the plan may capture
+parts of the sampled reading; those captures remain live until its request
+ends. A later sample cannot change an already-issued reader.
 
-`Clipboard.written(result)` returns success or `NotAllowed`, `Unavailable`
-or `Refused`. `NotAllowed` covers denied permission, missing activation or
+The clipboard ask delivers `Ok({})` or `Err(NotAllowed)`,
+`Err(Unavailable)` or `Err(Refused)`. `NotAllowed` covers denied permission, missing activation or
 an unfocused page; `Unavailable` covers an absent clipboard service.
 Outside a click's turn Chrome usually permits a focused page, while
 Firefox and Safari require activation. The write cannot be aborted, so its

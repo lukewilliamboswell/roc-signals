@@ -26,6 +26,7 @@ Targets := [].{
 		{ name: "structure", main: "fuzz/structure/main.roc" },
 		{ name: "dom", main: "fuzz/dom/main.roc" },
 		{ name: "table-view", main: "fuzz/table-view/main.roc" },
+		{ name: "result-readers", main: "fuzz/result-readers/main.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc" },
 		{ name: "form-builder", main: "examples/form-builder/fuzz-rules.roc" },
 		{ name: "kanban-board", main: "examples/kanban-board/fuzz-board.roc" },
@@ -104,6 +105,7 @@ Targets := [].{
 	## Exercise the monitor's bounded aggregation and environment facts, including
 	## time-zone probes in UTC and Sydney, and the documented port handlers
 	## with bounded queues and browser-resource cleanup, without a browser.
+	## A development Wasm fixture also guards sparse-write allocation scaling.
 	runtime_unit! : SpecSuite.Options => Try(List(Str), _)
 	runtime_unit! = |o| {
 		var $failures = []
@@ -112,6 +114,13 @@ Targets := [].{
 			if code != 0 {
 				$failures = $failures.append("${script} failed (exit ${code.to_str()})")
 			}
+		}
+		wasm = "${o.build_dir}/write-scaling.wasm"
+		Path.create_all!(Path.utf8(o.build_dir))?
+		Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=dev", "tests/apps/write-scaling/main.roc", "--output=${wasm}"], cwd: o.root })?
+		code = Proc.status!({ program: o.node, args: ["tests/runtime/write-scaling.mjs", wasm], cwd: o.root })?
+		if code != 0 {
+			$failures = $failures.append("write-scaling.mjs failed (exit ${code.to_str()})")
 		}
 		Ok($failures)
 	}

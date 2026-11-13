@@ -524,6 +524,15 @@ Validate every change with the specs and the soaks. There are no exact
 allocation baselines in the gates; allocation regressions show up as soak
 growth or scaling.
 
+`check` also runs a bounded development-Wasm ownership guard in
+`tests/runtime/write-scaling.mjs`. After setup and one warm-up, it compares
+requested bytes for sparse table writes and small-cell writes at two table
+sizes. Allocation count alone misses a growing copy made by one allocation.
+The guard checks teardown too. It is evidence for development store ownership;
+optimized copying remains tracked by roc-lang/roc#13019, and local-state
+capture ownership by roc-lang/roc#13012. Extend the guard when those compiler
+fixes land rather than claiming shipping allocation from a development build.
+
 ## Compilers
 
 For `nightly-2026-11-11-7679cc5` only, automation prints explicit `SKIP`

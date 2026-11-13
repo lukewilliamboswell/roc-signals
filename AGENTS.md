@@ -125,7 +125,8 @@
   an app's data where a refusal or a structural bound is possible, and leave
   nothing to an app's author without stating why and what test catches it.
 - Preserve in-place updates. Each piece of state has one holder: exactly one
-  closure references a site's storage, the root site alone holds the store,
+  closure references a site's storage, the instance alone holds the store as
+  plain data beside the site tree,
   and environments move through handlers rather than being shared. No second
   reference is kept for convenience or for comparison; the one earlier state
   the design allows is a table's changes, one earlier row per distinct key

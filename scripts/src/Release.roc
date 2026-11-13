@@ -156,7 +156,10 @@ Release := [].{
 		} else {
 			""
 		}
-		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), "${Release.notes(version, bundle_url, { compiler, tooling })}${limitations}")?
+		ownership = if o.nightly == "nightly-2026-11-12-ce942d6" {
+			"\n## Store ownership\n\nThe instance holds its store as plain data beside its sites. A bounded development-Wasm check compares sparse-write requested bytes at two table sizes and verifies teardown. This does not establish flat shipping allocations: optimized site writes remain affected by [roc-lang/roc#13019](https://github.com/roc-lang/roc/issues/13019), and boxed local-state captures by [roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012). These are compiler limitations, not different reactive semantics. Actual roc-fuzz fixed-example checks remain required.\n"
+		} else ""
+		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), "${Release.notes(version, bundle_url, { compiler, tooling })}${limitations}${ownership}")?
 		Proc.note!("release ${version}: ${out}")
 		Ok($problems)
 	}

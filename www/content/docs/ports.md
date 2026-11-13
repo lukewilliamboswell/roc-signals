@@ -25,7 +25,7 @@ in IndexedDB. Its spec runs natively and in Chrome. The
 [Reading List](@/examples/reading-list.md) example is a whole app built the
 same way: books kept in IndexedDB, still there after a reload, and a change
 in one tab shown in every other. Its source shows each side of the line
-between your app and its JavaScript: `Store.roc` declares the ports,
+between your app and its JavaScript: `BookStorage.roc` declares the ports,
 `ports.mjs` answers them, and `index.html` mounts the app with them.
 
 ## Three shapes

@@ -632,8 +632,9 @@ Engine := [].{
 	## Whether requests include cross-origin credentials.
 	Credentials : Core.Credentials
 
-	## A request with the reader chosen when it is issued. Only transformations
-	## and sent-request inspection are public members; the platform owns reading.
+	## An awaited request with typed success and failure. Return asks from an
+	## effect plan, and map their answers when the plan mixes different requests.
+	## `sent` exposes the original request for pure request/answer tests.
 	Ask(output, error) : Core.Ask(output, error)
 
 	## An HTTP response at any status, for applications that classify statuses.

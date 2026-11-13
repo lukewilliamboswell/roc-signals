@@ -231,7 +231,7 @@ ownership_view = |_| Engine.state(
 	),
 )
 
-ownership_round : Core.App, Dom.Target, U64 -> Core.App
+ownership_round : Core.App({}), Dom.Target, U64 -> Core.App({})
 ownership_round = |engine, route, round| {
 	(posted, _) = Core.take_cmds(Core.event(engine, route.node, route.handler, ""), [])
 	id = Core.fx_live(posted).first() ?? crash "reader admission did not retain one subscription"
@@ -253,7 +253,7 @@ ownership_round = |engine, route, round| {
 	ended
 }
 
-measured_round! : Core.App, Dom.Target, U64 => { value : Core.App, stats : Fuzz.Stats }
+measured_round! : Core.App({}), Dom.Target, U64 => { value : Core.App({}), stats : Fuzz.Stats }
 measured_round! = |engine, route, round| Fuzz.measure!("reader-retirement", || ownership_round(engine, route, round))
 
 ownership! : U64 => {}
@@ -296,7 +296,7 @@ large_ask = |value| {
 	Engine.http({ url: "/resource-reader" }).map(|_| Ok(capture.fold(0.U64, |sum, byte| sum + byte.to_u64())))
 }
 
-resource_result! : Core.App => { value : Core.App, stats : Fuzz.Stats }
+resource_result! : Core.App({}) => { value : Core.App({}), stats : Fuzz.Stats }
 resource_result! = |engine| Fuzz.measure!("resource-result", || Core.result(engine, 1, Timeout))
 
 resource_plan! : () => {}
@@ -325,6 +325,7 @@ resource_plan! = || {
 	{}
 }
 
+## Mapping the result preserves the exact request the ask sends.
 expect ask(5).sent() == Engine.http({ url: "/reader/5" }).sent()
 
 test! : Input => Fuzz.Outcome
