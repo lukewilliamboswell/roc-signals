@@ -1054,7 +1054,7 @@ SpecRunner := [].{
 			Err("event target is detached")
 		} else match Dom.target(s.dom, i, ev, Bool.True) {
 			Err(_) => Err("no ${ev} handler")
-			Ok(_) => Ok(SpecRunner.fire_if(program, s, i, ev, payload))
+			Ok(target) => Ok(SpecRunner.dispatch_control(program, s, i, target, payload))
 		}
 
 	## Dispatch `ev` if a handler listens for it on the way up from node `i`.
@@ -1064,10 +1064,24 @@ SpecRunner := [].{
 			return s
 		}
 		match Dom.target(s.dom, i, ev, Bool.True) {
-			Ok(target) if target.kind == 1 => SpecRunner.send(program, s, target.node, target.handler, payload.to_utf8())
-			Ok(target) if target.kind == 5 and ev == "change" and Dom.checked_input(Dom.node(s.dom, i)) => SpecRunner.send(program, s, target.node, target.handler, [if (Dom.live_value(Dom.node(s.dom, i), "checked") == "true") 1 else 0])
+			Ok(target) => SpecRunner.dispatch_control(program, s, i, target, payload)
 			_ => s
 		}
+	}
+
+	## Both native dispatch entry points have already resolved the route. Build
+	## only the payload its kind carries, without routing again or retaining a
+	## context beside the state passed to the engine.
+	dispatch_control : Program(state), S(state), U64, Dom.Target, Str -> S(state)
+	dispatch_control = |program, s, i, target, text| {
+		payload = if target.kind == 1 {
+			text.to_utf8()
+		} else if target.kind == 5 and target.event == "change" and Dom.checked_input(Dom.node(s.dom, i)) {
+			[if (Dom.live_value(Dom.node(s.dom, i), "checked") == "true") 1 else 0]
+		} else {
+			return s
+		}
+		SpecRunner.send(program, s, target.node, target.handler, payload)
 	}
 
 	## One host call, then the storage reads and focus events it issued, each
