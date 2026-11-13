@@ -50,12 +50,16 @@ MarkupLiteral := [].{
 						if Markup.is_event_attribute({ element_namespace: name.namespace, attribute: attribute.name }) {
 							return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "a markup literal holds no handlers: listen with Engine.on or Html's controls")))
 						}
+						attr_name = attribute_name(attribute.name).map_err(|NotAnAttribute(note)| BadLiteral(at_offset(parsed.parsed, attribute.span.start, note)))?
+						match Core.attribute_claim(tag, attr_name) {
+							Unclaimed => {}
+							Claimed(property) => return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "${sample(attribute.name.local)} on ${name_label(name)} is claimed by Engine.Prop.${property}; use Engine.prop or Engine.prop_s on a constructor, or Html's typed controls")))
+						}
 						hole = $attributes.get(($node_index, $attribute_index))
 						boolean = name.namespace == Uri(Markup.html_namespace) and attribute.name.namespace == NoNamespace and ParsedHtml.boolean_attributes.contains(attribute.name.local)
 						if boolean and hole.is_ok() {
 							return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "a Boolean attribute cannot have a text hole: use Html.boolean or a typed control on a constructor")))
 						}
-						attr_name = attribute_name(attribute.name).map_err(|NotAnAttribute(note)| BadLiteral(at_offset(parsed.parsed, attribute.span.start, note)))?
 						value = match hole {
 							Ok(index) => Part(index)
 							Err(_) => Fixed(if (boolean) "" else attribute.value)
@@ -331,4 +335,16 @@ expect {
 	raw = Engine.element("template", [], children())
 	literal_bytes = Core.take_cmds(Core.mount(literal), []).1
 	literal_bytes == Core.take_cmds(Core.mount(ordinary), []).1 and literal_bytes != Core.take_cmds(Core.mount(raw), []).1
+}
+
+## The shared claim query uses resolved DOM identity. Exact uppercase and
+## namespaced attributes remain distinct from an HTML input's value property.
+expect {
+	tag = Web.Tag.from_str("input")?.in_namespace(Html, Unprefixed)?
+	ordinary = Web.AttrName.from_str("value")?.in_namespace(None, Unprefixed)?
+	uppercase = Web.AttrName.from_str("VALUE")?.in_namespace(None, Unprefixed)?
+	qualified = Web.AttrName.from_str("value")?.in_namespace(Uri("urn:fields"), Prefix("x"))?
+	Core.attribute_claim(tag, ordinary) == Claimed("value") and
+		Core.attribute_claim(tag, uppercase) == Unclaimed and
+			Core.attribute_claim(tag, qualified) == Unclaimed
 }
