@@ -1,6 +1,5 @@
-import pf.Engine exposing [Elem, File, State]
+import pf.Engine exposing [Elem, File, State, Table]
 import pf.Html
-import pf.Table
 import pf.Worker
 
 ## Files test app: the files a user gives the app arrive as handles, and live

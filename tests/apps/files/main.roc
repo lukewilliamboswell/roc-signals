@@ -9,4 +9,4 @@ main : Engine.Program
 main = FilesApp.program
 
 ## The instance holds this store beside its site tree.
-Store : Engine.Stored(FilesApp, (List(Engine.File), Str))
+Store : Engine.Stored(FilesApp, (List(Engine.File), (Str, (Engine.Table(U64, Engine.File), U64))))

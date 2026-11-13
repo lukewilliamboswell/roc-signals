@@ -170,6 +170,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "monitor-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "workers-scaling.mjs", ["--wasm", SpecSuite.wasm_of(o, "worker-lab"), "--mode", "smoke"])?)
 				.concat(Targets.browser!(o, "files-browser.mjs", ["--wasm", files])?)
+				.concat(Targets.browser!(o, "table-file-lifetime-browser.mjs", ["--wasm", files])?)
 				.concat(Targets.browser!(o, "file-effects-browser.mjs", ["--wasm", file_effects])?)
 				.concat(Targets.browser!(o, "http-progress-browser.mjs", ["--wasm", file_effects])?)
 				.concat(Targets.browser!(o, "file-transfer-memory-browser.mjs", [])?)
