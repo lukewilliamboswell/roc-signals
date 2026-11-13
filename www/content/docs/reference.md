@@ -1,7 +1,7 @@
 +++
 title = "Reference"
 description = "The Engine, Table, Html, Layout, Clipboard, Worker, Wire, Port and PortJson APIs at a glance, the platform's limits, and its error classes."
-weight = 18
+weight = 19
 template = "page.html"
 +++
 
@@ -39,9 +39,11 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Animation | `ViewTransition(List(Str))`, a command in both `Request` and `Command`; marks one complete host-call batch, merges types in issue order, never marks mount | [Animation](@/docs/effects-and-browser.md#animation) |
 | Pointer data | `Pointer`: `id`, `kind`, `button`, `buttons`, `modifiers`, `primary`, `at` (`Outside` or `In({ zone, x, y })` with fractions 0–10000) | [Pointer input and dragging](@/docs/state-and-events.md#pointer-input-and-dragging) |
 | Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.spans` (the `{ start, len }` ranges of `n` bytes that cover a file, for `read!`), `Received`, `FilesHandler` (the generic handler family at `Received`), `on_files` | [Files](@/docs/files.md) |
-| Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) | [Files](@/docs/files.md) |
-| Saving and downloading | `File.save` (a download command; `SaveProps`: `name : [Same, Named(Str)]`), `File.fetch` (`FetchProps`: `url`, `method`, `headers`, `timeout : [Unlimited, Ms(U32)]`), `fetched`, `FetchError` (`Network`, `Timeout`, `Status`, `TooLarge`, `Refused`) | [Files in Tasks](@/docs/files-in-tasks.md) |
+| Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`, `credentials ?? SameOrigin`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) | [Files](@/docs/files.md) |
+| Saving and downloading | `File.save` (a download command; `SaveProps`: `name : [Same, Named(Str)]`), `File.fetch` (`File.FetchProps`: `url`, `method`, `headers`, `timeout : [Unlimited, Ms(U32)]`, `cache ?? Default`, `credentials ?? SameOrigin`), `fetched`, `FetchError` (`Network`, `Timeout`, `Status`, `TooLarge`, `Refused`) | [Files in Tasks](@/docs/files-in-tasks.md) |
 | Effects in a worker job | `File.read!` (`{ start, len }`) and `File.contents!`, answering `Try(_, [Unreadable])`, and `File.contents_utf8!`, `Try(Str, [Unreadable, InvalidUtf8])`; `Files.build!` (`import pf.Files`; `BuildProps`: `name`, `mime : [Auto, Mime(Str)] ?? Auto`, `start_from : [Empty, From(File)] ?? Empty`), `Builder`, `Builder.append!` (`Try({}, [TooLarge])`), `Builder.append_file!`, `Builder.finish!` | [Files in Tasks](@/docs/files-in-tasks.md) |
+| HTTP | `http`, `HttpProps` (defaulted method, headers, body, timeout, cache and credentials), `Cache` (`Default`, `NoStore`, `Reload`, `NoCache`, `ForceCache`), `Credentials` (`SameOrigin`, `Include`) | [HTTP options](@/docs/effects-and-browser.md#http-options) |
+| Transfer progress | `Transfer`, `ProgressReaction`, `ProgressProps`, `State.on_progress`, `react_progress`, `Reaction.with_progress` | [Transfer progress](@/docs/effects-and-browser.md#transfer-progress) |
 | Effects | `watch`, `watch_changes`, `watch_latest`, `on_post`, `on_post_by` (sample a declared reading only when issuing the post), `Outbox(item)` (`outbox({})`, `box.post(item)`, `box.last()`: `Unposted` or `Posted(item)`), `Reaction`, `State.on_result`, `react`, `react_by`, `Reaction.also` (two reactions to one result), `ignore`, `on_cleanup`, `cleanup`, `Request`, `Command` (the requests that await no result, which is what a cleanup's plan returns), `Result`, `HttpError`, `http_text`, `WorkFault`, `FileError`, and the plain data of port requests, `PortMessage`, `PortFailure` and `PortDelivery`, which the typed `Port` module wraps | [Effects and the Browser](@/docs/effects-and-browser.md) |
 
 A component is not an API of its own: it is a type module whose view is
@@ -380,9 +382,10 @@ it mounts.
 ## Protocol
 
 The command stream, event records, boot bytes and program declarations are versioned together. The
-current protocol is version 15: every nonempty page batch starts with a flags
+current protocol is version 16: every nonempty page batch starts with a flags
 byte, and a marked batch ends with `TRANSITION` (opcode 24). Worker answers
 have no page-batch header. Session storage adds section 11, and `GUARD` is
 opcode 25. Clipboard and failed storage writes have typed results; paste
-text has its own payload kind. The full wire protocol is Appendix B of
+text has its own payload kind. HTTP carries cache, credentials and an optional
+progress interval; transfer reports use tag 26 and counter 47. The full wire protocol is Appendix B of
 [design.md](https://github.com/lukewilliamboswell/roc-signals/blob/main/design.md).

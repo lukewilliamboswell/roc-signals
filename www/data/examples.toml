@@ -120,7 +120,7 @@ specs = "examples/status-page/specs"
 public = true
 section = "effects"
 features = ["Store", "Components", "HTTP", "Intervals", "Ports", "Custom elements"]
-what_to_try = "Wait about fifteen seconds for the API's latency to spike past its objective, then drop the connection for 20 s: the feed replays what it buffered at the page's pace and drops the rest, and the monitor counts the emits the page refused. Switch to another tab and back, and polling and the feed pause and resume."
+what_to_try = "Wait about fifteen seconds for the API's latency to spike past its objective, then press Drop the connection: Roc waits with seeded backoff, reconnects and resumes after the last reading kept. A long gap is counted instead of hidden. Switch to another tab and back, and polling, the feed and any retry timer pause and resume."
 # Its simulated checks and incident feed, the example's own JavaScript.
 backend = "backend.mjs"
 # Its simulated latency stream (a subscription) and the command that drops

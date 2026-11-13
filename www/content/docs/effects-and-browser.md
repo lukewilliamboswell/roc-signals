@@ -141,7 +141,7 @@ list is on, say), lift that state in and map both:
 
 | Request | Result |
 |---|---|
-| `Http({ method, url, headers, body, timeout_ms })` | `Http({ status, headers, body })`, `Network(message)` or `Timeout` |
+| `Engine.http({ url, … })` | `Http({ status, headers, body })`, `Network(message)` or `Timeout` |
 | `StorageGet(key)`, `SessionStorageGet(key)` | `Value(text)` or `Missing` |
 | `StorageChanges(key)` | Another document's local-storage `Value(text)` or `Missing`, the newest report per frame |
 | `StorageWriteFailures` | `StorageFailed({ store, key, reason })` for a refused local or session write; `store` is `Local` or `Session`, `reason` is `Quota` or `Unavailable` |
@@ -154,9 +154,9 @@ list is on, say), lift that state in and map both:
 | `MediaChanges(query)` | `Matches(Bool)`, the newest reported state per frame; query must be declared in `ProgramProps.media` |
 | `Work({ task, input, files, timeout_ms, on_dispose, on_cancel, prepared })` | `Work({ output, files })`, `WorkLost(fault)` or `Timeout`: a job of a registered task in a Web Worker. Apps use the typed `Worker` module instead; see [Workers](@/docs/workers.md) |
 | `ReadBytes({ file, max_bytes })`, `ReadUtf8({ file, max_bytes })` | `FileBytes(bytes)` or `FileText(text)`, or `FileFailed(error)`: a file read into the page. Made with `File.read_bytes` and `File.read_utf8`; see [Files](@/docs/files.md) |
-| `Upload({ method, url, headers, body, timeout_ms })` | As `Http`, with a [file](@/docs/files.md) as the body; made with `File.upload` |
+| `file.upload({ url, … })` | As `Http`, with a [file](@/docs/files.md) as the body; made with `File.upload` |
 | `Sha256(file)`, `ObjectUrl(file)` | `Digest(bytes)` or `FileUrl(url)`, or `FileFailed(error)`: made with `File.sha256` and `File.object_url`; see [Files](@/docs/files.md) |
-| `Fetch({ method, url, headers, timeout_ms })` | `Fetched({ status, headers, body })` with the body as a [file](@/docs/files.md), `Network(message)`, `Timeout` or `FileFailed(TooLarge)`: made with `File.fetch`, read with `Engine.fetched`; see [Files in Tasks](@/docs/files-in-tasks.md) |
+| `File.fetch({ url, … })` | `Fetched({ status, headers, body })` with the body as a [file](@/docs/files.md), `Network(message)`, `Timeout` or `FileFailed(TooLarge)`: made with `File.fetch`, read with `Engine.fetched`; see [Files in Tasks](@/docs/files-in-tasks.md) |
 | `PortCall({ port, message, timeout_ms })` | `PortAnswer(message)` or `PortFailed(failure)`, once. Made by a typed [port](@/docs/ports.md) call |
 | `PortSubscribe({ port, message })` | `PortAnswer(message)` for every message, or `PortFailed(failure)`, until the site is disposed or the JavaScript ends it. Made by a typed port subscription |
 | `Self` | `Now`, in a follow-up turn |
@@ -170,6 +170,74 @@ runtime will arm is ten minutes.
 
 To see where a worker job's time goes and how busy the pool is, read the
 runtime's monitor; see [Monitoring Workers](@/docs/worker-monitoring.md).
+
+### HTTP options
+
+Build a request with `Engine.http({ url })`. Its `HttpProps` default to
+`method: "GET"`, empty `headers` and `body`, `timeout: Unlimited`,
+`cache: Default` and `credentials: SameOrigin`. `timeout: Ms(ms)` is capped
+at ten minutes. Cache modes are `Default`, `NoStore`, `Reload`, `NoCache`
+and `ForceCache`, passed directly to the browser's fetch policy. A polled
+status endpoint can use `NoStore`; `NoCache` permits a stored response after
+revalidation. `Include` credentials permit cross-origin cookies subject to
+the browser's cookie and CORS rules. There is no `Omit`, `OnlyIfCached` or
+`mode` option.
+
+`File.fetch` has the same cache and credentials options. `file.upload`
+has credentials but no cache option. A mount's own `fetch` receives these
+options on every request, even when progress is requested.
+
+### Transfer progress
+
+Attach a progress handler to the final-result reaction:
+
+{{ sample(file="effects.roc", region="progress") }}
+
+`Transfer` carries `direction` (`Sending` or `Receiving`), `done: U64` and
+`total: Known(U64)` or `Unknown`. The handler receives the value the request
+was issued for, as the final reaction does. `State.on_progress` writes local
+state; `Engine.react_progress` builds a pure decision over store cells.
+Attaching it with `reaction.with_progress(props, handler)` asks for progress
+on every HTTP, upload or fetch request that site issues. `every_ms` defaults
+to 100 and has a floor of 16 milliseconds. `Reaction.also` composes progress
+handlers in the same atomic order as final reactions, with the smaller
+interval for the composed site. A later `with_progress` replaces its progress
+attachment. `resource` and `gather` have no
+reaction to attach it to; use a `watch_latest` site when progress matters.
+
+A report does not answer or retire the request. One undelivered report per
+request waits for a frame and newer counts replace it in place. The final
+result drains earlier reports first; cancellation and timeout discard them.
+`Result` gains no progress arm, so existing answer helpers keep their meaning.
+A reparented request's progress handler runs in the surviving ancestor's
+environment; writes to retired local state are skipped and counted.
+
+Receiving an HTTP body is counted from its response stream. Its total is
+unknown when the length is absent, encoded, or the runtime cannot establish
+that the visible length describes the decoded body. Uploads and default-cache
+file downloads that ask for progress use `XMLHttpRequest`, keeping the file
+body in the browser. A cross-origin upload with progress sends a CORS
+preflight: the server must answer `OPTIONS`, even when the same upload without
+progress is a simple request.
+
+A file download with both a non-default cache mode and progress uses a fetch
+stream, holding the body in JavaScript memory up to `maxFileBytes`. A mount's
+own `fetch` is always honoured; it likewise counts received bytes from the
+stream and reports sending complete once for an upload. Both transports
+answer the same status and headers; a fetched file's type is the response's
+`Content-Type`, or empty when absent. Progress is a courtesy, and may be coarse
+when the transport cannot expose intermediate counts.
+
+Cancelling or superseding a transfer aborts its fetch or XHR. Disposing its
+site keeps an admitted request running under the ordinary reparenting rule.
+
+### User activation
+
+Requests and port commands posted by a click's `on_post` or `on_post_by` site
+are performed inside that click's listener. A gesture-sensitive browser
+operation must start in the handler before yielding. Starting it from a later
+answer or timer turn has no guarantee of activation. See the
+[permission and share recipes](@/docs/port-recipes.md#a-gesture-reaches-the-handler).
 
 ## Commands
 
@@ -458,7 +526,7 @@ Formatting belongs to the app. This sample's pure civil-date conversion is:
 
 The app chooses its own pattern: Field Notes uses twelve hours for its first
 language `en-US`, twenty-four otherwise. This is an app rule, not CLDR.
-Browser CLDR formatting can use a batched port call; a hole never calls
+[Browser CLDR formatting](@/docs/port-recipes.md#browser-locale-formatting) can use a batched port call; a hole never calls
 `Intl` synchronously. The platform ships no calendar or formatting package.
 
 ### Ids from the seed
@@ -510,10 +578,9 @@ itself is one decision. [Conduit](@/examples/conduit.md) is built this way.
 
 ## Subscriptions and lifetime
 
-Connectivity, visibility, media, other documents' storage writes and a
-port's `Latest` messages report current
-state. They wait for the next animation frame; a newer waiting report
-from the same subscription replaces the earlier one in place. A visible
+Connectivity, visibility, media, other documents' storage writes, a
+port's `Latest` messages and transfer progress report current state. They wait for the next animation frame; a newer waiting report
+from the same source replaces the earlier one in place. A visible
 page given no frames drains within 100 ms, and a hidden page drains at the
 end of the reporting task.
 

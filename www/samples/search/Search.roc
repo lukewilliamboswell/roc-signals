@@ -24,7 +24,7 @@ Search := [].{
 		if query == "" {
 			[]
 		} else {
-			[Http({ method: "GET", url: "/api/search?q=${query}", headers: [], body: "", timeout_ms: 5000 })]
+			[Engine.http({ url: "/api/search?q=${query}", timeout: Ms(5000) })]
 		}
 
 	## Keep the body of a successful response, or the typed failure.

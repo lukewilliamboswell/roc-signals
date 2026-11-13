@@ -132,10 +132,14 @@ other, which the runtime performs on the browser's own file:
 
 - `file.upload({ url })` sends the file, or a range of it, as an HTTP
   request's body. `method` (`"POST"` unless you say), `headers` (none) and
-  `timeout` (`Unlimited`, or `Ms(ms)`) are optional. The browser streams it
+  `timeout` (`Unlimited`, or `Ms(ms)`) and `credentials` (`SameOrigin`, or
+  `Include`) are optional. The browser streams it
   from the file. Read the answer with `http_text`, as for any HTTP request; like
   one, it is still answered when the site that made it is disposed. A file
   the browser can no longer read fails it as a network failure.
+  Attach a [progress handler](@/docs/effects-and-browser.md#transfer-progress)
+  to its reaction to report sending counts. Cross-origin upload progress
+  requires the server to answer a CORS preflight.
 - `File.sha256(file)` answers the SHA-256 digest, 32 bytes, with
   `file_digest`. The browser reads the range into a buffer of its own, not
   the page's memory; more than `maxFileBytes` is `TooLarge`, and a page

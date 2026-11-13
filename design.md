@@ -308,7 +308,10 @@ reconsidered.
   focus, workers, files, layout observation, media queries, time, entropy,
   the user's languages and time zone, and writing the clipboard) is not a
   port's business. Reading the clipboard on demand remains a port. Formatting
-  with the browser's CLDR data is not modelled and may use a port. Nothing that needs a
+  with the browser's CLDR data is not modelled and may use a port. A live
+  connection (a WebSocket or event stream) is a port subscription. Its
+  reconnect policy is the app's state, written in Roc; the handler ends a
+  lost connection rather than reconnecting by itself. Nothing that needs a
   synchronous answer (a default to prevent, a layout measurement inside a
   turn) can be one. The hosted effects a worker task calls (see
   [Workers](#workers)) are not an FFI either: they are a closed, typed
@@ -1357,10 +1360,12 @@ The native runner applies the same bound to the turns one step raises.
 ### Reports and occurrences
 
 A report source states a current value. `OnlineChanges`,
-`VisibilityChanges`, `MediaChanges(query)` and port subscriptions declared
-`Latest` are report
-sources, identified by request id. Other sources join only through a
-declaration that states their identity and which results are reports.
+`VisibilityChanges`, `MediaChanges(query)`, `StorageChanges(key)` and port
+subscriptions declared `Latest` are report sources, identified by request id.
+An awaited HTTP, upload or fetch request whose reaction asks for progress is
+also a report source, identified by its request id: its progress reports do
+not retire that id, and its final result is an occurrence. Other sources join
+only through a declaration that states their identity and which results are reports.
 An `on_pointer_paced` move is identified by its declaring element, handler
 number and pointer id. Element identity, rather than a recycled node id,
 keeps a new element's reports separate; two pointers never replace each
@@ -1738,8 +1743,33 @@ reducer or the decision sees both what changed and what is sent.
 - **Awaited requests** get an id: `Http`, `StorageGet`, `SessionStorageGet`,
   `ClipboardWrite`, `Timer`, `Work` and
   the operations on a file the app holds (see [Files](#files)) deliver one
-  result; `Interval` and `Popstate` are subscriptions that deliver any number
+  result, preceded, when the site asks for it, by transfer progress reports
+  that do not retire the id; `Interval` and `Popstate` are subscriptions that deliver any number
   of results until stopped.
+- **HTTP options.** `http(HttpProps)` builds `Http` with a required URL and
+  defaulted method (`GET`), headers and body (empty), timeout (`Unlimited`),
+  cache (`Default`) and credentials (`SameOrigin`). Cache is `Default`,
+  `NoStore`, `Reload`, `NoCache` or `ForceCache`; credentials is `SameOrigin`
+  or `Include`. `File.fetch` offers both options; `File.upload` offers only
+  credentials. Neither transport can honour `Omit`, and `OnlyIfCached`
+  needs a mode the request does not carry, so neither is expressible.
+- **Transfer progress.** A separate `ProgressReaction(ctx, a)` receives the
+  issued-for value and `Transfer { direction, done, total }`. Direction is
+  `Sending` or `Receiving`, counts are U64 and total is `Known(U64)` or
+  `Unknown`. `State.on_progress` builds a local reducer; `react_progress`
+  builds a pure decision over store cells. Attaching it with
+  `reaction.with_progress(props, handler)` asks for progress on every `Http`,
+  `Upload` and `Fetch` the site issues. `ProgressProps.every_ms` defaults to
+  100, raised to at least 16. `Reaction.also` composes attached progress
+  handlers atomically in operand order, using the smaller interval for the
+  composed site; a subsequent `with_progress` replaces that attachment.
+  There is no progress arm of `Result`, and
+  `resource` and `gather` have no reaction on which to request it. Progress
+  uses the ordinary report queue: one waiting value per id, replaced in
+  place. The final result drains earlier progress before delivery;
+  cancellation and timeout discard waiting progress. No report is delivered
+  after the final result. A report for a live request that did not ask for
+  one is a contract error at its issuing site.
 - **`Work`** runs a job of a task from the program's worker catalogue (see
   [Workers](#workers)), in a Web Worker that instantiates the same compiled
   module. A catalogue entry is a namespaced, unversioned name and an
@@ -2075,8 +2105,12 @@ deployment allows is a mount option, named `max…Bytes` or `maxWorkers`
   reaches the bound is a loop that multiplies, or a follow-up whose own turn
   fans out past it.
 - **HTTP timeout.** Each request carries `timeout_ms` (0 = none), capped at
-  600 s. A timeout delivers `Timeout`; the runtime arms at most one timer per
-  admitted request and clears it on completion, failure, timeout or cancel.
+  600 s. A timeout delivers `Timeout`; the runtime arms at most one timeout
+  timer per admitted request, plus at most one sampling timer for a request
+  that reports progress. Both are cleared on completion, failure, timeout
+  or cancel. Sampling uses an internal monotonic clock, never another read
+  of the app's wall-clock environment. Large U32 intervals are scheduled
+  without the browser's signed-32-bit timer clamp shortening them.
 - **Work timeout.** Each job carries `timeout_ms` (0 = none), capped at
   600 s like an HTTP timeout. Its expiry stops the job by terminating its
   worker and delivers `Timeout`. A cancelled job that finishes (`on_cancel:
@@ -2132,7 +2166,8 @@ rendered the control:
   jobs of tasks that say `Keep`) reparent** to the nearest surviving
   ancestor site — the `when`, `switch` or `remount_on` that replaced its
   body, or the `each` or view site that removed the row. When the result
-  arrives, the reaction runs in that ancestor's current environment.
+  arrives, the reaction runs in that ancestor's current environment. Its
+  progress handler runs there too, under the same rules for writes.
   Disposed layers are snapshots there: a write to a retired state is skipped
   and counted (`skipped`), writes to surviving states commit, and the write
   set names only surviving layers. The scope that held the state is gone, so
@@ -2217,6 +2252,8 @@ so both spec runners read them: specs assert the cumulative ones as the
 `effects_*` metrics; the live gauge is not a metric, and specs assert what is
 outstanding with `expect-pending-effects` and `expect-interval` instead. The
 effect-channel fuzz model asserts all of them exactly after every step.
+`effects_progress` separately counts delivered transfer reports (index 47),
+excluding replaced reports; they do not increment `effects_delivered`.
 
 ### Observation
 
@@ -2605,13 +2642,27 @@ Digests and URLs are pure in effect, like a read, so they are scoped.
   and no spec can see it. A save issued in the turn of the click that asks
   for it carries the user's gesture. The save picker (`showSaveFilePicker`)
   is not built. The same synchronous turn preserves activation for
-  `ClipboardWrite` and an app's port command; a later result turn has no
+  `ClipboardWrite`, an app's port command and a port call (permission or
+  sharing, for example), provided its handler starts the browser operation
+  before yielding; a later result turn has no
   such guarantee.
 - `File.fetch` is an HTTP request whose response body becomes a file the
   page holds (`Fetch`, FX kind 15, answered `Fetched({ status, headers,
   body })`, result tag 21 with one staged handle). The body is the
   browser's `Blob` and never enters the instance's memory: a large one
-  stays on disk, measured. A body over `maxFileBytes` is
+  stays on disk, measured. With progress requested, uploads and default-cache
+  file downloads use `XMLHttpRequest`, keeping the body out of JavaScript.
+  A download with a non-default cache mode and progress instead reads a
+  fetch stream, holding the body in JavaScript memory up to `maxFileBytes`.
+  A mount's own `fetch` always performs all requests when supplied: receiving
+  progress then counts that stream, and an upload reports sending complete
+  once. Both transports answer the same status and headers, and a fetched
+  file's type is the `Content-Type` header, or empty when absent. An upload
+  with progress crosses origins with a CORS preflight, which its server must
+  answer even if the upload without progress would be a simple request.
+  HTTP text receiving counts its fetch response stream. A total is unknown
+  when length is absent, encoded, or the runtime cannot establish that it
+  names the decoded body. A body over `maxFileBytes` is
   `FileFailed(TooLarge)`; otherwise it fails and is kept on disposal as
   `Http` is. The file is a file like any other: it can be read, digested,
   shown, uploaded, saved, or sent to a task.
@@ -3389,7 +3440,12 @@ of steps written against the rendered UI:
   request or upload with the staged answer, fire a timer, run a worker job,
   or perform an operation on a file, in issue order), `expect-upload N FILE
   START LEN` (the N-th is a pending upload of that range of a setup file),
-  `lose-work` and
+  `expect-request N` checks selected method, URL, cache and credentials of
+  the N-th currently pending effect, in issue order; `progress-effect N`
+  reports exact U64 sending or receiving counts for a current pending
+  transfer that requested progress, without retiring it. These two steps
+  number the current pending list, including timers, calls and jobs;
+  completed or cancelled entries no longer count. `lose-work` and
   `time-out-work` (answer a pending worker job `WorkLost` with a fault class,
   or `Timeout`, without running it), `expect-pending-work`, interval ticks,
   `set-visibility`, `set-online`. A fetch takes the staged `stub-http`
@@ -3405,7 +3461,9 @@ of steps written against the rendered UI:
   `answer-port N reply|throw|too-large|timeout` answers it (an answer's JSON
   is delivered as written, so a spec can answer what the app's type does
   not accept). Subscriptions are addressed by port: `emit-port`,
-  `close-port`, `fail-port` and `expect-port-subscriptions`. Commands are
+  `close-port`, `fail-port` and `expect-port-subscriptions`.
+  `expect-port-subscription-arg port K json` checks the one-based K-th
+  currently active subscription on that port, retaining no history. Commands are
   logged per document: `expect-port-sent port K json` and
   `expect-port-sends port n`. Replacement is observable in both runners
   through `hold-reports`, `release-reports` and `expect-reports-replaced`;
@@ -3814,6 +3872,7 @@ metric: soak plateaus assert it.
 | `scopes_created` / `scopes_disposed` | Scopes mounted / disposed: `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites |
 | `dirty_source_roots` | What a turn wrote: one for each cell, and one for each layer when its readers are refreshed, whether its site started the pass, joined it or was reached by the walk after it (a layer disposed before then counts none; a `resource` answer that folds to an equal value writes none, and a decision that returns no write counts nothing) |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
+| `effects_progress` | Delivered transfer reports, excluding replacements; the request remains in flight and the final-delivery counter is unchanged |
 | `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters"): awaited requests issued (one `FX` each), results delivered to a reaction, stale results dropped, requests refused at the in-flight cap, requests cancelled (one `CANCEL` each), requests reparented to a surviving ancestor, and reparented writes skipped because their state was retired |
 | `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it, and `PROP`/`HPROP` whose row claims an attribute; natively from the oracle, in Chrome from a MutationObserver of the mirrored attributes |
 | `expect-interval ms n` | Live `INTERVAL` subscriptions with period `ms` |
@@ -4276,7 +4335,7 @@ File.read_bytes, File.read_utf8 : File, ReadProps -> Request   # awaited reads i
 ReadProps := { max_bytes : U64 ?? 8388608 }    # under the page's maxFileBytes
 File.upload : File, UploadProps -> Request        # the file as an HTTP body
 UploadProps := { url : Str, method : Str ?? "POST", headers : List((Str, Str)) ?? [],
-                 timeout : [Unlimited, Ms(U32)] ?? Unlimited }
+                 timeout : [Unlimited, Ms(U32)] ?? Unlimited, credentials : Credentials ?? SameOrigin }
 File.sha256 : File -> Request                     # answered Digest(32 bytes)
 File.object_url : File -> Request                 # answered FileUrl(url), valid while the handle lives
 file_bytes, file_digest : Result -> Try(List(U8), FileError)
@@ -4284,8 +4343,10 @@ file_text, file_url : Result -> Try(Str, FileError)
 File.save : File, { name : [Same, Named(Str)] ?? Same }
             -> [Save({ file : File, name : Str })]   # a command: a download; typed by its one tag,
                                               # so it fits a List(Request) and a List(Command)
-File.fetch : { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [],
-               timeout : [Unlimited, Ms(U32)] ?? Unlimited } -> Request   # answered Fetched
+File.fetch : File.FetchProps -> Request             # answered Fetched
+File.FetchProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [],
+                timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default,
+                credentials : Credentials ?? SameOrigin }
 fetched : Result -> Try(File, FetchError)
 FetchError : [Network(Str), Timeout, Status(U16), TooLarge, Refused]
 # In a worker job only (a task's run!, a preparation's prepare!; effects):
@@ -4302,6 +4363,18 @@ Received : { files : List(File), refused : U64 }
 on_files : [Change, Drop, Paste], FilesHandler(ctx) -> Attr(ctx)
 
 # Effects
+Cache : [Default, NoStore, Reload, NoCache, ForceCache]
+Credentials : [SameOrigin, Include]
+HttpProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [], body : Str ?? "",
+               timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
+http : HttpProps -> Request
+Transfer : { direction : [Sending, Receiving], done : U64, total : [Known(U64), Unknown] }
+ProgressReaction(ctx, a)                       # opaque: separate from a final-result reaction
+ProgressProps := { every_ms : U32 ?? 100 }     # floor 16 ms
+react_progress : (a, Transfer -> List(Write(st))) -> ProgressReaction(ctx, a)
+                  where [ctx.store : () -> Reach(ctx, st)]
+State.on_progress : State(ctx, s), (s, a, Transfer -> s) -> ProgressReaction(ctx, a)
+Reaction.with_progress : Reaction(ctx, a), ProgressProps, ProgressReaction(ctx, a) -> Reaction(ctx, a)
 watch : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
 watch_changes : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
 watch_latest : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)   # supersedes
@@ -4314,7 +4387,7 @@ on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> 
 ignore : {} -> Reaction(ctx, a)
 on_cleanup : Str, Signal(ctx, a), (a -> List(Command)) -> Elem(ctx)   # an awaited request does not compile
 cleanup : Str -> Elem(ctx)
-Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), SessionStorageGet(Str), Timer(U32),
+Request : [Http({ method, url, headers, body, timeout_ms, cache, credentials }), StorageGet(Str), SessionStorageGet(Str), Timer(U32),
        Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32,
               on_dispose : [Stop, Keep], on_cancel : [Stop, Finish],
               prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
@@ -4326,10 +4399,10 @@ Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Se
        ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
        StorageSet(Str, Str), StorageRemove(Str), SessionStorageSet(Str, Str), SessionStorageRemove(Str), ReadBytes({ file, max_bytes }),
        ReadUtf8({ file, max_bytes }),
-       Upload({ method, url, headers, body : File, timeout_ms }), Sha256(File), ObjectUrl(File),
+       Upload({ method, url, headers, body : File, timeout_ms, credentials }), Sha256(File), ObjectUrl(File),
        PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
        PortSubscribe({ port, message }),
-       Save({ file : File, name : Str }), Fetch({ method, url, headers, timeout_ms }),
+       Save({ file : File, name : Str }), Fetch({ method, url, headers, timeout_ms, cache, credentials }),
        ViewTransition(List(Str))]
 Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str), FocusInPlace(Str),
        ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
@@ -4510,7 +4583,7 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **15**. The engine declares it
+This appendix is protocol version **16**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -4529,7 +4602,7 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (15) |
+| `roc_engine_version` | `() -> u32` | The protocol version (16) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -4681,9 +4754,10 @@ that has run, in first-run order, with its run count.
 | 44 | Live observations (`observations_live`), a gauge |
 | 45 | Marked batches (`view_transitions`; `TRANSITION`, opcode 24), excluded from `patches_emitted` |
 | 46 | Guard commands (`GUARD`, opcode 25), excluded from `patches_emitted` |
+| 47 | Transfer progress reports delivered (`effects_progress`); excludes replaced reports and does not increment final results (`effects_delivered`) |
 
-Index 0 is unused; the record has 46 counters. The metric names the spec
-language accepts map onto these indices (`platform/Scm.roc`, `metric_names`).
+Index 0 is unused; the record has 48 entries, indices 0 through 47. The metric
+names the spec language accepts map onto these indices (`platform/Scm.roc`, `metric_names`).
 
 ### Event records
 
@@ -4733,6 +4807,7 @@ An event is `event(node, handler)` with the payload staged first:
 | 23 | — | `Copied`; no trailing bytes |
 | 24 | `reason:u8` | `ClipboardFailed`: `1` NotAllowed, `2` Unavailable |
 | 25 | `store:u8 reason:u8 key:rest` | `StorageFailed`: store `1` Local, `2` Session; reason `1` Quota, `2` Unavailable |
+| 26 | `direction:u8 done:u64 known:u8 total:u64` | Transfer progress, not a `Result`: direction `1` Sending, `2` Receiving; known `0` Unknown (total must be zero), `1` Known. Exactly 19 bytes including the tag. Keeps the id live; a live request without a progress handler is a contract error |
 
 A result payload that does not follow this table (unknown tag, bytes after a
 bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file
@@ -4740,6 +4815,11 @@ failure other than `1`–`3`, a digest that is not 32 bytes, a port failure othe
 than `1`–`3`, a port answer, job answer or fetched body whose file count is not
 the handles staged with it, a truncated HTTP record, text that is not UTF-8) is
 a `contract` fault.
+
+Progress uses the same effect node and request id as its final result. Unknown
+directions, unknown total flags, nonzero Unknown totals, truncation or trailing
+bytes are contract faults. A cancelled or completed id is stale under the
+ordinary id rule.
 
 ### Node ids
 
@@ -4821,7 +4901,7 @@ an earlier command. Scroll end is resolved at perform time.
 
 | Kind | Operands | Request |
 |---|---|---|
-| 1 | `method:str url:str n:u32 (name:str value:str)* body:str timeout_ms:u32` | HTTP |
+| 1 | `method:str url:str n:u32 (name:str value:str)* body:str timeout_ms:u32 cache:u8 credentials:u8 progress_ms:u32` | HTTP |
 | 2 | `key:str` | Storage read (answered one task later) |
 | 3 | `ms:u32` | Timer |
 | 4 | `ms:u32` | Interval (subscription) |
@@ -4832,15 +4912,22 @@ an earlier command. Scroll end is resolved at perform time.
 | 9 | `port:str message timeout_ms:u32` | Port call (`message` as for `PORT`); `timeout_ms` 0 = none, capped at 600 000 |
 | 10 | `port:str message` | Port subscription |
 | 11 | `mode:u8 token:u64 start:u64 len:u64 max_bytes:u64` | Read a file's range into the page: `mode` `1` bytes (answered tag 16), `2` text (tag 17); a range longer than `max_bytes`, or than the runtime's `maxFileBytes`, is answered tag 13 `TooLarge` unread |
-| 12 | `method:str url:str n:u32 (name:str value:str)* token:u64 start:u64 len:u64 timeout_ms:u32` | HTTP with a file's range as the body (answered as kind 1); a method of `GET` or `HEAD` is a `contract` error in the engine |
+| 12 | `method:str url:str n:u32 (name:str value:str)* token:u64 start:u64 len:u64 timeout_ms:u32 cache:u8 credentials:u8 progress_ms:u32` | HTTP with a file's range as the body (answered as kind 1); a method of `GET` or `HEAD` is a `contract` error in the engine |
 | 13 | `algorithm:u8 token:u64 start:u64 len:u64` | Digest of a file's range: `algorithm` `1` SHA-256 (tag 18) |
 | 14 | `token:u64 start:u64 len:u64` | A URL that shows a file's range (tag 19) |
-| 15 | `method:str url:str n:u32 (name:str value:str)* timeout_ms:u32` | HTTP whose response body becomes a file (tag 21; failures as kind 1, a body over `maxFileBytes` tag 13 reason 2) |
+| 15 | `method:str url:str n:u32 (name:str value:str)* timeout_ms:u32 cache:u8 credentials:u8 progress_ms:u32` | HTTP whose response body becomes a file (tag 21; failures as kind 1, a body over `maxFileBytes` tag 13 reason 2) |
 | 16 | `query:str` | MediaChanges subscription; answered with tag 22 |
 | 17 | `key:str` | Session storage read, answered one task later |
 | 18 | `key:str` | StorageChanges report subscription; event values use tags 3 and 4 |
 | 19 | `text:str html:u8 [html:str]` | Clipboard write; flag `0` plain text, `1` text and HTML; answers tag 23 or 24 |
 | 20 | — | StorageWriteFailures occurrence subscription; answers tag 25 one task after a failed write |
+
+FX kinds 1, 12 and 15 encode cache as `1` Default, `2` NoStore,
+`3` Reload, `4` NoCache, `5` ForceCache, and credentials as `1` SameOrigin,
+`2` Include. Kind 12 requires cache `1`. Any other policy byte is a
+contract fault. `progress_ms` is `0` off or at least `16`, set from the
+issuing reaction, not a request field. The runtime passes cache and
+credentials through to a mount's fetch.
 
 **Template encoding** (`TEMPLATE` bytes): a node tree, then a hole table.
 

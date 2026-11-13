@@ -100,11 +100,12 @@ Targets := [].{
 	}
 
 	## Exercise the monitor's bounded aggregation and environment facts, including
-	## time-zone probes in UTC and Sydney, without a browser.
+	## time-zone probes in UTC and Sydney, and the documented port handlers
+	## with bounded queues and browser-resource cleanup, without a browser.
 	runtime_unit! : SpecSuite.Options => Try(List(Str), _)
 	runtime_unit! = |o| {
 		var $failures = []
-		for script in ["monitor-unit.mjs", "environment-unit.mjs"] {
+		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs"] {
 			code = Proc.status!({ program: o.node, args: ["tests/runtime/${script}"], cwd: o.root })?
 			if code != 0 {
 				$failures = $failures.append("${script} failed (exit ${code.to_str()})")

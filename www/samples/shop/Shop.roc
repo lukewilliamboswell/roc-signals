@@ -79,7 +79,7 @@ Shop := [CornerShop].{
 	ordering = |{}|
 		Engine.on_post(
 			Shop.cells.sending.signal(),
-			|total| [Http({ method: "POST", url: "/api/orders", headers: [], body: total.to_str(), timeout_ms: 5000 })],
+			|total| [Engine.http({ method: "POST", url: "/api/orders", body: total.to_str(), timeout: Ms(5000) })],
 			Engine.react(Shop.ordered),
 		)
 	# endregion answer

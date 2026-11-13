@@ -136,14 +136,22 @@ is ready. Choosing where to save (a save dialog) is not built yet.
 ## Downloading into a file
 
 `File.fetch({ url })` is an HTTP request whose response body becomes a file
-the page holds. The body stays in the browser (a large one on disk) and never
-enters the page's memory; read the answer with `Engine.fetched`, or match
+the page holds. Ordinarily the body stays in the browser (a large one on
+disk) and never enters Wasm memory; read the answer with `Engine.fetched`, or match
 `Fetched({ status, headers, body })` to read the status and headers. The
 file is a file like any other, so a task can process it:
 
 {{ sample(file="tasks/Convert.roc", region="fetch") }}
 
 {{ sample(file="tasks/Convert.roc", region="measure") }}
+
+`File.FetchProps` also accepts `cache` (`Default` unless specified) and
+`credentials` (`SameOrigin` or `Include`). Attach a
+[progress handler](@/docs/effects-and-browser.md#transfer-progress) to follow
+receiving counts. Default-cache downloads use XHR for progress; a non-default
+cache mode with progress uses a fetch stream and holds the body in JavaScript
+memory up to `maxFileBytes`. A mount's own `fetch` is always used when supplied
+and has the same stream cost for progress.
 
 A body larger than the page's `maxFileBytes` mount option (256 MiB by
 default) is `Err(TooLarge)`. Like an HTTP request, a fetch is kept when its

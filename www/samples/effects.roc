@@ -39,7 +39,7 @@ search : State(Ctx, Model) -> Elem(Ctx)
 search = |model|
 	Engine.watch_changes(
 		model.signal().map(|m| m.query),
-		|q| [Http({ method: "GET", url: "/api/search?q=${q}", headers: [], body: "", timeout_ms: 5000 })],
+		|q| [Engine.http({ url: "/api/search?q=${q}", timeout: Ms(5000) })],
 		model.on_result(
 			|m, q, res|
 				if q != m.query {
@@ -64,7 +64,7 @@ save = |model| [
 	Html.button("Save search", [], model.update(|m| { ..m, saving: m.saving.post(m.query) })),
 	Engine.on_post(
 		model.signal().map(|m| m.saving),
-		|q| [Http({ method: "POST", url: "/api/saved", headers: [], body: q, timeout_ms: 5000 })],
+		|q| [Engine.http({ method: "POST", url: "/api/saved", body: q, timeout: Ms(5000) })],
 		model.on_result(
 			|m, q, res|
 				match Engine.http_text(res) {
@@ -189,7 +189,7 @@ page = |model|
 			.concat(subscriptions(model))
 			.concat(drafts(model))
 			.concat(copy_search(model))
-			.concat([paste_search(model)]),
+			.concat([paste_search(model), progress_search({})]),
 	)
 
 # region scroll
@@ -209,6 +209,7 @@ reveal_problem = |invalid| Engine.watch_changes(
 ## The narrow scroll tag also fits cleanup's command-only plan.
 restore_scroll : Engine.Signal(Ctx, {}) -> Elem(Ctx)
 restore_scroll = |signal| Engine.on_cleanup("restore page position", signal, |_| [Engine.scroll_into_view("search", {}), ScrollTo("search", { top: Start, left: Keep, behavior: Auto })])
+
 # endregion scroll
 
 # region session
@@ -220,15 +221,18 @@ drafts = |model| [
 	Engine.watch(
 		Engine.const({}),
 		|_| [StorageWriteFailures],
-		model.on_result(|m, _, result| match result {
-			StorageFailed({ store: _, key, reason: Quota }) => { ..m, draft_status: "Not kept: ${key} is over the storage quota" }
-			StorageFailed({ store: _, key, reason: Unavailable }) => { ..m, draft_status: "Not kept: storage for ${key} is unavailable" }
-			Refused => { ..m, draft_status: "Storage failures cannot be reported" }
-			_ => m
-		}),
+		model.on_result(
+			|m, _, result| match result {
+				StorageFailed({ store: _, key, reason: Quota }) => { ..m, draft_status: "Not kept: ${key} is over the storage quota" }
+				StorageFailed({ store: _, key, reason: Unavailable }) => { ..m, draft_status: "Not kept: storage for ${key} is unavailable" }
+				Refused => { ..m, draft_status: "Storage failures cannot be reported" }
+				_ => m
+			},
+		),
 	),
 	Html.p_s(model.signal().map(|m| m.draft_status), []),
 ]
+
 # endregion session
 
 # region guard
@@ -236,6 +240,7 @@ drafts = |model| [
 ## numbers. Its live true guards jointly request one leave warning.
 leave_warning : Engine.Signal(Ctx, Bool) -> Elem(Ctx)
 leave_warning = |dirty| Engine.guard_leave(dirty)
+
 # endregion guard
 
 # region clipboard
@@ -249,18 +254,21 @@ copy_search = |model| [
 		model.signal().map(|m| m.copies),
 		model.signal().map(|m| m.query),
 		|text, _| [Clipboard.text(text)],
-		model.on_result(|m, _, result| {
-			copy_status = match Clipboard.written(result) {
-				Ok(_) => "Copied"
-				Err(NotAllowed) => "Copy blocked by the browser"
-				Err(Unavailable) => "The clipboard is unavailable"
-				Err(Refused) => "Too many requests to copy now"
-			}
-			{ ..m, copy_status }
-		}),
+		model.on_result(
+			|m, _, result| {
+				copy_status = match Clipboard.written(result) {
+					Ok(_) => "Copied"
+					Err(NotAllowed) => "Copy blocked by the browser"
+					Err(Unavailable) => "The clipboard is unavailable"
+					Err(Refused) => "Too many requests to copy now"
+				}
+				{ ..m, copy_status }
+			},
+		),
 	),
 	Html.p_s(model.signal().map(|m| m.copy_status), []),
 ]
+
 # endregion clipboard
 
 # region paste
@@ -271,11 +279,56 @@ paste_search = |model| Html.div_attrs(
 	[
 		Engine.attr("tabindex", "0"),
 		Engine.attr("aria-label", "Paste a search"),
-		Html.on_paste_text(model.set_value(|m, pasted| match pasted {
-			Text(text) => { ..m, query: text, results: Loading, paste_status: "Search imported", draft_status: "", drafts: m.drafts.post({}) }
-			TooLarge => { ..m, paste_status: "Pasted text is too large" }
-		})),
+		Html.on_paste_text(
+			model.set_value(
+				|m, pasted| match pasted {
+					Text(text) => { ..m, query: text, results: Loading, paste_status: "Search imported", draft_status: "", drafts: m.drafts.post({}) }
+					TooLarge => { ..m, paste_status: "Pasted text is too large" }
+				},
+			),
+		),
 	],
 	[Engine.text("Paste a search here"), Html.p_s(model.signal().map(|m| m.paste_status), [])],
 )
+
 # endregion paste
+
+# region progress
+## Attaching this handler asks for sampled progress on the site's transfers.
+## Reports update the caption; only the final result answers the request.
+progress_search : {} -> Elem(ctx)
+progress_search = |_| Engine.state(
+	{ sent: Engine.outbox({}), caption: "Not started" },
+	|state| Html.div(
+		"transfer",
+		[
+			Html.button("Download report", [], state.update(|s| { ..s, sent: s.sent.post({}), caption: "Starting…" })),
+			Engine.on_post(
+				state.signal().map(|s| s.sent),
+				|_| [Engine.http({ url: "/api/report", cache: NoStore, credentials: Include, timeout: Ms(30000) })],
+				state.on_result(
+					|s, _, result| {
+						..s,
+						caption: match Engine.http_text(result) {
+							Ok(_) => "Report received"
+							Err(error) => "Report failed: ${Str.inspect(error)}"
+						},
+					},
+				).with_progress(
+					{ every_ms: 250 },
+					state.on_progress(
+						|s, _, transfer| {
+							..s,
+							caption: match transfer.total {
+								Known(total) => "Received ${transfer.done.to_str()} of ${total.to_str()} bytes"
+								Unknown => "Received ${transfer.done.to_str()} bytes"
+							},
+						},
+					),
+				),
+			),
+			Html.p_s(state.signal().map(|s| s.caption), []),
+		],
+	),
+)
+# endregion progress

@@ -1,7 +1,7 @@
 +++
 title = "Testing"
 description = "Test decisions as functions with expect, write .scm specs against the rendered UI, control effects and intervals, and assert how much work an update did, natively and in Chrome."
-weight = 17
+weight = 18
 template = "page.html"
 +++
 
@@ -483,6 +483,8 @@ browsers do.
 | `(stub-http "label" :url "/api/x" :status 200 :body "…")` | Stage an HTTP answer; optional `:headers (("name" "value") …)`, default `content-type: application/json`. `:status` is 100–999. Staging a second answer before one is used fails |
 | `(stub-http-reject "label" :kind network :detail "offline")` | Stage a failure: `network` with the browser's message, or `timeout` with an empty `:detail` |
 | `(run-effect N)` | Answer the N-th HTTP request, upload, fetch, timer, worker job or operation on a file the current document issued (1-based, in issue order; port calls share the numbering but are answered with `answer-port` (see [Ports](#ports)); subscriptions, commands and storage reads not counted). It must still be pending. A timer fires; a worker job runs its task (in Chrome in a real worker, natively in a child process that serves the job's effects from the setup files, the step waiting for its result: a task that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request or an upload takes the staged answer, and an HTTP response's `:url` must equal the request's; a page read, a digest or a file URL is performed on the setup file (see [Files](#files)) |
+| `(expect-request N :method "GET" :url "/api/status" :cache no-store :credentials include)` | Assert selected fields of currently pending HTTP, upload or fetch occurrence N; every keyword is optional. Cache values are `default`, `no-store`, `reload`, `no-cache`, `force-cache`; credentials are `same-origin`, `include` |
+| `(progress-effect N sending 1024 4096)` | Report progress for pending occurrence N without answering it; direction is `sending` or `receiving`, counts are exact U64, and the total may be `unknown`. Fails when N did not ask for progress; honours `hold-reports` |
 | `(expect-pending-effects N)` | Exactly N HTTP requests, uploads, fetches, timers, worker jobs, operations on files and port calls are waiting to be answered |
 | `(expect-pending-work "task" N)` | Exactly N worker jobs of the task of that name are waiting |
 | `(lose-work N FAULT)` | Answer the N-th effect occurrence, a pending worker job, as `WorkLost(FAULT)` without running it. `FAULT` is `contract`, `resource_limit`, `out_of_memory`, `app_crash`, `expect_failed`, `unavailable` or `executor` |
@@ -494,11 +496,16 @@ browsers do.
 | `(set-visibility hidden)` | Change page visibility and notify `VisibilityChanges` subscribers |
 | `(expect-cleanup "name" N)` | The `on_cleanup` site named `name` has run N times |
 
+`expect-request` and `progress-effect` number the **current pending list**,
+in issue order, including timers, calls and jobs. Completed and cancelled
+entries no longer count. This differs from `run-effect`, which addresses the
+document's original issue occurrence.
+
 ### Reports
 
 A step normally acts as its own frame: any state reports it raises are
 delivered before the next step. `set-online`, `set-visibility` and
-`emit-port` on a `Latest` subscription raise reports. To check several
+`emit-port` on a `Latest` subscription and `progress-effect` raise reports. To check several
 reports meeting before a frame, hold and release them explicitly:
 
 | Step | Meaning |
@@ -683,6 +690,7 @@ awaited requests.
 | `(emit-port "port" "json")` | Deliver a message to every live subscription on `port`; fails when none is live |
 | `(close-port "port")`, `(fail-port "port" "message")` | End every live subscription on `port` with `Closed` or `Threw` |
 | `(expect-port-subscriptions "port" N)` | Exactly N subscriptions on `port` are live |
+| `(expect-port-subscription-arg "port" k "json")` | The one-based k-th currently active subscription on `port` has exactly this argument; no subscription history is retained |
 | `(expect-port-sent "port" K "json")` | The K-th command (from 1) sent on `port` carried exactly `json` |
 | `(expect-port-sends "port" N)` | Exactly N commands were sent on `port` |
 
@@ -725,12 +733,13 @@ does not fail your spec.
 | `dirty_source_roots` | What a turn wrote: the local states and the cells. A decision that returns no write counts nothing |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons in keyed reconciliation |
 | `effects_issued` | Awaited requests issued (HTTP, timers, storage reads, subscriptions, worker jobs); a refused request is not issued |
-| `effects_delivered` | Results delivered to a reaction, a `Refused` answer included |
+| `effects_delivered` | Results delivered to a reaction, a `Refused` answer included; progress excluded |
+| `effects_progress` | Transfer progress reports delivered to a progress handler; replaced reports excluded |
 | `effects_stale` | Results dropped because their request was no longer in flight |
 | `effects_refused` | Requests refused because the in-flight table was full |
 | `effects_cancelled` | Requests stopped because their site was disposed or superseded |
 | `effects_reparented` | Admitted requests handed to a surviving ancestor when their site was disposed |
-| `effects_skipped` | Writes a reparented result made to state that no longer exists |
+| `effects_skipped` | Writes a reparented result or progress report made to state that no longer exists |
 
 Any other metric name is a parse error. Two more steps measure work on one
 element or service:

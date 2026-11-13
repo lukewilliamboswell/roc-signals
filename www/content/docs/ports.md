@@ -341,6 +341,7 @@ counts in the same numbering as `run-effect`:
 | `(emit-port "port" "json")` | Deliver a message to every live subscription on `port` |
 | `(close-port "port")`, `(fail-port "port" "message")` | End every live subscription on `port` with `Closed` or `Threw` |
 | `(expect-port-subscriptions "port" n)` | Exactly `n` subscriptions on `port` are live |
+| `(expect-port-subscription-arg "port" k "json")` | The one-based `k`-th currently active subscription on `port` has exactly this argument |
 | `(expect-port-sent "port" k "json")`, `(expect-port-sends "port" n)` | The `k`-th command sent on `port` carried `json`; `n` were sent |
 
 Commands are not awaited, so `expect-pending-effects` does not count them.
@@ -354,6 +355,10 @@ opens its own page in two tabs on one IndexedDB, and checks the records
 the handlers wrote, a reload, and each tab seeing the other's changes. A
 handler that needs no browser service can also be tested as the plain
 function it is, for example with `node:test`.
+
+The [Port Recipes](@/docs/port-recipes.md) page supplies complete declarations,
+handlers and specs for WebSocket/SSE, permissions, sharing, clipboard reads,
+geolocation, media capture, fullscreen, wake lock and batched locale formatting.
 
 ## A port, an effect or a worker?
 
