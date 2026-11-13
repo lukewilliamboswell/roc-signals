@@ -234,12 +234,14 @@ HandlersApp := [].{
 	)
 
 	program : Engine.Program
-	program = Engine.program(
-		|| Html.div(
+	program = Engine.program_boot(
+		{},
+		|boot| Html.div(
 			"handlers",
 			[
 				HandlersApp.presses({}),
 				HandlersApp.keyboard({}),
+				HandlersApp.keyboard_document(boot.url),
 				Engine.state("none", HandlersApp.owner),
 				HandlersApp.counter({}),
 				Engine.state(0.I64, HandlersApp.answers),
@@ -247,6 +249,22 @@ HandlersApp := [].{
 				HandlersApp.rated({}),
 				HandlersApp.closing({}),
 				HandlersApp.mixed({}),
+			],
+		),
+	)
+
+	## Enter navigation replaces the document between down and up. The new
+	## instance owns the release, so its document handler counts it once.
+	keyboard_document : Str -> Elem(Engine.Root)
+	keyboard_document = |url| Engine.state(
+		0.I64,
+		|ups| Engine.element(
+			"section",
+			[Engine.on_document_key({ on: Up, keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("Enter")])) }, ups.update(|n| n + 1))],
+			[
+				Engine.element("a", [Html.aria_label("Next keyboard document"), Engine.attr("href", "/next-keyboard-document")], [Engine.text("Next keyboard document")]),
+				Html.p_s(ups.signal().map(|n| n.to_str()), [Engine.test_id("document-key-ups")]),
+				Engine.element("p", [Engine.test_id("keyboard-document-url")], [Engine.text(url)]),
 			],
 		),
 	)

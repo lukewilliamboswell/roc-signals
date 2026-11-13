@@ -116,20 +116,25 @@ async function navigating(page, state, act, known = undefined) {
   const before = state.doc;
   const loads = state.loads;
   await act();
-  const nav = known ?? await page
+  // The click may already have replaced its document, whose installer has
+  // reset __nav. Read the intent and token together so that replacement is
+  // still observed even when the old document's intent is no longer present.
+  const observed = await page
     .evaluate(() => {
-      const n = window.__nav ?? null;
+      const nav = window.__nav ?? null;
       window.__nav = null;
-      return n;
+      return { nav, doc: window.__doc, href: location.pathname + location.search + location.hash };
     })
-    .catch(() => ({ cross: true, href: "?" }));
-  if (nav && nav.cross) {
+    .catch(() => ({ nav: { cross: true, href: "?" }, doc: null }));
+  const nav = known ?? observed.nav;
+  if (nav?.cross || observed.doc !== before) {
+    const href = nav?.href ?? observed.href;
     if (state.holdingReports) throw new Error("a cross-document navigation cannot leave while reports are held");
     if (state.pointers.size) throw new Error("a cross-document navigation cannot leave while a pointer is down");
-    if (nav.external) throw new Error(`the click navigates to ${nav.href}, which leaves the app`);
+    if (nav?.external) throw new Error(`the click navigates to ${nav.href}, which leaves the app`);
     const t0 = Date.now();
     while (state.loads === loads) {
-      if (Date.now() - t0 > 20000) throw new Error(`timed out waiting for the navigation to ${nav.href}`);
+      if (Date.now() - t0 > 20000) throw new Error(`timed out waiting for the navigation to ${href}`);
       await new Promise((r) => setTimeout(r, 10));
     }
     await mounted(page);
@@ -570,25 +575,7 @@ async function traverse(page, delta, what) {
 // has a fragment and differs from the current one only in the fragment.
 const sameDocument = (from, to) => to.includes("#") && from.split("#")[0] === to.split("#")[0];
 
-// Keep the actual KeyboardEvent until dispatch has returned. A passive CDP
-// binding preserves its prevented flag even when a key activates navigation.
-async function press(page, step, state) {
-  if (step.loc) {
-    await need(page, step.loc);
-    await onEl(page, step.loc, (element) => element.focus());
-    await settle(page);
-  }
-  if (!page.keyBinding) {
-    await page.send("Runtime.addBinding", { name: "__rocKeyFacts" });
-    page.conn.on(page.sessionId, "Runtime.bindingCalled", (event) => {
-      if (event.name !== "__rocKeyFacts" || !page.keyFacts) return;
-      if (page.keyFacts.length >= 2) { page.keyFactsError = "press raised more than two keyboard events"; return; }
-      page.keyFacts.push(JSON.parse(event.payload));
-    });
-    page.keyBinding = true;
-  }
-  page.keyFacts = [];
-  page.keyFactsError = null;
+async function observeKeyInput(page, state) {
   await page.evaluate((defaults, types) => {
     let pending = null;
     const flush = () => {
@@ -627,21 +614,66 @@ async function press(page, step, state) {
       delete window.__flushKeyInput;
     };
   }, state.keyDefaults, state.keyControlTypes);
+}
+
+async function flushKeyInput(page) {
+  await page.evaluate(() => window.__flushKeyInput?.()).catch((error) => {
+    if (!/Execution context was destroyed|Cannot find context/.test(error.message)) throw error;
+  });
+}
+
+// Keep the actual KeyboardEvent until dispatch has returned. A passive CDP
+// binding preserves its prevented flag even when a key activates navigation.
+async function press(page, step, state) {
+  if (step.loc) {
+    await need(page, step.loc);
+    await onEl(page, step.loc, (element) => element.focus());
+    await settle(page);
+  }
+  if (!page.keyBinding) {
+    await page.send("Runtime.addBinding", { name: "__rocKeyFacts" });
+    page.conn.on(page.sessionId, "Runtime.bindingCalled", (event) => {
+      if (event.name !== "__rocKeyFacts" || !page.keyFacts) return;
+      if (page.keyFacts.length >= 2) { page.keyFactsError = "press raised more than two keyboard events"; return; }
+      page.keyFacts.push(JSON.parse(event.payload));
+    });
+    page.keyBinding = true;
+  }
+  page.keyFacts = [];
+  page.keyFactsError = null;
+  await observeKeyInput(page, state);
+  let pressed = false, released = false;
   try {
+    const before = state.doc;
     await navigating(page, state, async () => {
-      await page.pressSpec(step.key, state.keyTable);
-      await page.evaluate(() => window.__flushKeyInput?.()).catch((error) => {
-        if (!/Execution context was destroyed|Cannot find context/.test(error.message)) throw error;
-      });
+      await page.specKey(step.key, state.keyTable, "down");
+      pressed = true;
+      await flushKeyInput(page);
       if (page.keyFactsError) throw new Error(page.keyFactsError);
-      // The following keyup capture (or beforeunload) flushes the retained
-      // keydown, before waiting for any navigation its default initiated.
       const down = page.keyFacts.find((fact) => fact.type === "keydown");
       if (!down) throw new Error("press is missing physical keydown evidence");
       if (down.refused && !down.prevented) throw new Error("press has an unmodelled browser default; use fill for text input or prevent it with a keymap");
     });
+    // Navigation caused by down has the ordinary bounded fresh-mount wait.
+    // Only then release the physical key, with capture installed in that
+    // document too, so a newly mounted Up handler hears the same release
+    // as the native runner and missing input never becomes an empty log.
+    if (state.doc !== before) await observeKeyInput(page, state);
+    await navigating(page, state, async () => {
+      await page.specKey(step.key, state.keyTable, "up");
+      released = true;
+      await flushKeyInput(page);
+    });
     await page.evaluate(() => window.__endKeyInput?.());
-  } finally { page.keyFacts = null; }
+    if (page.keyFactsError) throw new Error(page.keyFactsError);
+    if (page.keyFacts.length !== 2 || page.keyFacts[0].type !== "keydown" || page.keyFacts[1].type !== "keyup") throw new Error("press requires physical keydown followed by keyup evidence");
+  } finally {
+    try {
+      // A refused step still releases its synthetic physical key before
+      // its context is discarded, without delivering another down.
+      if (pressed && !released) await page.specKey(step.key, state.keyTable, "up");
+    } finally { page.keyFacts = null; }
+  }
   await settle(page);
 }
 
