@@ -1849,3 +1849,11 @@ expect {
 	}
 	{ selection, text: (value.read)("A") } == { selection: { mask: 8.U128, key: "A" }, text: "A!" }
 }
+
+## Fixed text, ordinary attributes and block properties use their existing
+## static builders. Static reference and explicit-presence holes still count.
+expect {
+	page = Engine.element("div", [Engine.attr_s("title", "fixed"), Engine.class_s("fixed"), Engine.test_id_s("fixed"), Engine.ref_s("fixed"), Engine.attr_presence("data-empty", Engine.const(Present("")))], [Engine.text_s("fixed"), Engine.element("input", [Engine.prop_s(Engine.Prop.value, "fixed")], [])])
+	mounted = Core.mount(page)
+	Core.evals(mounted) == 2 and Core.settled(mounted).is_ok()
+}

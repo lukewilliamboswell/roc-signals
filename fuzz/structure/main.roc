@@ -6,6 +6,7 @@ app [target] {
 import fz.Fuzz
 import pf.Core
 import pf.Dom
+import pf.Engine
 import pf.SpecRunner
 import pf.Wire
 import pf.Worker
@@ -703,6 +704,77 @@ run = |tree, pure, events| {
 	{}
 }
 
+## The same arbitrary shape also builds a tree containing only fixed text
+## and attributes. Its independent preorder model checks every title and text;
+## zero sampled evaluations proves constants did not become dynamic holes.
+constant_caption : Node -> Str
+constant_caption = |node| match node {
+	Show(index) => "show-${index.to_str()}"
+	Guard(index) => "guard-${index.to_str()}"
+	Control(index) => "control-${index.to_str()}"
+	Bump(index) => "bump-${index.to_str()}"
+	Bump2(left, right) => "bump-${left.to_str()}-${right.to_str()}"
+	Pair(left, right) => "pair-${left.to_str()}-${right.to_str()}"
+	When(index, _, _) => "when-${index.to_str()}"
+	Switch(index, _, _, _) => "switch-${index.to_str()}"
+	Layer(kind, index, _) => "layer-${kind.to_str()}-${index.to_str()}"
+	Each(index, _) => "each-${index.to_str()}"
+	Watch(kind, index) => "watch-${kind.to_str()}-${index.to_str()}"
+}
+
+constant_elements : List(Node) -> List(Engine.Elem(Engine.Root))
+constant_elements = |tree| tree.map(
+	|node| {
+		children = match node {
+			When(_, yes, no) => constant_elements(yes).concat(constant_elements(no))
+			Switch(_, first, second, third) => constant_elements(first).concat(constant_elements(second)).concat(constant_elements(third))
+			Layer(_, _, body) | Each(_, body) => constant_elements(body)
+			_ => []
+		}
+		caption = constant_caption(node)
+		Engine.element("div", [Engine.attr_s("title", Engine.const(caption)), Engine.class_s("constant"), Engine.test_id_s("static-${Engine.const(caption)}")], [Engine.text_s("text ${Engine.const(caption)}")].concat(children))
+	},
+)
+
+## Walk the generated data, not the mounted engine, to obtain expected
+## preorder labels. Conditional branches are ordinary static children here.
+constant_labels : List(Node) -> List(Str)
+constant_labels = |tree| {
+	var $labels = []
+	for node in tree {
+		$labels = $labels.append(constant_caption(node))
+		match node {
+			When(_, yes, no) => {
+				$labels = $labels.concat(constant_labels(yes)).concat(constant_labels(no))
+			}
+			Switch(_, first, second, third) => {
+				$labels = $labels.concat(constant_labels(first)).concat(constant_labels(second)).concat(constant_labels(third))
+			}
+			Layer(_, _, body) | Each(_, body) => {
+				$labels = $labels.concat(constant_labels(body))
+			}
+			_ => {}
+		}
+	}
+	$labels
+}
+
+constant_tree_property : List(Node) -> {}
+constant_tree_property = |tree| {
+	(engine, batch) = Core.take_cmds(Core.mount(Engine.element("main", [], constant_elements(tree))), [])
+	dom = Dom.apply(Dom.new({}), batch)
+	labels = constant_labels(tree)
+	actual = { labels: dom.nodes.keep_if(|node| node.tag == "div").map(|node| Dom.attr_of(node, "title")), text: Dom.text_of(dom, dom.root), evaluations: Core.evals(engine) }
+	wanted = { labels, text: Str.join_with(labels.map(|label| "text ${label}"), ""), evaluations: 0.U64 }
+	if actual != wanted {
+		crash "constant text tree differs: ${Str.inspect(actual)} expected ${Str.inspect(wanted)}"
+	}
+	if Core.settled(engine).is_err() {
+		crash "constant text tree is not settled"
+	}
+	{}
+}
+
 Input : { mode : U8, tree : List(U8), events : List(U8) }
 
 ## Mode 2: a seeded series of generated trees and sessions.
@@ -729,6 +801,7 @@ series = |seed, count| {
 ## property's leak-checked region, so both replay the exact same histories.
 run_input : Input -> {}
 run_input = |{ mode, tree, events }| {
+	constant_tree_property(decode(tree))
 	if mode == 3 {
 		observation_release_case({})
 	} else if mode == 2 {
@@ -751,6 +824,7 @@ ex = |name, mode, tree, events| { name, input: { mode, tree, events } }
 
 fixed_cases : List(Case)
 fixed_cases = [
+	ex("constant-text-and-attributes", 0, [3, 5, 0, 1, 0, 0, 7, 0, 1, 0, 0, 3, 0, 1, 0, 0, 1, 0, 1], []),
 	# `When(0, [Show(0)], [Layer(state, 0, [Show(1), Bump(1)])])`: a state
 	# that exists only in the branch the `when` mounts second, written by
 	# its own button and by a `Bump`.
