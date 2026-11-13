@@ -26,6 +26,7 @@ Targets := [].{
 		{ name: "wire", main: "fuzz/wire/main.roc" },
 		{ name: "structure", main: "fuzz/structure/main.roc" },
 		{ name: "dom", main: "fuzz/dom/main.roc" },
+		{ name: "markup", main: "fuzz/markup/main.roc" },
 		{ name: "table-view", main: "fuzz/table-view/main.roc" },
 		{ name: "result-readers", main: "fuzz/result-readers/main.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc" },
@@ -170,9 +171,11 @@ Targets := [].{
 		Ok(
 			Targets.browser!(o, "protocol-facts-browser.mjs", [])?
 				.concat(Targets.browser!(o, "names-browser.mjs", [])?)
+				.concat(Targets.browser!(o, "namespaces-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "unicode-symbols-browser.mjs", ["--oracle", unicode_bits])?)
 				.concat(Targets.browser!(o, "fx-browser.mjs", ["--wasm", fx])?)
 				.concat(Targets.browser!(o, "controls-browser.mjs", ["--wasm", controls])?)
+				.concat(Targets.browser!(o, "markup-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "markup")])?)
 				.concat(Targets.browser!(o, "pointer-browser.mjs", ["--wasm", controls])?)
 				.concat(Targets.browser!(o, "keys-browser.mjs", ["--wasm", controls])?)
 				.concat(Targets.browser!(o, "dialogs-browser.mjs", ["--wasm", controls])?)
