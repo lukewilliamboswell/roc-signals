@@ -1654,6 +1654,16 @@ Rules:
 - **Determinism.** The same mount and the same sequence of inputs produce the
   same command bytes.
 
+The mount element's namespace URI, optional prefix and exact local name are
+engine inputs, separate from the app-visible `Boot`. The runtime measures
+these finite facts; Roc uses them to resolve the context of raw constructors
+and check literal placement. Neither side scans the mount's ancestors. A
+mount under SVG retains that context, including an HTML child context under
+`foreignObject`. Native and browser specs supply the same root facts. A
+proof that a mounted state is fixed must account for these inputs as well as
+the program and any app-visible boot values; an entry that reads no `Boot`
+does not by itself prove independence from its enclosing element.
+
 Element properties, such as a control's live value, are their own commands,
 from a closed table in Appendix B. Attribute commands set attributes, and
 the runtime interprets only how a boolean attribute or SVG `class` is
@@ -1688,8 +1698,9 @@ turns an adoption into a replacement, patches a mismatch, or judges the facts.
 An assertion that fails after adoption poisons the instance as an executor
 fault; recovery mounts afresh without a picture.
 
-The canonical tree covers namespaces, local names, every attribute and value,
-child order, text and comments, including row marks. Live properties changed
+The canonical tree covers namespace URIs, optional prefixes, exact local
+names, every attribute and value, child order, text and comments, including
+row marks. Live properties changed
 by a page script, CSS, layout and nodes outside the root are outside that
 measurement. Adoption re-applies the batch's attributes, text and properties.
 The canonical form has independent Roc and JavaScript implementations, kept
