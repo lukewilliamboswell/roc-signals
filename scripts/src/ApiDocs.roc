@@ -51,9 +51,12 @@ ApiDocs := [].{
 
 	## Compare against the actual latest published platform bundle, or the one
 	## reviewed repair of it in `baseline_repairs`. Discovery or extraction
-	## failures fail the gate; a self comparison is no baseline.
-	bump! : SpecSuite.Options => Try(List(Str), _)
-	bump! = |o| {
+	## failures fail the gate; a self comparison is no baseline. A `Release`
+	## must also be at least the version the API's changes require
+	## (`roc bump --expect`); a `Candidate`, such as a pull request, has no
+	## version to hold to that.
+	bump! : SpecSuite.Options, [Candidate, Release(Str)] => Try(List(Str), _)
+	bump! = |o, claim| {
 		request = Request.from_method(GET)
 			.with_uri("https://api.github.com/repos/lukewilliamboswell/roc-signals/releases/latest")
 			.add_header("Accept", "application/vnd.github+json")
@@ -78,7 +81,11 @@ ApiDocs := [].{
 				["--old", root, "--old-version", repair.version]
 			}
 		}
-		result = Proc.merged!({ program: o.compiler, args: ["bump"].concat(old).concat(["platform/main.roc"]), cwd: o.root })?
+		expected = match claim {
+			Candidate => []
+			Release(version) => ["--expect", version]
+		}
+		result = Proc.merged!({ program: o.compiler, args: ["bump"].concat(old).concat(expected).concat(["platform/main.roc"]), cwd: o.root })?
 		output = Str.from_utf8_lossy(result.stdout)
 		Proc.note!(output)
 		Ok(if (result.code == 0) [] else ["roc bump against ${published.tag_name} failed: ${output}"])

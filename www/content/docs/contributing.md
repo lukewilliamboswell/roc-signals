@@ -878,6 +878,12 @@ assets with `blueprint run release` and creates a draft GitHub release with:
   and `roc-stable`), to which the maintainer adds the narrative on GitHub
   before publishing.
 
+For a version `X.Y.Z` the task also runs the API comparison with
+`roc bump --expect X.Y.Z`, so a release whose number is smaller than its API
+changes require (0.5.1 after a breaking change to 0.5.0) fails
+before anything is published. A prerelease or the dry run claims no number
+and is not compared there; `check` compares every pull request without one.
+
 After a release, `nightly-compatibility.yml` builds the released examples with
 the latest Roc nightly every day, using roc-automation's shared runner, and
 keeps one tracking issue open while they fail.

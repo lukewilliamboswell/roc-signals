@@ -52,7 +52,7 @@ config = [
 	# Building the documentation site, its API docs and its live examples.
 	Environment("site", [Programs([roc_stable_program, zig_program, zola_program, roc_docs_program, node_program, Fetch("tailwindcss", tailwind)]), Expect(["roc", "google-chrome"])]),
 	# Building the release assets, API docs included.
-	Environment("release", [Programs([roc_stable_program, zig_program, node_program, roc_docs_program]), Expect(["roc", "zip"])]),
+	Environment("release", [Programs([roc_stable_program, zig_program, node_program, roc_docs_program]), Expect(["roc", "zip", "curl", "tar", "zstd", "sha256sum"])]),
 	Shell("default", [Use("engine")]),
 	# The per-pull-request gate: formatting, roc test, every fuzz target's
 	# fixed examples, the docs samples, every app's specs natively and in

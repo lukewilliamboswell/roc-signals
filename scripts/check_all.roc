@@ -84,7 +84,7 @@ main! = |raw_args| {
 	Proc.note!("== API docs")
 	$problems = Checks.gather!($problems, ApiDocs.check!({}))?
 	$problems = Checks.gather!($problems, ApiDocs.internal_roots!(o))?
-	$problems = Checks.gather!($problems, ApiDocs.bump!(o))?
+	$problems = Checks.gather!($problems, ApiDocs.bump!(o, Candidate))?
 
 	Proc.note!("== roc test")
 	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["test", "platform/main.roc"], cwd: "." }, "roc test platform/main.roc"))?
