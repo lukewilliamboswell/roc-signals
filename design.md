@@ -1035,11 +1035,14 @@ branch directly) are workarounds for upstream issues and are marked as such in
 the code. They are not semantics. Holding the store beside the sites is not
 one of them: the store is the instance's state, not a site's storage, and it
 moves through the environments rather than being captured. The law above is
-what the engine asks of the compiler, and a compiler can fall short of it,
-copying a large, uniquely held value on a write in an optimized build (see
-[Compiler Limitations](#compiler-limitations)). So an allocation guard states
-which builds it covers: one that holds for development builds says nothing
-of shipping builds.
+what the engine asks of the compiler, and the compilers the platform is
+built with fall short of it: an optimized build can copy any site's storage,
+the store included, on a write, and in any build a local state or a table
+view's ordered keys, which a boxed site closure captures, can be copied on
+each write (see [Compiler Limitations](#compiler-limitations)). So an
+allocation guard states which builds and which state it covers: one that
+holds for the store in development builds says nothing of shipping builds or
+of local state.
 
 The same law constrains apps. These patterns copy silently on every update:
 
@@ -1048,7 +1051,10 @@ The same law constrains apps. These patterns copy silently on every update:
 - deriving projections that retain the whole state;
 - a `set` of a value built from a reading of the same large cell, or an
   `update` whose function holds that reading. The reading is a second
-  holder. An `update` by a function of the value alone is in place.
+  holder. An `update` by a function of the value alone is in place, as far
+  as the compiler keeps the law above, except that a table's first write
+  of a row in a writing turn copies that row once to record its earlier
+  value.
 
 Per-event allocation counts are how such a copy is caught; a soak's plateau
 shows only what is retained.
