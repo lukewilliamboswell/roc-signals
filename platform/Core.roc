@@ -2231,14 +2231,14 @@ Core := [].{
 	## delivered, stale, refused, cancelled, reparented, skipped) and the number
 	## of requests in flight.
 	fx_stats : App(st) -> { issued : U64, delivered : U64, stale : U64, refused : U64, cancelled : U64, live : U64, reparented : U64, skipped : U64 }
-	fx_stats = |a| {
-		fx = a.tx.fx
+	fx_stats = |App.(AppBody.({ tx, .. }))| {
+		fx = tx.fx
 		{ issued: fx.issued, delivered: fx.delivered, stale: fx.stale, refused: fx.refused, cancelled: fx.cancelled, live: fx.live.len(), reparented: fx.reparented, skipped: fx.skipped }
 	}
 
 	## For test platforms and harnesses: the ids of the requests in flight, in issue order.
 	fx_live : App(st) -> List(U32)
-	fx_live = |a| a.tx.fx.live.map(|l| l.id)
+	fx_live = |App.(AppBody.({ tx, .. }))| tx.fx.live.map(|l| l.id)
 
 	## For the wire format: what a file's encoding carries beside its handle.
 	file_parts : File -> { name : Str, mime : Str, size : U64, start : U64, len : U64 }
@@ -2898,19 +2898,31 @@ Core := [].{
 	## holds it between calls through [Program]; test platforms and harnesses drive
 	## it directly with `mount`, `event`, `result` and `take_cmds`. `programs`
 	## is the program's catalogue: its worker tasks' names and its ports.
-	App(st) :: { root : Inst(Root(st)), store : st, tx : Tx, programs : Catalogue }
+	##
+	## It is opaque, so an application cannot build or open it, and it wraps a
+	## transparent body that only this module names ([AppBody]) rather than
+	## being the record itself. An opaque record with a function anywhere in
+	## its fields (here the root site) loses its unique hold on the store beside
+	## it under `--opt=speed` and `--opt=size`, so a write of a store cell's
+	## list copied the whole list through the host's box. The same instance
+	## behind a transparent body is written in place. This is a compiler
+	## defect, https://github.com/roc-lang/roc/issues/13081, listed in
+	## design.md's compiler limitations; the body goes back into this type
+	## once the compiler is fixed.
+	App(st) :: AppBody(st)
 
 	## The site tree and engine bookkeeping, separated from the store only while
 	## the platform moves both parts through its single opaque host handle.
-	Sites(st) :: { root : Inst(Root(st)), tx : Tx, programs : Catalogue }
+	## Opaque over a transparent body ([SitesBody]) for the reason [App] gives.
+	Sites(st) :: SitesBody(st)
 
 	## Move the store out as plain data; no site captures it.
 	split : App(st) -> (st, Sites(st))
-	split = |{ store, root, tx, programs }| (store, { root, tx, programs })
+	split = |App.(AppBody.({ store, root, tx, programs }))| (store, Sites.(SitesBody.{ root, tx, programs }))
 
 	## Reunite the uniquely owned store with its site tree after host transfer.
 	join : st, Sites(st) -> App(st)
-	join = |store, { root, tx, programs }| { store, root, tx, programs }
+	join = |store, Sites.(SitesBody.({ root, tx, programs }))| App.(AppBody.{ store, root, tx, programs })
 
 	## What a program declares beside its view, kept beside the engine root
 	## (never in the turn, whose every field costs code at each site
@@ -2975,7 +2987,7 @@ Core := [].{
 
 	## Route an event's payload to its node's handler.
 	deliver : App(st), U32, U32, Payload -> App(st)
-	deliver = |{ store, root, tx, programs }, node, handler, payload| {
+	deliver = |App.(AppBody.({ store, root, tx, programs })), node, handler, payload| {
 		# O(1): the route gives a static node's block path or a row's site and
 		# slot (the site's path + slot). The handler number comes from the host
 		# (LISTEN or the template carried it per event name), so an element
@@ -2991,8 +3003,8 @@ Core := [].{
 			}
 		}
 		match target {
-			Err(Stale) => { store, root, tx, programs }
-			Ok((path, h)) => drain(turn({ store, root, tx: start_batch(tx), programs }, path, h, payload))
+			Err(Stale) => App.(AppBody.{ store, root, tx, programs })
+			Ok((path, h)) => drain(turn(App.(AppBody.{ store, root, tx: start_batch(tx), programs }), path, h, payload))
 		}
 	}
 
@@ -3000,15 +3012,15 @@ Core := [].{
 	## as one turn exactly like an event. An id that is not in flight is
 	## dropped and counted `stale`.
 	result : App(st), U32, Result -> App(st)
-	result = |{ store, root, tx, programs }, id, res| {
+	result = |App.(AppBody.({ store, root, tx, programs })), id, res| {
 		match tx.fx.live.find_first(|l| l.id == id) {
-			Err(_) => { store, root, tx: fx_count(tx, Stale), programs }
+			Err(_) => App.(AppBody.{ store, root, tx: fx_count(tx, Stale), programs })
 			Ok(entry) => {
 				# A subscription stays live until it is cancelled, unless its
 				# JavaScript ended it (a port's `Closed` or `Threw`).
 				live = entry.sub and !(programs.ports.ends)(res)
 				tx1 = if (live) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
-				drain(turn({ store, root, tx: start_batch(tx1), programs }, entry.path, id, Fx(Final(res, live))))
+				drain(turn(App.(AppBody.{ store, root, tx: start_batch(tx1), programs }), entry.path, id, Fx(Final(res, live))))
 			}
 		}
 	}
@@ -3016,10 +3028,10 @@ Core := [].{
 	## Deliver a sampled transfer through its live request’s owning path without
 	## retiring the request. An unsolicited report is a contract error.
 	progress : App(st), U32, Transfer -> App(st)
-	progress = |{ store, root, tx, programs }, id, transfer| match tx.fx.live.find_first(|entry| entry.id == id) {
-		Err(_) => { store, root, tx: fx_count(tx, Stale), programs }
+	progress = |App.(AppBody.({ store, root, tx, programs })), id, transfer| match tx.fx.live.find_first(|entry| entry.id == id) {
+		Err(_) => App.(AppBody.{ store, root, tx: fx_count(tx, Stale), programs })
 		Ok(entry) => if entry.progress {
-			drain(turn({ store, root, tx: start_batch(tx), programs }, entry.path, id, Fx(Progress(transfer))))
+			drain(turn(App.(AppBody.{ store, root, tx: start_batch(tx), programs }), entry.path, id, Fx(Progress(transfer))))
 		} else crash "contract: transfer progress was not requested for effect ${id.to_str()} at site ${show_path(entry.path)}"
 	}
 
@@ -3027,7 +3039,7 @@ Core := [].{
 	## last call, reusing `buf` (cleared) for the next batch.
 	## Finalization merges transition types into one terminal command.
 	take_cmds : App(st), List(U8) -> (App(st), List(U8))
-	take_cmds = |{ store, root, tx, programs }, buf| {
+	take_cmds = |App.(AppBody.({ store, root, tx, programs })), buf| {
 		{ cmds, next, free, routes, work, paths, site_free, observations, fx } = tx
 		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch } = fx
 		{ mounting, asked, types, seen: _ } = batch
@@ -3042,25 +3054,26 @@ Core := [].{
 			$cmds = $cmds.clear()
 		}
 		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
-		({ store, root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2 }, programs }, $cmds)
+		(App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2 }, programs }), $cmds)
 	}
 
 	## For test platforms and harnesses: how many app closures (holes, values,
 	## reducers) the instance has evaluated so far.
 	evals : App(st) -> U64
-	evals = |a| work_get(a.tx.work, w_evals)
+	evals = |App.(AppBody.({ tx, .. }))| work_get(tx.work, w_evals)
 
 	## For test platforms and harnesses: the instance's work counters so far, in
 	## the order of the host's work record (design.md, "Work assertions").
 	work_counters : App(st) -> List(U64)
 	work_counters = |a| {
+		App.(AppBody.({ tx, .. })) = a
 		var $out = []
 		var $i = 0.U64
 		while $i < w_count {
-			$out = $out.append(work_get(a.tx.work, $i))
+			$out = $out.append(work_get(tx.work, $i))
 			$i = $i + 1
 		}
-		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42), work_get(a.tx.work, 43), a.tx.fx.observed.live, work_get(a.tx.work, 45), work_get(a.tx.work, 46), work_get(a.tx.work, 47), work_get(a.tx.work, 48)])
+		$out.concat(fx_counters(a)).concat([work_get(tx.work, w_port_sends), work_get(tx.work, 41), work_get(tx.work, 42), work_get(tx.work, 43), tx.fx.observed.live, work_get(tx.work, 45), work_get(tx.work, 46), work_get(tx.work, 47), work_get(tx.work, 48)])
 	}
 
 	# ------------------------------------------------------------------
@@ -3100,7 +3113,7 @@ Core := [].{
 	## once the result is dropped the instance owns its storage alone again.
 	## Run it outside any region that measures allocations.
 	settled : App(st) -> Try({}, { cmds : List(U8), note : Str })
-	settled = |{ store, root, tx, programs: _ }| {
+	settled = |App.(AppBody.({ store, root, tx, programs: _ }))| {
 		before = tx.fx
 		scratch = with_fx(tx, |effects| { ..effects, batch: { mounting: False, asked: False, types: [], seen: Dict.empty() } })
 		(_, _, after) = call(root, Root.{ store }, Changed(every_layer), { ..scratch, cmds: [] })
@@ -3241,9 +3254,9 @@ Core := [].{
 			init: |boot| init({ workers: tasks, ports, media }, boot),
 			event: p.event,
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
-				{ store, root, tx, programs } = inst
+				App.(AppBody.({ store, root, tx, programs })) = inst
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
-				fresh = { store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
+				fresh = App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs })
 				handles = blobs.map(|b| Blob.(b))
 				if node == fx_node {
 					# A result that carries files: a port's answer (result
@@ -3431,9 +3444,9 @@ Core := [].{
 				finish(mount_start_in(cfg.max_inflight, names, start(b), view(b), enclosing_root(mounted.root)), [], [])
 			},
 			event: |inst, buf, wbuf, node, handler, payload| {
-				{ store, root, tx, programs } = inst
+				App.(AppBody.({ store, root, tx, programs })) = inst
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
-				fresh = { store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
+				fresh = App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs })
 				if node == fx_node {
 					finish(if (payload.first() == Ok(26)) Core.progress(fresh, handler, decode_progress(payload)) else Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
 				} else {
@@ -3800,6 +3813,13 @@ orphans_of = |out| match out {
 
 Inst(ctx) := [Inst((ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx)))]
 
+## The site tree, the store and the turn of a [Core.App], behind its opaque
+## name (see [Core.App] for why the body is a type of its own).
+AppBody(st) := { root : Inst(Root(st)), store : st, tx : Tx, programs : Catalogue }
+
+## The site tree and the turn of a [Core.Sites], behind its opaque name.
+SitesBody(st) := { root : Inst(Root(st)), tx : Tx, programs : Catalogue }
+
 ## A node's route: a static node's block path, or a row element's site
 ## and slot (resolved through the site's current path).
 Route := [NoRoute, Route(List(U32), U32), RowOf(U32, U32)]
@@ -3872,8 +3892,8 @@ w_count = 32
 ## They are read from the effect table when the record is written, so the
 ## accumulator keeps no second copy.
 fx_counters : App(st) -> List(U64)
-fx_counters = |a| {
-	fx = a.tx.fx
+fx_counters = |Core.App.(AppBody.({ tx, .. }))| {
+	fx = tx.fx
 	[fx.issued, fx.delivered, fx.stale, fx.refused, fx.cancelled, fx.reparented, fx.skipped, fx.live.len()]
 }
 
@@ -7612,8 +7632,8 @@ mount_start_in = |max, programs, { st, tables }, elem, enclosing| {
 	tx0 = { cmds, next, free, routes, work, paths, site_free, observations, fx: { ..fx, max } }
 	(block, tx) = mount_block(Root.{ store: st }, elem, 0, [], 0, 0, { cap: 0, enclosing }, tx0)
 	written = tables.fold(0.U128, |acc, cell, _| acc.bitwise_or(cell_bit(cell)))
-	{ store, root, tx: mounted, programs: catalogue } = drain({ store: st, root: store_inst({ cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs })
-	{ store, root, tx: with_fx(mounted, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), programs: catalogue }
+	Core.App.(AppBody.({ store, root, tx: mounted, programs: catalogue })) = drain(Core.App.(AppBody.{ store: st, root: store_inst({ cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs }))
+	Core.App.(AppBody.{ store, root, tx: with_fx(mounted, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), programs: catalogue })
 }
 
 ## A files-kind event's record (design.md, Appendix B), `count:u32
@@ -9698,16 +9718,16 @@ new_tx = |cmds| { cmds: cmds.append(0), next: 1, free: [], routes: [], work: wor
 ## commands (resolved now, so a reference mounted later in the same turn
 ## is found; a missing one is counted stale).
 turn : App(st), List(U32), U32, Payload -> App(st)
-turn = |{ store, root, tx, programs }, path, h, payload| {
+turn = |Core.App.(AppBody.({ store, root, tx, programs })), path, h, payload| {
 	(root2, out, tx2) = call(root, Root.{ store }, Fire(path, 0, h, payload), bump(tx, w_turns, 1))
 	(store2, writes) = root_answer(out)
 	force = tx2.observations.echo
 	if layers_empty(writes) {
 		if force {
 			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Fire(path, 0, h, Settle(no_layers, True)), tx2)
-			{ store: root_answer(answer3).0, root: root3, tx: flush_turn(tx3, programs), programs }
+			Core.App.(AppBody.{ store: root_answer(answer3).0, root: root3, tx: flush_turn(tx3, programs), programs })
 		} else {
-			{ store: store2, root: root2, tx: flush_turn(tx2, programs), programs }
+			Core.App.(AppBody.{ store: store2, root: root2, tx: flush_turn(tx2, programs), programs })
 		}
 	} else {
 		cells = cells_of(writes)
@@ -9735,10 +9755,10 @@ turn = |{ store, root, tx, programs }, path, h, payload| {
 end_written_turn : Inst(Root(st)), st, Tx, { path : List(U32), h : U32, waiting : Layers, force : Bool }, Catalogue -> App(st)
 end_written_turn = |root, store, tx, { path, h, waiting, force }, programs| {
 	if layers_empty(waiting) and !force {
-		{ store, root, tx: flush_turn(tx, programs), programs }
+		Core.App.(AppBody.{ store, root, tx: flush_turn(tx, programs), programs })
 	} else {
 		(root2, answer, tx2) = call(root, Root.{ store }, Fire(path, 0, h, Settle(waiting, force)), tx)
-		{ store: root_answer(answer).0, root: root2, tx: flush_turn(tx2, programs), programs }
+		Core.App.(AppBody.{ store: root_answer(answer).0, root: root2, tx: flush_turn(tx2, programs), programs })
 	}
 }
 
@@ -9854,7 +9874,7 @@ flush_turn = |incoming, programs| {
 ## https://github.com/roc-lang/roc/issues/12957; it has no standalone
 ## reproduction yet.
 drain : App(st) -> App(st)
-drain = |{ store: store0, root: root0, tx: tx0, programs }| {
+drain = |Core.App.(AppBody.({ store: store0, root: root0, tx: tx0, programs }))| {
 	var $store = store0
 	var $root = root0
 	var $tx = tx0
@@ -9887,14 +9907,18 @@ drain = |{ store: store0, root: root0, tx: tx0, programs }| {
 				$deep_turns = $deep_turns + 1
 			}
 			tx1 = with_fx(tx, |fx| { ..fx, queue: { entries: fx.queue.entries.drop_first(1), waiting: fx.queue.waiting.remove(q.id) } })
-			{ store, root, tx: tx2, programs: _ } = turn({ store: $store, root: $root, tx: tx1, programs }, q.path, q.id, Fx(Final(q.res, False)))
+			Core.App.(AppBody.({ store, root, tx: tx2, programs: _ })) = turn(Core.App.(AppBody.{ store: $store, root: $root, tx: tx1, programs }), q.path, q.id, Fx(Final(q.res, False)))
 			$store = store
 			$root = root
 			$tx = tx2
 		}
 	}
-	{ store: $store, root: $root, tx: $tx, programs }
+	Core.App.(AppBody.{ store: $store, root: $root, tx: $tx, programs })
 }
+
+## The turn state of an instance, for this module's tests.
+tx_of : Core.App(st) -> Tx
+tx_of = |Core.App.(AppBody.({ tx, .. }))| tx
 
 popcount : U64 -> U64
 popcount = |m| {
@@ -9928,15 +9952,15 @@ finish = |inst, buf, wbuf| {
 ## then `n:u32 (name:str runs:u64)*` for the cleanups that have run.
 ## Written into `buf`, which is cleared first.
 work_bytes : App(st), List(U8) -> List(U8)
-work_bytes = |inst, buf| {
-	counters = inst.tx.work
+work_bytes = |Core.App.(AppBody.({ tx, .. })), buf| {
+	counters = tx.work
 	var $b = put_u32(buf.clear(), w_record_count.to_u32_wrap())
 	var $i = 0.U64
 	while $i < w_count {
 		$b = put_u64($b, work_get(counters, $i))
 		$i = $i + 1
 	}
-	fx = inst.tx.fx
+	fx = tx.fx
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.issued), fx.delivered), fx.stale), fx.refused)
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.cancelled), fx.reparented), fx.skipped), fx.live.len())
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, w_port_sends)), work_get(counters, 41)), work_get(counters, 42))
@@ -9944,7 +9968,7 @@ work_bytes = |inst, buf| {
 	$b = put_u64($b, work_get(counters, 46))
 	$b = put_u64($b, work_get(counters, 47))
 	$b = put_u64($b, work_get(counters, 48))
-	runs = inst.tx.fx.cleanups
+	runs = tx.fx.cleanups
 	$b = put_u32($b, runs.len().to_u32_wrap())
 	for (name, k) in runs {
 		$b = put_u64(put_str($b, name), k)
@@ -10194,7 +10218,7 @@ expect {
 	mounted = put_str(put_str(put_u32(put_u32(put_u32([8], 1), 0), 0).append(0), ""), "div").append(0).concat(put_str(put_u32(put_u32(put_u32([10], 2), 1), 0), ""))
 	cleaned = put_str([17], "a").concat(put_str(put_str([16, 1], "last"), "a")).concat(put_str([16, 2], "draft"))
 	replaced = put_str(put_u32(put_u32(put_u32([10], 3), 0), 2), "")
-	cmds == [0].concat(mounted).concat(cleaned).concat(replaced) and taken.tx.fx.cleanups == [("closing", 1)]
+	cmds == [0].concat(mounted).concat(cleaned).concat(replaced) and tx_of(taken).fx.cleanups == [("closing", 1)]
 }
 
 ## A call is kept when its site is disposed (it reparents, like HTTP) and a
@@ -10515,14 +10539,14 @@ expect {
 		),
 	)
 	before = Core.mount(view)
-	old = (before.tx.fx.refs.get("second") ?? []).first()?.node
-	old_next = before.tx.next
+	old = (tx_of(before).fx.refs.get("second") ?? []).first()?.node
+	old_next = tx_of(before).next
 	updated = Core.event(before, 1, 0, "")
 	actual = {
-		first: (updated.tx.fx.refs.get("first") ?? []).first()?.node,
-		recycled: updated.tx.next == old_next,
-		retired: updated.tx.fx.refs.contains("second"),
-		count: updated.tx.fx.refs.len(),
+		first: (tx_of(updated).fx.refs.get("first") ?? []).first()?.node,
+		recycled: tx_of(updated).next == old_next,
+		retired: tx_of(updated).fx.refs.contains("second"),
+		count: tx_of(updated).fx.refs.len(),
 		settled: Core.settled(updated).is_ok(),
 	}
 	actual == { first: old, recycled: Bool.True, retired: Bool.False, count: 2, settled: Bool.True }
@@ -10561,7 +10585,7 @@ expect {
 	value = put_str(put_u32([21], 1).append(1), "draft")
 	checked = put_str(put_u32([21], 1).append(2), "true")
 	listen = put_u32(put_str(put_u32(put_u32([11], 1), 0), "change").append(1), 3)
-	actual = { bytes: commands, value: work_get(mounted.tx.work, 19), checked: work_get(mounted.tx.work, 20), properties: work_get(mounted.tx.work, 41), evaluations: work_get(mounted.tx.work, 21) }
+	actual = { bytes: commands, value: work_get(tx_of(mounted).work, 19), checked: work_get(tx_of(mounted).work, 20), properties: work_get(tx_of(mounted).work, 41), evaluations: work_get(tx_of(mounted).work, 21) }
 	actual == { bytes: [0].concat(element).concat(value).concat(checked).concat(listen), value: 1, checked: 1, properties: 2, evaluations: 0 }
 }
 
@@ -10599,9 +10623,9 @@ expect {
 		],
 	)
 	before = Core.mount_store(32, store.initial(), view)
-	kept = (before.tx.fx.refs.get("key-2") ?? []).first()?.node
+	kept = (tx_of(before).fx.refs.get("key-2") ?? []).first()?.node
 	after = Core.event(before, 1, 0, "")
-	actual = { removed: after.tx.fx.refs.contains("key-1"), kept: (after.tx.fx.refs.get("key-2") ?? []).first()?.node, settled: Core.settled(after).is_ok() }
+	actual = { removed: tx_of(after).fx.refs.contains("key-1"), kept: (tx_of(after).fx.refs.get("key-2") ?? []).first()?.node, settled: Core.settled(after).is_ok() }
 	actual == { removed: Bool.False, kept, settled: Bool.True }
 }
 
@@ -10631,7 +10655,7 @@ expect {
 		same: same_commands,
 		named: named_commands,
 		absent: absent_commands,
-		evaluations: work_get(absent.tx.work, 21) - work_get(mounted.tx.work, 21),
+		evaluations: work_get(tx_of(absent).work, 21) - work_get(tx_of(mounted).work, 21),
 		settled: Core.settled(absent).is_ok(),
 	}
 	actual == { empty: put_str(prefix.append(1), ""), same: [], named: put_str(prefix.append(1), "name"), absent: prefix.append(0), evaluations: 4, settled: Bool.True }
@@ -11094,9 +11118,9 @@ expect {
 		),
 	)
 	opened = Core.event(Core.mount(view), 1, 0, "")
-	first_nested = ((opened.tx.fx.refs.get("nested-b") ?? []).first() ?? crash "nested b").node
-	second_nested = ((opened.tx.fx.refs.get("nested-a") ?? []).first() ?? crash "nested a").node
-	first = ((opened.tx.fx.refs.get("first-a") ?? []).first() ?? crash "first a").node
+	first_nested = ((tx_of(opened).fx.refs.get("nested-b") ?? []).first() ?? crash "nested b").node
+	second_nested = ((tx_of(opened).fx.refs.get("nested-a") ?? []).first() ?? crash "nested a").node
+	first = ((tx_of(opened).fx.refs.get("first-a") ?? []).first() ?? crash "first a").node
 	(c0, _) = Core.take_cmds(opened, [])
 	echoed = Core.event(c0, first, 0, Str.from_utf8([1]) ?? crash "UTF8")
 	(clean, echo_commands) = Core.take_cmds(echoed, [])
@@ -11290,7 +11314,7 @@ expect {
 	(ready, _) = Core.take_cmds(initial, [])
 	changed = Core.event(ready, 2, 0, "")
 	(settled, commands) = Core.take_cmds(changed, [])
-	{ guards: settled.tx.fx.guard.live, commands: Core.work_counters(settled).get(46), settled: Core.settled(settled).is_ok(), nonempty: !commands.is_empty() } == { guards: 1, commands: Ok(1), settled: True, nonempty: False }
+	{ guards: tx_of(settled).fx.guard.live, commands: Core.work_counters(settled).get(46), settled: Core.settled(settled).is_ok(), nonempty: !commands.is_empty() } == { guards: 1, commands: Ok(1), settled: True, nonempty: False }
 }
 
 ## False signals and scope disposal remove exactly their own guard contribution.
@@ -11298,7 +11322,7 @@ expect {
 	initial = Core.mount(Core.state(True, |on| Core.element("main", [], [Core.element("button", [Core.on_click(on.update(|value| !value))], []), Core.guard_leave(on.signal()), Core.when(on.signal(), || Core.guard_leave(Core.const(True)), || Core.text(""))])))
 	(ready, _) = Core.take_cmds(initial, [])
 	changed = Core.event(ready, 2, 0, "")
-	{ guards: changed.tx.fx.guard.live, emitted: changed.tx.fx.guard.emitted, commands: Core.work_counters(changed).get(46), pending: Core.fx_live(changed), settled: Core.settled(changed).is_ok() } == { guards: 0, emitted: False, commands: Ok(2), pending: [], settled: True }
+	{ guards: tx_of(changed).fx.guard.live, emitted: tx_of(changed).fx.guard.emitted, commands: Core.work_counters(changed).get(46), pending: Core.fx_live(changed), settled: Core.settled(changed).is_ok() } == { guards: 0, emitted: False, commands: Ok(2), pending: [], settled: True }
 }
 
 ## Session values retain their own availability, independent of local storage.
