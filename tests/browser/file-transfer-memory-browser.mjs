@@ -8,7 +8,9 @@ import { installProtocolFixture } from "./protocol-fixture.mjs";
 // difference printed explicitly. A buffered Fetch positive control must retain
 // the body in measured JavaScript backing storage before EOF. No response body
 // is captured through DevTools. These metrics cover renderer JavaScript/Wasm,
-// not whole-browser RSS or the browser's Blob storage.
+// not whole-browser RSS or the browser's Blob storage. A transfer the app
+// cancels, and one its timeout ends, mid-body (every byte written, EOF held)
+// must leave no more behind after cleanup than a completed one does.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -180,7 +182,75 @@ try {
   assert(Math.abs(fetchBlob.growth.jsHeap + fetchBlob.growth.backingStorage - xhrBlob.growth.jsHeap - xhrBlob.growth.backingStorage) < 2 * MIB, "Fetch.blob and XHR.blob JavaScript retention diverged");
   assert(buffered.growth.backingStorage >= BODY_BYTES * 0.9, "positive control did not expose retained stream chunks");
   assert(buffered.growth.backingStorage - Math.max(fetchBlob.growth.backingStorage, xhrBlob.growth.backingStorage) >= BODY_BYTES * 0.75, "positive control did not materially exceed browser-owned paths");
-  console.log("file-transfer-memory-browser: passed (32 MiB; renderer JavaScript/backing storage and Wasm only)");
+  const ended = [];
+  for (const transport of [
+    { name: "fetch-blob", progressMs: 0 },
+    { name: "xhr-blob", progressMs: 16 },
+  ]) {
+    for (const ending of ["cancel", "timeout"]) {
+      const label = `${transport.name}-${ending}`;
+      const browser = await launch({ executablePath: opts.chrome });
+      try {
+        const page = await browser.newPage();
+        const errors = [];
+        page.on("pageerror", error => errors.push(String(error)));
+        await page.goto(base);
+        await installProtocolFixture(page);
+        await page.evaluate(async () => {
+          const { RocEngineRuntime } = await import("/runtime.mjs");
+          const memory = new WebAssembly.Memory({ initial: 2 });
+          window.rt = new RocEngineRuntime({ memory, cmd_ptr: () => 0, cmd_len: () => 0, drop: () => {} }, document.body, {});
+          __bindProtocolFixture(window.rt);
+          window.answers = [];
+          window.rt.deliver = (_node, _id, payload) => {
+            payload.before?.();
+            const tag = payload.parts?.[0]?.[0] ?? payload[0];
+            if (tag !== 26) window.answers.push(tag);
+          };
+        });
+        let requestId = null, received = 0;
+        page.conn.on(page.sessionId, "Network.requestWillBeSent", event => {
+          if (event.request.url === `${base}/body?case=${label}`) requestId = event.requestId;
+        });
+        page.conn.on(page.sessionId, "Network.dataReceived", event => {
+          if (event.requestId === requestId) received += event.dataLength;
+        });
+        await page.send("Network.enable", { maxTotalBufferSize: 1, maxResourceBufferSize: 1 });
+        const before = await memory(page);
+        // A timeout long enough for the body to arrive first, held at EOF.
+        const timeout = ending === "timeout" ? 4000 : 0;
+        await page.evaluate(({ transport, label, timeout }) => window.rt.startTransfer({
+          id: 1, op: "fetch", url: `/body?case=${label}`, method: "GET", headers: [], body: "", timeout,
+          credentials: "same-origin", progressMs: transport.progressMs, cache: "default",
+        }), { transport, label, timeout });
+        await until(() => held.get(label)?.sentBytes === BODY_BYTES, `${label}: server wrote the bounded body`);
+        if (transport.name === "xhr-blob") await until(() => received === BODY_BYTES, `${label}: all body bytes reached the renderer before EOF`);
+        assert(await page.evaluate(() => window.rt.live.size === 1 && window.answers.length === 0), `${label}: was not in flight mid-body`);
+        const plateau = await memory(page);
+        if (ending === "cancel") await page.evaluate(() => window.rt.cancel(1));
+        await until(() => page.evaluate(() => window.rt.live.size === 0), `${label}: the transfer ended`);
+        const state = await page.evaluate(() => { window.rt.releaseReports(); return { answers: window.answers, live: window.rt.live.size, timers: window.rt.timers, reports: window.rt.reportSources.size }; });
+        // Cancellation delivers nothing; a timeout answers Timeout (tag 7) once.
+        const expected = ending === "cancel" ? [] : [7];
+        assert(JSON.stringify(state.answers) === JSON.stringify(expected), `${label}: answered ${JSON.stringify(state.answers)}, expected ${JSON.stringify(expected)}`);
+        assert(state.live === 0 && state.timers === 0 && state.reports === 0, `${label}: transfer resources survived ${ending} ${JSON.stringify(state)}`);
+        await page.evaluate(() => window.rt.unmount());
+        const after = await memory(page);
+        assert(errors.length === 0, `${label}: browser errors ${JSON.stringify(errors)}`);
+        ended.push({ transport: label, before, plateau, growth: growth(before, plateau), after, cleanupGrowth: growth(before, after), state });
+        console.log(JSON.stringify(ended.at(-1)));
+      } finally {
+        held.get(label)?.destroy();
+        held.delete(label);
+        await browser.close();
+      }
+    }
+  }
+  for (const result of ended) {
+    assert(result.growth.wasm === 0 && result.cleanupGrowth.wasm === 0, `${result.transport}: file body grew Wasm memory`);
+    assert(result.cleanupGrowth.jsHeap + result.cleanupGrowth.backingStorage < 2 * MIB, `${result.transport}: body-sized backing storage survived cleanup`);
+  }
+  console.log("file-transfer-memory-browser: passed (32 MiB; renderer JavaScript/backing storage and Wasm only; completed, cancelled and timed-out transfers)");
 } finally {
   for (const response of held.values()) response.destroy();
   server.closeAllConnections();
