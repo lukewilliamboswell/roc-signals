@@ -3754,7 +3754,8 @@ SpecRunner := [].{
 	## tag 10's files are minted as the page's handles (`handles`, which
 	## `mint!` gave) and kept as files the runner can read back, named `#N`
 	## beside the spec's own files, and the answer goes to the app through
-	## the effect node with those handles, as the runtime delivers it. Tag 11
+	## the effect node with those handles, as the runtime delivers it. An answer
+	## without files uses event; only a file-bearing answer uses files. Tag 11
 	## passes through. An empty record is a job that did not finish within
 	## the runner's bound, which fails the step: a spec's time is manual, and
 	## a job's timeout expires only when the spec says so. When the host had
@@ -3783,6 +3784,9 @@ SpecRunner := [].{
 				handles = mint!(n)
 				if handles.len() < n {
 					return Ok(SpecRunner.deliver(program, rest, id, [11, 2]))
+				}
+				if n == 0 {
+					return Ok(SpecRunner.deliver(program, rest, id, SpecRunner.put_u32([10], 0).concat(output)))
 				}
 				var $payload = SpecRunner.put_u32([10], n.to_u32_wrap())
 				var $files = rest.browser.files
