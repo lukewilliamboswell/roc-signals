@@ -589,7 +589,7 @@ PortJson := [].{
 
 		## A `U8` key.
 		parse_key_u8 : Format, State -> Try({ value : U8, rest : State }, Error)
-		parse_key_u8 = |_, state| parse_key_int(state, U8.from_str)
+		parse_key_u8 = |_, state| parse_key_int(state, U8.from_str, U8.to_str)
 
 		## An `I8` key, as its digits.
 		encode_key_i8 : Format, I8, Out -> Try(Out, [])
@@ -597,7 +597,7 @@ PortJson := [].{
 
 		## An `I8` key.
 		parse_key_i8 : Format, State -> Try({ value : I8, rest : State }, Error)
-		parse_key_i8 = |_, state| parse_key_int(state, I8.from_str)
+		parse_key_i8 = |_, state| parse_key_int(state, I8.from_str, I8.to_str)
 
 		## A `U16` key, as its digits.
 		encode_key_u16 : Format, U16, Out -> Try(Out, [])
@@ -605,7 +605,7 @@ PortJson := [].{
 
 		## A `U16` key.
 		parse_key_u16 : Format, State -> Try({ value : U16, rest : State }, Error)
-		parse_key_u16 = |_, state| parse_key_int(state, U16.from_str)
+		parse_key_u16 = |_, state| parse_key_int(state, U16.from_str, U16.to_str)
 
 		## An `I16` key, as its digits.
 		encode_key_i16 : Format, I16, Out -> Try(Out, [])
@@ -613,7 +613,7 @@ PortJson := [].{
 
 		## An `I16` key.
 		parse_key_i16 : Format, State -> Try({ value : I16, rest : State }, Error)
-		parse_key_i16 = |_, state| parse_key_int(state, I16.from_str)
+		parse_key_i16 = |_, state| parse_key_int(state, I16.from_str, I16.to_str)
 
 		## A `U32` key, as its digits.
 		encode_key_u32 : Format, U32, Out -> Try(Out, [])
@@ -621,7 +621,7 @@ PortJson := [].{
 
 		## A `U32` key.
 		parse_key_u32 : Format, State -> Try({ value : U32, rest : State }, Error)
-		parse_key_u32 = |_, state| parse_key_int(state, U32.from_str)
+		parse_key_u32 = |_, state| parse_key_int(state, U32.from_str, U32.to_str)
 
 		## An `I32` key, as its digits.
 		encode_key_i32 : Format, I32, Out -> Try(Out, [])
@@ -629,7 +629,7 @@ PortJson := [].{
 
 		## An `I32` key.
 		parse_key_i32 : Format, State -> Try({ value : I32, rest : State }, Error)
-		parse_key_i32 = |_, state| parse_key_int(state, I32.from_str)
+		parse_key_i32 = |_, state| parse_key_int(state, I32.from_str, I32.to_str)
 
 		## A `U64` key, as its digits.
 		encode_key_u64 : Format, U64, Out -> Try(Out, [])
@@ -637,7 +637,7 @@ PortJson := [].{
 
 		## A `U64` key.
 		parse_key_u64 : Format, State -> Try({ value : U64, rest : State }, Error)
-		parse_key_u64 = |_, state| parse_key_int(state, U64.from_str)
+		parse_key_u64 = |_, state| parse_key_int(state, U64.from_str, U64.to_str)
 
 		## An `I64` key, as its digits.
 		encode_key_i64 : Format, I64, Out -> Try(Out, [])
@@ -645,7 +645,7 @@ PortJson := [].{
 
 		## An `I64` key.
 		parse_key_i64 : Format, State -> Try({ value : I64, rest : State }, Error)
-		parse_key_i64 = |_, state| parse_key_int(state, I64.from_str)
+		parse_key_i64 = |_, state| parse_key_int(state, I64.from_str, I64.to_str)
 
 		## A `U128` key, as its digits.
 		encode_key_u128 : Format, U128, Out -> Try(Out, [])
@@ -653,7 +653,7 @@ PortJson := [].{
 
 		## A `U128` key.
 		parse_key_u128 : Format, State -> Try({ value : U128, rest : State }, Error)
-		parse_key_u128 = |_, state| parse_key_int(state, U128.from_str)
+		parse_key_u128 = |_, state| parse_key_int(state, U128.from_str, U128.to_str)
 
 		## An `I128` key, as its digits.
 		encode_key_i128 : Format, I128, Out -> Try(Out, [])
@@ -661,7 +661,7 @@ PortJson := [].{
 
 		## An `I128` key.
 		parse_key_i128 : Format, State -> Try({ value : I128, rest : State }, Error)
-		parse_key_i128 = |_, state| parse_key_int(state, I128.from_str)
+		parse_key_i128 = |_, state| parse_key_int(state, I128.from_str, I128.to_str)
 
 		## A `Dec` key, as its digits.
 		encode_key_dec : Format, Dec, Out -> Try(Out, [])
@@ -676,6 +676,11 @@ PortJson := [].{
 				return Err(Expected("a decimal key", s.pos))
 			}
 			value = Dec.from_str(read.value) ? |_| OutOfRange(s.pos)
+			# One key, one text: "1", "1.0" and "1e0" would otherwise be one
+			# entry, and the answer's other entries would be merged into it.
+			if value.to_str() != read.value {
+				return Err(Expected("a decimal key written as ${value.to_str()}", s.pos))
+			}
 			Ok({ value, rest: read.rest })
 		}
 
@@ -1111,15 +1116,21 @@ parse_int = |state, width, from_str| {
 	Ok({ value, rest })
 }
 
-## Read an integer dictionary key: a string of digits.
-parse_key_int : PortJson.State, (Str -> Try(a, _)) -> Try({ value : a, rest : PortJson.State }, PortJson.Error)
-parse_key_int = |state, from_str| {
+## Read an integer dictionary key: a string of digits, exactly as the
+## encoder writes that key (`to_str`). A key has one text, so two texts of one
+## value, such as `"0"` and `"-0"`, cannot alias one entry: the other is
+## refused rather than merged into it.
+parse_key_int : PortJson.State, (Str -> Try(a, _)), (a -> Str) -> Try({ value : a, rest : PortJson.State }, PortJson.Error)
+parse_key_int = |state, from_str, to_str| {
 	s = skip_ws(state)
 	read = read_string(s)?
 	if !is_integer(Str.to_utf8(read.value)) {
 		return Err(Expected("an integer key", s.pos))
 	}
 	value = from_str(read.value) ? |_| OutOfRange(s.pos)
+	if to_str(value) != read.value {
+		return Err(Expected("an integer key written as ${to_str(value)}", s.pos))
+	}
 	Ok({ value, rest: read.rest })
 }
 
@@ -1425,6 +1436,37 @@ expect {
 	marker : Try(Dict(Str, U8), PortJson.Error)
 	marker = from_text("{\"$bytes\":0}")
 	words == "{\"$$x\":3,\"a\":1,\"b\":2}" and numbers == "{\"10\":true,\"2\":false}" and round_trips(colors) and round_trips(Dict.from_list([("$x", 3.U8), ("a", 1)])) and marker.is_err()
+}
+
+## A dictionary key has one text, the one the encoder writes for it, so two
+## texts of one value never alias one entry: a port's answer is outside
+## input, and merging its entries would decode something it did not say.
+expect {
+	zeros : Try(Dict(I32, U8), PortJson.Error)
+	zeros = from_text("{\"0\":1,\"-0\":2}")
+	negative_zero : Try(Dict(I64, U8), PortJson.Error)
+	negative_zero = from_text("{\"-0\":2}")
+	unsigned_zero : Try(Dict(U8, U8), PortJson.Error)
+	unsigned_zero = from_text("{\"-0\":1}")
+	integers : Try(Dict(I32, U8), PortJson.Error)
+	integers = from_text("{\"0\":1,\"-3\":2,\"2147483647\":3}")
+	zeros.is_err() and negative_zero.is_err() and unsigned_zero.is_err() and integers == Ok(Dict.from_list([(0, 1), (-3, 2), (2147483647, 3)]))
+}
+
+## A decimal key is accepted only as `Dec.to_str` writes it: `"1"`, `"1.0"`
+## and `"1e0"` are one value, and only `"1.0"` is its key.
+expect {
+	aliased : Try(Dict(Dec, U8), PortJson.Error)
+	aliased = from_text("{\"1.0\":1,\"1\":2}")
+	plain : Try(Dict(Dec, U8), PortJson.Error)
+	plain = from_text("{\"1\":2}")
+	exponent : Try(Dict(Dec, U8), PortJson.Error)
+	exponent = from_text("{\"1e0\":2}")
+	padded : Try(Dict(Dec, U8), PortJson.Error)
+	padded = from_text("{\"2.50\":2}")
+	canonical : Try(Dict(Dec, U8), PortJson.Error)
+	canonical = from_text("{\"1.0\":1,\"2.5\":2,\"-0.1\":3}")
+	aliased.is_err() and plain.is_err() and exponent.is_err() and padded.is_err() and canonical == Ok(Dict.from_list([(1.0, 1), (2.5, 2), (-0.1, 3)])) and round_trips(Dict.from_list([(3.Dec, 1.U8), (-12.5, 2)]))
 }
 
 ## Lists, sets, empty containers and nested lists.

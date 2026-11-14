@@ -21,7 +21,11 @@ import pf.Wire
 ## message decodes to a value whose message is the same text and blobs, and,
 ## for the types whose equality is structural, to an equal value. JSON is
 ## not canonical, so an accepted input need not be the encoding of its
-## value; what must hold is that Roc's own encoding is.
+## value; what must hold is that Roc's own encoding is. A dictionary with
+## number keys is its text keys one for one: two texts of one key (`"0"`
+## and `"-0"`, `"1"` and `"1.0"`) never merge into one entry, so whenever
+## an input decodes with integer or decimal keys it decodes with text keys
+## to as many entries.
 Shape : [Dot, Circle(F64), Rect({ w : U32, h : U32 }), Path(List((I16, I16)))]
 
 Kind : [A, B(U16, Str), C({ x : I8 })]
@@ -95,6 +99,24 @@ decode_strs = |input| PortJson.decode(message(input))
 decode_words : List(U8) -> Try(Dict(Str, U8), PortJson.Error)
 decode_words = |input| PortJson.decode(message(input))
 
+decode_int_keys : List(U8) -> Try(Dict(I32, U8), PortJson.Error)
+decode_int_keys = |input| PortJson.decode(message(input))
+
+decode_dec_keys : List(U8) -> Try(Dict(Dec, U8), PortJson.Error)
+decode_dec_keys = |input| PortJson.decode(message(input))
+
+## Crash if `keyed` decoded entries that the same text, read with text keys,
+## does not hold one for one: a merge of two key texts into one entry.
+one_for_one! : Str, List(U8), Try(Dict(k, U8), PortJson.Error) => {}
+one_for_one! = |label, input, keyed| match keyed {
+	Ok(entries) => match decode_words(input) {
+		Ok(words) if words.len() == entries.len() => {}
+		Ok(words) => crash "${label} keys merged ${words.len().to_str()} key texts into ${entries.len().to_str()} entries"
+		Err(problem) => crash "${label} keys decoded text whose keys are not text: ${PortJson.describe(problem)}"
+	}
+	Err(_) => {}
+}
+
 decode_profiles : List(U8) -> Try(List(Profile), PortJson.Error)
 decode_profiles = |input| PortJson.decode(message(input))
 
@@ -161,6 +183,10 @@ test! = |input| {
 	structural!("Canon", input, decode_canon)
 	structural!("List(Str)", input, decode_strs)
 	structural!("Dict(Str, U8)", input, decode_words)
+	structural!("Dict(I32, U8)", input, decode_int_keys)
+	structural!("Dict(Dec, U8)", input, decode_dec_keys)
+	one_for_one!("Dict(I32, U8)", input, decode_int_keys(input))
+	one_for_one!("Dict(Dec, U8)", input, decode_dec_keys(input))
 	structural!("List(Profile)", input, decode_profiles)
 	structural!("List(Kind)", input, decode_kinds)
 	structural!("Node", input, decode_node)
@@ -219,6 +245,8 @@ target = Fuzz.target_with!({
 		Fuzz.example({ name: "canon-trailing", revision: "1", make: || Str.to_utf8(PortJson.encode(sample_canon).json).append(44) }),
 		Fuzz.example({ name: "deep", revision: "1", make: || List.repeat(91, 700) }),
 		Fuzz.example({ name: "empty", revision: "1", make: || [] }),
+		Fuzz.example({ name: "integer-key-alias", revision: "1", make: || Str.to_utf8("{\"0\":1,\"-0\":2,\"7\":3}") }),
+		Fuzz.example({ name: "decimal-key-alias", revision: "1", make: || Str.to_utf8("{\"1.0\":1,\"1\":2,\"1e0\":3,\"2.5\":4}") }),
 	],
 	name: "port-json",
 	generator: Fuzz.raw_bytes,

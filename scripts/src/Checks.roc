@@ -104,6 +104,7 @@ Checks := [].{
 			{ name: "layout-size-text", expectation: Rejected(["width: U32"]) },
 			{ name: "layout-seen-text", expectation: Rejected(["ratio_permille: U16"]) },
 			{ name: "timeout-zero", expectation: Rejected(["a timeout of Ms(0)"]) },
+			{ name: "port-float-key", expectation: Rejected(["parse_key_f64"]) },
 			{ name: "checkbox-text-payload", expectation: Rejected(["This string literal is being used where a non-string type is needed", "Bool"]) },
 			{ name: "select-text-payload", expectation: Rejected(["The sixth argument", "[Chose(Str), NotOffered]"]) },
 			{ name: "sort-tuple", expectation: Rejected(["order_relative_to"]) },

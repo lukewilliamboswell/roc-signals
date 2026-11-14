@@ -209,6 +209,7 @@ types. The JavaScript receives plain data and answers plain data:
 | list, tuple | array |
 | tag | `"Tag"`, `{"Tag": payload}` or `{"Tag": [a, b]}` |
 | `Dict(Str, v)` | object |
+| `Dict(k, v)` with an integer, `Dec`, `Bool` or tag key | object whose keys are written exactly as Roc writes them: `"7"`, never `"-0"` or `"07"`; a `Dec` key as `"3.0"`, never `"3"` or `"3e0"`. Another spelling of a key answers `Undecodable` rather than merging two entries. A float key does not compile |
 | `Wire.Bytes` | `Uint8Array` (an answer may also be an `ArrayBuffer`) |
 | `Engine.File` | the browser's `File`; an answer may be a `File` or `Blob` |
 
