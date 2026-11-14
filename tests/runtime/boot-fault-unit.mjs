@@ -1,5 +1,7 @@
 // A module whose declarations cannot be built traps in `boot_keys`, before
-// section 12 (which names the fault classes) exists. The runtime still
+// section 12 (which names the fault classes) exists. The declarations depend
+// only on the top-level `main`, so this is a compiler gap or a platform bug,
+// not app data; it must still be contained and classified. The runtime still
 // classifies that trap by the host's fault code, poisons once and reports it
 // through onFault; and the protocol facts it later binds must name the host's
 // fault classes and HTTP policies exactly. Only the host exports are fake.

@@ -3215,9 +3215,11 @@ export class RocEngineRuntime {
       if (typeof this.x.dbg_len !== "function" || typeof this.x.dbg_ptr !== "function") throw new Error("roc engine protocol requires dbg_ptr and dbg_len exports");
       // The app's port declarations, checked against options.ports before
       // anything mounts: a mismatch throws, and nothing runs.
-      // A trap in `boot_keys` (a catalogue the program builds at run time
-      // that breaks a rule) is contained like any other: classified by the
-      // host's fault code, poisoned, reported once through onFault. Its
+      // A trap in `boot_keys` is contained like any other: classified by the
+      // host's fault code, poisoned, reported once through onFault. The
+      // declarations are a function of the top-level `main` alone, so a
+      // catalogue rule they break should have failed when the app compiled:
+      // such a trap means a compiler gap or a platform bug. Its
       // declarations are then never read. A declaration that is readable
       // but invalid is a refusal: it throws, and nothing runs.
       this.calling = true;
