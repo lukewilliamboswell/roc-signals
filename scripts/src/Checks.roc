@@ -353,10 +353,27 @@ Checks := [].{
 		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(release-reports)", bad: "(navigate \"/leave-held-document\")", rejection: "cross-document navigation" },
 	]
 
-	## Each runner must reject each deliberately broken spec
-	## (`broken_specs`). A runner that passes one is not evidence of anything.
-	broken_spec! : SpecSuite.Options, Broken => Try(List(Str), _)
-	broken_spec! = |o, { example, spec, good, bad, rejection }| {
+	## The broken specs whose bad step breaks a contract the engine refuses
+	## by poisoning the instance: an outbox posted twice in one turn. In
+	## Chrome the replay fails the spec with the contract's message. The
+	## native runner shares the page's process, so there the refusal is a
+	## crash that ends the run (exit 70) before the spec has a result; the
+	## suite must report that run as a failure (`SpecSuite.judge`), never
+	## count it as a shorter run that passed.
+	crashing_specs : List(Broken)
+	crashing_specs = [
+		{ example: "outbox", spec: "tests/apps/outbox/specs/list.scm", good: "(click (role button :name \"Send both\"))", bad: "(click (role button :name \"Send twice\"))", rejection: "posted 2 times in one turn" },
+	]
+
+	## Each runner must reject each deliberately broken spec. With
+	## `Rejects` (`broken_specs`) the native runner reports it as failed;
+	## with `Crashes` (`crashing_specs`) it runs the broken spec before the
+	## original, crashes on the first and leaves both without a result, and
+	## the suite's verdict on that run must say so with exit 70. In Chrome
+	## both are failed with `rejection`. A runner that passes one is not
+	## evidence of anything.
+	broken_spec! : SpecSuite.Options, Broken, [Rejects, Crashes] => Try(List(Str), _)
+	broken_spec! = |o, { example, spec, good, bad, rejection }, natively| {
 		original = Path.read_utf8!(Path.utf8(spec))?
 		if !original.contains(good) {
 			return Ok(["broken-spec self-check: ${spec} no longer holds ${good}; choose a new assertion to break"])
@@ -366,15 +383,25 @@ Checks := [].{
 		SpecSuite.fresh_dir!(dir)?
 		broken = "${dir}/broken.scm"
 		Path.write_utf8!(Path.utf8(broken), original.replace_each(good, bad))?
-		native = SpecSuite.run_native!(runner, [broken])?.lines
+		rejected = |lines| lines.any(|l| SpecSuite.json_field(l, "status") == "failed" and SpecSuite.json_message(l).contains(rejection))
+		native_problems = match natively {
+			Rejects => if (rejected(SpecSuite.run_native!(runner, [broken])?.lines)) [] else ["broken-spec self-check: the native runner did not reject the broken ${spec}"]
+			Crashes => {
+				run = SpecSuite.run_native!(runner, [broken, spec])?
+				verdict = SpecSuite.judge({ example, stage: Native, expected: ["broken", SpecSuite.id_of(spec)], run })
+				if run.code == 70 and verdict.unreported == 2 and verdict.problems.len() == 2 {
+					[]
+				} else {
+					["broken-spec self-check: the crashing ${spec} did not end the native run with 70 and two specs without a result, as the suite must report (exit ${run.code.to_str()}; ${Str.join_with(verdict.problems, "; ")})"]
+				}
+			}
+		}
 		steps = Proc.capture!({ program: runner, args: ["--emit-steps", broken], cwd: "." })?
 		Path.write_bytes!(Path.utf8("${dir}/steps.jsonl"), steps)?
 		{ stdout, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", SpecSuite.wasm_of(o, example), "--runtime", SpecSuite.runtime, "--steps", "${dir}/steps.jsonl", "--chrome", o.chrome, "--json-lines"], cwd: "." })?
 		in_browser = Str.from_utf8_lossy(stdout).split_on("\n")
-		rejected = |lines| lines.any(|l| SpecSuite.json_field(l, "status") == "failed" and SpecSuite.json_message(l).contains(rejection))
 		Ok(
-			[]
-				.concat(if (rejected(native)) [] else ["broken-spec self-check: the native runner did not reject the broken ${spec}"])
+			native_problems
 				.concat(if (rejected(in_browser)) [] else ["broken-spec self-check: the browser runner did not reject the broken ${spec}"]),
 		)
 	}

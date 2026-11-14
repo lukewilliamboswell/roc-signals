@@ -179,7 +179,8 @@ published baseline.
 5. Every app's specs natively and in Chrome, a walk of 300 steps of every
    walked app in its native runner (below), the check that the browser
    runner handles every form of the grammar, then a deliberately broken spec
-   that both runners must reject. Each run of a runner must account for
+   that both runners must reject, and a spec that breaks a contract, whose
+   native crash the suite must report. Each run of a runner must account for
    every spec it was given (see [Specs and contract tests](#specs-and-contract-tests)).
 6. The runtime's unit tests in Node (the work monitor's aggregation and
    bounds, `tests/runtime/`), then its contract tests in Chrome: effects,
@@ -307,7 +308,11 @@ without a result, instead of counting the specs before them as the whole
 run. The emit step (`--emit-steps`) and the Chrome replay are judged the
 same way: a spec the parser refuses is an `error` line and exit 1, which
 the replay reports as failed; a replay that cannot start Chrome gives no
-lines and fails naming every spec.
+lines and fails naming every spec. A deliberately crashing spec
+(`Checks.crashing_specs`, an outbox posted twice in one turn) keeps this
+honest: run natively before the spec it was made from, it must end the run
+with 70 and leave both without a result, and the replay must fail it with
+the contract's message.
 
 For a setup file given through `choose-files`, choose an extension whose
 MIME type Chrome recognizes on every supported system, such as `.txt`

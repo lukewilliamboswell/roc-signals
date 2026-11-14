@@ -32,7 +32,8 @@ import src/Sizes
 ## app's `.scm` specs natively and in Chrome, a short walk of every app in
 ## the native runner, the broken-spec self-checks (both
 ## runners reject each spec with one wrong expectation, a lost worker job's
-## fault class among them), the runtime's
+## fault class among them, and a broken contract's native crash is reported
+## as a run without results), the runtime's
 ## unit tests in Node and contract tests in Chrome (effects, controls,
 ## workers, Conduit journey), the
 ## recorded gzip sizes of shipped JavaScript and a report of each example's
@@ -119,7 +120,10 @@ main! = |_args| {
 
 	Proc.note!("== broken-spec self-check")
 	for broken in Checks.broken_specs {
-		$problems = Checks.gather!($problems, Checks.broken_spec!(o, broken))?
+		$problems = Checks.gather!($problems, Checks.broken_spec!(o, broken, Rejects))?
+	}
+	for crashing in Checks.crashing_specs {
+		$problems = Checks.gather!($problems, Checks.broken_spec!(o, crashing, Crashes))?
 	}
 
 	Proc.note!("== declaration refusals before execution and emission")
