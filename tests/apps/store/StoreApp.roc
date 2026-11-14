@@ -54,8 +54,8 @@ StoreApp := [Hundred].{
 
 	## The 100 cells, in order.
 	cells = {
-		cells = StoreApp.store.cells()
-		cells.g0.concat(cells.g1).concat(cells.g2).concat(cells.g3).concat(cells.g4).concat(cells.g5).concat(cells.g6).concat(cells.g7).concat(cells.g8).concat(cells.g9)
+		groups = StoreApp.store.cells()
+		groups.g0.concat(groups.g1).concat(groups.g2).concat(groups.g3).concat(groups.g4).concat(groups.g5).concat(groups.g6).concat(groups.g7).concat(groups.g8).concat(groups.g9)
 	}
 
 	## Cell `i`.
