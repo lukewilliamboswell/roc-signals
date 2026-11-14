@@ -693,7 +693,7 @@ growth or scaling.
 requested bytes for sparse table writes and small-cell writes at two table
 sizes. Allocation count alone misses a growing copy made by one allocation.
 The guard checks teardown too. It is evidence for development store ownership;
-optimized copying remains tracked by roc-lang/roc#13019, and local-state
+optimized copying remains tracked by roc-lang/roc#12957, and local-state
 capture ownership by roc-lang/roc#13012. Extend the guard when those compiler
 fixes land rather than claiming shipping allocation from a development build.
 
