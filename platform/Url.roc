@@ -7,6 +7,12 @@
 ## DNS names, dotted-decimal IPv4 addresses, or bracketed IPv6 addresses made
 ## from hexadecimal groups with optional :: elision. IPv4-in-IPv6 and Unicode
 ## domain names are intentionally unsupported.
+##
+## A host whose last label is a number (decimal, or hexadecimal after `0x`) is
+## an IPv4 address to a browser, so it must be four decimal components from 0
+## to 255, none longer than one digit starting with `0`; anything else, such as
+## `017.0.0.1`, `0x7f.0.0.1` or `foo.123`, is refused rather than read
+## differently from the browser.
 Url :: {
 	origin : [Relative, Absolute({ scheme : [Http, Https], host : Str, port : [None, Some(U16)] })],
 	path : Str,
@@ -399,12 +405,42 @@ validate_host = |raw_host| {
 		Err(EmptyHost)
 	} else if List.any(Str.to_utf8(raw_host), |byte| byte > 127) {
 		Err(InternationalHostUnsupported)
-	} else if Str.to_utf8(raw_host).all(|byte| is_digit(byte) or byte == 46) {
+	} else if ends_in_number(raw_host) {
 		validate_ipv4(raw_host)
 	} else {
 		validate_dns_name(raw_host)
 	}
 }
+
+# WHATWG's "ends in a number" rule: a browser parses a host as IPv4 when its
+# last label, ignoring one trailing dot, is all decimal digits or `0x`/`0X`
+# followed by hexadecimal digits. Such a host must then be the one IPv4 form
+# this module reads exactly as a browser does, or it is refused; it is never a
+# DNS name, whose origin would differ from the address the browser contacts.
+ends_in_number : Str -> Bool
+ends_in_number = |raw_host| {
+	labels = Str.split_on(raw_host, ".")
+	significant =
+		if labels.len() > 1 and labels.last() == Ok("") {
+			labels.drop_last(1)
+		} else {
+			labels
+		}
+	match significant.last() {
+		Ok(last) => is_ipv4_number(Str.to_utf8(last))
+		Err(_) => False
+	}
+}
+
+# A label a browser's IPv4 number parser accepts: decimal digits (octal ones
+# included), or a hexadecimal prefix with hexadecimal digits, possibly none.
+is_ipv4_number : List(U8) -> Bool
+is_ipv4_number = |bytes|
+	match bytes {
+		[48, x, .. as rest] if x == 120 or x == 88 => rest.all(is_hex)
+		[] => False
+		_ => bytes.all(is_digit)
+	}
 
 validate_dns_name : Str -> Try(Str, [InvalidHost(Str)])
 validate_dns_name = |raw_host| {
@@ -449,7 +485,11 @@ parse_ipv4_parts = |parts, out|
 		[first, .. as rest] => {
 			# An IPv4 component can contain at most three decimal digits. Check
 			# that before accumulating into U64 so hostile input cannot overflow.
-			if Str.to_utf8(first).len() > 3 {
+			# A browser reads a component with a leading zero as octal, so a
+			# longer component starting with `0` is refused rather than read as
+			# decimal.
+			bytes = Str.to_utf8(first)
+			if bytes.len() > 3 or (bytes.len() > 1 and first_or_zero(bytes) == 48) {
 				Err(BadIpv4Part)
 			} else {
 				match parse_decimal(first) {
@@ -1139,12 +1179,9 @@ expect
 		Err(_) => False
 	}
 
-## Parsing canonicalizes IPv4 decimal components.
-expect
-	match Url.parse("https://127.000.000.001:8443/") {
-		Ok(url) => Url.to_str(url) == "https://127.0.0.1:8443/"
-		Err(_) => False
-	}
+## Parsing refuses IPv4 components with leading zeroes, which a browser reads
+## as octal.
+expect Url.parse("https://127.000.000.001:8443/") == Err(InvalidIpv4("127.000.000.001"))
 
 ## Parsing expands and canonicalizes an IPv6 loopback address.
 expect
@@ -1736,3 +1773,34 @@ expect {
 	url = "https://host//b"
 	url.request_target() == "//b" and url.to_str() == "https://host//b"
 }
+
+## A host whose last label is a number is an IPv4 address to a browser, so
+## parsing reads it as one or refuses it; it is never a DNS name.
+expect Url.parse("http://foo.123/") == Err(InvalidIpv4("foo.123"))
+
+## A trailing dot does not hide a numeric last label.
+expect Url.parse("http://foo.123./") == Err(InvalidIpv4("foo.123."))
+
+## A hexadecimal last label is a number to a browser.
+expect Url.parse("http://1.2.3.0x4/") == Err(InvalidIpv4("1.2.3.0x4"))
+
+## A bare `0x` label is the number zero to a browser.
+expect Url.parse("http://foo.0X/") == Err(InvalidIpv4("foo.0X"))
+
+## A hexadecimal component is refused, not read as a DNS label.
+expect Url.parse("http://0x7f.0.0.1/") == Err(InvalidIpv4("0x7f.0.0.1"))
+
+## A component with a leading zero is octal to a browser, so it is refused.
+expect Url.parse("http://017.0.0.1/") == Err(InvalidIpv4("017.0.0.1"))
+
+## A single zero component is decimal zero in both readings.
+expect Url.parse("http://0.0.0.0/").map_ok(Url.to_str) == Ok("http://0.0.0.0/")
+
+## A shortened or single-number IPv4 form is refused.
+expect Url.parse("http://2130706433/") == Err(InvalidIpv4("2130706433"))
+
+## A last label that is not a number keeps the host a DNS name.
+expect Url.parse("http://1.2.3.0xg/").map_ok(Url.to_str) == Ok("http://1.2.3.0xg/")
+
+## Digits before the last label do not make the host an address.
+expect Url.parse("http://123.example/").map_ok(Url.to_str) == Ok("http://123.example/")
