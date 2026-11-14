@@ -161,77 +161,94 @@ fail with their status and a bounded response excerpt. Discovery and baseline
 extraction failures fail the gate; the current source never replaces the
 published baseline.
 
-1. Every script names the `roc-stable` nightly that `Blueprint.roc` pins, and
-   no other Roc file names a compiler; every file `www/data/examples.toml`
-   names exists, and every example is in a section of the examples index.
-2. `roc fmt --check` over every Roc source, `roc test` on the platform, the
-   engine package (`platform/main-fuzz.roc`), the tool (`cli/`), the
-   scripts, and the `main.roc` of every example and test app, which runs
-   the `expect`s of every module the app imports (the tests of its
-   transitions), and the check that `cli/Bundle.roc` is what the release
-   generates for a checkout.
-3. The platform's link inputs for every target, a worker app's spec runner
-   linked for macOS (`arm64mac`, `x64mac`) and Windows (`x64win`) from them,
-   and the examples of the fuzz targets in `fuzz/` (the `.scm` parser, the
-   worker wire format, the port message format, generated site trees, and
-   tables with their views) and of the examples' own targets.
-4. The docs samples (below).
-5. Every app's specs natively and in Chrome, a walk of 300 steps of every
-   walked app in its native runner (below), the check that the browser
-   runner handles every form of the grammar, then a deliberately broken spec
-   that both runners must reject, and a spec that breaks a contract, whose
-   native crash the suite must report. Each run of a runner must account for
-   every spec it was given (see [Specs and contract tests](#specs-and-contract-tests)).
-6. The runtime's unit tests in Node (the work monitor's aggregation and
-   bounds, `tests/runtime/`), then its contract tests in Chrome: effects,
-   controlled inputs, an outbox posted twice in one turn, worker jobs, the work monitor, a smoke of the worker
-   scaling measurement (correctness, robustness sequences and memory; no
-   timing ratios), file handles and their release, operations on files
-   (page reads, uploads to a local server, digests and file URLs, with their
-   bounds, failures and lifetimes), preparations and the pool's
-   placement of their tasks' jobs, a preparation that fails and what each
-   of its tasks then answers, ports with real handlers
-   (`ports-browser.mjs`: the mount check, delivery policies, the payload
-   bound, bytes and files both ways, containment), jobs that read and build
-   files (`tasks-browser.mjs`: the handles each instance holds after a job, a
-   large transform with bounded worker memory, the output bound, termination
-   and unmounting mid-job, the page's import stubs, inline mode, where a job
-   that reaches no worker effect answers and one that does is unavailable
-   without poisoning the page, downloads into files and real saves), the
-   Reading List's own port handlers against real IndexedDB in two tabs
-   (`reading-list-journey.mjs`), the Status Page's seeded latency stream
-   through its port's bound, a stalled page, a dropped connection, pausing
-   and hiding (`status-page-journey.mjs`; with `--plotly FILE
-   --measure-ms N` it also reports the stream's rates, the chart's JSON and
-   the longest frame gap), the Log Explorer's preparation over a
-   generated 64 MiB log, its timeline and a click on it, and its own
-   timings element, with its times and memory (`log-explorer-journey.mjs`),
-   the Million-Row Explorer at two million orders with its own live feed
-   (`million-row-explorer-journey.mjs`: shards kept by their workers, a
-   drag, the feed's bound, one worker and inline), and the Conduit journey
-   against the example's own simulated backend
-   (`examples/conduit/backend.mjs`).
-7. The js-framework-benchmark check.
-8. The release dry run: the bundle, `runtime.mjs`, `environment.mjs` and `worker.mjs`, the
-   `signals.roc` tool's package and app, the examples archive with every app
-   mounted by its check helper, and the release notes.
-9. The tool, end to end (`scripts/src/ToolCheck.roc`): the dry run's
-   `signals.roc` run from empty directories as an author runs it, on the
-   counter and on the Worker Lab. `init`, `test` and `build`; every failure
-   it explains, each by its sentence (a misused command line, no
-   `main.roc`, `index.html` or specs, a failing spec, a build error, no
-   `roc` on the PATH, a compiler other than the release's); the built
-   `dist/` mounting from a plain static server in Chrome with jobs running
-   in workers (`tests/browser/tool-dist.mjs`); and `serve` in Chrome
-   (`tests/browser/tool-serve.mjs`: a busy port, content types, the reload
-   script, a reload after an edit, and the overlay for a build error, a
-   mount refusal and an engine fault).
-10. The as-shipped files in `SpecSuite.runtime_files`, compressed with Node's
-    zlib at gzip level 9, against `scripts/src/runtime-sizes.tsv`. Growth or
-    shrinkage beyond 16 bytes fails; a newly shipped file without a figure
-    fails too. Debug scripts and every example in `www/data/examples.toml`
-    are reported as raw, gzip and Brotli sizes, without size thresholds.
-    Example modules are built separately with `--opt=size`.
+The stages run in this order (`scripts/check_all.roc`). A problem does not
+stop the later stages; every problem is printed as a `FAIL` line at the end,
+and a stage that cannot run at all aborts the task after printing the
+problems found before it.
+
+1. Every script names the `roc-stable` nightly that `Blueprint.roc` pins,
+   and no other Roc file names a compiler; no two source paths differ only
+   in letter case, which a checkout on macOS or Windows would merge.
+2. `roc fmt --check` over every Roc source.
+3. Every file `www/data/examples.toml` names exists, and every example is in
+   a section of the examples index.
+4. Every fuzz target in the tree is registered in `Targets.fuzz_targets`, or
+   skipped in `Targets.fuzz_skipped` with a reason that `check` prints as a
+   `SKIP` line, and every registered file exists.
+5. The shipped JavaScript's gzip sizes against `scripts/src/runtime-sizes.tsv`:
+   growth or shrinkage beyond 16 bytes fails, and so does a newly shipped
+   file without a figure.
+6. Both platform roots declare the same parser, Unicode and CBOR dependencies.
+7. The API: every public `Engine` and `Html` symbol is documented, no Roc
+   file but the platform's own fuzz targets names the internal engine package,
+   and `roc bump` against the latest published platform bundle (above).
+8. `roc test` on the platform, the engine package (`platform/main-fuzz.roc`)
+   and the tool (`cli/`); on the `main.roc` of every example and test app,
+   which runs the `expect`s of every module the app imports (the tests of
+   its transitions), together with the key- and declaration-type fixtures
+   that must fail to compile naming their rule; the check that
+   `cli/Bundle.roc` is what the release generates for a checkout; and on
+   every root under `scripts/`, except a root that imports the platform
+   package to drive its tests, which may not hold `expect`s of their own.
+9. The platform's link inputs for every target; the declaration and request
+   contracts as isolated apps in both hosts; `zig test` of the host's handle
+   heaps (`platform/host/resources.zig`) and `dbg` buffer
+   (`platform/host/dbg.zig`); a worker app's spec runner linked for macOS
+   (`arm64mac`, `x64mac`) and Windows (`x64win`); and the fuzz targets' fixed
+   examples (see [Fuzzing](#fuzzing)).
+10. The docs samples (below).
+11. The web platform and every spec-bearing app built for both runners, with
+    the raw, gzip and Brotli sizes of each example module (built separately
+    with `--opt=size`) and of the debug scripts reported, without thresholds;
+    then every app's specs natively and in Chrome. Each run of a runner must
+    account for every spec it was given (see
+    [Specs and contract tests](#specs-and-contract-tests)).
+12. The native lifetime contracts: file handles across pages run in fixed
+    orders in one runner process (`tests/native/file-lifetimes.mjs`), and the
+    native runner's `dbg` output (`tests/native/dbg-output.mjs`).
+13. A walk of 300 steps of every walked app in its native runner (below).
+14. The check that the browser runner handles every form of the grammar and
+    nothing else.
+15. Deliberately broken specs that both runners must reject, and a spec
+    that breaks a contract, whose native crash the suite must report.
+16. Every malformed declaration name refused identically before native
+    execution and before browser emission.
+17. The runtime's unit tests: the Roc scripts `scripts/test_parallel.roc`,
+    `scripts/test_protocol.roc` and `scripts/test_worker_entries.roc`, the
+    Node tests in `tests/runtime/` (among them the work monitor's
+    aggregation and bounds) and `tests/fuzz/check-report-unit.mjs`, and the
+    sparse-write allocation check of `tests/apps/write-scaling` in a
+    development build.
+18. The runtime's contract tests in Chrome (`Targets.browser_contracts!`, one
+    script under `tests/browser/` each): the protocol facts, names,
+    namespaces and Unicode classes against the native oracle; effects,
+    controls, pointers, keys, dialogs, layout, services, the environment,
+    persistence and transitions; an outbox posted twice in one turn; worker
+    jobs, `dbg`, the work monitor and a smoke of the worker scaling
+    measurement (correctness, robustness sequences and memory; no timing
+    ratios); file handles, operations on files and their lifetimes in a
+    table; preparations, ports with real handlers, reports and jobs that
+    read and build files; and the journeys of the Reading List, the Status
+    Page, the Log Explorer, the Million-Row Explorer and Conduit, each
+    against the example's own JavaScript. With `--plotly FILE --measure-ms N`,
+    `status-page-journey.mjs` also reports the stream's rates, the chart's
+    JSON and the longest frame gap.
+19. The js-framework-benchmark check.
+20. The release dry run: the bundle, `runtime.mjs`, `environment.mjs` and
+    `worker.mjs`, the `signals.roc` tool's package and app, the examples
+    archive with every app mounted by its check helper, and the release
+    notes.
+21. The tool, end to end (`scripts/src/ToolCheck.roc`): the dry run's
+    `signals.roc` run from empty directories as an author runs it, on the
+    counter and on the Worker Lab. `init`, `test` and `build`; every failure
+    it explains, each by its sentence (a misused command line, no
+    `main.roc`, `index.html` or specs, a failing spec, a build error, no
+    `roc` on the PATH, a compiler other than the release's); the built
+    `dist/` mounting from a plain static server in Chrome with jobs running
+    in workers (`tests/browser/tool-dist.mjs`); and `serve` in Chrome
+    (`tests/browser/tool-serve.mjs`: a busy port, content types, the reload
+    script, a reload after an edit, and the overlay for a build error, a
+    mount refusal and an engine fault).
 
 Every spec must pass in both runners; there are no expected failures.
 
