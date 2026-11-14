@@ -63,7 +63,7 @@ try {
     const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const checks = [], check = (name, ok) => checks.push([name, !!ok]);
-    const fixture = ({ marked = true, batch = [0], version = 19, trap = false, authoredInert = null, ownedInert = false, invalidInert = false, namespacedInert = false, beforeInit = () => {} } = {}) => {
+    const fixture = ({ marked = true, batch = [0], version = 19, trap = false, authoredInert = null, ownedInert = false, invalidInert = false, namespacedInert = false, bootTrap = null, beforeInit = () => {} } = {}) => {
       const root = document.createElement("div");
       if (marked) root.setAttribute("data-roc-picture", "");
       if (authoredInert !== null) root.setAttribute("inert", authoredInert);
@@ -73,16 +73,21 @@ try {
       const old = document.createElement("input"), comment = document.createComment("picture"), oldText = document.createTextNode("picture text");
       root.append(old, comment, oldText); document.body.append(root);
       const memory = new WebAssembly.Memory({ initial: 2 });
-      let length = 0, events = 0, initCalls = 0;
+      let length = 0, events = 0, initCalls = 0, bootCalls = 0, code = 0, errLength = 0;
       const faults = [];
       const write = bytes => { new Uint8Array(memory.buffer).set(bytes); length = bytes.length; };
       const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => version,
-        boot_keys() { write(declarations); }, cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
+        boot_keys() {
+          bootCalls++;
+          // As host.zig does: record the class and diagnostic, then trap.
+          if (bootTrap !== null) { const bytes = new TextEncoder().encode(bootTrap.message); new Uint8Array(memory.buffer).set(bytes, 4096); errLength = bytes.length; code = bootTrap.code; throw new WebAssembly.RuntimeError("unreachable"); }
+          write(declarations);
+        }, cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
         init() { initCalls++; beforeInit(root, old); if (trap) throw new Error("init trap"); write(batch); return 0; },
-        event() { events++; write([0]); return 0; }, files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
+        event() { events++; write([0]); return 0; }, files_released: () => 0, fault: () => code, err_ptr: () => 4096, err_len: () => errLength, work_len: () => 0, metric: () => 0n, drop() {},
       };
       const runtime = new RocEngineRuntime(x, root, { manualEffects: true, onFault: fault => faults.push(fault) });
-      return { root, old, comment, oldText, runtime, faults, get events() { return events; }, get initCalls() { return initCalls; }, cleanup() { runtime.unmount(); root.remove(); } };
+      return { root, old, comment, oldText, runtime, faults, get events() { return events; }, get initCalls() { return initCalls; }, get bootCalls() { return bootCalls; }, cleanup() { runtime.unmount(); root.remove(); } };
     };
     const elem = [8, ...word(1), ...word(0), ...word(0), 0, ...text(""), ...text("input"), 0];
     const prop = [21, ...word(1), 1, ...text("mounted")];
@@ -178,6 +183,22 @@ try {
       check(`${url} holds the same picture before fetch settles`, root.firstChild === old && root.inert);
       let rejected = false; try { await promise; } catch (_) { rejected = true; }
       check(`${url} rejection preserves the picture with one classified fault`, rejected && root.firstChild === old && root.inert && root.hasAttribute("data-roc-failed") && faults.length === 1 && faults[0].class === "executor"); root.remove();
+    }
+    // A module whose declarations cannot be built traps in boot_keys, before
+    // section 12 exists. It is classified by the host's code, reported once,
+    // and leaves the inert picture as a failed mount does (design.md, "A
+    // prerendered first page": the picture remains inert and the root
+    // exposes its failed state).
+    for (const [code, klass] of [[1, "contract"], [2, "resource_limit"]]) {
+      const message = `${klass}: worker catalogue: two tasks are named "sum"`;
+      const f = fixture({ bootTrap: { code, message } }); let thrown = false;
+      try { f.runtime.mount(); } catch (_) { thrown = true; }
+      check(`a ${klass} boot_keys trap is classified by the host's code and reported once`, (thrown || f.runtime.poisoned) && f.runtime.poisoned?.class === klass && f.runtime.poisoned.message === message && f.faults.length === 1 && f.faults[0] === f.runtime.poisoned && f.initCalls === 0);
+      check(`a ${klass} boot_keys trap keeps the exact inert picture and exposes its failed state`, f.root.firstChild === f.old && f.root.childNodes[1] === f.comment && f.root.childNodes[2] === f.oldText && f.root.childNodes.length === 3 && f.root.inert && f.root.hasAttribute("data-roc-failed") && f.root.hasAttribute("data-roc-picture"));
+      f.old.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      try { f.runtime.mount(); } catch (_) { /* a poisoned runtime refuses the second mount */ }
+      check(`a ${klass} boot_keys trap registers nothing and is never re-entered`, f.runtime.listening.size === 0 && f.runtime.internal.length === 0 && f.runtime.documentListeners.size === 0 && f.runtime.live.size === 0 && f.events === 0 && f.bootCalls === 1 && f.faults.length === 1);
+      f.cleanup();
     }
     const authored = fixture({ authoredInert: "author", batch: [0, ...elem, ...focus] });
     check("holding a direct picture preserves authored inert text", authored.root.getAttribute("inert") === "author"); authored.runtime.mount();
