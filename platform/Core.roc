@@ -1304,7 +1304,13 @@ Core := [].{
 	table_view = |source, props, template| Site(
 		Mount(
 			|env, args, tx| {
-				get = view_source(source)
+				get = {
+					## The context's type, named so its method can be called.
+					Ctx : ctx
+					store_get = Ctx.store().get
+					cell_get = source.get
+					|e| cell_get(store_get(e))
+				}
 				depth = layer(args.depth)
 				plan = compile(template(view_key({}), view_row(source, depth, args.path)), depth, args.path, "a table view", args.enclosing)
 				(site, tx1) = alloc_site(tx, args.path)
@@ -6933,24 +6939,6 @@ view_chunk = 1024
 ## Fixed per view site: the table's getter, the query and how it selects
 ## and orders rows, and the window.
 Shows(ctx, q, k, v, s) : { get : (ctx -> Table(k, v)), query : Signal(ctx, q), plan : (q -> Core.QueryPlan(k, v, s)), window : Signal(ctx, Core.Window) }
-
-## How a scope reads the table a view draws: through its reach of the
-## store, then the table's cell.
-##
-## A function of its own because of a compiler defect: written as a
-## lambda inside `table_view`, its closure goes into the view site, whose
-## instance calls itself from several branches, and `roc check` of an app
-## that reaches the site does not finish (roc-lang/roc#12869, fixed in
-## compilers after the pinned nightly).
-view_source : Core.Cell(st, Table(k, v)) -> (ctx -> Table(k, v))
-	where [ctx.store : () -> Core.StoreReach(ctx, st)]
-view_source = |source| {
-	## The context's type, named so its method can be called.
-	Ctx : ctx
-	store_get = Ctx.store().get
-	cell_get = source.get
-	|e| cell_get(store_get(e))
-}
 
 ## A view row's key. It is fixed for the row's lifetime, so it never
 ## triggers a refresh.

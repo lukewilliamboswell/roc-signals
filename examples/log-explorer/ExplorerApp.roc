@@ -476,6 +476,8 @@ ExplorerApp := [].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	viewer_for_log = |{}| {
 		cells = LogStore.cells
+		# Moves the viewer to the line `step` works out from the page it shows.
+		stepped = |r, step| Engine.handle_by({ remote: r, geometry: LogStore.cells.place.geometry.signal() }.Signal, |at, _| LogStore.moved_to(at.geometry, at.remote.answered().map_ok(step)))
 		Worker.resource_when(
 			ExplorerApp.window,
 			{ open: cells.log.signal(), first: cells.place.first.signal(), viewport: cells.viewport.signal() }.Signal.map(
@@ -508,9 +510,9 @@ ExplorerApp := [].{
 							"toolbar",
 							[
 								Html.button("First", [Engine.class("button button-sm")], Engine.handle_by(cells.place.geometry.signal(), |known, _| LogStore.moved_to(known, Ok(0)))),
-								Html.button("Previous", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| if (w.first > w.count) w.first - w.count else 0)),
-								Html.button("Next", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.first + w.count, count: w.count }))),
-								Html.button("Last", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.total, count: w.count }))),
+								Html.button("Previous", [Engine.class("button button-sm")], stepped(r, |w| if (w.first > w.count) w.first - w.count else 0)),
+								Html.button("Next", [Engine.class("button button-sm")], stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.first + w.count, count: w.count }))),
+								Html.button("Last", [Engine.class("button button-sm")], stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.total, count: w.count }))),
 								Html.number_input(
 									Engine.const("Go to line"),
 									cells.place.first.signal().map(|first| (first + 1).to_str()),
@@ -584,15 +586,6 @@ ExplorerApp := [].{
 			},
 		)
 	}
-
-	## A handler that moves the viewer to the line `step` works out from
-	## the page it shows. It is a function of the module rather than a
-	## local of `viewer_panel`: as a local helper it makes `roc check` of
-	## this module take minutes with the pinned compiler
-	## (roc-lang/roc#12869, fixed in later ones).
-	stepped : Signal(ctx, Engine.Remote(Log.Window, Worker.Error(Problem))), (Log.Window -> U64) -> Engine.Handler(ctx)
-		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	stepped = |r, step| Engine.handle_by({ remote: r, geometry: LogStore.cells.place.geometry.signal() }.Signal, |at, _| LogStore.moved_to(at.geometry, at.remote.answered().map_ok(step)))
 
 	tab_button : Str, LogStore.Tab -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
