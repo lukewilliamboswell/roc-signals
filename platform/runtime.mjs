@@ -2470,14 +2470,20 @@ class WorkPool {
 
   // A worker for a job that no worker holds the state of: an idle one that
   // holds nothing, else a new one while the pool has room, else the idle
-  // holder used least recently. Null when every worker is busy.
+  // holder used least recently. Null when every worker is busy. A worker
+  // whose `forget` has not answered holds nothing but takes no job yet: if
+  // that forget faults its instance is poisoned, and a job posted behind it
+  // would be lost. The job waits for it (its answer pumps the queue) rather
+  // than starting another worker, so placement is as it was, only later.
   free() {
-    let lru = null;
+    let lru = null, forgetting = false;
     for (const s of this.slots) {
       if (s.job !== null) continue;
+      if (s.forgetting > 0) { forgetting = true; continue; }
       if (s.key === null) return s;
       if (lru === null || s.used < lru.used) lru = s;
     }
+    if (forgetting) return null;
     if (this.slots.length < this.max) return this.spawn();
     return lru;
   }
@@ -2550,7 +2556,7 @@ class WorkPool {
       for (const job of this.queue.splice(0)) this.settle(job, { lost: LOST_EXECUTOR, message: `worker could not start: ${e}` });
       return null;
     }
-    const slot = { worker, job: null, seq: this.monitor.instanceSpawned("worker"), key: null, used: 0 };
+    const slot = { worker, job: null, seq: this.monitor.instanceSpawned("worker"), key: null, used: 0, forgetting: 0 };
     this.created += 1;
     worker.onmessage = (event) => this.answer(slot, event.data);
     worker.onerror = (event) => {
@@ -2563,11 +2569,12 @@ class WorkPool {
     return slot;
   }
 
-  // Let go of `slot`'s state: it is idle, so the message runs before any
-  // job posted after it.
+  // Let go of `slot`'s state: it is idle, and takes no job until the
+  // forget answers (see free()).
   evict(slot, cause) {
     if (slot.key === null) return;
     slot.key = null;
+    slot.forgetting += 1;
     slot.worker.postMessage({ type: "forget" });
     this.monitor.stateEvicted(slot.seq, cause);
   }
@@ -2600,11 +2607,26 @@ class WorkPool {
       return;
     }
     if (m.type === "forgot") {
-      if (this.slots.includes(slot)) this.monitor.instanceMemory(slot.seq, m.mem);
+      slot.forgetting -= 1;
+      if (this.slots.includes(slot)) {
+        this.monitor.instanceMemory(slot.seq, m.mem);
+        this.pump();
+      }
+      return;
+    }
+    if (!this.slots.includes(slot)) {
+      this.monitor.lateAnswer();
+      return;
+    }
+    // A fault with no job on the worker is its forget's (or an idle
+    // instance's): the instance is poisoned and is never sent another job.
+    if (m.type === "fault" && (slot.forgetting > 0 || slot.job === null)) {
+      if (slot.forgetting > 0) slot.forgetting -= 1;
+      this.lose(slot, m.code >= 1 && m.code <= 5 ? m.code : LOST_EXECUTOR, m.message);
       return;
     }
     const job = slot.job;
-    if (job === null || !this.slots.includes(slot)) {
+    if (job === null) {
       this.monitor.lateAnswer();
       return;
     }

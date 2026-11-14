@@ -2276,9 +2276,11 @@ are all of that kind.
   state kept is closed with the call that opened it (see [Workers](#workers)).
 - **Release.** No kept state outlives its file: when the page releases a
   handle, every state keyed on it is let go (at once on an idle worker,
-  after its job on a busy one). A worker whose linear memory has grown past
-  the `maxWorkerBytes` mount option is retired after its job, its state with
-  it, since linear memory never shrinks.
+  after its job on a busy one). A worker letting go of its state takes no
+  job until that `forget` has answered; a `forget` that faults poisons the
+  worker, which is discarded with no job lost. A worker whose linear
+  memory has grown past the `maxWorkerBytes` mount option is retired after
+  its job, its state with it, since linear memory never shrinks.
 - **Cancellation.** `on_cancel: Finish` is what keeps a state across a
   superseded job: the job completes, its answer is dropped, and the worker
   keeps the state for the next job. At most one such job per worker, so the
