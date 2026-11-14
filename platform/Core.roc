@@ -3513,8 +3513,8 @@ Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(EffectInput), Sett
 
 ## Whether a payload is a `Settle` walk, and if so whether it names a
 ## layer below index `depth`, so that it goes on past the state site there.
-settle_walk : Payload, U64 -> Try([Further, Ends], [Fires])
-settle_walk = |payload, depth| match payload {
+finish_event : Payload, U64 -> Try([Further, Ends], [Fires])
+finish_event = |payload, depth| match payload {
 	Settle(left, forced) => if (!forced and layers_empty(layers_from(left, depth + 1))) Ok(Ends) else Ok(Further)
 	_ => Err(Fires)
 }
@@ -5161,7 +5161,7 @@ state_inst = |s0, block0, depth0, waits0| {
 					}
 				}
 				Fire(path, pos, h, payload) => {
-					match settle_walk(payload, depth) {
+					match finish_event(payload, depth) {
 						Ok(on) => state_walk(s, block, env, depth, waits, on, path, pos, h, payload, tx)
 						Err(Fires) => {
 							# `s` moves into the environment here and is never used again on
@@ -9697,14 +9697,33 @@ turn = |{ store, root, tx, programs }, path, h, payload| {
 	} else {
 		cells = cells_of(writes)
 		waiting = layers_from(writes, 0)
-		(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Changed(layers_sig(cells)), bump(tx2, w_dirty_roots, layers_count(cells)))
-		(store3, _) = root_answer(answer3)
-		if layers_empty(waiting) and !force {
-			{ store: store3, root: root3, tx: flush_turn(tx3, programs), programs }
+		if layers_empty(cells) {
+			# The root's pass is for cells (design.md, "One turn"). A turn
+			# that wrote local state alone has nothing for it to carry: it
+			# would test every hole and child of the root block against an
+			# empty mask, and no table was written to rearm. Its layers
+			# settled at their own sites, and the walk below reaches any left
+			# waiting. Each branch returns the instance itself, so the store
+			# never meets a rebuilt one in a value (roc-lang/roc#12846).
+			end_written_turn(root2, store2, tx2, { path, h, waiting, force }, programs)
 		} else {
-			(root4, answer4, tx4) = call(root3, Root.{ store: store3 }, Fire(path, 0, h, Settle(waiting, force)), tx3)
-			{ store: root_answer(answer4).0, root: root4, tx: flush_turn(tx4, programs), programs }
+			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Changed(layers_sig(cells)), bump(tx2, w_dirty_roots, layers_count(cells)))
+			(store3, _) = root_answer(answer3)
+			end_written_turn(root3, store3, tx3, { path, h, waiting, force }, programs)
 		}
+	}
+}
+
+## The rest of a turn that wrote something: the walk down the event's path
+## for the layers the pass did not reach and for a browser echo, then the
+## end of the turn.
+end_written_turn : Inst(Root(st)), st, Tx, { path : List(U32), h : U32, waiting : Layers, force : Bool }, Catalogue -> App(st)
+end_written_turn = |root, store, tx, { path, h, waiting, force }, programs| {
+	if layers_empty(waiting) and !force {
+		{ store, root, tx: flush_turn(tx, programs), programs }
+	} else {
+		(root2, answer, tx2) = call(root, Root.{ store }, Fire(path, 0, h, Settle(waiting, force)), tx)
+		{ store: root_answer(answer).0, root: root2, tx: flush_turn(tx2, programs), programs }
 	}
 }
 
