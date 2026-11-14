@@ -5129,8 +5129,9 @@ state_out = |out| match out {
 ## `Settle` walk that follows it.
 ## TODO https://github.com/roc-lang/roc/issues/13012: boxed site captures
 ## remain borrowed; local state can copy even in development builds.
-## TODO https://github.com/roc-lang/roc/issues/12957: optimized writes still
-## copy site storage without a boxed engine value; no local workaround found.
+## TODO https://github.com/roc-lang/roc/issues/13012: through the host's box
+## the same copy happens in optimized builds too; no local workaround found.
+## Driven directly, without a box, an optimized write is in place (`drain`).
 state_inst : s, Block(In(ctx, s)), U64, [Settled, Waiting] -> Inst(ctx)
 state_inst = |s0, block0, depth0, waits0| {
 	held = { s: s0, block: block0, depth: depth0, waits: waits0 }
@@ -5284,7 +5285,9 @@ block_inst = |block0| {
 ## from Pending. The Changed pass rearms only written tables after refreshing
 ## readers; their last writing turn's record remains until the next write.
 ## TODO https://github.com/roc-lang/roc/issues/12957: moving the store out
-## fixes development ownership, but optimized site paths can still copy it.
+## fixes development ownership, and driven directly an optimized write of a
+## store cell is in place (`drain`); through the host's box an optimized
+## write of a list cell or a table's rows still copies them.
 store_inst : Tables(st), Layers, Block(Root(st)) -> Inst(Root(st))
 store_inst = |tables0, wrote0, block0| {
 	held = { tables: tables0, wrote: wrote0, block: block0 }
@@ -9733,16 +9736,28 @@ flush_turn = |incoming, programs| {
 ## or more are counted, at most `max_breadth(max_inflight)` per host call:
 ## a loop in which each follow-up queues two or more reaches that long
 ## before it reaches the depth bound.
+##
+## The loop carries the store, the site tree and the turn in three
+## variables and rebuilds the instance once, after it. Carried as one
+## `var` holding the whole instance, `--opt=speed` and `--opt=size`
+## copied a written list on every event that reaches this function, even
+## one whose queue is empty and whose loop never runs: 8 bytes per element
+## of a `List(U64)` in local state or in a store cell. This works around an
+## optimizer defect of the roc-lang/roc#12971 family (a `while` loop over a
+## `var` holding a record of refcounted fields), reported against the
+## engine as roc-lang/roc#13019; it has no standalone reproduction yet.
 drain : App(st) -> App(st)
-drain = |app0| {
-	var $app = app0
+drain = |{ store: store0, root: root0, tx: tx0, programs }| {
+	var $store = store0
+	var $root = root0
+	var $tx = tx0
 	var $deep_turns = 0.U64
 	var $depth = 1.U64
-	var $below_next = app0.tx.fx.next
-	var $below_inner = app0.tx.fx.inner
-	breadth = max_breadth(app0.tx.fx.max)
-	while !$app.tx.fx.queue.is_empty() {
-		{ store, root, tx, programs } = $app
+	var $below_next = tx0.fx.next
+	var $below_inner = tx0.fx.inner
+	breadth = max_breadth(tx0.fx.max)
+	while !$tx.fx.queue.is_empty() {
+		tx = $tx
 		q = tx.fx.queue.first() ?? crash "queue"
 		deeper = if (q.id >= fx_inner_base) q.id >= $below_inner else q.id >= $below_next
 		if deeper {
@@ -9760,9 +9775,12 @@ drain = |app0| {
 			$deep_turns = $deep_turns + 1
 		}
 		tx1 = with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_first(1) })
-		$app = turn({ store, root, tx: tx1, programs }, q.path, q.id, Fx(Final(q.res, False)))
+		{ store, root, tx: tx2, programs: _ } = turn({ store: $store, root: $root, tx: tx1, programs }, q.path, q.id, Fx(Final(q.res, False)))
+		$store = store
+		$root = root
+		$tx = tx2
 	}
-	$app
+	{ store: $store, root: $root, tx: $tx, programs }
 }
 
 popcount : U64 -> U64
