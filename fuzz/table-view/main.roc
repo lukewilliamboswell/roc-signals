@@ -39,7 +39,9 @@ import pf.Engine exposing [Elem, Signal, State, Table]
 ##   order (insert, put, replace, update, remove; a run of up to 16 puts or
 ##   updates, which crosses the size at which a view rebuilds instead of
 ##   absorbing the changes; a whole rewrite by `load` or `update_all`; an
-##   undo of the turn so far), as one `update` or one for each, a write of
+##   undo of the turn so far), as one `update` or one for each, an undo of
+##   the last turn that wrote the table (the reading control's decision
+##   reads the table's inverse before its writes), a write of
 ##   `spare`, a copy of the table saved, `a`'s listing and window, the lanes
 ##   and whether `c` is mounted. It fires from a control whose handler is
 ##   the decision alone, one whose decision also reads the tables it may
@@ -61,7 +63,11 @@ import pf.Engine exposing [Elem, Signal, State, Table]
 ##   moved are exactly those off a longest run that kept its order, so an
 ##   event changes the rows a view draws once and never by way of a window
 ##   it does not end with;
-## - the readers of the row count and of the serial show the model's.
+## - the readers of the row count and of the serial show the model's;
+## - a reader of the table's inverse shows, applied to the table, the rows
+##   the table held before its last writing turn (or that the turn
+##   rewrote it whole), through every turn since that did not write it, as
+##   a model that keeps those rows itself says.
 ## The session frees everything it allocated.
 
 # --------------------------------------------------------------------- rows
@@ -278,9 +284,10 @@ Op : [
 ## - `head`: how the cell of `rows` is replaced before `ops`: by a new table
 ##   (`Fresh(seed, count)`), by its group's reset, by the copy `saved`
 ##   holds (`Restore`), by `spare`'s table (`Borrow`), or by a pure Store
-##   value with its own cleared history (`Snapshot(seed, count)`). Restore
-##   and Borrow need
-##   a reading, so only the control that takes one applies them.
+##   value with its own cleared history (`Snapshot(seed, count)`); or how
+##   it is written: by the inverse of its last writing turn, read before
+##   this event writes anything (`UndoLast`). Restore, Borrow and UndoLast
+##   need a reading, so only the control that takes one applies them.
 ## - `ops`: writes of `rows`, in order, as one `update` for each (`split`)
 ##   or one `update` that folds them.
 ## - `spare`: a write of the other table.
@@ -290,7 +297,7 @@ Op : [
 ## - `listing`, `window`, `lanes`: set those cells.
 ## - `local_listing`, `local_window`: what `b`'s control writes to its state.
 Decision : {
-	head : [Keep, Fresh(U64, U64), Reset, Restore, Borrow, Snapshot(U64, U64)],
+	head : [Keep, Fresh(U64, U64), Reset, Restore, Borrow, Snapshot(U64, U64), UndoLast],
 	ops : List(Op),
 	split : Bool,
 	spare : [Untouched, Wrote(Op)],
@@ -335,6 +342,7 @@ decision_of : List(U64) -> Decision
 decision_of = |words| {
 	w = |at| words.get(at) ?? 0
 	head = match w(0) % 16 {
+		10 => UndoLast
 		11 => Snapshot(w(1), w(2) % (key_space + 1))
 		12 => Fresh(w(1), w(2) % (key_space + 1))
 		13 => Reset
@@ -413,6 +421,7 @@ words_of = |d| {
 		Reset => [13, 0, 0]
 		Restore => [14, 0, 0]
 		Borrow => [15, 0, 0]
+		UndoLast => [10, 0, 0]
 	}
 	flags = (if (d.split) 1 else 0) + (if (d.tick) 2 else 0) + (if (d.save) 12 else 0) + (if (d.flip) 48 else 0)
 	(listing, listing_word_of) = match d.listing {
@@ -554,6 +563,13 @@ writes_of = |d, reading| {
 		(Reset, _) => [cells.items.reset]
 		(Restore, Read({ kept, .. })) => [rows.set(kept)]
 		(Borrow, Read({ lent, .. })) => [rows.set(lent)]
+		# The inverse of the last turn that wrote the table, as the table
+		# was read before this event's first write clears it.
+		(UndoLast, Read({ now, .. })) =>
+			match now.inverse() {
+				Ok(undo) => [rows.update(|table| table.apply(undo))]
+				Err(Rewritten) => []
+			}
 		_ => []
 	}
 	ops = d.ops
@@ -602,6 +618,18 @@ local_after = |held, d| {
 		Same => held.window
 	},
 }
+
+## What the inverse of a table's last writing turn gives, applied to the
+## table: its rows by key, or `whole` when that turn rewrote it whole.
+undone_text : Table(U64, Item) -> Str
+undone_text = |table| match table.inverse() {
+	Ok(undo) => entries_text(table.apply(undo).to_list())
+	Err(Rewritten) => "whole"
+}
+
+## Rows as `key:rank:shade`, in the order of their keys.
+entries_text : List({ key : U64, row : Item }) -> Str
+entries_text = |rows| Str.join_with(rows.sort_with(|x, y| compare_u64(x.key, y.key)).map(|e| "${e.key.to_str()}:${e.row.rank.to_str()}:${e.row.shade.to_str()}"), " ")
 
 ## A button named `name` with no text of its own, so a row's text is its
 ## key, its row and its marks alone.
@@ -662,6 +690,7 @@ page = |{}| {
 			Engine.element("input", [Engine.test_id("copy"), Engine.on("input", Engine.handle_by(reading, |read, payload| writes_of(decided_by(payload), Read(read))))], []),
 			Engine.element("p", [Engine.test_id("count")], [Engine.text_s(rows.signal().map(|table| table.len().to_str()))]),
 			Engine.element("p", [Engine.test_id("serial")], [Engine.text_s(cells.items.serial.signal().map(|n| n.to_str()))]),
+			Engine.element("p", [Engine.test_id("undo")], [Engine.text_s(rows.signal().map(undone_text))]),
 			list_of(Engine.test_id("a"), rows, cells.listing.signal(), cells.window.signal()),
 			Engine.state(
 				first_local,
@@ -748,7 +777,16 @@ Model : {
 	shown : Bool,
 	lanes : List(U64),
 	marks : List(Mark),
+	undo : Undone,
 }
+
+## What the model knows of `rows`' last writing turn: the rows the table
+## held before it (`Before`), that it rewrote the table whole (`Whole`),
+## or nothing (`Unknown`): after a restore of a saved copy, which is a
+## whole rewrite unless the copy is still the cell's own table, which the
+## model does not follow. The model keeps this itself, from the turns it
+## models, never from the table.
+Undone : [Before(List(Entry)), Whole, Unknown]
 
 ## The model of the app as it mounts.
 model_start : Model
@@ -763,6 +801,7 @@ model_start = {
 	shown: False,
 	lanes: first_lanes,
 	marks: [],
+	undo: Before(first_rows),
 }
 
 ## The order of two numbers.
@@ -881,12 +920,44 @@ decided = |m, control, d| {
 		Reset => Ok(described)
 		Restore => if (has_reading) Ok(m.saved) else Err(Kept)
 		Borrow => if (has_reading) Ok(m.spare) else Err(Kept)
-		Keep => Err(Kept)
+		Keep | UndoLast => Err(Kept)
 	}
-	began = match replaced {
-		Ok(rows) => { rows, began: m.rows, rewritten: True }
-		Err(Kept) => { rows: m.rows, began: m.rows, rewritten: False }
+	# An undo of the last writing turn writes the table back to the rows it
+	# held before that turn; after a whole rewrite it writes nothing.
+	undone = match (d.head, has_reading, m.undo) {
+		(UndoLast, True, Before(rows)) => Wrote(rows)
+		(UndoLast, True, Unknown) => Unsure
+		_ => Untouched
 	}
+	began = match (replaced, undone) {
+		(Ok(rows), _) => { rows, began: m.rows, rewritten: True }
+		(_, Wrote(rows)) => { rows, began: m.rows, rewritten: False }
+		_ => { rows: m.rows, began: m.rows, rewritten: False }
+	}
+	after_ops = d.ops.fold(began, model_op)
+	restored = match d.head {
+		Restore => has_reading
+		_ => False
+	}
+	undid = match undone {
+		Wrote(_) => True
+		_ => False
+	}
+	replaces = match replaced {
+		Ok(_) => True
+		Err(Kept) => False
+	}
+	writes_rows = replaces or undid or !d.ops.is_empty()
+	undo =
+		if restored or (!undid and d.head == UndoLast and has_reading and m.undo == Unknown and d.ops.is_empty()) {
+			Unknown
+		} else if !writes_rows {
+			m.undo
+		} else if after_ops.rewritten {
+			Whole
+		} else {
+			Before(m.rows)
+		}
 	spare = match d.spare {
 		Wrote(op) => model_op({ rows: m.spare, began: m.spare, rewritten: False }, op).rows
 		Untouched => m.spare
@@ -897,7 +968,8 @@ decided = |m, control, d| {
 	}
 	{
 		..m,
-		rows: d.ops.fold(began, model_op).rows,
+		rows: after_ops.rows,
+		undo,
 		spare,
 		saved: if (d.save and has_reading) m.rows else m.saved,
 		serial: if (d.tick) serial + 1 else serial,
@@ -1114,7 +1186,7 @@ course = |m, step| match step {
 			Ok(key) => {
 				write = |held, op| match view {
 					D => { ..held, spare: model_op({ rows: held.spare, began: held.spare, rewritten: False }, op).rows }
-					_ => { ..held, rows: model_op({ rows: held.rows, began: held.rows, rewritten: False }, op).rows }
+					_ => { ..held, rows: model_op({ rows: held.rows, began: held.rows, rewritten: False }, op).rows, undo: Before(held.rows) }
 				}
 				match button {
 					Mark => {
@@ -1184,7 +1256,7 @@ problem : S, List(U8), U64, [Exactly(U64), Unchecked] -> Try({}, Str)
 problem = |s, ops, created, moved| {
 	match Core.settled(s.eng) {
 		Ok(_) => {}
-		Err({ cmds, note }) => Err("the engine is not settled: a pass over every layer emitted ${Dom.describe(Dom.apply_ops(s.dom, cmds).1)} ${note}")?
+		Err({ cmds, note }) => Err("the engine is not settled: a pass over every layer emitted ${Dom.describe(Dom.apply_ops(s.dom, [0].concat(cmds)).1)} ${note}")?
 	}
 	for view in all_views {
 		name = name_of(view)
@@ -1217,6 +1289,18 @@ problem = |s, ops, created, moved| {
 	}
 	if shows("serial") != s.model.serial.to_str() {
 		Err("the serial reads ${shows("serial")}, the model's is ${s.model.serial.to_str()}")?
+	}
+	undo_want = match s.model.undo {
+		Before(rows) => Ok(entries_text(rows))
+		Whole => Ok("whole")
+		Unknown => Err(Unknown)
+	}
+	match undo_want {
+		Ok(want) =>
+			if shows("undo") != want {
+				Err("the inverse of the last writing turn gives ${shows("undo")}, the model's ${want}")?
+			}
+		Err(Unknown) => {}
 	}
 	insts = ops.count_if(|op| op == 1)
 	if insts != created {
@@ -1608,6 +1692,40 @@ tied_steps = [
 	plain({ ..quiet, ops: [Remove(2), Put(4, ranked(4, 0))], listing: To({ show: All, order: ByBand }), window: To({ start: 1, count: 2 }) }),
 ]
 
+## The last writing turn's changes outlive the turns that do not write
+## the table, and a later event undoes that turn from its inverse, read
+## before its own first write. Between the writes: a mark, a scroll, a
+## write of the other table and a write of another cell of the table's
+## group. An undo undoes the undo; after a whole rewrite there is nothing
+## to undo; a click writes through a row's `State`; an undo is followed by
+## an undo of the turn so far; a restore leaves the model unsure until the
+## next write; and the control that takes no reading cannot undo.
+undo_steps : List(Step)
+undo_steps = [
+	wrote(Put(1, ranked(0, 1))),
+	Click(A, 0, Mark),
+	plain({ ..quiet, window: To({ start: 1, count: 4 }) }),
+	plain({ ..quiet, spare: Wrote(Put(2, ranked(1, 1))) }),
+	plain({ ..quiet, tick: True }),
+	reads({ ..quiet, head: UndoLast }),
+	plain({ ..quiet, listing: To({ show: All, order: ByKey }) }),
+	reads({ ..quiet, head: UndoLast }),
+	plain({ ..quiet, ops: [Remove(3), Update(4, 1), Put(6, ranked(2, 0))], split: True }),
+	Click(B, 1, Mark),
+	reads({ ..quiet, head: UndoLast, ops: [Put(7, ranked(0, 0))] }),
+	wrote(All(1)),
+	reads({ ..quiet, head: UndoLast }),
+	Click(A, 2, Bump),
+	plain({ ..quiet, flip: True }),
+	reads({ ..quiet, head: UndoLast, ops: [Put(11, ranked(1, 2)), Undo] }),
+	reads({ ..quiet, save: True }),
+	reads({ ..quiet, head: Restore }),
+	reads({ ..quiet, head: UndoLast }),
+	wrote(Remove(5)),
+	both({ ..quiet, head: UndoLast, local_window: To({ start: 0, count: 5 }) }),
+	reads({ ..quiet, head: UndoLast }),
+]
+
 ## A session written as steps. Its bytes must decode to the steps it was
 ## written as, so an example cannot quietly stop meaning what it says.
 ex : Str, List(Step) -> Fuzz.Example(Input)
@@ -1640,6 +1758,7 @@ written_cases = [
 	{ name: "store-snapshots", steps: snapshot_steps },
 	{ name: "one-change", steps: once_steps },
 	{ name: "sort-value-ties", steps: tied_steps },
+	{ name: "undo-last-writing-turn", steps: undo_steps },
 ]
 
 ## Every named session must survive its complete byte codec before a fuzz build.
