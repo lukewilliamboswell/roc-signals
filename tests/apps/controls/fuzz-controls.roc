@@ -458,6 +458,12 @@ has_ancestor = |dom, { target, root }| {
 ## stay open through insertion; moved modals are re-shown and refocus their first
 ## control. A moved modal loses its old opener; close and dismissal then leave
 ## focus on body. Unmoved closes restore the still-visible opener.
+## A row with no nested site holds an auto popover whose toggle removes the
+## row itself: showing it, any later action dismisses it (an outside click,
+## Escape, another popover or a modal), and its own toggle then removes its
+## row in the same turn, so the row's echoed shown hole must leave with it.
+## Showing it while it is shown keeps the row (the same key) and the
+## dismissal that click causes then removes it.
 ## The finite fixture has fewer than sixteen native callbacks per generated action.
 top_layer_history : List(U8) -> {}
 top_layer_history = |events| {
@@ -475,7 +481,10 @@ top_layer_history = |events| {
 	var $popover_has_opener = True
 	var $scrolls = 0.U64
 	var $stale = 0.U64
+	var $dismissable = False
 	for event in events {
+		was_dismissable = $dismissable
+		$dismissable = False
 		var $name = ""
 		var $dismiss = False
 		var $focus = []
@@ -624,6 +633,10 @@ top_layer_history = |events| {
 						$name = "Focus target in place"
 						$focus = [button("Target")]
 					}
+					15 => {
+						$name = "Show dismissable rows"
+						$dismissable = !was_dismissable
+					}
 					13 if !$rows.is_empty() => {
 						$name = "Open row modal"
 						$row_opener_lost = False
@@ -699,6 +712,7 @@ top_layer_history = |events| {
 		$state = SpecRunner.one(base, $state, ExpectShown(Label("Modal"), if ($modal == PageModal) Modal else Hidden)) ?? crash "top layer: modal differs from model"
 		$state = SpecRunner.one(base, $state, ExpectShown(Label("Auto A"), if ($popover == AutoA) Popover else Hidden)) ?? crash "top layer: auto A differs from model"
 		$state = SpecRunner.one(base, $state, ExpectShown(Label("Auto B"), if ($popover == AutoB) Popover else Hidden)) ?? crash "top layer: auto B differs after ${Str.inspect(op)} from ${Str.inspect(events)}"
+		$state = SpecRunner.one(base, $state, if ($dismissable) ExpectShown(TestId("dismissable-x"), Popover) else ExpectAbsent(TestId("dismissable-x"))) ?? crash "top layer: the dismissable row differs from the model after ${Str.inspect(op)}"
 		$state = SpecRunner.one(base, $state, ExpectScrolls($scrolls)) ?? crash "top layer: scroll count differs from model"
 		if Core.fx_stats($state.inst).stale != $stale {
 			crash "top layer: stale-reference count differs from model"
@@ -720,6 +734,11 @@ top_layer_history = |events| {
 	}
 	{}
 }
+
+## A row whose popover's dismissal removes it: shown, then dismissed by an
+## outside click, by Escape, by another popover, by a modal, and by showing
+## it again.
+expect top_layer_history([15, 14, 15, 1, 15, 8, 1, 15, 0, 0, 15, 15, 15, 13, 2]) == {}
 
 ## Popover sibling/modal hiding, focus restoration and missing references share a session.
 expect top_layer_history([8, 9, 10, 1, 11, 12, 0, 0, 8, 1, 9, 1]) == {}
