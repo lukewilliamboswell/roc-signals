@@ -113,12 +113,12 @@ DocSamples := [].{
 					$problems = $problems.append("docs sample ${dir} does not build")
 				} else {
 					specs = SpecSuite.files_with!("${dir}/specs", ".scm")?
-					in_native = SpecSuite.tally(SpecSuite.empty_tally, dir, Native, SpecSuite.run_native!(o, runner, specs)?)
-					in_browser = SpecSuite.tally(SpecSuite.empty_tally, dir, Browser, SpecSuite.run_browser!(o, name, runner, wasm, specs)?)
+					in_native = SpecSuite.native_specs!({ example: dir, runner, specs })?
+					in_browser = SpecSuite.browser_specs!(o, { example: name, runner, wasm, specs })?
 					for t in [(Native, in_native), (Browser, in_browser)] {
 						(runner_kind, tally) = t
 						Proc.note!(SpecSuite.summary(dir, runner_kind, tally))
-						$problems = $problems.concat(tally.problems).concat(if (tally.passed == specs.len()) [] else ["docs sample ${dir} (${Str.inspect(runner_kind)}): ${tally.passed.to_str()} of ${specs.len().to_str()} specs passed"])
+						$problems = $problems.concat(tally.problems)
 					}
 				}
 			}

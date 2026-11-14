@@ -179,7 +179,8 @@ published baseline.
 5. Every app's specs natively and in Chrome, a walk of 300 steps of every
    walked app in its native runner (below), the check that the browser
    runner handles every form of the grammar, then a deliberately broken spec
-   that both runners must reject.
+   that both runners must reject. Each run of a runner must account for
+   every spec it was given (see [Specs and contract tests](#specs-and-contract-tests)).
 6. The runtime's unit tests in Node (the work monitor's aggregation and
    bounds, `tests/runtime/`), then its contract tests in Chrome: effects,
    controlled inputs, an outbox posted twice in one turn, worker jobs, the work monitor, a smoke of the worker
@@ -291,6 +292,22 @@ runs in both runners from one parser, `platform/Scm.roc`. An unknown step
 is a parse error, and both runners implement every step, with Chrome as the
 reference for what it means. The language is
 documented in [Testing](@/docs/testing.md).
+
+The suite (`check`, `spec`, the docs samples) hands each runner exactly the
+spec files it selected and judges the run as a whole
+(`SpecSuite.judge`): every selected spec must have exactly one result line,
+no other spec may have one, and the exit code must be the one the runner
+returns for the lines it printed, 0 when all passed and 1 when one
+reported a failure. This matters because the native runner prints a
+spec's result only after the spec has run: an engine contract error, an
+app's `crash` or a failed `expect` outside a worker job ends its process
+with 70 or 71, and that spec and every later one in the invocation print
+nothing. The suite then fails with the exit code and the specs left
+without a result, instead of counting the specs before them as the whole
+run. The emit step (`--emit-steps`) and the Chrome replay are judged the
+same way: a spec the parser refuses is an `error` line and exit 1, which
+the replay reports as failed; a replay that cannot start Chrome gives no
+lines and fails naming every spec.
 
 For a setup file given through `choose-files`, choose an extension whose
 MIME type Chrome recognizes on every supported system, such as `.txt`

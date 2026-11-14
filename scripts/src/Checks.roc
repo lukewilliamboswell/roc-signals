@@ -296,32 +296,27 @@ Checks := [].{
 		Ok(if (code == 0) $problems else $problems.append("browser key contracts failed (see above)"))
 	}
 
-	## Run one app's specs natively, and in Chrome when `browser`, with the
-	## builds `SpecSuite.build!` made.
+	## Run the specs of one app that `o.filter` selects natively, and in
+	## Chrome when `browser`, with the builds `SpecSuite.build!` made. Each
+	## run is judged by `SpecSuite.judge`: a runner that stops before giving
+	## every selected spec a result, or exits with a code its lines do not
+	## explain, is a problem in the tally beside the failures it reported.
 	## Returns the tallies and the native runner's path.
 	run_app! : SpecSuite.Options, Str, Bool => Try({ native : SpecSuite.Tally, browser : SpecSuite.Tally, runner : Str }, _)
 	run_app! = |o, example, browser| {
-		specs = SpecSuite.spec_files!(example)?
+		specs = SpecSuite.select(o.filter, SpecSuite.spec_files!(example)?)
 		runner = SpecSuite.runner_of(o, example)
-		native = SpecSuite.tally(SpecSuite.empty_tally, example, Native, SpecSuite.run_native!(o, runner, specs)?)
+		native = SpecSuite.native_specs!({ example, runner, specs })?
 		Proc.note!(SpecSuite.summary(example, Native, native))
 		in_browser =
 			if browser {
-				wasm = SpecSuite.wasm_of(o, example)
-				t = SpecSuite.tally(SpecSuite.empty_tally, example, Browser, SpecSuite.run_browser!(o, example, runner, wasm, specs)?)
+				t = SpecSuite.browser_specs!(o, { example, runner, wasm: SpecSuite.wasm_of(o, example), specs })?
 				Proc.note!(SpecSuite.summary(example, Browser, t))
 				t
 			} else {
 				SpecSuite.empty_tally
 			}
 		Ok({ native, browser: in_browser, runner })
-	}
-
-	add : SpecSuite.Tally, SpecSuite.Tally -> SpecSuite.Tally
-	add = |a, b| {
-		passed: a.passed + b.passed,
-		failed: a.failed + b.failed,
-		problems: a.problems.concat(b.problems),
 	}
 
 	## A deliberately broken spec: a copy of `spec` (a spec of `example`) with the
@@ -371,7 +366,7 @@ Checks := [].{
 		SpecSuite.fresh_dir!(dir)?
 		broken = "${dir}/broken.scm"
 		Path.write_utf8!(Path.utf8(broken), original.replace_each(good, bad))?
-		native = SpecSuite.run_native!({ ..o, filter: "*" }, runner, [broken])?
+		native = SpecSuite.run_native!(runner, [broken])?.lines
 		steps = Proc.capture!({ program: runner, args: ["--emit-steps", broken], cwd: "." })?
 		Path.write_bytes!(Path.utf8("${dir}/steps.jsonl"), steps)?
 		{ stdout, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", SpecSuite.wasm_of(o, example), "--runtime", SpecSuite.runtime, "--steps", "${dir}/steps.jsonl", "--chrome", o.chrome, "--json-lines"], cwd: "." })?

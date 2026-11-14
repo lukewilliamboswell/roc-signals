@@ -100,8 +100,8 @@ main! = |_args| {
 	Checks.hold!($problems, SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.spec_apps.concat(["tests/apps/effects", "tests/apps/controls"])))?
 	for example in SpecSuite.spec_apps {
 		r = Checks.hold!($problems.concat($native.problems).concat($browser.problems), Checks.run_app!(o, example, Bool.True))?
-		$native = Checks.add($native, r.native)
-		$browser = Checks.add($browser, r.browser)
+		$native = SpecSuite.add($native, r.native)
+		$browser = SpecSuite.add($browser, r.browser)
 		if example == "kanban-board" {
 			$kanban = { runner: r.runner }
 		}

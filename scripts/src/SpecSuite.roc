@@ -59,11 +59,34 @@ SpecSuite := [].{
 
 	## Every spec must pass in both runners: there is no list of expected
 	## failures, because the runners agree on every step (design.md, "The
-	## `.scm` spec language").
-	Tally : { passed : U64, failed : U64, problems : List(Str) }
+	## `.scm` spec language"). `unreported` counts the selected specs a
+	## runner gave no result for, each of which is also a problem: a run that
+	## stops early must never read as a shorter run that passed.
+	Tally : { passed : U64, failed : U64, unreported : U64, problems : List(Str) }
 
 	empty_tally : Tally
-	empty_tally = { passed: 0, failed: 0, problems: [] }
+	empty_tally = { passed: 0, failed: 0, unreported: 0, problems: [] }
+
+	## Two tallies as one, problems in order.
+	add : Tally, Tally -> Tally
+	add = |a, b| {
+		passed: a.passed + b.passed,
+		failed: a.failed + b.failed,
+		unreported: a.unreported + b.unreported,
+		problems: a.problems.concat(b.problems),
+	}
+
+	## One invocation of a runner as the suite sees it: the exit code the
+	## process returned and the lines of its standard output. A runner ended
+	## by a signal never becomes a `Run`: `Proc.output!` fails the stage.
+	Run : { code : I32, lines : List(Str) }
+
+	## Which invocation a run was. `Native` is the native runner's results;
+	## `Emit` is the native runner's `--emit-steps`, one steps line per
+	## parsed spec and one `error` result line per refused one; `Replay` is
+	## `tests/browser/replay.mjs --json-lines`, one result line per spec it
+	## was given, a refused spec's passed through as failed.
+	Stage : [Native, Emit, Replay]
 
 	## `root` and `build_dir` are absolute.
 	Options : { root : Str, build_dir : Str, compiler : Str, nightly : Str, tooling : Str, zig : Str, node : Str, chrome : Str, filter : Str }
@@ -177,6 +200,11 @@ SpecSuite := [].{
 	spec_files! : Str => Try(List(Str), _)
 	spec_files! = |example| SpecSuite.files_with!("${SpecSuite.dir_of(example)}/specs", ".scm")
 
+	## A spec's id, as every runner reports it: its file name without the
+	## directory or `.scm` (`SpecRunner.id_of`).
+	id_of : Str -> Str
+	id_of = |path| (path.split_on("/").last() ?? path).drop_suffix(".scm")
+
 	## The value of `"key":"..."` in a JSON line (no escapes inside).
 	json_field : Str, Str -> Str
 	json_field = |line, key|
@@ -193,28 +221,91 @@ SpecSuite := [].{
 			_ => SpecSuite.json_field(line, "status")
 		}
 
-	## Fold one runner's result lines into the tally.
-	tally : Tally, Str, Runner, List(Str) -> Tally
-	tally = |t0, example, runner, lines| {
-		var $t = t0
-		for line in lines.keep_if(|l| l.starts_with("{")) {
-			id = SpecSuite.json_field(line, "id")
-			status = SpecSuite.json_field(line, "status")
+	## The verdict on one run of `expected` (the ids of the specs the run
+	## was given, in order): its result lines tallied, and a problem for
+	## anything the run does not account for. The run must give exactly one
+	## line for each expected id and none for any other id, and its exit
+	## code must be one the runner returns for the lines it printed: 0 when
+	## every line passed, 1 when at least one reported a failure. A runner
+	## that stops early (the native runner exits with 70 on a crash and 71
+	## on a failed `expect`, before it prints the spec's result) or a replay
+	## that never started therefore fails the suite, naming the exit code
+	## and every spec it left without a result. A failure the runner
+	## reported is a problem of its own, as before. An `Emit` run's lines
+	## are not tallied: a spec the parser refused is counted when the replay
+	## reports it as failed.
+	judge : { example : Str, stage : Stage, expected : List(Str), run : Run } -> Tally
+	judge = |{ example, stage, expected, run }| {
+		label = match stage {
+			Native => "${example} Native"
+			Emit => "${example} Browser (emit)"
+			Replay => "${example} Browser"
+		}
+		var $t = SpecSuite.empty_tally
+		var $ids = []
+		var $failures = 0.U64
+		for line in run.lines.keep_if(|l| l.starts_with("{")) {
 			t = $t
-			$t = match status {
-				"passed" => { ..t, passed: t.passed + 1 }
-				_ => { ..t, failed: t.failed + 1, problems: t.problems.append("${example} ${Str.inspect(runner)} ${id}: ${SpecSuite.json_message(line)}") }
+			id = SpecSuite.json_field(line, "id")
+			if line.starts_with("{\"protocol\":\"roc-signals/spec-result/v2\",") {
+				$ids = $ids.append(id)
+				passed = SpecSuite.json_field(line, "status") == "passed"
+				if !passed {
+					$failures = $failures + 1
+				}
+				$t = match (stage, passed) {
+					(Emit, _) => t
+					(_, Bool.True) => { ..t, passed: t.passed + 1 }
+					(_, Bool.False) => { ..t, failed: t.failed + 1, problems: t.problems.append("${label} ${id}: ${SpecSuite.json_message(line)}") }
+				}
+			} else if stage == Emit and line.starts_with("{\"id\":\"") {
+				$ids = $ids.append(id)
+			} else {
+				$t = { ..t, problems: t.problems.append("${label}: output line is not a result: ${line}") }
 			}
 		}
-		$t
+		ids = $ids
+		missing = expected.drop_if(|id| ids.contains(id))
+		unknown = ids.drop_if(|id| expected.contains(id))
+		repeated = expected.keep_if(|id| ids.count_if(|seen| seen == id) > 1)
+		legitimate = (run.code == 0 and $failures == 0) or (run.code == 1 and $failures > 0)
+		reported = ids.len() - unknown.len()
+		problems = []
+			.concat(if (legitimate) [] else ["${label}: exited with ${run.code.to_str()}${exit_meaning(stage, run.code, $failures)} after giving results for ${reported.to_str()} of ${expected.len().to_str()} specs"])
+			.concat(if (missing.is_empty()) [] else ["${label}: no result for ${Str.join_with(missing, ", ")}"])
+			.concat(if (unknown.is_empty()) [] else ["${label}: a result for ${Str.join_with(unknown, ", ")}, which the run was not given"])
+			.concat(if (repeated.is_empty()) [] else ["${label}: more than one result for ${Str.join_with(repeated, ", ")}"])
+		t = $t
+		{ ..t, unreported: missing.len(), problems: t.problems.concat(problems) }
 	}
 
-	## Run the native specs; returns the result lines.
-	run_native! : Options, Str, List(Str) => Try(List(Str), _)
-	run_native! = |o, runner, specs| {
-		{ stdout, .. } = Proc.output!({ program: runner, args: ["--filter", o.filter].concat(specs), cwd: "." })?
-		Ok(Str.from_utf8_lossy(stdout).split_on("\n"))
+	## Run `specs` (paths) with the native runner `runner`, keeping its exit
+	## code and its standard output for `judge`. Its standard error (the
+	## runner's summary, a crash's message, `dbg` output) passes through to
+	## the log, where the message of a crash `judge` reports can be read.
+	run_native! : Str, List(Str) => Try(Run, _)
+	run_native! = |runner, specs| {
+		{ code, stdout } = Proc.output!({ program: runner, args: specs, cwd: "." })?
+		Ok({ code, lines: Str.from_utf8_lossy(stdout).split_on("\n") })
 	}
+
+	## Run `specs` (paths of `example`'s specs) with its native runner and
+	## judge the run.
+	native_specs! : { example : Str, runner : Str, specs : List(Str) } => Try(Tally, _)
+	native_specs! = |{ example, runner, specs }|
+		if specs.is_empty() {
+			Ok(SpecSuite.empty_tally)
+		} else {
+			run = SpecSuite.run_native!(runner, specs)?
+			Ok(SpecSuite.judge({ example, stage: Native, expected: specs.map(SpecSuite.id_of), run }))
+		}
+
+	## The specs of `example` the filter `pattern` selects: those whose id it
+	## matches, `*` standing for any run of bytes and `?` for any one (the
+	## native runner's `--filter`). The suite selects here and hands the
+	## runner exactly the files it expects results for.
+	select : Str, List(Str) -> List(Str)
+	select = |pattern, specs| specs.keep_if(|path| glob(pattern.to_utf8(), SpecSuite.id_of(path).to_utf8()))
 
 	# ------------------------------------------------------------ browser
 
@@ -225,33 +316,160 @@ SpecSuite := [].{
 		Proc.run!({ program: o.zig, args: ["build-obj", "host/host.zig", "-target", "wasm32-freestanding", "-O", "ReleaseSmall", "-fstrip", "-femit-bin=targets/wasm32/host.wasm"], cwd: "${o.root}/platform" })
 	}
 
-	## Emit the parsed steps with the native runner, then replay them in
-	## Chrome; returns the replay's result lines.
-	run_browser! : Options, Str, Str, Str, List(Str) => Try(List(Str), _)
-	run_browser! = |o, example, runner, wasm, specs| {
-		# A spec the parser refuses is emitted as an error line (and the
-		# command exits 1); the replay reports it as failed.
-		{ stdout: steps, .. } = Proc.output!({ program: runner, args: ["--emit-steps", "--filter", o.filter].concat(specs), cwd: "." })?
+	## Emit the parsed steps of `specs` with the native runner into
+	## `steps_file`, then replay them in Chrome, and judge both runs. A spec
+	## the parser refuses is emitted as an error line (and the emit exits
+	## 1); the replay reports it as failed. The replay is given only the
+	## specs the emit gave a line for, so a spec the emit lost is reported
+	## once, by the emit's verdict; when it gave none, nothing is replayed.
+	browser_specs! : Options, { example : Str, runner : Str, wasm : Str, specs : List(Str) } => Try(Tally, _)
+	browser_specs! = |o, { example, runner, wasm, specs }| {
+		if specs.is_empty() {
+			return Ok(SpecSuite.empty_tally)
+		}
+		expected = specs.map(SpecSuite.id_of)
 		steps_file = "${o.build_dir}/wasm/${example}/steps.jsonl"
-		Path.write_bytes!(Path.utf8(steps_file), steps)?
-		{ stdout, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", SpecSuite.runtime, "--steps", steps_file, "--chrome", o.chrome, "--json-lines"], cwd: "." })?
-		Ok(Str.from_utf8_lossy(stdout).split_on("\n"))
+		emit = Proc.output!({ program: runner, args: ["--emit-steps"].concat(specs), cwd: "." })?
+		Path.write_bytes!(Path.utf8(steps_file), emit.stdout)?
+		emit_run = { code: emit.code, lines: Str.from_utf8_lossy(emit.stdout).split_on("\n") }
+		emitted = SpecSuite.judge({ example, stage: Emit, expected, run: emit_run })
+		given = emit_run.lines.keep_if(|l| l.starts_with("{")).map(|l| SpecSuite.json_field(l, "id"))
+		replayed = expected.keep_if(|id| given.contains(id))
+		if replayed.is_empty() {
+			return Ok(emitted)
+		}
+		{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", SpecSuite.runtime, "--steps", steps_file, "--chrome", o.chrome, "--json-lines"], cwd: "." })?
+		replay = SpecSuite.judge({ example, stage: Replay, expected: replayed, run: { code, lines: Str.from_utf8_lossy(stdout).split_on("\n") } })
+		Ok(SpecSuite.add(emitted, replay))
 	}
 
 	# --------------------------------------------------------------- report
 
 	summary : Str, Runner, Tally -> Str
-	summary = |example, runner, t| "${example} (${Str.inspect(runner)}): ${t.passed.to_str()} passed, ${t.failed.to_str()} failed"
+	summary = |example, runner, t| {
+		unreported = if (t.unreported == 0) "" else ", ${t.unreported.to_str()} without a result"
+		"${example} (${Str.inspect(runner)}): ${t.passed.to_str()} passed, ${t.failed.to_str()} failed${unreported}"
+	}
 }
 
-## Result lines are tallied; anything but a pass is a failure with its message.
+## What an exit code the verdict refuses means, for its problem. The native
+## runner and its emit return 70 when Roc crashes (an engine contract error,
+## an app's `crash`) and 71 when an `expect` fails outside a worker job
+## (`platform/host/spec.zig`), and 2 for a usage error or a host failure;
+## the replay returns 1 when it throws (Chrome did not start, a step had no
+## handler).
+exit_meaning : Stage, I32, U64 -> Str
+exit_meaning = |stage, code, failures|
+	match (stage, code) {
+		(_, 0) => ", which says every spec passed, though ${failures.to_str()} reported a failure,"
+		(Replay, 1) => ", which it returns when a spec failed or when the replay itself threw, but it reported no failure,"
+		(_, 1) => ", which it returns when a spec failed, but it reported no failure,"
+		(Replay, _) => ""
+		(_, 70) => " (Roc crashed: an engine contract error or an app's crash)"
+		(_, 71) => " (an expect failed outside a worker job)"
+		(_, 2) => " (a usage error or a host failure)"
+		_ => ""
+	}
+
+## Shell-style matching over bytes, as the native runner's `--filter`
+## matches (`SpecRunner.glob_bytes`).
+glob : List(U8), List(U8) -> Bool
+glob = |pattern, text|
+	match pattern {
+		[] => text.is_empty()
+		['*', .. as rest] => glob(rest, text) or (!text.is_empty() and glob(pattern, text.drop_first(1)))
+		['?', .. as rest] => !text.is_empty() and glob(rest, text.drop_first(1))
+		[c, .. as rest] => text.first() == Ok(c) and glob(rest, text.drop_first(1))
+	}
+
+## A result line, as a runner prints it, for the tests below.
+result_line : Str, Str -> Str
+result_line = |id, status| "{\"protocol\":\"roc-signals/spec-result/v2\",\"id\":\"${id}\",\"name\":\"N\",\"status\":\"${status}\",\"duration_ns\":0,\"failure\":${if (status == "passed") "null" else "{\"phase\":\"step\",\"kind\":\"assertion\",\"message\":\"wrong ${id}\",\"step\":0}"}}"
+
+## A verdict as one comparable record: counts, then every problem.
+verdict : SpecSuite.Stage, List(Str), I32, List(Str) -> { passed : U64, failed : U64, unreported : U64, problems : List(Str) }
+verdict = |stage, expected, code, lines| SpecSuite.judge({ example: "app", stage, expected, run: { code, lines } })
+
+## Every selected spec passed and the runner exited 0: nothing to report, and
+## a summary line on stderr or a blank line is not a result.
+expect verdict(Native, ["a", "b"], 0, [result_line("a", "passed"), result_line("b", "passed"), "", "specs: 2 passed"]) == { passed: 2, failed: 0, unreported: 0, problems: [] }
+
+## A failure the runner reported, with the exit code it returns for one, is
+## that failure and nothing more.
+expect verdict(Native, ["a", "b"], 1, [result_line("a", "passed"), result_line("b", "failed")]) == { passed: 1, failed: 1, unreported: 0, problems: ["app Native b: wrong b"] }
+
+## A crash (exit 70) after two of five specs gave results fails the suite,
+## naming the exit code and the three specs left without a result.
 expect {
-	lines = [
-		"{\"protocol\":\"roc-signals/spec-result/v2\",\"id\":\"a\",\"name\":\"A\",\"status\":\"passed\"}",
-		"{\"id\":\"b\",\"status\":\"failed\",\"failure\":{\"message\":\"y\"}}",
-		"specs: summary on stderr is ignored",
-	]
-	t = SpecSuite.tally(SpecSuite.empty_tally, "form-builder", Browser, lines)
-	actual = [t.passed, t.failed, t.problems.len()]
-	actual == [1, 1, 1]
+	actual = verdict(Native, ["a", "b", "c", "d", "e"], 70, [result_line("a", "passed"), result_line("b", "passed")])
+	expected = {
+		passed: 2,
+		failed: 0,
+		unreported: 3,
+		problems: [
+			"app Native: exited with 70 (Roc crashed: an engine contract error or an app's crash) after giving results for 2 of 5 specs",
+			"app Native: no result for c, d, e",
+		],
+	}
+	actual == expected
 }
+
+## A failed `expect` (exit 71) is named too.
+expect verdict(Native, ["a"], 71, []).problems == ["app Native: exited with 71 (an expect failed outside a worker job) after giving results for 0 of 1 specs", "app Native: no result for a"]
+
+## Exit 0 with a spec missing is not a pass: the missing spec is named.
+expect verdict(Native, ["a", "b"], 0, [result_line("a", "passed")]).problems == ["app Native: no result for b"]
+
+## A result for a spec the run was not given, or two for one, is a problem.
+expect {
+	actual = verdict(Native, ["a"], 0, [result_line("a", "passed"), result_line("z", "passed"), result_line("a", "passed")]).problems
+	actual == ["app Native: a result for z, which the run was not given", "app Native: more than one result for a"]
+}
+
+## A run that printed nothing accounts for none of its specs; a run given no
+## specs that printed nothing accounts for all of them.
+expect {
+	actual = [verdict(Native, ["a", "b"], 0, []).problems, verdict(Native, [], 0, []).problems]
+	actual == [["app Native: no result for a, b"], []]
+}
+
+## Exit codes that contradict the lines: 1 with every spec passed, 0 with a
+## failure reported.
+expect {
+	actual = [verdict(Native, ["a"], 1, [result_line("a", "passed")]).problems, verdict(Native, ["a"], 0, [result_line("a", "failed")]).problems]
+	expected = [
+		["app Native: exited with 1, which it returns when a spec failed, but it reported no failure, after giving results for 1 of 1 specs"],
+		["app Native a: wrong a", "app Native: exited with 0, which says every spec passed, though 1 reported a failure, after giving results for 1 of 1 specs"],
+	]
+	actual == expected
+}
+
+## The emit step exits 1 with an error line for a spec the parser refused and
+## a steps line for each other: that is a reported failure, which the replay
+## counts, not a fault of the suite; the emit itself tallies nothing.
+expect {
+	steps = "{\"id\":\"a\",\"name\":\"A\",\"setup\":[],\"steps\":[{\"op\":\"click\",\"id\":\"x\"}]}"
+	actual = verdict(Emit, ["a", "b"], 1, [steps, result_line("b", "error")])
+	actual == { passed: 0, failed: 0, unreported: 0, problems: [] }
+}
+
+## An emit that crashed after one spec loses the rest, named as missing.
+expect verdict(Emit, ["a", "b"], 70, ["{\"id\":\"a\",\"name\":\"A\"}"]).problems == ["app Browser (emit): exited with 70 (Roc crashed: an engine contract error or an app's crash) after giving results for 1 of 2 specs", "app Browser (emit): no result for b"]
+
+## A replay that threw before any spec (Chrome did not start) exits 1 with no
+## lines: every spec it was given is named.
+expect verdict(Replay, ["a", "b"], 1, []).problems == ["app Browser: exited with 1, which it returns when a spec failed or when the replay itself threw, but it reported no failure, after giving results for 0 of 2 specs", "app Browser: no result for a, b"]
+
+## The replay passes a refused spec's error line through as failed: one
+## failure, with the exit code for one.
+expect verdict(Replay, ["a"], 1, [result_line("a", "failed")]) == { passed: 0, failed: 1, unreported: 0, problems: ["app Browser a: wrong a"] }
+
+## A line that opens like JSON but is neither a result nor emitted steps is
+## a problem, not silently ignored.
+expect verdict(Native, [], 0, ["{\"id\":\"a\"}"]).problems == ["app Native: output line is not a result: {\"id\":\"a\"}"]
+
+## Selection matches the spec id, not the path, with the runner's glob.
+expect SpecSuite.select("add*", ["x/specs/adding-a-field.scm", "x/specs/remove.scm", "add/specs/zzz.scm"]) == ["x/specs/adding-a-field.scm"]
+
+## `?` matches one byte and a plain pattern only itself.
+expect SpecSuite.select("a?c", ["s/abc.scm", "s/ac.scm", "s/abcd.scm"]) == ["s/abc.scm"]
