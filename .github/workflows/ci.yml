@@ -57,6 +57,8 @@ jobs:
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint check
       - run: blueprint run check
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   # The spec runner's link inputs for every system, cross-compiled on Linux
   # with the pinned Zig exactly as the release builds them.

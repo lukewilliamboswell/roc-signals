@@ -1,5 +1,8 @@
 import cli.Path
 import cli.Http
+import cli.Env
+import http.Request
+import http.Response
 import ApiSurface
 import Proc
 import SpecSuite
@@ -50,8 +53,18 @@ ApiDocs := [].{
 	## or extraction failures fail the gate; a self comparison is no baseline.
 	bump! : SpecSuite.Options => Try(List(Str), _)
 	bump! = |o| {
-		published : { tag_name : Str, assets : List({ name : Str, browser_download_url : Str }) }
-		published = Http.get!("https://api.github.com/repos/lukewilliamboswell/roc-signals/releases/latest", {})?
+		request = Request.from_method(GET)
+			.with_uri("https://api.github.com/repos/lukewilliamboswell/roc-signals/releases/latest")
+			.add_header("Accept", "application/vnd.github+json")
+			.add_header("X-GitHub-Api-Version", "2022-11-28")
+		with_token = match Env.var_str!("GH_TOKEN") {
+			Ok(token) if !token.is_empty() => request.add_header("Authorization", "Bearer ${token}")
+			Ok(_) | Err(VarNotFound(_)) => request
+			Err(error) => return Err(error)
+		}
+		response : Response
+		response = Http.send!(with_token, {})?
+		published = ApiDocs.published_release({ status: response.status(), body: response.body() })?
 		bundle = match published.assets.keep_if(|asset| asset.name.ends_with(".tar.zst") and !asset.name.starts_with("signals-")) {
 			[asset] => asset.browser_download_url
 			_ => return Err(AmbiguousPublishedPlatform(published.tag_name))
@@ -60,6 +73,19 @@ ApiDocs := [].{
 		output = Str.from_utf8_lossy(result.stdout)
 		Proc.note!(output)
 		Ok(if (result.code == 0) [] else ["roc bump against ${published.tag_name} failed: ${output}"])
+	}
+
+	## Refuse an HTTP error before interpreting its body as release metadata.
+	## Retain a bounded response excerpt so discovery failures identify the
+	## service response instead of reporting an unrelated missing JSON field.
+	published_release : { status : U16, body : List(U8) } -> Try({ tag_name : Str, assets : List({ name : Str, browser_download_url : Str }) }, _)
+	published_release = |{ status, body }| {
+		if status != 200 {
+			return Err(PublishedReleaseHttpFailure({ status, body: Str.from_utf8_lossy(body.take_first(2048)) }))
+		}
+		text = Str.from_utf8(body) ? |_| InvalidPublishedReleaseUtf8
+		published = Json.parse(text) ? InvalidPublishedReleaseJson
+		Ok(published)
 	}
 
 	## Parse module declarations once, retaining the source comments used for
@@ -210,6 +236,32 @@ ApiDocs := [].{
 			}
 		}
 		Ok($problems)
+	}
+}
+
+## A successful release response preserves the actual asset URLs for the baseline.
+expect {
+	published = ApiDocs.published_release({ status: 200, body: "{\"tag_name\":\"0.5.0\",\"assets\":[{\"name\":\"platform.tar.zst\",\"browser_download_url\":\"https://example.com/platform.tar.zst\"}]}".to_utf8() })?
+	published == { tag_name: "0.5.0", assets: [{ name: "platform.tar.zst", browser_download_url: "https://example.com/platform.tar.zst" }] }
+}
+
+## GitHub error responses report their HTTP failure before release JSON decoding.
+expect {
+	body = "{\"message\":\"API rate limit exceeded\"}"
+	ApiDocs.published_release({ status: 403, body: body.to_utf8() }) == Err(PublishedReleaseHttpFailure({ status: 403, body }))
+}
+
+## Even release-shaped JSON cannot turn an unsuccessful HTTP response into a baseline.
+expect ApiDocs.published_release({ status: 503, body: "{\"tag_name\":\"0.5.0\",\"assets\":[]}".to_utf8() }).is_err()
+
+## A malformed successful response still fails discovery rather than inventing assets.
+expect ApiDocs.published_release({ status: 200, body: "{\"message\":\"unexpected response\"}".to_utf8() }).is_err()
+
+## Error diagnostics keep at most two KiB of a service response.
+expect {
+	match ApiDocs.published_release({ status: 502, body: List.repeat('x', 4096) }) {
+		Err(PublishedReleaseHttpFailure(failure)) => failure.status == 502 and failure.body.count_utf8_bytes() == 2048
+		_ => False
 	}
 }
 

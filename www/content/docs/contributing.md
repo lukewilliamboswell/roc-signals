@@ -154,6 +154,13 @@ an interpolation are checked; dynamically built class names remain the app's.
 
 ## What `check` runs
 
+The API comparison discovers the latest published platform through GitHub's
+release API. CI supplies its read-only token as `GH_TOKEN`; local runs can
+also set `GH_TOKEN` when the anonymous API quota is exhausted. HTTP errors
+fail with their status and a bounded response excerpt. Discovery and baseline
+extraction failures fail the gate; the current source never replaces the
+published baseline.
+
 1. Every script names the `roc-stable` nightly that `Blueprint.roc` pins, and
    no other Roc file names a compiler; every file `www/data/examples.toml`
    names exists, and every example is in a section of the examples index.
