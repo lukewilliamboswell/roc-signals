@@ -377,6 +377,59 @@ Checks := [].{
 		)
 	}
 
+	## A native target override lets the same early-refusal contract run on a
+	## contributor's system; CI uses the ordinary native suite target.
+	DeclarationProps := { target : Str ?? "x64musl" }
+
+	## Build one crash-on-init fixture and require every malformed declaration
+	## name to fail identically before native execution and browser emission.
+	## Rejected output is never replayed as if it were a valid browser story.
+	declaration_refusals! : SpecSuite.Options, DeclarationProps => Try(List(Str), _)
+	declaration_refusals! = |o, props| {
+		dir = "${o.build_dir}/declaration-refusals"
+		SpecSuite.fresh_dir!(dir)?
+		runner = "${dir}/runner"
+		Proc.run!(SpecSuite.build_job(o, "dev", "tests/fixtures/declarations/main.roc", props.target, runner))?
+		cases = [
+			{ name: "unknown-task", message: "expect-pending-work names worker catalogue entry \"misspelt-task\", which the program does not register" },
+			{ name: "unknown-port", message: "expect-port-sends names port \"misspelt-port\", which the program does not declare" },
+			{ name: "command-as-subscription", message: "expect-port-subscriptions names port \"command\", which is a command port; this step requires a subscription port" },
+			{ name: "subscription-as-command", message: "expect-port-sends names port \"subscription\", which is a subscription port; this step requires a command port" },
+			{ name: "command-as-call", message: "expect-port-call names port \"command\", which is a command port; this step requires a call port" },
+			{ name: "unknown-media", message: "expect-media-subscriptions names media query \"misspelt-query\", which the program does not declare" },
+			{ name: "unknown-setup-media", message: "setup names media query \"misspelt-query\", which the program does not declare" },
+			{ name: "unknown-local", message: "expect-no-local-storage names local-storage key \"misspelt-local\", which is neither declared nor seeded or positively established in this spec" },
+			{ name: "unknown-session", message: "expect-no-session-storage names session-storage key \"misspelt-session\", which is neither declared nor seeded or positively established in this spec" },
+		]
+		var $problems = []
+		for case in cases {
+			path = "tests/fixtures/declarations/specs/${case.name}.scm"
+			expected = "${path}:3:5: ${case.message}"
+			var $failures = []
+			for mode in ["native", "emit"] {
+				args = if mode == "emit" ["--emit-steps", path] else [path]
+				result = Proc.merged!({ program: runner, args, cwd: o.root })?
+				Path.write_bytes!(Path.utf8("${dir}/${case.name}-${mode}.log"), result.stdout)?
+				if result.code != 1 {
+					$problems = $problems.append("declaration refusal ${case.name} ${mode}: expected exit1, got ${result.code.to_str()}")
+				}
+				match declaration_failure({ bytes: result.stdout, id: case.name, expected }) {
+					Ok(message) => { $failures = $failures.append(message) }
+					Err(message) => { $problems = $problems.append("declaration refusal ${case.name} ${mode}: ${message}") }
+				}
+			}
+			if $failures.len() != 2 or ($failures.first() != $failures.last()) {
+				$problems = $problems.append("declaration refusal ${case.name}: native and emit did not produce the same positioned error")
+			}
+		}
+		known = Proc.merged!({ program: runner, args: ["--emit-steps", "tests/fixtures/declarations/specs/known.scm"], cwd: o.root })?
+		Path.write_bytes!(Path.utf8("${dir}/known-emit.log"), known.stdout)?
+		if known.code != 0 or !(Str.from_utf8(known.stdout)?).contains("Declarations without initialization") {
+			$problems = $problems.append("known declarations were not emitted without initializing the crash-on-init fixture")
+		}
+		Ok($problems)
+	}
+
 	## The browser runner has a handler for every step and setup form of the
 	## grammar, and for nothing else: the native runner prints the grammar
 	## (`--grammar`, from the parser's form tables) and
@@ -392,4 +445,25 @@ Checks := [].{
 		{ code, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--check-grammar", "${dir}/grammar.json"], cwd: "." })?
 		if (code == 0) Ok([]) else Ok(["grammar coverage: replay.mjs and the grammar disagree (see above)"])
 	}
+}
+
+# Declaration refusals are parse-phase errors, never executed assertion failures.
+# Decode the structured record so quotes and source positions are compared exactly.
+declaration_failure : { bytes : List(U8), id : Str, expected : Str } -> Try(Str, Str)
+declaration_failure = |{ bytes, id, expected }| {
+	text = Str.from_utf8(bytes) ? |_| "runner output was not UTF-8"
+	lines = text.split_on("\n").keep_if(|line| line.starts_with("{"))
+	line = match lines {
+		[only] => only
+		_ => return Err("runner did not return exactly one structured refusal")
+	}
+	record : { protocol : Str, id : Str, name : Str, status : Str, duration_ns : U64, failure : { phase : Str, kind : Str, message : Str, step : U64, line : U64, column : U64 } }
+	record = Json.parse(line) ? |_| "runner returned a malformed refusal record"
+	if record.protocol != "roc-signals/spec-result/v2" or record.id != id or record.name != "" or record.status != "error" or record.duration_ns != 0 or record.failure.phase != "parse" or record.failure.kind != "parse" or record.failure.step != 0 or record.failure.line != 3 or record.failure.column != 5 or record.failure.message != expected {
+		return Err("runner returned the wrong error: ${line}")
+	}
+	if text.contains("declaration fixture unexpectedly initialized") {
+		return Err("the fixture initialized before refusing its declaration")
+	}
+	Ok(record.failure.message)
 }

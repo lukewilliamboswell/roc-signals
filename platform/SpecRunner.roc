@@ -80,6 +80,9 @@ SpecRunner := [].{
 	## An app as its host sees it: `Core.driver` of its `Engine.Program`.
 	Program(state) : {
 		version : U32,
+		## Registered worker catalogue names, including preparation owners.
+		## Static metadata only; reading it never initializes the app.
+		tasks : List(Str),
 		keys : () -> List(U8),
 		init : List(U8) -> (state, List(U8), List(U8)),
 		event : state, List(U8), List(U8), U32, U32, List(U8) -> (state, List(U8), List(U8)),
@@ -358,9 +361,18 @@ SpecRunner := [].{
 	decode_keys : List(U8) -> List(Str)
 	decode_keys = |b| SpecRunner.decode_declarations(b).keys
 
+	## The closed shape of a declared port, independent of request execution.
+	PortKind : [Command, Call, Subscription]
+
+	## A port's validated name and kind from declaration section five.
+	DeclaredPort : { name : Str, kind : PortKind }
+
+	## Spec validation retains only the declaration facts its steps can name.
+	Declarations : { keys : List(Str), ports : List(DeclaredPort), latest_ports : List(Str), media : List(Str), zone_days : U16, session_keys : List(Str) }
+
 	## Decode both declaration sections once: only the catalogue decides
 	## whether a subscription's messages are reports.
-	decode_declarations : List(U8) -> { keys : List(Str), latest_ports : List(Str), media : List(Str), zone_days : U16, session_keys : List(Str) }
+	decode_declarations : List(U8) -> Declarations
 	decode_declarations = |b| {
 		if b.first() != Ok(2) {
 			crash "contract: declaration section 2 (local-storage) is missing"
@@ -404,6 +416,7 @@ SpecRunner := [].{
 		$i = 0
 		var $names = []
 		var $latest_ports = []
+		var $declared_ports = []
 		while $i < count {
 			name_len = (SpecRunner.get_u32(ports, $at) ?? crash "contract: declaration section 5 (ports) has a short name").to_u64()
 			if name_len < 1 or name_len > 128 or name_len > ports.len() - $at - 4 {
@@ -426,6 +439,13 @@ SpecRunner := [].{
 			if !is_shape {
 				crash "contract: declaration section 5 (ports) has an invalid shape"
 			}
+			port_kind = match kind {
+				1 => Command
+				2 => Call
+				3 => Subscription
+				_ => crash "SpecRunner.decode_declarations: validated port kind is missing"
+			}
+			$declared_ports = $declared_ports.append({ name, kind: port_kind })
 			if kind == 3 and delivery == 2 {
 				$latest_ports = $latest_ports.append(name)
 			}
@@ -499,7 +519,46 @@ SpecRunner := [].{
 		if $session_cursor != session_body.len() {
 			crash "contract: session-storage trailing bytes"
 		}
-		{ keys: $keys, latest_ports: $latest_ports, media: $queries, zone_days: days, session_keys: $session }
+		{ keys: $keys, ports: $declared_ports, latest_ports: $latest_ports, media: $queries, zone_days: days, session_keys: $session }
+	}
+
+	## Check every named declaration before a spec is emitted or executed.
+	## Same-spec storage evidence can appear before or after an absence. The
+	## transient indexes contain names only and are dropped before mounting.
+	declared : Program(state), Scm.Spec -> Try({}, Scm.Problem)
+	declared = |program, spec| {
+		declarations = SpecRunner.decode_declarations((program.keys)())
+		contexts = spec.setup.map(|entry| { pos: entry.pos, form: "setup", evidence: Scm.setup_evidence(entry.item) }).concat(spec.steps.map(|step| { pos: step.pos, form: Scm.op_name(step.op), evidence: Scm.evidence(step.op) }))
+		local_keys = declarations.keys.fold(Dict.empty(), |keys, key| keys.insert({ store: Local, key }, {}))
+		declared_keys = declarations.session_keys.fold(local_keys, |keys, key| keys.insert({ store: Session, key }, {}))
+		storage = contexts.fold(declared_keys, |keys, context| context.evidence.shows.fold(keys, |known, subject| match subject {
+			Storage(key) => known.insert(key, {})
+			Locator(_) | Attribute(_) | Cleanup(_) | Interval(_) => known
+		}))
+		names = {
+			ports: declarations.ports.fold(Dict.empty(), |ports, port| ports.insert(port.name, port.kind)),
+			tasks: program.tasks.fold(Dict.empty(), |tasks, task| tasks.insert(task, {})),
+			media: declarations.media.fold(Dict.empty(), |queries, query| queries.insert(query, {})),
+			storage,
+		}
+		for context in contexts {
+			for need in context.evidence.needs {
+				match declared_need(need, names) {
+					Ok({}) => {}
+					Err(message) => return Err({ pos: context.pos, message: "${context.form} ${message}" })
+				}
+			}
+		}
+		Ok({})
+	}
+
+	## Parsing and declaration checks share one early boundary for normal,
+	## emitted and walked specs. No app initializer or effect runs here.
+	parse_declared : Program(state), Str -> Try(Scm.Spec, Scm.Problem)
+	parse_declared = |program, text| {
+		spec = Scm.parse(text)?
+		SpecRunner.declared(program, spec)?
+		Ok(spec)
 	}
 
 	## Encode a resolved boolean using the wire’s exact zero/one vocabulary.
@@ -4414,6 +4473,7 @@ SpecRunner := [].{
 		live = program.live
 		{
 			version: program.version,
+			tasks: program.tasks,
 			keys: program.keys,
 			init: |boot| {
 				(inst, cmds, wbuf) = init(boot)
@@ -4814,7 +4874,7 @@ SpecRunner := [].{
 			if SpecRunner.glob(opts.filter, id) {
 				text = Str.from_utf8((io.read_file!)(path)) ?? ""
 				t0 = (io.now_ns!)()
-				match Scm.parse(text) {
+				match SpecRunner.parse_declared(program, text) {
 					Err(problem) => {
 						$counts = { ..$counts, error: $counts.error + 1 }
 						(io.stdout!)(
@@ -4862,11 +4922,11 @@ SpecRunner := [].{
 	}
 
 	## Every spec file, parsed, or the first problem.
-	parsed! : (Str => List(U8)), List(Str) => Try(List(Scm.Spec), Str)
-	parsed! = |read_file!, paths| {
+	parsed! : Program(state), { read_file! : Str => List(U8), paths : List(Str) } => Try(List(Scm.Spec), Str)
+	parsed! = |program, { read_file!, paths }| {
 		var $specs = []
 		for path in paths {
-			match Scm.parse(Str.from_utf8(read_file!(path)) ?? "") {
+			match SpecRunner.parse_declared(program, Str.from_utf8(read_file!(path)) ?? "") {
 				Ok(spec) => {
 					$specs = $specs.append(spec)
 				}
@@ -4880,7 +4940,7 @@ SpecRunner := [].{
 	## (`walk!`): everything it allocates is its own.
 	walk_files! : Program(state), Host, (Str => List(U8)), List(Str), { steps : U64, seed : U64 } => Try(Tally, { step : U64, message : Str })
 	walk_files! = |program, host, read_file!, paths, walk| {
-		specs = SpecRunner.parsed!(read_file!, paths).map_err(|message| { step: 0, message })?
+		specs = SpecRunner.parsed!(program, { read_file!, paths }).map_err(|message| { step: 0, message })?
 		SpecRunner.walk!(program, host, specs, walk)
 	}
 
@@ -4895,7 +4955,7 @@ SpecRunner := [].{
 		# Parse every file first, so a malformed one is reported as such;
 		# the walk parses them again inside its measured call, so what they
 		# hold is allocated and freed within it.
-		match SpecRunner.parsed!(io.read_file!, paths).map_ok(|_| {}) {
+		match SpecRunner.parsed!(program, { read_file!: io.read_file!, paths }).map_ok(|_| {}) {
 			Ok({}) => {}
 			Err(message) => {
 				(io.stderr!)("${message}\n")
@@ -4994,6 +5054,7 @@ expect {
 	program : SpecRunner.Program(U64)
 	program = {
 		version: Dom.protocol_version,
+		tasks: [],
 		keys: || [],
 		init: |_| (0, [], []),
 		event: |count, _buf, _work, node, _handler, _payload| {
@@ -5021,6 +5082,7 @@ expect {
 	program : SpecRunner.Program(List(U32))
 	program = {
 		version: Dom.protocol_version,
+		tasks: [],
 		keys: || [],
 		init: |_| ([], [], []),
 		event: |seen, _buf, _work, node, _handler, _payload| (seen.append(node), if (node == 1) SpecRunner.put_u32([0, 18, 1], 3) else [], List.repeat(0, 8)),
@@ -5044,6 +5106,7 @@ expect {
 	program : SpecRunner.Program(U64)
 	program = {
 		version: Dom.protocol_version,
+		tasks: [],
 		keys: || [],
 		init: |_| (0, [], []),
 		event: |count, _buf, _work, node, _handler, _payload| (count + 1, SpecRunner.put_u32([0, 18, 1], if (node == 1) 2 else 1), List.repeat(0, 8)),
@@ -5069,6 +5132,7 @@ expect {
 	program : SpecRunner.Program(List(U32))
 	program = {
 		version: Dom.protocol_version,
+		tasks: [],
 		keys: || [],
 		init: |_| ([], [], []),
 		event: |seen, _buf, _work, id, _handler, _payload| {
@@ -5099,6 +5163,7 @@ expect {
 	program : SpecRunner.Program(U64)
 	program = {
 		version: Dom.protocol_version,
+		tasks: [],
 		keys: || [],
 		init: |_| (0, [], []),
 		event: |seen, _buf, _work, _node, _handler, _payload| (seen + 1, [], List.repeat(0, 8)),
@@ -5246,6 +5311,7 @@ expect {
 	program : SpecRunner.Program(List(Str))
 	program = {
 		version: Dom.protocol_version,
+		tasks: [],
 		keys: || [],
 		init: |_| ([], [], []),
 		event: |seen, _buf, _work, _node, _handler, payload| (seen.append(Str.from_utf8(payload) ?? crash "test payload is UTF-8"), [], List.repeat(0, 8)),
@@ -5276,6 +5342,7 @@ expect {
 	program : SpecRunner.Program({ events : List(Str), files : U64 })
 	program = {
 		version: Dom.protocol_version,
+		tasks: [],
 		keys: || [],
 		init: |_| ({ events: [], files: 0 }, [], []),
 		event: |seen, _buf, _work, _node, _handler, payload| ({ ..seen, events: seen.events.append(Str.from_utf8(payload) ?? crash "test payload is UTF-8") }, [], List.repeat(0, 8)),
@@ -5312,6 +5379,7 @@ expect {
 report_probe : {} -> SpecRunner.Program(List({ id : U32, payload : List(U8) }))
 report_probe = |_| {
 	version: Dom.protocol_version,
+		tasks: [],
 	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0],
 	init: |_| ([], [0, 13, 1, 0, 0, 0, 6, 13, 2, 0, 0, 0, 7], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), [], List.repeat(0, 8)),
@@ -5443,6 +5511,7 @@ expect {
 pointer_probe : {} -> SpecRunner.Program(List({ handler : U32, payload : List(U8) }))
 pointer_probe = |_props| {
 	version: Dom.protocol_version,
+		tasks: [],
 	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0],
 	init: |_| ([], [], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), [], List.repeat(0, 8)),
@@ -6212,4 +6281,130 @@ expect {
 			SpecRunner.attr_value(dom, control, "disabled") == Ok("false") and
 				SpecRunner.attr_value(dom, control, "checked") == Ok("false") and
 					SpecRunner.attr_value(dom, control, "value") == Ok("")
+}
+
+# A spec's names are immutable, transient validation inputs, never app values.
+DeclarationNames : { ports : Dict(Str, SpecRunner.PortKind), tasks : Dict(Str, {}), media : Dict(Str, {}), storage : Dict(Scm.StorageSubject, {}) }
+
+port_kind_text : SpecRunner.PortKind -> Str
+port_kind_text = |kind| match kind {
+	Command => "command"
+	Call => "call"
+	Subscription => "subscription"
+}
+
+declared_need : Scm.Need, DeclarationNames -> Try({}, Str)
+declared_need = |need, names| match need {
+	Story(_) => Ok({})
+	Port({ name, kind }) => match names.ports.get(name) {
+		Err(_) => Err("names port ${JsonOut.quote(name)}, which the program does not declare")
+		Ok(actual) if actual != kind => Err("names port ${JsonOut.quote(name)}, which is a ${port_kind_text(actual)} port; this step requires a ${port_kind_text(kind)} port")
+		Ok(_) => Ok({})
+	}
+	Task(name) => if names.tasks.contains(name) Ok({}) else Err("names worker catalogue entry ${JsonOut.quote(name)}, which the program does not register")
+	Media(query) => if names.media.contains(query) Ok({}) else Err("names media query ${JsonOut.quote(query)}, which the program does not declare")
+	Storage(key) => if names.storage.contains(key) Ok({}) else {
+		store = match key.store {
+			Local => "local-storage"
+			Session => "session-storage"
+		}
+		Err("names ${store} key ${JsonOut.quote(key.key)}, which is neither declared nor seeded or positively established in this spec")
+	}
+}
+
+## Declaration validation reads catalogue names only: every runtime callback
+## in this probe crashes, so accepting a spec cannot accidentally initialize it.
+declaration_probe : {} -> SpecRunner.Program({})
+declaration_probe = |_| {
+	version: Dom.protocol_version,
+	tasks: ["task", "owner", "prepared-task", "empty-owner"],
+	keys: || {
+		ports = [
+			{ name: "command", kind: 1.U8, delivery: 0.U8, bound: 0.U32 },
+			{ name: "call", kind: 2, delivery: 0, bound: 0 },
+			{ name: "subscription", kind: 3, delivery: 2, bound: 1 },
+		]
+		port_bytes = ports.fold(SpecRunner.put_u32([], ports.len().to_u32_wrap()), |bytes, port| SpecRunner.put_u32(SpecRunner.put_str(bytes, port.name).append(port.kind).append(port.delivery), port.bound))
+		[
+			{ tag: 2.U8, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "local") },
+			{ tag: 5, body: port_bytes },
+			{ tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "screen") },
+			{ tag: 10, body: [110, 1] },
+			{ tag: 11, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "session") },
+		].fold([], SpecRunner.put_section)
+	},
+	init: |_| crash "declaration probe unexpectedly initialized",
+	event: |_, _, _, _, _, _| crash "declaration probe unexpectedly entered an event",
+	files: |_, _, _, _, _, _, _| crash "declaration probe unexpectedly staged files",
+	settled: |_| crash "declaration probe unexpectedly inspected state",
+	live: |_| crash "declaration probe unexpectedly inspected requests",
+}
+
+## All declared port shapes, media, storage and worker catalogue names pass
+## before any app code runs, at positive and zero counts alike.
+expect {
+	program = declaration_probe({})
+	[
+		"(expect-port-call 1 \"call\" \"null\")",
+		"(expect-port-sent \"command\" 1 \"null\")",
+		"(expect-port-sends \"command\" 0)",
+		"(expect-port-subscriptions \"subscription\" 0)",
+		"(expect-port-subscription-arg \"subscription\" 1 \"null\")",
+		"(emit-port \"subscription\" \"null\") (close-port \"subscription\") (fail-port \"subscription\" \"lost\")",
+		"(expect-pending-work \"task\" 0) (expect-pending-work \"prepared-task\" 1) (expect-pending-work \"owner\" 0) (expect-pending-work \"empty-owner\" 0)",
+		"(set-media \"screen\" true) (expect-media-subscriptions \"screen\" 0)",
+		"(expect-no-local-storage \"local\") (expect-no-session-storage \"session\")",
+	].all(|steps| SpecRunner.parse_declared(program, "(test \"known\" (steps ${steps}))").is_ok())
+}
+
+## Unknown names and wrong port kinds fail at the original step position;
+## an early zero cannot conceal a misspelling.
+expect {
+	program = declaration_probe({})
+	cases = [
+		{ step: "(expect-pending-work \"missing\" 0)", message: "expect-pending-work names worker catalogue entry \"missing\", which the program does not register" },
+		{ step: "(expect-port-sends \"missing\" 0)", message: "expect-port-sends names port \"missing\", which the program does not declare" },
+		{ step: "(expect-port-subscriptions \"missing\" 0)", message: "expect-port-subscriptions names port \"missing\", which the program does not declare" },
+		{ step: "(expect-port-sends \"subscription\" 0)", message: "expect-port-sends names port \"subscription\", which is a subscription port; this step requires a command port" },
+		{ step: "(expect-port-subscriptions \"command\" 0)", message: "expect-port-subscriptions names port \"command\", which is a command port; this step requires a subscription port" },
+		{ step: "(expect-port-call 1 \"command\" \"null\")", message: "expect-port-call names port \"command\", which is a command port; this step requires a call port" },
+		{ step: "(set-media \"missing\" true)", message: "set-media names media query \"missing\", which the program does not declare" },
+		{ step: "(expect-media-subscriptions \"missing\" 0)", message: "expect-media-subscriptions names media query \"missing\", which the program does not declare" },
+	]
+	cases.all(|case| SpecRunner.parse_declared(program, "(test \"unknown\"\n  (steps\n    ${case.step}))").map_ok(|_| {}) == Err({ pos: { line: 3, column: 5 }, message: case.message }))
+}
+
+## Seeded and positive evidence can establish an undeclared storage key in
+## either order, while the stores remain distinct even for equal key text.
+expect {
+	program = declaration_probe({})
+	accepted = [
+		"(test \"seed\" (setup (local-storage \"extra\" \"value\")) (steps (expect-no-local-storage \"extra\")))",
+		"(test \"seed\" (setup (session-storage \"extra\" \"value\")) (steps (expect-no-session-storage \"extra\")))",
+		"(test \"positive later\" (steps (expect-no-local-storage \"extra\") (expect-local-storage \"extra\" \"value\")))",
+		"(test \"positive first\" (steps (expect-session-storage \"extra\" \"value\") (expect-no-session-storage \"extra\")))",
+		"(test \"elsewhere\" (steps (expect-no-local-storage \"extra\") (storage-elsewhere \"extra\" \"value\")))",
+	]
+	rejected = [
+		"(test \"missing\" (steps (expect-no-local-storage \"extra\")))",
+		"(test \"missing\" (steps (expect-no-session-storage \"extra\")))",
+		"(test \"other store\" (setup (local-storage \"extra\" \"value\")) (steps (expect-no-session-storage \"extra\")))",
+		"(test \"other key\" (steps (expect-local-storage \"other\" \"value\") (expect-no-local-storage \"extra\")))",
+		"(test \"removed\" (steps (storage-elsewhere-removed \"extra\") (expect-no-local-storage \"extra\")))",
+		"(test \"cleared\" (steps (storage-elsewhere-cleared) (expect-no-local-storage \"extra\")))",
+	]
+	accepted.all(|text| SpecRunner.parse_declared(program, text).is_ok()) and rejected.all(|text| SpecRunner.parse_declared(program, text).is_err())
+}
+
+## Setup media is checked at its own position before emit, and recording
+## forwards the catalogue metadata without evaluating an instance callback.
+expect {
+	program = declaration_probe({})
+	known = SpecRunner.parse_declared(program, "(test \"media\" (setup (initial-media \"screen\" true)) (steps (mark-metrics)))")?
+	unknown = SpecRunner.parse_declared(program, "(test \"media\"\n  (setup\n    (initial-media \"missing\" true))\n  (steps (mark-metrics)))")
+	SpecRunner.declared(program, known)?
+	{ unknown: unknown.map_ok(|_| {}), recorded: SpecRunner.recording(program).tasks } == {
+		unknown: Err({ pos: { line: 3, column: 5 }, message: "setup names media query \"missing\", which the program does not declare" }),
+		recorded: ["task", "owner", "prepared-task", "empty-owner"],
+	}
 }

@@ -46,7 +46,7 @@ main! = |_args| {
 	$problems = $problems.concat(file_names!()?)
 
 	Proc.note!("== formatting")
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
+	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "tests/fixtures", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
 	$problems = $problems.concat(check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts")?)
 
 	Proc.note!("== example files")
@@ -106,6 +106,9 @@ main! = |_args| {
 	for broken in Checks.broken_specs {
 		$problems = $problems.concat(Checks.broken_spec!(o, broken)?)
 	}
+
+	Proc.note!("== declaration refusals before execution and emission")
+	$problems = $problems.concat(Checks.declaration_refusals!(o, {})?)
 
 	Proc.note!("== runtime unit tests")
 	$problems = $problems.concat(Targets.runtime_unit!(o)?)

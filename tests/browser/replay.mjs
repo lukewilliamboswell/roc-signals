@@ -862,8 +862,6 @@ const STEPS = {
     return settle(page);
   },
   "set-media": async (page, s, state) => {
-    const declared = await page.evaluate((query) => window.__rt.mediaQueries.includes(query), s.query);
-    if (!declared) throw new Error(`undeclared media query ${JSON.stringify(s.query)}`);
     const values = new Map(state.environment.media);
     if ((values.get(s.query) ?? false) === s.matches) return;
     values.set(s.query, s.matches);

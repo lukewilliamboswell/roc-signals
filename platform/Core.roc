@@ -3174,6 +3174,9 @@ Core := [].{
 		init : Catalogue, List(U8) -> (App(st), List(U8), List(U8)),
 		event : App(st), List(U8), List(U8), U32, U32, List(U8) -> (App(st), List(U8), List(U8)),
 		workers : List(Registration),
+		# Validated once when the static catalogue is authored. This immutable
+		# list contains names only, never a second reference to instance state.
+		worker_names : List(Str),
 		ports : Ports,
 		media : List(Str),
 		zone_days : U16,
@@ -3200,7 +3203,7 @@ Core := [].{
 		with_workers = |p, registrations| {
 			combined = p.workers.concat(registrations)
 			match Core.catalogue(combined) {
-				Ok(_) => { ..p, workers: combined }
+				Ok(names) => { ..p, workers: combined, worker_names: names }
 				Err(message) => crash message
 			}
 		}
@@ -3211,10 +3214,13 @@ Core := [].{
 	## are `work!`, `work_prepare!` and `work_ask!`. `settled` is the settle
 	## check (`Core.settled`) and `live` the requests in flight
 	## (`Core.fx_live`), which only harnesses call.
-	driver : Program(st) -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App(st), List(U8), List(U8)), event : App(st), List(U8), List(U8), U32, U32, List(U8) -> (App(st), List(U8), List(U8)), files : App(st), List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App(st), List(U8), List(U8)), settled : App(st) -> Try({}, { cmds : List(U8), note : Str }), live : App(st) -> List(U32) }
+	## `tasks` contains registered worker catalogue names, including preparation
+	## owners. It is bounded immutable metadata, not executable-job evidence;
+	## reading it initializes no instance and retains no application state.
+	driver : Program(st) -> { version : U32, tasks : List(Str), keys : () -> List(U8), init : List(U8) -> (App(st), List(U8), List(U8)), event : App(st), List(U8), List(U8), U32, U32, List(U8) -> (App(st), List(U8), List(U8)), files : App(st), List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App(st), List(U8), List(U8)), settled : App(st) -> Try({}, { cmds : List(U8), note : Str }), live : App(st) -> List(U32) }
 	driver = |p| {
 		init = p.init
-		workers = p.workers
+		tasks = p.worker_names
 		ports = p.ports
 		media = p.media
 		keys = p.keys
@@ -3222,8 +3228,9 @@ Core := [].{
 		session_keys = p.session_keys
 		{
 			version: p.version,
+			tasks,
 			keys: || put_section(put_section(put_media_table((ports.table)(keys(), ports.decls), media), 10, [zone_days.to_u8_wrap(), zone_days.shr_zf_wrap(8).to_u8_wrap()]), 11, session_keys.fold(put_u32([], session_keys.len().to_u32_wrap()), put_str)),
-			init: |boot| init({ workers: catalogue_names(workers), ports, media }, boot),
+			init: |boot| init({ workers: tasks, ports, media }, boot),
 			event: p.event,
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
 				{ store, root, tx, programs } = inst
@@ -3421,6 +3428,7 @@ Core := [].{
 				}
 			},
 			workers: [],
+			worker_names: [],
 			ports: no_ports,
 			media,
 			zone_days: cfg.zone_days,
@@ -9875,6 +9883,16 @@ expect {
 		"Err(\"contract: with_workers registers more than 64 worker tasks (task \\\"p64\\\" is over the bound)\")",
 	]
 	actual == expected
+}
+
+## Driver metadata lists the whole registered worker catalogue without
+## mounting, including preparation owners and a preparation with no tasks.
+expect {
+	plain = Core.registration("plain", |bytes, _| bytes)
+	prepared = Core.registration_prepared("owner", ["prepared-task"], |_, _| crash "catalogue metadata must not prepare")
+	empty = Core.registration_prepared("empty-owner", [], |_, _| crash "catalogue metadata must not prepare")
+	program = Core.program(|| crash "catalogue metadata must not initialize").with_workers([plain, prepared, empty])
+	Core.driver(program).tasks == ["plain", "owner", "prepared-task", "empty-owner"]
 }
 
 ## A file's spans cover it in order, the last one shorter, and a range's
