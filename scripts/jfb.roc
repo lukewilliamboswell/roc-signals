@@ -5,7 +5,6 @@ app [main!] {
 }
 
 import src/Checks
-import src/Slow
 import src/SpecSuite
 import src/Targets
 
@@ -15,5 +14,5 @@ import src/Targets
 main! = |_args| {
 	o = Checks.options!({ filter: "*" })?
 	SpecSuite.build_web_platform!(o)?
-	Slow.finish!("jfb", Targets.jfb!(o)?)
+	Checks.finish!("jfb", Targets.jfb!(o)?)
 }

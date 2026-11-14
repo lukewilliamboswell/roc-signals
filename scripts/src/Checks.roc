@@ -456,7 +456,67 @@ Checks := [].{
 		{ code, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--check-grammar", "${dir}/grammar.json"], cwd: "." })?
 		if (code == 0) Ok([]) else Ok(["grammar coverage: replay.mjs and the grammar disagree (see above)"])
 	}
+
+	## Add a stage's problems to those a gate has collected. A stage that
+	## cannot run (a tool that will not start, a build that will not link)
+	## aborts the gate with its error instead; the problems collected before
+	## it are printed first, as the `FAIL` lines `finish!` would print, so
+	## one run shows everything it found, not only the abort. The verdict is
+	## unchanged: the gate still fails with the stage's error.
+	gather! : List(Str), Try(List(Str), e) => Try(List(Str), e)
+	gather! = |problems, stage| {
+		found = Checks.hold!(problems, stage)?
+		Ok(problems.concat(found))
+	}
+
+	## Pass on the result of a stage that yields something other than
+	## problems (a build, a prepared input), printing the problems collected
+	## so far, as `gather!` does, if the stage aborts.
+	hold! : List(Str), Try(a, e) => Try(a, e)
+	hold! = |problems, stage| {
+		for line in aborted_lines(problems, stage) {
+			Proc.warn!(line)
+		}
+		stage
+	}
+
+	## End a gate: it passes when it collected no problem, and otherwise
+	## prints each as a `FAIL` line and exits with 1.
+	finish! : Str, List(Str) => Try({}, [Exit(I32)])
+	finish! = |task, problems|
+		if problems.is_empty() {
+			Proc.note!("${task}: passed")
+			Ok({})
+		} else {
+			for line in failure_lines(problems) {
+				Proc.warn!(line)
+			}
+			Err(Exit(1))
+		}
 }
+
+## What a gate prints for the problems it collected: one `FAIL` line each.
+failure_lines : List(Str) -> List(Str)
+failure_lines = |problems| problems.map(|problem| "FAIL ${problem}")
+
+## What a gate prints when a stage aborts it: the problems collected before
+## the stage, as `FAIL` lines, and nothing when it ran or nothing was found.
+aborted_lines : List(Str), Try(a, e) -> List(Str)
+aborted_lines = |problems, stage| match stage {
+	Ok(_) => []
+	Err(_) => failure_lines(problems)
+}
+
+## A stage that runs prints nothing yet, whatever was collected before it;
+## the gate reports at its end.
+expect aborted_lines(["fmt failed"], Ok([])) == []
+
+## An aborting stage prints every problem collected before it, in order, as
+## the end of the gate would have.
+expect aborted_lines(["fmt failed", "size changed"], Err(CommandFailed("zig"))) == ["FAIL fmt failed", "FAIL size changed"]
+
+## An abort with nothing collected prints nothing beside its own error.
+expect aborted_lines([], Err(CommandFailed("zig"))) == []
 
 # Declaration refusals are parse-phase errors, never executed assertion failures.
 # Decode the structured record so quotes and source positions are compared exactly.

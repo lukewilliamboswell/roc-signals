@@ -39,65 +39,67 @@ import src/Sizes
 ## shipping module and development-only scripts, the
 ## js-framework-benchmark check, the release dry run, and the `signals.roc`
 ## tool run end to end from the dry run's copy. The long walks, the soaks
-## and the test apps' fuzz targets are `check-slow`.
+## and the test apps' fuzz targets are `check-slow`. Every problem is
+## printed as a `FAIL` line at the end or, when a stage cannot run and
+## aborts the task, before that stage's error (`Checks.gather!`).
 main! = |_args| {
 	o = Checks.options!({ filter: "*" })?
 	var $problems = []
 
 	Proc.note!("== script pins")
-	$problems = $problems.concat(script_pins!()?)
+	$problems = Checks.gather!($problems, script_pins!())?
 
 	Proc.note!("== file names")
-	$problems = $problems.concat(file_names!()?)
+	$problems = Checks.gather!($problems, file_names!())?
 
 	Proc.note!("== formatting")
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "tests/fixtures", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
-	$problems = $problems.concat(check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts")?)
+	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "tests/fixtures", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check"))?
+	$problems = Checks.gather!($problems, check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts"))?
 
 	Proc.note!("== example files")
-	$problems = $problems.concat(ExampleFiles.check!(o.root)?)
+	$problems = Checks.gather!($problems, ExampleFiles.check!(o.root))?
 
 	Proc.note!("== platform JavaScript sizes")
-	$problems = $problems.concat(Sizes.check_runtime!({ root: o.root, node: o.node })?)
+	$problems = Checks.gather!($problems, Sizes.check_runtime!({ root: o.root, node: o.node }))?
 
-	$problems = $problems.concat(platform_packages!(o.root)?)
+	$problems = Checks.gather!($problems, platform_packages!(o.root))?
 
 	Proc.note!("== API docs")
-	$problems = $problems.concat(ApiDocs.check!({})?)
-	$problems = $problems.concat(ApiDocs.internal_roots!(o)?)
-	$problems = $problems.concat(ApiDocs.bump!(o)?)
+	$problems = Checks.gather!($problems, ApiDocs.check!({}))?
+	$problems = Checks.gather!($problems, ApiDocs.internal_roots!(o))?
+	$problems = Checks.gather!($problems, ApiDocs.bump!(o))?
 
 	Proc.note!("== roc test")
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/main.roc"], cwd: "." }, "roc test platform/main.roc")?)
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/main-fuzz.roc"], cwd: "." }, "roc test platform/main-fuzz.roc")?)
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "cli/main.roc"], cwd: "." }, "roc test cli/main.roc")?)
-	$problems = $problems.concat(Checks.app_expects!(o)?)
-	$problems = $problems.concat(ToolCheck.bundle_current!(o)?)
-	$problems = $problems.concat(check!({ program: o.tooling, args: ["test", "scripts/check_all.roc"], cwd: "." }, "roc-stable test scripts")?)
+	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["test", "platform/main.roc"], cwd: "." }, "roc test platform/main.roc"))?
+	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["test", "platform/main-fuzz.roc"], cwd: "." }, "roc test platform/main-fuzz.roc"))?
+	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["test", "cli/main.roc"], cwd: "." }, "roc test cli/main.roc"))?
+	$problems = Checks.gather!($problems, Checks.app_expects!(o))?
+	$problems = Checks.gather!($problems, ToolCheck.bundle_current!(o))?
+	$problems = Checks.gather!($problems, check!({ program: o.tooling, args: ["test", "scripts/check_all.roc"], cwd: "." }, "roc-stable test scripts"))?
 
 	Proc.note!("== platform inputs")
-	Checks.prepare_platform!(o)?
-	$problems = $problems.concat(Checks.key_contracts!(o)?)
-	$problems = $problems.concat(check!({ program: o.zig, args: ["test", "platform/host/resources.zig"], cwd: "." }, "zig test platform/host/resources.zig")?)
-	$problems = $problems.concat(check!({ program: o.zig, args: ["test", "platform/host/dbg.zig"], cwd: "." }, "zig test platform/host/dbg.zig")?)
-	$problems = $problems.concat(cross_links!(o)?)
-	$problems = $problems.concat(fuzz_smoke!(o)?)
+	Checks.hold!($problems, Checks.prepare_platform!(o))?
+	$problems = Checks.gather!($problems, Checks.key_contracts!(o))?
+	$problems = Checks.gather!($problems, check!({ program: o.zig, args: ["test", "platform/host/resources.zig"], cwd: "." }, "zig test platform/host/resources.zig"))?
+	$problems = Checks.gather!($problems, check!({ program: o.zig, args: ["test", "platform/host/dbg.zig"], cwd: "." }, "zig test platform/host/dbg.zig"))?
+	$problems = Checks.gather!($problems, cross_links!(o))?
+	$problems = Checks.gather!($problems, fuzz_smoke!(o))?
 
 	Proc.note!("== docs samples")
-	$problems = $problems.concat(DocSamples.check!(o)?)
+	$problems = Checks.gather!($problems, DocSamples.check!(o))?
 
 	Proc.note!("== specs")
 	var $native = SpecSuite.empty_tally
 	var $browser = SpecSuite.empty_tally
 	var $kanban = { runner: "" }
-	SpecSuite.build_web_platform!(o)?
+	Checks.hold!($problems, SpecSuite.build_web_platform!(o))?
 	Proc.note!("== example module and debug file sizes (reported)")
-	$problems = $problems.concat(Sizes.report!(o)?)
+	$problems = Checks.gather!($problems, Sizes.report!(o))?
 	# Every spec-bearing app is built for the browser too, from the one list in
 	# SpecSuite, with the two test apps that have contract tests and no specs.
-	SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.spec_apps.concat(["tests/apps/effects", "tests/apps/controls"]))?
+	Checks.hold!($problems, SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.spec_apps.concat(["tests/apps/effects", "tests/apps/controls"])))?
 	for example in SpecSuite.spec_apps {
-		r = Checks.run_app!(o, example, Bool.True)?
+		r = Checks.hold!($problems.concat($native.problems).concat($browser.problems), Checks.run_app!(o, example, Bool.True))?
 		$native = Checks.add($native, r.native)
 		$browser = Checks.add($browser, r.browser)
 		if example == "kanban-board" {
@@ -107,49 +109,41 @@ main! = |_args| {
 	$problems = $problems.concat($native.problems).concat($browser.problems)
 
 	Proc.note!("== native lifetime contracts")
-	$problems = $problems.concat(Targets.native_contracts!(o)?)
+	$problems = Checks.gather!($problems, Targets.native_contracts!(o))?
 
 	Proc.note!("== short walks")
-	$problems = $problems.concat(Slow.short_walks!(o)?)
+	$problems = Checks.gather!($problems, Slow.short_walks!(o))?
 
 	Proc.note!("== grammar coverage")
-	$problems = $problems.concat(Checks.grammar!(o, $kanban.runner)?)
+	$problems = Checks.gather!($problems, Checks.grammar!(o, $kanban.runner))?
 
 	Proc.note!("== broken-spec self-check")
 	for broken in Checks.broken_specs {
-		$problems = $problems.concat(Checks.broken_spec!(o, broken)?)
+		$problems = Checks.gather!($problems, Checks.broken_spec!(o, broken))?
 	}
 
 	Proc.note!("== declaration refusals before execution and emission")
-	$problems = $problems.concat(Checks.declaration_refusals!(o, {})?)
+	$problems = Checks.gather!($problems, Checks.declaration_refusals!(o, {}))?
 
 	Proc.note!("== runtime unit tests")
-	$problems = $problems.concat(Targets.runtime_unit!(o)?)
+	$problems = Checks.gather!($problems, Targets.runtime_unit!(o))?
 
 	Proc.note!("== runtime contracts in Chrome")
-	$problems = $problems.concat(Targets.browser_contracts!(o, "${o.build_dir}/wasm/conduit/app.wasm")?)
+	$problems = Checks.gather!($problems, Targets.browser_contracts!(o, "${o.build_dir}/wasm/conduit/app.wasm"))?
 
 	Proc.note!("== js-framework-benchmark")
-	$problems = $problems.concat(Targets.jfb!(o)?)
+	$problems = Checks.gather!($problems, Targets.jfb!(o))?
 
 	Proc.note!("== release dry run")
-	$problems = $problems.concat(Release.build!(o, "0.0.1-dryrun", "${o.build_dir}/release")?)
+	$problems = Checks.gather!($problems, Release.build!(o, "0.0.1-dryrun", "${o.build_dir}/release"))?
 
 	Proc.note!("== signals.roc")
-	$problems = $problems.concat(ToolCheck.run!(o)?)
+	$problems = Checks.gather!($problems, ToolCheck.run!(o))?
 
 	Proc.note!("")
 	Proc.note!(SpecSuite.summary("all apps", Native, $native))
 	Proc.note!(SpecSuite.summary("all apps", Browser, $browser))
-	if $problems.is_empty() {
-		Proc.note!("check: passed")
-		Ok({})
-	} else {
-		for p in $problems {
-			Proc.warn!("FAIL ${p}")
-		}
-		Err(Exit(1))
-	}
+	Checks.finish!("check", $problems)
 }
 
 ## Run a check; a failure is a reported problem, not an abort.

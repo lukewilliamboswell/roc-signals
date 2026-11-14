@@ -41,11 +41,8 @@ main! = |raw_args| {
 	SpecSuite.build!(o, apps, if ($browser) apps else [])?
 	var $problems = []
 	for example in apps {
-		r = Checks.run_app!(o, example, $browser)?
+		r = Checks.hold!($problems, Checks.run_app!(o, example, $browser))?
 		$problems = $problems.concat(r.native.problems).concat(r.browser.problems)
 	}
-	for p in $problems {
-		Proc.warn!("FAIL ${p}")
-	}
-	if ($problems.is_empty()) Ok({}) else Err(Exit(1))
+	Checks.finish!("spec", $problems)
 }

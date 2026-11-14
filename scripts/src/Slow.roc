@@ -151,30 +151,18 @@ Slow := [].{
 		Proc.note!("== fuzz targets")
 		var $problems = Targets.fuzz_check_all!(o, Targets.fuzz_targets)?
 		Proc.note!("== walks")
-		$problems = $problems.concat(Slow.walks!(o)?)
+		$problems = Checks.gather!($problems, Slow.walks!(o))?
 		Proc.note!("== native soaks")
-		$problems = $problems.concat(Slow.native_soak!(o)?)
+		$problems = Checks.gather!($problems, Slow.native_soak!(o))?
 		if SpecSuite.has_broken_optimizer(o.nightly) {
 			Proc.note!("SKIP shipping-build browser soaks (${SpecSuite.optimizer_issue}): ${o.nightly} cannot build the optimized artifacts; a dev build cannot establish shipping allocation plateaus. Restore on the next nightly.")
 		} else {
-			SpecSuite.build_with!(o, [], Slow.browser_soak_apps, "size")?
+			Checks.hold!($problems, SpecSuite.build_with!(o, [], Slow.browser_soak_apps, "size"))?
 			for example in Slow.browser_soak_apps {
 				Proc.note!("== browser soak ${example}")
-				$problems = $problems.concat(Targets.browser_soak!(o, example, SpecSuite.wasm_of(o, example))?)
+				$problems = Checks.gather!($problems, Targets.browser_soak!(o, example, SpecSuite.wasm_of(o, example)))?
 			}
 		}
 		Ok($problems)
 	}
-
-	finish! : Str, List(Str) => Try({}, [Exit(I32)])
-	finish! = |task, problems|
-		if problems.is_empty() {
-			Proc.note!("${task}: passed")
-			Ok({})
-		} else {
-			for p in problems {
-				Proc.warn!("FAIL ${p}")
-			}
-			Err(Exit(1))
-		}
 }

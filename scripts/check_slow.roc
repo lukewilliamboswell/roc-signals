@@ -15,5 +15,5 @@ import src/Slow
 main! = |_args| {
 	o = Checks.options!({ filter: "*" })?
 	problems = Slow.soak!(o)?
-	Slow.finish!("check-slow", problems)
+	Checks.finish!("check-slow", problems)
 }

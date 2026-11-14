@@ -34,12 +34,9 @@ main! = |raw_args| {
 	SpecSuite.build_web_platform!(o)?
 	SpecSuite.build!(o, [], SpecSuite.apps)?
 	problems = Release.build!(o, version, out)?
-	site = ApiDocs.build!(o, version)?
-	Proc.run!({ program: "zip", args: ["-q", "-r", "-X", "${out}/roc-signals-docs-${version}.zip", "."], cwd: site })?
-	for p in problems {
-		Proc.warn!("FAIL ${p}")
-	}
-	if (problems.is_empty()) Ok({}) else Err(Exit(1))
+	site = Checks.hold!(problems, ApiDocs.build!(o, version))?
+	Checks.hold!(problems, Proc.run!({ program: "zip", args: ["-q", "-r", "-X", "${out}/roc-signals-docs-${version}.zip", "."], cwd: site }))?
+	Checks.finish!("release", problems)
 }
 
 ## The value after `name` in the arguments.

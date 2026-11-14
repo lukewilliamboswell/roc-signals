@@ -24,16 +24,9 @@ main! = |raw_args| {
 	root = Path.display(Env.cwd!()?)
 	var $problems = Sizes.check_runtime!({ root, node: "node" })?
 	if args.is_empty() {
-		o = Checks.options!({ filter: "*" })?
-		SpecSuite.build_web_platform!(o)?
-		$problems = $problems.concat(Sizes.report!(o)?)
+		o = Checks.hold!($problems, Checks.options!({ filter: "*" }))?
+		Checks.hold!($problems, SpecSuite.build_web_platform!(o))?
+		$problems = Checks.gather!($problems, Sizes.report!(o))?
 	}
-	for problem in $problems {
-		Proc.warn!("FAIL ${problem}")
-	}
-	if $problems.is_empty() {
-		Ok({})
-	} else {
-		Err(Exit(1))
-	}
+	Checks.finish!("sizes", $problems)
 }

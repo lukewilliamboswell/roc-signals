@@ -8,6 +8,7 @@ import cli.OsStr
 import cli.Path
 import src/Checks
 import src/Proc
+import src/SpecSuite
 import src/Targets
 
 ## The `fuzz` task, a campaign: `fuzz.roc -- [--time SECONDS] [--timeout
@@ -52,20 +53,23 @@ main! = |raw_args| {
 	Targets.build_fuzz_all!(o, selected)?
 	var $failed = []
 	for t in selected {
-		out = "${o.root}/.fuzz-out/${t.name}"
-		Path.create_all!(Path.utf8("${out}/corpus"))?
-		report = "${out}/report"
-		if Path.exists!(Path.utf8(report))? {
-			Path.delete_all!(Path.utf8(report))?
-		}
-		Proc.note!("== fuzz ${t.name} (${$time} s)")
-		code = Proc.status!({ program: Targets.exe_of(o, t), args: ["explore", "${out}/corpus", "--time=${$time}", "--timeout=${$timeout}", "--report-dir=${report}", "--print-final-stats"], cwd: out })?
-		if code != 0 {
-			$failed = $failed.append("fuzz ${t.name}: exited with ${code.to_str()}; see ${report}")
-		}
+		$failed = Checks.gather!($failed, explore!(o, t, { time: $time, timeout: $timeout }))?
 	}
-	for f in $failed {
-		Proc.warn!("FAIL ${f}")
+	Checks.finish!("fuzz", $failed)
+}
+
+## Explore one target from its kept corpus into a fresh report. A target
+## that finds a failure is a problem; one that cannot be started aborts the
+## campaign, after the findings of the targets before it are printed.
+explore! : SpecSuite.Options, Targets.Fuzz, { time : Str, timeout : Str } => Try(List(Str), _)
+explore! = |o, t, { time, timeout }| {
+	out = "${o.root}/.fuzz-out/${t.name}"
+	Path.create_all!(Path.utf8("${out}/corpus"))?
+	report = "${out}/report"
+	if Path.exists!(Path.utf8(report))? {
+		Path.delete_all!(Path.utf8(report))?
 	}
-	if ($failed.is_empty()) Ok({}) else Err(Exit(1))
+	Proc.note!("== fuzz ${t.name} (${time} s)")
+	code = Proc.status!({ program: Targets.exe_of(o, t), args: ["explore", "${out}/corpus", "--time=${time}", "--timeout=${timeout}", "--report-dir=${report}", "--print-final-stats"], cwd: out })?
+	Ok(if (code == 0) [] else ["fuzz ${t.name}: exited with ${code.to_str()}; see ${report}"])
 }
