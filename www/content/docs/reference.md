@@ -244,9 +244,17 @@ names newer than that vocabulary. A name alone does not supply a namespace
 or promise that its children obey the element's content model.
 
 Attribute literals `class` and `data-testid` point to `class`/`class_s` and
-`test_id`/`test_id_s`. `EventType` accepts any nonempty computed type, including
-custom events. Literals reject retired suffixes and text key handlers with the
-typed builder to use; computed types still face those checks at mount.
+`test_id`/`test_id_s`. An HTML element folds an attribute name's ASCII case,
+so these checks and the ARIA check read the folded name: `"CLASS"` and
+`"ARIA-LABLE"` are refused like `"class"` and `"aria-lable"`, and a correct ARIA
+name in another case, such as `"aria-Label"`, is refused with its lowercase
+spelling, which SVG and MathML elements also read. Other names keep their
+case (`viewBox`). An event-handler attribute such as `onclick` is not refused
+by the constructors; a markup literal refuses it.
+
+`EventType` accepts any nonempty computed type, including custom events.
+Literals reject retired suffixes and text key handlers with the typed
+builder to use; computed types still face those checks at mount.
 
 `Method` checks HTTP-token grammar and refuses CONNECT, TRACE and TRACK in any
 ASCII case. A literal containing lowercase is accepted only for the six methods

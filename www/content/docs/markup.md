@@ -27,12 +27,14 @@ whole quoted value of an attribute. Its future values are text too; they
 are not reparsed as markup or checked against the fixed attribute grammar.
 Use typed constructors when a value needs that validation.
 
-Event-handler attributes and holes in Boolean attributes are refused. Use
-ordinary handlers and `Html.boolean` or typed controls. A literal also
-refuses an attribute claimed by an engine property on that element, such
-as `input.value`, `input.checked` or `option.value`, even when its value is
-fixed. Use `Engine.prop`, `Engine.prop_s` or a typed control on a constructor
-to choose controlled behavior explicitly.
+Event-handler attributes and holes in Boolean attributes are refused in a
+literal. Use ordinary handlers and `Html.boolean` or typed controls. The
+constructors do not refuse them: `Engine.attr("onclick", text)` sets the
+attribute as written. A literal also refuses an attribute claimed by an
+engine property on that element, such as `input.value`, `input.checked` or
+`option.value`, even when its value is fixed. Use `Engine.prop`,
+`Engine.prop_s` or a typed control on a constructor to choose controlled
+behavior explicitly.
 
 Comments inside the root retain their data. Comments beside the root,
 document declarations and processing instructions are refused. Indentation

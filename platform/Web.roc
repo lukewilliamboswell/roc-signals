@@ -101,20 +101,34 @@ Web := [].{
 		from_str = |spelling| if (is_attribute(spelling)) Ok(AttrName.({ local: spelling, namespace: None, prefix: Unprefixed, exact: False })) else Err(NotAnAttribute("${Str.inspect(spelling)} is not a valid attribute local name"))
 
 		## Literals check aria-* names against the parser's ARIA vocabulary and
-		## direct class and test-id names to their dedicated builders. from_str
-		## keeps grammar-only access to explicitly computed names.
+		## direct class and test-id names to their dedicated builders. An HTML
+		## element folds an attribute name's ASCII case, so these rules apply
+		## to the folded spelling: `"CLASS"` is `class` and `"ARIA-LABLE"` is a
+		## misspelt ARIA name. A correct ARIA name in another case is refused
+		## with its lowercase spelling, because SVG and MathML elements keep the
+		## case and read no ARIA attribute from it; the literal does not know
+		## its element. Other names keep their case (`viewBox`). from_str keeps
+		## grammar-only access to explicitly computed names. Event-handler
+		## names such as `onclick` are not refused here.
 		from_quote : Str -> Try(AttrName, [BadQuotedBytes(Str)])
 		from_quote = |spelling| {
-			if spelling == "class" {
-				return Err(BadQuotedBytes("set `class` with Engine.class or Engine.class_s"))
+			folded = Spelling.ascii_lower(spelling)
+			read_as = if (folded == spelling) "" else "an HTML element reads ${Str.inspect(spelling)} as ${Str.inspect(folded)}: "
+			if folded == "class" {
+				return Err(BadQuotedBytes("${read_as}set `class` with Engine.class or Engine.class_s"))
 			}
-			if spelling == "data-testid" {
-				return Err(BadQuotedBytes("set `data-testid` with Engine.test_id or Engine.test_id_s"))
+			if folded == "data-testid" {
+				return Err(BadQuotedBytes("${read_as}set `data-testid` with Engine.test_id or Engine.test_id_s"))
 			}
 			name = AttrName.from_str(spelling).map_err(|NotAnAttribute(note)| BadQuotedBytes(note))?
-			if spelling.starts_with("aria-") and !MarkupFacts.aria_attribute_names.contains(spelling) {
-				hint = Spelling.suggest(spelling, MarkupFacts.aria_attribute_names)
-				return Err(BadQuotedBytes("${Str.inspect(spelling)} is not an ARIA attribute in the pinned roc-parser vocabulary;${hint} one newer than the pinned vocabulary is written Web.AttrName.from_str(${Str.inspect(spelling)})"))
+			if folded.starts_with("aria-") {
+				if !MarkupFacts.aria_attribute_names.contains(folded) {
+					hint = Spelling.suggest(spelling, MarkupFacts.aria_attribute_names)
+					return Err(BadQuotedBytes("${Str.inspect(spelling)} is not an ARIA attribute in the pinned roc-parser vocabulary;${hint} one newer than the pinned vocabulary is written Web.AttrName.from_str(${Str.inspect(spelling)})"))
+				}
+				if folded != spelling {
+					return Err(BadQuotedBytes("write ${Str.inspect(folded)}: ARIA attribute names are lowercase, and an SVG or MathML element keeps ${Str.inspect(spelling)} as written, so no ARIA attribute is set"))
+				}
 			}
 			Ok(name)
 		}
@@ -302,6 +316,15 @@ expect {
 	["dvi", "geolocation", "center", "math", "lineargradient"].all(|name| Web.Tag.from_quote(name).is_err() and Web.Tag.from_str(name).is_ok()) and
 		Web.AttrName.from_quote("aria-lable").is_err() and Web.AttrName.from_str("aria-lable").is_ok() and
 			Web.AttrName.from_str("aria-future-proposal").is_ok() and Web.AttrName.from_quote("data-future-proposal").is_ok()
+}
+
+## An HTML element folds attribute case, so literal rules see the folded name.
+## Mixed-case ARIA names point to their lowercase spelling, explicit text keeps
+## its grammar-only door, and other foreign names keep their exact case.
+expect {
+	["ARIA-LABLE", "CLASS", "Class", "DATA-TESTID", "aria-Label", "ARIA-LABEL"].all(|name| Web.AttrName.from_quote(name).is_err() and Web.AttrName.from_str(name).is_ok()) and
+		Web.AttrName.from_quote("aria-Label") == Err(BadQuotedBytes("write \"aria-label\": ARIA attribute names are lowercase, and an SVG or MathML element keeps \"aria-Label\" as written, so no ARIA attribute is set")) and
+			Web.AttrName.from_quote("viewBox").is_ok() and Web.AttrName.from_quote("aria-label").is_ok() and Web.AttrName.from_quote("onclick").is_ok()
 }
 
 ## Suggestions use the threshold, case folding, initial-letter and lexical
