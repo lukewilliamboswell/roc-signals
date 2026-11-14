@@ -23,6 +23,7 @@ import src/Sizes
 
 ## The `check` task, the per-pull-request gate: the script pins,
 ## formatting, every file `www/data/examples.toml` names present, every
+## fuzz target in the tree listed in `Targets.fuzz_targets`, every
 ## public `Engine` and `Html` symbol documented, `roc test` (the platform,
 ## the engine package, the tool, the scripts, and every example's and test
 ## app's `expect`s),
@@ -59,6 +60,9 @@ main! = |_args| {
 
 	Proc.note!("== example files")
 	$problems = Checks.gather!($problems, ExampleFiles.check!(o.root))?
+
+	Proc.note!("== fuzz target registry")
+	$problems = Checks.gather!($problems, Targets.registry!())?
 
 	Proc.note!("== platform JavaScript sizes")
 	$problems = Checks.gather!($problems, Sizes.check_runtime!({ root: o.root, node: o.node }))?

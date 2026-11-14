@@ -49,6 +49,72 @@ Targets := [].{
 		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc" },
 	]
 
+	## The directories a fuzz target may live in.
+	target_dirs : List(Str)
+	target_dirs = ["fuzz", "examples", "tests"]
+
+	## Whether a Roc file is a fuzz target, from its path and its text: a
+	## `main.roc` one directory below `fuzz/`, a file named `fuzz-<subject>.roc`,
+	## or any app whose header names a roc-fuzz release as its platform.
+	is_target : Str, Str -> Bool
+	is_target = |path, text| {
+		parts = path.split_on("/")
+		name = parts.last() ?? path
+		under_fuzz = parts.len() == 3 and parts.first() == Ok("fuzz") and name == "main.roc"
+		header = text.split_on("\n").take_first(4)
+		under_fuzz or (name.starts_with("fuzz-") and name.ends_with(".roc")) or header.any(|line| line.contains("/roc-fuzz/releases/download/"))
+	}
+
+	## A fuzz target in the tree that no task builds or replays, with the
+	## reason, which `check` prints as a `SKIP` line every time it runs. This
+	## is the only way to leave a target out: a target file that is neither
+	## here nor in `fuzz_targets` fails `check`.
+	Skipped : { main : Str, reason : Str }
+
+	fuzz_skipped : List(Skipped)
+	fuzz_skipped = []
+
+	## The `SKIP` line printed for a target left out.
+	skip_line : Skipped -> Str
+	skip_line = |{ main, reason }| "SKIP fuzz target ${main}: ${reason}"
+
+	## Every way the registry and the tree disagree: a target file neither
+	## listed nor skipped, a listed or skipped file that is not a target in
+	## the tree, a file both listed and skipped, a skip without a reason, and
+	## any name or file listed twice. Any other task that accounts for fuzz
+	## targets uses this same comparison.
+	registry_problems : List(Fuzz), List(Skipped), List(Str) -> List(Str)
+	registry_problems = |listed, skipped, found| {
+		mains = listed.map(|t| t.main)
+		names = listed.map(|t| t.name)
+		skips = skipped.map(|t| t.main)
+		known = mains.concat(skips)
+		unlisted = found.keep_if(|f| !known.contains(f)).map(|f| "${f} is a fuzz target that neither Targets.fuzz_targets lists nor Targets.fuzz_skipped skips with a reason, so no task builds or replays it")
+		gone = known.keep_if(|m| !found.contains(m)).map(|m| "the Targets registry names ${m}, which is not a fuzz target in the tree")
+		both = skips.keep_if(|m| mains.contains(m)).map(|m| "${m} is both listed in Targets.fuzz_targets and skipped in Targets.fuzz_skipped")
+		reasonless = skipped.keep_if(|t| t.reason.trim() == "").map(|t| "Targets.fuzz_skipped skips ${t.main} without a reason")
+		twice = |list, what| list.keep_if(|x| list.keep_if(|y| y == x).len() > 1).fold([], |acc, x| if (acc.contains(x)) acc else acc.append(x)).map(|x| "the Targets registry names the ${what} ${x} more than once")
+		unlisted.concat(gone).concat(both).concat(reasonless).concat(twice(names, "name")).concat(twice(known, "file"))
+	}
+
+	## The `check` stage over the tree: every fuzz target is listed or skipped
+	## with a printed reason, and everything the registry names exists.
+	registry! : () => Try(List(Str), _)
+	registry! = || {
+		var $found = []
+		for dir in Targets.target_dirs {
+			for file in SpecSuite.files_under!(dir, ".roc")? {
+				if Targets.is_target(file, Path.read_utf8!(Path.utf8(file))?) {
+					$found = $found.append(file)
+				}
+			}
+		}
+		for skip in Targets.fuzz_skipped {
+			Proc.note!(Targets.skip_line(skip))
+		}
+		Ok(Targets.registry_problems(Targets.fuzz_targets, Targets.fuzz_skipped, $found))
+	}
+
 	## Where a target's executable is built.
 	exe_of : SpecSuite.Options, Fuzz -> Str
 	exe_of = |o, { name, .. }| "${o.build_dir}/fuzz/${name}/target"
@@ -377,3 +443,30 @@ Targets := [].{
 		Ok(if (code == 0) [] else ["jfb-check failed (exit ${code.to_str()})"])
 	}
 }
+
+## A target in the tree that is not listed is named, and so is a listed one
+## that is gone.
+expect Targets.registry_problems([{ name: "a", main: "fuzz/a/main.roc" }, { name: "b", main: "examples/b/fuzz-b.roc" }], [], ["examples/b/fuzz-b.roc", "tests/apps/c/fuzz-c.roc"]) == ["tests/apps/c/fuzz-c.roc is a fuzz target that neither Targets.fuzz_targets lists nor Targets.fuzz_skipped skips with a reason, so no task builds or replays it", "the Targets registry names fuzz/a/main.roc, which is not a fuzz target in the tree"]
+
+## Equal lists in any order agree, and a skip with a reason accounts for its
+## target.
+expect Targets.registry_problems([{ name: "a", main: "fuzz/a/main.roc" }], [{ main: "examples/b/fuzz-b.roc", reason: "needs a browser" }], ["examples/b/fuzz-b.roc", "fuzz/a/main.roc"]) == []
+
+## A skip without a reason, a file both listed and skipped, and a name or file
+## named twice are each reported once.
+expect Targets.registry_problems([{ name: "a", main: "fuzz/a/main.roc" }, { name: "a", main: "fuzz/a/main.roc" }], [{ main: "fuzz/a/main.roc", reason: " " }], ["fuzz/a/main.roc"]) == ["fuzz/a/main.roc is both listed in Targets.fuzz_targets and skipped in Targets.fuzz_skipped", "Targets.fuzz_skipped skips fuzz/a/main.roc without a reason", "the Targets registry names the name a more than once", "the Targets registry names the file fuzz/a/main.roc more than once"]
+
+## A skipped target is printed with its reason.
+expect Targets.skip_line({ main: "fuzz/a/main.roc", reason: "needs a browser" }) == "SKIP fuzz target fuzz/a/main.roc: needs a browser"
+
+## A target is known by its place, its name or its platform; a module beside
+## it, and a main deeper under `fuzz/`, are not targets by place alone.
+expect [
+	Targets.is_target("fuzz/z/main.roc", ""),
+	Targets.is_target("examples/x/fuzz-y.roc", ""),
+	Targets.is_target("tests/apps/x/fuzz-y.roc", ""),
+	Targets.is_target("examples/x/Rules.roc", "app [target] {\n\tfz: platform \"https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.2/h.tar.zst\",\n}\n"),
+	Targets.is_target("fuzz/wire/Saved.roc", "module [saved]\n"),
+	Targets.is_target("fuzz/z/lib/main.roc", ""),
+	Targets.is_target("examples/x/main.roc", "app [main] { pf: platform \"../../platform/main.roc\" }\n"),
+] == [True, True, True, True, False, False, False]
