@@ -38,7 +38,12 @@ WorkerCodec := [].{
 	Enc :: EncBody
 
 	## The writer and the files met so far, behind `Enc`.
-	EncBody := { writer : Cbor.Writer, files : List(Engine.File) }
+	EncBody := { writer : Cbor.Writer, held : Held }
+
+	## What an encode carries beside its writer: the files met so far, how
+	## many containers enclose the item being written, and whether a
+	## container was met at the nesting bound (`max_nesting`).
+	Held : { files : List(Engine.File), depth : U64, over : Bool }
 
 	## An open list, tuple or tag's accumulator. Its add callback creates an
 	## Enc for each value. These are different states: a container cannot be
@@ -46,7 +51,7 @@ WorkerCodec := [].{
 	Items :: ItemsBody
 
 	## The open container and the files met so far, behind `Items`.
-	ItemsBody := { container : Cbor.Container, files : List(Engine.File) }
+	ItemsBody := { container : Cbor.Container, held : Held }
 
 	## The opaque accumulator supplied to a record's field callback.
 	Fields : Items
@@ -90,7 +95,7 @@ WorkerCodec := [].{
 
 		## Write one Str item while moving the accompanying files unchanged.
 		encode_str : Str, Enc -> Try(Enc, [])
-		encode_str = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_str(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_str = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_str(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one Str using the checked cursor and this payload's strict rules.
 		parse_str : Format, State -> Try({ value : Str, rest : State }, Error)
@@ -98,7 +103,7 @@ WorkerCodec := [].{
 
 		## Write one Bool item while moving the accompanying files unchanged.
 		encode_bool : Bool, Enc -> Try(Enc, [])
-		encode_bool = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_bool(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_bool = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_bool(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one Bool using the checked cursor and this payload's strict rules.
 		parse_bool : Format, State -> Try({ value : Bool, rest : State }, Error)
@@ -106,7 +111,7 @@ WorkerCodec := [].{
 
 		## Write one U8 item while moving the accompanying files unchanged.
 		encode_u8 : U8, Enc -> Try(Enc, [])
-		encode_u8 = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_u8(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_u8 = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_u8(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one U8 using the checked cursor and this payload's strict rules.
 		parse_u8 : Format, State -> Try({ value : U8, rest : State }, Error)
@@ -114,7 +119,7 @@ WorkerCodec := [].{
 
 		## Write one I8 item while moving the accompanying files unchanged.
 		encode_i8 : I8, Enc -> Try(Enc, [])
-		encode_i8 = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_i8(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_i8 = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_i8(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one I8 using the checked cursor and this payload's strict rules.
 		parse_i8 : Format, State -> Try({ value : I8, rest : State }, Error)
@@ -122,7 +127,7 @@ WorkerCodec := [].{
 
 		## Write one U16 item while moving the accompanying files unchanged.
 		encode_u16 : U16, Enc -> Try(Enc, [])
-		encode_u16 = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_u16(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_u16 = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_u16(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one U16 using the checked cursor and this payload's strict rules.
 		parse_u16 : Format, State -> Try({ value : U16, rest : State }, Error)
@@ -130,7 +135,7 @@ WorkerCodec := [].{
 
 		## Write one I16 item while moving the accompanying files unchanged.
 		encode_i16 : I16, Enc -> Try(Enc, [])
-		encode_i16 = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_i16(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_i16 = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_i16(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one I16 using the checked cursor and this payload's strict rules.
 		parse_i16 : Format, State -> Try({ value : I16, rest : State }, Error)
@@ -138,7 +143,7 @@ WorkerCodec := [].{
 
 		## Write one U32 item while moving the accompanying files unchanged.
 		encode_u32 : U32, Enc -> Try(Enc, [])
-		encode_u32 = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_u32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_u32 = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_u32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one U32 using the checked cursor and this payload's strict rules.
 		parse_u32 : Format, State -> Try({ value : U32, rest : State }, Error)
@@ -146,7 +151,7 @@ WorkerCodec := [].{
 
 		## Write one I32 item while moving the accompanying files unchanged.
 		encode_i32 : I32, Enc -> Try(Enc, [])
-		encode_i32 = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_i32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_i32 = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_i32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one I32 using the checked cursor and this payload's strict rules.
 		parse_i32 : Format, State -> Try({ value : I32, rest : State }, Error)
@@ -154,7 +159,7 @@ WorkerCodec := [].{
 
 		## Write one U64 item while moving the accompanying files unchanged.
 		encode_u64 : U64, Enc -> Try(Enc, [])
-		encode_u64 = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_u64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_u64 = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_u64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one U64 using the checked cursor and this payload's strict rules.
 		parse_u64 : Format, State -> Try({ value : U64, rest : State }, Error)
@@ -162,7 +167,7 @@ WorkerCodec := [].{
 
 		## Write one I64 item while moving the accompanying files unchanged.
 		encode_i64 : I64, Enc -> Try(Enc, [])
-		encode_i64 = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_i64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_i64 = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_i64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one I64 using the checked cursor and this payload's strict rules.
 		parse_i64 : Format, State -> Try({ value : I64, rest : State }, Error)
@@ -170,7 +175,7 @@ WorkerCodec := [].{
 
 		## Write one U128 item while moving the accompanying files unchanged.
 		encode_u128 : U128, Enc -> Try(Enc, [])
-		encode_u128 = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_u128(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_u128 = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_u128(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one U128 using the checked cursor and this payload's strict rules.
 		parse_u128 : Format, State -> Try({ value : U128, rest : State }, Error)
@@ -178,7 +183,7 @@ WorkerCodec := [].{
 
 		## Write one I128 item while moving the accompanying files unchanged.
 		encode_i128 : I128, Enc -> Try(Enc, [])
-		encode_i128 = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_i128(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_i128 = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_i128(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one I128 using the checked cursor and this payload's strict rules.
 		parse_i128 : Format, State -> Try({ value : I128, rest : State }, Error)
@@ -186,7 +191,7 @@ WorkerCodec := [].{
 
 		## Write one F32 item while moving the accompanying files unchanged.
 		encode_f32 : F32, Enc -> Try(Enc, [])
-		encode_f32 = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_f32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_f32 = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_f32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one F32 using the checked cursor and this payload's strict rules.
 		parse_f32 : Format, State -> Try({ value : F32, rest : State }, Error)
@@ -194,7 +199,7 @@ WorkerCodec := [].{
 
 		## Write one F64 item while moving the accompanying files unchanged.
 		encode_f64 : F64, Enc -> Try(Enc, [])
-		encode_f64 = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_f64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_f64 = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_f64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one F64 using the checked cursor and this payload's strict rules.
 		parse_f64 : Format, State -> Try({ value : F64, rest : State }, Error)
@@ -202,7 +207,7 @@ WorkerCodec := [].{
 
 		## Write one Dec item while moving the accompanying files unchanged.
 		encode_dec : Dec, Enc -> Try(Enc, [])
-		encode_dec = |value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_dec(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_dec = |value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_dec(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read one Dec using the checked cursor and this payload's strict rules.
 		parse_dec : Format, State -> Try({ value : Dec, rest : State }, Error)
@@ -211,63 +216,88 @@ WorkerCodec := [].{
 		## Let CBOR open a list and count each callback item. The file list moves
 		## through each callback with its writer, including nested containers.
 		encode_list : Enc, U64, (Items, (Items, (Enc -> Try(Enc, err)) -> Try(Items, err)) -> Try(Items, err)) -> Try(Enc, err)
-		encode_list = |Enc.(EncBody.({ writer: output, files })), count, write| Cbor.encode_list_carry(
-			{ writer: output, state: files },
-			count,
-			|items, add| write(
-				Items.(ItemsBody.{ container: items.container, files: items.state }),
-				|Items.(ItemsBody.({ container: item_container, files: item_files })), write_value| add({ container: item_container, state: item_files }, |entry| write_value(Enc.(EncBody.{ writer: entry.writer, files: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, files: done_files }))| { writer: done_writer, state: done_files })).map_ok(|done| Items.(ItemsBody.{ container: done.container, files: done.state })),
-			).map_ok(|Items.(ItemsBody.({ container: done_container, files: done_files }))| { container: done_container, state: done_files }),
-		).map_ok(|done| Enc.(EncBody.{ writer: done.writer, files: done.state }))
+		encode_list = |Enc.(EncBody.({ writer: output, held })), count, write| if held.depth >= max_nesting {
+			too_deep(output, held)
+		} else {
+			outer = held.depth
+			Cbor.encode_list_carry(
+				{ writer: output, state: { ..held, depth: held.depth + 1 } },
+				count,
+				|items, add| write(
+					Items.(ItemsBody.{ container: items.container, held: items.state }),
+					|Items.(ItemsBody.({ container: item_container, held: item_held })), write_value| add({ container: item_container, state: item_held }, |entry| write_value(Enc.(EncBody.{ writer: entry.writer, held: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, held: done_held }))| { writer: done_writer, state: done_held })).map_ok(|done| Items.(ItemsBody.{ container: done.container, held: done.state })),
+				).map_ok(|Items.(ItemsBody.({ container: done_container, held: done_held }))| { container: done_container, state: done_held }),
+			).map_ok(|done| Enc.(EncBody.{ writer: done.writer, held: { ..done.state, depth: outer } }))
+		}
 
 		## Let CBOR open a tuple and count each callback item. The file list moves
 		## through each callback with its writer, including nested containers.
 		encode_tuple : Enc, U64, (Items, (Items, (Enc -> Try(Enc, err)) -> Try(Items, err)) -> Try(Items, err)) -> Try(Enc, err)
-		encode_tuple = |Enc.(EncBody.({ writer: output, files })), count, write| Cbor.encode_tuple_carry(
-			{ writer: output, state: files },
-			count,
-			|items, add| write(
-				Items.(ItemsBody.{ container: items.container, files: items.state }),
-				|Items.(ItemsBody.({ container: item_container, files: item_files })), write_value| add({ container: item_container, state: item_files }, |entry| write_value(Enc.(EncBody.{ writer: entry.writer, files: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, files: done_files }))| { writer: done_writer, state: done_files })).map_ok(|done| Items.(ItemsBody.{ container: done.container, files: done.state })),
-			).map_ok(|Items.(ItemsBody.({ container: done_container, files: done_files }))| { container: done_container, state: done_files }),
-		).map_ok(|done| Enc.(EncBody.{ writer: done.writer, files: done.state }))
+		encode_tuple = |Enc.(EncBody.({ writer: output, held })), count, write| if held.depth >= max_nesting {
+			too_deep(output, held)
+		} else {
+			outer = held.depth
+			Cbor.encode_tuple_carry(
+				{ writer: output, state: { ..held, depth: held.depth + 1 } },
+				count,
+				|items, add| write(
+					Items.(ItemsBody.{ container: items.container, held: items.state }),
+					|Items.(ItemsBody.({ container: item_container, held: item_held })), write_value| add({ container: item_container, state: item_held }, |entry| write_value(Enc.(EncBody.{ writer: entry.writer, held: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, held: done_held }))| { writer: done_writer, state: done_held })).map_ok(|done| Items.(ItemsBody.{ container: done.container, held: done.state })),
+				).map_ok(|Items.(ItemsBody.({ container: done_container, held: done_held }))| { container: done_container, state: done_held }),
+			).map_ok(|done| Enc.(EncBody.{ writer: done.writer, held: { ..done.state, depth: outer } }))
+		}
 
 		## Let CBOR open a tag and count each callback item. The file list moves
 		## through each callback with its writer, including nested containers.
 		encode_tag : Enc, Str, U64, (Items, (Items, (Enc -> Try(Enc, err)) -> Try(Items, err)) -> Try(Items, err)) -> Try(Enc, err)
-		encode_tag = |Enc.(EncBody.({ writer: output, files })), name, count, write| Cbor.encode_tag_carry(
-			{ writer: output, state: files },
-			name,
-			count,
-			|items, add| write(
-				Items.(ItemsBody.{ container: items.container, files: items.state }),
-				|Items.(ItemsBody.({ container: item_container, files: item_files })), write_value| add({ container: item_container, state: item_files }, |entry| write_value(Enc.(EncBody.{ writer: entry.writer, files: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, files: done_files }))| { writer: done_writer, state: done_files })).map_ok(|done| Items.(ItemsBody.{ container: done.container, files: done.state })),
-			).map_ok(|Items.(ItemsBody.({ container: done_container, files: done_files }))| { container: done_container, state: done_files }),
-		).map_ok(|done| Enc.(EncBody.{ writer: done.writer, files: done.state }))
+		encode_tag = |Enc.(EncBody.({ writer: output, held })), name, count, write| if count > 0 and held.depth >= max_nesting {
+			too_deep(output, held)
+		} else {
+			outer = held.depth
+			Cbor.encode_tag_carry(
+				{ writer: output, state: { ..held, depth: if (count == 0) held.depth else held.depth + 1 } },
+				name,
+				count,
+				|items, add| write(
+					Items.(ItemsBody.{ container: items.container, held: items.state }),
+					|Items.(ItemsBody.({ container: item_container, held: item_held })), write_value| add({ container: item_container, state: item_held }, |entry| write_value(Enc.(EncBody.{ writer: entry.writer, held: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, held: done_held }))| { writer: done_writer, state: done_held })).map_ok(|done| Items.(ItemsBody.{ container: done.container, held: done.state })),
+				).map_ok(|Items.(ItemsBody.({ container: done_container, held: done_held }))| { container: done_container, state: done_held }),
+			).map_ok(|done| Enc.(EncBody.{ writer: done.writer, held: { ..done.state, depth: outer } }))
+		}
 
 		## Let CBOR open a record and count each callback item. The file list moves
 		## through each callback with its writer, including nested containers.
 		encode_record : Enc, U64, (Fields, (Fields, Str, (Enc -> Try(Enc, err)) -> Try(Fields, err)) -> Try(Fields, err)) -> Try(Enc, err)
-		encode_record = |Enc.(EncBody.({ writer: output, files })), count, write| Cbor.encode_record_carry(
-			{ writer: output, state: files },
-			count,
-			|items, add| write(
-				Items.(ItemsBody.{ container: items.container, files: items.state }),
-				|Items.(ItemsBody.({ container: item_container, files: item_files })), name, write_value| add({ container: item_container, state: item_files }, name, |entry| write_value(Enc.(EncBody.{ writer: entry.writer, files: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, files: done_files }))| { writer: done_writer, state: done_files })).map_ok(|done| Items.(ItemsBody.{ container: done.container, files: done.state })),
-			).map_ok(|Items.(ItemsBody.({ container: done_container, files: done_files }))| { container: done_container, state: done_files }),
-		).map_ok(|done| Enc.(EncBody.{ writer: done.writer, files: done.state }))
+		encode_record = |Enc.(EncBody.({ writer: output, held })), count, write| if held.depth >= max_nesting {
+			too_deep(output, held)
+		} else {
+			outer = held.depth
+			Cbor.encode_record_carry(
+				{ writer: output, state: { ..held, depth: held.depth + 1 } },
+				count,
+				|items, add| write(
+					Items.(ItemsBody.{ container: items.container, held: items.state }),
+					|Items.(ItemsBody.({ container: item_container, held: item_held })), name, write_value| add({ container: item_container, state: item_held }, name, |entry| write_value(Enc.(EncBody.{ writer: entry.writer, held: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, held: done_held }))| { writer: done_writer, state: done_held })).map_ok(|done| Items.(ItemsBody.{ container: done.container, held: done.state })),
+				).map_ok(|Items.(ItemsBody.({ container: done_container, held: done_held }))| { container: done_container, state: done_held }),
+			).map_ok(|done| Enc.(EncBody.{ writer: done.writer, held: { ..done.state, depth: outer } }))
+		}
 
 		## Let CBOR open a dict and count each callback item. The file list moves
 		## through each callback with its writer, including nested containers.
 		encode_dict : Enc, U64, (Entries, (Entries, (Enc -> Try(Enc, err)), (Enc -> Try(Enc, err)) -> Try(Entries, err)) -> Try(Entries, err)) -> Try(Enc, err)
-		encode_dict = |Enc.(EncBody.({ writer: output, files })), count, write| Cbor.encode_dict_carry(
-			{ writer: output, state: files },
-			count,
-			|items, add| write(
-				Items.(ItemsBody.{ container: items.container, files: items.state }),
-				|Items.(ItemsBody.({ container: item_container, files: item_files })), write_key, write_value| add({ container: item_container, state: item_files }, |entry| write_key(Enc.(EncBody.{ writer: entry.writer, files: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, files: done_files }))| { writer: done_writer, state: done_files }), |entry| write_value(Enc.(EncBody.{ writer: entry.writer, files: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, files: done_files }))| { writer: done_writer, state: done_files })).map_ok(|done| Items.(ItemsBody.{ container: done.container, files: done.state })),
-			).map_ok(|Items.(ItemsBody.({ container: done_container, files: done_files }))| { container: done_container, state: done_files }),
-		).map_ok(|done| Enc.(EncBody.{ writer: done.writer, files: done.state }))
+		encode_dict = |Enc.(EncBody.({ writer: output, held })), count, write| if held.depth >= max_nesting {
+			too_deep(output, held)
+		} else {
+			outer = held.depth
+			Cbor.encode_dict_carry(
+				{ writer: output, state: { ..held, depth: held.depth + 1 } },
+				count,
+				|items, add| write(
+					Items.(ItemsBody.{ container: items.container, held: items.state }),
+					|Items.(ItemsBody.({ container: item_container, held: item_held })), write_key, write_value| add({ container: item_container, state: item_held }, |entry| write_key(Enc.(EncBody.{ writer: entry.writer, held: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, held: done_held }))| { writer: done_writer, state: done_held }), |entry| write_value(Enc.(EncBody.{ writer: entry.writer, held: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, held: done_held }))| { writer: done_writer, state: done_held })).map_ok(|done| Items.(ItemsBody.{ container: done.container, held: done.state })),
+				).map_ok(|Items.(ItemsBody.({ container: done_container, held: done_held }))| { container: done_container, state: done_held }),
+			).map_ok(|done| Enc.(EncBody.{ writer: done.writer, held: { ..done.state, depth: outer } }))
+		}
 
 		## Open the checked list; CBOR owns its count and end position.
 		parse_list_start : Format, State -> Try([Counted({ len : U64, rest : State }), Uncounted(State)], Error)
@@ -420,7 +450,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_str : Format, Str, Enc -> Try(Enc, [])
-		encode_key_str = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_str(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_str = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_str(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_str : Format, State -> Try({ value : Str, rest : State }, Error)
@@ -428,7 +458,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_bool : Format, Bool, Enc -> Try(Enc, [])
-		encode_key_bool = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_bool(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_bool = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_bool(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_bool : Format, State -> Try({ value : Bool, rest : State }, Error)
@@ -436,7 +466,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_u8 : Format, U8, Enc -> Try(Enc, [])
-		encode_key_u8 = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_u8(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_u8 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_u8(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_u8 : Format, State -> Try({ value : U8, rest : State }, Error)
@@ -444,7 +474,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_i8 : Format, I8, Enc -> Try(Enc, [])
-		encode_key_i8 = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_i8(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_i8 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_i8(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_i8 : Format, State -> Try({ value : I8, rest : State }, Error)
@@ -452,7 +482,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_u16 : Format, U16, Enc -> Try(Enc, [])
-		encode_key_u16 = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_u16(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_u16 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_u16(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_u16 : Format, State -> Try({ value : U16, rest : State }, Error)
@@ -460,7 +490,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_i16 : Format, I16, Enc -> Try(Enc, [])
-		encode_key_i16 = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_i16(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_i16 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_i16(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_i16 : Format, State -> Try({ value : I16, rest : State }, Error)
@@ -468,7 +498,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_u32 : Format, U32, Enc -> Try(Enc, [])
-		encode_key_u32 = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_u32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_u32 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_u32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_u32 : Format, State -> Try({ value : U32, rest : State }, Error)
@@ -476,7 +506,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_i32 : Format, I32, Enc -> Try(Enc, [])
-		encode_key_i32 = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_i32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_i32 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_i32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_i32 : Format, State -> Try({ value : I32, rest : State }, Error)
@@ -484,7 +514,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_u64 : Format, U64, Enc -> Try(Enc, [])
-		encode_key_u64 = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_u64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_u64 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_u64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_u64 : Format, State -> Try({ value : U64, rest : State }, Error)
@@ -492,7 +522,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_i64 : Format, I64, Enc -> Try(Enc, [])
-		encode_key_i64 = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_i64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_i64 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_i64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_i64 : Format, State -> Try({ value : I64, rest : State }, Error)
@@ -500,7 +530,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_u128 : Format, U128, Enc -> Try(Enc, [])
-		encode_key_u128 = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_u128(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_u128 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_u128(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_u128 : Format, State -> Try({ value : U128, rest : State }, Error)
@@ -508,7 +538,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_i128 : Format, I128, Enc -> Try(Enc, [])
-		encode_key_i128 = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_i128(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_i128 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_i128(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_i128 : Format, State -> Try({ value : I128, rest : State }, Error)
@@ -516,7 +546,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_f32 : Format, F32, Enc -> Try(Enc, [])
-		encode_key_f32 = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_f32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_f32 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_f32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor, and refuse
 		## a zero whose other sign this dictionary already has as a key.
@@ -530,7 +560,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_f64 : Format, F64, Enc -> Try(Enc, [])
-		encode_key_f64 = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_f64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_f64 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_f64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor, and refuse
 		## a zero whose other sign this dictionary already has as a key.
@@ -544,7 +574,7 @@ WorkerCodec := [].{
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_dec : Format, Dec, Enc -> Try(Enc, [])
-		encode_key_dec = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_dec(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_dec = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_dec(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor.
 		parse_key_dec : Format, State -> Try({ value : Dec, rest : State }, Error)
@@ -552,7 +582,7 @@ WorkerCodec := [].{
 
 		## A payload-free tag key uses the library's bare-text form.
 		encode_key_tag : Format, Enc, Str -> Try(Enc, [])
-		encode_key_tag = |_, Enc.(EncBody.({ writer: output, files })), name| Cbor.encode_str(name, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_key_tag = |_, Enc.(EncBody.({ writer: output, held })), name| Cbor.encode_str(name, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## A typed tag key uses the same external-union bridge as a value.
 		parse_key_tag_union : Format, Encoding.ParseTagUnionSpec(a, Format, State, Error), State -> Try({ value : a, rest : State }, Error)
@@ -560,7 +590,7 @@ WorkerCodec := [].{
 
 		## Write a bulk byte string without exposing the writer's representation.
 		encode_bytes : Format, List(U8), Enc -> Try(Enc, [])
-		encode_bytes = |_, value, Enc.(EncBody.({ writer: output, files }))| Cbor.encode_bytes(value, output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
+		encode_bytes = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_bytes(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
 
 		## Read a bulk byte string, which may share the checked input buffer.
 		parse_bytes : Format, State -> Try({ value : List(U8), rest : State }, Error)
@@ -569,10 +599,10 @@ WorkerCodec := [].{
 		## A file's bytes stay behind its handle. Only its index and range
 		## metadata enter the six-item CBOR array beside that owned file list.
 		encode_file : Format, Engine.File, Enc -> Try(Enc, [])
-		encode_file = |_, file, Enc.(EncBody.({ writer: output, files }))| {
+		encode_file = |_, file, Enc.(EncBody.({ writer: output, held }))| {
 			{ name, mime, size, start, len } = Core.file_parts(file)
-			index = files.len()
-			opened = Enc.(EncBody.{ writer: output, files: files.append(file) })
+			index = held.files.len()
+			opened = Enc.(EncBody.{ writer: output, held: { ..held, files: held.files.append(file) } })
 			Format.encode_tuple(
 				opened,
 				6,
@@ -627,6 +657,9 @@ WorkerCodec := [].{
 		if !encoded.files.is_empty() {
 			crash "contract: a file crosses only in a worker task's input or answer"
 		}
+		if encoded.deep {
+			crash "internal: a platform test encoded a value nested past the bound with encode; use try_encode"
+		}
 		encoded.bytes
 	}
 
@@ -652,10 +685,13 @@ encode_payload : a -> Try({ bytes : List(U8), files : List(Engine.File), deep : 
 encode_payload = |value| {
 	Shape : a
 	encoding = WorkerCodec.Format.{}
-	WorkerCodec.Enc.(WorkerCodec.EncBody.({ writer, files })) = Shape.encoder_for(encoding)(value, WorkerCodec.Enc.(WorkerCodec.EncBody.{ writer: Cbor.Writer.new({ key_order: Sorted }), files: [] }))?
-	report = Cbor.Writer.finish_report(writer)?
-	deep = report.max_depth > 512
-	Ok({ bytes: report.bytes, files, deep })
+	WorkerCodec.Enc.(WorkerCodec.EncBody.({ writer, held })) = Shape.encoder_for(encoding)(value, WorkerCodec.Enc.(WorkerCodec.EncBody.{ writer: Cbor.Writer.new({ key_order: Sorted }), held: { files: [], depth: 0, over: Bool.False } }))?
+	if held.over {
+		Ok({ bytes: [], files: [], deep: Bool.True })
+	} else {
+		bytes = Cbor.Writer.finish(writer)?
+		Ok({ bytes, files: held.files, deep: Bool.False })
+	}
 }
 
 ## Package-local checked reader entrypoint. The complete CBOR walk happens
@@ -663,12 +699,43 @@ encode_payload = |value| {
 decode_payload : List(U8), List(Engine.File) -> Try(a, WorkerCodec.Error) where [a.WorkerCodec.Sendable]
 decode_payload = |bytes, files| {
 	Shape : a
-	opened = Cbor.Reader.new(bytes, { key_order: Sorted, unknown_fields: Reject, max_depth: 512, decimals: EncoderForm, floats: EncoderForm, empty_byte_lists: Reject })?
+	opened = Cbor.Reader.new(bytes, { key_order: Sorted, unknown_fields: Reject, max_depth: max_cbor_depth, decimals: EncoderForm, floats: EncoderForm, empty_byte_lists: Reject })?
 	encoding = WorkerCodec.Format.{}
 	{ value, rest } = Shape.parser_for(encoding)(WorkerCodec.State.(WorkerCodec.StateBody.{ cbor: opened.cbor, reader: opened.reader, files, dicts: [] }))?
 	Cbor.Reader.finish(reader_of(rest))?
 	Ok(value)
 }
+
+## How many containers of the app's own data one worker input or answer may
+## nest: each list, set, dictionary, record, tuple and tag with a payload is
+## one level, and a file is one. A container met at the bound is not written
+## (`too_deep`), so encoding cannot run out of stack, and the encode is
+## refused with `TooDeep`. 128 is measured, not derived: a Chrome dedicated
+## worker on a development build overflows V8's native stack encoding about
+## 113 levels of a record holding a list and about 240 of a tag, and
+## optimized builds and the page go about 3 to 10 times deeper, so 128 keeps
+## a margin of 1.75 in the weakest configuration. Roc itself cannot drop or
+## compare a recursive value much deeper than about 1,900 levels in a
+## worker (https://github.com/roc-lang/roc/issues/12917), and development
+## Wasm frames are about 3 times optimized ones
+## (https://github.com/roc-lang/roc/issues/12922). A handwritten codec that
+## recurses without the container hooks is not counted. Change the bound
+## here only; the reader's backstop follows it.
+max_nesting : U64
+max_nesting = 128
+
+## The deepest CBOR structure an encode within `max_nesting` writes: a tag
+## with several payloads is two levels (its map and their array), and a
+## `Dec` fraction leaf two more (its tag and array). The reader refuses
+## anything deeper before any typed callback runs.
+max_cbor_depth : U64
+max_cbor_depth = 2 * max_nesting + 2
+
+## A container met at the nesting bound: one placeholder item keeps the
+## enclosing container's count whole, its contents are not visited, and the
+## encode is marked to be refused.
+too_deep : Cbor.Writer, WorkerCodec.Held -> Try(WorkerCodec.Enc, err)
+too_deep = |output, held| Cbor.encode_null(output).map_ok(|writer| WorkerCodec.Enc.(WorkerCodec.EncBody.{ writer, held: { ..held, over: Bool.True } }))
 
 ## The reader's configuration in a parser state, which every `Cbor.parse_*`
 ## step takes.

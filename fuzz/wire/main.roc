@@ -141,10 +141,13 @@ canonical! = |label, input, decode| {
 	measured = Fuzz.measure!(label, || decode(input))
 	check_bound!(label, input, measured.stats)
 	match measured.value {
-		Ok(value) => {
-			if WorkerCodec.encode(value) != input {
-				crash "an accepted ${label} input is not the encoding of the value it decodes to"
-			}
+		# The reader's backstop counts CBOR levels and admits values nested
+		# past the writer's bound on the app's own levels; such a value is
+		# refused as `TooDeep`, never written as other bytes.
+		Ok(value) => match WorkerCodec.try_encode(value) {
+			Ok(bytes) if bytes != input => crash "an accepted ${label} input is not the encoding of the value it decodes to"
+			Ok(_) => {}
+			Err(TooDeep) => {}
 		}
 		Err(_) => {}
 	}
@@ -155,18 +158,21 @@ test! = |input| {
 	rich = Fuzz.measure!("Rich", || decode_rich(input))
 	check_bound!("Rich", input, rich.stats)
 	match rich.value {
-		Ok(value) => {
-			payload = WorkerCodec.encode(value)
-			well_formed : Try(Cbor.Value, _)
-			well_formed = Cbor.parse(payload)
-			if well_formed.is_err() {
-				crash "an encoded Rich is not a CBOR item"
+		Ok(value) => match WorkerCodec.try_encode(value) {
+			Ok(payload) => {
+				well_formed : Try(Cbor.Value, _)
+				well_formed = Cbor.parse(payload)
+				if well_formed.is_err() {
+					crash "an encoded Rich is not a CBOR item"
+				}
+				match decode_rich(payload) {
+					Ok(again) if WorkerCodec.try_encode(again) == Ok(payload) => {}
+					Ok(_) => crash "a re-encoded Rich decodes to a value with a different encoding"
+					Err(problem) => crash "a re-encoded Rich is refused: ${Str.inspect(problem)}"
+				}
 			}
-			match decode_rich(payload) {
-				Ok(again) if WorkerCodec.encode(again) == payload => {}
-				Ok(_) => crash "a re-encoded Rich decodes to a value with a different encoding"
-				Err(problem) => crash "a re-encoded Rich is refused: ${Str.inspect(problem)}"
-			}
+			# Nested past the writer's bound, as the canonical rule allows.
+			Err(TooDeep) => {}
 		}
 		Err(_) => {}
 	}

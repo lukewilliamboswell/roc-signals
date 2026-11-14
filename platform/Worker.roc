@@ -451,7 +451,7 @@ encoded_answer : Str, value, U8 -> List(U8) where [value.Wire.Sendable]
 encoded_answer = |name, value, flag| {
 	{ bytes, files, deep } = WorkerCodec.encode_with_files(name, value)
 	if deep {
-		crash "contract: worker task \"${name}\" returned a value nested deeper than 512 containers, which the page cannot decode"
+		crash "contract: worker task \"${name}\" returned a value nested deeper than 128 levels, which a payload cannot hold"
 	}
 	Core.task_answer(name, bytes.append(flag), files)
 }

@@ -132,6 +132,50 @@ Nested := { children : List(Nested) }.{
 	is_eq : _
 }
 
+## A chain of tags with two payloads, ending in a payload-free tag.
+Deep := [Down(Deep, Dec), Stop].{
+	parser_for : _
+	encoder_for : _
+	is_eq : _
+}
+
+## A chain of one-payload tags holding a file at its end.
+Filed := [In(Filed), Doc(Engine.File)].{
+	parser_for : _
+	encoder_for : _
+	is_eq : _
+}
+
+## `levels` nested `Down`s, each holding a decimal fraction.
+down : U64 -> Deep
+down = |levels| {
+	var $value = Deep.Stop
+	for _ in (0.U64).until(levels) {
+		$value = Deep.Down($value, 0.5)
+	}
+	$value
+}
+
+## A file inside `levels` nested `In`s and its own `Doc`.
+filed : U64, Engine.File -> Filed
+filed = |levels, file| {
+	var $value = Filed.Doc(file)
+	for _ in (0.U64).until(levels) {
+		$value = Filed.In($value)
+	}
+	$value
+}
+
+## `levels` nested `Nested` records, the innermost with no children.
+nest : U64 -> Nested
+nest = |levels| {
+	var $value = Nested.{ children: [] }
+	for _ in (1.U64).until(levels) {
+		$value = Nested.{ children: [$value] }
+	}
+	$value
+}
+
 ## A tree nested `depth` levels down its left branch.
 left_spine : U64 -> Tree
 left_spine = |depth| {
@@ -395,41 +439,71 @@ expect {
 	unordered.is_err() and repeated.is_err()
 }
 
-## The physical CBOR bound is exact at511/512/513, including the additional map around a typed value.
+## Nesting is counted in containers of the app's own data, at most 128 on
+## any path: each `Node` of a tree is one, a record or a dictionary around
+## it one more, and each `Nested` two (its record and its list). A value at
+## the bound round trips; one level more is refused with `TooDeep` before
+## anything past the bound is visited.
 expect {
-	at511 = { inner: left_spine(255) }
-	at512 = left_spine(256)
-	at513 = { inner: left_spine(256) }
-	decoded511 : Try({ inner : Tree }, Wire.Error)
-	decoded511 = WorkerCodec.decode(WorkerCodec.encode(at511))
-	decoded512 : Try(Tree, Wire.Error)
-	decoded512 = WorkerCodec.decode(WorkerCodec.encode(at512))
-	decoded513 : Try({ inner : Tree }, Wire.Error)
-	decoded513 = WorkerCodec.decode(WorkerCodec.encode(at513))
-	decoded511 == Ok(at511) and decoded512 == Ok(at512) and decoded513.is_err() and WorkerCodec.try_encode(at511).is_ok() and WorkerCodec.try_encode(at512).is_ok() and WorkerCodec.try_encode(at513) == Err(TooDeep)
+	agrees = |value| WorkerCodec.decode(WorkerCodec.encode(value)) == Ok(value)
+	tree_at = left_spine(128)
+	wrapped_at = { inner: left_spine(127) }
+	keyed_at = Dict.from_list([("k", left_spine(127))])
+	nested_at = nest(64)
+	actual =
+		\\tree: ${Str.inspect([agrees(tree_at), WorkerCodec.try_encode(left_spine(129)) == Err(TooDeep)])}
+		\\wrapped: ${Str.inspect([agrees(wrapped_at), WorkerCodec.try_encode({ inner: left_spine(128) }) == Err(TooDeep)])}
+		\\keyed: ${Str.inspect([agrees(keyed_at), WorkerCodec.try_encode(Dict.from_list([("k", left_spine(128))])) == Err(TooDeep)])}
+		\\nested: ${Str.inspect([agrees(nested_at), WorkerCodec.try_encode(nest(65)) == Err(TooDeep)])}
+	expected =
+		\\tree: [True, True]
+		\\wrapped: [True, True]
+		\\keyed: [True, True]
+		\\nested: [True, True]
+	actual == expected
 }
 
-## Reader and writer agree across recursive records/lists and dictionary wrappers, without assuming the former logical Wire framing depth.
+## The deepest CBOR a value within the bound writes is read: 128 tags with
+## two payloads are 256 levels of maps and arrays, and a `Dec` fraction in
+## the last is two more, the reader's backstop of 258. A file is a level of
+## its own, so it is accepted inside 126 levels and refused inside 127.
 expect {
-	nest = |depth| {
-		var $value = Nested.{ children: [] }
-		for _ in (1.U64).until(depth) {
-			$value = Nested.{ children: [$value] }
+	file = match Core.placed_file(Core.held_file(Box.box(1)), { name: "a.bin", mime: "", size: 2, start: 0, len: 2 }) {
+		Ok(f) => f
+		Err(_) => crash "a range outside its file"
+	}
+	deepest = down(128)
+	back : Try(Deep, Wire.Error)
+	back = WorkerCodec.decode(WorkerCodec.encode(deepest))
+	filed_at = WorkerCodec.encode_with_files("wire unit", filed(126, file))
+	filed_back : Try(Filed, Wire.Error)
+	filed_back = WorkerCodec.decode_with_held(filed_at.bytes, filed_at.files)
+	actual =
+		\\deepest: ${Str.inspect([back == Ok(deepest), WorkerCodec.try_encode(down(129)) == Err(TooDeep)])}
+		\\filed: ${Str.inspect([filed_back == Ok(filed(126, file)), filed_at.files.len() == 1, WorkerCodec.encode_with_files("wire unit", filed(127, file)).deep])}
+	expected =
+		\\deepest: [True, True]
+		\\filed: [True, True, True]
+	actual == expected
+}
+
+## The reader's backstop is physical: 129 levels of `Nested` are 258 maps
+## and arrays and are read, 130 are refused before any typed callback runs.
+## So the reader accepts more than the writer writes, never less.
+expect {
+	children = [0xa1, 0x68].concat("children".to_utf8())
+	bytes = |levels| {
+		var $out = []
+		for _ in (1.U64).until(levels) {
+			$out = $out.concat(children).append(0x81)
 		}
-		$value
+		$out.concat(children).append(0x80)
 	}
-	agrees = |value| {
-		back : Try(Nested, Wire.Error)
-		back = WorkerCodec.decode(WorkerCodec.encode(value))
-		back.is_ok() == WorkerCodec.try_encode(value).is_ok()
-	}
-	wrapped = |depth| {
-		value = Dict.from_list([("k", left_spine(depth))])
-		back : Try(Dict(Str, Tree), Wire.Error)
-		back = WorkerCodec.decode(WorkerCodec.encode(value))
-		back.is_ok() == WorkerCodec.try_encode(value).is_ok()
-	}
-	[255.U64, 256, 257].all(|d| agrees(nest(d))) and WorkerCodec.try_encode(nest(256)).is_ok() and WorkerCodec.try_encode(nest(257)).is_err() and [254.U64, 255, 256].all(wrapped)
+	at : Try(Nested, Wire.Error)
+	at = WorkerCodec.decode(bytes(129))
+	past : Try(Nested, Wire.Error)
+	past = WorkerCodec.decode(bytes(130))
+	at == Ok(nest(129)) and past.is_err()
 }
 
 ## Files travel beside the payload as handles: decoding with the handle list
