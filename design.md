@@ -3867,7 +3867,11 @@ of steps written against the rendered UI:
   carries them in the browser's own drag and clipboard events. A setup
   file's name, type and contents are the spec's input, so every one of
   these steps gives the app exactly the declared name, type and bytes, in
-  both runners and on every system. Chrome's chooser would take a chosen
+  both runners and on every system. The parser therefore refuses a declaration
+  the browser could not carry exactly: a name that is not one file name
+  on disk (empty, holding `/` or a NUL byte, `.` or `..`), and a type that
+  is not lowercase printable ASCII, which the `File` constructor would
+  lowercase or drop. Chrome's chooser would take a chosen
   file's type from the operating system's table of file name extensions,
   which differs between systems (`.log` is `text/x-log` on Linux and has no
   type on macOS; `.bin` is `application/octet-stream` on one and

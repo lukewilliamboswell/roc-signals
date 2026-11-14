@@ -1604,8 +1604,16 @@ Scm := [].{
 				if name == "" or name.contains("/") {
 					return Err(Scm.bad(name_sx, "a file name must be a non-empty name without a directory"))
 				}
+				if name == "." or name == ".." or name.to_utf8().contains(0) {
+					return Err(Scm.bad(name_sx, "a file name cannot be . or .. or hold a NUL byte: Chrome's choose-files writes the file to disk under its name"))
+				}
+				mime_sx = Scm.arg(args, 1)
+				mime = Scm.string(mime_sx, "the media type")?
+				if !mime.to_utf8().all(|b| b >= 0x20 and b <= 0x7E and !(b >= 'A' and b <= 'Z')) {
+					return Err(Scm.bad(mime_sx, "a file's media type must be lowercase printable ASCII, as a browser's File keeps it: Chrome would lowercase or drop \"${mime}\""))
+				}
 				repeat = if (args.len() == 4) Scm.unsigned(Scm.arg(args, 3), "the repeat count")? else 1
-				Ok(File({ name, mime: Scm.string(Scm.arg(args, 1), "the media type")?, text: Scm.string(Scm.arg(args, 2), "the contents")?, repeat }))
+				Ok(File({ name, mime, text: Scm.string(Scm.arg(args, 2), "the contents")?, repeat }))
 			},
 		},
 		{ name: "max-output-bytes", parse: |form, args| Ok(MaxOutputBytes(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the byte count")?)) },
@@ -3030,6 +3038,27 @@ expect {
 
 ## The widest period parses as itself, unwrapped, and so does the narrowest.
 expect Scm.parse("(test \"t\" (steps (tick-interval 4294967295) (expect-interval 1 0 :never-started)))").map_ok(|spec| spec.steps.map(|st| st.op)) == Ok([TickInterval(4294967295), ExpectInterval({ period_ms: 1, count: 0 })])
+
+## A setup file the browser runner could not give the app exactly is refused
+## where it is declared: a name that cannot be written to disk for
+## choose-files, and a media type the File constructor would lowercase
+## (uppercase ASCII) or drop (a byte outside printable ASCII).
+expect {
+	file = |name, mime| problem_of("(test \"t\" (setup (file ${name} ${mime} \"x\")) (steps (expect-files 0)))")
+	actual = [file("\".\"", "\"text/plain\""), file("\"..\"", "\"text/plain\""), file("\"a.txt\"", "\"Text/Plain\""), file("\"a.txt\"", "\"text/plain;\tq\""), file("\"a.txt\"", "\"text/é\"")]
+	expected = [
+		"x.scm:1:24: a file name cannot be . or .. or hold a NUL byte: Chrome's choose-files writes the file to disk under its name",
+		"x.scm:1:24: a file name cannot be . or .. or hold a NUL byte: Chrome's choose-files writes the file to disk under its name",
+		"x.scm:1:32: a file's media type must be lowercase printable ASCII, as a browser's File keeps it: Chrome would lowercase or drop \"Text/Plain\"",
+		"x.scm:1:32: a file's media type must be lowercase printable ASCII, as a browser's File keeps it: Chrome would lowercase or drop \"text/plain;\tq\"",
+		"x.scm:1:32: a file's media type must be lowercase printable ASCII, as a browser's File keeps it: Chrome would lowercase or drop \"text/é\"",
+	]
+	actual == expected
+}
+
+## A name with dots that is not a directory entry, and an empty or lowercase
+## printable type with parameters, are kept exactly.
+expect Scm.parse("(test \"t\" (setup (file \"...\" \"\" \"\") (file \".env\" \"text/plain; charset=utf-8\" \"x\")) (steps (expect-files 0)))").is_ok()
 
 expect problem_of("(test \"t\" (steps (local-storage-unavailable)))") == "x.scm:1:18: unknown step local-storage-unavailable"
 

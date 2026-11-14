@@ -207,7 +207,7 @@ deployment limit.
 | `(local-storage-full)`, `(session-storage-full)` | Writes to that store fail with `Quota`; reads and removals work. Seeded values are allowed |
 | `(clipboard-denied)` | Clipboard writes answer `ClipboardFailed(NotAllowed)` |
 | `(max-paste-bytes N)` | The deployment's paste-text byte limit, 4 MiB by default; 0 through 9007199254740991 |
-| `(file "name" "type" "text" [REPEAT])` | Declare a file the steps can give the app: its name, its MIME type, and its contents, `text` repeated `REPEAT` times (once without it) |
+| `(file "name" "type" "text" [REPEAT])` | Declare a file the steps can give the app: its name, its MIME type, and its contents, `text` repeated `REPEAT` times (once without it). The name has no `/` and is not `.` or `..`; the type is lowercase printable ASCII, which a browser's `File` keeps as written |
 | `(max-output-bytes N)` | The most bytes a [task](@/docs/workers.md)'s job may append to its builders, the runtime's `maxOutputBytes` mount option (256 MiB without it) |
 
 Effects never run on their own in a spec: HTTP requests, timers and worker
