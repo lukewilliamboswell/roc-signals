@@ -19,17 +19,18 @@ const wasmString = value => { const bytes = [...new TextEncoder().encode(value)]
 const wasmSection = (tag, bytes) => [tag, ...leb(bytes.length), ...bytes];
 const vector = entries => [...leb(entries.length), ...entries.flat()];
 const moduleBytes = (() => {
-  const names = ["protocol_version", "boot_keys", "cmd_ptr", "cmd_len", "payload_reserve", "init", "files_released", "fault", "work_len", "metric", "drop"];
+  const names = ["protocol_version", "boot_keys", "cmd_ptr", "cmd_len", "payload_reserve", "init", "files_released", "fault", "work_len", "metric", "drop", "dbg_ptr", "dbg_len"];
   const bodies = [
     [0x41, 19],
     [0x41, 0, 0x24, 0, 0x41, ...leb(declarations.length), 0x24, 1],
     [0x23, 0], [0x23, 1], [0x41, ...leb(65536)],
     [0x41, ...leb(16384), 0x24, 0, 0x41, 1, 0x24, 1],
     [0x41, 0], [0x41, 0], [0x41, 0], [0x42, 0], [],
+    [0x41, 0], [0x41, 0],
   ].map(code => { const body = [0, ...code, 0x0b]; return [...leb(body.length), ...body]; });
   return Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0,
     ...wasmSection(1, vector([[0x60, 0, 1, 0x7f], [0x60, 0, 0], [0x60, 1, 0x7f, 1, 0x7f], [0x60, 0, 1, 0x7e]])),
-    ...wasmSection(3, vector([0, 1, 0, 0, 2, 1, 0, 0, 0, 3, 1].map(i => [i]))),
+    ...wasmSection(3, vector([0, 1, 0, 0, 2, 1, 0, 0, 0, 3, 1, 0, 0].map(i => [i]))),
     ...wasmSection(5, [1, 0, 2]),
     ...wasmSection(6, vector([[0x7f, 1, 0x41, 0, 0x0b], [0x7f, 1, 0x41, 0, 0x0b]])),
     ...wasmSection(7, vector([...names.map((name, i) => [...wasmString(name), 0, ...leb(i)]), [...wasmString("memory"), 2, 0]])),
