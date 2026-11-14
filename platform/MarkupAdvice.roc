@@ -9,6 +9,7 @@ MarkupAdvice := [].{
 	repair : Markup.StructureReason -> Str
 	repair = |reason| match reason {
 		ImpliedElement(element) => "the HTML parser would insert <${bounded_label(element)}>; write that structure explicitly"
+		MissingEndTag("p") => "the HTML parser would close the paragraph first; close <p> explicitly"
 		MissingEndTag(element) => "close <${bounded_label(element)}> explicitly: construction keeps its written nesting"
 		UnexpectedEndTag(element) => "the HTML parser would discard the closing tag </${bounded_label(element)}>"
 		NonVoidSelfClosing(element) => "<${bounded_label(element)}> is not void; write its closing tag explicitly"
@@ -36,7 +37,7 @@ bounded_label = |text| {
 }
 
 ## Parser diagnostics retain their exact repair category in human wording.
-expect MarkupAdvice.repair(MissingEndTag("p")) == "close <p> explicitly: construction keeps its written nesting"
+expect MarkupAdvice.repair(MissingEndTag("p")) == "the HTML parser would close the paragraph first; close <p> explicitly"
 
 ## Abbreviating a multibyte label keeps whole scalars within the byte bound.
 expect {
