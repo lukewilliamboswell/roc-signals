@@ -886,18 +886,25 @@ const COMMAND_APPLIERS = {
     } else if (kind === 7) {
       queueEffect(this, reader, { op: "visibility", id });
     } else if (kind === 8) {
-      const task = str();
+      // Any other value, or an operand outside the request, is a contract
+      // fault (design.md, Appendix B, FX kinds), like the HTTP policy bytes.
+      const within = (n, what) => { if (n > u8.length - at) throw new ContractFault(`contract: work request ${what} does not lie within the request`); };
+      const name = what => { within(4, what); within(4 + dv.getUint32(at, true), what); return str(); };
+      const task = name("task name");
+      within(4, "input length");
       const n = dv.getUint32(at, true);
+      within(4 + n, "input");
       // Copied out: linear memory may move before the job is posted.
-      if (n > u8.length - at - 4) throw new Error("truncated work input");
       const input = reader.mode === "preflight" ? null : u8.slice(at + 4, at + 4 + n);
       at += 4 + n;
       // The files the job names, resolved now, while the handles the
       // batch released still name their files (see "Files").
       // Its files cross whole, as handles the worker mints, and the job
       // reads their ranges itself; nothing is read before it runs.
+      within(4, "file count");
       const refs = dv.getUint32(at, true);
       at += 4;
+      within(24 * refs, "files");
       const files = [];
       const ranges = [];
       for (let i = 0; i < refs; i += 1) {
@@ -907,22 +914,24 @@ const COMMAND_APPLIERS = {
         if (reader.mode !== "preflight") { files.push(file); ranges.push(token, start, len); }
         at += 24;
       }
+      within(6, "timeout and policies");
       const timeout = dv.getUint32(at, true);
       const cancel = u8[at + 4];
       const flag = u8[at + 5];
       at += 6;
-      if (cancel !== 1 && cancel !== 2) throw new Error(`work request cancel policy ${cancel} is not 1 or 2`);
+      if (cancel !== 1 && cancel !== 2) throw new ContractFault(`contract: work request cancel policy ${cancel} is not 1 or 2`);
       // A preparation's task (design.md, "Prepared state"): which
       // preparation answers it, and where its input lies in `input`.
       let prep = null;
       if (flag === 1) {
-        const name = str();
+        const prepName = name("preparation name");
+        within(8, "preparation operands");
         const initLen = dv.getUint32(at, true);
         const initFiles = dv.getUint32(at + 4, true);
         at += 8;
-        if (initLen > n || initFiles > refs) throw new Error(`malformed preparation operands for worker task ${task}`);
-        if (reader.mode !== "preflight") prep = { name, initLen, initFiles, ranges: ranges.slice(0, 3 * initFiles) };
-      } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0 or 1`);
+        if (initLen > n || initFiles > refs) throw new ContractFault(`contract: malformed preparation operands for worker task ${task}`);
+        if (reader.mode !== "preflight") prep = { name: prepName, initLen, initFiles, ranges: ranges.slice(0, 3 * initFiles) };
+      } else if (flag !== 0) throw new ContractFault(`contract: work request flag ${flag} is not 0 or 1`);
       queueEffect(this, reader, { op: "work", id, task, input, files, timeout, finish: cancel === 2, prep });
     } else if (kind === 11) {
       const mode = u8[at];
@@ -1210,7 +1219,10 @@ const POLICY_APPLIERS = {
 };
 
 // Validate the closed declaration tables before retaining a listener. An
-// unknown number or bit is a producer/consumer mismatch, contained as executor.
+// unknown number or bit is a producer/consumer mismatch, contained as executor
+// (design.md, Bounds: payload kinds, element properties and event policies).
+// A request operand the design names a contract fault (FX kind 8, HTTP
+// policy bytes) throws ContractFault instead.
 function handlerEntry(h, kind, policies, type, protocol) {
   const row = protocol.PAYLOAD_KINDS[kind];
   if (!row) throw new Error(`unknown event payload kind ${kind}`);
