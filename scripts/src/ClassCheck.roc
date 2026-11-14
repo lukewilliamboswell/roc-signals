@@ -23,12 +23,14 @@ ClassCheck := [].{
 	run! = |root| {
 		css = Path.read_utf8!(Path.utf8("${root}/www/static/signals.css"))?
 		known = ClassCheck.selectors(css)
+		html = Path.read_utf8!(Path.utf8("${root}/platform/Html.roc"))?
+		checked = ClassCheck.constructors_of(html) ? |line| UnreadableClassParameter("platform/Html.roc:${line.to_str()}: passes a class to Engine.class from a definition the class check cannot read; write it as `name = |params| ...` on one line")
 		var $problems = []
 		var $literals = 0
 		var $tokens = 0
 		for path in SpecSuite.files_under!("${root}/examples", ".roc")? {
 			source = Path.read_utf8!(Path.utf8(path))?
-			scanned = ClassCheck.analyze(source) ? |line| InvalidClassSource("${path}:${line.to_str()}: cannot parse Roc class positions")
+			scanned = ClassCheck.analyze(checked, source) ? |line| InvalidClassSource("${path}:${line.to_str()}: cannot parse Roc class positions")
 			$literals = $literals + scanned.literals
 			$tokens = $tokens + scanned.uses.len()
 			for use in ClassCheck.missing(known, scanned.uses) {
@@ -238,13 +240,49 @@ ClassCheck := [].{
 	## Only literal arguments at documented class positions are inspected.
 	## An interpolation's adjacent partial word is dynamic; complete static
 	## words on either side still require stylesheet definitions.
-	uses : Str -> Try(List(Use), U64)
-	uses = |source| ClassCheck.analyze(source).map_ok(|scanned| scanned.uses)
+	uses : List(Constructor), Str -> Try(List(Use), U64)
+	uses = |checked, source| ClassCheck.analyze(checked, source).map_ok(|scanned| scanned.uses)
+
+	## A function whose argument at `position` (1 for the first) is a class.
+	Constructor : { name : Str, position : U64 }
+
+	## The functions whose class arguments are checked: `Engine.class`, and
+	## every function of `platform/Html.roc` that passes one of its own
+	## parameters to `Engine.class`, found in that module's source so that a
+	## constructor added later is checked with no other edit. A line that
+	## calls `Engine.class` outside a one-line `name = |params| ...`
+	## definition, or with something other than a parameter, is the error,
+	## with its line, rather than a constructor left unchecked.
+	constructors_of : Str -> Try(List(Constructor), U64)
+	constructors_of = |html| {
+		var $out = [{ name: "Engine.class", position: 1 }]
+		var $line = 0.U64
+		for source_line in html.split_on("\n") {
+			$line = $line + 1
+			if source_line.contains("Engine.class(") {
+				found = match source_line.trim().split_on(" = |") {
+					[name, rest] =>
+						match rest.split_on("|") {
+							[params, .. as body] => {
+								names = params.split_on(",").map(|param| param.trim())
+								argument = (Str.join_with(body, "|").split_on("Engine.class(").get(1) ?? "").split_on(")").first() ?? ""
+								names.find_first_index(|param| param == argument.trim()).map_ok(|index| { name: "Html.${name}", position: index.to_u64() + 1 })
+							}
+							_ => Err(NotFound)
+						}
+					_ => Err(NotFound)
+				}
+				line = $line
+				$out = $out.append(found ? |_| line)
+			}
+		}
+		Ok($out)
+	}
 
 	## Parse every example before counting literals, retaining byte-to-line
 	## positions once for diagnostics. A syntax diagnostic fails the check.
-	analyze : Str -> Try({ uses : List(Use), literals : U64 }, U64)
-	analyze = |source| {
+	analyze : List(Constructor), Str -> Try({ uses : List(Use), literals : U64 }, U64)
+	analyze = |constructors, source| {
 		parsed = RocSyntax.parse_str(source)
 		var $line = 1.U64
 		var $lines = []
@@ -260,8 +298,9 @@ ClassCheck := [].{
 		}
 		var $uses = []
 		var $literals = 0
-		for call in parsed.nodes.keep_if(|node| node.kind == Call) {
-			match ClassCheck.class_literal(parsed, call) {
+		for node in parsed.nodes.keep_if(|node| node.kind == Call or node.kind == RecordField) {
+			found = if (node.kind == Call) ClassCheck.class_literal(constructors, parsed, node) else ClassCheck.class_field(parsed, node)
+			match found {
 				Ok(literal) => {
 					$literals = $literals + 1
 					$uses = $uses.concat(ClassCheck.literal_uses(parsed, literal, $lines))
@@ -272,19 +311,32 @@ ClassCheck := [].{
 		Ok({ uses: $uses, literals: $literals })
 	}
 
-	## Select the literal at each supported constructor’s class argument.
-	## A dynamic expression remains outside the static class check.
-	class_literal : RocSyntax.Parsed, RocSyntax.Node -> Try(RocSyntax.Node, [NotClassLiteral])
-	class_literal = |parsed, call| {
+	## Select the literal at each constructor’s class argument. A dynamic
+	## expression remains outside the static class check.
+	class_literal : List(Constructor), RocSyntax.Parsed, RocSyntax.Node -> Try(RocSyntax.Node, [NotClassLiteral])
+	class_literal = |constructors, parsed, call| {
 		args = ClassCheck.children(parsed, call)
 		function = args.first() ?? return Err(NotClassLiteral)
-		position = match ClassCheck.function_name(parsed, function) {
-			"Engine.class" | "Html.div" => 1
-			"Html.p" | "Html.h1" | "Html.h2" | "Html.h3" | "Html.section" | "Html.section_s" => 2
-			"Html.icon_button" => 3
-			_ => return Err(NotClassLiteral)
+		name = ClassCheck.function_name(parsed, function)
+		position = match constructors.find_first(|c| c.name == name) {
+			Ok(c) => c.position
+			Err(_) => return Err(NotClassLiteral)
 		}
-		var $literal = args.get(position) ?? return Err(NotClassLiteral)
+		ClassCheck.string_literal(parsed, args.get(position) ?? return Err(NotClassLiteral))
+	}
+
+	## Select the literal given to a record field named `class`, which is how
+	## an app's props carry a class to the function that draws it.
+	class_field : RocSyntax.Parsed, RocSyntax.Node -> Try(RocSyntax.Node, [NotClassLiteral])
+	class_field = |parsed, field| match ClassCheck.children(parsed, field) {
+		[name, value] if ClassCheck.text(parsed, name) == "class" => ClassCheck.string_literal(parsed, value)
+		_ => Err(NotClassLiteral)
+	}
+
+	## The string literal an expression is, through redundant parentheses.
+	string_literal : RocSyntax.Parsed, RocSyntax.Node -> Try(RocSyntax.Node, [NotClassLiteral])
+	string_literal = |parsed, expression| {
+		var $literal = expression
 		while $literal.kind == Parenthesized {
 			$literal = ClassCheck.children(parsed, $literal).first() ?? return Err(NotClassLiteral)
 		}
@@ -343,6 +395,42 @@ ClassCheck := [].{
 	}
 }
 
+## Lines of `platform/Html.roc` as they are written, for the tests.
+sample_html : Str
+sample_html =
+	\\	div = |cls, kids| Engine.element("div", [Engine.class(cls)], kids)
+	\\	section = |name, cls, kids| Engine.element("section", [Engine.attr("aria-label", name), Engine.class(cls)], kids)
+	\\	section_s = |name, cls, kids| Engine.element("section", [Engine.attr_s("aria-label", name), Engine.class(cls)], kids)
+	\\	h1 = |t, cls| Engine.element("h1", [Engine.class(cls)], [Engine.text(t)])
+	\\	h2 = |t, cls| Engine.element("h2", [Engine.class(cls)], [Engine.text(t)])
+	\\	p = |t, cls| Engine.element("p", [Engine.class(cls)], [Engine.text(t)])
+	\\	icon_button = |glyph, name, cls, h| Engine.element("button", [Engine.attr_s("aria-label", name), Engine.attr("type", "button"), Engine.class(cls), Engine.on_click(h)], [Engine.text(glyph)])
+	\\	div_s = |cls, kids| Engine.element("div", [Engine.class_s(cls)], kids)
+	\\	h3 = |t, cls| Engine.element("h3", [Engine.class(cls)], [Engine.text(t)])
+
+## The class words of a source, with the constructors of `sample_html`.
+sample_uses : Str -> Try(List(ClassCheck.Use), U64)
+sample_uses = |source| ClassCheck.uses(ClassCheck.constructors_of(sample_html) ?? [], source)
+
+## Every function of the module that passes a parameter to `Engine.class` is
+## a constructor at that parameter's place; one passing a signal to
+## `Engine.class_s` is not.
+expect ClassCheck.constructors_of(sample_html) == Ok([{ name: "Engine.class", position: 1 }, { name: "Html.div", position: 1 }, { name: "Html.section", position: 2 }, { name: "Html.section_s", position: 2 }, { name: "Html.h1", position: 2 }, { name: "Html.h2", position: 2 }, { name: "Html.p", position: 2 }, { name: "Html.icon_button", position: 3 }, { name: "Html.h3", position: 2 }])
+
+## A class passed from a definition the check cannot read is an error at its
+## line, never a constructor left out.
+expect [
+	ClassCheck.constructors_of("\tbox = |cls| Engine.element(\"div\", [Engine.class(\"fixed\")], [])\n"),
+	ClassCheck.constructors_of("\n\tbox = |cls|\n\t\tEngine.element(\"div\", [Engine.class(cls)], [])\n"),
+] == [Err(1), Err(3)]
+
+## A literal in a record field named `class` is checked, as an app's props
+## carry it; other fields and dynamic values are not.
+expect {
+	source = "props = { label: \"Open\", class: \"button button-sm\", style: \"wide\" }\nother = { class: (\"tall\"), title: \"x\" }\ndynamic = { class: chosen }\n"
+	sample_uses(source)? == [{ name: "button", line: 1 }, { name: "button-sm", line: 1 }, { name: "tall", line: 2 }]
+}
+
 ## CSS selector names decode every escape spelling, including supplementary
 ## Unicode and the replacement character required for invalid scalar values.
 expect {
@@ -379,7 +467,7 @@ expect {
 ## other attributes, function names inside strings or dynamic producers.
 expect {
 	source = "value = Html.div(\"outer\", [Html.p(\"prose is not a class\", \"small\"), Html.h1(\"heading\", \"title\"), Html.h2(\"heading\", \"title\"), Html.h3(\"heading\", \"title\"), Html.section(\"Region\", \"region\", []), Html.section_s(name, \"region\", []), Html.icon_button(\"↑\", name, \"button\", handler), Engine.class((\"direct\")), Engine.class(producer()), Engine.attr(\"title\", \"not-a-class\"), Engine.text(\"Engine.class(\\\"fake\\\")\")])\n# Engine.class(\"comment\")\n"
-	uses = ClassCheck.uses(source)?
+	uses = sample_uses(source)?
 	uses.map(|use| use.name).sort_with(|a, b| SpecSuite.compare_str(a, b)) == ["button", "direct", "outer", "region", "region", "small", "title", "title", "title"]
 }
 
@@ -388,14 +476,14 @@ expect {
 ## adjacent to dynamic text are fixed classes.
 expect {
 	source = "value = Engine.class(\"bg-\${color}-500\\ttext-sm \${extra} font-bold\\n\\u(00e9)clair\\u(000c)end\")\n"
-	ClassCheck.uses(source)?.map(|use| use.name) == ["text-sm", "font-bold", "éclair", "end"]
+	sample_uses(source)?.map(|use| use.name) == ["text-sm", "font-bold", "éclair", "end"]
 }
 
 ## Source lines refer to original bytes even when decoded escapes change
 ## lengths or create whitespace. Malformed Roc is refused rather than skipped.
 expect {
-	uses = ClassCheck.uses("# café\nvalue = Html.div(\n  \"ok\\nmissing\",\n  [],\n)\n")?
-	uses == [{ name: "ok", line: 3 }, { name: "missing", line: 3 }] and ClassCheck.uses("value = Engine.class(\"unfinished").is_err()
+	uses = sample_uses("# café\nvalue = Html.div(\n  \"ok\\nmissing\",\n  [],\n)\n")?
+	uses == [{ name: "ok", line: 3 }, { name: "missing", line: 3 }] and sample_uses("value = Engine.class(\"unfinished").is_err()
 }
 
 ## Missing words are diagnosed after CSS and Roc escape decoding agree.
@@ -403,7 +491,7 @@ expect {
 ## remain part of a class name under HTML's class-token whitespace rules.
 expect {
 	known = ClassCheck.selectors(".hover\\:red{} .\\e9 clair{} .x\\a0 y{} .\\0 {}")
-	uses = ClassCheck.uses("# heading\nvalue = Engine.class(\"hover:red \\u(00e9)clair x\\u(00a0)y missing \\u(0000)\")\n")?
+	uses = sample_uses("# heading\nvalue = Engine.class(\"hover:red \\u(00e9)clair x\\u(00a0)y missing \\u(0000)\")\n")?
 	ClassCheck.missing(known, uses) == [{ name: "missing", line: 2 }, { name: "\u(0000)", line: 2 }]
 }
 
@@ -411,12 +499,12 @@ expect {
 ## complete static word after an interpolation on the previous line is checked.
 expect {
 	source = "value = Engine.class(\n  \\\\head \${dynamic}\n  \\\\tail\n)\n"
-	ClassCheck.uses(source)?.map(|use| use.name) == ["head", "tail"]
+	sample_uses(source)?.map(|use| use.name) == ["head", "tail"]
 }
 
 ## Multiline strings preserve literal backslashes. A spelling that looks
 ## like a quoted-string escape remains one class word, not a newline.
 expect {
 	source = "value = Engine.class(\n  \\\\literal\\nname\n)\n"
-	ClassCheck.uses(source)? == [{ name: "literal\\nname", line: 2 }]
+	sample_uses(source)? == [{ name: "literal\\nname", line: 2 }]
 }

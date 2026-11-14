@@ -148,9 +148,15 @@ Builds go to `.build/`; set `ROC_SIGNALS_BUILD_DIR` to use another directory,
 for example to run two tasks at once.
 
 After Tailwind writes `www/static/signals.css`, the `site` task checks the
-examples' literal class arguments against that stylesheet. An undefined class
-fails the build with its source file and line. Complete static words around
-an interpolation are checked; dynamically built class names remain the app's.
+examples' class literals against that stylesheet: a string literal given as
+the class argument of `Engine.class` or of any `Html` function that passes
+one of its parameters to `Engine.class` (found in `platform/Html.roc`, so a
+new constructor is checked with no other edit), and one given to a record
+field named `class`, as an app's props carry it. An undefined class fails
+the build with its source file and line. Complete static words around an
+interpolation are checked. A class built by a function, or held in a value
+under another name before it reaches a class argument, is not a literal at a
+class position and remains the app's.
 
 ## What `check` runs
 
