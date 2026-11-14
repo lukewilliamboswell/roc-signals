@@ -3866,7 +3866,18 @@ SpecRunner := [].{
 	## The host services a replay uses: running a worker job in a child
 	## process, minting and counting file handles in the host's heap, and
 	## digesting bytes, and a monotonic clock for observation deadlines.
-	Host : { now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64 }
+	Host : { now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64, mute_dbg! : Bool => {} }
+
+	## The settle oracle evaluates readers speculatively. Mute only that
+	## evaluation and restore output before reporting either result. Real
+	## events, mounts and child jobs retain their ordinary native output.
+	check_settled! : Program(state), { host : Host, inst : S(state) } => Try({}, Str)
+	check_settled! = |program, { host, inst }| {
+		(host.mute_dbg!)(True)
+		result = SpecRunner.check_settled(program, inst)
+		(host.mute_dbg!)(False)
+		result
+	}
 
 	## Native observation yields between browser tasks and never changes app fault state.
 	pump_ui! : Program(state), Host, S(state) => Try(S(state), Str)
@@ -3909,7 +3920,7 @@ SpecRunner := [].{
 			Err(message) => return Err({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })
 		}
 		$s = SpecRunner.pump_ui!(program, host, $s).map_err(|message| { step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })?
-		match SpecRunner.check_settled(program, $s) {
+		match SpecRunner.check_settled!(program, { host, inst: $s }) {
 			Ok(_) => {}
 			Err(message) => return Err({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message: "after mount, ${message}" })
 		}
@@ -3921,7 +3932,7 @@ SpecRunner := [].{
 			# engine, not a step, so the browser runner has no equivalent.
 			match SpecRunner.step!(program, host, $s, step.op) {
 				Ok(s2) => {
-					match SpecRunner.check_settled(program, s2) {
+					match SpecRunner.check_settled!(program, { host, inst: s2 }) {
 						Ok(_) => {}
 						Err(message) => return Err({ step: $i, at: step, message })
 					}
@@ -4126,12 +4137,12 @@ SpecRunner := [].{
 
 	## A gesture is made from the ordinary pointer steps, with settling checked
 	## at every boundary rather than only at the final release or cancel.
-	walk_pointer : Program(state), S(state), { target : Scm.Loc, choice : U64 } -> Try(S(state), Str)
-	walk_pointer = |program, s, { target, choice }| {
+	walk_pointer! : Program(state), { host : Host, inst : S(state), target : Scm.Loc, choice : U64 } => Try(S(state), Str)
+	walk_pointer! = |program, { host, inst, target, choice }| {
 		kind = if (choice % 4 == 3) Touch else Mouse
 		id = if (kind == Mouse) 1.U32 else 2.U32
-		var $s = SpecRunner.one(program, s, PointerDown({ target, at: Centre, id, kind, button: Main, modifiers: 0 }))?
-		SpecRunner.check_settled(program, $s)?
+		var $s = SpecRunner.one(program, inst, PointerDown({ target, at: Centre, id, kind, button: Main, modifiers: 0 }))?
+		SpecRunner.check_settled!(program, { host, inst: $s })?
 		$s = SpecRunner.one(program, $s, HoldReports)?
 		var $last = { target, at: Centre, id }
 		var $count = 0.U64
@@ -4143,11 +4154,11 @@ SpecRunner := [].{
 			place = places.get((choice + $count) % places.len()) ?? crash "SpecRunner.walk_pointer: place index is bounded"
 			$last = { target: place.target, at: Percent({ x: if ($count % 2 == 0) 25 else 75, y: 50 }), id }
 			$s = SpecRunner.one(program, $s, PointerMove($last))?
-			SpecRunner.check_settled(program, $s)?
+			SpecRunner.check_settled!(program, { host, inst: $s })?
 			$count = $count + 1
 		}
 		$s = SpecRunner.one(program, $s, ReleaseReports)?
-		SpecRunner.check_settled(program, $s)?
+		SpecRunner.check_settled!(program, { host, inst: $s })?
 		if kind == Touch and choice % 8 == 3 {
 			$s = SpecRunner.one(program, $s, PointerCancel(id))?
 		} else if SpecRunner.find($s.dom, $last.target).is_ok() {
@@ -4156,7 +4167,7 @@ SpecRunner := [].{
 			pointer = $s.browser.pointers.get(id) ? |_| "a walk's active pointer disappeared"
 			$s = SpecRunner.pointer_up_at(program, $s, { pointer, target: $s.dom.root, at: Outside })?
 		}
-		SpecRunner.check_settled(program, $s)?
+		SpecRunner.check_settled!(program, { host, inst: $s })?
 		Ok($s)
 	}
 
@@ -4287,7 +4298,7 @@ SpecRunner := [].{
 				prior = b.env.media.find_first(|(name, _)| name == query) ? |_| "a live media subscription has no declared query"
 				Ok((SpecRunner.one(program, s, SetMedia({ query, matches: !prior.1 }))?, { what: "set-media ${query}", kind: Service }))
 			}
-			PointerGesture(target) => Ok((SpecRunner.walk_pointer(program, s, { target, choice: v })?, { what: "pointer gesture", kind: UserEvent }))
+			PointerGesture(target) => Ok((SpecRunner.walk_pointer!(program, { host, inst: s, target, choice: v })?, { what: "pointer gesture", kind: UserEvent }))
 			BurstOnline | BurstVisibility | BurstPort(_) => {
 				var $s = SpecRunner.one(program, s, HoldReports)?
 				var $count = 0.U64
@@ -4422,7 +4433,7 @@ SpecRunner := [].{
 	walk! = |program, host, specs, { steps, seed }| {
 		first = specs.first() ? |_| { step: 0, message: "a walk needs at least one spec" }
 		var $s = SpecRunner.start(program, { ..first, steps: [] }).map_err(|message| { step: 0, message })?
-		match SpecRunner.check_settled(program, $s) {
+		match SpecRunner.check_settled!(program, { host, inst: $s }) {
 			Ok(_) => {}
 			Err(message) => return Err({ step: 0, message: "after mount, ${message}" })
 		}
@@ -4437,7 +4448,7 @@ SpecRunner := [].{
 			failed = |message| Err({ step: $i + 1, message: "${message}\n  after: ${Str.join_with($trail, "\n         ")}" })
 			match done {
 				Ok((s2, { what, kind })) => {
-					match SpecRunner.check_settled(program, s2) {
+					match SpecRunner.check_settled!(program, { host, inst: s2 }) {
 						Ok(_) => {}
 						Err(message) => return failed("${what}: ${message}")
 					}
@@ -4612,7 +4623,7 @@ SpecRunner := [].{
 
 	## The host services the `spec` command uses, passed in by the test
 	## program (the test platform's `Cli`), so this package stays pure.
-	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64 }
+	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64, mute_dbg! : Bool => {} }
 
 	## Bounded diagnostic rendering is best effort only in an existing failure
 	## report. A renderer refusal remains visible instead of masking stale state.
@@ -4896,7 +4907,7 @@ SpecRunner := [].{
 						(io.stdout!)("${JsonOut.render(Scm.to_json(id, spec))}\n")
 					}
 					Ok(spec) => {
-						host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes! }
+						host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes!, mute_dbg!: io.mute_dbg! }
 						outcome = match opts.soak {
 							NoSoak => SpecRunner.run!(program, host, spec)
 							Soak(soak) =>
@@ -4973,7 +4984,7 @@ SpecRunner := [].{
 				return 2
 			}
 		}
-		host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes! }
+		host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes!, mute_dbg!: io.mute_dbg! }
 		t0 = (io.now_ns!)()
 		allocations = (host.live_allocations!)()
 		bytes = (host.live_bytes!)()

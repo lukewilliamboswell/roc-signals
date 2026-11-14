@@ -1,4 +1,5 @@
 import Core
+import Engine
 import Effects
 
 ## Building a file in a worker task's job (design.md, "Workers"). A job
@@ -32,6 +33,6 @@ Files := [].{
 	## `Files.build!({ name, start_from: From(previous) })` gives a new file
 	## that is the previous one followed by what this job appends, and the
 	## previous file is unchanged whatever happens to this job.
-	build! : Core.BuildProps => Core.Builder
+	build! : BuildProps => Engine.Builder
 	build! = |props| Core.open_builder!(Effects.job, props)
 }

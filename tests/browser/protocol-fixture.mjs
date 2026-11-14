@@ -1,29 +1,47 @@
-// Independent test-owned protocol 18 declarations. Raw command contracts keep
-// their own numbers; no Roc producer metadata is imported to make them agree.
+// Independent test-owned protocol19 declarations. Raw command contracts keep
+// their own numbers; neither production facts nor the Roc encoder is imported.
 const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
-const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
-const list = values => [...word(values.length), ...values.flat()];
-const names = values => list(values.map(text));
-const codes = (values, first = 1) => list(values.map((name, i) => [i + first, ...text(name)]));
-const section = (tag, body) => [tag, ...word(body.length), ...body];
-const fields = [
-  codes(["INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD", "COMMENT"]),
-  list([
+const utf8 = new TextEncoder();
+export const cborFixtureHead = (major, size) => {
+  if (!Number.isInteger(size) || size < 0 || size > 0xffffffff) throw new Error("fixture integer bound");
+  if (size < 24) return [major * 32 + size];
+  if (size <= 255) return [major * 32 + 24, size];
+  if (size <= 65535) return [major * 32 + 25, size >>> 8, size & 255];
+  return [major * 32 + 26, size >>> 24, (size >>> 16) & 255, (size >>> 8) & 255, size & 255];
+};
+const compareBytes = (left, right) => {
+  for (let i = 0; i < Math.min(left.length, right.length); i++) if (left[i] !== right[i]) return left[i] - right[i];
+  return left.length - right.length;
+};
+export const encodeProtocolFixture = value => {
+  if (typeof value === "number") return cborFixtureHead(0, value);
+  if (typeof value === "string") { const bytes = [...utf8.encode(value)]; return [...cborFixtureHead(3, bytes.length), ...bytes]; }
+  if (Array.isArray(value)) return [...cborFixtureHead(4, value.length), ...value.flatMap(encodeProtocolFixture)];
+  const pairs = Object.entries(value).map(([key, item]) => ({ key: encodeProtocolFixture(key), value: item })).sort((left, right) => compareBytes(left.key, right.key));
+  return [...cborFixtureHead(5, pairs.length), ...pairs.flatMap(pair => [...pair.key, ...encodeProtocolFixture(pair.value)])];
+};
+export const protocolFixtureSectionOf = facts => {
+  const body = encodeProtocolFixture(facts);
+  return Uint8Array.from([12, ...word(body.length), ...body]);
+};
+const codes = (values, first = 1) => values.map((name, i) => ({ code: i + first, name }));
+export const protocolFixtureFacts = {
+  ops: codes(["INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD", "COMMENT"]),
+  kinds: [
     ["TEXT", []], ["FILES", ["change", "drop", "paste"]], ["POINTER", ["pointerdown", "pointermove", "pointerup", "pointercancel"]],
     ["KEY", ["keydown", "keyup"]], ["OPEN_STATE", ["close", "toggle", "change"]], ["SCROLL", ["scroll"]], ["SIZE", ["size"]], ["SEEN", ["seen"]], ["PASTE", ["paste"]],
-  ].map(([name, events], i) => [i + 1, ...text(name), ...names(events)])),
-  list(["PREVENT", "STOP", "CAPTURE", "PACED", "DOCUMENT", "AHEAD"].map((name, i) => [...word(1 << i), ...text(name)])),
-  list([
+  ].map(([name, events], i) => ({ code: i + 1, name, events })),
+  policies: ["PREVENT", "STOP", "CAPTURE", "PACED", "DOCUMENT", "AHEAD"].map((name, i) => ({ bit: 1 << i, name })),
+  properties: [
     ["value", ["input", "textarea", "select", "option"]], ["checked", ["input"]], ["pointer_zone", []], ["keymap_down", []], ["keymap_up", []], ["shown", ["dialog"]], ["popover_shown", []],
-  ].map(([name, elements], i) => [i + 1, ...text(name), ...names(elements)])),
-  codes(["default", "no-store", "reload", "no-cache", "force-cache"]), codes(["same-origin", "include"]),
-  codes(["HTML", "SVG", "MATHML", "NONE", "URI"], 0),
-  names(["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "range", "color", "image"]),
-  names(["none", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed", "unavailable", "executor"]),
-  codes(["ELEMENT", "TEXT", "COMMENT"]),
-  codes(["CHILDREN", "TEMPLATE_CONTENT"], 0),
-];
-export const protocolFixtureSection = Uint8Array.from(section(12, fields.flatMap((body, i) => section(i + 1, body))));
+  ].map(([name, elements], i) => ({ index: i + 1, name, elements })),
+  http_cache: codes(["default", "no-store", "reload", "no-cache", "force-cache"]), http_credentials: codes(["same-origin", "include"]),
+  namespaces: codes(["HTML", "SVG", "MATHML", "NONE", "URI"], 0),
+  text_entry_excluded: ["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "range", "color", "image"],
+  fault_classes: ["none", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed", "unavailable", "executor"],
+  template_nodes: codes(["ELEMENT", "TEXT", "COMMENT"]), child_containers: codes(["CHILDREN", "TEMPLATE_CONTENT"], 0),
+};
+export const protocolFixtureSection = protocolFixtureSectionOf(protocolFixtureFacts);
 
 // Validate the fixture through ordinary declaration reading and mount. Tests
 // that specifically bypass boot can then reuse these validated bindings while
@@ -42,10 +60,10 @@ export async function installProtocolFixture(page) {
       const memory = new WebAssembly.Memory({ initial: 2 });
       let length = 0;
       const x = {
-        memory, protocol_version: () => 18,
+        memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 19,
         boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
         cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
-        init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; },
+        init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },
         files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop() {},
       };
       const root = document.createElement("div");

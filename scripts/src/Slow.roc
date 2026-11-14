@@ -7,10 +7,10 @@ import Targets
 ## The slow suite: the fuzz targets' examples, the walks and the soaks.
 Slow := [].{
 
-	## The apps soaked in Chrome: every example, and the worker app (soak.mjs
-	## holds its jobs and checks its worker instance flat too).
+	## The apps soaked in Chrome: every example and the worker/debug fixtures
+	## (soak.mjs holds jobs and checks their worker instances flat too).
 	browser_soak_apps : List(Str)
-	browser_soak_apps = SpecSuite.apps.append("worker-search")
+	browser_soak_apps = SpecSuite.apps.append("worker-search").append("dbg")
 
 	## A native soak: one app's round-trip spec, which the app's native spec
 	## runner repeats on the engine alone with flat live allocations and
@@ -36,6 +36,7 @@ Slow := [].{
 		{ example: "worker-search", spec: "round-trip-search-and-report" },
 		{ example: "table", spec: "round-trip-edit-scroll-and-rewrite" },
 		{ example: "prerender", spec: "round-trip" },
+		{ example: "dbg", spec: "round-trip-dbg" },
 	]
 
 	## How many times a native soak repeats its round trip.
@@ -58,14 +59,14 @@ Slow := [].{
 		Ok(List.map2(Slow.native_soaks, results, |s, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["native soak ${s.example} ${s.spec}: ${r.output.trim()}"]).join())
 	}
 
-	## The apps walked: every spec app but the four whose pages offer a
+	## The apps walked: every spec app except those whose pages offer a
 	## contract error on purpose (a job of an unregistered task, a port used
 	## as the wrong kind, an outbox posted twice in a turn, duplicate control
-	## references or a focus loop), which a walk
+	## references, a focus loop or a debug fault control), which a walk
 	## reaches within a few hundred steps and which, as it must, poisons
 	## the instance. Their specs and Chrome contract tests cover them.
 	walk_apps : List(Str)
-	walk_apps = SpecSuite.spec_apps.drop_if(|name| ["workers", "ports", "outbox", "controls"].contains(name))
+	walk_apps = SpecSuite.spec_apps.drop_if(|name| ["workers", "ports", "outbox", "controls", "dbg"].contains(name))
 
 	## One walk: an app, how many steps, and from which seed.
 	Walk : { name : Str, steps : U64, seed : U64 }

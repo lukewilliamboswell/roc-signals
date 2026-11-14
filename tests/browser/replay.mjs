@@ -53,6 +53,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { launch } from "./cdp.mjs";
+import { applicationErrors, DBG_PRINT_FAILURE } from "./replay-errors.mjs";
 import { verifyPointerRecords, verifyClickEvents, beginPointerInput, endPointerInput } from "./pointer-log.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -336,8 +337,7 @@ const JOB_BOUND_MS = 30000;
 // The runtime reports every lost worker job on the console with this prefix
 // (and the native runner on stderr). A lost job is a result the app sees,
 // not a page error: the spec asserts what the app does with it.
-const WORKER_FAULT = "roc worker fault [";
-const pageErrors = (page) => page.errors.filter((e) => !e.startsWith(WORKER_FAULT));
+const pageErrors = (page) => applicationErrors(page.errors);
 
 // Sum of the engine work counters `ks` (metric(16 + k)).
 const counters = (page) => page.evaluate(() => window.__rt.workRecord().counters.map((c) => c.toString()));
@@ -1539,6 +1539,7 @@ for (const spec of specs) {
   }
   const context = await browser.createBrowserContext();
   const page = await context.newPage();
+  page.on("console", (message) => { if (message.text().startsWith("[dbg") || message.text().startsWith(DBG_PRINT_FAILURE)) console.error(message.text()); });
   const t0 = Date.now();
   let failed = null;
   let i = 0;

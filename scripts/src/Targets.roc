@@ -215,7 +215,7 @@ Targets := [].{
 		Proc.run!({ program: o.tooling, args: ["scripts/test_parallel.roc"], cwd: o.root })?
 		Proc.run!({ program: o.tooling, args: ["scripts/test_protocol.roc"], cwd: o.root })?
 		Proc.run!({ program: o.tooling, args: ["scripts/test_worker_entries.roc"], cwd: o.root })?
-		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs", "protocol-facts.mjs", "conduit-urls.mjs"] {
+		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs", "protocol-facts.mjs", "conduit-urls.mjs", "dbg.test.mjs", "replay-errors.test.mjs"] {
 			code = Proc.status!({ program: o.node, args: ["tests/runtime/${script}"], cwd: o.root })?
 			if code != 0 {
 				$failures = $failures.append("${script} failed (exit ${code.to_str()})")
@@ -240,7 +240,8 @@ Targets := [].{
 	native_contracts! : SpecSuite.Options => Try(List(Str), _)
 	native_contracts! = |o| {
 		code = Proc.status!({ program: o.node, args: ["tests/native/file-lifetimes.mjs", "--runner", SpecSuite.runner_of(o, "files")], cwd: o.root })?
-		Ok(if (code == 0) [] else ["native file lifetime contracts failed (exit ${code.to_str()})"])
+		debug_code = Proc.status!({ program: o.node, args: ["tests/native/dbg-output.mjs", "--runner", SpecSuite.runner_of(o, "dbg")], cwd: o.root })?
+		Ok((if (code == 0) [] else ["native file lifetime contracts failed (exit ${code.to_str()})"]).concat(if (debug_code == 0) [] else ["native dbg output contracts failed (exit ${debug_code.to_str()})"]))
 	}
 
 	## Build the deliberately crashing app only for its native query contract.
@@ -311,6 +312,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "persistence-browser.mjs", ["--wasm", services, "--runner", SpecSuite.runner_of(o, "services")])?)
 				.concat(Targets.browser!(o, "transitions-browser.mjs", ["--wasm", services])?)
 				.concat(Targets.browser!(o, "workers-browser.mjs", ["--wasm", workers])?)
+				.concat(Targets.browser!(o, "dbg-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "dbg")])?)
 				.concat(Targets.browser!(o, "monitor-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "workers-scaling.mjs", ["--wasm", SpecSuite.wasm_of(o, "worker-lab"), "--mode", "smoke"])?)
 				.concat(Targets.browser!(o, "files-browser.mjs", ["--wasm", files])?)

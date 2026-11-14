@@ -38,6 +38,16 @@ Nothing outside the site uses them.
 is pinned by package URL in the platform and tooling. Copyright © 2023 Luke Boswell and subsequent authors; Universal
 Permissive License (UPL), Version 1.0. Its LICENSE accompanies that package.
 
+Protocol consumer metadata is encoded with
+[roc-cbor 0.6.2](https://github.com/lukewilliamboswell/roc-cbor/releases/tag/0.6.2),
+pinned by its content-addressed bundle URL in both platform roots. Copyright
+© 2026 Heorhii Bulakh and subsequent roc-cbor authors
+(<https://github.com/Karakatiza666/roc-cbor/graphs/contributors>); Universal
+Permissive License (UPL), Version 1.0. The compiler fetches this dependency;
+its source is not copied into this repository. The package files retain the
+copyright notice and UPL reference; the complete license is in the upstream
+repository's `LICENSE`.
+
 The native keyboard oracle uses roc-lang/unicode 4.3.2, pinned by bundle URL
 in both platform roots. Copyright © 2019 Richard Feldman and subsequent Roc
 authors; UPL Version 1.0. Its Unicode 17 data is covered by the Unicode License

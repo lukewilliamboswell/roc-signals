@@ -8,6 +8,7 @@ import pf.Core
 import pf.Dom
 import pf.Engine
 import pf.SpecRunner
+import pf.WorkerCodec
 import pf.Wire
 import pf.Worker
 
@@ -328,8 +329,8 @@ tripler = Worker.task({ name: "roc-signals.test/structure/triple", run!: |bytes|
 tripled : List(U8) -> List(U8)
 tripled = |input| {
 	bytes : Wire.Bytes
-	bytes = Wire.decode(input) ?? crash "structure: a job's input is not the task's"
-	Wire.encode(Wire.Bytes.from_list(triple(bytes.to_list()))).append(0)
+	bytes = WorkerCodec.decode(input) ?? crash "structure: a job's input is not the task's"
+	WorkerCodec.encode(Wire.Bytes.from_list(triple(bytes.to_list()))).append(0)
 }
 
 ## A layer that follows a worker job for its input: the output's byte sum,

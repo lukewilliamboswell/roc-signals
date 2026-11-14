@@ -145,14 +145,16 @@ See [Scrolling and layout](@/docs/effects-and-browser.md#scrolling-and-layout).
 
 ## Wire
 
-`Wire` is the binary format of worker payloads. Apps rarely call it: a
-task's types decide what is sent.
+`Wire` supplies the derived types of worker payloads. A task's types decide
+what is sent; encoding and decoding belong to the worker boundary, rather
+than an app API for storing bytes. Payloads are one strict CBOR item within
+one compiled module.
 
 | Area | Symbols |
 |---|---|
-| Payloads | `Sendable`, `encode`, `try_encode`, `decode`, `Error` |
+| Payloads | `Sendable`, `Error` (`InvalidCbor(position)`, `MissingRequiredField(name)`) |
 | Bulk bytes | `Bytes`, `Bytes.from_list`, `Bytes.to_list` |
-| Derivation | `Format`, `State`: the hooks the compiler's codec derivation calls; apps never use them |
+| Custom codecs | `Format`, `Enc`, `State`, `Items`, `Fields`, `Entries`: opaque state types and the hooks used by codec derivation |
 
 ## Port
 
@@ -317,6 +319,7 @@ optional.
 
 | Option | Default | What it sets or bounds | Guide |
 |---|---|---|---|
+| `dbg` | `"console"` | `"off"` suppresses debug values and fault text; the first observation explains that choice once. Other values refuse mount | [Debugging](@/docs/debugging.md) |
 | `onFault` | none | Called with the diagnostic when the app breaks a contract and stops | [Getting Started](@/docs/getting-started.md) |
 | `viewTransitions` | `"document"` | `"document"` allows marked batches to start document-wide browser view transitions; `"off"` applies directly. Other values refuse mount | [Animation](@/docs/effects-and-browser.md#animation) |
 | `maxWorkers` | the core count, at most 8 | Workers alive at once; further jobs wait in order | [Workers](@/docs/workers.md#serving-the-app) |
@@ -453,7 +456,7 @@ it mounts.
 ## Protocol
 
 The command stream, event records, boot bytes and program declarations are versioned together. The
-current protocol is version 18: every nonempty page batch starts with a flags
+current protocol is version 19: every nonempty page batch starts with a flags
 byte, and a marked batch ends with `TRANSITION` (opcode 24). Worker answers
 have no page-batch header. Session storage adds section 11, and `GUARD` is
 opcode 25. Expanded names carry namespace, prefix and local name; elements
@@ -463,3 +466,13 @@ Clipboard and failed storage writes have typed results; paste
 text has its own payload kind. HTTP carries cache, credentials and an optional
 progress interval; transfer reports use tag 26 and counter 47. The full wire protocol is Appendix B of
 [design.md](https://github.com/lukewilliamboswell/roc-signals/blob/main/design.md).
+
+### Debug observations on faults
+
+`onFault` receives the same object as `runtime.poisoned`. Its `dbg` is
+`{ dropped, entries: [{ text, bytes }] }` only for a call that trapped after
+writing debug text; otherwise it is `null`. `bytes` is the full UTF-8 length,
+not merely the retained prefix. `onWorkerFault` has the same field for a
+reported job fault. With `dbg: "off"`, both fields are always `null`. Printing
+failure disables console output for the mount, but later fault text is still
+read. These are observations, never app results or scheduling inputs.

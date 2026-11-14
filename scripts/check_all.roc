@@ -59,6 +59,8 @@ main! = |_args| {
 	Proc.note!("== platform JavaScript sizes")
 	$problems = $problems.concat(Sizes.check_runtime!({ root: o.root, node: o.node })?)
 
+	$problems = $problems.concat(Checks.platform_packages!(o)?)
+
 	Proc.note!("== API docs")
 	$problems = $problems.concat(ApiDocs.check!({})?)
 	$problems = $problems.concat(ApiDocs.internal_roots!(o)?)
@@ -76,6 +78,7 @@ main! = |_args| {
 	Checks.prepare_platform!(o)?
 	$problems = $problems.concat(Checks.key_contracts!(o)?)
 	$problems = $problems.concat(check!({ program: o.zig, args: ["test", "platform/host/resources.zig"], cwd: "." }, "zig test platform/host/resources.zig")?)
+	$problems = $problems.concat(check!({ program: o.zig, args: ["test", "platform/host/dbg.zig"], cwd: "." }, "zig test platform/host/dbg.zig")?)
 	$problems = $problems.concat(cross_links!(o)?)
 	$problems = $problems.concat(fuzz_smoke!(o)?)
 

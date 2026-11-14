@@ -40,8 +40,8 @@ try {
       const declarations=join([section(2,u32(0)),section(5,u32(0)),section(6,u32(0)),section(10,new Uint8Array([days&255,days>>8])),section(11,u32(0)), __protocolFixtureSection]);
       new Uint8Array(memory.buffer).set(declarations);
       let mounted=false, length=0, boot;
-      const x={ memory,protocol_version:()=>PROTOCOL_VERSION,boot_keys:()=>{},cmd_ptr:()=>0,cmd_len:()=>mounted?0:declarations.length,
-        payload_reserve:n=>{length=n;return 65536;},init:()=>{boot=new Uint8Array(memory.buffer,65536,length).slice();mounted=true;},files_released:()=>0,metric:()=>0n,work_len:()=>0,fault:()=>0,drop:()=>{} };
+      const x={ memory,dbg_len: () => 0, dbg_ptr: () => 0, protocol_version:()=>PROTOCOL_VERSION,boot_keys:()=>{},cmd_ptr:()=>0,cmd_len:()=>mounted?0:declarations.length,
+        payload_reserve:n=>{length=n;return 65536;},init:()=>{boot=new Uint8Array(memory.buffer,65536,length).slice();mounted=true;return 0;},files_released:()=>0,metric:()=>0n,work_len:()=>0,fault:()=>0,drop:()=>{} };
       const root=document.createElement("div"); document.body.append(root);
       const readers={...defaults,...environment};
       for(const key of Object.keys(readers))if(readers[key]===undefined)delete readers[key];

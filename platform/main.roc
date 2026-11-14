@@ -28,7 +28,7 @@ platform ""
 		[Store : st] for main : Engine.Program(st)
 	}
 	exposes [Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, Wire, Worker]
-	packages { parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.2/2H2hePe5iYTZaGdG9MbMqhS29yg4Zxxr7dPEbZJ96fME.tar.zst", unicode: "https://github.com/roc-lang/unicode/releases/download/4.3.2/3gvgiWm6BShjHKbNV2zRH6fhC5ZvScZgWF7AnVDWHSdd.tar.zst" }
+	packages { cbor: "https://github.com/lukewilliamboswell/roc-cbor/releases/download/0.6.2/2xhPdWbS9DQqooG9zXnTqBk9Vkx3LqLsPiEkVxAZ2skD.tar.zst", parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.2/2H2hePe5iYTZaGdG9MbMqhS29yg4Zxxr7dPEbZJ96fME.tar.zst", unicode: "https://github.com/roc-lang/unicode/releases/download/4.3.2/3gvgiWm6BShjHKbNV2zRH6fhC5ZvScZgWF7AnVDWHSdd.tar.zst" }
 	provides {
 		"roc_engine_ask": ask_for_host!,
 		"roc_engine_drop": drop_for_host,
@@ -55,6 +55,7 @@ platform ""
 		"roc_test_live_bytes": Cli.live_bytes!,
 		"roc_test_live_files": Cli.live_files!,
 		"roc_test_mint_files": Cli.mint_files!,
+		"roc_test_mute_dbg": Cli.mute_dbg!,
 		"roc_test_now_ns": Cli.now_ns!,
 		"roc_test_read_file": Cli.read_file!,
 		"roc_test_sha256": Cli.sha256!,
@@ -66,7 +67,7 @@ platform ""
 		inputs_dir: "targets/",
 		wasm32: {
 			inputs: ["host.wasm", app],
-			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "work", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
+			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "work", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len", "dbg_ptr", "dbg_len"],
 		},
 		x64musl: { inputs: ["rcrt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
 		arm64mac: { inputs: ["libhost.a", app] },
@@ -208,4 +209,4 @@ drop_for_host = |_boxed, _buf, _wbuf| {}
 ## The native spec runner: `SpecRunner.main!` over this app's `main`, with
 ## the native host's file and output services.
 spec_main_for_host! : List(Str) => I32
-spec_main_for_host! = |args| SpecRunner.main!(Core.driver(main), { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns!, work!: Cli.work!, mint_files!: Cli.mint_files!, live_files!: Cli.live_files!, sha256!: Cli.sha256!, live_allocations!: Cli.live_allocations!, live_bytes!: Cli.live_bytes! }, args)
+spec_main_for_host! = |args| SpecRunner.main!(Core.driver(main), { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns!, work!: Cli.work!, mint_files!: Cli.mint_files!, live_files!: Cli.live_files!, sha256!: Cli.sha256!, live_allocations!: Cli.live_allocations!, live_bytes!: Cli.live_bytes!, mute_dbg!: Cli.mute_dbg! }, args)

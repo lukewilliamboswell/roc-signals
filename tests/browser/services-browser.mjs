@@ -73,7 +73,7 @@ async function open(prelude = "") {
     // The version.
     const x0 = await fresh();
     out.version = [x0.protocol_version(), PROTOCOL_VERSION];
-    const fake = { ...x0, protocol_version: () => PROTOCOL_VERSION + 1 };
+    const fake = { ...x0, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => PROTOCOL_VERSION + 1 };
     const root = document.createElement("div");
     try {
       new RocEngineRuntime(fake, root).mount();
@@ -172,7 +172,7 @@ async function open(prelude = "") {
       boot_keys: () => { declarationsPtr = empty.payload_reserve(declarations.length); new Uint8Array(empty.memory.buffer, declarationsPtr, declarations.length).set(declarations); },
       cmd_ptr: () => declarationsPtr,
       cmd_len: () => initialized ? 0 : declarations.length,
-      init: () => { emptyBytes = new Uint8Array(empty.memory.buffer, capture.ptr, capture.len).slice(); initialized = true; },
+      init: () => { emptyBytes = new Uint8Array(empty.memory.buffer, capture.ptr, capture.len).slice(); initialized = true; return 0; },
       payload_reserve: (n) => { capture.len = n; capture.ptr = empty.payload_reserve(n); return capture.ptr; },
     };
     const rt = new RocEngineRuntime(capture, document.createElement("div"), { window: { location: { pathname: "/test", search: "?a=1", hash: "#h" } }, storage: { getItem: (key) => key === "saved" ? "seed" : null }, sessionStorage: { getItem: () => null }, environment: { online: () => false, visible: () => true, now: () => 0n, seed: () => new Uint8Array(16), languages: () => ["en-US"], timeZone: () => utc } });
@@ -186,7 +186,7 @@ async function open(prelude = "") {
       let mounted = false;
       const memory = new WebAssembly.Memory({ initial: 1 });
       new Uint8Array(memory.buffer).set(bytes);
-      const exports = { memory, protocol_version: () => PROTOCOL_VERSION, boot_keys: () => {}, cmd_ptr: () => 0, cmd_len: () => bytes.length, init: () => { mounted = true; } };
+      const exports = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => PROTOCOL_VERSION, boot_keys: () => {}, cmd_ptr: () => 0, cmd_len: () => bytes.length, init: () => { mounted = true; return 0; } };
       try { new RocEngineRuntime(exports, document.createElement("div")).mount(); out.declarations.push(false); }
       catch (error) { out.declarations.push(!mounted && error.message.includes("declaration section")); }
     }

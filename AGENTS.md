@@ -15,12 +15,12 @@
   changes, no guessing or recovery that changes meaning, work proportional to
   the changed set rather than total tree or table size, a pure Roc engine
   behind a host
-  that only allocates, stages payloads, backs handles and classifies
+  that only allocates, stages payloads, backs handles, keeps a call’s bounded `dbg` text and classifies
   faults (and, in a worker instance, performs a job's hosted effects on
   handles), typed site storage with no host-held Roc values beyond the opaque
   boxes `design.md` names (the page's engine state, and one prepared state in
-  a worker instance), and the command stream as the page instance's only
-  output.
+  a worker instance), and the command stream as the page instance’s only output that decides
+  anything.
 - If requested work conflicts with the design, identify the conflict explicitly.
   Do not conceal it in compatibility glue, a special case, logic in the host or
   runtime, or an undocumented boundary convention.
@@ -141,7 +141,7 @@
 - Keep the host to its job. `host.zig` holds one opaque boxed engine state (in
   a worker instance, at most one opaque boxed prepared state instead), the
   last command buffer, at most one staged payload, the typed heaps behind
-  handles, the allocator and the fault state, and in a worker
+  handles, the bounded text of the last call’s `dbg`s, the allocator and the fault state, and in a worker
   instance the flag that says a job (or a preparation) is running. It clears
   its slots before each call into Roc and never interprets the state, the
   commands or any Roc value. A job's hosted effects are the platform's closed
@@ -183,6 +183,8 @@
   a view transition performs effects that name no node when the call returns.
   Its DOM and node effects follow in the guarded update callback; no page-instance Roc
   call or payload staging may invalidate the waiting command buffer.
+  A call’s `dbg` text is not part of its batch: it is readable after return
+  or trap, printed passively, and nothing is decided from it.
 - Bound host-retained and in-flight work. Define the bound and the behavior at
   the bound — typed refusal, classified diagnostic, cancellation, teardown —
   before adding a queue, table, request kind, timer class or runtime registry.

@@ -1,5 +1,5 @@
-// Independent protocol18 replacement contracts for an explicitly marked picture.
-// This stage does not claim adoption or protocol19 support.
+// Independent protocol19 replacement contracts for an explicitly marked picture.
+// CBOR facts do not add adoption; this stage applies ordinary replacement.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -21,7 +21,7 @@ const vector = entries => [...leb(entries.length), ...entries.flat()];
 const moduleBytes = (() => {
   const names = ["protocol_version", "boot_keys", "cmd_ptr", "cmd_len", "payload_reserve", "init", "files_released", "fault", "work_len", "metric", "drop"];
   const bodies = [
-    [0x41, 18],
+    [0x41, 19],
     [0x41, 0, 0x24, 0, 0x41, ...leb(declarations.length), 0x24, 1],
     [0x23, 0], [0x23, 1], [0x41, ...leb(65536)],
     [0x41, ...leb(16384), 0x24, 0, 0x41, 1, 0x24, 1],
@@ -62,7 +62,7 @@ try {
     const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const checks = [], check = (name, ok) => checks.push([name, !!ok]);
-    const fixture = ({ marked = true, batch = [0], version = 18, trap = false, authoredInert = null, ownedInert = false, invalidInert = false, namespacedInert = false, beforeInit = () => {} } = {}) => {
+    const fixture = ({ marked = true, batch = [0], version = 19, trap = false, authoredInert = null, ownedInert = false, invalidInert = false, namespacedInert = false, beforeInit = () => {} } = {}) => {
       const root = document.createElement("div");
       if (marked) root.setAttribute("data-roc-picture", "");
       if (authoredInert !== null) root.setAttribute("inert", authoredInert);
@@ -75,10 +75,10 @@ try {
       let length = 0, events = 0, initCalls = 0;
       const faults = [];
       const write = bytes => { new Uint8Array(memory.buffer).set(bytes); length = bytes.length; };
-      const x = { memory, protocol_version: () => version,
+      const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => version,
         boot_keys() { write(declarations); }, cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
-        init() { initCalls++; beforeInit(root, old); if (trap) throw new Error("init trap"); write(batch); },
-        event() { events++; write([0]); }, files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
+        init() { initCalls++; beforeInit(root, old); if (trap) throw new Error("init trap"); write(batch); return 0; },
+        event() { events++; write([0]); return 0; }, files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
       };
       const runtime = new RocEngineRuntime(x, root, { manualEffects: true, onFault: fault => faults.push(fault) });
       return { root, old, comment, oldText, runtime, faults, get events() { return events; }, get initCalls() { return initCalls; }, cleanup() { runtime.unmount(); root.remove(); } };

@@ -968,3 +968,17 @@ build/fuzz-csv explore corpus --time=60  # a minute of exploration
 
 A round trip, a spec that takes the app back to where it started, stays an
 ordinary spec like any other.
+
+## Debug output
+
+Both runners print real `dbg` evaluations, without a spec step to observe
+them. Browser replay forwards page-console `[dbg` lines to its standard
+error. Native settle checks mute their speculative reader evaluations, so
+a reader prints once for each real evaluation. Observation differences
+remain: native prints every entry while Chrome retains the newest 4096 entry
+bytes per call; native prepares afresh for every job while a browser worker
+may reuse prepared state. A `dbg` reached while constructing a top-level
+constant or checking the default mount can print during compilation instead
+of a runner invocation. Declaration evaluation counts are not guaranteed.
+None changes a job answer or an assertion’s meaning.
+See [Debugging](@/docs/debugging.md) for faults, bounds and deployment settings.

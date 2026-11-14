@@ -73,8 +73,8 @@ try {
       let staged = null, initialized = false;
       const declarations = declarationOverride ?? join(section(2, u32(0)), section(5, u32(0)), section(6, join(u32(queries.length), ...queries.map(str))), section(10, new Uint8Array([110, 1])), section(11, u32(0)), __protocolFixtureSection);
       new Uint8Array(memory.buffer).set(declarations);
-      const exports = { memory, protocol_version: () => PROTOCOL_VERSION, boot_keys: () => {}, cmd_ptr: () => 0, cmd_len: () => initialized ? 0 : declarations.length, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {},
-        payload_reserve: (length) => { staged = { start: 65536, length }; return staged.start; }, init: () => { initialized = true; } };
+      const exports = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => PROTOCOL_VERSION, boot_keys: () => {}, cmd_ptr: () => 0, cmd_len: () => initialized ? 0 : declarations.length, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {},
+        payload_reserve: (length) => { staged = { start: 65536, length }; return staged.start; }, init: () => { initialized = true; return 0; } };
       const root = document.createElement("div"); document.body.append(root);
       const rt = new RocEngineRuntime(exports, root, { manualEffects: true, environment });
       const calls = []; rt.deliver = (node, handler, bytes) => calls.push([node, handler, [...bytes]]);

@@ -106,6 +106,13 @@ creating a row is one `INST` command carrying only its holes' values.
 The batch becomes visible only when the call returns. If the call traps,
 nothing from it is applied.
 
+The compiled module supplies its consumer vocabulary in a bounded deterministic
+CBOR declaration, using the released roc-cbor package pinned by both platform
+roots. The runtime validates it and binds every supported role before app
+initialization. Names are shared; command layouts and semantics remain
+independent in the engine and native oracle. This metadata transport does not
+change the page command stream into CBOR.
+
 ## Work
 
 Every call also returns cumulative counters: commands by kind, closures

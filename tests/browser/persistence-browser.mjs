@@ -53,8 +53,8 @@ async function fixture() {
       const declarations = join(section(2, join(u32(localKeys.length), ...localKeys.map(str))), section(5, u32(0)), section(6, u32(0)), section(10, new Uint8Array([0, 0])), section(11, join(u32(sessionKeys.length), ...sessionKeys.map(str))), __protocolFixtureSection);
       new Uint8Array(memory.buffer).set(declarations);
       let length = declarations.length, payloadLength = 0, boot;
-      const exports = { memory, protocol_version: () => PROTOCOL_VERSION, boot_keys: () => {}, cmd_ptr: () => 0, cmd_len: () => length,
-        payload_reserve: count => { payloadLength = count; return 65536; }, init: () => { boot = new Uint8Array(memory.buffer, 65536, payloadLength).slice(); length = 0; },
+      const exports = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => PROTOCOL_VERSION, boot_keys: () => {}, cmd_ptr: () => 0, cmd_len: () => length,
+        payload_reserve: count => { payloadLength = count; return 65536; }, init: () => { boot = new Uint8Array(memory.buffer, 65536, payloadLength).slice(); length = 0; return 0; },
         files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
       const root = document.createElement("div"); document.getElementById("app").append(root);
       const rt = new RocEngineRuntime(exports, root, { manualEffects: true, ...options, environment: { now: () => 0, seed: () => new Uint8Array(16), ...options.environment } });

@@ -181,8 +181,46 @@ export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.
     return next;
 }
 
+var dbg_muted: bool = false;
+
+/// The runner brackets speculative settle evaluations only. This never mutes
+/// an actual event or the child process of a task.
+export fn roc_test_mute_dbg(muted: bool) callconv(.c) void {
+    dbg_muted = muted;
+}
+
+/// Match JSON.stringify's quoted task label without allocation. Catalogue
+/// names are UTF-8; only JSON's ASCII control/quote escapes need expansion.
+fn writeDbgName(name: []const u8) void {
+    const hex = "0123456789abcdef";
+    for (name) |byte| {
+        switch (byte) {
+            '"' => writeErr("\\\""),
+            '\\' => writeErr("\\\\"),
+            8 => writeErr("\\b"),
+            9 => writeErr("\\t"),
+            10 => writeErr("\\n"),
+            12 => writeErr("\\f"),
+            13 => writeErr("\\r"),
+            else => {
+                if (byte < 32) {
+                    const escaped = [_]u8{ '\\', 'u', '0', '0', hex[byte >> 4], hex[byte & 15] };
+                    writeErr(&escaped);
+                } else writeErr(&.{byte});
+            },
+        }
+    }
+}
+
+/// Print each real evaluation immediately; a child labels it with its task.
+/// Speculative native settle evaluations are the only muted interval.
 export fn roc_dbg(bytes: [*]const u8, len: usize) callconv(.c) void {
-    writeErr("[dbg] ");
+    if (dbg_muted) return;
+    if (in_job) {
+        writeErr("[dbg task \"");
+        writeDbgName(job_name);
+        writeErr("\"] ");
+    } else writeErr("[dbg] ");
     writeErr(bytes[0..len]);
     writeErr("\n");
 }

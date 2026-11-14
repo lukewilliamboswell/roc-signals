@@ -33,6 +33,10 @@ Cli := [].{
 	## How many bytes the live allocations asked for.
 	live_bytes! : () => U64
 
+	## Suppress only native settle-oracle reader evaluations; restoring False
+	## leaves ordinary evaluations and child task output unchanged.
+	mute_dbg! : Bool => {}
+
 	## Run one worker job in a child process, as a browser runs it in a Web
 	## Worker (design.md, "Workers"): a fresh process of the runner's own
 	## executable, which reads the job and writes its answer through pipes,

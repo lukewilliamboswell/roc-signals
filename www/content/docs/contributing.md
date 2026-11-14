@@ -589,6 +589,14 @@ reject malformed declarations before init, compare every valid Unicode scalar
 between the native oracle and Chrome, and check that one mounted module cannot
 change another's protocol bindings. `protocol-facts` fixed replays check the
 bounded declaration codec; compiler checks do not replace those replays.
+Section 12 uses deterministic CBOR from the released roc-cbor 0.6.2 package.
+Both platform roots pin the same content-addressed URL, checked by `check`.
+The reader bounds bytes, depth and data items before its typed parse, and
+checks all vocabulary limits before acceptance. A transport change bumps the
+shared protocol and updates the independent malformed-declaration fixtures,
+worker version guard and Appendix B together. Dependency source is not
+vendored into the platform bundle; an offline build needs its compiler cache
+warmed with the exact release.
 
 `Order.roc` supplies pure sort values used by table-view plans and ordinary
 Roc sorting. An example's platform-free fuzz modules keep their own ordered
@@ -799,3 +807,10 @@ with these deliberate exceptions:
   notes under `docs/releases/`.
 - **No SBOM yet.** Release SBOMs are tracked in
   [#171](https://github.com/lukewilliamboswell/roc-signals/issues/171).
+
+The debug contracts use `tests/apps/dbg`: ordinary paired specs cover its
+handler, reader and task answers; `dbg-browser.mjs` separately asserts bounded
+observations and fault/console behavior; `tests/native/dbg-output.mjs` rejects
+extra settle-reader output. Its intentional fault controls exclude it from
+walks; its round trip remains a native soak. Debug observations add no SCM
+step. The host’s buffer is independently checked by `zig test platform/host/dbg.zig`.

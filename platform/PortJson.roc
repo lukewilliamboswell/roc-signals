@@ -1,4 +1,5 @@
 import Core
+import Engine
 import Wire
 
 ## The format of port messages: JSON text for JavaScript the platform did not
@@ -84,7 +85,7 @@ PortJson := [].{
 
 	## A message: the JSON text, the blobs its bytes markers index and the
 	## files its file markers index. It is `Engine.PortMessage`.
-	Message : { json : Str, blobs : List(List(U8)), files : List(Core.File) }
+	Message : { json : Str, blobs : List(List(U8)), files : List(Engine.File) }
 
 	## A type whose values can be sent to and received from JavaScript:
 	## everything derivation covers, and nominal types that declare
@@ -144,12 +145,12 @@ PortJson := [].{
 
 	## The encoder's output: JSON text so far, and the blobs it has written.
 	## Applications never construct one.
-	Out := { text : List(U8), blobs : List(List(U8)), files : List(Core.File) }
+	Out := { text : List(U8), blobs : List(List(U8)), files : List(Engine.File) }
 
 	## The decoder's cursor: the text, the position, the message's blobs, how
 	## deep the open containers are, and whether a `null` is standing in for
 	## the record being read. Applications never construct one.
-	State := { text : List(U8), pos : U64, blobs : List(List(U8)), files : List(Core.File), depth : U64, null_record : Bool }
+	State := { text : List(U8), pos : U64, blobs : List(List(U8)), files : List(Engine.File), depth : U64, null_record : Bool }
 
 	## The format marker the compiler dispatches on. Its methods are the
 	## derivation hooks; applications call `encode` and `decode` instead.
@@ -718,7 +719,7 @@ PortJson := [].{
 
 		## A file: a marker naming its place in the message's file list,
 		## which travels beside the text.
-		encode_file : Format, Core.File, Out -> Try(Out, [])
+		encode_file : Format, Engine.File, Out -> Try(Out, [])
 		encode_file = |_, file, out| {
 			index = out.files.len()
 			text = out.text.concat(Str.to_utf8("{\"$file\":${index.to_str()}}"))
@@ -726,7 +727,7 @@ PortJson := [].{
 		}
 
 		## A file: the one a marker names.
-		parse_file : Format, State -> Try({ value : Core.File, rest : State }, Error)
+		parse_file : Format, State -> Try({ value : Engine.File, rest : State }, Error)
 		parse_file = |_, state| {
 			s = skip_ws(state)
 			if byte_at(s) != open_curly {
@@ -746,7 +747,7 @@ PortJson := [].{
 
 	## A dictionary being encoded: each entry's key and value text, and the
 	## blobs written so far. Applications never construct one.
-	Entries := { items : List((List(U8), List(U8))), blobs : List(List(U8)), files : List(Core.File) }
+	Entries := { items : List((List(U8), List(U8))), blobs : List(List(U8)), files : List(Engine.File) }
 }
 
 ## How deep containers may nest in a decoded message: the bound on the
@@ -1504,9 +1505,9 @@ expect {
 		Err(_) => crash "a range outside its file"
 	}
 	message = PortJson.encode({ doc: file, name: "a" })
-	back : Try({ doc : Core.File, name : Str }, PortJson.Error)
+	back : Try({ doc : Engine.File, name : Str }, PortJson.Error)
 	back = PortJson.decode(message)
-	missing : Try({ doc : Core.File }, PortJson.Error)
+	missing : Try({ doc : Engine.File }, PortJson.Error)
 	missing = PortJson.decode({ json: "{\"doc\":{\"$file\":3}}", blobs: [], files: [file] })
 	message.json == "{\"doc\":{\"$file\":0},\"name\":\"a\"}" and message.files == [file] and back == Ok({ doc: file, name: "a" }) and missing == Err(NoSuchFile(3))
 }

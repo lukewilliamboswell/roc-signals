@@ -1,6 +1,7 @@
 import Core
 import Engine exposing [Elem, In, Signal]
 import Wire
+import WorkerCodec
 
 ## Worker tasks: registered Roc functions an app runs off the page's thread.
 ##
@@ -72,7 +73,7 @@ Worker := [].{
 
 		## Any bytes are not a `Never`: there is no value to decode.
 		parser_for : Wire.Format -> (Wire.State -> Try({ value : Never, rest : Wire.State }, Wire.Error))
-		parser_for = |_| |_| Err(UnknownTag)
+		parser_for = |format| |state| Err(Wire.Format.invalid_value(format, state))
 	}
 
 	## What `task` is told about a task.
@@ -121,7 +122,7 @@ Worker := [].{
 		on_cancel : [Stop, Finish],
 		send : (input -> { bytes : List(U8), files : List(Engine.File) }),
 		receive : (List(U8), List(Engine.File) -> Try(output, error)),
-		entry! : (List(U8), List(Core.File) => List(U8)),
+		entry! : (List(U8), List(Engine.File) => List(U8)),
 	}.{
 
 		## The task's entry for `Program.with_workers`. Register each task
@@ -175,7 +176,7 @@ Worker := [].{
 			timeout_ms: timeout_ms_of(timeout),
 			on_dispose,
 			on_cancel,
-			send: |input| sent(input),
+			send: |input| sent(name, input),
 			receive: |bytes, files| received(name, bytes, files),
 			entry!: |bytes, files| answer_of(name, run!(held_input(name, bytes, files))),
 		}
@@ -284,7 +285,7 @@ Worker := [].{
 		{
 			name,
 			build!: |bytes, files| prepare!(held_input(name, bytes, files)),
-			send: |init| sent(init),
+			send: |init| sent(name, init),
 			fail: |error| encoded_answer(name, error, 1),
 		}
 	}
@@ -307,7 +308,7 @@ Worker := [].{
 	## A preparation's task's entry for its preparation's `registration`,
 	## from the task's `registration()`: the task's name and how it runs on
 	## the typed state.
-	PreparedTaskEntry(state) :: { name : Str, run! : (state, List(U8), List(Core.File) => List(U8)) }
+	PreparedTaskEntry(state) :: { name : Str, run! : (state, List(U8), List(Engine.File) => List(U8)) }
 
 	## A task of a preparation, from a `Question(init, input)` to `output`,
 	## failing with the preparation's `error`. Use it as a [Task] is used:
@@ -359,7 +360,7 @@ Worker := [].{
 ## bytes, file readers and one captured preparation state.
 WorkerPreparation(init, state, error) :: {
 	name : Str,
-	build! : (List(U8), List(Core.File) => Try(state, error)),
+	build! : (List(U8), List(Engine.File) => Try(state, error)),
 	send : (init -> { bytes : List(U8), files : List(Engine.File) }),
 	fail : (error -> List(U8)),
 }.{
@@ -381,7 +382,7 @@ WorkerPreparation(init, state, error) :: {
 			on_dispose,
 			on_cancel,
 			send_init: p.send,
-			send_input: |input| sent(input),
+			send_input: |input| sent(name, input),
 			receive: |bytes, files| received(name, bytes, files),
 			entry: {
 				name,
@@ -428,8 +429,8 @@ WorkerPreparation(init, state, error) :: {
 
 ## A job's input, decoded with the files its worker's host minted handles
 ## for, in the request's order, which carry the job's effects.
-held_input : Str, List(U8), List(Core.File) -> input where [input.Wire.Sendable]
-held_input = |name, bytes, files| match Wire.decode_with_held(bytes, files) {
+held_input : Str, List(U8), List(Engine.File) -> input where [input.Wire.Sendable]
+held_input = |name, bytes, files| match WorkerCodec.decode_with_held(bytes, files) {
 	Ok(input) => input
 	Err(_) => crash "contract: worker task \"${name}\" was sent bytes that are not its input type"
 }
@@ -448,11 +449,11 @@ answer_of = |name, answer| match answer {
 ## One side of an answer, with its flag byte.
 encoded_answer : Str, value, U8 -> List(U8) where [value.Wire.Sendable]
 encoded_answer = |name, value, flag| {
-	encoded = Wire.encode_with_files(value)
-	if encoded.deep {
+	{ bytes, files, deep } = WorkerCodec.encode_with_files(name, value)
+	if deep {
 		crash "contract: worker task \"${name}\" returned a value nested deeper than 512 containers, which the page cannot decode"
 	}
-	Core.task_answer(name, encoded.bytes.append(flag), encoded.files)
+	Core.task_answer(name, bytes.append(flag), files)
 }
 
 ## A job's answer as the page reads it: the output or the task's error,
@@ -461,11 +462,11 @@ received : Str, List(U8), List(Engine.File) -> Try(output, error) where [output.
 received = |name, bytes, files| {
 	body = bytes.drop_last(1)
 	match bytes.last() {
-		Ok(0) => match Wire.decode_with_held(body, files) {
+		Ok(0) => match WorkerCodec.decode_with_held(body, files) {
 			Ok(value) => Ok(value)
 			Err(_) => crash "contract: worker task \"${name}\" answered with bytes that are not its output type"
 		}
-		Ok(1) => match Wire.decode_with_held(body, files) {
+		Ok(1) => match WorkerCodec.decode_with_held(body, files) {
 			Ok(error) => Err(error)
 			Err(_) => crash "contract: worker task \"${name}\" answered with bytes that are not its error type"
 		}
@@ -489,9 +490,9 @@ answered = |res, receive| match res {
 
 ## A request's payload and the files it refers to. A page input nested too
 ## deep is sent anyway and refused in the worker, where that is contained.
-sent : input -> { bytes : List(U8), files : List(Engine.File) } where [input.Wire.Sendable]
-sent = |input| {
-	{ bytes, files, deep: _ } = Wire.encode_with_files(input)
+sent : Str, input -> { bytes : List(U8), files : List(Engine.File) } where [input.Wire.Sendable]
+sent = |name, input| {
+	{ bytes, files, deep: _ } = WorkerCodec.encode_with_files(name, input)
 	{ bytes, files }
 }
 
@@ -513,8 +514,8 @@ expect {
 	actual =
 		\\name: ${parse.name()}
 		\\request: ${shape}
-		\\good: ${Str.inspect(parse.result(answer(Wire.encode(7.U64).append(0))))}
-		\\bad: ${Str.inspect(parse.result(answer(Wire.encode(NotANumber("seven")).append(1))))}
+		\\good: ${Str.inspect(parse.result(answer(WorkerCodec.encode(7.U64).append(0))))}
+		\\bad: ${Str.inspect(parse.result(answer(WorkerCodec.encode(NotANumber("seven")).append(1))))}
 		\\late: ${Str.inspect(parse.result(Timeout))}
 		\\lost: ${Str.inspect(parse.result(WorkLost(AppCrash)))}
 	expected =
@@ -531,7 +532,7 @@ expect {
 expect {
 	double : Worker.Task(U64, U64, Worker.Never)
 	double = Worker.task({ name: "test/double", run!: |n| Ok(n * 2) })
-	shown = match double.result(Work({ output: Wire.encode(42.U64).append(0), files: [] })) {
+	shown = match double.result(Work({ output: WorkerCodec.encode(42.U64).append(0), files: [] })) {
 		Ok(n) => n.to_str()
 		Err(Timeout) => "late"
 		Err(Refused) => "refused"
@@ -654,10 +655,10 @@ expect {
 	actual =
 		\\name: ${nth.name()}
 		\\request: ${shape}
-		\\answer: ${Str.inspect(nth.result(Work({ output: Wire.encode("b").append(0), files: [] })))}
+		\\answer: ${Str.inspect(nth.result(Work({ output: WorkerCodec.encode("b").append(0), files: [] })))}
 	expected =
 		\\name: test/lines/nth
-		\\request: ("test/lines/nth", [3, 97, 10, 98, 1, 0, 0, 0, 0, 0, 0, 0], 40, Finish, Prepared({ input_files: 0, input_len: 4, name: "test/lines" }))
+		\\request: ("test/lines/nth", [99, 97, 10, 98, 1], 40, Finish, Prepared({ input_files: 0, input_len: 4, name: "test/lines" }))
 		\\answer: Ok("b")
 	actual == expected
 }

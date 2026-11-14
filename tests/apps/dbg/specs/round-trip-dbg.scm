@@ -1,0 +1,16 @@
+(test "debug text leaves handlers readers and jobs unchanged"
+  (steps
+    (expect-text (test-id "count") "0")
+    (run-effect 1)
+    (expect-text (test-id "answer") "kept:0")
+    (mark-metrics)
+    (click (role button :name "Increment"))
+    (expect-text (test-id "count") "1")
+    (run-effect 2)
+    (expect-text (test-id "answer") "kept:1")
+    (click (role button :name "Reset"))
+    (run-effect 3)
+    (expect-text (test-id "count") "0")
+    (expect-text (test-id "answer") "kept:0")
+  )
+)

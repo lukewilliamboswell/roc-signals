@@ -1,11 +1,15 @@
 app [target] {
+	cbor: "https://github.com/lukewilliamboswell/roc-cbor/releases/download/0.6.2/2xhPdWbS9DQqooG9zXnTqBk9Vkx3LqLsPiEkVxAZ2skD.tar.zst",
 	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.2/3kyiehxxzwAsjM23uCQGJ3Hx7dAAdzSGtK3k9Jq7Egtu.tar.zst",
 	pf: "../../platform/main-fuzz.roc",
 }
 
 import fz.Fuzz
+import Saved
+import cbor.Cbor
 import pf.Core
 import pf.Engine
+import pf.WorkerCodec
 import pf.Wire
 
 ## The worker wire format is total and canonical over arbitrary bytes.
@@ -64,7 +68,7 @@ table_of : {} -> List(Engine.File)
 table_of = |_| [Core.held_file(Box.box(1)), Core.held_file(Box.box(2))]
 
 decode_filed : List(U8), List(Engine.File) -> Try(Filed, Wire.Error)
-decode_filed = |input, table| Wire.decode_with_held(input, table)
+decode_filed = |input, table| WorkerCodec.decode_with_held(input, table)
 
 Canon : {
 	id : U64,
@@ -92,28 +96,32 @@ fixed_bytes : U64
 fixed_bytes = 65536
 
 decode_rich : List(U8) -> Try(Rich, Wire.Error)
-decode_rich = |bytes| Wire.decode(bytes)
+decode_rich = |bytes| WorkerCodec.decode(bytes)
 
 decode_canon : List(U8) -> Try(Canon, Wire.Error)
-decode_canon = |bytes| Wire.decode(bytes)
+decode_canon = |bytes| WorkerCodec.decode(bytes)
 
 decode_strs : List(U8) -> Try(List(Str), Wire.Error)
-decode_strs = |bytes| Wire.decode(bytes)
+decode_strs = |bytes| WorkerCodec.decode(bytes)
 
 decode_words : List(U8) -> Try(Dict(Str, U8), Wire.Error)
-decode_words = |bytes| Wire.decode(bytes)
+decode_words = |bytes| WorkerCodec.decode(bytes)
 
 decode_profiles : List(U8) -> Try(List(Profile), Wire.Error)
-decode_profiles = |bytes| Wire.decode(bytes)
+decode_profiles = |bytes| WorkerCodec.decode(bytes)
 
 decode_kinds : List(U8) -> Try(List(Kind), Wire.Error)
-decode_kinds = |bytes| Wire.decode(bytes)
+decode_kinds = |bytes| WorkerCodec.decode(bytes)
 
 decode_node : List(U8) -> Try(Node, Wire.Error)
-decode_node = |bytes| Wire.decode(bytes)
+decode_node = |bytes| WorkerCodec.decode(bytes)
 
 decode_colors : List(U8) -> Try(Dict([Red, Green, Blue], List(I16)), Wire.Error)
-decode_colors = |bytes| Wire.decode(bytes)
+decode_colors = |bytes| WorkerCodec.decode(bytes)
+
+## Preferred scalar forms still must not let numeric float-key aliases overwrite entries.
+decode_float_keys : List(U8) -> Try(Dict(F64, Str), Wire.Error)
+decode_float_keys = |bytes| WorkerCodec.decode(bytes)
 
 ## Crash unless a decode's peak memory is within the bound for `input`.
 check_bound! : Str, List(U8), Fuzz.Stats => {}
@@ -134,7 +142,7 @@ canonical! = |label, input, decode| {
 	check_bound!(label, input, measured.stats)
 	match measured.value {
 		Ok(value) => {
-			if Wire.encode(value) != input {
+			if WorkerCodec.encode(value) != input {
 				crash "an accepted ${label} input is not the encoding of the value it decodes to"
 			}
 		}
@@ -148,9 +156,14 @@ test! = |input| {
 	check_bound!("Rich", input, rich.stats)
 	match rich.value {
 		Ok(value) => {
-			payload = Wire.encode(value)
+			payload = WorkerCodec.encode(value)
+			well_formed : Try(Cbor.Value, _)
+			well_formed = Cbor.parse(payload)
+			if well_formed.is_err() {
+				crash "an encoded Rich is not a CBOR item"
+			}
 			match decode_rich(payload) {
-				Ok(again) if Wire.encode(again) == payload => {}
+				Ok(again) if WorkerCodec.encode(again) == payload => {}
 				Ok(_) => crash "a re-encoded Rich decodes to a value with a different encoding"
 				Err(problem) => crash "a re-encoded Rich is refused: ${Str.inspect(problem)}"
 			}
@@ -172,7 +185,12 @@ test! = |input| {
 			if !all.all(|f| within(Core.file_parts(f))) {
 				crash "a decoded file's range lies outside its size"
 			}
-			again = Wire.encode_with_files(value)
+			again = WorkerCodec.encode_with_files("wire fuzz", value)
+			well_formed : Try(Cbor.Value, _)
+			well_formed = Cbor.parse(again.bytes)
+			if well_formed.is_err() {
+				crash "an encoded Filed is not a CBOR item"
+			}
 			match decode_filed(again.bytes, again.files) {
 				Ok(back) if back == value => {}
 				Ok(_) => crash "a re-encoded Filed decodes to a different value"
@@ -190,6 +208,7 @@ test! = |input| {
 	canonical!("List(Kind)", input, decode_kinds)
 	canonical!("Node", input, decode_node)
 	canonical!("Dict(color, List(I16))", input, decode_colors)
+	canonical!("Dict(F64, Str)", input, decode_float_keys)
 	Fuzz.keep
 }
 
@@ -240,20 +259,34 @@ sample_filed = {
 		Ok(f) => f
 		Err(_) => crash "an empty range lies within an empty file"
 	}
-	Wire.encode_with_files({ title: "t", docs: [empty], extra: Err(Missing) }).bytes
+	WorkerCodec.encode_with_files("wire fuzz", { title: "t", docs: [empty], extra: Err(Missing) }).bytes
 }
 
 target = Fuzz.target_with!({
 	examples: [
-		Fuzz.example({ name: "rich", revision: "1", make: || Wire.encode(sample_rich) }),
-		Fuzz.example({ name: "canon", revision: "1", make: || Wire.encode(sample_canon) }),
-		Fuzz.example({ name: "rich-truncated", revision: "1", make: || Wire.encode(sample_rich).drop_last(1) }),
-		Fuzz.example({ name: "canon-trailing", revision: "1", make: || Wire.encode(sample_canon).append(0) }),
-		Fuzz.example({ name: "empty", revision: "1", make: || [] }),
-		Fuzz.example({ name: "filed", revision: "1", make: || sample_filed }),
+		Fuzz.saved({ name: "rich", revision: "2", bytes: Saved.rich }),
+		Fuzz.saved({ name: "canon", revision: "2", bytes: Saved.canon }),
+		Fuzz.saved({ name: "rich-truncated", revision: "2", bytes: Saved.rich.drop_last(1) }),
+		Fuzz.saved({ name: "canon-trailing", revision: "2", bytes: Saved.canon.append(0) }),
+		Fuzz.saved({ name: "empty", revision: "2", bytes: [] }),
+		Fuzz.saved({ name: "filed", revision: "2", bytes: Saved.filed }),
+		Fuzz.saved({ name: "canon-money-float", revision: "1", bytes: Saved.canon_money_float }),
+		Fuzz.saved({ name: "float-key-zero-alias", revision: "1", bytes: [0xa2, 0xf9, 0, 0, 0x61, 0x61, 0xf9, 0x80, 0, 0x61, 0x62] }),
 	],
 	name: "wire",
 	generator: Fuzz.raw_bytes,
 	test!,
 	show: |input| Str.inspect(input),
 })
+
+## A saved full Canon with floating money must be refused without weakening canonical equality.
+expect decode_canon(Saved.canon_money_float).is_err()
+
+## Independent complete Rich seed reaches every maintained derived shape.
+expect decode_rich(Saved.rich) == Ok(sample_rich)
+
+## Independent complete Canon seed is accepted and re-encodes byte-for-byte.
+expect decode_canon(Saved.canon) == Ok(sample_canon) and WorkerCodec.encode(sample_canon) == Saved.canon
+
+## The six-item file metadata array agrees with the owned-handle encoder.
+expect sample_filed == Saved.filed

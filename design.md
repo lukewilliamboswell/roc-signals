@@ -27,7 +27,7 @@ must converge on, and they never license a different interim meaning.
 Internal representations may change when the replacement preserves these
 contracts and improves measured cost or clarity. Scope-owned lifetime,
 construction-site identity, one holder for each piece of state with what
-changed taken from the write, and the command stream as the only output are
+changed taken from the write, and the command stream as the only output that decides anything are
 architectural laws; a column layout, a hash-table probe sequence, the width
 of a signature word or a node-id encoding is an engineering choice. Neither an optimization nor a compiler
 workaround may change application meaning.
@@ -64,7 +64,7 @@ and learns what changed from the write itself, at two grains: which pieces of
 state a turn wrote and, inside a table, which rows.
 
 The host is deliberately small. A Zig Wasm host allocates memory, holds one
-opaque engine state between calls, stages payload bytes and classifies faults.
+opaque engine state between calls, stages payload bytes, keeps the text of the last call’s `dbg`s and classifies faults.
 A JavaScript runtime applies the command stream to the DOM and performs the
 requested effects. Neither decides anything the engine has already decided.
 
@@ -352,15 +352,16 @@ reconsidered.
    whole table or the whole DOM, or by comparing a large value with an
    earlier copy of it, is a violation. See
    [Complexity budget](#complexity-budget).
-4. **The engine is pure Roc; the host only allocates, stages and classifies,
+4. **The engine is pure Roc; the host only allocates, stages, keeps a call’s
+   `dbg` text and classifies,
    and in a worker instance performs the platform's synchronous hosted
    effects on handles through the worker script.**
    All reactive scheduling, structural reconciliation, identity, effect
    lifecycle and ownership policy live in the platform's Roc engine. The Zig
    host owns the allocator, the boxed engine state between calls (in a worker
    instance, at most one boxed prepared state instead), the command buffer,
-   one staged payload, the typed heaps behind the handles an app holds, and
-   fault classification. JavaScript applies commands and performs effects. Reactive or structural logic in either is a
+   one staged payload, the typed heaps behind the handles an app holds, the bounded text of the
+   last call’s `dbg`s, and fault classification. JavaScript applies commands and performs effects. Reactive or structural logic in either is a
    defect.
 5. **Types are never erased across a boundary that can disagree.** A site's
    storage is typed by the site's own closure; dispatch between sites is by
@@ -379,16 +380,20 @@ reconsidered.
    releases. The only other values
    the host builds for Roc are freshly minted handles, each with a single
    reference, and the status codes and sizes a hosted effect answers.
-6. **The command stream is the only output of the page's instance.**
-   Everything the outside world
-   observes — DOM structure, attributes, listeners, effects, navigation,
-   storage, title, focus — is a command in the stream returned by one host
-   call. There is no side channel, with one narrow exception: the list of
-   handles Roc released during a call, which the runtime reads after it has
-   applied the call's batch and performed its effects. It decides nothing:
-   it names only handles no Roc value can reach any more. A
-   worker task's effects act only on handles its job was sent or made, and
-   reach the page only as its answer, an ordinary result.
+6. **The command stream is the only output of the page’s instance that decides anything.**
+   Everything an app does to the outside world — DOM structure, attributes,
+   listeners, effects, navigation, storage, title, focus — is a command in
+   the stream returned by one host call. What else the runtime reads from
+   the instance is not a second way for an app to act: the program’s
+   declarations, read once before mount; a fault’s class and diagnostic;
+   the work record and the host’s counters, which are observation (see
+   [Observation](#observation)); the list of handles Roc released during a
+   call, read after its batch and effects and naming only handles no Roc
+   value can reach any more; and the text of a call’s `dbg`s, read after it
+   returns or traps and printed on the console. The engine, the runtime’s
+   scheduling and the app never read that text back. A worker task’s effects
+   act only on handles its job was sent or made, and reach the page only as
+   its answer, an ordinary result.
 
 ## First Principles, Not Imitation
 
@@ -441,7 +446,7 @@ that row's — is the documented pattern that keeps app work local.
 flowchart LR
     App["app: App.roc<br/>Elem tree of typed sites,<br/>a store of cells and tables"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, the store, each columns,<br/>tables and their table views (TableCore.roc, View.roc, Seq.roc),<br/>effects, command encoding"]
     Engine --> Main["platform/main.roc<br/>keys · init · event · files · drop ·<br/>work · prepare · ask · forget"]
-    Main --> Host["platform/host/host.zig<br/>allocator · one opaque Handle holding the store beside boxed sites, or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · fault class"]
+    Main --> Host["platform/host/host.zig<br/>allocator · one opaque Handle holding the store beside boxed sites, or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · dbg text · fault class"]
     Host --> Wire["command bytes in linear memory"]
     Wire --> JS["platform/runtime.mjs (and worker.mjs in each worker)<br/>apply commands · perform effects ·<br/>delegate events · contain faults"]
     JS --> DOM["browser DOM and services"]
@@ -1622,6 +1627,10 @@ by the compiler.
 
 ## The Command Stream Is the Only Output
 
+Only output means the only way an app acts on the page. A fault’s diagnostic
+and the text of a `dbg` are read beside the stream and decide nothing
+(Non-Negotiable Constraint 6).
+
 Each host call returns one complete command batch. The engine accumulates
 commands into a `List(U8)` in the turn accumulator and hands it to the
 host as the call's result; the host keeps it readable through `cmd_ptr` and
@@ -2305,7 +2314,7 @@ are all of that kind.
   which retires its id like a cancel; `TooLarge` reports one message and the
   subscription goes on.
   Application failures are values; contract violations are diagnostics,
-  never fabricated results. A worker's diagnostic text goes to the page's
+  never fabricated results. A worker’s diagnostic text and a job’s `dbg` text go to the page’s
   console, never into its result.
 - `http` and file upload deliver the full response at every status as
   `Try(Response, HttpFailure)`. `http_body` explicitly selects a 2xx text body
@@ -2538,6 +2547,19 @@ corrected. By default it holds sizes, names and times, never payload bytes.
 Its cost is a few clock reads per job, and none for a turn nobody asked to
 see. The engine's own account stays the work record: the monitor reads it
 and adds nothing to it.
+
+### `dbg`
+
+Page code is pure and a task’s effects are a closed vocabulary, so `dbg` is
+how either says something that is not a command or an answer. The host
+keeps the inspected text of one call, bounded, and the runtime prints it
+after the call. A job’s text travels with its answer or fault. A trap
+retains it; ending a worker loses it. The compiler supplies the value alone,
+without a source location. Nothing reads it back, and printing cannot fail
+a turn. A deployment chooses `dbg: "off"`, which prevents text from reaching
+the console or a fault but does not remove formatting cost. The first `dbg`
+then explains in one value-free line that output is off. Production builds
+should contain none; the compiler warns of each in an optimized build.
 
 ### The environment at boot
 
@@ -3449,7 +3471,14 @@ The Zig host (`platform/host/host.zig`) owns exactly:
   page allocator's power-of-two classes, so a large list costs its own size
   in linear memory, not up to twice that;
 - **the fault state** — a class and a bounded diagnostic buffer reserved
-  statically.
+  statically;
+- **the last call’s `dbg` text** — 4096 bytes of entries reserved statically
+  in `host/dbg.zig`, keeping at most 1024 bytes of each entry at a code-point
+  boundary and its full byte length. Newest entries survive; oldest whole
+  entries are dropped until half the buffer is free and counted. The U32
+  dropped count saturates, reported as “at least” at its maximum. Calls and
+  payload/handle staging clear it; a trap preserves it. The host never
+  interprets its text.
 
 - **in a worker instance, at most one opaque `Box(Kept)`** — a
   preparation's state between jobs (see [Prepared state](#prepared-state)),
@@ -3539,7 +3568,8 @@ instance:
 1. The host records a class from a closed set and up to 512 bytes of
    diagnostic text in static storage (no allocation).
 2. It discards the staged commands and payload and abandons the state (the Roc
-   heap may be mid-mutation, so nothing is freed).
+   heap may be mid-mutation, so nothing is freed), leaving the call’s `dbg`
+   text in place.
 3. It traps.
 
 The classes are `contract`, `resource_limit`, `out_of_memory`, `app_crash` and
@@ -3549,10 +3579,10 @@ path — for example `contract: duplicate key "r0" in each at site /3/0`. Any
 other crash is `app_crash`.
 
 A poisoned instance never re-enters Roc: every engine entry point traps
-immediately, and only `fault`, `err_ptr`/`err_len`, `metric` and `cmd_len`
+immediately, and only `fault`, `err_ptr`/`err_len`, `dbg_ptr`/`dbg_len`, `metric` and `cmd_len`
 answer. `drop` is idempotent at the containment boundary.
 
-The runtime catches every trap, reads the class and diagnostic through fresh
+The runtime catches every trap, reads the class, diagnostic and call’s `dbg` text through fresh
 memory views, reports them, detaches its input listeners and cancels its effects,
 drops queued events and staged effects, keeps the last applied DOM as fallback,
 and refuses later calls without entering Wasm. The leave guard its last
@@ -3692,6 +3722,8 @@ bound and a declared behaviour at the bound:
 | Worker output held by the host | 1 | Previous one freed |
 | Staged payloads | 1 | Previous one freed |
 | Diagnostic text | 512 bytes | Truncated |
+| `dbg` text of one call |4096 bytes of entries;1024 bytes of one entry’s text | Oldest entries dropped and counted; text cut at a code point with full length retained |
+| A job’s `dbg` text sent to the page | At most two call buffers, preparation and task | A stopped/lost worker sends none |
 | File handles live in one instance | 64 | The event's further files are not delivered and are counted in `Received.refused` |
 | Bytes one read of a file into the page takes | The read's `max_bytes` (default 8 MiB), at most `maxFileBytes`; reads in flight are bounded by the in-flight cap | Typed `FileFailed(TooLarge)`, unread |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
@@ -3804,6 +3836,14 @@ produces a typed list of steps. Both runners consume it:
   the engine directly and asserts against the `Dom.roc` model;
 - the **browser runner** replays the same steps, emitted as data by the same
   parser, against the real runtime in headless Chrome.
+
+`dbg` is not a step and no step observes it. Both runners print `[dbg] text`
+for page code and `[dbg task "name"] text` for a job. Native settle-oracle
+reader evaluations are muted. Native output keeps every entry; Chrome keeps
+the newest 4096 entry bytes of each call. A preparation prints for every native
+job and only when actually prepared in Chrome. A `dbg` reached while constructing
+a top-level constant or checking the default mount may print during compilation
+instead of a runner invocation; declaration evaluation counts are not guaranteed.
 
 **Both runners implement every step, and the browser is the reference.** A
 step means what it does in Chrome; the native runner models that against the
@@ -4436,7 +4476,7 @@ of them is platform semantics.
 | [roc-lang/roc#12869](https://github.com/roc-lang/roc/issues/12869) | An unused closure capturing a function passed to a branching self-recursive closure makes monotype lowering exponential: a lambda that hands a function to a site whose instance calls itself from several branches makes `roc check` take minutes or not finish. Fixed upstream in nightlies after 2026-11-10 | The view site's getter is a function of its own (`view_source` in `Core.roc`), and the Log Explorer's `stepped` handler is a function of its module instead of a local closure, only while a pinned compiler predates the fix |
 | [roc-lang/roc#12836](https://github.com/roc-lang/roc/issues/12836) | `Box.box` of a capture-free callable allocates on every call | Extra allocations per call |
 | [roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012) | Updating storage captured by a boxed closure can borrow that capture and copy it even in development builds | The instance holds its store as plain data beside boxed sites. Local state still lives in a site's closure and remains affected; extend the allocation guard to local state when the compiler is fixed |
-| [roc-lang/roc#13022](https://github.com/roc-lang/roc/issues/13022) | Format derivation cannot resolve inherited hooks through a public format alias | Port.Registering declares its safe format hooks directly; catalogue accumulation remains in the unexposed PortRegistry module |
+| [roc-lang/roc#13022](https://github.com/roc-lang/roc/issues/13022) | Format derivation cannot resolve inherited hooks through a public format alias | Port.Registering declares its safe format hooks directly; catalogue accumulation remains in the unexposed PortRegistry module. Wire.Sendable names the backing WorkerCodec types in its constraint; applications use the public Wire aliases, which the compiler preserves in extracted hook signatures |
 | [roc-lang/roc#13002](https://github.com/roc-lang/roc/issues/13002) | Compile-time Dict and Set work can be quadratic in the default page's rows | Engine.mounts has inherent default-mount work; the compiler's extra superlinear cost remains upstream. Removing the app constant disables the check |
 | [roc-lang/roc#13019](https://github.com/roc-lang/roc/issues/13019) | An engine-dependent local-list reproduction shows value-size-dependent allocation in optimized writes without a host box; the report was closed for insufficient isolation, not as fixed | The development sparse-write guard proves only its own scope. Shipping allocation is not claimed flat; isolate the optimized path against the standalone #12957 case before attributing a separate compiler defect |
 | [roc-lang/roc#12953](https://github.com/roc-lang/roc/issues/12953) | Since roc-lang/roc#12887, the host boundary rejects an opaque `Box` of a value that contains functions, though it accepts the same value as `Box(Iter(...))` | The sites cross as `Box(Iter(Core.Sites(st)))` inside the one outer `Handle`, beside the plain store; `platform/main.roc` alone wraps and unwraps them. `Core.Kept` holds its task runner as a `Box` of its own |
@@ -5064,7 +5104,7 @@ a leading U+FEFF in names and values, including a worker's hosted arguments.
 Unknown closed-vocabulary names cannot become known names by dropping that
 character. Invalid UTF-8 is rejected at each strict protocol boundary.
 
-This appendix is protocol version **18**. The engine declares it
+This appendix is protocol version **19**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -5091,7 +5131,7 @@ roc-lang/roc#12953 workaround (see [Compiler Limitations](#compiler-limitations)
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (18) |
+| `roc_engine_version` | `() -> u32` | The protocol version (19) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Handle, List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -5102,7 +5142,8 @@ roc-lang/roc#12953 workaround (see [Compiler Limitations](#compiler-limitations)
 | `roc_engine_ask` | `Box(Core.Kept), List(U8), List(Box(U64)) => { held, out }` | A job of a preparation's task on the kept state (effectful): payload `task:str input:rest` (the task's own input) and the handles of the task's own files; returns the state (`held`) and the answer (`out`, as `roc_engine_work`'s). A task the state's preparation does not list is a `contract` crash |
 | `roc_engine_forget` | `Box(Core.Kept) -> {}` | Drop the kept state |
 
-The host provides `roc_alloc`, `roc_dealloc`, `roc_realloc`, `roc_dbg`,
+The host provides `roc_alloc`, `roc_dealloc`, `roc_realloc`, `roc_dbg`
+(which keeps bounded debug text for passive reading after return or trap),
 `roc_expect_failed` and `roc_crashed`, and the hosted functions a job
 calls, each `roc_task_*` in both hosts (`platform/Hosted.roc`, reached only
 through `platform/Effects.roc`): `read`
@@ -5135,10 +5176,10 @@ warm-up neither allocates.
 |---|---|
 | `boot_keys()` | Before mount: make the program's declaration sections readable through `cmd_ptr`/`cmd_len` |
 | `payload_reserve(len) -> ptr` | Allocate the next call's payload (`0` for `len = 0`); JS writes `len` bytes at `ptr` after refreshing its memory view |
-| `init()` | Mount with the staged boot bytes; mount commands become readable |
-| `event(node, handler)` | One turn with the staged payload; its commands become readable |
+| `init() -> u32` | Mount with the staged boot bytes; mount commands become readable. Returns 1 when the call ran a `dbg`, otherwise 0 |
+| `event(node, handler) -> u32` | One turn with the staged payload; its commands become readable. Returns 1 when the call ran a `dbg`, otherwise 0 |
 | `files_stage(n) -> u32` | Mint handles for the next `event_files`, as many of `n` as the blob heap has free slots (64 at most live), and return how many; their tokens (`u64` each) are readable at `files_tokens()`. Releases an undelivered staged set first |
-| `event_files(node, handler)` | A files-kind event: the staged payload (its file record) and the staged handles move into `roc_engine_files` |
+| `event_files(node, handler) -> u32` | A files-kind event: staged payload and handles move into `roc_engine_files`. Returns 1 when the call ran a `dbg`, otherwise 0 |
 | `files_released() -> u32` | After a batch is applied and its effects performed: free the slots of the handles Roc released since the last drain and return how many; their tokens are readable at `files_tokens()`, and the runtime lets their files go. `0` when poisoned |
 | `files_tokens() -> ptr` | The tokens `files_stage` or `files_released` left |
 | `work()` | A worker instance's job: the staged payload and the handles staged with `files_stage` move into `roc_engine_work`, the hosted effects may act for the length of the call, and the answer stays readable through `cmd_ptr`/`cmd_len` until the next call, the previous one released first. Traps when the instance is poisoned; a `contract` fault when an engine state is mounted in this instance (the page's) |
@@ -5150,7 +5191,8 @@ warm-up neither allocates.
 | `work_ptr()`, `work_len()` | The work record returned with the last call, valid until the next `event` or `drop` |
 | `drop()` | Teardown; no-op when poisoned or already dropped |
 | `fault() -> u32` | `0` healthy, `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed |
-| `err_ptr()`, `err_len()` | Diagnostic text (≤ 512 bytes) |
+| `err_ptr()`, `err_len()` | Diagnostic text (≤ 512 bytes), independent of debug output |
+| `dbg_ptr()`, `dbg_len()` | The last call’s debug buffer: `dropped:u32 (len:u32 kept:u32 text:kept)*`; 0 bytes when no entry. Entries occupy at most 4096 bytes, each text at most 1024; `len` retains its full byte length. Valid until the next call or payload/handle staging, including after a trap; answers when poisoned |
 | `metric(i) -> u64` | Allocator counters: `0` allocations, `1` deallocations, `2` requested bytes, `3` reallocations, `4` live allocations, `5` live bytes; `6` live file handles (retired ones included until drained); `8` whether a prepared state is kept (`1` or `0`). `16 + k`: counter `k` of the work record (0 past its end) |
 | `reset_metrics()` | Reset counters 0–3 |
 | `memory` | Linear memory |
@@ -5185,31 +5227,44 @@ space. A dash means that section does not occur in that direction.
 | 12 | protocol | The bounded metadata item below | — | ProtocolFacts appended by the platform root; mandatory |
 | 13 | mount-root | — | `expanded-name` | The actual mount element's namespace URI, optional prefix and exact local name; an HTML `div` for empty driver boot |
 
-Section 12 uses the temporary length-delimited fallback until the owner's
-roc-cbor port has a compatible pinned release. A future codec change requires
-a coordinated protocol revision. Its eleven fields are `tag:u8 length:u32 body`,
-in tag order: opcodes, payload kinds, policy bits, properties, HTTP cache modes,
-HTTP credential modes, namespaces, OutsideText excluded input types, fault
-classes, template node kinds and child containers. Each table starts with
-`count:u32`; strings use
-`UTF-8-byte-count:u32 bytes`. Opcode/cache/credential rows are `code:u8 name:str`;
-kind rows add `events:(count:u32 str*)`; policy rows are `bit:u32 name:str`;
-property rows are `index:u8 name:str elements:(count:u32 str*)`. Namespace,
-template-node and child-container rows are also `code:u8 name:str`; fields
-8 and 9 contain strings only. Empty element lists mean unrestricted elements
-subject to independent guards. Empty event lists mean the generic bare-event
-vocabulary, with key events independently forbidden for text payloads.
+Section 12 is one deterministic CBOR item, encoded with the content-addressed
+roc-cbor 0.6.2 release named in both platform roots. Its root map has exactly
+the eleven fields `ops`, `kinds`, `policies`, `properties`, `http_cache`,
+`http_credentials`, `namespaces`, `text_entry_excluded`, `fault_classes`,
+`template_nodes` and `child_containers`. These field names and their types
+come from `Protocol.Facts`; a field is required even when its list is empty.
+
+Only definite-length maps and arrays, text and unsigned integers are accepted.
+Every head uses its shortest form and every map uses RFC 8949 section 4.2.1
+bytewise encoded-key order, including row maps. Duplicate, unknown or missing
+map keys, other CBOR types, indefinite lengths and trailing bytes are refused.
+CBOR argument bytes are **big-endian**, an exception to this appendix's
+little-endian framing rule; the outer declaration section still has its
+little-endian u32 length. There is no legacy transport or compatibility fallback.
+
+Every root value is an array. Opcode, cache, credentials, namespace,
+template-node and child-container rows are maps with `code` (u8 range) and
+`name` (text). Kind rows add `events` (array of text); property rows instead
+have `index` (u8 range), `name` and `elements` (array of text). Policy rows
+have `bit` (u32 range) and `name`. Input exclusions and fault classes are
+arrays of text. Empty element lists mean unrestricted elements subject to
+independent guards. Empty event lists mean the generic bare-event vocabulary,
+with key events independently forbidden for text payloads.
 
 The item is at most 65,536 bytes; tables have at most 64 rows, nested event or
 element lists at most 32 names, and nonempty names at most 128 UTF-8 bytes,
 without NUL. Readers reject invalid UTF-8, duplicate names or codes, non-dense
 numbered tables, zero or non-single policy bits, empty required numbered tables
-or fault labels, incorrect field order, truncation and trailing bytes. The
+or fault labels, incorrect map-key order, truncation and trailing bytes. The
 runtime binds each validated role to its actual implementation and rejects
 unknown or missing roles before init. Bindings are immutable per instance;
 one module cannot change another's tables. Namespace and child-container
 codes are dense from zero; the other numbered tables are dense from one.
-Template node kinds and hole kinds are separate number spaces.
+Template node kinds and hole kinds are separate number spaces. Before the derived
+Roc parse, the whole body is bounded to 65,536 bytes and the released codec
+validates at most four nested containers and 7,383 data items. Field limits
+and vocabulary checks apply before acceptance; the JavaScript schema reader
+also bounds each array and text length before constructing its value.
 
 Each applicable section is required exactly once, in ascending tag order:
 boot has 1–4, 6–11 and 13; compiled-module declarations have 2, 5, 6, 10, 11 and 12. The pure engine driver

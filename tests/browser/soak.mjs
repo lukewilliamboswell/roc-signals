@@ -51,7 +51,7 @@ const FETCHES_FILES = ["csv-converter"];
 const backendModule = BACKENDS[app] ?? null;
 const handle = backendModule ? (await import(path.join(repo, backendModule))).default() : null;
 // Apps whose effects include worker jobs.
-const WORKER_APPS = ["worker-search", "csv-converter", "log-explorer", "million-row-explorer"];
+const WORKER_APPS = ["worker-search", "csv-converter", "log-explorer", "million-row-explorer", "dbg"];
 // Apps where a response that arrives while a held job runs may supersede
 // it (the converter's sample, fetched during the walk, replaces the file
 // being converted): stopping a running job ends its worker, so the walk
@@ -183,7 +183,7 @@ const check = (name, ok, detail = "") => {
     await window.__runWork();
   });
   const t0 = Date.now();
-  const done = await page.evaluate(async (n, served, workers) => {
+  const done = await page.evaluate(async (n, served, workers, app) => {
     const POOL = ["", "a", "Ada", "10", "-3", "2x", "x@y.z", "Lorem ipsum dolor", "Node-0007", "# Title", "Renamed"];
     let seed = 7n;
     const rnd = () => {
@@ -200,7 +200,11 @@ const check = (name, ok, detail = "") => {
       const walk = (el) => {
         for (let c = el.firstElementChild; c; c = c.nextElementSibling) {
           const h = c.__h;
-          if (h !== undefined && !c.disabled) {
+          // The debug fixture also exposes deliberate crash/recursion and
+          // cancellation controls. Their containment contracts run separately;
+          // this walk exercises successful page/reader/job evaluations.
+          const ordinaryDebugControl = app !== "dbg" || ["Increment", "Reset"].includes(c.textContent);
+          if (h !== undefined && !c.disabled && ordinaryDebugControl) {
             // Filter before choosing: focus-only and file-only declarations
             // cannot consume one of the walk's requested input events.
             const op = h.input !== undefined && !h.input.files && c.type !== "file" ? "input"
@@ -231,7 +235,7 @@ const check = (name, ok, detail = "") => {
       if (served && i % 10 === 9) await new Promise((r) => setTimeout(r, 0));
     }
     return { fired, jobs, fault: rt.poisoned };
-  }, EVENTS, served, workers);
+  }, EVENTS, served, workers, app);
   if (served) await settle(page);
   if (served && workers) {
     await page.evaluate(() => window.__runWork());
@@ -250,6 +254,7 @@ const check = (name, ok, detail = "") => {
 
 // 2. Round trips.
 const CYCLES = {
+  dbg: [["click", ["role", "button", "Increment"]], ["click", ["role", "button", "Reset"]]],
   "form-builder": [["fill", ["label", "Answer f1"], "Ada"], ["fill", ["label", "Answer f1"], ""], ["click", ["role", "button", "Move up f2"]], ["click", ["role", "button", "Move up f1"]]],
   "kanban-board": [["fill", ["label", "New card title"], "Soak card"], ["click", ["role", "button", "Add card"]], ["click", ["role", "button", "Delete: Soak card"]]],
   "data-grid": [["fill", ["label", "Filter"], "Node-0007"], ["fill", ["label", "Filter"], ""], ["click", ["role", "button", "Next page"]], ["click", ["role", "button", "Previous page"]]],

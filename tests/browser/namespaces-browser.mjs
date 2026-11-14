@@ -1,4 +1,4 @@
-// Independent raw protocol18 identity/presence/comment contracts. No app Wasm
+// Independent raw protocol19 identity/presence/comment contracts. No app Wasm
 // or production encoder supplies expected numbers, names or browser facts.
 import http from "node:http";
 import fs from "node:fs";
@@ -27,10 +27,10 @@ try {
     const memory = new WebAssembly.Memory({ initial: 2 });
     let length = 0;
     const root = document.createElement("div"); document.body.append(root);
-    const exports = { memory, protocol_version: () => 18,
+    const exports = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 19,
       boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
       cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
-      init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; },
+      init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },
       files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
     };
     const runtime = new RocEngineRuntime(exports, root, { manualEffects: true });
@@ -159,11 +159,11 @@ try {
     const fresh = (wrapper, doc = document) => {
       const memory = new WebAssembly.Memory({ initial: 2 });
       let length = 0, reserved = 0, initCalls = 0, boot;
-      const x = { memory, protocol_version: () => 18,
+      const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 19,
         boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
         cmd_ptr: () => 0, cmd_len: () => length,
         payload_reserve(size) { reserved = size; return 65536; },
-        init() { initCalls++; boot = [...new Uint8Array(memory.buffer, 65536, reserved)]; new Uint8Array(memory.buffer)[0] = 0; length = 1; },
+        init() { initCalls++; boot = [...new Uint8Array(memory.buffer, 65536, reserved)]; new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },
         files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
       };
       const rt = new RocEngineRuntime(x, wrapper, { manualEffects: true, document: doc });

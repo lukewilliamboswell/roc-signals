@@ -53,6 +53,8 @@
 
 let ready = null;
 let userTiming = false;
+// Whether the page wants a job's `dbg` text (its mount's `dbg` option).
+let sendDbg = true;
 // Measures this worker has added to its own performance timeline; it clears
 // them at 1024 (observers and DevTools traces have already seen them).
 let measures = 0;
@@ -74,9 +76,12 @@ let outputLeft = 0;
 
 // The instance's exports, for the imports to reach its memory.
 let exportsOf = null;
+let jobDbg = null;
+let dbgUntaken = false;
 
 // Roc passes string bytes, so retain a leading U+FEFF as part of the value.
 const textDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
+const dbgDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 function readText(ptr, len) {
   return len === 0 ? "" : textDecoder.decode(new Uint8Array(exportsOf.memory.buffer, ptr, len));
@@ -158,6 +163,31 @@ const taskImports = {
   },
 };
 
+// The `dbg` text of the instance's last call (design.md, Appendix B), added
+// to what the job's earlier call said: `dropped` and `entries`, each
+// { text, bytes }. Null when the job ran no `dbg`. Readable after a trap.
+function takeDbg(x, into) {
+  if (!dbgUntaken) return into;
+  dbgUntaken = false;
+  try {
+    if (!sendDbg) return into === true || x.dbg_len() !== 0;
+    const length = x.dbg_len();
+    if (length === 0) return into;
+    if (!Number.isInteger(length) || length < 12 || length > 4100) throw new Error("invalid dbg buffer length");
+    const bytes = new Uint8Array(x.memory.buffer, x.dbg_ptr(), length);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, length);
+    const entries = [];
+    for (let at = 4; at < length;) {
+      if (length - at < 8) throw new Error("truncated dbg entry");
+      const full = view.getUint32(at, true), kept = view.getUint32(at + 4, true);
+      if (kept > 1024 || kept > full || kept > length - at - 8) throw new Error("invalid dbg entry length");
+      entries.push({ text: dbgDecoder.decode(bytes.subarray(at + 8, at + 8 + kept)), bytes: full });
+      at += 8 + kept;
+    }
+    return { dropped: Math.min(0xffffffff, (into?.dropped ?? 0) + view.getUint32(0, true)), entries: (into?.entries ?? []).concat(entries) };
+  } catch (_) { return into; } // Observation never changes a job's answer.
+}
+
 // Close the builders the call that just returned opened.
 function closeOpened() {
   for (const token of opened) {
@@ -208,6 +238,8 @@ function stage(x, payload) {
 // Run a job (`work()`, or `ask()` on the held state, preparing it first in
 // "prepare" mode) and return its output and the objects its answer holds.
 function runJob(x, m) {
+  jobDbg = null;
+  dbgUntaken = false;
   outputLeft = m.maxOutputBytes ?? 0;
   let prepareMs = null;
   if (m.mode === "prepare") {
@@ -217,17 +249,21 @@ function runJob(x, m) {
     stageObjects(x, m.prepareObjects ?? []);
     stage(x, m.prepare);
     const t = performance.now();
+    dbgUntaken = true;
     x.prepare();
     prepareMs = performance.now() - t;
+    jobDbg = takeDbg(x, jobDbg);
     closeOpened();
     drainReleased(x);
   }
   stageObjects(x, m.objects ?? []);
   stage(x, m.payload);
   const call = performance.now();
+  dbgUntaken = true;
   if (m.mode === "work") x.work();
   else x.ask();
   const ret = performance.now();
+  jobDbg = takeDbg(x, jobDbg);
   closeOpened();
   const answer = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
   const dv = new DataView(answer.buffer, answer.byteOffset, answer.byteLength);
@@ -241,10 +277,10 @@ function runJob(x, m) {
   }
   const output = answer.slice(4 + 8 * count);
   drainReleased(x);
-  return { output, objects: out, call, ret, prepareMs };
+  return { output, objects: out, call, ret, prepareMs, dbg: jobDbg };
 }
 
-const PROTOCOL_VERSION = 18;
+const PROTOCOL_VERSION = 19;
 
 async function start(module, version) {
   if (version !== PROTOCOL_VERSION) throw new Error(`page runtime protocol ${version} is not the protocol ${PROTOCOL_VERSION} this worker implements`);
@@ -256,6 +292,7 @@ async function start(module, version) {
   const got = typeof x.protocol_version === "function" ? x.protocol_version() : 0;
   if (got !== version) throw new Error(`roc engine protocol ${got} is not the protocol ${version} the page's runtime implements`);
   if (typeof x.work !== "function") throw new Error("the module has no work export");
+  if (typeof x.dbg_len !== "function" || typeof x.dbg_ptr !== "function") throw new Error("the module has no dbg_ptr/dbg_len exports");
   self.postMessage({ type: "ready", origin: performance.timeOrigin, instStart, instEnd, memBytes: x.memory.buffer.byteLength, liveAllocs: Number(x.metric(4)), liveBytes: Number(x.metric(5)) });
   return x;
 }
@@ -285,22 +322,26 @@ function measure(task, start, end) {
 }
 
 function faultOf(x, error) {
-  if (error && typeof error.code === "number" && typeof error.message === "string") return { type: "fault", code: error.code, message: error.message };
-  let code = 0;
+  const classified = error && typeof error.code === "number" && typeof error.message === "string";
+  let code = classified ? error.code : 0;
   let message = String(error && error.message ? error.message : error);
-  try {
-    code = x ? x.fault() : 0;
-    if (code !== 0) message = new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len()));
-  } catch (_) {
-    code = 0;
+  if (!classified) {
+    try {
+      code = x ? x.fault() : 0;
+      if (code !== 0) message = new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len()));
+    } catch (_) { code = 0; }
   }
-  return { type: "fault", code, message };
+  // A resource refusal while staging a task still retains its preparation's
+  // output. Observation cannot alter the independently classified fault.
+  const dbg = x ? takeDbg(x, jobDbg) : jobDbg;
+  return { type: "fault", code, message, dbg };
 }
 
 self.onmessage = async (event) => {
   const m = event.data;
   if (m.type === "init") {
     userTiming = !!m.userTiming;
+    sendDbg = m.dbg !== false;
     ready = start(m.module, m.version);
     ready.catch(() => {});
     return;
@@ -318,6 +359,8 @@ self.onmessage = async (event) => {
     return;
   }
   if (m.type !== "job") return;
+  jobDbg = null;
+  dbgUntaken = false;
   const recv = performance.now();
   let x = null;
   try {
@@ -337,5 +380,5 @@ self.onmessage = async (event) => {
   }
   if (userTiming && typeof m.task === "string") measure(m.task, r.call, r.ret);
   const output = r.output;
-  self.postMessage({ type: "done", output: output.buffer, objects: r.objects, t: [recv, begin, r.call, r.ret, performance.now()], mem: memOf(x), prepareMs: r.prepareMs, held: x.metric(8) === 1n, handles: Number(x.metric(6)) }, [output.buffer]);
+  self.postMessage({ type: "done", output: output.buffer, objects: r.objects, t: [recv, begin, r.call, r.ret, performance.now()], mem: memOf(x), prepareMs: r.prepareMs, held: x.metric(8) === 1n, handles: Number(x.metric(6)), dbg: r.dbg }, [output.buffer]);
 };

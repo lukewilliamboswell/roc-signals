@@ -3,6 +3,7 @@ import cli.Env
 import cli.OsStr
 import cli.Path
 import cli.Stdout
+import cli.Stderr
 import cli.System
 import Bundle
 import Compiler
@@ -53,6 +54,12 @@ Specs :: [].{
 		results = Specs.outcomes(Str.from_utf8_lossy(output.stdout_bytes))
 		if results.len() != count {
 			return Err(RunnerFailed(Str.from_utf8_lossy(output.stderr_bytes)))
+		}
+		# Valid outcome records leave stderr available for native diagnostics,
+		# including dbg. A malformed runner report is rendered by RunnerFailed
+		# above instead, so its stderr is never printed twice.
+		if !output.stderr_bytes.is_empty() {
+			Stderr.write_bytes!(output.stderr_bytes)?
 		}
 		for outcome in results {
 			Stdout.line!(Specs.show(outcome))?

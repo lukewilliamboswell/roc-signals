@@ -156,7 +156,7 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // text is never interpreted as absence, including empty or false text.
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 18;
+export const PROTOCOL_VERSION = 19;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -275,6 +275,54 @@ const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 // Reject incomplete or invalid text before the ASCII fast path can fabricate
 // characters from missing bytes or a decoder can replace invalid UTF-8.
+// The `dbg` text of an instance's last call (design.md, Appendix B):
+// `dropped:u32 (len:u32 kept:u32 text:kept)*`, or null when it ran none.
+// Readable after a trap too. `len` is an entry's full length, `kept` what
+// the host kept of it.
+export function readDbg(x) {
+  const length = x.dbg_len();
+  if (length === 0) return null;
+  if (!Number.isInteger(length) || length < 12 || length > 4100) throw new Error("invalid dbg buffer length");
+  const u8 = new Uint8Array(x.memory.buffer, x.dbg_ptr(), length);
+  const view = new DataView(u8.buffer, u8.byteOffset, length);
+  const entries = [];
+  for (let at = 4; at < length;) {
+    if (length - at < 8) throw new Error("truncated dbg entry");
+    const bytes = view.getUint32(at, true), kept = view.getUint32(at + 4, true);
+    if (kept > 1024 || kept > bytes || kept > length - at - 8) throw new Error("invalid dbg entry length");
+    entries.push({ text: readStr(u8, at + 8, kept), bytes });
+    at += 8 + kept;
+  }
+  return { dropped: view.getUint32(0, true), entries };
+}
+
+// Job messages retain at most two host call buffers. Reject malformed observer
+// data without changing delivery; never keep an arbitrary worker-supplied list.
+function checkedJobDbg(value) {
+  if (value === null || typeof value !== "object") return null;
+  if (!Number.isInteger(value.dropped) || value.dropped < 0 || value.dropped > 0xffffffff || !Array.isArray(value.entries) || value.entries.length > 1024) throw new Error("invalid job dbg record");
+  let total = 0;
+  for (const entry of value.entries) {
+    if (entry === null || typeof entry !== "object" || typeof entry.text !== "string" || entry.text.length > 1024 || !entry.text.isWellFormed() || !Number.isInteger(entry.bytes) || entry.bytes < 0 || entry.bytes > 0xffffffff) throw new Error("invalid job dbg entry");
+    const kept = utf8enc.encode(entry.text).length;
+    if (kept > 1024 || kept > entry.bytes) throw new Error("invalid job dbg text length");
+    total += 8 + kept;
+    if (total > 8192) throw new Error("job dbg exceeds two call buffers");
+  }
+  return value;
+}
+
+// At most two call buffers per job; off reads only the occurrence fact.
+function safeDbg(x, enabled) {
+  try { return enabled ? readDbg(x) : x.dbg_len() !== 0; } catch (_) { return null; }
+}
+function mergeDbg(before, after) {
+  if (after === null || after === false) return before;
+  if (after === true) return true;
+  if (before === null) return after;
+  return { dropped: Math.min(0xffffffff, before.dropped + after.dropped), entries: before.entries.concat(after.entries) };
+}
+
 function readStr(u8, at, n) {
   if (!Number.isInteger(at) || !Number.isInteger(n) || at < 0 || n < 0 || at > u8.length || n > u8.length - at) throw new Error("truncated command string");
   if (n <= 32) {
@@ -2269,7 +2317,7 @@ export class WorkMonitor {
 // it, and the next job prepares again. Placement never changes an answer:
 // a job's answer is what preparing afresh would give.
 class WorkPool {
-  constructor({ module, url, max, inline, Worker: W, monitor, faultClasses, maxBytes = Infinity, live = () => true }) {
+  constructor({ module, url, max, inline, Worker: W, monitor, faultClasses, dbg = true, observeDbg = () => null, maxBytes = Infinity, live = () => true }) {
     this.LOST_CLASSES = faultClasses;
     this.module = module;
     this.url = url;
@@ -2290,6 +2338,9 @@ class WorkPool {
     this.closed = false;
     this.pumpQueued = false;
     this.monitor = monitor;
+    // Whether jobs send their `dbg` text with their answer or their fault.
+    this.dbg = dbg;
+    this.observeDbg = observeDbg;
     // A worker whose linear memory exceeds this after a job is retired.
     this.maxBytes = maxBytes;
     // Whether the runtime still holds a file token (a state prepared from a
@@ -2484,7 +2535,7 @@ class WorkPool {
       this.lose(slot, LOST_EXECUTOR, `worker script failed: ${event && event.message ? event.message : "error"}`);
     };
     worker.onmessageerror = () => this.lose(slot, LOST_EXECUTOR, "worker message could not be read");
-    worker.postMessage({ type: "init", module: this.module, version: PROTOCOL_VERSION, userTiming: this.monitor.userTiming });
+    worker.postMessage({ type: "init", module: this.module, version: PROTOCOL_VERSION, userTiming: this.monitor.userTiming, dbg: this.dbg });
     this.slots.push(slot);
     return slot;
   }
@@ -2534,6 +2585,7 @@ class WorkPool {
       this.monitor.lateAnswer();
       return;
     }
+    const said = this.observeDbg(job.task, m.dbg ?? null);
     if (m.type === "done") {
       slot.job = null;
       job.slot = null;
@@ -2543,22 +2595,22 @@ class WorkPool {
       if (job.finishing) this.monitor.instanceFinished(slot.seq, m.mem ?? null);
       else {
         this.monitor.jobAnswered(job.id, slot.seq, { t: m.t, mem: m.mem, outputBytes: m.output.byteLength, prepareMs: m.prepareMs, held: m.held });
-        this.settle(job, { output: new Uint8Array(m.output), objects: m.objects ?? [] });
+        this.settle(job, { output: new Uint8Array(m.output), objects: m.objects ?? [], dbg: said });
       }
       this.afterJob(slot, m.mem);
       this.pump();
     } else {
-      this.lose(slot, m.code >= 1 && m.code <= 5 ? m.code : LOST_EXECUTOR, m.message);
+      this.lose(slot, m.code >= 1 && m.code <= 5 ? m.code : LOST_EXECUTOR, m.message, said);
     }
   }
 
   // The worker can no longer be trusted: discard it and lose its job.
-  lose(slot, lost, message) {
+  lose(slot, lost, message, dbg = null) {
     const job = slot.job;
     this.discard(slot, lost === LOST_EXECUTOR ? "executor" : "fault", { class: this.LOST_CLASSES[lost], message });
     if (job !== null) {
       job.slot = null;
-      this.settle(job, { lost, message });
+      this.settle(job, { lost, message, dbg });
     }
     this.pump();
   }
@@ -2624,6 +2676,12 @@ class WorkPool {
         const p = job.prepared;
         const mode = p === null ? "work" : this.inlineKey !== null && sameKey(this.inlineKey, p.key) ? "ask" : "prepare";
         let x = null;
+        let jobDbg = null, dbgUntaken = false;
+        const collectDbg = () => {
+          if (!dbgUntaken) return;
+          dbgUntaken = false;
+          jobDbg = mergeDbg(jobDbg, safeDbg(x, this.dbg));
+        };
         try {
           if (this.instance === null) {
             this.inlineSeq = mon.instanceSpawned("page");
@@ -2648,8 +2706,10 @@ class WorkPool {
             const ptr = x.payload_reserve(p.prepare.length);
             if (p.prepare.length > 0) new Uint8Array(x.memory.buffer, ptr, p.prepare.length).set(p.prepare);
             const t = mon.now();
+            dbgUntaken = true;
             x.prepare();
             prepareMs = mon.now() - t;
+            collectDbg();
             this.inlineKey = p.key;
             this.drainInline(x);
           }
@@ -2657,9 +2717,11 @@ class WorkPool {
           const ptr = x.payload_reserve(job.payload.length);
           if (job.payload.length > 0) new Uint8Array(x.memory.buffer, ptr, job.payload.length).set(job.payload);
           const call = mon.now();
+          dbgUntaken = true;
           if (mode === "work") x.work();
           else x.ask();
           const ret = mon.now();
+          collectDbg();
           const answer = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
           const dv = new DataView(answer.buffer, answer.byteOffset, answer.byteLength);
           const count = dv.getUint32(0, true);
@@ -2675,7 +2737,7 @@ class WorkPool {
           const mem = [x.memory.buffer.byteLength, Number(x.metric(4)), Number(x.metric(5))];
           if (mon.userTiming) mon.measure(`roc:work.compute ${job.task}`, call, ret, { id: job.id }, `worker ${this.inlineSeq}`);
           mon.jobAnswered(job.id, this.inlineSeq, { t: [begin, begin, call, ret, sent], mem, outputBytes: output.length, prepareMs, held: this.inlineKey !== null });
-          this.settle(job, { output, objects });
+          this.settle(job, { output, objects, dbg: this.observeDbg(job.task, jobDbg) });
           if (this.inlineKey !== null && !keyLive(this.inlineKey, this.live)) this.forgetInline("released");
           if (mem[0] > this.maxBytes) {
             if (this.inlineKey !== null) this.reportOversized(this.inlineKey.name, mem[0]);
@@ -2687,6 +2749,8 @@ class WorkPool {
         } catch (e) {
           let lost;
           let message = String(e && e.message ? e.message : e);
+          collectDbg();
+          const dbg = this.observeDbg(job.task, jobDbg);
           if (e instanceof EffectUnavailable) lost = LOST_UNAVAILABLE;
           else if (e && typeof e.lost === "number") lost = e.lost;
           else {
@@ -2706,7 +2770,7 @@ class WorkPool {
           this.inlineHeld.clear();
           this.terminated += 1;
           mon.instanceEnded(this.inlineSeq, lost === LOST_EXECUTOR ? "executor" : "fault", { class: this.LOST_CLASSES[lost], message });
-          this.settle(job, { lost, message });
+          this.settle(job, { lost, message, dbg });
         }
       }
     } finally {
@@ -2845,7 +2909,7 @@ function pictureLoadFault(root, error, onFault) {
   keepPictureHold(root);
   failPicture(root);
   const message = String(error?.message ?? error);
-  const fault = { class: "executor", code: 0, message, trap: String(error) };
+  const fault = { class: "executor", code: 0, message, trap: String(error), dbg: null };
   console.error(`roc engine fault [executor]: ${message}`);
   if (onFault) onFault(fault);
 }
@@ -2869,6 +2933,11 @@ export class RocEngineRuntime {
     this.onEvent = (event) => { if (!this.picturePending && event.bubbles) this.guard(() => this.handle(event)); };
     this.onCapture = (event) => { if (!this.picturePending && !event.bubbles) this.guard(() => this.handle(event)); };
     this.busy = false;
+    this.calling = false;
+    this.dbgTold = false;
+    this.dbgPrinting = true;
+    this.dbg = options.dbg === undefined ? "console" : options.dbg;
+    if (this.dbg !== "console" && this.dbg !== "off") throw new Error('options.dbg must be "console" or "off"');
     this.pendingTransition = null;
     this.transitionIdle = Promise.resolve();
     this.transitionIdleState = null;
@@ -3086,9 +3155,12 @@ export class RocEngineRuntime {
       if (version !== PROTOCOL_VERSION) {
         throw new Error(`roc engine protocol ${version} is not the protocol ${PROTOCOL_VERSION} this runtime implements`);
       }
+      if (typeof this.x.dbg_len !== "function" || typeof this.x.dbg_ptr !== "function") throw new Error("roc engine protocol requires dbg_ptr and dbg_len exports");
       // The app's port declarations, checked against options.ports before
       // anything mounts: a mismatch throws, and nothing runs.
-      const boot = readDeclarations(this.x);
+      let boot;
+      try { boot = readDeclarations(this.x); }
+      finally { this.takeDbg(null); }
       this.protocol = boot.bindings;
       this.bootKeys = boot.keys;
       this.sessionKeys = boot.sessionKeys;
@@ -3170,7 +3242,10 @@ export class RocEngineRuntime {
     this.stage(bytes);
     this.busy = true;
     try {
-      x.init();
+      this.calling = true;
+      const said = x.init();
+      this.calling = false;
+      if (said === 1) this.takeDbg(null);
       this.apply();
     } finally {
       this.busy = this.pendingTransition !== null;
@@ -3219,7 +3294,9 @@ export class RocEngineRuntime {
         code = 0;
       }
     }
-    this.poisoned = { class: code === 0 ? "executor" : this.protocol.LOST_CLASSES[code] ?? "unknown", code, message, trap: String(error) };
+    const said = this.calling ? this.takeDbg(null) : null;
+    this.calling = false;
+    this.poisoned = { dbg: said, class: code === 0 ? "executor" : this.protocol.LOST_CLASSES[code] ?? "unknown", code, message, trap: String(error) };
     for (const [type, listeners] of this.listening) {
       this.root.removeEventListener(type, listeners.bubble);
       if (listeners.capture) this.root.removeEventListener(type, listeners.capture, true);
@@ -3250,8 +3327,46 @@ export class RocEngineRuntime {
     this.nativeTasks.clear();
     if (this.modalOrder) this.modalOrder.clear();
     this.monitor.runtimeEnded("poisoned", this.poisoned);
-    console.error(`roc engine fault [${this.poisoned.class}]: ${message}`);
+    try { console.error(`roc engine fault [${this.poisoned.class}]: ${message}`); } catch (_) {}
     if (this.onFault) this.onFault(this.poisoned);
+  }
+
+  // Observation cannot fail a turn. Printing failure persists across recovery,
+  // but reading remains active so a later fault still carries the call's text.
+  takeDbg(task, given) {
+    let said = null;
+    try {
+      if (this.dbg === "off") {
+        const ran = given === undefined ? this.x.dbg_len() !== 0 : given === true;
+        if (ran && !this.dbgTold && this.dbgPrinting) {
+          this.dbgTold = true;
+          console.info('roc dbg: a dbg ran and its output is off, because this page was mounted with dbg: "off"');
+        }
+        return null;
+      }
+      said = given === undefined ? readDbg(this.x) : checkedJobDbg(given);
+      if (said === null || typeof said !== "object") return null;
+      if (!this.dbgPrinting) return said;
+      const from = task === null ? "[dbg]" : `[dbg task ${JSON.stringify(task)}]`;
+      if (said.dropped > 0) console.log(`${from} ${said.dropped === 0xffffffff ? "at least " : ""}${said.dropped} earlier entries of this call were dropped (a call keeps its newest 4096 bytes)`);
+      for (const entry of said.entries) {
+        const kept = utf8enc.encode(entry.text).length;
+        console.log(entry.bytes > kept ? `${from} ${entry.text}… (${entry.bytes} bytes)` : `${from} ${entry.text}`);
+      }
+    } catch (error) {
+      this.dbgPrinting = false;
+      try { console.error(`roc dbg: printing failed and is off for this mount: ${error}`); } catch (_) {}
+    }
+    return said;
+  }
+
+  // The exact call boundary excludes staging and executor callbacks.
+  callEvent(node, handler, files = false) {
+    this.calling = true;
+    const said = files ? this.x.event_files(node, handler) : this.x.event(node, handler);
+    this.calling = false;
+    if (said === 1) this.takeDbg(null);
+    return said;
   }
 
   // A fresh instance from the same module; the poisoned one is abandoned.
@@ -4011,14 +4126,10 @@ export class RocEngineRuntime {
   // One engine call for an event: a files-kind event stages its handles and
   // file record (design.md, Appendix B); other events stage their bytes or text.
   call(node, handler, payload) {
-    if (payload !== null && typeof payload === "object" && payload.parts !== undefined) {
-      this.callPort(node, handler, payload);
-      return;
-    }
+    if (payload !== null && typeof payload === "object" && payload.parts !== undefined) return this.callPort(node, handler, payload);
     if (payload === null || typeof payload !== "object" || payload.files === undefined) {
       this.stage(payload);
-      this.x.event(node, handler);
-      return;
+      return this.callEvent(node, handler);
     }
     const files = payload.files;
     const minted = this.x.files_stage(files.length);
@@ -4030,7 +4141,7 @@ export class RocEngineRuntime {
       parts.push(u64le(f.size), encStr(f.name), encStr(f.type));
     }
     this.stage(concat(parts));
-    this.x.event_files(node, handler);
+    return this.callEvent(node, handler, true);
   }
 
   // Let go of the files whose handles Roc released during the last call:
@@ -5419,16 +5530,14 @@ export class RocEngineRuntime {
       const tail = payload.tail ?? [];
       if (files.length === 0) {
         this.stageParts(payload.parts.concat(tail));
-        x.event(node, handler);
-        return;
+        return this.callEvent(node, handler);
       }
       const minted = x.files_stage(files.length);
       if (minted < files.length) {
         x.files_stage(0);
         if (payload.overflowed) payload.overflowed(files.length, minted);
         this.stageParts([payload.overflow ?? new Uint8Array([RES_PORT_FAILED, 2])]);
-        x.event(node, handler);
-        return;
+        return this.callEvent(node, handler);
       }
       const tokens = new DataView(x.memory.buffer, x.files_tokens(), 8 * minted);
       const parts = payload.parts.slice();
@@ -5438,7 +5547,7 @@ export class RocEngineRuntime {
         parts.push(u64le(f.size), encStr(f.name ?? ""), encStr(f.type ?? ""));
       }
       this.stageParts(parts.concat(tail));
-      x.event_files(node, handler);
+      return this.callEvent(node, handler, true);
     } finally {
       if (payload.after) payload.after();
     }
@@ -5586,6 +5695,7 @@ export class RocEngineRuntime {
     } else payload = concat([encStr(fx.task), fx.input]);
     const objects = fx.prep !== null ? fx.files.slice(fx.prep.initFiles) : fx.files;
     const done = (outcome) => {
+      const said = outcome.dbg ?? null;
       if (outcome.output !== undefined) {
         // A job's answer (result tag 10): the files it holds become the
         // page's handles when the turn is delivered, each the worker's Blob
@@ -5595,7 +5705,7 @@ export class RocEngineRuntime {
         finish({ parts: [new Uint8Array([RES_WORK]), u32(files.length)], files, tail: [outcome.output], overflow: new Uint8Array([RES_WORK_LOST, LOST_RESOURCE_LIMIT]), overflowed: (n, room) => this.reportLost(fx, LOST_RESOURCE_LIMIT, `resource_limit: the job answered with ${n} files and the page has room for ${room}`) }, "done", null, outcome.output);
         return;
       }
-      const klass = this.reportLost(fx, outcome.lost, outcome.message);
+      const klass = this.reportLost(fx, outcome.lost, outcome.message, said);
       finish(new Uint8Array([RES_WORK_LOST, outcome.lost]), outcome.lost === LOST_UNAVAILABLE ? "unavailable" : "lost", klass);
     };
     // In manual mode the timeout is not on the clock, so a finishing job
@@ -5607,17 +5717,17 @@ export class RocEngineRuntime {
   // Report a lost job and return its class name. The `roc worker fault
   // [CLASS]` prefix is stable: the browser spec runner tells these reports
   // from page errors by it.
-  reportLost(fx, code, message) {
+  reportLost(fx, code, message, dbg = null) {
     const klass = this.protocol.LOST_CLASSES[code] ?? "executor";
-    console.error(`roc worker fault [${klass}] in task "${fx.task}": ${message}`);
-    if (this.onWorkerFault) this.onWorkerFault({ id: fx.id, task: fx.task, class: klass, message });
+    try { console.error(`roc worker fault [${klass}] in task "${fx.task}": ${message}`); } catch (_) {}
+    if (this.onWorkerFault) this.onWorkerFault({ id: fx.id, task: fx.task, class: klass, message, dbg });
     return klass;
   }
 
   workPool() {
     if (this.pool === null) {
       const W = (this.win && this.win.Worker) ?? globalThis.Worker;
-      this.pool = new WorkPool({ module: this.module, url: this.workerUrl, max: this.maxWorkers, inline: this.workerMode === "inline", Worker: W, monitor: this.monitor, faultClasses: this.protocol.LOST_CLASSES, maxBytes: this.maxWorkerBytes, live: (token) => this.files.has(token) });
+      this.pool = new WorkPool({ module: this.module, url: this.workerUrl, max: this.maxWorkers, inline: this.workerMode === "inline", Worker: W, monitor: this.monitor, faultClasses: this.protocol.LOST_CLASSES, dbg: this.dbg === "console", observeDbg: (task, text) => this.takeDbg(task, text), maxBytes: this.maxWorkerBytes, live: (token) => this.files.has(token) });
     }
     return this.pool;
   }
@@ -5817,23 +5927,71 @@ export class RocEngineRuntime {
 // ---------------------------------------------------------------------
 // Port data (see "Ports" above).
 
-// Read one bounded protocol-facts item. Field order, lengths and uniqueness are
-// checked before any lookup table is constructed or app code is initialized.
+// Decode only the bounded facts schema, before creating any instance bindings.
+// CBOR argument bytes are big-endian; the surrounding declaration frame is LE.
 export function readProtocolFacts(bytes) {
   if (!(bytes instanceof Uint8Array) || bytes.length > 65536) throw new Error("protocol facts exceed 65536 bytes");
-  const reader = (body) => {
-    let at = 0;
-    const need = (n) => { if (n > body.length - at) throw new Error("short protocol facts body"); };
-    const r = {
-      u8() { need(1); return body[at++]; },
-      u32() { need(4); const value = new DataView(body.buffer, body.byteOffset + at, 4).getUint32(0, true); at += 4; return value; },
-      bytes(n) { need(n); const value = body.subarray(at, at + n); at += n; return value; },
-      name() { const n = r.u32(); if (n < 1 || n > 128) throw new Error("invalid protocol fact name length"); const value = utf8.decode(r.bytes(n)); if (value.includes("\0")) throw new Error("NUL in protocol fact name"); return value; },
-      rows(read, maximum = 64) { const n = r.u32(); if (n > maximum || n > body.length - at) throw new Error("invalid protocol fact row count"); return Array.from({ length: n }, () => read(r)); },
-      done() { if (at !== body.length) throw new Error("trailing protocol facts bytes"); },
-    };
-    return r;
+  let at = 0, items = 0;
+  const need = n => { if (n > bytes.length - at) throw new Error("short protocol facts CBOR"); };
+  const head = () => {
+    if (++items > 7383) throw new Error("protocol facts exceed item bound");
+    need(1); const first = bytes[at++], major = first >>> 5, additional = first & 31;
+    if (major !== 0 && major !== 3 && major !== 4 && major !== 5) throw new Error("unsupported protocol facts CBOR type");
+    if (additional < 24) return { major, size: additional };
+    const widths = { 24: 1, 25: 2, 26: 4 };
+    const width = widths[additional];
+    if (!width) throw new Error("unsupported protocol facts CBOR head");
+    need(width); let size = 0;
+    for (let i = 0; i < width; i++) size = size * 256 + bytes[at++];
+    if (size < (width === 1 ? 24 : width === 2 ? 256 : 65536)) throw new Error("non-shortest protocol facts CBOR head");
+    return { major, size };
   };
+  const text = h => {
+    if (h.major !== 3 || h.size < 1 || h.size > 128) throw new Error("invalid protocol fact name length/type");
+    need(h.size); const value = utf8.decode(bytes.subarray(at, at + h.size)); at += h.size;
+    if (value.includes("\0")) throw new Error("NUL in protocol fact name");
+    return value;
+  };
+  const array = (element, maximum = 64) => ({ element, maximum });
+  const code = { code: 255, name: "text" };
+  const schema = {
+    ops: array(code), kinds: array({ code: 255, name: "text", events: array("text", 32) }),
+    policies: array({ bit: 0xffffffff, name: "text" }),
+    properties: array({ index: 255, name: "text", elements: array("text", 32) }),
+    http_cache: array(code), http_credentials: array(code), namespaces: array(code),
+    text_entry_excluded: array("text"), fault_classes: array("text"), template_nodes: array(code), child_containers: array(code),
+  };
+  const read = (shape, depth) => {
+    const h = head();
+    if (typeof shape === "number") {
+      if (h.major !== 0 || h.size > shape) throw new Error("invalid protocol facts unsigned integer");
+      return h.size;
+    }
+    if (shape === "text") return text(h);
+    if (depth >= 4) throw new Error("protocol facts exceed depth bound");
+    if (Object.hasOwn(shape, "element")) {
+      if (h.major !== 4 || h.size > shape.maximum || h.size > bytes.length - at) throw new Error("invalid protocol fact row count");
+      return Array.from({ length: h.size }, () => read(shape.element, depth + 1));
+    }
+    const fields = Object.keys(shape);
+    if (h.major !== 5 || h.size !== fields.length) throw new Error("invalid protocol facts map field count");
+    const result = {}, seen = new Set(); let previous = null;
+    for (let i = 0; i < h.size; i++) {
+      const start = at, name = text(head()), key = bytes.subarray(start, at);
+      if (seen.has(name)) throw new Error(`duplicate protocol facts key ${JSON.stringify(name)}`);
+      if (previous) {
+        let order = 0;
+        for (let j = 0; j < Math.min(previous.length, key.length); j++) { if (previous[j] !== key[j]) { order = previous[j] < key[j] ? -1 : 1; break; } }
+        if (order === 0) order = previous.length - key.length;
+        if (order >= 0) throw new Error("out-of-order protocol facts map key");
+      }
+      if (!Object.hasOwn(shape, name)) throw new Error(`unknown protocol facts key ${JSON.stringify(name)}`);
+      previous = key; seen.add(name); result[name] = read(shape[name], depth + 1);
+    }
+    return result;
+  };
+  const facts = read(schema, 0);
+  if (at !== bytes.length) throw new Error("trailing protocol facts bytes");
   const unique = (values, label) => {
     const seen = new Set();
     for (const value of values) {
@@ -5842,26 +6000,6 @@ export function readProtocolFacts(bytes) {
     }
     return values;
   };
-  const names = (r, maximum = 64) => unique(r.rows(s => s.name(), maximum), "names");
-  const codeRows = r => r.rows(s => ({ code: s.u8(), name: s.name() }));
-  const nestedRows = (r, key, nested) => r.rows(s => ({ [key]: s.u8(), name: s.name(), [nested]: names(s, 32) }));
-  const fields = [
-    ["ops", codeRows],
-    ["kinds", r => nestedRows(r, "code", "events")],
-    ["policies", r => r.rows(s => ({ bit: s.u32(), name: s.name() }))],
-    ["properties", r => nestedRows(r, "index", "elements")],
-    ["http_cache", codeRows], ["http_credentials", codeRows],
-    ["namespaces", codeRows], ["text_entry_excluded", names], ["fault_classes", names], ["template_nodes", codeRows], ["child_containers", codeRows],
-  ];
-  const outer = reader(bytes), facts = {};
-  for (let i = 0; i < fields.length; i += 1) {
-    const tag = outer.u8();
-    if (tag !== i + 1) throw new Error(`expected protocol fact field ${i + 1}, found ${tag}`);
-    const body = reader(outer.bytes(outer.u32()));
-    facts[fields[i][0]] = fields[i][1](body);
-    body.done();
-  }
-  outer.done();
   for (const field of ["ops", "kinds", "policies", "properties", "http_cache", "http_credentials", "namespaces", "template_nodes", "child_containers"]) {
     const rows = facts[field];
     if (rows.length === 0) throw new Error(`empty protocol ${field}`);
@@ -5872,6 +6010,9 @@ export function readProtocolFacts(bytes) {
       if (rows.some(row => row.bit === 0 || (row.bit & (row.bit - 1)) !== 0)) throw new Error("invalid protocol policy bit");
     } else if (rows.some((row, i) => row[key] !== i + (["namespaces", "child_containers"].includes(field) ? 0 : 1))) throw new Error(`non-dense protocol ${field}`);
   }
+  for (const row of facts.kinds) unique(row.events, "event names");
+  for (const row of facts.properties) unique(row.elements, "element names");
+  unique(facts.text_entry_excluded, "input names"); unique(facts.fault_classes, "fault names");
   if (facts.fault_classes.length === 0) throw new Error("empty protocol fault classes");
   return facts;
 }

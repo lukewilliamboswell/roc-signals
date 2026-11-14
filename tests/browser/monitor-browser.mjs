@@ -158,8 +158,8 @@ function ordered(events) {
   const [cold, warm] = r.s.recent;
   check("the first job is cold and first on its instance; the second warm", [cold.cold, cold.firstJobOnInstance, warm.cold, warm.firstJobOnInstance], [true, true, false, false]);
   check("both ran off the page's thread on instance 1", [cold.thread, warm.thread, cold.instance, warm.instance], ["worker", "worker", 1, 1]);
-  // A payload is the task's Wire encoding: `Wire.Bytes` is a one-byte count
-  // and the bytes, and an answer ends with its `Ok` flag.
+  // This task carries five-byte Wire.Bytes values: a one-byte CBOR byte
+  // string head and those bytes. An answer ends with its separate `Ok` flag.
   check("sizes, not bytes", [cold.task, cold.inputBytes, cold.outputBytes, r.s.jobs.inputBytes, r.s.jobs.outputBytes], ["test.roc-signals/upper", 6, 7, 12, 14]);
   const t = warm.t;
   const seq = [t.issue, t.submit, t.post, t.answer, t.turnStart, t.turnEnd];
@@ -369,8 +369,8 @@ function ordered(events) {
     const end = window.__events.find((e) => e.kind === "job-end");
     const s = window.__rt.monitor.snapshot();
     return {
-      // The payloads as the task encodes them: a count, the bytes, and for
-      // the answer its `Ok` flag.
+      // This Wire.Bytes task carries a CBOR byte-string head and bytes, followed by
+      // the answer's separate `Ok` flag.
       input: [issue.input[0], new TextDecoder().decode(issue.input.slice(1))],
       output: [end.output[0], new TextDecoder().decode(end.output.slice(1, -1)), end.output[end.output.length - 1]],
       recordBytes: window.__hasBytes(s),
@@ -381,7 +381,7 @@ function ordered(events) {
       measures: window.__measures,
     };
   });
-  check("payloads: copies in the events only", [r.input, r.output, r.recordBytes], [[5, "job 1"], [5, "JOB 1", 0], false]);
+  check("payloads: copies in the events only", [r.input, r.output, r.recordBytes], [[0x45, "job 1"], [0x45, "JOB 1", 0], false]);
   check("a throwing listener is reported once and dropped; jobs still delivered", [r.errors, r.log], [1, 5]);
   check("history bound: the last 2 of 5", [r.recent.length, r.dropped], [2, 3]);
   const names = [...new Set(r.measures.map((m) => m.name))].sort();

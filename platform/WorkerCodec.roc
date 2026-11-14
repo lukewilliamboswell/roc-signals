@@ -1,0 +1,629 @@
+import Core
+import Engine
+import cbor.Cbor
+
+## The unexposed worker payload implementation. Wire gives applications
+## public aliases for the codec vocabulary; only this module carries files
+## beside encoded bytes and opens or finishes payload state.
+##
+## CBOR owns item grammar, preferred numeric forms, container checks and map
+## ordering. File references are the one protocol-specific six-item array;
+## the actual owned files travel beside the bytes between instances.
+WorkerCodec := [].{
+
+	## A malformed payload's byte position, or a missing required field name.
+	Error : [InvalidCbor(U64), MissingRequiredField(Str)]
+
+	## Values whose codecs can carry them between instances of this module.
+	## Functions and types without the required codecs are not Sendable.
+	a.Sendable :
+		where [
+			a.encoder_for : Format -> (a, Enc -> Try(Enc, [])),
+			a.parser_for : Format -> (State -> Try({ value : a, rest : State }, Error)),
+		]
+
+	## One value's opaque encoder state. Custom codecs pass it to the supplied
+	## item writer; they neither construct it nor retain an earlier state.
+	Enc :: { writer : Cbor.Writer, files : List(Engine.File) }
+
+	## An open list, tuple or tag's accumulator. Its add callback creates an
+	## Enc for each value. These are different states: a container cannot be
+	## used where its next item writer is required.
+	Items :: { container : Cbor.Container, files : List(Engine.File) }
+
+	## The opaque accumulator supplied to a record's field callback.
+	Fields : Items
+
+	## The opaque accumulator supplied to a dictionary's entry callback.
+	Entries : Items
+
+	## One checked payload's cursor and accompanying owned file values.
+	## Custom parsers return the next cursor and never open its representation.
+	State :: { cbor : Cbor, reader : Cbor.Reader, files : List(Engine.File) }
+
+	## The opaque configuration supplied to each derived or handwritten codec.
+	## Its hooks forward representation work to the pinned CBOR implementation.
+	Format :: { cbor : Cbor }.{
+
+		## Reject a value that does not belong to the expected derived type.
+		invalid_value : Format, State -> Error
+		invalid_value = |encoding, state| Cbor.invalid_value(encoding.cbor, state.reader)
+
+		## Name the missing required field using the codec's field rules.
+		missing_field : Format, Str -> Error
+		missing_field = |encoding, name| Cbor.missing_field(encoding.cbor, name)
+
+		## Pass field naming through the same CBOR configuration as the writer.
+		rename_field : Format, Str -> Str
+		rename_field = |encoding, name| Cbor.rename_field(encoding.cbor, name)
+
+		## Write one Str item while moving the accompanying files unchanged.
+		encode_str : Str, Enc -> Try(Enc, [])
+		encode_str = |value, { writer: output, files }| Cbor.encode_str(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one Str using the checked cursor and this payload's strict rules.
+		parse_str : Format, State -> Try({ value : Str, rest : State }, Error)
+		parse_str = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_str(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one Bool item while moving the accompanying files unchanged.
+		encode_bool : Bool, Enc -> Try(Enc, [])
+		encode_bool = |value, { writer: output, files }| Cbor.encode_bool(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one Bool using the checked cursor and this payload's strict rules.
+		parse_bool : Format, State -> Try({ value : Bool, rest : State }, Error)
+		parse_bool = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_bool(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one U8 item while moving the accompanying files unchanged.
+		encode_u8 : U8, Enc -> Try(Enc, [])
+		encode_u8 = |value, { writer: output, files }| Cbor.encode_u8(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one U8 using the checked cursor and this payload's strict rules.
+		parse_u8 : Format, State -> Try({ value : U8, rest : State }, Error)
+		parse_u8 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_u8(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one I8 item while moving the accompanying files unchanged.
+		encode_i8 : I8, Enc -> Try(Enc, [])
+		encode_i8 = |value, { writer: output, files }| Cbor.encode_i8(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one I8 using the checked cursor and this payload's strict rules.
+		parse_i8 : Format, State -> Try({ value : I8, rest : State }, Error)
+		parse_i8 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_i8(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one U16 item while moving the accompanying files unchanged.
+		encode_u16 : U16, Enc -> Try(Enc, [])
+		encode_u16 = |value, { writer: output, files }| Cbor.encode_u16(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one U16 using the checked cursor and this payload's strict rules.
+		parse_u16 : Format, State -> Try({ value : U16, rest : State }, Error)
+		parse_u16 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_u16(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one I16 item while moving the accompanying files unchanged.
+		encode_i16 : I16, Enc -> Try(Enc, [])
+		encode_i16 = |value, { writer: output, files }| Cbor.encode_i16(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one I16 using the checked cursor and this payload's strict rules.
+		parse_i16 : Format, State -> Try({ value : I16, rest : State }, Error)
+		parse_i16 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_i16(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one U32 item while moving the accompanying files unchanged.
+		encode_u32 : U32, Enc -> Try(Enc, [])
+		encode_u32 = |value, { writer: output, files }| Cbor.encode_u32(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one U32 using the checked cursor and this payload's strict rules.
+		parse_u32 : Format, State -> Try({ value : U32, rest : State }, Error)
+		parse_u32 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_u32(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one I32 item while moving the accompanying files unchanged.
+		encode_i32 : I32, Enc -> Try(Enc, [])
+		encode_i32 = |value, { writer: output, files }| Cbor.encode_i32(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one I32 using the checked cursor and this payload's strict rules.
+		parse_i32 : Format, State -> Try({ value : I32, rest : State }, Error)
+		parse_i32 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_i32(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one U64 item while moving the accompanying files unchanged.
+		encode_u64 : U64, Enc -> Try(Enc, [])
+		encode_u64 = |value, { writer: output, files }| Cbor.encode_u64(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one U64 using the checked cursor and this payload's strict rules.
+		parse_u64 : Format, State -> Try({ value : U64, rest : State }, Error)
+		parse_u64 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_u64(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one I64 item while moving the accompanying files unchanged.
+		encode_i64 : I64, Enc -> Try(Enc, [])
+		encode_i64 = |value, { writer: output, files }| Cbor.encode_i64(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one I64 using the checked cursor and this payload's strict rules.
+		parse_i64 : Format, State -> Try({ value : I64, rest : State }, Error)
+		parse_i64 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_i64(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one U128 item while moving the accompanying files unchanged.
+		encode_u128 : U128, Enc -> Try(Enc, [])
+		encode_u128 = |value, { writer: output, files }| Cbor.encode_u128(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one U128 using the checked cursor and this payload's strict rules.
+		parse_u128 : Format, State -> Try({ value : U128, rest : State }, Error)
+		parse_u128 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_u128(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one I128 item while moving the accompanying files unchanged.
+		encode_i128 : I128, Enc -> Try(Enc, [])
+		encode_i128 = |value, { writer: output, files }| Cbor.encode_i128(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one I128 using the checked cursor and this payload's strict rules.
+		parse_i128 : Format, State -> Try({ value : I128, rest : State }, Error)
+		parse_i128 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_i128(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one F32 item while moving the accompanying files unchanged.
+		encode_f32 : F32, Enc -> Try(Enc, [])
+		encode_f32 = |value, { writer: output, files }| Cbor.encode_f32(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one F32 using the checked cursor and this payload's strict rules.
+		parse_f32 : Format, State -> Try({ value : F32, rest : State }, Error)
+		parse_f32 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_f32(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one F64 item while moving the accompanying files unchanged.
+		encode_f64 : F64, Enc -> Try(Enc, [])
+		encode_f64 = |value, { writer: output, files }| Cbor.encode_f64(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one F64 using the checked cursor and this payload's strict rules.
+		parse_f64 : Format, State -> Try({ value : F64, rest : State }, Error)
+		parse_f64 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_f64(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Write one Dec item while moving the accompanying files unchanged.
+		encode_dec : Dec, Enc -> Try(Enc, [])
+		encode_dec = |value, { writer: output, files }| Cbor.encode_dec(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read one Dec using the checked cursor and this payload's strict rules.
+		parse_dec : Format, State -> Try({ value : Dec, rest : State }, Error)
+		parse_dec = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_dec(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## Let CBOR open a list and count each callback item. The file list moves
+		## through each callback with its writer, including nested containers.
+		encode_list : Enc, U64, (Items, (Items, (Enc -> Try(Enc, err)) -> Try(Items, err)) -> Try(Items, err)) -> Try(Enc, err)
+		encode_list = |{ writer: output, files }, count, write| Cbor.encode_list_carry(
+			{ writer: output, state: files },
+			count,
+			|items, add| write(
+				Items.{ container: items.container, files: items.state },
+				|item, write_value| add({ container: item.container, state: item.files }, |entry| write_value(Enc.{ writer: entry.writer, files: entry.state }).map_ok(|done| { writer: done.writer, state: done.files })).map_ok(|done| Items.{ container: done.container, files: done.state }),
+			).map_ok(|done| { container: done.container, state: done.files }),
+		).map_ok(|done| Enc.{ writer: done.writer, files: done.state })
+
+		## Let CBOR open a tuple and count each callback item. The file list moves
+		## through each callback with its writer, including nested containers.
+		encode_tuple : Enc, U64, (Items, (Items, (Enc -> Try(Enc, err)) -> Try(Items, err)) -> Try(Items, err)) -> Try(Enc, err)
+		encode_tuple = |{ writer: output, files }, count, write| Cbor.encode_tuple_carry(
+			{ writer: output, state: files },
+			count,
+			|items, add| write(
+				Items.{ container: items.container, files: items.state },
+				|item, write_value| add({ container: item.container, state: item.files }, |entry| write_value(Enc.{ writer: entry.writer, files: entry.state }).map_ok(|done| { writer: done.writer, state: done.files })).map_ok(|done| Items.{ container: done.container, files: done.state }),
+			).map_ok(|done| { container: done.container, state: done.files }),
+		).map_ok(|done| Enc.{ writer: done.writer, files: done.state })
+
+		## Let CBOR open a tag and count each callback item. The file list moves
+		## through each callback with its writer, including nested containers.
+		encode_tag : Enc, Str, U64, (Items, (Items, (Enc -> Try(Enc, err)) -> Try(Items, err)) -> Try(Items, err)) -> Try(Enc, err)
+		encode_tag = |{ writer: output, files }, name, count, write| Cbor.encode_tag_carry(
+			{ writer: output, state: files },
+			name,
+			count,
+			|items, add| write(
+				Items.{ container: items.container, files: items.state },
+				|item, write_value| add({ container: item.container, state: item.files }, |entry| write_value(Enc.{ writer: entry.writer, files: entry.state }).map_ok(|done| { writer: done.writer, state: done.files })).map_ok(|done| Items.{ container: done.container, files: done.state }),
+			).map_ok(|done| { container: done.container, state: done.files }),
+		).map_ok(|done| Enc.{ writer: done.writer, files: done.state })
+
+		## Let CBOR open a record and count each callback item. The file list moves
+		## through each callback with its writer, including nested containers.
+		encode_record : Enc, U64, (Fields, (Fields, Str, (Enc -> Try(Enc, err)) -> Try(Fields, err)) -> Try(Fields, err)) -> Try(Enc, err)
+		encode_record = |{ writer: output, files }, count, write| Cbor.encode_record_carry(
+			{ writer: output, state: files },
+			count,
+			|items, add| write(
+				Items.{ container: items.container, files: items.state },
+				|item, name, write_value| add({ container: item.container, state: item.files }, name, |entry| write_value(Enc.{ writer: entry.writer, files: entry.state }).map_ok(|done| { writer: done.writer, state: done.files })).map_ok(|done| Items.{ container: done.container, files: done.state }),
+			).map_ok(|done| { container: done.container, state: done.files }),
+		).map_ok(|done| Enc.{ writer: done.writer, files: done.state })
+
+		## Let CBOR open a dict and count each callback item. The file list moves
+		## through each callback with its writer, including nested containers.
+		encode_dict : Enc, U64, (Entries, (Entries, (Enc -> Try(Enc, err)), (Enc -> Try(Enc, err)) -> Try(Entries, err)) -> Try(Entries, err)) -> Try(Enc, err)
+		encode_dict = |{ writer: output, files }, count, write| Cbor.encode_dict_carry(
+			{ writer: output, state: files },
+			count,
+			|items, add| write(
+				Items.{ container: items.container, files: items.state },
+				|item, write_key, write_value| add({ container: item.container, state: item.files }, |entry| write_key(Enc.{ writer: entry.writer, files: entry.state }).map_ok(|done| { writer: done.writer, state: done.files }), |entry| write_value(Enc.{ writer: entry.writer, files: entry.state }).map_ok(|done| { writer: done.writer, state: done.files })).map_ok(|done| Items.{ container: done.container, files: done.state }),
+			).map_ok(|done| { container: done.container, state: done.files }),
+		).map_ok(|done| Enc.{ writer: done.writer, files: done.state })
+
+		## Open the checked list; CBOR owns its count and end position.
+		parse_list_start : Format, State -> Try([Counted({ len : U64, rest : State }), Uncounted(State)], Error)
+		parse_list_start = |encoding, { cbor: config, reader: cursor, files }| match Cbor.parse_list_start(encoding.cbor, cursor)? {
+			Counted({ len, rest }) => Ok(Counted({ len, rest: State.{ cbor: config, reader: rest, files: files } }))
+			Uncounted(rest) => Ok(Uncounted(State.{ cbor: config, reader: rest, files: files }))
+		}
+
+		## Open the checked dict; CBOR owns its count and end position.
+		parse_dict_start : Format, State -> Try([Counted({ len : U64, rest : State }), Uncounted(State)], Error)
+		parse_dict_start = |encoding, { cbor: config, reader: cursor, files }| match Cbor.parse_dict_start(encoding.cbor, cursor)? {
+			Counted({ len, rest }) => Ok(Counted({ len, rest: State.{ cbor: config, reader: rest, files: files } }))
+			Uncounted(rest) => Ok(Uncounted(State.{ cbor: config, reader: rest, files: files }))
+		}
+
+		## Open the checked record; CBOR owns its count and end position.
+		parse_record_start : Format, State -> Try([Counted({ len : U64, rest : State }), Uncounted(State)], Error)
+		parse_record_start = |encoding, { cbor: config, reader: cursor, files }| match Cbor.parse_record_start(encoding.cbor, cursor)? {
+			Counted({ len, rest }) => Ok(Counted({ len, rest: State.{ cbor: config, reader: rest, files: files } }))
+			Uncounted(rest) => Ok(Uncounted(State.{ cbor: config, reader: rest, files: files }))
+		}
+
+		## Advance within the checked container, preserving its associated files.
+		parse_list_next : Format, State -> Try([Item(State), Done(State)], Error)
+		parse_list_next = |encoding, { cbor: config, reader: cursor, files }| match Cbor.parse_list_next(encoding.cbor, cursor)? {
+			Item(reader) => Ok(Item(State.{ cbor: config, reader, files: files }))
+			Done(reader) => Ok(Done(State.{ cbor: config, reader, files: files }))
+		}
+
+		## Advance within the checked container, preserving its associated files.
+		parse_list_after_item : Format, State -> Try([Continue(State), Done(State)], Error)
+		parse_list_after_item = |encoding, { cbor: config, reader: cursor, files }| match Cbor.parse_list_after_item(encoding.cbor, cursor)? {
+			Continue(reader) => Ok(Continue(State.{ cbor: config, reader, files: files }))
+			Done(reader) => Ok(Done(State.{ cbor: config, reader, files: files }))
+		}
+
+		## Advance within the checked container, preserving its associated files.
+		parse_dict_next : Format, State -> Try([Entry(State), Done(State)], Error)
+		parse_dict_next = |encoding, { cbor: config, reader: cursor, files }| match Cbor.parse_dict_next(encoding.cbor, cursor)? {
+			Entry(reader) => Ok(Entry(State.{ cbor: config, reader, files: files }))
+			Done(reader) => Ok(Done(State.{ cbor: config, reader, files: files }))
+		}
+
+		## Advance within the checked container, preserving its associated files.
+		parse_dict_after_entry : Format, State -> Try([Continue(State), Done(State)], Error)
+		parse_dict_after_entry = |encoding, { cbor: config, reader: cursor, files }| match Cbor.parse_dict_after_entry(encoding.cbor, cursor)? {
+			Continue(reader) => Ok(Continue(State.{ cbor: config, reader, files: files }))
+			Done(reader) => Ok(Done(State.{ cbor: config, reader, files: files }))
+		}
+
+		## Advance within the checked container, preserving its associated files.
+		parse_record_after_field : Format, State -> Try([Continue(State), Done(State)], Error)
+		parse_record_after_field = |encoding, { cbor: config, reader: cursor, files }| match Cbor.parse_record_after_field(encoding.cbor, cursor)? {
+			Continue(reader) => Ok(Continue(State.{ cbor: config, reader, files: files }))
+			Done(reader) => Ok(Done(State.{ cbor: config, reader, files: files }))
+		}
+
+		## Preserve the compiler's field shape in this wrapper. The explicit
+		## annotation avoids https://github.com/roc-lang/roc/issues/13052.
+		parse_record_field : Format, Encoding.FieldName.FieldNames(_shape), State -> Try([Field({ field : Encoding.FieldName(_shape), rest : State }), TryField({ name : Str, rest : State }), TryFieldCaseless({ name : Str, rest : State }), Continue(State), Done(State)], Error)
+		parse_record_field = |encoding, names, { cbor: config, reader: cursor, files }| match Cbor.parse_record_field(encoding.cbor, names, cursor)? {
+			Field({ field, rest }) => Ok(Field({ field, rest: State.{ cbor: config, reader: rest, files: files } }))
+			TryField({ name, rest }) => Ok(TryField({ name, rest: State.{ cbor: config, reader: rest, files: files } }))
+			TryFieldCaseless({ name, rest }) => Ok(TryFieldCaseless({ name, rest: State.{ cbor: config, reader: rest, files: files } }))
+			Continue(reader) => Ok(Continue(State.{ cbor: config, reader, files: files }))
+			Done(reader) => Ok(Done(State.{ cbor: config, reader, files: files }))
+		}
+
+		## Delegate the checked cursor transition without reading bytes here.
+		skip_record_field : Format, State -> Try(State, Error)
+		skip_record_field = |encoding, { cbor: config, reader: cursor, files }| Cbor.skip_record_field(encoding.cbor, cursor).map_ok(|reader| State.{ cbor: config, reader, files: files })
+
+		## Delegate the checked cursor transition without reading bytes here.
+		parse_dict_after_key : Format, State -> Try(State, Error)
+		parse_dict_after_key = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_dict_after_key(encoding.cbor, cursor).map_ok(|reader| State.{ cbor: config, reader, files: files })
+
+		## Delegate the checked cursor transition without reading bytes here.
+		parse_tuple_start : Format, State, U64 -> Try(State, Error)
+		parse_tuple_start = |encoding, { cbor: config, reader: cursor, files }, count| Cbor.parse_tuple_start(encoding.cbor, cursor, count).map_ok(|reader| State.{ cbor: config, reader, files: files })
+
+		## Delegate the checked cursor transition without reading bytes here.
+		parse_tuple_next : Format, State, U64, U64 -> Try(State, Error)
+		parse_tuple_next = |encoding, { cbor: config, reader: cursor, files }, index, count| Cbor.parse_tuple_next(encoding.cbor, cursor, index, count).map_ok(|reader| State.{ cbor: config, reader, files: files })
+
+		## Delegate the checked cursor transition without reading bytes here.
+		parse_tuple_end : Format, State, U64 -> Try(State, Error)
+		parse_tuple_end = |encoding, { cbor: config, reader: cursor, files }, count| Cbor.parse_tuple_end(encoding.cbor, cursor, count).map_ok(|reader| State.{ cbor: config, reader, files: files })
+
+		## Read the external union through CBOR tokens and checked containers;
+		## the caller's spec keeps the typed payload parsers.
+		parse_tag_union : Format, Encoding.ParseTagUnionSpec(a, Format, State, Error), State -> Try({ value : a, rest : State }, Error)
+		parse_tag_union = |encoding, spec, state| {
+			failure = Cbor.invalid_value(encoding.cbor, state.reader)
+			match Cbor.peek(encoding.cbor, state.reader)? {
+				Text => {
+					tag = Format.parse_str(encoding, state)?
+					Encoding.ParseTagUnionSpec.parse(
+						spec,
+						{
+							tag: tag.value,
+							encoding,
+							state: tag.rest,
+							start_payloads: |current, count| if (count == 0) Ok(current) else Err(failure),
+							next_payload: |_, _, _| Err(failure),
+							finish_payloads: |current, _| Ok(current),
+							missing: failure,
+						},
+					)
+				}
+				Map => {
+					opened = Format.parse_dict_start(encoding, state)?
+					current = match opened {
+						Counted({ len: 1, rest }) => rest
+						_ => return Err(failure)
+					}
+					tag = Format.parse_str(encoding, current)?
+					Encoding.ParseTagUnionSpec.parse(
+						spec,
+						{
+							tag: tag.value,
+							encoding,
+							state: tag.rest,
+							start_payloads: |cursor, count| if count == 1 {
+								Ok(cursor)
+							} else if count > 1 {
+								Format.parse_tuple_start(encoding, cursor, count)
+							} else Err(failure),
+							next_payload: |cursor, _, _| Ok(cursor),
+							finish_payloads: |cursor, count| if (count == 1) Ok(cursor) else Format.parse_tuple_end(encoding, cursor, count),
+							missing: failure,
+						},
+					)
+				}
+				_ => Err(failure)
+			}
+		}
+
+		## Composite keys already occupy one checked dictionary item slot.
+		## This required hook remains present despite the compiler limitation:
+		## https://github.com/roc-lang/roc/issues/12919.
+		encode_key_start : Format, Enc -> Try(Enc, [])
+		encode_key_start = |_, { writer: output, files }| Cbor.Writer.key_start(output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Keep the compiler's composite-key entrypoint; CBOR already checked
+		## the complete key's structure before any typed callback runs. Typed
+		## duplicate refusal needs the compiler's actual key equality:
+		## https://github.com/roc-lang/roc/issues/13057.
+		parse_key_start : Format, State -> Try(State, Error)
+		parse_key_start = |_, { cbor: config, reader: cursor, files }| Cbor.Reader.key_start(cursor).map_ok(|reader| State.{ cbor: config, reader, files: files })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_str : Format, Str, Enc -> Try(Enc, [])
+		encode_key_str = |encoding, value, { writer: output, files }| Cbor.encode_key_str(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_str : Format, State -> Try({ value : Str, rest : State }, Error)
+		parse_key_str = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_str(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_bool : Format, Bool, Enc -> Try(Enc, [])
+		encode_key_bool = |encoding, value, { writer: output, files }| Cbor.encode_key_bool(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_bool : Format, State -> Try({ value : Bool, rest : State }, Error)
+		parse_key_bool = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_bool(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_u8 : Format, U8, Enc -> Try(Enc, [])
+		encode_key_u8 = |encoding, value, { writer: output, files }| Cbor.encode_key_u8(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_u8 : Format, State -> Try({ value : U8, rest : State }, Error)
+		parse_key_u8 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_u8(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_i8 : Format, I8, Enc -> Try(Enc, [])
+		encode_key_i8 = |encoding, value, { writer: output, files }| Cbor.encode_key_i8(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_i8 : Format, State -> Try({ value : I8, rest : State }, Error)
+		parse_key_i8 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_i8(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_u16 : Format, U16, Enc -> Try(Enc, [])
+		encode_key_u16 = |encoding, value, { writer: output, files }| Cbor.encode_key_u16(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_u16 : Format, State -> Try({ value : U16, rest : State }, Error)
+		parse_key_u16 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_u16(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_i16 : Format, I16, Enc -> Try(Enc, [])
+		encode_key_i16 = |encoding, value, { writer: output, files }| Cbor.encode_key_i16(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_i16 : Format, State -> Try({ value : I16, rest : State }, Error)
+		parse_key_i16 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_i16(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_u32 : Format, U32, Enc -> Try(Enc, [])
+		encode_key_u32 = |encoding, value, { writer: output, files }| Cbor.encode_key_u32(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_u32 : Format, State -> Try({ value : U32, rest : State }, Error)
+		parse_key_u32 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_u32(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_i32 : Format, I32, Enc -> Try(Enc, [])
+		encode_key_i32 = |encoding, value, { writer: output, files }| Cbor.encode_key_i32(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_i32 : Format, State -> Try({ value : I32, rest : State }, Error)
+		parse_key_i32 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_i32(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_u64 : Format, U64, Enc -> Try(Enc, [])
+		encode_key_u64 = |encoding, value, { writer: output, files }| Cbor.encode_key_u64(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_u64 : Format, State -> Try({ value : U64, rest : State }, Error)
+		parse_key_u64 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_u64(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_i64 : Format, I64, Enc -> Try(Enc, [])
+		encode_key_i64 = |encoding, value, { writer: output, files }| Cbor.encode_key_i64(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_i64 : Format, State -> Try({ value : I64, rest : State }, Error)
+		parse_key_i64 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_i64(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_u128 : Format, U128, Enc -> Try(Enc, [])
+		encode_key_u128 = |encoding, value, { writer: output, files }| Cbor.encode_key_u128(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_u128 : Format, State -> Try({ value : U128, rest : State }, Error)
+		parse_key_u128 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_u128(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_i128 : Format, I128, Enc -> Try(Enc, [])
+		encode_key_i128 = |encoding, value, { writer: output, files }| Cbor.encode_key_i128(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_i128 : Format, State -> Try({ value : I128, rest : State }, Error)
+		parse_key_i128 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_i128(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_f32 : Format, F32, Enc -> Try(Enc, [])
+		encode_key_f32 = |encoding, value, { writer: output, files }| Cbor.encode_key_f32(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_f32 : Format, State -> Try({ value : F32, rest : State }, Error)
+		parse_key_f32 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_f32(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_f64 : Format, F64, Enc -> Try(Enc, [])
+		encode_key_f64 = |encoding, value, { writer: output, files }| Cbor.encode_key_f64(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_f64 : Format, State -> Try({ value : F64, rest : State }, Error)
+		parse_key_f64 = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_f64(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## The same CBOR scalar form at a dictionary key position.
+		encode_key_dec : Format, Dec, Enc -> Try(Enc, [])
+		encode_key_dec = |encoding, value, { writer: output, files }| Cbor.encode_key_dec(encoding.cbor, value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Apply CBOR's exact scalar-key rule to the checked cursor.
+		parse_key_dec : Format, State -> Try({ value : Dec, rest : State }, Error)
+		parse_key_dec = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_key_dec(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## A payload-free tag key uses the library's bare-text form.
+		encode_key_tag : Format, Enc, Str -> Try(Enc, [])
+		encode_key_tag = |_, { writer: output, files }, name| Cbor.encode_str(name, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## A typed tag key uses the same external-union bridge as a value.
+		parse_key_tag_union : Format, Encoding.ParseTagUnionSpec(a, Format, State, Error), State -> Try({ value : a, rest : State }, Error)
+		parse_key_tag_union = |encoding, spec, state| Format.parse_tag_union(encoding, spec, state)
+
+		## Write a bulk byte string without exposing the writer's representation.
+		encode_bytes : Format, List(U8), Enc -> Try(Enc, [])
+		encode_bytes = |_, value, { writer: output, files }| Cbor.encode_bytes(value, output).map_ok(|writer| Enc.{ writer, files: files })
+
+		## Read a bulk byte string, which may share the checked input buffer.
+		parse_bytes : Format, State -> Try({ value : List(U8), rest : State }, Error)
+		parse_bytes = |encoding, { cbor: config, reader: cursor, files }| Cbor.parse_bytes(encoding.cbor, cursor).map_ok(|parsed| { value: parsed.value, rest: State.{ cbor: config, reader: parsed.rest, files: files } })
+
+		## A file's bytes stay behind its handle. Only its index and range
+		## metadata enter the six-item CBOR array beside that owned file list.
+		encode_file : Format, Engine.File, Enc -> Try(Enc, [])
+		encode_file = |_, file, { writer: output, files }| {
+			{ name, mime, size, start, len } = Core.file_parts(file)
+			index = files.len()
+			opened = Enc.{ writer: output, files: files.append(file) }
+			Format.encode_tuple(
+				opened,
+				6,
+				|items, add| {
+					a = add(items, |entry| Format.encode_u64(index, entry))?
+					b = add(a, |entry| Format.encode_str(name, entry))?
+					c = add(b, |entry| Format.encode_str(mime, entry))?
+					d = add(c, |entry| Format.encode_u64(size, entry))?
+					e = add(d, |entry| Format.encode_u64(start, entry))?
+					add(e, |entry| Format.encode_u64(len, entry))
+				},
+			)
+		}
+
+		## Resolve the declared file index against the files this instance
+		## owns, then let the engine validate its exact declared range.
+		parse_file : Format, State -> Try({ value : Engine.File, rest : State }, Error)
+		parse_file = |encoding, current| {
+			opened = Format.parse_tuple_start(encoding, current, 6)?
+			at_index = Cbor.invalid_value(encoding.cbor, opened.reader)
+			{ value: index, rest: after_index } = Format.parse_u64(encoding, opened)?
+			source = after_index.files.get(index) ? |_| at_index
+			{ value: name, rest: after_name } = Format.parse_str(encoding, after_index)?
+			{ value: mime, rest: after_mime } = Format.parse_str(encoding, after_name)?
+			{ value: size, rest: after_size } = Format.parse_u64(encoding, after_mime)?
+			{ value: start, rest: after_start } = Format.parse_u64(encoding, after_size)?
+			{ value: len, rest: after_len } = Format.parse_u64(encoding, after_start)?
+			rest = Format.parse_tuple_end(encoding, after_len, 6)?
+			file = Core.placed_file(source, { name, mime, size, start, len }) ? |_| Cbor.invalid_value(encoding.cbor, rest.reader)
+			Ok({ value: file, rest })
+		}
+	}
+
+	## Encode a worker input or answer, keeping the actual owned files beside
+	## its bytes. A malformed custom encoder is a contract fault naming the task.
+	encode_with_files : Str, a -> { bytes : List(U8), files : List(Engine.File), deep : Bool } where [a.Sendable]
+	encode_with_files = |name, value| match encode_payload(value) {
+		Ok(encoded) => encoded
+		Err(CountMismatch) => crash "contract: worker task \"${name}\" encoded the wrong number of CBOR items"
+		Err(DuplicateMapKey) => crash "contract: worker task \"${name}\" encoded duplicate CBOR map keys"
+	}
+
+	## Decode an input or answer with the file values owned by its receiving
+	## instance. The worker layer supplies its task-specific failure message.
+	decode_with_held : List(U8), List(Engine.File) -> Try(a, Error) where [a.Sendable]
+	decode_with_held = |bytes, files| decode_payload(bytes, files)
+
+	## Encode an ordinary no-file value for platform tests of the derived format.
+	encode : a -> List(U8) where [a.Sendable]
+	encode = |value| {
+		encoded = WorkerCodec.encode_with_files("payload", value)
+		if !encoded.files.is_empty() {
+			crash "contract: a file crosses only in a worker task's input or answer"
+		}
+		encoded.bytes
+	}
+
+	## Expose the reader's depth refusal to platform tests of own-encoded values.
+	try_encode : a -> Try(List(U8), [TooDeep]) where [a.Sendable]
+	try_encode = |value| {
+		encoded = WorkerCodec.encode_with_files("payload", value)
+		if !encoded.files.is_empty() {
+			crash "contract: a file crosses only in a worker task's input or answer"
+		}
+		if (encoded.deep) Err(TooDeep) else Ok(encoded.bytes)
+	}
+
+	## Decode an ordinary no-file value for platform format tests.
+	decode : List(U8) -> Try(a, Error) where [a.Sendable]
+	decode = |bytes| decode_payload(bytes, [])
+
+}
+
+## The unexposed codec's writer entrypoint. The format types alone receive
+## public aliases; applications cannot reach this module or its worker functions.
+encode_payload : a -> Try({ bytes : List(U8), files : List(Engine.File), deep : Bool }, [CountMismatch, DuplicateMapKey]) where [a.WorkerCodec.Sendable]
+encode_payload = |value| {
+	Shape : a
+	opened = Cbor.Writer.open({ key_order: Sorted })
+	encoding = WorkerCodec.Format.{ cbor: opened.cbor }
+	{ writer, files } = Shape.encoder_for(encoding)(value, WorkerCodec.Enc.{ writer: opened.writer, files: [] })?
+	report = Cbor.Writer.finish_report(writer)?
+	deep = report.max_depth > 512
+	Ok({ bytes: report.bytes, files, deep })
+}
+
+## Package-local checked reader entrypoint. The complete CBOR walk happens
+## before typed callbacks, which carry the actual owned files unchanged.
+decode_payload : List(U8), List(Engine.File) -> Try(a, WorkerCodec.Error) where [a.WorkerCodec.Sendable]
+decode_payload = |bytes, files| {
+	Shape : a
+	opened = Cbor.Reader.new(bytes, { key_order: Sorted, unknown_fields: Reject, max_depth: 512, decimals: EncoderForm, floats: EncoderForm, empty_byte_lists: Reject })?
+	encoding = WorkerCodec.Format.{ cbor: opened.cbor }
+	{ value, rest } = Shape.parser_for(encoding)(WorkerCodec.State.{ cbor: opened.cbor, reader: opened.reader, files })?
+	Cbor.Reader.finish(rest.reader)?
+	Ok(value)
+}

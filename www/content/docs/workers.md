@@ -642,13 +642,37 @@ field.) Inside a payload, use a tag union of your own, such as
 `[Parsed(U64), NotANumber(Str)]`.
 
 For bulk bytes the page already holds, wrap the `List(U8)` in `Wire.Bytes`.
-It is encoded exactly like the list but copied as one block rather than
-byte by byte:
+It is encoded and read as one CBOR byte string rather than item by item.
+An empty `Bytes` is a byte string, while an ordinary empty derived list is
+an array:
 
 {{ sample(file="wire.roc", region="bytes") }}
 
-Every payload is decoded strictly. A value nested more than 512 containers
-deep cannot cross either way, and either way only the job is lost: an input
+Payloads use the pinned roc-cbor format. Records carry field names, dictionaries
+have sorted keys, and every number uses the writer's preferred representation.
+The two instances are the same compiled module; payload bytes are not a format
+for an app to persist across releases. A float keeps its zero sign, while all
+NaN payloads become one canonical NaN.
+
+Handwritten codecs keep their hook names. A list, tuple or tag's accumulator is
+now `Wire.Items`; its add callback supplies a `Wire.Enc` for the individual item.
+Record and dictionary accumulators are `Wire.Fields` and `Wire.Entries`.
+Codecs whose callback types are inferred need no source change. A handwritten
+annotation that used `Wire.Enc` for the outer container must use its accumulator
+type instead. These states are opaque: pass the supplied state through the
+format's hooks rather than constructing or opening its representation.
+
+The former `Wire.encode`, `Wire.try_encode` and `Wire.decode` helpers leave the
+public API in this release. An app needing CBOR bytes of its own should depend
+on roc-cbor and choose its own schema and persistence contract. Worker tasks
+continue to derive their codecs through `Wire.Sendable`; their source does not
+need replacement encode or decode calls.
+
+Every payload is decoded strictly. The depth limit is 512 physical CBOR
+arrays, maps and tags, including empty containers and numeric tags. This
+can differ from the earlier Wire framing depth: a decimal fraction adds
+its tag and array, a bignum adds a tag, and a payload-free union is text.
+A value beyond this physical bound cannot cross either way, and either way only the job is lost: an input
 that deep fails to decode in the worker, and an answer that deep is refused
 in the worker before it is sent, so the job is `Lost(Contract)` and the
 console names the task and the bound. Keep payloads plain: each payload
@@ -813,3 +837,13 @@ the sites that issue it and react to its answer (`Worker.resource`, `watch_lates
 `Engine.resource`). The handles are the same idea, and so are the `!`
 effects on them; what is different is that a job's effects cannot wait, and
 that a handle crosses to the job by token rather than being shared.
+
+## Debugging a task
+
+A job’s `dbg` lines appear on the page console with `[dbg task "name"]` when
+its answer or fault arrives. Preparation output precedes task output; a kept
+preparation prints only when it actually runs. A cancelled job allowed to
+finish still prints, while a stopped, timed-out or lost worker loses its
+buffer with its memory. While investigating that job, lengthen its timeout
+or call its function from an `expect`. `dbg: "off"` applies to jobs too.
+See [Debugging](@/docs/debugging.md) before deploying debug statements.
