@@ -1,5 +1,6 @@
 (test "Ordinary constructors preserve explicit namespaces and raw SVG context"
   (steps
+    (expect-element (test-id "svg-group") svg "g")
     (expect-text (test-id "context-root") "Change namespaced attributeToggle namespace subtreeexact HTMLlocal colonprefixed HTMLextensionno namespacexforeign HTML")
     (expect-element (test-id "context-root") html "div")
     (expect-value (test-id "exact-value") "")
@@ -28,5 +29,6 @@
     (click (role button :name "Toggle namespace subtree"))
     (expect-absent (test-id "svg-group"))
     (click (role button :name "Toggle namespace subtree"))
+    (expect-element (test-id "svg-group") svg "g")
     (expect-element (test-id "gradient") svg "linearGradient")
     (expect-element (test-id "foreign-html") html "div")))
