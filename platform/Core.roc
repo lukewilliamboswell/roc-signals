@@ -266,7 +266,7 @@ Core := [].{
 	## another (a feature's cells inside the app's) needs no lens either.
 	## `tables` lists what the root needs of each table cell among them
 	## (see [TableCell]), given the same position and modifier.
-	Cells(whole, st, h) := { init : st, count : U64, make : (U64, (whole -> st), (whole, (st -> st) -> whole) -> h), restart : (st -> st), tables : (U64, (whole, (st -> st) -> whole) -> List(TableCell(whole))) }.{
+	Cells(whole, st, h) := { init : st, count : U64, make : (U64, (whole -> st), (whole, (st -> st) -> whole) -> h), restart : (st -> st), tables : (U64, (whole -> st), (whole, (st -> st) -> whole) -> List(TableCell(whole))) }.{
 
 		## Two descriptions side by side: `l`'s cells first, then `r`'s.
 		map2 : Cells(whole, a, ha), Cells(whole, b, hb), (ha, hb -> hc) -> Cells(whole, (a, b), hc)
@@ -287,7 +287,7 @@ Core := [].{
 					combine(left, right)
 				},
 				restart: |(a, b)| (lr(a), rr(b)),
-				tables: |base, modify| lt(base, |w, f| modify(w, |(a, b)| (f(a), b))).concat(rt(base + n, |w, f| modify(w, |(a, b)| (a, f(b))))),
+				tables: |base, get, modify| lt(base, |w| pair_first(get(w)), |w, f| modify(w, |(a, b)| (f(a), b))).concat(rt(base + n, |w| pair_second(get(w)), |w, f| modify(w, |(a, b)| (a, f(b))))),
 			}
 		}
 
@@ -323,14 +323,15 @@ Core := [].{
 	## The description of one cell starting at `init`, which is also what a
 	## group's reset puts back in it.
 	cell : a -> Cells(whole, a, Cell(whole, a))
-	cell = |init| { init, count: 1, make: |base, get, modify| { cell: base, get, modify }, restart: |_| init, tables: |_, _| [] }
+	cell = |init| { init, count: 1, make: |base, get, modify| { cell: base, get, modify }, restart: |_| init, tables: |_, _, _| [] }
 
 	## What the root site needs of a table cell of the store `st`: the cell's
 	## position, `clear` for initialization, and `finish` to rearm the next
-	## writing turn without changing the retained record. `stamp` gives a
+	## writing turn without changing the retained record, and `ready` to
+	## tell, for the settle check, whether it was rearmed. `stamp` gives a
 	## Store value its table identity; `live` gives mounted storage an
 	## identity no table read from a Store value carries.
-	TableCell(st) : { cell : U64, clear : (st -> st), stamp : (st -> st), live : (st -> st), finish : (st -> st) }
+	TableCell(st) : { cell : U64, clear : (st -> st), stamp : (st -> st), live : (st -> st), finish : (st -> st), ready : (st -> Bool) }
 
 	## The description of one cell holding a [Table] of `rows`, by key. It
 	## is an ordinary cell: a decision changes it with `Cell.update` and the
@@ -371,7 +372,7 @@ Core := [].{
 				),
 			},
 			restart: |t| wrap(TableCore.kept(unwrap(init), TableCore.mark(TableCore.begin_changes(unwrap(t))))),
-			tables: |base, modify| [{ cell: base, clear: |w| modify(w, |t| wrap(TableCore.clear_changes(unwrap(t)))), stamp: |w| modify(w, |t| wrap(TableCore.with_id(unwrap(t), base + 1))), live: |w| modify(w, |t| wrap(TableCore.with_id(unwrap(t), base + 1 + live_ids))), finish: |w| modify(w, |t| wrap(TableCore.finish_changes(unwrap(t)))) }],
+			tables: |base, get, modify| [{ cell: base, ready: |w| TableCore.is_ready(unwrap(get(w))), clear: |w| modify(w, |t| wrap(TableCore.clear_changes(unwrap(t)))), stamp: |w| modify(w, |t| wrap(TableCore.with_id(unwrap(t), base + 1))), live: |w| modify(w, |t| wrap(TableCore.with_id(unwrap(t), base + 1 + live_ids))), finish: |w| modify(w, |t| wrap(TableCore.finish_changes(unwrap(t)))) }],
 		}
 	}
 
@@ -441,7 +442,7 @@ Core := [].{
 			{ st: held } = w
 			{ st: f(held) }
 		}
-		tables = (d.tables)(0, over).fold(Dict.empty(), |index, descriptor| index.insert(descriptor.cell, descriptor))
+		tables = (d.tables)(0, |w| w.st, over).fold(Dict.empty(), |index, descriptor| index.insert(descriptor.cell, descriptor))
 		{ init: tables.fold({ st: d.init }, |st, _, t| (t.stamp)(st)), cells: m(0, |w| w.st, over), tables, table_bits: tables.fold(0.U128, |bits, position, _| bits.bitwise_or(cell_bit(position))) }
 	}
 
@@ -5302,7 +5303,12 @@ store_inst = |tables0, wrote0, block0| {
 			match msg {
 				Changed(mask) => {
 					(b2, t2) = refresh(block, env, mask, tx)
-					(store_inst(tables, no_layers, b2), Pending(Root.{ store: end_tables(env.store, tables, wrote) }, no_layers), t2)
+					# The settle check (`Core.settled`) is the only pass over every
+					# layer at the root. It also asks every table cell, drawn or
+					# not, whether its last writing turn rearmed it: O(tables),
+					# which only a harness pays.
+					t3 = if (mask == every_layer) unrearmed(tables, env.store, t2) else t2
+					(store_inst(tables, no_layers, b2), Pending(Root.{ store: end_tables(env.store, tables, wrote) }, no_layers), t3)
 				}
 				Fire(path, pos, h, payload) => match fire_target(block, path, pos) {
 					Leaf => {
@@ -5323,6 +5329,15 @@ store_inst = |tables0, wrote0, block0| {
 		},
 	)
 }
+
+## The settle check's report of every table cell that its last writing
+## turn left unrearmed, which a view's own check would miss for a table
+## nothing draws.
+unrearmed : Tables(st), st, Tx -> Tx
+unrearmed = |tables, st, tx| tables.cells.fold(
+	tx,
+	|acc, position, table| if ((table.ready)(st)) acc else with_fx(acc, |fx| { ..fx, focus: fx.focus.append(Drift("the table cell at position ${position.to_str()} was not rearmed when its last writing turn ended")) }),
+)
 
 ## Mounted table identities start above value identities. Store construction
 ## keeps cell positions below this boundary; a Store.read snapshot cannot
@@ -10287,8 +10302,8 @@ expect {
 	edited = TableCore.begin_changes(Table.from_list([{ key: 1.U64, row: "a" }])).update(1, |row| "${row}!")
 	tables = {
 		cells: Dict.empty()
-			.insert(6, { cell: 6, clear: |(a, b)| (TableCore.clear_changes(a), b), stamp: |st| st, live: |st| st, finish: |(a, b)| (TableCore.finish_changes(a), b) })
-			.insert(70, { cell: 70, clear: |(a, b)| (a, TableCore.clear_changes(b)), stamp: |st| st, live: |st| st, finish: |(a, b)| (a, TableCore.finish_changes(b)) }),
+			.insert(6, { cell: 6, clear: |(a, b)| (TableCore.clear_changes(a), b), stamp: |st| st, live: |st| st, finish: |(a, b)| (TableCore.finish_changes(a), b), ready: |_| True })
+			.insert(70, { cell: 70, clear: |(a, b)| (a, TableCore.clear_changes(b)), stamp: |st| st, live: |st| st, finish: |(a, b)| (a, TableCore.finish_changes(b)), ready: |_| True }),
 		written: cell_bit(6),
 	}
 	(first, second) = end_tables((edited, edited), tables, one_cell(70))
@@ -10301,9 +10316,9 @@ expect {
 ## cells 64 apart, and never invokes an unwritten or merely aliased cell.
 expect {
 	index = Dict.empty()
-		.insert(6.U64, { cell: 6, clear: |st| st, stamp: |st| st, live: |st| st, finish: |(a, b)| (a + 1, b) })
-		.insert(70, { cell: 70, clear: |st| st, stamp: |st| st, live: |st| st, finish: |(a, b)| (a, b + 1) })
-		.insert(134, { cell: 134, clear: |st| st, stamp: |st| st, live: |st| st, finish: |_| crash "an unwritten table finalizer was invoked" })
+		.insert(6.U64, { cell: 6, clear: |st| st, stamp: |st| st, live: |st| st, finish: |(a, b)| (a + 1, b), ready: |_| True })
+		.insert(70, { cell: 70, clear: |st| st, stamp: |st| st, live: |st| st, finish: |(a, b)| (a, b + 1), ready: |_| True })
+		.insert(134, { cell: 134, clear: |st| st, stamp: |st| st, live: |st| st, finish: |_| crash "an unwritten table finalizer was invoked", ready: |_| True })
 	tables = { cells: index, written: cell_bit(6) }
 	wrote = layers_or(one_cell(6), one_cell(70))
 	{
