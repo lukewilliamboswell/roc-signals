@@ -47,7 +47,7 @@ import pf.Worker
 ## three levels, and one layer inside a row. Below the last level a `Layer`
 ## or an `Each` draws its body in place and adds no scope. That keeps the
 ## generator monomorphic: a recursive generator over the typed contexts
-## would need polymorphic recursion (roc-lang/roc#12835).
+## would need polymorphic recursion, which the compiler rejects.
 ##
 ## The session clicks any live button or answers any live request: a timer
 ## fires; a worker job is answered by its task's stand-in (`triple`), or is lost
