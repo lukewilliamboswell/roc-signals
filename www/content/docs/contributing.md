@@ -645,7 +645,8 @@ unverified compiler version.
 
 The tooling compiler is `nightly-2026-11-13-03dce41`, matching the compiler
 used by roc-parser 6.0.0-rc.2. Earlier toolchains cannot resolve the released
-parser's nominal type aliases. `Blueprint.lock` records the published archive
+parser's nominal type aliases. The scripts and `signals.roc` tool use
+basic-cli 0.28.1, which checks without duplicate-name warnings on that nightly. `Blueprint.lock` records the published archive
 digests for each supported system.
 
 The repository follows roc-automation's three-compiler model:
