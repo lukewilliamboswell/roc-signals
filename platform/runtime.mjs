@@ -599,18 +599,23 @@ function setValue(el, value) {
   el.value = value;
 }
 
+// A no-namespace attribute whose local name holds a colon (or is `xmlns`)
+// cannot be set by `setAttributeNS`, which would read the colon as a prefix.
+// Nor by `setAttribute`: it lowercases the name on an HTML element, and on
+// any element it sets an existing attribute whose qualified name is the same
+// text (an XLink `xlink:href`) instead of the no-namespace one. Such an
+// attribute is found by its exact local name and, when absent, made from an
+// XML document, whose `createAttribute` keeps the name as written.
 function setAttr(el, name, value) {
   if (name.namespace === null && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")) {
-    if (el.namespaceURI === HTML_NS && /[A-Z]/u.test(name.local)) {
-      const existing = el.getAttributeNodeNS(null, name.local);
-      if (existing) existing.value = value;
-      else {
-        const source = el.ownerDocument.implementation.createDocument(null, "");
-        const attribute = source.createAttribute(name.local);
-        attribute.value = value;
-        el.setAttributeNodeNS(attribute);
-      }
-    } else el.setAttribute(name.local, value);
+    const existing = el.getAttributeNodeNS(null, name.local);
+    if (existing) existing.value = value;
+    else {
+      const source = el.ownerDocument.implementation.createDocument(null, "");
+      const attribute = source.createAttribute(name.local);
+      attribute.value = value;
+      el.setAttributeNodeNS(attribute);
+    }
   } else el.setAttributeNS(name.namespace, name.qualified, value);
 }
 

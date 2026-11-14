@@ -52,6 +52,11 @@ try {
     check("SVG parent and child retain explicit namespaces", outer.namespaceURI === svg && group.namespaceURI === svg);
     apply(attr(3, name(3, "xlink:href"), "raw"), attr(3, name(4, "href", "xlink", xlink), "qualified"));
     check("raw colon attribute and qualified attribute coexist", exact.getAttributeNS(null, "xlink:href") === "raw" && exact.getAttributeNS(xlink, "href") === "qualified");
+    apply(attr(2, name(4, "href", "xlink", xlink), "qualified"), attr(2, name(3, "xlink:href"), "raw"));
+    check("a raw colon attribute set after a qualified one of the same text on SVG coexists with it", group.getAttributeNS(null, "xlink:href") === "raw" && group.getAttributeNS(xlink, "href") === "qualified" && group.attributes.length === 2);
+    apply(attr(2, name(3, "xlink:href"), "raw again"));
+    check("updating that raw colon attribute leaves the qualified one", group.getAttributeNS(null, "xlink:href") === "raw again" && group.getAttributeNS(xlink, "href") === "qualified");
+    apply(attr(2, name(4, "href", "xlink", xlink), null), attr(2, name(3, "xlink:href"), null));
     apply(attr(3, name(4, "href", "xlink", xlink), null));
     check("qualified removal preserves raw colon attribute", !exact.hasAttributeNS(xlink, "href") && exact.getAttributeNS(null, "xlink:href") === "raw");
     apply(attr(3, name(3, "x:UPPER"), "one"));
