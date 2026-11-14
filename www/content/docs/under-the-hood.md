@@ -54,8 +54,8 @@ inside it. The runtime never decides anything: it does what the commands say.
    `event(node, handler)`.
 3. The engine looks the node up in its routes table — one array index — and
    finds the path of the site that owns the handler, or the list row.
-4. The event travels down that path. On the way the root moves the store
-   into the environment, and each local state the event passes moves its
+4. The event travels down that path. On the way the instance moves the store
+   into the root's environment, and each local state the event passes moves its
    value in. The handler runs there: a reducer is applied to its state; a
    decision takes its reading and returns its writes, which are applied to
    the store in order. The handler answers exactly what it wrote: which

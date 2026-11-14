@@ -46,7 +46,7 @@ The application describes its UI once, as a tree of typed sites. Every dynamic
 part of that tree — a piece of local state, a conditional, a keyed list, a
 table view, a derived signal, an effect — is a *site*: one Roc closure
 that owns its own typed storage. State the whole application shares lives in
-a *store* that the root site holds. The reactive engine is ordinary Roc code
+a *store* that the instance holds beside its sites. The reactive engine is ordinary Roc code
 inside the platform. Each external input (a DOM event or an effect result) is
 one pure turn over the engine's state that returns the next state and
 a byte stream of rendering and effect commands. The engine re-evaluates only
@@ -523,7 +523,7 @@ counters of whichever host runs it.
 
 The engine's data model is **one closure per site, each capturing only its
 own typed storage**, with the application's shared state in one store that
-the root site holds.
+the instance holds beside the site tree, as plain data no closure captures.
 
 ### Sites and messages
 
@@ -540,7 +540,8 @@ outcome and the accumulator. Messages are:
 
 Every site kind — `state`, `when`, `switch`, `remount_on`, `each`,
 `table_view`, `derive`, `resource`, effect sites, and the root site, which
-holds the store and the view's top block — implements these three messages.
+holds the view's top block and receives the store in its context for each
+call — implements these three messages.
 The engine therefore needs no node table, no erased value registry and no
 type tags: the closure's own captures are the typed storage, and the only
 dispatch is the message.
@@ -1219,7 +1220,7 @@ Rules:
 | Change the key of a `remount_on` | Dispose the body; local state inside starts again; admitted requests reparent to the site | Remove the body's nodes and build it again |
 | Hide a region with an attribute or class | Its sites stay live | Nodes stay |
 | Write a store cell | The cell and everything mounted survive; its readers refresh | Update only changed holes |
-| Dispose the root | Dispose everything it owns; drop the store | Remove its nodes |
+| Dispose the root | Dispose everything it owns; the instance drops the store | Remove its nodes |
 
 State that must survive filtering, pagination or route changes belongs in the
 store: a cell, or a field of a table's row. Keeping a scope alive is never
@@ -1336,7 +1337,8 @@ Every external input — a DOM event or an effect result — is one *turn*:
    after all writes and derives above it. With no writes and no echo, a turn
    runs no pass. No sibling is visited to discover an echo.
 5. **End of turn.** When the pass has refreshed every reader, the root site
-   rearms exactly the table cells the turn wrote, retaining their changes
+   rearms, in the store the instance moved into the pass, exactly the table
+   cells the turn wrote, retaining their changes
    until the next writing turn's first modifier. When no table was written,
    that is one test of the turn's signature against the tables' bits. Sharing
    a signature bit does not rearm an unrelated cell. A table the turn wrote
