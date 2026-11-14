@@ -51,9 +51,13 @@ View(k, v, s) :: {
 	## The view absorbs the changes when it has seen exactly the version the
 	## changes start at and the changes are small next to the table. It builds
 	## its ordered keys again when the changes are large (`Many`), when a bulk
-	## write replaced the rows (`Rewritten`), or when it missed writes
-	## (`Behind`): a missed refresh is repaired at the cost of a rebuild, and
-	## reported so the engine can treat it as the contract error it is.
+	## write replaced the rows (`Rewritten`), or when it has missed writes
+	## (`Behind`), as design.md's "Tables and views" states: a view that has
+	## not seen exactly the count the changes start from builds again. The
+	## engine's site reaches every view in the pass of each turn that writes
+	## its table, so it never meets `Behind`; `Core.settled` checks a view's
+	## version after every step and reports one that fell behind. `how` says
+	## which case applied, for tests of this module.
 	##
 	## `placed` counts the rows whose place was worked out with the query's
 	## `keep` and `sort`: two for each written key it absorbed (its row

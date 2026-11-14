@@ -6939,7 +6939,6 @@ each_inst = |cfg0, rows0, adopted0, cols0| {
 ## window of a view the site owns instead of from a list, and found by the
 ## table's key instead of by a text key.
 
-## The value a table's bookkeeping asks for: what makes this module the
 ## The chunk size of a view's ordered keys (see `Seq`).
 view_chunk : U64
 view_chunk = 1024

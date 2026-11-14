@@ -48,7 +48,8 @@ import pf.Engine exposing [Elem, Signal, State, Table]
 ##
 ## Oracles, after every step:
 ## - the engine is settled (`Core.settled`): no reader is stale, and every
-##   view equals one built from scratch with its table's changes cleared;
+##   view equals one built from scratch, is at its table's version, and
+##   finds its table rearmed for the next writing turn;
 ## - each view is drawn exactly when the model has it mounted, and its rows'
 ##   texts, in order, are the model's: the rows its listing keeps, in its
 ##   order, inside its window;
