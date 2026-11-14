@@ -17,13 +17,13 @@ Dom := [].{
 	protocol_version : U32
 	protocol_version = Protocol.version
 
+	## Expanded attribute identity is namespace URI plus local name. The prefix
+	## is retained for exact serialization but never aliases another namespace.
+	ExpandedName : { namespace : Str, prefix : Str, local : Str }
+
 	## A model node has a lifetime index independent of its engine aliases.
 	## Routing ids, rendered attributes, live properties and pending browser work
 	## stay separate so id reuse or a user edit cannot overwrite another meaning.
-	## Expanded attribute identity is namespace URI plus local name; prefix is
-	## retained for exact serialization but never aliases another namespace.
-	ExpandedName : { namespace : Str, prefix : Str, local : Str }
-
 	DNode : { namespace : Str, prefix : Str, kind : U8, container : U8, content : [None, Some(U64)], svg : Bool, tag : Str, text : Str, attrs : List((ExpandedName, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
 
 	## Explicit cold-render limits are supplied by the caller's build or display
@@ -41,12 +41,21 @@ Dom := [].{
 	## Attribute order and both native child containers are observable facts.
 	## An intrinsic content fragment has its own container, not a node ordinal.
 	PictureElement : { name : ExpandedName, attributes : List((ExpandedName, Str)), children : U64, content : [NoContent, Content(U64)] }
+
+	## One physical node in the serialized picture, preserving exact element
+	## names or character data without treating application text as metadata.
 	PictureNode : [Element(PictureElement), Text(Str), Comment(Str)]
 
 	## Logical ordering retains omitted and adjacent text nodes. A model index
 	## lets the native producer join separately derived command binding roles.
 	LogicalNode : { model : U64, target : [Node(U64), TextPart({ run : U64, part : U64 }), Constructed({ container : U64, logical_child_index : U64, data : [Text(Str), Comment(Str)] })] }
+
+	## One logical text node's contribution to a physical text run. Lengths use
+	## UTF-16 code units so the declared partition agrees with browser text APIs.
 	TextPart : { logical : U64, utf16_units : U64 }
+
+	## Adjacent logical text nodes share one physical text node, or are omitted
+	## when empty. Their ordered parts retain the logical boundaries separately.
 	TextRun : { container : U64, child_index : U64, physical : [Omitted, Node(U64)], parts : List(TextPart) }
 
 	## Producer-only controls have explicit restoration data. No app spelling
@@ -57,6 +66,10 @@ Dom := [].{
 	## output is not a parse-back certification; picture mode returns only after
 	## the parser independently agrees with the declared physical projection.
 	Rendered : { markup : Str, root_name : [ElementRoot(ExpandedName), NonElementRoot], physical : List(PictureNode), containers : List(PictureContainer), logical : List(LogicalNode), text_runs : List(TextRun), scaffolds : List(Scaffold) }
+
+	## Rendering refuses an exceeded caller limit, an incoherent model, or a
+	## picture the independent parser cannot reproduce. Each failure identifies
+	## the resource, model location or source position needed to diagnose it.
 	RenderError : [RenderLimit({ resource : [Bytes, Nodes, Depth], maximum : U64 }), InvalidModel({ model : U64, rule : Str }), ParseFailure({ line : U64, column : U64, rule : Str }), ParseMismatch({ physical : U64, rule : Str })]
 
 	## Browser top-layer state, separate from the value a property decided.
@@ -1905,6 +1918,9 @@ Dom := [].{
 	## choices and from the parser's current element vocabulary.
 	html_namespace : Str
 	html_namespace = "http://www.w3.org/1999/xhtml"
+
+	## The SVG namespace identifies foreign nodes independently of tag spelling;
+	## it is preserved even when a local name also exists in the HTML vocabulary.
 	svg_namespace : Str
 	svg_namespace = "http://www.w3.org/2000/svg"
 

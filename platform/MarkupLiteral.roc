@@ -12,8 +12,13 @@ import parser.Literal
 ## Compile checked markup to a small immutable constructor plan. Only this
 ## compile path sees parser source and syntax; bound holes keep ordinary signals.
 MarkupLiteral := [].{
+
+	## Select the fragment syntax of the literal's fixed segments. HTML and SVG
+	## use their own parser entrypoints before lowering to the same view plan.
 	Mode : [HtmlFragment, SvgFragment]
 
+	## A validated constructor plan owns only the lowered nodes and hole layout.
+	## It retains neither parser source nor tokens when a view uses the literal.
 	Plan :: { nodes : List(Node), root : U64, parts : U64, svg_parent : Bool }
 
 	## Validate fixed segments once, retaining neither source nor parser tokens

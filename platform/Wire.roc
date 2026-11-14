@@ -28,11 +28,11 @@ Wire := [].{
 	## A malformed item's position or a missing required field name.
 	Error : WorkerCodec.Error
 
-	## Types that can cross between instances, with derived or handwritten
-	## codecs over this format. Functions and absent codecs are compile errors.
 	# Derivation through format aliases fails on the pinned compiler. Only
 	# this constraint names backing types; public aliases remain app-nameable.
 	# https://github.com/roc-lang/roc/issues/13022
+	## Types that can cross between instances, with derived or handwritten
+	## codecs over this format. Functions and absent codecs are compile errors.
 	a.Sendable :
 		where [
 			a.encoder_for : WorkerCodec.Format -> (a, WorkerCodec.Enc -> Try(WorkerCodec.Enc, [])),

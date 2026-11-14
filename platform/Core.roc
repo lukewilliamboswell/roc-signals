@@ -1539,8 +1539,8 @@ Core := [].{
 		Sha256(File),
 		ObjectUrl(File),
 
-		## Ports (see [PortDecl]): a message to the page's JavaScript for the
-		## port named `port`. `PortCommand` is emitted and forgotten;
+		## Ports (see [Engine.PortRegistration]) send a message to the page's
+		## JavaScript for the port named `port`. `PortCommand` is emitted and forgotten;
 		## `PortCall` awaits one `PortAnswer` or `PortFailed` and, like `Http`,
 		## survives its site's disposal (`timeout_ms` 0 = none, capped at 10
 		## minutes); `PortSubscribe` delivers any number of messages until its
@@ -3183,8 +3183,9 @@ Core := [].{
 		session_keys : List(Str),
 	}.{
 
-		## Declare the ports the program's effect sites use (see [PortDecl]):
-		## the services the page's JavaScript supplies at mount. At most 64,
+		## Declare the ports the program's effect sites use (see
+		## [Engine.PortRegistration]): the services the page's JavaScript supplies
+		## at mount. At most 64,
 		## each name once and 1 to 128 bytes long; anything else is a contract
 		## error when these declarations and the program are built, at compile
 		## time for a top-level program constant. A request for a port not declared
