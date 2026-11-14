@@ -80,7 +80,7 @@ main! = |_args| {
 	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["test", "cli/main.roc"], cwd: "." }, "roc test cli/main.roc"))?
 	$problems = Checks.gather!($problems, Checks.app_expects!(o))?
 	$problems = Checks.gather!($problems, ToolCheck.bundle_current!(o))?
-	$problems = Checks.gather!($problems, check!({ program: o.tooling, args: ["test", "scripts/check_all.roc"], cwd: "." }, "roc-stable test scripts"))?
+	$problems = Checks.gather!($problems, script_tests!(o))?
 
 	Proc.note!("== platform inputs")
 	Checks.hold!($problems, Checks.prepare_platform!(o))?
@@ -286,4 +286,43 @@ platform_packages! = |root| {
 			},
 		),
 	)
+}
+
+## Every script root's `expect`s, and those of the modules it imports, run:
+## each root under `scripts/` is tested with the tooling compiler, so a
+## root added later is tested with no other edit. A root that imports the
+## platform package is a driver of the platform's own tests, which
+## `roc test platform/main-fuzz.roc` runs; testing it would run them again
+## under the tooling compiler, so it is not tested, and an `expect` of its
+## own is a problem instead of a test that never runs.
+script_tests! : SpecSuite.Options => Try(List(Str), _)
+script_tests! = |o| {
+	var $roots = []
+	for path in SpecSuite.files_with!("scripts", ".roc")? {
+		$roots = $roots.append({ path, text: Path.read_utf8!(Path.utf8(path))? })
+	}
+	plan = script_test_plan($roots)
+	results = Proc.parallel!(plan.test.map(|path| { program: o.tooling, args: ["test", path], cwd: "." }), Proc.compiler_jobs!()?)?
+	Ok(plan.problems.concat(List.map2(plan.test, results, |path, r| (path, r)).keep_if(|(_, r)| r.code != 0).map(|(path, r)| "roc-stable test ${path} failed (exit ${r.code.to_str()}): ${r.output.trim()}")))
+}
+
+## Which script roots to test, and the roots that import the platform
+## package yet declare `expect`s of their own.
+script_test_plan : List({ path : Str, text : Str }) -> { test : List(Str), problems : List(Str) }
+script_test_plan = |roots| {
+	drives_platform = |text| text.split_on("\n").take_first(10).any(|line| line.contains("\"../platform/main"))
+	own_expects = |text| text.split_on("\n").any(|line| line.starts_with("expect"))
+	{
+		test: roots.keep_if(|r| !drives_platform(r.text)).map(|r| r.path),
+		problems: roots.keep_if(|r| drives_platform(r.text) and own_expects(r.text)).map(|r| "${r.path} imports the platform package, so no gate runs its own expects; move them to a module under scripts/src that a tested root imports"),
+	}
+}
+
+## Roots are tested unless they import the platform package; such a root
+## with an `expect` of its own is reported.
+expect {
+	plain = { path: "scripts/a.roc", text: "app [main!] {\n\tcli: platform \"u\",\n}\n\nexpect 1 == 1\n" }
+	driver = { path: "scripts/b.roc", text: "app [main!] {\n\tpf: \"../platform/main-fuzz.roc\",\n}\n" }
+	tested_driver = { path: "scripts/c.roc", text: "app [main!] {\n\tpf: \"../platform/main-fuzz.roc\",\n}\nexpect 1 == 1\n" }
+	script_test_plan([plain, driver, tested_driver]) == { test: ["scripts/a.roc"], problems: ["scripts/c.roc imports the platform package, so no gate runs its own expects; move them to a module under scripts/src that a tested root imports"] }
 }
