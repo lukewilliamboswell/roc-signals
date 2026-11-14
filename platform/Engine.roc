@@ -96,36 +96,7 @@ Engine := [].{
 	## an app built with `program_store` does. It is written by a decision:
 	## `set` and `update` make the writes a `handle` or a `react` returns. A
 	## write to a cell refreshes the readers of that cell and no one else's.
-	Cell(st, a) :: { c : Core.Cell(st, a) }.{
-
-		## The cell's current value.
-		signal : Cell(st, a) -> Signal(ctx, a)
-			where [ctx.store : () -> Reach(ctx, st)]
-		signal = |{ c }| Varies(c.signal())
-
-		## The cell as a [State] of the context this is called in, for a
-		## component that takes a `State(ctx, a)` and should not care whether
-		## its state is the app's or its own. A write through that state is
-		## a write of the cell.
-		state : Cell(st, a) -> State(ctx, a)
-			where [ctx.store : () -> Reach(ctx, st)]
-		state = |{ c }| { s: c.as_state() }
-
-		## A [Write] that replaces the cell with `value`, for the list a
-		## decision returns (`handle`, `react`). Use it for a value that does
-		## not come from the cell itself; to update what the cell holds, use
-		## `update`.
-		set : Cell(st, a), a -> Write(st)
-		set = |{ c }, value| c.set(value)
-
-		## A [Write] that replaces the cell with `f` of it, for the list a
-		## decision returns. `f` receives the value uniquely owned, so a
-		## large value (a list, a table) is changed in place: `set` of a
-		## value built from a reading of the cell would copy it, and so
-		## would an `f` that holds such a reading.
-		update : Cell(st, a), (a -> a) -> Write(st)
-		update = |{ c }, f| c.update(f)
-	}
+	Cell(st, a) : EngineCell(st, a)
 
 	## One write to the store, as a value: which cells, and how. Make one
 	## with `Cell.set`, `Cell.update` or a group's reset
@@ -1758,6 +1729,40 @@ Engine := [].{
 	## with the cells that depend on the boot data set (`Store.with_initial`).
 	program_store : ProgramProps, (Boot -> Store(st, h)), (Boot -> Elem(StoreRoot(st))) -> Program(st)
 	program_store = |cfg, start, view| Core.program_store(cfg, |boot| start(boot).s.initial(), view)
+}
+
+## The public cell aliases this opaque implementation. Keeping it outside
+## Engine's namespace separates its method binders from public operations;
+## the record and generated lens still have the same single owner.
+EngineCell(st, a) :: { c : Core.Cell(st, a) }.{
+
+	## The cell's current value.
+	signal : Engine.Cell(st, a) -> Engine.Signal(ctx, a)
+		where [ctx.store : () -> Engine.Reach(ctx, st)]
+	signal = |{ c }| Varies(c.signal())
+
+	## The cell as a [Engine.State] of the context this is called in, for a
+	## component that takes a `State(ctx, a)` and should not care whether
+	## its state is the app's or its own. A write through that state is
+	## a write of the cell.
+	state : Engine.Cell(st, a) -> Engine.State(ctx, a)
+		where [ctx.store : () -> Engine.Reach(ctx, st)]
+	state = |{ c }| { s: c.as_state() }
+
+	## A [Engine.Write] that replaces the cell with `value`, for the list a
+	## decision returns (`handle`, `react`). Use it for a value that does
+	## not come from the cell itself; to update what the cell holds, use
+	## `update`.
+	set : Engine.Cell(st, a), a -> Engine.Write(st)
+	set = |{ c }, value| c.set(value)
+
+	## A [Engine.Write] that replaces the cell with `f` of it, for the list a
+	## decision returns. `f` receives the value uniquely owned, so a
+	## large value (a list, a table) is changed in place: `set` of a
+	## value built from a reading of the cell would copy it, and so
+	## would an `f` that holds such a reading.
+	update : Engine.Cell(st, a), (a -> a) -> Engine.Write(st)
+	update = |{ c }, f| c.update(f)
 }
 
 ## The cell the engine made, wrapped for the public API.

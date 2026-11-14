@@ -265,74 +265,7 @@ Worker := [].{
 	## would give, and a task never changes the state. A preparation that
 	## fails (`prepare!` answers `Err(error)`) answers each of its tasks'
 	## jobs `Failed(error)`. The state never crosses to the page.
-	Preparation(init, state, error) :: {
-		name : Str,
-		build! : (List(U8), List(Core.File) => Try(state, error)),
-		send : (init -> { bytes : List(U8), files : List(Engine.File) }),
-		fail : (error -> List(U8)),
-	}.{
-
-		## The task a props record describes, over this preparation's state:
-		## `document.task({ name, run!: |lines, input| Ok(search(lines, input)) })`
-		## answers `run!(state, input)` from the state the preparation
-		## built. The input and the output must be `Wire.Sendable`, and the
-		## task shares the preparation's error type. Names share the
-		## catalogue's namespace with every other task.
-		task : Preparation(init, state, error), PreparedTaskProps(state, input, output, error) -> PreparedTask(init, state, input, output, error)
-			where [input.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
-		task = |p, props| {
-			{ name, run!, timeout, on_dispose, on_cancel } = props
-			{
-				name,
-				prep: p.name,
-				timeout_ms: timeout_ms_of(timeout),
-				on_dispose,
-				on_cancel,
-				send_init: p.send,
-				send_input: |input| sent(input),
-				receive: |bytes, files| received(name, bytes, files),
-				entry: {
-					name,
-					run!: |state, bytes, files| answer_of(name, run!(state, held_input(name, bytes, files))),
-				},
-			}
-		}
-
-		## The preparation's entry for `Program.with_workers`, with the
-		## entries of the tasks that read its state
-		## (`document.registration([summary.registration(), search.registration()])`).
-		## It registers the preparation's name and each task's name; a name
-		## registered twice is a contract error when the app mounts, and a job
-		## of a task the preparation does not list is a contract error in the
-		## worker.
-		registration : Preparation(init, state, error), List(PreparedTaskEntry(state)) -> Engine.Registration
-		registration = |p, entries| {
-			name = p.name
-			build! = p.build!
-			fail = p.fail
-			Core.registration_prepared(
-				name,
-				entries.map(|e| e.name),
-				|bytes, handles| {
-					built = build!(bytes, handles)
-					Core.kept(
-						name,
-						|asked, tbytes, thandles| match entries.find_first(|e| e.name == asked) {
-							Ok(e) =>
-								match built {
-									Ok(state) => {
-										run! = e.run!
-										run!(state, tbytes, thandles)
-									}
-									Err(error) => fail(error)
-								}
-							Err(_) => crash "contract: worker task \"${asked}\" is not a task of the preparation \"${name}\""
-						},
-					)
-				},
-			)
-		}
-	}
+	Preparation(init, state, error) : WorkerPreparation(init, state, error)
 
 	## The preparation a props record describes:
 	## `Worker.preparation({ name: "example.org/notes/document", prepare!: |text| Ok(lines_of(text)) })`.
@@ -418,6 +351,78 @@ Worker := [].{
 		## The answer to a `request`, as `Task.result`.
 		result : PreparedTask(init, state, input, output, error), Engine.Result -> Try(output, Error(error))
 		result = |t, res| answered(res, t.receive)
+	}
+}
+
+## The public preparation aliases this opaque implementation. Its methods
+## have a distinct lexical scope from Worker.task while retaining the same
+## bytes, file readers and one captured preparation state.
+WorkerPreparation(init, state, error) :: {
+	name : Str,
+	build! : (List(U8), List(Core.File) => Try(state, error)),
+	send : (init -> { bytes : List(U8), files : List(Engine.File) }),
+	fail : (error -> List(U8)),
+}.{
+
+	## The task a props record describes, over this preparation's state:
+	## `document.task({ name, run!: |lines, input| Ok(search(lines, input)) })`
+	## answers `run!(state, input)` from the state the preparation
+	## built. The input and the output must be `Wire.Sendable`, and the
+	## task shares the preparation's error type. Names share the
+	## catalogue's namespace with every other task.
+	task : Worker.Preparation(init, state, error), Worker.PreparedTaskProps(state, input, output, error) -> Worker.PreparedTask(init, state, input, output, error)
+		where [input.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
+	task = |p, props| {
+		{ name, run!, timeout, on_dispose, on_cancel } = props
+		{
+			name,
+			prep: p.name,
+			timeout_ms: timeout_ms_of(timeout),
+			on_dispose,
+			on_cancel,
+			send_init: p.send,
+			send_input: |input| sent(input),
+			receive: |bytes, files| received(name, bytes, files),
+			entry: {
+				name,
+				run!: |state, bytes, files| answer_of(name, run!(state, held_input(name, bytes, files))),
+			},
+		}
+	}
+
+	## The preparation's entry for `Program.with_workers`, with the
+	## entries of the tasks that read its state
+	## (`document.registration([summary.registration(), search.registration()])`).
+	## It registers the preparation's name and each task's name; a name
+	## registered twice is a contract error when the app mounts, and a job
+	## of a task the preparation does not list is a contract error in the
+	## worker.
+	registration : Worker.Preparation(init, state, error), List(Worker.PreparedTaskEntry(state)) -> Engine.Registration
+	registration = |p, entries| {
+		name = p.name
+		build! = p.build!
+		fail = p.fail
+		Core.registration_prepared(
+			name,
+			entries.map(|e| e.name),
+			|bytes, handles| {
+				built = build!(bytes, handles)
+				Core.kept(
+					name,
+					|asked, tbytes, thandles| match entries.find_first(|e| e.name == asked) {
+						Ok(e) =>
+							match built {
+								Ok(state) => {
+									run! = e.run!
+									run!(state, tbytes, thandles)
+								}
+								Err(error) => fail(error)
+							}
+						Err(_) => crash "contract: worker task \"${asked}\" is not a task of the preparation \"${name}\""
+					},
+				)
+			},
+		)
 	}
 }
 
