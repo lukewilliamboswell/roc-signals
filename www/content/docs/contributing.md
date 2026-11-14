@@ -745,8 +745,8 @@ growth or scaling.
 
 `check` also runs a bounded development-Wasm ownership guard in
 `tests/runtime/write-scaling.mjs`. After setup and one warm-up, it compares
-requested bytes for sparse table writes and small-cell writes at two table
-sizes. Allocation count alone misses a growing copy made by one allocation.
+requested bytes for sparse table writes, writes of one element of a list in
+a store cell, and small-cell writes at two sizes. Allocation count alone misses a growing copy made by one allocation.
 The guard checks teardown too. It is evidence for development store ownership;
 optimized copying remains tracked by roc-lang/roc#12957, and local-state
 capture ownership by roc-lang/roc#13012. Extend the guard when those compiler

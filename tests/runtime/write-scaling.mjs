@@ -1,7 +1,9 @@
 // One unmeasured warm-up before each group of 21 sparse writes; the median
 // excludes fill/setup costs. Keyed samples release one earlier row, O(J_previous = 1).
-// A self-comparison at two table sizes catches copies that allocation counts miss.
-// Build this fixture with --opt=dev: optimized site storage is tracked upstream.
+// A self-comparison at two sizes catches copies that allocation counts miss:
+// a keyed write of a table, one element of a list in a store cell, and a
+// small write beside them. Build this fixture with --opt=dev: optimized
+// writes through the host's box still copy (design.md, roc-lang/roc#13019).
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
@@ -71,14 +73,21 @@ for (const size of [1000, 10000]) {
   const small = median("Count");
   assert.ok([...content.values()].includes(`Count ${size === 1000 ? 22 : 44}`));
   assert.ok([...content.values()].includes(`a long row name 7${"!".repeat(22)}`));
-  results.push({ size, keyed, small });
+  // Each fill replaces the list, so its reading starts again from zero.
+  click(`Values ${size}`);
+  click("Bump value");
+  const cell = median("Bump value");
+  assert.ok([...content.values()].includes("Value 22"));
+  results.push({ size, keyed, small, cell });
 }
 try {
-  for (const kind of ["keyed", "small"]) {
-    const [low, high] = results.map(result => result[kind].bytes);
-    assert.ok(high <= low + 1024, `${kind} write allocates ${low} B at 1000 rows and ${high} B at 10000 (allowed: ${low + 1024})`);
-  }
+  // The measurements come first, so a failure names every kind that copies.
   console.log(JSON.stringify({ development: true, samples: 21, results }));
+  const copied = ["keyed", "small", "cell"].flatMap(kind => {
+    const [low, high] = results.map(result => result[kind].bytes);
+    return high <= low + 1024 ? [] : [`${kind} write allocates ${low} B at size 1000 and ${high} B at size 10000 (allowed: ${low + 1024})`];
+  });
+  assert.deepEqual(copied, [], "a sparse write's allocation grows with the data it writes");
 } finally {
   wasm.drop();
   assert.equal(Number(wasm.metric(4)), 0, "no live allocations after drop");
