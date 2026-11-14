@@ -10,7 +10,9 @@ Checks := [].{
 	## The tools Blueprint.roc puts on PATH, and the package compiler: `roc`, the
 	## latest Roc nightly, which the environment expects on PATH and never pins
 	## (roc-automation's model). `roc-stable`, pinned in Blueprint.roc, runs and
-	## checks the scripts only.
+	## checks the scripts only. Native spec runners are built for `x64musl`,
+	## the system CI runs on; `spec.roc` replaces the target with the one it
+	## was given or the system's own.
 	options! : { filter : Str } => Try(SpecSuite.Options, _)
 	options! = |{ filter }| {
 		root = Path.display(Env.cwd!()?)
@@ -21,7 +23,7 @@ Checks := [].{
 		}
 		version = Str.from_utf8_lossy(Proc.capture!({ program: "roc", args: ["version"], cwd: root })?).trim()
 		nightly = version.split_on(" ").last() ?? version
-		Ok({ root, build_dir, compiler: "roc", nightly, tooling: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", filter })
+		Ok({ root, build_dir, compiler: "roc", nightly, tooling: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", filter, target: "x64musl" })
 	}
 
 	prepare_platform! : SpecSuite.Options => Try({}, _)
@@ -293,7 +295,7 @@ Checks := [].{
 			runner = "${case_dir}/runner"
 			wasm = "${case_dir}/app.wasm"
 			Path.write_utf8!(Path.utf8(main), source)?
-			Proc.run!(SpecSuite.build_job(o, "dev", main, SpecSuite.native_target, runner))?
+			Proc.run!(SpecSuite.build_job(o, "dev", main, o.target, runner))?
 			Proc.run!(SpecSuite.build_job(o, "dev", main, "wasm32", wasm))?
 			spec = "${case_dir}/contract.scm"
 			Path.write_utf8!(Path.utf8(spec), "(test \"contract\" (steps (mark-metrics)))")?

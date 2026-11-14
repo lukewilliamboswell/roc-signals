@@ -104,7 +104,7 @@ Slow := [].{
 		var $builds = []
 		for name in Slow.walk_apps {
 			Path.create_all!(Path.utf8("${o.build_dir}/walk/${name}"))?
-			$builds = $builds.append(SpecSuite.build_job(o, "speed", "${SpecSuite.dir_of(name)}/main.roc", SpecSuite.native_target, Slow.walker_of(o, name)))
+			$builds = $builds.append(SpecSuite.build_job(o, "speed", "${SpecSuite.dir_of(name)}/main.roc", o.target, Slow.walker_of(o, name)))
 		}
 		built = Proc.parallel!($builds, Proc.compiler_jobs!()?)?
 		match List.map2(Slow.walk_apps, built, |name, r| (name, r.code)).keep_if(|(_, c)| c != 0).first() {

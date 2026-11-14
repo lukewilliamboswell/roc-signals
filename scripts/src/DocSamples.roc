@@ -107,7 +107,7 @@ DocSamples := [].{
 				name = "docs-${dir.split_on("/").last() ?? dir}"
 				Path.create_all!(Path.utf8(out))?
 				Path.create_all!(Path.utf8("${o.build_dir}/wasm/${name}"))?
-				native = Proc.output!(SpecSuite.build_job(o, "dev", "${dir}/main.roc", SpecSuite.native_target, runner))?
+				native = Proc.output!(SpecSuite.build_job(o, "dev", "${dir}/main.roc", o.target, runner))?
 				web = Proc.output!(SpecSuite.build_job(o, "dev", "${dir}/main.roc", "wasm32", wasm))?
 				if native.code != 0 or web.code != 0 {
 					$problems = $problems.append("docs sample ${dir} does not build")

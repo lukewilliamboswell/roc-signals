@@ -3,7 +3,8 @@ import Proc
 
 ## Builds the apps for the native and the browser spec runners and runs
 ## their `.scm` specs. Each app's one entry, `main.roc`, is built twice from
-## the one platform: `--target=x64musl` gives its native spec runner and
+## the one platform: `--target=x64musl` (or the system's own target, see
+## `native_targets`) gives its native spec runner and
 ## `--target=wasm32` its browser module.
 SpecSuite := [].{
 	runtime = "platform/runtime.mjs"
@@ -88,8 +89,9 @@ SpecSuite := [].{
 	## was given, a refused spec's passed through as failed.
 	Stage : [Native, Emit, Replay]
 
-	## `root` and `build_dir` are absolute.
-	Options : { root : Str, build_dir : Str, compiler : Str, nightly : Str, tooling : Str, zig : Str, node : Str, chrome : Str, filter : Str }
+	## `root` and `build_dir` are absolute. `target` is the system the
+	## native spec runners are built for, one of `native_targets`.
+	Options : { root : Str, build_dir : Str, compiler : Str, nightly : Str, tooling : Str, zig : Str, node : Str, chrome : Str, filter : Str, target : Str }
 
 	# -------------------------------------------------------------- files
 
@@ -144,8 +146,25 @@ SpecSuite := [].{
 
 	# ------------------------------------------------------------- native
 
-	## The target the platform's native spec runner builds for.
-	native_target = "x64musl"
+	## The systems the platform's native spec runner builds for: Linux
+	## x86-64, macOS on Apple silicon and on Intel, and Windows x86-64. The
+	## pull-request gate builds for `x64musl`, as CI runs on Linux; `spec.roc`
+	## builds for the system it runs on (`host_target`) unless told otherwise.
+	native_targets : List(Str)
+	native_targets = ["x64musl", "arm64mac", "x64mac", "x64win"]
+
+	## The native target of the system `uname -sm` describes (its output,
+	## surrounding white space ignored), or `Unknown` for a system the
+	## runner does not build for. Only the kernel's name and the machine
+	## decide: `Darwin arm64` is `arm64mac`, `Linux x86_64` is `x64musl`.
+	host_target : Str -> Try(Str, [Unknown(Str)])
+	host_target = |uname|
+		match uname.trim().split_on(" ").drop_if(|w| w.is_empty()) {
+			["Darwin", "arm64"] => Ok("arm64mac")
+			["Darwin", "x86_64"] => Ok("x64mac")
+			["Linux", "x86_64"] => Ok("x64musl")
+			_ => Err(Unknown(uname.trim()))
+		}
 
 	## The native spec runner of `example` (built by `build!`).
 	runner_of : Options, Str -> Str
@@ -177,7 +196,7 @@ SpecSuite := [].{
 		var $jobs = []
 		for example in natives {
 			Path.create_all!(Path.utf8("${o.build_dir}/native/${example}"))?
-			$jobs = $jobs.append(SpecSuite.build_job(o, "dev", "${SpecSuite.dir_of(example)}/main.roc", SpecSuite.native_target, SpecSuite.runner_of(o, example)))
+			$jobs = $jobs.append(SpecSuite.build_job(o, "dev", "${SpecSuite.dir_of(example)}/main.roc", o.target, SpecSuite.runner_of(o, example)))
 		}
 		for w in webs {
 			name = w.split_on("/").last() ?? w
@@ -473,3 +492,10 @@ expect SpecSuite.select("add*", ["x/specs/adding-a-field.scm", "x/specs/remove.s
 
 ## `?` matches one byte and a plain pattern only itself.
 expect SpecSuite.select("a?c", ["s/abc.scm", "s/ac.scm", "s/abcd.scm"]) == ["s/abc.scm"]
+
+## The host's own target is read from `uname -sm`, on each system that has it.
+expect [SpecSuite.host_target("Darwin arm64\n"), SpecSuite.host_target("Darwin x86_64"), SpecSuite.host_target("Linux x86_64\n")] == [Ok("arm64mac"), Ok("x64mac"), Ok("x64musl")]
+
+## A system the runner does not build for is unknown, never guessed: Linux on
+## Arm has no runner, and output that is not two words is not a system.
+expect [SpecSuite.host_target("Linux aarch64"), SpecSuite.host_target(""), SpecSuite.host_target("Darwin arm64 extra")] == [Err(Unknown("Linux aarch64")), Err(Unknown("")), Err(Unknown("Darwin arm64 extra"))]

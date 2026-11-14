@@ -324,7 +324,7 @@ Targets := [].{
 		main = "${dir}/main.roc"
 		runner = "${dir}/runner"
 		Path.write_utf8!(Path.utf8(main), fixture.replace_each("<PLATFORM>", "${up}/${o.root.drop_prefix("/")}/platform/main.roc"))?
-		build = SpecSuite.build_job(o, "dev", main, SpecSuite.native_target, runner)
+		build = SpecSuite.build_job(o, "dev", main, o.target, runner)
 		Proc.run!({ ..build, args: build.args.append("--timings") })?
 		Targets.browser!(o, "prerender-stage1-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "prerender"), "--runner", SpecSuite.runner_of(o, "prerender"), "--no-init-runner", runner, "--template", "tests/apps/prerender/index.html"])
 	}
