@@ -1032,17 +1032,14 @@ ownership law that makes this hold is:
 Patterns that hold this law against current compiler behaviour (wrapping a
 site's captures in a single-tag `Held`, returning a rebuilt site from each
 branch directly) are workarounds for upstream issues and are marked as such in
-the code. They are not semantics. Optimized closure and aggregate ownership
-can still copy a large, uniquely held value on a write. roc-lang/roc#12957
-has a standalone nested-capture and list-extraction reproduction;
-roc-lang/roc#13019 records an engine-dependent local-state case without a
-host box. The latter was closed for insufficient isolation, not as fixed.
-The instance holds its store beside the sites and moves it through their
-environments; it is not another site capture. That layout does not by itself
-establish flat shipping allocations, and no general workaround for the
-engine's optimized copying is established. The law above is what the engine
-asks of the compiler; allocation guards must distinguish development and
-shipping builds.
+the code. They are not semantics. Holding the store beside the sites is not
+one of them: the store is the instance's state, not a site's storage, and it
+moves through the environments rather than being captured. The law above is
+what the engine asks of the compiler, and a compiler can fall short of it,
+copying a large, uniquely held value on a write in an optimized build (see
+[Compiler Limitations](#compiler-limitations)). So an allocation guard states
+which builds it covers: one that holds for development builds says nothing
+of shipping builds.
 
 The same law constrains apps. These patterns copy silently on every update:
 
@@ -2580,9 +2577,12 @@ A value an app reads at boot is declared through the defaulted
 is a defaulted nominal record, built and read as ordinary record data, so
 a later field breaks neither a program nor a pure test that builds one.
 
-The mount's `environment` option supplies read-only fact readers, currently
-`online()` and `visible()` are called at boot and on their browser events
-for live subscriptions. `matchMedia(query)` is called at boot for each
+The mount's `environment` option supplies read-only fact readers, each
+optional: `online()`, `visible()`, `matchMedia(query)`, `now()`, `seed()`,
+`languages()` and `timeZone(days)`; the last four are described under
+[Time, entropy and locale](#time-entropy-and-locale). `online()` and
+`visible()` are called at boot and on their browser events for live
+subscriptions. `matchMedia(query)` is called at boot for each
 declared query and when its subscription is created; that subscription
 retains the returned object and reads its `matches` when `change` arrives.
 The object must supply Boolean `matches` and `addEventListener` and
