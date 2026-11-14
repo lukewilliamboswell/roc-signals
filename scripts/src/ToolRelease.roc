@@ -61,7 +61,7 @@ ToolRelease := [].{
 			Path.create_all!(Path.utf8(Str.join_with(target.split_on("/").drop_last(1), "/")))?
 			Path.copy!(Path.utf8("${ToolRelease.scaffold_dir}/${file}"), Path.utf8(target))?
 		}
-		bundle_module = ToolRelease.bundle_module({
+		bundle_source = ToolRelease.bundle_module({
 			version: release.version,
 			platform_url: release.platform_url,
 			nightly: release.nightly,
@@ -70,7 +70,7 @@ ToolRelease := [].{
 			scaffold_dir: "templates/",
 			scaffold,
 		})
-		Path.write_utf8!(Path.utf8("${stage}/Bundle.roc"), bundle_module)?
+		Path.write_utf8!(Path.utf8("${stage}/Bundle.roc"), bundle_source)?
 		# `main.roc`, the package's root, goes first.
 		files = ["main.roc"]
 			.concat($files.drop_if(|f| f == "main.roc").sort_with(|a, b| SpecSuite.compare_str(a, b)))

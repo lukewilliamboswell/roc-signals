@@ -28,7 +28,7 @@ ApiSurface := [].{
 	## Quoted escapes are decoded after syntax validation; comments and source
 	## strings elsewhere cannot accidentally trigger this repository check.
 	has_internal_dependency : Str -> Try(Bool, _)
-	has_internal_dependency = |source| ApiSurface.dependencies(source).map_ok(|dependencies| dependencies.any(|dependency| dependency.url == "main-fuzz.roc" or dependency.url.ends_with("/main-fuzz.roc")))
+	has_internal_dependency = |source| ApiSurface.dependencies(source).map_ok(|declared_dependencies| declared_dependencies.any(|dependency| dependency.url == "main-fuzz.roc" or dependency.url.ends_with("/main-fuzz.roc")))
 
 	## Read dependency names and decoded URLs from validated header fields.
 	## Escapes and platform references use the same source parser as the audit.
@@ -38,8 +38,8 @@ ApiSurface := [].{
 		parsed = RocSyntax.validate({ source, name: "source dependency audit", lints: { placeholders: False } })?
 		root = parsed.nodes.get(parsed.root)?
 		for header in children(parsed, root).keep_if(|node| node.kind == Header) {
-			for dependencies in children(parsed, header).keep_if(|node| node.kind == Dependencies) {
-				for field in children(parsed, dependencies).keep_if(|node| node.kind == DependencyField) {
+			for dependency_block in children(parsed, header).keep_if(|node| node.kind == Dependencies) {
+				for field in children(parsed, dependency_block).keep_if(|node| node.kind == DependencyField) {
 					value = match children(parsed, field) {
 						[_, expression] => expression
 						_ => return Err(BadDependency)
@@ -78,9 +78,9 @@ ApiSurface := [].{
 	## Every method reachable through a public declaration, including methods
 	## inherited through aliases. Cycles are refused rather than truncated.
 	reachable : List(Module), List(Decl) -> Try(List(Decl), [AliasCycle(Str)])
-	reachable = |catalogue, declarations| {
+	reachable = |catalogue, declared| {
 		var $out = []
-		for decl in declarations {
+		for decl in declared {
 			$out = $out.append(decl).concat(alias_members(catalogue, decl.name, decl.alias, [])?)
 		}
 		Ok($out)
