@@ -44,6 +44,16 @@ test('off never reads value bytes and explains itself once without values',()=> 
   finally {console.info=info;}
   assert.equal(reads,0);assert.equal(infos.length,1);assert.match(infos[0],/dbg: "off"/);
 });
+test('the first job alone explains off output without reading values',()=> {
+  const info=console.info;const infos=[];
+  const rt=runtime({dbg_ptr:()=>{throw Error('job text read');}},'off');
+  try {
+    console.info=line=>infos.push(line);
+    assert.equal(rt.takeDbg('only-task',true),null);
+    assert.equal(rt.takeDbg('only-task',true),null);
+  } finally {console.info=info;}
+  assert.equal(infos.length,1);assert.match(infos[0],/dbg: "off"/);
+});
 test('call boundary is cleared before executor work and none makes no extra Wasm reads',()=> {
   let calls=0,reads=0;
   const rt=runtime({event:()=>{calls++;return 0;},dbg_len:()=>{reads++;return 0;}});
