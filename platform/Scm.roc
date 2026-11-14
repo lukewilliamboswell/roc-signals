@@ -889,109 +889,157 @@ Scm := [].{
 		Ok({ name, setup: $setup, steps: $steps, environment: Scm.environment($setup)?, mount_root: Scm.mount_root($setup)? })
 	}
 
-	## The locator a step must resolve to run. Absence itself cannot prove a
-	## spelling, and a press on the current focus names no locator. Keep this
-	## exhaustive: a new operation must state whether it requires a match.
-	required_loc : Op -> Try(Loc, [NoRequiredLocator])
-	required_loc = |op| match op {
-		Click(loc) => Ok(loc)
-		RealClick(loc) => Ok(loc)
-		PointerDown({ target, .. }) => Ok(target)
-		PointerMove({ target, .. }) => Ok(target)
-		PointerUp({ target, .. }) => Ok(target)
-		PointerCancel(_) => Err(NoRequiredLocator)
+	## Storage evidence distinguishes the two stores even for equal key text.
+	StorageSubject : { store : [Local, Session], key : Str }
+
+	## Names a story can prove without program declarations. Equality stays
+	## typed: locator structure, exact text and numeric periods are distinct.
+	Subject : [Locator(Loc), Attribute(Str), Cleanup(Str), Interval(U64), Storage(StorageSubject)]
+
+	## Declaration needs retain port shape; storage may instead be established
+	## by this spec's seed or a positive step. Story needs are parser-checked.
+	Need : [Story(Subject), Port({ name : Str, kind : [Call, Command, Subscription] }), Task(Str), Media(Str), Storage(StorageSubject)]
+
+	## A step may both require a locator and prove a separate name. Keeping
+	## providers and needs together gives parser and runner one classification.
+	Evidence := { provides : List(Subject), needs : List(Need) }
+
+	## Classify every operation explicitly. No wildcard may let a new named
+	## step silently escape evidence checks. Only positive observations or
+	## operations that require the subject provide same-story evidence.
+	evidence : Op -> Evidence
+	evidence = |op| match op {
+		Click(loc) => { provides: [Locator(loc)], needs: [] }
+		RealClick(loc) => { provides: [Locator(loc)], needs: [] }
+		PointerDown({ target, .. }) => { provides: [Locator(target)], needs: [] }
+		PointerMove({ target, .. }) => { provides: [Locator(target)], needs: [] }
+		PointerUp({ target, .. }) => { provides: [Locator(target)], needs: [] }
+		PointerCancel(_) => { provides: [], needs: [] }
 		Press({ target, .. }) => match target {
-			At(loc) => Ok(loc)
-			Focused => Err(NoRequiredLocator)
+			At(loc) => { provides: [Locator(loc)], needs: [] }
+			Focused => { provides: [], needs: [] }
 		}
-		Dismiss => Err(NoRequiredLocator)
-		ExpectElement({ target, .. }) => Ok(target)
-		ExpectShown(loc, _) => Ok(loc)
-		ExpectScroll({ target, .. }) => Ok(target)
-		ExpectScrolls(_) => Err(NoRequiredLocator)
-		ExpectTransitions(_) => Err(NoRequiredLocator)
-		ExpectTransition(_) => Err(NoRequiredLocator)
-		Scroll({ target, .. }) => Ok(target)
-		ReportSize({ target, .. }) => Ok(target)
-		ReportSeen({ target, .. }) => Ok(target)
-		SetMedia(_) => Err(NoRequiredLocator)
-		SetTime(_) => Err(NoRequiredLocator)
-		AdvanceTime(_) => Err(NoRequiredLocator)
-		ExpectObserved(_) => Err(NoRequiredLocator)
-		ExpectMediaSubscriptions(_) => Err(NoRequiredLocator)
-		Focus(loc) => Ok(loc)
-		Blur(loc) => Ok(loc)
-		Change(loc, _) => Ok(loc)
-		SelectOption(loc, _) => Ok(loc)
-		Submit(loc) => Ok(loc)
-		Fill(loc, _) => Ok(loc)
-		Check(loc) => Ok(loc)
-		Uncheck(loc) => Ok(loc)
-		ExpectText(loc, _) => Ok(loc)
-		ExpectVisible(loc) => Ok(loc)
-		ExpectFocused(loc) => Ok(loc)
-		ExpectNoFocus => Err(NoRequiredLocator)
-		ExpectAbsent(_) => Err(NoRequiredLocator)
-		ExpectValue(loc, _) => Ok(loc)
-		ExpectAttr({ target, .. }) => Ok(target)
-		ExpectNoAttr({ target, .. }) => Ok(target)
-		ExpectChecked(loc, _) => Ok(loc)
-		ExpectDisabled(loc, _) => Ok(loc)
-		ExpectUpdates(loc, _) => Ok(loc)
-		StubHttp(_) => Err(NoRequiredLocator)
-		RunEffect(_) => Err(NoRequiredLocator)
-		ExpectRequest(_) => Err(NoRequiredLocator)
-		ProgressEffect(_) => Err(NoRequiredLocator)
-		ExpectPortSubscriptionArg(_) => Err(NoRequiredLocator)
-		ExpectPendingEffects(_) => Err(NoRequiredLocator)
-		LoseWork(_) => Err(NoRequiredLocator)
-		TimeOutWork(_) => Err(NoRequiredLocator)
-		ExpectPendingWork(_) => Err(NoRequiredLocator)
-		ChooseFiles(loc, _) => Ok(loc)
-		DropFiles(loc, _) => Ok(loc)
-		PasteFiles(loc, _) => Ok(loc)
-		ExpectFiles(_) => Err(NoRequiredLocator)
-		TickInterval(_) => Err(NoRequiredLocator)
-		TickIntervalIfActive(_) => Err(NoRequiredLocator)
-		ExpectCleanup(_) => Err(NoRequiredLocator)
-		ExpectInterval(_) => Err(NoRequiredLocator)
-		Navigate(_) => Err(NoRequiredLocator)
-		SetVisibility(_) => Err(NoRequiredLocator)
-		SetOnline(_) => Err(NoRequiredLocator)
-		HoldReports => Err(NoRequiredLocator)
-		ReleaseReports => Err(NoRequiredLocator)
-		ExpectReportsReplaced(_) => Err(NoRequiredLocator)
-		HistoryBack => Err(NoRequiredLocator)
-		HistoryForward => Err(NoRequiredLocator)
-		ExpectLocation(_) => Err(NoRequiredLocator)
-		ExpectTitle(_) => Err(NoRequiredLocator)
-		ExpectLocalStorage(_) => Err(NoRequiredLocator)
-		ExpectNoLocalStorage(_) => Err(NoRequiredLocator)
-		ExpectSessionStorage(_) => Err(NoRequiredLocator)
-		ExpectNoSessionStorage(_) => Err(NoRequiredLocator)
-		PasteText(loc, _) => Ok(loc)
-		StorageElsewhere(_) => Err(NoRequiredLocator)
-		StorageElsewhereRemoved(_) => Err(NoRequiredLocator)
-		StorageElsewhereCleared => Err(NoRequiredLocator)
-		LeavePage(_) => Err(NoRequiredLocator)
-		ExpectClipboard(_) => Err(NoRequiredLocator)
-		ExpectClipboardHtml(_) => Err(NoRequiredLocator)
-		ExpectClipboardWrites(_) => Err(NoRequiredLocator)
-		MarkMetrics => Err(NoRequiredLocator)
-		ExpectMetricDelta(_) => Err(NoRequiredLocator)
-		ExpectMetricDeltaAtMost(_) => Err(NoRequiredLocator)
-		ExpectUpload(_) => Err(NoRequiredLocator)
-		ExpectPortCall(_) => Err(NoRequiredLocator)
-		AnswerPort(_) => Err(NoRequiredLocator)
-		ExpectPortSent(_) => Err(NoRequiredLocator)
-		ExpectPortSends(_) => Err(NoRequiredLocator)
-		EmitPort(_) => Err(NoRequiredLocator)
-		ClosePort(_) => Err(NoRequiredLocator)
-		FailPort(_) => Err(NoRequiredLocator)
-		ExpectPortSubscriptions(_) => Err(NoRequiredLocator)
-		ExpectSaved(_) => Err(NoRequiredLocator)
-		ExpectSaves(_) => Err(NoRequiredLocator)
+		Dismiss => { provides: [], needs: [] }
+		ExpectElement({ target, .. }) => { provides: [Locator(target)], needs: [] }
+		ExpectShown(loc, _) => { provides: [Locator(loc)], needs: [] }
+		ExpectScroll({ target, .. }) => { provides: [Locator(target)], needs: [] }
+		ExpectScrolls(_) => { provides: [], needs: [] }
+		ExpectTransitions(_) => { provides: [], needs: [] }
+		ExpectTransition(_) => { provides: [], needs: [] }
+		Scroll({ target, .. }) => { provides: [Locator(target)], needs: [] }
+		ReportSize({ target, .. }) => { provides: [Locator(target)], needs: [] }
+		ReportSeen({ target, .. }) => { provides: [Locator(target)], needs: [] }
+		SetMedia({ query, .. }) => { provides: [], needs: [Media(query)] }
+		SetTime(_) => { provides: [], needs: [] }
+		AdvanceTime(_) => { provides: [], needs: [] }
+		ExpectObserved(_) => { provides: [], needs: [] }
+		ExpectMediaSubscriptions({ query, .. }) => { provides: [], needs: [Media(query)] }
+		Focus(loc) => { provides: [Locator(loc)], needs: [] }
+		Blur(loc) => { provides: [Locator(loc)], needs: [] }
+		Change(loc, _) => { provides: [Locator(loc)], needs: [] }
+		SelectOption(loc, _) => { provides: [Locator(loc)], needs: [] }
+		Submit(loc) => { provides: [Locator(loc)], needs: [] }
+		Fill(loc, _) => { provides: [Locator(loc)], needs: [] }
+		Check(loc) => { provides: [Locator(loc)], needs: [] }
+		Uncheck(loc) => { provides: [Locator(loc)], needs: [] }
+		ExpectText(loc, _) => { provides: [Locator(loc)], needs: [] }
+		ExpectVisible(loc) => { provides: [Locator(loc)], needs: [] }
+		ExpectFocused(loc) => { provides: [Locator(loc)], needs: [] }
+		ExpectNoFocus => { provides: [], needs: [] }
+		ExpectAbsent(loc) => { provides: [], needs: [Story(Locator(loc))] }
+		ExpectValue(loc, _) => { provides: [Locator(loc)], needs: [] }
+		ExpectAttr({ target, name, .. }) => { provides: [Locator(target), Attribute(name)], needs: [] }
+		ExpectNoAttr({ target, name }) => { provides: [Locator(target)], needs: [Story(Attribute(name))] }
+		ExpectChecked(loc, _) => { provides: [Locator(loc)], needs: [] }
+		ExpectDisabled(loc, _) => { provides: [Locator(loc)], needs: [] }
+		ExpectUpdates(loc, _) => { provides: [Locator(loc)], needs: [] }
+		StubHttp(_) => { provides: [], needs: [] }
+		RunEffect(_) => { provides: [], needs: [] }
+		ExpectRequest(_) => { provides: [], needs: [] }
+		ProgressEffect(_) => { provides: [], needs: [] }
+		ExpectPortSubscriptionArg({ port, .. }) => { provides: [], needs: [Port({ name: port, kind: Subscription })] }
+		ExpectPendingEffects(_) => { provides: [], needs: [] }
+		LoseWork(_) => { provides: [], needs: [] }
+		TimeOutWork(_) => { provides: [], needs: [] }
+		ExpectPendingWork({ task, .. }) => { provides: [], needs: [Task(task)] }
+		ChooseFiles(loc, _) => { provides: [Locator(loc)], needs: [] }
+		DropFiles(loc, _) => { provides: [Locator(loc)], needs: [] }
+		PasteFiles(loc, _) => { provides: [Locator(loc)], needs: [] }
+		ExpectFiles(_) => { provides: [], needs: [] }
+		TickInterval(period) => { provides: [Interval(period)], needs: [] }
+		TickIntervalIfActive(period) => { provides: [], needs: [Story(Interval(period))] }
+		ExpectCleanup({ name, count }) => if count == 0 { provides: [], needs: [Story(Cleanup(name))] } else { provides: [Cleanup(name)], needs: [] }
+		ExpectInterval({ period_ms, count }) => if count == 0 { provides: [], needs: [Story(Interval(period_ms))] } else { provides: [Interval(period_ms)], needs: [] }
+		Navigate(_) => { provides: [], needs: [] }
+		SetVisibility(_) => { provides: [], needs: [] }
+		SetOnline(_) => { provides: [], needs: [] }
+		HoldReports => { provides: [], needs: [] }
+		ReleaseReports => { provides: [], needs: [] }
+		ExpectReportsReplaced(_) => { provides: [], needs: [] }
+		HistoryBack => { provides: [], needs: [] }
+		HistoryForward => { provides: [], needs: [] }
+		ExpectLocation(_) => { provides: [], needs: [] }
+		ExpectTitle(_) => { provides: [], needs: [] }
+		ExpectLocalStorage({ key, .. }) => { provides: [Storage({ store: Local, key })], needs: [] }
+		ExpectNoLocalStorage(key) => { provides: [], needs: [Storage({ store: Local, key })] }
+		ExpectSessionStorage({ key, .. }) => { provides: [Storage({ store: Session, key })], needs: [] }
+		ExpectNoSessionStorage(key) => { provides: [], needs: [Storage({ store: Session, key })] }
+		PasteText(loc, _) => { provides: [Locator(loc)], needs: [] }
+		StorageElsewhere({ key, .. }) => { provides: [Storage({ store: Local, key })], needs: [] }
+		StorageElsewhereRemoved(_) => { provides: [], needs: [] }
+		StorageElsewhereCleared => { provides: [], needs: [] }
+		LeavePage(_) => { provides: [], needs: [] }
+		ExpectClipboard(_) => { provides: [], needs: [] }
+		ExpectClipboardHtml(_) => { provides: [], needs: [] }
+		ExpectClipboardWrites(_) => { provides: [], needs: [] }
+		MarkMetrics => { provides: [], needs: [] }
+		ExpectMetricDelta(_) => { provides: [], needs: [] }
+		ExpectMetricDeltaAtMost(_) => { provides: [], needs: [] }
+		ExpectUpload(_) => { provides: [], needs: [] }
+		ExpectPortCall({ port, .. }) => { provides: [], needs: [Port({ name: port, kind: Call })] }
+		AnswerPort(_) => { provides: [], needs: [] }
+		ExpectPortSent({ port, .. }) => { provides: [], needs: [Port({ name: port, kind: Command })] }
+		ExpectPortSends({ port, .. }) => { provides: [], needs: [Port({ name: port, kind: Command })] }
+		EmitPort({ port, .. }) => { provides: [], needs: [Port({ name: port, kind: Subscription })] }
+		ClosePort(port) => { provides: [], needs: [Port({ name: port, kind: Subscription })] }
+		FailPort({ port, .. }) => { provides: [], needs: [Port({ name: port, kind: Subscription })] }
+		ExpectPortSubscriptions({ port, .. }) => { provides: [], needs: [Port({ name: port, kind: Subscription })] }
+		ExpectSaved(_) => { provides: [], needs: [] }
+		ExpectSaves(_) => { provides: [], needs: [] }
 	}
+
+	## Setup evidence keeps its original position in Spec.setup. Availability,
+	## removal and bounds cannot establish a key's spelling.
+	setup_evidence : Setup -> Evidence
+	setup_evidence = |item| match item {
+		InitialLocation(_) => { provides: [], needs: [] }
+		InitialVisibility(_) => { provides: [], needs: [] }
+		InitialOnline(_) => { provides: [], needs: [] }
+		InitialMedia({ query, .. }) => { provides: [], needs: [Media(query)] }
+		InitialTime(_) => { provides: [], needs: [] }
+		Seed(_) => { provides: [], needs: [] }
+		Languages(_) => { provides: [], needs: [] }
+		TimeZone(_) => { provides: [], needs: [] }
+		LocalStorage({ key, .. }) => { provides: [Storage({ store: Local, key })], needs: [] }
+		LocalStorageUnavailable => { provides: [], needs: [] }
+		SessionStorage({ key, .. }) => { provides: [Storage({ store: Session, key })], needs: [] }
+		SessionStorageUnavailable => { provides: [], needs: [] }
+		SessionStorageFull => { provides: [], needs: [] }
+		LocalStorageFull => { provides: [], needs: [] }
+		ClipboardDenied => { provides: [], needs: [] }
+		MaxPasteBytes(_) => { provides: [], needs: [] }
+		MountRoot(_) => { provides: [], needs: [] }
+		File(_) => { provides: [], needs: [] }
+		MaxOutputBytes(_) => { provides: [], needs: [] }
+	}
+
+	## Preserve the locator query as a projection of the exhaustive evidence
+	## classifier, so absence and future declaration checks cannot diverge.
+	required_loc : Op -> Try(Loc, [NoRequiredLocator])
+	required_loc = |op| Scm.evidence(op).provides.keep_oks(|subject| match subject {
+		Locator(loc) => Ok(loc)
+		_ => Err(NoRequiredLocator)
+	}).first() ? |_| NoRequiredLocator
 
 	## Relate absences to the whole story, including anchors that occur later.
 	## The marker positions are parser-only metadata: runners receive the same
@@ -3548,4 +3596,38 @@ expect {
 ## Invalid roots and duplicate declarations fail before either runner mounts.
 expect {
 	["(mount-root svg \"\")", "(mount-root none \"root\" :prefix \"p\")", "(mount-root svg \"root\" :prefix \"a:b\")", "(mount-root svg \"svg\") (mount-root html \"div\")"].all(|setup| Scm.parse("(test \"bad\" (setup ${setup}) (steps (mark-metrics)))").is_err())
+}
+
+## Port shape, worker names and setup queries survive classification even
+## when the assertion's count is zero; declarations can reject them early.
+expect {
+	Scm.evidence(ExpectPortCall({ occurrence: 1, port: "call", json: "null" })).needs == [Port({ name: "call", kind: Call })] and
+	Scm.evidence(ExpectPortSends({ port: "command", count: 0 })).needs == [Port({ name: "command", kind: Command })] and
+	Scm.evidence(ExpectPortSubscriptions({ port: "subscription", count: 0 })).needs == [Port({ name: "subscription", kind: Subscription })] and
+	Scm.evidence(ExpectPendingWork({ task: "task", count: 0 })).needs == [Task("task")] and
+	Scm.setup_evidence(InitialMedia({ query: "query", matches: Bool.False })).needs == [Media("query")]
+}
+
+## Only an actual set, positive reading or seed establishes a storage key.
+## Removal, clear and an absence cannot prove their own spelling.
+expect {
+	Scm.evidence(StorageElsewhere({ key: "draft", value: "" })).provides == [Storage({ store: Local, key: "draft" })] and
+	Scm.setup_evidence(SessionStorage({ key: "draft", value: "" })).provides == [Storage({ store: Session, key: "draft" })] and
+	Scm.evidence(ExpectSessionStorage({ key: "draft", value: "" })).provides == [Storage({ store: Session, key: "draft" })] and
+	Scm.evidence(ExpectNoLocalStorage("draft")).needs == [Storage({ store: Local, key: "draft" })] and
+	Scm.evidence(StorageElsewhereRemoved("draft")).provides.is_empty() and
+	Scm.evidence(StorageElsewhereCleared).provides.is_empty()
+}
+
+## Locator evidence is a projection; attribute assertions simultaneously
+## prove a locator and carry the attribute's independent story obligation.
+expect {
+	loc = Scm.TestId("node")
+	Scm.required_loc(ExpectNoAttr({ target: loc, name: "title" })) == Ok(loc) and
+	Scm.evidence(ExpectNoAttr({ target: loc, name: "title" })).needs == [Story(Attribute("title"))] and
+	Scm.evidence(ExpectAttr({ target: loc, name: "title", value: "" })).provides == [Locator(loc), Attribute("title")] and
+	Scm.evidence(ExpectCleanup({ name: "cleanup", count: 0 })).needs == [Story(Cleanup("cleanup"))] and
+	Scm.evidence(ExpectCleanup({ name: "cleanup", count: 1 })).provides == [Cleanup("cleanup")] and
+	Scm.evidence(TickIntervalIfActive(500)).needs == [Story(Interval(500))] and
+	Scm.evidence(TickInterval(500)).provides == [Interval(500)]
 }
