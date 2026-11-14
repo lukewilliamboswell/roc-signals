@@ -4440,12 +4440,15 @@ architecture are recorded here:
   compiler or carries an absolute path.
 - **Roc scripts.** Automation is Roc scripts under `scripts/`; one `check`
   task runs formatting, `roc test`, every example's specs natively and in
-  Chrome, fuzz corpus replay, the size of the platform’s JavaScript files, and the host
+  Chrome, every fuzz target's fixed examples, the size of the platform’s JavaScript files, and the host
   and runtime contract tests. CI calls Blueprint tasks, never script paths;
   on macOS and Windows, where Blueprint does not run, CI builds apps' spec
   runners with `roc` and runs their specs, as an app author there does.
-- **Fuzzing.** Short corpus replays run in pull-request CI; long campaigns
-  run on a schedule.
+- **Fuzzing.** Every registered target's fixed examples (its declared
+  examples and saved regressions) are replayed in pull-request CI, which
+  shows each compiles, links and runs; CI never explores. Campaigns run on
+  a contributor's machine, on demand, and what they find comes back as a
+  saved example every replay keeps.
 - **Releases.** A release publishes the one platform bundle (engine, Wasm
   host and runtime, and the native spec runner with its link inputs for
   Linux x86-64, macOS and Windows), `runtime.mjs`, an examples archive naming that bundle, and the

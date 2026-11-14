@@ -113,15 +113,15 @@ These are the development environment's Blueprint tasks, not an app's
 
 | Task | What it does |
 |---|---|
-| `blueprint run check` | The pull-request gate (below) |
-| `blueprint run check-slow` | Every fuzz target's declared examples, a walk of every app of 10,000 steps (`RUNNER --walk`), the native soak of each app's round-trip spec (`RUNNER --soak 48`, flat live allocations and bytes), and a long Chrome session per app |
+| `blueprint run check -- [--without-fuzz]` | The pull-request gate (below), every fuzz target's fixed examples included; `--without-fuzz` skips the fuzz targets, each with a `SKIP` line, as CI's Check job does beside its Fuzz smoke job |
+| `blueprint run check-slow` | Local only, never in CI: every fuzz target's fixed examples on its instrumented build, a walk of every app of 10,000 steps (`RUNNER --walk`), the native soak of each app's round-trip spec (`RUNNER --soak 48`, flat live allocations and bytes), and a long Chrome session per app |
 | `blueprint run spec -- [--browser] [--filter GLOB] [APP...]` | Some apps' specs, natively and optionally in Chrome |
 | `blueprint run platform` | Build the platform's link inputs with the pinned Zig, including matching PIC musl startup and libraries, to build an app's `main.roc` by hand (a fuzz target needs none: `roc build --fuzz` fetches its roc-fuzz release) |
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
-| `blueprint run fuzz-smoke -- [TARGET...]` | Actual fixed examples on ordinary optimized native builds; defaults to every maintained target |
+| `blueprint run fuzz-smoke -- [TARGET...]` | Every registered fuzz target's fixed examples on plain optimized native builds, or the named targets; `-- --shard K/N` runs shard K of N, as CI does; never explores |
 | `blueprint run sizes -- [--runtime-only]` | Check shipped JavaScript gzip sizes; without the flag, also build and report each example's shipping module and development-only scripts |
-| `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign |
+| `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign (600 s of exploration per target by default), local only: CI never runs one |
 | `blueprint run api` | Build and audit the API reference alone, including methods inherited through public aliases, without rebuilding the site examples |
 | `blueprint run site -- [--base-url URL] [--tool-url URL]` | Build the website, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
 | `blueprint run serve -- [DIR] [--port N]` | Serve `dist/` at `127.0.0.1:8000/roc-signals/`, its published path, or `DIR` at the root |
@@ -141,8 +141,8 @@ website link alone does not make an older release compatible. The override is
 written to `.build/site-config.toml`, leaving `www/config.toml` unchanged.
 Without an override, onboarding links download the latest published release.
 
-The published website is main: every push to main that passes `check` deploys
-CI's `blueprint run site` build to GitHub Pages.
+The published website is main: every push to main that passes CI's Check and
+Fuzz smoke jobs deploys CI's `blueprint run site` build to GitHub Pages.
 
 Builds go to `.build/`; set `ROC_SIGNALS_BUILD_DIR` to use another directory,
 for example to run two tasks at once.
@@ -580,14 +580,66 @@ not something either kind does: the walks are seeded, not guided. Guided
 exploration meets the engine through generated programs (`structure`) and
 the effect channel's model (`fx-channel`).
 
-`check` replays the examples of the targets in `fuzz/` and of the
-examples' own; `check-slow` replays every target's; `fuzz.yml` runs nightly
-campaigns of every target in `Targets.fuzz_targets` with the corpora in the
-Actions cache. When a campaign finds a failure, reduce it and add it to the
-target's examples with `Fuzz.saved`, so every later replay keeps it fixed.
 Judge a target by its properties: state the rules the code must keep over
 generated sequences, and check them against a reference model. Its oracles,
 not its inputs, carry the value.
+
+### What runs where
+
+Every target is registered in `Targets.fuzz_targets`, and every run starts
+from that registry. A target's fixed examples are its declared examples
+and its saved regressions (`Fuzz.saved`, in the target's source); a replay
+of them shows the target compiles, links and runs, and finds nothing new.
+Finding new inputs is a campaign's job.
+
+| Where | What runs | Build | How long |
+|---|---|---|---|
+| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in six shards (`fuzz-smoke -- --shard K/6`), beside Check (`check -- --without-fuzz`) | Plain `--opt=speed` | Estimated from the figures below at 15 to 30 minutes a shard, the one with `structure` the longest; each shard is allowed 60 |
+| `blueprint run check` | The same replays as CI's Fuzz smoke job, every target, in one run | Plain `--opt=speed` | Its compilers dominate: estimated at 25 to 40 minutes on an Apple-silicon Mac that compiles one target at a time |
+| `blueprint run fuzz-smoke` | Every target's fixed examples, or those named, or one shard | Plain `--opt=speed` | As `check`'s, or a few seconds for one platform-free target |
+| `blueprint run check-slow`, local only | Every target's fixed examples on the build a campaign explores | Instrumented `--fuzz` | About a third longer to compile than the plain builds |
+| `blueprint run fuzz`, local only | A campaign: each selected target explores from its corpus under `.fuzz-out/` | Instrumented `--fuzz` | 600 s per target by default (`--time S`), plus its build |
+
+CI never runs a campaign, on a schedule or otherwise, and never keeps a
+corpus. Run one on your machine with
+`blueprint run fuzz -- --time S [TARGET...]`; its corpora stay in
+`.fuzz-out/<target>/corpus` between campaigns there. When a campaign finds a
+failure, reduce it and add it to the target's examples with `Fuzz.saved`,
+so every later replay, CI's included, keeps it fixed.
+
+The costs behind those figures: on an Apple-silicon Mac, the 12
+platform-free targets compiled instrumented in about 62 s together and
+replayed in under 2 s; a batch of 13 targets that import the engine
+package compiled instrumented in about 1,780 s and replayed in about 17 s,
+and `structure`, the largest, compiled in 539 s plain against 717 s
+instrumented. A target
+that imports the engine package compiles the package itself, and a compiler
+process is given 16 GiB, so a CI runner compiles one target at a time; the
+shards are what run the compilers in parallel, and a CI runner is slower
+than that Mac. That is too long to add to the Check job, which is why CI
+runs the replays as a job of their own.
+
+### No target is left out silently
+
+Every fuzz run (`check`, `check-slow`, `fuzz-smoke`, `fuzz`) plans its
+targets first (`scripts/src/FuzzPlan.roc`): each registered target is
+either run or skipped with a reason, and the only reasons are these:
+
+- it was not named, when the run was given target names;
+- another shard runs it, when the run was given `--shard K/N`;
+- `check -- --without-fuzz`: CI's Fuzz smoke job replays every target.
+
+Each skipped target is printed as `SKIP <target>: <reason>`, and the run
+ends with one line, `fuzz: N targets: R ran (P passed, F failed), S
+skipped`. The run fails when R + S is not N, when a target it runs has no
+result or two, or when a result names a target it did not run. A target
+name that is not registered, a shard outside its total and a shard that
+would receive no target are refused. A target that fails to build has
+failed, and the others still build and run. No platform, missing tool or
+compiler version skips a target, and nothing is skipped because its inputs
+look unchanged: every run builds every target it runs afresh.
+
+### The plain and the instrumented builds
 
 The maintained targets pin roc-fuzz 0.6.2, which restores compatibility with
 `nightly-2026-11-13-03dce41` after its stricter duplicate-name check. The
@@ -600,8 +652,9 @@ spent running its fixed examples.
 For a fixed-example editing loop, run `blueprint run fuzz-smoke`, or select
 whole applicable targets with `blueprint run fuzz-smoke -- controls fx-channel`.
 It defaults to all entries in `Targets.fuzz_targets`, including the test-app
-targets. It builds the same roc-fuzz apps at `--opt=speed` without coverage
-instrumentation, then runs their actual `check` commands with the usual
+targets, and is what `check` and CI run. It builds the same roc-fuzz apps
+at `--opt=speed` without coverage instrumentation, then runs their actual
+`check` commands with the usual
 30-minute per-invocation deadline, allocator observations, trace rules and
 leak checks. Compiler, linker, replay and report failures fail the task.
 It neither explores new inputs nor replaces an applicable fixed replay with
@@ -620,10 +673,15 @@ metadata records the command, compiler version, entry and binary hashes; it
 is not a dependency manifest or an executable cache. A matched-profile proof
 also retains the complete frozen source and dependency manifests.
 
-`check`, `check-slow` and `fuzz` retain their instrumented builds under
+CI runs the plain builds on evidence: they compile in about three
+quarters of the time (`structure`: 539 s against 717 s), and their reports
+are validated in full, which the instrumented replays' pass line is not.
+`check-slow` and `fuzz` keep their instrumented builds under
 `.build/fuzz/`; campaigns never select the plain smoke executables. Keep the
 covered final checks and guided campaigns: the plain profile does not test
-coverage-generated machine code. The task prints compiler and fixed-replay
+coverage-generated machine code, so a change that could break the
+instrumented build (a roc-fuzz or compiler update) runs `check-slow` before
+it merges. The task prints compiler and fixed-replay
 batch wall times separately, while each build log has compiler phase timings.
 Those batch times include scheduling and are not individual target timings.
 The small matched URL check established compatibility; it does not establish
