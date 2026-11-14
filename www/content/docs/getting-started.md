@@ -175,6 +175,8 @@ The spec passed.
 ```
 
 `test` builds the app's native spec runner and runs every spec in `specs/`.
+Compiler warnings are printed even when the build succeeds; they do not make a
+passing test command fail.
 The runner drives the real engine and checks the DOM it would build, so a
 spec takes milliseconds. A failing spec names its file, line and the step
 that did not hold, and `test` exits with 1. The native spec runner is built
@@ -188,6 +190,10 @@ ARM64, for now) `test` says which systems run them.
 ```sh
 roc signals.roc build
 ```
+
+The tool shows the compiler's warnings even when the build succeeds. Optimized
+builds keep `dbg`, so read its warning before deploying the output. A warning
+alone does not make the command fail.
 
 ```text
 Built the app into dist/:

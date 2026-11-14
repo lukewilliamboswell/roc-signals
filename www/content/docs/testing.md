@@ -90,6 +90,10 @@ typed list of steps. Two runners consume that list:
   runtime applies the stream correctly and that real browser events reach
   the app as the native runner modelled them.
 
+`roc signals.roc test` prints compiler warnings before running the specs. Warnings
+do not change its success status: a warning-only build can still run a passing
+story. The tool's `build` and `serve` commands show those reports too.
+
 Neither runner proves the other's half. The native runner never runs the
 JavaScript runtime or real event dispatch; the browser runner is too slow
 for long random walks and reads the engine's counters only through its

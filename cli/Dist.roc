@@ -54,7 +54,12 @@ Dist :: [].{
 		}
 		wasm = ".signals/build/app.wasm"
 		match Compiler.build!({ target: "wasm32", opt, output: wasm })? {
-			Built(_) => {}
+			Built(report) => {
+				shown = Compiler.report_on_success(report)
+				if !shown.is_empty() {
+					Stdout.line!(shown)?
+				}
+			}
 			Failed(report) => return Err(BuildFailed({ report, version }))
 		}
 		members = Project.members!()?
@@ -138,7 +143,12 @@ Dist :: [].{
 		runner = ".signals/build/picture-runner${if (target.ends_with("win")) ".exe" else ""}"
 		version = Compiler.version!()?
 		match Compiler.build!({ target, opt: "dev", output: runner })? {
-			Built(_) => {}
+			Built(report) => {
+				shown = Compiler.report_on_success(report)
+				if !shown.is_empty() {
+					Stdout.line!(shown)?
+				}
+			}
 			Failed(report) => return Err(BuildFailed({ report, version }))
 		}
 		program = "${Project.with_slashes(Path.display(Env.cwd!()?))}/${runner}"

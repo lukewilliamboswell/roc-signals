@@ -38,7 +38,12 @@ Specs :: [].{
 		# program is started by its absolute path.
 		runner = ".signals/test/runner${if (target.ends_with("win")) ".exe" else ""}"
 		match Compiler.build!({ target, opt: "dev", output: runner })? {
-			Built(_) => {}
+			Built(report) => {
+				shown = Compiler.report_on_success(report)
+				if !shown.is_empty() {
+					Stdout.line!(shown)?
+				}
+			}
 			Failed(report) => return Err(BuildFailed({ report, version }))
 		}
 		count = specs.len()
