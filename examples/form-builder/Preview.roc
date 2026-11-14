@@ -118,8 +118,6 @@ Preview := [].{
 							[
 								Engine.when(
 									Schema.has_fields(props.fields),
-									# The template is a lambda here, not the result of
-									# a helper that returns one (roc-lang/roc#12970).
 									|| Schema.each_field(props.fields, |key, field| answer_row(props.answers, { key, field, attempted: props.ui.attempted.signal() })),
 									|| Html.div("empty-state", [Html.p_attrs("No fields yet. The generated form is empty.", [])]),
 								),

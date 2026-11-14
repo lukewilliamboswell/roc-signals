@@ -282,16 +282,12 @@ list is sorted or filtered on the page, or when it is long.
   writing turn pays for freeing those earlier rows, so a single keyed write
   can also pay cleanup proportional to the previous turn's recorded keys.
 
-Three compiler defects touch tables today, each with its upstream issue:
+Two compiler defects touch tables today, each with its upstream issue:
 
 - Many writes to a table in one event are a fold over the keys, as `awarded`
   is, not a `while` loop over a `var` that holds the table: the loop copies
   the table on every pass in an optimised build
   ([roc-lang/roc#12971](https://github.com/roc-lang/roc/issues/12971)).
-- A row template that needs something from outside is a lambda that passes
-  it on with the key and the row, `|key, row| template(extra, key, row)`,
-  not a function returned from a helper, which `roc check` rejects
-  ([roc-lang/roc#12970](https://github.com/roc-lang/roc/issues/12970)).
 - An optimised build can still copy a large table on each write
   ([roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957)).
   The instance holds its store outside the site's boxed closure; a bounded

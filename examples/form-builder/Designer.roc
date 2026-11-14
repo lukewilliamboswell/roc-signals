@@ -62,7 +62,6 @@ Designer := [].{
 				[
 					Engine.when(
 						Schema.has_fields(props.fields),
-						# Keep the template as a lambda (roc-lang/roc#12970).
 						|| Schema.each_field(props.fields, |key, field| editor(props, { key, field })),
 						|| Html.div("empty-state", [Html.p_attrs("No fields yet. Add a field to start designing.", [])]),
 					),

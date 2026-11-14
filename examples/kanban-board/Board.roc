@@ -158,8 +158,6 @@ Board := [].{
 									plan: Kanban.plan,
 									window: Engine.const(Engine.every_row),
 								},
-								# The template is a lambda here, not the result of a
-								# helper that returns one (roc-lang/roc#12970).
 								|title, card| card_row({ cards: props.cards, drag: props.drag, column, size: size.lift_row(), marker: marker.lift_row() }, title, card),
 							),
 							Engine.when(

@@ -643,8 +643,6 @@ list_of : Engine.Attr(ctx), Engine.Cell(st, Table(U64, Item)), Signal(ctx, Listi
 list_of = |name, table, listing, window| Engine.element(
 	"ul",
 	[name],
-	# The template is given as a lambda, not returned from a helper
-	# (roc-lang/roc#12970).
 	[Engine.table_view(table, { query: listing, plan: query_plan, window }, |key, row| row_view(table, key, row))],
 )
 
