@@ -3637,7 +3637,12 @@ or an inline job reached a worker effect), and reports the diagnostic to the
 console; the page's instance is untouched. A prepared state the worker kept
 is gone with it, and the next job over that input prepares again. A job's
 builders and their parts go with a discarded worker too: nothing a failed
-job wrote is ever delivered.
+job wrote is ever delivered. A fault while a worker lets go of its prepared
+state, with no job on it, discards that worker the same way, and the next
+job goes to another. In `workers: "inline"` mode the second instance is
+contained alike, including when its `forget` traps while the page's own
+apply lets go of the file its state was prepared from: that instance is
+dropped and the next job gets a fresh one, and the page is never poisoned.
 
 **Contract errors the engine raises:** duplicate key; switch value not in its
 cases; row template not a single element; two live references with one name;

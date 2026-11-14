@@ -2702,13 +2702,38 @@ class WorkPool {
     this.monitor.instanceEnded(slot.seq, cause, fault);
   }
 
+  // Inline mode: let go of the instance's prepared state. A trap in its
+  // `forget` poisons that instance only, as it does a worker's (design.md,
+  // "Error Containment"): the instance is dropped as a lost worker is, and
+  // the next job gets a fresh one. It is never let reach the page's apply,
+  // which this is called from when the page releases a file.
   forgetInline(cause) {
-    if (this.instance !== null) {
-      this.instance.exports.forget();
-      this.drainInline(this.instance.exports);
+    const x = this.instance === null ? null : this.instance.exports;
+    let failure = null;
+    if (x !== null) {
+      try {
+        x.forget();
+        this.drainInline(x);
+      } catch (e) {
+        failure = e;
+      }
     }
     this.inlineKey = null;
     this.monitor.stateEvicted(this.inlineSeq, cause);
+    if (failure !== null) {
+      const { lost, message } = inlineFault(x, failure);
+      this.dropInline(lost, message);
+    }
+  }
+
+  // Inline mode: the instance can no longer be trusted. It is never called
+  // again; its state and the handles it held go with it.
+  dropInline(lost, message) {
+    this.instance = null;
+    this.inlineKey = null;
+    this.inlineHeld.clear();
+    this.terminated += 1;
+    this.monitor.instanceEnded(this.inlineSeq, lost === LOST_EXECUTOR ? "executor" : "fault", { class: this.LOST_CLASSES[lost], message });
   }
 
   // Inline mode: mint a handle for each object in the page-thread
@@ -2809,7 +2834,7 @@ class WorkPool {
           mon.jobAnswered(job.id, this.inlineSeq, { t: [begin, begin, call, ret, sent], mem, outputBytes: output.length, prepareMs, held: this.inlineKey !== null });
           this.settle(job, { output, objects, dbg: this.observeDbg(job.task, jobDbg) });
           if (this.inlineKey !== null && !keyLive(this.inlineKey, this.live)) this.forgetInline("released");
-          if (mem[0] > this.maxBytes) {
+          if (this.instance !== null && mem[0] > this.maxBytes) {
             if (this.inlineKey !== null) this.reportOversized(this.inlineKey.name, mem[0]);
             this.instance = null;
             this.inlineKey = null;
@@ -2817,29 +2842,12 @@ class WorkPool {
             mon.instanceEnded(this.inlineSeq, "retired");
           }
         } catch (e) {
-          let lost;
-          let message = String(e && e.message ? e.message : e);
           collectDbg();
           const dbg = this.observeDbg(job.task, jobDbg);
-          if (e instanceof EffectUnavailable) lost = LOST_UNAVAILABLE;
-          else if (e && typeof e.lost === "number") lost = e.lost;
-          else {
-            let code = 0;
-            try {
-              code = x ? x.fault() : 0;
-              if (code !== 0) message = new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len()));
-            } catch (_) {
-              code = 0;
-            }
-            lost = code >= 1 && code <= 5 ? code : LOST_EXECUTOR;
-          }
+          const { lost, message } = inlineFault(x, e);
           // An instance a call left mid-way, faulted or not, is never called
           // again: the next job gets a fresh one.
-          this.instance = null;
-          this.inlineKey = null;
-          this.inlineHeld.clear();
-          this.terminated += 1;
-          mon.instanceEnded(this.inlineSeq, lost === LOST_EXECUTOR ? "executor" : "fault", { class: this.LOST_CLASSES[lost], message });
+          this.dropInline(lost, message);
           this.settle(job, { lost, message, dbg });
         }
       }
@@ -2861,6 +2869,23 @@ class WorkPool {
     this.inlineKey = null;
     this.inlineHeld.clear();
   }
+}
+
+// What an inline instance's failed call means: a job's effect that only a
+// worker has, a refusal the pool raised itself, or the instance's own fault
+// class and diagnostic when its host recorded one (else `executor`).
+function inlineFault(x, e) {
+  let message = String(e && e.message ? e.message : e);
+  if (e instanceof EffectUnavailable) return { lost: LOST_UNAVAILABLE, message };
+  if (e && typeof e.lost === "number") return { lost: e.lost, message };
+  let code = 0;
+  try {
+    code = x ? x.fault() : 0;
+    if (code !== 0) message = new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len()));
+  } catch (_) {
+    code = 0;
+  }
+  return { lost: code >= 1 && code <= 5 ? code : LOST_EXECUTOR, message };
 }
 
 // Whether two prepared-state keys are the same: one preparation, the same
