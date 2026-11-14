@@ -1,9 +1,11 @@
 # Third-Party Licenses
 
 The native spec runner links runtime archives built and selected by the Zig
-release pinned in `Blueprint.roc`. The fuzz targets separately depend on the
-roc-fuzz 0.6.1 release as their platform; nothing of roc-fuzz is copied into the
-repository. One Roc utility is derived from basic-webserver. The documentation site serves font files that are kept in it.
+release pinned in `Blueprint.roc`. Three examples depend on Plume and load
+Plotly in the page; the fuzz targets and the repository's scripts depend on
+packages the compiler fetches, none of them copied into the repository. One Roc
+utility is derived from basic-webserver. The documentation site serves font
+files that are kept in it.
 
 ## musl and Zig runtime archives
 
@@ -31,6 +33,42 @@ from `www/static/fonts/`: the Latin subsets of the weights the site uses, as
 packaged by Fontsource 5.3.0 (`@fontsource/ibm-plex-sans`,
 `@fontsource/ibm-plex-mono`). The license is `www/static/fonts/LICENSE.txt`.
 Nothing outside the site uses them.
+
+## Example dependencies
+
+The Status Page, Log Explorer and Million-Row Explorer examples
+(`examples/{status-page,log-explorer,million-row-explorer}/main.roc`), and so
+the examples archive and the documentation site that serve them, build their
+charts with [Plume 0.6.0](https://github.com/lukewilliamboswell/plume/releases/tag/0.6.0),
+pinned by bundle URL. Copyright © 2025 Luke Boswell and subsequent authors
+(<https://github.com/lukewilliamboswell/plume/graphs/contributors>); Universal
+Permissive License (UPL), Version 1.0. The compiler fetches it; its source is
+not copied into this repository.
+
+Those three example pages load [plotly.js 4.2.0](https://github.com/plotly/plotly.js)
+from `https://cdn.plot.ly/plotly-4.2.0.min.js`, pinned with a subresource
+integrity hash in `www/data/examples.toml`. Copyright (c) 2016-2024 Plotly
+Technologies Inc.; MIT License. The browser fetches it from the CDN; it is not
+copied into this repository, the examples archive or the site.
+
+## Fuzz and tooling dependencies
+
+These are fetched by the compiler when the fuzz targets or the scripts under
+`scripts/` are built, and are not part of the platform bundle, the examples
+archive or the site:
+
+- [roc-fuzz 0.6.2](https://github.com/lukewilliamboswell/roc-fuzz/releases/tag/0.6.2),
+  the platform of every fuzz target. Copyright (c) 2023 Brendan Hansknecht,
+  Copyright (c) 2026 Luke Boswell; MIT License.
+- [basic-cli 0.28.1](https://github.com/roc-lang/basic-cli/releases/tag/0.28.1),
+  the scripts' platform. Copyright © 2022 Richard Feldman and subsequent
+  basic-cli authors; UPL Version 1.0.
+- [roc-lang/http 1.0.0](https://github.com/roc-lang/http/releases/tag/1.0.0),
+  used by the scripts. Copyright © 2025 Richard Feldman and subsequent Roc
+  authors; UPL Version 1.0.
+- [roc-blueprint 0.13.0](https://github.com/lukewilliamboswell/roc-blueprint/releases/tag/0.13.0),
+  which evaluates `Blueprint.roc`. Copyright © 2026 Luke Boswell and
+  subsequent authors; UPL Version 1.0.
 
 ## Internal Roc dependencies
 
