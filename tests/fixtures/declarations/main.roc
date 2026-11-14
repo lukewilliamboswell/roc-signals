@@ -25,5 +25,11 @@ ports = {
 task : Worker.Task({}, {}, Worker.Never)
 task = Worker.task({ name: "task", run!: |_input| Ok({}) })
 
-owner : Worker.Preparation({}, {}, Worker.Never)
+## Nightly 2026-11-13-03dce41 crashes while building an empty preparation
+## catalogue with Never: https://github.com/roc-lang/roc/issues/13056.
+## TODO: restore Worker.Never once fixed. Preparation still always succeeds;
+## declaration validation must never initialize this fixture.
+PreparationError : [PreparationUnavailable]
+
+owner : Worker.Preparation({}, {}, PreparationError)
 owner = Worker.preparation({ name: "empty-owner", prepare!: |_input| Ok({}) })
