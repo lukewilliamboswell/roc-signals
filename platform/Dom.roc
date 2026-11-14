@@ -225,20 +225,33 @@ Dom := [].{
 	enum_attr : DNode, Str -> Str
 	enum_attr = |element, name| Spelling.ascii_lower(Dom.attr_of(element, name))
 
-	## The raw type keyword with HTML's ASCII case rule. Missing and invalid
-	## values stay as written apart from case; this does not apply defaults.
+	## The effective HTML input or button type. Keyword membership comes from
+	## the parser; missing and invalid values use the control's browser default.
+	## Raw attributes remain unchanged. Other elements have no HTML control type.
 	input_type : DNode -> Str
-	# TODO(roc-parser#118): use its public HTML enumeration API when exposed.
-	input_type = |element| Dom.enum_attr(element, "type")
+	input_type = |element| {
+		fallback = if Dom.html_tag(element, "input") {
+			"text"
+		} else if Dom.html_tag(element, "button") {
+			"submit"
+		} else {
+			return ""
+		}
+		match attribute_keyword(element.tag, "type", Dom.attr_of(element, "type")) {
+			Ok(keyword) => keyword
+			Err(InvalidKeyword) => fallback
+			Err(NotEnumerated) => crash "oracle: the parser must enumerate HTML input and button types"
+		}
+	}
 
 	## OutsideText is about the event target, including inherited editability.
 	text_entry : Model, U64 -> Bool
 	text_entry = |dom, i| {
 		n = Dom.node(dom, i)
-		if ["textarea", "select"].contains(n.tag) {
+		if Dom.html_tag(n, "textarea") or Dom.html_tag(n, "select") {
 			return Bool.True
 		}
-		if n.tag == "input" and !Protocol.text_entry_excluded.contains(Dom.input_type(n)) {
+		if Dom.html_tag(n, "input") and !Protocol.text_entry_excluded.contains(Dom.input_type(n)) {
 			return Bool.True
 		}
 		Dom.content_editable(dom, i)
@@ -2160,11 +2173,18 @@ expect {
 	{ count: counted.transitions.count, old: counted.transitions.records.contains(1), len: counted.transitions.records.len(), byte_len: b.transitions.records.len(), bytes: b.transitions.bytes, oversize: oversize.transitions.records.len(), total: oversize.transitions.count, exhausted: exhausted.transitions.exhausted } == { count: 4097, old: False, len: 4096, byte_len: 1, bytes: 524293, oversize: 0, total: 4100, exhausted: True }
 }
 
-## Input classification folds only ASCII and leaves raw attributes intact.
+## Browser defaults affect classification without rewriting raw attributes.
 expect {
-	kinds = ["CHECKBOX", "Text", "FILE", "Radio", "txet", "", "TÉXT"]
-	nodes = kinds.map(|kind| { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)]) })
-	nodes.map(Dom.input_type) == ["checkbox", "text", "file", "radio", "txet", "", "tÉxt"] and nodes.map(|node| Dom.attr_of(node, "type")) == kinds and Dom.input_type(Dom.empty_node) == ""
+	kinds = ["CHECKBOX", "Text", "FILE", "Radio", "txet", "", " text ", "TÉXT"]
+	inputs = kinds.map(|kind| { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)]) })
+	buttons = ["SUBMIT", "Reset", "button", "sumbit", "", " submit ", "SÚBMIT"].map(|kind| { ..Dom.empty_node, tag: "button", attrs: Dom.attributes([("type", kind)]) })
+	inputs.map(Dom.input_type) == ["checkbox", "text", "file", "radio", "text", "text", "text", "text"] and inputs.map(|element| Dom.attr_of(element, "type")) == kinds and buttons.map(Dom.input_type) == ["submit", "reset", "button", "submit", "submit", "submit", "submit"] and Dom.input_type({ ..Dom.empty_node, tag: "input" }) == "text" and Dom.input_type({ ..Dom.empty_node, tag: "button" }) == "submit"
+}
+
+## Foreign lookalikes and unrelated HTML elements do not inherit control types.
+expect {
+	foreign = [Dom.svg_namespace, "urn:controls", ""].map(|namespace| { ..Dom.empty_node, namespace, tag: "input", attrs: Dom.attributes([("type", "Text")]) })
+	foreign.map(Dom.input_type) == ["", "", ""] and Dom.input_type({ ..Dom.empty_node, tag: "INPUT" }) == "" and Dom.input_type(Dom.empty_node) == ""
 }
 
 ## The transport's six ordinary boolean names belong to the parser's HTML

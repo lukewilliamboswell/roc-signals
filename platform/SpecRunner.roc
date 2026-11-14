@@ -1631,7 +1631,7 @@ SpecRunner := [].{
 
 	## The input types `fill` types into, as Playwright's `fill` allows.
 	fillable : List(Str)
-	fillable = ["", "text", "password", "email", "search", "tel", "url", "number"]
+	fillable = ["text", "password", "email", "search", "tel", "url", "number"]
 
 	## Move focus to node index `to` (+1; 0 blurs). The control losing focus
 	## first gets `change` if the user changed its value since it gained focus,
@@ -2879,7 +2879,7 @@ SpecRunner := [].{
 	implicit_inputs : Dom.Model, U64 -> U64
 	implicit_inputs = |dom, i| {
 		n = Dom.node(dom, i)
-		own = if (Dom.html_tag(n, "input") and ["", "text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"].contains(Dom.input_type(n))) 1 else 0
+		own = if (Dom.html_tag(n, "input") and ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"].contains(Dom.input_type(n))) 1 else 0
 		n.kids.fold(own, |count, child| count + SpecRunner.implicit_inputs(dom, child))
 	}
 
@@ -2947,7 +2947,7 @@ SpecRunner := [].{
 				else if Dom.html_tag(n, "input") and !key.ctrl and !key.meta {
 					match SpecRunner.ancestor($s.dom, down_index, |m| Dom.html_tag(m, "form")) {
 						Ok(form) => {
-							button = Dom.find($s.dom, form, |m| (Dom.html_tag(m, "button") and ["", "submit"].contains(Dom.input_type(m))) or (Dom.html_tag(m, "input") and Dom.input_type(m) == "submit"))
+							button = Dom.find($s.dom, form, |m| (Dom.html_tag(m, "button") and Dom.input_type(m) == "submit") or (Dom.html_tag(m, "input") and Dom.input_type(m) == "submit"))
 							$s = match button {
 								Ok(i) => SpecRunner.key_activate(program, $s, i)?
 								Err(_) => if (SpecRunner.implicit_inputs($s.dom, form) <= 1) SpecRunner.submit_form(program, $s, form) else $s
@@ -3372,7 +3372,7 @@ SpecRunner := [].{
 				s1 = SpecRunner.fire_if(program, SpecRunner.check_on(s, i), i, "input", on_value)
 				Ok(SpecRunner.fire_if(program, s1, i, "change", "true"))
 			}
-		} else if (Dom.html_tag(n, "button") and (kind == "" or kind == "submit")) or (Dom.html_tag(n, "input") and kind == "submit") {
+		} else if (Dom.html_tag(n, "button") and kind == "submit") or (Dom.html_tag(n, "input") and kind == "submit") {
 			match SpecRunner.ancestor(s.dom, i, |m| Dom.html_tag(m, "form")) {
 				Ok(form) => Ok(SpecRunner.submit_form(program, s, form))
 				Err(_) => Ok(s)
@@ -6125,10 +6125,9 @@ expect {
 	{ timer: SpecRunner.is_occurrence(timer, RunEffect(1)), network: SpecRunner.is_occurrence(network, RunEffect(1)), unissued: SpecRunner.is_occurrence(network, RunEffect(2)) } == { timer: True, network: False, unissued: True }
 }
 
-## Raw mixed-case text controls use the same fill classification as lowercase;
-## this does not repair an invalid keyword or change a missing type's default.
+## Effective text controls include invalid raw keywords without rewriting them.
 expect {
-	["Text", "EMAIL", "password", "txet", ""].map(|kind| SpecRunner.text_control({ ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)]) })) == [True, True, True, False, True]
+	["Text", "EMAIL", "password", "txet", ""].map(|kind| SpecRunner.text_control({ ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)]) })) == [True, True, True, True, True]
 }
 
 ## The three WHATWG component sets differ: apostrophes stay in path and
@@ -6414,4 +6413,18 @@ expect {
 		unknown: Err({ pos: { line: 3, column: 5 }, message: "setup names media query \"missing\", which the program does not declare" }),
 		recorded: ["task", "owner", "prepared-task", "empty-owner"],
 	}
+}
+
+## Invalid raw input types still block implicit submission as text controls,
+## and never acquire checked or file-input actions from their raw spelling.
+expect {
+	program = report_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, form) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "form" })
+	(d2, first) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", "txet"), ("data-testid", "invalid")]) })
+	one = Dom.insert(Dom.insert(d2, d2.root, form, Err(End)), form, first, Err(End))
+	(d3, second) = Dom.add_node(one, { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", "text")]) })
+	two = Dom.insert(d3, form, second, Err(End))
+	state = { ..base, dom: two }
+	SpecRunner.implicit_inputs(one, form) == 1 and SpecRunner.implicit_inputs(two, form) == 2 and SpecRunner.set_checked(program, state, TestId("invalid"), True).is_err() and SpecRunner.give_files(program, state, ChooseFiles(TestId("invalid"), []), []).is_err() and Dom.attr_of(Dom.node(two, first), "type") == "txet"
 }

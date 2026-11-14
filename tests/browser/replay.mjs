@@ -344,7 +344,7 @@ const counters = (page) => page.evaluate(() => window.__rt.workRecord().counters
 const sumOf = (cs, ks) => ks.reduce((n, k) => n + BigInt(cs[k] ?? "0"), 0n);
 
 // The input types `fill` can type into, as Playwright's `fill` allows.
-const FILLABLE = ["", "text", "password", "email", "search", "tel", "url", "number"];
+const FILLABLE = ["text", "password", "email", "search", "tel", "url", "number"];
 
 // `fill` as Playwright defines it: the control must be an enabled text
 // input or textarea that can hold the value (an <input type=number> holds
@@ -358,9 +358,9 @@ async function fill(page, loc, v) {
     page,
     loc,
     (e, v, fillable) => {
-      const tag = e.tagName.toLowerCase();
-      const type = tag === "input" ? (e.getAttribute("type") ?? "").toLowerCase() : "";
-      if (!(tag === "textarea" || (tag === "input" && fillable.includes(type)))) return { error: "cannot be filled" };
+      const html = e.namespaceURI === "http://www.w3.org/1999/xhtml";
+      const type = html && e.localName === "input" ? e.type : "";
+      if (!(html && (e.localName === "textarea" || (e.localName === "input" && fillable.includes(type))))) return { error: "cannot be filled" };
       if (e.disabled) return { error: "is disabled" };
       if (type === "number" && v !== "" && !/^-?(\d+(\.\d+)?|\.\d+)([eE][-+]?\d+)?$/.test(v)) return { error: `cannot hold ${JSON.stringify(v)}` };
       e.focus();
@@ -389,7 +389,7 @@ function popstateAfter(page, action) {
 // state, which must then be in it.
 async function setChecked(page, state, loc, want) {
   await reachable(page, loc);
-  const kind = await onEl(page, loc, (e) => (e.tagName === "INPUT" ? (e.getAttribute("type") ?? "").toLowerCase() : ""));
+  const kind = await onEl(page, loc, (e) => (e.namespaceURI === "http://www.w3.org/1999/xhtml" && e.localName === "input" ? e.type : ""));
   if (kind !== "checkbox" && kind !== "radio") throw new Error(`${showLoc(loc)} is not a checkbox or radio button`);
   if (kind === "radio" && !want) throw new Error(`${showLoc(loc)} is a radio button, which cannot be unchecked`);
   if ((await onEl(page, loc, (e) => e.checked)) === want) return;
@@ -442,7 +442,7 @@ async function chooseFiles(page, s, state) {
   const files = setupFiles(state, s.files);
   await reachable(page, s.loc);
   const r = await onEl(page, s.loc, (e, n) => {
-    if (e.tagName !== "INPUT" || (e.getAttribute("type") ?? "").toLowerCase() !== "file") return { error: "is not a file input" };
+    if (e.namespaceURI !== "http://www.w3.org/1999/xhtml" || e.localName !== "input" || e.type !== "file") return { error: "is not a file input" };
     if (e.disabled) return { error: "is disabled" };
     if (n > 1 && !e.multiple) return { error: `takes one file, not ${n}` };
     return {};
