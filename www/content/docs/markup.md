@@ -20,7 +20,11 @@ and plain values, lift the plain values with `Engine.const` first.
 
 ## What the compiler checks
 
-A literal has exactly one element root. The parser checks fixed syntax,
+A literal has exactly one element root. A table part can be that root: a
+`tr` literal is a row a constructor places in a `tbody`, and a `td` literal a
+cell of a `tr`. Where a root may stand is checked when the view is
+constructed, so a `tr` literal placed in a `div` is a contract error naming
+its site. The parser checks fixed syntax,
 element and attribute names, fixed attribute values and nesting while the
 literal compiles. A hole supplies text, either in text content or as the
 whole quoted value of an attribute. Its future values are text too; they

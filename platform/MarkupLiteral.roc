@@ -7,6 +7,7 @@ import Spelling
 import parser.Html as ParsedHtml
 import parser.Svg as ParsedSvg
 import parser.Markup
+import parser.MarkupTemplate
 import parser.Literal
 
 ## Compile checked markup to a small immutable constructor plan. Only this
@@ -29,7 +30,7 @@ MarkupLiteral := [].{
 			return Err(BadLiteral("line 1, column 1: a markup interpolation needs at least one fixed segment"))
 		}
 		parsed = match mode {
-			HtmlFragment => ParsedHtml.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True })
+			HtmlFragment => html_segments(segments)
 			SvgFragment => ParsedSvg.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True })
 		}.map_err(|InvalidMarkup(error)| BadLiteral(parser_problem(error)))?
 		var $texts = Dict.empty()
@@ -216,6 +217,40 @@ at_offset = |parsed, offset, note| {
 	"line ${position.line.to_str()}, column ${position.column.to_str()}: ${note}"
 }
 
+# HTML parses in a body context. A table part (tr, td, th, tbody, thead,
+# tfoot, caption, colgroup, col) is never valid there, so a literal whose
+# body parse fails is parsed again in a template's content context, where
+# HTML's parser lets the root choose its insertion mode, and is accepted
+# only when that parse is exact and its root is a table part. Every other
+# literal keeps the body parse and its diagnostic. Where a table-part root
+# may be placed is the construction check's: a <tr> in a <div> is refused.
+html_segments : List(Str) -> Try(MarkupTemplate.Plan, [InvalidMarkup(Markup.Error)])
+html_segments = |segments|
+	match ParsedHtml.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True }) {
+		Ok(plan) => Ok(plan)
+		Err(body_error) =>
+			match ParsedHtml.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True, context_element: "template" }) {
+				Ok(plan) if table_part_root(plan) => Ok(plan)
+				_ => Err(body_error)
+			}
+	}
+
+# Whether a parse has an HTML table-part root; compile still requires
+# exactly one element root.
+table_part_root : MarkupTemplate.Plan -> Bool
+table_part_root = |plan|
+	plan.parsed.tree.roots.any(
+		|index|
+			match plan.parsed.tree.nodes.get(index) {
+				Ok(node) =>
+					match node.kind {
+						Element(name) => name.namespace == Uri(Markup.html_namespace) and ["tr", "td", "th", "tbody", "thead", "tfoot", "caption", "colgroup", "col"].contains(name.local)
+						_ => False
+					}
+				Err(_) => False
+			},
+	)
+
 parser_problem : Markup.Error -> Str
 parser_problem = |error| "line ${error.line.to_str()}, column ${error.column.to_str()}: ${problem_words(error.problem)}"
 
@@ -346,4 +381,12 @@ expect {
 	Core.attribute_claim(tag, ordinary) == Claimed("value") and
 		Core.attribute_claim(tag, uppercase) == Unclaimed and
 			Core.attribute_claim(tag, qualified) == Unclaimed
+}
+
+## A table part is a literal root of its own, as a row or cell a constructor
+## places in its table; nesting inside it still keeps the repair rule.
+expect {
+	roots = ["<tr><td>x</td></tr>", "<td>x</td>", "<th>x</th>", "<tbody><tr><td>x</td></tr></tbody>", "<thead><tr><th>x</th></tr></thead>", "<caption>x</caption>", "<colgroup><col></colgroup>", "<col>"]
+	repaired = ["<tr><div>x</div></tr>", "<td>x</td><tr><td>y</td></tr>", "<p><div>x</div></p>"]
+	roots.all(|source| MarkupLiteral.compile([source], HtmlFragment).is_ok()) and repaired.all(|source| MarkupLiteral.compile([source], HtmlFragment).is_err())
 }

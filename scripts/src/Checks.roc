@@ -189,6 +189,8 @@ Checks := [].{
 			{ name: "construction-foster-table-text", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["move the text outside the table", "site"] }) },
 			{ name: "construction-empty-each", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["insert a table section first", "site"] }) },
 			{ name: "construction-empty-row-void-text", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["a void element cannot hold children", "site"] }) },
+			{ name: "markup-table-row", expectation: Compiles },
+			{ name: "markup-table-row-outside", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["contract: <tr> under <div>: a table part needs its table context"] }) },
 			{ name: "construction-raw-svg-colon", expectation: Compiles },
 			{ name: "construction-raw-svg-colon-refused", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["contract: raw <:foo> cannot be created under <svg>", "must begin with an ASCII letter", "at site / (element /0)"] }) },
 			{ name: "construction-empty-table-view", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["contract: <tr> inside <table>: the HTML parser would insert a table section first in the row template of a table view at site /0"] }) },
