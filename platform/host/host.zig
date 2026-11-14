@@ -255,8 +255,9 @@ fn outOfMemory(size: usize) noreturn {
 // `dbg` (design.md, "The Thin Wasm Host"). Page code is pure, so `dbg` is the
 // one way it can say something that is not a command. The text of each `dbg`
 // a call ran is kept in `dbg.zig`'s buffer, in static storage, until the next
-// call into Roc clears it: the runtime reads it after the call returns, or
-// after it trapped, since a trap leaves the buffer as it was.
+// call into Roc, or the next staging of a payload (`payload_reserve`) or of
+// handles (`files_stage`), clears it: the runtime reads it after the call
+// returns, or after it trapped, since a trap leaves the buffer as it was.
 
 /// The `dbg` text of the last call into Roc: 4096 bytes of entries, one
 /// entry keeping at most 1024 bytes of its text.
@@ -268,14 +269,19 @@ export fn roc_dbg(bytes: [*]const u8, len: usize) callconv(.c) void {
     dbg.append(bytes[0..len]);
 }
 
-/// The last call's `dbg` text (`dropped:u32`, then its entries), readable
-/// until the next call into Roc, and after a trap. Answers when poisoned.
+/// The address of the last call's `dbg` text: `dropped:u32`, then each entry
+/// as `len:u32 kept:u32 text:kept`. It stays readable after the call returns
+/// or traps, until the next call into Roc or the next `payload_reserve` or
+/// `files_stage` clears it, so the runtime reads it before staging anything
+/// for the next call. Static storage: it never allocates, and answers when
+/// the instance is poisoned.
 export fn dbg_ptr() callconv(.c) usize {
     return @intFromPtr(&dbg.region);
 }
 
-/// The length of the region at `dbg_ptr()`: 0 when the last call ran no
-/// `dbg`.
+/// The length in bytes of the region at `dbg_ptr()`, valid for as long as
+/// that region is: 0 when the last call ran no `dbg` (or the buffer has been
+/// cleared since), which lets the runtime skip reading it.
 export fn dbg_len() callconv(.c) usize {
     return dbg.len();
 }
@@ -323,9 +329,15 @@ export fn boot_keys() callconv(.c) void {
     cmds = roc_engine_keys();
 }
 
-/// Mount the app with the staged boot bytes (URL and storage values; empty
-/// when nothing was staged): builds the instance and leaves the mount
-/// commands readable. The declaration buffer, if any, is released by Roc.
+/// Mount the app with the staged boot bytes: the boot sections (tags 1–4,
+/// 6–11 and 13 of design.md's Boot table, in ascending order) that
+/// JavaScript staged with `payload_reserve`, or empty when nothing was
+/// staged. The staged payload moves into `roc_engine_init`, which decodes and
+/// checks the sections (a malformed one is a `contract` crash); the host then
+/// releases the declaration buffer `boot_keys` left, if any. Builds the
+/// engine state the host then holds and leaves the mount commands
+/// readable through `cmd_ptr`/`cmd_len`. Returns 1 when the call ran a `dbg`,
+/// otherwise 0. Traps when poisoned or already mounted.
 export fn init() callconv(.c) u32 {
     refuseIfPoisoned();
     dbg.clear();
