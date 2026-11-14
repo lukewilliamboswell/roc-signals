@@ -59,16 +59,18 @@ probe = |_props| {
 
 ## Report observable call fields without retaining handles in the assertion.
 describe : List(SpecRunner.Call) -> List({ entry : Str, node : U32, handler : [Handler(U32), InFlight(U64)], payload : List(U8), handles : List(U64) })
-describe = |calls| calls.map(|call| {
-	entry: match call.files {
-		Event => "event"
-		Files(_) => "files"
+describe = |calls| calls.map(
+	|call| {
+		entry: match call.files {
+			Event => "event"
+			Files(_) => "files"
+		},
+		node: call.node,
+		handler: call.handler,
+		payload: call.payload,
+		handles: match call.files {
+			Event => []
+			Files(handles) => handles.map(Box.unbox)
+		},
 	},
-	node: call.node,
-	handler: call.handler,
-	payload: call.payload,
-	handles: match call.files {
-		Event => []
-		Files(handles) => handles.map(Box.unbox)
-	},
-})
+)
