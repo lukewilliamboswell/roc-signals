@@ -1,10 +1,12 @@
 import cli.Path
 import Checks
+import FuzzPlan
 import Proc
 import SpecSuite
 import Targets
 
-## The slow suite: the fuzz targets' examples, the walks and the soaks.
+## The slow suite: the fuzz targets' fixed examples on instrumented
+## builds, the walks and the soaks.
 Slow := [].{
 
 	## The apps soaked in Chrome: every example and the worker/debug fixtures
@@ -138,14 +140,15 @@ Slow := [].{
 		Ok(List.map2(Slow.walk_apps, results, |name, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["short walk ${name}: ${r.output.trim()}"]).join())
 	}
 
-	## Every fuzz target's examples, every app's walk and native soak, then
-	## every app's browser soak.
+	## Every fuzz target's fixed examples on the instrumented builds a
+	## campaign explores (which `check`'s plain builds do not compile), every
+	## app's walk and native soak, then every app's browser soak.
 	soak! : SpecSuite.Options => Try(List(Str), _)
 	soak! = |o| {
 		Checks.prepare_platform!(o)?
 		SpecSuite.build_web_platform!(o)?
-		Proc.note!("== fuzz targets")
-		var $problems = Targets.fuzz_check_all!(o, Targets.fuzz_targets)?
+		Proc.note!("== fuzz targets, instrumented")
+		var $problems = FuzzPlan.run!(Targets.fuzz_targets, Every, |fuzzes| Targets.fuzz_check_all!(o, fuzzes))?
 		Proc.note!("== walks")
 		$problems = Checks.gather!($problems, Slow.walks!(o))?
 		Proc.note!("== native soaks")

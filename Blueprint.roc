@@ -4,7 +4,7 @@
 #     blueprint run spec -- --browser kanban-board
 #     blueprint run site                   # build the site into dist/
 #     blueprint run serve                  # serve dist/ on localhost
-#     blueprint run fuzz -- --time 600     # a fuzz campaign
+#     blueprint run fuzz -- --time 600     # a fuzz campaign, never run in CI
 #     blueprint tasks                      # list every task
 #     blueprint update                     # refresh Blueprint.lock
 #
@@ -54,14 +54,17 @@ config = [
 	# Building the release assets, API docs included.
 	Environment("release", [Programs([roc_stable_program, zig_program, node_program, roc_docs_program]), Expect(["roc", "zip"])]),
 	Shell("default", [Use("engine")]),
-	# The per-pull-request gate: formatting, roc test, the docs samples, every
-	# app's specs natively and in Chrome, the broken-spec self-check, the
-	# runtime contract tests, the jfb check and the release dry run.
-	Task("check", [Use("engine"), Run(["scripts/check_all.roc"])]),
+	# The per-pull-request gate: formatting, roc test, every fuzz target's
+	# fixed examples, the docs samples, every app's specs natively and in
+	# Chrome, the broken-spec self-check, the runtime contract tests, the jfb
+	# check and the release dry run. CI runs it as `check -- --without-fuzz`
+	# beside `fuzz-smoke -- --shard K/N`.
+	Task("check", [Use("engine"), Run(["scripts/check_all.roc", "--"])]),
 	# Declaration rejections and compile-time default-mount contracts.
 	Task("compile-fixtures", [Use("engine"), Run(["scripts/compile_fixtures.roc"])]),
-	# Too slow for every pull request: every fuzz target's examples and the
-	# leak-checked soaks, natively and in Chrome.
+	# Too slow for every pull request, and never run in CI: every fuzz
+	# target's fixed examples on its instrumented build, and the long walks
+	# and leak-checked soaks, natively and in Chrome.
 	Task("check-slow", [Use("engine"), Run(["scripts/check_slow.roc"])]),
 	# One or more apps' specs: `blueprint run spec -- --browser kanban-board`.
 	Task("spec", [Use("engine"), Run(["scripts/spec.roc", "--"])]),
@@ -73,11 +76,11 @@ config = [
 	# Measure how worker jobs scale in Chrome, on both candidate shipping
 	# builds of the Worker Lab; prints tables for a pull request.
 	Task("workers-scaling", [Use("engine"), Run(["scripts/workers_scaling.roc"])]),
-	# Fixed examples only, with ordinary optimized native builds. Covered
-	# check/check-slow targets and campaigns keep their own executables.
+	# Every fuzz target's fixed examples on ordinary optimized native builds,
+	# or the named ones, or `-- --shard K/N` of them as CI runs them.
 	Task("fuzz-smoke", [Use("engine"), Run(["scripts/fuzz_smoke.roc", "--"])]),
 	Task("sizes", [Use("engine"), Run(["scripts/check_sizes.roc", "--"])]),
-	# A fuzz campaign: `blueprint run fuzz -- --time 600 [TARGET...]`.
+	# A fuzz campaign, local only: `blueprint run fuzz -- --time 600 [TARGET...]`.
 	Task("fuzz", [Use("engine"), Run(["scripts/fuzz.roc", "--"])]),
 	# The release assets: `blueprint run release -- --version 0.3.0`.
 	Task("release", [Use("release"), Run(["scripts/release.roc", "--"])]),

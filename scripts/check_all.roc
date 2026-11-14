@@ -6,8 +6,10 @@ app [main!] {
 	roc: "nightly-2026-11-13-03dce41",
 }
 
+import cli.OsStr
 import cli.Path
 import src/Checks
+import src/FuzzPlan
 import src/PlatformTest
 import src/DocSamples
 import src/ApiDocs
@@ -28,8 +30,8 @@ import src/Sizes
 ## the engine package, the tool, the scripts, and every example's and test
 ## app's `expect`s),
 ## the platform inputs, the host's resource-heap tests, the spec runner's
-## links for macOS and Windows, the fuzz targets under `fuzz/` and the
-## examples' own, the docs samples, every
+## links for macOS and Windows, every registered fuzz target's fixed
+## examples on a plain optimized build (`fuzz-smoke`), the docs samples, every
 ## app's `.scm` specs natively and in Chrome, a short walk of every app in
 ## the native runner, the broken-spec self-checks (both
 ## runners reject each spec with one wrong expectation, a lost worker job's
@@ -41,10 +43,20 @@ import src/Sizes
 ## shipping module and development-only scripts, the
 ## js-framework-benchmark check, the release dry run, and the `signals.roc`
 ## tool run end to end from the dry run's copy. The long walks, the soaks
-## and the test apps' fuzz targets are `check-slow`. Every problem is
+## and the fuzz targets' instrumented replays are `check-slow`.
+## `check -- --without-fuzz` prints a `SKIP` line for each fuzz target
+## instead of running it; CI's Check job passes it because CI's Fuzz smoke
+## job runs every target, in shards. Every problem is
 ## printed as a `FAIL` line at the end or, when a stage cannot run and
 ## aborts the task, before that stage's error (`Checks.gather!`).
-main! = |_args| {
+main! = |raw_args| {
+	fuzzing = match fuzz_selection(raw_args.map(OsStr.display).drop_if(|arg| arg == "--")) {
+		Ok(selection) => selection
+		Err(Unknown(arg)) => {
+			Proc.warn!("unknown check option ${arg}; the one option is --without-fuzz")
+			return Err(Exit(2))
+		}
+	}
 	o = Checks.options!({ filter: "*" })?
 	var $problems = []
 
@@ -88,7 +100,9 @@ main! = |_args| {
 	$problems = Checks.gather!($problems, check!({ program: o.zig, args: ["test", "platform/host/resources.zig"], cwd: "." }, "zig test platform/host/resources.zig"))?
 	$problems = Checks.gather!($problems, check!({ program: o.zig, args: ["test", "platform/host/dbg.zig"], cwd: "." }, "zig test platform/host/dbg.zig"))?
 	$problems = Checks.gather!($problems, cross_links!(o))?
-	$problems = Checks.gather!($problems, fuzz_smoke!(o))?
+
+	Proc.note!("== fuzz targets")
+	$problems = Checks.gather!($problems, FuzzPlan.run!(Targets.fuzz_targets, fuzzing, |fuzzes| Targets.fuzz_smoke_all!(o, fuzzes)))?
 
 	Proc.note!("== docs samples")
 	$problems = Checks.gather!($problems, DocSamples.check!(o))?
@@ -258,11 +272,21 @@ cross_links! = |o| {
 	Ok(List.map2(PlatformTest.spec_hosts, results, |host, r| (host.target, r)).keep_if(|(_, r)| r.code != 0).map(|(target, r)| "spec runner for ${target} does not link: ${r.output.trim()}"))
 }
 
-## The fuzz targets under `fuzz/` and the examples' targets of their own
-## logic build with `--fuzz` and pass their examples; the targets beside
-## the test apps, which take minutes, are `check-slow`'s.
-fuzz_smoke! : SpecSuite.Options => Try(List(Str), _)
-fuzz_smoke! = |o| Targets.fuzz_check_all!(o, Targets.fuzz_targets.keep_if(|t| !t.main.starts_with("tests/")))
+## Which fuzz targets `check` runs: every registered one, or, with
+## `--without-fuzz`, none, each skipped for the reason its `SKIP` line
+## gives. CI's Check job passes the option because its Fuzz smoke job runs
+## the same replays, sharded, beside it.
+fuzz_selection : List(Str) -> Try(FuzzPlan.Selection, [Unknown(Str)])
+fuzz_selection = |args| match args {
+	[] => Ok(Every)
+	["--without-fuzz"] => Ok(Elsewhere("check --without-fuzz: CI's Fuzz smoke job replays every target"))
+	[arg, ..] => Err(Unknown(arg))
+}
+
+## `check` runs every fuzz target unless told they are replayed elsewhere.
+expect fuzz_selection([]) == Ok(Every)
+expect fuzz_selection(["--without-fuzz"]) == Ok(Elsewhere("check --without-fuzz: CI's Fuzz smoke job replays every target"))
+expect fuzz_selection(["--filter"]) == Err(Unknown("--filter"))
 
 ## Both platform roots must fetch the same internal dependencies. A drift
 ## would give the oracle/fuzz package a different codec from shipped apps.

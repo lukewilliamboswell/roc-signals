@@ -119,10 +119,13 @@ Targets := [].{
 	exe_of : SpecSuite.Options, Fuzz -> Str
 	exe_of = |o, { name, .. }| "${o.build_dir}/fuzz/${name}/target"
 
-	## Build fuzz targets in parallel. `--fuzz` needs the LLVM backend, so
-	## these builds use `--opt=speed` (the compiler refuses `--opt=dev`).
-	## Phase timings distinguish compiler cost from fixed-example replay cost.
-	build_fuzz_all! : SpecSuite.Options, List(Fuzz) => Try({}, _)
+	## Build fuzz targets in parallel, with coverage instrumentation, as a
+	## campaign explores them. `--fuzz` needs the LLVM backend, so these
+	## builds use `--opt=speed` (the compiler refuses `--opt=dev`). Phase
+	## timings distinguish compiler cost from fixed-example replay cost. One
+	## outcome per target, in order: a build that fails is that target's
+	## problem, and the other targets are still built.
+	build_fuzz_all! : SpecSuite.Options, List(Fuzz) => Try(List({ name : Str, problems : List(Str) }), _)
 	build_fuzz_all! = |o, fuzzes| {
 		var $jobs = []
 		for t in fuzzes {
@@ -130,16 +133,7 @@ Targets := [].{
 			$jobs = $jobs.append({ program: o.compiler, args: ["build", "--fuzz", "--opt=speed", "--timings", t.main, "--output=${Targets.exe_of(o, t)}"], cwd: o.root })
 		}
 		results = Proc.parallel!($jobs, Proc.compiler_jobs!()?)?
-		match List.map2(fuzzes, results, |t, r| (t, r.code)).keep_if(|(_, c)| c != 0).first() {
-			Ok((t, c)) => Err(BuildFailed("fuzz ${t.name}: build exited with ${c.to_str()}"))
-			Err(_) => Ok({})
-		}
-	}
-
-	build_fuzz! : SpecSuite.Options, Fuzz => Try(Str, _)
-	build_fuzz! = |o, t| {
-		Targets.build_fuzz_all!(o, [t])?
-		Ok(Targets.exe_of(o, t))
+		Ok(List.map2(fuzzes, results, |t, r| { name: t.name, problems: if (r.code == 0) [] else ["fuzz ${t.name}: build exited with ${r.code.to_str()}: ${r.output.trim()}"] }))
 	}
 
 	check_job : SpecSuite.Options, Fuzz -> Proc.Job
@@ -156,17 +150,18 @@ Targets := [].{
 			[]
 		}
 
-	## Build every target, then check each one's declared examples, in
-	## parallel (the checks are independent processes).
-	fuzz_check_all! : SpecSuite.Options, List(Fuzz) => Try(List(Str), _)
+	## Build every target instrumented, then check the declared examples and
+	## saved regressions of each one that built, in parallel (the checks are
+	## independent processes). One outcome per target: the failed builds',
+	## then the checks'; `FuzzPlan.account` holds a run to exactly one each.
+	fuzz_check_all! : SpecSuite.Options, List(Fuzz) => Try(List({ name : Str, problems : List(Str) }), _)
 	fuzz_check_all! = |o, fuzzes| {
-		Targets.build_fuzz_all!(o, fuzzes)?
-		results = Proc.parallel!(fuzzes.map(|t| Targets.check_job(o, t)), Proc.cpus!())?
-		Ok(List.map2(fuzzes, results, |t, r| Targets.judge(t.name, r.code, r.output)).join())
+		built = Targets.build_fuzz_all!(o, fuzzes)?
+		ready = List.map2(fuzzes, built, |t, b| (t, b)).keep_if(|(_, b)| b.problems.is_empty()).map(|(t, _)| t)
+		results = Proc.parallel!(ready.map(|t| Targets.check_job(o, t)), Proc.cpus!())?
+		checked = List.map2(ready, results, |t, r| { name: t.name, problems: Targets.judge(t.name, r.code, r.output) })
+		Ok(built.keep_if(|b| !b.problems.is_empty()).concat(checked))
 	}
-
-	fuzz_check! : SpecSuite.Options, Fuzz, Str => Try(List(Str), _)
-	fuzz_check! = |o, t, _exe| Targets.fuzz_check_all!(o, [t])
 
 	## The explicit fixed-example lane has its own executables. Campaigns and
 	## covered checks continue to use exe_of and never consult this directory.
@@ -180,12 +175,13 @@ Targets := [].{
 
 	## Check every declared example of each selected target. A failed build
 	## result blocks only its own replay; other built targets are checked.
+	## One outcome per target: the failed builds', then the replays'.
 	## Process spawn/poll and filesystem errors remain fatal batch errors,
 	## as in Proc.parallel!. Durable reports, saved input
 	## hashes, traces and outer allocation balance are judged by one helper.
 	## Compiler and replay batch wall times are reported separately; neither
 	## is a per-target timing when the scheduler admits several processes.
-	fuzz_smoke_all! : SpecSuite.Options, List(Fuzz) => Try(List(Str), _)
+	fuzz_smoke_all! : SpecSuite.Options, List(Fuzz) => Try(List({ name : Str, problems : List(Str) }), _)
 	fuzz_smoke_all! = |o, fuzzes| {
 		if fuzzes.is_empty() {
 			return Err(NoFuzzTargets)
@@ -197,15 +193,15 @@ Targets := [].{
 		built = Proc.parallel!(fuzzes.map(|target| Targets.smoke_build_job(o, target)), Proc.compiler_jobs!()?)?
 		build_elapsed = build_start.elapsed!()
 		Proc.note!("== fuzz-smoke compiler batch: ${build_elapsed.to_str()}")
-		var $problems = []
+		var $outcomes = []
 		var $ready = []
 		for outcome in List.map2(fuzzes, built, |target, result| { target, code: result.code, output: result.output }) {
 			dir = "${o.build_dir}/fuzz-smoke/${outcome.target.name}"
 			Path.write_utf8!(Path.utf8("${dir}/build.log"), outcome.output)?
 			if outcome.code != 0 {
-				$problems = $problems.append("fuzz smoke ${outcome.target.name}: compiler/linker exited ${outcome.code.to_str()}; see ${dir}/build.log")
+				$outcomes = $outcomes.append({ name: outcome.target.name, problems: ["fuzz smoke ${outcome.target.name}: compiler/linker exited ${outcome.code.to_str()}; see ${dir}/build.log"] })
 			} else if !(Path.exists!(Path.utf8(Targets.smoke_exe_of(o, outcome.target)))?) {
-				$problems = $problems.append("fuzz smoke ${outcome.target.name}: compiler produced no executable")
+				$outcomes = $outcomes.append({ name: outcome.target.name, problems: ["fuzz smoke ${outcome.target.name}: compiler produced no executable"] })
 			} else {
 				$ready = $ready.append(outcome.target)
 			}
@@ -258,11 +254,9 @@ Targets := [].{
 		}
 		judged = Proc.parallel!($judges, Proc.cpus!())?
 		for outcome in List.map2($ready, judged, |target, result| { target, code: result.code, output: result.output }) {
-			if outcome.code != 0 {
-				$problems = $problems.append("fuzz smoke ${outcome.target.name}: ${outcome.output.trim()}; see ${o.build_dir}/fuzz-smoke/${outcome.target.name}")
-			}
+			$outcomes = $outcomes.append({ name: outcome.target.name, problems: if (outcome.code == 0) [] else ["fuzz smoke ${outcome.target.name}: ${outcome.output.trim()}; see ${o.build_dir}/fuzz-smoke/${outcome.target.name}"] })
 		}
-		Ok($problems)
+		Ok($outcomes)
 	}
 
 	browser! : SpecSuite.Options, Str, List(Str) => Try(List(Str), _)
