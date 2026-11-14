@@ -452,6 +452,38 @@ expect {
 	back == Ok({ note: "x", docs: [a, b] }) and missing.is_err() and outside.is_err()
 }
 
+## Each file a payload holds is one entry of the list beside its bytes, in
+## a record with an absent optional field too: the encoder that came before
+## CBOR listed such a record's files twice, so 9 of them made 18 entries and
+## an answer of 9 to 16 was refused at the 16-file bound. Now 9 and 16 files
+## make 9 and 16 entries, an answer of 16 is within the bound (17 is past
+## it: `Core.task_answer` refuses it), and two occurrences of one file are
+## still two entries.
+expect {
+	file = |token| match Core.placed_file(Core.held_file(Box.box(token)), { name: "f${token.to_str()}", mime: "", size: 8, start: 0, len: 8 }) {
+		Ok(f) => f
+		Err(_) => crash "a range outside its file"
+	}
+	docs = |count| {
+		var $docs = []
+		for token in (1.U64).until(count + 1) {
+			$docs = $docs.append({ doc: file(token), note: Err(Missing) })
+		}
+		$docs
+	}
+	listed = |count| {
+		value : List({ doc : Engine.File, note : Try(Str, [Missing]) })
+		value = docs(count)
+		sent = WorkerCodec.encode_with_files("wire unit", value)
+		back : Try(List({ doc : Engine.File, note : Try(Str, [Missing]) }), Wire.Error)
+		back = WorkerCodec.decode_with_held(sent.bytes, sent.files)
+		if (back == Ok(value)) sent.files else []
+	}
+	twice = WorkerCodec.encode_with_files("wire unit", [file(1), file(1)])
+	answered = Core.task_answer("wire unit", [], listed(16))
+	listed(9).len() == 9 and listed(16).len() == 16 and listed(17).len() == 17 and twice.files.len() == 2 and answered.len() == 4 + 8 * 16
+}
+
 ## A typed numeric dictionary must refuse physical zero keys that would otherwise overwrite one entry (https://github.com/roc-lang/roc/issues/13057).
 expect {
 	value : Try(Dict(F64, Str), Wire.Error)
