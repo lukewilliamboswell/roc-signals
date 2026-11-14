@@ -99,6 +99,8 @@ Checks := [].{
 			{ name: "wire-opaque-encoder", expectation: Rejected(["cannot use opaque nominal type"]) },
 			{ name: "wire-opaque-reader", expectation: Rejected(["cannot use opaque nominal type"]) },
 			{ name: "wire-custom-codec", expectation: Compiles },
+			{ name: "wire-record-key", expectation: Rejected(["which does not have a method named encode_key_start", "which does not have a method named parse_key_start"]) },
+			{ name: "wire-nominal-key", expectation: Rejected(["which does not have a method named encode_key_start", "which does not have a method named parse_key_start"]) },
 			{ name: "ask-reaction-type", expectation: Rejected(["type mismatch"]) },
 			{ name: "ask-mixed-plan", expectation: Rejected(["incompatible types"]) },
 			{ name: "ask-await-command", expectation: Rejected(["Engine.Command"]) },

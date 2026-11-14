@@ -407,18 +407,13 @@ WorkerCodec := [].{
 			}
 		}
 
-		## Composite keys already occupy one checked dictionary item slot.
-		## This required hook remains present despite the compiler limitation:
-		## https://github.com/roc-lang/roc/issues/12919.
-		encode_key_start : Format, Enc -> Try(Enc, [])
-		encode_key_start = |_, Enc.(EncBody.({ writer: output, files }))| Cbor.Writer.key_start(output).map_ok(|writer| Enc.(EncBody.{ writer, files: files }))
-
-		## Keep the compiler's composite-key entrypoint; CBOR already checked
-		## the complete key's structure before any typed callback runs. Typed
-		## duplicate refusal needs the compiler's actual key equality:
-		## https://github.com/roc-lang/roc/issues/13057.
-		parse_key_start : Format, State -> Try(State, Error)
-		parse_key_start = |_, State.(StateBody.({ cbor: config, reader: cursor, files, dicts }))| Cbor.Reader.key_start(cursor).map_ok(|reader| State.(StateBody.{ cbor: config, reader, files: files, dicts: dicts }))
+		# There is deliberately no `encode_key_start` or `parse_key_start`: a
+		# dictionary key that is a tuple, a record or a nominal type is then a
+		# `roc check` error naming the missing method. With the hooks such a
+		# key passes `roc check` and crashes the compiler when it is built
+		# (https://github.com/roc-lang/roc/issues/12919), and a derived parser
+		# would merge two keys its type equates with no hook that sees them
+		# (https://github.com/roc-lang/roc/issues/13057).
 
 		## The same CBOR scalar form at a dictionary key position.
 		encode_key_str : Format, Str, Enc -> Try(Enc, [])
@@ -727,9 +722,10 @@ closed_dict = |dicts| {
 ## Note the sign of a float zero key in its dictionary. The second sign of
 ## zero in one dictionary is refused: builtin float equality makes both one
 ## key, so inserting it would overwrite the entry of the first
-## (https://github.com/roc-lang/roc/issues/13057). A key type with an
-## equality of its own is a nominal type, which is parsed after
-## `parse_key_start` and never reaches this check.
+## (https://github.com/roc-lang/roc/issues/13057). Every key type the
+## format admits (a number, `Bool`, `Str` or a tag without payloads) has the
+## builtin equality, so this is the only collision a key can have under the
+## strict reader.
 float_key : List(WorkerCodec.OpenDict), [NotZero, Positive, Negative] -> Try(List(WorkerCodec.OpenDict), [BothZeros])
 float_key = |dicts, key| {
 	open = unfinished(dicts)

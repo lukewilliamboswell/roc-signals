@@ -602,10 +602,15 @@ reaches the view, and a total whose job is lost (see [Testing](#testing)).
 A task's input, output and error must be `Wire.Sendable`. Most types are,
 with no code from you: numbers, `Bool`, `Str`, lists, sets, dictionaries,
 records, tuples and tag unions of those, and `File`, which crosses as a
-handle. On the current compiler a dictionary key must be a number, `Bool`,
-`Str` or a tag union without payloads: a key that is a tuple, a record or a
-nominal type passes `roc check` but crashes the compiler when the app is
-built ([roc#12919](https://github.com/roc-lang/roc/issues/12919)).
+handle. A dictionary key must be a number, `Bool`, `Str` or a tag union
+without payloads. A key that is a tuple, a record or a nominal type is a
+compile error at the task's declaration, naming the missing method
+`encode_key_start`: its equality is its type's own, which the format
+cannot see, so two keys the type equates would silently become one entry
+([roc#13057](https://github.com/roc-lang/roc/issues/13057)), and the
+compiler cannot yet build such a key's codec
+([roc#12919](https://github.com/roc-lang/roc/issues/12919)). Use a
+`Dict(Str, v)` or a list of pairs instead.
 
 {{ sample(file="wire.roc", region="structural") }}
 

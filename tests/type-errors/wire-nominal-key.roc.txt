@@ -1,0 +1,22 @@
+app [main] { pf: platform "<PLATFORM>" }
+
+import pf.Engine
+import pf.Worker
+
+## A key with derived codecs over `U64` is still a nominal type, whose own
+## equality no format hook sees, so a payload refuses it at `roc check`.
+UserId := U64.{
+ parser_for : _
+ encoder_for : _
+ is_eq : _
+ to_hash : _
+}
+
+job : Worker.Task(Dict(UserId, Str), U64, Worker.Never)
+job = Worker.task({ name: "test/nominal-key", run!: |value| Ok(value.len()) })
+
+main : Engine.Program
+main = Engine.program(|| Engine.text("nominal dictionary key")).with_workers([job.registration()])
+
+## This contract has no shared store.
+Store : {}

@@ -132,17 +132,6 @@ Nested := { children : List(Nested) }.{
 	is_eq : _
 }
 
-## A float key compared by its bits, as an app may define one: `0.0` and
-## `-0.0` are two keys of it, where builtin float equality makes them one.
-Bits := F64.{
-	parser_for : _
-	encoder_for : _
-	is_eq : Bits, Bits -> Bool
-	is_eq = |Bits.(a), Bits.(b)| a.to_bits() == b.to_bits()
-	to_hash : Bits, Hasher -> Hasher
-	to_hash = |Bits.(value), hasher| value.to_bits().to_hash(hasher)
-}
-
 ## A tree nested `depth` levels down its left branch.
 left_spine : U64 -> Tree
 left_spine = |depth| {
@@ -449,26 +438,6 @@ expect {
 	value : Try(Dict(F64, Str), Wire.Error)
 	value = WorkerCodec.decode([0xa2, 0xf9, 0, 0, 0x61, 0x61, 0xf9, 0x80, 0, 0x61, 0x62])
 	value.is_err()
-}
-
-## The same typed nonloss requirement holds inside a derived record key (https://github.com/roc-lang/roc/issues/13057).
-expect {
-	value : Try(Dict({ f : F64 }, Str), Wire.Error)
-	value = WorkerCodec.decode([0xa2, 0xa1, 0x61, 0x66, 0xf9, 0, 0, 0x61, 0x61, 0xa1, 0x61, 0x66, 0xf9, 0x80, 0, 0x61, 0x62])
-	value.is_err()
-}
-
-## The same bytes are two entries of a key type whose own equality keeps the
-## zero signs apart, so the float rule is the decoded type's, not the bytes'.
-expect {
-	positive = Bits.(0.0)
-	negative = Bits.(F64.from_bits(0x8000000000000000))
-	value : Try(Dict(Bits, Str), Wire.Error)
-	value = WorkerCodec.decode([0xa2, 0xf9, 0, 0, 0x61, 0x61, 0xf9, 0x80, 0, 0x61, 0x62])
-	match value {
-		Ok(decoded) => decoded.len() == 2 and decoded.get(positive) == Ok("a") and decoded.get(negative) == Ok("b")
-		Err(_) => False
-	}
 }
 
 ## Both zero signs are refused as `F32` keys too, and a zero of one sign
