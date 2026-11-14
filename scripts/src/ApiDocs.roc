@@ -72,7 +72,7 @@ ApiDocs := [].{
 			if file.ends_with(".roc") {
 				name = (file.split_on("/").last() ?? file).drop_suffix(".roc")
 				source = Path.read_utf8!(entry)?
-				$out = $out.append({ name, declarations: ApiSurface.declarations(name, source)? })
+				$out = $out.append(ApiSurface.catalogue(name, source)?)
 			}
 		}
 		Ok($out)

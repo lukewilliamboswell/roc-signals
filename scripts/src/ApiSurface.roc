@@ -9,7 +9,7 @@ ApiSurface := [].{
 	Decl : { name : Str, doc : Str, alias : Str }
 
 	## A parsed module, used to follow aliases without exposing internal pages.
-	Module : { name : Str, declarations : List(Decl) }
+	Module : { name : Str, declarations : List(Decl), auxiliary : List(Decl) }
 
 	## The modules in the parsed platform header's exposes clause. Imports,
 	## comments and string literals elsewhere cannot add apparent modules.
@@ -78,10 +78,10 @@ ApiSurface := [].{
 	## Every method reachable through a public declaration, including methods
 	## inherited through aliases. Cycles are refused rather than truncated.
 	reachable : List(Module), List(Decl) -> Try(List(Decl), [AliasCycle(Str)])
-	reachable = |catalogue, declared| {
+	reachable = |sources, declared| {
 		var $out = []
 		for decl in declared {
-			$out = $out.append(decl).concat(alias_members(catalogue, decl.name, decl.alias, [])?)
+			$out = $out.append(decl).concat(alias_members(sources, decl.name, decl.alias, [])?)
 		}
 		Ok($out)
 	}
@@ -89,18 +89,36 @@ ApiSurface := [].{
 	## Direct and nested members of this file's own module type. A missing
 	## module block is allowed for roots and files containing private helpers.
 	declarations : Str, Str -> Try(List(Decl), _)
-	declarations = |module_name, source| {
+	declarations = |module_name, source| ApiSurface.catalogue(module_name, source).map_ok(|catalogued| catalogued.declarations)
+
+	## Retain file-local type implementations for alias traversal, separately
+	## from the module's public declarations. Internal lookup names never
+	## become a public page or a member unless reached through a public alias.
+	catalogue : Str, Str -> Try(Module, _)
+	catalogue = |module_name, source| {
 		parsed = RocSyntax.validate({ source, name: module_name, lints: { placeholders: False } })?
 		root = parsed.nodes.get(parsed.root)?
-		var $found = []
-		for node in children(parsed, root).keep_if(|node| node.kind == TypeDeclaration) {
-			header = children(parsed, node).find_first(|child| child.kind == TypeHeader)?
-			name = (text(parsed, header).split_on("(").first() ?? "").trim()
-			if name == module_name {
-				$found = members(parsed, node, module_name)
+		owners = children(parsed, root).keep_if(|node| node.kind == TypeDeclaration).map(
+			|node| {
+				header = children(parsed, node).find_first(|child| child.kind == TypeHeader) ?? crash "ApiSurface: type declaration has a header"
+				{ name: (text(parsed, header).split_on("(").first() ?? "").trim(), node }
+			},
+		)
+		local_names = owners.keep_if(|owner| owner.name != module_name).map(|owner| owner.name)
+		qualify = |decl| if local_names.contains(decl.alias) {
+			{ ..decl, alias: "${module_name}#${decl.alias}" }
+		} else decl
+		var $direct = []
+		var $auxiliary = []
+		for owner in owners {
+			if owner.name == module_name {
+				$direct = members(parsed, owner.node, module_name).map(qualify)
+			} else {
+				internal_name = "${module_name}#${owner.name}"
+				$auxiliary = $auxiliary.append(qualify({ name: internal_name, doc: documentation(parsed, owner.node.start), alias: alias_target(parsed, owner.node) })).concat(members(parsed, owner.node, internal_name).map(qualify))
 			}
 		}
-		Ok($found)
+		Ok({ name: module_name, declarations: $direct, auxiliary: $auxiliary })
 	}
 }
 
@@ -149,6 +167,21 @@ documentation = |parsed, start| {
 	Str.join_with($doc, "\n")
 }
 
+## Only a direct type alias has a target; nominal backing records and
+## union representations do not publish the members of their backing type.
+alias_target : RocSyntax.Parsed, RocSyntax.Node -> Str
+alias_target = |parsed, node| {
+	parts = children(parsed, node)
+	header = parts.find_first(|child| child.kind == TypeHeader) ?? crash "ApiSurface: type declaration has a header"
+	for value in parts.keep_if(|child| child.kind != TypeHeader and child.kind != AssociatedBlock and child.kind != WhereClause and child.start >= header.end) {
+		operator = Str.from_utf8(parsed.source.sublist({ start: header.end, len: value.start - header.end })) ?? crash "ApiSurface: type operator UTF-8"
+		if operator.trim() == ":" {
+			return (text(parsed, value).split_on("(").first() ?? "").trim()
+		}
+	}
+	""
+}
+
 ## Traverse only associated blocks. An annotation and its definition name
 ## one member; the annotation owns its documentation and alias information.
 members : RocSyntax.Parsed, RocSyntax.Node, Str -> List(ApiSurface.Decl)
@@ -161,14 +194,7 @@ members = |parsed, owner, prefix| {
 				header = parts.find_first(|child| child.kind == TypeHeader) ?? crash "ApiSurface: type declaration has a header"
 				name = (text(parsed, header).split_on("(").first() ?? "").trim()
 				qualified = "${prefix}.${name}"
-				var $alias = ""
-				for value in parts.keep_if(|child| child.kind != TypeHeader and child.kind != AssociatedBlock and child.kind != WhereClause and child.start >= header.end) {
-					operator = Str.from_utf8(parsed.source.sublist({ start: header.end, len: value.start - header.end })) ?? crash "ApiSurface: type operator UTF-8"
-					if operator.trim() == ":" {
-						$alias = (text(parsed, value).split_on("(").first() ?? "").trim()
-					}
-				}
-				$out = $out.append({ name: qualified, doc: documentation(parsed, node.start), alias: $alias }).concat(members(parsed, node, qualified))
+				$out = $out.append({ name: qualified, doc: documentation(parsed, node.start), alias: alias_target(parsed, node) }).concat(members(parsed, node, qualified))
 			} else if node.kind == TypeAnnotation or node.kind == Declaration {
 				match parts.first() {
 					Ok(first) if first.kind == Identifier or first.kind == IdentifierPattern => {
@@ -222,7 +248,7 @@ alias_members = |modules, public_name, target, seen| {
 	}
 	var $out = []
 	for source_module in modules {
-		for decl in source_module.declarations {
+		for decl in source_module.declarations.concat(source_module.auxiliary) {
 			if decl.name == target {
 				$out = $out.concat(alias_members(modules, public_name, decl.alias, seen.append(target))?)
 			} else if decl.name.starts_with("${target}.") {
@@ -240,13 +266,14 @@ expect {
 	modules = [
 		{
 			name: "Core",
+			auxiliary: [],
 			declarations: [
 				{ name: "Core.Program", doc: "Internal program.", alias: "" },
 				{ name: "Core.Program.with_ports", doc: "Register ports.", alias: "" },
 				{ name: "Core.driver", doc: "Internal driver.", alias: "" },
 			],
 		},
-		{ name: "Engine", declarations: [{ name: "Engine.Program", doc: "An app.", alias: "Core.Program" }] },
+		{ name: "Engine", auxiliary: [], declarations: [{ name: "Engine.Program", doc: "An app.", alias: "Core.Program" }] },
 	]
 	ApiSurface.reachable(modules, [{ name: "Public.App", doc: "The program.", alias: "Engine.Program" }])? == [
 		{ name: "Public.App", doc: "The program.", alias: "Engine.Program" },
@@ -255,7 +282,7 @@ expect {
 }
 
 ## A cyclic alias cannot make the documentation walk recurse forever.
-expect ApiSurface.reachable([{ name: "Cycle", declarations: [{ name: "Cycle.Type", doc: "Cycle.", alias: "Cycle.Type" }] }], [{ name: "Public.Type", doc: "Alias.", alias: "Cycle.Type" }]).is_err()
+expect ApiSurface.reachable([{ name: "Cycle", auxiliary: [], declarations: [{ name: "Cycle.Type", doc: "Cycle.", alias: "Cycle.Type" }] }], [{ name: "Public.Type", doc: "Alias.", alias: "Cycle.Type" }]).is_err()
 
 ## An internal dependency is detected or rejected as unsupported syntax,
 ## including escaped spellings. Prose mentioning it is not a dependency.
@@ -274,4 +301,44 @@ expect {
 ## borrow the engine package merely by having a filename resembling a target.
 expect {
 	["fuzz/table-view/main.roc", "tests/apps/controls/fuzz-controls.roc"].all(ApiSurface.is_platform_target) and ["examples/todos/fuzz-todos.roc", "examples/todos/main.roc", "tests/apps/controls/main.roc", "cli/main.roc"].all(|file| !ApiSurface.is_platform_target(file))
+}
+
+## Public aliases inherit file-local methods and their own comments, while
+## unrelated private types and helper members stay out of the public surface.
+expect {
+	source =
+		\\Demo := [].{
+		\\    ## A public cell.
+		\\    Cell(a) : LocalCell(a)
+		\\}
+		\\LocalCell(a) :: a.{
+		\\    ## Read the current value.
+		\\    state : LocalCell(a) -> a
+		\\    state = |LocalCell.(value)| value
+		\\}
+		\\Hidden := [].{
+		\\    ## An unrelated helper.
+		\\    secret = 0
+		\\}
+	catalogued = ApiSurface.catalogue("Demo", source)?
+	ApiSurface.reachable([catalogued], catalogued.declarations)? == [
+		{ name: "Demo.Cell", doc: "A public cell.", alias: "Demo#LocalCell" },
+		{ name: "Demo.Cell.state", doc: "Read the current value.", alias: "" },
+	]
+}
+
+## File-local names are scoped to their source file, even when two modules
+## use the same implementation name. A private alias chain stays transitive.
+expect {
+	first = ApiSurface.catalogue("First", "First := [].{ Public : Alias }\nAlias : Shared\nShared :: U64.{ get : Shared -> U64\n get = |Shared.(value)| value }")?
+	second = ApiSurface.catalogue("Second", "Second := [].{ Public : Shared }\nShared :: Str.{ text : Shared -> Str\n text = |Shared.(value)| value }")?
+	ApiSurface.reachable([first, second], first.declarations)?.map(|decl| decl.name) == ["First.Public", "First.Public.get"] and
+		ApiSurface.reachable([first, second], second.declarations)?.map(|decl| decl.name) == ["Second.Public", "Second.Public.text"]
+}
+
+## A file-private alias cycle is refused just like a public cycle; it
+## cannot silently erase methods from the reachable public catalogue.
+expect {
+	catalogued = ApiSurface.catalogue("Demo", "Demo := [].{ Public : First }\nFirst : Second\nSecond : First")?
+	ApiSurface.reachable([catalogued], catalogued.declarations).is_err()
 }
