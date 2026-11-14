@@ -223,6 +223,20 @@ export const MAX_PORT_BYTES = 64 * 1024 * 1024;
 const LOST_UNAVAILABLE = 6;
 const LOST_EXECUTOR = 7;
 
+// The class of each fault code, by position: `host.zig`'s `fault()` answers
+// 0 (healthy) to 5, and 6 and 7 are the worker-only labels above. The host
+// fixes these codes, so the runtime keeps its own table: it classifies a trap
+// before any declaration is read (a `boot_keys` trap prevents section 12),
+// and section 12's `fault_classes` must equal it exactly or the mount is
+// refused (bindProtocolFacts).
+const FAULT_CLASSES = Object.freeze(["none", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed", "unavailable", "executor"]);
+
+// The `RequestInit.cache` and `RequestInit.credentials` strings an HTTP
+// request may name. `only-if-cached` is left out: `fetch` refuses it outside
+// `mode: "same-origin"`, which the runtime never sets.
+const FETCH_CACHE_MODES = new Set(["default", "no-store", "reload", "no-cache", "force-cache"]);
+const FETCH_CREDENTIALS_MODES = new Set(["omit", "same-origin", "include"]);
+
 const HOLE_TEXT = 1;
 const HOLE_ATTR = 2;
 const HOLE_CLICK = 3;
@@ -1285,7 +1299,16 @@ function bindProtocolFacts(facts) {
   for (const row of facts.policies) protocol[`POLICY_${row.name}`] = row.bit;
   for (const row of facts.namespaces) protocol[`NS_${row.name}`] = row.code;
   for (const row of facts.template_nodes) protocol[`NODE_${row.name}`] = row.code;
-  protocol.LOST_CLASSES = facts.fault_classes;
+  // Fault codes are the host's, not the module's: the labels must be the
+  // runtime's own table, in its order, with nothing missing or added.
+  if (facts.fault_classes.length !== FAULT_CLASSES.length || facts.fault_classes.some((name, code) => name !== FAULT_CLASSES[code])) {
+    throw new Error(`fault classes ${JSON.stringify(facts.fault_classes)} are not the host's ${JSON.stringify(FAULT_CLASSES)}`);
+  }
+  // An HTTP policy name is passed to `fetch` as it is, so each must be one
+  // `fetch` accepts.
+  for (const [rows, accepted, label] of [[facts.http_cache, FETCH_CACHE_MODES, "HTTP cache"], [facts.http_credentials, FETCH_CREDENTIALS_MODES, "HTTP credentials"]]) {
+    for (const row of rows) if (!accepted.has(row.name)) throw new Error(`unknown ${label} name ${JSON.stringify(row.name)}`);
+  }
   protocol.HTTP_CACHE = Object.fromEntries(facts.http_cache.map(row => [row.code, row.name]));
   protocol.HTTP_CREDENTIALS = Object.fromEntries(facts.http_credentials.map(row => [row.code, row.name]));
   const bind = (rows, implementations, key, make, label) => {
@@ -3158,9 +3181,17 @@ export class RocEngineRuntime {
       if (typeof this.x.dbg_len !== "function" || typeof this.x.dbg_ptr !== "function") throw new Error("roc engine protocol requires dbg_ptr and dbg_len exports");
       // The app's port declarations, checked against options.ports before
       // anything mounts: a mismatch throws, and nothing runs.
-      let boot;
-      try { boot = readDeclarations(this.x); }
-      finally { this.takeDbg(null); }
+      // A trap in `boot_keys` (a catalogue the program builds at run time
+      // that breaks a rule) is contained like any other: classified by the
+      // host's fault code, poisoned, reported once through onFault. Its
+      // declarations are then never read. A declaration that is readable
+      // but invalid is a refusal: it throws, and nothing runs.
+      this.calling = true;
+      this.guard(() => this.x.boot_keys());
+      if (this.poisoned) return;
+      this.calling = false;
+      this.takeDbg(null);
+      const boot = readDeclarationBytes(new Uint8Array(this.x.memory.buffer, this.x.cmd_ptr(), this.x.cmd_len()));
       this.protocol = boot.bindings;
       this.bootKeys = boot.keys;
       this.sessionKeys = boot.sessionKeys;
@@ -3285,7 +3316,7 @@ export class RocEngineRuntime {
     let code = 0;
     let message = String(error && error.message ? error.message : error);
     if (klass !== null) {
-      code = klass === "executor" ? 0 : this.protocol.LOST_CLASSES.indexOf(klass);
+      code = klass === "executor" ? 0 : FAULT_CLASSES.indexOf(klass);
     } else {
       try {
         code = this.x.fault();
@@ -3296,7 +3327,7 @@ export class RocEngineRuntime {
     }
     const said = this.calling ? this.takeDbg(null) : null;
     this.calling = false;
-    this.poisoned = { dbg: said, class: code === 0 ? "executor" : this.protocol.LOST_CLASSES[code] ?? "unknown", code, message, trap: String(error) };
+    this.poisoned = { dbg: said, class: code === 0 ? "executor" : FAULT_CLASSES[code] ?? "unknown", code, message, trap: String(error) };
     for (const [type, listeners] of this.listening) {
       this.root.removeEventListener(type, listeners.bubble);
       if (listeners.capture) this.root.removeEventListener(type, listeners.capture, true);
@@ -5718,7 +5749,7 @@ export class RocEngineRuntime {
   // [CLASS]` prefix is stable: the browser spec runner tells these reports
   // from page errors by it.
   reportLost(fx, code, message, dbg = null) {
-    const klass = this.protocol.LOST_CLASSES[code] ?? "executor";
+    const klass = FAULT_CLASSES[code] ?? "executor";
     try { console.error(`roc worker fault [${klass}] in task "${fx.task}": ${message}`); } catch (_) {}
     if (this.onWorkerFault) this.onWorkerFault({ id: fx.id, task: fx.task, class: klass, message, dbg });
     return klass;
@@ -5727,7 +5758,7 @@ export class RocEngineRuntime {
   workPool() {
     if (this.pool === null) {
       const W = (this.win && this.win.Worker) ?? globalThis.Worker;
-      this.pool = new WorkPool({ module: this.module, url: this.workerUrl, max: this.maxWorkers, inline: this.workerMode === "inline", Worker: W, monitor: this.monitor, faultClasses: this.protocol.LOST_CLASSES, dbg: this.dbg === "console", observeDbg: (task, text) => this.takeDbg(task, text), maxBytes: this.maxWorkerBytes, live: (token) => this.files.has(token) });
+      this.pool = new WorkPool({ module: this.module, url: this.workerUrl, max: this.maxWorkers, inline: this.workerMode === "inline", Worker: W, monitor: this.monitor, faultClasses: FAULT_CLASSES, dbg: this.dbg === "console", observeDbg: (task, text) => this.takeDbg(task, text), maxBytes: this.maxWorkerBytes, live: (token) => this.files.has(token) });
     }
     return this.pool;
   }
@@ -5798,7 +5829,7 @@ export class RocEngineRuntime {
   // pending job or `klass` is not a class.
   loseEffect(id, klass) {
     const e = this.live.get(id);
-    const code = this.protocol.LOST_CLASSES.indexOf(klass);
+    const code = FAULT_CLASSES.indexOf(klass);
     if (this.poisoned || e === undefined || e.kind !== "work" || e.running || code < 1) return false;
     this.live.delete(id);
     const reported = this.reportLost(e.req, code, "lost by the spec");
@@ -6021,7 +6052,11 @@ export function readProtocolFacts(bytes) {
 // omitted or malformed a section is refused before any app code mounts.
 export function readDeclarations(x) {
   x.boot_keys();
-  const bytes = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
+  return readDeclarationBytes(new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len()));
+}
+
+// The sections `boot_keys` left at `cmd_ptr`, read after the call returned.
+function readDeclarationBytes(bytes) {
   const out = { keys: [], sessionKeys: [], decls: [], media: [], zoneDays: 366 };
   const sections = [
     { tag: 2, name: "local-storage", read: (r) => {

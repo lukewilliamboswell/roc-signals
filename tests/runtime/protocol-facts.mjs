@@ -3,6 +3,9 @@ import { readProtocolFacts } from "../../platform/runtime.mjs";
 import { encodeProtocolFixture as encode, cborFixtureHead as head } from "../browser/protocol-fixture.mjs";
 
 // Test-owned values/encoder, independent of Protocol.roc and its derived writer.
+// These facts are a minimal shape for the CBOR reader alone: binding refuses
+// them (two fault classes are not the host's eight), which
+// boot-fault-unit.mjs checks with the full fixture.
 const facts = {
   ops: [{ code: 1, name: "INST" }], kinds: [{ code: 1, name: "TEXT", events: [] }],
   policies: [{ bit: 1, name: "PREVENT" }], properties: [{ index: 1, name: "value", elements: ["input"] }],

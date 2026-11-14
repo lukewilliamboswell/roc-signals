@@ -5257,7 +5257,13 @@ without NUL. Readers reject invalid UTF-8, duplicate names or codes, non-dense
 numbered tables, zero or non-single policy bits, empty required numbered tables
 or fault labels, incorrect map-key order, truncation and trailing bytes. The
 runtime binds each validated role to its actual implementation and rejects
-unknown or missing roles before init. Bindings are immutable per instance;
+unknown or missing roles before init. Fault codes are fixed by the host, so
+the runtime keeps its own table of their classes, classifies a trap with it
+before any declaration is read (a `boot_keys` trap is contained like any
+other), and refuses `fault_classes` that are not exactly that table in that
+order. HTTP cache and credentials names are passed to `fetch` as they are, so
+each must be one `fetch` accepts there (`only-if-cached` is not, outside the
+same-origin mode the runtime never sets). Bindings are immutable per instance;
 one module cannot change another's tables. Namespace and child-container
 codes are dense from zero; the other numbered tables are dense from one.
 Template node kinds and hole kinds are separate number spaces. Before the derived

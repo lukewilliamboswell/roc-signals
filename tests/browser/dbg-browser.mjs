@@ -132,8 +132,9 @@ try {
       const rt=new RocEngineRuntime(x,root,{manualEffects:true});return {x,rt,put,reads:()=>reads};
     };
     const checks=[];
-    const broken=make(true);try{broken.rt.mount();}catch(_){}
+    let faults=0;const broken=make(true);broken.rt.onFault=()=>faults++;let thrown=null;try{broken.rt.mount();}catch(error){thrown=error;}
     checks.push(['boot_keys trap prints its preceding output',logs.includes('[dbg] declarations')]);
+    checks.push(['boot_keys trap is contained once with its dbg text',thrown===null&&faults===1&&broken.rt.poisoned?.class==='executor'&&broken.rt.poisoned.dbg?.entries?.[0]?.text==='declarations']);
     logs=[];const normal=make();normal.rt.mount();
     const before=normal.reads();normal.rt.callEvent(1,1);
     checks.push(['quiet event makes no added Wasm calls',normal.reads()===before]);
