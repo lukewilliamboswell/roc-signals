@@ -3,9 +3,14 @@ import ExampleFiles
 import Proc
 import SpecSuite
 
-## Measure shipped bytes with Node's zlib. Only the platform JavaScript has
-## recorded figures: example modules also follow the floating compiler, and
-## development-only scripts do not add bytes to a production page.
+## Measure shipped bytes with Node's zlib module. Only the platform
+## JavaScript has recorded figures: example modules also follow the floating
+## compiler, and development-only scripts do not add bytes to a production
+## page. The recorded figure is the Brotli quality 11 size, which every Node
+## build measured gives for the same bytes. The gzip size is reported beside
+## it and never gated: Node's gzip output depends on the deflate library it
+## was built with (the official builds bundle Chromium's zlib, a packaged
+## Node may link the system's), so one file has two gzip sizes.
 Sizes := [].{
 	data_file = "scripts/src/runtime-sizes.tsv"
 	tolerance = 16.U64
@@ -15,7 +20,7 @@ Sizes := [].{
 	debug_files = ["cli/dev-client.js"]
 
 	Measurement : { path : Str, raw : U64, gzip : U64, brotli : U64 }
-	Figure : { path : Str, gzip : U64 }
+	Figure : { path : Str, brotli : U64 }
 
 	## Parse the deliberately small line format, refusing malformed or duplicate
 	## figures rather than leaving a runtime file unchecked.
@@ -24,7 +29,7 @@ Sizes := [].{
 		var $out = []
 		for line in text.split_on("\n").map(Str.trim).drop_if(|line| line.is_empty() or line.starts_with("#")) {
 			figure = match line.split_on("\t") {
-				[path, size] if path != "" => { path, gzip: U64.from_str(size) ? |_| BadSizeFigure(line) }
+				[path, size] if path != "" => { path, brotli: U64.from_str(size) ? |_| BadSizeFigure(line) }
 				_ => return Err(BadSizeFigure(line))
 			}
 			if $out.any(|previous| previous.path == figure.path) {
@@ -43,19 +48,19 @@ Sizes := [].{
 		for measurement in measured {
 			match recorded.find_first(|figure| figure.path == measurement.path) {
 				Err(_) => {
-					$out = $out.append("${measurement.path}: no recorded gzip size in ${Sizes.data_file} (measured ${measurement.gzip.to_str()} bytes)")
+					$out = $out.append("${measurement.path}: no recorded Brotli size in ${Sizes.data_file} (measured ${measurement.brotli.to_str()} bytes)")
 				}
 				Ok(figure) => {
-					difference = measurement.gzip.max(figure.gzip) - measurement.gzip.min(figure.gzip)
+					difference = measurement.brotli.max(figure.brotli) - measurement.brotli.min(figure.brotli)
 					if difference > Sizes.tolerance {
-						$out = $out.append("${measurement.path}: gzip ${measurement.gzip.to_str()} bytes, recorded ${figure.gzip.to_str()}, tolerance +/-${Sizes.tolerance.to_str()}; update ${Sizes.data_file} and explain the change in the PR")
+						$out = $out.append("${measurement.path}: Brotli ${measurement.brotli.to_str()} bytes, recorded ${figure.brotli.to_str()}, tolerance +/-${Sizes.tolerance.to_str()}; update ${Sizes.data_file} and explain the change in the PR")
 					}
 				}
 			}
 		}
 		for figure in recorded {
 			if !measured.any(|measurement| measurement.path == figure.path) {
-				$out = $out.append("${figure.path}: recorded gzip figure is absent from SpecSuite.runtime_files")
+				$out = $out.append("${figure.path}: recorded Brotli figure is absent from SpecSuite.runtime_files")
 			}
 		}
 		$out
@@ -166,21 +171,25 @@ Sizes := [].{
 
 ## The tolerance includes its two endpoints and fails both directions beyond it.
 expect {
-	recorded = [{ path: "runtime.mjs", gzip: 1000 }]
-	[984, 1000, 1016].all(|gzip| Sizes.problems(recorded, [{ path: "runtime.mjs", raw: 2000, gzip, brotli: 900 }]).is_empty())
+	recorded = [{ path: "runtime.mjs", brotli: 1000 }]
+	[984, 1000, 1016].all(|brotli| Sizes.problems(recorded, [{ path: "runtime.mjs", raw: 2000, gzip: 1100, brotli }]).is_empty())
 }
 
 ## Both growth and savings beyond the tolerance require a recorded update.
 expect {
-	recorded = [{ path: "runtime.mjs", gzip: 1000 }]
-	[983, 1017].all(|gzip| Sizes.problems(recorded, [{ path: "runtime.mjs", raw: 2000, gzip, brotli: 900 }]).len() == 1)
+	recorded = [{ path: "runtime.mjs", brotli: 1000 }]
+	[983, 1017].all(|brotli| Sizes.problems(recorded, [{ path: "runtime.mjs", raw: 2000, gzip: 1100, brotli }]).len() == 1)
 }
+
+## The gzip size is reported, not gated: a measurement whose gzip size is
+## far from anything recorded passes when its Brotli size agrees.
+expect Sizes.problems([{ path: "runtime.mjs", brotli: 1000 }], [{ path: "runtime.mjs", raw: 2000, gzip: 5000, brotli: 1000 }]).is_empty()
 
 ## A newly shipped runtime file cannot pass without a figure.
 expect Sizes.problems([], [{ path: "new.mjs", raw: 50, gzip: 30, brotli: 25 }]).len() == 1
 
 ## Removing a runtime file also removes its obsolete recorded figure.
-expect Sizes.problems([{ path: "old.mjs", gzip: 100 }], []).len() == 1
+expect Sizes.problems([{ path: "old.mjs", brotli: 100 }], []).len() == 1
 
 ## Duplicate or malformed figures never turn off the gate.
 expect {

@@ -39,7 +39,7 @@ import src/Sizes
 ## as a run without results), the runtime's
 ## unit tests in Node and contract tests in Chrome (effects, controls,
 ## workers, Conduit journey), the
-## recorded gzip sizes of shipped JavaScript and a report of each example's
+## recorded Brotli sizes of shipped JavaScript and a report of each example's
 ## shipping module and development-only scripts, the
 ## js-framework-benchmark check, the release dry run, and the `signals.roc`
 ## tool run end to end from the dry run's copy. The long walks, the soaks

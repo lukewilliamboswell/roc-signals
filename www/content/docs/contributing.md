@@ -120,7 +120,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
 | `blueprint run fuzz-smoke -- [TARGET...]` | Every registered fuzz target's fixed examples on plain optimized native builds, or the named targets; `-- --shard K/N` runs shard K of N, as CI does; never explores |
-| `blueprint run sizes -- [--runtime-only]` | Check shipped JavaScript gzip sizes; without the flag, also build and report each example's shipping module and development-only scripts |
+| `blueprint run sizes -- [--runtime-only]` | Check shipped JavaScript Brotli sizes (gzip is reported); without the flag, also build and report each example's shipping module and development-only scripts |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign (600 s of exploration per target by default), local only: CI never runs one |
 | `blueprint run api` | Build and audit the API reference alone, including methods inherited through public aliases, without rebuilding the site examples |
 | `blueprint run site -- [--base-url URL] [--tool-url URL]` | Build the website, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
@@ -181,7 +181,7 @@ problems found before it.
 4. Every fuzz target in the tree is registered in `Targets.fuzz_targets`, or
    skipped in `Targets.fuzz_skipped` with a reason that `check` prints as a
    `SKIP` line, and every registered file exists.
-5. The shipped JavaScript's gzip sizes against `scripts/src/runtime-sizes.tsv`:
+5. The shipped JavaScript's Brotli sizes against `scripts/src/runtime-sizes.tsv`:
    growth or shrinkage beyond 16 bytes fails, and so does a newly shipped
    file without a figure.
 6. Both platform roots declare the same parser, Unicode and CBOR dependencies.
@@ -711,7 +711,7 @@ layout and browser navigation.
 ## Performance
 
 The platform's JavaScript ships with its comments, without a minifier. Its
-recorded gzip sizes are a review gate: run `blueprint run sizes -- --runtime-only`
+recorded Brotli sizes are a review gate: run `blueprint run sizes -- --runtime-only`
 to see current figures, update the affected line in
 `scripts/src/runtime-sizes.tsv` with the source change, and explain the cost or
 saving in the pull request. The tolerance is 16 bytes in either direction;
@@ -724,7 +724,15 @@ threshold: debug scripts do not ship to production pages, and Wasm sizes follow
 the floating Roc compiler as well as this repository. A failed module build is
 still a failed check, because its required report is unavailable. Record the
 compiler and report alongside a size-sensitive change. The compressor is Node's
-zlib, gzip level 9 and Brotli quality 11, over the exact file bytes.
+zlib module, gzip level 9 and Brotli quality 11, over the exact file bytes; the
+helper names the Node, Brotli and zlib versions it ran with.
+
+Brotli is the checked figure because it is a function of the bytes alone on
+every Node measured. Gzip is not: Node's official builds bundle Chromium's
+zlib, whose level-9 output differs from the reference zlib a packaged Node
+(such as Homebrew's) links: the same `runtime.mjs` bytes differ by tens of
+bytes between the two, beyond the tolerance. A gzip figure would hold only on
+the Node it was recorded with.
 
 Compiler batches refill a vacant process slot as soon as a job finishes;
 their logs and results retain input order. The default compiler concurrency

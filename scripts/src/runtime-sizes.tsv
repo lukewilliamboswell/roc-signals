@@ -1,5 +1,5 @@
-# As-shipped platform JavaScript, Node zlib gzip level 9, bytes.
+# As-shipped platform JavaScript, Brotli quality 11 through Node's zlib module, bytes.
 # Update a figure with its source change and explain the size change in the PR.
-platform/runtime.mjs	76355
-platform/worker.mjs	5700
-platform/environment.mjs	2371
+platform/runtime.mjs	63001
+platform/worker.mjs	5038
+platform/environment.mjs	2042
