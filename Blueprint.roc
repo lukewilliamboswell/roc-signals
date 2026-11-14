@@ -76,6 +76,7 @@ config = [
 	# Fixed examples only, with ordinary optimized native builds. Covered
 	# check/check-slow targets and campaigns keep their own executables.
 	Task("fuzz-smoke", [Use("engine"), Run(["scripts/fuzz_smoke.roc", "--"])]),
+	Task("sizes", [Use("engine"), Run(["scripts/check_sizes.roc", "--"])]),
 	# A fuzz campaign: `blueprint run fuzz -- --time 600 [TARGET...]`.
 	Task("fuzz", [Use("engine"), Run(["scripts/fuzz.roc", "--"])]),
 	# The release assets: `blueprint run release -- --version 0.3.0`.

@@ -120,6 +120,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
 | `blueprint run fuzz-smoke -- [TARGET...]` | Actual fixed examples on ordinary optimized native builds; defaults to every maintained target |
+| `blueprint run sizes -- [--runtime-only]` | Check shipped JavaScript gzip sizes; without the flag, also build and report each example's shipping module and development-only scripts |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign |
 | `blueprint run api` | Build and audit the API reference alone, including methods inherited through public aliases, without rebuilding the site examples |
 | `blueprint run site -- [--base-url URL] [--tool-url URL]` | Build the website, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
@@ -216,6 +217,12 @@ an interpolation are checked; dynamically built class names remain the app's.
    (`tests/browser/tool-serve.mjs`: a busy port, content types, the reload
    script, a reload after an edit, and the overlay for a build error, a
    mount refusal and an engine fault).
+10. The as-shipped files in `SpecSuite.runtime_files`, compressed with Node's
+    zlib at gzip level 9, against `scripts/src/runtime-sizes.tsv`. Growth or
+    shrinkage beyond 16 bytes fails; a newly shipped file without a figure
+    fails too. Debug scripts and every example in `www/data/examples.toml`
+    are reported as raw, gzip and Brotli sizes, without size thresholds.
+    Example modules are built separately with `--opt=size`.
 
 Every spec must pass in both runners; there are no expected failures.
 
@@ -587,6 +594,22 @@ decoded route parts; pure location tests and paired specs cover its fragment
 layout and browser navigation.
 
 ## Performance
+
+The platform's JavaScript ships with its comments, without a minifier. Its
+recorded gzip sizes are a review gate: run `blueprint run sizes -- --runtime-only`
+to see current figures, update the affected line in
+`scripts/src/runtime-sizes.tsv` with the source change, and explain the cost or
+saving in the pull request. The tolerance is 16 bytes in either direction;
+it is not growth headroom. `SpecSuite.runtime_files` is the checked inventory,
+so every future runtime file needs a figure.
+
+`blueprint run sizes` also prints raw, gzip and Brotli sizes for development-only
+scripts and each catalogue example's `--opt=size` module. These have no size
+threshold: debug scripts do not ship to production pages, and Wasm sizes follow
+the floating Roc compiler as well as this repository. A failed module build is
+still a failed check, because its required report is unavailable. Record the
+compiler and report alongside a size-sensitive change. The compressor is Node's
+zlib, gzip level 9 and Brotli quality 11, over the exact file bytes.
 
 Compiler batches refill a vacant process slot as soon as a job finishes;
 their logs and results retain input order. The default compiler concurrency

@@ -17,6 +17,7 @@ import src/SpecSuite
 import src/Slow
 import src/Targets
 import src/ToolCheck
+import src/Sizes
 
 ## The `check` task, the per-pull-request gate: the script pins,
 ## formatting, every file `www/data/examples.toml` names present, every
@@ -32,6 +33,8 @@ import src/ToolCheck
 ## fault class among them), the runtime's
 ## unit tests in Node and contract tests in Chrome (effects, controls,
 ## workers, Conduit journey), the
+## recorded gzip sizes of shipped JavaScript and a report of each example's
+## shipping module and development-only scripts, the
 ## js-framework-benchmark check, the release dry run, and the `signals.roc`
 ## tool run end to end from the dry run's copy. The long walks, the soaks
 ## and the test apps' fuzz targets are `check-slow`.
@@ -51,6 +54,9 @@ main! = |_args| {
 
 	Proc.note!("== example files")
 	$problems = $problems.concat(ExampleFiles.check!(o.root)?)
+
+	Proc.note!("== platform JavaScript sizes")
+	$problems = $problems.concat(Sizes.check_runtime!({ root: o.root, node: o.node })?)
 
 	Proc.note!("== API docs")
 	$problems = $problems.concat(ApiDocs.check!({})?)
@@ -80,6 +86,8 @@ main! = |_args| {
 	var $browser = SpecSuite.empty_tally
 	var $kanban = { runner: "" }
 	SpecSuite.build_web_platform!(o)?
+	Proc.note!("== example module and debug file sizes (reported)")
+	$problems = $problems.concat(Sizes.report!(o)?)
 	# Every spec-bearing app is built for the browser too, from the one list in
 	# SpecSuite, with the two test apps that have contract tests and no specs.
 	SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.spec_apps.concat(["tests/apps/effects", "tests/apps/controls"]))?
