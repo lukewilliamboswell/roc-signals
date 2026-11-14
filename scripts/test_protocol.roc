@@ -1,7 +1,7 @@
 #!/usr/bin/env roc-stable
 app [main!] {
 	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.27.0/9yjxqdGTP4xSpSEmDazwTmRsehfRZzA19pwEKkR6fj1g.tar.zst",
-	parser: "../../roc-parser/package/main.roc",
+	parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.2/2H2hePe5iYTZaGdG9MbMqhS29yg4Zxxr7dPEbZJ96fME.tar.zst",
 	pf: "../platform/main-fuzz.roc",
 	roc: "nightly-2026-11-10-f7d1f19",
 }
@@ -12,8 +12,7 @@ import src/ApiSurface
 import src/Proc
 
 ## Check authored protocol rows without generating architectural authority.
-## Both package roots must declare identical internal dependencies. The local
-## parser stand-in is the one permitted relative dependency before its release.
+## Both package roots must declare identical, published internal dependencies.
 main! = |_args| {
 	design = Path.read_utf8!(Path.utf8("design.md"))?
 	appendix = design.split_on("## Appendix B: Wire Protocol").last() ?? return Err(MissingAppendix)
@@ -57,7 +56,7 @@ main! = |_args| {
 		return Err(PackageRootsDiffer(page_dependencies, fuzz_dependencies))
 	}
 	for dependency in page_dependencies {
-		if dependency.url != "../../roc-parser/package/main.roc" and !(dependency.url.starts_with("https://") and dependency.url.contains("/releases/download/") and dependency.url.ends_with(".tar.zst")) {
+		if !(dependency.url.starts_with("https://") and dependency.url.contains("/releases/download/") and dependency.url.ends_with(".tar.zst")) {
 			return Err(UnpinnedDependency(dependency))
 		}
 	}

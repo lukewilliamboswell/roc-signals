@@ -65,7 +65,6 @@ jobs:
         with:
           version: nightly-new-compiler
           nightly-tag: ${{ needs.nightly.outputs.tag }}
-      - run: blueprint run setup-parser
       - env:
           VERSION: ${{ inputs.version }}
         run: blueprint run release -- --version "$VERSION" --output-dir dist-release

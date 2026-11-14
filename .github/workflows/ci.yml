@@ -56,7 +56,6 @@ jobs:
           version: nightly-new-compiler
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint check
-      - run: blueprint run setup-parser
       - run: blueprint run check
 
   # The spec runner's link inputs for every system, cross-compiled on Linux
@@ -129,7 +128,6 @@ jobs:
         with:
           version: nightly-new-compiler
           nightly-tag: ${{ needs.nightly.outputs.tag }}
-      - run: blueprint run setup-parser
       - env:
           TARGET: ${{ matrix.target }}
           EXE: ${{ matrix.exe }}
@@ -252,7 +250,6 @@ jobs:
         with:
           version: nightly-new-compiler
           nightly-tag: ${{ needs.nightly.outputs.tag }}
-      - run: blueprint run setup-parser
       - run: blueprint run site
       - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0

@@ -39,8 +39,6 @@ roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-10
 config = [
 	Name("roc-signals"),
 	Systems(["x86_64-linux", "aarch64-linux", "aarch64-darwin"]),
-	# Source setup needs only Git and the tooling compiler.
-	Environment("source", [Programs([roc_stable_program]), Expect(["git"])]),
 	# The engine's environment: native and browser spec runs, the platform's
 	# native inputs, and the scripts that drive them. The pinned Zig builds
 	# matching PIC startup and runtime libraries for the native runner.
@@ -56,8 +54,6 @@ config = [
 	# Building the release assets, API docs included.
 	Environment("release", [Programs([roc_stable_program, zig_program, node_program, roc_docs_program]), Expect(["roc", "zip"])]),
 	Shell("default", [Use("engine")]),
-	# Run once before compiling source that imports the sibling parser.
-	Task("setup-parser", [Use("source"), Run(["scripts/setup_parser.roc", "--"])]),
 	# The per-pull-request gate: formatting, roc test, the docs samples, every
 	# app's specs natively and in Chrome, the broken-spec self-check, the
 	# runtime contract tests, the jfb check and the release dry run.

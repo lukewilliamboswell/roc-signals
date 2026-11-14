@@ -34,8 +34,8 @@ Nothing outside the site uses them.
 
 ## Internal Roc dependencies
 
-roc-parser is used through the sibling 6.0.0 stand-in named in both platform
-roots. Copyright © 2023 Luke Boswell and subsequent authors; Universal
+[roc-parser 6.0.0-rc.2](https://github.com/lukewilliamboswell/roc-parser/releases/tag/6.0.0-rc.2)
+is pinned by package URL in the platform and tooling. Copyright © 2023 Luke Boswell and subsequent authors; Universal
 Permissive License (UPL), Version 1.0. Its LICENSE accompanies that package.
 
 The native keyboard oracle uses roc-lang/unicode 4.3.2, pinned by bundle URL
