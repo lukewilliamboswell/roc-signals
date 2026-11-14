@@ -132,6 +132,17 @@ Nested := { children : List(Nested) }.{
 	is_eq : _
 }
 
+## A float key compared by its bits, as an app may define one: `0.0` and
+## `-0.0` are two keys of it, where builtin float equality makes them one.
+Bits := F64.{
+	parser_for : _
+	encoder_for : _
+	is_eq : Bits, Bits -> Bool
+	is_eq = |Bits.(a), Bits.(b)| a.to_bits() == b.to_bits()
+	to_hash : Bits, Hasher -> Hasher
+	to_hash = |Bits.(value), hasher| value.to_bits().to_hash(hasher)
+}
+
 ## A tree nested `depth` levels down its left branch.
 left_spine : U64 -> Tree
 left_spine = |depth| {
@@ -445,4 +456,63 @@ expect {
 	value : Try(Dict({ f : F64 }, Str), Wire.Error)
 	value = WorkerCodec.decode([0xa2, 0xa1, 0x61, 0x66, 0xf9, 0, 0, 0x61, 0x61, 0xa1, 0x61, 0x66, 0xf9, 0x80, 0, 0x61, 0x62])
 	value.is_err()
+}
+
+## The same bytes are two entries of a key type whose own equality keeps the
+## zero signs apart, so the float rule is the decoded type's, not the bytes'.
+expect {
+	positive = Bits.(0.0)
+	negative = Bits.(F64.from_bits(0x8000000000000000))
+	value : Try(Dict(Bits, Str), Wire.Error)
+	value = WorkerCodec.decode([0xa2, 0xf9, 0, 0, 0x61, 0x61, 0xf9, 0x80, 0, 0x61, 0x62])
+	match value {
+		Ok(decoded) => decoded.len() == 2 and decoded.get(positive) == Ok("a") and decoded.get(negative) == Ok("b")
+		Err(_) => False
+	}
+}
+
+## Both zero signs are refused as `F32` keys too, and a zero of one sign
+## alone is accepted as either width.
+expect {
+	both : Try(Dict(F32, Str), Wire.Error)
+	both = WorkerCodec.decode([0xa2, 0xf9, 0, 0, 0x61, 0x61, 0xf9, 0x80, 0, 0x61, 0x62])
+	negative : Try(Dict(F32, Str), Wire.Error)
+	negative = WorkerCodec.decode([0xa1, 0xf9, 0x80, 0, 0x61, 0x62])
+	positive : Try(Dict(F64, Str), Wire.Error)
+	positive = WorkerCodec.decode([0xa2, 0xf9, 0, 0, 0x61, 0x61, 0xf9, 0x3c, 0, 0x61, 0x62])
+	actual =
+		\\both: ${Str.inspect(both.is_ok())}
+		\\negative: ${Str.inspect(negative.map_ok(|d| d.len()))}
+		\\positive: ${Str.inspect(positive.map_ok(|d| d.len()))}
+	expected =
+		\\both: False
+		\\negative: Ok(1)
+		\\positive: Ok(2)
+	actual == expected
+}
+
+## Each dictionary keeps its own zero signs: the two signs in sibling
+## dictionaries, or one in a dictionary nested in another's value, are
+## accepted and keep their bytes, while the two signs as keys of the outer
+## dictionary, around a nested one, are refused.
+expect {
+	positive = 0.0.F64
+	negative = F64.from_bits(0x8000000000000000)
+	siblings = [Dict.from_list([(positive, "a")]), Dict.from_list([(negative, "b")])]
+	nested = Dict.from_list([(positive, Dict.from_list([(negative, "x")])), (1.0, Dict.empty())])
+	around : Try(Dict(F64, Dict(F64, Str)), Wire.Error)
+	around = WorkerCodec.decode([0xa2, 0xf9, 0, 0, 0xa1, 0xf9, 0x3c, 0, 0x61, 0x78, 0xf9, 0x80, 0, 0xa0])
+	tagged : Try(Dict(F64, [Pair(Dict(F64, Str))]), Wire.Error)
+	tagged = WorkerCodec.decode([0xa2, 0xf9, 0, 0, 0xa1, 0x64, 0x50, 0x61, 0x69, 0x72, 0xa0, 0xf9, 0x80, 0, 0xa1, 0x64, 0x50, 0x61, 0x69, 0x72, 0xa0])
+	actual =
+		\\siblings: ${Str.inspect(same_bytes(siblings))}
+		\\nested: ${Str.inspect(same_bytes(nested))}
+		\\around: ${Str.inspect(around.is_ok())}
+		\\tagged: ${Str.inspect(tagged.is_ok())}
+	expected =
+		\\siblings: True
+		\\nested: True
+		\\around: False
+		\\tagged: False
+	actual == expected
 }

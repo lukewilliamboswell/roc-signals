@@ -652,11 +652,15 @@ Payloads use the pinned roc-cbor format. Records carry field names, dictionaries
 have sorted keys, and every number uses the writer's preferred representation.
 The two instances are the same compiled module; payload bytes are not a format
 for an app to persist across releases. A float keeps its zero sign, while all
-NaN payloads become one canonical NaN.
+NaN payloads become one canonical NaN. A dictionary with `F32` or `F64` keys
+cannot hold both `0.0` and `-0.0`, which float equality makes one key, so a
+payload holding both is refused rather than read as one entry.
 
 Handwritten codecs keep their hook names. A list, tuple or tag's accumulator is
 now `Wire.Items`; its add callback supplies a `Wire.Enc` for the individual item.
 Record and dictionary accumulators are `Wire.Fields` and `Wire.Entries`.
+A handwritten parser that opens a dictionary with `parse_dict_start` calls
+`parse_dict_after_key` after each key, as a derived one does.
 Codecs whose callback types are inferred need no source change. A handwritten
 annotation that used `Wire.Enc` for the outer container must use its accumulator
 type instead. These states are opaque: pass the supplied state through the
