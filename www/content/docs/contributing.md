@@ -530,6 +530,10 @@ Judge a target by its properties: state the rules the code must keep over
 generated sequences, and check them against a reference model. Its oracles,
 not its inputs, carry the value.
 
+The maintained targets pin roc-fuzz 0.6.2, which restores compatibility with
+`nightly-2026-11-13-03dce41` after its stricter duplicate-name check. The
+fixed-example inputs and public fuzz API are unchanged by that patch.
+
 Fuzz builds print compiler phase timings. Use those alongside the replay
 report to distinguish time spent compiling the optimized target from time
 spent running its fixed examples.
