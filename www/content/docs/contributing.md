@@ -165,7 +165,14 @@ release API. CI supplies its read-only token as `GH_TOKEN`; local runs can
 also set `GH_TOKEN` when the anonymous API quota is exhausted. HTTP errors
 fail with their status and a bounded response excerpt. Discovery and baseline
 extraction failures fail the gate; the current source never replaces the
-published baseline.
+published baseline. A release `roc bump` cannot read as it shipped is compared
+through one reviewed repair, recorded in `ApiDocs.baseline_repairs`: the gate
+downloads the published bundle, refuses it unless its SHA-256 is the recorded
+one, makes the repair's exact edits to its `main.roc` and says so in its
+output. 0.5.0 is repaired by exposing `EngineOnly`, because `roc bump` cannot
+extract an API whose signatures name a type from an unexposed module. A repair
+kept after its release is no longer the latest fails the gate until it is
+removed.
 
 The stages run in this order (`scripts/check_all.roc`). A problem does not
 stop the later stages; every problem is printed as a `FAIL` line at the end,
@@ -392,8 +399,9 @@ make a public member internal.
 internal package outside the platform and tooling. Type-error fixtures under
 `tests/type-errors/` verify that apps cannot reach internal operations.
 `blueprint run api` builds and audits the reference without building examples.
-The release API comparison uses the actual published platform bundle; extraction
-failures fail the comparison and do not count as a compatible change.
+The release API comparison uses the actual published platform bundle, or its
+one reviewed repair; extraction failures fail the comparison and do not count
+as a compatible change.
 
 ## New capabilities
 

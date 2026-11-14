@@ -49,8 +49,9 @@ ApiDocs := [].{
 		Ok($problems)
 	}
 
-	## Compare against the actual latest published platform bundle. Discovery
-	## or extraction failures fail the gate; a self comparison is no baseline.
+	## Compare against the actual latest published platform bundle, or the one
+	## reviewed repair of it in `baseline_repairs`. Discovery or extraction
+	## failures fail the gate; a self comparison is no baseline.
 	bump! : SpecSuite.Options => Try(List(Str), _)
 	bump! = |o| {
 		request = Request.from_method(GET)
@@ -69,10 +70,103 @@ ApiDocs := [].{
 			[asset] => asset.browser_download_url
 			_ => return Err(AmbiguousPublishedPlatform(published.tag_name))
 		}
-		result = Proc.merged!({ program: o.compiler, args: ["bump", "--old", bundle, "platform/main.roc"], cwd: o.root })?
+		old = match ApiDocs.baseline_plan(published.tag_name, ApiDocs.baseline_repairs)? {
+			AsPublished => ["--old", bundle]
+			Repaired(repair) => {
+				root = ApiDocs.repair_baseline!(o, { url: bundle, repair })?
+				Proc.note!("API baseline: ${repair.version} as published (sha256 ${repair.sha256}), with one public name added for roc bump: ${repair.reason}")
+				["--old", root, "--old-version", repair.version]
+			}
+		}
+		result = Proc.merged!({ program: o.compiler, args: ["bump"].concat(old).concat(["platform/main.roc"]), cwd: o.root })?
 		output = Str.from_utf8_lossy(result.stdout)
 		Proc.note!(output)
 		Ok(if (result.code == 0) [] else ["roc bump against ${published.tag_name} failed: ${output}"])
+	}
+
+	## A published release that `roc bump` cannot read as it shipped, and the
+	## exact edits to its platform root that let it: each `before` must occur
+	## exactly once in the published `main.roc`.
+	BaselineRepair : { version : Str, sha256 : Str, reason : Str, edits : List({ before : Str, after : Str }) }
+
+	## The reviewed repairs of published baselines; empty once the latest
+	## release is one `roc bump` reads as it shipped.
+	##
+	## 0.5.0's `Table` methods take an `EngineOnly` (`Table.version :
+	## Table(k, v), EngineOnly -> U64`), a type from a module 0.5.0 does not
+	## expose, so that only the engine can call them. `roc bump` refuses to
+	## extract an API whose signatures name a type outside it ("The old
+	## package's public API references the type `EngineOnly`, which is not
+	## itself part of the exposed API"), although `roc check` accepts the
+	## package. The repair exposes `EngineOnly`, the one name the baseline
+	## then has beyond what shipped; 0.6.0 has no `EngineOnly`, so the
+	## comparison reports it removed. The upstream issue is drafted, not yet
+	## filed; link it here and in `design.md`'s compiler limitations once it
+	## is. When the latest release is 0.6.0 this entry no longer applies and
+	## `baseline_plan` fails until it is removed.
+	baseline_repairs : List(BaselineRepair)
+	baseline_repairs = [
+		{
+			version: "0.5.0",
+			sha256: "8134fe1b069bd1360e40340304d30d4530813f1501cce6c8aceb688304d3b14b",
+			reason: "EngineOnly is exposed, since roc bump cannot extract an API that names a type from an unexposed module",
+			edits: [
+				{
+					before: "\texposes [Engine, Files, Html, Port, PortJson, Table, Wire, Worker]\n",
+					after: "\texposes [Engine, EngineOnly, Files, Html, Port, PortJson, Table, Wire, Worker]\n",
+				},
+				{ before: "import Engine\nimport Files\n", after: "import Engine\nimport EngineOnly\nimport Files\n" },
+			],
+		},
+	]
+
+	## Which baseline the latest release gives: its bundle as published, or
+	## its one reviewed repair. A repair kept for any other release is an
+	## error, so an expired repair cannot outlive the release it was for.
+	baseline_plan : Str, List(BaselineRepair) -> Try([AsPublished, Repaired(BaselineRepair)], [StaleBaselineRepair({ latest : Str, repaired : Str }), DuplicateBaselineRepair(Str)])
+	baseline_plan = |latest, repairs| {
+		stale = repairs.drop_if(|repair| repair.version == latest)
+		match (repairs.keep_if(|repair| repair.version == latest), stale) {
+			([], []) => Ok(AsPublished)
+			([repair], []) => Ok(Repaired(repair))
+			(_, [repair, ..]) => Err(StaleBaselineRepair({ latest, repaired: repair.version }))
+			(_, []) => Err(DuplicateBaselineRepair(latest))
+		}
+	}
+
+	## The published platform root with a repair's edits made, refusing any
+	## edit whose text does not occur exactly once.
+	repaired_root : Str, List({ before : Str, after : Str }) -> Try(Str, [BaselineEditDoesNotApply(Str)])
+	repaired_root = |source, edits|
+		edits.fold_until(
+			Ok(source),
+			|result, edit| match result {
+				Ok(text) => match text.split_on(edit.before) {
+					[head, tail] => Continue(Ok("${head}${edit.after}${tail}"))
+					_ => Break(Err(BaselineEditDoesNotApply(edit.before)))
+				}
+				Err(error) => Break(Err(error))
+			},
+		)
+
+	## Download the published bundle, refuse it unless its SHA-256 is the one
+	## recorded with the repair, unpack it and make the repair's edits.
+	## Answers the repaired platform root, under the build directory.
+	repair_baseline! : SpecSuite.Options, { url : Str, repair : BaselineRepair } => Try(Str, _)
+	repair_baseline! = |o, { url, repair }| {
+		dir = "${o.build_dir}/api-baseline/${repair.version}"
+		SpecSuite.fresh_dir!("${dir}/package")?
+		Proc.run!({ program: "curl", args: ["-fsSL", "-o", "${dir}/bundle.tar.zst", url], cwd: o.root })?
+		digest = Str.from_utf8_lossy(Proc.capture!({ program: "sha256sum", args: ["${dir}/bundle.tar.zst"], cwd: o.root })?).split_on(" ").first() ?? ""
+		if digest != repair.sha256 {
+			return Err(BaselineBundleChanged({ version: repair.version, recorded: repair.sha256, downloaded: digest }))
+		}
+		Proc.run!({ program: "zstd", args: ["-q", "-d", "-f", "-o", "${dir}/bundle.tar", "${dir}/bundle.tar.zst"], cwd: o.root })?
+		Proc.run!({ program: "tar", args: ["-xf", "${dir}/bundle.tar", "-C", "${dir}/package"], cwd: o.root })?
+		root = "${dir}/package/main.roc"
+		source = Path.read_utf8!(Path.utf8(root))?
+		Path.write_utf8!(Path.utf8(root), ApiDocs.repaired_root(source, repair.edits)?)?
+		Ok(root)
 	}
 
 	## Refuse an HTTP error before interpreting its body as release metadata.
@@ -237,6 +331,42 @@ ApiDocs := [].{
 		}
 		Ok($problems)
 	}
+}
+
+## The latest release takes its reviewed repair, a release without one is
+## compared as published, and a repair kept past its release fails.
+expect {
+	repair = { version: "0.5.0", sha256: "00", reason: "r", edits: [] }
+	actual =
+		\\current: ${Str.inspect(ApiDocs.baseline_plan("0.5.0", [repair]))}
+		\\none: ${Str.inspect(ApiDocs.baseline_plan("0.6.0", []))}
+		\\stale: ${Str.inspect(ApiDocs.baseline_plan("0.6.0", [repair]))}
+		\\twice: ${Str.inspect(ApiDocs.baseline_plan("0.5.0", [repair, repair]))}
+	expected =
+		\\current: Ok(Repaired({ edits: [], reason: "r", sha256: "00", version: "0.5.0" }))
+		\\none: Ok(AsPublished)
+		\\stale: Err(StaleBaselineRepair({ latest: "0.6.0", repaired: "0.5.0" }))
+		\\twice: Err(DuplicateBaselineRepair("0.5.0"))
+	actual == expected
+}
+
+## 0.5.0's repair adds exactly `EngineOnly` to the exposed modules of its
+## published root, and nothing else.
+expect {
+	repair = ApiDocs.baseline_repairs.find_first(|r| r.version == "0.5.0")?
+	published = "platform \"\"\n\trequires {}\n\texposes [Engine, Files, Html, Port, PortJson, Table, Wire, Worker]\n\tpackages {}\n\tprovides {}\nimport Core\nimport Engine\nimport Files\n"
+	repaired = ApiDocs.repaired_root(published, repair.edits)?
+	{ before: ApiDocs.modules(published)?, after: ApiDocs.modules(repaired)? } == { before: ["Engine", "Files", "Html", "Port", "PortJson", "Table", "Wire", "Worker"], after: ["Engine", "EngineOnly", "Files", "Html", "Port", "PortJson", "Table", "Wire", "Worker"] }
+}
+
+## An edit whose text is missing or repeated refuses the baseline rather
+## than comparing against a root the repair was not reviewed for.
+expect {
+	edit = { before: "import Engine\n", after: "import Engine\nimport EngineOnly\n" }
+	{
+		missing: ApiDocs.repaired_root("import Html\n", [edit]),
+		twice: ApiDocs.repaired_root("import Engine\nimport Engine\n", [edit]),
+	} == { missing: Err(BaselineEditDoesNotApply("import Engine\n")), twice: Err(BaselineEditDoesNotApply("import Engine\n")) }
 }
 
 ## A successful release response preserves the actual asset URLs for the baseline.
