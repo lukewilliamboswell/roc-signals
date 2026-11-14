@@ -118,7 +118,9 @@ this document and the implementation are tracked in issues.
    the page supplies at mount. The host never exposes its state to an app,
    and no JavaScript value enters Roc.
 6. **Cost is visible and bounded.** Payload size, startup, per-event work, and
-   memory are measured and budgeted, and in-flight work has fixed caps with
+   memory are measured, and budgeted wherever the repository alone decides
+   them: the size of the platform’s JavaScript is checked, and the size of a
+   module, which also follows the compiler, is reported, and in-flight work has fixed caps with
    typed refusal.
 7. **Testable at the right boundary.** Reactive semantics, ordering, work and
    cleanup are asserted in fast, deterministic native specs. The same specs
@@ -156,7 +158,8 @@ this document and the implementation are tracked in issues.
   contract-error class has a spec asserting its diagnostic.
 - **External evidence:** the keyed js-framework-benchmark run against declared
   comparison frameworks, Conduit passing its journey against a RealWorld
-  backend in Chrome, and recorded compressed size budgets.
+  backend in Chrome, and recorded compressed sizes of the platform’s JavaScript files, checked,
+  and of each example’s module, reported.
 - **First frame:** the built page paints before the module arrives, stays
   inert until ordinary mounting, and behaves like an unprerendered mount
   after replacement. Native and Chrome specs cover the same app behavior.
@@ -4387,7 +4390,7 @@ architecture are recorded here:
   compiler or carries an absolute path.
 - **Roc scripts.** Automation is Roc scripts under `scripts/`; one `check`
   task runs formatting, `roc test`, every example's specs natively and in
-  Chrome, fuzz corpus replay, size budgets, and the host
+  Chrome, fuzz corpus replay, the size of the platform’s JavaScript files, and the host
   and runtime contract tests. CI calls Blueprint tasks, never script paths;
   on macOS and Windows, where Blueprint does not run, CI builds apps' spec
   runners with `roc` and runs their specs, as an app author there does.
@@ -4447,7 +4450,7 @@ of them is platform semantics.
 | [roc-lang/roc#12970](https://github.com/roc-lang/roc/issues/12970) | `roc check` rejects a function that returns a function whose local helper is called after its parameter meets a `where` clause, such as a function that returns a table view's row template | A row template is not returned from a helper. The helper takes the key and the row as arguments, and the site is given a lambda that passes them on with whatever else it needs |
 
 Code size is the main open cost of the architecture and is tracked against
-#12847 and #12848, with each over-budget app's size budget linking its issue.
+#12847 and #12848, with each example’s reported size beside them.
 In-place writes of large values in shipping builds are tracked against
 #12957 and #13019; boxed local-state captures are also affected by #13012.
 
