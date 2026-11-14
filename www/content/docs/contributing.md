@@ -639,6 +639,11 @@ automatically retries the original work. Remove these branches once the
 corresponding upstream fixes are available; do not extend a skip to an
 unverified compiler version.
 
+The tooling compiler is `nightly-2026-11-13-03dce41`, matching the compiler
+used by roc-parser 6.0.0-rc.2. Earlier toolchains cannot resolve the released
+parser's nominal type aliases. `Blueprint.lock` records the published archive
+digests for each supported system.
+
 The repository follows roc-automation's three-compiler model:
 
 | Compiler | Selected by | Used for |
