@@ -9743,9 +9743,10 @@ flush_turn = |incoming, programs| {
 ## copied a written list on every event that reaches this function, even
 ## one whose queue is empty and whose loop never runs: 8 bytes per element
 ## of a `List(U64)` in local state or in a store cell. This works around an
-## optimizer defect of the roc-lang/roc#12971 family (a `while` loop over a
-## `var` holding a record of refcounted fields), reported against the
-## engine as roc-lang/roc#13019; it has no standalone reproduction yet.
+## optimizer defect (a `while` loop over a `var` holding a record of
+## refcounted fields) tracked with the optimized copies of
+## https://github.com/roc-lang/roc/issues/12957; it has no standalone
+## reproduction yet.
 drain : App(st) -> App(st)
 drain = |{ store: store0, root: root0, tx: tx0, programs }| {
 	var $store = store0
