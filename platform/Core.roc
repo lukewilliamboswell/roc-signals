@@ -347,7 +347,7 @@ Core := [].{
 	## Other modifiers of this event keep the first earlier row per key.
 	table : List({ key : k, row : v }) -> Cells(whole, Table(k, v), Cell(whole, Table(k, v)))
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-	table = |rows| Core.table_of(rows, |table| table, |table| table)
+	table = |rows| Core.table_of(rows, |table_data| table_data, |table_data| table_data)
 
 	## Build the generated table lens through its public wrapper. Conversions
 	## move the representation whole; the guard and bookkeeping remain here.
@@ -762,7 +762,7 @@ Core := [].{
 		encoder_for = |encoding| {
 			## The format's type, named so its methods can be called.
 			Encoding : encoding
-			|file, state| Encoding.encode_file(encoding, file, state)
+			|file, encoder_state| Encoding.encode_file(encoding, file, encoder_state)
 		}
 
 		## Read the file with the format's `parse_file`.
@@ -771,7 +771,7 @@ Core := [].{
 		parser_for = |encoding| {
 			## The format's type, named so its methods can be called.
 			Encoding : encoding
-			|state| Encoding.parse_file(encoding, state)
+			|parser_state| Encoding.parse_file(encoding, parser_state)
 		}
 	}
 
@@ -1595,15 +1595,15 @@ Core := [].{
 
 		## Transform a successful answer without changing the request or its errors.
 		map_ok : Ask(a, e), (a -> b) -> Ask(b, e)
-		map_ok = |{ request, read }, f| { request, read: |result| read(result).map_ok(f) }
+		map_ok = |{ request, read }, f| { request, read: |raw_result| read(raw_result).map_ok(f) }
 
 		## Transform an error without changing the request or its answer type.
 		map_err : Ask(o, a), (a -> b) -> Ask(o, b)
-		map_err = |{ request, read }, f| { request, read: |result| read(result).map_err(f) }
+		map_err = |{ request, read }, f| { request, read: |raw_result| read(raw_result).map_err(f) }
 
 		## Classify the whole typed result, for example an HTTP status as an error.
 		map : Ask(a, e), (Try(a, e) -> Try(b, f)) -> Ask(b, f)
-		map = |{ request, read }, f| { request, read: |result| f(read(result)) }
+		map = |{ request, read }, f| { request, read: |raw_result| f(read(raw_result)) }
 
 		## The request as data, for pure tests of a plan's URL, payload and policies.
 		sent : Ask(o, e) -> Request
@@ -1617,12 +1617,12 @@ Core := [].{
 
 	## Deliberately keep every raw result arm for a protocol-level reaction.
 	raw : Request -> Ask(Result, [])
-	raw = |request| { request, read: |result| Ok(result) }
+	raw = |request| { request, read: |raw_result| Ok(raw_result) }
 
 	## Pair an asker's request with its declared reader once, when it is asked.
 	ask_of : asker, input -> Ask(output, error)
 		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error)]
-	ask_of = |asker, input| { request: asker.request(input), read: |result| asker.result(result) }
+	ask_of = |asker, input| { request: asker.request(input), read: |raw_result| asker.result(raw_result) }
 
 	## A command has no answer, so it fits any result type a plan shares.
 	command : Command -> Ask(output, error)
@@ -1726,7 +1726,7 @@ Core := [].{
 	## other result is a contract error.
 	file_text : Result -> Try(Str, FileError)
 	file_text = |res| match res {
-		FileText(text) => Ok(text)
+		FileText(content) => Ok(content)
 		FileFailed(e) => Err(e)
 		Refused => Err(Refused)
 		_ => crash "contract: file_text was given a result that is not from File.read_utf8"
@@ -1775,7 +1775,7 @@ Core := [].{
 	## Ask for the body of a successful HTTP response; non-2xx statuses are errors.
 	http_body : HttpProps -> Ask(Str, HttpError)
 	http_body = |props| Core.http(props).map(
-		|result| match result {
+		|raw_result| match raw_result {
 			Ok(response) => if (response.status >= 200 and response.status < 300) Ok(response.body) else Err(Status(response.status))
 			Err(error) => Err(error)
 		},
@@ -1793,7 +1793,7 @@ Core := [].{
 	again : {} -> Ask({}, error)
 	again = |_| Core.make_ask(
 		Self,
-		|result| match result {
+		|raw_result| match raw_result {
 			Now => Ok({})
 			_ => crash "contract: again received a result other than Now"
 		},
@@ -1803,7 +1803,7 @@ Core := [].{
 	media_changes : Str -> Ask(Bool, [Refused])
 	media_changes = |query| Core.make_ask(
 		MediaChanges(query),
-		|result| match result {
+		|raw_result| match raw_result {
 			Matches(value) => Ok(value)
 			Refused => Err(Refused)
 			_ => crash "contract: media_changes received a non-media result"
@@ -1814,7 +1814,7 @@ Core := [].{
 	popstate : {} -> Ask(Str, [Refused])
 	popstate = |_| Core.make_ask(
 		Popstate,
-		|result| match result {
+		|raw_result| match raw_result {
 			Location(value) => Ok(value)
 			Refused => Err(Refused)
 			_ => crash "contract: popstate received a non-location result"
@@ -1833,7 +1833,7 @@ Core := [].{
 	storage_changes : Str -> Ask([Set(Str), Removed], [Refused])
 	storage_changes = |key| Core.make_ask(
 		StorageChanges(key),
-		|result| match result {
+		|raw_result| match raw_result {
 			Value(value) => Ok(Set(value))
 			Missing => Ok(Removed)
 			Refused => Err(Refused)
@@ -1845,7 +1845,7 @@ Core := [].{
 	storage_write_failures : {} -> Ask({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] }, [Refused])
 	storage_write_failures = |_| Core.make_ask(
 		StorageWriteFailures,
-		|result| match result {
+		|raw_result| match raw_result {
 			StorageFailed(value) => Ok(value)
 			Refused => Err(Refused)
 			_ => crash "contract: storage_write_failures received another result"
@@ -1856,7 +1856,7 @@ Core := [].{
 	online_changes : {} -> Ask(Bool, [Refused])
 	online_changes = |_| Core.make_ask(
 		OnlineChanges,
-		|result| match result {
+		|raw_result| match raw_result {
 			Online(value) => Ok(value)
 			Refused => Err(Refused)
 			_ => crash "contract: online_changes received another result"
@@ -1867,7 +1867,7 @@ Core := [].{
 	visibility_changes : {} -> Ask(Bool, [Refused])
 	visibility_changes = |_| Core.make_ask(
 		VisibilityChanges,
-		|result| match result {
+		|raw_result| match raw_result {
 			Visible(value) => Ok(value)
 			Refused => Err(Refused)
 			_ => crash "contract: visibility_changes received another result"
@@ -1941,7 +1941,7 @@ Core := [].{
 		## Ask every HTTP transfer issued by this site to sample progress, using
 		## the original issued-for item and ordinary turn settlement.
 		with_progress : Reaction(ctx, a, result), ProgressProps, ProgressReaction(ctx, a) -> Reaction(ctx, a, result)
-		with_progress = |reaction, props, progress| { ..reaction, progress: Reporting({ every_ms: if (props.every_ms < 16) 16 else props.every_ms, run: progress.run }) }
+		with_progress = |reaction, props, progress_reaction| { ..reaction, progress: Reporting({ every_ms: if (props.every_ms < 16) 16 else props.every_ms, run: progress_reaction.run }) }
 
 		## One reaction that runs `first` and then `second` on the same
 		## result, as one atomic write: `second` receives the environment
@@ -1986,9 +1986,9 @@ Core := [].{
 	guard_leave = |value| Site(
 		Mount(
 			|env, _args, tx| {
-				on = (value.read)(env)
-				next = if (on) with_fx(tx, |fx| { ..fx, guard: { ..fx.guard, live: fx.guard.live + 1 } }) else tx
-				(guard_inst(value, on), eff_mask(value), count_evals(next, 1))
+				guarded = (value.read)(env)
+				next = if (guarded) with_fx(tx, |fx| { ..fx, guard: { ..fx.guard, live: fx.guard.live + 1 } }) else tx
+				(guard_inst(value, guarded), eff_mask(value), count_evals(next, 1))
 			},
 		),
 		|_| eff_mask(value),
@@ -2080,7 +2080,7 @@ Core := [].{
 					elem = body({ mask: bit(depth), read: |e| e.value, sel: NoSel })
 					(block, t2) = mount_block(In.{ outer: env, value: s }, elem, depth, args.path, args.parent, args.before, { cap: args.cap, enclosing: args.enclosing }, t1)
 					reads = block.reads.bitwise_or(eff_mask(input))
-					rc = { input, pending: cfg.pending, plan: planned, resolve: |value, held, at, result| resolve(value, held.value, at, (held.read)(result)), path: args.path, depth }
+					rc = { input, pending: cfg.pending, plan: planned, resolve: |value, held, at, raw_result| resolve(value, held.value, at, (held.read)(raw_result)), path: args.path, depth }
 					(resource_inst(rc, a, s, owned, block), reads, t2)
 				},
 			),
@@ -2521,7 +2521,7 @@ Core := [].{
 		attrs.fold(
 			[],
 			|out, attribute| match attribute {
-				KeyOn(event, handler, keymap) => out.concat([PropertyV(if (event.event == "keydown") 4 else 5, keymap), On(event, handler)])
+				KeyOn(key_event, handler, keymap) => out.concat([PropertyV(if (key_event.event == "keydown") 4 else 5, keymap), On(key_event, handler)])
 				ShownOn(index, value, handler, showing) => out.concat([PropertyV(index, value), attach_open(index, showing, handler)])
 				_ => out.append(attribute)
 			},
@@ -2771,7 +2771,7 @@ Core := [].{
 
 		## An input's checked state, encoded as a canonical boolean.
 		checked : Prop(Bool)
-		checked = { index: 2, encode: |checked| if (checked) "true" else "false" }
+		checked = { index: 2, encode: |is_checked| if (is_checked) "true" else "false" }
 
 		## The key the pointer hit test reports for this element. Empty text
 		## disables the zone; the key is never interpreted or used as identity.
@@ -2789,11 +2789,11 @@ Core := [].{
 
 	## Listen for a text event with no synchronous browser policy.
 	on : Str, Handler(ctx) -> Attr(ctx)
-	on = |event, handler| Core.on_with(event, {}, handler)
+	on = |event_type, handler| Core.on_with(event_type, {}, handler)
 
 	## Listen for text with static prevention and propagation policies.
 	on_with : Str, Policy, Handler(ctx) -> Attr(ctx)
-	on_with = |event, policy, handler| attach_kind(event, text_kind, policy_bits(policy), handler)
+	on_with = |event_type, policy, handler| attach_kind(event_type, text_kind, policy_bits(policy), handler)
 
 	## Read a checkbox's or radio's checked state as a Boolean on change.
 	on_checked : HandlerOf(ctx, Bool) -> Attr(ctx)
@@ -2802,7 +2802,7 @@ Core := [].{
 	## Receive a pointer record from one of the four pointer event types.
 	## Every move is an occurrence unless `on_pointer_paced` declares otherwise.
 	on_pointer : [Down, Move, Up, Cancel], HandlerOf(ctx, Pointer) -> Attr(ctx)
-	on_pointer = |event, handler| attach_kind(pointer_event(event), pointer_kind(event), 0, handler)
+	on_pointer = |pointer_type, handler| attach_kind(pointer_event(pointer_type), pointer_kind(pointer_type), 0, handler)
 
 	## Capture the pointer on this handler's element during pointerdown,
 	## before its turn can wait. A refused browser capture still dispatches.
@@ -2875,8 +2875,8 @@ Core := [].{
 	## prevents, with `dragover`'s, so the browser does not open the file) and
 	## `"paste"`. The handler receives the files as handles, never their bytes.
 	on_files : [Change, Drop, Paste], FilesHandler(ctx) -> Attr(ctx)
-	on_files = |event, handler| attach_kind(
-		match event {
+	on_files = |file_event, handler| attach_kind(
+		match file_event {
 			Change => "change"
 			Drop => "drop"
 			Paste => "paste"
