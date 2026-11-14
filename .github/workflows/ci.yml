@@ -2,9 +2,13 @@ name: CI
 
 # Every Linux job runs a Blueprint task, so CI and contributors run the same
 # commands: `blueprint run check` is the pull-request gate (the release dry
-# run included), and `blueprint run site` builds the site, its API docs and
-# its live examples. The macOS and Windows jobs run apps' specs with the
-# spec runner `roc build` makes there, as an app author on that system does. A push to main also deploys that build to GitHub Pages,
+# run included), run here as two jobs, Check (`check -- --without-fuzz`)
+# and Fuzz smoke (every registered fuzz target's fixed examples, in shards
+# of `fuzz-smoke`), and `blueprint run site` builds the site, its API docs
+# and its live examples. CI never runs a fuzz campaign: campaigns are a
+# contributor's `blueprint run fuzz`. The macOS and Windows jobs run apps'
+# specs with the spec runner `roc build` makes there, as an app author on
+# that system does. A push to main also deploys that build to GitHub Pages,
 # so the published site always matches main.
 
 on:
@@ -56,9 +60,72 @@ jobs:
           version: nightly-new-compiler
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint check
-      - run: blueprint run check
+      # The fuzz targets are the Fuzz smoke job's; check prints a SKIP line
+      # for each and accounts for every registered target.
+      - run: blueprint run check -- --without-fuzz
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # Every registered fuzz target's fixed examples (declared examples and
+  # saved regressions) on a plain optimized build: each target compiles,
+  # links and runs, and nothing explores. The targets come from the
+  # registry (`Targets.fuzz_targets`), never from this file: each leg runs
+  # shard K of N, where K and N are this matrix's own job index and size,
+  # so a new target lands in some shard, and a leg whose shard would hold
+  # no target fails. Each leg compiles one target at a time (16 GiB per
+  # compiler process), so the legs are what run the compilers in parallel.
+  fuzz-shard:
+    name: Fuzz smoke (shard ${{ matrix.shard }})
+    needs: nightly
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@14a895879f6fea8c2d1a546a2a56c8502decb2a0
+        with:
+          cache: 'true'
+          cache-workload: engine
+      - uses: roc-lang/setup-roc@f5a74bf90aa694b43ab4a7cbfdb19273bc6aa697
+        with:
+          version: nightly-new-compiler
+          nightly-tag: ${{ needs.nightly.outputs.tag }}
+      - env:
+          INDEX: ${{ strategy.job-index }}
+          TOTAL: ${{ strategy.job-total }}
+        run: blueprint run fuzz-smoke -- --shard "$((INDEX + 1))/$TOTAL"
+      # A failing target's build and check logs, roc-fuzz report and
+      # validation are gone with the runner unless they are uploaded.
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: fuzz-smoke-${{ matrix.shard }}
+          path: .build/fuzz-smoke/
+          if-no-files-found: warn
+          retention-days: 7
+
+  # One result for the whole matrix, the check a pull request requires:
+  # it passes only when every shard passed.
+  fuzz:
+    name: Fuzz smoke
+    needs: fuzz-shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - env:
+          RESULT: ${{ needs.fuzz-shard.result }}
+        run: |
+          echo "fuzz smoke shards: $RESULT"
+          test "$RESULT" = success
 
   # The spec runner's link inputs for every system, cross-compiled on Linux
   # with the pinned Zig exactly as the release builds them.
@@ -228,10 +295,10 @@ jobs:
 
   # Publishes the site the Site job built. Only main deploys: the
   # github-pages environment admits no other branch. The deploy waits for
-  # Check, so a main that fails its gate is never published.
+  # Check and Fuzz smoke, so a main that fails its gate is never published.
   deploy-site:
     name: Deploy site
-    needs: [check, site]
+    needs: [check, fuzz, site]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
