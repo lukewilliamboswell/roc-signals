@@ -31,7 +31,7 @@ LabStore := [Bench].{
 				refused: Engine.cell(0.U64),
 				ticks: Engine.cell(0.U64),
 				save: Engine.cell(Engine.outbox({})),
-			}.Engine.Cells.with_reset(|cells, reset| { jobs: cells.jobs, refused: cells.refused, ticks: cells.ticks, save: cells.save, reset }),
+			}.Engine.Cells.with_reset(|work_cells, reset| { jobs: work_cells.jobs, refused: work_cells.refused, ticks: work_cells.ticks, save: work_cells.save, reset }),
 		}.Engine.Cells,
 	)
 

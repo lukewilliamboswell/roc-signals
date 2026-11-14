@@ -61,7 +61,7 @@ Orders := [].{
 		is_eq : _
 
 		pack : { day : U64, category : U64, region : U64, cents : U64 } -> Order
-		pack = |{ day, category, region, cents }| Order.(day.shl_wrap(23).bitwise_or(category.shl_wrap(20)).bitwise_or(region.shl_wrap(16)).bitwise_or(cents).to_u32_wrap())
+		pack = |{ day: order_day, category: order_category, region: order_region, cents: order_cents }| Order.(order_day.shl_wrap(23).bitwise_or(order_category.shl_wrap(20)).bitwise_or(order_region.shl_wrap(16)).bitwise_or(order_cents).to_u32_wrap())
 
 		day : Order -> U64
 		day = |Order.(word)| word.shr_zf_wrap(23).to_u64()

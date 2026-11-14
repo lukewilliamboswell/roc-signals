@@ -57,7 +57,7 @@ LogStore := [Explorer].{
 				first: Engine.cell(0.U64),
 				asked: Engine.cell(0.U32),
 				geometry: Engine.cell(LogStore.awaiting_geometry),
-			}.Engine.Cells.with_reset(|cells, reset| { page: cells.page, first: cells.first, asked: cells.asked, geometry: cells.geometry, reset }),
+			}.Engine.Cells.with_reset(|place_cells, reset| { page: place_cells.page, first: place_cells.first, asked: place_cells.asked, geometry: place_cells.geometry, reset }),
 			viewport: Engine.cell(Log.Viewport.waiting),
 			scrolling: Engine.cell(Engine.outbox({})),
 			# Construct the full union: an open Light initializer crashes monotype

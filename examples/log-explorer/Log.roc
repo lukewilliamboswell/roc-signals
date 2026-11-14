@@ -100,7 +100,7 @@ Log := [].{
 
 		## The fixed-height lines this content box can draw.
 		for_height : U32 -> Viewport
-		for_height = |height| Fitted(height)
+		for_height = |pixels| Fitted(pixels)
 
 		## The last observed content-box height, without inventing one before layout.
 		height : Viewport -> Try(U32, [Unmeasured])
@@ -165,18 +165,18 @@ Log := [].{
 	## viewport whose last line's own offset lies beyond that physical end.
 	first_at : ScrollMap, U32 -> U64
 	first_at = |map, top| {
-		span = scroll_span(map)
-		if span.pixels == 0 or span.last == 0 {
+		extent = scroll_span(map)
+		if extent.pixels == 0 or extent.last == 0 {
 			return 0
 		}
-		offset = top.min(span.pixels)
-		if offset == span.pixels {
-			return span.last
+		offset = top.min(extent.pixels)
+		if offset == extent.pixels {
+			return extent.last
 		}
 		if map.total.to_u128() * map.line_height.to_u128() <= Log.spacer_cap.to_u128() {
-			((offset.to_u64() + map.line_height.to_u64() // 2) // map.line_height.to_u64()).min(span.last)
+			((offset.to_u64() + map.line_height.to_u64() // 2) // map.line_height.to_u64()).min(extent.last)
 		} else {
-			((offset.to_u128() * span.last.to_u128() + span.pixels.to_u128() // 2) // span.pixels.to_u128()).to_u64_wrap()
+			((offset.to_u128() * extent.last.to_u128() + extent.pixels.to_u128() // 2) // extent.pixels.to_u128()).to_u64_wrap()
 		}
 	}
 
@@ -185,15 +185,15 @@ Log := [].{
 	## pixel represents several lines. A viewport with no scroll range is zero.
 	offset_of : ScrollMap, U64 -> U32
 	offset_of = |map, first| {
-		span = scroll_span(map)
-		if span.pixels == 0 or span.last == 0 {
+		extent = scroll_span(map)
+		if extent.pixels == 0 or extent.last == 0 {
 			return 0
 		}
-		line = first.min(span.last)
+		line = first.min(extent.last)
 		if map.total.to_u128() * map.line_height.to_u128() <= Log.spacer_cap.to_u128() {
-			(line.to_u128() * map.line_height.to_u128()).min(span.pixels.to_u128()).to_u32_wrap()
+			(line.to_u128() * map.line_height.to_u128()).min(extent.pixels.to_u128()).to_u32_wrap()
 		} else {
-			((line.to_u128() * span.pixels.to_u128() + span.last.to_u128() // 2) // span.last.to_u128()).to_u32_wrap()
+			((line.to_u128() * extent.pixels.to_u128() + extent.last.to_u128() // 2) // extent.last.to_u128()).to_u32_wrap()
 		}
 	}
 

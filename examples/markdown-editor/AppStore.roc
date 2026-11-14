@@ -68,8 +68,8 @@ AppStore := [Editor].{
 	## agree. Without a draft the saved document, or the sample, is clean.
 	start : Engine.Boot -> _
 	start = |boot| {
-		saved = Engine.boot_storage(boot, "md.document") ?? AppStore.sample_document
-		source = Engine.boot_session(boot, "md.draft") ?? saved
+		saved_document = Engine.boot_storage(boot, "md.document") ?? AppStore.sample_document
+		source = Engine.boot_session(boot, "md.draft") ?? saved_document
 		restored = Engine.boot_session(boot, "md.draft").is_ok()
 		AppStore.store
 			.with_initial(AppStore.cells.source, source)

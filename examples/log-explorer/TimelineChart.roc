@@ -48,7 +48,7 @@ TimelineChart := [].{
 	figure : Props -> [Absent, Present(Str)]
 	figure = |props|
 		match TimelineChart.chart(props) {
-			Ok(chart) => Present(chart.to_json())
+			Ok(figure_chart) => Present(figure_chart.to_json())
 			Err(_) => Absent
 		}
 

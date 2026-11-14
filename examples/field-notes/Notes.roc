@@ -372,8 +372,8 @@ Notes := {}.{
 	settle_send = |board, slot, issue, ok| {
 		lane = Notes.lane_at(board, slot)
 		match issue.request {
-			Send(token) if lane.generation == issue.generation => {
-				settled = if (ok) TaskDone(token) else TaskFailed(token)
+			Send(send_token) if lane.generation == issue.generation => {
+				settled = if (ok) TaskDone(send_token) else TaskFailed(send_token)
 				Notes.settle({ ..board, lanes: board.lanes.set(slot, { ..lane, settled }) ?? board.lanes })
 			}
 			_ => board

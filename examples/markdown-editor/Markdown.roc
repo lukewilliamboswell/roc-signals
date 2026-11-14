@@ -303,7 +303,7 @@ Markup :: Str.{
 	Tag : [H1, H2, H3, H4, H5, H6, P, Blockquote, Pre, Code, Ul, Li, Strong]
 
 	text : Str -> Markup
-	text = |text| Markup.(escape(text))
+	text = |source_text| Markup.(escape(source_text))
 
 	element : Markup.Tag, Markup -> Markup
 	element = |tag, Markup.(body)| {

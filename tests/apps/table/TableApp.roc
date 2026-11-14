@@ -154,7 +154,7 @@ TableApp := [Todos].{
 		items: {
 			todos: Engine.table([]),
 			next: Engine.cell(0.U64),
-		}.Engine.Cells.with_reset(|cells, reset| { todos: cells.todos, next: cells.next, reset }),
+		}.Engine.Cells.with_reset(|item_cells, reset| { todos: item_cells.todos, next: item_cells.next, reset }),
 		shadow: Engine.table([]),
 		listing: Engine.cell({ show: Open, order: ByQty }),
 		window: Engine.cell({ start: 0.U64, count: 30.U64 }),

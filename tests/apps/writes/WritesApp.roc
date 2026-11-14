@@ -46,7 +46,7 @@ WritesApp := [Writes].{
 			form: {
 				draft: Engine.cell(""),
 				sent: Engine.cell(0.I64),
-			}.Engine.Cells.with_reset(|cells, reset| { cells, reset }),
+			}.Engine.Cells.with_reset(|form_cells, reset| { cells: form_cells, reset }),
 			score: Engine.cell(0.I64),
 			bonus: Engine.cell(0.I64),
 		}.Engine.Cells,
