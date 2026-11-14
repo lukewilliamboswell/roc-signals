@@ -233,6 +233,19 @@ number.
 | `(set-media "QUERY" BOOL)` | Report a declared media query's new match |
 | `(focus LOC)` / `(blur LOC)` | Move focus, delivering `blur` and `focus` to handlers that listen. Focusing an element that cannot take focus does nothing |
 
+Input and button actions use the HTML control's effective type. An input with
+missing, empty or invalid `type` behaves as a text input; a button with the same
+kinds of `type` behaves as a submit button. Keyword matching ignores ASCII case
+but does not trim spaces or fold non-ASCII letters. For example, `type="txet"`
+can be filled and blocks implicit form submission just like `type="text"`.
+Checking it or choosing files still fails the step. These defaults apply to HTML
+controls, not foreign elements with the same local name.
+
+The `type` attribute remains raw: `expect-attr` sees the exact authored spelling,
+including empty text, and `expect-no-attr` sees its absence. This does not change
+the live property readings of `value`, `checked` or `disabled` described under
+[Assertions](#assertions).
+
 For a typed `Html.select`, ordinary `select-option` chooses by the stable
 choice key and delivers its current application value. A scripted `change`
 with a foreign or removed key exercises `NotOffered`; the spec then checks
