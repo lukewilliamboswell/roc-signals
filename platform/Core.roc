@@ -6016,11 +6016,20 @@ Cols(r, item) : {
 	## nested sites left (admitted requests that outlive the row).
 	dropped : List({ key : Str, item : item, orphans : List(Orphan(r)) }),
 
+	## Each slot's shown dialog and popover addresses, in show-intent
+	## order, so a move re-emits them in that order without scanning the
+	## row (`move_row`). A removed row's map is emptied.
+	shown : List(ShownMap),
+
+	## The one row hole a browser echo of an open state marked this turn
+	## (`row_echo`): a routed event fires one handler, so a turn echoes at
+	## most once. `settle` evaluates it and clears it; removing its row
+	## clears it too.
+	pending_echo : [NoEcho, Echo({ slot : U32, hole : U64 })],
+
 	## The host node id of each slot's row element (dense node ids,
 	## shared with static nodes; routes map them back to site and slot),
 	## or 0 for a slot that holds no row (`is_live`).
-	shown : List(ShownMap),
-	pending_echo : [NoEcho, Echo({ slot : U32, hole : U64 })],
 	rnodes : List(U32),
 }
 
