@@ -60,7 +60,7 @@ PicturePage := [].{
 	## while refusing structural repair. Exactly one explicit opt-in is required.
 	parse : Str -> Try(Template, [InvalidTemplate(Str)])
 	parse = |page| {
-		parsed = ParsedHtml.parse_source(page, { authored_structure: Exact }, False) ? |InvalidMarkup(problem)| InvalidTemplate("${problem.line.to_str()}:${problem.column.to_str()}: ${Str.inspect(problem.problem)}")
+		parsed = ParsedHtml.parse_source(page, { exact_structure: True, strict_foreign_spelling: True }, False) ? |InvalidMarkup(problem)| InvalidTemplate("${problem.line.to_str()}:${problem.column.to_str()}: ${Str.inspect(problem.problem)}")
 		marked = parsed.tree.nodes.map_with_index(|node, index| { node, index }).keep_if(|candidate| candidate.node.attributes.any(|attribute| attribute.name.namespace == NoNamespace and attribute.name.prefix == Unprefixed and attribute.name.local == "data-roc-picture"))
 		selected = match marked {
 			[one] => one

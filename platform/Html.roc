@@ -1,8 +1,8 @@
+import parser.MarkupFacts
 import Engine exposing [Attr, Elem, FilesHandler, Handler, HandlerOf, Signal]
 import Layout
 import Spelling
 import MarkupLiteral
-import parser.Html as MarkupHtml
 
 ## Typed helpers for common HTML elements, attributes and events, built on
 ## `Engine.element`, `Engine.attr` and `Engine.on`.
@@ -50,7 +50,7 @@ Html := [].{
 
 		## Check a computed keyword in any ASCII case and keep its typed meaning.
 		from_str : Str -> Try(InputType, [NotAnInputType(Str)])
-		from_str = |text| match MarkupHtml.ascii_lower(text) {
+		from_str = |text| match Spelling.ascii_lower(text) {
 			"hidden" => Ok(Hidden)
 			"text" => Ok(Text)
 			"search" => Ok(Search)
@@ -74,7 +74,7 @@ Html := [].{
 			"reset" => Ok(Reset)
 			"button" => Ok(Button)
 			_ => {
-				words = MarkupHtml.attribute_keywords({ element: "input", attribute: "type" }) ?? crash "Html.InputType: parser must describe input type keywords"
+				words = MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { namespace: NoNamespace, prefix: Unprefixed, local: "type" }) ?? crash "Html.InputType: parser must describe input type keywords"
 				hint = Spelling.suggest(text, words)
 				advice = if (hint.is_empty()) " choose a listed HTML input keyword" else hint
 				Err(NotAnInputType("${Str.inspect(text)} is not an input type;${advice}"))
@@ -501,7 +501,7 @@ hidden_presence = |state| match state {
 expect {
 	kinds : List(Html.InputType)
 	kinds = [Hidden, Text, Search, Tel, Url, Email, Password, Date, Month, Week, Time, DatetimeLocal, Number, Range, Color, Checkbox, Radio, File, Submit, Image, Reset, Button]
-	kinds.map(|kind| kind.text()) == MarkupHtml.attribute_keywords({ element: "input", attribute: "type" })?
+	kinds.map(|kind| kind.text()) == MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { namespace: NoNamespace, prefix: Unprefixed, local: "type" })?
 }
 
 ## Both literal and computed keyword checks fold only ASCII spelling.

@@ -1,3 +1,4 @@
+import parser.MarkupFacts
 import parser.Markup
 import parser.MarkupTemplate
 import parser.Html as ParsedHtml
@@ -56,7 +57,7 @@ draw = |plan, index, values| {
 			for attribute in node.attributes {
 				value = match plan.slots.find_first(|slot| slot.target == AttributeSlot({ node: index, attribute: $position })) {
 					Ok(slot) => values.get(slot.index) ?? crash "reference: attribute part is missing"
-					Err(_) => if name.namespace == Uri(Markup.html_namespace) and attribute.name.namespace == NoNamespace and ParsedHtml.boolean_attributes.contains(attribute.name.local) {
+					Err(_) => if MarkupFacts.is_boolean_attribute(name, attribute.name) {
 						""
 					} else attribute.value
 				}
@@ -85,7 +86,7 @@ omitted_indentation = |value| {
 ## Indexed substitution keeps arbitrary data out of source syntax. Comment data
 ## and inline space survive, while the root's newline indentation is omitted.
 expect {
-	plan = ParsedHtml.parse_segments(["\n<div><span>", "</span><!--roc:node=9--> <b>fixed</b></div>\n"], { authored_structure: Exact })?
+	plan = ParsedHtml.parse_segments(["\n<div><span>", "</span><!--roc:node=9--> <b>fixed</b></div>\n"], { exact_structure: True, strict_foreign_spelling: True })?
 	actual = Reference.render(plan, ["<>&\u(FEFF)"])
 	actual == [
 		Element({
@@ -99,7 +100,7 @@ expect {
 
 ## The same source binding fans out to the option and its selectedcontent clone.
 expect {
-	plan = ParsedHtml.parse_segments(["<select><button><selectedcontent></selectedcontent></button><option selected>", "</option></select>"], { authored_structure: Exact })?
+	plan = ParsedHtml.parse_segments(["<select><button><selectedcontent></selectedcontent></button><option selected>", "</option></select>"], { exact_structure: True, strict_foreign_spelling: True })?
 	Reference.text(Reference.render(plan, ["chosen"])) == "chosenchosen" and plan.slots.len() == 2
 }
 
@@ -111,7 +112,7 @@ expect {
 ## Parsed HTML template descendants belong to its inert content fragment.
 ## They do not appear in childNodes, textContent or ordinary page locators.
 expect {
-	plan = ParsedHtml.parse_segments(["<template><span>", "</span><!--roc:node=9--></template>"], { authored_structure: Exact })?
+	plan = ParsedHtml.parse_segments(["<template><span>", "</span><!--roc:node=9--></template>"], { exact_structure: True, strict_foreign_spelling: True })?
 	actual = Reference.render(plan, ["inert data"])
 	actual == [
 		Element({
@@ -126,7 +127,7 @@ expect {
 ## XML-parsed XHTML templates also place descendants in inert content. The
 ## direct raw constructor remains a separate ordinary-child operation.
 expect {
-	plan = ParsedSvg.parse_segments(["<svg xmlns='http://www.w3.org/2000/svg'><foreignObject><h:template xmlns:h='http://www.w3.org/1999/xhtml'><h:span>", "</h:span><!--xml comment--></h:template></foreignObject></svg>"], { authored_structure: Exact })?
+	plan = ParsedSvg.parse_segments(["<svg xmlns='http://www.w3.org/2000/svg'><foreignObject><h:template xmlns:h='http://www.w3.org/1999/xhtml'><h:span>", "</h:span><!--xml comment--></h:template></foreignObject></svg>"], { exact_structure: True, strict_foreign_spelling: True })?
 	actual = Reference.render(plan, ["xml child"])
 	Reference.text(actual) == "" and match actual {
 		[Element(svg)] => match svg.children {

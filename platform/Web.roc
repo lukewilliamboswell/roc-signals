@@ -1,7 +1,5 @@
+import parser.MarkupFacts
 import Spelling
-import parser.Html as MarkupHtml
-import parser.Svg as MarkupSvg
-import parser.MathML as MarkupMathML
 
 ## Names used by DOM construction, event listeners and HTTP requests. Literals
 ## are checked while compiling; from_str validates names assembled by an app.
@@ -49,13 +47,13 @@ Web := [].{
 		from_quote : Str -> Try(Tag, [BadQuotedBytes(Str)])
 		from_quote = |text| {
 			tag = Tag.from_str(text).map_err(|NotATag(note)| BadQuotedBytes(note))?
-			if MarkupHtml.Vocabulary.elements.contains(MarkupHtml.ascii_lower(text)) or MarkupSvg.Vocabulary.elements.contains(text) or text.contains("-") {
+			if MarkupFacts.element_names(Uri("http://www.w3.org/1999/xhtml")).contains(Spelling.ascii_lower(text)) or MarkupFacts.element_names(Uri("http://www.w3.org/2000/svg")).contains(text) or text.contains("-") {
 				return Ok(tag)
 			}
-			if MarkupMathML.Vocabulary.elements.contains(text) {
+			if MarkupFacts.element_names(Uri("http://www.w3.org/1998/Math/MathML")).contains(text) {
 				return Err(BadQuotedBytes("<${text}> is a MathML element, which Engine.element does not create in its namespace; write MathML in a markup literal. Web.Tag.from_str(${Str.inspect(text)}) writes it as an unknown HTML element"))
 			}
-			hint = Spelling.suggest(text, MarkupHtml.Vocabulary.elements.concat(MarkupSvg.Vocabulary.elements))
+			hint = Spelling.suggest(text, MarkupFacts.element_names(Uri("http://www.w3.org/1999/xhtml")).concat(MarkupFacts.element_names(Uri("http://www.w3.org/2000/svg"))))
 			Err(BadQuotedBytes("<${text}> is not an HTML or SVG element in the pinned roc-parser vocabulary;${hint} a custom element's name holds a hyphen; any other name is written Web.Tag.from_str(${Str.inspect(text)})"))
 		}
 
@@ -114,8 +112,8 @@ Web := [].{
 				return Err(BadQuotedBytes("set `data-testid` with Engine.test_id or Engine.test_id_s"))
 			}
 			name = AttrName.from_str(text).map_err(|NotAnAttribute(note)| BadQuotedBytes(note))?
-			if text.starts_with("aria-") and !MarkupHtml.Vocabulary.aria_attributes.contains(text) {
-				hint = Spelling.suggest(text, MarkupHtml.Vocabulary.aria_attributes)
+			if text.starts_with("aria-") and !MarkupFacts.aria_attribute_names.contains(text) {
+				hint = Spelling.suggest(text, MarkupFacts.aria_attribute_names)
 				return Err(BadQuotedBytes("${Str.inspect(text)} is not an ARIA attribute in the pinned roc-parser vocabulary;${hint} one newer than the pinned vocabulary is written Web.AttrName.from_str(${Str.inspect(text)})"))
 			}
 			Ok(name)
@@ -281,9 +279,9 @@ expect Web.EventType.from_str("").is_err() and Web.EventType.from_quote("").is_e
 ## The parser owns the complete catalogue: every exported HTML/SVG/ARIA name
 ## remains usable, while HTML membership preserves case-insensitive spelling.
 expect {
-	MarkupHtml.Vocabulary.elements.all(|name| Web.Tag.from_quote(name).is_ok() and Web.Tag.from_str(name).is_ok()) and
-		MarkupSvg.Vocabulary.elements.all(|name| Web.Tag.from_quote(name).is_ok() and Web.Tag.from_str(name).is_ok()) and
-			MarkupHtml.Vocabulary.aria_attributes.all(|name| Web.AttrName.from_quote(name).is_ok() and Web.AttrName.from_str(name).is_ok()) and
+	MarkupFacts.element_names(Uri("http://www.w3.org/1999/xhtml")).all(|name| Web.Tag.from_quote(name).is_ok() and Web.Tag.from_str(name).is_ok()) and
+		MarkupFacts.element_names(Uri("http://www.w3.org/2000/svg")).all(|name| Web.Tag.from_quote(name).is_ok() and Web.Tag.from_str(name).is_ok()) and
+			MarkupFacts.aria_attribute_names.all(|name| Web.AttrName.from_quote(name).is_ok() and Web.AttrName.from_str(name).is_ok()) and
 				Web.Tag.from_quote("DIV")?.text() == "DIV" and Web.Tag.from_quote("foreignObject")?.text() == "foreignObject"
 }
 
@@ -291,9 +289,9 @@ expect {
 ## is MathML vocabulary but the custom-name escape precedes that diagnostic;
 ## accepting its spelling does not create a MathML namespace.
 expect {
-	MarkupHtml.Vocabulary.elements.contains("a") and MarkupSvg.Vocabulary.elements.contains("a") and
+	MarkupFacts.element_names(Uri("http://www.w3.org/1999/xhtml")).contains("a") and MarkupFacts.element_names(Uri("http://www.w3.org/2000/svg")).contains("a") and
 		Web.Tag.from_quote("a").is_ok() and Web.Tag.from_quote("my-new-widget").is_ok() and
-			MarkupMathML.Vocabulary.elements.contains("annotation-xml") and Web.Tag.from_quote("annotation-xml").is_ok() and
+			MarkupFacts.element_names(Uri("http://www.w3.org/1998/Math/MathML")).contains("annotation-xml") and Web.Tag.from_quote("annotation-xml").is_ok() and
 				Web.Tag.from_quote("-widget").is_err() and Web.Tag.from_quote("my widget-name").is_err() and
 					Web.Tag.from_quote("math").is_err() and Web.Tag.from_str("math").is_ok()
 }
@@ -309,10 +307,10 @@ expect {
 ## Suggestions use the threshold, case folding, initial-letter and lexical
 ## tie rules; supplied candidate order never selects a different answer.
 expect {
-	Spelling.suggest("dvi", MarkupHtml.Vocabulary.elements) == " did you mean \"div\"?" and
-		Spelling.suggest("aria-lable", MarkupHtml.Vocabulary.aria_attributes) == " did you mean \"aria-label\"?" and
-			Spelling.suggest("lineargradient", MarkupSvg.Vocabulary.elements) == " did you mean \"linearGradient\"?" and
-				Spelling.suggest("zzzzzzzzzzzzzzzzzzzz", MarkupHtml.Vocabulary.elements).is_empty() and
+	Spelling.suggest("dvi", MarkupFacts.element_names(Uri("http://www.w3.org/1999/xhtml"))) == " did you mean \"div\"?" and
+		Spelling.suggest("aria-lable", MarkupFacts.aria_attribute_names) == " did you mean \"aria-label\"?" and
+			Spelling.suggest("lineargradient", MarkupFacts.element_names(Uri("http://www.w3.org/2000/svg"))) == " did you mean \"linearGradient\"?" and
+				Spelling.suggest("zzzzzzzzzzzzzzzzzzzz", MarkupFacts.element_names(Uri("http://www.w3.org/1999/xhtml"))).is_empty() and
 					Spelling.suggest("cat", ["bat", "cap"]) == Spelling.suggest("cat", ["cap", "bat"]) and
 						Spelling.suggest("cat", ["bat", "cap"]) == " did you mean \"cap\"?" and
 							Spelling.suggest("cat", ["can", "cap"]) == " did you mean \"can\"?"
@@ -334,7 +332,7 @@ expect {
 ## SVG case. These cases are examples, not another element vocabulary.
 expect {
 	pairs = [("dvi", "div"), ("spna", "span"), ("butotn", "button"), ("inpt", "input"), ("texarea", "textarea"), ("selec", "select"), ("optoin", "option"), ("lable", "label"), ("artcle", "article"), ("sectoin", "section"), ("heder", "header"), ("foooter", "footer"), ("mian", "main"), ("nva", "nav"), ("imgg", "img"), ("canavs", "canvas"), ("svgg", "svg"), ("lineargradient", "linearGradient"), ("foreignobject", "foreignObject"), ("cricle", "circle")]
-	names = MarkupHtml.Vocabulary.elements.concat(MarkupSvg.Vocabulary.elements)
+	names = MarkupFacts.element_names(Uri("http://www.w3.org/1999/xhtml")).concat(MarkupFacts.element_names(Uri("http://www.w3.org/2000/svg")))
 	pairs.all(|(typo, word)| Web.Tag.from_quote(typo).is_err() and Spelling.suggest(typo, names) == " did you mean ${Str.inspect(word)}?")
 }
 
@@ -343,7 +341,7 @@ expect {
 ## grammar-valid names that need the explicit raw door under the strict rule.
 expect {
 	names = ["div", "span", "button", "input", "textarea", "select", "a", "svg", "linearGradient", "foreignObject", "my-widget", "section", "article", "nav", "math", "mi", "center", "marquee", "frame", "frameset", "font", "big", "geolocation", "fencedframe", "h7"]
-	catalogue = MarkupHtml.Vocabulary.elements.concat(MarkupSvg.Vocabulary.elements)
+	catalogue = MarkupFacts.element_names(Uri("http://www.w3.org/1999/xhtml")).concat(MarkupFacts.element_names(Uri("http://www.w3.org/2000/svg")))
 	strict_refused = names.keep_if(|name| Web.Tag.from_quote(name).is_err()).len()
 	near_miss_refused = names.keep_if(|name| Web.Tag.from_quote(name).is_err() and !Spelling.suggest(name, catalogue).is_empty()).len()
 	strict_refused == 11 and near_miss_refused == 7 and names.all(|name| Web.Tag.from_str(name).is_ok())

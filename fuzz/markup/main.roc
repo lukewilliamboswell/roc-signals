@@ -28,8 +28,8 @@ run = |input| {
 		SvgFragment
 	} else HtmlFragment
 	parsed = match mode {
-		HtmlFragment => ParsedHtml.parse_segments(segments, { authored_structure: Exact })
-		SvgFragment => ParsedSvg.parse_segments(segments, { authored_structure: Exact })
+		HtmlFragment => ParsedHtml.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True })
+		SvgFragment => ParsedSvg.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True })
 	} ?? crash "markup generator produced invalid source"
 	plan = MarkupLiteral.compile(segments, mode) ?? crash "generated checked source failed literal lowering"
 	parts = segments.len() - 1

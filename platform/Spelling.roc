@@ -1,8 +1,10 @@
-import parser.Html as MarkupHtml
-
 ## Deterministic authoring suggestions over a caller's canonical vocabulary.
 ## The vocabulary and acceptance rules stay with the type that asks for advice.
 Spelling := [].{
+
+	## Fold ASCII case for authoring keywords without normalizing other scalars.
+	ascii_lower : Str -> Str
+	ascii_lower = |text| Str.from_utf8(text.to_utf8().map(|byte| if (byte >= 'A' and byte <= 'Z') byte + 32 else byte)) ?? crash "internal: ASCII folding preserves UTF-8"
 
 	## Suggest at most two edits away, preferring the same initial letter and
 	## then lexical spelling. An empty answer means no sufficiently close name.
@@ -19,12 +21,12 @@ Spelling := [].{
 ## same initial letter, then lexical order, independent of catalogue ordering.
 format_suggestion : Str, List(Str) -> Str
 format_suggestion = |text, names| {
-	folded = MarkupHtml.ascii_lower(text)
+	folded = Spelling.ascii_lower(text)
 	first = folded.to_utf8().first()
 	best = names.fold(
 		{ distance: 3.U64, initial: False, name: "" },
 		|kept, name| {
-			candidate = MarkupHtml.ascii_lower(name)
+			candidate = Spelling.ascii_lower(name)
 			distance = edit_distance(folded.to_utf8(), candidate.to_utf8())
 			initial = candidate.to_utf8().first() == first
 			prefer = distance < kept.distance or (distance == kept.distance and (initial and !kept.initial or (initial == kept.initial and lexical_before(name, kept.name))))

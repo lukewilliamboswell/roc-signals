@@ -1,3 +1,4 @@
+import parser.MarkupFacts
 import Engine
 import Core
 import Web
@@ -23,8 +24,8 @@ MarkupLiteral := [].{
 			return Err(BadLiteral("line 1, column 1: a markup interpolation needs at least one fixed segment"))
 		}
 		parsed = match mode {
-			HtmlFragment => ParsedHtml.parse_segments(segments, { authored_structure: Exact })
-			SvgFragment => ParsedSvg.parse_segments(segments, { authored_structure: Exact })
+			HtmlFragment => ParsedHtml.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True })
+			SvgFragment => ParsedSvg.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True })
 		}.map_err(|InvalidMarkup(error)| BadLiteral(parser_problem(error)))?
 		var $texts = Dict.empty()
 		var $attributes = Dict.empty()
@@ -47,7 +48,7 @@ MarkupLiteral := [].{
 					var $attrs = []
 					var $attribute_index = 0.U64
 					for attribute in node.attributes {
-						if Markup.is_event_attribute({ element_namespace: name.namespace, attribute: attribute.name }) {
+						if MarkupFacts.is_event_handler(name, attribute.name) {
 							return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "a markup literal holds no handlers: listen with Engine.on or Html's controls")))
 						}
 						attr_name = attribute_name(attribute.name).map_err(|NotAnAttribute(note)| BadLiteral(at_offset(parsed.parsed, attribute.span.start, note)))?
@@ -56,7 +57,7 @@ MarkupLiteral := [].{
 							Claimed(property) => return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "${sample(attribute.name.local)} on ${name_label(name)} is claimed by Engine.Prop.${property}; use Engine.prop or Engine.prop_s on a constructor, or Html's typed controls")))
 						}
 						hole = $attributes.get(($node_index, $attribute_index))
-						boolean = name.namespace == Uri(Markup.html_namespace) and attribute.name.namespace == NoNamespace and ParsedHtml.boolean_attributes.contains(attribute.name.local)
+						boolean = MarkupFacts.is_boolean_attribute(name, attribute.name)
 						if boolean and hole.is_ok() {
 							return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "a Boolean attribute cannot have a text hole: use Html.boolean or a typed control on a constructor")))
 						}
@@ -218,21 +219,14 @@ problem_words = |problem| match problem {
 	SyntaxError(note) => note
 	HtmlSyntax(UnexpectedDoctype) => "a markup literal is an element UI fragment, not a document declaration"
 	HtmlSyntax(code) => "invalid HTML syntax: ${Str.inspect(code)}"
-	AuthoredStructure(authored) => match authored {
-		MissingEndTag({ element, .. }) => "close ${name_label(element)} explicitly: a markup literal keeps its written nesting"
-		ImpliedElement({ element, .. }) => "the HTML parser would insert ${name_label(element)}; write that structure explicitly"
-		RelocatedElement({ element, .. }) => "the HTML parser would move ${name_label(element)} away from its written parent"
-		UnrepresentedTag({ spelling, .. }) => "the HTML parser would discard the written tag ${sample(spelling)}"
-		ForeignNameAdjusted({ spelling, expected, kind, .. }) => "foreign ${Str.inspect(kind)} ${sample(spelling)} would be adjusted to ${sample(expected)}; write the exact spelling"
-		Repair({ rule, parent, child, .. }) => MarkupAdvice.repair(rule, { parent: name_label(parent), child: name_label(child) })
-		FosteredText({ parent, .. }) => MarkupAdvice.repair(FosterTableText, { parent: name_label(parent), child: "text" })
-	}
+	HtmlStructure({ reason, .. }) => MarkupAdvice.repair(reason)
+	NonCanonicalName({ authored, expected, .. }) => "foreign name ${sample(authored)} would be adjusted to ${sample(expected)}; write the exact spelling"
 	NamespaceError(reason) => "invalid namespace: ${Str.inspect(reason)}"
 	WrongRoot({ expected, actual }) => "expected ${short_text(expected)}, found ${short_text(actual)}"
-	UnknownElement(name) => "${sample(name)} is not an element in the pinned parser vocabulary${Spelling.suggest(name, ParsedHtml.Vocabulary.elements.concat(ParsedSvg.Vocabulary.elements))}"
+	UnknownElement(name) => "${sample(name)} is not an element in the pinned parser vocabulary${Spelling.suggest(name, MarkupFacts.element_names(Uri(Markup.html_namespace)).concat(MarkupFacts.element_names(Uri(Markup.svg_namespace))))}"
 	UnknownAttribute({ element, attribute }) => {
 		hint = if attribute.starts_with("aria-") {
-			Spelling.suggest(attribute, ParsedHtml.Vocabulary.aria_attributes)
+			Spelling.suggest(attribute, MarkupFacts.aria_attribute_names)
 		} else ""
 		"<${short_text(element)}> has no attribute ${sample(attribute)}${hint}"
 	}

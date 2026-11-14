@@ -4,30 +4,20 @@ import parser.Markup
 ## the parser; the engine and a literal add their own site or source position.
 MarkupAdvice := [].{
 
-	## Describe one repair using supplied element/text labels. Each label is
-	## bounded to 64 UTF-8 bytes here, without evaluating a view or keeping a
-	## tree. The caller supplies classification and its construction/source site.
-	repair : Markup.RepairRule, { parent : Str, child : Str } -> Str
-	repair = |rule, labels| {
-		parent = bounded_label(labels.parent)
-		child = bounded_label(labels.child)
-		match rule {
-			CloseParagraph => "${child} inside ${parent}: the HTML parser would close the paragraph first"
-			InsertTableSection => "${child} inside ${parent}: the HTML parser would insert a table section first"
-			InvalidTableChild => "${child} inside ${parent}: the HTML parser would move it outside the table"
-			TablePartOutsideTable => "${child} under ${parent}: a table part needs its table context"
-			NestedAnchor => "${child} inside ${parent}: the HTML parser would close the earlier anchor first"
-			NestedForm => "${child} inside ${parent}: the HTML parser would ignore the nested form"
-			NestedButton => "${child} inside ${parent}: the HTML parser would close the earlier button first"
-			CloseListItem => "${child} inside ${parent}: the HTML parser would close the earlier list item first"
-			CloseDescriptionItem => "${child} inside ${parent}: the HTML parser would close the earlier description item first"
-			CloseOption => "${child} inside ${parent}: the HTML parser would close the earlier option first"
-			CloseHeading => "${child} inside ${parent}: the HTML parser would close the earlier heading first"
-			ChildOfVoid => "${child} inside ${parent}: a void element cannot hold children"
-			ElementInTextContent => "${child} inside ${parent}: the HTML parser reads this content as text"
-			FosterTableText => "${child} inside ${parent}: the HTML parser would move the text outside the table"
-		}
+	## Describe the parser's exact-structure refusal without inventing element
+	## provenance discarded by its public diagnostic. The caller adds the source site.
+	repair : Markup.StructureReason -> Str
+	repair = |reason| match reason {
+		ImpliedElement(element) => "the HTML parser would insert <${bounded_label(element)}>; write that structure explicitly"
+		MissingEndTag(element) => "close <${bounded_label(element)}> explicitly: construction keeps its written nesting"
+		UnexpectedEndTag(element) => "the HTML parser would discard the closing tag </${bounded_label(element)}>"
+		NonVoidSelfClosing(element) => "<${bounded_label(element)}> is not void; write its closing tag explicitly"
+		ReparentedContent => "the HTML parser would move content away from its written parent"
+		IgnoredMarkup => "the HTML parser would discard written markup"
+		ReconstructedContent => "the HTML parser would reconstruct earlier formatting"
+		ChangedAttributes => "the HTML parser would change written attributes"
 	}
+
 }
 
 ## A failed contract may name a long authored label; never split its scalar
@@ -45,11 +35,8 @@ bounded_label = |text| {
 	}
 }
 
-## Constructor and literal callers receive the same rule words.
-expect {
-	MarkupAdvice.repair(CloseParagraph, { parent: "<p>", child: "<div>" }) == "<div> inside <p>: the HTML parser would close the paragraph first" and
-		MarkupAdvice.repair(FosterTableText, { parent: "<table>", child: "text" }) == "text inside <table>: the HTML parser would move the text outside the table"
-}
+## Parser diagnostics retain their exact repair category in human wording.
+expect MarkupAdvice.repair(MissingEndTag("p")) == "close <p> explicitly: construction keeps its written nesting"
 
 ## Abbreviating a multibyte label keeps whole scalars within the byte bound.
 expect {
