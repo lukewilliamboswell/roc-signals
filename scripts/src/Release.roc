@@ -152,10 +152,7 @@ Release := [].{
 		Proc.run!({ program: "zip", args: ["-q", "-r", "-X", "${out}/${name}.zip", name], cwd: stage })?
 
 		tooling = Str.from_utf8_lossy(Proc.capture!({ program: o.tooling, args: ["version"], cwd: o.root })?).trim()
-		ownership = if o.nightly == "nightly-2026-11-12-ce942d6" {
-			"\n## Store ownership\n\nThe instance holds its store as plain data beside its sites. A bounded development-Wasm check compares sparse-write requested bytes at two table sizes and verifies teardown. This does not establish flat shipping allocations: optimized site writes remain affected by [roc-lang/roc#13019](https://github.com/roc-lang/roc/issues/13019), and boxed local-state captures by [roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012). These are compiler limitations, not different reactive semantics. Actual roc-fuzz fixed-example checks remain required.\n"
-		} else ""
-		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), "${Release.notes(version, bundle_url, { compiler, tooling })}${ownership}")?
+		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), Release.notes(version, bundle_url, { compiler, tooling }))?
 		Proc.note!("release ${version}: ${out}")
 		Ok($problems)
 	}
@@ -214,6 +211,19 @@ Release := [].{
 		\\- Built and tested with `${compiler}`, the latest Roc nightly when the release
 		\\  was built.
 		\\- Release tooling ran on `${tooling}` (`roc-stable`).
+		\\${Release.store_ownership}
+
+	## What the platform cannot yet promise about in-place writes, under every
+	## compiler a release can be built with: the compiler limitations that
+	## `design.md` lists for roc-lang/roc#12957 and #13012. It is in every
+	## release's notes while those limitations are, and is removed, with its
+	## `expect`, in the commit that removes their rows from `design.md`.
+	store_ownership : Str
+	store_ownership =
+		\\
+		\\## Store ownership
+		\\
+		\\The instance holds its store as plain data beside its sites and moves it through each turn. A bounded development-Wasm check compares the bytes a sparse write requests at two table sizes. That does not establish flat allocations in optimized builds, where a large value can still be copied on a write ([roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957)), nor for local state, which a site's boxed closure captures ([roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012)). These are compiler limitations, not different reactive semantics.
 }
 
 ## Examples name the released bundle instead of the working tree.
@@ -227,6 +237,13 @@ expect Release.released_main("app [main] { pf: platform \"https://y\" }", "u") =
 
 ## Recorded output is escaped as JSON.
 expect Release.json_str("a\"b\nc") == "\"a\\\"b\\nc\""
+
+## Every release's notes disclose the open store-ownership limitations,
+## whatever compiler built it; this goes with `Release.store_ownership`.
+expect {
+	text = Release.notes("1.0.0", "https://x/1.0.0/h.tar.zst", { compiler: "roc nightly-x", tooling: "roc nightly-y" })
+	text.contains("\n## Store ownership\n") and text.contains("roc-lang/roc#12957") and text.contains("roc-lang/roc#13012")
+}
 
 ## The entry point and its modules are archived; a fuzz target is not.
 expect [Release.is_archived("e/main.roc"), Release.is_archived("e/fuzz-csv.roc"), Release.is_archived("e/Api.roc"), Release.is_archived("e/Fuzzy.roc")] == [True, False, True, True]
