@@ -38,11 +38,14 @@ application values: consider what an error-reporting service forwards.
 
 ## Bounds
 
-Each call retains its newest 4096 bytes of entries, with an eight-byte header
+Each call retains at most 4096 bytes of entries, with an eight-byte header
 per entry, and at most 1024 bytes of one entry’s text. Truncation stops at a
-Unicode code-point boundary and displays the full byte length. If a call fills
-the buffer, older whole entries are dropped and a line says how many; the
-U32 count saturates and says “at least” at its maximum. A job carries at most
+Unicode code-point boundary and displays the full byte length. When an entry
+does not fit, the oldest whole entries are dropped until the entries kept,
+the new one included, take at most half of the 4096 bytes, and a line says
+how many were dropped; the U32 count saturates and says “at least” at its
+maximum. What is kept is always the newest entries: every one of them that
+fits in 2048 bytes, and at most 4096 bytes of them. A job carries at most
 two call buffers, one for preparation and one for the task.
 
 The native spec runner prints every entry immediately. It mutes the speculative

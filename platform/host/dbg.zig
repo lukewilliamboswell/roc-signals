@@ -109,6 +109,44 @@ test "an entry that does not fit drops the oldest whole entries until half is fr
     try std.testing.expectEqual(@as(usize, 48), b.used);
 }
 
+test "what survives an overflow is the newest entries, all that fit in half the buffer" {
+    // At the host's size: 65 entries of 56 bytes of text, 64 with the head.
+    // Sixty-four fill 4096 bytes; the 65th keeps the newest 2048, 32 entries.
+    var big: Buffer(4096, 1024) = .{};
+    var text: [56]u8 = undefined;
+    for (0..65) |i| {
+        @memset(&text, @intCast('A' + i % 26));
+        big.append(&text);
+    }
+    try std.testing.expectEqual(@as(u32, 33), big.dropped);
+    try std.testing.expectEqual(@as(usize, 32 * 64), big.used);
+
+    // At any length of entry and any point in a call, what is kept is the
+    // newest entries, oldest first, within capacity, and it includes every
+    // newest entry that fits in half the buffer.
+    var b: Small = .{};
+    var sizes: [400]usize = undefined;
+    const letters = "abcdefghijklmnop";
+    for (0..sizes.len) |n| {
+        const size = (n * 7 + n / 3) % 17;
+        sizes[n] = 8 + size;
+        b.append(letters[0..size]);
+        try std.testing.expect(b.used <= 64);
+        const kept = n + 1 - b.dropped;
+        var at: usize = 0;
+        for (n + 1 - kept..n + 1) |k| {
+            const e = entryAt(&b, at);
+            try std.testing.expectEqual(@as(u32, @intCast(sizes[k] - 8)), e.len);
+            at = e.next;
+        }
+        try std.testing.expectEqual(b.used, at);
+        var half: usize = 0;
+        var fit: usize = 0;
+        while (fit <= n and half + sizes[n - fit] <= 32) : (fit += 1) half += sizes[n - fit];
+        try std.testing.expect(kept >= fit);
+    }
+}
+
 test "a long entry keeps its full length and is cut at a code point" {
     var b: Small = .{};
     // 'a', then two-byte code points: byte 16 is a continuation byte.
