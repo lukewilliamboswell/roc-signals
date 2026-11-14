@@ -82,6 +82,7 @@ Checks := [].{
 			{ name: "vocabulary-aria-future", expectation: Rejected(["not an ARIA attribute", "Web.AttrName.from_str"]) },
 			{ name: "vocabulary-uncalled", expectation: Rejected(["did you mean \"div\"", "Web.Tag.from_str"]) },
 			{ name: "vocabulary-escape", expectation: Compiles },
+			{ name: "vocabulary-tag-colon-case", expectation: Rejected(["<Data:Point-x> holds a colon, which SVG keeps as local text only in a name that starts with an ASCII letter and holds no ASCII capitals", "write \"data:point-x\""]) },
 			{ name: "missing-keymap", expectation: Rejected(["Engine.KeyProps"]) },
 			{ name: "key-prevent", expectation: Rejected(["Engine.KeyProps"]) },
 			{ name: "document-row", expectation: Rejected(["outside_rows"]) },
@@ -188,6 +189,8 @@ Checks := [].{
 			{ name: "construction-foster-table-text", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["move the text outside the table", "site"] }) },
 			{ name: "construction-empty-each", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["insert a table section first", "site"] }) },
 			{ name: "construction-empty-row-void-text", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["a void element cannot hold children", "site"] }) },
+			{ name: "construction-raw-svg-colon", expectation: Compiles },
+			{ name: "construction-raw-svg-colon-refused", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["contract: raw <:foo> cannot be created under <svg>", "must begin with an ASCII letter", "at site / (element /0)"] }) },
 			{ name: "construction-empty-table-view", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["contract: <tr> inside <table>: the HTML parser would insert a table section first in the row template of a table view at site /0"] }) },
 		]
 		dir = "${o.build_dir}/key-type-errors"

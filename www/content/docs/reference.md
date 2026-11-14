@@ -221,7 +221,11 @@ remains available when a vocabulary does not yet list it.
 a required namespace and a prefix defaulting to `Unprefixed`. They return a
 checked result. `local`, `prefix` and `namespace` expose those retained facts;
 `text` gives their written qualified spelling. A colon in an ordinary raw name
-does not infer a namespace or prefix.
+does not infer a namespace or prefix: under SVG, `xlink:x` is an unprefixed
+local name. SVG keeps such a name only when it starts with an ASCII letter and
+holds no ASCII capitals, so a tag literal holding a colon must follow that
+rule, and a computed one that does not is a contract error, naming its site,
+where it is created under SVG.
 
 Explicit names retain exact case. Raw constructors resolve HTML case and the
 SVG/`foreignObject` child context in Roc before commands reach the runtime.

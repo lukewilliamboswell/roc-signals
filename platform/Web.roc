@@ -43,10 +43,18 @@ Web := [].{
 		}
 
 		## Literals name a listed HTML or exact-case SVG element, or a custom
-		## element with a hyphen. from_str keeps grammar-only access to other names.
+		## element with a hyphen. A literal holding a colon must also start with
+		## an ASCII letter and hold no ASCII capitals, the names a raw
+		## constructor can create under `<svg>` as well as in HTML. from_str
+		## keeps grammar-only access to other names; a computed colon name
+		## outside that rule is a contract error where it is created under SVG.
 		from_quote : Str -> Try(Tag, [BadQuotedBytes(Str)])
 		from_quote = |spelling| {
 			tag = Tag.from_str(spelling).map_err(|NotATag(note)| BadQuotedBytes(note))?
+			bytes = spelling.to_utf8()
+			if spelling.contains(":") and (bytes.any(|byte| byte >= 'A' and byte <= 'Z') or !is_ascii_alpha(bytes.first() ?? 0)) {
+				return Err(BadQuotedBytes("<${spelling}> holds a colon, which SVG keeps as local text only in a name that starts with an ASCII letter and holds no ASCII capitals; write ${Str.inspect(Spelling.ascii_lower(spelling))} if it starts with a letter (HTML folds it to that name), or qualify the name with Web.Tag.in_namespace"))
+			}
 			if MarkupFacts.element_names(Uri("http://www.w3.org/1999/xhtml")).contains(Spelling.ascii_lower(spelling)) or MarkupFacts.element_names(Uri("http://www.w3.org/2000/svg")).contains(spelling) or spelling.contains("-") {
 				return Ok(tag)
 			}
@@ -316,6 +324,11 @@ expect {
 	["dvi", "geolocation", "center", "math", "lineargradient"].all(|name| Web.Tag.from_quote(name).is_err() and Web.Tag.from_str(name).is_ok()) and
 		Web.AttrName.from_quote("aria-lable").is_err() and Web.AttrName.from_str("aria-lable").is_ok() and
 			Web.AttrName.from_str("aria-future-proposal").is_ok() and Web.AttrName.from_quote("data-future-proposal").is_ok()
+}
+
+## A tag literal holding a colon is one a raw constructor can create under SVG.
+expect {
+	["A:b-c", ":a-b", "_x:y-z"].all(|name| Web.Tag.from_quote(name).is_err() and Web.Tag.from_str(name).is_ok()) and Web.Tag.from_quote("a:b-c").is_ok()
 }
 
 ## An HTML element folds attribute case, so literal rules see the folded name.

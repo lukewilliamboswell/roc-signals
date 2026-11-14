@@ -5777,8 +5777,10 @@ An empty prefix means no prefix. A colon in an unprefixed local name remains
 local data; receivers never split it to invent a prefix or namespace.
 
 Roc resolves raw HTML case and the raw constructor's inherited namespace
-before encoding. The raw rule opens SVG at `svg`, inherits SVG below an SVG
-parent except `foreignObject`, and otherwise creates HTML. It does not infer
+before encoding, and never splits a raw name's colon into a prefix either; a
+raw SVG name the colon factory below cannot keep is a construction contract
+error naming its site. The raw rule opens SVG at `svg`, inherits SVG below an
+SVG parent except `foreignObject`, and otherwise creates HTML. It does not infer
 MathML or implement every integration point of HTML parsing. Parsed literal
 names carry their full resolved identities. No literal/raw provenance flag
 crosses the wire.

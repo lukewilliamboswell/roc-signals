@@ -11446,14 +11446,11 @@ resolve_element = |name, enclosing| match name.namespace() {
 			local = ascii_name_lower(name.local())
 			(Web.Tag.from_str(local) ?? crash "internal: folded HTML name").in_namespace({ namespace: Html }) ?? crash "internal: unprefixed HTML name"
 		} else {
-			parts = name.local().split_on(":")
-			(prefix, local) = if parts.len() == 1 {
-				(Unprefixed, name.local())
-			} else {
-				(Prefix(parts.first() ?? crash "internal: qualified name has a prefix"), Str.join_with(parts.drop_first(1), ":"))
-			}
-			local_name = Web.Tag.from_str(local) ?? crash "contract: raw foreign element has an invalid local name"
-			local_name.in_namespace({ namespace, prefix }) ?? crash "contract: raw foreign element has an invalid namespace qualification"
+			# A colon in a raw name is local text, never a prefix (reference.md,
+			# "Browser names and methods"). A name the foreign empty-node factory
+			# cannot keep is left unresolved, and child_enclosing, which has the
+			# site, refuses it as a contract error.
+			name.in_namespace({ namespace: namespace }) ?? name
 		}
 	}
 }
@@ -11462,6 +11459,13 @@ resolve_element = |name, enclosing| match name.namespace() {
 ## identity stays available separately for literal placement checks.
 child_enclosing : Enclosing, { name : Web.Tag, site : List(U32), placement : Str, describe : () -> Str } -> Enclosing
 child_enclosing = |parent, { name, site, placement, describe }| {
+	if name.namespace() == Inherit {
+		refusal = match name.in_namespace({ namespace: parent.raw_namespace }) {
+			Err(NotATag(note)) => note
+			Ok(_) => crash "internal: construction requires a resolved name"
+		}
+		crash "contract: raw <${name.text()}> cannot be created under <${parent.local}>: ${refusal}; write the name in lowercase starting with a letter, or qualify it with Web.Tag.in_namespace${placement} at site ${show_path(site)}${describe()}"
+	}
 	construction = match DomConstruction.enter(
 		parent.construction,
 		construction_name({
@@ -11694,6 +11698,16 @@ expect {
 		$index = $index + 1
 	}
 	$changed == 1 and raw_commands.len() == parsed_commands.len() and raw_work == parsed_work and Core.settled(raw_state).is_ok() and Core.settled(parsed_state).is_ok()
+}
+
+## A colon in a raw SVG name stays local text with no prefix, as the reference
+## says. A name SVG's empty-node factory cannot keep stays unresolved, which
+## child_enclosing refuses with the construction site.
+expect {
+	svg = child_enclosing(root_enclosing, { name: resolve_element(Web.Tag.from_str("svg")?, root_enclosing), site: [], placement: "", describe: || "" })
+	locals = ["xlink:x", "xml:foo", "xmlns:foo"].map(|text| resolve_element(Web.Tag.from_str(text) ?? crash "test: raw name", svg))
+	refused = [":foo", "Xlink:x", "_a:b"].map(|text| resolve_element(Web.Tag.from_str(text) ?? crash "test: raw name", svg))
+	locals.all(|name| name.namespace() == Explicit(Svg) and name.prefix() == Unprefixed and name.local().contains(":")) and refused.all(|name| name.namespace() == Inherit)
 }
 
 ## Semantic control claims use the actual encoded attribute identity. Raw HTML
