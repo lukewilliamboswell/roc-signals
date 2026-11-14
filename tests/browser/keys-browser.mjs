@@ -422,11 +422,11 @@ try {
       f.emit(1, key, { code });
       return [f.calls.length, f.rt.poisoned?.class ?? null];
     };
-    const result = [run("a*", "\ud800", "KeyK"), run("a*", "k", "\udfff"), run("", "\ud800", "\udfff"), run("a*", "", "\ud800")];
+    const result = [run("a*", "\ud800", "KeyK"), run("a*", "k", "\udfff"), run("", "\ud800", "\udfff"), run("a*", "", "\ud800"), run("a*", "k", "KeyK")];
     for (const f of fixtures) f.end();
     return result;
   });
-  check("heard malformed UTF-16 is contained; ignored and empty keys stage nothing", utf16, [[0, "executor"], [0, "executor"], [0, null], [0, null]]);
+  check("a key or code that is not well-formed is heard by no keymap, every included, and never poisons", utf16, [[0, null], [0, null], [0, null], [0, null], [1, null]]);
   const emptyChord = await page.evaluate(() => {
     const f = __keyFixture();
     f.raw(f.elem(1, 0, "div"), f.prop(1, 4, "pa----0:"), f.listen(1, 0));

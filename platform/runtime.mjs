@@ -1506,8 +1506,17 @@ function parseKeymap(value) {
   }
   return { exact, physical, every };
 }
+// A key event names a key only through well-formed text: a page script can
+// dispatch any key or code, and an ill-formed one is no key a chord can
+// name, so no keymap hears it, `every` included (design.md, "Keyboard
+// input").
+function namedKey(event) {
+  const code = event.code ?? "";
+  return typeof event.key === "string" && event.key !== "" && event.key.isWellFormed() && typeof code === "string" && code.isWellFormed();
+}
+
 function matchKey(map, event, excluded) {
-  if (!map || typeof event.key !== "string" || event.key === "") return null;
+  if (!map || !namedKey(event)) return null;
   const outside = !textEntry(event.target, excluded);
   const first = (entries) => entries?.find((entry) => !entry.outside || outside) ?? null;
   if (!event.isComposing && event.keyCode !== 229) {
@@ -1523,7 +1532,6 @@ function matchKey(map, event, excluded) {
   return null;
 }
 function keyPayload(event, heard) {
-  if (!event.key.isWellFormed() || !(event.code ?? "").isWellFormed()) throw new Error("key event contains malformed UTF-16");
   const flags = keyModifiers(event) | (event.repeat ? 16 : 0) | (event.isComposing || event.keyCode === 229 ? 32 : 0);
   return concat([new Uint8Array([flags]), encStr(event.key), encStr(event.code ?? ""), new Uint8Array([heard.modifiers]), encStr(heard.key)]);
 }
@@ -1764,6 +1772,7 @@ export class WorkMonitor {
         const counters = pg.counters ?? [];
         page = { memBytes: pg.memBytes, liveAllocs: pg.liveAllocs, liveBytes: pg.liveBytes, turns: counters.length > 30 ? Number(counters[30]) : 0 };
         if (pg.captureRefused !== undefined) page.captureRefused = pg.captureRefused;
+        if (pg.textRefused !== undefined) page.textRefused = pg.textRefused;
         if (counters.length >= ENGINE_FX_FIRST + ENGINE_FX_NAMES.length) {
           engine = Object.fromEntries(ENGINE_FX_NAMES.map((n, i) => [n, Number(counters[ENGINE_FX_FIRST + i])]));
         }
@@ -3009,6 +3018,7 @@ export class RocEngineRuntime {
     this.reportDue = false;
     this.pointerLog = [];
     this.captureRefused = 0;
+    this.textRefused = 0;
     this.poisoned = null;
     this.refused = 0;
     this.onFault = options.onFault ?? null;
@@ -3459,6 +3469,7 @@ export class RocEngineRuntime {
     this.reportsReplaced = 0;
     this.pointerLog = [];
     this.captureRefused = 0;
+    this.textRefused = 0;
     this.fxOut = [];
     this.busy = false;
     this.poisoned = null;
@@ -3705,12 +3716,25 @@ export class RocEngineRuntime {
         } else {
           if (type === "scroll") this.observeManualScroll(declaring);
           const payload = this.protocol.PAYLOAD_KINDS[handler.kind].payload(event);
+          if (handler.kind === this.protocol.KIND_TEXT && (typeof payload !== "string" || !payload.isWellFormed())) {
+            this.refuseText(type);
+            return;
+          }
           if (payload !== null) this.dispatch(node.__rn, handler.h, payload, node);
         }
         return;
       }
       node = node.parentNode;
     }
+  }
+
+  // An event whose text payload (an input's value, pasted text) is not
+  // well-formed Unicode is not delivered: Roc text cannot hold it, and
+  // replacing its lone surrogates would hand the app text nobody wrote.
+  // Its declared policies have already acted; the monitor counts it.
+  refuseText(type) {
+    this.textRefused += 1;
+    this.monitor.emit({ kind: "event-text-refused", type, at: this.monitor.tick() });
   }
 
   // Fix each instance's document-listener position at mount, independently
@@ -5953,7 +5977,7 @@ export class RocEngineRuntime {
   // counters.
   pageStats() {
     const x = this.x;
-    return { memBytes: x.memory.buffer.byteLength, liveAllocs: Number(x.metric(4)), liveBytes: Number(x.metric(5)), captureRefused: this.captureRefused, counters: this.workRecord().counters };
+    return { memBytes: x.memory.buffer.byteLength, liveAllocs: Number(x.metric(4)), liveBytes: Number(x.metric(5)), captureRefused: this.captureRefused, textRefused: this.textRefused, counters: this.workRecord().counters };
   }
 
   // How work runs here: "inline", "workers", or "unavailable" (no Worker

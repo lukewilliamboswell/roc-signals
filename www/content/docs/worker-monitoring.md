@@ -114,7 +114,7 @@ console.table(s.recent.map((j) => ({ id: j.id, task: j.task, outcome: j.outcome,
 | `hist` | Histograms of `queue`, `cold`, `compute`, `total`, `resultTurn` and `prepare`, in fixed 1-2-5 millisecond buckets (`edges`, `counts`, `n`, `sum`, `min`, `max`) |
 | `tasks` | Per task, by name: jobs, outcomes, bytes, and `queue`, `compute` and `total` histograms (job records name their task in `task`) |
 | `recent` | The last `history` job records, with every stamp (`t`) and span (`ms`). The record of a preparation's task's job says whether it `prepared` (`"prepare"`) or reused a kept state (`"reuse"`; `null` for other tasks), and `prepareMs`, how long preparing took (also `ms.prepare`; `null` when it reused); `compute` is then the task alone. `finished` is true for a cancelled job whose task's `on_cancel: Finish` let it complete |
-| `page` | The page instance's linear memory, live allocations and bytes, and turns |
+| `page` | The page instance's linear memory, live allocations and bytes, and turns; `captureRefused`, pointer captures the browser refused; `textRefused`, events not delivered because their text was not well-formed Unicode |
 | `engine` | The engine's effect counters, when the engine's work record carries them; otherwise `null` |
 | `ports` | Per [port](@/docs/ports.md) the app used, by name: `sent` (commands), `calls`, `answered`, `threw`, `timedOut`, `cancelled` (stopped by the app or by teardown), `subscribed`, `messages` (delivered to the app), `coalesced` (replaced under `Latest` before delivery), `refusedEmits` (`emit` returned `false` under `Every(n)`), `tooLarge`, `closed` (ended by the JavaScript), and `faults` (failures of command handlers and unsubscribe functions, which the app never sees). Counted by the runtime since mount; at most one entry per declared port, so at most 64. Beside the counts, what is outstanding when the snapshot is taken: `inFlight` (calls awaiting an answer), `subscriptions` (live subscriptions) and `backlog` (messages emitted and not yet delivered), so a test can wait until a port is idle |
 
@@ -150,6 +150,8 @@ const stop = runtime.monitor.subscribe((e) => console.log(e.kind, e));
 | `state-evict` | `instance`, `prep` (the preparation's name), `cause` (`replaced`, `released`), `at` |
 | `turn` | `node`, `handler`, `fx` (the job id for a job's result turn), `eventMs`, `applyMs`, `bytes`, `at`. Only for subscribers that pass `{ turns: true }` |
 | `transition` | `state` (`applied`, `start-rejected`, `ready-rejected`, `finished-rejected`), `at`; `applied` carries `cause` (`callback`, `timer`, `queue`, `none`) and `typeCount`; rejections carry a diagnostic `message` of at most 1024 characters |
+| `pointer-capture-refused` | `pointer`, `at` |
+| `event-text-refused` | `type` (the event type), `at` |
 | `runtime` | `state` (`mounted`, `poisoned`, `unmounted`), `generation`, `fault`, `at` |
 
 What a listener can rely on:

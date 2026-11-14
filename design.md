@@ -3056,7 +3056,13 @@ constant-time UTF-16 length, then checks candidates' UTF-8 size and Unicode
 within the bound. This explicitly qualifies the issue's "unread" wording:
 refusal precedes encoding and staging, rather than the browser's own read. An element has one handler per event type, so
 it accepts pasted files or pasted text. An ordinary text-kind `paste`
-continues to carry its ordinary empty string. A handler is generic over its payload, and a kind is attached only
+continues to carry its ordinary empty string. Text the browser holds as
+UTF-16, such as an input's value that a script set, can hold a lone
+surrogate that Roc text cannot. Such an event is not delivered: its declared
+policies have acted, no turn runs, and the monitor counts it in
+`page.textRefused` with a passive `event-text-refused` event. It is never
+repaired into replacement characters, which would hand the app text nobody
+wrote, and never a fault, since any page script can raise it. A handler is generic over its payload, and a kind is attached only
 to the event types its row allows. Decoding happens once, after routing,
 and a malformed payload is a `contract` fault naming the site.
 
@@ -3100,7 +3106,9 @@ Exact matches outrank fallbacks anywhere in the list. Composing events
 (`isComposing` or keyCode 229) skip both and can reach only `every`.
 `heard` is the declared chord, so a handler never repeats these rules;
 under `every` it is the event's own chord. Missing or empty event keys do
-not dispatch; a heard event's key and code must be well-formed Unicode.
+not dispatch. A key or code that is not well-formed Unicode names no key a
+chord can name, so no keymap hears it, `every` included: any page script can
+dispatch such an event, and it is external input, never a fault.
 
 A matching entry decides prevention synchronously. A policy is matched
 against the DOM the browser dispatched over; the turn that delivers the
@@ -5375,7 +5383,9 @@ An event is `event(node, handler)` with the payload staged first:
   the default of every `submit` that reaches the mount root); `input` → the
   target's value; `change` → `"true"`/`"false"` for a checkbox or radio, else the value;
   `focus`/`blur` (listened as
-  `focusin`/`focusout`) → the target's value.
+  `focusin`/`focusout`) → the target's value. A value that is not a
+  well-formed string stages nothing: the event is not delivered, as a key or
+  code that is not well-formed is heard by no keymap.
 - **Files-kind DOM events:** a handler declared with the files kind on
   `change`, `drop` or `paste` receives the target's `files`, the drop's
   `dataTransfer.files` or the paste's `clipboardData.files`, captured while
@@ -5585,10 +5595,10 @@ site; an unknown kind number in commands is an `executor` fault.
 
 | Kind | Payload layout | Delivering export | Allowed event types |
 |---|---|---|---|
-| 1 Text | UTF-8, with the per-type meanings in Event records | `event` | Any bare type except `keydown` and `keyup` |
+| 1 Text | UTF-8, with the per-type meanings in Event records | `event` | Any bare type except `keydown` and `keyup`; a value that is not a well-formed string is not delivered |
 | 2 Files | `minted:u32 refused:u32 (size:u64 name:str type:str)*minted`, with staged handles in order | `event_files` | `change`, `drop`, `paste`; no files means no dispatch. `drop` prevents both its default and `dragover`'s default |
 | 3 Pointer | `id:u32 kind:u8 button:u8 buttons:u16 mods:u8 primary:u8 at:u8 [x:u16 y:u16 zone:str]` | `event` | `pointerdown`, `pointermove`, `pointerup`, `pointercancel` |
-| 4 Key | `flags:u8 key:str code:str heard:u8 heard_key:str` | `event` | `keydown`, `keyup`; pass over a local handler whose keymap hears nothing |
+| 4 Key | `flags:u8 key:str code:str heard:u8 heard_key:str` | `event` | `keydown`, `keyup`; pass over a local handler whose keymap hears nothing; a key or code that is not well-formed is heard by none |
 | 5 OpenState | One byte, strictly `0` or `1` | `event` | Helper-paired dialog `close`, popover `toggle`, or HTML checkbox/radio `change` |
 | 6 Scroll | `top:u32 left:u32` | `event` | `scroll`, paced |
 | 7 Size | `width:u32 height:u32` | `event` | `size`, observation report |

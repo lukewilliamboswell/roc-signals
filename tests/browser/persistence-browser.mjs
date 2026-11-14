@@ -283,6 +283,16 @@ try {
       return { refused, contained };
     });
     check("oversized Unicode is refused before scanning or encoding; in-bound malformed text is contained", unicode, { refused: [true, [[1]], 0, 0, null], contained: ["executor", 1] });
+    const textKind = await page.evaluate(() => {
+      const f = window.__fixture();
+      f.raw(f.join(new Uint8Array([0, 8]), f.u32(1), f.u32(0), f.u32(0), new Uint8Array([0]), f.str(""), f.str("input"), new Uint8Array([0]), new Uint8Array([11]), f.u32(1), f.u32(7), f.str("input"), new Uint8Array([1]), f.u32(0)));
+      const input = f.root.firstChild;
+      const raise = value => { input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); };
+      raise("a\ud800"); const refused = [f.rt.poisoned, f.calls.length, f.rt.textRefused];
+      raise("ab"); const after = f.calls.map(call => call.payload); f.end();
+      return { refused, after };
+    });
+    check("a text-kind value that is not well-formed is not delivered and never poisons", textKind, { refused: [null, 0, 1], after: [["a", "b"]] });
     const unhandled = await page.evaluate(() => {
       const f = window.__fixture();
       f.raw(f.join(new Uint8Array([0, 8]), f.u32(1), f.u32(0), f.u32(0), new Uint8Array([0]), f.str(""), f.str("div"), new Uint8Array([0]), new Uint8Array([8]), f.u32(2), f.u32(0), f.u32(0), new Uint8Array([0]), f.str(""), f.str("div"), new Uint8Array([0]), new Uint8Array([11]), f.u32(2), f.u32(7), f.str("paste"), new Uint8Array([9]), f.u32(0)));
