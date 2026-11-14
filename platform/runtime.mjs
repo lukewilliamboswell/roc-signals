@@ -3466,7 +3466,9 @@ export class RocEngineRuntime {
     if (this.modalOrder) this.modalOrder.clear();
     this.monitor.runtimeEnded("poisoned", this.poisoned);
     try { console.error(`roc engine fault [${this.poisoned.class}]: ${message}`); } catch (_) {}
-    if (this.onFault) this.onFault(this.poisoned);
+    if (this.onFault) {
+      try { this.onFault(this.poisoned); } catch (_) { /* an observer that throws changes nothing */ }
+    }
   }
 
   // Observation cannot fail a turn. Printing failure persists across recovery,
@@ -5879,7 +5881,11 @@ export class RocEngineRuntime {
   reportLost(fx, code, message, dbg = null) {
     const klass = FAULT_CLASSES[code] ?? "executor";
     try { console.error(`roc worker fault [${klass}] in task "${fx.task}": ${message}`); } catch (_) {}
-    if (this.onWorkerFault) this.onWorkerFault({ id: fx.id, task: fx.task, class: klass, message, dbg });
+    // The observer is the page's code: one that throws changes nothing, and
+    // above all never keeps the lost job's result from being delivered.
+    if (this.onWorkerFault) {
+      try { this.onWorkerFault({ id: fx.id, task: fx.task, class: klass, message, dbg }); } catch (_) { /* an observer that throws changes nothing */ }
+    }
     return klass;
   }
 

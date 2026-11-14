@@ -3634,7 +3634,10 @@ job poisons that instance only. The runtime discards the worker, answers
 its job with `WorkLost` carrying the instance's class (`executor` when the
 worker script itself failed, `unavailable` when the browser has no workers
 or an inline job reached a worker effect), and reports the diagnostic to the
-console; the page's instance is untouched. A prepared state the worker kept
+console and the `onWorkerFault` mount option; the page's instance is
+untouched. A fault observer the page supplies (`onFault`, `onWorkerFault`,
+`onPortFault`) that throws changes nothing: it never keeps a result from
+its request. A prepared state the worker kept
 is gone with it, and the next job over that input prepares again. A job's
 builders and their parts go with a discarded worker too: nothing a failed
 job wrote is ever delivered. A fault while a worker lets go of its prepared

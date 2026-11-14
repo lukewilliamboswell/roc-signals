@@ -69,3 +69,14 @@ contract("a preparation's input longer than the input is a contract fault", work
 contract("a preparation's files beyond the request's files are a contract fault", work({ flag: 1, prep: [...text("index"), ...word(0), ...word(1)] }), /preparation operands/);
 contract("a preparation cut before its operands is a contract fault", work({ flag: 1, prep: [...text("index"), ...word(0)] }), /work request/);
 contract("a truncated preparation name is a contract fault", work({ flag: 1, prep: [...word(1000)] }), /work request/);
+
+// onWorkerFault is the page's own observer, called just before a lost
+// job's WorkLost result is delivered: one that throws must not keep that
+// result from its request, which would leave the request unanswered.
+check("an onWorkerFault observer that throws changes nothing", () => {
+  const runtime = runtimeWith([0]);
+  runtime.onWorkerFault = () => { throw new Error("observer broke"); };
+  const error = console.error; console.error = () => {};
+  try { assert.equal(runtime.reportLost({ id: 1, task: "sum" }, 4, "app_crash: boom"), "app_crash"); }
+  finally { console.error = error; }
+});
