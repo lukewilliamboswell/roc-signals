@@ -147,9 +147,9 @@ Core := [].{
 		## The cell as a [State] in the context where this is called: what a
 		## component that takes a `State(ctx, a)` is given, so it cannot
 		## tell a cell from a local state.
-		state : Cell(st, a) -> State(ctx, a)
+		as_state : Cell(st, a) -> State(ctx, a)
 			where [ctx.store : () -> StoreReach(ctx, st)]
-		state = |c| {
+		as_state = |c| {
 			## The context's type, named so its method can be called.
 			Ctx : ctx
 			reach = Ctx.store()
@@ -1018,7 +1018,7 @@ Core := [].{
 	##
 	## `mask` is what a reader of the handle listens to and `writes` what a
 	## write through it reports. For a state layer both name the layer; a
-	## store cell seen as a state (`Cell.state`) names the cell, and a view
+	## store cell seen as a state (`Cell.as_state`) names the cell, and a view
 	## row's handle reads the row's layer and writes the table's cell.
 	State(ctx, s) := { mask : U128, writes : Layers, get : (ctx -> s), modify : (ctx, (s -> s) -> ctx) }.{
 

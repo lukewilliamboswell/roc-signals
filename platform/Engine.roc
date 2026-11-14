@@ -109,7 +109,7 @@ Engine := [].{
 		## a write of the cell.
 		state : Cell(st, a) -> State(ctx, a)
 			where [ctx.store : () -> Reach(ctx, st)]
-		state = |{ c }| { s: c.state() }
+		state = |{ c }| { s: c.as_state() }
 
 		## A [Write] that replaces the cell with `value`, for the list a
 		## decision returns (`handle`, `react`). Use it for a value that does
