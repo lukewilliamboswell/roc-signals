@@ -33,12 +33,16 @@ StoryStep : { family : U8, key : U8, mode : U8 }
 ## after a negative must keep acceptance; changing its subject must not.
 check_story : List(U8) -> {}
 check_story = |bytes| {
-	history = (if bytes.is_empty() [0] else bytes).map(|byte| { family: byte % 4, key: (byte // 4) % 4, mode: (byte // 16) % 4 })
-	expected = history.all(|step| {
-		if step.mode % 2 == 1 { return Bool.True }
-		shown = history.any(|candidate| candidate.mode % 2 == 1 and candidate.family == step.family and candidate.key == step.key)
-		if step.mode == 2 !shown else shown
-	})
+	history = (if (bytes.is_empty()) [0] else bytes).map(|byte| { family: byte % 4, key: (byte // 4) % 4, mode: (byte // 16) % 4 })
+	expected = history.all(
+		|step| {
+			if step.mode % 2 == 1 {
+				return Bool.True
+			}
+			shown = history.any(|candidate| candidate.mode % 2 == 1 and candidate.family == step.family and candidate.key == step.key)
+			if (step.mode == 2) !shown else shown
+		},
+	)
 	body = Str.join_with(history.map(story_form), "\n")
 	written = "(test \"generated evidence\" (steps\n${body}))"
 	parsed = Scm.parse(written)
@@ -57,16 +61,16 @@ story_form = |{ family, key, mode }| {
 	positive = mode % 2 == 1
 	marked = mode == 2
 	match family {
-		0 => if positive "(expect-visible (test-id \"${name}\"))" else "(expect-absent (test-id \"${name}\")${if marked " :never-drawn" else ""})"
+		0 => if (positive) "(expect-visible (test-id \"${name}\"))" else "(expect-absent (test-id \"${name}\")${if (marked) " :never-drawn" else ""})"
 		1 => if positive {
-			if mode == 1 "(expect-has-attr (test-id \"provider\") \"${name}\")" else "(expect-attr (test-id \"provider\") ${name} \"\")"
-		} else "(expect-no-attr (test-id \"negative\") ${name}${if marked " :never-written" else ""})"
-		2 => "(expect-cleanup \"${name}\" ${if positive "1" else "0"}${if marked " :never-runs" else ""})"
+			if (mode == 1) "(expect-has-attr (test-id \"provider\") \"${name}\")" else "(expect-attr (test-id \"provider\") ${name} \"\")"
+		} else "(expect-no-attr (test-id \"negative\") ${name}${if (marked) " :never-written" else ""})"
+		2 => "(expect-cleanup \"${name}\" ${if (positive) "1" else "0"}${if (marked) " :never-runs" else ""})"
 		_ => {
 			period = (key.to_u64() + 1) * 100
 			if positive {
-				if mode == 1 "(tick-interval ${period.to_str()})" else "(expect-interval ${period.to_str()} 1)"
-			} else "(tick-interval-if-active ${period.to_str()}${if marked " :never-started" else ""})"
+				if (mode == 1) "(tick-interval ${period.to_str()})" else "(expect-interval ${period.to_str()} 1)"
+			} else "(tick-interval-if-active ${period.to_str()}${if (marked) " :never-started" else ""})"
 		}
 	}
 }
@@ -104,7 +108,7 @@ target = Fuzz.target_with({
 ## bounded history, including providers following the obligations they prove.
 expect {
 	check_story([0, 16, 1, 49, 2, 18, 3, 51]) == {} and
-	check_story([32, 33, 34, 35]) == {} and
-	check_story([0, 20, 1, 21, 2, 22, 3, 23]) == {} and
-	check_story([32, 16, 33, 17, 34, 18, 35, 19]) == {}
+		check_story([32, 33, 34, 35]) == {} and
+			check_story([0, 20, 1, 21, 2, 22, 3, 23]) == {} and
+				check_story([32, 16, 33, 17, 34, 18, 35, 19]) == {}
 }

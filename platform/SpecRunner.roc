@@ -6208,8 +6208,8 @@ expect {
 expect {
 	(dom, control) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("title", "")]) })
 	SpecRunner.attr_value(dom, control, "title") == Ok("") and
-	SpecRunner.attr_value(dom, control, "alt") == Err(Absent) and
-	SpecRunner.attr_value(dom, control, "disabled") == Ok("false") and
-	SpecRunner.attr_value(dom, control, "checked") == Ok("false") and
-	SpecRunner.attr_value(dom, control, "value") == Ok("")
+		SpecRunner.attr_value(dom, control, "alt") == Err(Absent) and
+			SpecRunner.attr_value(dom, control, "disabled") == Ok("false") and
+				SpecRunner.attr_value(dom, control, "checked") == Ok("false") and
+					SpecRunner.attr_value(dom, control, "value") == Ok("")
 }
