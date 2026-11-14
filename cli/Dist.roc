@@ -10,7 +10,7 @@ import Compiler
 import Project
 
 ## `build`: the app ready to deploy, in `dist/`. The page goes to
-## `dist/index.html`; the app's module (normally built with `--opt=size`), the
+## `dist/index.html`; the app's module (built with `--opt=size`), the
 ## platform's runtime and the app's other files go together into
 ## `dist/assets/<hash>/`, a directory named by a hash of everything in it;
 ## files under `public/` go to the top of `dist/` under their own names.
@@ -45,15 +45,10 @@ Dist :: [].{
 			return Err(NoIndexHtml)
 		}
 		version = Compiler.version!()?
-		opt = if (Compiler.has_broken_optimizer(version)) "dev" else "size"
 		Path.create_all!(Path.utf8(".signals/build"))?
-		if opt == "dev" {
-			Stdout.line!("SKIP optimized build (${Compiler.optimizer_issue}): Roc ${version} crashes in its optimizer. Building with --opt=dev; this output is larger and slower. The next nightly retries --opt=size.")?
-		} else {
-			Stdout.line!("Building the app with `roc build --opt=size`, which takes longer than a development build...")?
-		}
+		Stdout.line!("Building the app with `roc build --opt=size`, which takes longer than a development build...")?
 		wasm = ".signals/build/app.wasm"
-		match Compiler.build!({ target: "wasm32", opt, output: wasm })? {
+		match Compiler.build!({ target: "wasm32", opt: "size", output: wasm })? {
 			Built(report) => {
 				shown = Compiler.report_on_success(report)
 				if !shown.is_empty() {

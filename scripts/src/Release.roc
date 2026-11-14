@@ -152,15 +152,10 @@ Release := [].{
 		Proc.run!({ program: "zip", args: ["-q", "-r", "-X", "${out}/${name}.zip", name], cwd: stage })?
 
 		tooling = Str.from_utf8_lossy(Proc.capture!({ program: o.tooling, args: ["version"], cwd: o.root })?).trim()
-		limitations = if SpecSuite.has_broken_optimizer(o.nightly) {
-			"\n## Compiler limitations\n\nThis nightly crashes when optimizing the store apps ([roc-lang/roc#12976](https://github.com/roc-lang/roc/issues/12976)). The site examples use `--opt=dev`; every example's native and browser specs still run. `signals.roc build` automatically uses `--opt=dev` with an explicit warning; direct builds need `roc build --opt=dev --target=wasm32` on this nightly. Optimized walks, shipping browser soaks and worker scaling are explicitly skipped, so this release has no shipping performance or allocation validation on this compiler. Fuzz examples and campaigns always attempt their requested targets; compiler, linker and runtime failures fail the task. Windows CI always attempts the current CLI init and prints its retained log. A failed init may quarantine the remaining CLI journey on this nightly only if its diagnostics form a nonempty subset of the three exact captured basic-cli 0.28 Locale/Path failures ([basic-cli#555](https://github.com/roc-lang/basic-cli/issues/555)). Each may appear once, and every error, cause and summary must agree; other failures remain fatal and successful init continues every CLI check. CI has reproduced Locale failures with basic-cli 0.27 and 0.28; the underlying cause remains unproven. Native specs remain enabled; remove this quarantine when basic-cli#555 is resolved. Each skip expires on the next nightly, which retries the original check.\n"
-		} else {
-			""
-		}
 		ownership = if o.nightly == "nightly-2026-11-12-ce942d6" {
 			"\n## Store ownership\n\nThe instance holds its store as plain data beside its sites. A bounded development-Wasm check compares sparse-write requested bytes at two table sizes and verifies teardown. This does not establish flat shipping allocations: optimized site writes remain affected by [roc-lang/roc#13019](https://github.com/roc-lang/roc/issues/13019), and boxed local-state captures by [roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012). These are compiler limitations, not different reactive semantics. Actual roc-fuzz fixed-example checks remain required.\n"
 		} else ""
-		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), "${Release.notes(version, bundle_url, { compiler, tooling })}${limitations}${ownership}")?
+		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), "${Release.notes(version, bundle_url, { compiler, tooling })}${ownership}")?
 		Proc.note!("release ${version}: ${out}")
 		Ok($problems)
 	}

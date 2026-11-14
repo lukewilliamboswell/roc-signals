@@ -86,7 +86,7 @@ ToolCheck := [].{
 		$problems = $problems.concat(judge(run_tool!(tool, scratch, ["build"])?, { code: 1, says: ["There is no main.roc here, so there is no app to work on."] }))
 
 		# The counter's specs and its deployable build.
-		$problems = $problems.concat(ToolCheck.compiler_reports!(o, { tool, dir: counter })?)
+		$problems = $problems.concat(ToolCheck.compiler_reports!({ tool, dir: counter })?)
 		$problems = $problems.concat(dist_problems!(o, counter)?)
 		$problems = $problems.concat(ToolCheck.picture_builds!(o, { tool, dir: counter })?)
 
@@ -158,8 +158,8 @@ ToolCheck := [].{
 	## warning also exercises the development compiler used by test. Both tool
 	## commands succeed and print their compiler reports. Restore the app before
 	## propagating process errors so later checks see the original clean source.
-	compiler_reports! : SpecSuite.Options, { tool : Tool, dir : Str } => Try(List(Str), _)
-	compiler_reports! = |o, { tool, dir }| {
+	compiler_reports! : { tool : Tool, dir : Str } => Try(List(Str), _)
+	compiler_reports! = |{ tool, dir }| {
 		clean_test = run_tool!(tool, dir, ["test"])?
 		clean_build = run_tool!(tool, dir, ["build"])?
 		var $problems = judge(clean_test, { code: 0, says: ["Running 1 spec:", "  passed  the counter counts both ways", "The spec passed."] })
@@ -188,7 +188,7 @@ ToolCheck := [].{
 		test_report = tested?
 		$problems = $problems.concat(judge(build_report, { code: 0, says: ["Counter.roc", "duplicate definition", "Built the app into dist/:"] }))
 		$problems = $problems.concat(judge(test_report, { code: 0, says: ["Counter.roc", "duplicate definition", "The spec passed."] }))
-		if !SpecSuite.has_broken_optimizer(o.nightly) and !(build_report.output.contains("dbg") and build_report.output.contains("optimized build")) {
+		if !(build_report.output.contains("dbg") and build_report.output.contains("optimized build")) {
 			$problems = $problems.append("signals.roc build discarded the real optimized dbg warning")
 		}
 		Ok($problems)

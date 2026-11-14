@@ -205,17 +205,8 @@ Built the app into dist/:
   dist/assets/5e711d3a91d0f155/worker.mjs
 ```
 
-`build` normally makes the app's module with `--opt=size`, lays out `dist/`,
-and lists each file it wrote with its size. Some release/compiler pairs
-need a compatibility build: for the optimizer failure tracked in
-[roc#12976](https://github.com/roc-lang/roc/issues/12976), the tool explicitly
-reports that it is using `--opt=dev` instead. That output can be served and
-tested, but it is larger and slower; it does not establish optimized
-shipping performance. Check the tool's output and the
-[current release notes](https://github.com/lukewilliamboswell/roc-signals/releases/latest)
-for the mode and limitations of the release you downloaded.
-
-Both modes write the same deployment layout:
+`build` makes the app's module with `--opt=size`, lays out `dist/`, and
+lists each file it wrote with its size. The layout is:
 
 - `dist/index.html`, your page, with each quoted relative URL that names
   one of the files below pointed into the hashed directory. Nothing else in

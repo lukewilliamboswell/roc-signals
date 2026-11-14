@@ -654,32 +654,15 @@ fixes land rather than claiming shipping allocation from a development build.
 
 ## Compilers
 
-For `nightly-2026-11-11-7679cc5` only, automation prints explicit `SKIP`
-messages for compiler-blocked work.
-[roc-lang/roc#12976](https://github.com/roc-lang/roc/issues/12976) crashes
-optimized builds of every maintained example, so the website and `signals.roc
-build` use `--opt=dev`, with a warning that the artifacts are larger and slower.
-Native and browser specs, short walks and native soaks still run. Optimized long
-walks, shipping browser soaks and full worker scaling do not run; development
-artifacts are not performance or shipping allocation evidence. The release notes
-disclose these limits.
-
 Fuzz examples and campaigns always attempt their requested targets. Compiler,
 linker and runtime failures fail the task; no compiler version exempts fuzzing.
-Windows CI always attempts the current CLI init and retains its output in `.build/cli-init.log`, printing
-it before classification. Only a failed init containing a nonempty subset of
-the three captured basic-cli 0.28 diagnostics (`Locale:253:11`, `Locale:291:11`, or `Path:739:1`), each once
-and with every error, cause and summary accounted for, may quarantine the remaining
-CLI journey on that exact nightly ([basic-cli#555](https://github.com/roc-lang/basic-cli/issues/555)).
-CI has reproduced the Locale failures with basic-cli 0.27 and 0.28; the
-underlying cause remains unproven. Successful init continues the full journey, and
-other failures remain fatal. Windows native specs and worker failure
-checks remain enabled; remove the quarantine when basic-cli#555 is resolved.
 
-Every exemption matches that exact compiler version, so the next nightly
-automatically retries the original work. Remove these branches once the
-corresponding upstream fixes are available; do not extend a skip to an
-unverified compiler version.
+A compiler defect that blocks a check does not silently skip it. If automation
+must route around one, the exemption matches the exact affected compiler
+version and prints an explicit `SKIP` naming the upstream issue, so the next
+nightly automatically retries the original work. Remove the branch once the
+upstream fix is available; do not extend a skip to an unverified compiler
+version.
 
 The tooling compiler is `nightly-2026-11-13-03dce41`, matching the compiler
 used by roc-parser 6.0.0-rc.2. Earlier toolchains cannot resolve the released

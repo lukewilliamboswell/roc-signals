@@ -99,10 +99,6 @@ Slow := [].{
 	## step, which must leave nothing allocated (`RUNNER --walk`).
 	walks! : SpecSuite.Options => Try(List(Str), _)
 	walks! = |o| {
-		if SpecSuite.has_broken_optimizer(o.nightly) {
-			Proc.note!("SKIP optimized 10,000-step walks (${SpecSuite.optimizer_issue}): ${o.nightly} crashes building the runners; native specs, short walks and native soaks still run with --opt=dev. Restore on the next nightly.")
-			return Ok([])
-		}
 		var $builds = []
 		for name in Slow.walk_apps {
 			Path.create_all!(Path.utf8("${o.build_dir}/walk/${name}"))?
@@ -154,14 +150,10 @@ Slow := [].{
 		$problems = Checks.gather!($problems, Slow.walks!(o))?
 		Proc.note!("== native soaks")
 		$problems = Checks.gather!($problems, Slow.native_soak!(o))?
-		if SpecSuite.has_broken_optimizer(o.nightly) {
-			Proc.note!("SKIP shipping-build browser soaks (${SpecSuite.optimizer_issue}): ${o.nightly} cannot build the optimized artifacts; a dev build cannot establish shipping allocation plateaus. Restore on the next nightly.")
-		} else {
-			Checks.hold!($problems, SpecSuite.build_with!(o, [], Slow.browser_soak_apps, "size"))?
-			for example in Slow.browser_soak_apps {
-				Proc.note!("== browser soak ${example}")
-				$problems = Checks.gather!($problems, Targets.browser_soak!(o, example, SpecSuite.wasm_of(o, example)))?
-			}
+		Checks.hold!($problems, SpecSuite.build_with!(o, [], Slow.browser_soak_apps, "size"))?
+		for example in Slow.browser_soak_apps {
+			Proc.note!("== browser soak ${example}")
+			$problems = Checks.gather!($problems, Targets.browser_soak!(o, example, SpecSuite.wasm_of(o, example)))?
 		}
 		Ok($problems)
 	}

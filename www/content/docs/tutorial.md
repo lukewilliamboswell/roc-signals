@@ -286,9 +286,7 @@ The first command checks the module's pure decisions and storage format; the
 second checks all four `.scm` files against the app. `build` writes a deployable
 `dist/` with the browser module, page and matching runtime. Serve that directory
 over HTTP to deploy it; [Getting Started](@/docs/getting-started.md#build-it-for-deployment)
-explains what to keep together. Check the tool's build output for the
-optimization mode: a compiler workaround may explicitly select `--opt=dev`
-instead of the usual `--opt=size`, as Getting Started explains.
+explains what to keep together.
 
 You have a running app, its editable source and a test suite. As you make it
 your own, use the specs to state what should stay true about adding, checking,

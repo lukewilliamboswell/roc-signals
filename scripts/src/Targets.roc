@@ -341,10 +341,6 @@ Targets := [].{
 	## request. `check` runs its smoke on the development build instead.
 	workers_scaling! : SpecSuite.Options => Try(List(Str), _)
 	workers_scaling! = |o| {
-		if SpecSuite.has_broken_optimizer(o.nightly) {
-			Proc.note!("SKIP optimized worker scaling (${SpecSuite.optimizer_issue}): ${o.nightly} crashes building Worker Lab; the dev-build smoke still runs in check. Restore on the next nightly.")
-			return Ok([])
-		}
 		var $problems = []
 		# Compiler workaround (https://github.com/roc-lang/roc/issues/12945): a
 		# derived record decode leaks on every worker job under
