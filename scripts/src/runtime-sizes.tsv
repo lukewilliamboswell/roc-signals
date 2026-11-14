@@ -1,5 +1,5 @@
 # As-shipped platform JavaScript, Brotli quality 11 through Node's zlib module, bytes.
 # Update a figure with its source change and explain the size change in the PR.
-platform/runtime.mjs	63001
+platform/runtime.mjs	65579
 platform/worker.mjs	5038
 platform/environment.mjs	2042

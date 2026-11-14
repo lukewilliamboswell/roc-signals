@@ -107,10 +107,10 @@ ApiDocs := [].{
 	## itself part of the exposed API"), although `roc check` accepts the
 	## package. The repair exposes `EngineOnly`, the one name the baseline
 	## then has beyond what shipped; 0.6.0 has no `EngineOnly`, so the
-	## comparison reports it removed. The upstream issue is drafted, not yet
-	## filed; link it here and in `design.md`'s compiler limitations once it
-	## is. When the latest release is 0.6.0 this entry no longer applies and
-	## `baseline_plan` fails until it is removed.
+	## comparison reports it removed. Upstream:
+	## https://github.com/roc-lang/roc/issues/13080. When the latest release
+	## is 0.6.0 this entry no longer applies and `baseline_plan` fails until
+	## it is removed.
 	baseline_repairs : List(BaselineRepair)
 	baseline_repairs = [
 		{
