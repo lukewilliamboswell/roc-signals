@@ -513,7 +513,11 @@ prevents the paste's default on that element:
 The runtime reads plain text during dispatch. `maxPasteBytes` caps its UTF-8
 size, 4 MiB by default; over the bound the app receives `TooLarge`. The
 browser first provides the whole string; the limit then bounds validation,
-UTF-8 copying and Wasm staging. An element takes pasted text or pasted files, since it has one handler per
+UTF-8 copying and Wasm staging. Pasted text that is not well-formed
+Unicode (a lone surrogate, which Roc text cannot hold) is not delivered at
+all, nor is an input's value that holds one; the runtime monitor counts
+each in `page.textRefused`. A key event whose key or code holds one is heard
+by no keymap. An element takes pasted text or pasted files, since it has one handler per
 event type. An ordinary `on("paste", ...)` still receives its ordinary
 empty text payload. Reading the clipboard on demand remains a port's
 business; the paste event covers text the user chooses to paste.

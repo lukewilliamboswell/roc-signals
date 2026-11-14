@@ -3046,6 +3046,7 @@ text decided by event type, and the files kind carries the files the event
 holds. The paste-text kind, attached by `Html.on_paste_text`, is allowed only
 on `paste`. It reads `clipboardData.getData("text/plain")` during dispatch,
 prevents the element's paste default and delivers `Text(Str)` or `TooLarge`.
+Pasted text that is not well-formed Unicode is not delivered (see below).
 `maxPasteBytes` is a deployment bound, 4 MiB by default; an over-bound string
 is never staged into Wasm. The browser's
 [`getData` API](https://html.spec.whatwg.org/multipage/dnd.html#dom-datatransfer-getdata)
@@ -5384,8 +5385,9 @@ An event is `event(node, handler)` with the payload staged first:
   target's value; `change` → `"true"`/`"false"` for a checkbox or radio, else the value;
   `focus`/`blur` (listened as
   `focusin`/`focusout`) → the target's value. A value that is not a
-  well-formed string stages nothing: the event is not delivered, as a key or
-  code that is not well-formed is heard by no keymap.
+  well-formed string stages nothing: the event is not delivered, as with
+  pasted text, and as a key or code that is not well-formed is heard by no
+  keymap.
 - **Files-kind DOM events:** a handler declared with the files kind on
   `change`, `drop` or `paste` receives the target's `files`, the drop's
   `dataTransfer.files` or the paste's `clipboardData.files`, captured while
@@ -5603,7 +5605,7 @@ site; an unknown kind number in commands is an `executor` fault.
 | 6 Scroll | `top:u32 left:u32` | `event` | `scroll`, paced |
 | 7 Size | `width:u32 height:u32` | `event` | `size`, observation report |
 | 8 Seen | `intersecting:u8 ratio:u16` | `event` | `seen`, observation report |
-| 9 Paste | `status:u8 [text:rest]` | `event` | `paste`; `0` Text with UTF-8 body, `1` TooLarge with no body; prevents default |
+| 9 Paste | `status:u8 [text:rest]` | `event` | `paste`; `0` Text with UTF-8 body, `1` TooLarge with no body; prevents default; text that is not well-formed is not delivered |
 
 Kind **9** rejects any status except 0 or 1, trailing bytes after TooLarge
 and invalid UTF-8 text as routed-site contract faults. Unknown clipboard or

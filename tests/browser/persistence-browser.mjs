@@ -278,11 +278,15 @@ try {
       } finally {
         String.prototype.isWellFormed = wellFormed; TextEncoder.prototype.encode = encode;
       }
-      paste("\ud800");
-      const contained = [f.rt.poisoned?.class, f.calls.length]; f.end();
-      return { refused, contained };
+      const seen = [];
+      f.rt.monitor.subscribe(event => { if (event.kind === "event-text-refused") seen.push(event.type); });
+      const prevented = paste("\ud800");
+      const notDelivered = [prevented, f.rt.poisoned, f.calls.length, f.rt.textRefused, seen];
+      paste("ok");
+      const after = f.calls.map(call => call.payload); f.end();
+      return { refused, notDelivered, after };
     });
-    check("oversized Unicode is refused before scanning or encoding; in-bound malformed text is contained", unicode, { refused: [true, [[1]], 0, 0, null], contained: ["executor", 1] });
+    check("oversized Unicode is refused before scanning or encoding; in-bound malformed text is not delivered and never poisons", unicode, { refused: [true, [[1]], 0, 0, null], notDelivered: [true, null, 1, 1, ["paste"]], after: [[1], [0, 111, 107]] });
     const textKind = await page.evaluate(() => {
       const f = window.__fixture();
       f.raw(f.join(new Uint8Array([0, 8]), f.u32(1), f.u32(0), f.u32(0), new Uint8Array([0]), f.str(""), f.str("input"), new Uint8Array([0]), new Uint8Array([11]), f.u32(1), f.u32(7), f.str("input"), new Uint8Array([1]), f.u32(0)));

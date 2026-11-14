@@ -3700,7 +3700,12 @@ export class RocEngineRuntime {
             this.dispatch(node.__rn, handler.h, new Uint8Array([1]), node);
             return;
           }
-          if (!text.isWellFormed()) throw new Error("paste text is not well-formed Unicode");
+          // Text Roc cannot hold is not repaired into other text: the paste
+          // is not delivered, as the declaration's prevention still acts.
+          if (!text.isWellFormed()) {
+            this.refuseText(type);
+            return;
+          }
           let bytes = 0;
           for (const character of text) {
             const point = character.codePointAt(0);
