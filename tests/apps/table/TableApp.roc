@@ -51,8 +51,10 @@ TableApp := [Todos].{
 	## What the address chose. `draws` is `Everything`, or `Main` for the
 	## main list alone (no second list, no readers), which is what a timing
 	## of one view wants. `Changes` adds readers of the last writing turn's
-	## changes and inverse for the lifecycle specs.
-	Setup : { rows : U64, window : U64, draws : [Everything, Main, Changes] }
+	## changes and inverse for the lifecycle specs. `Saves` adds a short list
+	## whose rows issue requests, for the specs of requests that outlive the
+	## row that issued them.
+	Setup : { rows : U64, window : U64, draws : [Everything, Main, Changes, Saves] }
 
 	## The setup an address names; 1,000 rows, a window of 30, everything
 	## drawn, by default.
@@ -63,6 +65,7 @@ TableApp := [Todos].{
 		draws = match TableApp.asked(url, "draws") ?? "everything" {
 			"main" => Main
 			"changes" => Changes
+			"saves" => Saves
 			_ => Everything
 		}
 		{ rows, window, draws }
@@ -168,6 +171,8 @@ TableApp := [Todos].{
 		scroll_request: Engine.cell(Engine.outbox({})),
 		scroll_focus: Engine.cell(Engine.outbox({})),
 		observed_rows: Engine.cell([]),
+		saved: Engine.cell(""),
+		saves_window: Engine.cell({ start: 0.U64, count: 2.U64 }),
 	}.Engine.Cells
 
 	store = Engine.store(TableApp.Todos, TableApp.description)
@@ -271,6 +276,30 @@ TableApp := [Todos].{
 	## One row of the smaller lists: its key and its title.
 	line : Signal(r, U64), State(r, Todo) -> Elem(r)
 	line = |key, todo| Html.li([], [Html.span_s(key.map2(todo.signal(), |k, t| "${k.to_str()}=${t.title} "), [])])
+
+	## One row of the `saves` list. It saves its row with `keep_current`,
+	## which runs its reaction only while the row is the one it saved, and
+	## reports its progress; and it reads its row with `watch`, whose
+	## reaction reads the row again when the answer arrives. Each reaction
+	## appends to the `saved` log.
+	saving : Signal(Engine.Row(ctx, U64), U64), State(Engine.Row(ctx, U64), Todo) -> Elem(Engine.Row(ctx, U64))
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	saving = |key, todo| {
+		saved = TableApp.cells.saved
+		logged = |entry| [saved.update(|log| "${log}${entry} ")]
+		Html.li(
+			[],
+			[
+				Html.span_s(key.map2(todo.signal(), |k, t| "${k.to_str()}=${t.title} "), []),
+				Engine.keep_current(
+					todo.signal(),
+					|t| [Engine.http({ url: "/save" })],
+					Engine.react(|t, _| logged("saved:${t.title}")).with_progress({}, Engine.react_progress(|t, _| logged("sending:${t.title}"))),
+				),
+				Engine.watch(todo.signal(), |_| [Engine.http({ url: "/read" })], Engine.react_by(todo.signal(), |now, _, _| logged("read:${now.title}"))),
+			],
+		)
+	}
 
 	## A list of `todos` named `name`: the window `window` of `listing`.
 	list : Str, Signal(ctx, Listing), Signal(ctx, Engine.Window), (Signal(Engine.Row(ctx, U64), U64), State(Engine.Row(ctx, U64), Todo) -> Elem(Engine.Row(ctx, U64))) -> Elem(ctx)
@@ -550,6 +579,13 @@ TableApp := [Todos].{
 					),
 					Html.p_s(TableApp.cells.items.next.signal().map(|next| "Next: ${next.to_str()}"), [Engine.test_id("next")]),
 				])
+				Saves => [
+					Html.button("Scroll saves", [], Engine.handle(|_| [TableApp.cells.saves_window.set({ start: 1, count: 2 })])),
+					Html.button("Restore 0", [], Engine.handle(|_| [TableApp.cells.items.todos.update(|table| table.insert(0, TableApp.todo_of(0, setup.rows)))])),
+					Html.button("Restore 0 retitled", [], Engine.handle(|_| [TableApp.cells.items.todos.update(|table| table.insert(0, { ..TableApp.todo_of(0, setup.rows), title: "Again" }))])),
+					TableApp.list("saves", Engine.const({ show: All, order: ByKey }), TableApp.cells.saves_window.signal(), TableApp.saving),
+					Html.p_s(TableApp.cells.saved.signal(), [Engine.test_id("saved")]),
+				]
 				Main => []
 			},
 		),

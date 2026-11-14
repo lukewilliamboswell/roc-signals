@@ -903,6 +903,18 @@ keeps, in the query's order, and of those only the rows inside a window.
   other table. Any other write (remove, insert, a write of several rows) goes
   through the table's cell. A row read after its key left the table in the same
   event is a `contract` error naming the site.
+- **A drawn row's orphans read the table.** The row's context holds its key,
+  not its row, so a request admitted below a drawn row that reparents to the
+  table view site reads the row as the table holds it when its result or a
+  progress report arrives: a row that only left the window reads its current
+  row, and a key removed and inserted again reads the new row. When the
+  table no longer holds the key, the orphan's reaction or progress decision
+  does not run: the result counts as delivered and the run counts once as
+  `skipped`. Its writes to store cells are skipped with it, because the
+  decision that would make them cannot take its reading of the row. This is
+  one lookup of the key per result. No earlier row is kept for it: a whole
+  rewrite leaves none to keep, and a copy held by the site would be a second
+  holder of every drawn row.
 - **Up to date before anything else.** On every `Changed`, whatever it names,
   a view site first brings its view up to date with its table, which is a
   comparison of two counts when nothing was written. The root's pass
@@ -2444,7 +2456,9 @@ rendered the control:
   and counted (`skipped`), writes to surviving states commit, and the write
   set names only surviving layers. The scope that held the state is gone, so
   there is nothing to write. A spec asserts `effects_skipped`. A decision's
-  writes to store cells always commit, since the store outlives every scope.
+  writes to store cells always commit, since the store outlives every scope,
+  except for the orphan of a table view's row whose key has left the table,
+  whose reaction does not run (see [Tables and views](#tables-and-views)).
 - A reparented orphan retains a snapshot of its retired layers until its
   result arrives; the in-flight cap bounds that retention.
 - Only tearing down the instance invalidates delivery.

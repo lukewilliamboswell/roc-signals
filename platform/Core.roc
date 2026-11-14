@@ -7184,7 +7184,7 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 					}
 					(c4, s4, t4) = view_apply(cfg, c1, slots, mk, v2, changes, t2)
 					(c5, t5) = settle(cfg, c4, mk, t4)
-					(c6, orph) = take_dropped(c5, cfg.depth)
+					(c6, orph) = take_dropped_view(c5, cfg.depth, shows.get)
 					(view_inst(cfg, shows, q2, v2, adopted.concat(orph), c6, s4), Done, fx_adopt(t5, cfg.path, orph))
 				}
 				Fire(path, pos, h, payload) => {
@@ -7229,7 +7229,7 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 				}
 				Dispose(remove) => {
 					(c1, t1) = if (remove or cfg.dynamic) clear_rows(cfg, cols, mk, remove, tx) else (cols, free_rows(cols, tx))
-					(_, orph) = take_dropped(c1, cfg.depth)
+					(_, orph) = take_dropped_view(c1, cfg.depth, shows.get)
 					t2 = if !cfg.sole {
 						if (remove) free_id(emit_op(t1, 5, |c| put_u32(c, cfg.anchor)), cfg.anchor) else free_id(t1, cfg.anchor)
 					} else t1
@@ -8903,6 +8903,34 @@ take_dropped = |cols, depth| {
 		var $o = []
 		for d in dropped {
 			$o = $o.concat(lower_row(d.orphans, d.key, d.item, depth))
+		}
+		({ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped: [], shown, pending_echo, rnodes }, $o)
+	}
+}
+
+## Take a view site's dropped rows and lower their orphans to the site.
+## A view row's row is not part of its context (which holds the table's
+## key): a read of it reads the table. So an orphan of a drawn row runs
+## only while the table holds the row's key, and reads the row as the
+## table has it then. When the key has left the table, nothing of the row
+## remains to read or write: the orphan's reaction (or progress decision)
+## does not run, its result still counts as delivered and the run counts
+## once as `skipped`. This costs one lookup of the key per result, and
+## nothing for a row that leaves without orphans.
+take_dropped_view : Cols(Row(ctx, k), k), U64, (ctx -> Table(k, v)) -> (Cols(Row(ctx, k), k), List(Orphan(ctx)))
+	where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+take_dropped_view = |cols, depth, get| {
+	if cols.dropped.is_empty() {
+		(cols, [])
+	} else {
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes } = cols
+		var $o = []
+		for d in dropped {
+			row_key = d.item
+			for lowered in lower_row(d.orphans, d.key, row_key, depth) {
+				run = lowered.run
+				$o = $o.append({ id: lowered.id, run: |e, r| if (get(e).contains(row_key)) run(e, r) else (e, no_layers, 1) })
+			}
 		}
 		({ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped: [], shown, pending_echo, rnodes }, $o)
 	}
@@ -10826,6 +10854,45 @@ expect {
 	closed = Core.event(clean, 2, 0, Str.from_utf8([0]) ?? crash "UTF8")
 	(_, commands) = Core.take_cmds(closed, [])
 	commands.drop_first(1) == put_u32([5], 2) and Core.settled(closed).is_ok()
+}
+
+## A table view's row whose key left the table while its requests were in
+## flight: the requests reparent to the view site, and their progress and
+## results then find no row to read. Each counts as delivered (progress as
+## progress) and as skipped, its reaction does not run, the instance is not
+## poisoned and the view stays settled. A row that only left the window
+## still reads the row the table holds.
+expect {
+	store = Core.store_of({}, { todos: Core.table([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }]), seen: Core.cell(0.U64), win: Core.cell({ start: 0.U64, count: 10.U64 }) }.Core.Cells)
+	todos = store.cells().todos
+	seen = store.cells().seen
+	win = store.cells().win
+	plan = |_| { keep: |_, _| Bool.True, sort: |k, _| k, compare: |a, b| if (a < b) Before else if (a > b) After else Same }
+	counted = Core.store_reaction(|_, _| [seen.update(|n| n + 1)])
+	page = |row_part| Core.element(
+		"main",
+		[],
+		[
+			Core.element("button", [Core.on_click(Core.store_handler(|_| [todos.update(|t| t.remove(1))]))], []),
+			Core.element("button", [Core.on_click(Core.store_handler(|_| [win.set({ start: 1, count: 10 })]))], []),
+			Core.table_view(todos, { query: Core.const({}), plan, window: win.signal() }, |_, row| Core.element("p", [], [row_part(row)])),
+		],
+	)
+	ok = Http({ status: 200, headers: [], body: "" })
+	answered = |row_part, button, report| {
+		dropped = Core.event(Core.mount_store(32, store.initial(), page(row_part)), button, button - 2, "")
+		reported = if (report) Core.progress(dropped, 1, { direction: Receiving, done: 1, total: Known(2) }) else dropped
+		done = Core.result(reported, 1, ok)
+		(st, _) = Core.split(done)
+		stats = Core.fx_stats(done)
+		{ seen: (seen.get)(st), delivered: stats.delivered, skipped: stats.skipped, reparented: stats.reparented, progress: Core.work_counters(done).get(47) ?? 0, settled: Core.settled(done).is_ok() }
+	}
+	current = |row| Core.keep_current(row.signal(), |r| [Core.http({ url: "/x/${r}" })], counted.with_progress({}, Core.store_progress(|_, _| [seen.update(|n| n + 10)])))
+	reading = |row| Core.watch(row.signal(), |r| [Core.http({ url: "/x/${r}" })], Core.store_reaction_by(row.signal(), |r, _, _| [seen.update(|n| n + 1 + r.count_utf8_bytes())]))
+	answered(current, 2, True) == { seen: 0, delivered: 1, skipped: 2, reparented: 1, progress: 1, settled: True }
+		and answered(reading, 2, False) == { seen: 0, delivered: 1, skipped: 1, reparented: 1, progress: 0, settled: True }
+		and answered(current, 3, True) == { seen: 11, delivered: 1, skipped: 0, reparented: 1, progress: 1, settled: True }
+		and answered(reading, 3, False) == { seen: 2, delivered: 1, skipped: 0, reparented: 1, progress: 0, settled: True }
 }
 
 ## A derive equality cutoff cannot strand the echoed hole below it. Its
