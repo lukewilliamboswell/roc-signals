@@ -5,7 +5,7 @@
     (click (role button :name "Show findable"))
     (expect-no-attr (test-id "findable") "hidden")
     (click (role button :name "Hide findable"))
-    (expect-attr (test-id "findable") "hidden" "")
+    (expect-attr (test-id "findable") "hidden" "hidden")
     (click (role button :name "Findable until found"))
     (expect-attr (test-id "findable") "hidden" "until-found")
     (expect-attr (test-id "boolean-static") "readonly" "named")
