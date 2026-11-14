@@ -1,4 +1,5 @@
 import parser.Markup
+import parser.DomConstruction
 
 ## Human wording for parser-owned construction rules. Validation stays with
 ## the parser; the engine and a literal add their own site or source position.
@@ -18,6 +19,36 @@ MarkupAdvice := [].{
 		ReconstructedContent => "the HTML parser would reconstruct earlier formatting"
 		ChangedAttributes => "the HTML parser would change written attributes"
 	}
+
+	## Keep the finite constructor's exact repair category and supplied labels.
+	## This is independent of the literal/renderer StructureReason wording;
+	## each caller adds its own construction site or authored source position.
+	construction : DomConstruction.RepairRule, { parent : Str, child : Str } -> Str
+	construction = |rule, labels| {
+		parent = bounded_label(labels.parent)
+		child = bounded_label(labels.child)
+		match rule {
+			CloseParagraph => "${child} inside ${parent}: the HTML parser would close the paragraph first"
+			InsertTableSection => "${child} inside ${parent}: the HTML parser would insert a table section first"
+			InvalidTableChild => "${child} inside ${parent}: the HTML parser would move it outside the table"
+			TablePartOutsideTable => "${child} under ${parent}: a table part needs its table context"
+			NestedAnchor => "${child} inside ${parent}: the HTML parser would close the earlier anchor first"
+			NestedForm => "${child} inside ${parent}: the HTML parser would ignore the nested form"
+			NestedButton => "${child} inside ${parent}: the HTML parser would close the earlier button first"
+			CloseListItem => "${child} inside ${parent}: the HTML parser would close the earlier list item first"
+			CloseDescriptionItem => "${child} inside ${parent}: the HTML parser would close the earlier description item first"
+			CloseOption => "${child} inside ${parent}: the HTML parser would close the earlier option first"
+			CloseHeading => "${child} inside ${parent}: the HTML parser would close the earlier heading first"
+			ChildOfVoid => "${child} inside ${parent}: a void element cannot hold children"
+			ElementInTextContent => "${child} inside ${parent}: the HTML parser reads this content as text"
+			FosterTableText => "${child} inside ${parent}: the HTML parser would move the text outside the table"
+		}
+	}
+
+	## The name-only checker cannot choose the hidden-input table exception.
+	## Do not describe missing evidence as proof of invalid HTML or repair.
+	unsupported_table_input : { parent : Str, child : Str } -> Str
+	unsupported_table_input = |labels| "${bounded_label(labels.child)} inside ${bounded_label(labels.parent)}: attribute-dependent table input is outside the name-only construction check"
 
 }
 
@@ -43,4 +74,17 @@ expect MarkupAdvice.repair(MissingEndTag("p")) == "the HTML parser would close t
 expect {
 	bounded_label("${Str.repeat("a", 63)}λ") == Str.repeat("a", 63) and bounded_label(Str.repeat("λ", 40)).count_utf8_bytes() == 64 and
 		bounded_label("").is_empty() and bounded_label("<svg>") == "<svg>"
+}
+
+## Constructor wording stays exact beside the separate full-parser wording.
+expect {
+	{
+		paragraph: MarkupAdvice.construction(CloseParagraph, { parent: "<p>", child: "<div>" }),
+		table_text: MarkupAdvice.construction(FosterTableText, { parent: "<table>", child: "text" }),
+		unsupported: MarkupAdvice.unsupported_table_input({ parent: "<table>", child: "<input>" }),
+	} == {
+		paragraph: "<div> inside <p>: the HTML parser would close the paragraph first",
+		table_text: "text inside <table>: the HTML parser would move the text outside the table",
+		unsupported: "<input> inside <table>: attribute-dependent table input is outside the name-only construction check",
+	}
 }
