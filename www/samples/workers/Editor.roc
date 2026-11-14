@@ -59,7 +59,7 @@ Editor := [].{
 	length = |v|
 		Engine.derive(
 			v.map(|s| Words.split(s.text).len()),
-			|n| Html.p_s(n.map(|count| "${count.to_str()} words"), [Engine.test_id("length")]),
+			|n| Html.p_s(n.map(|words| "${words.to_str()} words"), [Engine.test_id("length")]),
 		)
 	# endregion cheap
 

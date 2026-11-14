@@ -92,7 +92,7 @@ Documents := [].{
 	rows = |st|
 		Html.ul(
 			[],
-			[Engine.each(st.signal().map(|s| s.docs), |d| d.id, |row| Documents.row(st, row))],
+			[Engine.each(st.signal().map(|s| s.docs), |d| d.id, |row_ref| Documents.row(st, row_ref))],
 		)
 
 	row : State(Ctx, S), RowRef(Ctx, Doc) -> Elem(Line)
