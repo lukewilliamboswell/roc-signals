@@ -68,3 +68,10 @@ textual true/false tokens, such as ARIA values.
 `Html.InputType` checks the parser's closed set of input keywords.
 The raw `Engine.attr` constructor remains available for names and values
 whose grammar the application chooses to validate itself.
+
+## Compiler limitations
+
+`roc check` does not check a literal in a view that nothing calls, or that
+is bound and never used, until something calls it
+([roc-lang/roc#13003](https://github.com/roc-lang/roc/issues/13003)). A
+component library's view is checked once an app or a constant calls it.
