@@ -6,10 +6,10 @@ import assert from 'node:assert/strict';
 import {launch} from './cdp.mjs';
 import {parseArgs,runtimeFiles} from './args.mjs';
 import {protocolFixtureSection} from './protocol-fixture.mjs';
-const options=parseArgs(process.argv.slice(2),["scope"],["runtime"]);
+const options=parseArgs(process.argv.slice(2),["scope","job-only-wasm"],["runtime"]);
 const scope=options.scope??"all";
 if(!["all","raw"].includes(scope)||scope==="all"&&!options.wasm) throw Error("use --wasm APP.wasm, or --scope raw for only independent raw contracts");
-const files={...runtimeFiles(options.runtime),'app.wasm':options.wasm};
+const files={...runtimeFiles(options.runtime),'app.wasm':options.wasm,...(options['job-only-wasm']?{'job-only.wasm':options['job-only-wasm']}:{})};
 const server=http.createServer((request,response)=>{
   const file=files[path.basename(new URL(request.url,'http://x').pathname)];
   response.writeHead(200,{'content-type':file?(file.endsWith('.wasm')?'application/wasm':'text/javascript'):'text/html'});
@@ -19,16 +19,16 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const browser=await launch({executablePath:options.chrome});
 let count=0;
 const check=(name,condition)=>{assert.ok(condition,name);count++;console.log(`ok ${name}`);};
-async function open(mode='worker',dbg='console') {
+async function open(mode='worker',dbg='console',wasm='app.wasm') {
   const page=await browser.newPage();await page.goto(`http://127.0.0.1:${server.address().port}/`);
-  await page.evaluate(async ({mode,dbg})=>{
+  await page.evaluate(async ({mode,dbg,wasm})=>{
     window.__lines=[];window.__faults=[];window.__workerFaults=[];
     for(const key of ['log','error','info']) {const original=console[key].bind(console);console[key]=(...parts)=>{window.__lines.push([key,parts.join(' ')]);original(...parts);};}
     const {mountRocEngineApp}=await import('/runtime.mjs');
     const root=document.createElement('div');document.body.append(root);window.__root=root;
-    window.__rt=await mountRocEngineApp({wasmUrl:'/app.wasm',root,workers:mode,dbg,manualEffects:true,onFault:f=>window.__faults.push(f),onWorkerFault:f=>window.__workerFaults.push(f)});
+    window.__rt=await mountRocEngineApp({wasmUrl:`/${wasm}`,root,workers:mode,dbg,manualEffects:true,onFault:f=>window.__faults.push(f),onWorkerFault:f=>window.__workerFaults.push(f)});
     window.__click=label=>[...root.querySelectorAll('button')].find(button=>button.textContent===label).click();
-  },{mode,dbg});
+  },{mode,dbg,wasm});
   return page;
 }
 try {
@@ -102,6 +102,18 @@ try {
     check('a stopped job sends no debug text',await page.evaluate(()=>!__lines.some(row=>row[1].includes('[dbg task "dbg/stop"]'))));
     await page.close();
   }
+  }
+  if(options['job-only-wasm']) {
+    for(const mode of ['worker','inline']) {
+      const page=await open(mode,'off','job-only.wasm');
+      check(`${mode}: job-only mount has no debug notice before its first answer`,await page.evaluate(()=>__lines.length===0&&__rt.x.dbg_len()===0));
+      await page.evaluate(async()=>{await __rt.runEffect(__rt.pendingEffects()[0].id);});
+      const first=await page.evaluate(()=>({lines:__lines,answer:__root.querySelector('[data-testid=answer]').textContent,fault:__rt.poisoned}));
+      check(`${mode}: first task alone explains off once without values`,first.answer==='job:0'&&!first.fault&&first.lines.length===1&&first.lines[0][0]==='info'&&first.lines[0][1].includes('dbg: "off"'));
+      await page.evaluate(async()=>{__click('Increment');await __rt.runEffect(__rt.pendingEffects()[0].id);});
+      check(`${mode}: later task answers stay silent after the off notice`,await page.evaluate(()=>__lines.length===1&&__root.querySelector('[data-testid=answer]').textContent==='job:1'&&!__rt.poisoned));
+      await page.close();
+    }
   }
   // Hand-written valid declarations enter through the real mount boundary;
   // only the host exports are fake, to force traps before/after exact calls.

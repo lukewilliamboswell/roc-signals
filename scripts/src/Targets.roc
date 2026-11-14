@@ -312,7 +312,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "persistence-browser.mjs", ["--wasm", services, "--runner", SpecSuite.runner_of(o, "services")])?)
 				.concat(Targets.browser!(o, "transitions-browser.mjs", ["--wasm", services])?)
 				.concat(Targets.browser!(o, "workers-browser.mjs", ["--wasm", workers])?)
-				.concat(Targets.browser!(o, "dbg-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "dbg")])?)
+				.concat(Targets.browser!(o, "dbg-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "dbg"), "--job-only-wasm", SpecSuite.wasm_of(o, "dbg-job-only")])?)
 				.concat(Targets.browser!(o, "monitor-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "workers-scaling.mjs", ["--wasm", SpecSuite.wasm_of(o, "worker-lab"), "--mode", "smoke"])?)
 				.concat(Targets.browser!(o, "files-browser.mjs", ["--wasm", files])?)
