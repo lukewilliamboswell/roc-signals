@@ -8139,6 +8139,18 @@ Live : { id : U32, path : List(U32), sub : Bool, progress : Bool }
 
 Queued : { id : U32, path : List(U32), res : Result }
 
+## The follow-ups waiting to run, in order, and the ids among them that
+## still will. Supersession and disposal drop an id from `waiting` alone,
+## so finding and dropping it is an expected O(1) lookup whatever the
+## queue holds; `drain` skips an entry whose id is no longer waiting. The
+## queue follows the app's data (a refusal for each row that fetches past
+## the in-flight bound), so a scan of it per owned id would too.
+FollowUps : { entries : List(Queued), waiting : Dict(U32, {}) }
+
+## Queue a follow-up.
+follow_up : FollowUps, Queued -> FollowUps
+follow_up = |{ entries, waiting }, entry| { entries: entries.append(entry), waiting: waiting.insert(entry.id, {}) }
+
 RefMap : Dict(Str, List({ node : U32, path : List(U32), value_control : Bool }))
 
 RefOwned : { name : Str, path : List(U32) }
@@ -8150,7 +8162,7 @@ Fx : {
 	next : U32,
 	inner : U32,
 	live : List(Live),
-	queue : List(Queued),
+	queue : FollowUps,
 	max : U64,
 	issued : U64,
 	delivered : U64,
@@ -8215,7 +8227,7 @@ PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe
 TransitionBatch : { mounting : Bool, asked : Bool, types : List(Str), seen : Dict(Str, {}) }
 
 fx_empty : Fx
-fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
+fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: { entries: [], waiting: Dict.empty() }, max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
 
 ## Collect a request without allocating an awaited id. Removing the batch from
 ## its holder before updating keeps its hash set and ordered list unique.
@@ -8601,7 +8613,7 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = turn_end_later(tx, path, req)
 	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch } = fx
 	if live.len() >= max {
-		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
+		fx2 = { next: id + 1, inner, live, queue: follow_up(queue, { id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
 		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2 })
 	} else {
 		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req), progress: progress_ms > 0 and supports_progress(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
@@ -8656,7 +8668,7 @@ turn_end_later = |tx, path, req| {
 fx_follow : Tx, List(U32), Result -> (U32, Tx)
 fx_follow = |tx, path, res| {
 	id = tx.fx.inner
-	(id, with_fx(tx, |fx| { ..fx, inner: id + 1, queue: fx.queue.append({ id, path, res }) }))
+	(id, with_fx(tx, |fx| { ..fx, inner: id + 1, queue: follow_up(fx.queue, { id, path, res }) }))
 }
 
 ## Issue a site's requests for value `a`.
@@ -8774,8 +8786,8 @@ fx_dispose_by = |tx, { owned, orphan }| {
 				t1 = with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
 				$tx = emit_op(t1, 14, |c| put_u32(c, id))
 			}
-		} else if $tx.fx.queue.any(|q| q.id == id) {
-			$tx = with_fx($tx, |fx| { ..fx, queue: fx.queue.keep_if(|q| q.id != id), stale: fx.stale + 1 })
+		} else if $tx.fx.queue.waiting.contains(id) {
+			$tx = with_fx($tx, |fx| { ..fx, queue: { ..fx.queue, waiting: fx.queue.waiting.remove(id) }, stale: fx.stale + 1 })
 		}
 	}
 	($orph, $tx)
@@ -9090,7 +9102,9 @@ effect_deliver = |cfg, last, owned, env, id, res, tx| {
 # late result is stale like any other; a follow-up still queued for it (a
 # `Self` or a refusal) is dropped and counts `stale`. Owned entries already
 # answered are not in either table and cost nothing. The work is
-# O(owned x in-flight), bounded by the in-flight cap.
+# O(owned x in-flight) in the in-flight table, bounded by the in-flight
+# cap, and an expected O(1) lookup per owned id in the follow-ups waiting
+# (`FollowUps`), whose number follows the app's data instead.
 
 ## Give up every request a superseding site owns (the list is then empty).
 fx_supersede : Tx, List(Owned(a)) -> Tx
@@ -9101,8 +9115,8 @@ fx_supersede = |tx, owned| {
 		if $tx.fx.live.any(|l| l.id == id) {
 			t1 = with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
 			$tx = emit_op(t1, 14, |c| put_u32(c, id))
-		} else if $tx.fx.queue.any(|q| q.id == id) {
-			$tx = with_fx($tx, |fx| { ..fx, queue: fx.queue.keep_if(|q| q.id != id), stale: fx.stale + 1 })
+		} else if $tx.fx.queue.waiting.contains(id) {
+			$tx = with_fx($tx, |fx| { ..fx, queue: { ..fx.queue, waiting: fx.queue.waiting.remove(id) }, stale: fx.stale + 1 })
 		}
 	}
 	$tx
@@ -9815,29 +9829,35 @@ drain = |{ store: store0, root: root0, tx: tx0, programs }| {
 	var $below_next = tx0.fx.next
 	var $below_inner = tx0.fx.inner
 	breadth = max_breadth(tx0.fx.max)
-	while !$tx.fx.queue.is_empty() {
+	while !$tx.fx.queue.entries.is_empty() {
 		tx = $tx
-		q = tx.fx.queue.first() ?? crash "queue"
-		deeper = if (q.id >= fx_inner_base) q.id >= $below_inner else q.id >= $below_next
-		if deeper {
-			$depth = $depth + 1
-			$below_next = tx.fx.next
-			$below_inner = tx.fx.inner
-			if $depth > max_turns {
-				crash "contract: an effect follow-up chain reached depth 65 at site ${show_path(q.path)}: each follow-up's turn queued another, more than 64 deep in one call (feedback loop)"
+		q = tx.fx.queue.entries.first() ?? crash "internal: a follow-up queue that is not empty has no first entry"
+		if !tx.fx.queue.waiting.contains(q.id) {
+			# Dropped by supersession or disposal (and counted stale then):
+			# it was never to run, so it takes no turn and no depth.
+			$tx = with_fx(tx, |fx| { ..fx, queue: { ..fx.queue, entries: fx.queue.entries.drop_first(1) } })
+		} else {
+			deeper = if (q.id >= fx_inner_base) q.id >= $below_inner else q.id >= $below_next
+			if deeper {
+				$depth = $depth + 1
+				$below_next = tx.fx.next
+				$below_inner = tx.fx.inner
+				if $depth > max_turns {
+					crash "contract: an effect follow-up chain reached depth 65 at site ${show_path(q.path)}: each follow-up's turn queued another, more than 64 deep in one call (feedback loop)"
+				}
 			}
-		}
-		if $depth > 1 {
-			if $deep_turns >= breadth {
-				crash "resource_limit: the follow-up turns that follow-ups queued in one call exceeded 64 per in-flight slot (at least 4096) at site ${show_path(q.path)}: follow-ups are multiplying (feedback loop), or a follow-up's own turn issued far more requests than the in-flight bound admits (raise max_inflight)"
+			if $depth > 1 {
+				if $deep_turns >= breadth {
+					crash "resource_limit: the follow-up turns that follow-ups queued in one call exceeded 64 per in-flight slot (at least 4096) at site ${show_path(q.path)}: follow-ups are multiplying (feedback loop), or a follow-up's own turn issued far more requests than the in-flight bound admits (raise max_inflight)"
+				}
+				$deep_turns = $deep_turns + 1
 			}
-			$deep_turns = $deep_turns + 1
+			tx1 = with_fx(tx, |fx| { ..fx, queue: { entries: fx.queue.entries.drop_first(1), waiting: fx.queue.waiting.remove(q.id) } })
+			{ store, root, tx: tx2, programs: _ } = turn({ store: $store, root: $root, tx: tx1, programs }, q.path, q.id, Fx(Final(q.res, False)))
+			$store = store
+			$root = root
+			$tx = tx2
 		}
-		tx1 = with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_first(1) })
-		{ store, root, tx: tx2, programs: _ } = turn({ store: $store, root: $root, tx: tx1, programs }, q.path, q.id, Fx(Final(q.res, False)))
-		$store = store
-		$root = root
-		$tx = tx2
 	}
 	{ store: $store, root: $root, tx: $tx, programs }
 }
@@ -9919,7 +9939,7 @@ settle_note = |a, b| {
 		("stale", a.stale, b.stale),
 		("cancelled", a.cancelled, b.cancelled),
 		("in flight", a.live.len(), b.live.len()),
-		("queued follow-ups", a.queue.len(), b.queue.len()),
+		("queued follow-ups", a.queue.waiting.len(), b.queue.waiting.len()),
 		("end-of-turn focus requests, program checks and port requests", a.focus.len(), b.focus.len() - drifts.len()),
 	]
 	changed = pairs.keep_if(|(_, x, y)| x != y).map(|(name, x, y)| "${name} ${x.to_str()} -> ${y.to_str()}")
