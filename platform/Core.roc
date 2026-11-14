@@ -5123,7 +5123,7 @@ state_out = |out| match out {
 ## `Settle` walk that follows it.
 ## TODO https://github.com/roc-lang/roc/issues/13012: boxed site captures
 ## remain borrowed; local state can copy even in development builds.
-## TODO https://github.com/roc-lang/roc/issues/13019: optimized writes still
+## TODO https://github.com/roc-lang/roc/issues/12957: optimized writes still
 ## copy site storage without a boxed engine value; no local workaround found.
 state_inst : s, Block(In(ctx, s)), U64, [Settled, Waiting] -> Inst(ctx)
 state_inst = |s0, block0, depth0, waits0| {
@@ -5277,7 +5277,7 @@ block_inst = |block0| {
 ## The instance moves the store into each call's Root context and takes it back
 ## from Pending. The Changed pass rearms only written tables after refreshing
 ## readers; their last writing turn's record remains until the next write.
-## TODO https://github.com/roc-lang/roc/issues/13019: moving the store out
+## TODO https://github.com/roc-lang/roc/issues/12957: moving the store out
 ## fixes development ownership, but optimized site paths can still copy it.
 store_inst : Tables(st), Layers, Block(Root(st)) -> Inst(Root(st))
 store_inst = |tables0, wrote0, block0| {
