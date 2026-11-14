@@ -31,7 +31,9 @@ EffectiveTypesApp := [].{
 		),
 	)
 
-	form : { name : Str, two_inputs : Bool ?? False, button : Bool ?? False } -> Engine.Elem(ctx)
+	FormProps := { name : Str, two_inputs : Bool ?? False, button : Bool ?? False }
+
+	form : FormProps -> Engine.Elem(ctx)
 	form = |props| Engine.state(
 		0.U64,
 		|submitted| Engine.element(

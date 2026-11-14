@@ -24,26 +24,26 @@ ControlsApp := [].{
 	attributes : {} -> Elem(ctx)
 	attributes = |_props| Engine.state(
 		{ presence: Absent, rows: ["a", "b"] },
-		|attributes| Engine.element(
+		|attribute_state| Engine.element(
 			"section",
 			[],
 			[
-				Html.button("Empty attribute", [], attributes.update(|s| { ..s, presence: Present("") })),
-				Html.button("Text attribute", [], attributes.update(|s| { ..s, presence: Present("named") })),
-				Html.button("Absent attribute", [], attributes.update(|s| { ..s, presence: Absent })),
-				Html.button("Reverse attribute rows", [], attributes.update(|s| { ..s, rows: s.rows.fold([], |reversed, key| [key].concat(reversed)) })),
-				Html.button("Remove attribute row", [], attributes.update(|s| { ..s, rows: s.rows.keep_if(|key| key != "a") })),
-				Html.button("Restore attribute rows", [], attributes.update(|s| { ..s, rows: ["a", "b"] })),
-				Engine.element("img", [Engine.test_id("attribute-plain"), Engine.attr("alt", ""), Engine.attr_presence("title", attributes.signal().map(|s| s.presence))], []),
+				Html.button("Empty attribute", [], attribute_state.update(|s| { ..s, presence: Present("") })),
+				Html.button("Text attribute", [], attribute_state.update(|s| { ..s, presence: Present("named") })),
+				Html.button("Absent attribute", [], attribute_state.update(|s| { ..s, presence: Absent })),
+				Html.button("Reverse attribute rows", [], attribute_state.update(|s| { ..s, rows: s.rows.fold([], |reversed, key| [key].concat(reversed)) })),
+				Html.button("Remove attribute row", [], attribute_state.update(|s| { ..s, rows: s.rows.keep_if(|key| key != "a") })),
+				Html.button("Restore attribute rows", [], attribute_state.update(|s| { ..s, rows: ["a", "b"] })),
+				Engine.element("img", [Engine.test_id("attribute-plain"), Engine.attr("alt", ""), Engine.attr_presence("title", attribute_state.signal().map(|s| s.presence))], []),
 				Engine.each(
-					attributes.signal().map(|s| s.rows),
+					attribute_state.signal().map(|s| s.rows),
 					|key| key,
 					|row| Engine.element(
 						"div",
 						[
 							Engine.test_id_s(row.key().map(|key| "attribute-row-${key}")),
 							Engine.attr("aria-label", ""),
-							Engine.attr_presence("title", attributes.lift_row().signal().map(|s| s.presence)),
+							Engine.attr_presence("title", attribute_state.lift_row().signal().map(|s| s.presence)),
 						],
 						[],
 					),
@@ -58,23 +58,23 @@ ControlsApp := [].{
 	references : {} -> Elem(ctx)
 	references = |_props| Engine.state(
 		{ rows: ["a", "b"], selected: "a", names: PerRow, requests: Engine.outbox({}), log: "", duplicate: False },
-		|references| Engine.element(
+		|reference_state| Engine.element(
 			"section",
 			[],
 			[
-				Html.button("Focus row a", [], references.update(|s| { ..s, requests: s.requests.post("row-a") })),
-				Html.button("Focus row b", [], references.update(|s| { ..s, requests: s.requests.post("row-b") })),
-				Html.button("Focus current row", [], references.update(|s| { ..s, requests: s.requests.post("current") })),
-				Html.button("Focus empty name", [], references.update(|s| { ..s, requests: s.requests.post("") })),
-				Html.button("Focus paragraph", [], references.update(|s| { ..s, requests: s.requests.post("paragraph") })),
-				Html.button("Reverse reference rows", [], references.update(|s| { ..s, rows: s.rows.fold([], |reversed, key| [key].concat(reversed)) })),
-				Html.button("Remove row a", [], references.update(|s| { ..s, rows: s.rows.keep_if(|key| key != "a") })),
-				Html.button("Restore reference rows", [], references.update(|s| { ..s, rows: ["a", "b"] })),
-				Html.button("Use selected reference", [], references.update(|s| { ..s, names: Selected })),
-				Html.button("Select row b", [], references.update(|s| { ..s, selected: "b" })),
-				Html.button("Clear reference names", [], references.update(|s| { ..s, names: Unnamed })),
+				Html.button("Focus row a", [], reference_state.update(|s| { ..s, requests: s.requests.post("row-a") })),
+				Html.button("Focus row b", [], reference_state.update(|s| { ..s, requests: s.requests.post("row-b") })),
+				Html.button("Focus current row", [], reference_state.update(|s| { ..s, requests: s.requests.post("current") })),
+				Html.button("Focus empty name", [], reference_state.update(|s| { ..s, requests: s.requests.post("") })),
+				Html.button("Focus paragraph", [], reference_state.update(|s| { ..s, requests: s.requests.post("paragraph") })),
+				Html.button("Reverse reference rows", [], reference_state.update(|s| { ..s, rows: s.rows.fold([], |reversed, key| [key].concat(reversed)) })),
+				Html.button("Remove row a", [], reference_state.update(|s| { ..s, rows: s.rows.keep_if(|key| key != "a") })),
+				Html.button("Restore reference rows", [], reference_state.update(|s| { ..s, rows: ["a", "b"] })),
+				Html.button("Use selected reference", [], reference_state.update(|s| { ..s, names: Selected })),
+				Html.button("Select row b", [], reference_state.update(|s| { ..s, selected: "b" })),
+				Html.button("Clear reference names", [], reference_state.update(|s| { ..s, names: Unnamed })),
 				Engine.each(
-					references.signal().map(|s| s.rows),
+					reference_state.signal().map(|s| s.rows),
 					|key| key,
 					|row| Engine.element(
 						"button",
@@ -83,7 +83,7 @@ ControlsApp := [].{
 							Html.aria_label_s(row.key().map(|key| "Row ${key}")),
 							Engine.ref_s(
 								row.key().map2(
-									references.lift_row().signal(),
+									reference_state.lift_row().signal(),
 									|key, s| match s.names {
 										PerRow => "row-${key}"
 										Selected => if (key == s.selected) "current" else ""
@@ -91,15 +91,15 @@ ControlsApp := [].{
 									},
 								),
 							),
-							Engine.on_click(references.lift_row().update_by(row.key(), |s, key| { ..s, log: key })),
+							Engine.on_click(reference_state.lift_row().update_by(row.key(), |s, key| { ..s, log: key })),
 						],
 						[Engine.text_s(row.key())],
 					),
 				),
-				Html.p_s(references.signal().map(|s| s.log), [Engine.test_id("reference-log"), Engine.ref("paragraph")]),
-				Html.button("Duplicate references", [], references.update(|s| { ..s, duplicate: True })),
+				Html.p_s(reference_state.signal().map(|s| s.log), [Engine.test_id("reference-log"), Engine.ref("paragraph")]),
+				Html.button("Duplicate references", [], reference_state.update(|s| { ..s, duplicate: True })),
 				Engine.when(
-					references.signal().map(|s| s.duplicate),
+					reference_state.signal().map(|s| s.duplicate),
 					|| Engine.element(
 						"div",
 						[],
@@ -110,10 +110,10 @@ ControlsApp := [].{
 					),
 					|| Engine.text(""),
 				),
-				Html.button("Start focus loop", [], references.update(|s| { ..s, requests: s.requests.post("loop-left") })),
-				Engine.element("input", [Html.aria_label("Loop left"), Engine.ref("loop-left"), Html.on_focus(references.update(|s| { ..s, requests: s.requests.post("loop-right") }))], []),
-				Engine.element("input", [Html.aria_label("Loop right"), Engine.ref("loop-right"), Html.on_focus(references.update(|s| { ..s, requests: s.requests.post("loop-left") }))], []),
-				Engine.on_post(references.signal().map(|s| s.requests), |name| [Engine.command(Focus(name))], Engine.ignore({})),
+				Html.button("Start focus loop", [], reference_state.update(|s| { ..s, requests: s.requests.post("loop-left") })),
+				Engine.element("input", [Html.aria_label("Loop left"), Engine.ref("loop-left"), Html.on_focus(reference_state.update(|s| { ..s, requests: s.requests.post("loop-right") }))], []),
+				Engine.element("input", [Html.aria_label("Loop right"), Engine.ref("loop-right"), Html.on_focus(reference_state.update(|s| { ..s, requests: s.requests.post("loop-left") }))], []),
+				Engine.on_post(reference_state.signal().map(|s| s.requests), |name| [Engine.command(Focus(name))], Engine.ignore({})),
 			],
 		),
 	)
@@ -215,14 +215,14 @@ ControlsApp := [].{
 	properties : {} -> Elem(ctx)
 	properties = |_props| Engine.state(
 		{ rows: [{ key: "a", checked: False, choice: "a", stamp: 0.U64 }, { key: "b", checked: True, choice: "b", stamp: 0 }], fault: Clean, input_type: "text", value: "draft", custom: "" },
-		|properties| Engine.element(
+		|property_state| Engine.element(
 			"section",
 			[],
 			[
-				Html.button("Set row checks", [], properties.update(|s| { ..s, rows: s.rows.map(|row| { ..row, checked: True }) })),
-				Html.button("Touch row metadata", [], properties.update(|s| { ..s, rows: s.rows.map(|row| { ..row, stamp: row.stamp.plus_wrap(1) }) })),
+				Html.button("Set row checks", [], property_state.update(|s| { ..s, rows: s.rows.map(|row| { ..row, checked: True }) })),
+				Html.button("Touch row metadata", [], property_state.update(|s| { ..s, rows: s.rows.map(|row| { ..row, stamp: row.stamp.plus_wrap(1) }) })),
 				Engine.each(
-					properties.signal().map(|s| s.rows),
+					property_state.signal().map(|s| s.rows),
 					|row| row.key,
 					|row| Engine.element(
 						"div",
@@ -234,7 +234,7 @@ ControlsApp := [].{
 									Engine.attr("type", "checkbox"),
 									Html.aria_label_s(row.key().map(|key| "Property check ${key}")),
 									Engine.prop_s(Engine.Prop.checked, row.field(|value| value.checked)),
-									Engine.on("change", properties.lift_row().set_value_by(row.key(), |s, key, value| { ..s, rows: s.rows.map(|entry| if (entry.key == key) { ..entry, checked: value == "true" } else entry) })),
+									Engine.on("change", property_state.lift_row().set_value_by(row.key(), |s, key, value| { ..s, rows: s.rows.map(|entry| if (entry.key == key) { ..entry, checked: value == "true" } else entry) })),
 								],
 								[],
 							),
@@ -243,7 +243,7 @@ ControlsApp := [].{
 								[
 									Html.aria_label_s(row.key().map(|key| "Property option ${key}")),
 									Engine.prop_s(Engine.Prop.value, row.field(|value| value.choice)),
-									Engine.on("change", properties.lift_row().set_value_by(row.key(), |s, key, value| { ..s, rows: s.rows.map(|entry| if (entry.key == key) { ..entry, choice: value } else entry) })),
+									Engine.on("change", property_state.lift_row().set_value_by(row.key(), |s, key, value| { ..s, rows: s.rows.map(|entry| if (entry.key == key) { ..entry, choice: value } else entry) })),
 								],
 								[
 									Engine.element("option", [Engine.prop_s(Engine.Prop.value, row.key())], [Engine.text_s(row.key())]),
@@ -255,11 +255,11 @@ ControlsApp := [].{
 				),
 				Engine.element("progress", [Engine.test_id("ordinary-progress"), Engine.attr("value", "0.5")], []),
 				Engine.element("custom-value", [Engine.test_id("ordinary-custom-value"), Engine.attr("value", "attribute only")], []),
-				Engine.element("button", [Html.aria_label("Custom colon event"), Engine.on("x:y", properties.update(|s| { ..s, custom: "received" }))], [Engine.text("Custom colon event")]),
-				Html.p_s(properties.signal().map(|s| s.custom), [Engine.test_id("custom-event-log")]),
-				Engine.element("input", [Html.aria_label("Dynamic file value"), Engine.attr_s("type", properties.signal().map(|s| s.input_type)), Engine.prop_s(Engine.Prop.value, properties.signal().map(|s| s.value))], []),
-				Html.button("Make value input a file", [], properties.update(|s| { ..s, input_type: "file" })),
-				Html.button("Write file value", [], properties.update(|s| { ..s, value: "changed" })),
+				Engine.element("button", [Html.aria_label("Custom colon event"), Engine.on("x:y", property_state.update(|s| { ..s, custom: "received" }))], [Engine.text("Custom colon event")]),
+				Html.p_s(property_state.signal().map(|s| s.custom), [Engine.test_id("custom-event-log")]),
+				Engine.element("input", [Html.aria_label("Dynamic file value"), Engine.attr_s("type", property_state.signal().map(|s| s.input_type)), Engine.prop_s(Engine.Prop.value, property_state.signal().map(|s| s.value))], []),
+				Html.button("Make value input a file", [], property_state.update(|s| { ..s, input_type: "file" })),
+				Html.button("Write file value", [], property_state.update(|s| { ..s, value: "changed" })),
 				Engine.element(
 					"div",
 					[],
@@ -272,17 +272,17 @@ ControlsApp := [].{
 						{ name: "Value attribute on input", fault: AttributeValue },
 						{ name: "Duplicate value property", fault: DuplicateProperty },
 						{ name: "Value property on file input", fault: FileValue },
-					].map(|trigger| Html.button(trigger.name, [], properties.update(|s| { ..s, fault: trigger.fault }))),
+					].map(|trigger| Html.button(trigger.name, [], property_state.update(|s| { ..s, fault: trigger.fault }))),
 				),
 				Engine.switch(
-					properties.signal().map(|s| s.fault),
+					property_state.signal().map(|s| s.fault),
 					[Clean, RetiredPrevent, RetiredFiles, ClickPolicies, ChangeKinds, CheckedDiv, AttributeValue, DuplicateProperty, FileValue],
 					|fault| match fault {
 						Clean => Engine.text("")
-						RetiredPrevent => Engine.element("button", [Engine.on(Engine.EventType.from_str("click:prevent") ?? crash "the retired-suffix fixture uses a nonempty event type", properties.update(|s| s))], [])
-						RetiredFiles => Engine.element("input", [Engine.on(Engine.EventType.from_str("change:files") ?? crash "the retired-suffix fixture uses a nonempty event type", properties.update(|s| s))], [])
-						ClickPolicies => Engine.element("button", [Engine.on("click", properties.update(|s| s)), Engine.on_with("click", { prevent: True }, properties.update(|s| s))], [])
-						ChangeKinds => Engine.element("input", [Engine.on("change", properties.update(|s| s)), Engine.on_files(Change, properties.update(|s| s))], [])
+						RetiredPrevent => Engine.element("button", [Engine.on(Engine.EventType.from_str("click:prevent") ?? crash "the retired-suffix fixture uses a nonempty event type", property_state.update(|s| s))], [])
+						RetiredFiles => Engine.element("input", [Engine.on(Engine.EventType.from_str("change:files") ?? crash "the retired-suffix fixture uses a nonempty event type", property_state.update(|s| s))], [])
+						ClickPolicies => Engine.element("button", [Engine.on("click", property_state.update(|s| s)), Engine.on_with("click", { prevent: True }, property_state.update(|s| s))], [])
+						ChangeKinds => Engine.element("input", [Engine.on("change", property_state.update(|s| s)), Engine.on_files(Change, property_state.update(|s| s))], [])
 						CheckedDiv => Engine.element("div", [Engine.prop(Engine.Prop.checked, True)], [])
 						AttributeValue => Engine.element("input", [Engine.attr_s("value", Engine.const("not a property"))], [])
 						DuplicateProperty => Engine.element("input", [Engine.prop(Engine.Prop.value, "first"), Engine.prop(Engine.Prop.value, "second")], [])
