@@ -6246,7 +6246,10 @@ remove_row = |cfg, cols, env, slot, remove, tx| {
 	} else {
 		released = release_node(t1, node)
 		removed = if (remove) emit_op(released, 5, |commands| put_u32(commands, node)) else released
-		({ items, keys, order, free: free.append(slot), index, lasts, kids, binds, pend: pend2, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }, free_id(removed, node))
+		# Every per-row mark goes with the row, as in the dynamic branch: a
+		# browser echo of the row's open state left pending would be settled
+		# against the removed slot and address its released node.
+		({ items, keys, order, free: free.append(slot), index, lasts, kids, binds, pend: pend2, dirty, sels, known, kid_mask, dropped, shown: shown.set(si, shown_empty) ?? shown, pending_echo: clear_row_echo(pending_echo, slot), rnodes }, free_id(removed, node))
 	}
 }
 
@@ -10789,6 +10792,31 @@ expect {
 	closed = Core.event(clean, 2, 0, Str.from_utf8([0]) ?? crash "UTF8")
 	(_, commands) = Core.take_cmds(closed, [])
 	commands.drop_first(1) == put_str(put_u32([22], 2).append(0), "true") and Core.evals(closed) == before + 1 and Core.settled(closed).is_ok()
+}
+
+## A row with no nested sites whose toggle handler removes the row itself
+## ("dismiss deletes"): the browser's echo marks the row's shown hole, and
+## the removal takes the mark with the row, so REMOVE is the only command
+## and nothing addresses the released node.
+expect {
+	view = Core.state(["a", "b"], |rows| Core.element("main", [], [Core.each(rows.signal(), |key| key, |_| Core.controlled_popover({ label: "Help", open: Core.const(True), on_toggle: rows.update(|list| list.drop_first(1)).lift_row(), dismiss: Auto, attrs: [], children: [] }))]))
+	(clean, _) = Core.take_cmds(Core.mount(view), [])
+	closed = Core.event(clean, 2, 0, Str.from_utf8([0]) ?? crash "UTF8")
+	(_, commands) = Core.take_cmds(closed, [])
+	commands.drop_first(1) == put_u32([5], 2) and Core.settled(closed).is_ok()
+}
+
+## The same for a table view's row whose toggle removes its key from the
+## table through the table's cell.
+expect {
+	store = Core.store_of({}, Core.table([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }]).map(|c| { todos: c }))
+	todos = store.cells().todos
+	plan = |_| { keep: |_, _| Bool.True, sort: |k, _| k, compare: |a, b| if (a < b) Before else if (a > b) After else Same }
+	view = Core.element("main", [], [Core.table_view(todos, { query: Core.const({}), plan, window: Core.const({ start: 0, count: 10 }) }, |key, _| Core.controlled_popover({ label: "Help", open: Core.const(True), on_toggle: Core.store_handler_by(key, |k, _| [todos.update(|t| t.remove(k))]), dismiss: Auto, attrs: [], children: [] }))])
+	(clean, _) = Core.take_cmds(Core.mount_store(32, store.initial(), view), [])
+	closed = Core.event(clean, 2, 0, Str.from_utf8([0]) ?? crash "UTF8")
+	(_, commands) = Core.take_cmds(closed, [])
+	commands.drop_first(1) == put_u32([5], 2) and Core.settled(closed).is_ok()
 }
 
 ## A derive equality cutoff cannot strand the echoed hole below it. Its

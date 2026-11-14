@@ -17,7 +17,7 @@ TopLayerApp := [].{
 
 	view : {} -> Elem(Root)
 	view = |_| Engine.state(
-		{ modal: { open: False, closes: 0.U64, toggles: 0.U64 }, inline: False, ignored: False, prevent: False, pop_a: False, pop_b: False, manual: False, initial: True, rows: ["a", "b"], row_open: False, row_modal: False, requests: Engine.outbox({}), log: "" },
+		{ modal: { open: False, closes: 0.U64, toggles: 0.U64 }, inline: False, ignored: False, prevent: False, pop_a: False, pop_b: False, manual: False, initial: True, rows: ["a", "b"], row_open: False, row_modal: False, dismissable: [], requests: Engine.outbox({}), log: "" },
 		|st| Engine.element(
 			"section",
 			[],
@@ -81,6 +81,20 @@ TopLayerApp := [].{
 						[],
 						[
 							Html.dialog("Row dialog", { open: st.lift_row().signal().map(|s| s.row_open), on_close: st.lift_row().set_value(|s, open| { ..s, row_open: open }), modal: NonModal }, [Engine.test_id_s(row.key().map(|key| "dialog-${key}"))], [Engine.text_s(row.key())]),
+						],
+					),
+				),
+				# A row with no nested site whose popover's toggle removes the row
+				# itself: dismissing the popover deletes its row in the same turn.
+				Html.button("Show dismissable rows", [], st.update(|s| { ..s, dismissable: ["x"] })),
+				Engine.each(
+					st.signal().map(|s| s.dismissable),
+					|key| key,
+					|row| Engine.element(
+						"div",
+						[],
+						[
+							Html.popover("Dismissable", { open: Engine.const(True), on_toggle: st.lift_row().set_value_by(row.key(), |s, key, open| if (open) s else { ..s, dismissable: s.dismissable.drop_if(|k| k == key) }) }, [Engine.test_id_s(row.key().map(|key| "dismissable-${key}"))], []),
 						],
 					),
 				),
