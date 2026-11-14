@@ -587,6 +587,10 @@ runner's location model.
 | `(set-visibility hidden)` | Change page visibility and notify `VisibilityChanges` subscribers |
 | `(expect-cleanup "name" N)` | The `on_cleanup` site named `name` has run N times |
 
+An interval step's `MS` is a period an interval can have: 1 to 4294967295.
+The parser refuses any other at its position, so a step never names a period
+that would wrap onto a different one.
+
 `expect-request` and `progress-effect` number the **current pending list**,
 in issue order, including timers, calls and jobs. Completed and cancelled
 entries no longer count. This differs from `run-effect`, which addresses the

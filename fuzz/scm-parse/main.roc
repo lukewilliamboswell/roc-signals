@@ -97,6 +97,7 @@ target = Fuzz.target_with({
 		Fuzz.example({ name: "report-frame", revision: "1", make: || "(test \"reports\" (steps (hold-reports) (set-online offline) (set-online online) (expect-reports-replaced 1) (release-reports)))" }),
 		Fuzz.example({ name: "layout-media-reports", revision: "1", make: || "(test \"layout\" (setup (initial-media \"dark\" true)) (steps (hold-reports) (scroll (label \"List\") 20 0) (report-size (label \"List\") 640 400) (report-seen (label \"End\") yes 500) (set-media \"dark\" false) (release-reports) (expect-observed 2) (expect-media-subscriptions \"dark\" 1)))" }),
 		Fuzz.example({ name: "report-bad-count", revision: "1", make: || "(test \"reports\" (steps (expect-reports-replaced -1)))" }),
+		Fuzz.example({ name: "interval-period-bounds", revision: "1", make: || "(test \"periods\" (steps (tick-interval 4294967295) (expect-interval 1 0 :never-started) (tick-interval 4294968296)))" }),
 	],
 	name: "scm-parse",
 	generator: Fuzz.str,

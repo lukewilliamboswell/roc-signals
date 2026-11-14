@@ -617,6 +617,23 @@ Scm := [].{
 		Ok({ target, at: $at, id: if ($kind != Mouse and !$seen.contains(":id")) 2 else $id, kind: $kind, button: $button, modifiers: $modifiers })
 	}
 
+	## An interval's period, as the engine can issue one: at least 1 ms, and
+	## no wider than the `INTERVAL` command's U32 field, so a step names
+	## exactly the period it compares with and never one that wraps onto
+	## another. A period no live interval has fails at run time in both
+	## runners; one no interval can have fails here, at its position.
+	interval_period : Sx -> Try(U32, Problem)
+	interval_period = |sx| {
+		n = Scm.unsigned(sx, "the period")?
+		if n == 0 {
+			return Err(Scm.bad(sx, "the period must be at least 1 ms: no interval has a period of 0"))
+		}
+		if n > 4294967295 {
+			return Err(Scm.bad(sx, "the period must be at most 4294967295 ms, the widest an interval's period can be"))
+		}
+		Ok(n.to_u32_wrap())
+	}
+
 	## Reject negative or overflowing pointer identities before narrowing to
 	## the wire's U32 field. The original atom supplies the diagnostic position.
 	pointer_id : Sx -> Try(U32, Problem)
@@ -733,10 +750,10 @@ Scm := [].{
 
 		## Exactly `count` file handles are live in the app's instance.
 		ExpectFiles(U64),
-		TickInterval(U64),
-		TickIntervalIfActive(U64),
+		TickInterval(U32),
+		TickIntervalIfActive(U32),
 		ExpectCleanup({ name : Str, count : U64 }),
-		ExpectInterval({ period_ms : U64, count : U64 }),
+		ExpectInterval({ period_ms : U32, count : U64 }),
 		Navigate(Str),
 		SetVisibility(Visibility),
 		SetOnline(Online),
@@ -898,7 +915,7 @@ Scm := [].{
 
 	## Names a story can prove without program declarations. Equality stays
 	## typed: locator structure, exact text and numeric periods are distinct.
-	Subject : [Locator(Loc), Attribute(Str), Cleanup(Str), Interval(U64), Storage(StorageSubject)]
+	Subject : [Locator(Loc), Attribute(Str), Cleanup(Str), Interval(U32), Storage(StorageSubject)]
 
 	## Declaration needs retain port shape; storage may instead be established
 	## by this spec's seed or a positive step. Story needs are parser-checked.
@@ -2043,8 +2060,8 @@ Scm := [].{
 				Ok(ExpectPendingWork({ task, count: Scm.unsigned(Scm.arg(a, 1), "the pending count")? }))
 			},
 		},
-		{ name: "tick-interval", parse: |form, args| Ok(TickInterval(Scm.count1(form, args, "the period")?)) },
-		{ name: "tick-interval-if-active", parse: |form, args| Ok(TickIntervalIfActive(Scm.count1(form, Scm.story_args(form, { args, count: 1, marker: ":never-started", zero_count: Bool.False })?, "the period")?)) },
+		{ name: "tick-interval", parse: |form, args| Ok(TickInterval(Scm.interval_period(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "tick-interval-if-active", parse: |form, args| Ok(TickIntervalIfActive(Scm.interval_period(Scm.arg(Scm.story_args(form, { args, count: 1, marker: ":never-started", zero_count: Bool.False })?, 0))?)) },
 		{
 			name: "expect-cleanup",
 			parse: |form, args| {
@@ -2056,7 +2073,7 @@ Scm := [].{
 			name: "expect-interval",
 			parse: |form, args| {
 				a = Scm.story_args(form, { args, count: 2, marker: ":never-started", zero_count: Bool.True })?
-				Ok(ExpectInterval({ period_ms: Scm.unsigned(Scm.arg(a, 0), "the period")?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
+				Ok(ExpectInterval({ period_ms: Scm.interval_period(Scm.arg(a, 0))?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
 			},
 		},
 		{ name: "navigate", parse: |form, args| Ok(Navigate(Scm.location(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
@@ -2824,10 +2841,10 @@ Scm := [].{
 			DropFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
 			PasteFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
 			ExpectFiles(n) => [JsonOut.field("count", Nat(n))]
-			TickInterval(ms) => [JsonOut.field("period_ms", Nat(ms))]
-			TickIntervalIfActive(ms) => [JsonOut.field("period_ms", Nat(ms))]
+			TickInterval(ms) => [JsonOut.field("period_ms", Nat(ms.to_u64()))]
+			TickIntervalIfActive(ms) => [JsonOut.field("period_ms", Nat(ms.to_u64()))]
 			ExpectCleanup({ name, count }) => [JsonOut.field("name", Text(name)), JsonOut.field("count", Nat(count))]
-			ExpectInterval({ period_ms, count }) => [JsonOut.field("period_ms", Nat(period_ms)), JsonOut.field("count", Nat(count))]
+			ExpectInterval({ period_ms, count }) => [JsonOut.field("period_ms", Nat(period_ms.to_u64())), JsonOut.field("count", Nat(count))]
 			Navigate(url) => [text(url)]
 			SetVisibility(v) => [text(Scm.visibility_name(v))]
 			SetOnline(o) => [text(Scm.online_name(o))]
@@ -2992,6 +3009,28 @@ expect {
 expect problem_of("(test \"t\"\n  (steps\n    (click (label \"a\"))\n    (frobnicate 1)))") == "x.scm:4:5: unknown step frobnicate"
 
 ## Setup vocabulary is not a step, and steps are not setup.
+## An interval's period is bounded where it is written: 0 and a period past
+## the INTERVAL command's U32 field are refused at the period's position,
+## so `(tick-interval 4294968296)` can never wrap onto a 1000 ms interval.
+expect {
+	actual = [
+		problem_of("(test \"t\" (steps (tick-interval 4294968296)))"),
+		problem_of("(test \"t\" (steps (tick-interval 0)))"),
+		problem_of("(test \"t\" (steps (expect-interval 4294967296 1)))"),
+		problem_of("(test \"t\" (steps (tick-interval 7) (tick-interval-if-active 0)))"),
+	]
+	expected = [
+		"x.scm:1:33: the period must be at most 4294967295 ms, the widest an interval's period can be",
+		"x.scm:1:33: the period must be at least 1 ms: no interval has a period of 0",
+		"x.scm:1:35: the period must be at most 4294967295 ms, the widest an interval's period can be",
+		"x.scm:1:61: the period must be at least 1 ms: no interval has a period of 0",
+	]
+	actual == expected
+}
+
+## The widest period parses as itself, unwrapped, and so does the narrowest.
+expect Scm.parse("(test \"t\" (steps (tick-interval 4294967295) (expect-interval 1 0 :never-started)))").map_ok(|spec| spec.steps.map(|st| st.op)) == Ok([TickInterval(4294967295), ExpectInterval({ period_ms: 1, count: 0 })])
+
 expect problem_of("(test \"t\" (steps (local-storage-unavailable)))") == "x.scm:1:18: unknown step local-storage-unavailable"
 
 ## Forms neither runner implements are not part of the grammar: each is an

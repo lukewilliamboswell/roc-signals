@@ -1552,13 +1552,13 @@ SpecRunner := [].{
 	}
 
 	## Fire one tick of every live interval of period `ms`.
-	tick : Program(state), S(state), U64 -> S(state)
-	tick = |program, s, ms| SpecRunner.broadcast(program, s, |x| x.sub == Interval(ms.to_u32_wrap()), SpecRunner.put_u64([5], s.browser.env.now_ms.to_u64_wrap()))
+	tick : Program(state), S(state), U32 -> S(state)
+	tick = |program, s, ms| SpecRunner.broadcast(program, s, |x| x.sub == Interval(ms), SpecRunner.put_u64([5], s.browser.env.now_ms.to_u64_wrap()))
 
 	## Count registered native interval sources for a wire period. A request’s
 	## callback is driven separately by tick-interval rather than by wall-clock time.
-	live_intervals : S(state), U64 -> U64
-	live_intervals = |s, ms| s.browser.subs.count_if(|x| x.sub == Interval(ms.to_u32_wrap()))
+	live_intervals : S(state), U32 -> U64
+	live_intervals = |s, ms| s.browser.subs.count_if(|x| x.sub == Interval(ms))
 
 	# ---------------------------------------------------------------- focus
 
@@ -4346,7 +4346,7 @@ SpecRunner := [].{
 			}
 			Tick(ms) => {
 				advanced = SpecRunner.one(program, s, AdvanceTime(ms.to_u64()))?
-				Ok((SpecRunner.one(program, advanced, TickInterval(ms.to_u64()))?, { what: "advance-time and tick-interval ${ms.to_str()}", kind: Service }))
+				Ok((SpecRunner.one(program, advanced, TickInterval(ms))?, { what: "advance-time and tick-interval ${ms.to_str()}", kind: Service }))
 			}
 			MoveClock => {
 				duration = 1000 + v % 86399001
