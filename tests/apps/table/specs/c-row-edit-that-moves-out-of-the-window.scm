@@ -4,6 +4,7 @@
     ; the 31st row enters at its end. One row removed, one created with
     ; its 14 holes (11 in the row, 3 in the state nested in it, whose block
     ; is 10 commands).
+    (expect-visible (label "Qty 0"))
     (mark-metrics)
     (click (label "Last 0"))
     (expect-absent (label "Qty 0"))

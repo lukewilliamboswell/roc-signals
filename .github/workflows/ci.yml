@@ -57,6 +57,8 @@ jobs:
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint check
       - run: blueprint run check
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   # The spec runner's link inputs for every system, cross-compiled on Linux
   # with the pinned Zig exactly as the release builds them.
@@ -116,6 +118,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@14a895879f6fea8c2d1a546a2a56c8502decb2a0
+        with:
+          cache: 'true'
+          cache-workload: engine
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: spec-inputs
@@ -213,12 +219,12 @@ jobs:
           ls .signals/test/runner$EXE || failed=1
           echo "== build"
           roc signals.roc build || failed=1
-          ls dist/index.html dist/assets/*/app.wasm dist/assets/*/runtime.mjs dist/assets/*/worker.mjs || failed=1
+          ls dist/index.html dist/assets/*/app.wasm dist/assets/*/runtime.mjs dist/assets/*/worker.mjs dist/assets/*/environment.mjs || failed=1
           echo "== serve"
           roc signals.roc serve --port 8123 > serve.txt 2>&1 &
           for i in $(seq 1 120); do curl -sf -o /dev/null http://127.0.0.1:8123/ && break; sleep 1; done
           cat serve.txt
-          for f in "/ text/html" "/runtime.mjs text/javascript" "/app.wasm application/wasm"; do
+          for f in "/ text/html" "/runtime.mjs text/javascript" "/environment.mjs text/javascript" "/app.wasm application/wasm"; do
             set -- $f
             type=$(curl -s -o /dev/null -w '%{content_type}' "http://127.0.0.1:8123$1")
             echo "$1: $type"

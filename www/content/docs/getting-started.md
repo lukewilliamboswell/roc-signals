@@ -97,6 +97,11 @@ point by hand, use the platform bundle URL from the
 
 {{ sample(file="counter/main.roc") }}
 
+The entry also declares `Store`, the type of the app's shared storage. This
+counter uses only local state, so its `Store` is `{}`. An app with cells
+names the type the compiler prints for its `program_store` result; keep
+that declaration in step with its store description.
+
 The platform builds this one file for two kinds of target:
 `--target=wasm32` gives the module the browser runs, and your system's
 native target gives the app's native spec runner: `x64musl` on Linux,
@@ -121,7 +126,8 @@ runtime:
 
 {{ sample(file="counter/index.html", syntax="html") }}
 
-The server supplies `runtime.mjs` (with `worker.mjs`, which the runtime
+The server supplies `runtime.mjs` and its `environment.mjs` readers (with
+`worker.mjs`, which the runtime
 starts [workers](@/docs/workers.md) from) and `app.wasm`, the app's
 development build; your other files are served as they are. When port 8000
 is taken it uses the next free one and says so; `--port N` chooses another.
@@ -169,6 +175,8 @@ The spec passed.
 ```
 
 `test` builds the app's native spec runner and runs every spec in `specs/`.
+Compiler warnings are printed even when the build succeeds; they do not make a
+passing test command fail.
 The runner drives the real engine and checks the DOM it would build, so a
 spec takes milliseconds. A failing spec names its file, line and the step
 that did not hold, and `test` exits with 1. The native spec runner is built
@@ -183,12 +191,17 @@ ARM64, for now) `test` says which systems run them.
 roc signals.roc build
 ```
 
+The tool shows the compiler's warnings even when the build succeeds. Optimized
+builds keep `dbg`, so read its warning before deploying the output. A warning
+alone does not make the command fail.
+
 ```text
 Built the app into dist/:
 
   dist/index.html
   dist/assets/5e711d3a91d0f155/app.wasm
   dist/assets/5e711d3a91d0f155/runtime.mjs
+  dist/assets/5e711d3a91d0f155/environment.mjs
   dist/assets/5e711d3a91d0f155/worker.mjs
 ```
 
@@ -207,11 +220,12 @@ Both modes write the same deployment layout:
 - `dist/index.html`, your page, with each quoted relative URL that names
   one of the files below pointed into the hashed directory. Nothing else in
   it changes.
-- `dist/assets/<hash>/`: the module, the platform's runtime and worker
-  script, and the app's other files (its scripts, styles and images, in
+- `dist/assets/<hash>/`: the module, the platform's runtime, its environment
+  helper and worker script, and the app's other files (its scripts, styles and images, in
   their own folders). The directory's name is a hash of everything in it, so
   a browser may cache it for ever. The files keep their places relative to
-  each other, so the runtime still finds `worker.mjs` beside it.
+  each other, so the runtime still imports `environment.mjs` and finds
+  `worker.mjs` beside it.
 - Everything under `public/`, copied to the top of `dist/` under its own
   name: put there a file something names by a fixed URL, such as data the
   app's Roc code downloads, `robots.txt` or a favicon.
@@ -219,6 +233,56 @@ Both modes write the same deployment layout:
 `build` replaces `dist/` each time. Serve it from any static file server:
 `.mjs` files as `text/javascript` and `app.wasm` as `application/wasm`, with
 `index.html` not cached. No other headers are needed.
+
+## Build a first page
+
+The scaffold marks its HTML mount element with `data-roc-picture`. To include
+an initial view in the HTML sent by your static server, choose explicit URLs:
+
+```sh
+roc signals.roc build --picture / '/tasks/?open=1#list'
+```
+
+This writes `dist/index.html` and `dist/tasks/index.html`, alongside the same
+hashed assets. HTTP(S) URLs are accepted too; their pathname, query and
+fragment supply the app's initial location. No origin or user session is
+invented. Query or fragment variants of one path cannot share an output file,
+so the build refuses a list containing both `/tasks?open=1` and `/tasks?open=2`.
+
+The native runner initializes the actual app once per URL and renders its
+ordinary first command batch. Network, storage, worker and timer answers,
+focus and layout arrive later in the running browser. The HTML frame stays
+inert while the module loads. The runtime replaces those built nodes with its
+ordinary mount, releases the inertness the builder added, then performs the
+batch's effects. This is ordinary replacement: built node objects are not
+adopted or reused. Adoption is a future capability. An `inert` attribute you
+authored on the inert owner remains intact.
+
+A template needs exactly one authored `data-roc-picture` mount root. An HTML
+root owns its temporary inertness. For an SVG, MathML or other non-HTML root,
+author an immediate HTML parent with `data-roc-picture-inert-parent=""`.
+Its only element child must be the mount root, optionally followed by an HTML
+`script` with `type="application/json"` and `data-roc-picture-envelope="1"`.
+Text and comments are allowed around those elements. A template content
+fragment cannot be the parent. The builder adds no wrapper and keeps the
+actual mount root unchanged.
+
+Leave `data-roc-picture-inert` out of the inert owner's authored attributes:
+the builder reserves it to record inertness it added. Authored `inert` text
+on the owner remains intact after startup. The parent marker also remains.
+These attributes use no-namespace identity; the same spelling on a descendant
+or in another namespace remains data. Asset URLs are projected before the
+app's rendered markup is inserted, so an app title containing `app.wasm`
+remains unchanged.
+
+The scaffold includes a `noscript` notice and styles `data-roc-failed` on the
+actual mount root when startup fails. A failed first page stays inert until
+a successful retry or recovery.
+
+The complete output is staged before publication. A refused route or invalid
+frame leaves the published `dist/` intact. Replacing an existing directory
+uses a backup and rename with rollback, rather than an atomic directory
+exchange. This mode requires one of the native-runner systems listed above.
 
 ## Working in a checkout
 

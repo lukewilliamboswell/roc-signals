@@ -1,13 +1,13 @@
 app [target] {
-	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst",
+	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.2/3kyiehxxzwAsjM23uCQGJ3Hx7dAAdzSGtK3k9Jq7Egtu.tar.zst",
 	pf: "../../platform/main-fuzz.roc",
 }
 
 import fz.Fuzz
 import pf.Core
+import pf.Order
 import pf.Dom
-import pf.Engine exposing [Elem, Signal, State]
-import pf.Table
+import pf.Engine exposing [Elem, Signal, State, Table]
 
 ## Tables and their views: bytes decode into a session of events over one
 ## app, and after every event each view must draw what a model that filters,
@@ -35,7 +35,7 @@ import pf.Table
 ## A step is a decision or a click on a drawn row:
 ## - a decision is one event whose payload names every write it makes: how
 ##   the table's cell is replaced first, if at all (a new table, the reset
-##   of its group, a copy saved earlier, the other table), keyed writes in
+##   of its group, a copy saved earlier, the other table, a Store value), keyed writes in
 ##   order (insert, put, replace, update, remove; a run of up to 16 puts or
 ##   updates, which crosses the size at which a view rebuilds instead of
 ##   absorbing the changes; a whole rewrite by `load` or `update_all`; an
@@ -73,11 +73,7 @@ Entry : { key : U64, row : Item }
 
 ## What a view shows: which rows and in what order. Plain data a view site
 ## compares. `ByRank` and `ByRankDown` order equal ranks by key, ascending.
-Listing : { show : [All, Only(U64), Except(U64)], order : [ByKey, ByKeyDown, ByRank, ByRankDown] }
-
-## Where a row stands in a listing's order: its order's number, then its key,
-## so no two rows tie.
-Place : { primary : I64, key : U64 }
+Listing : { show : [All, Only(U64), Except(U64)], order : [ByKey, ByKeyDown, ByRank, ByRankDown, ByBand, ByBandDown] }
 
 ## What `b` holds in its local state.
 Local : { listing : Listing, window : Engine.Window }
@@ -99,12 +95,33 @@ span = |n| {
 	$out
 }
 
-## The row a number names, and the number that names a row.
+## Seed-generated rows keep their original eight ranks and three shades.
 item_of : U64 -> Item
 item_of = |n| { rank: n % 8, shade: (n // 8) % 3 }
 
+## Direct writes reserve words 24..47 for ranks 8..15, giving generated
+## sessions two bands without changing the legacy seeded rows or low-rank words.
+item_from_word : U64 -> Item
+item_from_word = |word| {
+	n = word % 64
+	if n >= 24 and n < 48 {
+		high = n - 24
+		{ rank: 8 + high % 8, shade: high // 8 }
+	} else {
+		item_of(n)
+	}
+}
+
+## Every authored row must fit the direct-write vocabulary exactly.
 item_word : Item -> U64
-item_word = |item| item.shade * 8 + item.rank
+item_word = |item|
+	if item.rank >= 16 or item.shade >= 3 {
+		crash "table-view: an authored row exceeds the codec's 16 ranks or 3 shades"
+	} else if item.rank < 8 {
+		item.shade * 8 + item.rank
+	} else {
+		24 + item.shade * 8 + item.rank - 8
+	}
 
 ## A row changed in one of four ways; the last leaves it equal.
 bumped : Item, U64 -> Item
@@ -120,36 +137,24 @@ entries : U64, U64 -> List(Entry)
 entries = |seed, count| span(count).map(|i| { key: (seed + i * 5) % key_space, row: item_of(seed + i * 3) })
 
 ## How a listing selects and orders rows: the `plan` of every view.
-query_plan : Listing -> Engine.QueryPlan(U64, Item, Place)
-query_plan = |{ show, order }| {
+query_plan : Listing -> Engine.QueryPlan(U64, Item, (Order.Direction(U64), U64))
+query_plan = |{ show, order }| Engine.sort_by({
 	keep: |_, item| match show {
 		All => True
 		Only(shade) => item.shade == shade
 		Except(shade) => item.shade != shade
 	},
 	sort: |key, item| match order {
-		ByKey => { primary: 0, key }
-		ByKeyDown => { primary: 0 - key.to_i64_wrap(), key }
-		ByRank => { primary: item.rank.to_i64_wrap(), key }
-		ByRankDown => { primary: 0 - item.rank.to_i64_wrap(), key }
+		ByKey => Order.asc(key)
+		ByKeyDown => Order.desc(key)
+		ByRank => Order.asc(item.rank)
+		ByRankDown => Order.desc(item.rank)
+		ByBand => Order.asc(item.rank // 8)
+		ByBandDown => Order.desc(item.rank // 8)
 	},
-	compare: compare_place,
-}
+})
 
-compare_place : Place, Place -> [Before, Same, After]
-compare_place = |x, y|
-	if (x.primary < y.primary)
-		Before
-	else if (x.primary > y.primary)
-		After
-	else if (x.key < y.key)
-		Before
-	else if (x.key > y.key)
-		After
-	else
-		Same
-
-## The listing a number names: 5 filters by 4 orders.
+## The listing a number names: 5 filters by 6 orders.
 listing_of : U64 -> Listing
 listing_of = |n| {
 	show: match n % 5 {
@@ -159,11 +164,13 @@ listing_of = |n| {
 		3 => Only(2)
 		_ => Except(0)
 	},
-	order: match (n // 5) % 4 {
+	order: match (n // 5) % 6 {
 		0 => ByKey
 		1 => ByKeyDown
 		2 => ByRank
-		_ => ByRankDown
+		3 => ByRankDown
+		4 => ByBand
+		_ => ByBandDown
 	},
 }
 
@@ -182,6 +189,8 @@ listing_word = |{ show, order }| {
 		ByKeyDown => 1
 		ByRank => 2
 		ByRankDown => 3
+		ByBand => 4
+		ByBandDown => 5
 	}
 	filter + by * 5
 }
@@ -195,6 +204,8 @@ turned = |{ show, order }| {
 		ByKeyDown => ByKey
 		ByRank => ByRankDown
 		ByRankDown => ByRank
+		ByBand => ByBandDown
+		ByBandDown => ByBand
 	},
 }
 
@@ -265,7 +276,9 @@ Op : [
 ## Everything one event writes.
 ## - `head`: how the cell of `rows` is replaced before `ops`: by a new table
 ##   (`Fresh(seed, count)`), by its group's reset, by the copy `saved`
-##   holds (`Restore`) or by `spare`'s table (`Borrow`). The last two need
+##   holds (`Restore`), by `spare`'s table (`Borrow`), or by a pure Store
+##   value with its own cleared history (`Snapshot(seed, count)`). Restore
+##   and Borrow need
 ##   a reading, so only the control that takes one applies them.
 ## - `ops`: writes of `rows`, in order, as one `update` for each (`split`)
 ##   or one `update` that folds them.
@@ -276,7 +289,7 @@ Op : [
 ## - `listing`, `window`, `lanes`: set those cells.
 ## - `local_listing`, `local_window`: what `b`'s control writes to its state.
 Decision : {
-	head : [Keep, Fresh(U64, U64), Reset, Restore, Borrow],
+	head : [Keep, Fresh(U64, U64), Reset, Restore, Borrow, Snapshot(U64, U64)],
 	ops : List(Op),
 	split : Bool,
 	spare : [Untouched, Wrote(Op)],
@@ -321,6 +334,7 @@ decision_of : List(U64) -> Decision
 decision_of = |words| {
 	w = |at| words.get(at) ?? 0
 	head = match w(0) % 16 {
+		11 => Snapshot(w(1), w(2) % (key_space + 1))
 		12 => Fresh(w(1), w(2) % (key_space + 1))
 		13 => Reset
 		14 => Restore
@@ -349,10 +363,10 @@ decision_of = |words| {
 		save: (w(3) // 4) % 4 == 3,
 		flip: (w(3) // 16) % 4 == 3,
 		listing: if (w(4) % 4 == 3) To(listing_of(w(5))) else Same,
-		window: if ((w(4) // 4) % 4 == 3) To({ start: w(6) % 20, count: w(7) % 7 }) else Same,
+		window: if ((w(4) // 4) % 4 == 3) To({ start: w(6) % 20, count: w(7) % (key_space + 1) }) else Same,
 		lanes: if ((w(4) // 16) % 4 == 3) To(lane_lists.get(w(8) % 16) ?? []) else Same,
 		local_listing: if (w(9) % 2 == 1) To(listing_of(w(10))) else Same,
-		local_window: if ((w(9) // 2) % 2 == 1) To({ start: w(11) % 20, count: w(12) % 7 }) else Same,
+		local_window: if ((w(9) // 2) % 2 == 1) To({ start: w(11) % 20, count: w(12) % (key_space + 1) }) else Same,
 		spare: if (w(13) % 4 == 3) Wrote(op_of((w(13) // 4) * 2, w(14), w(15), w(16), True)) else Untouched,
 	}
 }
@@ -364,13 +378,13 @@ op_of = |kind, a, b, c, undoes| {
 	key = a % key_space
 	k = kind % 32
 	if k < 6 {
-		Put(key, item_of(b))
+		Put(key, item_from_word(b))
 	} else if k < 11 {
-		Insert(key, item_of(b))
+		Insert(key, item_from_word(b))
 	} else if k < 18 {
 		Update(key, c % 4)
 	} else if k < 20 {
-		Replace(key, item_of(b))
+		Replace(key, item_from_word(b))
 	} else if k < 26 {
 		Remove(key)
 	} else if k < 28 {
@@ -394,6 +408,7 @@ words_of = |d| {
 	head = match d.head {
 		Keep => [0, 0, 0]
 		Fresh(seed, count) => [12, seed, count]
+		Snapshot(seed, count) => [11, seed, count]
 		Reset => [13, 0, 0]
 		Restore => [14, 0, 0]
 		Borrow => [15, 0, 0]
@@ -528,6 +543,13 @@ writes_of = |d, reading| {
 	rows = cells.items.rows
 	head = match (d.head, reading) {
 		(Fresh(seed, count), _) => [rows.set(Table.from_list(entries(seed, count)))]
+		(Snapshot(seed, count), _) => {
+			snapshot = started({})
+				.after([rows.update(|table| table.load(entries(seed, count)))])
+				.with_initial(cells.items.serial, 0)
+				.read(rows)
+			[rows.set(snapshot)]
+		}
 		(Reset, _) => [cells.items.reset]
 		(Restore, Read({ kept, .. })) => [rows.set(kept)]
 		(Borrow, Read({ lent, .. })) => [rows.set(lent)]
@@ -765,6 +787,8 @@ drawn = |rows, { show, order }, window| {
 			ByKeyDown => compare_u64(y.key, x.key)
 			ByRank => if (x.row.rank == y.row.rank) compare_u64(x.key, y.key) else compare_u64(x.row.rank, y.row.rank)
 			ByRankDown => if (x.row.rank == y.row.rank) compare_u64(x.key, y.key) else compare_u64(y.row.rank, x.row.rank)
+			ByBand => if (x.row.rank // 8 == y.row.rank // 8) compare_u64(x.key, y.key) else compare_u64(x.row.rank // 8, y.row.rank // 8)
+			ByBandDown => if (x.row.rank // 8 == y.row.rank // 8) compare_u64(x.key, y.key) else compare_u64(y.row.rank // 8, x.row.rank // 8)
 		},
 	)
 	sorted.sublist({ start: window.start, len: window.count.min(sorted.len()) }).map(|e| e.key)
@@ -854,7 +878,7 @@ decided = |m, control, d| {
 		_ => False
 	}
 	replaced = match d.head {
-		Fresh(seed, count) => Ok(entries(seed, count))
+		Fresh(seed, count) | Snapshot(seed, count) => Ok(entries(seed, count))
 		Reset => Ok(described)
 		Restore => if (has_reading) Ok(m.saved) else Err(Kept)
 		Borrow => if (has_reading) Ok(m.spare) else Err(Kept)
@@ -1043,7 +1067,10 @@ bytes_of = |steps| steps.fold(
 )
 
 ## The engine, the oracle's DOM and the model.
-S : { eng : Core.App, dom : Dom.Model, model : Model }
+## The concrete store storage carried beside the generated site tree.
+Live : Engine.Stored(Tag, ((Engine.Table(U64, Item), U64), (Engine.Table(U64, Item), (Engine.Table(U64, Item), (Listing, (Engine.Window, (Bool, List(U64))))))))
+
+S : { eng : Core.App(Live), dom : Dom.Model, model : Model }
 
 ## Mount the app through its program's driver, as a host does.
 mount : {} -> S
@@ -1064,10 +1091,13 @@ rows_in = |dom, list| Dom.node(dom, list).kids.keep_if(|kid| Dom.node(dom, kid).
 ## Deliver `event` with `payload` to the node at index `at`, as one turn,
 ## and apply its commands to the oracle. Answers the batch's opcodes too.
 fire : S, U64, Str, Str -> (S, List(U8))
-fire = |s, at, event, payload| match Dom.target(s.dom, at, event) {
-	Ok((node, handler)) => {
-		(eng, cmds) = Core.take_cmds(Core.event(s.eng, node, handler, payload), [])
+fire = |s, at, event, payload| match Dom.target(s.dom, at, event, Bool.True) {
+	Ok(target) => {
+		(eng, cmds) = Core.take_cmds(Core.event(s.eng, target.node, target.handler, payload), [])
 		(dom, ops) = Dom.apply_ops(s.dom, cmds)
+		if (Core.work_counters(eng).get(45) ?? 0) != dom.transitions.count {
+			crash "table-view: engine transition count differs from the independent oracle"
+		}
 		({ eng, dom, model: s.model }, ops)
 	}
 	Err(NoHandler) => crash "table-view: node ${at.to_str()} has no ${event} handler"
@@ -1554,12 +1584,37 @@ copy_steps = [
 	reads({ ..quiet, head: Restore }),
 ]
 
+## A pure Store value must never be mistaken for the mounted cell's table,
+## even when their cleared write counts match. Replacements include empty
+## and full tables, then keyed writes and undo in the replacing event.
+snapshot_steps : List(Step)
+snapshot_steps = [
+	wrote(Update(0, 1)),
+	plain({ ..quiet, head: Snapshot(4, 10) }),
+	Click(A, 0, Mark),
+	plain({ ..quiet, head: Snapshot(9, 5), ops: [Put(1, ranked(0, 1)), Undo], split: True }),
+	plain({ ..quiet, head: Snapshot(0, 0) }),
+	plain({ ..quiet, head: Snapshot(0, 16), ops: [Remove(0), Put(1, ranked(0, 2))] }),
+	wrote(Update(1, 1)),
+]
+
+## Many equal sort values exercise the plan's key tie-break through keyed
+## writes, a move across a band, a reversed query and a changed window.
+tied_steps : List(Step)
+tied_steps = [
+	plain({ ..quiet, head: Snapshot(0, 0), listing: To({ show: All, order: ByBand }), window: To({ start: 0, count: 16 }), ops: [Put(3, ranked(2, 0)), Put(1, ranked(3, 0)), Put(2, ranked(1, 0))] }),
+	Click(A, 1, Mark),
+	plain({ ..quiet, ops: [Put(3, ranked(1, 0)), Put(1, ranked(2, 0))] }),
+	plain({ ..quiet, ops: [Put(2, ranked(10, 0))], listing: To({ show: All, order: ByBandDown }), window: To({ start: 0, count: 2 }) }),
+	plain({ ..quiet, ops: [Remove(2), Put(4, ranked(4, 0))], listing: To({ show: All, order: ByBand }), window: To({ start: 1, count: 2 }) }),
+]
+
 ## A session written as steps. Its bytes must decode to the steps it was
 ## written as, so an example cannot quietly stop meaning what it says.
 ex : Str, List(Step) -> Fuzz.Example(Input)
 ex = |name, steps| Fuzz.example({
 	name,
-	revision: "1",
+	revision: "2",
 	make: || {
 		events = bytes_of(steps)
 		if steps_of(events) != steps {
@@ -1570,21 +1625,61 @@ ex = |name, steps| Fuzz.example({
 	},
 })
 
+## All authored sessions share one list so the cheap codec check and the
+## actual fixed replay cannot disagree about which histories they protect.
+written_cases : List({ name : Str, steps : List(Step) })
+written_cases = [
+	{ name: "keyed", steps: keyed_steps },
+	{ name: "batch", steps: batch_steps },
+	{ name: "many", steps: many_steps },
+	{ name: "rewrite", steps: rewrite_steps },
+	{ name: "window", steps: window_steps },
+	{ name: "mount", steps: mount_steps },
+	{ name: "local", steps: local_steps },
+	{ name: "marks", steps: marks_steps },
+	{ name: "copies", steps: copy_steps },
+	{ name: "store-snapshots", steps: snapshot_steps },
+	{ name: "one-change", steps: once_steps },
+	{ name: "sort-value-ties", steps: tied_steps },
+]
+
+## Every named session must survive its complete byte codec before a fuzz build.
+expect written_cases.all(|written| steps_of(bytes_of(written.steps)) == written.steps)
+
+## Each direct-write row round trips and arbitrary words genuinely reach both bands.
+expect {
+	span(3).all(
+		|shade| span(16).all(
+			|rank| {
+				row = { rank, shade }
+				item_from_word(item_word(row)) == row
+			},
+		),
+	) and span(64).all(
+		|word| {
+			row = item_from_word(word)
+			row.rank < 16 and row.shade < 3
+		},
+	) and span(64).map(|word| item_from_word(word).rank // 8).contains(0) and span(64).map(|word| item_from_word(word).rank // 8).contains(1)
+}
+
+## Every generated listing retains its filter and all six orders through its word.
+expect span(30).all(|word| listing_word(listing_of(word)) == word)
+
+## Store and local windows round trip through their full 0..16 count range.
+expect span(key_space + 1).all(
+	|count| {
+		d = { ..quiet, window: To({ start: 19, count }), local_window: To({ start: 0, count }) }
+		decision_of(words_of(d)) == d
+	},
+)
+
+## The seeded starting windows keep the row identities the older histories mark.
+expect drawn(first_rows, first_listing, first_window) == [0, 8, 15, 14] and drawn(first_rows, first_local.listing, first_local.window) == [14, 9, 4]
+
 target = Fuzz.target_with!({
 	name: "table-view",
-	examples: [
-		ex("keyed", keyed_steps),
-		ex("batch", batch_steps),
-		ex("many", many_steps),
-		ex("rewrite", rewrite_steps),
-		ex("window", window_steps),
-		ex("mount", mount_steps),
-		ex("local", local_steps),
-		ex("marks", marks_steps),
-		ex("copies", copy_steps),
-		ex("one-change", once_steps),
-		Fuzz.example({ name: "series", revision: "1", make: || { mode: 1, events: [] } }),
-	],
+	examples: written_cases.map(|written| ex(written.name, written.steps)).append(Fuzz.example({ name: "series", revision: "1", make: || { mode: 1, events: [] } })),
 	generator: { mode: Fuzz.constant(0), events: Fuzz.list(Fuzz.u8, 640) }.Fuzz,
 	test!,
 	show: |{ mode, events }| if (mode == 1) "a seeded series" else Str.inspect(steps_of(events)),

@@ -95,6 +95,12 @@ Compiler :: [].{
 			_ => report
 		}
 
+	## The report an author should see after a successful build. Suppress the
+	## compiler's explicit clean summary; keep every other report visible so
+	## warnings and changes to the compiler's report format cannot disappear.
+	report_on_success : Str -> Str
+	report_on_success = |report| if (report.contains("0 errors and 0 warnings")) "" else report.trim()
+
 	## The side file a build writes before it replaces `output`: `.next`
 	## before the extension, so a Windows program keeps its `.exe`.
 	side_of : Str -> Str
@@ -172,3 +178,11 @@ expect Compiler.platform_of("app [main] { pf: platform \"https://x/y.tar.zst\" }
 
 ## A module with no platform says so.
 expect Compiler.platform_of("Counter := [].{}") == Err(NoPlatform)
+
+## Successful reports suppress only the compiler's explicit clean marker.
+expect [
+	"0 errors and 0 warnings found in 1ms.",
+	"\n  warning: dbg in optimized build\n",
+	"new compiler report format",
+	"  ",
+].map(Compiler.report_on_success) == ["", "warning: dbg in optimized build", "new compiler report format", ""]

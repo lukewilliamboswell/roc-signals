@@ -1,5 +1,4 @@
-import pf.Engine exposing [Signal]
-import pf.Table
+import pf.Engine exposing [Signal, Table]
 import Cells
 import Formula
 import Sheet
@@ -24,12 +23,17 @@ import Sheet
 SheetStore := [Workbook].{
 
 	## Whether the selected cell has the focus.
-	Focus : [Editing, Resting]
+	Focus : [Editing, Typing, Resting]
 
 	## What the formula bar shows of the selected cell: its address, whether
 	## it is being edited, what was typed into it, what that computes to
 	## (with the kind that text came from), and the cells it reads.
 	Bar : { ref : Str, focus : Focus, source : Str, value : Str, kind : Sheet.CellKind, depends : Str }
+
+	Keyboard : { anchor : U64, saved : Str, pending : Bool, commands : Engine.Outbox(List(Engine.Command)) }
+
+	keyboard_start : Keyboard
+	keyboard_start = { anchor: 0, saved: "", pending: False, commands: Engine.outbox({}) }
 
 	store = Engine.store(
 		SheetStore.Workbook,
@@ -37,6 +41,7 @@ SheetStore := [Workbook].{
 			sheet: Engine.table(Sheet.rows_of(Sheet.initial_cells)),
 			selected: Engine.cell(0.U64),
 			editing: Engine.cell(Resting),
+			keyboard: Engine.cell(SheetStore.keyboard_start),
 			mode: Engine.cell(Values),
 			listing: Engine.cell(Sheet.whole_sheet),
 		}.Engine.Cells,
@@ -48,12 +53,88 @@ SheetStore := [Workbook].{
 	## Typing `text` into the cell at `index`, in the grid or in the formula
 	## bar.
 	typed : U64, Str -> List(Engine.Write(_))
-	typed = |index, text| [SheetStore.cells.sheet.update(|table| SheetStore.retyped(table, index, text))]
+	typed = |index, text| [SheetStore.cells.sheet.update(|table| SheetStore.retyped(table, index, text)), SheetStore.cells.editing.update(|_| Typing)]
 
 	## The cell at `index` taking the focus: the caret moves there and
 	## editing starts, as one transition.
 	focused : U64 -> List(Engine.Write(_))
 	focused = |index| [SheetStore.cells.selected.set(index), SheetStore.cells.editing.set(Editing)]
+
+	## Capture a small source snapshot on focus; keyboard navigation preserves
+	## the range anchor already chosen by its initiating turn.
+	focused_source : U64, Str, Keyboard -> List(Engine.Write(_))
+	focused_source = |index, source, keyboard| SheetStore.focused(index).concat([
+		SheetStore.cells.keyboard.set({ ..keyboard, anchor: if (keyboard.pending) keyboard.anchor else index, saved: source, pending: False }),
+	])
+
+	## Listed row numbers in exactly the view's declared order.
+	listed_rows : Table(U64, Sheet.Row), Sheet.Listing -> List(U64)
+	listed_rows = |table, listing| {
+		plan = Sheet.plan(listing)
+		numbers = table.fold([], |rows, number, row| if ((plan.keep)(number, row)) rows.append(number) else rows)
+		numbers.sort_with(|a, b| if (a == b) Same else if ((a < b) == (listing.order == TopDown)) Before else After)
+	}
+
+	## Move within the listed rows, clamping at an edge rather than leaving it.
+	next_cell : U64, List(U64), [Left, Right, Up, Down, First, Last] -> U64
+	next_cell = |index, rows, direction| {
+		row = index // Cells.col_count
+		col = index % Cells.col_count
+		(position, _) = rows.fold((0.U64, False), |(offset, found), number| if (found or number == row) (offset, True) else (offset + 1, False))
+		match direction {
+			Left => if (col > 0) index - 1 else index
+			Right => if (col + 1 < Cells.col_count) index + 1 else index
+			Up => (rows.get(if (position > 0) position - 1 else 0) ?? row) * Cells.col_count + col
+			Down => (rows.get(position + 1) ?? row) * Cells.col_count + col
+			First => (rows.first() ?? row) * Cells.col_count + col
+			Last => (rows.last() ?? row) * Cells.col_count + col
+		}
+	}
+
+	## A move selects one cell and posts focus in the same transition.
+	moved : U64, Keyboard -> List(Engine.Write(_))
+	moved = |index, keyboard| [SheetStore.cells.selected.set(index), SheetStore.cells.keyboard.set({ ..keyboard, anchor: index, pending: True, commands: keyboard.commands.post([Focus("cell-${Cells.ref_of(index)}")]) })]
+
+	## Extending moves the active end while retaining the range's anchor.
+	extended : U64, Keyboard -> List(Engine.Write(_))
+	extended = |index, keyboard| [SheetStore.cells.selected.set(index), SheetStore.cells.keyboard.set({ ..keyboard, pending: True, commands: keyboard.commands.post([Focus("cell-${Cells.ref_of(index)}")]) })]
+
+	## Escape restores a typed source in place; otherwise it collapses a range.
+	cancelled : U64, Keyboard, Focus, Str -> List(Engine.Write(_))
+	cancelled = |index, keyboard, editing, reference| {
+		restore = if (editing == Typing) [SheetStore.cells.sheet.update(|table| SheetStore.retyped(table, index, keyboard.saved))] else []
+		restore.concat([SheetStore.cells.editing.set(Editing), SheetStore.cells.keyboard.set({ ..keyboard, anchor: index, commands: keyboard.commands.post([ApplyValue(reference)]) })])
+	}
+
+	## A small rendered map controls whether left/right move the selection or
+	## remain the text control's ordinary caret keys after typing starts.
+	keymap : Focus -> Engine.Keymap
+	keymap = |editing| {
+		arrows = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]
+		Engine.Keymap.prevent(
+			[Engine.Chord.plain("Enter"), Engine.Chord.plain("F2"), Engine.Chord.plain("Escape")]
+				.concat(arrows.map(|key| Engine.Chord.plain(key).with_shift()))
+				.concat([Engine.Chord.plain("ArrowUp"), Engine.Chord.plain("ArrowDown")])
+				.concat(if (editing == Typing) [] else [Engine.Chord.plain("ArrowLeft"), Engine.Chord.plain("ArrowRight")])
+				.concat(Engine.Chord.plain("ArrowUp").primary()).concat(Engine.Chord.plain("ArrowDown").primary()),
+		)
+	}
+
+	## The rectangle's address and numeric sum, computed from its two ends.
+	selection : Table(U64, Sheet.Row), U64, U64 -> Str
+	selection = |table, anchor, selected| {
+		indices = Cells.expand_range(anchor, selected)
+		first = indices.first() ?? selected
+		last = indices.last() ?? selected
+		sum = indices.fold(
+			0.I64,
+			|total, index| match Cells.take_number(SheetStore.cell_at(table, index).out.text.to_utf8()) {
+				Ok(number) => if (number.rest.is_empty()) total + number.value else total
+				Err(_) => total
+			},
+		)
+		"${Cells.ref_of(first)}${if (first == last) "" else ":${Cells.ref_of(last)}"} · ${Cells.format_number(sum)}"
+	}
 
 	## The selected cell losing the focus. The caret stays where it is.
 	blurred : List(Engine.Write(_))
@@ -211,4 +292,25 @@ expect {
 expect {
 	table = SheetStore.store.read(SheetStore.cells.sheet)
 	(SheetStore.rows_listed(table, Sheet.whole_sheet), SheetStore.rows_listed(table, Sheet.with_rows_switched(Sheet.whole_sheet))) == (12, 11)
+}
+
+## A move selects and focuses one cell without leaving the old range anchored.
+expect {
+	moved = SheetStore.store.after(SheetStore.moved(9, SheetStore.keyboard_start))
+	(moved.read(SheetStore.cells.selected), moved.read(SheetStore.cells.keyboard).anchor, moved.read(SheetStore.cells.keyboard).commands.last()) == (9, 9, Posted([Focus("cell-B2")]))
+}
+
+## Extending retains its anchor while changing the active end.
+expect {
+	keyboard = { ..SheetStore.keyboard_start, anchor: 9 }
+	extended = SheetStore.store.after(SheetStore.extended(27, keyboard))
+	(extended.read(SheetStore.cells.selected), extended.read(SheetStore.cells.keyboard).anchor) == (27, 9)
+}
+
+## Cancelling restores the captured source and asks to land it without moving focus.
+expect {
+	keyboard = { ..SheetStore.keyboard_start, anchor: 9, saved: "1200" }
+	typed = SheetStore.store.after(SheetStore.typed(9, "999"))
+	cancelled = typed.after(SheetStore.cancelled(9, keyboard, Typing, "cell-B2"))
+	(values_at(cancelled, ["B2"]), cancelled.read(SheetStore.cells.keyboard).commands.last()) == (["1200"], Posted([ApplyValue("cell-B2")]))
 }

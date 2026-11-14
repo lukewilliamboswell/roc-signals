@@ -169,11 +169,11 @@ Documents := [].{
 							|ask|
 								match ask {
 									Idle => []
-									Export({ docs, .. }) => [Documents.report.request(docs)]
+									Export({ docs, .. }) => [Documents.report.ask(docs)]
 								},
 							st.on_result(
 								|s, _, res|
-									match Documents.report.result(res) {
+									match res {
 										Ok(text) => { ..s, report: text }
 										Err(error) => { ..s, report: Documents.problem(error) }
 									},

@@ -1,4 +1,5 @@
 import pf.Engine exposing [Cell, Elem, Reaction, Row, RowRef, Signal, State]
+import pf.Url
 import pf.Html
 import Api
 import AppStore
@@ -8,6 +9,7 @@ import Pages
 import Session
 import Story
 import Route
+import Locations
 import Format
 import Links
 import Styles
@@ -80,7 +82,7 @@ ConduitApp := [].{
 	home_url = AppStore.home_url
 
 	route_of : Here -> Route
-	route_of = |w| Route.of_url(w.loc)
+	route_of = |w| Locations.of_url(w.loc)
 
 	token_of : Session -> Str
 	token_of = |s| s.token()
@@ -94,12 +96,12 @@ ConduitApp := [].{
 	## Where a visitor at `loc` must be sent instead, or `""`.
 	guard_for : Str, Session -> Str
 	guard_for = |loc, session| {
-		kind = Route.kind(Route.of_url(loc))
+		kind = Route.kind(Locations.of_url(loc))
 		signed_in = session.is_signed_in()
 		requires_auth = kind == Settings or kind == EditorNew or kind == EditorEdit
 		anonymous_only = kind == Login or kind == Register
 		if requires_auth and !signed_in {
-			Route.to_url(Route.login_location)
+			Locations.to_url(Locations.login_location)
 		} else if anonymous_only and signed_in {
 			ConduitApp.home_url
 		} else {
@@ -150,8 +152,10 @@ ConduitApp := [].{
 		if name.is_empty() {
 			ConduitApp.no_req
 		} else {
-			uri = Api.profile_uri(name)
-			{ key: "${uri}#${m.prof.refetch.to_str()}", uri, token: "" }
+			match Api.profile_uri(name) {
+				Ok(uri) => { key: "${uri}#${m.prof.refetch.to_str()}", uri, token: "" }
+				Err(_) => ConduitApp.no_req
+			}
 		}
 	}
 
@@ -172,27 +176,26 @@ ConduitApp := [].{
 	fill : (M, Str -> M) -> Engine.Handler(Engine.StoreRoot(_))
 	fill = |set| Engine.handle(|value| [ConduitApp.pages.update(|m| set(m, value))])
 
-	## A load site: issue a GET whenever the request record changes; store
-	## the decoded result only while it is still the current request, which
-	## `store` decides from where the reader is when the answer arrives.
-	load_site : Signal(Engine.StoreRoot(_), LoadReq), (M, Here, LoadReq, Engine.Result -> M) -> Elem(Engine.StoreRoot(_))
-	load_site = |req, store| Engine.watch(
+	## Issue each GET without cancellation. The site's current-step policy
+	## admits only the answers the page still asks for before storing them.
+	load_site : Signal(Engine.StoreRoot(_), LoadReq), (M, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M) -> Elem(Engine.StoreRoot(_))
+	load_site = |req, store| Engine.keep_current(
 		req,
 		|r| if (r.uri.is_empty()) [] else [Api.get_request(r.uri, r.token)],
-		Engine.react_by(ConduitApp.here, |at, asked, res| [ConduitApp.pages.update(|m| store(m, at, asked, res))]),
+		Engine.react(|asked, res| [ConduitApp.pages.update(|m| store(m, asked, res))]),
 	)
 
-	store_feed : M, Here, LoadReq, Engine.Result -> M
-	store_feed = |m, w, r, res| if (ConduitApp.feed_req(w).key != r.key) m else ConduitApp.set_loads(m, |l| { ..l, feed: { key: r.key, value: Api.decode_feed_response(Api.response_of(res)) } })
+	store_feed : M, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M
+	store_feed = |m, r, res| ConduitApp.set_loads(m, |l| { ..l, feed: { key: r.key, value: Api.decode_feed_response(Api.response_of(res)) } })
 
-	store_tags : M, Here, LoadReq, Engine.Result -> M
-	store_tags = |m, _, r, res| ConduitApp.set_loads(m, |l| { ..l, tags: { key: r.key, value: Api.decode_get(Api.response_of(res), Api.decode_tags) } })
+	store_tags : M, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M
+	store_tags = |m, r, res| ConduitApp.set_loads(m, |l| { ..l, tags: { key: r.key, value: Api.decode_get(Api.response_of(res), Api.decode_tags) } })
 
-	store_profile : M, Here, LoadReq, Engine.Result -> M
-	store_profile = |m, w, r, res| if (ConduitApp.profile_req(w, m).key != r.key) m else ConduitApp.set_loads(m, |l| { ..l, profile: { key: r.key, value: Api.decode_get(Api.response_of(res), Api.decode_profile) } })
+	store_profile : M, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M
+	store_profile = |m, r, res| ConduitApp.set_loads(m, |l| { ..l, profile: { key: r.key, value: Api.decode_get(Api.response_of(res), Api.decode_profile) } })
 
-	store_articles : M, Here, LoadReq, Engine.Result -> M
-	store_articles = |m, w, r, res| if (ConduitApp.articles_req(w).key != r.key) m else ConduitApp.set_loads(m, |l| { ..l, articles: { key: r.key, value: Api.decode_get(Api.response_of(res), Api.decode_feed) } })
+	store_articles : M, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M
+	store_articles = |m, r, res| ConduitApp.set_loads(m, |l| { ..l, articles: { key: r.key, value: Api.decode_get(Api.response_of(res), Api.decode_feed) } })
 
 	feed_remote : Here, M -> Api.Remote(Api.FeedPage)
 	feed_remote = |w, m| ConduitApp.remote(m.loads.feed, ConduitApp.feed_req(w).key)
@@ -200,31 +203,40 @@ ConduitApp := [].{
 	edit_req : Here -> LoadReq
 	edit_req = |w| {
 		slug = Route.article_slug(ConduitApp.route_of(w))
-		if (slug.is_empty()) ConduitApp.no_req else { key: Api.article_uri(slug), uri: Api.article_uri(slug), token: "" }
+		match Api.article_uri(slug) {
+			Ok(uri) => { key: uri, uri, token: "" }
+			Err(_) => ConduitApp.no_req
+		}
 	}
 
-	store_edit : M, Here, LoadReq, Engine.Result -> M
-	store_edit = |m, w, r, res| if (ConduitApp.edit_req(w).key != r.key) m else ConduitApp.set_loads(m, |l| { ..l, article: { key: r.key, value: Api.decode_get(Api.response_of(res), Api.decode_article) } })
+	store_edit : M, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M
+	store_edit = |m, r, res| ConduitApp.set_loads(m, |l| { ..l, article: { key: r.key, value: Api.decode_get(Api.response_of(res), Api.decode_article) } })
 
 	## ------------------------------------------------------------------
 	## Mutations.
 
-	plan_submit : Submit -> List(Engine.Request)
+	plan_submit : Submit -> List(Engine.Ask(Engine.Response, Engine.HttpFailure))
 	plan_submit = |s| {
 		if s.serial == 0 {
-			[]
-		} else if s.method == "GET" or s.method == "DELETE" {
-			[Http({ method: s.method, url: s.url, headers: Api.auth_headers(s.token), body: s.body, timeout_ms: Api.timeout_ms })]
-		} else {
-			[Http({ method: s.method, url: s.url, headers: Api.json_headers(s.token), body: s.body, timeout_ms: Api.timeout_ms })]
+			return []
+		}
+		match s.url {
+			Err(_) => []
+			Ok(url) => {
+				headers = if s.method == "GET" or s.method == "DELETE" {
+					Api.auth_headers(s.token)
+				} else {
+					Api.json_headers(s.token)
+				}
+				[Engine.http({ method: s.method, url, headers, body: s.body, timeout: Ms(Api.timeout_ms) })]
+			}
 		}
 	}
-
-	next : Submit, Str, Str, Str, Str -> Submit
+	next : Submit, Engine.Method, Try(Str, Url.SegmentErr), Str, Str -> Submit
 	next = |prev, method, url, body, token| { serial: prev.serial + 1, method, url, body, token }
 
-	submit_site : Signal(Engine.StoreRoot(_), Submit), Reaction(Engine.StoreRoot(_), Submit) -> Elem(Engine.StoreRoot(_))
-	submit_site = |sub, react| Engine.watch(sub, ConduitApp.plan_submit, react)
+	submit_site : Signal(Engine.StoreRoot(_), Submit), Reaction(Engine.StoreRoot(_), Submit, Try(Engine.Response, Engine.HttpFailure)) -> Elem(Engine.StoreRoot(_))
+	submit_site = |sub, react| Engine.keep_current(sub, ConduitApp.plan_submit, react)
 
 	classify_favorite : Api.ResponseState, Str -> FavoriteResult
 	classify_favorite = |response, empty_message| {
@@ -287,30 +299,25 @@ ConduitApp := [].{
 	submit_auth : M, Bool -> M
 	submit_auth = |m, is_register| {
 		a = m.auth
-		(url, body) = if (is_register) ("/api/users", Api.register_body(a.username, a.email, a.password)) else ("/api/users/login", Api.login_body(a.email, a.password))
-		{ ..m, auth: { ..a, sub: ConduitApp.next(a.sub, "POST", url, body, "") } }
+		(url, body) = if (is_register) (Api.users.request_target(), Api.register_body(a.username, a.email, a.password)) else (Api.login.request_target(), Api.login_body(a.email, a.password))
+		{ ..m, auth: { ..a, sub: ConduitApp.next(a.sub, "POST", Ok(url), body, "") } }
 	}
 
-	## What an answer to a sign-in or sign-up writes, decided once from the
-	## pages as they are when it arrives: the form records the answer, and
-	## an accepted one asks to go home and brings in the user it names. An
-	## answer to anything but the latest submission writes nothing.
+	## Writes for a current sign-in or sign-up result: record the form's
+	## answer, and for acceptance ask to go home and bring in the user.
+	## Its keep_current site admits only the latest submission's results.
 	##
 	## The navigation comes first and the session a turn later, applied by
 	## a root follow-up turn (`incoming`): home mounts anonymous (feed and
 	## tags) and then asks for the feed again with the token. The sign-in
 	## spec pins that order.
-	auth_answered : M, Submit, Engine.Result -> List(Engine.Write(_))
-	auth_answered = |m, req, res| {
-		if req.serial != m.auth.sub.serial {
-			[]
-		} else {
-			result = Api.classify_auth(Api.response_of(res))
-			recorded = ConduitApp.pages.update(|p| { ..p, auth: { ..p.auth, result } })
-			match result {
-				AuthAccepted(user) => [recorded, AppStore.asking(ConduitApp.home_url), AppStore.cells.incoming.set(SignedIn({ token: user.token, username: user.username }))]
-				_ => [recorded]
-			}
+	auth_answered : Submit, Try(Engine.Response, Engine.HttpFailure) -> List(Engine.Write(_))
+	auth_answered = |_req, res| {
+		result = Api.classify_auth(Api.response_of(res))
+		recorded = ConduitApp.pages.update(|p| { ..p, auth: { ..p.auth, result } })
+		match result {
+			AuthAccepted(user) => [recorded, AppStore.asking(ConduitApp.home_url), AppStore.cells.incoming.set(SignedIn({ token: user.token, username: user.username }))]
+			_ => [recorded]
 		}
 	}
 
@@ -320,11 +327,11 @@ ConduitApp := [].{
 	submit_settings : M, Here -> M
 	submit_settings = |m, w| {
 		s = m.settings
-		{ ..m, settings: { ..s, sub: ConduitApp.next(s.sub, "PUT", "/api/user", ConduitApp.update_body(s), ConduitApp.token_of(w.session)) } }
+		{ ..m, settings: { ..s, sub: ConduitApp.next(s.sub, "PUT", Ok(Api.user.request_target()), ConduitApp.update_body(s), ConduitApp.token_of(w.session)) } }
 	}
 
-	react_settings : M, Submit, Engine.Result -> M
-	react_settings = |m, req, res| if (req.serial != m.settings.sub.serial) m else { ..m, settings: { ..m.settings, result: Api.classify_auth(Api.response_of(res)) } }
+	react_settings : M, Submit, Try(Engine.Response, Engine.HttpFailure) -> M
+	react_settings = |m, _req, res| { ..m, settings: { ..m.settings, result: Api.classify_auth(Api.response_of(res)) } }
 
 	parse_tags : Str -> List(Str)
 	parse_tags = |raw| raw.split_on(",").map(|part| part.trim()).keep_if(|tag| !tag.is_empty())
@@ -340,24 +347,20 @@ ConduitApp := [].{
 		e = m.editor
 		body = ConduitApp.article_body(e.title.trim(), e.description.trim(), e.body, ConduitApp.parse_tags(e.tags))
 		slug = Route.article_slug(ConduitApp.route_of(w))
-		(method, url) = if (slug.is_empty()) ("POST", "/api/articles") else ("PUT", Api.article_uri(slug))
+		(method, url) = if (slug.is_empty()) ("POST", Ok(Api.articles.request_target())) else ("PUT", Api.article_uri(slug))
 		{ ..m, editor: { ..e, sub: ConduitApp.next(e.sub, method, url, body, ConduitApp.token_of(w.session)) } }
 	}
 
 	## What an answer to a published article writes: the form records it,
-	## and an accepted article is where the reader asks to go next. An
-	## answer to anything but the latest submission writes nothing.
-	editor_answered : M, Submit, Engine.Result -> List(Engine.Write(_))
-	editor_answered = |m, req, res| {
-		if req.serial != m.editor.sub.serial {
-			[]
-		} else {
-			result = ConduitApp.classify_article(Api.response_of(res))
-			recorded = ConduitApp.pages.update(|p| { ..p, editor: { ..p.editor, result } })
-			match result {
-				ArticleAccepted(article) => [recorded, AppStore.asking(Route.to_url(Route.article_location(article.slug)))]
-				_ => [recorded]
-			}
+	## and an accepted article is where the reader asks to go next. Its
+	## keep_current site admits only the latest submission's results.
+	editor_answered : Submit, Try(Engine.Response, Engine.HttpFailure) -> List(Engine.Write(_))
+	editor_answered = |_req, res| {
+		result = ConduitApp.classify_article(Api.response_of(res))
+		recorded = ConduitApp.pages.update(|p| { ..p, editor: { ..p.editor, result } })
+		match result {
+			ArticleAccepted(article) => [recorded, AppStore.asking(Locations.to_url(Locations.article_location(article.slug)))]
+			_ => [recorded]
 		}
 	}
 
@@ -373,16 +376,12 @@ ConduitApp := [].{
 		_ => m
 	}
 
-	react_follow : M, Submit, Engine.Result -> M
-	react_follow = |m, req, res| {
-		if req.serial != m.prof.follow.serial {
-			m
-		} else {
-			result = ConduitApp.classify_follow(Api.response_of(res))
-			match result {
-				FollowAccepted(_) => { ..m, prof: { ..m.prof, follow_result: result, refetch: m.prof.refetch + 1 } }
-				_ => { ..m, prof: { ..m.prof, follow_result: result } }
-			}
+	react_follow : M, Submit, Try(Engine.Response, Engine.HttpFailure) -> M
+	react_follow = |m, _req, res| {
+		result = ConduitApp.classify_follow(Api.response_of(res))
+		match result {
+			FollowAccepted(_) => { ..m, prof: { ..m.prof, follow_result: result, refetch: m.prof.refetch + 1 } }
+			_ => { ..m, prof: { ..m.prof, follow_result: result } }
 		}
 	}
 
@@ -399,16 +398,16 @@ ConduitApp := [].{
 		"${prefix} ${article.title} (${article.favorites_count.to_str()})"
 	}
 
-	react_row_fav : FavState, Submit, Engine.Result -> FavState
-	react_row_fav = |s, req, res| if (req.serial != s.req.serial) s else { ..s, result: ConduitApp.classify_favorite(Api.response_of(res), "The server response could not be read.") }
+	react_row_fav : FavState, Submit, Try(Engine.Response, Engine.HttpFailure) -> FavState
+	react_row_fav = |s, _req, res| { ..s, result: ConduitApp.classify_favorite(Api.response_of(res), "The server response could not be read.") }
 
 	## Pagination.
 	PageItem : { key : Str, active : Bool }
 
 	page_items : Api.Remote(Api.FeedPage), Route.Feed -> List(PageItem)
 	page_items = |r, feed| match r {
-		Ready(page) => {
-			count = Api.page_count(page.articles_count)
+		Ready(feed_page) => {
+			count = Api.page_count(feed_page.articles_count)
 			if count <= 1 {
 				[]
 			} else {
@@ -437,23 +436,23 @@ ConduitApp := [].{
 	key_url = |key| {
 		loc = key.split_first("|").map_ok(
 			|split| {
-				page = U64.from_str(split.before) ?? 1
+				page_number = U64.from_str(split.before) ?? 1
 				tag = if (split.after.is_empty()) AllTags else Tagged(split.after)
-				Route.feed_location({ page, tag, source: Global })
+				Locations.feed_location({ page: page_number, tag, source: Global })
 			},
 		)
-			?? Route.home_location
-		Route.to_url(loc)
+			?? Locations.home_location
+		Locations.to_url(loc)
 	}
 
 	tag_url : Str -> Str
-	tag_url = |tag| Route.to_url(Route.feed_location({ page: 1, tag: Tagged(tag), source: Global }))
+	tag_url = |tag| Locations.to_url(Locations.feed_location({ page: 1, tag: Tagged(tag), source: Global }))
 
 	profile_url : Str -> Str
-	profile_url = |name| Route.to_url(Route.profile_location(name))
+	profile_url = |name| Locations.to_url(Locations.profile_location(name))
 
 	article_url : Str -> Str
-	article_url = |slug| Route.to_url(Route.article_location(slug))
+	article_url = |slug| Locations.to_url(Locations.article_location(slug))
 
 	keyed_lines : List(Str) -> List({ key : Str, text : Str })
 	keyed_lines = |lines| {
@@ -508,10 +507,10 @@ ConduitApp := [].{
 	button_s = |label, cls, h| Engine.element("button", [Engine.attr("type", "button"), Engine.class(cls), Engine.on_click(h)], [Engine.text_s(label)])
 
 	input : Str, Str, Signal(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)
-	input = |name, kind, v, h| Engine.element("input", [Engine.attr("aria-label", name), Engine.attr("type", kind), Engine.class(Styles.field), Engine.attr_s("value", v), Engine.on("input", h)], [])
+	input = |name, kind, v, h| Engine.element("input", [Engine.attr("aria-label", name), Engine.attr("type", kind), Engine.class(Styles.field), Engine.prop_s(Engine.Prop.value, v), Engine.on("input", h)], [])
 
 	textarea : Str, Signal(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)
-	textarea = |name, v, h| Engine.element("textarea", [Engine.attr("aria-label", name), Engine.class(Styles.field), Engine.attr_s("value", v), Engine.on("input", h)], [])
+	textarea = |name, v, h| Engine.element("textarea", [Engine.attr("aria-label", name), Engine.class(Styles.field), Engine.prop_s(Engine.Prop.value, v), Engine.on("input", h)], [])
 
 	heading : Str, Str -> Elem(ctx)
 	heading = |t, cls| Engine.element("h1", [Engine.class(cls)], [Engine.text(t)])
@@ -536,7 +535,7 @@ ConduitApp := [].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	tag_pill = |row| {
 		key = row.key()
-		Engine.element("a", [Engine.class("border border-zinc-400 px-2 py-0.5 font-mono text-xs text-zinc-600 no-underline"), Engine.attr_s("href", key.map(ConduitApp.tag_url)), Engine.on("click:prevent", AppStore.go_by(key.map(ConduitApp.tag_url)))], [Engine.text_s(key)])
+		Engine.element("a", [Engine.class("border border-zinc-400 px-2 py-0.5 font-mono text-xs text-zinc-600 no-underline"), Engine.attr_s("href", key.map(ConduitApp.tag_url)), Engine.on_with("click", { prevent: True }, AppStore.go_by(key.map(ConduitApp.tag_url)))], [Engine.text_s(key)])
 	}
 
 	preview_body : Signal(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState), Api.ArticleSummary), State(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState), FavState) -> Elem(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState))
@@ -549,7 +548,7 @@ ConduitApp := [].{
 			"div",
 			[],
 			[
-				Engine.watch(fst.signal().map(|s| s.req), ConduitApp.plan_submit, fst.on_result(ConduitApp.react_row_fav)),
+				Engine.keep_current(fst.signal().map(|s| s.req), ConduitApp.plan_submit, fst.on_result(ConduitApp.react_row_fav)),
 				Html.div(
 					"mb-3 flex flex-wrap items-center gap-2 text-sm text-zinc-500",
 					[
@@ -559,7 +558,7 @@ ConduitApp := [].{
 				),
 				Engine.element(
 					"a",
-					[Engine.class("block text-2xl font-semibold tracking-normal text-zinc-900 no-underline"), Engine.attr_s("href", art.map(|a| ConduitApp.article_url(a.slug))), Engine.on("click:prevent", AppStore.go_by(art.map(|a| ConduitApp.article_url(a.slug))))],
+					[Engine.class("block text-2xl font-semibold tracking-normal text-zinc-900 no-underline"), Engine.attr_s("href", art.map(|a| ConduitApp.article_url(a.slug))), Engine.on_with("click", { prevent: True }, AppStore.go_by(art.map(|a| ConduitApp.article_url(a.slug))))],
 					[Engine.text_s(shown.map(|a| a.title))],
 				),
 				Html.p_s(shown.map(|a| a.description), [Engine.class("mt-2 leading-7 text-zinc-600")]),
@@ -573,7 +572,7 @@ ConduitApp := [].{
 								"border border-emerald-600 bg-white px-3 py-1.5 font-medium text-emerald-700",
 								fst.update_by(shown.map2(token, |a, t| (a, t)), |s, (a, t)| { ..s, req: ConduitApp.next(s.req, if (a.favorited) "DELETE" else "POST", Api.favorite_uri(a.slug), "", t) }),
 							),
-							|| Engine.text_s(shown.map(|a| "${a.favorites_count.to_str()} favorites")),
+							|| Engine.text_s("${shown.map(|a| a.favorites_count)} favorites"),
 						),
 						Engine.element("div", [Engine.class("flex flex-wrap gap-1")], [Engine.each(art.map(|a| a.tag_list), |t| t, |row| ConduitApp.tag_pill(row))]),
 					],
@@ -609,9 +608,9 @@ ConduitApp := [].{
 		articles = current.map2(
 			stored,
 			|requested, loaded| match requested {
-				Ready(page) => page.articles
+				Ready(requested_page) => requested_page.articles
 				Loading => match loaded {
-					Ready(page) => page.articles
+					Ready(loaded_page) => loaded_page.articles
 					_ => []
 				}
 				Failed(_) => []
@@ -638,7 +637,7 @@ ConduitApp := [].{
 				Engine.when(
 					current.map(
 						|requested| match requested {
-							Ready(page) => page.articles.is_empty()
+							Ready(feed_page) => feed_page.articles.is_empty()
 							_ => False
 						},
 					),
@@ -663,7 +662,7 @@ ConduitApp := [].{
 					|row| {
 						key = row.key()
 						cls = row.field(|i| if (i.active) "bg-emerald-600 px-3 py-2 text-sm font-medium text-white no-underline" else "border border-zinc-950 bg-white px-3 py-2 text-sm text-zinc-700 no-underline")
-						Engine.element("a", [Engine.class_s(cls), Engine.attr_s("href", key.map(ConduitApp.key_url)), Engine.on("click:prevent", AppStore.go_by(key.map(ConduitApp.key_url)))], [Engine.text_s(key.map(ConduitApp.page_label))])
+						Engine.element("a", [Engine.class_s(cls), Engine.attr_s("href", key.map(ConduitApp.key_url)), Engine.on_with("click", { prevent: True }, AppStore.go_by(key.map(ConduitApp.key_url)))], [Engine.text_s(key.map(ConduitApp.page_label))])
 					},
 				),
 			],
@@ -707,7 +706,7 @@ ConduitApp := [].{
 									[
 										Engine.when(
 											signed_in,
-											|| Links.link_c("Your Feed", feed.map(|f| if (f.source == Yours) active else idle), Route.to_url(Route.feed_location({ page: 1, tag: AllTags, source: Yours }))),
+											|| Links.link_c("Your Feed", feed.map(|f| if (f.source == Yours) active else idle), Locations.to_url(Locations.feed_location({ page: 1, tag: AllTags, source: Yours }))),
 											|| Engine.text(""),
 										),
 										Links.link_c("Global Feed", feed.map(|f| if (f.source == Global and f.tag == AllTags) active else idle), ConduitApp.home_url),
@@ -774,15 +773,15 @@ ConduitApp := [].{
 			title,
 			Styles.narrow_page,
 			[
-				ConduitApp.submit_site(af.map(|a| a.sub), Engine.react_by(st.signal(), ConduitApp.auth_answered)),
+				ConduitApp.submit_site(af.map(|a| a.sub), Engine.react(ConduitApp.auth_answered)),
 				ConduitApp.heading(title, "text-center text-4xl font-semibold tracking-normal text-zinc-950"),
 				Html.div(
 					"mb-7 mt-2 text-center",
 					[
 						if is_register {
-							Links.link("Have an account?", "font-medium text-emerald-700", Route.to_url(Route.login_location))
+							Links.link("Have an account?", "font-medium text-emerald-700", Locations.to_url(Locations.login_location))
 						} else {
-							Links.link("Need an account?", "font-medium text-emerald-700", Route.to_url(Route.register_location))
+							Links.link("Need an account?", "font-medium text-emerald-700", Locations.to_url(Locations.register_location))
 						},
 					],
 				),
@@ -865,7 +864,7 @@ ConduitApp := [].{
 		"New article",
 		Styles.wide_page,
 		[
-			ConduitApp.submit_site(ConduitApp.pages.signal().map(|m| m.editor.sub), Engine.react_by(ConduitApp.pages.signal(), ConduitApp.editor_answered)),
+			ConduitApp.submit_site(ConduitApp.pages.signal().map(|m| m.editor.sub), Engine.react(ConduitApp.editor_answered)),
 			ConduitApp.heading("New article", "mb-8 text-center text-4xl font-semibold tracking-normal text-zinc-950"),
 			ConduitApp.error_list(ConduitApp.pages.signal().map(|m| ConduitApp.article_errors(m.editor.result))),
 			ConduitApp.editor_form("Publish Article"),
@@ -888,7 +887,7 @@ ConduitApp := [].{
 			Styles.wide_page,
 			[
 				ConduitApp.load_site(w.map(ConduitApp.edit_req), ConduitApp.store_edit),
-				ConduitApp.submit_site(mv.map(|m| m.editor.sub), Engine.react_by(mv, ConduitApp.editor_answered)),
+				ConduitApp.submit_site(mv.map(|m| m.editor.sub), Engine.react(ConduitApp.editor_answered)),
 				ConduitApp.heading("Edit article", "mb-8 text-center text-4xl font-semibold tracking-normal text-zinc-950"),
 				Engine.when(
 					article.map(ConduitApp.is_loading),
@@ -899,7 +898,7 @@ ConduitApp := [].{
 						|| Html.div(
 							"mb-4 space-y-1 border border-zinc-950 bg-zinc-50 p-3 text-sm text-zinc-700",
 							[
-								Html.p_s(current(|a| "Current title: ${a.title}"), []),
+								Html.p_s("Current title: ${current(|a| a.title)}", []),
 								Html.p_s(current(|a| "Current description: ${a.description}"), []),
 								Html.p_s(current(|a| "Current body: ${a.body}"), []),
 								Html.p_s(current(|a| "Current tags: ${Str.join_with(a.tag_list, ", ")}"), []),
@@ -949,7 +948,7 @@ ConduitApp := [].{
 							"div",
 							[Engine.attr("data-conduit", "profile"), Engine.class("mb-8 border border-zinc-950 bg-white p-6 text-center sm:p-8")],
 							[
-								Engine.element("h2", [Engine.class("text-3xl font-semibold tracking-normal text-zinc-950")], [Engine.text_s(field(|p| "@${p.username}"))]),
+								Engine.element("h2", [Engine.class("text-3xl font-semibold tracking-normal text-zinc-950")], [Engine.text_s("@${field(|p| p.username)}")]),
 								Html.p_s(field(|p| p.bio), [Engine.class("mx-auto mt-2 max-w-2xl leading-7 text-zinc-600")]),
 								Engine.when(
 									w.map2(
@@ -991,8 +990,8 @@ ConduitApp := [].{
 						Html.div(
 							"flex",
 							[
-								Links.link_s(Engine.const("My Articles"), if (favorites) idle else active, username.map(ConduitApp.profile_url)),
-								Links.link_s(Engine.const("Favorited Articles"), if (favorites) active else idle, username.map(|u| Route.to_url(Route.profile_favorites_location(u)))),
+								Links.link_s("My Articles", if (favorites) idle else active, username.map(ConduitApp.profile_url)),
+								Links.link_s("Favorited Articles", if (favorites) active else idle, username.map(|u| Locations.to_url(Locations.profile_favorites_location(u)))),
 							],
 						),
 					],
@@ -1047,16 +1046,16 @@ ConduitApp := [].{
 							|| Html.div(
 								"inline-flex",
 								[
-									Links.link("New Article", item, Route.to_url(Route.location_for("/editor", ""))),
-									Links.link("Settings", item, Route.to_url(Route.location_for("/settings", ""))),
+									Links.link("New Article", item, Locations.to_url(Locations.to_location(EditorNew))),
+									Links.link("Settings", item, Locations.to_url(Locations.to_location(Settings))),
 									Links.link_s(username, "px-3 py-2 text-emerald-700 no-underline", username.map(ConduitApp.profile_url)),
 								],
 							),
 							|| Html.div(
 								"inline-flex",
 								[
-									Links.link("Sign in", item, Route.to_url(Route.login_location)),
-									Links.link("Sign up", item, Route.to_url(Route.register_location)),
+									Links.link("Sign in", item, Locations.to_url(Locations.login_location)),
+									Links.link("Sign up", item, Locations.to_url(Locations.register_location)),
 								],
 							),
 						),
@@ -1069,10 +1068,13 @@ ConduitApp := [].{
 	all_kinds : List(Route.Kind)
 	all_kinds = [Home, Login, Register, Settings, EditorNew, EditorEdit, Article, Profile, ProfileFavorites, NotFound]
 
-	storage_plan : Session -> List(Engine.Request)
-	storage_plan = |s| match s {
-		SignedIn(u) => [StorageSet(AppStore.jwt_key, u.token), StorageSet(AppStore.username_key, u.username)]
-		Anonymous => [StorageRemove(AppStore.jwt_key), StorageRemove(AppStore.username_key)]
+	storage_plan : Session -> List(Engine.Ask(output, error))
+	storage_plan = |session| {
+		commands = match session {
+			SignedIn(u) => [StorageSet(AppStore.jwt_key, u.token), StorageSet(AppStore.username_key, u.username)]
+			Anonymous => [StorageRemove(AppStore.jwt_key), StorageRemove(AppStore.username_key)]
+		}
+		commands.map(Engine.command)
 	}
 
 	## The whole app. Who is signed in, where the reader is, the navigation
@@ -1088,29 +1090,29 @@ ConduitApp := [].{
 				## Root effects: popstate, history push, guard redirect, title, session storage.
 				Engine.watch(
 					Engine.const(0.U8),
-					|_| [Popstate],
+					|_| [Engine.popstate({})],
 					Engine.react_by(
 						ConduitApp.here,
 						|at, _, res| match res {
-							Location(url) => AppStore.moved(at, url)
-							_ => []
+							Ok(url) => AppStore.moved(at, url)
+							Err(Refused) => []
 						},
 					),
 				),
-				Engine.on_post(AppStore.cells.nav.signal(), |url| [Push(url), Self], Engine.react_by(ConduitApp.here, |at, url, _| AppStore.moved(at, url))),
-				Engine.watch(ConduitApp.here.map(|w| ConduitApp.guard_for(w.loc, w.session)), |u| if (u.is_empty()) [] else [Replace(u), Self], Engine.react_by(ConduitApp.here, |at, u, _| if (!u.is_empty() and ConduitApp.guard_for(at.loc, at.session) == u) AppStore.moved(at, u) else [])),
-				Engine.watch(ConduitApp.here.map2(AppStore.cells.article.cells.story.signal(), ConduitApp.title_of), |t| [Title(t)], Engine.ignore({})),
+				Engine.on_post(AppStore.cells.nav.signal(), |url| [Engine.command(Push(url)), Engine.again({})], Engine.react_by(ConduitApp.here, |at, url, _| AppStore.moved(at, url))),
+				Engine.keep_current(ConduitApp.here.map(|w| ConduitApp.guard_for(w.loc, w.session)), |u| if (u.is_empty()) [] else [Engine.command(Replace(u)), Engine.again({})], Engine.react_by(ConduitApp.here, |at, u, _| AppStore.moved(at, u))),
+				Engine.watch(ConduitApp.here.map2(AppStore.cells.article.cells.story.signal(), ConduitApp.title_of), |t| [Engine.command(Title(t))], Engine.ignore({})),
 				Engine.watch_changes(session, ConduitApp.storage_plan, Engine.ignore({})),
 				Engine.watch_changes(
 					AppStore.cells.incoming.signal(),
 					|s| match s {
-						SignedIn(_) => [Self]
+						SignedIn(_) => [Engine.again({})]
 						Anonymous => []
 					},
 					Engine.react(|s, _| [AppStore.cells.session.set(s), AppStore.cells.incoming.set(Anonymous)]),
 				),
 				ConduitApp.header({}),
-				Engine.element("main", [Engine.class(Styles.main)], [Engine.switch(loc.map(|url| Route.kind(Route.of_url(url))), ConduitApp.all_kinds, |k| ConduitApp.page(k))]),
+				Engine.element("main", [Engine.class(Styles.main)], [Engine.switch(loc.map(|url| Route.kind(Locations.of_url(url))), ConduitApp.all_kinds, |k| ConduitApp.page(k))]),
 				Engine.element(
 					"footer",
 					[Engine.class(Styles.footer)],
@@ -1130,15 +1132,30 @@ ConduitApp := [].{
 
 }
 
-## An answer to an older sign-in writes nothing.
-expect ConduitApp.auth_answered(Pages.init(""), { ..Pages.no_submit, serial: 7 }, Timeout).is_empty()
-
 ## An accepted sign-in records the answer, asks to go home and brings the user in.
 expect {
 	body = "{\"user\":{\"email\":\"kim@conduit.test\",\"token\":\"jwt\",\"username\":\"kim\",\"bio\":\"\",\"image\":\"\"}}"
-	after = AppStore.store.after(ConduitApp.auth_answered(Pages.init(""), Pages.no_submit, Http({ status: 200, headers: [], body })))
+	after = AppStore.store.after(ConduitApp.auth_answered(Pages.no_submit, Ok({ status: 200, headers: [], body })))
 	after.read(AppStore.cells.incoming) == Session.SignedIn({ token: "jwt", username: "kim" }) and after.read(AppStore.cells.nav).last() == Posted(AppStore.home_url)
 }
 
 ## A rejected sign-in records the answer and nothing else.
-expect ConduitApp.auth_answered(Pages.init(""), Pages.no_submit, Http({ status: 422, headers: [], body: "{\"errors\":{\"body\":[\"bad\"]}}" })).len() == 1
+expect ConduitApp.auth_answered(Pages.no_submit, Ok({ status: 422, headers: [], body: "{\"errors\":{\"body\":[\"bad\"]}}" })).len() == 1
+
+## A typed sign-in rejection changes only its own form: settings, editor,
+## profile and loads keep their state, and no session or navigation is posted.
+expect {
+	pages = Pages.init("")
+	after = AppStore.store.after(ConduitApp.auth_answered(Pages.no_submit, Ok({ status: 422, headers: [], body: "{\"errors\":{\"body\":[\"bad\"]}}" })))
+	{
+		pages: after.read(AppStore.cells.pages),
+		session: after.read(AppStore.cells.session),
+		incoming: after.read(AppStore.cells.incoming),
+		navigation: after.read(AppStore.cells.nav).last(),
+	} == {
+		pages: { ..pages, auth: { ..pages.auth, result: AuthRejected(["body bad"]) } },
+		session: Session.Anonymous,
+		incoming: Session.Anonymous,
+		navigation: Unposted,
+	}
+}

@@ -48,12 +48,18 @@ a `State` and attached to an element:
 | `st.set_value(f)` | the state and the event's payload |
 | `st.set_value_by(v, f)` | the state, `v`'s value and the payload |
 
-The payload depends on the event: an `input` carries the control's new text, a
-`change` on a checkbox or radio carries `"true"` or `"false"`, a `change` on a
-select carries the chosen option's value, `keydown` carries the key, and a
-click or submit carries nothing. `Html` attaches the usual ones for you:
-`text_input` and `textarea` listen to `input`, `checkbox` and `select` to
-`change`.
+The handler's declaration chooses its payload kind. `Html.text_input` and
+`textarea` deliver the control's text on `input`. `Html.checkbox` delivers
+its Boolean checked state on `change`. `Html.select` delivers `Chose(value)`
+from its current offered choices, or `NotOffered` when a removed or foreign
+key arrives. A click or submit handler receives empty text. Raw text-kind
+`Engine.on("change", handler)` retains its string payload; use `on_checked`
+when attaching a Boolean handler to a checkbox or radio yourself.
+
+`HandlerOf(ctx, p)` is the generic family: `Handler(ctx)` is its text
+alias, and `FilesHandler(ctx)` takes the `Received` of a file event. The
+same `set_value`, `handle` and `also` serve every payload kind; attaching a
+handler through the wrong kind is a compile error.
 
 `update_by` is the tool for "which one": in a list row, `update_by(row.key(), f)`
 passes the clicked row's key.
@@ -63,9 +69,94 @@ a list in it happens in place. The state is not compared with what it held
 before: a reducer that returns an equal value still wakes the state's
 readers, and they find nothing to change.
 
-An element takes one handler per event; a second one for the same event is a
+An element takes one handler per event type, whatever its kind or policies;
+a second one for the same type is a
 contract error. Two things that must both happen are one handler made with
 `also` (see [Shared State](@/docs/shared-state.md#local-and-shared-in-one-event)).
+
+Declare browser policies with `Engine.on_with(type, policy, handler)`.
+`Policy` has `prevent` and `stop`, both false by default. `prevent` stops
+the default action; `stop` hides a bubbling event from page listeners
+above the mount root. For an event that does not bubble, `stop` does
+nothing, so its target still receives it. Policies are static, chosen
+before dispatch; a misspelt field does not compile. Event types are bare
+names: retired `:prevent` and `:files` suffixes are contract errors.
+
+## Keys and shortcuts
+
+A key handler receives `Engine.Key`: `key`, physical `code`, `ctrl`, `alt`,
+`shift`, `meta`, `repeat`, `composing` and `heard`. Attach it together with
+a signal of the chords it hears:
+
+{{ sample(file="keys/main.roc", region="keymap") }}
+
+`Engine.on_key` takes `{ keymap, on, stop }`. Only `keymap` is required;
+`on` defaults to `Down` and can be `Up`, and `stop` defaults to false.
+Use the ordinary reducers, decisions and `also` at the `Key` payload type.
+Text-event names are `Engine.EventType` values (also `Web.EventType`). Literals
+are checked while compiling; computed nonempty names use `from_str`, and custom
+events need no catalogue.
+
+The old `Html.on_keydown` is removed; text handlers on keydown or keyup are
+contract errors naming `on_key`.
+
+`Chord.plain` builds a chord. `with_ctrl`, `with_alt`, `with_shift` and
+`with_meta` add modifiers; `primary` gives Ctrl and Cmd alternatives.
+`Keymap.prevent(chords)` hears and prevents those chords, while `keep`
+hears them with their default intact. `concat` lists the left entries
+first. An empty keymap hears nothing and costs no turns. An empty declared chord
+is valid but cannot match a browser key.
+
+Ctrl, Alt and Meta must match exactly. ASCII letters compare without case;
+Shift must match too, except for a single punctuation or symbol character.
+Thus `?` works whether a layout needs Shift for it, while Shift+Tab remains
+distinct from Tab. Punctuation and symbols use pinned Unicode 18.0.0 data
+in both runners. Space, digits, other letters and named keys compare Shift.
+
+For a shortcut naming an ASCII letter or digit, the physical code is a
+fallback when the event's key is not an ASCII letter or digit. Ctrl+K can
+therefore work on a Cyrillic layout; Dvorak keeps its labelled ASCII key.
+Exact matches anywhere in the list beat every fallback. Compare the
+payload's `heard` with your declared chord, rather than repeating these
+rules in a handler. It is the original chord that matched.
+
+`Keymap.outside_text()` restricts entries to targets outside text-entry
+inputs, textarea, select and contenteditable. It is useful for plain-key
+shortcuts such as `/`. `Keymap.every` catches anything no listed entry
+matches, including composing keys, and prevents nothing. Named entries
+never hear a composing event, so Enter cannot accidentally commit an IME
+composition. Concatenation keeps one `every`, heard anywhere if either
+side's is.
+
+An unmatched handler is passed over on the way to an ancestor. The nearest
+matching local handler wins. `on_document_key` instead hears keys reaching
+the document that no local handler of this mount dispatched, including
+when focus is outside the root:
+
+{{ sample(file="keys/main.roc", region="shortcuts") }}
+
+The newest mounted matching document handler wins, so a modal can own
+Escape and disposal restores the shell's handler. A document handler
+cannot compile under a list or table-view row, including within a state
+nested in one: it requires the context's `OutsideRows` evidence. There
+can be at most 32 live document handlers per instance.
+
+`stop` uses the ordinary propagation policy. At the root it blocks the
+document; at the document it blocks window listeners. Other listeners on
+the same document still run, in mount order across mounts. A queued event
+keeps the keymap match made when it arrived, even if a later batch changes
+the keymap before its turn. A handler still decides from its current state.
+
+Browser-reserved chords cannot be prevented, including Chrome's Ctrl/Cmd+N,
+T and W, and macOS Cmd+backquote and Cmd+Tab. macOS sends no keyup when a
+key is released while Cmd is held; Windows AltGr reports Ctrl+Alt.
+
+A focus trap prevents just the two boundary chords and posts focus commands:
+
+{{ sample(file="keys/main.roc", region="focus-trap") }}
+
+The [Spreadsheet](@/examples/spreadsheet-lite.md) demonstrates navigation,
+Shift+Arrow range selection, a changing grid keymap and document shortcuts.
 
 ## One event, one transition
 
@@ -93,9 +184,65 @@ A few things to note:
 - The compact toggle is a separate state, so toggling it re-evaluates only the
   class that reads it.
 
+## Dialogs and popovers
+
+A dialog's open state is a signal, and its close handler receives the
+browser's current open state as a `Bool`. Accept that value so Escape and
+an authored close button agree:
+
+{{ sample(file="dialogs.roc", region="dialog") }}
+
+`Html.dialog(label, props, attrs, children)` defaults to `modal: Modal`;
+choose `NonModal` for an inline dialog. The element stays mounted while
+closed, but its content has one scope that exists only while open. Closing
+hides the dialog before disposing that content, so the browser can restore
+focus to its opener. An open dialog removed with its row cannot restore
+focus that way; post a focus command in the decision that removes it.
+
+A modal initially focuses its autofocus descendant, otherwise its first
+focusable descendant, otherwise the dialog itself. It makes background
+controls inert. `Html.on_cancel(handler)` hears the text-kind `cancel`
+event; use a preventing policy on `Engine.on_with("cancel", ...)` when the
+app asks to refuse dismissal. Native cancellation is limited by user
+activation: after one prevented request, another Escape can close without
+a cancelable event until new activation. Use a preventing keymap when Escape
+itself must be suppressed. Forms never navigate or close a dialog through
+`method="dialog"`: the runtime prevents every submit from mount onward.
+
+A popover keeps its children mounted while hidden:
+
+{{ sample(file="dialogs.roc", region="popover") }}
+
+`Html.popover` defaults to `dismiss: Auto`, accepting Escape, an outside
+pointer press and release, and hiding caused by another unrelated auto
+popover or a modal opening. Write the `on_toggle` value back to its cell or
+local state. Choose `Manual` when unrelated popovers must stay shown
+together, and provide the controls that hide them. Position either kind
+with ordinary CSS, including anchor positioning.
+
+Both handlers are required. If a handler ignores a browser close, the open
+signal is evaluated again and the control reopens, even when no state was
+written. Two unrelated auto popovers that both insist on staying open can
+keep dismissing each other; accept their toggles or make their desired
+states compatible. Test that decision as a pure function.
+
+Native callbacks run in browser tasks and read live state at dispatch.
+A delayed close after reopening can therefore carry `True`. Close and
+toggle task sources have no promised relative arrival order: decisions
+spanning them must work in either order. The helpers own their shown
+properties and echo declarations. A controlled dialog rejects `open`,
+`popover` and `closedby` attributes; a controlled popover owns its static
+`popover` attribute. Both reject `beforetoggle` handlers. Extra declarations
+are contract errors, including differently cased HTML attribute names.
+
+[Form Builder](@/examples/form-builder.md) uses row settings dialogs, a
+page-level delete confirmation, and an automatic problem summary. Its
+invalid submit scrolls and focuses the first problem through named
+references ([Scrolling and focus in place](@/docs/effects-and-browser.md#scrolling-and-focus-in-place)).
+
 ## Controlled inputs
 
-A text box's `value` attribute is guarded, so the engine can rewrite it
+A text box's `value` property is guarded, so the engine can rewrite it
 without fighting the user:
 
 - writing the value it already shows does nothing, so the caret stays put;
@@ -106,6 +253,99 @@ In practice: state written from a keystroke flows straight back, and a value
 your app changes while the user is typing (clearing a draft after submit, for
 example) appears when focus leaves the box. Checkboxes take `checked` as a
 property, and a select re-applies its value when its options change.
+
+For Escape-to-revert, post `ApplyValue(reference)` after restoring the
+state. It applies the last rendered value while the control still has
+focus, including when equality pruning emitted no new property write:
+
+{{ sample(file="keys/main.roc", region="revert") }}
+
+The reference must name an input, textarea, select or option with an
+explicit `Prop.value` (as `Html` controls provide). Otherwise it is a
+contract error naming the reference and site. An absent reference counts
+stale. During composition the command waits for `compositionend`, so it
+does not cut an IME composition. Use it only when replacing the user's draft
+is the intended action; ordinary updates keep the guard.
+
+A select's choices are application values. Supply a selected-value signal,
+an offered-list signal and `Html.Choices(a)` with stable `key` and `label`
+functions. The helper owns ordinary keyed option rows; duplicate keys are
+contract errors. An empty key is a real empty option value, not a sentinel.
+On change it finds the key in the current offered list, in O(choices), and
+returns that current value. Reusing a key with refreshed data delivers the
+refreshed value. A missing key returns `NotOffered` without the raw text;
+the decision explicitly chooses whether to write anything. A no-write arm
+can leave the browser showing no choice until a later state write.
+
+`handler.from_payload_by(reading, convert)` maps an arriving payload using
+a signal read before that handler writes. In `also`, the second handler
+reads after the first handler's writes, as with `handle_by`. To share a
+handler between controls with different payload types, bind a function that
+returns it: one Roc value has one payload type.
+
+`Html` controls set these properties for you. On a raw element use
+`Engine.prop` or `prop_s` with `Engine.Prop.value` (text) or
+`Engine.Prop.checked` (`Bool`). Properties prune equal values and work in
+row templates. An attribute using a name claimed by a property row is a
+contract error on that row's elements. Elsewhere, such as on a custom
+element, it is only an attribute. A property on an element its row does not allow, or declared
+twice, is a contract error at mount. A value property on a file input is
+rejected when applied, because its `type` can change through a signal.
+
+## Pointer input and dragging
+
+A pointer handler receives `Engine.Pointer`: its id, kind (mouse, pen,
+touch or other), changed button, held-button mask, modifiers, primary flag
+and the zone beneath it. Use the ordinary handler constructors at this
+payload type:
+
+{{ sample(file="pointer.roc", region="handlers") }}
+
+| Attach function | What it does |
+|---|---|
+| `Engine.on_pointer(Down\|Move\|Up\|Cancel, handler)` | Deliver every event of that kind |
+| `Engine.on_pointer_capture(handler)` | Capture on pointerdown before its turn runs |
+| `Engine.on_pointer_paced(handler)` | Report the newest pointermove per pointer at the frame |
+
+`Html` names the same choices `on_pointer_down`,
+`on_pointer_down_capture`, `on_pointer_move`, `on_pointer_move_paced`,
+`on_pointer_up` and `on_pointer_cancel`. Capture and pacing have their own
+attach functions; they are not fields of `Engine.Policy`.
+
+`Html.zone(key)` and `zone_s(signal)` set `Engine.Prop.pointer_zone`.
+The nearest zone beneath the actual point gives `pointer.at` as
+`In({ zone, x, y })`, with `x` and `y` in 1/10000 of its box: 5000 is
+halfway. Outside the mount, over no zone or over a zone with no positive
+area gives `Outside`; cancel also gives `Outside`. Empty text turns a
+zone off. Capture changes the event's target, while the zone still comes
+from the point beneath it.
+
+Interpret the key and fractions with a pure function:
+
+{{ sample(file="pointer.roc", region="zones") }}
+
+Zones provide fractions, so a drop target, splitter or swipe can be pure
+Roc logic and run in a native spec. They give no pixels, element sizes or
+drag ghost that follows the pointer. Only the nearest zone is reported.
+
+Choose pacing for a drag whose newest position is all that matters;
+choose ordinary moves for a stroke that needs every sample. A waiting
+move is delivered before an up. The payload is captured when the event
+arrives, including its zone and fractions.
+
+Start a drag only for the buttons the app accepts, update its target on
+move, and end it on both up and cancel. Put `touch-action:none` on a touch
+grip. If a result can dispose the grip during a drag, add up and cancel
+handlers on a stable ancestor; the engine cannot know which state a lost
+up should reset. The [Kanban board](@/examples/kanban-board.md) keeps its
+grip stable, decides the drop in Roc and preserves its Move buttons for
+keyboard use. A drop that moves the pressed row ends without a click.
+
+Capture is requested on the declaring element before dispatch. If the
+browser refuses it, the handler still runs; the runtime monitor records
+`page.captureRefused` and a `pointer-capture-refused` event. Pointer ids
+identify active pointers; they are not persistent identities or values
+whose numeric choice an app should interpret.
 
 ## Derived values
 

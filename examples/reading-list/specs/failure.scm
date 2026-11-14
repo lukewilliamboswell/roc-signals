@@ -1,4 +1,5 @@
 (test "Reading List — a store that does not answer, answers what the app does not understand, or refuses a book"
+  (setup (seed 7) (initial-time 1731200000000))
   (steps
     (answer-port 1 timeout)
     (expect-text (test-id "status") "Your shelf could not be read: the store did not answer in time.")
@@ -18,7 +19,9 @@
     (answer-port 1 reply "[]")
     (fill (label "Title") "Piranesi")
     (click (role button :name "Add book"))
-    (answer-port 2 throw "QuotaExceededError")
+    (run-effect 2)
+    (expect-port-call 3 "roc-signals.example/reading-list/add" "{\"added_ms\":\"1731200000000\",\"author\":\"\",\"id\":\"b-088712be8a582fca\",\"shelf\":\"WantToRead\",\"title\":\"Piranesi\"}")
+    (answer-port 3 throw "QuotaExceededError")
     (expect-text (test-id "note") "\"Piranesi\" was not added: the store said \"QuotaExceededError\".")
     (expect-text (test-id "status") "No books yet. Add the first one above.")
   )

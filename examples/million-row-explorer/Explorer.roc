@@ -182,9 +182,9 @@ Explorer := [Shop].{
 	## showed `shown`: the question changes and is asked at once, with
 	## whatever a slider still had waiting. The categories stay in their
 	## fixed order, so the same choice is the same question.
-	ticked : Orders.Filter, Orders.Category, Str -> List(Engine.Write(_))
+	ticked : Orders.Filter, Orders.Category, Bool -> List(Engine.Write(_))
 	ticked = |shown, category, checked| {
-		next = { ..shown, categories: Orders.categories.keep_if(|c| if (c == category) checked == "true" else shown.categories.contains(c)) }
+		next = { ..shown, categories: Orders.categories.keep_if(|c| if (c == category) checked else shown.categories.contains(c)) }
 		[Explorer.cells.shown.set(next), Explorer.cells.asked.set(next)]
 	}
 
@@ -212,15 +212,15 @@ Explorer := [Shop].{
 	sampled = |shown| [Explorer.cells.asked.set(shown)]
 
 	## A pace from the menu; anything else is ignored.
-	paced : Str -> List(Engine.Write(_))
-	paced = |text| match U32.from_str(text) {
-		Ok(rate) if Explorer.rates.contains(rate) => [Explorer.cells.rate.set(rate)]
-		_ => []
+	paced : [Chose(U32), NotOffered] -> List(Engine.Write(_))
+	paced = |picked| match picked {
+		Chose(rate) => [Explorer.cells.rate.set(rate)]
+		NotOffered => []
 	}
 
-	## The live feed switched on (`"true"`) or off.
-	switched : Str -> List(Engine.Write(_))
-	switched = |checked| [Explorer.cells.flow.set(if (checked == "true") Live else Paused)]
+	## The live feed switched on or off.
+	switched : Bool -> List(Engine.Write(_))
+	switched = |checked| [Explorer.cells.flow.set(if (checked) Live else Paused)]
 
 	## A message of the live feed. A batch is checked at the door: an order
 	## with a region the shop does not ship to, or a value outside what an
@@ -396,7 +396,7 @@ expect {
 	odd = Explorer.questions(10, Orders.everything)
 	slid = Explorer.store.after(Explorer.slid(Lowest, "3"))
 	sampled = slid.after(Explorer.sampled(slid.read(Explorer.cells.shown)))
-	clicked = slid.after(Explorer.ticked(slid.read(Explorer.cells.shown), Toys, "false"))
+	clicked = slid.after(Explorer.ticked(slid.read(Explorer.cells.shown), Toys, False))
 	actual =
 		\\shards: ${asked.len().to_str()}
 		\\rows: ${Str.inspect(asked.map(|q| q.init.rows))}
@@ -422,9 +422,9 @@ expect {
 ## and the address's size and the feed's switch are read at the door.
 expect {
 	shown_after = |store, writes| store.after(writes).read(Explorer.cells.shown)
-	no_toys = Explorer.store.after(Explorer.ticked(Orders.everything, Toys, "false"))
-	no_books = no_toys.after(Explorer.ticked(no_toys.read(Explorer.cells.shown), Books, "false"))
-	back = shown_after(no_books, Explorer.ticked(no_books.read(Explorer.cells.shown), Toys, "true"))
+	no_toys = Explorer.store.after(Explorer.ticked(Orders.everything, Toys, False))
+	no_books = no_toys.after(Explorer.ticked(no_toys.read(Explorer.cells.shown), Books, False))
+	back = shown_after(no_books, Explorer.ticked(no_books.read(Explorer.cells.shown), Toys, True))
 	pushed = shown_after(Explorer.store.with_initial(Explorer.cells.shown, { ..Orders.everything, highest: 5 }), Explorer.slid(Lowest, "9"))
 	pulled = shown_after(Explorer.store.with_initial(Explorer.cells.shown, { ..Orders.everything, lowest: 7 }), Explorer.slid(Highest, "3"))
 	actual =
@@ -479,4 +479,10 @@ expect {
 		\\closed: Paused The live feed closed.
 		\\line: Live: 200 orders a second. 2 live orders folded in today, 12 dropped by the feed.
 	actual == expected
+}
+
+## A foreign pace preserves the last selected rate.
+expect {
+	before = Explorer.store.after(Explorer.paced(Chose(Explorer.rates.last() ?? 1)))
+	before.after(Explorer.paced(NotOffered)).read(Explorer.cells.rate) == before.read(Explorer.cells.rate)
 }

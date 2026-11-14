@@ -1,4 +1,7 @@
+import Protocol
 import JsonOut
+import Core
+import Web
 
 ## The `.scm` spec language: the one parser both spec runners use.
 ##
@@ -24,7 +27,7 @@ Scm := [].{
 	Problem : { pos : Pos, message : Str }
 
 	## One s-expression with the position of its first character.
-	Sx := [Sym(Str, Pos), Str(Str, Pos), Int(I64, Pos), Bool(Bool, Pos), List(List(Sx), Pos)]
+	Sx := [Sym(Str, Pos), Str(Str, Pos), Int(I64, Pos), Unsigned(U64, Pos), Bool(Bool, Pos), List(List(Sx), Pos)]
 
 	## Semantic locators. `Role` matches an element's explicit `role` or its
 	## implicit role with its accessible name; `Label` its `aria-label`;
@@ -32,10 +35,230 @@ Scm := [].{
 	## `data-testid`. Resolution is the runner's job.
 	Loc : [Role({ role : Str, name : Str }), Label(Str), Text(Str), TestId(Str)]
 
+	## The US keyboard vocabulary shared by parsing, native delivery and CDP.
+	## Virtual key codes are physical: shifted partners share the code Chrome
+	## needs for native defaults such as Escape and Tab, beside key and code.
+	KeyEntry : { key : Str, name : Str, code : Str, vk : U32, needs_shift : Bool, named : Bool }
+
+	## A press resolves its logical label, physical code and modifiers once.
+	## Native delivery and browser CDP consume these fields instead of reparsing
+	## the chord text independently.
+	Key : { key : Str, code : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool }
+
+	## A press either addresses a semantic locator or uses the current focus.
+	## Only the explicit target requires a locator to match, which also determines
+	## whether this step can anchor an absence.
+	KeyPress : { target : [Focused, At(Loc)], key : Key }
+
+	## The portable US vocabulary includes printable characters and named-key
+	## aliases with their physical codes. Keeping Space's two spellings here lets
+	## both runners use one resolved key record and the same Shift rules.
+	key_table : List(KeyEntry)
+	key_table = [
+		{ key: " ", name: " ", code: "Space", vk: 32, needs_shift: Bool.False, named: Bool.False },
+		{ key: "Enter", name: "Enter", code: "Enter", vk: 13, needs_shift: Bool.False, named: Bool.True },
+		{ key: "Escape", name: "Escape", code: "Escape", vk: 27, needs_shift: Bool.False, named: Bool.True },
+		{ key: "Tab", name: "Tab", code: "Tab", vk: 9, needs_shift: Bool.False, named: Bool.True },
+		{ key: " ", name: "Space", code: "Space", vk: 32, needs_shift: Bool.False, named: Bool.True },
+		{ key: "Backspace", name: "Backspace", code: "Backspace", vk: 8, needs_shift: Bool.False, named: Bool.True },
+		{ key: "Delete", name: "Delete", code: "Delete", vk: 46, needs_shift: Bool.False, named: Bool.True },
+		{ key: "ArrowUp", name: "ArrowUp", code: "ArrowUp", vk: 38, needs_shift: Bool.False, named: Bool.True },
+		{ key: "ArrowDown", name: "ArrowDown", code: "ArrowDown", vk: 40, needs_shift: Bool.False, named: Bool.True },
+		{ key: "ArrowLeft", name: "ArrowLeft", code: "ArrowLeft", vk: 37, needs_shift: Bool.False, named: Bool.True },
+		{ key: "ArrowRight", name: "ArrowRight", code: "ArrowRight", vk: 39, needs_shift: Bool.False, named: Bool.True },
+		{ key: "Home", name: "Home", code: "Home", vk: 36, needs_shift: Bool.False, named: Bool.True },
+		{ key: "End", name: "End", code: "End", vk: 35, needs_shift: Bool.False, named: Bool.True },
+		{ key: "PageUp", name: "PageUp", code: "PageUp", vk: 33, needs_shift: Bool.False, named: Bool.True },
+		{ key: "PageDown", name: "PageDown", code: "PageDown", vk: 34, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F1", name: "F1", code: "F1", vk: 112, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F2", name: "F2", code: "F2", vk: 113, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F3", name: "F3", code: "F3", vk: 114, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F4", name: "F4", code: "F4", vk: 115, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F5", name: "F5", code: "F5", vk: 116, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F6", name: "F6", code: "F6", vk: 117, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F7", name: "F7", code: "F7", vk: 118, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F8", name: "F8", code: "F8", vk: 119, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F9", name: "F9", code: "F9", vk: 120, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F10", name: "F10", code: "F10", vk: 121, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F11", name: "F11", code: "F11", vk: 122, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F12", name: "F12", code: "F12", vk: 123, needs_shift: Bool.False, named: Bool.True },
+		{ key: "!", name: "!", code: "Digit1", vk: 49, needs_shift: Bool.True, named: Bool.False },
+		{ key: "\"", name: "\"", code: "Quote", vk: 222, needs_shift: Bool.True, named: Bool.False },
+		{ key: "#", name: "#", code: "Digit3", vk: 51, needs_shift: Bool.True, named: Bool.False },
+		{ key: "$", name: "$", code: "Digit4", vk: 52, needs_shift: Bool.True, named: Bool.False },
+		{ key: "%", name: "%", code: "Digit5", vk: 53, needs_shift: Bool.True, named: Bool.False },
+		{ key: "&", name: "&", code: "Digit7", vk: 55, needs_shift: Bool.True, named: Bool.False },
+		{ key: "'", name: "'", code: "Quote", vk: 222, needs_shift: Bool.False, named: Bool.False },
+		{ key: "(", name: "(", code: "Digit9", vk: 57, needs_shift: Bool.True, named: Bool.False },
+		{ key: ")", name: ")", code: "Digit0", vk: 48, needs_shift: Bool.True, named: Bool.False },
+		{ key: "*", name: "*", code: "Digit8", vk: 56, needs_shift: Bool.True, named: Bool.False },
+		{ key: "+", name: "+", code: "Equal", vk: 187, needs_shift: Bool.True, named: Bool.False },
+		{ key: ",", name: ",", code: "Comma", vk: 188, needs_shift: Bool.False, named: Bool.False },
+		{ key: "-", name: "-", code: "Minus", vk: 189, needs_shift: Bool.False, named: Bool.False },
+		{ key: ".", name: ".", code: "Period", vk: 190, needs_shift: Bool.False, named: Bool.False },
+		{ key: "/", name: "/", code: "Slash", vk: 191, needs_shift: Bool.False, named: Bool.False },
+		{ key: "0", name: "0", code: "Digit0", vk: 48, needs_shift: Bool.False, named: Bool.False },
+		{ key: "1", name: "1", code: "Digit1", vk: 49, needs_shift: Bool.False, named: Bool.False },
+		{ key: "2", name: "2", code: "Digit2", vk: 50, needs_shift: Bool.False, named: Bool.False },
+		{ key: "3", name: "3", code: "Digit3", vk: 51, needs_shift: Bool.False, named: Bool.False },
+		{ key: "4", name: "4", code: "Digit4", vk: 52, needs_shift: Bool.False, named: Bool.False },
+		{ key: "5", name: "5", code: "Digit5", vk: 53, needs_shift: Bool.False, named: Bool.False },
+		{ key: "6", name: "6", code: "Digit6", vk: 54, needs_shift: Bool.False, named: Bool.False },
+		{ key: "7", name: "7", code: "Digit7", vk: 55, needs_shift: Bool.False, named: Bool.False },
+		{ key: "8", name: "8", code: "Digit8", vk: 56, needs_shift: Bool.False, named: Bool.False },
+		{ key: "9", name: "9", code: "Digit9", vk: 57, needs_shift: Bool.False, named: Bool.False },
+		{ key: ":", name: ":", code: "Semicolon", vk: 186, needs_shift: Bool.True, named: Bool.False },
+		{ key: ";", name: ";", code: "Semicolon", vk: 186, needs_shift: Bool.False, named: Bool.False },
+		{ key: "<", name: "<", code: "Comma", vk: 188, needs_shift: Bool.True, named: Bool.False },
+		{ key: "=", name: "=", code: "Equal", vk: 187, needs_shift: Bool.False, named: Bool.False },
+		{ key: ">", name: ">", code: "Period", vk: 190, needs_shift: Bool.True, named: Bool.False },
+		{ key: "?", name: "?", code: "Slash", vk: 191, needs_shift: Bool.True, named: Bool.False },
+		{ key: "@", name: "@", code: "Digit2", vk: 50, needs_shift: Bool.True, named: Bool.False },
+		{ key: "A", name: "A", code: "KeyA", vk: 65, needs_shift: Bool.True, named: Bool.False },
+		{ key: "B", name: "B", code: "KeyB", vk: 66, needs_shift: Bool.True, named: Bool.False },
+		{ key: "C", name: "C", code: "KeyC", vk: 67, needs_shift: Bool.True, named: Bool.False },
+		{ key: "D", name: "D", code: "KeyD", vk: 68, needs_shift: Bool.True, named: Bool.False },
+		{ key: "E", name: "E", code: "KeyE", vk: 69, needs_shift: Bool.True, named: Bool.False },
+		{ key: "F", name: "F", code: "KeyF", vk: 70, needs_shift: Bool.True, named: Bool.False },
+		{ key: "G", name: "G", code: "KeyG", vk: 71, needs_shift: Bool.True, named: Bool.False },
+		{ key: "H", name: "H", code: "KeyH", vk: 72, needs_shift: Bool.True, named: Bool.False },
+		{ key: "I", name: "I", code: "KeyI", vk: 73, needs_shift: Bool.True, named: Bool.False },
+		{ key: "J", name: "J", code: "KeyJ", vk: 74, needs_shift: Bool.True, named: Bool.False },
+		{ key: "K", name: "K", code: "KeyK", vk: 75, needs_shift: Bool.True, named: Bool.False },
+		{ key: "L", name: "L", code: "KeyL", vk: 76, needs_shift: Bool.True, named: Bool.False },
+		{ key: "M", name: "M", code: "KeyM", vk: 77, needs_shift: Bool.True, named: Bool.False },
+		{ key: "N", name: "N", code: "KeyN", vk: 78, needs_shift: Bool.True, named: Bool.False },
+		{ key: "O", name: "O", code: "KeyO", vk: 79, needs_shift: Bool.True, named: Bool.False },
+		{ key: "P", name: "P", code: "KeyP", vk: 80, needs_shift: Bool.True, named: Bool.False },
+		{ key: "Q", name: "Q", code: "KeyQ", vk: 81, needs_shift: Bool.True, named: Bool.False },
+		{ key: "R", name: "R", code: "KeyR", vk: 82, needs_shift: Bool.True, named: Bool.False },
+		{ key: "S", name: "S", code: "KeyS", vk: 83, needs_shift: Bool.True, named: Bool.False },
+		{ key: "T", name: "T", code: "KeyT", vk: 84, needs_shift: Bool.True, named: Bool.False },
+		{ key: "U", name: "U", code: "KeyU", vk: 85, needs_shift: Bool.True, named: Bool.False },
+		{ key: "V", name: "V", code: "KeyV", vk: 86, needs_shift: Bool.True, named: Bool.False },
+		{ key: "W", name: "W", code: "KeyW", vk: 87, needs_shift: Bool.True, named: Bool.False },
+		{ key: "X", name: "X", code: "KeyX", vk: 88, needs_shift: Bool.True, named: Bool.False },
+		{ key: "Y", name: "Y", code: "KeyY", vk: 89, needs_shift: Bool.True, named: Bool.False },
+		{ key: "Z", name: "Z", code: "KeyZ", vk: 90, needs_shift: Bool.True, named: Bool.False },
+		{ key: "[", name: "[", code: "BracketLeft", vk: 219, needs_shift: Bool.False, named: Bool.False },
+		{ key: "\\", name: "\\", code: "Backslash", vk: 220, needs_shift: Bool.False, named: Bool.False },
+		{ key: "]", name: "]", code: "BracketRight", vk: 221, needs_shift: Bool.False, named: Bool.False },
+		{ key: "^", name: "^", code: "Digit6", vk: 54, needs_shift: Bool.True, named: Bool.False },
+		{ key: "_", name: "_", code: "Minus", vk: 189, needs_shift: Bool.True, named: Bool.False },
+		{ key: "`", name: "`", code: "Backquote", vk: 192, needs_shift: Bool.False, named: Bool.False },
+		{ key: "a", name: "a", code: "KeyA", vk: 65, needs_shift: Bool.False, named: Bool.False },
+		{ key: "b", name: "b", code: "KeyB", vk: 66, needs_shift: Bool.False, named: Bool.False },
+		{ key: "c", name: "c", code: "KeyC", vk: 67, needs_shift: Bool.False, named: Bool.False },
+		{ key: "d", name: "d", code: "KeyD", vk: 68, needs_shift: Bool.False, named: Bool.False },
+		{ key: "e", name: "e", code: "KeyE", vk: 69, needs_shift: Bool.False, named: Bool.False },
+		{ key: "f", name: "f", code: "KeyF", vk: 70, needs_shift: Bool.False, named: Bool.False },
+		{ key: "g", name: "g", code: "KeyG", vk: 71, needs_shift: Bool.False, named: Bool.False },
+		{ key: "h", name: "h", code: "KeyH", vk: 72, needs_shift: Bool.False, named: Bool.False },
+		{ key: "i", name: "i", code: "KeyI", vk: 73, needs_shift: Bool.False, named: Bool.False },
+		{ key: "j", name: "j", code: "KeyJ", vk: 74, needs_shift: Bool.False, named: Bool.False },
+		{ key: "k", name: "k", code: "KeyK", vk: 75, needs_shift: Bool.False, named: Bool.False },
+		{ key: "l", name: "l", code: "KeyL", vk: 76, needs_shift: Bool.False, named: Bool.False },
+		{ key: "m", name: "m", code: "KeyM", vk: 77, needs_shift: Bool.False, named: Bool.False },
+		{ key: "n", name: "n", code: "KeyN", vk: 78, needs_shift: Bool.False, named: Bool.False },
+		{ key: "o", name: "o", code: "KeyO", vk: 79, needs_shift: Bool.False, named: Bool.False },
+		{ key: "p", name: "p", code: "KeyP", vk: 80, needs_shift: Bool.False, named: Bool.False },
+		{ key: "q", name: "q", code: "KeyQ", vk: 81, needs_shift: Bool.False, named: Bool.False },
+		{ key: "r", name: "r", code: "KeyR", vk: 82, needs_shift: Bool.False, named: Bool.False },
+		{ key: "s", name: "s", code: "KeyS", vk: 83, needs_shift: Bool.False, named: Bool.False },
+		{ key: "t", name: "t", code: "KeyT", vk: 84, needs_shift: Bool.False, named: Bool.False },
+		{ key: "u", name: "u", code: "KeyU", vk: 85, needs_shift: Bool.False, named: Bool.False },
+		{ key: "v", name: "v", code: "KeyV", vk: 86, needs_shift: Bool.False, named: Bool.False },
+		{ key: "w", name: "w", code: "KeyW", vk: 87, needs_shift: Bool.False, named: Bool.False },
+		{ key: "x", name: "x", code: "KeyX", vk: 88, needs_shift: Bool.False, named: Bool.False },
+		{ key: "y", name: "y", code: "KeyY", vk: 89, needs_shift: Bool.False, named: Bool.False },
+		{ key: "z", name: "z", code: "KeyZ", vk: 90, needs_shift: Bool.False, named: Bool.False },
+		{ key: "{", name: "{", code: "BracketLeft", vk: 219, needs_shift: Bool.True, named: Bool.False },
+		{ key: "|", name: "|", code: "Backslash", vk: 220, needs_shift: Bool.True, named: Bool.False },
+		{ key: "}", name: "}", code: "BracketRight", vk: 221, needs_shift: Bool.True, named: Bool.False },
+		{ key: "~", name: "~", code: "Backquote", vk: 192, needs_shift: Bool.True, named: Bool.False },
+	]
+
+	## Parse explicit modifiers, rejecting an implicit or contradictory US Shift.
+	key_press : Sx, List(Sx) -> Try(Op, Problem)
+	key_press = |form, args| {
+		(target, chord) = match args {
+			[x] => (Focused, Scm.string(x, "the chord")?)
+			[loc, x] => (At(Scm.locator(loc)?), Scm.string(x, "the chord")?)
+			_ => return Err(Scm.bad(form, "press takes a chord, optionally preceded by a locator"))
+		}
+		var $rest = chord
+		var $mods = []
+		while True {
+			match ["Control", "Alt", "Shift", "Meta"].find_first(|m| $rest.starts_with("${m}+")) {
+				Err(_) => break
+				Ok(modifier) => {
+					if $mods.contains(modifier) {
+						return Err(Scm.bad(form, "press repeats ${modifier}"))
+					}
+					$mods = $mods.append(modifier)
+					$rest = Str.from_utf8($rest.to_utf8().drop_first(modifier.count_utf8_bytes() + 1)) ?? crash "Scm.key_press: ASCII prefix"
+				}
+			}
+		}
+		entry = Scm.key_table.find_first(|k| k.name == $rest) ? |_| Scm.bad(form, "press has unknown key ${$rest}")
+		shift = $mods.contains("Shift")
+		if !entry.named and entry.key != " " and shift != entry.needs_shift {
+			wanted = if entry.needs_shift {
+				"Shift+${entry.name}"
+			} else {
+				partner = Scm.key_table.find_first(|k| k.code == entry.code and k.needs_shift) ?? crash "Scm.key_press: shifted US partner"
+				"Shift+${partner.name}"
+			}
+			return Err(Scm.bad(form, "press ${chord}: write ${wanted}"))
+		}
+		Ok(Press({ target, key: { key: entry.key, code: entry.code, ctrl: $mods.contains("Control"), alt: $mods.contains("Alt"), shift, meta: $mods.contains("Meta") } }))
+	}
+
+	## Defaults that edit values or open another browser context are outside
+	## the portable layout-free oracle.
+	## Runners consume this data rather than maintaining two refusal lists.
+	key_control_types : { text_input_excluded : List(Str), choice_input_types : List(Str) }
+	key_control_types = {
+		text_input_excluded: Protocol.text_entry_excluded,
+		choice_input_types: ["radio", "number", "range", "date", "time", "month", "week", "datetime-local"],
+	}
+
+	## Default actions the portable press step must refuse are named by control
+	## group. This data is emitted for replay as well as read natively, so refusal
+	## does not depend on two independently maintained keyboard vocabularies.
+	unmodelled_key_defaults : List({ control : Str, keys : List(Str) })
+	unmodelled_key_defaults = [
+		{ control: "text", keys: ["printable", "Backspace", "Delete", "primary:A", "primary:C", "primary:V", "primary:X", "primary:Y", "primary:Z"] },
+		{ control: "textarea", keys: ["Enter"] },
+		{ control: "link", keys: ["modified:Enter"] },
+		{ control: "editable", keys: ["Enter"] },
+		{ control: "choice", keys: ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"] },
+	]
+
+	## Emit the resolved event data, so replay never reparses a chord string.
+	key_json : Key -> JsonOut.Value
+	key_json = |k| Object([
+		JsonOut.field("key", Text(k.key)),
+		JsonOut.field("code", Text(k.code)),
+		JsonOut.field("ctrl", Bool(k.ctrl)),
+		JsonOut.field("alt", Bool(k.alt)),
+		JsonOut.field("shift", Bool(k.shift)),
+		JsonOut.field("meta", Bool(k.meta)),
+	])
+
+	## The document visibility fact used by setup and report steps. It describes
+	## the browser input an app observes, independently of whether its own views
+	## happen to be drawn.
 	Visibility : [Visible, Hidden]
 
+	## The navigator connectivity fact used by setup and reports. Request
+	## outcomes still enter as explicit effect results, so this fact can be tested
+	## without manufacturing a network answer.
 	Online : [Online, Offline]
 
+	## A stub reply retains header names and values as ordered text pairs.
+	## The parser checks their shape without discarding duplicates or rewriting
+	## the fixture's spelling.
 	Header : { name : Str, value : Str }
 
 	## What a stubbed HTTP request answers with.
@@ -63,11 +286,23 @@ Scm := [].{
 		InitialLocation(Str),
 		InitialVisibility(Visibility),
 		InitialOnline(Online),
+		InitialMedia({ query : Str, matches : Bool }),
+		InitialTime(I64),
+		Seed(U128),
+		Languages(List(Str)),
+		TimeZone(Core.Zone),
 		LocalStorage({ key : Str, value : Str }),
 
 		## Local storage cannot be used at all: every access throws, as in a
 		## browser with site data disabled.
 		LocalStorageUnavailable,
+		SessionStorage({ key : Str, value : Str }),
+		SessionStorageUnavailable,
+		SessionStorageFull,
+		LocalStorageFull,
+		ClipboardDenied,
+		MaxPasteBytes(U64),
+		MountRoot(MountRoot),
 
 		## A file the spec's file steps can give the app: its name, its media
 		## type, and its contents, `text` repeated `repeat` times.
@@ -77,6 +312,346 @@ Scm := [].{
 		## runtime's `maxOutputBytes` mount option (256 MiB when a spec does
 		## not say).
 		MaxOutputBytes(U64),
+	]
+
+	## Engine-only mount identity, separate from the app's browser environment.
+	## Prefix is explicit; a colon in local text does not infer one.
+	MountRoot : { namespace : Str, prefix : Str, local : Str }
+
+	## The ordinary wrapper used by both runners and empty driver boot.
+	default_mount_root : MountRoot
+	default_mount_root = { namespace: "http://www.w3.org/1999/xhtml", prefix: "", local: "div" }
+
+	## Resolve the engine-only setup once. Repetition is an error instead of a
+	## runner-specific choice of the first or last wrapper.
+	mount_root : List({ item : Setup, pos : Pos }) -> Try(MountRoot, Problem)
+	mount_root = |setup| {
+		var $root = Scm.default_mount_root
+		var $seen = False
+		for { item, pos } in setup {
+			match item {
+				MountRoot(value) => {
+					if $seen {
+						return Err({ pos, message: "mount-root is declared more than once" })
+					}
+					$seen = True
+					$root = value
+				}
+				_ => {}
+			}
+		}
+		Ok($root)
+	}
+
+	## Shared namespace spelling for setup and observations. URI strings stay
+	## literal, including the empty string for no namespace.
+	namespace_uri : Sx -> Try(Str, Problem)
+	namespace_uri = |form| match form {
+		Str(uri, _) => Ok(uri)
+		Sym("html", _) => Ok("http://www.w3.org/1999/xhtml")
+		Sym("svg", _) => Ok("http://www.w3.org/2000/svg")
+		Sym("mathml", _) => Ok("http://www.w3.org/1998/Math/MathML")
+		Sym("none", _) => Ok("")
+		_ => Err(Scm.bad(form, "namespace must be html, svg, mathml, none or a URI string"))
+	}
+
+	## The browser facts a spec starts from. Boot owns their fixed defaults, so
+	## empty boot bytes, a pure Boot literal and a spec agree on every value.
+	Environment : Core.Boot
+
+	## Resolve the environment forms once, retaining the source position of a
+	## cross-form error. Fixtures and deployment limits do not set browser facts.
+	environment : List({ item : Setup, pos : Pos }) -> Try(Environment, Problem)
+	environment = |setup| {
+		initial : Environment
+		initial = {}
+		var $env = initial
+		for { item, pos } in setup {
+			env = $env
+			$env = match item {
+				InitialTime(now_ms) => { ..env, now_ms }
+				Seed(seed) => { ..env, seed }
+				Languages(languages) => { ..env, languages }
+				TimeZone(zone) => { ..env, zone }
+				InitialLocation(url) => { ..env, url }
+				InitialOnline(value) => { ..env, online: value == Online }
+				InitialVisibility(value) => { ..env, visible: value == Visible }
+				InitialMedia({ query, matches }) => { ..env, media: env.media.keep_if(|(name, _)| name != query).append((query, matches)) }
+				LocalStorage({ key, value }) => {
+					if !env.storage_available {
+						return Err({ pos, message: "local-storage seeds storage that local-storage-unavailable says the app cannot read" })
+					}
+					{ ..env, storage: env.storage.keep_if(|(name, _)| name != key).append((key, value)) }
+				}
+				LocalStorageUnavailable => {
+					if !env.storage.is_empty() {
+						return Err({ pos, message: "local-storage seeds storage that local-storage-unavailable says the app cannot read" })
+					}
+					{ ..env, storage_available: Bool.False }
+				}
+				SessionStorage({ key, value }) => {
+					if !env.session_available {
+						return Err({ pos, message: "session-storage seeds a store that session-storage-unavailable says the app cannot read" })
+					}
+					{ ..env, session: env.session.keep_if(|(name, _)| name != key).append((key, value)) }
+				}
+				SessionStorageUnavailable => {
+					if !env.session.is_empty() {
+						return Err({ pos, message: "session-storage seeds a store that session-storage-unavailable says the app cannot read" })
+					}
+					{ ..env, session_available: False }
+				}
+				MountRoot(_) | File(_) | MaxOutputBytes(_) | SessionStorageFull | LocalStorageFull | ClipboardDenied | MaxPasteBytes(_) => env
+			}
+		}
+		Ok($env)
+	}
+
+	## Carry the current clock and browser facts into the next document while
+	## advancing its reproducible seed. Exhaustion is a diagnostic, never a wrap.
+	next_document : Environment -> Try(Environment, Str)
+	next_document = |env| {
+		if env.seed == 340282366920938463463374607431768211455 {
+			return Err("spec seed exhausted the U128 document sequence")
+		}
+		Ok({ ..env, seed: env.seed + 1 })
+	}
+
+	## Every environment section by its wire-table name. The browser replay's
+	## appliers must cover exactly this list, checked with the rest of its grammar.
+	environment_sections : List(Str)
+	environment_sections = ["location", "local-storage", "connectivity", "visibility", "media", "time", "seed", "languages", "time-zone", "session-storage"]
+
+	## Full-width seeds are decimal data; larger numeric atoms remain symbols
+	## in the generic s-expression parser and are interpreted only here.
+	seed_value : Sx -> Try(U128, Problem)
+	seed_value = |sx| match sx {
+		Int(n, _) if n >= 0 => Ok(n.to_u64_wrap().to_u128())
+		Unsigned(n, _) => Ok(n.to_u128())
+		Sym(text, _) => Ok(U128.from_str(text) ? |_| Scm.bad(sx, "the seed must be an integer in U128"))
+		_ => Err(Scm.bad(sx, "the seed must be a non-negative integer in U128"))
+	}
+
+	## A language list is bounded data, not a second BCP47 implementation.
+	read_languages : Sx, List(Sx) -> Try(List(Str), Problem)
+	read_languages = |form, args| {
+		if args.is_empty() or args.len() > 16 {
+			return Err(Scm.bad(form, "languages takes 1 to 16 tags"))
+		}
+		var $languages = []
+		for sx in args {
+			language = Scm.string(sx, "a language tag")?
+			if language.count_utf8_bytes() > 64 {
+				return Err(Scm.bad(sx, "a language tag must be at most 64 UTF-8 bytes"))
+			}
+			$languages = $languages.append(language)
+		}
+		Ok($languages)
+	}
+
+	## Specs state an initial offset followed by exact UTC-millisecond
+	## transitions. Their table covers all I64 time, independently of a probe.
+	time_zone : Sx, List(Sx) -> Try(Core.Zone, Problem)
+	time_zone = |form, args| {
+		if args.len() < 2 or args.len() > 129 {
+			return Err(Scm.bad(form, "time-zone takes a name, an offset and at most 127 transitions"))
+		}
+		name = Scm.string(Scm.arg(args, 0), "the zone name")?
+		if name.count_utf8_bytes() > 64 {
+			return Err(Scm.bad(form, "the zone name must be at most 64 UTF-8 bytes"))
+		}
+		minutes = Scm.zone_minutes(Scm.arg(args, 1))?
+		var $offsets = [{ from_ms: -9223372036854775808.I64, minutes }]
+		var $previous = -9223372036854775808.I64
+		for sx in args.drop_first(2) {
+			pair = match sx {
+				List(parts, _) => Scm.arity(sx, parts, 2)?
+				_ => return Err(Scm.bad(sx, "a zone transition is (milliseconds minutes)"))
+			}
+			from_ms = Scm.integer(Scm.arg(pair, 0), "the zone transition time")?
+			if from_ms <= $previous {
+				return Err(Scm.bad(sx, "zone transitions must start in strictly ascending order"))
+			}
+			$offsets = $offsets.append({ from_ms, minutes: Scm.zone_minutes(Scm.arg(pair, 1))? })
+			$previous = from_ms
+		}
+		Ok({ name, from_ms: -9223372036854775808, until_ms: 9223372036854775807, offsets: $offsets })
+	}
+
+	## Check that a declared offset fits the boot protocol's signed minute
+	## field before narrowing it. The spec supplies the offset table; this parser
+	## does not consult a host time-zone database.
+	zone_minutes : Sx -> Try(I32, Problem)
+	zone_minutes = |sx| {
+		value = Scm.integer(sx, "the zone offset")?
+		if value < -2147483648 or value > 2147483647 {
+			return Err(Scm.bad(sx, "the zone offset must fit I32"))
+		}
+		Ok(value.to_i32_wrap())
+	}
+
+	## Clock forms accept an I64 timestamp or the one portable UTC spelling.
+	time_ms : Sx -> Try(I64, Problem)
+	time_ms = |sx| match sx {
+		Int(value, _) => Ok(value)
+		Str(text, _) => Ok(utc_milliseconds(text) ? |_| Scm.bad(sx, "time must be YYYY-MM-DDTHH:MM:SS[.sss]Z with a valid UTC date"))
+		_ => Err(Scm.bad(sx, "time must be an I64 millisecond timestamp or UTC text"))
+	}
+
+	## Wide arithmetic makes an advance across the epoch exact and refuses an
+	## exhausted clock rather than wrapping it into another date.
+	advance_clock : I64, U64 -> Try(I64, Str)
+	advance_clock = |now_ms, duration| {
+		advanced = now_ms.to_i128() + duration.to_i128()
+		if advanced > 9223372036854775807 {
+			return Err("advance-time exceeds the I64 clock range")
+		}
+		Ok(advanced.to_i64_wrap())
+	}
+
+	## Emit the explicit zone table with millisecond boundaries as decimal
+	## text, preserving I64 precision in JavaScript. Offsets keep their checked
+	## I32 representation and their declared order.
+	zone_json : Core.Zone -> JsonOut.Value
+	zone_json = |zone| Object([
+		JsonOut.field("name", Text(zone.name)),
+		JsonOut.field("from_ms", Text(zone.from_ms.to_str())),
+		JsonOut.field("until_ms", Text(zone.until_ms.to_str())),
+		JsonOut.field("offsets", Array(zone.offsets.map(|offset| Object([JsonOut.field("from_ms", Text(offset.from_ms.to_str())), JsonOut.field("minutes", Int(offset.minutes.to_i64()))])))),
+	])
+
+	## Pointer steps carry a zone-relative percentage or ask for the located
+	## element's centre. The runner rejects an ambiguous centre inside a zone.
+	PointerPoint : [Centre, Percent({ x : U16, y : U16 })]
+
+	## Moves and releases carry the target, declared point and pointer identity
+	## of an ongoing gesture. Press-only device, button and modifier options are
+	## excluded from this record.
+	PointerPlace : { target : Loc, at : PointerPoint, id : U32 }
+
+	## A press fixes device, button and modifier facts alongside its located
+	## point and pointer id. Parsing checks the numeric bounds before these
+	## fields are narrowed or emitted for real browser input.
+	PointerPress : { target : Loc, at : PointerPoint, id : U32, kind : [Mouse, Pen, Touch], button : [Main, Middle, Secondary], modifiers : U8 }
+
+	## Parse pointer options exactly once. Press-only options are rejected on
+	## moves and releases rather than silently changing a pointer's identity.
+	pointer_place : { form : Sx, args : List(Sx), mode : [Press, Place] } -> Try(PointerPress, Problem)
+	pointer_place = |{ form, args, mode }| {
+		target = Scm.locator(args.first() ?? return Err(Scm.bad(form, "a pointer step needs a locator")))?
+		var $rest = args.drop_first(1)
+		var $seen = []
+		var $at = Centre
+		var $id = 1.U32
+		var $kind = Mouse
+		var $button = Main
+		var $modifiers = 0.U8
+		while !$rest.is_empty() {
+			key = $rest.first() ?? crash "Scm.pointer_place: options remain"
+			name = match key {
+				Sym(value, _) => value
+				_ => return Err(Scm.bad(key, "pointer options start with :at, :id, :button, :pointer or :modifiers"))
+			}
+			if $seen.contains(name) {
+				return Err(Scm.bad(key, "pointer option ${name} is repeated"))
+			}
+			$seen = $seen.append(name)
+			$rest = $rest.drop_first(1)
+			value = $rest.first() ?? return Err(Scm.bad(key, "${name} needs a value"))
+			match name {
+				":at" => {
+					x = Scm.unsigned(value, "the horizontal percentage")?
+					y_sx = $rest.get(1) ?? return Err(Scm.bad(key, ":at needs two integer percentages"))
+					y = Scm.unsigned(y_sx, "the vertical percentage")?
+					if x > 100 or y > 100 {
+						return Err(Scm.bad(value, "pointer percentages must be between 0 and 100"))
+					}
+					$at = Percent({ x: x.to_u16_wrap(), y: y.to_u16_wrap() })
+					$rest = $rest.drop_first(2)
+				}
+				":id" => {
+					$id = Scm.pointer_id(value)?
+					$rest = $rest.drop_first(1)
+				}
+				":pointer" if mode == Press => {
+					$kind = match value {
+						Sym("mouse", _) => Mouse
+						Sym("pen", _) => Pen
+						Sym("touch", _) => Touch
+						_ => return Err(Scm.bad(value, "a pointer is mouse, pen or touch"))
+					}
+					$rest = $rest.drop_first(1)
+				}
+				":button" if mode == Press => {
+					$button = match value {
+						Sym("main", _) => Main
+						Sym("middle", _) => Middle
+						Sym("secondary", _) => Secondary
+						_ => return Err(Scm.bad(value, "a pointer button is main, middle or secondary"))
+					}
+					$rest = $rest.drop_first(1)
+				}
+				":modifiers" if mode == Press => {
+					items = match value {
+						List(xs, _) => xs
+						_ => return Err(Scm.bad(value, "pointer modifiers are a list of shift, ctrl, alt and meta"))
+					}
+					for item in items {
+						bit = match item {
+							Sym("shift", _) => 1.U8
+							Sym("ctrl", _) => 2.U8
+							Sym("alt", _) => 4.U8
+							Sym("meta", _) => 8.U8
+							_ => return Err(Scm.bad(item, "a pointer modifier is shift, ctrl, alt or meta"))
+						}
+						if $modifiers.bitwise_and(bit) != 0 {
+							return Err(Scm.bad(item, "a pointer modifier is repeated"))
+						}
+						$modifiers = $modifiers.bitwise_or(bit)
+					}
+					$rest = $rest.drop_first(1)
+				}
+				_ => return Err(Scm.bad(key, "unknown option ${name} for this pointer step"))
+			}
+		}
+		Ok({ target, at: $at, id: if ($kind != Mouse and !$seen.contains(":id")) 2 else $id, kind: $kind, button: $button, modifiers: $modifiers })
+	}
+
+	## Reject negative or overflowing pointer identities before narrowing to
+	## the wire's U32 field. The original atom supplies the diagnostic position.
+	pointer_id : Sx -> Try(U32, Problem)
+	pointer_id = |sx| {
+		n = Scm.unsigned(sx, "the pointer id")?
+		if n > 4294967295 {
+			return Err(Scm.bad(sx, "the pointer id must fit in U32"))
+		}
+		Ok(n.to_u32_wrap())
+	}
+
+	## Cancellation carries pointer identity without resolving another target.
+	## Only its optional id is accepted; placement and press options cannot
+	## reinterpret the gesture being cancelled.
+	pointer_cancel : { form : Sx, args : List(Sx) } -> Try(Op, Problem)
+	pointer_cancel = |{ form, args }| match args {
+		[] => Ok(PointerCancel(2))
+		[Sym(":id", _), id] => Ok(PointerCancel(Scm.pointer_id(id)?))
+		_ => Err(Scm.bad(form, "pointer-cancel takes only an optional :id N"))
+	}
+
+	## Emit the shared location, point and id fields for a press, move or
+	## release. A centre is represented by null, leaving real pixel geometry to
+	## the browser rather than inventing it in the parser.
+	pointer_place_json : PointerPlace -> List({ key : Str, value : JsonOut.Value })
+	pointer_place_json = |{ target, at, id }| [
+		JsonOut.field("loc", Scm.loc_json(target)),
+		JsonOut.field(
+			"at",
+			match at {
+				Centre => Null
+				Percent({ x, y }) => Object([JsonOut.field("x", Nat(x.to_u64())), JsonOut.field("y", Nat(y.to_u64()))])
+			},
+		),
+		JsonOut.field("id", Nat(id.to_u64())),
 	]
 
 	## A step a test takes, in order. Both runners implement every step
@@ -89,6 +664,26 @@ Scm := [].{
 	Op : [
 		Click(Loc),
 		RealClick(Loc),
+		PointerDown(PointerPress),
+		PointerMove(PointerPlace),
+		PointerUp(PointerPlace),
+		PointerCancel(U32),
+		Press(KeyPress),
+		Dismiss,
+		ExpectElement({ target : Loc, namespace : Str, name : Str }),
+		ExpectShown(Loc, [Hidden, Open, Modal, Popover]),
+		ExpectScroll({ ordinal : U64, target : Loc, kind : [IntoView, To] }),
+		ExpectScrolls(U64),
+		ExpectTransitions(U64),
+		ExpectTransition({ at : U64, types : List(Str) }),
+		Scroll({ target : Loc, top : U32, left : U32 }),
+		ReportSize({ target : Loc, width : U32, height : U32 }),
+		ReportSeen({ target : Loc, intersecting : Bool, ratio_permille : U16 }),
+		SetMedia({ query : Str, matches : Bool }),
+		SetTime(I64),
+		AdvanceTime(U64),
+		ExpectObserved(U64),
+		ExpectMediaSubscriptions({ query : Str, count : U64 }),
 		Focus(Loc),
 		Blur(Loc),
 		Change(Loc, Str),
@@ -99,15 +694,21 @@ Scm := [].{
 		Uncheck(Loc),
 		ExpectText(Loc, Str),
 		ExpectVisible(Loc),
+		ExpectFocused(Loc),
+		ExpectNoFocus,
 		ExpectAbsent(Loc),
 		ExpectValue(Loc, Str),
 		ExpectAttr({ target : Loc, name : Str, value : Str }),
 		ExpectNoAttr({ target : Loc, name : Str }),
+		ExpectHasAttr({ target : Loc, name : Str }),
 		ExpectChecked(Loc, Bool),
 		ExpectDisabled(Loc, Bool),
 		ExpectUpdates(Loc, U64),
 		StubHttp({ label : Str, stub : Stub }),
 		RunEffect(U64),
+		ExpectRequest({ n : U64, checks : List({ key : Str, value : Str }) }),
+		ProgressEffect({ n : U64, direction : [Sending, Receiving], done : U64, total : [Known(U64), Unknown] }),
+		ExpectPortSubscriptionArg({ port : Str, n : U64, json : Str }),
 		ExpectPendingEffects(U64),
 
 		## Answer the N-th effect occurrence, a pending worker job, as lost
@@ -139,12 +740,29 @@ Scm := [].{
 		Navigate(Str),
 		SetVisibility(Visibility),
 		SetOnline(Online),
+
+		## Keep report sources waiting until an explicit frame boundary.
+		HoldReports,
+		ReleaseReports,
+
+		## Reports replaced before delivery in the current document.
+		ExpectReportsReplaced(U64),
 		HistoryBack,
 		HistoryForward,
 		ExpectLocation(Str),
 		ExpectTitle(Str),
 		ExpectLocalStorage({ key : Str, value : Str }),
 		ExpectNoLocalStorage(Str),
+		ExpectSessionStorage({ key : Str, value : Str }),
+		ExpectNoSessionStorage(Str),
+		PasteText(Loc, Str),
+		StorageElsewhere({ key : Str, value : Str }),
+		StorageElsewhereRemoved(Str),
+		StorageElsewhereCleared,
+		LeavePage({ url : Str, outcome : [Stay, Leave, Unasked] }),
+		ExpectClipboard(Str),
+		ExpectClipboardHtml(Str),
+		ExpectClipboardWrites(U64),
 		MarkMetrics,
 		ExpectMetricDelta({ metric : Str, delta : I64 }),
 		ExpectMetricDeltaAtMost({ metric : Str, delta : I64 }),
@@ -197,8 +815,15 @@ Scm := [].{
 	## A step with the position of its form.
 	Step : { op : Op, pos : Pos }
 
-	## A parsed spec file.
-	Spec : { name : Str, setup : List({ item : Setup, pos : Pos }), steps : List(Step) }
+	## A parsed spec file and its resolved browser facts. The defaulted field
+	## also lets a pure harness construct a spec with Boot's default environment.
+	Spec := { name : Str, setup : List({ item : Setup, pos : Pos }), steps : List(Step), environment : Environment ?? {}, mount_root : MountRoot ?? { namespace: "http://www.w3.org/1999/xhtml", prefix: "", local: "div" } }.{
+
+		## Structural equality includes source positions and resolved environment
+		## facts alongside setup and steps, allowing parser consistency tests to
+		## compare the whole parsed result.
+		is_eq : _
+	}
 
 	## Parse one spec file's text.
 	parse : Str -> Try(Spec, Problem)
@@ -219,6 +844,7 @@ Scm := [].{
 		}
 		var $setup = []
 		var $steps = []
+		var $markers = []
 		var $saw_setup = Bool.False
 		var $saw_steps = Bool.False
 		for section in items.drop_first(2) {
@@ -244,7 +870,17 @@ Scm := [].{
 					return Err({ pos: spos, message: "steps must hold at least one step" })
 				}
 				for form in forms.drop_first(1) {
-					$steps = $steps.append(Scm.step_form(form)?)
+					step = Scm.step_form(form)?
+					$steps = $steps.append(step)
+					match form {
+						List(parts, _) => match parts.last() {
+							Ok(Sym(marker, _)) if [":never-drawn", ":never-written", ":never-runs", ":never-started"].contains(marker) => {
+								$markers = $markers.append({ pos: step.pos, marker })
+							}
+							_ => {}
+						}
+						_ => {}
+					}
 				}
 			} else {
 				return Err({ pos: Scm.pos_of(first), message: "unknown section ${Scm.show(first)}; expected setup or steps" })
@@ -253,7 +889,224 @@ Scm := [].{
 		if !$saw_steps {
 			return Err({ pos, message: "the test has no (steps ...) section" })
 		}
-		Ok({ name, setup: $setup, steps: $steps })
+		Scm.anchored($steps, $markers)?
+		Ok({ name, setup: $setup, steps: $steps, environment: Scm.environment($setup)?, mount_root: Scm.mount_root($setup)? })
+	}
+
+	## Storage evidence distinguishes the two stores even for equal key text.
+	StorageSubject : { store : [Local, Session], key : Str }
+
+	## Names a story can prove without program declarations. Equality stays
+	## typed: locator structure, exact text and numeric periods are distinct.
+	Subject : [Locator(Loc), Attribute(Str), Cleanup(Str), Interval(U64), Storage(StorageSubject)]
+
+	## Declaration needs retain port shape; storage may instead be established
+	## by this spec's seed or a positive step. Story needs are parser-checked.
+	Need : [Story(Subject), Port({ name : Str, kind : [Call, Command, Subscription] }), Task(Str), Media(Str), Storage(StorageSubject)]
+
+	## A step may both require a locator and prove a separate name. Keeping
+	## providers and needs together gives parser and runner one classification.
+	Evidence := { shows : List(Subject), needs : List(Need) }
+
+	## Classify every operation explicitly. No wildcard may let a new named
+	## step silently escape evidence checks. Only positive observations or
+	## operations that require the subject provide same-story evidence.
+	evidence : Op -> Evidence
+	evidence = |op| match op {
+		Click(loc) => { shows: [Locator(loc)], needs: [] }
+		RealClick(loc) => { shows: [Locator(loc)], needs: [] }
+		PointerDown({ target, .. }) => { shows: [Locator(target)], needs: [] }
+		PointerMove({ target, .. }) => { shows: [Locator(target)], needs: [] }
+		PointerUp({ target, .. }) => { shows: [Locator(target)], needs: [] }
+		PointerCancel(_) => { shows: [], needs: [] }
+		Press({ target, .. }) => match target {
+			At(loc) => { shows: [Locator(loc)], needs: [] }
+			Focused => { shows: [], needs: [] }
+		}
+		Dismiss => { shows: [], needs: [] }
+		ExpectElement({ target, .. }) => { shows: [Locator(target)], needs: [] }
+		ExpectShown(loc, _) => { shows: [Locator(loc)], needs: [] }
+		ExpectScroll({ target, .. }) => { shows: [Locator(target)], needs: [] }
+		ExpectScrolls(_) => { shows: [], needs: [] }
+		ExpectTransitions(_) => { shows: [], needs: [] }
+		ExpectTransition(_) => { shows: [], needs: [] }
+		Scroll({ target, .. }) => { shows: [Locator(target)], needs: [] }
+		ReportSize({ target, .. }) => { shows: [Locator(target)], needs: [] }
+		ReportSeen({ target, .. }) => { shows: [Locator(target)], needs: [] }
+		SetMedia({ query, .. }) => { shows: [], needs: [Media(query)] }
+		SetTime(_) => { shows: [], needs: [] }
+		AdvanceTime(_) => { shows: [], needs: [] }
+		ExpectObserved(_) => { shows: [], needs: [] }
+		ExpectMediaSubscriptions({ query, .. }) => { shows: [], needs: [Media(query)] }
+		Focus(loc) => { shows: [Locator(loc)], needs: [] }
+		Blur(loc) => { shows: [Locator(loc)], needs: [] }
+		Change(loc, _) => { shows: [Locator(loc)], needs: [] }
+		SelectOption(loc, _) => { shows: [Locator(loc)], needs: [] }
+		Submit(loc) => { shows: [Locator(loc)], needs: [] }
+		Fill(loc, _) => { shows: [Locator(loc)], needs: [] }
+		Check(loc) => { shows: [Locator(loc)], needs: [] }
+		Uncheck(loc) => { shows: [Locator(loc)], needs: [] }
+		ExpectText(loc, _) => { shows: [Locator(loc)], needs: [] }
+		ExpectVisible(loc) => { shows: [Locator(loc)], needs: [] }
+		ExpectFocused(loc) => { shows: [Locator(loc)], needs: [] }
+		ExpectNoFocus => { shows: [], needs: [] }
+		ExpectAbsent(loc) => { shows: [], needs: [Story(Locator(loc))] }
+		ExpectValue(loc, _) => { shows: [Locator(loc)], needs: [] }
+		ExpectAttr({ target, name, .. }) => { shows: [Locator(target), Attribute(name)], needs: [] }
+		ExpectHasAttr({ target, name }) => { shows: [Locator(target), Attribute(name)], needs: [] }
+		ExpectNoAttr({ target, name }) => { shows: [Locator(target)], needs: [Story(Attribute(name))] }
+		ExpectChecked(loc, _) => { shows: [Locator(loc)], needs: [] }
+		ExpectDisabled(loc, _) => { shows: [Locator(loc)], needs: [] }
+		ExpectUpdates(loc, _) => { shows: [Locator(loc)], needs: [] }
+		StubHttp(_) => { shows: [], needs: [] }
+		RunEffect(_) => { shows: [], needs: [] }
+		ExpectRequest(_) => { shows: [], needs: [] }
+		ProgressEffect(_) => { shows: [], needs: [] }
+		ExpectPortSubscriptionArg({ port, .. }) => { shows: [], needs: [Port({ name: port, kind: Subscription })] }
+		ExpectPendingEffects(_) => { shows: [], needs: [] }
+		LoseWork(_) => { shows: [], needs: [] }
+		TimeOutWork(_) => { shows: [], needs: [] }
+		ExpectPendingWork({ task, .. }) => { shows: [], needs: [Task(task)] }
+		ChooseFiles(loc, _) => { shows: [Locator(loc)], needs: [] }
+		DropFiles(loc, _) => { shows: [Locator(loc)], needs: [] }
+		PasteFiles(loc, _) => { shows: [Locator(loc)], needs: [] }
+		ExpectFiles(_) => { shows: [], needs: [] }
+		TickInterval(period) => { shows: [Interval(period)], needs: [] }
+		TickIntervalIfActive(period) => { shows: [], needs: [Story(Interval(period))] }
+		ExpectCleanup({ name, count }) => if (count == 0) { shows: [], needs: [Story(Cleanup(name))] } else { shows: [Cleanup(name)], needs: [] }
+		ExpectInterval({ period_ms, count }) => if (count == 0) { shows: [], needs: [Story(Interval(period_ms))] } else { shows: [Interval(period_ms)], needs: [] }
+		Navigate(_) => { shows: [], needs: [] }
+		SetVisibility(_) => { shows: [], needs: [] }
+		SetOnline(_) => { shows: [], needs: [] }
+		HoldReports => { shows: [], needs: [] }
+		ReleaseReports => { shows: [], needs: [] }
+		ExpectReportsReplaced(_) => { shows: [], needs: [] }
+		HistoryBack => { shows: [], needs: [] }
+		HistoryForward => { shows: [], needs: [] }
+		ExpectLocation(_) => { shows: [], needs: [] }
+		ExpectTitle(_) => { shows: [], needs: [] }
+		ExpectLocalStorage({ key, .. }) => { shows: [Storage({ store: Local, key })], needs: [] }
+		ExpectNoLocalStorage(key) => { shows: [], needs: [Storage({ store: Local, key })] }
+		ExpectSessionStorage({ key, .. }) => { shows: [Storage({ store: Session, key })], needs: [] }
+		ExpectNoSessionStorage(key) => { shows: [], needs: [Storage({ store: Session, key })] }
+		PasteText(loc, _) => { shows: [Locator(loc)], needs: [] }
+		StorageElsewhere({ key, .. }) => { shows: [Storage({ store: Local, key })], needs: [] }
+		StorageElsewhereRemoved(_) => { shows: [], needs: [] }
+		StorageElsewhereCleared => { shows: [], needs: [] }
+		LeavePage(_) => { shows: [], needs: [] }
+		ExpectClipboard(_) => { shows: [], needs: [] }
+		ExpectClipboardHtml(_) => { shows: [], needs: [] }
+		ExpectClipboardWrites(_) => { shows: [], needs: [] }
+		MarkMetrics => { shows: [], needs: [] }
+		ExpectMetricDelta(_) => { shows: [], needs: [] }
+		ExpectMetricDeltaAtMost(_) => { shows: [], needs: [] }
+		ExpectUpload(_) => { shows: [], needs: [] }
+		ExpectPortCall({ port, .. }) => { shows: [], needs: [Port({ name: port, kind: Call })] }
+		AnswerPort(_) => { shows: [], needs: [] }
+		ExpectPortSent({ port, .. }) => { shows: [], needs: [Port({ name: port, kind: Command })] }
+		ExpectPortSends({ port, .. }) => { shows: [], needs: [Port({ name: port, kind: Command })] }
+		EmitPort({ port, .. }) => { shows: [], needs: [Port({ name: port, kind: Subscription })] }
+		ClosePort(port) => { shows: [], needs: [Port({ name: port, kind: Subscription })] }
+		FailPort({ port, .. }) => { shows: [], needs: [Port({ name: port, kind: Subscription })] }
+		ExpectPortSubscriptions({ port, .. }) => { shows: [], needs: [Port({ name: port, kind: Subscription })] }
+		ExpectSaved(_) => { shows: [], needs: [] }
+		ExpectSaves(_) => { shows: [], needs: [] }
+	}
+
+	## Setup evidence keeps its original position in Spec.setup. Availability,
+	## removal and bounds cannot establish a key's spelling.
+	setup_evidence : Setup -> Evidence
+	setup_evidence = |item| match item {
+		InitialLocation(_) => { shows: [], needs: [] }
+		InitialVisibility(_) => { shows: [], needs: [] }
+		InitialOnline(_) => { shows: [], needs: [] }
+		InitialMedia({ query, .. }) => { shows: [], needs: [Media(query)] }
+		InitialTime(_) => { shows: [], needs: [] }
+		Seed(_) => { shows: [], needs: [] }
+		Languages(_) => { shows: [], needs: [] }
+		TimeZone(_) => { shows: [], needs: [] }
+		LocalStorage({ key, .. }) => { shows: [Storage({ store: Local, key })], needs: [] }
+		LocalStorageUnavailable => { shows: [], needs: [] }
+		SessionStorage({ key, .. }) => { shows: [Storage({ store: Session, key })], needs: [] }
+		SessionStorageUnavailable => { shows: [], needs: [] }
+		SessionStorageFull => { shows: [], needs: [] }
+		LocalStorageFull => { shows: [], needs: [] }
+		ClipboardDenied => { shows: [], needs: [] }
+		MaxPasteBytes(_) => { shows: [], needs: [] }
+		MountRoot(_) => { shows: [], needs: [] }
+		File(_) => { shows: [], needs: [] }
+		MaxOutputBytes(_) => { shows: [], needs: [] }
+	}
+
+	## Preserve the locator query as a projection of the exhaustive evidence
+	## classifier, so absence and future declaration checks cannot diverge.
+	required_loc : Op -> Try(Loc, [NoRequiredLocator])
+	required_loc = |op| Scm.evidence(op).shows.keep_oks(
+		|subject| match subject {
+			Locator(loc) => Ok(loc)
+			_ => Err(NoRequiredLocator)
+		},
+	).first().map_err(|_| NoRequiredLocator)
+
+	## Resolve same-story obligations against all steps, including later ones.
+	## Markers are parser-only assertions about a family, never runner data.
+	anchored : List(Step), List({ pos : Pos, marker : Str }) -> Try({}, Problem)
+	anchored = |steps, markers| {
+		anchors = steps.fold([], |all, step| all.concat(Scm.evidence(step.op).shows.map(|subject| { subject, pos: step.pos })))
+		for step in steps {
+			for need in Scm.evidence(step.op).needs {
+				match need {
+					Story(subject) => {
+						facts = Scm.story_facts(subject)
+						anchor = anchors.find_first(|candidate| candidate.subject == subject)
+						marked = markers.any(|candidate| candidate.pos == step.pos and candidate.marker == facts.marker)
+						if marked {
+							match anchor {
+								Ok(found) => return Err({ pos: step.pos, message: "${Scm.op_name(step.op)} ${facts.name} is matched at line ${found.pos.line.to_str()}; drop ${facts.marker}" })
+								Err(_) => {}
+							}
+						} else if anchor.is_err() {
+							return Err({ pos: step.pos, message: "${Scm.op_name(step.op)} ${facts.name} names ${facts.description} that no step of this spec ${facts.shows}; ${facts.remedy}, or mark this story ${facts.marker}" })
+						}
+					}
+					_ => {}
+				}
+			}
+		}
+		Ok({})
+	}
+
+	## One family's marker and actionable diagnostic accompany its typed
+	## subject. Storage obligations are resolved against program facts instead.
+	story_facts : Subject -> { marker : Str, name : Str, description : Str, shows : Str, remedy : Str }
+	story_facts = |subject| match subject {
+		Locator(loc) => { marker: ":never-drawn", name: Scm.show_loc(loc), description: "a locator", shows: "matches", remedy: "show the element with a step that requires it (expect-visible, expect-text, click, ...) where the story draws it, so a misspelt or renamed locator is caught" }
+		Attribute(name) => { marker: ":never-written", name: Str.inspect(name), description: "an attribute", shows: "shows present", remedy: "show its name with expect-attr or expect-has-attr where the story writes it" }
+		Cleanup(name) => { marker: ":never-runs", name: Str.inspect(name), description: "a cleanup", shows: "shows running", remedy: "show its name with an expect-cleanup count of at least one" }
+		Interval(period) => { marker: ":never-started", name: period.to_str(), description: "an interval period", shows: "shows live", remedy: "show its period with tick-interval or an expect-interval count of at least one" }
+		Storage(_) => crash "Scm.story_facts: storage is checked against declarations and storage evidence"
+	}
+
+	## Strip only the marker admitted by this family and arity. Positive
+	## counts cannot claim never-running or never-started evidence.
+	story_args : Sx, { args : List(Sx), count : U64, marker : Str, zero_count : Bool } -> Try(List(Sx), Problem)
+	story_args = |form, { args, count, marker, zero_count }| {
+		if args.len() == count {
+			return Ok(args)
+		}
+		if args.len() == count + 1 {
+			match args.last() {
+				Ok(Sym(written, _)) if written == marker => {
+					plain = args.drop_last(1)
+					if zero_count and Scm.unsigned(Scm.arg(plain, count - 1), "the count")? != 0 {
+						return Err(Scm.bad(form, "${marker} is only allowed on a zero count"))
+					}
+					return Ok(plain)
+				}
+				_ => {}
+			}
+		}
+		Err(Scm.bad(form, "expected ${count.to_str()} arguments, optionally followed by ${marker}"))
 	}
 
 	## `path:line:column: message`, for reports.
@@ -262,6 +1115,9 @@ Scm := [].{
 
 	# ---------------------------------------------------------------- reader
 
+	## A reader cursor shares immutable source bytes while carrying its own
+	## byte offset and one-based diagnostic position. Parsing threads cursors
+	## explicitly instead of keeping hidden scanner state.
 	R : { bytes : List(U8), at : U64, line : U64, column : U64 }
 
 	## Read exactly one top-level s-expression.
@@ -279,9 +1135,14 @@ Scm := [].{
 		Ok(sx)
 	}
 
+	## Capture the cursor's diagnostic position before consuming a form or
+	## argument. Opening positions remain available when a later delimiter or
+	## escape proves that form malformed.
 	here : R -> Pos
 	here = |r| { line: r.line, column: r.column }
 
+	## Inspect a source byte without advancing the cursor. End-of-input stays
+	## a typed result so each reader can name the construct that was unfinished.
 	peek : R -> Try(U8, [End])
 	peek = |r| r.bytes.get(r.at).map_err(|_| End)
 
@@ -295,6 +1156,9 @@ Scm := [].{
 			_ => { ..r, at: r.at + 1, column: r.column + 1 }
 		}
 
+	## Consume the grammar's whitespace and semicolon comments while advancing
+	## the original source position. Trivia never becomes a form or changes the
+	## spelling retained by an atom.
 	skip_trivia : R -> R
 	skip_trivia = |r0| {
 		var $r = r0
@@ -318,6 +1182,9 @@ Scm := [].{
 		$r
 	}
 
+	## Dispatch one expression after trivia from its leading byte. Unexpected
+	## closing parentheses and end-of-input are positioned failures, not empty
+	## expressions or implicit list terminators.
 	read_expr : R -> Try((Sx, R), Problem)
 	read_expr = |r0| {
 		r = Scm.skip_trivia(r0)
@@ -330,6 +1197,9 @@ Scm := [].{
 		}
 	}
 
+	## Read nested expressions until the matching close, retaining the opening
+	## position on the list. End-of-input reports an unterminated list at that
+	## opening rather than returning its partially accumulated children.
 	read_list : R -> Try((Sx, R), Problem)
 	read_list = |r0| {
 		start = Scm.here(r0)
@@ -346,6 +1216,9 @@ Scm := [].{
 		Ok((List($items, start), Scm.advance($r)))
 	}
 
+	## Decode only the spec grammar's five escapes and require valid UTF-8.
+	## Literal line breaks, unknown escapes and missing closing quotes are hard
+	## errors; decoded text retains the string's opening position.
 	read_string : R -> Try((Sx, R), Problem)
 	read_string = |r0| {
 		start = Scm.here(r0)
@@ -380,9 +1253,15 @@ Scm := [].{
 		Err({ pos: start, message: "unterminated string" })
 	}
 
+	## Define where an atom stops: the grammar's whitespace, parentheses,
+	## quote and comment marker. The reader leaves each delimiter for the
+	## appropriate list, string or trivia handler.
 	is_delimiter : U8 -> Bool
 	is_delimiter = |b| b == ' ' or b == '\t' or b == '\r' or b == '\n' or b == '(' or b == ')' or b == '"' or b == ';'
 
+	## Recognize boolean atoms, then I64 and U64 integers, retaining other text
+	## as a symbol. Wider decimal seeds stay intact for seed_value to validate
+	## as U128 instead of being truncated by the generic reader.
 	read_atom : R -> Try((Sx, R), Problem)
 	read_atom = |r0| {
 		start = Scm.here(r0)
@@ -398,7 +1277,10 @@ Scm := [].{
 		} else {
 			match I64.from_str(text) {
 				Ok(n) => Int(n, start)
-				Err(_) => Sym(text, start)
+				Err(_) => match U64.from_str(text) {
+					Ok(n) => Unsigned(n, start)
+					Err(_) => Sym(text, start)
+				}
 			}
 		}
 		Ok((atom, $r))
@@ -406,16 +1288,22 @@ Scm := [].{
 
 	# ------------------------------------------------------------ s-expr views
 
+	## Every expression retains its opening source position, including atoms
+	## not yet validated as arguments. Diagnostics can therefore point at a bad
+	## value without substituting the surrounding step's position.
 	pos_of : Sx -> Pos
 	pos_of = |sx|
 		match sx {
 			Sym(_, p) => p
 			Str(_, p) => p
 			Int(_, p) => p
+			Unsigned(_, p) => p
 			Bool(_, p) => p
 			List(_, p) => p
 		}
 
+	## Match an exact bare-symbol spelling without coercing a quoted string.
+	## Keywords and form heads use this distinction as part of the grammar.
 	is_sym : Sx, Str -> Bool
 	is_sym = |sx, want|
 		match sx {
@@ -430,13 +1318,20 @@ Scm := [].{
 			Sym(s, _) => s
 			Str(s, _) => "\"${s}\""
 			Int(n, _) => n.to_str()
+			Unsigned(n, _) => n.to_str()
 			Bool(b, _) => if (b) "true" else "false"
 			List(xs, _) => "(${Str.join_with(xs.map(Scm.show), " ")})"
 		}
 
+	## Attach a validation message to the expression that violated its rule.
+	## Callers choose the argument or whole form so later readers do not need to
+	## reconstruct a source location from rendered text.
 	bad : Sx, Str -> Problem
 	bad = |sx, message| { pos: Scm.pos_of(sx), message }
 
+	## Require quoted text at an argument position, preserving its decoded
+	## contents. Bare names are refused with the caller's description of the
+	## expected value, rather than silently becoming text.
 	string : Sx, Str -> Try(Str, Problem)
 	string = |sx, what|
 		match sx {
@@ -444,6 +1339,9 @@ Scm := [].{
 			_ => Err(Scm.bad(sx, "${what} must be a string, got ${Scm.show(sx)}"))
 		}
 
+	## Require a bare grammar word or keyword, retaining its exact spelling.
+	## Quoted lookalikes remain text values and are diagnosed at their own source
+	## position instead of acquiring keyword meaning.
 	symbol : Sx, Str -> Try(Str, Problem)
 	symbol = |sx, what|
 		match sx {
@@ -459,6 +1357,33 @@ Scm := [].{
 			_ => Err(Scm.bad(sx, "${what} must be a non-negative integer, got ${Scm.show(sx)}"))
 		}
 
+	## Observation counts and ordinals use the whole U64 range and cross JSON as text.
+	scroll_count : Sx, Str -> Try(U64, Problem)
+	scroll_count = |sx, what| match sx {
+		Unsigned(n, _) => Ok(n)
+		_ => Scm.unsigned(sx, what)
+	}
+
+	## CSS pixel dimensions and offsets fit the unsigned wire fields exactly.
+	pixels : Sx, Str -> Try(U32, Problem)
+	pixels = |sx, what| {
+		value = Scm.unsigned(sx, what)?
+		if value > 4294967295 {
+			return Err(Scm.bad(sx, "${what} must fit U32"))
+		}
+		Ok(value.to_u32_wrap())
+	}
+
+	## A media query and its injected match value, for setup and later reports.
+	media_fact : Sx, List(Sx) -> Try({ query : Str, matches : Bool }, Problem)
+	media_fact = |form, args| {
+		values = Scm.arity(form, args, 2)?
+		Ok({ query: Scm.string(Scm.arg(values, 0), "the media query")?, matches: Scm.boolean(Scm.arg(values, 1), "the media match")? })
+	}
+
+	## Read a signed I64 atom without narrowing a wider unsigned literal.
+	## Forms using this helper retain the offending expression's position on a
+	## kind or range mismatch.
 	integer : Sx, Str -> Try(I64, Problem)
 	integer = |sx, what|
 		match sx {
@@ -466,6 +1391,8 @@ Scm := [].{
 			_ => Err(Scm.bad(sx, "${what} must be an integer, got ${Scm.show(sx)}"))
 		}
 
+	## Require the reader's true/false atoms for boolean assertions. Text and
+	## numeric values never acquire truthiness that could weaken the assertion.
 	boolean : Sx, Str -> Try(Bool, Problem)
 	boolean = |sx, what|
 		match sx {
@@ -523,6 +1450,9 @@ Scm := [].{
 			Err(Scm.bad(form, "${Scm.head_of(form)} takes ${n.to_str()} argument(s), got ${args.len().to_str()}"))
 		}
 
+	## Name a headed form in arity diagnostics, falling back to its rendered
+	## expression when no symbol head exists. Error reporting does not invent a
+	## step name for a malformed form.
 	head_of : Sx -> Str
 	head_of = |form|
 		match form {
@@ -530,9 +1460,15 @@ Scm := [].{
 			_ => Scm.show(form)
 		}
 
+	## Index arguments only after an arity or length check established the
+	## position. A missing entry here is a parser implementation error and crashes
+	## instead of supplying a guessed argument.
 	arg : List(Sx), U64 -> Sx
 	arg = |args, i| args.get(i) ?? crash "Scm.arg: arity was checked first"
 
+	## Validate the visible/hidden keywords before environment resolution or
+	## report delivery. A misspelt state remains a source error rather than
+	## choosing a default visibility.
 	visibility : Sx -> Try(Visibility, Problem)
 	visibility = |sx|
 		match Scm.symbol(sx, "visibility")? {
@@ -541,6 +1477,9 @@ Scm := [].{
 			other => Err(Scm.bad(sx, "visibility is visible or hidden, got ${other}"))
 		}
 
+	## Validate the online/offline connectivity vocabulary shared by setup and
+	## reports. This selects an observed browser fact while effect steps retain
+	## control of request outcomes.
 	online : Sx -> Try(Online, Problem)
 	online = |sx|
 		match Scm.symbol(sx, "connectivity")? {
@@ -549,12 +1488,18 @@ Scm := [].{
 			other => Err(Scm.bad(sx, "connectivity is online or offline, got ${other}"))
 		}
 
+	## Keep storage keys and values as two quoted data arguments. Empty values
+	## remain representable, and the shared arity check prevents an omitted value
+	## from being confused with an empty one.
 	key_value : Sx, List(Sx) -> Try({ key : Str, value : Str }, Problem)
 	key_value = |form, args0| {
 		args = Scm.arity(form, args0, 2)?
 		Ok({ key: Scm.string(Scm.arg(args, 0), "the key")?, value: Scm.string(Scm.arg(args, 1), "the value")? })
 	}
 
+	## Require a nonempty list with a bare symbol head, returning its remaining
+	## arguments and opening position. Registry dispatch then decides whether that
+	## name belongs to setup or executable steps.
 	split_form : Sx -> Try((Str, List(Sx), Pos), Problem)
 	split_form = |form|
 		match form {
@@ -567,9 +1512,62 @@ Scm := [].{
 	## accepts exactly these; anything else is an unknown setup form.
 	setup_forms : List({ name : Str, parse : (Sx, List(Sx) -> Try(Setup, Problem)) })
 	setup_forms = [
+		{
+			name: "mount-root",
+			parse: |form, args| {
+				if args.len() != 2 and args.len() != 4 {
+					return Err(Scm.bad(form, "mount-root needs namespace, local name and optional :prefix text"))
+				}
+				namespace = Scm.namespace_uri(Scm.arg(args, 0))?
+				local_form = Scm.arg(args, 1)
+				local = Scm.string(local_form, "the exact mount-root local name")?
+				_ = Web.Tag.from_str(local).map_err(|NotATag(message)| Scm.bad(local_form, message))?
+				prefix = if args.len() == 4 {
+					if !Scm.is_sym(Scm.arg(args, 2), ":prefix") {
+						return Err(Scm.bad(Scm.arg(args, 2), "mount-root accepts only :prefix"))
+					}
+					Scm.string(Scm.arg(args, 3), "the mount-root prefix")?
+				} else ""
+				if !prefix.is_empty() and (namespace.is_empty() or prefix.to_utf8().any(|unit| [0.U8, 9, 10, 12, 13, 32, 47, 58, 62].contains(unit))) {
+					return Err(Scm.bad(form, "mount-root has an invalid prefix or no namespace for its prefix"))
+				}
+				if prefix == "xml" and namespace != "http://www.w3.org/XML/1998/namespace" {
+					return Err(Scm.bad(form, "the xml prefix requires the XML namespace"))
+				}
+				if prefix == "xmlns" and namespace != "http://www.w3.org/2000/xmlns/" {
+					return Err(Scm.bad(form, "the xmlns prefix requires the XMLNS namespace"))
+				}
+				common = ["http://www.w3.org/1999/xhtml", "http://www.w3.org/2000/svg", "http://www.w3.org/1998/Math/MathML", ""].contains(namespace)
+				size = 9 + prefix.count_utf8_bytes() + local.count_utf8_bytes() + if (common) 0 else 4 + namespace.count_utf8_bytes()
+				if size > 65_536 {
+					return Err(Scm.bad(form, "mount-root exceeds 65536 encoded bytes"))
+				}
+				Ok(MountRoot({ namespace, prefix, local }))
+			},
+		},
+		{ name: "initial-time", parse: |form, args| Ok(InitialTime(Scm.time_ms(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "seed", parse: |form, args| Ok(Seed(Scm.seed_value(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "languages", parse: |form, args| Ok(Languages(Scm.read_languages(form, args)?)) },
+		{ name: "time-zone", parse: |form, args| Ok(TimeZone(Scm.time_zone(form, args)?)) },
 		{ name: "initial-location", parse: |form, args| Ok(InitialLocation(Scm.location(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
 		{ name: "initial-visibility", parse: |form, args| Ok(InitialVisibility(Scm.visibility(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
 		{ name: "initial-online", parse: |form, args| Ok(InitialOnline(Scm.online(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "initial-media", parse: |form, args| Scm.media_fact(form, args).map_ok(|fact| InitialMedia(fact)) },
+		{ name: "session-storage", parse: |form, args| Ok(SessionStorage(Scm.key_value(form, args)?)) },
+		{ name: "session-storage-unavailable", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| SessionStorageUnavailable) },
+		{ name: "session-storage-full", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| SessionStorageFull) },
+		{ name: "local-storage-full", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| LocalStorageFull) },
+		{ name: "clipboard-denied", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| ClipboardDenied) },
+		{
+			name: "max-paste-bytes",
+			parse: |form, args| {
+				n = Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the paste byte bound")?
+				if n > 9007199254740991 {
+					return Err(Scm.bad(form, "max-paste-bytes must be a nonnegative safe JavaScript integer"))
+				}
+				Ok(MaxPasteBytes(n))
+			},
+		},
 		{ name: "local-storage", parse: |form, args| Ok(LocalStorage(Scm.key_value(form, args)?)) },
 		{
 			name: "local-storage-unavailable",
@@ -609,6 +1607,9 @@ Scm := [].{
 		Ok((Scm.locator(Scm.arg(args, 0))?, $names))
 	}
 
+	## Dispatch through the setup registry and retain the original form
+	## position. Environment resolution can then locate cross-form contradictions
+	## without either runner reparsing the setup text.
 	setup_form : Sx -> Try({ item : Setup, pos : Pos }, Problem)
 	setup_form = |form| {
 		(head, args, pos) = Scm.split_form(form)?
@@ -675,6 +1676,42 @@ Scm := [].{
 		}
 	}
 
+	## Parse only the request fields an assertion states, rejecting unknown policies.
+	request_assertion : Sx, List(Sx) -> Try(Op, Problem)
+	request_assertion = |form, args| {
+		if args.is_empty() {
+			return Err(Scm.bad(form, "expect-request requires a pending occurrence"))
+		}
+		n = Scm.unsigned(Scm.arg(args, 0), "the pending occurrence")?
+		if n == 0 {
+			return Err(Scm.bad(form, "the pending occurrence is one-based"))
+		}
+		fields = Scm.keywords(form, args.drop_first(1))?
+		var $checks = []
+		for field in fields {
+			value = match field.key {
+				":method" | ":url" => Scm.string(field.value, field.key)?
+				":cache" => {
+					policy = Scm.symbol(field.value, "a cache policy")?
+					if !["default", "no-store", "reload", "no-cache", "force-cache"].contains(policy) {
+						return Err(Scm.bad(field.value, "unknown HTTP cache policy"))
+					}
+					policy
+				}
+				":credentials" => {
+					policy = Scm.symbol(field.value, "a credentials policy")?
+					if !["same-origin", "include"].contains(policy) {
+						return Err(Scm.bad(field.value, "unknown HTTP credentials policy"))
+					}
+					policy
+				}
+				_ => return Err(Scm.bad(form, "expect-request accepts :method, :url, :cache and :credentials"))
+			}
+			$checks = $checks.append({ key: field.key.drop_prefix(":"), value })
+		}
+		Ok(ExpectRequest({ n, checks: $checks }))
+	}
+
 	## `:key value` pairs, each key at most once.
 	keywords : Sx, List(Sx) -> Try(List({ key : Str, value : Sx }), Problem)
 	keywords = |form, items| {
@@ -698,6 +1735,9 @@ Scm := [].{
 		Ok($out)
 	}
 
+	## Extract a required field after keyword framing has checked duplicates.
+	## A missing field points at its whole form; the returned value still carries
+	## its own position for the subsequent type check.
 	required : Sx, List({ key : Str, value : Sx }), Str -> Try(Sx, Problem)
 	required = |form, fields, key|
 		match fields.find_first(|f| f.key == key) {
@@ -705,6 +1745,9 @@ Scm := [].{
 			Err(_) => Err(Scm.bad(form, "missing ${key}"))
 		}
 
+	## Validate a fixture's list of quoted name/value pairs with nonempty names.
+	## Order, duplicate entries and empty values are retained rather than
+	## canonicalized into a different response fixture.
 	header_list : Sx -> Try(List(Header), Problem)
 	header_list = |sx| {
 		items = match sx {
@@ -727,6 +1770,154 @@ Scm := [].{
 	## accepts exactly these; anything else is an unknown step.
 	step_forms : List({ name : Str, parse : (Sx, List(Sx) -> Try(Op, Problem)) })
 	step_forms = [
+		{
+			name: "paste-text",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 2)?
+				Ok(PasteText(Scm.locator(Scm.arg(values, 0))?, Scm.string(Scm.arg(values, 1), "the pasted text")?))
+			},
+		},
+		{ name: "storage-elsewhere", parse: |form, args| Ok(StorageElsewhere(Scm.key_value(form, args)?)) },
+		{ name: "storage-elsewhere-removed", parse: |form, args| Ok(StorageElsewhereRemoved(Scm.text1(form, args, "the key")?)) },
+		{ name: "storage-elsewhere-cleared", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| StorageElsewhereCleared) },
+		{
+			name: "leave-page",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 2)?
+				outcome_sx = Scm.arg(values, 1)
+				outcome = match Scm.symbol(outcome_sx, "the leave outcome")? {
+					"stay" => Stay
+					"leave" => Leave
+					"unasked" => Unasked
+					_ => return Err(Scm.bad(outcome_sx, "leave-page outcome must be stay, leave or unasked"))
+				}
+				Ok(LeavePage({ url: Scm.location(Scm.arg(values, 0))?, outcome }))
+			},
+		},
+		{ name: "expect-session-storage", parse: |form, args| Ok(ExpectSessionStorage(Scm.key_value(form, args)?)) },
+		{ name: "expect-no-session-storage", parse: |form, args| Ok(ExpectNoSessionStorage(Scm.text1(form, args, "the key")?)) },
+		{ name: "expect-clipboard", parse: |form, args| Ok(ExpectClipboard(Scm.text1(form, args, "the text")?)) },
+		{ name: "expect-clipboard-html", parse: |form, args| Ok(ExpectClipboardHtml(Scm.text1(form, args, "the HTML")?)) },
+		{ name: "expect-clipboard-writes", parse: |form, args| Ok(ExpectClipboardWrites(Scm.scroll_count(Scm.arg(Scm.arity(form, args, 1)?, 0), "the write count")?)) },
+		{ name: "press", parse: |form, args| Scm.key_press(form, args) },
+		{ name: "dismiss", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| Dismiss) },
+		{
+			name: "expect-element",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 3)?
+				ns_form = Scm.arg(values, 1)
+				namespace = Scm.namespace_uri(ns_form)?
+				name_form = Scm.arg(values, 2)
+				name = Scm.string(name_form, "the exact element local name")?
+				if name.is_empty() {
+					return Err(Scm.bad(name_form, "element local name must not be empty"))
+				}
+				Ok(ExpectElement({ target: Scm.locator(Scm.arg(values, 0))?, namespace, name }))
+			},
+		},
+		{
+			name: "expect-shown",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 2)?
+				state = Scm.arg(values, 1)
+				shown = match Scm.symbol(state, "the shown state")? {
+					"hidden" => Hidden
+					"open" => Open
+					"modal" => Modal
+					"popover" => Popover
+					_ => return Err(Scm.bad(state, "the shown state must be hidden, open, modal or popover"))
+				}
+				Ok(ExpectShown(Scm.locator(Scm.arg(values, 0))?, shown))
+			},
+		},
+		{
+			name: "expect-scroll",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 3)?
+				ordinal_sx = Scm.arg(values, 0)
+				ordinal = Scm.scroll_count(ordinal_sx, "the scroll ordinal")?
+				if ordinal == 0 {
+					return Err(Scm.bad(ordinal_sx, "the scroll ordinal starts at one"))
+				}
+				kind_sx = Scm.arg(values, 2)
+				kind = match Scm.symbol(kind_sx, "the scroll kind")? {
+					"into-view" => IntoView
+					"to" => To
+					_ => return Err(Scm.bad(kind_sx, "the scroll kind must be into-view or to"))
+				}
+				Ok(ExpectScroll({ ordinal, target: Scm.locator(Scm.arg(values, 1))?, kind }))
+			},
+		},
+		{ name: "expect-transitions", parse: |form, args| Ok(ExpectTransitions(Scm.scroll_count(Scm.arg(Scm.arity(form, args, 1)?, 0), "the transition count")?)) },
+		{
+			name: "expect-transition",
+			parse: |form, args| {
+				if args.is_empty() {
+					return Err(Scm.bad(form, "expect-transition needs an ordinal"))
+				}
+				at = Scm.scroll_count(Scm.arg(args, 0), "the transition ordinal")?
+				if at == 0 {
+					return Err(Scm.bad(Scm.arg(args, 0), "the transition ordinal starts at one"))
+				}
+				var $types = []
+				for sx in args.drop_first(1) {
+					$types = $types.append(Scm.string(sx, "the transition type")?)
+				}
+				Ok(ExpectTransition({ at, types: $types }))
+			},
+		},
+		{ name: "expect-scrolls", parse: |form, args| Ok(ExpectScrolls(Scm.scroll_count(Scm.arg(Scm.arity(form, args, 1)?, 0), "the scroll count")?)) },
+		{
+			name: "scroll",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 3)?
+				Ok(Scroll({ target: Scm.locator(Scm.arg(values, 0))?, top: Scm.pixels(Scm.arg(values, 1), "the top offset")?, left: Scm.pixels(Scm.arg(values, 2), "the left offset")? }))
+			},
+		},
+		{
+			name: "report-size",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 3)?
+				Ok(ReportSize({ target: Scm.locator(Scm.arg(values, 0))?, width: Scm.pixels(Scm.arg(values, 1), "the width")?, height: Scm.pixels(Scm.arg(values, 2), "the height")? }))
+			},
+		},
+		{
+			name: "report-seen",
+			parse: |form, args| {
+				if args.len() != 2 and args.len() != 3 {
+					return Err(Scm.bad(form, "report-seen takes a locator, yes or no, and optionally a ratio per mille"))
+				}
+				flag = Scm.arg(args, 1)
+				intersecting = match Scm.symbol(flag, "the intersection state")? {
+					"yes" => Bool.True
+					"no" => Bool.False
+					_ => return Err(Scm.bad(flag, "the intersection state must be yes or no"))
+				}
+				ratio = if (args.len() == 3) Scm.unsigned(Scm.arg(args, 2), "the ratio per mille")? else if (intersecting) 1000 else 0
+				if ratio > 1000 {
+					return Err(Scm.bad(Scm.arg(args, 2), "the ratio per mille must be between 0 and 1000"))
+				}
+				Ok(ReportSeen({ target: Scm.locator(Scm.arg(args, 0))?, intersecting, ratio_permille: ratio.to_u16_wrap() }))
+			},
+		},
+		{ name: "set-time", parse: |form, args| Ok(SetTime(Scm.time_ms(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "advance-time", parse: |form, args| Ok(AdvanceTime(Scm.scroll_count(Scm.arg(Scm.arity(form, args, 1)?, 0), "the clock advance")?)) },
+		{ name: "set-media", parse: |form, args| Scm.media_fact(form, args).map_ok(|fact| SetMedia(fact)) },
+		{ name: "expect-observed", parse: |form, args| Ok(ExpectObserved(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the observation count")?)) },
+		{
+			name: "expect-media-subscriptions",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 2)?
+				Ok(ExpectMediaSubscriptions({ query: Scm.string(Scm.arg(values, 0), "the media query")?, count: Scm.unsigned(Scm.arg(values, 1), "the subscription count")? }))
+			},
+		},
+		{ name: "pointer-down", parse: |form, args| Scm.pointer_place({ form, args, mode: Press }).map_ok(|press| PointerDown(press)) },
+		{ name: "pointer-move", parse: |form, args| Scm.pointer_place({ form, args, mode: Place }).map_ok(|p| PointerMove({ target: p.target, at: p.at, id: p.id })) },
+		{ name: "pointer-up", parse: |form, args| Scm.pointer_place({ form, args, mode: Place }).map_ok(|p| PointerUp({ target: p.target, at: p.at, id: p.id })) },
+		{ name: "pointer-cancel", parse: |form, args| Scm.pointer_cancel({ form, args }) },
+		{ name: "hold-reports", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| HoldReports) },
+		{ name: "release-reports", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| ReleaseReports) },
+		{ name: "expect-reports-replaced", parse: |form, args| Ok(ExpectReportsReplaced(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the replacement count")?)) },
 		{ name: "click", parse: |form, args| Ok(Click(Scm.loc1(form, args)?)) },
 		{ name: "real-click", parse: |form, args| Ok(RealClick(Scm.loc1(form, args)?)) },
 		{ name: "focus", parse: |form, args| Ok(Focus(Scm.loc1(form, args)?)) },
@@ -738,8 +1929,23 @@ Scm := [].{
 		{ name: "change", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| Change(l, t)) },
 		{ name: "select-option", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| SelectOption(l, t)) },
 		{ name: "expect-text", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| ExpectText(l, t)) },
+		{ name: "expect-focused", parse: |form, args| Ok(ExpectFocused(Scm.loc1(form, args)?)) },
+		{
+			name: "expect-no-focus",
+			parse: |form, args| {
+				_ = Scm.arity(form, args, 0)?
+				Ok(ExpectNoFocus)
+			},
+		},
 		{ name: "expect-visible", parse: |form, args| Ok(ExpectVisible(Scm.loc1(form, args)?)) },
-		{ name: "expect-absent", parse: |form, args| Ok(ExpectAbsent(Scm.loc1(form, args)?)) },
+		{
+			name: "expect-absent",
+			parse: |form, args| match args {
+				[loc] => Ok(ExpectAbsent(Scm.locator(loc)?))
+				[loc, Sym(":never-drawn", _)] => Ok(ExpectAbsent(Scm.locator(loc)?))
+				_ => Err(Scm.bad(form, "expect-absent takes a locator, optionally followed by :never-drawn"))
+			},
+		},
 		{ name: "expect-value", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| ExpectValue(l, t)) },
 		{
 			name: "expect-attr",
@@ -749,9 +1955,16 @@ Scm := [].{
 			},
 		},
 		{
-			name: "expect-no-attr",
+			name: "expect-has-attr",
 			parse: |form, args| {
 				a = Scm.arity(form, args, 2)?
+				Ok(ExpectHasAttr({ target: Scm.locator(Scm.arg(a, 0))?, name: Scm.attr_name(Scm.arg(a, 1))? }))
+			},
+		},
+		{
+			name: "expect-no-attr",
+			parse: |form, args| {
+				a = Scm.story_args(form, { args, count: 2, marker: ":never-written", zero_count: Bool.False })?
 				name_sx = Scm.arg(a, 1)
 				name = Scm.attr_name(name_sx)?
 				match name {
@@ -772,6 +1985,39 @@ Scm := [].{
 		{ name: "stub-http", parse: |form, args| Ok(StubHttp(Scm.http_fixture(form, "stub-http", args)?)) },
 		{ name: "stub-http-reject", parse: |form, args| Ok(StubHttp(Scm.http_fixture(form, "stub-http-reject", args)?)) },
 		{ name: "run-effect", parse: |form, args| Ok(RunEffect(Scm.count1(form, args, "the effect occurrence")?)) },
+		{ name: "expect-request", parse: Scm.request_assertion },
+		{
+			name: "progress-effect",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 4)?
+				n = Scm.unsigned(Scm.arg(a, 0), "the pending occurrence")?
+				if n == 0 {
+					return Err(Scm.bad(form, "the pending occurrence is one-based"))
+				}
+				direction = match Scm.symbol(Scm.arg(a, 1), "sending or receiving")? {
+					"sending" => Sending
+					"receiving" => Receiving
+					_ => return Err(Scm.bad(Scm.arg(a, 1), "direction is sending or receiving"))
+				}
+				done = Scm.scroll_count(Scm.arg(a, 2), "bytes transferred")?
+				total = match Scm.arg(a, 3) {
+					Sym("unknown", _) => Unknown
+					value => Known(Scm.scroll_count(value, "the total or unknown")?)
+				}
+				Ok(ProgressEffect({ n, direction, done, total }))
+			},
+		},
+		{
+			name: "expect-port-subscription-arg",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 3)?
+				n = Scm.unsigned(Scm.arg(a, 1), "the active subscription index")?
+				if n == 0 {
+					return Err(Scm.bad(form, "the active subscription index is one-based"))
+				}
+				Ok(ExpectPortSubscriptionArg({ port: Scm.port_name(Scm.arg(a, 0))?, n, json: Scm.string(Scm.arg(a, 2), "the argument JSON")? }))
+			},
+		},
 		{ name: "expect-pending-effects", parse: |form, args| Ok(ExpectPendingEffects(Scm.count1(form, args, "the pending count")?)) },
 		{
 			name: "lose-work",
@@ -798,18 +2044,18 @@ Scm := [].{
 			},
 		},
 		{ name: "tick-interval", parse: |form, args| Ok(TickInterval(Scm.count1(form, args, "the period")?)) },
-		{ name: "tick-interval-if-active", parse: |form, args| Ok(TickIntervalIfActive(Scm.count1(form, args, "the period")?)) },
+		{ name: "tick-interval-if-active", parse: |form, args| Ok(TickIntervalIfActive(Scm.count1(form, Scm.story_args(form, { args, count: 1, marker: ":never-started", zero_count: Bool.False })?, "the period")?)) },
 		{
 			name: "expect-cleanup",
 			parse: |form, args| {
-				a = Scm.arity(form, args, 2)?
+				a = Scm.story_args(form, { args, count: 2, marker: ":never-runs", zero_count: Bool.True })?
 				Ok(ExpectCleanup({ name: Scm.string(Scm.arg(a, 0), "the cleanup name")?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
 			},
 		},
 		{
 			name: "expect-interval",
 			parse: |form, args| {
-				a = Scm.arity(form, args, 2)?
+				a = Scm.story_args(form, { args, count: 2, marker: ":never-started", zero_count: Bool.True })?
 				Ok(ExpectInterval({ period_ms: Scm.unsigned(Scm.arg(a, 0), "the period")?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
 			},
 		},
@@ -919,6 +2165,9 @@ Scm := [].{
 		Ok(AnswerPort({ occurrence, answer }))
 	}
 
+	## Dispatch one executable form through the closed step registry and retain
+	## its position. Whole-story checks, including absence anchoring, run later in
+	## parse when every step is available.
 	step_form : Sx -> Try(Step, Problem)
 	step_form = |form| {
 		(head, args, pos) = Scm.split_form(form)?
@@ -927,27 +2176,45 @@ Scm := [].{
 		Ok({ op, pos })
 	}
 
+	## Keep single-target steps on the same strict arity and semantic-locator
+	## grammar. A malformed target fails during parsing before either runner can
+	## attempt to resolve it against a page.
 	loc1 : Sx, List(Sx) -> Try(Loc, Problem)
 	loc1 = |form, args| Scm.locator(Scm.arg(Scm.arity(form, args, 1)?, 0))
 
+	## Parse the shared target-plus-text shape used by edits and text/value
+	## assertions. Text remains quoted data, and locator validation is identical
+	## to the single-target steps.
 	loc_text : Sx, List(Sx) -> Try((Loc, Str), Problem)
 	loc_text = |form, args| {
 		a = Scm.arity(form, args, 2)?
 		Ok((Scm.locator(Scm.arg(a, 0))?, Scm.string(Scm.arg(a, 1), "the text")?))
 	}
 
+	## Parse a locator and an explicit boolean for control-state assertions.
+	## False remains an expected value to test at the located element, not an
+	## instruction to omit that assertion.
 	loc_bool : Sx, List(Sx) -> Try((Loc, Bool), Problem)
 	loc_bool = |form, args| {
 		a = Scm.arity(form, args, 2)?
 		Ok((Scm.locator(Scm.arg(a, 0))?, Scm.boolean(Scm.arg(a, 1), "the expected value")?))
 	}
 
+	## Single-text steps share exact arity and quoted-string validation.
+	## The caller's label identifies the expected value in a positioned error;
+	## unquoted spellings are not converted for convenience.
 	text1 : Sx, List(Sx), Str -> Try(Str, Problem)
 	text1 = |form, args, what| Scm.string(Scm.arg(Scm.arity(form, args, 1)?, 0), what)
 
+	## Keep ordinary one-count forms consistent about arity and nonnegative
+	## integer syntax. Full-width observation ordinals instead use scroll_count,
+	## which explicitly accepts the reader's wider unsigned atom.
 	count1 : Sx, List(Sx), Str -> Try(U64, Problem)
 	count1 = |form, args, what| Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), what)
 
+	## Reject unknown metric names while the source position is available,
+	## then retain the signed expected delta. Whether execution established a
+	## mark is a runner check, separate from this static vocabulary check.
 	metric_args : Sx, List(Sx) -> Try({ metric : Str, delta : I64 }, Problem)
 	metric_args = |form, args| {
 		a = Scm.arity(form, args, 2)?
@@ -957,18 +2224,22 @@ Scm := [].{
 		Ok({ metric: name, delta: Scm.integer(Scm.arg(a, 1), "the delta")? })
 	}
 
-	## The grammar's form names as one JSON object, `{"steps": [...],
-	## "setup": [...]}`, for `replay.mjs --check-grammar`.
+	## The grammar's form and environment-section names, for the browser
+	## replay to check its handlers and appliers cover the parser completely.
 	grammar_json : JsonOut.Value
 	grammar_json = Object([
 		JsonOut.field("steps", Array(Scm.step_forms.map(|f| Text(f.name)))),
 		JsonOut.field("setup", Array(Scm.setup_forms.map(|f| Text(f.name)))),
+		JsonOut.field("environment_sections", Array(Scm.environment_sections.map(|name| Text(name)))),
 	])
 
 	## Every work fault by its spelling.
 	work_faults : List((Str, WorkFault))
 	work_faults = [("contract", Contract), ("resource_limit", ResourceLimit), ("out_of_memory", OutOfMemory), ("app_crash", AppCrash), ("expect_failed", ExpectFailed), ("unavailable", Unavailable), ("executor", Executor)]
 
+	## Accept only the declared loss-of-worker fault vocabulary. A task's own
+	## failure remains its answer, so an invented failure spelling cannot be
+	## substituted for a worker-loss result.
 	work_fault : Sx -> Try(WorkFault, Problem)
 	work_fault = |sx| {
 		name = Scm.symbol(sx, "the work fault")?
@@ -982,6 +2253,9 @@ Scm := [].{
 	work_fault_name : WorkFault -> Str
 	work_fault_name = |fault| Scm.work_faults.find_first(|(_, f)| f == fault).map_ok(|(n, _)| n) ?? crash "Scm.work_faults names every fault"
 
+	## Assertions accept an attribute name as a bare word or quoted text and
+	## preserve it for the runner. This parser checks the argument kind without
+	## normalizing the element's attribute semantics.
 	attr_name : Sx -> Try(Str, Problem)
 	attr_name = |sx|
 		match sx {
@@ -1010,8 +2284,9 @@ Scm := [].{
 		{ name: "set_value", counters: [19] },
 		{ name: "set_checked", counters: [20] },
 		{ name: "bind_event", counters: [11] },
+		{ name: "registrations_released", counters: [43] },
 		{ name: "set_metadata", counters: [17] },
-		{ name: "patches_emitted", counters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+		{ name: "patches_emitted", counters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 41, 42, 48] },
 		{ name: "derived_calls_into_roc", counters: [21] },
 		{ name: "scopes_created", counters: [25] },
 		{ name: "scopes_disposed", counters: [26] },
@@ -1025,6 +2300,8 @@ Scm := [].{
 		{ name: "effects_cancelled", counters: [36] },
 		{ name: "effects_reparented", counters: [37] },
 		{ name: "effects_skipped", counters: [38] },
+		{ name: "effects_progress", counters: [47] },
+		{ name: "view_transitions", counters: [45] },
 	]
 
 	## The counters a metric name sums.
@@ -1042,12 +2319,158 @@ Scm := [].{
 
 	# ------------------------------------------------------------ properties
 
+	## Whether a performed step grants user activation. Conditional rows inspect
+	## the actual input the step performed, rather than its spelling alone.
+	Activation : [Never, Always, WhenClicked, WhenTyped, KeyboardPress, PointerPress, PointerRelease]
+
+	## The whole activation model, including every step that does not grant it.
+	## Browser replay consumes the emitted table; the native runner reads it here.
+	activation_table : List({ op : Str, grant : Activation })
+	activation_table = [
+		{ op: "paste-text", grant: Never },
+		{ op: "storage-elsewhere", grant: Never },
+		{ op: "storage-elsewhere-removed", grant: Never },
+		{ op: "storage-elsewhere-cleared", grant: Never },
+		{ op: "leave-page", grant: Never },
+		{ op: "expect-session-storage", grant: Never },
+		{ op: "expect-no-session-storage", grant: Never },
+		{ op: "expect-clipboard", grant: Never },
+		{ op: "expect-clipboard-html", grant: Never },
+		{ op: "expect-clipboard-writes", grant: Never },
+
+		{ op: "set-time", grant: Never },
+		{ op: "advance-time", grant: Never },
+		{ op: "press", grant: KeyboardPress },
+		{ op: "dismiss", grant: Never },
+		{ op: "expect-element", grant: Never },
+		{ op: "expect-shown", grant: Never },
+		{ op: "expect-scroll", grant: Never },
+		{ op: "expect-scrolls", grant: Never },
+		{ op: "expect-transitions", grant: Never },
+		{ op: "expect-transition", grant: Never },
+		{ op: "scroll", grant: Never },
+		{ op: "report-size", grant: Never },
+		{ op: "report-seen", grant: Never },
+		{ op: "set-media", grant: Never },
+		{ op: "expect-observed", grant: Never },
+		{ op: "expect-media-subscriptions", grant: Never },
+		{ op: "pointer-down", grant: PointerPress },
+		{ op: "pointer-move", grant: Never },
+		{ op: "pointer-up", grant: PointerRelease },
+		{ op: "pointer-cancel", grant: Never },
+		{ op: "hold-reports", grant: Never },
+		{ op: "release-reports", grant: Never },
+		{ op: "expect-reports-replaced", grant: Never },
+		{ op: "click", grant: WhenClicked },
+		{ op: "real-click", grant: Always },
+		{ op: "focus", grant: Never },
+		{ op: "blur", grant: Never },
+		{ op: "submit", grant: Never },
+		{ op: "check", grant: WhenClicked },
+		{ op: "uncheck", grant: WhenClicked },
+		{ op: "fill", grant: WhenTyped },
+		{ op: "change", grant: Never },
+		{ op: "select-option", grant: Never },
+		{ op: "expect-text", grant: Never },
+		{ op: "expect-focused", grant: Never },
+		{ op: "expect-no-focus", grant: Never },
+		{ op: "expect-visible", grant: Never },
+		{ op: "expect-absent", grant: Never },
+		{ op: "expect-value", grant: Never },
+		{ op: "expect-attr", grant: Never },
+		{ op: "expect-no-attr", grant: Never },
+		{ op: "expect-has-attr", grant: Never },
+		{ op: "expect-checked", grant: Never },
+		{ op: "expect-disabled", grant: Never },
+		{ op: "expect-updates", grant: Never },
+		{ op: "stub-http", grant: Never },
+		{ op: "stub-http-reject", grant: Never },
+		{ op: "run-effect", grant: Never },
+		{ op: "expect-request", grant: Never },
+		{ op: "progress-effect", grant: Never },
+		{ op: "expect-port-subscription-arg", grant: Never },
+		{ op: "expect-pending-effects", grant: Never },
+		{ op: "lose-work", grant: Never },
+		{ op: "time-out-work", grant: Never },
+		{ op: "choose-files", grant: Never },
+		{ op: "drop-files", grant: Never },
+		{ op: "paste-files", grant: Never },
+		{ op: "expect-files", grant: Never },
+		{ op: "expect-pending-work", grant: Never },
+		{ op: "tick-interval", grant: Never },
+		{ op: "tick-interval-if-active", grant: Never },
+		{ op: "expect-cleanup", grant: Never },
+		{ op: "expect-interval", grant: Never },
+		{ op: "navigate", grant: Never },
+		{ op: "set-visibility", grant: Never },
+		{ op: "set-online", grant: Never },
+		{ op: "history-back", grant: Never },
+		{ op: "history-forward", grant: Never },
+		{ op: "expect-current-location", grant: Never },
+		{ op: "expect-document-title", grant: Never },
+		{ op: "expect-local-storage", grant: Never },
+		{ op: "expect-no-local-storage", grant: Never },
+		{ op: "mark-metrics", grant: Never },
+		{ op: "expect-metric-delta", grant: Never },
+		{ op: "expect-metric-delta-at-most", grant: Never },
+		{ op: "expect-upload", grant: Never },
+		{ op: "expect-port-call", grant: Never },
+		{ op: "answer-port", grant: Never },
+		{ op: "expect-port-sent", grant: Never },
+		{ op: "expect-port-sends", grant: Never },
+		{ op: "emit-port", grant: Never },
+		{ op: "close-port", grant: Never },
+		{ op: "fail-port", grant: Never },
+		{ op: "expect-port-subscriptions", grant: Never },
+		{ op: "expect-saved", grant: Never },
+		{ op: "expect-saves", grant: Never },
+	]
+
+	## A new grammar form must declare its activation behavior explicitly.
+	activation_for : Op -> Activation
+	activation_for = |op| {
+		name = Scm.op_name(op)
+		(Scm.activation_table.find_first(|row| row.op == name) ?? crash "Scm.activation_for: missing activation row ${name}").grant
+	}
+
+	## The emitted vocabulary keeps replay from restating the step table.
+	activation_name : Activation -> Str
+	activation_name = |grant| match grant {
+		Never => "never"
+		Always => "always"
+		WhenClicked => "clicked"
+		WhenTyped => "typed"
+		KeyboardPress => "keyboard"
+		PointerPress => "pointer-down"
+		PointerRelease => "pointer-up"
+	}
+
 	## The step's name as a spec spells it.
 	op_name : Op -> Str
 	op_name = |op|
 		match op {
 			Click(_) => "click"
 			RealClick(_) => "real-click"
+			PointerDown(_) => "pointer-down"
+			PointerMove(_) => "pointer-move"
+			PointerUp(_) => "pointer-up"
+			PointerCancel(_) => "pointer-cancel"
+			Press(_) => "press"
+			Dismiss => "dismiss"
+			ExpectElement(_) => "expect-element"
+			ExpectShown(_, _) => "expect-shown"
+			ExpectScroll(_) => "expect-scroll"
+			ExpectScrolls(_) => "expect-scrolls"
+			ExpectTransitions(_) => "expect-transitions"
+			ExpectTransition(_) => "expect-transition"
+			Scroll(_) => "scroll"
+			ReportSize(_) => "report-size"
+			ReportSeen(_) => "report-seen"
+			SetTime(_) => "set-time"
+			AdvanceTime(_) => "advance-time"
+			SetMedia(_) => "set-media"
+			ExpectObserved(_) => "expect-observed"
+			ExpectMediaSubscriptions(_) => "expect-media-subscriptions"
 			Focus(_) => "focus"
 			Blur(_) => "blur"
 			Change(_, _) => "change"
@@ -1058,16 +2481,22 @@ Scm := [].{
 			Uncheck(_) => "uncheck"
 			ExpectText(_, _) => "expect-text"
 			ExpectVisible(_) => "expect-visible"
+			ExpectFocused(_) => "expect-focused"
+			ExpectNoFocus => "expect-no-focus"
 			ExpectAbsent(_) => "expect-absent"
 			ExpectValue(_, _) => "expect-value"
 			ExpectAttr(_) => "expect-attr"
 			ExpectNoAttr(_) => "expect-no-attr"
+			ExpectHasAttr(_) => "expect-has-attr"
 			ExpectChecked(_, _) => "expect-checked"
 			ExpectDisabled(_, _) => "expect-disabled"
 			ExpectUpdates(_, _) => "expect-updates"
 			StubHttp({ stub: Reply(_), .. }) => "stub-http"
 			StubHttp({ stub: Reject(_), .. }) => "stub-http-reject"
 			RunEffect(_) => "run-effect"
+			ExpectRequest(_) => "expect-request"
+			ProgressEffect(_) => "progress-effect"
+			ExpectPortSubscriptionArg(_) => "expect-port-subscription-arg"
 			ExpectPendingEffects(_) => "expect-pending-effects"
 			LoseWork(_) => "lose-work"
 			TimeOutWork(_) => "time-out-work"
@@ -1083,12 +2512,26 @@ Scm := [].{
 			Navigate(_) => "navigate"
 			SetVisibility(_) => "set-visibility"
 			SetOnline(_) => "set-online"
+			HoldReports => "hold-reports"
+			ReleaseReports => "release-reports"
+			ExpectReportsReplaced(_) => "expect-reports-replaced"
 			HistoryBack => "history-back"
 			HistoryForward => "history-forward"
 			ExpectLocation(_) => "expect-current-location"
 			ExpectTitle(_) => "expect-document-title"
 			ExpectLocalStorage(_) => "expect-local-storage"
 			ExpectNoLocalStorage(_) => "expect-no-local-storage"
+			PasteText(_, _) => "paste-text"
+			StorageElsewhere(_) => "storage-elsewhere"
+			StorageElsewhereRemoved(_) => "storage-elsewhere-removed"
+			StorageElsewhereCleared => "storage-elsewhere-cleared"
+			LeavePage(_) => "leave-page"
+			ExpectSessionStorage(_) => "expect-session-storage"
+			ExpectNoSessionStorage(_) => "expect-no-session-storage"
+			ExpectClipboard(_) => "expect-clipboard"
+			ExpectClipboardHtml(_) => "expect-clipboard-html"
+			ExpectClipboardWrites(_) => "expect-clipboard-writes"
+
 			MarkMetrics => "mark-metrics"
 			ExpectMetricDelta(_) => "expect-metric-delta"
 			ExpectMetricDeltaAtMost(_) => "expect-metric-delta-at-most"
@@ -1118,18 +2561,64 @@ Scm := [].{
 	# ------------------------------------------------------------------ JSON
 
 	## The spec as one JSON object, for the browser runner:
-	## `{"id", "name", "setup": [...], "steps": [...]}`. Each step carries
+	## `{"id", "name", "setup", "environment", "steps"}`. Environment facts
+	## have already been resolved by the parser. Each step carries
 	## `op` (its spec spelling), `line`, `column`, and its arguments under
 	## fixed names (`loc`, `text`, `value`, `count`, ...).
 	to_json : Str, Spec -> JsonOut.Value
-	to_json = |id, spec|
+	to_json = |id, spec| {
+		fields = match Scm.spec_fields(id, spec) {
+			Object(items) => items
+			_ => crash "Scm.to_json: spec fields are an object"
+		}
+		Object(
+			fields.concat([
+				JsonOut.field("activation_table", Array(Scm.activation_table.map(|row| Object([JsonOut.field("op", Text(row.op)), JsonOut.field("grant", Text(Scm.activation_name(row.grant)))])))),
+				JsonOut.field("key_control_types", Object([JsonOut.field("text_input_excluded", Array(Scm.key_control_types.text_input_excluded.map(|kind| Text(kind)))), JsonOut.field("choice_input_types", Array(Scm.key_control_types.choice_input_types.map(|kind| Text(kind))))])),
+				JsonOut.field("key_table", Array(Scm.key_table.map(|k| Object([JsonOut.field("key", Text(k.key)), JsonOut.field("name", Text(k.name)), JsonOut.field("code", Text(k.code)), JsonOut.field("vk", Nat(k.vk.to_u64())), JsonOut.field("needs_shift", Bool(k.needs_shift)), JsonOut.field("named", Bool(k.named))])))),
+				JsonOut.field("unmodelled_key_defaults", Array(Scm.unmodelled_key_defaults.map(|r| Object([JsonOut.field("control", Text(r.control)), JsonOut.field("keys", Array(r.keys.map(|k| Text(k))))])))),
+			]),
+		)
+	}
+
+	## The per-spec fields, separate from shared keyboard vocabulary.
+	spec_fields : Str, Spec -> JsonOut.Value
+	spec_fields = |id, spec|
 		Object([
 			JsonOut.field("id", Text(id)),
 			JsonOut.field("name", Text(spec.name)),
 			JsonOut.field("setup", Array(spec.setup.map(|s| Scm.setup_json(s)))),
+			JsonOut.field("environment", Scm.environment_json(spec.environment)),
+			JsonOut.field("mount_root", Scm.mount_root_json(spec.mount_root)),
 			JsonOut.field("steps", Array(spec.steps.map(|s| Scm.step_json(s)))),
 		])
 
+	## Root facts stay outside environment JSON, matching the engine-only boot
+	## section rather than adding a value an app can read from Boot.
+	mount_root_json : MountRoot -> JsonOut.Value
+	mount_root_json = |root| Object([JsonOut.field("namespace", Text(root.namespace)), JsonOut.field("prefix", Text(root.prefix)), JsonOut.field("local", Text(root.local))])
+
+	## The already-resolved facts, without defaults or setup rules for a runner
+	## to interpret. Storage pairs retain Boot's declared data representation.
+	environment_json : Environment -> JsonOut.Value
+	environment_json = |env| Object([
+		JsonOut.field("url", Text(env.url)),
+		JsonOut.field("now_ms", Text(env.now_ms.to_str())),
+		JsonOut.field("seed", Text(env.seed.to_str())),
+		JsonOut.field("languages", Array(env.languages.map(|language| Text(language)))),
+		JsonOut.field("zone", Scm.zone_json(env.zone)),
+		JsonOut.field("storage", Array(env.storage.map(|(key, value)| Array([Text(key), Text(value)])))),
+		JsonOut.field("storage_available", Bool(env.storage_available)),
+		JsonOut.field("session", Array(env.session.map(|(key, value)| Array([Text(key), Text(value)])))),
+		JsonOut.field("session_available", Bool(env.session_available)),
+		JsonOut.field("online", Bool(env.online)),
+		JsonOut.field("visible", Bool(env.visible)),
+		JsonOut.field("media", Array(env.media.map(|(query, matches)| Array([Text(query), Bool(matches)])))),
+	])
+
+	## Emit a semantic address, never a resolved DOM node or engine id.
+	## The browser resolves this locator at its step, preserving the same timing
+	## and lifetime meaning as native execution.
 	loc_json : Loc -> JsonOut.Value
 	loc_json = |loc|
 		match loc {
@@ -1139,6 +2628,9 @@ Scm := [].{
 			TestId(x) => Object([JsonOut.field("kind", Text("test-id")), JsonOut.field("value", Text(x))])
 		}
 
+	## Produce the JSON fields for a typed reply or rejection fixture. Header,
+	## body and detail text are retained without rewriting, so the emitted fixture
+	## represents the same answer that native execution consumes.
 	stub_fields : { label : Str, stub : Stub } -> List({ key : Str, value : JsonOut.Value })
 	stub_fields = |{ label, stub }|
 		match stub {
@@ -1156,6 +2648,9 @@ Scm := [].{
 			]
 		}
 
+	## Use the grammar's closed network/timeout spellings in emitted fixtures.
+	## These request failures keep their own vocabulary, distinct from worker-loss
+	## fault names.
 	reject_kind_name : RejectKind -> Str
 	reject_kind_name = |kind|
 		match kind {
@@ -1163,32 +2658,63 @@ Scm := [].{
 			Timeout => "timeout"
 		}
 
+	## Emit the setup/report keyword for a document visibility value.
+	## The already-resolved environment carries its boolean fact separately, so
+	## replay does not have to derive defaults from this spelling.
 	visibility_name : Visibility -> Str
 	visibility_name = |v| if (v == Visible) "visible" else "hidden"
 
+	## Emit the grammar keyword for a connectivity value in setup or reports.
+	## Resolved environment data carries the corresponding browser fact without
+	## asking replay to reinterpret the original setup forms.
 	online_name : Online -> Str
 	online_name = |o| if (o == Online) "online" else "offline"
 
+	## Attach original one-based source coordinates to emitted setup and steps.
+	## Replay consumes JSON, but its failures must still identify the authored
+	## spec's line and column.
 	pos_fields : Pos -> List({ key : Str, value : JsonOut.Value })
 	pos_fields = |pos| [JsonOut.field("line", Nat(pos.line)), JsonOut.field("column", Nat(pos.column))]
 
+	## Retain typed setup forms and their origins for fixtures and diagnostics.
+	## Environment facts have already been resolved separately; this emission does
+	## not give replay another set of defaulting or conflict rules.
 	setup_json : { item : Setup, pos : Pos } -> JsonOut.Value
 	setup_json = |{ item, pos }| {
 		(op, args) = match item {
+			InitialTime(at_ms) => ("initial-time", [JsonOut.field("at_ms", Text(at_ms.to_str()))])
+			Seed(seed) => ("seed", [JsonOut.field("seed", Text(seed.to_str()))])
+			Languages(languages) => ("languages", [JsonOut.field("languages", Array(languages.map(|language| Text(language))))])
+			TimeZone(zone) => ("time-zone", [JsonOut.field("zone", Scm.zone_json(zone))])
+			MountRoot(root) => ("mount-root", [JsonOut.field("namespace", Text(root.namespace)), JsonOut.field("prefix", Text(root.prefix)), JsonOut.field("local", Text(root.local))])
 			InitialLocation(url) => ("initial-location", [JsonOut.field("text", Text(url))])
 			InitialVisibility(v) => ("initial-visibility", [JsonOut.field("text", Text(Scm.visibility_name(v)))])
 			InitialOnline(o) => ("initial-online", [JsonOut.field("text", Text(Scm.online_name(o)))])
+			InitialMedia({ query, matches }) => ("initial-media", [JsonOut.field("query", Text(query)), JsonOut.field("matches", Bool(matches))])
 			LocalStorage({ key, value }) => ("local-storage", [JsonOut.field("key", Text(key)), JsonOut.field("text", Text(value))])
 			LocalStorageUnavailable => ("local-storage-unavailable", [])
+			SessionStorage({ key, value }) => ("session-storage", [JsonOut.field("key", Text(key)), JsonOut.field("text", Text(value))])
+			SessionStorageUnavailable => ("session-storage-unavailable", [])
+			SessionStorageFull => ("session-storage-full", [])
+			LocalStorageFull => ("local-storage-full", [])
+			ClipboardDenied => ("clipboard-denied", [])
+			MaxPasteBytes(n) => ("max-paste-bytes", [JsonOut.field("count", Nat(n))])
 			File({ name, mime, text, repeat }) => ("file", [JsonOut.field("name", Text(name)), JsonOut.field("type", Text(mime)), JsonOut.field("text", Text(text)), JsonOut.field("count", Nat(repeat))])
 			MaxOutputBytes(n) => ("max-output-bytes", [JsonOut.field("count", Nat(n))])
 		}
 		Object([JsonOut.field("op", Text(op))].concat(Scm.pos_fields(pos)).concat(args))
 	}
 
+	## Emit the work-record indices a parsed metric sums, so replay need not
+	## maintain its own mapping. Unknown names yield no indices here; metric_args
+	## rejects them before a source spec can reach this emission path.
 	counters_json : Str -> JsonOut.Value
 	counters_json = |metric| Array((Scm.metric_counters(metric) ?? []).map(|k| Nat(k)))
 
+	## Emit one typed operation with its source position and resolved arguments.
+	## The exhaustive match keeps replay's payload vocabulary aligned with native
+	## steps, including decimal text for full-width observation values and the
+	## counter indices chosen by metric validation.
 	step_json : Step -> JsonOut.Value
 	step_json = |{ op, pos }| {
 		loc = |l| JsonOut.field("loc", Scm.loc_json(l))
@@ -1196,6 +2722,65 @@ Scm := [].{
 		args = match op {
 			Click(l) => [loc(l)]
 			RealClick(l) => [loc(l)]
+			PointerDown(p) => Scm.pointer_place_json({ target: p.target, at: p.at, id: p.id }).concat([
+				JsonOut.field(
+					"pointer",
+					Text(
+						match p.kind {
+							Mouse => "mouse"
+							Pen => "pen"
+							Touch => "touch"
+						},
+					),
+				),
+				JsonOut.field(
+					"button",
+					Text(
+						match p.button {
+							Main => "main"
+							Middle => "middle"
+							Secondary => "secondary"
+						},
+					),
+				),
+				JsonOut.field("modifiers", Array([{ name: "shift", bit: 1.U8 }, { name: "ctrl", bit: 2 }, { name: "alt", bit: 4 }, { name: "meta", bit: 8 }].keep_if(|m| p.modifiers.bitwise_and(m.bit) != 0).map(|m| Text(m.name)))),
+			])
+			PointerMove(p) | PointerUp(p) => Scm.pointer_place_json(p)
+			PointerCancel(id) => [JsonOut.field("id", Nat(id.to_u64()))]
+			Press(p) => [JsonOut.field("key", Scm.key_json(p.key))].concat(
+				match p.target {
+					Focused => []
+					At(l) => [loc(l)]
+				},
+			)
+			Dismiss => []
+			ExpectElement({ target, namespace, name }) => [loc(target), JsonOut.field("namespace", Text(namespace)), JsonOut.field("name", Text(name))]
+			ExpectShown(l, shown) => [
+				loc(l),
+				JsonOut.field(
+					"shown",
+					Text(
+						match shown {
+							Hidden => "hidden"
+							Open => "open"
+							Modal => "modal"
+							Popover => "popover"
+						},
+					),
+				),
+			]
+			ExpectScroll({ ordinal, target, kind }) => [loc(target), JsonOut.field("ordinal", Text(ordinal.to_str())), JsonOut.field("kind", Text(if (kind == IntoView) "into-view" else "to"))]
+			ExpectScrolls(count) => [JsonOut.field("count", Text(count.to_str()))]
+			ExpectTransitions(count) => [JsonOut.field("count", Text(count.to_str()))]
+			ExpectTransition({ at, types }) => [JsonOut.field("at", Text(at.to_str())), JsonOut.field("types", Array(types.map(|t| Text(t))))]
+			Scroll({ target, top, left }) => [loc(target), JsonOut.field("top", Nat(top.to_u64())), JsonOut.field("left", Nat(left.to_u64()))]
+			ReportSize({ target, width, height }) => [loc(target), JsonOut.field("width", Nat(width.to_u64())), JsonOut.field("height", Nat(height.to_u64()))]
+			ReportSeen({ target, intersecting, ratio_permille }) => [loc(target), JsonOut.field("intersecting", Bool(intersecting)), JsonOut.field("ratio_permille", Nat(ratio_permille.to_u64()))]
+			SetTime(at_ms) => [JsonOut.field("at_ms", Text(at_ms.to_str()))]
+			AdvanceTime(ms) => [JsonOut.field("ms", Text(ms.to_str()))]
+			SetMedia({ query, matches }) => [JsonOut.field("query", Text(query)), JsonOut.field("matches", Bool(matches))]
+			ExpectObserved(count) => [JsonOut.field("count", Nat(count))]
+			ExpectMediaSubscriptions({ query, count }) => [JsonOut.field("query", Text(query)), JsonOut.field("count", Nat(count))]
 			Focus(l) => [loc(l)]
 			Blur(l) => [loc(l)]
 			Change(l, t) => [loc(l), text(t)]
@@ -1206,15 +2791,31 @@ Scm := [].{
 			Uncheck(l) => [loc(l)]
 			ExpectText(l, t) => [loc(l), text(t)]
 			ExpectVisible(l) => [loc(l)]
+			ExpectFocused(l) => [loc(l)]
+			ExpectNoFocus => []
 			ExpectAbsent(l) => [loc(l)]
 			ExpectValue(l, t) => [loc(l), text(t)]
 			ExpectAttr({ target, name, value }) => [loc(target), JsonOut.field("name", Text(name)), text(value)]
-			ExpectNoAttr({ target, name }) => [loc(target), JsonOut.field("name", Text(name))]
+			ExpectNoAttr({ target, name }) | ExpectHasAttr({ target, name }) => [loc(target), JsonOut.field("name", Text(name))]
 			ExpectChecked(l, b) => [loc(l), JsonOut.field("value", Bool(b))]
 			ExpectDisabled(l, b) => [loc(l), JsonOut.field("value", Bool(b))]
 			ExpectUpdates(l, n) => [loc(l), JsonOut.field("count", Nat(n))]
 			StubHttp(fixture) => Scm.stub_fields(fixture)
 			RunEffect(n) => [JsonOut.field("count", Nat(n))]
+			ExpectRequest({ n, checks }) => [JsonOut.field("n", Nat(n))].concat(checks.map(|field| JsonOut.field(field.key, Text(field.value))))
+			ProgressEffect({ n, direction, done, total }) => [
+				JsonOut.field("n", Nat(n)),
+				JsonOut.field("direction", Text(if (direction == Sending) "sending" else "receiving")),
+				JsonOut.field("done", Text(done.to_str())),
+				JsonOut.field(
+					"total",
+					match total {
+						Known(bytes) => Text(bytes.to_str())
+						Unknown => Null
+					},
+				),
+			]
+			ExpectPortSubscriptionArg({ port, n, json }) => [JsonOut.field("port", Text(port)), JsonOut.field("n", Nat(n)), JsonOut.field("json", Text(json))]
 			ExpectPendingEffects(n) => [JsonOut.field("count", Nat(n))]
 			LoseWork({ occurrence, fault }) => [JsonOut.field("count", Nat(occurrence)), JsonOut.field("fault", Text(Scm.work_fault_name(fault)))]
 			TimeOutWork(n) => [JsonOut.field("count", Nat(n))]
@@ -1230,12 +2831,33 @@ Scm := [].{
 			Navigate(url) => [text(url)]
 			SetVisibility(v) => [text(Scm.visibility_name(v))]
 			SetOnline(o) => [text(Scm.online_name(o))]
+			HoldReports | ReleaseReports => []
+			ExpectReportsReplaced(n) => [JsonOut.field("count", Nat(n))]
 			HistoryBack => []
 			HistoryForward => []
 			ExpectLocation(url) => [text(url)]
 			ExpectTitle(t) => [text(t)]
 			ExpectLocalStorage({ key, value }) => [JsonOut.field("key", Text(key)), text(value)]
 			ExpectNoLocalStorage(key) => [JsonOut.field("key", Text(key))]
+			PasteText(target, value) => [loc(target), text(value)]
+			StorageElsewhere({ key, value }) | ExpectSessionStorage({ key, value }) => [JsonOut.field("key", Text(key)), text(value)]
+			StorageElsewhereRemoved(key) | ExpectNoSessionStorage(key) => [JsonOut.field("key", Text(key))]
+			StorageElsewhereCleared => []
+			LeavePage({ url, outcome }) => [
+				text(url),
+				JsonOut.field(
+					"outcome",
+					Text(
+						match outcome {
+							Stay => "stay"
+							Leave => "leave"
+							Unasked => "unasked"
+						},
+					),
+				),
+			]
+			ExpectClipboard(value) | ExpectClipboardHtml(value) => [text(value)]
+			ExpectClipboardWrites(count) => [JsonOut.field("count", Text(count.to_str()))]
 			MarkMetrics => []
 			ExpectMetricDelta({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
 			ExpectMetricDeltaAtMost({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
@@ -1337,10 +2959,10 @@ expect {
 	)?
 	actual =
 		\\${Str.inspect(spec.steps.map(|s| s.op))}
-		\\${JsonOut.render(Scm.to_json("w", spec))}
+		\\${JsonOut.render(Scm.spec_fields("w", spec))}
 	expected =
 		\\[LoseWork({ fault: AppCrash, occurrence: 1 }), TimeOutWork(2), ExpectPendingWork({ count: 3, task: "example.org/search/filter" })]
-		\\{"id":"w","name":"work","setup":[],"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
+		\\{"id":"w","name":"work","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"session":[],"session_available":true,"online":true,"visible":true,"media":[]},"mount_root":{"namespace":"http://www.w3.org/1999/xhtml","prefix":"","local":"div"},"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
 	actual == expected
 }
 
@@ -1376,24 +2998,20 @@ expect problem_of("(test \"t\" (steps (local-storage-unavailable)))") == "x.scm:
 ## unknown step or setup form.
 expect {
 	actual =
-		\\${problem_of("(test \"t\" (steps (pointer-down (label \"a\"))))")}
+		\\${problem_of("(test \"t\" (steps (pointer-hover (label \"a\"))))")}
 		\\${problem_of("(test \"t\" (steps (key-down (label \"a\") \"Enter\" false)))")}
 		\\${problem_of("(test \"t\" (steps (composition-start (label \"a\"))))")}
 		\\${problem_of("(test \"t\" (steps (custom-event (label \"a\") \"x\" \"\")))")}
-		\\${problem_of("(test \"t\" (steps (expect-session-storage \"k\" \"v\")))")}
 		\\${problem_of("(test \"t\" (steps (assert-current-location \"/\")))")}
 		\\${problem_of("(test \"t\" (setup (manual-effects)) (steps (mark-metrics)))")}
-		\\${problem_of("(test \"t\" (setup (session-storage \"k\" \"v\")) (steps (mark-metrics)))")}
 		\\${problem_of("(test \"t\" (setup (stub-http \"f\" :url \"/a\" :status 200 :body \"\")) (steps (mark-metrics)))")}
 	expected =
-		\\x.scm:1:18: unknown step pointer-down
+		\\x.scm:1:18: unknown step pointer-hover
 		\\x.scm:1:18: unknown step key-down
 		\\x.scm:1:18: unknown step composition-start
 		\\x.scm:1:18: unknown step custom-event
-		\\x.scm:1:18: unknown step expect-session-storage
 		\\x.scm:1:18: unknown step assert-current-location
 		\\x.scm:1:18: unknown setup form manual-effects
-		\\x.scm:1:18: unknown setup form session-storage
 		\\x.scm:1:18: unknown setup form stub-http
 	actual == expected
 }
@@ -1473,8 +3091,8 @@ expect {
 ## The emitted JSON names the op, its position and its arguments.
 expect {
 	spec = Scm.parse("(test \"j\" (setup (local-storage \"k\" \"v\")) (steps (expect-checked (role checkbox :name \"A\") true)))")?
-	actual = JsonOut.render(Scm.to_json("j-file", spec))
-	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
+	actual = JsonOut.render(Scm.spec_fields("j-file", spec))
+	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"environment\":{\"url\":\"/\",\"now_ms\":\"0\",\"seed\":\"0\",\"languages\":[\"en-US\"],\"zone\":{\"name\":\"UTC\",\"from_ms\":\"-9223372036854775808\",\"until_ms\":\"9223372036854775807\",\"offsets\":[{\"from_ms\":\"-9223372036854775808\",\"minutes\":0}]},\"storage\":[[\"k\",\"v\"]],\"storage_available\":true,\"session\":[],\"session_available\":true,\"online\":true,\"visible\":true,\"media\":[]},\"mount_root\":{\"namespace\":\"http://www.w3.org/1999/xhtml\",\"prefix\":\"\",\"local\":\"div\"},\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
 }
 
 ## Metric names are checked: an unknown one is a parse error, and a known one
@@ -1483,10 +3101,10 @@ expect {
 	spec = Scm.parse("(test \"m\" (steps (mark-metrics) (expect-metric-delta set_text 2)))")?
 	actual =
 		\\${problem_of("(test \"t\" (steps (expect-metric-delta-at-most rows_painted 0)))")}
-		\\${JsonOut.render(Scm.to_json("m", spec))}
+		\\${JsonOut.render(Scm.spec_fields("m", spec))}
 	expected =
-		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped
-		\\{"id":"m","name":"m","setup":[],"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
+		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, registrations_released, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped, effects_progress, view_transitions
+		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"session":[],"session_available":true,"online":true,"visible":true,"media":[]},"mount_root":{"namespace":"http://www.w3.org/1999/xhtml","prefix":"","local":"div"},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
 }
 
@@ -1521,4 +3139,597 @@ expect {
 		\\steps: [ExpectSaved({ index: 1, name: "out.txt", text: "AB" }), ExpectSaves(1)]
 		\\zero: x.scm:1:32: saves are counted from 1
 	actual == expected
+}
+
+## Focus assertions share the same locators and strict arities as the other
+## assertions, and emit the operations consumed by the browser runner.
+expect {
+	spec = Scm.parse("(test \"focus\" (steps (expect-focused (label \"Name\")) (expect-no-focus)))")?
+	spec.steps.map(|step| step.op) == [ExpectFocused(Label("Name")), ExpectNoFocus]
+}
+
+## A focus assertion's arguments are checked at parse time in both runners.
+expect {
+	missing = Scm.parse("(test \"t\" (steps (expect-focused)))")
+	extra = Scm.parse("(test \"t\" (steps (expect-no-focus (label \"Name\"))))")
+	missing.is_err() and extra.is_err()
+}
+
+## Unset specs use Boot's defaults, with no independent runner default.
+expect {
+	spec = Scm.parse("(test \"defaults\" (steps (mark-metrics)))")?
+	boot : Core.Boot
+	boot = {}
+	spec.environment == boot
+}
+
+## The parser resolves repeated facts and storage keys in setup order; the
+## emitted environment is data and the next-document hook preserves it.
+expect {
+	spec = Scm.parse("(test \"resolved\" (setup (initial-location \"/a\") (initial-online offline) (initial-visibility hidden) (local-storage \"a\" \"old\") (local-storage \"b\" \"b\") (local-storage \"a\" \"new\")) (steps (mark-metrics)))")?
+	expected : Scm.Environment
+	expected = { url: "/a", online: Bool.False, visible: Bool.False, storage: [("b", "b"), ("a", "new")] }
+	{ resolved: spec.environment, next: Scm.next_document(spec.environment)? } == { resolved: expected, next: { ..expected, seed: 1 } }
+}
+
+## Either order of seeding unavailable storage is a parser error at the
+## second conflicting form; runners never have to reconstruct this rule.
+expect {
+	before = Scm.parse("(test \"bad\" (setup (local-storage \"a\" \"v\") (local-storage-unavailable)) (steps (mark-metrics)))")
+	after = Scm.parse("(test \"bad\" (setup (local-storage-unavailable) (local-storage \"a\" \"v\")) (steps (mark-metrics)))")
+	message = "local-storage seeds storage that local-storage-unavailable says the app cannot read"
+	{ before, after } == {
+		before: Err({ pos: { line: 1, column: 44 }, message }),
+		after: Err({ pos: { line: 1, column: 48 }, message }),
+	}
+}
+
+## Report controls and their count emit the same names and arguments both
+## runners consume; malformed arity and a negative count remain hard errors.
+expect {
+	spec = Scm.parse("(test \"reports\" (steps (hold-reports) (expect-reports-replaced 2) (release-reports)))")?
+	invalid = ["(hold-reports 1)", "(release-reports 1)", "(expect-reports-replaced -1)", "(expect-reports-replaced)"]
+	{ ops: spec.steps.map(|step| step.op), rejected: invalid.map(|form| Scm.parse("(test \"bad\" (steps ${form}))").is_err()) } == {
+		ops: [HoldReports, ExpectReportsReplaced(2), ReleaseReports],
+		rejected: [Bool.True, Bool.True, Bool.True, Bool.True],
+	}
+}
+
+## The report-step wire data keeps controls argument-free and carries the
+## replacement assertion's count without inventing a work-record metric.
+expect {
+	pos = { line: 4, column: 5 }
+	actual = [HoldReports, ReleaseReports, ExpectReportsReplaced(2)].map(|op| JsonOut.render(Scm.step_json({ op, pos })))
+	actual == [
+		"{\"op\":\"hold-reports\",\"line\":4,\"column\":5}",
+		"{\"op\":\"release-reports\",\"line\":4,\"column\":5}",
+		"{\"op\":\"expect-reports-replaced\",\"line\":4,\"column\":5,\"count\":2}",
+	]
+}
+
+## Pointer options resolve into one typed step record, including the reserved
+## mouse id and the default non-mouse id, and emit the shared JSON fields.
+expect {
+	spec = Scm.parse("(test \"pointer\" (steps (pointer-down (test-id \"a\") :pointer touch :at 25 70 :modifiers (shift meta)) (pointer-move (test-id \"b\") :id 2) (pointer-up (test-id \"b\") :id 2) (pointer-cancel)))")?
+	{ ops: spec.steps.map(|step| step.op), json: JsonOut.render(Scm.step_json(spec.steps.first()?)) } == {
+		ops: [PointerDown({ target: TestId("a"), at: Percent({ x: 25, y: 70 }), id: 2, kind: Touch, button: Main, modifiers: 9 }), PointerMove({ target: TestId("b"), at: Centre, id: 2 }), PointerUp({ target: TestId("b"), at: Centre, id: 2 }), PointerCancel(2)],
+		json: "{\"op\":\"pointer-down\",\"line\":1,\"column\":24,\"loc\":{\"kind\":\"test-id\",\"value\":\"a\"},\"at\":{\"x\":25,\"y\":70},\"id\":2,\"pointer\":\"touch\",\"button\":\"main\",\"modifiers\":[\"shift\",\"meta\"]}",
+	}
+}
+
+## Unknown, duplicate and misplaced options never become guessed pointer
+## input. Percentages and ids are checked before narrowing their integer type.
+expect {
+	bad = ["(pointer-down (test-id \"a\") :at 101 0)", "(pointer-down (test-id \"a\") :id -1)", "(pointer-down (test-id \"a\") :id 4294967296)", "(pointer-down (test-id \"a\") :id 2 :id 3)", "(pointer-down (test-id \"a\") :modifiers (shift shift))", "(pointer-move (test-id \"a\") :button main)", "(pointer-up (test-id \"a\") :pointer touch)", "(pointer-cancel :at 50 50)", "(pointer-down (test-id \"a\") :at 0)"]
+	bad.map(|form| Scm.parse("(test \"bad\" (steps ${form}))").is_err()) == List.repeat(Bool.True, bad.len())
+}
+
+## Press resolves one explicit US chord once for both runners.
+expect {
+	spec = Scm.parse("(test \"keys\" (steps (press \"Control+`\") (press (label \"Grid\") \"Shift+ArrowDown\") (press \"Shift+?\")))")?
+	spec.steps.map(|step| step.op) == [Press({ target: Focused, key: { key: "`", code: "Backquote", ctrl: Bool.True, alt: Bool.False, shift: Bool.False, meta: Bool.False } }), Press({ target: At(Label("Grid")), key: { key: "ArrowDown", code: "ArrowDown", ctrl: Bool.False, alt: Bool.False, shift: Bool.True, meta: Bool.False } }), Press({ target: Focused, key: { key: "?", code: "Slash", ctrl: Bool.False, alt: Bool.False, shift: Bool.True, meta: Bool.False } })]
+}
+
+## Dialog assertions and scroll ordinals are parsed once, with exact U64 JSON.
+expect {
+	spec = Scm.parse("(test \"shown\" (steps (dismiss) (expect-shown (label \"Editor\") modal) (expect-scroll 18446744073709551615 (test-id \"answer\") into-view) (expect-scrolls 18446744073709551615)))")?
+	actual = {
+		ops: spec.steps.map(|step| step.op),
+		ordinal: JsonOut.render(Scm.step_json(spec.steps.get(2)?)),
+	}
+	actual == {
+		ops: [Dismiss, ExpectShown(Label("Editor"), Modal), ExpectScroll({ ordinal: 18446744073709551615, target: TestId("answer"), kind: IntoView }), ExpectScrolls(18446744073709551615)],
+		ordinal: "{\"op\":\"expect-scroll\",\"line\":1,\"column\":70,\"loc\":{\"kind\":\"test-id\",\"value\":\"answer\"},\"ordinal\":\"18446744073709551615\",\"kind\":\"into-view\"}",
+	}
+}
+
+## New forms reject unknown states, zero ordinals, overflow and extra arguments.
+expect ["(dismiss 1)", "(expect-shown (label \"x\") dialog)", "(expect-scroll 0 (label \"x\") to)", "(expect-scroll -1 (label \"x\") to)", "(expect-scrolls 18446744073709551616)", "(expect-scroll 1 (label \"x\") smooth)", "(expect-files 18446744073709551615)"].map(|step| Scm.parse("(test \"bad\" (steps ${step}))").is_err()) == List.repeat(Bool.True, 7)
+
+## Every grammar spelling has one explicit activation row, including assertions.
+expect {
+	names = Scm.step_forms.map(|form| form.name)
+	rows = Scm.activation_table
+	{
+		count: rows.len(),
+		unique: rows.map(|row| row.op).fold(Dict.empty(), |seen, name| seen.insert(name, {})).len(),
+		covered: names.all(|name| rows.any(|row| row.op == name)),
+		keyboard: Scm.activation_for(Dismiss),
+	} == { count: names.len(), unique: names.len(), covered: Bool.True, keyboard: Never }
+}
+
+## Implicit and contradictory Shift, repeated modifiers and unknown keys are
+## parser failures, so neither runner can assign a different chord.
+expect ["?", "A", "Shift+a", "Control+Control+k", "Hyper+k", "é"].map(|chord| Scm.parse("(test \"bad\" (steps (press \"${chord}\")))").is_err()) == List.repeat(Bool.True, 6)
+
+## The shared keyboard table covers every printable ASCII character and each
+## physical Shift partner without duplicated names.
+expect {
+	printable = Scm.key_table.keep_if(|k| !k.named)
+	{
+		printable: printable.len(),
+		unique: Scm.key_table.map(|k| k.name).fold(Dict.empty(), |seen, name| seen.insert(name, {})).len() == Scm.key_table.len(),
+		shifted: printable.keep_if(|k| k.needs_shift).all(|k| Scm.key_table.any(|other| other.code == k.code and !other.needs_shift)),
+		metadata: match Scm.to_json("keyboard", Scm.parse("(test \"k\" (steps (press \"F2\")))")?) {
+			Object(fields) => fields.any(|f| f.key == "key_table") and fields.any(|f| f.key == "unmodelled_key_defaults")
+			_ => Bool.False
+		},
+	} == { printable: 95, unique: Bool.True, shifted: Bool.True, metadata: Bool.True }
+}
+
+## Raw Space and named Space carry the same key record, including an
+## explicit Shift; Shift remains mandatory for other shifted characters.
+expect {
+	spec = Scm.parse("(test \"space\" (steps (press \" \") (press \"Space\") (press \"Shift+ \") (press \"Shift+Space\")))")?
+	keys = spec.steps.map(
+		|step| match step.op {
+			Press(p) => p.key
+			_ => crash "space test contains only press steps"
+		},
+	)
+	{ plain: keys.get(0) == keys.get(1), shifted: keys.get(2) == keys.get(3), shift: (keys.get(2)?).shift } == { plain: Bool.True, shifted: Bool.True, shift: Bool.True }
+}
+
+## Layout steps keep their typed fields and media facts use the same environment
+## representation as Boot, resolving repeated setup facts in written order.
+expect {
+	spec = Scm.parse("(test \"layout\" (setup (initial-media \"dark\" true) (initial-media \"dark\" false)) (steps (scroll (label \"List\") 4294967295 2) (report-size (label \"List\") 640 400) (report-seen (test-id \"end\") yes 500) (report-seen (test-id \"end\") no) (set-media \"dark\" true) (expect-observed 2) (expect-media-subscriptions \"dark\" 1)))")?
+	{
+		media: spec.environment.media,
+		ops: spec.steps.map(|step| step.op),
+		activation: spec.steps.map(|step| Scm.activation_for(step.op)),
+	} == {
+		media: [("dark", False)],
+		ops: [Scroll({ target: Label("List"), top: 4294967295, left: 2 }), ReportSize({ target: Label("List"), width: 640, height: 400 }), ReportSeen({ target: TestId("end"), intersecting: True, ratio_permille: 500 }), ReportSeen({ target: TestId("end"), intersecting: False, ratio_permille: 0 }), SetMedia({ query: "dark", matches: True }), ExpectObserved(2), ExpectMediaSubscriptions({ query: "dark", count: 1 })],
+		activation: List.repeat(Never, 7),
+	}
+}
+
+## Layout dimensions and ratios reject overflow, negative values, misspelt
+## states and extra arguments before either runner can act.
+expect {
+	forms = ["(scroll (label \"L\") -1 0)", "(scroll (label \"L\") 4294967296 0)", "(report-size (label \"L\") 1 4294967296)", "(report-seen (label \"L\") true)", "(report-seen (label \"L\") yes 1001)", "(report-seen (label \"L\") no -1)", "(report-seen (label \"L\") no 0 extra)", "(set-media \"dark\" yes)", "(expect-observed -1)", "(expect-media-subscriptions \"dark\" 1 2)"]
+	forms.map(|form| Scm.parse("(test \"bad\" (steps ${form}))").is_err()) == List.repeat(True, 10)
+}
+
+## Layout and media JSON carries plain named fields, with no runner-specific
+## interpretation of a missing ratio, media match or activation policy.
+expect {
+	pos = { line: 2, column: 3 }
+	ops = [Scroll({ target: Label("L"), top: 3, left: 4 }), ReportSize({ target: Label("L"), width: 640, height: 400 }), ReportSeen({ target: Label("L"), intersecting: True, ratio_permille: 500 }), SetMedia({ query: "dark", matches: False }), ExpectObserved(2), ExpectMediaSubscriptions({ query: "dark", count: 1 })]
+	ops.map(|op| JsonOut.render(Scm.step_json({ op, pos }))) == [
+		"{\"op\":\"scroll\",\"line\":2,\"column\":3,\"loc\":{\"kind\":\"label\",\"value\":\"L\"},\"top\":3,\"left\":4}",
+		"{\"op\":\"report-size\",\"line\":2,\"column\":3,\"loc\":{\"kind\":\"label\",\"value\":\"L\"},\"width\":640,\"height\":400}",
+		"{\"op\":\"report-seen\",\"line\":2,\"column\":3,\"loc\":{\"kind\":\"label\",\"value\":\"L\"},\"intersecting\":true,\"ratio_permille\":500}",
+		"{\"op\":\"set-media\",\"line\":2,\"column\":3,\"query\":\"dark\",\"matches\":false}",
+		"{\"op\":\"expect-observed\",\"line\":2,\"column\":3,\"count\":2}",
+		"{\"op\":\"expect-media-subscriptions\",\"line\":2,\"column\":3,\"query\":\"dark\",\"count\":1}",
+	]
+}
+
+## Transition counts and ordinals preserve U64 precision in shared JSON.
+expect {
+	spec = Scm.parse("(test \"transitions\" (steps (expect-transitions 18446744073709551615) (expect-transition 18446744073709551615 \"shelf\" \"books\") (expect-transition 1)))")?
+	{ ops: spec.steps.map(|step| step.op), json: JsonOut.render(Scm.step_json(spec.steps.get(1)?)) } == {
+		ops: [ExpectTransitions(18446744073709551615), ExpectTransition({ at: 18446744073709551615, types: ["shelf", "books"] }), ExpectTransition({ at: 1, types: [] })],
+		json: "{\"op\":\"expect-transition\",\"line\":1,\"column\":70,\"at\":\"18446744073709551615\",\"types\":[\"shelf\",\"books\"]}",
+	}
+}
+
+## Missing, negative, overflowing and zero transition ordinals are errors.
+expect ["(expect-transition)", "(expect-transition 0)", "(expect-transition -1)", "(expect-transition 18446744073709551616)", "(expect-transitions 18446744073709551616)", "(expect-transition 1 nope)", "(expect-transitions 1 2)"].map(|form| Scm.parse("(test \"bad\" (steps ${form}))").is_err()) == List.repeat(True, 7)
+
+## Parse the spec grammar's fixed UTC spelling, with Gregorian date checks.
+utc_milliseconds : Str -> Try(I64, [InvalidUtc])
+utc_milliseconds = |text| {
+	bytes = text.to_utf8()
+	if bytes.len() != 20 and bytes.len() != 24 {
+		return Err(InvalidUtc)
+	}
+	if bytes.get(4) != Ok('-') or bytes.get(7) != Ok('-') or bytes.get(10) != Ok('T') or bytes.get(13) != Ok(':') or bytes.get(16) != Ok(':') {
+		return Err(InvalidUtc)
+	}
+	if (bytes.len() == 20 and bytes.get(19) != Ok('Z')) or (bytes.len() == 24 and (bytes.get(19) != Ok('.') or bytes.get(23) != Ok('Z'))) {
+		return Err(InvalidUtc)
+	}
+	digits = |start, count| {
+		var $value = 0.I64
+		for byte in bytes.sublist({ start, len: count }) {
+			if byte < '0' or byte > '9' {
+				return Err(InvalidUtc)
+			}
+			$value = $value * 10 + (byte - '0').to_i64()
+		}
+		Ok($value)
+	}
+	year = digits(0, 4)?
+	month = digits(5, 2)?
+	day = digits(8, 2)?
+	hour = digits(11, 2)?
+	minute = digits(14, 2)?
+	second = digits(17, 2)?
+	milliseconds = if (bytes.len() == 24) digits(20, 3)? else 0
+	if month < 1 or month > 12 or hour > 23 or minute > 59 or second > 59 {
+		return Err(InvalidUtc)
+	}
+	leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+	month_days = [31.I64, if (leap) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31].get((month - 1).to_u64_wrap()) ?? crash "internal: UTC month"
+	if day < 1 or day > month_days {
+		return Err(InvalidUtc)
+	}
+	adjusted_year = year - (if (month <= 2) 1 else 0)
+	era = (if (adjusted_year >= 0) adjusted_year else adjusted_year - 399) // 400
+	year_of_era = adjusted_year - era * 400
+	shifted_month = month + (if (month > 2) -3 else 9)
+	day_of_year = (153 * shifted_month + 2) // 5 + day - 1
+	day_of_era = year_of_era * 365 + year_of_era // 4 - year_of_era // 100 + day_of_year
+	days = era * 146097 + day_of_era - 719468
+	Ok(((days * 24 + hour) * 60 + minute) * 60000 + second * 1000 + milliseconds)
+}
+
+## Portable UTC parsing checks Gregorian dates and preserves negative epochs.
+expect {
+	valid = ["1970-01-01T00:00:00Z", "1969-12-31T23:59:59.999Z", "2000-02-29T00:00:00Z", "0000-01-01T00:00:00Z"]
+	invalid = ["1900-02-29T00:00:00Z", "2000-02-30T00:00:00Z", "1970-01-01T00:00:60Z", "1970-01-01T24:00:00Z", "1970-01-01T00:00:00.1Z", "1970-01-01T00:00:00+00:00"]
+	valid.map(utc_milliseconds) == [Ok(0), Ok(-1), Ok(951782400000), Ok(-62167219200000)] and invalid.all(|text| utc_milliseconds(text).is_err())
+}
+
+## Full-width seeds and signed clock forms resolve once; only a new document
+## advances the seed, and exhausting either integer produces an error.
+expect {
+	spec = Scm.parse("(test \"facts\" (setup (initial-time \"1969-12-31T23:59:59.999Z\") (seed 340282366920938463463374607431768211455) (languages \"\" \"en-AU\") (time-zone \"test\" -60 (0 90))) (steps (set-time -100) (advance-time 18446744073709551615)))")?
+	{ now: spec.environment.now_ms, seed: spec.environment.seed, language: spec.environment.languages, at_zero: Core.zone_offset(spec.environment.zone, 0), exhausted: Scm.next_document(spec.environment).is_err(), advance: Scm.advance_clock(-9223372036854775808, 18446744073709551615), overflow: Scm.advance_clock(9223372036854775807, 1).is_err() } == {
+		now: -1,
+		seed: 340282366920938463463374607431768211455,
+		language: ["", "en-AU"],
+		at_zero: Ok(90),
+		exhausted: Bool.True,
+		advance: Ok(9223372036854775807),
+		overflow: Bool.True,
+	}
+}
+
+## Invalid environment setup is rejected by the shared parser.
+expect ["(seed -1)", "(seed 340282366920938463463374607431768211456)", "(languages)", "(time-zone \"x\" 2147483648)", "(time-zone \"x\" 0 (1 20) (1 30))", "(initial-time \"2001-02-29T00:00:00Z\")"].all(|form| Scm.parse("(test \"bad\" (setup ${form}) (steps (mark-metrics)))").is_err())
+
+## Session setup resolves once, permits a full store's existing seed, and
+## every persistence action has an explicit non-activating grammar row.
+expect {
+	spec = Scm.parse(
+		\\(test "draft"
+		\\  (setup (session-storage "draft" "saved") (session-storage-full) (local-storage-full) (clipboard-denied) (max-paste-bytes 0))
+		\\  (steps (paste-text (label "Import") "") (storage-elsewhere "doc" "new") (storage-elsewhere-removed "doc") (storage-elsewhere-cleared) (leave-page "/next" stay) (expect-session-storage "draft" "saved") (expect-no-session-storage "absent") (expect-clipboard "copied") (expect-clipboard-html "<p>copied</p>") (expect-clipboard-writes 18446744073709551615)))
+	)?
+	{ session: spec.environment.session, available: spec.environment.session_available, activation: spec.steps.map(|step| Scm.activation_for(step.op)), writes: spec.steps.last()?.op } == {
+		session: [("draft", "saved")],
+		available: True,
+		activation: List.repeat(Never, 10),
+		writes: ExpectClipboardWrites(18446744073709551615),
+	}
+}
+
+## Unavailable session storage rejects seeds in either order; paste bounds
+## must remain exactly representable and leave outcomes have closed spelling.
+expect {
+	inputs = [
+		"(test \"t\" (setup (session-storage \"k\" \"v\") (session-storage-unavailable)) (steps (mark-metrics)))",
+		"(test \"t\" (setup (session-storage-unavailable) (session-storage \"k\" \"v\")) (steps (mark-metrics)))",
+		"(test \"t\" (setup (max-paste-bytes -1)) (steps (mark-metrics)))",
+		"(test \"t\" (setup (max-paste-bytes 9007199254740992)) (steps (mark-metrics)))",
+		"(test \"t\" (steps (leave-page \"/next\" maybe)))",
+		"(test \"t\" (steps (paste-text (label \"Import\"))))",
+	]
+	inputs.map(|source| Scm.parse(source).is_err()) == List.repeat(True, inputs.len())
+}
+
+## Request assertions retain only stated fields, and progress JSON preserves full U64 values.
+expect {
+	spec = Scm.parse("(test \"transfer\" (steps (expect-request 1 :cache no-store :credentials include) (progress-effect 2 receiving 18446744073709551615 unknown) (expect-port-subscription-arg \"feed\" 1 \"{}\")))")?
+	{ names: spec.steps.map(|step| Scm.op_name(step.op)), json: JsonOut.render(Scm.step_json(spec.steps.get(1)?)) } == {
+		names: ["expect-request", "progress-effect", "expect-port-subscription-arg"],
+		json: "{\"op\":\"progress-effect\",\"line\":1,\"column\":81,\"n\":2,\"direction\":\"receiving\",\"done\":\"18446744073709551615\",\"total\":null}",
+	}
+}
+
+## Network assertions reject unknown, duplicate and unsupported policies at the parser boundary.
+expect {
+	forms = ["(expect-request)", "(expect-request 0)", "(expect-request 1 :cache only-if-cached)", "(expect-request 1 :mode \"cors\")", "(expect-request 1 :url \"/a\" :url \"/b\")", "(expect-request 1 :credentials omit)", "(progress-effect 1 sent 2 unknown)", "(progress-effect 1 receiving 18446744073709551616 unknown)", "(expect-port-subscription-arg \"feed\" 0 \"{}\")"]
+	forms.all(|form| Scm.parse("(test \"invalid\" (steps ${form}))").is_err())
+}
+
+## An absence relates to the whole spec, before or after its positive anchor.
+expect {
+	before = Scm.parse("(test \"t\" (steps (expect-visible (test-id \"row-7\")) (expect-absent (test-id \"row-7\"))))")
+	after = Scm.parse("(test \"t\" (steps (expect-absent (test-id \"row-7\")) (click (test-id \"row-7\"))))")
+	before.is_ok() and after.is_ok()
+}
+
+## Wrong spellings and key-built ids are distinct, and failures point at the
+## absence rather than its section or the otherwise valid positive step.
+expect {
+	text = "(test \"t\"\n  (steps\n    (expect-visible (test-id \"row-7\"))\n    (expect-absent (test-id \"row-8\"))))"
+	match Scm.parse(text) {
+		Err(problem) => problem.pos == { line: 4, column: 5 } and problem.message.contains("(test-id \"row-8\") names a locator that no step")
+		Ok(_) => Bool.False
+	}
+}
+
+## A never-drawn branch retains the ordinary emitted operation. A matching
+## step rejects the marker in either order and names its first anchor line.
+expect {
+	unmarked = Scm.step_form(Scm.read_one("(expect-absent (label \"Other\"))")?)?
+	marked = Scm.parse("(test \"t\" (steps (expect-absent (label \"Other\") :never-drawn)))")?
+	before = problem_of("(test \"t\"\n (steps\n  (focus (label \"Other\"))\n  (expect-absent (label \"Other\") :never-drawn)))")
+	after = problem_of("(test \"t\"\n (steps\n  (expect-absent (label \"Other\") :never-drawn)\n  (focus (label \"Other\"))))")
+	marked.steps.first()?.op == unmarked.op and before.contains("is matched at line 3; drop :never-drawn") and after.contains("is matched at line 4; drop :never-drawn")
+}
+
+## An absent locator never anchors itself, a differently written locator
+## never anchors it, and malformed markers do not become an unchecked guard.
+expect {
+	bad = [
+		"(expect-absent (text \"x\")) (expect-absent (text \"x\"))",
+		"(expect-visible (text \"x\")) (expect-absent (label \"x\"))",
+		"(press \"Escape\") (expect-absent (text \"x\"))",
+		"(expect-absent (text \"x\") :never)",
+		"(expect-absent (text \"x\") \":never-drawn\")",
+		"(expect-absent (text \"x\") :never-drawn :never-drawn)",
+	]
+	bad.all(|steps| Scm.parse("(test \"bad\" (steps ${steps}))").is_err())
+}
+
+## Every spelling is deliberately classified. Each requiring form is parsed
+## and checked against the exact locator, including hidden shown-state and
+## layout reports; a new alias or family must extend one of these tables.
+expect {
+	forms = [
+		"(click (test-id \"row-7\"))",
+		"(real-click (test-id \"row-7\"))",
+		"(focus (test-id \"row-7\"))",
+		"(blur (test-id \"row-7\"))",
+		"(submit (test-id \"row-7\"))",
+		"(check (test-id \"row-7\"))",
+		"(uncheck (test-id \"row-7\"))",
+		"(fill (test-id \"row-7\") \"x\")",
+		"(change (test-id \"row-7\") \"x\")",
+		"(select-option (test-id \"row-7\") \"x\")",
+		"(expect-text (test-id \"row-7\") \"x\")",
+		"(expect-visible (test-id \"row-7\"))",
+		"(expect-focused (test-id \"row-7\"))",
+		"(expect-shown (test-id \"row-7\") hidden)",
+		"(expect-element (test-id \"row-7\") html \"div\")",
+		"(expect-value (test-id \"row-7\") \"x\")",
+		"(expect-attr (test-id \"row-7\") \"title\" \"x\")",
+		"(expect-no-attr (test-id \"row-7\") \"title\" :never-written)",
+		"(expect-has-attr (test-id \"row-7\") \"title\")",
+		"(expect-checked (test-id \"row-7\") true)",
+		"(expect-disabled (test-id \"row-7\") false)",
+		"(expect-updates (test-id \"row-7\") 0)",
+		"(choose-files (test-id \"row-7\") \"a\")",
+		"(drop-files (test-id \"row-7\") \"a\")",
+		"(paste-files (test-id \"row-7\") \"a\")",
+		"(paste-text (test-id \"row-7\") \"x\")",
+		"(pointer-down (test-id \"row-7\"))",
+		"(pointer-move (test-id \"row-7\"))",
+		"(pointer-up (test-id \"row-7\"))",
+		"(press (test-id \"row-7\") \"Escape\")",
+		"(scroll (test-id \"row-7\") 0 0)",
+		"(report-size (test-id \"row-7\") 1 1)",
+		"(report-seen (test-id \"row-7\") yes 1)",
+		"(expect-scroll 1 (test-id \"row-7\") to)",
+	]
+	nonrequiring = [
+		"storage-elsewhere",
+		"storage-elsewhere-removed",
+		"storage-elsewhere-cleared",
+		"leave-page",
+		"expect-session-storage",
+		"expect-no-session-storage",
+		"expect-clipboard",
+		"expect-clipboard-html",
+		"expect-clipboard-writes",
+		"dismiss",
+		"expect-transitions",
+		"expect-transition",
+		"expect-scrolls",
+		"set-time",
+		"advance-time",
+		"set-media",
+		"expect-observed",
+		"expect-media-subscriptions",
+		"pointer-cancel",
+		"hold-reports",
+		"release-reports",
+		"expect-reports-replaced",
+		"expect-no-focus",
+		"expect-absent",
+		"stub-http",
+		"stub-http-reject",
+		"run-effect",
+		"expect-request",
+		"progress-effect",
+		"expect-port-subscription-arg",
+		"expect-pending-effects",
+		"lose-work",
+		"time-out-work",
+		"expect-files",
+		"expect-pending-work",
+		"tick-interval",
+		"tick-interval-if-active",
+		"expect-cleanup",
+		"expect-interval",
+		"navigate",
+		"set-visibility",
+		"set-online",
+		"history-back",
+		"history-forward",
+		"expect-current-location",
+		"expect-document-title",
+		"expect-local-storage",
+		"expect-no-local-storage",
+		"mark-metrics",
+		"expect-metric-delta",
+		"expect-metric-delta-at-most",
+		"expect-upload",
+		"expect-port-call",
+		"answer-port",
+		"expect-port-sent",
+		"expect-port-sends",
+		"emit-port",
+		"close-port",
+		"fail-port",
+		"expect-port-subscriptions",
+		"expect-saved",
+		"expect-saves",
+	]
+	classified = forms.map(
+		|text| {
+			step = Scm.step_form(Scm.read_one(text).map_err(|_| {})?).map_err(|_| {})?
+			name = match Scm.read_one(text).map_err(|_| {})? {
+				List([Sym(head, _), ..], _) => head
+				_ => return Err({})
+			}
+			if Scm.required_loc(step.op) != Ok(TestId("row-7")) {
+				return Err({})
+			}
+			if !Scm.parse("(test \"t\" (steps ${text} (expect-absent (test-id \"row-7\"))))").is_ok() {
+				return Err({})
+			}
+			if !Scm.parse("(test \"t\" (steps (expect-absent (test-id \"row-7\") :never-drawn) ${text}))").is_err() {
+				return Err({})
+			}
+			Ok(name)
+		},
+	)
+	covered = classified.keep_oks(|item| item).concat(nonrequiring)
+	names = Scm.step_forms.map(|form| form.name)
+	classified.all(|item| item.is_ok()) and covered.len() == names.len() and covered.fold(Dict.empty(), |seen, name| seen.insert(name, {})).len() == names.len() and names.all(|name| covered.contains(name))
+}
+
+## Namespace assertions require a real locator and compare exact local case;
+## common aliases and arbitrary extension URI strings share one operation.
+expect {
+	spec = Scm.parse("(test \"namespaces\" (steps (expect-absent (test-id \"path\")) (expect-element (test-id \"path\") svg \"linearGradient\") (expect-element (test-id \"entry\") \"urn:entry\" \"entry\")))")?
+	spec.steps.get(1).map_ok(|step| step.op) == Ok(ExpectElement({ target: TestId("path"), namespace: "http://www.w3.org/2000/svg", name: "linearGradient" })) and Scm.required_loc((spec.steps.get(2)?).op) == Ok(TestId("entry"))
+}
+
+## Invalid namespace aliases, local names and arity fail at parse time;
+## an unanchored absence remains invalid rather than receiving a fake anchor.
+expect {
+	["(expect-element (test-id \"x\") mystery \"path\")", "(expect-element (test-id \"x\") svg \"\")", "(expect-element (test-id \"x\") svg)", "(expect-absent (test-id \"x\")) (expect-element (test-id \"other\") svg \"path\")"].all(|steps| Scm.parse("(test \"bad\" (steps ${steps}))").is_err())
+}
+
+## External SVG and foreignObject mounts are explicit engine inputs; they do
+## not add a field to the app-visible environment or infer a prefix from local.
+expect {
+	spec = Scm.parse("(test \"root\" (setup (mount-root svg \"foreignObject\" :prefix \"s\")) (steps (mark-metrics)))")?
+	spec.mount_root == { namespace: "http://www.w3.org/2000/svg", prefix: "s", local: "foreignObject" } and spec.environment == {}
+}
+
+## Invalid roots and duplicate declarations fail before either runner mounts.
+expect {
+	["(mount-root svg \"\")", "(mount-root none \"root\" :prefix \"p\")", "(mount-root svg \"root\" :prefix \"a:b\")", "(mount-root svg \"svg\") (mount-root html \"div\")"].all(|setup| Scm.parse("(test \"bad\" (setup ${setup}) (steps (mark-metrics)))").is_err())
+}
+
+## Port shape, worker names and setup queries survive classification even
+## when the assertion's count is zero; declarations can reject them early.
+expect {
+	Scm.evidence(ExpectPortCall({ occurrence: 1, port: "call", json: "null" })).needs == [Port({ name: "call", kind: Call })] and
+		Scm.evidence(ExpectPortSends({ port: "command", count: 0 })).needs == [Port({ name: "command", kind: Command })] and
+			Scm.evidence(ExpectPortSubscriptions({ port: "subscription", count: 0 })).needs == [Port({ name: "subscription", kind: Subscription })] and
+				Scm.evidence(ExpectPendingWork({ task: "task", count: 0 })).needs == [Task("task")] and
+					Scm.setup_evidence(InitialMedia({ query: "query", matches: Bool.False })).needs == [Media("query")]
+}
+
+## Only an actual set, positive reading or seed establishes a storage key.
+## Removal, clear and an absence cannot prove their own spelling.
+expect {
+	Scm.evidence(StorageElsewhere({ key: "draft", value: "" })).shows == [Storage({ store: Local, key: "draft" })] and
+		Scm.setup_evidence(SessionStorage({ key: "draft", value: "" })).shows == [Storage({ store: Session, key: "draft" })] and
+			Scm.evidence(ExpectSessionStorage({ key: "draft", value: "" })).shows == [Storage({ store: Session, key: "draft" })] and
+				Scm.evidence(ExpectNoLocalStorage("draft")).needs == [Storage({ store: Local, key: "draft" })] and
+					Scm.evidence(StorageElsewhereRemoved("draft")).shows.is_empty() and
+						Scm.evidence(StorageElsewhereCleared).shows.is_empty()
+}
+
+## Locator evidence is a projection; attribute assertions simultaneously
+## prove a locator and carry the attribute's independent story obligation.
+expect {
+	loc : Scm.Loc
+	loc = TestId("node")
+	Scm.required_loc(ExpectNoAttr({ target: loc, name: "title" })) == Ok(loc) and
+		Scm.evidence(ExpectNoAttr({ target: loc, name: "title" })).needs == [Story(Attribute("title"))] and
+			Scm.evidence(ExpectAttr({ target: loc, name: "title", value: "" })).shows == [Locator(loc), Attribute("title")] and
+				Scm.evidence(ExpectCleanup({ name: "cleanup", count: 0 })).needs == [Story(Cleanup("cleanup"))] and
+					Scm.evidence(ExpectCleanup({ name: "cleanup", count: 1 })).shows == [Cleanup("cleanup")] and
+						Scm.evidence(TickIntervalIfActive(500)).needs == [Story(Interval(500))] and
+							Scm.evidence(TickInterval(500)).shows == [Interval(500)]
+}
+
+## Each story family accepts earlier and later evidence, catches a changed
+## subject and rejects a marker when the story can prove the spelling.
+expect {
+	families = [
+		{ negative: "(expect-no-attr (test-id \"a\") title)", positive: "(expect-attr (test-id \"b\") \"title\" \"\")", wrong: "(expect-has-attr (test-id \"b\") typo)", marked: "(expect-no-attr (test-id \"a\") title :never-written)" },
+		{ negative: "(expect-cleanup \"cleanup\" 0)", positive: "(expect-cleanup \"cleanup\" 1)", wrong: "(expect-cleanup \"typo\" 1)", marked: "(expect-cleanup \"cleanup\" 0 :never-runs)" },
+		{ negative: "(expect-interval 500 0)", positive: "(expect-interval 500 1)", wrong: "(expect-interval 5000 1)", marked: "(expect-interval 500 0 :never-started)" },
+		{ negative: "(tick-interval-if-active 500)", positive: "(tick-interval 500)", wrong: "(tick-interval 5000)", marked: "(tick-interval-if-active 500 :never-started)" },
+	]
+	families.all(
+		|story|
+			Scm.parse("(test \"before\" (steps ${story.positive} ${story.negative}))").is_ok() and
+				Scm.parse("(test \"after\" (steps ${story.negative} ${story.positive}))").is_ok() and
+					Scm.parse("(test \"typo\" (steps ${story.negative} ${story.wrong}))").is_err() and
+						Scm.parse("(test \"missing\" (steps ${story.negative}))").is_err() and
+							Scm.parse("(test \"never\" (steps ${story.marked}))").is_ok() and
+								Scm.parse("(test \"redundant\" (steps ${story.marked} ${story.positive}))").is_err(),
+	)
+}
+
+## Markers cannot cross families, hide positive counts or survive emission;
+## presence of an empty attribute still anchors the required locator.
+expect {
+	invalid = [
+		"(expect-no-attr (test-id \"a\") title :never-runs)",
+		"(expect-cleanup \"cleanup\" 0 :never-written)",
+		"(expect-cleanup \"cleanup\" 1 :never-runs)",
+		"(expect-interval 500 1 :never-started)",
+		"(tick-interval-if-active 500 :never-drawn)",
+		"(expect-has-attr (test-id \"a\") title :never-written)",
+	]
+	presence = Scm.parse("(test \"presence\" (steps (expect-absent (test-id \"a\")) (expect-has-attr (test-id \"a\") title)))")?
+	marked = Scm.parse("(test \"never\" (steps (expect-no-attr (test-id \"a\") title :never-written)))")?
+	invalid.all(|form| Scm.parse("(test \"invalid\" (steps ${form}))").is_err()) and
+		Scm.required_loc(presence.steps.get(1)?.op) == Ok(TestId("a")) and
+			!JsonOut.render(Scm.step_json(marked.steps.first()?)).contains(":never-written") and
+				Scm.evidence(presence.steps.get(1)?.op).shows == [Locator(TestId("a")), Attribute("title")]
+}
+
+## Missing evidence points at the negative form, not a later unrelated
+## provider; the diagnostic identifies the family and the explicit remedy.
+expect {
+	match Scm.parse("(test \"position\"\n (steps\n  (expect-no-attr (label \"a\") title)\n  (expect-has-attr (label \"b\") typo)))") {
+		Err(problem) => problem.pos == { line: 3, column: 3 } and problem.message.contains("title") and problem.message.contains(":never-written")
+		Ok(_) => Bool.False
+	}
 }

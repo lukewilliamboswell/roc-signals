@@ -418,6 +418,14 @@ sources and a timeline of entries a minute; its overview and its chart are
 answered from the index alone, and its search and its viewer read only the
 lines they need.
 
+The viewer follows its native scrollbar, asking the worker for only the
+fixed-height lines that fit. Its spacer is capped at 8,000,000 pixels; for a
+taller log the scroll map is proportional, while paging and “Go to line”
+keep fine movement available. Jumps scroll instantly, and their scroll
+echoes write nothing, so one jump asks for one window. Superseded window
+jobs use `on_cancel: Finish` to keep the worker's prepared index for the
+next question.
+
 Two costs come with a state like this:
 
 - A question about the whole text, such as a search for a word, reads the
@@ -484,6 +492,11 @@ changes, so tell the user, as the rows do, or ask again from a button.
 
 Jobs beyond the number of workers wait for a free one. The pool's size is
 the page's `maxWorkers` option (see [Serving the app](#serving-the-app)).
+
+Task and prepared-task timeouts use `Unlimited` for none, or `Ms(ms)` with
+at least one millisecond. `Ms(0)` is a contract error when `Worker.task` or
+the preparation's task constructor is called. A bad top-level constant
+fails while compiling; a computed bad timeout faults when constructed.
 
 **A timeout stops a job that takes too long.** `timeout: Ms(ms)` stops a
 job that has not answered `ms` milliseconds after it was asked for, and
@@ -675,16 +688,16 @@ returns add code too, usually far less than the task itself.
 
 ## Serving the app
 
-The runtime starts its workers from `worker.mjs`, which it loads from beside
-`runtime.mjs`, so the two are served together, from the same origin as the
-page. `roc signals.roc serve` does this, and `roc signals.roc build` puts
-both beside the app's module in `dist/` (see
+The runtime starts its workers from `worker.mjs`, beside `runtime.mjs`.
+It also imports `environment.mjs` for browser facts. Serve all three together,
+from the same origin as the page. `roc signals.roc serve` does this, and `roc signals.roc build` puts
+the runtime files beside the app's module in `dist/` (see
 [Getting Started](@/docs/getting-started.md#build-it-for-deployment)).
-Serving the files yourself, copy both from the release, or from `platform/`
+Serving the files yourself, copy all three from the release, or from `platform/`
 in a checkout:
 
 ```sh
-cp platform/runtime.mjs platform/worker.mjs my-site/
+cp platform/runtime.mjs platform/environment.mjs platform/worker.mjs my-site/
 ```
 
 A worker receives the module the page already compiled, so `app.wasm` is not

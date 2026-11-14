@@ -77,6 +77,75 @@ Kanban := [].{
 	## title to drop. A move is a list of them, applied in order.
 	Edit : [Put(Str, Kanban.Card), Remove(Str)]
 
+	## A drop describes a gap beside a card or the end of a lane. These are
+	## application targets, independent of browser geometry and engine ids.
+	Spot := [Nowhere, Before(Str), After(Str), EndOf(Kanban.Column)].{
+		is_eq : _
+
+		## Decode only this board's zone vocabulary. Titles retain every byte
+		## after the prefix, including colons; an unknown zone is no drop target.
+		from_zone : Str, U16 -> Kanban.Spot
+		from_zone = |zone, y| {
+			if zone.starts_with("card:") or zone.starts_with("grip:") {
+				title = if (zone.starts_with("card:")) zone.drop_prefix("card:") else zone.drop_prefix("grip:")
+				if (title.is_empty()) Nowhere else if (y < 5000) Before(title) else After(title)
+			} else if zone.starts_with("lane:") {
+				slug = zone.drop_prefix("lane:")
+				match Kanban.all_columns.find_first(|column| Kanban.Column.slug(column) == slug) {
+					Ok(column) => EndOf(column)
+					Err(_) => Nowhere
+				}
+			} else {
+				Nowhere
+			}
+		}
+	}
+
+	## A gap's column and place, before the dragged card is taken out.
+	Position : { column : Kanban.Column, place : U64 }
+
+	## Taking a card out shifts a later gap in its own lane up one place.
+	## This one adjustment is shared by the preview and the eventual move.
+	landing : Kanban.Card, Kanban.Position -> Kanban.Position
+	landing = |card, target| {
+		column: target.column,
+		place: if (target.column == card.column and target.place > card.place) target.place - 1 else target.place,
+	}
+
+	## Move a card into a gap. Only rows whose column or place changes are
+	## written; dropping into its existing gap returns no edit at all.
+	move_to : Kanban.Listing, { title : Str, over : Kanban.Spot } -> List(Kanban.Edit)
+	move_to = |cards, { title, over }| {
+		card = Kanban.card_titled(cards, title) ?? return []
+		target = match over {
+			Nowhere => return []
+			Before(other) => {
+				row = Kanban.card_titled(cards, other) ?? return []
+				{ column: row.column, place: row.place }
+			}
+			After(other) => {
+				row = Kanban.card_titled(cards, other) ?? return []
+				{ column: row.column, place: row.place + 1 }
+			}
+			EndOf(column) => { column, place: size_of(cards, column) }
+		}
+		at = Kanban.landing(card, target)
+		if at.column == card.column and at.place == card.place {
+			return []
+		}
+		cards.keep_oks(
+			|held| {
+				next = if held.key == title {
+					{ ..held.row, column: at.column, place: at.place }
+				} else {
+					closed = if (held.row.column == card.column and held.row.place > card.place) held.row.place - 1 else held.row.place
+					{ ..held.row, place: if (held.row.column == at.column and closed >= at.place) closed + 1 else closed }
+				}
+				if (next == held.row) Err(Unchanged) else Ok(Put(held.key, next))
+			},
+		)
+	}
+
 	## The cards the example starts with.
 	initial_cards : Kanban.Listing
 	initial_cards = [
@@ -229,20 +298,23 @@ Kanban := [].{
 	## Where a card stands in its column's order: its place, then its
 	## title. While the edits of a move are applied one by one, two cards can
 	## stand at one place for a moment, and the title tells them apart.
-	Rank : { place : U64, title : Str }
+	Rank := { place : U64, title : Str }.{
+		is_eq : _
+
+		## Titles break position ties using the board's existing byte order.
+		order_relative_to : Rank, Rank -> [Before, Same, After]
+		order_relative_to = |left, right| match left.place.order_relative_to(right.place) {
+			Same => title_order(left.title, right.title)
+			other => other
+		}
+	}
 
 	## How a column's view selects and orders the board's cards.
 	plan : Kanban.Showing -> { keep : Str, Kanban.Card -> Bool, sort : Str, Kanban.Card -> Kanban.Rank, compare : Kanban.Rank, Kanban.Rank -> [Before, Same, After] }
 	plan = |{ column, filter }| {
 		keep: |title, card| card.column == column and Kanban.is_match({ title, filter }),
 		sort: |title, card| { place: card.place, title },
-		compare: |a, b|
-			if (a.place < b.place)
-				Before
-			else if (a.place > b.place)
-				After
-			else
-				title_order(a.title, b.title),
+		compare: Kanban.Rank.order_relative_to,
 	}
 
 	## Whether a title passes a filter: an empty filter passes every title.
@@ -544,3 +616,38 @@ expect Kanban.WipState.attr(Kanban.WipState.of(2, NoLimit)) == "unlimited"
 
 ## No card count can put an uncapped column over its limit.
 expect !Kanban.WipState.is_over(Kanban.WipState.of(1_000_000, NoLimit))
+
+## Zone parsing is exact application vocabulary: card titles may contain
+## colons, grips use their card, and unknown or empty names are nowhere.
+expect {
+	actual = [Kanban.Spot.from_zone("card:A:B", 4999), Kanban.Spot.from_zone("grip:A:B", 5000), Kanban.Spot.from_zone("lane:progress", 0), Kanban.Spot.from_zone("lane:nope", 0), Kanban.Spot.from_zone("card:", 0), Kanban.Spot.from_zone("", 0)]
+	actual == [Before("A:B"), After("A:B"), EndOf(InProgress), Nowhere, Nowhere, Nowhere]
+}
+
+## Crossing lanes closes the source gap and inserts before the target,
+## preserving every other card and its flags.
+expect {
+	starting = Kanban.initial_cards
+	changes = Kanban.move_to(starting, { title: "Draft onboarding copy", over: Before("Ship search filters") })
+	lanes(Kanban.edited(starting, changes)) == [["Design login screen"], ["Draft onboarding copy", "Ship search filters"], ["Audit billing events"], ["Rotate API keys"]]
+}
+
+## A reorder writes only the two changed rows, and either side of the
+## dragged card itself is its existing gap, so neither gives an edit.
+expect {
+	starting = Kanban.initial_cards
+	changes = Kanban.move_to(starting, { title: "Draft onboarding copy", over: After("Design login screen") })
+	{
+		lanes: lanes(Kanban.edited(starting, changes)),
+		written: changes.len(),
+		own_before: Kanban.move_to(starting, { title: "Draft onboarding copy", over: Before("Draft onboarding copy") }),
+		own_after: Kanban.move_to(starting, { title: "Draft onboarding copy", over: After("Draft onboarding copy") }),
+		outside: Kanban.move_to(starting, { title: "Draft onboarding copy", over: Nowhere }),
+	} == {
+		lanes: [["Design login screen", "Draft onboarding copy"], ["Ship search filters"], ["Audit billing events"], ["Rotate API keys"]],
+		written: 2,
+		own_before: [],
+		own_after: [],
+		outside: [],
+	}
+}

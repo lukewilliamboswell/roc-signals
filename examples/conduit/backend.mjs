@@ -416,6 +416,8 @@ function register(backend, bodyText) {
   const errors = {};
   if (!username) {
     errors.username = ["can't be blank"];
+  } else if (username === "." || username === "..") {
+    errors.username = ["must not be a dot path segment"];
   }
   if (!email) {
     errors.email = ["can't be blank"];
@@ -450,6 +452,9 @@ function updateUser(backend, viewer, bodyText) {
     return errorResponse(422, { body: ["can't be parsed"] });
   }
   const updates = parsed?.user ?? {};
+  if (updates.username === "." || updates.username === "..") {
+    return errorResponse(422, { username: ["must not be a dot path segment"] });
+  }
   if (["email", "bio", "image", "password", "username"].every((field) => typeof updates[field] !== "string" || updates[field] === "")) {
     return errorResponse(422, { body: ["must update at least one field"] });
   }
@@ -635,7 +640,7 @@ function isConduitPath(path) {
 }
 
 function routeConduit(backend, { method, path, query, viewer, bodyText }) {
-  const segments = path.split("/").filter((segment) => segment.length > 0);
+  const segments = path.split("/").slice(1).map(decodeURIComponent);
 
   if (method === "GET" && path === "/api/articles") {
     return listArticles(backend, query, viewer);

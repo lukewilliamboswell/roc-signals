@@ -84,7 +84,9 @@ this document and the implementation are tracked in issues.
 1. **The idiomatic way is the correct way.** The simplest thing an author can
    write must be the thing the platform is designed for. An encoding trick, a
    positional convention, or boilerplate the platform could derive is a defect
-   of the API, not of the author.
+   of the API, not of the author. A pointer zone's key is an application
+   name handed back unchanged, not a workaround encoding: the platform
+   never resolves the key or looks anything up by it.
 2. **Composition is first-class.** UI is built from typed, reusable
    components: a type, its pure operations, and a view that is handed the
    shared state it uses and owns its local state and effects. A component
@@ -95,11 +97,19 @@ this document and the implementation are tracked in issues.
    idiomatic code. Where a natural idiom would defeat it, the platform provides
    the primitive (`derive`, keyed selection, row templates, tables and their
    views) that restores it, and the property is pinned by observable counters.
-4. **Failure is legible.** Every contract violation — a duplicate key, a value
-   outside a switch's cases, an effect feedback loop, a malformed payload, an
-   exhausted resource — is reported as a classified, readable diagnostic naming
-   the rule and the construction site, identically natively and in the browser.
-   A bare trap or a silent no-op is never an acceptable way to fail.
+4. **Failure is controlled and legible.** An app that compiles and whose
+   specs pass does not fail at runtime for a reason the platform could have
+   told its author earlier, and what does fail is caught at the earliest
+   layer that can catch it (see
+   [How failure is controlled](#how-failure-is-controlled)). Every contract
+   violation — a duplicate key, a value outside a switch's cases, an effect
+   feedback loop, a malformed payload, an exhausted resource — is reported
+   as a classified, readable diagnostic naming the rule and the construction
+   site, identically natively and in the browser.
+   A bare trap is never an acceptable way to fail. A silent no-op is
+   acceptable only where this design names it, says why no earlier layer can
+   catch it and says what the author has in its place: a test that sees it,
+   or a rule that avoids it.
 5. **There is exactly one door to the outside.** Events enter, and effects
    leave, through the declared effect channel and the command stream. Apps do
    not call JavaScript. A service the platform does not model is reached
@@ -108,7 +118,9 @@ this document and the implementation are tracked in issues.
    the page supplies at mount. The host never exposes its state to an app,
    and no JavaScript value enters Roc.
 6. **Cost is visible and bounded.** Payload size, startup, per-event work, and
-   memory are measured and budgeted, and in-flight work has fixed caps with
+   memory are measured, and budgeted wherever the repository alone decides
+   them: the size of the platform’s JavaScript is checked, and the size of a
+   module, which also follows the compiler, is reported, and in-flight work has fixed caps with
    typed refusal.
 7. **Testable at the right boundary.** Reactive semantics, ordering, work and
    cleanup are asserted in fast, deterministic native specs. The same specs
@@ -125,6 +137,11 @@ this document and the implementation are tracked in issues.
     occurrences stay distinct even when their payloads are equal, and one
     event expresses one atomic domain transition, decided by one pure
     function however many pieces of state it spans.
+11. **The first frame comes with the document.** A page can show its first
+    frame before its module arrives: the build renders it from the app's own
+    mount. Startup replaces the built nodes with the ordinary mount before
+    effects run. **Target:** the engine may instead adopt them only when its
+    mount fingerprint and the measured tree digest agree with the built frame.
 
 ### Success criteria
 
@@ -132,7 +149,8 @@ this document and the implementation are tracked in issues.
   `Dom.roc` oracle, roc-fuzz property targets, long seeded walks of every
   app in the native spec runner, and soak runs with flat live allocations
   and Wasm pages.
-- **Author outcomes:** maintained apps contain no workaround encodings; a
+- **Author outcomes:** maintained apps contain no workaround encodings
+  (pointer zone keys are names the platform only hands back unchanged); a
   write to one store cell wakes the readers of that cell, wherever they sit,
   and not the rest of the tree; a write to one row of a table costs the same
   engine work whatever the table's size; a one-row change in a keyed list
@@ -140,17 +158,139 @@ this document and the implementation are tracked in issues.
   contract-error class has a spec asserting its diagnostic.
 - **External evidence:** the keyed js-framework-benchmark run against declared
   comparison frameworks, Conduit passing its journey against a RealWorld
-  backend in Chrome, and recorded compressed size budgets.
+  backend in Chrome, and recorded compressed sizes of the platform’s JavaScript files, checked,
+  and of each example’s module, reported.
+- **First frame:** the built page paints before the module arrives, stays
+  inert until ordinary mounting, and behaves like an unprerendered mount
+  after replacement. Native and Chrome specs cover the same app behavior.
+  **Target adoption:** every maintained example's picture adopts in Chrome
+  and in the native runner, and the adopted page equals one built from
+  nothing. The module's size still determines when it becomes interactive.
+
+### When a capability is built
+
+The platform builds a browser capability when real applications are expected
+to need it. It does not wait for a maintained example to be blocked. What it
+requires is that the capability lands whole:
+
+- a stated use in real applications, and what an app must do today without
+  it;
+- an API in the platform's own vocabulary, with what it deliberately leaves
+  out;
+- bounds and the behaviour at each bound;
+- a failure analysis: each thing that can go wrong, the layer that takes it
+  and what happens (see
+  [How failure is controlled](#how-failure-is-controlled));
+- an Appendix B entry wherever it touches the wire;
+- the same meaning in both spec runners, for every step that drives it. An
+  input no runner can drive faithfully is named in
+  [The `.scm` spec language](#the-scm-spec-language) and held by a contract
+  test;
+- a runtime contract test;
+- a demonstration: an example upgraded to use it or, where no example fits,
+  a test app with specs.
+
+A capability is declined for a reason in this design, such as: it cannot
+mean the same in both runners, it needs a synchronous answer the engine
+cannot give, it crosses a Non-Goal, or a port serves it as well. It is never
+declined for want of an example.
+
+### How failure is controlled
+
+Failure is inevitable: the outside world fails, resources run out, and the
+platform, the compiler and the browser have bugs. Roc has no
+failure-and-unwind channel, so a crash is never caught and resumed: it
+poisons the instance. The platform therefore does not promise an app without
+runtime errors. It promises that:
+
+- an app that compiles and whose specs pass does not fail at runtime for a
+  reason the platform could have told its author earlier;
+- what does fail is caught at the earliest layer that can catch it, is
+  legible, and does not corrupt what is left.
+
+The layers, in order of preference:
+
+1. **Impossible to write.** A type rules the mistake out and the compiler
+   rejects it: opaque types, typed props records with defaults, closed tag
+   unions, a payload type that fixes which handler an event takes, and
+   internal operations absent from app-facing types. A later layer is right only when no type expresses the
+   rule.
+2. **A value the app must handle.** A failure of the outside world arrives
+   as typed data the app matches (`Refused`, `Timeout`, `Network`,
+   `PortFailed(...)`, `FileFailed(...)`, `WorkLost(...)`, a `Try`), never as
+   an exception and never fabricated. A mistake in the program is the next
+   layer's: no value may disguise it.
+3. **A contract error at the narrowest boundary.** A programmer error no
+   type expresses, such as a duplicate key, is rejected where it is first
+   knowable (when the program or a catalogue is built, at mount, at the end
+   of the turn) with a classified diagnostic naming the rule and the
+   construction site. It poisons the instance, and recovery is a fresh one
+   (see [Error Containment](#error-containment)). How much outside input
+   arrives is a bound instead, the next layer's. Outside data that breaks a
+   rule the app must keep, such as two rows with one key in a server's
+   answer, is still this layer: the app checks data where it enters.
+4. **Bounded.** Every queue, table and buffer that grows with outside input
+   has a declared bound and a declared behaviour at it (see
+   [Boundedness](#boundedness)): a typed refusal where the work can be
+   refused, as the in-flight cap answers `Refused`, and poison only where
+   dropping would corrupt, as when a feedback loop fills the ingress queue.
+5. **Contained.** What still goes wrong is confined (see
+   [Error Containment](#error-containment)): a trap discards its batch and
+   never publishes a prefix, a poisoned instance keeps the last applied DOM
+   and refuses further calls, a worker fails alone, a port handler's throw
+   becomes a value, and an executor fault is contained like a crash. This is
+   the floor, never the plan for a failure an earlier layer can take, and it
+   does not undo an effect already performed.
+6. **Checked by tests the design requires.** An invariant no type expresses
+   is held by a test (see [Testing Architecture](#testing-architecture)):
+   roc-fuzz targets with reference models, the settle check after every
+   step, seeded walks, soaks with flat allocations, contract tests of the
+   runtime and the host against the wire, the independent `Dom.roc` oracle,
+   both spec runners meaning the same, and pure `expect`s over decisions. A
+   rule of an app's own logic, which the platform cannot model, is the last
+   layer's.
+7. **Left to the app's author.** This is allowed only as a stated
+   trade-off: what is left, why no earlier layer can reasonably catch it,
+   and what the platform gives the author in its place. That is usually a
+   pure test that sees it and, where no test can, a rule that avoids it.
+   Among those this design leaves: a component handed the wrong cell of the
+   right type, a transition that left out a reset, and a write to a key a
+   table does not hold.
+
+A failure is taken at the earliest layer that is **reasonably practicable**,
+and backed by later ones where they apply. That weighs API ergonomics, code
+size, the Roc compiler as it is and the cost of a check on a hot path. Two
+rules are firm:
+
+- **A rule the compiler can carry is never left to a check at mount.** A
+  contract error poisons the whole instance, and a check that runs only when
+  its site mounts ships a typo in a rarely opened branch.
+- **A bound whose count follows the app's data (rows drawn, messages
+  received) is never a poison where a typed refusal or a structural bound is
+  possible.**
+
+Fuzzing controls the engine's own invariants. Generated sequences, checked
+against reference models, hold propagation completeness, identity reuse,
+effect lifetime, table views equal to a rebuild, allocation balance and wire
+decoders that are total. A capability that adds an engine sequence adds it
+to a fuzz target.
+
+A capability's failure analysis is written against these layers, and is part
+of landing whole (see
+[When a capability is built](#when-a-capability-is-built)).
 
 ## Non-Goals
 
 Each item is a scope decision with the condition under which it would be
 reconsidered.
 
-- **Server-side rendering, hydration and SEO.** The platform is a client-side
-  runtime. Any future server path must keep the command stream as the only
-  render output; hydration would be the engine adopting existing DOM ids, never
-  JavaScript reconstructing meaning.
+- **Per-request server rendering, streaming and SEO claims.** The platform
+  is a client-side runtime. A first frame rendered at build time is part of
+  the target design: the command stream remains the only render output, the
+  engine adopts existing DOM ids or replaces them, and JavaScript never
+  reconstructs meaning. Per-request rendering or streaming is reconsidered
+  only if a build-time frame cannot serve the intended apps. Search engines
+  may index a picture; the platform makes no promise about it.
 - **A native desktop GUI host.** The engine is web-only. A GUI platform would
   be a separate platform consuming its own command vocabulary, not a second
   engine.
@@ -182,7 +322,13 @@ reconsidered.
   never holds a JavaScript value, and is never called by it; every message is
   data in a declared encoding with the channel's id, bound, scope and
   lifetime. A capability the platform models (HTTP, storage, timers, history,
-  focus, workers, files) is not a port's business, and nothing that needs a
+  focus, workers, files, layout observation, media queries, time, entropy,
+  the user's languages and time zone, and writing the clipboard) is not a
+  port's business. Reading the clipboard on demand remains a port. Formatting
+  with the browser's CLDR data is not modelled and may use a port. A live
+  connection (a WebSocket or event stream) is a port subscription. Its
+  reconnect policy is the app's state, written in Roc; the handler ends a
+  lost connection rather than reconnecting by itself. Nothing that needs a
   synchronous answer (a default to prevent, a layout measurement inside a
   turn) can be one. The hosted effects a worker task calls (see
   [Workers](#workers)) are not an FFI either: they are a closed, typed
@@ -293,9 +439,9 @@ that row's — is the documented pattern that keeps app work local.
 
 ```mermaid
 flowchart LR
-    App["app: App.roc<br/>Elem tree of typed sites,<br/>a store of cells and tables"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, the store, each columns,<br/>tables and their table views (Table.roc, View.roc, Seq.roc),<br/>effects, command encoding"]
+    App["app: App.roc<br/>Elem tree of typed sites,<br/>a store of cells and tables"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, the store, each columns,<br/>tables and their table views (TableCore.roc, View.roc, Seq.roc),<br/>effects, command encoding"]
     Engine --> Main["platform/main.roc<br/>keys · init · event · files · drop ·<br/>work · prepare · ask · forget"]
-    Main --> Host["platform/host/host.zig<br/>allocator · Box(Core.App), today wrapped as Box(Iter(Core.App)) (roc-lang/roc#12953 workaround), or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · fault class"]
+    Main --> Host["platform/host/host.zig<br/>allocator · one opaque Handle holding the store beside boxed sites, or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · fault class"]
     Host --> Wire["command bytes in linear memory"]
     Wire --> JS["platform/runtime.mjs (and worker.mjs in each worker)<br/>apply commands · perform effects ·<br/>delegate events · contain faults"]
     JS --> DOM["browser DOM and services"]
@@ -309,12 +455,12 @@ flowchart LR
     Parser -->|"emitted steps"| Browser["replay in Chrome"]
 ```
 
-The engine is `Core.roc` and three modules of its own for tables: `Table.roc`
-(rows by key and the changes from a turn, which an app imports
-to write a table), `View.roc` (a sorted, filtered, windowed view kept up to
+The engine is `Core.roc` and three modules of its own for tables: `TableCore.roc`
+(rows by key and the changes from a turn), `View.roc` (a sorted, filtered, windowed view kept up to
 date from those changes) and `Seq.roc` (a table view's ordered keys). `Engine.roc` is
-the authoring API over them. `EngineOnly.roc` holds the one value that lets
-the engine, and no app, call a table's bookkeeping.
+the authoring API over them. Its opaque `Table` wraps the internal table;
+bookkeeping is a function of the unexposed `TableCore` namespace, never a
+member of a type an app can name.
 
 The repository has one platform (`platform/main.roc`), web only, shipped as
 one release bundle. An app has one entry, `main.roc`, binding its `program`
@@ -414,11 +560,25 @@ Every context type also answers one method, `store`, with a
 with a function applied to the store. `Root` answers from what it carries;
 `In` and `Row` build theirs on the enclosing context's. A store *cell* is
 therefore read and written in any context, at any depth, with no `lift`, and
-reaching the store is the one thing a function asks of its context:
+a function that reaches the store asks of its context:
 `where [ctx.store : () -> Engine.Reach(ctx, st)]`. Reading and writing are
 one requirement, not two: a reach holds both.
 
-**Read signatures.** A `Signal(ctx, a)` is `{ mask, read, sel }`: a signature of
+A function that must not occur under a row asks a separate question:
+`where [ctx.outside_rows : () -> Engine.OutsideRows(ctx)]`. `Root` answers
+it, and `In` forwards its enclosing context's evidence; `Row` does not.
+`OutsideRows(ctx)` is opaque, state-free evidence, with no environment or
+store reference. Thus `on_document_key` cannot compile in a row or in a
+layer nested within one, without a mount-time failure that follows row data.
+
+**Read signatures.** The public `Engine.Signal(ctx, a)` holds either a
+constant value or a varying Core recipe, as an opaque representation. Mapping
+a constant runs once at construction; combining one constant with a varying
+signal preserves the latter's keyed selection. Lifting preserves this mark.
+A zero ordinary mask never proves a signal constant: row keys and keyed
+selections remain varying.
+
+A varying `Core.Signal(ctx, a)` is `{ mask, read, sel }`: a signature of
 what it reads, a reader from the environment, and an optional keyed selector.
 A signature has two words. The layers' word has a bit for each layer index
 and the cells' word a bit for each cell's position in the store, each taken
@@ -428,6 +588,24 @@ store, share a bit, and a shared bit costs an evaluation that equality
 pruning then discards. A reader of something that changed is never skipped.
 A cell never shares a bit with a layer, so a store of any size leaves the
 precision of local state as it was, and layers nest without a limit.
+
+Text literals produce constant text signals. Interpolation parts provide
+`to_text_signal`; one literal has one part type, with explicit conversion for
+mixed signal types. Constant pieces are assembled at construction. The joined
+reader samples each varying part once and joins text once. It preserves one
+keyed selector only when exactly one varying part has it and all other varying
+parts have zero ordinary mask; otherwise selection dependencies become ordinary
+reads, as in map2. Manual hook calls require one more static segment than
+parts and raise a named contract error on any arity mismatch.
+
+Exactly six signal attach forms use existing static builders for constants:
+text_s, attr_s, class_s, test_id_s, prop_s and ref_s. Static references retain
+their ordinary reference hole and sampling. A constant row property still uses
+the existing per-row property hole, since cloning does not copy live control
+state and selects must see their options first. Explicit attr_presence retains
+its Dyn route; controlled shown properties and other signal-consuming sites
+retain their required machinery. Constant recognition invents no reference or
+absence representation and changes no wire counter's meaning.
 
 **Write sets.** What an event wrote is kept exactly wherever exactness
 decides something. A write set names the layers written by index, without
@@ -439,9 +617,10 @@ visits the readers of a cell that shares its bit, and they prune.
 
 A `State(ctx, s)` is a piece of state as one context sees it, local or
 shared. It is a lens (`get`, `modify`) with what a read of it listens to
-and what a write through it reports. A `Handler(ctx)` is an environment
-transformer that answers what it wrote, `(ctx, payload) -> (ctx, written)`,
-and a `Reaction(ctx, a)` is the same for an effect result. The set is the
+and what a write through it reports. A `HandlerOf(ctx, p)` is an environment
+transformer over a typed payload that answers what it wrote,
+`(ctx, p) -> (ctx, written)` (`Handler(ctx)` is its text alias),
+and a `Reaction(ctx, a, result)` is the same for a typed effect result. The set is the
 handler's answer, not a property fixed before it runs, so a handler that
 decides what to write from what it reads reports only the writes it made,
 and nothing is declared twice.
@@ -492,12 +671,12 @@ to carry it.
   depends on the boot data, and `Engine.program_store(cfg, start, view)`
   mounts the view over the store `start(boot)` gives. A start is not a
   write: a table started this way has no changes.
-- **Held at the root.** The root site is the store's one holder. For an
-  event it moves the store into the root context and takes it back when the
-  event has unwound, exactly as a state site moves its value, so a write at
-  any depth receives its cell's value uniquely owned. The store sits behind
-  the root site's closure, like every site's storage, because the host holds
-  one type of box and that type cannot carry an application's storage type.
+- **Held beside the sites.** The instance is the store's one holder. It holds
+  the store as plain data beside its site tree, never inside a site's closure.
+  Each root call moves it into the root context and returns it with the write
+  set, so a write at any depth receives its cell's value uniquely owned. The
+  app's entry names that storage type as `Store`; the platform's `Program(st)`
+  carries it through mount and events without exposing engine state.
 - **Started again by a write.** A cell lives as long as the instance and is
   never disposed, so state that should start fresh, such as a page's form
   once the reader leaves the page, is started again on purpose.
@@ -515,14 +694,17 @@ to carry it.
 The static content of a site that draws no rows is flattened at mount into a
 *block*:
 
-- *holes* — dynamic text and attributes, each with its read signature, reader
-  and last emitted value;
+- *holes* — dynamic text, attributes and element properties, each with its read signature, reader
+  and last observed value (emitted, or echoed by a controlled browser property);
+- *reference holes* — named element addresses, whose signal updates the
+  reference map without emitting a DOM command;
 - *handlers* — in mount order, so a handler number is a dense index;
 - *children* — nested sites with their static read signatures;
 - the block's node ids and its top-level nodes (for removal).
 
 A refresh with mask `m`, the signature of what changed, re-evaluates the
-holes whose signature intersects `m`, emits a command only when the new
+holes whose signature intersects `m` and any controlled shown hole marked
+by its own browser echo, emits a command only when the new
 value differs from the last one, and
 descends only into children whose signature intersects `m`. A site's reads
 are computed statically (`elem_reads`) without mounting it, including the
@@ -531,7 +713,8 @@ everything it could need. A layer site's reads include its own layer and the
 layers below it: a pass from above reaches a changed layer only through the
 signatures of the sites above it.
 
-An element takes one handler per event. Two handlers for one event on one
+An element takes one handler per event type, whatever its policies or payload
+kind. Two handlers for one event type on one
 element are a `contract` error at mount, naming the event, the element and
 the site: the runtime keeps one listener per event and element, so the
 second would be dropped without a word. Two things that must both happen are
@@ -545,7 +728,7 @@ its own representation:
 
 - The row template runs **once per site**, against a `RowRef` accessor rather
   than a row value. It compiles to a DOM template (sent once as `TEMPLATE`)
-  plus a hole table: text, attribute, event and nested-site placeholders.
+  plus a hole table: text, attribute, property, event, reference and nested-site placeholders.
 - Rows are **typed columns** indexed by slot: items, keys, the last value of
   every live hole, nested site instances, dirty marks, plus `order` (slots by
   position), a free-slot list, and an open-addressing key index from the exact
@@ -562,7 +745,18 @@ its own representation:
 Reconciliation compares the new list against the site's columns with fast
 paths for a common prefix and suffix, swapped ends, pure insertion and pure
 removal, and otherwise a keyed move planned with a longest increasing
-subsequence, so surviving rows move rather than rebuild. A kept row whose new
+subsequence, so surviving rows move rather than rebuild. A row also keeps an ordered index of its currently shown dialog and popover
+addresses. A changed shown command updates only that address in the rows on
+its call path; hiding and disposal remove it before an id can be reused.
+The index supports direct affected-owner removal and preserves show-intent
+chronology across template holes and nested sites. Moving a row re-emits
+those shown properties in that order, without scanning the row's tree.
+Reinsertion loses native top-layer membership, so re-showing can restack the
+moved controls above unmoved ones and focus their first control again.
+A browser echo of true that emits no new show keeps the existing order.
+This bookkeeping holds command addresses, never application identity.
+
+A kept row whose new
 item is equal to its old item is pruned; a changed item marks the row dirty and
 only its live holes that read the row layer are re-evaluated.
 
@@ -585,9 +779,9 @@ names the rows it touches.
   `contains` and `len` read, and so do `fold` and `to_list`, which visit
   every row in no particular order. A table has no order of its own: an
   order the user chooses is a field of the row that a view sorts by.
-- **This turn's changes.** Beside its rows a table keeps, for every key
-  written in the current turn, the row as it was when the turn began, or the
-  fact that it was absent. A key written twice keeps its first entry, so the
+- **The last writing turn's changes.** Beside its rows a table keeps, for
+  every key its last writing turn wrote, the row as it was before that turn's
+  first write of the key, or the fact that it was absent. A key written twice keeps its first entry, so the
   changes are bounded by the distinct keys one turn writes. An operation that
   replaces every row does not record per key: it marks the changes as a whole
   rewrite. The changes are how a keyed write says which rows it touched, and
@@ -604,6 +798,9 @@ names the rows it touches.
   rewrite. So a `set` of a new table, a generated reset and a function that
   ignores its argument are all whole rewrites, and none can leave a view
   showing rows the table no longer has.
+  A mounted program's table identities are disjoint from those in a `Store`
+  value, so a table read with `Store.read` and set into a live cell is a whole
+  rewrite.
 
 `Table.update`, `replace` and `remove` of a key the table does not hold leave
 it as it was, because an earlier write of the same event may have removed
@@ -621,14 +818,21 @@ keeps, in the query's order, and of those only the rows inside a window.
   (the order of two sort values). A record of functions cannot be compared, so
   with the functions as the query the site could not tell a changed query from
   the same one.
-- **The order is total.** `compare` answers `Same` only for a row's own sort
-  value. A view finds a row's entry again by its sort value alone; two rows
-  that compare `Same` are a `contract` error at mount, after a write, and
-  between the keyed writes of one event. The site absorbs the changes one key
-  at a time, so two rows that trade places in one event tie once the first
-  is placed and the second is not, though they never tie before the event
-  or after it. A sort value therefore ends with the key, whatever the
-  sorted field.
+- **The order is total.** `Engine.sort_by({ keep, sort })` builds a plan by
+  the sort value's own `order_relative_to`, then the key's own order. A table
+  has no insertion order for ties to keep. The key's order must agree with its
+  equality: `Same` exactly when equal. Lookup still uses its equality and hash.
+  `Order` supplies paired priorities, ascending or descending values in one
+  type, and explicit UTF-8 text order; application types can provide their own
+  order without importing the platform. `Order.utf8` is not locale collation
+  or normalization and allocates no encoded key. The plan stores `(sort, key)`,
+  so it retains the key both there and in the ordered entry.
+  `QueryPlan` with its own `compare` is the primitive, like `List.sort_with`
+  beside `List.sort_by`. With that form, `Same` must identify only one row's
+  sort value. Two different rows comparing `Same` are a contract error at
+  mount, after a write and between keyed writes of one event. The site absorbs
+  changes one key at a time, so two rows trading places can tie between the
+  writes. That form's sort value includes the key wherever its field can tie.
 - **The view's storage.** The site owns the ordered keys of every row the
   query keeps, each with the sort value it was placed by, the window, and the
   keys the window shows. The ordered keys are held in chunks, so placing a
@@ -700,12 +904,18 @@ keeps, in the query's order, and of those only the rows inside a window.
   that starts at a layer's site afterwards finds the view up to date. The
   site checks all the same: drawing from a view the turn's writes have
   passed would name rows the table no longer has.
-- **Cleared when the turn ends.** After the turn's one `Changed` pass the
-  root site clears the changes of each table the turn wrote (see
-  [One turn](#one-turn)). Every view of a table, wherever it is mounted,
-  reads the same changes in that pass; kept longer, the changes would describe
-  rows relative to a state no view remembers, and would go on holding their
-  earlier values.
+- **Cleared before the next writing turn.** Every view reads the same
+  changes in the turn's one `Changed` pass. After it, the root rearms the
+  recording phase of exactly the table cells the turn wrote, without changing
+  the record. Before the next writing turn's first modifier runs, that
+  generated modifier clears the record; further modifiers and `also` handlers
+  in the same event retain its first earlier row per key. A turn that does
+  not write the table leaves the record unchanged. Rearming has no public
+  observation and starts no second propagation pass (see [One turn](#one-turn)). Clearing
+  can reclaim the previous writing turn's J earlier rows before this turn's
+  modifier, costing O(J_previous) even when the current turn writes one key.
+  This moves reclamation from the previous turn's end; over a session its
+  work is proportional to recorded keys, not a worst-case O(J_current) bound.
 
 A plain reader of a table cell (`todos.signal().map(|t| t.len())`, one row by
 key) is an ordinary reader of the cell: it is evaluated on every write to the
@@ -714,19 +924,21 @@ alone.
 
 `Table.inverse` gives the writes that undo what the changes hold, and
 `Table.apply` applies such a list, recording each write like any other. The
-changes are gone when the turn ends, so an inverse is taken in the event that
-made the writes. `Table.changes` reads the changes themselves: each written key
-with its row as it was.
+changes remain until the next writing turn begins. A later event's decision
+may read the last writing turn's inverse before its writes begin, then apply
+it to undo that turn. An inverse taken inside a modifier describes the current
+writing turn instead. A history that must outlive the next table write keeps
+the inverse in its own cell. `Table.changes` reads the same retained record,
+so a signal over changes or inverse stays true through unrelated turns.
 
 The changes' bookkeeping is the engine's alone: clearing them, giving a table
 its cell's identity, judging what a write of the cell left, and reading the
 two counts. An app that gave another table the cell's identity would pass
 it off as the cell's own, and every view would go on showing rows the table
-no longer has. Roc has no visibility between a module's own and
-everyone's, so each of these operations takes an `EngineOnly` as its last
-argument: a value of an opaque type in a module the platform does not
-expose, which an app can neither make nor name. The operations are listed
-with the type, and an app cannot call them.
+no longer has. These operations are functions of the unexposed `TableCore`
+namespace, separate from the members of `Engine.Table`. Roc's associated
+members are public through aliases too; keeping bookkeeping off every
+app-facing type makes it impossible for an app to call it.
 
 **Known limits.**
 
@@ -745,7 +957,9 @@ with the type, and an app cannot call them.
   of the same cell is still a keyed write, and copies the table.
 - A write to a key the table does not hold writes nothing and reports no
   error, so a row handler that names another table's cell by mistake is
-  silent.
+  silent. An error would punish a write that lost a race with its row's
+  removal, which no app can avoid. An `expect` over `Store.after` sees that
+  the transition wrote no row.
 
 ### State, derivation and conditionals
 
@@ -770,15 +984,26 @@ with the type, and an app cannot call them.
   draft for the open message, starts again when the key does. The
   site keeps the key to compare, so a key is small, such as an id.
 
+`guard_leave(dirty)` is a site that renders no DOM and owns no id or
+in-flight slot. Its closure keeps its last Boolean and contributes one to
+the engine's count while mounted and true. A signal change or disposal
+updates that count. At the end of the turn, like focus, the root emits at
+most one `GUARD on` command, only when whether any guard is true differs
+from the last value emitted. Disposing one true guard and mounting another
+in one turn therefore emits nothing. While any guard is on, the runtime
+asks the browser to confirm leaving; the flag, decided by the last batch,
+is the policy, so `beforeunload` needs no turn. No app callback runs there.
+
 ### In-place ownership
 
 The engine's speed depends on Roc updating each piece of state in place. The
 ownership law that makes this hold is:
 
 - **One holder per piece of state.** Exactly one closure references a site's
-  storage, and the root site alone references the store. Consuming the
-  closure and rebuilding it with the updated storage leaves the storage
-  uniquely owned, so list, record and table updates happen in place.
+  storage; the instance alone holds its plain store beside the site tree.
+  Consuming and rebuilding each holder leaves the updated storage uniquely
+  owned. The native runner also moves its instance out before an engine call,
+  so its bookkeeping cannot retain a second store reference during a write.
 - **The environment is moved, not shared.** A handler receives the context by
   value and returns it. A state's value moves into the environment for the
   reducer and comes back out, and the store moves into the root context and
@@ -788,21 +1013,30 @@ ownership law that makes this hold is:
   second holder and every write would copy what it changes. What changed
   comes from the write. Pruning happens at holes, rows of a list and
   `derive`, where the values compared are small.
-- **The one earlier state the engine keeps is bounded and brief.** A table's
-  changes hold, for each row a turn wrote, that row as it was when the turn
-  began. It is one row per row written, never the table, and it is dropped
-  when the turn ends. A row that holds a large value and is written in part
-  is therefore copied once in a turn that writes it.
+- **Earlier rows are bounded by the last writing turn.** A table's changes
+  hold one earlier row per distinct key that turn wrote, or a whole-rewrite
+  marker. Those rows may live until the next write of the table or disposal
+  of its holder; there is no time bound and no earlier whole table is kept.
+  Clearing releases them before the next turn's first modifier receives the
+  uniquely held table. A row holding a large value is copied at most once
+  while recording the first earlier value for that key in one writing turn. The
+  next writing turn pays for releasing the previous record, O(J_previous);
+  retaining changes delays that cleanup rather than making it constant.
 
 Patterns that hold this law against current compiler behaviour (wrapping a
 site's captures in a single-tag `Held`, returning a rebuilt site from each
 branch directly) are workarounds for upstream issues and are marked as such in
-the code. They are not semantics. One defect has no local workaround: in
-optimised builds a large value held by a site's closure, a list or a `Dict`
-alike, is copied on every write (roc-lang/roc#12957), and every site's
-storage and the store are held that way. The design assumes the fix: the law
-above is what the engine asks of the compiler, and a write to a large cell
-or table is constant only where the compiler honours it.
+the code. They are not semantics. Optimized closure and aggregate ownership
+can still copy a large, uniquely held value on a write. roc-lang/roc#12957
+has a standalone nested-capture and list-extraction reproduction;
+roc-lang/roc#13019 records an engine-dependent local-state case without a
+host box. The latter was closed for insufficient isolation, not as fixed.
+The instance holds its store beside the sites and moves it through their
+environments; it is not another site capture. That layout does not by itself
+establish flat shipping allocations, and no general workaround for the
+engine's optimized copying is established. The law above is what the engine
+asks of the compiler; allocation guards must distinguish development and
+shipping builds.
 
 The same law constrains apps. These patterns copy silently on every update:
 
@@ -824,7 +1058,8 @@ tree of closures with no back-references, so there are no reference cycles.
 
 A layer or a cell describes a current value. An event describes an
 occurrence. Equality prunes value propagation; it never merges two separately
-accepted events.
+accepted events. A report replaced before delivery was never accepted:
+a source declared as a report states a value rather than an occurrence.
 
 State lives in three places, and each is written in its own way:
 
@@ -838,7 +1073,7 @@ State lives in three places, and each is written in its own way:
   event fires, receives the payload, and answers the environment with its
   writes applied and the set it wrote.
 - **Local state is written by reducers.** `update`, `update_by`, `set_value`,
-  `set_value_by`, `on_result` and `on_files` are applied to the value the
+  `set_value_by` and `on_result` are applied to the value the
   state holds at that moment. The same `State` API writes a table view's row, and
   `cell.state()` gives a component written over a `State` a cell to draw
   without knowing it is one.
@@ -856,9 +1091,10 @@ State lives in three places, and each is written in its own way:
   record: `Signal.map2` has the shape Roc's record builder calls, so
   `{ a: va, b: vb }.Engine.Signal` reads what both read.
   `Engine.does(writes)` is the handler of a list that needs neither the
-  payload nor a reading, and `handle_files` and `handle_files_by` make a
-  decision of the files an event carries, so a drop or a choice is a
-  transition like any other.
+  payload nor a reading. These constructors, the reducers `set_value` and
+  `set_value_by`, and handler composition are generic over the event's
+  payload: text, files or a later declared kind use the same family. A
+  handler of one payload can attach only through a kind of that payload.
   A transition usually touches several cells that must agree. One function
   sees one reading and returns every write, so there is no order to get
   wrong; a reaction per cell would decide the same transition again for each
@@ -887,7 +1123,8 @@ State lives in three places, and each is written in its own way:
   cell replaces it. A decision composed second takes its reading from the
   environment `first` returned:
   `draft.update(|_| "").also(Engine.handle_by(draft.signal(), ..))` reads the
-  emptied draft. `FilesHandler.also` is the same for the files of one event.
+  emptied draft. Both handlers have the same payload type, including when
+  that payload is the files of one event.
 - **One event is one atomic transition.** All writes made while an event
   fires are in place before any observation runs.
 - **A reset is a write the transition includes.** The generated reset of a
@@ -897,9 +1134,12 @@ State lives in three places, and each is written in its own way:
 - **A decision is tested as a function.** `store.after(writes)` applies a
   list to the store's starting storage as a turn applies it, the same-cell
   rule included, and `read(cell)` reads a cell of the result. A transition
-  is checked by a top-level `expect` with no engine and no browser. No turn
-  ends there, so a table keeps its changes, across chained
-  `after`s too: `read(table).inverse()` tells which rows a transition wrote.
+  is checked by a top-level `expect` with no engine and no browser. Each
+  `after` is one pure turn: a written table starts its record before its first
+  modifier and retains the first earlier row per key for the list. The turn
+  rearms exactly the table cells its writes name. Unrelated tables retain
+  their last writing turn's changes. A decision may read the preceding
+  inverse before building writes; the first modifier sees the new record.
 - **Equality is an observation contract.** A successful `==` lets the engine
   keep the last emitted value and skip every downstream observation. It must
   imply that no observation can distinguish the two values. A conservative
@@ -944,7 +1184,12 @@ Rules:
 - **Engine ids are private.** DOM node ids, handler numbers, site ids, cell
   positions and effect ids are dense integers minted by the engine. Apps
   never see them; focus targets are named references scoped to the element
-  that declares them.
+  that declares them. A reference's name is an address in the app's
+  vocabulary, never a row's identity: rows are found by their keys. Two live
+  references with one name are a `contract` error, and the empty name names
+  nothing. An app may build a name from a row's key because a typed reference
+  carried through the plain-data request channel would need a value registry;
+  the duplicate check makes a collision an error rather than an alias.
 - **Ids are recycled, never aliased across a live lifetime.** Freed node ids,
   slots and site ids are reused only after their owner is disposed. An event
   that arrives for a freed id finds no route and is dropped.
@@ -977,10 +1222,17 @@ inferred from a reused key, and there is no implicit `keep_alive`.
 
 ## Explicit Scopes and Disposal
 
+A removal is animated only through a browser view-transition snapshot. The
+runtime never retains a node after its `REMOVE` or `CLEAR`, because its id
+may already name a new owner. A long exit that retains a live node is app
+state, disposed by a later write.
+
 Every site is a scope. Disposing it:
 
 1. disposes its children in order (each child disposes its own);
-2. emits `REMOVE` for its top-level nodes when its parent is not already
+2. releases registrations outside the node tables with `RELEASE`, including
+   size and seen observations, before
+   emitting `REMOVE` for its top-level nodes when its parent is not already
    removing an ancestor (or `CLEAR` when an `each` or view site is the sole
    child of its parent);
 3. frees its node ids, routes, focus references and, for an `each` or view
@@ -991,6 +1243,11 @@ Every site is a scope. Disposing it:
 5. hands its admitted requests up as orphans, the jobs of tasks that say
    `on_dispose: Keep` among them (see [Disposal and
    reparenting](#disposal-and-reparenting)).
+
+An observation on an element inside a row belongs to the row root, so one
+`RELEASE` releases its observations without scanning other rows. Nested
+sites dispose and release their own observations before an ancestor removal
+or clear detaches them.
 
 Dropping the site's closure releases its storage. Nothing is left registered in
 the host or the runtime for a disposed scope: the runtime holds DOM nodes by id
@@ -1016,12 +1273,19 @@ Soak runs assert it natively and in Chrome.
 
 `on_cleanup(name, value, plan)` is a site that renders nothing and reads
 nothing while it is live. When its scope is disposed it reads `value` in the
-scope's last environment and turns it into requests with `plan`, in the
-disposing turn. Only commands are allowed (history, title, storage writes,
-focus): a request that awaits a result would outlive its owner, so asking for
-one is a `contract` error. Cleanup runs are counted per name in the engine's
-work record (Appendix B) so specs assert them (`expect-cleanup`); `cleanup(name)`
-is the form that only counts.
+scope's last environment and turns it into commands with `plan`, in the
+disposing turn. A plan returns a list of `Command`: the tag union of the
+requests that are emitted and forgotten (history, title, storage writes,
+focus, port commands, saves) and of nothing else. A request that awaits a
+result would outlive its owner, and no value of that type is one, so a
+cleanup that asks for one does not compile. The rule is the type's, because
+a check made when a scope is disposed would first run in whichever branch
+closes last. The engine turns each command into the request it issues with a
+total `match`. A function that builds a command (`File.save`, a port
+command's `send`) is typed by the one tag it returns, so its value fits a
+list of requests and a list of commands alike. Cleanup runs are counted per
+name in the engine's work record (Appendix B) so specs assert them
+(`expect-cleanup`); `cleanup(name)` is the form that only counts.
 
 ## Propagation: Turns, Ordering, and Pruning
 
@@ -1032,13 +1296,15 @@ Every external input — a DOM event or an effect result — is one *turn*:
 1. **Route.** A static node's route gives the site path and the handler number
    comes from the event record; a row node gives its site's path and the
    slot. An event for a freed node is dropped without touching state.
-2. **Fire.** The event travels down the path. The root site moves the store
+2. **Fire.** The event travels down the path. The instance moves the store
    into the root context, and each layer the event passes moves its value
    into the environment. The owning block runs the handler. A reducer is
    applied to the local state it names; a decision takes its reading and
    returns its list of writes, which are applied to the store in order. The
    handler answers the environment and the exact set of layers and cells it
-   wrote.
+   wrote. An open-state event first records the browser's value in its paired
+   shown hole and marks that hole dirty, before running the handler. This is
+   a browser fact, not a write to an application cell or local state.
 3. **Settle.** The environment travels back up and each layer takes its value
    back. A state layer the event wrote, with nothing written above it on the
    event's path and no cell written, starts the event's pass at its own
@@ -1047,8 +1313,8 @@ Every external input — a DOM event or an effect result — is one *turn*:
    that has something written above it (an outer layer, or a cell) hands
    its write up and waits at its site for that write's pass. An
    asynchronous layer that an answer changed refreshes its own subtree at
-   its site. The root site takes the store back.
-4. **Changed pass.** If the turn wrote cells, the root runs one `Changed`
+   its site. The instance takes the store back from the root answer.
+4. **Changed pass.** If the turn wrote cells, the instance moves the store into one root `Changed`
    pass with their signature. Each site refreshes the holes that read
    something in it and descends only into children that read something in
    it. When the pass reaches the site of a layer that waits, the layer
@@ -1059,13 +1325,19 @@ Every external input — a DOM event or an effect result — is one *turn*:
    subtree reads what the pass carried. The site that started the pass (the
    root for a cell, otherwise the outermost written layer) then sends a
    walk down the event's path, which refreshes each such layer's subtree
-   at its own site. A turn that wrote nothing runs no pass.
+   at its own site. An echoed shown hole joins the ordinary pass when it
+   reaches its block; otherwise the same path walk reaches that one marked
+   hole, including beyond an equality-pruned derive. It is evaluated once,
+   after all writes and derives above it. With no writes and no echo, a turn
+   runs no pass. No sibling is visited to discover an echo.
 5. **End of turn.** When the pass has refreshed every reader, the root site
-   clears the changes of each table the pass named. When it named none, that
-   is one test of the pass's signature against the tables' bits. A table
-   whose cell shares a bit with another written cell is cleared too; its
-   changes are empty already. A table the turn wrote is cleared whether or not
-   a view draws it. Then focus requests made during the turn are resolved to
+   rearms exactly the table cells the turn wrote, retaining their changes
+   until the next writing turn's first modifier. When no table was written,
+   that is one test of the turn's signature against the tables' bits. Sharing
+   a signature bit does not rearm an unrelated cell. A table the turn wrote
+   is rearmed whether or not a view draws it. The reference names the turn mounted or renamed are
+   checked for duplicates, after every departing reference has been removed
+   and before focus is resolved. Then focus requests made during the turn are resolved to
    node ids and emitted, and follow-up turns queued by the turn run next, in
    order.
 
@@ -1112,14 +1384,16 @@ layers written below it join in the same way. The walk visits the sites on
 the event's path and evaluates nothing outside the subtrees it refreshes.
 
 Effect results and follow-ups are turns of their own, applied in arrival
-order. Which of two concurrent results should win is application state, never
+order, except that a report replaced in place keeps the place of its
+source's waiting entry. Which of two concurrent results should win is application state, never
 a host inference.
 
 ### Equality pruning
 
 Pruning happens at observation points:
 
-- every hole compares its new value to the last emitted value;
+- every hole compares its new value to its last observation: a command, or
+  the browser value an open-state event echoed;
 - `each` compares a kept row's new item to its old item;
 - `derive` compares its recomputation to its last value;
 - `resource` compares its layer after each `pending` and `resolve` to its
@@ -1140,10 +1414,111 @@ Synchronous browser callbacks raised while JavaScript applies a batch, or
 while Wasm runs, never re-enter the engine. They are queued and delivered as
 their own turns after the current batch.
 
-The runtime's ingress queue is bounded at 4096 events. Only a feedback loop
-between the DOM and the engine fills it, so overflow is not refused event by
-event (that would drop non-lossy input or strand an in-flight id): it poisons
-the runtime with class `resource_limit`, reported like any other fault.
+The runtime's ingress queue is bounded at 4096 entries. Reports wait in it
+until the frame, one replaceable entry per source; a full queue of waiting
+reports drains early. While the runtime is busy, a feedback loop between
+the DOM and the engine can fill it. That overflow is not refused event by
+event (which would drop non-lossy input or strand an in-flight id): it
+poisons the runtime with class `resource_limit`, reported like any other fault.
+A full queue while a marked batch waits for its view-transition callback
+instead forces that batch to apply and drains the queue. Early effects and
+DOM application retain the ordinary busy overflow rule.
+
+After its initiating turn, a drain delivers at most 4096 further turns
+before the runtime returns to idle. A loop that raises only one further
+event per turn never fills the queue, but still cannot settle: a 4097th
+further turn poisons with `resource_limit`.
+The native runner applies the same bound to the turns one step raises.
+
+### Reports and occurrences
+
+A report source states a current value. `OnlineChanges`,
+`VisibilityChanges`, `MediaChanges(query)`, `StorageChanges(key)` and port
+subscriptions declared `Latest` are report sources, identified by request id.
+An awaited HTTP, upload or fetch request whose reaction asks for progress is
+also a report source, identified by its request id: its progress reports do
+not retire that id, and its final result is an occurrence. Other sources join
+only through a declaration that states their identity and which results are reports.
+An `on_pointer_paced` move is identified by its declaring element, handler
+number and pointer id. Element identity, rather than a recycled node id,
+keeps a new element's reports separate; two pointers never replace each
+other's moves. Scroll reports are identified by element and handler; size
+and seen reports by element and kind. Media uses its subscription id.
+Several observer entries for one target enter in callback order and the
+report index retains the newest. Disconnected targets are skipped.
+Clicks, key presses, input, change, submit, focus and file events, final
+request results, `Every` port messages, subscription `Closed` and `Threw`,
+interval ticks and `Popstate` are occurrences. Their repeated occurrences
+remain distinct. A `Latest` message represented by `PortFailed(TooLarge)`
+is still a report; another message can replace it and the subscription
+continues.
+
+A report's payload is fixed when reported, never read again at delivery.
+The runtime applies the declared delivery policy through one ingress queue:
+
+1. A report source has at most one replaceable entry, reached through its
+   source index. A newer report replaces that entry's payload in place,
+   keeping the source's position. A quiet source needs no index entry.
+2. Queuing an occurrence pins all earlier reports in O(1), by advancing
+   the index's epoch. A later report from a pinned source starts a new
+   entry behind the occurrence.
+3. Reports raised while idle wait for `requestAnimationFrame`, with one
+   `FRAME_WAIT_MS = 100` timer alongside it. Whichever fires first drains
+   the queue and cancels the other. When `environment.visible()` answers
+   false, a microtask drains at the end of the reporting task instead.
+   A busy runtime waits until its batch has applied. Size reports drain when
+   their ResizeObserver callback returns: it runs after the frame drain and
+   before paint, so another frame would paint the old layout once.
+4. An occurrence joins the queue and drains it immediately in order when
+   idle. Click commands therefore retain user activation. While busy it
+   waits for the batch's ordinary drain.
+5. Delivery is an ordinary turn through the event or result's existing
+   entry, and removes its index entry.
+6. A report that finds the queue full while idle drains it early before
+   queuing. The number of sources can follow app data and never causes a
+   poison merely because reports waited for a frame.
+
+An occurrence arriving at a full idle queue also drains in order. The
+oldest report becomes the initiating turn, outside the following drain's
+4096-turn budget; the occurrence occupies its freed slot and pins earlier
+reports before that initiating turn runs. This preserves both the queue
+bound and the order of reports raised during delivery.
+
+An occurrence follows every report queued before it, each with its newest
+value from before the occurrence, and precedes every report raised after
+it joined. Sources keep the order of their first report since the drain.
+`Every` port messages enter ingress when their subscription's turn comes,
+not when the handler emits: a report raised between emit and that turn is
+delivered first. This retains the bound on port traffic; an app needing a
+single order sends both values on one subscription.
+
+A `StorageGet` callback reads storage when it runs, after the preceding
+ingress and batch focus work. Its answer is then an occurrence. The native
+runner likewise defers the read itself, so a queued occurrence that writes
+storage before the callback is reflected in the answer.
+
+`CANCEL` makes all waiting reports of its request or subscription dead and removes
+its source index entry. Draining skips them without delivery or stale
+counts. A waiting DOM report follows the
+existing element and node identity checks; a new element with a recycled
+id cannot replace an old element's report. Poison and unmount discard the
+queue and index and cancel scheduled drains.
+
+The frame lets reports from separate browser tasks meet before the page
+draws. Hidden pages use the microtask because background timers can be
+throttled; the 100 ms timer bounds waiting for a visible page given no
+frames. It is a runtime liveness bound, not a mount option. There is only
+one frame request and one timer, and the source index is bounded by the
+ingress queue. These policies change neither engine turns nor wire bytes.
+
+In `manualEffects` mode reports wait for `releaseReports()`. Spec runners
+release after each report step unless `hold-reports` is in force, so a
+step is its own frame. An occurrence inside a hold still drains reports
+ahead of it and leaves the hold in force. A hold and the replacement count
+belong to one document: nesting a hold, releasing without one, ending a
+spec while holding or leaving the document while holding is a step error.
+`manualWork` and `manualIntervals` alone leave reports on the browser's
+frame schedule.
 
 ### Complexity budget
 
@@ -1155,7 +1530,10 @@ keys a turn wrote in a table.
 
 | Operation | Budget | Forbidden |
 |---|---|---|
+| Apply a marked view-transition batch | Two reads of the command bytes; browser capture follows the document and each named element | claiming browser capture costs only the changed set |
 | Route an event to its handler | O(path depth) | scanning nodes or sites |
+| Dispatch a document key | O(live document-key handlers), at most 32; matching is linear in the keymap inspected | scanning nodes or scopes |
+| Build a pointer's zone payload | One browser hit test, then O(ancestor depth) to the nearest zone | scanning every zone or keeping a registry of zone values |
 | Write a local state | O(R) evaluations, plus the static structure on the path to them, all inside that state's subtree | visiting the readers of a sibling state |
 | Write a store cell | O(R) evaluations, plus the static structure on the path to them, whatever the depth of the writer | carrying the cell through the scopes between; comparing the cell's value |
 | Write several things in one event (`also`) | One evaluation of each reader of any of them, O(R) over them all, plus a walk of the event's path, O(path depth), for a written layer the pass did not reach | evaluating a reader of two of them twice; visiting the readers of a sibling layer at a written layer's depth |
@@ -1163,14 +1541,17 @@ keys a turn wrote in a table.
 | Keyed selection change | 2 rows re-evaluated | O(L) row re-evaluation |
 | `when`/`switch` flip, `remount_on` key change | O(disposed + mounted subtree) | rebuilding siblings |
 | `each` list change | O(L) key and item comparisons, O(K) row evaluations and DOM commands | O(L) row re-evaluation or rebuild; O(L²) planning |
+| Refresh an echoed shown property | One paired hole, in the ordinary pass or its path walk | refreshing siblings or discovering changes from DOM state |
+| Re-show controls after a row move | O(shown addresses in that row), in recorded show-intent order | scanning all descendant nodes or all rows |
 | Row event | O(1) to find the row (slot from the node id) | key or list scan |
 | Keyed writes to a table, per table view | Per written key: two placements with the query, a search of the ordered keys and a move inside one chunk. O(W) more when a change reaches the window. O(J) row evaluations and DOM commands at most | a pass over the table; a comparison of two lists of rows; a copy of the table |
 | A move of a row within a view | O(W) | O(T) |
 | Change a table view's window | O(old window + new window), plus the chunk count to find the position | touching the ordered keys or the table |
 | Change a table view's query, rewrite a table whole, write more than a fixed fraction of a table's rows in one turn, mount a view | O(T) to filter, and a sort of the rows kept | — |
-| End of turn | One test when no table was written; otherwise O(table cells in the store), clearing those the pass named | visiting a view, or the rows of a table |
+| End of turn | O(exact write-set words + written cell IDs), with expected constant lookup in the construction-time table-cell index; only written tables rearm | visiting every table cell, a view, or the rows of a table |
 | Dispose a scope | O(scope size) | work outside the scope |
 | Effect result lookup | O(in-flight), bounded by the cap | unbounded tables |
+| Mount, rename, dispose or resolve a reference | One map lookup per affected name; duplicate checks visit only names touched by the turn | scanning all references |
 
 `each` is honest about its cost: comparing a new list value with the site's
 columns is linear in the list, as any keyed reconciliation of a list value is.
@@ -1234,8 +1615,10 @@ is compiled for each; that cost is carried with the compiler issues (see
 code size.
 
 What the types do not catch: a component handed the wrong cell of the right
-type compiles. Two cells of one type are told apart by a spec or by a pure
-test of the transition, not by the compiler.
+type compiles. A view generic over the store accepts any cell of the type it
+asks for, which is what lets a component be published (Goal 2). Two cells of
+one type are told apart by a spec or by a pure test of the transition, not
+by the compiler.
 
 ## The Command Stream Is the Only Output
 
@@ -1246,25 +1629,291 @@ host as the call's result; the host keeps it readable through `cmd_ptr` and
 
 Rules:
 
-- **Atomic publication.** A batch becomes visible only when the call returns
+- **Atomic publication.** A batch becomes visible only after the call returns
   successfully. A trap discards it; JavaScript never observes a prefix of a
-  failed call.
+  failed call. A marked view-transition batch is published whole later than
+  the call returns, never earlier.
 - **Apply, then perform.** The runtime applies DOM commands in stream order and
   collects effect commands, then performs the effects after the whole batch is
-  applied, so an effect never observes a half-applied DOM.
+  applied, so an effect never observes a half-applied DOM. A shown property
+  hides in stream order but queues a show at its position among the commands
+  performed after the batch, when its content exists. A later decision for
+  the same property supersedes an earlier queued show, including a later
+  hide. The runtime checks the captured element and per-property intent
+  token before performing it; a removed or superseded target is skipped.
+  Other surviving shows, effects and reference commands keep stream order.
+  A marked batch that starts a view transition is the exception described below.
 - **Decided, not interpreted.** The runtime does not diff, reorder, coalesce or
-  skip commands. Its only state is the id → DOM node tables, parsed templates
-  and live effect handles the commands told it to keep.
+  skip commands, except for the protocol-defined partition of a marked batch
+  that starts a view transition:
+  effects that name no node precede its DOM, and node effects follow it, each
+  class in stream order. Its only state is the id → DOM node tables, parsed templates
+  and live effect handles the commands told it to keep, plus the ingress
+  queue and its index of report sources, the guard flag the last `GUARD`
+  command set, the keymaps rendered on nodes and
+  the document-key registrations commands registered, and the elements
+  commands told it to observe, released by `RELEASE`, teardown or poisoning. Manual mode also keeps
+  the bounded passive scroll, transition and native-callback observation data
+  described below. At most one transition batch waits for its update callback,
+  with its parsed templates and effect metadata; its command bytes stay in
+  the host-owned buffer, without a copy. `RELEASE`, teardown
+  and poisoning remove those registrations. Input delivery applies a declared
+  policy; it does not decide application meaning. The controlled-value guard
+  and the shown-property live-state table below are explicit protocol guards,
+  not application-state diffing. Shown intent tokens exist only to reject
+  superseded work within a batch.
 - **Fresh views.** Any call may grow Wasm memory. The runtime re-reads
   `memory.buffer` after every call that can allocate, including
   `payload_reserve`, and never holds a view across one.
 - **Determinism.** The same mount and the same sequence of inputs produce the
   same command bytes.
 
-Attribute commands carry the engine's decided value. The runtime's
-interpretation of a few attribute names (`value` and `checked` as live control
-state, boolean attributes, `class` on SVG) is part of the protocol in
-Appendix B, not a decision about application state.
+The mount element's namespace URI, optional prefix and exact local name are
+engine inputs, separate from the app-visible `Boot`. The runtime measures
+these finite facts; Roc uses them to resolve the context of raw constructors
+and check literal placement. Neither side scans the mount's ancestors. A
+mount under SVG retains that context, including an HTML child context under
+`foreignObject`. Native and browser specs supply the same root facts. A
+proof that a mounted state is fixed must account for these inputs as well as
+the program and any app-visible boot values; an entry that reads no `Boot`
+does not by itself prove independence from its enclosing element.
+
+An element's child container is explicit in the command
+representation: ordinary DOM children and an HTML template's `content` are
+distinct targets. Roc chooses the container before encoding; the runtime
+applies that choice. `Engine.element` keeps its ordinary DOM-child behavior,
+while parsed markup places an HTML template's contents in the explicit
+content target, for both HTML and XML source. These operations can resolve
+the same element name while choosing different containers. Row templates
+and hole paths preserve that distinction too.
+Template content remains owned by the engine's ordinary scopes and is
+disposed with them, but does not contribute to the template element's
+`textContent` or ordinary descendant locators. The independent oracle models
+both containment and observation rather than treating inert content as drawn
+children.
+
+Element properties, such as a control's live value, are their own commands,
+from a closed table in Appendix B. Attribute commands set attributes, and
+the runtime preserves each attribute's decided name, presence and text.
+Each property row fixes its value type, encoding, allowed elements
+and the attribute name it claims, if any; the runtime applies the
+engine-decided value rather than inferring control state from a name.
+
+### A prerendered first page
+
+An app may opt in to a first frame rendered at build time inside
+its marked mount root. The native runner mounts the actual program for the
+requested boot, consumes its command batch through the independent oracle,
+and renders that model as a document. This is a rendering of the engine's
+output, not a second engine or an application view run in JavaScript. One
+configured oracle renderer handles diagnostics and documents. The first
+frame arrives with the document; the module's arrival decides when it
+becomes interactive.
+
+Startup replaces the picture immediately before applying the ordinary mount
+batch, in the same task. The producer renders one init batch without delivering
+host answers; the browser initializes the app normally for its live mount.
+The generated page carries no adoption claims or measured boot facts. The
+picture is inert until replacement. The runtime removes inertness before
+performing the batch's effects, so focus and reference commands observe the
+mounted page. An HTML mount root owns its inertness.
+A non-HTML mount root requires an explicitly marked immediate ordinary HTML
+parent with the no-namespace `data-roc-picture-inert-parent=""` attribute.
+That parent has exactly the root and, optionally, its following HTML JSON
+descriptor as element children; text and comments may surround them. The
+descriptor has no-namespace `type="application/json"` and
+`data-roc-picture-envelope="1"` attributes. A template content fragment cannot
+supply this parent. The producer never inserts a wrapper or changes the
+actual mount root, its namespace or live mounting semantics.
+
+The producer adds no-namespace `inert` to this explicit owner only when it
+was absent, recording that addition with `data-roc-picture-inert="added"` on
+the owner. An authored owner cannot supply that reserved restoration fact;
+authored inert text is preserved exactly. The host template's public parser
+tokens bound any parent opening-tag insertion. The runtime retains the fact
+and its bounded hold across startup failure and retry, then removes the fact
+and only producer-added inertness after successful replacement or recovery.
+The parent marker persists; picture and failure markers belong to the actual
+root. These bootstrap facts use exact no-namespace attribute identity; the
+same spelling elsewhere or in another namespace remains data. The app
+chooses the routes to render; no origin, user session or hash route is
+invented by the build.
+
+A picture is accepted only when the parser preserves the structure and text
+that the oracle rendered. The parser and its browser comparisons are the
+independent check of the renderer. HTML repair is also a construction contract
+error for the declared bounded subset, in live and prerendered views alike:
+paragraph closure, repaired table placement, nested anchors/forms/buttons,
+direct list/option/heading closure, children of voids and element children
+inside text-content elements. Legal insertion-mode exceptions come from the
+parser's grammar. These checks retain finite scope facts and the immediate
+parent, never an ancestor list or a scan of the existing tree. Unknown raw
+names retain their grammar-only escape; vocabulary checks belong at literals.
+
+Dynamic sites receive the context of their enclosing element. Row templates
+are checked once at site construction even for an empty list or table view;
+branches and drawn rows are checked when mounted. Restricted table text is
+checked when created and when replaced, in the size of the new text, without
+retaining an earlier value. The bounded constructor check is not a claim of
+complete HTML parsing: the independent full parsed-picture check covers
+repairs outside its declared subset. A default mount reaching a construction
+error fails at the app's compile-time mount declaration; later paths fail in
+the ordinary contained turn.
+
+No event queue accepts interaction with an inert picture before mount. If the
+module or scripting cannot run, the picture remains inert; the root exposes
+its failed state when the runtime can report it, and the app's document gives
+its failure styling and noscript notice.
+
+**Target — adoption.** Preserving built node objects is a future capability,
+separate from ordinary replacement. It must meet the following requirements
+before it can replace that startup path.
+
+Adoption preserves the existing nodes only on the engine's command. The
+build writes versioned node and row-hole claims separately from the owned
+DOM, the mount batch's fingerprint, and a digest of the tree and claim facts
+it expects the browser to expose. Authored comments and attributes remain
+data; their spelling never assigns an adoption role. Before init, the runtime
+measures that same canonical tree and stages the built and measured facts
+with boot bytes, separately from the app-visible Boot. Roc compares those
+facts with its own mount batch and emits adopt or replace. JavaScript never
+turns an adoption into a replacement, patches a mismatch, or judges the facts.
+An assertion that fails after adoption poisons the instance as an executor
+fault; recovery mounts afresh without a picture.
+
+The canonical tree covers namespace URIs, optional prefixes, exact local
+names, every attribute and value, ordinary children and template content,
+text and comments. Its measurement also covers the ordered claim roles and
+logical text boundaries. Live properties changed
+by a page script, CSS, layout and nodes outside the root are outside that
+measurement. Adoption re-applies the batch's attributes, text and properties.
+The canonical form has independent Roc and JavaScript implementations, kept
+in agreement by Chrome differential tests over every maintained app's picture.
+The wire layouts and hash widths land together in Appendix B with the
+producer and consumers; a fingerprint is never an application-state registry.
+
+HTML omits empty text nodes and merges adjacent ones. The renderer therefore
+declares their physical text runs and a Roc-built plan for the logical text
+boundaries. On adoption, Roc explicitly commands any splitting and creation
+of empty text nodes required by that plan. The runtime verifies each claim
+and applies those instructions; it never invents boundaries or repairs a
+mismatch. Correct existing elements, comments and text nodes stay in place.
+A claim's structural position locates an already-decided engine address,
+not an application identity. Temporary claim and text-run data is bounded
+and released when mount completes or faults.
+
+Controlled textarea and select values can require physical markup which differs
+from their ordinary logical children or attributes. The renderer declares any
+control-value text, selected-attribute override or empty-selection option as a
+scaffold, with explicit restoration facts in the measured claim envelope. These
+nodes and attributes have no application identity. On adoption, Roc commands
+removal of declared scaffolds, restoration of logical attributes and construction
+of logical text or comments which the picture could not represent directly.
+It then reapplies the ordinary control properties before effects. The runtime
+never recognizes a scaffold from its name or chooses a control value. Existing
+nodes which already represent the logical frame retain their identity.
+
+A malformed adoption marker is reported and staged as absent so a normal mount
+replaces it. A picture for a different boot, a stale frame or a changed measured tree is replaced by Roc's
+verdict. Both spec runners stage these same facts and assert the verdict;
+the browser additionally proves that parsed markup and adopted nodes agree.
+
+### Applied in a view transition
+
+`ViewTransition(types)` is a command issued by an ordinary effect site over
+what changed, so result turns animate by the same rule as DOM events. It
+awaits no result and occupies no in-flight slot. The unit is the complete
+batch of one host call: requests from its turns, including `Self` follow-ups,
+merge through a hash set in first-issue order. The mount call, including its
+follow-ups, is always unmarked. No CSS identifier validation or type-count
+cap is imposed; the command buffer's structural bound is the bound.
+
+Every nonempty page batch has a flags byte. A marked batch ends with one
+`TRANSITION` holding the collected types (Appendix B). The engine decides
+this mark; the runtime never infers it from DOM changes.
+
+When `viewTransitions: "document"` (the default), the actual document is not
+hidden and `document.startViewTransition` exists, application has two reads:
+
+1. Read the whole buffer in place, retain `TEMPLATE` definitions and collect
+   effects and types, without changing the live DOM. After framing validation,
+   perform `FX`, `CANCEL`, `NAV`, `STORAGE`, `TITLE`, `PORT`, `SAVE` and `GUARD` in
+   stream order. These effects name no node. Saves and port commands issued
+   in a click's turn still run in its listener's stack.
+2. Ask `document.startViewTransition({ update, types })`, falling back to
+   its function form without types if the options form throws. In its guarded
+   update callback, read the buffer again and apply DOM commands in stream
+   order, without redefining templates or repeating early effects. Perform
+   node effects (`REF` and queued shown-property work) in their stream order,
+   drain released file handles, clear busy and drain queued inputs.
+
+This partition deliberately changes cross-class effect order: a reference
+command issued before an HTTP request runs after it. An early effect sees
+the old DOM; a node effect sees the completed new DOM. Neither sees a
+half-applied batch. Resolve files when their effect is performed and hold
+the browser object until result or cancellation; releases still drain only
+after DOM application and remaining effects.
+
+While the callback waits, no page-instance Roc call or payload staging is
+allowed. The host's command buffer stays valid and is never copied. Inputs
+queue against the old page, and are delivered after the update; queued DOM
+events whose element was removed or whose id was recycled are dropped.
+The callback runs at most once. After 1000 ms without it, apply directly and
+skip the transition; a later callback does nothing. A full ingress queue
+while waiting also forces application and draining, rather than poisoning.
+This exception applies only to the waiting gap: overflow during early effects
+or DOM application keeps the ordinary busy feedback-loop bound. Unmount,
+poisoning and recovery invalidate old callbacks and release pending metadata.
+
+With the API absent, the option `"off"`, or actual
+`document.visibilityState === "hidden"`, read once and apply directly with
+effects after the DOM. The app's `environment.visible()` is not this browser
+safety check.
+If starting a transition throws after early effects ran, apply directly
+without repeating them. An early-effect fault leaves the old DOM and drops
+the batch; effects already performed stand. A callback fault is contained as
+`executor`, and skips the animation. Rejected `ready` or `finished` promises
+are bounded passive monitor diagnostics, never application faults.
+
+A transition belongs to the document: it can capture the page and each named
+element, holds rendering until the update, and replaces any preceding
+transition, including another mount's, at its final state. This browser cost
+follows the page and named elements, rather than the changed set. An embedder
+that does not own the page chooses `viewTransitions: "off"`. The engine's
+propagation work is unchanged. Names come from app keys and CSS; duplicate
+live names can lose the animation without losing the update.
+
+A removed row survives only as a browser snapshot. `REMOVE` and `CLEAR`
+detach nodes and release identity normally; keeping an outgoing node would
+let a recycled id route input to its new owner and make the oracle disagree
+with the browser. For a long exit that must retain real content, the app
+keeps an explicit leaving row and removes it on a scoped timer's `Fired(_)` or
+`Refused` result. Entrance CSS can use `@starting-style`; `MOVE` remains
+`insertBefore` and may replay it. `Element.moveBefore` would change focus
+semantics and is not adopted. No frame subscription is introduced: CSS
+interpolates values, `Interval` supplies coarse progress, and a custom
+canvas element owns any drawing frame loop.
+
+The transition overlay's `pointer-events: none` permits input to uncaptured
+UI, but captured subtrees remain unavailable to hit testing until their
+snapshots finish. Reading List disables the root capture, names book rows
+by their table keys, and keeps its form and shelf buttons outside captures;
+controls inside books still incur that browser cost. Its shared app CSS
+handles reduced motion and uses `@starting-style` only as the fallback where
+view transitions are unsupported. The runtime does not alter the app's CSS.
+
+Manual mode records applied marked batches, skips each animation once its
+update ran, and exposes `idle()` until `finished` settles. Replay waits for
+it before the next step, so native and Chrome specs see the same final DOM
+without an overlay intercepting input. Both runners retain transition
+observations under the same bounds: newest 4096 records and at most 1 MiB
+of encoded type bytes (four length bytes plus UTF-8 bytes per type).
+Ordinals and the total count are absolute U64 values, represented as decimal
+strings at the JSON boundary. Eviction makes an old ordinal unavailable;
+an oversized record clears older history and is itself unavailable. Neither
+changes app progress or the total count. U64 exhaustion disables observation
+with an explicit diagnostic, never app execution. This bounded observation
+history does not cap types in an actual batch.
 
 ## The Effect Channel
 
@@ -1295,16 +1944,66 @@ moved by at most one since it last looked, and a larger step is a
 of a list. Because the outbox is ordinary state, a pure `expect` on the
 reducer or the decision sees both what changed and what is sent.
 
+An effect plan returns `List(Ask(output, error))`. Each ask pairs one request
+with the reader of its own raw result. The site retains that reader beside
+the request's issued-for value, separately for every admitted request, and
+its reaction receives `Try(output, error)`. `Ask.map_ok`, `map_err` and `map`
+adapt heterogeneous requests to one application answer vocabulary before the
+list is built. Only those transformations and sent-request inspection are
+public members; constructing or invoking the reader is internal machinery.
+A resource retains its reader too: receiving a result never recomputes its plan.
+
+Disposal reparents a kept request's issued-for value and reader together.
+Cancellation, supersession, terminal results and refusal drop that reader;
+progress and nonterminal subscription messages retain it. The in-flight
+table's existing terminal/liveness decision is authoritative, carried on
+internal delivery without another table search. Progress uses the original
+issued-for value without invoking its result reader. This adds no host-held
+Roc value, wire kind, queue or bound. `command` adapts an unawaited command
+into a typed plan; `raw` deliberately exposes the whole raw Result union.
+
 ### Request kinds
 
 - **Commands** are emitted and forgotten: history `Push`/`Replace` (`NAV`),
-  `Title` (`TITLE`), `StorageSet`/`StorageRemove` (`STORAGE`), and
-  `Focus`/`Blur`/`SelectText` on a named reference (`FOCUS`, resolved at the
-  end of the turn).
-- **Awaited requests** get an id: `Http`, `StorageGet`, `Timer`, `Work` and
+  `Title` (`TITLE`), local and session storage set/remove (`STORAGE`), and
+  `Focus`/`Blur`/`SelectText`/`ApplyValue`/`FocusInPlace`, `ScrollIntoView`
+  and `ScrollTo` on a named reference (`REF`, resolved at the
+  end of the turn). With a port's command and a save, below, they are the
+  tags of `Command`, the type a cleanup's plan returns (see
+  [Explicit Scopes and Disposal](#explicit-scopes-and-disposal)).
+- **`ViewTransition(types)`** is also a command: it marks the call's batch,
+  never the mount batch, and merges types in first-issue order as described
+  in [Applied in a view transition](#applied-in-a-view-transition).
+- **Awaited requests** get an id: `Http`, `StorageGet`, `SessionStorageGet`,
+  `ClipboardWrite`, `Timer`, `Work` and
   the operations on a file the app holds (see [Files](#files)) deliver one
-  result; `Interval` and `Popstate` are subscriptions that deliver any number
+  result, preceded, when the site asks for it, by transfer progress reports
+  that do not retire the id; `Interval` and `Popstate` are subscriptions that deliver any number
   of results until stopped.
+- **HTTP options.** `http(HttpProps)` builds a typed ask carrying `Http` with a required URL and
+  defaulted method (`GET`), headers and body (empty), timeout (`Unlimited`),
+  cache (`Default`) and credentials (`SameOrigin`). Cache is `Default`,
+  `NoStore`, `Reload`, `NoCache` or `ForceCache`; credentials is `SameOrigin`
+  or `Include`. `File.fetch` offers both options; `File.upload` offers only
+  credentials. Neither transport can honour `Omit`, and `OnlyIfCached`
+  needs a mode the request does not carry, so neither is expressible.
+- **Transfer progress.** A separate `ProgressReaction(ctx, a)` receives the
+  issued-for value and `Transfer { direction, done, total }`. Direction is
+  `Sending` or `Receiving`, counts are U64 and total is `Known(U64)` or
+  `Unknown`. `State.on_progress` builds a local reducer; `react_progress`
+  builds a pure decision over store cells. Attaching it with
+  `reaction.with_progress(props, handler)` asks for progress on every `Http`,
+  `Upload` and `Fetch` the site issues. `ProgressProps.every_ms` defaults to
+  100, raised to at least 16. `Reaction.also` composes attached progress
+  handlers atomically in operand order, using the smaller interval for the
+  composed site; a subsequent `with_progress` replaces that attachment.
+  There is no progress arm of `Result`, and
+  `resource` and `gather` have no reaction on which to request it. Progress
+  uses the ordinary report queue: one waiting value per id, replaced in
+  place. The final result drains earlier progress before delivery;
+  cancellation and timeout discard waiting progress. No report is delivered
+  after the final result. A report for a live request that did not ask for
+  one is a contract error at its issuing site.
 - **`Work`** runs a job of a task from the program's worker catalogue (see
   [Workers](#workers)), in a Web Worker that instantiates the same compiled
   module. A catalogue entry is a namespaced, unversioned name and an
@@ -1341,8 +2040,16 @@ reducer or the decision sees both what changed and what is sent.
   carries a port name and a message: JSON text in the `PortJson` encoding,
   the byte blocks its `{"$bytes":N}` markers name and the files its
   `{"$file":N}` markers name, which travel beside the text and are never
-  encoded as text. The program declares each port with `with_ports` (at
-  most 64, each name once, 1 to 128 bytes), and a request for an undeclared
+  encoded as text. A module keeps its ports in one annotated record and
+  `Port.registrations` derives every field, including nested records. The
+  program combines those catalogues with `with_ports` (at most 64, each name
+  once, 1 to 128 bytes). Invalid catalogues fail where built, at compile time
+  for top-level constants. Record fields derive in lexical order, but handlers
+  and requests address ports by name. A complete module omitted from the
+  composing catalogue can still be undeclared. A non-port field names its full
+  field path in the diagnostic. The catalogue walk visits record fields and
+  authored nesting, with no runtime registry or browser object retained.
+  A request for an undeclared
   port, or for a port of another shape, is a `contract` error naming the port
   and the site, checked at the end of the turn like a worker task's name.
   The runtime refuses to mount a page whose `ports` option does not implement
@@ -1394,7 +2101,8 @@ because an error left to inference does not resolve.
   they take a request.
 - **Handles cross by token.** A file in a job's input is not read before the
   job runs. The request names its handle and range (FX kind 8); the runtime
-  resolves the handle to the browser's `File` when it applies the batch and
+  resolves the handle to the browser's `File` when it applies the batch (when
+  the call returns for a marked transition's early effect) and
   posts the whole file with the job, by reference; the worker's host mints
   a handle of its own for each (`files_stage`), in the request's order, and
   the job's `File` values hold those local handles, with the names and
@@ -1587,21 +2295,23 @@ are all of that kind.
   `stale`. The owning site also checks that it holds the id, so a successor
   site at the same path never receives its predecessor's results.
 - Results are typed: `Http({ status, headers, body })`, `Network(message)`,
-  `Timeout`, `Value`, `Missing`, `Fired`, `Location`, `Online(Bool)`,
+  `Timeout`, `Value`, `Missing`, `Fired(I64)`, `Location`, `Online(Bool)`,
   `Visible(Bool)`, `Now`, `Refused`, `Work({ output, files })`,
   `WorkLost(fault)`, `Fetched({ status, headers, body })`,
   `FileBytes(bytes)`, `FileText(text)`, `Digest(bytes)`, `FileUrl(url)`,
-  `FileFailed(reason)`, `PortAnswer(message)` and `PortFailed(Threw(text) |
+  `FileFailed(reason)`, `Copied`, `ClipboardFailed(NotAllowed | Unavailable)`,
+  `StorageFailed({ store, key, reason })`, `PortAnswer(message)` and `PortFailed(Threw(text) |
   TooLarge | Closed)`. A subscription ends at its first `Threw` or `Closed`,
   which retires its id like a cancel; `TooLarge` reports one message and the
   subscription goes on.
   Application failures are values; contract violations are diagnostics,
   never fabricated results. A worker's diagnostic text goes to the page's
   console, never into its result.
-- `http_text` reads an HTTP result as the body of a 2xx response or a typed
-  `HttpError`: `Network(message)` (the browser could not reach the server),
-  `Timeout`, `Status(code)` (any other status) or `Refused` (the in-flight
-  bound). Apps that classify statuses themselves match on `Http` directly.
+- `http` and file upload deliver the full response at every status as
+  `Try(Response, HttpFailure)`. `http_body` explicitly selects a 2xx text body
+  and classifies other statuses as `HttpError.Status(code)`. File fetch
+  likewise delivers status, headers and a file body at every status; selecting
+  a 2xx body is an application's mapping, never an implicit transport policy.
 
 ### Bounds
 
@@ -1625,14 +2335,25 @@ deployment allows is a mount option, named `max…Bytes` or `maxWorkers`
   each of a hundred rows that fetch at mount: they are all depth 1.
 - **Follow-up breadth.** A loop in which each follow-up queues two or more
   would grow exponentially before it reached depth 64, so one host call runs
-  at most 64 follow-up turns per in-flight slot, and at least 4096. Only a
-  multiplying loop, or a fan-out refusing more than 64 requests per slot of
-  the in-flight table, reaches it; it is a `resource_limit` error. The total
-  is in the app's hands: it is set by `max_inflight` and by how many requests
-  its sites issue in one turn.
+  at most 64 follow-up turns of depth 2 or more per in-flight slot, and at
+  least 4096; one more is a `resource_limit` error naming the site. The
+  follow-ups of depth 1 are not counted. The external turn queued them
+  itself, one for each request it issued past the in-flight bound and one
+  for each `Self`, and nothing adds to them once that turn has returned, so
+  their number is bounded by what the one turn issued. It follows the app's
+  data: a turn that mounts five thousand rows that each fetch is refused
+  about five thousand times. A count that follows the rows drawn is no
+  loop, and a poison there is what
+  [How failure is controlled](#how-failure-is-controlled) rules out. What
+  reaches the bound is a loop that multiplies, or a follow-up whose own turn
+  fans out past it.
 - **HTTP timeout.** Each request carries `timeout_ms` (0 = none), capped at
-  600 s. A timeout delivers `Timeout`; the runtime arms at most one timer per
-  admitted request and clears it on completion, failure, timeout or cancel.
+  600 s. A timeout delivers `Timeout`; the runtime arms at most one timeout
+  timer per admitted request, plus at most one sampling timer for a request
+  that reports progress. Both are cleared on completion, failure, timeout
+  or cancel. Sampling uses an internal monotonic clock, never another read
+  of the app's wall-clock environment. Large U32 intervals are scheduled
+  without the browser's signed-32-bit timer clamp shortening them.
 - **Work timeout.** Each job carries `timeout_ms` (0 = none), capped at
   600 s like an HTTP timeout. Its expiry stops the job by terminating its
   worker and delivers `Timeout`. A cancelled job that finishes (`on_cancel:
@@ -1662,10 +2383,11 @@ deployment allows is a mount option, named `max…Bytes` or `maxWorkers`
   together, else `PortFailed(TooLarge)`; one that carries more files than
   the page has free handles for is `PortFailed(TooLarge)` too, and none of
   its files is kept. Each subscription declares how its
-  undelivered messages wait: `Latest` keeps one and a newer one replaces it;
+  undelivered messages wait: `Latest` follows the
+  [report rules](#reports-and-occurrences), keeping one replaceable entry;
   `Every(n)` keeps up to n ≤ 1024 in order and refuses `emit` beyond them (it
-  returns false and takes nothing). The runtime keeps at most one message per
-  subscription in its ingress queue, so port traffic adds at most the
+  returns false and takes nothing). The runtime keeps at most one `Every`
+  message per subscription in its ingress queue, so that traffic adds at most the
   in-flight cap to it. A call's `timeout_ms` is capped at 600 s like HTTP's.
 
 ### Disposal and reparenting
@@ -1682,15 +2404,18 @@ rendered the control:
   computing an answer nobody will read is only cost. A task decides for
   itself, because its job may have an effect worth keeping: one that says
   `on_dispose: Keep` is kept and reparents like `Http`.
-- **Admitted requests (`Http`, `Upload`, `Fetch`, `StorageGet`, port calls,
+- **Admitted requests (`Http`, `Upload`, `Fetch`, `StorageGet`,
+  `SessionStorageGet`, `ClipboardWrite`, port calls,
   jobs of tasks that say `Keep`) reparent** to the nearest surviving
   ancestor site — the `when`, `switch` or `remount_on` that replaced its
   body, or the `each` or view site that removed the row. When the result
-  arrives, the reaction runs in that ancestor's current environment.
+  arrives, the reaction runs in that ancestor's current environment. Its
+  progress handler runs there too, under the same rules for writes.
   Disposed layers are snapshots there: a write to a retired state is skipped
   and counted (`skipped`), writes to surviving states commit, and the write
-  set names only surviving layers. A decision's writes to store cells always
-  commit, since the store outlives every scope.
+  set names only surviving layers. The scope that held the state is gone, so
+  there is nothing to write. A spec asserts `effects_skipped`. A decision's
+  writes to store cells always commit, since the store outlives every scope.
 - A reparented orphan retains a snapshot of its retired layers until its
   result arrives; the in-flight cap bounds that retention.
 - Only tearing down the instance invalidates delivery.
@@ -1717,6 +2442,30 @@ inference:
   cancelled id is then stale like any other. A `plan` that returns `[]` makes a
   change a pure cancel. Disposal keeps the per-kind rules above: supersession
   is about a value being replaced, disposal about an owner going away.
+- **`keep_current(v, plan, react)`** issues at mount and each unequal value,
+  keeping every request while delivering readers and reactions only for the
+  latest issuing step. Every request of that step is eligible. An empty or
+  commands-only plan also replaces the eligible step; an equal value does not.
+  Older results and progress still count as delivered to their site, but run
+  neither their retained typed reader nor their reaction. Subscriptions are a
+  contract error before admission, even at an in-flight bound of zero; use
+  `watch_latest` for them. A one-shot `Timer(0)` is legal.
+  On disposal, eligibility freezes for each admitted request. An eligible
+  orphan also requires its declared signal, read from the surviving ancestor's
+  passed environment, to equal its issued-for value. The check captures no
+  environment or store; retired local reads use the existing snapshot and
+  writes to retired state remain skipped. A remount is a new scope, not a
+  generation shared with the orphan. Existing cancellation, refusal, retirement
+  and reparenting rules remain in force.
+  The site's index contains only outstanding ids from its current step,
+  including queued follow-ups and refusals. Final delivery removes an id;
+  progress retains it. Lookup is expected O(1). The pinned Dict retains bucket
+  capacity after removal, so physical storage follows the current step's
+  high-water capacity until replacement or disposal. Existing owned-request
+  lookup and removal remain linear in the site's owned requests. An eligible
+  orphan performs one declared-question read and equality check per result or
+  progress report; live delivery needs no guard read. Like reaction readings,
+  this result-time read is outside the propagation sampling counter.
 - **`resource(input, { init, pending, plan, resolve }, body)`** is a layer whose
   value follows the answers to requests issued for its input. At mount the
   layer is `pending(init, a)` and `plan(a)` is issued. When the input changes to
@@ -1770,6 +2519,8 @@ so both spec runners read them: specs assert the cumulative ones as the
 `effects_*` metrics; the live gauge is not a metric, and specs assert what is
 outstanding with `expect-pending-effects` and `expect-interval` instead. The
 effect-channel fuzz model asserts all of them exactly after every step.
+`effects_progress` separately counts delivered transfer reports (index 47),
+excluding replaced reports; they do not increment `effects_delivered`.
 
 ### Observation
 
@@ -1788,32 +2539,290 @@ Its cost is a few clock reads per job, and none for a turn nobody asked to
 see. The engine's own account stays the work record: the monitor reads it
 and adds nothing to it.
 
-### Connectivity and visibility
+### The environment at boot
 
-Whether the browser is online and the page visible is part of the boot bytes
+Boot bytes and program declarations use tagged, length-bounded sections in
+one tag space (Appendix B). Each table row states its declaration body,
+boot body, source and default. Every section applicable to that direction
+is required once, in ascending tag order; tags do not provide compatibility
+or permission to skip unknown data. Empty boot bytes mean all defaults,
+including location `/`. Declarations must contain their sections even when
+their lists are empty.
+
+A value an app reads at boot is declared through the defaulted
+`ProgramProps`; a catalogue of request kinds is a `with_…` method. `Boot`
+is a defaulted nominal record, built and read as ordinary record data, so
+a later field breaks neither a program nor a pure test that builds one.
+
+The mount's `environment` option supplies read-only fact readers, currently
+`online()` and `visible()` are called at boot and on their browser events
+for live subscriptions. `matchMedia(query)` is called at boot for each
+declared query and when its subscription is created; that subscription
+retains the returned object and reads its `matches` when `change` arrives.
+The object must supply Boolean `matches` and `addEventListener` and
+`removeEventListener` methods. Defaults read the browser through the
+runtime's existing window and document options.
+Report scheduling also reads `visible()` to choose a frame or the hidden
+page's microtask drain.
+Services remain separate: `storage`, `fetch` and `ports` perform requests
+and writes. The URL comes from the document's location, which navigation
+commands write, and deployment limits remain `max…` options.
+
+Unknown environment keys and non-functions refuse mount. A reader that
+throws or returns the wrong type refuses mount when boot is being read;
+after boot it is an `executor` fault. The runtime never keeps a stale
+fact or skips the event to conceal that failure.
+
+The spec parser resolves one `Environment` with stated defaults and owns
+cross-form checks; both runners mount from it, and emitted spec JSON
+includes it. A cross-document mount carries the current environment
+through `next_document`, incrementing the document seed with an explicit
+diagnostic at U128 exhaustion. Replay installs readers
+over that value in each new document and seeds storage without an
+app-visible marker. A step that sets an unchanged fact dispatches nothing.
+Nondeterministic facts reach either runner only from the spec or their fixed
+defaults, never a real clock or entropy source.
+
+A value steps can change is set up with `initial-<name>` and changed by
+`set-<name>`; a value fixed for the document uses `(<name> …)`.
+Storage predates this naming rule: `local-storage` seeds it and the app's
+writes change it. File fixtures and deployment limits are not environment
+facts.
+
+### Time, entropy and locale
+
+The boot data includes `now_ms : I64` (milliseconds since the Unix epoch),
+`seed : U128`, ordered `languages : List(Str)` and a `Zone` offset table.
+Their defaults are 0, 0, `["en-US"]` and `utc`. They are inputs fixed for the
+instance; the engine never reads a clock or makes entropy. A mount and the
+same inputs therefore still produce the same command bytes.
+
+The environment readers supply these facts: `now()` defaults to `Date.now()`,
+`seed()` to sixteen bytes from `crypto.getRandomValues`, `languages()` to the
+browser's preferred languages, and `timeZone(days)` to the probe below.
+Signed times accept a safe-integer JavaScript Number or an I64 BigInt,
+without rounding. The seed reader returns `Uint8Array(16)` in little-endian
+order. There is no entropy fallback: an unavailable or failing source
+refuses mount. The default language reader keeps the first sixteen tags
+that fit the 64-byte limit and supplies `["en-US"]` when none remain;
+injected readers must already meet the bounds.
+
+`Fired(at_ms)` carries the same reader's time when a timer or interval
+callback runs. Counting ticks would drift when the browser delays them.
+`Self` still answers the unrelated, bare `Now`: it reads no clock. There is
+no additional clock request and no timestamp on every turn.
+
+A displayed clock is a cell initialized from `boot.now_ms`, then written by
+an `Interval` reaction. It is as old as its last sample. A decision that
+stamps an action instead posts to an outbox whose site issues `Timer(0)`;
+its reaction writes the supplied `Fired(t)` time. That sample is a task after
+the action and can be delayed further by background throttling or suspension.
+It occupies an in-flight slot; `Refused` must be handled, as the examples do
+by using their clock cell. Decisions remain pure functions of supplied data.
+The wall clock may move backwards; apps handle that rather than assuming a
+monotonic clock.
+
+A zone is `{ name, from_ms, until_ms, offsets }`. Each offset gives
+`{ from_ms, minutes }`, minutes east of UTC. Its span is inclusive; one to
+128 entries are strictly ascending, the first starts at the span's beginning,
+and every entry lies within it. `zone_offset(zone, time)` returns
+`OutsideZone` outside that span. It checks a hand-built table's contract,
+bounded by 128 entries, then uses binary search. It never guesses from the
+nearest offset beyond the stated span. `utc` has one zero offset over the
+whole I64 range. A zone name has at most 64 UTF-8 bytes; an unknown browser
+name is the empty string.
+
+The program declares `zone_days : U16` (366 by default, at most 7305) on each
+side of mount. This is app meaning, carried in its declarations, not a
+mount limit. The default probe uses the captured mount time, samples
+`-new Date(t).getTimezoneOffset()` daily in both directions, and bisects each
+detected change to a millisecond. It reads the browser service and encodes
+facts; it decides no reactive meaning. If more offsets than fit are found,
+both ends are shortened until the table fits, still containing mount time.
+The returned bounds state exactly what was probed. A requested span outside
+the browser's Date range refuses mount; injected I64 time and a valid
+injected zone may still cover that time.
+
+The probe's work is bounded: at most 14,611 daily samples and at most 27
+bisection reads per detected change before the offset cap is reached.
+The environment contract tests run the default and maximum declared spans
+under UTC and Australia/Sydney and record reads and elapsed time; a dense
+synthetic zone checks truncation and its bounds. Probe work belongs to the
+mount's startup cost, never to an update path.
+
+Languages and the zone stay as mounted until reload. There is no subscription
+to a language or zone change. A worker never mounts or gets these services;
+a job that needs time or randomness takes them as input so its answer remains
+a function of that input.
+
+Formatting is pure app Roc. The platform ships no calendar or PRNG; the time
+sample shows civil dates and a SplitMix64 stream seeded from both halves of
+the boot seed. Browser CLDR formatting can be requested through a port, never
+synchronously from a hole. Field Notes uses a 30-second clock for relative
+ages and `Timer(0)` for capture times, including refusal and backwards time.
+Reading List sends its database a whole book with an id and time minted in Roc.
+
+Both spec runners use the parser's manual clock, initially 0. `set-time` and
+`advance-time` deliver nothing; `run-effect` and `tick-interval` stamp their
+`Fired` with the current clock without moving it. Cross-document navigation
+keeps that clock and mounts document k with seed N + k, checked for overflow.
+The spec's zone is true for all time and its languages are fixed. JSON carries
+I64/U128 values as decimal strings. Only the app's readers are controlled:
+page JavaScript and port handlers still read their real clock, so an example
+that needs deterministic stamps makes them in Roc.
+
+### Connectivity, visibility and media
+
+As sections of [the environment at boot](#the-environment-at-boot), whether
+the browser is online and the page visible is part of the boot bytes
 (`Boot.online`, `Boot.visible`), and the `OnlineChanges` and
-`VisibilityChanges` subscriptions deliver every later change as
+`VisibilityChanges` subscriptions report the browser's state: changes
+raised before the next frame reach the app as one turn with the newest
+value, delivered as
 `Online(Bool)` or `Visible(Bool)` from the browser's `online`/`offline` and
 `visibilitychange` events. Like every subscription they are scoped: disposing
 their site stops them.
 
+Programs declare media queries in `ProgramProps.media`, at most 32 distinct
+queries of 1–256 UTF-8 bytes each. Boot includes each declared query and its
+Boolean match, available through `boot_media(boot, query)`; an undeclared
+read returns `Err(Undeclared)`. This pure read has no construction site to
+name, so the error is a value the app must handle. `MediaChanges(query)`
+subscribes to a declared query and reports `Matches(Bool)` through the
+ordinary effect channel. An undeclared subscription is a contract error
+naming the query and site; an admitted subscription uses an awaited slot,
+so the in-flight bound can answer `Refused`.
+
+The environment's `matchMedia(query)` supplies the query object used for
+boot and subscription; the default calls the runtime's window. A first
+render therefore knows the preference rather than learning it a turn later.
+Specs give undeclared-in-setup queries their fixed false default and supply
+query objects the driver can change. `set-media` changes the app's fact,
+not the page's CSS media rules. Cross-document mounts carry these facts as
+they do connectivity and visibility.
+
+`on_post_by(box, reading, plan, reaction)` is the same effect site as
+`on_post`, with a declared reading sampled only when a new post issues.
+Both signals contribute declared read dependencies, so the reading has
+settled before the plan runs. Only the outbox's item is retained and used
+for post equality and issued-for identity; the reading is transient and is
+not stored for comparison. The plan's returned readers may explicitly
+capture values from that reading; each capture lives with its own request
+and cannot be changed by a later sample. A change to the reading alone
+issues nothing, nor does mount. The plan receives `(reading, item)` and
+the reaction still receives `item`. It preserves the two-post contract and
+same-turn issuance, including browser activation. An editor posts a small
+revision or format marker and samples its document at issue, avoiding a
+second long-lived reference that would make later edits copy the source.
+An app that needs answer identity carries that identity in the item.
+
 ### Storage availability
 
-Whether local storage can be used at all is part of the boot bytes too
-(`Boot.storage_available`). The runtime reports it unavailable when there is
-no `localStorage`, reaching it throws, or reading a declared key throws (as in
-a browser with site data disabled); the boot storage is then empty rather than
-partial, and storage writes persist nothing. Availability is fixed for the
-instance, so an app that promises reloads survive can say when they will not.
+Local and session storage are independent services. The program declares
+`storage_keys` and `session_keys`; their boot sections carry pairs and
+`Boot.storage_available` / `Boot.session_available`. `boot_storage` and
+`boot_session` read a key or return `Missing`. The runtime's `storage` and
+`sessionStorage` options default to the browser services. A service is
+unavailable when absent, when reaching it throws, or when reading a declared
+key throws. Its boot pairs are then empty rather than partial. Availability
+is fixed for the instance. Session storage survives a reload in the same
+tab; a new tab has its own session.
 
-### Files
+A set or remove is a command and consumes no awaited slot. A successful
+write adds no result turn. A failed write persists nothing and warns in
+the console. Each live `StorageWriteFailures` subscription receives
+`StorageFailed({ store, key, reason })` one task after that write's batch:
+`store` is `Local` or `Session`, `reason` is `Quota` or `Unavailable`.
+These are occurrences, never replaceable reports. One scheduled task holds
+the pending failure recipients. It freezes that task's group before delivering
+its results; a failure caused by a result waits for a later task. Failures
+already gathered for that group are delivered before a storage-read task
+scheduled between the failed writes. Each recipient still enters through
+its own ordinary turn; no result is coalesced. The native browser model
+keeps this grouping separate from its read and clipboard tasks.
+An app with no subscription learns nothing except the warning: a command carries no result, and making
+each keystroke's draft write awaited would add a slot and a second turn.
+The author can instead subscribe and check `(session-storage-full)` or
+`(local-storage-full)` in a spec. The subscription itself can be `Refused`
+at the in-flight bound, which the app must handle.
+
+### Other documents' storage
+
+`StorageChanges(key)` subscribes to a local-storage key, without requiring
+a boot declaration. A real `storage` event for that service reports its
+`newValue` as `Value(text)`, or `Missing` for a removal or `clear()`. The
+value is captured at arrival, never read again at delivery. It is a report
+source: one replaceable queued entry per subscription, with the ordinary
+frame ordering and cancellation rules. A `clear()` reaches every live
+subscription. One window listener serves all live storage-change ids and
+is removed at the last cancellation or teardown. Session storage has no
+cross-tab subscription. The runtime classifies an event by the captured
+storage service's identity. If it could not acquire that object, it cannot
+identify a local event and does not guess from an unrelated storage area.
+A failed read from an acquired object can still make boot availability
+false while leaving that identity available for reports. The spec's
+unavailable-store setup specifically makes the window getter throw;
+`storage-elsewhere` still changes the other document's underlying store,
+but that setup's receiver has no identifiable local report source.
+
+A document's own write raises no event, including a write by another mount
+in that document. Mounts that must communicate there can use an app's port
+over `BroadcastChannel`. Another tab's write can race this tab's own later
+write; a report still carries the other tab's value even if the store no
+longer holds it. Local storage has no transaction that could order these
+writes. The app decides whether to take theirs or keep its own, through
+pure decisions with `Store.after` tests; an app that must converge keeps a
+revision in its stored value.
+
+### Clipboard and leaving
+
+`ClipboardWrite({ text, html })` writes plain text or one item containing
+both text and HTML, using `Clipboard.text` or `Clipboard.html`. It answers
+`Copied`, `ClipboardFailed(NotAllowed)` or `ClipboardFailed(Unavailable)`;
+The typed ask reads these as `Ok({})` or the corresponding failure,
+including the in-flight `Refused` outcome. A denied
+permission, absent activation or unfocused page is `NotAllowed`; an absent
+clipboard service is `Unavailable`. The browser operation cannot be aborted,
+so the request is kept through disposal and its reaction moves to the nearest
+surviving ancestor, like HTTP. Reading the clipboard on demand remains a
+port; paste text is the user's offered input.
+
+The guard's `beforeunload` listener reads only the last applied flag,
+calls `preventDefault()` and sets `returnValue = true`. It never enters
+Roc. It is installed only while on, uses no message text and needs sticky
+activation. Browsers may skip it, especially on mobile, so it is a courtesy;
+a session draft is the safety net. The last applied guard survives poisoning,
+when unsaved state can no longer be saved; unmount and recovery remove it.
+In-app navigation remains the app's own `Push` decision.
+
+### URL utility (public Url module)
+Url                                  # opaque checked URL
+Url.ParseErr, Url.SegmentErr          # typed parse and builder refusals
+Url.parse : Str -> Try(Url, Url.ParseErr)
+Url.from_quote : Str -> Try(Url, [BadQuotedBytes(Str)])
+Url.to_str, Url.to_inspect : Url -> Str
+Url.is_eq : Url, Url -> Bool
+Url.to_hash : Url, Hasher -> Hasher
+Url.origin : Url -> [Relative, Absolute({ scheme : [Http, Https], host : Str, port : [None, Some(U16)] })]
+Url.request_target, Url.path : Url -> Str
+Url.path_segments : Url -> List(Str)
+Url.query, Url.fragment : Url -> [None, Some(Str)]
+Url.query_pairs : Url -> List((Str, Str))
+Url.without_fragment : Url -> Url
+Url.resolve : Url, Str -> Try(Url, Url.ParseErr)
+Url.append_path_segments : Url, List(Str) -> Try(Url, Url.SegmentErr)
+Url.append_query_param : Url, Str, Str -> Url
+Url.with_query, Url.with_fragment : Url, [None, Some(Str)] -> Try(Url, Url.ParseErr)
+Url.parser_for, Url.encoder_for       # generic string codecs, checked on parse
+
+# Files
 
 A file the user gives the app — chosen in a file input, dropped or pasted —
 reaches it as a **handle**, never as bytes on the page. The browser keeps
 the file; the runtime holds its `File` under a token; the host mints a
 `Box(U64)` holding the token in its blob heap; and the engine pairs each
 handle with the name, size and type the event's file record carries into a
-`File` value the handler's reducer receives (`State.on_files`). The page's
+`File` value the handler's reducer receives (`State.set_value`). The page's
 heap holds a few dozen bytes per file whatever its size.
 
 A handle's lifetime is Roc's reference count. A `File` is an ordinary value:
@@ -1824,9 +2833,13 @@ the scope holding that state is disposed — Roc frees the box, the host
 retires the slot, and after the call the runtime lets the `File` go. No
 handle dangles: nothing can name a file once nothing holds it. What keeps a
 file alive is what keeps any value alive, including the less visible holders
-— a `resource` site's previous value, a reparented request's snapshot, or a
-slice of a list that held it, which keeps the whole list's elements alive —
-and `expect-files` makes it assertable.
+— a `resource` site's previous value, a reparented request's snapshot, a table's
+retained earlier row from its last writing turn, or a slice of a list that
+held it, which keeps the whole list's elements alive — and `expect-files`
+makes it assertable. Removing a File-valued table row therefore need not
+release its handle: that earlier row can hold it until the table's next write
+or disposal of its holder. Retained handles still count against the instance's
+64-handle bound.
 
 An instance holds at most 64 handles at once. An event that carries more
 files than there are free slots delivers the ones that fit and counts the
@@ -1913,16 +2926,37 @@ Digests and URLs are pure in effect, like a read, so they are scoped.
   as a download under its own name or another. The runtime resolves the
   handle when it applies the batch and, after the batch, clicks a link
   with a `download` attribute over an object URL it revokes a moment
-  later. A save issued in a click's turn runs inside that click's listener,
+  later. For a marked batch starting a view transition, resolution and the
+  download happen when the call returns, before its deferred DOM update.
+  A save issued in a click's turn runs inside that click's listener,
   so the browser sees the user's gesture; a save issued later (from a
   task's answer) runs without one, and Chrome may hold back a second
   automatic download, which the platform documents rather than hides. The
-  save picker (`showSaveFilePicker`) is not built.
+  browser tells the page nothing when it does, so no layer can report it
+  and no spec can see it. A save issued in the turn of the click that asks
+  for it carries the user's gesture. The save picker (`showSaveFilePicker`)
+  is not built. The same synchronous turn preserves activation for
+  `ClipboardWrite`, an app's port command and a port call (permission or
+  sharing, for example), provided its handler starts the browser operation
+  before yielding; a later result turn has no
+  such guarantee.
 - `File.fetch` is an HTTP request whose response body becomes a file the
   page holds (`Fetch`, FX kind 15, answered `Fetched({ status, headers,
   body })`, result tag 21 with one staged handle). The body is the
   browser's `Blob` and never enters the instance's memory: a large one
-  stays on disk, measured. A body over `maxFileBytes` is
+  stays on disk, measured. With progress requested, uploads and default-cache
+  file downloads use `XMLHttpRequest`, keeping the body out of JavaScript.
+  A download with a non-default cache mode and progress instead reads a
+  fetch stream, holding the body in JavaScript memory up to `maxFileBytes`.
+  A mount's own `fetch` always performs all requests when supplied: receiving
+  progress then counts that stream, and an upload reports sending complete
+  once. Both transports answer the same status and headers, and a fetched
+  file's type is the `Content-Type` header, or empty when absent. An upload
+  with progress crosses origins with a CORS preflight, which its server must
+  answer even if the upload without progress would be a simple request.
+  HTTP text receiving counts its fetch response stream. A total is unknown
+  when length is absent, encoded, or the runtime cannot establish that it
+  names the decoded body. A body over `maxFileBytes` is
   `FileFailed(TooLarge)`; otherwise it fails and is kept on disposal as
   `Http` is. The file is a file like any other: it can be read, digested,
   shown, uploaded, saved, or sent to a task.
@@ -1933,8 +2967,9 @@ a composite handle, while a task's builder already joins files by reference
 with `append_file!`.
 
 **A request holds its browser file until it is answered.** The runtime
-resolves every handle a request names when it applies the batch, before it
-drains the handles the batch released, and the request keeps that `File`
+resolves every handle a request names when it applies the batch, or when
+the call returns for a marked transition's early effect, before it drains
+the handles the batch released, and the request keeps that `File`
 (or its slice) until its answer is delivered or it is cancelled. A request
 can therefore name a file whose last handle Roc drops in the same batch, and
 the runtime's handle table holds only the files of live handles.
@@ -1942,61 +2977,440 @@ the runtime's handle table holds only the files of live handles.
 ### Target effects
 
 **Target:** further browser services, each as a request kind or subscription
-in this channel with an Appendix B entry and a runtime contract test, when a
-maintained app needs it:
+in this channel, each landed whole (see
+[When a capability is built](#when-a-capability-is-built)):
 
-- session storage alongside local storage, declared at boot the same way;
-- an entropy seed in the boot bytes;
-- sampled time, if an app needs wall-clock values rather than timer ticks;
 - a save destination the user picks (`showSaveFilePicker`, Chromium only and
   needing a gesture), as a request answering `[Canceled, Chosen(handle)]`.
 
 ## Browser Events and Policies
 
-The runtime installs one delegated listener per event type on the mount root,
-the first time a `LISTEN` command or a template event hole names that type.
-When an event fires it walks up from the target to the nearest element with a
-handler for that type, then to the nearest element carrying an engine node id,
-and dispatches `(node, handler, payload)`.
+The runtime installs two delegated listeners per event type on the mount root,
+one capturing and one bubbling, the first time a `LISTEN` command or a template
+event hole names that type. The event's own `bubbles` flag decides which acts.
+A bubbling event walks up from the target to the nearest element with a
+handler for that type. A key handler is passed over unless its rendered
+keymap hears the key; document declarations are considered only by the
+document listener, never by this ancestor walk. An event that does not bubble reaches only a handler
+on its target. The runtime then finds the nearest element carrying a routing
+node id and dispatches `(node, handler, payload)`. A row reference's command
+id does not change routing: its events still use the row's id.
 
-Event payloads are UTF-8 text decided by event type (Appendix B). An event name
-may carry a policy suffix: `click:prevent` calls `preventDefault` when the
-handler dispatches. The policy is static, fixed at the time the handler is
-declared, because the browser's synchronous response window closes before the
-engine could decide.
+The set of event types is open, so `Engine.on` takes an `EventType`.
+Any nonempty computed type is available through `from_str`; the nonempty
+rule is the platform's, since the DOM accepts an empty event type. A misspelt type,
+or an event declared on an element that never raises it, reaches nothing.
+Nothing reports that silent outcome: an earlier check would need a closed
+list kept in step with every browser and custom element.
+Literals also reject retired policy/file suffixes and text handlers on
+`keydown` or `keyup`, with the typed builder to use. Computed types retain
+those mount-time checks. No known-event catalogue restricts custom events.
+Typed attach functions cover the events of `Html`'s controls and helpers;
+a spec that expects a handler to run fails in both runners.
 
-A handler declared with the `:files` suffix receives the files the event
-carries instead of text: a file input's `change`, a `drop` and a `paste`
-(see [Files](#files)). The runtime captures them while the event is
-dispatched, because the browser empties a drop's or a paste's file list
-afterwards. A `drop:files` handler also makes the runtime prevent the
-default of `dragover` on its element, without a turn, so the drop happens
-there instead of the browser opening the file. A file input needs no
-policy: the browser opens its chooser on the user's own click, so user
-activation never depends on the engine.
+What an event carries is decided by its handler's declaration: a payload
+kind from a closed, versioned set (Appendix B). The text kind carries UTF-8
+text decided by event type, and the files kind carries the files the event
+holds. The paste-text kind, attached by `Html.on_paste_text`, is allowed only
+on `paste`. It reads `clipboardData.getData("text/plain")` during dispatch,
+prevents the element's paste default and delivers `Text(Str)` or `TooLarge`.
+`maxPasteBytes` is a deployment bound, 4 MiB by default; an over-bound string
+is never staged into Wasm. The browser's
+[`getData` API](https://html.spec.whatwg.org/multipage/dnd.html#dom-datatransfer-getdata)
+first provides a whole string, with no preceding byte-length query. The
+limit therefore bounds validation, UTF-8 copying and Wasm staging, after
+that unavoidable browser read. The runtime first checks the string's
+constant-time UTF-16 length, then checks candidates' UTF-8 size and Unicode
+within the bound. This explicitly qualifies the issue's "unread" wording:
+refusal precedes encoding and staging, rather than the browser's own read. An element has one handler per event type, so
+it accepts pasted files or pasted text. An ordinary text-kind `paste`
+continues to carry its ordinary empty string. A handler is generic over its payload, and a kind is attached only
+to the event types its row allows. Decoding happens once, after routing,
+and a malformed payload is a `contract` fault naming the site.
 
-**Target:** `stopPropagation` as a static policy; dynamic `preventDefault`
-expressed as a declared policy over a value the engine has already rendered
-(never decided after the event); pointer coordinates and form-data payloads
-if maintained apps use them. Each is a protocol change with a contract test.
+### Keyboard input
+
+`on_key` attaches one `HandlerOf(ctx, Key)` with a required signal of
+`Keymap`, an optional `on: Down|Up` (default `Down`) and `stop` (default
+false). `Key` carries `key`, `code`, Ctrl, Alt, Shift, Meta, repeat and
+composing flags, and `heard`, the original declared `Chord` that matched.
+`Chord.plain` and its modifier methods build chords; `primary` returns
+Ctrl and Meta alternatives. The ordinary handler constructors and `also`
+serve this payload too. `Html.on_keydown` is removed: a text-kind
+`keydown` or `keyup` is a mount `contract` error naming `on_key`.
+
+`Keymap.prevent` and `keep` list ordered chords with their default policy.
+`concat` lists the left entries first; `outside_text` restricts entries to
+targets outside text-entry inputs, textarea, select and contenteditable.
+`every` catches all keys, including composing ones, and prevents nothing.
+Concatenation keeps one `every`, heard anywhere if either operand's is.
+An empty keymap hears nothing. A keymap is an ordinary rendered value,
+with equality pruning, including a property hole in a row template.
+
+Matching first filters entries by their target restriction. It then tries
+all exact matches in listed order, all physical fallbacks in listed order,
+and finally `every`. Ctrl, Alt and Meta must equal the chord's. One ASCII
+letter compares without case; other keys compare exactly. Shift must equal
+except when the chord is exactly one Unicode scalar with general category
+Punctuation or Symbol (`P*` or `S*`). Space, digits, letters of other
+alphabets and named keys still compare Shift. The native oracle uses
+roc-lang/unicode 4.3.2 (Unicode 17) through its own one-scalar decoder; the
+browser uses its Unicode category regular expression. A contract compares
+every valid scalar and rejects any package/browser upgrade disagreement.
+Neither implementation keeps a copied range table. This check establishes
+agreement with the tested browser, not a universal JavaScript Unicode version.
+
+A physical fallback is available only to a chord naming one ASCII letter
+or digit, when the event's key is not an ASCII letter or digit and its code
+is the corresponding `KeyK` or `Digit1`. Thus Cyrillic Ctrl+K can match a
+Latin shortcut, whereas Dvorak's ASCII key keeps its labelled meaning.
+Exact matches outrank fallbacks anywhere in the list. Composing events
+(`isComposing` or keyCode 229) skip both and can reach only `every`.
+`heard` is the declared chord, so a handler never repeats these rules;
+under `every` it is the event's own chord. Missing or empty event keys do
+not dispatch; a heard event's key and code must be well-formed Unicode.
+
+A matching entry decides prevention synchronously. A policy is matched
+against the DOM the browser dispatched over; the turn that delivers the
+event can follow a later batch. The captured payload is never rematched.
+A key nobody hears costs no turn. A keymap has no separate size limit:
+like another rendered value, it can follow data; duplicate chords use the
+first entry whose restriction holds. An empty declared chord is valid but
+unhearable; browser event keys remain nonempty.
+
+`on_document_key` takes the same props and handler but asks for
+`outside_rows`. Its declaring element owns its lifetime. Of this mount's
+live document declarations, the most recently mounted matching one wins.
+It hears only events reaching the document that no local handler of this
+mount dispatched. Focus may be on the body or outside the root. Disposing
+a modal restores the shell's older shortcuts. At most 32 document handlers
+are live per instance; a 33rd is a mount `contract` error naming its site.
+`RELEASE node` removes its registrations before `REMOVE` or `CLEAR`.
+The independent oracle rejects a node leaving without that release.
+Poisoning, unmount and recovery remove document listeners too.
+
+`stop` keeps its ordinary `stopPropagation` meaning. At the root it stops
+an event before document listeners; at the document it stops propagation
+to window. Other listeners on that same document still run. Each mount
+installs its keydown and keyup document listeners at initialization, even
+before a conditional declaration appears. These two instance-owned listeners
+run in mount order; no mount can undo a
+listener that already ran.
+
+Reserved browser chords cannot be prevented: Chrome's Ctrl/Cmd+N, T and W,
+and macOS Cmd+backquote and Cmd+Tab. macOS emits no keyup for a key released
+while Cmd is held, and Windows AltGr reports Ctrl+Alt. An app must account
+for these limits; layout fallback does not turn reserved keys into app keys.
+
+### Pointer input
+
+`on_pointer` chooses `[Down, Move, Up, Cancel]` and a
+`HandlerOf(ctx, Pointer)`. The pointer record carries its id, kind, changed
+button, held buttons, modifiers, whether it is primary, and
+`at: Outside` or `In({ zone, x, y })`. The fractions `x` and `y` are in
+1/10000 of a zone's box, from 0 to 10000. No pixels or element size reach
+Roc. A drag's target is therefore pure arithmetic, reproducible by the
+native oracle. A splitter or swipe can use fractions; a drag ghost that
+follows the pointer in pixels is outside this API.
+
+`Prop.pointer_zone`, set through `prop` or `prop_s`, marks any element with
+a zone key. It claims and mirrors no attribute. An empty key marks no
+zone and is passed over. At each pointer dispatch the runtime calls
+`document.elementFromPoint`, unaffected by capture, and walks up to the
+nearest nonempty zone inside the mount. It rounds and clamps fractions
+of that zone's box. This is one hit test per raised event, including a
+move later replaced before delivery; a report never reads layout again
+at delivery. A nearest zone with non-positive width or height has no
+representable point and reports `Outside`; the runtime does not choose
+another ancestor zone. Event coordinates and box coordinates must be
+finite, never converted from invalid numbers to invented fractions.
+`pointercancel` always carries `Outside`.
+
+The key is application text. The platform hands it back unchanged and
+never resolves it, while an app parses it with one pure, tested function.
+It has no role in site or table identity and needs no value registry.
+
+`on_pointer_capture` attaches a `pointerdown` that calls
+`setPointerCapture(pointerId)` on the declaring element before dispatch,
+even when its turn must wait in ingress. Waiting for a Roc result would
+miss the browser's synchronous window. The browser releases capture at
+up or cancel; the runtime holds none. A refused capture still dispatches
+and is reported by the monitor's `page.captureRefused` count and passive
+`pointer-capture-refused` event. Reporting never changes dispatch.
+
+`on_pointer_paced` attaches a `pointermove` as a report source: the newest
+waiting move for each declaring element, handler and pointer replaces
+the earlier one. Down, up and cancel are occurrences, so an up cannot
+overtake its waiting move. An app drawing a stroke chooses ordinary
+`on_pointer(Move, …)` when each sample matters.
+
+The event tag and separate capture and pacing attach functions make a
+misspelt event, capture on a move, pacing on a press or another payload's
+handler impossible to attach. Public `Policy` remains the record of
+`prevent` and `stop`; capture and pacing cross as the private bits of
+those typed declarations. Capture here is pointer capture, distinct from
+the DOM's listener phase.
+
+Disposing a capturing element can lose its up. An app where that can
+happen supplies up and cancel handlers on a stable ancestor, knowing it
+will also hear ordinary pointer events there. The platform cannot infer
+which state a lost event should reset. Kanban instead keeps its grip
+stable during a drag and supplies all four handlers; the drop itself
+writes the cards and clears the drag together, with the keyboard buttons
+still available. Its target markers are read through a per-lane `derive`,
+so a move does not wake every card's marker reader.
+
+### Layout observations
+
+`Layout` is plain data with `Scroll { top : U32, left : U32 }`,
+`Size { width : U32, height : U32 }` and
+`Seen { intersecting : Bool, ratio_permille : U16 }`. `Html.on_scroll`
+attaches a paced scroll handler. It reads offsets when the event is raised,
+rounds CSS pixels and clamps them to the U32 range. Left is distance from
+the start edge: RTL negates the browser's negative `scrollLeft`; a still
+negative left or top is clamped to zero. Column-reverse and overscroll thus
+report zero for negative positions.
+
+`Html.on_size` and `Html.on_seen(props, handler)` declare observations, not
+DOM listeners or awaited requests. `size` and `seen` are not browser event
+names; real `resize` retains its ordinary DOM meaning. Their typed attach
+functions choose the codec and report policy; `SeenProps.ahead` defaults to
+false and is unavailable on the other kinds.
+
+The runtime has one shared ResizeObserver and one IntersectionObserver for
+each ahead setting. Seen uses the browser's default threshold, reporting
+entry and exit. Ahead uses both `rootMargin: "100%"` and
+`scrollMargin: "100%"` so nested clipping scrollers admit an early sentinel.
+A browser without scrollMargin reports that nested sentinel when it enters
+view instead: later, never a false early fact. Size reports the content box;
+all dimensions are rounded CSS pixels. Nonfinite browser measurements are
+executor faults rather than wrapped integers or substituted values. Seen ratios round to per mille and
+stay within 0–1000.
+
+Each observed element/kind is registered under its engine owner: its own
+node, or the row root for a template element. Reverse lists let `RELEASE`
+unobserve only that owner's elements in O(released observations); removal
+never triggers a sweep of every observation. Teardown and poisoning
+disconnect the shared observers. The live-observation gauge counts the
+registrations, not cumulative work; the oracle rejects removal of anything
+still observed. Observations consume no in-flight slot, so data-sized rows
+are bounded structurally by live nodes rather than a fixed observer cap.
+
+These are facts the app writes into its cells through normal handlers.
+A fixed-height table window follows scroll and size reports at
+O(old window + new window). Its spacer height must come from row count,
+independent of drawn rows, and the container must set `overflow-anchor:
+none`. Otherwise drawing a window can move its scrollbar and generate
+another report. An observed box must take its size from its container,
+not from what its handler draws. Browser depth limits postpone resize
+loops to later frames; neither kind of loop fills the queue, so only the
+app's layout ends it. The guides state these author obligations; Chrome
+contracts check a scroll that settles in one turn and a resize that changes
+once then settles. No measurement request, variable-height virtualization,
+page-scroll model or named intersection root is introduced.
+
+### Other event policies
+
+A declaration may carry policies from a closed table, as a record the
+compiler checks (`{ prevent: True }`). They are static, because the
+browser's synchronous response window closes before the engine could
+decide, and they cross the wire as bits. `prevent` calls `preventDefault`
+when the handler dispatches. `stop` calls `stopPropagation` for an event
+that bubbles, so listeners above the mount root do not receive it.
+Nearest-handler dispatch already isolates handlers within the mount.
+For an event that does not bubble, `stop` does nothing: stopping it at the
+capturing root would keep it from its own target.
+
+Event types are bare text. A type ending in a retired suffix (`:prevent`,
+`:files` or `:prevent:files`) is a `contract` error at mount naming
+`on_with` or `on_files`. Another colon is part of the type, so a custom
+event such as `x:y` remains valid.
+
+`on_files` takes its event as `[Change, Drop, Paste]`, so a files handler
+cannot attach to an event that carries no files. The runtime captures the
+files during dispatch, before a drop's or paste's list is emptied. The
+files kind's `Drop` prevents the default of both `drop` and `dragover` on
+its element, without another turn, so a file is dropped there rather than
+opened by the browser. An event carrying no files dispatches nothing. A
+file input needs no policy: its chooser opens on the user's own click.
+
+Keymaps provide dynamic prevention over an engine-rendered value. Form-data
+payloads are declined: controlled inputs already write fields into state as
+they are typed, including browser autofill, so a submit reads that state.
+
+## Attributes
+
+An attribute's text and its presence are separate facts. `attr(name, text)`
+and `attr_s(name, signal)` set a present attribute, including when its text
+is empty. Empty text has HTML meaning: `alt=""` marks a decorative image,
+and an option's `value=""` is a real empty choice rather than its text.
+This holds for Boolean attributes too: raw empty text and `"false"` remain
+present. Typed HTML helpers encode their chosen presence before emission.
+
+`attr_presence(name, signal)` takes a signal of `[Absent, Present(Str)]`.
+`Absent` removes the attribute; `Present("")` keeps it with empty text.
+This is one attribute mechanism: the string constructors wrap their value
+as `Present`, and the same hole owns its reader and last observation.
+The reader runs once, and equality pruning compares presence as well as
+text, including in row templates. A change between absent and empty emits
+one attribute command without changing the element's identity.
+
+A conditional URL or chart attribute expresses its missing case as
+`Absent`. The runtime never guesses absence from an empty string or a
+name. `Html.flag_maybe` is `Present("true")` while its flag is true and
+`Absent` otherwise. A static attribute that should not exist is normally
+omitted from its element's attributes.
+
+## Dialogs, Popovers and Scrolling
+
+`Html.dialog(label, props, attrs, children)` pairs a required `open` signal
+and `on_close : HandlerOf(ctx, Bool)` with one controlled dialog property.
+`modal` is fixed at construction, `Modal` by default or `NonModal`. The
+dialog element stays mounted while closed; its content is one conditional
+scope mounted only while open. Removing an open dialog would bypass native
+focus restoration, so closing hides before disposing that content.
+
+`Html.popover(label, props, attrs, children)` makes a named div with a fixed
+`dismiss: Auto|Manual` (default Auto), an `open` signal and required Boolean
+`on_toggle` handler. Auto popovers accept Escape and outside pointer
+press-and-release dismissal. Showing another unrelated auto popover hides
+older ones; showing a modal hides auto popovers that do not contain it.
+Manual popovers are appropriate when unrelated controls must stay shown
+together. Popover children remain mounted while the browser hides them.
+Placement and anchor positioning are ordinary authored CSS, not engine
+geometry or an application JavaScript callback.
+
+The shown rows and open-state codec are private to these helpers. The
+Engine record forms take the complete props, including the echo handler,
+just as the Html helpers do. A controlled dialog reserves
+`open`, `popover` and `closedby`; a controlled popover owns its one static
+`popover` declaration. Extra or dynamic declarations are mount `contract`
+errors, with HTML's ASCII-insensitive attribute names. `beforetoggle`
+handlers on either controlled helper are also contract errors: canceling or
+observing that intermediate lifecycle is outside this capability. Ordinary
+attributes and event declarations on raw elements keep their meanings.
+
+The open-state payload is read from the element when the native event is
+dispatched, rather than from an older event's state strings. `close` echoes
+whether the dialog is open; `toggle` echoes whether the popover is shown.
+Before its handler, the engine updates the paired hole's last observation:
+false is hidden; true retains a dialog's declared showing mode. It marks
+that hole for the event's ordinary settlement. When state agrees, no additional shown property write is emitted; accepting
+a close can still dispose dialog content or update other UI. An ignored
+close re-evaluates the signal and reopens the control.
+A delayed close dispatched after reopening carries true. This rule applies
+to constant properties and template property holes too, without a second
+propagation mechanism or a static handler write mask.
+
+Hiding happens in stream order, ahead of content removal. Showing waits
+until after the batch at its stream position among effects and reference
+commands. A later decision for the same shown property invalidates an
+older queued show, so show followed by hide in one batch cannot resurrect a
+closed control. A later removal also invalidates the target. The runtime
+applies each surviving decision against live browser state:
+
+| Value | Closed | Open, non-modal | Open, modal |
+|---|---|---|---|
+| Hidden | Nothing | close | close |
+| Open | show | Nothing | close, then show |
+| Modal | showModal | close, then showModal | Nothing |
+
+A popover is shown or hidden only if its current state differs. Failure to
+reach the requested state, including an external listener canceling a show,
+is an `executor` fault naming the node. The adapter never silently claims a
+show succeeded. The browser's dialog focusing steps see mounted content:
+autofocus, otherwise the first focusable descendant, otherwise the dialog.
+A modal close restores its connected opener; a non-modal close restores it
+only while focus is still inside. Removing an open control produces no
+restoration on behalf of the engine; an app that needs another destination
+posts focus in the same decision that removes it.
+
+`FocusInPlace(name)` focuses with scrolling prevented. `ScrollIntoView`
+takes block/inline alignment (`Start`, `Center`, `End`, `Nearest`) and
+`ScrollBehavior` (`Auto`, `Instant`, `Smooth`). The narrow-tag constructor
+`scroll_into_view(name, props)` defaults both alignments to Nearest and
+behavior to Auto, so its result fits requests and cleanup commands alike.
+`ScrollTo` takes top/left `Edge` values (`Keep`, `Start`, `End`, `Px(U32)`)
+and a behavior. Left is distance from the logical start edge; RTL maps
+`Px` and `End` to the corresponding negative CSSOM offset. End is resolved
+by the browser when performed; geometry
+never enters Roc. These commands use the reference map, count missing
+addresses stale and consume no awaited id. A scroll command is an action,
+not a persistent value to reconcile. A spec asserts the performed command,
+not whether layout put something in view.
+
+Two unrelated auto popovers cannot both remain shown if each ignores the
+other's automatic hiding. An app must accept the toggle or make its desired
+states compatible; pure decisions test that rule. The platform does not
+arbitrate a winner or infer which state to rewrite. Each turn and retained
+registry stays bounded, but incompatible app decisions can keep generating
+browser tasks. This is an application liveness error, not a reason to
+invent a consecutive-event threshold or poison valid large fanout.
+
+Native close and toggle callbacks are browser tasks, not synchronous method
+results. Toggle callbacks coalesce and read live state when dispatched.
+Different HTML task sources have no promised relative arrival order;
+`close` uses user interaction and dialog `toggle` uses DOM manipulation.
+Applications must not depend on a total order between those sources. The
+native oracle exercises a legal interleaving; decisions spanning them are
+tested in both orders and specs assert order-independent settled results.
+See the [HTML dialog algorithms](https://html.spec.whatwg.org/multipage/interactive-elements.html#close-the-dialog).
+
+Manual replay passively observes pending native callbacks and waits up to
+20 seconds for them, rather than assuming one zero-delay timer settles UI.
+The tracker holds at most live controlled nodes, with a per-node close
+count and coalesced-toggle mark; it checks identity after deferred marking
+and forgets removed targets. A weak modal-order index supplies reachability
+facts without DOM-wide searches. These observers never create an event,
+choose a result or schedule production input. The native driver's effectful
+clock bounds a pump of the same pure UI-task transitions; a timeout or
+observer counter exhaustion fails observation, leaving app faults untouched.
+Pure fuzz targets pump their own bounded generated sequences.
 
 ## Controlled Inputs
 
-A `value` attribute is a guarded update, not a blind assignment:
+The `value` property is a guarded update, not a blind assignment:
 
 - an equal value is a no-op, so caret and selection stay;
 - a differing value is deferred while the control is focused or composing
   (IME), and applied on blur, unless a later input echo already matched it.
 
+`ApplyValue(name)` explicitly applies the last rendered `Prop.value` at
+that reference after the whole turn, even while focused and even when an
+equal signal produced no new property command. The runtime retains that
+rendered value independently of the deferred write. A composing control
+waits until `compositionend`; an input that already equals it clears the
+pending write. This command is the app's explicit choice to replace a draft,
+not an exception for all key turns. A reference without a declared
+`Prop.value` on input, textarea, select or option is an end-of-turn
+`contract` error naming the reference and site. An absent reference is
+stale, as for focus. A file input still cannot take `Prop.value`.
+
 This applies to text-like controls (text inputs, number-input draft strings,
-textarea). `checked` is set as a property. A `<select>`'s value is re-applied
+textarea). The `checked` property takes a `Bool`. A `<select>`'s value is re-applied
 when an option is inserted below it or an option's value changes. Forms are
-app-managed: the runtime prevents the default of every `submit` that reaches
-the mount root, so a submit never navigates the page.
+app-managed: the runtime listens for `submit` from mount, even without an
+app handler, and prevents every submit that reaches the root. A form never
+navigates or closes a dialog through its native submit default.
 
 Focus is an explicit command on a named reference (`ref(name)` on an element;
-`Focus`/`Blur`/`SelectText` requests). A reference that is not mounted at the
-end of the turn is counted stale. App `focus`/`blur` handlers listen to the
+`Focus`/`Blur`/`SelectText`/`ApplyValue` requests). A reference that is not mounted at the
+end of the turn is counted stale: it may leave in the turn that asks for it,
+so rejecting the request would punish a race the app cannot avoid.
+`expect-focused` checks the resulting focus in both runners. Focusing an
+element that cannot take focus leaves focus where it was, as `element.focus()`
+does; the engine does not interpret focusability.
+
+`ref_s(signal)` lets the name follow a signal, including a row's key in an
+`each` or table view template. A rename emits no DOM command. The empty name
+holds no reference and can be used for unselected rows. References live in a
+map from name to live nodes and their construction sites: mounting adds one
+node, disposal removes that node, and a rename does both. Each touched name
+is checked at the end of the turn; more than one live node is a `contract`
+error naming the name and both sites. Checking then lets a departing row
+and an entering row share a name within a turn. Resolution is one lookup.
+
+App `focus`/`blur` handlers listen to the
 bubbling `focusin`/`focusout` and carry the control's value. A disposed target
 never receives a delayed focus or value write.
 
@@ -2004,13 +3418,27 @@ Native specs model this contract through the oracle; they do not establish
 real IME, keyboard or assistive-technology behaviour. Chrome tests (typing,
 mid-text edits, a CDP IME composition) do.
 
+Properties are a closed table, attached with `prop` or `prop_s`, and pruned
+like attributes, including in row templates. A property on an element its
+row does not allow, a property declared twice on an element, and an
+attribute with a name a row claims on that element are `contract` errors
+at mount. Outside that row's elements the name remains an ordinary
+attribute: `value` on a custom element sets its attribute only.
+
+A `value` property on a file input is a `contract` error when applied,
+naming the node, in the runtime and the oracle alike. The input's `type`
+can follow a signal, so a mount check cannot decide it. `Html.file_input`
+offers no value property.
+
 ## The Thin Wasm Host
 
 The Zig host (`platform/host/host.zig`) owns exactly:
 
-- **one opaque `Box(Core.App)`** — the engine state between calls. Until
-  roc-lang/roc#12953 is resolved, the box crosses the boundary wrapped in a
-  one-item `Iter`, as `Box(Iter(Core.App))`, still one pointer to the host
+- **one opaque `Handle`** — the engine state between calls, a box containing
+  the plain store beside the boxed sites. `Core.split` and `Core.join` move
+  the parts only at this boundary. Until roc-lang/roc#12953 is resolved,
+  the sites cross inside a boxed one-item `Iter`; the outer handle is still
+  one pointer and the host inspects neither part
   (see [Compiler Limitations](#compiler-limitations));
 - **the command buffer** — the last call's `List(U8)`;
 - **one staged payload** — a Roc `List(U8)` allocated by `payload_reserve`;
@@ -2093,6 +3521,18 @@ holds.
 
 ## Error Containment
 
+Every program must mount at the default environment. An app may check its
+default first page while compiling with a top-level `Engine.mounts(main)`
+constant of type U64. It calls the ordinary driver with empty boot bytes and
+returns the mount batch's byte length. The check reports reached failures in
+the app's own file: engine contracts at the constant, and an app's explicit
+crash or inline `expect` at that expression when the compiler has its source.
+It checks no unvisited route, branch or future result. Removing the constant
+disables the check; the scaffold and maintained app entries include it.
+Mount-time element contracts name the site's path and element position; where
+available, a static test id, id, aria-label, name or first static descendant
+text adds a hint bounded to 64 UTF-8 bytes. Dynamic labels are not sampled.
+
 A Roc crash, a failed `expect`, or an allocation failure **poisons** the
 instance:
 
@@ -2113,10 +3553,18 @@ immediately, and only `fault`, `err_ptr`/`err_len`, `metric` and `cmd_len`
 answer. `drop` is idempotent at the containment boundary.
 
 The runtime catches every trap, reads the class and diagnostic through fresh
-memory views, reports them, detaches its listeners and cancels its effects,
+memory views, reports them, detaches its input listeners and cancels its effects,
 drops queued events and staged effects, keeps the last applied DOM as fallback,
-and refuses later calls without entering Wasm. An executor failure (a bug in
-applying a command) is contained the same way with class `executor`.
+and refuses later calls without entering Wasm. The leave guard its last
+applied batch left stays until unmount or recovery. An executor failure (a bug in
+applying a command, including an external listener preventing a controlled
+show from reaching its requested state) is contained the same way with
+class `executor`.
+A fault while a marked batch's early effects run drops its unapplied DOM
+commands and keeps the page before the batch; performed effects stand.
+A fault in the guarded transition update is an `executor` fault and skips
+the animation. Transition promise rejections are passive monitor diagnostics.
+
 `recover()` mounts a fresh instance from the same module; it never resumes a
 poisoned one. External effects already performed are not undone. Poisoning
 or unmounting the page's runtime terminates every worker it started and
@@ -2134,23 +3582,26 @@ builders and their parts go with a discarded worker too: nothing a failed
 job wrote is ever delivered.
 
 **Contract errors the engine raises:** duplicate key; switch value not in its
-cases; row template not a single element; focus reference inside a row
-template; two handlers for one event on one element; a decision whose list
+cases; row template not a single element; two live references with one name;
+two handlers for one event on one element; a decision whose list
 replaces a cell an earlier write of the same list wrote (named by the site
 whose handler or reaction fired, the cell's position in the store and the
 two writes' places in the list, since the record builder hands the engine
 no field names); `Table.insert` of a key
-already present; a table built from two rows with one key; two rows of a
-view that compare `Same`; a table view's row read after its key left the table in
+already present; a table built from two rows with one key; two rows of a plan with its own `compare` that compare `Same`; a table view's row read after its key left the table in
 the same event;
-an effect follow-up chain deeper than 64; a cleanup asking for an awaited
-request; `http_text` given a non-HTTP result; a worker catalogue with a
+a typed timeout of `Ms(0)`, an interval of zero milliseconds, or a timer or
+interval longer than 2,147,483,647 milliseconds;
+an effect follow-up chain deeper than 64;
+a result reader given a raw result of the wrong kind; a worker catalogue with a
 duplicate name or more than 64 names; work issued for a task the
-catalogue does not hold; an upload whose method is `GET` or `HEAD`;
+catalogue does not hold; an upload whose method is any ASCII spelling of `GET` or `HEAD`;
 a port catalogue with a duplicate name, more than
 64 ports, a name that is empty or longer than 128 bytes or an `Every` bound
 outside 1–1024; a request for an undeclared port or for a port of another
-shape; a hosted effect reached outside a job, or a job's entry called on
+shape; a media catalogue with duplicate queries, more than 32 queries or a
+query outside 1–256 UTF-8 bytes, or a subscription to an undeclared query;
+a hosted effect reached outside a job, or a job's entry called on
 the page's instance; `Builder.append!`, `append_file!` or `finish!` on a
 builder that was finished, or that the call which opened it has left
 behind (a builder a prepared state kept); `File.read!` of a range outside
@@ -2158,17 +3609,42 @@ the file; a job's answer holding more than 16 files or nesting deeper than
 the page decodes; in the worker, a job for a name that is not a task of
 its own (a preparation's name, or a preparation's task through `work`),
 and a job of a task its preparation does not list; event payload not
-UTF-8; boot
+valid for its handler's payload kind (for text, not UTF-8); an event type
+ending in a retired policy or files suffix; a property on an element its
+row does not allow, a property declared twice on an element, or an
+attribute with a name a property row claims on that element; a controlled
+helper with reserved attributes or a `beforetoggle` handler; a text-kind
+key handler, a 33rd live document-key handler, or `ApplyValue` without a
+declared value property at its reference; boot
 bytes or an effect result that do not follow Appendix B (truncated, trailing
 bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
-**Resource limits:** node ids (2³² − 2 live nodes); any count the template
+Boot faults include unknown, repeated, missing or out-of-order sections,
+storage pairs while storage is unavailable, and a pair for a key the
+program did not declare; language counts or lengths outside their bounds;
+and a zone with an invalid span, count, order or offset range. The diagnostic
+names the section. A program declaring more than 7305 zone days is a
+contract error when it is built. A bare result tag 5 is truncated, never a
+timer answer with an invented time.
+A timeout constant evaluated while compiling fails at that constant; a
+computed `Ms(0)` faults when constructed. Invalid timer and interval delays
+fault before admission, with their issuing site's path, before a command batch
+is published. These diagnostics name the value and rule; `Unlimited`
+explicitly requests no timeout.
+
+**Resource limits:** node ids (2³² − 2 live nodes); a store description with
+2³² or more cells; any count the template
 encoding carries in one byte —
 static attributes, children, holes, hole path depth, row handlers — above 255;
-more follow-up turns in one host call than the breadth backstop allows.
+more follow-up turns of depth 2 or more in one host call than the breadth
+backstop allows.
 Each is checked before it could wrap. The runtime adds `resource_limit` for
-ingress-queue overflow and refuses a module of another protocol version
+ingress-queue overflow or a drain delivering more than 4096 turns before
+returning to idle, and refuses a module of another protocol version
 before running it, and a page whose port handlers do not match the
 program's declarations before mounting it.
+It also raises `contract` for a `value` property applied to a file input,
+which `Dom.roc` raises too: the element's current type makes the program's
+mistake knowable only where the property is applied.
 
 A port handler is the page's own JavaScript and is contained like a
 browser service: a handler that throws or rejects, or answers with
@@ -2176,7 +3652,9 @@ something that is not JSON data (a `Map`, a function, a cycle, a NaN), answers
 its request `PortFailed(Threw(message))`, an answer that is too large answers
 it `PortFailed(TooLarge)`, and a command handler's failure is
 reported to the console and the `onPortFault` mount option. None of them
-poisons the instance.
+poisons the instance. A command has no result to carry a failure. An app
+that must know its message was handled declares a call, whose failure is a
+value.
 
 **Target:** the diagnostic names the construction path for every contract
 error (some messages lack it).
@@ -2190,14 +3668,23 @@ bound and a declared behaviour at the bound:
 |---|---|---|
 | Awaited requests in flight | 32 (per-program setting) | Typed `Refused` follow-up |
 | Follow-up chain depth per host call | 64 | `contract` poison |
-| Follow-up turns per host call | 64 per in-flight slot, at least 4096 | `resource_limit` poison |
-| HTTP timeout, work timeout | 600 s | Capped |
+| Follow-up turns of depth 1 per host call | One for each request the external turn issued past the in-flight cap, and one for each `Self` it asked for | All run |
+| Follow-up turns of depth 2 or more per host call | 64 per in-flight slot, at least 4096 | `resource_limit` poison |
+| HTTP timeout, work timeout | 600 s | Capped; typed `Ms(0)` is a contract error, `Unlimited` means none |
+| Timer delay / interval period | At most 2,147,483,647 ms; interval at least 1 ms | `contract` before admission and publication; `Timer(0)` remains legal |
+| Authored store description | Fewer than 2³² cells | `resource_limit` at construction, before assigning table identities |
+| Transfer progress sampler | One latest sample and one timer per request that asks for progress | Reports no more often than the requested interval (floor 16 ms); final, failure, timeout or cancel clears the timer |
 | A cancelled job that finishes (`on_cancel: Finish`) | Its timeout, else 600 s after it was performed | Its worker is terminated as at a timeout |
 | Worker catalogue | 64 names (a preparation's and its tasks' each count) | `contract` poison |
 | Port catalogue | 64 ports, names 1–128 bytes | `contract` poison |
 | A port answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | Typed `PortFailed(TooLarge)` |
-| Undelivered messages per port subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` replaces; `Every` refuses `emit` |
-| Port messages in the ingress queue | 1 per subscription | The next waits for its turn |
+| Replaceable `Latest` report or `Every` backlog per subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` replaces; `Every` refuses `emit`; reports pinned by occurrences count within ingress |
+| `Every` port messages in the ingress queue | 1 per subscription | The next waits for its turn |
+| Replaceable reports per source | 1 | A newer report replaces its payload in place |
+| Report entries per source | 1 plus entries pinned by queued occurrences | Counted within ingress |
+| Report source index | At most the ingress queue | Removed when delivered or cancelled |
+| Scheduled report drains | One frame request and one timer | Hidden pages use a microtask instead |
+| Wait for a frame | 100 ms | Timer drains |
 | Workers per runtime | `maxWorkers` (default: core count, at most 8) | Jobs queue |
 | Prepared states | One per worker | The least recently used idle holder's is replaced |
 | A worker's linear memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is retired, its state with it |
@@ -2215,8 +3702,29 @@ bound and a declared behaviour at the bound:
 | Handles one job holds at once | 64 (the worker's heap) | `resource_limit` fault of that worker |
 | Bytes of one fetched body | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)` |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
-| A table's changes | One earlier row for each distinct key one turn writes | Cleared when the turn ends |
-| Runtime ingress queue | 4096 queued events | `resource_limit` poison |
+| A table's changes | One earlier row per distinct key its last writing turn wrote, or a whole-rewrite marker | Released before the next writing turn's first modifier or disposal of the holder; unrelated turns retain them, with no time bound |
+| Runtime ingress queue | 4096 occurrences and reports | A report drains a full queue early while idle; a waiting transition applies and drains; other busy overflow is `resource_limit` poison |
+| Transition batches waiting for update | 1 | Inputs queue; a full queue forces apply and drain |
+| Wait for transition update | 1000 ms | Apply directly and skip animation |
+| Transition observation history | Newest 4096 records and 1 MiB encoded type bytes, absolute U64 ordinals | Evicted or oversized records fail observation only; oversized entries clear prior history; exhaustion disables observation, never app progress |
+| Live document-key handlers | 32 per instance, structurally outside rows | `contract` at mount naming the site |
+| Declared media queries | 32 distinct queries, 1–256 UTF-8 bytes each | `contract` at catalogue construction |
+| Boot languages | 1–16 strings, at most 64 UTF-8 bytes each | Default reader retains the first that fit, or `en-US`; invalid injected readers refuse mount and invalid bytes are a named section contract fault |
+| Zone table | `zone_days` each side of mount (366 by default, at most 7305); 1–128 offsets | Default probe shortens both ends to fit, retaining mount time; outside the stated span `zone_offset` returns `OutsideZone` |
+| Zone name | 64 UTF-8 bytes | Unknown or oversized browser name is empty; invalid injected data refuses mount |
+| Live observations | One registration per observed element and kind; follows live nodes | Node resource bound; no fixed data-sized cap |
+| Leave guards | Live sites contribute a count; one runtime flag and at most one listener | No in-flight slot or refusal; unmount/recovery clear the flag, poisoning retains it |
+| Storage-change reports | One replaceable waiting entry per live subscription | New event value replaces the old entry in place |
+| Deferred storage-write failures | Pending recipient occurrences plus ingress entries at most 4096; one FIFO and scheduled task | `resource_limit` on overflow; cancel drops its pending identities, poison/unmount clear the queue |
+| Manual clipboard observation | Last successful text and HTML plus a U64 count per document | Remount resets observation; count exhaustion fails observation only, never the write |
+| Paste text | `maxPasteBytes`, 4 MiB by default | `TooLarge`, without staging the string into Wasm |
+| Manual scroll history | Newest 4096 performed records per document, weak target identities, cumulative U64 ordinal | Older assertions fail retained-history diagnostics; ordinal exhaustion disables observation, never scrolling |
+| Manual native-UI readiness | Live controlled nodes; per-node U64 close count or coalesced toggle mark; 20 s observation deadline | Explicit observation failure, never app poison |
+| Manual pointer log | 4096 dispatch records, taken after each input step | `resource_limit` on overflow; production retains no log |
+| Spec driver pointers | One mouse/pen gesture or up to 16 touches, without overlap between modes | Step error before input; no such limit on production pointer dispatch |
+| Turns one drain delivers | 4096 | `resource_limit` poison |
+| Payload kinds and element properties | Closed tables with one-byte indices | Unknown wire numbers are contained as `executor` |
+| Event policies | Closed table of 32 bits | Unknown fields do not compile; unknown wire bits are contained as `executor` |
 | Monitor job history | `history` option (default 128, at most 1024) | Oldest overwritten, counted |
 | Monitor retired instances | 16 | Oldest overwritten, counted |
 | Monitor per-task figures | 64 names (the catalogue) | Further names under `*` |
@@ -2233,8 +3741,8 @@ assert it.
 
 `.scm` specs are the platform's Playwright-style test language and the single
 source of truth for application-visible behaviour. A spec names a test, an
-optional setup (initial location, local storage and its availability,
-connectivity, visibility, the files the spec can give the app), and a list
+optional setup (the environment resolved by the parser with stated
+defaults, and the files and limits the spec gives the app), and a list
 of steps written against the rendered UI:
 
 - **Locators** — `role` (implicit or explicit role plus accessible name),
@@ -2257,13 +3765,19 @@ of steps written against the rendered UI:
   request or upload with the staged answer, fire a timer, run a worker job,
   or perform an operation on a file, in issue order), `expect-upload N FILE
   START LEN` (the N-th is a pending upload of that range of a setup file),
-  `lose-work` and
+  `expect-request N` checks selected method, URL, cache and credentials of
+  the N-th currently pending effect, in issue order; `progress-effect N`
+  reports exact U64 sending or receiving counts for a current pending
+  transfer that requested progress, without retiring it. These two steps
+  number the current pending list, including timers, calls and jobs;
+  completed or cancelled entries no longer count. `lose-work` and
   `time-out-work` (answer a pending worker job `WorkLost` with a fault class,
   or `Timeout`, without running it), `expect-pending-work`, interval ticks,
   `set-visibility`, `set-online`. A fetch takes the staged `stub-http`
   answer, its body becoming the file. `(max-output-bytes N)` in the setup is
   the runtime's
-  `maxOutputBytes`; `expect-saved K NAME TEXT` asserts the K-th file the app
+  `maxOutputBytes`; `(max-paste-bytes N)` likewise sets `maxPasteBytes`.
+  `expect-saved K NAME TEXT` asserts the K-th file the app
   saved in this document (its name and contents) and `expect-saves N` how
   many it saved.
 - **Ports** — neither runner calls the page's port handlers; port traffic
@@ -2272,10 +3786,13 @@ of steps written against the rendered UI:
   `answer-port N reply|throw|too-large|timeout` answers it (an answer's JSON
   is delivered as written, so a spec can answer what the app's type does
   not accept). Subscriptions are addressed by port: `emit-port`,
-  `close-port`, `fail-port` and `expect-port-subscriptions`. Commands are
+  `close-port`, `fail-port` and `expect-port-subscriptions`.
+  `expect-port-subscription-arg port K json` checks the one-based K-th
+  currently active subscription on that port, retaining no history. Commands are
   logged per document: `expect-port-sent port K json` and
-  `expect-port-sends port n`. Delivery policies are runtime behaviour,
-  covered by its contract test.
+  `expect-port-sends port n`. Replacement is observable in both runners
+  through `hold-reports`, `release-reports` and `expect-reports-replaced`;
+  real frames and timers are covered by runtime contract tests.
 - **Work** — `mark-metrics`, `expect-metric-delta`,
   `expect-metric-delta-at-most`, `expect-updates`, `expect-cleanup`,
   `expect-interval`.
@@ -2292,6 +3809,14 @@ produces a typed list of steps. Both runners consume it:
 step means what it does in Chrome; the native runner models that against the
 oracle and never defines a meaning of its own. In particular:
 
+- a location an app or spec writes is reported as Chrome serializes it: URL
+  input first drops leading/trailing C0 controls and spaces, then removes TAB,
+  LF and CR throughout; path, special-query and fragment percent-encode sets
+  apply to the remaining bytes. Existing percent escapes are preserved. Empty
+  query and fragment delimiters are omitted from the reported location, while
+  the runner's existing URL/history strings retain them for document identity.
+  This bounded same-origin model does not resolve dot segments, normalize
+  backslashes or parse hosts;
 - effects are always manual: HTTP requests, timers and worker jobs wait for
   `run-effect`, which fires a timer, answers an HTTP request with the one
   staged answer, and runs a worker job — in Chrome in a real worker, the step
@@ -2322,23 +3847,349 @@ oracle and never defines a meaning of its own. In particular:
 - a click is a real mouse click with the browser's default actions (a
   checkbox toggles and a radio checks, each with `input` and `change`; a
   submit button submits its form if the form's controls are valid; a link
-  navigates) unless the dispatched handler's `:prevent` policy prevented
-  them; `real-click` differs only in failing on a disabled control;
+  navigates) unless the dispatched handler's `prevent` policy prevented
+  them. Before the default action it delivers `pointermove`, `mousemove`,
+  `pointerdown`, `mousedown`, the focus change, `pointerup`, `mouseup` and
+  `click`, in that order. A prevented `pointerdown` suppresses `mousedown`,
+  `mouseup` and the focus change; `click` still fires. `real-click` differs
+  only in failing on a disabled control;
 - focus moves as in Chrome, and a text control the user changed gets
-  `change` when it loses focus;
+  `change` when it loses focus. Engine `REF` commands are applied after
+  the batch and raise the same focus events as programmatic focus in
+  Chrome, each as a turn. `expect-focused LOC` checks the active element,
+  and `expect-no-focus` checks that focus is on the document body;
 - `fill` is Playwright's: it refuses a control that cannot hold the value;
 - a navigation to a URL that differs from the current one only in its
   fragment stays in the document; any other mounts the app afresh in a new
   document. History traversal across documents is refused, because a
   browser may restore a cached page rather than mount afresh;
-- a spec without `initial-location` starts at `/`.
+- the parser resolves the spec's environment once: location `/`, local
+  storage available with no seeded pairs, online and visible unless a
+  setup form says otherwise. Time defaults to 0, seed to 0, languages to
+  `["en-US"]` and zone to UTC. `set-online`, `set-visibility` and the current
+  clock carry into a later document; its seed is N + k, document k from 0.
+  Setting an unchanged connectivity or visibility fact dispatches nothing.
 
-There are no native-only or Chrome-only steps. Inputs no runner implements —
-pointer, keyboard, composition and custom events, and session storage — are
-not part of the grammar: IME composition is covered by the runtime's
-contract tests, and session storage is a **Target** service. An unknown step
+### Drafts, storage events and leaving
+
+Setup forms `session-storage` and `session-storage-unavailable` follow local
+storage's seed and availability rules. A seed with an unavailable store is
+a spec error. `session-storage-full` and `local-storage-full` make sets fail
+with `Quota`, while reads and removals still work; seeding a full store is
+allowed. `clipboard-denied` answers each clipboard write `NotAllowed`.
+Session storage survives cross-document navigation in the same tab.
+
+`storage-elsewhere`, `storage-elsewhere-removed` and
+`storage-elsewhere-cleared` change the model as another document would,
+raising a report only for a real change. A clear of nonempty local storage
+reports `Missing` to every live key subscription; an empty clear raises
+nothing. Chrome uses a second page of the origin, so these are real storage
+events. They honour `hold-reports`. Each report retains its event's value,
+independent of a later local write.
+
+`paste-text` dispatches a `ClipboardEvent` with a `DataTransfer` and delivers
+the text through its declared payload kind. Session assertions are
+`expect-session-storage` and `expect-no-session-storage`. Clipboard
+assertions are `expect-clipboard`, `expect-clipboard-html` and
+`expect-clipboard-writes`. A clipboard write and a `StorageFailed` answer
+by themselves in the following turn, as a storage read does, and take no
+`run-effect` occurrence number. Clipboard assertions observe successful
+writes in the current document rather than reading the OS clipboard; like
+SAVE observations they reset on remount. A denied copy changes neither
+contents nor count. Exhausting the U64 count fails observation only.
+
+`leave-page URL stay|leave|unasked` alone may leave a guarded, activated
+document. `stay` must see a dialog and decline it; `leave` must see a dialog
+and accept it; `unasked` must see none. Acceptance mounts the app afresh at
+URL. Chrome calls `location.assign` and handles the real beforeunload
+dialog; an unexpected or missing dialog fails. A dialog outside this step
+fails the step that caused it. Natively any other action, including a
+link's click or `navigate`, that would leave while guard and sticky
+activation are on fails and names `leave-page`. The walk takes no such
+step. Sticky activation follows the parser's activation table and carries
+across the supported same-origin document navigations and reloads;
+`paste-text`, the three storage-elsewhere steps and `leave-page` grant none.
+A fresh tab starts false. The native model preserves this browser fact,
+separately from a new document's reset CloseWatcher cancellation allowance.
+
+This carry-over deliberately corrects the earlier assumption that all
+activation resets on a new document. A plain-HTML Chrome contract verifies
+new document identity, expired transient activation, retained sticky
+activation and the later real leave dialog. It agrees with the
+[upstream same-origin activation test](https://github.com/web-platform-tests/wpt/blob/master/html/user-activation/navigate-to-sameorigin.html)
+and the [proposed HTML carry-over rules](https://github.com/whatwg/html/pull/11454).
+No browser state is patched to make a spec pass; cross-origin navigation,
+redirects and cross-document history traversal remain outside the runners'
+supported app navigation.
+
+### Manual clock and document facts
+
+`initial-time` and `set-time` accept I64 milliseconds or exactly
+`YYYY-MM-DDTHH:MM:SS[.sss]Z` UTC text with a valid calendar date. `advance-time`
+takes a nonnegative U64 duration and rejects an I64 overflow. These clock
+steps deliver nothing and fire no timer. `run-effect` and `tick-interval`
+use the clock as it stands; timer order is issue order, never time order.
+
+`(seed N)` takes a U128; each new document uses the next checked value.
+`(languages TAG ...)` supplies one to sixteen strings of at most 64 UTF-8
+bytes. `(time-zone NAME MINUTES (AT MINUTES) ...)` gives a first offset
+from the start of I64 time and ascending changes, true over all I64 time.
+The parser owns these bounds, UTC parsing and cross-form checks. Replay
+installs them through the ordinary readers, not CDP overrides or a global
+Date patch. Walks advance the clock by a second to a day, sometimes backwards;
+an interval tick advances it by that period before firing.
+
+### Transition assertions
+
+`(expect-transitions N)` checks the absolute number of applied marked batches
+in the document; `(expect-transition K TYPE ...)` checks the exact ordered
+types of the one-based K-th batch. Both runners decode independently and
+retain the bounded history described above. An assertion of an overwritten
+or oversized record fails with a retained-history diagnostic. Manual Chrome
+replay skips animations after update and waits for `idle()` before another
+step. The runtime contract tests exercise real snapshots and input during
+animation; specs assert engine intent and final DOM.
+
+### Native UI and scrolling steps
+
+`(dismiss)` is Escape down and up at current focus, honoring key prevention,
+CloseWatcher cancellation and native dialog/auto-popover dismissal.
+`(expect-shown LOC hidden|open|modal|popover)` tests live shown state rather
+than document presence. Actions refuse hidden dialog/popover descendants
+and elements outside the top modal; observations may read inert background.
+Tab skips inert elements. The driver settles native callbacks after mount
+and each step with the bounded passive observation described above.
+
+`(expect-scroll K LOC into-view|to)` checks the K-th performed explicit
+scroll command, with one-based U64 ordinals; `(expect-scrolls N)` checks the
+absolute U64 count in this document. The manual history retains 4096 newest
+commands and element identity, never reused node ids; an overwritten
+ordinal fails. JSON carries these counts as decimal strings to retain U64
+precision. No geometry, final offset or animation completion is asserted.
+
+`Scm` supplies one explicit activation classification for every step, shared
+by both runners. Actual clicks (including check/uncheck only when clicking),
+nonempty fill, press except Escape, mouse/pen down and touch up grant
+activation. Disabled/no-op clicks, empty fill, pointer move/cancel,
+mouse/pen up and scripted change/select/submit/focus do not. A new document
+starts without the CloseWatcher cancellation allowance; a prevented cancel
+consumes that opportunity until the next actual activation. Sticky activation
+for a leave guard is separate: it starts false in a fresh tab and is retained
+across the supported same-origin document navigations and reloads. Existing
+same-document history traversal preserves it too; cross-document history
+traversal remains unsupported by the runners. It is
+not consumed by a prevented cancel. Native callbacks preserve each task source's order
+and toggle coalescing without promising cross-source ordering.
+
+### Layout and media steps
+
+`initial-media "QUERY" BOOL` in setup provides a declared query's boot
+value; absent values default false. `set-media "QUERY" BOOL` changes its
+subscription reports, refusing an undeclared query. `report-size LOC WIDTH
+HEIGHT` and `report-seen LOC yes|no [PERMILLE]` inject the same facts into
+both runners and fail without a matching observation. Real observer timing
+and geometry belong in Chrome contracts. `expect-observed N` checks the
+live gauge; `expect-media-subscriptions "QUERY" N` checks its subscriptions.
+
+`scroll LOC TOP LEFT` is a report step and a real scroll in Chrome. It
+fails if the browser cannot reach the exact requested position, or if the
+resulting turn leaves it elsewhere. A scroll to the current position raises
+nothing. Typed scroll, size, seen and media honor report holds and grant no
+activation. An ordinary text-kind scroll remains an occurrence: it drains
+earlier reports even inside a hold, rather than acquiring paced delivery
+from the spec form.
+
+On an element with a scroll handler (typed or text), `ScrollTo` with
+`Start`, `Px` or `Keep` updates the oracle's offsets and raises the report
+at the end of the step if they changed. Chrome waits a frame for the real
+event and checks the same position; use Instant for a deterministic command,
+since Smooth or CSS-smooth Auto may still be intermediate then. `End` on a
+handled scroller and `ScrollIntoView` inside one fail in both runners: their
+landing position needs layout the oracle lacks. Chrome also fails any step
+that changed a handled scroller without a scroll step or modelled command,
+including focus, click or drawing that moved its scrollbar. It names the
+element and directs the spec to scroll first. Natively that mistake can
+pass, because there is no layout to reveal it; the Chrome run proves it.
+
+### Pointer steps
+
+`pointer-down LOC` accepts `:at X Y`, `:button main|middle|secondary`,
+`:pointer mouse|pen|touch`, `:id N` and `:modifiers (shift ctrl alt meta)`.
+`pointer-move LOC` and `pointer-up LOC` accept `:at X Y` and `:id N`;
+`pointer-cancel` accepts `:id N` and only a touch pointer. Down defaults
+to main, mouse and no modifiers, with id 1 for mouse or 2 for pen and
+touch. Move and up default to id 1, and cancel to id 2; they never guess
+the current pointer. Mouse always uses id 1 and nonmouse pointers cannot
+use that id. A pointer already down, an up or cancel for one not down,
+or a cancel for a nontouch pointer is a step error. A buttonless mouse
+move is allowed.
+
+The automation channel supports only one active non-touch press, mouse or
+pen. Overlapping mouse/pen presses share a compatibility-mouse target in
+Chrome, so both runners reject a second non-touch gesture before input.
+Touch and non-touch gestures also share compatibility-mouse state, so
+they cannot overlap in a spec. The driver supports either one mouse/pen
+gesture or up to 16 touch pointers. A 17th touch fails before input, as
+the browser driver refuses it and can otherwise leave its input state
+incoherent. Replay maps full U32 local aliases to small reusable driver
+contact slots; it never wraps the aliases. Browser-assigned pointer ids
+are separate. These bounds apply to the spec driver, not production input.
+
+Ids track active pointers, not persistent objects. Native nonmouse ids
+are the spec's names; Chrome assigns its own and replay maps them back
+only when checking the pointer log. App logic can compare active ids;
+specs must not assert the browser's numeric choices.
+
+`X Y` are integer percentages, 0–100, of the nearest nonempty zone at or
+above LOC. Without `:at`, a zone's centre is 50 50 and an element in no
+zone is outside. LOC inside another element's zone requires `:at` in
+that zone, because the oracle cannot locate its centre. Chrome computes
+the point from the zone's box and checks that its hit test finds LOC or
+a descendant with the same nearest zone. A nested zone covering the
+point, a box without positive area or another hit fails the step rather
+than changing the target. Its logged fraction must equal `X × 100` and
+`Y × 100` exactly.
+
+A click's pointer sequence follows the same centre rule only when it
+reaches a pointer-kind handler. A click that reaches none is unaffected
+by its zones. A paced pointer move is a report step, released at the end
+of the step unless held; an up first delivers its waiting moves.
+
+The native model keeps each pointer's buttons, down target and capture
+target. Capture retargets events but not the zone beneath the point.
+Touch captures implicitly. Mouse and pen produce compatibility mouse
+events and focus; a main-button up produces click, while a nonmain up
+produces auxclick. A single-contact touch tap produces mousemove, mousedown, mouseup and
+click after its up; preventing its down suppresses those compatibility
+mouse events while click still occurs. A touch that moved produces none.
+Once a touch set has contained multiple contacts, none of its releases
+produces compatibility mouse events or click; this state ends only when
+the last contact ends. Chrome checks `touch-action:none` before a touch
+down. An unchanged logical touch move fails in
+both runners, and Chrome also refuses physical movement within its tap
+slop, which the oracle's layout-free model cannot measure.
+
+An up's click targets the capturing element, or the nearest common
+ancestor of the pressed and released elements without capture. If the
+up's turn removes or moves the pressed element or any ancestor, mouseup
+instead targets the old parent of the detached node and no click follows.
+`MOVE` counts because insertion removes and reinserts the node. The
+oracle records detach history and checks only the pressed ancestor path;
+it retains no earlier DOM and scans no whole tree.
+
+The browser's automation API cancels all active touches together. To
+preserve the meaning of `pointer-cancel :id`, both runners refuse it when
+more than one touch is active; they never cancel unnamed pointers or
+fabricate a per-pointer event. Cross-document navigation with a pointer
+down is also a step error, since a physical press can outlive the old
+document while the native browser model starts afresh. Same-document
+navigation keeps the gesture.
+
+Manual pointer logs hold at most 4096 records and are taken and cleared
+after each input step. Overflow is `resource_limit`, never silent loss;
+each document starts with an empty log. Walks drive complete pointer
+gestures over live zones, ending with up or a supported cancel.
+
+### Grammar boundaries
+
+There are no native-only or Chrome-only steps. Hover is outside the grammar:
+neither runner delivers `pointerover`, `pointerout`, `pointerenter`,
+`pointerleave` or their four mouse counterparts. The browser replay stops
+them at `window` before the app loads. Which element is under the cursor
+after layout shifts needs layout the oracle lacks, and Chrome can raise
+these events without a step. Contract tests cover their dispatch, and an
+author can test a hover handler as a pure function.
+
+`contextmenu` is also excluded from both runners. Chromium sends it on
+press on Mac/Linux and release on Windows, so one portable native meaning
+cannot reproduce it. Replay stops it at the window and prevents its
+default menu. Production runtime dispatch remains available and is
+covered by its contract tests. This is an explicit limit of pointer
+steps; secondary pointer payloads and auxclick remain in the grammar.
+The platform-dependent placement follows
+[Chromium's mouse-up implementation](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/blink/renderer/core/frame/web_frame_widget_impl.cc).
+
+`gotpointercapture` and `lostpointercapture` are likewise outside the
+spec grammar: its capture model drives the four pointer events above and
+their stated mouse and focus followers, rather than capture lifecycle
+callbacks. Replay filters them; production generic dispatch remains
+available and contract-tested.
+
+### Keyboard steps
+
+`(press LOC "Shift+ArrowDown")` focuses the locator, then raises keydown
+and keyup. If keydown navigates, the driver waits for the new document
+to load and mount before releasing the key there; both phases require
+physical browser evidence. `(press "Escape")` instead uses the current
+focus or body. Prefixes
+are `Control`, `Alt`, `Shift` and `Meta`, with exact modifiers. There is no
+platform-dependent `ControlOrMeta`. One US-key table in `Scm.roc` supplies
+key, code and modifiers to both runners through the emitted JSON. It
+contains printable ASCII, Enter, Escape, Tab, Space, Backspace, Delete,
+arrows, Home, End, PageUp, PageDown and F1–F12. Write `Shift+?` and
+`Shift+A`; `?`, `A` without Shift and `Shift+a` are parse errors.
+
+Unprevented Tab follows positive tabindex then DOM order, skipping disabled,
+hidden and inert elements. Enter activates a button or link and supports implicit
+form submission. Enter on a file or color input clicks that control instead
+of submitting; the chooser UI is outside the DOM model, as for a mouse click.
+Ctrl or Meta suppresses button, file/color and implicit-form activation;
+Alt and Shift retain it. Space activates buttons, checkboxes and radios on
+keyup, including with modifiers, only while the original pressed control
+still holds focus and its pressed ancestry has not been detached.
+Escape performs native dialog and auto-popover dismissal unless prevented;
+function keys and caret-only movement have no modelled change.
+Modified Enter on a link has platform-dependent navigation, download or
+new-context defaults. Both runners refuse it unless the app prevented the
+default, for any Ctrl, Alt, Shift or Meta modifier. Plain Enter remains
+supported. The model does not type text or edit a caret. Both runners
+refuse an unprevented default they cannot model: printable keys or Space without
+Ctrl/Meta, Backspace/Delete and Ctrl/Meta+A/C/V/X/Y/Z in text entry; Enter
+in textarea or contenteditable; arrows, Home, End and PageUp/PageDown in
+selects, radios and number, range, date, time, month, week or datetime-local
+inputs. These key/control rules and their input-type selectors are data in
+`Scm.roc`, emitted once for Chrome rather than restated there. A prevented
+key is allowed. Use `fill` to enter text. Composition remains a runtime contract
+test, not a spec step. Escape grants no user activation.
+
+Inputs no runner implements — composition and custom events — are not
+part of the grammar: IME composition is covered by the runtime's
+contract tests. An unknown step
 is a hard parse error in both runners, and neither runner may weaken a step;
-it fails. Coverage is checked: the native runner's step dispatch is an
+it fails.
+
+An `expect-absent` names a locator that another step of the same spec requires
+to match, or says `:never-drawn`; the parser rejects any other, so a misspelt or
+renamed locator fails at parse instead of passing. A marker on an anchored
+locator is also a parse error. Locators are compared exactly as written.
+
+Names in negative and zero-count assertions need evidence before a runner
+can trust their spelling. The program's declarations are the first authority
+for ports (including their kind), worker tasks and media queries. Negative
+storage assertions may instead use that spec's seeded or positively observed
+key in the same store; setting local storage from another document establishes
+that key too, while removal and clear do not.
+
+Names with no declaration must be shown elsewhere in the same spec, before
+or after the negative: `expect-attr` or `expect-has-attr` shows an attribute
+name on any locator; a positive cleanup count shows a cleanup name; a
+positive interval count or `tick-interval` shows a period. Otherwise the
+negative carries its family marker: `:never-written`, `:never-runs` or
+`:never-started`. A marker on an anchored subject is an error. These markers
+are parser-only, just as `:never-drawn` is; they never change an operation's
+runner meaning. One exhaustive `Scm.evidence` classifies every operation,
+and the locator query and declaration preflight consume its projections.
+Setup has its own exhaustive classification and retains its source position.
+
+`expect-has-attr`, `expect-attr` and `expect-no-attr` share the same present
+reading in both runners, including present-empty text. Live property readings
+are always present: `disabled`, and `checked` or `value` on their applicable
+controls. Presence assertions on those readings are vacuous; use the dedicated
+value/state assertions. The parser refuses their spellings in `expect-no-attr`
+and directs the author to those assertions. Ordinary attribute values retain
+the exact text the app wrote.
+
+Coverage is checked: the native runner's step dispatch is an
 exhaustive `match`, and `check` compares the browser runner's handler table
 with the parser's form tables (`replay.mjs --check-grammar`).
 
@@ -2348,10 +4199,17 @@ with the parser's form tables (`replay.mjs --check-grammar`).
 the engine: it shares no code with `Core.roc`. Every native assertion reads
 that model, never engine state. It mirrors the runtime's delegated dispatch
 (nearest handler, then nearest engine id) and decodes effect commands in
-stream order, so specs can model a browser — location and history, title,
-storage, pending requests, live subscriptions — driven only by what the engine
+stream order, partitioning marked batches into early no-node effects and
+node effects after the DOM, as the runtime does. Thus specs can model a
+browser — location and history, title, storage, pending requests, live subscriptions — driven only by what the engine
 emitted. Because the oracle sees only the wire, a spec that passes natively
 exercises the same protocol the browser runtime consumes.
+
+**Target.** The oracle's configured document renderer also writes the
+prerendered first page. It remains independent of `Core.roc`; Chrome
+differential tests and the engine's digest verdict protect the page from a
+renderer error. Rendering and canonical shape follow one node walk rather
+than separate implementations that could disagree inside the oracle.
 
 ### Work assertions
 
@@ -2371,30 +4229,33 @@ metric: soak plateaus assert it.
 | Step or metric | Definition |
 |---|---|
 | `mark-metrics` | Snapshot every counter |
+| `expect-reports-replaced n` | Waiting reports replaced in this document, read from the runner's ingress model or the runtime's manual count; separate from engine work counters |
 | `rows_created` | `INST` commands: rows created by mount, by an `each` reconciliation or by a table view's window |
 | `rows_removed` | Rows a reconciliation removed and rows that left a table view's window (a row disposed with its whole site is a disposed scope, not a removed row) |
 | `rows_reused` | Old rows an `each` reconciliation kept. A reconciliation whose list is equal to the old one (nothing created, removed, moved or changed) counts nothing, and a view, which compares no list, counts none |
 | `rows_updated` | Rows kept whose content was written: a row of an `each` site whose item changed, and a row a view draws before and after the turn whose row in the table was written. With `rows_created`, `rows_removed` and `rows_moved` it says exactly what a turn did to the rows a view draws |
 | `rows_moved` | `MOVE` commands |
+| `view_transitions` | Host-call batches marked for transition, regardless of browser support or deployment choice; never mount |
 | `create_element`, `bind_event`, `set_metadata` | `ELEM`, `LISTEN` and `TITLE` commands |
 | `set_text` | `SETTEXT` and `TEXT` commands |
-| `set_value`, `set_checked` | Control state the engine set: `ATTR` and `HATTR` named `value` / `checked`, and `INST` attribute holes with those names |
-| `patches_emitted` | DOM commands (opcodes 1–12) |
+| `set_value`, `set_checked` | Control state the engine set: `PROP` and `HPROP` for the `value` / `checked` rows, and `INST` property holes of those rows |
+| `patches_emitted` | DOM commands (opcodes 1–12 and `PROP`/`HPROP`, 21–22) |
 | `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values; for a table view, each read of its query or its window and each row it places with the query's `keep` and `sort` (two for a written key it absorbs, the row before and after; every row of the table for a mount or a rebuild). A table view's comparisons are not counted |
 | `scopes_created` / `scopes_disposed` | Scopes mounted / disposed: `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites |
 | `dirty_source_roots` | What a turn wrote: one for each cell, and one for each layer when its readers are refreshed, whether its site started the pass, joined it or was reached by the walk after it (a layer disposed before then counts none; a `resource` answer that folds to an equal value writes none, and a decision that returns no write counts nothing) |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
-| `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters"): awaited requests issued (one `FX` each), results delivered to a reaction, stale results dropped, requests refused at the in-flight cap, requests cancelled (one `CANCEL` each), requests reparented to a surviving ancestor, and reparented writes skipped because their state was retired |
-| `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it; natively from the oracle, in Chrome from a MutationObserver |
+| `effects_progress` | Delivered transfer reports, excluding replacements; the request remains in flight and the final-delivery counter is unchanged |
+| `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters"): awaited requests issued (one `FX` each), results delivered to their site (including withheld keep_current results), stale results dropped, requests refused at the in-flight cap, requests cancelled (one `CANCEL` each), requests reparented to a surviving ancestor, and reparented writes skipped because their state was retired |
+| `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it, and `PROP`/`HPROP` whose row claims an attribute; natively from the oracle, in Chrome from a MutationObserver of the mirrored attributes |
 | `expect-interval ms n` | Live `INTERVAL` subscriptions with period `ms` |
-| `tick-interval ms` | Deliver `Fired` to every live interval with period `ms`; a step with none live fails. `tick-interval-if-active` is a no-op when none is live |
+| `tick-interval ms` | Deliver `Fired(current_clock)` to every live interval with period `ms`; a step with none live fails. `tick-interval-if-active` is a no-op when none is live |
 | `expect-cleanup name n` | Runs of `on_cleanup` sites named `name` |
 | `expect-files n` | File handles live in the app's instance after the last call: natively from the native host's heap, in Chrome from `metric(6)` |
 
 The browser runner holds intervals for `tick-interval` (they never fire on
-their own during a replay) and drives `set-online` and `set-visibility` by
-overriding `navigator.onLine` and `document.visibilityState` and dispatching
-the browser's own events, so the runtime's real listeners are exercised.
+their own during a replay) and drives `set-online` and `set-visibility`
+through the runtime's `environment` readers. It dispatches the browser's
+own events only when the value changes, exercising the real listeners.
 `local-storage-unavailable` makes `window.localStorage` throw before the app
 loads; seeding storage in the same setup is a spec error in both runners.
 
@@ -2403,9 +4264,16 @@ loads; seeding storage in the same setup is a spec error in both runners.
 A decision is a pure function, so a transition is tested by a top-level
 `expect` with no engine and no browser: `store.after(writes)` applies a list
 to the store's starting storage as a turn applies it, the same-cell rule
-included, and `read(cell)` reads a cell of the result. No turn ends there,
-so a table read from the result still holds its changes, and
-`read(table).inverse()` tells which rows the transition wrote. A component's
+included, and `read(cell)` reads a cell of the result. Each `after` is one
+pure turn. Generated modifiers start a written table's record before its
+first modifier, and retain its first earlier row per key across the list.
+The turn rearms exactly its written table cells; unrelated tables keep their
+last writing turn's record. `read(table).inverse()` describes that retained
+turn. The existing exact write-set words select only written cell IDs through
+an immutable index of generated table callbacks, built once with the store.
+A turn never scans all table descriptors, unrelated rows or change records.
+Reclaiming a written table's preceding record remains
+O(J_previous), as in a live turn. A component's
 operations on its own type are tested the same way. This is the check that
 sees a transition that left out a reset or wrote the wrong cell of the right
 type, which no propagation check can.
@@ -2429,7 +4297,8 @@ know nothing of the platform.
   once, against a model that filters and sorts the table from scratch and
   takes each view from the window before an event to the window after it
   in one change), effect lifecycle (issue, supersede, dispose,
-  reparent, deliver, refuse, cancel, stale), generated site trees, and the
+  reparent, deliver, refuse, cancel, stale), generated site trees with guard
+  sites checked against whether any live guard reads true, and the
   spec, wire and port formats. Their oracles, not their inputs, carry the
   value.
 - **Walks.** The native spec runner walks an app (`RUNNER --walk STEPS
@@ -2445,6 +4314,7 @@ know nothing of the platform.
   Every other request is answered from the app's own specs: an HTTP request
   with an HTTP response they give its URL (else its path), a 503 or a timeout; a
   port call with an answer they give that port, a throw or its timeout.
+  A walk takes no step that leaves a guarded, activated document.
   After every step the settle check must pass and the counters must agree
   with the commands; at the end the walk must leave no allocation, byte or
   file handle live. A walk needs nothing written for it, so it covers every
@@ -2455,8 +4325,10 @@ know nothing of the platform.
   runner applies it after every step (`Core.settled`). After a turn, a root
   `Changed` pass that names every layer and every cell, run on a copy of the
   instance that is then dropped, must emit no command and change nothing in
-  the effect channel. That pass re-evaluates every hole and descends into
-  every child whatever the read signatures say, and the sites that settle
+  the effect channel. Its scratch transition collection starts empty, and
+  any newly issued request fails the check even if its types duplicate those
+  already issued in the real call. That pass re-evaluates every hole and
+  descends into every child whatever the read signatures say, and the sites that settle
   their own layers pass it inward whole. Since every observation point
   prunes against what it last emitted or holds, a complete turn leaves it
   nothing to do, and a reader the turn missed (a signature or a write set
@@ -2518,7 +4390,7 @@ architecture are recorded here:
   compiler or carries an absolute path.
 - **Roc scripts.** Automation is Roc scripts under `scripts/`; one `check`
   task runs formatting, `roc test`, every example's specs natively and in
-  Chrome, fuzz corpus replay, size budgets, and the host
+  Chrome, fuzz corpus replay, the size of the platform’s JavaScript files, and the host
   and runtime contract tests. CI calls Blueprint tasks, never script paths;
   on macOS and Windows, where Blueprint does not run, CI builds apps' spec
   runners with `roc` and runs their specs, as an app author there does.
@@ -2546,8 +4418,14 @@ of them is platform semantics.
 
 | Issue | Defect | Effect on the engine |
 |---|---|---|
+| [roc-lang/roc#13020](https://github.com/roc-lang/roc/issues/13020) | Development Wasm on nightly `2026-11-13-03dce41` retains removed refcounted elements after empty and partial `List.drop_last`/`Dict.remove` results | Standalone release-counter controls reproduce retained values after two-to-one removal and retained owned keys even when the removed value is cleared first. Ordinary owner drop releases them. File-valued-table lifetime checks remain failing; no generic workaround, container rebuild or host-forced release substitutes for ownership. |
+| [roc-lang/roc#13056](https://github.com/roc-lang/roc/issues/13056) | Nightly `2026-11-13-03dce41` crashes during native compilation of an empty preparation catalogue whose error type is `Worker.Never`; the minimal public 0.5 reproduction requires no Signals checkout | The declaration-refusal fixture uses a named inhabited preparation error while its preparation still always succeeds, its owner registers no tasks and its view still crashes on initialization. Validation still rejects declarations before initialization; allowed execution still reaches the fixture crash. Restore `Worker.Never` once fixed; no engine or declaration semantics change |
+| [roc-lang/roc#13005](https://github.com/roc-lang/roc/issues/13005) | A top-level annotated constant using a missing method can crash `roc check` in `boxy_lowering` instead of reporting the missing item | The table-bookkeeping rejection fixture uses the unannotated spelling and links the issue. It still requires the compiler's missing-method diagnostic; an annotated spelling may crash until the compiler is fixed |
+| [roc-lang/roc#13011](https://github.com/roc-lang/roc/issues/13011) | `nightly-2026-11-12-ce942d6` assigns callable evidence scope to a non-function stored value in an open-tag initializer test, leaving a child call without evidence during Mono and Boxy lowering | Log Explorer initializes its theme through the full union constructor and its viewer geometry through a typed producer, and the time sample closes its action initializer through its typed producer; their pure tests remain enabled |
+| [roc-lang/roc#13018](https://github.com/roc-lang/roc/issues/13018) | `roc docs` on `nightly-2026-11-12-ce942d6` omits associated methods reachable through a public alias of an internal type | `ApiDocs` derives the inherited members and their comments from the source syntax tree and renders them in the API front page and PDF; coverage checks both direct module entries and this generated companion. Remove the companion when the compiler renders the inherited members |
+| [roc-lang/roc#13017](https://github.com/roc-lang/roc/issues/13017) | `nightly-2026-11-12-ce942d6` development Wasm allocates backing for an empty `Str.to_utf8()` result with zero capacity; consuming it through `List.concat` leaks its four-byte reference count | `PortJson` writes an empty string directly as two quotes before conversion, preserving the exact JSON bytes; the real-port Reading List journey checks empty and nonempty authors return to zero live allocations and bytes after unmount |
 | [roc-lang/roc#12978](https://github.com/roc-lang/roc/issues/12978) | Since `nightly-2026-11-11-7679cc5`, a method's nominal defaulted props reject `{}` inside a callback stored in a record passed to a generic function | The File Effects test app gives its empty read props the explicit `Engine.ReadProps` type before constructing the callback, preserving the default read bound and every spec |
-| [roc-lang/roc#12949](https://github.com/roc-lang/roc/pull/12949) | Native links now require PIC libraries and PIE startup; roc-fuzz 0.6.0's immutable Linux inputs predate that requirement | The platform builds matching PIC musl inputs with its pinned Zig. Fuzz examples and campaigns explicitly report `SKIP` on `nightly-2026-11-11-7679cc5` until roc-fuzz supplies PIC inputs; the next nightly retries, and the engine targets also require the optimizer fix below |
+| [roc-lang/roc#12949](https://github.com/roc-lang/roc/pull/12949) | Native links now require PIC libraries and PIE startup; roc-fuzz 0.6.0's immutable Linux inputs predate that requirement | The platform builds matching PIC musl inputs with its pinned Zig. Fuzz examples and campaigns always attempt their requested targets; compiler, linker and runtime failures fail the task. Linux needs matching PIC roc-fuzz inputs, and affected engine targets also need the optimizer fix below |
 | [roc-lang/roc#12976](https://github.com/roc-lang/roc/issues/12976) | `nightly-2026-11-11-7679cc5` crashes in `spec_constr` optimizing a function that returns a value beside a closure capturing it; every store example reaches this shape | On that exact nightly the site builds the examples with `--opt=dev`, and optimized walks, browser soaks and worker scaling explicitly report `SKIP`. Ordinary native/browser specs and dev native soaks remain enabled. The next nightly retries optimized builds automatically |
 | [roc-lang/basic-cli#555](https://github.com/roc-lang/basic-cli/issues/555) | Windows CI with `nightly-2026-11-11-7679cc5` reported two `Locale` compile-time stack overflows with basic-cli 0.27 and 0.28; other 0.28 runs reported varying subsets of those and a `Path.roc:739:1` literal overflowing in `Bundle:30:17`. The underlying cause is not established | CI always attempts the current CLI init and prints its retained log. On Windows with that nightly, failed init quarantines the remaining CLI journey only when its diagnostics form a nonempty subset of the three exact captured basic-cli 0.28 failures, each once, and every error, cause and summary agrees; successful init continues it, other failures remain fatal, and native specs still run. Remove the quarantine when basic-cli#555 is resolved; the next nightly retries without it |
 | [roc-lang/roc#12846](https://github.com/roc-lang/roc/issues/12846) | A record captured by one closure is copied on every update under `--opt=speed/size` in some call shapes | Sites return rebuilt closures from each branch; row sites rebuilt before running a handler |
@@ -2557,10 +4435,14 @@ of them is platform semantics.
 | [roc-lang/roc#12835](https://github.com/roc-lang/roc/issues/12835) | Annotated polymorphic recursion hangs `roc test`/`roc check` under `--specialize=yes` | Recursive site types annotated with care |
 | [roc-lang/roc#12869](https://github.com/roc-lang/roc/issues/12869) | An unused closure capturing a function passed to a branching self-recursive closure makes monotype lowering exponential: a lambda that hands a function to a site whose instance calls itself from several branches makes `roc check` take minutes or not finish. Fixed upstream in nightlies after 2026-11-10 | The view site's getter is a function of its own (`view_source` in `Core.roc`), and the Log Explorer's `stepped` handler is a function of its module instead of a local closure, only while a pinned compiler predates the fix |
 | [roc-lang/roc#12836](https://github.com/roc-lang/roc/issues/12836) | `Box.box` of a capture-free callable allocates on every call | Extra allocations per call |
-| [roc-lang/roc#12953](https://github.com/roc-lang/roc/issues/12953) | Since roc-lang/roc#12887, the host boundary rejects an opaque `Box` of a value that contains functions, though it accepts the same value as `Box(Iter(...))` | The engine state crosses as `Box(Iter(Core.App))`, wrapped and unwrapped in `platform/main.roc`; `Core.Kept` holds its task runner as a `Box` of its own |
+| [roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012) | Updating storage captured by a boxed closure can borrow that capture and copy it even in development builds | The instance holds its store as plain data beside boxed sites. Local state still lives in a site's closure and remains affected; extend the allocation guard to local state when the compiler is fixed |
+| [roc-lang/roc#13022](https://github.com/roc-lang/roc/issues/13022) | Format derivation cannot resolve inherited hooks through a public format alias | Port.Registering declares its safe format hooks directly; catalogue accumulation remains in the unexposed PortRegistry module |
+| [roc-lang/roc#13002](https://github.com/roc-lang/roc/issues/13002) | Compile-time Dict and Set work can be quadratic in the default page's rows | Engine.mounts has inherent default-mount work; the compiler's extra superlinear cost remains upstream. Removing the app constant disables the check |
+| [roc-lang/roc#13019](https://github.com/roc-lang/roc/issues/13019) | An engine-dependent local-list reproduction shows value-size-dependent allocation in optimized writes without a host box; the report was closed for insufficient isolation, not as fixed | The development sparse-write guard proves only its own scope. Shipping allocation is not claimed flat; isolate the optimized path against the standalone #12957 case before attributing a separate compiler defect |
+| [roc-lang/roc#12953](https://github.com/roc-lang/roc/issues/12953) | Since roc-lang/roc#12887, the host boundary rejects an opaque `Box` of a value that contains functions, though it accepts the same value as `Box(Iter(...))` | The sites cross as `Box(Iter(Core.Sites(st)))` inside the one outer `Handle`, beside the plain store; `platform/main.roc` alone wraps and unwraps them. `Core.Kept` holds its task runner as a `Box` of its own |
 | [roc-lang/roc#12945](https://github.com/roc-lang/roc/issues/12945) | Under `--specialize=no`, a derived record decode leaks on every call | Worker instances grow per job in that build, so the scaling task's memory checks fail for it |
 | [roc-lang/roc#12951](https://github.com/roc-lang/roc/issues/12951) | A lambda passed to a generic function is rejected when its body uses `?` on a method of its own parameter and then `?` again | A task whose `run!` reads a file and then uses `?` again is written as a named function, not a lambda in the props record; the Workers guide says so |
-| [roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957) | In optimised builds (`--opt=size`, `--opt=speed`) a large value held by a closure that is itself kept in a list is copied on every write, a list and a `Dict` alike | Every site's storage and the store are held this way, so a write to a large state, cell or table copies it in a shipping build. There is no local workaround: the design assumes the fix (see [In-place ownership](#in-place-ownership)) |
+| [roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957) | Nested aggregate captures in closures taken from a list can copy a uniquely held list or `Dict` on each write under `--opt=size` and `--opt=speed` | Standalone controls distinguish nested captures from in-place shapes. The store remains beside the sites; its development guard is not a shipping allocation guarantee (see [In-place ownership](#in-place-ownership)) |
 | [roc-lang/roc#12963](https://github.com/roc-lang/roc/issues/12963) | Roc has no field accessor or updater as a value | A store's storage cannot be a record the author wrote, addressed field by field. The record builder generates it as nested pairs, with a lens for each position (see [The store](#the-store)) |
 | [roc-lang/roc#12965](https://github.com/roc-lang/roc/issues/12965) | Punned fields in a record builder (`{ x, y }.T`) are reported as unused, which fails `roc check` and `roc test` | A description of cells writes each field out: `{ x: x, y: y }.Engine.Cells` |
 | [roc-lang/roc#12962](https://github.com/roc-lang/roc/issues/12962) | A member of a type's `.{ }` block and a top-level definition of the same name resolve by declaration order: the member binds to itself when the top-level definition comes after the type, so `roc check` passes and `roc test` hangs | A helper in a type module is never given the name of a top-level function |
@@ -2568,22 +4450,22 @@ of them is platform semantics.
 | [roc-lang/roc#12970](https://github.com/roc-lang/roc/issues/12970) | `roc check` rejects a function that returns a function whose local helper is called after its parameter meets a `where` clause, such as a function that returns a table view's row template | A row template is not returned from a helper. The helper takes the key and the row as arguments, and the site is given a lambda that passes them on with whatever else it needs |
 
 Code size is the main open cost of the architecture and is tracked against
-#12847 and #12848, with each over-budget app's size budget linking its issue.
+#12847 and #12848, with each example’s reported size beside them.
 In-place writes of large values in shipping builds are tracked against
-#12957.
+#12957 and #13019; boxed local-state captures are also affected by #13012.
 
 ## Measures of Effectiveness
 
 1. **One engine, thin host.** All reactive and structural logic is in the
-   engine's Roc modules (`Core.roc`, with `Table.roc`, `View.roc` and
+   engine's Roc modules (`Core.roc`, with `TableCore.roc`, `View.roc` and
    `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
    *Holds when:* the same engine runs in the browser module and the native spec runner with
    the same command stream.
 2. **App semantics agree natively and in the browser.** Every maintained app's
    specs pass under both runners from one parser.
 3. **Work scales with change.** Work counters and command counts in specs
-   bound per-event work; sparse operations show identical allocation counts
-   across 10× data, and a keyed write to a table costs the same evaluations
+   bound per-event work; sparse operations compare requested bytes as well as
+   allocation counts across 10× data, and a keyed write to a table costs the same evaluations
    and commands whatever the table's size.
 4. **No leaks; reclamation is deterministic.** Live allocations, live effect
    ids and Wasm pages plateau across long sessions, natively and in Chrome.
@@ -2637,47 +4519,111 @@ These are unresolved mechanism choices within the contracts above.
   a coarser site representation is needed for the largest apps.
 - **Many-widget embedding.** Whether one instance per mount is acceptable for
   pages with many small widgets.
-- **First paint.** Whether streaming compilation and a smaller initial module
-  close the startup gap that larger modules open.
-- **High-frequency values.** Whether frame-aligned delivery of continuous
-  inputs helps; any coalescing must be an explicit policy on the source.
 
 ## Appendix A: API Surface
+
+`Url` is a pure app utility; the engine does not use it. A checked value is
+root-relative or has an explicit HTTP(S) origin. Builders take decoded text;
+`append_path_segments` refuses empty and dot names, while `append_query_param`
+form-encodes a pair. Readers decode exactly, and parsing refuses malformed
+escapes and escaped invalid UTF-8. Resolving retains the base origin; an
+authority reference needs an absolute base to supply its scheme. Parsed dot
+segments normalize and other empty segments remain distinct. A normalized
+root-relative path beginning `//` is refused as `MissingScheme`, because its
+standalone text would mean an authority reference. This strict subset does
+not accept every possible browser pathname. `request_target` is HTTP origin-form
+text, not a universal fetch reference: an absolute URL retains its origin
+through `to_str`, including when its path begins `//`. Request URL fields remain text.
+
+
+`Web` owns the opaque `Tag`, `AttrName`, `EventType` and `Method` primitives;
+`Engine` aliases them beside its builders. Their literals are checked while
+compiling. `from_str` returns a typed refusal for computed text, and `text`
+retains the original spelling. Tag and attribute grammar is context-free;
+namespace-specific validity is checked where the namespace is known. Raw
+well-formed names remain available independently of vocabulary checks at
+literals. A tag literal accepts a listed HTML name (ASCII-insensitive), an
+exact-case SVG name, or a grammar-valid hyphenated name. An exact `aria-`
+prefix requires a listed ARIA spelling at a literal. The lists come from the
+public parser vocabulary; there is no platform copy. Unknown names explain
+the explicit raw constructor, with spelling suggestions up to two edits
+including an adjacent transposition. The hyphen rule precedes a MathML
+name diagnostic and does not supply a namespace. Attribute literals `class`
+and `data-testid` direct an author to
+their dedicated builders; computed names apply grammar only.
+
+A `Method` is a nonempty HTTP token excluding `CONNECT`, `TRACE` and `TRACK`
+in every ASCII case. A literal containing lowercase is refused unless Fetch
+would normalize it: DELETE, GET, HEAD, OPTIONS, POST and PUT. Computed methods
+retain Fetch's grammar and forbidden-method check, including an explicitly
+computed lowercase custom method. Requests, File factories and defaulted props
+hold this one concrete Method type. Uploads refuse every ASCII spelling of
+GET or HEAD at admission, where the file body is known; that contextual rule
+never rewrites the retained method.
 
 The authoring API as it stands (`Engine.roc`). Types are abbreviated; `ctx` is
 the context a value or handler is used in.
 
-**The authoring API is the whole public surface.** Every `Engine` type is
-opaque: `Signal`, `State`, `Handler`, `RowRef`, `Cell`, `Cells` and `Store` are
+**The authoring API is the whole public surface.** It is everything reachable
+through the modules `platform/main.roc` exposes, including members inherited
+through aliases. Nothing in it mentions, requires or returns a type an app
+cannot name. The reactive and storage
+types `Signal`, `State`, `HandlerOf`, `Prop`, `RowRef`, `Cell`, `Cells`, `Store` and `Table` are
 opaque wrappers whose methods are documented here, and the contexts, `Elem`,
-`Attr`, `Keyed`, `Write`, `Reach`, `Stored`, `Reaction`, `Program`,
+`Attr`, `Keyed`, `Write`, `Reach`, `Stored`, `Reaction`, `Program(st)`,
 `Registration` and `Outbox` are aliases of opaque types in the internal
 `Core` module, which holds the implementation. `Core` is not exposed, so an
 app can neither name a representation nor call the interfaces only hosts and
 harnesses use (`Core.driver`, `mount`, `event`, `result`, `take_cmds`,
 `settled`, the effect and work counters); the generated API docs list the
-authoring API and nothing else. `Request`, `Result`, `WorkFault`, `FileError`,
-`HttpError`, `Boot`, `QueryPlan` and `Window` are plain data and stay
-structural; `Remote` is a transparent nominal type over a record, so an app
-reads and builds it as the record and calls its methods. `Table` is an
-opaque type in a module of its own, which an app imports to write a table.
-The operations of `Table` that only the engine may call take an
-`EngineOnly`, an opaque value of a module the platform does not expose, so
-they are outside the surface too.
+authoring API and nothing else. `Request`, `Command`, `Result`, `WorkFault`,
+`FileError`, `HttpError`, `Pointer`, `Key`, `QueryPlan` and `Window` are plain data and
+stay structural; `Boot` and `ProgramProps` are nominal records with defaulted
+fields, built and read as records. `Remote` is a transparent nominal type over a record, so an app
+reads and builds it as the record and calls its methods. Every member of an
+aliased type is public. Operations only the engine may perform are functions
+of internal namespaces such as `Core` and `TableCore`, never members of types
+an app can name. Apps import `Table` from `Engine`; its representation and
+bookkeeping remain internal.
+
+`Handler(ctx)` and `FilesHandler(ctx)` are aliases of `HandlerOf` at
+`Str` and `Received`, so both use one family of reducers, decisions and
+composition methods. `Policy` is a nominal props record with defaulted
+fields. A payload kind and its decoder are Core-only: an app chooses one
+through an attach function rather than supplying an unchecked codec.
 
 ```roc
+HandlerOf.from_payload_by : HandlerOf(ctx, q), Signal(ctx, b), (b, p -> q) -> HandlerOf(ctx, p)
+on_checked : HandlerOf(ctx, Bool) -> Attr(ctx)
+Html.Choices(a) := { key : a -> Str, label : a -> Str }
+Html.checkbox : Signal(ctx, Str), Signal(ctx, Bool), List(Attr(ctx)), HandlerOf(ctx, Bool) -> Elem(ctx)
+Html.select : Signal(ctx, Str), Signal(ctx, a), Signal(ctx, List(a)), Html.Choices(a), List(Attr(ctx)), HandlerOf(ctx, [Chose(a), NotOffered]) -> Elem(ctx) where [a.is_eq : a, a -> Bool]
+
 # Program entry
-program : (() -> Elem(Root)) -> Program
-program_boot : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Elem(Root)) -> Program
-program_store : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Store(st, h)),
-                (Boot -> Elem(StoreRoot(st))) -> Program             # the store start(boot) gives, held at the root
+program : (() -> Elem(Root)) -> Program({})
+ProgramProps := { storage_keys : List(Str) ?? [], session_keys : List(Str) ?? [], max_inflight : U64 ?? 32,
+                  media : List(Str) ?? [], zone_days : U16 ?? 366 }
+program_boot : ProgramProps, (Boot -> Elem(Root)) -> Program({})
+program_store : ProgramProps, (Boot -> Store(st, h)),
+                (Boot -> Elem(StoreRoot(st))) -> Program(st)         # store held beside the sites
 Root                                          # the top context of a program without a store
 StoreRoot(st)                                 # the top context of a program whose store's storage is st
-Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool, storage_available : Bool }
-Program                                       # opaque; the app binds it as `main`
-Program.with_workers : Program, List(Registration) -> Program   # the worker catalogue
+Boot := { url : Str ?? "/", storage : List((Str, Str)) ?? [], online : Bool ?? True,
+          visible : Bool ?? True, storage_available : Bool ?? True, media : List((Str, Bool)) ?? [],
+          now_ms : I64 ?? 0, seed : U128 ?? 0, languages : List(Str) ?? ["en-US"], zone : Zone ?? utc,
+          session : List((Str, Str)) ?? [], session_available : Bool ?? True }
+Zone : { name : Str, from_ms : I64, until_ms : I64, offsets : List({ from_ms : I64, minutes : I32 }) }
+utc : Zone
+zone_offset : Zone, I64 -> Try(I32, [OutsideZone])
+boot_media : Boot, Str -> Try(Bool, [Undeclared])
+boot_session : Boot, Str -> Try(Str, [Missing])
+guard_leave : Signal(ctx, Bool) -> Elem(ctx)
+Paste : [Text(Str), TooLarge]
+Program(st)                                   # opaque; the app binds it as `main` and names st as Store
+Program.with_workers : Program(st), List(Registration) -> Program(st)   # the worker catalogue
 Registration                                  # opaque: a task or preparation; Worker makes one
-Program.with_ports : Program, List(PortRegistration) -> Program # the ports the page supplies
+mounts : Program(st) -> U64                 # check the default first page at compile time
+Program.with_ports : Program(st), List(PortRegistration) -> Program(st) # the ports the page supplies
 PortRegistration                              # opaque: a port's name and shape; Port makes one
 
 # Signals
@@ -2687,6 +4633,11 @@ Signal.map2 : Signal(ctx, a), Signal(ctx, b), (a, b -> c) -> Signal(ctx, c)   # 
                                               # { a: va, b: vb }.Engine.Signal is a Signal of the record
 Signal.lift : Signal(ctx, a) -> Signal(In(ctx, s), a)
 Signal.lift_row : Signal(ctx, a) -> Signal(Row(ctx, item), a)
+Signal.from_quote : Str -> Try(Signal(ctx, Str), [BadQuotedBytes(Str)])
+Signal.from_interpolation : List(Str) -> Try((Iter(part) -> Signal(ctx, Str)), [InvalidInterpolation(Str)])
+    where [part.to_text_signal : part -> Signal(ctx, Str)]
+Signal.to_text_signal : Signal(ctx, a) -> Signal(ctx, Str) where [a.to_str : a -> Str]
+
 
 # The store: cells, their description and the store built from it
 cell : a -> Cells(whole, a, Cell(whole, a))                       # one cell starting at a value; a store of
@@ -2702,8 +4653,8 @@ store : tag, Cells(Stored(tag, st), st, h) -> Store(Stored(tag, st), h)
 Stored(tag, st)                               # opaque: the type of the store `tag` names
 Store.cells : Store(st, h) -> h
 Store.with_initial : Store(st, h), Cell(st, a), a -> Store(st, h)   # a start: a table's changes stay empty
-Store.after : Store(st, h), List(Write(st)) -> Store(st, h)      # a decision's writes applied, for a pure expect;
-                                              # no turn ends, so a table keeps its changes
+Store.after : Store(st, h), List(Write(st)) -> Store(st, h)      # one pure turn; written tables record this list,
+                                              # unrelated tables retain their last writing turn
 Store.read : Store(st, h), Cell(st, a) -> a
 Reach(ctx, st)                                # opaque: how the context ctx reaches the store
 # Everything below that reads or writes a cell in a context asks of that context:
@@ -2715,35 +4666,45 @@ Cell.update : Cell(st, a), (a -> a) -> Write(st)
 Write(st)                                     # opaque: one write to the store
 
 # Decisions: one pure function from a reading to a list of writes
-handle : (Str -> List(Write(st))) -> Handler(ctx)                # given the event's payload
-handle_by : Signal(ctx, b), (b, Str -> List(Write(st))) -> Handler(ctx)   # b read before the decision's own writes
-does : List(Write(st)) -> Handler(ctx)                           # a list that needs neither payload nor reading
-handle_files : (Received -> List(Write(st))) -> FilesHandler(ctx)   # given the files an event carries
-handle_files_by : Signal(ctx, b), (b, Received -> List(Write(st))) -> FilesHandler(ctx)
-react : (r, Result -> List(Write(st))) -> Reaction(ctx, r)          # given what the request was issued for
-react_by : Signal(ctx, b), (b, r, Result -> List(Write(st))) -> Reaction(ctx, r)
+handle : (p -> List(Write(st))) -> HandlerOf(ctx, p)                # given the event's payload
+handle_by : Signal(ctx, b), (b, p -> List(Write(st))) -> HandlerOf(ctx, p)   # b read before the decision's own writes
+does : List(Write(st)) -> HandlerOf(ctx, p)                          # a list that needs neither payload nor reading
+react : (r, result -> List(Write(st))) -> Reaction(ctx, r, result)          # given what the request was issued for
+react_by : Signal(ctx, b), (b, r, result -> List(Write(st))) -> Reaction(ctx, r, result)
 
 # Local state and handlers
 state : s, (State(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 State.signal : State(ctx, s) -> Signal(ctx, s)
-State.update : State(ctx, s), (s -> s) -> Handler(ctx)
-State.update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> Handler(ctx)
-State.set_value : State(ctx, s), (s, Str -> s) -> Handler(ctx)
-State.set_value_by : State(ctx, s), Signal(ctx, b), (s, b, Str -> s) -> Handler(ctx)
-State.on_result : State(ctx, s), (s, a, Result -> s) -> Reaction(ctx, a)
-State.lift, State.lift_row, Handler.lift, Handler.lift_row
-Handler.also : Handler(ctx), Handler(ctx) -> Handler(ctx)        # both for one event, in order
-Reaction.also : Reaction(ctx, a), Reaction(ctx, a) -> Reaction(ctx, a)
+HandlerOf(ctx, p)                             # opaque: a handler of payload p
+Handler(ctx) : HandlerOf(ctx, Str)              # text events
+FilesHandler(ctx) : HandlerOf(ctx, Received)    # file events; same constructors and methods
+State.update : State(ctx, s), (s -> s) -> HandlerOf(ctx, p)
+State.update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> HandlerOf(ctx, p)
+State.set_value : State(ctx, s), (s, p -> s) -> HandlerOf(ctx, p)
+State.set_value_by : State(ctx, s), Signal(ctx, b), (s, b, p -> s) -> HandlerOf(ctx, p)
+State.on_result : State(ctx, s), (s, a, result -> s) -> Reaction(ctx, a, result)
+State.lift, State.lift_row, HandlerOf.lift, HandlerOf.lift_row
+HandlerOf.also : HandlerOf(ctx, p), HandlerOf(ctx, p) -> HandlerOf(ctx, p)  # both for one event, in order
+Reaction.also : Reaction(ctx, a, result), Reaction(ctx, a, result) -> Reaction(ctx, a, result)
+
+# Browser names (public Web module, with Engine aliases)
+Tag, AttrName, EventType, Method             # opaque; retain authored spelling
+Web.Tag.from_str : Str -> Try(Tag, [NotATag(Str)])
+Web.AttrName.from_str : Str -> Try(AttrName, [NotAnAttribute(Str)])
+Web.EventType.from_str : Str -> Try(EventType, [NotAnEventType(Str)])
+Web.Method.from_str : Str -> Try(Method, [NotAMethod(Str)])
+# Each has from_quote : Str -> Try(Self, [BadQuotedBytes(Str)]),
+# text : Self -> Str and is_eq : Self, Self -> Bool.
 
 # Structure
-element : Str, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
+element : Tag, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 text : Str -> Elem(ctx)
 text_s : Signal(ctx, Str) -> Elem(ctx)
 when : Signal(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
 switch : Signal(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
 remount_on : Signal(ctx, k), (() -> Elem(ctx)) -> Elem(ctx)         # built again when the key changes; k has is_eq
 derive : Signal(ctx, a), (Signal(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
-resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Request)), resolve : (s, a, Result -> s) },
+resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Ask(o, e))), resolve : (s, a, Try(o, e) -> s) },
            (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 Remote(output, error) := { request : [Idle, Pending],                 # what Worker.resource and
                            answer : [Unanswered, Answered(output), Failed(error)] }  # Port.resource hold
@@ -2762,14 +4723,67 @@ TableViewProps(ctx, q, k, v, s) : { query : Signal(ctx, q), plan : (q -> QueryPl
 table_view : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s),
             (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)   # q has is_eq
 QueryPlan(k, v, s) : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }
+sort_by : { keep : k, v -> Bool, sort : k, v -> s } -> QueryPlan(k, v, (s, k))
+    where [s.order_relative_to : s, s -> [Before, Same, After], k.order_relative_to : k, k -> [Before, Same, After]]
+Order.Pair(a, b), Order.Direction(a), Order.Utf8
+Order.pair : a, b -> Pair(a, b)
+Order.asc, Order.desc : a -> Direction(a)
+Order.directed : a, Bool -> Direction(a)
+Order.utf8 : Str -> Utf8
+Order.compare : a, a -> [Before, Same, After] where [a.order_relative_to : a, a -> [Before, Same, After]]
+
 Window : { start : U64, count : U64 }
 every_row : Window                            # the window that draws every row a view keeps
 
 # Attributes and events
-attr, attr_s, class, class_s, test_id, test_id_s
-on : Str, Handler(ctx) -> Attr(ctx)          # event name, optional ":prevent"
+attr : AttrName, Str -> Attr(ctx)
+attr_s : AttrName, Signal(ctx, Str) -> Attr(ctx)
+class, class_s, test_id, test_id_s
+attr_presence : AttrName, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
+                                              # explicit presence; empty text remains present
+on : EventType, Handler(ctx) -> Attr(ctx)          # bare event type; text kind, no policy
+Policy := { prevent : Bool ?? False, stop : Bool ?? False }
+on_with : EventType, Policy, Handler(ctx) -> Attr(ctx)
 on_click : Handler(ctx) -> Attr(ctx)
+Pointer : { id : U32, kind : [Mouse, Pen, Touch, Other],
+            button : [None, Main, Middle, Secondary, Back, Forward, Other(U8)],
+            buttons : U16, modifiers : { shift : Bool, ctrl : Bool, alt : Bool, meta : Bool },
+            primary : Bool, at : [Outside, In({ zone : Str, x : U16, y : U16 })] }
+Key : { key : Str, code : Str, ctrl : Bool, alt : Bool, shift : Bool,
+        meta : Bool, repeat : Bool, composing : Bool, heard : Chord }
+Chord                                        # opaque; compares with ==
+Chord.plain : Str -> Chord
+Chord.with_ctrl, Chord.with_alt, Chord.with_shift, Chord.with_meta : Chord -> Chord
+Chord.primary : Chord -> List(Chord)         # Ctrl and Meta alternatives
+Keymap                                       # opaque ordered chords with policies
+Keymap.prevent, Keymap.keep : List(Chord) -> Keymap
+Keymap.every : Keymap
+Keymap.concat : Keymap, Keymap -> Keymap
+Keymap.outside_text : Keymap -> Keymap
+KeyProps(ctx) := { keymap : Signal(ctx, Keymap), on : [Down, Up] ?? Down, stop : Bool ?? False }
+DocumentKeyProps(ctx) := { keymap : Signal(ctx, Keymap), on : [Down, Up] ?? Down, stop : Bool ?? False }
+OutsideRows(ctx)                             # opaque state-free evidence; Root and In outside rows
+on_key : KeyProps(ctx), HandlerOf(ctx, Key) -> Attr(ctx)
+on_document_key : DocumentKeyProps(ctx), HandlerOf(ctx, Key) -> Attr(ctx)
+                                              where [ctx.outside_rows : () -> OutsideRows(ctx)]
+on_pointer : [Down, Move, Up, Cancel], HandlerOf(ctx, Pointer) -> Attr(ctx)
+on_pointer_capture : HandlerOf(ctx, Pointer) -> Attr(ctx)  # pointerdown; capture before dispatch
+on_pointer_paced : HandlerOf(ctx, Pointer) -> Attr(ctx)    # pointermove; newest report per pointer
+Prop(a)                                      # opaque: a closed property row and its value encoding
+Prop.value : Prop(Str)                        # input, textarea, select, option; guarded live value
+Prop.checked : Prop(Bool)                     # input's checked state
+Prop.pointer_zone : Prop(Str)                 # any element; empty key marks no zone; no attribute mirror
+prop : Prop(a), a -> Attr(ctx)
+prop_s : Prop(a), Signal(ctx, a) -> Attr(ctx)
 ref : Str -> Attr(ctx)                        # named focus reference
+ref_s : Signal(ctx, Str) -> Attr(ctx)          # reactive name; allowed in a row; empty names nothing
+
+# Reference commands
+Align : [Start, Center, End, Nearest]
+Edge : [Keep, Start, End, Px(U32)]
+ScrollBehavior : [Auto, Instant, Smooth]
+ScrollProps := { block : Align ?? Nearest, inline : Align ?? Nearest, behavior : ScrollBehavior ?? Auto }
+scroll_into_view : Str, ScrollProps -> [ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior })]
 
 # Files
 File                                          # opaque handle: a file, or a range of one
@@ -2777,19 +4791,23 @@ File.name, File.mime : File -> Str
 File.size : File -> U64                       # bytes in this file or range
 File.slice : File, { start : U64, len : U64 } -> File   # contract error outside the file
 File.spans : File, U64 -> List({ start : U64, len : U64 })   # ranges of n bytes covering it, for read!
-File.read_bytes, File.read_utf8 : File, ReadProps -> Request   # awaited reads into the page
+File.read_bytes : File, ReadProps -> Ask(List(U8), FileError)
+File.read_utf8 : File, ReadProps -> Ask(Str, FileError)
 ReadProps := { max_bytes : U64 ?? 8388608 }    # under the page's maxFileBytes
-File.upload : File, UploadProps -> Request        # the file as an HTTP body
-UploadProps := { url : Str, method : Str ?? "POST", headers : List((Str, Str)) ?? [],
-                 timeout : [Unlimited, Ms(U32)] ?? Unlimited }
-File.sha256 : File -> Request                     # answered Digest(32 bytes)
-File.object_url : File -> Request                 # answered FileUrl(url), valid while the handle lives
-file_bytes, file_digest : Result -> Try(List(U8), FileError)
-file_text, file_url : Result -> Try(Str, FileError)
-File.save : File, { name : [Same, Named(Str)] ?? Same } -> Request   # a command: a download
-File.fetch : { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [],
-               timeout : [Unlimited, Ms(U32)] ?? Unlimited } -> Request   # answered Fetched
-fetched : Result -> Try(File, FetchError)
+File.upload : File, UploadProps -> Ask(Response, HttpFailure)        # the file as an HTTP body
+UploadProps := { url : Str, method : Method ?? "POST", headers : List((Str, Str)) ?? [],
+                 timeout : [Unlimited, Ms(U32)] ?? Unlimited, credentials : Credentials ?? SameOrigin }
+File.sha256 : File -> Ask(List(U8), FileError)      # 32 digest bytes
+File.object_url : File -> Ask(Str, FileError)       # URL valid while the handle lives
+File.save : File, { name : [Same, Named(Str)] ?? Same }
+            -> [Save({ file : File, name : Str })]   # a command: a download; typed by its one tag,
+                                              # use command(...) in a typed plan; cleanup takes List(Command)
+File.fetch : File.FetchProps -> Ask(Fetched, FetchFailure)
+File.FetchProps := { url : Str, method : Method ?? "GET", headers : List((Str, Str)) ?? [],
+                timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default,
+                credentials : Credentials ?? SameOrigin }
+Fetched : { status : U16, headers : List((Str, Str)), body : File }
+FetchFailure : [Network(Str), Timeout, TooLarge, Refused]
 FetchError : [Network(Str), Timeout, Status(U16), TooLarge, Refused]
 # In a worker job only (a task's run!, a preparation's prepare!; effects):
 File.read! : File, { start : U64, len : U64 } => Try(List(U8), [Unreadable])
@@ -2802,39 +4820,82 @@ Builder.append! : Builder, List(U8) => Try({}, [TooLarge])   # past maxOutputByt
 Builder.append_file! : Builder, File => {}                    # by reference
 Builder.finish! : Builder => File
 Received : { files : List(File), refused : U64 }
-State.on_files : State(ctx, s), (s, Received -> s) -> FilesHandler(ctx)
-FilesHandler.also : FilesHandler(ctx), FilesHandler(ctx) -> FilesHandler(ctx)   # both for one event's files
-on_files : Str, FilesHandler(ctx) -> Attr(ctx)   # "change", "drop" or "paste"
+on_files : [Change, Drop, Paste], FilesHandler(ctx) -> Attr(ctx)
 
 # Effects
-watch : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
-watch_changes : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
-watch_latest : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)   # supersedes
+Cache : [Default, NoStore, Reload, NoCache, ForceCache]
+Credentials : [SameOrigin, Include]
+HttpProps := { url : Str, method : Method ?? "GET", headers : List((Str, Str)) ?? [], body : Str ?? "",
+               timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
+Ask(output, error)                             # opaque: request and retained reader
+Ask.map_ok : Ask(a, e), (a -> b) -> Ask(b, e)
+Ask.map_err : Ask(o, a), (a -> b) -> Ask(o, b)
+Ask.map : Ask(a, e), (Try(a, e) -> Try(b, f)) -> Ask(b, f)
+Ask.sent : Ask(o, e) -> Request
+ask_of : asker, input -> Ask(output, error)     # request/result protocol, adapted once
+raw : Request -> Ask(Result, [])
+command : Command -> Ask(output, error)
+Response : { status : U16, headers : List((Str, Str)), body : Str }
+HttpFailure : [Network(Str), Timeout, Refused]
+http : HttpProps -> Ask(Response, HttpFailure)
+http_body : HttpProps -> Ask(Str, HttpError)
+timer, interval : U32 -> Ask(I64, [Refused])
+again : {} -> Ask({}, error)
+popstate : {} -> Ask(Str, [Refused])
+online_changes, visibility_changes : {} -> Ask(Bool, [Refused])
+media_changes : Str -> Ask(Bool, [Refused])
+storage_get, session_get : Str -> Ask(Str, [Missing, Refused])
+storage_changes : Str -> Ask([Set(Str), Removed], [Refused])
+storage_write_failures : {} -> Ask({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] }, [Refused])
+Transfer : { direction : [Sending, Receiving], done : U64, total : [Known(U64), Unknown] }
+ProgressReaction(ctx, a)                       # opaque: separate from a final-result reaction
+ProgressProps := { every_ms : U32 ?? 100 }     # floor 16 ms
+react_progress : (a, Transfer -> List(Write(st))) -> ProgressReaction(ctx, a)
+                  where [ctx.store : () -> Reach(ctx, st)]
+State.on_progress : State(ctx, s), (s, a, Transfer -> s) -> ProgressReaction(ctx, a)
+Reaction.with_progress : Reaction(ctx, a, result), ProgressProps, ProgressReaction(ctx, a) -> Reaction(ctx, a, result)
+watch : Signal(ctx, a), (a -> List(Ask(o, e))), Reaction(ctx, a, Try(o, e)) -> Elem(ctx)
+watch_changes : Signal(ctx, a), (a -> List(Ask(o, e))), Reaction(ctx, a, Try(o, e)) -> Elem(ctx)
+keep_current : Signal(ctx, a), (a -> List(Ask(o, e))), Reaction(ctx, a, Try(o, e)) -> Elem(ctx)   # keeps work; latest step answers
+watch_latest : Signal(ctx, a), (a -> List(Ask(o, e))), Reaction(ctx, a, Try(o, e)) -> Elem(ctx)   # supersedes
 Outbox(item)                                  # opaque: the latest post and its serial
 outbox : {} -> Outbox(item)
 Outbox.post : Outbox(item), item -> Outbox(item)   # one post per turn; a second is a contract error
 Outbox.last : Outbox(item) -> [Unposted, Posted(item)]
-on_post : Signal(ctx, Outbox(item)), (item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
-ignore : {} -> Reaction(ctx, a)
-on_cleanup : Str, Signal(ctx, a), (a -> List(Request)) -> Elem(ctx)   # commands only
+on_post : Signal(ctx, Outbox(item)), (item -> List(Ask(o, e))), Reaction(ctx, item, Try(o, e)) -> Elem(ctx)
+on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Ask(o, e))), Reaction(ctx, item, Try(o, e)) -> Elem(ctx)
+ignore : {} -> Reaction(ctx, a, result)
+on_cleanup : Str, Signal(ctx, a), (a -> List(Command)) -> Elem(ctx)   # an awaited request does not compile
 cleanup : Str -> Elem(ctx)
-Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(U32),
+Request : [Http({ method : Method, url, headers, body, timeout_ms, cache, credentials }), StorageGet(Str), SessionStorageGet(Str), Timer(U32),
        Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32,
               on_dispose : [Stop, Keep], on_cancel : [Stop, Finish],
               prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
-       Interval(U32), Popstate, OnlineChanges, VisibilityChanges, Self, Push(Str),
-       Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str),
-       StorageSet(Str, Str), StorageRemove(Str), ReadBytes({ file, max_bytes }),
+       Interval(U32), Popstate, OnlineChanges, VisibilityChanges, MediaChanges(Str),
+       StorageChanges(Str), StorageWriteFailures,
+       ClipboardWrite({ text : Str, html : [Plain, Html(Str)] }), Self, Push(Str),
+       Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str), FocusInPlace(Str),
+       ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
+       ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
+       StorageSet(Str, Str), StorageRemove(Str), SessionStorageSet(Str, Str), SessionStorageRemove(Str), ReadBytes({ file, max_bytes }),
        ReadUtf8({ file, max_bytes }),
-       Upload({ method, url, headers, body : File, timeout_ms }), Sha256(File), ObjectUrl(File),
+       Upload({ method : Method, url, headers, body : File, timeout_ms, credentials }), Sha256(File), ObjectUrl(File),
        PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
        PortSubscribe({ port, message }),
-       Save({ file : File, name : Str }), Fetch({ method, url, headers, timeout_ms })]
+       Save({ file : File, name : Str }), Fetch({ method : Method, url, headers, timeout_ms, cache, credentials }),
+       ViewTransition(List(Str))]
+Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str), FocusInPlace(Str),
+       ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
+       ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
+       StorageSet(Str, Str), StorageRemove(Str), SessionStorageSet(Str, Str), SessionStorageRemove(Str), PortCommand({ port, message }),
+       Save({ file : File, name : Str }), ViewTransition(List(Str))]     # the requests that await nothing: a cleanup's plan
 Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
-       Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused,
+       Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused,
        Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError),
        FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str),
-       PortAnswer(PortMessage), PortFailed(PortFailure),
+       PortAnswer(PortMessage), PortFailed(PortFailure), Copied,
+       ClipboardFailed([NotAllowed, Unavailable]),
+       StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] }),
        Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
 PortMessage : { json : Str, blobs : List(List(U8)), files : List(File) }
@@ -2842,10 +4903,17 @@ PortFailure : [Threw(Str), TooLarge, Closed]
 PortDelivery : [Latest, Every(U32)]
 WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 HttpError : [Network(Str), Timeout, Status(U16), Refused]
-http_text : Result -> Try(Str, HttpError)
 ```
 
-`Table` (`platform/Table.roc`) is the value a table cell holds. Its key type
+`Clipboard` builds one clipboard item with its plain-text representation:
+
+```roc
+Clipboard.text : Str -> Ask({}, [NotAllowed, Unavailable, Refused])
+Clipboard.html : { html : Str, text : Str } -> Ask({}, [NotAllowed, Unavailable, Refused])
+Html.on_paste_text : HandlerOf(ctx, Paste) -> Attr(ctx)
+```
+
+`Engine.Table` (`platform/Engine.roc`) is the value a table cell holds. Its key type
 has `is_eq` and `to_hash`:
 
 ```roc
@@ -2863,21 +4931,15 @@ Table.contains : Table(k, v), k -> Bool
 Table.len : Table(k, v) -> U64
 Table.fold : Table(k, v), state, (state, k, v -> state) -> state       # in no particular order
 Table.to_list : Table(k, v) -> List({ key : k, row : v })               # in no particular order
-Table.changes : Table(k, v) -> [Keyed(Dict(k, [Absent, Was(v)])), Rewritten]   # this turn's changes
-Table.inverse : Table(k, v) -> Try(List([Put(k, v), Remove(k)]), [Rewritten])   # undoes this turn's writes
+Table.changes : Table(k, v) -> [Keyed(Dict(k, [Absent, Was(v)])), Rewritten]   # the last writing turn's changes
+Table.inverse : Table(k, v) -> Try(List([Put(k, v), Remove(k)]), [Rewritten])   # undoes the retained writing turn
 Table.apply : Table(k, v), List([Put(k, v), Remove(k)]) -> Table(k, v)
-# The engine's bookkeeping of the changes. An app cannot make an EngineOnly, so it cannot call these:
-Table.version, Table.changes_start : Table(k, v), EngineOnly -> U64
-Table.clear_changes : Table(k, v), EngineOnly -> Table(k, v)
-Table.with_id : Table(k, v), U64, EngineOnly -> Table(k, v)
-Table.mark : Table(k, v), EngineOnly -> { id : U64, start : U64, version : U64 }
-Table.kept : Table(k, v), { id : U64, start : U64, version : U64 }, EngineOnly -> Table(k, v)
 ```
 
-Everything above the last six lines is for apps. `changes`, `inverse` and
-`apply` read and replay the changes of the current turn: an undo history
-takes an inverse in the event that made the writes, and a pure test reads
-which rows a transition wrote.
+These operations are for apps. `changes`,
+`inverse` and `apply` read and replay the retained writing turn. A later event
+may read its inverse before writing; a history keeps an inverse that must
+survive the next write. A pure test reads which rows its transition recorded.
 
 `Worker` (`platform/Worker.roc`) is the typed layer over `Work` requests, and
 `Wire` (`platform/Wire.roc`) the payload format it derives:
@@ -2890,6 +4952,7 @@ Worker.TaskProps(input, output, error) := { name : Str, run! : input => Try(outp
     on_cancel : [Stop, Finish] ?? Stop }
 Task.registration : Task(input, output, error) -> Registration
 Task.name : Task(input, output, error) -> Str                            # what requests and the monitor name its jobs by
+Task.ask : Task(input, output, error), input -> Ask(output, Worker.Error(error))
 Task.request : Task(input, output, error), input -> Request                 # a Work request
 Task.result : Task(input, output, error), Result -> Try(output, Worker.Error(error))
 Worker.Error(error) : [Failed(error), Timeout, Refused, Lost(WorkFault)]
@@ -2906,6 +4969,7 @@ Worker.PreparedTaskProps(state, input, output, error) := { name : Str,
 Preparation.registration : Preparation(init, state, error), List(PreparedTaskEntry(state)) -> Registration
 PreparedTask.registration : PreparedTask(init, state, input, output, error) -> PreparedTaskEntry(state)
 PreparedTask.name : PreparedTask(init, state, input, output, error) -> Str
+PreparedTask.ask : PreparedTask(init, state, input, output, error), Question(init, input) -> Ask(output, Worker.Error(error))
 PreparedTask.request : PreparedTask(init, state, input, output, error), Question(init, input) -> Request
 PreparedTask.result : PreparedTask(init, state, input, output, error), Result -> Try(output, Worker.Error(error))
 Worker.PreparedTaskEntry(state)               # opaque: a preparation's task, for its registration
@@ -2933,10 +4997,14 @@ Port.call : CallProps -> Call(input, output)            where [input.PortJson.Se
 Port.CallProps := { name : Str, timeout : [Unlimited, Ms(U32)] ?? Unlimited }
 Port.subscription : SubscriptionProps -> Subscription(arg, msg)   where [arg.PortJson.Sendable, msg.PortJson.Sendable]
 Port.SubscriptionProps := { name : Str, delivery : Delivery }
-Command.registration, Call.registration, Subscription.registration : ... -> PortRegistration
-Command.send : Command(output), output -> Request          # a PortCommand
+registrations : ports -> List(PortRegistration) # derive an annotated record, including nested records
+Command.name, Call.name, Subscription.name : ... -> Str
+Command.send : Command(output), output -> [PortCommand({ port : Str, message : PortMessage })]
+                                              # typed by its one tag, as File.save is
+Call.ask : Call(input, output), input -> Ask(output, Port.Error)
 Call.request : Call(input, output), input -> Request       # a PortCall
 Call.result : Call(input, output), Result -> Try(output, Port.Error)
+Subscription.ask : Subscription(arg, msg), arg -> Ask(msg, Port.Error)
 Subscription.subscribe : Subscription(arg, msg), arg -> Request   # a PortSubscribe
 Subscription.message : Subscription(arg, msg), Result -> Try(msg, Port.Error)
 Port.Error : [Refused, Timeout, Threw(Str), TooLarge, Closed, Undecodable(Str)]
@@ -2953,23 +5021,51 @@ controls (`button`, `action_button`, `text_input`, `number_input`, `textarea`,
 whose props are `FileInputProps := { selection : [Single, Multiple] ?? Single,
 accept : [Any, Types(Str)] ?? Any }`), accessibility attributes (`aria_label`,
 `aria_invalid`, `aria_describedby`) and event helpers (`on_input`, `on_change`,
-`on_focus`, `on_blur`, `on_keydown`, `on_submit`, `on_drop_files`,
-`on_paste_files`). Accessible names go in `aria-label`, which the spec locators
+`on_focus`, `on_blur`, `on_submit`, `on_cancel`, `on_drop_files`,
+`on_paste_files`, `on_pointer_down`, `on_pointer_down_capture`,
+`on_pointer_move`, `on_pointer_move_paced`, `on_pointer_up`,
+`on_pointer_cancel`) and zone properties (`zone`, `zone_s`). Accessible names go in `aria-label`, which the spec locators
 match.
 
-**Target vocabulary.** An `Svg` module and a typed style API, event policies
-beyond `:prevent`, session storage, an entropy seed, and handler-level
+The controlled helpers are:
+
+```roc
+Html.DialogProps(ctx) := { open : Signal(ctx, Bool), on_close : HandlerOf(ctx, Bool), modal : [Modal, NonModal] ?? Modal }
+Html.dialog : Str, Html.DialogProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
+Html.PopoverProps(ctx) := { open : Signal(ctx, Bool), on_toggle : HandlerOf(ctx, Bool), dismiss : [Auto, Manual] ?? Auto }
+
+# Layout reports (Layout is plain data, with no engine dependency)
+Layout.Scroll : { top : U32, left : U32 }
+Layout.Size : { width : U32, height : U32 }
+Layout.Seen : { intersecting : Bool, ratio_permille : U16 }
+on_scroll : HandlerOf(ctx, Layout.Scroll) -> Attr(ctx)
+on_size : HandlerOf(ctx, Layout.Size) -> Attr(ctx)
+SeenProps := { ahead : Bool ?? False }
+on_seen : SeenProps, HandlerOf(ctx, Layout.Seen) -> Attr(ctx)
+Html.on_scroll : HandlerOf(ctx, Layout.Scroll) -> Attr(ctx)
+Html.on_size : HandlerOf(ctx, Layout.Size) -> Attr(ctx)
+Html.SeenProps := { ahead : Bool ?? False }
+Html.on_seen : Html.SeenProps, HandlerOf(ctx, Layout.Seen) -> Attr(ctx)
+Html.popover : Str, Html.PopoverProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
+Html.on_cancel : Handler(ctx) -> Attr(ctx)
+```
+
+**Target vocabulary.** An `Svg` module and a typed style API, and handler-level
 request occurrences. Each lands with an engine change,
-a native spec, a runtime contract test and, where it touches the wire, an
-Appendix B entry.
+a native spec, a runtime contract test, a demonstration and, where it
+touches the wire, an Appendix B entry.
 
 ## Appendix B: Wire Protocol
 
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
+These are data bytes, not files with an encoding signature: decoding preserves
+a leading U+FEFF in names and values, including a worker's hosted arguments.
+Unknown closed-vocabulary names cannot become known names by dropping that
+character. Invalid UTF-8 is rejected at each strict protocol boundary.
 
-This appendix is protocol version **4**. The engine declares it
-(`Engine.protocol_version`), the host exports it (`protocol_version()`), the
+This appendix is protocol version **18**. The engine declares it
+(`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
 `Dom.roc` decodes. A change to the wire bytes below bumps the version and updates the
@@ -2978,21 +5074,29 @@ engine's encoder and decoders, `Dom.roc`, both hosts (`host.zig`,
 appendix together. Renaming a label without changing its bytes does not
 change the protocol version.
 
+`Protocol.roc` owns consumer names and closed vocabularies. The engine keeps
+independent numeric dispatch and semantics and imports neither Protocol nor
+ProtocolFacts. Consumers share names, event restrictions and allowed element
+lists; their decoding, policy combination guards and command behavior remain
+independent. The platform root appends mandatory declaration section 12 at the
+compiled-module boundary. This is declaration metadata, never boot input.
+
 ### Roc ↔ host
 
-The platform provides (`platform/main.roc`). The engine state is
-`Box(Core.App)` by design; the signatures below show it as it crosses
-today, wrapped as `Box(Iter(Core.App))`, a workaround for
-roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
+The platform provides (`platform/main.roc`). The engine state crosses as
+one opaque `Handle`, a `Box({ store : Store, sites : Box(Iter(Core.Sites(Store))) })`.
+The instance's plain store and site tree move whole into Roc and back; the
+host sees one pointer. The sites' nested boxed one-item `Iter` is the narrow
+roc-lang/roc#12953 workaround (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (4) |
-| `roc_engine_keys` | `() -> List(U8)` | Declared storage keys, then the port table: `count:u32 (key:str)* nports:u32 (name:str kind:u8 delivery:u8 bound:u32)*`, where `kind` is `1` command, `2` call, `3` subscription, `delivery` is `0` (not a subscription), `1` every or `2` latest, and `bound` is n for every, `1` for latest, `0` otherwise. An invalid port catalogue is a `contract` crash |
+| `roc_engine_version` | `() -> u32` | The protocol version (18) |
+| `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
-| `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
-| `roc_engine_files` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port answer (14) or a fetched file (21) |
-| `roc_engine_drop` | `Box(Iter(Core.App)), List(U8), List(U8) -> {}` | Teardown |
+| `roc_engine_event` | `Handle, List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
+| `roc_engine_files` | `Handle, List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A files-kind event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port answer (14) or a fetched file (21) |
+| `roc_engine_drop` | `Handle, List(U8), List(U8) -> {}` | Teardown |
 | `roc_engine_work` | `List(U8), List(Box(U64)) => List(U8)` | A worker instance's job (effectful): payload `name:str input:rest` and the handles the instance's host minted for the files the request named, in its order; returns the answer, `n:u32 (token:u64)*n output:rest`: the instance's tokens of the files the answer holds (in the order its payload refers to them), then the answer's bytes, a list of its own. `name` is a `str` (a `u32` length), while `input` is a `Wire` payload whose counts are LEB128, so a harness meets both encodings in one buffer. `output` is the `Wire` encoding of the job's `Ok` value or `Err` error followed by one byte, `0` or `1`, which the typed layer writes and reads. A name the catalogue does not hold, a preparation's name or a preparation's task's name, a payload without a name, or an answer holding more than 16 files, is a `contract` crash (it poisons that worker instance only) |
 | `roc_engine_prepare` | `List(U8), List(Box(U64)) => Box(Core.Kept)` | Prepare a state to keep (effectful): payload `prep:str init:rest` (the preparation's name and its own input) and the handles of the preparation's files; returns the state. A name that is not a preparation is a `contract` crash |
 | `roc_engine_ask` | `Box(Core.Kept), List(U8), List(Box(U64)) => { held, out }` | A job of a preparation's task on the kept state (effectful): payload `task:str input:rest` (the task's own input) and the handles of the task's own files; returns the state (`held`) and the answer (`out`, as `roc_engine_work`'s). A task the state's preparation does not list is a `contract` crash |
@@ -3029,12 +5133,12 @@ warm-up neither allocates.
 
 | Export | Meaning |
 |---|---|
-| `boot_keys()` | Before mount: make the declared key list readable through `cmd_ptr`/`cmd_len` |
+| `boot_keys()` | Before mount: make the program's declaration sections readable through `cmd_ptr`/`cmd_len` |
 | `payload_reserve(len) -> ptr` | Allocate the next call's payload (`0` for `len = 0`); JS writes `len` bytes at `ptr` after refreshing its memory view |
 | `init()` | Mount with the staged boot bytes; mount commands become readable |
 | `event(node, handler)` | One turn with the staged payload; its commands become readable |
 | `files_stage(n) -> u32` | Mint handles for the next `event_files`, as many of `n` as the blob heap has free slots (64 at most live), and return how many; their tokens (`u64` each) are readable at `files_tokens()`. Releases an undelivered staged set first |
-| `event_files(node, handler)` | A `:files` event: the staged payload (its file record) and the staged handles move into `roc_engine_files` |
+| `event_files(node, handler)` | A files-kind event: the staged payload (its file record) and the staged handles move into `roc_engine_files` |
 | `files_released() -> u32` | After a batch is applied and its effects performed: free the slots of the handles Roc released since the last drain and return how many; their tokens are readable at `files_tokens()`, and the runtime lets their files go. `0` when poisoned |
 | `files_tokens() -> ptr` | The tokens `files_stage` or `files_released` left |
 | `work()` | A worker instance's job: the staged payload and the handles staged with `files_stage` move into `roc_engine_work`, the hosted effects may act for the length of the call, and the answer stays readable through `cmd_ptr`/`cmd_len` until the next call, the previous one released first. Traps when the instance is poisoned; a `contract` fault when an engine state is mounted in this instance (the page's) |
@@ -3056,16 +5160,98 @@ allocations since reset; that is a measurement probe, not protocol.
 
 ### Boot
 
-1. `boot_keys()`; read `count:u32 (key:str)*`.
-2. Read each key from storage; stage the boot bytes with `payload_reserve`:
-   `url:str count:u32 (key:str value:str)* online:u8 visible:u8
-   storage:u8`, listing only keys that exist. `url` is `pathname + search +
-   hash`; `online` is `navigator.onLine`, `visible` is
-   `document.visibilityState != "hidden"`, and `storage` is whether local
-   storage is available (no key/value pairs when it is not), each `0` or `1`.
-   Empty boot bytes mean no boot data (online, visible, storage available).
-   Anything else that does not follow this layout is a `contract` fault.
+1. `boot_keys()`; read and validate the declaration sections below, including
+   the port table, before calling `init()`.
+2. Read the declared storage keys and environment facts; stage the boot
+   sections with `payload_reserve`.
 3. `init()`; apply the mount batch.
+
+Both buffers are sequences of `tag:u8 len:u32 body:len`. They share one tag
+space. A dash means that section does not occur in that direction.
+
+| Tag | Section | Declaration body | Boot body | Source and default |
+|---|---|---|---|---|
+| 1 | location | — | `url:str` | Document `pathname + search + hash`; `/` |
+| 2 | local-storage | `n:u32 (key:str)*n` | `available:u8 n:u32 (key:str value:str)*n` | `storage` service; available, no pairs |
+| 3 | connectivity | — | `online:u8` | `environment.online()`, otherwise the browser; true |
+| 4 | visibility | — | `visible:u8` | `environment.visible()`, otherwise the browser; true |
+| 5 | ports | `n:u32 (name:str kind:u8 delivery:u8 bound:u32)*n` | — | `Program.with_ports`; empty catalogue |
+| 6 | media | `n:u32 (query:str)*n` | `matches:u8` for each declared query, in declaration order | `environment.matchMedia(query)`; no queries, and false for an unspecified spec query |
+| 7 | time | — | `now_ms:i64` | `environment.now()`, default `Date.now()`; 0 in a spec |
+| 8 | seed | — | Sixteen little-endian bytes | `environment.seed()`, default `crypto.getRandomValues`; 0 in a spec |
+| 9 | languages | — | `n:u32 (language:str)*n` | `environment.languages()`, default preferred browser languages; `["en-US"]` in a spec |
+| 10 | time zone | `days:u16` | `name:str from_ms:i64 until_ms:i64 n:u32 (from_ms:i64 minutes:i32)*n` | `environment.timeZone(days)`; default probe, UTC in a spec |
+| 11 | session-storage | `n:u32 (key:str)*n` | `available:u8 n:u32 (key:str value:str)*n` | `sessionStorage` service; available, no pairs |
+| 12 | protocol | The bounded metadata item below | — | ProtocolFacts appended by the platform root; mandatory |
+| 13 | mount-root | — | `expanded-name` | The actual mount element's namespace URI, optional prefix and exact local name; an HTML `div` for empty driver boot |
+
+Section 12 uses the temporary length-delimited fallback until the owner's
+roc-cbor port has a compatible pinned release. A future codec change requires
+a coordinated protocol revision. Its eleven fields are `tag:u8 length:u32 body`,
+in tag order: opcodes, payload kinds, policy bits, properties, HTTP cache modes,
+HTTP credential modes, namespaces, OutsideText excluded input types, fault
+classes, template node kinds and child containers. Each table starts with
+`count:u32`; strings use
+`UTF-8-byte-count:u32 bytes`. Opcode/cache/credential rows are `code:u8 name:str`;
+kind rows add `events:(count:u32 str*)`; policy rows are `bit:u32 name:str`;
+property rows are `index:u8 name:str elements:(count:u32 str*)`. Namespace,
+template-node and child-container rows are also `code:u8 name:str`; fields
+8 and 9 contain strings only. Empty element lists mean unrestricted elements
+subject to independent guards. Empty event lists mean the generic bare-event
+vocabulary, with key events independently forbidden for text payloads.
+
+The item is at most 65,536 bytes; tables have at most 64 rows, nested event or
+element lists at most 32 names, and nonempty names at most 128 UTF-8 bytes,
+without NUL. Readers reject invalid UTF-8, duplicate names or codes, non-dense
+numbered tables, zero or non-single policy bits, empty required numbered tables
+or fault labels, incorrect field order, truncation and trailing bytes. The
+runtime binds each validated role to its actual implementation and rejects
+unknown or missing roles before init. Bindings are immutable per instance;
+one module cannot change another's tables. Namespace and child-container
+codes are dense from zero; the other numbered tables are dense from one.
+Template node kinds and hole kinds are separate number spaces.
+
+Each applicable section is required exactly once, in ascending tag order:
+boot has 1–4, 6–11 and 13; compiled-module declarations have 2, 5, 6, 10, 11 and 12. The pure engine driver
+retains its internal sections 2, 5, 6, 10 and 11; the native runner reads
+consumer facts directly. Unknown, repeated, out-of-order
+or missing sections are errors; tags are not a compatibility mechanism.
+The length bounds the body exactly, with no trailing bytes. Flags are
+strictly `0` or `1`; strings must be UTF-8. A body that overruns its section,
+an unavailable storage section with pairs, or a pair for a key the program
+did not declare is a `contract` fault naming the section. Unreadable
+declarations refuse mount before `init()`.
+
+The mount-root body is at most 65,536 encoded bytes and is bounded before
+decoding its strings. It is engine-only input, separate from app-visible
+`Boot`. JavaScript measures the actual root without scanning its ancestors;
+native and browser specs supply the same facts. Invalid or oversized measured
+root facts refuse mount before `init`; malformed staged bytes are a
+`contract` fault naming section 13. Existing roots are validated as DOM
+identities, without requiring that a creation factory reconstruct them.
+
+Empty boot bytes alone mean all defaults, including URL `/` and the HTML
+`div` root. Empty
+declarations are invalid: sections 2, 5, 6, 10 and 11 occur even for empty lists.
+The zone declaration is two bytes and at most 7305 days. Languages carry
+1–16 strings of at most 64 UTF-8 bytes. A zone name has at most 64 bytes, its
+span has `from_ms <= until_ms`, and its 1–128 offsets are strictly ascending,
+inside the inclusive span, with the first exactly at `from_ms`. Each section
+is consumed exactly. Empty boot defaults include time 0, seed 0, `en-US` and
+UTC across the entire I64 range.
+Storage declarations have no additional bound or duplicate check; declaring
+a key twice reads it twice. Only existing keys are included in boot pairs.
+`Core.read_boot_media(bytes, queries)` is the total structural decoder; its
+catalogue supplies media names and expected flag count, since boot carries
+only ordered flags. `read_boot(bytes)` uses an empty catalogue. Mount also
+checks storage-key membership against the program's declarations. Empty
+boot bytes default every declared media query to false. Media declarations
+reject duplicates, more than 32 queries and query lengths outside 1–256 bytes.
+
+In the port table, `kind` is `1` command, `2` call, `3` subscription;
+`delivery` is `0` for a command or call, `1` every or `2` latest;
+`bound` is n for every, `1` for latest, `0` otherwise. The catalogue's
+existing bounds and validation apply within its section.
 
 ### Work record
 
@@ -3077,7 +5263,7 @@ that has run, in first-run order, with its run count.
 | Index | Counter |
 |---|---|
 | 1–18 | Commands emitted, by opcode (`1` is `INST`, `4` `MOVE`, …) |
-| 19 | `set_value`: control values set (`ATTR`/`HATTR` named `value`, `INST` value holes) |
+| 19 | `set_value`: control values set (`PROP`/`HPROP` for property 1, and `INST` value property holes) |
 | 20 | `set_checked`: the same for `checked` |
 | 21 | Evaluations of app closures (`derived_calls_into_roc`) |
 | 22 | Rows removed by reconciliation, and rows that left a table view's window (`rows_removed`) |
@@ -3091,23 +5277,30 @@ that has run, in first-run order, with its run count.
 | 32–38 | Effect counters (The Effect Channel, "Counters"): requests issued, results delivered, stale results, requests refused at the in-flight cap, requests cancelled, requests reparented, writes skipped |
 | 39 | Live awaited ids now (a gauge, not cumulative) |
 | 40 | Port commands sent (`PORT`, opcode 19, which is counted here and not at index 19) |
+| 41, 42 | `PROP`, `HPROP` commands (opcodes 21, 22; counted here rather than by opcode) |
+| 43 | `RELEASE` commands (`registrations_released`; opcode 23, counted here rather than as rows reused; excluded from `patches_emitted`) |
+| 44 | Live observations (`observations_live`), a gauge |
+| 45 | Marked batches (`view_transitions`; `TRANSITION`, opcode 24), excluded from `patches_emitted` |
+| 46 | Guard commands (`GUARD`, opcode 25), excluded from `patches_emitted` |
+| 47 | Transfer progress reports delivered (`effects_progress`); excludes replaced reports and does not increment final results (`effects_delivered`) |
+| 48 | `COMMENT` commands emitted (opcode 26), counted separately from text-node commands |
 
-Index 0 is unused. The metric names the spec language accepts map onto these
-indices (`platform/Scm.roc`, `metric_names`).
+Index 0 is unused; the record has 49 entries, indices 0 through 48. The metric
+names the spec language accepts map onto these indices (`platform/Scm.roc`, `metric_names`).
 
 ### Event records
 
 An event is `event(node, handler)` with the payload staged first:
 
-- **DOM events:** `node` is the nearest engine node id at or above the handler
+- **Text-kind DOM events:** `node` is the nearest engine node id at or above the handler
   element, `handler` the handler number from `LISTEN` or the template's event
   hole. Payload (UTF-8): `click`/`submit` → empty (and the runtime prevents
   the default of every `submit` that reaches the mount root); `input` → the
   target's value; `change` → `"true"`/`"false"` for a checkbox or radio, else the value;
-  `keydown`/`keyup` → the key; `focus`/`blur` (listened as
+  `focus`/`blur` (listened as
   `focusin`/`focusout`) → the target's value.
-- **File events:** a handler declared `change:files`, `drop:prevent:files`
-  or `paste:files` receives the target's `files`, the drop's
+- **Files-kind DOM events:** a handler declared with the files kind on
+  `change`, `drop` or `paste` receives the target's `files`, the drop's
   `dataTransfer.files` or the paste's `clipboardData.files`, captured while
   the event is dispatched; an event that carries none dispatches nothing.
   The runtime stages handles with `files_stage`, then the file record
@@ -3122,7 +5315,7 @@ An event is `event(node, handler)` with the payload staged first:
 | 2 | `message:rest` | `Network` |
 | 3 | `value:rest` | `Value` (storage hit) |
 | 4 | — | `Missing` (storage miss) |
-| 5 | — | `Fired` (timer or interval) |
+| 5 | `at_ms:i64` | `Fired(I64)` (timer or interval), sampled when its callback runs |
 | 6 | `url:rest` | `Location` (popstate) |
 | 7 | — | `Timeout` (an HTTP timeout, or a work timeout that stopped its worker) |
 | 8 | `online:u8` | `Online(Bool)` (connectivity change) |
@@ -3139,6 +5332,11 @@ An event is `event(node, handler)` with the payload staged first:
 | 19 | `url:rest` | `FileUrl(Str)` |
 | 20 | — | Free |
 | 21 | `status:u16 n:u32 (name:str value:str)*n size:u64 name:str type:str` | `Fetched({ status, headers, body })`, delivered through `event_files` with exactly one staged handle, the body |
+| 22 | `matches:u8` | `Matches(Bool)` for media query changes |
+| 23 | — | `Copied`; no trailing bytes |
+| 24 | `reason:u8` | `ClipboardFailed`: `1` NotAllowed, `2` Unavailable |
+| 25 | `store:u8 reason:u8 key:rest` | `StorageFailed`: store `1` Local, `2` Session; reason `1` Quota, `2` Unavailable |
+| 26 | `direction:u8 done:u64 known:u8 total:u64` | Transfer progress, not a `Result`: direction `1` Sending, `2` Receiving; known `0` Unknown (total must be zero), `1` Known. Exactly 19 bytes including the tag. Keeps the id live; a live request without a progress handler is a contract error |
 
 A result payload that does not follow this table (unknown tag, bytes after a
 bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file
@@ -3147,10 +5345,15 @@ than `1`–`3`, a port answer, job answer or fetched body whose file count is no
 the handles staged with it, a truncated HTTP record, text that is not UTF-8) is
 a `contract` fault.
 
+Progress uses the same effect node and request id as its final result. Unknown
+directions, unknown total flags, nonzero Unknown totals, truncation or trailing
+bytes are contract faults. A cancelled or completed id is stale under the
+ordinary id rule.
+
 ### Node ids
 
 - `0` is the mount root.
-- Every other node the engine creates — elements, text nodes, anchors,
+- Every other node the engine creates — elements, text nodes, comments, anchors,
   nested-site placeholders and row roots alike — takes a `u32` id from one
   dense pool, `1 … 2³² − 2`. A removed node's id returns to a free list and is
   reused. Running out is a `resource_limit` poison.
@@ -3167,45 +5370,74 @@ a `contract` fault.
   has left the document or whose id now names a different element, before it
   reaches the engine.
 - `0xffffffff` is the effect node and never names a DOM node.
+- An HTML template's intrinsic content fragment has no engine id. Commands
+  address its owning element and explicitly select that child container.
 
 ### Commands
 
+Every nonempty page command batch starts with `flags:u8`, strictly `0`
+(unmarked) or `1` (view transition). A marked batch has exactly one terminal
+`TRANSITION`; an unmarked batch has none. Unknown flags, a missing terminal
+mark, a repeated or nonterminal `TRANSITION`, or trailing operands are an
+`executor` fault in the runtime and a protocol error in the independent
+`Dom.roc` decoder. Empty batches have no header; worker answers are not page
+command batches and have no header.
+
 | Op | Name | Operands |
 |---|---|---|
-| 1 | `INST` | `node parent before tpl`, then per template hole in order: text/attr → `str`; event → nothing; nested site → `u32` node id for its placeholder |
+| 1 | `INST` | `node parent before tpl`, then per template hole in order: text/property → `str`; attribute → `presence:u8 [value:str]`; event → nothing; nested site → `u32` node id for its placeholder; reference → `u32` command node id for its element |
 | 2 | `TEXT` | `node hole:u8 str` — row text hole |
-| 3 | `HATTR` | `node hole:u8 str` — row attribute hole |
+| 3 | `HATTR` | `node hole:u8 presence:u8 [value:str]` — row attribute hole |
 | 4 | `MOVE` | `node before` (`0` = append to the parent's end) |
 | 5 | `REMOVE` | `node` |
 | 6 | `CLEAR` | `parent site` — remove all children; forget the site's rows |
 | 7 | `TEMPLATE` | `tpl len bytes` — define a row template |
-| 8 | `ELEM` | `node parent before tag:str` |
-| 9 | `ATTR` | `node name:str value:str` |
+| 8 | `ELEM` | `node parent before expanded-name child-container:u8` |
+| 9 | `ATTR` | `node expanded-name presence:u8 [value:str]` |
 | 10 | `TEXTNODE` | `node parent before text:str` |
-| 11 | `LISTEN` | `node handler:u32 event:str` |
+| 11 | `LISTEN` | `node handler:u32 type:str kind:u8 policies:u32` |
 | 12 | `SETTEXT` | `node text:str` |
 | 13 | `FX` | `id kind:u8 …` (below) |
 | 14 | `CANCEL` | `id` |
 | 15 | `NAV` | `mode:u8 url:str` (`1` push, `2` replace) |
-| 16 | `STORAGE` | `op:u8 key:str [value:str]` (`1` set with value, `2` remove) |
+| 16 | `STORAGE` | `op:u8 key:str [value:str]` (`1` local set, `2` local remove, `3` session set, `4` session remove; set carries value) |
 | 17 | `TITLE` | `text:str` |
-| 18 | `FOCUS` | `op:u8 node` (`1` focus, `2` blur, `3` focus and select text) |
+| 18 | `REF` | `op:u8 node` then operands: `1` focus, `2` blur, `3` focus and select text, `4` apply rendered value, `5` focus without scrolling; `6` scroll into view with `block:u8 inline:u8 behavior:u8`; `7` scroll to with `top:edge left:edge behavior:u8` |
 | 19 | `PORT` | `port:str message` — a port command; `message` is `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32 (token:u64 start:u64 len:u64)*` |
 | 20 | `SAVE` | `token:u64 start:u64 len:u64 name:str` — save a file's range as a download named `name`; not counted by opcode (index 20 of the work record is `set_checked`) |
+| 21 | `PROP` | `node prop:u8 value:str` — set an element property from the closed table below |
+| 22 | `HPROP` | `node hole:u8 value:str` — set a row property hole |
+| 23 | `RELEASE` | `node` — release document-key and size/seen registrations owned by this node before removal; a row root owns observations on its template elements |
+| 24 | `TRANSITION` | `n:u32 (type:str)*n` — last command of a marked batch; types deduplicated in first-issue order |
+| 25 | `GUARD` | `on:u8`, strictly `0` or `1`; performed with effects, at most once per turn |
+| 26 | `COMMENT` | `node parent before data:str` — an authored static comment |
 
-`before = 0` appends to `parent`; otherwise the node is inserted before
+`before = 0` appends to `parent`'s explicitly selected child container;
+otherwise the node is inserted before
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
 the batch is applied and performed after it, as are 19 and 20 (a save's
-file is resolved when the batch is applied).
+file is resolved when the batch is applied). For a marked batch starting a
+view transition, the first read instead performs 13–17, 19, 20 and 25 before
+DOM application; the second read applies DOM and then performs `REF` and
+queued shown-property work, each class in stream order. See
+[Applied in a view transition](#applied-in-a-view-transition) for the
+`viewTransitions` mount option, direct fallbacks and bounds.
+
+For REF, alignment is `0` Start, `1` Center, `2` End, `3` Nearest;
+behavior is `0` Auto, `1` Instant, `2` Smooth. An edge is tag `0` Keep,
+`1` Start, `2` End or `3` followed by `pixels:u32`. Unknown ops or enum
+values are executor faults. All REF modes are counted at work index 18.
+Collected commands capture element identity, so a recycled id never retargets
+an earlier command. Scroll end is resolved at perform time.
 
 **`FX` kinds:**
 
 | Kind | Operands | Request |
 |---|---|---|
-| 1 | `method:str url:str n:u32 (name:str value:str)* body:str timeout_ms:u32` | HTTP |
+| 1 | `method:str url:str n:u32 (name:str value:str)* body:str timeout_ms:u32 cache:u8 credentials:u8 progress_ms:u32` | HTTP |
 | 2 | `key:str` | Storage read (answered one task later) |
-| 3 | `ms:u32` | Timer |
-| 4 | `ms:u32` | Interval (subscription) |
+| 3 | `ms:u32` | Timer, 0–2,147,483,647 ms; zero samples the time |
+| 4 | `ms:u32` | Interval (subscription), 1–2,147,483,647 ms |
 | 5 | — | Popstate (subscription) |
 | 6 | — | Connectivity (subscription; `online`/`offline` events) |
 | 7 | — | Visibility (subscription; `visibilitychange` events) |
@@ -3213,40 +5445,265 @@ file is resolved when the batch is applied).
 | 9 | `port:str message timeout_ms:u32` | Port call (`message` as for `PORT`); `timeout_ms` 0 = none, capped at 600 000 |
 | 10 | `port:str message` | Port subscription |
 | 11 | `mode:u8 token:u64 start:u64 len:u64 max_bytes:u64` | Read a file's range into the page: `mode` `1` bytes (answered tag 16), `2` text (tag 17); a range longer than `max_bytes`, or than the runtime's `maxFileBytes`, is answered tag 13 `TooLarge` unread |
-| 12 | `method:str url:str n:u32 (name:str value:str)* token:u64 start:u64 len:u64 timeout_ms:u32` | HTTP with a file's range as the body (answered as kind 1); a method of `GET` or `HEAD` is a `contract` error in the engine |
+| 12 | `method:str url:str n:u32 (name:str value:str)* token:u64 start:u64 len:u64 timeout_ms:u32 cache:u8 credentials:u8 progress_ms:u32` | HTTP with a file's range as the body (answered as kind 1); a method of `GET` or `HEAD` is a `contract` error in the engine |
 | 13 | `algorithm:u8 token:u64 start:u64 len:u64` | Digest of a file's range: `algorithm` `1` SHA-256 (tag 18) |
 | 14 | `token:u64 start:u64 len:u64` | A URL that shows a file's range (tag 19) |
-| 15 | `method:str url:str n:u32 (name:str value:str)* timeout_ms:u32` | HTTP whose response body becomes a file (tag 21; failures as kind 1, a body over `maxFileBytes` tag 13 reason 2) |
+| 15 | `method:str url:str n:u32 (name:str value:str)* timeout_ms:u32 cache:u8 credentials:u8 progress_ms:u32` | HTTP whose response body becomes a file (tag 21; failures as kind 1, a body over `maxFileBytes` tag 13 reason 2) |
+| 16 | `query:str` | MediaChanges subscription; answered with tag 22 |
+| 17 | `key:str` | Session storage read, answered one task later |
+| 18 | `key:str` | StorageChanges report subscription; event values use tags 3 and 4 |
+| 19 | `text:str html:u8 [html:str]` | Clipboard write; flag `0` plain text, `1` text and HTML; answers tag 23 or 24 |
+| 20 | — | StorageWriteFailures occurrence subscription; answers tag 25 one task after a failed write |
+
+FX kinds 1, 12 and 15 encode cache as `1` Default, `2` NoStore,
+`3` Reload, `4` NoCache, `5` ForceCache, and credentials as `1` SameOrigin,
+`2` Include. Kind 12 requires cache `1`. Any other policy byte is a
+contract fault. `progress_ms` is `0` off or at least `16`, set from the
+issuing reaction, not a request field. The runtime passes cache and
+credentials through to a mount's fetch.
 
 **Template encoding** (`TEMPLATE` bytes): a node tree, then a hole table.
 
 ```text
-node  := 1 tag:str nattr:u8 (name:str value:str)* nchild:u8 node*
+node  := 1 expanded-name child-container:u8 nattr:u8 (expanded-name value:str)* nchild:u8 node*
        | 2 text:str
+       | 3 comment:str
 holes := nholes:u8 hole*
-hole  := kind:u8 depth:u8 path:u8{depth} extra
+hole  := kind:u8 depth:u8 (container:u8 child-index:u8){depth} extra
 extra := (kind 1, text)   —
-       | (kind 2, attr)   name:str
-       | (kind 3, event)  handler:u8 event:str
+       | (kind 2, attr)   expanded-name
+       | (kind 3, event)  handler:u8 type:str kind:u8 policies:u32
        | (kind 4, site)   —
+       | (kind 5, reference) —
+       | (kind 6, property) prop:u8
 ```
 
 Text and nested-site holes have an empty text node in the tree as their
-placeholder. `path` is child indices from the template root. Hole targets are
+placeholder. Each path step selects ordinary children or template content,
+then a child index, starting at the template root. Both the depth and child
+index retain their 255 bounds. Hole targets are
 resolved once per row at `INST`, so later insertions by nested sites do not
 shift them.
 
-**Attribute values.** `""` removes the attribute. `value` is set as the live
-control value under the controlled-input rule and mirrored as an attribute;
-`checked` is set as a property from `"true"`; `disabled`, `selected`,
-`readonly`, `required`, `hidden` and `multiple` are present for any value other
-than `""` and `"false"`. `class` on an SVG element is set as an attribute.
+A reference hole carries no name on the wire: the engine alone holds the
+name. Its `INST` operand assigns its element an id for commands such as
+`REF`, freed with the row. The runtime keeps that command address separate
+from event routing, which still uses the row's id.
 
-**Event names.** `name[:suffix]*`: `prevent` calls `preventDefault` when the
-handler dispatches; `files` makes the payload the event's files (above),
-and on `drop` also makes the runtime prevent `dragover`'s default on the
-element. `focus` and `blur` are listened as `focusin` and `focusout`.
+**Attribute presence and values.** In `ATTR`, `HATTR` and an attribute
+hole's `INST` operand, `presence` is `0` (remove, with no value operand)
+or `1` (set, followed by `value:str`). Any other flag is an `executor`
+fault. The static attributes in a template's node tree are always present
+and carry their expanded names and literal values.
 
-**Namespaces.** `<svg>` and its descendants are created in the SVG namespace; a
-row template first instantiated under an SVG parent is re-created in the SVG
-namespace once.
+Every present value is written exactly, including `""`, `"false"` and
+`"true"`. Only explicit absence removes an attribute. Typed Boolean helpers
+and bare Boolean markup literals encode absence or present-empty before
+this boundary. Enumerated values such as `hidden="until-found"` and raw
+text values are not normalized by consumers.
+
+**Payload kinds.** A handler's declaration chooses its payload, decoded once
+at its routed site. A malformed payload is a `contract` fault naming that
+site; an unknown kind number in commands is an `executor` fault.
+
+| Kind | Payload layout | Delivering export | Allowed event types |
+|---|---|---|---|
+| 1 Text | UTF-8, with the per-type meanings in Event records | `event` | Any bare type except `keydown` and `keyup` |
+| 2 Files | `minted:u32 refused:u32 (size:u64 name:str type:str)*minted`, with staged handles in order | `event_files` | `change`, `drop`, `paste`; no files means no dispatch. `drop` prevents both its default and `dragover`'s default |
+| 3 Pointer | `id:u32 kind:u8 button:u8 buttons:u16 mods:u8 primary:u8 at:u8 [x:u16 y:u16 zone:str]` | `event` | `pointerdown`, `pointermove`, `pointerup`, `pointercancel` |
+| 4 Key | `flags:u8 key:str code:str heard:u8 heard_key:str` | `event` | `keydown`, `keyup`; pass over a local handler whose keymap hears nothing |
+| 5 OpenState | One byte, strictly `0` or `1` | `event` | Helper-paired dialog `close`, popover `toggle`, or HTML checkbox/radio `change` |
+| 6 Scroll | `top:u32 left:u32` | `event` | `scroll`, paced |
+| 7 Size | `width:u32 height:u32` | `event` | `size`, observation report |
+| 8 Seen | `intersecting:u8 ratio:u16` | `event` | `seen`, observation report |
+| 9 Paste | `status:u8 [text:rest]` | `event` | `paste`; `0` Text with UTF-8 body, `1` TooLarge with no body; prevents default |
+
+Kind **9** rejects any status except 0 or 1, trailing bytes after TooLarge
+and invalid UTF-8 text as routed-site contract faults. Unknown clipboard or
+storage failure reasons, or storage selectors outside 1 and 2, are also
+contract faults; invalid GUARD operands are executor faults.
+
+Kinds **6** and **7** require exactly eight bytes. Kind **8** requires
+exactly three: an intersecting flag strictly 0 or 1, then a ratio no greater
+than 1000. Truncated or trailing payloads and invalid fields are routed-site
+contract faults. Their declarations allow only paced bit 8; Seen may also
+carry ahead bit 32. Prevent, stop, capture, document and all other bits are
+invalid on these layout declarations.
+
+Kind **5 OpenState** is one byte, strictly `0` or `1`, delivered by
+`event`. Its private helper declaration pairs `close` with shown property 6
+and `toggle` with popover property 7. The same Boolean layout also serves
+`change` on an HTML input whose ASCII-folded type is checkbox or radio, reading
+its checked property. On another element or namespace that change dispatch is
+suppressed. The native oracle records namespace at creation, including template
+insertion and foreignObject context; moving a node never reclassifies it.
+For the helper-paired shown events, the runtime reads `dialog.open` or
+`:popover-open` at dispatch. The engine records that value in the paired
+hole before the Boolean handler and settles it once as described above.
+`cancel` remains text-kind with an empty payload. Malformed Boolean bytes
+are a routed-site contract fault. A shown-state echo still comes only from
+its controlled helper.
+
+Key kind **4** is allowed only on `keydown` and `keyup`, delivered by
+`event`. Its payload is `flags:u8 key:str code:str heard:u8 heard_key:str`.
+`flags` contains Ctrl `1`, Alt `2`, Shift `4`, Meta `8`, repeat `16` and
+composing `32`. `heard` has only the first four modifier bits and names the
+original chord, or the event's chord for `every`. `key` and `heard_key` must be nonempty;
+code may be empty. Unknown bits, invalid UTF-8, truncation and trailing
+bytes are a routed-site `contract` fault. Dispatch passes over a local
+handler whose rendered keymap does not hear the event, as specified above;
+a document declaration participates only in the document registry.
+
+In a pointer record, `kind` is `0` mouse, `1` pen, `2` touch or `3` other.
+`button` is the DOM button plus one: `0` none, `1` main, `2` middle,
+`3` secondary, `4` back, `5` forward; larger bytes denote other buttons.
+`buttons` is the DOM held-button mask. `mods` contains only `1` shift,
+`2` ctrl, `4` alt and `8` meta; `primary` is strictly `0` or `1`.
+`at` is `0` outside or `1` in a zone; only `1` carries the trailing fields.
+Fractions `x` and `y` are 0–10000 and the zone key is nonempty UTF-8.
+`pointercancel` must be outside. Unknown tags or bits, invalid flags,
+out-of-range fractions, empty zone keys, truncated or trailing bytes and
+invalid UTF-8 are a `contract` fault naming the routed site. Roc never
+clamps malformed wire fractions; rounding and clamping belong to the
+browser's conversion of a valid point and zone box.
+
+**Policies.** `policies:u32` is a bit set. Unknown bits are an `executor`
+fault. Policies are applied when the handler dispatches, never inferred
+from the event type or decided by an engine result.
+
+| Bit | Policy | Dispatch behavior |
+|---|---|---|
+| 0 (`1`) | `prevent` | Call `preventDefault` |
+| 1 (`2`) | `stop` | Call `stopPropagation` only when `event.bubbles` is true; a non-bubbling event must still reach its target |
+| 2 (`4`) | `capture` | The typed capturing `pointerdown` calls `setPointerCapture(pointerId)` on its declaring element before dispatch; refusal still dispatches and is observed |
+| 3 (`8`) | `paced` | Typed pointermove, scroll, size or seen is a report source with the identity defined above |
+| 4 (`16`) | `document` | Register a key-kind handler for document dispatch, owned by its declaring node |
+| 5 (`32`) | `ahead` | Seen observation uses both 100% margins |
+
+`capture` is valid only for pointer-kind `pointerdown` and `paced` only
+for pointer-kind `pointermove` or the three layout kinds; `ahead` only for
+seen-kind declarations; `document` only for key-kind declarations. The
+three layout kinds require paced delivery.
+Key-kind prevention comes from the keymap, never a static prevent bit. A known bit on another declaration is an
+`executor` fault, just as an unknown policy bit is.
+
+**Event declarations.** Types are bare text, keyed independently of their
+kind and policies. Two handlers for one type on one element are a
+`contract` error at mount. Types ending in `:prevent`, `:files` or
+`:prevent:files` are retired syntax and a `contract` error naming the typed
+replacement. Any other colon is part of the type. `focus` and `blur` are
+listened as `focusin` and `focusout`.
+
+**Element properties.** `PROP`, `HPROP` and property holes use this closed
+table. Each encoded value is a `str`; the row decides its type and meaning.
+Rows 1–5 apply in stream order; rows 6–7 have the timing below. `value` and `checked` mirror their
+attribute; `pointer_zone` has no attribute mirror. An empty
+`value` sets the live value to empty text and keeps `value=""`, so an
+option remains the empty choice. A false `checked` removes its mirrored
+attribute; true keeps it present.
+
+| Index | Property | Elements | Type and encoding | Claims attribute | When applied |
+|---|---|---|---|---|---|
+| 1 | `value` | `input`, `textarea`, `select`, `option` | `Str`, UTF-8; the controlled-input guard and select settle apply | `value` | Stream |
+| 2 | `checked` | `input` | `Bool`, exactly `"true"` or `"false"` | `checked` | Stream |
+| 3 | `pointer_zone` | Any element | `Str`, UTF-8; empty key marks no zone | None | Stream |
+| 4 | `keymap_down` | Any element | Encoded keymap for its paired keydown handler | None | Stream |
+| 5 | `keymap_up` | Any element | Encoded keymap for its paired keyup handler | None | Stream |
+| 6 | `shown` | Controlled dialog | `hidden`, `open`, `modal`; guarded by live-state table above | `open` (reserved, not a string mirror) | Hidden in stream; showing after batch, guarded by latest intent |
+| 7 | `popover_shown` | Controlled element with one static auto/manual popover declaration | Exactly `true` or `false`, guarded by live state | None; helper owns its static `popover` declaration | False in stream; true after batch, guarded by latest intent |
+
+Rows 6 and 7 and their echo attachment are helper-only, with the attribute
+and event restrictions stated above. Showing work keeps its collected stream
+position and is invalidated by a later property decision or target removal.
+
+Rows 4 and 5 are private to `on_key` and `on_document_key`, never exposed
+as `Prop` constructors. Each entry concatenates policy `p` (prevent) or
+`k` (keep), place `a` (anywhere) or `o` (outside text), four modifier
+characters `C/- A/- S/- M/-` without spaces, canonical decimal UTF-8 byte length (zero, or no leading zero),
+`:`, then the key's bytes. `every` is a final `a*` or `o*`, at most once.
+Zero length is a valid, unhearable declared chord. The empty string hears
+nothing. For example prevent Ctrl+backquote is
+`paC---1:` followed by the backquote byte. A malformed encoding is an
+`executor` fault. Parsing counts UTF-8 bytes, never UTF-16 code units.
+
+A property on another element, one declared twice, and an ordinary
+no-namespace attribute using a name claimed by a row on that HTML element
+are `contract` errors at mount. The check uses the resolved attribute
+identity: raw HTML names fold before checking, while explicitly qualified
+case-preserved or namespaced attributes retain their distinct identities.
+Markup literals reject the same claims at their source position.
+A `value` property on an input whose current `type` is `file` is a
+`contract` error when applied, naming the node, in the runtime and oracle.
+The type can follow a signal, so this check cannot be made at mount.
+An unknown index or a value outside its row's encoding is contained as
+`executor`.
+
+**Expanded names and child containers.** Element and attribute names share
+this framing:
+
+```text
+expanded-name := namespace:u8 [uri:str] prefix:str local:str
+```
+
+The namespace is `0` HTML, `1` SVG, `2` MathML, `3` no namespace or `4` an
+explicit nonempty URI, with `uri` present only for `4`. HTML, SVG and MathML
+mean their standard namespace URIs; explicit aliases compare by URI identity.
+An empty prefix means no prefix. A colon in an unprefixed local name remains
+local data; receivers never split it to invent a prefix or namespace.
+
+Roc resolves raw HTML case and the raw constructor's inherited namespace
+before encoding. The raw rule opens SVG at `svg`, inherits SVG below an SVG
+parent except `foreignObject`, and otherwise creates HTML. It does not infer
+MathML or implement every integration point of HTML parsing. Parsed literal
+names carry their full resolved identities. No literal/raw provenance flag
+crosses the wire.
+
+Receivers preserve the namespace URI, optional prefix and exact local name,
+using a DOM operation that preserves that tuple. Invalid framing, grammar,
+namespace pairing or a creation operation that changes identity is an
+`executor` fault. Vocabulary membership is a literal check, not a consumer
+restriction on well-formed raw names. XML source retains the parser's XML
+grammar; computed DOM names follow the DOM boundary's grammar.
+
+The executor normally uses the direct DOM creation operation. Two narrowly
+selected empty-node factories bridge identities that operation cannot express:
+an HTML template wrapper produces an unprefixed colon-bearing SVG or MathML
+local name, and an XML document with one namespace declaration produces a
+bare `xmlns` element in another namespace. The first requires an ASCII letter
+at the start and no ASCII capitals, because HTML parsing would otherwise
+change the name. The second requires XML 1.0 characters in that URI and
+excludes the reserved XML namespace URI. These are construction limits on
+those tuples, not a general restriction on namespace URI text.
+
+This is an explicit exception for creating an empty node, not a markup
+renderer. The runtime verifies the exact URI, prefix, local name and expected
+DOM interface, removes only the factory's known namespace declaration, and
+checks that no attributes or children remain before importing and returning
+the node. A changed or nonempty result is an executor fault. App attributes,
+text, comments and children come only from the ordinary command operands;
+no app markup is sent to these factories. Temporary wrapper/document data is
+bounded by the new name and URI operands and released after that creation;
+no parsed source or node cache is retained for later turns.
+
+Attributes are looked up and removed by namespace URI and local name. A
+replacement retains the existing attribute's prefix and order, as the DOM
+does. Raw no-namespace `xlink:href` and qualified XLink `href` are distinct and
+can coexist. Namespace declarations are ordinary explicit attributes; they
+do not instruct the executor to infer another node's identity.
+
+Child-container `0` means ordinary children and `1` means an HTML template's
+intrinsic `content` fragment. The latter is valid only for an exact HTML
+namespace/local `template`, with or without a prefix. Both choices are legal
+on such an element. Parsed HTML and XML template contents use the explicit
+content target; raw ordinary construction keeps ordinary children. Unknown
+roles or content on another element are executor faults. Neither the fragment
+nor selecting it adds an engine node id or command.
+
+A row template is decoded once under its already-decided names and container
+roles. Cloning preserves both ordinary children and content. The executor
+restores explicitly declared content-owner targets on the clone and resolves
+hole paths once; it does not reparse retained bytes under a later parent.
+Removal and release include owned content, while text content, page locators,
+focus and event reachability follow actual DOM parentage and do not cross an
+inert content fragment's absent parent link. No scope or reactive mechanism
+is added for that fragment.

@@ -220,20 +220,20 @@ PreparedApp := [].{
 				Html.file_input(
 					Engine.const("Document"),
 					{},
-					st.on_files(
+					st.set_value(
 						|s, { files, refused: _ }| match files {
 							[first, ..] => { ..s, doc: Loaded(first) }
 							[] => s
 						},
 					),
 				),
-				Html.checkbox(Engine.const("Ignore case"), v.map(|s| s.fold), [], st.set_value(|s, x| { ..s, fold: x == "true" })),
+				Html.checkbox(Engine.const("Ignore case"), v.map(|s| s.fold), [], st.set_value(|s, x| { ..s, fold: x })),
 				Html.button("Forget", [], st.update(|s| { ..s, doc: None })),
 				PreparedApp.tab_button(st, "Stats", Stats),
 				PreparedApp.tab_button(st, "Lookup", Lookup),
 				PreparedApp.tab_button(st, "Top", Top),
 				Engine.switch(v.map(|s| s.tab), [Stats, Lookup, Top], |tab| PreparedApp.panel(st, tab)),
-				Html.checkbox(Engine.const("Summary"), v.map(|s| s.summary), [], st.set_value(|s, x| { ..s, summary: x == "true" })),
+				Html.checkbox(Engine.const("Summary"), v.map(|s| s.summary), [], st.set_value(|s, x| { ..s, summary: x })),
 				Worker.resource_when(PreparedApp.stats, v.map(|s| if (s.summary) PreparedApp.asked(s, {}) else Skip), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |a| "${a.lines.to_str()} lines")), [Engine.test_id("summary")])),
 				Html.button("Write scratch", [], st.update(|s| { ..s, scratch: Write })),
 				Html.button("Keep copy", [], st.update(|s| { ..s, scratch: Keep })),

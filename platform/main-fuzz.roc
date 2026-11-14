@@ -11,7 +11,7 @@
 ## `.scm` parser, and the wire and port formats.
 ##
 ## Its only users are the platform's own targets: those under `fuzz/` (the
-## spec, wire and port format parsers and generated site trees) and those
+## spec, boot, wire and port format parsers and generated site trees) and those
 ## beside the test apps under `tests/apps/` that drive the engine (the
 ## effect channel's model and the controls). A target there is an ordinary
 ## roc-fuzz app:
@@ -27,4 +27,4 @@
 ## root hands it (`Effects.roc`), which is what keeps the modules listed
 ## here pure. `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc` belong
 ## to the platform alone and are not listed.
-package [Core, Dom, Engine, Html, JsonOut, Port, PortJson, Scm, Seq, SpecRunner, Table, View, Wire, Worker] {}
+package [Clipboard, Core, Dom, Engine, Html, JsonOut, Layout, MarkupLiteral, Order, Port, PortJson, Protocol, ProtocolFacts, Scm, Seq, SpecRunner, Svg, Url, View, Web, Wire, Worker] { parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.2/2H2hePe5iYTZaGdG9MbMqhS29yg4Zxxr7dPEbZJ96fME.tar.zst", unicode: "https://github.com/roc-lang/unicode/releases/download/4.3.2/3gvgiWm6BShjHKbNV2zRH6fhC5ZvScZgWF7AnVDWHSdd.tar.zst" }

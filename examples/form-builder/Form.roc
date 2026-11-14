@@ -219,32 +219,30 @@ Form := {}.{
 	## number. While the two edits of a move are applied one by one, two
 	## fields stand at one place for a moment, and the number tells them
 	## apart.
-	Rank : { place : U64, key : U64 }
+	Rank := { place : U64, key : U64 }.{
+		is_eq : _
+
+		## Fields at one position remain distinct by their authored key.
+		order_relative_to : Rank, Rank -> [Before, Same, After]
+		order_relative_to = |left, right| match left.place.order_relative_to(right.place) {
+			Same => left.key.order_relative_to(right.key)
+			other => other
+		}
+	}
 
 	## How a view of the fields selects and orders them: every field, from
 	## the lowest place to the highest.
-	plan : {} -> { keep : U64, Form.Field -> Bool, sort : U64, Form.Field -> Form.Rank, compare : Form.Rank, Form.Rank -> [Before, Same, After] }
+	plan : {} -> { keep : U64, Form.Field -> Bool, sort : U64, Form.Field -> Form.Rank }
 	plan = |{}| {
 		keep: |_key, _field| True,
 		sort: |key, field| { place: field.place, key },
-		compare: |a, b|
-			if (a.place < b.place)
-				Before
-			else if (a.place > b.place)
-				After
-			else if (a.key < b.key)
-				Before
-			else if (a.key > b.key)
-				After
-			else
-				Same,
 	}
 
 	## The fields' numbers in the form's order: what a view of them draws.
 	ordered : Form.Fields -> List(U64)
 	ordered = |fields| {
-		{ sort, compare, .. } = Form.plan({})
-		fields.sort_with(|a, b| compare(sort(a.key, a.row), sort(b.key, b.row))).map(|held| held.key)
+		{ sort, .. } = Form.plan({})
+		fields.sort_with(|a, b| sort(a.key, a.row).order_relative_to(sort(b.key, b.row))).map(|held| held.key)
 	}
 
 	## A listing with `edits` applied in order, as the app's table applies
@@ -628,7 +626,7 @@ expect {
 
 ## Two fields at one place are ordered by number, and a field is `Same` only as itself.
 expect {
-	{ compare, .. } = Form.plan({})
+	compare = Form.Rank.order_relative_to
 	orders = [
 		compare({ place: 1, key: 9 }, { place: 2, key: 1 }),
 		compare({ place: 2, key: 1 }, { place: 2, key: 3 }),

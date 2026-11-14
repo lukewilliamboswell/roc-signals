@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, File, State]
+import pf.Engine exposing [Elem, File, State, Table]
 import pf.Html
 import pf.Worker
 
@@ -17,12 +17,16 @@ import pf.Worker
 ##   one's bytes there and answers its size and byte sum (`test-id
 ##   "counts"`); "Count tail" sends the last half of the first file only.
 ## - "Inbox" is a drop target whose handler is a decision
-##   (`Engine.handle_files`): one drop puts the files in a store cell and
+##   (`Engine.handle`): one drop puts the files in a store cell and
 ##   writes a note in another. "Inbox with a reading" adds to the inbox and
 ##   notes how many it held when the files arrived
-##   (`Engine.handle_files_by`). "Inbox and list" writes the cells and the
+##   (`Engine.handle_by`). "Inbox and list" writes the cells and the
 ##   local list as one event (`FilesHandler.also`), and "Empty inbox" lets
 ##   the inbox's files go (`Engine.does`).
+## - "Table files" stores File-valued rows. Removing those rows retains
+##   their handles in the last writing turn's record across unrelated turns.
+##   "Next table write" releases that record through an ordinary identity
+##   update. Retained records still count against the instance's 64 handles.
 ##   "Probe" checks, in the job, that a file's bytes behave as an ordinary
 ##   list: two reads agree, a slice and a UTF-8 view see the same bytes, and
 ##   changing one read leaves the other alone (`test-id "probe"`).
@@ -36,10 +40,34 @@ FilesApp := [Shelf].{
 		{
 			inbox: Engine.cell([]),
 			note: Engine.cell("nothing arrived"),
+			table_files: Engine.table([]),
+			table_refused: Engine.cell(0.U64),
 		}.Engine.Cells,
 	)
 
 	cells = FilesApp.store.cells()
+
+	## A nonempty offer replaces the table. Refusal alone writes only its
+	## count: touching the table would clear the record whose handles filled
+	## the heap and would conceal the refusal we are testing.
+	arrived_in_table : Engine.Received -> List(Engine.Write(_))
+	arrived_in_table = |{ files, refused }| {
+		counted = [FilesApp.cells.table_refused.set(refused)]
+		if files.is_empty() {
+			counted
+		} else {
+			rows = files.map_with_index(|file, key| { key, row: file })
+			[FilesApp.cells.table_files.update(|table| table.load(rows))].concat(counted)
+		}
+	}
+
+	## Remove the live rows by key while preserving their earlier File
+	## values in the last writing turn's record.
+	removed_table_files : Table(U64, File) -> Table(U64, File)
+	removed_table_files = |table| {
+		keys = table.fold([], |found, key, _file| found.append(key))
+		keys.fold(table, |held, key| held.remove(key))
+	}
 
 	## What a drop on "Inbox" writes: the files it delivered in place of
 	## the inbox's, and a note of how many came and how many were refused.
@@ -155,18 +183,24 @@ FilesApp := [Shelf].{
 		Html.div(
 			"files",
 			[
-				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.on_files(FilesApp.received)),
-				Engine.element("section", [Html.aria_label("Drop"), Html.on_drop_files(st.on_files(FilesApp.received))], [Engine.text("drop here")]),
-				Engine.element("section", [Html.aria_label("Paste"), Html.on_paste_files(st.on_files(FilesApp.received))], [Engine.text("paste here")]),
-				Engine.element("section", [Html.aria_label("Inbox"), Html.on_drop_files(Engine.handle_files(FilesApp.arrived))], [Engine.text("inbox")]),
+				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.set_value(FilesApp.received)),
+				Engine.element("section", [Html.aria_label("Table files"), Html.on_drop_files(Engine.handle(FilesApp.arrived_in_table))], [Engine.text("table files")]),
+				Html.button("Remove table files", [], Engine.does([FilesApp.cells.table_files.update(FilesApp.removed_table_files)])),
+				Html.button("Next table write", [], Engine.does([FilesApp.cells.table_files.update(|table| table)])),
+				Html.button("Table unrelated", [], Engine.does([FilesApp.cells.note.set("unrelated table turn")])),
+				Html.p_s(FilesApp.cells.table_files.signal().map(|table| "table rows ${table.len().to_str()}"), [Engine.test_id("table-rows")]),
+				Html.p_s(FilesApp.cells.table_refused.signal().map(|refused_count| "table refused ${refused_count.to_str()}"), [Engine.test_id("table-refused")]),
+				Engine.element("section", [Html.aria_label("Drop"), Html.on_drop_files(st.set_value(FilesApp.received))], [Engine.text("drop here")]),
+				Engine.element("section", [Html.aria_label("Paste"), Html.on_paste_files(st.set_value(FilesApp.received))], [Engine.text("paste here")]),
+				Engine.element("section", [Html.aria_label("Inbox"), Html.on_drop_files(Engine.handle(FilesApp.arrived))], [Engine.text("inbox")]),
 				Engine.element(
 					"section",
-					[Html.aria_label("Inbox with a reading"), Html.on_drop_files(Engine.handle_files_by(inbox.signal().map(|held| held.len()), FilesApp.arrived_after))],
+					[Html.aria_label("Inbox with a reading"), Html.on_drop_files(Engine.handle_by(inbox.signal().map(|held| held.len()), FilesApp.arrived_after))],
 					[Engine.text("inbox, added to")],
 				),
 				Engine.element(
 					"section",
-					[Html.aria_label("Inbox and list"), Html.on_drop_files(st.on_files(FilesApp.received).also(Engine.handle_files(FilesApp.arrived)))],
+					[Html.aria_label("Inbox and list"), Html.on_drop_files(st.set_value(FilesApp.received).also(Engine.handle(FilesApp.arrived)))],
 					[Engine.text("inbox and list")],
 				),
 				Html.button("Empty inbox", [], Engine.does(FilesApp.emptied)),
@@ -198,7 +232,7 @@ FilesApp := [Shelf].{
 							"section",
 							[Html.aria_label("panel")],
 							[
-								Html.file_input(Engine.const("Panel upload"), { accept: Types(".txt") }, inner.on_files(|kept, { files, refused: _ }| kept.concat(files))),
+								Html.file_input(Engine.const("Panel upload"), { accept: Types(".txt") }, inner.set_value(|kept, { files, refused: _ }| kept.concat(files))),
 								Html.p_s(inner.signal().map(FilesApp.listing), [Engine.test_id("panel-files")]),
 							],
 						),
@@ -222,4 +256,11 @@ expect {
 	added = after.after(FilesApp.arrived_after(2, { files: [], refused: 0 }))
 	gone = added.after(FilesApp.emptied)
 	(after.read(FilesApp.cells.note), added.read(FilesApp.cells.note), gone.read(FilesApp.cells.note), gone.read(FilesApp.cells.inbox).len()) == ("0 arrived, 3 refused", "0 arrived after 2", "emptied", 0)
+}
+
+## A refused-only offer leaves the table untouched and records the refusal.
+expect {
+	after = FilesApp.store.after(FilesApp.arrived_in_table({ files: [], refused: 1 }))
+	actual = { rows: after.read(FilesApp.cells.table_files).len(), refused: after.read(FilesApp.cells.table_refused) }
+	actual == { rows: 0, refused: 1 }
 }

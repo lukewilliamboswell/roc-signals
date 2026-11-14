@@ -35,8 +35,258 @@ Checks := [].{
 	app_expects! : SpecSuite.Options => Try(List(Str), _)
 	app_expects! = |o| {
 		dirs = SpecSuite.app_dirs!()?
-		results = Proc.parallel!(dirs.map(|dir| { program: o.compiler, args: ["test", "${dir}/main.roc"], cwd: o.root }), Proc.cpus!())?
-		Ok(List.map2(dirs, results, |dir, r| if (r.code == 0) [] else ["roc test ${dir}/main.roc failed: ${r.output.trim()}"]).join())
+		results = Proc.parallel!(dirs.map(|dir| { program: o.compiler, args: ["test", "${dir}/main.roc"], cwd: o.root }), Proc.compiler_jobs!()?)?
+		negatives = Checks.key_type_errors!(o)?
+		Ok(List.map2(dirs, results, |dir, r| if (r.code == 0) [] else ["roc test ${dir}/main.roc failed: ${r.output.trim()}"]).join().concat(negatives))
+	}
+
+	## Declaration and default-mount contracts are checked as complete apps.
+	## A constant failure must name its expected app declaration and every
+	## rule; a must-compile case guards code the default mount does not reach.
+	## Compiler process crashes and warning exits never count as rejections.
+	key_type_errors! : SpecSuite.Options => Try(List(Str), _)
+	key_type_errors! = |o| {
+		cases : List({ name : Str, expectation : [Rejected(List(Str)), ConstantCrash({ at : Str, rules : List(Str) }), ConstantExpect({ at : Str, rules : List(Str) }), Compiles] })
+		cases = [
+			{ name: "web-tag-empty", expectation: Rejected(["name must not be empty"]) },
+			{ name: "web-tag-start", expectation: Rejected(["starts with a letter"]) },
+			{ name: "web-tag-space", expectation: Rejected(["ASCII whitespace"]) },
+			{ name: "web-attribute-space", expectation: Rejected(["not a valid attribute local name"]) },
+			{ name: "web-attribute-empty", expectation: Rejected(["not a valid attribute local name"]) },
+			{ name: "web-attribute-class", expectation: Rejected(["Engine.class"]) },
+			{ name: "web-attribute-testid", expectation: Rejected(["Engine.test_id"]) },
+			{ name: "web-event-prevent", expectation: Rejected(["on_with"]) },
+			{ name: "web-event-files", expectation: Rejected(["on_files"]) },
+			{ name: "web-event-key", expectation: Rejected(["on_key"]) },
+			{ name: "web-event-empty", expectation: Rejected(["nonempty event type"]) },
+			{ name: "web-method-patch", expectation: Rejected(["write", "PATCH"]) },
+			{ name: "web-method-forbidden", expectation: Rejected(["browser refuses"]) },
+			{ name: "web-method-empty", expectation: Rejected(["one or more token characters"]) },
+			{ name: "web-method-space", expectation: Rejected(["one or more token characters"]) },
+			{ name: "web-text-tag", expectation: Rejected(["Engine.Tag", "Str"]) },
+			{ name: "web-interpolation", expectation: Rejected(["Web.AttrName"]) },
+			{ name: "web-shared-constant", expectation: Rejected(["Web.AttrName", "Str"]) },
+			{ name: "web-method-request", expectation: Rejected(["Engine.Method", "Str"]) },
+			{ name: "web-method-upload", expectation: Rejected(["Core.UploadProps", "Str"]) },
+			{ name: "web-method-sent", expectation: Rejected(["Web.Method", "Str"]) },
+			{ name: "web-public-family", expectation: Compiles },
+			{ name: "vocabulary-tag-typo", expectation: Rejected(["did you mean \"div\"", "Web.Tag.from_str"]) },
+			{ name: "vocabulary-tag-unknown", expectation: Rejected(["pinned roc-parser vocabulary", "Web.Tag.from_str"]) },
+			{ name: "vocabulary-tag-obsolete", expectation: Rejected(["pinned roc-parser vocabulary", "Web.Tag.from_str"]) },
+			{ name: "vocabulary-tag-mathml", expectation: Rejected(["is a MathML element", "does not create in its namespace", "Web.Tag.from_str"]) },
+			{ name: "vocabulary-tag-svg-case", expectation: Rejected(["did you mean \"linearGradient\"", "Web.Tag.from_str"]) },
+			{ name: "vocabulary-aria-typo", expectation: Rejected(["did you mean \"aria-label\"", "Web.AttrName.from_str"]) },
+			{ name: "vocabulary-aria-future", expectation: Rejected(["not an ARIA attribute", "Web.AttrName.from_str"]) },
+			{ name: "vocabulary-uncalled", expectation: Rejected(["did you mean \"div\"", "Web.Tag.from_str"]) },
+			{ name: "vocabulary-escape", expectation: Compiles },
+			{ name: "missing-keymap", expectation: Rejected(["Engine.KeyProps"]) },
+			{ name: "key-prevent", expectation: Rejected(["Engine.KeyProps"]) },
+			{ name: "document-row", expectation: Rejected(["outside_rows"]) },
+			{ name: "document-state-in-row", expectation: Rejected(["outside_rows"]) },
+			{ name: "dialog-open-text", expectation: Rejected(["Bool"]) },
+			{ name: "dialog-close-text", expectation: Rejected(["Bool"]) },
+			{ name: "popover-toggle-text", expectation: Rejected(["Bool"]) },
+			{ name: "table-bookkeeping", expectation: Rejected(["with_id"]) },
+			{ name: "internal-module", expectation: Rejected(["does not name a public module"]) },
+			{ name: "ask-reaction-type", expectation: Rejected(["type mismatch"]) },
+			{ name: "ask-mixed-plan", expectation: Rejected(["incompatible types"]) },
+			{ name: "ask-await-command", expectation: Rejected(["Engine.Command"]) },
+			{ name: "ask-private-constructor", expectation: Rejected(["it is an alias"]) },
+			{ name: "ask-private-reader", expectation: Rejected(["associated item named read"]) },
+			{ name: "layout-scroll-text", expectation: Rejected(["top: U32"]) },
+			{ name: "layout-size-text", expectation: Rejected(["width: U32"]) },
+			{ name: "layout-seen-text", expectation: Rejected(["ratio_permille: U16"]) },
+			{ name: "timeout-zero", expectation: Rejected(["a timeout of Ms(0)"]) },
+			{ name: "checkbox-text-payload", expectation: Rejected(["This string literal is being used where a non-string type is needed", "Bool"]) },
+			{ name: "select-text-payload", expectation: Rejected(["The sixth argument", "[Chose(Str), NotOffered]"]) },
+			{ name: "sort-tuple", expectation: Rejected(["order_relative_to"]) },
+			{ name: "sort-tag", expectation: Rejected(["order_relative_to"]) },
+			{ name: "sort-record", expectation: Rejected(["order_relative_to"]) },
+			{ name: "sort-key", expectation: Rejected(["order_relative_to"]) },
+			{ name: "signal-text-str-part", expectation: Rejected(["to_text_signal"]) },
+			{ name: "signal-text-mixed-parts", expectation: Rejected(["type mismatch", "Engine.Signal"]) },
+			{ name: "signal-text-record-part", expectation: Rejected(["to_str"]) },
+			{ name: "signal-text-shared-literal", expectation: Rejected(["type mismatch", "Engine.Signal"]) },
+			{ name: "signal-text-positive", expectation: Compiles },
+			{ name: "worker-module-duplicate", expectation: ConstantCrash({ at: "main = Engine.program(|| Engine.text(\"\")).with_workers([job.registration()]).with_workers([job.registration()])", rules: ["worker task \"test/duplicate-worker\" is registered twice"] }) },
+			{ name: "port-record-duplicate", expectation: ConstantCrash({ at: "registrations = Port.registrations(ports)", rules: ["port \"test/duplicate\" is declared twice"] }) },
+			{ name: "port-module-duplicate", expectation: ConstantCrash({ at: "main = program", rules: ["port \"test/across-modules\" is declared twice"] }) },
+			{ name: "port-record-data", expectation: ConstantCrash({ at: "registrations = Port.registrations(ports)", rules: ["Port.registrations: field \"actions.label\" is not a port"] }) },
+			{ name: "mount-table-order-same", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two rows of a table view compare Same", "site /0"] }) },
+			{ name: "mount-table-key", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two rows have the same key"] }) },
+			{ name: "mount-two-handlers", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two handlers", "site /0", "Save"] }) },
+			{ name: "mount-empty-row-handlers", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two handlers", "row template", "site /0"] }) },
+			{ name: "mount-row-shape", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["row template must be a single element", "site /0"] }) },
+			{ name: "mount-table-row-shape", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["a table view row template must be a single element", "site /0"] }) },
+			{ name: "mount-app-crash", expectation: ConstantCrash({ at: "main = Engine.program(|| crash \"first page failed\")", rules: ["first page failed"] }) },
+			{ name: "mount-inline-expect", expectation: ConstantExpect({ at: "expect boot.url != \"/\"", rules: ["expect failed"] }) },
+			{ name: "mount-unreached-nested-row", expectation: Compiles },
+			{ name: "markup-input-value", expectation: Rejected(["line 1", "checkbox"]) },
+			{ name: "markup-boolean-value", expectation: Rejected(["line 1", "disabled"]) },
+			{ name: "markup-hidden-value", expectation: Rejected(["line 1", "hidden"]) },
+			{ name: "markup-aria-value", expectation: Rejected(["line 1", "aria-pressed"]) },
+			{ name: "markup-element-attribute", expectation: Rejected(["line 1", "value"]) },
+			{ name: "markup-element-name", expectation: Rejected(["line 1", "div"]) },
+			{ name: "markup-aria-name", expectation: Rejected(["line 1", "aria-label"]) },
+			{ name: "markup-svg-case", expectation: Rejected(["line 1", "viewbox"]) },
+			{ name: "markup-svg-numbers", expectation: Rejected(["line 1", "viewBox"]) },
+			{ name: "markup-svg-path", expectation: Rejected(["line 1", "path"]) },
+			{ name: "markup-repair", expectation: Rejected(["line 1", "paragraph"]) },
+			{ name: "markup-handler", expectation: Rejected(["line 1", "holds no handlers"]) },
+			{ name: "markup-comment-root", expectation: Rejected(["line 1", "one element root"]) },
+			{ name: "markup-text-root", expectation: Rejected(["line 1", "one element root"]) },
+			{ name: "markup-two-roots", expectation: Rejected(["line 1", "exactly one element root"]) },
+			{ name: "markup-doctype", expectation: Rejected(["line 1", "document declaration"]) },
+			{ name: "markup-boolean-hole", expectation: Rejected(["Boolean attribute", "Html.boolean"]) },
+			{ name: "markup-partial-attribute", expectation: Rejected(["hole"]) },
+			{ name: "markup-comment-hole", expectation: Rejected(["hole"]) },
+			{ name: "markup-child-part", expectation: Rejected(["to_text_signal"]) },
+			{ name: "markup-tag-hole", expectation: Rejected(["hole"]) },
+			{ name: "markup-attribute-hole", expectation: Rejected(["hole"]) },
+			{ name: "markup-raw-part", expectation: Rejected(["to_text_signal", "Str"]) },
+			{ name: "markup-arity-fewer", expectation: ConstantCrash({ at: "view = {", rules: ["contract", "fewer parts"] }) },
+			{ name: "markup-arity-more", expectation: ConstantCrash({ at: "view = {", rules: ["contract", "more parts"] }) },
+			{ name: "markup-opaque-plan", expectation: Rejected(["plan"]) },
+			{ name: "markup-mathml-handler", expectation: Rejected(["line 1", "holds no handlers"]) },
+			{ name: "markup-svg-input-handler", expectation: Rejected(["line 1", "holds no handlers"]) },
+			{ name: "markup-processing-instruction", expectation: Rejected(["line 1", "processing instruction"]) },
+			{ name: "input-kind-mixed", expectation: Compiles },
+			{ name: "input-kind-typo", expectation: Rejected(["is not an input type", "did you mean \"checkbox\""]) },
+			{ name: "input-kind-text", expectation: Rejected(["Html.InputType", "Str"]) },
+			{ name: "input-kind-union", expectation: Rejected(["Html.InputType", "Unlisted"]) },
+			{ name: "markup-property-value", expectation: Rejected(["line 1", "Engine.Prop.value", "Engine.prop_s", "constructor"]) },
+			{ name: "markup-property-checked", expectation: Rejected(["line 1", "Engine.Prop.checked", "constructor"]) },
+			{ name: "markup-property-value-hole", expectation: Rejected(["line 1", "Engine.Prop.value", "constructor"]) },
+			{ name: "markup-property-checked-hole", expectation: Rejected(["line 1", "Engine.Prop.checked", "constructor"]) },
+			{ name: "markup-property-uppercase", expectation: Rejected(["line 1", "Engine.Prop.value"]) },
+			{ name: "markup-property-option", expectation: Rejected(["line 1", "Engine.Prop.value"]) },
+			{ name: "markup-property-foreign", expectation: Compiles },
+			{ name: "construction-paragraph", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the paragraph first", "site"] }) },
+			{ name: "construction-insert-table-section", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["insert a table section first", "site"] }) },
+			{ name: "construction-invalid-table-child", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["move it outside the table", "site"] }) },
+			{ name: "construction-table-part-outside", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["a table part needs its table context", "site"] }) },
+			{ name: "construction-nested-anchor", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the earlier anchor first", "site"] }) },
+			{ name: "construction-nested-form", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["ignore the nested form", "site"] }) },
+			{ name: "construction-nested-button", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the earlier button first", "site"] }) },
+			{ name: "construction-list-item", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the earlier list item first", "site"] }) },
+			{ name: "construction-description-item", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the earlier description item first", "site"] }) },
+			{ name: "construction-option", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the earlier option first", "site"] }) },
+			{ name: "construction-heading", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["close the earlier heading first", "site"] }) },
+			{ name: "construction-void", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["a void element cannot hold children", "site"] }) },
+			{ name: "construction-text-content", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["reads this content as text", "site"] }) },
+			{ name: "construction-foster-table-text", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["move the text outside the table", "site"] }) },
+			{ name: "construction-empty-each", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["insert a table section first", "site"] }) },
+			{ name: "construction-empty-row-void-text", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["a void element cannot hold children", "site"] }) },
+			{ name: "construction-empty-table-view", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["insert a table section first", "site"] }) },
+		]
+		dir = "${o.build_dir}/key-type-errors"
+		SpecSuite.fresh_dir!(dir)?
+		var $problems = []
+		for test in cases {
+			fixture = Path.read_utf8!(Path.utf8("${o.root}/tests/type-errors/${test.name}.roc.txt"))?
+			case_dir = "${dir}/${test.name}"
+			Path.create_all!(Path.utf8(case_dir))?
+			up = Str.join_with(List.repeat("..", case_dir.split_on("/").keep_if(|part| !part.is_empty()).len()), "/")
+			platform_path = "${up}/${o.root.drop_prefix("/")}/platform/main.roc"
+			source = fixture.replace_each("<PLATFORM>", platform_path)
+			path = "${case_dir}/main.roc"
+			Path.write_utf8!(Path.utf8(path), source)?
+			{ code, stdout } = Proc.merged!({ program: o.compiler, args: ["check", "--no-cache", path], cwd: o.root })?
+			output = Str.from_utf8_lossy(stdout)
+			diagnostic = Str.join_with(output.split_on("\n").map(|line| line.trim()), " ")
+			passed = match test.expectation {
+				Rejected(rules) => code == 1 and rules.all(|rule| diagnostic.contains(rule))
+				ConstantCrash(expected) | ConstantExpect(expected) => {
+					anchors = source.split_on("\n").map_with_index(|line, index| { text: line.trim(), number: index + 1 }).keep_if(|line| line.text == expected.at)
+					anchor = match anchors {
+						[line] => line.number
+						_ => crash "internal: a compile-time crash fixture must name one exact declaration line"
+					}
+					category = match test.expectation {
+						ConstantExpect(_) => "compile time expect failed"
+						_ => "compile time crash"
+					}
+					code == 1 and output.contains(category) and output.contains("main.roc:${anchor.to_str()}:") and expected.rules.all(|rule| diagnostic.contains(rule))
+				}
+				Compiles => code == 0
+			}
+			if !passed {
+				$problems = $problems.append("declaration contract ${test.name}: expected ${Str.inspect(test.expectation)}, exit ${code.to_str()}: ${output}")
+			}
+		}
+		Ok($problems)
+	}
+
+	## Isolated apps check declaration and request contracts in both hosts:
+	## deliberate mistakes name the rule; ordinary raw attributes still mount.
+	key_contracts! : SpecSuite.Options => Try(List(Str), _)
+	key_contracts! = |o| {
+		cases = [
+			{ name: "oracle-flags", rejection: "unknown command batch flags", prefix: "executor:", code: 70 },
+			{ name: "oracle-missing-transition", rejection: "marked batch is missing TRANSITION", prefix: "executor:", code: 70 },
+			{ name: "oracle-unmarked-transition", rejection: "TRANSITION requires marked batch", prefix: "executor:", code: 70 },
+			{ name: "oracle-transition-trailing", rejection: "TRANSITION must be last", prefix: "executor:", code: 70 },
+			{ name: "oracle-transition-truncated", rejection: "short command", prefix: "executor:", code: 70 },
+			{ name: "oracle-leading-zero", rejection: "leading zero", prefix: "executor:", code: 70 },
+			{ name: "oracle-apply-file", rejection: "value property on file input", prefix: "contract:", code: 70 },
+			{ name: "text-key", rejection: "on_key", prefix: "contract:", code: 70 },
+			{ name: "document-bound", rejection: "32", prefix: "contract:", code: 70 },
+			{ name: "apply-noncontrol", rejection: "ApplyValue", prefix: "contract:", code: 70 },
+			{ name: "apply-without-value", rejection: "ApplyValue", prefix: "contract:", code: 70 },
+			{ name: "dialog-open", rejection: "owned by the controlled dialog", prefix: "contract:", code: 70 },
+			{ name: "dialog-dynamic-open", rejection: "owned by the controlled dialog", prefix: "contract:", code: 70 },
+			{ name: "dialog-popover", rejection: "popover and closedby", prefix: "contract:", code: 70 },
+			{ name: "dialog-dynamic-popover", rejection: "popover and closedby", prefix: "contract:", code: 70 },
+			{ name: "dialog-closedby", rejection: "popover and closedby", prefix: "contract:", code: 70 },
+			{ name: "dialog-dynamic-closedby", rejection: "popover and closedby", prefix: "contract:", code: 70 },
+			{ name: "controlled-beforetoggle", rejection: "beforetoggle", prefix: "contract:", code: 70 },
+			{ name: "popover-beforetoggle", rejection: "beforetoggle", prefix: "contract:", code: 70 },
+			{ name: "popover-duplicate", rejection: "one static popover", prefix: "contract:", code: 70 },
+			{ name: "popover-dynamic-popover", rejection: "one static popover", prefix: "contract:", code: 70 },
+			{ name: "media-undeclared", rejection: "missing-media", prefix: "contract:", code: 70 },
+			{ name: "table-order-same", rejection: "two rows of a table view compare Same", prefix: "contract:", code: 70 },
+			{ name: "signal-text-manual-arity", rejection: "Signal.from_interpolation", prefix: "contract:", code: 70 },
+			{ name: "keep-current-subscription", rejection: "keep_current cannot issue a subscription", prefix: "contract:", code: 70 },
+			{ name: "interval-zero", rejection: "Interval(0) has no period", prefix: "contract:", code: 70 },
+			{ name: "timer-overflow", rejection: "Timer(3000000000) is longer", prefix: "contract:", code: 70 },
+			{ name: "interval-overflow", rejection: "Interval(2147483648) is longer", prefix: "contract:", code: 70 },
+			{ name: "timer-overflow-boundary", rejection: "Timer(2147483648) is longer", prefix: "contract:", code: 70 },
+			{ name: "timeout-zero", rejection: "a timeout of Ms(0)", prefix: "contract:", code: 70 },
+			{ name: "raw-controlled-attributes", rejection: "", prefix: "", code: 0 },
+			{ name: "oracle-namespace", rejection: "unknown namespace kind", prefix: "executor:", code: 70 },
+			{ name: "oracle-content-container", rejection: "invalid child container", prefix: "executor:", code: 70 },
+			{ name: "raw-uppercase-value", rejection: "claimed by a property", prefix: "contract:", code: 70 },
+			{ name: "construction-later-branch", rejection: "close the paragraph first", prefix: "contract:", code: 70 },
+			{ name: "construction-later-row", rejection: "close the paragraph first", prefix: "contract:", code: 70 },
+			{ name: "construction-later-state", rejection: "close the paragraph first", prefix: "contract:", code: 70 },
+			{ name: "construction-later-text", rejection: "move the text outside the table", prefix: "contract:", code: 70 },
+			{ name: "construction-later-row-text", rejection: "move the text outside the table", prefix: "contract:", code: 70 },
+		]
+		dir = "${o.build_dir}/key-contracts"
+		SpecSuite.fresh_dir!(dir)?
+		var $problems = []
+		for test in cases {
+			case_dir = "${dir}/${test.name}"
+			Path.create_all!(Path.utf8(case_dir))?
+			fixture = Path.read_utf8!(Path.utf8("${o.root}/tests/key-contracts/${test.name}.roc.txt"))?
+			up = Str.join_with(List.repeat("..", case_dir.split_on("/").keep_if(|part| !part.is_empty()).len()), "/")
+			source = fixture.replace_each("<PLATFORM>", "${up}/${o.root.drop_prefix("/")}/platform/main.roc").replace_each("<ORACLE>", "${up}/${o.root.drop_prefix("/")}/platform/main-fuzz.roc")
+			main = "${case_dir}/main.roc"
+			runner = "${case_dir}/runner"
+			wasm = "${case_dir}/app.wasm"
+			Path.write_utf8!(Path.utf8(main), source)?
+			Proc.run!(SpecSuite.build_job(o, "dev", main, SpecSuite.native_target, runner))?
+			Proc.run!(SpecSuite.build_job(o, "dev", main, "wasm32", wasm))?
+			spec = "${case_dir}/contract.scm"
+			Path.write_utf8!(Path.utf8(spec), "(test \"contract\" (steps (mark-metrics)))")?
+			{ code, stdout } = Proc.merged!({ program: runner, args: [spec], cwd: case_dir })?
+			message = Str.from_utf8_lossy(stdout)
+			if code != test.code or !message.contains(test.prefix) or !message.contains(test.rejection) {
+				$problems = $problems.append("native key contract ${test.name}: expected ${test.prefix} ${test.rejection}, got ${code.to_str()}: ${message}")
+			}
+		}
+		{ code, .. } = Proc.output!({ program: o.node, args: ["tests/browser/key-contracts-browser.mjs", "--fixtures", dir, "--runtime", SpecSuite.runtime, "--chrome", o.chrome], cwd: o.root })?
+		Ok(if (code == 0) $problems else $problems.append("browser key contracts failed (see above)"))
 	}
 
 	## Run one app's specs natively, and in Chrome when `browser`, with the
@@ -76,11 +326,29 @@ Checks := [].{
 	## kanban-board's initial render, and a crashing worker job expected to
 	## be lost to the wrong fault class (the native runner's child process and
 	## the browser's worker must both report the class the task's crash
-	## has).
+	## has), and a focus feedback loop that both runners must stop with
+	## resource_limit rather than hanging the replay. Report-frame mutations
+	## also hold both runners to rejecting an invalid hold lifecycle.
 	broken_specs : List(Broken)
 	broken_specs = [
+		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press (label \"Keyboard editable\") \"Enter\")", rejection: "unmodelled" },
+		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press (label \"Keyboard editable\") \"j\")", rejection: "unmodelled" },
+		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press (label \"Prevented shortcut link\") \"Control+Enter\")", bad: "(press (label \"Unprevented shortcut link\") \"Shift+Enter\")", rejection: "unmodelled" },
+		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press \"a\")", rejection: "unmodelled" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-many-touches.scm", good: "(pointer-up (test-id \"pointer-capture\") :id 2)", bad: "(pointer-down (test-id \"pointer-capture\") :pointer touch :id 18)", rejection: "at most 16" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-capture.scm", good: "(hold-reports)", bad: "(pointer-down (test-id \"pointer-plain\") :pointer touch :id 2)", rejection: "touch" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-capture.scm", good: "(hold-reports)", bad: "(pointer-down (test-id \"pointer-plain\") :pointer pen :id 2)", rejection: "mouse or pen" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-two-touches.scm", good: ":pointer touch", bad: ":pointer pen", rejection: "mouse or pen" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-capture.scm", good: "(pointer-down (test-id \"pointer-capture\"))", bad: "(click (test-id \"pointer-inside\"))", rejection: "give :at" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-two-touches.scm", good: "(hold-reports)", bad: "(pointer-cancel :id 2)", rejection: "pointer-cancel" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-capture.scm", good: "(pointer-up (test-id \"pointer-outside\"))", bad: "(navigate \"/leave-pointer-document\")", rejection: "cross-document navigation" },
 		{ example: "kanban-board", spec: "examples/kanban-board/specs/initial-render.scm", good: "(expect-text (test-id \"board-total\") \"5\")", bad: "(expect-text (test-id \"board-total\") \"6\")", rejection: "expected \\\"6\\\"" },
 		{ example: "workers", spec: "tests/apps/workers/specs/crash.scm", good: "(expect-text (test-id \"log\") \"crash:lost AppCrash\")", bad: "(expect-text (test-id \"log\") \"crash:lost Contract\")", rejection: "expected \\\"crash:lost Contract\\\"" },
+		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(click (role button :name \"Start focus loop\"))", rejection: "resource_limit" },
+		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(hold-reports)", bad: "(hold-reports) (hold-reports)", rejection: "reports are already held" },
+		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(hold-reports)", bad: "(release-reports)", rejection: "reports are not held" },
+		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(expect-reports-replaced 0)", bad: "(hold-reports)", rejection: "spec ended while reports were held" },
+		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(release-reports)", bad: "(navigate \"/leave-held-document\")", rejection: "cross-document navigation" },
 	]
 
 	## Each runner must reject each deliberately broken spec
@@ -109,6 +377,63 @@ Checks := [].{
 		)
 	}
 
+	## A native target override lets the same early-refusal contract run on a
+	## contributor's system; CI uses the ordinary native suite target.
+	DeclarationProps := { target : Str ?? "x64musl" }
+
+	## Build one crash-on-init fixture and require every malformed declaration
+	## name to fail identically before native execution and browser emission.
+	## Rejected output is never replayed as if it were a valid browser story.
+	declaration_refusals! : SpecSuite.Options, DeclarationProps => Try(List(Str), _)
+	declaration_refusals! = |o, props| {
+		dir = "${o.build_dir}/declaration-refusals"
+		SpecSuite.fresh_dir!(dir)?
+		runner = "${dir}/runner"
+		Proc.run!(SpecSuite.build_job(o, "dev", "tests/fixtures/declarations/main.roc", props.target, runner))?
+		cases = [
+			{ name: "unknown-task", message: "expect-pending-work names worker catalogue entry \"misspelt-task\", which the program does not register" },
+			{ name: "unknown-port", message: "expect-port-sends names port \"misspelt-port\", which the program does not declare" },
+			{ name: "command-as-subscription", message: "expect-port-subscriptions names port \"command\", which is a command port; this step requires a subscription port" },
+			{ name: "subscription-as-command", message: "expect-port-sends names port \"subscription\", which is a subscription port; this step requires a command port" },
+			{ name: "command-as-call", message: "expect-port-call names port \"command\", which is a command port; this step requires a call port" },
+			{ name: "unknown-media", message: "expect-media-subscriptions names media query \"misspelt-query\", which the program does not declare" },
+			{ name: "unknown-setup-media", message: "setup names media query \"misspelt-query\", which the program does not declare" },
+			{ name: "unknown-local", message: "expect-no-local-storage names local-storage key \"misspelt-local\", which is neither declared nor seeded or positively established in this spec" },
+			{ name: "unknown-session", message: "expect-no-session-storage names session-storage key \"misspelt-session\", which is neither declared nor seeded or positively established in this spec" },
+		]
+		var $problems = []
+		for case in cases {
+			path = "tests/fixtures/declarations/specs/${case.name}.scm"
+			expected = "${path}:3:5: ${case.message}"
+			var $failures = []
+			for mode in ["native", "emit"] {
+				args = if (mode == "emit") ["--emit-steps", path] else [path]
+				result = Proc.merged!({ program: runner, args, cwd: o.root })?
+				Path.write_bytes!(Path.utf8("${dir}/${case.name}-${mode}.log"), result.stdout)?
+				if result.code != 1 {
+					$problems = $problems.append("declaration refusal ${case.name} ${mode}: expected exit1, got ${result.code.to_str()}")
+				}
+				match declaration_failure({ bytes: result.stdout, id: case.name, expected }) {
+					Ok(message) => {
+						$failures = $failures.append(message)
+					}
+					Err(message) => {
+						$problems = $problems.append("declaration refusal ${case.name} ${mode}: ${message}")
+					}
+				}
+			}
+			if $failures.len() != 2 or ($failures.first() != $failures.last()) {
+				$problems = $problems.append("declaration refusal ${case.name}: native and emit did not produce the same positioned error")
+			}
+		}
+		known = Proc.merged!({ program: runner, args: ["--emit-steps", "tests/fixtures/declarations/specs/known.scm"], cwd: o.root })?
+		Path.write_bytes!(Path.utf8("${dir}/known-emit.log"), known.stdout)?
+		if known.code != 0 or !(Str.from_utf8(known.stdout)?).contains("Declarations without initialization") {
+			$problems = $problems.append("known declarations were not emitted without initializing the crash-on-init fixture")
+		}
+		Ok($problems)
+	}
+
 	## The browser runner has a handler for every step and setup form of the
 	## grammar, and for nothing else: the native runner prints the grammar
 	## (`--grammar`, from the parser's form tables) and
@@ -124,4 +449,25 @@ Checks := [].{
 		{ code, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--check-grammar", "${dir}/grammar.json"], cwd: "." })?
 		if (code == 0) Ok([]) else Ok(["grammar coverage: replay.mjs and the grammar disagree (see above)"])
 	}
+}
+
+# Declaration refusals are parse-phase errors, never executed assertion failures.
+# Decode the structured record so quotes and source positions are compared exactly.
+declaration_failure : { bytes : List(U8), id : Str, expected : Str } -> Try(Str, Str)
+declaration_failure = |{ bytes, id, expected }| {
+	text = Str.from_utf8(bytes) ? |_| "runner output was not UTF-8"
+	lines = text.split_on("\n").keep_if(|line| line.starts_with("{"))
+	line = match lines {
+		[only] => only
+		_ => return Err("runner did not return exactly one structured refusal")
+	}
+	record : { protocol : Str, id : Str, name : Str, status : Str, duration_ns : U64, failure : { phase : Str, kind : Str, message : Str, step : U64, line : U64, column : U64 } }
+	record = Json.parse(line) ? |_| "runner returned a malformed refusal record"
+	if record.protocol != "roc-signals/spec-result/v2" or record.id != id or record.name != "" or record.status != "error" or record.duration_ns != 0 or record.failure.phase != "parse" or record.failure.kind != "parse" or record.failure.step != 0 or record.failure.line != 3 or record.failure.column != 5 or record.failure.message != expected {
+		return Err("runner returned the wrong error: ${line}")
+	}
+	if text.contains("declaration fixture unexpectedly initialized") {
+		return Err("the fixture initialized before refusing its declaration")
+	}
+	Ok(record.failure.message)
 }

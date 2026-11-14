@@ -1,7 +1,7 @@
 +++
 title = "Under the Hood"
 description = "Follow an event through the runtime, the Wasm host and the engine, and see where work and failures happen."
-weight = 19
+weight = 20
 template = "page.html"
 +++
 
@@ -16,7 +16,7 @@ or a profile. The architecture and its rules are in
 
 | Piece | File | Job |
 |---|---|---|
-| Engine | `platform/Core.roc`, with tables and their table views in `Table.roc`, `View.roc` and `Seq.roc`; `Engine.roc` is the API apps see | Everything reactive: sites, the store, propagation, lists and table views, effects, identity. Pure Roc. |
+| Engine | `platform/Core.roc`, with tables and their table views in `TableCore.roc`, `View.roc` and `Seq.roc`; `Engine.roc` is the API apps see | Everything reactive: sites, the store, propagation, lists and table views, effects, identity. Pure Roc. |
 | Host | `platform/host/host.zig` | Allocates memory, keeps the engine state between calls, stages one payload, backs the handles of [files](@/docs/files.md) the app holds, classifies faults. In a worker it holds no engine state: it keeps at most one preparation's state between jobs, and during a job performs the task's file effects through the worker script. |
 | Runtime | `platform/runtime.mjs` | Applies the engine's commands to the DOM, performs effects, delivers events. |
 | Worker script | `platform/worker.mjs` | Runs [worker](@/docs/workers.md) tasks: a Web Worker instantiates the same `app.wasm`, never mounts it, calls its `work` entry (or `prepare` and `ask` for a preparation's task) for each job, and performs the job's file effects. |
@@ -28,6 +28,10 @@ inside it. The runtime never decides anything: it does what the commands say.
 ## Mounting
 
 1. The runtime checks the module's protocol version and refuses a mismatch.
+   It validates the module's bounded protocol vocabulary before initialization,
+   then binds those names to its implementations for that instance. Names and
+   closed lists come from `Protocol.roc`; the Roc engine keeps its own numbers
+   and behavior, and the native oracle keeps independent command decoding.
 2. It asks for the app's declared storage keys, reads them, and stages the
    boot bytes: the URL, those values, and the online, visibility and storage
    flags.
@@ -40,9 +44,12 @@ inside it. The runtime never decides anything: it does what the commands say.
 
 ## One event
 
-1. One delegated listener per event type sits on the mount root. A click walks
-   up from the target to the nearest element with a click handler, then to the
-   nearest element with an engine node id.
+1. Two delegated listeners per event type sit on the mount root, one
+   capturing and one bubbling. A bubbling event walks from the target to
+   the nearest handler; an event that does not bubble reaches only a
+   handler on its target. The runtime then finds the nearest element with
+   a routing node id. A reference inside a row has its own command id,
+   while its events still route through the row.
 2. The runtime stages the payload (for an `input`, the new text) and calls
    `event(node, handler)`.
 3. The engine looks the node up in its routes table — one array index — and
@@ -67,8 +74,11 @@ inside it. The runtime never decides anything: it does what the commands say.
    changes from this turn, then its query and its window, and
    changes the rows it draws once, from the window before the event to the
    window after it.
-7. The records of the tables the turn wrote are cleared, focus requests are
-   resolved, and the call returns the command batch and the work record. The
+7. The tables the turn wrote are rearmed for their next writing turn without
+   changing their recorded changes. Those changes are cleared before that
+   next turn's first modifier runs. The reference names
+   the turn mounted or renamed are checked for duplicates, focus requests
+   are resolved, and the call returns the command batch and the work record. The
    runtime applies the DOM commands in order, then performs any effects.
 
 A signature can only err towards more work. Two cells far apart in a large
@@ -80,6 +90,10 @@ An effect result takes the same path: the runtime calls `event` on a reserved
 node with the request's id, and the engine runs the reaction as a turn.
 Events raised while a batch is being applied are queued and delivered after
 it, so the engine is never re-entered.
+
+The queue holds at most 4096 events, and one drain delivers at most 4096
+turns before returning to idle. Either overflow stops the instance with
+`resource_limit`, including a focus loop that queues only one event at a time.
 
 ## The command stream
 
@@ -104,13 +118,19 @@ checks that the counters agree with the commands it decoded.
 ## Memory
 
 Each piece of state has one holder. A site's storage is referenced by exactly
-one closure, and the root alone holds the store, so Roc updates lists,
-records and tables in place rather than copying them. That is also why the
+one closure; the instance holds the store as plain data beside the sites.
+The store moves into each root call and back, preserving unique ownership
+for updates. That is also why the
 engine never keeps an earlier copy of a state or a cell to compare with: the
 copy would be a second holder, and every write would then copy what it
 changes. What changed comes from the write. The one earlier state the engine
-keeps is a table's changes: for each row a turn wrote, that row as it was,
-dropped when the turn ends.
+keeps is a table's changes: one earlier row per distinct key its last writing
+turn wrote. Unrelated turns retain them; the next writing turn releases them
+before its first modifier runs, or disposal of the holder releases them.
+There is no time bound and no earlier whole table is kept. Freeing that record
+costs its previous writing turn's recorded keys, even if the next turn writes
+only one key; this is delayed cleanup proportional to recorded keys over the
+session.
 
 Disposing a site drops its closure, and reference counting frees what it
 held. The repository's long-session tests walk every example for thousands

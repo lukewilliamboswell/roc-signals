@@ -21,7 +21,7 @@
     (expect-current-location "/roc-signals/examples/conduit/#/login")
     (expect-no-local-storage "conduit.jwt")
     (expect-no-local-storage "conduit.username")
-    (expect-absent (text "Settings saved."))
+    (expect-absent (text "Settings saved.") :never-drawn)
     (expect-visible (role heading :name "Sign in"))
   )
 )

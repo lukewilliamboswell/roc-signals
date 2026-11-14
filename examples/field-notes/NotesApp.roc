@@ -1,7 +1,8 @@
-import pf.Engine exposing [Elem, Handler, Row, RowRef, Signal]
+import pf.Engine exposing [Elem, Row, RowRef, Signal]
 import pf.Html
 import AppStore
 import Notes
+import Time
 
 ## Field Notes: an offline-first note capture tool.
 ##
@@ -44,24 +45,62 @@ NotesApp := [].{
 				sync_status(boot.storage_available, rows),
 				capture(rows),
 				outbox(rows),
-				captured(rows),
+				captured_notes({ rows, zone: boot.zone, language: boot.languages.first() ?? crash "NotesApp.view: boot supplies a preferred language" }),
 				sync_lane(0),
 				sync_lane(1),
 				sync_lane(2),
 				sync_lane(3),
+				Engine.on_post(
+					AppStore.cells.stamps.signal(),
+					|_| [Engine.timer(0)],
+					Engine.react_by(
+						AppStore.cells.clock.signal(),
+						|clock, id, result| AppStore.capture_answer({ id, clock, result }),
+					),
+				),
+				Engine.watch(
+					Engine.const({}),
+					|_| [Engine.interval(30000)],
+					Engine.react(
+						|_, result| match result {
+							Ok(at_ms) => AppStore.clocked(at_ms)
+							_ => []
+						},
+					),
+				),
+				Engine.watch(
+					Engine.const({}),
+					|_| [Engine.visibility_changes({})],
+					Engine.react(
+						|_, result| match result {
+							Ok(visible) => AppStore.visibility_changed(visible)
+							_ => []
+						},
+					),
+				),
+				Engine.on_post(
+					AppStore.cells.refreshes.signal(),
+					|_| [Engine.timer(0)],
+					Engine.react(
+						|_, result| match result {
+							Ok(at_ms) => AppStore.clocked(at_ms)
+							_ => []
+						},
+					),
+				),
 				# The browser's connectivity, for as long as the app runs.
 				Engine.watch(
 					Engine.const({}),
-					|_| [OnlineChanges],
+					|_| [Engine.online_changes({})],
 					Engine.react(
 						|_, res| match res {
-							Online(on) => AppStore.connected(on)
+							Ok(on) => AppStore.connected(on)
 							_ => []
 						},
 					),
 				),
 				# The notes, written back to local storage whenever they change.
-				Engine.watch_changes(AppStore.cells.board.signal().map(|b| Notes.encode_notes(b.notes)), |text| [StorageSet(Notes.notes_key, text)], Engine.ignore({})),
+				Engine.watch_changes(AppStore.cells.board.signal().map(|b| Notes.encode_notes(b.notes)), |text| [Engine.command(StorageSet(Notes.notes_key, text))], Engine.ignore({})),
 			],
 		),
 	)
@@ -117,15 +156,15 @@ stat = |{ label, value, id }| Html.div("stat", [Html.p(label, "stat-label"), Htm
 
 ## A checkbox draws no caption of its own, so the visible label is next to
 ## it.
-check_row : Str, Signal(ctx, Bool), Handler(ctx) -> Elem(ctx)
+check_row : Str, Signal(ctx, Bool), Engine.HandlerOf(ctx, Bool) -> Elem(ctx)
 check_row = |label, checked, changed| Html.div("check-row", [Html.checkbox(Engine.const(label), checked, [Engine.class("checkbox")], changed), Engine.text(label)])
 
 ## One note, a row of the list. Its handlers name the note by the row's
 ## key, read when the event fires, and write the board through the store's
 ## decisions: a row needs nothing handed to it.
-note_card : RowRef(ctx, Notes.Row) -> Elem(Row(ctx, Notes.Row))
+note_card : { zone : Engine.Zone, language : Str }, RowRef(ctx, Notes.Row) -> Elem(Row(ctx, Notes.Row))
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
-note_card = |row| {
+note_card = |locale, row| {
 	key = row.key()
 	named = |prefix| key.map(|k| "${prefix} ${k}")
 	status = row.field(|r| r.status)
@@ -155,6 +194,27 @@ note_card = |row| {
 				],
 			),
 			Html.p_s(row.field(|r| r.detail), [Engine.class("hint numeric")]),
+			Engine.element(
+				"time",
+				[
+					Engine.test_id_s(key.map(|id| "captured-${id}")),
+					Engine.class("hint numeric"),
+					Engine.attr_presence(
+						"datetime",
+						row.field(
+							|note| match note.captured {
+								Unknown => Absent
+								Awaiting => Absent
+								At(at_ms) => match Time.utc_text(at_ms) {
+									Ok(text) => Present(text)
+									Err(_) => Absent
+								}
+							},
+						),
+					),
+				],
+				[Engine.text_s(row.field(|note| note.captured).map2(AppStore.cells.clock.signal(), |captured, now_ms| capture_caption({ captured, now_ms, zone: locale.zone, language: locale.language })))],
+			),
 			Html.div(
 				toolbar_class,
 				[
@@ -176,12 +236,12 @@ sync_lane : U64 -> Elem(ctx)
 sync_lane = |slot| Engine.watch(
 	AppStore.cells.board.signal().map(|b| Notes.issue_at(b, slot)),
 	|issue| match issue.request {
-		Send(token) => [Http({ method: "POST", url: "/api/notes/sync", headers: [], body: token, timeout_ms: 0 })]
+		Send(token) => [Engine.http_body({ method: "POST", url: "/api/notes/sync", headers: [], body: token })]
 		Idle => []
 	},
 	Engine.react(
 		|issue, res| {
-			accepted = match (issue.request, Engine.http_text(res)) {
+			accepted = match (issue.request, res) {
 				(Send(token), Ok(body)) => body == token
 				_ => False
 			}
@@ -219,8 +279,8 @@ sync_status = |storage_available, rows| {
 					Html.div(
 						toolbar_class,
 						[
-							check_row("Sync automatically", auto, Engine.handle(|checked| AppStore.auto_set(checked == "true"))),
-							check_row("Hide synced notes", AppStore.cells.hide_synced.signal(), Engine.handle(|checked| AppStore.synced_hidden(checked == "true"))),
+							check_row("Sync automatically", auto, Engine.handle(|checked| AppStore.auto_set(checked))),
+							check_row("Hide synced notes", AppStore.cells.hide_synced.signal(), Engine.handle(|checked| AppStore.synced_hidden(checked))),
 						],
 					),
 					Html.div(
@@ -264,7 +324,10 @@ capture = |rows| {
 				Engine.const("Save note"),
 				draft.map2(rows, |typed, all| Notes.draft_body(typed) == "" or Notes.is_full(all)),
 				[Engine.class("button-primary justify-self-start")],
-				Engine.handle_by(draft, |typed, _| AppStore.saved(typed)),
+				Engine.handle_by(
+					{ draft: draft, id: AppStore.cells.board.signal().map(Notes.next_id), has_room: rows.map(|all| !Notes.is_full(all)) }.Engine.Signal,
+					|reading, _| AppStore.saved(reading),
+				),
 			),
 		],
 	)
@@ -286,9 +349,9 @@ outbox = |rows| Html.section(
 )
 
 ## The captured notes, without the synced ones while they are hidden.
-captured : Signal(ctx, List(Notes.Row)) -> Elem(ctx)
+captured_notes : { rows : Signal(ctx, List(Notes.Row)), zone : Engine.Zone, language : Str } -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
-captured = |rows| {
+captured_notes = |{ rows, zone, language }| {
 	shown = rows.map2(AppStore.cells.hide_synced.signal(), |all, hide| if (hide) all.keep_if(|r| r.status != Synced) else all)
 	Html.section(
 		"Notes",
@@ -298,8 +361,32 @@ captured = |rows| {
 			Engine.when(
 				rows.map(|r| r.is_empty()),
 				|| Html.p("No notes captured yet. Write one above — it will save even while you are offline.", "empty-state"),
-				|| Html.div("grid gap-3", [Engine.each(shown, |r| r.id, note_card)]),
+				|| Html.div("grid gap-3", [Engine.each(shown, |r| r.id, |row| note_card({ zone, language }, row))]),
 			),
 		],
 	)
+}
+
+## The app handles an offset outside the saved zone span and a date outside
+## its small calendar explicitly, without guessing a current offset.
+capture_caption : { captured : Notes.Captured, now_ms : I64, zone : Engine.Zone, language : Str } -> Str
+capture_caption = |{ captured, now_ms, zone, language }| match captured {
+	Unknown => "Capture time unknown"
+	Awaiting => "just now"
+	At(at_ms) => {
+		age = Time.relative({ now_ms, captured_ms: at_ms })
+		match Engine.zone_offset(zone, at_ms) {
+			Err(OutsideZone) => "Captured outside saved time zone · ${age}"
+			Ok(offset_minutes) => match Time.clock_text({ at_ms, offset_minutes, language }) {
+				Ok(clock) => "Captured ${clock} · ${age}"
+				Err(OutsideCalendar) => "Captured outside supported calendar · ${age}"
+			}
+		}
+	}
+}
+
+## A missing old sample is honest about its age; only a new pending save
+## uses the provisional caption while its timer can still answer.
+expect {
+	[Unknown, Awaiting].map(|captured| capture_caption({ captured, now_ms: 180000, zone: Engine.utc, language: "en-AU" })) == ["Capture time unknown", "just now"]
 }

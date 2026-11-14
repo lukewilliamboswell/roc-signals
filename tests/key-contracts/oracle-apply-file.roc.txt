@@ -1,0 +1,19 @@
+app [main] {
+    pf: platform "<PLATFORM>",
+    oracle: "<ORACLE>",
+}
+
+import pf.Engine
+import oracle.Dom
+
+main : Engine.Program
+main = Engine.program(|| {
+    (model, input) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input" })
+    rendered = Dom.set_property_on(model, input, 1, "", 1)
+    file = Dom.set_attr_on(rendered, input, "type", "FILE")
+    applied = Dom.apply_value(file, input, 1)
+    Engine.text(Dom.live_value(Dom.node(applied, input), "value"))
+})
+
+## No shared store is declared by this contract fixture.
+Store : {}

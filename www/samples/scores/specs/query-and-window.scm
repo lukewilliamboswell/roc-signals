@@ -1,5 +1,6 @@
 (test "the listing chooses the rows and their order, and the window which of them are drawn"
   (steps
+    (expect-visible (text "Ben 25"))
     (expect-text (test-id "size") "6 players")
     ; The window: three rows from the top, then the three after them.
     (expect-visible (text "Ada 30"))

@@ -1,5 +1,4 @@
-import pf.Engine exposing [Cell, Elem, Row, Signal, State]
-import pf.Table
+import pf.Engine exposing [Cell, Elem, Row, Signal, State, Table]
 import Form
 
 ## The form's schema as a store holds it: the fields as a table by number,
@@ -56,7 +55,7 @@ Schema := [].{
 		fields,
 		{
 			query: Engine.const({}),
-			plan: Form.plan,
+			plan: |query| Engine.sort_by(Form.plan(query)),
 			window: Engine.const(Engine.every_row),
 		},
 		template,

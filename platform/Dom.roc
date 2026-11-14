@@ -1,3 +1,11 @@
+import Spelling
+import parser.MarkupFacts
+import Protocol
+import parser.Html as MarkupHtml
+import parser.Markup
+import unicode.GeneralCategory
+import unicode.Scalar
+
 ## An independent decoder of the engine's command stream into a small DOM
 ## model, used as the test and fuzz oracle. It shares no code with the
 ## engine. Nodes live in one list; engine ids map to node indices (+1).
@@ -7,36 +15,451 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 4
+	protocol_version = Protocol.version
 
-	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List((Str, U32)), ht : List(U64) }
+	## A model node has a lifetime index independent of its engine aliases.
+	## Routing ids, rendered attributes, live properties and pending browser work
+	## stay separate so id reuse or a user edit cannot overwrite another meaning.
+	## Expanded attribute identity is namespace URI plus local name; prefix is
+	## retained for exact serialization but never aliases another namespace.
+	ExpandedName : { namespace : Str, prefix : Str, local : Str }
 
-	THole : { kind : U8, path : List(U8), name : Str, handler : U8 }
+	DNode : { namespace : Str, prefix : Str, kind : U8, container : U8, content : [None, Some(U64)], svg : Bool, tag : Str, text : Str, attrs : List((ExpandedName, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
 
+	## Explicit cold-render limits are supplied by the caller's build or display
+	## policy. They never change the app's live node or propagation limits.
+	RenderLimits := { max_bytes : U64, max_nodes : U64, max_depth : U64 }
+
+	## Diagnostics inspect one subtree; a picture serializes its actual mount
+	## element's contents and validates them in that element's parse context.
+	RenderProps := { root : U64, scope : [Subtree, Contents, MountEnvelope] ?? Subtree, mode : [Diagnostic, Picture] ?? Diagnostic, limits : RenderLimits, scripting : Bool ?? True, enclosing : [Unspecified, Document, Element(ExpandedName)] ?? Unspecified }
+
+	## Physical ordinals name positions in one rendered picture only. They are
+	## never engine addresses, application keys or identities across mounts.
+	PictureContainer : { owner : [Mount, Element(U64)], role : [Children, Content], children : List(U64) }
+
+	## Attribute order and both native child containers are observable facts.
+	## An intrinsic content fragment has its own container, not a node ordinal.
+	PictureElement : { name : ExpandedName, attributes : List((ExpandedName, Str)), children : U64, content : [NoContent, Content(U64)] }
+	PictureNode : [Element(PictureElement), Text(Str), Comment(Str)]
+
+	## Logical ordering retains omitted and adjacent text nodes. A model index
+	## lets the native producer join separately derived command binding roles.
+	LogicalNode : { model : U64, target : [Node(U64), TextPart({ run : U64, part : U64 }), Constructed({ container : U64, logical_child_index : U64, data : [Text(Str), Comment(Str)] })] }
+	TextPart : { logical : U64, utf16_units : U64 }
+	TextRun : { container : U64, child_index : U64, physical : [Omitted, Node(U64)], parts : List(TextPart) }
+
+	## Producer-only controls have explicit restoration data. No app spelling
+	## assigns these roles, and ordinary logical children remain separate.
+	Scaffold : [ControlText({ owner : U64, container : U64, physical_text : [Omitted, Node(U64)] }), AttributeOverride({ owner : U64, name : ExpandedName, logical : [Absent, Present(Str)], physical : [Absent, Present(Str)] }), NoSelectionOption({ owner : U64, physical_option : U64 })]
+
+	## The one walk supplies markup and canonical facts together. Diagnostic
+	## output is not a parse-back certification; picture mode returns only after
+	## the parser independently agrees with the declared physical projection.
+	Rendered : { markup : Str, root_name : [ElementRoot(ExpandedName), NonElementRoot], physical : List(PictureNode), containers : List(PictureContainer), logical : List(LogicalNode), text_runs : List(TextRun), scaffolds : List(Scaffold) }
+	RenderError : [RenderLimit({ resource : [Bytes, Nodes, Depth], maximum : U64 }), InvalidModel({ model : U64, rule : Str }), ParseFailure({ line : U64, column : U64, rule : Str }), ParseMismatch({ physical : U64, rule : Str })]
+
+	## Browser top-layer state, separate from the value a property decided.
+	Shown : [Hidden, Open, Modal, Popover]
+
+	## Scroll operands remain command data; layout belongs to the browser.
+	Edge : [Keep, Start, End, Px(U32)]
+
+	## A decoded reference action retains its legacy focus mode or scroll
+	## operands. Layout and execution belong to the runner; decoding preserves the
+	## request without inventing geometry.
+	RefAction : [Focus(U8), IntoView({ block : U8, inline : U8, behavior : U8 }), To({ top : Edge, left : Edge, behavior : U8 })]
+
+	## Deferred work captures a model lifetime, never a recycled engine id.
+	RefCmd : { node : U32, target : U64, action : RefAction }
+
+	## A shown-property write captures the target lifetime and its byte position
+	## in the batch. The runner can discard a superseded intent before changing
+	## top-layer state, even when an engine id has since been rebound.
+	ShownCmd : { target : U64, property : U8, value : Shown, intent : U64 }
+
+	## The runner's ordered work after command decoding. Distinct entries keep
+	## reference actions, shown changes and service effects recognizable while
+	## leaving their scheduling outside this independent DOM decoder.
+	AfterCmd : [Ref(RefCmd), Show(ShownCmd), Effect(FxCmd)]
+
+	## Parsed keymaps index canonical labels separately from physical fallback.
+	Chord : { key : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool }
+
+	## An incoming key keeps its logical label separate from its physical code.
+	## Composition suppresses explicit chords while still allowing an every-key
+	## policy to observe the occurrence.
+	Key : { key : Str, code : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool, composing : Bool }
+
+	## One rendered chord keeps its own prevention and outside-text policy.
+	## Lists retain declaration order, and a physical fallback still reports the
+	## chord the author declared.
+	KeyEntry : { chord : Chord, prevent : Bool, outside : Bool }
+
+	## Lookup groups include the non-Shift modifiers; Shift is checked inside
+	## the selected group using the punctuation rule. Exact labels, physical
+	## fallbacks and the final every-key policy remain distinct.
+	KeyIndex : { exact : Dict(Str, List(KeyEntry)), physical : Dict(Str, List(KeyEntry)), every : [None, Anywhere, OutsideText] }
+
+	## A selected key declaration supplies both its route and the chord heard
+	## by the handler. Its prevention decision is available before delivery, as
+	## required for the browser's synchronous default-action boundary.
+	KeyTarget : { target : Target, heard : Chord, prevent : Bool }
+
+	## Only ASCII letters fold. Non-Latin labels retain their exact spelling.
+	key_label : Str -> Str
+	key_label = |key| {
+		bs = key.to_utf8()
+		if bs.len() == 1 {
+			c = bs.first() ?? crash "Dom.key_label: one byte"
+			if c >= 'A' and c <= 'Z' {
+				return Str.from_utf8([c + 32]) ?? crash "Dom.key_label: ASCII"
+			}
+		}
+		key
+	}
+
+	## Physical fallback is eligible only for a single ASCII letter or digit.
+	key_alphanumeric : Str -> Bool
+	key_alphanumeric = |key| {
+		bs = Dom.key_label(key).to_utf8()
+		bs.len() == 1 and bs.any(|c| (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9'))
+	}
+
+	## One lookup group carries exact non-Shift modifiers and a canonical label.
+	key_group : Str, { ctrl : Bool, alt : Bool, meta : Bool } -> Str
+	key_group = |key, mods| "${if (mods.ctrl) "C" else "-"}${if (mods.alt) "A" else "-"}${if (mods.meta) "M" else "-"}${Dom.key_label(key)}"
+
+	## Only ASCII letters and digits have a platform-defined physical fallback.
+	physical_key : Str -> Str
+	physical_key = |key| {
+		bs = Dom.key_label(key).to_utf8()
+		if bs.len() != 1 {
+			return ""
+		}
+		c = bs.first() ?? crash "Dom.physical_key: one byte"
+		if c >= 'a' and c <= 'z' {
+			return "Key${Str.from_utf8([c - 32]) ?? crash "Dom.physical_key: ASCII"}"
+		}
+		if c >= '0' and c <= '9' {
+			return "Digit${key}"
+		}
+		""
+	}
+
+	## Decode the private property once. Malformed framing is executor failure.
+	parse_keymap : Str -> KeyIndex
+	parse_keymap = |text| {
+		bs = text.to_utf8()
+		var $at = 0.U64
+		var $index = { exact: Dict.empty(), physical: Dict.empty(), every: None }
+		while $at < bs.len() {
+			policy = Dom.byte(bs, $at)
+			if (policy == 'a' or policy == 'o') and bs.get($at + 1) == Ok('*') {
+				if $at + 2 != bs.len() {
+					crash "executor: keymap every must be last"
+				}
+				$index = { ..$index, every: if (policy == 'a') Anywhere else OutsideText }
+				$at = $at + 2
+			} else {
+				if bs.len() - $at < 8 {
+					crash "executor: truncated keymap entry"
+				}
+				if policy != 'p' and policy != 'k' {
+					crash "executor: invalid keymap policy"
+				}
+				entry_place = Dom.byte(bs, $at + 1)
+				if entry_place != 'a' and entry_place != 'o' {
+					crash "executor: invalid keymap place"
+				}
+				var $flags = []
+				for (offset, expected) in [(2.U64, 'C'), (3, 'A'), (4, 'S'), (5, 'M')] {
+					flag = Dom.byte(bs, $at + offset)
+					if flag != '-' and flag != expected {
+						crash "executor: invalid keymap modifier"
+					}
+					$flags = $flags.append(flag == expected)
+				}
+				$at = $at + 6
+				start = $at
+				var $length = 0.U64
+				while $at < bs.len() and Dom.byte(bs, $at) >= '0' and Dom.byte(bs, $at) <= '9' {
+					digit = (Dom.byte(bs, $at) - '0').to_u64()
+					if $length > (bs.len() - digit.min(bs.len())) / 10 {
+						crash "executor: keymap key length exceeds property"
+					}
+					$length = $length * 10 + digit
+					$at = $at + 1
+				}
+				if $at - start > 1 and bs.get(start) == Ok('0') {
+					crash "executor: keymap key length has a leading zero"
+				}
+				if $at == start or $at >= bs.len() or Dom.byte(bs, $at) != ':' or $length > bs.len() - $at - 1 {
+					crash "executor: invalid keymap key length"
+				}
+				key = Str.from_utf8(bs.sublist({ start: $at + 1, len: $length })) ?? crash "executor: invalid keymap UTF-8"
+				$at = $at + 1 + $length
+				chord = { key, ctrl: $flags.get(0) ?? Bool.False, alt: $flags.get(1) ?? Bool.False, shift: $flags.get(2) ?? Bool.False, meta: $flags.get(3) ?? Bool.False }
+				entry = { chord, prevent: policy == 'p', outside: entry_place == 'o' }
+				mods = { ctrl: chord.ctrl, alt: chord.alt, meta: chord.meta }
+				group = Dom.key_group(key, mods)
+				index = $index
+				physical = Dom.physical_key(key)
+				pg = Dom.key_group(physical, mods)
+				$index = {
+					..index,
+					exact: index.exact.insert(group, (index.exact.get(group) ?? []).append(entry)),
+					physical: if physical == "" {
+						index.physical
+					} else {
+						index.physical.insert(pg, (index.physical.get(pg) ?? []).append(entry))
+					},
+				}
+			}
+		}
+		$index
+	}
+
+	## HTML enumerated attributes use ASCII case-insensitive keywords. An
+	## invalid contenteditable keyword inherits its nearest valid ancestor.
+	enum_attr : DNode, Str -> Str
+	enum_attr = |element, name| Spelling.ascii_lower(Dom.attr_of(element, name))
+
+	## The effective HTML input or button type. Keyword membership comes from
+	## the parser; missing and invalid values use the control's browser default.
+	## Raw attributes remain unchanged. Other elements have no HTML control type.
+	input_type : DNode -> Str
+	input_type = |element| {
+		fallback = if Dom.html_tag(element, "input") {
+			"text"
+		} else if Dom.html_tag(element, "button") {
+			"submit"
+		} else {
+			return ""
+		}
+		match attribute_keyword(element.tag, "type", Dom.attr_of(element, "type")) {
+			Ok(keyword) => keyword
+			Err(InvalidKeyword) => fallback
+			Err(NotEnumerated) => crash "oracle: the parser must enumerate HTML input and button types"
+		}
+	}
+
+	## OutsideText is about the event target, including inherited editability.
+	text_entry : Model, U64 -> Bool
+	text_entry = |dom, i| {
+		n = Dom.node(dom, i)
+		if Dom.html_tag(n, "textarea") or Dom.html_tag(n, "select") {
+			return Bool.True
+		}
+		if Dom.html_tag(n, "input") and !Protocol.text_entry_excluded.contains(Dom.input_type(n)) {
+			return Bool.True
+		}
+		Dom.content_editable(dom, i)
+	}
+
+	## Browser editability inherits through invalid enumeration values and
+	## stops at false; this does not make every editable descendant focusable.
+	content_editable : Model, U64 -> Bool
+	content_editable = |dom, i| {
+		var $at = i
+		while True {
+			item = Dom.node(dom, $at)
+			if Dom.has_attr(item, "contenteditable") {
+				match attribute_keyword(item.tag, "contenteditable", Dom.attr_of(item, "contenteditable")) {
+					Ok("false") => return Bool.False
+					Ok(_) => return Bool.True
+					Err(_) => {}
+				}
+			}
+			if item.parent == 0 {
+				return Bool.False
+			}
+			$at = item.parent - 1
+		}
+	}
+
+	## Shift is ignored only for one Unicode punctuation or symbol scalar.
+	key_symbol : Str -> Bool
+	key_symbol = |key| {
+		bs = key.to_utf8()
+		first = bs.first() ?? return Bool.False
+		width = if (first < 128) 1 else if (first < 224) 2 else if (first < 240) 3 else 4
+		if bs.len() != width {
+			return Bool.False
+		}
+		var $scalar = first.to_u32().bitwise_and(if (width == 1) 127 else if (width == 2) 31 else if (width == 3) 15 else 7)
+		for continuation in bs.drop_first(1) {
+			$scalar = $scalar * 64 + continuation.to_u32().bitwise_and(63)
+		}
+		scalar = Scalar.from_u32($scalar) ?? return Bool.False
+		match GeneralCategory.of_scalar(scalar) {
+			Pc | Pd | Ps | Pe | Pi | Pf | Po | Sm | Sc | Sk | So => Bool.True
+			_ => Bool.False
+		}
+	}
+
+	## Exact entries win over all physical fallbacks; every is tried last,
+	## including while composition suppresses the explicit chord entries.
+	key_match : KeyIndex, Key, Bool -> Try({ heard : Chord, prevent : Bool }, [Unheard])
+	key_match = |index, key, in_text| {
+		if key.key.is_empty() {
+			return Err(Unheard)
+		}
+		mods = { ctrl: key.ctrl, alt: key.alt, meta: key.meta }
+		fits = |e| (!e.outside or !in_text) and (e.chord.shift == key.shift or Dom.key_symbol(e.chord.key))
+		if !key.composing {
+			exact = index.exact.get(Dom.key_group(key.key, mods)) ?? []
+			match exact.find_first(fits) {
+				Ok(e) => return Ok({ heard: e.chord, prevent: e.prevent })
+				Err(_) => {}
+			}
+			if !Dom.key_alphanumeric(key.key) {
+				fallback = index.physical.get(Dom.key_group(key.code, mods)) ?? []
+				match fallback.find_first(fits) {
+					Ok(e) => return Ok({ heard: e.chord, prevent: e.prevent })
+					Err(_) => {}
+				}
+			}
+		}
+		if index.every == Anywhere or (index.every == OutsideText and !in_text) {
+			return Ok({ heard: { key: key.key, ctrl: key.ctrl, alt: key.alt, shift: key.shift, meta: key.meta }, prevent: Bool.False })
+		}
+		Err(Unheard)
+	}
+
+	## Resolve a matching element handler first, then the newest live document
+	## handler. The latter list is populated by LISTEN and emptied by RELEASE.
+	key_target : Model, U64, Str, Key -> Try(KeyTarget, [NoHandler])
+	key_target = |dom, i, event, key| {
+		if key.key.is_empty() {
+			return Err(NoHandler)
+		}
+		in_text = Dom.text_entry(dom, i)
+		var $at = i
+		while True {
+			n = Dom.node(dom, $at)
+			for listener in n.hs {
+				if listener.event == event and listener.kind == 4 and listener.policies.bitwise_and(16) == 0 {
+					index = n.keymaps.get(event) ?? Dom.parse_keymap("")
+					match Dom.key_match(index, key, in_text) {
+						Ok(matched) => {
+							var $route = $at
+							while Dom.node(dom, $route).rn == 0 {
+								$route = Dom.node(dom, $route).parent - 1
+							}
+							return Ok({ target: { node: Dom.node(dom, $route).rn, handler: listener.handler, event, kind: 4, policies: listener.policies, declaring: $at }, heard: matched.heard, prevent: matched.prevent })
+						}
+						Err(_) => {}
+					}
+				}
+			}
+			if n.parent == 0 {
+				break
+			}
+			$at = n.parent - 1
+		}
+		var $n = dom.documents.len()
+		while $n > 0 {
+			$n = $n - 1
+			doc = dom.documents.get($n) ?? crash "Dom.key_target: bounded index"
+			if doc.event == event {
+				n = Dom.node(dom, doc.index)
+				listener = n.hs.find_first(|h| h.event == event and h.policies.bitwise_and(16) != 0) ?? crash "Dom.key_target: registered listener"
+				match Dom.key_match(n.keymaps.get(event) ?? Dom.parse_keymap(""), key, in_text) {
+					Ok(matched) => return Ok({ target: { node: n.rn, handler: listener.handler, event, kind: 4, policies: listener.policies, declaring: doc.index }, heard: matched.heard, prevent: matched.prevent })
+					Err(_) => {}
+				}
+			}
+		}
+		Err(NoHandler)
+	}
+
+	## The selected rendered entry determines the synchronous default policy.
+	key_prevents : Model, U64, Str, Key -> Bool
+	key_prevents = |dom, i, event, key| Dom.key_target(dom, i, event, key).map_ok(|m| m.prevent) ?? Bool.False
+
+	## Rendered handler metadata stores the payload kind and policy bits beside
+	## the handler number. Stream decoding validates that closed vocabulary before
+	## installing the declaration.
+	Listener : { event : Str, handler : U32, kind : U8, policies : U32 }
+
+	## The declaring model node and the engine routing node are different
+	## addresses. A reference alias on a descendant must not replace the owning
+	## row's routing id when an event bubbles.
+	Target : { node : U32, handler : U32, event : Str, kind : U8, policies : U32, declaring : U64 }
+
+	## A template hole describes its static child path and kind-specific wire
+	## operands. Paths are resolved when a row is instantiated, before nested
+	## sites can shift its child positions.
+	THole : { kind : U8, path : List(U8), name : Str, attribute : ExpandedName, handler : U8, payload_kind : U8, policies : U32, property : U8 }
+
+	## A stored template owns its wire bytes and ordered hole plan. Instances
+	## reuse that immutable description, while resolved hole targets belong to
+	## each row root's node record.
 	Tpl : { bytes : List(U8), root_at : U64, holes : List(THole) }
 
-	Model : { nodes : List(DNode), statics : List(U64), rows : List(List(U64)), tpls : List(Tpl), root : U64 }
+	## Bounded passive observation of marked batches, independent of the engine.
+	TransitionHistory : { count : U64, oldest : U64, bytes : U64, records : Dict(U64, { types : List(Str), bytes : U64 }), exhausted : Bool }
 
+	## Record a performed transition without influencing DOM progress. Retain
+	## the newest 4096 records within one MiB of encoded type data; an oversized
+	## record clears retained detail, and ordinal exhaustion is remembered.
+	transition : Model, List(Str) -> Model
+	transition = |dom, types| {
+		prior = dom.transitions
+		if prior.count == 18446744073709551615 {
+			return { ..dom, transitions: { ..prior, exhausted: True } }
+		}
+		ordinal = prior.count + 1
+		bytes = types.fold(0.U64, |n, t| n + 4 + t.to_utf8().len())
+		if bytes > 1048576 {
+			return { ..dom, transitions: { ..prior, count: ordinal, oldest: ordinal, bytes: 0, records: Dict.empty() } }
+		}
+		var $history = prior
+		while !$history.records.is_empty() and ($history.records.len() >= 4096 or $history.bytes + bytes > 1048576) {
+			h = $history
+			record = h.records.get(h.oldest) ?? crash "transition history ordinal"
+			$history = { ..h, records: h.records.remove(h.oldest), oldest: h.oldest + 1, bytes: h.bytes - record.bytes }
+		}
+		h = $history
+		{ ..dom, transitions: { ..h, count: ordinal, oldest: if (h.records.is_empty()) ordinal else h.oldest, bytes: h.bytes + bytes, records: h.records.insert(ordinal, { types, bytes }) } }
+	}
+
+	## The oracle keeps append-only node lifetimes, a packed engine-id index,
+	## per-template row membership and passive service observations. Root child
+	## links define the drawn tree; detached lifetimes remain available for stale
+	## work checks without reusing their indices.
+	Model : { nodes : List(DNode), statics : List(U64), rows : List(Dict(U64, {})), tpls : List(Tpl), root : U64, documents : List({ index : U64, event : Str }), observed_count : U64, transitions : TransitionHistory }
+
+	## Start a fresh oracle document with a synthetic root at index zero.
+	## No engine aliases, templates, document listeners or observations survive
+	## from an earlier model.
 	new : {} -> Model
-	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [] }], statics: [], rows: [], tpls: [], root: 0 }
+	new = |_| { nodes: [{ namespace: Dom.html_namespace, prefix: "", kind: 1, container: 0, content: None, svg: False, tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0, transitions: { count: 0, oldest: 0, bytes: 0, records: Dict.empty(), exhausted: False } }
 
+	## Read a little-endian command operand independently of the engine's
+	## encoder. Every byte is bounds checked; a short operand is an executor
+	## fault rather than a partially decoded value.
 	u32 : List(U8), U64 -> U32
 	u32 = |b, at| {
-		b0 = (b.get(at) ?? crash "short command").to_u32()
-		b1 = (b.get(at + 1) ?? crash "short command").to_u32()
-		b2 = (b.get(at + 2) ?? crash "short command").to_u32()
-		b3 = (b.get(at + 3) ?? crash "short command").to_u32()
+		b0 = (b.get(at) ?? crash "executor: short command").to_u32()
+		b1 = (b.get(at + 1) ?? crash "executor: short command").to_u32()
+		b2 = (b.get(at + 2) ?? crash "executor: short command").to_u32()
+		b3 = (b.get(at + 3) ?? crash "executor: short command").to_u32()
 		b0 + b1.shl_wrap(8) + b2.shl_wrap(16) + b3.shl_wrap(24)
 	}
 
+	## Decode a length-prefixed UTF-8 operand and return the following byte
+	## offset. The length counts bytes, and either truncated data or invalid UTF-8
+	## fails the command instead of changing its text.
 	str : List(U8), U64 -> (Str, U64)
 	str = |b, at| {
 		n = Dom.u32(b, at).to_u64()
 		bytes = b.sublist({ start: at + 4, len: n })
 		if bytes.len() != n {
-			crash "short string"
+			crash "executor: short string"
 		}
-		(Str.from_utf8(bytes) ?? crash "bad utf8", at + 4 + n)
+		(Str.from_utf8(bytes) ?? crash "executor: bad utf8", at + 4 + n)
 	}
 
 	## A `u32` length and that many raw bytes (not necessarily UTF-8).
@@ -50,8 +473,23 @@ Dom := [].{
 		(bytes, at + 4 + n)
 	}
 
+	## Attribute operands distinguish an omitted attribute from present text,
+	## including empty text. Only the two protocol flags are accepted.
+	attr_presence : List(U8), U64 -> ([Absent, Present(Str)], U64)
+	attr_presence = |bytes, at| match Dom.byte(bytes, at) {
+		0 => (Absent, at + 1)
+		1 => {
+			(text, next) = Dom.str(bytes, at + 1)
+			(Present(text), next)
+		}
+		_ => crash "executor: invalid attribute presence flag"
+	}
+
+	## Bounds-check a raw command byte with the decoder's short-command
+	## failure. Callers use this for discriminants whose allowed values they
+	## validate at their own narrow boundary.
 	byte : List(U8), U64 -> U8
-	byte = |b, at| b.get(at) ?? crash "short command"
+	byte = |b, at| b.get(at) ?? crash "executor: short command"
 
 	## Engine id -> node index.
 	lookup : Model, U32 -> U64
@@ -67,39 +505,54 @@ Dom := [].{
 		r - 1
 	}
 
+	## Address a model lifetime directly, including detached nodes retained for
+	## stale-work checks. An out-of-range index is an oracle invariant failure;
+	## engine ids must first pass through lookup.
 	node : Model, U64 -> DNode
 	node = |dom, i| dom.nodes.get(i) ?? crash "node index"
 
+	## Replace one lifetime record while preserving the model's secondary
+	## indexes. Structural and registration changes use their dedicated helpers;
+	## this operation does not infer changes from the replacement record.
 	set_node : Model, U64, DNode -> Model
-	set_node = |{ nodes, statics, rows, tpls, root }, i, n| { nodes: nodes.set(i, n) ?? crash "node index", statics, rows, tpls, root }
+	set_node = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, i, n| { nodes: nodes.set(i, n) ?? crash "node index", statics, rows, tpls, root, documents, observed_count, transitions }
 
+	## Record the append-only index before consuming the node list. No read
+	## of the previous list may retain it across append in template decoding.
 	add_node : Model, DNode -> (Model, U64)
-	add_node = |{ nodes, statics, rows, tpls, root }, n| ({ nodes: nodes.append(n), statics, rows, tpls, root }, nodes.len())
+	add_node = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, n| {
+		index = nodes.len()
+		({ nodes: nodes.append(n), statics, rows, tpls, root, documents, observed_count, transitions }, index)
+	}
 
+	## Bind an engine id to an index plus one, growing the alias array only as
+	## needed. Zero remains the unbound sentinel; row ownership is packed by
+	## set_row rather than inferred from a node's position.
 	set_static : Model, U32, U64 -> Model
-	set_static = |{ nodes, statics, rows, tpls, root }, id, idx| {
+	set_static = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, id, idx| {
 		var $s = statics
 		while $s.len() <= id.to_u64() {
 			$s = $s.append(0)
 		}
-		{ nodes, statics: $s.set(id.to_u64(), idx + 1) ?? crash "static", rows, tpls, root }
+		{ nodes, statics: $s.set(id.to_u64(), idx + 1) ?? crash "static", rows, tpls, root, documents, observed_count, transitions }
 	}
 
 	## Bind a row element: its node index, its site (recorded with the id and
 	## in the site's row list, so CLEAR can forget the site's rows).
 	set_row : Model, U32, U64, U64 -> Model
-	set_row = |{ nodes, statics, rows, tpls, root }, id, idx, site| {
+	set_row = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, id, idx, site| {
 		var $s = statics
 		while $s.len() <= id.to_u64() {
 			$s = $s.append(0)
 		}
 		var $r = rows
 		while $r.len() <= site {
-			$r = $r.append([])
+			$r = $r.append(Dict.empty())
 		}
-		{ list, prev } = $r.replace(site, []) ?? crash "row"
+		{ list, prev } = $r.replace(site, Dict.empty()) ?? crash "row"
 		packed = (idx + 1).bitwise_or((site + 1).shl_wrap(40))
-		{ nodes, statics: $s.set(id.to_u64(), packed) ?? crash "static", rows: list.set(site, prev.append(id.to_u64())) ?? crash "row", tpls, root }
+		dom = { nodes, statics: $s.set(id.to_u64(), packed) ?? crash "static", rows: list.set(site, prev.insert(id.to_u64(), {})) ?? crash "row", tpls, root, documents, observed_count, transitions }
+		Dom.modify(dom, idx, |n| { ..n, ids: n.ids.append(id) })
 	}
 
 	## The site of a bound row element (Err for a static node).
@@ -109,34 +562,108 @@ Dom := [].{
 		if (v == 0) Err(Static) else Ok(v - 1)
 	}
 
+	## A neutral record holds no children, aliases or registrations. Besides
+	## serving fixtures, it lets modify move a record out of its list before
+	## changing nested storage without retaining a second holder.
 	empty_node : DNode
-	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [] }
+	empty_node = { namespace: Dom.html_namespace, prefix: "", kind: 1, container: 0, content: None, svg: False, tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
 
 	## Update node i in place (the node is moved out of the list first, so
 	## its kid list stays uniquely owned).
 	modify : Model, U64, (DNode -> DNode) -> Model
-	modify = |{ nodes, statics, rows, tpls, root }, i, f| {
+	modify = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, i, f| {
 		{ list, prev } = nodes.replace(i, Dom.empty_node) ?? crash "node index"
-		{ nodes: list.set(i, f(prev)) ?? crash "node index", statics, rows, tpls, root }
+		{ nodes: list.set(i, f(prev)) ?? crash "node index", statics, rows, tpls, root, documents, observed_count, transitions }
 	}
 
+	## Register a static command alias and remember it on the target lifetime
+	## for subtree teardown. This leaves the node's event-routing id unchanged,
+	## so references inside a row retain the row's route.
 	bind : Model, U32, U64 -> Model
-	bind = |dom, id, idx| Dom.set_static(dom, id, idx)
+	bind = |dom, id, idx| Dom.modify(Dom.set_static(dom, id, idx), idx, |n| { ..n, ids: n.ids.append(id) })
 
+	## Clear an engine alias and its recorded row-site membership together.
+	## The model node remains available for lifetime checks; forgetting a subtree
+	## separately clears its reverse alias list.
 	unbind : Model, U32 -> Model
-	unbind = |{ nodes, statics, rows, tpls, root }, id| {
+	unbind = |{ nodes, statics, rows, tpls, root, documents, observed_count, transitions }, id| {
 		packed = statics.get(id.to_u64()) ?? 0
 		statics2 = statics.set(id.to_u64(), 0) ?? statics
 		site1 = packed.shr_zf_wrap(40)
 		if site1 == 0 {
-			{ nodes, statics: statics2, rows, tpls, root }
+			{ nodes, statics: statics2, rows, tpls, root, documents, observed_count, transitions }
 		} else {
 			site = site1 - 1
-			{ list, prev } = rows.replace(site, []) ?? crash "row"
-			{ nodes, statics: statics2, rows: list.set(site, prev.keep_if(|r| r != id.to_u64())) ?? crash "row", tpls, root }
+			{ list, prev } = rows.replace(site, Dict.empty()) ?? crash "row"
+			{ nodes, statics: statics2, rows: list.set(site, prev.remove(id.to_u64())) ?? crash "row", tpls, root, documents, observed_count, transitions }
 		}
 	}
 
+	## Register one observation under the command owner that must release it.
+	## Template descendants share their row root; targets retain kind flags so
+	## removal itself independently rejects a missing RELEASE.
+	observe : Model, { owner : U64, target : U64, kind : U8 } -> Model
+	observe = |dom, { owner, target: observed_index, kind }| {
+		if kind != 7 and kind != 8 {
+			return dom
+		}
+		bit = if (kind == 7) 1.U8 else 2
+		n = Dom.node(dom, observed_index)
+		if n.observing.bitwise_and(bit) != 0 {
+			crash "executor: duplicate observation"
+		}
+		registered = Dom.modify(dom, observed_index, |target_node| { ..target_node, observing: target_node.observing.bitwise_or(bit) })
+		owned = if n.observing == 0 {
+			Dom.modify(registered, owner, |owner_node| { ..owner_node, observed: owner_node.observed.append(observed_index) })
+		} else registered
+		{ ..owned, observed_count: owned.observed_count + 1 }
+	}
+
+	## Release exactly the targets indexed under this owner, before any detach.
+	release_observed : Model, U64 -> Model
+	release_observed = |dom, owner| {
+		var $dom = dom
+		for observed_index in Dom.node(dom, owner).observed {
+			flags = Dom.node($dom, observed_index).observing
+			count = (if (flags.bitwise_and(1) != 0) 1.U64 else 0) + (if (flags.bitwise_and(2) != 0) 1 else 0)
+			cleared = Dom.modify($dom, observed_index, |target_node| { ..target_node, observing: 0 })
+			$dom = { ..cleared, observed_count: cleared.observed_count - count }
+		}
+		Dom.modify($dom, owner, |owner_node| { ..owner_node, observed: [] })
+	}
+
+	## Forget command aliases and row membership owned by a removed subtree.
+	## Walking only its nodes also removes references nested in static content;
+	## an id since rebound elsewhere is left with its current owner.
+	forget_subtree : Model, U64 -> Model
+	forget_subtree = |dom, i| {
+		owned = Dom.node(dom, i)
+		if owned.observing != 0 or !owned.observed.is_empty() {
+			crash "executor: observation detached without RELEASE"
+		}
+		if dom.documents.any(|d| d.index == i) {
+			crash "executor: document key handler detached without RELEASE"
+		}
+		var $d = dom
+		for child in owned.kids.concat(
+			match owned.content {
+				None => []
+				Some(fragment) => [fragment]
+			},
+		) {
+			$d = Dom.forget_subtree($d, child)
+		}
+		for id in owned.ids {
+			if ($d.statics.get(id.to_u64()) ?? 0).bitwise_and(1099511627775) == i + 1 {
+				$d = Dom.unbind($d, id)
+			}
+		}
+		Dom.modify($d, i, |n| { ..n, ids: [] })
+	}
+
+	## Remove one node from its parent's ordered children and count the
+	## detachment. Its subtree and aliases remain available for MOVE; lifetime
+	## removal also calls forget_subtree. Searching the sibling list is linear.
 	detach : Model, U64 -> Model
 	detach = |dom, i| {
 		n = Dom.node(dom, i)
@@ -147,15 +674,15 @@ Dom := [].{
 				dom,
 				n.parent - 1,
 				|p| {
-					{ tag, text, attrs, kids, parent, rn, hs, ht } = p
+					{ namespace, prefix, kind, container: child_container, content, svg, tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 					kept = match kids.find_last_index(|k| k == i) {
 						Ok(pos) => kids.drop_at(pos)
 						Err(_) => kids
 					}
-					{ tag, text, attrs, kids: kept, parent, rn, hs, ht }
+					{ namespace, prefix, kind, container: child_container, content, svg, tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 				},
 			)
-			Dom.modify(d1, i, |m| { ..m, parent: 0 })
+			Dom.modify(d1, i, |m| { ..m, parent: 0, detach_count: m.detach_count + 1 })
 		}
 	}
 
@@ -167,7 +694,7 @@ Dom := [].{
 			d0,
 			parent,
 			|p| {
-				{ tag, text, attrs, kids, parent: pp, rn, hs, ht } = p
+				{ namespace, prefix, kind, container: child_container, content, svg, tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 				kids2 = match before {
 					Err(End) => kids.append(i)
 					Ok(b) => {
@@ -175,7 +702,7 @@ Dom := [].{
 						kids.sublist({ start: 0, len: pos }).append(i).concat(kids.sublist({ start: pos, len: kids.len() - pos }))
 					}
 				}
-				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht }
+				{ namespace, prefix, kind, container: child_container, content, svg, tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 			},
 		)
 		Dom.modify(d1, i, |n| { ..n, parent: parent + 1 })
@@ -185,7 +712,7 @@ Dom := [].{
 	place : Model, U64, U32, U32 -> Model
 	place = |dom, i, parent, before| {
 		if before == 0 {
-			Dom.insert(dom, Dom.lookup(dom, parent), i, Err(End))
+			Dom.insert(dom, if (parent == 0) dom.root else Dom.child_target(dom, Dom.lookup(dom, parent), Dom.node(dom, Dom.lookup(dom, parent)).container), i, Err(End))
 		} else {
 			b = Dom.lookup(dom, before)
 			bp = Dom.node(dom, b).parent
@@ -196,68 +723,80 @@ Dom := [].{
 		}
 	}
 
-	## Parse one template node, creating nodes; returns the index.
+	## Build a template from its explicit names. Insertion context has no role
+	## in decoding and moving a row never reclassifies an element.
 	build : Model, List(U8), U64 -> (Model, U64, U64)
-	build = |dom, b, at| {
-		kind = Dom.byte(b, at)
-		if kind == 2 {
-			(t, next) = Dom.str(b, at + 1)
-			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [] })
-			(d1, i, next)
-		} else {
-			(tag, a1) = Dom.str(b, at + 1)
-			na = Dom.byte(b, a1).to_u64()
-			var $at = a1 + 1
-			var $attrs = []
-			var $k = 0.U64
-			while $k < na {
-				(name, n1) = Dom.str(b, $at)
-				(value, n2) = Dom.str(b, n1)
-				$attrs = $attrs.append((name, value))
-				$at = n2
-				$k = $k + 1
-			}
-			nk = Dom.byte(b, $at).to_u64()
-			$at = $at + 1
-			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [] })
-			var $d = d1
-			$k = 0
-			while $k < nk {
-				(d2, c, next) = Dom.build($d, b, $at)
-				$d = Dom.insert(d2, i, c, Err(End))
-				$at = next
-				$k = $k + 1
-			}
-			($d, i, $at)
+	build = |dom, bytes, at| {
+		kind = Dom.byte(bytes, at)
+		if kind == 2 or kind == 3 {
+			(value, next) = Dom.str(bytes, at + 1)
+			(next_dom, index) = Dom.add_node(dom, { ..Dom.empty_node, namespace: "", kind, tag: "", text: value })
+			return (next_dom, index, next)
 		}
+		if kind != 1 {
+			crash "executor: unknown template node kind"
+		}
+		(name, name_end) = Dom.expanded_name(bytes, at + 1, True)
+		child_container = Dom.container(bytes, name_end, name)
+		count = Dom.byte(bytes, name_end + 1).to_u64()
+		var $at = name_end + 2
+		var $attrs = []
+		var $attribute_index = 0.U64
+		while $attribute_index < count {
+			$attribute_index = $attribute_index + 1
+			(attribute, value_at) = Dom.expanded_name(bytes, $at, False)
+			(value, next) = Dom.str(bytes, value_at)
+			$attrs = Dom.assign_attribute($attrs, attribute, value)
+			$at = next
+		}
+		children = Dom.byte(bytes, $at).to_u64()
+		$at = $at + 1
+		(next_dom, index) = Dom.create_node(dom, { ..Dom.empty_node, namespace: name.namespace, prefix: name.prefix, tag: name.local, container: child_container, svg: name.namespace == Dom.svg_namespace, attrs: $attrs })
+		var $dom = next_dom
+		var $child_index = 0.U64
+		while $child_index < children {
+			$child_index = $child_index + 1
+			(child_dom, child, next) = Dom.build($dom, bytes, $at)
+			$dom = Dom.insert(child_dom, Dom.child_target(child_dom, index, child_container), child, Err(End))
+			$at = next
+		}
+		($dom, index, $at)
 	}
 
-	## Skip one template node.
+	## Validate and skip the exact same node framing before reading hole metadata.
+	## No model tree or insertion namespace is needed for this bounded byte walk.
 	skip : List(U8), U64 -> U64
-	skip = |b, at| {
-		kind = Dom.byte(b, at)
-		if kind == 2 {
-			Dom.str(b, at + 1).1
-		} else {
-			(_, a1) = Dom.str(b, at + 1)
-			na = Dom.byte(b, a1).to_u64()
-			var $at = a1 + 1
-			var $k = 0.U64
-			while $k < na {
-				$at = Dom.str(b, Dom.str(b, $at).1).1
-				$k = $k + 1
-			}
-			nk = Dom.byte(b, $at).to_u64()
-			$at = $at + 1
-			$k = 0
-			while $k < nk {
-				$at = Dom.skip(b, $at)
-				$k = $k + 1
-			}
-			$at
+	skip = |bytes, at| {
+		kind = Dom.byte(bytes, at)
+		if kind == 2 or kind == 3 {
+			return Dom.str(bytes, at + 1).1
 		}
+		if kind != 1 {
+			crash "executor: unknown template node kind"
+		}
+		(name, name_end) = Dom.expanded_name(bytes, at + 1, True)
+		_ = Dom.container(bytes, name_end, name)
+		count = Dom.byte(bytes, name_end + 1).to_u64()
+		var $at = name_end + 2
+		var $attribute_index = 0.U64
+		while $attribute_index < count {
+			$attribute_index = $attribute_index + 1
+			(_, value_at) = Dom.expanded_name(bytes, $at, False)
+			$at = Dom.str(bytes, value_at).1
+		}
+		children = Dom.byte(bytes, $at).to_u64()
+		$at = $at + 1
+		var $child_index = 0.U64
+		while $child_index < children {
+			$child_index = $child_index + 1
+			$at = Dom.skip(bytes, $at)
+		}
+		$at
 	}
 
+	## Decode and validate a template's hole plan after walking its static
+	## node bytes. Unknown hole kinds, invalid listener/property metadata and
+	## trailing bytes fail before the template can instantiate rows.
 	parse_tpl : List(U8) -> Tpl
 	parse_tpl = |b| {
 		var $at = Dom.skip(b, 0)
@@ -268,19 +807,29 @@ Dom := [].{
 		while $k < n {
 			kind = Dom.byte(b, $at)
 			depth = Dom.byte(b, $at + 1).to_u64()
-			path = b.sublist({ start: $at + 2, len: depth })
-			$at = $at + 2 + depth
+			path = b.sublist({ start: $at + 2, len: depth * 2 })
+			$at = $at + 2 + depth * 2
 			if kind == 2 {
-				(name, next) = Dom.str(b, $at)
-				$holes = $holes.append({ kind, path, name, handler: 0 })
+				(attribute, next) = Dom.expanded_name(b, $at, False)
+				$holes = $holes.append({ kind, path, name: "", attribute, handler: 0, payload_kind: 0, policies: 0, property: 0 })
 				$at = next
 			} else if kind == 3 {
 				hb = Dom.byte(b, $at)
 				(ev, next) = Dom.str(b, $at + 1)
-				$holes = $holes.append({ kind, path, name: ev, handler: hb })
-				$at = next
+				payload_kind = Dom.byte(b, next)
+				policies = Dom.u32(b, next + 1)
+				Dom.check_listener({ event: ev, kind: payload_kind, policies })
+				$holes = $holes.append({ kind, path, name: ev, attribute: Dom.empty_name, handler: hb, payload_kind, policies, property: 0 })
+				$at = next + 5
+			} else if kind == 6 {
+				property = Dom.byte(b, $at)
+				_ = Dom.property_name(property)
+				$holes = $holes.append({ kind, path, name: "", attribute: Dom.empty_name, handler: 0, payload_kind: 0, policies: 0, property })
+				$at = $at + 1
+			} else if kind == 1 or kind == 4 or kind == 5 {
+				$holes = $holes.append({ kind, path, name: "", attribute: Dom.empty_name, handler: 0, payload_kind: 0, policies: 0, property: 0 })
 			} else {
-				$holes = $holes.append({ kind, path, name: "", handler: 0 })
+				crash "unknown template hole kind ${kind.to_str()}"
 			}
 			$k = $k + 1
 		}
@@ -290,22 +839,199 @@ Dom := [].{
 		{ bytes: b, root_at: 0, holes: $holes }
 	}
 
+	## Resolve a template's child-ordinal path against its freshly built
+	## structure. Missing children fail the template contract; callers cache the
+	## result before dynamic insertions can change sibling positions.
 	walk : Model, U64, List(U8) -> U64
 	walk = |dom, root, path| {
 		var $n = root
-		for k in path {
-			$n = Dom.node(dom, $n).kids.get(k.to_u64()) ?? crash "template path"
+		var $at = 0.U64
+		while $at < path.len() {
+			parent = Dom.child_target(dom, $n, Dom.byte(path, $at))
+			$n = Dom.node(dom, parent).kids.get(Dom.byte(path, $at + 1).to_u64()) ?? crash "template path"
+			$at = $at + 2
 		}
 		$n
 	}
 
+	## Remove an ordinary unnamespaced attribute without interpreting its text.
+	remove_attr_on : Model, U64, Str -> Model
+	remove_attr_on = |dom, index, local| Dom.remove_expanded_on(dom, index, Dom.unqualified(local))
+
+	## Apply an ordinary unnamespaced attribute's explicit presence.
+	set_presence_on : Model, U64, Str, [Absent, Present(Str)] -> Model
+	set_presence_on = |dom, index, local, presence| Dom.set_expanded_presence(dom, index, Dom.unqualified(local), presence)
+
+	## Preserve every present value verbatim, including empty and false text.
 	set_attr_on : Model, U64, Str, Str -> Model
-	set_attr_on = |dom, i, name, value| {
-		n = Dom.node(dom, i)
-		attrs = if (n.attrs.any(|(k, _)| k == name)) n.attrs.map(|(k, v)| if (k == name) (k, value) else (k, v)) else n.attrs.append((name, value))
-		Dom.set_node(dom, i, { ..n, attrs })
+	set_attr_on = |dom, index, local, value| Dom.set_expanded_on(dom, index, Dom.unqualified(local), value)
+
+	## Present empty/false text remains distinct from explicit removal, even for
+	## boolean and enumerated HTML names.
+	expect {
+		(d1, i) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div" })
+		d2 = Dom.set_attr_on(Dom.set_attr_on(d1, i, "disabled", ""), i, "hidden", "false")
+		Dom.has_attr(Dom.node(d2, i), "disabled") and Dom.attr_of(Dom.node(d2, i), "hidden") == "false" and !Dom.has_attr(Dom.node(Dom.remove_attr_on(d2, i, "disabled"), i), "disabled")
 	}
 
+	## Browser input changes live properties independently of attributes.
+	## Keeping both lets an ordinary attribute on a custom element remain an
+	## attribute without manufacturing the element's `value` property.
+	set_live_on : Model, U64, Str, Str -> Model
+	set_live_on = |dom, i, name, value| Dom.modify(
+		dom,
+		i,
+		|n| {
+			props = if (n.props.any(|(key, _)| key == name)) n.props.map(|(key, prior)| if (key == name) (key, value) else (key, prior)) else n.props.append((name, value))
+			{ ..n, props }
+		},
+	)
+
+	## Whether an event target carries the Boolean checked property for kind 5.
+	checked_input : DNode -> Bool
+	checked_input = |n| Dom.html_tag(n, "input") and ["checkbox", "radio"].contains(Dom.input_type(n))
+
+	## A control's property value, including defaults before its first write.
+	live_value : DNode, Str -> Str
+	live_value = |n, name| n.props.find_first(|(key, _)| key == name).map_ok(|(_, value)| value) ?? if (name == "checked") "false" else if (name == "value" and n.tag == "button") Dom.attr_of(n, "value") else ""
+
+	## Only known payload kinds and policy bits can occur in a declaration.
+	## Invalid numbers come from a protocol mismatch, never an app event.
+	check_listener : { event : Str, kind : U8, policies : U32 } -> {}
+	check_listener = |{ event, kind, policies }| {
+		row = Protocol.kind(kind) ?? crash "executor: unknown payload kind ${kind.to_str()}"
+		if kind == 2 and !row.events.contains(event) {
+			crash "executor: files payload kind on unsupported event ${event}"
+		}
+		if kind == 3 and !row.events.contains(event) {
+			crash "executor: pointer payload kind on unsupported event ${event}"
+		}
+		if policies.bitwise_and(4) != 0 and (kind != 3 or event != "pointerdown") {
+			crash "executor: capture policy requires a pointerdown pointer handler"
+		}
+		if policies.bitwise_and(8) != 0 and !((kind == 3 and event == "pointermove") or (kind >= 6 and kind <= 8)) {
+			crash "executor: paced policy requires a pointermove pointer handler"
+		}
+		if policies.bitwise_and(32) != 0 and kind != 8 {
+			crash "executor: ahead policy requires a seen observation"
+		}
+		if kind >= 6 and kind <= 8 {
+			allowed = if (kind == 8) 40.U32 else 8
+			if !row.events.contains(event) or policies.bitwise_and(8) == 0 or policies.bitwise_and(allowed.bitwise_not()) != 0 {
+				crash "executor: layout payload requires its matching paced declaration"
+			}
+		}
+		if kind == 9 and (!row.events.contains(event) or policies != 1) {
+			crash "executor: paste text requires paste and prevention"
+		}
+		if kind == 5 and !row.events.contains(event) {
+			crash "executor: open-state payload requires close, toggle or change"
+		}
+		if kind == 4 and !row.events.contains(event) {
+			crash "executor: key payload requires keydown or keyup"
+		}
+		if policies.bitwise_and(16) != 0 and kind != 4 {
+			crash "executor: document policy requires a key handler"
+		}
+		if kind == 4 and policies.bitwise_and(1) != 0 {
+			crash "executor: key prevention belongs to its keymap"
+		}
+		if policies.bitwise_and(Protocol.policy_mask.bitwise_not()) != 0 {
+			crash "executor: unknown event policy bits ${policies.to_str()}"
+		}
+	}
+
+	## Decode only the private property vocabulary; invalid values are wire faults.
+	shown_value : U8, Str -> Shown
+	shown_value = |property, value| match (property, value) {
+		(6, "hidden") | (7, "false") => Hidden
+		(6, "open") => Open
+		(6, "modal") => Modal
+		(7, "true") => Popover
+		_ => crash "executor: invalid shown property value"
+	}
+
+	## Each scroll edge consumes exactly its discriminant and optional pixel value.
+	read_edge : List(U8), U64 -> (Edge, U64)
+	read_edge = |bytes, at| match Dom.byte(bytes, at) {
+		0 => (Keep, at + 1)
+		1 => (Start, at + 1)
+		2 => (End, at + 1)
+		3 => (Px(Dom.u32(bytes, at + 1)), at + 5)
+		_ => crash "executor: unknown scroll edge"
+	}
+
+	## The independent property table fixes each wire index's claimed name.
+	property_name : U8 -> Str
+	property_name = |property| (Protocol.property(property) ?? crash "executor: unknown property index ${property.to_str()}").name
+
+	## HTML interprets an input's type without ASCII case. Keep the raw
+	## attribute for assertions while applying the browser's file-input rule.
+	is_file_input : DNode -> Bool
+	is_file_input = |n| Dom.html_tag(n, "input") and Dom.input_type(n) == "file"
+
+	## The browser's file-input guard recognizes every ASCII spelling while
+	## leaving other input types available for value properties.
+	expect ["file", "FILE", "FiLe", "text", "filex"].map(|kind| Dom.is_file_input({ ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)]) })) == [Bool.True, Bool.True, Bool.True, Bool.False, Bool.False]
+
+	## Apply one declared property in stream order, preserving the mirror
+	## attribute used by browser update observations. A file input rejects a
+	## value where it is applied because its type may change during a turn.
+	set_property_on : Model, U64, U8, Str, U32 -> Model
+	set_property_on = |dom, i, property, value, command_node| {
+		row = Protocol.property(property) ?? crash "executor: unknown property index ${property.to_str()}"
+		name = row.name
+		if property == 6 or property == 7 {
+			n = Dom.node(dom, i)
+			_ = Dom.shown_value(property, value)
+			if (property == 6 and !row.elements.contains(n.tag)) or (property == 7 and !(attribute_keyword(n.tag, "popover", Dom.attr_of(n, "popover")).map_ok(|keyword| ["auto", "manual"].contains(keyword)) ?? False)) {
+				crash "executor: shown property on unsupported element at node ${command_node.to_str()}"
+			}
+			return Dom.set_live_on(dom, i, name, value)
+		}
+		if property >= 3 {
+			if Dom.node(dom, i).tag.is_empty() {
+				crash "executor: pointer zone property requires an element"
+			}
+			return if property == 3 {
+				Dom.set_live_on(dom, i, name, value)
+			} else {
+				Dom.modify(dom, i, |n| { ..n, keymaps: n.keymaps.insert(if (property == 4) "keydown" else "keyup", Dom.parse_keymap(value)) })
+			}
+		}
+		n = Dom.node(dom, i)
+		if property == 1 and Dom.is_file_input(n) {
+			crash "contract: value property on file input at node ${command_node.to_str()}"
+		}
+		if property == 2 and value != "true" and value != "false" {
+			crash "executor: invalid checked property value"
+		}
+		allowed = row.elements.contains(n.tag)
+		if !allowed {
+			crash "executor: property ${name} on unsupported element ${n.tag}"
+		}
+		mirrored = if property == 2 {
+			if (value == "false") Dom.remove_attr_on(dom, i, name) else Dom.set_attr_on(dom, i, name, "")
+		} else {
+			Dom.set_attr_on(dom, i, name, value)
+		}
+		Dom.set_live_on(mirrored, i, name, value)
+	}
+
+	## Explicit value application uses the last rendered mirror, including when
+	## no property changed this turn. A current file input is always forbidden.
+	apply_value : Model, U64, U32 -> Model
+	apply_value = |dom, i, command_node| {
+		n = Dom.node(dom, i)
+		if Dom.is_file_input(n) {
+			crash "contract: value property on file input at node ${command_node.to_str()}"
+		}
+		Dom.set_live_on(dom, i, "value", Dom.attr_of(n, "value"))
+	}
+
+	## Replace the text carried by one lifetime without rebuilding its other
+	## metadata. Children are changed by structural commands, independently of
+	## this stored text operand.
 	set_text_on : Model, U64, Str -> Model
 	set_text_on = |dom, i, t| {
 		n = Dom.node(dom, i)
@@ -316,33 +1042,62 @@ Dom := [].{
 	apply : Model, List(U8) -> Model
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
+	## Give command traces their diagnostic opcode labels. The fallback label
+	## does not validate a command; decode_commands rejects unknown wire opcodes
+	## before any caller can treat them as performed work.
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "FOCUS", "PORT", "SAVE"].get(op.to_u64()) ?? "?"
+	op_name = |op| Protocol.op_name(op)
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
 	describe = |ops| {
 		var $parts = []
-		var $op = 1.U8
-		while $op <= 20 {
-			n = ops.count_if(|o| o == $op)
+		for row in Protocol.ops {
+			n = ops.count_if(|op| op == row.code)
 			if n > 0 {
-				$parts = $parts.append("${Dom.op_name($op)}=${n.to_str()}")
+				$parts = $parts.append("${row.name}=${n.to_str()}")
 			}
-			$op = $op + 1
 		}
 		Str.join_with($parts, " ")
 	}
 
+	## Network policy decoded independently from the command stream.
+	HttpOptions : { cache : Str, credentials : Str, progress_ms : U32 }
+
+	## Validate the closed policy bytes, including upload’s fixed default cache.
+	http_options : List(U8), U64, Bool -> HttpOptions
+	http_options = |bytes, at, upload| {
+		cache_code = Dom.byte(bytes, at)
+		if upload and cache_code != 1 {
+			crash "invalid HTTP cache policy"
+		}
+		cache = (Protocol.http_cache.find_first(|row| row.code == cache_code) ?? crash "invalid HTTP cache policy").name
+		credentials_code = Dom.byte(bytes, at + 1)
+		credentials = (Protocol.http_credentials.find_first(|row| row.code == credentials_code) ?? crash "invalid HTTP credentials policy").name
+		progress_ms = Dom.u32(bytes, at + 2)
+		if progress_ms > 0 and progress_ms < 16 {
+			crash "invalid HTTP progress interval"
+		}
+		{ cache, credentials, progress_ms }
+	}
+
 	## An effect command, decoded independently of the engine.
 	FxCmd : [
-		Http(U32, Str, Str, List((Str, Str)), Str, U32),
+		Http(U32, Str, Str, List((Str, Str)), Str, U32, HttpOptions),
 		Get(U32, Str),
+		SessionGet(U32, Str),
+		StorageSub(U32, Str),
+		StorageFailures(U32),
+		Clipboard(U32, { text : Str, html : [Plain, Html(Str)] }),
+		Guard(Bool),
+		SessionSet(Str, Str),
+		SessionRemove(Str),
 		Timer(U32, U32),
 		Interval(U32, U32),
 		Pop(U32),
 		OnlineSub(U32),
 		VisibilitySub(U32),
+		MediaSub(U32, Str),
 
 		## A worker job (`FX` kind 8): its id, then its task's name, input
 		## bytes, the files it names (each a handle's token and a range of its
@@ -355,7 +1110,8 @@ Dom := [].{
 		Set(Str, Str),
 		Remove(Str),
 		Title(Str),
-		Focus(U8, U32),
+		Ref(RefCmd),
+		Shown(ShownCmd),
 
 		## A read of a file into the page: id, mode (1 bytes, 2 text) and the
 		## file's handle token and range.
@@ -363,7 +1119,7 @@ Dom := [].{
 
 		## An HTTP request whose body is a file's range: id, method, URL,
 		## headers, the file and the timeout (ms, 0 none).
-		Upload(U32, Str, Str, List((Str, Str)), { token : U64, start : U64, len : U64 }, U32),
+		Upload(U32, Str, Str, List((Str, Str)), { token : U64, start : U64, len : U64 }, U32, HttpOptions),
 
 		## A digest of a file's range: id, algorithm (1 SHA-256) and the file.
 		Digest(U32, U8, { token : U64, start : U64, len : U64 }),
@@ -383,7 +1139,7 @@ Dom := [].{
 
 		## An HTTP request whose body becomes a file (`FX` kind 15): id,
 		## method, URL, headers and timeout (ms, 0 none).
-		Fetch(U32, Str, Str, List((Str, Str)), U32),
+		Fetch(U32, Str, Str, List((Str, Str)), U32, HttpOptions),
 
 		## A file's range saved as a download (`SAVE`), and the name it is
 		## saved under.
@@ -437,21 +1193,44 @@ Dom := [].{
 	}
 
 	## Apply one batch; also return its opcodes, its effect commands in
-	## stream order, the node indices each `ATTR`, `HATTR`, `SETTEXT` or
+	## stream order, the node indices each `ATTR`, `HATTR`, `PROP`, `HPROP`, `SETTEXT` or
 	## `TEXT` wrote (one entry per command, in order), and the `value`
-	## writes of `ATTR` and `HATTR` (node index and value, in order: the
+	## writes of `PROP` and `HPROP` (node index and value, in order: the
 	## spec runner defers them on a focused control as the runtime does).
 	## Node indices only grow, so a node created by this batch has an index
 	## at or above the model's node count before it.
 	apply_full : Model, List(U8) -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64), values : List((U64, Str)) }
 	apply_full = |dom0, b| {
+		r = Dom.decode_commands(dom0, b, { start: 0, one: Bool.False })
+		{ dom: r.dom, ops: r.ops, fx: r.fx, written: r.written, values: r.values }
+	}
+
+	## Decode one command at its byte position, allowing the browser model to
+	## apply a hiding value before decoding the content removal that follows it.
+	apply_next : Model, List(U8), U64 -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64), values : List((U64, Str)), next : U64 }
+	apply_next = |dom, bytes, at| Dom.decode_commands(dom, bytes, { start: at, one: Bool.True })
+
+	## The shared resumable batch reader updates the model and ordered command,
+	## write and effect traces. A zero start consumes the batch flag; one-command
+	## mode returns the next byte boundary. Unsupported or malformed wire data
+	## fails rather than being skipped, and no service effect is executed here.
+	decode_commands : Model, List(U8), { start : U64, one : Bool } -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64), values : List((U64, Str)), next : U64 }
+	decode_commands = |dom0, b, { start, one }| {
 		var $written = []
 		var $values = []
 		var $fx = []
 		var $d = dom0
-		var $at = 0.U64
+		flags = if (b.is_empty()) 0 else Dom.byte(b, 0)
+		if flags > 1 {
+			crash "executor: unknown command batch flags"
+		}
+		if b.len() == 1 and flags == 1 {
+			crash "executor: marked batch is missing TRANSITION"
+		}
+		var $at = if (start == 0 and !b.is_empty()) 1 else start
 		var $ops = []
-		while $at < b.len() {
+		while $at < b.len() and (!one or $ops.is_empty()) {
+			intent = $at
 			op = Dom.byte(b, $at)
 			$ops = $ops.append(op)
 			$at = $at + 1
@@ -472,42 +1251,86 @@ Dom := [].{
 				}
 				var $dd = Dom.set_node(d1, root, { ..r, rn: nid, ht: $ht })
 				for hole in tpl.holes {
-					target = Dom.walk($dd, root, hole.path)
+					target_index = Dom.walk($dd, root, hole.path)
 					if hole.kind == 1 {
 						(v, next) = Dom.str(b, $at)
 						$at = next
-						$dd = Dom.set_text_on($dd, target, v)
+						$dd = Dom.set_text_on($dd, target_index, v)
 					} else if hole.kind == 2 {
+						(presence, next) = Dom.attr_presence(b, $at)
+						$at = next
+						$dd = Dom.set_expanded_presence($dd, target_index, hole.attribute, presence)
+					} else if hole.kind == 6 {
 						(v, next) = Dom.str(b, $at)
 						$at = next
-						if v != "" or hole.name != "class" {
-							$dd = Dom.set_attr_on($dd, target, hole.name, v)
+						$dd = Dom.set_property_on($dd, target_index, hole.property, v, nid)
+						if hole.property == 6 or hole.property == 7 {
+							$dd = Dom.modify($dd, target_index, |n| { ..n, shown_intent: if (hole.property == 6) { ..n.shown_intent, dialog: intent } else { ..n.shown_intent, popover: intent } })
+							$fx = $fx.append(Shown({ target: target_index, property: hole.property, value: Dom.shown_value(hole.property, v), intent }))
 						}
 					} else if hole.kind == 3 {
-						t = Dom.node($dd, target)
-						$dd = Dom.set_node($dd, target, { ..t, hs: t.hs.append((hole.name, hole.handler.to_u32())) })
-					} else {
+						t = Dom.node($dd, target_index)
+						$dd = Dom.set_node($dd, target_index, { ..t, hs: t.hs.append({ event: hole.name, handler: hole.handler.to_u32(), kind: hole.payload_kind, policies: hole.policies }) })
+						$dd = Dom.observe($dd, { owner: root, target: target_index, kind: hole.payload_kind })
+					} else if hole.kind == 4 or hole.kind == 5 {
+						# Site placeholders and references carry command ids; neither
+						# replaces the row root's event routing id.
 						id = Dom.u32(b, $at)
 						$at = $at + 4
-						$dd = Dom.bind($dd, id, target)
+						$dd = Dom.bind($dd, id, target_index)
+					} else {
+						crash "unknown template hole kind ${hole.kind.to_str()}"
 					}
 				}
 				$dd = Dom.place($dd, root, parent, before)
 				$d = Dom.set_row($dd, nid, root, site_id)
-			} else if op == 2 or op == 3 {
+			} else if op == 2 or op == 3 or op == 22 {
 				nid = Dom.u32(b, $at)
 				h = Dom.byte(b, $at + 4).to_u64()
-				(v, next) = Dom.str(b, $at + 5)
+				(presence, next) = if op == 3 {
+					Dom.attr_presence(b, $at + 5)
+				} else {
+					(text, after) = Dom.str(b, $at + 5)
+					(Present(text), after)
+				}
 				$at = next
 				row = Dom.lookup($d, nid)
 				tpl = $d.tpls.get(Dom.site_of($d, nid) ?? crash "TEXT/HATTR on a non-row node") ?? crash "unknown template"
 				hole = tpl.holes.get(h) ?? crash "unknown hole"
-				target = Dom.node($d, row).ht.get(h) ?? crash "hole target"
-				$written = $written.append(target)
-				if op == 3 and hole.name == "value" {
-					$values = $values.append((target, v))
+				target_index = Dom.node($d, row).ht.get(h) ?? crash "hole target"
+				if op != 22 or hole.property < 3 {
+					$written = $written.append(target_index)
 				}
-				$d = if (op == 2) Dom.set_text_on($d, target, v) else Dom.set_attr_on($d, target, hole.name, v)
+				$d = if op == 3 {
+					if hole.kind != 2 {
+						crash "executor: HATTR names a non-attribute hole"
+					}
+					Dom.set_expanded_presence($d, target_index, hole.attribute, presence)
+				} else {
+					v = match presence {
+						Present(text) => text
+						Absent => crash "internal: a text or property operand is present"
+					}
+					if op == 22 and hole.property == 1 {
+						$values = $values.append((target_index, v))
+					}
+					if op == 2 {
+						Dom.set_text_on($d, target_index, v)
+					} else {
+						if hole.kind != 6 {
+							crash "executor: HPROP names a non-property hole"
+						}
+						Dom.set_property_on($d, target_index, hole.property, v, nid)
+					}
+				}
+				if op == 22 and (hole.property == 6 or hole.property == 7) {
+					v = match presence {
+						Present(text) => text
+						Absent => crash "executor: missing shown value"
+					}
+					$d = Dom.modify($d, target_index, |n| { ..n, shown_intent: if (hole.property == 6) { ..n.shown_intent, dialog: intent } else { ..n.shown_intent, popover: intent } })
+					$fx = $fx.append(Shown({ target: target_index, property: hole.property, value: Dom.shown_value(hole.property, v), intent }))
+				}
 			} else if op == 4 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
 				before = Dom.u32(b, $at + 4)
@@ -520,69 +1343,100 @@ Dom := [].{
 			} else if op == 5 {
 				id = Dom.u32(b, $at)
 				$at = $at + 4
-				$d = Dom.unbind(Dom.detach($d, Dom.lookup($d, id)), id)
+				i = Dom.lookup($d, id)
+				$d = Dom.detach(Dom.forget_subtree($d, i), i)
 			} else if op == 6 {
-				p = Dom.lookup($d, Dom.u32(b, $at))
+				parent_id = Dom.u32(b, $at)
+				owner = Dom.lookup($d, parent_id)
+				p = if (parent_id == 0) owner else Dom.child_target($d, owner, Dom.node($d, owner).container)
 				site = Dom.u32(b, $at + 4).to_u64()
 				$at = $at + 8
 				old_kids = Dom.node($d, p).kids
 				var $dd = Dom.modify($d, p, |pn| { ..pn, kids: [] })
 				for k in old_kids {
-					$dd = Dom.modify($dd, k, |kn| { ..kn, parent: 0 })
+					$dd = Dom.modify(Dom.forget_subtree($dd, k), k, |kn| { ..kn, parent: 0, detach_count: kn.detach_count + 1 })
 				}
-				{ nodes, statics, rows, tpls, root } = $dd
-				var $st = statics
-				for rid in rows.get(site) ?? [] {
-					$st = $st.set(rid, 0) ?? $st
-				}
-				$d = { nodes, statics: $st, rows: if (site < rows.len()) rows.set(site, []) ?? rows else rows, tpls, root }
+				# Teardown removed this site's rows, including rows nested below
+				# them; membership is maintained per id, never by scanning nodes.
+				$d = $dd
+				_ = site
 			} else if op == 7 {
 				tpl = Dom.u32(b, $at).to_u64()
 				n = Dom.u32(b, $at + 4).to_u64()
 				bytes = b.sublist({ start: $at + 8, len: n })
 				$at = $at + 8 + n
 				t = Dom.parse_tpl(bytes)
-				{ nodes, statics, rows, tpls, root } = $d
+				{ nodes, statics, rows, tpls, root, documents, observed_count, transitions } = $d
 				var $t = tpls
 				while $t.len() <= tpl {
 					$t = $t.append({ bytes: [], root_at: 0, holes: [] })
 				}
 				var $r = rows
 				while $r.len() <= tpl {
-					$r = $r.append([])
+					$r = $r.append(Dict.empty())
 				}
 				# A TEMPLATE starts a new lifetime of this site id (ids are
 				# recycled): rows of an earlier site that was disposed with an
 				# ancestor are forgotten, as the runtime does, or its next CLEAR
 				# would unbind node ids reused since.
-				$d = { nodes, statics, rows: $r.set(tpl, []) ?? $r, tpls: $t.set(tpl, t) ?? $t, root }
-			} else if op == 8 or op == 10 {
+				$d = { nodes, statics, rows: $r.set(tpl, Dict.empty()) ?? $r, tpls: $t.set(tpl, t) ?? $t, root, documents, observed_count, transitions }
+			} else if op == 8 or op == 10 or op == 26 {
 				nid = Dom.u32(b, $at)
 				parent = Dom.u32(b, $at + 4)
 				before = Dom.u32(b, $at + 8)
-				(s, next) = Dom.str(b, $at + 12)
+				(fresh, next) = if op == 8 {
+					(name, end) = Dom.expanded_name(b, $at + 12, True)
+					({ ..Dom.empty_node, namespace: name.namespace, prefix: name.prefix, tag: name.local, container: Dom.container(b, end, name), svg: name.namespace == Dom.svg_namespace }, end + 1)
+				} else {
+					(value, end) = Dom.str(b, $at + 12)
+					({ ..Dom.empty_node, namespace: "", kind: if (op == 10) 2 else 3, tag: "", text: value }, end)
+				}
 				$at = next
-				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [] } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [] }
-				(d1, i) = Dom.add_node($d, fresh)
+				(d1, i) = Dom.create_node($d, fresh)
 				$d = Dom.bind(Dom.place(d1, i, parent, before), nid, i)
 			} else if op == 9 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
-				(name, n1) = Dom.str(b, $at + 4)
-				(value, n2) = Dom.str(b, n1)
+				(name, n1) = Dom.expanded_name(b, $at + 4, False)
+				(presence, n2) = Dom.attr_presence(b, n1)
 				$at = n2
 				$written = $written.append(i)
-				if name == "value" {
+				$d = Dom.set_expanded_presence($d, i, name, presence)
+			} else if op == 23 {
+				i = Dom.lookup($d, Dom.u32(b, $at))
+				$at = $at + 4
+				$d = Dom.release_observed({ ..$d, documents: $d.documents.keep_if(|d| d.index != i) }, i)
+			} else if op == 21 {
+				id = Dom.u32(b, $at)
+				property = Dom.byte(b, $at + 4)
+				(value, next) = Dom.str(b, $at + 5)
+				$at = next
+				i = Dom.lookup($d, id)
+				if property < 3 {
+					$written = $written.append(i)
+				}
+				if property == 1 {
 					$values = $values.append((i, value))
 				}
-				$d = Dom.set_attr_on($d, i, name, value)
+				$d = Dom.set_property_on($d, i, property, value, id)
+				if property == 6 or property == 7 {
+					$d = Dom.modify($d, i, |n| { ..n, shown_intent: if (property == 6) { ..n.shown_intent, dialog: intent } else { ..n.shown_intent, popover: intent } })
+					$fx = $fx.append(Shown({ target: i, property: property, value: Dom.shown_value(property, value), intent }))
+				}
 			} else if op == 11 {
 				id = Dom.u32(b, $at)
 				h = Dom.u32(b, $at + 4)
 				(ev, next) = Dom.str(b, $at + 8)
-				$at = next
+				kind = Dom.byte(b, next)
+				policies = Dom.u32(b, next + 1)
+				Dom.check_listener({ event: ev, kind, policies })
+				$at = next + 5
 				i = Dom.lookup($d, id)
 				n = Dom.node($d, i)
-				$d = Dom.set_node($d, i, { ..n, rn: id, hs: n.hs.append((ev, h)) })
+				$d = Dom.set_node($d, i, { ..n, rn: id, hs: n.hs.append({ event: ev, handler: h, kind, policies }) })
+				$d = Dom.observe($d, { owner: i, target: i, kind })
+				if policies.bitwise_and(16) != 0 {
+					$d = { ..$d, documents: $d.documents.append({ index: i, event: ev }) }
+				}
 			} else if op == 12 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
 				(t, next) = Dom.str(b, $at + 4)
@@ -609,8 +1463,8 @@ Dom := [].{
 					}
 					(body, a3) = Dom.str(b, $a)
 					timeout = Dom.u32(b, a3)
-					$at = a3 + 4
-					$fx = $fx.append(Http(id, method, url, $hs, body, timeout))
+					$at = a3 + 10
+					$fx = $fx.append(Http(id, method, url, $hs, body, timeout, Dom.http_options(b, a3 + 4, False)))
 				} else if kind == 2 {
 					(key, a1) = Dom.str(b, $at)
 					$at = a1
@@ -680,8 +1534,8 @@ Dom := [].{
 						$hs = $hs.append((hk, hv))
 						$a = h2
 					}
-					$fx = $fx.append(Upload(id, method, url, $hs, Dom.file_ref(b, $a), Dom.u32(b, $a + 24)))
-					$at = $a + 28
+					$fx = $fx.append(Upload(id, method, url, $hs, Dom.file_ref(b, $a), Dom.u32(b, $a + 24), Dom.http_options(b, $a + 28, True)))
+					$at = $a + 34
 				} else if kind == 13 {
 					algorithm = Dom.byte(b, $at)
 					if algorithm != 1 {
@@ -702,6 +1556,26 @@ Dom := [].{
 					(msg, a2) = Dom.port_msg(b, a1)
 					$fx = $fx.append(PortListen(id, port, msg))
 					$at = a2
+				} else if kind == 17 or kind == 18 {
+					(key, next) = Dom.str(b, $at)
+					$at = next
+					$fx = $fx.append(if (kind == 17) SessionGet(id, key) else StorageSub(id, key))
+				} else if kind == 20 {
+					$fx = $fx.append(StorageFailures(id))
+				} else if kind == 19 {
+					(text, next) = Dom.str(b, $at)
+					flag = Dom.byte(b, next)
+					$at = next + 1
+					html = if (flag == 0) Plain else if flag == 1 {
+						(markup, end) = Dom.str(b, $at)
+						$at = end
+						Html(markup)
+					} else crash "executor: invalid ClipboardWrite representation flag"
+					$fx = $fx.append(Clipboard(id, { text, html }))
+				} else if kind == 16 {
+					(query, next) = Dom.str(b, $at)
+					$at = next
+					$fx = $fx.append(MediaSub(id, query))
 				} else if kind == 15 {
 					(method, a1) = Dom.str(b, $at)
 					(url, a2) = Dom.str(b, a1)
@@ -714,8 +1588,8 @@ Dom := [].{
 						$hs = $hs.append((hk, hv))
 						$a = h2
 					}
-					$fx = $fx.append(Fetch(id, method, url, $hs, Dom.u32(b, $a)))
-					$at = $a + 4
+					$fx = $fx.append(Fetch(id, method, url, $hs, Dom.u32(b, $a), Dom.http_options(b, $a + 4, False)))
+					$at = $a + 10
 				} else {
 					crash "unknown effect kind ${kind.to_str()}"
 				}
@@ -730,19 +1604,45 @@ Dom := [].{
 			} else if op == 16 {
 				mode = Dom.byte(b, $at)
 				(key, a1) = Dom.str(b, $at + 1)
-				if mode == 1 {
+				if mode == 1 or mode == 3 {
 					(v, a2) = Dom.str(b, a1)
 					$at = a2
-					$fx = $fx.append(Set(key, v))
-				} else if mode == 2 {
+					$fx = $fx.append(if (mode == 1) Set(key, v) else SessionSet(key, v))
+				} else if mode == 2 or mode == 4 {
 					$at = a1
-					$fx = $fx.append(Remove(key))
+					$fx = $fx.append(if (mode == 2) Remove(key) else SessionRemove(key))
 				} else {
 					crash "unknown store op"
 				}
 			} else if op == 18 {
-				$fx = $fx.append(Focus(Dom.byte(b, $at), Dom.u32(b, $at + 1)))
+				mode = Dom.byte(b, $at)
+				ref_node = Dom.u32(b, $at + 1)
+				target_index = Dom.lookup($d, ref_node)
 				$at = $at + 5
+				action = if mode >= 1 and mode <= 5 {
+					Focus(mode)
+				} else if mode == 6 {
+					block = Dom.byte(b, $at)
+					inline = Dom.byte(b, $at + 1)
+					behavior = Dom.byte(b, $at + 2)
+					if block > 3 or inline > 3 or behavior > 2 {
+						crash "executor: invalid scroll-into-view operands"
+					}
+					$at = $at + 3
+					IntoView({ block, inline, behavior })
+				} else if mode == 7 {
+					(top, next) = Dom.read_edge(b, $at)
+					(left, end) = Dom.read_edge(b, next)
+					behavior = Dom.byte(b, end)
+					if behavior > 2 {
+						crash "executor: invalid scroll behavior"
+					}
+					$at = end + 1
+					To({ top, left, behavior })
+				} else {
+					crash "executor: unknown REF mode ${mode.to_str()}"
+				}
+				$fx = $fx.append(Ref({ node: ref_node, target: target_index, action }))
 			} else if op == 17 {
 				(t, a1) = Dom.str(b, $at)
 				$at = a1
@@ -757,11 +1657,39 @@ Dom := [].{
 				(name, a1) = Dom.str(b, $at + 24)
 				$at = a1
 				$fx = $fx.append(Save(file, name))
+			} else if op == 25 {
+				on = Dom.byte(b, $at)
+				if on > 1 {
+					crash "executor: GUARD needs a flag 0 or 1"
+				}
+				$at = $at + 1
+				$fx = $fx.append(Guard(on == 1))
+			} else if op == 24 {
+				if flags != 1 {
+					crash "executor: TRANSITION requires marked batch"
+				}
+				n = Dom.u32(b, $at).to_u64()
+				$at = $at + 4
+				var $types = []
+				var $i = 0.U64
+				while $i < n {
+					(t, next) = Dom.str(b, $at)
+					$types = $types.append(t)
+					$at = next
+					$i = $i + 1
+				}
+				if $at != b.len() {
+					crash "executor: TRANSITION must be last"
+				}
+				$d = Dom.transition($d, $types)
 			} else {
-				crash "unknown command ${op.to_str()}"
+				crash "executor: unknown command ${op.to_str()}"
+			}
+			if $at == b.len() and flags == 1 and op != 24 {
+				crash "executor: marked batch is missing TRANSITION"
 			}
 		}
-		{ dom: $d, ops: $ops, fx: $fx, written: $written, values: $values }
+		{ dom: $d, ops: $ops, fx: $fx, written: $written, values: $values, next: $at }
 	}
 
 	## A file's handle token and range on the wire, `token:u64 start:u64
@@ -774,6 +1702,9 @@ Dom := [].{
 	## independently of the engine that wrote it.
 	Work : { counters : List(U64), cleanups : List((Str, U64)) }
 
+	## Preserve counter order and cleanup names from one complete work record.
+	## The primitive readers reject short operands, and the final length check
+	## rejects trailing bytes that would otherwise hide a framing mismatch.
 	decode_work : List(U8) -> Work
 	decode_work = |b| {
 		n = Dom.u32(b, 0).to_u64()
@@ -801,116 +1732,90 @@ Dom := [].{
 		{ counters: $cs, cleanups: $runs }
 	}
 
+	## Combine two little-endian words without a floating-point conversion.
+	## Handle tokens, ranges and work counters therefore retain all 64 bits in
+	## the oracle's decoded values.
 	u64 : List(U8), U64 -> U64
 	u64 = |b, at| Dom.u32(b, at).to_u64() + Dom.u32(b, at + 4).to_u64().shl_wrap(32)
 
-	## The (node, handler) pair an event `ev` on node index i dispatches, as
-	## the browser runtime computes it: the nearest handler for `ev` walking
-	## up (bubbling), then the nearest node with an engine id.
-	target : Model, U64, Str -> Try((U32, U32), [NoHandler])
-	target = |dom, i, ev| {
-		var $n = i
-		var $h = -1.I64
+	## Resolve the nearest declared handler and its payload kind and policy
+	## bits. Non-bubbling events inspect only the target; a reference's command
+	## id never replaces the owning row's routing id.
+	target : Model, U64, Str, Bool -> Try(Target, [NoHandler])
+	target = |dom, i, ev, bubbles| {
+		var $at = i
+		var $found = NoListener
 		while True {
-			n = Dom.node(dom, $n)
-			if $h < 0 {
-				# A handler name may carry a policy suffix ("click:prevent").
-				match n.hs.find_first(|(e, _)| e == ev or e.starts_with("${ev}:")) {
-					Ok((_, hh)) => {
-						$h = hh.to_i64()
+			n = Dom.node(dom, $at)
+			if $found == NoListener and ($at == i or bubbles) {
+				match n.hs.find_first(|listener| listener.event == ev) {
+					Ok(listener) => {
+						$found = Found(listener, $at)
 					}
 					Err(_) => {}
 				}
 			}
-			if n.rn != 0 and $h >= 0 {
-				return Ok((n.rn, $h.to_u32_wrap()))
+			match $found {
+				Found(listener, declaring) if n.rn != 0 => return Ok({ node: n.rn, handler: listener.handler, event: listener.event, kind: listener.kind, policies: listener.policies, declaring })
+				_ => {}
 			}
 			if n.parent == 0 {
 				return Err(NoHandler)
 			}
-			$n = n.parent - 1
+			$at = n.parent - 1
 		}
 	}
 
-	## The (node, handler) pair a `:files` event `ev` on node index i
-	## dispatches: as `target`, but the nearest handler for `ev` must take
-	## files (a `:files` suffix), as the runtime requires before it hands an
-	## event's files over.
-	files_target : Model, U64, Str -> Try((U32, U32), [NoHandler])
-	files_target = |dom, i, ev| {
-		var $n = i
-		var $h = -1.I64
-		while True {
-			n = Dom.node(dom, $n)
-			if $h < 0 {
-				match n.hs.find_first(|(e, _)| e == ev or e.starts_with("${ev}:")) {
-					Ok((e, hh)) => {
-						if !e.ends_with(":files") {
-							return Err(NoHandler)
-						}
-						$h = hh.to_i64()
-					}
-					Err(_) => {}
-				}
-			}
-			if n.rn != 0 and $h >= 0 {
-				return Ok((n.rn, $h.to_u32_wrap()))
+	## The nearest nonempty pointer zone at or above a node. The key is only
+	## returned to the app that authored it, never resolved as engine identity.
+	zone_of : Model, U64 -> Try({ index : U64, key : Str }, [Outside])
+	zone_of = |dom, i| {
+		var $at = i
+		while $at != dom.root {
+			n = Dom.node(dom, $at)
+			key = Dom.live_value(n, "pointer_zone")
+			if !key.is_empty() {
+				return Ok({ index: $at, key })
 			}
 			if n.parent == 0 {
-				return Err(NoHandler)
+				return Err(Outside)
 			}
-			$n = n.parent - 1
+			$at = n.parent - 1
 		}
+		Err(Outside)
 	}
 
-	## Whether the handler event `ev` dispatches from node index i asks the
-	## browser to prevent the event's default action (a `:prevent` suffix), as
-	## the runtime decides it when it dispatches (design.md, "Browser events
-	## and policies"). An event that reaches no handler prevents nothing.
-	prevents : Model, U64, Str -> Bool
-	prevents = |dom, i, ev| {
-		var $n = i
-		var $name = ""
-		while True {
-			n = Dom.node(dom, $n)
-			if $name == "" {
-				match n.hs.find_first(|(e, _)| e == ev or e.starts_with("${ev}:")) {
-					Ok((e, _)) => {
-						$name = e
-					}
-					Err(_) => {}
-				}
-			}
-			if n.rn != 0 and $name != "" {
-				return $name.ends_with(":prevent") or $name.contains(":prevent:")
-			}
-			if n.parent == 0 {
-				return Bool.False
-			}
-			$n = n.parent - 1
-		}
-	}
+	## Serialize once from explicit model facts. Picture mode independently parses
+	## the emitted source before returning claims; diagnostics retain the same
+	## representation without certifying its suitability for HTML parsing.
+	render : Model, RenderProps -> Try(Rendered, RenderError)
+	render = render_model
 
-	render : Model, U64 -> Str
-	render = |dom, i| {
-		n = Dom.node(dom, i)
-		if n.tag == "" {
-			n.text
-		} else {
-			attrs = n.attrs.map(|(k, v)| " ${k}=\"${v}\"")
-			inner = n.kids.map(|k| Dom.render(dom, k))
-			"<${n.tag}${Str.join_with(attrs, "")}>${Str.join_with(inner, "")}</${n.tag}>"
-		}
-	}
-
+	## Collect text-leaf contents through the subtree's ordered children.
+	## This models textContent for assertions, independently of layout,
+	## attributes and live control properties.
 	text_of : Model, U64 -> Str
 	text_of = |dom, i| {
 		n = Dom.node(dom, i)
-		if (n.tag == "") n.text else Str.join_with(n.kids.map(|k| Dom.text_of(dom, k)), "")
+		if (n.kind == 3) "" else if (n.kind == 2) n.text else Str.join_with(n.kids.map(|k| Dom.text_of(dom, k)), "")
 	}
 
+	## Read an option's explicit value or its collapsed ordinary descendant
+	## text. HTML/SVG script contents and inert template content do not contribute;
+	## non-ASCII spaces remain data. This models the browser's value getter, not
+	## a display label or the label getter's image-alt behavior.
+	option_value : Model, U64 -> Str
+	option_value = |dom, index| collect_option_value(dom, { root: index, max_nodes: dom.nodes.len(), max_bytes: 18_446_744_073_709_551_615 }) ?? crash "Dom.option_value: invalid or oversized model text"
+
+	## Attribute presence is independent of its text: an empty value is present.
+	has_attr : DNode, Str -> Bool
+	has_attr = |element, name| element.attrs.any(|(key, _)| key.namespace.is_empty() and key.local == name)
+
+	## Read the first stored value for an attribute, using empty text when
+	## absent. A caller testing presence must also use has_attr, because present
+	## empty text is a valid ordinary attribute value.
 	attr_of : DNode, Str -> Str
-	attr_of = |n, name| n.attrs.find_first(|(k, _)| k == name).map_ok(|(_, v)| v) ?? ""
+	attr_of = |n, name| n.attrs.find_first(|(key, _)| key.namespace.is_empty() and key.local == name).map_ok(|(_, v)| v) ?? ""
 
 	## First node (depth-first) satisfying `pred`.
 	find : Model, U64, (DNode -> Bool) -> Try(U64, [NotFound])
@@ -930,13 +1835,20 @@ Dom := [].{
 		Err(NotFound)
 	}
 
+	## Walk the attached tree for the first node with a present matching
+	## attribute. Checking presence separately prevents an empty expected value
+	## from matching a node that never had the attribute.
 	by_attr : Model, Str, Str -> Try(U64, [NotFound])
-	by_attr = |dom, name, value| Dom.find(dom, dom.root, |n| Dom.attr_of(n, name) == value)
+	by_attr = |dom, name, value| Dom.find(dom, dom.root, |n| Dom.has_attr(n, name) and Dom.attr_of(n, name) == value)
 
-	## Every node (depth-first) whose text content equals `t` and has a handler.
-	click_target : Model, U64 -> Try((U32, U32), [NoHandler])
-	click_target = |dom, i| Dom.target(dom, i, "click")
+	## Resolve a click for an already located node through the ordinary
+	## bubbling listener route, retaining the owning row's engine address.
+	click_target : Model, U64 -> Try(Target, [NoHandler])
+	click_target = |dom, i| Dom.target(dom, i, "click", Bool.True)
 
+	## Find the first attached button with one child carrying the given stored
+	## text. This narrow fixture helper does not resolve nested text or accessible
+	## names; the spec runner's semantic locators handle those cases.
 	button_with_text : Model, Str -> Try(U64, [NotFound])
 	button_with_text = |dom, t| Dom.find(dom, dom.root, |n| n.tag == "button" and n.kids.len() == 1 and (Dom.node(dom, n.kids.get(0) ?? 0)).text == t)
 
@@ -946,8 +1858,8 @@ Dom := [].{
 	expect {
 		le32 = |n| [n.bitwise_and(0xFF).to_u8_wrap(), n.shr_zf_wrap(8).bitwise_and(0xFF).to_u8_wrap(), 0, 0]
 		lstr = |t| le32(t.to_utf8().len().to_u32_wrap()).concat(t.to_utf8())
-		elem = |id, tag| [8.U8].concat(le32(id)).concat(le32(0.U32)).concat(le32(0.U32)).concat(lstr(tag))
-		tpl_bytes = [1.U8].concat(lstr("li")).concat([0, 0, 0])
+		elem = |id, tag| [8.U8].concat(le32(id)).concat(le32(0.U32)).concat(le32(0.U32)).concat([0]).concat(lstr("")).concat(lstr(tag)).append(0)
+		tpl_bytes = [1.U8, 0].concat(lstr("")).concat(lstr("li")).concat([0, 0, 0, 0])
 		template = [7.U8].concat(le32(0.U32)).concat(le32(tpl_bytes.len().to_u32_wrap())).concat(tpl_bytes)
 		cmds =
 			elem(1.U32, "ul")
@@ -958,7 +1870,1357 @@ Dom := [].{
 				.concat(elem(3.U32, "ul"))
 				.concat(template)
 				.concat([6.U8].concat(le32(3.U32)).concat(le32(0.U32)))
-		dom = Dom.apply(Dom.new({}), cmds)
+		dom = Dom.apply(Dom.new({}), [0].concat(cmds))
 		(dom.statics.get(2) ?? 0) != 0
 	}
+
+	## A non-bubbling event reaches only its target's handler. A bubbling
+	## occurrence of the same type can reach the ancestor instead.
+	expect {
+		base = Dom.new({})
+		(d1, parent) = Dom.add_node(base, { ..Dom.empty_node, tag: "div", rn: 10, hs: [{ event: "cancel", handler: 1, kind: 1, policies: 0 }, { event: "scroll", handler: 2, kind: 1, policies: 0 }] })
+		(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", parent: parent + 1, hs: [{ event: "close", handler: 3, kind: 1, policies: 0 }] })
+		actual = {
+			target: Dom.target(d2, child, "close", Bool.False),
+			ancestor: Dom.target(d2, child, "scroll", Bool.False),
+			bubbling: Dom.target(d2, child, "cancel", Bool.True),
+		}
+		actual == { target: Ok({ node: 10, handler: 3, event: "close", kind: 1, policies: 0, declaring: child }), ancestor: Err(NoHandler), bubbling: Ok({ node: 10, handler: 1, event: "cancel", kind: 1, policies: 0, declaring: parent }) }
+	}
+
+	## Removing an ancestor drops both a row's routing id and the command
+	## aliases of its references; rebinding an id starts an independent owner.
+	expect {
+		(d1, parent) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div" })
+		(d2, row) = Dom.add_node(d1, { ..Dom.empty_node, tag: "li", rn: 2 })
+		(d3, ref_node) = Dom.add_node(d2, { ..Dom.empty_node, tag: "input" })
+		d4 = Dom.insert(Dom.insert(Dom.insert(d3, d3.root, parent, Err(End)), parent, row, Err(End)), row, ref_node, Err(End))
+		d5 = Dom.bind(Dom.set_row(Dom.bind(d4, 1, parent), 2, row, 0), 3, ref_node)
+		d6 = Dom.forget_subtree(d5, parent)
+		actual = { parent: d6.statics.get(1)?, row: d6.statics.get(2)?, ref: d6.statics.get(3)?, members: (d6.rows.get(0)?).len() }
+		actual == { parent: 0, row: 0, ref: 0, members: 0 }
+	}
+
+	## Namespace URIs are identity data, independent from the engine's namespace
+	## choices and from the parser's current element vocabulary.
+	html_namespace : Str
+	html_namespace = "http://www.w3.org/1999/xhtml"
+	svg_namespace : Str
+	svg_namespace = "http://www.w3.org/2000/svg"
+
+	## Unused hole metadata has no name; this sentinel never reaches a DOM write.
+	empty_name : ExpandedName
+	empty_name = { namespace: "", prefix: "", local: "" }
+
+	## Ordinary model services address unnamespaced attributes by exact local text.
+	unqualified : Str -> ExpandedName
+	unqualified = |local| { namespace: "", prefix: "", local }
+
+	## Test fixtures and browser-model services use the same expanded attribute
+	## representation as decoded commands, without inventing namespaces.
+	attributes : List((Str, Str)) -> List((ExpandedName, Str))
+	attributes = |pairs| pairs.map(|(local, value)| (Dom.unqualified(local), value))
+
+	## Qualified spelling is only serialization; it is never an attribute key.
+	written_name : ExpandedName -> Str
+	written_name = |name| if (name.prefix.is_empty()) name.local else "${name.prefix}:${name.local}"
+
+	## HTML interface behavior requires both its namespace and exact local name.
+	## Resolved raw HTML case has already been supplied by the command stream.
+	html_tag : DNode, Str -> Bool
+	html_tag = |element, local| element.kind == 1 and element.namespace == Dom.html_namespace and element.tag == local
+
+	## Read one explicit namespace and expanded name. Framing and DOM grammar
+	## are checked independently from Core; unlisted names remain accepted.
+	expanded_name : List(U8), U64, Bool -> (ExpandedName, U64)
+	expanded_name = |bytes, at, element| {
+		code = Dom.byte(bytes, at)
+		(namespace, prefix_at) = match code {
+			0 => (Dom.html_namespace, at + 1)
+			1 => (Dom.svg_namespace, at + 1)
+			2 => ("http://www.w3.org/1998/Math/MathML", at + 1)
+			3 => ("", at + 1)
+			4 => {
+				(uri, next) = Dom.str(bytes, at + 1)
+				if uri.is_empty() {
+					crash "executor: explicit namespace URI is empty"
+				}
+				(uri, next)
+			}
+			_ => crash "executor: unknown namespace kind"
+		}
+		(prefix, local_at) = Dom.str(bytes, prefix_at)
+		(local, next) = Dom.str(bytes, local_at)
+		name = { namespace, prefix, local }
+		Dom.validate_name(name, element)
+		(name, next)
+	}
+
+	## Modern DOM local/prefix rules are broader than XML NCNames. Explicit
+	## expanded parts must also be representable without a different first-colon
+	## split. Ordinary raw HTML and unnamespaced attributes retain local colons.
+	validate_name : ExpandedName, Bool -> {}
+	validate_name = |name, element| {
+		if !dom_local_valid(name.local, element) {
+			crash "executor: invalid namespace-dependent local name"
+		}
+		prefix = name.prefix
+		if !prefix.is_empty() {
+			if prefix.to_utf8().any(|unit| [0.U8, 9, 10, 12, 13, 32, 47, 58, 62].contains(unit)) {
+				crash "executor: invalid namespace prefix"
+			}
+			if name.namespace.is_empty() {
+				crash "executor: namespace prefix without namespace"
+			}
+			if prefix == "xml" and name.namespace != "http://www.w3.org/XML/1998/namespace" {
+				crash "executor: xml prefix requires XML namespace"
+			}
+		} else if name.local.contains(":") and !((element and [Dom.html_namespace, Dom.svg_namespace, "http://www.w3.org/1998/Math/MathML", ""].contains(name.namespace)) or (!element and name.namespace.is_empty())) {
+			crash "executor: unrepresentable unprefixed local name"
+		}
+		ordinary = prefix.is_empty() and ((element and (name.namespace == Dom.html_namespace or name.namespace.is_empty())) or (!element and name.namespace.is_empty()))
+		declares = prefix == "xmlns" or Dom.written_name(name) == "xmlns"
+		bare_xmlns = element and prefix.is_empty() and name.local == "xmlns"
+		if !ordinary and !bare_xmlns and (name.namespace == "http://www.w3.org/2000/xmlns/") != declares {
+			crash "executor: invalid xmlns namespace pairing"
+		}
+		if element and prefix.is_empty() and name.local.contains(":") {
+			foreign = [Dom.svg_namespace, "http://www.w3.org/1998/Math/MathML"].contains(name.namespace)
+			bytes = name.local.to_utf8()
+			first = bytes.first() ?? crash "validated nonempty local name"
+			if foreign and !((first >= 65 and first <= 90) or (first >= 97 and first <= 122)) {
+				crash "executor: foreign colon factory requires an ASCII letter"
+			}
+			if (foreign or name.namespace == Dom.html_namespace) and bytes.any(|unit| unit >= 65 and unit <= 90) {
+				crash "executor: empty-node factory would fold the local name"
+			}
+		}
+		if bare_xmlns and !ordinary and name.namespace != "http://www.w3.org/2000/xmlns/" {
+			if name.namespace == "http://www.w3.org/XML/1998/namespace" or name.namespace.to_utf8().any(|unit| unit < 32 and ![9.U8, 10, 13].contains(unit)) or name.namespace.contains("\u(FFFE)") or name.namespace.contains("\u(FFFF)") {
+				crash "executor: unrepresentable empty-node namespace"
+			}
+		}
+	}
+
+	## DOM updates identify an attribute by URI/local and preserve its existing
+	## prefix when only its value changes, as setAttributeNS does in Chrome.
+	assign_attribute : List((ExpandedName, Str)), ExpandedName, Str -> List((ExpandedName, Str))
+	assign_attribute = |entries, name, value| {
+		found = entries.any(|(key, _)| key.namespace == name.namespace and key.local == name.local)
+		if found {
+			entries.map(|(key, prior)| if (key.namespace == name.namespace and key.local == name.local) (key, value) else (key, prior))
+		} else entries.append((name, value))
+	}
+
+	## Removal ignores prefixes and never removes another namespace's namesake.
+	remove_expanded_on : Model, U64, ExpandedName -> Model
+	remove_expanded_on = |dom, index, name| Dom.modify(
+		dom,
+		index,
+		|element| {
+			attrs = element.attrs.keep_if(|(key, _)| key.namespace != name.namespace or key.local != name.local)
+			{ ..element, attrs, shown: if (Dom.html_tag(element, "dialog") and name.namespace.is_empty() and name.local == "open") Hidden else element.shown }
+		},
+	)
+
+	## Present text is literal data; only the presence tag removes an attribute.
+	set_expanded_presence : Model, U64, ExpandedName, [Absent, Present(Str)] -> Model
+	set_expanded_presence = |dom, index, name, presence| match presence {
+		Absent => Dom.remove_expanded_on(dom, index, name)
+		Present(value) => Dom.set_expanded_on(dom, index, name, value)
+	}
+
+	## Keep attribute text and the dialog's browser state consistent by presence.
+	set_expanded_on : Model, U64, ExpandedName, Str -> Model
+	set_expanded_on = |dom, index, name, value| Dom.modify(
+		dom,
+		index,
+		|element| {
+			attrs = Dom.assign_attribute(element.attrs, name, value)
+			{ ..element, attrs, shown: if (Dom.html_tag(element, "dialog") and name.namespace.is_empty() and name.local == "open" and element.shown == Hidden) Open else element.shown }
+		},
+	)
+
+	## An intrinsic template fragment is a DOM node, not an emitted engine node.
+	## Its parent chain ends here, so inert descendants never bubble through the
+	## template owner. The owner still visits it when disposing owned addresses.
+	create_node : Model, DNode -> (Model, U64)
+	create_node = |dom, element| {
+		(d1, index) = Dom.add_node(dom, element)
+		if !Dom.html_tag(element, "template") {
+			return (d1, index)
+		}
+		(d2, fragment) = Dom.add_node(d1, { ..Dom.empty_node, namespace: "", kind: 4, tag: "" })
+		(Dom.modify(d2, index, |owner| { ..owner, content: Some(fragment) }), index)
+	}
+
+	## Decode child ownership independently of namespace construction. Both
+	## choices are legal on HTML templates; Content is illegal on other nodes.
+	container : List(U8), U64, ExpandedName -> U8
+	container = |bytes, at, name| {
+		mode = Dom.byte(bytes, at)
+		if mode == 0 {
+			return 0
+		}
+		if mode == 1 and name.namespace == Dom.html_namespace and name.local == "template" {
+			return 1
+		}
+		crash "executor: invalid child container"
+	}
+
+	## Follow only the explicit container step. No namespace inheritance or
+	## literal provenance is reconstructed while applying a command or hole path.
+	child_target : Model, U64, U8 -> U64
+	child_target = |dom, index, mode| {
+		if mode == 0 {
+			return index
+		}
+		if mode == 1 {
+			return match Dom.node(dom, index).content {
+				Some(fragment) => fragment
+				None => crash "executor: content path requires an HTML template"
+			}
+		}
+		crash "executor: unknown child container"
+	}
+
+}
+
+## A keymap gives exact labels priority over an earlier physical fallback;
+## duplicate places are considered only inside the selected chord group.
+expect {
+	key = { key: "л", code: "KeyK", ctrl: True, alt: False, shift: False, meta: False, composing: False }
+	map = Dom.parse_keymap("paC---1:kkaC---2:л")
+	matched = Dom.key_match(map, key, False)?
+	{ heard: matched.heard.key, prevent: matched.prevent } == { heard: "л", prevent: Bool.False }
+}
+
+## Dvorak labels suppress physical fallback, and composing keys bypass every
+## explicit entry while an every declaration preserves their own spelling.
+expect {
+	base = { key: "k", code: "KeyK", ctrl: True, alt: False, shift: False, meta: False, composing: False }
+	map = Dom.parse_keymap("paC---1:k")
+	{ dvorak: Dom.key_match(map, { ..base, key: "t" }, False).is_err(), cyrillic: Dom.key_match(map, { ..base, key: "л" }, False).map_ok(|m| m.heard.key), composing: Dom.key_match(map, { ..base, composing: True }, False).is_err(), every: Dom.key_match(Dom.parse_keymap("a*"), { ..base, composing: True }, False).map_ok(|m| m.heard.key) } == { dvorak: Bool.True, cyrillic: Ok("k"), composing: Bool.True, every: Ok("k") }
+}
+
+## OutsideText duplicates fall through without changing their listed order.
+expect {
+	key = { key: "/", code: "Slash", ctrl: False, alt: False, shift: False, meta: False, composing: False }
+	map = Dom.parse_keymap("po----1:/ka----1:/o*")
+	{ outside: Dom.key_match(map, key, False).map_ok(|m| m.prevent), inside: Dom.key_match(map, key, True).map_ok(|m| m.prevent), every: Dom.key_match(map, { ..key, key: "Escape" }, True).is_err() } == { outside: Ok(Bool.True), inside: Ok(Bool.False), every: Bool.True }
+}
+
+## Shift-insensitive Unicode categories exclude letters and Space, and require
+## exactly one scalar rather than a combining sequence or a named key.
+expect ["?", "`", "€", "💡", "л", "é", " ", "á", "ArrowDown"].map(Dom.key_symbol) == [Bool.True, Bool.True, Bool.True, Bool.True, Bool.False, Bool.False, Bool.False, Bool.False, Bool.False]
+
+## OutsideText follows HTML enumeration and inheritance rather than treating
+## an arbitrary contenteditable attribute as true or a raw input type as text.
+expect {
+	(d1, parent) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", attrs: Dom.attributes([("contenteditable", "TRUE")]) })
+	(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "span", attrs: Dom.attributes([("contenteditable", "invalid")]) })
+	dom = Dom.insert(Dom.insert(d2, d2.root, parent, Err(End)), parent, child, Err(End))
+	stopped = Dom.set_attr_on(dom, child, "contenteditable", "FALSE")
+	false_parent = Dom.set_attr_on(dom, parent, "contenteditable", "FALSE")
+	(d3, checkbox) = Dom.add_node(dom, { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", "CHECKBOX")]) })
+	{ inherited: Dom.text_entry(dom, child), stopped: Dom.text_entry(stopped, child), inherited_false: Dom.text_entry(false_parent, child), checkbox: Dom.text_entry(d3, checkbox) } == { inherited: Bool.True, stopped: Bool.False, inherited_false: Bool.False, checkbox: Bool.False }
+}
+
+## An empty declared chord is a valid inert entry, while an empty browser
+## key dispatches nothing even when every is declared.
+expect {
+	key = { key: "", code: "", ctrl: False, alt: False, shift: False, meta: False, composing: False }
+	map = Dom.parse_keymap("pa----0:a*")
+	{ empty: Dom.key_match(map, key, False).is_err(), every: Dom.key_match(map, { ..key, key: "F2" }, False).map_ok(|m| m.heard.key) } == { empty: Bool.True, every: Ok("F2") }
+}
+
+## REF decoding captures lifetimes and keeps all legacy modes byte-for-byte.
+expect {
+	(d1, target) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "button" })
+	dom = Dom.bind(d1, 1, target)
+	legacy = [1.U8, 2, 3, 4, 5].fold([], |bytes, mode| bytes.concat([18, mode, 1, 0, 0, 0]))
+	bytes = legacy.concat([18, 6, 1, 0, 0, 0, 0, 1, 2, 18, 7, 1, 0, 0, 0, 3, 255, 0, 0, 0, 2, 1])
+	actual = Dom.apply_full(dom, [0].concat(bytes))
+	actual.fx == [1.U8, 2, 3, 4, 5].map(|mode| Ref({ node: 1, target, action: Focus(mode) })).concat([
+		Ref({ node: 1, target, action: IntoView({ block: 0, inline: 1, behavior: 2 }) }),
+		Ref({ node: 1, target, action: To({ top: Px(255), left: End, behavior: 1 }) }),
+	])
+}
+
+## Marked batches retain their exact ordered types without interpreting CSS.
+expect {
+	marked = [1.U8, 24, 2, 0, 0, 0, 5, 0, 0, 0].concat("shelf".to_utf8()).concat([3, 0, 0, 0]).concat("x y".to_utf8())
+	first = Dom.apply_full(Dom.new({}), marked)
+	second = Dom.apply(first.dom, [1, 24, 0, 0, 0, 0])
+	{ ops: first.ops, count: second.transitions.count, types: first.dom.transitions.records.get(1).map_ok(|r| r.types), empty: second.transitions.records.get(2).map_ok(|r| r.types) } == { ops: [24], count: 2, types: Ok(["shelf", "x y"]), empty: Ok([]) }
+}
+
+## Observation evicts at both retention limits and never stops DOM progress.
+expect {
+	var $dom = Dom.new({})
+	var $i = 0.U64
+	while $i < 4097 {
+		$dom = Dom.transition($dom, [])
+		$i = $i + 1
+	}
+	counted = $dom
+	large = Str.from_utf8(List.repeat(97.U8, 524289)) ?? crash "ASCII"
+	a = Dom.transition(counted, [large])
+	b = Dom.transition(a, [large])
+	oversize = Dom.transition(b, [large, large])
+	maxed = { ..oversize, transitions: { ..oversize.transitions, count: 18446744073709551615 } }
+	exhausted = Dom.transition(maxed, [])
+	{ count: counted.transitions.count, old: counted.transitions.records.contains(1), len: counted.transitions.records.len(), byte_len: b.transitions.records.len(), bytes: b.transitions.bytes, oversize: oversize.transitions.records.len(), total: oversize.transitions.count, exhausted: exhausted.transitions.exhausted } == { count: 4097, old: False, len: 4096, byte_len: 1, bytes: 524293, oversize: 0, total: 4100, exhausted: True }
+}
+
+## Browser defaults affect classification without rewriting raw attributes.
+expect {
+	kinds = ["CHECKBOX", "Text", "FILE", "Radio", "txet", "", " text ", "TÉXT"]
+	inputs = kinds.map(|kind| { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)]) })
+	buttons = ["SUBMIT", "Reset", "button", "sumbit", "", " submit ", "SÚBMIT"].map(|kind| { ..Dom.empty_node, tag: "button", attrs: Dom.attributes([("type", kind)]) })
+	inputs.map(Dom.input_type) == ["checkbox", "text", "file", "radio", "text", "text", "text", "text"] and inputs.map(|element| Dom.attr_of(element, "type")) == kinds and buttons.map(Dom.input_type) == ["submit", "reset", "button", "submit", "submit", "submit", "submit"] and Dom.input_type({ ..Dom.empty_node, tag: "input" }) == "text" and Dom.input_type({ ..Dom.empty_node, tag: "button" }) == "submit"
+}
+
+## Foreign lookalikes and unrelated HTML elements do not inherit control types.
+expect {
+	foreign = [Dom.svg_namespace, "urn:controls", ""].map(|namespace| { ..Dom.empty_node, namespace, tag: "input", attrs: Dom.attributes([("type", "Text")]) })
+	foreign.map(Dom.input_type) == ["", "", ""] and Dom.input_type({ ..Dom.empty_node, tag: "INPUT" }) == "" and Dom.input_type(Dom.empty_node) == ""
+}
+
+## The transport's six ordinary boolean names belong to the parser's HTML
+## vocabulary. Hidden has a different grammar and is checked separately.
+expect [("input", "disabled"), ("option", "selected"), ("input", "readonly"), ("input", "required"), ("select", "multiple"), ("details", "open")].all(|(element, attribute)| MarkupFacts.is_boolean_attribute({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: element }, { namespace: NoNamespace, prefix: Unprefixed, local: attribute })) and !MarkupFacts.is_boolean_attribute({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: "div" }, { namespace: NoNamespace, prefix: Unprefixed, local: "hidden" })
+
+## Preserve the legacy wire convention without describing hidden as a boolean
+## attribute or applying a browser default to its explicit enumeration.
+expect MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "div" }, { namespace: NoNamespace, prefix: Unprefixed, local: "hidden" }) == Ok(["", "hidden", "until-found"])
+
+## OutsideText is platform policy over real HTML input keywords; the parser
+## does not choose the policy or repair an unknown type into a known one.
+expect MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { namespace: NoNamespace, prefix: Unprefixed, local: "type" }).map_ok(|keywords| Protocol.text_entry_excluded.all(|keyword| keywords.contains(keyword))) == Ok(True)
+
+## The controlled popover policy deliberately supports auto/manual, while
+## the parser's complete grammar also describes empty and hint spellings.
+expect MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "div" }, { namespace: NoNamespace, prefix: Unprefixed, local: "popover" }) == Ok(["", "auto", "manual", "hint"])
+
+## Independent DOM local-name grammar. UTF-8 validity is established by str;
+## no XML Unicode-name ranges or engine construction helpers are shared.
+dom_local_valid : Str, Bool -> Bool
+dom_local_valid = |text, element| {
+	bytes = text.to_utf8()
+	first = bytes.first() ?? return False
+	space = [0.U8, 9, 10, 12, 13, 32, 47, 62]
+	if !element {
+		return !bytes.any(|byte| space.contains(byte) or byte == '=')
+	}
+	letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".to_utf8()
+	if letters.contains(first) {
+		return !bytes.any(|byte| space.contains(byte))
+	}
+	if first < 128 and first != ':' and first != '_' {
+		return False
+	}
+	allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-.:_".to_utf8()
+	bytes.all(|byte| byte >= 128 or allowed.contains(byte))
+}
+
+## Comment nodes retain their data and child position while remaining absent
+## from textContent, independently of any engine constructor or byte encoder.
+expect {
+	word = |n| [n.to_u8_wrap(), 0.U8, 0, 0]
+	text = |value| word(value.count_utf8_bytes()).concat(value.to_utf8())
+	parent = [8.U8].concat(word(1.U64)).concat(word(0.U64)).concat(word(0.U64)).concat([0]).concat(text("")).concat(text("div")).append(0)
+	leaf = |op, id, value| [op].concat(word(id)).concat(word(1.U64)).concat(word(0.U64)).concat(text(value))
+	commands = [0].concat(parent).concat(leaf(10.U8, 2.U64, "before")).concat(leaf(26.U8, 3.U64, "identity:row:7")).concat(leaf(10.U8, 4.U64, "after"))
+	dom = Dom.apply(Dom.new({}), commands)
+	root = Dom.node(dom, Dom.lookup(dom, 1))
+	root.kids.map(|index| Dom.node(dom, index).kind) == [2, 3, 2] and Dom.node(dom, Dom.lookup(dom, 3)).text == "identity:row:7" and Dom.text_of(dom, Dom.lookup(dom, 1)) == "beforeafter"
+}
+
+## A template owns an intrinsic disconnected fragment even when ordinary raw
+## construction selects childNodes. Content placement never changes that mode.
+expect {
+	(d1, ordinary) = Dom.create_node(Dom.new({}), { ..Dom.empty_node, tag: "template" })
+	(d2, inert) = Dom.create_node(d1, { ..Dom.empty_node, tag: "template", container: 1 })
+	(d3, text) = Dom.add_node(d2, { ..Dom.empty_node, namespace: "", kind: 2, text: "inert" })
+	fragment = Dom.child_target(d3, inert, 1)
+	dom = Dom.insert(d3, fragment, text, Err(End))
+	Dom.node(dom, ordinary).kids == [] and Dom.node(dom, inert).kids == [] and Dom.text_of(dom, inert) == "" and Dom.text_of(dom, fragment) == "inert" and Dom.node(dom, text).parent == fragment + 1 and Dom.node(dom, fragment).parent == 0 and Dom.node(dom, fragment).kind == 4 and Dom.node(dom, fragment).ids == []
+}
+
+## Disposing the template removes addresses in its disconnected content through
+## ownership, while ordinary DOM traversal and text observations remain inert.
+expect {
+	(d1, owner) = Dom.create_node(Dom.new({}), { ..Dom.empty_node, tag: "template", container: 1 })
+	(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "span" })
+	fragment = Dom.child_target(d2, owner, 1)
+	d3 = Dom.bind(Dom.insert(d2, fragment, child, Err(End)), 5, child)
+	dom = Dom.forget_subtree(d3, owner)
+	Dom.node(dom, child).ids == [] and (dom.statics.get(5) ?? 0) == 0 and Dom.node(dom, owner).kids == []
+}
+
+## An explicit empty option value wins over its text; qualified and exact-case
+## attributes do not impersonate the ordinary no-namespace value attribute.
+expect {
+	base = { ..Dom.empty_node, tag: "option", kids: [1] }
+	text = { ..Dom.empty_node, kind: 2, tag: "", text: " A  B " }
+	model = { ..Dom.new({}), nodes: [base, text] }
+	explicit = Dom.set_node(model, 0, { ..base, attrs: Dom.attributes([("value", "")]) })
+	qualified = Dom.set_node(model, 0, { ..base, attrs: [({ namespace: "urn:fields", prefix: "x", local: "value" }, "ignored")] })
+	uppercase = Dom.set_node(model, 0, { ..base, attrs: [({ namespace: "", prefix: "", local: "VALUE" }, "ignored")] })
+	{ explicit: Dom.option_value(explicit, 0), qualified: Dom.option_value(qualified, 0), uppercase: Dom.option_value(uppercase, 0) } == { explicit: "", qualified: "A B", uppercase: "A B" }
+}
+
+## Option text follows ordinary descendants, excludes only HTML/SVG scripts,
+## and collapses ASCII spaces without removing NBSP or an em space.
+expect {
+	option = { ..Dom.empty_node, tag: "option", kids: [1, 2, 3] }
+	first = { ..Dom.empty_node, kind: 2, text: " \tA\n" }
+	script = { ..Dom.empty_node, tag: "script", kids: [4] }
+	last = { ..Dom.empty_node, kind: 2, text: " B\u(000C) \u(00A0) C\u(2003) " }
+	skipped = { ..Dom.empty_node, kind: 2, text: "BAD" }
+	model = { ..Dom.new({}), nodes: [option, first, script, last, skipped] }
+	svg = Dom.set_node(model, 2, { ..script, namespace: Dom.svg_namespace })
+	other = Dom.set_node(model, 2, { ..script, namespace: "urn:other" })
+	{ html: Dom.option_value(model, 0), svg: Dom.option_value(svg, 0), other: Dom.option_value(other, 0) } == { html: "A B \u(00A0) C\u(2003)", svg: "A B \u(00A0) C\u(2003)", other: "A BAD B \u(00A0) C\u(2003)" }
+}
+
+## Template content is not an ordinary descendant, while a raw template's
+## ordinary children remain ordinary descendants of the option.
+expect {
+	option = { ..Dom.empty_node, tag: "option", kids: [1, 2, 4] }
+	before = { ..Dom.empty_node, kind: 2, text: "x " }
+	template = { ..Dom.empty_node, tag: "template", content: Some(3) }
+	fragment = { ..Dom.empty_node, kind: 4, namespace: "", kids: [5] }
+	after = { ..Dom.empty_node, kind: 2, text: " y" }
+	inert = { ..Dom.empty_node, kind: 2, text: "inert" }
+	model = { ..Dom.new({}), nodes: [option, before, template, fragment, after, inert] }
+	raw = Dom.set_node(model, 2, { ..template, kids: [5] })
+	{ content: Dom.option_value(model, 0), ordinary: Dom.option_value(raw, 0) } == { content: "x y", ordinary: "x inert y" }
+}
+
+## DOM text offsets count UTF-16 units. A valid UTF-8 scalar starts at one
+## ASCII/leading byte; four-byte scalars take two units, never a split surrogate.
+render_utf16_units : Str -> U64
+render_utf16_units = |text| text.to_utf8().fold(0.U64, |units, byte| if (byte < 128 or byte >= 192) units + if (byte >= 240) 2 else 1 else units)
+
+## Character references preserve text without making data into syntax. Raw
+## text modes are verified by parse-back rather than escaped into other text.
+render_text : Str, MarkupFacts.TextBehavior -> Str
+render_text = |text, mode| match mode {
+	Data | Rcdata => text.replace_each("&", "&amp;").replace_each("<", "&lt;").replace_each(">", "&gt;").replace_each("\r", "&#13;")
+	RawText | ScriptData | Plaintext => text
+}
+
+## Quoted attribute data is escaped once. A character reference keeps CR from
+## undergoing HTML source newline normalization; presence remains independent.
+render_attribute : Str -> Str
+render_attribute = |text| text.replace_each("&", "&amp;").replace_each("\"", "&quot;").replace_each("<", "&lt;").replace_each("\r", "&#13;")
+
+## Escaping preserves a leading BOM, quotes and CR as data rather than syntax.
+expect {
+	actual = { data: render_text("<>&\r\u(FEFF)", Data), attribute: render_attribute("\"<&\r\u(FEFF)"), raw: render_text("x<&", RawText), units: ["", "a", "é", "😀", "a😀é"].map(render_utf16_units) }
+	actual == { data: "&lt;&gt;&amp;&#13;\u(FEFF)", attribute: "&quot;&lt;&amp;&#13;\u(FEFF)", raw: "x<&", units: [0, 1, 1, 2, 4] }
+}
+
+RenderSelection : [Uncontrolled, Controlled({ owner : U64, value : Str, multiple : Bool, matched : Bool, eligible : Bool })]
+
+RenderToken : [Open(U64), Close(U64), Text({ node : U64, mode : MarkupFacts.TextBehavior, initial_lf : Bool }), Comment(U64), EnvelopeOpen({ name : Dom.ExpandedName, attributes : List((Dom.ExpandedName, Str)) }), EnvelopeClose(Dom.ExpandedName)]
+
+RenderState : { tokens : List(RenderToken), minimum_bytes : U64, physical : List(Dom.PictureNode), containers : List(Dom.PictureContainer), logical : List(Dom.LogicalNode), text_runs : List(Dom.TextRun), scaffolds : List(Dom.Scaffold), seen : Dict(U64, {}), selection : RenderSelection, props : Dom.RenderProps }
+
+## The plan's lower byte bound rejects oversized text before joining a run or
+## scanning it for UTF-16 boundaries. Final escaping is bounded separately.
+render_reserve : RenderState, U64 -> Try(RenderState, Dom.RenderError)
+render_reserve = |state, bytes| {
+	if bytes > state.props.limits.max_bytes - state.minimum_bytes {
+		return Err(RenderLimit({ resource: Bytes, maximum: state.props.limits.max_bytes }))
+	}
+	Ok({ ..state, minimum_bytes: state.minimum_bytes + bytes })
+}
+
+## The source model is a tree across both child containers. Reject aliasing or
+## a cycle before recursion, rather than silently rendering one lifetime twice.
+render_visit : RenderState, { model : U64, depth : U64 } -> Try(RenderState, Dom.RenderError)
+render_visit = |state, { model, depth }| {
+	if depth > state.props.limits.max_depth {
+		return Err(RenderLimit({ resource: Depth, maximum: state.props.limits.max_depth }))
+	}
+	if state.logical.len() >= state.props.limits.max_nodes {
+		return Err(RenderLimit({ resource: Nodes, maximum: state.props.limits.max_nodes }))
+	}
+	if state.seen.contains(model) {
+		return Err(InvalidModel({ model, rule: "one model lifetime occurs twice across child containers" }))
+	}
+	Ok({ ..state, seen: state.seen.insert(model, {}) })
+}
+
+## Physical records have their own structural bound, including temporary
+## producer scaffolds which have no logical engine lifetime.
+render_physical : RenderState, Dom.PictureNode -> Try({ state : RenderState, ordinal : U64 }, Dom.RenderError)
+render_physical = |state, node| {
+	ordinal = state.physical.len()
+	if ordinal >= state.props.limits.max_nodes {
+		return Err(RenderLimit({ resource: Nodes, maximum: state.props.limits.max_nodes }))
+	}
+	Ok({ state: { ..state, physical: state.physical.append(node) }, ordinal })
+}
+
+## The bounded core is also used while rendering, before joining source text.
+## The ordinary getter supplies the model's own finite size and no byte ceiling.
+collect_option_value : Dom.Model, { root : U64, max_nodes : U64, max_bytes : U64 } -> Try(Str, [OptionTextLimit([Bytes, Nodes])])
+collect_option_value = |dom, { root, max_nodes, max_bytes }| {
+	option = Dom.node(dom, root)
+	if Dom.has_attr(option, "value") {
+		value = Dom.attr_of(option, "value")
+		if value.count_utf8_bytes() > max_bytes {
+			return Err(OptionTextLimit(Bytes))
+		}
+		return Ok(value)
+	}
+	var $stack = []
+	var $pieces = []
+	var $bytes = 0.U64
+	var $visited = 0.U64
+	var $position = option.kids.len()
+	if $position > max_nodes {
+		return Err(OptionTextLimit(Nodes))
+	}
+	while $position > 0 {
+		$position = $position - 1
+		$stack = $stack.append(option.kids.get($position) ?? crash "Dom.option_value: child index")
+	}
+	while !$stack.is_empty() {
+		if $visited == max_nodes {
+			return Err(OptionTextLimit(Nodes))
+		}
+		$visited = $visited + 1
+		child = Dom.node(dom, $stack.last() ?? crash "Dom.option_value: traversal stack")
+		$stack = $stack.drop_last(1)
+		if child.kind == 2 {
+			count = child.text.count_utf8_bytes()
+			if count > max_bytes - $bytes {
+				return Err(OptionTextLimit(Bytes))
+			}
+			$bytes = $bytes + count
+			$pieces = $pieces.append(child.text)
+		} else if !(child.tag == "script" and [Dom.html_namespace, Dom.svg_namespace].contains(child.namespace)) {
+			$position = child.kids.len()
+			if $stack.len() > max_nodes - $visited or $position > max_nodes - $visited - $stack.len() {
+				return Err(OptionTextLimit(Nodes))
+			}
+			while $position > 0 {
+				$position = $position - 1
+				$stack = $stack.append(child.kids.get($position) ?? crash "Dom.option_value: descendant index")
+			}
+		}
+	}
+	words = Str.join_with($pieces, "")
+		.replace_each("\t", " ")
+		.replace_each("\r", " ")
+		.replace_each("\n", " ")
+		.replace_each("\u(000C)", " ")
+		.split_on(" ")
+		.keep_if(|part| !part.is_empty())
+	Ok(Str.join_with(words, " "))
+}
+
+## Container ordinals are allocated before their children, but their child
+## lists have one holder until complete. Appending a child never copies an
+## already accumulated child list through a retained container record.
+render_container : RenderState, { owner : [Mount, Element(U64)], role : [Children, Content] } -> Try({ state : RenderState, ordinal : U64 }, Dom.RenderError)
+render_container = |state, { owner, role }| {
+	ordinal = state.containers.len()
+	if ordinal >= state.props.limits.max_nodes {
+		return Err(RenderLimit({ resource: Nodes, maximum: state.props.limits.max_nodes }))
+	}
+	Ok({ state: { ..state, containers: state.containers.append({ owner, role, children: [] }) }, ordinal })
+}
+
+render_name : Dom.DNode -> Dom.ExpandedName
+render_name = |node| { namespace: node.namespace, prefix: node.prefix, local: node.tag }
+
+render_behavior : Dom.ExpandedName, Bool -> { is_void : Bool, text_mode : MarkupFacts.TextBehavior, initial_lf : MarkupFacts.InitialNewlineState }
+render_behavior = |name, scripting| {
+	expanded = render_parser_name(name)
+	{ is_void: MarkupFacts.is_void_element(expanded), text_mode: MarkupFacts.text_behavior(expanded, scripting), initial_lf: MarkupFacts.initial_newline(expanded) }
+}
+
+render_parser_name : Dom.ExpandedName -> Markup.Name
+render_parser_name = |name| { namespace: if (name.namespace.is_empty()) NoNamespace else Uri(name.namespace), prefix: if (name.prefix.is_empty()) Unprefixed else Prefix(name.prefix), local: name.local }
+
+## Keyword membership comes from the parser; the browser uses ASCII-insensitive
+## matching without changing the attribute's stored value or applying defaults.
+attribute_keyword : Str, Str, Str -> Try(Str, [NotEnumerated, InvalidKeyword])
+attribute_keyword = |element, attribute, value| {
+	words = MarkupFacts.enumerated_values({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: element }, { namespace: NoNamespace, prefix: Unprefixed, local: attribute })?
+	folded = Spelling.ascii_lower(value)
+	if (words.contains(folded)) Ok(folded) else Err(InvalidKeyword)
+}
+
+render_model : Dom.Model, Dom.RenderProps -> Try(Dom.Rendered, Dom.RenderError)
+render_model = |dom, props| {
+	root = dom.nodes.get(props.root).map_err(|_| InvalidModel({ model: props.root, rule: "missing root lifetime" }))?
+	root_name = if (root.kind == 1) ElementRoot(render_name(root)) else NonElementRoot
+	if props.scope != Subtree and root.kind != 1 {
+		return Err(InvalidModel({ model: props.root, rule: "picture contents require an actual element root" }))
+	}
+	if props.mode == Picture and props.scope != Subtree and root.namespace == Dom.html_namespace and root.tag == "template" and !root.kids.is_empty() {
+		return Err(InvalidModel({ model: props.root, rule: "ordinary mount children of an HTML template cannot be serialized into its content" }))
+	}
+	if props.mode == Picture and props.scope == MountEnvelope and props.enclosing == Unspecified {
+		return Err(InvalidModel({ model: props.root, rule: "a mount envelope requires its actual enclosing parse context" }))
+	}
+	initial = { tokens: [], minimum_bytes: 0, physical: [], containers: [], logical: [], text_runs: [], scaffolds: [], seen: Dict.empty(), selection: Uncontrolled, props }
+	allocated = render_container(initial, { owner: Mount, role: Children })?
+	var $state = allocated.state
+	if props.scope == Subtree {
+		models = if (root.kind == 4) root.kids else [props.root]
+		$state = render_children(dom, { state: $state, models, container: allocated.ordinal, depth: 0, mode: Data, initial_lf: False })?
+	} else {
+		name = render_name(root)
+		behavior = render_behavior(name, props.scripting)
+		if props.scope == MountEnvelope {
+			$state = render_reserve($state, 2 + Dom.written_name(name).count_utf8_bytes() + if (behavior.is_void) 0 else 3 + Dom.written_name(name).count_utf8_bytes())?
+			for (key, value) in root.attrs {
+				$state = render_reserve($state, Dom.written_name(key).count_utf8_bytes() + 4)?
+				$state = render_reserve($state, value.count_utf8_bytes())?
+			}
+			$state = { ..$state, tokens: $state.tokens.append(EnvelopeOpen({ name, attributes: root.attrs })) }
+		}
+		$state = render_children(dom, { state: $state, models: root.kids, container: allocated.ordinal, depth: 0, mode: behavior.text_mode, initial_lf: behavior.initial_lf == Pending })?
+		if props.scope == MountEnvelope and !behavior.is_void {
+			$state = { ..$state, tokens: $state.tokens.append(EnvelopeClose(name)) }
+		}
+	}
+	markup = render_emit($state).map_err(
+		|error| match error {
+			RenderLimit({ resource: Bytes, .. }) => RenderLimit({ resource: Bytes, maximum: props.limits.max_bytes })
+			other => other
+		},
+	)?
+	rendered = { markup, root_name, physical: $state.physical, containers: $state.containers, logical: $state.logical, text_runs: $state.text_runs, scaffolds: $state.scaffolds }
+	if props.mode == Picture {
+		render_parse_back(rendered, { props, root_attributes: root.attrs })?
+	}
+	Ok(rendered)
+}
+
+## Consecutive logical text nodes have one physical parse node. Empty parts
+## stay in the explicit partition; an all-empty run consumes no physical node.
+render_children : Dom.Model, { state : RenderState, models : List(U64), container : U64, depth : U64, mode : MarkupFacts.TextBehavior, initial_lf : Bool } -> Try(RenderState, Dom.RenderError)
+render_children = |dom, { state, models, container, depth, mode, initial_lf }| {
+	var $state = state
+	var $children = []
+	var $at = 0.U64
+	while $at < models.len() {
+		model = models.get($at) ?? crash "Dom.render: child position"
+		node = dom.nodes.get(model).map_err(|_| InvalidModel({ model, rule: "missing child lifetime" }))?
+		if node.kind == 2 {
+			run = $state.text_runs.len()
+			var $parts = []
+			var $texts = []
+			while $at < models.len() {
+				next = models.get($at) ?? crash "Dom.render: text position"
+				text_node = dom.nodes.get(next).map_err(|_| InvalidModel({ model: next, rule: "missing text lifetime" }))?
+				if text_node.kind != 2 {
+					break
+				}
+				$state = render_visit($state, { model: next, depth })?
+				$state = render_reserve($state, text_node.text.count_utf8_bytes())?
+				logical = $state.logical.len()
+				part = $parts.len()
+				$state = { ..$state, logical: $state.logical.append({ model: next, target: TextPart({ run, part }) }) }
+				$parts = $parts.append({ logical, utf16_units: render_utf16_units(text_node.text) })
+				$texts = $texts.append(text_node.text)
+				$at = $at + 1
+			}
+			text = Str.join_with($texts, "")
+			child_index = $children.len()
+			physical = if text.is_empty() {
+				Omitted
+			} else {
+				created = render_physical($state, Text(text))?
+				$state = { ..created.state, tokens: created.state.tokens.append(Text({ node: created.ordinal, mode, initial_lf: initial_lf and $children.is_empty() })) }
+				$children = $children.append(created.ordinal)
+				Node(created.ordinal)
+			}
+			$state = { ..$state, text_runs: $state.text_runs.append({ container, child_index, physical, parts: $parts }) }
+		} else {
+			$state = render_visit($state, { model, depth })?
+			match node.kind {
+				3 => {
+					$state = render_reserve($state, 7 + node.text.count_utf8_bytes())?
+					created = render_physical($state, Comment(node.text))?
+					$state = { ..created.state, tokens: created.state.tokens.append(Comment(created.ordinal)), logical: created.state.logical.append({ model, target: Node(created.ordinal) }) }
+					$children = $children.append(created.ordinal)
+				}
+				1 => {
+					created = render_element(dom, { state: $state, model, node, depth })?
+					$state = created.state
+					$children = $children.append(created.ordinal)
+				}
+				_ => return Err(InvalidModel({ model, rule: "a child must be an element, text or comment" }))
+			}
+			$at = $at + 1
+		}
+	}
+	previous = $state.containers.get(container) ?? crash "Dom.render: container position"
+	Ok({ ..$state, containers: $state.containers.set(container, { ..previous, children: $children }) ?? crash "Dom.render: container completion" })
+}
+
+render_element : Dom.Model, { state : RenderState, model : U64, node : Dom.DNode, depth : U64 } -> Try({ state : RenderState, ordinal : U64 }, Dom.RenderError)
+render_element = |dom, { state, model, node, depth }| {
+	props = state.props
+	deferred_selected = node.namespace == Dom.html_namespace and node.tag == "option" and match state.selection {
+		Uncontrolled => False
+		Controlled(selection) => selection.eligible
+	}
+	name = render_name(node)
+	behavior = render_behavior(name, props.scripting)
+	var $reserved = render_reserve(state, 2 + Dom.written_name(name).count_utf8_bytes() + if (behavior.is_void) 0 else 3 + Dom.written_name(name).count_utf8_bytes())?
+	for (key, value) in node.attrs {
+		if !(deferred_selected and key.namespace.is_empty() and key.local == "selected") {
+			$reserved = render_reserve($reserved, Dom.written_name(key).count_utf8_bytes() + 4)?
+			$reserved = render_reserve($reserved, value.count_utf8_bytes())?
+		}
+	}
+	created = render_physical($reserved, Element({ name, attributes: node.attrs, children: 0, content: NoContent }))?
+	ordinal = created.ordinal
+	allocated = render_container(created.state, { owner: Element(ordinal), role: Children })?
+	children = allocated.ordinal
+	var $state = { ..allocated.state, logical: allocated.state.logical.append({ model, target: Node(ordinal) }), tokens: allocated.state.tokens.append(Open(ordinal)) }
+	var $content = NoContent
+	var $content_models = []
+	match node.content {
+		None => {}
+		Some(fragment) => {
+			fragment_node = dom.nodes.get(fragment).map_err(|_| InvalidModel({ model: fragment, rule: "missing intrinsic template fragment" }))?
+			if fragment_node.kind != 4 {
+				return Err(InvalidModel({ model: fragment, rule: "template content must point to an intrinsic fragment" }))
+			}
+			if $state.seen.contains(fragment) {
+				return Err(InvalidModel({ model: fragment, rule: "an intrinsic content fragment has more than one owner" }))
+			}
+			$state = { ..$state, seen: $state.seen.insert(fragment, {}) }
+			allocated_content = render_container($state, { owner: Element(ordinal), role: Content })?
+			$state = allocated_content.state
+			$content = Content(allocated_content.ordinal)
+			$content_models = fragment_node.kids
+		}
+	}
+	if behavior.is_void and !node.kids.is_empty() {
+		return Err(InvalidModel({ model, rule: "a void element has ordinary children" }))
+	}
+	outer_selection = $state.selection
+	is_html = name.namespace == Dom.html_namespace
+	select_value = node.props.find_first(|(key, _)| key == "value")
+	if is_html and name.local == "select" {
+		$state = {
+			..$state,
+			selection: match select_value {
+				Ok((_, value)) => Controlled({ owner: ordinal, value, multiple: Dom.has_attr(node, "multiple"), matched: False, eligible: True })
+				Err(_) => Uncontrolled
+			},
+		}
+	} else if is_html and (name.local == "datalist" or name.local == "option") {
+		$state = {
+			..$state,
+			selection: match $state.selection {
+				Uncontrolled => Uncontrolled
+				Controlled(value) => Controlled({ ..value, eligible: False })
+			},
+		}
+	}
+	if is_html and name.local == "textarea" and select_value.is_ok() {
+		(_, value) = select_value ?? crash "Dom.render: textarea value"
+		$state = render_control_text(dom, { state: $state, models: node.kids, owner: ordinal, container: children, value, depth: depth + 1, mode: behavior.text_mode, initial_lf: behavior.initial_lf == Pending })?
+	} else {
+		$state = render_children(dom, { state: $state, models: node.kids, container: children, depth: depth + 1, mode: behavior.text_mode, initial_lf: behavior.initial_lf == Pending })?
+	}
+	match $content {
+		NoContent => {}
+		Content(container) => {
+			if props.mode == Picture and !node.kids.is_empty() {
+				return Err(InvalidModel({ model, rule: "ordinary children of an HTML template cannot be serialized into its content" }))
+			}
+			$state = render_children(dom, { state: $state, models: $content_models, container, depth: depth + 1, mode: Data, initial_lf: False })?
+		}
+	}
+	var $attributes = node.attrs
+	if is_html and name.local == "option" {
+		$state = { ..$state, selection: outer_selection }
+		match outer_selection {
+			Controlled(selection) if selection.eligible => {
+				value = collect_option_value(dom, { root: model, max_nodes: $state.props.limits.max_nodes, max_bytes: $state.props.limits.max_bytes }).map_err(|OptionTextLimit(resource)| RenderLimit({ resource, maximum: if (resource == Bytes) $state.props.limits.max_bytes else $state.props.limits.max_nodes }))?
+				selected = value == selection.value and !selection.matched
+				changed = render_override($state, { owner: ordinal, attributes: $attributes, name: { namespace: "", prefix: "", local: "selected" }, value: if (selected) Present("") else Absent })?
+				$state = { ..changed.state, selection: Controlled({ ..selection, matched: selection.matched or selected }) }
+				$attributes = changed.attributes
+			}
+			_ => {}
+		}
+	} else if is_html and name.local == "select" {
+		match $state.selection {
+			Controlled(selection) if !selection.multiple and !selection.matched => {
+				$state = render_no_selection($state, { owner: ordinal, container: children, depth: depth + 1 })?
+			}
+			_ => {}
+		}
+		$state = { ..$state, selection: outer_selection }
+	} else if is_html and name.local == "datalist" {
+		$state = { ..$state, selection: outer_selection }
+	}
+	if deferred_selected {
+		match $attributes.find_first(|(key, _)| key.namespace.is_empty() and key.local == "selected") {
+			Ok((key, value)) => {
+				$state = render_reserve($state, Dom.written_name(key).count_utf8_bytes() + 4)?
+				$state = render_reserve($state, value.count_utf8_bytes())?
+			}
+			Err(_) => {}
+		}
+	}
+	$state = { ..$state, physical: $state.physical.set(ordinal, Element({ name, attributes: $attributes, children, content: $content })) ?? crash "Dom.render: element completion" }
+	if !behavior.is_void {
+		$state = { ..$state, tokens: $state.tokens.append(Close(ordinal)) }
+	}
+	Ok({ state: $state, ordinal })
+}
+
+render_scaffold : RenderState, Dom.Scaffold -> Try(RenderState, Dom.RenderError)
+render_scaffold = |state, scaffold| {
+	if state.scaffolds.len() >= state.props.limits.max_nodes {
+		return Err(RenderLimit({ resource: Nodes, maximum: state.props.limits.max_nodes }))
+	}
+	Ok({ ..state, scaffolds: state.scaffolds.append(scaffold) })
+}
+
+## An override records both sides, including raw present-empty/false text.
+## Existing selected text need not be rewritten merely to express presence.
+render_override : RenderState, { owner : U64, attributes : List((Dom.ExpandedName, Str)), name : Dom.ExpandedName, value : [Absent, Present(Str)] } -> Try({ state : RenderState, attributes : List((Dom.ExpandedName, Str)) }, Dom.RenderError)
+render_override = |state, { owner, attributes, name, value }| {
+	previous = attributes.find_first(|(key, _)| key.namespace == name.namespace and key.local == name.local)
+	logical = previous.map_ok(|(_, text)| Present(text)) ?? Absent
+	if logical == value or (value == Present("") and previous.is_ok()) {
+		return Ok({ state, attributes })
+	}
+	var $attributes = []
+	var $found = False
+	for (key, text) in attributes {
+		if key.namespace == name.namespace and key.local == name.local {
+			$found = True
+			match value {
+				Absent => {}
+				Present(replacement) => {
+					$attributes = $attributes.append((key, replacement))
+				}
+			}
+		} else {
+			$attributes = $attributes.append((key, text))
+		}
+	}
+	if !$found {
+		match value {
+			Absent => {}
+			Present(text) => {
+				$attributes = $attributes.append((name, text))
+			}
+		}
+	}
+	changed = render_scaffold(state, AttributeOverride({ owner, name, logical, physical: value }))?
+	Ok({ state: changed, attributes: $attributes })
+}
+
+## A controlled textarea's source text is a declared producer scaffold. The
+## engine's ordinary text/comment lifetimes are explicitly constructed later,
+## with their data in the claims rather than inferred by JavaScript.
+render_control_text : Dom.Model, { state : RenderState, models : List(U64), owner : U64, container : U64, value : Str, depth : U64, mode : MarkupFacts.TextBehavior, initial_lf : Bool } -> Try(RenderState, Dom.RenderError)
+render_control_text = |dom, { state, models, owner, container, value, depth, mode, initial_lf }| {
+	if !value.is_empty() and depth > state.props.limits.max_depth {
+		return Err(RenderLimit({ resource: Depth, maximum: state.props.limits.max_depth }))
+	}
+	var $state = render_reserve(state, value.count_utf8_bytes())?
+	var $same = True
+	var $pieces = []
+	var $source_bytes = 0.U64
+	for model in models {
+		node = dom.nodes.get(model).map_err(|_| InvalidModel({ model, rule: "missing textarea child lifetime" }))?
+		if node.kind != 2 {
+			$same = False
+		}
+		if node.text.count_utf8_bytes() > state.props.limits.max_bytes - $source_bytes {
+			return Err(RenderLimit({ resource: Bytes, maximum: state.props.limits.max_bytes }))
+		}
+		$source_bytes = $source_bytes + node.text.count_utf8_bytes()
+		$pieces = $pieces.append(node.text)
+	}
+	if $same and Str.join_with($pieces, "") == value {
+		return render_children(dom, { state: state, models, container, depth, mode, initial_lf })
+	}
+	var $child = 0.U64
+	for model in models {
+		node = dom.nodes.get(model).map_err(|_| InvalidModel({ model, rule: "missing textarea logical lifetime" }))?
+		$state = render_visit($state, { model, depth })?
+		data = match node.kind {
+			2 => Text(node.text)
+			3 => Comment(node.text)
+			_ => return Err(InvalidModel({ model, rule: "a controlled textarea scaffold accepts only text/comment logical children" }))
+		}
+		$state = { ..$state, logical: $state.logical.append({ model, target: Constructed({ container, logical_child_index: $child, data }) }) }
+		$child = $child + 1
+	}
+	physical_text = if value.is_empty() {
+		Omitted
+	} else {
+		created = render_physical($state, Text(value))?
+		previous = created.state.containers.get(container) ?? crash "Dom.render: textarea container"
+		$state = { ..created.state, containers: created.state.containers.set(container, { ..previous, children: [created.ordinal] }) ?? crash "Dom.render: textarea content", tokens: created.state.tokens.append(Text({ node: created.ordinal, mode, initial_lf })) }
+		Node(created.ordinal)
+	}
+	render_scaffold($state, ControlText({ owner, container, physical_text }))
+}
+
+## A single select with no matching value needs an explicit temporary selected
+## option, otherwise HTML parsing selects its first ordinary option. Roc names
+## that temporary node and its removal; the adapter does not infer selection.
+render_no_selection : RenderState, { owner : U64, container : U64, depth : U64 } -> Try(RenderState, Dom.RenderError)
+render_no_selection = |state, { owner, container, depth }| {
+	if depth > state.props.limits.max_depth {
+		return Err(RenderLimit({ resource: Depth, maximum: state.props.limits.max_depth }))
+	}
+	reserved = render_reserve(state, 48)?
+	name = { namespace: Dom.html_namespace, prefix: "", local: "option" }
+	created = render_physical(reserved, Element({ name, attributes: Dom.attributes([("hidden", ""), ("selected", ""), ("value", "")]), children: 0, content: NoContent }))?
+	allocated = render_container(created.state, { owner: Element(created.ordinal), role: Children })?
+	element = Element({ name, attributes: Dom.attributes([("hidden", ""), ("selected", ""), ("value", "")]), children: allocated.ordinal, content: NoContent })
+	var $state = allocated.state
+	previous = $state.containers.get(container) ?? crash "Dom.render: select container"
+	$state = { ..$state, physical: $state.physical.set(created.ordinal, element) ?? crash "Dom.render: select scaffold", containers: $state.containers.set(container, { ..previous, children: previous.children.append(created.ordinal) }) ?? crash "Dom.render: select children", tokens: $state.tokens.append(Open(created.ordinal)).append(Close(created.ordinal)) }
+	render_scaffold($state, NoSelectionOption({ owner, physical_option: created.ordinal }))
+}
+
+## The token plan is linear and refers to final physical records, so a select
+## can finish its presence decisions before any attribute source is emitted.
+## Each escaped piece is sized before allocation; pieces are joined once.
+render_emit : RenderState -> Try(Str, Dom.RenderError)
+render_emit = |state| {
+	var $pieces = []
+	var $bytes = 0.U64
+	for token in state.tokens {
+		match token {
+			Open(ordinal) => {
+				element = match state.physical.get(ordinal) ?? crash "Dom.render: open record" {
+					Element(value) => value
+					_ => crash "Dom.render: open kind"
+				}
+				written = render_open(element.name, { attributes: element.attributes, remaining: state.props.limits.max_bytes - $bytes })?
+				$bytes = $bytes + written.count_utf8_bytes()
+				$pieces = $pieces.append(written)
+			}
+			EnvelopeOpen({ name, attributes }) => {
+				written = render_open(name, { attributes, remaining: state.props.limits.max_bytes - $bytes })?
+				$bytes = $bytes + written.count_utf8_bytes()
+				$pieces = $pieces.append(written)
+			}
+			Close(ordinal) => {
+				name = match state.physical.get(ordinal) ?? crash "Dom.render: close record" {
+					Element(value) => value.name
+					_ => crash "Dom.render: close kind"
+				}
+				length = 3 + Dom.written_name(name).count_utf8_bytes()
+				if length > state.props.limits.max_bytes - $bytes {
+					return Err(RenderLimit({ resource: Bytes, maximum: state.props.limits.max_bytes }))
+				}
+				$bytes = $bytes + length
+				$pieces = $pieces.append("</${Dom.written_name(name)}>")
+			}
+			EnvelopeClose(name) => {
+				length = 3 + Dom.written_name(name).count_utf8_bytes()
+				if length > state.props.limits.max_bytes - $bytes {
+					return Err(RenderLimit({ resource: Bytes, maximum: state.props.limits.max_bytes }))
+				}
+				$bytes = $bytes + length
+				$pieces = $pieces.append("</${Dom.written_name(name)}>")
+			}
+			Text({ node, mode, initial_lf }) => {
+				text = match state.physical.get(node) ?? crash "Dom.render: text record" {
+					Text(value) => value
+					_ => crash "Dom.render: text kind"
+				}
+				prefix = if (initial_lf and text.starts_with("\n")) "\n" else ""
+				length = render_escaped_length(text, { mode: if (mode == Data or mode == Rcdata) Text else Raw, remaining: state.props.limits.max_bytes - $bytes })?
+				if prefix.count_utf8_bytes() > state.props.limits.max_bytes - $bytes - length {
+					return Err(RenderLimit({ resource: Bytes, maximum: state.props.limits.max_bytes }))
+				}
+				$bytes = $bytes + length + prefix.count_utf8_bytes()
+				$pieces = $pieces.append(prefix).append(render_text(text, mode))
+			}
+			Comment(ordinal) => {
+				text = match state.physical.get(ordinal) ?? crash "Dom.render: comment record" {
+					Comment(value) => value
+					_ => crash "Dom.render: comment kind"
+				}
+				length = text.count_utf8_bytes()
+				if length > state.props.limits.max_bytes - $bytes or 7 > state.props.limits.max_bytes - $bytes - length {
+					return Err(RenderLimit({ resource: Bytes, maximum: state.props.limits.max_bytes }))
+				}
+				$bytes = $bytes + length + 7
+				$pieces = $pieces.append("<!--${text}-->")
+			}
+		}
+	}
+	Ok(Str.join_with($pieces, ""))
+}
+
+render_escaped_length : Str, { mode : [Text, Attribute, Raw], remaining : U64 } -> Try(U64, Dom.RenderError)
+render_escaped_length = |text, { mode, remaining }| {
+	var $length = 0.U64
+	for byte in text.to_utf8() {
+		count = if mode == Raw {
+			1
+		} else match byte {
+			'&' => 5
+			'<' => 4
+			'>' if mode == Text => 4
+			'"' if mode == Attribute => 6
+			'\r' => 5
+			_ => 1
+		}
+		if count > remaining - $length {
+			return Err(RenderLimit({ resource: Bytes, maximum: remaining }))
+		}
+		$length = $length + count
+	}
+	Ok($length)
+}
+
+render_open : Dom.ExpandedName, { attributes : List((Dom.ExpandedName, Str)), remaining : U64 } -> Try(Str, Dom.RenderError)
+render_open = |name, { attributes, remaining }| {
+	var $bytes = Dom.written_name(name).count_utf8_bytes()
+	if $bytes > remaining or 2 > remaining - $bytes {
+		return Err(RenderLimit({ resource: Bytes, maximum: remaining }))
+	}
+	$bytes = $bytes + 2
+	var $pieces = ["<", Dom.written_name(name)]
+	for (key, value) in attributes {
+		length = Dom.written_name(key).count_utf8_bytes()
+		if length > remaining - $bytes or 4 > remaining - $bytes - length {
+			return Err(RenderLimit({ resource: Bytes, maximum: remaining }))
+		}
+		$bytes = $bytes + length + 4
+		escaped = render_escaped_length(value, { mode: Attribute, remaining: remaining - $bytes })?
+		$bytes = $bytes + escaped
+		$pieces = $pieces.append(" ${Dom.written_name(key)}=\"${render_attribute(value)}\"")
+	}
+	Ok(Str.join_with($pieces.append(">"), ""))
+}
+
+ParseProjection : { physical : List(Dom.PictureNode), containers : List(Dom.PictureContainer), maximum : U64 }
+
+## Parse-back deliberately projects public parser nodes without calling the
+## source-model walk, its text grouping, or its control-scaffold decisions.
+## The parser's parsed XHTML template children belong to content in both
+## syntaxes; ordinary raw-constructor template children remain a distinct fact.
+render_parse_back : Dom.Rendered, { props : Dom.RenderProps, root_attributes : List((Dom.ExpandedName, Str)) } -> Try({}, Dom.RenderError)
+render_parse_back = |rendered, { props, root_attributes }| {
+	root = match rendered.root_name {
+		ElementRoot(name) => name
+		NonElementRoot if props.scope == Subtree => { namespace: Dom.html_namespace, prefix: "", local: "body" }
+		NonElementRoot => return Err(ParseMismatch({ physical: 0, rule: "picture contents require an element root" }))
+	}
+	context = if props.scope == MountEnvelope {
+		match props.enclosing {
+			Element(name) => name
+			Document => root
+			Unspecified => return Err(ParseMismatch({ physical: 0, rule: "missing envelope parse context" }))
+		}
+	} else if props.scope == Contents {
+		root
+	} else {
+		match props.enclosing {
+			Element(name) => name
+			Document => root
+			Unspecified => { namespace: Dom.html_namespace, prefix: "", local: "body" }
+		}
+	}
+	document = (props.scope == MountEnvelope or props.scope == Subtree) and props.enclosing == Document
+	source = if (document) "<!doctype html>${rendered.markup}" else rendered.markup
+	maximum = if (props.limits.max_nodes > 18_446_744_073_709_551_612) 18_446_744_073_709_551_615 else props.limits.max_nodes + 3
+	depth = if (props.limits.max_depth > 18_446_744_073_709_551_612) 18_446_744_073_709_551_615 else props.limits.max_depth + 3
+	parsed = MarkupHtml.parse_source(source, { recovery: Browser, exact_structure: True, strict_foreign_spelling: True, scripting: props.scripting, context_namespace: context.namespace, context_element: context.local, max_source_bytes: source.count_utf8_bytes(), max_nodes: maximum, max_elements: maximum, max_attributes: props.limits.max_bytes, max_depth: depth }, !document)
+		.map_err(|InvalidMarkup(error)| ParseFailure({ line: error.line, column: error.column, rule: Str.inspect(error.problem) }))?
+	var $roots = parsed.tree.roots
+	if document {
+		$roots = $roots.keep_if(
+			|index| match (parsed.tree.nodes.get(index) ?? crash "Dom.render: document projection").kind {
+				Doctype(_) => False
+				_ => True
+			},
+		)
+	}
+	if props.scope == MountEnvelope {
+		if $roots.len() != 1 {
+			return Err(ParseMismatch({ physical: 0, rule: "an envelope did not parse as one element" }))
+		}
+		envelope = parsed.tree.nodes.get($roots.first() ?? crash "Dom.render: envelope root") ?? crash "Dom.render: envelope node"
+		match envelope.kind {
+			Element(name) if render_parsed_name(name) == root => {}
+			_ => return Err(ParseMismatch({ physical: 0, rule: "the external mount root expanded identity changed" }))
+		}
+		if envelope.attributes.map(|attribute| (render_parsed_name(attribute.name), attribute.value)) != root_attributes {
+			return Err(ParseMismatch({ physical: 0, rule: "the external mount root ordered attributes changed" }))
+		}
+		$roots = envelope.children
+	}
+	initial = { physical: [], containers: [{ owner: Mount, role: Children, children: [] }], maximum: props.limits.max_nodes }
+	projected = render_project_children(parsed.tree, { projection: initial, roots: $roots, container: 0 })?
+	if projected.physical != rendered.physical {
+		var $at = 0.U64
+		while $at < projected.physical.len() and $at < rendered.physical.len() and projected.physical.get($at) == rendered.physical.get($at) {
+			$at = $at + 1
+		}
+		return Err(ParseMismatch({ physical: $at, rule: "parsed names, ordered attributes, node kinds or data differ from the declared physical picture" }))
+	}
+	if projected.containers != rendered.containers {
+		return Err(ParseMismatch({ physical: 0, rule: "parsed ordinary children or template content differ from the declared containers" }))
+	}
+	Ok({})
+}
+
+render_parsed_name : Markup.Name -> Dom.ExpandedName
+render_parsed_name = |name| {
+	namespace = match name.namespace {
+		NoNamespace => ""
+		Uri(uri) => uri
+	}
+	prefix = match name.prefix {
+		Unprefixed => ""
+		Prefix(text) => text
+	}
+	{ namespace, prefix, local: name.local }
+}
+
+render_project_children : Markup.Tree, { projection : ParseProjection, roots : List(U64), container : U64 } -> Try(ParseProjection, Dom.RenderError)
+render_project_children = |tree, { projection, roots, container }| {
+	var $projection = projection
+	var $children = []
+	for index in roots {
+		node = tree.nodes.get(index) ?? crash "Dom.render: parser child position"
+		ordinal = $projection.physical.len()
+		if ordinal >= projection.maximum {
+			return Err(RenderLimit({ resource: Nodes, maximum: projection.maximum }))
+		}
+		match node.kind {
+			Text(text) => {
+				$projection = { ..$projection, physical: $projection.physical.append(Text(text)) }
+			}
+			Comment(text) => {
+				$projection = { ..$projection, physical: $projection.physical.append(Comment(text)) }
+			}
+			Element(name) => {
+				expanded = render_parsed_name(name)
+				attributes = node.attributes.map(|attribute| (render_parsed_name(attribute.name), attribute.value))
+				children = $projection.containers.len()
+				if children >= projection.maximum {
+					return Err(RenderLimit({ resource: Nodes, maximum: projection.maximum }))
+				}
+				$projection = { ..$projection, containers: $projection.containers.append({ owner: Element(ordinal), role: Children, children: [] }) }
+				var $content = NoContent
+				if expanded.namespace == Dom.html_namespace and expanded.local == "template" {
+					content = $projection.containers.len()
+					if content >= projection.maximum {
+						return Err(RenderLimit({ resource: Nodes, maximum: projection.maximum }))
+					}
+					$projection = { ..$projection, containers: $projection.containers.append({ owner: Element(ordinal), role: Content, children: [] }) }
+					$content = Content(content)
+				}
+				$projection = { ..$projection, physical: $projection.physical.append(Element({ name: expanded, attributes, children, content: $content })) }
+				target = match $content {
+					NoContent => children
+					Content(content) => content
+				}
+				$projection = render_project_children(tree, { projection: $projection, roots: node.children, container: target })?
+			}
+			Doctype(_) | ProcessingInstruction(_) => return Err(ParseMismatch({ physical: ordinal, rule: "an owned UI picture contains an unsupported document node" }))
+		}
+		$children = $children.append(ordinal)
+	}
+	previous = $projection.containers.get(container) ?? crash "Dom.render: parser container"
+	Ok({ ..$projection, containers: $projection.containers.set(container, { ..previous, children: $children }) ?? crash "Dom.render: parser container completion" })
+}
+
+## Empty and adjacent text remain distinct logical lifetimes. Marker-looking
+## comments and attributes are data, with no reserved spelling or lookup role.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1, 2, 3, 4, 5] }
+	text = |value| { ..Dom.empty_node, namespace: "", kind: 2, text: value }
+	comment = { ..Dom.empty_node, namespace: "", kind: 3, text: "roc:node:7" }
+	leaf = { ..Dom.empty_node, tag: "i", attrs: Dom.attributes([("data-n", "7"), ("data-h", "false"), ("hidden", "")]) }
+	dom = { ..Dom.new({}), nodes: [root, text(""), text("<&\r😀"), text(""), comment, leaf] }
+	picture = match Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 1024, max_nodes: 32, max_depth: 8 } }) {
+		Ok(result) => result
+		Err(error) => crash Str.inspect(error)
+	}
+	picture.markup == "&lt;&amp;&#13;😀<!--roc:node:7--><i data-n=\"7\" data-h=\"false\" hidden=\"\"></i>" and picture.physical.len() == 3 and picture.logical.len() == 5 and picture.text_runs == [{ container: 0, child_index: 0, physical: Node(0), parts: [{ logical: 0, utf16_units: 0 }, { logical: 1, utf16_units: 5 }, { logical: 2, utf16_units: 0 }] }]
+}
+
+## HTML's conditional initial-LF consumption is parser metadata. An omitted
+## empty node leaves that opportunity intact; an actual comment consumes it.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1, 4] }
+	pre = { ..Dom.empty_node, tag: "pre", kids: [2, 3] }
+	empty = { ..Dom.empty_node, kind: 2, text: "" }
+	text = { ..empty, text: "\nfirst" }
+	second = { ..pre, kids: [5, 3] }
+	comment = { ..Dom.empty_node, kind: 3, text: "first" }
+	# Reusing one source lifetime twice is forbidden, even if both texts agree.
+	aliased = { ..Dom.new({}), nodes: [root, pre, empty, text, second, comment] }
+	dom = { ..aliased, nodes: aliased.nodes.append(text).set(4, { ..second, kids: [5, 6] }) ?? crash "initial LF fixture" }
+	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 256, max_nodes: 32, max_depth: 8 } }) ?? crash "initial LF render"
+	picture.markup == "<pre>\n\nfirst</pre><pre><!--first-->\nfirst</pre>" and Dom.render(aliased, { root: 0, scope: Contents, limits: { max_bytes: 256, max_nodes: 32, max_depth: 8 } }).is_err()
+}
+
+## Parsed template content is represented by a separate intrinsic edge, even
+## when empty. A raw template's ordinary childNodes cannot be dropped to make
+## its serialization pass; diagnostics can still describe that valid live DOM.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	template = { ..Dom.empty_node, tag: "template", container: 1, content: Some(2) }
+	fragment = { ..Dom.empty_node, namespace: "", kind: 4, kids: [3] }
+	comment = { ..Dom.empty_node, kind: 3, text: "roc:row:7" }
+	dom = { ..Dom.new({}), nodes: [root, template, fragment, comment] }
+	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }) ?? crash "template render"
+	raw = Dom.set_node(dom, 1, { ..template, container: 0, kids: [3], content: Some(4) })
+	raw_with_fragment = { ..raw, nodes: raw.nodes.append({ ..fragment, kids: [] }) }
+	picture.markup == "<template><!--roc:row:7--></template>" and picture.containers == [{ owner: Mount, role: Children, children: [0] }, { owner: Element(0), role: Children, children: [] }, { owner: Element(0), role: Content, children: [1] }] and Dom.render(raw_with_fragment, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }).is_err() and Dom.render(raw_with_fragment, { root: 0, scope: Contents, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }).is_ok()
+}
+
+## Raw attribute values are not Boolean-normalized, and spelling catalogues
+## never gate grammar-valid dynamic names. Parse-back detects actual HTML
+## repairs instead of blessing a serializer's output as its own oracle.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	leaf = { ..Dom.empty_node, tag: "x-raw", attrs: Dom.attributes([("hidden", "false"), ("data-raw", "")]) }
+	dom = { ..Dom.new({}), nodes: [root, leaf] }
+	good = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }) ?? crash "raw render"
+	table = { ..leaf, tag: "table", attrs: [], kids: [2] }
+	bad = { ..dom, nodes: [root, table, { ..leaf, tag: "tr", attrs: [] }] }
+	good.markup == "<x-raw hidden=\"false\" data-raw=\"\"></x-raw>" and Dom.render(bad, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }).is_err()
+}
+
+## Limits are checked during construction at their smallest boundaries. A
+## maximum-depth element may be empty; one child beyond that depth refuses.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	leaf = { ..Dom.empty_node, tag: "i" }
+	dom = { ..Dom.new({}), nodes: [root, leaf] }
+	fits = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 7, max_nodes: 2, max_depth: 0 } })
+	bytes = Dom.render(dom, { root: 0, scope: Contents, limits: { max_bytes: 6, max_nodes: 2, max_depth: 0 } })
+	nodes = Dom.render(dom, { root: 0, scope: Contents, limits: { max_bytes: 7, max_nodes: 1, max_depth: 0 } })
+	zero = Dom.render(dom, { root: 0, scope: Contents, limits: { max_bytes: 0, max_nodes: 0, max_depth: 0 } })
+	deep = { ..dom, nodes: [root, { ..leaf, kids: [2] }, { ..Dom.empty_node, kind: 2, text: "x" }] }
+	fits.map_ok(|rendered| rendered.markup) == Ok("<i></i>") and bytes == Err(RenderLimit({ resource: Bytes, maximum: 6 })) and nodes == Err(RenderLimit({ resource: Nodes, maximum: 1 })) and zero == Err(RenderLimit({ resource: Nodes, maximum: 0 })) and Dom.render(deep, { root: 0, scope: Contents, limits: { max_bytes: 64, max_nodes: 8, max_depth: 0 } }) == Err(RenderLimit({ resource: Depth, maximum: 0 }))
+}
+
+## A source textarea value can differ from its logical childNodes. Restoration
+## names their exact data, and never assigns an authored marker comment a role.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	area = { ..Dom.empty_node, tag: "textarea", attrs: Dom.attributes([("value", "\nvalue<&")]), props: [("value", "\nvalue<&")], kids: [2, 3] }
+	comment = { ..Dom.empty_node, kind: 3, text: "roc:node:7" }
+	text = { ..Dom.empty_node, kind: 2, text: "old" }
+	dom = { ..Dom.new({}), nodes: [root, area, comment, text] }
+	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }) ?? crash "textarea render"
+	picture.markup == "<textarea value=\"\nvalue&lt;&amp;\">\n\nvalue&lt;&amp;</textarea>" and picture.scaffolds == [ControlText({ owner: 0, container: 1, physical_text: Node(1) })] and picture.logical.map(|logical| logical.target) == [Node(0), Constructed({ container: 1, logical_child_index: 0, data: Comment("roc:node:7") }), Constructed({ container: 1, logical_child_index: 1, data: Text("old") })]
+}
+
+## A select's value setter selects its first matching option even when multiple
+## is present. No match in a single select has an explicit temporary option;
+## raw selected text is restored by a recorded presence override.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	select = { ..Dom.empty_node, tag: "select", attrs: Dom.attributes([("multiple", "")]), props: [("value", "x")], kids: [2, 3] }
+	option = { ..Dom.empty_node, tag: "option", attrs: Dom.attributes([("value", "x"), ("selected", "false")]) }
+	dom = { ..Dom.new({}), nodes: [root, select, option, option] }
+	multiple = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 512, max_nodes: 32, max_depth: 8 } }) ?? crash "multiple select render"
+	missing_dom = Dom.set_node(dom, 1, { ..select, attrs: [], props: [("value", "missing")] })
+	missing = Dom.render(missing_dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 512, max_nodes: 32, max_depth: 8 } }) ?? crash "missing select render"
+	multiple.markup == "<select multiple=\"\"><option value=\"x\" selected=\"false\"></option><option value=\"x\"></option></select>" and multiple.scaffolds == [AttributeOverride({ owner: 2, name: { namespace: "", prefix: "", local: "selected" }, logical: Present("false"), physical: Absent })] and missing.scaffolds.last().map_ok(
+		|scaffold| match scaffold {
+			NoSelectionOption(_) => True
+			_ => False
+		},
+	) == Ok(True)
+}
+
+## The mount wrapper is emitted by the same token plan but remains outside
+## owned ordinals. Its actual enclosing document/element is never guessed.
+expect {
+	root = { ..Dom.empty_node, tag: "section", attrs: Dom.attributes([("data-roc-picture", ""), ("inert", "")]), kids: [1] }
+	dom = { ..Dom.new({}), nodes: [root, { ..Dom.empty_node, tag: "i" }] }
+	picture = Dom.render(dom, { root: 0, scope: MountEnvelope, mode: Picture, enclosing: Element({ namespace: Dom.html_namespace, prefix: "", local: "body" }), limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }) ?? crash "mount envelope render"
+	picture.markup == "<section data-roc-picture=\"\" inert=\"\"><i></i></section>" and picture.physical.len() == 1 and picture.logical.map(|logical| logical.model) == [1] and picture.containers.first() == Ok({ owner: Mount, role: Children, children: [0] }) and Dom.render(dom, { root: 0, scope: MountEnvelope, mode: Picture, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }).is_err()
+}
+
+## Browser lexical handling is not permission to change data. A numeric NUL
+## reference decodes to a replacement character, and that exact-data mismatch
+## is refused even though lexical recovery itself can preserve a CR reference.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	dom = { ..Dom.new({}), nodes: [root, { ..Dom.empty_node, kind: 2, text: "\u(0000)" }] }
+	props : Dom.RenderProps
+	props = { root: 0, scope: Contents, mode: Diagnostic, limits: { max_bytes: 64, max_nodes: 8, max_depth: 8 } }
+	picture = Dom.render(dom, props) ?? crash "NUL diagnostic render"
+	forged = { ..picture, markup: "&#0;" }
+	match render_parse_back(forged, { props, root_attributes: [] }) {
+		Err(ParseMismatch(_)) => True
+		_ => False
+	}
+}
+
+## A removed selected attribute does not consume the physical output budget.
+## The final option decision reserves only the bytes actually serialized.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	select = { ..Dom.empty_node, tag: "select", props: [("value", "y")], kids: [2, 3] }
+	first = { ..Dom.empty_node, tag: "option", attrs: Dom.attributes([("value", "x"), ("selected", "false")]) }
+	second = { ..Dom.empty_node, tag: "option", attrs: Dom.attributes([("value", "y")]) }
+	dom = { ..Dom.new({}), nodes: [root, select, first, second] }
+	output = "<select><option value=\"x\"></option><option value=\"y\" selected=\"\"></option></select>"
+	Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: output.count_utf8_bytes(), max_nodes: 16, max_depth: 8 } }).map_ok(|picture| picture.markup) == Ok(output)
+}
+
+## A diagnostic fragment does not acquire an invented element wrapper or a
+## logical engine lifetime. Picture contents still require an actual element.
+expect {
+	fragment = { ..Dom.empty_node, kind: 4, namespace: "", kids: [1] }
+	dom = { ..Dom.new({}), nodes: [fragment, { ..Dom.empty_node, kind: 3, text: "roc:row:1" }] }
+	picture = Dom.render(dom, { root: 0, limits: { max_bytes: 64, max_nodes: 8, max_depth: 8 } }) ?? crash "fragment diagnostic"
+	picture.markup == "<!--roc:row:1-->" and picture.root_name == NonElementRoot and picture.logical.map(|logical| logical.model) == [1] and Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 64, max_nodes: 8, max_depth: 8 } }).is_err()
+}
+
+## Producer-only nodes obey the same depth bound as ordinary nodes. Empty
+## source children do not give a control scaffold an unbounded extra level.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	["select", "textarea"].all(
+		|tag| {
+			control = { ..Dom.empty_node, tag, props: [("value", "x")] }
+			dom = { ..Dom.new({}), nodes: [root, control] }
+			Dom.render(dom, { root: 0, scope: Contents, limits: { max_bytes: 256, max_nodes: 16, max_depth: 0 } }) == Err(RenderLimit({ resource: Depth, maximum: 0 }))
+		},
+	)
+}
+
+## A checked property write mirrors presence with empty text exactly as the
+## browser executor does. Ordinary raw attribute text never goes through that
+## property operation and therefore retains both 'false' and 'true' verbatim.
+expect {
+	input = { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", "checkbox"), ("checked", "old")]) }
+	dom = { ..Dom.new({}), nodes: [input] }
+	on = Dom.set_property_on(dom, 0, 2, "true", 1)
+	off = Dom.set_property_on(on, 0, 2, "false", 1)
+	raw_false = Dom.set_attr_on(dom, 0, "checked", "false")
+	raw_true = Dom.set_attr_on(dom, 0, "checked", "true")
+	Dom.has_attr(Dom.node(on, 0), "checked") and Dom.attr_of(Dom.node(on, 0), "checked") == "" and Dom.live_value(Dom.node(on, 0), "checked") == "true" and !Dom.has_attr(Dom.node(off, 0), "checked") and Dom.live_value(Dom.node(off, 0), "checked") == "false" and Dom.attr_of(Dom.node(raw_false, 0), "checked") == "false" and Dom.attr_of(Dom.node(raw_true, 0), "checked") == "true"
 }

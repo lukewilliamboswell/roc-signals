@@ -1,10 +1,10 @@
 (test "Field notes — persistence"
   (setup
+    (seed 7)
     ; Field Notes: offline capture, outbox drain, rollback, and restore.
     ;
-    ; Storage format is "id|slot|queued|rev|body" per note, notes joined by ";".
-    ; Notes captured in this session get session ids ("s<n>"). Every operation is
-    ; idempotent, so replaying the log over the value it just persisted is stable.
+    ; These five-field fixtures exercise restoration of notes captured before
+    ; timestamps were stored. New notes use the document seed and sampled time.
 
     (initial-online offline)
     (local-storage "field-notes:notes" "n0|0|1|r7|Generator hours;n1|1|0|r7|Fence line check")
@@ -13,44 +13,47 @@
     ; Bring the page to the state this spec starts from.
     (fill (label "Note body") "Pump pressure log")
     (click (role button :name "Save note"))
+    (run-effect 1)
     (fill (label "Note body") "   ")
     (fill (label "Note body") "Tank level 42")
     (click (role button :name "Save note"))
+    (run-effect 2)
     (fill (label "Note body") "Overflow note")
     (fill (label "Note body") "")
-    (click (role button :name "Queue note s1"))
-    (click (role button :name "Queue note s2"))
+    (click (role button :name "Queue note n-63cbe1e459320dd7"))
+    (click (role button :name "Queue note n-044c3cd7f43c661c"))
     (mark-metrics)
-    (click (role button :name "Promote note s2"))
+    (click (role button :name "Promote note n-044c3cd7f43c661c"))
     (click (role button :name "Promote note n0"))
     (set-online online)
     (stub-http "completed sync n0#r7" :url "/api/notes/sync" :status 200 :body "n0#r7")
-    (run-effect 1)
-    (stub-http "failed sync s2#r0" :url "/api/notes/sync" :status 503 :body "temporarily unavailable")
-    (run-effect 2)
-    (stub-http "completed sync s1#r0" :url "/api/notes/sync" :status 200 :body "s1#r0")
     (run-effect 3)
-    (click (role button :name "Retry note s2"))
-    (stub-http "completed sync s2#s2:1" :url "/api/notes/sync" :status 200 :body "s2#s2:1")
+    (stub-http "failed sync n-044c3cd7f43c661c#r0" :url "/api/notes/sync" :status 503 :body "temporarily unavailable")
     (run-effect 4)
+    (stub-http "completed sync n-63cbe1e459320dd7#r0" :url "/api/notes/sync" :status 200 :body "n-63cbe1e459320dd7#r0")
+    (run-effect 5)
+    (click (role button :name "Retry note n-044c3cd7f43c661c"))
+    (stub-http "completed sync n-044c3cd7f43c661c#n-044c3cd7f43c661c:1" :url "/api/notes/sync" :status 200 :body "n-044c3cd7f43c661c#n-044c3cd7f43c661c:1")
+    (run-effect 6)
     (mark-metrics)
     (fill (label "Body n0") "Generator hours 128")
     (stub-http "completed sync n0#n0:1" :url "/api/notes/sync" :status 200 :body "n0#n0:1")
-    (run-effect 5)
+    (run-effect 7)
     (click (role button :name "Queue note n1"))
     (set-online offline)
     (set-online online)
     (mark-metrics)
     (stub-http "completed sync n1#r7" :url "/api/notes/sync" :status 200 :body "n1#r7")
-    (run-effect 6)
+    (run-effect 8)
     (stub-http "completed sync n1#r7" :url "/api/notes/sync" :status 200 :body "n1#r7")
-    (run-effect 7)
+    (run-effect 9)
     (uncheck (label "Sync automatically"))
-    (click (role button :name "Delete note s2"))
+    (click (role button :name "Delete note n-044c3cd7f43c661c"))
     (fill (label "Note body") "Radio check")
     (click (role button :name "Save note"))
-    (click (role button :name "Queue note s3"))
-    (click (role button :name "Delete note s3"))
+    (run-effect 10)
+    (click (role button :name "Queue note n-e6984080bab12a02"))
+    (click (role button :name "Delete note n-e6984080bab12a02"))
     (check (label "Sync automatically"))
     (mark-metrics)
     (check (label "Hide synced notes"))
@@ -58,6 +61,6 @@
 
     ; persistence
 
-    (expect-local-storage "field-notes:notes" "n0|0|1|n0:1|Generator hours 128;n1|1|1|r7|Fence line check;s1|2|1|r0|Pump pressure log")
+    (expect-local-storage "field-notes:notes" "n0|0|1|n0:1|unknown|Generator hours 128;n1|1|1|r7|unknown|Fence line check;n-63cbe1e459320dd7|2|1|r0|0|Pump pressure log")
   )
 )

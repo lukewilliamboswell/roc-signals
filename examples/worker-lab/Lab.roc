@@ -1,5 +1,4 @@
-import pf.Engine
-import pf.Table
+import pf.Engine exposing [Table]
 import pf.Worker
 
 ## Worker Lab's model: the parameters a person sets, the jobs of a run and
@@ -147,18 +146,28 @@ Lab := [].{
 
 	# ------------------------------------------------------------ parameters
 
-	workload_from_str : Str -> Workload
-	workload_from_str = |text|
-		match text {
-			"tiles" => Tiles
-			"faulty" => Faulty
-			"draw" => Draw
-			_ => Primes
-		}
+	## The workloads offered in the menu, in presentation order.
+	workloads : List(Workload)
+	workloads = [Primes, Tiles, Faulty, Draw]
+
+	workload_label : Workload -> Str
+	workload_label = |workload| match workload {
+		Primes => "Count primes"
+		Tiles => "Draw tiles"
+		Faulty => "Count primes, every fourth job crashing"
+		Draw => "Draw the Mandelbrot set"
+	}
+
+	## A foreign selection preserves the current form.
+	workload_picked : Form, [Chose(Workload), NotOffered] -> Form
+	workload_picked = |form_value, picked| match picked {
+		Chose(workload) => { ..form_value, workload }
+		NotOffered => form_value
+	}
 
 	## The `select` value, and the only place it is spelled.
-	workload_to_str : Workload -> Str
-	workload_to_str = |workload|
+	workload_key : Workload -> Str
+	workload_key = |workload|
 		match workload {
 			Primes => "primes"
 			Tiles => "tiles"
@@ -501,15 +510,14 @@ Lab := [].{
 
 	## How a listing selects and orders a run's jobs: the `plan` of both
 	## views of the run, the job grid and the picture's bands.
-	listed : Listing -> Engine.QueryPlan(U64, Job, U64)
-	listed = |listing| {
+	listed : Listing -> Engine.QueryPlan(U64, Job, (U64, U64))
+	listed = |listing| Engine.sort_by({
 		keep: |_, job| match listing {
 			Every => True
 			Strips => Lab.is_strip(job)
 		},
 		sort: |index, _| index,
-		compare: |a, b| if (a < b) Before else if (a > b) After else Same,
-	}
+	})
 
 	## Fold over a run's jobs in index order.
 	fold_jobs : Jobs, state, (state, Job -> state) -> state
@@ -922,11 +930,11 @@ Lab := [].{
 
 	## A strip's shape, so its band's placeholder takes the room the strip
 	## will. A job that draws no strip has none.
-	strip_style : Job -> Str
+	strip_style : Job -> [Absent, Present(Str)]
 	strip_style = |job|
 		match job.task {
-			Strip({ width, rows, .. }) => "aspect-ratio: ${width.to_str()} / ${rows.to_str()}"
-			_ => ""
+			Strip({ width, rows, .. }) => Present("aspect-ratio: ${width.to_str()} / ${rows.to_str()}")
+			_ => Absent
 		}
 }
 
@@ -985,3 +993,6 @@ expect {
 	typed = { ..Lab.form, workload: Draw, jobs_text: "61" }
 	Lab.problem(typed) == "A picture has from 1 to 60 strips: the page holds every strip, and the picture, as a file."
 }
+
+## A foreign workload leaves the authored form intact, including its numeric drafts.
+expect Lab.workload_picked({ ..Lab.form, workload: Tiles, jobs_text: "12" }, NotOffered) == { ..Lab.form, workload: Tiles, jobs_text: "12" }

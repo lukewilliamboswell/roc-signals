@@ -10,6 +10,7 @@
     (expect-text (test-id "submittable-state") "Not ready")
     (fill (label "Answer f2") "ada@example")
     (expect-text (test-id "preview-f2-verdict") "Enter a valid email address")
+    (expect-attr (label "Answer f2") aria-invalid "true")
     (expect-text (test-id "submittable-state") "Not ready")
     (fill (label "Answer f2") "ada@example.com")
     (expect-text (test-id "preview-f2-verdict") "Valid")

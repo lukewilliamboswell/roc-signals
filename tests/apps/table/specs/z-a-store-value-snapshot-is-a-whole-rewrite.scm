@@ -1,0 +1,27 @@
+(test "Table — a Store snapshot with matching cleared history replaces the live rows"
+  (setup (initial-location "/?n=3"))
+  (steps
+    (expect-text (test-id "main") "0:0:0 2:1:0 ")
+    (expect-text (label "Qty 0") "0")
+    (click (label "Mark 2"))
+    ; This table write matches the snapshot's cleared write count.
+    (click (label "Bump 0"))
+    (mark-metrics)
+    (click (role button :name "Load Store snapshot"))
+    (expect-text (test-id "count") "Rows: 2")
+    (expect-text (test-id "row0") "Row 0: gone")
+    (expect-text (test-id "main") "2:1:1 ")
+    (expect-text (test-id "done") "1=Task 1 ")
+    (expect-absent (label "Qty 0"))
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 1)
+    (expect-metric-delta rows_updated 2)
+    (expect-metric-delta rows_moved 0)
+    ; The following keyed edit is absorbed normally.
+    (mark-metrics)
+    (click (label "Bump 2"))
+    (expect-text (test-id "main") "2:2:1 ")
+    (expect-metric-delta rows_updated 1)
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+  ))

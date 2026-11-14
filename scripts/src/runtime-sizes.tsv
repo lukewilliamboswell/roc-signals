@@ -1,0 +1,5 @@
+# As-shipped platform JavaScript, Node zlib gzip level 9, bytes.
+# Update a figure with its source change and explain the size change in the PR.
+platform/runtime.mjs	74083
+platform/worker.mjs	5027
+platform/environment.mjs	2371

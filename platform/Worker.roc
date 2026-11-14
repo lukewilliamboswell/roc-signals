@@ -89,7 +89,8 @@ Worker := [].{
 	##   milliseconds after it was requested and answers `Timeout`; the time a
 	##   request waits for a free worker counts, and the platform caps it at
 	##   ten minutes. `Unlimited`, the default, lets a job run until it
-	##   answers or its site stops it.
+	##   answers or its site stops it. `Ms(0)` is a contract error; use
+	##   `Unlimited` explicitly for no timeout.
 	## - `on_dispose`: what disposing the site that asked for a job does to
 	##   it: `Stop` it (the default), or `Keep` it running and deliver its
 	##   answer to the nearest surviving ancestor, for a job whose work must
@@ -131,14 +132,18 @@ Worker := [].{
 		registration : Task(input, output, error) -> Engine.Registration
 		registration = |t| Core.registration(t.name, t.entry!)
 
+		## Ask for a job and carry this task's output reader with its input.
+		ask : Task(input, output, error), input -> Engine.Ask(output, Error(error))
+		ask = |t, input| Engine.ask_of(t, input)
+
 		## The task's name, as the props record gave it: what a request
 		## carries, what the monitor and a spec's `expect-pending-work` name
 		## the task's jobs by, and what a stand-in dispatches on.
 		name : Task(input, output, error) -> Str
 		name = |t| t.name
 
-		## A request for a job of the task on `input`, for an effect site's
-		## plan. The input is a snapshot: it is encoded when the request is
+		## The raw request of a job on `input`, for the asker protocol and pure
+		## tests. Use `ask` in a typed plan. The input is encoded when the request is
 		## issued, and later changes to the state it came from do not reach
 		## the job. The files it holds travel as handles.
 		request : Task(input, output, error), input -> Engine.Request
@@ -147,7 +152,7 @@ Worker := [].{
 			Work({ task: t.name, input: bytes, files, timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: Unprepared })
 		}
 
-		## The answer to a `request`, for an effect site's reaction: the
+		## Read a raw result through the task's declared protocol: the
 		## task's output, whose files are now handles the page holds, or why
 		## there is none (see [Error]). A result that is not from a worker
 		## request is a contract error.
@@ -260,74 +265,7 @@ Worker := [].{
 	## would give, and a task never changes the state. A preparation that
 	## fails (`prepare!` answers `Err(error)`) answers each of its tasks'
 	## jobs `Failed(error)`. The state never crosses to the page.
-	Preparation(init, state, error) :: {
-		name : Str,
-		build! : (List(U8), List(Core.File) => Try(state, error)),
-		send : (init -> { bytes : List(U8), files : List(Engine.File) }),
-		fail : (error -> List(U8)),
-	}.{
-
-		## The task a props record describes, over this preparation's state:
-		## `document.task({ name, run!: |lines, input| Ok(search(lines, input)) })`
-		## answers `run!(state, input)` from the state the preparation
-		## built. The input and the output must be `Wire.Sendable`, and the
-		## task shares the preparation's error type. Names share the
-		## catalogue's namespace with every other task.
-		task : Preparation(init, state, error), PreparedTaskProps(state, input, output, error) -> PreparedTask(init, state, input, output, error)
-			where [input.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
-		task = |p, props| {
-			{ name, run!, timeout, on_dispose, on_cancel } = props
-			{
-				name,
-				prep: p.name,
-				timeout_ms: timeout_ms_of(timeout),
-				on_dispose,
-				on_cancel,
-				send_init: p.send,
-				send_input: |input| sent(input),
-				receive: |bytes, files| received(name, bytes, files),
-				entry: {
-					name,
-					run!: |state, bytes, files| answer_of(name, run!(state, held_input(name, bytes, files))),
-				},
-			}
-		}
-
-		## The preparation's entry for `Program.with_workers`, with the
-		## entries of the tasks that read its state
-		## (`document.registration([summary.registration(), search.registration()])`).
-		## It registers the preparation's name and each task's name; a name
-		## registered twice is a contract error when the app mounts, and a job
-		## of a task the preparation does not list is a contract error in the
-		## worker.
-		registration : Preparation(init, state, error), List(PreparedTaskEntry(state)) -> Engine.Registration
-		registration = |p, entries| {
-			name = p.name
-			build! = p.build!
-			fail = p.fail
-			Core.registration_prepared(
-				name,
-				entries.map(|e| e.name),
-				|bytes, handles| {
-					built = build!(bytes, handles)
-					Core.kept(
-						name,
-						|asked, tbytes, thandles| match entries.find_first(|e| e.name == asked) {
-							Ok(e) =>
-								match built {
-									Ok(state) => {
-										run! = e.run!
-										run!(state, tbytes, thandles)
-									}
-									Err(error) => fail(error)
-								}
-							Err(_) => crash "contract: worker task \"${asked}\" is not a task of the preparation \"${name}\""
-						},
-					)
-				},
-			)
-		}
-	}
+	Preparation(init, state, error) : WorkerPreparation(init, state, error)
 
 	## The preparation a props record describes:
 	## `Worker.preparation({ name: "example.org/notes/document", prepare!: |text| Ok(lines_of(text)) })`.
@@ -373,7 +311,7 @@ Worker := [].{
 
 	## A task of a preparation, from a `Question(init, input)` to `output`,
 	## failing with the preparation's `error`. Use it as a [Task] is used:
-	## `request` and `result` in an effect site, or `Worker.resource` and
+	## `ask` in an effect site, or `Worker.resource` and
 	## `Worker.resource_when`.
 	PreparedTask(init, state, input, output, error) :: {
 		name : Str,
@@ -395,9 +333,13 @@ Worker := [].{
 		name : PreparedTask(init, state, input, output, error) -> Str
 		name = |t| t.name
 
-		## A request to run the task on `input` over the preparation's
-		## `init`, for an effect site's plan. Both are snapshots, encoded
-		## when the request is issued.
+		## Ask over a preparation with this task's own result reader retained.
+		ask : PreparedTask(init, state, input, output, error), Question(init, input) -> Engine.Ask(output, Error(error))
+		ask = |t, input| Engine.ask_of(t, input)
+
+		## The raw request to run the task on `input` over the preparation's
+		## `init`, for the asker protocol and pure tests. Both are snapshots,
+		## encoded when the request is made. Use `ask` in a typed plan.
 		request : PreparedTask(init, state, input, output, error), Question(init, input) -> Engine.Request
 		request = |t, { init, input }| {
 			initialized = (t.send_init)(init)
@@ -409,6 +351,78 @@ Worker := [].{
 		## The answer to a `request`, as `Task.result`.
 		result : PreparedTask(init, state, input, output, error), Engine.Result -> Try(output, Error(error))
 		result = |t, res| answered(res, t.receive)
+	}
+}
+
+## The public preparation aliases this opaque implementation. Its methods
+## have a distinct lexical scope from Worker.task while retaining the same
+## bytes, file readers and one captured preparation state.
+WorkerPreparation(init, state, error) :: {
+	name : Str,
+	build! : (List(U8), List(Core.File) => Try(state, error)),
+	send : (init -> { bytes : List(U8), files : List(Engine.File) }),
+	fail : (error -> List(U8)),
+}.{
+
+	## The task a props record describes, over this preparation's state:
+	## `document.task({ name, run!: |lines, input| Ok(search(lines, input)) })`
+	## answers `run!(state, input)` from the state the preparation
+	## built. The input and the output must be `Wire.Sendable`, and the
+	## task shares the preparation's error type. Names share the
+	## catalogue's namespace with every other task.
+	task : Worker.Preparation(init, state, error), Worker.PreparedTaskProps(state, input, output, error) -> Worker.PreparedTask(init, state, input, output, error)
+		where [input.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
+	task = |p, props| {
+		{ name, run!, timeout, on_dispose, on_cancel } = props
+		{
+			name,
+			prep: p.name,
+			timeout_ms: timeout_ms_of(timeout),
+			on_dispose,
+			on_cancel,
+			send_init: p.send,
+			send_input: |input| sent(input),
+			receive: |bytes, files| received(name, bytes, files),
+			entry: {
+				name,
+				run!: |state, bytes, files| answer_of(name, run!(state, held_input(name, bytes, files))),
+			},
+		}
+	}
+
+	## The preparation's entry for `Program.with_workers`, with the
+	## entries of the tasks that read its state
+	## (`document.registration([summary.registration(), search.registration()])`).
+	## It registers the preparation's name and each task's name; a name
+	## registered twice is a contract error when the app mounts, and a job
+	## of a task the preparation does not list is a contract error in the
+	## worker.
+	registration : Worker.Preparation(init, state, error), List(Worker.PreparedTaskEntry(state)) -> Engine.Registration
+	registration = |p, entries| {
+		name = p.name
+		build! = p.build!
+		fail = p.fail
+		Core.registration_prepared(
+			name,
+			entries.map(|e| e.name),
+			|bytes, handles| {
+				built = build!(bytes, handles)
+				Core.kept(
+					name,
+					|asked, tbytes, thandles| match entries.find_first(|e| e.name == asked) {
+						Ok(e) =>
+							match built {
+								Ok(state) => {
+									run! = e.run!
+									run!(state, tbytes, thandles)
+								}
+								Err(error) => fail(error)
+							}
+						Err(_) => crash "contract: worker task \"${asked}\" is not a task of the preparation \"${name}\""
+					},
+				)
+			},
+		)
 	}
 }
 
@@ -481,12 +495,9 @@ sent = |input| {
 	{ bytes, files }
 }
 
-## A timeout as the request carries it: `0` is none.
+## Use the shared timeout conversion so Ms(0) cannot become no deadline.
 timeout_ms_of : [Unlimited, Ms(U32)] -> U32
-timeout_ms_of = |timeout| match timeout {
-	Unlimited => 0
-	Ms(ms) => ms
-}
+timeout_ms_of = Core.timeout_wire
 
 ## A task's request carries its name, its timeout and its policies, and
 ## its answer is read back as an output or the task's own error; a
@@ -536,9 +547,9 @@ expect {
 	double = Worker.task({ name: "test/double", run!: |n| Ok(n * 2) })
 	follow = Core.follow_when(double)
 	first = (follow.pending)(follow.init, Run(1))
-	answered_now = (follow.resolve)(first, Run(1), Work({ output: Wire.encode(2.U64).append(0), files: [] }))
+	answered_now = (follow.resolve)(first, Run(1), Ok(2))
 	again = (follow.pending)(answered_now, Run(2))
-	failed = (follow.resolve)(again, Run(2), Refused)
+	failed = (follow.resolve)(again, Run(2), Err(Refused))
 	skipped = (follow.pending)(failed, Skip)
 	actual =
 		\\first: ${Str.inspect(first)}
@@ -595,9 +606,9 @@ expect {
 	double : Worker.Task(U64, U64, [Odd])
 	double = Worker.task({ name: "test/double-even", run!: |n| if (n % 2 == 0) Ok(n * 2) else Err(Odd) })
 	gather = Core.gather(double)
-	answer : U64 -> Engine.Result
-	answer = |n| Work({ output: Wire.encode(n).append(0), files: [] })
-	odd = Work({ output: Wire.encode(Odd).append(1), files: [] })
+	answer : U64 -> Try(U64, Worker.Error([Odd]))
+	answer = |n| Ok(n)
+	odd = Err(Failed(Odd))
 	asked = (gather.pending)(gather.init, [2, 4, 6])
 	last = (gather.resolve)(asked, [2, 4, 6], 2, answer(12))
 	first = (gather.resolve)(last, [2, 4, 6], 0, answer(4))
@@ -605,7 +616,7 @@ expect {
 	again = (gather.pending)(all, [1, 2])
 	one = (gather.resolve)(again, [1, 2], 1, answer(4))
 	failed = (gather.resolve)(one, [1, 2], 0, odd)
-	refused = (gather.resolve)((gather.pending)(failed, [2, 4]), [2, 4], 1, Refused)
+	refused = (gather.resolve)((gather.pending)(failed, [2, 4]), [2, 4], 1, Err(Refused))
 	show : Engine.Gathered(U64, Worker.Error([Odd])) -> Str
 	show = |g| "${Str.inspect(g.jobs)} ${Str.inspect(g.all)}"
 	actual =
@@ -648,5 +659,18 @@ expect {
 		\\name: test/lines/nth
 		\\request: ("test/lines/nth", [3, 97, 10, 98, 1, 0, 0, 0, 0, 0, 0, 0], 40, Finish, Prepared({ input_files: 0, input_len: 4, name: "test/lines" }))
 		\\answer: Ok("b")
+	actual == expected
+}
+
+## Both task forms expose an ask with the protocol's exact request data.
+expect {
+	task : Worker.Task(U64, U64, Worker.Never)
+	task = Worker.task({ name: "test/ask", run!: |n| Ok(n + 1) })
+	preparation : Worker.Preparation(Str, U64, Worker.Never)
+	preparation = Worker.preparation({ name: "test/ask-prepared", prepare!: |text| Ok(text.count_utf8_bytes()) })
+	prepared = preparation.task({ name: "test/ask-prepared/add", run!: |length, n| Ok(length + n) })
+	question = { init: "input", input: 7.U64 }
+	actual = { task: task.ask(7).sent(), prepared: prepared.ask(question).sent() }
+	expected = { task: task.request(7), prepared: prepared.request(question) }
 	actual == expected
 }

@@ -91,11 +91,11 @@ SearchApp := [].{
 			[
 				Engine.watch(
 					st.signal().map(|s| s.attempt),
-					|_| [SearchApp.summarise_task.request({})],
+					|_| [SearchApp.summarise_task.ask({})],
 					st.on_result(
 						|s, _, r| {
 							..s,
-							summary: match SearchApp.outcome(SearchApp.summarise_task.result(r)) {
+							summary: match SearchApp.outcome(r) {
 								Ok(text) => text
 								Err(why) => "The report ${why}"
 							},
@@ -116,10 +116,10 @@ SearchApp := [].{
 				Html.text_input(Engine.const("Search"), "search", v.map(|s| s.query), [], st.set_value(|s, t| { ..s, query: t })),
 				Engine.watch_latest(
 					v.map(|s| s.query),
-					|q| if (q == "") [] else [SearchApp.filter_task.request(q)],
+					|q| if (q == "") [] else [SearchApp.filter_task.ask(q)],
 					st.on_result(
 						|s, q, r|
-							match SearchApp.outcome(SearchApp.filter_task.result(r)) {
+							match SearchApp.outcome(r) {
 								Ok(text) => { ..s, results: text, searched: q }
 								Err(why) => { ..s, results: "Search ${why}", searched: q }
 							},

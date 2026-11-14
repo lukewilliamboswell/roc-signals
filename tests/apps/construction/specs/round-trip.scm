@@ -1,0 +1,15 @@
+(test "Default-route clicks retain the legal construction frame"
+  (setup (initial-location "/?contract=default#anchor"))
+  (steps
+    (expect-text (role button :name "Trigger construction") "Trigger construction")
+    (expect-text (role main) "Trigger constructionChoose a construction contract")
+    (mark-metrics)
+    (click (role button :name "Trigger construction"))
+    (click (role button :name "Trigger construction"))
+    (expect-text (role button :name "Trigger construction") "Trigger construction")
+    (expect-text (role main) "Trigger constructionChoose a construction contract")
+    (expect-metric-delta patches_emitted 0)
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta scopes_created 0)
+    (expect-metric-delta scopes_disposed 0)))

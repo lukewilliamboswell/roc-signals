@@ -1,0 +1,18 @@
+(test "Table — another Store value cannot impersonate the live table on its first write"
+  (setup (initial-location "/?n=3"))
+  (steps
+    (expect-text (test-id "main") "0:0:0 2:1:0 ")
+    (expect-text (label "Qty 0") "0")
+    (click (label "Mark 2"))
+    (mark-metrics)
+    (click (role button :name "Load second Store"))
+    (expect-text (test-id "count") "Rows: 2")
+    (expect-text (test-id "row0") "Row 0: gone")
+    (expect-text (test-id "main") "2:1:1 ")
+    (expect-text (test-id "done") "1=Task 1 ")
+    (expect-absent (label "Qty 0"))
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 1)
+    (expect-metric-delta rows_updated 2)
+    (expect-metric-delta rows_moved 0)
+  ))

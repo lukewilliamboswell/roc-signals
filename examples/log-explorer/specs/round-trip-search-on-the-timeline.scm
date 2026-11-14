@@ -7,9 +7,9 @@
 ; before the mark: leaving the tab would make them again under other ids.
 (test "Log Explorer — round trip: a search drawn on the timeline, paged, and cleared"
   (setup
-    (file "app.log" "text/x-log" "2026-11-11T12:00:10Z INFO api: GET /orders/1 answered 200\n2026-11-11T12:01:05Z ERROR checkout: POST /checkout answered 503\n    at Payments.charge (payments.roc:64)\n2026-11-11T12:03:00Z WARN checkout: slow request: POST /checkout took 4100 ms\n" 20))
+    (file "app.txt" "text/plain" "2026-11-11T12:00:10Z INFO api: GET /orders/1 answered 200\n2026-11-11T12:01:05Z ERROR checkout: POST /checkout answered 503\n    at Payments.charge (payments.roc:64)\n2026-11-11T12:03:00Z WARN checkout: slow request: POST /checkout took 4100 ms\n" 20))
   (steps
-    (choose-files (label "Log file") "app.log")
+    (choose-files (label "Log file") "app.txt")
     (run-effect 1)
     (click (role button :name "Search"))
     (run-effect 2)

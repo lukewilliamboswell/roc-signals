@@ -34,7 +34,7 @@ roc_docs_program = Fetch("roc-docs", Recipes.file("https://github.com/lukewillia
 # is pinned to it. roc-overlay packages each nightly as
 # `nix#rocpkgs.<tag>`; it is fetched directly here so no environment starts
 # Nix.
-roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-10-f7d1f19"))
+roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-13-03dce41"))
 
 config = [
 	Name("roc-signals"),
@@ -48,7 +48,7 @@ config = [
 	# `tar`, which GNU tar cannot read; the pinned recipe is ready
 	# below as `chrome` and replaces this Expect once blueprint unpacks zips on
 	# Linux.
-	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["roc", "curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome", "zip"])]),
+	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["roc", "git", "curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome", "zip"])]),
 	# Building the documentation site, its API docs and its live examples.
 	Environment("site", [Programs([roc_stable_program, zig_program, zola_program, roc_docs_program, node_program, Fetch("tailwindcss", tailwind)]), Expect(["roc", "google-chrome"])]),
 	# Building the release assets, API docs included.
@@ -58,6 +58,8 @@ config = [
 	# app's specs natively and in Chrome, the broken-spec self-check, the
 	# runtime contract tests, the jfb check and the release dry run.
 	Task("check", [Use("engine"), Run(["scripts/check_all.roc"])]),
+	# Declaration rejections and compile-time default-mount contracts.
+	Task("compile-fixtures", [Use("engine"), Run(["scripts/compile_fixtures.roc"])]),
 	# Too slow for every pull request: every fuzz target's examples and the
 	# leak-checked soaks, natively and in Chrome.
 	Task("check-slow", [Use("engine"), Run(["scripts/check_slow.roc"])]),
@@ -71,12 +73,18 @@ config = [
 	# Measure how worker jobs scale in Chrome, on both candidate shipping
 	# builds of the Worker Lab; prints tables for a pull request.
 	Task("workers-scaling", [Use("engine"), Run(["scripts/workers_scaling.roc"])]),
+	# Fixed examples only, with ordinary optimized native builds. Covered
+	# check/check-slow targets and campaigns keep their own executables.
+	Task("fuzz-smoke", [Use("engine"), Run(["scripts/fuzz_smoke.roc", "--"])]),
+	Task("sizes", [Use("engine"), Run(["scripts/check_sizes.roc", "--"])]),
 	# A fuzz campaign: `blueprint run fuzz -- --time 600 [TARGET...]`.
 	Task("fuzz", [Use("engine"), Run(["scripts/fuzz.roc", "--"])]),
 	# The release assets: `blueprint run release -- --version 0.3.0`.
 	Task("release", [Use("release"), Run(["scripts/release.roc", "--"])]),
 	# Build the site into dist/: `-- --base-url http://127.0.0.1:8000/roc-signals` for serve.
 	Task("site", [Use("site"), Run(["scripts/site.roc", "--"])]),
+	# API documentation and coverage alone, without shipping app builds.
+	Task("api", [Use("release"), Run(["scripts/api.roc"])]),
 	# Serve dist/ at 127.0.0.1:8000/roc-signals/, or `-- DIR` at the root (`--port N`).
 	Task("serve", [Use("engine"), Run(["node", "www/serve.mjs", "--"])]),
 ]

@@ -14,7 +14,7 @@ import Schema
 ## preview each draw a view of it in the form's order, so an edit of one
 ## field wakes that field's row in each. The form's totals are counted
 ## once per write, in one `derive` layer that the figures at the top and
-## the preview's submit button read. Each part is drawn by its own module
+## the preview read. Each part is drawn by its own module
 ## over the cells this page hands it: the page imports the store, the
 ## parts do not.
 FormApp := [].{
@@ -31,7 +31,7 @@ FormApp := [].{
 
 ## What the preview is drawn over: the fields it reads, and the cells it
 ## writes.
-preview = { fields: AppStore.cells.schema.fields, answers: AppStore.cells.answers, submissions: AppStore.cells.submissions }
+preview = { fields: AppStore.cells.schema.fields, answers: AppStore.cells.answers, submissions: AppStore.cells.submissions, ui: AppStore.cells.preview }
 
 ## The page under the form's totals: the figures, the toolbar, the designer
 ## and the preview.
@@ -45,7 +45,7 @@ page = |sums| Html.div(
 			"app-header",
 			[
 				Html.h1("Form Builder", "app-title"),
-				Html.p("Design a form on the left and answer the form it generates on the right. Field definitions and answers are two independent sources; every preview label, every validation message, and the submit button's disabled state are derived from both.", "app-subtitle"),
+				Html.p("Design a form on the left and answer the form it generates on the right. Field definitions and answers are two independent sources; every preview label, every validation message, and submission feedback follow those values. Settings and deletion use native dialogs.", "app-subtitle"),
 			],
 		),
 		Html.div(
@@ -77,7 +77,7 @@ page = |sums| Html.div(
 		Html.div(
 			"grid gap-5 lg:grid-cols-2",
 			[
-				Designer.view(AppStore.cells.schema.fields),
+				Designer.view({ fields: AppStore.cells.schema.fields, confirm: AppStore.cells.confirm, focus: AppStore.cells.focus }),
 				Preview.view(preview, sums),
 			],
 		),
@@ -88,7 +88,7 @@ page = |sums| Html.div(
 ## for the next field when it is pressed.
 add_button : Str, Form.Kind -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
-add_button = |label, kind| Html.button(label, [Engine.class("button button-sm")], Engine.handle_by(AppStore.cells.schema.next.signal(), |number, _| Schema.added(AppStore.cells.schema, { kind, number })))
+add_button = |label, kind| Html.button(label, [Engine.class("button button-sm")].concat(if (kind == Form.text_kind) [Engine.ref("add-text-field")] else []), Engine.handle_by(AppStore.cells.schema.next.signal(), |number, _| Schema.added(AppStore.cells.schema, { kind, number })))
 
 ## One figure, under its caption.
 stat : { caption : Str, id : Str }, Signal(ctx, Str) -> Elem(ctx)

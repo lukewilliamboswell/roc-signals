@@ -7,3 +7,10 @@ import Primes
 ## `roc build --target=x64musl` its native spec runner.
 main : Engine.Program
 main = Primes.program
+
+## The instance holds this store beside its site tree.
+Store : {}
+
+## Check that the default first page mounts while this app compiles.
+mounted : U64
+mounted = Engine.mounts(main)

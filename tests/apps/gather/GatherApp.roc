@@ -102,7 +102,7 @@ GatherApp := [].{
 				Engine.const("Fail the second shard"),
 				st.signal().map(|s| s.second == Fails),
 				[],
-				st.set_value(|s, checked| { ..s, second: if (checked == "true") Fails else Counts }),
+				st.set_value(|s, checked| { ..s, second: if (checked) Fails else Counts }),
 			),
 			Worker.gather(
 				GatherApp.count,

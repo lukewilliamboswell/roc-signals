@@ -1,7 +1,7 @@
 #!/usr/bin/env roc-stable
 app [main!] {
-	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.27.0/9yjxqdGTP4xSpSEmDazwTmRsehfRZzA19pwEKkR6fj1g.tar.zst",
-	roc: "nightly-2026-11-10-f7d1f19",
+	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst",
+	roc: "nightly-2026-11-13-03dce41",
 }
 
 import cli.OsStr
@@ -48,14 +48,10 @@ main! = |raw_args| {
 	}
 	o = Checks.options!({ filter: "*" })?
 	selected = if ($names.is_empty()) Targets.fuzz_targets else Targets.fuzz_targets.keep_if(|t| $names.contains(t.name))
-	chosen = Targets.runnable_fuzz!(o, selected)
-	if chosen.is_empty() {
-		return Ok({})
-	}
 	Checks.prepare_platform!(o)?
-	Targets.build_fuzz_all!(o, chosen)?
+	Targets.build_fuzz_all!(o, selected)?
 	var $failed = []
-	for t in chosen {
+	for t in selected {
 		out = "${o.root}/.fuzz-out/${t.name}"
 		Path.create_all!(Path.utf8("${out}/corpus"))?
 		report = "${out}/report"

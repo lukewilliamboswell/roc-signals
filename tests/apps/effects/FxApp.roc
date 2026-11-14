@@ -30,6 +30,9 @@ import pf.Worker
 ##   appends to the root log.
 ## - A follow-up loop that only the browser contract test arms ("loop"): a
 ##   refused request whose reaction issues it again.
+## - A loop that multiplies, armed the same way ("multiply"): a site over a
+##   local count that asks for two `Self` follow-ups, each of which raises
+##   the count, so every follow-up's turn queues two more.
 ## - P, a `latest` site over the counter `p`, shown or hidden by a `when`:
 ##   for a nonzero `p` a port call (kept when P is disposed) and a port
 ##   subscription (scoped, ended by its JavaScript with `Closed` or
@@ -51,6 +54,18 @@ FxApp := [].{
 
 	Ctx : In(Root, S)
 
+	## This protocol oracle deliberately accepts every raw result kind.
+	http : Engine.HttpProps -> Engine.Request
+	http = |props| Engine.http(props).sent()
+
+	asks : List(Engine.Request) -> List(Engine.Ask(Engine.Result, []))
+	asks = |requests| requests.map(Engine.raw)
+
+	unraw : Try(Engine.Result, []) -> Engine.Result
+	unraw = |answer| match answer {
+		Ok(result) => result
+	}
+
 	nsites : U64
 	nsites = 3
 
@@ -62,7 +77,7 @@ FxApp := [].{
 		if c == 0 {
 			[]
 		} else {
-			get = Http({ method: "GET", url: FxApp.url_of(k, c), headers: [("accept", "text/plain")], body: "", timeout_ms: FxApp.timeout_of(c) })
+			get = FxApp.http({ url: FxApp.url_of(k, c), headers: [("accept", "text/plain")], timeout: Ms(FxApp.timeout_of(c)) })
 			if (c % 6 == 0) [get, Self, Self] else if (c % 3 == 0) [get, Self] else [get]
 		}
 	}
@@ -116,7 +131,7 @@ FxApp := [].{
 	## settles a job.
 	Asker := [Asker].{
 		request : Asker, U64 -> Engine.Request
-		request = |_, x| Http({ method: "GET", url: "/x/${x.to_str()}", headers: [], body: "", timeout_ms: 0 })
+		request = |_, x| FxApp.http({ url: "/x/${x.to_str()}" })
 
 		result : Asker, Engine.Result -> Try(Str, Str)
 		result = |_, res| match res {
@@ -150,19 +165,26 @@ FxApp := [].{
 	}
 
 	## O's request for the item posted.
-	plan_o : U64 -> List(Engine.Request)
-	plan_o = |item| [Http({ method: "GET", url: "/o/${item.to_str()}", headers: [], body: "", timeout_ms: 0 })]
+	plan_o : U64, U64 -> List(Engine.Request)
+	plan_o = |query, item| [FxApp.http({ url: "/o/${item.to_str()}?q=${query.to_str()}" })]
 
-	## P's ports: a call and a subscription, each sent `p`.
-	port_call : Port.Call(U64, Str)
-	port_call = Port.call({ name: "test.roc-signals/fx-call" })
+	## The module's named ports, declared once and registered together.
+	Ports : {
+		## P's ports: a call and a subscription, each sent `p`.
+		port_call : Port.Call(U64, Str),
+		port_feed : Port.Subscription(U64, Str),
+	}
 
-	port_feed : Port.Subscription(U64, Str)
-	port_feed = Port.subscription({ name: "test.roc-signals/fx-feed", delivery: Every(8) })
+	## The same values serve requests and the derived program catalogue.
+	ports : Ports
+	ports = {
+		port_call: Port.call({ name: "test.roc-signals/fx-call" }),
+		port_feed: Port.subscription({ name: "test.roc-signals/fx-feed", delivery: Every(8) }),
+	}
 
 	## P's requests for `p`.
 	plan_p : U64 -> List(Engine.Request)
-	plan_p = |p| if (p == 0) [] else [FxApp.port_call.request(p), FxApp.port_feed.subscribe(p)]
+	plan_p = |p| if (p == 0) [] else [FxApp.ports.port_call.request(p), FxApp.ports.port_feed.subscribe(p)]
 
 	## L's requests for query `q`.
 	plan_l : U64 -> List(Engine.Request)
@@ -170,11 +192,11 @@ FxApp := [].{
 		if q == 0 {
 			[]
 		} else if q % 4 == 1 {
-			[Http({ method: "GET", url: "/l/${q.to_str()}", headers: [], body: "", timeout_ms: 5000 })]
+			[FxApp.http({ url: "/l/${q.to_str()}", timeout: Ms(5000) })]
 		} else if q % 4 == 2 {
 			[Interval(500)]
 		} else if q % 4 == 3 {
-			[Http({ method: "GET", url: "/l/${q.to_str()}", headers: [], body: "", timeout_ms: 0 }), Self, Self]
+			[FxApp.http({ url: "/l/${q.to_str()}" }), Self, Self]
 		} else {
 			[]
 		}
@@ -197,9 +219,9 @@ FxApp := [].{
 		if r == 0 {
 			[]
 		} else if r % 3 == 1 {
-			[Http({ method: "GET", url: "/r/${r.to_str()}", headers: [], body: "", timeout_ms: 0 })]
+			[FxApp.http({ url: "/r/${r.to_str()}" })]
 		} else if r % 3 == 2 {
-			[Http({ method: "GET", url: "/r/${r.to_str()}", headers: [], body: "", timeout_ms: 0 }), Timer(100)]
+			[FxApp.http({ url: "/r/${r.to_str()}" }), Timer(100)]
 		} else {
 			[Interval(700), FxApp.echo.request(r.to_u8_wrap())]
 		}
@@ -269,8 +291,8 @@ FxApp := [].{
 							Engine.text(label),
 							Engine.watch(
 								st.signal().map(|s| s.counts.get(k) ?? 0),
-								FxApp.plan(k),
-								st.on_result(|s, c, r| FxApp.react(s, k, c, r)),
+								|c| FxApp.asks(FxApp.plan(k)(c)),
+								st.on_result(|s, c, r| FxApp.react(s, k, c, FxApp.unraw(r))),
 							),
 							Engine.state(
 								0.U64,
@@ -280,14 +302,14 @@ FxApp := [].{
 									[
 										Engine.watch(
 											st.signal().map(|s| s.counts.get(k) ?? 0).lift(),
-											|c| if (c == 0) [] else [Http({ method: "GET", url: "/h${k.to_str()}/${c.to_str()}", headers: [], body: "", timeout_ms: 0 })],
+											|c| if (c == 0) [] else FxApp.asks([FxApp.http({ url: "/h${k.to_str()}/${c.to_str()}" })]),
 											hits.on_result(|h, _, _| h + 1),
 										),
 										Engine.text_s(hits.signal().map(|h| h.to_str())),
 									],
 								),
 							),
-							Engine.watch(Engine.const(0.U64), |_| [Interval(1000)], st.on_result(|s, _, r| FxApp.log_line(s, FxApp.describe(k, 0, r)))),
+							Engine.watch(Engine.const(0.U64), |_| FxApp.asks([Interval(1000)]), st.on_result(|s, _, r| FxApp.log_line(s, FxApp.describe(k, 0, FxApp.unraw(r))))),
 						],
 					),
 					|| Engine.text(""),
@@ -303,7 +325,7 @@ FxApp := [].{
 			"div",
 			[],
 			[
-				Engine.watch(Engine.const(0.U64), |_| [Popstate], st.on_result(|s, _, r| FxApp.log_line(s, FxApp.describe(9, 0, r)))),
+				Engine.watch(Engine.const(0.U64), |_| FxApp.asks([Popstate]), st.on_result(|s, _, r| FxApp.log_line(s, FxApp.describe(9, 0, FxApp.unraw(r))))),
 				FxApp.site(st, 0),
 				FxApp.site(st, 1),
 				FxApp.site(st, 2),
@@ -319,30 +341,44 @@ FxApp := [].{
 				# F: each flood asks for 70 timers at once, far past the bound, so one
 				# turn queues dozens of refusals (one follow-up chain deep each).
 				Html.button("flood", [], st.update(|s| { ..s, f: s.f + 1 })),
-				Engine.watch_changes(st.signal().map(|s| s.f), |_| List.repeat(Timer(10), FxApp.flood_size), st.on_result(|s, f, r| FxApp.log_line(s, FxApp.describe(6, f, r)))),
+				Engine.watch_changes(st.signal().map(|s| s.f), |_| FxApp.asks(List.repeat(Timer(10), FxApp.flood_size)), st.on_result(|s, f, r| FxApp.log_line(s, FxApp.describe(6, f, FxApp.unraw(r))))),
 				# A genuine follow-up loop, never armed by the fuzz model: once
 				# "loop" is pressed, a refusal bumps `n`, which issues again, which
 				# is refused again while the table is full.
 				Html.button("loop", [], st.update(|s| { ..s, looping: True })),
 				Engine.watch(
 					st.signal().map(|s| if (s.looping) s.n + 1 else 0),
-					|n| if (n == 0) [] else [Http({ method: "GET", url: "/loop/${n.to_str()}", headers: [], body: "", timeout_ms: 0 })],
+					|n| if (n == 0) [] else FxApp.asks([FxApp.http({ url: "/loop/${n.to_str()}" })]),
 					st.on_result(
-						|s, _, r| match r {
+						|s, _, r| match FxApp.unraw(r) {
 							Refused => { ..s, n: s.n + 1 }
 							_ => s
 						},
 					),
 				),
+				# A loop that multiplies, never armed by the fuzz model: once
+				# "multiply" is pressed, each follow-up raises the count, and the
+				# site asks for two more follow-ups for the new count.
+				Engine.state(
+					0.U64,
+					|count| Engine.element(
+						"span",
+						[],
+						[
+							Html.button("multiply", [], count.update(|_| 1)),
+							Engine.watch(count.signal(), |c| if (c == 0) [] else FxApp.asks([Self, Self]), count.on_result(|c, _, _| c + 1)),
+						],
+					),
+				),
 				Html.button("query", [], st.update(|s| { ..s, q: s.q + 1 })),
-				Engine.watch_latest(st.signal().map(|s| s.q), FxApp.plan_l, st.on_result(|s, q, r| FxApp.react_l(s, q, r))),
+				Engine.watch_latest(st.signal().map(|s| s.q), |value| FxApp.asks(FxApp.plan_l(value)), st.on_result(|s, q, r| FxApp.react_l(s, q, FxApp.unraw(r)))),
 				Html.button("rquery", [], st.update(|s| { ..s, r: s.r + 1 })),
 				Html.button("toggle r", [], st.update(|s| { ..s, rshown: !s.rshown })),
 				Engine.when(
 					st.signal().map(|s| s.rshown),
 					|| Engine.resource(
 						st.signal().map(|s| s.r),
-						{ init: FxApp.load0, pending: FxApp.pending_r, plan: FxApp.plan_r, resolve: FxApp.resolve_r },
+						{ init: FxApp.load0, pending: FxApp.pending_r, plan: |r| FxApp.asks(FxApp.plan_r(r)), resolve: |l, r, answer| FxApp.resolve_r(l, r, FxApp.unraw(answer)) },
 						|l| Html.p_s(l.map(FxApp.show_r), [Engine.test_id("res")]),
 					),
 					|| Engine.text(""),
@@ -351,7 +387,7 @@ FxApp := [].{
 				Html.button("toggle p", [], st.update(|s| { ..s, pshown: !s.pshown })),
 				Engine.when(
 					st.signal().map(|s| s.pshown),
-					|| Engine.watch_latest(st.signal().map(|s| s.p), FxApp.plan_p, st.on_result(|s, p, r| FxApp.log_line(s, FxApp.describe(10, p, r)))),
+					|| Engine.watch_latest(st.signal().map(|s| s.p), |value| FxApp.asks(FxApp.plan_p(value)), st.on_result(|s, p, r| FxApp.log_line(s, FxApp.describe(10, p, FxApp.unraw(r))))),
 					|| Engine.text(""),
 				),
 				Html.button("gquery", [], st.update(|s| { ..s, g: s.g + 1 })),
@@ -362,7 +398,7 @@ FxApp := [].{
 					|| Engine.text(""),
 				),
 				Html.button("post", [], st.update(|s| { ..s, posts: s.posts + 1, out: s.out.post((s.posts + 1) // 2) })),
-				Engine.on_post(st.signal().map(|s| s.out), FxApp.plan_o, st.on_result(|s, item, r| FxApp.log_line(s, FxApp.describe(12, item, r)))),
+				Engine.on_post_by(st.signal().map(|s| s.out), st.signal().map(|s| s.q), |query, item| FxApp.asks(FxApp.plan_o(query, item)), st.on_result(|s, item, r| FxApp.log_line(s, FxApp.describe(12, item, FxApp.unraw(r))))),
 			],
 		),
 	)
@@ -370,11 +406,11 @@ FxApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner, and `fuzz-channel.roc` drives as a roc-fuzz target.
 	program : Engine.Program
-	program = Engine.program_boot({ storage_keys: [], max_inflight: 8 }, |_| FxApp.main({})).with_workers(FxApp.workers).with_ports(FxApp.ports)
+	program = Engine.program_boot({ storage_keys: [], max_inflight: 8 }, |_| FxApp.main({})).with_workers(FxApp.workers).with_ports(FxApp.registrations)
 
 	## The ports P uses.
-	ports : List(Engine.PortRegistration)
-	ports = [FxApp.port_call.registration(), FxApp.port_feed.registration()]
+	registrations : List(Engine.PortRegistration)
+	registrations = Port.registrations(FxApp.ports)
 
 	main : {} -> Elem(Root)
 	main = |_| FxApp.main_with([True, True, True])

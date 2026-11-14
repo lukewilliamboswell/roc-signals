@@ -1,9 +1,9 @@
 (test "Log Explorer — every tab asks the same prepared log, a new file is asked afresh, and closing it lets it go"
   (setup
-    (file "app.log" "text/x-log" "2026-11-11T08:00:00.120Z INFO  api: GET /orders/1 answered 200\n2026-11-11T08:00:01.004Z ERROR db: connection reset by peer\n    at Pool.acquire (pool.roc:88)\n" 10)
-    (file "other.log" "text/x-log" "2026-11-12T09:30:00Z [warn] [cache] miss for user:7\n" 3))
+    (file "app.txt" "text/plain" "2026-11-11T08:00:00.120Z INFO  api: GET /orders/1 answered 200\n2026-11-11T08:00:01.004Z ERROR db: connection reset by peer\n    at Pool.acquire (pool.roc:88)\n" 10)
+    (file "other.txt" "text/plain" "2026-11-12T09:30:00Z [warn] [cache] miss for user:7\n" 3))
   (steps
-    (choose-files (label "Log file") "app.log")
+    (choose-files (label "Log file") "app.txt")
     (run-effect 1)
     (expect-text (test-id "overview") "30 lines, 20 entries, from 2026-11-11T08:00:00.120Z to 2026-11-11T08:00:01.004Z")
     (click (role button :name "Search"))
@@ -25,8 +25,8 @@
     (expect-text (test-id "search-status") "10 matching lines, page 1 of 1.")
     (click (role button :name "Overview"))
     ; Another file: its own answers, and the first file is let go.
-    (choose-files (label "Log file") "other.log")
-    (expect-text (test-id "log") "other.log, 156 bytes")
+    (choose-files (label "Log file") "other.txt")
+    (expect-text (test-id "log") "other.txt, 156 bytes")
     (expect-pending-work "roc-signals.example/log-explorer/overview" 1)
     (run-effect 5)
     (expect-text (test-id "overview") "3 lines, 3 entries, from 2026-11-12T09:30:00Z to 2026-11-12T09:30:00Z")

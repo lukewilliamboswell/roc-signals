@@ -8,7 +8,8 @@ template = "page.html"
 # Ports
 
 The platform models the browser services most apps need: HTTP, local
-storage, timers, history, focus, connectivity, workers and files. When your
+and session storage, timers, history, focus, connectivity, workers, files
+and clipboard writes. When your
 app needs one it does not model, such as IndexedDB, a save-file picker, a
 WebSocket or a payment sheet, reach it through a **port**.
 
@@ -24,7 +25,7 @@ in IndexedDB. Its spec runs natively and in Chrome. The
 [Reading List](@/examples/reading-list.md) example is a whole app built the
 same way: books kept in IndexedDB, still there after a reload, and a change
 in one tab shown in every other. Its source shows each side of the line
-between your app and its JavaScript: `Store.roc` declares the ports,
+between your app and its JavaScript: `BookStorage.roc` declares the ports,
 `ports.mjs` answers them, and `index.html` mounts the app with them.
 
 ## Three shapes
@@ -48,10 +49,28 @@ made from a props record: `Port.command({ name })`,
 
 {{ sample(file="ports/Notes.roc", region="ports") }}
 
+A call's timeout is `Unlimited` for none, or `Ms(ms)` with at least one
+millisecond, capped at ten minutes. `Ms(0)` is a contract error when
+`Port.call` is constructed, including a compile-time error for a bad
+top-level constant.
+
 Port names are global strings, so namespace them (`"example.org/notes/list"`).
-List every port's `registration()` in the program:
+Keep a module's ports in one annotated record. Its fields are `Port.Command`,
+`Port.Call`, `Port.Subscription`, or nested records of them. Derive every entry
+with `Port.registrations` and pass the catalogue to `with_ports`:
 
 {{ sample(file="ports/Notes.roc", region="program") }}
+
+The derived catalogue includes a new field automatically. A module omitted
+from the composing record can still be undeclared. Keep unrelated configuration
+outside it: a non-port field is a contract error naming its full field path.
+The catalogue allows at most 64 ports, unique names of 1–128 UTF-8 bytes, and
+`Every` bounds of 1–1024. `with_ports` checks the concatenated catalogue too,
+catching duplicates across modules. Top-level constants report these errors
+at compile time; dynamically built programs report them when built. JavaScript
+handler matching still happens at mount. Use a port's `name()` when a monitor
+or page needs its handler name. Derivation orders fields alphabetically;
+requests and handlers are addressed by name.
 
 And use them from effect sites, like any other request:
 
@@ -62,17 +81,11 @@ resource holding the answer for an input, an `Engine.Remote`, where a newer
 input stops the older call. `Port.resource_when` takes `[Run(input), Skip]`
 for an input that is sometimes not a question.
 
-Give each port its own effect site. A site's reaction receives every
-result of what its plan issued, and a `PortAnswer` does not say which port
-it came from, so a site that issued a call on one port and a subscription
-on another could not tell their results apart. One outbox whose item's tag
-names the port (`[Add(Book), Remove(Str)]`) works too: the reaction is
-given the item, so it knows which port answered.
-
-Decode a port's data into the app's own types at the door, in the
-reaction, and check the app's invariants there (an id that must be unique,
-a list that must be sorted), so nothing deeper takes the raw message on
-trust.
+A site's plan returns typed asks and its reaction receives their common
+result type. Use a port's `ask` or `subscribe` operation to decode its answer
+at that boundary. Validate application rules, such as uniqueness or ordering,
+in the decision before writing the result to cells. Use separate sites when
+different services need different result types.
 
 ### Sending when the user acts
 
@@ -98,8 +111,8 @@ as calls, and `writes`, each change's writes, sent as commands
 
 ## The JavaScript side
 
-The platform supplies the runtime, `runtime.mjs` and the `worker.mjs`
-beside it. They are the same for every app and know nothing of your ports.
+The platform supplies `runtime.mjs`, its `environment.mjs` fact readers,
+and `worker.mjs` beside it. They are the same for every app and know nothing of your ports.
 You write two things: the handlers, a module of plain functions, and the
 page that mounts your app with them. The page passes one handler per
 declared port in the `ports` option of `mountRocEngineApp`:
@@ -143,8 +156,9 @@ export default {
 The sample's complete handlers, IndexedDB included, are
 `www/samples/ports/notes-ports.mjs`, and the Reading List's are
 `examples/reading-list/ports.mjs`. Keep them with your app: they are your
-code, not the platform's. Store a record exactly as it crosses (a `U64` as
-its string of digits, a tag by its name), so what a handler stores is what
+code, not the platform's. Roc samples a note's time through `Timer(0)`;
+the IndexedDB handler stores the record unchanged. Store a record exactly
+as it crosses (wide integers as decimal strings, a tag by its name), so what a handler stores is what
 it answers and no conversion between them can drift.
 
 The runtime checks the handlers against the app's declarations before
@@ -233,12 +247,22 @@ of `Port.Error`:
 `Closed` and `Threw` end a subscription; after them no more messages come.
 Every other error reports one message, and the subscription goes on.
 
-A subscription declares how its messages wait while the app is busy:
-`Latest` keeps only the newest undelivered message, which suits a value
-whose newest state is all that matters (a revision, a position, a status);
+A subscription declares how its messages wait:
+`Latest` keeps the newest waiting report and delivers at the next animation
+frame, which suits a value whose newest state is all that matters (a
+revision, a position, a status). A newer message replaces the waiting
+report in place. An occurrence such as a click first delivers reports
+queued before it. Hidden pages drain at the end of the reporting task;
+visible pages given no frames drain within 100 ms.
+
 `Every(n)` keeps up to `n` (1 to 1024) in order, and `emit` returns `false`
 beyond them, so the JavaScript can slow down or drop. A port never lets a
 busy page's queue grow without bound.
+
+`Closed` and `Threw` are occurrences: a waiting latest message is delivered
+before them. A message refused as `TooLarge` is itself a report and can
+replace or be replaced by another waiting message. Test this delivery with
+[`hold-reports` and `expect-reports-replaced`](@/docs/testing.md#reports).
 
 Declaring a port twice, more than 64 ports, a request on a port the program
 does not declare, or using a port as another shape than its declaration
@@ -329,6 +353,7 @@ counts in the same numbering as `run-effect`:
 | `(emit-port "port" "json")` | Deliver a message to every live subscription on `port` |
 | `(close-port "port")`, `(fail-port "port" "message")` | End every live subscription on `port` with `Closed` or `Threw` |
 | `(expect-port-subscriptions "port" n)` | Exactly `n` subscriptions on `port` are live |
+| `(expect-port-subscription-arg "port" k "json")` | The one-based `k`-th currently active subscription on `port` has exactly this argument |
 | `(expect-port-sent "port" k "json")`, `(expect-port-sends "port" n)` | The `k`-th command sent on `port` carried `json`; `n` were sent |
 
 Commands are not awaited, so `expect-pending-effects` does not count them.
@@ -342,6 +367,10 @@ opens its own page in two tabs on one IndexedDB, and checks the records
 the handlers wrote, a reload, and each tab seeing the other's changes. A
 handler that needs no browser service can also be tested as the plain
 function it is, for example with `node:test`.
+
+The [Port Recipes](@/docs/port-recipes.md) page supplies complete declarations,
+handlers and specs for WebSocket/SSE, permissions, sharing, clipboard reads,
+geolocation, media capture, fullscreen, wake lock and batched locale formatting.
 
 ## A port, an effect or a worker?
 

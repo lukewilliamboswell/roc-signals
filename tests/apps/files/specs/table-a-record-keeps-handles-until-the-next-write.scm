@@ -1,0 +1,17 @@
+(test "A removed table row retains its File through unrelated turns until the next table write"
+  (setup (file "retained.txt" "text/plain" "retained"))
+  (steps
+    (expect-files 0)
+    (drop-files (label "Table files") "retained.txt")
+    (expect-text (test-id "table-rows") "table rows 1")
+    (expect-files 1)
+    (click (role button :name "Remove table files"))
+    (expect-text (test-id "table-rows") "table rows 0")
+    (expect-files 1)
+    (click (role button :name "Table unrelated"))
+    (expect-text (test-id "note") "unrelated table turn")
+    (expect-files 1)
+    (click (role button :name "Next table write"))
+    (expect-text (test-id "table-rows") "table rows 0")
+    (expect-files 0)
+  ))

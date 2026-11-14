@@ -1,0 +1,9 @@
+app [main] { pf: platform "<PLATFORM>" }
+
+import pf.Engine
+
+main : Engine.Program
+main = Engine.program_boot({ max_inflight: 0 }, |_boot| Engine.keep_current(Engine.const({}), |_| [Engine.interval(1)], Engine.ignore({})))
+
+## This instance has no shared store.
+Store : {}

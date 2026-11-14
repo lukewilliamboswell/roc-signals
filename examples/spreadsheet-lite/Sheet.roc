@@ -209,32 +209,29 @@ Sheet := [].{
 		},
 	}
 
-	## How a listing selects and orders rows: what a view of the rows asks.
-	## A row is placed by its number, which no other row has, so the order
-	## is total.
-	plan : Listing -> { keep : U64, Row -> Bool, sort : U64, Row -> U64, compare : U64, U64 -> [Before, Same, After] }
-	plan = |{ rows, order }| {
-		keep: |_number, row|
-			match rows {
-				Every => True
-				Filled => !Sheet.is_blank(row)
-			},
-		sort: |number, _row| number,
-		compare: match order {
-			TopDown => Sheet.ascending
-			BottomUp => |left, right| Sheet.ascending(right, left)
-		},
+	## A row number with the listing's direction, independent of the platform.
+	Place := { number : U64, descending : Bool }.{
+		is_eq : _
+
+		## Reverse by comparison, preserving the full unsigned row number.
+		order_relative_to : Place, Place -> [Before, Same, After]
+		order_relative_to = |left, right| {
+			if left.descending != right.descending {
+				return if (left.descending) After else Before
+			}
+			if (left.descending) right.number.order_relative_to(left.number) else left.number.order_relative_to(right.number)
+		}
 	}
 
-	ascending : U64, U64 -> [Before, Same, After]
-	ascending = |left, right|
-		if left < right {
-			Before
-		} else if left > right {
-			After
-		} else {
-			Same
-		}
+	## The filtered row numbers, in the direction the listing chose.
+	plan : Listing -> { keep : U64, Row -> Bool, sort : U64, Row -> Place }
+	plan = |{ rows, order }| {
+		keep: |_number, row| match rows {
+			Every => True
+			Filled => !Sheet.is_blank(row)
+		},
+		sort: |number, _row| { number, descending: order == BottomUp },
+	}
 
 	## The starting workbook: a small quarterly budget plus deliberate error,
 	## cycle, empty-reference, and isolated-cell cases.
@@ -416,7 +413,8 @@ expect {
 	listed = Sheet.rows_of(Sheet.initial_cells)
 		.keep_if(|entry| (asked.keep)(entry.key, entry.row))
 		.map(|entry| (asked.sort)(entry.key, entry.row))
-		.sort_with(asked.compare)
+		.sort()
+		.map(|place| place.number)
 	listed == [11, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
 }
 

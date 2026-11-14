@@ -286,9 +286,10 @@ fn refuseIfPoisoned() void {
 // ---------------------------------------------------------------------------
 // JavaScript-facing exports.
 
-/// Before mount: the storage keys the app declares (count:u32 then key:str
-/// each), readable through `cmd_ptr`/`cmd_len` until `init`. JavaScript reads
-/// their values and stages the boot bytes with `payload_reserve`.
+/// Before mount: the program's declaration sections, readable through
+/// `cmd_ptr`/`cmd_len` until `init`. JavaScript reads the declared browser
+/// facts and stages their boot sections with `payload_reserve`; the host
+/// forwards both byte lists without interpreting their sections.
 export fn boot_keys() callconv(.c) void {
     refuseIfPoisoned();
     if (state != null or cmds.ptr != null) @trap();
@@ -297,7 +298,7 @@ export fn boot_keys() callconv(.c) void {
 
 /// Mount the app with the staged boot bytes (URL and storage values; empty
 /// when nothing was staged): builds the instance and leaves the mount
-/// commands readable. The key list buffer, if any, is released by Roc.
+/// commands readable. The declaration buffer, if any, is released by Roc.
 export fn init() callconv(.c) void {
     refuseIfPoisoned();
     if (state != null) @trap();
@@ -580,7 +581,7 @@ export fn files_tokens() callconv(.c) usize {
     return @intFromPtr(&tokens);
 }
 
-/// A `:files` event (design.md, Appendix B): the staged payload is the
+/// A files-kind event (design.md, Appendix B): the staged payload is the
 /// event's file record and the staged handles its files, in order; both move
 /// into Roc for one turn, like `event`.
 export fn event_files(node: u32, handler: u32) callconv(.c) void {

@@ -1,7 +1,9 @@
 #!/usr/bin/env roc-stable
 app [main!] {
-	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.27.0/9yjxqdGTP4xSpSEmDazwTmRsehfRZzA19pwEKkR6fj1g.tar.zst",
-	roc: "nightly-2026-11-10-f7d1f19",
+	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst",
+	http: "https://github.com/roc-lang/http/releases/download/1.0.0/6ZUwqYhCS8PU9Mo6MF7oV82ET2o7KYb57CLKDq4cq4sS.tar.zst",
+	parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.2/2H2hePe5iYTZaGdG9MbMqhS29yg4Zxxr7dPEbZJ96fME.tar.zst",
+	roc: "nightly-2026-11-13-03dce41",
 }
 
 import cli.Path
@@ -16,6 +18,7 @@ import src/SpecSuite
 import src/Slow
 import src/Targets
 import src/ToolCheck
+import src/Sizes
 
 ## The `check` task, the per-pull-request gate: the script pins,
 ## formatting, every file `www/data/examples.toml` names present, every
@@ -31,6 +34,8 @@ import src/ToolCheck
 ## fault class among them), the runtime's
 ## unit tests in Node and contract tests in Chrome (effects, controls,
 ## workers, Conduit journey), the
+## recorded gzip sizes of shipped JavaScript and a report of each example's
+## shipping module and development-only scripts, the
 ## js-framework-benchmark check, the release dry run, and the `signals.roc`
 ## tool run end to end from the dry run's copy. The long walks, the soaks
 ## and the test apps' fuzz targets are `check-slow`.
@@ -45,14 +50,19 @@ main! = |_args| {
 	$problems = $problems.concat(file_names!()?)
 
 	Proc.note!("== formatting")
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
+	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "tests/fixtures", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
 	$problems = $problems.concat(check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts")?)
 
 	Proc.note!("== example files")
 	$problems = $problems.concat(ExampleFiles.check!(o.root)?)
 
+	Proc.note!("== platform JavaScript sizes")
+	$problems = $problems.concat(Sizes.check_runtime!({ root: o.root, node: o.node })?)
+
 	Proc.note!("== API docs")
 	$problems = $problems.concat(ApiDocs.check!({})?)
+	$problems = $problems.concat(ApiDocs.internal_roots!(o)?)
+	$problems = $problems.concat(ApiDocs.bump!(o)?)
 
 	Proc.note!("== roc test")
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/main.roc"], cwd: "." }, "roc test platform/main.roc")?)
@@ -64,6 +74,7 @@ main! = |_args| {
 
 	Proc.note!("== platform inputs")
 	Checks.prepare_platform!(o)?
+	$problems = $problems.concat(Checks.key_contracts!(o)?)
 	$problems = $problems.concat(check!({ program: o.zig, args: ["test", "platform/host/resources.zig"], cwd: "." }, "zig test platform/host/resources.zig")?)
 	$problems = $problems.concat(cross_links!(o)?)
 	$problems = $problems.concat(fuzz_smoke!(o)?)
@@ -76,6 +87,8 @@ main! = |_args| {
 	var $browser = SpecSuite.empty_tally
 	var $kanban = { runner: "" }
 	SpecSuite.build_web_platform!(o)?
+	Proc.note!("== example module and debug file sizes (reported)")
+	$problems = $problems.concat(Sizes.report!(o)?)
 	# Every spec-bearing app is built for the browser too, from the one list in
 	# SpecSuite, with the two test apps that have contract tests and no specs.
 	SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.spec_apps.concat(["tests/apps/effects", "tests/apps/controls"]))?
@@ -89,6 +102,9 @@ main! = |_args| {
 	}
 	$problems = $problems.concat($native.problems).concat($browser.problems)
 
+	Proc.note!("== native lifetime contracts")
+	$problems = $problems.concat(Targets.native_contracts!(o)?)
+
 	Proc.note!("== short walks")
 	$problems = $problems.concat(Slow.short_walks!(o)?)
 
@@ -99,6 +115,9 @@ main! = |_args| {
 	for broken in Checks.broken_specs {
 		$problems = $problems.concat(Checks.broken_spec!(o, broken)?)
 	}
+
+	Proc.note!("== declaration refusals before execution and emission")
+	$problems = $problems.concat(Checks.declaration_refusals!(o, {})?)
 
 	Proc.note!("== runtime unit tests")
 	$problems = $problems.concat(Targets.runtime_unit!(o)?)
@@ -229,7 +248,7 @@ cross_links! = |o| {
 		Path.create_all!(Path.utf8(dir))?
 		$jobs = $jobs.append(SpecSuite.build_job(o, "dev", "tests/apps/tasks/main.roc", host.target, "${dir}/runner"))
 	}
-	results = Proc.parallel!($jobs, Proc.cpus!())?
+	results = Proc.parallel!($jobs, Proc.compiler_jobs!()?)?
 	Ok(List.map2(PlatformTest.spec_hosts, results, |host, r| (host.target, r)).keep_if(|(_, r)| r.code != 0).map(|(target, r)| "spec runner for ${target} does not link: ${r.output.trim()}"))
 }
 

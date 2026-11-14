@@ -50,7 +50,7 @@ ExplorerApp := [].{
 					"Measured",
 					"grid gap-3",
 					[
-						Engine.element("query-meter", [Engine.attr("data-task", Explorer.summary.name()), Engine.attr("data-port", Feed.name), Engine.attr("data-shards", Explorer.shards.to_str())], []),
+						Engine.element("query-meter", [Engine.attr("data-task", Explorer.summary.name()), Engine.attr("data-port", Feed.ports.orders.name()), Engine.attr("data-shards", Explorer.shards.to_str())], []),
 						Engine.element("worker-pool-panel", [], []),
 					],
 				),
@@ -59,7 +59,7 @@ ExplorerApp := [].{
 				Engine.watch(
 					Explorer.question({}).map(Explorer.sampling),
 					|sampling| match sampling {
-						Waiting => [Timer(Explorer.sample_ms)]
+						Waiting => [Engine.timer(Explorer.sample_ms)]
 						Asked => []
 					},
 					Engine.react_by(cells.shown.signal(), |shown, _, _| Explorer.sampled(shown)),
@@ -69,10 +69,10 @@ ExplorerApp := [].{
 				Engine.watch_latest(
 					{ flow: cells.flow.signal(), rate: cells.rate.signal() }.Signal,
 					|{ flow, rate }| match flow {
-						Live => [Feed.orders.subscribe({ per_second: rate })]
+						Live => [Feed.ports.orders.ask({ per_second: rate })]
 						Paused => []
 					},
-					Engine.react(|_, res| Explorer.received(Feed.orders.message(res))),
+					Engine.react(|_, res| Explorer.received(res)),
 				),
 			],
 		)
@@ -134,9 +134,10 @@ ExplorerApp := [].{
 						),
 						Html.select(
 							Engine.const("Live orders a second"),
-							cells.rate.signal().map(|rate| rate.to_str()),
+							cells.rate.signal(),
+							Engine.const(Explorer.rates),
+							{ key: |rate| rate.to_str(), label: |rate| "${Explorer.grouped(rate.to_u64())} a second" },
 							[Engine.class("input")],
-							Explorer.rates.map(|rate| Html.option(rate.to_str(), "${Explorer.grouped(rate.to_u64())} a second")),
 							Engine.handle(Explorer.paced),
 						),
 						Html.p_s({ flow: cells.flow.signal(), rate: cells.rate.signal(), live: cells.live.signal() }.Signal.map(Explorer.live_text), [Engine.class("hint"), Engine.test_id("live")]),

@@ -176,7 +176,7 @@ GridApp := [].{
 										),
 										Engine.table_view(
 											GridStore.cells.rows,
-											{ query: GridStore.listing({}), plan: GridData.plan, window: shown.map(GridData.window_of) },
+											{ query: GridStore.listing({}), plan: |listing| Engine.sort_by(GridData.plan(listing)), window: shown.map(GridData.window_of) },
 											GridApp.line,
 										),
 									],
@@ -252,5 +252,5 @@ GridApp := [].{
 }
 
 ## What a checkbox's event says: `"true"` when it was ticked.
-selection_of : Str -> GridData.Selection
-selection_of = |checked| if (checked == "true") Selected else Unselected
+selection_of : Bool -> GridData.Selection
+selection_of = |checked| if (checked) Selected else Unselected

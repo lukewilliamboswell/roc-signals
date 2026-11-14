@@ -1,10 +1,12 @@
 import pf.Engine exposing [Elem, In, Root, State]
 import pf.Html
+import LocationApp
 
 ## Browser-services test app: one control per browser service, each with a
 ## spec in `specs/` run natively and in Chrome.
 ## - A running clock (`when`) owns a 1 s interval and a named cleanup whose
-##   run sets the document title.
+##   run issues two commands: it sets the document title and writes the
+##   ticks it stopped at to local storage.
 ## - While the page is visible a 5 s poll interval is live; connectivity and
 ##   visibility are shown from boot and kept current by subscriptions, and
 ##   whether local storage is available is shown from boot.
@@ -72,14 +74,18 @@ ServicesApp := [].{
 		prevented: 0,
 	}
 
-	press : State(Ctx, S), Str -> Engine.Attr(Ctx)
-	press = |st, ev| Engine.on(ev, st.update(|s| { ..s, presses: s.presses.append(ev) }))
+	press : State(Ctx, S), Engine.EventType -> Engine.Attr(Ctx)
+	press = |st, ev| Engine.on(ev, st.update(|s| { ..s, presses: s.presses.append(ev.text()) }))
 
-	shown : Engine.Result -> Str
-	shown = |r| match Engine.http_text(r) {
+	shown : Try(Str, Engine.HttpError) -> Str
+	shown = |r| match r {
 		Ok(body) => "ok:${body}"
 		Err(e) => Str.inspect(e)
 	}
+
+	## What the clock's cleanup issues for the ticks it stopped at, in order.
+	stopped : U64 -> List(Engine.Command)
+	stopped = |ticks| [Title("stopped at ${ticks.to_str()}"), StorageSet("clock.stopped", ticks.to_str())]
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
@@ -89,20 +95,20 @@ ServicesApp := [].{
 			[
 				Engine.watch(
 					Engine.const({}),
-					|_| [OnlineChanges],
+					|_| [Engine.online_changes({})],
 					st.on_result(
 						|s, _, r| match r {
-							Online(on) => { ..s, online: on }
+							Ok(on) => { ..s, online: on }
 							_ => s
 						},
 					),
 				),
 				Engine.watch(
 					Engine.const({}),
-					|_| [VisibilityChanges],
+					|_| [Engine.visibility_changes({})],
 					st.on_result(
 						|s, _, r| match r {
-							Visible(vis) => { ..s, visible: vis }
+							Ok(vis) => { ..s, visible: vis }
 							_ => s
 						},
 					),
@@ -112,7 +118,7 @@ ServicesApp := [].{
 				Html.p_s(v.map(|s| if (s.storage_available) "storage available" else "storage unavailable"), [Engine.test_id("storage")]),
 				Engine.when(
 					v.map(|s| s.visible),
-					|| Engine.element("span", [], [Engine.watch(Engine.const({}), |_| [Interval(5000)], st.on_result(|s, _, _| { ..s, polls: s.polls + 1 }))]),
+					|| Engine.element("span", [], [Engine.watch(Engine.const({}), |_| [Engine.interval(5000)], st.on_result(|s, _, _| { ..s, polls: s.polls + 1 }))]),
 					|| Engine.text(""),
 				),
 				Html.p_s(v.map(|s| s.polls.to_str()), [Engine.test_id("polls")]),
@@ -125,8 +131,8 @@ ServicesApp := [].{
 						"span",
 						[Engine.test_id("clock")],
 						[
-							Engine.watch(Engine.const({}), |_| [Interval(1000)], st.on_result(|s, _, _| { ..s, ticks: s.ticks + 1 })),
-							Engine.on_cleanup("clock cleanup", v.map(|s| s.ticks), |t| [Title("stopped at ${t.to_str()}")]),
+							Engine.watch(Engine.const({}), |_| [Engine.interval(1000)], st.on_result(|s, _, _| { ..s, ticks: s.ticks + 1 })),
+							Engine.on_cleanup("clock cleanup", v.map(|s| s.ticks), ServicesApp.stopped),
 							Engine.text("running"),
 						],
 					),
@@ -137,7 +143,7 @@ ServicesApp := [].{
 				Html.radio("Small", "size", "s", v.map(|s| s.size), [], st.update(|s| { ..s, size: "s" })),
 				Html.radio("Medium", "size", "m", v.map(|s| s.size), [], st.update(|s| { ..s, size: "m" })),
 				Html.p_s(v.map(|s| s.size), [Engine.test_id("size")]),
-				Html.checkbox(Engine.const("Agree"), v.map(|s| s.agree), [], st.set_value(|s, p| { ..s, agree: p == "true" })),
+				Html.checkbox(Engine.const("Agree"), v.map(|s| s.agree), [], st.set_value(|s, p| { ..s, agree: p })),
 				Engine.element("button", [Html.aria_label("Press"), ServicesApp.press(st, "focus"), ServicesApp.press(st, "mousedown"), ServicesApp.press(st, "mouseup"), ServicesApp.press(st, "click")], [Engine.text("Press")]),
 				Html.p_s(v.map(|s| Str.join_with(s.presses, ",")), [Engine.test_id("presses")]),
 				# A form
@@ -153,20 +159,38 @@ ServicesApp := [].{
 				Html.p_s(v.map(|s| s.submitted.to_str()), [Engine.test_id("submitted")]),
 				# Selects: static options, and options an `each` mounts after
 				# the select's value is set.
-				Html.select(Engine.const("Fruit"), v.map(|s| s.fruit), [], [Html.option("apple", "Apple"), Html.option("pear", "Pear")], st.set_value(|s, f| { ..s, fruit: f })),
+				Html.select(
+					Engine.const("Fruit"),
+					v.map(|s| s.fruit),
+					Engine.const(["apple", "pear"]),
+					{ key: |fruit| fruit, label: |fruit| if (fruit == "apple") "Apple" else "Pear" },
+					[],
+					st.set_value(
+						|s, picked| match picked {
+							Chose(fruit) => { ..s, fruit }
+							NotOffered => s
+						},
+					),
+				),
 				Html.p_s(v.map(|s| s.fruit), [Engine.test_id("fruit")]),
 				Html.select(
 					Engine.const("Shade"),
 					v.map(|s| s.shade),
+					Engine.const(["amber", "teal", "plum"]),
+					{ key: |shade| shade, label: |shade| shade },
 					[],
-					[Engine.each(Engine.const(["amber", "teal", "plum"]), |k| k, |row| Engine.element("option", [Engine.attr_s("value", row.key())], [Engine.text_s(row.key())]))],
-					st.set_value(|s, c| { ..s, shade: c }),
+					st.set_value(
+						|s, picked| match picked {
+							Chose(shade) => { ..s, shade }
+							NotOffered => s
+						},
+					),
 				),
 				# HTTP results as typed errors
 				Html.button("Fetch", [], st.update(|s| { ..s, fetches: s.fetches + 1 })),
 				Engine.watch_changes(
 					v.map(|s| s.fetches),
-					|n| [Http({ method: "GET", url: "/api/item/${n.to_str()}", headers: [], body: "", timeout_ms: 100 })],
+					|n| [Engine.http_body({ url: "/api/item/${n.to_str()}", timeout: Ms(100) })],
 					st.on_result(|s, _, r| { ..s, fetched: ServicesApp.shown(r) }),
 				),
 				Html.p_s(v.map(|s| s.fetched), [Engine.test_id("fetched")]),
@@ -176,17 +200,45 @@ ServicesApp := [].{
 				Html.p_s(v.map(|s| s.trimmed), [Engine.test_id("trimmed")]),
 				# Default actions
 				Html.link("Jump", "#jump", []),
-				Engine.element("a", [Engine.attr("href", "#stay"), Engine.on("click:prevent", st.update(|s| { ..s, prevented: s.prevented + 1 }))], [Engine.text("Stay")]),
+				Html.link("Next pointer document", "/pointer-next-document", [Engine.on_pointer(Down, Engine.handle(|_| [])), Engine.on_pointer(Up, Engine.handle(|_| []))]),
+				Engine.element("a", [Engine.attr("href", "#stay"), Engine.on_with("click", { prevent: True }, st.update(|s| { ..s, prevented: s.prevented + 1 }))], [Engine.text("Stay")]),
 				Html.p_s(v.map(|s| s.prevented.to_str()), [Engine.test_id("prevented")]),
 				Engine.element("input", [Html.aria_label("Commit"), Engine.attr("type", "text"), Html.on_change(st.set_value(|s, t| { ..s, committed: t }))], []),
 				Html.p_s(v.map(|s| s.committed), [Engine.test_id("committed")]),
 				Html.button("Delay", [], st.update(|s| { ..s, delays: s.delays + 1 })),
-				Engine.watch_changes(v.map(|s| s.delays), |_| [Timer(1000)], st.on_result(|s, _, r| { ..s, delayed: Str.inspect(r) })),
+				Engine.watch_changes(
+					v.map(|s| s.delays),
+					|_| [Engine.timer(1000)],
+					st.on_result(
+						|s, _, r| {
+							..s,
+							delayed: match r {
+								Ok(at) => Str.inspect(Fired(at))
+								Err(Refused) => "Refused"
+							},
+						},
+					),
+				),
 				Html.p_s(v.map(|s| s.delayed), [Engine.test_id("delayed")]),
 				ServicesApp.two_states({}),
+				ServicesApp.transition_probe({}),
 			],
 		)
 	}
+
+	## A mount-time request is ignored, while a later change marks its call.
+	transition_probe : {} -> Elem(ctx)
+	transition_probe = |_| Engine.state(
+		0.U64,
+		|st| Engine.element(
+			"div",
+			[],
+			[
+				Engine.watch(st.signal(), |_| [Engine.command(ViewTransition(["services"]))], st.on_result(|s, _, _| s)),
+				Html.button("Animate turn", [], st.update(|n| n + 1)),
+			],
+		),
+	)
 
 	## Two nested states that one click writes in the same turn: the outer
 	## one and the inner one, by one handler.
@@ -207,12 +259,123 @@ ServicesApp := [].{
 		),
 	)
 
+	## Environment facts stay fixed while timer results carry a fresh wall clock.
+	environment_probe : Engine.Boot -> Elem(ctx)
+	environment_probe = |boot| Engine.state(
+		{ request: 0.U64, clock: boot.now_ms },
+		|st| Engine.element(
+			"div",
+			[],
+			[
+				Html.p_s(Engine.const(boot.now_ms.to_str()), [Engine.test_id("boot-time")]),
+				Html.p_s(Engine.const(boot.seed.to_str()), [Engine.test_id("boot-seed")]),
+				Html.p_s(Engine.const(Str.join_with(boot.languages, ",")), [Engine.test_id("boot-languages")]),
+				Html.p_s(Engine.const(boot.zone.name), [Engine.test_id("boot-zone")]),
+				Html.p_s(st.signal().map(|s| s.clock.to_str()), [Engine.test_id("sample-time")]),
+				Engine.watch(
+					st.signal().map(|s| s.request),
+					|_| [Engine.timer(0)],
+					st.on_result(
+						|s, _, result| match result {
+							Ok(clock) => { ..s, clock }
+							Err(Refused) => s
+							_ => crash "environment probe expected a timer result"
+						},
+					),
+				),
+				Engine.watch(
+					Engine.const({}),
+					|_| [Engine.interval(1000)],
+					st.on_result(
+						|s, _, result| match result {
+							Ok(clock) => { ..s, clock }
+							Err(Refused) => s
+							_ => crash "environment probe expected an interval result"
+						},
+					),
+				),
+				Html.button("Sample clock", [], st.update(|s| { ..s, request: s.request + 1 })),
+			],
+		),
+	)
+
+	## Exercise guard lifetime and paste decoding against the actual engine.
+	persistence_probe : {} -> Elem(ctx)
+	persistence_probe = |_| Engine.state(
+		{ enabled: False, mounted: True, pasted: "" },
+		|state| Engine.element(
+			"main",
+			[],
+			[
+				Html.button("Guard on", [], state.update(|value| { ..value, enabled: True })),
+				Html.button("Guard off", [], state.update(|value| { ..value, enabled: False })),
+				Html.button("Dispose guard", [], state.update(|value| { ..value, mounted: False })),
+				Html.button("Mount guard", [], state.update(|value| { ..value, mounted: True })),
+				Engine.when(state.signal().map(|value| value.mounted), || Engine.guard_leave(state.signal().map(|value| value.enabled)), || Engine.text("")),
+				Engine.element(
+					"div",
+					[
+						Html.aria_label("Paste text"),
+						Engine.attr("tabindex", "0"),
+						Html.on_paste_text(
+							state.set_value(
+								|value, pasted| {
+									..value,
+									pasted: match pasted {
+										Text(text) => text
+										TooLarge => "too large"
+									},
+								},
+							),
+						),
+					],
+					[],
+				),
+				Html.p_s(state.signal().map(|value| value.pasted), [Engine.test_id("pasted")]),
+				Html.link("Leave link", "/after-leaving", []),
+			],
+		),
+	)
+
+	## A storage event supplies its captured value without a later read. The
+	## unavailable-getter fixture has no area identity from which to classify it.
+	storage_probe : {} -> Elem(ctx)
+	storage_probe = |_| Engine.state(
+		"initial",
+		|state| Engine.element(
+			"main",
+			[],
+			[
+				Engine.watch(
+					Engine.const({}),
+					|_| [Engine.storage_changes("document")],
+					state.on_result(
+						|prior, _, result| match result {
+							Ok(Set(value)) => value
+							Ok(Removed) => "missing"
+							_ => prior
+						},
+					),
+				),
+				Html.p_s(state.signal(), [Engine.test_id("storage-change")]),
+			],
+		),
+	)
+
 	## The program both hosts run.
 	program : Engine.Program
 	program = Engine.program_boot(
 		{ storage_keys: [], max_inflight: 8 },
 		|boot|
-			if boot.url.ends_with("#limit-children") {
+			if boot.url.starts_with("/url-probe") {
+				LocationApp.view(boot)
+			} else if boot.url.ends_with("#storage") {
+				ServicesApp.storage_probe({})
+			} else if boot.url.ends_with("#persistence") {
+				ServicesApp.persistence_probe({})
+			} else if boot.url.ends_with("#environment") {
+				ServicesApp.environment_probe(boot)
+			} else if boot.url.ends_with("#limit-children") {
 				ServicesApp.too_wide({})
 			} else {
 				Engine.state(ServicesApp.initial(boot), |st| ServicesApp.view(st))

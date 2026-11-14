@@ -653,7 +653,7 @@ a.site-brand:hover {
 }
 
 .site-links {
-  @apply flex flex-wrap items-center gap-x-7 gap-y-1 font-mono text-xs uppercase tracking-widest;
+  @apply flex w-full flex-wrap items-center gap-x-7 gap-y-1 font-mono text-xs uppercase tracking-widest sm:w-auto;
 }
 
 .site-links a {
@@ -670,6 +670,7 @@ a.site-brand:hover {
 .theme-control {
   display: inline-flex;
   align-items: center;
+  margin-left: auto;
   gap: 0.5rem;
   color: var(--site-muted);
 }
@@ -682,7 +683,7 @@ a.site-brand:hover {
   border: 1px solid var(--site-rule);
   border-radius: 0;
   background: var(--site-panel);
-  padding: 0.3rem 0.5rem;
+  padding: 0.3rem 1.75rem 0.3rem 0.5rem;
   font: inherit;
   letter-spacing: inherit;
   text-transform: inherit;

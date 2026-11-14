@@ -8,12 +8,12 @@ import Proc
 SpecSuite := [].{
 	runtime = "platform/runtime.mjs"
 
-	## The runtime's files in `platform/`: the runtime and the worker script
+	## The runtime's files in `platform/`: the runtime, its fact readers and the worker script
 	## it loads from beside itself. Every place that serves or ships the
 	## runtime copies all of them side by side (`copy_runtime!`); the browser
 	## tests serve the same list (`tests/browser/args.mjs`).
 	runtime_files : List(Str)
-	runtime_files = ["runtime.mjs", "worker.mjs"]
+	runtime_files = ["runtime.mjs", "worker.mjs", "environment.mjs"]
 
 	## Copy every runtime file from `root`'s `platform/` into `dir`.
 	copy_runtime! : Str, Str => Try({}, _)
@@ -32,7 +32,7 @@ SpecSuite := [].{
 	## browser services, work counters, worker jobs (byte-level and typed) and
 	## superseding effect sites the examples do not exercise.
 	test_apps : List(Str)
-	test_apps = ["services", "workers", "worker-typed", "supersede", "worker-search", "files", "file-effects", "prepared", "ports", "tasks", "gather", "outbox", "deep", "handlers", "remount", "store", "writes", "table"]
+	test_apps = ["services", "workers", "worker-typed", "supersede", "worker-search", "files", "file-effects", "prepared", "ports", "tasks", "gather", "outbox", "deep", "handlers", "remount", "store", "writes", "table", "controls", "write-scaling", "keep-current", "signal-text", "markup", "namespaces", "construction", "prerender"]
 
 	## Every spec-bearing app, examples first.
 	spec_apps : List(Str)
@@ -176,7 +176,7 @@ SpecSuite := [].{
 			Path.create_all!(Path.utf8("${o.build_dir}/wasm/${name}"))?
 			$jobs = $jobs.append(SpecSuite.build_job(o, opt, "${dir}/main.roc", "wasm32", SpecSuite.wasm_of(o, name)))
 		}
-		results = Proc.parallel!($jobs, Proc.cpus!())?
+		results = Proc.parallel!($jobs, Proc.compiler_jobs!()?)?
 		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| code != 0)
 		match failed.first() {
 			Ok((job, code)) => Err(BuildFailed("${Proc.show(job)} exited with ${code.to_str()}"))

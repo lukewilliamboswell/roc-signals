@@ -4,6 +4,8 @@
   (steps
     (choose-files (label "Upload") "notes.txt")
     (click (role button :name "Panel"))
+    (expect-visible (label "panel"))
+    (expect-visible (test-id "noted"))
     (expect-pending-work "test.roc-signals/tasks/stopped" 1)
     (expect-pending-work "test.roc-signals/tasks/kept" 2)
     (mark-metrics)

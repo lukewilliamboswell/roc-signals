@@ -30,6 +30,11 @@ const repo = path.resolve(here, "../..");
 const opts = parseArgs(process.argv.slice(2), ["app", "events", "cycles"]);
 const app = opts.app;
 const EVENTS = Number(opts.events ?? 3000);
+const WARMUP_CYCLES = 3;
+const NCYC = Number(opts.cycles ?? 30);
+if (!Number.isSafeInteger(NCYC) || NCYC < WARMUP_CYCLES + 2) {
+  throw new Error(`--cycles must be an integer of at least ${WARMUP_CYCLES + 2}: ${WARMUP_CYCLES} warm-up cycles and two nonempty comparison halves`);
+}
 // Apps with a simulated service run against the example's own module (its
 // `backend` in www/data/examples.toml), served over HTTP below: Conduit's
 // RealWorld API, Field Notes' sync endpoint (every third sync fails) and the
@@ -137,19 +142,25 @@ async function open() {
 // stay quiet for QUIET consecutive checks (a write, then the read that
 // reports it).
 const QUIET = portsModule ? 10 : 0;
-const settle = (page) => page.evaluate((quiet) => new Promise((r) => {
+const settle = (page) => page.evaluate(async (quiet) => {
   const rt = window.__rt;
-  const t0 = performance.now();
+  const deadline = performance.now() + 2000;
   let calm = 0;
-  const tick = () => {
+  for (;;) {
+    let timer;
+    try {
+      await Promise.race([rt.idle(), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("soak timed out waiting for transition idle")), Math.max(1, deadline - performance.now()));
+      })]);
+    } finally { clearTimeout(timer); }
     // A held job is not waited for: the soak runs it (`__runWork`).
     const busy = [...rt.live.values()].some((e) => e.kind === "http" || e.kind === "fetch" || e.kind === "file" || e.kind === "portcall" || (e.kind === "work" && e.running));
-    calm = !busy && rt.queue.length === 0 ? calm + 1 : 0;
-    if (calm > quiet || performance.now() - t0 > 2000) r();
-    else setTimeout(tick, 5);
-  };
-  setTimeout(tick, 0);
-}), QUIET);
+    calm = !busy && !rt.busy && rt.queue.length === 0 && rt.nativeEventsReady() ? calm + 1 : 0;
+    if (calm > quiet) return;
+    if (performance.now() >= deadline) throw new Error("soak timed out waiting for a quiet runtime");
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}, QUIET);
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -160,6 +171,17 @@ const check = (name, ok, detail = "") => {
 // 1. Random walk.
 {
   const { ctx, page, errors } = await open();
+  // A file chooser cannot be populated by the walk. Open a small log through
+  // the app's generator so its search and viewer can ask meaningful questions.
+  if (app === "log-explorer") await page.evaluate(async () => {
+    const entries = window.__loc(["label", "Entries"]);
+    entries.value = "300";
+    entries.dispatchEvent(new Event("input", { bubbles: true }));
+    window.__loc(["role", "button", "Generate a sample log"]).click();
+    await window.__runWork();
+    window.__loc(["role", "button", "Search"]).click();
+    await window.__runWork();
+  });
   const t0 = Date.now();
   const done = await page.evaluate(async (n, served, workers) => {
     const POOL = ["", "a", "Ada", "10", "-3", "2x", "x@y.z", "Lorem ipsum dolor", "Node-0007", "# Title", "Renamed"];
@@ -177,33 +199,33 @@ const check = (name, ok, detail = "") => {
       const cands = [];
       const walk = (el) => {
         for (let c = el.firstElementChild; c; c = c.nextElementSibling) {
-          if (c.__h !== undefined && !c.disabled) cands.push(c);
+          const h = c.__h;
+          if (h !== undefined && !c.disabled) {
+            // Filter before choosing: focus-only and file-only declarations
+            // cannot consume one of the walk's requested input events.
+            const op = h.input !== undefined && !h.input.files && c.type !== "file" ? "input"
+              : h.change !== undefined && !h.change.files && c.type !== "file" ? "change"
+              : h.click !== undefined ? "click" : null;
+            if (op !== null) cands.push({ el: c, op });
+          }
           walk(c);
         }
       };
       walk(root);
       if (cands.length === 0) break;
-      const el = cands[rnd() % cands.length];
-      const h = el.__h;
-      // A control that takes files (a file input, a drop target) has no
-      // text to type; the walk gives the app none.
-      if ((h.change !== undefined && h.change.files) || (h.drop !== undefined && h.drop.files)) continue;
-      if (h.input !== undefined) {
+      const { el, op } = cands[rnd() % cands.length];
+      if (op === "input") {
         el.focus();
         el.value = POOL[rnd() % POOL.length];
         el.dispatchEvent(new Event("input", { bubbles: true }));
-      } else if (h.change !== undefined) {
+      } else if (op === "change") {
         if (el.type === "checkbox" || el.type === "radio") el.click();
         else {
           if (el.tagName === "SELECT" && el.options.length > 0) el.value = el.options[rnd() % el.options.length].value;
           else el.value = POOL[rnd() % POOL.length];
           el.dispatchEvent(new Event("change", { bubbles: true }));
         }
-      } else if (h.click !== undefined) {
-        el.click();
-      } else {
-        continue;
-      }
+      } else el.click();
       fired += 1;
       if (workers) jobs += await window.__runWork();
       if (served && i % 10 === 9) await new Promise((r) => setTimeout(r, 0));
@@ -216,7 +238,7 @@ const check = (name, ok, detail = "") => {
     await settle(page);
   }
   const fault = await page.evaluate(() => window.__rt.poisoned);
-  check(`random walk: ${done.fired} events in ${Date.now() - t0} ms, no fault`, done.fired >= Math.min(EVENTS, 1000) && fault === null && errors.length === 0, JSON.stringify({ fault, errors: errors.slice(0, 3) }));
+  check(`random walk: ${done.fired} events in ${Date.now() - t0} ms, no fault`, done.fired === EVENTS && fault === null && errors.length === 0, JSON.stringify({ fault, errors: errors.slice(0, 3) }));
   const stats = await page.evaluate(() => ({ pages: window.__rt.x.memory.buffer.byteLength / 65536, live: Number(window.__rt.x.metric(4)) }));
   console.log(`   after walk: ${stats.pages} pages, ${stats.live} live allocations`);
   if (workers) {
@@ -233,7 +255,7 @@ const CYCLES = {
   "data-grid": [["fill", ["label", "Filter"], "Node-0007"], ["fill", ["label", "Filter"], ""], ["click", ["role", "button", "Next page"]], ["click", ["role", "button", "Previous page"]]],
   // Append + remove a section is not an exact inverse in this app (one more
   // trailing newline per trip): load two fixed documents instead.
-  "markdown-editor": [["click", ["role", "button", "Load heading drill"]], ["click", ["role", "button", "Load document without headings"]]],
+  "markdown-editor": [["click", ["role", "button", "Load heading drill"]], ["click", ["role", "button", "Save"]], ["click", ["role", "button", "Copy as HTML"]], ["click", ["role", "button", "Load document without headings"]], ["click", ["role", "button", "Save"]], ["click", ["role", "button", "Copy as markdown"]]],
   conduit: [["click", ["role", "link", "Sign in"]], ["click", ["role", "link", "Home"]]],
   "field-notes": [
     ["fill", ["label", "Note body"], "Soak note"],
@@ -265,7 +287,7 @@ const CYCLES = {
   "csv-converter": [["click", ["role", "button", "Load the sample"]]],
   // A sample log written by its task, then prepared for the overview: each
   // new log replaces the last, whose file and prepared state are let go.
-  "log-explorer": [["fill", ["label", "Entries"], "300"], ["click", ["role", "button", "Generate a sample log"]]],
+  "log-explorer": [["fill", ["label", "Entries"], "300"], ["click", ["role", "button", "Generate a sample log"]], ["click", ["role", "button", "Viewer"]], ["scroll", ["test-id", "viewer-viewport"], 1000], ["scroll", ["test-id", "viewer-viewport"], 0], ["click", ["role", "button", "Overview"]]],
   // A book added (the store answers it) and removed (a command), each write
   // followed by the store's copy.
   "reading-list": [["fill", ["label", "Title"], "Soak book"], ["click", ["role", "button", "Add book"]], ["click", ["role", "button", "Remove Soak book"]]],
@@ -280,16 +302,18 @@ const SCENES = { "status-page": [["click", ["role", "button", "Pause the feed"]]
   const { ctx, page } = await open();
   if (served) await settle(page);
   const cycle = CYCLES[app];
-  const NCYC = Number(opts.cycles ?? 30);
   const samples = [];
   const workerSamples = [];
   for (let c = 0; c < NCYC; c += 1) {
     for (const [op, loc, v] of c === 0 ? (SCENES[app] ?? []).concat(cycle) : cycle) {
-      const r = await page.evaluate((op, loc, v) => {
+      const r = await page.evaluate(async (op, loc, v) => {
         const el = window.__loc(loc);
         if (!el) return `no element ${JSON.stringify(loc)}`;
         if (op === "click") el.click();
-        else {
+        else if (op === "scroll") {
+          el.scrollTop = v;
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        } else {
           el.value = v;
           // A select reports a choice with `change`, a text field with `input`.
           el.dispatchEvent(new Event(el.tagName === "SELECT" ? "change" : "input", { bubbles: true }));
@@ -300,6 +324,8 @@ const SCENES = { "status-page": [["click", ["role", "button", "Pause the feed"]]
       // A response may issue a job (a fetched file sent to a task), and a
       // job's answer may issue a request (a read of the file it built).
       if (served) await settle(page);
+      // Let the viewer's real size/scroll observations arrive before draining jobs.
+      if (app === "log-explorer") await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       if (workers) await page.evaluate(() => window.__runWork());
       if (served) await settle(page);
     }
@@ -317,7 +343,7 @@ const SCENES = { "status-page": [["click", ["role", "button", "Pause the feed"]]
   // Flat: identical pages; live allocations with no growth (the later half
   // never exceeds the earlier half). Exact equality is also reported: an
   // async effect app may jitter by an allocation depending on timing.
-  const tail = samples.slice(3);
+  const tail = samples.slice(WARMUP_CYCLES);
   const half = Math.floor(tail.length / 2);
   const maxOf = (xs, i) => Math.max(...xs.map((s) => s[i]));
   const pagesFlat = tail.every((s) => s[0] === tail[0][0]);
@@ -330,7 +356,7 @@ const SCENES = { "status-page": [["click", ["role", "button", "Pause the feed"]]
     // The worker instance runs the same jobs every cycle: after warm-up its
     // memory is identical and its live allocations and bytes never grow; the
     // pool is that one instance, idle, with every job answered.
-    const wt = workerSamples.slice(3);
+    const wt = workerSamples.slice(WARMUP_CYCLES);
     const wh = Math.floor(wt.length / 2);
     const wmax = (xs, k) => Math.max(...xs.map((s) => s[k]));
     const memFlat = wt.every((s) => s.mem === wt[0].mem);

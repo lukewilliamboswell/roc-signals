@@ -103,16 +103,16 @@ ExplorerApp := [].{
 	}
 
 	## The viewer's page from a line (from 0): one read of just its lines.
-	window : LogTask(U64, Log.Window)
-	window = ExplorerApp.log.task({ name: "roc-signals.example/log-explorer/window", run!: ExplorerApp.window! })
+	window : LogTask({ first : U64, count : U64 }, Log.Window)
+	window = ExplorerApp.log.task({ name: "roc-signals.example/log-explorer/window", run!: ExplorerApp.window!, on_cancel: Finish })
 
-	window! : Prepared, U64 => Try(Log.Window, Problem)
+	window! : Prepared, { first : U64, count : U64 } => Try(Log.Window, Problem)
 	window! = |{ file, index }, wanted| {
 		total = index.starts.len()
-		first = Log.window_first({ lines: total, wanted })
-		count = (total - first).min(Log.window_lines)
+		first = Log.window_first({ lines: total, wanted: wanted.first, count: wanted.count })
+		count = (total - first).min(wanted.count)
 		bytes = file.read!(Log.span(index, { first, count }))?
-		Ok({ first, total, lines: Log.lines_in(index, { first, count, bytes }) })
+		Ok({ first, total, count: wanted.count, lines: Log.lines_in(index, { first, count, bytes }) })
 	}
 
 	## A sample log of some number of entries, written to a new file.
@@ -265,7 +265,8 @@ ExplorerApp := [].{
 	timeline_view : Signal(ctx, OverviewAnswer), Signal(ctx, [NotCounted, Counted(List(U64))]) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	timeline_view = |r, matches| {
-		answered = r.map2(matches, |remote, over_time| remote.answered().map_ok(|o| { o, over_time }))
+		answered : Signal(ctx, Try({ o : Log.Overview, over_time : [NotCounted, Counted(List(U64))], theme : TimelineChart.Theme }, [NoAnswer]))
+		answered = { remote: r, over_time: matches, theme: LogStore.cells.theme.signal() }.Signal.map(|{ remote, over_time, theme }| remote.answered().map_ok(|o| { o, over_time, theme }))
 		Html.div(
 			"grid gap-1",
 			[
@@ -278,21 +279,22 @@ ExplorerApp := [].{
 						# The element reports a click on a point as the point's
 						# time, in its value and a change event.
 						Engine.attr("data-click", "x"),
-						Engine.attr_s("aria-label", answered.map(|a| a.map_ok(|{ o, over_time }| ExplorerApp.timeline_label(o, over_time)) ?? "Timeline")),
-						Engine.attr_s(
+						Engine.attr_s("data-background", LogStore.cells.theme.signal().map(TimelineChart.background)),
+						Engine.attr_s("aria-label", answered.map(|a| a.map_ok(|{ o, over_time, .. }| ExplorerApp.timeline_label(o, over_time)) ?? "Timeline")),
+						Engine.attr_presence(
 							"data-figure",
 							answered.map(
 								|a| match a {
-									Ok({ o, over_time }) => TimelineChart.figure({ timeline: o.timeline, matches: over_time, revision: "${o.size.to_str()}/${o.lines.to_str()}" })
-									Err(NoAnswer) => ""
+									Ok({ o, over_time, theme }) => TimelineChart.figure({ timeline: o.timeline, matches: over_time, revision: "${o.size.to_str()}/${o.lines.to_str()}", theme })
+									Err(NoAnswer) => Absent
 								},
 							),
 						),
-						Html.on_change(Engine.handle_by(r, |remote, clicked| LogStore.timeline_clicked(remote.answered(), clicked))),
+						Html.on_change(Engine.handle_by({ remote: r, geometry: LogStore.cells.place.geometry.signal() }.Signal, |at, clicked| LogStore.timeline_clicked({ answered: at.remote.answered(), geometry: at.geometry, clicked }))),
 					],
 					[],
 				),
-				Html.p_s(answered.map(|a| a.map_ok(|{ o, over_time }| ExplorerApp.peak_text(o, over_time)) ?? ""), [Engine.class("hint"), Engine.test_id("timeline-peak")]),
+				Html.p_s(answered.map(|a| a.map_ok(|{ o, over_time, .. }| ExplorerApp.peak_text(o, over_time)) ?? ""), [Engine.class("hint"), Engine.test_id("timeline-peak")]),
 			],
 		)
 	}
@@ -332,19 +334,43 @@ ExplorerApp := [].{
 		number = row.field(|line| line.number)
 		Engine.element(
 			"li",
-			[Engine.class("flex items-baseline gap-2 font-mono text-xs")],
+			[Engine.class("flex items-baseline gap-2 font-mono text-xs")].concat(
+				match jump {
+					Stay => [Engine.attr("style", "height:${Log.line_height.to_str()}px;line-height:${Log.line_height.to_str()}px;white-space:pre")]
+					Jump => []
+				},
+			),
 			[
 				match jump {
 					Jump =>
 						Engine.element(
 							"button",
-							[Engine.attr("type", "button"), Engine.class("button-ghost button-sm numeric"), Engine.attr_s("aria-label", number.map(|n| "Show line ${n.to_str()}")), Engine.on_click(Engine.handle_by(number, |n, _| LogStore.shown_at(n - 1)))],
+							[Engine.attr("type", "button"), Engine.class("button-ghost button-sm numeric"), Engine.attr_s("aria-label", number.map(|n| "Show line ${n.to_str()}")), Engine.on_click(Engine.handle_by({ number: number, geometry: LogStore.cells.place.geometry.signal() }.Signal, |at, _| LogStore.shown_at(at.geometry, at.number - 1)))],
 							[Engine.text_s(number.map(|n| n.to_str()))],
 						)
 					Stay => Html.span_s(number.map(|n| n.to_str()), [Engine.class("muted numeric")])
 				},
-				Html.span_s(row.field(|line| ExplorerApp.mark_name(line.mark)), [Engine.class_s(row.field(|line| ExplorerApp.mark_class(line.mark)))]),
-				Html.span_s(row.field(|line| line.text), [Engine.class("whitespace-pre-wrap break-all"), Engine.test_id_s(number.map(|n| "line-${n.to_str()}"))]),
+				Html.span_s(
+					row.field(|line| ExplorerApp.mark_name(line.mark)),
+					[Engine.class_s(row.field(|line| ExplorerApp.mark_class(line.mark)))].concat(
+						match jump {
+							Stay => [Engine.attr("style", "padding-block:0;line-height:16px")]
+							Jump => []
+						},
+					),
+				),
+				Html.span_s(
+					row.field(|line| line.text),
+					[
+						Engine.class(
+							match jump {
+								Jump => "whitespace-pre-wrap break-all"
+								Stay => "whitespace-pre"
+							},
+						),
+						Engine.test_id_s(number.map(|n| "line-${n.to_str()}")),
+					],
+				),
 			],
 		)
 	}
@@ -382,14 +408,19 @@ ExplorerApp := [].{
 						Html.text_input(Engine.const("Text to find"), "search", query.map(|typed| typed.text), [Engine.class("input"), Engine.attr("placeholder", "Text to find, any case")], Engine.handle(LogStore.searched)),
 						Html.select(
 							Engine.const("Level"),
-							query.map(
-								|typed| match typed.filter {
+							query.map(|typed| typed.filter),
+							Engine.const([Everything].concat(Log.levels.map(|level| Only(level)))),
+							{
+								key: |filter| match filter {
 									Everything => "any"
 									Only(level) => Log.level_name(level)
 								},
-							),
+								label: |filter| match filter {
+									Everything => "Any level"
+									Only(level) => Log.level_name(level)
+								},
+							},
 							[Engine.class("input")],
-							[Html.option("any", "Any level")].concat(Log.levels.map(|level| Html.option(Log.level_name(level), Log.level_name(level)))),
 							Engine.handle(LogStore.filtered),
 						),
 					],
@@ -437,43 +468,120 @@ ExplorerApp := [].{
 	## the ways to move it.
 	viewer_panel : {} -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	viewer_panel = |{}| {
+	viewer_panel = |{}| Engine.remount_on(LogStore.cells.log.signal(), || ExplorerApp.viewer_for_log({}))
+
+	## Each chosen file owns its resource; an old file can never lend its total
+	## to a newly opened log while that log's first window is pending.
+	viewer_for_log : {} -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	viewer_for_log = |{}| {
 		cells = LogStore.cells
 		Worker.resource_when(
 			ExplorerApp.window,
-			cells.log.signal().map2(cells.place.first.signal(), ExplorerApp.asked),
-			|r| Html.section(
-				"Viewer",
-				"grid gap-3",
-				[
-					Html.div(
-						"toolbar",
-						[
-							Html.button("First", [Engine.class("button button-sm")], Engine.does(LogStore.moved_to(Ok(0)))),
-							Html.button("Previous", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| if (w.first > Log.window_lines) w.first - Log.window_lines else 0)),
-							Html.button("Next", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.first + Log.window_lines }))),
-							Html.button("Last", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.total }))),
-							Html.number_input(
-								Engine.const("Go to line"),
-								cells.place.first.signal().map(|first| (first + 1).to_str()),
-								[Engine.class("input w-32")],
-								Engine.handle(LogStore.went_to),
+			{ open: cells.log.signal(), first: cells.place.first.signal(), viewport: cells.viewport.signal() }.Signal.map(
+				|at| match at.viewport.capacity() {
+					Ok(count) => ExplorerApp.asked(at.open, { first: at.first, count })
+					Err(Unmeasured) => Skip
+				},
+			),
+			|r| {
+				geometry = { answer: r, prior: cells.place.geometry.signal(), viewport: cells.viewport.signal() }.Signal.map(
+					|at| {
+						total = match at.answer.answered() {
+							Ok(answered) => Ok(answered.total)
+							Err(NoAnswer) => match at.prior {
+								Ready(map) => Ok(map.total)
+								Awaiting => Err(NoAnswer)
+							}
+						}
+						match (total, at.viewport.height()) {
+							(Ok(lines), Ok(height)) => Ready({ total: lines, line_height: Log.line_height, viewport_height: height })
+							_ => Awaiting
+						}
+					},
+				)
+				Html.section(
+					"Viewer",
+					"grid gap-3",
+					[
+						Html.div(
+							"toolbar",
+							[
+								Html.button("First", [Engine.class("button button-sm")], Engine.handle_by(cells.place.geometry.signal(), |known, _| LogStore.moved_to(known, Ok(0)))),
+								Html.button("Previous", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| if (w.first > w.count) w.first - w.count else 0)),
+								Html.button("Next", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.first + w.count, count: w.count }))),
+								Html.button("Last", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.total, count: w.count }))),
+								Html.number_input(
+									Engine.const("Go to line"),
+									cells.place.first.signal().map(|first| (first + 1).to_str()),
+									[Engine.class("input w-32")],
+									Engine.handle_by(cells.place.geometry.signal(), LogStore.went_to),
+								),
+							],
+						),
+						Html.p_s(
+							r.map(
+								|remote| ExplorerApp.status(
+									remote,
+									"Reading…",
+									|w| if (w.lines.is_empty()) "The log has no lines." else "Lines ${ExplorerApp.grouped(w.first + 1)}–${ExplorerApp.grouped(w.first + w.lines.len())} of ${ExplorerApp.grouped(w.total)}.",
+								),
 							),
-						],
-					),
-					Html.p_s(
-						r.map(
-							|remote| ExplorerApp.status(
-								remote,
-								"Reading…",
-								|w| if (w.lines.is_empty()) "The log has no lines." else "Lines ${ExplorerApp.grouped(w.first + 1)}–${ExplorerApp.grouped(w.first + w.lines.len())} of ${ExplorerApp.grouped(w.total)}.",
+							[Engine.test_id("viewer-status")],
+						),
+						Engine.element(
+							"div",
+							[
+								Engine.test_id("viewer-viewport"),
+								Engine.ref("log-viewer"),
+								Engine.attr("tabindex", "0"),
+								Html.aria_label("Log lines"),
+								Engine.attr("style", "height:min(60vh,1000px);min-width:0;overflow:auto;overflow-anchor:none"),
+								Html.on_size(Engine.handle(|size| LogStore.viewer_sized(size.height))),
+								Html.on_scroll(Engine.handle_by({ geometry: cells.place.geometry.signal(), asked: cells.place.asked.signal() }.Signal, |at, scroll| LogStore.scrolled(at, scroll.top))),
+							],
+							[
+								Engine.element(
+									"div",
+									[
+										Engine.test_id("viewer-spacer"),
+										Engine.attr_s(
+											"style",
+											geometry.map(
+												|map| {
+													height = match map {
+														Ready(known) => Log.spacer_height({ total: known.total, line_height: known.line_height })
+														Awaiting => 0
+													}
+													"height:${height.to_str()}px;position:relative"
+												},
+											),
+										),
+									],
+									[Engine.element("ol", [Engine.class("m-0 p-0"), Engine.attr("style", "position:sticky;top:0;width:max-content;min-width:100%;margin:0;padding:0"), Html.aria_label("Lines")], [Engine.each(r.map(|remote| remote.answered().map_ok(|w| w.lines) ?? []), |line| line.number.to_str(), |row| ExplorerApp.line_row(row, Stay))])],
+								),
+							],
+						),
+						Engine.on_post(cells.scrolling.signal(), |top| [Engine.command(ScrollTo("log-viewer", { top: Px(top), left: Keep, behavior: Instant }))], Engine.ignore({})),
+						# Mount and geometry changes restore the current intent. Self is an
+						# ordinary follow-up, settled before this call publishes its batch.
+						Engine.watch(
+							geometry,
+							|map| match map {
+								Ready(_) => [Engine.again({})]
+								Awaiting => []
+							},
+							Engine.react_by(
+								{ first: cells.place.first.signal(), previous: cells.place.geometry.signal(), asked: cells.place.asked.signal() }.Signal,
+								|at, map, result| match (map, result) {
+									(Ready(known), Ok({})) => LogStore.geometry_ready({ total: known.total, height: known.viewport_height, first: at.first, previous: at.previous, asked: at.asked })
+									_ => crash "ExplorerApp.viewer_for_log: geometry follow-up was not successful"
+								},
 							),
 						),
-						[Engine.test_id("viewer-status")],
-					),
-					Engine.element("ol", [Engine.class("grid gap-1"), Html.aria_label("Lines")], [Engine.each(r.map(|remote| remote.answered().map_ok(|w| w.lines) ?? []), |line| line.number.to_str(), |row| ExplorerApp.line_row(row, Stay))]),
-				],
-			),
+					],
+				)
+			},
 		)
 	}
 
@@ -484,7 +592,7 @@ ExplorerApp := [].{
 	## (roc-lang/roc#12869, fixed in later ones).
 	stepped : Signal(ctx, Engine.Remote(Log.Window, Worker.Error(Problem))), (Log.Window -> U64) -> Engine.Handler(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	stepped = |r, step| Engine.handle_by(r, |remote, _| LogStore.moved_to(remote.answered().map_ok(step)))
+	stepped = |r, step| Engine.handle_by({ remote: r, geometry: LogStore.cells.place.geometry.signal() }.Signal, |at, _| LogStore.moved_to(at.geometry, at.remote.answered().map_ok(step)))
 
 	tab_button : Str, LogStore.Tab -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
@@ -505,7 +613,7 @@ ExplorerApp := [].{
 		"20000",
 		|entries| {
 			cells = LogStore.cells
-			arrival = Engine.handle_files(LogStore.arrived)
+			arrival = Engine.handle(LogStore.arrived)
 			Engine.element(
 				"section",
 				[Engine.class("panel grid gap-3 p-4"), Html.aria_label("Open a log"), Html.on_drop_files(arrival)],
@@ -550,6 +658,7 @@ ExplorerApp := [].{
 						Html.p("Open a log of any size: a worker indexes it once, and the overview, the search and the viewer ask that index their own questions, reading only the lines they need. The file never comes into the page.", "app-subtitle"),
 					],
 				),
+				Engine.watch(Engine.const({}), |_| [Engine.media_changes(LogStore.dark_query)], Engine.react(|_, result| LogStore.media_changed(result))),
 				ExplorerApp.opener({}),
 				Html.div(
 					"toolbar",
@@ -590,15 +699,15 @@ ExplorerApp := [].{
 				Engine.watch_latest(
 					cells.generating.signal(),
 					|generating| match generating {
-						Generating(entries) => [ExplorerApp.generate.request(entries)]
+						Generating(entries) => [ExplorerApp.generate.ask(entries)]
 						Idle => []
 					},
-					Engine.react(|_, res| LogStore.sample_written(ExplorerApp.generate.result(res))),
+					Engine.react(|_, res| LogStore.sample_written(res)),
 				),
 			],
 		)
 	}
 
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_boot| LogStore.store, |_boot| ExplorerApp.view({})).with_workers(ExplorerApp.registrations)
+	program = Engine.program_store({ media: [LogStore.dark_query] }, LogStore.start, |_boot| ExplorerApp.view({})).with_workers(ExplorerApp.registrations)
 }

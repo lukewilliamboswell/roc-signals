@@ -1,7 +1,6 @@
 # region imports
-import pf.Engine exposing [Elem, Signal, State]
+import pf.Engine exposing [Elem, Signal, State, Table]
 import pf.Html
-import pf.Table
 # endregion imports
 
 ## The tutorial's to-do list: a table of to-dos and two cells in the app's
@@ -72,16 +71,15 @@ Todos := [TodoList].{
 	## How a choice of `Showing` selects and orders rows: the rows it
 	## keeps, in the order they were added, which is the order of their
 	## keys.
-	plan : Showing -> Engine.QueryPlan(U64, Todo, U64)
-	plan = |showing| {
+	plan : Showing -> Engine.QueryPlan(U64, Todo, (U64, U64))
+	plan = |showing| Engine.sort_by({
 		keep: |_, todo| match showing {
 			All => True
 			Open => todo.status == Open
 			Done => todo.status == Done
 		},
 		sort: |key, _| key,
-		compare: by_key,
-	}
+	})
 	# endregion plan
 
 	# region list
@@ -129,7 +127,7 @@ Todos := [TodoList].{
 					title.map(|text| "Done: ${text}"),
 					todo.signal().map(|held| held.status == Done),
 					[],
-					todo.set_value(|held, checked| { ..held, status: if (checked == "true") Done else Open }),
+					todo.set_value(|held, checked| { ..held, status: if (checked) Done else Open }),
 				),
 				Engine.text_s(title),
 				Html.icon_button(
@@ -164,7 +162,7 @@ Todos := [TodoList].{
 				Engine.when(todos.map(|table| table.len() == 0), || Html.p("Nothing to do.", "empty"), || Engine.text("")),
 				Html.span_s(todos.map(Todos.remaining), [Engine.test_id("remaining")]),
 				# region persist
-				Engine.watch_changes(todos.map(Todos.encode), |text| [StorageSet("todos", text)], Engine.ignore({})),
+				Engine.watch_changes(todos.map(Todos.encode), |text| [Engine.command(StorageSet("todos", text))], Engine.ignore({})),
 				# endregion persist
 			],
 		)
@@ -184,7 +182,7 @@ Todos := [TodoList].{
 	## for done and `-` for open.
 	encode : Table(U64, Todo) -> Str
 	encode = |table| {
-		rows = table.fold([], |found, key, todo| found.append({ key, todo })).sort_with(|a, b| by_key(a.key, b.key))
+		rows = table.fold([], |found, key, todo| found.append({ key, todo })).sort_by(|held| held.key)
 		Str.join_with(rows.map(|{ todo, .. }| "${if (todo.status == Done) "+" else "-"}${todo.title}"), "\n")
 	}
 
@@ -218,17 +216,6 @@ Todos := [TodoList].{
 	program = Engine.program_store({ storage_keys: ["todos"], max_inflight: 32 }, Todos.start, |_boot| Todos.view({}))
 	# endregion storage
 }
-
-## The order of two keys: the smaller first.
-by_key : U64, U64 -> [Before, Same, After]
-by_key = |a, b|
-	if a < b {
-		Before
-	} else if a > b {
-		After
-	} else {
-		Same
-	}
 
 # region expects
 ## A new title is added under the next key, and the next key and the draft

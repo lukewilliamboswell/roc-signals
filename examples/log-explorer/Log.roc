@@ -88,7 +88,34 @@ Log := [].{
 
 	## A page of the viewer: its first line (from 0), the log's line count
 	## and the lines.
-	Window : { first : U64, total : U64, lines : List(Line) }
+	Window : { first : U64, total : U64, count : U64, lines : List(Line) }
+
+	## A viewer waits for layout before asking a worker for its first window.
+	## Only a size report supplies a capacity, always at least one line.
+	Viewport :: [Unmeasured, Fitted(U32)].{
+
+		## The state before the first size report.
+		waiting : Viewport
+		waiting = Unmeasured
+
+		## The fixed-height lines this content box can draw.
+		for_height : U32 -> Viewport
+		for_height = |pixels| Fitted(pixels)
+
+		## The last observed content-box height, without inventing one before layout.
+		height : Viewport -> Try(U32, [Unmeasured])
+		height = |viewport| match viewport {
+			Unmeasured => Err(Unmeasured)
+			Fitted(pixels) => Ok(pixels)
+		}
+
+		## A request can be made only after layout has supplied a capacity.
+		capacity : Viewport -> Try(U64, [Unmeasured])
+		capacity = |viewport| match viewport {
+			Unmeasured => Err(Unmeasured)
+			Fitted(pixels) => Ok(Log.lines_that_fit(pixels))
+		}
+	}
 
 	## What the overview shows.
 	Overview : {
@@ -107,9 +134,68 @@ Log := [].{
 	page_lines : U64
 	page_lines = 25
 
-	## How many lines a page of the viewer holds.
-	window_lines : U64
-	window_lines = 50
+	## The viewer draws each line at this height in CSS pixels. Its observed
+	## content height determines the number of complete lines to request.
+	line_height : U32
+	line_height = 20
+
+	## Even a temporarily hidden or very small viewer requests one line.
+	lines_that_fit : U32 -> U64
+	lines_that_fit = |height| (height / Log.line_height).max(1).to_u64()
+
+	## Stay below browser element-height limits even for millions of lines.
+	spacer_cap : U32
+	spacer_cap = 8000000
+
+	## The immutable line count and the observed content box define one scroll map.
+	ScrollMap : { total : U64, line_height : U32, viewport_height : U32 }
+
+	## The spacer comes from all lines, never the drawn window. Wide arithmetic
+	## prevents a large count from wrapping before the cap is applied.
+	spacer_height : { total : U64, line_height : U32 } -> U32
+	spacer_height = |dimensions| {
+		if dimensions.line_height == 0 {
+			crash "Log.spacer_height: line height must be positive"
+		}
+		(dimensions.total.to_u128() * dimensions.line_height.to_u128()).min(Log.spacer_cap.to_u128()).to_u32_wrap()
+	}
+
+	## The first line at a physical offset, rounded to the nearest line. The
+	## reachable end names the last full window, including a partial-height
+	## viewport whose last line's own offset lies beyond that physical end.
+	first_at : ScrollMap, U32 -> U64
+	first_at = |map, top| {
+		extent = scroll_span(map)
+		if extent.pixels == 0 or extent.last == 0 {
+			return 0
+		}
+		offset = top.min(extent.pixels)
+		if offset == extent.pixels {
+			return extent.last
+		}
+		if map.total.to_u128() * map.line_height.to_u128() <= Log.spacer_cap.to_u128() {
+			((offset.to_u64() + map.line_height.to_u64() // 2) // map.line_height.to_u64()).min(extent.last)
+		} else {
+			((offset.to_u128() * extent.last.to_u128() + extent.pixels.to_u128() // 2) // extent.pixels.to_u128()).to_u64_wrap()
+		}
+	}
+
+	## The reachable physical offset of a requested first line. Capped logs
+	## use a proportional map; the buttons retain exact line intent when one
+	## pixel represents several lines. A viewport with no scroll range is zero.
+	offset_of : ScrollMap, U64 -> U32
+	offset_of = |map, first| {
+		extent = scroll_span(map)
+		if extent.pixels == 0 or extent.last == 0 {
+			return 0
+		}
+		line = first.min(extent.last)
+		if map.total.to_u128() * map.line_height.to_u128() <= Log.spacer_cap.to_u128() {
+			(line.to_u128() * map.line_height.to_u128()).min(extent.pixels.to_u128()).to_u32_wrap()
+		} else {
+			((line.to_u128() * extent.pixels.to_u128() + extent.last.to_u128() // 2) // extent.last.to_u128()).to_u32_wrap()
+		}
+	}
 
 	## How much of a line's start the header is looked for in.
 	header_bytes : U64
@@ -471,9 +557,9 @@ Log := [].{
 
 	## The first line (from 0) of the viewer's page that is `wanted` in a
 	## log of `lines` lines: no further than the last full page's.
-	window_first : { lines : U64, wanted : U64 } -> U64
-	window_first = |{ lines, wanted }| {
-		last = if (lines > Log.window_lines) lines - Log.window_lines else 0
+	window_first : { lines : U64, wanted : U64, count : U64 } -> U64
+	window_first = |{ lines, wanted, count }| {
+		last = if (lines > count) lines - count else 0
 		if (wanted > last) last else wanted
 	}
 
@@ -729,6 +815,18 @@ has_folded = |hay, needle| {
 		$at = $at + 1
 	}
 	Bool.False
+}
+
+## The last first-line and the physical range, with one line while hidden.
+scroll_span : Log.ScrollMap -> { last : U64, pixels : U32 }
+scroll_span = |map| {
+	if map.line_height == 0 {
+		crash "Log.scroll_span: line height must be positive"
+	}
+	count = (map.viewport_height.to_u64() // map.line_height.to_u64()).max(1)
+	last = if (map.total > count) map.total - count else 0
+	height = Log.spacer_height({ total: map.total, line_height: map.line_height })
+	{ last, pixels: if (height > map.viewport_height) height - map.viewport_height else 0 }
 }
 
 ## Byte order of two words.
@@ -991,7 +1089,44 @@ expect {
 }
 
 ## The viewer's first line stops at the last page.
-expect [0, 60, 100].map(|wanted| Log.window_first({ lines: 120, wanted })) == [0, 60, 70]
+expect [0, 60, 100].map(|wanted| Log.window_first({ lines: 120, wanted, count: 50 })) == [0, 60, 70]
 
 ## A log shorter than a page always starts at its first line.
-expect Log.window_first({ lines: 10, wanted: 7 }) == 0
+expect Log.window_first({ lines: 10, wanted: 7, count: 50 }) == 0
+
+## Fitting uses only complete fixed-height lines, with one while hidden.
+expect [0, 19, 20, 39, 400, 1000].map(Log.lines_that_fit) == [1, 1, 1, 1, 20, 50]
+
+## A changed viewport moves the last full page without changing its rules.
+expect [1, 20, 50, 200].map(|count| Log.window_first({ lines: 120, wanted: 110, count })) == [110, 100, 70, 0]
+
+## An unmeasured viewer asks for nothing; its first size supplies capacity.
+expect {
+	count = Log.Viewport.for_height(400).capacity()?
+	{ waiting: Log.Viewport.waiting.capacity(), count } == { waiting: Err(Unmeasured), count: 20 }
+}
+
+## A partial-height last viewport is reached at the browser's physical end.
+expect {
+	map = { total: 100, line_height: 20, viewport_height: 39 }
+	{ at_end: Log.first_at(map, 1961), offset: Log.offset_of(map, 99), before_end: Log.first_at(map, 1960) } == { at_end: 99, offset: 1961, before_end: 98 }
+}
+
+## Empty logs and a viewport larger than the capped spacer have no scroll range.
+expect [0.U64, 100, 2000000, 18446744073709551615].all(
+	|total| {
+		map = { total, line_height: 20, viewport_height: 8000000 }
+		Log.offset_of(map, total) == 0 and Log.first_at(map, 400) == 0
+	},
+)
+
+## Large products are capped before narrowing; both proportional endpoints are exact.
+expect {
+	map = { total: 18446744073709551615, line_height: 4294967295, viewport_height: 400 }
+	{ height: Log.spacer_height({ total: map.total, line_height: map.line_height }), start: Log.first_at(map, 0), end: Log.first_at(map, 7999600), offset: Log.offset_of(map, map.total) } == { height: 8000000, start: 0, end: 18446744073709551614, offset: 7999600 }
+}
+
+## Below one row of viewport height, a line keeps its own reachable offset.
+expect [0.U32, 1, 19].all(
+	|height| Log.offset_of({ total: 100, line_height: 20, viewport_height: height }, 99) == 1980,
+)

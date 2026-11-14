@@ -96,16 +96,16 @@ LabApp := [].{
 	clock_ms = 100
 
 	## The requests for what a row wants.
-	plan : Lab.Want -> List(Engine.Request)
+	plan : Lab.Want -> List(Engine.Ask(Lab.Answer, Lab.Ended))
 	plan = |want|
 		match want {
 			Hold => []
 			Run({ task, timeout, .. }) =>
 				match task {
-					Count(range) => [LabApp.primes(timeout).request(range)]
-					Crash(range) => [LabApp.crasher(timeout).request(range)]
-					Tile(spec) => [LabApp.tiles(timeout).request(spec)]
-					Strip(spec) => [Picture.strip(timeout).request(spec)]
+					Count(range) => [LabApp.primes(timeout).ask(range).map_ok(|n| Primes(n)).map_err(Lab.ended)]
+					Crash(range) => [LabApp.crasher(timeout).ask(range).map_ok(|n| Primes(n)).map_err(Lab.ended)]
+					Tile(spec) => [LabApp.tiles(timeout).ask(spec).map_ok(|bytes| Tile(Lab.summarize(bytes.to_list()))).map_err(Lab.ended)]
+					Strip(spec) => [Picture.strip(timeout).ask(spec).map_ok(Lab.drawn).map_err(LabApp.strip_ended)]
 				}
 		}
 
@@ -119,27 +119,17 @@ LabApp := [].{
 			Lost(fault) => Lost(fault)
 		}
 
-	## A job's result, decoded with the task that ran.
-	outcome : Lab.Task, Engine.Result -> Try(Lab.Answer, Lab.Ended)
-	outcome = |task, res|
-		match task {
-			Count(_) => LabApp.primes(Unlimited).result(res).map_ok(|n| Primes(n)).map_err(Lab.ended)
-			Crash(_) => LabApp.crasher(Unlimited).result(res).map_ok(|n| Primes(n)).map_err(Lab.ended)
-			Tile(_) => LabApp.tiles(Unlimited).result(res).map_ok(|bytes| Tile(Lab.summarize(bytes.to_list()))).map_err(Lab.ended)
-			Strip(_) => Picture.strip(Unlimited).result(res).map_ok(Lab.drawn).map_err(LabApp.strip_ended)
-		}
-
 	## What a row's result writes, decided from the row's job as it is when
 	## the result arrives.
-	answered : Lab.Job, Lab.Want, Engine.Result -> List(Engine.Write(_))
+	answered : Lab.Job, Lab.Want, Try(Lab.Answer, Lab.Ended) -> List(Engine.Write(_))
 	answered = |job, want, res|
 		match want {
 			Hold => []
-			Run({ run, attempt, task, .. }) => LabStore.finished(job, { run, attempt }, LabApp.outcome(task, res))
+			Run({ run, attempt, .. }) => LabStore.finished(job, { run, attempt }, res)
 		}
 
 	## The request for a drawn strip's URL.
-	plan_url : Lab.UrlWant -> List(Engine.Request)
+	plan_url : Lab.UrlWant -> List(Engine.Ask(Str, Engine.FileError))
 	plan_url = |want|
 		match want {
 			Show({ file, .. }) => [file.object_url()]
@@ -147,10 +137,10 @@ LabApp := [].{
 		}
 
 	## What a strip's URL, or the lack of one, writes.
-	url_answered : Lab.Job, Lab.UrlWant, Engine.Result -> List(Engine.Write(_))
+	url_answered : Lab.Job, Lab.UrlWant, Try(Str, Engine.FileError) -> List(Engine.Write(_))
 	url_answered = |job, want, res|
 		match want {
-			Show({ run, attempt, .. }) => LabStore.shown(job, { run, attempt }, Engine.file_url(res).map_err(Lab.file_error_text))
+			Show({ run, attempt, .. }) => LabStore.shown(job, { run, attempt }, res.map_err(Lab.file_error_text))
 			Hold => []
 		}
 
@@ -200,7 +190,7 @@ LabApp := [].{
 			cells = LabStore.cells
 			typed = form.signal()
 			jobs = cells.work.jobs.signal()
-			restart = Engine.handle_by({ typed, run: cells.run.signal(), going: jobs.map(Lab.active) }.Signal, |at, _| LabStore.edited(at))
+			restart = |{}| Engine.handle_by({ typed, run: cells.run.signal(), going: jobs.map(Lab.active) }.Signal, |at, _| LabStore.edited(at))
 			Html.section(
 				"Run",
 				"panel grid gap-4 p-5",
@@ -215,16 +205,17 @@ LabApp := [].{
 									Html.p("Workload", "field-label"),
 									Html.select(
 										Engine.const("Workload"),
-										typed.map(|f| Lab.workload_to_str(f.workload)),
+										typed.map(|f| f.workload),
+										Engine.const(Lab.workloads),
+										{ key: Lab.workload_key, label: Lab.workload_label },
 										[Engine.class("input")],
-										[Html.option("primes", "Count primes"), Html.option("tiles", "Draw tiles"), Html.option("faulty", "Count primes, every fourth job crashing"), Html.option("draw", "Draw the Mandelbrot set")],
-										form.set_value(|f, text| { ..f, workload: Lab.workload_from_str(text) }).also(restart),
+										form.set_value(Lab.workload_picked).also(restart({})),
 									),
 								],
 							),
-							LabApp.field("Jobs", typed.map(|f| f.jobs_text), form.set_value(|f, text| { ..f, jobs_text: text }).also(restart)),
-							LabApp.field("Weight", typed.map(|f| f.weight_text), form.set_value(|f, text| { ..f, weight_text: text }).also(restart)),
-							LabApp.field("Timeout (ms)", typed.map(|f| f.timeout_text), form.set_value(|f, text| { ..f, timeout_text: text }).also(restart)),
+							LabApp.field("Jobs", typed.map(|f| f.jobs_text), form.set_value(|f, text| { ..f, jobs_text: text }).also(restart({}))),
+							LabApp.field("Weight", typed.map(|f| f.weight_text), form.set_value(|f, text| { ..f, weight_text: text }).also(restart({}))),
+							LabApp.field("Timeout (ms)", typed.map(|f| f.timeout_text), form.set_value(|f, text| { ..f, timeout_text: text }).also(restart({}))),
 						],
 					),
 					Html.p_s(typed.map(Lab.problem), [Engine.class("hint text-red-700"), Engine.test_id("problem")]),
@@ -255,7 +246,7 @@ LabApp := [].{
 			[
 				Html.p("Heartbeat", "stat-label"),
 				Html.p_s(beats.signal().map(|n| n.to_str()), [Engine.class("stat-value numeric"), Engine.test_id("heartbeat"), Html.aria_label("Heartbeat")]),
-				Engine.watch(Engine.const({}), |_| [Interval(LabApp.heartbeat_ms)], beats.on_result(|n, _, _| n + 1)),
+				Engine.watch(Engine.const({}), |_| [Engine.interval(LabApp.heartbeat_ms)], beats.on_result(|n, _, _| n + 1)),
 			],
 		),
 	)
@@ -295,7 +286,7 @@ LabApp := [].{
 		number = index.map(|i| (i + 1).to_str())
 		Engine.element(
 			"div",
-			[Engine.class_s(look.map(Lab.look_class)), Engine.attr_s("style", job.map(Lab.strip_style)), Engine.test_id_s(number.map(|k| "strip-${k}"))],
+			[Engine.class_s(look.map(Lab.look_class)), Engine.attr_presence("style", job.map(Lab.strip_style)), Engine.test_id_s(number.map(|k| "strip-${k}"))],
 			[
 				Engine.when(
 					look.map(|l| Lab.look_url(l) != ""),
@@ -323,7 +314,7 @@ LabApp := [].{
 		}
 
 	## A layer holding the URL that shows the composed picture.
-	link_of : { init : Link, pending : (Link, [Run(File), Skip] -> Link), plan : ([Run(File), Skip] -> List(Engine.Request)), resolve : (Link, [Run(File), Skip], Engine.Result -> Link) }
+	link_of : { init : Link, pending : (Link, [Run(File), Skip] -> Link), plan : ([Run(File), Skip] -> List(Engine.Ask(Str, Engine.FileError))), resolve : (Link, [Run(File), Skip], Try(Str, Engine.FileError) -> Link) }
 	link_of = {
 		init: NoLink,
 		pending: |_, _| NoLink,
@@ -333,14 +324,14 @@ LabApp := [].{
 				Skip => []
 			},
 		resolve: |_, _, res|
-			match Engine.file_url(res) {
+			match res {
 				Ok(url) => Link(url)
 				Err(e) => Unlinked(Lab.file_error_text(e))
 			},
 	}
 
 	## A layer holding the composed picture's digest.
-	sum_of : { init : Sum, pending : (Sum, [Run(File), Skip] -> Sum), plan : ([Run(File), Skip] -> List(Engine.Request)), resolve : (Sum, [Run(File), Skip], Engine.Result -> Sum) }
+	sum_of : { init : Sum, pending : (Sum, [Run(File), Skip] -> Sum), plan : ([Run(File), Skip] -> List(Engine.Ask(List(U8), Engine.FileError))), resolve : (Sum, [Run(File), Skip], Try(List(U8), Engine.FileError) -> Sum) }
 	sum_of = {
 		init: NoSum,
 		pending: |_, _| NoSum,
@@ -350,7 +341,7 @@ LabApp := [].{
 				Skip => []
 			},
 		resolve: |_, _, res|
-			match Engine.file_digest(res) {
+			match res {
 				Ok(bytes) => Sum(Lab.hex_bytes(bytes))
 				Err(e) => Unsummed(Lab.file_error_text(e))
 			},
@@ -454,7 +445,7 @@ LabApp := [].{
 				# `latest`, not `watch`: the clock must stop when drawing does.
 				Engine.watch_latest(
 					drawing,
-					|on| if (on) [Interval(LabApp.clock_ms)] else [],
+					|on| if (on) [Engine.interval(LabApp.clock_ms)] else [],
 					Engine.react_by(drawing, |still, _, _| LabStore.ticked(still)),
 				),
 			],
@@ -484,7 +475,7 @@ LabApp := [].{
 						Engine.element("worker-pool-panel", [Engine.class("block"), Engine.attr("role", "region"), Html.aria_label("Worker pool"), Engine.test_id("pool-panel")], []),
 					],
 				),
-				Engine.on_post(cells.work.save.signal(), |file| [File.save(file, {})], Engine.ignore({})),
+				Engine.on_post(cells.work.save.signal(), |file| [Engine.command(File.save(file, {}))], Engine.ignore({})),
 				Html.p_s(cells.work.refused.signal().map(|count| "Refused at the in-flight bound and retried: ${count.to_str()}"), [Engine.class("hint"), Engine.test_id("refused")]),
 				Html.ul(
 					[Engine.class("grid gap-2"), Html.aria_label("Jobs")],

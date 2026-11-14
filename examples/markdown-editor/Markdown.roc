@@ -288,4 +288,123 @@ Markdown := {}.{
 			Ok(next) => next
 			Err(_) => plain(state, text)
 		}
+
+	## Serialize the supported Markdown as HTML for a clipboard item. Source text
+	## and attribute values always pass through the escaping builder, including
+	## fenced code; raw HTML in a document stays literal text, as in the preview.
+	to_html : Str -> Str
+	to_html = |source| Markup.join(parse(source).map(block_html), Lines).to_str()
+
 }
+
+# The HTML serializer has one constructor for outside text and closed element
+# constructors. Only this builder can introduce markup into a serialized result.
+Markup :: Str.{
+	Tag : [H1, H2, H3, H4, H5, H6, P, Blockquote, Pre, Code, Ul, Li, Strong]
+
+	text : Str -> Markup
+	text = |source_text| Markup.(escape(source_text))
+
+	element : Markup.Tag, Markup -> Markup
+	element = |tag, Markup.(body)| {
+		name = match tag {
+			H1 => "h1"
+			H2 => "h2"
+			H3 => "h3"
+			H4 => "h4"
+			H5 => "h5"
+			H6 => "h6"
+			P => "p"
+			Blockquote => "blockquote"
+			Pre => "pre"
+			Code => "code"
+			Ul => "ul"
+			Li => "li"
+			Strong => "strong"
+		}
+		Markup.("<${name}>${body}</${name}>")
+	}
+
+	link : { href : Str, body : Markup } -> Markup
+	link = |{ href, body: Markup.(body) }| Markup.("<a href=\"${escape(href)}\">${body}</a>")
+
+	image : { href : Str, alt : Str } -> Markup
+	image = |{ href, alt }| Markup.("<img src=\"${escape(href)}\" alt=\"${escape(alt)}\">")
+
+	join : List(Markup), [Adjacent, Lines] -> Markup
+	join = |parts, spacing| Markup.(
+		Str.join_with(
+			parts.map(|Markup.(part)| part),
+			match spacing {
+				Adjacent => ""
+				Lines => "\n"
+			},
+		),
+	)
+
+	to_str : Markup -> Str
+	to_str = |Markup.(rendered)| rendered
+}
+
+escape : Str -> Str
+escape = |text| {
+	ampersands = Str.join_with(text.split_on("&"), "&amp;")
+	opening = Str.join_with(ampersands.split_on("<"), "&lt;")
+	closing = Str.join_with(opening.split_on(">"), "&gt;")
+	quotes = Str.join_with(closing.split_on("\""), "&quot;")
+	Str.join_with(quotes.split_on("'"), "&#39;")
+}
+
+inline_html : Str -> Markup
+inline_html = |source| Markup.join(
+	Markdown.inline_segments(source).map(
+		|segment| match segment.kind {
+			Plain => Markup.text(segment.text)
+			Strong => Markup.element(Strong, Markup.text(segment.text))
+			Code => Markup.element(Code, Markup.text(segment.text))
+			Link => Markup.link({ href: segment.href, body: Markup.text(segment.text) })
+			Image => Markup.image({ href: segment.href, alt: segment.text })
+		},
+	),
+	Adjacent,
+)
+
+block_html : Markdown.Block -> Markup
+block_html = |block| match block.kind {
+	Heading(level) => {
+		tag = match level {
+			1 => H1
+			2 => H2
+			3 => H3
+			4 => H4
+			5 => H5
+			6 => H6
+			_ => crash "Markdown.to_html: a parsed heading level is outside 1–6"
+		}
+		Markup.element(tag, inline_html(block.text))
+	}
+	Paragraph => Markup.element(P, inline_html(block.text))
+	Quote => Markup.element(Blockquote, inline_html(block.text))
+	CodeBlock => Markup.element(Pre, Markup.element(Code, Markup.text(block.text)))
+	ListBlock => Markup.element(
+		Ul,
+		Markup.join(
+			block.items.map(
+				|item| {
+					children = if (item.children.is_empty()) Markup.text("") else Markup.element(Ul, Markup.join(item.children.map(|child| Markup.element(Li, inline_html(child))), Adjacent))
+					Markup.element(Li, Markup.join([inline_html(item.text), children], Adjacent))
+				},
+			),
+			Adjacent,
+		),
+	)
+}
+
+## Copied HTML follows the preview's supported blocks and inline markup.
+expect Markdown.to_html("# Title\n\nA **strong** word and `code`.\n\n> quote\n\n- parent\n  - child") == "<h1>Title</h1>\n<p>A <strong>strong</strong> word and <code>code</code>.</p>\n<blockquote>quote</blockquote>\n<ul><li>parent<ul><li>child</li></ul></li></ul>"
+
+## Raw markup, quotes and ampersands remain text in copied HTML and attributes.
+expect Markdown.to_html("<script>alert(\"x\")</script> & <img>\n\n[x\"<](https://example.test/?x=\"&y=<)\n\n![a\"&<](https://example.test/\"<)") == "<p>&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &lt;img&gt;</p>\n<p><a href=\"https://example.test/?x=&quot;&amp;y=&lt;\">x&quot;&lt;</a></p>\n<p><img src=\"https://example.test/&quot;&lt;\" alt=\"a&quot;&amp;&lt;\"></p>"
+
+## Unsafe URL schemes stay plain text, and fenced markup never becomes an element.
+expect Markdown.to_html("[run](javascript:alert)\n\n```\n<script>\n```\n\n###### Six") == "<p>run</p>\n<pre><code>&lt;script&gt;</code></pre>\n<h6>Six</h6>"

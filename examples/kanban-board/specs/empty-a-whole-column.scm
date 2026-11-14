@@ -1,6 +1,7 @@
 (test "Kanban board — empty a whole column"
   (steps
     ; Bring the page to the state this spec starts from.
+    (expect-visible (role region :name "Design login screen"))
     (mark-metrics)
     (click (role button :name "Move right: Draft onboarding copy"))
     (mark-metrics)
@@ -30,6 +31,7 @@
     (mark-metrics)
     (click (role button :name "Add card"))
     ; empty a whole column
+    (expect-visible (role region :name "Write release notes"))
     (click (role button :name "Delete: Write release notes"))
     (expect-absent (role region :name "Write release notes"))
     (expect-text (test-id "count-backlog") "1 card")

@@ -2,13 +2,13 @@
 // and the only JavaScript of its own the app has. The platform's runtime
 // (runtime.mjs) knows nothing of it; the page that mounts the app passes
 // this module's default export as the `ports` option of mountRocEngineApp,
-// and the runtime checks it against the ports Store.roc registers, one
+// and the runtime checks it against the ports BookStorage.roc registers, one
 // handler per port, before the app starts.
 //
 // The books live in IndexedDB, one record per book, each exactly the object
-// that crosses the port (Store.Book): { id, title, author, shelf, added_ms },
-// with `shelf` a tag name ("WantToRead") and `added_ms` a string of digits,
-// as a U64 crosses. Every handler takes and answers plain data; nothing here
+// that crosses the port (BookStorage.Book): { id, title, author, shelf, added_ms },
+// with `shelf` a tag name ("WantToRead") and `added_ms` a signed decimal
+// string, as an I64 crosses. Every handler takes and answers plain data; nothing here
 // touches the page or the app's state.
 const NS = "roc-signals.example/reading-list";
 const DATABASE = "roc-signals.example/reading-list";
@@ -66,8 +66,7 @@ export default {
   [`${NS}/load`]: { call: () => readAll() },
 
   [`${NS}/add`]: {
-    call: async ({ title, author }) => {
-      const book = { id: crypto.randomUUID(), title, author, shelf: "WantToRead", added_ms: String(Date.now()) };
+    call: async (book) => {
       await transact("readwrite", (books) => books.add(book));
       written();
       return book;

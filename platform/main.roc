@@ -3,11 +3,10 @@
 ## the typed vocabulary above that, and `Worker.roc` is the typed layer for
 ## tasks run in Web Workers, whose payloads `Wire.roc` derives;
 ## `Port.roc` is the typed layer for services the page's JavaScript supplies,
-## whose messages `PortJson.roc` derives. `Table.roc` is what a table cell
+## whose messages `PortJson.roc` derives. `Engine.Table` is what a table cell
 ## of an app's store holds, rows by key, and `View.roc` and `Seq.roc` keep
 ## the filtered, sorted view of it that `Engine.table_view` draws;
-## `EngineOnly.roc` is the value that keeps a table's bookkeeping the
-## engine's. A worker
+## Table bookkeeping stays in the internal `TableCore.roc` module. A worker
 ## job's hosted effects (`Hosted.roc`) are reached only through `Effects.roc`, which this root
 ## hands to the engine with each job, and `Files.roc`, whose `build!`
 ## opens a builder; every other module is pure, and `main-fuzz.roc` is a
@@ -15,7 +14,7 @@
 ## binds a `program` as `main`, and one entry file builds for two targets:
 ##
 ## - `roc build --target=wasm32` gives the module the browser runs. The Zig
-##   host (`host/host.zig`) holds exactly one opaque `Box(Core.App)` and the
+##   host (`host/host.zig`) holds one opaque box of the store and sites, and the
 ##   command buffer between calls; JavaScript (`runtime.mjs`) reads the buffer
 ##   straight from linear memory.
 ## - `roc build --target=x64musl` (Linux), `arm64mac` or `x64mac` (macOS) or
@@ -26,10 +25,10 @@
 ##   worker jobs in child processes. Run it as `RUNNER FILE.scm...`.
 platform ""
 	requires {
-		main : Engine.Program
+		[Store : st] for main : Engine.Program(st)
 	}
-	exposes [Engine, Files, Html, Port, PortJson, Table, Wire, Worker]
-	packages {}
+	exposes [Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, Wire, Worker]
+	packages { parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.2/2H2hePe5iYTZaGdG9MbMqhS29yg4Zxxr7dPEbZJ96fME.tar.zst", unicode: "https://github.com/roc-lang/unicode/releases/download/4.3.2/3gvgiWm6BShjHKbNV2zRH6fhC5ZvScZgWF7AnVDWHSdd.tar.zst" }
 	provides {
 		"roc_engine_ask": ask_for_host!,
 		"roc_engine_drop": drop_for_host,
@@ -76,16 +75,22 @@ platform ""
 	}
 
 import Cli
+import Clipboard
 import Core
 import Effects
 import Engine
+import Web
 import Files
 import Hosted
 import Html
+import Svg
+import Layout
+import Order
 import Port
 import PortJson
+import ProtocolFacts
 import SpecRunner
-import Table
+import Url
 import Wire
 import Worker
 
@@ -94,39 +99,44 @@ import Worker
 ## by the host, lent to JS, and passed back into the next call for reuse).
 Step : { cmds : List(U8), state : Handle, work : List(U8) }
 
-## The engine state as the host holds it between calls. By design this is
-## `Box(Core.App)`; compiler workaround
-## (https://github.com/roc-lang/roc/issues/12953): the host boundary rejects
-## a box of a state that holds functions but accepts a boxed `Iter`, so the
-## state crosses wrapped in a one-item `Iter`. `hold` is the one place that
-## wraps it and `release` the one place that unwraps it; all three go, and
-## `Step.state` becomes `Box(Core.App)` again, once the plain box is
-## accepted. Stepping the unique handle moves the state out, so the engine
-## still updates it in place.
-Handle : Box(Iter(Core.App))
+## The host owns one opaque box containing the store as plain Roc data and
+## the site tree beside it. The host neither inspects nor shares either part.
+## The nested boxed Iter is the narrow #12953 workaround for sites containing
+## functions: https://github.com/roc-lang/roc/issues/12953.
+## TODO https://github.com/roc-lang/roc/issues/13012: keeping the store outside
+## that closure avoids borrowed capture updates;
+## local site storage remains affected by https://github.com/roc-lang/roc/issues/13012.
+Handle : Box({ store : Store, sites : Box(Iter(Core.Sites(Store))) })
 
 ## The handle over the state the host keeps until its next call.
-hold : Core.App -> Handle
-hold = |engine|
-	Box.box(
-		Iter.custom(
-			Some(engine),
-			Ok(1),
-			|seed|
-				match seed {
-					Some(state) => Ok((state, None))
-					None => Err(NoMore)
-				},
+hold : Core.App(Store) -> Handle
+hold = |engine| {
+	(store, sites) = Core.split(engine)
+	Box.box({
+		store,
+		sites: Box.box(
+			Iter.custom(
+				Some(sites),
+				Ok(1),
+				|seed|
+					match seed {
+						Some(state) => Ok((state, None))
+						None => Err(NoMore)
+					},
+			),
 		),
-	)
+	})
+}
 
 ## The state a handle holds; the host passes each handle back once.
-release : Handle -> Core.App
-release = |handle|
-	match Box.unbox(handle).next() {
-		One({ item, rest: _ }) => item
+release : Handle -> Core.App(Store)
+release = |handle| {
+	{ store, sites } = Box.unbox(handle)
+	match Box.unbox(sites).next() {
+		One({ item, rest: _ }) => Core.join(store, item)
 		_ => crash "internal: the host passed an engine handle whose state was already taken"
 	}
+}
 
 ## The wire protocol version the engine speaks (design.md, Appendix B).
 version_for_host : () -> U32
@@ -135,7 +145,7 @@ version_for_host = || Core.driver(main).version
 ## The storage keys the app declares, encoded count:u32 (key:str)*; the host
 ## reads their values before mount.
 keys_for_host : () -> List(U8)
-keys_for_host = || (Core.driver(main).keys)()
+keys_for_host = || ProtocolFacts.append_declaration((Core.driver(main).keys)())
 
 ## Mount with the boot bytes (URL and declared storage values).
 init_for_host : List(U8) -> Step
@@ -152,7 +162,7 @@ event_for_host = |boxed, buf, wbuf, node, handler, payload| {
 	{ cmds, state: hold(next), work }
 }
 
-## A `:files` event: the file record and the handles the host minted for its
+## A files-kind event: the file record and the handles the host minted for its
 ## files, which move into the engine with the call.
 files_for_host : Handle, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> Step
 files_for_host = |boxed, buf, wbuf, node, handler, record, blobs| {

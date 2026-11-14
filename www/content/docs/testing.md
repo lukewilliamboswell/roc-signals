@@ -1,7 +1,7 @@
 +++
 title = "Testing"
 description = "Test decisions as functions with expect, write .scm specs against the rendered UI, control effects and intervals, and assert how much work an update did, natively and in Chrome."
-weight = 17
+weight = 18
 template = "page.html"
 +++
 
@@ -23,6 +23,21 @@ visibility, history and storage. And they can assert *how much* work an
 update did, so a change that makes a keystroke rebuild a whole list fails a
 test instead of slipping through.
 
+## Check the default first page
+
+Every program must mount at the default environment: `/`, empty local and
+session storage, online and visible, with the remaining boot defaults. A new
+app's `main.roc` binds `mounted = Engine.mounts(main)` as a `U64` constant. The
+compiler mounts that page and reports any reached contract error, crash or
+failed inline `expect` in the app's own file. An app's explicit crash or
+`expect` can point to that expression; engine contracts point to the constant.
+
+The check reaches only the default page. Specs still cover routes, later
+branches, rows and results. An app needing a session should draw a sign-in
+page there; an app rejecting `/` can draw a not-found page. Removing the
+constant disables this check. It costs work proportional to the default mount
+on each compilation; it creates no extra runtime mount or retained state.
+
 ## Decisions as functions
 
 A decision returns the list of writes its transition makes
@@ -40,9 +55,10 @@ values as a turn applies it, and `read(cell)` reads a cell of the result.
   that depends on the boot data is `store.with_initial(cell, value)`.
 - A table is read like any cell, and its rows with `get`:
   `store.after(writes).read(table).get(key)`.
-- `after` ends no turn, so a table keeps its changes:
-  `store.after(writes).read(table).inverse()` is one write for each row
-  the transition wrote. Chained `after`s add to the same changes.
+- Each `after` is one pure turn. A written table starts its changes before
+  its first modifier; `store.after(writes).read(table).inverse()` describes
+  that list's first earlier row for each written key. A table the list does
+  not write retains its last writing turn's changes.
 
 Run them with `roc test` in the app's directory; it runs every top-level
 `expect` in `main.roc` and the modules it imports.
@@ -73,6 +89,10 @@ typed list of steps. Two runners consume that list:
   history, title and storage are the browser's own. It proves that the
   runtime applies the stream correctly and that real browser events reach
   the app as the native runner modelled them.
+
+`roc signals.roc test` prints compiler warnings before running the specs. Warnings
+do not change its success status: a warning-only build can still run a passing
+story. The tool's `build` and `serve` commands show those reports too.
 
 Neither runner proves the other's half. The native runner never runs the
 JavaScript runtime or real event dispatch; the browser runner is too slow
@@ -146,38 +166,174 @@ models it. `LOC` is a locator, `"…"` a string, `N` a non-negative integer,
 
 ### Setup forms
 
+The parser resolves one environment before either runner mounts the app.
+Without setup forms its values are:
+
+| Value | Default |
+|---|---|
+| Location | `/` |
+| Local storage | Available, with no seeded pairs |
+| Session storage | Available, with no seeded pairs; retained across same-tab navigation |
+| Clipboard | Empty text and HTML, no writes; writes allowed |
+| Connectivity | Online |
+| Visibility | Visible |
+| Declared media query | False unless setup gives its match |
+| Clock | 0 ms (1970-01-01T00:00:00Z) |
+| Seed | 0, plus the zero-based document number |
+| Languages | `("en-US")` |
+| Time zone | UTC, zero offset over all I64 time |
+
+Both runners use these values, including when Chrome's real browser facts
+differ. A value that later steps can change uses `initial-…` in setup and
+`set-…` in steps; a value fixed for the document uses its name directly.
+Storage predates that naming rule: `local-storage` seeds it and the app's
+own writes change it. Files are fixtures and `max-output-bytes` is a
+deployment limit.
+
 | Form | Effect |
 |---|---|
 | `(initial-location "/path?q#h")` | The URL the app boots at; must start with `/`. Without it, `/` |
 | `(initial-online online)` | Boot connectivity, `online` or `offline` |
 | `(initial-visibility hidden)` | Boot page visibility, `visible` or `hidden` |
+| `(initial-media "QUERY" BOOL)` | A declared media query's boot match |
+| `(initial-time TIME)` | Clock at mount: I64 milliseconds or strict UTC text |
+| `(seed N)` | U128 seed; document k from 0 uses N + k |
+| `(languages "TAG" ...)` | One to sixteen language strings, at most 64 UTF-8 bytes each |
+| `(time-zone "NAME" MINUTES (FROM_MS MINUTES) ...)` | Initial I32 offset and ascending changes at I64 integer milliseconds, true for all I64 time; at most 128 offsets, name at most 64 UTF-8 bytes |
 | `(local-storage "key" "value")` | Seed local storage before mount |
 | `(local-storage-unavailable)` | Every local-storage access throws, as with site data disabled. Seeding storage in the same setup is a spec error |
+| `(session-storage "key" "value")` | Seed session storage before mount |
+| `(session-storage-unavailable)` | Session storage is unavailable; seeding it is a spec error |
+| `(local-storage-full)`, `(session-storage-full)` | Writes to that store fail with `Quota`; reads and removals work. Seeded values are allowed |
+| `(clipboard-denied)` | Clipboard writes answer `ClipboardFailed(NotAllowed)` |
+| `(max-paste-bytes N)` | The deployment's paste-text byte limit, 4 MiB by default; 0 through 9007199254740991 |
 | `(file "name" "type" "text" [REPEAT])` | Declare a file the steps can give the app: its name, its MIME type, and its contents, `text` repeated `REPEAT` times (once without it) |
 | `(max-output-bytes N)` | The most bytes a [task](@/docs/workers.md)'s job may append to its builders, the runtime's `maxOutputBytes` mount option (256 MiB without it) |
 
 Effects never run on their own in a spec: HTTP requests, timers and worker
 jobs wait for `run-effect`, and intervals for `tick-interval`. A worker
 job's timeout never expires on its own either: `time-out-work` expires it.
-Storage reads answer by themselves, from storage.
+Storage reads and clipboard writes answer by themselves in the following
+turn. A storage write failure is also delivered then, to each live
+`StorageWriteFailures` subscription. None takes a `run-effect` occurrence
+number.
 
 ### Actions
 
 | Step | What happens |
 |---|---|
-| `(click LOC)` | A real mouse click: `mousedown`, focus moves to the nearest focusable element (or away), `mouseup`, `click`, then the default action unless the click handler prevented it — a checkbox toggles and a radio checks (each with `input` and `change`), a submit button submits its form if the form's controls are valid, a link navigates. A disabled control gets no click |
+| `(click LOC)` | A real mouse click: `pointermove`, `mousemove`, `pointerdown`, `mousedown`, focus moves to the nearest focusable element (or away), `pointerup`, `mouseup`, `click`, then the default action unless the click handler prevented it — a checkbox toggles and a radio checks (each with `input` and `change`), a submit button submits its form if the form's controls are valid, a link navigates. A prevented `pointerdown` suppresses `mousedown`, `mouseup` and the focus change; `click` still fires. A disabled control gets no click |
 | `(real-click LOC)` | The same click, but a disabled control fails the step |
 | `(fill LOC "text")` | Playwright's `fill`: focus an enabled text input or textarea and deliver the whole value as one `input` event. A value the control cannot hold (`"2x"` in an `<input type=number>`) fails the step |
 | `(change LOC "value")` | Set the value and fire `change`; on a radio or checkbox the value must equal the control's `value`, and it becomes checked |
 | `(select-option LOC "value")` | Choose an option of a `<select>`, firing `input` and `change`; the option must exist |
 | `(check LOC)` / `(uncheck LOC)` | Click a checkbox or radio that is not in that state; it must then be in it. A radio cannot be unchecked |
 | `(submit LOC)` | Submit a `<form>` as `requestSubmit` does: nothing is submitted while a control is invalid |
+| `(press LOC "Shift+ArrowDown")` / `(press "Escape")` | Focus the locator if supplied, then keydown and keyup; otherwise use current focus or body. See [Keyboard steps](#keyboard-steps) |
+| `(dismiss)` | Press and release Escape at current focus, with normal key prevention and native dismissal |
+| `(scroll LOC TOP LEFT)` | Scroll to these nonnegative CSS-pixel offsets and report them; Chrome must reach and retain them |
+| `(report-size LOC WIDTH HEIGHT)` | Inject a content-box size report into an element with a size observation |
+| `(report-seen LOC yes\|no [PERMILLE])` | Inject visibility into an element with a seen observation; ratio defaults to 1000 for yes, 0 for no |
+| `(set-media "QUERY" BOOL)` | Report a declared media query's new match |
 | `(focus LOC)` / `(blur LOC)` | Move focus, delivering `blur` and `focus` to handlers that listen. Focusing an element that cannot take focus does nothing |
+
+Input and button actions use the HTML control's effective type. An input with
+missing, empty or invalid `type` behaves as a text input; a button with the same
+kinds of `type` behaves as a submit button. Keyword matching ignores ASCII case
+but does not trim spaces or fold non-ASCII letters. For example, `type="txet"`
+can be filled and blocks implicit form submission just like `type="text"`.
+Checking it or choosing files still fails the step. These defaults apply to HTML
+controls, not foreign elements with the same local name.
+
+The `type` attribute remains raw: `expect-attr` sees the exact authored spelling,
+including empty text, and `expect-no-attr` sees its absence. This does not change
+the live property readings of `value`, `checked` or `disabled` described under
+[Assertions](#assertions).
+
+For a typed `Html.select`, ordinary `select-option` chooses by the stable
+choice key and delivers its current application value. A scripted `change`
+with a foreign or removed key exercises `NotOffered`; the spec then checks
+the decision's explicit behavior. Checkbox helpers receive `Bool`, including
+when `check` or `uncheck` performs their native change sequence.
 
 Focus follows Chrome in both runners: a text control the user changed gets
 `change` when it loses focus, and a controlled input's rewritten value waits
-for blur while it has focus. A handler with no listener for its event is not
+for blur while it has focus. The engine's `Focus`, `Blur` and `SelectText`
+and `FocusInPlace` commands also update focus and raise the same events after the batch, each
+as its own turn. A focus loop stops the instance with `resource_limit`
+after 4096 turns in one step. A handler with no listener for its event is not
 an error: the event simply reaches nothing, as in a browser.
+
+Hover is not driven by specs. Neither runner delivers `pointerover`,
+`pointerout`, `pointerenter`, `pointerleave` or their mouse counterparts;
+the browser replay filters them before the app sees them. Hover depends on
+layout, including changes under a resting cursor, which the native oracle
+cannot model. Contract tests cover dispatch of those events, and a hover
+handler's pure logic can be tested as a function. The move events in the
+click sequence above are delivered in both runners.
+
+`contextmenu`, `gotpointercapture` and `lostpointercapture` are also outside
+the spec grammar. Context-menu timing differs by operating system; capture
+lifecycle callbacks are outside the four pointer events modeled below.
+The browser replay filters them, while production dispatch and its
+contract tests retain them.
+
+### Pointer gestures
+
+| Step | Meaning |
+|---|---|
+| `(pointer-down LOC ...)` | Press; options `:at X Y`, `:button main\|middle\|secondary`, `:pointer mouse\|pen\|touch`, `:id N`, `:modifiers (shift ctrl alt meta)` |
+| `(pointer-move LOC ...)` | Move; options `:at X Y` and `:id N` |
+| `(pointer-up LOC ...)` | Release; options `:at X Y` and `:id N` |
+| `(pointer-cancel ...)` | Cancel one touch; option `:id N` |
+
+Down defaults to main, mouse and no modifiers. Its id defaults to 1 for
+mouse or 2 for pen and touch. Move and up default to id 1; a nonmouse
+gesture names its id explicitly on them. Cancel defaults to id 2. Mouse
+always uses id 1, which nonmouse pointers cannot use. A second down for
+an active id, an up for one not down or a cancel for a nontouch pointer
+fails. A buttonless mouse move is allowed. Apps compare active pointer
+ids; specs do not assert the browser's numeric choices.
+
+Only one non-touch press (mouse or pen) can be active: Chrome's automation
+channel shares their compatibility-mouse target. A second non-touch
+gesture fails before input in both runners. Touch and non-touch gestures
+cannot overlap either: the driver supports one mouse/pen gesture or a
+set of up to 16 touch pointers. A 17th touch fails before input. Local ids
+can use the full U32 range: replay maps them to reusable driver contact
+slots and separately tracks the browser-assigned pointer ids. Production
+pointer dispatch has none of these automation limits.
+
+`X Y` are whole percentages, 0–100, in the nearest zone at or above LOC.
+Without `:at`, LOC must itself be a zone (its centre is 50 50) or lie in
+no zone (`Outside`). If it lies inside another element's zone, give
+`:at` explicitly. Chrome verifies that the point hits LOC or a descendant
+and the same nearest zone, and checks the reported fractions exactly.
+A nested zone covering the point or a box without positive area fails
+the step. A `click` reaching a pointer-kind handler follows the same
+centre rule; use pointer steps when it needs `:at`.
+
+A paced move is a [report](#reports): outside a hold it is one frame, and
+inside a hold only its newest waiting value per pointer reaches the app.
+An up delivers the waiting moves first. Capture changes the event target,
+while its reported zone remains the one beneath the point.
+
+Mouse and pen also deliver their mouse and focus events: a main release
+clicks, while a nonmain release delivers `auxclick`. A single-contact touch tap delivers
+compatibility mouse events after its up; preventing its down suppresses
+those mouse events while click still occurs. A moved touch produces none,
+as do releases from a set that has contained multiple contacts, until the
+last contact ends. Chrome checks `touch-action:none` before a touch
+press, and a touch move must change its
+logical point; Chrome also rejects a physical move inside its tap slop.
+If an up's turn moves or removes the pressed element or an ancestor,
+mouseup goes to that node's old parent and no click follows.
+
+The browser input API cancels all touches together. To keep a cancel
+specific to its named pointer, both runners reject it when more than one
+touch is active. A gesture also cannot cross into a new document: release
+or cancel before navigating there. Same-document navigation is allowed.
+These are step errors, with no fabricated release or cancellation.
 
 ### Assertions
 
@@ -187,10 +343,200 @@ an error: the event simply reaches nothing, as in a browser.
 | `(expect-value LOC "value")` | The control's value is `value` |
 | `(expect-checked LOC BOOL)` | The control's checked state is `BOOL` |
 | `(expect-disabled LOC BOOL)` | The control's disabled state is `BOOL` |
-| `(expect-attr LOC name "value")` | The attribute `name` is present with that value; `checked` and `disabled` read `"true"`/`"false"` and `value` the live value |
-| `(expect-no-attr LOC name)` | The attribute `name` is absent. `checked`, `disabled` and `value` are live state, asserted with their own steps |
+| `(expect-attr LOC name "value")` | The attribute `name` is present with that value. On property-table elements, `value` reads the live value and `checked` reads `"true"`/`"false"`; elsewhere they read ordinary attributes. `disabled` reads `"true"`/`"false"` |
+| `(expect-has-attr LOC name)` | The attribute reading is present, including an empty string, with any value |
+| `(expect-no-attr LOC name)` | The attribute `name` is absent; another step of this spec must show the same name present, on any locator |
+| `(expect-no-attr LOC name :never-written)` | The attribute is absent in a story that never shows that name present; its spelling remains unchecked |
 | `(expect-visible LOC)` | The locator matches an element in the document |
-| `(expect-absent LOC)` | The locator matches nothing |
+| `(expect-absent LOC)` | The locator matches nothing now. Another step of this spec must require the same locator to match, before or after this step |
+| `(expect-absent LOC :never-drawn)` | The locator matches nothing in a story that never draws it. No step of this spec may require that locator to match; its spelling remains unchecked |
+| `(expect-focused LOC)` | The located element is the document's active element |
+| `(expect-no-focus)` | No page element holds focus; the active element is the document body |
+
+An absence alone cannot catch a misspelt locator or one the app renamed. Show
+where the story draws it with a step such as `expect-visible`, `expect-text`
+or `click`, using exactly the same locator. The anchor may occur later when
+the absence checks something not drawn yet. An anchor proves that spelling
+matches at that step; it does not prove the two steps identify the same element.
+Use `:never-drawn` for a branch the story never draws. The parser rejects that
+marker if the story already has an anchor, naming its line.
+
+Previously passing specs with an unanchored `expect-absent` fail to parse at
+that step in both runners and `--emit-steps`. Add an assertion where the
+existing story draws the element, or mark a branch the story never draws
+with `:never-drawn`.
+
+The parser checks names using the strongest available evidence: program
+declarations first, another step in this spec next, then an explicit marker
+for a story that never shows the subject. Attribute names are anchored by
+`expect-attr` or `expect-has-attr`, before or after the absence and on any
+locator. Symbols and strings of the same text are one name. A misspelling
+fails at the negative step; a redundant marker also fails and names the
+anchor's line. No anchor from another spec counts.
+
+All three attribute assertions use the same reading. Present-empty values
+count as present. `disabled`, and `checked` or `value` on applicable controls,
+are always-present live readings: `expect-has-attr` adds no useful check there.
+Use `expect-disabled`, `expect-checked` and `expect-value` instead. The parser
+rejects those names in `expect-no-attr`. Ordinary raw attributes retain their
+literal empty, false or named text.
+
+When upgrading existing specs, add an assertion where the existing story
+already shows the name; no extra event turn is required. Use the family
+marker only when that story never shows it. Unanchored `expect-no-attr`, zero
+cleanup/interval counts and conditional ticks now fail during parse, including
+`--emit-steps`, until anchored or explicitly marked.
+
+`expect-updates` counts property commands whose row mirrors an attribute,
+including control values and checked state. Both runners count the same
+work: the native oracle reads the property commands, and Chrome observes
+their mirrored attributes. `patches_emitted` includes `PROP` and `HPROP`.
+
+### Dialogs, popovers and scrolling
+
+| Step | Passes when |
+|---|---|
+| `(expect-shown LOC hidden\|open\|modal\|popover)` | The live dialog or popover has exactly that shown state |
+| `(expect-scroll K LOC into-view\|to)` | The K-th performed explicit scroll command targeted this element and had this kind; K starts at 1 |
+| `(expect-scrolls N)` | Exactly N explicit scroll commands were performed in this document |
+
+`expect-visible` tests presence in the document, so a closed dialog or
+hidden popover can still match it. Use `expect-shown` for shown state.
+Actions on hidden dialog/popover content or outside the top modal fail;
+assertions can inspect the inert background. No pixel layout or smooth
+scroll completion is asserted. A scroll command targeting a missing
+reference is stale and adds no performed scroll.
+
+The manual scroll history keeps the newest 4096 commands, with absolute
+U64 ordinals and element identity rather than reusable engine ids. An
+assertion for an overwritten command fails explicitly. The history and count reset with a new document, unmount or recovery. At ordinal exhaustion, observation fails without
+stopping the app or suppressing its scroll. The browser history uses weak
+element references so it cannot retain removed subtrees.
+
+Both runners settle native close and toggle callbacks after mount and
+after each step. Browser replay passively tracks pending callbacks and
+waits up to 20 seconds; it does not assume a timer tick is enough. A
+nonsettling app fails the step. Close and toggle use different browser task
+sources, whose relative order is unspecified; assert the settled outcome
+and test decisions in both orders. In particular, accept automatic
+popover hiding rather than making unrelated auto popovers reopen each
+other indefinitely.
+
+The parser emits one activation table for both runners. An actual click,
+including a check/uncheck that clicks, grants user activation; a disabled
+click or already-satisfied check does not. Nonempty `fill` grants it,
+while empty `fill` does not. Every supported `press` except Escape grants
+it. Mouse/pen pointer down and touch pointer up grant it; move, cancel,
+mouse/pen up, scripted changes, selects, submits and focus do not. A new
+document resets the CloseWatcher cancellation allowance; preventing one
+`cancel` can consume that allowance until the next interaction. Sticky
+activation for a leave warning is separate and survives the supported
+same-origin document navigation and reload. Existing same-document history
+traversal preserves it; cross-document history traversal is still unsupported.
+
+### View transitions
+
+| Step | Checks |
+|---|---|
+| `(expect-transitions N)` | Exactly N marked batches have been applied in this document |
+| `(expect-transition K TYPE ...)` | The one-based K-th marked batch has exactly these types, in this order; an empty type list is allowed |
+
+These assert the engine's request to animate, whether or not the browser
+supports transitions or the deployment enables them. Mount never adds a
+transition. `view_transitions` checks the same intent as a work counter.
+
+Native and browser observations retain the newest 4096 records and at most
+1 MiB of encoded type bytes (four length bytes plus UTF-8 bytes for each
+type). Counts and ordinals are absolute U64 values; their JSON representation
+is a decimal string. An overwritten ordinal fails with a retained-history
+diagnostic. A record larger than that byte allowance clears older history
+and is itself unavailable, while the total count still advances. Exhausting
+U64 fails observation. None of these limits stops the app or caps the types
+it may actually ask the browser to animate.
+
+Chrome replay skips the animation once its update has run and awaits the
+runtime's `idle()` until `finished` settles before the next step. Thus a
+replayed click meets the final DOM without an overlay. Real animation,
+capture boundaries and input during animation are runtime contract tests;
+application specs assert the final DOM and transition intent.
+
+### Layout and media
+
+`(initial-media "QUERY" BOOL)` in setup supplies a query's boot match. A
+query the program declares but setup omits starts false. Both runners use
+these same facts; the page's CSS keeps following the real browser.
+`(expect-media-subscriptions "QUERY" N)` checks the live subscriptions;
+`(expect-observed N)` checks live size/seen registrations. An element with
+both observations contributes two. Disposing a row or scope must release
+them before its nodes disappear; the native oracle checks that invariant.
+
+Typed scroll, size, seen and media are reports, honor `hold-reports` and
+grant no user activation. An ordinary text-kind scroll remains an
+occurrence and drains earlier reports even inside a hold. A repeated scroll to the same position raises
+nothing. Size and seen are injected in Chrome too, since the native oracle
+has no geometry. Real observer behavior belongs in browser contracts.
+
+A scroll step checks the real Chrome position again after its turn, so it
+fails if drawing the window moved the scrollbar. `ScrollTo` with `Start`,
+`Px` and `Keep` on a handled scroller updates the oracle and, if changed,
+reports its position at the end of the step. Chrome waits a frame and
+checks the same position, including raw signed offsets; negative physical
+movement cannot pass by rounding or clamping its payload to zero. Prefer
+`Instant`: `Smooth`, or `Auto` with CSS
+smooth scrolling, can still be intermediate at that check. A handled
+scroller means one carrying a typed or text-kind scroll handler.
+
+`ScrollTo` with `End` on a handled scroller, or `ScrollIntoView` inside one,
+fails in both runners because its destination depends on layout. Chrome
+also fails a step that moved a handled scroller without a scroll step or
+modelled command, including a click, focus or drawing that shifted it. The
+failure names the element and says to scroll first. The native run alone
+cannot detect that mistake; running both proves reachability and stable
+scroll geometry.
+
+### Keyboard steps
+
+`press` raises keydown and keyup. If keydown loads a new document, the
+driver waits for its app to mount before releasing the key there; it
+checks physical evidence for both phases.
+
+`press` uses exact `Control`, `Alt`, `Shift` and `Meta` prefixes. Its one
+US-key table is declared in `Scm.roc` and emitted for the browser runner:
+printable ASCII, Enter, Escape, Tab, Space, Backspace, Delete, arrows,
+Home, End, PageUp, PageDown and F1–F12. There is no `ControlOrMeta`.
+Write `Shift+?` and `Shift+A`; omitting required Shift is a parse error,
+as is `Shift+a` (use `Shift+A`). A named key may also carry Shift.
+
+Tab moves focus by positive tabindex then document order, skipping disabled,
+hidden and inert elements. Enter activates a button or link or implicitly
+submits a form. Enter on a file or color input clicks the control instead;
+the chooser UI is outside the DOM model, as for a mouse click. Ctrl/Meta
+suppresses button, file/color and implicit-form activation;
+Alt/Shift retains it. Space activates buttons, checkboxes and radios on keyup,
+with any modifiers, if the original control still holds focus and its
+pressed ancestry has not been detached.
+Prevention suppresses the default. Escape performs native dialog and auto
+popover dismissal; function keys and caret-only movement have no modelled
+change.
+
+Unprevented modified Enter on a link is refused for any Control, Alt,
+Shift or Meta modifier: its navigation, download or new-context default
+varies by platform. A keymap that prevents it permits the step. Plain Enter
+on a link remains supported, and this driver restriction does not limit
+production keyboard handling.
+
+Use `fill` for text entry. A press refuses an unprevented default the native
+model cannot reproduce: printable keys and Space without Ctrl/Meta,
+Backspace/Delete and Ctrl/Meta+A/C/V/X/Y/Z in text entry, Enter in textarea
+or contenteditable, and arrows/Home/End/PageUp/PageDown in selects, radios
+and number, range, date, time, month, week or datetime-local inputs. The
+refusal rules and their input-type selectors are emitted from `Scm.roc`;
+Chrome checks the actual event's `defaultPrevented`. A keymap that prevents
+the default permits the step. Composition remains a browser contract test.
+
+The sample checks Escape without losing focus and both ends of a Tab loop:
+
+{{ sample(file="keys/specs/keys.scm", syntax="scheme") }}
 
 ### Location, history, title and storage
 
@@ -206,6 +552,21 @@ an error: the event simply reaches nothing, as in a browser.
 App `Push` and `Replace` requests move the location without a popstate, as
 browsers do.
 
+A location the app reads at boot or after back and forward is the text Chrome
+serializes, with spaces, quotes and non-ASCII bytes percent-encoded. An app
+that puts its own text into a location decodes what it reads. URL input first
+trims C0 controls and spaces at the edges and removes TAB, LF and CR throughout.
+`expect-current-location` compares the reported pathname, search and hash;
+empty query and fragment delimiters are omitted. The native runner retains
+those delimiters in its existing URL/history strings and reports the location
+at boot, popstate and location assertions. This preserves the distinction
+between no query and an empty query for document identity. An explicit empty
+fragment still identifies a same-document navigation. An exactly empty argument
+to an app's `Push` or `Replace` keeps its current URL, including its fragment;
+a nonempty whitespace-only reference resolves against the current URL and drops
+its fragment. Dot segments, backslashes and hosts remain outside the native
+runner's location model.
+
 ### Effects
 
 | Step | Meaning |
@@ -213,6 +574,8 @@ browsers do.
 | `(stub-http "label" :url "/api/x" :status 200 :body "…")` | Stage an HTTP answer; optional `:headers (("name" "value") …)`, default `content-type: application/json`. `:status` is 100–999. Staging a second answer before one is used fails |
 | `(stub-http-reject "label" :kind network :detail "offline")` | Stage a failure: `network` with the browser's message, or `timeout` with an empty `:detail` |
 | `(run-effect N)` | Answer the N-th HTTP request, upload, fetch, timer, worker job or operation on a file the current document issued (1-based, in issue order; port calls share the numbering but are answered with `answer-port` (see [Ports](#ports)); subscriptions, commands and storage reads not counted). It must still be pending. A timer fires; a worker job runs its task (in Chrome in a real worker, natively in a child process that serves the job's effects from the setup files, the step waiting for its result: a task that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request or an upload takes the staged answer, and an HTTP response's `:url` must equal the request's; a page read, a digest or a file URL is performed on the setup file (see [Files](#files)) |
+| `(expect-request N :method "GET" :url "/api/status" :cache no-store :credentials include)` | Assert selected fields of currently pending HTTP, upload or fetch occurrence N; every keyword is optional. Cache values are `default`, `no-store`, `reload`, `no-cache`, `force-cache`; credentials are `same-origin`, `include` |
+| `(progress-effect N sending 1024 4096)` | Report progress for pending occurrence N without answering it; direction is `sending` or `receiving`, counts are exact U64, and the total may be `unknown`. Fails when N did not ask for progress; honours `hold-reports` |
 | `(expect-pending-effects N)` | Exactly N HTTP requests, uploads, fetches, timers, worker jobs, operations on files and port calls are waiting to be answered |
 | `(expect-pending-work "task" N)` | Exactly N worker jobs of the task of that name are waiting |
 | `(lose-work N FAULT)` | Answer the N-th effect occurrence, a pending worker job, as `WorkLost(FAULT)` without running it. `FAULT` is `contract`, `resource_limit`, `out_of_memory`, `app_crash`, `expect_failed`, `unavailable` or `executor` |
@@ -223,6 +586,43 @@ browsers do.
 | `(set-online offline)` | Change connectivity and notify `OnlineChanges` subscribers |
 | `(set-visibility hidden)` | Change page visibility and notify `VisibilityChanges` subscribers |
 | `(expect-cleanup "name" N)` | The `on_cleanup` site named `name` has run N times |
+
+`expect-request` and `progress-effect` number the **current pending list**,
+in issue order, including timers, calls and jobs. Completed and cancelled
+entries no longer count. This differs from `run-effect`, which addresses the
+document's original issue occurrence.
+
+### Reports
+
+A step normally acts as its own frame: any state reports it raises are
+delivered before the next step. `set-online`, `set-visibility` and
+`emit-port` on a `Latest` subscription and `progress-effect` raise reports. To check several
+reports meeting before a frame, hold and release them explicitly:
+
+| Step | Meaning |
+|---|---|
+| `(hold-reports)` | Keep reports waiting until a release or an occurrence |
+| `(release-reports)` | Deliver all waiting reports in order and end the hold |
+| `(expect-reports-replaced N)` | Exactly N waiting reports have been replaced in this document |
+
+Newer reports from one source replace its waiting value in place. An
+occurrence inside a hold, such as a click or an effect result, first
+delivers reports queued ahead of it; the hold continues. Assertions read
+the current drawn page without releasing reports. Setting an unchanged
+connectivity or visibility value raises no report.
+
+A hold belongs to one document. Holding twice, releasing without a hold,
+ending a spec while holding or navigating to a new document while holding
+fails the step. The replacement count starts at zero in each document.
+These steps check the same delivery in both runners; browser contract
+tests check real frames and the fallback timer.
+
+This spec sends three revisions before releasing the reports. Only the
+newest reaches the app:
+
+{{ sample(file="ports/specs/reports.scm", syntax="scheme") }}
+
+### Answering effects
 
 Stage one answer immediately before each `run-effect` that answers an HTTP
 request: both runners hold a single staged answer, which that `run-effect`
@@ -241,14 +641,89 @@ input loses its job under `run-effect`, with the class `app_crash`, in both
 runners. A job cancelled by disposing its site is no longer pending, and the
 `effects_cancelled` metric below counts it.
 
-In Chrome, `set-online` and `set-visibility` override `navigator.onLine` and
-`document.visibilityState` and dispatch the browser's own events, so the
-runtime's real listeners run.
+In Chrome, `set-online` and `set-visibility` update the runtime's
+`environment` readers and dispatch the browser's own events, so the
+runtime's real listeners run. Setting an unchanged value dispatches nothing
+and causes no turn. The current environment carries into a later document:
+setting offline and then following a link boots the next document offline.
+Storage is seeded once per spec, so app writes and removals also survive
+navigation. Nondeterministic browser facts must come from a spec or its
+stated defaults in both runners.
 
 This spec checks the auto-refresh interval: it mounts with the checkbox,
 ticks, answers the refetch, and is gone when unchecked.
 
 {{ sample(file="search/specs/auto-refresh.scm", syntax="scheme") }}
+
+### Drafts, other tabs and the clipboard
+
+| Step | Meaning |
+|---|---|
+| `(expect-session-storage "key" "value")` | The session store holds exactly that text |
+| `(expect-no-session-storage "key")` | The session store has no value for the key |
+| `(storage-elsewhere "key" "value")` | Another document changes a local key; report its new value |
+| `(storage-elsewhere-removed "key")` | Another document removes a local key |
+| `(storage-elsewhere-cleared)` | Another document clears local storage; report `Missing` to all subscriptions when anything was stored |
+| `(paste-text LOC "text")` | Dispatch a plain-text paste at the located element |
+| `(expect-clipboard "text")` | Last successful plain-text write observed in this document |
+| `(expect-clipboard-html "html")` | HTML of that write, empty for a plain-text write |
+| `(expect-clipboard-writes N)` | Successful writes observed in this document |
+| `(leave-page "/url" stay)` | The browser must ask before leaving; decline and retain the current document |
+| `(leave-page "/url" leave)` | The browser must ask; accept and mount afresh at the URL |
+| `(leave-page "/url" unasked)` | The browser must not ask; mount afresh at the URL |
+
+Clipboard assertions observe writes, like the saved-file assertions; they
+never read the OS clipboard. A new document resets that observation to
+empty text, empty HTML and zero writes. A denied copy leaves it unchanged.
+U64 write-count exhaustion fails observation without stopping the app's copy.
+
+Storage changes honour `hold-reports`: several writes to one subscription
+before release become one report carrying the last event's value. A write
+that changes nothing raises no event, nor does removal of a missing key or
+clearing an empty store. Chrome performs these writes in a second page of
+the origin, exercising the browser's real `storage` event.
+
+`local-storage-unavailable` makes this app's window getter throw. Another
+document can still write the origin's store, and storage assertions can
+observe that write, but this app acquired no local storage-area identity
+with which to classify and report its event. This differs from an injected
+store object whose reads throw: the object still has an identity, so its
+matching events can be reported. The runtime never guesses that an
+unidentified storage event is local rather than session storage.
+
+A guard asks only after sticky activation: a prior step actually interacted
+with this tab's same-origin document. That fact survives same-origin
+navigation and reload; it starts false in a fresh tab. `paste-text`, `storage-elsewhere` and its removal/clear
+variants, and `leave-page` grant none. Any other step that tries to leave a
+guarded, activated document fails and names `leave-page`; a dialog outside
+that step also fails. Chrome navigates with `location.assign` and answers
+the real dialog. The native runner checks the same guard and activation.
+
+### Time and document facts
+
+`TIME` is an I64 integer or exactly `YYYY-MM-DDTHH:MM:SS[.sss]Z` with a valid
+UTC date. Other zones and malformed dates are spec errors. Clock steps are:
+
+| Step | What happens |
+|---|---|
+| `(set-time TIME)` | Set the wall clock, forwards or backwards; deliver nothing |
+| `(advance-time MS)` | Add a nonnegative U64 duration; fail on I64 overflow; deliver nothing |
+
+Only those steps move the clock. `run-effect` on a timer and `tick-interval`
+read its current value for `Fired(at_ms)` without advancing it. Timers still
+fire in issue order, never time order. Write `(advance-time 30000)` then
+`(tick-interval 30000)` when thirty seconds pass and the interval fires.
+
+The current clock survives a new document, whose seed is the next checked
+U128 value. Seed exhaustion is a spec error rather than wrapping. Languages
+and the supplied zone stay fixed; a spec zone covers all time, so the
+platform and probe contract tests check `OutsideZone` separately. Emitted
+JSON uses decimal strings for I64 times and U128 seeds.
+
+Chrome uses the ordinary environment readers for these values, not a CDP
+zone override or a global Date patch. JavaScript the page supplies, including
+port handlers and simulated services, still reads its real time. An example
+that needs deterministic stamps makes them in Roc, as Reading List does.
 
 ### Files
 
@@ -306,6 +781,7 @@ awaited requests.
 | `(emit-port "port" "json")` | Deliver a message to every live subscription on `port`; fails when none is live |
 | `(close-port "port")`, `(fail-port "port" "message")` | End every live subscription on `port` with `Closed` or `Threw` |
 | `(expect-port-subscriptions "port" N)` | Exactly N subscriptions on `port` are live |
+| `(expect-port-subscription-arg "port" k "json")` | The one-based k-th currently active subscription on `port` has exactly this argument; no subscription history is retained |
 | `(expect-port-sent "port" K "json")` | The K-th command (from 1) sent on `port` carried exactly `json` |
 | `(expect-port-sends "port" N)` | Exactly N commands were sent on `port` |
 
@@ -335,23 +811,26 @@ does not fail your spec.
 | `rows_reused` | Old rows an `each` reconciliation kept; a reconciliation whose list equals the old one counts nothing. A table view compares no list and counts nothing here |
 | `rows_updated` | Rows kept whose content was written: a row of an `each` whose item changed, and a drawn row a table view draws before and after the event whose row in the table was written. Pinned beside `rows_created`, `rows_removed` and `rows_moved`, it says exactly which drawn rows of a table view a write woke |
 | `rows_moved` | Rows moved |
+| `view_transitions` | Host-call batches marked for animation, including result turns; never mount |
 | `create_element` | Elements created |
 | `bind_event` | Event listeners bound |
 | `set_metadata` | Document title writes |
 | `set_text` | Text writes and text nodes created |
 | `set_value` / `set_checked` | Control `value` / `checked` the engine set |
-| `patches_emitted` | DOM commands of every kind |
+| `patches_emitted` | DOM commands; excludes `RELEASE`, `TRANSITION` and `GUARD`, which do not change the DOM |
+| `registrations_released` | `RELEASE` commands emitted for nodes owning document-key registrations or layout observations |
 | `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values. For a table view: each read of its query or its window, and each row it places with the query's `keep` and `sort` (two for a written key, the row before and after; every row of the table for a mount or a rebuild) |
 | `scopes_created` / `scopes_disposed` | `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites, mounted / disposed |
 | `dirty_source_roots` | What a turn wrote: the local states and the cells. A decision that returns no write counts nothing |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons in keyed reconciliation |
 | `effects_issued` | Awaited requests issued (HTTP, timers, storage reads, subscriptions, worker jobs); a refused request is not issued |
-| `effects_delivered` | Results delivered to a reaction, a `Refused` answer included |
+| `effects_delivered` | Results delivered to their site, including `Refused` and answers withheld by `keep_current`; progress excluded |
+| `effects_progress` | Transfer progress reports delivered to a progress handler; replaced reports excluded |
 | `effects_stale` | Results dropped because their request was no longer in flight |
 | `effects_refused` | Requests refused because the in-flight table was full |
 | `effects_cancelled` | Requests stopped because their site was disposed or superseded |
 | `effects_reparented` | Admitted requests handed to a surviving ancestor when their site was disposed |
-| `effects_skipped` | Writes a reparented result made to state that no longer exists |
+| `effects_skipped` | Writes a reparented result or progress report made to state that no longer exists |
 
 Any other metric name is a parse error. Two more steps measure work on one
 element or service:
@@ -362,6 +841,12 @@ element or service:
   `Searching…`, then the answer: 3.
 - `(expect-interval MS N)` and `(expect-cleanup "name" N)` (above) check
   that a disposed scope released its subscriptions and ran its cleanups.
+  A zero cleanup count requires a positive count of the same name somewhere
+  in this spec, or `:never-runs`. A zero interval count and
+  `tick-interval-if-active MS` require a positive interval count or
+  `tick-interval MS` of the same period, or `:never-started`. A marker is
+  rejected when the spec has that evidence. The assertions still check the
+  exact count; a conditional tick still delivers nothing when inactive.
 
 Natively, every work step also checks that the engine's per-command
 counters agree with the commands the oracle decoded, and that every issued
@@ -376,8 +861,11 @@ pass over a copy of the instance, as if every local state and every cell had
 changed: every text and attribute is re-read, every `when`, `switch` and
 `remount_on` decides again, every `each` reconciles, every `derive`,
 `resource` and effect site re-reads its input, and the pass reaches into
-every row. Each of those compares with what it last emitted, so after a
-complete turn the pass emits nothing. If a write never reached one of its
+every row. Each compares with its last observation: the emitted value, or
+for a shown property the browser-echoed state. After a complete turn the
+pass emits nothing. The scratch transition collection starts empty, and a
+new request fails the check even if its types duplicate the real call's.
+If a write never reached one of its
 readers, the pass emits the update the turn should have, and the step fails
 naming it:
 

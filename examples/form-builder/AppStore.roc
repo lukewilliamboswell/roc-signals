@@ -1,4 +1,5 @@
 import pf.Engine
+import Designer
 import Form
 import Preview
 import Schema
@@ -14,9 +15,13 @@ import Schema
 ##   Nothing draws a list of answers (each preview row reads its own), so
 ##   it is a plain cell holding a map, not a table.
 ## - `submissions`: how often the generated form has been submitted.
+## - `confirm` and `focus`: a page-level deletion choice and its focus post.
+## - `preview`: whether submission was attempted, whether its problem summary
+##   is wanted, and the address of the first problem to reveal.
 ##
-## The fields and the answers are two cells, so the designer is handed one
-## and cannot write the other.
+## The designer receives the fields and its confirmation cells, and never
+## the answers. The preview receives the answers and feedback cells, and
+## reads the fields without redefining them.
 ##
 ## The module's one tag is the store's name: it is part of the type of every
 ## handle, so a cell of another store is a type error here.
@@ -32,6 +37,13 @@ AppStore := [FormBuilder].{
 			}.Engine.Cells,
 			answers: Engine.cell(Form.no_answers),
 			submissions: Engine.cell(0.U64),
+			confirm: Engine.cell(Designer.idle),
+			focus: Engine.cell(Engine.outbox({})),
+			preview: {
+				attempted: Engine.cell(False),
+				problems_open: Engine.cell(False),
+				reveal: Engine.cell(Engine.outbox({})),
+			}.Engine.Cells,
 		}.Engine.Cells,
 	)
 
@@ -99,10 +111,59 @@ expect {
 	actual == expected
 }
 
-## Submitting counts a form that can be submitted, and writes nothing for one that cannot.
+## A valid submission is counted; an invalid one reveals its first problem
+## without counting it, and dismissing feedback leaves the attempt visible.
 expect {
-	submissions = AppStore.cells.submissions
-	ready = AppStore.store.after(Preview.submitted(submissions, { fields: 2, problems: 0 }))
-	writes = [Preview.submitted(submissions, { fields: 2, problems: 1 }).len(), Preview.submitted(submissions, Form.empty_totals).len()]
-	(ready.read(submissions), writes) == (1, [0, 0])
+	props = { fields: AppStore.cells.schema.fields, answers: AppStore.cells.answers, submissions: AppStore.cells.submissions, ui: AppStore.cells.preview }
+	ready = AppStore.store.after(Preview.submitted(props, { totals: { fields: 2, problems: 0 }, first: NoProblem }))
+	blocked = AppStore.store.after(Preview.submitted(props, { totals: { fields: 2, problems: 1 }, first: FirstProblem(2) }))
+	{
+		submissions: ready.read(props.submissions),
+		accepted: (ready.read(props.ui.attempted), ready.read(props.ui.problems_open)),
+		blocked: (blocked.read(props.submissions), blocked.read(props.ui.attempted), blocked.read(props.ui.problems_open)),
+		reveal: blocked.read(props.ui.reveal).last(),
+	} == {
+		submissions: 1,
+		accepted: (True, False),
+		blocked: (0, True, True),
+		reveal: Posted("answer-f2"),
+	}
+}
+
+## An empty form reports why it cannot submit without naming a missing field.
+expect {
+	props = { fields: AppStore.cells.schema.fields, answers: AppStore.cells.answers, submissions: AppStore.cells.submissions, ui: AppStore.cells.preview }
+	empty = AppStore.store.after(Preview.submitted(props, { totals: Form.empty_totals, first: NoProblem }))
+	(empty.read(props.submissions), empty.read(props.ui.problems_open), empty.read(props.ui.reveal).last()) == (0, True, Unposted)
+}
+
+## Confirmation keeps the schema until accepted, then removes the row,
+## clears the choice and posts focus to a surviving toolbar element.
+expect {
+	props = { fields: AppStore.cells.schema.fields, confirm: AppStore.cells.confirm, focus: AppStore.cells.focus }
+	requested = AppStore.store.after(Designer.requested(props.confirm, 1))
+	kept = requested.after(Designer.kept(props.confirm))
+	deleted = requested.after(Designer.confirmed(props, requested.read(props.confirm)))
+	{
+		before: requested.read(props.fields).len(),
+		kept: (kept.read(props.fields).len(), kept.read(props.confirm).is_idle()),
+		remaining: Form.ordered(deleted.read(props.fields).to_list()),
+		idle: deleted.read(props.confirm).is_idle(),
+		focus: deleted.read(props.focus).last(),
+		next: deleted.read(AppStore.cells.schema.next),
+	} == {
+		before: 2,
+		kept: (2, True),
+		remaining: [2],
+		idle: True,
+		focus: Posted("add-text-field"),
+		next: 3,
+	}
+}
+
+## A choice removed between drawing and delivery preserves the existing answer.
+expect {
+	answers = AppStore.cells.answers
+	before = AppStore.store.after(Preview.answered_choice(answers, { key: 1, picked: Chose("Ada") }))
+	before.after(Preview.answered_choice(answers, { key: 1, picked: NotOffered })).read(answers) == before.read(answers)
 }

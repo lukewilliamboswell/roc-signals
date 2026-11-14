@@ -1,6 +1,7 @@
-import pf.Engine exposing [Elem, Handler, Signal, State]
+import pf.Order
+import pf.Engine exposing [Elem, Handler, Signal, State, Table]
 import pf.Html
-import pf.Table
+import pf.Layout
 
 ## Table test app: a table of to-dos in the app's store, drawn as filtered,
 ## sorted windows of it, with specs in `specs/` that pin the work of every
@@ -47,14 +48,11 @@ TableApp := [Todos].{
 	few_below : I64
 	few_below = 10
 
-	## Where a row stands in a listing's order: its order's number, then
-	## its key, so that no two rows tie.
-	Place : { primary : I64, key : U64 }
-
 	## What the address chose. `draws` is `Everything`, or `Main` for the
 	## main list alone (no second list, no readers), which is what a timing
-	## of one view wants.
-	Setup : { rows : U64, window : U64, draws : [Everything, Main] }
+	## of one view wants. `Changes` adds readers of the last writing turn's
+	## changes and inverse for the lifecycle specs.
+	Setup : { rows : U64, window : U64, draws : [Everything, Main, Changes] }
 
 	## The setup an address names; 1,000 rows, a window of 30, everything
 	## drawn, by default.
@@ -64,6 +62,7 @@ TableApp := [Todos].{
 		window = U64.from_str(TableApp.asked(url, "window") ?? "30") ?? 30
 		draws = match TableApp.asked(url, "draws") ?? "everything" {
 			"main" => Main
+			"changes" => Changes
 			_ => Everything
 		}
 		{ rows, window, draws }
@@ -100,8 +99,8 @@ TableApp := [Todos].{
 	}
 
 	## How a listing selects and orders rows: the `plan` of every view.
-	plan : Listing -> Engine.QueryPlan(U64, Todo, Place)
-	plan = |{ show, order }| {
+	plan : Listing -> Engine.QueryPlan(U64, Todo, (Order.Direction(I64), U64))
+	plan = |{ show, order }| Engine.sort_by({
 		keep: |_, todo| match show {
 			All => True
 			Open => todo.status == Open
@@ -109,25 +108,11 @@ TableApp := [Todos].{
 			Few => todo.qty < TableApp.few_below
 		},
 		sort: |key, todo| match order {
-			ByQty => { primary: todo.qty, key }
-			ByKey => { primary: 0, key }
-			ByKeyDown => { primary: 0 - key.to_i64_wrap(), key }
+			ByQty => Order.asc(todo.qty)
+			ByKey => Order.asc(key.to_i64_wrap())
+			ByKeyDown => Order.desc(key.to_i64_wrap())
 		},
-		compare: TableApp.compare_place,
-	}
-
-	compare_place : Place, Place -> [Before, Same, After]
-	compare_place = |a, b|
-		if (a.primary < b.primary)
-			Before
-		else if (a.primary > b.primary)
-			After
-		else if (a.key < b.key)
-			Before
-		else if (a.key > b.key)
-			After
-		else
-			Same
+	})
 
 	raised : Todo, I64 -> Todo
 	raised = |todo, by| { ..todo, qty: todo.qty + by }
@@ -165,21 +150,27 @@ TableApp := [Todos].{
 		keys.fold(table, |acc, key| acc.update(key, |todo| { ..todo, title: "${todo.title}!" }))
 	}
 
-	store = Engine.store(
-		TableApp.Todos,
-		{
-			items: {
-				todos: Engine.table([]),
-				next: Engine.cell(0.U64),
-			}.Engine.Cells.with_reset(|cells, reset| { todos: cells.todos, next: cells.next, reset }),
-			shadow: Engine.table([]),
-			listing: Engine.cell({ show: Open, order: ByQty }),
-			window: Engine.cell({ start: 0.U64, count: 30.U64 }),
-			late: Engine.cell(Hidden),
-			few: Engine.cell(Hidden),
-			paged: Engine.cell(Hidden),
-		}.Engine.Cells,
-	)
+	description = {
+		items: {
+			todos: Engine.table([]),
+			next: Engine.cell(0.U64),
+		}.Engine.Cells.with_reset(|item_cells, reset| { todos: item_cells.todos, next: item_cells.next, reset }),
+		shadow: Engine.table([]),
+		listing: Engine.cell({ show: Open, order: ByQty }),
+		window: Engine.cell({ start: 0.U64, count: 30.U64 }),
+		late: Engine.cell(Hidden),
+		few: Engine.cell(Hidden),
+		paged: Engine.cell(Hidden),
+		scrolled: Engine.cell(Hidden),
+		scroll_window: Engine.cell({ start: 0.U64, count: 5.U64 }),
+		scroll_position: Engine.cell({ top: 0.U32, left: 0.U32, turns: 0.U64 }),
+		scroll_loaded: Engine.cell(100.U64),
+		scroll_request: Engine.cell(Engine.outbox({})),
+		scroll_focus: Engine.cell(Engine.outbox({})),
+		observed_rows: Engine.cell([]),
+	}.Engine.Cells
+
+	store = Engine.store(TableApp.Todos, TableApp.description)
 
 	cells = TableApp.store.cells()
 
@@ -190,6 +181,27 @@ TableApp := [Todos].{
 		.with_initial(TableApp.cells.shadow, Table.from_list(TableApp.sample(setup.rows)))
 		.with_initial(TableApp.cells.items.next, setup.rows)
 		.with_initial(TableApp.cells.window, { start: 0, count: setup.window })
+
+	## Snapshots built outside the mounted store are ordinary values. Loading
+	## any of them is a whole rewrite, even if its cleared history happens to
+	## have the same write count as the live table.
+	snapshot : Setup, [AfterInitial, Chain, OtherStore] -> Table(U64, Todo)
+	snapshot = |setup, kind| {
+		todos = TableApp.cells.items.todos
+		match kind {
+			AfterInitial => TableApp.start(setup)
+				.after([todos.update(|table| table.remove(0))])
+				.with_initial(TableApp.cells.items.next, setup.rows)
+				.read(todos)
+			Chain => TableApp.start(setup)
+				.after([todos.update(|table| table.remove(0))])
+				.after([todos.update(|table| table.put(setup.rows, { title: "Snapshot row", status: Open, qty: -1 }))])
+				.read(todos)
+			OtherStore => Engine.store(TableApp.Todos, TableApp.description)
+				.with_initial(todos, Table.from_list(TableApp.sample(setup.rows).drop_if(|entry| entry.key == 0)))
+				.read(todos)
+		}
+	}
 
 	## What "Add" writes: a to-do under the key `key`, and the key after it
 	## as the next one.
@@ -232,7 +244,7 @@ TableApp := [Todos].{
 			[],
 			[
 				Html.span_s(key.map(|k| "${k.to_str()}:"), []),
-				Html.checkbox(named("Done"), todo.signal().map(|t| t.status == Done), [], todo.set_value(|t, checked| { ..t, status: if (checked == "true") Done else Open })),
+				Html.checkbox(named("Done"), todo.signal().map(|t| t.status == Done), [], todo.set_value(|t, checked| { ..t, status: if (checked) Done else Open })),
 				Html.text_input(named("Title"), "text", todo.signal().map(|t| t.title), [], todo.set_value(|t, title| { ..t, title })),
 				Html.span_s(todo.signal().map(|t| t.qty.to_str()), [Html.aria_label_s(named("Qty"))]),
 				TableApp.action(named("Bump"), raise(1)),
@@ -268,6 +280,102 @@ TableApp := [Todos].{
 		[Engine.table_view(TableApp.cells.items.todos, { query: listing, plan: TableApp.plan, window }, template)],
 	)
 
+	## One scroll writes its window and its diagnostic reading together.
+	scrolled_to : Layout.Scroll -> List(Engine.Write(_))
+	scrolled_to = |position| [
+		TableApp.cells.scroll_window.set({ start: position.top.to_u64() // 20, count: 5 }),
+		TableApp.cells.scroll_position.update(|before| { top: position.top, left: position.left, turns: before.turns + 1 }),
+	]
+
+	## Showing the scroller starts its drawn window at its native start edge.
+	show_scrolled : {} -> List(Engine.Write(_))
+	show_scrolled = |_args| [
+		TableApp.cells.scrolled.set(Shown),
+		TableApp.cells.scroll_window.set({ start: 0, count: 5 }),
+		TableApp.cells.scroll_position.set({ top: 0, left: 0, turns: 0 }),
+	]
+
+	## The button moves the window and posts its matching native scroll in
+	## one event; the browser's report then enters as an ordinary turn.
+	jump_scrolled : {} -> List(Engine.Write(_))
+	jump_scrolled = |_args| [
+		TableApp.cells.scroll_window.set({ start: 6, count: 5 }),
+		TableApp.cells.scroll_request.update(|box| box.post(120.U32)),
+	]
+
+	## Fixed-height virtualization: the spacer follows loaded row count,
+	## never the drawn window, and anchoring cannot move the scrollbar.
+	scrolled_list : {} -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	scrolled_list = |_args| Html.section(
+		"Scrolled list",
+		"",
+		[
+			Engine.element("style", [], [Engine.text(".table-scrolled-panel { position:fixed; right:0; top:0; width:320px; background:white; border:1px solid black; z-index:1 } .table-scrolled-rows { margin:0; padding:0; list-style:none }")]),
+			Html.p_s(TableApp.cells.scroll_position.signal().map(|position| "${position.top.to_str()}:${position.left.to_str()}:${position.turns.to_str()}"), [Engine.test_id("scrolled-status")]),
+			Html.button("Jump scrolled list", [], Engine.does(TableApp.jump_scrolled({}))),
+			Html.button("Hide scrolled list", [], Engine.does([TableApp.cells.scrolled.set(Hidden)])),
+			Html.button("Focus distant scrolled control", [], Engine.does([TableApp.cells.scroll_focus.update(|box| box.post("scrolled-distant"))])),
+			Engine.element(
+				"div",
+				[
+					Html.aria_label("Scrolled todos"),
+					Engine.ref("scrolled-todos"),
+					Engine.attr("style", "height:100px;width:280px;overflow:auto;overflow-anchor:none;position:relative"),
+					Html.on_scroll(Engine.handle(TableApp.scrolled_to)),
+				],
+				[
+					Engine.element(
+						"div",
+						[Engine.attr_s("style", TableApp.cells.scroll_loaded.signal().map(|count| "height:${(count * 20).to_str()}px;position:relative"))],
+						[
+							Engine.element(
+								"ul",
+								[Engine.class("table-scrolled-rows"), Engine.test_id("scrolled"), Engine.attr_s("style", TableApp.cells.scroll_window.signal().map(|window| "position:absolute;top:${(window.start * 20).to_str()}px;left:0;width:100%"))],
+								[
+									Engine.table_view(
+										TableApp.cells.items.todos,
+										{
+											query: TableApp.cells.scroll_loaded.signal(),
+											plan: |loaded| { keep: |key, _| key < loaded, sort: |key, _| key, compare: |left, right| if (left < right) Before else if (left > right) After else Same },
+											window: TableApp.cells.scroll_window.signal(),
+										},
+										|key, todo| Html.li([Engine.attr("style", "height:20px;line-height:20px;box-sizing:border-box")], [Html.span_s(key.map2(todo.signal(), |number, todo_row| "${number.to_str()}=${todo_row.title} "), [])]),
+									),
+								],
+							),
+							Engine.element("button", [Html.aria_label("Distant scrolled control"), Engine.attr("type", "button"), Engine.ref("scrolled-distant"), Engine.attr("style", "position:absolute;top:400px;left:0")], [Engine.text("Distant")]),
+							Engine.element("div", [Html.aria_label("Load more scrolled"), Engine.attr("style", "position:absolute;bottom:0;height:1px;width:1px"), Html.on_seen({ ahead: True }, Engine.handle(|seen| if (seen.intersecting) [TableApp.cells.scroll_loaded.update(|loaded| loaded + 100)] else []))], []),
+						],
+					),
+				],
+			),
+			Engine.on_post(TableApp.cells.scroll_request.signal(), |top| [Engine.command(ScrollTo("scrolled-todos", { top: Px(top), left: Keep, behavior: Instant }))], Engine.ignore({})),
+			Engine.on_post(TableApp.cells.scroll_focus.signal(), |name| [Engine.command(Focus(name))], Engine.ignore({})),
+		],
+	)
+
+	## Nested sites under rows must release observations before either a row
+	## REMOVE or its site's CLEAR. Each row observes both its template root
+	## and an element inside a state scope.
+	observed_list : {} -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	observed_list = |_args| Engine.element(
+		"div",
+		[Engine.test_id("observed-rows")],
+		[
+			Engine.each(
+				TableApp.cells.observed_rows.signal(),
+				|key| key.to_str(),
+				|accessor| Engine.element(
+					"section",
+					[Html.aria_label_s(accessor.key().map(|key| "Observed row ${key}")), Html.on_seen({}, Engine.does([])), Html.on_size(Engine.does([]))],
+					[Engine.state(0.U32, |size| Engine.element("div", [Html.aria_label_s(accessor.key().lift().map(|key| "Observed size ${key}")), Html.on_size(size.set_value(|_before, box| box.height))], [Html.span_s(size.signal().map(|height| height.to_str()), [])]))],
+				),
+			),
+		],
+	)
+
 	toolbar : Setup -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	toolbar = |setup| {
@@ -289,6 +397,25 @@ TableApp := [Todos].{
 				Html.button("Edit 1000", [], edit(1000)),
 				Html.button("Toggle all", [], Engine.handle(|_| [todos.update(|table| table.update_all(|_, todo| TableApp.toggled(todo)))])),
 				Html.button("Reset", [], Engine.handle(|_| TableApp.restored(setup))),
+				Html.button("Load Store snapshot", [], Engine.handle(|_| [todos.set(TableApp.snapshot(setup, AfterInitial))])),
+				Html.button("Load Store chain", [], Engine.handle(|_| [todos.set(TableApp.snapshot(setup, Chain))])),
+				Html.button("Load second Store", [], Engine.handle(|_| [todos.set(TableApp.snapshot(setup, OtherStore))])),
+				Html.button("Touch next", [], Engine.does([TableApp.cells.items.next.update(|next| next + 1)])),
+				Html.button("Write twice", [], Engine.does([todos.update(|table| table.update(0, |todo| TableApp.raised(todo, 1))), todos.update(|table| table.update(2, |todo| TableApp.raised(todo, 1)))])),
+				Html.button("Write with also", [], Engine.does([todos.update(|table| table.update(0, |todo| TableApp.raised(todo, 1)))]).also(Engine.does([todos.update(|table| table.update(2, |todo| TableApp.raised(todo, 1)))]))),
+				Html.button("Keep table", [], Engine.does([todos.update(|table| table)])),
+				Html.button(
+					"Undo previous",
+					[],
+					Engine.handle_by(
+						todos.signal(),
+						|table, _| match table.inverse() {
+							Ok(inverse) => [todos.update(|held| held.apply(inverse))]
+							Err(Rewritten) => []
+						},
+					),
+				),
+				Html.button("Reset with also", [], Engine.does([TableApp.cells.items.reset]).also(Engine.does([todos.update(|table| table.insert(3, { title: "After reset", status: Open, qty: -1 }))]))),
 				Html.button("Start again", [], Engine.handle(|_| [TableApp.cells.items.reset])),
 				Html.button("Show open", [], show(Open)),
 				Html.button("Show all", [], show(All)),
@@ -305,6 +432,10 @@ TableApp := [Todos].{
 				Html.button("Show few list", [], Engine.does([TableApp.cells.few.set(Shown)])),
 				Html.button("Retitle few", [], Engine.does([todos.update(TableApp.retitled)])),
 				Html.button("Show paged list", [], Engine.does([TableApp.cells.paged.set(Shown)])),
+				Html.button("Show scrolled list", [], Engine.does(TableApp.show_scrolled({}))),
+				Html.button("Show observed rows", [], Engine.does([TableApp.cells.observed_rows.set([1.U64, 2, 3])])),
+				Html.button("Remove observed row", [], Engine.does([TableApp.cells.observed_rows.update(|rows| rows.drop_first(1))])),
+				Html.button("Clear observed rows", [], Engine.does([TableApp.cells.observed_rows.set([])])),
 			],
 		)
 	}
@@ -384,6 +515,8 @@ TableApp := [Todos].{
 				|| TableApp.paged({}),
 				|| Engine.text(""),
 			),
+			Engine.when(TableApp.cells.scrolled.signal().map(|state| state == Shown), || Engine.element("div", [Engine.class("table-scrolled-panel")], [TableApp.scrolled_list({})]), || Engine.text("")),
+			TableApp.observed_list({}),
 		]
 	}
 
@@ -396,6 +529,27 @@ TableApp := [Todos].{
 		].concat(
 			match setup.draws {
 				Everything => TableApp.extras({})
+				Changes => TableApp.extras({}).concat([
+					Html.p_s(
+						TableApp.cells.items.todos.signal().map(
+							|table| match table.changes() {
+								Keyed(changes) => "Changed: ${changes.len().to_str()}"
+								Rewritten => "Rewritten"
+							},
+						),
+						[Engine.test_id("changes")],
+					),
+					Html.p_s(
+						TableApp.cells.items.todos.signal().map(
+							|table| match table.inverse() {
+								Ok(inverse) => "Inverse: ${inverse.len().to_str()}"
+								Err(Rewritten) => "No inverse"
+							},
+						),
+						[Engine.test_id("inverse")],
+					),
+					Html.p_s(TableApp.cells.items.next.signal().map(|next| "Next: ${next.to_str()}"), [Engine.test_id("next")]),
+				])
 				Main => []
 			},
 		),
@@ -465,4 +619,26 @@ expect {
 		\\next: 3, 0
 		\\changes: rewritten, rewritten
 	actual == expected
+}
+
+## Snapshot helpers preserve the pure Store path: with_initial clears its
+## changes, while chained after calls retain only the latest writing turn.
+expect {
+	setup = { rows: 3, window: 30, draws: Everything }
+	cleared = TableApp.snapshot(setup, AfterInitial)
+	chained = TableApp.snapshot(setup, Chain)
+	actual = {
+		cleared_rows: cleared.len(),
+		cleared_changes: match cleared.changes() {
+			Keyed(changes) => changes.len()
+			Rewritten => 99
+		},
+		chain_rows: chained.len(),
+		chain_keys: match chained.changes() {
+			Keyed(changes) => changes.keys().sort_with(|a, b| if (a < b) Before else if (a > b) After else Same)
+			Rewritten => []
+		},
+		chain_title: chained.get(3)?.title,
+	}
+	actual == { cleared_rows: 2, cleared_changes: 0, chain_rows: 3, chain_keys: [3], chain_title: "Snapshot row" }
 }

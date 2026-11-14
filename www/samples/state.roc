@@ -61,14 +61,14 @@ page = |form, compact| {
 	Html.div_s(
 		compact.signal().map(|c| if (c) "signup compact" else "signup"),
 		[
-			Html.checkbox(Engine.const("Compact"), compact.signal(), [], compact.set_value(|_, v| v == "true")),
+			Html.checkbox(Engine.const("Compact"), compact.signal(), [], compact.set_value(|_, v| v)),
 			Html.form(
 				"Sign up",
 				[Html.on_submit(form.update(submit))],
 				[
 					Html.text_input(Engine.const("Name"), "text", s.map(|v| v.name), [Html.aria_invalid(shown(NameMissing))], form.set_value(|v, text| { ..v, name: text })),
 					Html.text_input(Engine.const("Email"), "email", s.map(|v| v.email), [Html.aria_invalid(shown(EmailInvalid))], form.set_value(|v, text| { ..v, email: text })),
-					Html.checkbox(Engine.const("I accept the terms"), s.map(|v| v.agreed), [], form.set_value(|v, flag| { ..v, agreed: flag == "true" })),
+					Html.checkbox(Engine.const("I accept the terms"), s.map(|v| v.agreed), [], form.set_value(|v, flag| { ..v, agreed: flag })),
 					Html.submit_button("Sign up", []),
 				],
 			),
@@ -97,4 +97,12 @@ word_count = |form|
 ## Two signals combine with `map2`; the result reads both sources.
 greeting : Signal(C2, Signup), Signal(C2, Bool) -> Signal(C2, Str)
 greeting = |s, compact| Signal.map2(s, compact, |v, c| if (c) v.name else "Hello, ${v.name}")
+
 # endregion map2
+
+## The instance holds this store beside its site tree.
+Store : {}
+
+## Check that the default first page mounts while this app compiles.
+mounted : U64
+mounted = Engine.mounts(main)

@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>First picture</title></head>
+<body>
+<!--host-before-->
+<div id="app" data-roc-picture></div>
+<!--host-after-->
+<script type="module">
+import { mountRocEngineApp } from "./runtime.mjs";
+window.mounted = mountRocEngineApp({ wasmUrl: "app.wasm", root: document.getElementById("app"), onFault: (fault) => console.error(`${fault.class}: ${fault.message}`) });
+</script>
+</body>
+</html>

@@ -64,6 +64,12 @@ long, so annotations write `_` for it, here and in `Engine.Write(_)` and
 mentions a store takes the store's type as a parameter, as `Props(st)` does in
 [Components](@/docs/components.md).
 
+The app's `main.roc` also names the concrete storage type as `Store`, using
+public types such as `Engine.Stored` and `Engine.Table`. The compiler prints
+that type when the declaration is missing or out of date. The instance holds
+this storage beside its sites and moves it through each turn; it is not
+captured by the root site's closure.
+
 A write to a cell wakes the readers of that cell and no one else's. Adding
 tea re-evaluates what reads the cart and the notice. The line that counts
 orders reads neither, so it is not looked at.
@@ -100,7 +106,11 @@ The list is the whole transition:
 | `Engine.handle(decide)` | the event's payload |
 | `Engine.handle_by(v, decide)` | the value `v` holds when the event fires, and the payload |
 | `Engine.does(writes)` | nothing: the handler is the list of writes itself, for a transition that needs neither the payload nor a reading |
-| `Engine.handle_files(decide)`, `Engine.handle_files_by(v, decide)` | the files an event carries (a drop, a paste, a choice in a file input), and for `_by` the value `v` holds when they arrive ([Files](@/docs/files.md)) |
+
+These handlers are generic over the event's payload. The same `handle`
+and `handle_by` receive a `Received` for a file choice, drop or paste when
+attached as a files handler ([Files](@/docs/files.md)); a handler of one
+payload cannot attach to an event kind of another.
 
 In the product row above, the "Add" button reads the row's product when it
 is pressed. The page's "Check out" button reads the cart:
@@ -156,10 +166,46 @@ of the result:
 transition that wrote the wrong cell or left one out. The type checker
 cannot: two cells of one type are the same to it.
 
-`after` applies the writes and ends no turn. A table therefore keeps its
-changes, and `store.after(writes).read(table).inverse()` tells which
-rows the transition wrote. Across chained `after`s the changes hold the
-rows all of them wrote.
+Each `after` is one turn. Before a table's first write in that list, its
+preceding writing turn's changes are cleared. Further updates keep the first
+earlier row per key. A table the list does not write retains its last writing
+turn's changes through unrelated turns. Read
+`store.after(writes).read(table).inverse()` to see which rows that transition
+wrote; the next `after` writing that table starts its next recording turn.
+
+A decision may read the preceding inverse before returning writes. Inside its
+first table modifier the inverse already describes the new turn. Keep an
+inverse in its own cell if history must survive the next table write. A reset
+followed by refinements is one list and one turn; `with_initial` remains a
+start, with empty changes.
+
+### State a rule over a store
+
+State the rule as a pure function of a plain reading. Project only the cells
+the rule needs. A table has no order of its own: sort its rows by an explicit
+order before comparing readings. Read an outbox through `last()`, which names
+what was posted, rather than its internal serial.
+
+Compare readings with `==`. `Str.inspect` is for debugging, never equality or
+identity: opaque values can print alike while holding different data.
+
+Check the rule in a top-level `expect` on the path that matters: one transition
+or a few chained `after`s, checking after each relevant turn. To bound what a
+transition wrote, read its table's inverse after that `after`. Conduit's typed
+sign-in test checks which page's form changed; Kanban's tests check a move and
+a completed drop through their keyed inverse counts.
+
+An answer is a decision too. Supply the typed result its ask delivers, and
+state which request it answers and when it arrives. A keeping site can have
+several requests in flight; each result carries its own issued-for value even
+after newer posts. A test that keeps only the latest post omits those paths.
+Under `keep_current`, test the decision with an admitted current result; the
+site's sequence specs check withholding of older steps.
+
+An example's roc-fuzz target tests its platform-free domain rules. It imports
+nothing of the platform or another package of this repository. Decisions that
+return `Engine.Write` are checked by these pure `expect`s and the app's paired
+specs; they do not require the engine package in an example target.
 
 ## Results decide too
 
@@ -188,7 +234,8 @@ event, in order, and the page is refreshed once, after both:
 `draft.update(|_| "").also(Engine.handle_by(draft.signal(), ...))` hands the
 decision the emptied draft, with no error. When a decision reads local state
 that the same click clears, put the decision first. `Reaction.also` does the
-same for one result, and `FilesHandler.also` for the files of one event.
+same for one result. Handler composition also works for the files of one
+event; both handlers must take the same payload type.
 
 `also` runs two handlers one after the other; it does not give them one
 reading. If one transition must decide a piece of local state and a cell

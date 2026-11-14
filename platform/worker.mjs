@@ -75,7 +75,8 @@ let outputLeft = 0;
 // The instance's exports, for the imports to reach its memory.
 let exportsOf = null;
 
-const textDecoder = new TextDecoder();
+// Roc passes string bytes, so retain a leading U+FEFF as part of the value.
+const textDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
 function readText(ptr, len) {
   return len === 0 ? "" : textDecoder.decode(new Uint8Array(exportsOf.memory.buffer, ptr, len));
@@ -243,7 +244,10 @@ function runJob(x, m) {
   return { output, objects: out, call, ret, prepareMs };
 }
 
+const PROTOCOL_VERSION = 18;
+
 async function start(module, version) {
+  if (version !== PROTOCOL_VERSION) throw new Error(`page runtime protocol ${version} is not the protocol ${PROTOCOL_VERSION} this worker implements`);
   const instStart = performance.now();
   const instance = await WebAssembly.instantiate(module, { env: taskImportsFor(module) });
   const instEnd = performance.now();

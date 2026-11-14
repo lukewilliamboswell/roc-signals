@@ -18,7 +18,10 @@ const server = createServer(async (req, res) => {
     if (name !== "__fixture.html" && !filename.startsWith(`${root}/`)) throw Error("outside site");
     let data = await fs.readFile(filename);
     const ext = path.extname(filename);
-    if (ext === ".html") data = Buffer.from(data.toString().replaceAll(published, `${origin}/roc-signals`));
+    // Localize navigation and assets without rewriting a published URL that
+    // appears as text inside a source sample: that text is the fidelity oracle.
+    if (ext === ".html") data = Buffer.from(data.toString().replace(/(\b(?:href|src)=["'])([^"']*)/g, (attribute, prefix, value) =>
+      value.startsWith(`${published}/`) ? `${prefix}${origin}/roc-signals${value.slice(published.length)}` : attribute));
     res.writeHead(200, { "content-type": ({ ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript", ".html": "text/html; charset=utf-8" })[ext] ?? "application/octet-stream" }).end(data);
   } catch (_) { res.writeHead(404).end("not found"); }
 });
@@ -84,10 +87,20 @@ try {
   assert.equal(await theme(), "dark");
   assert.equal(await page.evaluate(() => localStorage.getItem("roc-signals-theme")), null);
   // Real keyboard operation of the native select and a visible focus ring.
-  await page.$eval("[data-theme-select]", select => select.focus());
-  await page.keyboard.press("Home");
-  await page.keyboard.press("ArrowDown");
-  await page.keyboard.press("Enter");
+  await page.$eval("[data-theme-select]", select => {
+    select.focus();
+    window.themeKeyboardEvents = [];
+    for (const type of ["input", "change"]) select.addEventListener(type, event => {
+      window.themeKeyboardEvents.push({ type, trusted: event.isTrusted, value: select.value });
+    }, { once: true });
+  });
+  // Native typeahead selects Light without depending on a platform's popup
+  // navigation keys. The browser must perform the choice and emit its events.
+  await page.keyboard.press("l");
+  assert.deepEqual(await page.evaluate(() => window.themeKeyboardEvents), [
+    { type: "input", trusted: true, value: "light" },
+    { type: "change", trusted: true, value: "light" },
+  ]);
   assert.equal(await theme(), "light");
   // The copy action occupies the code corner rather than a toolbar row.
   // A keyboard user can reveal and activate the otherwise quiet control.
@@ -95,6 +108,8 @@ try {
   await page.keyboard.down("Shift");
   await page.keyboard.press("Tab");
   await page.keyboard.up("Shift");
+  // Read the visibility after the authored opacity transition has settled.
+  await page.waitForFunction(() => getComputedStyle(document.querySelector(".code-copy")).opacity === "1");
   const copyControl = await page.evaluate(() => {
     const button = document.querySelector(".code-copy");
     const wrapper = button.closest(".code-sample");
@@ -112,6 +127,7 @@ try {
   assert(copyControl.width >= 32 && copyControl.height >= 32);
   await page.evaluate(() => document.activeElement.blur());
   await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 });
+  await page.waitForFunction(() => getComputedStyle(document.querySelector(".code-copy")).opacity === (matchMedia("(hover: hover)").matches ? "0" : "1"));
   const quiet = await page.evaluate(() => ({ hover: matchMedia("(hover: hover)").matches, opacity: getComputedStyle(document.querySelector(".code-copy")).opacity }));
   assert.equal(quiet.opacity, quiet.hover ? "0" : "1");
   await page.click(".code-copy");
@@ -126,6 +142,7 @@ try {
   await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 });
   await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
   await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await page.waitForFunction(() => getComputedStyle(document.querySelector(".code-copy")).opacity === "1");
   assert.equal(await page.evaluate(() => matchMedia("(hover: none)").matches), true);
   assert.equal(await page.$eval(".code-copy", button => getComputedStyle(button).opacity), "1", "touch users always see copy");
   await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });

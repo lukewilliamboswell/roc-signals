@@ -2,6 +2,7 @@ import pf.Engine exposing [Cell]
 import CommentForm
 import Comments
 import Route
+import Locations
 import Story
 
 ## The article page's state, as cells of the app's store: the article, its
@@ -33,13 +34,13 @@ Article := [].{
 		story: Engine.cell(Story.init("")),
 		comments: Engine.cell(Comments.init("")),
 		form: Engine.cell(CommentForm.init),
-	}.Engine.Cells.with_reset(|cells, reset| { cells, reset })
+	}.Engine.Cells.with_reset(|group_cells, reset| { cells: group_cells, reset })
 
 	## Whether a move from `from` to `url` stays on the same kind of page.
 	same_kind : Str, Str -> Bool
-	same_kind = |from, url| Route.kind(Route.of_url(from)) == Route.kind(Route.of_url(url))
+	same_kind = |from, url| Route.kind(Locations.of_url(from)) == Route.kind(Locations.of_url(url))
 
 	## The slug of the article at `url`, or `""`.
 	slug_of : Str -> Str
-	slug_of = |url| Route.article_slug(Route.of_url(url))
+	slug_of = |url| Route.article_slug(Locations.of_url(url))
 }

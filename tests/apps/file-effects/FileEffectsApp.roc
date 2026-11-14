@@ -22,7 +22,7 @@ import pf.Html
 ## - "Show" asks for a URL that shows the first file and links to it
 ##   (`test-id "preview"`, `test-id "shown"`); "Hide" gives it up.
 FileEffectsApp := [].{
-	S : { files : List(File), read : Ask, panel : Bool, send : Pick, send_panel : Bool, panel_sent : Str, digest : Pick, show : Pick }
+	S : { files : List(File), read : Ask, panel : Bool, send : Pick, send_panel : Bool, panel_sent : Str, progress : Str, progress_sent : Str, progress_pick : Pick, digest : Pick, show : Pick }
 
 	## What the page was last asked to read: nothing, or a file as text or
 	## as bytes, or as bytes accepting a large file.
@@ -98,13 +98,11 @@ FileEffectsApp := [].{
 		Answered(text) => text
 	}
 
-	sent : Result -> Str
-	sent = |res| match Engine.http_text(res) {
-		Ok(body) => "sent ${body}"
+	sent : Try(Engine.Response, Engine.HttpFailure) -> Str
+	sent = |res| match res {
+		Ok({ status, body, .. }) => if (status >= 200 and status < 300) "sent ${body}" else "send failed ${Str.inspect(Status(status))}"
 		Err(e) => "send failed ${Str.inspect(e)}"
 	}
-
-	Result : Engine.Result
 
 	## A `resource` that reads what `ask` names into the page.
 	reader : Engine.Signal(ctx, Ask), (Engine.Signal(In(ctx, Shown), Shown) -> Elem(In(ctx, Shown))) -> Elem(ctx)
@@ -123,15 +121,19 @@ FileEffectsApp := [].{
 					_ => Reading
 				},
 				plan: |a| match a {
-					Bytes(f) => [f.read_bytes(defaults)]
-					Text(f) => [f.read_utf8(defaults)]
-					Large(f) => [f.read_bytes({ max_bytes: 64 * 1024 * 1024 })]
+					Bytes(f) => [f.read_bytes(defaults).map_ok(|bytes| Bytes(bytes))]
+					Text(f) => [f.read_utf8(defaults).map_ok(|text| Text(text))]
+					Large(f) => [f.read_bytes({ max_bytes: 64 * 1024 * 1024 }).map_ok(|bytes| Bytes(bytes))]
 					Skip => []
 				},
-				resolve: |_, a, res| match a {
-					Bytes(_) | Large(_) => GotBytes(Engine.file_bytes(res))
-					Text(_) => GotText(Engine.file_text(res))
-					Skip => NotRead
+				resolve: |_, a, res| match res {
+					Ok(Bytes(bytes)) => GotBytes(Ok(bytes))
+					Ok(Text(text)) => GotText(Ok(text))
+					Err(error) => match a {
+						Text(_) => GotText(Err(error))
+						Bytes(_) | Large(_) => GotBytes(Err(error))
+						Skip => NotRead
+					}
 				},
 			},
 			body,
@@ -140,7 +142,7 @@ FileEffectsApp := [].{
 
 	## A `resource` that runs `request` on the file `pick` names and shows its
 	## answer with `answer`.
-	operation : Engine.Signal(ctx, Pick), (File -> Engine.Request), (Result -> Str), (Engine.Signal(In(ctx, Op), Op) -> Elem(In(ctx, Op))) -> Elem(ctx)
+	operation : Engine.Signal(ctx, Pick), (File -> Engine.Ask(output, error)), (Try(output, error) -> Str), (Engine.Signal(In(ctx, Op), Op) -> Elem(In(ctx, Op))) -> Elem(ctx)
 	operation = |pick, request, answer, body|
 		Engine.resource(
 			pick,
@@ -159,17 +161,17 @@ FileEffectsApp := [].{
 			body,
 		)
 
-	upload : File -> Engine.Request
-	upload = |f| f.upload({ url: "/upload", headers: [("x-name", f.name())] })
+	upload : File -> Engine.Ask(Engine.Response, Engine.HttpFailure)
+	upload = |f| f.upload({ url: "/upload", headers: [("x-name", f.name())], credentials: Include })
 
-	digested : Result -> Str
-	digested = |res| match Engine.file_digest(res) {
+	digested : Try(List(U8), Engine.FileError) -> Str
+	digested = |res| match res {
 		Ok(bytes) => "sha256 ${FileEffectsApp.hex(bytes)}"
 		Err(e) => "digest failed ${Str.inspect(e)}"
 	}
 
-	shown_url : Result -> Str
-	shown_url = |res| match Engine.file_url(res) {
+	shown_url : Try(Str, Engine.FileError) -> Str
+	shown_url = |res| match res {
 		Ok(url) => url
 		Err(e) => "failed ${Str.inspect(e)}"
 	}
@@ -180,10 +182,10 @@ FileEffectsApp := [].{
 		other => FileEffectsApp.show_op(other)
 	}
 
-	url_of : Op -> Str
+	url_of : Op -> [Absent, Present(Str)]
 	url_of = |op| match op {
-		Answered(url) if url.starts_with("blob:") => url
-		_ => ""
+		Answered(url) if url.starts_with("blob:") => Present(url)
+		_ => Absent
 	}
 
 	first_text : List(File) -> Ask
@@ -192,13 +194,24 @@ FileEffectsApp := [].{
 		[] => Skip
 	}
 
+	## Keep exact transfer counts visible without converting wide integers through JSON numbers.
+	transfer_text : Engine.Transfer -> Str
+	transfer_text = |transfer| {
+		direction = if (transfer.direction == Sending) "sending" else "receiving"
+		total = match transfer.total {
+			Known(count) => count.to_str()
+			Unknown => "unknown"
+		}
+		"${direction} ${transfer.done.to_str()}/${total}"
+	}
+
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
 		v = st.signal()
 		Html.div(
 			"file-effects",
 			[
-				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.on_files(FileEffectsApp.received)),
+				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.set_value(FileEffectsApp.received)),
 				Html.p_s(v.map(|s| FileEffectsApp.listing(s.files)), [Engine.test_id("files")]),
 				Html.button("Clear", [], st.update(|s| { ..s, files: [] })),
 				Html.button("Read text", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Text(f)))),
@@ -221,6 +234,18 @@ FileEffectsApp := [].{
 				Html.button("Send", [], st.update(|s| { ..s, send: FileEffectsApp.pick_first(s.files, FileEffectsApp.whole) })),
 				Html.button("Send tail", [], st.update(|s| { ..s, send: FileEffectsApp.pick_first(s.files, FileEffectsApp.tail_of) })),
 				FileEffectsApp.operation(v.map(|s| s.send), FileEffectsApp.upload, FileEffectsApp.sent, |r| Html.p_s(r.map(FileEffectsApp.show_op), [Engine.test_id("sent")])),
+				Html.button("Send progress", [], st.update(|s| { ..s, progress_pick: FileEffectsApp.pick_first(s.files, FileEffectsApp.whole), progress: "waiting" })),
+				Html.button("Cancel progress", [], st.update(|s| { ..s, progress_pick: Skip })),
+				Engine.watch_latest(
+					v.map(|s| s.progress_pick),
+					|pick| match pick {
+						Run(file) => [FileEffectsApp.upload(file)]
+						Skip => []
+					},
+					st.on_result(|s, _, result| { ..s, progress_sent: FileEffectsApp.sent(result) }).with_progress({ every_ms: 1 }, st.on_progress(|s, _, transfer| { ..s, progress: FileEffectsApp.transfer_text(transfer) })),
+				),
+				Html.p_s(v.map(|s| s.progress), [Engine.test_id("transfer-progress")]),
+				Html.p_s(v.map(|s| s.progress_sent), [Engine.test_id("transfer-result")]),
 				Html.button("Send panel", [], st.update(|s| { ..s, send_panel: !s.send_panel })),
 				Engine.when(
 					v.map(|s| s.send_panel),
@@ -234,7 +259,7 @@ FileEffectsApp := [].{
 									Run(f) => [FileEffectsApp.upload(f)]
 									Skip => []
 								},
-								st.on_result(|s, _, res| { ..s, panel_sent: FileEffectsApp.sent(res) }),
+								st.on_result(|s, _, res| { ..s, panel_sent: FileEffectsApp.sent(res) }).with_progress({ every_ms: 100 }, st.on_progress(|s, _, transfer| { ..s, progress: FileEffectsApp.transfer_text(transfer) })),
 							),
 						],
 					),
@@ -254,7 +279,7 @@ FileEffectsApp := [].{
 						"preview",
 						[
 							Html.p_s(r.map(FileEffectsApp.url_state), [Engine.test_id("shown")]),
-							Engine.element("a", [Engine.attr_s("href", r.map(FileEffectsApp.url_of)), Engine.test_id("preview")], [Engine.text("preview")]),
+							Engine.element("a", [Engine.attr_presence("href", r.map(FileEffectsApp.url_of)), Engine.attr("title", ""), Engine.test_id("preview")], [Engine.text("preview")]),
 						],
 					),
 				),
@@ -263,5 +288,5 @@ FileEffectsApp := [].{
 	}
 
 	program : Engine.Program
-	program = Engine.program(|| Engine.state({ files: [], read: Skip, panel: Bool.False, send: Skip, send_panel: Bool.False, panel_sent: "nothing sent", digest: Skip, show: Skip }, |st| FileEffectsApp.view(st)))
+	program = Engine.program(|| Engine.state({ files: [], read: Skip, panel: Bool.False, send: Skip, send_panel: Bool.False, panel_sent: "nothing sent", progress: "none", progress_sent: "idle", progress_pick: Skip, digest: Skip, show: Skip }, |st| FileEffectsApp.view(st)))
 }

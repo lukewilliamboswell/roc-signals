@@ -1,6 +1,9 @@
 (test "Kanban board — filter fans in with column membership"
   (steps
     ; Bring the page to the state this spec starts from.
+    (expect-visible (role region :name "Draft onboarding copy"))
+    (expect-visible (role region :name "Audit billing events"))
+    (expect-visible (role region :name "Rotate API keys"))
     (mark-metrics)
     (click (role button :name "Move right: Draft onboarding copy"))
     (mark-metrics)

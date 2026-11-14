@@ -27,14 +27,15 @@ Slow := [].{
 		{ example: "conduit", spec: "round-trip-sign-in-page-and-home" },
 		{ example: "field-notes", spec: "round-trip-draft-filter-and-reorder" },
 		{ example: "status-page", spec: "round-trip-refresh-answered-healthy" },
-		{ example: "spreadsheet-lite", spec: "round-trip-edit-reorder-filter-and-mode" },
+		{ example: "spreadsheet-lite", spec: "round-trip-keyboard" },
 		{ example: "worker-lab", spec: "round-trip-a-run-answered-and-reset" },
 		{ example: "reading-list", spec: "round-trip-finish-and-read-again" },
-		{ example: "log-explorer", spec: "round-trip-search-on-the-timeline" },
+		{ example: "log-explorer", spec: "round-trip-scroll" },
 		{ example: "million-row-explorer", spec: "round-trip-clear-and-restore-a-category" },
 		{ example: "supersede", spec: "round-trip-late-branch" },
 		{ example: "worker-search", spec: "round-trip-search-and-report" },
 		{ example: "table", spec: "round-trip-edit-scroll-and-rewrite" },
+		{ example: "prerender", spec: "round-trip" },
 	]
 
 	## How many times a native soak repeats its round trip.
@@ -57,13 +58,14 @@ Slow := [].{
 		Ok(List.map2(Slow.native_soaks, results, |s, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["native soak ${s.example} ${s.spec}: ${r.output.trim()}"]).join())
 	}
 
-	## The apps walked: every spec app but the three whose pages offer a
+	## The apps walked: every spec app but the four whose pages offer a
 	## contract error on purpose (a job of an unregistered task, a port used
-	## as the wrong kind, an outbox posted twice in a turn), which a walk
+	## as the wrong kind, an outbox posted twice in a turn, duplicate control
+	## references or a focus loop), which a walk
 	## reaches within a few hundred steps and which, as it must, poisons
 	## the instance. Their specs and Chrome contract tests cover them.
 	walk_apps : List(Str)
-	walk_apps = SpecSuite.spec_apps.drop_if(|name| ["workers", "ports", "outbox"].contains(name))
+	walk_apps = SpecSuite.spec_apps.drop_if(|name| ["workers", "ports", "outbox", "controls"].contains(name))
 
 	## One walk: an app, how many steps, and from which seed.
 	Walk : { name : Str, steps : U64, seed : U64 }
@@ -105,7 +107,7 @@ Slow := [].{
 			Path.create_all!(Path.utf8("${o.build_dir}/walk/${name}"))?
 			$builds = $builds.append(SpecSuite.build_job(o, "speed", "${SpecSuite.dir_of(name)}/main.roc", SpecSuite.native_target, Slow.walker_of(o, name)))
 		}
-		built = Proc.parallel!($builds, Proc.cpus!())?
+		built = Proc.parallel!($builds, Proc.compiler_jobs!()?)?
 		match List.map2(Slow.walk_apps, built, |name, r| (name, r.code)).keep_if(|(_, c)| c != 0).first() {
 			Ok((name, c)) => return Err(BuildFailed("walk runner ${name}: build exited with ${c.to_str()}"))
 			Err(_) => {}

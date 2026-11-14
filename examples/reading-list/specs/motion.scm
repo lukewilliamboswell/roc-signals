@@ -1,0 +1,21 @@
+(test "Reading List — shelf changes, moves and removals animate while typing does not"
+  (steps
+    (expect-transitions 0)
+    (answer-port 1 reply "[{\"id\":\"b1\",\"title\":\"Dune\",\"author\":\"Frank Herbert\",\"shelf\":\"Reading\",\"added_ms\":\"10\"},{\"id\":\"b2\",\"title\":\"Piranesi\",\"author\":\"Susanna Clarke\",\"shelf\":\"Reading\",\"added_ms\":\"20\"}]")
+    (expect-transitions 1)
+    (expect-transition 1 "books")
+    (click (role button :name "Reading"))
+    (expect-transitions 2)
+    (expect-transition 2 "shelf")
+    ; The removed shelf row exists only in the browser's snapshot.
+    (click (role button :name "Finish Dune"))
+    (expect-absent (role button :name "Finish Dune"))
+    (expect-transitions 3)
+    (expect-transition 3 "books")
+    (fill (label "Title") "Piranesi")
+    (expect-transitions 3)
+    (mark-metrics)
+    (click (role button :name "Remove Piranesi"))
+    (expect-metric-delta view_transitions 1)
+    (expect-transitions 4)
+    (expect-transition 4 "books")))

@@ -1,0 +1,18 @@
+app [main] { pf: platform "<PLATFORM>" }
+
+import pf.Engine
+import pf.Port
+
+main : Engine.Program
+main = Engine.program_boot(
+	{},
+	|boot| {
+		length = boot.url.count_utf8_bytes().to_u32_wrap()
+		call : Port.Call({}, Str)
+		call = Port.call({ name: "test.roc-signals/zero-timeout", timeout: Ms(length - length) })
+		Engine.watch(Engine.const({}), |_| [call.ask({})], Engine.ignore({}))
+	},
+)
+
+## No shared store is declared by this contract fixture.
+Store : {}

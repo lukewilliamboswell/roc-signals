@@ -1,3 +1,5 @@
+import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, checkedSeed, browserSeed, checkedZone, probeTimeZone } from "./environment.mjs";
+
 // Browser runtime of the web platform. The engine, which is Roc code
 // (platform/Core.roc, behind the authoring API in platform/Engine.roc),
 // decides everything; this file applies its command bytes to the DOM and
@@ -8,25 +10,30 @@
 // Encoding: design.md, Appendix B, protocol version PROTOCOL_VERSION. A module
 // whose `protocol_version()` differs is refused at mount.
 //
-// Event payloads (UTF-8, staged with `payload_reserve` and moved into Roc by
-// `event`): click/submit "", input: the target's value, change: "true"/"false"
-// for a checkbox or radio, else the target's value, keydown/keyup: the key.
+// Text-kind event payloads (UTF-8, staged with `payload_reserve` and moved
+// into Roc by `event`): click/submit "", input: the target's value, change: "true"/"false"
+// for a checkbox or radio, else the target's value. Keys use their typed binary payload.
 // A `submit` event that reaches the mount root is always default-prevented:
 // forms are app-managed and never navigate the page.
 //
 // Boot bytes carry the URL, the declared storage values, whether the browser
-// is online and the page visible, and whether local storage is available at
-// all (it is not when reaching or reading it throws); the `OnlineChanges` and
-// `VisibilityChanges` subscriptions (FX kinds 6 and 7) report later changes.
+// is online and the page visible, each declared media query's match, and
+// whether local storage is available at all (it is not when reaching or
+// reading it throws). Scoped environment subscriptions report later changes.
 //
-// Ingress: events raised while a batch is applied are queued, at most
-// MAX_QUEUED of them. Exceeding the bound poisons the runtime with class
-// `resource_limit` (a feedback loop between the DOM and the engine); queued
-// work is never dropped silently.
+// Ingress: declared reports wait for the frame, with one replaceable entry
+// per source. Occurrences pin earlier reports and drain them synchronously.
+// At MAX_QUEUED entries an idle runtime drains early; exceeding that bound
+// while synchronously busy poisons with `resource_limit`. A waiting view
+// transition instead applies its held batch and drains. A drain delivers at most
+// MAX_QUEUED turns before idle, bounding a one-event-per-turn feedback loop.
 //
 // Effects (see "Effects" in Engine.roc): the engine emits FX requests with
 // ids, CANCEL, NAV, STORAGE and TITLE commands. They are collected while a
-// batch is applied and performed only after the whole batch is applied.
+// batch is applied and performed after its DOM changes. A marked transition
+// performs commands naming no node before waiting for its update callback;
+// node commands and shown properties wait until its DOM changes are applied.
+// The page instance cannot be called or staged while that batch is waiting.
 // Each awaited result comes back as its own event on FX_NODE (one turn, in
 // completion order). In manual mode (options.manualEffects) HTTP requests,
 // timers and work jobs wait in `pending` until runEffect() answers or runs them and intervals
@@ -71,12 +78,14 @@
 // Timing entries, all bounded (see "The monitor" below). The pool and this
 // runtime report to it after they act; it decides nothing.
 //
-// Handler event names may carry suffixes: "click:prevent" listens to
-// "click" and calls preventDefault when it dispatches (in-app links, forms);
-// ":files" makes the payload the event's files (a file input's `change`, a
-// `drop`, a `paste`) instead of text. A "drop" handler with ":files" also
-// prevents `dragover`'s default on its element, so the browser lets the drop
-// happen there instead of opening the file.
+// Each handler declaration carries a payload kind and static policy bits.
+// The closed kind table builds typed input and layout facts; event names are
+// bare names, including custom names containing colons. Policies prevent the default or
+// stop bubbling above the mount. The files kind's drop rule also prevents
+// dragover's default so the browser permits the drop.
+// Size and seen declarations start shared browser observers instead of DOM
+// listeners. Registrations belong to their node (a row root for a template
+// descendant), and RELEASE unobserves only that owner's registrations.
 //
 // Files (design.md, "Files"): the runtime holds each file the app was given
 // as the browser's own `File`, under the token of the handle the host minted
@@ -118,15 +127,15 @@
 // { subscribe(arg, { emit, close, signal, port }) } returning an optional
 // unsubscribe function, or { push: true } for a subscription fed by
 // runtime.emitPort(name, value). The engine lists the app's declarations
-// after its storage keys; the runtime refuses to mount (it throws) when a
+// in declaration sections; the runtime refuses to mount (it throws) when a
 // declared port has no handler of its shape or a handler names a port the
 // app does not declare. A command (opcode 19 PORT) is performed after the
 // batch like NAV; a call (FX kind 9) is answered once (result tag 14 or
 // 15), aborted on CANCEL or at its timeout (Timeout); a subscription (FX
-// kind 10) delivers each emitted message as its own turn, never
-// synchronously, with at most one message per subscription in the ingress
-// queue: `Latest` keeps the newest undelivered message, `Every(n)` keeps n
-// and `emit` returns false beyond them. close() ends it with Closed,
+// kind 10) declares its delivery: `Latest` reports the newest waiting value
+// at the frame; `Every(n)` keeps n and `emit` returns false beyond them.
+// Every queues at most one message per subscription in ingress while the
+// next waits for its turn. close() ends it with Closed,
 // close(error) with Threw. Messages are PortJson text with `{"$bytes":N}`
 // and `{"$file":N}` markers, revived into Uint8Arrays and Files for the
 // handler; an answer is serialised strictly (null, booleans, finite
@@ -142,42 +151,25 @@
 // never called: calls wait for answerPort(), subscriptions for
 // messagePort(), and commands are logged in portLog.
 //
-// Attribute values: "" removes the attribute. `value` and `checked` are set
-// as properties (the live control state), boolean attributes (disabled,
-// selected, readonly, required, hidden, multiple) are present for any value
-// other than "" and "false".
+// Attributes carry explicit presence; a present empty string stays present.
+// Element properties have their own commands and a closed table. Attribute
+// text is never interpreted as absence, including empty or false text.
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 18;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
+
+// A visible page whose browser supplies no frames must still make progress.
+export const FRAME_WAIT_MS = 100;
 
 // The engine's work counters start at this `metric` index (design.md,
 // Appendix B); `workRecord()` decodes the whole record.
 export const WORK_METRIC_BASE = 16;
 
-const OP_INST = 1;
-const OP_TEXT = 2;
-const OP_HATTR = 3;
-const OP_MOVE = 4;
-const OP_REMOVE = 5;
-const OP_CLEAR = 6;
-const OP_TEMPLATE = 7;
-const OP_ELEM = 8;
-const OP_ATTR = 9;
-const OP_TEXTNODE = 10;
-const OP_LISTEN = 11;
-const OP_SETTEXT = 12;
 
-const OP_FX = 13;
-const OP_CANCEL = 14;
-const OP_NAV = 15;
-const OP_STORE = 16;
-const OP_TITLE = 17;
-const OP_FOCUS = 18;
-const OP_PORT = 19;
-const OP_SAVE = 20;
+const TRANSITION_WAIT_MS = 1000;
 
 // Effect results are events on this node; the handler number is the id.
 const FX_NODE = 0xffffffff;
@@ -215,6 +207,11 @@ const MAX_TIMEOUT_MS = 600000;
 const RES_PORT_ANSWER = 14;
 const RES_PORT_FAILED = 15;
 const RES_FETCHED = 21;
+const RES_MATCHES = 22;
+const RES_COPIED = 23;
+const RES_CLIPBOARD_FAILED = 24;
+const RES_STORAGE_FAILED = 25;
+const RES_PROGRESS = 26;
 
 // The default and largest bound on one port answer or message, JSON text
 // and bytes together (options.maxPortBytes).
@@ -225,12 +222,14 @@ export const MAX_PORT_BYTES = 64 * 1024 * 1024;
 // Result tag 11's class byte: an instance's fault code (1-5) is its class.
 const LOST_UNAVAILABLE = 6;
 const LOST_EXECUTOR = 7;
-const LOST_CLASSES = ["", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed", "unavailable", "executor"];
 
 const HOLE_TEXT = 1;
 const HOLE_ATTR = 2;
 const HOLE_CLICK = 3;
 const HOLE_BIND = 4;
+const HOLE_REF = 5;
+const HOLE_PROP = 6;
+
 
 
 export async function instantiateEngineBytes(bytes) {
@@ -271,9 +270,13 @@ export async function instantiateEngineWasm(url) {
   return instantiateEngineBytes(await response.arrayBuffer());
 }
 
-const utf8 = new TextDecoder();
+// Wire strings are length-delimited data; a leading U+FEFF is not a file BOM.
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
+// Reject incomplete or invalid text before the ASCII fast path can fabricate
+// characters from missing bytes or a decoder can replace invalid UTF-8.
 function readStr(u8, at, n) {
+  if (!Number.isInteger(at) || !Number.isInteger(n) || at < 0 || n < 0 || at > u8.length || n > u8.length - at) throw new Error("truncated command string");
   if (n <= 32) {
     let s = "";
     for (let i = 0; i < n; i += 1) {
@@ -286,31 +289,233 @@ function readStr(u8, at, n) {
   return utf8.decode(u8.subarray(at, at + n));
 }
 
-function walk(root, path) {
+// Preflight retains only the declared template shape, never DOM nodes. Both
+// shape reading and construction use templateNode's one wire grammar.
+function walkShape(root, path, protocol) {
   let node = root;
-  for (let i = 0; i < path.length; i += 1) {
-    node = node.firstChild;
-    for (let k = path[i]; k > 0; k -= 1) node = node.nextSibling;
+  for (let i = 0; i < path.length; i += 2) {
+    const container = protocol.CONTAINERS[path[i]];
+    if (!container) throw new Error(`unknown hole container ${path[i]}`);
+    const children = container === CONTAINER_APPLIERS.TEMPLATE_CONTENT ? node.content : node.children;
+    if (!children) throw new Error("template path requires the declared container");
+    node = children[path[i + 1]];
+    if (!node) throw new Error("template path does not address a child");
   }
   return node;
 }
 
-const BOOL_ATTRS = new Set(["disabled", "selected", "readonly", "required", "hidden", "multiple", "open"]);
-
-const SVG_NS = "http://www.w3.org/2000/svg";
-
-// Elements are created in the SVG namespace for <svg> and anything inside it.
-function createIn(doc, tag, parent) {
-  if (tag === "svg" || (parent && parent.namespaceURI === SVG_NS && parent.tagName !== "foreignObject")) return doc.createElementNS(SVG_NS, tag);
-  return doc.createElement(tag);
+function walk(root, path, protocol) {
+  let node = root;
+  for (let i = 0; i < path.length; i += 2) {
+    const container = protocol.CONTAINERS[path[i]];
+    if (!container) throw new Error(`unknown hole container ${path[i]}`);
+    node = container(node).childNodes[path[i + 1]];
+    if (!node) throw new Error("template path does not address a child");
+  }
+  return node;
 }
 
-function toSvg(doc, node) {
-  if (node.nodeType !== 1) return node.cloneNode(true);
-  const el = doc.createElementNS(SVG_NS, node.tagName.toLowerCase());
-  for (const a of node.attributes) el.setAttribute(a.name, a.value);
-  for (const c of node.childNodes) el.appendChild(toSvg(doc, c));
-  return el;
+
+const HTML_NS = "http://www.w3.org/1999/xhtml";
+const SVG_NS = "http://www.w3.org/2000/svg";
+const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
+const XML_NS = "http://www.w3.org/XML/1998/namespace";
+const XMLNS_NS = "http://www.w3.org/2000/xmlns/";
+
+// Registry keys bind the module's names to real decoding implementations before
+// init. Command layout and DOM validation remain independent from Roc.
+const NAMESPACE_READERS = {
+  HTML: reader => { reader.namespace = HTML_NS; },
+  SVG: reader => { reader.namespace = SVG_NS; },
+  MATHML: reader => { reader.namespace = MATHML_NS; },
+  NONE: reader => { reader.namespace = null; },
+  URI: reader => {
+    const value = nameString(reader);
+    if (!value) throw new Error("explicit namespace URI is empty");
+    reader.namespace = value;
+  },
+};
+
+function nameString(reader) {
+  const size = reader.dv.getUint32(reader.at, true);
+  reader.at += 4;
+  const text = readStr(reader.u8, reader.at, size);
+  reader.at += size;
+  return text;
+}
+
+// The XML factory is needed only for a bare xmlns element outside the
+// ordinary HTML/no-namespace and XMLNS factories. Other URI strings stay data.
+function xmlFactoryNamespace(value) {
+  return value !== XML_NS && value.isWellFormed() && !/[\0-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/u.test(value);
+}
+
+function validateExpandedName(name, element) {
+  const localPattern = /^(?:[A-Za-z][^\0\t\n\f\r\u0020/>]*|[:_\u0080-\u{10FFFF}][A-Za-z0-9-.:_\u0080-\u{10FFFF}]*)$/u;
+  if (!(element ? localPattern.test(name.local) : name.local.length > 0 && !/[\0\t\n\f\r\u0020/=>]/u.test(name.local))) throw new Error("invalid namespace-dependent local name");
+  if (name.prefix !== null) {
+    if (!name.prefix || /[\0\t\n\f\r\u0020/:>]/u.test(name.prefix)) throw new Error("invalid namespace prefix");
+    if (name.namespace === null) throw new Error("namespace prefix without namespace");
+    if (name.prefix === "xml" && name.namespace !== XML_NS) throw new Error("xml prefix requires XML namespace");
+  } else if (name.local.includes(":")) {
+    if (element && name.namespace === HTML_NS && /[A-Z]/.test(name.local)) throw new Error("unprefixed HTML colon name cannot preserve spelling through its factory");
+    const foreign = element && (name.namespace === SVG_NS || name.namespace === MATHML_NS);
+    if (foreign && (!/^[a-z]/.test(name.local) || /[A-Z]/.test(name.local))) throw new Error("unprefixed foreign colon name cannot preserve spelling through its empty-node factory");
+    if (!foreign && !((element && (name.namespace === HTML_NS || name.namespace === null)) || (!element && name.namespace === null))) throw new Error("unrepresentable unprefixed local name");
+  }
+  const ordinary = name.prefix === null && ((element && (name.namespace === HTML_NS || name.namespace === null)) || (!element && name.namespace === null));
+  const bareXmlns = element && name.prefix === null && name.local === "xmlns" && name.namespace !== null && name.namespace !== XMLNS_NS;
+  if (bareXmlns && !ordinary && !xmlFactoryNamespace(name.namespace)) throw new Error("bare xmlns namespace cannot be preserved by its empty-node factory");
+  const declares = name.prefix === "xmlns" || name.qualified === "xmlns";
+  if (!ordinary && !bareXmlns && (name.namespace === XMLNS_NS) !== declares) throw new Error("invalid xmlns namespace pairing");
+}
+
+function expandedName(reader, element) {
+  const code = reader.u8[reader.at++];
+  const read = reader.protocol.NAMESPACES[code];
+  if (!read) throw new Error(`unknown namespace kind ${code}`);
+  read(reader);
+  const namespace = reader.namespace;
+  const prefix = nameString(reader) || null;
+  const local = nameString(reader);
+  const name = { namespace, prefix, local, qualified: prefix === null ? local : `${prefix}:${local}` };
+  validateExpandedName(name, element);
+  return name;
+}
+
+// Read the actual wrapper's finite facts without walking ancestors or choosing
+// construction semantics. Roc classifies the context; these are not app Boot.
+function mountRootBytes(root, protocol) {
+  if (!root || root.nodeType !== 1) throw new Error("mount-root must be an Element");
+  const namespace = root.namespaceURI;
+  const prefix = root.prefix ?? "";
+  const local = root.localName;
+  for (const value of [namespace ?? "", prefix, local]) {
+    if (typeof value !== "string" || !value.isWellFormed()) throw new Error("mount-root facts must be well-formed Unicode");
+  }
+  let code;
+  if (namespace === HTML_NS) code = protocol.NS_HTML;
+  else if (namespace === SVG_NS) code = protocol.NS_SVG;
+  else if (namespace === MATHML_NS) code = protocol.NS_MATHML;
+  else if (namespace === null) code = protocol.NS_NONE;
+  else code = protocol.NS_URI;
+  const uriLength = code === protocol.NS_URI ? namespace.length + 4 : 0;
+  if (9 + prefix.length + local.length + uriLength > 65536) throw new Error("mount-root exceeds 65536 encoded bytes");
+  const bytes = concat([new Uint8Array([code]), ...(code === protocol.NS_URI ? [encStr(namespace)] : []), encStr(prefix), encStr(local)]);
+  if (bytes.length > 65536) throw new Error("mount-root exceeds 65536 encoded bytes");
+  return bytes;
+}
+
+// Every fallback creates one empty element of an already-decided identity.
+// Parsing never receives app attributes, children or text. Exact facts are
+// checked before import and again before return; mismatch is an executor fault.
+function checkFactoryElement(element, name, realm, interfaceName = null) {
+  if (element?.nodeType !== 1 || element.namespaceURI !== name.namespace || element.prefix !== name.prefix || element.localName !== name.local) throw new Error("element factory changed expanded identity");
+  if (interfaceName !== null && Object.getPrototypeOf(element) !== realm[interfaceName].prototype) throw new Error("element factory changed DOM interface");
+  if (interfaceName !== null && (element.attributes.length !== 0 || element.childNodes.length !== 0)) throw new Error("element factory returned nonempty data");
+  return element;
+}
+
+function createResolvedElement(doc, name) {
+  const realm = doc.defaultView ?? globalThis;
+  let element, interfaceName = null;
+  if (name.prefix === null && name.local.includes(":") && (name.namespace === SVG_NS || name.namespace === MATHML_NS)) {
+    const wrapper = name.namespace === SVG_NS ? "svg" : "math";
+    const source = doc.implementation.createHTMLDocument("").createElement("template");
+    source.innerHTML = `<${wrapper}><${name.local}></${name.local}></${wrapper}>`;
+    const outer = source.content.firstChild;
+    if (source.content.childNodes.length !== 1 || outer?.namespaceURI !== name.namespace || outer.prefix !== null || outer.localName !== wrapper || outer.attributes.length !== 0 || outer.childNodes.length !== 1) throw new Error("foreign empty-node factory changed its wrapper");
+    interfaceName = name.namespace === SVG_NS ? "SVGElement" : "MathMLElement";
+    checkFactoryElement(outer.firstChild, name, realm, interfaceName);
+    element = doc.importNode(outer.firstChild, false);
+  } else if (name.prefix === null && name.local === "xmlns" && name.namespace !== null && name.namespace !== HTML_NS && name.namespace !== XMLNS_NS) {
+    const uri = name.namespace.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;").replaceAll("\r", "&#13;").replaceAll("\n", "&#10;").replaceAll("\t", "&#9;");
+    const source = new realm.DOMParser().parseFromString(`<xmlns xmlns="${uri}"/>`, "application/xml");
+    const candidate = source.documentElement;
+    interfaceName = name.namespace === SVG_NS ? "SVGElement" : name.namespace === MATHML_NS ? "MathMLElement" : "Element";
+    if (source.childNodes.length !== 1 || source.firstChild !== candidate || candidate?.nodeType !== 1 || candidate.namespaceURI !== name.namespace || candidate.prefix !== null || candidate.localName !== "xmlns" || candidate.childNodes.length !== 0 || candidate.attributes.length !== 1) throw new Error("XML empty-node factory changed expanded identity");
+    const declaration = candidate.attributes[0];
+    if (declaration.namespaceURI !== XMLNS_NS || declaration.prefix !== null || declaration.localName !== "xmlns" || declaration.value !== name.namespace) throw new Error("XML empty-node factory changed its declaration");
+    candidate.removeAttributeNS(XMLNS_NS, "xmlns");
+    checkFactoryElement(candidate, name, realm, interfaceName);
+    element = doc.importNode(candidate, false);
+  } else if (name.namespace === null && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")) {
+    const source = doc.implementation.createDocument(null, "");
+    const candidate = source.createElement(name.local);
+    checkFactoryElement(candidate, name, realm, "Element");
+    element = doc.importNode(candidate, false);
+    interfaceName = "Element";
+  } else if (name.namespace === HTML_NS && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")) {
+    const source = doc.implementation.createHTMLDocument("");
+    const candidate = source.createElement(name.local);
+    interfaceName = "HTMLUnknownElement";
+    checkFactoryElement(candidate, name, realm, interfaceName);
+    element = doc.importNode(candidate, false);
+  } else {
+    element = doc.createElementNS(name.namespace, name.qualified);
+  }
+  checkFactoryElement(element, name, realm, interfaceName);
+  if (element.ownerDocument !== doc) throw new Error("element factory returned another document's node");
+  return element;
+}
+
+// Container roles select an already-decided DOM target. HTML template.content
+// is distinct from ordinary childNodes, including on the same element interface.
+const CONTAINER_APPLIERS = {
+  CHILDREN: element => element,
+  TEMPLATE_CONTENT(element) {
+    if (element.namespaceURI !== HTML_NS || element.localName !== "template" || !element.content) throw new Error("template content requires an HTML template");
+    return element.content;
+  },
+};
+
+function readContainer(reader, element) {
+  const code = reader.u8[reader.at++];
+  const apply = reader.protocol.CONTAINERS[code];
+  if (!apply) throw new Error(`unknown child container ${code}`);
+  const target = apply(element);
+  if (target !== element) element.__childTarget = target;
+  return { code, target };
+}
+
+const TEMPLATE_NODE_APPLIERS = {
+  ELEMENT(reader) {
+    const name = expandedName(reader, true);
+    const element = reader.dry
+      ? { children: [], content: name.namespace === HTML_NS && name.local === "template" ? [] : null }
+      : createResolvedElement(reader.doc, name);
+    let code, target;
+    if (reader.dry) {
+      code = reader.u8[reader.at++];
+      const container = reader.protocol.CONTAINERS[code];
+      if (!container) throw new Error(`unknown child container ${code}`);
+      target = container === CONTAINER_APPLIERS.TEMPLATE_CONTENT ? element.content : element.children;
+      if (!target) throw new Error("template content requires an HTML template");
+    } else ({ code, target } = readContainer(reader, element));
+    if (reader.dry ? target === element.content : target !== element) reader.contentOwners.push(reader.path.slice());
+    const attributes = reader.u8[reader.at++];
+    for (let index = 0; index < attributes; index += 1) {
+      const attribute = expandedName(reader, false), value = nameString(reader);
+      if (!reader.dry) setAttr(element, attribute, value);
+    }
+    const children = reader.u8[reader.at++];
+    for (let index = 0; index < children; index += 1) {
+      reader.path.push(code, index);
+      const child = templateNode(reader);
+      if (reader.dry) target.push(child); else target.appendChild(child);
+      reader.path.length -= 2;
+    }
+    return element;
+  },
+  TEXT(reader) { const value = nameString(reader); return reader.dry ? {} : reader.doc.createTextNode(value); },
+  COMMENT(reader) { const value = nameString(reader); return reader.dry ? {} : reader.doc.createComment(value); },
+};
+
+function templateNode(reader) {
+  const kind = reader.u8[reader.at++];
+  const apply = reader.protocol.TEMPLATE_NODES[kind];
+  if (!apply) throw new Error(`unknown template node kind ${kind}`);
+  return apply(reader);
 }
 
 // Controlled text values (design.md, "Controlled inputs"): an equal value is
@@ -320,6 +525,7 @@ function toSvg(doc, node) {
 function setValue(el, value) {
   if (el.value === value) {
     el.__deferred = undefined;
+    el.__applyValue = false;
     return;
   }
   const doc = el.ownerDocument;
@@ -332,30 +538,565 @@ function setValue(el, value) {
 }
 
 function setAttr(el, name, value) {
-  if (name === "class" && el.namespaceURI === SVG_NS) {
-    if (value === "") el.removeAttribute("class");
-    else el.setAttribute("class", value);
-  } else if (name === "class") {
-    el.className = value;
-  } else if (name === "value") {
-    setValue(el, value);
-    if (el.tagName === "SELECT") el.__v = value;
-    if (value === "") el.removeAttribute("value");
-    else el.setAttribute("value", value);
-    // An option whose value changes may now be the one its select wants.
-    if (el.tagName === "OPTION") settleSelect(el.parentNode);
-  } else if (name === "checked") {
-    el.checked = value === "true";
-    if (el.checked) el.setAttribute("checked", "");
-    else el.removeAttribute("checked");
-  } else if (BOOL_ATTRS.has(name)) {
-    if (value === "" || value === "false") el.removeAttribute(name);
-    else el.setAttribute(name, "");
-  } else if (value === "") {
-    el.removeAttribute(name);
-  } else {
-    el.setAttribute(name, value);
+  if (name.namespace === null && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")) {
+    if (el.namespaceURI === HTML_NS && /[A-Z]/u.test(name.local)) {
+      const existing = el.getAttributeNodeNS(null, name.local);
+      if (existing) existing.value = value;
+      else {
+        const source = el.ownerDocument.implementation.createDocument(null, "");
+        const attribute = source.createAttribute(name.local);
+        attribute.value = value;
+        el.setAttributeNodeNS(attribute);
+      }
+    } else el.setAttribute(name.local, value);
+  } else el.setAttributeNS(name.namespace, name.qualified, value);
+}
+
+// ApplyValue uses the last rendered property even when equality pruning
+// emitted no new PROP and the user changed the live value meanwhile.
+function applyRenderedValue(el) {
+  checkValueControl(el, el.__renderedValueNode);
+  if (typeof el.__renderedValue !== "string") throw new Error("ApplyValue requires a rendered value property");
+  el.__deferred = undefined;
+  if (el.value !== el.__renderedValue) el.value = el.__renderedValue;
+}
+
+// A file input's live value is a program contract error, rather than an
+// executor defect. Its type can change in the batch, so only application of
+// the property can make this check against the current DOM state.
+class ContractFault extends Error {}
+
+function checkValueControl(el, node) {
+  if (el.tagName === "INPUT" && el.type === "file") throw new ContractFault(`contract: value property on file input at node ${node}`);
+}
+
+// Stateless command implementations are the semantic roles supported by this
+// runtime. Mount binds metadata codes to these actual functions, not to another
+// number table. A reader belongs only to its guarded applyBatch invocation.
+function applyHoleCommand(reader) {
+  const { dv, u8, op } = reader;
+  let at = reader.at;
+  const node = dv.getUint32(at, true);
+  const row = this.lookup(node);
+  const hole = this.templates[row.__site].holes[u8[at + 4]];
+  const n = dv.getUint32(at + 5, true);
+  const target = row.__ht[u8[at + 4]];
+  const v = readStr(u8, at + 9, n);
+  if (op === this.protocol.OP_TEXT) target.nodeValue = v;
+  else {
+    if (hole.kind !== HOLE_PROP) throw new Error("HPROP names a non-property hole");
+    setProp(target, hole.prop, v, node, this);
   }
+  at += 9 + n;
+  return at;
+}
+function applyNodeCommand(reader) {
+  const { dv, doc, op } = reader;
+  const node = dv.getUint32(reader.at, true);
+  const parent = dv.getUint32(reader.at + 4, true);
+  const before = dv.getUint32(reader.at + 8, true);
+  reader.at += 12;
+  const element = op === this.protocol.OP_ELEM;
+  const el = element ? createResolvedElement(doc, expandedName(reader, true))
+    : op === this.protocol.OP_COMMENT ? doc.createComment(nameString(reader)) : doc.createTextNode(nameString(reader));
+  if (element) readContainer(reader, el);
+  el.__id = node;
+  this.place(el, parent, before);
+  if (element && el.namespaceURI === HTML_NS && el.localName === "option") settleSelect(el.parentNode);
+  this.statics[node] = el;
+  return reader.at;
+}
+
+// The pure first-batch pass consumes the same effect operands without
+// retaining work. Ordinary application preserves the stream's effect order.
+function queueEffect(runtime, reader, effect) {
+  if (reader.mode !== "preflight") runtime.fxOut.push(effect);
+}
+
+const COMMAND_APPLIERS = {
+  INST(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const node = dv.getUint32(at, true);
+    const parent = dv.getUint32(at + 4, true);
+    const before = dv.getUint32(at + 8, true);
+    const site = dv.getUint32(at + 12, true);
+    const tpl = this.templates[site];
+    at += 16;
+    const el = tpl.root.cloneNode(true);
+    for (const path of tpl.contentOwners) {
+      const owner = walk(el, path, this.protocol);
+      owner.__childTarget = CONTAINER_APPLIERS.TEMPLATE_CONTENT(owner);
+    }
+    el.__rn = node;
+    const holes = tpl.holes;
+    // Hole targets are resolved once, here: a nested site inserting
+    // content into the row later shifts sibling indices.
+    const targets = new Array(holes.length);
+    for (let i = 0; i < holes.length; i += 1) targets[i] = walk(el, holes[i].path, this.protocol);
+    el.__ht = targets;
+    el.__aliases = [];
+    for (let i = 0; i < holes.length; i += 1) {
+      const hole = holes[i];
+      const target = targets[i];
+      if (hole.kind === HOLE_TEXT) {
+        const n = dv.getUint32(at, true);
+        target.nodeValue = readStr(u8, at + 4, n);
+        at += 4 + n;
+      } else if (hole.kind === HOLE_ATTR) {
+        at = applyAttribute(this, u8, dv, at, target, hole.name);
+      } else if (hole.kind === HOLE_PROP) {
+        const n = dv.getUint32(at, true);
+        setProp(target, hole.prop, readStr(u8, at + 4, n), node, this);
+        at += 4 + n;
+      } else if (hole.kind === HOLE_CLICK) {
+        checkHandlerElement(target, hole.name, hole.entry, this.protocol);
+        if (target.__h === undefined) target.__h = {};
+        target.__h[hole.name] = hole.entry;
+        this.registerLayout(target, hole.name, hole.entry, el);
+      } else if (hole.kind === HOLE_BIND || hole.kind === HOLE_REF) {
+        const id = dv.getUint32(at, true);
+        this.statics[id] = target;
+        el.__aliases.push(id);
+        at += 4;
+      } else throw new Error(`unknown template hole kind ${hole.kind}`);
+    }
+    this.place(el, parent, before);
+    if (el.tagName === "OPTION") settleSelect(el.parentNode);
+    el.__site = site;
+    this.statics[node] = el;
+    this.sites[site].add(node);
+    return at;
+  },
+  HATTR(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const row = this.lookup(dv.getUint32(at, true));
+    const index = u8[at + 4];
+    const hole = this.templates[row.__site].holes[index];
+    if (hole.kind !== HOLE_ATTR) throw new Error("HATTR names a non-attribute hole");
+    at += 5;
+    at = applyAttribute(this, u8, dv, at, row.__ht[index], hole.name);
+    return at;
+  },
+  TEXT: applyHoleCommand,
+  HPROP: applyHoleCommand,
+  MOVE(reader) {
+    const { dv } = reader;
+    let at = reader.at;
+    const el = this.lookup(dv.getUint32(at, true));
+    const before = dv.getUint32(at + 4, true);
+    el.parentNode.insertBefore(el, before === 0 ? null : this.lookup(before));
+    at += 8;
+    return at;
+  },
+  RELEASE(reader) {
+    const { dv } = reader;
+    let at = reader.at;
+    this.releaseNode(this.lookup(dv.getUint32(at, true)));
+    at += 4;
+    return at;
+  },
+  REMOVE(reader) {
+    const { dv } = reader;
+    let at = reader.at;
+    const node = dv.getUint32(at, true);
+    const el = this.lookup(node);
+    this.forgetSubtree(el);
+    el.parentNode.removeChild(el);
+    this.statics[node] = undefined;
+    at += 4;
+    return at;
+  },
+  CLEAR(reader) {
+    const { dv } = reader;
+    let at = reader.at;
+    const parentId = dv.getUint32(at, true);
+    const owner = this.lookup(parentId);
+    const parent = parentId === 0 ? owner : owner.__childTarget ?? owner;
+    const site = dv.getUint32(at + 4, true);
+    for (let child = parent.firstChild; child; child = child.nextSibling) this.forgetSubtree(child);
+    this.sites[site] = new Set();
+    parent.textContent = "";
+    at += 8;
+    return at;
+  },
+  TEMPLATE(reader) {
+    const { dv, u8, mode, batch, offset } = reader;
+    let at = reader.at;
+    const tpl = dv.getUint32(at, true);
+    const n = dv.getUint32(at + 4, true);
+    this.templates[tpl] = mode === "update" ? batch.definitions.get(offset) : this.parseTemplate(u8, dv, at + 8, n);
+    this.sites[tpl] = new Set();
+    at += 8 + n;
+    return at;
+  },
+  ELEM: applyNodeCommand,
+  TEXTNODE: applyNodeCommand,
+  COMMENT: applyNodeCommand,
+  ATTR(reader) {
+    const el = this.lookup(reader.dv.getUint32(reader.at, true));
+    reader.at += 4;
+    const name = expandedName(reader, false);
+    return applyAttribute(this, reader.u8, reader.dv, reader.at, el, name);
+  },
+  PROP(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const node = dv.getUint32(at, true);
+    const prop = u8[at + 4];
+    const n = dv.getUint32(at + 5, true);
+    setProp(this.lookup(node), prop, readStr(u8, at + 9, n), node, this);
+    at += 9 + n;
+    return at;
+  },
+  LISTEN(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const node = dv.getUint32(at, true);
+    const el = this.statics[node];
+    const n = dv.getUint32(at + 8, true);
+    const type = readStr(u8, at + 12, n);
+    el.__rn = node;
+    if (el.__h === undefined) el.__h = {};
+    const h = dv.getUint32(at + 4, true);
+    const kind = u8[at + 12 + n];
+    const policies = dv.getUint32(at + 13 + n, true);
+    const entry = handlerEntry(h, kind, policies, type, this.protocol);
+    checkHandlerElement(el, type, entry, this.protocol);
+    el.__h[type] = entry;
+    if (policies & this.protocol.POLICY_DOCUMENT) this.registerDocumentKey(el, type, entry);
+    else if (kind !== this.protocol.KIND_SIZE && kind !== this.protocol.KIND_SEEN) this.listen(type);
+    this.registerLayout(el, type, entry, el);
+    at += 17 + n;
+    return at;
+  },
+  SETTEXT(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const el = this.lookup(dv.getUint32(at, true));
+    const n = dv.getUint32(at + 4, true);
+    el.nodeValue = readStr(u8, at + 8, n);
+    at += 8 + n;
+    return at;
+  },
+  FX(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const id = dv.getUint32(at, true);
+    const kind = u8[at + 4];
+    at += 5;
+    const str = () => {
+      const n = dv.getUint32(at, true);
+      const v = readStr(u8, at + 4, n);
+      at += 4 + n;
+      return v;
+    };
+    const httpOptions = () => {
+      const cacheByte = u8[at++], credentialsByte = u8[at++];
+      const cache = this.protocol.HTTP_CACHE[cacheByte];
+      const credentials = this.protocol.HTTP_CREDENTIALS[credentialsByte];
+      if (!cache || !credentials || (kind === 12 && cacheByte !== 1)) throw new ContractFault("invalid HTTP cache or credentials");
+      const progressMs = dv.getUint32(at, true); at += 4;
+      if (progressMs !== 0 && progressMs < 16) throw new ContractFault("progress interval must be zero or at least 16 ms");
+      return { cache, credentials, progressMs };
+    };
+    if (kind === 1) {
+      const method = str();
+      const url = str();
+      const headers = [];
+      let n = dv.getUint32(at, true);
+      at += 4;
+      for (; n > 0; n -= 1) headers.push([str(), str()]);
+      const body = str();
+      const timeout = dv.getUint32(at, true);
+      at += 4;
+      queueEffect(this, reader, { op: "http", id, method, url, headers, body, timeout, ...httpOptions() });
+    } else if (kind === 2) {
+      queueEffect(this, reader, { op: "get", id, key: str() });
+    } else if (kind === 3 || kind === 4) {
+      queueEffect(this, reader, { op: kind === 3 ? "timer" : "interval", id, ms: dv.getUint32(at, true) });
+      at += 4;
+    } else if (kind === 5) {
+      queueEffect(this, reader, { op: "popstate", id });
+    } else if (kind === 6) {
+      queueEffect(this, reader, { op: "online", id });
+    } else if (kind === 7) {
+      queueEffect(this, reader, { op: "visibility", id });
+    } else if (kind === 8) {
+      const task = str();
+      const n = dv.getUint32(at, true);
+      // Copied out: linear memory may move before the job is posted.
+      if (n > u8.length - at - 4) throw new Error("truncated work input");
+      const input = reader.mode === "preflight" ? null : u8.slice(at + 4, at + 4 + n);
+      at += 4 + n;
+      // The files the job names, resolved now, while the handles the
+      // batch released still name their files (see "Files").
+      // Its files cross whole, as handles the worker mints, and the job
+      // reads their ranges itself; nothing is read before it runs.
+      const refs = dv.getUint32(at, true);
+      at += 4;
+      const files = [];
+      const ranges = [];
+      for (let i = 0; i < refs; i += 1) {
+        const { token, start, len } = fileRange(dv, at);
+        const file = reader.mode === "preflight" ? undefined : this.files.get(token);
+        if (reader.mode !== "preflight" && file === undefined) throw new Error(`a work request names file handle ${token}, which this runtime does not hold`);
+        if (reader.mode !== "preflight") { files.push(file); ranges.push(token, start, len); }
+        at += 24;
+      }
+      const timeout = dv.getUint32(at, true);
+      const cancel = u8[at + 4];
+      const flag = u8[at + 5];
+      at += 6;
+      if (cancel !== 1 && cancel !== 2) throw new Error(`work request cancel policy ${cancel} is not 1 or 2`);
+      // A preparation's task (design.md, "Prepared state"): which
+      // preparation answers it, and where its input lies in `input`.
+      let prep = null;
+      if (flag === 1) {
+        const name = str();
+        const initLen = dv.getUint32(at, true);
+        const initFiles = dv.getUint32(at + 4, true);
+        at += 8;
+        if (initLen > n || initFiles > refs) throw new Error(`malformed preparation operands for worker task ${task}`);
+        if (reader.mode !== "preflight") prep = { name, initLen, initFiles, ranges: ranges.slice(0, 3 * initFiles) };
+      } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0 or 1`);
+      queueEffect(this, reader, { op: "work", id, task, input, files, timeout, finish: cancel === 2, prep });
+    } else if (kind === 11) {
+      const mode = u8[at];
+      if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
+      const maxBytes = tokenAt(dv, 0, at + 25);
+      queueEffect(this, reader, { op: "read", id, mode, maxBytes, ...this.fileRef(dv, at + 1, reader.mode === "preflight") });
+      at += 33;
+    } else if (kind === 12) {
+      const method = str();
+      const url = str();
+      const headers = [];
+      let n = dv.getUint32(at, true);
+      at += 4;
+      for (; n > 0; n -= 1) headers.push([str(), str()]);
+      const ref = this.fileRef(dv, at, reader.mode === "preflight");
+      const timeout = dv.getUint32(at + 24, true);
+      at += 28;
+      queueEffect(this, reader, { op: "upload", id, method, url, headers, ...ref, timeout, ...httpOptions() });
+    } else if (kind === 13) {
+      const algorithm = u8[at];
+      if (algorithm !== 1) throw new Error(`unknown digest algorithm ${algorithm}`);
+      queueEffect(this, reader, { op: "digest", id, algorithm, ...this.fileRef(dv, at + 1, reader.mode === "preflight") });
+      at += 25;
+    } else if (kind === 14) {
+      queueEffect(this, reader, { op: "url", id, ...this.fileRef(dv, at, reader.mode === "preflight") });
+      at += 24;
+    } else if (kind === 9) {
+      const port = str();
+      const m = this.readPortMessage(u8, dv, at, reader.mode === "preflight");
+      at = m.at;
+      const timeout = dv.getUint32(at, true);
+      at += 4;
+      queueEffect(this, reader, { op: "portcall", id, port, msg: m.msg, timeout });
+    } else if (kind === 10) {
+      const port = str();
+      const m = this.readPortMessage(u8, dv, at, reader.mode === "preflight");
+      at = m.at;
+      queueEffect(this, reader, { op: "portsub", id, port, msg: m.msg });
+    } else if (kind === 15) {
+      const method = str();
+      const url = str();
+      const headers = [];
+      let n = dv.getUint32(at, true);
+      at += 4;
+      for (; n > 0; n -= 1) headers.push([str(), str()]);
+      const timeout = dv.getUint32(at, true);
+      at += 4;
+      queueEffect(this, reader, { op: "fetch", id, method, url, headers, body: "", timeout, ...httpOptions() });
+    } else if (kind === 16) {
+      queueEffect(this, reader, { op: "media", id, query: str() });
+    } else if (kind === 17) {
+      queueEffect(this, reader, { op: "sessionget", id, key: str() });
+    } else if (kind === 18) {
+      queueEffect(this, reader, { op: "storagechanges", id, key: str() });
+    } else if (kind === 19) {
+      const text = str(), htmlFlag = u8[at++];
+      if (htmlFlag !== 0 && htmlFlag !== 1) throw new Error(`invalid clipboard HTML flag ${htmlFlag}`);
+      queueEffect(this, reader, { op: "clipboard", id, text, html: htmlFlag ? str() : null });
+    } else if (kind === 20) {
+      queueEffect(this, reader, { op: "storagefailures", id });
+    } else throw new Error(`unknown effect kind ${kind}`);
+    return at;
+  },
+  SAVE(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    // Resolved now, while a handle the batch released still names its
+    // file; the download is made after the batch.
+    const ref = this.fileRef(dv, at, reader.mode === "preflight");
+    const n = dv.getUint32(at + 24, true);
+    const name = readStr(u8, at + 28, n);
+    at += 28 + n;
+    queueEffect(this, reader, { op: "save", name, blob: ref.blob, type: ref.file?.type });
+    return at;
+  },
+  CANCEL(reader) {
+    const { dv } = reader;
+    let at = reader.at;
+    queueEffect(this, reader, { op: "cancel", id: dv.getUint32(at, true) });
+    at += 4;
+    return at;
+  },
+  NAV(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const mode = u8[at];
+    const n = dv.getUint32(at + 1, true);
+    queueEffect(this, reader, { op: mode === 1 ? "push" : "replace", url: readStr(u8, at + 5, n) });
+    at += 5 + n;
+    return at;
+  },
+  GUARD(reader) {
+    const { u8 } = reader;
+    let at = reader.at;
+    const on = u8[at++];
+    if (on !== 0 && on !== 1) throw new Error(`invalid leave guard flag ${on}`);
+    queueEffect(this, reader, { op: "guardleave", on: on === 1 });
+    return at;
+  },
+  STORAGE(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const mode = u8[at];
+    if (mode < 1 || mode > 4) throw new Error(`unknown storage operation ${mode}`);
+    const n = dv.getUint32(at + 1, true);
+    const key = readStr(u8, at + 5, n);
+    at += 5 + n;
+    if (mode === 1 || mode === 3) {
+      const m = dv.getUint32(at, true);
+      queueEffect(this, reader, { op: "set", session: mode === 3, key, value: readStr(u8, at + 4, m) });
+      at += 4 + m;
+    } else queueEffect(this, reader, { op: "remove", session: mode === 4, key });
+    return at;
+  },
+  REF(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const mode = u8[at], node = dv.getUint32(at + 1, true);
+    if (mode < 1 || mode > 7) throw new Error(`unknown reference operation ${mode}`);
+    at += 5;
+    const command = { op: "ref", mode, node, element: this.lookup(node) };
+    if (mode === 6) {
+      const block = u8[at++], inline = u8[at++], behavior = u8[at++];
+      if (block > 3 || inline > 3 || behavior > 2 || behavior === undefined) throw new Error("invalid scroll-into-view operands");
+      command.options = { block: ["start", "center", "end", "nearest"][block], inline: ["start", "center", "end", "nearest"][inline], behavior: ["auto", "instant", "smooth"][behavior] };
+    } else if (mode === 7) {
+      const edge = () => {
+        const tag = u8[at++];
+        if (tag === 0) return { kind: "keep" };
+        if (tag === 1) return { kind: "start" };
+        if (tag === 2) return { kind: "end" };
+        if (tag !== 3) throw new Error(`invalid scroll edge ${tag}`);
+        const pixels = dv.getUint32(at, true); at += 4;
+        return { kind: "px", pixels };
+      };
+      const top = edge(), left = edge(), behavior = u8[at++];
+      if (behavior > 2 || behavior === undefined) throw new Error("invalid scroll-to behavior");
+      command.top = top; command.left = left; command.behavior = ["auto", "instant", "smooth"][behavior];
+    }
+    queueEffect(this, reader, command);
+    return at;
+  },
+  TITLE(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const n = dv.getUint32(at, true);
+    queueEffect(this, reader, { op: "title", text: readStr(u8, at + 4, n) });
+    at += 4 + n;
+    return at;
+  },
+  PORT(reader) {
+    const { dv, u8 } = reader;
+    let at = reader.at;
+    const n = dv.getUint32(at, true);
+    const port = readStr(u8, at + 4, n);
+    const m = this.readPortMessage(u8, dv, at + 4 + n, reader.mode === "preflight");
+    at = m.at;
+    queueEffect(this, reader, { op: "port", port, msg: m.msg });
+    return at;
+  },
+  TRANSITION(reader) {
+    const { mode, len, flags, dv, u8, batch } = reader;
+    let at = reader.at;
+    if (mode === "update") { reader.marked = true; return len; }
+    if (!flags || reader.marked) throw new Error("TRANSITION requires a marked batch and must occur once, last");
+    reader.marked = true;
+    const count = dv.getUint32(at, true); at += 4;
+    const types = [];
+    for (let i = 0; i < count; i += 1) { const n = dv.getUint32(at, true); types.push(readStr(u8, at + 4, n)); at += 4 + n; }
+    if (at !== len) throw new Error("TRANSITION must be last");
+    batch.types = types;
+    return at;
+  },
+};
+
+function applyAttribute(runtime, u8, dv, at, el, name) {
+  const present = u8[at++];
+  if (present === 0) el.removeAttributeNS(name.namespace, name.local);
+  else if (present === 1) {
+    const n = dv.getUint32(at, true);
+    setAttr(el, name, readStr(u8, at + 4, n));
+    at += 4 + n;
+  } else throw new Error(`invalid attribute presence ${present}`);
+  return at;
+}
+
+const PROPERTY_APPLIERS = {
+  value: {
+    apply(el, value, node) {
+      checkValueControl(el, node);
+      el.__renderedValueNode = node;
+      el.__renderedValue = value;
+      setValue(el, value);
+      if (el.tagName === "SELECT") el.__v = value;
+      el.setAttribute("value", value);
+      if (el.tagName === "OPTION") settleSelect(el.parentNode);
+    },
+  },
+  checked: {
+    apply(el, value) {
+      if (value !== "true" && value !== "false") throw new Error(`invalid checked property value ${JSON.stringify(value)}`);
+      el.checked = value === "true";
+      if (el.checked) el.setAttribute("checked", "");
+      else el.removeAttribute("checked");
+    },
+  },
+  pointer_zone: {
+    apply(el, value) { el.__pointerZone = value; },
+  },
+  keymap_down: {
+    apply(el, value) { el.__keymapDown = parseKeymap(value); },
+  },
+  keymap_up: {
+    apply(el, value) { el.__keymapUp = parseKeymap(value); },
+  },
+  shown: {
+    apply(el, value, node, runtime) {
+      if (!["hidden", "open", "modal"].includes(value)) throw new Error(`invalid shown property value ${JSON.stringify(value)}`);
+      runtime.decideShown(el, 6, value, node);
+    },
+  },
+  popover_shown: {
+    apply(el, value, node, runtime) {
+      if (value !== "true" && value !== "false") throw new Error(`invalid popover_shown property value ${JSON.stringify(value)}`);
+      if (!["auto", "manual"].includes(el.getAttribute("popover"))) throw new Error("popover_shown requires a static auto or manual popover");
+      runtime.decideShown(el, 7, value, node);
+    },
+  },
+};
+
+function setProp(el, prop, value, node, runtime) {
+  const row = runtime.protocol.PROPS[prop];
+  if (!row) throw new Error(`unknown element property ${prop}`);
+  if (el.nodeType !== 1) throw new Error(`element property ${row.name} requires an element`);
+  if (row.elements && !row.elements.includes(el.tagName)) throw new Error(`element property ${row.name} does not apply to ${el.tagName}`);
+  row.apply(el, value, node, runtime);
 }
 
 // A <select>'s value can only be set once its options exist: re-apply the
@@ -369,13 +1110,64 @@ function settleSelect(parent) {
 const DOM_EVENT = { focus: "focusin", blur: "focusout" };
 const APP_EVENT = { focusin: "focus", focusout: "blur" };
 
-// What a handler declared: its number and its suffixes (see "Handler event
-// names" above).
-function handlerEntry(h, policies) {
-  return { h, prevent: policies.includes("prevent"), files: policies.includes("files") };
+// Policy roles own their actual validation or browser action. Their keys are
+// also the complete semantic roles mount requires; bit numbers come from facts.
+// Validation order preserves the existing diagnostic priority.
+const POLICY_APPLIERS = {
+  CAPTURE: {
+    validate(kind, type, policies, p) {
+      if ((policies & p.POLICY_CAPTURE) && (kind !== p.KIND_POINTER || type !== "pointerdown")) throw new Error("capture policy requires a pointerdown pointer handler");
+    },
+  },
+  PACED: {
+    validate(kind, type, policies, p) {
+      if ((policies & p.POLICY_PACED) && !((kind === p.KIND_POINTER && type === "pointermove") || [p.KIND_SCROLL, p.KIND_SIZE, p.KIND_SEEN].includes(kind))) throw new Error("paced policy requires pointermove or a layout handler");
+      if ([p.KIND_SCROLL, p.KIND_SIZE, p.KIND_SEEN].includes(kind) && !(policies & p.POLICY_PACED)) throw new Error("layout handlers require paced delivery");
+    },
+  },
+  AHEAD: {
+    validate(kind, _type, policies, p) {
+      if ((policies & p.POLICY_AHEAD) && kind !== p.KIND_SEEN) throw new Error("ahead policy requires a seen handler");
+      if ((kind === p.KIND_SIZE || kind === p.KIND_SEEN) && (policies & ~(p.POLICY_PACED | p.POLICY_AHEAD))) throw new Error("observation handlers have no DOM event policies");
+    },
+  },
+  DOCUMENT: {
+    validate(kind, _type, policies, p) {
+      if ((policies & p.POLICY_DOCUMENT) && kind !== p.KIND_KEY) throw new Error("document policy requires a key handler");
+    },
+  },
+  PREVENT: {
+    validate(kind, _type, policies, p) {
+      if (kind === p.KIND_KEY && (policies & p.POLICY_PREVENT)) throw new Error("key prevention belongs to its keymap");
+    },
+    perform(event) { event.preventDefault(); },
+  },
+  STOP: {
+    perform(event) { event.stopPropagation(); },
+  },
+};
+
+// Validate the closed declaration tables before retaining a listener. An
+// unknown number or bit is a producer/consumer mismatch, contained as executor.
+function handlerEntry(h, kind, policies, type, protocol) {
+  const row = protocol.PAYLOAD_KINDS[kind];
+  if (!row) throw new Error(`unknown event payload kind ${kind}`);
+  if (row.events && !row.events.includes(type)) throw new Error(`event payload kind ${kind} does not apply to ${type}`);
+  if ((policies & ~protocol.policy_mask) !== 0) throw new Error(`unknown event policy bits ${policies}`);
+  for (const validate of protocol.policyValidators) validate(kind, type, policies, protocol);
+  if (kind === protocol.KIND_TEXT && (type === "keydown" || type === "keyup")) throw new Error("text key handler requires on_key");
+  return { h, kind, policies };
 }
 
-// The files a `:files` event carries.
+function checkHandlerElement(element, type, handler, protocol) {
+  const { KIND_OPEN_STATE } = protocol;
+  if (handler.kind !== KIND_OPEN_STATE) return;
+  if (type === "close" && element.tagName !== "DIALOG") throw new Error("open-state close requires a dialog");
+  if (type === "toggle" && !["auto", "manual"].includes(element.getAttribute("popover"))) throw new Error("open-state toggle requires a popover");
+}
+
+// The files a files-kind event carries, captured before the browser clears
+// a drop's or paste's list after dispatch.
 function filesOf(event) {
   const list = event.type === "drop" ? event.dataTransfer && event.dataTransfer.files : event.type === "paste" ? event.clipboardData && event.clipboardData.files : event.target.files;
   return list ? Array.from(list) : [];
@@ -392,12 +1184,265 @@ function payloadOf(event) {
     case "change":
       if (t.type === "checkbox" || t.type === "radio") return t.checked ? "true" : "false";
       return t.value ?? "";
-    case "keydown":
-    case "keyup":
-      return event.key;
     default:
       return "";
   }
+}
+
+const PAYLOAD_APPLIERS = {
+  TEXT: { payload: payloadOf },
+  PASTE: {},
+  FILES: {
+    payload(event) {
+      const files = filesOf(event);
+      return files.length === 0 ? null : { files };
+    },
+  },
+  POINTER: {},
+  KEY: {},
+  SCROLL: {},
+  SIZE: {},
+  SEEN: {},
+  OPEN_STATE: {
+    payload(event) {
+      const element = event.target;
+      if (event.type === "change") {
+        if (element.namespaceURI !== "http://www.w3.org/1999/xhtml" || element.tagName !== "INPUT" || !["checkbox", "radio"].includes(element.type)) return null;
+        return new Uint8Array([element.checked ? 1 : 0]);
+      }
+      if (event.type === "close") {
+        if (element.tagName !== "DIALOG") throw new Error("open-state close requires a dialog");
+        return new Uint8Array([element.open ? 1 : 0]);
+      }
+      if (!["auto", "manual"].includes(element.getAttribute("popover"))) throw new Error("open-state toggle requires a popover");
+      return new Uint8Array([element.matches(":popover-open") ? 1 : 0]);
+    },
+  },
+};
+
+// Build tables only after the complete metadata item has been validated. Each
+// runtime holds its own bindings; mounting another module cannot change them.
+function bindProtocolFacts(facts) {
+  for (const rows of Object.values(facts)) {
+    for (const row of rows) if (typeof row === "object") {
+      for (const value of Object.values(row)) if (Array.isArray(value)) Object.freeze(value);
+      Object.freeze(row);
+    }
+    Object.freeze(rows);
+  }
+  Object.freeze(facts);
+  const protocol = { facts, text_entry_excluded: facts.text_entry_excluded };
+  for (const row of facts.ops) protocol[`OP_${row.name}`] = row.code;
+  for (const row of facts.kinds) protocol[`KIND_${row.name}`] = row.code;
+  for (const row of facts.policies) protocol[`POLICY_${row.name}`] = row.bit;
+  for (const row of facts.namespaces) protocol[`NS_${row.name}`] = row.code;
+  for (const row of facts.template_nodes) protocol[`NODE_${row.name}`] = row.code;
+  protocol.LOST_CLASSES = facts.fault_classes;
+  protocol.HTTP_CACHE = Object.fromEntries(facts.http_cache.map(row => [row.code, row.name]));
+  protocol.HTTP_CREDENTIALS = Object.fromEntries(facts.http_credentials.map(row => [row.code, row.name]));
+  const bind = (rows, implementations, key, make, label) => {
+    const names = new Set(rows.map(row => row.name));
+    for (const row of rows) if (!Object.hasOwn(implementations, row.name)) throw new Error(`unknown ${label} name ${JSON.stringify(row.name)}`);
+    for (const name of Object.keys(implementations)) if (!names.has(name)) throw new Error(`missing ${label} name ${JSON.stringify(name)}`);
+    return Object.freeze(Object.fromEntries(rows.map(row => [row[key], Object.freeze(make(row, implementations[row.name]))])));
+  };
+  protocol.NAMESPACES = bind(facts.namespaces, NAMESPACE_READERS, "code", (_row, implementation) => implementation, "namespace");
+  protocol.CONTAINERS = bind(facts.child_containers, CONTAINER_APPLIERS, "code", (_row, implementation) => implementation, "child container");
+  protocol.TEMPLATE_NODES = bind(facts.template_nodes, TEMPLATE_NODE_APPLIERS, "code", (_row, implementation) => implementation, "template node");
+  protocol.COMMANDS = bind(facts.ops, COMMAND_APPLIERS, "code", (_row, implementation) => implementation, "opcode");
+  protocol.POLICIES = bind(facts.policies, POLICY_APPLIERS, "bit", (_row, implementation) => implementation, "policy");
+  protocol.policyValidators = Object.freeze(Object.keys(POLICY_APPLIERS).flatMap(name => {
+    const implementation = protocol.POLICIES[protocol[`POLICY_${name}`]];
+    return implementation.validate ? [implementation.validate] : [];
+  }));
+  protocol.policy_mask = facts.policies.reduce((mask, row) => mask | row.bit, 0);
+  protocol.PROPS = bind(facts.properties, PROPERTY_APPLIERS, "index", (row, implementation) => ({
+    name: row.name, elements: row.elements.length ? row.elements.map(name => name.toUpperCase()) : null, apply: implementation.apply,
+  }), "property");
+  protocol.PAYLOAD_KINDS = bind(facts.kinds, PAYLOAD_APPLIERS, "code", (row, implementation) => ({
+    events: row.events.length ? row.events : null, payload: implementation.payload,
+  }), "payload kind");
+  return Object.freeze(protocol);
+}
+
+const SCROLL_HISTORY = 4096;
+const U64_MAX = (1n << 64n) - 1n;
+
+// Observation retains weak identities rather than nodes or recycled command
+// addresses. Exhaustion disables observation, never the command it observes.
+// Observation never bounds application requests. Retained type bytes and
+// record count are bounded independently; ordinals remain absolute.
+class TransitionHistory {
+  constructor(maximum = U64_MAX) { this.maximum = maximum; this.clear(); }
+  clear() { this.count = 0n; this.exhausted = false; this.records = new Map(); this.bytes = 0; }
+  add(types, cause) {
+    if (this.exhausted) return;
+    if (this.count === this.maximum) { this.exhausted = true; this.records.clear(); this.bytes = 0; return; }
+    this.count += 1n;
+    const bytes = types.reduce((n, type) => n + 4 + utf8enc.encode(type).length, 0);
+    while (this.records.size && (this.records.size >= 4096 || this.bytes + bytes > 1048576)) {
+      const oldest = this.records.keys().next().value;
+      this.bytes -= this.records.get(oldest).bytes; this.records.delete(oldest);
+    }
+    if (bytes <= 1048576) {
+      this.records.set(this.count, { ordinal: this.count, types: types.slice(), cause, bytes });
+      this.bytes += bytes;
+    }
+  }
+  total() { if (this.exhausted) throw new Error("transition history ordinal exhausted"); return this.count; }
+  at(ordinal) {
+    this.total();
+    if (ordinal < 1n || ordinal > this.count) throw new Error(`transition ${ordinal} has not been performed`);
+    const record = this.records.get(ordinal);
+    if (!record) throw new Error(`transition ${ordinal} is outside retained transition history (newest 4096, at most 1048576 encoded type bytes)`);
+    return record;
+  }
+}
+
+class ScrollHistory {
+  constructor(maximum = U64_MAX) {
+    this.maximum = maximum;
+    this.clear();
+  }
+
+  clear() { this.count = 0n; this.exhausted = false; this.records = []; }
+
+  add(element, kind) {
+    if (this.exhausted) return;
+    if (this.count === this.maximum) { this.exhausted = true; this.records = []; return; }
+    this.count += 1n;
+    this.records[Number((this.count - 1n) % BigInt(SCROLL_HISTORY))] = { ordinal: this.count, target: new WeakRef(element), kind };
+  }
+
+  total() {
+    if (this.exhausted) throw new Error("scroll history ordinal exhausted");
+    return this.count;
+  }
+
+  at(ordinal) {
+    this.total();
+    if (ordinal < 1n || ordinal > this.count) throw new Error(`scroll command ${ordinal} was not performed`);
+    if (this.count - ordinal >= BigInt(SCROLL_HISTORY)) throw new Error(`scroll command ${ordinal} is outside retained scroll history (newest ${SCROLL_HISTORY})`);
+    const record = this.records[Number((ordinal - 1n) % BigInt(SCROLL_HISTORY))];
+    if (record.ordinal !== ordinal) throw new Error("scroll history has an incoherent ordinal");
+    return record;
+  }
+}
+
+// This manual-driver observer records actual modal entry, not DOM order or
+// the value an app requested. Neither links nor the reverse index own a node.
+class ModalOrder {
+  constructor() { this.clear(); }
+  clear() { this.byElement = new WeakMap(); this.head = null; this.tail = null; }
+  remove(element) {
+    const entry = this.byElement.get(element);
+    if (!entry) return;
+    if (entry.before) entry.before.after = entry.after; else this.head = entry.after;
+    if (entry.after) entry.after.before = entry.before; else this.tail = entry.before;
+    this.byElement.delete(element);
+  }
+  add(element) {
+    this.remove(element);
+    const entry = { element: new WeakRef(element), before: this.tail, after: null };
+    if (this.tail) this.tail.after = entry; else this.head = entry;
+    this.tail = entry;
+    this.byElement.set(element, entry);
+  }
+  top(root) {
+    while (this.tail) {
+      const element = this.tail.element.deref();
+      if (element?.isConnected && root.contains(element) && element.matches(":modal")) return element;
+      if (element) this.remove(element);
+      else {
+        this.tail = this.tail.before;
+        if (this.tail) this.tail.after = null; else this.head = null;
+      }
+    }
+    return null;
+  }
+}
+
+// A rendered map is indexed once. Dispatch visits only the matching chord's
+// entries, preserving the first declaration whose place applies.
+function keyModifiers(event) {
+  return (event.ctrlKey ? 1 : 0) | (event.altKey ? 2 : 0) | (event.shiftKey ? 4 : 0) | (event.metaKey ? 8 : 0);
+}
+function asciiLetter(key) { return /^[A-Za-z]$/.test(key); }
+function asciiAlnum(key) { return /^[A-Za-z0-9]$/.test(key); }
+// The browser supplies Unicode categories; the native oracle independently
+// uses roc-lang/unicode. The all-scalar browser contract checks their agreement.
+function symbolKey(key) {
+  return /^[\p{P}\p{S}]$/u.test(key);
+}
+function chordIndex(key, modifiers) {
+  return `${symbolKey(key) ? modifiers & ~4 : modifiers}:${asciiLetter(key) ? key.toLowerCase() : key}`;
+}
+function textEntry(target, excluded) {
+  if (target?.nodeType !== 1) target = target?.parentElement;
+  return !!target && (target.tagName === "TEXTAREA" || target.tagName === "SELECT" ||
+    (target.tagName === "INPUT" && !excluded.includes(target.type)) || target.isContentEditable);
+}
+function parseKeymap(value) {
+  const bytes = utf8enc.encode(value);
+  const exact = new Map(), physical = new Map();
+  let every = null, at = 0;
+  const add = (index, key, entry) => {
+    const entries = index.get(key);
+    if (entries) entries.push(entry); else index.set(key, [entry]);
+  };
+  while (at < bytes.length) {
+    const policy = bytes[at++];
+    if ((policy === 97 || policy === 111) && bytes[at] === 42) {
+      at += 1;
+      if (at !== bytes.length || every !== null) throw new Error("keymap every must occur once at the end");
+      every = { outside: policy === 111, prevent: false };
+      continue;
+    }
+    if (policy !== 112 && policy !== 107) throw new Error("invalid keymap policy");
+    const place = bytes[at++];
+    if (place !== 97 && place !== 111) throw new Error("invalid keymap place");
+    let modifiers = 0;
+    for (let bit = 0; bit < 4; bit += 1) {
+      const flag = bytes[at++];
+      if (flag === [67, 65, 83, 77][bit]) modifiers |= 1 << bit;
+      else if (flag !== 45) throw new Error("invalid keymap modifier");
+    }
+    const start = at;
+    while (bytes[at] >= 48 && bytes[at] <= 57) at += 1;
+    if (at === start || bytes[at++] !== 58 || (at - start > 2 && bytes[start] === 48)) throw new Error("invalid keymap key length");
+    const length = Number(new TextDecoder().decode(bytes.subarray(start, at - 1)));
+    if (!Number.isSafeInteger(length) || length > bytes.length - at) throw new Error("invalid keymap key length");
+    const key = utf8.decode(bytes.subarray(at, at + length));
+    at += length;
+    const entry = { key, modifiers, outside: place === 111, prevent: policy === 112 };
+    add(exact, chordIndex(key, modifiers), entry);
+    if (asciiAlnum(key)) {
+      const code = asciiLetter(key) ? `Key${key.toUpperCase()}` : `Digit${key}`;
+      add(physical, `${modifiers}:${code}`, entry);
+    }
+  }
+  return { exact, physical, every };
+}
+function matchKey(map, event, excluded) {
+  if (!map || typeof event.key !== "string" || event.key === "") return null;
+  const outside = !textEntry(event.target, excluded);
+  const first = (entries) => entries?.find((entry) => !entry.outside || outside) ?? null;
+  if (!event.isComposing && event.keyCode !== 229) {
+    const modifiers = keyModifiers(event);
+    const exact = first(map.exact.get(chordIndex(event.key, modifiers)));
+    if (exact) return exact;
+    if (!asciiAlnum(event.key)) {
+      const physical = first(map.physical.get(`${modifiers}:${event.code}`));
+      if (physical) return physical;
+    }
+  }
+  if (map.every && (!map.every.outside || outside)) return { ...map.every, key: event.key, modifiers: keyModifiers(event) };
+  return null;
+}
+function keyPayload(event, heard) {
+  if (!event.key.isWellFormed() || !(event.code ?? "").isWellFormed()) throw new Error("key event contains malformed UTF-16");
+  const flags = keyModifiers(event) | (event.repeat ? 16 : 0) | (event.isComposing || event.keyCode === 229 ? 32 : 0);
+  return concat([new Uint8Array([flags]), encStr(event.key), encStr(event.code ?? ""), new Uint8Array([heard.modifiers]), encStr(heard.key)]);
 }
 
 const utf8enc = new TextEncoder();
@@ -423,6 +1468,23 @@ function tokenAt(dv, i, at = 0) {
   return dv.getUint32(at + 8 * i, true) + dv.getUint32(at + 8 * i + 4, true) * 0x100000000;
 }
 
+
+function fileRange(dv, at) {
+  const token = tokenAt(dv, 0, at), start = tokenAt(dv, 0, at + 8), len = tokenAt(dv, 0, at + 16);
+  if (![token, start, len, start + len].every(Number.isSafeInteger)) throw new Error("file range exceeds the safe integer boundary");
+  return { token, start, len };
+}
+
+// Storage uses UTF-16 strings. Refuse unrepresentable text rather than
+// letting TextEncoder silently replace a lone surrogate at the Roc boundary.
+function storageText(value) {
+  if (typeof value !== "string" || !value.isWellFormed()) throw new Error("storage returned text that is not well-formed Unicode");
+  return value;
+}
+
+function storageResult(value) {
+  return value === null ? new Uint8Array([RES_MISSING]) : concat([new Uint8Array([RES_VALUE]), utf8enc.encode(storageText(value))]);
+}
 
 function encStr(s) {
   const b = utf8enc.encode(s);
@@ -618,6 +1680,7 @@ export class WorkMonitor {
       if (pg !== null) {
         const counters = pg.counters ?? [];
         page = { memBytes: pg.memBytes, liveAllocs: pg.liveAllocs, liveBytes: pg.liveBytes, turns: counters.length > 30 ? Number(counters[30]) : 0 };
+        if (pg.captureRefused !== undefined) page.captureRefused = pg.captureRefused;
         if (counters.length >= ENGINE_FX_FIRST + ENGINE_FX_NAMES.length) {
           engine = Object.fromEntries(ENGINE_FX_NAMES.map((n, i) => [n, Number(counters[ENGINE_FX_FIRST + i])]));
         }
@@ -1206,7 +2269,8 @@ export class WorkMonitor {
 // it, and the next job prepares again. Placement never changes an answer:
 // a job's answer is what preparing afresh would give.
 class WorkPool {
-  constructor({ module, url, max, inline, Worker: W, monitor, maxBytes = Infinity, live = () => true }) {
+  constructor({ module, url, max, inline, Worker: W, monitor, faultClasses, maxBytes = Infinity, live = () => true }) {
+    this.LOST_CLASSES = faultClasses;
     this.module = module;
     this.url = url;
     this.max = Math.max(1, max);
@@ -1491,7 +2555,7 @@ class WorkPool {
   // The worker can no longer be trusted: discard it and lose its job.
   lose(slot, lost, message) {
     const job = slot.job;
-    this.discard(slot, lost === LOST_EXECUTOR ? "executor" : "fault", { class: LOST_CLASSES[lost], message });
+    this.discard(slot, lost === LOST_EXECUTOR ? "executor" : "fault", { class: this.LOST_CLASSES[lost], message });
     if (job !== null) {
       job.slot = null;
       this.settle(job, { lost, message });
@@ -1641,7 +2705,7 @@ class WorkPool {
           this.inlineKey = null;
           this.inlineHeld.clear();
           this.terminated += 1;
-          mon.instanceEnded(this.inlineSeq, lost === LOST_EXECUTOR ? "executor" : "fault", { class: LOST_CLASSES[lost], message });
+          mon.instanceEnded(this.inlineSeq, lost === LOST_EXECUTOR ? "executor" : "fault", { class: this.LOST_CLASSES[lost], message });
           this.settle(job, { lost, message });
         }
       }
@@ -1703,19 +2767,122 @@ function httpResult(status, body, headers = []) {
   return concat(parts);
 }
 
+// The deployment marks the mount wrapper explicitly. No descendant spelling
+// assigns an engine address or an adoption role.
+const PICTURE_MARKER = "data-roc-picture";
+const PICTURE_FAILED = "data-roc-failed";
+const PICTURE_INERT = "data-roc-picture-inert";
+const PICTURE_INERT_PARENT = "data-roc-picture-inert-parent";
+const PICTURE_HOLD = Symbol("roc-picture-hold");
+
+class PictureBootstrapError extends Error {
+  constructor(rule) { super(`picture bootstrap: ${rule}`); this.rule = rule; }
+}
+
+function markedPicture(root) {
+  return root?.nodeType === 1 && root.hasAttributeNS(null, PICTURE_MARKER);
+}
+
+function pictureDescriptorMatches(candidate) {
+  return candidate?.nodeType === 1 && candidate.namespaceURI === HTML_NS && candidate.localName === "script" && candidate.getAttributeNS(null, "type") === "application/json" && candidate.getAttributeNS(null, "data-roc-picture-envelope") === "1";
+}
+
+function pictureInertOwner(root) {
+  if (root.namespaceURI === HTML_NS) return root;
+  const parent = root.parentElement;
+  if (parent?.namespaceURI !== HTML_NS || parent.getAttributeNS(null, PICTURE_INERT_PARENT) !== "") throw new PictureBootstrapError("a non-HTML picture root requires its explicitly marked immediate HTML parent");
+  const next = root.nextElementSibling;
+  if (parent.firstElementChild !== root || (next !== null && (!pictureDescriptorMatches(next) || next.nextElementSibling !== null))) throw new PictureBootstrapError("the inert parent must contain only its root and optional associated descriptor as element children");
+  return parent;
+}
+
+function keepPictureHold(root) {
+  const hold = root[PICTURE_HOLD];
+  if (hold && !hold.owner.hasAttributeNS(null, "inert")) hold.owner.setAttributeNS(null, "inert", "");
+}
+
+function holdPicture(root) {
+  // Resolve only the declared edge. A failed loader retains this Root-local
+  // owner token across retries; it never discovers another owner on cleanup.
+  const owner = pictureInertOwner(root), previous = root[PICTURE_HOLD];
+  if (previous && previous.owner !== owner) throw new PictureBootstrapError("the recorded inert owner changed before mount");
+  if (!previous) {
+    const added = owner.getAttributeNS(null, PICTURE_INERT) === "added";
+    root[PICTURE_HOLD] = { owner, inert: !added && owner.hasAttributeNS(null, "inert") };
+  }
+  keepPictureHold(root);
+}
+
+function restorePictureHold(runtime) {
+  const hold = runtime.root[PICTURE_HOLD];
+  if (!hold) return;
+  delete runtime.root[PICTURE_HOLD];
+  hold.owner.removeAttributeNS(null, PICTURE_INERT);
+  if (!hold.inert) hold.owner.removeAttributeNS(null, "inert");
+}
+
+function clearPictureBootstrap(runtime) {
+  if (!runtime.pictureManaged) return;
+  runtime.picturePending = false;
+  runtime.root.removeAttributeNS(null, PICTURE_MARKER);
+  runtime.root.removeAttributeNS(null, PICTURE_FAILED);
+  restorePictureHold(runtime);
+}
+
+function failPicture(root) {
+  root.setAttributeNS(null, PICTURE_FAILED, "");
+}
+
+function finishPicture(runtime) {
+  if (!runtime.picturePending) return;
+  holdPicture(runtime.root);
+  clearPictureBootstrap(runtime);
+}
+
+// A module can fail before there is a runtime whose containment path can
+// report it. Keep the document's picture and use the same fault vocabulary.
+function pictureLoadFault(root, error, onFault) {
+  keepPictureHold(root);
+  failPicture(root);
+  const message = String(error?.message ?? error);
+  const fault = { class: "executor", code: 0, message, trap: String(error) };
+  console.error(`roc engine fault [executor]: ${message}`);
+  if (onFault) onFault(fault);
+}
+
 export class RocEngineRuntime {
   constructor(exports, root, options = {}) {
     this.x = exports;
     this.root = root;
+    this.pictureManaged = markedPicture(root);
+    this.picturePending = this.pictureManaged;
+    if (this.picturePending) holdPicture(root);
     this.doc = options.document ?? globalThis.document;
     this.statics = [];
     this.sites = [];
     this.templates = [];
     this.listening = new Map();
     this.internal = [];
-    this.onEvent = (event) => this.handle(event);
+    this.documentKeys = new Map();
+    this.documentListeners = new Map();
+    this.heardKeys = new WeakSet();
+    this.onEvent = (event) => { if (!this.picturePending && event.bubbles) this.guard(() => this.handle(event)); };
+    this.onCapture = (event) => { if (!this.picturePending && !event.bubbles) this.guard(() => this.handle(event)); };
     this.busy = false;
-    this.queue = [];
+    this.pendingTransition = null;
+    this.transitionIdle = Promise.resolve();
+    this.transitionIdleState = null;
+    this.transitionEpoch = {};
+    this.viewTransitions = options.viewTransitions ?? "document";
+    if (this.viewTransitions !== "document" && this.viewTransitions !== "off") throw new TypeError('viewTransitions must be "document" or "off"');
+    this.queue = { head: null, tail: null, length: 0 };
+    this.reportSources = new Map();
+    this.reportEpoch = {};
+    this.reportsReplaced = 0;
+    this.reportDrain = null;
+    this.reportDue = false;
+    this.pointerLog = [];
+    this.captureRefused = 0;
     this.poisoned = null;
     this.refused = 0;
     this.onFault = options.onFault ?? null;
@@ -1726,7 +2893,7 @@ export class RocEngineRuntime {
     // Work jobs wait for runEffect(id) while every other effect runs on its
     // own (soak walks hold workers so results arrive in issue order).
     this.manualWork = options.manualWork ?? false;
-    // Armed HTTP timeout timers (for tests: must return to 0).
+    // Armed request timeout and progress timers (must return to zero).
     this.timers = 0;
     this.fxOut = [];
     // id -> { kind, req, cancel } for every effect this runtime holds.
@@ -1734,6 +2901,22 @@ export class RocEngineRuntime {
     // Manual mode: awaited non-subscription requests in issue order.
     this.issued = [];
     this.win = options.window ?? globalThis.window;
+    const environment = options.environment === undefined ? {} : options.environment;
+    if (typeof environment !== "object" || environment === null || Array.isArray(environment)) throw new Error("options.environment must be an object of readers");
+    for (const key of Object.keys(environment)) {
+      if (!["online", "visible", "matchMedia", "now", "seed", "languages", "timeZone"].includes(key)) throw new Error(`options.environment has an unknown reader "${key}"`);
+      if (typeof environment[key] !== "function") throw new Error(`options.environment.${key} must be a function`);
+    }
+    this.environment = environment;
+    // One registration per live observed element and kind. The reverse index
+    // releases only an owning node's registrations, including row descendants.
+    this.observations = new Map();
+    this.observationOwners = new Map();
+    this.layoutObservers = new Map();
+    this.mediaQueries = [];
+    this.manualScrollers = this.manual ? new Map() : null;
+    this.pendingManualScrolls = new Set();
+    this.manualScrollError = null;
     // HTTP requests go through options.fetch when one is given (an embedding
     // page's scripted backend; it may answer synchronously), else the
     // global fetch.
@@ -1769,6 +2952,11 @@ export class RocEngineRuntime {
     // Manual mode: the files the app saved (`SAVE`), in order, as
     // { name, blob }, for a spec to read.
     this.saveLog = [];
+    this.scrollLog = this.manual ? new ScrollHistory() : null;
+    this.transitionLog = this.manual ? new TransitionHistory() : null;
+    this.modalOrder = this.manual ? new ModalOrder() : null;
+    this.nativeTasks = new Map();
+    this.nativeObservationError = null;
     // Ports (see "Ports" above): the page's handlers, the app's declared
     // ports (read at mount), push subscriptions by port, the command log of
     // manual mode, and per-port counters for the monitor.
@@ -1783,6 +2971,23 @@ export class RocEngineRuntime {
     this.portLog = [];
     this.portCounts = new Map();
     this.ending = null;
+    this.leaveGuard = false;
+    this.leaveListener = null;
+    this.storageChanges = new Map();
+    this.storageListener = null;
+    this.storageFailureHead = null;
+    this.storageFailureTail = null;
+    this.storageFailureEpoch = {};
+    this.storageFailureSubscribers = new Map();
+    this.storageFailureCount = 0;
+    this.storageFailureTask = null;
+    this.clipboardText = "";
+    this.clipboardHtml = "";
+    this.clipboardWrites = 0n;
+    this.clipboardObservationError = null;
+    this.manualClipboardDenied = options.manualClipboardDenied ?? false;
+    this.maxPasteBytes = options.maxPasteBytes ?? 4 * 1024 * 1024;
+    if (!Number.isSafeInteger(this.maxPasteBytes) || this.maxPasteBytes < 0) throw new Error("maxPasteBytes must be a nonnegative safe integer");
     // Observation of jobs, workers and turns (options.monitor; see "The
     // monitor" above). It never changes what this runtime does.
     this.monitor = new WorkMonitor(options.monitor ?? {}, {
@@ -1798,34 +3003,111 @@ export class RocEngineRuntime {
         return null;
       }
     })();
+    this.sessionStorage = options.sessionStorage ?? (() => {
+      try { return this.win.sessionStorage; }
+      catch { return null; }
+    })();
   }
 
-  // Boot: check the protocol version, read the app's declared storage keys,
-  // stage the URL, their values and the online, visibility and storage
-  // flags, then
-  // mount. A module that speaks another protocol is refused before anything
-  // runs: the runtime throws and never applies a command it cannot read.
-  mount() {
-    const version = typeof this.x.protocol_version === "function" ? this.x.protocol_version() : 0;
-    if (version !== PROTOCOL_VERSION) {
-      throw new Error(`roc engine protocol ${version} is not the protocol ${PROTOCOL_VERSION} this runtime implements`);
+  // The last applied GUARD is the complete policy. This listener never
+  // enters Roc and deliberately survives poisoning of the visible page.
+  setLeaveGuard(on) {
+    if (on === this.leaveGuard) return;
+    this.leaveGuard = on;
+    if (on) {
+      this.leaveListener = event => { event.preventDefault(); event.returnValue = true; };
+      this.win.addEventListener("beforeunload", this.leaveListener);
+    } else if (this.leaveListener !== null) {
+      this.win.removeEventListener("beforeunload", this.leaveListener);
+      this.leaveListener = null;
     }
-    // The app's port declarations, checked against options.ports before
-    // anything mounts: a mismatch throws, and nothing runs.
-    const boot = this.guard(() => readBootKeys(this.x));
-    if (this.poisoned) return;
-    this.bootKeys = boot.keys;
-    this.portDecls = new Map(boot.decls.map((d) => [d.name, d]));
-    checkPortHandlers(boot.decls, this.ports, this.manual);
-    this.monitor.runtimeMounted();
-    this.guard(() => this.mountInner());
-    this.drainQueue();
   }
 
-  mountInner() {
-    this.controlListeners();
-    this.listen("click");
-    const x = this.x;
+  // Manual assertions observe the last successful write and an exact count,
+  // never retain earlier clipboard contents or affect request performance.
+  clipboardSnapshot() {
+    if (this.clipboardObservationError) throw new Error(this.clipboardObservationError);
+    return { text: this.clipboardText, html: this.clipboardHtml, writes: this.clipboardWrites.toString() };
+  }
+
+  unlinkStorageFailure(item) {
+    if (item.previous) item.previous.next = item.next;
+    else this.storageFailureHead = item.next;
+    if (item.next) item.next.previous = item.previous;
+    else this.storageFailureTail = item.previous;
+    item.owner.pendingFailures.delete(item);
+    item.next = null; item.previous = null;
+    this.storageFailureCount -= 1;
+  }
+
+  clearStorageFailures() {
+    if (this.storageFailureTask !== null) clearTimeout(this.storageFailureTask);
+    this.storageFailureTask = null;
+    while (this.storageFailureHead) this.unlinkStorageFailure(this.storageFailureHead);
+    this.storageFailureEpoch = {};
+  }
+
+  storageWriteFailed(fx, error) {
+    if (this.storageFailureSubscribers.size === 0) return;
+    if (this.storageFailureCount + this.storageFailureSubscribers.size + this.queue.length > MAX_QUEUED) {
+      this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} pending storage failures and ingress entries`), "resource_limit");
+      return;
+    }
+    const payload = concat([new Uint8Array([RES_STORAGE_FAILED, fx.session ? 2 : 1, error?.name === "QuotaExceededError" ? 1 : 2]), utf8enc.encode(fx.key)]);
+    for (const [id, owner] of this.storageFailureSubscribers) {
+      const item = { id, owner, payload, epoch: this.storageFailureEpoch, previous: this.storageFailureTail, next: null };
+      if (this.storageFailureTail) this.storageFailureTail.next = item;
+      else this.storageFailureHead = item;
+      this.storageFailureTail = item;
+      owner.pendingFailures.add(item);
+      this.storageFailureCount += 1;
+    }
+    if (this.storageFailureTask === null) this.storageFailureTask = setTimeout(() => {
+      this.storageFailureTask = null;
+      const epoch = this.storageFailureEpoch;
+      this.storageFailureEpoch = {};
+      // A write made by a delivered failure belongs to the next task, even
+      // when it appends while this callback is draining earlier failures.
+      while (this.storageFailureHead?.epoch === epoch && !this.poisoned && !this.ending) {
+        const item = this.storageFailureHead;
+        this.unlinkStorageFailure(item);
+        if (this.live.get(item.id) === item.owner) this.result(item.id, item.payload);
+      }
+    }, 0);
+  }
+
+  // Boot: check the protocol version and declaration sections, then read
+  // browser facts through the checked environment seam and stage their
+  // sections. A module that speaks another protocol is refused before
+  // anything runs: the runtime throws and never applies an unreadable command.
+  mount() {
+    try {
+      const version = typeof this.x.protocol_version === "function" ? this.x.protocol_version() : 0;
+      if (version !== PROTOCOL_VERSION) {
+        throw new Error(`roc engine protocol ${version} is not the protocol ${PROTOCOL_VERSION} this runtime implements`);
+      }
+      // The app's port declarations, checked against options.ports before
+      // anything mounts: a mismatch throws, and nothing runs.
+      const boot = readDeclarations(this.x);
+      this.protocol = boot.bindings;
+      this.bootKeys = boot.keys;
+      this.sessionKeys = boot.sessionKeys;
+      this.mediaQueries = boot.media;
+      this.zoneDays = boot.zoneDays;
+      this.portDecls = new Map(boot.decls.map((d) => [d.name, d]));
+      checkPortHandlers(boot.decls, this.ports, this.manual);
+      const bytes = this.bootBytes();
+      this.monitor.runtimeMounted();
+      this.guard(() => this.mountInner(bytes));
+      this.drainQueue();
+    } catch (error) {
+      if (this.pictureManaged && !this.poisoned) this.contain(error, "executor");
+      throw error;
+    }
+  }
+
+  bootBytes() {
+    const mountRoot = mountRootBytes(this.root, this.protocol);
     // Read before mount with the port table (see mount()).
     const keys = this.bootKeys;
     // Storage is unavailable when there is none or any read throws; then
@@ -1834,26 +3116,64 @@ export class RocEngineRuntime {
     const pairs = [];
     for (const k of keys) {
       if (!storageOk) break;
-      try {
-        const v = this.storage.getItem(k);
-        if (v !== null) pairs.push([k, v]);
-      } catch (_) {
-        storageOk = false;
-      }
+      let value;
+      try { value = this.storage.getItem(k); }
+      catch { storageOk = false; continue; }
+      if (value !== null) pairs.push([k, storageText(value)]);
     }
     if (!storageOk) pairs.length = 0;
+    let sessionOk = !!this.sessionStorage && typeof this.sessionStorage.getItem === "function";
+    const session = [];
+    for (const key of this.sessionKeys) {
+      if (!sessionOk) break;
+      let value;
+      try { value = this.sessionStorage.getItem(key); }
+      catch { sessionOk = false; continue; }
+      if (value !== null) session.push([key, storageText(value)]);
+    }
+    if (!sessionOk) session.length = 0;
     const loc = this.win ? this.win.location : null;
-    const url = loc ? loc.pathname + loc.search + loc.hash : "";
-    const parts = [encStr(url), u32(pairs.length)];
-    for (const [k, v] of pairs) parts.push(encStr(k), encStr(v));
-    parts.push(new Uint8Array([this.isOnline() ? 1 : 0, this.isVisible() ? 1 : 0, storageOk ? 1 : 0]));
-    this.stage(concat(parts));
+    const url = loc ? loc.pathname + loc.search + loc.hash : "/";
+    // The default zone probe uses this exact mount sample rather than
+    // reading a second clock value. Injected zone readers retain their one
+    // argument: the span the program declares, in days each side of mount.
+    const now = this.readNow();
+    const seed = checkedSeed(this.environment.seed ? this.environment.seed() : browserSeed());
+    const languages = checkedLanguages(this.environment.languages ? this.environment.languages() : browserLanguages(this.win?.navigator));
+    const zone = this.environment.timeZone ? checkedZone(this.environment.timeZone(this.zoneDays)) : probeTimeZone(this.zoneDays, now);
+    const sections = [
+      { tag: 1, write: () => encStr(url) },
+      { tag: 2, write: () => concat([new Uint8Array([storageOk ? 1 : 0]), u32(pairs.length), ...pairs.flatMap(([k, v]) => [encStr(k), encStr(v)])]) },
+      { tag: 3, write: () => new Uint8Array([this.isOnline() ? 1 : 0]) },
+      { tag: 4, write: () => new Uint8Array([this.isVisible() ? 1 : 0]) },
+      { tag: 6, write: () => new Uint8Array(this.mediaQueries.map((query) => this.mediaMatch(this.mediaQuery(query)) ? 1 : 0)) },
+      { tag: 7, write: () => i64Bytes(now) },
+      { tag: 8, write: () => seed },
+      { tag: 9, write: () => concat([u32(languages.length), ...languages.map(encStr)]) },
+      { tag: 10, write: () => concat([encStr(zone.name), i64Bytes(zone.from_ms), i64Bytes(zone.until_ms), u32(zone.offsets.length), ...zone.offsets.flatMap(offset => [i64Bytes(offset.from_ms), i32Bytes(offset.minutes)])]) },
+      { tag: 11, write: () => concat([new Uint8Array([sessionOk ? 1 : 0]), u32(session.length), ...session.flatMap(([key, value]) => [encStr(key), encStr(value)])]) },
+      { tag: 13, write: () => mountRoot },
+    ];
+    return concat(sections.map(({ tag, write }) => {
+      const body = write();
+      return concat([new Uint8Array([tag]), u32(body.length), body]);
+    }));
+  }
+
+  mountInner(bytes) {
+    this.controlListeners();
+    this.nativeEventListeners();
+    this.documentKeyListeners();
+    this.listen("click");
+    this.listen("submit");
+    const x = this.x;
+    this.stage(bytes);
     this.busy = true;
     try {
       x.init();
       this.apply();
     } finally {
-      this.busy = false;
+      this.busy = this.pendingTransition !== null;
     }
   }
 
@@ -1873,21 +3193,24 @@ export class RocEngineRuntime {
     try {
       return fn();
     } catch (e) {
-      this.contain(e);
+      this.contain(e, e instanceof ContractFault ? "contract" : null);
       return null;
     }
   }
 
-  // `klass` names a fault the runtime itself classifies (the ingress bound);
+  // `klass` names a fault the runtime itself classifies (an ingress bound
+  // or a value property applied to a file input);
   // otherwise the instance's fault class decides, and a trap the instance
   // did not classify is an executor failure.
   contain(error, klass = null) {
+    this.cancelTransition();
     if (this.poisoned) return;
-    const CLASSES = ["executor", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed"];
+    if (this.pictureManaged) failPicture(this.root);
+    if (this.picturePending) keepPictureHold(this.root);
     let code = 0;
     let message = String(error && error.message ? error.message : error);
     if (klass !== null) {
-      code = CLASSES.indexOf(klass);
+      code = klass === "executor" ? 0 : this.protocol.LOST_CLASSES.indexOf(klass);
     } else {
       try {
         code = this.x.fault();
@@ -1896,9 +3219,14 @@ export class RocEngineRuntime {
         code = 0;
       }
     }
-    this.poisoned = { class: CLASSES[code] ?? "unknown", code, message, trap: String(error) };
-    for (const [type, fn] of this.listening) this.root.removeEventListener(type, fn);
+    this.poisoned = { class: code === 0 ? "executor" : this.protocol.LOST_CLASSES[code] ?? "unknown", code, message, trap: String(error) };
+    for (const [type, listeners] of this.listening) {
+      this.root.removeEventListener(type, listeners.bubble);
+      if (listeners.capture) this.root.removeEventListener(type, listeners.capture, true);
+    }
     this.listening.clear();
+    this.clearDocumentKeys();
+    this.clearObservations();
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
     this.internal = [];
     this.monitor.runtimeEnding("contained");
@@ -1910,13 +3238,17 @@ export class RocEngineRuntime {
         // teardown is best effort and never re-enters Wasm
       }
     }
+    this.clearIngress();
+    this.clearStorageFailures();
     this.live.clear();
     this.pushSubs.clear();
     this.stopWorkers();
     this.files.clear();
     this.revokeUrls();
-    this.queue = [];
     this.fxOut = [];
+    this.nativeObservationError = null;
+    this.nativeTasks.clear();
+    if (this.modalOrder) this.modalOrder.clear();
     this.monitor.runtimeEnded("poisoned", this.poisoned);
     console.error(`roc engine fault [${this.poisoned.class}]: ${message}`);
     if (this.onFault) this.onFault(this.poisoned);
@@ -1924,18 +3256,27 @@ export class RocEngineRuntime {
 
   // A fresh instance from the same module; the poisoned one is abandoned.
   async recover() {
+    this.cancelTransition();
+    this.setLeaveGuard(false);
+    this.clearStorageFailures();
+    for (const id of [...this.live.keys()]) this.cancel(id);
     if (!this.module) throw new Error("recover() needs the compiled module (mountRocEngineApp keeps it)");
     const instance = await WebAssembly.instantiate(this.module, pageImports(this.module));
     this.x = instance.exports;
     this.root.textContent = "";
+    clearPictureBootstrap(this);
     this.statics = [];
     this.sites = [];
     this.templates = [];
+    this.clearIngress();
     this.live = new Map();
     this.files = new Map();
     this.revokeUrls();
     this.issued = [];
-    this.queue = [];
+    this.reportEpoch = {};
+    this.reportsReplaced = 0;
+    this.pointerLog = [];
+    this.captureRefused = 0;
     this.fxOut = [];
     this.busy = false;
     this.poisoned = null;
@@ -1943,28 +3284,104 @@ export class RocEngineRuntime {
     this.pushSubs = new Map();
     this.portLog = [];
     this.saveLog = [];
+    this.clipboardText = "";
+    this.clipboardHtml = "";
+    this.clipboardWrites = 0n;
+    this.clipboardObservationError = null;
+    this.scrollLog = this.manual ? new ScrollHistory() : null;
+    this.transitionLog = this.manual ? new TransitionHistory() : null;
+    this.modalOrder = this.manual ? new ModalOrder() : null;
+    this.nativeTasks = new Map();
+    this.nativeObservationError = null;
+    this.manualScrollers = this.manual ? new Map() : null;
+    this.pendingManualScrolls.clear();
+    this.manualScrollError = null;
     this.mount();
     return this;
   }
 
   unmount() {
+    this.cancelTransition();
+    this.setLeaveGuard(false);
+    this.clearStorageFailures();
     this.monitor.runtimeEnding("unmount");
     this.ending = "unmounted";
+    this.clearIngress();
     for (const id of [...this.live.keys()]) this.cancel(id);
     this.pushSubs.clear();
     this.stopWorkers();
     this.monitor.runtimeEnded("unmounted");
-    for (const [type, fn] of this.listening) this.root.removeEventListener(type, fn);
+    for (const [type, listeners] of this.listening) {
+      this.root.removeEventListener(type, listeners.bubble);
+      if (listeners.capture) this.root.removeEventListener(type, listeners.capture, true);
+    }
     this.listening.clear();
+    this.clearDocumentKeys();
+    this.clearObservations();
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
     this.internal = [];
-    this.x.drop();
-    this.files.clear();
-    this.revokeUrls();
-    this.root.textContent = "";
-    this.statics = [];
-    this.sites = [];
-    this.templates = [];
+    try { this.x.drop(); }
+    finally {
+      this.files.clear();
+      this.revokeUrls();
+      this.root.textContent = "";
+      clearPictureBootstrap(this);
+      this.pictureManaged = false;
+      this.statics = [];
+      this.sites = [];
+      this.templates = [];
+      if (this.scrollLog) this.scrollLog.clear();
+      if (this.transitionLog) this.transitionLog.clear();
+      this.nativeTasks.clear();
+      if (this.modalOrder) this.modalOrder.clear();
+      this.nativeObservationError = null;
+      if (this.manualScrollers) this.manualScrollers.clear();
+      this.pendingManualScrolls.clear();
+      this.manualScrollError = null;
+    }
+  }
+
+  // Only the manual driver observes native queued UI callbacks. This does
+  // not deliver or schedule a turn: the browser's actual callbacks do that.
+  nativeEventListeners() {
+    if (!this.manual) return;
+    const on = (type, callback) => {
+      const listener = event => { if (!this.picturePending) callback(event); };
+      this.root.addEventListener(type, listener, true);
+      this.internal.push([type, listener]);
+    };
+    on("beforetoggle", (event) => {
+      const element = event.target;
+      const property = element.__shownControl ? 6 : element.__popoverControl ? 7 : 0;
+      if (!property) return;
+      const slot = property === 6 ? "__shownControl" : "__popoverControl";
+      const control = element[slot];
+      queueMicrotask(() => {
+        if (this.poisoned || this.ending || !element.isConnected || !this.root.contains(element) || element[slot] !== control || (event.cancelable && event.defaultPrevented)) return;
+        if (property === 6 && !element.matches(":modal")) this.modalOrder.remove(element);
+        const pending = this.nativeTasks.get(element) ?? { control, close: 0n, toggle: false };
+        if (property === 6 && event.newState === "closed") {
+          if (pending.close === U64_MAX) this.nativeObservationError = "native UI callback observation exhausted";
+          else pending.close += 1n;
+        }
+        if (property === 7 || element.__h?.toggle) pending.toggle = true;
+        if (pending.close || pending.toggle) this.nativeTasks.set(element, pending);
+      });
+    });
+    const completed = (event) => {
+      const pending = this.nativeTasks.get(event.target);
+      if (!pending) return;
+      if (event.type === "close" && pending.close) pending.close -= 1n;
+      if (event.type === "toggle") pending.toggle = false;
+      if (!pending.close && !pending.toggle) this.nativeTasks.delete(event.target);
+    };
+    on("close", completed);
+    on("toggle", completed);
+  }
+
+  nativeEventsReady() {
+    if (this.nativeObservationError) throw new Error(this.nativeObservationError);
+    return this.nativeTasks.size === 0;
   }
 
   // Controlled-input bookkeeping: composition flags, deferred values applied
@@ -1972,23 +3389,33 @@ export class RocEngineRuntime {
   // (capture) and independently of the app's own handlers.
   controlListeners() {
     const on = (type, fn) => {
-      this.root.addEventListener(type, fn, true);
-      this.internal.push([type, fn]);
+      const listener = event => { if (!this.picturePending) fn(event); };
+      this.root.addEventListener(type, listener, true);
+      this.internal.push([type, listener]);
     };
     on("compositionstart", (e) => {
       e.target.__composing = true;
     });
     on("compositionend", (e) => {
-      e.target.__composing = false;
+      const t = e.target;
+      t.__composing = false;
+      if (t.__applyValue) {
+        t.__applyValue = false;
+        applyRenderedValue(t);
+      }
     });
     on("input", (e) => {
       const t = e.target;
       if (t.__deferred !== undefined && t.__deferred === t.value) t.__deferred = undefined;
+      if (t.__applyValue && t.value === t.__renderedValue) t.__applyValue = false;
     });
     on("focusout", (e) => {
       const t = e.target;
       t.__composing = false;
-      if (t.__deferred !== undefined) {
+      if (t.__applyValue) {
+        t.__applyValue = false;
+        applyRenderedValue(t);
+      } else if (t.__deferred !== undefined) {
         const v = t.__deferred;
         t.__deferred = undefined;
         if (t.value !== v) t.value = v;
@@ -1996,33 +3423,38 @@ export class RocEngineRuntime {
     });
   }
 
-  // One delegated listener per event type, added the first time a LISTEN
-  // command or template hole names that type.
+  // Two delegated listeners per event type, added the first time a LISTEN
+  // command or template hole names that type. The event's own bubbles flag
+  // selects exactly one; non-bubbling events only find their target's handler.
   // App "focus"/"blur" handlers listen to the bubbling focusin/focusout.
   listen(type) {
     const dom = DOM_EVENT[type] ?? type;
     if (this.listening.has(dom)) return;
-    this.listening.set(dom, this.onEvent);
+    this.listening.set(dom, { bubble: this.onEvent, capture: this.onCapture });
     this.root.addEventListener(dom, this.onEvent);
-    if (dom === "drop" && !this.listening.has("dragover")) {
+    this.root.addEventListener(dom, this.onCapture, true);
+    if (dom === "drop") {
       // A drop target that takes files lets the drop happen (see "Handler
-      // event names" above); dragover reaches no app handler.
+      // event names" above); this helper itself dispatches no app event.
       const over = (event) => {
+        if (this.picturePending) return;
         for (let node = event.target; node && node !== this.root; node = node.parentNode) {
           const h = node.__h && node.__h.drop;
           if (h !== undefined) {
-            if (h.files) event.preventDefault();
+            if (h.kind === this.protocol.KIND_FILES) event.preventDefault();
             return;
           }
         }
       };
-      this.listening.set("dragover", over);
-      this.root.addEventListener("dragover", over);
+      // This default-action helper is independent of app delegation: a
+      // later LISTEN for dragover must still register its own handlers.
+      this.internal.push(["dragover", over]);
+      this.root.addEventListener("dragover", over, true);
     }
   }
 
-  // The nearest handler for this event type walking up from the target
-  // (bubbling), then the nearest node carrying an engine id.
+  // Find the target's handler, or for a bubbling event the nearest ancestor
+  // handler, then its nearest routing id. Reference ids never route events.
   handle(event) {
     const type = APP_EVENT[event.type] ?? event.type;
     // Forms are app-managed: a submit never navigates (design.md,
@@ -2030,66 +3462,554 @@ export class RocEngineRuntime {
     if (event.type === "submit") event.preventDefault();
     let node = event.target;
     let handler = null;
+    let declaring = null;
+    let heard = null;
     while (node && node !== this.root) {
-      if (handler === null && node.__h !== undefined) {
+      if (handler === null && (event.bubbles || node === event.target) && node.__h !== undefined) {
         const h = node.__h[type];
-        if (h !== undefined) handler = h;
+        if (h !== undefined && !(h.policies & this.protocol.POLICY_DOCUMENT)) {
+          const match = h.kind === this.protocol.KIND_KEY ? matchKey(type === "keydown" ? node.__keymapDown : node.__keymapUp, event, this.protocol.text_entry_excluded) : null;
+          if (h.kind !== this.protocol.KIND_KEY || match) { handler = h; declaring = node; heard = match; }
+        }
       }
       if (node.__rn !== undefined && handler !== null) {
-        if (handler.prevent) event.preventDefault();
-        if (handler.files) {
-          // The browser empties a drop's or a paste's file list after the
-          // event, so the files are captured now.
-          const files = filesOf(event);
-          if (files.length > 0) this.dispatch(node.__rn, handler.h, { files }, node);
-        } else this.dispatch(node.__rn, handler.h, payloadOf(event), node);
+        if (heard?.prevent || (handler.policies & this.protocol.POLICY_PREVENT) !== 0 || (handler.kind === this.protocol.KIND_FILES && type === "drop") || handler.kind === this.protocol.KIND_PASTE) this.protocol.POLICIES[this.protocol.POLICY_PREVENT].perform(event);
+        // A non-bubbling event is heard during capture; stopping it there
+        // would prevent its target's own listeners from running.
+        if (event.bubbles && (handler.policies & this.protocol.POLICY_STOP) !== 0) this.protocol.POLICIES[this.protocol.POLICY_STOP].perform(event);
+        if ((handler.policies & this.protocol.POLICY_CAPTURE) !== 0) {
+          try { declaring.setPointerCapture(event.pointerId); }
+          catch (_) {
+            this.captureRefused += 1;
+            this.monitor.emit({ kind: "pointer-capture-refused", pointer: event.pointerId, at: this.monitor.tick() });
+          }
+        }
+        if (handler.kind === this.protocol.KIND_KEY) {
+          this.heardKeys.add(event);
+          this.dispatch(node.__rn, handler.h, keyPayload(event, heard), node);
+        } else if (handler.kind === this.protocol.KIND_POINTER) {
+          const pointer = this.pointerPayload(event);
+          if (this.manual) {
+            if (this.pointerLog.length >= MAX_QUEUED) {
+              this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} pointer dispatches before the replay drained its log`), "resource_limit");
+              return;
+            }
+            this.pointerLog.push({ type, id: event.pointerId, kind: event.pointerType || "other", at: pointer.at, paced: (handler.policies & this.protocol.POLICY_PACED) !== 0 });
+          }
+          const source = (handler.policies & this.protocol.POLICY_PACED) !== 0 ? this.pointerSource(declaring, handler, event.pointerId) : undefined;
+          this.dispatch(node.__rn, handler.h, pointer.bytes, node, source);
+        } else if (handler.kind === this.protocol.KIND_PASTE) {
+          // getData returns the whole DOMString; the browser exposes no
+          // pre-read size check. UTF-8 needs at least one byte per UTF-16
+          // code unit, so reject this lower bound before any Unicode scan.
+          const text = event.clipboardData?.getData("text/plain") ?? "";
+          if (text.length > this.maxPasteBytes) {
+            this.dispatch(node.__rn, handler.h, new Uint8Array([1]), node);
+            return;
+          }
+          if (!text.isWellFormed()) throw new Error("paste text is not well-formed Unicode");
+          let bytes = 0;
+          for (const character of text) {
+            const point = character.codePointAt(0);
+            bytes += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+            if (bytes > this.maxPasteBytes) break;
+          }
+          const payload = bytes > this.maxPasteBytes ? new Uint8Array([1]) : concat([new Uint8Array([0]), utf8enc.encode(text)]);
+          this.dispatch(node.__rn, handler.h, payload, node);
+        } else if (handler.kind === this.protocol.KIND_SCROLL) {
+          this.observeManualScroll(declaring);
+          const position = this.scrollPosition(declaring);
+          this.dispatch(node.__rn, handler.h, concat([u32(position.top), u32(position.left)]), node, this.elementReportSource(declaring, type, handler));
+        } else {
+          if (type === "scroll") this.observeManualScroll(declaring);
+          const payload = this.protocol.PAYLOAD_KINDS[handler.kind].payload(event);
+          if (payload !== null) this.dispatch(node.__rn, handler.h, payload, node);
+        }
         return;
       }
       node = node.parentNode;
     }
   }
 
-  // Events raised while a batch is being applied (or while Wasm runs) are
-  // queued and delivered in order after it; they never re-enter.
-  // `el` (DOM events only): a queued event is dropped if its element left
-  // the DOM or its node id was recycled meanwhile (ids are reused).
-  dispatch(node, handler, payload, el) {
-    if (this.poisoned) {
-      this.refused += 1;
+  // Fix each instance's document-listener position at mount, independently
+  // of when conditional declarations first appear or which key phase they use.
+  documentKeyListeners() {
+    for (const type of ["keydown", "keyup"]) {
+      this.documentKeys.set(type, []);
+      const listener = (event) => this.guard(() => {
+        if (this.picturePending || this.heardKeys.has(event)) return;
+        const live = this.documentKeys.get(type);
+        for (let i = live.length - 1; i >= 0; i -= 1) {
+          const { el: declaring, handler: h } = live[i];
+          const heard = matchKey(type === "keydown" ? declaring.__keymapDown : declaring.__keymapUp, event, this.protocol.text_entry_excluded);
+          if (!heard) continue;
+          if (heard.prevent) event.preventDefault();
+          if (h.policies & this.protocol.POLICY_STOP) this.protocol.POLICIES[this.protocol.POLICY_STOP].perform(event);
+          this.heardKeys.add(event);
+          this.dispatch(declaring.__rn, h.h, keyPayload(event, heard), declaring);
+          return;
+        }
+      });
+      this.documentListeners.set(type, listener);
+      this.doc.addEventListener(type, listener);
+    }
+  }
+
+  registerDocumentKey(el, type, handler) {
+    this.documentKeys.get(type).push({ el, handler });
+  }
+
+  releaseNode(el) {
+    this.releaseObservations(el);
+    for (const [type, entries] of this.documentKeys) {
+      this.documentKeys.set(type, entries.filter((entry) => entry.el !== el));
+    }
+  }
+
+  clearDocumentKeys() {
+    for (const [type, listener] of this.documentListeners) this.doc.removeEventListener(type, listener);
+    this.documentListeners.clear();
+    this.documentKeys.clear();
+    this.heardKeys = new WeakSet();
+  }
+
+  // Observation routes use the owning element's id. A template descendant
+  // is owned by its row root even when it also has a reference address.
+  registerLayout(element, type, handler, owner) {
+    if (this.manualScrollers && type === "scroll") {
+      this.manualScrollers.set(element, { expected: this.scrollPosition(element), allowed: false });
+    }
+    if (handler.kind !== this.protocol.KIND_SIZE && handler.kind !== this.protocol.KIND_SEEN) return;
+    let kinds = this.observations.get(element);
+    if (!kinds) this.observations.set(element, kinds = new Map());
+    if (kinds.has(handler.kind)) throw new Error("duplicate layout observation");
+    const registration = { element, owner, type, handler, observer: null };
+    kinds.set(handler.kind, registration);
+    let owned = this.observationOwners.get(owner);
+    if (!owned) this.observationOwners.set(owner, owned = new Set());
+    owned.add(registration);
+    if (this.manual) return;
+    const key = handler.kind === this.protocol.KIND_SIZE ? "size" : handler.policies & this.protocol.POLICY_AHEAD ? "ahead" : "seen";
+    let observer = this.layoutObservers.get(key);
+    if (!observer) {
+      const callback = (entries) => this.guard(() => {
+        for (const entry of entries) {
+          const current = this.observations.get(entry.target)?.get(handler.kind);
+          if (!current || current.observer !== observer || !entry.target.isConnected) continue;
+          const value = handler.kind === this.protocol.KIND_SIZE
+            ? { width: this.layoutPixel(entry.contentRect.width), height: this.layoutPixel(entry.contentRect.height) }
+            : { intersecting: entry.isIntersecting, ratio_permille: Math.max(0, Math.min(1000, Math.round(entry.intersectionRatio * 1000))) };
+          this.deliverObservation(current, value);
+        }
+        // ResizeObserver runs after the frame's normal report drain. Its
+        // completed callback must settle this frame's sizes before paint.
+        if (handler.kind === this.protocol.KIND_SIZE) this.drainQueue(true);
+      });
+      observer = key === "size"
+        ? new this.win.ResizeObserver(callback)
+        : new this.win.IntersectionObserver(callback, key === "ahead" ? { rootMargin: "100%", scrollMargin: "100%" } : {});
+      this.layoutObservers.set(key, observer);
+    }
+    registration.observer = observer;
+    observer.observe(element);
+  }
+
+  releaseObservations(owner) {
+    const owned = this.observationOwners.get(owner);
+    if (!owned) return;
+    for (const registration of owned) {
+      const { element, handler, observer } = registration;
+      if (observer) observer.unobserve(element);
+      const kinds = this.observations.get(element);
+      kinds.delete(handler.kind);
+      if (kinds.size === 0) this.observations.delete(element);
+      const source = element.__layoutReports?.get(handler.kind);
+      if (source) { this.dropReports(source, source); source.retire(); }
+    }
+    this.observationOwners.delete(owner);
+  }
+
+  clearObservations() {
+    for (const observer of this.layoutObservers.values()) observer.disconnect();
+    this.layoutObservers.clear();
+    this.observations.clear();
+    this.observationOwners.clear();
+    if (this.manualScrollers) this.manualScrollers.clear();
+    this.pendingManualScrolls.clear();
+    this.manualScrollError = null;
+  }
+
+  // Reports capture values at arrival. The element owns the source while
+  // its declaration lives, and RELEASE cancels its queued observations.
+  elementReportSource(element, type, handler) {
+    const sources = element.__layoutReports ??= new Map();
+    let source = sources.get(handler.kind);
+    if (!source || !source.isLive()) {
+      source = { dom: true, dispatching: 0, reports: new Set(),
+        isLive: () => element.isConnected && element.__h?.[type] === handler &&
+          (handler.kind !== this.protocol.KIND_SIZE && handler.kind !== this.protocol.KIND_SEEN || this.observations.get(element)?.get(handler.kind)?.handler === handler),
+        retire: () => { if (source.dispatching === 0 && source.reports.size === 0 && sources.get(handler.kind) === source) sources.delete(handler.kind); } };
+      sources.set(handler.kind, source);
+    }
+    return source;
+  }
+
+  deliverObservation(registration, value) {
+    const { element, owner, type, handler } = registration;
+    const bytes = handler.kind === this.protocol.KIND_SIZE ? concat([u32(value.width), u32(value.height)]) : new Uint8Array(3);
+    if (handler.kind === this.protocol.KIND_SEEN) {
+      if (typeof value.intersecting !== "boolean" || !Number.isInteger(value.ratio_permille) || value.ratio_permille < 0 || value.ratio_permille > 1000) throw new Error("invalid seen observation");
+      bytes[0] = value.intersecting ? 1 : 0;
+      new DataView(bytes.buffer).setUint16(1, value.ratio_permille, true);
+    }
+    this.dispatch(owner.__rn, handler.h, bytes, owner, this.elementReportSource(element, type, handler));
+  }
+
+  // Manual specs inject the same facts a real observer reports. They never
+  // measure Chrome's layout to invent an answer the native oracle lacks.
+  injectLayout(element, kind, value) {
+    if (!this.manual) throw new Error("layout injection requires manualEffects");
+    const registration = this.observations.get(element)?.get(kind);
+    if (!registration) throw new Error(`element has no ${kind === this.protocol.KIND_SIZE ? "size" : "seen"} observation`);
+    if (kind === this.protocol.KIND_SIZE) {
+      const size = { width: value.width, height: value.height };
+      for (const dimension of Object.values(size)) if (!Number.isInteger(dimension) || dimension < 0 || dimension > 0xffffffff) throw new Error("invalid size observation");
+      this.deliverObservation(registration, size);
+    } else this.deliverObservation(registration, { intersecting: value.intersecting, ratio_permille: value.ratio_permille });
+  }
+
+  layoutPixel(value) {
+    if (!Number.isFinite(value)) throw new Error("layout dimension is not finite");
+    return Math.max(0, Math.min(0xffffffff, Math.round(value)));
+  }
+
+  scrollCoordinates(element) {
+    const direction = this.win.getComputedStyle(element).direction;
+    const top = element.scrollTop, left = direction === "rtl" ? -element.scrollLeft : element.scrollLeft;
+    if (!Number.isFinite(top) || !Number.isFinite(left)) throw new Error("scroll position is not finite");
+    return { top, left };
+  }
+
+  scrollPosition(element) {
+    const coordinates = this.scrollCoordinates(element);
+    return { top: this.layoutPixel(coordinates.top), left: this.layoutPixel(coordinates.left) };
+  }
+
+  // The replay observes only scrollers a step or command touched. Any real
+  // unannounced scroll records a step failure rather than changing input.
+  observeManualScroll(element) {
+    const observed = this.manualScrollers?.get(element);
+    if (!observed) return;
+    const position = this.scrollCoordinates(element);
+    if (!observed.allowed && (position.top !== observed.expected.top || position.left !== observed.expected.left)) {
+      this.manualScrollError ??= `scrolling ${element.getAttribute("aria-label") || element.tagName} moved without a scroll step or modelled ScrollTo; scroll first`;
+    }
+    this.pendingManualScrolls.add(element);
+  }
+
+  expectManualScroll(element, position) {
+    const expected = { top: position.top, left: position.left };
+    for (const distance of Object.values(expected)) if (!Number.isInteger(distance) || distance < 0 || distance > 0xffffffff) throw new Error("scroll position must be unsigned U32 CSS pixels");
+    const observed = this.manualScrollers?.get(element);
+    if (!observed) throw new Error("element has no scroll handler");
+    observed.expected = expected;
+    observed.allowed = true;
+    this.pendingManualScrolls.add(element);
+  }
+
+  checkManualScrolls() {
+    if (this.manualScrollError) throw new Error(this.manualScrollError);
+    for (const element of this.pendingManualScrolls) {
+      const observed = this.manualScrollers?.get(element);
+      if (!observed) continue;
+      const actual = this.scrollCoordinates(element);
+      if (actual.top !== observed.expected.top || actual.left !== observed.expected.left) throw new Error(`scrolling ${element.getAttribute("aria-label") || element.tagName} did not retain requested position ${observed.expected.top}, ${observed.expected.left}; got ${actual.top}, ${actual.left}`);
+      observed.allowed = false;
+    }
+    this.pendingManualScrolls.clear();
+  }
+
+  // A hit test ignores capture, and returns only the nearest nonempty zone
+  // inside this mount. Fractions are sampled before a report can wait.
+  pointerPayload(event) {
+    if (!Number.isInteger(event.pointerId) || event.pointerId < 0 || event.pointerId > 0xffffffff ||
+        !Number.isInteger(event.button) || event.button < -1 || event.button > 254 ||
+        !Number.isInteger(event.buttons) || event.buttons < 0 || event.buttons > 0xffff) throw new Error("pointer fields do not fit their wire record");
+    let at = null;
+    if (event.type !== "pointercancel") {
+      if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) throw new Error("pointer coordinates are not finite");
+      let hit = this.doc.elementFromPoint(event.clientX, event.clientY);
+      if (hit && this.root.contains(hit)) {
+        while (hit && hit !== this.root) {
+          if (hit.__pointerZone) {
+            const box = hit.getBoundingClientRect();
+            if (![box.x, box.y, box.width, box.height].every(Number.isFinite)) throw new Error("pointer zone box is not finite");
+            if (box.width > 0 && box.height > 0) {
+              const fraction = (point, start, size) => Math.max(0, Math.min(10000, Math.round((point - start) * 10000 / size)));
+              at = { zone: hit.__pointerZone, x: fraction(event.clientX, box.x, box.width), y: fraction(event.clientY, box.y, box.height) };
+            }
+            break;
+          }
+          hit = hit.parentElement;
+        }
+      }
+    }
+    const header = new Uint8Array(at === null ? 11 : 15);
+    const view = new DataView(header.buffer);
+    view.setUint32(0, event.pointerId, true);
+    header[4] = ({ mouse: 0, pen: 1, touch: 2 })[event.pointerType] ?? 3;
+    header[5] = event.button + 1;
+    view.setUint16(6, event.buttons, true);
+    header[8] = (event.shiftKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.altKey ? 4 : 0) | (event.metaKey ? 8 : 0);
+    header[9] = event.isPrimary ? 1 : 0;
+    header[10] = at === null ? 0 : 1;
+    if (at !== null) { view.setUint16(11, at.x, true); view.setUint16(13, at.y, true); }
+    return { at, bytes: at === null ? header : concat([header, encStr(at.zone)]) };
+  }
+
+  // The element owns this cache only while a pointer has queued entries.
+  // Identity never depends on a recyclable engine node id.
+  pointerSource(element, handler, pointer) {
+    const sources = element.__pointerReports ??= new Map();
+    const key = `${handler.h}:${pointer}`;
+    let source = sources.get(key);
+    if (source === undefined || !source.isLive()) {
+      source = { dom: true, dispatching: 0, reports: new Set(), isLive: () => element.isConnected && element.__h?.pointermove === handler,
+        retire: () => { if (source.dispatching === 0 && source.reports.size === 0 && sources.get(key) === source) sources.delete(key); } };
+      sources.set(key, source);
+    }
+    return source;
+  }
+
+  // Manual replay verifies and drains each input step; production retains no log.
+  takePointerLog() {
+    const log = this.pointerLog;
+    this.pointerLog = [];
+    return log;
+  }
+
+  // An occurrence pins every earlier report in O(1) by advancing the epoch.
+  // Reports replace only their own source's entry from the current epoch.
+  // The linked queue makes appending and draining constant work per entry.
+  dispatch(node, handler, payload, el, source) {
+    if (this.picturePending) {
+      if (source?.dom) source.retire();
       return;
     }
-    if (this.busy) {
-      if (this.queue.length >= MAX_QUEUED) {
-        this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} events queued behind one batch (an event feedback loop)`), "resource_limit");
+    if (this.poisoned || this.ending) {
+      this.refused += 1;
+      if (source?.dom) source.retire();
+      return;
+    }
+    const report = source !== undefined;
+    const owner = report ? source.dom ? source : this.live.get(source) : null;
+    if (owner?.dom) owner.dispatching += 1;
+    try {
+      if (report) {
+        if (owner === undefined || (owner.dom && !owner.isLive())) return;
+        const waiting = this.reportSources.get(source);
+        if (waiting !== undefined && waiting.epoch === this.reportEpoch) {
+          waiting.payload = payload;
+          this.reportsReplaced += 1;
+          this.guard(() => this.scheduleReports());
+          return true;
+        }
+      }
+      if (!report) this.reportEpoch = {};
+      // Keep an idle occurrence synchronous, including its user activation.
+      if (!report && !this.busy && this.queue.length === 0) {
+        this.busy = true;
+        try {
+          this.guard(() => this.deliver(node, handler, payload));
+        } finally {
+          this.busy = this.pendingTransition !== null;
+        }
+        this.drainQueue();
+        return false;
+      }
+      if (this.storageFailureCount > 0 && this.queue.length + this.storageFailureCount >= MAX_QUEUED) {
+        this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} pending storage failures and ingress entries`), "resource_limit");
         return;
       }
-      this.queue.push([node, handler, payload, el]);
+      let active = null, waiting = null;
+      if (this.queue.length >= MAX_QUEUED && this.pendingTransition?.phase === "waiting") {
+        // Reserve the oldest entry as the active delivery, as on an idle
+        // full queue. Admit this input before any older turn can raise a
+        // newer report; the linked queue stays within MAX_QUEUED.
+        waiting = this.pendingTransition;
+        active = this.takeIngress();
+      }
+      if (this.queue.length >= MAX_QUEUED) {
+        if (this.busy) {
+          this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} events queued behind one batch (an event feedback loop)`), "resource_limit");
+          return;
+        }
+        // Reports and occurrences both take their FIFO place before an
+        // older delivery can synchronously emit another report.
+        active = this.takeIngress();
+      }
+      const entry = { node, handler, payload, el, source, owner, epoch: this.reportEpoch, next: null };
+      if (this.queue.tail === null) this.queue.head = entry;
+      else this.queue.tail.next = entry;
+      this.queue.tail = entry;
+      this.queue.length += 1;
+      if (report) {
+        this.reportSources.set(source, entry);
+        if (!owner.reports) owner.reports = new Set();
+        owner.reports.add(entry);
+        this.guard(() => this.scheduleReports());
+      }
+      if (waiting !== null) waiting.update("queue", false);
+      if (this.poisoned || this.ending) {
+        if (active !== null) active.payload = null;
+        return false;
+      }
+      if (active !== null) {
+        const first = this.takePayload(active);
+        if (first !== null) {
+          this.busy = true;
+          try {
+            this.guard(() => this.deliver(active.node, active.handler, first));
+          } finally {
+            this.busy = this.pendingTransition !== null;
+          }
+        }
+      }
+      if (active !== null && report) {
+        // Capacity pressure flushes older inputs, not this newly admitted
+        // report. Keep its FIFO position and ordinary epoch pacing intact.
+        this.drainQueue(true, entry);
+        this.drainQueue();
+      } else if (!report) this.drainQueue();
+      return false;
+    } finally {
+      if (owner?.dom) { owner.dispatching -= 1; owner.retire(); }
+    }
+  }
+
+  // Taking the head retires just that entry's index and ownership links.
+  takeIngress() {
+    const entry = this.queue.head;
+    this.queue.head = entry.next;
+    this.queue.length -= 1;
+    if (this.queue.length === 0) this.queue.tail = null;
+    if (entry.source !== undefined) {
+      if (this.reportSources.get(entry.source) === entry) this.reportSources.delete(entry.source);
+      entry.owner.reports.delete(entry);
+      if (entry.owner.retire) entry.owner.retire();
+    }
+    return entry;
+  }
+
+  // A disposed source or recycled DOM id never receives its queued input.
+  // Clear the payload even on a dropped entry so no browser files linger.
+  takePayload(entry) {
+    const { node, payload, el } = entry;
+    entry.payload = null;
+    if (payload === null || (entry.owner && (entry.owner.dom ? !entry.owner.isLive() : this.live.get(entry.source) !== entry.owner))) return null;
+    if (el !== undefined && (!el.isConnected || el.__rn !== node)) return null;
+    if (payload.isLive && !payload.isLive()) return null;
+    return payload;
+  }
+
+  // A report's payload was captured at arrival, never read again here.
+  // Current-epoch reports wait; an occurrence has pinned older epochs.
+  drainQueue(reports = false, before = null) {
+    if (this.busy) {
+      // A real frame remains due across a batch. Capacity pressure's
+      // bounded older-entry flush is not a frame and persists no release.
+      if (reports && before === null) this.reportDue = true;
       return;
     }
-    this.busy = true;
-    try {
-      this.guard(() => this.deliver(node, handler, payload));
-    } finally {
-      this.busy = false;
-    }
-    this.drainQueue();
-  }
-
-  drainQueue() {
+    reports ||= this.reportDue;
+    this.reportDue = false;
+    if (reports) this.cancelReportDrain();
+    let turns = 0;
     while (!this.busy && !this.poisoned && this.queue.length > 0) {
-      const [n, h, p, el] = this.queue.shift();
-      if (el !== undefined && (!el.isConnected || el.__rn !== n)) continue;
+      const entry = this.queue.head;
+      if (entry === before) break;
+      if (entry.source !== undefined && entry.epoch === this.reportEpoch && !reports && entry.payload !== null) break;
+      this.takeIngress();
+      const payload = this.takePayload(entry);
+      if (payload === null) continue;
+      if (turns >= MAX_QUEUED) {
+        this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} turns delivered without returning to idle (an event feedback loop)`), "resource_limit");
+        return;
+      }
+      turns += 1;
       this.busy = true;
       try {
-        this.guard(() => this.deliver(n, h, p));
+        this.guard(() => this.deliver(entry.node, entry.handler, payload));
       } finally {
-        this.busy = false;
+        this.busy = this.pendingTransition !== null;
       }
+    }
+    if (this.queue.length === 0) this.cancelReportDrain();
+    else if (!this.poisoned) this.guard(() => this.scheduleReports());
+  }
+
+  // Manual replay supplies the frame; manualWork/manualIntervals do not.
+  releaseReports() {
+    this.drainQueue(true);
+  }
+
+  // One drain for all report sources, paced by a frame or its liveness
+  // timer. Hidden pages use a microtask because their frames may stop.
+  scheduleReports() {
+    if (this.manual || this.poisoned || this.ending) return;
+    const hidden = !this.isVisible();
+    if (this.reportDrain !== null) {
+      if (!hidden || this.reportDrain.hidden) return;
+      this.cancelReportDrain();
+    }
+    const drain = { hidden, frame: null, timer: null };
+    this.reportDrain = drain;
+    const run = () => {
+      if (this.reportDrain !== drain) return;
+      this.cancelReportDrain();
+      this.drainQueue(true);
+    };
+    if (hidden) queueMicrotask(run);
+    else {
+      if (typeof this.win?.requestAnimationFrame === "function") drain.frame = this.win.requestAnimationFrame(run);
+      drain.timer = setTimeout(run, FRAME_WAIT_MS);
     }
   }
 
-  // One engine call for an event: a `:files` event stages its handles and
-  // file record (design.md, Appendix B), anything else its text.
+  cancelReportDrain() {
+    const drain = this.reportDrain;
+    if (drain === null) return;
+    this.reportDrain = null;
+    if (drain.frame !== null) this.win.cancelAnimationFrame(drain.frame);
+    if (drain.timer !== null) clearTimeout(drain.timer);
+  }
+
+  // A source owns its queued entries, including pinned earlier reports.
+  // CANCEL visits only that source, releases payloads immediately and lets
+  // the ordinary drain skip the dead queue cells without scanning others.
+  dropReports(id, owner) {
+    this.reportSources.delete(id);
+    if (owner.reports) {
+      for (const entry of owner.reports) entry.payload = null;
+      owner.reports.clear();
+    }
+  }
+
+  clearIngress() {
+    this.cancelReportDrain();
+    for (const entry of this.reportSources.values()) {
+      entry.owner.reports.clear();
+      if (entry.owner.retire) entry.owner.retire();
+    }
+    this.queue = { head: null, tail: null, length: 0 };
+    this.reportSources.clear();
+    this.reportDue = false;
+    this.pointerLog = [];
+    for (const owner of this.live.values()) if (owner.reports) owner.reports.clear();
+  }
+
+  // One engine call for an event: a files-kind event stages its handles and
+  // file record (design.md, Appendix B); other events stage their bytes or text.
   call(node, handler, payload) {
     if (payload !== null && typeof payload === "object" && payload.parts !== undefined) {
       this.callPort(node, handler, payload);
@@ -2172,6 +4092,7 @@ export class RocEngineRuntime {
   // effects performed) only when the monitor wants it: a job's result turn,
   // or every turn while a subscriber asked for `turn` events.
   deliver(node, handler, payload) {
+    if (payload.before) payload.before();
     if (globalThis.__trace) console.log("event", node, handler, JSON.stringify(payload));
     const m = this.monitor;
     if (!m.timesTurn(node, handler)) {
@@ -2193,15 +4114,42 @@ export class RocEngineRuntime {
     return node === 0 ? this.root : this.statics[node];
   }
 
+  // Removing an ancestor also disposes the rows and command-only aliases
+  // beneath it. Walk only that subtree; the engine need not emit a REMOVE
+  // for each descendant when one ancestor removal already removes its DOM.
+  forgetSubtree(el) {
+    const pending = [el];
+    while (pending.length > 0) {
+      const node = pending.pop();
+      this.nativeTasks.delete(node);
+      if (this.manualScrollers) this.manualScrollers.delete(node);
+      this.pendingManualScrolls.delete(node);
+      if (this.modalOrder) this.modalOrder.remove(node);
+      node.__shownControl = undefined;
+      node.__popoverControl = undefined;
+      for (let child = node.firstChild; child; child = child.nextSibling) pending.push(child);
+      if (node.__childTarget && node.__childTarget !== node) pending.push(node.__childTarget);
+      if (node.__site !== undefined) {
+        this.sites[node.__site].delete(node.__rn);
+        for (const id of node.__aliases) this.statics[id] = undefined;
+      }
+      if (node.__rn !== undefined) this.statics[node.__rn] = undefined;
+      if (node.__id !== undefined) this.statics[node.__id] = undefined;
+    }
+  }
+
   place(el, parent, before) {
-    if (before === 0) this.lookup(parent).appendChild(el);
+    if (before === 0) {
+      const owner = this.lookup(parent);
+      (parent === 0 ? owner : owner.__childTarget ?? owner).appendChild(el);
+    }
     else {
       const b = this.lookup(before);
       b.parentNode.insertBefore(el, b);
     }
   }
 
-  parseTemplate(u8, dv, start, len) {
+  parseTemplate(u8, dv, start, len, dry = false) {
     let at = start;
     const doc = this.doc;
     const str = () => {
@@ -2211,56 +4159,191 @@ export class RocEngineRuntime {
       at += n;
       return s;
     };
-    const node = (parent) => {
-      const kind = u8[at++];
-      if (kind === 2) return doc.createTextNode(str());
-      const el = createIn(doc, str(), parent);
-      const attrs = u8[at++];
-      for (let i = 0; i < attrs; i += 1) {
-        const name = str();
-        setAttr(el, name, str());
-      }
-      const children = u8[at++];
-      for (let i = 0; i < children; i += 1) el.appendChild(node(el));
-      return el;
-    };
-    // Templates are parsed as HTML; a row template first placed under an SVG
-    // parent is re-created in the SVG namespace once (see INST).
-    const root = node(null);
+    const reader = { u8, dv, at, doc, protocol: this.protocol, path: [], contentOwners: [], dry };
+    const root = templateNode(reader);
+    at = reader.at;
     const holes = [];
     const count = u8[at++];
     for (let i = 0; i < count; i += 1) {
       const kind = u8[at++];
       const depth = u8[at++];
-      const path = Array.from(u8.subarray(at, at + depth));
-      at += depth;
-      const hole = { kind, path, name: null, handler: 0 };
-      if (kind === HOLE_ATTR) hole.name = str();
+      const path = Array.from(u8.subarray(at, at + depth * 2));
+      at += depth * 2;
+      if (dry) walkShape(root, path, this.protocol); else walk(root, path, this.protocol);
+      const hole = { kind, path, name: null, handler: 0, prop: 0, entry: null };
+      if (kind === HOLE_ATTR) { reader.at = at; hole.name = expandedName(reader, false); at = reader.at; }
       else if (kind === HOLE_CLICK) {
         hole.handler = u8[at++];
         hole.name = str();
-        this.listen(hole.name.split(":")[0]);
-      }
+        const payloadKind = u8[at++];
+        const policies = dv.getUint32(at, true);
+        at += 4;
+        hole.entry = handlerEntry(hole.handler, payloadKind, policies, hole.name, this.protocol);
+        if (!dry && payloadKind !== this.protocol.KIND_SIZE && payloadKind !== this.protocol.KIND_SEEN) this.listen(hole.name);
+      } else if (kind === HOLE_PROP) {
+        hole.prop = u8[at++];
+        if (!this.protocol.PROPS[hole.prop]) throw new Error(`unknown element property ${hole.prop}`);
+      } else if (kind !== HOLE_TEXT && kind !== HOLE_BIND && kind !== HOLE_REF) throw new Error(`unknown template hole kind ${kind}`);
       holes.push(hole);
     }
     if (at !== start + len) throw new Error("template length mismatch");
-    return { root, holes };
+    return { root, holes, contentOwners: reader.contentOwners };
   }
 
-  // Returns the number of command bytes applied. Effect commands found in
-  // the batch run after the whole batch has been applied.
-  apply() {
-    const n = this.applyBatch();
-    if (this.fxOut.length > 0) {
-      const out = this.fxOut;
-      this.fxOut = [];
-      for (const fx of out) this.perform(fx);
+  // One shared promise covers both a deferred update and its animation. Manual
+  // replay waits for this before allowing another pointer event.
+  idle() { return this.transitionIdle; }
+
+  transitionEvent(state, detail = {}) {
+    this.monitor.emit({ kind: "transition", state, at: this.monitor.tick(), ...detail });
+  }
+
+  skipTransition(pending) {
+    pending.skipRequested = true;
+    if (!pending.transition || pending.skipped) return;
+    pending.skipped = true;
+    try { pending.transition.skipTransition(); } catch { /* animation only */ }
+  }
+
+  cancelTransition() {
+    this.transitionEpoch = {};
+    const idle = this.transitionIdleState;
+    this.transitionIdleState = null;
+    idle?.resolve();
+    if (idle?.token) this.skipTransition(idle.token);
+    const pending = this.pendingTransition;
+    if (!pending) return;
+    this.pendingTransition = null;
+    clearTimeout(pending.timer);
+    pending.cancelled = true;
+    pending.batch.definitions.clear(); pending.batch.spans.clear(); pending.batch.types = null;
+    this.skipTransition(pending);
+    pending.resolve();
+  }
+
+  flushEffects() {
+    const out = this.fxOut;
+    this.fxOut = [];
+    for (const fx of out) {
+      if (this.poisoned || this.ending) break;
+      this.perform(fx);
     }
-    this.releaseFiles();
-    return n;
   }
 
-  applyBatch() {
+  apply() {
+    const len = this.x.cmd_len();
+    if (this.picturePending) holdPicture(this.root);
+    if (!len) {
+      if (this.picturePending) this.root.replaceChildren();
+      finishPicture(this); this.releaseFiles(); return 0;
+    }
+    const flags = new Uint8Array(this.x.memory.buffer, this.x.cmd_ptr(), len)[0];
+    if (flags !== 0 && flags !== 1) throw new Error(`invalid command batch flags ${flags}`);
+    if (this.picturePending) {
+      if (flags !== 0) throw new Error("picture mount batch must be unmarked");
+      const batch = { definitions: new Map() };
+      try {
+        // The shared wire reader builds only temporary template shapes. DOM
+        // factories and effect registration run once, after framing succeeds.
+        this.applyBatch("preflight", batch);
+        holdPicture(this.root);
+        this.root.replaceChildren();
+        this.applyBatch("normal", batch);
+        finishPicture(this);
+        this.flushEffects();
+        if (!this.poisoned && !this.ending) this.releaseFiles();
+        return len;
+      } finally {
+        batch.definitions.clear();
+      }
+    }
+    const animate = flags === 1 && this.viewTransitions === "document" && this.doc.visibilityState !== "hidden" && typeof this.doc.startViewTransition === "function";
+    if (!animate) {
+      const batch = { types: null };
+      this.applyBatch("normal", batch);
+      finishPicture(this);
+      this.flushEffects();
+      if (this.poisoned || this.ending) return len;
+      this.releaseFiles();
+      if (flags) { this.transitionLog?.add(batch.types, "none"); this.transitionEvent("applied", { cause: "none", typeCount: batch.types.length }); }
+      return len;
+    }
+    const batch = { definitions: new Map(), spans: new Map(), types: null };
+    this.applyBatch("early", batch);
+    // No effect runs until the complete marked batch has passed framing checks.
+    this.flushEffects();
+    if (this.poisoned || this.ending) return len;
+    // All callers share one outstanding idle promise. A document transition
+    // supersedes the preceding animation, so only the newest token completes
+    // it; stale browser promise handlers cannot affect a later generation.
+    let state = this.transitionIdleState;
+    if (state === null) {
+      let finish;
+      const promise = new Promise(resolve => { finish = resolve; });
+      state = { resolve: finish, token: null };
+      this.transitionIdleState = state;
+      this.transitionIdle = promise;
+    }
+    const epoch = this.transitionEpoch;
+    const isCurrent = () => this.transitionEpoch === epoch && !this.poisoned && !this.ending;
+    let pending;
+    const resolve = () => {
+      if (this.transitionIdleState !== state || state.token !== pending) return;
+      this.transitionIdleState = null;
+      state.resolve();
+    };
+    pending = { batch, resolve, timer: null, transition: null, applied: false, cancelled: false, finished: false, phase: "waiting" };
+    state.token = pending;
+    this.pendingTransition = pending;
+    this.busy = true;
+    const update = (cause = "callback", drain = true) => {
+      if (!isCurrent() || pending.cancelled || pending.applied || this.pendingTransition !== pending) return;
+      pending.applied = true;
+      pending.phase = "applying";
+      clearTimeout(pending.timer);
+      this.guard(() => {
+        this.applyBatch("update", batch);
+        this.flushEffects();
+        if (this.poisoned || this.ending) return;
+        this.releaseFiles();
+        this.transitionLog?.add(batch.types, cause);
+        this.transitionEvent("applied", { cause, typeCount: batch.types.length });
+      });
+      // Browser animation promises retain only their small lifecycle token,
+      // never completed requests' files or parsed template trees.
+      batch.definitions.clear(); batch.spans.clear(); batch.types = null;
+      if (this.pendingTransition === pending) this.pendingTransition = null;
+      this.busy = false;
+      if (cause !== "callback" || this.manual || this.poisoned) {
+        this.skipTransition(pending);
+      }
+      if (drain) this.drainQueue();
+      if (pending.finished) resolve();
+    };
+    pending.update = update;
+    pending.timer = setTimeout(() => update("timer"), TRANSITION_WAIT_MS);
+    try {
+      try { pending.transition = this.doc.startViewTransition({ update: () => update(), types: batch.types }); }
+      catch (error) {
+        // Older implementations support only the callback overload.
+        if (pending.applied) throw error;
+        pending.transition = this.doc.startViewTransition(() => update());
+      }
+      const transition = pending.transition;
+      if (pending.skipRequested || pending.applied && (this.manual || this.poisoned)) this.skipTransition(pending);
+      const rejected = (state, error) => { if (isCurrent()) this.transitionEvent(state, { message: String(error?.message ?? error).slice(0, 1024) }); };
+      Promise.resolve(transition?.ready).catch(error => rejected("ready-rejected", error));
+      const finished = () => { if (!isCurrent()) return; pending.finished = true; if (pending.applied || pending.cancelled) resolve(); };
+      Promise.resolve(transition?.finished).then(finished, error => { rejected("finished-rejected", error); finished(); });
+    } catch (error) {
+      if (isCurrent()) this.transitionEvent("start-rejected", { message: String(error?.message ?? error).slice(0, 1024) });
+      update("none");
+      resolve();
+    }
+    return len;
+  }
+
+  applyBatch(mode = "normal", batch = {}) {
     const x = this.x;
     const len = x.cmd_len();
     if (len === 0) return 0;
@@ -2269,331 +4352,91 @@ export class RocEngineRuntime {
     const u8 = new Uint8Array(buffer, ptr, len);
     const dv = new DataView(buffer, ptr, len);
     const doc = this.doc;
-    let at = 0;
+    let at = 1;
+    const flags = u8[0];
+    if (flags !== 0 && flags !== 1) throw new Error(`invalid command batch flags ${flags}`);
+    let marked = false;
+    const scanning = mode === "early" || mode === "preflight";
+    const shadow = scanning ? new Map() : null;
+    const skipString = () => { const n = dv.getUint32(at, true); if (mode === "preflight") readStr(u8, at + 4, n); at += 4 + n; };
+    const skipAttribute = () => { const present = u8[at++]; if (present === 1) skipString(); else if (present !== 0) throw new Error(`invalid attribute presence ${present}`); };
+    // One reader per batch; no implementation retains it or its memory views.
+    const reader = { u8, dv, doc, protocol: this.protocol, mode, batch, len, flags, at: 1, op: 0, offset: 0, marked: false };
     while (at < len) {
+      const offset = at;
       const op = u8[at];
       at += 1;
-      switch (op) {
-        case OP_INST: {
-          const node = dv.getUint32(at, true);
-          const parent = dv.getUint32(at + 4, true);
-          const before = dv.getUint32(at + 8, true);
-          const site = dv.getUint32(at + 12, true);
-          const tpl = this.templates[site];
-          at += 16;
-          if (!tpl.svg && tpl.root.namespaceURI !== SVG_NS) {
-            const p = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
-            if (p.namespaceURI === SVG_NS && p.tagName !== "foreignObject") {
-              tpl.root = toSvg(doc, tpl.root);
-              tpl.svg = true;
-            }
-          }
-          const el = tpl.root.cloneNode(true);
-          el.__rn = node;
-          const holes = tpl.holes;
-          // Hole targets are resolved once, here: a nested site inserting
-          // content into the row later shifts sibling indices.
-          const targets = new Array(holes.length);
-          for (let i = 0; i < holes.length; i += 1) targets[i] = walk(el, holes[i].path);
-          el.__ht = targets;
-          for (let i = 0; i < holes.length; i += 1) {
-            const hole = holes[i];
-            const target = targets[i];
-            if (hole.kind === HOLE_TEXT) {
-              const n = dv.getUint32(at, true);
-              target.nodeValue = readStr(u8, at + 4, n);
-              at += 4 + n;
-            } else if (hole.kind === HOLE_ATTR) {
-              const n = dv.getUint32(at, true);
-              setAttr(target, hole.name, readStr(u8, at + 4, n));
-              at += 4 + n;
-            } else if (hole.kind === HOLE_CLICK) {
-              if (target.__h === undefined) target.__h = {};
-              const [type, ...policies] = hole.name.split(":");
-              target.__h[type] = handlerEntry(hole.handler, policies);
-            } else {
-              this.statics[dv.getUint32(at, true)] = target;
-              at += 4;
-            }
-          }
-          this.place(el, parent, before);
-          if (el.tagName === "OPTION") settleSelect(el.parentNode);
-          el.__site = site;
-          this.statics[node] = el;
-          this.sites[site].add(node);
-          break;
-        }
-        case OP_TEXT:
-        case OP_HATTR: {
-          const node = dv.getUint32(at, true);
-          const row = this.lookup(node);
-          const hole = this.templates[row.__site].holes[u8[at + 4]];
-          const n = dv.getUint32(at + 5, true);
-          const target = row.__ht[u8[at + 4]];
-          const v = readStr(u8, at + 9, n);
-          if (op === OP_TEXT) target.nodeValue = v;
-          else setAttr(target, hole.name, v);
-          at += 9 + n;
-          break;
-        }
-        case OP_MOVE: {
-          const el = this.lookup(dv.getUint32(at, true));
-          const before = dv.getUint32(at + 4, true);
-          el.parentNode.insertBefore(el, before === 0 ? null : this.lookup(before));
-          at += 8;
-          break;
-        }
-        case OP_REMOVE: {
-          const node = dv.getUint32(at, true);
-          const el = this.lookup(node);
-          el.parentNode.removeChild(el);
-          if (el.__site !== undefined) this.sites[el.__site].delete(node);
-          this.statics[node] = undefined;
-          at += 4;
-          break;
-        }
-        case OP_CLEAR: {
-          const parent = this.lookup(dv.getUint32(at, true));
-          const site = dv.getUint32(at + 4, true);
-          for (const n of this.sites[site]) this.statics[n] = undefined;
-          this.sites[site] = new Set();
-          parent.textContent = "";
-          at += 8;
-          break;
-        }
-        case OP_TEMPLATE: {
-          const tpl = dv.getUint32(at, true);
-          const n = dv.getUint32(at + 4, true);
-          this.templates[tpl] = this.parseTemplate(u8, dv, at + 8, n);
-          this.sites[tpl] = new Set();
-          at += 8 + n;
-          break;
-        }
-        case OP_ELEM:
-        case OP_TEXTNODE: {
-          const node = dv.getUint32(at, true);
-          const parent = dv.getUint32(at + 4, true);
-          const before = dv.getUint32(at + 8, true);
-          const n = dv.getUint32(at + 12, true);
-          const s = readStr(u8, at + 16, n);
-          at += 16 + n;
-          const parentEl = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
-          const el = op === OP_ELEM ? createIn(doc, s, parentEl) : doc.createTextNode(s);
-          this.place(el, parent, before);
-          if (op === OP_ELEM && el.tagName === "OPTION") settleSelect(el.parentNode);
-          this.statics[node] = el;
-          break;
-        }
-        case OP_ATTR: {
-          const el = this.lookup(dv.getUint32(at, true));
-          const n = dv.getUint32(at + 4, true);
-          const name = readStr(u8, at + 8, n);
-          at += 8 + n;
-          const m = dv.getUint32(at, true);
-          setAttr(el, name, readStr(u8, at + 4, m));
-          at += 4 + m;
-          break;
-        }
-        case OP_LISTEN: {
-          const node = dv.getUint32(at, true);
-          const el = this.statics[node];
-          const n = dv.getUint32(at + 8, true);
-          const type = readStr(u8, at + 12, n);
-          el.__rn = node;
-          if (el.__h === undefined) el.__h = {};
-          const [base, ...policies] = type.split(":");
-          const h = dv.getUint32(at + 4, true);
-          el.__h[base] = handlerEntry(h, policies);
-          this.listen(base);
-          at += 12 + n;
-          break;
-        }
-        case OP_SETTEXT: {
-          const el = this.lookup(dv.getUint32(at, true));
-          const n = dv.getUint32(at + 4, true);
-          el.nodeValue = readStr(u8, at + 8, n);
-          at += 8 + n;
-          break;
-        }
-        case OP_FX: {
-          const id = dv.getUint32(at, true);
-          const kind = u8[at + 4];
-          at += 5;
-          const str = () => {
-            const n = dv.getUint32(at, true);
-            const v = readStr(u8, at + 4, n);
-            at += 4 + n;
-            return v;
-          };
-          if (kind === 1) {
-            const method = str();
-            const url = str();
-            const headers = [];
-            let n = dv.getUint32(at, true);
-            at += 4;
-            for (; n > 0; n -= 1) headers.push([str(), str()]);
-            const body = str();
-            const timeout = dv.getUint32(at, true);
-            at += 4;
-            this.fxOut.push({ op: "http", id, method, url, headers, body, timeout });
-          } else if (kind === 2) {
-            this.fxOut.push({ op: "get", id, key: str() });
-          } else if (kind === 3 || kind === 4) {
-            this.fxOut.push({ op: kind === 3 ? "timer" : "interval", id, ms: dv.getUint32(at, true) });
-            at += 4;
-          } else if (kind === 5) {
-            this.fxOut.push({ op: "popstate", id });
-          } else if (kind === 6) {
-            this.fxOut.push({ op: "online", id });
-          } else if (kind === 7) {
-            this.fxOut.push({ op: "visibility", id });
-          } else if (kind === 8) {
-            const task = str();
-            const n = dv.getUint32(at, true);
-            // Copied out: linear memory may move before the job is posted.
-            const input = u8.slice(at + 4, at + 4 + n);
-            at += 4 + n;
-            // The files the job names, resolved now, while the handles the
-            // batch released still name their files (see "Files").
-            // Its files cross whole, as handles the worker mints, and the job
-            // reads their ranges itself; nothing is read before it runs.
-            const refs = dv.getUint32(at, true);
-            at += 4;
-            const files = [];
-            const ranges = [];
-            for (let i = 0; i < refs; i += 1) {
-              const token = tokenAt(dv, 0, at);
-              const start = tokenAt(dv, 0, at + 8);
-              const len = tokenAt(dv, 0, at + 16);
-              const file = this.files.get(token);
-              if (file === undefined) throw new Error(`a work request names file handle ${token}, which this runtime does not hold`);
-              files.push(file);
-              ranges.push(token, start, len);
-              at += 24;
-            }
-            const timeout = dv.getUint32(at, true);
-            const cancel = u8[at + 4];
-            const flag = u8[at + 5];
-            at += 6;
-            if (cancel !== 1 && cancel !== 2) throw new Error(`work request cancel policy ${cancel} is not 1 or 2`);
-            // A preparation's task (design.md, "Prepared state"): which
-            // preparation answers it, and where its input lies in `input`.
-            let prep = null;
-            if (flag === 1) {
-              const name = str();
-              const initLen = dv.getUint32(at, true);
-              const initFiles = dv.getUint32(at + 4, true);
-              at += 8;
-              if (initLen > input.length || initFiles > refs) throw new Error(`malformed preparation operands for worker task ${task}`);
-              prep = { name, initLen, initFiles, ranges: ranges.slice(0, 3 * initFiles) };
-            } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0 or 1`);
-            this.fxOut.push({ op: "work", id, task, input, files, timeout, finish: cancel === 2, prep });
-          } else if (kind === 11) {
-            const mode = u8[at];
-            if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
-            const maxBytes = tokenAt(dv, 0, at + 25);
-            this.fxOut.push({ op: "read", id, mode, maxBytes, ...this.fileRef(dv, at + 1) });
-            at += 33;
-          } else if (kind === 12) {
-            const method = str();
-            const url = str();
-            const headers = [];
-            let n = dv.getUint32(at, true);
-            at += 4;
-            for (; n > 0; n -= 1) headers.push([str(), str()]);
-            const ref = this.fileRef(dv, at);
-            const timeout = dv.getUint32(at + 24, true);
-            at += 28;
-            this.fxOut.push({ op: "upload", id, method, url, headers, ...ref, timeout });
-          } else if (kind === 13) {
-            const algorithm = u8[at];
-            if (algorithm !== 1) throw new Error(`unknown digest algorithm ${algorithm}`);
-            this.fxOut.push({ op: "digest", id, algorithm, ...this.fileRef(dv, at + 1) });
-            at += 25;
-          } else if (kind === 14) {
-            this.fxOut.push({ op: "url", id, ...this.fileRef(dv, at) });
-            at += 24;
-          } else if (kind === 9) {
-            const port = str();
-            const m = this.readPortMessage(u8, dv, at);
-            at = m.at;
-            const timeout = dv.getUint32(at, true);
-            at += 4;
-            this.fxOut.push({ op: "portcall", id, port, msg: m.msg, timeout });
-          } else if (kind === 10) {
-            const port = str();
-            const m = this.readPortMessage(u8, dv, at);
-            at = m.at;
-            this.fxOut.push({ op: "portsub", id, port, msg: m.msg });
-          } else if (kind === 15) {
-            const method = str();
-            const url = str();
-            const headers = [];
-            let n = dv.getUint32(at, true);
-            at += 4;
-            for (; n > 0; n -= 1) headers.push([str(), str()]);
-            const timeout = dv.getUint32(at, true);
-            at += 4;
-            this.fxOut.push({ op: "fetch", id, method, url, headers, body: "", timeout });
-          } else throw new Error(`unknown effect kind ${kind}`);
-          break;
-        }
-        case OP_SAVE: {
-          // Resolved now, while a handle the batch released still names its
-          // file; the download is made after the batch.
-          const ref = this.fileRef(dv, at);
-          const n = dv.getUint32(at + 24, true);
-          const name = readStr(u8, at + 28, n);
-          at += 28 + n;
-          this.fxOut.push({ op: "save", name, blob: ref.blob, type: ref.file.type });
-          break;
-        }
-        case OP_CANCEL:
-          this.fxOut.push({ op: "cancel", id: dv.getUint32(at, true) });
-          at += 4;
-          break;
-        case OP_NAV: {
-          const mode = u8[at];
-          const n = dv.getUint32(at + 1, true);
-          this.fxOut.push({ op: mode === 1 ? "push" : "replace", url: readStr(u8, at + 5, n) });
-          at += 5 + n;
-          break;
-        }
-        case OP_STORE: {
-          const mode = u8[at];
-          const n = dv.getUint32(at + 1, true);
-          const key = readStr(u8, at + 5, n);
-          at += 5 + n;
-          if (mode === 1) {
-            const m = dv.getUint32(at, true);
-            this.fxOut.push({ op: "set", key, value: readStr(u8, at + 4, m) });
-            at += 4 + m;
-          } else this.fxOut.push({ op: "remove", key });
-          break;
-        }
-        case OP_FOCUS: {
-          this.fxOut.push({ op: "focus", mode: u8[at], node: dv.getUint32(at + 1, true) });
-          at += 5;
-          break;
-        }
-        case OP_TITLE: {
-          const n = dv.getUint32(at, true);
-          this.fxOut.push({ op: "title", text: readStr(u8, at + 4, n) });
-          at += 4 + n;
-          break;
-        }
-        case OP_PORT: {
-          const n = dv.getUint32(at, true);
-          const port = readStr(u8, at + 4, n);
-          const m = this.readPortMessage(u8, dv, at + 4 + n);
-          at = m.at;
-          this.fxOut.push({ op: "port", port, msg: m.msg });
-          break;
-        }
-        default:
-          throw new Error(`unknown engine command ${op} at byte ${at - 1}`);
+      if (op === this.protocol.OP_TRANSITION) {
+        reader.at = at; reader.marked = marked;
+        at = this.protocol.COMMANDS[op].call(this, reader);
+        marked = reader.marked;
+        break;
       }
+      if (mode === "update" && batch.spans.has(offset)) {
+        at = batch.spans.get(offset); continue;
+      }
+      if (scanning) {
+        let skipped = true;
+        switch (op) {
+          case this.protocol.OP_TEMPLATE: {
+            const site = dv.getUint32(at, true), n = dv.getUint32(at + 4, true);
+            const template = this.parseTemplate(u8, dv, at + 8, n, mode === "preflight");
+            shadow.set(site, template); batch.definitions.set(offset, template); at += 8 + n; break;
+          }
+          case this.protocol.OP_INST: {
+            const site = dv.getUint32(at + 12, true), template = shadow.get(site) ?? this.templates[site];
+            if (!template) throw new Error(`INST names unknown template ${site}`);
+            at += 16;
+            for (const hole of template.holes) {
+              if (hole.kind === HOLE_TEXT || hole.kind === HOLE_PROP) skipString();
+              else if (hole.kind === HOLE_ATTR) skipAttribute();
+              else if (hole.kind === HOLE_BIND || hole.kind === HOLE_REF) at += 4;
+            }
+            break;
+          }
+          case this.protocol.OP_HATTR: at += 5; skipAttribute(); break;
+          case this.protocol.OP_TEXT: case this.protocol.OP_HPROP: case this.protocol.OP_PROP:
+            if (mode === "preflight" && op === this.protocol.OP_PROP && !this.protocol.PROPS[u8[at + 4]]) throw new Error(`unknown element property ${u8[at + 4]}`);
+            at += 5; skipString(); break;
+          case this.protocol.OP_MOVE: case this.protocol.OP_CLEAR: at += 8; break;
+          case this.protocol.OP_RELEASE: case this.protocol.OP_REMOVE: at += 4; break;
+          case this.protocol.OP_ELEM: {
+            reader.at = at + 12;
+            const name = expandedName(reader, true);
+            const container = reader.protocol.CONTAINERS[u8[reader.at++]];
+            if (!container) throw new Error("unknown child container");
+            if (container === CONTAINER_APPLIERS.TEMPLATE_CONTENT && (name.namespace !== HTML_NS || name.local !== "template")) throw new Error("template content requires an HTML template");
+            at = reader.at;
+            break;
+          }
+          case this.protocol.OP_TEXTNODE: case this.protocol.OP_COMMENT: at += 12; skipString(); break;
+          case this.protocol.OP_ATTR: at += 4; reader.at = at; expandedName(reader, false); at = reader.at; skipAttribute(); break;
+          case this.protocol.OP_LISTEN: {
+            const n = dv.getUint32(at + 8, true);
+            if (mode === "preflight") handlerEntry(dv.getUint32(at + 4, true), u8[at + 12 + n], dv.getUint32(at + 13 + n, true), readStr(u8, at + 12, n), this.protocol);
+            at += 17 + n; break;
+          }
+          case this.protocol.OP_SETTEXT: at += 4; skipString(); break;
+          case this.protocol.OP_REF: {
+            const kind = u8[at]; at += 5;
+            if (kind < 1 || kind > 7) throw new Error(`unknown reference operation ${kind}`);
+            if (kind === 6) { if (u8[at] > 3 || u8[at + 1] > 3 || u8[at + 2] > 2) throw new Error("invalid scroll-into-view operands"); at += 3; }
+            if (kind === 7) { for (let i = 0; i < 2; i += 1) { const edge = u8[at++]; if (edge > 3) throw new Error("invalid scroll edge"); if (edge === 3) at += 4; } if (u8[at++] > 2) throw new Error("invalid scroll behavior"); }
+            break;
+          }
+          default: skipped = false;
+        }
+        if (at > len) throw new Error("command exceeds batch length");
+        if (skipped) continue;
+      }
+      reader.at = at; reader.op = op; reader.offset = offset;
+      const apply = this.protocol.COMMANDS[op];
+      if (!apply) throw new Error(`unknown engine command ${op} at byte ${at - 1}`);
+      at = apply.call(this, reader);
+      if (at > len) throw new Error("command exceeds batch length");
+      if (mode === "early") batch.spans.set(offset, at);
     }
+    if (at !== len || (flags === 1) !== marked) throw new Error("command batch flag/TRANSITION mismatch");
     return len;
   }
 
@@ -2604,15 +4447,19 @@ export class RocEngineRuntime {
     this.dispatch(FX_NODE, id, bytes);
   }
 
+  report(id, payload) {
+    return this.dispatch(FX_NODE, id, payload, undefined, id);
+  }
+
   // A request's file, `token:u64 start:u64 len:u64` at `at`, resolved while
   // the batch's released handles still name their files (see "Files"): the
   // browser's `File`, the range, and the range as a Blob of the file's type.
   // The request holds them, so the file outlives its handle until the
   // request is answered.
-  fileRef(dv, at) {
-    const token = tokenAt(dv, 0, at);
-    const start = tokenAt(dv, 0, at + 8);
-    const len = tokenAt(dv, 0, at + 16);
+  // Preflight checks the range's framing without resolving a browser file.
+  fileRef(dv, at, dry = false) {
+    const { token, start, len } = fileRange(dv, at);
+    if (dry) return {};
     const file = this.files.get(token);
     if (file === undefined) throw new Error(`a request names file handle ${token}, which this runtime does not hold`);
     const blob = start === 0 && len === file.size ? file : file.slice(start, start + len, file.type);
@@ -2682,9 +4529,61 @@ export class RocEngineRuntime {
     throw new Error(`unknown file operation ${fx.op}`);
   }
 
+  // A later decision invalidates a deferred show, including a hide already
+  // applied in stream order. Object tokens have no generation that can wrap.
+  decideShown(element, property, value, node) {
+    const control = property === 6 ? "__shownControl" : "__popoverControl";
+    if (!element[control]) element[control] = {};
+    const intent = {};
+    element[property === 6 ? "__shownIntent" : "__popoverIntent"] = intent;
+    if ((property === 6 && value === "hidden") || (property === 7 && value === "false")) this.applyShown(element, property, value, node);
+    else this.fxOut.push({ op: "shown", element, property, value, node, intent });
+  }
+
+  applyShown(element, property, value, node) {
+    try {
+      if (property === 6) {
+        const modal = element.matches(":modal");
+        if (value === "hidden") { if (element.open) element.close(); }
+        else if (value === "modal") {
+          if (!modal) { if (element.open) element.close(); element.showModal(); }
+        } else if (!element.open || modal) {
+          if (element.open) element.close();
+          element.show();
+        }
+        const actual = !element.open ? "hidden" : element.matches(":modal") ? "modal" : "open";
+        if (actual !== value) throw new Error(`dialog stayed ${actual} after ${value}`);
+        if (this.modalOrder) {
+          if (actual !== "modal") this.modalOrder.remove(element);
+          else if (!modal) this.modalOrder.add(element);
+        }
+      } else {
+        const wanted = value === "true";
+        if (element.matches(":popover-open") !== wanted) {
+          if (wanted) element.showPopover(); else element.hidePopover();
+        }
+        if (element.matches(":popover-open") !== wanted) throw new Error("popover did not reach its decided shown state");
+      }
+    } catch (error) {
+      throw new Error(`shown property at node ${node}: ${error.message}`);
+    }
+  }
+
+  // Manual observations use decimal ordinals at the JSON boundary. Reading
+  // old or exhausted history fails the assertion without stopping the app.
+  topModal() { return this.modalOrder ? this.modalOrder.top(this.root) : null; }
+  scrollCount() { return this.scrollLog ? this.scrollLog.total() : 0n; }
+  scrollRecord(ordinal) {
+    if (!this.scrollLog) throw new Error("scroll history requires manualEffects");
+    return this.scrollLog.at(BigInt(ordinal));
+  }
+
   perform(fx) {
     const w = this.win;
     switch (fx.op) {
+      case "guardleave":
+        this.setLeaveGuard(fx.on);
+        return;
       case "push":
         w.history.pushState(null, "", fx.url);
         return;
@@ -2694,12 +4593,53 @@ export class RocEngineRuntime {
       case "title":
         w.document.title = fx.text;
         return;
-      case "focus": {
+      case "shown": {
+        const { element, property, value, intent } = fx;
+        if (!element.isConnected || !this.root.contains(element) || element[property === 6 ? "__shownIntent" : "__popoverIntent"] !== intent) return;
+        this.applyShown(element, property, value, fx.node);
+        return;
+      }
+      case "ref": {
         // After the batch: the element exists. Focus events this raises are
         // queued (busy) and delivered as their own turns.
-        const el = this.lookup(fx.node);
-        if (!el) return;
-        if (fx.mode === 2) el.blur();
+        const el = fx.element;
+        if (!el || this.lookup(fx.node) !== el || !this.root.contains(el)) return;
+        if (fx.mode === 4) {
+          checkValueControl(el, fx.node);
+          if (el.__composing) el.__applyValue = el.value !== el.__renderedValue;
+          else applyRenderedValue(el);
+        } else if (fx.mode === 2) el.blur();
+        else if (fx.mode === 5) el.focus({ preventScroll: true });
+        else if (fx.mode === 6) {
+          if (this.manualScrollers) {
+            for (let ancestor = el.parentElement; ancestor && ancestor !== this.root; ancestor = ancestor.parentElement) {
+              if (this.manualScrollers.has(ancestor)) this.manualScrollError = "ScrollIntoView inside an element that handles scroll needs layout the native oracle does not have; use a scroll step";
+            }
+          }
+          el.scrollIntoView(fx.options);
+          if (this.scrollLog) this.scrollLog.add(el, "into-view");
+        } else if (fx.mode === 7) {
+          const options = { behavior: fx.behavior };
+          const handled = this.manualScrollers?.has(el);
+          const unmodelled = handled && (fx.top.kind === "end" || fx.left.kind === "end");
+          if (unmodelled) this.manualScrollError = "ScrollTo End on an element that handles scroll needs layout the native oracle does not have; use a scroll step";
+          if (handled && !unmodelled) {
+            this.observeManualScroll(el);
+            const position = this.manualScrollers.get(el).expected;
+            this.expectManualScroll(el, {
+              top: fx.top.kind === "keep" ? position.top : fx.top.kind === "start" ? 0 : fx.top.pixels,
+              left: fx.left.kind === "keep" ? position.left : fx.left.kind === "start" ? 0 : fx.left.pixels,
+            });
+          }
+          for (const axis of ["top", "left"]) {
+            const edge = fx[axis];
+            if (edge.kind === "keep") continue;
+            options[axis] = edge.kind === "start" ? 0 : edge.kind === "end" ? (axis === "top" ? el.scrollHeight : el.scrollWidth) : edge.pixels;
+          }
+          if (options.left !== undefined && this.win.getComputedStyle(el).direction === "rtl") options.left = -options.left;
+          el.scrollTo(options);
+          if (this.scrollLog) this.scrollLog.add(el, "to");
+        }
         else {
           el.focus();
           if (fx.mode === 3 && typeof el.select === "function") el.select();
@@ -2709,11 +4649,13 @@ export class RocEngineRuntime {
       case "set":
       case "remove":
         try {
-          if (fx.op === "set") this.storage.setItem(fx.key, fx.value);
-          else this.storage.removeItem(fx.key);
-        } catch (e) {
-          // A storage write failure is a host diagnostic, not an app result.
-          console.warn(`storage ${fx.op} ${fx.key} failed: ${e}`);
+          const store = fx.session ? this.sessionStorage : this.storage;
+          if (!store) throw new Error("storage is unavailable");
+          if (fx.op === "set") store.setItem(fx.key, fx.value);
+          else store.removeItem(fx.key);
+        } catch (error) {
+          console.warn(`${fx.session ? "session" : "local"} storage ${fx.op} ${fx.key} failed: ${error}`);
+          this.storageWriteFailed(fx, error);
         }
         return;
       case "cancel":
@@ -2729,7 +4671,7 @@ export class RocEngineRuntime {
         return;
       }
       case "online": {
-        const fn = () => this.result(fx.id, new Uint8Array([RES_ONLINE, this.isOnline() ? 1 : 0]));
+        const fn = () => this.guard(() => this.report(fx.id, new Uint8Array([RES_ONLINE, this.isOnline() ? 1 : 0])));
         w.addEventListener("online", fn);
         w.addEventListener("offline", fn);
         this.live.set(fx.id, {
@@ -2744,9 +4686,21 @@ export class RocEngineRuntime {
       }
       case "visibility": {
         const doc = this.doc;
-        const fn = () => this.result(fx.id, new Uint8Array([RES_VISIBLE, this.isVisible() ? 1 : 0]));
+        const fn = () => this.guard(() => this.report(fx.id, new Uint8Array([RES_VISIBLE, this.isVisible() ? 1 : 0])));
         doc.addEventListener("visibilitychange", fn);
         this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => doc.removeEventListener("visibilitychange", fn) });
+        return;
+      }
+      case "media": {
+        if (!this.mediaQueries.includes(fx.query)) throw new Error(`undeclared media query ${JSON.stringify(fx.query)}`);
+        const query = this.mediaQuery(fx.query);
+        this.mediaMatch(query);
+        const fn = () => this.guard(() => {
+          const matches = this.mediaMatch(query);
+          this.report(fx.id, new Uint8Array([RES_MATCHES, matches ? 1 : 0]));
+        });
+        query.addEventListener("change", fn);
+        this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => query.removeEventListener("change", fn) });
         return;
       }
       case "interval": {
@@ -2755,22 +4709,103 @@ export class RocEngineRuntime {
           this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => {} });
           return;
         }
-        const h = setInterval(() => this.result(fx.id, new Uint8Array([RES_FIRED])), fx.ms);
+        const h = setInterval(() => this.guard(() => this.result(fx.id, this.firedPayload())), fx.ms);
         this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => clearInterval(h) });
         return;
       }
+      case "storagechanges": {
+        let ids = this.storageChanges.get(fx.key);
+        if (!ids) { ids = new Set(); this.storageChanges.set(fx.key, ids); }
+        ids.add(fx.id);
+        if (this.storageListener === null) {
+          this.storageListener = event => this.guard(() => {
+            if (!this.storage || event.storageArea !== this.storage) return;
+            // Reporting can drain an already-full ingress queue. Fix the
+            // recipients before that delivery can dispose or mount a site.
+            const recipients = event.key === null ? [...this.storageChanges.values()].flatMap(ids => [...ids]) : [...(this.storageChanges.get(event.key) ?? [])];
+            if (recipients.length === 0) return;
+            const payload = storageResult(event.key === null ? null : event.newValue);
+            for (const id of recipients) this.report(id, payload);
+          });
+          w.addEventListener("storage", this.storageListener);
+        }
+        this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => {
+          ids.delete(fx.id);
+          if (ids.size === 0) this.storageChanges.delete(fx.key);
+          if (this.storageChanges.size === 0 && this.storageListener !== null) {
+            w.removeEventListener("storage", this.storageListener);
+            this.storageListener = null;
+          }
+        } });
+        return;
+      }
+      case "storagefailures": {
+        const entry = { kind: "sub", req: fx, pendingFailures: new Set(), cancel: () => {
+          this.storageFailureSubscribers.delete(fx.id);
+          for (const item of entry.pendingFailures) this.unlinkStorageFailure(item);
+          if (this.storageFailureCount === 0 && this.storageFailureTask !== null) {
+            clearTimeout(this.storageFailureTask); this.storageFailureTask = null;
+          }
+        } };
+        this.storageFailureSubscribers.set(fx.id, entry);
+        this.live.set(fx.id, entry);
+        return;
+      }
+      case "clipboard": {
+        const entry = { kind: "clipboard", req: fx, cancel: () => { entry.active = false; }, active: true };
+        this.live.set(fx.id, entry);
+        const finish = payload => {
+          if (!entry.active || this.live.get(fx.id) !== entry || this.poisoned || this.ending) return;
+          this.live.delete(fx.id);
+          this.result(fx.id, payload);
+        };
+        if (this.manual) {
+          // The write is performed with this batch. Cancellation can suppress
+          // its later answer but cannot undo successful clipboard contents.
+          const denied = this.manualClipboardDenied;
+          if (!denied) {
+            this.clipboardText = fx.text;
+            this.clipboardHtml = fx.html ?? "";
+            if (this.clipboardWrites === U64_MAX) this.clipboardObservationError = "clipboard write observation exhausted its U64 count";
+            else this.clipboardWrites += 1n;
+          }
+          const task = setTimeout(() => finish(new Uint8Array(denied ? [RES_CLIPBOARD_FAILED, 1] : [RES_COPIED])), 0);
+          entry.cancel = () => { entry.active = false; clearTimeout(task); };
+          return;
+        }
+        const clipboard = w?.navigator?.clipboard;
+        if (!clipboard || (fx.html === null ? typeof clipboard.writeText !== "function" : typeof clipboard.write !== "function" || typeof w.ClipboardItem !== "function")) {
+          // Every answer is a later turn, even a synchronously unavailable API.
+          const task = setTimeout(() => finish(new Uint8Array([RES_CLIPBOARD_FAILED, 2])), 0);
+          entry.cancel = () => { entry.active = false; clearTimeout(task); };
+          return;
+        }
+        try {
+          const written = fx.html === null ? clipboard.writeText(fx.text) : clipboard.write([new w.ClipboardItem({
+            "text/plain": new w.Blob([fx.text], { type: "text/plain" }),
+            "text/html": new w.Blob([fx.html], { type: "text/html" }),
+          })]);
+          Promise.resolve(written).then(() => finish(new Uint8Array([RES_COPIED])), error => finish(new Uint8Array([RES_CLIPBOARD_FAILED, error?.name === "NotAllowedError" ? 1 : 2])));
+        } catch (error) {
+          const task = setTimeout(() => finish(new Uint8Array([RES_CLIPBOARD_FAILED, error?.name === "NotAllowedError" ? 1 : 2])), 0);
+          entry.cancel = () => { entry.active = false; clearTimeout(task); };
+        }
+        return;
+      }
+      case "sessionget":
       case "get": {
         // One turn later, never inside the current call.
-        const h = setTimeout(() => {
+        const h = setTimeout(() => this.guard(() => {
           this.live.delete(fx.id);
           let v = null;
           try {
-            v = this.storage ? this.storage.getItem(fx.key) : null;
+            const store = fx.op === "sessionget" ? this.sessionStorage : this.storage;
+            v = store ? store.getItem(fx.key) : null;
           } catch (_) {
             v = null;
           }
-          this.result(fx.id, v === null ? new Uint8Array([RES_MISSING]) : concat([new Uint8Array([RES_VALUE]), utf8enc.encode(v)]));
-        }, 0);
+          this.result(fx.id, storageResult(v));
+        }), 0);
         this.live.set(fx.id, { kind: "get", cancel: () => clearTimeout(h) });
         return;
       }
@@ -2805,62 +4840,15 @@ export class RocEngineRuntime {
           return;
         }
         if (fx.op === "timer") {
-          const h = setTimeout(() => {
+          const h = setTimeout(() => this.guard(() => {
+            const payload = this.firedPayload();
             this.live.delete(fx.id);
-            this.result(fx.id, new Uint8Array([RES_FIRED]));
-          }, fx.ms);
+            this.result(fx.id, payload);
+          }), fx.ms);
           this.live.set(fx.id, { kind: "timer", cancel: () => clearTimeout(h) });
           return;
         }
-        // One abort controller and at most one timeout timer per admitted
-        // request (bounded by the engine's in-flight cap); the timer is
-        // cleared on completion, failure, timeout or cancel.
-        const ctl = new AbortController();
-        let timer = null;
-        const done = () => {
-          if (timer === null) return;
-          clearTimeout(timer);
-          timer = null;
-          this.timers -= 1;
-        };
-        if (fx.timeout > 0) {
-          this.timers += 1;
-          timer = setTimeout(() => {
-            if (!this.live.has(fx.id)) return;
-            this.live.delete(fx.id);
-            done();
-            ctl.abort();
-            this.result(fx.id, new Uint8Array([RES_TIMEOUT]));
-          }, fx.timeout);
-        }
-        this.live.set(fx.id, {
-          kind: "http",
-          req: fx,
-          cancel: () => {
-            done();
-            ctl.abort();
-          },
-        });
-        const init = { method: fx.method, headers: fx.headers, signal: ctl.signal };
-        // An upload's body is its file's range, which the browser streams
-        // from the file; the request holds the file until it is answered.
-        if (fx.op === "upload") init.body = fx.blob;
-        else if (fx.method !== "GET" && fx.method !== "HEAD" && fx.body !== "") init.body = fx.body;
-        const send = this.fetch ?? globalThis.fetch;
-        new Promise((resolve) => resolve(send(fx.url, init)))
-          .then(async (r) => {
-            const body = await r.text();
-            if (!this.live.has(fx.id)) return;
-            this.live.delete(fx.id);
-            done();
-            this.result(fx.id, httpResult(r.status, body, [...r.headers]));
-          })
-          .catch((e) => {
-            if (!this.live.has(fx.id)) return; // cancelled or timed out
-            this.live.delete(fx.id);
-            done();
-            this.result(fx.id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(String(e))]));
-          });
+        this.startTransfer(fx);
         return;
       }
       case "save":
@@ -2872,7 +4860,7 @@ export class RocEngineRuntime {
           this.issued.push(fx.id);
           return;
         }
-        this.startFetch(fx);
+        this.startTransfer(fx);
         return;
       }
       case "port":
@@ -2920,62 +4908,171 @@ export class RocEngineRuntime {
     }
   }
 
-  // FX kind 15: an HTTP request whose body becomes a file the page holds
-  // (result tag 21), never entering linear memory: the body is the
-  // browser's `Blob`, which a large response keeps on disk. A body over
-  // options.maxFileBytes is FileFailed(TooLarge); a failure or a timeout is
-  // answered as an HTTP request's. Held, cancelled and timed out as an HTTP
-  // request is.
-  startFetch(fx) {
-    const ctl = new AbortController();
-    let timer = null;
-    const done = () => {
-      if (timer === null) return;
-      clearTimeout(timer);
-      timer = null;
-      this.timers -= 1;
-    };
-    const entry = {
-      kind: "fetch",
-      req: fx,
-      running: true,
-      cancel: () => {
-        done();
-        ctl.abort();
-      },
-    };
-    this.live.set(fx.id, entry);
-    const settle = (payload) => {
-      if (this.live.get(fx.id) !== entry) return;
-      this.live.delete(fx.id);
-      done();
-      this.result(fx.id, payload);
-    };
-    if (fx.timeout > 0) {
+  // HTTP, upload and file-fetch share lifetime and timeout handling. A
+  // terminal occurrence retains its source until delivery so already queued
+  // reports remain valid; cancellation and timeout explicitly discard them.
+  finishTransfer(id, entry, payload, discard = false) {
+    if (this.live.get(id) !== entry || entry.terminal) return false;
+    entry.terminal = true;
+    entry.stop?.();
+    if (discard) this.dropReports(id, entry);
+    payload.isLive = () => this.live.get(id) === entry;
+    payload.before = () => this.live.delete(id);
+    this.result(id, payload);
+    return true;
+  }
+
+  // Exactly one timer samples each request's latest counts. Split long U32
+  // waits at the browser's signed timer limit rather than allowing overflow
+  // to turn a many-day interval into a one-millisecond loop.
+  transferSampler(fx, entry) {
+    let timer = null, latest = null, deadline = 0;
+    const now = () => performance.now();
+    const clear = () => { if (timer !== null) { clearTimeout(timer); timer = null; this.timers -= 1; } latest = null; };
+    const arm = () => {
       this.timers += 1;
       timer = setTimeout(() => {
-        timer = null;
-        this.timers -= 1;
-        if (this.live.get(fx.id) !== entry) return;
-        this.live.delete(fx.id);
-        ctl.abort();
-        this.result(fx.id, new Uint8Array([RES_TIMEOUT]));
+        timer = null; this.timers -= 1;
+        if (this.live.get(fx.id) !== entry || entry.terminal) return;
+        if (now() < deadline) { arm(); return; }
+        const payload = latest; latest = null;
+        if (payload !== null) this.report(fx.id, payload);
+      }, Math.min(0x7fffffff, Math.max(0, Math.ceil(deadline - now()))));
+    };
+    return { clear, sample: (direction, done, total) => {
+      if (!fx.progressMs || entry.terminal || this.live.get(fx.id) !== entry) return;
+      latest = this.transferPayload(direction, done, total);
+      if (timer === null) { deadline = now() + fx.progressMs; arm(); }
+    } };
+  }
+
+  transferPayload(direction, done, total) {
+    const integer = value => {
+      if (typeof value === "number" && (!Number.isSafeInteger(value) || value < 0)) throw new Error("transfer count is not an exact unsigned integer");
+      if (typeof value !== "bigint" && typeof value !== "number" && !(typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value))) throw new Error("transfer count is not an unsigned integer");
+      const n = BigInt(value);
+      if (n < 0n || n > U64_MAX) throw new Error("transfer count is outside U64");
+      return n;
+    };
+    const dir = direction === "sending" ? 1 : direction === "receiving" ? 2 : 0;
+    if (dir === 0) throw new Error("invalid transfer direction");
+    const bytes = new Uint8Array(19), view = new DataView(bytes.buffer);
+    bytes[0] = RES_PROGRESS; bytes[1] = dir;
+    view.setBigUint64(2, integer(done), true);
+    bytes[10] = total === null ? 0 : 1;
+    view.setBigUint64(11, total === null ? 0n : integer(total), true);
+    return bytes;
+  }
+
+  // Manual replay reports the same bytes and uses the same ingress source as
+  // a transport, without a sampling timer or retiring the pending request.
+  progressEffect(id, direction, done, total) {
+    const entry = this.live.get(id);
+    if (this.poisoned || !entry || entry.terminal || !entry.req?.progressMs || !["http", "upload", "fetch"].includes(entry.req.op)) return false;
+    this.report(id, this.transferPayload(direction, done, total));
+    return true;
+  }
+
+  startTransfer(fx) {
+    const ctl = new AbortController();
+    let timeout = null, xhr = null;
+    const entry = { kind: fx.op === "fetch" ? "fetch" : "http", req: fx, running: true, terminal: false };
+    this.live.set(fx.id, entry);
+    const sampler = this.transferSampler(fx, entry);
+    entry.stop = () => {
+      sampler.clear();
+      if (timeout !== null) { clearTimeout(timeout); timeout = null; this.timers -= 1; }
+    };
+    entry.cancel = () => { entry.stop(); ctl.abort(); xhr?.abort(); };
+    const finish = payload => this.finishTransfer(fx.id, entry, payload);
+    const fail = error => finish(concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(String(error))]));
+    if (fx.timeout > 0) {
+      this.timers += 1;
+      timeout = setTimeout(() => {
+        if (!this.finishTransfer(fx.id, entry, new Uint8Array([RES_TIMEOUT]), true)) return;
+        ctl.abort(); xhr?.abort();
       }, fx.timeout);
     }
+    // XHR's blob response keeps file bytes in the browser. An explicit fetch
+    // backend always wins; nondefault cache needs Fetch's RequestInit.
+    if (fx.progressMs && this.fetch === null && (fx.op === "upload" || (fx.op === "fetch" && fx.cache === "default"))) {
+      try {
+        xhr = new this.win.XMLHttpRequest();
+        xhr.open(fx.method, fx.url);
+        xhr.withCredentials = fx.credentials === "include";
+        // Decode an HTTP answer as UTF-8, as Fetch.text does, regardless of
+        // the response header's charset. File bytes remain a browser Blob.
+        xhr.responseType = fx.op === "fetch" ? "blob" : "arraybuffer";
+        for (const [name, value] of fx.headers) xhr.setRequestHeader(name, value);
+        const progress = event => this.guard(() => {
+          if (fx.op === "fetch" && event.loaded > this.maxFileBytes) {
+            finish(new Uint8Array([RES_FILE_FAILED, FILE_TOO_LARGE])); xhr.abort(); return;
+          }
+          const sameOrigin = new URL(xhr.responseURL || fx.url, this.doc.baseURI).origin === this.win.location.origin;
+          const known = fx.op === "upload" || (sameOrigin && !xhr.getResponseHeader("content-encoding"));
+          sampler.sample(fx.op === "upload" ? "sending" : "receiving", event.loaded, known && event.lengthComputable ? event.total : null);
+        });
+        if (fx.op === "upload") xhr.upload.addEventListener("progress", progress);
+        else xhr.addEventListener("progress", progress);
+        xhr.onload = () => {
+          const headers = new Headers();
+          for (const line of xhr.getAllResponseHeaders().trim().split(/[\r\n]+/)) {
+            if (!line) continue;
+            const colon = line.indexOf(":");
+            if (colon < 1) { fail("invalid response header"); return; }
+            headers.append(line.slice(0, colon), line.slice(colon + 1).trim());
+          }
+          finish(fx.op === "fetch" ? this.fetchedPayload(fx.url, xhr.status, [...headers], xhr.response) : httpResult(xhr.status, new TextDecoder().decode(xhr.response), [...headers]));
+        };
+        xhr.onerror = () => fail("XMLHttpRequest network error");
+        xhr.onabort = () => fail("XMLHttpRequest aborted");
+        xhr.send(fx.op === "upload" ? fx.blob : null);
+      } catch (error) { fail(error); }
+      return;
+    }
+    const init = { method: fx.method, headers: fx.headers, signal: ctl.signal, cache: fx.cache, credentials: fx.credentials };
+    if (fx.op === "upload") init.body = fx.blob;
+    else if (fx.method !== "GET" && fx.method !== "HEAD" && fx.body !== "") init.body = fx.body;
     const send = this.fetch ?? globalThis.fetch;
-    new Promise((resolve) => resolve(send(fx.url, { method: fx.method, headers: fx.headers, signal: ctl.signal })))
-      .then(async (r) => {
-        const blob = await r.blob();
-        if (this.live.get(fx.id) !== entry) return;
-        settle(this.fetchedPayload(fx.url, r.status, [...r.headers], blob));
-      })
-      .catch((e) => settle(concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(String(e))])));
+    new Promise(resolve => resolve(send(fx.url, init))).then(async response => {
+      if (this.live.get(fx.id) !== entry || entry.terminal) return;
+      // Fetch exposes no sent-byte events. A supplied backend gets one coarse
+      // complete Sending report when its response confirms the send finished.
+      if (fx.op === "upload" && fx.progressMs) this.report(fx.id, this.transferPayload("sending", fx.blob.size, fx.blob.size));
+      const headers = [...response.headers];
+      let body;
+      if (fx.progressMs && fx.op !== "upload") {
+        const length = response.headers.get("content-length"), encoding = response.headers.get("content-encoding");
+        const total = response.type !== "cors" && !encoding && length !== null && /^(0|[1-9][0-9]*)$/.test(length) && BigInt(length) <= U64_MAX ? BigInt(length) : null;
+        const reader = response.body?.getReader();
+        const chunks = [];
+        let done = 0n;
+        if (reader) {
+          try {
+            for (;;) {
+              const next = await reader.read();
+              if (this.live.get(fx.id) !== entry || entry.terminal) { await reader.cancel(); return; }
+              if (next.done) break;
+              done += BigInt(next.value.byteLength);
+              if (fx.op === "fetch" && done > BigInt(this.maxFileBytes)) {
+                finish(new Uint8Array([RES_FILE_FAILED, FILE_TOO_LARGE])); await reader.cancel(); return;
+              }
+              chunks.push(next.value);
+              sampler.sample("receiving", done, total);
+            }
+          } finally { reader.releaseLock(); }
+        }
+        const blob = new Blob(chunks);
+        body = fx.op === "fetch" ? blob : await blob.text();
+      } else body = fx.op === "fetch" ? await response.blob() : await response.text();
+      finish(fx.op === "fetch" ? this.fetchedPayload(fx.url, response.status, headers, body) : httpResult(response.status, body, headers));
+    }).catch(fail);
   }
 
   // A fetched body as result tag 21 with its file, or FileFailed(TooLarge).
   fetchedPayload(url, status, headers, blob) {
     if (blob.size > this.maxFileBytes) return new Uint8Array([RES_FILE_FAILED, FILE_TOO_LARGE]);
-    const type = (headers.find(([k]) => k.toLowerCase() === "content-type") ?? [null, blob.type])[1];
+    const type = (headers.find(([k]) => k.toLowerCase() === "content-type") ?? [null, ""])[1];
     const file = new File([blob], urlFileName(url), { type });
     const parts = [new Uint8Array([RES_FETCHED, status & 0xff, (status >>> 8) & 0xff]), u32(headers.length)];
     for (const [k, v] of headers) parts.push(encStr(k), encStr(v));
@@ -2990,7 +5087,7 @@ export class RocEngineRuntime {
   // copied out of linear memory (it may move before the handler runs) and
   // the files resolved now, while the handles the batch released still name
   // their files.
-  readPortMessage(u8, dv, at0) {
+  readPortMessage(u8, dv, at0, dry = false) {
     let at = at0;
     const n = dv.getUint32(at, true);
     const json = readStr(u8, at + 4, n);
@@ -3000,19 +5097,20 @@ export class RocEngineRuntime {
     at += 4;
     for (let i = 0; i < nblobs; i += 1) {
       const len = dv.getUint32(at, true);
-      blobs.push(u8.slice(at + 4, at + 4 + len));
+      if (len > u8.length - at - 4) throw new Error("truncated port blob");
+      if (!dry) blobs.push(u8.slice(at + 4, at + 4 + len));
       at += 4 + len;
     }
     const files = [];
     const nfiles = dv.getUint32(at, true);
     at += 4;
     for (let i = 0; i < nfiles; i += 1) {
-      const token = tokenAt(dv, 0, at);
-      const start = tokenAt(dv, 0, at + 8);
-      const len = tokenAt(dv, 0, at + 16);
-      const file = this.files.get(token);
-      if (file === undefined) throw new Error(`a port message names file handle ${token}, which this runtime does not hold`);
-      files.push(start === 0 && len === file.size ? file : new File([file.slice(start, start + len)], file.name ?? "", { type: file.type }));
+      const { token, start, len } = fileRange(dv, at);
+      if (!dry) {
+        const file = this.files.get(token);
+        if (file === undefined) throw new Error(`a port message names file handle ${token}, which this runtime does not hold`);
+        files.push(start === 0 && len === file.size ? file : new File([file.slice(start, start + len)], file.name ?? "", { type: file.type }));
+      }
       at += 24;
     }
     return { msg: { json, blobs, files }, at };
@@ -3181,7 +5279,7 @@ export class RocEngineRuntime {
     sub.entry = {
       kind: "portsub",
       req: fx,
-      backlog: () => sub.queue.length,
+      backlog: () => sub.latest ? sub.entry.reports?.size ?? 0 : sub.queue.length,
       cancel: () => {
         sub.ended = true;
         sub.queue = [];
@@ -3223,9 +5321,10 @@ export class RocEngineRuntime {
   // data is the emitter's error, thrown back to it.
   portEmit(sub, value) {
     if (sub.ended || this.live.get(sub.id) !== sub.entry) return false;
-    let payload;
+    let payload, data;
     try {
-      payload = portReplyPayload(portData(value));
+      data = portData(value);
+      payload = portReplyPayload(data);
     } catch (e) {
       if (e instanceof PortDataError) throw new TypeError(`port "${sub.port}": emit was given something that is not JSON data: ${e.message}`);
       throw e;
@@ -3233,12 +5332,18 @@ export class RocEngineRuntime {
     if (payload.size > this.maxPortBytes) {
       this.portCount(sub.port, "tooLarge");
       payload = portFailed(2);
+    } else if (sub.latest && data.blobs.length > 0) {
+      // A report is a snapshot at emit, even if its caller later mutates a
+      // byte array. Files are immutable browser objects and stay by reference.
+      payload = portReplyPayload({ ...data, blobs: data.blobs.map((bytes) => bytes.slice()) });
     }
     if (sub.latest) {
-      if (sub.queue.length > 0) {
-        sub.queue[0] = { payload, terminal: false };
-        this.portCount(sub.port, "coalesced");
-      } else sub.queue.push({ payload, terminal: false });
+      const replaced = this.report(sub.id, {
+        ...payload,
+        before: () => { if (payload.parts[0][0] === RES_PORT_ANSWER) this.portCount(sub.port, "messages"); },
+      });
+      if (replaced) this.portCount(sub.port, "coalesced");
+      return true;
     } else {
       if (sub.queue.length >= sub.bound) {
         this.portCount(sub.port, "refusedEmits");
@@ -3256,6 +5361,17 @@ export class RocEngineRuntime {
     sub.ended = true;
     this.portCount(sub.port, threw ? "threw" : "closed");
     const payload = threw ? portFailed(1, String(error && error.message !== undefined ? error.message : error)) : portFailed(3);
+    if (sub.latest) {
+      this.result(sub.id, {
+        ...payload,
+        isLive: () => this.live.get(sub.id) === sub.entry,
+        before: () => {
+          this.live.delete(sub.id);
+          this.dropPushSub(sub);
+        },
+      });
+      return;
+    }
     sub.queue.push({ payload, terminal: true });
     this.portPump(sub);
   }
@@ -3373,8 +5489,16 @@ export class RocEngineRuntime {
     let n = 0;
     for (const [id, e] of [...this.live]) {
       if (e.kind !== "portsub" || e.req.port !== port || (arg !== undefined && e.req.msg.json !== arg)) continue;
-      if (answer.closed || answer.threw !== undefined) this.live.delete(id);
-      this.result(id, manualPortPayload(answer));
+      const terminal = answer.closed || answer.threw !== undefined;
+      const payload = manualPortPayload(answer);
+      if (!terminal && this.portDecls.get(port).delivery === 2) this.report(id, payload);
+      else {
+        this.result(id, {
+          ...payload,
+          isLive: () => this.live.get(id) === e,
+          before: () => { if (terminal) this.live.delete(id); },
+        });
+      }
       n += 1;
     }
     return n;
@@ -3484,7 +5608,7 @@ export class RocEngineRuntime {
   // [CLASS]` prefix is stable: the browser spec runner tells these reports
   // from page errors by it.
   reportLost(fx, code, message) {
-    const klass = LOST_CLASSES[code] ?? "executor";
+    const klass = this.protocol.LOST_CLASSES[code] ?? "executor";
     console.error(`roc worker fault [${klass}] in task "${fx.task}": ${message}`);
     if (this.onWorkerFault) this.onWorkerFault({ id: fx.id, task: fx.task, class: klass, message });
     return klass;
@@ -3493,7 +5617,7 @@ export class RocEngineRuntime {
   workPool() {
     if (this.pool === null) {
       const W = (this.win && this.win.Worker) ?? globalThis.Worker;
-      this.pool = new WorkPool({ module: this.module, url: this.workerUrl, max: this.maxWorkers, inline: this.workerMode === "inline", Worker: W, monitor: this.monitor, maxBytes: this.maxWorkerBytes, live: (token) => this.files.has(token) });
+      this.pool = new WorkPool({ module: this.module, url: this.workerUrl, max: this.maxWorkers, inline: this.workerMode === "inline", Worker: W, monitor: this.monitor, faultClasses: this.protocol.LOST_CLASSES, maxBytes: this.maxWorkerBytes, live: (token) => this.files.has(token) });
     }
     return this.pool;
   }
@@ -3508,13 +5632,14 @@ export class RocEngineRuntime {
   cancel(id) {
     const e = this.live.get(id);
     if (e === undefined) return;
+    this.dropReports(id, e);
     this.live.delete(id);
     e.cancel();
   }
 
   // Manual mode: awaited requests still pending, in issue order.
   pendingEffects() {
-    return this.issued.filter((id) => this.live.has(id) && !this.live.get(id).running).map((id) => this.live.get(id).req ?? { id });
+    return this.issued.filter((id) => this.live.has(id) && !this.live.get(id).running && !this.live.get(id).terminal).map((id) => this.live.get(id).req ?? { id });
   }
 
   // Manual mode: answer pending request `id` with an HTTP response
@@ -3527,7 +5652,7 @@ export class RocEngineRuntime {
   runEffect(id, answer = {}) {
     if (this.poisoned || !this.live.has(id)) return false;
     const e = this.live.get(id);
-    if (e.running || e.kind === "portcall") return false;
+    if (e.running || e.terminal || e.kind === "portcall") return false;
     if (e.kind === "work") {
       this.live.delete(id);
       return new Promise((resolve) => this.startWork(e.req, () => resolve(true)));
@@ -3541,25 +5666,29 @@ export class RocEngineRuntime {
     // A fetch answered with a response: its body becomes the file, as a
     // real response's Blob does.
     if (e.kind === "fetch" && answer.status !== undefined) {
-      this.live.delete(id);
-      this.result(id, this.fetchedPayload(e.req.url, answer.status, answer.headers ?? [], new Blob([answer.body ?? ""])));
+      this.finishTransfer(id, e, this.fetchedPayload(e.req.url, answer.status, answer.headers ?? [], new Blob([answer.body ?? ""])));
       return true;
     }
-    this.live.delete(id);
-    if (answer.timeout) this.result(id, new Uint8Array([RES_TIMEOUT]));
-    else if (answer.network !== undefined) this.result(id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]));
-    else if (answer.status !== undefined) this.result(id, httpResult(answer.status, answer.body ?? "", answer.headers ?? []));
-    else this.result(id, new Uint8Array([RES_FIRED]));
+    if (e.req?.progressMs) {
+      const payload = answer.timeout ? new Uint8Array([RES_TIMEOUT]) : answer.network !== undefined ? concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]) : httpResult(answer.status, answer.body ?? "", answer.headers ?? []);
+      this.finishTransfer(id, e, payload, !!answer.timeout);
+    } else {
+      this.live.delete(id);
+      if (answer.timeout) this.result(id, new Uint8Array([RES_TIMEOUT]));
+      else if (answer.network !== undefined) this.result(id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]));
+      else if (answer.status !== undefined) this.result(id, httpResult(answer.status, answer.body ?? "", answer.headers ?? []));
+      else this.guard(() => this.result(id, this.firedPayload()));
+    }
     return true;
   }
 
   // Manual mode: answer pending work job `id` as lost with fault class
-  // `klass` ("contract" ... "executor", the names of LOST_CLASSES) without
+  // `klass` ("contract" ... "executor", the module's fault names) without
   // running it, reported as a real loss is. Returns false when `id` is not a
   // pending job or `klass` is not a class.
   loseEffect(id, klass) {
     const e = this.live.get(id);
-    const code = LOST_CLASSES.indexOf(klass);
+    const code = this.protocol.LOST_CLASSES.indexOf(klass);
     if (this.poisoned || e === undefined || e.kind !== "work" || e.running || code < 1) return false;
     this.live.delete(id);
     const reported = this.reportLost(e.req, code, "lost by the spec");
@@ -3584,7 +5713,7 @@ export class RocEngineRuntime {
   tick(id) {
     const e = this.live.get(id);
     if (e === undefined || e.kind !== "sub") return false;
-    this.result(id, new Uint8Array([RES_FIRED]));
+    this.guard(() => this.result(id, this.firedPayload()));
     return true;
   }
 
@@ -3598,13 +5727,41 @@ export class RocEngineRuntime {
     return (this.sites[site] ?? new Set()).size;
   }
 
+  // Wall time is sampled only at boot and when a timer callback runs. The
+  // encoded result keeps that sample even if ingress must wait for a batch.
+  readNow() {
+    return checkedI64(this.environment.now ? this.environment.now() : Date.now(), "options.environment.now");
+  }
+
+  firedPayload() {
+    return concat([new Uint8Array([RES_FIRED]), i64Bytes(this.readNow())]);
+  }
+
   isOnline() {
     const nav = this.win ? this.win.navigator : null;
-    return nav ? nav.onLine !== false : true;
+    const value = this.environment.online ? this.environment.online() : nav ? nav.onLine !== false : true;
+    if (typeof value !== "boolean") throw new Error("options.environment.online must answer a boolean");
+    return value;
   }
 
   isVisible() {
-    return !this.doc || this.doc.visibilityState !== "hidden";
+    const value = this.environment.visible ? this.environment.visible() : !this.doc || this.doc.visibilityState !== "hidden";
+    if (typeof value !== "boolean") throw new Error("options.environment.visible must answer a boolean");
+    return value;
+  }
+
+  // MediaQueryList is the browser fact and event source. Check the reader's
+  // shape at boot and at subscription, before retaining a listener.
+  mediaQuery(query) {
+    const value = this.environment.matchMedia ? this.environment.matchMedia(query) : this.win.matchMedia(query);
+    if (!value || typeof value.addEventListener !== "function" || typeof value.removeEventListener !== "function") throw new Error("options.environment.matchMedia must answer an object with boolean matches and change listener methods");
+    return value;
+  }
+
+  mediaMatch(query) {
+    const matches = query.matches;
+    if (typeof matches !== "boolean") throw new Error("options.environment.matchMedia must answer an object with boolean matches");
+    return matches;
   }
 
   // Live interval subscriptions with period `ms`, in issue order.
@@ -3619,7 +5776,7 @@ export class RocEngineRuntime {
   // counters.
   pageStats() {
     const x = this.x;
-    return { memBytes: x.memory.buffer.byteLength, liveAllocs: Number(x.metric(4)), liveBytes: Number(x.metric(5)), counters: this.workRecord().counters };
+    return { memBytes: x.memory.buffer.byteLength, liveAllocs: Number(x.metric(4)), liveBytes: Number(x.metric(5)), captureRefused: this.captureRefused, counters: this.workRecord().counters };
   }
 
   // How work runs here: "inline", "workers", or "unavailable" (no Worker
@@ -3660,30 +5817,140 @@ export class RocEngineRuntime {
 // ---------------------------------------------------------------------
 // Port data (see "Ports" above).
 
-// The app's declared storage keys and, after them, its port declarations
-// (design.md, Appendix B): { keys, decls }.
-function readBootKeys(x) {
+// Read one bounded protocol-facts item. Field order, lengths and uniqueness are
+// checked before any lookup table is constructed or app code is initialized.
+export function readProtocolFacts(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length > 65536) throw new Error("protocol facts exceed 65536 bytes");
+  const reader = (body) => {
+    let at = 0;
+    const need = (n) => { if (n > body.length - at) throw new Error("short protocol facts body"); };
+    const r = {
+      u8() { need(1); return body[at++]; },
+      u32() { need(4); const value = new DataView(body.buffer, body.byteOffset + at, 4).getUint32(0, true); at += 4; return value; },
+      bytes(n) { need(n); const value = body.subarray(at, at + n); at += n; return value; },
+      name() { const n = r.u32(); if (n < 1 || n > 128) throw new Error("invalid protocol fact name length"); const value = utf8.decode(r.bytes(n)); if (value.includes("\0")) throw new Error("NUL in protocol fact name"); return value; },
+      rows(read, maximum = 64) { const n = r.u32(); if (n > maximum || n > body.length - at) throw new Error("invalid protocol fact row count"); return Array.from({ length: n }, () => read(r)); },
+      done() { if (at !== body.length) throw new Error("trailing protocol facts bytes"); },
+    };
+    return r;
+  };
+  const unique = (values, label) => {
+    const seen = new Set();
+    for (const value of values) {
+      if (seen.has(value)) throw new Error(`duplicate protocol ${label} ${JSON.stringify(value)}`);
+      seen.add(value);
+    }
+    return values;
+  };
+  const names = (r, maximum = 64) => unique(r.rows(s => s.name(), maximum), "names");
+  const codeRows = r => r.rows(s => ({ code: s.u8(), name: s.name() }));
+  const nestedRows = (r, key, nested) => r.rows(s => ({ [key]: s.u8(), name: s.name(), [nested]: names(s, 32) }));
+  const fields = [
+    ["ops", codeRows],
+    ["kinds", r => nestedRows(r, "code", "events")],
+    ["policies", r => r.rows(s => ({ bit: s.u32(), name: s.name() }))],
+    ["properties", r => nestedRows(r, "index", "elements")],
+    ["http_cache", codeRows], ["http_credentials", codeRows],
+    ["namespaces", codeRows], ["text_entry_excluded", names], ["fault_classes", names], ["template_nodes", codeRows], ["child_containers", codeRows],
+  ];
+  const outer = reader(bytes), facts = {};
+  for (let i = 0; i < fields.length; i += 1) {
+    const tag = outer.u8();
+    if (tag !== i + 1) throw new Error(`expected protocol fact field ${i + 1}, found ${tag}`);
+    const body = reader(outer.bytes(outer.u32()));
+    facts[fields[i][0]] = fields[i][1](body);
+    body.done();
+  }
+  outer.done();
+  for (const field of ["ops", "kinds", "policies", "properties", "http_cache", "http_credentials", "namespaces", "template_nodes", "child_containers"]) {
+    const rows = facts[field];
+    if (rows.length === 0) throw new Error(`empty protocol ${field}`);
+    unique(rows.map(row => row.name), `${field} names`);
+    const key = field === "policies" ? "bit" : field === "properties" ? "index" : "code";
+    unique(rows.map(row => row[key]), `${field} codes`);
+    if (field === "policies") {
+      if (rows.some(row => row.bit === 0 || (row.bit & (row.bit - 1)) !== 0)) throw new Error("invalid protocol policy bit");
+    } else if (rows.some((row, i) => row[key] !== i + (["namespaces", "child_containers"].includes(field) ? 0 : 1))) throw new Error(`non-dense protocol ${field}`);
+  }
+  if (facts.fault_classes.length === 0) throw new Error("empty protocol fault classes");
+  return facts;
+}
+
+// Declaration sections are decoded inside their own lengths. A module that
+// omitted or malformed a section is refused before any app code mounts.
+export function readDeclarations(x) {
   x.boot_keys();
-  const u8 = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
-  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
-  const keys = [];
-  let at = 4;
-  for (let i = dv.getUint32(0, true); i > 0; i -= 1) {
-    const n = dv.getUint32(at, true);
-    keys.push(readStr(u8, at + 4, n));
-    at += 4 + n;
+  const bytes = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
+  const out = { keys: [], sessionKeys: [], decls: [], media: [], zoneDays: 366 };
+  const sections = [
+    { tag: 2, name: "local-storage", read: (r) => {
+      for (let n = r.u32(); n > 0; n -= 1) out.keys.push(r.str());
+    } },
+    { tag: 5, name: "ports", read: (r) => {
+      const names = new Set();
+      const count = r.u32();
+      if (count > 64) throw new Error("more than 64 ports");
+      for (let n = count; n > 0; n -= 1) {
+        const name = r.str();
+        const kind = r.u8(), delivery = r.u8(), bound = r.u32();
+        if (utf8enc.encode(name).length < 1 || utf8enc.encode(name).length > 128 || names.has(name)) throw new Error("invalid or duplicate port name");
+        if (![1, 2, 3].includes(kind) || (kind !== 3 ? delivery !== 0 || bound !== 0 : delivery === 1 ? bound < 1 || bound > 1024 : delivery !== 2 || bound !== 1)) throw new Error("invalid port shape or delivery");
+        names.add(name);
+        out.decls.push({ name, kind, delivery, bound });
+      }
+    } },
+    { tag: 6, name: "media", read: (r) => {
+      const count = r.u32();
+      if (count > 32) throw new Error("more than 32 media queries");
+      const queries = new Set();
+      for (let n = count; n > 0; n -= 1) {
+        const query = r.str(), length = utf8enc.encode(query).length;
+        if (length < 1 || length > 256 || queries.has(query)) throw new Error("invalid or duplicate media query");
+        queries.add(query); out.media.push(query);
+      }
+    } },
+    { tag: 10, name: "time-zone", read: (r) => {
+      out.zoneDays = r.u16();
+      if (out.zoneDays > 7305) throw new Error("zone_days is greater than 7305");
+    } },
+    { tag: 11, name: "session-storage", read: r => {
+      for (let n = r.u32(); n > 0; n -= 1) out.sessionKeys.push(r.str());
+    } },
+    { tag: 12, name: "protocol", read: r => { out.protocol = readProtocolFacts(r.bytes(r.remaining())); } },
+  ];
+  let at = 0;
+  for (const section of sections) {
+    const prefix = `contract: declaration section ${section.tag} (${section.name})`;
+    try {
+      if (at === bytes.length) throw new Error("is missing");
+      const tag = bytes[at];
+      if (tag !== section.tag) throw new Error(`expected tag ${section.tag}, found ${tag} (unknown, repeated or out of order)`);
+      if (bytes.length - at < 5) throw new Error("has a short header");
+      const len = new DataView(bytes.buffer, bytes.byteOffset + at + 1, 4).getUint32(0, true);
+      at += 5;
+      if (len > bytes.length - at) throw new Error("has a short body");
+      const body = bytes.subarray(at, at + len);
+      let pos = 0;
+      const need = (n) => { if (n > body.length - pos) throw new Error("has a short body"); };
+      const reader = {
+        remaining: () => body.length - pos,
+        bytes: n => { need(n); const value = body.subarray(pos, pos + n); pos += n; return value; },
+        u8: () => { need(1); return body[pos++]; },
+        u16: () => { need(2); const value = new DataView(body.buffer, body.byteOffset + pos, 2).getUint16(0, true); pos += 2; return value; },
+        u32: () => { need(4); const value = new DataView(body.buffer, body.byteOffset + pos, 4).getUint32(0, true); pos += 4; return value; },
+        str: () => { const n = reader.u32(); need(n); const value = readStr(body, pos, n); pos += n; return value; },
+      };
+      section.read(reader);
+      if (pos !== body.length) throw new Error("has bytes left over");
+      at += len;
+    } catch (error) {
+      throw new Error(`${prefix}: ${error.message}`);
+    }
   }
-  const decls = [];
-  let n = dv.getUint32(at, true);
-  at += 4;
-  for (; n > 0; n -= 1) {
-    const len = dv.getUint32(at, true);
-    const name = readStr(u8, at + 4, len);
-    at += 4 + len;
-    decls.push({ name, kind: u8[at], delivery: u8[at + 1], bound: dv.getUint32(at + 2, true) });
-    at += 6;
-  }
-  return { keys, decls };
+  if (at !== bytes.length) throw new Error(`contract: declaration section ${bytes[at]} (unknown, repeated or out of order): unexpected section`);
+  try { out.bindings = bindProtocolFacts(out.protocol); }
+  catch (error) { throw new Error(`contract: declaration section 12 (protocol): ${error.message}`); }
+  return out;
 }
 
 const PORT_SHAPES = ["", "command", "call", "subscription"];
@@ -3836,11 +6103,23 @@ function manualPortPayload(answer) {
 }
 
 export async function mountRocEngineApp({ wasmUrl, root, ...options }) {
-  const response = await fetch(wasmUrl);
-  if (!response.ok) throw new Error(`failed to fetch ${wasmUrl}: ${response.status}`);
-  const module = await WebAssembly.compile(await response.arrayBuffer());
-  const instance = await WebAssembly.instantiate(module, pageImports(module));
-  const runtime = new RocEngineRuntime(instance.exports, root, { ...options, module });
-  runtime.mount();
-  return runtime;
+  const picture = markedPicture(root);
+  let runtime = null;
+  try {
+    if (picture) holdPicture(root);
+    const response = await fetch(wasmUrl);
+    if (!response.ok) throw new Error(`failed to fetch ${wasmUrl}: ${response.status}`);
+    const module = await WebAssembly.compile(await response.arrayBuffer());
+    const instance = await WebAssembly.instantiate(module, pageImports(module));
+    runtime = new RocEngineRuntime(instance.exports, root, { ...options, module });
+    runtime.mount();
+    return runtime;
+  } catch (error) {
+    if (picture) {
+      if (runtime) {
+        if (!runtime.poisoned) runtime.contain(error, "executor");
+      } else pictureLoadFault(root, error, options.onFault);
+    }
+    throw error;
+  }
 }

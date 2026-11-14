@@ -46,8 +46,10 @@
   keeps the previous value of a state, a cell or a table to compare against.
   A table's changes are this rule at the grain of rows, not a
   second reactive mechanism: they say only which rows a turn wrote, its table views
-  are reached by the ordinary `Changed` pass, and they live one turn, cleared
-  by the root when that pass has run.
+  are reached by the ordinary `Changed` pass. They retain the last writing
+  turn's earlier rows until the next writing turn's first modifier clears
+  them; unrelated turns leave them intact. After the pass the root rearms
+  only the exact table cells written, without changing public observations.
 - Dependencies are declared by read signatures on values, the layers and the
   store cells a value reads, built before anything runs. Preserve glitch-free
   propagation: every write of a turn is applied before anything is observed,
@@ -67,8 +69,8 @@
   again, and a row the turn never shows would be created, with its state and
   its requests.
 - A DOM event, an effect result and a follow-up enter through the same turn:
-  route, fire, settle, Changed pass, end of turn (the changes of the tables
-  written are cleared, then focus). Do not create a side channel that
+  route, fire, settle, Changed pass, end of turn (the tables written are
+  rearmed for their next writing turn, then focus). Do not create a side channel that
   bypasses routing, pruning, scope ownership, the in-flight table or the
   counters.
 - Keep one way to write shared state. A write to a store cell is a value
@@ -90,7 +92,9 @@
   equality and hash, never through a text made from it. Do not derive
   identity from content, DOM position, a value's inspected text, or engine
   ids exposed to applications. Duplicate keys are contract errors, not
-  aliases.
+  aliases. A reference's name is an address the app builds for a command on
+  an element, never an identity: rows are found by their keys, and two live
+  references with one name are a contract error, not an alias.
 - Keep dynamic structure owned by explicit scopes. Disposing a site removes its
   nodes, frees its ids and routes, cancels its subscriptions and timers, and
   reparents its admitted requests to the nearest surviving ancestor, exactly as
@@ -115,12 +119,22 @@
 
 ## Keep ownership and boundaries safe
 
+- Control each failure at the earliest layer of `design.md`'s "How failure
+  is controlled" that is reasonably practicable. Do not leave to a check at
+  mount a rule the compiler can carry, do not poison at a bound that follows
+  an app's data where a refusal or a structural bound is possible, and leave
+  nothing to an app's author without stating why and what test catches it.
 - Preserve in-place updates. Each piece of state has one holder: exactly one
-  closure references a site's storage, the root site alone holds the store,
+  closure references a site's storage, the instance alone holds the store as
+  plain data beside the site tree,
   and environments move through handlers rather than being shared. No second
   reference is kept for convenience or for comparison; the one earlier state
-  the design allows is a table's changes, one earlier row for each row a turn
-  wrote, dropped when the turn ends. A change that makes a column, a state, a
+  the design allows is a table's changes, one earlier row per distinct key
+  its last writing turn wrote, dropped before the next writing turn's first
+  modifier or when its holder is disposed. There is no time bound on those
+  earlier rows and no earlier whole table is retained. State the delayed
+  O(J_previous) reclamation cost of the next writing turn; do not advertise
+  that turn as worst-case O(J_current) only. A change that makes a column, a state, a
   cell or a table copy on every update is a regression even when output is
   correct, and per-event allocation counts and the soak's flat round trips
   must catch it.
@@ -147,8 +161,10 @@
   act where the browser object lives; its contents cross into Wasm only
   through a read the app asks for. A request resolves the handle to its
   browser object when its batch is applied and holds it until it is
-  answered or cancelled, and anything the runtime makes from one (an object
-  URL) lives exactly as long as its handle.
+  answered or cancelled. When a marked batch starts a view transition, effects
+  that name no node run and resolve their handles when the call returns, before the
+  deferred DOM update. Anything the runtime makes from one (an object URL)
+  lives exactly as long as its handle.
   Handles cross between instances by token: each instance mints its own box
   for the browser object, so either side letting go cannot invalidate the
   other's. A file a job builds is immutable once finished, and its builder
@@ -160,10 +176,13 @@
   and answer, a file read into the page as a result), establish
   who owns it before the call, after it, and when the instance is poisoned or
   dropped.
-- Publish atomically. A command batch becomes visible only when its call
+- Publish atomically. A command batch becomes visible only after its call
   returns; a trap discards it. JavaScript reads command bytes only after the
   call, refreshes memory views after every call that can allocate, and applies
-  effects only after the whole batch is applied.
+  effects after the whole batch is applied, except that a marked batch starting
+  a view transition performs effects that name no node when the call returns.
+  Its DOM and node effects follow in the guarded update callback; no page-instance Roc
+  call or payload staging may invalidate the waiting command buffer.
 - Bound host-retained and in-flight work. Define the bound and the behavior at
   the bound — typed refusal, classified diagnostic, cancellation, teardown —
   before adding a queue, table, request kind, timer class or runtime registry.
@@ -176,12 +195,12 @@
   its Roc code and carried on the request; what a deployment allows is a
   `max…` mount option that caps whatever a request asks for. Do not move an
   app's meaning into a mount option, or a deployment's limit into app code.
-- Keep the engine's operations on an exposed type out of an app's reach.
-  Roc has no visibility between a module's own and everyone's, so an
-  operation an exposed type must offer the engine and must not offer an app,
-  such as giving a table its cell's identity, takes an `EngineOnly`: a
-  value only a module of the platform can make. Do not add such an
-  operation without it, and do not expose the module that makes the value.
+- Keep app-facing surface separate from platform machinery. Everything an app
+  can name through a module `platform/main.roc` exposes, including members of
+  aliased types and types in public signatures, is public. Nothing there may
+  mention, require or return a type an app cannot name. An operation only the
+  platform may perform belongs to an unexposed module's namespace, never to a
+  type an app can name. A witness value is not the mechanism for hiding it.
 - Reject programmer and contract errors at the narrowest trustworthy boundary
   with a classified diagnostic that names the rule and the construction site.
   Do not repair invalid input, substitute values, or continue after state may
@@ -191,7 +210,7 @@
 
 - Put scheduling, reconciliation, identity, effect lifecycle and containment
   policy in `platform/Core.roc` and the platform's Roc modules; a table, its
-  table views and their ordered keys are `Table.roc`, `View.roc` and `Seq.roc`. The
+  table views and their ordered keys are `TableCore.roc`, `View.roc` and `Seq.roc`. The
   host,
   `runtime.mjs` and `worker.mjs` adapt the engine to the browser; they do not
   implement its semantics. The native spec runner drives the same engine; it
@@ -232,24 +251,32 @@
   request and answers with data, checked against the type the app declared;
   it never decides reactive meaning, never touches the DOM the engine owns,
   and never calls into Roc or holds a Roc value. A service the platform
-  models (HTTP, storage, timers, history, focus, workers, files) is not a
-  port's business.
+  models (HTTP, storage, timers, history, focus, workers, files, layout
+  observation, media queries, time, entropy, the user's languages and time
+  zone, and writing the clipboard) is not a port's business. Reading the
+  clipboard on demand remains a port. Formatting with the browser's CLDR data is
+  not modelled and may use a port.
 - Keep observation passive. The runtime's monitor reports what the runtime
   and its pool did after they acted and never decides scheduling, a result
   or an order; everything it keeps is bounded, and an observer that
   misbehaves is dropped rather than obeyed. Meet a measurement need by
   observing more, never by letting an observer steer.
 - Treat the command stream, event records, effect payloads, worker payloads,
-  port messages, boot bytes (with the port table after the storage keys) and
+  port messages, boot bytes and the program's declarations, and
   Wasm exports as one versioned protocol. Change the Roc encoder
   and decoders, `platform/Dom.roc`, both hosts (`host.zig`, `spec.zig`),
   `runtime.mjs`, `worker.mjs`, the contract tests in `tests/` and Appendix B of
   `design.md` together.
+- Names and closed consumer lists live in `platform/Protocol.roc`; the runtime
+  reads them from the compiled module. They contain no command meaning.
 - Keep `platform/Dom.roc` independent of the engine. It is the oracle; code
-  shared with `Core.roc` would let one bug pass its own test.
+  shared with `Core.roc` would let one bug pass its own test. A table of names
+  shared by consumers is not code shared with `Core.roc`.
 - Keep `.scm` specs the single source of truth for application-visible
   behavior, parsed by the one Roc parser in `platform/Scm.roc`. Unknown steps are
-  hard errors in every runner. The native runner builds for several systems
+  hard errors in every runner. An `expect-absent` names a locator its spec
+  shows to match, or is marked `:never-drawn`. The native runner builds for
+  several systems
   and means the same on each: what differs between them is a service of the
   native host's system files (`platform/host/os_posix.zig`,
   `platform/host/os_windows.zig`), never a difference in what `spec.zig`
@@ -265,7 +292,9 @@
   (`platform/main-fuzz.roc`), `host.zig`,
   `runtime.mjs`, `worker.mjs`, the native spec runner and oracle, specs,
   examples, generated or bundled artifacts, and maintained documentation
-  wherever each layer is affected.
+  wherever each layer is affected. A new capability lands whole, as
+  `design.md`'s "When a capability is built" lists, with its failure
+  analysis and a demonstration in an example or a test app.
 - Read the [Roc Style Guide](https://gist.github.com/lukewilliamboswell/241a4e8adb7c89c7e0e02f1d303a8fa1)
   before editing Roc. Follow it for naming, types, props records, function
   shape, errors, text, the host boundary and top-level `expect` tests; do not
@@ -316,6 +345,10 @@
   target of that logic named for what it checks (`fuzz-<subject>.roc`)
   that imports nothing of the platform. Nothing in an example exists only
   so a platform test can drive it, and no public API exists only for one.
+- Run applicable roc-fuzz smoke checks; do not replace them with compiler
+  checks or ordinary `expect` tests. Deferring a campaign does not defer the
+  fixed-example replays. Compiler, linker and replay failures fail the check,
+  rather than exempting the target.
 - Reach for fuzzing where the bug class is a *sequence* rather than a case:
   reconciliation order, identity reuse across disposal, effect lifetime across
   disposal and reparenting, a table view kept from a long history of keyed writes,
@@ -357,11 +390,14 @@
   public behavior in reference or module documentation, and local invariants
   beside the code they constrain.
 - Review documentation as part of every pull request, including every added or
-  changed doc comment on an exposed Roc function and every Zig `pub fn` or
-  `export fn`. Each comment must be well written and give a helpful narrative
-  explanation of the function's purpose and, where relevant, its contract,
-  ownership, failure behavior, or architectural role. Reject comments that
-  merely restate the name or signature.
+  changed Roc doc comment and every Zig `pub fn` or `export fn`. On anything
+  an app can name, write for an app author: purpose, when to use it, contract,
+  errors and how to meet them, in the guide's vocabulary. On internal items,
+  write for a platform contributor: invariants, ownership, cost, wire and oracle
+  obligations, architectural rationale and compiler workarounds, in the engine's
+  vocabulary. A comment for the wrong reader is a defect; an app-facing item
+  whose honest comment is internal belongs in an unexposed module. Reject
+  comments that merely restate the name or signature.
 - Track reproducible compiler limitations in upstream GitHub issues. Once
   filed, link the issue beside any local workaround, keep the workaround narrow
   and identifiable, list it in `design.md`'s compiler limitations, and remove it

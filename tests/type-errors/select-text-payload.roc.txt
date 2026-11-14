@@ -1,0 +1,6 @@
+app [main] { pf: platform "<PLATFORM>" }
+import pf.Engine
+import pf.Html
+main : Engine.Program
+main = Engine.program(|| Engine.state("a", |state| Html.select(Engine.const("Choice"), state.signal(), Engine.const(["a", "b"]), { key: |choice| choice, label: |choice| choice }, [], state.set_value(|_, text| text))))
+Store : {}

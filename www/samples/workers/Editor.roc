@@ -148,9 +148,9 @@ Editor := [].{
 					|ask|
 						match ask {
 							Idle => []
-							Count({ text, .. }) => [Words.frequencies.request(text)]
+							Count({ text, .. }) => [Words.frequencies.ask(text)]
 						},
-					st.on_result(|s, _, res| { ..s, counted: Editor.counted(Words.frequencies.result(res)) }),
+					st.on_result(|s, _, res| { ..s, counted: Editor.counted(res) }),
 				),
 				Html.p_s(v.map(|s| Editor.show_counted(s.counted)), [Engine.test_id("counted")]),
 			],

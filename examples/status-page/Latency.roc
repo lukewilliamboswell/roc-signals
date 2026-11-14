@@ -31,36 +31,37 @@ Latency := [].{
 	## One message of the feed: its sequence number (consecutive while
 	## nothing is lost), when the interval ended (milliseconds since the Unix
 	## epoch, UTC), each service's p95, and how many readings the feed has
-	## dropped since this subscription began because neither the page nor
-	## its own buffer had room for them.
+	## dropped for this connection: readings no longer in the server history,
+	## or readings its own buffer had no room for.
 	Reading : { seq : U32, at_ms : I64, p95_ms : P95, dropped : U32 }
 
-	## The live feed. The argument seeds the simulation, so a seed always
-	## tells the same story.
-	readings : Port.Subscription({ seed : U32 }, Reading)
-	readings = Port.subscription({ name: Latency.readings_name, delivery: Every(16) })
+	## Opening is distinct from a reading; only an Event makes the panel live.
+	Message : [Opened, Event(Reading)]
 
-	## The feed's port name, which the page also gives the element that
-	## shows the runtime's monitor record for it.
-	readings_name : Str
-	readings_name = "roc-signals.example/status-page/latency"
+	## The module's named ports, declared once and registered together.
+	Ports : {
+		## The live feed. The seed always tells the same story, and after is
+		## the last reading the page kept. Reopening replays its bounded history.
+		readings : Port.Subscription({ seed : U32, after : U32 }, Message),
 
-	## Tell the feed to lose its connection for `seconds` and then replay
-	## what it buffered meanwhile: a burst the page's bound pushes back on.
-	disconnect : Port.Command({ seconds : U32 })
-	disconnect = Port.command({ name: "roc-signals.example/status-page/disconnect" })
+		## End every open connection. Roc decides when to try again.
+		drop : Port.Command({}),
+	}
 
-	## The program's entry for `Program.with_ports`: both ports, once.
+	## The same values serve requests and the derived program catalogue.
+	ports : Ports
+	ports = {
+		readings: Port.subscription({ name: "roc-signals.example/status-page/latency", delivery: Every(16) }),
+		drop: Port.command({ name: "roc-signals.example/status-page/drop" }),
+	}
+
+	## The program declares the subscription and the drop command once.
 	registrations : List(Engine.PortRegistration)
-	registrations = [Latency.readings.registration(), Latency.disconnect.registration()]
+	registrations = Port.registrations(Latency.ports)
 
 	## The seed the page subscribes with.
 	seed : U32
 	seed = 2026
-
-	## How long the page lets the connection drop when asked.
-	outage_seconds : U32
-	outage_seconds = 20
 
 	## How many readings the page keeps: 30 seconds of the feed. A reading
 	## beyond it lets the oldest go, so the window and the chart drawn from

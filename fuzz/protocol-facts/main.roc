@@ -1,0 +1,47 @@
+app [target] {
+	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.2/3kyiehxxzwAsjM23uCQGJ3Hx7dAAdzSGtK3k9Jq7Egtu.tar.zst",
+	pf: "../../platform/main-fuzz.roc",
+}
+
+import fz.Fuzz
+import pf.Protocol
+import pf.ProtocolFacts
+
+## Arbitrary bytes are either a typed refusal or exactly one canonical facts
+## item. Accepted values retain all tables and every nested name when encoded
+## and read again. The independent JS reader tests the same framing separately.
+test : List(U8) -> Fuzz.Outcome
+test = |bytes| {
+	match ProtocolFacts.decode(bytes) {
+		Err(_) => {}
+		Ok(facts) => {
+			encoded = ProtocolFacts.encode(facts)
+			if encoded != bytes {
+				crash "protocol facts accepted noncanonical bytes"
+			}
+			if ProtocolFacts.decode(encoded) != Ok(facts) {
+				crash "protocol facts lost decoded metadata"
+			}
+		}
+	}
+	Fuzz.keep
+}
+
+target = Fuzz.target_with({
+	name: "protocol-facts",
+	generator: Fuzz.raw_bytes,
+	test,
+	show: |bytes| Str.inspect(bytes),
+	examples: [
+		Fuzz.example({ name: "empty", revision: "2", make: || [] }),
+		Fuzz.example({ name: "all-vocabularies", revision: "2", make: || ProtocolFacts.encode(Protocol.facts) }),
+		Fuzz.example({ name: "truncated", revision: "2", make: || ProtocolFacts.encode(Protocol.facts).drop_last(1) }),
+		Fuzz.example({ name: "trailing", revision: "2", make: || ProtocolFacts.encode(Protocol.facts).append(0) }),
+		Fuzz.example({ name: "unknown-first-field", revision: "3", make: || [12].concat(ProtocolFacts.encode(Protocol.facts).drop_first(1)) }),
+		Fuzz.example({ name: "repeated-field", revision: "2", make: || ProtocolFacts.encode(Protocol.facts).concat(ProtocolFacts.encode(Protocol.facts)) }),
+		Fuzz.example({ name: "oversized-count", revision: "2", make: || [1, 4, 0, 0, 0, 255, 255, 255, 255] }),
+		Fuzz.example({ name: "duplicate-names", revision: "2", make: || ProtocolFacts.encode({ ..Protocol.facts, namespaces: [{ code: 0, name: "HTML" }, { code: 1, name: "HTML" }] }) }),
+		Fuzz.example({ name: "non-dense-opcodes", revision: "2", make: || ProtocolFacts.encode({ ..Protocol.facts, ops: [{ code: 2, name: "INST" }] }) }),
+		Fuzz.example({ name: "invalid-policy-bit", revision: "2", make: || ProtocolFacts.encode({ ..Protocol.facts, policies: [{ bit: 3, name: "PREVENT" }] }) }),
+	],
+})

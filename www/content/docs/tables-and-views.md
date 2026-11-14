@@ -65,16 +65,28 @@ into a `QueryPlan(k, v, s)`, the three functions a table view needs:
 
 {{ sample(file="scores/Scores.roc", region="plan") }}
 
-- `keep` says whether a row is in the table view.
-- `sort` gives the value the row is ordered by.
-- `compare` orders two sort values, answering `Before`, `Same` or `After`.
+`Engine.sort_by` takes `keep`, which selects rows, and `sort`, which gives a
+row's sort value. It compares that value by its type's `order_relative_to`,
+then breaks a tie by the key's own order. A table has no insertion order for
+ties to keep. The key's order must agree with its equality: `Same` exactly
+when the keys are equal.
 
-The order must be total: `compare` may answer `Same` only for a row's own
-sort value, and two rows that compare `Same` are a contract error. End the
-sort value with the key, as `Place` does, whatever the sorted field. A field
-that never ties before or after an event can still tie during one: when one
-event swaps two rows' places, the table view takes its writes one key at a time,
-and after the first both rows hold the same place.
+`Order.asc`, `Order.desc` and `Order.directed(value, descending)` keep both
+directions in one type. `Order.pair(first, second)` compares two priorities;
+nest pairs for more. `Order.utf8(text)` gives identifiers an explicit UTF-8
+byte order, with no allocation during comparison. It is not a reader's
+language-sensitive order: uppercase ASCII precedes lowercase, and different
+normalization forms stay different. Normalize at input when the app requires
+it, and give names an application-defined order when byte order is unsuitable.
+A nominal sort value can provide its own `order_relative_to`, just like a
+number does.
+
+The primitive `QueryPlan` also accepts an explicit `compare`, like
+`List.sort_with` beside `List.sort_by`. Use it for a key without its own order,
+such as `Str`. Its order must be total: `Same` identifies only a row's own
+sort value. Include the key wherever the sorted field can tie. Two rows can
+tie between the keyed writes of one event even when they do not tie before
+or after it; two different rows comparing `Same` are a contract error.
 
 The query is data rather than the functions themselves because functions
 cannot be compared: given a record of functions, the site could not tell a
@@ -96,6 +108,26 @@ leaves or moves costs a comparison across all of them.
 
 Here the listing and the window are cells, so buttons change them. Either
 could as well be local state or a constant: each is just a `Signal`.
+
+### Following a scrollbar
+
+A fixed-height list can write the same window from a scroll report instead
+of a paging button:
+
+{{ sample(file="scores/Scores.roc", region="scroll") }}
+
+The scroller's CSS fixes its height, and every row uses the height the
+window calculation assumes. A spacer keeps the full row count's height;
+only the drawn rows change with the window. Set `overflow-anchor: none`
+and keep the spacer independent of drawn rows, so a window write cannot
+move the scrollbar and produce another scroll report. A size report can
+also change the window's count as its container grows or shrinks. Both
+writes use the ordinary turn and preserve rows kept by the final window.
+
+This model assumes fixed-height rows. Measuring each row, page scrolling
+and variable-height virtualization are outside the platform's layout
+vocabulary. [Scrolling and layout](@/docs/effects-and-browser.md#scrolling-and-layout)
+describes size/seen observations and their lifetimes.
 
 ## A drawn row is handed its row
 
@@ -236,10 +268,19 @@ list is sorted or filtered on the page, or when it is long.
   nothing: an earlier write of the same event may have removed the row.
 - A row read after its key left the table in the same event is a contract
   error.
-- `Table.inverse` gives the writes that undo what this turn wrote, and
-  `Table.apply` applies such a list, for an undo history. The changes from a
-  turn are gone when the turn ends, so take the inverse in the event
-  that made the writes.
+- `Table.changes` retains the last turn that wrote this table, including
+  across unrelated turns. The next writing turn clears it before its first
+  modifier runs; further writes in that event keep the first earlier row
+  per key. A signal can read these changes like any other part of the cell.
+- `Table.inverse` gives writes that undo those retained changes, and
+  `Table.apply` applies them. A later event's decision can read the inverse
+  before its writes begin and use it to undo the last writing turn. Inside
+  a modifier the inverse describes that event's writes instead. Keep an
+  inverse in a history cell if it must survive the next write of the table.
+  Earlier rows are held until that next write or disposal of their holder;
+  there is no time bound, and no earlier whole table is kept. The next
+  writing turn pays for freeing those earlier rows, so a single keyed write
+  can also pay cleanup proportional to the previous turn's recorded keys.
 
 Three compiler defects touch tables today, each with its upstream issue:
 
@@ -251,8 +292,11 @@ Three compiler defects touch tables today, each with its upstream issue:
   it on with the key and the row, `|key, row| template(extra, key, row)`,
   not a function returned from a helper, which `roc check` rejects
   ([roc-lang/roc#12970](https://github.com/roc-lang/roc/issues/12970)).
-- An optimised build copies a large table on each write, where a development
-  build updates it in place
-  ([roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957)). The
+- An optimised build can still copy a large table on each write
+  ([roc-lang/roc#13019](https://github.com/roc-lang/roc/issues/13019), also
+  tracked by [roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957)).
+  The instance holds its store outside the site's boxed closure; a bounded
+  development-Wasm guard checks sparse-write bytes at two table sizes.
+  That development result does not establish flat shipping allocations. The
   platform is designed for the fix, and nothing in an app changes when it
   lands.

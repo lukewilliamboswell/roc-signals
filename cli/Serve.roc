@@ -180,7 +180,8 @@ report! = |outcome, { version, started, .. }| {
 	seconds = seconds_since!(started)
 	match outcome {
 		Built(text) => {
-			warnings = if (text.contains("0 errors and 0 warnings")) "" else "\n${text.trim()}"
+			shown = Compiler.report_on_success(text)
+			warnings = if (shown.is_empty()) "" else "\n${shown}"
 			Stdout.line!("Built in ${seconds} s.${warnings}")?
 			Ok(Clean)
 		}
