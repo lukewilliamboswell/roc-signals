@@ -399,11 +399,15 @@ async function setChecked(page, state, loc, want) {
 
 // Claimed attributes on controls read their live property. On other
 // elements value/checked remain ordinary attributes, as their commands do.
+// An ordinary attribute is read by its exact local name in no namespace, as
+// the oracle reads it (`Dom.attr_of`): `getAttribute` would lowercase the
+// name on an HTML element and match a namespaced attribute by its qualified
+// name, so `TITLE` would find `title` and `xlink:href` the XLink `href`.
 const attrOf = (e, n) => {
   if (n === "checked" && e.tagName === "INPUT") return e.checked ? "true" : "false";
   if (n === "disabled") return e.disabled ? "true" : "false";
   if (n === "value" && ["INPUT", "TEXTAREA", "SELECT", "OPTION"].includes(e.tagName)) return e.value;
-  return e.getAttribute(n);
+  return e.getAttributeNS(null, n);
 };
 
 async function expectText(page, loc, want) {

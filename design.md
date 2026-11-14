@@ -4321,7 +4321,11 @@ are always present: `disabled`, and `checked` or `value` on their applicable
 controls. Presence assertions on those readings are vacuous; use the dedicated
 value/state assertions. The parser refuses their spellings in `expect-no-attr`
 and directs the author to those assertions. Ordinary attribute values retain
-the exact text the app wrote.
+the exact text the app wrote, and an ordinary attribute is named by its exact
+local name in no namespace: `TITLE` is not `title`, and `xlink:href` is the
+attribute with that local name, never the XLink-namespaced `href`. Chrome
+reads it with `getAttributeNS(null, name)`, since `getAttribute` would fold
+case on an HTML element and match a qualified name.
 
 Coverage is checked: the native runner's step dispatch is an
 exhaustive `match`, and `check` compares the browser runner's handler table

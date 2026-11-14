@@ -379,7 +379,10 @@ count as present. `disabled`, and `checked` or `value` on applicable controls,
 are always-present live readings: `expect-has-attr` adds no useful check there.
 Use `expect-disabled`, `expect-checked` and `expect-value` instead. The parser
 rejects those names in `expect-no-attr`. Ordinary raw attributes retain their
-literal empty, false or named text.
+literal empty, false or named text. The name is compared exactly, in no
+namespace: `(expect-no-attr LOC "TITLE")` holds on an element with a `title`,
+and `xlink:href` names an attribute the app wrote with that local name, not
+the XLink-namespaced `href`.
 
 When upgrading existing specs, add an assertion where the existing story
 already shows the name; no extra event turn is required. Use the family
