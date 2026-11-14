@@ -293,7 +293,7 @@ TableApp := [Todos].{
 				Html.span_s(key.map2(todo.signal(), |k, t| "${k.to_str()}=${t.title} "), []),
 				Engine.keep_current(
 					todo.signal(),
-					|t| [Engine.http({ url: "/save" })],
+					|_| [Engine.http({ url: "/save" })],
 					Engine.react(|t, _| logged("saved:${t.title}")).with_progress({}, Engine.react_progress(|t, _| logged("sending:${t.title}"))),
 				),
 				Engine.watch(todo.signal(), |_| [Engine.http({ url: "/read" })], Engine.react_by(todo.signal(), |now, _, _| logged("read:${now.title}"))),
