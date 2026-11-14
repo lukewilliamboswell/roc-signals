@@ -549,8 +549,8 @@ SpecRunner := [].{
 			storage,
 		}
 		for context in contexts {
-			for need in context.evidence.needs {
-				match declared_need(need, names) {
+			for requirement in context.evidence.needs {
+				match declared_need(requirement, names) {
 					Ok({}) => {}
 					Err(message) => return Err({ pos: context.pos, message: "${context.form} ${message}" })
 				}
@@ -1123,17 +1123,17 @@ SpecRunner := [].{
 	mount_config : Program(state), Scm.Environment, { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64, mount_root : Scm.MountRoot } -> S(state)
 	mount_config = |program, initial_env, settings| {
 		env = { ..initial_env, url: SpecRunner.serialize_reference(initial_env.url) }
-		declared = SpecRunner.decode_declarations((program.keys)())
-		boot_kvs = declared.keys.keep_oks(|key| env.storage.find_first(|(name, _)| name == key))
-		boot_session = declared.session_keys.keep_oks(|key| env.session.find_first(|(name, _)| name == key))
+		declarations = SpecRunner.decode_declarations((program.keys)())
+		boot_kvs = declarations.keys.keep_oks(|key| env.storage.find_first(|(name, _)| name == key))
+		boot_session = declarations.session_keys.keep_oks(|key| env.session.find_first(|(name, _)| name == key))
 		for (query, _) in env.media {
-			if !declared.media.contains(query) {
+			if !declarations.media.contains(query) {
 				crash "contract: initial-media query ${JsonOut.quote(query)} is not declared"
 			}
 		}
-		media = declared.media.map(|query| (query, env.media.find_first(|(name, _)| name == query).map_ok(|(_, matches)| matches) ?? False))
+		media = declarations.media.map(|query| (query, env.media.find_first(|(name, _)| name == query).map_ok(|(_, matches)| matches) ?? False))
 		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_mount({ ..env, url: SpecRunner.serialize_location(env.url), media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }, settings.mount_root))
-		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declared.latest_ports, settings }
+		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declarations.latest_ports, settings }
 		initial = SpecRunner.fresh(inst, browser)
 		root = settings.mount_root
 		s0 = { ..initial, dom: Dom.modify(initial.dom, initial.dom.root, |element| { ..element, namespace: root.namespace, prefix: root.prefix, tag: root.local, svg: root.namespace == Dom.svg_namespace }) }
@@ -4673,9 +4673,9 @@ SpecRunner := [].{
 		if program.version != Dom.protocol_version {
 			return Err("picture program and oracle protocol versions differ")
 		}
-		declared = SpecRunner.decode_declarations((program.keys)())
+		declarations = SpecRunner.decode_declarations((program.keys)())
 		environment : Scm.Environment
-		environment = { url: SpecRunner.serialize_location(resolved.boot_url), media: declared.media.map(|query| (query, False)) }
+		environment = { url: SpecRunner.serialize_location(resolved.boot_url), media: declarations.media.map(|query| (query, False)) }
 		# init drains its own engine follow-ups. Do not call mount_config,
 		# answer_gets, drain_focus or pump_ui here: those deliver later inputs.
 		(inst, commands, _work) = (program.init)(SpecRunner.encode_mount(environment, template.root()))
@@ -6301,7 +6301,7 @@ port_kind_text = |kind| match kind {
 }
 
 declared_need : Scm.Need, DeclarationNames -> Try({}, Str)
-declared_need = |need, names| match need {
+declared_need = |requirement, names| match requirement {
 	Story(_) => Ok({})
 	Port({ name, kind }) => match names.ports.get(name) {
 		Err(_) => Err("names port ${JsonOut.quote(name)}, which the program does not declare")
