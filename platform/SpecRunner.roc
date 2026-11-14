@@ -80,6 +80,7 @@ SpecRunner := [].{
 	## An app as its host sees it: `Core.driver` of its `Engine.Program`.
 	Program(state) : {
 		version : U32,
+
 		## Registered worker catalogue names, including preparation owners.
 		## Static metadata only; reading it never initializes the app.
 		tasks : List(Str),
@@ -531,10 +532,16 @@ SpecRunner := [].{
 		contexts = spec.setup.map(|entry| { pos: entry.pos, form: "setup", evidence: Scm.setup_evidence(entry.item) }).concat(spec.steps.map(|step| { pos: step.pos, form: Scm.op_name(step.op), evidence: Scm.evidence(step.op) }))
 		local_keys = declarations.keys.fold(Dict.empty(), |keys, key| keys.insert({ store: Local, key }, {}))
 		declared_keys = declarations.session_keys.fold(local_keys, |keys, key| keys.insert({ store: Session, key }, {}))
-		storage = contexts.fold(declared_keys, |keys, context| context.evidence.shows.fold(keys, |known, subject| match subject {
-			Storage(key) => known.insert(key, {})
-			Locator(_) | Attribute(_) | Cleanup(_) | Interval(_) => known
-		}))
+		storage = contexts.fold(
+			declared_keys,
+			|keys, context| context.evidence.shows.fold(
+				keys,
+				|known, subject| match subject {
+					Storage(key) => known.insert(key, {})
+					Locator(_) | Attribute(_) | Cleanup(_) | Interval(_) => known
+				},
+			),
+		)
 		names = {
 			ports: declarations.ports.fold(Dict.empty(), |ports, port| ports.insert(port.name, port.kind)),
 			tasks: program.tasks.fold(Dict.empty(), |tasks, task| tasks.insert(task, {})),
@@ -5379,7 +5386,7 @@ expect {
 report_probe : {} -> SpecRunner.Program(List({ id : U32, payload : List(U8) }))
 report_probe = |_| {
 	version: Dom.protocol_version,
-		tasks: [],
+	tasks: [],
 	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0],
 	init: |_| ([], [0, 13, 1, 0, 0, 0, 6, 13, 2, 0, 0, 0, 7], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), [], List.repeat(0, 8)),
@@ -5511,7 +5518,7 @@ expect {
 pointer_probe : {} -> SpecRunner.Program(List({ handler : U32, payload : List(U8) }))
 pointer_probe = |_props| {
 	version: Dom.protocol_version,
-		tasks: [],
+	tasks: [],
 	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0],
 	init: |_| ([], [], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), [], List.repeat(0, 8)),
@@ -6301,9 +6308,9 @@ declared_need = |need, names| match need {
 		Ok(actual) if actual != kind => Err("names port ${JsonOut.quote(name)}, which is a ${port_kind_text(actual)} port; this step requires a ${port_kind_text(kind)} port")
 		Ok(_) => Ok({})
 	}
-	Task(name) => if names.tasks.contains(name) Ok({}) else Err("names worker catalogue entry ${JsonOut.quote(name)}, which the program does not register")
-	Media(query) => if names.media.contains(query) Ok({}) else Err("names media query ${JsonOut.quote(query)}, which the program does not declare")
-	Storage(key) => if names.storage.contains(key) Ok({}) else {
+	Task(name) => if (names.tasks.contains(name)) Ok({}) else Err("names worker catalogue entry ${JsonOut.quote(name)}, which the program does not register")
+	Media(query) => if (names.media.contains(query)) Ok({}) else Err("names media query ${JsonOut.quote(query)}, which the program does not declare")
+	Storage(key) => if (names.storage.contains(key)) Ok({}) else {
 		store = match key.store {
 			Local => "local-storage"
 			Session => "session-storage"

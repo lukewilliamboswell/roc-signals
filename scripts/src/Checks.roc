@@ -407,15 +407,19 @@ Checks := [].{
 			expected = "${path}:3:5: ${case.message}"
 			var $failures = []
 			for mode in ["native", "emit"] {
-				args = if mode == "emit" ["--emit-steps", path] else [path]
+				args = if (mode == "emit") ["--emit-steps", path] else [path]
 				result = Proc.merged!({ program: runner, args, cwd: o.root })?
 				Path.write_bytes!(Path.utf8("${dir}/${case.name}-${mode}.log"), result.stdout)?
 				if result.code != 1 {
 					$problems = $problems.append("declaration refusal ${case.name} ${mode}: expected exit1, got ${result.code.to_str()}")
 				}
 				match declaration_failure({ bytes: result.stdout, id: case.name, expected }) {
-					Ok(message) => { $failures = $failures.append(message) }
-					Err(message) => { $problems = $problems.append("declaration refusal ${case.name} ${mode}: ${message}") }
+					Ok(message) => {
+						$failures = $failures.append(message)
+					}
+					Err(message) => {
+						$problems = $problems.append("declaration refusal ${case.name} ${mode}: ${message}")
+					}
 				}
 			}
 			if $failures.len() != 2 or ($failures.first() != $failures.last()) {
