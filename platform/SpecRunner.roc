@@ -609,7 +609,7 @@ SpecRunner := [].{
 			{ tag: 2, body: $storage },
 			{ tag: 3, body: [SpecRunner.flag_byte(env.online)] },
 			{ tag: 4, body: [SpecRunner.flag_byte(env.visible)] },
-			{ tag: 6, body: env.media.map(|(_, matches)| SpecRunner.flag_byte(matches)) },
+			{ tag: 6, body: env.media.map(|(_, matched)| SpecRunner.flag_byte(matched)) },
 			{ tag: 7, body: SpecRunner.put_u64([], env.now_ms.to_u64_wrap()) },
 			{ tag: 8, body: $seed },
 			{ tag: 9, body: languages },
@@ -722,7 +722,7 @@ SpecRunner := [].{
 	## assert no work metrics).
 	take_batch : S(state), state, List(U8) -> S(state)
 	take_batch = |s, inst, cmds| {
-		before = s.dom.nodes.len()
+		before_count = s.dom.nodes.len()
 		var $s = { ..s, inst, buf: cmds }
 		var $at = 0.U64
 		while $at < cmds.len() {
@@ -738,7 +738,7 @@ SpecRunner := [].{
 				$w = $w.append(0)
 			}
 			for i in r.written {
-				if i < before {
+				if i < before_count {
 					$w = $w.set(i, ($w.get(i) ?? 0) + 1) ?? $w
 					n = Dom.node(r.dom, i)
 					if n.kind == 2 and n.parent != 0 {
@@ -1131,7 +1131,7 @@ SpecRunner := [].{
 				crash "contract: initial-media query ${JsonOut.quote(query)} is not declared"
 			}
 		}
-		media = declarations.media.map(|query| (query, env.media.find_first(|(name, _)| name == query).map_ok(|(_, matches)| matches) ?? False))
+		media = declarations.media.map(|query| (query, env.media.find_first(|(name, _)| name == query).map_ok(|(_, matched)| matched) ?? False))
 		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_mount({ ..env, url: SpecRunner.serialize_location(env.url), media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }, settings.mount_root))
 		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declarations.latest_ports, settings }
 		initial = SpecRunner.fresh(inst, browser)
@@ -1666,10 +1666,10 @@ SpecRunner := [].{
 
 	## Browser state uses parent paths and modal lifetimes, independent of engine sites.
 	inside : Dom.Model, U64, U64 -> Bool
-	inside = |dom, i, ancestor| {
+	inside = |dom, i, ancestor_index| {
 		var $at = i + 1
 		while $at != 0 {
-			if $at == ancestor + 1 {
+			if $at == ancestor_index + 1 {
 				return True
 			}
 			$at = Dom.node(dom, $at - 1).parent
@@ -1924,8 +1924,8 @@ SpecRunner := [].{
 					return { ..recorded, browser: { ..recorded.browser, scroll_error: "ScrollTo End on an element that handles scroll needs layout; use a scroll step" } }
 				}
 				prior = Dom.node(s.dom, i).scroll
-				edge = |value, before| match value {
-					Keep => before
+				edge = |value, prior_offset| match value {
+					Keep => prior_offset
 					Start => 0
 					Px(pixels) => pixels
 					End => crash "SpecRunner.perform_scroll: End refused"

@@ -168,8 +168,8 @@ Dom := [].{
 				if policy != 'p' and policy != 'k' {
 					crash "executor: invalid keymap policy"
 				}
-				place = Dom.byte(bs, $at + 1)
-				if place != 'a' and place != 'o' {
+				entry_place = Dom.byte(bs, $at + 1)
+				if entry_place != 'a' and entry_place != 'o' {
 					crash "executor: invalid keymap place"
 				}
 				var $flags = []
@@ -200,7 +200,7 @@ Dom := [].{
 				key = Str.from_utf8(bs.sublist({ start: $at + 1, len: $length })) ?? crash "executor: invalid keymap UTF-8"
 				$at = $at + 1 + $length
 				chord = { key, ctrl: $flags.get(0) ?? Bool.False, alt: $flags.get(1) ?? Bool.False, shift: $flags.get(2) ?? Bool.False, meta: $flags.get(3) ?? Bool.False }
-				entry = { chord, prevent: policy == 'p', outside: place == 'o' }
+				entry = { chord, prevent: policy == 'p', outside: entry_place == 'o' }
 				mods = { ctrl: chord.ctrl, alt: chord.alt, meta: chord.meta }
 				group = Dom.key_group(key, mods)
 				index = $index
@@ -223,13 +223,13 @@ Dom := [].{
 	## HTML enumerated attributes use ASCII case-insensitive keywords. An
 	## invalid contenteditable keyword inherits its nearest valid ancestor.
 	enum_attr : DNode, Str -> Str
-	enum_attr = |node, name| Spelling.ascii_lower(Dom.attr_of(node, name))
+	enum_attr = |element, name| Spelling.ascii_lower(Dom.attr_of(element, name))
 
 	## The raw type keyword with HTML's ASCII case rule. Missing and invalid
 	## values stay as written apart from case; this does not apply defaults.
 	input_type : DNode -> Str
 	# TODO(roc-parser#118): use its public HTML enumeration API when exposed.
-	input_type = |node| Dom.enum_attr(node, "type")
+	input_type = |element| Dom.enum_attr(element, "type")
 
 	## OutsideText is about the event target, including inherited editability.
 	text_entry : Model, U64 -> Bool
@@ -275,8 +275,8 @@ Dom := [].{
 			return Bool.False
 		}
 		var $scalar = first.to_u32().bitwise_and(if (width == 1) 127 else if (width == 2) 31 else if (width == 3) 15 else 7)
-		for byte in bs.drop_first(1) {
-			$scalar = $scalar * 64 + byte.to_u32().bitwise_and(63)
+		for continuation in bs.drop_first(1) {
+			$scalar = $scalar * 64 + continuation.to_u32().bitwise_and(63)
 		}
 		scalar = Scalar.from_u32($scalar) ?? return Bool.False
 		match GeneralCategory.of_scalar(scalar) {
@@ -590,18 +590,18 @@ Dom := [].{
 	## Template descendants share their row root; targets retain kind flags so
 	## removal itself independently rejects a missing RELEASE.
 	observe : Model, { owner : U64, target : U64, kind : U8 } -> Model
-	observe = |dom, { owner, target, kind }| {
+	observe = |dom, { owner, target: observed_index, kind }| {
 		if kind != 7 and kind != 8 {
 			return dom
 		}
 		bit = if (kind == 7) 1.U8 else 2
-		n = Dom.node(dom, target)
+		n = Dom.node(dom, observed_index)
 		if n.observing.bitwise_and(bit) != 0 {
 			crash "executor: duplicate observation"
 		}
-		registered = Dom.modify(dom, target, |target_node| { ..target_node, observing: target_node.observing.bitwise_or(bit) })
+		registered = Dom.modify(dom, observed_index, |target_node| { ..target_node, observing: target_node.observing.bitwise_or(bit) })
 		owned = if n.observing == 0 {
-			Dom.modify(registered, owner, |owner_node| { ..owner_node, observed: owner_node.observed.append(target) })
+			Dom.modify(registered, owner, |owner_node| { ..owner_node, observed: owner_node.observed.append(observed_index) })
 		} else registered
 		{ ..owned, observed_count: owned.observed_count + 1 }
 	}
@@ -610,10 +610,10 @@ Dom := [].{
 	release_observed : Model, U64 -> Model
 	release_observed = |dom, owner| {
 		var $dom = dom
-		for target in Dom.node(dom, owner).observed {
-			flags = Dom.node($dom, target).observing
+		for observed_index in Dom.node(dom, owner).observed {
+			flags = Dom.node($dom, observed_index).observing
 			count = (if (flags.bitwise_and(1) != 0) 1.U64 else 0) + (if (flags.bitwise_and(2) != 0) 1 else 0)
-			cleared = Dom.modify($dom, target, |target_node| { ..target_node, observing: 0 })
+			cleared = Dom.modify($dom, observed_index, |target_node| { ..target_node, observing: 0 })
 			$dom = { ..cleared, observed_count: cleared.observed_count - count }
 		}
 		Dom.modify($dom, owner, |owner_node| { ..owner_node, observed: [] })
@@ -661,12 +661,12 @@ Dom := [].{
 				dom,
 				n.parent - 1,
 				|p| {
-					{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
+					{ namespace, prefix, kind, container: child_container, content, svg, tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 					kept = match kids.find_last_index(|k| k == i) {
 						Ok(pos) => kids.drop_at(pos)
 						Err(_) => kids
 					}
-					{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
+					{ namespace, prefix, kind, container: child_container, content, svg, tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 				},
 			)
 			Dom.modify(d1, i, |m| { ..m, parent: 0, detach_count: m.detach_count + 1 })
@@ -681,7 +681,7 @@ Dom := [].{
 			d0,
 			parent,
 			|p| {
-				{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
+				{ namespace, prefix, kind, container: child_container, content, svg, tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 				kids2 = match before {
 					Err(End) => kids.append(i)
 					Ok(b) => {
@@ -689,7 +689,7 @@ Dom := [].{
 						kids.sublist({ start: 0, len: pos }).append(i).concat(kids.sublist({ start: pos, len: kids.len() - pos }))
 					}
 				}
-				{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
+				{ namespace, prefix, kind, container: child_container, content, svg, tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 			},
 		)
 		Dom.modify(d1, i, |n| { ..n, parent: parent + 1 })
@@ -724,7 +724,7 @@ Dom := [].{
 			crash "executor: unknown template node kind"
 		}
 		(name, name_end) = Dom.expanded_name(bytes, at + 1, True)
-		container = Dom.container(bytes, name_end, name)
+		child_container = Dom.container(bytes, name_end, name)
 		count = Dom.byte(bytes, name_end + 1).to_u64()
 		var $at = name_end + 2
 		var $attrs = []
@@ -738,13 +738,13 @@ Dom := [].{
 		}
 		children = Dom.byte(bytes, $at).to_u64()
 		$at = $at + 1
-		(next_dom, index) = Dom.create_node(dom, { ..Dom.empty_node, namespace: name.namespace, prefix: name.prefix, tag: name.local, container, svg: name.namespace == Dom.svg_namespace, attrs: $attrs })
+		(next_dom, index) = Dom.create_node(dom, { ..Dom.empty_node, namespace: name.namespace, prefix: name.prefix, tag: name.local, container: child_container, svg: name.namespace == Dom.svg_namespace, attrs: $attrs })
 		var $dom = next_dom
 		var $child_index = 0.U64
 		while $child_index < children {
 			$child_index = $child_index + 1
 			(child_dom, child, next) = Dom.build($dom, bytes, $at)
-			$dom = Dom.insert(child_dom, Dom.child_target(child_dom, index, container), child, Err(End))
+			$dom = Dom.insert(child_dom, Dom.child_target(child_dom, index, child_container), child, Err(End))
 			$at = next
 		}
 		($dom, index, $at)
@@ -1238,33 +1238,33 @@ Dom := [].{
 				}
 				var $dd = Dom.set_node(d1, root, { ..r, rn: nid, ht: $ht })
 				for hole in tpl.holes {
-					target = Dom.walk($dd, root, hole.path)
+					target_index = Dom.walk($dd, root, hole.path)
 					if hole.kind == 1 {
 						(v, next) = Dom.str(b, $at)
 						$at = next
-						$dd = Dom.set_text_on($dd, target, v)
+						$dd = Dom.set_text_on($dd, target_index, v)
 					} else if hole.kind == 2 {
 						(presence, next) = Dom.attr_presence(b, $at)
 						$at = next
-						$dd = Dom.set_expanded_presence($dd, target, hole.attribute, presence)
+						$dd = Dom.set_expanded_presence($dd, target_index, hole.attribute, presence)
 					} else if hole.kind == 6 {
 						(v, next) = Dom.str(b, $at)
 						$at = next
-						$dd = Dom.set_property_on($dd, target, hole.property, v, nid)
+						$dd = Dom.set_property_on($dd, target_index, hole.property, v, nid)
 						if hole.property == 6 or hole.property == 7 {
-							$dd = Dom.modify($dd, target, |n| { ..n, shown_intent: if (hole.property == 6) { ..n.shown_intent, dialog: intent } else { ..n.shown_intent, popover: intent } })
-							$fx = $fx.append(Shown({ target: target, property: hole.property, value: Dom.shown_value(hole.property, v), intent }))
+							$dd = Dom.modify($dd, target_index, |n| { ..n, shown_intent: if (hole.property == 6) { ..n.shown_intent, dialog: intent } else { ..n.shown_intent, popover: intent } })
+							$fx = $fx.append(Shown({ target: target_index, property: hole.property, value: Dom.shown_value(hole.property, v), intent }))
 						}
 					} else if hole.kind == 3 {
-						t = Dom.node($dd, target)
-						$dd = Dom.set_node($dd, target, { ..t, hs: t.hs.append({ event: hole.name, handler: hole.handler.to_u32(), kind: hole.payload_kind, policies: hole.policies }) })
-						$dd = Dom.observe($dd, { owner: root, target, kind: hole.payload_kind })
+						t = Dom.node($dd, target_index)
+						$dd = Dom.set_node($dd, target_index, { ..t, hs: t.hs.append({ event: hole.name, handler: hole.handler.to_u32(), kind: hole.payload_kind, policies: hole.policies }) })
+						$dd = Dom.observe($dd, { owner: root, target: target_index, kind: hole.payload_kind })
 					} else if hole.kind == 4 or hole.kind == 5 {
 						# Site placeholders and references carry command ids; neither
 						# replaces the row root's event routing id.
 						id = Dom.u32(b, $at)
 						$at = $at + 4
-						$dd = Dom.bind($dd, id, target)
+						$dd = Dom.bind($dd, id, target_index)
 					} else {
 						crash "unknown template hole kind ${hole.kind.to_str()}"
 					}
@@ -1284,30 +1284,30 @@ Dom := [].{
 				row = Dom.lookup($d, nid)
 				tpl = $d.tpls.get(Dom.site_of($d, nid) ?? crash "TEXT/HATTR on a non-row node") ?? crash "unknown template"
 				hole = tpl.holes.get(h) ?? crash "unknown hole"
-				target = Dom.node($d, row).ht.get(h) ?? crash "hole target"
+				target_index = Dom.node($d, row).ht.get(h) ?? crash "hole target"
 				if op != 22 or hole.property < 3 {
-					$written = $written.append(target)
+					$written = $written.append(target_index)
 				}
 				$d = if op == 3 {
 					if hole.kind != 2 {
 						crash "executor: HATTR names a non-attribute hole"
 					}
-					Dom.set_expanded_presence($d, target, hole.attribute, presence)
+					Dom.set_expanded_presence($d, target_index, hole.attribute, presence)
 				} else {
 					v = match presence {
 						Present(text) => text
 						Absent => crash "internal: a text or property operand is present"
 					}
 					if op == 22 and hole.property == 1 {
-						$values = $values.append((target, v))
+						$values = $values.append((target_index, v))
 					}
 					if op == 2 {
-						Dom.set_text_on($d, target, v)
+						Dom.set_text_on($d, target_index, v)
 					} else {
 						if hole.kind != 6 {
 							crash "executor: HPROP names a non-property hole"
 						}
-						Dom.set_property_on($d, target, hole.property, v, nid)
+						Dom.set_property_on($d, target_index, hole.property, v, nid)
 					}
 				}
 				if op == 22 and (hole.property == 6 or hole.property == 7) {
@@ -1315,8 +1315,8 @@ Dom := [].{
 						Present(text) => text
 						Absent => crash "executor: missing shown value"
 					}
-					$d = Dom.modify($d, target, |n| { ..n, shown_intent: if (hole.property == 6) { ..n.shown_intent, dialog: intent } else { ..n.shown_intent, popover: intent } })
-					$fx = $fx.append(Shown({ target, property: hole.property, value: Dom.shown_value(hole.property, v), intent }))
+					$d = Dom.modify($d, target_index, |n| { ..n, shown_intent: if (hole.property == 6) { ..n.shown_intent, dialog: intent } else { ..n.shown_intent, popover: intent } })
+					$fx = $fx.append(Shown({ target: target_index, property: hole.property, value: Dom.shown_value(hole.property, v), intent }))
 				}
 			} else if op == 4 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
@@ -1604,7 +1604,7 @@ Dom := [].{
 			} else if op == 18 {
 				mode = Dom.byte(b, $at)
 				ref_node = Dom.u32(b, $at + 1)
-				target = Dom.lookup($d, ref_node)
+				target_index = Dom.lookup($d, ref_node)
 				$at = $at + 5
 				action = if mode >= 1 and mode <= 5 {
 					Focus(mode)
@@ -1629,7 +1629,7 @@ Dom := [].{
 				} else {
 					crash "executor: unknown REF mode ${mode.to_str()}"
 				}
-				$fx = $fx.append(Ref({ node: ref_node, target, action }))
+				$fx = $fx.append(Ref({ node: ref_node, target: target_index, action }))
 			} else if op == 17 {
 				(t, a1) = Dom.str(b, $at)
 				$at = a1
