@@ -116,6 +116,8 @@ LabApp := [].{
 			Failed(TooLarge) => Failed("larger than a job may write")
 			Timeout => Timeout
 			Refused => Refused
+			TooDeep => Failed("nested too deeply to send")
+			TooManyFiles => Failed("more files than an answer may hold")
 			Lost(fault) => Lost(fault)
 		}
 
@@ -364,6 +366,8 @@ LabApp := [].{
 			Failed(TooLarge) => "The picture is larger than a job may write."
 			Timeout => "The picture was not composed: it timed out."
 			Refused => "The picture was not composed: too many requests were in flight."
+			TooDeep => "The picture was not composed: its answer was nested too deeply."
+			TooManyFiles => "The picture was not composed: its answer held too many files."
 			Lost(fault) => "The picture was not composed: ${Lab.fault_text(fault)}."
 		}
 

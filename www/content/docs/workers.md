@@ -106,7 +106,8 @@ It gives `body` a value of type `Engine.Remote(output, Worker.Error(error))`:
   job works: `remote.answered() ?? default` shows a fallback, and
   `.map_ok(f)` picks from it. `Worker.status(remote)` is the whole resource as
   one union, `Unasked`, `Working`, `Answered(output)`, the task's own
-  `Failed(error)`, `Timeout`, `Refused` or `Lost(fault)`, for a view that
+  `Failed(error)`, `Timeout`, `Refused`, `TooDeep`, `TooManyFiles` or
+  `Lost(fault)`, for a view that
   says something different in each case (see [Failures](#failures)).
 - To show an answer beside state the resource does not hold (the page of
   results the user is on, say), lift the state in and combine the two:
@@ -549,6 +550,8 @@ tells them apart:
 | `Failed(error)` | The task answered `Err(error)`: a failure of its own, which it chose |
 | `Timeout` | The job's timeout expired, and it was stopped |
 | `Refused` | Too many requests were in flight; the job was never started |
+| `TooDeep` | The input or the answer nested more than 128 levels of lists, sets, dictionaries, records, tuples, tags with a payload and files; nothing was sent or answered, and the worker was kept |
+| `TooManyFiles` | The answer held more than 16 files; nothing was answered, and the worker was kept |
 | `Lost(fault)` | The job crashed, or no worker could run it |
 
 **The task's own error.** A calculation that can fail on its input (text
@@ -564,8 +567,8 @@ the two into one union, so a view matches each case once:
 {{ sample(file="workers/Editor.roc", region="failing-view") }}
 
 With `request` and `result`, the same cases are `Ok(value)`,
-`Err(Failed(error))`, `Err(Timeout)`, `Err(Refused)` and
-`Err(Lost(fault))`.
+`Err(Failed(error))`, `Err(Timeout)`, `Err(Refused)`, `Err(TooDeep)`,
+`Err(TooManyFiles)` and `Err(Lost(fault))`.
 
 **A long job.** A job cannot be stopped from inside: there are no
 checkpoints, and stopping one ends its worker. Split long work into
@@ -583,7 +586,7 @@ working. The next job starts a new worker.
 | Fault | Cause |
 |---|---|
 | `AppCrash`, `OutOfMemory`, `ExpectFailed` | The job crashed, ran out of memory, or failed an `expect` |
-| `Contract` | The job broke a rule of the API: an answer holding more than 16 files, a payload nested too deep, a builder used after `finish!` |
+| `Contract` | The job broke a rule of the API: a builder used after `finish!` |
 | `ResourceLimit` | The job held more than 64 files and builders at once, or the page had no room for the files of its answer |
 | `Unavailable` | No worker could run the job (below) |
 | `Executor` | The worker script itself failed |
@@ -682,14 +685,14 @@ on roc-cbor and choose its own schema and persistence contract. Worker tasks
 continue to derive their codecs through `Wire.Sendable`; their source does not
 need replacement encode or decode calls.
 
-Every payload is decoded strictly. The depth limit is 512 physical CBOR
-arrays, maps and tags, including empty containers and numeric tags. This
-can differ from the earlier Wire framing depth: a decimal fraction adds
-its tag and array, a bignum adds a tag, and a payload-free union is text.
-A value beyond this physical bound cannot cross either way, and either way only the job is lost: an input
-that deep fails to decode in the worker, and an answer that deep is refused
-in the worker before it is sent, so the job is `Lost(Contract)` and the
-console names the task and the bound. Keep payloads plain: each payload
+Every payload is decoded strictly. A value crosses only if it nests at
+most 128 levels: each list, set, dictionary, record, tuple, tag with a
+payload and file is one level of the path down to it. A deeper input is
+not sent and its job's result is `TooDeep` at once; a deeper answer is not
+sent either, and the job's result is `TooDeep`. Either way the worker and
+its prepared state are kept, and nothing is lost. The bound is what a
+browser worker can encode safely on every build; a handwritten codec that
+recurses without the container hooks is not counted. Keep payloads plain: each payload
 type adds code to the module.
 
 ## When a worker is worth it

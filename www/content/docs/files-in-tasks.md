@@ -163,7 +163,7 @@ site is disposed and answered to the nearest surviving ancestor.
 | Limit | Default | Beyond it |
 |---|---|---|
 | Bytes a job appends to its builders | `maxOutputBytes`, 256 MiB | `append!` answers `Err(TooLarge)`; the job decides |
-| Files in one answer | 16, each file the answer holds counted once per place it appears (a file in a record with an absent optional field is counted once) | The job is `Lost(Contract)`; nothing is delivered |
+| Files in one answer | 16, each file the answer holds counted once per place it appears (a file in a record with an absent optional field is counted once) | The job's result is `TooManyFiles`; nothing is delivered, and the worker is kept |
 | Room on the page for an answer's files | 64 files held at once | The job is `Lost(ResourceLimit)`; nothing is delivered |
 | Files and builders a job holds at once | 64 | The job is `Lost(ResourceLimit)` |
 | A fetched body | `maxFileBytes`, 256 MiB | `Err(TooLarge)` |

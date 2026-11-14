@@ -191,7 +191,10 @@ test! = |input| {
 			if !all.all(|f| within(Core.file_parts(f))) {
 				crash "a decoded file's range lies outside its size"
 			}
-			again = WorkerCodec.encode_with_files("wire fuzz", value)
+			again = match WorkerCodec.encode_with_files("wire fuzz", value) {
+				Ok(encoded) => encoded
+				Err(TooDeep) => crash "a decoded Filed, which cannot nest, is refused as too deep"
+			}
 			well_formed : Try(Cbor.Value, _)
 			well_formed = Cbor.parse(again.bytes)
 			if well_formed.is_err() {
@@ -265,7 +268,10 @@ sample_filed = {
 		Ok(f) => f
 		Err(_) => crash "an empty range lies within an empty file"
 	}
-	WorkerCodec.encode_with_files("wire fuzz", { title: "t", docs: [empty], extra: Err(Missing) }).bytes
+	match WorkerCodec.encode_with_files("wire fuzz", { title: "t", docs: [empty], extra: Err(Missing) }) {
+		Ok(encoded) => encoded.bytes
+		Err(TooDeep) => crash "a seed Filed, which cannot nest, is refused as too deep"
+	}
 }
 
 target = Fuzz.target_with!({

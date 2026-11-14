@@ -175,6 +175,8 @@ PreparedApp := [].{
 		Lost(fault) => "lost ${Str.inspect(fault)}"
 		Timeout => "timed out"
 		Refused => "refused"
+		TooDeep => "too deep"
+		TooManyFiles => "too many files"
 		Failed(problem) => "failed ${Str.inspect(problem)}"
 	}
 

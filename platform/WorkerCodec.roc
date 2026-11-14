@@ -637,10 +637,13 @@ WorkerCodec := [].{
 	}
 
 	## Encode a worker input or answer, keeping the actual owned files beside
-	## its bytes. A malformed custom encoder is a contract fault naming the task.
-	encode_with_files : Str, a -> { bytes : List(U8), files : List(Engine.File), deep : Bool } where [a.Sendable]
+	## its bytes, or refuse a value nested past `max_nesting` with `TooDeep`.
+	## A handwritten encoder that writes the wrong number of items, or two
+	## equal keys in one map, is a contract fault naming the task.
+	encode_with_files : Str, a -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep]) where [a.Sendable]
 	encode_with_files = |name, value| match encode_payload(value) {
-		Ok(encoded) => encoded
+		Ok({ bytes, files, deep: Bool.False }) => Ok({ bytes, files })
+		Ok({ deep: Bool.True, .. }) => Err(TooDeep)
 		Err(CountMismatch) => crash "contract: worker task \"${name}\" encoded the wrong number of CBOR items"
 		Err(DuplicateMapKey) => crash "contract: worker task \"${name}\" encoded duplicate CBOR map keys"
 	}
@@ -653,24 +656,20 @@ WorkerCodec := [].{
 	## Encode an ordinary no-file value for platform tests of the derived format.
 	encode : a -> List(U8) where [a.Sendable]
 	encode = |value| {
-		encoded = WorkerCodec.encode_with_files("payload", value)
-		if !encoded.files.is_empty() {
-			crash "contract: a file crosses only in a worker task's input or answer"
+		match WorkerCodec.try_encode(value) {
+			Ok(bytes) => bytes
+			Err(TooDeep) => crash "internal: a platform test encoded a value nested past the bound with encode; use try_encode"
 		}
-		if encoded.deep {
-			crash "internal: a platform test encoded a value nested past the bound with encode; use try_encode"
-		}
-		encoded.bytes
 	}
 
 	## Expose the reader's depth refusal to platform tests of own-encoded values.
 	try_encode : a -> Try(List(U8), [TooDeep]) where [a.Sendable]
 	try_encode = |value| {
-		encoded = WorkerCodec.encode_with_files("payload", value)
+		encoded = WorkerCodec.encode_with_files("payload", value)?
 		if !encoded.files.is_empty() {
-			crash "contract: a file crosses only in a worker task's input or answer"
+			crash "internal: a platform test encoded a file with try_encode; a file crosses only in a worker task's input or answer"
 		}
-		if (encoded.deep) Err(TooDeep) else Ok(encoded.bytes)
+		Ok(encoded.bytes)
 	}
 
 	## Decode an ordinary no-file value for platform format tests.

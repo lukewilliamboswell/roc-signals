@@ -1507,7 +1507,7 @@ Core := [].{
 		StorageWriteFailures,
 		ClipboardWrite({ text : Str, html : [Plain, Html(Str)] }),
 		Timer(U32),
-		Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
+		Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })], refusal : [None, TooDeep] }),
 		Interval(U32),
 		Popstate,
 
@@ -1646,7 +1646,7 @@ Core := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
@@ -3325,12 +3325,13 @@ Core := [].{
 	## For the worker layer: a job's answer as its entry returns it,
 	## `n:u32 (token:u64)* output:rest`, from the answer's bytes and the
 	## files it holds, in the order the bytes refer to them. Each must be a
-	## handle the job holds. An answer may hold at most 16 files
-	## (design.md, "Boundedness"); more is a contract error in the worker.
+	## handle the job holds. An answer may hold at most `answer_file_limit`
+	## files (design.md, "Boundedness"): the worker layer answers more as
+	## `TooManyFiles` before it gets here, so more here is a platform bug.
 	task_answer : Str, List(U8), List(File) -> List(U8)
 	task_answer = |name, bytes, files| {
 		if files.len() > max_answer_files {
-			crash "contract: worker task \"${name}\" answered with ${files.len().to_str()} files; an answer holds at most ${max_answer_files.to_str()}"
+			crash "internal: worker task \"${name}\" answered with ${files.len().to_str()} files past the bound of ${max_answer_files.to_str()} the worker layer refuses"
 		}
 		var $b = put_u32(List.with_capacity(4 + 8 * files.len() + bytes.len()), files.len().to_u32_wrap())
 		for f in files {
@@ -3338,6 +3339,10 @@ Core := [].{
 		}
 		$b.concat(bytes)
 	}
+
+	## For the worker layer: how many files one job's answer may hold (16).
+	answer_file_limit : U64
+	answer_file_limit = max_answer_files
 
 	## For test platforms and harnesses: the catalogue rule `with_workers`
 	## enforces, as a value: the registered names in order, or the contract
@@ -8593,6 +8598,17 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 	}
 }
 
+## Refuse a request without admitting it: it takes an id but no slot, sends
+## nothing and is not in the in-flight table, and its result is queued for
+## the next turn as the in-flight bound's `Refused` is, counted with it. A
+## worker job whose input is nested past the payload bound is refused so
+## (`WorkRefused(TooDeep)`).
+fx_refuse : Tx, List(U32), Result -> (U32, Tx)
+fx_refuse = |tx, path, res| {
+	id = tx.fx.next
+	(id, with_fx(tx, |fx| { ..fx, next: id + 1, queue: fx.queue.append({ id, path, res }), refused: fx.refused + 1 }))
+}
+
 ## Queue what the end of the turn settles for a request (see [TurnEnd]) as
 ## it is issued: a focus or scroll command on a named reference, or a port request
 ## with the place its bytes go (see [PortAt]), which is nowhere when the
@@ -8680,9 +8696,12 @@ issue_progress = |tx, path, reqs, owned, progress_ms| {
 				$tx = t1
 				$owned = $owned.append({ id, sub: False, keep: False, a, at })
 			}
-			Work({ task, on_dispose, .. }) => {
+			Work({ task, on_dispose, refusal, .. }) => {
 				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckTask(task, path)) })
-				(id, t1) = fx_admit(t0, path, req)
+				(id, t1) = match refusal {
+					None => fx_admit(t0, path, req)
+					TooDeep => fx_refuse(t0, path, WorkRefused(TooDeep))
+				}
 				$tx = t1
 				$owned = $owned.append({ id, sub: False, keep: on_dispose == Keep, a, at })
 			}
@@ -9953,7 +9972,7 @@ expect {
 				"div",
 				[],
 				[
-					Core.when(st.signal(), || Core.watch(Core.const({}), |_| [Work({ task: "t/echo", input: [1], files: [], timeout_ms: 0, on_dispose: Stop, on_cancel: Stop, prepared: Unprepared })].map(Core.raw), Core.ignore({})), || Core.text("")),
+					Core.when(st.signal(), || Core.watch(Core.const({}), |_| [Work({ task: "t/echo", input: [1], files: [], timeout_ms: 0, on_dispose: Stop, on_cancel: Stop, prepared: Unprepared, refusal: None })].map(Core.raw), Core.ignore({})), || Core.text("")),
 					Core.watch(Core.const({}), |_| [Core.again({})], st.on_result(|_, _, _| Bool.False)),
 				],
 			),

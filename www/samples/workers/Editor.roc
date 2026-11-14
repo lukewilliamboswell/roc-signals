@@ -93,6 +93,7 @@ Editor := [].{
 		match error {
 			Timeout => "This took too long."
 			Refused => "Too much is running; edit the text to try again."
+			TooDeep | TooManyFiles => "The answer was too large to send."
 			Lost(_) => "The analysis failed."
 		}
 	# endregion derive
@@ -207,6 +208,7 @@ Editor := [].{
 			Failed(NotANumber(word)) => "\"${word}\" is not a number"
 			Timeout => "Adding took too long."
 			Refused => "Too much is running; edit the numbers to try again."
+			TooDeep | TooManyFiles => "The answer was too large to send."
 			Lost(_) => "Adding failed."
 		}
 	# endregion failing-view

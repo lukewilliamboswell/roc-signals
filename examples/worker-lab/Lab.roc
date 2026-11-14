@@ -657,6 +657,8 @@ Lab := [].{
 		match error {
 			Timeout => Timeout
 			Refused => Refused
+			TooDeep => Failed("nested too deeply to send")
+			TooManyFiles => Failed("more files than an answer may hold")
 			Lost(fault) => Lost(fault)
 		}
 

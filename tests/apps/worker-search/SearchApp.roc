@@ -69,6 +69,8 @@ SearchApp := [].{
 		Err(Lost(fault)) => Err("lost (${Str.inspect(fault)})")
 		Err(Timeout) => Err("took too long")
 		Err(Refused) => Err("too busy")
+		Err(TooDeep) => Err("nested too deeply")
+		Err(TooManyFiles) => Err("too many files")
 	}
 
 	status : S -> Str

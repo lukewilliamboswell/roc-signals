@@ -132,6 +132,13 @@ Nested := { children : List(Nested) }.{
 	is_eq : _
 }
 
+## A payload and the files beside it, for a value within the bound.
+held : a -> { bytes : List(U8), files : List(Engine.File) } where [a.Wire.Sendable]
+held = |value| match WorkerCodec.encode_with_files("wire unit", value) {
+	Ok(encoded) => encoded
+	Err(TooDeep) => crash "internal: a platform test's value is nested past the bound"
+}
+
 ## A chain of tags with two payloads, ending in a payload-free tag.
 Deep := [Down(Deep, Dec), Stop].{
 	parser_for : _
@@ -475,12 +482,12 @@ expect {
 	deepest = down(128)
 	back : Try(Deep, Wire.Error)
 	back = WorkerCodec.decode(WorkerCodec.encode(deepest))
-	filed_at = WorkerCodec.encode_with_files("wire unit", filed(126, file))
+	filed_at = held(filed(126, file))
 	filed_back : Try(Filed, Wire.Error)
 	filed_back = WorkerCodec.decode_with_held(filed_at.bytes, filed_at.files)
 	actual =
 		\\deepest: ${Str.inspect([back == Ok(deepest), WorkerCodec.try_encode(down(129)) == Err(TooDeep)])}
-		\\filed: ${Str.inspect([filed_back == Ok(filed(126, file)), filed_at.files.len() == 1, WorkerCodec.encode_with_files("wire unit", filed(127, file)).deep])}
+		\\filed: ${Str.inspect([filed_back == Ok(filed(126, file)), filed_at.files.len() == 1, WorkerCodec.encode_with_files("wire unit", filed(127, file)) == Err(TooDeep)])}
 	expected =
 		\\deepest: [True, True]
 		\\filed: [True, True, True]
@@ -517,7 +524,7 @@ expect {
 	}
 	a = file(1, { name: "a.bin", mime: "", size: 10, start: 4, len: 3 })
 	b = file(2, { name: "b.txt", mime: "text/plain", size: 0, start: 0, len: 0 })
-	sent = WorkerCodec.encode_with_files("wire unit", { note: "x", docs: [a, b] })
+	sent = held({ note: "x", docs: [a, b] })
 	back : Try({ note : Str, docs : List(Engine.File) }, Wire.Error)
 	back = WorkerCodec.decode_with_held(sent.bytes, sent.files)
 	missing : Try({ note : Str, docs : List(Engine.File) }, Wire.Error)
@@ -531,8 +538,8 @@ expect {
 ## CBOR listed such a record's files twice, so 9 of them made 18 entries and
 ## an answer of 9 to 16 was refused at the 16-file bound. Now 9 and 16 files
 ## make 9 and 16 entries, an answer of 16 is within the bound (17 is past
-## it: `Core.task_answer` refuses it), and two occurrences of one file are
-## still two entries.
+## it, which the worker layer answers as `TooManyFiles`), and two
+## occurrences of one file are still two entries.
 expect {
 	file = |token| match Core.placed_file(Core.held_file(Box.box(token)), { name: "f${token.to_str()}", mime: "", size: 8, start: 0, len: 8 }) {
 		Ok(f) => f
@@ -548,12 +555,12 @@ expect {
 	listed = |count| {
 		value : List({ doc : Engine.File, note : Try(Str, [Missing]) })
 		value = docs(count)
-		sent = WorkerCodec.encode_with_files("wire unit", value)
+		sent = held(value)
 		back : Try(List({ doc : Engine.File, note : Try(Str, [Missing]) }), Wire.Error)
 		back = WorkerCodec.decode_with_held(sent.bytes, sent.files)
 		if (back == Ok(value)) sent.files else []
 	}
-	twice = WorkerCodec.encode_with_files("wire unit", [file(1), file(1)])
+	twice = held([file(1), file(1)])
 	answered = Core.task_answer("wire unit", [], listed(16))
 	listed(9).len() == 9 and listed(16).len() == 16 and listed(17).len() == 17 and twice.files.len() == 2 and answered.len() == 4 + 8 * 16
 }

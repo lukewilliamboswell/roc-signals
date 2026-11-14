@@ -168,6 +168,8 @@ ExplorerApp := [].{
 		Lost(fault) => "The worker stopped (${Str.inspect(fault)}). Open the log again to retry."
 		Timeout => "This took too long."
 		Refused => "Too many requests at once."
+		TooDeep => "The answer is nested too deeply to send."
+		TooManyFiles => "The answer holds too many files to send."
 		Unasked => "Open a log file, or generate a sample."
 	}
 

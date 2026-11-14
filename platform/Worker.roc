@@ -51,11 +51,17 @@ Worker := [].{
 
 	## Why a job has no output: the task answered with its own `error`
 	## (`Failed`), its timeout expired and it was stopped (`Timeout`), the
-	## in-flight bound turned the request away (`Refused`), or the worker
-	## could not run it or failed running it (`Lost`, with the fault class;
-	## the diagnostic goes to the page's console). A crash in a job is
-	## `Lost`, never `Failed`: `Failed` is only what `run!` chose to answer.
-	Error(error) : [Failed(error), Timeout, Refused, Lost(Engine.WorkFault)]
+	## in-flight bound turned the request away (`Refused`), its input or its
+	## answer nested containers deeper than a payload may hold, 128 levels of
+	## lists, sets, dictionaries, records, tuples, tags with a payload and
+	## files (`TooDeep`: nothing was sent, or nothing answered, and the
+	## worker and its prepared state are kept), its answer held more than
+	## 16 files (`TooManyFiles`: nothing was answered, the worker is kept, and
+	## the files stay the job's), or the worker could not run
+	## it or failed running it (`Lost`, with the fault class; the diagnostic
+	## goes to the page's console). A crash in a job is `Lost`, never
+	## `Failed`: `Failed` is only what `run!` chose to answer.
+	Error(error) : [Failed(error), Timeout, Refused, TooDeep, TooManyFiles, Lost(Engine.WorkFault)]
 
 	## The error of a task that cannot fail: a type with no values.
 	## `Worker.Task(Str, U64, Worker.Never)` declares a task that always
@@ -120,8 +126,8 @@ Worker := [].{
 		timeout_ms : U32,
 		on_dispose : [Stop, Keep],
 		on_cancel : [Stop, Finish],
-		send : (input -> { bytes : List(U8), files : List(Engine.File) }),
-		receive : (List(U8), List(Engine.File) -> Try(output, error)),
+		send : (input -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep])),
+		receive : (List(U8), List(Engine.File) -> Answer(output, error)),
 		entry! : (List(U8), List(Engine.File) => List(U8)),
 	}.{
 
@@ -146,11 +152,13 @@ Worker := [].{
 		## The raw request of a job on `input`, for the asker protocol and pure
 		## tests. Use `ask` in a typed plan. The input is encoded when the request is
 		## issued, and later changes to the state it came from do not reach
-		## the job. The files it holds travel as handles.
+		## the job. The files it holds travel as handles. An input nested past
+		## the payload bound is not sent: the request is refused, and its result
+		## is `TooDeep`.
 		request : Task(input, output, error), input -> Engine.Request
-		request = |t, input| {
-			{ bytes, files } = (t.send)(input)
-			Work({ task: t.name, input: bytes, files, timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: Unprepared })
+		request = |t, input| match (t.send)(input) {
+			Ok({ bytes, files }) => Work({ task: t.name, input: bytes, files, timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: Unprepared, refusal: None })
+			Err(TooDeep) => Work({ task: t.name, input: [], files: [], timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: Unprepared, refusal: TooDeep })
 		}
 
 		## Read a raw result through the task's declared protocol: the
@@ -224,7 +232,7 @@ Worker := [].{
 	## How a resource that follows a task stands, in one match: no job asked
 	## for yet (`Unasked`), a job `Working`, its answer, or why there is
 	## none: the task's own error (`Failed`) beside the platform's.
-	Status(output, error) : [Unasked, Working, Answered(output), Failed(error), Timeout, Refused, Lost(Engine.WorkFault)]
+	Status(output, error) : [Unasked, Working, Answered(output), Failed(error), Timeout, Refused, TooDeep, TooManyFiles, Lost(Engine.WorkFault)]
 
 	## A worker resource's value as a [Status], so a view matches one flat union
 	## instead of `Failed(Failed(problem))`. While a newer job is `Working`,
@@ -236,6 +244,8 @@ Worker := [].{
 		(Idle, Failed(Failed(error))) => Failed(error)
 		(Idle, Failed(Timeout)) => Timeout
 		(Idle, Failed(Refused)) => Refused
+		(Idle, Failed(TooDeep)) => TooDeep
+		(Idle, Failed(TooManyFiles)) => TooManyFiles
 		(Idle, Failed(Lost(fault))) => Lost(fault)
 		(Idle, Unanswered) => Unasked
 	}
@@ -320,9 +330,9 @@ Worker := [].{
 		timeout_ms : U32,
 		on_dispose : [Stop, Keep],
 		on_cancel : [Stop, Finish],
-		send_init : (init -> { bytes : List(U8), files : List(Engine.File) }),
-		send_input : (input -> { bytes : List(U8), files : List(Engine.File) }),
-		receive : (List(U8), List(Engine.File) -> Try(output, error)),
+		send_init : (init -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep])),
+		send_input : (input -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep])),
+		receive : (List(U8), List(Engine.File) -> Answer(output, error)),
 		entry : PreparedTaskEntry(state),
 	}.{
 
@@ -340,13 +350,16 @@ Worker := [].{
 
 		## The raw request to run the task on `input` over the preparation's
 		## `init`, for the asker protocol and pure tests. Both are snapshots,
-		## encoded when the request is made. Use `ask` in a typed plan.
+		## encoded when the request is made. Use `ask` in a typed plan. If
+		## either is nested past the payload bound, nothing is sent and the
+		## result is `TooDeep`.
 		request : PreparedTask(init, state, input, output, error), Question(init, input) -> Engine.Request
-		request = |t, { init, input }| {
-			initialized = (t.send_init)(init)
-			asked = (t.send_input)(input)
-			of = Prepared({ name: t.prep, input_len: initialized.bytes.len(), input_files: initialized.files.len() })
-			Work({ task: t.name, input: initialized.bytes.concat(asked.bytes), files: initialized.files.concat(asked.files), timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: of })
+		request = |t, { init, input }| match ((t.send_init)(init), (t.send_input)(input)) {
+			(Ok(initialized), Ok(asked)) => {
+				of = Prepared({ name: t.prep, input_len: initialized.bytes.len(), input_files: initialized.files.len() })
+				Work({ task: t.name, input: initialized.bytes.concat(asked.bytes), files: initialized.files.concat(asked.files), timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: of, refusal: None })
+			}
+			_ => Work({ task: t.name, input: [], files: [], timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: Prepared({ name: t.prep, input_len: 0, input_files: 0 }), refusal: TooDeep })
 		}
 
 		## The answer to a `request`, as `Task.result`.
@@ -361,7 +374,7 @@ Worker := [].{
 WorkerPreparation(init, state, error) :: {
 	name : Str,
 	build! : (List(U8), List(Engine.File) => Try(state, error)),
-	send : (init -> { bytes : List(U8), files : List(Engine.File) }),
+	send : (init -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep])),
 	fail : (error -> List(U8)),
 }.{
 
@@ -437,9 +450,11 @@ held_input = |name, bytes, files| match WorkerCodec.decode_with_held(bytes, file
 
 ## A job's answer as its entry returns it: the tokens of the files it
 ## holds, then its bytes and a byte that says whether it is `Ok` (0) or
-## `Err` (1). An answer nesting containers deeper than the page decodes, or
-## holding more files than an answer may, is a contract error here, in the
-## worker, where it is contained.
+## `Err` (1). An answer nested past the payload bound is the one byte `2`
+## with no files (its files drop with the value), which the page reads as
+## `TooDeep`; the worker and its prepared state are kept. An answer holding
+## more files than an answer may is the one byte `3` with no files, read as
+## `TooManyFiles`; its files stay the job's and drop with it.
 answer_of : Str, Try(output, error) -> List(U8) where [output.Wire.Sendable, error.Wire.Sendable]
 answer_of = |name, answer| match answer {
 	Ok(value) => encoded_answer(name, value, 0)
@@ -448,53 +463,59 @@ answer_of = |name, answer| match answer {
 
 ## One side of an answer, with its flag byte.
 encoded_answer : Str, value, U8 -> List(U8) where [value.Wire.Sendable]
-encoded_answer = |name, value, flag| {
-	{ bytes, files, deep } = WorkerCodec.encode_with_files(name, value)
-	if deep {
-		crash "contract: worker task \"${name}\" returned a value nested deeper than 128 levels, which a payload cannot hold"
-	}
-	Core.task_answer(name, bytes.append(flag), files)
+encoded_answer = |name, value, flag| match WorkerCodec.encode_with_files(name, value) {
+	Ok({ files, .. }) if files.len() > Core.answer_file_limit => Core.task_answer(name, [3], [])
+	Ok({ bytes, files }) => Core.task_answer(name, bytes.append(flag), files)
+	Err(TooDeep) => Core.task_answer(name, [2], [])
 }
 
-## A job's answer as the page reads it: the output or the task's error,
-## with the files the page now holds for it.
-received : Str, List(U8), List(Engine.File) -> Try(output, error) where [output.Wire.Sendable, error.Wire.Sendable]
+## A job's answer as the page reads it: the task's output, its own error,
+## or that its answer was nested past the payload bound or held more files
+## than an answer may.
+Answer(output, error) : [Value(output), TaskError(error), TooDeep, TooManyFiles]
+
+## A job's answer as the page reads it, with the files the page now holds
+## for it. The decode failures are platform bugs: both instances are one
+## compiled module, and the writer writes only what the reader accepts.
+received : Str, List(U8), List(Engine.File) -> Answer(output, error) where [output.Wire.Sendable, error.Wire.Sendable]
 received = |name, bytes, files| {
 	body = bytes.drop_last(1)
 	match bytes.last() {
 		Ok(0) => match WorkerCodec.decode_with_held(body, files) {
-			Ok(value) => Ok(value)
+			Ok(value) => Value(value)
 			Err(_) => crash "contract: worker task \"${name}\" answered with bytes that are not its output type"
 		}
 		Ok(1) => match WorkerCodec.decode_with_held(body, files) {
-			Ok(error) => Err(error)
+			Ok(error) => TaskError(error)
 			Err(_) => crash "contract: worker task \"${name}\" answered with bytes that are not its error type"
 		}
+		Ok(2) if body.is_empty() => TooDeep
+		Ok(3) if body.is_empty() => TooManyFiles
 		_ => crash "contract: worker task \"${name}\" answered without saying whether it succeeded"
 	}
 }
 
 ## A worker request's result as a task's: its answer, or why there is none.
-answered : Engine.Result, (List(U8), List(Engine.File) -> Try(output, error)) -> Try(output, [Failed(error), Timeout, Refused, Lost(Engine.WorkFault)])
+answered : Engine.Result, (List(U8), List(Engine.File) -> Answer(output, error)) -> Try(output, [Failed(error), Timeout, Refused, TooDeep, TooManyFiles, Lost(Engine.WorkFault)])
 answered = |res, receive| match res {
 	Work({ output, files }) =>
 		match receive(output, files) {
-			Ok(value) => Ok(value)
-			Err(error) => Err(Failed(error))
+			Value(value) => Ok(value)
+			TaskError(error) => Err(Failed(error))
+			TooDeep => Err(TooDeep)
+			TooManyFiles => Err(TooManyFiles)
 		}
+	WorkRefused(TooDeep) => Err(TooDeep)
 	WorkLost(fault) => Err(Lost(fault))
 	Timeout => Err(Timeout)
 	Refused => Err(Refused)
 	_ => crash "contract: Worker.result was given a result that is not from a worker request"
 }
 
-## A request's payload and the files it refers to. A page input nested too
-## deep is sent anyway and refused in the worker, where that is contained.
-sent : Str, input -> { bytes : List(U8), files : List(Engine.File) } where [input.Wire.Sendable]
-sent = |name, input| {
-	{ bytes, files, deep: _ } = WorkerCodec.encode_with_files(name, input)
-	{ bytes, files }
-}
+## A request's payload and the files it refers to, or `TooDeep` when the
+## input is nested past the payload bound and is not sent.
+sent : Str, input -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep]) where [input.Wire.Sendable]
+sent = |name, input| WorkerCodec.encode_with_files(name, input)
 
 ## Use the shared timeout conversion so Ms(0) cannot become no deadline.
 timeout_ms_of : [Unlimited, Ms(U32)] -> U32
@@ -536,9 +557,70 @@ expect {
 		Ok(n) => n.to_str()
 		Err(Timeout) => "late"
 		Err(Refused) => "refused"
+		Err(TooDeep) => "too deep"
+		Err(TooManyFiles) => "too many files"
 		Err(Lost(_)) => "lost"
 	}
 	shown == "42"
+}
+
+## A chain of one-payload tags, `levels` deep, to nest an input or an answer.
+Chain := [Link(Chain), End].{
+	parser_for : _
+	encoder_for : _
+	is_eq : _
+}
+
+## `levels` nested links around the end.
+chain : U64 -> Chain
+chain = |levels| {
+	var $value = Chain.End
+	for _ in (0.U64).until(levels) {
+		$value = Chain.Link($value)
+	}
+	$value
+}
+
+## Nesting past the payload bound sends nothing and answers `TooDeep`: an
+## input 129 links deep is a request refused before it is sent, with no
+## bytes and no files, an answer that deep is the one flag byte 2, and the
+## page reads both as `TooDeep`. An input at the bound is sent. An answer
+## holding 17 files is the one flag byte 3, read as `TooManyFiles`.
+expect {
+	echo : Worker.Task(Chain, Chain, Worker.Never)
+	echo = Worker.task({ name: "test/echo-chain", run!: |value| Ok(value) })
+	deep_answer : Try(Chain, Worker.Never)
+	deep_answer = Ok(chain(129))
+	collect : Worker.Task(U64, List(Engine.File), Worker.Never)
+	collect = Worker.task({ name: "test/collect", run!: |_| Ok([]) })
+	seventeen : List(Engine.File)
+	seventeen = (1.U64).until(18).fold([], |held, token| held.append(Core.held_file(Box.box(token))))
+	many : Try(List(Engine.File), Worker.Never)
+	many = Ok(seventeen)
+	many_answer = answer_of("test/collect", many)
+	shape = |request| match request {
+		Work({ input, files, refusal, .. }) => Str.inspect((input.is_empty(), files.len(), refusal))
+		_ => "not a work request"
+	}
+	actual =
+		\\at: ${shape(echo.request(chain(128)))}
+		\\past: ${shape(echo.request(chain(129)))}
+		\\answer: ${Str.inspect(answer_of("test/echo-chain", deep_answer))}
+		\\read: ${Str.inspect(echo.result(Work({ output: [2], files: [] })))}
+		\\refused: ${Str.inspect(echo.result(WorkRefused(TooDeep)))}
+		\\status: ${Str.inspect(Worker.status({ request: Idle, answer: Failed(TooDeep) }))}
+		\\many: ${Str.inspect(many_answer)}
+		\\many_read: ${Str.inspect(collect.result(Work({ output: [3], files: [] })))}
+	expected =
+		\\at: (False, 0, None)
+		\\past: (True, 0, TooDeep)
+		\\answer: [0, 0, 0, 0, 2]
+		\\read: Err(TooDeep)
+		\\refused: Err(TooDeep)
+		\\status: TooDeep
+		\\many: [0, 0, 0, 0, 3]
+		\\many_read: Err(TooManyFiles)
+	actual == expected
 }
 
 ## A layer that follows a task keeps its previous answer while the next is

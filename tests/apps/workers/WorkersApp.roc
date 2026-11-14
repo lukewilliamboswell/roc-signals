@@ -136,6 +136,8 @@ WorkersApp := [].{
 		Err(Lost(fault)) => "lost ${Str.inspect(fault)}"
 		Err(Timeout) => "timeout"
 		Err(Refused) => "refused"
+		Err(TooDeep) => "too deep"
+		Err(TooManyFiles) => "too many files"
 	}
 
 	## A bytes task's result, its output as text.

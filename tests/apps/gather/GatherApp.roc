@@ -74,6 +74,8 @@ GatherApp := [].{
 		Failed(Unlucky) => "unlucky"
 		Timeout => "timeout"
 		Refused => "refused"
+		TooDeep => "too deep"
+		TooManyFiles => "too many files"
 		Lost(_) => "lost"
 	}
 
@@ -89,6 +91,8 @@ GatherApp := [].{
 			Failed(Unlucky) => "failed: unlucky"
 			Timeout => "failed: timeout"
 			Refused => "failed: refused"
+			TooDeep => "failed: too deep"
+			TooManyFiles => "failed: too many files"
 			Lost(_) => "failed: lost"
 		}
 	}
