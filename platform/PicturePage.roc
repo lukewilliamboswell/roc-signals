@@ -92,8 +92,14 @@ PicturePage := [].{
 	route : Str -> Try(Str, [InvalidRoute(Str)])
 	route = |input| PicturePage.resolve(input).map_ok(|resolved| resolved.path)
 
-	## Match browser Boot location facts without inventing an origin: the public
-	## URL parser canonicalizes the path, query and fragment before init.
+	## Give the picture's Boot location without inventing an origin. The public
+	## URL parser puts the path, query and fragment in Url's own canonical form,
+	## which is not the browser's serialization: it keeps characters such as
+	## `{`, `|` and `'` raw and upper-cases escapes (`%2a` becomes `%2A`). The
+	## native runner then serializes this text as a location, which restores
+	## the browser's encoding of some characters but not escape case, so a
+	## picture's Boot location can differ in text from the live page's. The
+	## live mount replaces the picture and reads the browser's own location.
 	resolve : Str -> Try({ path : Str, boot_url : Str }, [InvalidRoute(Str)])
 	resolve = |input| {
 		url = Url.parse(input) ? |problem| InvalidRoute("${input}: ${Str.inspect(problem)}")
