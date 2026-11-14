@@ -220,7 +220,9 @@ in your app, released when your app lets it go (see
 [Files](@/docs/files.md)).
 
 An answer that is not JSON data, such as a `Map`, a function, a cycle or a
-`NaN`, answers `Threw` with a message naming where it was. An answer that is
+`NaN`, answers `Threw` with a message naming where it was. So does an answer
+whose reading throws, such as a getter or a `Proxy` trap that throws: the
+call is still answered. An answer that is
 JSON data of the wrong shape is the typed `Undecodable(why)` error: your app
 decides what to show, and `why` names the port and the place.
 
@@ -239,7 +241,7 @@ of `Port.Error`:
 |---|---|
 | `Refused` | The app had too many requests in flight (see `max_inflight`) |
 | `Timeout` | The call's `timeout` expired |
-| `Threw(message)` | The JavaScript threw, rejected, or answered something that is not JSON data |
+| `Threw(message)` | The JavaScript threw, rejected, answered something that is not JSON data, or answered something whose reading threw |
 | `TooLarge` | The answer was larger than the page's `maxPortBytes` (default 4 MiB, at most 64 MiB), or carried more files than the app can hold |
 | `Closed` | The JavaScript ended the subscription |
 | `Undecodable(why)` | The answer is not of the type the port declares |

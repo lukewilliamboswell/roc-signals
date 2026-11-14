@@ -5368,7 +5368,7 @@ export class RocEngineRuntime {
   // A failure the app cannot be told of: a command handler's, or an
   // unsubscribe function's. Reported, never delivered, never poisoning.
   portFault(port, kind, error) {
-    const message = String(error && error.message !== undefined ? error.message : error);
+    const message = portErrorText(error);
     this.portCount(port, "faults");
     console.error(`roc port fault [${kind}] "${port}": ${message}`);
     if (this.onPortFault) {
@@ -5400,14 +5400,16 @@ export class RocEngineRuntime {
   }
 
   // An answer as the payload of its result turn, or the failure it is.
+  // Reading the answer runs the page's code (a getter, a Proxy's traps), so
+  // anything it throws is the handler's failure, `Threw`, and the call is
+  // still answered: an exception here would leave it unsettled for ever.
   portAnswer(port, value) {
     let data;
     try {
       data = portData(value);
     } catch (e) {
-      if (!(e instanceof PortDataError)) throw e;
       this.portCount(port, "threw");
-      return portFailed(1, `the answer is not JSON data: ${e.message}`);
+      return portFailed(1, e instanceof PortDataError ? `the answer is not JSON data: ${e.message}` : `reading the answer threw: ${portErrorText(e)}`);
     }
     const payload = portReplyPayload(data);
     if (payload.size > this.maxPortBytes) {
@@ -5462,7 +5464,7 @@ export class RocEngineRuntime {
     }
     const threw = (e) => {
       this.portCount(fx.port, "threw");
-      return portFailed(1, String(e && e.message !== undefined ? e.message : e));
+      return portFailed(1, portErrorText(e));
     };
     let r;
     try {
@@ -5576,7 +5578,7 @@ export class RocEngineRuntime {
     if (sub.ended || this.live.get(sub.id) !== sub.entry) return;
     sub.ended = true;
     this.portCount(sub.port, threw ? "threw" : "closed");
-    const payload = threw ? portFailed(1, String(error && error.message !== undefined ? error.message : error)) : portFailed(3);
+    const payload = threw ? portFailed(1, portErrorText(error)) : portFailed(3);
     if (sub.latest) {
       this.result(sub.id, {
         ...payload,
@@ -6233,6 +6235,17 @@ export function checkPortHandlers(decls, ports, manual) {
 
 // A value that is not JSON data, found while serialising an answer.
 class PortDataError extends Error {}
+
+// The text of what a port handler threw or rejected with. Describing it can
+// run the page's code too (a throwing `message` getter or `toString`), so
+// this never throws: a value that cannot be described says so.
+function portErrorText(error) {
+  try {
+    return String(error && error.message !== undefined ? error.message : error);
+  } catch (_) {
+    return "a value that could not be described";
+  }
+}
 
 function describeValue(v) {
   if (typeof v !== "object") return `a ${typeof v}`;

@@ -3705,12 +3705,17 @@ which `Dom.roc` raises too: the element's current type makes the program's
 mistake knowable only where the property is applied.
 
 A port handler is the page's own JavaScript and is contained like a
-browser service: a handler that throws or rejects, or answers with
-something that is not JSON data (a `Map`, a function, a cycle, a NaN), answers
-its request `PortFailed(Threw(message))`, an answer that is too large answers
+browser service: a handler that throws or rejects, answers with
+something that is not JSON data (a `Map`, a function, a cycle, a NaN), or
+answers with something whose reading throws (a getter or a `Proxy` trap,
+which run the page's code while the runtime reads the answer) answers
+its request `PortFailed(Threw(message))` and releases its entry, an answer that is too large answers
 it `PortFailed(TooLarge)`, and a command handler's failure is
-reported to the console and the `onPortFault` mount option. None of them
-poisons the instance. A command has no result to carry a failure. An app
+reported to the console and the `onPortFault` mount option. A thrown value
+whose message cannot itself be read is described as such. None of them
+poisons the instance, and none leaves a call unanswered. A value given to a
+subscription's `emit` that cannot be read is the emitter's own error, thrown
+back to it, as one that is not JSON data is. A command has no result to carry a failure. An app
 that must know its message was handled declares a call, whose failure is a
 value.
 
