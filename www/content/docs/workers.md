@@ -651,8 +651,10 @@ field.) Inside a payload, use a tag union of your own, such as
 
 For bulk bytes the page already holds, wrap the `List(U8)` in `Wire.Bytes`.
 It is encoded and read as one CBOR byte string rather than item by item.
-An empty `Bytes` is a byte string, while an ordinary empty derived list is
-an array:
+An empty `Bytes` is an empty byte string, while an ordinary empty derived
+list is an empty array, and the strict reader reads each only as its own
+type. Both ends of a job always have the same types, so this never refuses
+a payload one instance sends another:
 
 {{ sample(file="wire.roc", region="bytes") }}
 

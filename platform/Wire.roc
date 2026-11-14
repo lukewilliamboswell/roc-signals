@@ -253,6 +253,25 @@ expect {
 	round_trips(bytes) and WorkerCodec.encode(bytes) == WorkerCodec.encode([0.U8, 1, 255]) and decoded == Ok([0, 1, 255])
 }
 
+## Empty bulk bytes and an empty list have distinct encodings, and the
+## strict reader reads each only as its own type: an empty `Bytes` is the
+## empty byte string `40`, an empty `List(U8)` the empty array `80`. Both
+## ends of a payload always have the same type, so neither cross-read can
+## happen between two instances; a non-empty one reads as either.
+expect {
+	empty_bytes = WorkerCodec.encode(Wire.Bytes.from_list([]))
+	no_bytes : List(U8)
+	no_bytes = []
+	empty_list = WorkerCodec.encode(no_bytes)
+	as_list : Try(List(U8), Wire.Error)
+	as_list = WorkerCodec.decode(empty_bytes)
+	as_bytes : Try(Wire.Bytes, Wire.Error)
+	as_bytes = WorkerCodec.decode(empty_list)
+	full : Try(Wire.Bytes, Wire.Error)
+	full = WorkerCodec.decode(WorkerCodec.encode([7.U8]))
+	empty_bytes == [0x40] and empty_list == [0x80] and as_list.is_err() and as_bytes.is_err() and full == Ok(Wire.Bytes.from_list([7]))
+}
+
 ## Exact bytes pin the layout of numbers, Bool and strings.
 expect {
 	actual =
