@@ -219,15 +219,20 @@ try {
   {
     const { context, page } = await fixture();
     const malformed = await page.evaluate(async () => {
-      let bootRefused = false;
-      try { window.__fixture({ sessionStorage: { getItem: () => "\ud800" } }, ["draft"]); }
-      catch (error) { bootRefused = error.message.includes("well-formed Unicode"); }
+      const boots = [];
+      const sectionOf = (boot, wanted) => { for (let at = 0; at < boot.length;) { const tag = boot[at], n = new DataView(boot.buffer).getUint32(at + 1, true); if (tag === wanted) return [...boot.slice(at + 5, at + 5 + n)]; at += 5 + n; } };
+      for (const [bad, sessionKeys, localKeys, tag] of [[{ sessionStorage: { getItem: key => key === "draft" ? "\ud800" : "kept" } }, ["kept", "draft"], [], 11], [{ storage: { getItem: () => 7 } }, [], ["draft"], 2]]) {
+        const f = window.__fixture(bad, sessionKeys, localKeys);
+        boots.push([f.rt.poisoned, sectionOf(f.boot, tag)]); f.end();
+      }
       const readFailures = [];
       for (const op of ["get", "sessionget"]) {
-        const bad = { getItem: () => "\ud800" };
-        const f = window.__fixture({ storage: bad, sessionStorage: bad });
-        f.rt.perform({ op, id: 1, key: "draft" }); await new Promise(resolve => setTimeout(resolve, 0));
-        readFailures.push([f.rt.poisoned?.class, f.calls.length]); f.end();
+        for (const getItem of [() => "\ud800", () => { throw new Error("unreadable"); }]) {
+          const bad = { getItem };
+          const f = window.__fixture({ storage: bad, sessionStorage: bad });
+          f.rt.perform({ op, id: 1, key: "draft" }); await new Promise(resolve => setTimeout(resolve, 0));
+          readFailures.push([f.rt.poisoned, f.calls.map(call => call.payload)]); f.end();
+        }
       }
       const f = window.__fixture(); f.rt.perform({ op: "storagechanges", id: 1, key: "wanted" });
       let reads = 0;
@@ -236,10 +241,11 @@ try {
       window.dispatchEvent(unrelated);
       const untouched = [reads, f.rt.poisoned === null];
       window.dispatchEvent(new StorageEvent("storage", { storageArea: localStorage, key: "wanted", newValue: "\ud800" }));
-      const reported = [f.rt.poisoned?.class, f.calls.length]; f.end();
-      return { bootRefused, readFailures, untouched, reported };
+      f.rt.releaseReports();
+      const reported = [f.rt.poisoned, f.calls.map(call => call.payload)]; f.end();
+      return { boots, readFailures, untouched, reported };
     });
-    check("storage refuses unrepresentable Unicode without repairing values or reading unrelated keys", malformed, { bootRefused: true, readFailures: [["executor", 0], ["executor", 0]], untouched: [0, true], reported: ["executor", 0] });
+    check("unreadable stored text makes boot storage unavailable, reads and reports Missing, never a fault or a repaired value", malformed, { boots: [[null, [0, 0, 0, 0, 0]], [null, [0, 0, 0, 0, 0]]], readFailures: Array(4).fill([null, [[4]]]), untouched: [0, true], reported: [null, [[4]]] });
     await context.close();
   }
   {

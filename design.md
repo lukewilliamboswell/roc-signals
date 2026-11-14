@@ -2756,8 +2756,16 @@ Local and session storage are independent services. The program declares
 `boot_session` read a key or return `Missing`. The runtime's `storage` and
 `sessionStorage` options default to the browser services. A service is
 unavailable when absent, when reaching it throws, or when reading a declared
-key throws. Its boot pairs are then empty rather than partial. Availability
-is fixed for the instance. Session storage survives a reload in the same
+key throws or yields a value Roc text cannot hold (not a string, or one with
+a lone surrogate). Its boot pairs are then empty rather than partial, so an
+app tells an unreadable store from a key never written by
+`storage_available`. Availability is fixed for the instance. Storage is
+written by other tabs, other versions of the app and other scripts on the
+origin, so what it holds is external input: an unreadable value is never
+repaired into other text and never a fault. A later `StorageGet` or
+`SessionStorageGet` answers `Missing` when the key holds nothing this
+document can read: no value, a service that is absent or throws, or an
+unreadable value. Session storage survives a reload in the same
 tab; a new tab has its own session.
 
 A set or remove is a command and consumes no awaited slot. A successful
@@ -2782,7 +2790,8 @@ at the in-flight bound, which the app must handle.
 
 `StorageChanges(key)` subscribes to a local-storage key, without requiring
 a boot declaration. A real `storage` event for that service reports its
-`newValue` as `Value(text)`, or `Missing` for a removal or `clear()`. The
+`newValue` as `Value(text)`, or `Missing` for a removal, a `clear()` or a
+value Roc text cannot hold, as a read of it would answer. The
 value is captured at arrival, never read again at delivery. It is a report
 source: one replaceable queued entry per subscription, with the ordinary
 frame ordering and cancellation rules. A `clear()` reaches every live

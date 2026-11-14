@@ -390,7 +390,10 @@ storage usable:
 {{ sample(file="effects.roc", region="boot") }}
 
 When local storage is unavailable (disabled site data, a throwing
-`localStorage`), `boot.storage_available` is false and `boot.storage` is empty.
+`localStorage`, or a declared key holding text Roc cannot hold, such as a
+lone surrogate another script wrote), `boot.storage_available` is false and
+`boot.storage` is empty. After boot, a read of a key whose value cannot be
+read answers `Missing`, as a read of an absent key does.
 Session storage has the same rule: declare `session_keys`, read them with
 `Engine.boot_session(boot, key)`, and check `boot.session_available`.
 `boot.session` is empty when that service is unavailable. Each service is
@@ -447,7 +450,7 @@ so it will report no failed writes.
 
 `StorageChanges(key)` subscribes to another document's writes to a local
 key. A `storage` event captures its `newValue` immediately, or `Missing`
-for removal or `clear()`. These are reports: several waiting writes to
+for removal, `clear()` or a value Roc text cannot hold. These are reports: several waiting writes to
 one subscription replace its queued value in place. A `clear()` reports
 `Missing` to every subscription. This document's own writes never echo,
 and session storage has no cross-tab subscription.

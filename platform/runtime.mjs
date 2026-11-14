@@ -1566,15 +1566,19 @@ function fileRange(dv, at) {
   return { token, start, len };
 }
 
-// Storage uses UTF-16 strings. Refuse unrepresentable text rather than
-// letting TextEncoder silently replace a lone surrogate at the Roc boundary.
-function storageText(value) {
-  if (typeof value !== "string" || !value.isWellFormed()) throw new Error("storage returned text that is not well-formed Unicode");
-  return value;
+// Storage holds UTF-16 strings that other tabs, other versions of the app
+// and other scripts on the origin write, so what it holds is external
+// input. A value Roc text cannot hold (a lone surrogate, or not a string
+// from an injected service) is unreadable: it is never repaired into
+// other text, and never a fault (design.md, "Storage availability").
+function readableStorage(value) {
+  return typeof value === "string" && value.isWellFormed();
 }
 
+// A read answers the value, or `Missing` when there is none this document
+// can read: an absent key, a service that throws, or an unreadable value.
 function storageResult(value) {
-  return value === null ? new Uint8Array([RES_MISSING]) : concat([new Uint8Array([RES_VALUE]), utf8enc.encode(storageText(value))]);
+  return value === null || !readableStorage(value) ? new Uint8Array([RES_MISSING]) : concat([new Uint8Array([RES_VALUE]), utf8enc.encode(value)]);
 }
 
 function encStr(s) {
@@ -3259,8 +3263,9 @@ export class RocEngineRuntime {
     const mountRoot = mountRootBytes(this.root, this.protocol);
     // Read before mount with the port table (see mount()).
     const keys = this.bootKeys;
-    // Storage is unavailable when there is none or any read throws; then
-    // the app boots with no stored values rather than some of them.
+    // Storage is unavailable when there is none, any read throws or any
+    // declared key holds an unreadable value; then the app boots with no
+    // stored values rather than some of them.
     let storageOk = !!this.storage && typeof this.storage.getItem === "function";
     const pairs = [];
     for (const k of keys) {
@@ -3268,7 +3273,9 @@ export class RocEngineRuntime {
       let value;
       try { value = this.storage.getItem(k); }
       catch { storageOk = false; continue; }
-      if (value !== null) pairs.push([k, storageText(value)]);
+      if (value === null) continue;
+      if (!readableStorage(value)) { storageOk = false; continue; }
+      pairs.push([k, value]);
     }
     if (!storageOk) pairs.length = 0;
     let sessionOk = !!this.sessionStorage && typeof this.sessionStorage.getItem === "function";
@@ -3278,7 +3285,9 @@ export class RocEngineRuntime {
       let value;
       try { value = this.sessionStorage.getItem(key); }
       catch { sessionOk = false; continue; }
-      if (value !== null) session.push([key, storageText(value)]);
+      if (value === null) continue;
+      if (!readableStorage(value)) { sessionOk = false; continue; }
+      session.push([key, value]);
     }
     if (!sessionOk) session.length = 0;
     const loc = this.win ? this.win.location : null;
