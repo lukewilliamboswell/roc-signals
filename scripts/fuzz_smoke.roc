@@ -21,7 +21,7 @@ main! = |raw_args| {
 			Proc.note!("Targets: ${Str.join_with(Targets.fuzz_targets.map(|target| target.name), ", ")}")
 			return Ok({})
 		}
-		Ok(Run(targets)) => targets
+		Ok(Run(fuzzes)) => fuzzes
 		Err(UnknownTarget(name)) => {
 			Proc.warn!("unknown fuzz-smoke target or option ${name}; use --help")
 			return Err(Exit(2))
@@ -42,19 +42,29 @@ main! = |raw_args| {
 
 selection : List(Str) -> Try([Help, Run(List(Targets.Fuzz))], [UnknownTarget(Str)])
 selection = |names| {
-	if names == ["--help"] { return Ok(Help) }
+	if names == ["--help"] {
+		return Ok(Help)
+	}
 	for name in names {
 		if !Targets.fuzz_targets.any(|target| target.name == name) {
 			return Err(UnknownTarget(name))
 		}
 	}
-	Ok(Run(if names.is_empty() { Targets.fuzz_targets } else { Targets.fuzz_targets.keep_if(|target| names.contains(target.name)) }))
+	Ok(
+		Run(
+			if names.is_empty() {
+				Targets.fuzz_targets
+			} else {
+				Targets.fuzz_targets.keep_if(|target| names.contains(target.name))
+			},
+		),
+	)
 }
 
 ## The default includes the complete registry, including test-app targets.
 expect {
 	match selection([]) {
-		Ok(Run(targets)) => targets == Targets.fuzz_targets and targets.any(|target| target.name == "controls") and targets.any(|target| target.name == "fx-channel")
+		Ok(Run(fuzzes)) => fuzzes == Targets.fuzz_targets and fuzzes.any(|target| target.name == "controls") and fuzzes.any(|target| target.name == "fx-channel")
 		_ => False
 	}
 }
@@ -62,7 +72,7 @@ expect {
 ## Selection keeps registry order and checks a repeated target only once.
 expect {
 	match selection(["controls", "url", "controls"]) {
-		Ok(Run(targets)) => targets.map(|target| target.name) == ["url", "controls"]
+		Ok(Run(fuzzes)) => fuzzes.map(|target| target.name) == ["url", "controls"]
 		_ => False
 	}
 }

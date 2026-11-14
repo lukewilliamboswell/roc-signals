@@ -121,7 +121,9 @@ Targets := [].{
 	## is a per-target timing when the scheduler admits several processes.
 	fuzz_smoke_all! : SpecSuite.Options, List(Fuzz) => Try(List(Str), _)
 	fuzz_smoke_all! = |o, fuzzes| {
-		if fuzzes.is_empty() { return Err(NoFuzzTargets) }
+		if fuzzes.is_empty() {
+			return Err(NoFuzzTargets)
+		}
 		for target in fuzzes {
 			SpecSuite.fresh_dir!("${o.build_dir}/fuzz-smoke/${target.name}")?
 		}
@@ -158,19 +160,32 @@ Targets := [].{
 				program: o.node,
 				args: [
 					"tests/fuzz/check-report.mjs",
-					"--report-dir", "${dir}/report",
-					"--target", outcome.target.name,
-					"--profile", "fixed-examples-plain",
-					"--binary", Targets.smoke_exe_of(o, outcome.target),
-					"--build-exit", "0",
-					"--check-exit", outcome.code.to_str(),
-					"--build-log", "${dir}/build.log",
-					"--check-log", "${dir}/check.log",
-					"--compiler-version", o.nightly,
-					"--build-cwd", o.root,
-					"--build-batch-ns", build_elapsed.to_nanos().to_str(),
-					"--check-batch-ns", check_elapsed.to_nanos().to_str(),
-					"--build-command", build.program,
+					"--report-dir",
+					"${dir}/report",
+					"--target",
+					outcome.target.name,
+					"--profile",
+					"fixed-examples-plain",
+					"--binary",
+					Targets.smoke_exe_of(o, outcome.target),
+					"--build-exit",
+					"0",
+					"--check-exit",
+					outcome.code.to_str(),
+					"--build-log",
+					"${dir}/build.log",
+					"--check-log",
+					"${dir}/check.log",
+					"--compiler-version",
+					o.nightly,
+					"--build-cwd",
+					o.root,
+					"--build-batch-ns",
+					build_elapsed.to_nanos().to_str(),
+					"--check-batch-ns",
+					check_elapsed.to_nanos().to_str(),
+					"--build-command",
+					build.program,
 				].concat(build.args),
 				cwd: o.root,
 			})

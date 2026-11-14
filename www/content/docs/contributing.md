@@ -543,6 +543,10 @@ instrumentation, then runs their actual `check` commands with the usual
 leak checks. Compiler, linker, replay and report failures fail the task.
 It neither explores new inputs nor replaces an applicable fixed replay with
 a compiler check or an `expect`.
+Ordinary nonzero compiler, linker, replay and report outcomes are accumulated
+while independent targets continue. Process spawn, polling, capture and
+filesystem errors fail the batch immediately; that failure never claims all
+selected targets were checked.
 
 Its executables, compiler/check logs, roc-fuzz reports and `validation.json`
 are under `.build/fuzz-smoke/<target>/` (or `ROC_SIGNALS_BUILD_DIR`). The
