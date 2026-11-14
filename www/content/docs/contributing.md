@@ -337,14 +337,11 @@ honest: run natively before the spec it was made from, it must end the run
 with 70 and leave both without a result, and the replay must fail it with
 the contract's message.
 
-For a setup file given through `choose-files`, choose an extension whose
-MIME type Chrome recognizes on every supported system, such as `.txt`
-with `text/plain` or `.csv` with `text/csv`. The chooser's `File.type`
-comes from the system's filename mapping, and the replay must match it
-against the declared type. Extensions such as `.log` and `.bin` have
-different mappings across systems. Keep byte-processing fixtures portable
-without changing their bytes or weakening that check; use runtime contract
-tests with explicitly constructed `File`s for arbitrary MIME metadata.
+A setup file's name and type are the spec's input, independent of each
+other: name and type it as the app's user would have it (`app.log` with
+`text/x-log`, `data.bin` with `application/octet-stream`). The replay never
+lets the system's table of file name extensions decide a chosen file's
+type, and fails if the app's input holds anything but the declared files.
 
 The first-page contracts build the `prerender` app for both runners and a
 separate native fixture whose init deliberately crashes. Its `--picture-path`

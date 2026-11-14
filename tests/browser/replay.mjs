@@ -433,11 +433,17 @@ process.on("exit", () => {
   for (const d of chosenDirs) fs.rmSync(d, { recursive: true, force: true });
 });
 
-// `choose-files`: the files are written to disk, each under its own name,
-// and set on the file input through DevTools, as a user's choice in the
-// browser's own chooser sets them, which fires `input` and `change`. The
-// browser decides a chosen file's type from its name; it must be the type
-// the spec declares.
+// `choose-files`: the app receives files with exactly the declared names,
+// types and contents, backed by files on disk as a user's choice is, on
+// every system. Each file is written to disk under its own name and chosen
+// through DevTools, which takes paths and no type: Chrome would give each
+// the type the operating system maps its name to (`.log` is `text/x-log`
+// on Linux and has no type on macOS), so it is chosen in a detached input
+// no page code sees, then made again with the declared type from the
+// chosen file, which keeps reading from disk (a read, a slice, an upload
+// or a worker's read of it fails once its disk file is gone). The new
+// files are set on the app's input with the `input` and `change` events a
+// user's choice fires.
 async function chooseFiles(page, s, state) {
   const files = setupFiles(state, s.files);
   await reachable(page, s.loc);
@@ -455,16 +461,39 @@ async function chooseFiles(page, s, state) {
     fs.writeFileSync(p, f.text.repeat(f.count));
     return p;
   });
-  const input = await page.evaluateHandle((loc) => window.__loc(loc), s.loc);
-  await page.send("DOM.setFileInputFiles", { files: paths, objectId: input.objectId });
-  await settle(page);
-  // A chosen file is read from disk when a worker reads it, so it stays
+  // A chosen file is read from disk whenever the app reads it, so it stays
   // until the replay ends.
   chosenDirs.push(dir);
-  const types = await onEl(page, s.loc, (e) => Array.from(e.files).map((f) => f.type));
-  files.forEach((f, i) => {
-    if (types[i] !== f.type) throw new Error(`Chrome gives ${f.name} the type ${JSON.stringify(types[i])}, not the declared ${JSON.stringify(f.type)}`);
+  const chooser = await page.evaluateHandle(() => {
+    const e = document.createElement("input");
+    e.type = "file";
+    e.multiple = true;
+    return e;
   });
+  await page.send("DOM.setFileInputFiles", { files: paths, objectId: chooser.objectId });
+  const declared = files.map((f) => ({ name: f.name, type: f.type, size: Buffer.byteLength(f.text) * f.count }));
+  const given = await page.evaluate(
+    (chooser, loc, declared) => {
+      const dt = new DataTransfer();
+      Array.from(chooser.files).forEach((f, i) => dt.items.add(new File([f], f.name, { type: declared[i].type, lastModified: f.lastModified })));
+      const e = window.__loc(loc);
+      e.files = dt.files;
+      e.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      e.dispatchEvent(new Event("change", { bubbles: true }));
+      return Array.from(dt.files).map((f) => ({ name: f.name, type: f.type, size: f.size }));
+    },
+    chooser,
+    s.loc,
+    declared,
+  );
+  // The step's guarantee, which holds on every system.
+  declared.forEach((want, i) => {
+    const f = given[i];
+    if (f === undefined || f.name !== want.name || f.type !== want.type || f.size !== want.size) {
+      throw new Error(`choose-files gave the app ${JSON.stringify(f ?? null)}, not the declared ${JSON.stringify(want)}`);
+    }
+  });
+  return settle(page);
 }
 
 // `drop-files` and `paste-files`: a `DataTransfer` of the files, carried by

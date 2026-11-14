@@ -208,9 +208,9 @@ so both runners give it the same bytes:
 
 `(file NAME TYPE TEXT [REPEAT])` declares a file whose contents are `TEXT`
 repeated; `choose-files`, `drop-files` and `paste-files` give the app named
-files; `expect-files N` checks how many files the app holds. In Chrome a
-chosen file must get the type the spec declares, which the browser decides
-from the file's name.
+files; `expect-files N` checks how many files the app holds. Each step
+gives the app exactly the declared name, type and contents, in both
+runners and on every system: a type is never inferred from a name.
 
 Operations on a file wait for `run-effect`. `expect-upload N NAME START LEN`
 checks which file and range an upload sends, and a digest is computed for

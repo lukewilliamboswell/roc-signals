@@ -3827,10 +3827,23 @@ of steps written against the rendered UI:
   `drop-files` and `paste-files` on an element. A setup file, `(file NAME
   TYPE TEXT [REPEAT])`, is its contents written in the spec, so both runners
   give the app the same bytes: the native runner mints the files' handles in
-  its host's heap, and the browser runner sets them on the input through
-  DevTools or carries them in the browser's own drag and clipboard events,
-  and fails if Chrome gives a chosen file another type than the declared
-  one.
+  its host's heap, and the browser runner chooses them through DevTools or
+  carries them in the browser's own drag and clipboard events. A setup
+  file's name, type and contents are the spec's input, so every one of
+  these steps gives the app exactly the declared name, type and bytes, in
+  both runners and on every system. Chrome's chooser would take a chosen
+  file's type from the operating system's table of file name extensions,
+  which differs between systems (`.log` is `text/x-log` on Linux and has no
+  type on macOS; `.bin` is `application/octet-stream` on one and
+  `application/macbinary` on the other), so `choose-files` chooses the
+  files, written to disk, in an input no page code sees and sets the app's
+  input to files made again from them with the declared types, still read
+  from disk, with the `input` and `change` events a choice fires; it fails
+  if the app's input then holds anything but the declared files. The
+  browser's inference of a type from a name is therefore not exercised by
+  a spec: no platform code depends on it, since the runtime passes on the
+  type the browser gives a file and a built file's `Auto` type is the type
+  of the file it starts from.
 - **Assertions** — text, value, checked, disabled, attribute presence and
   value, visibility and absence, location, document title, local storage,
   pending effects.

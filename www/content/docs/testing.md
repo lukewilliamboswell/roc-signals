@@ -742,8 +742,13 @@ the app the same bytes; a step that names a file no `file` form declares
 fails.
 `expect-files` counts handles, so it shows when the app lets a file go:
 after the state that held it is written without it, or its scope is
-disposed. In Chrome a chosen file gets its type from its name, and the step
-fails if that is not the type the spec declares. See
+disposed. A file step gives the app exactly the declared name, type and
+contents, in both runners and on every system. A browser's own chooser
+takes a file's type from the operating system's table of name extensions,
+which differs between systems, so in Chrome `choose-files` chooses the
+files from disk where the app cannot see them and gives the app files
+made from them with the declared types, still read from disk, with the
+`input` and `change` events of a choice. See
 [Files](@/docs/files.md#testing) for a sample.
 
 Operations on a file wait for `run-effect` like any awaited request, and
