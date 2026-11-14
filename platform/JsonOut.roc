@@ -2,6 +2,7 @@
 ## steps `--emit-steps` hands to the browser runner. Values are built as a
 ## small tree and rendered once, so every string goes through one escaper.
 JsonOut := [].{
+
 	## The result and replay JSON tree. Object fields retain caller order;
 	## every text value and key reaches quote before bytes are published.
 	Value := [Null, Bool(Bool), Int(I64), Nat(U64), Text(Str), Array(List(Value)), Object(List({ key : Str, value : Value }))]
