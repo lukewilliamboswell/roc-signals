@@ -279,7 +279,7 @@ FileEffectsApp := [].{
 						"preview",
 						[
 							Html.p_s(r.map(FileEffectsApp.url_state), [Engine.test_id("shown")]),
-							Engine.element("a", [Engine.attr_presence("href", r.map(FileEffectsApp.url_of)), Engine.test_id("preview")], [Engine.text("preview")]),
+							Engine.element("a", [Engine.attr_presence("href", r.map(FileEffectsApp.url_of)), Engine.attr("title", ""), Engine.test_id("preview")], [Engine.text("preview")]),
 						],
 					),
 				),

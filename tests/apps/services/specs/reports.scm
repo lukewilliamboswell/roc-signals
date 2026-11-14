@@ -15,6 +15,7 @@
     (set-online online)
     (click (role button :name "Start"))
     (expect-text (test-id "online") "online")
+    (expect-interval 5000 1)
     (set-visibility hidden)
     (set-visibility visible)
     (set-visibility hidden)

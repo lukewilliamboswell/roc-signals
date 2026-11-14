@@ -33,5 +33,6 @@
     (click (role button :name "Overview"))
     (expect-pending-effects 0)
     (expect-text (test-id "overview") "1 line, 1 entry, from 2026-11-11T08:00:00Z to 2026-11-11T08:00:00Z")
+    (expect-has-attr (test-id "timeline") data-figure)
   )
 )

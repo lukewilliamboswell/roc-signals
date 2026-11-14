@@ -8,6 +8,8 @@
     (expect-pending-effects 1)
     (run-effect 1)
     (expect-text (test-id "shown") "shown")
+    (expect-has-attr (test-id "preview") "title")
+    (expect-has-attr (test-id "preview") "href")
     (click (role button :name "Hide"))
     (expect-text (test-id "shown") "idle")
     (expect-no-attr (test-id "preview") "href")

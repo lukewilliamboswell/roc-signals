@@ -15,6 +15,7 @@
     (fill (label "Note body") "Tank level 42")
     (click (role button :name "Save note"))
     (run-effect 1)
+    (expect-attr (test-id "captured-n-9e5651b0ef953636") datetime "1970-01-01T00:00:00Z")
     (expect-value (label "Body n-9e5651b0ef953636") "Tank level 42")
     (expect-value (label "Body n-63cbe1e459320dd7") "Pump pressure log")
     (expect-local-storage "field-notes:notes" "n0|0|1|r7|unknown|Generator hours;n-63cbe1e459320dd7|1|0|r0|unknown|Pump pressure log;n-9e5651b0ef953636|2|0|r0|0|Tank level 42")))

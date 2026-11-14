@@ -22,6 +22,7 @@
     (expect-no-attr (test-id "timeline") data-figure)
     (run-effect 1)
     (expect-text (test-id "timeline-peak") "Most matches in a minute: 20 matches at 2026-11-11 08:00.")
+    (expect-has-attr (test-id "timeline") data-figure)
     (expect-pending-effects 0)
   )
 )

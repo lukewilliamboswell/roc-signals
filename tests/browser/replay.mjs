@@ -1031,9 +1031,14 @@ const STEPS = {
     if (got === null) throw new Error(`${showLoc(s.loc)} has no ${s.name} attribute, expected ${JSON.stringify(s.text)}`);
     if (got !== s.text) throw new Error(`${showLoc(s.loc)} ${s.name}=${JSON.stringify(got)}, expected ${JSON.stringify(s.text)}`);
   },
+  "expect-has-attr": async (page, s) => {
+    await need(page, s.loc);
+    const got = await onEl(page, s.loc, (e, n) => window.__attrOf(e, n), s.name);
+    if (got === null) throw new Error(`${showLoc(s.loc)} has no ${s.name} attribute`);
+  },
   "expect-no-attr": async (page, s) => {
     await need(page, s.loc);
-    const got = await onEl(page, s.loc, (e, n) => e.getAttribute(n), s.name);
+    const got = await onEl(page, s.loc, (e, n) => window.__attrOf(e, n), s.name);
     if (got !== null) throw new Error(`${showLoc(s.loc)} has ${s.name}=${JSON.stringify(got)}`);
   },
   "expect-updates": async (page, s) => {

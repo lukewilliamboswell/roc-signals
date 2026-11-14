@@ -4160,6 +4160,32 @@ to match, or says `:never-drawn`; the parser rejects any other, so a misspelt or
 renamed locator fails at parse instead of passing. A marker on an anchored
 locator is also a parse error. Locators are compared exactly as written.
 
+Names in negative and zero-count assertions need evidence before a runner
+can trust their spelling. The program's declarations are the first authority
+for ports (including their kind), worker tasks and media queries. Negative
+storage assertions may instead use that spec's seeded or positively observed
+key in the same store; setting local storage from another document establishes
+that key too, while removal and clear do not.
+
+Names with no declaration must be shown elsewhere in the same spec, before
+or after the negative: `expect-attr` or `expect-has-attr` shows an attribute
+name on any locator; a positive cleanup count shows a cleanup name; a
+positive interval count or `tick-interval` shows a period. Otherwise the
+negative carries its family marker: `:never-written`, `:never-runs` or
+`:never-started`. A marker on an anchored subject is an error. These markers
+are parser-only, just as `:never-drawn` is; they never change an operation's
+runner meaning. One exhaustive `Scm.evidence` classifies every operation,
+and the locator query and declaration preflight consume its projections.
+Setup has its own exhaustive classification and retains its source position.
+
+`expect-has-attr`, `expect-attr` and `expect-no-attr` share the same present
+reading in both runners, including present-empty text. Live property readings
+are always present: `disabled`, and `checked` or `value` on their applicable
+controls. Presence assertions on those readings are vacuous; use the dedicated
+value/state assertions. The parser refuses their spellings in `expect-no-attr`
+and directs the author to those assertions. Ordinary attribute values retain
+the exact text the app wrote.
+
 Coverage is checked: the native runner's step dispatch is an
 exhaustive `match`, and `check` compares the browser runner's handler table
 with the parser's form tables (`replay.mjs --check-grammar`).

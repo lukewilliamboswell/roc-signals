@@ -700,6 +700,7 @@ Scm := [].{
 		ExpectValue(Loc, Str),
 		ExpectAttr({ target : Loc, name : Str, value : Str }),
 		ExpectNoAttr({ target : Loc, name : Str }),
+		ExpectHasAttr({ target : Loc, name : Str }),
 		ExpectChecked(Loc, Bool),
 		ExpectDisabled(Loc, Bool),
 		ExpectUpdates(Loc, U64),
@@ -843,7 +844,7 @@ Scm := [].{
 		}
 		var $setup = []
 		var $steps = []
-		var $never_drawn = []
+		var $markers = []
 		var $saw_setup = Bool.False
 		var $saw_steps = Bool.False
 		for section in items.drop_first(2) {
@@ -872,8 +873,11 @@ Scm := [].{
 					step = Scm.step_form(form)?
 					$steps = $steps.append(step)
 					match form {
-						List([Sym("expect-absent", _), _, Sym(":never-drawn", _)], _) => {
-							$never_drawn = $never_drawn.append(step.pos)
+						List(parts, _) => match parts.last() {
+							Ok(Sym(marker, _)) if [":never-drawn", ":never-written", ":never-runs", ":never-started"].contains(marker) => {
+								$markers = $markers.append({ pos: step.pos, marker })
+							}
+							_ => {}
 						}
 						_ => {}
 					}
@@ -885,7 +889,7 @@ Scm := [].{
 		if !$saw_steps {
 			return Err({ pos, message: "the test has no (steps ...) section" })
 		}
-		Scm.anchored($steps, $never_drawn)?
+		Scm.anchored($steps, $markers)?
 		Ok({ name, setup: $setup, steps: $steps, environment: Scm.environment($setup)?, mount_root: Scm.mount_root($setup)? })
 	}
 
@@ -949,6 +953,7 @@ Scm := [].{
 		ExpectAbsent(loc) => { provides: [], needs: [Story(Locator(loc))] }
 		ExpectValue(loc, _) => { provides: [Locator(loc)], needs: [] }
 		ExpectAttr({ target, name, .. }) => { provides: [Locator(target), Attribute(name)], needs: [] }
+		ExpectHasAttr({ target, name }) => { provides: [Locator(target), Attribute(name)], needs: [] }
 		ExpectNoAttr({ target, name }) => { provides: [Locator(target)], needs: [Story(Attribute(name))] }
 		ExpectChecked(loc, _) => { provides: [Locator(loc)], needs: [] }
 		ExpectDisabled(loc, _) => { provides: [Locator(loc)], needs: [] }
@@ -1041,29 +1046,63 @@ Scm := [].{
 		_ => Err(NoRequiredLocator)
 	}).first() ? |_| NoRequiredLocator
 
-	## Relate absences to the whole story, including anchors that occur later.
-	## The marker positions are parser-only metadata: runners receive the same
-	## ExpectAbsent operation for both forms, with no protocol change.
-	anchored : List(Step), List(Pos) -> Try({}, Problem)
-	anchored = |steps, never_drawn| {
-		anchors = steps.keep_oks(|step| Scm.required_loc(step.op).map_ok(|loc| { loc, pos: step.pos }))
+	## Resolve same-story obligations against all steps, including later ones.
+	## Markers are parser-only assertions about a family, never runner data.
+	anchored : List(Step), List({ pos : Pos, marker : Str }) -> Try({}, Problem)
+	anchored = |steps, markers| {
+		anchors = steps.fold([], |all, step| all.concat(Scm.evidence(step.op).provides.map(|subject| { subject, pos: step.pos })))
 		for step in steps {
-			match step.op {
-				ExpectAbsent(loc) => {
-					anchor = anchors.find_first(|candidate| candidate.loc == loc)
-					if never_drawn.contains(step.pos) {
-						match anchor {
-							Ok(found) => return Err({ pos: step.pos, message: "expect-absent ${Scm.show_loc(loc)} is matched at line ${found.pos.line.to_str()}; drop :never-drawn" })
-							Err(_) => {}
+			for need in Scm.evidence(step.op).needs {
+				match need {
+					Story(subject) => {
+						facts = Scm.story_facts(subject)
+						anchor = anchors.find_first(|candidate| candidate.subject == subject)
+						marked = markers.any(|candidate| candidate.pos == step.pos and candidate.marker == facts.marker)
+						if marked {
+							match anchor {
+								Ok(found) => return Err({ pos: step.pos, message: "${Scm.op_name(step.op)} ${facts.name} is matched at line ${found.pos.line.to_str()}; drop ${facts.marker}" })
+								Err(_) => {}
+							}
+						} else if anchor.is_err() {
+							return Err({ pos: step.pos, message: "${Scm.op_name(step.op)} ${facts.name} names ${facts.description} that no step of this spec ${facts.shows}; ${facts.remedy}, or mark this story ${facts.marker}" })
 						}
-					} else if anchor.is_err() {
-						return Err({ pos: step.pos, message: "expect-absent ${Scm.show_loc(loc)} names a locator that no step of this spec matches; show the element with a step that requires it (expect-visible, expect-text, click, ...) where the story draws it, so a misspelt or renamed locator is caught" })
 					}
+					_ => {}
+				}
+			}
+		}
+		Ok({})
+	}
+
+	## One family's marker and actionable diagnostic accompany its typed
+	## subject. Storage obligations are resolved against program facts instead.
+	story_facts : Subject -> { marker : Str, name : Str, description : Str, shows : Str, remedy : Str }
+	story_facts = |subject| match subject {
+		Locator(loc) => { marker: ":never-drawn", name: Scm.show_loc(loc), description: "a locator", shows: "matches", remedy: "show the element with a step that requires it (expect-visible, expect-text, click, ...) where the story draws it, so a misspelt or renamed locator is caught" }
+		Attribute(name) => { marker: ":never-written", name: Str.inspect(name), description: "an attribute", shows: "shows present", remedy: "show its name with expect-attr or expect-has-attr where the story writes it" }
+		Cleanup(name) => { marker: ":never-runs", name: Str.inspect(name), description: "a cleanup", shows: "shows running", remedy: "show its name with an expect-cleanup count of at least one" }
+		Interval(period) => { marker: ":never-started", name: period.to_str(), description: "an interval period", shows: "shows live", remedy: "show its period with tick-interval or an expect-interval count of at least one" }
+		Storage(_) => crash "Scm.story_facts: storage is checked against declarations and storage evidence"
+	}
+
+	## Strip only the marker admitted by this family and arity. Positive
+	## counts cannot claim never-running or never-started evidence.
+	story_args : Sx, { args : List(Sx), count : U64, marker : Str, zero_count : Bool } -> Try(List(Sx), Problem)
+	story_args = |form, { args, count, marker, zero_count }| {
+		if args.len() == count { return Ok(args) }
+		if args.len() == count + 1 {
+			match args.last() {
+				Ok(Sym(written, _)) if written == marker => {
+					plain = args.drop_last(1)
+					if zero_count and Scm.unsigned(Scm.arg(plain, count - 1), "the count")? != 0 {
+						return Err(Scm.bad(form, "${marker} is only allowed on a zero count"))
+					}
+					return Ok(plain)
 				}
 				_ => {}
 			}
 		}
-		Ok({})
+		Err(Scm.bad(form, "expected ${count.to_str()} arguments, optionally followed by ${marker}"))
 	}
 
 	## `path:line:column: message`, for reports.
@@ -1912,9 +1951,16 @@ Scm := [].{
 			},
 		},
 		{
-			name: "expect-no-attr",
+			name: "expect-has-attr",
 			parse: |form, args| {
 				a = Scm.arity(form, args, 2)?
+				Ok(ExpectHasAttr({ target: Scm.locator(Scm.arg(a, 0))?, name: Scm.attr_name(Scm.arg(a, 1))? }))
+			},
+		},
+		{
+			name: "expect-no-attr",
+			parse: |form, args| {
+				a = Scm.story_args(form, { args, count: 2, marker: ":never-written", zero_count: Bool.False })?
 				name_sx = Scm.arg(a, 1)
 				name = Scm.attr_name(name_sx)?
 				match name {
@@ -1994,18 +2040,18 @@ Scm := [].{
 			},
 		},
 		{ name: "tick-interval", parse: |form, args| Ok(TickInterval(Scm.count1(form, args, "the period")?)) },
-		{ name: "tick-interval-if-active", parse: |form, args| Ok(TickIntervalIfActive(Scm.count1(form, args, "the period")?)) },
+		{ name: "tick-interval-if-active", parse: |form, args| Ok(TickIntervalIfActive(Scm.count1(form, Scm.story_args(form, { args, count: 1, marker: ":never-started", zero_count: Bool.False })?, "the period")?)) },
 		{
 			name: "expect-cleanup",
 			parse: |form, args| {
-				a = Scm.arity(form, args, 2)?
+				a = Scm.story_args(form, { args, count: 2, marker: ":never-runs", zero_count: Bool.True })?
 				Ok(ExpectCleanup({ name: Scm.string(Scm.arg(a, 0), "the cleanup name")?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
 			},
 		},
 		{
 			name: "expect-interval",
 			parse: |form, args| {
-				a = Scm.arity(form, args, 2)?
+				a = Scm.story_args(form, { args, count: 2, marker: ":never-started", zero_count: Bool.True })?
 				Ok(ExpectInterval({ period_ms: Scm.unsigned(Scm.arg(a, 0), "the period")?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
 			},
 		},
@@ -2329,6 +2375,7 @@ Scm := [].{
 		{ op: "expect-value", grant: Never },
 		{ op: "expect-attr", grant: Never },
 		{ op: "expect-no-attr", grant: Never },
+		{ op: "expect-has-attr", grant: Never },
 		{ op: "expect-checked", grant: Never },
 		{ op: "expect-disabled", grant: Never },
 		{ op: "expect-updates", grant: Never },
@@ -2436,6 +2483,7 @@ Scm := [].{
 			ExpectValue(_, _) => "expect-value"
 			ExpectAttr(_) => "expect-attr"
 			ExpectNoAttr(_) => "expect-no-attr"
+			ExpectHasAttr(_) => "expect-has-attr"
 			ExpectChecked(_, _) => "expect-checked"
 			ExpectDisabled(_, _) => "expect-disabled"
 			ExpectUpdates(_, _) => "expect-updates"
@@ -2744,7 +2792,7 @@ Scm := [].{
 			ExpectAbsent(l) => [loc(l)]
 			ExpectValue(l, t) => [loc(l), text(t)]
 			ExpectAttr({ target, name, value }) => [loc(target), JsonOut.field("name", Text(name)), text(value)]
-			ExpectNoAttr({ target, name }) => [loc(target), JsonOut.field("name", Text(name))]
+			ExpectNoAttr({ target, name }) | ExpectHasAttr({ target, name }) => [loc(target), JsonOut.field("name", Text(name))]
 			ExpectChecked(l, b) => [loc(l), JsonOut.field("value", Bool(b))]
 			ExpectDisabled(l, b) => [loc(l), JsonOut.field("value", Bool(b))]
 			ExpectUpdates(l, n) => [loc(l), JsonOut.field("count", Nat(n))]
@@ -3468,7 +3516,8 @@ expect {
 		"(expect-element (test-id \"row-7\") html \"div\")",
 		"(expect-value (test-id \"row-7\") \"x\")",
 		"(expect-attr (test-id \"row-7\") \"title\" \"x\")",
-		"(expect-no-attr (test-id \"row-7\") \"title\")",
+		"(expect-no-attr (test-id \"row-7\") \"title\" :never-written)",
+		"(expect-has-attr (test-id \"row-7\") \"title\")",
 		"(expect-checked (test-id \"row-7\") true)",
 		"(expect-disabled (test-id \"row-7\") false)",
 		"(expect-updates (test-id \"row-7\") 0)",
@@ -3630,4 +3679,50 @@ expect {
 	Scm.evidence(ExpectCleanup({ name: "cleanup", count: 1 })).provides == [Cleanup("cleanup")] and
 	Scm.evidence(TickIntervalIfActive(500)).needs == [Story(Interval(500))] and
 	Scm.evidence(TickInterval(500)).provides == [Interval(500)]
+}
+
+## Each story family accepts earlier and later evidence, catches a changed
+## subject and rejects a marker when the story can prove the spelling.
+expect {
+	families = [
+		{ negative: "(expect-no-attr (test-id \"a\") title)", positive: "(expect-attr (test-id \"b\") \"title\" \"\")", wrong: "(expect-has-attr (test-id \"b\") typo)", marked: "(expect-no-attr (test-id \"a\") title :never-written)" },
+		{ negative: "(expect-cleanup \"cleanup\" 0)", positive: "(expect-cleanup \"cleanup\" 1)", wrong: "(expect-cleanup \"typo\" 1)", marked: "(expect-cleanup \"cleanup\" 0 :never-runs)" },
+		{ negative: "(expect-interval 500 0)", positive: "(expect-interval 500 1)", wrong: "(expect-interval 5000 1)", marked: "(expect-interval 500 0 :never-started)" },
+		{ negative: "(tick-interval-if-active 500)", positive: "(tick-interval 500)", wrong: "(tick-interval 5000)", marked: "(tick-interval-if-active 500 :never-started)" },
+	]
+	families.all(|story|
+		Scm.parse("(test \"before\" (steps ${story.positive} ${story.negative}))").is_ok() and
+		Scm.parse("(test \"after\" (steps ${story.negative} ${story.positive}))").is_ok() and
+		Scm.parse("(test \"typo\" (steps ${story.negative} ${story.wrong}))").is_err() and
+		Scm.parse("(test \"missing\" (steps ${story.negative}))").is_err() and
+		Scm.parse("(test \"never\" (steps ${story.marked}))").is_ok() and
+		Scm.parse("(test \"redundant\" (steps ${story.marked} ${story.positive}))").is_err())
+}
+
+## Markers cannot cross families, hide positive counts or survive emission;
+## presence of an empty attribute still anchors the required locator.
+expect {
+	invalid = [
+		"(expect-no-attr (test-id \"a\") title :never-runs)",
+		"(expect-cleanup \"cleanup\" 0 :never-written)",
+		"(expect-cleanup \"cleanup\" 1 :never-runs)",
+		"(expect-interval 500 1 :never-started)",
+		"(tick-interval-if-active 500 :never-drawn)",
+		"(expect-has-attr (test-id \"a\") title :never-written)",
+	]
+	presence = Scm.parse("(test \"presence\" (steps (expect-absent (test-id \"a\")) (expect-has-attr (test-id \"a\") title)))")?
+	marked = Scm.parse("(test \"never\" (steps (expect-no-attr (test-id \"a\") title :never-written)))")?
+	invalid.all(|form| Scm.parse("(test \"invalid\" (steps ${form}))").is_err()) and
+	Scm.required_loc(presence.steps.get(1)?.op) == Ok(TestId("a")) and
+	!JsonOut.render(Scm.step_json(marked.steps.first()?)).contains(":never-written") and
+	Scm.evidence(presence.steps.get(1)?.op).provides == [Locator(TestId("a")), Attribute("title")]
+}
+
+## Missing evidence points at the negative form, not a later unrelated
+## provider; the diagnostic identifies the family and the explicit remedy.
+expect {
+	match Scm.parse("(test \"position\"\n (steps\n  (expect-no-attr (label \"a\") title)\n  (expect-has-attr (label \"b\") typo)))") {
+		Err(problem) => problem.pos == { line: 3, column: 3 } and problem.message.contains("title") and problem.message.contains(":never-written")
+		Ok(_) => Bool.False
+	}
 }

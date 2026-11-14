@@ -1973,8 +1973,7 @@ SpecRunner := [].{
 
 	## What `expect-attr` reads, as the browser runner reads it: `checked` and
 	## `disabled` as "true"/"false" from the live state, `value` as the live
-	## value, and a boolean attribute's "true" as "" while preserving its
-	## other present text. `class` and ordinary attributes keep their text,
+	## value. `class` and ordinary attributes keep their literal text,
 	## including an explicitly present empty string.
 	attr_value : Dom.Model, U64, Str -> Try(Str, [Absent])
 	attr_value = |dom, i, name| {
@@ -2383,6 +2382,11 @@ SpecRunner := [].{
 				match SpecRunner.attr_value(dom, SpecRunner.need(dom, target)?, name) {
 					Ok(got) => check(got == value, "${Scm.show_loc(target)} ${name}=${JsonOut.quote(got)}, expected ${JsonOut.quote(value)}")
 					Err(Absent) => Err("${Scm.show_loc(target)} has no ${name} attribute, expected ${JsonOut.quote(value)}")
+				}
+			ExpectHasAttr({ target, name }) =>
+				match SpecRunner.attr_value(dom, SpecRunner.need(dom, target)?, name) {
+					Ok(_) => Ok(s)
+					Err(Absent) => Err("${Scm.show_loc(target)} has no ${name} attribute")
 				}
 			ExpectNoAttr({ target, name }) =>
 				match SpecRunner.attr_value(dom, SpecRunner.need(dom, target)?, name) {
@@ -6196,4 +6200,16 @@ expect {
 			SpecRunner.candidates(disabled) == [(enabled, "click")]
 		},
 	)
+}
+
+## Presence assertions use the same reading as exact attribute assertions.
+## A live false property is still present while an unwritten ordinary
+## attribute is absent, and an ordinary empty string remains present.
+expect {
+	(dom, control) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("title", "")]) })
+	SpecRunner.attr_value(dom, control, "title") == Ok("") and
+	SpecRunner.attr_value(dom, control, "alt") == Err(Absent) and
+	SpecRunner.attr_value(dom, control, "disabled") == Ok("false") and
+	SpecRunner.attr_value(dom, control, "checked") == Ok("false") and
+	SpecRunner.attr_value(dom, control, "value") == Ok("")
 }

@@ -327,7 +327,9 @@ These are step errors, with no fabricated release or cancellation.
 | `(expect-checked LOC BOOL)` | The control's checked state is `BOOL` |
 | `(expect-disabled LOC BOOL)` | The control's disabled state is `BOOL` |
 | `(expect-attr LOC name "value")` | The attribute `name` is present with that value. On property-table elements, `value` reads the live value and `checked` reads `"true"`/`"false"`; elsewhere they read ordinary attributes. `disabled` reads `"true"`/`"false"` |
-| `(expect-no-attr LOC name)` | The attribute `name` is absent. On property-table elements, assert live `checked` and `value` with their own steps; `disabled` also has its own step |
+| `(expect-has-attr LOC name)` | The attribute reading is present, including an empty string, with any value |
+| `(expect-no-attr LOC name)` | The attribute `name` is absent; another step of this spec must show the same name present, on any locator |
+| `(expect-no-attr LOC name :never-written)` | The attribute is absent in a story that never shows that name present; its spelling remains unchecked |
 | `(expect-visible LOC)` | The locator matches an element in the document |
 | `(expect-absent LOC)` | The locator matches nothing now. Another step of this spec must require the same locator to match, before or after this step |
 | `(expect-absent LOC :never-drawn)` | The locator matches nothing in a story that never draws it. No step of this spec may require that locator to match; its spelling remains unchecked |
@@ -346,6 +348,27 @@ Previously passing specs with an unanchored `expect-absent` fail to parse at
 that step in both runners and `--emit-steps`. Add an assertion where the
 existing story draws the element, or mark a branch the story never draws
 with `:never-drawn`.
+
+The parser checks names using the strongest available evidence: program
+declarations first, another step in this spec next, then an explicit marker
+for a story that never shows the subject. Attribute names are anchored by
+`expect-attr` or `expect-has-attr`, before or after the absence and on any
+locator. Symbols and strings of the same text are one name. A misspelling
+fails at the negative step; a redundant marker also fails and names the
+anchor's line. No anchor from another spec counts.
+
+All three attribute assertions use the same reading. Present-empty values
+count as present. `disabled`, and `checked` or `value` on applicable controls,
+are always-present live readings: `expect-has-attr` adds no useful check there.
+Use `expect-disabled`, `expect-checked` and `expect-value` instead. The parser
+rejects those names in `expect-no-attr`. Ordinary raw attributes retain their
+literal empty, false or named text.
+
+When upgrading existing specs, add an assertion where the existing story
+already shows the name; no extra event turn is required. Use the family
+marker only when that story never shows it. Unanchored `expect-no-attr`, zero
+cleanup/interval counts and conditional ticks now fail during parse, including
+`--emit-steps`, until anchored or explicitly marked.
 
 `expect-updates` counts property commands whose row mirrors an attribute,
 including control values and checked state. Both runners count the same
@@ -801,6 +824,12 @@ element or service:
   `Searching…`, then the answer: 3.
 - `(expect-interval MS N)` and `(expect-cleanup "name" N)` (above) check
   that a disposed scope released its subscriptions and ran its cleanups.
+  A zero cleanup count requires a positive count of the same name somewhere
+  in this spec, or `:never-runs`. A zero interval count and
+  `tick-interval-if-active MS` require a positive interval count or
+  `tick-interval MS` of the same period, or `:never-started`. A marker is
+  rejected when the spec has that evidence. The assertions still check the
+  exact count; a conditional tick still delivers nothing when inactive.
 
 Natively, every work step also checks that the engine's per-command
 counters agree with the commands the oracle decoded, and that every issued
