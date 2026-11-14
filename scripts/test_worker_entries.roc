@@ -21,9 +21,9 @@ main! = |_args| {
 	metadata = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u64(SpecRunner.put_u32([10], 1), 3), "answer.txt"), "text/plain")
 	with_file = SpecRunner.put_u64(metadata, output.len()).concat(output).concat([97, 98, 99])
 	mint! = |count| List.repeat(Box.box(41.U64), count)
-	plain = SpecRunner.deliver_work!(program, base, 7, empty, mint!)?
-	files = SpecRunner.deliver_work!(program, base, 7, with_file, mint!)?
-	refused = SpecRunner.deliver_work!(program, base, 7, with_file, |_count| [])?
+	plain = SpecRunner.deliver_work!(program, base, 7, empty, mint!) ? WorkerAnswerDeliveryFailed
+	files = SpecRunner.deliver_work!(program, base, 7, with_file, mint!) ? WorkerAnswerDeliveryFailed
+	refused = SpecRunner.deliver_work!(program, base, 7, with_file, |_count| []) ? WorkerAnswerDeliveryFailed
 	actual = {
 		plain: describe(plain.inst.calls),
 		files: describe(files.inst.calls),

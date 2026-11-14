@@ -86,16 +86,7 @@ ToolCheck := [].{
 		$problems = $problems.concat(judge(run_tool!(tool, scratch, ["build"])?, { code: 1, says: ["There is no main.roc here, so there is no app to work on."] }))
 
 		# The counter's specs and its deployable build.
-		clean_test = run_tool!(tool, counter, ["test"])?
-		clean_build = run_tool!(tool, counter, ["build"])?
-		$problems = $problems.concat(judge(clean_test, { code: 0, says: ["Running 1 spec:", "  passed  the counter counts both ways", "The spec passed."] }))
-		$problems = $problems.concat(judge(clean_build, { code: 0, says: ["Built the app into dist/:", "  dist/index.html", "/app.wasm", "/runtime.mjs", "/worker.mjs", "/environment.mjs"] }))
-		for clean in [clean_test, clean_build] {
-			if clean.output.contains("0 errors and 0 warnings") or clean.output.contains("duplicate definition") or clean.output.contains("dbg in optimized build") {
-				$problems = $problems.append("signals.roc ${Str.join_with(clean.args, " ")} printed a compiler report for a clean app")
-			}
-		}
-		$problems = $problems.concat(ToolCheck.warning_reports!(o, { tool, dir: counter })?)
+		$problems = $problems.concat(ToolCheck.compiler_reports!(o, { tool, dir: counter })?)
 		$problems = $problems.concat(dist_problems!(o, counter)?)
 		$problems = $problems.concat(ToolCheck.picture_builds!(o, { tool, dir: counter })?)
 
@@ -167,8 +158,17 @@ ToolCheck := [].{
 	## warning also exercises the development compiler used by test. Both tool
 	## commands succeed and print their compiler reports. Restore the app before
 	## propagating process errors so later checks see the original clean source.
-	warning_reports! : SpecSuite.Options, { tool : Tool, dir : Str } => Try(List(Str), _)
-	warning_reports! = |o, { tool, dir }| {
+	compiler_reports! : SpecSuite.Options, { tool : Tool, dir : Str } => Try(List(Str), _)
+	compiler_reports! = |o, { tool, dir }| {
+		clean_test = run_tool!(tool, dir, ["test"])?
+		clean_build = run_tool!(tool, dir, ["build"])?
+		var $problems = judge(clean_test, { code: 0, says: ["Running 1 spec:", "  passed  the counter counts both ways", "The spec passed."] })
+		$problems = $problems.concat(judge(clean_build, { code: 0, says: ["Built the app into dist/:", "  dist/index.html", "/app.wasm", "/runtime.mjs", "/worker.mjs", "/environment.mjs"] }))
+		for clean in [clean_test, clean_build] {
+			if clean.output.contains("0 errors and 0 warnings") or clean.output.contains("duplicate definition") or clean.output.contains("dbg in optimized build") {
+				$problems = $problems.append("signals.roc ${Str.join_with(clean.args, " ")} printed a compiler report for a clean app")
+			}
+		}
 		path = Path.utf8("${dir}/Counter.roc")
 		source = Path.read_utf8!(path)?
 		before = "program = Engine.program(|| Engine.state(0, Counter.view))"
@@ -186,7 +186,7 @@ ToolCheck := [].{
 		restored?
 		build_report = built?
 		test_report = tested?
-		var $problems = judge(build_report, { code: 0, says: ["Counter.roc", "duplicate definition", "Built the app into dist/:"] })
+		$problems = $problems.concat(judge(build_report, { code: 0, says: ["Counter.roc", "duplicate definition", "Built the app into dist/:"] }))
 		$problems = $problems.concat(judge(test_report, { code: 0, says: ["Counter.roc", "duplicate definition", "The spec passed."] }))
 		if !SpecSuite.has_broken_optimizer(o.nightly) and !(build_report.output.contains("dbg") and build_report.output.contains("optimized build")) {
 			$problems = $problems.append("signals.roc build discarded the real optimized dbg warning")

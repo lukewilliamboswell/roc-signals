@@ -50,15 +50,15 @@ Specs :: [].{
 		Stdout.line!("Running ${count.to_str()} spec${if (count == 1) "" else "s"}:")?
 		program = "${Project.with_slashes(Path.display(Env.cwd!()?))}/${runner}"
 		output = Cmd.new(OsStr.from_str(program)).args(specs.map(OsStr.from_str)).stdout(Capture).stderr(Capture).run!() ? |_| RunnerFailed("")
-		outcomes = Specs.outcomes(Str.from_utf8_lossy(output.stdout_bytes))
-		if outcomes.len() != count {
+		results = Specs.outcomes(Str.from_utf8_lossy(output.stdout_bytes))
+		if results.len() != count {
 			return Err(RunnerFailed(Str.from_utf8_lossy(output.stderr_bytes)))
 		}
-		for outcome in outcomes {
+		for outcome in results {
 			Stdout.line!(Specs.show(outcome))?
 		}
-		failed = outcomes.count_if(|o| o.status != Passed)
-		Stdout.line!("\n${Specs.tally(outcomes)}")?
+		failed = results.count_if(|o| o.status != Passed)
+		Stdout.line!("\n${Specs.tally(results)}")?
 		if (failed == 0) Ok({}) else Err(SpecsFailed)
 	}
 
