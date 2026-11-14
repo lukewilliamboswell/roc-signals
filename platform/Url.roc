@@ -113,12 +113,12 @@ Url :: {
 	origin : Url -> [Relative, Absolute({ scheme : [Http, Https], host : Str, port : [None, Some(U16)] })]
 	origin = |url| match url.origin {
 		Relative => Relative
-		Absolute(origin) => Absolute({
-			..origin,
-			host: if starts_with(origin.host, "[") {
-				trim_brackets(origin.host)
+		Absolute(explicit_origin) => Absolute({
+			..explicit_origin,
+			host: if starts_with(explicit_origin.host, "[") {
+				trim_brackets(explicit_origin.host)
 			} else {
-				origin.host
+				explicit_origin.host
 			},
 		})
 	}

@@ -608,7 +608,7 @@ Engine := [].{
 		## A text literal is a constant signal. It can be used wherever a text
 		## signal is expected, without wrapping the literal in Engine.const.
 		from_quote : Str -> Try(Signal(ctx, Str), [BadQuotedBytes(Str)])
-		from_quote = |text| Ok(Fixed(text))
+		from_quote = |quoted| Ok(Fixed(quoted))
 
 		## Join constant text and signal parts into one text reading. Fixed parts
 		## are assembled at construction; varying parts share one reader. Parts
@@ -1724,8 +1724,8 @@ Engine := [].{
 	## that mount is then reported at the call. The result is the mount batch's
 	## byte length. Remove the constant to stop checking that default page.
 	mounts : Program(st) -> U64
-	mounts = |program| {
-		(_, commands, _) = (Core.driver(program).init)([])
+	mounts = |app_program| {
+		(_, commands, _) = (Core.driver(app_program).init)([])
 		commands.len()
 	}
 

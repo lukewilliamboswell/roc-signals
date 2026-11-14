@@ -50,7 +50,7 @@ Html := [].{
 
 		## Check a computed keyword in any ASCII case and keep its typed meaning.
 		from_str : Str -> Try(InputType, [NotAnInputType(Str)])
-		from_str = |text| match Spelling.ascii_lower(text) {
+		from_str = |keyword| match Spelling.ascii_lower(keyword) {
 			"hidden" => Ok(Hidden)
 			"text" => Ok(Text)
 			"search" => Ok(Search)
@@ -75,15 +75,15 @@ Html := [].{
 			"button" => Ok(Button)
 			_ => {
 				words = MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { namespace: NoNamespace, prefix: Unprefixed, local: "type" }) ?? crash "Html.InputType: parser must describe input type keywords"
-				hint = Spelling.suggest(text, words)
+				hint = Spelling.suggest(keyword, words)
 				advice = if (hint.is_empty()) " choose a listed HTML input keyword" else hint
-				Err(NotAnInputType("${Str.inspect(text)} is not an input type;${advice}"))
+				Err(NotAnInputType("${Str.inspect(keyword)} is not an input type;${advice}"))
 			}
 		}
 
 		## Report a rejected keyword at its literal, before the input is built.
 		from_quote : Str -> Try(InputType, [BadQuotedBytes(Str)])
-		from_quote = |text| InputType.from_str(text).map_err(|NotAnInputType(note)| BadQuotedBytes(note))
+		from_quote = |keyword| InputType.from_str(keyword).map_err(|NotAnInputType(note)| BadQuotedBytes(note))
 
 		## Render the canonical lowercase keyword the browser understands.
 		text : InputType -> Str

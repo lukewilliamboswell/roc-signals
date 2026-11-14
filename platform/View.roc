@@ -103,7 +103,7 @@ View(k, v, s) :: {
 		if view.version != TableCore.version(table) {
 			crash "View.draw: follow the table before drawing the view"
 		} else {
-			{ site, query: held, seq: old_seq, shown, version, .. } = view
+			{ site, query: held, seq: old_seq, shown, version: held_version, .. } = view
 			(query, seq) = match asked {
 				Same => (held, old_seq)
 				New(next) => (next, scratch(table, next, old_seq.limit_of(), site))
@@ -114,7 +114,7 @@ View(k, v, s) :: {
 				Rows(record) => window_changes(shown.map(|e| e.key), next_shown.map(|e| e.key), |key| record.contains(key))
 				EveryRow => window_changes(shown.map(|e| e.key), next_shown.map(|e| e.key), |_| True)
 			}
-			{ view: { site, query, seq, window, shown: next_shown, version }, changes }
+			{ view: { site, query, seq, window, shown: next_shown, version: held_version }, changes }
 		}
 
 	## The rows just before and just after `key` in the view, as their keys and
