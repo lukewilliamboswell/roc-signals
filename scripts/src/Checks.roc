@@ -63,12 +63,12 @@ Checks := [].{
 			{ name: "web-method-forbidden", expectation: Rejected(["browser refuses"]) },
 			{ name: "web-method-empty", expectation: Rejected(["one or more token characters"]) },
 			{ name: "web-method-space", expectation: Rejected(["one or more token characters"]) },
-			{ name: "web-text-tag", expectation: Rejected(["Engine.Tag", "Str"]) },
+			{ name: "web-text-tag", expectation: Rejected(["This argument has the type: Str But the function needs the first argument to be: Engine.Tag"]) },
 			{ name: "web-interpolation", expectation: Rejected(["Web.AttrName"]) },
 			{ name: "web-shared-constant", expectation: Rejected(["Web.AttrName", "Str"]) },
-			{ name: "web-method-request", expectation: Rejected(["Engine.Method", "Str"]) },
-			{ name: "web-method-upload", expectation: Rejected(["Core.UploadProps", "Str"]) },
-			{ name: "web-method-sent", expectation: Rejected(["Web.Method", "Str"]) },
+			{ name: "web-method-request", expectation: Rejected(["Fetch({ cache: [Default, ForceCache, NoCache, NoStore, Reload], credentials: [Include, SameOrigin], headers: List((Str, Str)), method: Str,", "But the annotation says it should be: Engine.Request"]) },
+			{ name: "web-method-upload", expectation: Rejected(["method: Str ?? …", "But upload needs the first argument to be: Core.UploadProps"]) },
+			{ name: "web-method-sent", expectation: Rejected(["The first branch is: Web.Method But the match is expected to have the type: Str"]) },
 			{ name: "web-public-family", expectation: Compiles },
 			{ name: "vocabulary-tag-typo", expectation: Rejected(["did you mean \"div\"", "Web.Tag.from_str"]) },
 			{ name: "vocabulary-tag-unknown", expectation: Rejected(["pinned roc-parser vocabulary", "Web.Tag.from_str"]) },
@@ -86,7 +86,7 @@ Checks := [].{
 			{ name: "dialog-open-text", expectation: Rejected(["Bool"]) },
 			{ name: "dialog-close-text", expectation: Rejected(["Bool"]) },
 			{ name: "popover-toggle-text", expectation: Rejected(["Bool"]) },
-			{ name: "table-bookkeeping", expectation: Rejected(["with_id"]) },
+			{ name: "table-bookkeeping", expectation: Rejected(["This with_id method is being called on a value whose type doesn't have that method"]) },
 			{ name: "internal-module", expectation: Rejected(["package module is private"]) },
 			{ name: "wire-internal-module", expectation: Rejected(["does not name a public module"]) },
 			{ name: "wire-internal-encode", expectation: Rejected(["pf.Wire.encode_with_files does not exist."]) },
@@ -112,7 +112,7 @@ Checks := [].{
 			{ name: "sort-record", expectation: Rejected(["order_relative_to"]) },
 			{ name: "sort-key", expectation: Rejected(["order_relative_to"]) },
 			{ name: "signal-text-str-part", expectation: Rejected(["to_text_signal"]) },
-			{ name: "signal-text-mixed-parts", expectation: Rejected(["type mismatch", "Engine.Signal"]) },
+			{ name: "signal-text-mixed-parts", expectation: Rejected(["✗ type mismatch", "It has the type: Engine.Signal(Engine.Root, U64) But you are trying to use it as: Engine.Signal(Engine.Root, Str)"]) },
 			{ name: "signal-text-record-part", expectation: Rejected(["to_str"]) },
 			{ name: "signal-text-shared-literal", expectation: Rejected(["type mismatch", "Engine.Signal"]) },
 			{ name: "signal-text-positive", expectation: Compiles },
@@ -122,23 +122,23 @@ Checks := [].{
 			{ name: "port-record-data", expectation: ConstantCrash({ at: "registrations = Port.registrations(ports)", rules: ["Port.registrations: field \"actions.label\" is not a port"] }) },
 			{ name: "mount-table-order-same", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two rows of a table view compare Same", "site /0"] }) },
 			{ name: "mount-table-key", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two rows have the same key"] }) },
-			{ name: "mount-two-handlers", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two handlers", "site /0", "Save"] }) },
+			{ name: "mount-two-handlers", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["contract: two handlers for the \"click\" event on one <button> at site /0 (element /, \"Save\")"] }) },
 			{ name: "mount-empty-row-handlers", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["two handlers", "row template", "site /0"] }) },
 			{ name: "mount-row-shape", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["row template must be a single element", "site /0"] }) },
 			{ name: "mount-table-row-shape", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["a table view row template must be a single element", "site /0"] }) },
-			{ name: "mount-app-crash", expectation: ConstantCrash({ at: "main = Engine.program(|| crash \"first page failed\")", rules: ["first page failed"] }) },
+			{ name: "mount-app-crash", expectation: ConstantCrash({ at: "main = Engine.program(|| crash \"first page failed\")", rules: ["The crash happened with this message: first page failed"] }) },
 			{ name: "mount-inline-expect", expectation: ConstantExpect({ at: "expect boot.url != \"/\"", rules: ["expect failed"] }) },
 			{ name: "mount-unreached-nested-row", expectation: Compiles },
 			{ name: "markup-input-value", expectation: Rejected(["line 1", "checkbox"]) },
-			{ name: "markup-boolean-value", expectation: Rejected(["line 1", "disabled"]) },
-			{ name: "markup-hidden-value", expectation: Rejected(["line 1", "hidden"]) },
-			{ name: "markup-aria-value", expectation: Rejected(["line 1", "aria-pressed"]) },
-			{ name: "markup-element-attribute", expectation: Rejected(["line 1", "value"]) },
+			{ name: "markup-boolean-value", expectation: Rejected(["line 1, column 8: \"false\" is not a value of disabled; expected \"\", \"disabled\""]) },
+			{ name: "markup-hidden-value", expectation: Rejected(["line 1, column 4: \"flase\" is not a value of hidden; expected \"\", \"hidden\", \"until-found\""]) },
+			{ name: "markup-aria-value", expectation: Rejected(["line 1, column 9: \"ture\" is not a value of aria-pressed;", "did you mean \"true\"?"]) },
+			{ name: "markup-element-attribute", expectation: Rejected(["line 1, column 6: <div> has no attribute \"value\""]) },
 			{ name: "markup-element-name", expectation: Rejected(["line 1", "div"]) },
 			{ name: "markup-aria-name", expectation: Rejected(["line 1", "aria-label"]) },
-			{ name: "markup-svg-case", expectation: Rejected(["line 1", "viewbox"]) },
-			{ name: "markup-svg-numbers", expectation: Rejected(["line 1", "viewBox"]) },
-			{ name: "markup-svg-path", expectation: Rejected(["line 1", "path"]) },
+			{ name: "markup-svg-case", expectation: Rejected(["line 1, column 6: <svg> has no attribute \"viewbox\""]) },
+			{ name: "markup-svg-numbers", expectation: Rejected(["line 1, column 6: \"0 0 10\" is not a value of viewBox; expected 4 numbers"]) },
+			{ name: "markup-svg-path", expectation: Rejected(["line 1, column 7: \"M nonsense\" is not a value of d; expected valid SVG path data"]) },
 			{ name: "markup-repair", expectation: Rejected(["line 1", "paragraph"]) },
 			{ name: "markup-handler", expectation: Rejected(["line 1", "holds no handlers"]) },
 			{ name: "markup-comment-root", expectation: Rejected(["line 1", "one element root"]) },
@@ -147,21 +147,21 @@ Checks := [].{
 			{ name: "markup-doctype", expectation: Rejected(["line 1", "document declaration"]) },
 			{ name: "markup-boolean-hole", expectation: Rejected(["Boolean attribute", "Html.boolean"]) },
 			{ name: "markup-partial-attribute", expectation: Rejected(["hole"]) },
-			{ name: "markup-comment-hole", expectation: Rejected(["hole"]) },
+			{ name: "markup-comment-hole", expectation: Rejected(["line 1, column 10: hole index 0: holes are not allowed in comments, declarations or markup delimiters"]) },
 			{ name: "markup-child-part", expectation: Rejected(["to_text_signal"]) },
-			{ name: "markup-tag-hole", expectation: Rejected(["hole"]) },
-			{ name: "markup-attribute-hole", expectation: Rejected(["hole"]) },
+			{ name: "markup-tag-hole", expectation: Rejected(["line 1, column 2: hole index 0: expected character data or an entire quoted attribute value"]) },
+			{ name: "markup-attribute-hole", expectation: Rejected(["line 1, column 4: hole index 0: expected character data or an entire quoted attribute value"]) },
 			{ name: "markup-raw-part", expectation: Rejected(["to_text_signal", "Str"]) },
 			{ name: "markup-arity-fewer", expectation: ConstantCrash({ at: "view = {", rules: ["contract", "fewer parts"] }) },
 			{ name: "markup-arity-more", expectation: ConstantCrash({ at: "view = {", rules: ["contract", "more parts"] }) },
-			{ name: "markup-opaque-plan", expectation: Rejected(["plan"]) },
+			{ name: "markup-opaque-plan", expectation: Rejected(["This is not a record, so it does not have any fields to access. It is: Html.Markup(Ctx) But I need a record with a plan field."]) },
 			{ name: "markup-mathml-handler", expectation: Rejected(["line 1", "holds no handlers"]) },
 			{ name: "markup-svg-input-handler", expectation: Rejected(["line 1", "holds no handlers"]) },
 			{ name: "markup-processing-instruction", expectation: Rejected(["line 1", "processing instruction"]) },
 			{ name: "input-kind-mixed", expectation: Compiles },
 			{ name: "input-kind-typo", expectation: Rejected(["is not an input type", "did you mean \"checkbox\""]) },
-			{ name: "input-kind-text", expectation: Rejected(["Html.InputType", "Str"]) },
-			{ name: "input-kind-union", expectation: Rejected(["Html.InputType", "Unlisted"]) },
+			{ name: "input-kind-text", expectation: Rejected(["This argument has the type: Str But the function needs the second argument to be: Html.InputType"]) },
+			{ name: "input-kind-union", expectation: Rejected(["It has the type: [Unlisted] But the annotation says it should be: Html.InputType"]) },
 			{ name: "markup-property-value", expectation: Rejected(["line 1", "Engine.Prop.value", "Engine.prop_s", "constructor"]) },
 			{ name: "markup-property-checked", expectation: Rejected(["line 1", "Engine.Prop.checked", "constructor"]) },
 			{ name: "markup-property-value-hole", expectation: Rejected(["line 1", "Engine.Prop.value", "constructor"]) },
@@ -185,7 +185,7 @@ Checks := [].{
 			{ name: "construction-foster-table-text", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["move the text outside the table", "site"] }) },
 			{ name: "construction-empty-each", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["insert a table section first", "site"] }) },
 			{ name: "construction-empty-row-void-text", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["a void element cannot hold children", "site"] }) },
-			{ name: "construction-empty-table-view", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["insert a table section first", "site"] }) },
+			{ name: "construction-empty-table-view", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["contract: <tr> inside <table>: the HTML parser would insert a table section first in the row template of a table view at site /0"] }) },
 		]
 		dir = "${o.build_dir}/key-type-errors"
 		SpecSuite.fresh_dir!(dir)?
@@ -201,7 +201,7 @@ Checks := [].{
 			Path.write_utf8!(Path.utf8(path), source)?
 			{ code, stdout } = Proc.merged!({ program: o.compiler, args: ["check", "--no-cache", path], cwd: o.root })?
 			output = Str.from_utf8_lossy(stdout)
-			diagnostic = Str.join_with(output.split_on("\n").map(|line| line.trim()), " ")
+			diagnostic = diagnostic_message(output, source)
 			passed = match test.expectation {
 				Rejected(rules) => code == 1 and rules.all(|rule| diagnostic.contains(rule))
 				ConstantCrash(expected) | ConstantExpect(expected) => {
@@ -540,6 +540,35 @@ expect aborted_lines(["fmt failed", "size changed"], Err(CommandFailed("zig"))) 
 
 ## An abort with nothing collected prints nothing beside its own error.
 expect aborted_lines([], Err(CommandFailed("zig"))) == []
+
+# The compiler's own words in a diagnostic, as one line with single spaces: a
+# report header keeps its title but not the fixture's path, and blank lines,
+# echoed source lines and their caret underlines are dropped, so a fixture's
+# rule can only be met by what the compiler says, never by the source line it
+# quotes or the directory it names.
+diagnostic_message : Str, Str -> Str
+diagnostic_message = |output, source| {
+	written = source.split_on("\n").map(|line| line.trim()).keep_if(|line| !line.is_empty())
+	said = output.split_on("\n").map(|line| line.trim()).keep_if(
+		|line| {
+			echoed = !line.starts_with("──") and written.contains(line)
+			underline = line.to_utf8().all(|byte| byte == '^' or byte == ' ')
+			!(echoed or underline)
+		},
+	)
+	titled = said.map(|line| if (line.starts_with("── ")) line.drop_prefix("── ").split_on(" ─").first() ?? "" else line)
+	Str.join_with(titled, " ")
+}
+
+## A rule quoted only by the echoed source line, the caret line or the header's
+## path is not part of the message; the header's title and the compiler's own
+## sentence are, joined across its wrapped lines.
+expect {
+	source = "app [main] {}\n\tmarkup = \"<path d=\\\"M nonsense\\\"/>\"\n"
+	output = "── ✗ invalid string ─ cases/markup-svg-path/main.roc:2:11\n\nThe from_quote implementation rejected it.\n\nmarkup = \"<path d=\\\"M nonsense\\\"/>\"\n         ^^^^^^^^^^\n\nIt returned this error message:\n\n    line 1, column 7: \"M nonsense\" is not a value of d; expected valid SVG path\n    data\n\n── 1 error and 0 warnings ─ cases/markup-svg-path/main.roc\n"
+	message = diagnostic_message(output, source)
+	!message.contains("<path") and !message.contains("markup-svg-path") and !message.contains("^") and message.contains("expected valid SVG path data") and message.contains("line 1, column 7") and message.contains("✗ invalid string")
+}
 
 # Declaration refusals are parse-phase errors, never executed assertion failures.
 # Decode the structured record so quotes and source positions are compared exactly.
