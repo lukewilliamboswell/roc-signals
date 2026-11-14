@@ -5301,7 +5301,14 @@ without NUL. Readers reject invalid UTF-8, duplicate names or codes, non-dense
 numbered tables, zero or non-single policy bits, empty required numbered tables
 or fault labels, incorrect map-key order, truncation and trailing bytes. The
 runtime binds each validated role to its actual implementation and rejects
-unknown or missing roles before init. Fault codes are fixed by the host, so
+unknown or missing roles before init. A role's lists are bound with it, as
+sets: each kind's `events` must be exactly the event types its payload
+reader implements, each property's `elements` exactly the elements its
+applier implements, and `text_entry_excluded` exactly the runtime's own
+closed list of HTML input types outside text entry, which decides where an
+`outside_text` keymap entry is heard. Any other list refuses the mount, so
+a module cannot silently change what a role does. A contract test also
+compares a built module's facts with the test-owned fixture. Fault codes are fixed by the host, so
 the runtime keeps its own table of their classes, classifies a trap with it
 before any declaration is read (a `boot_keys` trap is contained like any
 other), and refuses `fault_classes` that are not exactly that table in that

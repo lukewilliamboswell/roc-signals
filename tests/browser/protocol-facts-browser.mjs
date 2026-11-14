@@ -28,6 +28,10 @@ const cases = [
   ["missing template node refuses before init", changed(facts => facts.template_nodes.pop()), 'missing template node name "COMMENT"'],
   ["unknown child container refuses before init", changed(facts => facts.child_containers[0].name = "BOGUS"), 'unknown child container name "BOGUS"'],
   ["missing child container refuses before init", changed(facts => facts.child_containers.pop()), 'missing child container name "TEMPLATE_CONTENT"'],
+  ["text-entry exclusions without checkbox refuse before init", changed(facts => { facts.text_entry_excluded = facts.text_entry_excluded.filter(name => name !== "checkbox"); }), "text-entry exclusions"],
+  ["text-entry exclusions with an extra input type refuse before init", changed(facts => facts.text_entry_excluded.push("text")), "text-entry exclusions"],
+  ["a payload kind's changed events refuse before init", changed(facts => { facts.kinds[3].events = ["keydown"]; }), "payload kind KEY events"],
+  ["a property's changed elements refuse before init", changed(facts => { facts.properties[0].elements = ["input"]; }), "property value elements"],
 ];
 // Duplicate the first root key while keeping eleven fields, and corrupt a text
 // byte without using either consumer's metadata decoder to locate it.

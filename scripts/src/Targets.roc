@@ -268,7 +268,8 @@ Targets := [].{
 	## Exercise the monitor's bounded aggregation and environment facts, including
 	## time-zone probes in UTC and Sydney, and the documented port handlers
 	## with bounded queues and browser-resource cleanup, without a browser.
-	## A development Wasm fixture also guards sparse-write allocation scaling.
+	## A development Wasm fixture also guards sparse-write allocation scaling,
+	## and its declared protocol facts must be exactly the test-owned fixture.
 	runtime_unit! : SpecSuite.Options => Try(List(Str), _)
 	runtime_unit! = |o| {
 		var $failures = []
@@ -291,6 +292,10 @@ Targets := [].{
 		code = Proc.status!({ program: o.node, args: ["tests/runtime/write-scaling.mjs", wasm], cwd: o.root })?
 		if code != 0 {
 			$failures = $failures.append("write-scaling.mjs failed (exit ${code.to_str()})")
+		}
+		facts = Proc.status!({ program: o.node, args: ["tests/runtime/protocol-production.mjs", wasm], cwd: o.root })?
+		if facts != 0 {
+			$failures = $failures.append("protocol-production.mjs failed (exit ${facts.to_str()})")
 		}
 		Ok($failures)
 	}

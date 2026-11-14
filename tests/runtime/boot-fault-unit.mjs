@@ -112,3 +112,17 @@ refuses("an unknown fault class refuses the mount", facts(f => { f.fault_classes
 refuses("an unknown HTTP cache name refuses the mount", facts(f => { f.http_cache[1].name = "no-storage"; }), 'unknown HTTP cache name "no-storage"');
 refuses("a cache name fetch refuses outside same-origin mode refuses the mount", facts(f => { f.http_cache[4].name = "only-if-cached"; }), 'unknown HTTP cache name "only-if-cached"');
 refuses("an unknown HTTP credentials name refuses the mount", facts(f => { f.http_credentials[0].name = "same_origin"; }), 'unknown HTTP credentials name "same_origin"');
+// The shared lists a role carries are bound to the runtime's own, so a
+// module whose list differs cannot silently change what the role does.
+refuses("text-entry exclusions without checkbox refuse the mount", facts(f => { f.text_entry_excluded = f.text_entry_excluded.filter(name => name !== "checkbox"); }), "text-entry exclusions");
+refuses("text-entry exclusions with an extra type refuse the mount", facts(f => { f.text_entry_excluded.push("text"); }), "text-entry exclusions");
+refuses("text-entry exclusions with an unknown type refuse the mount", facts(f => { f.text_entry_excluded[0] = "buton"; }), "text-entry exclusions");
+refuses("a payload kind's events without one the runtime reads refuse the mount", facts(f => { f.kinds[3].events = ["keydown"]; }), "payload kind KEY events");
+refuses("a payload kind's events with one the runtime does not read refuse the mount", facts(f => { f.kinds[8].events.push("drop"); }), "payload kind PASTE events");
+refuses("a restricted payload kind made unrestricted refuses the mount", facts(f => { f.kinds[1].events = []; }), "payload kind FILES events");
+refuses("a property's elements without one the runtime applies to refuse the mount", facts(f => { f.properties[0].elements = ["input", "textarea", "select"]; }), "property value elements");
+refuses("a property's elements with one the runtime does not apply to refuse the mount", facts(f => { f.properties[5].elements.push("div"); }), "property shown elements");
+check("text-entry exclusions in another order still bind", () => {
+  const { x } = fakeHost({ declarations: declarations(facts(f => { f.text_entry_excluded.reverse(); })) });
+  assert.equal(readDeclarations(x).bindings.text_entry_excluded.length, 10);
+});

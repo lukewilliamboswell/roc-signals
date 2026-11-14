@@ -1120,6 +1120,7 @@ function applyAttribute(runtime, u8, dv, at, el, name) {
 
 const PROPERTY_APPLIERS = {
   value: {
+    elements: ["input", "textarea", "select", "option"],
     apply(el, value, node) {
       checkValueControl(el, node);
       el.__renderedValueNode = node;
@@ -1131,6 +1132,7 @@ const PROPERTY_APPLIERS = {
     },
   },
   checked: {
+    elements: ["input"],
     apply(el, value) {
       if (value !== "true" && value !== "false") throw new Error(`invalid checked property value ${JSON.stringify(value)}`);
       el.checked = value === "true";
@@ -1139,21 +1141,26 @@ const PROPERTY_APPLIERS = {
     },
   },
   pointer_zone: {
+    elements: [],
     apply(el, value) { el.__pointerZone = value; },
   },
   keymap_down: {
+    elements: [],
     apply(el, value) { el.__keymapDown = parseKeymap(value); },
   },
   keymap_up: {
+    elements: [],
     apply(el, value) { el.__keymapUp = parseKeymap(value); },
   },
   shown: {
+    elements: ["dialog"],
     apply(el, value, node, runtime) {
       if (!["hidden", "open", "modal"].includes(value)) throw new Error(`invalid shown property value ${JSON.stringify(value)}`);
       runtime.decideShown(el, 6, value, node);
     },
   },
   popover_shown: {
+    elements: [],
     apply(el, value, node, runtime) {
       if (value !== "true" && value !== "false") throw new Error(`invalid popover_shown property value ${JSON.stringify(value)}`);
       if (!["auto", "manual"].includes(el.getAttribute("popover"))) throw new Error("popover_shown requires a static auto or manual popover");
@@ -1263,21 +1270,25 @@ function payloadOf(event) {
   }
 }
 
+// Each kind's `events` is the runtime's own listener vocabulary for it: the
+// event types its payload reader understands (empty: any bare type).
 const PAYLOAD_APPLIERS = {
-  TEXT: { payload: payloadOf },
-  PASTE: {},
+  TEXT: { events: [], payload: payloadOf },
+  PASTE: { events: ["paste"] },
   FILES: {
+    events: ["change", "drop", "paste"],
     payload(event) {
       const files = filesOf(event);
       return files.length === 0 ? null : { files };
     },
   },
-  POINTER: {},
-  KEY: {},
-  SCROLL: {},
-  SIZE: {},
-  SEEN: {},
+  POINTER: { events: ["pointerdown", "pointermove", "pointerup", "pointercancel"] },
+  KEY: { events: ["keydown", "keyup"] },
+  SCROLL: { events: ["scroll"] },
+  SIZE: { events: ["size"] },
+  SEEN: { events: ["seen"] },
   OPEN_STATE: {
+    events: ["close", "toggle", "change"],
     payload(event) {
       const element = event.target;
       if (event.type === "change") {
@@ -1293,6 +1304,12 @@ const PAYLOAD_APPLIERS = {
     },
   },
 };
+
+// The HTML input types that are not text entry: a key heard on one of them
+// is outside text for a keymap's `outside_text` entries (design.md,
+// "Keyboard input"). Roc's oracle keeps the same list; the module's must be
+// this one.
+const TEXT_ENTRY_EXCLUDED = Object.freeze(["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "range", "color", "image"]);
 
 // Build tables only after the complete metadata item has been validated. Each
 // runtime holds its own bindings; mounting another module cannot change them.
@@ -1339,12 +1356,22 @@ function bindProtocolFacts(facts) {
     return implementation.validate ? [implementation.validate] : [];
   }));
   protocol.policy_mask = facts.policies.reduce((mask, row) => mask | row.bit, 0);
-  protocol.PROPS = bind(facts.properties, PROPERTY_APPLIERS, "index", (row, implementation) => ({
-    name: row.name, elements: row.elements.length ? row.elements.map(name => name.toUpperCase()) : null, apply: implementation.apply,
-  }), "property");
-  protocol.PAYLOAD_KINDS = bind(facts.kinds, PAYLOAD_APPLIERS, "code", (row, implementation) => ({
-    events: row.events.length ? row.events : null, payload: implementation.payload,
-  }), "payload kind");
+  // A list the module carries for a role is bound to the runtime's own: a
+  // changed list would silently change what the role does here.
+  const sameNames = (given, own, label) => {
+    if (given.length !== own.length || given.some(name => !own.includes(name))) throw new Error(`${label} ${JSON.stringify(given)} are not the runtime's ${JSON.stringify(own)}`);
+  };
+  protocol.PROPS = bind(facts.properties, PROPERTY_APPLIERS, "index", (row, implementation) => {
+    sameNames(row.elements, implementation.elements, `property ${row.name} elements`);
+    return { name: row.name, elements: row.elements.length ? row.elements.map(name => name.toUpperCase()) : null, apply: implementation.apply };
+  }, "property");
+  protocol.PAYLOAD_KINDS = bind(facts.kinds, PAYLOAD_APPLIERS, "code", (row, implementation) => {
+    sameNames(row.events, implementation.events, `payload kind ${row.name} events`);
+    return { events: row.events.length ? row.events : null, payload: implementation.payload };
+  }, "payload kind");
+  // The input types outside text entry decide where an `outside_text` keymap
+  // entry is heard; they are the runtime's own closed list of HTML types.
+  sameNames(facts.text_entry_excluded, TEXT_ENTRY_EXCLUDED, "text-entry exclusions");
   return Object.freeze(protocol);
 }
 
