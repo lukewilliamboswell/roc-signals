@@ -11,6 +11,7 @@ import src/Checks
 import src/PlatformTest
 import src/DocSamples
 import src/ApiDocs
+import src/ApiSurface
 import src/ExampleFiles
 import src/Release
 import src/Proc
@@ -59,7 +60,7 @@ main! = |_args| {
 	Proc.note!("== platform JavaScript sizes")
 	$problems = $problems.concat(Sizes.check_runtime!({ root: o.root, node: o.node })?)
 
-	$problems = $problems.concat(Checks.platform_packages!(o)?)
+	$problems = $problems.concat(platform_packages!(o.root)?)
 
 	Proc.note!("== API docs")
 	$problems = $problems.concat(ApiDocs.check!({})?)
@@ -260,3 +261,27 @@ cross_links! = |o| {
 ## the test apps, which take minutes, are `check-slow`'s.
 fuzz_smoke! : SpecSuite.Options => Try(List(Str), _)
 fuzz_smoke! = |o| Targets.fuzz_check_all!(o, Targets.fuzz_targets.keep_if(|t| !t.main.starts_with("tests/")))
+
+## Both platform roots must fetch the same internal dependencies. A drift
+## would give the oracle/fuzz package a different codec from shipped apps.
+platform_packages! : Str => Try(List(Str), _)
+platform_packages! = |root| {
+	platform_source = Path.read_utf8!(Path.utf8("${root}/platform/main.roc"))?
+	package_source = Path.read_utf8!(Path.utf8("${root}/platform/main-fuzz.roc"))?
+	platform_dependencies = ApiSurface.dependencies(platform_source)?
+	package_dependencies = ApiSurface.dependencies(package_source)?
+	Ok(
+		["parser", "unicode", "cbor"].fold(
+			[],
+			|problems, name| {
+				platform_urls = platform_dependencies.keep_if(|dependency| dependency.name == name).map(|dependency| dependency.url)
+				package_urls = package_dependencies.keep_if(|dependency| dependency.name == name).map(|dependency| dependency.url)
+				if platform_urls.len() == 1 and platform_urls == package_urls {
+					problems
+				} else {
+					problems.append("platform roots must declare the same single ${name} dependency")
+				}
+			},
+		),
+	)
+}

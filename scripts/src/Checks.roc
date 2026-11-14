@@ -3,7 +3,6 @@ import cli.Path
 import Proc
 import SpecSuite
 import PlatformTest
-import ApiSurface
 
 ## The steps `check_all.roc` and `spec.roc` share.
 Checks := [].{
@@ -23,30 +22,6 @@ Checks := [].{
 		version = Str.from_utf8_lossy(Proc.capture!({ program: "roc", args: ["version"], cwd: root })?).trim()
 		nightly = version.split_on(" ").last() ?? version
 		Ok({ root, build_dir, compiler: "roc", nightly, tooling: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", filter })
-	}
-
-	## Both platform roots must fetch the same internal dependencies. A drift
-	## would give the oracle/fuzz package a different codec from shipped apps.
-	platform_packages! : SpecSuite.Options => Try(List(Str), _)
-	platform_packages! = |o| {
-		platform_source = Path.read_utf8!(Path.utf8("${o.root}/platform/main.roc"))?
-		package_source = Path.read_utf8!(Path.utf8("${o.root}/platform/main-fuzz.roc"))?
-		platform_dependencies = ApiSurface.dependencies(platform_source)?
-		package_dependencies = ApiSurface.dependencies(package_source)?
-		Ok(
-			["parser", "unicode", "cbor"].fold(
-				[],
-				|problems, name| {
-					platform_urls = platform_dependencies.keep_if(|dependency| dependency.name == name).map(|dependency| dependency.url)
-					package_urls = package_dependencies.keep_if(|dependency| dependency.name == name).map(|dependency| dependency.url)
-					if platform_urls.len() == 1 and platform_urls == package_urls {
-						problems
-					} else {
-						problems.append("platform roots must declare the same single ${name} dependency")
-					}
-				},
-			),
-		)
 	}
 
 	prepare_platform! : SpecSuite.Options => Try({}, _)
