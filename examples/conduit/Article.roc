@@ -34,7 +34,7 @@ Article := [].{
 		story: Engine.cell(Story.init("")),
 		comments: Engine.cell(Comments.init("")),
 		form: Engine.cell(CommentForm.init),
-	}.Engine.Cells.with_reset(|cells, reset| { cells, reset })
+	}.Engine.Cells.with_reset(|group_cells, reset| { cells: group_cells, reset })
 
 	## Whether a move from `from` to `url` stays on the same kind of page.
 	same_kind : Str, Str -> Bool

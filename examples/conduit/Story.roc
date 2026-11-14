@@ -32,11 +32,11 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 	Props(st) : { story : Cell(st, Story), session : Cell(st, Session), nav : Nav.Asked(st) }
 
 	init : Str -> Story
-	init = |slug| { slug, article: Fetch.no_load({}), refetch: 0, fav: Fetch.no_submit, fav_result: FavoriteIdle, del: Fetch.no_submit, del_result: DeleteIdle }
+	init = |article_slug| { slug: article_slug, article: Fetch.no_load({}), refetch: 0, fav: Fetch.no_submit, fav_result: FavoriteIdle, del: Fetch.no_submit, del_result: DeleteIdle }
 
 	## The same story model pointed at another article.
 	moved_to : Story, Str -> Story
-	moved_to = |s, slug| { ..s, slug }
+	moved_to = |s, article_slug| { ..s, slug: article_slug }
 
 	slug : Story -> Str
 	slug = |s| s.slug

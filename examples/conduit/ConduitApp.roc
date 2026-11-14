@@ -406,8 +406,8 @@ ConduitApp := [].{
 
 	page_items : Api.Remote(Api.FeedPage), Route.Feed -> List(PageItem)
 	page_items = |r, feed| match r {
-		Ready(page) => {
-			count = Api.page_count(page.articles_count)
+		Ready(feed_page) => {
+			count = Api.page_count(feed_page.articles_count)
 			if count <= 1 {
 				[]
 			} else {
@@ -436,9 +436,9 @@ ConduitApp := [].{
 	key_url = |key| {
 		loc = key.split_first("|").map_ok(
 			|split| {
-				page = U64.from_str(split.before) ?? 1
+				page_number = U64.from_str(split.before) ?? 1
 				tag = if (split.after.is_empty()) AllTags else Tagged(split.after)
-				Locations.feed_location({ page, tag, source: Global })
+				Locations.feed_location({ page: page_number, tag, source: Global })
 			},
 		)
 			?? Locations.home_location
@@ -608,9 +608,9 @@ ConduitApp := [].{
 		articles = current.map2(
 			stored,
 			|requested, loaded| match requested {
-				Ready(page) => page.articles
+				Ready(requested_page) => requested_page.articles
 				Loading => match loaded {
-					Ready(page) => page.articles
+					Ready(loaded_page) => loaded_page.articles
 					_ => []
 				}
 				Failed(_) => []
@@ -637,7 +637,7 @@ ConduitApp := [].{
 				Engine.when(
 					current.map(
 						|requested| match requested {
-							Ready(page) => page.articles.is_empty()
+							Ready(feed_page) => feed_page.articles.is_empty()
 							_ => False
 						},
 					),

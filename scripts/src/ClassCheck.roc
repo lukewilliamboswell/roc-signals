@@ -47,7 +47,7 @@ ClassCheck := [].{
 
 	## Keep each unresolved use, including its original source line.
 	missing : Dict(Str, {}), List(Use) -> List(Use)
-	missing = |known, uses| uses.keep_if(|use| known.get(use.name).is_err())
+	missing = |known, references| references.keep_if(|use| known.get(use.name).is_err())
 
 	## Class names are CSS identifiers in qualified-rule preludes. Grouping
 	## at-rules recurse into rules; declaration blocks never contribute names.
