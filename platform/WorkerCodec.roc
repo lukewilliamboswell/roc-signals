@@ -33,8 +33,9 @@ WorkerCodec := [].{
 	## the value being decoded at every item under `--opt=speed` and
 	## `--opt=size`: each append copies the whole output, quadratic in the
 	## payload. The same state behind a transparent body is updated in place.
-	## This is a compiler defect, listed in design.md's compiler limitations;
-	## each body goes back into its opaque type once the compiler is fixed.
+	## This is a compiler defect
+	## (https://github.com/roc-lang/roc/issues/13081); each body goes back
+	## into its opaque type once the compiler is fixed.
 	Enc :: EncBody
 
 	## The writer and the files met so far, behind `Enc`.
