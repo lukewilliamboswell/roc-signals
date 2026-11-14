@@ -602,7 +602,10 @@ reaches the view, and a total whose job is lost (see [Testing](#testing)).
 A task's input, output and error must be `Wire.Sendable`. Most types are,
 with no code from you: numbers, `Bool`, `Str`, lists, sets, dictionaries,
 records, tuples and tag unions of those, and `File`, which crosses as a
-handle.
+handle. On the current compiler a dictionary key must be a number, `Bool`,
+`Str` or a tag union without payloads: a key that is a tuple, a record or a
+nominal type passes `roc check` but crashes the compiler when the app is
+built ([roc#12919](https://github.com/roc-lang/roc/issues/12919)).
 
 {{ sample(file="wire.roc", region="structural") }}
 
