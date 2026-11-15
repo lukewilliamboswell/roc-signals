@@ -67,7 +67,7 @@ Filed : { title : Str, docs : List(Engine.File), extra : Try(Engine.File, [Missi
 table_of : {} -> List(Engine.File)
 table_of = |_| [Core.held_file(Box.box(1)), Core.held_file(Box.box(2))]
 
-decode_filed : List(U8), List(Engine.File) -> Try(Filed, Wire.Error)
+decode_filed : List(U8), List(Engine.File) -> Try(Filed, WorkerCodec.Error)
 decode_filed = |input, table| WorkerCodec.decode_with_held(input, table)
 
 Canon : {
@@ -95,32 +95,32 @@ bytes_per_input_byte = 64
 fixed_bytes : U64
 fixed_bytes = 65536
 
-decode_rich : List(U8) -> Try(Rich, Wire.Error)
+decode_rich : List(U8) -> Try(Rich, WorkerCodec.Error)
 decode_rich = |bytes| WorkerCodec.decode(bytes)
 
-decode_canon : List(U8) -> Try(Canon, Wire.Error)
+decode_canon : List(U8) -> Try(Canon, WorkerCodec.Error)
 decode_canon = |bytes| WorkerCodec.decode(bytes)
 
-decode_strs : List(U8) -> Try(List(Str), Wire.Error)
+decode_strs : List(U8) -> Try(List(Str), WorkerCodec.Error)
 decode_strs = |bytes| WorkerCodec.decode(bytes)
 
-decode_words : List(U8) -> Try(Dict(Str, U8), Wire.Error)
+decode_words : List(U8) -> Try(Dict(Str, U8), WorkerCodec.Error)
 decode_words = |bytes| WorkerCodec.decode(bytes)
 
-decode_profiles : List(U8) -> Try(List(Profile), Wire.Error)
+decode_profiles : List(U8) -> Try(List(Profile), WorkerCodec.Error)
 decode_profiles = |bytes| WorkerCodec.decode(bytes)
 
-decode_kinds : List(U8) -> Try(List(Kind), Wire.Error)
+decode_kinds : List(U8) -> Try(List(Kind), WorkerCodec.Error)
 decode_kinds = |bytes| WorkerCodec.decode(bytes)
 
-decode_node : List(U8) -> Try(Node, Wire.Error)
+decode_node : List(U8) -> Try(Node, WorkerCodec.Error)
 decode_node = |bytes| WorkerCodec.decode(bytes)
 
-decode_colors : List(U8) -> Try(Dict([Red, Green, Blue], List(I16)), Wire.Error)
+decode_colors : List(U8) -> Try(Dict([Red, Green, Blue], List(I16)), WorkerCodec.Error)
 decode_colors = |bytes| WorkerCodec.decode(bytes)
 
 ## Preferred scalar forms still must not let numeric float-key aliases overwrite entries.
-decode_float_keys : List(U8) -> Try(Dict(F64, Str), Wire.Error)
+decode_float_keys : List(U8) -> Try(Dict(F64, Str), WorkerCodec.Error)
 decode_float_keys = |bytes| WorkerCodec.decode(bytes)
 
 ## Crash unless a decode's peak memory is within the bound for `input`.
@@ -136,7 +136,7 @@ check_bound! = |label, input, stats| {
 
 ## Decode `input` as the canonical type `a`, within the memory bound. An
 ## accepted input must be exactly the encoding of the value it decodes to.
-canonical! : Str, List(U8), (List(U8) -> Try(a, Wire.Error)) => {} where [a.Wire.Sendable]
+canonical! : Str, List(U8), (List(U8) -> Try(a, WorkerCodec.Error)) => {} where [a.Wire.Sendable]
 canonical! = |label, input, decode| {
 	measured = Fuzz.measure!(label, || decode(input))
 	check_bound!(label, input, measured.stats)

@@ -669,15 +669,15 @@ NaN payloads become one canonical NaN. A dictionary with `F32` or `F64` keys
 cannot hold both `0.0` and `-0.0`, which float equality makes one key, so a
 payload holding both is refused rather than read as one entry.
 
-Handwritten codecs keep their hook names. A list, tuple or tag's accumulator is
-now `Wire.Items`; its add callback supplies a `Wire.Enc` for the individual item.
-Record and dictionary accumulators are `Wire.Fields` and `Wire.Entries`.
-A handwritten parser that opens a dictionary with `parse_dict_start` calls
-`parse_dict_after_key` after each key, as a derived one does.
-Codecs whose callback types are inferred need no source change. A handwritten
-annotation that used `Wire.Enc` for the outer container must use its accumulator
-type instead. These states are opaque: pass the supplied state through the
-format's hooks rather than constructing or opening its representation.
+A handwritten codec is generic over its format and names only the hooks it
+calls: an `encoder_for` of type `format -> (T, enc -> Try(enc, []))` whose
+`where` clause lists, say, `format.encode_list` and `format.encode_str`, and
+which calls them through a local alias of `format`. It never names the
+platform's format or its states, which are not public: pass each supplied
+state through the hooks, as a derived codec does. A list, tuple or tag's
+accumulator is distinct from the writer its add callback supplies for each
+item. A handwritten parser that opens a dictionary with `parse_dict_start`
+calls `parse_dict_after_key` after each key, as a derived one does.
 
 The former `Wire.encode`, `Wire.try_encode` and `Wire.decode` helpers leave the
 public API in this release. An app needing CBOR bytes of its own should depend

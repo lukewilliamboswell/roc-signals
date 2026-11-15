@@ -3,36 +3,18 @@ import Core
 import Engine
 
 ## The derived payload types an app uses in worker task signatures.
-## A task's types derive their codecs over [Format]; the platform carries the
-## resulting CBOR item and the files it owns between instances of one module.
+## A task's types derive their codecs over the platform's payload format;
+## the platform carries the resulting CBOR item and the files it owns
+## between instances of one module.
 Wire := [].{
 
-	## The opaque format supplied to a derived or handwritten codec.
-	Format : WorkerCodec.Format
-
-	## One item's opaque writer state, passed through codec callbacks.
-	Enc : WorkerCodec.Enc
-
-	## A container accumulator, distinct from the writer of each of its items.
-	Items : WorkerCodec.Items
-
-	## The accumulator of an open record's fields.
-	Fields : WorkerCodec.Fields
-
-	## The accumulator of an open dictionary's entries.
-	Entries : WorkerCodec.Entries
-
-	## One checked payload's opaque cursor, passed through parser callbacks.
-	State : WorkerCodec.State
-
-	## A malformed item's position or a missing required field name.
-	Error : WorkerCodec.Error
-
-	# Derivation through format aliases fails on the pinned compiler. Only
-	# this constraint names backing types; public aliases remain app-nameable.
-	# https://github.com/roc-lang/roc/issues/13022
+	# The constraint names the unexposed format's types: derivation cannot
+	# resolve a format's hooks through a re-exported alias
+	# (https://github.com/roc-lang/roc/issues/13022), and an app needs no
+	# name for them. A handwritten codec is generic over its format and
+	# names only the hooks it calls.
 	## Types that can cross between instances, with derived or handwritten
-	## codecs over this format. Functions and absent codecs are compile errors.
+	## codecs. Functions and absent codecs are compile errors.
 	a.Sendable :
 		where [
 			a.encoder_for : WorkerCodec.Format -> (a, WorkerCodec.Enc -> Try(WorkerCodec.Enc, [])),
@@ -92,7 +74,7 @@ round_trips = |value|
 same_bytes : a -> Bool where [a.Wire.Sendable]
 same_bytes = |value| {
 	payload = WorkerCodec.encode(value)
-	decoded : Try(a, Wire.Error)
+	decoded : Try(a, WorkerCodec.Error)
 	decoded = WorkerCodec.decode(payload)
 	match decoded {
 		Ok(back) => WorkerCodec.encode(back) == payload
@@ -217,7 +199,7 @@ expect round_trips(Dec.lowest) and round_trips(Dec.highest) and round_trips(-1.5
 expect {
 	values = (F64.from_bits(0x8000000000000000), F64.infinity, -F64.infinity, F64.nan, F64.highest, F32.from_bits(0x80000000), F32.infinity, F32.nan)
 	payload = WorkerCodec.encode(values)
-	decoded : Try((F64, F64, F64, F64, F64, F32, F32, F32), Wire.Error)
+	decoded : Try((F64, F64, F64, F64, F64, F32, F32, F32), WorkerCodec.Error)
 	decoded = WorkerCodec.decode(payload)
 	match decoded {
 		Ok((a, b, c, d, e, f, g, h)) => {
@@ -299,7 +281,7 @@ expect round_trips(Tree.Node(Tree.Leaf, 3, Tree.Node(Tree.Leaf, 4, Tree.Leaf))) 
 ## `Bytes` round trips, and is laid out exactly as the `List(U8)` it wraps.
 expect {
 	bytes = Wire.Bytes.from_list([0, 1, 255])
-	decoded : Try(List(U8), Wire.Error)
+	decoded : Try(List(U8), WorkerCodec.Error)
 	decoded = WorkerCodec.decode(WorkerCodec.encode(bytes))
 	round_trips(bytes) and WorkerCodec.encode(bytes) == WorkerCodec.encode([0.U8, 1, 255]) and decoded == Ok([0, 1, 255])
 }
@@ -314,11 +296,11 @@ expect {
 	no_bytes : List(U8)
 	no_bytes = []
 	empty_list = WorkerCodec.encode(no_bytes)
-	as_list : Try(List(U8), Wire.Error)
+	as_list : Try(List(U8), WorkerCodec.Error)
 	as_list = WorkerCodec.decode(empty_bytes)
-	as_bytes : Try(Wire.Bytes, Wire.Error)
+	as_bytes : Try(Wire.Bytes, WorkerCodec.Error)
 	as_bytes = WorkerCodec.decode(empty_list)
-	full : Try(Wire.Bytes, Wire.Error)
+	full : Try(Wire.Bytes, WorkerCodec.Error)
 	full = WorkerCodec.decode(WorkerCodec.encode([7.U8]))
 	empty_bytes == [0x40] and empty_list == [0x80] and as_list.is_err() and as_bytes.is_err() and full == Ok(Wire.Bytes.from_list([7]))
 }
@@ -372,7 +354,7 @@ expect {
 	value : Sample
 	value = { shapes: [Rect({ w: 1, h: 2 }), Path([(3, 4)])], text: "some text", index: Dict.from_list([("k", [1])]), who: { name: "n", age: 2 } }
 	accepted = |bytes| {
-		decoded : Try(Sample, Wire.Error)
+		decoded : Try(Sample, WorkerCodec.Error)
 		decoded = WorkerCodec.decode(bytes)
 		decoded.is_ok()
 	}
@@ -381,14 +363,14 @@ expect {
 
 ## Input left after the value is refused.
 expect {
-	decoded : Try({ a : U8 }, Wire.Error)
+	decoded : Try({ a : U8 }, WorkerCodec.Error)
 	decoded = WorkerCodec.decode(WorkerCodec.encode({ a: 1.U8 }).append(0))
 	decoded == Err(InvalidCbor(4))
 }
 
 ## A tag name the type does not have is refused.
 expect {
-	decoded : Try([Small, Large(U8)], Wire.Error)
+	decoded : Try([Small, Large(U8)], WorkerCodec.Error)
 	decoded = WorkerCodec.decode([161, 100, 72, 117, 103, 101, 1])
 	decoded.is_err()
 }
@@ -396,29 +378,29 @@ expect {
 ## A count larger than the rest of the input is refused before anything is
 ## allocated for it, however large it claims to be.
 expect {
-	text : Try(Str, Wire.Error)
+	text : Try(Str, WorkerCodec.Error)
 	text = WorkerCodec.decode([0x65, 97])
-	huge : Try(List(U64), Wire.Error)
+	huge : Try(List(U64), WorkerCodec.Error)
 	huge = WorkerCodec.decode([0x9b, 255, 255, 255, 255, 255, 255, 255, 255])
-	units : Try(List({}), Wire.Error)
+	units : Try(List({}), WorkerCodec.Error)
 	units = WorkerCodec.decode([0x83, 0xa0, 0xa0])
 	text.is_err() and huge.is_err() and units.is_err()
 }
 
 ## Invalid UTF-8 in a string is refused.
 expect {
-	decoded : Try(Str, Wire.Error)
+	decoded : Try(Str, WorkerCodec.Error)
 	decoded = WorkerCodec.decode([0x62, 195, 40])
 	decoded.is_err()
 }
 
 ## Invalid scalar forms, padded CBOR heads and impossible container counts are refused.
 expect {
-	flag : Try(Bool, Wire.Error)
+	flag : Try(Bool, WorkerCodec.Error)
 	flag = WorkerCodec.decode([2])
-	padded : Try(Str, Wire.Error)
+	padded : Try(Str, WorkerCodec.Error)
 	padded = WorkerCodec.decode([0x78, 0x00])
-	overflow : Try(List(U8), Wire.Error)
+	overflow : Try(List(U8), WorkerCodec.Error)
 	overflow = WorkerCodec.decode([255, 255, 255, 255, 255, 255, 255, 255, 255, 2])
 	flag.is_err() and padded.is_err() and overflow.is_err()
 }
@@ -426,22 +408,22 @@ expect {
 ## A record count above the type's field count, a named field out of order,
 ## a named field the type lacks, and a missing required field are refused.
 expect {
-	wide : Try({ a : U8, b : U8 }, Wire.Error)
+	wide : Try({ a : U8, b : U8 }, WorkerCodec.Error)
 	wide = WorkerCodec.decode([0xa3, 0x61, 97, 1, 0x61, 98, 2, 0x61, 99, 3])
-	unordered : Try(Profile, Wire.Error)
+	unordered : Try(Profile, WorkerCodec.Error)
 	unordered = WorkerCodec.decode([0xa2, 0x64, 110, 97, 109, 101, 0x61, 110, 0x63, 97, 103, 101, 9])
-	unknown : Try(Profile, Wire.Error)
+	unknown : Try(Profile, WorkerCodec.Error)
 	unknown = WorkerCodec.decode([0xa1, 0x63, 122, 122, 122, 9])
-	missing : Try(Profile, Wire.Error)
+	missing : Try(Profile, WorkerCodec.Error)
 	missing = WorkerCodec.decode([0xa1, 0x63, 97, 103, 101, 9])
 	wide.is_err() and unordered.is_err() and unknown.is_err() and missing == Err(MissingRequiredField("name"))
 }
 
 ## Dictionary keys out of order, or repeated, are refused.
 expect {
-	unordered : Try(Dict(Str, U8), Wire.Error)
+	unordered : Try(Dict(Str, U8), WorkerCodec.Error)
 	unordered = WorkerCodec.decode([0xa2, 0x61, 98, 2, 0x61, 97, 1])
-	repeated : Try(Dict(Str, U8), Wire.Error)
+	repeated : Try(Dict(Str, U8), WorkerCodec.Error)
 	repeated = WorkerCodec.decode([0xa2, 0x61, 97, 1, 0x61, 97, 2])
 	unordered.is_err() and repeated.is_err()
 }
@@ -480,10 +462,10 @@ expect {
 		Err(_) => crash "a range outside its file"
 	}
 	deepest = down(128)
-	back : Try(Deep, Wire.Error)
+	back : Try(Deep, WorkerCodec.Error)
 	back = WorkerCodec.decode(WorkerCodec.encode(deepest))
 	filed_at = held(filed(126, file))
-	filed_back : Try(Filed, Wire.Error)
+	filed_back : Try(Filed, WorkerCodec.Error)
 	filed_back = WorkerCodec.decode_with_held(filed_at.bytes, filed_at.files)
 	actual =
 		\\deepest: ${Str.inspect([back == Ok(deepest), WorkerCodec.try_encode(down(129)) == Err(TooDeep)])}
@@ -506,9 +488,9 @@ expect {
 		}
 		$out.concat(children).append(0x80)
 	}
-	at : Try(Nested, Wire.Error)
+	at : Try(Nested, WorkerCodec.Error)
 	at = WorkerCodec.decode(bytes(129))
-	past : Try(Nested, Wire.Error)
+	past : Try(Nested, WorkerCodec.Error)
 	past = WorkerCodec.decode(bytes(130))
 	at == Ok(nest(129)) and past.is_err()
 }
@@ -525,9 +507,9 @@ expect {
 	a = file(1, { name: "a.bin", mime: "", size: 10, start: 4, len: 3 })
 	b = file(2, { name: "b.txt", mime: "text/plain", size: 0, start: 0, len: 0 })
 	sent = held({ note: "x", docs: [a, b] })
-	back : Try({ note : Str, docs : List(Engine.File) }, Wire.Error)
+	back : Try({ note : Str, docs : List(Engine.File) }, WorkerCodec.Error)
 	back = WorkerCodec.decode_with_held(sent.bytes, sent.files)
-	missing : Try({ note : Str, docs : List(Engine.File) }, Wire.Error)
+	missing : Try({ note : Str, docs : List(Engine.File) }, WorkerCodec.Error)
 	missing = WorkerCodec.decode_with_held(sent.bytes, sent.files.take_first(1))
 	outside = Core.placed_file(Core.held_file(Box.box(3)), { name: "c", mime: "", size: 4, start: 2, len: 3 })
 	back == Ok({ note: "x", docs: [a, b] }) and missing.is_err() and outside.is_err()
@@ -556,7 +538,7 @@ expect {
 		value : List({ doc : Engine.File, note : Try(Str, [Missing]) })
 		value = docs(count)
 		sent = held(value)
-		back : Try(List({ doc : Engine.File, note : Try(Str, [Missing]) }), Wire.Error)
+		back : Try(List({ doc : Engine.File, note : Try(Str, [Missing]) }), WorkerCodec.Error)
 		back = WorkerCodec.decode_with_held(sent.bytes, sent.files)
 		if (back == Ok(value)) sent.files else []
 	}
@@ -567,7 +549,7 @@ expect {
 
 ## A typed numeric dictionary must refuse physical zero keys that would otherwise overwrite one entry (https://github.com/roc-lang/roc/issues/13057).
 expect {
-	value : Try(Dict(F64, Str), Wire.Error)
+	value : Try(Dict(F64, Str), WorkerCodec.Error)
 	value = WorkerCodec.decode([0xa2, 0xf9, 0, 0, 0x61, 0x61, 0xf9, 0x80, 0, 0x61, 0x62])
 	value.is_err()
 }
@@ -575,11 +557,11 @@ expect {
 ## Both zero signs are refused as `F32` keys too, and a zero of one sign
 ## alone is accepted as either width.
 expect {
-	both : Try(Dict(F32, Str), Wire.Error)
+	both : Try(Dict(F32, Str), WorkerCodec.Error)
 	both = WorkerCodec.decode([0xa2, 0xf9, 0, 0, 0x61, 0x61, 0xf9, 0x80, 0, 0x61, 0x62])
-	negative : Try(Dict(F32, Str), Wire.Error)
+	negative : Try(Dict(F32, Str), WorkerCodec.Error)
 	negative = WorkerCodec.decode([0xa1, 0xf9, 0x80, 0, 0x61, 0x62])
-	positive : Try(Dict(F64, Str), Wire.Error)
+	positive : Try(Dict(F64, Str), WorkerCodec.Error)
 	positive = WorkerCodec.decode([0xa2, 0xf9, 0, 0, 0x61, 0x61, 0xf9, 0x3c, 0, 0x61, 0x62])
 	actual =
 		\\both: ${Str.inspect(both.is_ok())}
@@ -601,9 +583,9 @@ expect {
 	negative = F64.from_bits(0x8000000000000000)
 	siblings = [Dict.from_list([(positive, "a")]), Dict.from_list([(negative, "b")])]
 	nested = Dict.from_list([(positive, Dict.from_list([(negative, "x")])), (1.0, Dict.empty())])
-	around : Try(Dict(F64, Dict(F64, Str)), Wire.Error)
+	around : Try(Dict(F64, Dict(F64, Str)), WorkerCodec.Error)
 	around = WorkerCodec.decode([0xa2, 0xf9, 0, 0, 0xa1, 0xf9, 0x3c, 0, 0x61, 0x78, 0xf9, 0x80, 0, 0xa0])
-	tagged : Try(Dict(F64, [Pair(Dict(F64, Str))]), Wire.Error)
+	tagged : Try(Dict(F64, [Pair(Dict(F64, Str))]), WorkerCodec.Error)
 	tagged = WorkerCodec.decode([0xa2, 0xf9, 0, 0, 0xa1, 0x64, 0x50, 0x61, 0x69, 0x72, 0xa0, 0xf9, 0x80, 0, 0xa1, 0x64, 0x50, 0x61, 0x69, 0x72, 0xa0])
 	actual =
 		\\siblings: ${Str.inspect(same_bytes(siblings))}

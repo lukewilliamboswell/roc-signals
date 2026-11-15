@@ -74,12 +74,12 @@ Worker := [].{
 		is_eq : _
 
 		## Never called: there is no value to encode.
-		encoder_for : Wire.Format -> (Never, Wire.Enc -> Try(Wire.Enc, []))
+		encoder_for : WorkerCodec.Format -> (Never, WorkerCodec.Enc -> Try(WorkerCodec.Enc, []))
 		encoder_for = |_| |_, _| crash "internal: a Never value was encoded, and Never has no values"
 
 		## Any bytes are not a `Never`: there is no value to decode.
-		parser_for : Wire.Format -> (Wire.State -> Try({ value : Never, rest : Wire.State }, Wire.Error))
-		parser_for = |format| |state| Err(Wire.Format.invalid_value(format, state))
+		parser_for : WorkerCodec.Format -> (WorkerCodec.State -> Try({ value : Never, rest : WorkerCodec.State }, WorkerCodec.Error))
+		parser_for = |format| |state| Err(WorkerCodec.Format.invalid_value(format, state))
 	}
 
 	## What `task` is told about a task.
