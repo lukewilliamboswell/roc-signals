@@ -337,6 +337,14 @@ Targets := [].{
 	## stubs (tests/apps/tasks), the Reading List's own port handlers against
 	## real IndexedDB in two tabs, the Log Explorer over a 64 MiB log, the
 	## Million-Row Explorer at two million orders with its own feed, and
+	## The script root that exports the native keyboard oracle's bits. It
+	## imports the platform package, so `roc`, the package compiler, builds it
+	## like an app, and like an app it names no compiler: a `roc` header field
+	## that differs from the running compiler is a warning, which fails the
+	## build that `browser_contracts!` runs.
+	unicode_symbols_root : Str
+	unicode_symbols_root = "scripts/unicode_symbols.roc"
+
 	## Conduit's user journey against the RealWorld mock backend.
 	browser_contracts! : SpecSuite.Options, Str => Try(List(Str), _)
 	browser_contracts! = |o, conduit_wasm| {
@@ -351,7 +359,7 @@ Targets := [].{
 		unicode_runner = "${o.build_dir}/unicode-symbols"
 		unicode_bits = "${o.build_dir}/unicode-symbols.bin"
 		Path.create_all!(Path.utf8(o.build_dir))?
-		Proc.run!({ program: o.compiler, args: ["build", "--opt=dev", "scripts/unicode_symbols.roc", "--output=${unicode_runner}"], cwd: o.root })?
+		Proc.run!({ program: o.compiler, args: ["build", "--opt=dev", Targets.unicode_symbols_root, "--output=${unicode_runner}"], cwd: o.root })?
 		bits = Proc.capture!({ program: unicode_runner, args: [], cwd: o.root })?
 		Path.write_bytes!(Path.utf8(unicode_bits), bits)?
 		Ok(

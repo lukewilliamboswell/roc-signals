@@ -221,9 +221,9 @@ expect case_collisions(["platform/engine.roc", "a/b.roc", "platform/Engine.roc"]
 expect case_collisions(["a/B.roc", "a/c.roc", "A2/b.roc", "a/c.roc"]) == []
 
 ## Every script under `scripts/` names the tooling compiler Blueprint.roc pins,
-## and nothing else pins a compiler: no `.roc-version`, and no `roc` header
-## field in any Roc file outside `scripts/` (roc-automation's model; the
-## package compiler floats).
+## except the one root the package compiler builds, and nothing else pins a
+## compiler: no `.roc-version`, and no `roc` header field in any Roc file
+## outside `scripts/` (roc-automation's model; the package compiler floats).
 script_pins! : () => Try(List(Str), _)
 script_pins! = || {
 	blueprint = Path.read_utf8!(Path.utf8("Blueprint.roc"))?
@@ -234,14 +234,11 @@ script_pins! = || {
 	if tag == "" {
 		return Ok(["Blueprint.roc names no roc-stable nightly"])
 	}
-	scripts = SpecSuite.files_with!("scripts", ".roc")?
-	var $out = []
-	for s in scripts {
-		text = Path.read_utf8!(Path.utf8(s))?
-		if !text.contains("roc: \"${tag}\"") {
-			$out = $out.append("${s} does not pin roc: \"${tag}\"")
-		}
+	var $scripts = []
+	for path in SpecSuite.files_with!("scripts", ".roc")? {
+		$scripts = $scripts.append({ path, text: Path.read_utf8!(Path.utf8(path))? })
 	}
+	var $out = script_pin_problems(tag, $scripts)
 	if Path.exists!(Path.utf8(".roc-version"))? {
 		$out = $out.append(".roc-version pins a compiler; only scripts/ may")
 	}
@@ -254,6 +251,36 @@ script_pins! = || {
 		}
 	}
 	Ok($out)
+}
+
+## The scripts `roc-stable` runs pin its tag. The root `roc` builds
+## (`Targets.unicode_symbols_root`) names no compiler, as an app does: `roc`
+## floats, and a header pin that differs from it is a warning that fails
+## the build.
+script_pin_problems : Str, List({ path : Str, text : Str }) -> List(Str)
+script_pin_problems = |tag, scripts|
+	scripts.keep_oks(
+		|{ path, text }| {
+			header = text.split_on("\n").take_first(8)
+			if path == Targets.unicode_symbols_root {
+				if (header.any(|l| l.trim().starts_with("roc: \""))) Ok("${path} is built by the package compiler, so it must not pin a compiler") else Err(Fine)
+			} else if text.contains("roc: \"${tag}\"") {
+				Err(Fine)
+			} else {
+				Ok("${path} does not pin roc: \"${tag}\"")
+			}
+		},
+	)
+
+## A tooling script must pin the tag; the root the package compiler builds
+## must not pin any compiler.
+expect {
+	tag = "nightly-1"
+	pinned = { path: "scripts/a.roc", text: "app [main!] {\n\troc: \"nightly-1\",\n}\n" }
+	unpinned = { path: "scripts/b.roc", text: "app [main!] {\n}\n" }
+	oracle = { path: Targets.unicode_symbols_root, text: "app [main!] {\n\tpf: \"../platform/main-fuzz.roc\",\n}\n" }
+	pinned_oracle = { path: Targets.unicode_symbols_root, text: "app [main!] {\n\troc: \"nightly-1\",\n}\n" }
+	script_pin_problems(tag, [pinned, unpinned, oracle, pinned_oracle]) == ["scripts/b.roc does not pin roc: \"nightly-1\"", "scripts/unicode_symbols.roc is built by the package compiler, so it must not pin a compiler"]
 }
 
 ## The spec runner links for every other system it builds for: a worker

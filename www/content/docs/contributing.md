@@ -180,7 +180,8 @@ and a stage that cannot run at all aborts the task after printing the
 problems found before it.
 
 1. Every script names the `roc-stable` nightly that `Blueprint.roc` pins,
-   and no other Roc file names a compiler; no two source paths differ only
+   except `scripts/unicode_symbols.roc`, which `roc` builds and which names
+   no compiler, and no other Roc file names a compiler; no two source paths differ only
    in letter case, which a checkout on macOS or Windows would merge.
 2. `roc fmt --check` over every Roc source.
 3. Every file `www/data/examples.toml` names exists, and every example is in
@@ -791,7 +792,7 @@ The repository follows roc-automation's three-compiler model:
 | Compiler | Selected by | Used for |
 |---|---|---|
 | Blueprint's own | The `blueprint` release `Blueprint.roc` names | Evaluating `Blueprint.roc` |
-| `roc-stable` | The nightly tag in `Blueprint.roc` | Running and checking the scripts under `scripts/` |
+| `roc-stable` | The nightly tag in `Blueprint.roc` | Running and checking the scripts under `scripts/`, except the keyboard oracle's exporter `scripts/unicode_symbols.roc`, which imports the platform and is built by `roc` |
 | `roc`, the latest Roc nightly | Nothing: whatever `roc-lang/nightlies` published last | Checking, building and testing the platform, the examples, the tests and the docs samples |
 
 The platform floats on purpose: the question each pull request answers is
@@ -803,7 +804,7 @@ file outside `scripts/` names a compiler, and `check` fails if one does.
 To move `roc-stable`, in one pull request:
 
 1. Change the `Recipes.roc_nightly(...)` tag in `Blueprint.roc`.
-2. Change the `roc` field of every script under `scripts/` to the same tag;
+2. Change the `roc` field of every script under `scripts/` that has one to the same tag;
    `check` fails until they match.
 3. Run `blueprint update` and commit `Blueprint.lock`.
 4. Run `blueprint run check`.
