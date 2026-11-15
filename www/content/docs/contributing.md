@@ -206,7 +206,9 @@ problems found before it.
 8. `roc test` on the platform, the engine package (`platform/main-fuzz.roc`)
    and the tool (`cli/`); on the `main.roc` of every example and test app,
    which runs the `expect`s of every module the app imports (the tests of
-   its transitions), together with the key- and declaration-type fixtures
+   its transitions); on every registered fuzz target's root
+   (`Targets.fuzz_targets`), whose own `expect`s no build or replay of the
+   target runs; together with the key- and declaration-type fixtures
    that must fail to compile naming their rule; the check that
    `cli/Bundle.roc` is what the release generates for a checkout; and on
    every root under `scripts/`, except a root that imports the platform

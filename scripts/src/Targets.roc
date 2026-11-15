@@ -115,6 +115,19 @@ Targets := [].{
 		Ok(Targets.registry_problems(Targets.fuzz_targets, Targets.fuzz_skipped, $found))
 	}
 
+	## Run the top-level `expect`s of every registered fuzz target with
+	## `roc test`: a target's own pure tests (its model, its saved seeds
+	## against independent bytes) are no replay's business, since a build
+	## and replay of the target runs its examples, not its `expect`s. Each
+	## target is its own root, with the platform's dependency graph when it
+	## imports the engine package, so the compiler runs them `compiler_jobs`
+	## at a time.
+	fuzz_expects! : SpecSuite.Options => Try(List(Str), _)
+	fuzz_expects! = |o| {
+		results = Proc.parallel!(Targets.fuzz_targets.map(|t| { program: o.compiler, args: ["test", t.main], cwd: o.root }), Proc.compiler_jobs!()?)?
+		Ok(List.map2(Targets.fuzz_targets, results, |t, r| if (r.code == 0) [] else ["roc test ${t.main} failed (an expect of fuzz target ${t.name} does not hold): ${r.output.trim()}"]).join())
+	}
+
 	## Where a target's executable is built.
 	exe_of : SpecSuite.Options, Fuzz -> Str
 	exe_of = |o, { name, .. }| "${o.build_dir}/fuzz/${name}/target"

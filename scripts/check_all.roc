@@ -97,6 +97,7 @@ main! = |raw_args| {
 	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["test", "platform/main-fuzz.roc"], cwd: "." }, "roc test platform/main-fuzz.roc"))?
 	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["test", "cli/main.roc"], cwd: "." }, "roc test cli/main.roc"))?
 	$problems = Checks.gather!($problems, Checks.app_expects!(o))?
+	$problems = Checks.gather!($problems, Targets.fuzz_expects!(o))?
 	$problems = Checks.gather!($problems, ToolCheck.bundle_current!(o))?
 	$problems = Checks.gather!($problems, script_tests!(o))?
 
