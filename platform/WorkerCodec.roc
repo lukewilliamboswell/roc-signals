@@ -756,12 +756,35 @@ decode_payload = |bytes, files| {
 max_nesting : U64
 max_nesting = 128
 
-## The deepest CBOR structure an encode within `max_nesting` writes: a tag
-## with several payloads is two levels (its map and their array), and a
-## `Dec` fraction leaf two more (its tag and array). The reader refuses
-## anything deeper before any typed callback runs.
+## The deepest CBOR structure an encode within `max_nesting` writes, which
+## the reader refuses to exceed before any typed callback runs. The
+## reader's depth counts each array, map and tag (RFC 8949 major types 4, 5
+## and 6); text, byte strings, integers, floats and simple values add none.
+## Derived from what roc-cbor 0.6.3 writes:
+##
+## - Each counted level writes at most two: a tag with several payloads is
+##   a one-entry map and an array of its payloads. A tag with one payload is
+##   the map alone; a list, set, tuple, record, dictionary or file is one
+##   array or map. A tag with no payload is its name, text, and is not
+##   counted.
+## - Beneath the innermost counted level only leaves remain, which open no
+##   counted container: an integer of 64 bits, a float (a dictionary's float
+##   key too), text, a `Wire.Bytes` or a byte list add nothing; a `U128` or
+##   `I128` past 64 bits is a bignum, one tag (2 or 3) over a byte string; a
+##   `Dec` that is not a whole number within 64 bits is a decimal fraction,
+##   tag 4 and the array `[exponent, mantissa]`, whose mantissa past 64 bits
+##   is itself a bignum: three levels, the deepest leaf.
+##
+## So `max_nesting` levels write at most `2 * max_nesting + 3`, reached by
+## 128 nested two-payload tags whose last holds such a `Dec`.
 max_cbor_depth : U64
-max_cbor_depth = 2 * max_nesting + 2
+max_cbor_depth = 2 * max_nesting + deepest_leaf
+
+## The most CBOR levels one leaf beneath the innermost counted level
+## writes: a `Dec` fraction with a bignum mantissa (tag 4, its array, tag 2
+## or 3). See `max_cbor_depth`.
+deepest_leaf : U64
+deepest_leaf = 3
 
 ## A container met at the nesting bound: one placeholder item keeps the
 ## enclosing container's count whole, its contents are not visited, and the

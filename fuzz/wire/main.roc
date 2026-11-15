@@ -30,6 +30,10 @@ import pf.Wire
 ## is a table entry's handle with the name, type and range its payload
 ## gives, a range that lies within its size, and a decoded value re-encodes
 ## to a payload and file list that decode back to it.
+##
+## In the writer's direction, every input also describes a `Gen`, a value
+## nested on either side of the writer's bound with the deepest leaves: a
+## value the writer accepts is read back equal.
 Shape : [Dot, Circle(F64), Rect({ w : U32, h : U32 }), Path(List((I16, I16)))]
 
 Kind : [A, B(U16, Str), C({ x : I8 })]
@@ -57,6 +61,72 @@ Rich : {
 	blob : Wire.Bytes,
 	tree : Node,
 	note : Try(Str, [Missing]),
+}
+
+## A recursive type the writer's direction builds from an input: each
+## counted level is a tag with two payloads, one with one, a record or a
+## list, and the leaves are the deepest a level can hold.
+Gen := [Link(Gen, Dec), Wide(Gen, U128), One(Gen), Wrap({ inner : Gen }), Items(List(Gen)), End].{
+	parser_for : _
+	encoder_for : _
+	is_eq : _
+}
+
+## The leaves `Gen` holds: a `Dec` with a 64-bit and with a bignum
+## mantissa, and a `U128` within and past 64 bits.
+dec_leaves : List(Dec)
+dec_leaves = [0.5, 100000000000.000000001, -100000000000.000000001, 100.0 / 3.0, 7]
+
+u128_leaves : List(U128)
+u128_leaves = [1, 18446744073709551616, U128.highest]
+
+## The `Gen` an input describes: its first byte is the number of levels
+## (so both sides of the writer's bound are reached), and each later byte
+## chooses a level's shape and leaf, those bytes repeating as needed.
+gen_of : List(U8) -> Gen
+gen_of = |input| {
+	levels = input.first() ?? 0
+	rest = input.drop_first(1)
+	at = |i| if (rest.is_empty()) 0 else rest.get(i % rest.len()) ?? 0
+	var $value = Gen.End
+	for i in (0.U64).until(levels.to_u64()) {
+		choice = at(i)
+		$value = match choice % 5 {
+			0 => Gen.Link($value, dec_leaves.get((choice // 5).to_u64() % dec_leaves.len()) ?? 0)
+			1 => Gen.Wide($value, u128_leaves.get((choice // 5).to_u64() % u128_leaves.len()) ?? 0)
+			2 => Gen.One($value)
+			3 => Gen.Wrap({ inner: $value })
+			_ => Gen.Items([$value])
+		}
+	}
+	$value
+}
+
+## Why the `Gen` an input describes breaks the writer's promise, if it
+## does: a value the writer accepts is read back equal.
+written_problem : List(U8) -> Try({}, Str)
+written_problem = |input| {
+	value = gen_of(input)
+	match WorkerCodec.try_encode(value) {
+		Ok(bytes) => {
+			back : Try(Gen, WorkerCodec.Error)
+			back = WorkerCodec.decode(bytes)
+			match back {
+				Ok(again) if again == value => Ok({})
+				Ok(_) => Err("a written Gen is read back as another value")
+				Err(problem) => Err("a written Gen is refused by the reader: ${Str.inspect(problem)}")
+			}
+		}
+		Err(TooDeep) => Ok({})
+		Err(NanKeys) => Err("a Gen, which has no dictionary, holds two NaN keys")
+	}
+}
+
+## Crash when the `Gen` an input describes breaks the writer's promise.
+written! : List(U8) => {}
+written! = |input| match written_problem(input) {
+	Ok({}) => {}
+	Err(problem) => crash problem
 }
 
 ## A value holding files, as a worker task's input does.
@@ -224,6 +294,7 @@ test! = |input| {
 	canonical!("Node", input, decode_node)
 	canonical!("Dict(color, List(I16))", input, decode_colors)
 	canonical!("Dict(F64, Str)", input, decode_float_keys)
+	written!(input)
 	Fuzz.keep
 }
 
@@ -291,6 +362,11 @@ target = Fuzz.target_with!({
 		Fuzz.saved({ name: "filed", revision: "2", bytes: Saved.filed }),
 		Fuzz.saved({ name: "canon-money-float", revision: "1", bytes: Saved.canon_money_float }),
 		Fuzz.saved({ name: "float-key-zero-alias", revision: "1", bytes: [0xa2, 0xf9, 0, 0, 0x61, 0x61, 0xf9, 0x80, 0, 0x61, 0x62] }),
+		# 128 two-payload tags, the last holding a `Dec` with a bignum
+		# mantissa: the deepest CBOR the writer writes.
+		Fuzz.saved({ name: "written-deepest-dec", revision: "1", bytes: [128, 5] }),
+		Fuzz.saved({ name: "written-deepest-u128", revision: "1", bytes: [128, 11] }),
+		Fuzz.saved({ name: "written-past-bound", revision: "1", bytes: [129, 5] }),
 	],
 	name: "wire",
 	generator: Fuzz.raw_bytes,
@@ -309,3 +385,9 @@ expect decode_canon(Saved.canon) == Ok(sample_canon) and WorkerCodec.encode(samp
 
 ## The six-item file metadata array agrees with the owned-handle encoder.
 expect sample_filed == Saved.filed
+
+## The deepest values the writer writes, with a `Dec` whose mantissa is a
+## bignum and a `U128` past 64 bits at the bound, are read back equal, and
+## one level past it is refused.
+expect [[128, 5], [128, 11], [129, 5], [127, 5]].all(|input| written_problem(input) == Ok({}))
+expect WorkerCodec.try_encode(gen_of([129, 5])) == Err(TooDeep)

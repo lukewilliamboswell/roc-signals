@@ -446,7 +446,11 @@ WorkerPreparation(init, state, error) :: {
 }
 
 ## A job's input, decoded with the files its worker's host minted handles
-## for, in the request's order, which carry the job's effects.
+## for, in the request's order, which carry the job's effects. The page
+## wrote it with the same compiled module, and the reader accepts every
+## value the writer writes (`WorkerCodec.max_cbor_depth`), so a refusal is
+## a platform bug, or a handwritten codec whose parser does not read what
+## its encoder writes: the app's contract error.
 held_input : Str, List(U8), List(Engine.File) -> input where [input.Wire.Sendable]
 held_input = |name, bytes, files| match WorkerCodec.decode_with_held(bytes, files) {
 	Ok(input) => input
@@ -484,7 +488,10 @@ Answer(output, error) : [Value(output), TaskError(error), TooDeep, NanKeys, TooM
 
 ## A job's answer as the page reads it, with the files the page now holds
 ## for it. The decode failures are platform bugs: both instances are one
-## compiled module, and the writer writes only what the reader accepts.
+## compiled module, and the reader accepts every value the writer writes
+## (`WorkerCodec.max_cbor_depth`). The one exception is a handwritten codec
+## whose parser does not read what its encoder writes, the app's contract
+## error.
 received : Str, List(U8), List(Engine.File) -> Answer(output, error) where [output.Wire.Sendable, error.Wire.Sendable]
 received = |name, bytes, files| {
 	body = bytes.drop_last(1)

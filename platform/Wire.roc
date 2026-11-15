@@ -129,6 +129,20 @@ Deep := [Down(Deep, Dec), Stop].{
 	is_eq : _
 }
 
+## A chain of tags with two payloads, each holding a `U128`.
+Wide := [Across(Wide, U128), Edge].{
+	parser_for : _
+	encoder_for : _
+	is_eq : _
+}
+
+## A chain of tags with two payloads, each holding a file.
+Paired := [Pair(Paired, Engine.File), Unpaired].{
+	parser_for : _
+	encoder_for : _
+	is_eq : _
+}
+
 ## A chain of one-payload tags holding a file at its end.
 Filed := [In(Filed), Doc(Engine.File)].{
 	parser_for : _
@@ -136,12 +150,32 @@ Filed := [In(Filed), Doc(Engine.File)].{
 	is_eq : _
 }
 
-## `levels` nested `Down`s, each holding a decimal fraction.
-down : U64 -> Deep
-down = |levels| {
+## `levels` nested `Down`s, each holding the decimal `leaf`.
+down : U64, Dec -> Deep
+down = |levels, leaf| {
 	var $value = Deep.Stop
 	for _ in (0.U64).until(levels) {
-		$value = Deep.Down($value, 0.5)
+		$value = Deep.Down($value, leaf)
+	}
+	$value
+}
+
+## `levels` nested `Across`es, each holding `leaf`.
+across : U64, U128 -> Wide
+across = |levels, leaf| {
+	var $value = Wide.Edge
+	for _ in (0.U64).until(levels) {
+		$value = Wide.Across($value, leaf)
+	}
+	$value
+}
+
+## `levels` nested `Pair`s, each holding `file`.
+paired : U64, Engine.File -> Paired
+paired = |levels, file| {
+	var $value = Paired.Unpaired
+	for _ in (0.U64).until(levels) {
+		$value = Paired.Pair($value, file)
 	}
 	$value
 }
@@ -454,31 +488,42 @@ expect {
 }
 
 ## The deepest CBOR a value within the bound writes is read: 128 tags with
-## two payloads are 256 levels of maps and arrays, and a `Dec` fraction in
-## the last is two more, the reader's backstop of 258. A file is a level of
-## its own, so it is accepted inside 126 levels and refused inside 127.
+## two payloads are 256 levels of maps and arrays, and the deepest leaf in
+## the last is three more (a `Dec` fraction whose mantissa is past 64 bits:
+## tag 4, its array and a bignum's tag), the reader's backstop of 259. A
+## `U128` past 64 bits is one level, a bignum's tag. A file is a level of
+## its own, so it is accepted inside 127 counted levels and refused inside
+## 128.
 expect {
 	file = match Core.placed_file(Core.held_file(Box.box(1)), { name: "a.bin", mime: "", size: 2, start: 0, len: 2 }) {
 		Ok(f) => f
 		Err(_) => crash "a range outside its file"
 	}
-	deepest = down(128)
-	back : Try(Deep, WorkerCodec.Error)
-	back = WorkerCodec.decode(WorkerCodec.encode(deepest))
+	# Past 64 bits with no trailing zero digit, so the mantissa is a bignum.
+	big_fraction = 100000000000.000000001
+	big_u128 = 340282366920938463463374607431768211455
 	filed_at = held(filed(126, file))
 	filed_back : Try(Filed, WorkerCodec.Error)
 	filed_back = WorkerCodec.decode_with_held(filed_at.bytes, filed_at.files)
+	paired_at = held(paired(127, file))
+	paired_back : Try(Paired, WorkerCodec.Error)
+	paired_back = WorkerCodec.decode_with_held(paired_at.bytes, paired_at.files)
 	actual =
-		\\deepest: ${Str.inspect([back == Ok(deepest), WorkerCodec.try_encode(down(129)) == Err(TooDeep)])}
+		\\deepest: ${Str.inspect([round_trips(down(128, 0.5)), round_trips(down(128, big_fraction)), round_trips(down(128, 100.0 / 3.0)), WorkerCodec.try_encode(down(129, big_fraction)) == Err(TooDeep)])}
+		\\wide: ${Str.inspect([round_trips(across(128, big_u128)), WorkerCodec.try_encode(across(129, big_u128)) == Err(TooDeep)])}
 		\\filed: ${Str.inspect([filed_back == Ok(filed(126, file)), filed_at.files.len() == 1, WorkerCodec.encode_with_files("wire unit", filed(127, file)) == Err(TooDeep)])}
+		\\paired: ${Str.inspect([paired_back == Ok(paired(127, file)), paired_at.files.len() == 127, WorkerCodec.encode_with_files("wire unit", paired(128, file)) == Err(TooDeep)])}
 	expected =
-		\\deepest: [True, True]
+		\\deepest: [True, True, True, True]
+		\\wide: [True, True]
 		\\filed: [True, True, True]
+		\\paired: [True, True, True]
 	actual == expected
 }
 
 ## The reader's backstop is physical: 129 levels of `Nested` are 258 maps
-## and arrays and are read, 130 are refused before any typed callback runs.
+## and arrays and are read, 130 are 260 and are refused before any typed
+## callback runs.
 ## So the reader accepts more than the writer writes, never less.
 expect {
 	children = [0xa1, 0x68].concat("children".to_utf8())
