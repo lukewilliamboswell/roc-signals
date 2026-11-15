@@ -17,6 +17,10 @@ import pf.Wire
 ##   length and the first and last byte of the answer.
 ## - "Inspect" calls `inspect` with the first chosen file; "Make" calls
 ##   `make`, whose JavaScript answers a new `File`, kept in the state.
+## - "Nest" calls `nest` with a chain of "Depth" one-payload tags, which its
+##   JavaScript answers with the chain's depth, and "Log nest" sends that
+##   chain on the command `nest-log`: past 512 levels neither is sent, the
+##   call answers `TooDeep` and the command is reported to the page.
 ## - "Undeclared" sends on a port the program does not declare, and "Wrong"
 ##   subscribes to the call port `get`: both are contract errors.
 PortsApp := [].{
@@ -31,6 +35,9 @@ PortsApp := [].{
 		makes : U64,
 		chosen : List(Engine.File),
 		made : List(Engine.File),
+		depth : Str,
+		nests : Press,
+		nest_logs : Press,
 		undeclared : U64,
 		wrong : U64,
 		log : List(Str),
@@ -42,7 +49,18 @@ PortsApp := [].{
 	Ctx : In(Root, S)
 
 	initial : S
-	initial = { sends: 0, gets: 0, panel: False, feed: False, size: "4", echoes: { n: 0, size: "" }, inspects: 0, makes: 0, chosen: [], made: [], undeclared: 0, wrong: 0, log: [] }
+	initial = { sends: 0, gets: 0, panel: False, feed: False, size: "4", echoes: { n: 0, size: "" }, inspects: 0, makes: 0, chosen: [], made: [], depth: "1", nests: { n: 0, size: "" }, nest_logs: { n: 0, size: "" }, undeclared: 0, wrong: 0, log: [] }
+
+	## A chain of one-payload tags: each link is one JSON object deep.
+	Nest := [Link(Nest), End].{
+		parser_for : _
+		encoder_for : _
+		is_eq : _
+	}
+
+	## A chain `levels` links deep.
+	nest : U64 -> Nest
+	nest = |levels| (0.U64).until(levels).fold(Nest.End, |inner, _| Nest.Link(inner))
 
 	## The module's named ports, declared once and registered together.
 	Ports : {
@@ -53,6 +71,8 @@ PortsApp := [].{
 		make : Port.Call(Str, Engine.File),
 		ticks : Port.Subscription({}, U64),
 		feed : Port.Subscription(Str, Str),
+		nest : Port.Call(Nest, U64),
+		nest_log : Port.Command(Nest),
 	}
 
 	## The same values serve requests and the derived program catalogue.
@@ -65,6 +85,8 @@ PortsApp := [].{
 		make: Port.call({ name: "test.roc-signals/make" }),
 		ticks: Port.subscription({ name: "test.roc-signals/ticks", delivery: Latest }),
 		feed: Port.subscription({ name: "test.roc-signals/feed", delivery: Every(4) }),
+		nest: Port.call({ name: "test.roc-signals/nest" }),
+		nest_log: Port.command({ name: "test.roc-signals/nest-log" }),
 	}
 
 	error : Port.Error -> Str
@@ -75,6 +97,7 @@ PortsApp := [].{
 		TooLarge => "too large"
 		Closed => "closed"
 		Undecodable(why) => "undecodable ${why}"
+		TooDeep => "too deep"
 	}
 
 	shown : Try(a, Port.Error), (a -> Str) -> Str
@@ -167,10 +190,19 @@ PortsApp := [].{
 					),
 				),
 				Html.button("Forget", [], st.update(|s| { ..s, made: [], chosen: [] })),
+				Html.text_input(Engine.const("Depth"), "text", v.map(|s| s.depth), [], st.set_value(|s, t| { ..s, depth: t })),
+				Html.button("Nest", [], st.update(|s| { ..s, nests: { n: s.nests.n + 1, size: s.depth } })),
+				Engine.watch_changes(
+					v.map(|s| s.nests),
+					|p| [PortsApp.ports.nest.ask(PortsApp.nest(U64.from_str(p.size) ?? 0))],
+					st.on_result(|s, _, r| PortsApp.log_line(s, "nest:${PortsApp.shown(r, |n| n.to_str())}")),
+				),
+				Html.button("Log nest", [], st.update(|s| { ..s, nest_logs: { n: s.nest_logs.n + 1, size: s.depth } })),
+				Engine.watch_changes(v.map(|s| s.nest_logs), |p| [Engine.command(PortsApp.ports.nest_log.send(PortsApp.nest(U64.from_str(p.size) ?? 0)))], Engine.ignore({})),
 				Html.button("Undeclared", [], st.update(|s| { ..s, undeclared: s.undeclared + 1 })),
-				Engine.watch_changes(v.map(|s| s.undeclared), |_| [Engine.command(PortCommand({ port: "test.roc-signals/undeclared", message: { json: "null", blobs: [], files: [] } }))], Engine.ignore({})),
+				Engine.watch_changes(v.map(|s| s.undeclared), |_| [Engine.command(PortCommand({ port: "test.roc-signals/undeclared", message: { json: "null", blobs: [], files: [] }, refusal: None }))], Engine.ignore({})),
 				Html.button("Wrong", [], st.update(|s| { ..s, wrong: s.wrong + 1 })),
-				Engine.watch_changes(v.map(|s| s.wrong), |_| [Engine.raw(PortSubscribe({ port: "test.roc-signals/get", message: { json: "{}", blobs: [], files: [] } }))], Engine.ignore({})),
+				Engine.watch_changes(v.map(|s| s.wrong), |_| [Engine.raw(PortSubscribe({ port: "test.roc-signals/get", message: { json: "{}", blobs: [], files: [] }, refusal: None }))], Engine.ignore({})),
 				Html.p_s(v.map(|s| Str.join_with(s.log, "|")), [Engine.test_id("log")]),
 			],
 		)

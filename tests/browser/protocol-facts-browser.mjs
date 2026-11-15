@@ -19,7 +19,7 @@ const cases = [
   ["unsupported property implementation refuses before init", changed(facts => facts.properties[0].name = "unknown")],
   ["unknown opcode name refuses before init", changed(facts => facts.ops.at(-1).name = "BOGUS"), 'unknown opcode name "BOGUS"'],
   ["a leading BOM cannot disguise an unknown opcode name", changed(facts => facts.ops[0].name = "\uFEFFINST")],
-  ["missing opcode name refuses before init", changed(facts => facts.ops.pop()), 'missing opcode name "COMMENT"'],
+  ["missing opcode name refuses before init", changed(facts => facts.ops.pop()), 'missing opcode name "UNSENT"'],
   ["unknown policy name refuses before init", changed(facts => facts.policies.at(-1).name = "BOGUS"), 'unknown policy name "BOGUS"'],
   ["missing policy name refuses before init", changed(facts => facts.policies.pop()), 'missing policy name "AHEAD"'],
   ["unknown namespace refuses before init", changed(facts => facts.namespaces.at(-1).name = "BOGUS"), 'unknown namespace name "BOGUS"'],
@@ -67,7 +67,7 @@ try {
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const section = (tag, body) => [tag, ...word(body.length), ...body];
     const prefix = [section(2, word(0)), section(5, word(0)), section(6, word(0)), section(10, [110, 1]), section(11, word(0))].flat();
-    const make = (declarations, version = 19) => {
+    const make = (declarations, version = 20) => {
       const memory = new WebAssembly.Memory({ initial: 2 }); let length = 0, initCalls = 0;
       const root = document.createElement("div"); document.body.append(root);
       const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => version,
@@ -86,9 +86,9 @@ try {
       check(name, refused && fixture.initCalls === 0); fixture.root.remove();
     };
     for (const [name, item, detail] of cases) reject(name, item, detail ?? null);
-    const oldModule = make(Uint8Array.from([...prefix, ...fixture]), 18);
+    const oldModule = make(Uint8Array.from([...prefix, ...fixture]), 19);
     let oldRefused = false;
-    try { oldModule.runtime.mount(); } catch (error) { oldRefused = error.message.includes("protocol 18 is not the protocol 19"); }
+    try { oldModule.runtime.mount(); } catch (error) { oldRefused = error.message.includes("protocol 19 is not the protocol 20"); }
     check("the previous transport version refuses before init", oldRefused && oldModule.initCalls === 0);
     oldModule.root.remove();
     const workerMismatch = await new Promise((resolve, reject) => {
@@ -96,11 +96,11 @@ try {
       const timer = setTimeout(() => { worker.terminate(); reject(new Error("worker version guard timed out")); }, 5000);
       worker.onmessage = event => { clearTimeout(timer); worker.terminate(); resolve(event.data); };
       worker.onerror = event => { clearTimeout(timer); worker.terminate(); reject(new Error(event.message)); };
-      worker.postMessage({ type: "init", module: null, version: 18 });
+      worker.postMessage({ type: "init", module: null, version: 19 });
       // Init intentionally has no failure reply until a job awaits its promise.
       worker.postMessage({ type: "job", mode: "work", payload: new ArrayBuffer(0) });
     });
-    check("the worker rejects the previous version before instantiation", workerMismatch.type === "fault" && workerMismatch.code === 0 && workerMismatch.message === "worker could not start: page runtime protocol 18 is not the protocol 19 this worker implements");
+    check("the worker rejects the previous version before instantiation", workerMismatch.type === "fault" && workerMismatch.code === 0 && workerMismatch.message === "worker could not start: page runtime protocol 19 is not the protocol 20 this worker implements");
     const metadataOnly = make(Uint8Array.from([...prefix, ...fixture]));
     const factories = new Map(["createElement", "createElementNS", "createTextNode", "createComment", "createDocumentFragment"].map(name => [name, document[name]]));
     const objectKinds = ["Blob", "File", "Worker", "MutationObserver", "ResizeObserver", "IntersectionObserver"];

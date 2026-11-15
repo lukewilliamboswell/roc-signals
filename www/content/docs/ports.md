@@ -186,8 +186,10 @@ What each handler can count on:
   for it is disposed, when a `watch_latest` site moves on, or when the app stops.
 - **Failures are values.** A call whose handler throws or rejects answers
   `Threw(message)`. A command handler's failure is reported to the console
-  and to the `onPortFault` mount option. Nothing a handler does stops the
-  app.
+  and to the `onPortFault` mount option, and so is a command the app could
+  not send because its value nests more than 512 deep (see
+  [Errors and bounds](#errors-and-bounds)); its handler is not called.
+  Nothing a handler does stops the app.
 
 `runtime.emitPort(name, value)` feeds a subscription port whose handler is
 `{ push: true }` from anywhere in the page, and returns how many live
@@ -246,9 +248,17 @@ of `Port.Error`:
 | `TooLarge` | The answer was larger than the page's `maxPortBytes` (default 4 MiB, at most 64 MiB), or carried more files than the app can hold |
 | `Closed` | The JavaScript ended the subscription |
 | `Undecodable(why)` | The answer is not of the type the port declares |
+| `TooDeep` | The value the app sent nests lists, sets, tuples, records, dictionaries and tags with a payload more than 512 deep; nothing was sent, and nothing counted against `max_inflight` |
 
-`Closed` and `Threw` end a subscription; after them no more messages come.
-Every other error reports one message, and the subscription goes on.
+`Closed`, `Threw` and `TooDeep` end a subscription; after them no more
+messages come (a subscription refused as `TooDeep` never started). Every
+other error reports one message, and the subscription goes on.
+
+A message nests at most 512 containers both ways: the app's value is
+refused before it is sent, and an answer from the JavaScript nested deeper
+is `Undecodable`. A command has no result to carry the refusal, so a
+command whose value is too deep is not sent and is reported to the console
+and `onPortFault` instead, as a command handler's failure is.
 
 A subscription declares how its messages wait:
 `Latest` keeps the newest waiting report and delivers at the next animation

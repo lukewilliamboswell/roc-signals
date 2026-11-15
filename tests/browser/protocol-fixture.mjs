@@ -26,7 +26,7 @@ export const protocolFixtureSectionOf = facts => {
 };
 const codes = (values, first = 1) => values.map((name, i) => ({ code: i + first, name }));
 export const protocolFixtureFacts = {
-  ops: codes(["INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD", "COMMENT"]),
+  ops: codes(["INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD", "COMMENT", "UNSENT"]),
   kinds: [
     ["TEXT", []], ["FILES", ["change", "drop", "paste"]], ["POINTER", ["pointerdown", "pointermove", "pointerup", "pointercancel"]],
     ["KEY", ["keydown", "keyup"]], ["OPEN_STATE", ["close", "toggle", "change"]], ["SCROLL", ["scroll"]], ["SIZE", ["size"]], ["SEEN", ["seen"]], ["PASTE", ["paste"]],
@@ -60,7 +60,7 @@ export async function installProtocolFixture(page) {
       const memory = new WebAssembly.Memory({ initial: 2 });
       let length = 0;
       const x = {
-        memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 19,
+        memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 20,
         boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
         cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
         init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },

@@ -5,7 +5,7 @@ Protocol := [].{
 
 	## A consumer's supported framing version, checked independently of Core.
 	version : U32
-	version = 19
+	version = 20
 
 	## One named byte value; the name carries no executable protocol behavior.
 	Code : { code : U8, name : Str }
@@ -51,6 +51,7 @@ Protocol := [].{
 		{ code: 24, name: "TRANSITION" },
 		{ code: 25, name: "GUARD" },
 		{ code: 26, name: "COMMENT" },
+		{ code: 27, name: "UNSENT" },
 	]
 
 	## Trace labels do not validate commands. A decoder rejects unknown bytes at

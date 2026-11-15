@@ -238,6 +238,7 @@ Explorer := [Shop].{
 				}
 			Err(Closed) => [Explorer.cells.flow.set(Paused)].concat(noted("The live feed closed."))
 			Err(Threw(why)) => [Explorer.cells.flow.set(Paused)].concat(noted("The live feed failed: ${why}"))
+			Err(TooDeep) => [Explorer.cells.flow.set(Paused)].concat(noted("The live feed could not start: its request was nested too deeply to send."))
 			Err(Undecodable(why)) => noted("A batch of live orders was not understood: ${why}")
 			Err(TooLarge) => noted("A batch of live orders was too large to take.")
 			Err(Refused) | Err(Timeout) => noted("The live feed could not start: too many requests at once.")

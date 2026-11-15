@@ -1092,10 +1092,14 @@ Engine := [].{
 		## `PortFailed` and, like `Http`, survives its site's disposal
 		## (`timeout_ms` 0 = none, capped at 10 minutes); `PortSubscribe`
 		## delivers any number of messages until its site is disposed or the
-		## JavaScript ends it.
-		PortCommand({ port : Str, message : PortMessage }),
-		PortCall({ port : Str, message : PortMessage, timeout_ms : U32 }),
-		PortSubscribe({ port : Str, message : PortMessage }),
+		## JavaScript ends it. `refusal: TooDeep` marks a message nested past
+		## the port format's bound, which is not sent: a command is reported
+		## to the page's console and `onPortFault`, and a call or a
+		## subscription is answered `PortRefused(TooDeep)` without being
+		## admitted. `Port` sets it; a raw request says `refusal: None`.
+		PortCommand({ port : Str, message : PortMessage, refusal : [None, TooDeep] }),
+		PortCall({ port : Str, message : PortMessage, timeout_ms : U32, refusal : [None, TooDeep] }),
+		PortSubscribe({ port : Str, message : PortMessage, refusal : [None, TooDeep] }),
 
 		## A command that saves a file's range as a download (`File.save`).
 		Save({ file : File, name : Str }),
@@ -1134,7 +1138,7 @@ Engine := [].{
 		StorageRemove(Str),
 		SessionStorageSet(Str, Str),
 		SessionStorageRemove(Str),
-		PortCommand({ port : Str, message : PortMessage }),
+		PortCommand({ port : Str, message : PortMessage, refusal : [None, TooDeep] }),
 		Save({ file : File, name : Str }),
 	]
 
@@ -1153,7 +1157,7 @@ Engine := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name and the files its `{"$file":N}` markers

@@ -977,6 +977,10 @@ SpecRunner := [].{
 				Digest(id, _, file) => { ..b, pending: b.pending.append({ id, url: "digest", body: "", kind: DigestRequest(file) }), issued: b.issued.append(id) }
 				FileUrl(id, file) => { ..b, pending: b.pending.append({ id, url: "url", body: "", kind: UrlRequest(file) }), issued: b.issued.append(id) }
 				PortSend(port, msg) => { ..b, port_log: b.port_log.append({ port, json: msg.json }) }
+				# A command that was not sent reaches no handler and no port log;
+				# the browser reports it to its console and `onPortFault`, which
+				# no step observes.
+				PortUnsent(_) => b
 				PortCall(id, port, msg, timeout_ms) => { ..b, pending: b.pending.append({ id, url: "port", body: "", kind: PortRequest({ port, json: msg.json, timeout_ms }) }), issued: b.issued.append(id) }
 				PortListen(id, port, msg) => { ..b, subs: b.subs.append({ id, sub: PortSub(port, msg.json) }), report_sources: if (b.latest_ports.contains(port)) b.report_sources.insert(id, {}) else b.report_sources }
 				Fetch(id, method, url, _, _, options) => { ..b, network: b.network.insert(id, { method, options }), report_sources: if (options.progress_ms > 0) b.report_sources.insert(id, {}) else b.report_sources, pending: b.pending.append({ id, url, body: "", kind: FetchRequest }), issued: b.issued.append(id) }

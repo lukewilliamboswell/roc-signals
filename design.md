@@ -2377,7 +2377,11 @@ are all of that kind.
   `StorageFailed({ store, key, reason })`, `PortAnswer(message)` and `PortFailed(Threw(text) |
   TooLarge | Closed)`. A subscription ends at its first `Threw` or `Closed`,
   which retires its id like a cancel; `TooLarge` reports one message and the
-  subscription goes on.
+  subscription goes on. `WorkRefused(TooDeep | NanKeys)` and
+  `PortRefused(TooDeep)` are engine-local and never on the wire: a request
+  whose payload the engine will not write is refused without being admitted
+  (it takes an id but no slot, and its result arrives as a follow-up, as
+  the in-flight bound's `Refused` does).
   Application failures are values; contract violations are diagnostics,
   never fabricated results. A worker’s diagnostic text and a job’s `dbg` text go to the page’s
   console, never into its result.
@@ -3783,7 +3787,11 @@ poisons the instance, and none leaves a call unanswered. A value given to a
 subscription's `emit` that cannot be read is the emitter's own error, thrown
 back to it, as one that is not JSON data is. A command has no result to carry a failure. An app
 that must know its message was handled declares a call, whose failure is a
-value.
+value. A message the app's value nests more than 512 containers deep is
+not sent: a call or a subscription is answered `TooDeep` without being
+admitted, and a command is written as `UNSENT` instead of `PORT`, which the
+runtime reports to the console and `onPortFault` as a command handler's
+failure, never poisoning.
 
 **Target:** the diagnostic names the construction path for every contract
 error (some messages lack it).
@@ -3807,6 +3815,7 @@ bound and a declared behaviour at the bound:
 | Worker catalogue | 64 names (a preparation's and its tasks' each count) | `contract` poison |
 | Port catalogue | 64 ports, names 1–128 bytes | `contract` poison |
 | A port answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | Typed `PortFailed(TooLarge)` |
+| Nesting of a port message | 512 containers (each list, set, tuple, record, dictionary and tag with a payload), both ways | The app's call or subscription: typed `TooDeep`, nothing sent or admitted; its command: not sent, reported to the console and `onPortFault`; an answer: typed `Undecodable` |
 | Replaceable `Latest` report or `Every` backlog per subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` replaces; `Every` refuses `emit`; reports pinned by occurrences count within ingress |
 | `Every` port messages in the ingress queue | 1 per subscription | The next waits for its turn |
 | Replaceable reports per source | 1 | A newer report replaces its payload in place |
@@ -5214,7 +5223,7 @@ Port.subscription : SubscriptionProps -> Subscription(arg, msg)   where [arg.Por
 Port.SubscriptionProps := { name : Str, delivery : Delivery }
 registrations : ports -> List(PortRegistration) # derive an annotated record, including nested records
 Command.name, Call.name, Subscription.name : ... -> Str
-Command.send : Command(output), output -> [PortCommand({ port : Str, message : PortMessage })]
+Command.send : Command(output), output -> [PortCommand({ port : Str, message : PortMessage, refusal : [None, TooDeep] })]
                                               # typed by its one tag, as File.save is
 Call.ask : Call(input, output), input -> Ask(output, Port.Error)
 Call.request : Call(input, output), input -> Request       # a PortCall
@@ -5222,7 +5231,7 @@ Call.result : Call(input, output), Result -> Try(output, Port.Error)
 Subscription.ask : Subscription(arg, msg), arg -> Ask(msg, Port.Error)
 Subscription.subscribe : Subscription(arg, msg), arg -> Request   # a PortSubscribe
 Subscription.message : Subscription(arg, msg), Result -> Try(msg, Port.Error)
-Port.Error : [Refused, Timeout, Threw(Str), TooLarge, Closed, Undecodable(Str)]
+Port.Error : [Refused, Timeout, Threw(Str), TooLarge, Closed, Undecodable(Str), TooDeep]
 Port.Delivery : [Latest, Every(U32)]
 Port.resource : Call(input, output), Signal(ctx, input),
     (Signal(In(ctx, Remote(output, Port.Error)), Remote(output, Port.Error)) -> Elem(...)) -> Elem(ctx)
@@ -5279,7 +5288,7 @@ a leading U+FEFF in names and values, including a worker's hosted arguments.
 Unknown closed-vocabulary names cannot become known names by dropping that
 character. Invalid UTF-8 is rejected at each strict protocol boundary.
 
-This appendix is protocol version **19**. The engine declares it
+This appendix is protocol version **20**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -5306,7 +5315,7 @@ roc-lang/roc#12953 workaround (see [Compiler Limitations](#compiler-limitations)
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (19) |
+| `roc_engine_version` | `() -> u32` | The protocol version (20) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Handle, List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -5657,13 +5666,14 @@ command batches and have no header.
 | 24 | `TRANSITION` | `n:u32 (type:str)*n` — last command of a marked batch; types deduplicated in first-issue order |
 | 25 | `GUARD` | `on:u8`, strictly `0` or `1`; performed with effects, at most once per turn |
 | 26 | `COMMENT` | `node parent before data:str` — an authored static comment |
+| 27 | `UNSENT` | `port:str reason:u8` — a port command not sent, in its place; `reason` is strictly `1`, a message nested past the port format's 512 containers. Performed with effects as `PORT` is: the runtime calls no handler and reports it to the console and `onPortFault` (`kind` `"command"`) |
 
 `before = 0` appends to `parent`'s explicitly selected child container;
 otherwise the node is inserted before
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
-the batch is applied and performed after it, as are 19 and 20 (a save's
+the batch is applied and performed after it, as are 19, 20 and 27 (a save's
 file is resolved when the batch is applied). For a marked batch starting a
-view transition, the first read instead performs 13–17, 19, 20 and 25 before
+view transition, the first read instead performs 13–17, 19, 20, 25 and 27 before
 DOM application; the second read applies DOM and then performs `REF` and
 queued shown-property work, each class in stream order. See
 [Applied in a view transition](#applied-in-a-view-transition) for the

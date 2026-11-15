@@ -145,7 +145,11 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // answers the request PortFailed(Threw); an answer larger than
 // options.maxPortBytes (default 4 MiB, at most 64 MiB) PortFailed
 // (TooLarge). A command handler's or an unsubscribe function's failure goes
-// to console.error and options.onPortFault. Nothing a handler does poisons
+// to console.error and options.onPortFault, as does a command the engine
+// did not send because its message nests more than 512 deep (opcode 27
+// UNSENT, performed in the command's place; its handler is not called).
+// A call or subscription refused for that reason never reaches the
+// runtime: the engine answers it TooDeep itself. Nothing a handler does poisons
 // the instance. Poisoning and unmounting abort every call's signal and
 // unsubscribe every subscription. In manual mode handlers are optional and
 // never called: calls wait for answerPort(), subscriptions for
@@ -156,7 +160,7 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // text is never interpreted as absence, including empty or false text.
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 19;
+export const PROTOCOL_VERSION = 20;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -1096,6 +1100,15 @@ const COMMAND_APPLIERS = {
     at = m.at;
     queueEffect(this, reader, { op: "port", port, msg: m.msg });
     return at;
+  },
+  UNSENT(reader) {
+    const { dv, u8 } = reader;
+    const at = reader.at;
+    const n = dv.getUint32(at, true);
+    const port = readStr(u8, at + 4, n);
+    if (u8[at + 4 + n] !== 1) throw new Error(`UNSENT reason ${u8[at + 4 + n]} is not 1`);
+    queueEffect(this, reader, { op: "unsent", port });
+    return at + 4 + n + 1;
   },
   TRANSITION(reader) {
     const { mode, len, flags, dv, u8, batch } = reader;
@@ -5140,6 +5153,9 @@ export class RocEngineRuntime {
       }
       case "port":
         this.performPortCommand(fx);
+        return;
+      case "unsent":
+        this.portFault(fx.port, "command", new Error("the message nests containers more than 512 deep, so it was not sent"));
         return;
       case "portcall":
         this.performPortCall(fx);

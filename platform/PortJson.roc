@@ -60,10 +60,12 @@ import Wire
 ##   marker stood, and turns a `File` or `Blob` in an answer back into a
 ##   marker and a file handle. A file's bytes never cross.
 ##
-## Encoding cannot fail. Decoding is total: input that does not follow the
-## grammar of RFC 8259 or does not fit the type is an `Err`, never a crash,
-## containers nest at most 512 deep, and nothing is allocated for input that
-## is not there. JavaScript is not trusted to be canonical: whitespace, key
+## Containers nest at most 512 deep both ways: encoding a value nested
+## deeper is refused with `TooDeep`, before anything is sent, and stops
+## descending at the bound, so it cannot exhaust the stack. Decoding is
+## total: input that does not follow the grammar of RFC 8259 or does not
+## fit the type is an `Err`, never a crash, and nothing is allocated for
+## input that is not there. JavaScript is not trusted to be canonical: whitespace, key
 ## order and the escapes it chooses do not matter.
 PortJson := [].{
 
@@ -99,17 +101,21 @@ PortJson := [].{
 			a.parser_for : Format -> (State -> Try({ value : a, rest : State }, Error)),
 		]
 
-	## Encode a value as a message. It cannot fail, and equal values encode to
-	## equal text, with two exceptions the compiler gives a format no way to
-	## close: a `Set` is written in its iteration order, and a dictionary's
-	## blobs are numbered in the order its entries were visited.
-	encode : a -> Message where [a.Sendable]
+	## Encode a value as a message, or refuse one whose containers (lists,
+	## sets, tuples, records, dictionaries and tags with a payload) nest
+	## more than 512 deep with `TooDeep`, the bound `decode` keeps, so every
+	## message `encode` makes decodes. Equal values encode to equal text,
+	## with two exceptions the compiler gives a format no way to close: a
+	## `Set` is written in its iteration order, and a dictionary's blobs are
+	## numbered in the order its entries were visited.
+	encode : a -> Try(Message, [TooDeep]) where [a.Sendable]
 	encode = |value| {
 		## The caller's type, named so its derived codec can be asked for.
 		Shape : a
 		encode_shape = Shape.encoder_for(Format.Default)
-		match encode_shape(value, Out.{ text: [], blobs: [], files: [] }) {
-			Ok(out) => { json: Str.from_utf8(out.text) ?? crash "internal: PortJson wrote text that is not UTF-8", blobs: out.blobs, files: out.files }
+		match encode_shape(value, Out.{ text: [], blobs: [], files: [], depth: 0, over: False }) {
+			Ok(out) if out.over => Err(TooDeep)
+			Ok(out) => Ok({ json: Str.from_utf8(out.text) ?? crash "internal: PortJson wrote text that is not UTF-8", blobs: out.blobs, files: out.files })
 		}
 	}
 
@@ -143,9 +149,11 @@ PortJson := [].{
 			Trailing(at) => "text after the value at byte ${at.to_str()}"
 		}
 
-	## The encoder's output: JSON text so far, and the blobs it has written.
-	## Applications never construct one.
-	Out := { text : List(U8), blobs : List(List(U8)), files : List(Engine.File) }
+	## The encoder's output: JSON text so far, the blobs and files it has
+	## written, how many containers enclose what it writes next, and whether
+	## a container was met at the nesting bound (`max_depth`), which makes
+	## the encode a refusal. Applications never construct one.
+	Out := { text : List(U8), blobs : List(List(U8)), files : List(Engine.File), depth : U64, over : Bool }
 
 	## The decoder's cursor: the text, the position, the message's blobs, how
 	## deep the open containers are, and whether a `null` is standing in for
@@ -328,12 +336,15 @@ PortJson := [].{
 			Ok({ value, rest: token.rest })
 		}
 
-		## An array.
+		## An array, or at the nesting bound a refusal (see `too_deep`).
 		encode_list : Out, U64, (Out, (Out, (Out -> Try(Out, err)) -> Try(Out, err)) -> Try(Out, err)) -> Try(Out, err)
 		encode_list = |out, _, write_items| {
-			opened = write(out, |t| t.append(open_square))
+			if out.depth >= max_depth {
+				return Ok(too_deep(out))
+			}
+			opened = write(inside(out), |t| t.append(open_square))
 			done = write_items(opened, |current, write_value| write_value(separate(current, open_square)))?
-			Ok(write(done, |t| t.append(close_square)))
+			Ok(write(outside(done, out.depth), |t| t.append(close_square)))
 		}
 
 		## Open an array. JSON arrays carry no count, so items are read one by
@@ -362,12 +373,15 @@ PortJson := [].{
 		## them (ascending byte order of their names).
 		encode_record : Out, U64, (Out, (Out, Str, (Out -> Try(Out, err)) -> Try(Out, err)) -> Try(Out, err)) -> Try(Out, err)
 		encode_record = |out, _, write_fields| {
-			opened = write(out, |t| t.append(open_curly))
+			if out.depth >= max_depth {
+				return Ok(too_deep(out))
+			}
+			opened = write(inside(out), |t| t.append(open_curly))
 			done = write_fields(
 				opened,
 				|current, name, write_value| write_value(write(separate(current, open_curly), |t| write_string(t, name).append(colon))),
 			)?
-			Ok(write(done, |t| t.append(close_curly)))
+			Ok(write(outside(done, out.depth), |t| t.append(close_curly)))
 		}
 
 		## Open an object, or take `null` as an object with no fields.
@@ -451,14 +465,19 @@ PortJson := [].{
 			if count == 0 {
 				return Ok(write(out, |t| write_string(t, name)))
 			}
-			if count == 1 {
-				opened = write(out, |t| write_string(t.append(open_curly), name).append(colon))
-				done = write_payloads(opened, |current, write_value| write_value(current))?
-				return Ok(write(done, |t| t.append(close_curly)))
+			if out.depth >= max_depth {
+				return Ok(too_deep(out))
 			}
-			opened = write(out, |t| write_string(t.append(open_curly), name).append(colon).append(open_square))
+			if count == 1 {
+				opened = write(inside(out), |t| write_string(t.append(open_curly), name).append(colon))
+				done = write_payloads(opened, |current, write_value| write_value(current))?
+				return Ok(write(outside(done, out.depth), |t| t.append(close_curly)))
+			}
+			# The payloads' array is inside the tag's object and counts no
+			# level of its own, as the decoder counts it.
+			opened = write(inside(out), |t| write_string(t.append(open_curly), name).append(colon).append(open_square))
 			done = write_payloads(opened, |current, write_value| write_value(separate(current, open_square)))?
-			Ok(write(done, |t| t.append(close_square).append(close_curly)))
+			Ok(write(outside(done, out.depth), |t| t.append(close_square).append(close_curly)))
 		}
 
 		## A tag in either form; `UnknownTag` when the type has no such tag.
@@ -503,13 +522,17 @@ PortJson := [].{
 		## An object of the entries, sorted by key so equal dictionaries agree.
 		encode_dict : Out, U64, (Entries, (Entries, (Out -> Try(Out, err)), (Out -> Try(Out, err)) -> Try(Entries, err)) -> Try(Entries, err)) -> Try(Out, err)
 		encode_dict = |out, count, write_entries| {
-			start = Entries.{ items: List.with_capacity(count), blobs: out.blobs, files: out.files }
+			if out.depth >= max_depth {
+				return Ok(too_deep(out))
+			}
+			within = out.depth + 1
+			start = Entries.{ items: List.with_capacity(count), blobs: out.blobs, files: out.files, over: out.over }
 			collected = write_entries(
 				start,
 				|current, write_key, write_value| {
-					key = write_key(Out.{ text: [], blobs: current.blobs, files: current.files })?
-					value = write_value(Out.{ text: [], blobs: key.blobs, files: key.files })?
-					Ok(Entries.{ items: current.items.append((key.text, value.text)), blobs: value.blobs, files: value.files })
+					key = write_key(Out.{ text: [], blobs: current.blobs, files: current.files, depth: within, over: current.over })?
+					value = write_value(Out.{ text: [], blobs: key.blobs, files: key.files, depth: within, over: key.over })?
+					Ok(Entries.{ items: current.items.append((key.text, value.text)), blobs: value.blobs, files: value.files, over: value.over })
 				},
 			)?
 			var $text = out.text.append(open_curly)
@@ -519,7 +542,7 @@ PortJson := [].{
 				}
 				$text = $text.concat(key).append(colon).concat(value)
 			}
-			Ok(Out.{ text: $text.append(close_curly), blobs: collected.blobs, files: collected.files })
+			Ok(Out.{ text: $text.append(close_curly), blobs: collected.blobs, files: collected.files, depth: out.depth, over: collected.over })
 		}
 
 		## Open a dictionary's object.
@@ -701,7 +724,7 @@ PortJson := [].{
 		encode_bytes = |_, bytes, out| {
 			index = out.blobs.len()
 			text = out.text.concat(Str.to_utf8("{\"$bytes\":${index.to_str()}}"))
-			Ok(Out.{ text, blobs: out.blobs.append(bytes), files: out.files })
+			Ok(Out.{ text, blobs: out.blobs.append(bytes), files: out.files, depth: out.depth, over: out.over })
 		}
 
 		## `Wire.Bytes`: the blob a marker names, shared, not copied.
@@ -728,7 +751,7 @@ PortJson := [].{
 		encode_file = |_, file, out| {
 			index = out.files.len()
 			text = out.text.concat(Str.to_utf8("{\"$file\":${index.to_str()}}"))
-			Ok(Out.{ text, blobs: out.blobs, files: out.files.append(file) })
+			Ok(Out.{ text, blobs: out.blobs, files: out.files.append(file), depth: out.depth, over: out.over })
 		}
 
 		## A file: the one a marker names.
@@ -750,13 +773,14 @@ PortJson := [].{
 		}
 	}
 
-	## A dictionary being encoded: each entry's key and value text, and the
-	## blobs written so far. Applications never construct one.
-	Entries := { items : List((List(U8), List(U8))), blobs : List(List(U8)), files : List(Engine.File) }
+	## A dictionary being encoded: each entry's key and value text, the
+	## blobs and files written so far, and whether a container in it was met
+	## at the nesting bound. Applications never construct one.
+	Entries := { items : List((List(U8), List(U8))), blobs : List(List(U8)), files : List(Engine.File), over : Bool }
 }
 
-## How deep containers may nest in a decoded message: the bound on the
-## decoder's recursion.
+## How deep containers may nest in a message: the bound on the decoder's
+## recursion, and on the encoder's, which refuses a value nested deeper.
 max_depth : U64
 max_depth = 512
 
@@ -1197,7 +1221,21 @@ skip_value = |state| {
 
 ## Apply `f` to the encoder's text.
 write : PortJson.Out, (List(U8) -> List(U8)) -> PortJson.Out
-write = |out, f| PortJson.Out.{ text: f(out.text), blobs: out.blobs, files: out.files }
+write = |out, f| PortJson.Out.{ text: f(out.text), blobs: out.blobs, files: out.files, depth: out.depth, over: out.over }
+
+## The encoder inside one more container.
+inside : PortJson.Out -> PortJson.Out
+inside = |out| PortJson.Out.{ text: out.text, blobs: out.blobs, files: out.files, depth: out.depth + 1, over: out.over }
+
+## The encoder back at the depth `depth` of the container it closes.
+outside : PortJson.Out, U64 -> PortJson.Out
+outside = |out, depth| PortJson.Out.{ text: out.text, blobs: out.blobs, files: out.files, depth, over: out.over }
+
+## A container met at the nesting bound: a `null` stands where it would
+## be, its contents are not visited, so encoding cannot run out of stack,
+## and the encode is marked to be refused, so the text is never sent.
+too_deep : PortJson.Out -> PortJson.Out
+too_deep = |out| PortJson.Out.{ text: out.text.concat(Str.to_utf8("null")), blobs: out.blobs, files: out.files, depth: out.depth, over: True }
 
 ## A comma, unless the container was just opened with `open`.
 separate : PortJson.Out, U8 -> PortJson.Out
@@ -1275,14 +1313,21 @@ compare_bytes = |left, right| {
 
 ## The JSON text a value encodes to.
 json_of : a -> Str where [a.PortJson.Sendable]
-json_of = |value| PortJson.encode(value).json
+json_of = |value| match PortJson.encode(value) {
+	Ok(message) => message.json
+	Err(TooDeep) => crash "internal: a PortJson test's value is nested past the bound; test it with encode"
+}
 
 ## Whether a value comes back from its own message unchanged.
 round_trips : a -> Bool where [a.PortJson.Sendable, a.is_eq : a, a -> Bool]
 round_trips = |value|
-	match PortJson.decode(PortJson.encode(value)) {
-		Ok(decoded) => decoded == value
-		Err(_) => False
+	match PortJson.encode(value) {
+		Ok(message) =>
+			match PortJson.decode(message) {
+				Ok(decoded) => decoded == value
+				Err(_) => False
+			}
+		Err(TooDeep) => False
 	}
 
 ## Decode text that carries no blobs.
@@ -1297,6 +1342,29 @@ Nested := { kids : List(Nested) }.{
 	parser_for : _
 	encoder_for : _
 	is_eq : _
+}
+
+## A chain of one-payload tags: each link is one container.
+Chain := [Link(Chain), End].{
+	parser_for : _
+	encoder_for : _
+	is_eq : _
+}
+
+## A chain `levels` links deep.
+chain : U64 -> Chain
+chain = |levels| (0.U64).until(levels).fold(Chain.End, |inner, _| Chain.Link(inner))
+
+## A record holding a list of itself, `records` records deep: two
+## containers each.
+nest : U64 -> Nested
+nest = |records| (1.U64).until(records).fold(Nested.{ kids: [] }, |inner, _| Nested.{ kids: [inner] })
+
+## A test value's message; a test that encodes past the bound uses `encode`.
+message_of : a -> PortJson.Message where [a.PortJson.Sendable]
+message_of = |value| match PortJson.encode(value) {
+	Ok(message) => message
+	Err(TooDeep) => crash "internal: a PortJson test's value is nested past the bound; test it with encode"
 }
 
 ## Narrow integers are numbers; 64- and 128-bit integers and `Dec` are
@@ -1479,7 +1547,7 @@ expect {
 ## Bytes travel beside the text as blobs, named by markers, and are shared on
 ## the way back, never turned into text.
 expect {
-	message = PortJson.encode({ name: "report.docx", contents: Wire.Bytes.from_list([0, 255, 128]), thumb: Wire.Bytes.from_list([]) })
+	message = message_of({ name: "report.docx", contents: Wire.Bytes.from_list([0, 255, 128]), thumb: Wire.Bytes.from_list([]) })
 	decoded : Try({ name : Str, contents : Wire.Bytes, thumb : Wire.Bytes }, PortJson.Error)
 	decoded = PortJson.decode(message)
 	shape = message.json == "{\"contents\":{\"$bytes\":0},\"name\":\"report.docx\",\"thumb\":{\"$bytes\":1}}" and message.blobs == [[0, 255, 128], []]
@@ -1521,6 +1589,32 @@ expect {
 	deep == Err(TooDeep) and skipped == Err(TooDeep)
 }
 
+## Encoding keeps the decoder's bound of 512 containers: a chain of tags 512
+## deep, and records holding lists 512 containers deep, encode and decode
+## back; one container more is refused as `TooDeep` before anything is
+## written, and a value far deeper is refused the same way, because the
+## encoder stops descending at the bound.
+expect {
+	back : Try(Chain, PortJson.Error)
+	back = PortJson.decode(message_of(chain(512)))
+	nested_back : Try(Nested, PortJson.Error)
+	nested_back = PortJson.decode(message_of(nest(256)))
+	wrapped = PortJson.encode({ inner: chain(511) }).is_ok() and PortJson.encode({ inner: chain(512) }) == Err(TooDeep)
+	keyed = PortJson.encode(Dict.from_list([("k", chain(511))])).is_ok() and PortJson.encode(Dict.from_list([("k", chain(512))])) == Err(TooDeep)
+	paired = PortJson.encode(Pair(chain(511), 1.U8)).is_ok() and PortJson.encode(Pair(chain(512), 1.U8)) == Err(TooDeep)
+	actual =
+		\\chain: ${Str.inspect([back == Ok(chain(512)), PortJson.encode(chain(513)) == Err(TooDeep)])}
+		\\nested: ${Str.inspect([nested_back == Ok(nest(256)), PortJson.encode(nest(257)) == Err(TooDeep)])}
+		\\wrapped: ${Str.inspect([wrapped, keyed, paired])}
+		\\far: ${Str.inspect(PortJson.encode(chain(20000)) == Err(TooDeep))}
+	expected =
+		\\chain: [True, True]
+		\\nested: [True, True]
+		\\wrapped: [True, True, True]
+		\\far: True
+	actual == expected
+}
+
 ## Every strict prefix of a message is refused.
 expect {
 	text = json_of({ shapes: [Rect({ w: 1, h: 2 })], words: ["a\"b"], n: 7.U64 })
@@ -1546,7 +1640,7 @@ expect {
 		Ok(f) => f
 		Err(_) => crash "a range outside its file"
 	}
-	message = PortJson.encode({ doc: file, name: "a" })
+	message = message_of({ doc: file, name: "a" })
 	back : Try({ doc : Engine.File, name : Str }, PortJson.Error)
 	back = PortJson.decode(message)
 	missing : Try({ doc : Engine.File }, PortJson.Error)

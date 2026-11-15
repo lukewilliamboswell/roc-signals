@@ -28,7 +28,10 @@ import PortRegistry
 ## `Engine.File` as the browser's own `File`, carried beside the text rather
 ## than encoded in it. Anything a port's JavaScript answers is checked
 ## against the type the app expects; an answer that does not fit is the
-## typed `Undecodable` error, never a crash.
+## typed `Undecodable` error, never a crash. A value whose containers nest
+## more than 512 deep is not sent: a call or a subscription answers
+## `TooDeep`, and a command is reported to the page's console and its
+## `onPortFault`.
 ##
 ## Everything goes through the effect channel. A call or a subscription is
 ## an awaited request: it counts against the in-flight bound, is answered
@@ -166,10 +169,15 @@ Port := [].{
 	## - `Closed`: the JavaScript ended the subscription.
 	## - `Undecodable(why)`: the answer is JSON data, but not of the type the
 	##   app declared; `why` names the port and the place.
+	## - `TooDeep`: the value sent nests containers (lists, sets, tuples,
+	##   records, dictionaries and tags with a payload) more than 512 deep,
+	##   the bound a message keeps both ways; nothing was sent, and nothing
+	##   counted against the in-flight bound.
 	##
-	## `Threw` and `Closed` end a subscription; every other error reports one
+	## `Threw`, `Closed` and `TooDeep` end a subscription (a subscription
+	## refused as `TooDeep` never started); every other error reports one
 	## message and the subscription goes on.
-	Error : [Refused, Timeout, Threw(Str), TooLarge, Closed, Undecodable(Str)]
+	Error : [Refused, Timeout, Threw(Str), TooLarge, Closed, Undecodable(Str), TooDeep]
 
 	## How a subscription's messages wait while the app is busy: `Latest`
 	## keeps only the newest undelivered one, for a value whose newest state
@@ -180,7 +188,7 @@ Port := [].{
 
 	## A port that sends an `output` to JavaScript and expects nothing back.
 	## Make one with `command`.
-	Command(output) :: { name : Str, encode : (output -> Engine.PortMessage) }.{
+	Command(output) :: { name : Str, encode : (output -> Try(Engine.PortMessage, [TooDeep])) }.{
 
 		## A command that sends `value`, for an effect site's plan or the
 		## plan of an `on_cleanup`: its type is the one tag it returns, so
@@ -188,9 +196,13 @@ Port := [].{
 		## `Engine.Command`s alike. The JavaScript's `command` handler
 		## receives it after the turn's DOM changes are applied. A failure
 		## there is reported to the console and the page's `onPortFault`;
-		## the app learns nothing of it.
-		send : Command(output), output -> [PortCommand({ port : Str, message : Engine.PortMessage })]
-		send = |p, value| PortCommand({ port: p.name, message: (p.encode)(value) })
+		## the app learns nothing of it. A value nested past the bound is not
+		## sent, and is reported the same way.
+		send : Command(output), output -> [PortCommand({ port : Str, message : Engine.PortMessage, refusal : [None, TooDeep] })]
+		send = |p, value| match (p.encode)(value) {
+			Ok(sent) => PortCommand({ port: p.name, message: sent, refusal: None })
+			Err(TooDeep) => PortCommand({ port: p.name, message: unsent, refusal: TooDeep })
+		}
 
 		## The name its JavaScript handler and runtime monitor use.
 		name : Command(output) -> Str
@@ -204,7 +216,7 @@ Port := [].{
 
 	## A port that sends an `input` to JavaScript and awaits one `output`.
 	## Make one with `call`.
-	Call(input, output) :: { name : Str, timeout_ms : U32, encode : (input -> Engine.PortMessage), decode : (Engine.PortMessage -> Try(output, Str)) }.{
+	Call(input, output) :: { name : Str, timeout_ms : U32, encode : (input -> Try(Engine.PortMessage, [TooDeep])), decode : (Engine.PortMessage -> Try(output, Str)) }.{
 
 		## Ask the call and retain its declared result reader with this input.
 		ask : Call(input, output), input -> Engine.Ask(output, Error)
@@ -212,9 +224,14 @@ Port := [].{
 
 		## The raw request that calls JavaScript with `value`, for the asker
 		## protocol and pure tests. The value is encoded now; `ask` retains
-		## this request with its reader for a typed effect plan.
+		## this request with its reader for a typed effect plan. A value
+		## nested past the bound is not sent: the request is refused, and its
+		## result is `TooDeep`.
 		request : Call(input, output), input -> Engine.Request
-		request = |p, value| PortCall({ port: p.name, message: (p.encode)(value), timeout_ms: p.timeout_ms })
+		request = |p, value| match (p.encode)(value) {
+			Ok(sent) => PortCall({ port: p.name, message: sent, timeout_ms: p.timeout_ms, refusal: None })
+			Err(TooDeep) => PortCall({ port: p.name, message: unsent, timeout_ms: p.timeout_ms, refusal: TooDeep })
+		}
 
 		## Read a raw result through the call's declared protocol: JavaScript's
 		## answer as an `output`, or why there is none. A result
@@ -234,7 +251,7 @@ Port := [].{
 
 	## A port that sends an `arg` to JavaScript once and receives any number
 	## of `msg`s. Make one with `subscription`.
-	Subscription(arg, msg) :: { name : Str, delivery : Delivery, encode : (arg -> Engine.PortMessage), decode : (Engine.PortMessage -> Try(msg, Str)) }.{
+	Subscription(arg, msg) :: { name : Str, delivery : Delivery, encode : (arg -> Try(Engine.PortMessage, [TooDeep])), decode : (Engine.PortMessage -> Try(msg, Str)) }.{
 
 		## Subscribe with the reader of each message. A subscription deliberately
 		## has no request/result protocol for single-answer resource layers.
@@ -246,9 +263,14 @@ Port := [].{
 		## The JavaScript's `subscribe` handler receives `arg` and an `emit`
 		## function; each message it emits is a result turn for the site.
 		## Disposing the site, or a `watch_latest` site moving to a new value,
-		## calls the unsubscribe function the handler returned.
+		## calls the unsubscribe function the handler returned. An argument
+		## nested past the bound is not sent: the subscription is refused,
+		## and its one result is `TooDeep`.
 		subscribe : Subscription(arg, msg), arg -> Engine.Request
-		subscribe = |p, arg| PortSubscribe({ port: p.name, message: (p.encode)(arg) })
+		subscribe = |p, arg| match (p.encode)(arg) {
+			Ok(sent) => PortSubscribe({ port: p.name, message: sent, refusal: None })
+			Err(TooDeep) => PortSubscribe({ port: p.name, message: unsent, refusal: TooDeep })
+		}
 
 		## Read one raw subscription result, or why there is no message.
 		## After `Closed` or `Threw` no more messages come.
@@ -337,6 +359,10 @@ Port := [].{
 	resource_when = |port, input, body| Engine.resource(input, Core.follow_when(port), body)
 }
 
+## The empty message a refused request carries: it is never sent.
+unsent : Engine.PortMessage
+unsent = { json: "", blobs: [], files: [] }
+
 ## A port result as the app's type, or why there is none.
 answer_of : Str, (Engine.PortMessage -> Try(a, Str)), Engine.Result -> Try(a, Port.Error)
 answer_of = |name, decode, res| match res {
@@ -344,6 +370,7 @@ answer_of = |name, decode, res| match res {
 	PortFailed(Threw(text)) => Err(Threw(text))
 	PortFailed(TooLarge) => Err(TooLarge)
 	PortFailed(Closed) => Err(Closed)
+	PortRefused(TooDeep) => Err(TooDeep)
 	Timeout => Err(Timeout)
 	Refused => Err(Refused)
 	_ => crash "contract: port \"${name}\" was given a result that is not from a port request"
@@ -354,7 +381,7 @@ answer_of = |name, decode, res| match res {
 expect {
 	get = Port.call({ name: "test/get", timeout: Ms(1000) })
 	sent = match get.request({ id: "n1" }) {
-		PortCall({ port, message, timeout_ms }) => "${port} ${message.json} ${timeout_ms.to_str()}"
+		PortCall({ port, message, timeout_ms, .. }) => "${port} ${message.json} ${timeout_ms.to_str()}"
 		_ => "not a call"
 	}
 	good : Try({ title : Str }, Port.Error)
@@ -387,11 +414,11 @@ expect {
 	commands : List(Engine.Command)
 	commands = [note.send({ text: "b" }), Title("t")]
 	as_request = match requests {
-		[PortCommand({ port, message }), ..] => "${port} ${message.json}"
+		[PortCommand({ port, message, .. }), ..] => "${port} ${message.json}"
 		_ => "not a command"
 	}
 	as_command = match commands {
-		[PortCommand({ port, message }), ..] => "${port} ${message.json}"
+		[PortCommand({ port, message, .. }), ..] => "${port} ${message.json}"
 		_ => "not a command"
 	}
 	actual =
@@ -420,7 +447,7 @@ expect {
 	ticks : Port.Subscription({ every_ms : U32 }, U64)
 	ticks = Port.subscription({ name: "test/ticks", delivery: Every(8) })
 	sent = match ticks.subscribe({ every_ms: 50 }) {
-		PortSubscribe({ port, message }) => "${port} ${message.json}"
+		PortSubscribe({ port, message, .. }) => "${port} ${message.json}"
 		_ => "not a subscription"
 	}
 	actual =
@@ -477,4 +504,50 @@ expect {
 		empty: Err("contract: a program declares a port named \"\"; a port name is 1 to 128 bytes"),
 		bound: Err("contract: port \"test/events\" delivers Every(0); a subscription keeps 1 to 1024 undelivered messages"),
 	}
+}
+
+## A chain of one-payload tags, each one JSON object deep.
+Link := [Link(Link), End].{
+	parser_for : _
+	encoder_for : _
+	is_eq : _
+}
+
+## A value nested past the port format's bound of 512 is not sent: a call
+## and a subscription carry `refusal: TooDeep` and an empty message, and
+## read the engine's refusal as `TooDeep`; a command carries the same
+## refusal, which the engine reports instead of sending. At the bound each
+## is sent.
+expect {
+	links : U64 -> Link
+	links = |n| (0.U64).until(n).fold(Link.End, |inner, _| Link.Link(inner))
+	nest : Port.Call(Link, U64)
+	nest = Port.call({ name: "test/nest" })
+	feed : Port.Subscription(Link, U64)
+	feed = Port.subscription({ name: "test/feed", delivery: Latest })
+	note : Port.Command(Link)
+	note = Port.command({ name: "test/note" })
+	refusal = |req| match req {
+		PortCall({ message, refusal: r, .. }) => (message.json, r)
+		PortSubscribe({ message, refusal: r, .. }) => (message.json, r)
+		_ => ("not a port request", None)
+	}
+	sent = |req| match req {
+		PortCall({ message, refusal: None, .. }) | PortSubscribe({ message, refusal: None, .. }) => message.json.count_utf8_bytes() > 0
+		_ => Bool.False
+	}
+	commanded = |cmd| match cmd {
+		PortCommand({ refusal: r, message, .. }) => (message.json == "", r)
+	}
+	actual =
+		\\call: ${Str.inspect((sent(nest.request(links(512))), refusal(nest.request(links(513)))))}
+		\\subscribe: ${Str.inspect((sent(feed.subscribe(links(512))), refusal(feed.subscribe(links(513)))))}
+		\\command: ${Str.inspect((commanded(note.send(links(512))), commanded(note.send(links(513)))))}
+		\\read: ${Str.inspect((nest.result(PortRefused(TooDeep)), feed.message(PortRefused(TooDeep))))}
+	expected =
+		\\call: (True, ("", TooDeep))
+		\\subscribe: (True, ("", TooDeep))
+		\\command: ((False, None), (True, TooDeep))
+		\\read: (Err(TooDeep), Err(TooDeep))
+	actual == expected
 }

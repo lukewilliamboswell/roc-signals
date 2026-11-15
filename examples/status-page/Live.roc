@@ -83,7 +83,7 @@ Live :: {
 			Ok(window) => { ..live, window, received: live.received + 1, dropped: reading.dropped, retry: Live }
 			Err(_) => { ..live, rejected: live.rejected + 1 }
 		}
-		Err(Closed) | Err(Threw(_)) => lost(live)
+		Err(Closed) | Err(Threw(_)) | Err(TooDeep) => lost(live)
 		Err(Refused) => { ..live, retry: GaveUp, stopped: Refused }
 		Err(Undecodable(_)) | Err(TooLarge) | Err(Timeout) => { ..live, rejected: live.rejected + 1 }
 	}

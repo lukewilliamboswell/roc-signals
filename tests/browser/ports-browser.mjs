@@ -9,8 +9,10 @@
 // policies (`Latest` replaces, `Every(n)` refuses `emit` beyond n) and a
 // subscription's end from either side; the payload bound; bytes copied
 // once each way; files in both directions, with their handles released;
-// containment (nothing a handler does poisons the instance); and the
-// contract errors for an undeclared port and a port used as another shape.
+// containment (nothing a handler does poisons the instance); the nesting
+// bound (a value 512 deep reaches its handler, one 513 deep reaches none:
+// a call answers TooDeep and a command is reported); and the contract errors
+// for an undeclared port and a port used as another shape.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -52,7 +54,7 @@ const P = "test.roc-signals/";
 // (window.__mode) and a record of what they saw (window.__seen).
 function install() {
   const P = "test.roc-signals/";
-  window.__seen = { log: [], signals: [], unsubscribed: 0, faults: [], emits: [] };
+  window.__seen = { log: [], signals: [], unsubscribed: 0, faults: [], emits: [], nests: [], nestLogs: [] };
   window.__mode = { get: "sync", ticks: "none", feed: "none" };
   window.__pending = new Map();
   const seen = window.__seen;
@@ -88,6 +90,22 @@ function install() {
     },
     [`${P}inspect`]: { call: (file) => ({ name: file.name, size: BigInt(file.size), isFile: undefined }) },
     [`${P}make`]: { call: (text) => new File([text], `${text.replace(" ", "-")}.txt`, { type: "text/plain" }) },
+    // A chain of one-payload tags is `{"Link":...}` around `"End"`.
+    [`${P}nest`]: {
+      call: (chain) => {
+        let n = 0;
+        for (let v = chain; v !== "End"; v = v.Link) n += 1;
+        seen.nests.push(n);
+        return BigInt(n);
+      },
+    },
+    [`${P}nest-log`]: {
+      command: (chain) => {
+        let n = 0;
+        for (let v = chain; v !== "End"; v = v.Link) n += 1;
+        seen.nestLogs.push(n);
+      },
+    },
     [`${P}ticks`]: {
       subscribe: (_arg, { emit, close }) => {
         const m = window.__mode.ticks;
@@ -184,7 +202,7 @@ async function open(options = {}, mountWith = null) {
     `port "${P}get" is declared by the app as a call, but options.ports["${P}get"] is a command handler`,
     `options.ports["${P}log"] must have exactly one of command, call, subscribe (functions) or push: true`,
     "mounted",
-    "the app declares 7 ports (\"test.roc-sign",
+    "the app declares 9 ports (\"test.roc-sign",
   ]);
   await ctx.close();
 }
@@ -202,6 +220,43 @@ async function open(options = {}, mountWith = null) {
     log: ["hello 1", "hello 2", "hello 3"],
     faults: ["command:command handler threw", "command:command handler rejected"],
     poisoned: false,
+  });
+  await ctx.close();
+}
+
+// The nesting bound: a value 512 deep reaches its handler; one 513 deep
+// reaches none. The call answers TooDeep at once with nothing in flight,
+// and the command is reported to the console and onPortFault, never
+// poisoning.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async () => {
+    window.__fill("Depth", "512");
+    window.__click("Nest");
+    await window.__until((log) => log.includes("nest:"));
+    window.__click("Log nest");
+    await window.__turns();
+    window.__fill("Depth", "513");
+    window.__click("Nest");
+    const refused = await window.__until((log) => log.includes("nest:too deep"));
+    window.__click("Log nest");
+    await window.__turns();
+    return {
+      log: refused,
+      nests: window.__seen.nests,
+      nestLogs: window.__seen.nestLogs,
+      faults: window.__seen.faults.map((f) => `${f.port}:${f.kind}:${f.message}`),
+      poisoned: !!window.__rt.poisoned,
+      calls: window.__rt.monitor.snapshot().ports[`test.roc-signals/nest`].calls,
+    };
+  });
+  check("a value 512 deep is sent; one 513 deep is not: the call answers TooDeep and the command is reported", r, {
+    log: "nest:512|nest:too deep",
+    nests: [512],
+    nestLogs: [512],
+    faults: ["test.roc-signals/nest-log:command:the message nests containers more than 512 deep, so it was not sent"],
+    poisoned: false,
+    calls: 1,
   });
   await ctx.close();
 }

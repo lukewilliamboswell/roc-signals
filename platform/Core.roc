@@ -1552,10 +1552,13 @@ Core := [].{
 		## `PortCall` awaits one `PortAnswer` or `PortFailed` and, like `Http`,
 		## survives its site's disposal (`timeout_ms` 0 = none, capped at 10
 		## minutes); `PortSubscribe` delivers any number of messages until its
-		## site is disposed or the JavaScript ends it.
-		PortCommand({ port : Str, message : PortMessage }),
-		PortCall({ port : Str, message : PortMessage, timeout_ms : U32 }),
-		PortSubscribe({ port : Str, message : PortMessage }),
+		## site is disposed or the JavaScript ends it. A message nested past
+		## `PortJson`'s bound is not sent (`refusal: TooDeep`): a command is
+		## reported to the page (`UNSENT`), and a call or a subscription is
+		## refused without being admitted and answered `PortRefused(TooDeep)`.
+		PortCommand({ port : Str, message : PortMessage, refusal : [None, TooDeep] }),
+		PortCall({ port : Str, message : PortMessage, timeout_ms : U32, refusal : [None, TooDeep] }),
+		PortSubscribe({ port : Str, message : PortMessage, refusal : [None, TooDeep] }),
 
 		## A command that saves `file` (its range) as a download named `name`
 		## (`File.save`).
@@ -1593,7 +1596,7 @@ Core := [].{
 		StorageRemove(Str),
 		SessionStorageSet(Str, Str),
 		SessionStorageRemove(Str),
-		PortCommand({ port : Str, message : PortMessage }),
+		PortCommand({ port : Str, message : PortMessage, refusal : [None, TooDeep] }),
 		Save({ file : File, name : Str }),
 	]
 
@@ -1648,7 +1651,7 @@ Core := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
@@ -3153,7 +3156,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 19
+	protocol_version = 20
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -8068,6 +8071,7 @@ port_name = |req| match req {
 	Command(port, _) => port
 	Call(port, _, _) => port
 	Subscribe(port, _) => port
+	Unsent(port) => port
 }
 
 ## A port request names a declared port of its own shape, or it is the
@@ -8077,6 +8081,7 @@ check_port = |decls, { req, path, .. }| {
 	port = port_name(req)
 	kind = match req {
 		Command(_, _) => 1
+		Unsent(_) => 1
 		Call(_, _, _) => 2
 		Subscribe(_, _) => 3
 	}
@@ -8095,8 +8100,10 @@ check_port = |decls, { req, path, .. }| {
 ## [PortAt]), each at the
 ## place in the stream where it was issued, so the batch is exactly what
 ## writing it in place would have given: `PORT` (opcode 19) for a command,
-## `FX` kind 9 for a call and kind 10 for a subscription. A refused request
-## writes nothing. Commands are counted at work-record index 40, never by
+## `FX` kind 9 for a call and kind 10 for a subscription, and `UNSENT`
+## (opcode 27, reason 1) for a command whose message was nested past the
+## port format's bound. A refused request writes nothing. Commands are
+## counted at work-record index 40, never by
 ## opcode (index 19 is `set_value`).
 ##
 ## When every request was issued after the turn's last other command, the
@@ -8131,6 +8138,7 @@ write_ports = |tx, entries| {
 			}
 			Call(port, message, timeout_ms) => put_u32(put_port_message(put_str(put_u32($out.append(13), id).append(9), port), message), min_u32(timeout_ms, max_timeout_ms))
 			Subscribe(port, message) => put_port_message(put_str(put_u32($out.append(13), id).append(10), port), message)
+			Unsent(port) => put_str($out.append(27), port).append(1)
 		}
 	}
 	out = if (in_place) $out else $out.concat(cmds.sublist({ start: $from, len: cmds.len() - $from }))
@@ -8299,8 +8307,10 @@ TurnEnd : [CheckRef(Str), Focus(U8, Str), ScrollIntoView(Str, { block : Align, i
 PortAt : { req : PortRequest, path : List(U32), slot : [At(U64, U32), Refused] }
 
 ## A port request as it waits for the end of its turn: a command, a call
-## with its timeout, or a subscription, each with its port and message.
-PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe(Str, PortMessage)]
+## with its timeout, or a subscription, each with its port and message, or
+## a command whose message was nested past `PortJson`'s bound, which is not
+## sent but reported (`UNSENT`).
+PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe(Str, PortMessage), Unsent(Str)]
 
 TransitionBatch : { mounting : Bool, asked : Bool, types : List(Str), seen : Dict(Str, {}) }
 
@@ -8534,7 +8544,7 @@ is_sub = |req| match req {
 ## keep_current; a one-shot zero timer remains an ordinary legal request.
 expect {
 	message = { json: "null", blobs: [], files: [] }
-	kinds = [Interval(1), Popstate, OnlineChanges, VisibilityChanges, MediaChanges("(color)"), StorageChanges("key"), StorageWriteFailures, PortSubscribe({ port: "events", message })]
+	kinds = [Interval(1), Popstate, OnlineChanges, VisibilityChanges, MediaChanges("(color)"), StorageChanges("key"), StorageWriteFailures, PortSubscribe({ port: "events", message, refusal: None })]
 	kinds.all(is_sub) and !is_sub(Timer(0)) and !is_sub(Self)
 }
 
@@ -8689,7 +8699,8 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 ## the next turn as the in-flight bound's `Refused` is, counted with it. A
 ## worker job whose input is nested past the payload bound, or holds two
 ## NaN keys in one dictionary, is refused so (`WorkRefused(TooDeep)`,
-## `WorkRefused(NanKeys)`).
+## `WorkRefused(NanKeys)`), and so is a port call or subscription whose
+## message is nested past the port format's bound (`PortRefused(TooDeep)`).
 fx_refuse : Tx, List(U32), Result -> (U32, Tx)
 fx_refuse = |tx, path, res| {
 	id = tx.fx.next
@@ -8699,7 +8710,8 @@ fx_refuse = |tx, path, res| {
 ## Queue what the end of the turn settles for a request (see [TurnEnd]) as
 ## it is issued: a focus or scroll command on a named reference, or a port request
 ## with the place its bytes go (see [PortAt]), which is nowhere when the
-## in-flight bound is about to refuse it. Any other request needs nothing.
+## in-flight bound is about to refuse it or its message was nested past the
+## port format's bound. Any other request needs nothing.
 turn_end_later : Tx, List(U32), Request -> Tx
 turn_end_later = |tx, path, req| {
 	at = tx.cmds.len()
@@ -8712,9 +8724,12 @@ turn_end_later = |tx, path, req| {
 		FocusInPlace(n) => Focus(5, n)
 		ScrollIntoView(n, props) => ScrollIntoView(n, props)
 		ScrollTo(n, props) => ScrollTo(n, props)
-		PortCommand({ port, message }) => Port({ req: Command(port, message), path, slot: At(at, 0) })
-		PortCall({ port, message, timeout_ms }) => Port({ req: Call(port, message, timeout_ms), path, slot })
-		PortSubscribe({ port, message }) => Port({ req: Subscribe(port, message), path, slot })
+		PortCommand({ port, message, refusal: None }) => Port({ req: Command(port, message), path, slot: At(at, 0) })
+		PortCommand({ port, refusal: TooDeep, .. }) => Port({ req: Unsent(port), path, slot: At(at, 0) })
+		PortCall({ port, message, timeout_ms, refusal: None }) => Port({ req: Call(port, message, timeout_ms), path, slot })
+		PortCall({ port, message, timeout_ms, refusal: TooDeep }) => Port({ req: Call(port, message, timeout_ms), path, slot: Refused })
+		PortSubscribe({ port, message, refusal: None }) => Port({ req: Subscribe(port, message), path, slot })
+		PortSubscribe({ port, message, refusal: TooDeep }) => Port({ req: Subscribe(port, message), path, slot: Refused })
 		MediaChanges(query) => CheckMedia(query, path)
 		_ => Skip
 	}
@@ -8782,6 +8797,14 @@ issue_progress = |tx, path, reqs, owned, progress_ms| {
 				(id, t1) = fx_follow($tx, path, Now)
 				$tx = t1
 				$owned = $owned.append({ id, sub: False, keep: False, a, at })
+			}
+			PortCall({ refusal: TooDeep, .. }) | PortSubscribe({ refusal: TooDeep, .. }) => {
+				# A message nested past the port format's bound: its port is
+				# still checked at the end of the turn, and the request is
+				# refused without being admitted, as a too-deep worker input is.
+				(id, t1) = fx_refuse(turn_end_later($tx, path, req), path, PortRefused(TooDeep))
+				$tx = t1
+				$owned = $owned.append({ id, sub: is_sub(req), keep: is_kept(req), a, at })
 			}
 			Work({ task, on_dispose, refusal, .. }) => {
 				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckTask(task, path)) })
@@ -10203,7 +10226,7 @@ expect {
 expect {
 	msg = { json: "{\"a\":1}", blobs: [[7, 8]], files: [] }
 	ports = [Core.port_declaration("t/c", Command), Core.port_declaration("t/k", Call), Core.port_declaration("t/s", Subscription(Every(4)))]
-	elem = Core.watch(Core.const({}), |_| [PortCommand({ port: "t/c", message: msg }), PortCall({ port: "t/k", message: msg, timeout_ms: 700000 }), PortSubscribe({ port: "t/s", message: msg })].map(Core.raw), Core.ignore({}))
+	elem = Core.watch(Core.const({}), |_| [PortCommand({ port: "t/c", message: msg, refusal: None }), PortCall({ port: "t/k", message: msg, timeout_ms: 700000, refusal: None }), PortSubscribe({ port: "t/s", message: msg, refusal: None })].map(Core.raw), Core.ignore({}))
 	mounted = mount_in(32, { workers: [], ports: ports_of(ports), media: [] }, {}, elem)
 	(taken, cmds) = Core.take_cmds(mounted, [])
 	body = put_u32(put_u32(put_u32(put_str([], "{\"a\":1}"), 1), 2).concat([7, 8]), 0)
@@ -10219,9 +10242,9 @@ expect {
 	file = Core.placed_file(Core.held_file(Box.box(1)), { name: "log", mime: "", size: 10, start: 0, len: 10 }) ?? crash "command expect: the file lies within its size"
 	message = { json: "1", blobs: [], files: [] }
 	commands : List(Core.Command)
-	commands = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), ApplyValue("v"), FocusInPlace("f"), Core.scroll_into_view("s", {}), ScrollTo("s", { top: End, left: Px(7), behavior: Instant }), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message }), File.save(file, { name: Named("copy") })]
+	commands = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), ApplyValue("v"), FocusInPlace("f"), Core.scroll_into_view("s", {}), ScrollTo("s", { top: End, left: Px(7), behavior: Instant }), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message, refusal: None }), File.save(file, { name: Named("copy") })]
 	requests : List(Core.Request)
-	requests = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), ApplyValue("v"), FocusInPlace("f"), Core.scroll_into_view("s", {}), ScrollTo("s", { top: End, left: Px(7), behavior: Instant }), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message }), Save({ file, name: "copy" })]
+	requests = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), ApplyValue("v"), FocusInPlace("f"), Core.scroll_into_view("s", {}), ScrollTo("s", { top: End, left: Px(7), behavior: Instant }), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message, refusal: None }), Save({ file, name: "copy" })]
 	commands.map(command_request) == requests
 }
 
@@ -10261,13 +10284,13 @@ expect {
 				"div",
 				[],
 				[
-					Core.when(st.signal(), || Core.watch(Core.const({}), |_| [PortCall({ port: "t/k", message: msg, timeout_ms: 0 }), PortSubscribe({ port: "t/s", message: msg })].map(Core.raw), Core.ignore({})), || Core.text("")),
+					Core.when(st.signal(), || Core.watch(Core.const({}), |_| [PortCall({ port: "t/k", message: msg, timeout_ms: 0, refusal: None }), PortSubscribe({ port: "t/s", message: msg, refusal: None })].map(Core.raw), Core.ignore({})), || Core.text("")),
 					Core.watch(Core.const({}), |_| [Core.again({})], st.on_result(|_, _, _| Bool.False)),
 				],
 			),
 	)
 	disposed = Core.fx_stats(mount_in(32, { workers: [], ports: ports_of(ports), media: [] }, {}, elem))
-	open = mount_in(32, { workers: [], ports: ports_of(ports), media: [] }, {}, Core.watch(Core.const({}), |_| [PortSubscribe({ port: "t/s", message: msg })].map(Core.raw), Core.ignore({})))
+	open = mount_in(32, { workers: [], ports: ports_of(ports), media: [] }, {}, Core.watch(Core.const({}), |_| [PortSubscribe({ port: "t/s", message: msg, refusal: None })].map(Core.raw), Core.ignore({})))
 	id = Core.fx_live(open).first() ?? 0
 	kept = Core.fx_stats(Core.result(open, id, PortAnswer(msg)))
 	closed = Core.result(open, id, PortFailed(Closed))

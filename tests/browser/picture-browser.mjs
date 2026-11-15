@@ -21,7 +21,7 @@ const vector = entries => [...leb(entries.length), ...entries.flat()];
 const moduleBytes = (() => {
   const names = ["protocol_version", "boot_keys", "cmd_ptr", "cmd_len", "payload_reserve", "init", "files_released", "fault", "work_len", "metric", "drop", "dbg_ptr", "dbg_len"];
   const bodies = [
-    [0x41, 19],
+    [0x41, 20],
     [0x41, 0, 0x24, 0, 0x41, ...leb(declarations.length), 0x24, 1],
     [0x23, 0], [0x23, 1], [0x41, ...leb(65536)],
     [0x41, ...leb(16384), 0x24, 0, 0x41, 1, 0x24, 1],
@@ -63,7 +63,7 @@ try {
     const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const checks = [], check = (name, ok) => checks.push([name, !!ok]);
-    const fixture = ({ marked = true, batch = [0], version = 19, trap = false, authoredInert = null, ownedInert = false, invalidInert = false, namespacedInert = false, bootTrap = null, beforeInit = () => {} } = {}) => {
+    const fixture = ({ marked = true, batch = [0], version = 20, trap = false, authoredInert = null, ownedInert = false, invalidInert = false, namespacedInert = false, bootTrap = null, beforeInit = () => {} } = {}) => {
       const root = document.createElement("div");
       if (marked) root.setAttribute("data-roc-picture", "");
       if (authoredInert !== null) root.setAttribute("inert", authoredInert);

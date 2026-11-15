@@ -1143,6 +1143,10 @@ Dom := [].{
 		## A port command (`PORT`): the port and its message.
 		PortSend(Str, PortMsg),
 
+		## A port command that was not sent (`UNSENT`): the port. Its one
+		## reason is a message nested past the port format's bound.
+		PortUnsent(Str),
+
 		## A port call (`FX` kind 9): id, port, message and timeout (ms, 0
 		## none).
 		PortCall(U32, Str, PortMsg, U32),
@@ -1665,6 +1669,13 @@ Dom := [].{
 				(msg, a2) = Dom.port_msg(b, a1)
 				$at = a2
 				$fx = $fx.append(PortSend(port, msg))
+			} else if op == 27 {
+				(port, a1) = Dom.str(b, $at)
+				if Dom.byte(b, a1) != 1 {
+					crash "executor: UNSENT needs reason 1"
+				}
+				$at = a1 + 1
+				$fx = $fx.append(PortUnsent(port))
 			} else if op == 20 {
 				file = Dom.file_ref(b, $at)
 				(name, a1) = Dom.str(b, $at + 24)

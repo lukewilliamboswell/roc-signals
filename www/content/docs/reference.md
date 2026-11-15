@@ -471,12 +471,14 @@ it mounts.
 ## Protocol
 
 The command stream, event records, boot bytes and program declarations are versioned together. The
-current protocol is version 19: every nonempty page batch starts with a flags
+current protocol is version 20: every nonempty page batch starts with a flags
 byte, and a marked batch ends with `TRANSITION` (opcode 24). Worker answers
 have no page-batch header. Session storage adds section 11, and `GUARD` is
 opcode 25. Expanded names carry namespace, prefix and local name; elements
 carry an explicit child-container role, and literal comments use `COMMENT`
-(opcode 26). Engine-only boot section 13 carries the measured mount root.
+(opcode 26). A port command the engine did not send, because its message
+nests past the port format's 512 containers, is `UNSENT` (opcode 27).
+Engine-only boot section 13 carries the measured mount root.
 Clipboard and failed storage writes have typed results; paste
 text has its own payload kind. HTTP carries cache, credentials and an optional
 progress interval; transfer reports use tag 26 and counter 47. The full wire protocol is Appendix B of

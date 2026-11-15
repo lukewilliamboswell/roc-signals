@@ -25,12 +25,21 @@ import pf.Wire
 ## number keys is its text keys one for one: two texts of one key (`"0"`
 ## and `"-0"`, `"1"` and `"1.0"`) never merge into one entry, so whenever
 ## an input decodes with integer or decimal keys it decodes with text keys
-## to as many entries.
+## to as many entries. Both directions keep one nesting bound of 512
+## containers, so a value the decoder accepts is never refused by the
+## encoder as too deep.
 Shape : [Dot, Circle(F64), Rect({ w : U32, h : U32 }), Path(List((I16, I16)))]
 
 Kind : [A, B(U16, Str), C({ x : I8 })]
 
 Profile : { name : Str, nick : Try(Str, [Missing]), age : Try(U8, [Missing]) }
+
+## A record holding a list of itself, the most nesting in the fewest bytes.
+Deep := { k : List(Deep) }.{
+	parser_for : _
+	encoder_for : _
+	is_eq : _
+}
 
 ## A recursive type, which recurses through a record field and a list.
 Node := [Leaf(Str), Branch({ label : U8, kids : List(Node) })].{
@@ -126,6 +135,9 @@ decode_kinds = |input| PortJson.decode(message(input))
 decode_node : List(U8) -> Try(Node, PortJson.Error)
 decode_node = |input| PortJson.decode(message(input))
 
+decode_deep : List(U8) -> Try(Deep, PortJson.Error)
+decode_deep = |input| PortJson.decode(message(input))
+
 decode_numbers : List(U8) -> Try((U64, I128, Dec, List(I32)), PortJson.Error)
 decode_numbers = |input| PortJson.decode(message(input))
 
@@ -148,11 +160,11 @@ structural! = |label, input, decode| {
 	check_bound!(label, input, measured.stats)
 	match measured.value {
 		Ok(value) => {
-			sent = PortJson.encode(value)
+			sent = encoded(label, value)
 			again : Try(a, PortJson.Error)
 			again = PortJson.decode(sent)
 			match again {
-				Ok(back) if back == value and PortJson.encode(back) == sent => {}
+				Ok(back) if back == value and PortJson.encode(back) == Ok(sent) => {}
 				Ok(_) => crash "a decoded ${label} does not come back from its own message unchanged"
 				Err(problem) => crash "the message of a decoded ${label} is refused: ${PortJson.describe(problem)}"
 			}
@@ -160,6 +172,24 @@ structural! = |label, input, decode| {
 		Err(_) => {}
 	}
 }
+
+## The message of a value the decoder accepted: the encoder keeps the
+## decoder's nesting bound, so refusing it as too deep is a defect.
+encoded : Str, a -> PortJson.Message where [a.PortJson.Sendable]
+encoded = |label, value| match PortJson.encode(value) {
+	Ok(sent) => sent
+	Err(TooDeep) => crash "a decoded ${label} is refused as too deep, though the decoder accepted it within the same bound"
+}
+
+## The JSON text of a fixed example's value.
+text_of : a -> List(U8) where [a.PortJson.Sendable]
+text_of = |value| Str.to_utf8(encoded("fixed example", value).json)
+
+## `records` records each holding a list of the next, the innermost an
+## empty list: two containers a record, in the fewest bytes, so a value at
+## the nesting bound fits a fixed example.
+deep : U64 -> Deep
+deep = |records| (1.U64).until(records).fold(Deep.{ k: [] }, |inner, _| Deep.{ k: [inner] })
 
 test! : List(U8) => Fuzz.Outcome
 test! = |input| {
@@ -169,11 +199,11 @@ test! = |input| {
 		Ok(value) => {
 			# Floats keep NaN and signed zero, so `Rich` is compared by its
 			# message, which must be a fixed point.
-			sent = PortJson.encode(value)
+			sent = encoded("Rich", value)
 			again : Try(Rich, PortJson.Error)
 			again = PortJson.decode(sent)
 			match again {
-				Ok(back) if PortJson.encode(back) == sent => {}
+				Ok(back) if PortJson.encode(back) == Ok(sent) => {}
 				Ok(_) => crash "a re-encoded Rich decodes to a value with a different message"
 				Err(problem) => crash "a re-encoded Rich is refused: ${PortJson.describe(problem)}"
 			}
@@ -190,6 +220,7 @@ test! = |input| {
 	structural!("List(Profile)", input, decode_profiles)
 	structural!("List(Kind)", input, decode_kinds)
 	structural!("Node", input, decode_node)
+	structural!("Deep", input, decode_deep)
 	structural!("numbers", input, decode_numbers)
 	Fuzz.keep
 }
@@ -238,11 +269,15 @@ from_javascript = " [ { \"who\" : { \"nick\" : null , \"name\" : \"\\u00e9\\ud83
 
 target = Fuzz.target_with!({
 	examples: [
-		Fuzz.example({ name: "rich", revision: "1", make: || Str.to_utf8(PortJson.encode(sample_rich).json) }),
-		Fuzz.example({ name: "canon", revision: "1", make: || Str.to_utf8(PortJson.encode(sample_canon).json) }),
+		Fuzz.example({ name: "rich", revision: "1", make: || text_of(sample_rich) }),
+		Fuzz.example({ name: "canon", revision: "1", make: || text_of(sample_canon) }),
 		Fuzz.example({ name: "javascript", revision: "1", make: || Str.to_utf8(from_javascript) }),
-		Fuzz.example({ name: "rich-truncated", revision: "1", make: || Str.to_utf8(PortJson.encode(sample_rich).json).drop_last(1) }),
-		Fuzz.example({ name: "canon-trailing", revision: "1", make: || Str.to_utf8(PortJson.encode(sample_canon).json).append(44) }),
+		Fuzz.example({ name: "rich-truncated", revision: "1", make: || text_of(sample_rich).drop_last(1) }),
+		Fuzz.example({ name: "canon-trailing", revision: "1", make: || text_of(sample_canon).append(44) }),
+		# 256 records holding lists: exactly 512 containers, the bound both
+		# ways; and one record more around them, which the decoder refuses.
+		Fuzz.example({ name: "deep-at-bound", revision: "1", make: || text_of(deep(256)) }),
+		Fuzz.example({ name: "deep-past-bound", revision: "1", make: || Str.to_utf8("{\"k\":[").concat(text_of(deep(256))).concat(Str.to_utf8("]}")) }),
 		Fuzz.example({ name: "deep", revision: "1", make: || List.repeat(91, 700) }),
 		Fuzz.example({ name: "empty", revision: "1", make: || [] }),
 		Fuzz.example({ name: "integer-key-alias", revision: "1", make: || Str.to_utf8("{\"0\":1,\"-0\":2,\"7\":3}") }),

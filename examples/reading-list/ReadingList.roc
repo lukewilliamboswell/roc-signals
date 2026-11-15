@@ -372,6 +372,7 @@ explain = |error|
 		TooLarge => "the shelf is larger than the page accepts."
 		Closed => "the store stopped answering."
 		Undecodable(why) => "it holds something this app does not understand (${why})."
+		TooDeep => "the request was nested too deeply to send."
 	}
 
 dune : BookStorage.Book
