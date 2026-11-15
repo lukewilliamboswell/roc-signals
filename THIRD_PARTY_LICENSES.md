@@ -18,6 +18,23 @@ platform release bundle. They are not taken from a roc-fuzz release. The source
 notices accompany the Zig distribution, including its `LICENSE` (MIT License)
 and `lib/libc/musl/COPYRIGHT`.
 
+The bundle also ships the spec runner's host for the other systems, each a
+static library the pinned Zig builds from `platform/host/spec.zig` with
+`-fcompiler-rt` (`PlatformTest.spec_hosts`): `targets/arm64mac/libhost.a`
+and `targets/x64mac/libhost.a` (members `spec_zcu.o` and `compiler_rt.o`)
+and `targets/x64win/host.lib` (`spec_zcu.obj` and `compiler_rt.obj`).
+`compiler_rt` is Zig's compiler runtime, under Zig's `LICENSE` (MIT
+License); some of its routines are ported from musl, as their source files
+say, under musl's MIT License (`lib/libc/musl/COPYRIGHT`). The rest of each
+library is this repository's code. The macOS hosts link no C library of
+their own: the Roc linker supplies the system's libSystem when an app is
+built. `targets/x64win/kernel32.lib` is an import library that `zig
+dlltool` makes from this repository's `platform/host/kernel32.def`; it
+holds only the names of the kernel32.dll functions the host imports, and
+the Windows host links no C runtime. `targets/wasm32/host.wasm` is the object
+`zig build-obj` makes from `platform/host/host.zig` for `wasm32-freestanding`,
+with no C library.
+
 ## URL utility
 
 `platform/Url.roc` derives from [basic-webserver](https://github.com/roc-lang/basic-webserver),
