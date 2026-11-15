@@ -255,6 +255,11 @@ Checks := [].{
 
 	## Isolated apps check declaration and request contracts in both hosts:
 	## deliberate mistakes name the rule; ordinary raw attributes still mount.
+	## Every fixture is built as a native runner and run by it; the fixtures
+	## `tests/browser/key-contracts-browser.mjs` mounts are also built for the
+	## browser, and only those: the rest (the native oracle's executor
+	## contracts among them) have no browser check that would load a Wasm
+	## build. All the builds are one bounded batch.
 	key_contracts! : SpecSuite.Options => Try(List(Str), _)
 	key_contracts! = |o| {
 		cases = [
@@ -299,7 +304,11 @@ Checks := [].{
 		]
 		dir = "${o.build_dir}/key-contracts"
 		SpecSuite.fresh_dir!(dir)?
-		var $problems = []
+		browser_test = "tests/browser/key-contracts-browser.mjs"
+		in_browser = browser_fixtures(Path.read_utf8!(Path.utf8("${o.root}/${browser_test}"))?, cases.map(|test| test.name))
+		var $problems = in_browser.unknown.map(|name| "${browser_test} mounts the key contract ${name}, which Checks.key_contracts! does not list")
+		var $fixtures = []
+		var $jobs = []
 		for test in cases {
 			case_dir = "${dir}/${test.name}"
 			Path.create_all!(Path.utf8(case_dir))?
@@ -307,20 +316,37 @@ Checks := [].{
 			up = Str.join_with(List.repeat("..", case_dir.split_on("/").keep_if(|part| !part.is_empty()).len()), "/")
 			source = fixture.replace_each("<PLATFORM>", "${up}/${o.root.drop_prefix("/")}/platform/main.roc").replace_each("<ORACLE>", "${up}/${o.root.drop_prefix("/")}/platform/main-fuzz.roc")
 			main = "${case_dir}/main.roc"
-			runner = "${case_dir}/runner"
-			wasm = "${case_dir}/app.wasm"
 			Path.write_utf8!(Path.utf8(main), source)?
-			Proc.run!(SpecSuite.build_job(o, "dev", main, o.target, runner))?
-			Proc.run!(SpecSuite.build_job(o, "dev", main, "wasm32", wasm))?
-			spec = "${case_dir}/contract.scm"
-			Path.write_utf8!(Path.utf8(spec), "(test \"contract\" (steps (mark-metrics)))")?
-			{ code, stdout } = Proc.merged!({ program: runner, args: [spec], cwd: case_dir })?
-			message = Str.from_utf8_lossy(stdout)
-			if code != test.code or !message.contains(test.prefix) or !message.contains(test.rejection) {
-				$problems = $problems.append("native key contract ${test.name}: expected ${test.prefix} ${test.rejection}, got ${code.to_str()}: ${message}")
+			$fixtures = $fixtures.append({ test, case_dir, runner: "${case_dir}/runner" })
+			$jobs = $jobs.append({ name: test.name, job: SpecSuite.build_job(o, "dev", main, o.target, "${case_dir}/runner") })
+			if in_browser.listed.contains(test.name) {
+				$jobs = $jobs.append({ name: test.name, job: SpecSuite.build_job(o, "dev", main, "wasm32", "${case_dir}/app.wasm") })
 			}
 		}
-		{ code, .. } = Proc.output!({ program: o.node, args: ["tests/browser/key-contracts-browser.mjs", "--fixtures", dir, "--runtime", SpecSuite.runtime, "--chrome", o.chrome], cwd: o.root })?
+		jobs = $jobs
+		limit = Proc.compiler_jobs!(App)?
+		Proc.note!("== key contracts: ${$fixtures.len().to_str()} native runners and ${in_browser.listed.len().to_str()} browser builds, ${limit.to_str()} at a time")
+		built = Proc.parallel!(jobs.map(|j| j.job), limit)?
+		failed = List.map2(jobs, built, |j, r| (j, r)).keep_if(|(_, r)| r.code != 0)
+		for (j, r) in failed {
+			$problems = $problems.append("key contract ${j.name}: ${Proc.show(j.job)} exited with ${r.code.to_str()}")
+		}
+		unbuilt = failed.map(|(j, _)| j.name)
+		for { test, case_dir, runner } in $fixtures {
+			if !unbuilt.contains(test.name) {
+				spec = "${case_dir}/contract.scm"
+				Path.write_utf8!(Path.utf8(spec), "(test \"contract\" (steps (mark-metrics)))")?
+				{ code, stdout } = Proc.merged!({ program: runner, args: [spec], cwd: case_dir })?
+				message = Str.from_utf8_lossy(stdout)
+				if code != test.code or !message.contains(test.prefix) or !message.contains(test.rejection) {
+					$problems = $problems.append("native key contract ${test.name}: expected ${test.prefix} ${test.rejection}, got ${code.to_str()}: ${message}")
+				}
+			}
+		}
+		if !unbuilt.is_empty() {
+			return Ok($problems.append("browser key contracts not run: a fixture they mount did not build"))
+		}
+		{ code, .. } = Proc.output!({ program: o.node, args: [browser_test, "--fixtures", dir, "--runtime", SpecSuite.runtime, "--chrome", o.chrome], cwd: o.root })?
 		Ok(if (code == 0) $problems else $problems.append("browser key contracts failed (see above)"))
 	}
 
@@ -611,6 +637,30 @@ Checks := [].{
 			}
 			Err(Exit(1))
 		}
+}
+
+## Which of the key-contract fixtures `names` the browser test `script`
+## mounts, by the `["NAME",` that opens each entry of its fixture table, and
+## the names that table holds that are not fixtures, each of which would ask
+## the browser for a build no one made.
+browser_fixtures : Str, List(Str) -> { listed : List(Str), unknown : List(Str) }
+browser_fixtures = |script, names| {
+	table = script.split_on("const fixtures = [").get(1) ?? ""
+	entries = (table.split_on("\n];").first() ?? "").split_on("\n").keep_oks(
+		|line| match line.trim().split_on("[\"") {
+			["", rest, ..] => rest.split_on("\"").first()
+			_ => Err(NotAnEntry)
+		},
+	)
+	{ listed: names.keep_if(|name| entries.contains(name)), unknown: entries.drop_if(|name| names.contains(name)) }
+}
+
+## The browser test's table names the fixtures it mounts; a fixture it does
+## not name is not built for the browser, and a name that is no fixture is
+## reported.
+expect {
+	script = "const x = 1;\nconst fixtures = [\n  [\"document-bound\", [\"more than 32\", \"site\"]],\n  [\"raw-controlled-attributes\", [], false],\n  [\"gone\", [\"x\"]],\n];\nconst y = [\"oracle-flags\"];\n"
+	browser_fixtures(script, ["oracle-flags", "document-bound", "raw-controlled-attributes"]) == { listed: ["document-bound", "raw-controlled-attributes"], unknown: ["gone"] }
 }
 
 ## What a gate prints for the problems it collected: one `FAIL` line each.

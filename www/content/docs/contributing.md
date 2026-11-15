@@ -214,7 +214,8 @@ problems found before it.
    every root under `scripts/`, except a root that imports the platform
    package to drive its tests, which may not hold `expect`s of their own.
 9. The platform's link inputs for every target; the declaration and request
-   contracts as isolated apps in both hosts; `zig test` of the host's handle
+   contracts as isolated apps, each in the native runner and those
+   `tests/browser/key-contracts-browser.mjs` mounts in Chrome; `zig test` of the host's handle
    heaps (`platform/host/resources.zig`) and `dbg` buffer
    (`platform/host/dbg.zig`); a worker app's spec runner linked for macOS
    (`arm64mac`, `x64mac`) and Windows (`x64win`); and the fuzz targets' fixed
