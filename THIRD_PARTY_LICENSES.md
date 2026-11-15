@@ -72,7 +72,7 @@ archive or the site:
 
 ## Internal Roc dependencies
 
-[roc-parser 6.0.0-rc.2](https://github.com/lukewilliamboswell/roc-parser/releases/tag/6.0.0-rc.2)
+[roc-parser 6.0.0-rc.3](https://github.com/lukewilliamboswell/roc-parser/releases/tag/6.0.0-rc.3)
 is pinned by package URL in the platform and tooling. Copyright © 2023 Luke Boswell and subsequent authors; Universal
 Permissive License (UPL), Version 1.0. Its LICENSE accompanies that package.
 
