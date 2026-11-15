@@ -174,7 +174,7 @@ for (const [button, where] of [
   });
   await clickButton(button);
   const f = await page.evaluate(() => window.__faults);
-  const message = new RegExp(`^contract: two handlers for the "click" event on one <button>${where} at site /[\\d/]+: an element takes one handler per event; run both from one with Handler\\.also$`);
+  const message = new RegExp(`^contract: two handlers for the "click" event on one <button>${where} at site /[\\d/]+ \\(element /[\\d/]*(?:, "[^"]*")?\\): an element takes one handler per event; run both from one with Handler\\.also$`);
   check(`${button}: one contract fault naming the event, the element and the site`, [f.length, f[0] && f[0].class, f[0] && message.test(f[0].message)], [1, "contract", true]);
   check(`${button}: nothing of the faulty turn is applied`, await page.evaluate(() => [...document.querySelectorAll("button")].some((b) => b.textContent.startsWith("Twice"))), false);
   check(`${button}: the fault reaches the console`, errors.some((e) => e.includes("roc engine fault [contract]")), true);
@@ -478,11 +478,11 @@ for (const [button, where] of [
   await ctx.close();
 }
 for (const [button, expected] of [
-  ["Duplicate click policies", 'contract: two handlers for the "click" event on one <button> at site /0/6/1: an element takes one handler per event; run both from one with Handler.also'],
-  ["Duplicate change kinds", 'contract: two handlers for the "change" event on one <input> at site /0/6/1: an element takes one handler per event; run both from one with Handler.also'],
-  ["Checked property on div", 'contract: property "checked" is not allowed on <div> at site /0/6/1'],
-  ["Value attribute on input", 'contract: attribute "value" on <input> is claimed by a property at site /0/6/1; use prop or prop_s'],
-  ["Duplicate value property", 'contract: property "value" is declared twice on <input> at site /0/6/1'],
+  ["Duplicate click policies", 'contract: two handlers for the "click" event on one <button> at site /0/6/1 (element /): an element takes one handler per event; run both from one with Handler.also'],
+  ["Duplicate change kinds", 'contract: two handlers for the "change" event on one <input> at site /0/6/1 (element /): an element takes one handler per event; run both from one with Handler.also'],
+  ["Checked property on div", 'contract: property "checked" is not allowed on <div> at site /0/6/1 (element /)'],
+  ["Value attribute on input", 'contract: attribute "value" on <input> is claimed by a property at site /0/6/1 (element /); use prop or prop_s'],
+  ["Duplicate value property", 'contract: property "value" is declared twice on <input> at site /0/6/1 (element /)'],
 ]) {
   const { page, ctx } = await open();
   await page.evaluate((name) => [...document.querySelectorAll("button")].find((b) => b.textContent === name).click(), button);
