@@ -2311,6 +2311,9 @@ Core := [].{
 			Ok((zone.offsets.get($low) ?? crash "internal: Zone.offset_at: a checked zone has a first offset").minutes)
 		}
 
+		## Two zones are equal when they have the same name and the same
+		## offsets over the same span: equal zones answer every
+		## `offset_at` alike.
 		is_eq : _
 	}
 
