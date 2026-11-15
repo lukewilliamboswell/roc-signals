@@ -126,7 +126,11 @@ ToolCheck := [].{
 		for file in lab_specs {
 			Path.copy!(Path.utf8(file), Path.utf8("${lab}/specs/${file.split_on("/").last() ?? file}"))?
 		}
-		Path.write_utf8!(Path.utf8("${lab}/main.roc"), main.replace_each("import Counter", "import LabApp").replace_each("Counter.program", "LabApp.program"))?
+		# The example's own entry file, store type included, under the
+		# scaffold's platform header.
+		header = main.split_on("\n").first() ?? ""
+		example_main = Path.read_utf8!(Path.utf8("examples/worker-lab/main.roc"))?
+		Path.write_utf8!(Path.utf8("${lab}/main.roc"), Str.join_with([header].concat(example_main.split_on("\n").drop_first(1)), "\n"))?
 		$problems = $problems.concat(judge(run_tool!(tool, lab, ["test"])?, { code: 0, says: ["All ${lab_specs.len().to_str()} specs passed."] }))
 		# A style the page links goes into the hashed directory; a file
 		# under public/ keeps its name at the top of dist/.
@@ -301,7 +305,7 @@ dist_problems! = |o, dir| {
 			$problems = $problems.append("signals.roc build: dist/assets/${name}/ has no ${file}")
 		}
 	}
-	{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/release/check.mjs", "${hashed}/app.wasm"], cwd: o.root })?
+	{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/release/check.mjs", "${hashed}/app.wasm", "${hashed}/runtime.mjs"], cwd: o.root })?
 	Ok(if (code == 0) $problems else $problems.append("signals.roc build: the module in ${dir}/dist does not mount: ${Str.from_utf8_lossy(stdout)}"))
 }
 
