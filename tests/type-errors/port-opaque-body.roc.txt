@@ -1,0 +1,14 @@
+app [main] { pf: platform "<PLATFORM>" }
+
+import pf.Engine
+import pf.PortJson
+
+## The encoder's output cannot be built from its body either.
+bad : PortJson.Out
+bad = PortJson.Out.(PortJson.OutBody.{ text: [], blobs: [], files: [], depth: 0, over: Bool.False })
+
+main : Engine.Program
+main = Engine.program(|| Engine.text("port API contract"))
+
+## This contract has no shared store.
+Store : {}
