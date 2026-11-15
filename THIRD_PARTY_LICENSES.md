@@ -86,7 +86,7 @@ its source is not copied into this repository. The package files retain the
 copyright notice and UPL reference; the complete license is in the upstream
 repository's `LICENSE`.
 
-The native keyboard oracle uses roc-lang/unicode 4.3.2, pinned by bundle URL
+The native keyboard oracle uses roc-lang/unicode 4.3.3, pinned by bundle URL
 in both platform roots. Copyright © 2019 Richard Feldman and subsequent Roc
 authors; UPL Version 1.0. Its Unicode 17 data is covered by the Unicode License
 V3 reproduced below. The browser uses its own Unicode category implementation;

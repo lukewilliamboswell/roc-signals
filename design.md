@@ -3129,7 +3129,7 @@ letter compares without case; other keys compare exactly. Shift must equal
 except when the chord is exactly one Unicode scalar with general category
 Punctuation or Symbol (`P*` or `S*`). Space, digits, letters of other
 alphabets and named keys still compare Shift. The native oracle uses
-roc-lang/unicode 4.3.2 (Unicode 17) through its own one-scalar decoder; the
+roc-lang/unicode 4.3.3 (Unicode 17) through its own one-scalar decoder; the
 browser uses its Unicode category regular expression. A contract compares
 every valid scalar and rejects any package/browser upgrade disagreement.
 Neither implementation keeps a copied range table. This check establishes
