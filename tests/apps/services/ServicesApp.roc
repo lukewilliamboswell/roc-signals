@@ -11,8 +11,8 @@ import LocationApp
 ##   visibility are shown from boot and kept current by subscriptions, and
 ##   whether local storage is available is shown from boot.
 ## - A radio group, a checkbox and a button that logs mouse and focus events
-##   (real clicks); a form whose submit counts; two selects, one with
-##   options mounted by an `each`; and a fetch whose result is shown as text
+##   (real clicks); a form whose submit counts; two selects, whose
+##   options an `each` mounts; and a fetch whose result is shown as text
 ##   or as its inspected `Engine.HttpError`.
 ## - A text box that trims what is typed into it: its rewritten value waits
 ##   for blur while it has focus (controlled inputs).
@@ -157,8 +157,8 @@ ServicesApp := [].{
 					],
 				),
 				Html.p_s(v.map(|s| s.submitted.to_str()), [Engine.test_id("submitted")]),
-				# Selects: static options, and options an `each` mounts after
-				# the select's value is set.
+				# Selects: each mounts its options with an `each` after the
+				# select's value is set, one row per option.
 				Html.select(
 					Engine.const("Fruit"),
 					v.map(|s| s.fruit),

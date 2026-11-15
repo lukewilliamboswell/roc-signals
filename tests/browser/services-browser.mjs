@@ -350,7 +350,11 @@ async function open(prelude = "") {
     const viaMetric = rt.x.metric(16 + 12);
     return [after.length, String(after[12] - before[12]), String(viaMetric) === String(after[12]), String(after[1])];
   });
-  check("work record: 49 counters (work, effects, ports, properties, releases, observations, guards, progress and comments); one SETTEXT for one click; metric(16 + k) reads counter k", work, [49, "1", true, "3"]);
+  // Counter 1 counts INST commands, one per row created (design.md's work
+  // record: rows_created). Up to here the page has created exactly the rows
+  // of its two selects' option `each`es, Fruit's two and Shade's three: the
+  // root, the `when` branches and the events in between create no row.
+  check("work record: 49 counters (work, effects, ports, properties, releases, observations, guards, progress and comments); one SETTEXT for one click; metric(16 + k) reads counter k; one INST per option row", work, [49, "1", true, "5"]);
   await ctx.close();
 }
 
