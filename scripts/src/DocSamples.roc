@@ -87,41 +87,52 @@ DocSamples := [].{
 			read = |file| found.find_first(|(f, _)| f == file).map_ok(|(_, source)| source).map_err(|_| Missing)
 			$problems = $problems.concat(DocSamples.page_problems(page, text, read))
 		}
-		for sample in DocSamples.apps!()? {
-			{ code, .. } = Proc.output!({ program: o.compiler, args: ["check", sample], cwd: "." })?
-			if code != 0 {
-				$problems = $problems.append("docs sample ${sample} does not type-check")
-			} else {
-				# `roc test` of an app runs the expects of every module it imports.
-				tested = Proc.output!({ program: o.compiler, args: ["test", sample], cwd: "." })?
-				if tested.code != 0 {
-					$problems = $problems.append("docs sample ${sample}: roc test fails (an expect of the sample does not hold)")
-				}
+		samples = DocSamples.apps!()?
+		limit = Proc.compiler_jobs!(App)?
+		Proc.note!("== docs samples: roc check and roc test of ${samples.len().to_str()} sample apps, ${limit.to_str()} at a time")
+		checked = Proc.parallel!(samples.map(|sample| { program: o.compiler, args: ["check", sample], cwd: "." }), limit)?
+		typed = List.map2(samples, checked, |sample, r| (sample, r.code)).keep_oks(|(sample, code)| if (code == 0) Ok(sample) else Err(Untyped))
+		for sample in samples.drop_if(|sample| typed.contains(sample)) {
+			$problems = $problems.append("docs sample ${sample} does not type-check")
+		}
+		# `roc test` of an app runs the expects of every module it imports.
+		tested = Proc.parallel!(typed.map(|sample| { program: o.compiler, args: ["test", sample], cwd: "." }), limit)?
+		for (sample, r) in List.map2(typed, tested, |sample, r| (sample, r)) {
+			if r.code != 0 {
+				$problems = $problems.append("docs sample ${sample}: roc test fails (an expect of the sample does not hold)")
 			}
 		}
+		var $with_specs = []
 		for dir in DocSamples.dirs!()? {
 			if Path.exists!(Path.utf8("${dir}/specs"))? and SpecSuite.files_with!("${dir}/specs", ".scm")?.is_empty() {
 				$problems = $problems.append("docs sample ${dir}/specs holds no spec, so its runs would pass having checked nothing")
 			} else if Path.exists!(Path.utf8("${dir}/specs"))? {
 				out = "${o.build_dir}/docs/${dir}"
-				runner = "${out}/runner"
-				wasm = "${out}/app.wasm"
 				name = "docs-${dir.split_on("/").last() ?? dir}"
 				Path.create_all!(Path.utf8(out))?
 				Path.create_all!(Path.utf8("${o.build_dir}/wasm/${name}"))?
-				native = Proc.output!(SpecSuite.build_job(o, "dev", "${dir}/main.roc", o.target, runner))?
-				web = Proc.output!(SpecSuite.build_job(o, "dev", "${dir}/main.roc", "wasm32", wasm))?
-				if native.code != 0 or web.code != 0 {
-					$problems = $problems.append("docs sample ${dir} does not build")
-				} else {
-					specs = SpecSuite.files_with!("${dir}/specs", ".scm")?
-					in_native = SpecSuite.native_specs!({ example: dir, runner, specs })?
-					in_browser = SpecSuite.browser_specs!(o, { example: name, runner, wasm, specs, skip: [] })?
-					for t in [(Native, in_native), (Browser, in_browser)] {
-						(runner_kind, tally) = t
-						Proc.note!(SpecSuite.summary(dir, runner_kind, tally))
-						$problems = $problems.concat(tally.problems)
-					}
+				$with_specs = $with_specs.append({ dir, name, runner: "${out}/runner", wasm: "${out}/app.wasm" })
+			}
+		}
+		with_specs = $with_specs
+		Proc.note!("== docs samples: native and browser builds of the ${with_specs.len().to_str()} samples with specs, ${limit.to_str()} at a time")
+		builds = Proc.parallel!(
+			with_specs.map(|s| [SpecSuite.build_job(o, "dev", "${s.dir}/main.roc", o.target, s.runner), SpecSuite.build_job(o, "dev", "${s.dir}/main.roc", "wasm32", s.wasm)]).join(),
+			limit,
+		)?
+		for (sample, index) in with_specs.map_with_index(|sample, index| (sample, index)) {
+			native = builds.get(2 * index) ?? { code: -1, output: "" }
+			web = builds.get(2 * index + 1) ?? { code: -1, output: "" }
+			if native.code != 0 or web.code != 0 {
+				$problems = $problems.append("docs sample ${sample.dir} does not build")
+			} else {
+				specs = SpecSuite.files_with!("${sample.dir}/specs", ".scm")?
+				in_native = SpecSuite.native_specs!({ example: sample.dir, runner: sample.runner, specs })?
+				in_browser = SpecSuite.browser_specs!(o, { example: sample.name, runner: sample.runner, wasm: sample.wasm, specs, skip: [] })?
+				for t in [(Native, in_native), (Browser, in_browser)] {
+					(runner_kind, tally) = t
+					Proc.note!(SpecSuite.summary(sample.dir, runner_kind, tally))
+					$problems = $problems.concat(tally.problems)
 				}
 			}
 		}
