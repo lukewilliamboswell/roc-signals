@@ -113,7 +113,7 @@ These are the development environment's Blueprint tasks, not an app's
 
 | Task | What it does |
 |---|---|
-| `blueprint run check -- [--without-fuzz] [--part K/N] [--plan]` | The pull-request gate (below), every fuzz target's fixed examples included; `--without-fuzz` skips the fuzz targets, each with a `SKIP` line, as CI's Check job does beside its Fuzz smoke job; `--part K/N` runs part K of the parts CI's Check job runs in parallel (below); `--plan` prints what each part runs and runs nothing |
+| `blueprint run check -- [--without-fuzz] [--part K/N] [--plan [--builds]]` | The pull-request gate (below), every fuzz target's fixed examples included; `--without-fuzz` skips the fuzz targets, each with a `SKIP` line, as CI's Check job does beside its Fuzz smoke job; `--part K/N` runs part K of the parts CI's Check job runs in parallel (below); `--plan` prints what each part runs and builds and runs nothing, and `--builds` adds every build |
 | `blueprint run check-slow` | Local only, never in CI: every fuzz target's fixed examples on its instrumented build, a walk of every app of 10,000 steps (`RUNNER --walk`), the native soak of each app's round-trip spec (`RUNNER --soak 48`, flat live allocations and bytes), and a long Chrome session per app |
 | `blueprint run spec -- [--browser] [--filter GLOB] [--target TARGET] [APP...]` | Some apps' specs, natively and optionally in Chrome. The native runners are built for `TARGET` (`x64musl`, `arm64mac`, `x64mac` or `x64win`); without it, for the system the task runs on as `uname -sm` names it (`x64musl` where that names none), so a contributor's Mac runs them as they are. `check` always builds for `x64musl`, as CI does. A run whose filter selects no spec fails: a filter that matches nothing is a mistake |
 | `blueprint run platform` | Build the platform's link inputs with the pinned Zig, including matching PIC musl startup and libraries, to build an app's `main.roc` by hand (a fuzz target needs none: `roc build --fuzz` fetches its roc-fuzz release) |
@@ -249,21 +249,22 @@ problems found before it.
     `scripts/test_protocol.roc` and `scripts/test_worker_entries.roc`, the
     Node tests in `tests/runtime/` (among them the work monitor's
     aggregation and bounds) and `tests/fuzz/check-report-unit.mjs`, and the
-    sparse-write allocation check of `tests/apps/write-scaling` in a
-    development and a shipping (`--opt=size`) build.
+    sparse-write allocation check of `tests/apps/write-scaling` on the
+    development build its specs use and on a shipping (`--opt=size`)
+    build.
 18. The runtime's contract tests in Chrome (`Targets.browser_contracts!`, one
     script under `tests/browser/` each): the protocol facts, names,
     namespaces and Unicode classes against the native oracle; effects,
     controls, pointers, keys, dialogs, layout, services, the environment,
     persistence and transitions; an outbox posted twice in one turn; worker
-    jobs, `dbg`, the work monitor and a smoke of the worker scaling
-    measurement (correctness, robustness sequences and memory; no timing
-    ratios); file handles, operations on files and their lifetimes in a
+    jobs, `dbg` and the work monitor; file handles, operations on files and their lifetimes in a
     table; preparations, ports with real handlers, reports, jobs that
     read and build files, and worker payloads at their nesting bound on a
-    development build; and the journeys of the Reading List, the Status
-    Page, the Log Explorer, the Million-Row Explorer and Conduit, each
-    against the example's own JavaScript. With `--plotly FILE --measure-ms N`,
+    development build. Then the examples' journeys
+    (`Targets.example_journeys!`): the worker scaling smoke on the Worker
+    Lab, and the Reading List, the Status Page, the Log Explorer, the
+    Million-Row Explorer and Conduit, each against the example's own
+    JavaScript. With `--plotly FILE --measure-ms N`,
     `status-page-journey.mjs` also reports the stream's rates, the chart's
     JSON and the longest frame gap.
 19. The js-framework-benchmark check, on a development build: it asks
@@ -293,23 +294,32 @@ stages as the parallel legs of its Check job, each `check -- --without-fuzz
 passes only when every leg did. Where each stage runs is data in
 `scripts/src/CheckPlan.roc`, never in the workflow: every stage above
 belongs to exactly one part, except the per-app stages (each app's builds
-for both runners, its specs, its example module's size, its short walk and
-its broken specs), which every part runs for its own share of the apps of
-`SpecSuite.apps` and `SpecSuite.test_apps`, dealt round-robin, so every
-app lands in exactly one part. A part prints a `SKIP` line for each stage
+for both runners, its specs, its short walk and its broken specs), which
+every part runs for its own share of the apps of `SpecSuite.apps` and
+`SpecSuite.test_apps`, so every app lands in exactly one part. Apps are
+dealt by need: an app a part's own stages use (`CheckPlan.needs`: the
+test apps of the native lifetime contracts, the runtime's unit and Chrome
+contracts in one part, and the examples of the grammar check, the
+examples' journeys and the release dry run in another) belongs to that
+part, and the rest are dealt round-robin among `CheckPlan.spare_parts`.
+A part prints a `SKIP` line for each stage
 another part runs (`SKIP specs ...` never appears: every part runs it for
 its apps), and a part given an N other than the plan's, or that would run
-nothing, fails. A stage that uses another's output builds it in its own
-part: before its first stage that needs builds, a run makes, in one
-bounded batch, the native runners and browser builds of its apps and of
-those its other stages name (`CheckPlan.needs`: the native lifetime
-contracts, the grammar check, the runtime's Chrome contracts and the
-release dry run); the tool's check runs in the release dry run's part,
-from its copy. So a part may build an app another part also builds; the
-whole gate builds each once. `check -- --plan` prints, for each part, its
-stages, its apps and how many builds it makes. Its pure `expect`s hold the
-plan to covering the whole gate: every stage once, every app once, the
-whole gate with no option, and a refusal for a wrong or empty part.
+nothing, fails. Before its first stage that needs builds, a run makes, in
+one bounded batch, the native runners and browser builds of its apps and
+of what its stages need; the tool's check runs in the release dry run's
+part, from its copy. `CheckPlan.builds_made` lists every build a run
+makes as its root, target and opt with the stages that use it (the
+`signals.roc` tool's own builds of its apps excepted: compiling them is
+what it checks). `check -- --plan` prints, for each part, its stages, its
+apps, how many builds it makes at `--opt=dev` and `--opt=size`, and any
+build another part also makes, then the whole gate's total and any build
+it makes twice; `check -- --plan --builds` lists every build of every
+part. Its pure `expect`s hold the plan to covering the whole gate (every
+stage once, every app once, the whole gate with no option, a refusal for
+a wrong or empty part) and to building each root, target and opt once:
+once in the whole gate, in no two parts, and in the parts together
+exactly what the whole gate builds.
 
 `check` runs on Linux. Blueprint does not run on Windows or Intel macOS, so
 CI proves the native spec runner on the other systems itself: a Linux job

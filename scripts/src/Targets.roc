@@ -281,9 +281,10 @@ Targets := [].{
 	## Exercise the monitor's bounded aggregation and environment facts, including
 	## time-zone probes in UTC and Sydney, and the documented port handlers
 	## with bounded queues and browser-resource cleanup, without a browser.
-	## A Wasm fixture, built for development and for shipping (`--opt=size`),
-	## also guards sparse-write allocation scaling,
-	## and its declared protocol facts must be exactly the test-owned fixture.
+	## A Wasm fixture, tests/apps/write-scaling, also guards sparse-write
+	## allocation scaling on its development build (the one its specs use)
+	## and on a shipping build (`--opt=size`), and its declared protocol
+	## facts must be exactly the test-owned fixture.
 	runtime_unit! : SpecSuite.Options => Try(List(Str), _)
 	runtime_unit! = |o| {
 		var $failures = []
@@ -301,15 +302,18 @@ Targets := [].{
 			$failures = $failures.append("fixed-report transport contracts failed (exit ${report_units.to_str()})")
 		}
 		Path.create_all!(Path.utf8(o.build_dir))?
-		for build in ["dev", "size"] {
-			wasm = "${o.build_dir}/write-scaling-${build}.wasm"
-			Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=${build}", "tests/apps/write-scaling/main.roc", "--output=${wasm}"], cwd: o.root })?
+		size = "${o.build_dir}/write-scaling-size.wasm"
+		Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=size", "tests/apps/write-scaling/main.roc", "--output=${size}"], cwd: o.root })?
+		# The development build is the one `SpecSuite.build!` made for the
+		# app's specs (`CheckPlan.needs`), not a second build of it.
+		dev = SpecSuite.wasm_of(o, "write-scaling")
+		for (build, wasm) in [("dev", dev), ("size", size)] {
 			code = Proc.status!({ program: o.node, args: ["tests/runtime/write-scaling.mjs", wasm, build], cwd: o.root })?
 			if code != 0 {
 				$failures = $failures.append("write-scaling.mjs ${build} failed (exit ${code.to_str()})")
 			}
 		}
-		facts = Proc.status!({ program: o.node, args: ["tests/runtime/protocol-production.mjs", "${o.build_dir}/write-scaling-dev.wasm"], cwd: o.root })?
+		facts = Proc.status!({ program: o.node, args: ["tests/runtime/protocol-production.mjs", dev], cwd: o.root })?
 		if facts != 0 {
 			$failures = $failures.append("protocol-production.mjs failed (exit ${facts.to_str()})")
 		}
@@ -342,17 +346,6 @@ Targets := [].{
 		Targets.browser!(o, "prerender-stage1-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "prerender"), "--runner", SpecSuite.runner_of(o, "prerender"), "--no-init-runner", runner, "--template", "tests/apps/prerender/index.html"])
 	}
 
-	## The runtime contract tests in Chrome (test apps built by `SpecSuite.build!`): the effect channel (tests/apps/effects),
-	## controlled inputs, focus and containment (tests/apps/controls), an
-	## outbox posted twice in one turn (tests/apps/outbox), worker
-	## jobs in real Web Workers and the work monitor (tests/apps/workers), the
-	## worker scaling smoke (the Worker Lab), file handles (tests/apps/files),
-	## operations on files (tests/apps/file-effects), preparations and
-	## the pool's placement (tests/apps/prepared), ports with real handlers
-	## (tests/apps/ports), worker tasks, their handles and the page's
-	## stubs (tests/apps/tasks), the Reading List's own port handlers against
-	## real IndexedDB in two tabs, the Log Explorer over a 64 MiB log, the
-	## Million-Row Explorer at two million orders with its own feed, and
 	## The script root that exports the native keyboard oracle's bits. It
 	## imports the platform package, so `roc`, the package compiler, builds it
 	## like an app, and like an app it names no compiler: a `roc` header field
@@ -361,9 +354,20 @@ Targets := [].{
 	unicode_symbols_root : Str
 	unicode_symbols_root = "scripts/unicode_symbols.roc"
 
-	## Conduit's user journey against the RealWorld mock backend.
-	browser_contracts! : SpecSuite.Options, Str => Try(List(Str), _)
-	browser_contracts! = |o, conduit_wasm| {
+	## The runtime contract tests in Chrome, on test apps built by
+	## `SpecSuite.build!`: the protocol facts, names, namespaces and Unicode
+	## classes against the native oracle; the effect channel
+	## (tests/apps/effects), controlled inputs, focus and containment
+	## (tests/apps/controls), an outbox posted twice in one turn
+	## (tests/apps/outbox), worker jobs in real Web Workers and the work
+	## monitor (tests/apps/workers), file handles (tests/apps/files),
+	## operations on files (tests/apps/file-effects), preparations and the
+	## pool's placement (tests/apps/prepared), ports with real handlers
+	## (tests/apps/ports), worker tasks, their handles and the page's stubs
+	## (tests/apps/tasks), and worker payloads at their nesting bound. The
+	## examples' journeys are `example_journeys!`.
+	browser_contracts! : SpecSuite.Options => Try(List(Str), _)
+	browser_contracts! = |o| {
 		fx = SpecSuite.wasm_of(o, "effects")
 		controls = SpecSuite.wasm_of(o, "controls")
 		services = SpecSuite.wasm_of(o, "services")
@@ -403,7 +407,6 @@ Targets := [].{
 				.concat(Targets.browser!(o, "workers-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "dbg-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "dbg"), "--job-only-wasm", SpecSuite.wasm_of(o, "dbg-job-only")])?)
 				.concat(Targets.browser!(o, "monitor-browser.mjs", ["--wasm", workers])?)
-				.concat(Targets.browser!(o, "workers-scaling.mjs", ["--wasm", SpecSuite.wasm_of(o, "worker-lab"), "--mode", "smoke"])?)
 				.concat(Targets.browser!(o, "files-browser.mjs", ["--wasm", files])?)
 				.concat(Targets.browser!(o, "table-file-lifetime-browser.mjs", ["--wasm", files])?)
 				.concat(Targets.browser!(o, "file-effects-browser.mjs", ["--wasm", file_effects])?)
@@ -413,14 +416,27 @@ Targets := [].{
 				.concat(Targets.browser!(o, "ports-browser.mjs", ["--wasm", ports])?)
 				.concat(Targets.browser!(o, "reports-browser.mjs", ["--wasm", ports])?)
 				.concat(Targets.browser!(o, "tasks-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "tasks")])?)
-				.concat(Targets.browser!(o, "deep-payload-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "deep-payload")])?)
+				.concat(Targets.browser!(o, "deep-payload-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "deep-payload")])?),
+		)
+	}
+
+	## The examples in Chrome, each against its own JavaScript, on the
+	## builds `SpecSuite.build!` made: the worker scaling smoke on the Worker
+	## Lab (correctness, robustness sequences and memory; no timing ratios),
+	## the Reading List's own port handlers against real IndexedDB in two
+	## tabs, the Status Page's stream, the Log Explorer over a 64 MiB log, the
+	## Million-Row Explorer at two million orders with its own feed, and
+	## Conduit's user journey against the RealWorld mock backend.
+	example_journeys! : SpecSuite.Options => Try(List(Str), _)
+	example_journeys! = |o|
+		Ok(
+			Targets.browser!(o, "workers-scaling.mjs", ["--wasm", SpecSuite.wasm_of(o, "worker-lab"), "--mode", "smoke"])?
 				.concat(Targets.browser!(o, "reading-list-journey.mjs", ["--wasm", SpecSuite.wasm_of(o, "reading-list")])?)
 				.concat(Targets.browser!(o, "status-page-journey.mjs", ["--wasm", SpecSuite.wasm_of(o, "status-page")])?)
 				.concat(Targets.browser!(o, "log-explorer-journey.mjs", ["--wasm", SpecSuite.wasm_of(o, "log-explorer")])?)
 				.concat(Targets.browser!(o, "million-row-explorer-journey.mjs", ["--wasm", SpecSuite.wasm_of(o, "million-row-explorer")])?)
-				.concat(Targets.browser!(o, "conduit-journey.mjs", ["--wasm", conduit_wasm])?),
+				.concat(Targets.browser!(o, "conduit-journey.mjs", ["--wasm", SpecSuite.wasm_of(o, "conduit")])?),
 		)
-	}
 
 	## The worker scaling measurement (tests/browser/workers-scaling.mjs) on
 	## the Worker Lab, in full, for each of the two candidate shipping builds:

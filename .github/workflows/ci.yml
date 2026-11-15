@@ -42,14 +42,15 @@ jobs:
 
   # The pull-request gate, `check -- --without-fuzz`, as parallel legs:
   # each runs part K of N, where K and N are this matrix's own job index
-  # and size. Which stages each part runs, and how the apps' per-app
-  # stages (their builds, their specs in both runners, their sizes, walks
-  # and broken specs) are dealt among the parts, is `CheckPlan` in the
-  # script, never this file: `check -- --plan` prints it. A part whose N
-  # is not the plan's, or that would run nothing, fails; each part prints
-  # a SKIP line for every stage another part runs, and builds what its own
-  # stages need. A leg compiles three apps at a time (4 GiB per compiler
-  # process on a 16 GB runner).
+  # and size. Which stages each part runs, how the apps' per-app stages
+  # (their builds, their specs in both runners, walks and broken specs)
+  # are dealt among the parts (by need: an app a part's own stages use is
+  # that part's, so no build is made by two legs), and every build each
+  # part makes, is `CheckPlan` in the script, never this file:
+  # `check -- --plan [--builds]` prints it. A part whose N is not the
+  # plan's, or that would run nothing, fails; each part prints a SKIP line
+  # for every stage another part runs. A leg compiles three apps at a time
+  # (4 GiB per compiler process on a 16 GB runner).
   check-part:
     name: Check (part ${{ matrix.part }})
     needs: nightly

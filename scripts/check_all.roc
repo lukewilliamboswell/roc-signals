@@ -9,6 +9,7 @@ app [main!] {
 import cli.OsStr
 import cli.Path
 import src/Checks
+import src/CompilerSkips
 import src/CheckPlan
 import src/FuzzPlan
 import src/PlatformTest
@@ -50,7 +51,8 @@ import src/Sizes
 ## job runs every target, in shards. `check -- --part K/N` runs part K of
 ## the `CheckPlan.parts` parts CI's Check matrix runs in parallel, printing
 ## a `SKIP` line for each stage another part runs, and `check -- --plan`
-## prints which stages and apps each part runs, without running anything.
+## prints which stages and apps each part runs and how many builds it
+## makes (`--plan --builds`: every build), without running anything.
 ## Every problem is printed as a `FAIL` line at the end or, when a stage
 ## cannot run and aborts the task, before that stage's error
 ## (`Checks.gather!`).
@@ -58,13 +60,27 @@ main! = |raw_args| {
 	args = match options(raw_args.map(OsStr.display).drop_if(|arg| arg == "--")) {
 		Ok(chosen) => chosen
 		Err(Unknown(arg)) => {
-			Proc.warn!("unknown check option ${arg}; the options are --without-fuzz, --part K/N and --plan")
+			Proc.warn!("unknown check option ${arg}; the options are --without-fuzz, --part K/N, --plan and --plan --builds")
 			return Err(Exit(2))
 		}
 	}
-	if args.describe {
-		for line in CheckPlan.describe(CheckPlan.stages, CheckPlan.parts, SpecSuite.spec_apps) {
+	if args.describe != Run {
+		inputs = plan_inputs!()?
+		for line in CheckPlan.describe(CheckPlan.stages, CheckPlan.parts, SpecSuite.spec_apps, inputs) {
 			Proc.note!(line)
+		}
+		if args.describe == Builds {
+			for index in 1.U64..=CheckPlan.parts {
+				match CheckPlan.plan(CheckPlan.stages, CheckPlan.parts, SpecSuite.spec_apps, OnePart({ index, total: CheckPlan.parts })) {
+					Ok(p) => {
+						Proc.note!("builds of part ${index.to_str()}/${CheckPlan.parts.to_str()}:")
+						for line in CheckPlan.build_lines(p, inputs) {
+							Proc.note!(line)
+						}
+					}
+					Err(error) => Proc.note!(CheckPlan.refusal(error))
+				}
+			}
 		}
 		return Ok({})
 	}
@@ -161,10 +177,7 @@ main! = |raw_args| {
 			Ok([])
 		},
 	)?
-	# A catalogue example that is in no spec list is reported by the part
-	# that reports the debug files, so every example's size is reported once.
-	unlisted = |slug| !SpecSuite.spec_apps.contains(slug) and CheckPlan.runs(plan, "debug file sizes")
-	$run = stage!(plan, $run, "example sizes", || Sizes.report_examples!(o, |slug| plan.apps.contains(slug) or unlisted(slug)))?
+	$run = stage!(plan, $run, "example sizes", || Sizes.report_examples!(o, |_| Bool.True))?
 	builds = CheckPlan.builds(plan)
 	if builds.natives != [] or builds.webs != [] {
 		Proc.note!("== builds: ${builds.natives.len().to_str()} native runners and ${builds.webs.len().to_str()} browser builds, ${Proc.compiler_jobs!(App)?.to_str()} at a time")
@@ -211,7 +224,8 @@ main! = |raw_args| {
 	)?
 	$run = stage!(plan, $run, "declaration refusals", || Checks.declaration_refusals!(o, {}))?
 	$run = stage!(plan, $run, "runtime unit tests", || Targets.runtime_unit!(o))?
-	$run = stage!(plan, $run, "runtime contracts in Chrome", || Targets.browser_contracts!(o, "${o.build_dir}/wasm/conduit/app.wasm"))?
+	$run = stage!(plan, $run, "runtime contracts in Chrome", || Targets.browser_contracts!(o))?
+	$run = stage!(plan, $run, "example journeys in Chrome", || Targets.example_journeys!(o))?
 	$run = stage!(plan, $run, "js-framework-benchmark", || Targets.jfb!(o, Checked))?
 	$run = stage!(plan, $run, "release dry run", || Release.build!(o, "0.0.1-dryrun", "${o.build_dir}/release"))?
 	$run = stage!(plan, $run, "signals.roc", || ToolCheck.run!(o))?
@@ -242,10 +256,11 @@ stage! = |plan, run, name, run!| {
 }
 
 ## What the arguments ask for: whether the fuzz targets run, which part of
-## the gate, and whether only to print the plan.
-options : List(Str) -> Try({ fuzzing : FuzzPlan.Selection, part : CheckPlan.Selection, describe : Bool }, [Unknown(Str)])
+## the gate, and whether only to print the plan (`--plan`), with every
+## build of every part (`--plan --builds`).
+options : List(Str) -> Try({ fuzzing : FuzzPlan.Selection, part : CheckPlan.Selection, describe : [Run, Summary, Builds] }, [Unknown(Str)])
 options = |args| {
-	var $out = { fuzzing: Every, part: Whole, describe: Bool.False }
+	var $out = { fuzzing: Every, part: Whole, describe: Run }
 	var $rest = args
 	while $rest != [] {
 		match $rest {
@@ -258,8 +273,12 @@ options = |args| {
 				$out = { ..$out, part: OnePart(part) }
 				$rest = more
 			}
-			["--plan", .. as more] if !$out.describe => {
-				$out = { ..$out, describe: Bool.True }
+			["--plan", "--builds", .. as more] if $out.describe == Run => {
+				$out = { ..$out, describe: Builds }
+				$rest = more
+			}
+			["--plan", .. as more] if $out.describe == Run => {
+				$out = { ..$out, describe: Summary }
 				$rest = more
 			}
 			[arg, ..] => return Err(Unknown(arg))
@@ -267,6 +286,22 @@ options = |args| {
 		}
 	}
 	Ok($out)
+}
+
+## The tree's inputs to the plan's builds: the docs sample directories
+## with specs, the catalogue's examples, and the apps a compiler-keyed skip
+## gives a size build.
+plan_inputs! : () => Try(CheckPlan.Inputs, _)
+plan_inputs! = || {
+	var $samples = []
+	for dir in DocSamples.dirs!()? {
+		if Path.exists!(Path.utf8("${dir}/specs"))? {
+			$samples = $samples.append(dir)
+		}
+	}
+	catalog = Sizes.examples(Path.read_utf8!(Path.utf8(ExampleFiles.catalog))?)?
+	size_specs = CompilerSkips.skips.map(|skip| skip.example).fold([], |seen, name| if (seen.contains(name)) seen else seen.append(name))
+	Ok({ samples: $samples, catalog, size_specs })
 }
 
 ## Run a check; a failure is a reported problem, not an abort.
@@ -438,9 +473,11 @@ cross_links! = |o| {
 ## `check` runs every fuzz target and the whole gate unless told the
 ## targets are replayed elsewhere or given one part; each option is given
 ## at most once.
-expect options([]) == Ok({ fuzzing: Every, part: Whole, describe: Bool.False })
-expect options(["--part", "2/5", "--without-fuzz"]) == Ok({ fuzzing: Elsewhere("check --without-fuzz: CI's Fuzz smoke job replays every target"), part: OnePart({ index: 2, total: 5 }), describe: Bool.False })
-expect options(["--plan"]) == Ok({ fuzzing: Every, part: Whole, describe: Bool.True })
+expect options([]) == Ok({ fuzzing: Every, part: Whole, describe: Run })
+expect options(["--part", "2/5", "--without-fuzz"]) == Ok({ fuzzing: Elsewhere("check --without-fuzz: CI's Fuzz smoke job replays every target"), part: OnePart({ index: 2, total: 5 }), describe: Run })
+expect options(["--plan"]) == Ok({ fuzzing: Every, part: Whole, describe: Summary })
+expect options(["--plan", "--builds"]) == Ok({ fuzzing: Every, part: Whole, describe: Builds })
+expect options(["--builds"]) == Err(Unknown("--builds"))
 expect options(["--filter"]) == Err(Unknown("--filter"))
 expect options(["--part", "two"]) == Err(Unknown("--part two"))
 expect options(["--part"]) == Err(Unknown("--part"))

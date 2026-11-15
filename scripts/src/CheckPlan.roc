@@ -1,20 +1,26 @@
 import SpecSuite
 
-## Which stages of `check` a run runs, and for which apps.
+## Which stages of `check` a run runs, for which apps, and what it builds.
 ##
 ## With no selection `check` runs the whole gate in one go, as a
 ## contributor runs it. CI runs the same gate as `CheckPlan.parts` parallel
 ## legs, each `check -- --part K/N`: every stage belongs to exactly one part,
 ## or is a per-app stage that every part runs for its own share of the apps
-## (`SpecSuite.spec_apps`, dealt round-robin), so the legs together run
-## every stage, and every per-app stage for every app, exactly once. A leg
-## prints a `SKIP` line for each stage another part runs, and a leg whose
-## selection would be empty is refused. A stage that needs another's
-## output builds it in its own leg: before its first stage that needs
-## builds, a run builds, in one bounded batch, the native runners and
-## browser builds of its apps and those its other stages name in `needs`
-## (so a part may build an app another part also builds; the whole gate
-## builds each once).
+## (`SpecSuite.spec_apps`), so the legs together run every stage, and every
+## per-app stage for every app, exactly once. A leg prints a `SKIP` line for
+## each stage another part runs, and a leg whose selection would be empty is
+## refused.
+##
+## Apps are dealt by need: an app a part's own stages use (`needs`: the
+## Chrome contracts' test apps, the examples the release dry run and the
+## journeys load) belongs to that part, so its builds are made once, there,
+## and its specs run beside the stages that use them; the rest are dealt
+## round-robin among `spare_parts`. Before its first stage that needs
+## builds, a run makes, in one bounded batch, the native runners and browser
+## builds of its apps and of what its stages need. `builds_made` is every
+## build a run makes, as (root, target, opt) with the stages that use it,
+## and its `expect`s hold the whole gate to building each once and the
+## parts to repeating none of another part's.
 CheckPlan := [].{
 
 	## Where a stage runs when the gate is split: in one part, or in every
@@ -30,12 +36,14 @@ CheckPlan := [].{
 	parts = 5
 
 	## The stages, in the order `check` runs them, and where each runs.
-	## Part 1 holds the checks of the tree and the `expect`s; part 2 the
-	## platform's inputs and the key contracts; part 3 the docs samples and
-	## the js-framework-benchmark; part 4 the runtime's contract tests and
-	## the stages beside them; part 5 the release dry run and the tool,
-	## which runs from the dry run's copy. Each part also runs every
-	## per-app stage for its share of the apps.
+	## Part 1 holds the checks of the tree, the `expect`s and the examples'
+	## shipping sizes (13 `--opt=size` builds); part 2 the platform's inputs
+	## and the key contracts; part 3 the docs samples and the
+	## js-framework-benchmark; part 4 the runtime's
+	## contract tests on the test apps and the stages beside them; part 5 the
+	## examples' journeys, the release dry run and the tool, which runs from
+	## the dry run's copy. Each part also runs every per-app stage for its
+	## own apps.
 	stages : List(Stage)
 	stages = [
 		{ name: "script pins", placement: Part(1) },
@@ -60,35 +68,144 @@ CheckPlan := [].{
 		{ name: "fuzz targets", placement: Part(1) },
 		{ name: "docs samples", placement: Part(3) },
 		{ name: "debug file sizes", placement: Part(3) },
-		{ name: "example sizes", placement: PerApp },
+		{ name: "example sizes", placement: Part(1) },
 		{ name: "specs", placement: PerApp },
 		{ name: "native lifetime contracts", placement: Part(4) },
 		{ name: "short walks", placement: PerApp },
-		{ name: "grammar coverage", placement: Part(4) },
+		{ name: "grammar coverage", placement: Part(5) },
 		{ name: "broken-spec self-check", placement: PerApp },
 		{ name: "declaration refusals", placement: Part(4) },
 		{ name: "runtime unit tests", placement: Part(4) },
 		{ name: "runtime contracts in Chrome", placement: Part(4) },
+		{ name: "example journeys in Chrome", placement: Part(5) },
 		{ name: "js-framework-benchmark", placement: Part(3) },
 		{ name: "release dry run", placement: Part(5) },
 		{ name: "signals.roc", placement: Part(5) },
 	]
 
-	## The builds of `SpecSuite.build!` a stage uses beyond its part's own
-	## apps': app names for native runners and for browser builds
-	## (`tests/apps/NAME` for a test app no list names). The per-app stages
-	## use their apps' builds; a stage not named here makes what it needs
-	## itself, or nothing.
+	## The parts that take the apps no part's own stages need, dealt
+	## round-robin: the parts whose own stages build least.
+	spare_parts : List(U64)
+	spare_parts = [1, 2]
+
+	## The builds of `SpecSuite.build!` a stage uses beyond the per-app
+	## stages': app names for native runners and for browser builds
+	## (`tests/apps/NAME` for a test app no list names). A stage not named
+	## here makes what it needs itself (`own_builds`), or nothing.
 	needs : Str -> { natives : List(Str), webs : List(Str) }
 	needs = |stage| match stage {
 		"native lifetime contracts" => { natives: ["files", "dbg"], webs: [] }
 		"grammar coverage" => { natives: ["kanban-board"], webs: [] }
 		"runtime contracts in Chrome" => {
 			natives: ["controls", "table", "services", "prerender"],
-			webs: ["tests/apps/effects", "controls", "services", "workers", "files", "file-effects", "ports", "markup", "construction", "table", "outbox", "dbg", "dbg-job-only", "worker-lab", "prepared", "tasks", "deep-payload", "reading-list", "status-page", "log-explorer", "million-row-explorer", "conduit", "prerender"],
+			webs: ["tests/apps/effects", "controls", "services", "workers", "files", "file-effects", "ports", "markup", "construction", "table", "outbox", "dbg", "dbg-job-only", "prepared", "tasks", "deep-payload", "prerender"],
 		}
+		"runtime unit tests" => { natives: [], webs: ["write-scaling"] }
+		"example journeys in Chrome" => { natives: [], webs: ["worker-lab", "reading-list", "status-page", "log-explorer", "million-row-explorer", "conduit"] }
 		"release dry run" => { natives: [], webs: SpecSuite.apps }
 		_ => { natives: [], webs: [] }
+	}
+
+	## One build: a root, the system it is built for (`native` is the native
+	## spec runners' target, `x64musl` in the gate; `host` the system the
+	## gate runs on) and the optimisation level.
+	Build : { root : Str, target : Str, opt : Str }
+
+	## The inputs of a run's builds the tree holds rather than the scripts:
+	## the docs sample directories with specs, the catalogue's examples, and
+	## the apps with a spec a compiler-keyed skip moves to an `--opt=size`
+	## build (`CompilerSkips`), on a compiler the skip names.
+	Inputs : { samples : List(Str), catalog : List(Str), size_specs : List(Str) }
+
+	## The builds a stage makes itself, outside the shared batch.
+	own_builds : Str, Inputs -> List(Build)
+	own_builds = |stage, inputs| match stage {
+		"key contracts" => [
+			{ root: "tests/apps/key-contracts/main.roc", target: "native", opt: "dev" },
+			{ root: "tests/apps/key-contracts/main.roc", target: "wasm32", opt: "dev" },
+			{ root: "tests/key-contracts/oracle.roc.txt", target: "native", opt: "dev" },
+		]
+		"cross links" => ["arm64mac", "x64mac", "x64win"].map(|target| { root: "tests/apps/tasks/main.roc", target, opt: "dev" })
+		"docs samples" => inputs.samples.map(|dir| [{ root: "${dir}/main.roc", target: "native", opt: "dev" }, { root: "${dir}/main.roc", target: "wasm32", opt: "dev" }]).join()
+		"example sizes" => inputs.catalog.map(|slug| { root: "examples/${slug}/main.roc", target: "wasm32", opt: "size" })
+		"declaration refusals" => [{ root: "tests/fixtures/declarations/main.roc", target: "native", opt: "dev" }]
+		"runtime unit tests" => [{ root: "tests/apps/write-scaling/main.roc", target: "wasm32", opt: "size" }]
+		"runtime contracts in Chrome" => [
+			{ root: "scripts/unicode_symbols.roc", target: "host", opt: "dev" },
+			{ root: "tests/key-contracts/picture-path-no-init.roc.txt", target: "native", opt: "dev" },
+		]
+		"js-framework-benchmark" => [{ root: "benchmarks/js-framework-benchmark/roc-signals-keyed/app/main.roc", target: "wasm32", opt: "dev" }]
+		_ => []
+	}
+
+	## Every build a plan makes, each with the stages that use it, in the
+	## order of the stages; a build made by two stages, or twice by one,
+	## appears once for each time it is made. The shared batch's builds are
+	## made once, for the per-app stages and the `needs` of the plan's
+	## stages. `signals.roc`'s builds are the tool's own (it compiles its
+	## apps as an author's `build` and `test` do, which is what it checks),
+	## so they are not the gate's to share and are not listed.
+	builds_made : Plan, Inputs -> List({ build : Build, used_by : List(Str) })
+	builds_made = |p, inputs| {
+		made = CheckPlan.builds(p)
+		users = |name, kind| {
+			own = if (CheckPlan.runs(p, "specs") and p.apps.contains(name)) ["specs"] else []
+			needed = p.stages.keep_if(
+				|stage| {
+					n = CheckPlan.needs(stage)
+					match kind {
+						Native => n.natives.contains(name)
+						Web => n.webs.contains(name)
+					}
+				},
+			)
+			own.concat(needed)
+		}
+		root_of = |name| if (name.starts_with("tests/apps/")) "${name}/main.roc" else "${SpecSuite.dir_of(name)}/main.roc"
+		batch = made.natives.map(|name| { build: { root: root_of(name), target: "native", opt: "dev" }, used_by: users(name, Native) })
+			.concat(made.webs.map(|name| { build: { root: root_of(name), target: "wasm32", opt: "dev" }, used_by: users(name, Web) }))
+		sized = if (CheckPlan.runs(p, "specs")) p.apps.keep_if(|name| inputs.size_specs.contains(name)).map(|name| { build: { root: root_of(name), target: "wasm32", opt: "size" }, used_by: ["specs"] }) else []
+		own = p.stages.map(|stage| CheckPlan.own_builds(stage, inputs).map(|build| { build, used_by: [stage] })).join()
+		batch.concat(sized).concat(own)
+	}
+
+	## The builds `made` holds more than once, each named once.
+	repeated : List({ build : Build, used_by : List(Str) }) -> List(Build)
+	repeated = |made| {
+		listed = made.map(|m| m.build)
+		listed.fold([], |seen, b| if (!seen.contains(b) and listed.keep_if(|x| x == b).len() > 1) seen.append(b) else seen)
+	}
+
+	## The apps two parts' own stages both need: each would be built in both
+	## parts, so dealing by need cannot place it once.
+	contested : List(Stage), List(Str) -> List({ name : Str, parts : List(U64) })
+	contested = |all, apps| apps.keep_oks(
+		|name| {
+			wanted = needing(all, name)
+			if (wanted.len() > 1) Ok({ name, parts: wanted }) else Err(Uncontested)
+		},
+	)
+
+	## Which part each app belongs to: the one part whose own stages need
+	## it, or, for an app no part's stages need, the next of `spare_parts`
+	## in turn.
+	deal : List(Stage), List(Str) -> List({ name : Str, part : U64 })
+	deal = |all, apps| {
+		var $free = 0.U64
+		var $out = []
+		for name in apps {
+			match needing(all, name) {
+				[part, ..] => {
+					$out = $out.append({ name, part })
+				}
+				[] => {
+					part = CheckPlan.spare_parts.get($free % CheckPlan.spare_parts.len()) ?? 1
+					$free = $free + 1
+					$out = $out.append({ name, part })
+				}
+			}
+		}
+		$out
 	}
 
 	## The stages that need what another stage made in the same run: the
@@ -124,7 +241,7 @@ CheckPlan := [].{
 				Part(k) => k == index
 				PerApp => Bool.True
 			}
-			mine = apps.map_with_index(|name, position| (name, position)).keep_if(|(_, position)| position % total + 1 == index).map(|(name, _)| name)
+			mine = CheckPlan.deal(all, apps).keep_if(|d| d.part == index).map(|d| d.name)
 			chosen = all.keep_if(placed_here).map(|s| s.name)
 			has_own = all.any(|s| s.placement == Part(index))
 			if !has_own and mine.is_empty() {
@@ -181,29 +298,57 @@ CheckPlan := [].{
 		}
 	}
 
-	## What `check -- --plan` prints: for each part, the stages it runs
-	## and the apps its per-app stages run for; then the per-app stages.
-	describe : List(Stage), U64, List(Str) -> List(Str)
-	describe = |all, count, apps| {
+	## What `check -- --plan` prints: for each part, the stages it runs,
+	## the apps its per-app stages run for, how many builds it makes (at
+	## `--opt=dev` and at `--opt=size`), and any build another part also
+	## makes; then the whole gate's builds, and any it makes twice.
+	describe : List(Stage), U64, List(Str), Inputs -> List(Str)
+	describe = |all, count, apps, inputs| {
 		per_app = all.keep_if(|s| s.placement == PerApp).map(|s| s.name)
+		counts = |made| {
+			dev = made.keep_if(|m| m.build.opt == "dev").len()
+			"${made.len().to_str()} builds (${dev.to_str()} --opt=dev, ${(made.len() - dev).to_str()} --opt=size)"
+		}
 		var $lines = ["check runs ${all.len().to_str()} stages; CI runs them as ${count.to_str()} parts (check -- --part K/${count.to_str()})", "every part runs the per-app stages for its own apps: ${Str.join_with(per_app, ", ")}"]
+		var $by_part = []
 		for index in 1.U64..=count {
 			match CheckPlan.plan(all, count, apps, OnePart({ index, total: count })) {
 				Ok(p) => {
-					own = all.keep_if(|s| s.placement == Part(index)).map(|s| s.name)
-					made = CheckPlan.builds(p)
-					$lines = $lines
-						.append("part ${index.to_str()}/${count.to_str()}: ${Str.join_with(own, ", ")}")
-						.append("  apps (${p.apps.len().to_str()}): ${Str.join_with(p.apps, ", ")}")
-						.append("  builds: ${made.natives.len().to_str()} native runners, ${made.webs.len().to_str()} browser builds")
+					$by_part = $by_part.append((index, CheckPlan.builds_made(p, inputs)))
 				}
 				Err(error) => {
 					$lines = $lines.append(CheckPlan.refusal(error))
 				}
 			}
 		}
-		$lines
+		by_part = $by_part
+		for (index, made) in by_part {
+			own = all.keep_if(|s| s.placement == Part(index)).map(|s| s.name)
+			mine = CheckPlan.deal(all, apps).keep_if(|d| d.part == index).map(|d| d.name)
+			elsewhere = by_part.keep_if(|(k, _)| k != index).map(|(_, other)| other.map(|m| m.build)).join()
+			shared = dedup_builds(made.map(|m| m.build).keep_if(|b| elsewhere.contains(b)))
+			$lines = $lines
+				.append("part ${index.to_str()}/${count.to_str()}: ${Str.join_with(own, ", ")}")
+				.append("  apps (${mine.len().to_str()}): ${Str.join_with(mine, ", ")}")
+				.append("  ${counts(made)}; repeated in another part: ${if (shared == []) "none" else Str.join_with(shared.map(show_build), ", ")}")
+		}
+		match CheckPlan.plan(all, count, apps, Whole) {
+			Ok(p) => {
+				made = CheckPlan.builds_made(p, inputs)
+				twice = CheckPlan.repeated(made)
+				$lines = $lines.append("whole gate: ${counts(made)}; made twice: ${if (twice == []) "none" else Str.join_with(twice.map(show_build), ", ")}")
+			}
+			Err(error) => {
+				$lines = $lines.append(CheckPlan.refusal(error))
+			}
+		}
+		$lines.append("signals.roc's own builds (its apps' runners and --opt=size modules, which it checks) are the tool's and not listed")
 	}
+
+	## Every build a plan makes, one line each: its root, target and opt,
+	## and the stages that use it (`check -- --plan --builds`).
+	build_lines : Plan, Inputs -> List(Str)
+	build_lines = |p, inputs| CheckPlan.builds_made(p, inputs).map(|m| "  ${show_build(m.build)}: ${Str.join_with(m.used_by, ", ")}")
 
 	## What is wrong between the stages `check` reached (`called`, in the
 	## order it reached them, whether the plan ran them or not) and the
@@ -254,6 +399,32 @@ CheckPlan := [].{
 
 dedup : List(Str) -> List(Str)
 dedup = |items| items.fold([], |seen, item| if (seen.contains(item)) seen else seen.append(item))
+
+dedup_builds : List(CheckPlan.Build) -> List(CheckPlan.Build)
+dedup_builds = |items| items.fold([], |seen, item| if (seen.contains(item)) seen else seen.append(item))
+
+show_build : CheckPlan.Build -> Str
+show_build = |b| "${b.root} (${b.target}, --opt=${b.opt})"
+
+## The parts whose own stages need `name`'s native runner or browser build.
+needing : List(CheckPlan.Stage), Str -> List(U64)
+needing = |all, name| {
+	parts = all.keep_oks(
+		|s| match s.placement {
+			Part(k) => {
+				n = CheckPlan.needs(s.name)
+				if (n.natives.contains(name) or n.webs.contains(name)) Ok(k) else Err(NotNeeded)
+			}
+			PerApp => Err(NotNeeded)
+		},
+	)
+	parts.fold([], |seen, k| if (seen.contains(k)) seen else seen.append(k))
+}
+
+## Inputs as the tree holds them today, for the tests below: two sample
+## directories stand in for the twenty.
+example_inputs : CheckPlan.Inputs
+example_inputs = { samples: ["www/samples/counter", "www/samples/todos"], catalog: SpecSuite.apps, size_specs: ["files"] }
 
 ## The stages as placed: each once, in parts 1..parts, every part with a
 ## stage of its own, and the tool beside the release dry run.
@@ -330,15 +501,73 @@ expect {
 }
 
 ## A part runs its own stages and the per-app ones for its apps, and skips
-## the rest naming the part that runs each; its builds are its apps' and
+## the rest naming the part that runs each; an app its own stages need is
+## dealt to it, the rest to the spare parts; its builds are its apps' and
 ## what its stages need, each once.
 expect {
 	all = [{ name: "a", placement: Part(1) }, { name: "specs", placement: PerApp }, { name: "grammar coverage", placement: Part(2) }]
 	match CheckPlan.plan(all, 2, ["x", "y", "kanban-board"], OnePart({ index: 2, total: 2 })) {
-		Ok(p) => p.stages == ["specs", "grammar coverage"] and p.apps == ["y"] and p.skip == [{ name: "a", part: 1 }] and CheckPlan.builds(p) == { natives: ["y", "kanban-board"], webs: ["y"] } and CheckPlan.skip_line({ name: "a", part: 1 }) == "SKIP a: part 1/${CheckPlan.parts.to_str()} runs it"
+		Ok(p) => p.stages == ["specs", "grammar coverage"] and p.apps == ["y", "kanban-board"] and p.skip == [{ name: "a", part: 1 }] and CheckPlan.builds(p) == { natives: ["y", "kanban-board"], webs: ["y", "kanban-board"] } and CheckPlan.skip_line({ name: "a", part: 1 }) == "SKIP a: part 1/${CheckPlan.parts.to_str()} runs it"
 		Err(_) => Bool.False
 	}
 }
+
+## The whole gate makes each build once: no two stages, and no stage and
+## the shared batch, build the same root for the same target at the same
+## opt.
+expect {
+	match CheckPlan.plan(CheckPlan.stages, CheckPlan.parts, SpecSuite.spec_apps, Whole) {
+		Ok(p) => CheckPlan.repeated(CheckPlan.builds_made(p, example_inputs)) == []
+		Err(_) => Bool.False
+	}
+}
+
+## No build is made by two parts: every app a part's own stages need is
+## needed by that part alone, and so is dealt to it, and no part makes
+## another's builds.
+expect {
+	var $all = []
+	for index in 1.U64..=CheckPlan.parts {
+		match CheckPlan.plan(CheckPlan.stages, CheckPlan.parts, SpecSuite.spec_apps, OnePart({ index, total: CheckPlan.parts })) {
+			Ok(p) => {
+				$all = $all.concat(CheckPlan.builds_made(p, example_inputs))
+			}
+			Err(_) => {
+				$all = $all.append({ build: { root: "refused", target: "", opt: "" }, used_by: [] }).append({ build: { root: "refused", target: "", opt: "" }, used_by: [] })
+			}
+		}
+	}
+	CheckPlan.contested(CheckPlan.stages, SpecSuite.spec_apps) == [] and CheckPlan.repeated($all) == []
+}
+
+## The parts together make exactly the whole gate's builds.
+expect {
+	var $all = []
+	for index in 1.U64..=CheckPlan.parts {
+		match CheckPlan.plan(CheckPlan.stages, CheckPlan.parts, SpecSuite.spec_apps, OnePart({ index, total: CheckPlan.parts })) {
+			Ok(p) => {
+				$all = $all.concat(CheckPlan.builds_made(p, example_inputs).map(|m| m.build))
+			}
+			Err(_) => {}
+		}
+	}
+	match CheckPlan.plan(CheckPlan.stages, CheckPlan.parts, SpecSuite.spec_apps, Whole) {
+		Ok(p) => {
+			whole = CheckPlan.builds_made(p, example_inputs).map(|m| m.build)
+			whole.len() == $all.len() and whole.all(|b| $all.contains(b))
+		}
+		Err(_) => Bool.False
+	}
+}
+
+## Two parts needing one app is reported, and the app goes to the first.
+expect {
+	all = [{ name: "release dry run", placement: Part(1) }, { name: "grammar coverage", placement: Part(2) }, { name: "specs", placement: PerApp }]
+	CheckPlan.contested(all, ["kanban-board", "x"]) == [{ name: "kanban-board", parts: [1, 2] }] and CheckPlan.deal(all, ["kanban-board"]) == [{ name: "kanban-board", part: 1 }]
+}
+
+## A stage and the shared batch building one root twice is a repeat.
+expect CheckPlan.repeated([{ build: { root: "a", target: "wasm32", opt: "dev" }, used_by: ["specs"] }, { build: { root: "a", target: "wasm32", opt: "dev" }, used_by: ["runtime unit tests"] }, { build: { root: "a", target: "wasm32", opt: "size" }, used_by: ["runtime unit tests"] }]) == [{ root: "a", target: "wasm32", opt: "dev" }]
 
 ## A part is written K/N.
 expect (CheckPlan.parse_part("2/5"), CheckPlan.parse_part("2"), CheckPlan.parse_part("a/5")) == (Ok({ index: 2, total: 5 }), Err(BadPart("2")), Err(BadPart("a/5")))
