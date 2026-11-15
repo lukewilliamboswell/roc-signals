@@ -144,6 +144,17 @@ Signals :: [].{
 		"${description}\n\nThis is roc-signals ${Bundle.version}, tested with Roc ${Bundle.nightly}.\nDocumentation: https://lukewilliamboswell.github.io/roc-signals/docs/${docs}/"
 	}
 
+	## The words for a spec run that is not accounted for, one sentence for
+	## each way (`Specs.unaccounted`), with what is wrong after it.
+	runner_failed : [NotStarted, Stopped, Disagrees, ExtraResults], Str -> Str
+	runner_failed = |cause, detail|
+		match cause {
+			NotStarted => "The spec runner could not be started (${detail.trim()}), so no spec ran."
+			Stopped => "The spec runner stopped before it reported every spec:\n${detail.trim()}"
+			Disagrees => "The spec runner's exit code disagrees with the results it reported, so the run cannot be trusted:\n${detail.trim()}"
+			ExtraResults => "The spec runner reported results for specs it was not given, or more than one for a spec:\n${detail.trim()}"
+		}
+
 	## The sentence a failure is explained with, and the exit code. This is
 	## the one place the tool's failures are put into words.
 	explain : _ -> { text : Str, code : I32 }
@@ -158,7 +169,7 @@ Signals :: [].{
 			NoSpecs => { code: 1, text: "There are no specs to run: specs/ holds no .scm files. `roc signals.roc init` writes specs/counter.scm as an example, and Testing describes the language: https://lukewilliamboswell.github.io/roc-signals/docs/testing/" }
 			SpecsUnsupported(target) => { code: 1, text: "This machine runs ${Specs.system_name(target)}, and roc-signals ${Bundle.version} builds the native spec runner only for ${Str.join_with(Bundle.spec_targets.map(Specs.system_name), ", ")}, so `test` cannot run the specs here. Run them on one of those systems, for example in CI." }
 			SpecsFailed => { code: 1, text: "" }
-			RunnerFailed(text) => { code: 1, text: "The spec runner stopped before it reported every spec:\n${text.trim()}" }
+			RunnerFailed({ cause, detail }) => { code: 1, text: Signals.runner_failed(cause, detail) }
 			BuildFailed({ report, version }) => {
 				note = Compiler.mismatch_note(version)
 				{ code: 1, text: "${report.trim()}\n\nThe build failed: the compiler's report is above.${if (note.is_empty()) "" else "\n${note}"}" }
@@ -234,3 +245,15 @@ expect Signals.parse(["build", "--picture", "/", "/tasks?open=1#list"]) == Ok(Bu
 
 ## A picture switch needs at least one URL and cannot swallow another option.
 expect Signals.parse(["build", "--picture"]).is_err() and Signals.parse(["build", "--picture", "/", "--watch"]).is_err()
+
+## Each way a spec run is not accounted for is put into its own words.
+expect {
+	texts = [NotStarted, Stopped, Disagrees, ExtraResults].map(|cause| Signals.runner_failed(cause, "why"))
+	texts
+		== [
+			"The spec runner could not be started (why), so no spec ran.",
+			"The spec runner stopped before it reported every spec:\nwhy",
+			"The spec runner's exit code disagrees with the results it reported, so the run cannot be trusted:\nwhy",
+			"The spec runner reported results for specs it was not given, or more than one for a spec:\nwhy",
+		]
+}

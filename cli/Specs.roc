@@ -50,11 +50,11 @@ Specs :: [].{
 		count = specs.len()
 		Stdout.line!("Running ${count.to_str()} spec${if (count == 1) "" else "s"}:")?
 		program = "${Project.with_slashes(Path.display(Env.cwd!()?))}/${runner}"
-		output = Cmd.new(OsStr.from_str(program)).args(specs.map(OsStr.from_str)).stdout(Capture).stderr(Capture).run!() ? |_| RunnerFailed("")
+		output = Cmd.new(OsStr.from_str(program)).args(specs.map(OsStr.from_str)).stdout(Capture).stderr(Capture).run!() ? |_| RunnerFailed({ cause: NotStarted, detail: program })
 		results = Specs.outcomes(Str.from_utf8_lossy(output.stdout_bytes))
 		match Specs.unaccounted({ ids: specs.map(Specs.id_of), status: output.status, results }) {
 			Ok({}) => {}
-			Err(reason) => return Err(RunnerFailed("${reason}\n${Str.from_utf8_lossy(output.stderr_bytes)}"))
+			Err({ cause, detail }) => return Err(RunnerFailed({ cause, detail: "${detail}\n${Str.from_utf8_lossy(output.stderr_bytes)}" }))
 		}
 		# Valid outcome records leave stderr available for native diagnostics,
 		# including dbg. A malformed runner report is rendered by RunnerFailed
@@ -82,33 +82,50 @@ Specs :: [].{
 	## runner returns for those results, 0 when every spec passed and 1 when
 	## one did not. A runner that crashed (exit 70), failed an `expect` (71)
 	## or was killed stops before it reports the rest, and that is never read
-	## as a shorter run that passed.
-	unaccounted : { ids : List(Str), status : [Exited(I32), Signaled(I32)], results : List(Outcome) } -> Try({}, Str)
+	## as a shorter run that passed. The cause says which rule the run broke,
+	## so the failure is put into the right words: it `Stopped` before every
+	## spec had a result, its exit code `Disagrees` with the results it gave,
+	## or it gave `ExtraResults` (one for a spec it was not given, or two for
+	## one). The detail names everything that is wrong.
+	unaccounted : { ids : List(Str), status : [Exited(I32), Signaled(I32)], results : List(Outcome) } -> Try({}, { cause : [Stopped, Disagrees, ExtraResults], detail : Str })
 	unaccounted = |{ ids, status, results }| {
 		reported = results.map(|o| o.id)
 		missing = ids.drop_if(|id| reported.contains(id))
 		unknown = reported.drop_if(|id| ids.contains(id))
 		repeated = ids.keep_if(|id| reported.count_if(|seen| seen == id) > 1)
 		failures = results.count_if(|o| o.status != Passed)
+		exit : Try({}, ([Stopped, Disagrees], Str))
 		exit = match status {
 			Exited(0) if failures == 0 => Ok({})
 			Exited(1) if failures > 0 => Ok({})
-			Exited(70) => Err("the runner crashed (exit 70: an engine contract error or an app's crash)")
-			Exited(71) => Err("an expect failed outside a worker job (exit 71)")
-			Exited(code) => Err("the runner exited with ${code.to_str()} after ${failures.to_str()} failing spec${if (failures == 1) "" else "s"}")
-			Signaled(signal) => Err("the runner was stopped by signal ${signal.to_str()}")
+			Exited(70) => Err((Stopped, "the runner crashed (exit 70: an engine contract error or an app's crash)"))
+			Exited(71) => Err((Stopped, "an expect failed outside a worker job (exit 71)"))
+			Exited(code) => Err((Disagrees, "the runner exited with ${code.to_str()} after ${failures.to_str()} failing spec${if (failures == 1) "" else "s"}"))
+			Signaled(signal) => Err((Stopped, "the runner was stopped by signal ${signal.to_str()}"))
 		}
+		stopped = match exit {
+			Err((Stopped, _)) => Bool.True
+			_ => Bool.False
+		}
+		cause =
+			if stopped or !missing.is_empty() {
+				Stopped
+			} else if exit.is_err() {
+				Disagrees
+			} else {
+				ExtraResults
+			}
 		problems = []
 			.concat(
 				match exit {
 					Ok({}) => []
-					Err(reason) => [reason]
+					Err((_, reason)) => [reason]
 				},
 			)
 			.concat(if (missing.is_empty()) [] else ["no result for ${Str.join_with(missing, ", ")}"])
 			.concat(if (unknown.is_empty()) [] else ["a result for ${Str.join_with(unknown, ", ")}, which it was not given"])
 			.concat(if (repeated.is_empty()) [] else ["more than one result for ${Str.join_with(repeated, ", ")}"])
-		if (problems.is_empty()) Ok({}) else Err(Str.join_with(problems, "; "))
+		if (problems.is_empty()) Ok({}) else Err({ cause, detail: Str.join_with(problems, "; ") })
 	}
 
 	## The compiler's name for the machine's target.
@@ -281,11 +298,11 @@ expect {
 	expected = [
 		Ok({}),
 		Ok({}),
-		Err("the runner crashed (exit 70: an engine contract error or an app's crash); no result for b, c"),
-		Err("a result for z, which it was not given; more than one result for a"),
-		Err("the runner exited with 0 after 1 failing spec"),
-		Err("the runner exited with 1 after 0 failing specs"),
-		Err("the runner was stopped by signal 9; no result for a"),
+		Err({ cause: Stopped, detail: "the runner crashed (exit 70: an engine contract error or an app's crash); no result for b, c" }),
+		Err({ cause: ExtraResults, detail: "a result for z, which it was not given; more than one result for a" }),
+		Err({ cause: Disagrees, detail: "the runner exited with 0 after 1 failing spec" }),
+		Err({ cause: Disagrees, detail: "the runner exited with 1 after 0 failing specs" }),
+		Err({ cause: Stopped, detail: "the runner was stopped by signal 9; no result for a" }),
 	]
 	actual == expected
 }
