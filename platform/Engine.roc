@@ -1155,7 +1155,9 @@ Engine := [].{
 	## `FileText`), a file's SHA-256 digest (`Digest`) or a URL that shows it
 	## (`FileUrl`), or why an operation on a file produced nothing
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
-	## there is none (`PortFailed`), or a response whose body is a file
+	## there is none (`PortFailed`), or `PortRefused(TooDeep)` when its
+	## message was nested past the port format's bound and nothing was
+	## sent, or a response whose body is a file
 	## (`Fetched`).
 	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 

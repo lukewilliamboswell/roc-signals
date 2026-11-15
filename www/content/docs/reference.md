@@ -412,6 +412,7 @@ them.
 | URLs one file gives | 16 ranges, revoked when the file is let go | `FileFailed(TooLarge)` |
 | Ports a program declares | 64, names 1 to 128 bytes | Contract error at mount |
 | A port's answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | `TooLarge` |
+| Nesting of a port message | 512 containers, both ways | A call or subscription: `TooDeep`, nothing sent; a command: not sent, reported to the console and `onPortFault`; an answer: `Undecodable` |
 | Replaceable `Latest` report or `Every` backlog per subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` replaces; reports pinned by occurrences count within ingress. `Every` refuses the JavaScript's `emit` |
 | Port call timeout | 600 s | Capped |
 | Payload nesting | 128 levels of the app's containers (each list, set, dictionary, record, tuple, tag with a payload and file) | `TooDeep`: an input is not sent, an answer is not answered, and the worker is kept |
