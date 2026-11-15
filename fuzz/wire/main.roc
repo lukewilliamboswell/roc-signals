@@ -345,7 +345,11 @@ sample_filed = {
 		Ok(f) => f
 		Err(_) => crash "an empty range lies within an empty file"
 	}
-	match WorkerCodec.encode_with_files("wire fuzz", { title: "t", docs: [empty], extra: Err(Missing) }) {
+	# Annotated: an unannotated `Err(Missing)` is a tag union of its own,
+	# not the `Try` the derivation omits as an absent optional field.
+	seed : Filed
+	seed = { title: "t", docs: [empty], extra: Err(Missing) }
+	match WorkerCodec.encode_with_files("wire fuzz", seed) {
 		Ok(encoded) => encoded.bytes
 		Err(TooDeep) => crash "a seed Filed, which cannot nest, is refused as too deep"
 		Err(NanKeys) => crash "a seed Filed, which has no dictionary, holds two NaN keys"
@@ -361,6 +365,7 @@ target = Fuzz.target_with!({
 		Fuzz.saved({ name: "empty", revision: "2", bytes: [] }),
 		Fuzz.saved({ name: "filed", revision: "2", bytes: Saved.filed }),
 		Fuzz.saved({ name: "canon-money-float", revision: "1", bytes: Saved.canon_money_float }),
+		Fuzz.saved({ name: "canon-absent-note", revision: "1", bytes: Saved.canon_absent_note }),
 		Fuzz.saved({ name: "float-key-zero-alias", revision: "1", bytes: [0xa2, 0xf9, 0, 0, 0x61, 0x61, 0xf9, 0x80, 0, 0x61, 0x62] }),
 		# 128 two-payload tags, the last holding a `Dec` with a bignum
 		# mantissa: the deepest CBOR the writer writes.
@@ -382,6 +387,17 @@ expect decode_rich(Saved.rich) == Ok(sample_rich)
 
 ## Independent complete Canon seed is accepted and re-encodes byte-for-byte.
 expect decode_canon(Saved.canon) == Ok(sample_canon) and WorkerCodec.encode(sample_canon) == Saved.canon
+
+## A `Try(a, [Missing])` field holding `Err(Missing)` has one encoding: no
+## entry. The Canon seed without its `note` entry decodes to that value and
+## re-encodes byte for byte, and the same field spelled as the tag `Err`
+## holding `Missing` is refused.
+expect {
+	absent = { ..sample_canon, note: Err(Missing) }
+	spelled : Try({ note : Try(Str, [Missing]) }, WorkerCodec.Error)
+	spelled = WorkerCodec.decode([0xa1, 0x64, 0x6e, 0x6f, 0x74, 0x65, 0xa1, 0x63, 0x45, 0x72, 0x72, 0x67, 0x4d, 0x69, 0x73, 0x73, 0x69, 0x6e, 0x67])
+	decode_canon(Saved.canon_absent_note) == Ok(absent) and WorkerCodec.encode(absent) == Saved.canon_absent_note and spelled.is_err()
+}
 
 ## The six-item file metadata array agrees with the owned-handle encoder.
 expect sample_filed == Saved.filed
