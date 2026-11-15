@@ -353,7 +353,8 @@ Checks := [].{
 	## change (a read-only control, text over `maxlength`, a line break in a
 	## single-line control, white space around an email address, a control
 	## in a disabled field set) and a scripted change its value setter would
-	## rewrite are refused by both.
+	## rewrite are refused by both. So is a click on an HTML button the
+	## browser does not draw because it sits under an SVG mount root.
 	broken_specs : List(Broken)
 	broken_specs = [
 		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press (label \"Keyboard editable\") \"Enter\")", rejection: "unmodelled" },
@@ -380,6 +381,7 @@ Checks := [].{
 		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(fill (label \"Email field\") \" a@b \")", rejection: "an email control trims white space" },
 		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(fill (label \"Fenced field\") \"x\")", rejection: "is disabled" },
 		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(change (label \"Email field\") \" a@b \")", rejection: "cannot take" },
+		{ example: "namespaces", spec: "tests/apps/namespaces/specs/svg-root.scm", good: "(navigate \"/#hidden\")", bad: "(click (role button :name \"Toggle namespace subtree\"))", rejection: "is not rendered: the browser draws no HTML element inside SVG outside foreignObject" },
 		{ example: "services", spec: "tests/apps/services/specs/url-links.scm", good: "(click (role link :name \"Follow raw fragment\"))", bad: "(click (role link :name \"Write mail\"))", rejection: "the click navigates to mailto:a@b, which leaves the app" },
 		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(hold-reports)", bad: "(hold-reports) (hold-reports)", rejection: "reports are already held" },
 		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(hold-reports)", bad: "(release-reports)", rejection: "reports are not held" },

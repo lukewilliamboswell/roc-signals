@@ -415,7 +415,9 @@ their mirrored attributes. `patches_emitted` includes `PROP` and `HPROP`.
 
 `expect-visible` tests presence in the document, so a closed dialog or
 hidden popover can still match it. Use `expect-shown` for shown state.
-Actions on hidden dialog/popover content or outside the top modal fail;
+Actions on hidden dialog/popover content, outside the top modal, or on an
+element the browser does not draw (an HTML element inside SVG outside
+`foreignObject` or inside MathML outside a token element such as `mi`) fail;
 assertions can inspect the inert background. No pixel layout or smooth
 scroll completion is asserted. A scroll command targeting a missing
 reference is stale and adds no performed scroll.

@@ -4148,8 +4148,12 @@ On any other element it fails in both runners, as `expect-checked` does on an
 element that is not an HTML `input`, `expect-disabled` on one that is not an
 HTML form control, option, option group or field set, and `expect-value` on
 one that is not an HTML `input`, `textarea`, `select`, `option` or `button`:
-an element without that state has no default reading. Actions refuse hidden dialog/popover descendants
-and elements outside the top modal; observations may read inert background.
+an element without that state has no default reading. Actions refuse hidden dialog/popover descendants,
+elements outside the top modal, and elements the browser does not draw: an
+HTML element inside SVG outside `foreignObject` or inside MathML outside a
+token element, and the child of an SVG element that draws none (the rule
+is `SpecRunner.drawn`, measured in Chrome; an open modal dialog or shown
+popover is drawn anywhere); observations may read inert background.
 Tab skips inert elements. The driver settles native callbacks after mount
 and each step with the bounded passive observation described above.
 

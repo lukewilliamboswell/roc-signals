@@ -37,6 +37,21 @@ NamespacesApp := [].{
 						[
 							Html.button("Change namespaced attribute", [], st.update(|state| { ..state, changed: !state.changed })),
 							Html.button("Toggle namespace subtree", [], st.update(|state| { ..state, drawn: !state.drawn })),
+							# Under an SVG mount root the browser draws none of this
+							# HTML, so no click reaches these buttons there; the
+							# fragment `#hidden` or `#shown` toggles the subtree
+							# without one (`specs/svg-root.scm`).
+							Engine.watch(
+								Engine.const({}),
+								|_| [Engine.popstate({})],
+								st.on_result(
+									|state, _, result| match result {
+										Ok(location) if location.ends_with("#hidden") => { ..state, drawn: False }
+										Ok(location) if location.ends_with("#shown") => { ..state, drawn: True }
+										_ => state
+									},
+								),
+							),
 							Engine.element("input", [Engine.test_id("exact-value"), Engine.attr(NamespacesApp.attribute("VALUE", { namespace: None }), "exact attribute")], []),
 							Html.dialog("Exact attr dialog", { open: Engine.const(False), on_close: Engine.does([]) }, [Engine.test_id("exact-dialog"), Engine.attr(NamespacesApp.attribute("OPEN", { namespace: None }), ""), Engine.attr(NamespacesApp.attribute("PoPoVeR", { namespace: None }), "manual")], []),
 							Engine.element(NamespacesApp.tag("DIV", { namespace: Html }), [Engine.test_id("exact-html")], [Engine.text("exact HTML")]),

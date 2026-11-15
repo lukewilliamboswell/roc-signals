@@ -1975,7 +1975,7 @@ SpecRunner := [].{
 	focusable_in : Dom.Model, U64 -> Bool
 	focusable_in = |dom, i| {
 		target = Dom.node(dom, i)
-		if !SpecRunner.focusable(target) or SpecRunner.actually_disabled(dom, i) {
+		if !SpecRunner.focusable(target) or SpecRunner.actually_disabled(dom, i) or !SpecRunner.drawn(dom, i) {
 			return Bool.False
 		}
 		if !SpecRunner.intrinsic_focusable(target) and target.parent != 0 and Dom.content_editable(dom, target.parent - 1) {
@@ -2062,6 +2062,65 @@ SpecRunner := [].{
 		}
 		False
 	}
+
+	## Whether the browser renders node `i`, so that an action can reach it,
+	## as measured in Chrome 157. Rendering follows each element's parent: an
+	## SVG `svg`, `g`, `a` or `switch` renders only SVG children, an SVG
+	## `text`, `tspan` or `textPath` only `tspan`, `textPath` and `a`, any
+	## other SVG element (`defs`, a gradient, a shape, an unknown element such
+	## as an SVG `DIV`) no child at all, a
+	## MathML element other than a token element (`mi`, `mn`, `mo`, `ms`,
+	## `mtext`) renders only MathML children, and any other parent (HTML, an
+	## element of another namespace, `foreignObject`, a token element) renders
+	## any child except an SVG element other than `svg`. An open modal dialog
+	## or a shown popover renders in the top layer whatever its parent. The
+	## mount root sits in the page's HTML. So an HTML button under `<svg>` or under the
+	## SVG mount root has no box in Chrome, takes no click or focus, and every
+	## action on it is refused, while observations still read it.
+	drawn : Dom.Model, U64 -> Bool
+	drawn = |dom, i| {
+		var $at = i
+		while True {
+			n = Dom.node(dom, $at)
+			if $at == dom.root or n.parent == 0 {
+				# The mount root sits in the page's HTML, which draws no SVG
+				# element but `svg`.
+				return !(n.namespace == Dom.svg_namespace and n.tag != "svg")
+			}
+			if (Dom.html_tag(n, "dialog") and n.shown == Modal) or (Dom.html_element(n) and Dom.has_attr(n, "popover") and n.shown == Popover) {
+				return Bool.True
+			}
+			if n.kind == 1 and !SpecRunner.renders_child(Dom.node(dom, n.parent - 1), n) {
+				return Bool.False
+			}
+			$at = n.parent - 1
+		}
+	}
+
+	## Whether element `parent`, itself rendered, renders element `child`
+	## (`drawn`).
+	renders_child : Dom.DNode, Dom.DNode -> Bool
+	renders_child = |parent, child| {
+		svg_child = child.namespace == Dom.svg_namespace
+		if parent.kind == 1 and parent.namespace == Dom.svg_namespace and parent.tag != "foreignObject" {
+			if ["svg", "g", "a", "switch"].contains(parent.tag) {
+				svg_child
+			} else if ["text", "tspan", "textPath"].contains(parent.tag) {
+				svg_child and ["tspan", "textPath", "a"].contains(child.tag)
+			} else {
+				Bool.False
+			}
+		} else if parent.kind == 1 and parent.namespace == Dom.mathml_namespace and !["mi", "mn", "mo", "ms", "mtext"].contains(parent.tag) {
+			child.namespace == Dom.mathml_namespace
+		} else {
+			!(svg_child and child.tag != "svg")
+		}
+	}
+
+	## The refusal of an action on an element the browser does not render,
+	## in both runners' words.
+	unrendered_message : Str -> Str
+	unrendered_message = |what| "${what} is not rendered: the browser draws no HTML element inside SVG outside foreignObject, nor inside MathML outside a token element, so no action can reach it"
 
 	## Native actions reject only browser reachability facts the oracle models.
 	reachable : S(state), U64 -> Bool
@@ -2645,24 +2704,36 @@ SpecRunner := [].{
 		match op {
 			Click(loc) | RealClick(loc) | Fill(loc, _) | Focus(loc) | Blur(loc) | Check(loc) | Uncheck(loc) | SelectOption(loc, _) | Change(loc, _) | Submit(loc) | ChooseFiles(loc, _) | DropFiles(loc, _) | PasteFiles(loc, _) | PasteText(loc, _) => {
 				i = SpecRunner.need(s.dom, loc)?
+				if !SpecRunner.drawn(s.dom, i) {
+					return Err(SpecRunner.unrendered_message(Scm.show_loc(loc)))
+				}
 				if !SpecRunner.reachable(s, i) {
 					return Err("${Scm.show_loc(loc)} is unreachable: hidden dialog/popover or outside the topmost modal")
 				}
 			}
 			PointerDown(press) => {
 				i = SpecRunner.need(s.dom, press.target)?
+				if !SpecRunner.drawn(s.dom, i) {
+					return Err(SpecRunner.unrendered_message(Scm.show_loc(press.target)))
+				}
 				if !SpecRunner.reachable(s, i) {
 					return Err("pointer target is unreachable: hidden dialog/popover or outside the topmost modal")
 				}
 			}
 			PointerMove(place) | PointerUp(place) => {
 				i = SpecRunner.need(s.dom, place.target)?
+				if !SpecRunner.drawn(s.dom, i) {
+					return Err(SpecRunner.unrendered_message(Scm.show_loc(place.target)))
+				}
 				if !SpecRunner.reachable(s, i) {
 					return Err("pointer target is unreachable: hidden dialog/popover or outside the topmost modal")
 				}
 			}
 			Press({ target: At(loc), .. }) => {
 				i = SpecRunner.need(s.dom, loc)?
+				if !SpecRunner.drawn(s.dom, i) {
+					return Err(SpecRunner.unrendered_message(Scm.show_loc(loc)))
+				}
 				if !SpecRunner.reachable(s, i) {
 					return Err("press target is unreachable: hidden dialog/popover or outside the topmost modal")
 				}
@@ -4087,6 +4158,9 @@ SpecRunner := [].{
 		}
 		dom = s.dom
 		i = SpecRunner.need(dom, loc)?
+		if !SpecRunner.drawn(dom, i) {
+			return Err(SpecRunner.unrendered_message(Scm.show_loc(loc)))
+		}
 		if !SpecRunner.reachable(s, i) {
 			return Err("${Scm.show_loc(loc)} is unreachable: hidden dialog/popover or outside the topmost modal")
 		}
@@ -4495,7 +4569,7 @@ SpecRunner := [].{
 			i = $stack.last() ?? 0
 			$stack = $stack.drop_last(1)
 			n = Dom.node(dom, i)
-			if !SpecRunner.actually_disabled(dom, i) {
+			if !SpecRunner.actually_disabled(dom, i) and SpecRunner.drawn(dom, i) {
 				for listener in n.hs {
 					if listener.kind != 3 {
 						$out = $out.append((i, listener.event))
@@ -4562,7 +4636,7 @@ SpecRunner := [].{
 			n = Dom.node(dom, i)
 			has_zone = !Dom.live_value(n, "pointer_zone").is_empty()
 			is_grip = n.hs.any(|h| h.kind == 3 and h.event == "pointerdown")
-			if has_zone and !SpecRunner.actually_disabled(dom, i) and (what == Zones or is_grip) {
+			if has_zone and !SpecRunner.actually_disabled(dom, i) and SpecRunner.drawn(dom, i) and (what == Zones or is_grip) {
 				id = Dom.attr_of(n, "data-testid")
 				label = Dom.attr_of(n, "aria-label")
 				if !id.is_empty() {
@@ -5842,6 +5916,58 @@ expect {
 		SpecRunner.form_valid(d2, form)
 	}
 	[valid([("required", ""), ("type", "hidden")]), valid([("required", ""), ("readonly", "")]), valid([("required", "")])] == [True, True, False]
+}
+
+## The browser renders an HTML element inside SVG only through
+## foreignObject, and inside MathML only through a token element; an open
+## modal dialog renders in the top layer wherever it is. Each case matches
+## a measurement in Chrome 157.
+expect {
+	svg = Dom.svg_namespace
+	math = Dom.mathml_namespace
+	html = Dom.html_namespace
+	leaf = |chain| {
+		var $dom = Dom.new({})
+		var $parent = $dom.root
+		for (namespace, tag) in chain {
+			(d, i) = Dom.add_node($dom, { ..Dom.empty_node, namespace, tag })
+			$dom = Dom.insert(d, $parent, i, Err(End))
+			$parent = i
+		}
+		($dom, $parent)
+	}
+	visible_in = |chain| {
+		(dom, i) = leaf(chain)
+		SpecRunner.drawn(dom, i)
+	}
+	actual = [
+		visible_in([(svg, "svg"), (html, "button")]),
+		visible_in([(svg, "svg"), (svg, "g"), (html, "button")]),
+		visible_in([(svg, "svg"), (svg, "foreignObject"), (html, "button")]),
+		visible_in([(svg, "svg"), (svg, "foreignObject"), (svg, "svg"), (html, "button")]),
+		visible_in([(svg, "svg"), (svg, "foreignObject"), (svg, "g")]),
+		visible_in([(math, "math"), (html, "button")]),
+		visible_in([(math, "math"), (math, "mrow"), (math, "mtext"), (html, "button")]),
+		visible_in([(svg, "svg"), (svg, "DIV"), (html, "section"), (html, "button")]),
+		visible_in([(html, "div"), ("urn:x", "entry"), (html, "button")]),
+		visible_in([(svg, "svg"), ("urn:x", "entry"), (html, "button")]),
+		visible_in([(html, "div"), (svg, "g")]),
+		visible_in([(math, "math"), (svg, "svg")]),
+	]
+	(modal_dom, button) = leaf([(svg, "svg"), (svg, "g"), (html, "dialog"), (html, "button")])
+	dialog = Dom.node(modal_dom, button).parent - 1
+	shown = Dom.modify(modal_dom, dialog, |n| { ..n, shown: Modal })
+	more = [
+		visible_in([(svg, "svg"), (svg, "DIV"), (svg, "circle")]),
+		visible_in([(svg, "svg"), (svg, "defs"), (svg, "circle")]),
+		visible_in([(svg, "svg"), (svg, "g"), (svg, "a"), (svg, "circle")]),
+		visible_in([(svg, "svg"), (svg, "text"), (svg, "tspan")]),
+		visible_in([(svg, "svg"), (svg, "g"), (svg, "foreignObject"), (html, "button")]),
+	]
+	(fo_root, fo_child) = leaf([(html, "div")])
+	unrooted = Dom.modify(fo_root, fo_root.root, |n| { ..n, namespace: svg, tag: "foreignObject" })
+	more == [False, False, True, True, True] and !SpecRunner.drawn(unrooted, fo_child) and
+		actual == [False, False, True, False, False, False, True, False, True, False, False, False] and SpecRunner.drawn(shown, button) and !SpecRunner.drawn(modal_dom, button)
 }
 
 ## Locators and focusability use presence rather than nonempty text. Empty

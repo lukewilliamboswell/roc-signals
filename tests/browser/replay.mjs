@@ -126,6 +126,26 @@ async function settle(page) {
 async function reachable(page, loc) {
   await need(page, loc);
   const reason = await onEl(page, loc, (element) => {
+    // The browser draws no HTML element inside SVG outside foreignObject, nor
+    // inside MathML outside a token element; a modal dialog or shown popover
+    // renders in the top layer anywhere (`SpecRunner.drawn`, measured in
+    // Chrome). An action on such an element is refused in both runners.
+    const SVG = "http://www.w3.org/2000/svg", MATH = "http://www.w3.org/1998/Math/MathML";
+    const rendersChild = (parent, child) => {
+      const svgChild = child.namespaceURI === SVG;
+      if (parent.namespaceURI === SVG && parent.localName !== "foreignObject") {
+        if (["svg", "g", "a", "switch"].includes(parent.localName)) return svgChild;
+        if (["text", "tspan", "textPath"].includes(parent.localName)) return svgChild && ["tspan", "textPath", "a"].includes(child.localName);
+        return false;
+      }
+      if (parent.namespaceURI === MATH && !["mi", "mn", "mo", "ms", "mtext"].includes(parent.localName)) return child.namespaceURI === MATH;
+      return !(svgChild && child.localName !== "svg");
+    };
+    for (let node = element; node; node = node.parentElement) {
+      if (node.matches(":modal, :popover-open")) break;
+      if (node.parentElement && !rendersChild(node.parentElement, node)) return "UNRENDERED";
+      if (node === window.__rt.root) break;
+    }
     const modal = window.__rt.topModal();
     if (modal && !modal.contains(element)) return "is outside the topmost modal dialog";
     for (let ancestor = element; ancestor && ancestor !== window.__rt.root; ancestor = ancestor.parentElement) {
@@ -136,6 +156,7 @@ async function reachable(page, loc) {
     }
     return null;
   });
+  if (reason === "UNRENDERED") throw new Error(`${showLoc(loc)} is not rendered: the browser draws no HTML element inside SVG outside foreignObject, nor inside MathML outside a token element, so no action can reach it`);
   if (reason) throw new Error(`${showLoc(loc)} ${reason}`);
 }
 
