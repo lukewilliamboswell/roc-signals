@@ -639,7 +639,7 @@ settle_check : S, Str -> S
 settle_check = |s, what|
 	match Core.settled(s.eng) {
 		Ok(_) => s
-		Err({ cmds, note }) => crash "${what}: a reader was left stale: a settle pass over every layer emitted ${Dom.describe(Dom.apply_ops(s.dom, cmds).1)} ${note}"
+		Err({ cmds, note }) => crash "${what}: a reader was left stale: a settle pass over every layer emitted ${Dom.describe(Dom.apply_ops(s.dom, [0].concat(cmds)).1)} ${note}"
 	}
 
 ## Mode 0: the page must equal a fresh mount at the root's current value.

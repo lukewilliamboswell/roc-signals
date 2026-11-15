@@ -654,7 +654,7 @@ settle! : Core.App({}), Dom.Model => {}
 settle! = |a, dom|
 	match Core.settled(a) {
 		Ok(_) => {}
-		Err({ cmds, note }) => crash "a reader was left stale: a settle pass over every layer emitted ${Dom.describe(Dom.apply_ops(dom, cmds).1)} ${note}"
+		Err({ cmds, note }) => crash "a reader was left stale: a settle pass over every layer emitted ${Dom.describe(Dom.apply_ops(dom, [0].concat(cmds)).1)} ${note}"
 	}
 
 click! : S, Str => E
