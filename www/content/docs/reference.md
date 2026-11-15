@@ -163,8 +163,8 @@ one compiled module.
 
 | Area | Symbols |
 |---|---|
-| Declaring | `command` (`CommandProps`: `name`), `call` (`CallProps`: `name`, `timeout : [Unlimited, Ms(U32)] ?? Unlimited`), `subscription` (`SubscriptionProps`: `name`, `delivery`), `Delivery` (`Latest`, `Every(n)`), and each shape's `registration` for `Program.with_ports` |
-| From an effect site | `Command.send`, `Call.request`, `Call.result`, `Subscription.subscribe`, `Subscription.message`, `Error` (`Refused`, `Timeout`, `Threw(message)`, `TooLarge`, `Closed`, `Undecodable(why)`) |
+| Declaring | `command` (`CommandProps`: `name`), `call` (`CallProps`: `name`, `timeout : [Unlimited, Ms(U32)] ?? Unlimited`), `subscription` (`SubscriptionProps`: `name`, `delivery`), `Delivery` (`Latest`, `Every(n)`), `registrations` (the catalogue for `Program.with_ports`, derived from an annotated record of ports and nested records of them), and each shape's `name` |
+| From an effect site | `Command.send`, `Call.ask`, `Subscription.ask`; `Call.request` and `Call.result`, `Subscription.subscribe` and `Subscription.message` for an asker and pure tests; `Error` (`Refused`, `Timeout`, `Threw(message)`, `TooLarge`, `Closed`, `Undecodable(why)`, `TooDeep`) |
 | Resources | `resource`, `resource_when` (for a call), holding an `Engine.Remote(output, Error)` |
 
 ## PortJson
@@ -410,7 +410,7 @@ them.
 | Bytes one page read takes | Its `max_bytes` (default 8 MiB), at most `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | URLs one file gives | 16 ranges, revoked when the file is let go | `FileFailed(TooLarge)` |
-| Ports a program declares | 64, names 1 to 128 bytes | Contract error at mount |
+| Ports a program declares | 64, names 1 to 128 bytes | Contract error where the catalogue is built: a compile error for a top-level program, otherwise when the program is built |
 | A port's answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | `TooLarge` |
 | Nesting of a port message | 512 containers, both ways | A call or subscription: `TooDeep`, nothing sent; a command: not sent, reported to the console and `onPortFault`; an answer: `Undecodable` |
 | Replaceable `Latest` report or `Every` backlog per subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` replaces; reports pinned by occurrences count within ingress. `Every` refuses the JavaScript's `emit` |
