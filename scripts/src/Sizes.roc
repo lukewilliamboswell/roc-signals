@@ -140,11 +140,26 @@ Sizes := [].{
 	## failed check, because it cannot supply the required size report.
 	report! : SpecSuite.Options => Try(List(Str), _)
 	report! = |o| {
-		options = { root: o.root, node: o.node }
-		for measurement in Sizes.measure!(options, Sizes.debug_files)? {
+		Sizes.report_debug!(o)?
+		Sizes.report_examples!(o, |_| Bool.True)
+	}
+
+	## Report the sizes of the development-only scripts, without thresholds.
+	report_debug! : SpecSuite.Options => Try({}, _)
+	report_debug! = |o| {
+		for measurement in Sizes.measure!({ root: o.root, node: o.node }, Sizes.debug_files)? {
 			Sizes.print!("debug (reported)", measurement)
 		}
-		slugs = Sizes.examples(Path.read_utf8!(Path.utf8("${o.root}/${ExampleFiles.catalog}"))?)?
+		Ok({})
+	}
+
+	## `report!`'s example modules, for the catalogue examples `chosen`
+	## keeps (a part of CI's Check reports its own apps'), built in one
+	## bounded batch.
+	report_examples! : SpecSuite.Options, (Str -> Bool) => Try(List(Str), _)
+	report_examples! = |o, chosen| {
+		options = { root: o.root, node: o.node }
+		slugs = Sizes.examples(Path.read_utf8!(Path.utf8("${o.root}/${ExampleFiles.catalog}"))?)?.keep_if(chosen)
 		var $jobs = []
 		for slug in slugs {
 			dir = "${o.build_dir}/sizes/${slug}"

@@ -113,7 +113,7 @@ These are the development environment's Blueprint tasks, not an app's
 
 | Task | What it does |
 |---|---|
-| `blueprint run check -- [--without-fuzz]` | The pull-request gate (below), every fuzz target's fixed examples included; `--without-fuzz` skips the fuzz targets, each with a `SKIP` line, as CI's Check job does beside its Fuzz smoke job |
+| `blueprint run check -- [--without-fuzz] [--part K/N] [--plan]` | The pull-request gate (below), every fuzz target's fixed examples included; `--without-fuzz` skips the fuzz targets, each with a `SKIP` line, as CI's Check job does beside its Fuzz smoke job; `--part K/N` runs part K of the parts CI's Check job runs in parallel (below); `--plan` prints what each part runs and runs nothing |
 | `blueprint run check-slow` | Local only, never in CI: every fuzz target's fixed examples on its instrumented build, a walk of every app of 10,000 steps (`RUNNER --walk`), the native soak of each app's round-trip spec (`RUNNER --soak 48`, flat live allocations and bytes), and a long Chrome session per app |
 | `blueprint run spec -- [--browser] [--filter GLOB] [--target TARGET] [APP...]` | Some apps' specs, natively and optionally in Chrome. The native runners are built for `TARGET` (`x64musl`, `arm64mac`, `x64mac` or `x64win`); without it, for the system the task runs on as `uname -sm` names it (`x64musl` where that names none), so a contributor's Mac runs them as they are. `check` always builds for `x64musl`, as CI does. A run whose filter selects no spec fails: a filter that matches nothing is a mistake |
 | `blueprint run platform` | Build the platform's link inputs with the pinned Zig, including matching PIC musl startup and libraries, to build an app's `main.roc` by hand (a fuzz target needs none: `roc build --fuzz` fetches its roc-fuzz release) |
@@ -278,6 +278,30 @@ problems found before it.
     mount refusal and an engine fault).
 
 Every spec must pass in both runners; there are no expected failures.
+
+Run with no option, `check` is the whole gate in one go. CI runs the same
+stages as the parallel legs of its Check job, each `check -- --without-fuzz
+--part K/N`, and a pull request requires the one job named Check that
+passes only when every leg did. Where each stage runs is data in
+`scripts/src/CheckPlan.roc`, never in the workflow: every stage above
+belongs to exactly one part, except the per-app stages (each app's builds
+for both runners, its specs, its example module's size, its short walk and
+its broken specs), which every part runs for its own share of the apps of
+`SpecSuite.apps` and `SpecSuite.test_apps`, dealt round-robin, so every
+app lands in exactly one part. A part prints a `SKIP` line for each stage
+another part runs (`SKIP specs ...` never appears: every part runs it for
+its apps), and a part given an N other than the plan's, or that would run
+nothing, fails. A stage that uses another's output builds it in its own
+part: before its first stage that needs builds, a run makes, in one
+bounded batch, the native runners and browser builds of its apps and of
+those its other stages name (`CheckPlan.needs`: the native lifetime
+contracts, the grammar check, the runtime's Chrome contracts and the
+release dry run); the tool's check runs in the release dry run's part,
+from its copy. So a part may build an app another part also builds; the
+whole gate builds each once. `check -- --plan` prints, for each part, its
+stages, its apps and how many builds it makes. Its pure `expect`s hold the
+plan to covering the whole gate: every stage once, every app once, the
+whole gate with no option, and a refusal for a wrong or empty part.
 
 `check` runs on Linux. Blueprint does not run on Windows or Intel macOS, so
 CI proves the native spec runner on the other systems itself: a Linux job
@@ -626,7 +650,7 @@ Finding new inputs is a campaign's job.
 
 | Where | What runs | Build | How long |
 |---|---|---|---|
-| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in six shards (`fuzz-smoke -- --shard K/6`), beside Check (`check -- --without-fuzz`) | Plain `--opt=speed` | Estimated from the figures below at 15 to 30 minutes a shard, the one with `structure` the longest; each shard is allowed 60 |
+| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in six shards (`fuzz-smoke -- --shard K/6`), beside Check (`check -- --without-fuzz`, in parts) | Plain `--opt=speed` | Estimated from the figures below at 15 to 30 minutes a shard, the one with `structure` the longest; each shard is allowed 60 |
 | `blueprint run check` | The same replays as CI's Fuzz smoke job, every target, in one run | Plain `--opt=speed` | Its compilers dominate: estimated at 25 to 40 minutes on an Apple-silicon Mac that compiles one target at a time |
 | `blueprint run fuzz-smoke` | Every target's fixed examples, or those named, or one shard | Plain `--opt=speed` | As `check`'s, or a few seconds for one platform-free target |
 | `blueprint run check-slow`, local only | Every target's fixed examples on the build a campaign explores | Instrumented `--fuzz` | About a third longer to compile than the plain builds |

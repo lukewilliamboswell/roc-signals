@@ -9,6 +9,7 @@ app [main!] {
 import cli.OsStr
 import cli.Path
 import src/Checks
+import src/CheckPlan
 import src/FuzzPlan
 import src/PlatformTest
 import src/DocSamples
@@ -46,136 +47,226 @@ import src/Sizes
 ## and the fuzz targets' instrumented replays are `check-slow`.
 ## `check -- --without-fuzz` prints a `SKIP` line for each fuzz target
 ## instead of running it; CI's Check job passes it because CI's Fuzz smoke
-## job runs every target, in shards. Every problem is
-## printed as a `FAIL` line at the end or, when a stage cannot run and
-## aborts the task, before that stage's error (`Checks.gather!`).
+## job runs every target, in shards. `check -- --part K/N` runs part K of
+## the `CheckPlan.parts` parts CI's Check matrix runs in parallel, printing
+## a `SKIP` line for each stage another part runs, and `check -- --plan`
+## prints which stages and apps each part runs, without running anything.
+## Every problem is printed as a `FAIL` line at the end or, when a stage
+## cannot run and aborts the task, before that stage's error
+## (`Checks.gather!`).
 main! = |raw_args| {
-	fuzzing = match fuzz_selection(raw_args.map(OsStr.display).drop_if(|arg| arg == "--")) {
-		Ok(selection) => selection
+	args = match options(raw_args.map(OsStr.display).drop_if(|arg| arg == "--")) {
+		Ok(chosen) => chosen
 		Err(Unknown(arg)) => {
-			Proc.warn!("unknown check option ${arg}; the one option is --without-fuzz")
+			Proc.warn!("unknown check option ${arg}; the options are --without-fuzz, --part K/N and --plan")
 			return Err(Exit(2))
 		}
 	}
-	o = Checks.options!({ filter: "*" })?
-	var $problems = []
-
-	Proc.note!("== script pins")
-	$problems = Checks.gather!($problems, script_pins!())?
-
-	Proc.note!("== file names")
-	$problems = Checks.gather!($problems, file_names!())?
-
-	Proc.note!("== script modes")
-	$problems = Checks.gather!($problems, script_modes!())?
-
-	Proc.note!("== formatting")
-	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "tests/fixtures", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check"))?
-	$problems = Checks.gather!($problems, check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts"))?
-
-	Proc.note!("== example files")
-	$problems = Checks.gather!($problems, ExampleFiles.check!(o.root))?
-
-	Proc.note!("== fuzz target registry")
-	$problems = Checks.gather!($problems, Targets.registry!())?
-
-	Proc.note!("== spec lists")
-	$problems = Checks.gather!($problems, SpecSuite.listing!())?
-
-	Proc.note!("== platform JavaScript sizes")
-	$problems = Checks.gather!($problems, Sizes.check_runtime!({ root: o.root, node: o.node }))?
-
-	$problems = Checks.gather!($problems, platform_packages!(o.root))?
-
-	Proc.note!("== API docs")
-	$problems = Checks.gather!($problems, ApiDocs.check!({}))?
-	$problems = Checks.gather!($problems, ApiDocs.internal_roots!(o))?
-	$problems = Checks.gather!($problems, ApiDocs.bump!(o, Candidate))?
-
-	Proc.note!("== roc test")
-	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["test", "platform/main.roc"], cwd: "." }, "roc test platform/main.roc"))?
-	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["test", "platform/main-fuzz.roc"], cwd: "." }, "roc test platform/main-fuzz.roc"))?
-	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["test", "cli/main.roc"], cwd: "." }, "roc test cli/main.roc"))?
-	$problems = Checks.gather!($problems, Checks.app_expects!(o))?
-	$problems = Checks.gather!($problems, Targets.fuzz_expects!(o))?
-	$problems = Checks.gather!($problems, ToolCheck.bundle_current!(o))?
-	$problems = Checks.gather!($problems, script_tests!(o))?
-
-	Proc.note!("== platform inputs")
-	Checks.hold!($problems, Checks.prepare_platform!(o))?
-	$problems = Checks.gather!($problems, Checks.key_contracts!(o))?
-	$problems = Checks.gather!($problems, check!({ program: o.zig, args: ["test", "platform/host/resources.zig"], cwd: "." }, "zig test platform/host/resources.zig"))?
-	$problems = Checks.gather!($problems, check!({ program: o.zig, args: ["test", "platform/host/dbg.zig"], cwd: "." }, "zig test platform/host/dbg.zig"))?
-	$problems = Checks.gather!($problems, cross_links!(o))?
-
-	Proc.note!("== fuzz targets")
-	$problems = Checks.gather!($problems, FuzzPlan.run!(Targets.fuzz_targets, fuzzing, |fuzzes| Targets.fuzz_smoke_all!(o, fuzzes)))?
-
-	Proc.note!("== docs samples")
-	$problems = Checks.gather!($problems, DocSamples.check!(o))?
-
-	Proc.note!("== specs")
-	var $native = SpecSuite.empty_tally
-	var $browser = SpecSuite.empty_tally
-	var $kanban = { runner: "" }
-	Checks.hold!($problems, SpecSuite.build_web_platform!(o))?
-	Proc.note!("== example module and debug file sizes (reported)")
-	$problems = Checks.gather!($problems, Sizes.report!(o))?
-	# Every spec-bearing app is built for the browser too, from the one list in
-	# SpecSuite (controls among them, whose contract tests use that build),
-	# with effects, a test app that has contract tests and no specs. Each
-	# build is named once: two jobs writing one app.wasm would race.
-	Checks.hold!($problems, SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.spec_apps.concat(["tests/apps/effects"])))?
-	for example in SpecSuite.spec_apps {
-		r = Checks.hold!($problems.concat($native.problems).concat($browser.problems), Checks.run_app!(o, example, Bool.True))?
-		$native = SpecSuite.add($native, r.native)
-		$browser = SpecSuite.add($browser, r.browser)
-		if example == "kanban-board" {
-			$kanban = { runner: r.runner }
+	if args.describe {
+		for line in CheckPlan.describe(CheckPlan.stages, CheckPlan.parts, SpecSuite.spec_apps) {
+			Proc.note!(line)
+		}
+		return Ok({})
+	}
+	plan = match CheckPlan.plan(CheckPlan.stages, CheckPlan.parts, SpecSuite.spec_apps, args.part) {
+		Ok(planned) => planned
+		Err(error) => {
+			Proc.warn!(CheckPlan.refusal(error))
+			return Err(Exit(2))
 		}
 	}
-	$problems = $problems.concat($native.problems).concat($browser.problems)
-
-	Proc.note!("== native lifetime contracts")
-	$problems = Checks.gather!($problems, Targets.native_contracts!(o))?
-
-	Proc.note!("== short walks")
-	$problems = Checks.gather!($problems, Slow.short_walks!(o))?
-
-	Proc.note!("== grammar coverage")
-	$problems = Checks.gather!($problems, Checks.grammar!(o, $kanban.runner))?
-	$problems = Checks.gather!($problems, Checks.choose_files!(o))?
-
-	Proc.note!("== broken-spec self-check")
-	for broken in Checks.broken_specs {
-		$problems = Checks.gather!($problems, Checks.broken_spec!(o, broken, Rejects))?
+	for skip in plan.skip {
+		Proc.note!(CheckPlan.skip_line(skip))
 	}
-	for crashing in Checks.crashing_specs {
-		$problems = Checks.gather!($problems, Checks.broken_spec!(o, crashing, Crashes))?
+	if plan.skip != [] {
+		Proc.note!("${plan.label}: ${plan.stages.len().to_str()} stages, the per-app ones for ${plan.apps.len().to_str()} apps: ${Str.join_with(plan.apps, ", ")}")
 	}
+	o = Checks.options!({ filter: "*" })?
+	var $run = { problems: [], called: [] }
 
-	Proc.note!("== declaration refusals before execution and emission")
-	$problems = Checks.gather!($problems, Checks.declaration_refusals!(o, {}))?
+	$run = stage!(plan, $run, "script pins", || script_pins!())?
+	$run = stage!(plan, $run, "file names", || file_names!())?
+	$run = stage!(plan, $run, "script modes", || script_modes!())?
+	$run = stage!(
+		plan,
+		$run,
+		"formatting",
+		|| {
+			sources = check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "tests/fixtures", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?
+			scripts = check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts")?
+			Ok(sources.concat(scripts))
+		},
+	)?
+	$run = stage!(plan, $run, "example files", || ExampleFiles.check!(o.root))?
+	$run = stage!(plan, $run, "fuzz target registry", || Targets.registry!())?
+	$run = stage!(plan, $run, "spec lists", || SpecSuite.listing!())?
+	$run = stage!(plan, $run, "platform JavaScript sizes", || Sizes.check_runtime!({ root: o.root, node: o.node }))?
+	$run = stage!(plan, $run, "platform packages", || platform_packages!(o.root))?
+	$run = stage!(
+		plan,
+		$run,
+		"API docs",
+		|| {
+			documented = ApiDocs.check!({})?
+			internal = ApiDocs.internal_roots!(o)?
+			bumped = ApiDocs.bump!(o, Candidate)?
+			Ok(documented.concat(internal).concat(bumped))
+		},
+	)?
+	$run = stage!(
+		plan,
+		$run,
+		"platform expects",
+		|| {
+			shipped = check!({ program: o.compiler, args: ["test", "platform/main.roc"], cwd: "." }, "roc test platform/main.roc")?
+			engine = check!({ program: o.compiler, args: ["test", "platform/main-fuzz.roc"], cwd: "." }, "roc test platform/main-fuzz.roc")?
+			tool = check!({ program: o.compiler, args: ["test", "cli/main.roc"], cwd: "." }, "roc test cli/main.roc")?
+			Ok(shipped.concat(engine).concat(tool))
+		},
+	)?
+	$run = stage!(plan, $run, "app expects", || Checks.app_expects!(o))?
+	$run = stage!(plan, $run, "declaration type fixtures", || Checks.key_type_errors!(o))?
+	$run = stage!(plan, $run, "fuzz expects", || Targets.fuzz_expects!(o))?
+	$run = stage!(plan, $run, "tool bundle", || ToolCheck.bundle_current!(o))?
+	$run = stage!(plan, $run, "script expects", || script_tests!(o))?
 
-	Proc.note!("== runtime unit tests")
-	$problems = Checks.gather!($problems, Targets.runtime_unit!(o))?
+	# The platform's link inputs, which every native build and the host
+	# tests need, are prepared by every run that builds anything.
+	Checks.hold!($run.problems, Checks.prepare_platform!(o))?
+	$run = stage!(plan, $run, "key contracts", || Checks.key_contracts!(o))?
+	$run = stage!(
+		plan,
+		$run,
+		"host tests",
+		|| {
+			resources = check!({ program: o.zig, args: ["test", "platform/host/resources.zig"], cwd: "." }, "zig test platform/host/resources.zig")?
+			debug = check!({ program: o.zig, args: ["test", "platform/host/dbg.zig"], cwd: "." }, "zig test platform/host/dbg.zig")?
+			Ok(resources.concat(debug))
+		},
+	)?
+	$run = stage!(plan, $run, "cross links", || cross_links!(o))?
+	$run = stage!(plan, $run, "fuzz targets", || FuzzPlan.run!(Targets.fuzz_targets, args.fuzzing, |fuzzes| Targets.fuzz_smoke_all!(o, fuzzes)))?
+	$run = stage!(plan, $run, "docs samples", || DocSamples.check!(o))?
 
-	Proc.note!("== runtime contracts in Chrome")
-	$problems = Checks.gather!($problems, Targets.browser_contracts!(o, "${o.build_dir}/wasm/conduit/app.wasm"))?
+	# Every build the run's stages use, from the one list in SpecSuite and
+	# each stage's `CheckPlan.needs`, in one bounded batch. Each build is
+	# named once: two jobs writing one app.wasm would race.
+	Checks.hold!($run.problems, SpecSuite.build_web_platform!(o))?
+	$run = stage!(
+		plan,
+		$run,
+		"debug file sizes",
+		|| {
+			Sizes.report_debug!(o)?
+			Ok([])
+		},
+	)?
+	# A catalogue example that is in no spec list is reported by the part
+	# that reports the debug files, so every example's size is reported once.
+	unlisted = |slug| !SpecSuite.spec_apps.contains(slug) and CheckPlan.runs(plan, "debug file sizes")
+	$run = stage!(plan, $run, "example sizes", || Sizes.report_examples!(o, |slug| plan.apps.contains(slug) or unlisted(slug)))?
+	builds = CheckPlan.builds(plan)
+	if builds.natives != [] or builds.webs != [] {
+		Proc.note!("== builds: ${builds.natives.len().to_str()} native runners and ${builds.webs.len().to_str()} browser builds, ${Proc.compiler_jobs!(App)?.to_str()} at a time")
+		Checks.hold!($run.problems, SpecSuite.build!(o, builds.natives, builds.webs))?
+	}
+	var $native = SpecSuite.empty_tally
+	var $browser = SpecSuite.empty_tally
+	if CheckPlan.runs(plan, "specs") {
+		Proc.note!("== specs")
+		for example in plan.apps {
+			r = Checks.hold!($run.problems.concat($native.problems).concat($browser.problems), Checks.run_app!(o, example, Bool.True))?
+			$native = SpecSuite.add($native, r.native)
+			$browser = SpecSuite.add($browser, r.browser)
+		}
+	}
+	$run = { problems: $run.problems.concat($native.problems).concat($browser.problems), called: $run.called.append("specs") }
 
-	Proc.note!("== js-framework-benchmark")
-	$problems = Checks.gather!($problems, Targets.jfb!(o))?
+	$run = stage!(plan, $run, "native lifetime contracts", || Targets.native_contracts!(o))?
+	$run = stage!(plan, $run, "short walks", || Slow.short_walks!(o, Slow.walk_apps.keep_if(|name| plan.apps.contains(name))))?
+	$run = stage!(
+		plan,
+		$run,
+		"grammar coverage",
+		|| {
+			grammar = Checks.grammar!(o, SpecSuite.runner_of(o, "kanban-board"))?
+			chosen = Checks.choose_files!(o)?
+			Ok(grammar.concat(chosen))
+		},
+	)?
+	$run = stage!(
+		plan,
+		$run,
+		"broken-spec self-check",
+		|| {
+			var $found = []
+			for broken in Checks.broken_specs.keep_if(|b| plan.apps.contains(b.example)) {
+				$found = $found.concat(Checks.broken_spec!(o, broken, Rejects)?)
+			}
+			for crashing in Checks.crashing_specs.keep_if(|b| plan.apps.contains(b.example)) {
+				$found = $found.concat(Checks.broken_spec!(o, crashing, Crashes)?)
+			}
+			Ok($found)
+		},
+	)?
+	$run = stage!(plan, $run, "declaration refusals", || Checks.declaration_refusals!(o, {}))?
+	$run = stage!(plan, $run, "runtime unit tests", || Targets.runtime_unit!(o))?
+	$run = stage!(plan, $run, "runtime contracts in Chrome", || Targets.browser_contracts!(o, "${o.build_dir}/wasm/conduit/app.wasm"))?
+	$run = stage!(plan, $run, "js-framework-benchmark", || Targets.jfb!(o))?
+	$run = stage!(plan, $run, "release dry run", || Release.build!(o, "0.0.1-dryrun", "${o.build_dir}/release"))?
+	$run = stage!(plan, $run, "signals.roc", || ToolCheck.run!(o))?
 
-	Proc.note!("== release dry run")
-	$problems = Checks.gather!($problems, Release.build!(o, "0.0.1-dryrun", "${o.build_dir}/release"))?
-
-	Proc.note!("== signals.roc")
-	$problems = Checks.gather!($problems, ToolCheck.run!(o))?
-
+	problems = $run.problems.concat(CheckPlan.called_problems(CheckPlan.stages, $run.called))
 	Proc.note!("")
-	Proc.note!(SpecSuite.summary("all apps", Native, $native))
-	Proc.note!(SpecSuite.summary("all apps", Browser, $browser))
-	Checks.finish!("check", $problems)
+	if CheckPlan.runs(plan, "specs") {
+		Proc.note!(SpecSuite.summary("${plan.apps.len().to_str()} apps", Native, $native))
+		Proc.note!(SpecSuite.summary("${plan.apps.len().to_str()} apps", Browser, $browser))
+	}
+	Checks.finish!(plan.label, problems)
+}
+
+## Run the stage `name` with `run!` when the plan runs it, adding its
+## problems to the run's, and record that `check` reached it, so that a
+## stage `CheckPlan.stages` places but `main!` never reaches is a problem
+## (`CheckPlan.called_problems`).
+stage! : CheckPlan.Plan, { problems : List(Str), called : List(Str) }, Str, (() => Try(List(Str), e)) => Try({ problems : List(Str), called : List(Str) }, e)
+stage! = |plan, run, name, run!| {
+	called = run.called.append(name)
+	if CheckPlan.runs(plan, name) {
+		Proc.note!("== ${name}")
+		problems = Checks.gather!(run.problems, run!())?
+		Ok({ problems, called })
+	} else {
+		Ok({ problems: run.problems, called })
+	}
+}
+
+## What the arguments ask for: whether the fuzz targets run, which part of
+## the gate, and whether only to print the plan.
+options : List(Str) -> Try({ fuzzing : FuzzPlan.Selection, part : CheckPlan.Selection, describe : Bool }, [Unknown(Str)])
+options = |args| {
+	var $out = { fuzzing: Every, part: Whole, describe: Bool.False }
+	var $rest = args
+	while $rest != [] {
+		match $rest {
+			["--without-fuzz", .. as more] if $out.fuzzing == Every => {
+				$out = { ..$out, fuzzing: Elsewhere("check --without-fuzz: CI's Fuzz smoke job replays every target") }
+				$rest = more
+			}
+			["--part", text, .. as more] if $out.part == Whole => {
+				part = CheckPlan.parse_part(text) ? |_| Unknown("--part ${text}")
+				$out = { ..$out, part: OnePart(part) }
+				$rest = more
+			}
+			["--plan", .. as more] if !$out.describe => {
+				$out = { ..$out, describe: Bool.True }
+				$rest = more
+			}
+			[arg, ..] => return Err(Unknown(arg))
+			[] => {}
+		}
+	}
+	Ok($out)
 }
 
 ## Run a check; a failure is a reported problem, not an abort.
@@ -344,21 +435,16 @@ cross_links! = |o| {
 	Ok(List.map2(PlatformTest.spec_hosts, results, |host, r| (host.target, r)).keep_if(|(_, r)| r.code != 0).map(|(target, r)| "spec runner for ${target} does not link: ${r.output.trim()}"))
 }
 
-## Which fuzz targets `check` runs: every registered one, or, with
-## `--without-fuzz`, none, each skipped for the reason its `SKIP` line
-## gives. CI's Check job passes the option because its Fuzz smoke job runs
-## the same replays, sharded, beside it.
-fuzz_selection : List(Str) -> Try(FuzzPlan.Selection, [Unknown(Str)])
-fuzz_selection = |args| match args {
-	[] => Ok(Every)
-	["--without-fuzz"] => Ok(Elsewhere("check --without-fuzz: CI's Fuzz smoke job replays every target"))
-	[arg, ..] => Err(Unknown(arg))
-}
-
-## `check` runs every fuzz target unless told they are replayed elsewhere.
-expect fuzz_selection([]) == Ok(Every)
-expect fuzz_selection(["--without-fuzz"]) == Ok(Elsewhere("check --without-fuzz: CI's Fuzz smoke job replays every target"))
-expect fuzz_selection(["--filter"]) == Err(Unknown("--filter"))
+## `check` runs every fuzz target and the whole gate unless told the
+## targets are replayed elsewhere or given one part; each option is given
+## at most once.
+expect options([]) == Ok({ fuzzing: Every, part: Whole, describe: Bool.False })
+expect options(["--part", "2/5", "--without-fuzz"]) == Ok({ fuzzing: Elsewhere("check --without-fuzz: CI's Fuzz smoke job replays every target"), part: OnePart({ index: 2, total: 5 }), describe: Bool.False })
+expect options(["--plan"]) == Ok({ fuzzing: Every, part: Whole, describe: Bool.True })
+expect options(["--filter"]) == Err(Unknown("--filter"))
+expect options(["--part", "two"]) == Err(Unknown("--part two"))
+expect options(["--part"]) == Err(Unknown("--part"))
+expect options(["--without-fuzz", "--without-fuzz"]) == Err(Unknown("--without-fuzz"))
 
 ## Both platform roots must fetch the same internal dependencies. A drift
 ## would give the oracle/fuzz package a different codec from shipped apps.
