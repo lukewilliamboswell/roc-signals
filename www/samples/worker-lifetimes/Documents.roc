@@ -127,7 +127,7 @@ Documents := [].{
 		match error {
 			Timeout => "This took too long."
 			Refused => "Too much is running."
-			TooDeep | TooManyFiles => "The answer was too large to send."
+			TooDeep | NanKeys | TooManyFiles => "The answer could not be sent."
 			Lost(_) => "Counting failed."
 		}
 

@@ -22,8 +22,14 @@ import pf.Worker
 ##   itself (two levels for each record, an even count), and a tag holding a
 ##   seven-field record (two levels for each tag, an even count).
 ##
-## Each shows the depth of what came back, counted on the page, or why
-## nothing did.
+## - "Send NaN keys" sends a dictionary with that many NaN keys to a task
+##   that answers how many keys it has (`test-id "nan-sent"`), and "Ask NaN
+##   keys" asks a task to answer with one (`test-id "nan-asked"`). NaN is
+##   unequal to itself, so a dictionary holds every one, but a payload
+##   writes them alike: one crosses, and two are `NanKeys`.
+##
+## Each shows the depth or the size of what came back, counted on the page,
+## or why nothing did.
 DeepApp := [].{
 
 	## A chain of one-payload tags: each `Link` is one level.
@@ -156,6 +162,18 @@ DeepApp := [].{
 	echo_fat : Worker.Task(Fat, Fat, Worker.Never)
 	echo_fat = Worker.task({ name: "test.roc-signals/deep-payload/echo-fat", run!: |value| Ok(value) })
 
+	## A dictionary with `count` NaN keys.
+	nan_keyed : U64 -> Dict(F64, U8)
+	nan_keyed = |count| (0.U64).until(count).fold(Dict.empty(), |keys, n| keys.insert(F64.nan, n.to_u8_wrap()))
+
+	## Answers how many keys the dictionary it was sent has.
+	count_keys : Worker.Task(Dict(F64, U8), U64, Worker.Never)
+	count_keys = Worker.task({ name: "test.roc-signals/deep-payload/count-keys", run!: |keys| Ok(keys.len()) })
+
+	## Answers with a dictionary with as many NaN keys as it is asked for.
+	make_keys : Worker.Task(U64, Dict(F64, U8), Worker.Never)
+	make_keys = Worker.task({ name: "test.roc-signals/deep-payload/make-keys", run!: |count| Ok(DeepApp.nan_keyed(count)) })
+
 	## A preparation whose state is the number its text names, or
 	## `NotANumber` when it names none.
 	##
@@ -171,24 +189,29 @@ DeepApp := [].{
 
 	## The levels "Levels" holds, and how many times each button was pressed
 	## with the levels at that press, so editing "Levels" alone asks nothing.
-	S : { levels : Str, sent : Asked, asked : Asked, grown : Asked, nested : Asked, fat : Asked, shown : Shown }
+	S : { levels : Str, sent : Asked, asked : Asked, grown : Asked, nested : Asked, fat : Asked, nan_sent : Asked, nan_asked : Asked, shown : Shown }
 
 	## A button's presses and the levels at the last one.
 	Asked : { n : U64, levels : U64 }
 
 	## What each output shows.
-	Shown : { sent : Str, asked : Str, grown : Str, nested : Str, fat : Str }
+	Shown : { sent : Str, asked : Str, grown : Str, nested : Str, fat : Str, nan_sent : Str, nan_asked : Str }
 
 	Ctx : In(Root, S)
 
 	## A result as its output shows it: the depth counted on the page, or
 	## why there is none.
 	show : Try(a, Worker.Error(Worker.Never)), (a -> U64) -> Str
-	show = |outcome, levels| match outcome {
-		Ok(value) => "${levels(value).to_str()} levels"
+	show = |outcome, levels| DeepApp.show_as(outcome, |value| "${levels(value).to_str()} levels")
+
+	## A result as `shown` shows it, or why there is none.
+	show_as : Try(a, Worker.Error(Worker.Never)), (a -> Str) -> Str
+	show_as = |outcome, shown| match outcome {
+		Ok(value) => shown(value)
 		Err(Timeout) => "timed out"
 		Err(Refused) => "refused"
 		Err(TooDeep) => "too deep"
+		Err(NanKeys) => "NaN keys"
 		Err(TooManyFiles) => "too many files"
 		Err(Lost(fault)) => "lost ${Str.inspect(fault)}"
 	}
@@ -201,6 +224,7 @@ DeepApp := [].{
 		Err(Timeout) => "timed out"
 		Err(Refused) => "refused"
 		Err(TooDeep) => "too deep"
+		Err(NanKeys) => "NaN keys"
 		Err(TooManyFiles) => "too many files"
 		Err(Lost(fault)) => "lost ${Str.inspect(fault)}"
 	}
@@ -225,6 +249,8 @@ DeepApp := [].{
 				Html.button("Grow", [], st.update(|s| { ..s, grown: DeepApp.pressed(s, s.grown), shown: { ..s.shown, grown: "growing" } })),
 				Html.button("Echo nested", [], st.update(|s| { ..s, nested: DeepApp.pressed(s, s.nested), shown: { ..s.shown, nested: "echoing" } })),
 				Html.button("Echo fat", [], st.update(|s| { ..s, fat: DeepApp.pressed(s, s.fat), shown: { ..s.shown, fat: "echoing" } })),
+				Html.button("Send NaN keys", [], st.update(|s| { ..s, nan_sent: DeepApp.pressed(s, s.nan_sent), shown: { ..s.shown, nan_sent: "sending" } })),
+				Html.button("Ask NaN keys", [], st.update(|s| { ..s, nan_asked: DeepApp.pressed(s, s.nan_asked), shown: { ..s.shown, nan_asked: "asking" } })),
 				Engine.watch_latest(
 					v.map(|s| s.sent),
 					|{ n, levels }| if (n == 0) [] else [DeepApp.take.ask(DeepApp.chain(levels))],
@@ -250,11 +276,23 @@ DeepApp := [].{
 					|{ n, levels }| if (n == 0) [] else [DeepApp.echo_fat.ask(DeepApp.fat(levels))],
 					st.on_result(|s, _, res| { ..s, shown: { ..s.shown, fat: DeepApp.show(res, DeepApp.fat_levels) } }),
 				),
+				Engine.watch_latest(
+					v.map(|s| s.nan_sent),
+					|{ n, levels }| if (n == 0) [] else [DeepApp.count_keys.ask(DeepApp.nan_keyed(levels))],
+					st.on_result(|s, _, res| { ..s, shown: { ..s.shown, nan_sent: DeepApp.show_as(res, |count| "${count.to_str()} keys") } }),
+				),
+				Engine.watch_latest(
+					v.map(|s| s.nan_asked),
+					|{ n, levels }| if (n == 0) [] else [DeepApp.make_keys.ask(levels)],
+					st.on_result(|s, _, res| { ..s, shown: { ..s.shown, nan_asked: DeepApp.show_as(res, |keys| "${keys.len().to_str()} keys") } }),
+				),
 				DeepApp.output(st, |s| s.sent, "sent"),
 				DeepApp.output(st, |s| s.asked, "asked"),
 				DeepApp.output(st, |s| s.grown, "grown"),
 				DeepApp.output(st, |s| s.nested, "nested"),
 				DeepApp.output(st, |s| s.fat, "fat"),
+				DeepApp.output(st, |s| s.nan_sent, "nan-sent"),
+				DeepApp.output(st, |s| s.nan_asked, "nan-asked"),
 			],
 		)
 	}
@@ -262,8 +300,8 @@ DeepApp := [].{
 	program : Engine.Program
 	program = {
 		none = { n: 0, levels: 0 }
-		Engine.program(|| Engine.state({ levels: "", sent: none, asked: none, grown: none, nested: none, fat: none, shown: { sent: "", asked: "", grown: "", nested: "", fat: "" } }, DeepApp.view))
-			.with_workers([DeepApp.take.registration(), DeepApp.make.registration(), DeepApp.echo_nested.registration(), DeepApp.echo_fat.registration(), DeepApp.base.registration([DeepApp.grow.registration()])])
+		Engine.program(|| Engine.state({ levels: "", sent: none, asked: none, grown: none, nested: none, fat: none, nan_sent: none, nan_asked: none, shown: { sent: "", asked: "", grown: "", nested: "", fat: "", nan_sent: "", nan_asked: "" } }, DeepApp.view))
+			.with_workers([DeepApp.take.registration(), DeepApp.make.registration(), DeepApp.echo_nested.registration(), DeepApp.echo_fat.registration(), DeepApp.count_keys.registration(), DeepApp.make_keys.registration(), DeepApp.base.registration([DeepApp.grow.registration()])])
 	}
 }
 

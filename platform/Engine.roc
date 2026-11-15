@@ -1048,7 +1048,7 @@ Engine := [].{
 		StorageWriteFailures,
 		ClipboardWrite({ text : Str, html : [Plain, Html(Str)] }),
 		Timer(U32),
-		Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })], refusal : [None, TooDeep] }),
+		Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })], refusal : [None, TooDeep, NanKeys] }),
 		Interval(U32),
 		Popstate,
 
@@ -1146,13 +1146,14 @@ Engine := [].{
 	## worker job's answer with the files it holds, handles the page now owns
 	## (`Work`; `Worker` decodes it) or the reason it produced none
 	## (`WorkLost`), or `WorkRefused(TooDeep)` when its input was nested past
-	## the payload bound and nothing was sent, a file's bytes or text read into the page (`FileBytes`,
+	## the payload bound and nothing was sent (`WorkRefused(NanKeys)` when a
+	## dictionary in it held two NaN keys), a file's bytes or text read into the page (`FileBytes`,
 	## `FileText`), a file's SHA-256 digest (`Digest`) or a URL that shows it
 	## (`FileUrl`), or why an operation on a file produced nothing
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name and the files its `{"$file":N}` markers

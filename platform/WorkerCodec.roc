@@ -42,9 +42,11 @@ WorkerCodec := [].{
 	EncBody := { writer : Cbor.Writer, held : Held }
 
 	## What an encode carries beside its writer: the files met so far, how
-	## many containers enclose the item being written, and whether a
-	## container was met at the nesting bound (`max_nesting`).
-	Held : { files : List(Engine.File), depth : U64, over : Bool }
+	## many containers enclose the item being written, whether a container
+	## was met at the nesting bound (`max_nesting`), whether the innermost
+	## open dictionary already has a NaN key (`nan_key`), and whether one was
+	## met with a second (`nan_keys`, see `encode_key_f64`).
+	Held : { files : List(Engine.File), depth : U64, over : Bool, nan_key : Bool, nan_keys : Bool }
 
 	## An open list, tuple or tag's accumulator. Its add callback creates an
 	## Enc for each value. These are different states: a container cannot be
@@ -285,19 +287,22 @@ WorkerCodec := [].{
 
 		## Let CBOR open a dict and count each callback item. The file list moves
 		## through each callback with its writer, including nested containers.
+		## The dictionary's NaN keys are its own: one nested in a value starts
+		## with none, and the outer one's count is restored after it.
 		encode_dict : Enc, U64, (Entries, (Entries, (Enc -> Try(Enc, err)), (Enc -> Try(Enc, err)) -> Try(Entries, err)) -> Try(Entries, err)) -> Try(Enc, err)
 		encode_dict = |Enc.(EncBody.({ writer: output, held })), count, write| if held.depth >= max_nesting {
 			too_deep(output, held)
 		} else {
 			outer = held.depth
+			outer_nan = held.nan_key
 			Cbor.encode_dict_carry(
-				{ writer: output, state: { ..held, depth: held.depth + 1 } },
+				{ writer: output, state: { ..held, depth: held.depth + 1, nan_key: Bool.False } },
 				count,
 				|items, add| write(
 					Items.(ItemsBody.{ container: items.container, held: items.state }),
 					|Items.(ItemsBody.({ container: item_container, held: item_held })), write_key, write_value| add({ container: item_container, state: item_held }, |entry| write_key(Enc.(EncBody.{ writer: entry.writer, held: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, held: done_held }))| { writer: done_writer, state: done_held }), |entry| write_value(Enc.(EncBody.{ writer: entry.writer, held: entry.state })).map_ok(|Enc.(EncBody.({ writer: done_writer, held: done_held }))| { writer: done_writer, state: done_held })).map_ok(|done| Items.(ItemsBody.{ container: done.container, held: done.state })),
 				).map_ok(|Items.(ItemsBody.({ container: done_container, held: done_held }))| { container: done_container, state: done_held }),
-			).map_ok(|done| Enc.(EncBody.{ writer: done.writer, held: { ..done.state, depth: outer } }))
+			).map_ok(|done| Enc.(EncBody.{ writer: done.writer, held: { ..done.state, depth: outer, nan_key: outer_nan } }))
 		}
 
 		## Open the checked list; CBOR owns its count and end position.
@@ -545,9 +550,10 @@ WorkerCodec := [].{
 		parse_key_i128 : Format, State -> Try({ value : I128, rest : State }, Error)
 		parse_key_i128 = |_, State.(StateBody.({ cbor: config, reader: cursor, files, dicts }))| Cbor.parse_key_i128(config, cursor).map_ok(|parsed| { value: parsed.value, rest: State.(StateBody.{ cbor: config, reader: parsed.rest, files: files, dicts: dicts }) })
 
-		## The same CBOR scalar form at a dictionary key position.
+		## The same CBOR scalar form at a dictionary key position, noting a
+		## NaN key in its dictionary (see `encode_key_f64`).
 		encode_key_f32 : Format, F32, Enc -> Try(Enc, [])
-		encode_key_f32 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_f32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
+		encode_key_f32 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_f32(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: nan_noted(held, value.is_nan()) }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor, and refuse
 		## a zero whose other sign this dictionary already has as a key.
@@ -559,9 +565,14 @@ WorkerCodec := [].{
 			Ok({ value: parsed.value, rest: State.(StateBody.{ cbor: config, reader: parsed.rest, files: files, dicts: noted }) })
 		}
 
-		## The same CBOR scalar form at a dictionary key position.
+		## The same CBOR scalar form at a dictionary key position, noting a
+		## NaN key in its dictionary. NaN is not equal to itself, so a
+		## dictionary can hold several NaN keys, but every NaN is written as
+		## the one canonical NaN: a second NaN key in one dictionary would be
+		## two equal CBOR keys, and the encode is refused with `NanKeys`
+		## instead. One NaN key crosses and is read back as a NaN key.
 		encode_key_f64 : Format, F64, Enc -> Try(Enc, [])
-		encode_key_f64 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_f64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: held }))
+		encode_key_f64 = |_, value, Enc.(EncBody.({ writer: output, held }))| Cbor.encode_f64(value, output).map_ok(|writer| Enc.(EncBody.{ writer, held: nan_noted(held, value.is_nan()) }))
 
 		## Apply CBOR's exact scalar-key rule to the checked cursor, and refuse
 		## a zero whose other sign this dictionary already has as a key.
@@ -638,13 +649,18 @@ WorkerCodec := [].{
 	}
 
 	## Encode a worker input or answer, keeping the actual owned files beside
-	## its bytes, or refuse a value nested past `max_nesting` with `TooDeep`.
-	## A handwritten encoder that writes the wrong number of items, or two
-	## equal keys in one map, is a contract fault naming the task.
-	encode_with_files : Str, a -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep]) where [a.Sendable]
+	## its bytes, or refuse a value nested past `max_nesting` with `TooDeep`
+	## and one holding a dictionary with more than one NaN key with
+	## `NanKeys`. A handwritten encoder that writes the wrong number of
+	## items, or two equal keys in one map, is a contract fault naming the
+	## task: a derived encoder writes neither, since a derived dictionary's
+	## keys are unequal under their type's equality and only NaN keys are
+	## unequal yet written alike.
+	encode_with_files : Str, a -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep, NanKeys]) where [a.Sendable]
 	encode_with_files = |name, value| match encode_payload(value) {
-		Ok({ bytes, files, deep: Bool.False }) => Ok({ bytes, files })
-		Ok({ deep: Bool.True, .. }) => Err(TooDeep)
+		Ok(Sent({ bytes, files })) => Ok({ bytes, files })
+		Ok(TooDeep) => Err(TooDeep)
+		Ok(NanKeys) => Err(NanKeys)
 		Err(CountMismatch) => crash "contract: worker task \"${name}\" encoded the wrong number of CBOR items"
 		Err(DuplicateMapKey) => crash "contract: worker task \"${name}\" encoded duplicate CBOR map keys"
 	}
@@ -660,11 +676,12 @@ WorkerCodec := [].{
 		match WorkerCodec.try_encode(value) {
 			Ok(bytes) => bytes
 			Err(TooDeep) => crash "internal: a platform test encoded a value nested past the bound with encode; use try_encode"
+			Err(NanKeys) => crash "internal: a platform test encoded a dictionary with two NaN keys with encode; use try_encode"
 		}
 	}
 
-	## Expose the reader's depth refusal to platform tests of own-encoded values.
-	try_encode : a -> Try(List(U8), [TooDeep]) where [a.Sendable]
+	## Expose the writer's refusals to platform tests of own-encoded values.
+	try_encode : a -> Try(List(U8), [TooDeep, NanKeys]) where [a.Sendable]
 	try_encode = |value| {
 		encoded = WorkerCodec.encode_with_files("payload", value)?
 		if !encoded.files.is_empty() {
@@ -681,16 +698,21 @@ WorkerCodec := [].{
 
 ## The unexposed codec's writer entrypoint. The format types alone receive
 ## public aliases; applications cannot reach this module or its worker functions.
-encode_payload : a -> Try({ bytes : List(U8), files : List(Engine.File), deep : Bool }, [CountMismatch, DuplicateMapKey]) where [a.WorkerCodec.Sendable]
+## A value past the nesting bound or with two NaN keys in one dictionary
+## is refused before the writer is finished, so its placeholder and its
+## equal keys are never checked or sent.
+encode_payload : a -> Try([Sent({ bytes : List(U8), files : List(Engine.File) }), TooDeep, NanKeys], [CountMismatch, DuplicateMapKey]) where [a.WorkerCodec.Sendable]
 encode_payload = |value| {
 	Shape : a
 	encoding = WorkerCodec.Format.{}
-	WorkerCodec.Enc.(WorkerCodec.EncBody.({ writer, held })) = Shape.encoder_for(encoding)(value, WorkerCodec.Enc.(WorkerCodec.EncBody.{ writer: Cbor.Writer.new({ key_order: Sorted }), held: { files: [], depth: 0, over: Bool.False } }))?
+	WorkerCodec.Enc.(WorkerCodec.EncBody.({ writer, held })) = Shape.encoder_for(encoding)(value, WorkerCodec.Enc.(WorkerCodec.EncBody.{ writer: Cbor.Writer.new({ key_order: Sorted }), held: { files: [], depth: 0, over: Bool.False, nan_key: Bool.False, nan_keys: Bool.False } }))?
 	if held.over {
-		Ok({ bytes: [], files: [], deep: Bool.True })
+		Ok(TooDeep)
+	} else if held.nan_keys {
+		Ok(NanKeys)
 	} else {
 		bytes = Cbor.Writer.finish(writer)?
-		Ok({ bytes, files: held.files, deep: Bool.False })
+		Ok(Sent({ bytes, files: held.files }))
 	}
 }
 
@@ -739,6 +761,17 @@ max_cbor_depth = 2 * max_nesting + 2
 ## encode is marked to be refused.
 too_deep : Cbor.Writer, WorkerCodec.Held -> Try(WorkerCodec.Enc, err)
 too_deep = |output, held| Cbor.encode_null(output).map_ok(|writer| WorkerCodec.Enc.(WorkerCodec.EncBody.{ writer, held: { ..held, over: Bool.True } }))
+
+## Note a dictionary key that is or is not NaN: the second NaN key of one
+## dictionary marks the encode to be refused (`NanKeys`).
+nan_noted : WorkerCodec.Held, Bool -> WorkerCodec.Held
+nan_noted = |held, nan| if !nan {
+	held
+} else if held.nan_key {
+	{ ..held, nan_keys: Bool.True }
+} else {
+	{ ..held, nan_key: Bool.True }
+}
 
 ## The reader's configuration in a parser state, which every `Cbor.parse_*`
 ## step takes.

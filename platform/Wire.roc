@@ -119,6 +119,7 @@ held : a -> { bytes : List(U8), files : List(Engine.File) } where [a.Wire.Sendab
 held = |value| match WorkerCodec.encode_with_files("wire unit", value) {
 	Ok(encoded) => encoded
 	Err(TooDeep) => crash "internal: a platform test's value is nested past the bound"
+	Err(NanKeys) => crash "internal: a platform test's value holds two NaN keys in one dictionary"
 }
 
 ## A chain of tags with two payloads, ending in a payload-free tag.
@@ -597,5 +598,55 @@ expect {
 		\\nested: True
 		\\around: False
 		\\tagged: False
+	actual == expected
+}
+
+## NaN is not equal to itself, so a dictionary can hold several NaN keys,
+## but every NaN is written as the one canonical NaN. One NaN key crosses
+## and is read back as a NaN key; a second NaN key in the same dictionary
+## is refused as `NanKeys` at encode, for `F32` keys as for `F64`, instead
+## of writing two equal map keys. Each dictionary's NaN keys are its own:
+## one in each of two siblings, or one in a dictionary nested in another's
+## value, cross, while two around a nested one are refused. A set of two
+## NaNs is a list, not a map, and crosses with both.
+expect {
+	two_f64 : Dict(F64, Str)
+	two_f64 = Dict.empty().insert(F64.nan, "a").insert(F64.nan, "b")
+	two_f32 : Dict(F32, Str)
+	two_f32 = Dict.empty().insert(F32.nan, "a").insert(F32.nan, "b")
+	one : Dict(F64, Str)
+	one = Dict.empty().insert(F64.nan, "a").insert(1.0, "b")
+	one_back : Try(Dict(F64, Str), WorkerCodec.Error)
+	one_back = WorkerCodec.decode(WorkerCodec.encode(one))
+	siblings = [Dict.empty().insert(F64.nan, "a"), Dict.empty().insert(F64.nan, "b")]
+	siblings_back : Try(List(Dict(F64, Str)), WorkerCodec.Error)
+	siblings_back = WorkerCodec.decode(WorkerCodec.encode(siblings))
+	nested : Dict(F64, Dict(F64, Str))
+	nested = Dict.empty().insert(F64.nan, Dict.empty().insert(F64.nan, "x"))
+	nested_back : Try(Dict(F64, Dict(F64, Str)), WorkerCodec.Error)
+	nested_back = WorkerCodec.decode(WorkerCodec.encode(nested))
+	around : Dict(F64, Dict(F64, Str))
+	around = Dict.empty().insert(F64.nan, Dict.empty().insert(F64.nan, "x")).insert(F64.nan, Dict.empty())
+	set : Set(F64)
+	set = Set.empty().insert(F64.nan).insert(F64.nan)
+	set_back : Try(Set(F64), WorkerCodec.Error)
+	set_back = WorkerCodec.decode(WorkerCodec.encode(set))
+	nan_keys = |d| d.to_list().keep_if(|(k, _)| k.is_nan()).len()
+	actual =
+		\\two: ${Str.inspect((two_f64.len(), WorkerCodec.try_encode(two_f64) == Err(NanKeys), WorkerCodec.encode_with_files("wire unit", two_f64) == Err(NanKeys)))}
+		\\two_f32: ${Str.inspect((two_f32.len(), WorkerCodec.try_encode(two_f32) == Err(NanKeys)))}
+		\\one: ${Str.inspect(one_back.map_ok(|d| (d.len(), nan_keys(d), d.get(1.0))))}
+		\\siblings: ${Str.inspect(siblings_back.map_ok(|ds| ds.map(nan_keys)))}
+		\\nested: ${Str.inspect(nested_back.map_ok(|d| (nan_keys(d), d.to_list().map(|(_, inner)| nan_keys(inner)))))}
+		\\around: ${Str.inspect((around.len(), WorkerCodec.try_encode(around) == Err(NanKeys)))}
+		\\set: ${Str.inspect((set.len(), set_back.map_ok(|s| s.len())))}
+	expected =
+		\\two: (2, True, True)
+		\\two_f32: (2, True)
+		\\one: Ok((2, 1, Ok("b")))
+		\\siblings: Ok([1, 1])
+		\\nested: Ok((1, [1]))
+		\\around: (2, True)
+		\\set: (2, Ok(2))
 	actual == expected
 }

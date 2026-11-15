@@ -137,6 +137,7 @@ WorkersApp := [].{
 		Err(Timeout) => "timeout"
 		Err(Refused) => "refused"
 		Err(TooDeep) => "too deep"
+		Err(NanKeys) => "NaN keys"
 		Err(TooManyFiles) => "too many files"
 	}
 

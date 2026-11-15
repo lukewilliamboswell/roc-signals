@@ -1509,7 +1509,7 @@ Core := [].{
 		StorageWriteFailures,
 		ClipboardWrite({ text : Str, html : [Plain, Html(Str)] }),
 		Timer(U32),
-		Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })], refusal : [None, TooDeep] }),
+		Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })], refusal : [None, TooDeep, NanKeys] }),
 		Interval(U32),
 		Popstate,
 
@@ -1648,7 +1648,7 @@ Core := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
@@ -8687,8 +8687,9 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 ## Refuse a request without admitting it: it takes an id but no slot, sends
 ## nothing and is not in the in-flight table, and its result is queued for
 ## the next turn as the in-flight bound's `Refused` is, counted with it. A
-## worker job whose input is nested past the payload bound is refused so
-## (`WorkRefused(TooDeep)`).
+## worker job whose input is nested past the payload bound, or holds two
+## NaN keys in one dictionary, is refused so (`WorkRefused(TooDeep)`,
+## `WorkRefused(NanKeys)`).
 fx_refuse : Tx, List(U32), Result -> (U32, Tx)
 fx_refuse = |tx, path, res| {
 	id = tx.fx.next
@@ -8787,6 +8788,7 @@ issue_progress = |tx, path, reqs, owned, progress_ms| {
 				(id, t1) = match refusal {
 					None => fx_admit(t0, path, req)
 					TooDeep => fx_refuse(t0, path, WorkRefused(TooDeep))
+					NanKeys => fx_refuse(t0, path, WorkRefused(NanKeys))
 				}
 				$tx = t1
 				$owned = $owned.append({ id, sub: False, keep: on_dispose == Keep, a, at })

@@ -74,6 +74,7 @@ TypedApp := [].{
 		Timeout => "timed out"
 		Refused => "refused"
 		TooDeep => "too deep"
+		NanKeys => "NaN keys"
 		TooManyFiles => "too many files"
 		Lost(_) => "lost"
 	}
@@ -107,6 +108,7 @@ TypedApp := [].{
 		Err(Timeout) => "timed out"
 		Err(Refused) => "refused"
 		Err(TooDeep) => "too deep"
+		Err(NanKeys) => "NaN keys"
 		Err(TooManyFiles) => "too many files"
 		Err(Lost(_)) => "lost"
 	}
@@ -124,6 +126,7 @@ TypedApp := [].{
 		Err(Timeout) => "timed out"
 		Err(Refused) => "refused"
 		Err(TooDeep) => "too deep"
+		Err(NanKeys) => "NaN keys"
 		Err(TooManyFiles) => "too many files"
 		Err(Lost(_)) => "lost"
 	}

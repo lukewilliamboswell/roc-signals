@@ -75,6 +75,7 @@ GatherApp := [].{
 		Timeout => "timeout"
 		Refused => "refused"
 		TooDeep => "too deep"
+		NanKeys => "NaN keys"
 		TooManyFiles => "too many files"
 		Lost(_) => "lost"
 	}
@@ -92,6 +93,7 @@ GatherApp := [].{
 			Timeout => "failed: timeout"
 			Refused => "failed: refused"
 			TooDeep => "failed: too deep"
+			NanKeys => "failed: NaN keys"
 			TooManyFiles => "failed: too many files"
 			Lost(_) => "failed: lost"
 		}

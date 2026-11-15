@@ -662,6 +662,7 @@ Lab := [].{
 			Timeout => Timeout
 			Refused => Refused
 			TooDeep => Failed("nested too deeply to send")
+			NanKeys => Failed("a dictionary with two NaN keys cannot be sent")
 			TooManyFiles => Failed("more files than an answer may hold")
 			Lost(fault) => Lost(fault)
 		}

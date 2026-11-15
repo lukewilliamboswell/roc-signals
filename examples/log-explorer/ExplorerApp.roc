@@ -171,6 +171,7 @@ ExplorerApp := [].{
 		Timeout => "This took too long."
 		Refused => "Too many requests at once."
 		TooDeep => "The answer is nested too deeply to send."
+		NanKeys => "The answer holds a dictionary with two NaN keys, which cannot be sent."
 		TooManyFiles => "The answer holds too many files to send."
 		Unasked => "Open a log file, or generate a sample."
 	}

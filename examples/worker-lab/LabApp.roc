@@ -117,6 +117,7 @@ LabApp := [].{
 			Timeout => Timeout
 			Refused => Refused
 			TooDeep => Failed("nested too deeply to send")
+			NanKeys => Failed("a dictionary with two NaN keys cannot be sent")
 			TooManyFiles => Failed("more files than an answer may hold")
 			Lost(fault) => Lost(fault)
 		}
@@ -368,6 +369,7 @@ LabApp := [].{
 			Timeout => "The picture was not composed: it timed out."
 			Refused => "The picture was not composed: too many requests were in flight."
 			TooDeep => "The picture was not composed: its answer was nested too deeply."
+			NanKeys => "The picture was not composed: its answer held a dictionary with two NaN keys."
 			TooManyFiles => "The picture was not composed: its answer held too many files."
 			Lost(fault) => "The picture was not composed: ${Lab.fault_text(fault)}."
 		}

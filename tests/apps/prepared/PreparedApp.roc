@@ -176,6 +176,7 @@ PreparedApp := [].{
 		Timeout => "timed out"
 		Refused => "refused"
 		TooDeep => "too deep"
+		NanKeys => "NaN keys"
 		TooManyFiles => "too many files"
 		Failed(problem) => "failed ${Str.inspect(problem)}"
 	}

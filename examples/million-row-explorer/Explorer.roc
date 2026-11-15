@@ -290,6 +290,7 @@ Explorer := [Shop].{
 			Timeout => "A shard took too long to answer.${unanswered}"
 			Refused => "Too many requests at once: a shard was not asked.${unanswered}"
 			TooDeep => "A shard's answer was nested too deeply to send.${unanswered}"
+			NanKeys => "A shard's answer held a dictionary with two NaN keys, which cannot be sent.${unanswered}"
 			TooManyFiles => "A shard's answer held too many files to send.${unanswered}"
 			Lost(fault) => "A shard's worker stopped (${Str.inspect(fault)}).${unanswered}"
 		}
@@ -366,6 +367,7 @@ shard_text = |job| match job {
 	Failed(Timeout) => "timed out"
 	Failed(Refused) => "not asked"
 	Failed(TooDeep) => "nested too deeply"
+	Failed(NanKeys) => "two NaN keys in a dictionary"
 	Failed(TooManyFiles) => "too many files"
 	Failed(Lost(_)) => "worker lost"
 }

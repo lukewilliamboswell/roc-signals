@@ -143,11 +143,15 @@ canonical! = |label, input, decode| {
 	match measured.value {
 		# The reader's backstop counts CBOR levels and admits values nested
 		# past the writer's bound on the app's own levels; such a value is
-		# refused as `TooDeep`, never written as other bytes.
+		# refused as `TooDeep`, never written as other bytes. The reader
+		# refuses two equal keys in one map, and every NaN is read from the
+		# one canonical form, so an accepted input never holds two NaN keys
+		# in one dictionary.
 		Ok(value) => match WorkerCodec.try_encode(value) {
 			Ok(bytes) if bytes != input => crash "an accepted ${label} input is not the encoding of the value it decodes to"
 			Ok(_) => {}
 			Err(TooDeep) => {}
+			Err(NanKeys) => crash "an accepted ${label} input holds two NaN keys in one dictionary"
 		}
 		Err(_) => {}
 	}
@@ -173,6 +177,7 @@ test! = |input| {
 			}
 			# Nested past the writer's bound, as the canonical rule allows.
 			Err(TooDeep) => {}
+			Err(NanKeys) => crash "a decoded Rich, whose dictionary keys are text, holds two NaN keys"
 		}
 		Err(_) => {}
 	}
@@ -194,6 +199,7 @@ test! = |input| {
 			again = match WorkerCodec.encode_with_files("wire fuzz", value) {
 				Ok(encoded) => encoded
 				Err(TooDeep) => crash "a decoded Filed, which cannot nest, is refused as too deep"
+				Err(NanKeys) => crash "a decoded Filed, which has no dictionary, holds two NaN keys"
 			}
 			well_formed : Try(Cbor.Value, _)
 			well_formed = Cbor.parse(again.bytes)
@@ -271,6 +277,7 @@ sample_filed = {
 	match WorkerCodec.encode_with_files("wire fuzz", { title: "t", docs: [empty], extra: Err(Missing) }) {
 		Ok(encoded) => encoded.bytes
 		Err(TooDeep) => crash "a seed Filed, which cannot nest, is refused as too deep"
+		Err(NanKeys) => crash "a seed Filed, which has no dictionary, holds two NaN keys"
 	}
 }
 

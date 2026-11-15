@@ -106,7 +106,7 @@ It gives `body` a value of type `Engine.Remote(output, Worker.Error(error))`:
   job works: `remote.answered() ?? default` shows a fallback, and
   `.map_ok(f)` picks from it. `Worker.status(remote)` is the whole resource as
   one union, `Unasked`, `Working`, `Answered(output)`, the task's own
-  `Failed(error)`, `Timeout`, `Refused`, `TooDeep`, `TooManyFiles` or
+  `Failed(error)`, `Timeout`, `Refused`, `TooDeep`, `NanKeys`, `TooManyFiles` or
   `Lost(fault)`, for a view that
   says something different in each case (see [Failures](#failures)).
 - To show an answer beside state the resource does not hold (the page of
@@ -552,6 +552,7 @@ tells them apart:
 | `Timeout` | The job's timeout expired, and it was stopped |
 | `Refused` | Too many requests were in flight; the job was never started |
 | `TooDeep` | The input or the answer nested more than 128 levels of lists, sets, dictionaries, records, tuples, tags with a payload and files; nothing was sent or answered, and the worker was kept |
+| `NanKeys` | The input or the answer held a dictionary with more than one NaN key, which a payload cannot tell apart; nothing was sent or answered, and the worker was kept |
 | `TooManyFiles` | The answer held more than 16 files; nothing was answered, and the worker was kept |
 | `Lost(fault)` | The job crashed, or no worker could run it |
 
@@ -569,7 +570,7 @@ the two into one union, so a view matches each case once:
 
 With `request` and `result`, the same cases are `Ok(value)`,
 `Err(Failed(error))`, `Err(Timeout)`, `Err(Refused)`, `Err(TooDeep)`,
-`Err(TooManyFiles)` and `Err(Lost(fault))`.
+`Err(NanKeys)`, `Err(TooManyFiles)` and `Err(Lost(fault))`.
 
 **A long job.** A job cannot be stopped from inside: there are no
 checkpoints, and stopping one ends its worker. Split long work into
@@ -668,7 +669,10 @@ The two instances are the same compiled module; payload bytes are not a format
 for an app to persist across releases. A float keeps its zero sign, while all
 NaN payloads become one canonical NaN. A dictionary with `F32` or `F64` keys
 cannot hold both `0.0` and `-0.0`, which float equality makes one key, so a
-payload holding both is refused rather than read as one entry.
+payload holding both is refused rather than read as one entry. NaN is not
+equal to itself, so such a dictionary can hold several NaN keys, but a
+payload writes every NaN alike: one NaN key crosses, and a dictionary with
+two is not sent. Its job's result is `NanKeys`, as `TooDeep` below.
 
 A handwritten codec is generic over its format and names only the hooks it
 calls: an `encoder_for` of type `format -> (T, enc -> Try(enc, []))` whose

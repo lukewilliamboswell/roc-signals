@@ -70,6 +70,7 @@ SearchApp := [].{
 		Err(Timeout) => Err("took too long")
 		Err(Refused) => Err("too busy")
 		Err(TooDeep) => Err("nested too deeply")
+		Err(NanKeys) => Err("two NaN keys in a dictionary")
 		Err(TooManyFiles) => Err("too many files")
 	}
 
