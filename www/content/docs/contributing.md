@@ -115,7 +115,7 @@ These are the development environment's Blueprint tasks, not an app's
 |---|---|
 | `blueprint run check -- [--without-fuzz]` | The pull-request gate (below), every fuzz target's fixed examples included; `--without-fuzz` skips the fuzz targets, each with a `SKIP` line, as CI's Check job does beside its Fuzz smoke job |
 | `blueprint run check-slow` | Local only, never in CI: every fuzz target's fixed examples on its instrumented build, a walk of every app of 10,000 steps (`RUNNER --walk`), the native soak of each app's round-trip spec (`RUNNER --soak 48`, flat live allocations and bytes), and a long Chrome session per app |
-| `blueprint run spec -- [--browser] [--filter GLOB] [--target TARGET] [APP...]` | Some apps' specs, natively and optionally in Chrome. The native runners are built for `TARGET` (`x64musl`, `arm64mac`, `x64mac` or `x64win`); without it, for the system the task runs on as `uname -sm` names it (`x64musl` where that names none), so a contributor's Mac runs them as they are. `check` always builds for `x64musl`, as CI does |
+| `blueprint run spec -- [--browser] [--filter GLOB] [--target TARGET] [APP...]` | Some apps' specs, natively and optionally in Chrome. The native runners are built for `TARGET` (`x64musl`, `arm64mac`, `x64mac` or `x64win`); without it, for the system the task runs on as `uname -sm` names it (`x64musl` where that names none), so a contributor's Mac runs them as they are. `check` always builds for `x64musl`, as CI does. A run whose filter selects no spec fails: a filter that matches nothing is a mistake |
 | `blueprint run platform` | Build the platform's link inputs with the pinned Zig, including matching PIC musl startup and libraries, to build an app's `main.roc` by hand (a fuzz target needs none: `roc build --fuzz` fetches its roc-fuzz release) |
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
@@ -188,7 +188,11 @@ problems found before it.
    a section of the examples index.
 4. Every fuzz target in the tree is registered in `Targets.fuzz_targets`, or
    skipped in `Targets.fuzz_skipped` with a reason that `check` prints as a
-   `SKIP` line, and every registered file exists.
+   `SKIP` line, and every registered file exists. Every app under
+   `examples/` and `tests/apps/` with a `specs/` directory is named in
+   `SpecSuite.apps` or `SpecSuite.test_apps`, every app they name has
+   specs, and none is named twice, so no app's specs go unrun and none
+   passes having checked nothing.
 5. The shipped JavaScript's Brotli sizes against `scripts/src/runtime-sizes.tsv`:
    growth or shrinkage beyond 16 bytes fails, and so does a newly shipped
    file without a figure.
@@ -469,7 +473,8 @@ marker is the whole end of its line, so a region `row` ends at
 it. `check`
 fails on an inline Roc block in a docs page, a missing sample or region, a
 sample that does not type-check or whose `expect`s fail, and a sample
-directory with `specs/` whose specs fail natively or in Chrome.
+directory with `specs/` whose specs fail natively or in Chrome, or that
+holds no spec.
 
 A sample is either one file that is a whole app (`www/samples/state.roc`)
 or a directory laid out as an app is: its modules, a `main.roc` that binds

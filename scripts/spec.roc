@@ -61,9 +61,11 @@ main! = |raw_args| {
 	}
 	SpecSuite.build!(o, apps, if ($browser) apps else [])?
 	var $problems = []
+	var $selected = 0
 	for example in apps {
 		r = Checks.hold!($problems, Checks.run_app!(o, example, $browser))?
 		$problems = $problems.concat(r.native.problems).concat(r.browser.problems)
+		$selected = $selected + r.selected
 	}
-	Checks.finish!("spec", $problems)
+	Checks.finish!("spec", $problems.concat(SpecSuite.selection_problems($filter, $selected)))
 }

@@ -57,6 +57,46 @@ SpecSuite := [].{
 		Ok($out)
 	}
 
+	## How many specs each spec-bearing directory holds: every app under
+	## `examples/` and `tests/apps/` with a `specs/` directory, as
+	## `listing_problems` compares them with the lists.
+	spec_dirs! : () => Try(List({ dir : Str, specs : U64 }), _)
+	spec_dirs! = || {
+		var $out = []
+		for parent in ["examples", "tests/apps"] {
+			for entry in Path.list!(Path.utf8(parent))? {
+				dir = Path.display(entry)
+				if Path.is_dir!(entry)? and Path.is_dir!(Path.utf8("${dir}/specs")) ?? Bool.False {
+					$out = $out.append({ dir, specs: SpecSuite.files_with!("${dir}/specs", ".scm")?.len() })
+				}
+			}
+		}
+		Ok($out)
+	}
+
+	## The `check` stage over the tree: every directory with specs is an app
+	## the lists name, and every app they name has specs.
+	listing! : () => Try(List(Str), _)
+	listing! = || Ok(SpecSuite.listing_problems({ examples: SpecSuite.apps, tests: SpecSuite.test_apps, found: SpecSuite.spec_dirs!()? }))
+
+	## What is wrong between the spec-bearing directories `found` and the
+	## lists: a directory whose specs no list names never runs, and a listed
+	## app with no specs passes having checked nothing.
+	listing_problems : { examples : List(Str), tests : List(Str), found : List({ dir : Str, specs : U64 }) } -> List(Str)
+	listing_problems = |{ examples, tests, found }| {
+		listed = examples.map(|a| { dir: "examples/${a}", name: a, list: "SpecSuite.apps" }).concat(tests.map(|a| { dir: "tests/apps/${a}", name: a, list: "SpecSuite.test_apps" }))
+		unlisted = found.keep_if(|f| f.specs > 0 and !listed.any(|l| l.dir == f.dir)).map(|f| "${f.dir}/specs holds specs, but neither SpecSuite.apps nor SpecSuite.test_apps names the app, so no run checks them")
+		empty = listed.keep_if(|l| !found.any(|f| f.dir == l.dir and f.specs > 0)).map(|l| "${l.list} names ${l.name}, but ${l.dir}/specs holds no spec, so its runs would pass having checked nothing")
+		names = examples.concat(tests)
+		twice = names.keep_if(|n| names.count_if(|m| m == n) > 1).fold([], |acc, n| if (acc.contains(n)) acc else acc.append(n)).map(|n| "the spec lists name ${n} more than once")
+		unlisted.concat(empty).concat(twice)
+	}
+
+	## A run that selected no spec at all is a mistake, never a pass: a
+	## filter that matches nothing, or apps with no specs.
+	selection_problems : Str, U64 -> List(Str)
+	selection_problems = |filter, selected| if (selected == 0) ["the filter ${Str.inspect(filter)} selects no spec in the apps run, so nothing was checked: a filter that matches nothing is a mistake"] else []
+
 	Runner : [Native, Browser]
 
 	## Every spec must pass in both runners: there is no list of expected
@@ -551,3 +591,24 @@ expect CompilerSkips.skips.all(|s| s.example == "files" and s.issue == "roc-lang
 
 ## The summary shows a skip, which is never a pass.
 expect SpecSuite.summary("files", Browser, { ..SpecSuite.empty_tally, passed: 12, skipped: 2 }) == "files (Browser): 12 passed, 0 failed, 2 skipped"
+
+## A directory with specs that no list names, a listed app with none, an
+## empty specs directory and a name listed twice are each a problem.
+expect {
+	found = [{ dir: "examples/a", specs: 2 }, { dir: "tests/apps/b", specs: 0 }, { dir: "tests/apps/c", specs: 1 }, { dir: "examples/z", specs: 0 }]
+	problems = SpecSuite.listing_problems({ examples: ["a", "d"], tests: ["b", "a"], found })
+	problems
+		== [
+			"tests/apps/c/specs holds specs, but neither SpecSuite.apps nor SpecSuite.test_apps names the app, so no run checks them",
+			"SpecSuite.apps names d, but examples/d/specs holds no spec, so its runs would pass having checked nothing",
+			"SpecSuite.test_apps names b, but tests/apps/b/specs holds no spec, so its runs would pass having checked nothing",
+			"SpecSuite.test_apps names a, but tests/apps/a/specs holds no spec, so its runs would pass having checked nothing",
+			"the spec lists name a more than once",
+		]
+}
+
+## Lists that agree with the tree have no problem.
+expect SpecSuite.listing_problems({ examples: ["a"], tests: ["c"], found: [{ dir: "examples/a", specs: 1 }, { dir: "tests/apps/c", specs: 3 }] }) == []
+
+## A selection of no spec is a problem; any spec at all is not.
+expect SpecSuite.selection_problems("nothing*", 0).len() == 1 and SpecSuite.selection_problems("*", 1) == []

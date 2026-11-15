@@ -317,12 +317,16 @@ Checks := [].{
 	## run is judged by `SpecSuite.judge`: a runner that stops before giving
 	## every selected spec a result, or exits with a code its lines do not
 	## explain, is a problem in the tally beside the failures it reported.
-	## Returns the tallies and the native runner's path.
-	run_app! : SpecSuite.Options, Str, Bool => Try({ native : SpecSuite.Tally, browser : SpecSuite.Tally, runner : Str }, _)
+	## A listed app with no specs at all is a problem of its native tally.
+	## Returns the tallies, how many specs the filter selected and the
+	## native runner's path.
+	run_app! : SpecSuite.Options, Str, Bool => Try({ native : SpecSuite.Tally, browser : SpecSuite.Tally, selected : U64, runner : Str }, _)
 	run_app! = |o, example, browser| {
-		specs = SpecSuite.select(o.filter, SpecSuite.spec_files!(example)?)
+		every = SpecSuite.spec_files!(example)?
+		specs = SpecSuite.select(o.filter, every)
 		runner = SpecSuite.runner_of(o, example)
-		native = SpecSuite.native_specs!({ example, runner, specs })?
+		ran = SpecSuite.native_specs!({ example, runner, specs })?
+		native = if (every.is_empty()) { ..ran, problems: ran.problems.append("${example} is listed for specs but its specs directory holds none") } else ran
 		Proc.note!(SpecSuite.summary(example, Native, native))
 		in_browser =
 			if browser {
@@ -344,7 +348,7 @@ Checks := [].{
 			} else {
 				SpecSuite.empty_tally
 			}
-		Ok({ native, browser: in_browser, runner })
+		Ok({ native, browser: in_browser, selected: specs.len(), runner })
 	}
 
 	## Run in Chrome, on an `--opt=size` build of `example`, the specs a

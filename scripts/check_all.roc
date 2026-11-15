@@ -76,6 +76,9 @@ main! = |raw_args| {
 	Proc.note!("== fuzz target registry")
 	$problems = Checks.gather!($problems, Targets.registry!())?
 
+	Proc.note!("== spec lists")
+	$problems = Checks.gather!($problems, SpecSuite.listing!())?
+
 	Proc.note!("== platform JavaScript sizes")
 	$problems = Checks.gather!($problems, Sizes.check_runtime!({ root: o.root, node: o.node }))?
 

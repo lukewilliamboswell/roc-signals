@@ -100,7 +100,9 @@ DocSamples := [].{
 			}
 		}
 		for dir in DocSamples.dirs!()? {
-			if Path.exists!(Path.utf8("${dir}/specs"))? {
+			if Path.exists!(Path.utf8("${dir}/specs"))? and SpecSuite.files_with!("${dir}/specs", ".scm")?.is_empty() {
+				$problems = $problems.append("docs sample ${dir}/specs holds no spec, so its runs would pass having checked nothing")
+			} else if Path.exists!(Path.utf8("${dir}/specs"))? {
 				out = "${o.build_dir}/docs/${dir}"
 				runner = "${out}/runner"
 				wasm = "${out}/app.wasm"
