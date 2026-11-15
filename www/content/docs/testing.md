@@ -193,7 +193,7 @@ deployment limit.
 
 | Form | Effect |
 |---|---|
-| `(initial-location "/path?q#h")` | The URL the app boots at; must start with `/`. Without it, `/` |
+| `(initial-location "/path?q#h")` | The URL the app boots at; must start with `/` and name a path the location model reports as Chrome does (see [Location](#location-history-title-and-storage)). Without it, `/` |
 | `(initial-online online)` | Boot connectivity, `online` or `offline` |
 | `(initial-visibility hidden)` | Boot page visibility, `visible` or `hidden` |
 | `(initial-media "QUERY" BOOL)` | A declared media query's boot match |
@@ -577,8 +577,14 @@ between no query and an empty query for document identity. An explicit empty
 fragment still identifies a same-document navigation. An exactly empty argument
 to an app's `Push` or `Replace` keeps its current URL, including its fragment;
 a nonempty whitespace-only reference resolves against the current URL and drops
-its fragment. Dot segments, backslashes and hosts remain outside the native
-runner's location model.
+its fragment. A path also encodes `^` and `|`, as Chrome does. A link or push
+to a URL with a scheme (`mailto:a@b`, `tel:`, `https:`) or another host (`//h`)
+leaves the app, and the step fails in both runners. Dot segments, backslashes
+and hosts remain outside the native runner's location model: the parser
+refuses a location whose path holds a backslash, a `.` or `..` segment or
+starts with `//`, and natively a link or an app's `Push` or `Replace` to such
+a path fails the step, saying what the model does not resolve. Write the
+location Chrome reports instead.
 
 ### Effects
 

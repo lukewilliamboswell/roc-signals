@@ -346,7 +346,8 @@ Checks := [].{
 	## also hold both runners to rejecting an invalid hold lifecycle. State
 	## assertions on a paragraph, which has no shown, checked, disabled or
 	## value state, must fail in both runners with one message rather than
-	## read a default.
+	## read a default. A link to a `mailto:` URL leaves the app in both
+	## runners, never resolving as a path on its origin.
 	broken_specs : List(Broken)
 	broken_specs = [
 		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press (label \"Keyboard editable\") \"Enter\")", rejection: "unmodelled" },
@@ -367,6 +368,7 @@ Checks := [].{
 		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(expect-checked (test-id \"state\") false)", rejection: "has no checked state: it is not an <input>" },
 		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(expect-disabled (test-id \"state\") false)", rejection: "has no disabled state" },
 		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(expect-value (test-id \"state\") \"\")", rejection: "has no live value property" },
+		{ example: "services", spec: "tests/apps/services/specs/url-links.scm", good: "(click (role link :name \"Follow raw fragment\"))", bad: "(click (role link :name \"Write mail\"))", rejection: "the click navigates to mailto:a@b, which leaves the app" },
 		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(hold-reports)", bad: "(hold-reports) (hold-reports)", rejection: "reports are already held" },
 		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(hold-reports)", bad: "(release-reports)", rejection: "reports are not held" },
 		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(expect-reports-replaced 0)", bad: "(hold-reports)", rejection: "spec ended while reports were held" },

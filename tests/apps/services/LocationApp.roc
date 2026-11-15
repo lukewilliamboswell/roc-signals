@@ -7,7 +7,7 @@ import pf.Html
 LocationApp := [].{
 	view : Engine.Boot -> Elem(Root)
 	view = |boot| Engine.state(
-		{ location: boot.url, pushes: 0.U64, replacements: 0.U64, normalizes: 0.U64, empty_pushes: 0.U64, empty_replaces: 0.U64, blanks: 0.U64, empty_queries: 0.U64, empty_fragments: 0.U64, traversals: 0.U64 },
+		{ location: boot.url, pushes: 0.U64, replacements: 0.U64, normalizes: 0.U64, empty_pushes: 0.U64, empty_replaces: 0.U64, blanks: 0.U64, pipes: 0.U64, empty_queries: 0.U64, empty_fragments: 0.U64, traversals: 0.U64 },
 		|st| Html.div(
 			"locations",
 			[
@@ -37,6 +37,8 @@ LocationApp := [].{
 				Engine.watch_changes(st.signal().map(|s| s.empty_replaces), |_| [Engine.command(Replace(""))], Engine.ignore({})),
 				Html.button("Push blank URL", [], st.update(|s| { ..s, blanks: s.blanks + 1 })),
 				Engine.watch_changes(st.signal().map(|s| s.blanks), |_| [Engine.command(Push(" \t\n\r "))], Engine.ignore({})),
+				Html.button("Push pipe path", [], st.update(|s| { ..s, pipes: s.pipes + 1 })),
+				Engine.watch_changes(st.signal().map(|s| s.pipes), |_| [Engine.command(Push("/url-probe/a|b^c?q=|^#|^"))], Engine.ignore({})),
 				Html.button("Push empty query", [], st.update(|s| { ..s, empty_queries: s.empty_queries + 1 })),
 				Engine.watch_changes(st.signal().map(|s| s.empty_queries), |_| [Engine.command(Push("?"))], Engine.ignore({})),
 				Html.button("Push empty fragment", [], st.update(|s| { ..s, empty_fragments: s.empty_fragments + 1 })),
@@ -44,6 +46,7 @@ LocationApp := [].{
 				Html.link("Follow empty fragment", "#", [Engine.attr("style", "display:block")]),
 				Html.link("Drop empty query", "/url-probe/query#link", [Engine.attr("style", "display:block")]),
 				Html.link("Follow raw fragment", "#l=café au lait\"<>`{}'?#", [Engine.attr("style", "display:block")]),
+				Html.link("Write mail", "mailto:a@b", [Engine.attr("style", "display:block")]),
 				Html.link("Follow raw relative path", "next café?word=ça va'\"#tag=é \"`", [Engine.attr("style", "display:block")]),
 			],
 		),

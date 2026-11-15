@@ -957,8 +957,16 @@ SpecRunner := [].{
 					)
 					{ ..b, pending: b.pending.keep_if(|request| request.id != id), subs: b.subs.keep_if(|entry| entry.id != id), gets: tasks, failure_queue: failures, failure_scheduled: b.failure_scheduled and !failures.is_empty(), reports: { ..b.reports, index: b.reports.index.remove(Request(id)) }, report_sources: b.report_sources.remove(id), network: b.network.remove(id) }
 				}
-				Push(url) => { ..b, back: b.back.append({ url: b.env.url, doc: b.doc }), env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) }, fwd: [] }
-				Replace(url) => { ..b, env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) } }
+				Push(url) =>
+					match SpecRunner.resolve_in_document(b.env.url, url) {
+						Ok(next) => { ..b, back: b.back.append({ url: b.env.url, doc: b.doc }), env: { ..b.env, url: next }, fwd: [] }
+						Err(problem) => { ..b, deferred_error: problem }
+					}
+				Replace(url) =>
+					match SpecRunner.resolve_in_document(b.env.url, url) {
+						Ok(next) => { ..b, env: { ..b.env, url: next } }
+						Err(problem) => { ..b, deferred_error: problem }
+					}
 				# Writes to unavailable storage fail in the browser and persist nothing.
 				Set(key, value) => SpecRunner.storage_write(b, { capacity, session: False, key, value: Present(value) })
 				Remove(key) => SpecRunner.storage_write(b, { capacity, session: False, key, value: Absent })
@@ -3442,7 +3450,11 @@ SpecRunner := [].{
 			match SpecRunner.ancestor(s.dom, i, |m| SpecRunner.link_href(m).is_ok()) {
 				Ok(a) => {
 					href = SpecRunner.link_href(Dom.node(s.dom, a)) ?? ""
-					url = SpecRunner.resolve_target(s.browser.env.url, href) ? |_| "the click navigates to ${href}, which leaves the app"
+					url = SpecRunner.resolve_target(s.browser.env.url, href) ? |problem|
+						match problem {
+							External => "the click navigates to ${href}, which leaves the app"
+							Unmodelled(why) => "unmodelled: the click navigates to ${href}, which holds ${why}; the native runner's location model does not resolve it"
+						}
 					SpecRunner.navigate(program, s, url)
 				}
 				Err(_) => Ok(s)
@@ -3519,26 +3531,14 @@ SpecRunner := [].{
 	alnum : U8 -> Bool
 	alnum = |c| (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')
 
-	## WHATWG URL input preprocessing happens before resolving a relative
-	## reference: trim C0/space at both edges, then remove TAB, LF and CR.
-	## Interior controls outside those three bytes remain for percent encoding.
-	location_input : Str -> Str
-	location_input = |url| {
-		bytes = url.to_utf8()
-		var $first = 0
-		var $end = bytes.len()
-		while $first < $end and (bytes.get($first) ?? ' ') <= ' ' {
-			$first = $first + 1
-		}
-		while $end > $first and (bytes.get($end - 1) ?? ' ') <= ' ' {
-			$end = $end - 1
-		}
-		Str.from_utf8(bytes.sublist({ start: $first, len: $end - $first }).keep_if(|byte| !['\t', '\n', '\r'].contains(byte))) ?? crash "URL input preprocessing preserves UTF-8"
-	}
-
 	## Apply Chrome's path, special-query and fragment percent-encode sets
 	## to a one-origin location. Existing escapes are kept. This is not a
-	## URL parser: dot segments, backslashes and hosts are not modelled.
+	## URL parser: dot segments, backslashes and hosts are not modelled, and
+	## a reference that needs them is refused before it gets here
+	## (`Scm.unmodelled_location`). The sets are Chrome's as measured, which
+	## add `|` to WHATWG's path set; the engine's `Url` module percent-encodes
+	## its own URLs separately (`platform/Url.roc`, `percent_encode`), and
+	## this oracle deliberately shares none of that code.
 	## Input preprocessing trims C0/space edges and removes tabs, LF and CR
 	## globally before applying the three component-specific sets. Empty
 	## query/fragment delimiters are omitted, as location.search/hash report.
@@ -3561,7 +3561,7 @@ SpecRunner := [].{
 		hex = "0123456789ABCDEF".to_utf8()
 		var $part = Path
 		var $bytes = []
-		for byte in SpecRunner.location_input(url).to_utf8() {
+		for byte in Scm.location_input(url).to_utf8() {
 			if byte == '#' and $part != Fragment {
 				$part = Fragment
 				$bytes = $bytes.append(byte)
@@ -3570,7 +3570,7 @@ SpecRunner := [].{
 				$bytes = $bytes.append(byte)
 			} else {
 				encoded = byte <= ' ' or byte > '~' or match $part {
-					Path => ['"', '<', '>', '`', '{', '}'].contains(byte)
+					Path => ['"', '<', '>', '^', '`', '{', '|', '}'].contains(byte)
 					Query => ['"', '<', '>', '\''].contains(byte)
 					Fragment => ['"', '<', '>', '`'].contains(byte)
 				}
@@ -3587,17 +3587,25 @@ SpecRunner := [].{
 	## `url` resolved against `base`, both path-absolute: a fragment, a query or
 	## an absolute path; a relative path resolves against `base`'s directory.
 	## A URL with a scheme or an authority leaves the app.
-	resolve : Str, Str -> Try(Str, [External])
+	resolve : Str, Str -> Try(Str, [External, Unmodelled(Str)])
 	resolve = |base, url| Ok(SpecRunner.serialize_location(SpecRunner.resolve_target(base, url)?))
 
 	## Resolve a reference while retaining empty component delimiters: an
 	## explicit empty fragment still selects same-document navigation even
 	## though the reported location omits its hash.
-	resolve_target : Str, Str -> Try(Str, [External])
+	## A reference with a scheme (`mailto:`, `https:`) or an authority leaves
+	## the app; one whose path needs a backslash or a dot segment read is
+	## `Unmodelled`, never guessed (`Scm.unmodelled_location`).
+	resolve_target : Str, Str -> Try(Str, [External, Unmodelled(Str)])
 	resolve_target = |base, raw_url| {
-		url = SpecRunner.location_input(raw_url)
-		if url.contains("://") or url.starts_with("//") {
+		url = Scm.location_input(raw_url)
+		if Scm.has_scheme(url) {
 			return Err(External)
+		}
+		match Scm.unmodelled_location(url) {
+			Ok({}) => {}
+			Err(OtherHost) => return Err(External)
+			Err(Unmodelled(why)) => return Err(Unmodelled(why))
 		}
 		path_q = SpecRunner.before(base, "#")
 		path = SpecRunner.before(path_q, "?")
@@ -3622,8 +3630,20 @@ SpecRunner := [].{
 	## A history URL the app pushed or replaced: it stays in the document.
 	## The History API keeps the current URL for an exactly empty argument;
 	## a nonempty argument that preprocesses to empty is instead resolved.
-	resolve_in_document : Str, Str -> Str
-	resolve_in_document = |base, url| if (url.is_empty()) base else SpecRunner.serialize_reference(SpecRunner.resolve_target(base, url) ?? crash "contract: the app pushed ${url}, which leaves the app")
+	## A URL that leaves the app, or one the location model cannot resolve as
+	## Chrome would, is the step's failure, with its message: the app's data
+	## decides it, so it is never a crash of the runner.
+	resolve_in_document : Str, Str -> Try(Str, Str)
+	resolve_in_document = |base, url|
+		if url.is_empty() {
+			Ok(base)
+		} else {
+			match SpecRunner.resolve_target(base, url) {
+				Ok(target) => Ok(SpecRunner.serialize_reference(target))
+				Err(External) => Err("contract: the app pushed ${JsonOut.quote(url)}, which leaves the app")
+				Err(Unmodelled(why)) => Err("unmodelled: the app pushed ${JsonOut.quote(url)}, which holds ${why}; the native runner's location model does not resolve it")
+			}
+		}
 
 	## The part of `s` before the first `sep`.
 	before : Str, Str -> Str
@@ -3632,7 +3652,7 @@ SpecRunner := [].{
 	## The HTML same-document rule: `to` has a fragment and differs from
 	## `from` only in it.
 	same_document : Str, Str -> Bool
-	same_document = |from, to| SpecRunner.location_input(to).contains("#") and SpecRunner.before(SpecRunner.serialize_reference(from), "#") == SpecRunner.before(SpecRunner.serialize_reference(to), "#")
+	same_document = |from, to| Scm.location_input(to).contains("#") and SpecRunner.before(SpecRunner.serialize_reference(from), "#") == SpecRunner.before(SpecRunner.serialize_reference(to), "#")
 
 	## Navigate to `url` as a user would: within the document, a new history
 	## entry and a popstate; otherwise the app mounts afresh at `url` in a new
@@ -6228,6 +6248,43 @@ expect {
 	actual == ["/abcd?q=xy#zw", "/x?q#f", "/dir/leaf?new=caf%C3%A9%20au%20lait#%C3%A9", "/dir/child%20caf%C3%A9"]
 }
 
+## The path set is Chrome's, which percent-encodes exactly these printable
+## bytes in a path (measured in Chrome 157): space, `"`, `<`, `>`, `^`, `` ` ``,
+## `{`, `|` and `}`; a query encodes space, `"`, `'`, `<` and `>`, and a fragment
+## space, `"`, `<`, `>` and `` ` ``. Every other printable byte stays.
+expect {
+	var $printable = []
+	var $b = 0x20.U8
+	while $b <= 0x7E {
+		if !['#', '?', '%', '/', '\\'].contains($b) {
+			$printable = $printable.append($b)
+		}
+		$b = $b + 1
+	}
+	printable = $printable
+	encoded = |prefix, wrap| printable.keep_if(|b| SpecRunner.serialize_location(wrap(Str.from_utf8([b]) ?? "")) != wrap(Str.from_utf8([b]) ?? "")).map(|b| Str.from_utf8([b]) ?? "").prepend(prefix)
+	actual = [encoded("path", |c| "/a${c}b"), encoded("query", |c| "/?a${c}b"), encoded("fragment", |c| "/#a${c}b")]
+	actual == [["path", " ", "\"", "<", ">", "^", "`", "{", "|", "}"], ["query", " ", "\"", "'", "<", ">"], ["fragment", " ", "\"", "<", ">", "`"]]
+}
+
+## An app's history URL with a `|` is reported as Chrome serializes it.
+expect SpecRunner.serialize_location("/a|b^c?q=|^#|^") == "/a%7Cb%5Ec?q=|^#|^"
+
+## A reference with a scheme, or whose path names a host (through a
+## backslash too), leaves the app; a query holding `://` does not. A
+## backslash or a dot segment in the path is unmodelled, never resolved by
+## a guess.
+expect {
+	base = "/dir/leaf"
+	actual = ["mailto:a@b", "tel:1", "a:b", "//h2/x", "\\\\h2/x", "/\\h2/x", "/x?u=http://y", "../x", "x/./y", "a\\b", "/a/%2e%2E"].map(|url| SpecRunner.resolve(base, url))
+	expected = [Err(External), Err(External), Err(External), Err(External), Err(External), Err(External), Ok("/x?u=http://y"), Err(Unmodelled("the dot segment .., which Chrome resolves away")), Err(Unmodelled("the dot segment ., which Chrome resolves away")), Err(Unmodelled("a backslash, which Chrome reads as /")), Err(Unmodelled("the dot segment %2e%2E, which Chrome resolves away"))]
+	actual == expected
+}
+
+## An app's push the model cannot resolve fails the step with its message,
+## and one that leaves the app is a contract failure, never a runner crash.
+expect [SpecRunner.resolve_in_document("/d/e", "/a/../b"), SpecRunner.resolve_in_document("/d/e", "https://x.test/"), SpecRunner.resolve_in_document("/d/e", "/a|b")] == [Err("unmodelled: the app pushed \"/a/../b\", which holds the dot segment .., which Chrome resolves away; the native runner's location model does not resolve it"), Err("contract: the app pushed \"https://x.test/\", which leaves the app"), Ok("/a%7Cb")]
+
 ## Existing escapes and their spelling survive repeated ingress unchanged.
 expect {
 	urls = ["/x%2f?q=%26#%zz", "/x/#/?tag=café au lait", "/p\"<>`{}?q=\"<>'`{}#f=\"<>`{}' ?#"]
@@ -6270,8 +6327,8 @@ expect {
 		reported: ["/x", "/x", "/x", "/x#?", "/x??", "/x##"],
 		resolved_empty: Ok("/dir/leaf?old"),
 		resolved_blank: Ok("/dir/leaf?old"),
-		history_empty: "/dir/leaf?old#start",
-		history_blank: "/dir/leaf?old",
+		history_empty: Ok("/dir/leaf?old#start"),
+		history_blank: Ok("/dir/leaf?old"),
 		empty_fragment: True,
 		retained_delimiter: Ok("/dir/leaf?old#"),
 	}

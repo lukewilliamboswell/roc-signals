@@ -3949,8 +3949,18 @@ oracle and never defines a meaning of its own. In particular:
   apply to the remaining bytes. Existing percent escapes are preserved. Empty
   query and fragment delimiters are omitted from the reported location, while
   the runner's existing URL/history strings retain them for document identity.
+  The path set is Chrome's as measured, which also encodes `^` and `|`. A
+  reference with a scheme (`mailto:`, `tel:`, `https:`) or an authority (`//h`,
+  or `\\h` and `/\h`, which Chrome reads so) leaves the app in both runners.
   This bounded same-origin model does not resolve dot segments, normalize
-  backslashes or parse hosts;
+  backslashes or parse hosts, so it refuses what would need them rather than
+  report a location Chrome would not: the parser refuses a spec location
+  naming another host or holding a backslash or a `.` or `..` segment (plain
+  or percent-encoded) in its path, and a link or an app's `Push` or
+  `Replace` to such a path fails the step natively, naming what is not
+  modelled. Its definition (`Scm.unmodelled_location`,
+  `SpecRunner.serialize_reference`) shares no code with the engine's own
+  `platform/Url.roc`;
 - effects are always manual: HTTP requests, timers and worker jobs wait for
   `run-effect`, which fires a timer, answers an HTTP request with the one
   staged answer, and runs a worker job — in Chrome in a real worker, the step

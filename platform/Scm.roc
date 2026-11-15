@@ -1643,13 +1643,88 @@ Scm := [].{
 		Ok({ item, pos })
 	}
 
-	## A location the app starts at or is navigated to: an absolute path,
-	## optionally with a query and a hash.
+	## A location the app starts at or is navigated to: an absolute path on
+	## this origin, optionally with a query and a hash, in a shape the native
+	## runner's location model reports as Chrome does (`unmodelled_location`).
 	location : Sx -> Try(Str, Problem)
 	location = |sx| {
 		s = Scm.string(sx, "a location")?
-		if (s.starts_with("/")) Ok(s) else Err(Scm.bad(sx, "a location starts with /, got \"${s}\""))
+		if !s.starts_with("/") {
+			return Err(Scm.bad(sx, "a location starts with /, got \"${s}\""))
+		}
+		match Scm.unmodelled_location(Scm.location_input(s)) {
+			Ok({}) => Ok(s)
+			Err(OtherHost) => Err(Scm.bad(sx, "a location is a path on the app's origin; \"${s}\" names another host"))
+			Err(Unmodelled(why)) => Err(Scm.bad(sx, "the location \"${s}\" holds ${why}; write the location Chrome reports for it"))
+		}
 	}
+
+	## WHATWG URL input preprocessing, before a reference is resolved: trim
+	## C0 controls and spaces at both edges, then remove TAB, LF and CR
+	## throughout. Other interior controls remain, for percent-encoding.
+	location_input : Str -> Str
+	location_input = |url| {
+		bytes = url.to_utf8()
+		var $first = 0
+		var $end = bytes.len()
+		while $first < $end and (bytes.get($first) ?? ' ') <= ' ' {
+			$first = $first + 1
+		}
+		while $end > $first and (bytes.get($end - 1) ?? ' ') <= ' ' {
+			$end = $end - 1
+		}
+		Str.from_utf8(bytes.sublist({ start: $first, len: $end - $first }).keep_if(|byte| !['\t', '\n', '\r'].contains(byte))) ?? crash "URL input preprocessing preserves UTF-8"
+	}
+
+	## Whether a preprocessed reference starts with a URL scheme (`mailto:`,
+	## `tel:`, `https:`): a letter, then letters, digits, `+`, `-` or `.`, then
+	## `:`. Such a reference is a URL of its own, never a path on this origin.
+	has_scheme : Str -> Bool
+	has_scheme = |reference| {
+		bytes = reference.to_utf8()
+		letter = |b| (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z')
+		match bytes.first() {
+			Ok(b) if letter(b) => {
+				rest = bytes.drop_first(1)
+				match rest.find_first_index(|c| !(letter(c) or (c >= '0' and c <= '9') or c == '+' or c == '-' or c == '.')) {
+					Ok(at) => rest.get(at) == Ok(':')
+					Err(_) => Bool.False
+				}
+			}
+			_ => Bool.False
+		}
+	}
+
+	## Why the native runner's location model cannot report a preprocessed,
+	## scheme-less reference as Chrome would. The model percent-encodes and
+	## resolves against the current path; it does not parse hosts, read a
+	## backslash as `/` or resolve dot segments, so a reference whose path
+	## (before its query and fragment) needs any of those is refused rather
+	## than reported wrongly: `OtherHost` when it names an authority (`//h`,
+	## `\\h`, `/\h`, which Chrome reads as another host), `Unmodelled` for a
+	## backslash or a `.` or `..` segment, plain or percent-encoded. The
+	## engine's own URL handling (`platform/Url.roc`) is a separate definition
+	## that this one deliberately shares no code with.
+	unmodelled_location : Str -> Try({}, [OtherHost, Unmodelled(Str)])
+	unmodelled_location = |reference| {
+		path = (reference.split_on("#").first() ?? "").split_on("?").first() ?? ""
+		slashed = path.replace_each("\\", "/")
+		if slashed.starts_with("//") {
+			return Err(OtherHost)
+		}
+		if path.contains("\\") {
+			return Err(Unmodelled("a backslash, which Chrome reads as /"))
+		}
+		dot = |segment| [".", "..", "%2e", ".%2e", "%2e.", "%2e%2e"].contains(Scm.ascii_lower_bytes(segment.to_utf8()))
+		match slashed.split_on("/").find_first(dot) {
+			Ok(segment) => Err(Unmodelled("the dot segment ${segment}, which Chrome resolves away"))
+			Err(_) => Ok({})
+		}
+	}
+
+	## ASCII letters lowered, as text, for comparing a percent-encoded dot.
+	ascii_lower_bytes : List(U8) -> Str
+	ascii_lower_bytes = |bytes| Str.from_utf8_lossy(bytes.map(|b| if (b >= 'A' and b <= 'Z') b + 32 else b))
 
 	## `(stub-http "label" :url "..." :status N [:headers (("k" "v") ...)] :body "...")`
 	## or `(stub-http-reject "label" :kind KIND :detail "...")`.
@@ -3059,6 +3134,32 @@ expect {
 ## A name with dots that is not a directory entry, and an empty or lowercase
 ## printable type with parameters, are kept exactly.
 expect Scm.parse("(test \"t\" (setup (file \"...\" \"\" \"\") (file \".env\" \"text/plain; charset=utf-8\" \"x\")) (steps (expect-files 0)))").is_ok()
+
+## A location the native location model would report differently from Chrome
+## is refused where the spec writes it: another host (also through a removed
+## TAB), a backslash, and a dot segment plain or percent-encoded.
+expect {
+	at = |url| problem_of("(test \"t\" (steps (navigate \"${url}\")))")
+	# Each string is spec text, where a doubled backslash is one backslash.
+	actual = ["//h2/x", "/\t/h2", "/\\\\h2", "/a\\\\b", "/a/../b", "/a/.", "/a/%2E%2e/b?x#y"].map(at)
+	expected = [
+		"x.scm:1:28: a location is a path on the app's origin; \"//h2/x\" names another host",
+		"x.scm:1:28: a location is a path on the app's origin; \"/\t/h2\" names another host",
+		"x.scm:1:28: a location is a path on the app's origin; \"/\\h2\" names another host",
+		"x.scm:1:28: the location \"/a\\b\" holds a backslash, which Chrome reads as /; write the location Chrome reports for it",
+		"x.scm:1:28: the location \"/a/../b\" holds the dot segment .., which Chrome resolves away; write the location Chrome reports for it",
+		"x.scm:1:28: the location \"/a/.\" holds the dot segment ., which Chrome resolves away; write the location Chrome reports for it",
+		"x.scm:1:28: the location \"/a/%2E%2e/b?x#y\" holds the dot segment %2E%2e, which Chrome resolves away; write the location Chrome reports for it",
+	]
+	actual == expected
+}
+
+## Dots that are not whole segments, and a backslash, dot segment or `//`
+## after the path, are ordinary location text Chrome keeps.
+expect ["/a..b/.x/..%2f", "/a?\\\\b/../c#//d", "/x?u=http://y", "/a//b"].all(|url| Scm.parse("(test \"t\" (steps (navigate \"${url}\")))").is_ok())
+
+## A scheme is a letter, then letters, digits, `+`, `-` or `.`, then `:`.
+expect [Scm.has_scheme("mailto:a@b"), Scm.has_scheme("tel:1"), Scm.has_scheme("a+b.c-d:x"), Scm.has_scheme("/a:b"), Scm.has_scheme("1a:b"), Scm.has_scheme("a_b:c"), Scm.has_scheme("abc")] == [True, True, True, False, False, False, False]
 
 expect problem_of("(test \"t\" (steps (local-storage-unavailable)))") == "x.scm:1:18: unknown step local-storage-unavailable"
 
