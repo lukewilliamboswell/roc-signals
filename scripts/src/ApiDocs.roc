@@ -55,6 +55,15 @@ ApiDocs := [].{
 	## must also be at least the version the API's changes require
 	## (`roc bump --expect`); a `Candidate`, such as a pull request, has no
 	## version to hold to that.
+	##
+	## The working tree's platform is compared as it is first. When `roc bump`
+	## refuses it for the reason `candidate_repair` names, the comparison runs
+	## again on a copy of `platform/` with that repair's edits made, and the
+	## gate prints what it added; a refusal for any other reason fails the
+	## gate. When the unrepaired platform extracts, the repair is stale and
+	## the gate fails until it is removed. That costs one extra `roc bump` run
+	## while the repair is needed (a few seconds: extraction fails before
+	## anything is compared), and none once it is gone.
 	bump! : SpecSuite.Options, [Candidate, Release(Str)] => Try(List(Str), _)
 	bump! = |o, claim| {
 		request = Request.from_method(GET)
@@ -85,10 +94,83 @@ ApiDocs := [].{
 			Candidate => []
 			Release(version) => ["--expect", version]
 		}
-		result = Proc.merged!({ program: o.compiler, args: ["bump"].concat(old).concat(expected).concat(["platform/main.roc"]), cwd: o.root })?
-		output = Str.from_utf8_lossy(result.stdout)
-		Proc.note!(output)
-		Ok(if (result.code == 0) [] else ["roc bump against ${published.tag_name} failed: ${output}"])
+		compare! = |root| {
+			result = Proc.merged!({ program: o.compiler, args: ["bump"].concat(old).concat(expected).concat([root]), cwd: o.root })?
+			Ok({ code: result.code, output: Str.from_utf8_lossy(result.stdout) })
+		}
+		unrepaired = compare!("platform/main.roc")?
+		judged = match ApiDocs.candidate_plan({ code: unrepaired.code, output: unrepaired.output }, ApiDocs.candidate_repair) {
+			AsItIs => unrepaired
+			StaleCandidateRepair => {
+				Proc.note!(unrepaired.output)
+				return Ok(["the candidate-side API repair (${ApiDocs.candidate_repair.reason}) is no longer needed: roc bump extracts the unrepaired platform, so remove ApiDocs.candidate_repair"])
+			}
+			Repair => {
+				root = ApiDocs.repair_candidate!(o, ApiDocs.candidate_repair)?
+				Proc.note!("API candidate: platform/ with one public module added for roc bump, in a copy (the real platform/main.roc is unchanged): ${ApiDocs.candidate_repair.reason}")
+				compare!(root)?
+			}
+		}
+		Proc.note!(judged.output)
+		Ok(if (judged.code == 0) [] else ["roc bump against ${published.tag_name} failed: ${judged.output}"])
+	}
+
+	## The working tree's platform as `roc bump` must read it: the one public
+	## module the copy adds and why, the text that shows `roc bump` refused
+	## the unrepaired platform for exactly that reason, and the edits to the
+	## copy's root, each of which must occur exactly once.
+	CandidateRepair : { reason : Str, refusal : Str, edits : List({ before : Str, after : Str }) }
+
+	## `Wire.Sendable`'s `where` clause names the payload format's types,
+	## `WorkerCodec.Format` and the states its hooks pass, because derivation
+	## cannot resolve a format's hooks through a public alias
+	## (https://github.com/roc-lang/roc/issues/13022), and `WorkerCodec` is
+	## not exposed, so that the format's hooks are not public API. `roc bump`
+	## refuses to extract an API whose signatures name a type outside it
+	## (https://github.com/roc-lang/roc/issues/13080, here on the new side),
+	## although `roc check` accepts the platform. The repair exposes
+	## `WorkerCodec` in a copy of `platform/`, so the comparison also lists
+	## it as an added module, which ships as unexposed.
+	candidate_repair : CandidateRepair
+	candidate_repair = {
+		reason: "WorkerCodec is exposed, since Wire.Sendable's where clause names its types (roc-lang/roc#13022) and roc bump cannot extract an API that names a type from an unexposed module (roc-lang/roc#13080)",
+		refusal: "The new package's public API references the type `WorkerCodec.",
+		edits: [
+			{ before: "Wire, Worker]\n", after: "Wire, WorkerCodec, Worker]\n" },
+			{ before: "import Wire\nimport Worker\n", after: "import Wire\nimport Worker\nimport WorkerCodec\n" },
+		],
+	}
+
+	## What the unrepaired comparison says about the candidate repair: the
+	## platform extracts (`AsItIs` when no repair is kept, otherwise the
+	## repair is stale) or was refused for the repair's reason (`Repair`).
+	## Any other refusal is judged as it is.
+	candidate_plan : { code : I32, output : Str }, CandidateRepair -> [AsItIs, Repair, StaleCandidateRepair]
+	candidate_plan = |{ code, output }, repair|
+		if repair.edits.is_empty() {
+			AsItIs
+		} else if code == 0 {
+			StaleCandidateRepair
+		} else if output.contains(repair.refusal) {
+			Repair
+		} else {
+			AsItIs
+		}
+
+	## Copy the working tree's platform modules into the build directory and
+	## make the candidate repair's edits to the copy's root. Answers the
+	## repaired root; `platform/` itself is never written.
+	repair_candidate! : SpecSuite.Options, CandidateRepair => Try(Str, _)
+	repair_candidate! = |o, repair| {
+		dir = "${o.build_dir}/api-candidate/platform"
+		SpecSuite.fresh_dir!(dir)?
+		for file in SpecSuite.files_with!("${o.root}/platform", ".roc")? {
+			Path.copy!(Path.utf8(file), Path.utf8("${dir}/${file.split_on("/").last() ?? file}"))?
+		}
+		root = "${dir}/main.roc"
+		source = Path.read_utf8!(Path.utf8(root))?
+		Path.write_utf8!(Path.utf8(root), ApiDocs.repaired_root(source, repair.edits)?)?
+		Ok(root)
 	}
 
 	## A published release that `roc bump` cannot read as it shipped, and the
@@ -374,6 +456,36 @@ expect {
 		missing: ApiDocs.repaired_root("import Html\n", [edit]),
 		twice: ApiDocs.repaired_root("import Engine\nimport Engine\n", [edit]),
 	} == { missing: Err(BaselineEditDoesNotApply("import Engine\n")), twice: Err(BaselineEditDoesNotApply("import Engine\n")) }
+}
+
+## The candidate repair adds exactly `WorkerCodec` to the exposed modules of
+## the working tree's root, and imports it, and nothing else.
+expect {
+	root = "platform \"\"\n\trequires {}\n\texposes [Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, Wire, Worker]\n\tpackages {}\n\tprovides {}\nimport Url\nimport Wire\nimport Worker\n"
+	repaired = ApiDocs.repaired_root(root, ApiDocs.candidate_repair.edits)?
+	added = ApiDocs.modules(repaired)?.drop_if(|name| ApiDocs.modules(root).map_ok(|names| names.contains(name)) == Ok(True))
+	added == ["WorkerCodec"] and repaired.contains("import Worker\nimport WorkerCodec\n") and repaired.replace_each("WorkerCodec, ", "").replace_each("import WorkerCodec\n", "") == root
+}
+
+## The candidate repair is refused on a root it was not reviewed for, as
+## the baseline repair is.
+expect {
+	moved = "platform \"\"\n\texposes [Engine, Worker, Wire]\nimport Worker\nimport Wire\n"
+	ApiDocs.repaired_root(moved, ApiDocs.candidate_repair.edits) == Err(BaselineEditDoesNotApply("Wire, Worker]\n"))
+}
+
+## The repair runs only after roc bump refused the platform for its reason;
+## a platform that extracts makes it stale, and another refusal is judged
+## as it is.
+expect {
+	repair = ApiDocs.candidate_repair
+	refused = "── ✗ cannot extract public api\n${repair.refusal}Format`, which is\nnot itself part of the exposed API.\n"
+	{
+		needed: ApiDocs.candidate_plan({ code: 1, output: refused }, repair),
+		stale: ApiDocs.candidate_plan({ code: 0, output: "This is a MAJOR change." }, repair),
+		other: ApiDocs.candidate_plan({ code: 1, output: "The new package (platform/main.roc) does not compile" }, repair),
+		none: ApiDocs.candidate_plan({ code: 0, output: "" }, { ..repair, edits: [] }),
+	} == { needed: Repair, stale: StaleCandidateRepair, other: AsItIs, none: AsItIs }
 }
 
 ## A successful release response preserves the actual asset URLs for the baseline.

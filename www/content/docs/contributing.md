@@ -174,6 +174,16 @@ extract an API whose signatures name a type from an unexposed module. A repair
 kept after its release is no longer the latest fails the gate until it is
 removed.
 
+The working tree's side has the same limitation: `Wire.Sendable`'s `where`
+clause names the unexposed `WorkerCodec` types (roc-lang/roc#13022), so
+`roc bump` refuses the platform as it is. The gate compares it unrepaired
+first; when the refusal names a `WorkerCodec` type, it compares a copy of
+`platform/` whose root also exposes and imports `WorkerCodec`
+(`ApiDocs.candidate_repair`, edits that must apply exactly once), says so in
+its output, and so lists `WorkerCodec` as an added module the release does
+not expose. Any other refusal fails the gate, and once the unrepaired
+platform extracts, the kept repair fails the gate until it is removed.
+
 The stages run in this order (`scripts/check_all.roc`). A problem does not
 stop the later stages; every problem is printed as a `FAIL` line at the end,
 and a stage that cannot run at all aborts the task after printing the
