@@ -3157,8 +3157,14 @@ false). `Key` carries `key`, `code`, Ctrl, Alt, Shift, Meta, repeat and
 composing flags, and `heard`, the original declared `Chord` that matched.
 `Chord.plain` and its modifier methods build chords; `primary` returns
 Ctrl and Meta alternatives. The ordinary handler constructors and `also`
-serve this payload too. `Html.on_keydown` is removed: a text-kind
-`keydown` or `keyup` is a mount `contract` error naming `on_key`.
+serve this payload too. `Html.on_keydown` is removed, and a text
+handler cannot be attached to `keydown` or `keyup` at all: the event type
+is refused where it is made, a literal when the app is checked
+(`Web.EventType.from_quote`) and a computed one by
+`Web.EventType.from_str`, which answers `NotAnEventType` naming `on_key`.
+The engine's check when it mounts the element is a platform invariant
+(`internal:`), and the runtime's when it attaches the listener an
+`executor` fault; no app can reach either.
 
 `Keymap.prevent` and `keep` list ordered chords with their default policy.
 `concat` lists the left entries first; `outside_text` restricts entries to
