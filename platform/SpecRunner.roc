@@ -2238,8 +2238,11 @@ SpecRunner := [].{
 			}
 		}
 		# Changing a dialog's display mode closes it before invoking the new method.
+		# This calls itself rather than `change_shown`, so the two are not one
+		# recursive group: the compiler re-expands a generic recursive group of
+		# two or more functions at every call into it.
 		if old != Hidden and value != Hidden {
-			$s = SpecRunner.change_shown($s, i, Hidden)
+			$s = SpecRunner.change_shown_with($s, { target: i, value: Hidden, focus: Restore })
 		}
 		s = $s
 		b = s.browser
