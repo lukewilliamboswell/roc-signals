@@ -252,100 +252,110 @@ Checks := [].{
 		Ok($problems)
 	}
 
-	## Isolated apps check declaration and request contracts in both hosts:
-	## deliberate mistakes name the rule; ordinary raw attributes still mount.
-	## Every fixture is built as a native runner and run by it; the fixtures
-	## `tests/browser/key-contracts-browser.mjs` mounts are also built for the
-	## browser, and only those: the rest (the native oracle's executor
-	## contracts among them) have no browser check that would load a Wasm
-	## build. All the builds are one bounded batch.
+	## The declaration and request contracts, as cases of two apps, each
+	## built once: `tests/apps/key-contracts` (the platform's contracts) and
+	## the fixture `tests/key-contracts/oracle.roc.txt` (those of the native
+	## oracle and the engine package, which only a fixture may name). An
+	## instance boots at a case's path to mount that case alone. Natively
+	## every case is one run of its app's runner on a spec that boots there,
+	## which must end with the case's class and rule and exit code; both
+	## apps' root paths must pass, so a case's failure is its own. In Chrome
+	## `tests/browser/key-contracts-browser.mjs` mounts the platform app's
+	## one Wasm build at each case its table names (an oracle case has no
+	## browser build to mount, and naming one is a problem).
 	key_contracts! : SpecSuite.Options => Try(List(Str), _)
 	key_contracts! = |o| {
 		cases = [
-			{ name: "oracle-flags", rejection: "unknown command batch flags", prefix: "executor:", code: 70 },
-			{ name: "oracle-missing-transition", rejection: "marked batch is missing TRANSITION", prefix: "executor:", code: 70 },
-			{ name: "oracle-unmarked-transition", rejection: "TRANSITION requires marked batch", prefix: "executor:", code: 70 },
-			{ name: "oracle-transition-trailing", rejection: "TRANSITION must be last", prefix: "executor:", code: 70 },
-			{ name: "oracle-transition-truncated", rejection: "short command", prefix: "executor:", code: 70 },
-			{ name: "oracle-leading-zero", rejection: "leading zero", prefix: "executor:", code: 70 },
-			{ name: "oracle-apply-file", rejection: "value property on file input", prefix: "contract:", code: 70 },
-			{ name: "document-bound", rejection: "32", prefix: "contract:", code: 70 },
-			{ name: "apply-noncontrol", rejection: "ApplyValue", prefix: "contract:", code: 70 },
-			{ name: "apply-without-value", rejection: "ApplyValue", prefix: "contract:", code: 70 },
-			{ name: "dialog-open", rejection: "owned by the controlled dialog", prefix: "contract:", code: 70 },
-			{ name: "dialog-dynamic-open", rejection: "owned by the controlled dialog", prefix: "contract:", code: 70 },
-			{ name: "dialog-popover", rejection: "popover and closedby", prefix: "contract:", code: 70 },
-			{ name: "dialog-dynamic-popover", rejection: "popover and closedby", prefix: "contract:", code: 70 },
-			{ name: "dialog-closedby", rejection: "popover and closedby", prefix: "contract:", code: 70 },
-			{ name: "dialog-dynamic-closedby", rejection: "popover and closedby", prefix: "contract:", code: 70 },
-			{ name: "controlled-beforetoggle", rejection: "beforetoggle", prefix: "contract:", code: 70 },
-			{ name: "popover-beforetoggle", rejection: "beforetoggle", prefix: "contract:", code: 70 },
-			{ name: "popover-duplicate", rejection: "one static popover", prefix: "contract:", code: 70 },
-			{ name: "popover-dynamic-popover", rejection: "one static popover", prefix: "contract:", code: 70 },
-			{ name: "media-undeclared", rejection: "missing-media", prefix: "contract:", code: 70 },
-			{ name: "table-order-same", rejection: "two rows of a table view compare Same", prefix: "contract:", code: 70 },
-			{ name: "signal-text-manual-arity", rejection: "Signal.from_interpolation", prefix: "contract:", code: 70 },
-			{ name: "keep-current-subscription", rejection: "keep_current cannot issue a subscription", prefix: "contract:", code: 70 },
-			{ name: "interval-zero", rejection: "Interval(0) has no period", prefix: "contract:", code: 70 },
-			{ name: "timer-overflow", rejection: "Timer(3000000000) is longer", prefix: "contract:", code: 70 },
-			{ name: "interval-overflow", rejection: "Interval(2147483648) is longer", prefix: "contract:", code: 70 },
-			{ name: "timer-overflow-boundary", rejection: "Timer(2147483648) is longer", prefix: "contract:", code: 70 },
-			{ name: "timeout-zero", rejection: "a timeout of Ms(0)", prefix: "contract:", code: 70 },
-			{ name: "raw-controlled-attributes", rejection: "", prefix: "", code: 0 },
-			{ name: "oracle-namespace", rejection: "unknown namespace kind", prefix: "executor:", code: 70 },
-			{ name: "oracle-content-container", rejection: "invalid child container", prefix: "executor:", code: 70 },
-			{ name: "raw-uppercase-value", rejection: "claimed by a property", prefix: "contract:", code: 70 },
-			{ name: "construction-later-branch", rejection: "close the paragraph first", prefix: "contract:", code: 70 },
-			{ name: "construction-later-row", rejection: "close the paragraph first", prefix: "contract:", code: 70 },
-			{ name: "construction-later-state", rejection: "close the paragraph first", prefix: "contract:", code: 70 },
-			{ name: "construction-later-text", rejection: "move the text outside the table; a text hole here can hold text", prefix: "contract:", code: 70 },
-			{ name: "construction-later-row-text", rejection: "move the text outside the table; a text hole here can hold text", prefix: "contract:", code: 70 },
+			{ name: "oracle-flags", rejection: "unknown command batch flags", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-missing-transition", rejection: "marked batch is missing TRANSITION", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-unmarked-transition", rejection: "TRANSITION requires marked batch", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-transition-trailing", rejection: "TRANSITION must be last", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-transition-truncated", rejection: "short command", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-leading-zero", rejection: "leading zero", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-apply-file", rejection: "value property on file input", prefix: "contract:", code: 70, program: Oracle },
+			{ name: "document-bound", rejection: "32", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "apply-noncontrol", rejection: "ApplyValue", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "apply-without-value", rejection: "ApplyValue", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "dialog-open", rejection: "owned by the controlled dialog", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "dialog-dynamic-open", rejection: "owned by the controlled dialog", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "dialog-popover", rejection: "popover and closedby", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "dialog-dynamic-popover", rejection: "popover and closedby", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "dialog-closedby", rejection: "popover and closedby", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "dialog-dynamic-closedby", rejection: "popover and closedby", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "controlled-beforetoggle", rejection: "beforetoggle", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "popover-beforetoggle", rejection: "beforetoggle", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "popover-duplicate", rejection: "one static popover", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "popover-dynamic-popover", rejection: "one static popover", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "media-undeclared", rejection: "missing-media", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "table-order-same", rejection: "two rows of a table view compare Same", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "signal-text-manual-arity", rejection: "Signal.from_interpolation", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "keep-current-subscription", rejection: "keep_current cannot issue a subscription", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "interval-zero", rejection: "Interval(0) has no period", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "timer-overflow", rejection: "Timer(3000000000) is longer", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "interval-overflow", rejection: "Interval(2147483648) is longer", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "timer-overflow-boundary", rejection: "Timer(2147483648) is longer", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "timeout-zero", rejection: "a timeout of Ms(0)", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "raw-controlled-attributes", rejection: "", prefix: "", code: 0, program: Contracts },
+			{ name: "oracle-namespace", rejection: "unknown namespace kind", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-content-container", rejection: "invalid child container", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "raw-uppercase-value", rejection: "claimed by a property", prefix: "contract:", code: 70, program: Contracts },
+			{ name: "construction-later-branch", rejection: "close the paragraph first", prefix: "contract:", code: 70, program: Oracle },
+			{ name: "construction-later-row", rejection: "close the paragraph first", prefix: "contract:", code: 70, program: Oracle },
+			{ name: "construction-later-state", rejection: "close the paragraph first", prefix: "contract:", code: 70, program: Oracle },
+			{ name: "construction-later-text", rejection: "move the text outside the table; a text hole here can hold text", prefix: "contract:", code: 70, program: Oracle },
+			{ name: "construction-later-row-text", rejection: "move the text outside the table; a text hole here can hold text", prefix: "contract:", code: 70, program: Oracle },
 		]
 		dir = "${o.build_dir}/key-contracts"
 		SpecSuite.fresh_dir!(dir)?
 		browser_test = "tests/browser/key-contracts-browser.mjs"
-		in_browser = browser_fixtures(Path.read_utf8!(Path.utf8("${o.root}/${browser_test}"))?, cases.map(|test| test.name))
-		var $problems = in_browser.unknown.map(|name| "${browser_test} mounts the key contract ${name}, which Checks.key_contracts! does not list")
-		var $fixtures = []
-		var $jobs = []
-		for test in cases {
-			case_dir = "${dir}/${test.name}"
-			Path.create_all!(Path.utf8(case_dir))?
-			fixture = Path.read_utf8!(Path.utf8("${o.root}/tests/key-contracts/${test.name}.roc.txt"))?
-			up = Str.join_with(List.repeat("..", case_dir.split_on("/").keep_if(|part| !part.is_empty()).len()), "/")
-			source = fixture.replace_each("<PLATFORM>", "${up}/${o.root.drop_prefix("/")}/platform/main.roc").replace_each("<ORACLE>", "${up}/${o.root.drop_prefix("/")}/platform/main-fuzz.roc")
-			main = "${case_dir}/main.roc"
-			Path.write_utf8!(Path.utf8(main), source)?
-			$fixtures = $fixtures.append({ test, case_dir, runner: "${case_dir}/runner" })
-			$jobs = $jobs.append({ name: test.name, job: SpecSuite.build_job(o, "dev", main, o.target, "${case_dir}/runner") })
-			if in_browser.listed.contains(test.name) {
-				$jobs = $jobs.append({ name: test.name, job: SpecSuite.build_job(o, "dev", main, "wasm32", "${case_dir}/app.wasm") })
-			}
+		in_browser = browser_fixtures(Path.read_utf8!(Path.utf8("${o.root}/${browser_test}"))?, cases.keep_if(|test| test.program == Contracts).map(|test| test.name))
+		var $problems = in_browser.unknown.map(|name| "${browser_test} mounts the key contract ${name}, which is no case of tests/apps/key-contracts")
+		oracle_dir = "${dir}/oracle"
+		Path.create_all!(Path.utf8(oracle_dir))?
+		fixture = Path.read_utf8!(Path.utf8("${o.root}/tests/key-contracts/oracle.roc.txt"))?
+		up = Str.join_with(List.repeat("..", oracle_dir.split_on("/").keep_if(|part| !part.is_empty()).len()), "/")
+		Path.write_utf8!(Path.utf8("${oracle_dir}/main.roc"), fixture.replace_each("<PLATFORM>", "${up}/${o.root.drop_prefix("/")}/platform/main.roc").replace_each("<ORACLE>", "${up}/${o.root.drop_prefix("/")}/platform/main-fuzz.roc"))?
+		runner_of = |program| match program {
+			Contracts => "${dir}/runner"
+			Oracle => "${oracle_dir}/runner"
 		}
-		jobs = $jobs
+		wasm = "${dir}/app.wasm"
+		jobs = [
+			{ program: Contracts, job: SpecSuite.build_job(o, "dev", "tests/apps/key-contracts/main.roc", o.target, runner_of(Contracts)) },
+			{ program: Oracle, job: SpecSuite.build_job(o, "dev", "${oracle_dir}/main.roc", o.target, runner_of(Oracle)) },
+		].concat(if (in_browser.listed.is_empty()) [] else [{ program: Contracts, job: SpecSuite.build_job(o, "dev", "tests/apps/key-contracts/main.roc", "wasm32", wasm) }])
 		limit = Proc.compiler_jobs!(App)?
-		Proc.note!("== key contracts: ${$fixtures.len().to_str()} native runners and ${in_browser.listed.len().to_str()} browser builds, ${limit.to_str()} at a time")
+		Proc.note!("== key contracts: ${cases.len().to_str()} cases of 2 apps; ${jobs.len().to_str()} builds, ${limit.to_str()} at a time")
 		built = Proc.parallel!(jobs.map(|j| j.job), limit)?
 		failed = List.map2(jobs, built, |j, r| (j, r)).keep_if(|(_, r)| r.code != 0)
 		for (j, r) in failed {
-			$problems = $problems.append("key contract ${j.name}: ${Proc.show(j.job)} exited with ${r.code.to_str()}")
+			$problems = $problems.append("key contracts: ${Proc.show(j.job)} exited with ${r.code.to_str()}")
 		}
-		unbuilt = failed.map(|(j, _)| j.name)
-		for { test, case_dir, runner } in $fixtures {
-			if !unbuilt.contains(test.name) {
-				spec = "${case_dir}/contract.scm"
-				Path.write_utf8!(Path.utf8(spec), "(test \"contract\" (steps (mark-metrics)))")?
-				{ code, stdout } = Proc.merged!({ program: runner, args: [spec], cwd: case_dir })?
-				message = Str.from_utf8_lossy(stdout)
-				if code != test.code or !message.contains(test.prefix) or !message.contains(test.rejection) {
-					$problems = $problems.append("native key contract ${test.name}: expected ${test.prefix} ${test.rejection}, got ${code.to_str()}: ${message}")
-				}
+		if !failed.is_empty() {
+			return Ok($problems)
+		}
+		run_case! = |program, name, path| {
+			spec = "${dir}/${name}.scm"
+			Path.write_utf8!(Path.utf8(spec), contract_spec(path))?
+			{ code, stdout } = Proc.merged!({ program: runner_of(program), args: [spec], cwd: dir })?
+			Ok({ code, message: Str.from_utf8_lossy(stdout) })
+		}
+		for (program, label) in [(Contracts, "key-contracts"), (Oracle, "oracle")] {
+			root = run_case!(program, "${label}-root", "/")?
+			if root.code != 0 {
+				$problems = $problems.append("key contracts: the ${label} app's root path must break no contract, got ${root.code.to_str()}: ${root.message}")
 			}
 		}
-		if !unbuilt.is_empty() {
-			return Ok($problems.append("browser key contracts not run: a fixture they mount did not build"))
+		for test in cases {
+			{ code, message } = run_case!(test.program, test.name, "/${test.name}")?
+			if code != test.code or !message.contains(test.prefix) or !message.contains(test.rejection) {
+				$problems = $problems.append("native key contract ${test.name}: expected ${test.prefix} ${test.rejection}, got ${code.to_str()}: ${message}")
+			}
 		}
-		{ code, .. } = Proc.output!({ program: o.node, args: [browser_test, "--fixtures", dir, "--runtime", SpecSuite.runtime, "--chrome", o.chrome], cwd: o.root })?
+		if in_browser.listed.is_empty() {
+			return Ok($problems)
+		}
+		{ code, .. } = Proc.output!({ program: o.node, args: [browser_test, "--wasm", wasm, "--runtime", SpecSuite.runtime, "--chrome", o.chrome], cwd: o.root })?
 		Ok(if (code == 0) $problems else $problems.append("browser key contracts failed (see above)"))
 	}
 
@@ -661,6 +671,15 @@ expect {
 	script = "const x = 1;\nconst fixtures = [\n  [\"document-bound\", [\"more than 32\", \"site\"]],\n  [\"raw-controlled-attributes\", [], false],\n  [\"gone\", [\"x\"]],\n];\nconst y = [\"oracle-flags\"];\n"
 	browser_fixtures(script, ["oracle-flags", "document-bound", "raw-controlled-attributes"]) == { listed: ["document-bound", "raw-controlled-attributes"], unknown: ["gone"] }
 }
+
+## The spec that boots an app at `path` and only mounts it: a case's
+## contract is refused at mount, or at the first turn's requests, before
+## any step.
+contract_spec : Str -> Str
+contract_spec = |path| "(test \"contract\"\n  (setup (initial-location \"${path}\"))\n  (steps (mark-metrics)))\n"
+
+## A case's spec boots at its path.
+expect contract_spec("/dialog-open") == "(test \"contract\"\n  (setup (initial-location \"/dialog-open\"))\n  (steps (mark-metrics)))\n"
 
 ## What a gate prints for the problems it collected: one `FAIL` line each.
 failure_lines : List(Str) -> List(Str)

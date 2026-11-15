@@ -214,9 +214,15 @@ problems found before it.
    every root under `scripts/`, except a root that imports the platform
    package to drive its tests, which may not hold `expect`s of their own.
 9. The platform's link inputs for every target; the declaration and request
-   contracts as isolated apps, each in the native runner and those
-   `tests/browser/key-contracts-browser.mjs` mounts in Chrome; `zig test` of the host's handle
-   heaps (`platform/host/resources.zig`) and `dbg` buffer
+   contracts, as the cases of two apps each built once
+   (`tests/apps/key-contracts`, and `tests/key-contracts/oracle.roc.txt` for
+   the native oracle's and the engine package's, which only a fixture may
+   name): an instance booted at a case's path mounts that case alone, so
+   each case is one run of its app's native runner on a spec that boots
+   there and must end with the case's class, rule and exit code (and each
+   app's root path must pass), and the platform app's cases are mounted
+   from the one Wasm build by `tests/browser/key-contracts-browser.mjs`;
+   `zig test` of the host's handle heaps (`platform/host/resources.zig`) and `dbg` buffer
    (`platform/host/dbg.zig`); a worker app's spec runner linked for macOS
    (`arm64mac`, `x64mac`) and Windows (`x64win`); and the fuzz targets' fixed
    examples (see [Fuzzing](#fuzzing)).

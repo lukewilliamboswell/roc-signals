@@ -1,6 +1,8 @@
 // Mount declarations and requests through the real Wasm host. Invalid timing
 // and conflicting declarations are contracts; raw elements keep their attributes.
-// Failed mounts and unmount both release every browser listener.
+// Failed mounts and unmount both release every browser listener. Every case is
+// one first page of tests/apps/key-contracts, built once (--wasm): each is
+// mounted from a page at the case's path, which is the path the app boots at.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -10,10 +12,10 @@ import { runtimeFiles } from "./args.mjs";
 const options = {};
 for (let i = 2; i < process.argv.length; i += 2) {
   const name = process.argv[i].replace(/^--/, "");
-  if (!["fixtures", "runtime", "chrome"].includes(name) || !process.argv[i + 1]) throw new Error("usage: --fixtures DIR --runtime FILE --chrome FILE");
+  if (!["wasm", "runtime", "chrome"].includes(name) || !process.argv[i + 1]) throw new Error("usage: --wasm FILE --runtime FILE --chrome FILE");
   options[name] = process.argv[i + 1];
 }
-for (const name of ["fixtures", "runtime", "chrome"]) if (!options[name]) throw new Error(`--${name} is required`);
+for (const name of ["wasm", "runtime", "chrome"]) if (!options[name]) throw new Error(`--${name} is required`);
 const fixtures = [
   ["document-bound", ["more than 32", "site"]],
   ["apply-noncontrol", ["ApplyValue", "reference \"bad\"", "site"]],
@@ -42,10 +44,9 @@ const fixtures = [
 const runtime = runtimeFiles(options.runtime);
 const server = http.createServer((request, response) => {
   const url = new URL(request.url, "http://x");
-  if (url.pathname === "/") { response.writeHead(200, { "content-type": "text/html" }); response.end("<!doctype html><div id=app></div>"); return; }
+  if (fixtures.some(([fixture]) => url.pathname === `/${fixture}`)) { response.writeHead(200, { "content-type": "text/html" }); response.end("<!doctype html><div id=app></div>"); return; }
   const name = path.basename(url.pathname);
-  let file = runtime[name];
-  if (name === "app.wasm" && fixtures.some(([fixture]) => url.pathname === `/${fixture}/app.wasm`)) file = path.join(options.fixtures, url.pathname.slice(1));
+  const file = url.pathname === "/assets/app.wasm" ? options.wasm : url.pathname === `/assets/${name}` ? runtime[name] : undefined;
   if (!file) { response.writeHead(404); response.end(); return; }
   response.writeHead(200, { "content-type": name.endsWith("wasm") ? "application/wasm" : "text/javascript" }); response.end(fs.readFileSync(file));
 });
@@ -57,16 +58,16 @@ try {
     const context = await browser.createBrowserContext();
     try {
       const page = await context.newPage();
-      await page.goto(`http://127.0.0.1:${server.address().port}/`);
-      const result = await page.evaluate(async (fixture) => {
-        const { mountRocEngineApp } = await import("/runtime.mjs");
+      await page.goto(`http://127.0.0.1:${server.address().port}/${fixture}`);
+      const result = await page.evaluate(async () => {
+        const { mountRocEngineApp } = await import("/assets/runtime.mjs");
         const faults = [];
-        const runtime = await mountRocEngineApp({ wasmUrl: `/${fixture}/app.wasm`, root: document.getElementById("app"), onFault: (fault) => faults.push(fault) });
+        const runtime = await mountRocEngineApp({ wasmUrl: "/assets/app.wasm", root: document.getElementById("app"), onFault: (fault) => faults.push(fault) });
         const fault = runtime.poisoned;
         runtime.unmount();
         const result = { class: fault?.class, message: fault?.message, faults: faults.length, rootListeners: runtime.listening.size, documentListeners: runtime.documentListeners.size, documentHandlers: runtime.documentKeys.size };
         return result;
-      }, fixture);
+      });
       const pass = (rejected ? result.class === "contract" && needles.every((needle) => result.message.includes(needle)) && result.faults === 1 : result.class === undefined && result.faults === 0) && result.rootListeners === 0 && result.documentListeners === 0 && result.documentHandlers === 0;
       if (!pass) failures += 1;
       console.log(`${pass ? "ok  " : "FAIL"} ${fixture}: ${rejected ? "real Core contract diagnostic" : "raw attributes remain ordinary"} and listener cleanup${pass ? "" : ` ${JSON.stringify(result)}`}`);
