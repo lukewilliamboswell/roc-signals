@@ -52,8 +52,9 @@ Specs :: [].{
 		program = "${Project.with_slashes(Path.display(Env.cwd!()?))}/${runner}"
 		output = Cmd.new(OsStr.from_str(program)).args(specs.map(OsStr.from_str)).stdout(Capture).stderr(Capture).run!() ? |_| RunnerFailed("")
 		results = Specs.outcomes(Str.from_utf8_lossy(output.stdout_bytes))
-		if results.len() != count {
-			return Err(RunnerFailed(Str.from_utf8_lossy(output.stderr_bytes)))
+		match Specs.unaccounted({ ids: specs.map(Specs.id_of), status: output.status, results }) {
+			Ok({}) => {}
+			Err(reason) => return Err(RunnerFailed("${reason}\n${Str.from_utf8_lossy(output.stderr_bytes)}"))
 		}
 		# Valid outcome records leave stderr available for native diagnostics,
 		# including dbg. A malformed runner report is rendered by RunnerFailed
@@ -67,6 +68,45 @@ Specs :: [].{
 		failed = results.count_if(|o| o.status != Passed)
 		Stdout.line!("\n${Specs.tally(results)}")?
 		if (failed == 0) Ok({}) else Err(SpecsFailed)
+	}
+
+	## A spec's id as the runner reports it: its file name without the
+	## directory or `.scm`.
+	id_of : Str -> Str
+	id_of = |path| (path.split_on("/").last() ?? path).drop_suffix(".scm")
+
+	## Why a run of the runner does not account for exactly the specs it was
+	## given, by the rule the repository's own suite applies
+	## (`scripts/src/SpecSuite.roc`, `judge`, which this tool cannot import):
+	## one result for each spec and none for another, and an exit code the
+	## runner returns for those results, 0 when every spec passed and 1 when
+	## one did not. A runner that crashed (exit 70), failed an `expect` (71)
+	## or was killed stops before it reports the rest, and that is never read
+	## as a shorter run that passed.
+	unaccounted : { ids : List(Str), status : [Exited(I32), Signaled(I32)], results : List(Outcome) } -> Try({}, Str)
+	unaccounted = |{ ids, status, results }| {
+		reported = results.map(|o| o.id)
+		missing = ids.drop_if(|id| reported.contains(id))
+		unknown = reported.drop_if(|id| ids.contains(id))
+		repeated = ids.keep_if(|id| reported.count_if(|seen| seen == id) > 1)
+		failures = results.count_if(|o| o.status != Passed)
+		exit = match status {
+			Exited(0) if failures == 0 => Ok({})
+			Exited(1) if failures > 0 => Ok({})
+			Exited(70) => Err("the runner crashed (exit 70: an engine contract error or an app's crash)")
+			Exited(71) => Err("an expect failed outside a worker job (exit 71)")
+			Exited(code) => Err("the runner exited with ${code.to_str()} after ${failures.to_str()} failing spec${if (failures == 1) "" else "s"}")
+			Signaled(signal) => Err("the runner was stopped by signal ${signal.to_str()}")
+		}
+		problems = []
+			.concat(match exit {
+				Ok({}) => []
+				Err(reason) => [reason]
+			})
+			.concat(if (missing.is_empty()) [] else ["no result for ${Str.join_with(missing, ", ")}"])
+			.concat(if (unknown.is_empty()) [] else ["a result for ${Str.join_with(unknown, ", ")}, which it was not given"])
+			.concat(if (repeated.is_empty()) [] else ["more than one result for ${Str.join_with(repeated, ", ")}"])
+		if (problems.is_empty()) Ok({}) else Err(Str.join_with(problems, "; "))
 	}
 
 	## The compiler's name for the machine's target.
@@ -220,3 +260,33 @@ expect {
 
 ## Every system the compiler builds for has a name for people.
 expect ["x64musl", "arm64mac", "x64win"].map(Specs.system_name) == ["Linux on x86-64", "macOS on Apple silicon", "Windows on x86-64"]
+
+## A run is accounted for when every spec has one result and the exit code
+## agrees with them; a crash after some results, a missing or extra result,
+## and an exit code the results contradict are each named.
+expect {
+	ok = |id| { id, name: id, status: Passed, message: "" }
+	bad = |id| { ..ok(id), status: Failed }
+	actual = [
+		Specs.unaccounted({ ids: ["a", "b"], status: Exited(0), results: [ok("a"), ok("b")] }),
+		Specs.unaccounted({ ids: ["a", "b"], status: Exited(1), results: [ok("a"), bad("b")] }),
+		Specs.unaccounted({ ids: ["a", "b", "c"], status: Exited(70), results: [ok("a")] }),
+		Specs.unaccounted({ ids: ["a", "b"], status: Exited(0), results: [ok("a"), ok("b"), ok("a"), ok("z")] }),
+		Specs.unaccounted({ ids: ["a"], status: Exited(0), results: [bad("a")] }),
+		Specs.unaccounted({ ids: ["a"], status: Exited(1), results: [ok("a")] }),
+		Specs.unaccounted({ ids: ["a"], status: Signaled(9), results: [] }),
+	]
+	expected = [
+		Ok({}),
+		Ok({}),
+		Err("the runner crashed (exit 70: an engine contract error or an app's crash); no result for b, c"),
+		Err("a result for z, which it was not given; more than one result for a"),
+		Err("the runner exited with 0 after 1 failing spec"),
+		Err("the runner exited with 1 after 0 failing specs"),
+		Err("the runner was stopped by signal 9; no result for a"),
+	]
+	actual == expected
+}
+
+## A spec's id is its file name without the directory or `.scm`.
+expect ["specs/counter.scm", "counter.scm", "a/b/c.d.scm"].map(Specs.id_of) == ["counter", "counter", "c.d"]
