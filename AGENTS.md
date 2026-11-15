@@ -276,7 +276,10 @@
   reads them from the compiled module. They contain no command meaning.
 - Keep `platform/Dom.roc` independent of the engine. It is the oracle; code
   shared with `Core.roc` would let one bug pass its own test. A table of names
-  shared by consumers is not code shared with `Core.roc`.
+  shared by consumers is not code shared with `Core.roc`. Its renderer also
+  writes the prerendered first page: keep one walk and one place that
+  decides how a node becomes text, so a diagnostic and a picture of one
+  model cannot disagree.
 - Keep `.scm` specs the single source of truth for application-visible
   behavior, parsed by the one Roc parser in `platform/Scm.roc`. Unknown steps are
   hard errors in every runner. An `expect-absent` names a locator its spec
