@@ -114,7 +114,7 @@ DocSamples := [].{
 				} else {
 					specs = SpecSuite.files_with!("${dir}/specs", ".scm")?
 					in_native = SpecSuite.native_specs!({ example: dir, runner, specs })?
-					in_browser = SpecSuite.browser_specs!(o, { example: name, runner, wasm, specs })?
+					in_browser = SpecSuite.browser_specs!(o, { example: name, runner, wasm, specs, skip: [] })?
 					for t in [(Native, in_native), (Browser, in_browser)] {
 						(runner_kind, tally) = t
 						Proc.note!(SpecSuite.summary(dir, runner_kind, tally))

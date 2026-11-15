@@ -1,5 +1,6 @@
 import cli.Env
 import cli.Path
+import CompilerSkips
 import Proc
 import SpecSuite
 import PlatformTest
@@ -325,13 +326,45 @@ Checks := [].{
 		Proc.note!(SpecSuite.summary(example, Native, native))
 		in_browser =
 			if browser {
-				t = SpecSuite.browser_specs!(o, { example, runner, wasm: SpecSuite.wasm_of(o, example), specs })?
-				Proc.note!(SpecSuite.summary(example, Browser, t))
-				t
+				all = SpecSuite.spec_files!(example)?.map(SpecSuite.id_of)
+				match SpecSuite.active_skips({ skips: CompilerSkips.skips, nightly: o.nightly, example, known: all, selected: specs.map(SpecSuite.id_of) }) {
+					Err(problem) => { ..SpecSuite.empty_tally, problems: [problem] }
+					Ok(skips) => {
+						skip = skips.map(|s| s.spec)
+						for s in skips {
+							Proc.note!(SpecSuite.skip_line(o.nightly, s))
+						}
+						t = SpecSuite.browser_specs!(o, { example, runner, wasm: SpecSuite.wasm_of(o, example), specs, skip })?
+						shipped = Checks.size_build_specs!(o, { example, runner, specs: specs.keep_if(|path| skip.contains(SpecSuite.id_of(path))) })?
+						total = { ..SpecSuite.add(t, shipped), skipped: t.skipped + skip.len() }
+						Proc.note!(SpecSuite.summary(example, Browser, total))
+						total
+					}
+				}
 			} else {
 				SpecSuite.empty_tally
 			}
 		Ok({ native, browser: in_browser, runner })
+	}
+
+	## Run in Chrome, on an `--opt=size` build of `example`, the specs a
+	## compiler-keyed skip keeps from its development build, which must pass
+	## there: the behaviour they check is still checked on the build that
+	## ships, so a regression of it cannot hide behind the skip. Their
+	## summary is printed under `example (size Wasm)`; only their problems
+	## join the tally, whose counts belong to the development run.
+	size_build_specs! : SpecSuite.Options, { example : Str, runner : Str, specs : List(Str) } => Try(SpecSuite.Tally, _)
+	size_build_specs! = |o, { example, runner, specs }| {
+		if specs.is_empty() {
+			return Ok(SpecSuite.empty_tally)
+		}
+		dir = "${o.build_dir}/wasm-size/${example}"
+		Path.create_all!(Path.utf8(dir))?
+		wasm = "${dir}/app.wasm"
+		Proc.run!(SpecSuite.build_job(o, "size", "${SpecSuite.dir_of(example)}/main.roc", "wasm32", wasm))?
+		t = SpecSuite.browser_specs!(o, { example: "${example} (size Wasm)", runner, wasm, specs, skip: [] })?
+		Proc.note!(SpecSuite.summary("${example} (size Wasm)", Browser, t))
+		Ok({ ..SpecSuite.empty_tally, problems: t.problems })
 	}
 
 	## A deliberately broken spec: a copy of `spec` (a spec of `example`) with the

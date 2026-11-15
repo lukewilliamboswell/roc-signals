@@ -784,6 +784,21 @@ nightly automatically retries the original work. Remove the branch once the
 upstream fix is available; do not extend a skip to an unverified compiler
 version.
 
+A spec a compiler defect keeps from passing is skipped the same way, and
+only through `scripts/src/CompilerSkips.roc`: each entry names the app, the
+spec, the runner and build it skips in (Chrome on the development Wasm build
+so far), the exact nightlies (`roc version` of the package compiler) it was
+verified to fail on, and its upstream issue. The suite prints one `SKIP`
+line per skipped spec, in `check` and `blueprint run spec` alike, counts it
+as skipped (never passed) in the app's summary, and fails when an entry
+names a spec the app does not have. A spec skipped on the development build
+also runs in Chrome on an `--opt=size` build of its app, which it must pass.
+Today that is the Files app's two handle-lifetime specs, for
+[roc-lang/roc#13020](https://github.com/roc-lang/roc/issues/13020). To
+remove a skip, delete its entry once a nightly fixes the defect, with the
+note in `design.md`'s compiler limitations; a nightly not listed already
+runs the spec.
+
 The tooling compiler is `nightly-2026-11-13-03dce41`, matching the compiler
 used by roc-parser 6.0.0-rc.2. Earlier toolchains cannot resolve the released
 parser's nominal type aliases. The scripts and `signals.roc` tool use

@@ -1,4 +1,5 @@
 import cli.Path
+import CompilerSkips
 import Proc
 
 ## Builds the apps for the native and the browser spec runners and runs
@@ -63,16 +64,20 @@ SpecSuite := [].{
 	## `.scm` spec language"). `unreported` counts the selected specs a
 	## runner gave no result for, each of which is also a problem: a run that
 	## stops early must never read as a shorter run that passed.
-	Tally : { passed : U64, failed : U64, unreported : U64, problems : List(Str) }
+	## `skipped` counts the selected specs a compiler-keyed skip kept from a
+	## runner (`CompilerSkips`): selected = passed + failed + skipped, and a
+	## skip is never a pass.
+	Tally : { passed : U64, failed : U64, skipped : U64, unreported : U64, problems : List(Str) }
 
 	empty_tally : Tally
-	empty_tally = { passed: 0, failed: 0, unreported: 0, problems: [] }
+	empty_tally = { passed: 0, failed: 0, skipped: 0, unreported: 0, problems: [] }
 
 	## Two tallies as one, problems in order.
 	add : Tally, Tally -> Tally
 	add = |a, b| {
 		passed: a.passed + b.passed,
 		failed: a.failed + b.failed,
+		skipped: a.skipped + b.skipped,
 		unreported: a.unreported + b.unreported,
 		problems: a.problems.concat(b.problems),
 	}
@@ -341,18 +346,21 @@ SpecSuite := [].{
 	## 1); the replay reports it as failed. The replay is given only the
 	## specs the emit gave a line for, so a spec the emit lost is reported
 	## once, by the emit's verdict; when it gave none, nothing is replayed.
-	browser_specs! : Options, { example : Str, runner : Str, wasm : Str, specs : List(Str) } => Try(Tally, _)
-	browser_specs! = |o, { example, runner, wasm, specs }| {
+	## The specs whose ids are in `skip` are emitted but not replayed; the
+	## caller accounts for them (`active_skips`).
+	browser_specs! : Options, { example : Str, runner : Str, wasm : Str, specs : List(Str), skip : List(Str) } => Try(Tally, _)
+	browser_specs! = |o, { example, runner, wasm, specs, skip }| {
 		if specs.is_empty() {
 			return Ok(SpecSuite.empty_tally)
 		}
 		expected = specs.map(SpecSuite.id_of)
-		steps_file = "${o.build_dir}/wasm/${example}/steps.jsonl"
+		steps_file = "${wasm}.steps.jsonl"
 		emit = Proc.output!({ program: runner, args: ["--emit-steps"].concat(specs), cwd: "." })?
-		Path.write_bytes!(Path.utf8(steps_file), emit.stdout)?
 		emit_run = { code: emit.code, lines: Str.from_utf8_lossy(emit.stdout).split_on("\n") }
+		kept = emit_run.lines.keep_if(|l| l.starts_with("{") and !skip.contains(SpecSuite.json_field(l, "id")))
+		Path.write_utf8!(Path.utf8(steps_file), Str.join_with(kept.map(|l| "${l}\n"), ""))?
 		emitted = SpecSuite.judge({ example, stage: Emit, expected, run: emit_run })
-		given = emit_run.lines.keep_if(|l| l.starts_with("{")).map(|l| SpecSuite.json_field(l, "id"))
+		given = kept.map(|l| SpecSuite.json_field(l, "id"))
 		replayed = expected.keep_if(|id| given.contains(id))
 		if replayed.is_empty() {
 			return Ok(emitted)
@@ -367,8 +375,30 @@ SpecSuite := [].{
 	summary : Str, Runner, Tally -> Str
 	summary = |example, runner, t| {
 		unreported = if (t.unreported == 0) "" else ", ${t.unreported.to_str()} without a result"
-		"${example} (${Str.inspect(runner)}): ${t.passed.to_str()} passed, ${t.failed.to_str()} failed${unreported}"
+		skipped = if (t.skipped == 0) "" else ", ${t.skipped.to_str()} skipped"
+		"${example} (${Str.inspect(runner)}): ${t.passed.to_str()} passed, ${t.failed.to_str()} failed${skipped}${unreported}"
 	}
+
+	# ---------------------------------------------------------------- skips
+
+	## The skips of `skips` that keep specs of `example` among `selected`
+	## (ids) from its Chrome run on a development Wasm built by `nightly`:
+	## those whose compilers list `nightly` exactly. A skip naming a spec
+	## `example` does not have (`known`, every spec id of the app) is an
+	## error on every compiler, so a renamed spec cannot leave a skip that
+	## silently means nothing.
+	active_skips : { skips : List(CompilerSkips.Skip), nightly : Str, example : Str, known : List(Str), selected : List(Str) } -> Try(List(CompilerSkips.Skip), Str)
+	active_skips = |{ skips, nightly, example, known, selected }| {
+		mine = skips.keep_if(|skip| skip.example == example)
+		match mine.find_first(|skip| !known.contains(skip.spec)) {
+			Ok(stale) => Err("CompilerSkips names ${example}/${stale.spec}, which is not a spec of ${example}; remove or correct the entry")
+			Err(_) => Ok(mine.keep_if(|skip| skip.compilers.contains(nightly) and selected.contains(skip.spec)))
+		}
+	}
+
+	## The line the suite prints for a skip it applies.
+	skip_line : Str, CompilerSkips.Skip -> Str
+	skip_line = |nightly, skip| "SKIP ${skip.example}/${skip.spec} (Chrome, development Wasm): ${skip.issue} (${skip.link}), ${skip.reason} on ${nightly}; it still runs natively and on an --opt=size build. Remove the entry in scripts/src/CompilerSkips.roc when a nightly fixes it"
 }
 
 ## What an exit code the verdict refuses means, for its problem. The native
@@ -406,16 +436,16 @@ result_line : Str, Str -> Str
 result_line = |id, status| "{\"protocol\":\"roc-signals/spec-result/v2\",\"id\":\"${id}\",\"name\":\"N\",\"status\":\"${status}\",\"duration_ns\":0,\"failure\":${if (status == "passed") "null" else "{\"phase\":\"step\",\"kind\":\"assertion\",\"message\":\"wrong ${id}\",\"step\":0}"}}"
 
 ## A verdict as one comparable record: counts, then every problem.
-verdict : SpecSuite.Stage, List(Str), I32, List(Str) -> { passed : U64, failed : U64, unreported : U64, problems : List(Str) }
+verdict : SpecSuite.Stage, List(Str), I32, List(Str) -> SpecSuite.Tally
 verdict = |stage, expected, code, lines| SpecSuite.judge({ example: "app", stage, expected, run: { code, lines } })
 
 ## Every selected spec passed and the runner exited 0: nothing to report, and
 ## a summary line on stderr or a blank line is not a result.
-expect verdict(Native, ["a", "b"], 0, [result_line("a", "passed"), result_line("b", "passed"), "", "specs: 2 passed"]) == { passed: 2, failed: 0, unreported: 0, problems: [] }
+expect verdict(Native, ["a", "b"], 0, [result_line("a", "passed"), result_line("b", "passed"), "", "specs: 2 passed"]) == { passed: 2, failed: 0, skipped: 0, unreported: 0, problems: [] }
 
 ## A failure the runner reported, with the exit code it returns for one, is
 ## that failure and nothing more.
-expect verdict(Native, ["a", "b"], 1, [result_line("a", "passed"), result_line("b", "failed")]) == { passed: 1, failed: 1, unreported: 0, problems: ["app Native b: wrong b"] }
+expect verdict(Native, ["a", "b"], 1, [result_line("a", "passed"), result_line("b", "failed")]) == { passed: 1, failed: 1, skipped: 0, unreported: 0, problems: ["app Native b: wrong b"] }
 
 ## A crash (exit 70) after two of five specs gave results fails the suite,
 ## naming the exit code and the three specs left without a result.
@@ -424,6 +454,7 @@ expect {
 	expected = {
 		passed: 2,
 		failed: 0,
+		skipped: 0,
 		unreported: 3,
 		problems: [
 			"app Native: exited with 70 (Roc crashed: an engine contract error or an app's crash) after giving results for 2 of 5 specs",
@@ -469,7 +500,7 @@ expect {
 expect {
 	steps = "{\"id\":\"a\",\"name\":\"A\",\"setup\":[],\"steps\":[{\"op\":\"click\",\"id\":\"x\"}]}"
 	actual = verdict(Emit, ["a", "b"], 1, [steps, result_line("b", "error")])
-	actual == { passed: 0, failed: 0, unreported: 0, problems: [] }
+	actual == { passed: 0, failed: 0, skipped: 0, unreported: 0, problems: [] }
 }
 
 ## An emit that crashed after one spec loses the rest, named as missing.
@@ -481,7 +512,7 @@ expect verdict(Replay, ["a", "b"], 1, []).problems == ["app Browser: exited with
 
 ## The replay passes a refused spec's error line through as failed: one
 ## failure, with the exit code for one.
-expect verdict(Replay, ["a"], 1, [result_line("a", "failed")]) == { passed: 0, failed: 1, unreported: 0, problems: ["app Browser a: wrong a"] }
+expect verdict(Replay, ["a"], 1, [result_line("a", "failed")]) == { passed: 0, failed: 1, skipped: 0, unreported: 0, problems: ["app Browser a: wrong a"] }
 
 ## A line that opens like JSON but is neither a result nor emitted steps is
 ## a problem, not silently ignored.
@@ -499,3 +530,24 @@ expect [SpecSuite.host_target("Darwin arm64\n"), SpecSuite.host_target("Darwin x
 ## A system the runner does not build for is unknown, never guessed: Linux on
 ## Arm has no runner, and output that is not two words is not a system.
 expect [SpecSuite.host_target("Linux aarch64"), SpecSuite.host_target(""), SpecSuite.host_target("Darwin arm64 extra")] == [Err(Unknown("Linux aarch64")), Err(Unknown("")), Err(Unknown("Darwin arm64 extra"))]
+
+## A skip applies on a listed compiler only, and only to a selected spec; a
+## skip naming a spec the app does not have is an error on any compiler.
+expect {
+	skip = { example: "files", spec: "a", runner: Browser, build: Development, compilers: ["nightly-x"], issue: "roc-lang/roc#1", link: "https://x", reason: "r" }
+	other = { ..skip, example: "kanban-board", spec: "zzz" }
+	active = |nightly, selected, known| SpecSuite.active_skips({ skips: [skip, other], nightly, example: "files", known, selected }).map_ok(|list| list.map(|s| s.spec))
+	actual = [
+		active("nightly-x", ["a", "b"], ["a", "b"]),
+		active("nightly-y", ["a", "b"], ["a", "b"]),
+		active("nightly-x", ["b"], ["a", "b"]),
+		active("nightly-y", ["b"], ["b"]),
+	]
+	actual == [Ok(["a"]), Ok([]), Ok([]), Err("CompilerSkips names files/a, which is not a spec of files; remove or correct the entry")]
+}
+
+## The shipped skips name specs of their app, on the verified nightlies only.
+expect CompilerSkips.skips.all(|s| s.example == "files" and s.issue == "roc-lang/roc#13020" and s.compilers == ["nightly-2026-11-13-03dce41", "nightly-2026-11-14-a87808d"])
+
+## The summary shows a skip, which is never a pass.
+expect SpecSuite.summary("files", Browser, { ..SpecSuite.empty_tally, passed: 12, skipped: 2 }) == "files (Browser): 12 passed, 0 failed, 2 skipped"
