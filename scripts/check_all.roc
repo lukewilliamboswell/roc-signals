@@ -121,8 +121,10 @@ main! = |raw_args| {
 	Proc.note!("== example module and debug file sizes (reported)")
 	$problems = Checks.gather!($problems, Sizes.report!(o))?
 	# Every spec-bearing app is built for the browser too, from the one list in
-	# SpecSuite, with the two test apps that have contract tests and no specs.
-	Checks.hold!($problems, SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.spec_apps.concat(["tests/apps/effects", "tests/apps/controls"])))?
+	# SpecSuite (controls among them, whose contract tests use that build),
+	# with effects, a test app that has contract tests and no specs. Each
+	# build is named once: two jobs writing one app.wasm would race.
+	Checks.hold!($problems, SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.spec_apps.concat(["tests/apps/effects"])))?
 	for example in SpecSuite.spec_apps {
 		r = Checks.hold!($problems.concat($native.problems).concat($browser.problems), Checks.run_app!(o, example, Bool.True))?
 		$native = SpecSuite.add($native, r.native)
