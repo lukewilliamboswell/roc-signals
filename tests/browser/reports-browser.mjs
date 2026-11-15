@@ -218,8 +218,9 @@ const ports = await page.evaluate(async () => {
   window.cancelAnimationFrame = (id) => frames.delete(id);
   const root = document.createElement("div"); document.body.append(root);
   const prefix = "test.roc-signals/";
-  const handlers = Object.fromEntries(["get", "echo", "inspect", "make"].map((name) => [prefix + name, { call: () => new Promise(() => {}) }]));
+  const handlers = Object.fromEntries(["get", "echo", "inspect", "make", "nest"].map((name) => [prefix + name, { call: () => new Promise(() => {}) }]));
   handlers[prefix + "log"] = { command: () => {} };
+  handlers[prefix + "nest-log"] = { command: () => {} };
   handlers[prefix + "ticks"] = { subscribe: (_arg, context) => { window.__ticksReport = context; } };
   handlers[prefix + "feed"] = { subscribe: (_arg, context) => { window.__feedReport = context; } };
   const rt = await mountRocEngineApp({ wasmUrl: "/app.wasm", root, ports: handlers, environment: { visible: () => { if (bad === "type") return "hidden"; if (bad) throw new Error("report visibility failed"); return true; } }, maxPortBytes: 16 });
