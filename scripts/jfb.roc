@@ -9,10 +9,10 @@ import src/SpecSuite
 import src/Targets
 
 ## The `jfb` task: build the js-framework-benchmark app
-## (benchmarks/js-framework-benchmark/roc-signals-keyed/dist) and check its
-## keyed operations in Chrome.
+## (benchmarks/js-framework-benchmark/roc-signals-keyed/dist) `--opt=speed`,
+## as the benchmark measures it, and check its keyed operations in Chrome.
 main! = |_args| {
 	o = Checks.options!({ filter: "*" })?
 	SpecSuite.build_web_platform!(o)?
-	Checks.finish!("jfb", Targets.jfb!(o)?)
+	Checks.finish!("jfb", Targets.jfb!(o, Measured)?)
 }

@@ -212,7 +212,7 @@ main! = |raw_args| {
 	$run = stage!(plan, $run, "declaration refusals", || Checks.declaration_refusals!(o, {}))?
 	$run = stage!(plan, $run, "runtime unit tests", || Targets.runtime_unit!(o))?
 	$run = stage!(plan, $run, "runtime contracts in Chrome", || Targets.browser_contracts!(o, "${o.build_dir}/wasm/conduit/app.wasm"))?
-	$run = stage!(plan, $run, "js-framework-benchmark", || Targets.jfb!(o))?
+	$run = stage!(plan, $run, "js-framework-benchmark", || Targets.jfb!(o, Checked))?
 	$run = stage!(plan, $run, "release dry run", || Release.build!(o, "0.0.1-dryrun", "${o.build_dir}/release"))?
 	$run = stage!(plan, $run, "signals.roc", || ToolCheck.run!(o))?
 

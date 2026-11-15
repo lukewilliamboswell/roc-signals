@@ -454,13 +454,21 @@ Targets := [].{
 
 	jfb_dir = "benchmarks/js-framework-benchmark/roc-signals-keyed"
 
-	## Build the js-framework-benchmark app into its `dist/` (`--opt=speed`,
-	## as the benchmark measures it) and run the keyed-operation checks.
-	jfb! : SpecSuite.Options => Try(List(Str), _)
-	jfb! = |o| {
+	## Build the js-framework-benchmark app into its `dist/` and run the
+	## keyed-operation checks. `Measured` builds it `--opt=speed`, as the
+	## benchmark measures it, for the `jfb` task whose `dist/` is what gets
+	## timed. `Checked` builds it `--opt=dev` for `check`, which only asks
+	## whether the keyed operations are right: that answer is the same in
+	## either build, and the optimized build costs minutes.
+	jfb! : SpecSuite.Options, [Measured, Checked] => Try(List(Str), _)
+	jfb! = |o, build| {
 		dist = "${o.root}/${Targets.jfb_dir}/dist"
 		Path.create_all!(Path.utf8(dist))?
-		Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=speed", "${Targets.jfb_dir}/app/main.roc", "--output=${dist}/app.wasm"], cwd: o.root })?
+		opt = match build {
+			Measured => "speed"
+			Checked => "dev"
+		}
+		Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=${opt}", "${Targets.jfb_dir}/app/main.roc", "--output=${dist}/app.wasm"], cwd: o.root })?
 		SpecSuite.copy_runtime!(o.root, dist)?
 		Path.copy!(Path.utf8("${o.root}/${Targets.jfb_dir}/src/main.mjs"), Path.utf8("${dist}/main.mjs"))?
 		code = Proc.status!({ program: o.node, args: ["tests/browser/jfb-check.mjs", "--dist", dist, "--chrome", o.chrome], cwd: o.root })?

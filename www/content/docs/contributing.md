@@ -117,7 +117,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run check-slow` | Local only, never in CI: every fuzz target's fixed examples on its instrumented build, a walk of every app of 10,000 steps (`RUNNER --walk`), the native soak of each app's round-trip spec (`RUNNER --soak 48`, flat live allocations and bytes), and a long Chrome session per app |
 | `blueprint run spec -- [--browser] [--filter GLOB] [--target TARGET] [APP...]` | Some apps' specs, natively and optionally in Chrome. The native runners are built for `TARGET` (`x64musl`, `arm64mac`, `x64mac` or `x64win`); without it, for the system the task runs on as `uname -sm` names it (`x64musl` where that names none), so a contributor's Mac runs them as they are. `check` always builds for `x64musl`, as CI does. A run whose filter selects no spec fails: a filter that matches nothing is a mistake |
 | `blueprint run platform` | Build the platform's link inputs with the pinned Zig, including matching PIC musl startup and libraries, to build an app's `main.roc` by hand (a fuzz target needs none: `roc build --fuzz` fetches its roc-fuzz release) |
-| `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
+| `blueprint run jfb` | Build the js-framework-benchmark app as the benchmark measures it (`--opt=speed`) and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
 | `blueprint run fuzz-smoke -- [TARGET...]` | Every registered fuzz target's fixed examples on plain optimized native builds, or the named targets; `-- --shard K/N` runs shard K of N, as CI does; never explores |
 | `blueprint run sizes -- [--runtime-only]` | Check shipped JavaScript Brotli sizes (gzip is reported); without the flag, also build and report each example's shipping module and development-only scripts |
@@ -260,7 +260,9 @@ problems found before it.
     against the example's own JavaScript. With `--plotly FILE --measure-ms N`,
     `status-page-journey.mjs` also reports the stream's rates, the chart's
     JSON and the longest frame gap.
-19. The js-framework-benchmark check.
+19. The js-framework-benchmark check, on a development build: it asks
+    whether the keyed operations are right, which `blueprint run jfb` asks
+    again of the `--opt=speed` build the benchmark measures.
 20. The release dry run: the bundle, `runtime.mjs`, `environment.mjs` and
     `worker.mjs`, the `signals.roc` tool's package and app, the examples
     archive with every app mounted by its check helper, and the release

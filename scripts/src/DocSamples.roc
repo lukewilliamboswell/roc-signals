@@ -103,7 +103,11 @@ DocSamples := [].{
 			}
 		}
 		var $with_specs = []
-		for dir in DocSamples.dirs!()? {
+		dirs = DocSamples.dirs!()?
+		if dirs.is_empty() {
+			$problems = $problems.append("${DocSamples.samples_dir} holds no sample directory, so the docs samples stage would pass having built and run nothing")
+		}
+		for dir in dirs {
 			if Path.exists!(Path.utf8("${dir}/specs"))? and SpecSuite.files_with!("${dir}/specs", ".scm")?.is_empty() {
 				$problems = $problems.append("docs sample ${dir}/specs holds no spec, so its runs would pass having checked nothing")
 			} else if Path.exists!(Path.utf8("${dir}/specs"))? {
