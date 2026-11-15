@@ -1616,6 +1616,9 @@ Scm := [].{
 				if name == "." or name == ".." or name.to_utf8().contains(0) {
 					return Err(Scm.bad(name_sx, "a file name cannot be . or .. or hold a NUL byte: Chrome's choose-files writes the file to disk under its name"))
 				}
+				if name.to_utf8().len() > 255 {
+					return Err(Scm.bad(name_sx, "a file name can be at most 255 bytes of UTF-8, as a file system allows: Chrome's choose-files writes the file to disk under its name"))
+				}
 				mime_sx = Scm.arg(args, 1)
 				mime = Scm.string(mime_sx, "the media type")?
 				if !mime.to_utf8().all(|b| b >= 0x20 and b <= 0x7E and !(b >= 'A' and b <= 'Z')) {
@@ -3128,14 +3131,17 @@ expect Scm.parse("(test \"t\" (steps (tick-interval 2147483647) (expect-interval
 
 ## A setup file the browser runner could not give the app exactly is refused
 ## where it is declared: a name that cannot be written to disk for
-## choose-files, and a media type the File constructor would lowercase
-## (uppercase ASCII) or drop (a byte outside printable ASCII).
+## choose-files (`.`, `..`, a NUL byte, more than 255 bytes of UTF-8), and a
+## media type the File constructor would lowercase (uppercase ASCII) or
+## drop (a byte outside printable ASCII).
 expect {
 	file = |name, mime| problem_of("(test \"t\" (setup (file ${name} ${mime} \"x\")) (steps (expect-files 0)))")
-	actual = [file("\".\"", "\"text/plain\""), file("\"..\"", "\"text/plain\""), file("\"a.txt\"", "\"Text/Plain\""), file("\"a.txt\"", "\"text/plain;\tq\""), file("\"a.txt\"", "\"text/é\"")]
+	long = |n| "\"${Str.repeat("é", n)}\""
+	actual = [file("\".\"", "\"text/plain\""), file("\"..\"", "\"text/plain\""), file(long(128), "\"text/plain\""), file("\"a.txt\"", "\"Text/Plain\""), file("\"a.txt\"", "\"text/plain;\tq\""), file("\"a.txt\"", "\"text/é\"")]
 	expected = [
 		"x.scm:1:24: a file name cannot be . or .. or hold a NUL byte: Chrome's choose-files writes the file to disk under its name",
 		"x.scm:1:24: a file name cannot be . or .. or hold a NUL byte: Chrome's choose-files writes the file to disk under its name",
+		"x.scm:1:24: a file name can be at most 255 bytes of UTF-8, as a file system allows: Chrome's choose-files writes the file to disk under its name",
 		"x.scm:1:32: a file's media type must be lowercase printable ASCII, as a browser's File keeps it: Chrome would lowercase or drop \"Text/Plain\"",
 		"x.scm:1:32: a file's media type must be lowercase printable ASCII, as a browser's File keeps it: Chrome would lowercase or drop \"text/plain;\tq\"",
 		"x.scm:1:32: a file's media type must be lowercase printable ASCII, as a browser's File keeps it: Chrome would lowercase or drop \"text/é\"",
@@ -3146,6 +3152,9 @@ expect {
 ## A name with dots that is not a directory entry, and an empty or lowercase
 ## printable type with parameters, are kept exactly.
 expect Scm.parse("(test \"t\" (setup (file \"...\" \"\" \"\") (file \".env\" \"text/plain; charset=utf-8\" \"x\")) (steps (expect-files 0)))").is_ok()
+
+## A name of exactly 255 bytes of UTF-8 is kept.
+expect Scm.parse("(test \"t\" (setup (file \"${Str.repeat("é", 127)}a\" \"\" \"\")) (steps (expect-files 0)))").is_ok()
 
 ## A location the native location model would report differently from Chrome
 ## is refused where the spec writes it: another host (also through a removed
