@@ -2,10 +2,10 @@ name: CI
 
 # Every Linux job runs a Blueprint task, so CI and contributors run the same
 # commands: `blueprint run check` is the pull-request gate (the release dry
-# run included), run here as two jobs, Check (`check -- --without-fuzz`)
-# and Fuzz smoke (every registered fuzz target's fixed examples, in shards
-# of `fuzz-smoke`), and `blueprint run site` builds the site, its API docs
-# and its live examples. CI never runs a fuzz campaign: campaigns are a
+# run included), run here as two jobs, Check (`check -- --without-fuzz`, in
+# parts of `check -- --part K/N`) and Fuzz smoke (every registered fuzz
+# target's fixed examples, in shards of `fuzz-smoke`), and `blueprint run
+# site` builds the site, its API docs and its live examples. CI never runs a fuzz campaign: campaigns are a
 # contributor's `blueprint run fuzz`. The macOS and Windows jobs run apps'
 # specs with the spec runner `roc build` makes there, as an app author on
 # that system does. A push to main also deploys that build to GitHub Pages,
@@ -40,11 +40,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: echo "tag=$(gh api repos/roc-lang/nightlies/releases/latest --jq .tag_name)" >> "$GITHUB_OUTPUT"
 
-  check:
-    name: Check
+  # The pull-request gate, `check -- --without-fuzz`, as parallel legs:
+  # each runs part K of N, where K and N are this matrix's own job index
+  # and size. Which stages each part runs, and how the apps' per-app
+  # stages (their builds, their specs in both runners, their sizes, walks
+  # and broken specs) are dealt among the parts, is `CheckPlan` in the
+  # script, never this file: `check -- --plan` prints it. A part whose N
+  # is not the plan's, or that would run nothing, fails; each part prints
+  # a SKIP line for every stage another part runs, and builds what its own
+  # stages need. A leg compiles three apps at a time (4 GiB per compiler
+  # process on a 16 GB runner).
+  check-part:
+    name: Check (part ${{ matrix.part }})
     needs: nightly
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5]
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 50
     permissions:
       contents: read
     steps:
@@ -62,9 +76,27 @@ jobs:
       - run: blueprint check
       # The fuzz targets are the Fuzz smoke job's; check prints a SKIP line
       # for each and accounts for every registered target.
-      - run: blueprint run check -- --without-fuzz
-        env:
+      - env:
           GH_TOKEN: ${{ github.token }}
+          INDEX: ${{ strategy.job-index }}
+          TOTAL: ${{ strategy.job-total }}
+        run: blueprint run check -- --without-fuzz --part "$((INDEX + 1))/$TOTAL"
+
+  # One result for the whole matrix, the check a pull request requires:
+  # it passes only when every part passed.
+  check:
+    name: Check
+    needs: check-part
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - env:
+          RESULT: ${{ needs.check-part.result }}
+        run: |
+          echo "check parts: $RESULT"
+          test "$RESULT" = success
 
   # Every registered fuzz target's fixed examples (declared examples and
   # saved regressions) on a plain optimized build: each target compiles,
