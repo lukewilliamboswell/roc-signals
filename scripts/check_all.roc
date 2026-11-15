@@ -141,6 +141,7 @@ main! = |raw_args| {
 
 	Proc.note!("== grammar coverage")
 	$problems = Checks.gather!($problems, Checks.grammar!(o, $kanban.runner))?
+	$problems = Checks.gather!($problems, Checks.choose_files!(o))?
 
 	Proc.note!("== broken-spec self-check")
 	for broken in Checks.broken_specs {

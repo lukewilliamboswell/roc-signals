@@ -229,7 +229,9 @@ problems found before it.
     native runner's `dbg` output (`tests/native/dbg-output.mjs`).
 13. A walk of 300 steps of every walked app in its native runner (below).
 14. The check that the browser runner handles every form of the grammar and
-    nothing else.
+    nothing else, and that a file its `choose-files` gives the app is read
+    from disk (`replay.mjs --check-choose-files`: once its disk file is
+    removed, a read, a slice and a worker's read of it fail).
 15. Deliberately broken specs that both runners must reject, and a spec
     that breaks a contract, whose native crash the suite must report.
 16. Every malformed declaration name refused identically before native

@@ -552,6 +552,17 @@ Checks := [].{
 		if (code == 0) Ok([]) else Ok(["grammar coverage: replay.mjs and the grammar disagree (see above)"])
 	}
 
+	## The browser runner's `choose-files` gives the app files read from
+	## disk, as a user's choice is: `replay.mjs --check-choose-files` chooses
+	## one as the step does, removes its disk file and finds that a read, a
+	## slice and a worker's read of it then fail.
+	choose_files! : SpecSuite.Options => Try(List(Str), _)
+	choose_files! = |o| {
+		# replay.mjs names each read that did not fail on stderr.
+		{ code, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--check-choose-files", "--chrome", o.chrome], cwd: "." })?
+		if (code == 0) Ok([]) else Ok(["choose-files: a chosen file is not read from disk (see above)"])
+	}
+
 	## Add a stage's problems to those a gate has collected. A stage that
 	## cannot run (a tool that will not start, a build that will not link)
 	## aborts the gate with its error instead; the problems collected before

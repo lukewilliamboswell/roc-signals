@@ -75,9 +75,10 @@ function parseArgs(argv) {
     else if (a === "--out") o.out = val();
     else if (a === "--json-lines") o.jsonLines = true;
     else if (a === "--check-grammar") o.grammar = val();
+    else if (a === "--check-choose-files") o.chooseFiles = true;
     else throw new Error(`unknown option ${a}`);
   }
-  if (o.grammar === null) for (const k of ["wasm", "runtime", "steps"]) if (!o[k]) throw new Error(`--${k} is required`);
+  if (o.grammar === null && !o.chooseFiles) for (const k of ["wasm", "runtime", "steps"]) if (!o[k]) throw new Error(`--${k} is required`);
   return o;
 }
 
@@ -496,7 +497,38 @@ process.on("exit", () => {
 // chosen file, which keeps reading from disk (a read, a slice, an upload
 // or a worker's read of it fails once its disk file is gone). The new
 // files are set on the app's input with the `input` and `change` events a
-// user's choice fires.
+// user's choice fires. `--check-choose-files` holds the claim that the
+// files stay read from disk (checkChooseFiles).
+//
+// Write `files` to disk under a fresh directory and choose them in a
+// detached input no page code sees; the caller removes `dir`.
+async function chooseOnDisk(page, files) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-files-"));
+  const paths = files.map((f, i) => {
+    fs.mkdirSync(path.join(dir, String(i)));
+    const p = path.join(dir, String(i), f.name);
+    fs.writeFileSync(p, f.text.repeat(f.count));
+    return p;
+  });
+  const chooser = await page.evaluateHandle(() => {
+    const e = document.createElement("input");
+    e.type = "file";
+    e.multiple = true;
+    return e;
+  });
+  await page.send("DOM.setFileInputFiles", { files: paths, objectId: chooser.objectId });
+  return { dir, chooser };
+}
+
+// A handle to an in-page function that makes the chooser's files again
+// with their declared types, as a DataTransfer whose files the app's input
+// is given.
+const remadeIn = (page) => page.evaluateHandle(() => (chooser, declared) => {
+  const dt = new DataTransfer();
+  Array.from(chooser.files).forEach((f, i) => dt.items.add(new File([f], f.name, { type: declared[i].type, lastModified: f.lastModified })));
+  return dt;
+});
+
 async function chooseFiles(page, s, state) {
   const files = setupFiles(state, s.files);
   await reachable(page, s.loc);
@@ -507,28 +539,14 @@ async function chooseFiles(page, s, state) {
     return {};
   }, files.length);
   if (r.error) throw new Error(`${showLoc(s.loc)} ${r.error}`);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-files-"));
-  const paths = files.map((f, i) => {
-    fs.mkdirSync(path.join(dir, String(i)));
-    const p = path.join(dir, String(i), f.name);
-    fs.writeFileSync(p, f.text.repeat(f.count));
-    return p;
-  });
+  const { dir, chooser } = await chooseOnDisk(page, files);
   // A chosen file is read from disk whenever the app reads it, so it stays
   // until the replay ends.
   chosenDirs.push(dir);
-  const chooser = await page.evaluateHandle(() => {
-    const e = document.createElement("input");
-    e.type = "file";
-    e.multiple = true;
-    return e;
-  });
-  await page.send("DOM.setFileInputFiles", { files: paths, objectId: chooser.objectId });
   const declared = files.map((f) => ({ name: f.name, type: f.type, size: Buffer.byteLength(f.text) * f.count }));
   const given = await page.evaluate(
-    (chooser, loc, declared) => {
-      const dt = new DataTransfer();
-      Array.from(chooser.files).forEach((f, i) => dt.items.add(new File([f], f.name, { type: declared[i].type, lastModified: f.lastModified })));
+    (chooser, loc, declared, remade) => {
+      const dt = remade(chooser, declared);
       const e = window.__loc(loc);
       e.files = dt.files;
       e.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
@@ -538,6 +556,7 @@ async function chooseFiles(page, s, state) {
     chooser,
     s.loc,
     declared,
+    await remadeIn(page),
   );
   // The step's guarantee, which holds on every system.
   declared.forEach((want, i) => {
@@ -1590,8 +1609,43 @@ function install(attrOfSource) {
   });
 }
 
+// `--check-choose-files`: the claim chooseFiles makes, held. A file chosen
+// as the step chooses one, made again with its declared type, is read
+// from disk: before its disk file is removed a read, a slice and a
+// worker's read give its contents, and after it each fails. Exits 1,
+// naming each read that did not, when the claim does not hold.
+async function checkChooseFiles() {
+  const browser = await launch({ executablePath: opts.chrome });
+  const page = await browser.newPage();
+  await page.goto("data:text/html,<title>choose-files</title>");
+  const { dir, chooser } = await chooseOnDisk(page, [{ name: "chosen.txt", text: "chosen", count: 1 }]);
+  await page.evaluate((chooser, remade) => { window.__chosen = remade(chooser, [{ type: "text/plain" }]).files[0]; }, chooser, await remadeIn(page));
+  const reads = () => page.evaluate(async () => {
+    const f = window.__chosen;
+    const outcome = async (read) => { try { return await read(); } catch (e) { return `failed: ${e.name}`; } };
+    const worker = new Worker(URL.createObjectURL(new Blob(["onmessage = async (m) => { try { postMessage(await m.data.text()); } catch (e) { postMessage(`failed: ${e.name}`); } }"])));
+    const inWorker = await new Promise((resolve) => { worker.onmessage = (m) => resolve(m.data); worker.postMessage(f); });
+    worker.terminate();
+    return { type: f.type, text: await outcome(() => f.text()), slice: await outcome(() => f.slice(1, 4).text()), worker: inWorker };
+  });
+  const before = await reads();
+  fs.rmSync(dir, { recursive: true, force: true });
+  const after = await reads();
+  await browser.close();
+  const problems = [];
+  if (before.type !== "text/plain") problems.push(`the remade file has type ${JSON.stringify(before.type)}, not the declared text/plain`);
+  for (const [read, want] of [["text", "chosen"], ["slice", "hos"], ["worker", "chosen"]]) {
+    if (before[read] !== want) problems.push(`before its disk file is removed, its ${read} read gives ${JSON.stringify(before[read])}, not ${JSON.stringify(want)}`);
+    if (!String(after[read]).startsWith("failed: ")) problems.push(`after its disk file is removed, its ${read} read still gives ${JSON.stringify(after[read])}: the chosen file is not read from disk`);
+  }
+  for (const p of problems) console.error(p);
+  console.error(problems.length === 0 ? `== a chosen file is read from disk: after its removal text, slice and a worker's read fail (${after.text})` : `== ${problems.length} choose-files problems`);
+  process.exit(problems.length === 0 ? 0 : 1);
+}
+
 const opts = parseArgs(process.argv.slice(2));
 if (opts.grammar !== null) checkGrammar(opts.grammar);
+if (opts.chooseFiles) await checkChooseFiles();
 
 const specs = fs
   .readFileSync(opts.steps, "utf8")

@@ -3922,7 +3922,9 @@ of steps written against the rendered UI:
   `application/macbinary` on the other), so `choose-files` chooses the
   files, written to disk, in an input no page code sees and sets the app's
   input to files made again from them with the declared types, still read
-  from disk, with the `input` and `change` events a choice fires; it fails
+  from disk (`check` holds this: once a chosen file's disk file is removed,
+  a read, a slice and a worker's read of it fail), with the `input` and
+  `change` events a choice fires; it fails
   if the app's input then holds anything but the declared files. The
   browser's inference of a type from a name is therefore not exercised by
   a spec: no platform code depends on it, since the runtime passes on the
