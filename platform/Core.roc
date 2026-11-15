@@ -8644,7 +8644,7 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 fx_refuse : Tx, List(U32), Result -> (U32, Tx)
 fx_refuse = |tx, path, res| {
 	id = tx.fx.next
-	(id, with_fx(tx, |fx| { ..fx, next: id + 1, queue: fx.queue.append({ id, path, res }), refused: fx.refused + 1 }))
+	(id, with_fx(tx, |fx| { ..fx, next: id + 1, queue: follow_up(fx.queue, { id, path, res }), refused: fx.refused + 1 }))
 }
 
 ## Queue what the end of the turn settles for a request (see [TurnEnd]) as
