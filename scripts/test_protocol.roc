@@ -10,6 +10,7 @@ import cli.Path
 import pf.Protocol
 import src/ApiSurface
 import src/Proc
+import src/UnionShape
 
 ## Check authored protocol rows without generating architectural authority.
 ## Both package roots must declare identical, published internal dependencies.
@@ -50,6 +51,18 @@ main! = |_args| {
 	if !appendix.contains("protocol version **${Protocol.version.to_str()}**") {
 		return Err(VersionMismatch)
 	}
+	# Appendix A's request, command and result unions are the engine's.
+	engine = Path.read_utf8!(Path.utf8("platform/Engine.roc"))?
+	surface = design.split_on("## Appendix A: API Surface").get(1) ?? return Err(MissingAppendix)
+	surface_a = surface.split_on("## Appendix B: Wire Protocol").first() ?? surface
+	for union in ["Request", "Command", "Result"] {
+		documented = UnionShape.variants(surface_a, union)?
+		declared = UnionShape.variants(engine, union)?
+		differences = UnionShape.differences(documented, declared)
+		if !differences.is_empty() {
+			return Err(AppendixADiffers({ union, differences }))
+		}
+	}
 	page_dependencies = ApiSurface.dependencies(Path.read_utf8!(Path.utf8("platform/main.roc"))?)?
 	fuzz_dependencies = ApiSurface.dependencies(Path.read_utf8!(Path.utf8("platform/main-fuzz.roc"))?)?
 	if page_dependencies.fold(Dict.empty(), |out, item| out.insert(item.name, item.url)) != fuzz_dependencies.fold(Dict.empty(), |out, item| out.insert(item.name, item.url)) {
@@ -60,7 +73,7 @@ main! = |_args| {
 			return Err(UnpinnedDependency(dependency))
 		}
 	}
-	Proc.note!("Protocol authority rows and package roots agree")
+	Proc.note!("Protocol authority rows, Appendix A's request, command and result unions and package roots agree")
 	Ok({})
 }
 
