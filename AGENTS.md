@@ -91,10 +91,13 @@
   contracts. A table view finds its rows by the table's key through the key's own
   equality and hash, never through a text made from it. Do not derive
   identity from content, DOM position, a value's inspected text, or engine
-  ids exposed to applications. Duplicate keys are contract errors, not
-  aliases. A reference's name is an address the app builds for a command on
-  an element, never an identity: rows are found by their keys, and two live
-  references with one name are a contract error, not an alias.
+  ids exposed to applications. Duplicate keys are never aliases: a
+  table cannot hold one key twice, and building one from rows that repeat a
+  key answers `DuplicateKey` where the rows enter; a duplicate key within an
+  `each` site is a contract error. A reference's name is an address the app
+  builds for a command on an element, never an identity: rows are found by
+  their keys, and two live references with one name are a contract error,
+  not an alias.
 - Keep dynamic structure owned by explicit scopes. Disposing a site removes its
   nodes, frees its ids and routes, cancels its subscriptions and timers, and
   reparents its admitted requests to the nearest surviving ancestor, exactly as
