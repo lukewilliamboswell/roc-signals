@@ -414,9 +414,10 @@ them.
 | A port's answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | `TooLarge` |
 | Replaceable `Latest` report or `Every` backlog per subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` replaces; reports pinned by occurrences count within ingress. `Every` refuses the JavaScript's `emit` |
 | Port call timeout | 600 s | Capped |
-| Payload nesting | 512 containers | The job is `Lost(Contract)`: an input fails to decode in the worker, an answer is refused there before it is sent |
+| Payload nesting | 128 levels of the app's containers (each list, set, dictionary, record, tuple, tag with a payload and file) | `TooDeep`: an input is not sent, an answer is not answered, and the worker is kept |
+| NaN keys in one payload dictionary | 1 | `NanKeys`, as `TooDeep` |
 | Bytes a job appends to its builders | `maxOutputBytes` (default 256 MiB); files appended by reference do not count | `append!` answers `Err(TooLarge)` |
-| Files in one job's answer | 16 | The job is `Lost(Contract)`, nothing delivered |
+| Files in one job's answer | 16 | `TooManyFiles`, nothing delivered, and the worker is kept |
 | Room on the page for an answer's files | The page's free slots among its 64 | The job is `Lost(ResourceLimit)`, nothing delivered |
 | Room on the page for a port's answer or message with files | The page's free slots among its 64 | `TooLarge`, none of its files kept |
 | Files and builders one job holds at once | 64 | The job is `Lost(ResourceLimit)` |

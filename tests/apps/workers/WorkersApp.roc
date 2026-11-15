@@ -18,8 +18,8 @@ import pf.Worker
 ##   contract error at issue time).
 ## - "Grow" runs a task that allocates 16 MiB, growing its instance's
 ##   memory (the monitor's per-instance memory figures).
-## - "Deep" runs a task whose answer nests deeper than the page could
-##   decode: the worker refuses to send it, and only that job is lost.
+## - "Deep" runs a task whose answer nests deeper than a payload may: the
+##   worker answers `TooDeep` instead of sending it, and is kept.
 WorkersApp := [].{
 	S : {
 		upper : U64,
@@ -81,7 +81,7 @@ WorkersApp := [].{
 		encoder_for : _
 	}
 
-	## A chain `depth` links long: more than 512 is deeper than a payload may
+	## A chain `depth` links long: more than 128 is deeper than a payload may
 	## nest.
 	deep : Worker.Task(U64, Chain, Worker.Never)
 	deep = Worker.task({
