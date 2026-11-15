@@ -526,20 +526,24 @@ A spec that takes the app back to where it started is a round trip, and the
 native runner soaks it: `RUNNER --soak 48 specs/round-trip-NAME.scm` runs
 the spec once, recording every call its steps make into the engine after
 its last `mark-metrics` (after the mount when there is none), then replays
-those calls 48 times on the engine alone and requires every cycle after a
-warm-up (`--warm N`, two by default) to leave no allocation and no byte
-live. An answer the spec gave (an HTTP stub, a worker job's answer, a port
-answer) is replayed as it was first given, to the request at the same place
-among those in flight; a cycle that leaves no request there is not a round
-trip, and the soak says so. Every replayed call must also do the work its
-recorded call did: the same rows created and removed, scopes created and
-disposed, turns, requests issued and results delivered. An event replayed
-to a node the cycle has freed, or has given to something else, does other
-work, and the soak names the cycle and the call rather than measuring a
-different, often idle, sequence. An event is replayed under its recorded
-node id, so a round trip whose events reach a row it created, or one an
-earlier cycle created in another's place, can pass only while the engine's
-free ids happen to give that row the same id each cycle. It is a leak check, never a baseline. Each
+those calls 48 times and requires every cycle after a warm-up (`--warm N`,
+two by default) to leave no allocation and no byte live. What is measured
+is the engine's own: the live counters are read around each call into the
+engine and summed over the cycle. An event is replayed to the place of its
+listener in the drawn tree, the node's path of child indexes from the mount
+root and the event type, found in the oracle's model of the page, which the
+replay keeps from the commands outside the measure; so a card the round
+trip adds and deletes, or a branch it opens and closes, is reached under
+whatever id the cycle gave it. An answer the spec gave (an HTTP stub, a
+worker job's answer, a port answer) is replayed as it was first given, to
+the request at the same place among those in flight. A cycle whose page
+has no node or no such listener at a recorded place, or no request at a
+recorded place, is not a round trip, and the soak says so. Every replayed
+call must also do the work its recorded call did: the same rows created
+and removed, scopes created and disposed, turns, requests issued and
+results delivered; a call that does other work fails the soak, naming the
+cycle and the call, rather than measuring a different, often idle,
+sequence. It is a leak check, never a baseline. Each
 example but the CSV Converter keeps one round-trip spec
 (`round-trip-*.scm`), which `check` runs as an ordinary spec in both
 runners and `check-slow` soaks (`Slow.native_soaks`). A soak records an

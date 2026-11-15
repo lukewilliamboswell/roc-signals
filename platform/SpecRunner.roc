@@ -5002,17 +5002,32 @@ SpecRunner := [].{
 		Ok($tally)
 	}
 
-	## One call a spec made into the engine, as a soak records it: the node
-	## and handler (for a result, the request's place among those in flight,
-	## since a later cycle issues it under a new id), the payload, the
-	## handles an event carrying files held, and the work it did
-	## (`SpecRunner.round_trip_work`), which each replay of it must repeat.
-	Call : { node : U32, handler : [Handler(U32), InFlight(U64)], payload : List(U8), files : [Event, Files(List(Box(U64)))], work : List(U64) }
+	## One call a spec made into the engine, as a soak records it: what it
+	## went to (`Target`), the payload, the handles an event carrying files
+	## held, and the work it did (`SpecRunner.round_trip_work`), which each
+	## replay of it must repeat.
+	Call : { target : Target, payload : List(U8), files : [Event, Files(List(Box(U64)))], work : List(U64) }
 
-	## An instance, the calls made into it since the recording began, and
-	## the round-trip counters after the latest call, from which the next
-	## call's work is measured.
-	Recorded(state) : { inst : state, calls : List(Call), counted : List(U64) }
+	## What a recorded call went to, named so that a later cycle finds the
+	## same thing under the ids that cycle gave it. An event goes to the
+	## listener for `event` on the node at `path` in the drawn tree (child
+	## indexes from the mount root, whose own path is empty), since a row
+	## or a branch the cycle re-creates comes back at its place under a new
+	## id. A result goes to the request at its place among those in flight
+	## (`InFlight`), or, for a request no longer in flight such as a
+	## subscription's, under its id (`Result`). An event whose node the
+	## oracle could not place is `Unplaced`, and the soak refuses it.
+	Target : [Place(Place), InFlight(U64), Result(U32), Unplaced(U32, U32)]
+
+	## A listener named by where it is: its node's path from the mount root
+	## and the event type it listens for.
+	Place : { path : List(U64), event : Str }
+
+	## An instance, the calls made into it since the recording began, the
+	## round-trip counters after the latest call, from which the next
+	## call's work is measured, and the oracle's model of the page, from
+	## which the next call's place is read.
+	Recorded(state) : { inst : state, calls : List(Call), counted : List(U64), dom : Dom.Model }
 
 	## The counters of a work record that say what a call did to the app,
 	## whatever ids it did it under: rows created (`INST`), rows removed,
@@ -5061,87 +5076,182 @@ SpecRunner := [].{
 			keys: program.keys,
 			init: |boot| {
 				(inst, cmds, wbuf) = init(boot)
-				({ inst, calls: [], counted: SpecRunner.round_trip_work(wbuf) }, cmds, wbuf)
+				({ inst, calls: [], counted: SpecRunner.round_trip_work(wbuf), dom: Dom.apply(Dom.new({}), cmds) }, cmds, wbuf)
 			},
-			event: |{ inst: prior, calls, counted }, buf, wbuf, node, h, payload| {
-				handler = SpecRunner.handler_of(live(prior), node, h)
+			event: |{ inst: prior, calls, counted, dom }, buf, wbuf, node, h, payload| {
+				target = SpecRunner.target_of(dom, live(prior), node, h)
 				(inst, cmds, w) = event(prior, buf, wbuf, node, h, payload)
 				after = SpecRunner.round_trip_work(w)
-				({ inst, calls: calls.append({ node, handler, payload, files: Event, work: SpecRunner.work_between(counted, after) }), counted: after }, cmds, w)
+				({ inst, calls: calls.append({ target, payload, files: Event, work: SpecRunner.work_between(counted, after) }), counted: after, dom: Dom.apply(dom, cmds) }, cmds, w)
 			},
-			files: |{ inst: prior, calls, counted }, buf, wbuf, node, h, record, handles| {
-				handler = SpecRunner.handler_of(live(prior), node, h)
+			files: |{ inst: prior, calls, counted, dom }, buf, wbuf, node, h, record, handles| {
+				target = SpecRunner.target_of(dom, live(prior), node, h)
 				(inst, cmds, w) = files(prior, buf, wbuf, node, h, record, handles)
 				after = SpecRunner.round_trip_work(w)
-				({ inst, calls: calls.append({ node, handler, payload: record, files: Files(handles), work: SpecRunner.work_between(counted, after) }), counted: after }, cmds, w)
+				({ inst, calls: calls.append({ target, payload: record, files: Files(handles), work: SpecRunner.work_between(counted, after) }), counted: after, dom: Dom.apply(dom, cmds) }, cmds, w)
 			},
 			settled: |r| settled(r.inst),
 			live: |r| live(r.inst),
 		}
 	}
 
-	## How a soak names the handler of a call: a result by the place of its
-	## request among those in flight, anything else as it is.
-	handler_of : List(U32), U32, U32 -> [Handler(U32), InFlight(U64)]
-	handler_of = |live, node, h|
+	## How a soak names what a call went to (`Target`): a result by the
+	## place of its request among those in flight, an event by the place
+	## of the listener the oracle's model routes it through.
+	target_of : Dom.Model, List(U32), U32, U32 -> Target
+	target_of = |dom, live, node, h|
 		if node == SpecRunner.fx_node {
 			match live.find_first_index(|id| id == h) {
 				Ok(i) => InFlight(i)
-				Err(_) => Handler(h)
+				Err(_) => Result(h)
 			}
 		} else {
-			Handler(h)
+			match SpecRunner.listener_place(dom, node, h) {
+				Ok(place) => Place(place)
+				Err(Unplaced) => Unplaced(node, h)
+			}
 		}
 
-	## Replay `calls` `cycles` times on the engine alone (no DOM model, the
-	## command and work buffers lent back as the hosts lend them), and give
-	## each cycle's net live allocations and bytes, read from the host's
-	## counters before and after it. A recorded answer goes to the request
-	## at its recorded place among those in flight; a cycle that has no
-	## request there is not a round trip. Nor is one in which a call does
-	## other work than its recorded call did (`round_trip_counters`): an
-	## event that reaches a freed node, or a node the cycle gave to
-	## something else, is no longer the recorded round trip, and a soak that
-	## went on would measure a different, often idle, sequence.
-	replay! : Program(state), { inst : state, buf : List(U8), wbuf : List(U8), counted : List(U64) }, List(Call), U64, Host => Try(List({ allocations : I64, bytes : I64 }), Str)
-	replay! = |program, { inst, buf, wbuf, counted }, calls, cycles, host| {
+	## The path of a drawn node: its index among its parent's children at
+	## each level, from the mount root down. A node that is not in the
+	## drawn tree has no path.
+	node_path : Dom.Model, U64 -> Try(List(U64), [Undrawn])
+	node_path = |dom, index| {
+		var $at = index
+		var $path = []
+		while $at != dom.root {
+			n = dom.nodes.get($at) ? |_| Undrawn
+			if n.parent == 0 {
+				return Err(Undrawn)
+			}
+			parent = dom.nodes.get(n.parent - 1) ? |_| Undrawn
+			$path = $path.append(parent.kids.find_first_index(|kid| kid == $at) ? |_| Undrawn)
+			$at = n.parent - 1
+		}
+		Ok(List.repeat(0, $path.len()).map_with_index(|_, i| $path.get($path.len() - 1 - i) ?? 0))
+	}
+
+	## The drawn node at a path, if there is one.
+	node_at : Dom.Model, List(U64) -> Try(U64, [NoNode])
+	node_at = |dom, path| {
+		var $at = dom.root
+		for i in path {
+			n = dom.nodes.get($at) ? |_| NoNode
+			$at = n.kids.get(i) ? |_| NoNode
+		}
+		Ok($at)
+	}
+
+	## Where the listener an event to `node` with handler `h` went through
+	## is: the drawn node in that node's subtree that declares a listener
+	## the oracle routes to exactly (`node`, `h`), and its event type. A
+	## node the oracle does not know, or no such listener, is `Unplaced`.
+	listener_place : Dom.Model, U32, U32 -> Try(Place, [Unplaced])
+	listener_place = |dom, node, h| {
+		bound = (dom.statics.get(node.to_u64()) ?? 0).bitwise_and(1099511627775)
+		if node != 0 and bound == 0 {
+			return Err(Unplaced)
+		}
+		var $stack = [if (node == 0) dom.root else bound - 1]
+		while !$stack.is_empty() {
+			at = $stack.last() ?? crash "SpecRunner.listener_place: a nonempty stack has a last node"
+			$stack = $stack.drop_last(1)
+			n = dom.nodes.get(at) ? |_| Unplaced
+			for listener in n.hs {
+				if listener.handler == h and Dom.target(dom, at, listener.event, False) == Ok({ node, handler: h, event: listener.event, kind: listener.kind, policies: listener.policies, declaring: at }) {
+					path = SpecRunner.node_path(dom, at) ? |_| Unplaced
+					return Ok({ path, event: listener.event })
+				}
+			}
+			$stack = $stack.concat(n.kids)
+		}
+		Err(Unplaced)
+	}
+
+	## The node and handler a place names now: the drawn node at its path,
+	## routed for its event type as the oracle routes an event there.
+	resolve_place : Dom.Model, Place -> Try({ node : U32, handler : U32 }, [NoNode, NoListener])
+	resolve_place = |dom, { path, event }| {
+		at = SpecRunner.node_at(dom, path)?
+		target = Dom.target(dom, at, event, False) ? |NoHandler| NoListener
+		if target.declaring != at {
+			return Err(NoListener)
+		}
+		Ok({ node: target.node, handler: target.handler })
+	}
+
+	## A place as a reader reads it.
+	show_place : Place -> Str
+	show_place = |{ path, event }| "the ${event} listener at [${Str.join_with(path.map(|i| i.to_str()), " ")}]"
+
+	## Replay `calls` `cycles` times, the command and work buffers lent back
+	## as the hosts lend them, and give each cycle's net live allocations
+	## and bytes: the sum, over its calls, of the host's counters after the
+	## engine's call less those before it, so what is measured is the
+	## engine's alone. Between calls, outside that measure, the oracle's
+	## model of the page follows the commands (from a copy of them, so the
+	## model holds no part of the engine's buffer), and each call's target
+	## is found in it: an event goes to the listener at its recorded place
+	## (`Place`), whatever id the cycle gave that node, and a recorded answer
+	## to the request at its recorded place among those in flight. A cycle
+	## whose model has no such listener, or no request at that place, is not
+	## a round trip. Nor is one in which a call does other work than its
+	## recorded call did (`round_trip_counters`): such a cycle is no longer
+	## the recorded round trip, and a soak that went on would measure a
+	## different, often idle, sequence.
+	replay! : Program(state), { inst : state, buf : List(U8), wbuf : List(U8), counted : List(U64), dom : Dom.Model }, List(Call), U64, Host => Try(List({ allocations : I64, bytes : I64 }), Str)
+	replay! = |program, { inst, buf, wbuf, counted, dom }, calls, cycles, host| {
 		var $inst = inst
 		var $buf = buf
 		var $wbuf = wbuf
 		var $counted = counted
+		var $dom = dom
 		var $nets = List.with_capacity(cycles)
 		var $c = 0.U64
 		while $c < cycles {
-			allocations = (host.live_allocations!)()
-			bytes = (host.live_bytes!)()
+			cycle = ($c + 1).to_str()
+			var $allocations = 0.I64
+			var $bytes = 0.I64
 			var $k = 0.U64
 			for call in calls {
 				$k = $k + 1
-				handler = match call.handler {
-					Handler(h) => h
+				{ node, handler } = match call.target {
+					Place(place) =>
+						match SpecRunner.resolve_place($dom, place) {
+							Ok(found) => found
+							Err(NoNode) => return Err("cycle ${cycle}'s call ${$k.to_str()} goes to ${SpecRunner.show_place(place)}, and the cycle has drawn no node there: the steps after the last mark-metrics do not return the app to where they started")
+							Err(NoListener) => return Err("cycle ${cycle}'s call ${$k.to_str()} goes to ${SpecRunner.show_place(place)}, and the node the cycle drew there has no such listener: the steps after the last mark-metrics do not return the app to where they started")
+						}
 					InFlight(i) =>
 						match (program.live)($inst).get(i) {
-							Ok(id) => id
-							Err(_) => return Err("cycle ${($c + 1).to_str()} has no request in flight at place ${(i + 1).to_str()}, which the recorded cycle answered: the steps after the last mark-metrics do not return the app to where they started")
+							Ok(id) => { node: SpecRunner.fx_node, handler: id }
+							Err(_) => return Err("cycle ${cycle} has no request in flight at place ${(i + 1).to_str()}, which the recorded cycle answered: the steps after the last mark-metrics do not return the app to where they started")
 						}
+					Result(id) => { node: SpecRunner.fx_node, handler: id }
+					Unplaced(id, h) => return Err("call ${$k.to_str()} went to node ${id.to_str()} with handler ${h.to_str()}, which the oracle's model places at no listener in the drawn tree")
 				}
+				allocations = (host.live_allocations!)()
+				bytes = (host.live_bytes!)()
 				(next, cmds, w) = match call.files {
-					Event => (program.event)($inst, $buf, $wbuf, call.node, handler, call.payload)
-					Files(handles) => (program.files)($inst, $buf, $wbuf, call.node, handler, call.payload, handles)
+					Event => (program.event)($inst, $buf, $wbuf, node, handler, call.payload)
+					Files(handles) => (program.files)($inst, $buf, $wbuf, node, handler, call.payload, handles)
 				}
+				after_allocations = (host.live_allocations!)()
+				after_bytes = (host.live_bytes!)()
+				$allocations = $allocations + after_allocations.to_i64_wrap() - allocations.to_i64_wrap()
+				$bytes = $bytes + after_bytes.to_i64_wrap() - bytes.to_i64_wrap()
+				$dom = Dom.apply($dom, cmds.map(|byte| byte))
 				$inst = next
 				$buf = cmds
 				$wbuf = w
 				after = SpecRunner.round_trip_work(w)
 				work = SpecRunner.work_between($counted, after)
 				if work != call.work {
-					return Err("cycle ${($c + 1).to_str()}'s call ${$k.to_str()} (node ${call.node.to_str()}) did ${SpecRunner.show_work(work)}, where the recorded call did ${SpecRunner.show_work(call.work)}: the replay is not the recorded round trip")
+					return Err("cycle ${cycle}'s call ${$k.to_str()} (node ${node.to_str()}) did ${SpecRunner.show_work(work)}, where the recorded call did ${SpecRunner.show_work(call.work)}: the replay is not the recorded round trip")
 				}
 				$counted = after
 			}
-			after_allocations = (host.live_allocations!)()
-			after_bytes = (host.live_bytes!)()
-			$nets = $nets.append({ allocations: after_allocations.to_i64_wrap() - allocations.to_i64_wrap(), bytes: after_bytes.to_i64_wrap() - bytes.to_i64_wrap() })
+			$nets = $nets.append({ allocations: $allocations, bytes: $bytes })
 			$c = $c + 1
 		}
 		Ok($nets)
@@ -5191,7 +5301,7 @@ SpecRunner := [].{
 		if ran.inst.calls.is_empty() {
 			return Err(failed("the steps after the last mark-metrics call nothing in the engine, so there is no round trip to repeat"))
 		}
-		nets = SpecRunner.replay!(program, { inst: ran.inst.inst, buf: ran.buf, wbuf: ran.wbuf, counted: ran.inst.counted }, ran.inst.calls, cycles, host).map_err(failed)?
+		nets = SpecRunner.replay!(program, { inst: ran.inst.inst, buf: ran.buf, wbuf: ran.wbuf, counted: ran.inst.counted, dom: ran.inst.dom }, ran.inst.calls, cycles, host).map_err(failed)?
 		SpecRunner.flat(nets, warm).map_err(failed)?
 		Ok(nets)
 	}
@@ -7255,3 +7365,39 @@ expect {
 ## A replayed call that did other work than its recorded call is named by
 ## every counter, so the report says what the replay missed.
 expect SpecRunner.show_work([1, 0, 2, 2, 1, 0, 0]) == "rows created 1, rows removed 0, scopes created 2, scopes disposed 2, turns 1, requests issued 0, results delivered 0"
+
+## A soak names an event by the place of its listener in the drawn tree,
+## so a row the cycle re-creates under another id is found again at its
+## place; a place with no node, or a node without the listener, is refused.
+expect {
+	base = Dom.new({})
+	(made, list) = Dom.add_node(base, { ..Dom.empty_node, tag: "ul" })
+	drawn = Dom.insert(made, base.root, list, Err(End))
+	row = |dom, id| {
+		(added, at) = Dom.add_node(dom, { ..Dom.empty_node, tag: "li", rn: id, hs: [{ event: "click", handler: 3, kind: 0, policies: 0 }] })
+		(Dom.set_row(Dom.insert(added, list, at, Err(End)), id, at, 0), at)
+	}
+	(one, _) = row(drawn, 7)
+	(two, second) = row(one, 8)
+	place = SpecRunner.listener_place(two, 8, 3)
+	removed = Dom.detach(two, second)
+	(again, _) = row(removed, 12)
+	{
+		place,
+		again: place.map_ok(|found| SpecRunner.resolve_place(again, found)),
+		removed: place.map_ok(|found| SpecRunner.resolve_place(removed, found)),
+		other_event: SpecRunner.resolve_place(again, { path: [0, 1], event: "input" }),
+		unknown: SpecRunner.listener_place(two, 99, 3),
+		other_handler: SpecRunner.listener_place(two, 8, 4),
+		root: SpecRunner.node_path(two, base.root),
+	}
+		== {
+			place: Ok({ path: [0, 1], event: "click" }),
+			again: Ok(Ok({ node: 12, handler: 3 })),
+			removed: Ok(Err(NoNode)),
+			other_event: Err(NoListener),
+			unknown: Err(Unplaced),
+			other_handler: Err(Unplaced),
+			root: Ok([]),
+		}
+}

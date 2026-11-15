@@ -4607,18 +4607,24 @@ know nothing of the platform.
   and live allocations asserted flat across repeated round trips. Natively,
   each app's round trip is an ordinary spec that the spec runner also
   soaks (`--soak`): it runs the spec once, records the calls its steps make
-  into the engine after the last `mark-metrics`, replays them on the engine
-  alone, and requires the native host's live allocation and byte counters
-  flat after a warm-up. A recorded answer goes to the request at the same
-  place among those in flight, so the soak needs no knowledge of the app.
-  Each replayed call must repeat its recorded call's work (rows created and
+  into the engine after the last `mark-metrics`, replays them, and requires
+  the native host's live allocation and byte counters flat after a
+  warm-up. A call is replayed to what it reached, not to the ids it was
+  recorded under: an event goes to the listener for its event type on the
+  node at the same place in the drawn tree (its path of child indexes from
+  the mount root, which is the empty path), as the oracle's model of the
+  page, kept from the commands, shows it in that cycle; a recorded answer
+  goes to the request at the same place among those in flight. So a row
+  or a branch the round trip re-creates is reached under whatever id the
+  engine's free ids give it, and the soak needs no knowledge of the app. A
+  place with no node or no such listener fails the soak. Each replayed
+  call must also repeat its recorded call's work (rows created and
   removed, scopes created and disposed, turns, requests issued and results
   delivered), or the cycle is not the recorded round trip and the soak
-  says so rather than measuring another sequence. **Target:** an event is
-  replayed to its recorded node id, so a round trip whose events reach a
-  row it re-creates passes only while the engine's free ids give that row
-  the same id each cycle; such a row is to be named by a place that
-  survives its re-creation, as a request is named by its place in flight.
+  says so rather than measuring another sequence. The counters are read
+  around each engine call and summed per cycle, so the measure is the
+  engine's alone: the oracle's model keeps every node lifetime it has
+  seen, so it grows with each cycle by design and stays outside it.
 - **Contract tests** (`tests/`) cover the host (`host.zig` tests: staging,
   containment, refusal after poison) and the runtime (`runtime.mjs` against the
   wire protocol: every opcode, payload encoding, effect performance and
