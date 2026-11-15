@@ -2140,12 +2140,17 @@ are the payload's declared bounds, met by the app's data: an input or an
 answer nested deeper than 128 levels of the app's own containers, or an
 answer holding more than 16 files. Nothing is sent or answered, nothing is
 admitted to the in-flight table for a refused input, and the worker and
-its prepared state are kept. The 128 is measured, not derived: encoding is
-recursive, and a Chrome dedicated worker on a development build overflows
-V8's native stack at about 113 levels of a record holding a list, so the
-bound keeps a margin of 1.75 in the weakest configuration measured and 3
-to 10 elsewhere. The encoder counts as it goes and does not descend past
-the bound, so encoding itself cannot overflow. A complete lift waits on
+its prepared state are kept. The 128 is measured, not derived: encoding and
+decoding are recursive, and with the bound lifted a round trip through a
+Chrome dedicated worker on a development build overflows V8's native stack
+first at 214 counted levels for a tag holding a seven-field record (224 for
+a record holding a list of itself, 237 for a chain of tags), so the bound
+keeps a margin of about 1.67 in the weakest configuration measured and 3
+to 10 elsewhere. A browser contract test holds the worst shapes' round
+trip at exactly 128 in a dedicated worker on a development build, so a
+compiler whose frames grow until the bound no longer fits fails it. The
+encoder counts as it goes and does not descend past the bound, so encoding
+itself cannot overflow. A complete lift waits on
 the compiler: Roc cannot drop or compare a recursive value much deeper
 than about 1,900 levels in a worker (roc-lang/roc#12917), and development
 Wasm frames are about three times optimized ones (roc-lang/roc#12922).

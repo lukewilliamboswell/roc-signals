@@ -710,11 +710,14 @@ decode_payload = |bytes, files| {
 ## nest: each list, set, dictionary, record, tuple and tag with a payload is
 ## one level, and a file is one. A container met at the bound is not written
 ## (`too_deep`), so encoding cannot run out of stack, and the encode is
-## refused with `TooDeep`. 128 is measured, not derived: a Chrome dedicated
-## worker on a development build overflows V8's native stack encoding about
-## 113 levels of a record holding a list and about 240 of a tag, and
-## optimized builds and the page go about 3 to 10 times deeper, so 128 keeps
-## a margin of 1.75 in the weakest configuration. Roc itself cannot drop or
+## refused with `TooDeep`. 128 is measured, not derived: with the bound
+## lifted, a round trip through a Chrome dedicated worker on a development
+## build overflows V8's native stack first at 214 of these levels for a tag
+## holding a seven-field record, 224 for a record holding a list of itself
+## and 237 for a chain of one-payload tags, and optimized builds and the
+## page go about 3 to 10 times deeper, so 128 keeps a margin of about 1.67
+## in the weakest configuration (tests/browser/deep-payload-browser.mjs
+## holds the round trip at 128). Roc itself cannot drop or
 ## compare a recursive value much deeper than about 1,900 levels in a
 ## worker (https://github.com/roc-lang/roc/issues/12917), and development
 ## Wasm frames are about 3 times optimized ones

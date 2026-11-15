@@ -241,8 +241,9 @@ problems found before it.
     jobs, `dbg`, the work monitor and a smoke of the worker scaling
     measurement (correctness, robustness sequences and memory; no timing
     ratios); file handles, operations on files and their lifetimes in a
-    table; preparations, ports with real handlers, reports and jobs that
-    read and build files; and the journeys of the Reading List, the Status
+    table; preparations, ports with real handlers, reports, jobs that
+    read and build files, and worker payloads at their nesting bound on a
+    development build; and the journeys of the Reading List, the Status
     Page, the Log Explorer, the Million-Row Explorer and Conduit, each
     against the example's own JavaScript. With `--plotly FILE --measure-ms N`,
     `status-page-journey.mjs` also reports the stream's rates, the chart's

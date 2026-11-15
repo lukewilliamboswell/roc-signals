@@ -12,7 +12,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export async function launch({ executablePath, timeoutMs = 20000 }) {
+// `args` adds command-line switches, such as `--js-flags=...` to pin the
+// engine's Wasm tiers for a test of stack depth.
+export async function launch({ executablePath, timeoutMs = 20000, args = [] }) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-chrome-"));
   const child = spawn(
     executablePath,
@@ -25,6 +27,7 @@ export async function launch({ executablePath, timeoutMs = 20000 }) {
       "--disable-extensions",
       "--remote-debugging-port=0",
       `--user-data-dir=${profile}`,
+      ...args,
       "about:blank",
     ],
     { stdio: ["ignore", "ignore", "pipe"], detached: true },
