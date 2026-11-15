@@ -31,9 +31,9 @@ main! = |_args| {
 		file_bytes: files.browser.files.map(|file| file.bytes),
 	}
 	expected = {
-		plain: [{ entry: "event", node: SpecRunner.fx_node, handler: InFlight(0), payload: SpecRunner.put_u32([10], 0).concat(output), handles: [] }],
-		files: [{ entry: "files", node: SpecRunner.fx_node, handler: InFlight(0), payload: metadata.concat(output), handles: [41] }],
-		refused: [{ entry: "event", node: SpecRunner.fx_node, handler: InFlight(0), payload: [11, 2], handles: [] }],
+		plain: [{ entry: "event", target: InFlight(0), payload: SpecRunner.put_u32([10], 0).concat(output), handles: [] }],
+		files: [{ entry: "files", target: InFlight(0), payload: metadata.concat(output), handles: [41] }],
+		refused: [{ entry: "event", target: InFlight(0), payload: [11, 2], handles: [] }],
 		file_bytes: [[97, 98, 99]],
 	}
 	if actual == expected {
@@ -58,15 +58,14 @@ probe = |_props| {
 }
 
 ## Report observable call fields without retaining handles in the assertion.
-describe : List(SpecRunner.Call) -> List({ entry : Str, node : U32, handler : [Handler(U32), InFlight(U64)], payload : List(U8), handles : List(U64) })
+describe : List(SpecRunner.Call) -> List({ entry : Str, target : SpecRunner.Target, payload : List(U8), handles : List(U64) })
 describe = |calls| calls.map(
 	|call| {
 		entry: match call.files {
 			Event => "event"
 			Files(_) => "files"
 		},
-		node: call.node,
-		handler: call.handler,
+		target: call.target,
 		payload: call.payload,
 		handles: match call.files {
 			Event => []
