@@ -129,8 +129,10 @@ async function reachable(page, loc) {
     const modal = window.__rt.topModal();
     if (modal && !modal.contains(element)) return "is outside the topmost modal dialog";
     for (let ancestor = element; ancestor && ancestor !== window.__rt.root; ancestor = ancestor.parentElement) {
-      if (ancestor.tagName === "DIALOG" && !ancestor.open) return "is inside a hidden dialog";
-      if (ancestor.hasAttribute("popover") && !ancestor.matches(":popover-open")) return "is inside a hidden popover";
+      // Dialogs and popovers are HTML's: an SVG element with `popover` is shown.
+      const html = ancestor.namespaceURI === "http://www.w3.org/1999/xhtml";
+      if (html && ancestor.localName === "dialog" && !ancestor.open) return "is inside a hidden dialog";
+      if (html && ancestor.hasAttribute("popover") && !ancestor.matches(":popover-open")) return "is inside a hidden popover";
     }
     return null;
   });
@@ -404,9 +406,10 @@ async function setChecked(page, state, loc, want) {
 // name on an HTML element and match a namespaced attribute by its qualified
 // name, so `TITLE` would find `title` and `xlink:href` the XLink `href`.
 const attrOf = (e, n) => {
-  if (n === "checked" && e.tagName === "INPUT") return e.checked ? "true" : "false";
+  const html = e.namespaceURI === "http://www.w3.org/1999/xhtml";
+  if (n === "checked" && html && e.localName === "input") return e.checked ? "true" : "false";
   if (n === "disabled") return e.disabled ? "true" : "false";
-  if (n === "value" && ["INPUT", "TEXTAREA", "SELECT", "OPTION"].includes(e.tagName)) return e.value;
+  if (n === "value" && html && ["input", "textarea", "select", "option"].includes(e.localName)) return e.value;
   return e.getAttributeNS(null, n);
 };
 
@@ -677,15 +680,21 @@ async function observeKeyInput(page, state) {
     const capture = (event) => {
       flush();
       const target = event.target;
-      const input = target.tagName === "INPUT";
-      const text = target.tagName === "TEXTAREA" || target.isContentEditable ||
+      // Controls by exact HTML identity, and links as `SpecRunner.link_href`
+      // reads them: an HTML `a` with `href`, or an SVG `a` with `href` or
+      // the XLink `href` (Chrome activates an SVG link with Enter too).
+      const html = (local) => target.namespaceURI === "http://www.w3.org/1999/xhtml" && target.localName === local;
+      const svgLink = target.namespaceURI === "http://www.w3.org/2000/svg" && target.localName === "a" &&
+        (target.hasAttributeNS(null, "href") || target.hasAttributeNS("http://www.w3.org/1999/xlink", "href"));
+      const input = html("input");
+      const text = html("textarea") || target.isContentEditable ||
         (input && !types.text_input_excluded.includes(target.type));
       const controls = new Set();
       if (text) controls.add("text");
-      if (target.tagName === "TEXTAREA") controls.add("textarea");
+      if (html("textarea")) controls.add("textarea");
       if (target.isContentEditable) controls.add("editable");
-      if (target.tagName === "A" && target.hasAttribute("href")) controls.add("link");
-      if (target.tagName === "SELECT" || (input && types.choice_input_types.includes(target.type))) controls.add("choice");
+      if ((html("a") && target.hasAttributeNS(null, "href")) || svgLink) controls.add("link");
+      if (html("select") || (input && types.choice_input_types.includes(target.type))) controls.add("choice");
       const refused = defaults.some((row) => controls.has(row.control) && row.keys.some((key) => {
         if (key === "printable") return /^[ -~]$/.test(event.key) && !event.ctrlKey && !event.metaKey;
         if (key.startsWith("primary:")) return (event.ctrlKey || event.metaKey) && event.key.toUpperCase() === key.slice(8);
@@ -987,7 +996,7 @@ const STEPS = {
       page,
       s.loc,
       (e, v) => {
-        if (e.tagName !== "SELECT") return "is not a <select>";
+        if (e.namespaceURI !== "http://www.w3.org/1999/xhtml" || e.localName !== "select") return "is not a <select>";
         if (![...e.options].some((o) => o.value === v)) return `has no option ${JSON.stringify(v)}`;
         e.value = v;
         e.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1030,7 +1039,7 @@ const STEPS = {
   submit: async (page, s) => {
     await reachable(page, s.loc);
     const r = await onEl(page, s.loc, (e) => {
-      if (e.tagName !== "FORM") return "is not a <form>";
+      if (e.namespaceURI !== "http://www.w3.org/1999/xhtml" || e.localName !== "form") return "is not a <form>";
       e.requestSubmit();
       return null;
     });

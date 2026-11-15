@@ -3993,6 +3993,14 @@ oracle and never defines a meaning of its own. In particular:
   Chrome, each as a turn. `expect-focused LOC` checks the active element,
   and `expect-no-focus` checks that focus is on the document body;
 - `fill` is Playwright's: it refuses a control that cannot hold the value;
+- an element behaves as its exact namespace and local name say, as the
+  browser's element interfaces do (#225, #246): HTML's `hidden`, `popover`
+  and `contenteditable` act only on HTML elements, so an SVG `<g hidden>` is
+  drawn and a link inside it takes focus; a link is an HTML `a` with `href`
+  or an SVG `a` with `href` or the XLink `href`; `tabindex` makes an HTML,
+  SVG or MathML element focusable and no other; controls, dialogs and forms
+  are HTML elements of that exact local name; and the implicit roles a
+  locator matches are those of HTML elements and of the SVG `a`;
 - a navigation to a URL that differs from the current one only in its
   fragment stays in the document; any other mounts the app afresh in a new
   document. History traversal across documents is refused, because a

@@ -58,6 +58,19 @@ NamespacesApp := [].{
 										),
 										|| Engine.text(""),
 									),
+									# HTML's `hidden` means nothing on an SVG element: Chrome
+									# draws this group and its link takes focus.
+									Engine.element(
+										NamespacesApp.tag("g", { namespace: Svg }),
+										[Engine.attr("hidden", "")],
+										[
+											Engine.element(
+												NamespacesApp.tag("a", { namespace: Svg }),
+												[Engine.test_id("svg-hidden-link"), Engine.attr("href", "#svg-link")],
+												[Engine.element(NamespacesApp.tag("rect", { namespace: Svg }), [Engine.attr("width", "20"), Engine.attr("height", "20")], [])],
+											),
+										],
+									),
 								],
 							),
 						],

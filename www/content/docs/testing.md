@@ -151,7 +151,8 @@ CSS selector or DOM position. The first match in document order wins.
 | `(test-id "status")` | An element whose `data-testid` is `status` |
 
 The implicit roles are `button`, `link` (`a`), `region` (`section`),
-`form`, `dialog` and `heading` (`h1`–`h6`). The accessible name is the
+`form`, `dialog` and `heading` (`h1`–`h6`), of HTML elements with exactly
+that local name; an SVG `a` is a `link` too. The accessible name is the
 `aria-label`, or else the element's text content. Inputs have no implicit
 role here, so find controls by `label`: the `Html` controls put their name
 in `aria-label` (see [Reference](@/docs/reference.md)). Give text you assert
@@ -244,6 +245,10 @@ but does not trim spaces or fold non-ASCII letters. For example, `type="txet"`
 can be filled and blocks implicit form submission just like `type="text"`.
 Checking it or choosing files still fails the step. These defaults apply to HTML
 controls, not foreign elements with the same local name.
+Likewise HTML's `hidden`, `popover` and `contenteditable` mean nothing on an
+SVG or MathML element: Chrome draws an SVG `<g hidden>`, and a link inside it
+takes focus, in both runners. A link is an HTML `a` with `href`, or an SVG `a`
+with `href` or `xlink:href`.
 
 The `type` attribute remains raw: `expect-attr` sees the exact authored spelling,
 including empty text, and `expect-no-attr` sees its absence. This does not change

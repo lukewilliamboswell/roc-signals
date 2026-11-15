@@ -277,7 +277,7 @@ Dom := [].{
 		var $at = i
 		while True {
 			item = Dom.node(dom, $at)
-			if Dom.has_attr(item, "contenteditable") {
+			if Dom.html_element(item) and Dom.has_attr(item, "contenteditable") {
 				match attribute_keyword(item.tag, "contenteditable", Dom.attr_of(item, "contenteditable")) {
 					Ok("false") => return Bool.False
 					Ok(_) => return Bool.True
@@ -906,7 +906,7 @@ Dom := [].{
 
 	## A control's property value, including defaults before its first write.
 	live_value : DNode, Str -> Str
-	live_value = |n, name| n.props.find_first(|(key, _)| key == name).map_ok(|(_, value)| value) ?? if (name == "checked") "false" else if (name == "value" and n.tag == "button") Dom.attr_of(n, "value") else ""
+	live_value = |n, name| n.props.find_first(|(key, _)| key == name).map_ok(|(_, value)| value) ?? if (name == "checked") "false" else if (name == "value" and Dom.html_tag(n, "button")) Dom.attr_of(n, "value") else ""
 
 	## Only known payload kinds and policy bits can occur in a declaration.
 	## Invalid numbers come from a protocol mismatch, never an app event.
@@ -1945,6 +1945,35 @@ Dom := [].{
 	## Resolved raw HTML case has already been supplied by the command stream.
 	html_tag : DNode, Str -> Bool
 	html_tag = |element, local| element.kind == 1 and element.namespace == Dom.html_namespace and element.tag == local
+
+	## SVG interface behavior (an SVG link) likewise needs the SVG namespace and
+	## the exact local name: an HTML or no-namespace `a` is not an SVG `a`.
+	svg_tag : DNode, Str -> Bool
+	svg_tag = |element, local| element.kind == 1 and element.namespace == Dom.svg_namespace and element.tag == local
+
+	## An HTML element of any local name. HTML's global attributes (`hidden`,
+	## `popover`, `contenteditable`) mean nothing on an SVG, MathML or other
+	## element, which Chrome displays and focuses as if they were absent.
+	html_element : DNode -> Bool
+	html_element = |element| element.kind == 1 and element.namespace == Dom.html_namespace
+
+	## The MathML namespace, for the elements whose `tabindex` makes them
+	## focusable alongside HTML and SVG ones.
+	mathml_namespace : Str
+	mathml_namespace = "http://www.w3.org/1998/Math/MathML"
+
+	## The XLink namespace of an SVG link's legacy `xlink:href`.
+	xlink_namespace : Str
+	xlink_namespace = "http://www.w3.org/1999/xlink"
+
+	## Whether an attribute in `namespace` with exact local name `local` is
+	## present, whatever its prefix.
+	has_attr_ns : DNode, Str, Str -> Bool
+	has_attr_ns = |element, namespace, local| element.attrs.any(|(key, _)| key.namespace == namespace and key.local == local)
+
+	## The value of an attribute in `namespace` with exact local name `local`.
+	attr_ns : DNode, Str, Str -> Try(Str, [Absent])
+	attr_ns = |element, namespace, local| element.attrs.find_first(|(key, _)| key.namespace == namespace and key.local == local).map_ok(|(_, v)| v).map_err(|_| Absent)
 
 	## Read one explicit namespace and expanded name. Framing and DOM grammar
 	## are checked independently from Core; unlisted names remain accepted.

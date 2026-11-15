@@ -817,7 +817,7 @@ SpecRunner := [].{
 	## control keeps showing what the user typed until blur.
 	hold_focused : S(state), Dom.Model, List((U64, Str)) -> { dom : Dom.Model, deferred : Deferred }
 	hold_focused = |s, dom, values| {
-		if s.focused == 0 or Dom.node(s.dom, s.focused - 1).tag == "select" {
+		if s.focused == 0 or Dom.html_tag(Dom.node(s.dom, s.focused - 1), "select") {
 			return { dom, deferred: s.deferred }
 		}
 		i = s.focused - 1
@@ -1567,6 +1567,32 @@ SpecRunner := [].{
 	flag_on : Dom.DNode, Str -> Bool
 	flag_on = |n, name| Dom.has_attr(n, name)
 
+	## Whether HTML's `hidden` hides node `n`: only on an HTML element. Chrome
+	## displays and focuses an SVG `<g hidden>` and what it holds.
+	html_hidden : Dom.DNode -> Bool
+	html_hidden = |n| Dom.html_element(n) and SpecRunner.flag_on(n, "hidden")
+
+	## Whether node `n` is a dialog or a popover whose shown state hides what
+	## it holds: an HTML `dialog`, or an HTML element with `popover`.
+	top_layer_candidate : Dom.DNode -> Bool
+	top_layer_candidate = |n| Dom.html_tag(n, "dialog") or (Dom.html_element(n) and Dom.has_attr(n, "popover"))
+
+	## The URL a hyperlink navigates to, as Chrome activates one: an HTML `a`
+	## with `href`, or an SVG `a` with `href` or else the XLink `href`. Any
+	## other element, an `a` without either, or an `a` in another namespace is
+	## not a link.
+	link_href : Dom.DNode -> Try(Str, [NotALink])
+	link_href = |n|
+		if Dom.html_tag(n, "a") and Dom.has_attr(n, "href") {
+			Ok(Dom.attr_of(n, "href"))
+		} else if Dom.svg_tag(n, "a") and Dom.has_attr(n, "href") {
+			Ok(Dom.attr_of(n, "href"))
+		} else if Dom.svg_tag(n, "a") {
+			Dom.attr_ns(n, Dom.xlink_namespace, "href").map_err(|_| NotALink)
+		} else {
+			Err(NotALink)
+		}
+
 	## Read the model’s effective disabled flag for native input eligibility.
 	## Ordinary raw attribute text is observed separately by attribute assertions.
 	disabled : Dom.DNode -> Bool
@@ -1575,14 +1601,16 @@ SpecRunner := [].{
 	## Whether Chrome focuses node `n` when it is clicked or `.focus()`ed.
 	focusable : Dom.DNode -> Bool
 	focusable = |n| {
-		editable = Dom.has_attr(n, "contenteditable") and ["", "true", "plaintext-only"].contains(Dom.enum_attr(n, "contenteditable"))
-		(SpecRunner.intrinsic_focusable(n) or editable) and !SpecRunner.disabled(n) and !SpecRunner.flag_on(n, "hidden") and !(Dom.html_tag(n, "input") and Dom.input_type(n) == "hidden")
+		editable = Dom.html_element(n) and Dom.has_attr(n, "contenteditable") and ["", "true", "plaintext-only"].contains(Dom.enum_attr(n, "contenteditable"))
+		(SpecRunner.intrinsic_focusable(n) or editable) and !SpecRunner.disabled(n) and !SpecRunner.html_hidden(n) and !(Dom.html_tag(n, "input") and Dom.input_type(n) == "hidden")
 	}
 
 	## Native controls, links and tabindex retain focus independently of an
 	## editable ancestor; other editable nodes focus only as editing hosts.
+	## `tabindex` makes an HTML, SVG or MathML element focusable; an element in
+	## no namespace or another one cannot take focus at all.
 	intrinsic_focusable : Dom.DNode -> Bool
-	intrinsic_focusable = |n| Dom.html_tag(n, "button") or Dom.html_tag(n, "input") or Dom.html_tag(n, "select") or Dom.html_tag(n, "textarea") or (n.tag == "a" and Dom.has_attr(n, "href")) or Dom.has_attr(n, "tabindex")
+	intrinsic_focusable = |n| Dom.html_tag(n, "button") or Dom.html_tag(n, "input") or Dom.html_tag(n, "select") or Dom.html_tag(n, "textarea") or SpecRunner.link_href(n).is_ok() or (Dom.has_attr(n, "tabindex") and n.kind == 1 and [Dom.html_namespace, Dom.svg_namespace, Dom.mathml_namespace].contains(n.namespace))
 
 	## Focus cannot enter a detached or hidden subtree. The oracle checks
 	## declared HTML attributes; CSS layout remains the browser's domain.
@@ -1598,7 +1626,7 @@ SpecRunner := [].{
 		var $at = i
 		while True {
 			n = Dom.node(dom, $at)
-			if SpecRunner.flag_on(n, "hidden") or ((Dom.html_tag(n, "dialog") or Dom.has_attr(n, "popover")) and n.shown == Hidden) {
+			if SpecRunner.html_hidden(n) or (SpecRunner.top_layer_candidate(n) and n.shown == Hidden) {
 				return Bool.False
 			}
 			if $at == dom.root {
@@ -1683,7 +1711,7 @@ SpecRunner := [].{
 		var $at = i + 1
 		while $at != 0 {
 			n = Dom.node(s.dom, $at - 1)
-			if SpecRunner.flag_on(n, "hidden") or ((Dom.html_tag(n, "dialog") or Dom.has_attr(n, "popover")) and n.shown == Hidden) {
+			if SpecRunner.html_hidden(n) or (SpecRunner.top_layer_candidate(n) and n.shown == Hidden) {
 				return False
 			}
 			$at = n.parent
@@ -1950,11 +1978,17 @@ SpecRunner := [].{
 
 	## Prefer an explicit role, otherwise use the runner’s closed element
 	## fallbacks. This is the supported locator vocabulary, not a full ARIA tree.
+	## The fallbacks are HTML elements by their exact local name, and an SVG
+	## `a`, which is a link too (`tests/browser/locate.js` reads the same).
 	implicit_role : Dom.DNode -> Str
 	implicit_role = |n| {
 		explicit = Dom.attr_of(n, "role")
 		if explicit != "" {
 			explicit
+		} else if Dom.svg_tag(n, "a") {
+			"link"
+		} else if !Dom.html_element(n) {
+			""
 		} else {
 			match n.tag {
 				"button" => "button"
@@ -2049,7 +2083,7 @@ SpecRunner := [].{
 			Ok(SpecRunner.bool_str(Dom.live_value(n, "checked") == "true"))
 		} else if name == "disabled" {
 			Ok(SpecRunner.bool_str(SpecRunner.disabled(n)))
-		} else if name == "value" and ["input", "textarea", "select", "option"].contains(n.tag) {
+		} else if name == "value" and ["input", "textarea", "select", "option"].any(|local| Dom.html_tag(n, local)) {
 			Ok(SpecRunner.value_of(dom, i))
 		} else if Dom.has_attr(n, name) {
 			Ok(raw)
@@ -2387,7 +2421,7 @@ SpecRunner := [].{
 			SelectOption(loc, v) => {
 				i = SpecRunner.need(dom, loc)?
 				n = Dom.node(dom, i)
-				if n.tag != "select" {
+				if !Dom.html_tag(n, "select") {
 					return Err("${Scm.show_loc(loc)} is not a <select>")
 				}
 				if !SpecRunner.has_option(dom, { root: i, value: v }) {
@@ -2411,7 +2445,7 @@ SpecRunner := [].{
 			}
 			Submit(loc) => {
 				i = SpecRunner.need(dom, loc)?
-				if Dom.node(dom, i).tag != "form" {
+				if !Dom.html_tag(Dom.node(dom, i), "form") {
 					return Err("${Scm.show_loc(loc)} is not a <form>")
 				}
 				Ok(SpecRunner.submit_form(program, s, i))
@@ -2425,7 +2459,7 @@ SpecRunner := [].{
 			ExpectValue(loc, want) => {
 				i = SpecRunner.need(dom, loc)?
 				n = Dom.node(dom, i)
-				if !["input", "textarea", "select", "option", "button"].contains(n.tag) and !n.props.any(|(key, _)| key == "value") {
+				if !["input", "textarea", "select", "option", "button"].any(|local| Dom.html_tag(n, local)) {
 					return Err("${Scm.show_loc(loc)} has no live value property")
 				}
 				got = SpecRunner.value_of(dom, i)
@@ -2812,7 +2846,7 @@ SpecRunner := [].{
 		choice = Dom.html_tag(n, "select") or (Dom.html_tag(n, "input") and Scm.key_control_types.choice_input_types.contains(kind))
 		Scm.unmodelled_key_defaults.any(
 			|row| {
-				applies = (row.control == "text" and text) or (row.control == "textarea" and Dom.html_tag(n, "textarea")) or (row.control == "choice" and choice) or (row.control == "link" and n.tag == "a" and Dom.has_attr(n, "href")) or (row.control == "editable" and Dom.content_editable(dom, i))
+				applies = (row.control == "text" and text) or (row.control == "textarea" and Dom.html_tag(n, "textarea")) or (row.control == "choice" and choice) or (row.control == "link" and SpecRunner.link_href(n).is_ok()) or (row.control == "editable" and Dom.content_editable(dom, i))
 				applies and row.keys.any(
 					|rule| {
 						if rule == "printable" {
@@ -2938,7 +2972,7 @@ SpecRunner := [].{
 			}
 			else if key.key == "Enter" {
 				n = Dom.node($s.dom, down_index)
-				if (n.tag == "a" and Dom.has_attr(n, "href")) or (!key.ctrl and !key.meta and (Dom.html_tag(n, "button") or (Dom.html_tag(n, "input") and ["button", "submit", "reset"].contains(Dom.input_type(n))))) {
+				if SpecRunner.link_href(n).is_ok() or (!key.ctrl and !key.meta and (Dom.html_tag(n, "button") or (Dom.html_tag(n, "input") and ["button", "submit", "reset"].contains(Dom.input_type(n))))) {
 					$s = SpecRunner.key_activate(program, $s, down_index)?
 				}
 				else if Dom.html_tag(n, "input") and !key.ctrl and !key.meta and ["file", "color"].contains(Dom.input_type(n)) {
@@ -3378,9 +3412,9 @@ SpecRunner := [].{
 				Err(_) => Ok(s)
 			}
 		} else {
-			match SpecRunner.ancestor(s.dom, i, |m| m.tag == "a" and Dom.has_attr(m, "href")) {
+			match SpecRunner.ancestor(s.dom, i, |m| SpecRunner.link_href(m).is_ok()) {
 				Ok(a) => {
-					href = Dom.attr_of(Dom.node(s.dom, a), "href")
+					href = SpecRunner.link_href(Dom.node(s.dom, a)) ?? ""
 					url = SpecRunner.resolve_target(s.browser.env.url, href) ? |_| "the click navigates to ${href}, which leaves the app"
 					SpecRunner.navigate(program, s, url)
 				}
@@ -4073,7 +4107,7 @@ SpecRunner := [].{
 	## A walk cannot accept a leave dialog. Skip click targets inside anchors
 	## while a guard is on; that click could itself grant sticky activation.
 	walk_candidates : S(state) -> List((U64, Str))
-	walk_candidates = |state| SpecRunner.candidates(state.dom).keep_if(|(index, event)| !(state.browser.guard and event == "click" and SpecRunner.ancestor(state.dom, index, |entry| entry.tag == "a" and Dom.has_attr(entry, "href")).is_ok()))
+	walk_candidates = |state| SpecRunner.candidates(state.dom).keep_if(|(index, event)| !(state.browser.guard and event == "click" and SpecRunner.ancestor(state.dom, index, |entry| SpecRunner.link_href(entry).is_ok()).is_ok()))
 
 	## The payload a browser would send for event `ev` on node `i`. For
 	## text, half the time a value the specs typed into a control the same
