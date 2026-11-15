@@ -86,6 +86,8 @@ const defaults = new Uint8Array([
   0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127,
   1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0,
   11, 5, 0, 0, 0, 1, 0, 0, 0, 0,
+  // mount-root: an HTML `div` (namespace 0, no prefix, local "div").
+  13, 12, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 100, 105, 118,
 ]);
 const other = (await WebAssembly.instantiate(module, { env })).exports;
 other.boot_keys();
