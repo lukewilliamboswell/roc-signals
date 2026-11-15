@@ -812,11 +812,13 @@ remove a skip, delete its entry once a nightly fixes the defect, with the
 note in `design.md`'s compiler limitations; a nightly not listed already
 runs the spec.
 
-The tooling compiler is `nightly-2026-11-13-03dce41`, matching the compiler
-used by roc-parser 6.0.0-rc.2. Earlier toolchains cannot resolve the released
-parser's nominal type aliases. The scripts and `signals.roc` tool use
-basic-cli 0.28.1, which checks without duplicate-name warnings on that nightly. `Blueprint.lock` records the published archive
-digests for each supported system.
+The tooling compiler is `nightly-2026-11-14-a87808d`. The scripts that read
+Roc source or markup import roc-parser, so `roc-stable` moves only to a
+nightly the pinned parser release checks on; toolchains before
+`nightly-2026-11-13-03dce41` cannot resolve the parser's nominal type
+aliases. The scripts and the `signals.roc` tool use basic-cli 0.28.1, which
+checks without warnings on the tooling compiler. `Blueprint.lock` records the
+published archive digests for each supported system.
 
 The repository follows roc-automation's three-compiler model:
 
