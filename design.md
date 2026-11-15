@@ -1061,16 +1061,15 @@ sites is not one of them: the store is the instance's state, not a site's
 storage, and it moves through the environments rather than being captured.
 The law above is what the engine asks of the compiler, and the compilers the
 platform is built with fall short of it (see
-[Compiler Limitations](#compiler-limitations)). Through the host's box, on
-nightly `2026-11-13-03dce41`:
+[Compiler Limitations](#compiler-limitations)). Through the host's box:
 
 - a write of one element of a list in a store cell, and a small write beside
   it, are in place in development and shipping (`--opt=size`) builds;
 - a keyed write of a table is in place in a development build, and a
   shipping build copies the table's rows on each one (roc-lang/roc#12957);
 - a write of a local state's value copies it in both, because a boxed site
-  closure captures it (roc-lang/roc#13012), and a table view's ordered keys,
-  captured the same way, are affected alike.
+  closure captures it (roc-lang/roc#13012); a table view's ordered keys are
+  captured the same way, which the guard does not measure.
 
 The allocation guard (`tests/runtime/write-scaling.mjs`, development and
 shipping builds of one fixture) asserts the writes that are in place and
@@ -2144,12 +2143,11 @@ every NaN as one canonical NaN and so cannot tell them apart), or an
 answer holding more than 16 files. Nothing is sent or answered, nothing is
 admitted to the in-flight table for a refused input, and the worker and
 its prepared state are kept. The 128 is measured, not derived: encoding and
-decoding are recursive, and with the bound lifted a round trip through a
-Chrome dedicated worker on a development build overflows V8's native stack
-first at 214 counted levels for a tag holding a seven-field record (224 for
-a record holding a list of itself, 237 for a chain of tags), so the bound
-keeps a margin of about 1.67 in the weakest configuration measured and 3
-to 10 elsewhere. A browser contract test holds the worst shapes' round
+decoding are recursive, and the bound is chosen with a measured margin over
+the weakest configuration, a round trip through a Chrome dedicated worker
+on a development build (the measurement is beside `max_nesting` in
+`WorkerCodec.roc`). A browser contract test
+(`tests/browser/deep-payload-browser.mjs`) holds the worst shapes' round
 trip at exactly 128 in a dedicated worker on a development build, so a
 compiler whose frames grow until the bound no longer fits fails it. The
 encoder counts as it goes and does not descend past the bound, so encoding
@@ -4666,7 +4664,7 @@ of them is platform semantics.
 | [roc-lang/roc#12847](https://github.com/roc-lang/roc/issues/12847) | Calling a closure from a borrowed position emits a second copy of its body | Owned child-call loops; code size |
 | [roc-lang/roc#12848](https://github.com/roc-lang/roc/issues/12848) | Every proc gets `inlinehint`; `--opt=size` emits no `minsize` | Code size of larger apps |
 | [roc-lang/roc#12836](https://github.com/roc-lang/roc/issues/12836) | `Box.box` of a capture-free callable allocates on every call | Extra allocations per call |
-| [roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012) | Updating storage captured by a boxed closure can borrow that capture and copy it, in development builds and, through the host's box, in optimized ones | The instance holds its store as plain data beside boxed sites. Local state still lives in a site's closure and remains affected: a write of a 10,000-element list in local state requests 72 KB more than one of 1,000, in development and `--opt=size` builds. The allocation guard measures and prints it; it asserts it once the compiler is fixed |
+| [roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012) | Updating storage captured by a boxed closure can borrow that capture and copy it, in development builds and, through the host's box, in optimized ones | The instance holds its store as plain data beside boxed sites. Local state still lives in a site's closure and remains affected: a write of a list in local state copies it, in development and `--opt=size` builds. The allocation guard measures and prints it; it asserts it once the compiler is fixed |
 | [roc-lang/roc#13081](https://github.com/roc-lang/roc/issues/13081) | On nightlies `2026-11-13-03dce41` and `2026-11-14-a87808d`, an opaque nominal record (`::`) with a function anywhere in its fields loses its unique hold on the list beside that field under `--opt=speed` and `--opt=size`, so every write of it copies the whole list | Two places hold such a record. `WorkerCodec`'s `Enc`, `Items` and `State` hold each `Engine.File`'s job effects; `Core.App` and `Core.Sites` hold the root site beside the store. Each stays opaque, so an application cannot build or open it, and wraps a transparent body only its module names (`EncBody`, `ItemsBody`, `StateBody`; `AppBody`, `SitesBody`). A worker payload is then written and read in place, with the allocations of plain roc-cbor on the same values, and a write of a store cell's list is in place in a shipping build. Each body goes back into its opaque type once the compiler is fixed |
 | [roc-lang/roc#13022](https://github.com/roc-lang/roc/issues/13022) | Format derivation cannot resolve inherited hooks through a public format alias | Port.Registering declares its safe format hooks directly; catalogue accumulation remains in the unexposed PortRegistry module. Wire.Sendable names the unexposed WorkerCodec types in its constraint; `Wire` exposes no alias of them, and a handwritten codec is generic over its format |
 | [roc-lang/roc#13057](https://github.com/roc-lang/roc/issues/13057) | A derived `Dict` parser inserts each decoded entry without a format hook that sees the key under its type's equality, so two encoded keys that the type equates silently become one entry | `WorkerCodec` admits only keys with the builtin equality (numbers, `Bool`, `Str`, tags without payloads) and notes, for each open dictionary, the zero signs of its `F32` and `F64` keys, refusing a dictionary holding both: under the strict reader that is the only collision such a key can have |
@@ -4676,7 +4674,7 @@ of them is platform semantics.
 | [roc-lang/roc#12953](https://github.com/roc-lang/roc/issues/12953) | Since roc-lang/roc#12887, the host boundary rejects an opaque `Box` of a value that contains functions, though it accepts the same value as `Box(Iter(...))` | The sites cross as `Box(Iter(Core.Sites(st)))` inside the one outer `Handle`, beside the plain store; `platform/main.roc` alone wraps and unwraps them. `Core.Kept` holds its task runner as a `Box` of its own |
 | [roc-lang/roc#12945](https://github.com/roc-lang/roc/issues/12945) | Under `--specialize=no`, a derived record decode leaks on every call | Worker instances grow per job in that build, so the scaling task's memory checks fail for it |
 | [roc-lang/roc#12951](https://github.com/roc-lang/roc/issues/12951) | A lambda passed to a generic function is rejected when its body uses `?` on a method of its own parameter and then `?` again | A task whose `run!` reads a file and then uses `?` again is written as a named function, not a lambda in the props record; the Workers guide says so |
-| [roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957) | Nested aggregate captures in closures taken from a list can copy a uniquely held list or `Dict` on each write under `--opt=size` and `--opt=speed` | A keyed write of a table still copies the table's rows in a shipping build (16 bytes per `(U64, U64)` row, 32 per row of two strings), also in a pure `Store.after`: a write reached through a decision's list of writes loses the unique hold on the rows. A platform-free reduction of a record of two dictionaries written that way copies the same way and is in place when the write takes the rows apart from the record; the same change in `TableCore` does not remove the engine's copy, so its cause there is not isolated. The allocation guard measures and prints it (see [In-place ownership](#in-place-ownership)) |
+| [roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957) | Nested aggregate captures in closures taken from a list can copy a uniquely held list or `Dict` on each write under `--opt=size` and `--opt=speed` | A keyed write of a table still copies the table's rows in a shipping build, also in a pure `Store.after`: a write reached through a decision's list of writes loses the unique hold on the rows. The allocation guard measures and prints it (see [In-place ownership](#in-place-ownership)) |
 | [roc-lang/roc#12963](https://github.com/roc-lang/roc/issues/12963) | Roc has no field accessor or updater as a value | A store's storage cannot be a record the author wrote, addressed field by field. The record builder generates it as nested pairs, with a lens for each position (see [The store](#the-store)) |
 | [roc-lang/roc#12971](https://github.com/roc-lang/roc/issues/12971) | Under `--opt=size` and `--opt=speed`, a `while` loop over a `var` holding a record of two `Dict`s, which a table is, copies both on every iteration when the function holding the loop has two or more callers | Many writes to a table in one event are a fold over the keys (`List.fold`), never a loop over a `var` that holds the table |
 | [roc-lang/roc#13003](https://github.com/roc-lang/roc/issues/13003) | A `from_interpolation` rejection in a function nothing calls is not reported | `roc check` reports no rejection of a markup literal, with or without holes, in a view nothing calls or bound and never used, until something calls it. No workaround in code; the markup guide says so, and a fixture that checks a rejection calls its view |
