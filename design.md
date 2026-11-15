@@ -1817,6 +1817,15 @@ repairs outside its declared subset. A default mount reaching a construction
 error fails at the app's compile-time mount declaration; later paths fail in
 the ordinary contained turn.
 
+A picture carries what markup can carry, and the element property rows
+(Appendix B) that markup cannot are not rendered. `value` and `checked`
+appear through the attributes the oracle mirrors them to (a `textarea`'s
+value as its text, a controlled `select`'s through its options'
+`selected`); a pointer zone and the two keymap rows have no
+markup and arrive with the mount; and a dialog's or popover's shown state
+is applied after the batch, so a picture shows every controlled dialog and
+popover closed until mount.
+
 No event queue accepts interaction with an inert picture before mount. If the
 module or scripting cannot run, the picture remains inert; the root exposes
 its failed state when the runtime can report it, and the app's document gives
@@ -6016,7 +6025,9 @@ attribute; true keeps it present.
 | 7 | `popover_shown` | Controlled element with one static auto/manual popover declaration | Exactly `true` or `false`, guarded by live state | None; helper owns its static `popover` declaration | False in stream; true after batch, guarded by latest intent |
 
 Rows 6 and 7 and their echo attachment are helper-only, with the attribute
-and event restrictions stated above. Showing work keeps its collected stream
+and event restrictions stated above. A prerendered picture renders rows 1
+and 2 through their mirrored attributes and rows 3 to 7 not at all (see
+[A prerendered first page](#a-prerendered-first-page)). Showing work keeps its collected stream
 position and is invalidated by a later property decision or target removal.
 
 Rows 4 and 5 are private to `on_key` and `on_document_key`, never exposed
