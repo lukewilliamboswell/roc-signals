@@ -68,6 +68,9 @@ With `"off"`, values are neither read for printing nor put on faults. The first
 call or completed job that ran a `dbg` logs one value-free informational line
 explaining that this mount chose `dbg: "off"`; later ones log nothing. Turning
 output off cannot remove formatting: Roc inspects the whole value before the
-host sees it. The original probe measured about 0.2 ms to inspect 1,000 records in
-an optimized build; that is illustrative, not a performance guarantee for your
-value or machine. Avoid debugging large values in a frequently evaluated reader.
+host sees it. Inspecting a list of 1,000 small records costs about 0.1 ms in an
+optimized build and about 0.2 ms in a development build, in a handler or a job,
+with output off as well as on; printing adds the console's own cost (measured
+in Chrome on an Apple M2). That is illustrative, not a performance guarantee
+for your value or machine. Avoid debugging large values in a frequently
+evaluated reader.
