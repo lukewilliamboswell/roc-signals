@@ -157,8 +157,8 @@ body never needs to write that out.
 When the user decides when a job runs, keep the request in state and use
 `Engine.watch_latest` (see
 [Effects and the Browser](@/docs/effects-and-browser.md#superseding-sites)).
-`task.request(input)` is the request for its plan, and `task.result(res)`
-reads its result as `Try(output, Worker.Error(error))`:
+`task.ask(input)` is the ask for its plan, and its reaction receives the
+job's result as `Try(output, Worker.Error(error))`:
 
 {{ sample(file="workers/Editor.roc", region="model") }}
 

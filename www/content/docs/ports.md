@@ -82,8 +82,8 @@ input stops the older call. `Port.resource_when` takes `[Run(input), Skip]`
 for an input that is sometimes not a question.
 
 A site's plan returns typed asks and its reaction receives their common
-result type. Use a port's `ask` or `subscribe` operation to decode its answer
-at that boundary. Validate application rules, such as uniqueness or ordering,
+result type. A port's `ask` (`call.ask(input)`, `subscription.ask(arg)`)
+decodes its answer at that boundary. Validate application rules, such as uniqueness or ordering,
 in the decision before writing the result to cells. Use separate sites when
 different services need different result types.
 
@@ -237,7 +237,7 @@ such a list as it refuses one of the wrong shape, naming the id.
 
 ## Errors and bounds
 
-`call.result(res)` and `subscription.message(res)` give `Ok(value)` or one
+A call's or a subscription's `ask` gives its reaction `Ok(value)` or one
 of `Port.Error`:
 
 | Error | Means |
