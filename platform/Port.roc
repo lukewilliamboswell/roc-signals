@@ -47,6 +47,11 @@ Port := [].{
 	# concrete; catalogue mutation still belongs to the internal registry.
 	## The format used to derive a record of ports. It visits fixed fields,
 	## including nested records, and rejects fields that are ordinary data.
+	## It is not for apps to name: `Port.registrations` derives through it.
+	## It and its hooks are public because format derivation cannot resolve
+	## a format's hooks through a public alias
+	## (https://github.com/roc-lang/roc/issues/13022; design.md, compiler
+	## limitations).
 	Registering :: [Records].{
 
 		## Keep each record field's authored name in the derived walk.
@@ -145,6 +150,8 @@ Port := [].{
 
 	## The state passed through registration derivation. A record's derived
 	## encoder uses this type; Port.registrations starts and finishes the walk.
+	## It is not for apps to name; it is public because `Registering`'s hooks
+	## name it (https://github.com/roc-lang/roc/issues/13022).
 	Walk : PortRegistry.Walk
 
 	## Derive every declaration from one record of named ports, including
@@ -210,6 +217,8 @@ Port := [].{
 
 		## Let a derived port record read this port's declaration. This hook
 		## keeps its existing name and options; it creates no port or codec.
+		## It is not for apps to call: `Port.registrations` reaches it through
+		## derivation, which needs it as a public method of the port's type.
 		encoder_for : Registering -> (Command(output), Walk -> Try(Walk, []))
 		encoder_for = |_format| |p, walk| Ok(PortRegistry.append(walk, Core.port_declaration(p.name, Command)))
 	}
@@ -245,6 +254,8 @@ Port := [].{
 
 		## Let a derived port record read this port's declaration. This hook
 		## keeps its existing name and options; it creates no port or codec.
+		## It is not for apps to call: `Port.registrations` reaches it through
+		## derivation, which needs it as a public method of the port's type.
 		encoder_for : Registering -> (Call(input, output), Walk -> Try(Walk, []))
 		encoder_for = |_format| |p, walk| Ok(PortRegistry.append(walk, Core.port_declaration(p.name, Call)))
 	}
@@ -284,6 +295,8 @@ Port := [].{
 
 		## Let a derived port record read this port's declaration. This hook
 		## keeps its existing name and options; it creates no port or codec.
+		## It is not for apps to call: `Port.registrations` reaches it through
+		## derivation, which needs it as a public method of the port's type.
 		encoder_for : Registering -> (Subscription(arg, msg), Walk -> Try(Walk, []))
 		encoder_for = |_format| |p, walk| Ok(PortRegistry.append(walk, Core.port_declaration(p.name, Subscription(p.delivery))))
 	}
