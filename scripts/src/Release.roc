@@ -187,7 +187,14 @@ Release := [].{
 		\\
 		\\## Upgrading specs
 		\\
-		\\An `expect-absent` needs the same locator in another step that requires it to match. Previously passing unanchored guards fail to parse at that step. Add an assertion where the existing story draws the element, or use `:never-drawn` for a branch the story never draws; the marker leaves its spelling unchecked.
+		\\A step that passes because the thing it names is absent, or counts zero of it, now needs evidence that the name is spelt right. A spec without it fails to parse at that step, in both runners and `--emit-steps`, even if it passed before. The evidence is another step of the same spec, before or after, or a marker saying the story never has the thing; a marker leaves the spelling unchecked, and is refused when the spec has the evidence.
+		\\
+		\\- `(expect-absent LOC)` needs a step that requires `LOC` to match, such as `expect-visible` or `click`. Add one where the story draws the element, or write `(expect-absent LOC :never-drawn)`.
+		\\- `(expect-no-attr LOC NAME)` needs an `expect-attr` or `expect-has-attr` of `NAME`, on any locator. Add `(expect-has-attr LOC NAME)` where the story writes the attribute with a value the spec cannot state, or write `(expect-no-attr LOC NAME :never-written)`.
+		\\- `(expect-cleanup NAME 0)` needs an `expect-cleanup` count of at least one for `NAME`, or write `(expect-cleanup NAME 0 :never-runs)`.
+		\\- `(expect-interval MS 0)` and `(tick-interval-if-active MS)` need a `tick-interval MS` or an `expect-interval MS` count of at least one, or end with `:never-started`.
+		\\
+		\\A port, worker task or media query that a step names must be one the program declares, of the kind the step uses, and a key in `expect-no-local-storage` or `expect-no-session-storage` one the program declares or the spec seeds or shows. These fail the same way, at the step, before anything runs; correct the name.
 		\\
 		\\## Upgrading worker payloads
 		\\
@@ -247,6 +254,15 @@ expect Release.json_str("a\"b\nc") == "\"a\\\"b\\nc\""
 expect {
 	text = Release.notes("1.0.0", "https://x/1.0.0/h.tar.zst", { compiler: "roc nightly-x", tooling: "roc nightly-y" })
 	text.contains("\n## Store ownership\n") and text.contains("roc-lang/roc#12957") and text.contains("roc-lang/roc#13012")
+}
+
+## The notes tell a spec's author each evidence rule that now refuses a
+## previously passing spec, with the step or marker that satisfies it.
+expect {
+	text = Release.notes("1.0.0", "https://x/1.0.0/h.tar.zst", { compiler: "roc nightly-x", tooling: "roc nightly-y" })
+	steps = ["(expect-absent LOC)", "(expect-no-attr LOC NAME)", "(expect-has-attr LOC NAME)", "(expect-cleanup NAME 0)", "(expect-interval MS 0)", "(tick-interval-if-active MS)"]
+	markers = [":never-drawn)", ":never-written)", ":never-runs)", ":never-started`"]
+	text.contains("\n## Upgrading specs\n") and steps.all(|step| text.contains("`${step}`")) and markers.all(|marker| text.contains(marker))
 }
 
 ## The entry point and its modules are archived; a fuzz target is not.
