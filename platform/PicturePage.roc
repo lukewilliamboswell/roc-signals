@@ -60,7 +60,15 @@ PicturePage := [].{
 	## while refusing structural repair. Exactly one explicit opt-in is required.
 	parse : Str -> Try(Template, [InvalidTemplate(Str)])
 	parse = |page| {
-		parsed = ParsedHtml.parse_source(page, { exact_structure: True, strict_foreign_spelling: True }, False) ? |InvalidMarkup(problem)| InvalidTemplate("${problem.line.to_str()}:${problem.column.to_str()}: ${Str.inspect(problem.problem)}")
+		{ parsed, host, unchecked_from } = match exact_structure(page) {
+			Ok(checked) => { parsed: checked, host: checked.source, unchecked_from: checked.source.bytes.len() }
+			Err(InvalidMarkup(problem)) => {
+				refused = InvalidTemplate("${problem.line.to_str()}:${problem.column.to_str()}: ${Str.inspect(problem.problem)}")
+				after_body = without_space_after_body(page, problem.problem) ?? return Err(refused)
+				checked = exact_structure(after_body.page) ?? return Err(refused)
+				{ parsed: checked, host: after_body.host, unchecked_from: after_body.from }
+			}
+		}
 		marked = parsed.tree.nodes.map_with_index(|node, index| { node, index }).keep_if(|candidate| candidate.node.attributes.any(|attribute| attribute.name.namespace == NoNamespace and attribute.name.prefix == Unprefixed and attribute.name.local == "data-roc-picture"))
 		selected = match marked {
 			[one] => one
@@ -71,6 +79,9 @@ PicturePage := [].{
 			_ => return Err(InvalidTemplate("the picture mount root must be an element"))
 		}
 		span = authored_span(selected.node, "the picture mount root")?
+		if span.end > unchecked_from {
+			return Err(InvalidTemplate("the picture mount root must end before the body's end tag"))
+		}
 		opening = opening_token(parsed.source, span)?
 		if opening.end != span.end {
 			_ = parsed.source.tokens.find_first(|token| token.kind == Tag and token.span.end == span.end and token.span.start >= opening.end) ? |_| InvalidTemplate("the mount root has no authored closing-tag token")
@@ -84,7 +95,7 @@ PicturePage := [].{
 			}
 		}
 		owner = inert_owner(parsed, { root: selected.index, parent, root_span: span })?
-		Ok(Template.{ source: parsed.source, span, root_name: name, attributes: selected.node.attributes.map(|attribute| (expanded(attribute.name), attribute.value)), parent: context, owner })
+		Ok(Template.{ source: host, span, root_name: name, attributes: selected.node.attributes.map(|attribute| (expanded(attribute.name), attribute.value)), parent: context, owner })
 	}
 
 	## Project only the explicit URL's decoded path to a static directory.
@@ -212,6 +223,75 @@ expect {
 
 ## A selected host root cannot forge the builder's restoration ownership fact.
 expect PicturePage.parse("<!doctype html><html><head></head><body><div data-roc-picture data-roc-picture-inert=\"added\"></div></body></html>").is_err()
+
+## The picture's check of the host page: its authored nesting, with no
+## browser repair, and SVG and MathML names spelled as the DOM spells them.
+exact_structure : Str -> Try(Markup.Parsed, [InvalidMarkup(Markup.Error)])
+exact_structure = |page| ParsedHtml.parse_source(page, { exact_structure: True, strict_foreign_spelling: True }, False)
+
+## Whitespace after the body's end tag, before or after `</html>`, is
+## outside the picture's claim: it is what a file's final newline is. A
+## browser appends it to the body, where it renders nothing, and the page
+## publishes it unchanged. The exact-structure check refuses it as content
+## moved into the body, and HTML moves whitespace text into another element
+## only there, after `</body>`. So that refusal, and no other, lets the check
+## read the page again without the whitespace text from the refused place
+## on, located by the parser's own tokens. A tag, a comment or any other
+## character there stays in the checked page and is refused as before; the
+## caller reports the first refusal. The host keeps every authored byte, and
+## `from` is where the checked page first differs from it.
+without_space_after_body : Str, Markup.Problem -> Try({ page : Str, host : Markup.Source, from : U64 }, [Unchanged])
+without_space_after_body = |page, problem| {
+	host = Markup.Source.from_bytes(page.to_utf8())
+	from = match problem {
+		HtmlStructure({ reason: ReparentedContent, span }) if span.start < span.end and host.slice(span).all(html_space) => span.start
+		_ => return Err(Unchanged)
+	}
+	removed = |token| token.span.start >= from and token.kind == Text and host.slice(token.span).all(html_space)
+	if !host.tokens.any(removed) {
+		return Err(Unchanged)
+	}
+	bytes = host.tokens.fold([], |checked, token| if (removed(token)) checked else checked.concat(host.slice(token.span)))
+	checked_page = Str.from_utf8(bytes).map_err(|_| Unchanged)?
+	Ok({ page: checked_page, host, from })
+}
+
+## HTML's ASCII whitespace: tab, line feed, form feed, carriage return, space.
+html_space : U8 -> Bool
+html_space = |byte| byte == '\t' or byte == '\n' or byte == 12 or byte == '\r' or byte == ' '
+
+## A file's final newline, and whitespace between `</body>` and `</html>`,
+## do not refuse a page. The page keeps every authored byte of the host.
+expect {
+	template = PicturePage.parse("<!doctype html><html><head></head><body><div data-roc-picture></div></body>\n\t</html>\r\n")?
+	template.page({ markup: "replacement", max_bytes: 16777216 })? == "<!doctype html><html><head></head><body>replacement</body>\n\t</html>\r\n"
+}
+
+## A final newline alone, after `</html>`, is the commonest case.
+expect {
+	template = PicturePage.parse("<!doctype html><html><head></head><body><div data-roc-picture></div></body></html>\n")?
+	template.page({ markup: "replacement", max_bytes: 16777216 })? == "<!doctype html><html><head></head><body>replacement</body></html>\n"
+}
+
+## Any other character after `</body>` is still moved into the body by a
+## browser and refused where it stands, whitespace beside it or not.
+expect {
+	refusal = |page| match PicturePage.parse(page) {
+		Err(InvalidTemplate(problem)) => problem
+		Ok(_) => "accepted"
+	}
+	prefix = "<!doctype html><html><head></head><body><div data-roc-picture></div></body>"
+	[
+		refusal("${prefix}x</html>"),
+		refusal("${prefix}</html>x"),
+		refusal("${prefix}\n<i></i></html>\n"),
+	]
+		== [
+			"1:76: HtmlStructure({ reason: ReparentedContent, span: { end: 76, start: 75 } })",
+			"1:83: HtmlStructure({ reason: ReparentedContent, span: { end: 83, start: 82 } })",
+			"1:76: HtmlStructure({ reason: ReparentedContent, span: { end: 76, start: 75 } })",
+		]
+}
 
 ## Source slices use public parser ranges. No tag, quote or attribute scanner
 ## is introduced by the producer's two-edit publication plan.

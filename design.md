@@ -1796,6 +1796,13 @@ parser's grammar. These checks retain finite scope facts and the immediate
 parent, never an ancestor list or a scan of the existing tree. Unknown raw
 names retain their grammar-only escape; vocabulary checks belong at literals.
 
+The host template is held to its authored nesting too: a template the parser
+would repair is refused before the app's init. Whitespace after its
+`</body>`, before or after `</html>`, as a file's final newline is, lies
+outside the picture's claim. A browser appends it to the body, where it
+renders nothing, and the producer publishes it unchanged. Any other content
+after `</body>` is repaired markup and refuses the template.
+
 Dynamic sites receive the context of their enclosing element. Row templates
 are checked once at site construction even for an empty list or table view;
 branches and drawn rows are checked when mounted. A text hole that reads

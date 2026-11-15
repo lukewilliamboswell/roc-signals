@@ -256,7 +256,10 @@ Its only element child must be the mount root, optionally followed by an HTML
 `script` with `type="application/json"` and `data-roc-picture-envelope="1"`.
 Text and comments are allowed around those elements. A template content
 fragment cannot be the parent. The builder adds no wrapper and keeps the
-actual mount root unchanged.
+actual mount root unchanged. The template must be HTML that a browser takes
+as written: the builder refuses one it would repair, such as a `p` holding a
+`div`, before the app starts. Whitespace after `</body>`, such as the file's
+final newline, is published unchanged.
 
 Leave `data-roc-picture-inert` out of the inert owner's authored attributes:
 the builder reserves it to record inertness it added. Authored `inert` text
