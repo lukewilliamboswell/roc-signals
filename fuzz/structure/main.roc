@@ -39,7 +39,9 @@ import pf.Worker
 ##   input and folds its output, its loss or its timeout; each shows its own
 ##   value and a `state` gets a button of its own;
 ## - `Each(i, body)`: rows whose keys are a layer-dependent permutation, each
-##   row showing its key and holding `body`;
+##   row a `div` showing its key and holding `body`. Rows nest in rows, and
+##   an `li` row would not: through the `div` of a layer between them, the
+##   HTML parser closes the outer `li` at the inner one, which mount refuses;
 ## - `Watch(k, i)`: a `watch`, `on_change` or `latest` that sets the title.
 ##
 ## The contexts a tree can nest through are typed by hand (the generator's
@@ -280,7 +282,7 @@ flat = |n, g, inner| match n {
 				|r| {
 					item = r.field(|k| k)
 					g2 = { vals: vals.map(|x| x.lift_row()).append(item), wrs: wrs.map(|w| w.lift_row()), pure }
-					Core.element("li", [], [show(item), row(body, g2)])
+					Core.element("div", [], [show(item), row(body, g2)])
 				},
 			)
 		}
