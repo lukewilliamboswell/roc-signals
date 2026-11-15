@@ -99,10 +99,12 @@ Specs :: [].{
 			Signaled(signal) => Err("the runner was stopped by signal ${signal.to_str()}")
 		}
 		problems = []
-			.concat(match exit {
-				Ok({}) => []
-				Err(reason) => [reason]
-			})
+			.concat(
+				match exit {
+					Ok({}) => []
+					Err(reason) => [reason]
+				},
+			)
 			.concat(if (missing.is_empty()) [] else ["no result for ${Str.join_with(missing, ", ")}"])
 			.concat(if (unknown.is_empty()) [] else ["a result for ${Str.join_with(unknown, ", ")}, which it was not given"])
 			.concat(if (repeated.is_empty()) [] else ["more than one result for ${Str.join_with(repeated, ", ")}"])

@@ -1722,7 +1722,7 @@ SpecRunner := [].{
 		space = |b| [' ', '\t', '\n', 12, '\r'].contains(b)
 		first = bytes.find_first_index(|b| !space(b)) ?? bytes.len()
 		end = (bytes.find_last_index(|b| !space(b)) ?? 0) + 1
-		if first >= end "" else Str.from_utf8(bytes.sublist({ start: first, len: end - first })) ?? text
+		if (first >= end) "" else Str.from_utf8(bytes.sublist({ start: first, len: end - first })) ?? text
 	}
 
 	## Why a scripted `change` cannot set control `n` to `v` as the step
@@ -1911,17 +1911,15 @@ SpecRunner := [].{
 				kind = Dom.input_type(n)
 				v = Dom.live_value(n, "value")
 				input = Dom.html_tag(n, "input")
-				(SpecRunner.validated_control(n) and !SpecRunner.actually_disabled(dom, k) and (
-					Dom.has_attr(n, "pattern")
-						or Dom.has_attr(n, "minlength")
-						or (input and Dom.has_attr(n, "step"))
-						or (input and kind != "number" and (Dom.has_attr(n, "min") or Dom.has_attr(n, "max")))
-						or (input and kind == "url" and v != "")
-						or (input and kind == "email" and Dom.has_attr(n, "multiple") and v != "")
-						or (input and kind == "number" and (!SpecRunner.is_integer(v) or (Dom.has_attr(n, "min") and !SpecRunner.is_integer(Dom.attr_of(n, "min"))) or (Dom.has_attr(n, "value") and !SpecRunner.is_integer(Dom.attr_of(n, "value")))))
-						or (input and kind == "radio" and Dom.has_attr(n, "required"))
-						or (input and ["time", "week", "datetime-local"].contains(kind) and v != "")
-				))
+				(SpecRunner.validated_control(n) and !SpecRunner.actually_disabled(dom, k) and (Dom.has_attr(n, "pattern")
+					or Dom.has_attr(n, "minlength")
+					or (input and Dom.has_attr(n, "step"))
+					or (input and kind != "number" and (Dom.has_attr(n, "min") or Dom.has_attr(n, "max")))
+					or (input and kind == "url" and v != "")
+					or (input and kind == "email" and Dom.has_attr(n, "multiple") and v != "")
+					or (input and kind == "number" and (!SpecRunner.is_integer(v) or (Dom.has_attr(n, "min") and !SpecRunner.is_integer(Dom.attr_of(n, "min"))) or (Dom.has_attr(n, "value") and !SpecRunner.is_integer(Dom.attr_of(n, "value")))))
+					or (input and kind == "radio" and Dom.has_attr(n, "required"))
+					or (input and ["time", "week", "datetime-local"].contains(kind) and v != "")))
 			},
 		)
 		match bad {
