@@ -208,7 +208,7 @@ Checks := [].{
 		]
 		dir = "${o.build_dir}/key-type-errors"
 		SpecSuite.fresh_dir!(dir)?
-		var $problems = []
+		var $fixtures = []
 		for test in cases {
 			fixture = Path.read_utf8!(Path.utf8("${o.root}/tests/type-errors/${test.name}.roc.txt"))?
 			case_dir = "${dir}/${test.name}"
@@ -218,8 +218,17 @@ Checks := [].{
 			source = fixture.replace_each("<PLATFORM>", platform_path)
 			path = "${case_dir}/main.roc"
 			Path.write_utf8!(Path.utf8(path), source)?
-			{ code, stdout } = Proc.merged!({ program: o.compiler, args: ["check", "--no-cache", path], cwd: o.root })?
-			output = Str.from_utf8_lossy(stdout)
+			$fixtures = $fixtures.append({ test, source, path })
+		}
+		fixtures = $fixtures
+		jobs = Proc.compiler_jobs!(App)?
+		Proc.note!("== declaration contracts: roc check of ${fixtures.len().to_str()} fixtures, ${jobs.to_str()} at a time; each must fail naming its rule, or compile")
+		results = Proc.parallel_with!(fixtures.map(|f| { program: o.compiler, args: ["check", f.path], cwd: o.root }), jobs, Line)?
+		var $problems = []
+		for (fixture, result) in List.map2(fixtures, results, |fixture, result| (fixture, result)) {
+			{ test, source, .. } = fixture
+			code = result.code
+			output = result.output
 			diagnostic = diagnostic_message(output, source)
 			passed = match test.expectation {
 				Rejected(rules) => code == 1 and rules.all(|rule| diagnostic.contains(rule))

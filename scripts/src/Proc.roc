@@ -70,7 +70,17 @@ Proc := [].{
 	## owned until polling reports completion; an observation error fails the
 	## batch and normal handle cleanup reaps its remaining children.
 	parallel! : List(Job), U64 => Try(List({ code : I32, output : Str }), [CommandFailed(Str)])
-	parallel! = |jobs, limit| {
+	parallel! = |jobs, limit| Proc.parallel_with!(jobs, limit, Whole)
+
+	## `parallel!`, choosing what is printed for each finished job, in input
+	## order: `Whole` prints its command and its captured output, as
+	## `parallel!` does; `Line` prints one line, its command and exit code,
+	## for a batch whose caller judges each output and reports the ones that
+	## matter (a batch of fixtures that must fail to compile, whose expected
+	## diagnostics would bury the log). The results hold every output either
+	## way.
+	parallel_with! : List(Job), U64, [Whole, Line] => Try(List({ code : I32, output : Str }), [CommandFailed(Str)])
+	parallel_with! = |jobs, limit, report| {
 		capacity = if limit == 0 {
 			1
 		} else {
@@ -114,8 +124,15 @@ Proc := [].{
 					}
 					Some(result) => {
 						job = jobs.get($reported) ?? crash "internal: parallel reported job"
-						Stdout.line!("RUN ${Proc.show(job)}") ?? {}
-						Stdout.write_bytes!(result.bytes) ?? {}
+						match report {
+							Whole => {
+								Stdout.line!("RUN ${Proc.show(job)}") ?? {}
+								Stdout.write_bytes!(result.bytes) ?? {}
+							}
+							Line => {
+								Stdout.line!("RAN ${Proc.show(job)}: exit ${result.code.to_str()}") ?? {}
+							}
+						}
 						$finished = $finished.set($reported, Some({ ..result, bytes: [] })) ?? crash "internal: parallel reported result"
 						$reported = $reported + 1
 					}
