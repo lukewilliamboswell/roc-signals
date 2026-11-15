@@ -710,7 +710,7 @@ for (const mode of ["initial", "changed"]) {
   await click("Show findable");
   check("explicit absence makes hidden absent", await hidden(), [null, false, false, "visible"]);
   await click("Hide findable");
-  check("explicit presence keeps an empty hidden attribute", await hidden(), ["", true, true, "visible"]);
+  check("Hidden keeps the hidden keyword", await hidden(), ["hidden", true, true, "visible"]);
   await click("Findable until found");
   check("an attribute update restores until-found", await hidden(), ["until-found", "until-found", false, "hidden"]);
   check("rendering paths produce no browser or runtime faults", errors, []);
