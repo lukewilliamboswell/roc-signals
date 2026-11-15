@@ -112,7 +112,7 @@ Checks := [].{
 			{ name: "ask-mixed-plan", expectation: Rejected(["incompatible types"]) },
 			{ name: "ask-await-command", expectation: Rejected(["Engine.Command"]) },
 			{ name: "ask-private-constructor", expectation: Rejected(["cannot use opaque nominal type", "You're attempting to create an instance of Core.Ask, but it's an opaque type."]) },
-			{ name: "ask-private-reader", expectation: Rejected(["associated item named read"]) },
+			{ name: "ask-private-reader", expectation: Rejected(["The type Ask does not have an associated", "named read."]) },
 			{ name: "layout-scroll-text", expectation: Rejected(["top: U32"]) },
 			{ name: "layout-size-text", expectation: Rejected(["width: U32"]) },
 			{ name: "layout-seen-text", expectation: Rejected(["ratio_permille: U16"]) },
