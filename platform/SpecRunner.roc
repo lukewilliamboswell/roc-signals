@@ -1163,23 +1163,34 @@ SpecRunner := [].{
 			Ok(target) => Ok(SpecRunner.dispatch_control(program, s, i, target, payload))
 		}
 
+	# The event loop. The functions named `*_in_loop` deliver an event, drain
+	# the focus and callback queues and fire the events those cause, so they
+	# call each other. Every call from outside the loop goes through the
+	# wrapper of the same name without the suffix: the compiler re-expands a
+	# generic recursive group of two or more functions at every call into it
+	# from another function, and a wrapper is expanded once and then replayed.
+
 	## Dispatch `ev` if a handler listens for it on the way up from node `i`.
-	fire_if : Program(state), S(state), U64, Str, Str -> S(state)
-	fire_if = |program, s, i, ev, payload| {
+	fire_if_in_loop : Program(state), S(state), U64, Str, Str -> S(state)
+	fire_if_in_loop = |program, s, i, ev, payload| {
 		if !SpecRunner.attached(s.dom, i) {
 			return s
 		}
 		match Dom.target(s.dom, i, ev, Bool.True) {
-			Ok(target) => SpecRunner.dispatch_control(program, s, i, target, payload)
+			Ok(target) => SpecRunner.dispatch_control_in_loop(program, s, i, target, payload)
 			_ => s
 		}
 	}
 
+	## Run [fire_if_in_loop] from outside the event loop.
+	fire_if : Program(state), S(state), U64, Str, Str -> S(state)
+	fire_if = |program, s, i, ev, payload| SpecRunner.fire_if_in_loop(program, s, i, ev, payload)
+
 	## Both native dispatch entry points have already resolved the route. Build
 	## only the payload its kind carries, without routing again or retaining a
 	## context beside the state passed to the engine.
-	dispatch_control : Program(state), S(state), U64, Dom.Target, Str -> S(state)
-	dispatch_control = |program, s, i, target, text| {
+	dispatch_control_in_loop : Program(state), S(state), U64, Dom.Target, Str -> S(state)
+	dispatch_control_in_loop = |program, s, i, target, text| {
 		payload = if target.kind == 1 {
 			text.to_utf8()
 		} else if target.kind == 5 and target.event == "change" and Dom.checked_input(Dom.node(s.dom, i)) {
@@ -1187,14 +1198,18 @@ SpecRunner := [].{
 		} else {
 			return s
 		}
-		SpecRunner.send(program, s, target.node, target.handler, payload)
+		SpecRunner.send_in_loop(program, s, target.node, target.handler, payload)
 	}
+
+	## Run [dispatch_control_in_loop] from outside the event loop.
+	dispatch_control : Program(state), S(state), U64, Dom.Target, Str -> S(state)
+	dispatch_control = |program, s, i, target, text| SpecRunner.dispatch_control_in_loop(program, s, i, target, text)
 
 	## One host call, then the storage reads and focus events it issued, each
 	## answered in a turn of its own as the runtime answers them. Reentrant
 	## focus callbacks wait until all of their batch's effects have landed.
-	send : Program(state), S(state), U32, U32, List(U8) -> S(state)
-	send = |program, s, node, h, payload| {
+	send_in_loop : Program(state), S(state), U32, U32, List(U8) -> S(state)
+	send_in_loop = |program, s, node, h, payload| {
 		if s.fault != Healthy {
 			return s
 		}
@@ -1209,20 +1224,24 @@ SpecRunner := [].{
 				{ input: oldest, rest } = SpecRunner.pop_input(s)
 				b = rest.browser
 				queued = { ..rest, draining: Bool.True, turns: 0, event_queue: rest.event_queue.append(input), browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } }
-				active = SpecRunner.deliver_input(program, { state: queued, input: oldest })
-				return SpecRunner.release_reports(program, { ..active, draining: Bool.False })
+				active = SpecRunner.deliver_input_in_loop(program, { state: queued, input: oldest })
+				return SpecRunner.release_reports_in_loop(program, { ..active, draining: Bool.False })
 			}
 			b = s.browser
 			queued = { ..s, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } }, event_queue: s.event_queue.append(input) }
-			return if (s.applying_focus or s.draining) queued else SpecRunner.drain_focus(program, queued)
+			return if (s.applying_focus or s.draining) queued else SpecRunner.drain_focus_in_loop(program, queued)
 		}
-		SpecRunner.send_now(program, { state: s, node: node, handler: h, payload: payload })
+		SpecRunner.send_now_in_loop(program, { state: s, node: node, handler: h, payload: payload })
 	}
+
+	## Run [send_in_loop] from outside the event loop.
+	send : Program(state), S(state), U32, U32, List(U8) -> S(state)
+	send = |program, s, node, h, payload| SpecRunner.send_in_loop(program, s, node, h, payload)
 
 	## Run an entry already selected for delivery, without queuing it again.
 	## Its batch's focus and storage callbacks still pass through ingress.
-	send_now : Program(state), { state : S(state), node : U32, handler : U32, payload : List(U8) } -> S(state)
-	send_now = |program, { state: s, node, handler: h, payload }| {
+	send_now_in_loop : Program(state), { state : S(state), node : U32, handler : U32, payload : List(U8) } -> S(state)
+	send_now_in_loop = |program, { state: s, node, handler: h, payload }| {
 		outer = !s.draining
 		active = if (outer) { ..s, draining: Bool.True, turns: 0 } else s
 		if !outer and active.turns >= 4096 {
@@ -1231,8 +1250,8 @@ SpecRunner := [].{
 		is_final_network = node == SpecRunner.fx_node and payload.first() != Ok(26) and active.browser.network.contains(h)
 		cleaned = if (is_final_network) { ..active, browser: { ..active.browser, report_sources: active.browser.report_sources.remove(h), network: active.browser.network.remove(h), reports: { ..active.browser.reports, index: active.browser.reports.index.remove(Request(h)) } } } else active
 		counted = { ..cleaned, turns: cleaned.turns + if (outer) 0 else 1 }
-		next = SpecRunner.answer_gets(program, SpecRunner.engine_call(counted, |inst, buf, wbuf| (program.event)(inst, buf, wbuf, node, h, payload)))
-		if (outer) { ..SpecRunner.drain_focus(program, next), draining: Bool.False } else next
+		next = SpecRunner.answer_gets_in_loop(program, SpecRunner.engine_call(counted, |inst, buf, wbuf| (program.event)(inst, buf, wbuf, node, h, payload)))
+		if (outer) { ..SpecRunner.drain_focus_in_loop(program, next), draining: Bool.False } else next
 	}
 
 	## Move the instance and reusable buffers out before an engine call. Keeping
@@ -1248,8 +1267,8 @@ SpecRunner := [].{
 	## Apply deferred effects, showing values and reference commands in stream order.
 	## Their synchronous callbacks retain their routes and join ordinary ingress,
 	## so no callback observes a partly applied command batch.
-	drain_focus : Program(state), S(state) -> S(state)
-	drain_focus = |program, s0| {
+	drain_focus_in_loop : Program(state), S(state) -> S(state)
+	drain_focus_in_loop = |program, s0| {
 		var $s = { ..s0, draining: Bool.True }
 		while $s.fault == Healthy and (!$s.after_batch.is_empty() or !$s.event_queue.is_empty() or SpecRunner.callbacks_waiting($s.browser)) {
 			if SpecRunner.callbacks_waiting($s.browser) and !$s.event_queue.is_empty() and !SpecRunner.head_ready($s) {
@@ -1272,9 +1291,9 @@ SpecRunner := [].{
 							s
 						} else match ref.action {
 							Focus(4) => { ..s, dom: Dom.apply_value(s.dom, i, ref.node), deferred: if (s.focused == i + 1) NoValue else s.deferred }
-							Focus(2) => if (s.focused == i + 1) SpecRunner.move_focus(program, s, 0) else s
-							Focus(_) => if (SpecRunner.focusable_in(s.dom, i) and SpecRunner.reachable(s, i)) SpecRunner.move_focus(program, s, i + 1) else s
-							IntoView(_) | To(_) => SpecRunner.perform_scroll(program, s, i, ref.action)
+							Focus(2) => if (s.focused == i + 1) SpecRunner.move_focus_in_loop(program, s, 0) else s
+							Focus(_) => if (SpecRunner.focusable_in(s.dom, i) and SpecRunner.reachable(s, i)) SpecRunner.move_focus_in_loop(program, s, i + 1) else s
+							IntoView(_) | To(_) => SpecRunner.perform_scroll_in_loop(program, s, i, ref.action)
 						}
 					}
 				}
@@ -1282,9 +1301,9 @@ SpecRunner := [].{
 			}
 			if !$s.event_queue.is_empty() and SpecRunner.head_ready($s) {
 				{ input, rest } = SpecRunner.pop_input($s)
-				$s = SpecRunner.deliver_input(program, { state: rest, input: input })
+				$s = SpecRunner.deliver_input_in_loop(program, { state: rest, input: input })
 			} else if SpecRunner.callbacks_waiting($s.browser) {
-				$s = SpecRunner.answer_gets(program, $s)
+				$s = SpecRunner.answer_gets_in_loop(program, $s)
 			} else {
 				break
 			}
@@ -1294,6 +1313,10 @@ SpecRunner := [].{
 			{ ..$s, draining: s0.draining, browser: { ..b, reports: { ..b.reports, head: 0, index: Dict.empty() } } }
 		} else { ..$s, draining: s0.draining }
 	}
+
+	## Run [drain_focus_in_loop] from outside the event loop.
+	drain_focus : Program(state), S(state) -> S(state)
+	drain_focus = |program, s0| SpecRunner.drain_focus_in_loop(program, s0)
 
 	## Pop exactly one ingress slot and remove only the index that still
 	## names it. A later report from a pinned source has its own slot.
@@ -1331,8 +1354,8 @@ SpecRunner := [].{
 
 	## A cancelled source or a DOM lifetime that ended cannot receive its
 	## queued input. Valid entries use the same ordinary turn path.
-	deliver_input : Program(state), { state : S(state), input : Input } -> S(state)
-	deliver_input = |program, { state: s, input }| {
+	deliver_input_in_loop : Program(state), { state : S(state), input : Input } -> S(state)
+	deliver_input_in_loop = |program, { state: s, input }| {
 		live = match input.source {
 			Report(Request(id)) => s.browser.report_sources.contains(id)
 			Report(Pointer({ element, .. })) | Report(Scroll({ element, .. })) => SpecRunner.attached(s.dom, element) and (s.dom.statics.get(input.node.to_u64()) ?? 0).bitwise_and(1099511627775) == input.owner + 1
@@ -1342,7 +1365,7 @@ SpecRunner := [].{
 				input.node == SpecRunner.fx_node or (current == input.owner + 1 and SpecRunner.attached(s.dom, input.owner))
 			}
 		}
-		if (live) SpecRunner.send_now(program, { state: s, node: input.node, handler: input.handler, payload: input.payload }) else s
+		if (live) SpecRunner.send_now_in_loop(program, { state: s, node: input.node, handler: input.handler, payload: input.payload }) else s
 	}
 
 	## Queue a frozen report, replacing only its source's entry in this
@@ -1358,8 +1381,8 @@ SpecRunner := [].{
 
 	## All report kinds use one queue and epoch. DOM identity is the declaring
 	## node index, which is never recycled by the oracle.
-	queue_report : Program(state), { state : S(state), source : ReportSource, node : U32, handler : U32, owner : U64, payload : List(U8) } -> S(state)
-	queue_report = |program, { state: s, source, node, handler, owner, payload }| {
+	queue_report_in_loop : Program(state), { state : S(state), source : ReportSource, node : U32, handler : U32, owner : U64, payload : List(U8) } -> S(state)
+	queue_report_in_loop = |program, { state: s, source, node, handler, owner, payload }| {
 		is_live = match source {
 			Request(id) => s.browser.report_sources.contains(id)
 			Pointer({ element, .. }) | Scroll({ element, .. }) => SpecRunner.attached(s.dom, element) and (s.dom.statics.get(node.to_u64()) ?? 0).bitwise_and(1099511627775) == owner + 1
@@ -1383,25 +1406,33 @@ SpecRunner := [].{
 			if s.applying_focus or s.draining {
 				return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [], browser: { ..SpecRunner.clear_callbacks(b), reports: { ..reports, head: 0, index: Dict.empty() } } }
 			}
-			return SpecRunner.queue_report(program, { state: SpecRunner.release_reports(program, s), source, node, handler, owner, payload })
+			return SpecRunner.queue_report_in_loop(program, { state: SpecRunner.release_reports_in_loop(program, s), source, node, handler, owner, payload })
 		}
 		slot = reports.head + s.event_queue.len()
 		{ ..s, event_queue: s.event_queue.append({ node, handler, payload, owner, source: Report(source) }), browser: { ..b, reports: { ..reports, index: reports.index.insert(source, { epoch: reports.epoch, slot }) } } }
 	}
 
+	## Run [queue_report_in_loop] from outside the event loop.
+	queue_report : Program(state), { state : S(state), source : ReportSource, node : U32, handler : U32, owner : U64, payload : List(U8) } -> S(state)
+	queue_report = |program, { state: s, source, node, handler, owner, payload }| SpecRunner.queue_report_in_loop(program, { state: s, source, node, handler, owner, payload })
+
 	## Deliver the waiting ingress entries as ordinary turns. A held frame
 	## remains held after an occurrence drains it.
-	release_reports : Program(state), S(state) -> S(state)
-	release_reports = |program, s| {
+	release_reports_in_loop : Program(state), S(state) -> S(state)
+	release_reports_in_loop = |program, s| {
 		b = s.browser
-		released = SpecRunner.drain_focus(program, { ..s, turns: 0, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1, releasing: True } } })
+		released = SpecRunner.drain_focus_in_loop(program, { ..s, turns: 0, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1, releasing: True } } })
 		{ ..released, browser: { ..released.browser, reports: { ..released.browser.reports, releasing: b.reports.releasing } } }
 	}
 
+	## Run [release_reports_in_loop] from outside the event loop.
+	release_reports : Program(state), S(state) -> S(state)
+	release_reports = |program, s| SpecRunner.release_reports_in_loop(program, s)
+
 	## Answer every storage read waiting for its turn: the stored value, or
 	## `Missing` when there is none or storage is unavailable.
-	answer_gets : Program(state), S(state) -> S(state)
-	answer_gets = |program, s0| {
+	answer_gets_in_loop : Program(state), S(state) -> S(state)
+	answer_gets_in_loop = |program, s0| {
 		var $s = s0
 		while $s.fault == Healthy and SpecRunner.callbacks_waiting($s.browser) and $s.event_queue.is_empty() and $s.after_batch.is_empty() {
 			b = $s.browser
@@ -1409,7 +1440,7 @@ SpecRunner := [].{
 				match b.failure_queue.first() {
 					Ok(recipient) if recipient.ready => {
 						next = { ..$s, browser: { ..b, failure_queue: b.failure_queue.drop_first(1) } }
-						$s = if (b.subs.any(|entry| entry.id == recipient.id and entry.sub == StorageFailures)) SpecRunner.deliver(program, next, recipient.id, recipient.payload) else next
+						$s = if (b.subs.any(|entry| entry.id == recipient.id and entry.sub == StorageFailures)) SpecRunner.deliver_in_loop(program, next, recipient.id, recipient.payload) else next
 					}
 					_ => {
 						$s = { ..$s, browser: { ..b, failure_active: False } }
@@ -1427,9 +1458,9 @@ SpecRunner := [].{
 							Ok((_, value)) => [3].concat(value.to_utf8())
 							Err(_) => [4]
 						}
-						SpecRunner.deliver(program, next, id, payload)
+						SpecRunner.deliver_in_loop(program, next, id, payload)
 					}
-					Answer({ id, payload, scoped }) => if (!scoped or b.subs.any(|entry| entry.id == id)) SpecRunner.deliver(program, next, id, payload) else next
+					Answer({ id, payload, scoped }) => if (!scoped or b.subs.any(|entry| entry.id == id)) SpecRunner.deliver_in_loop(program, next, id, payload) else next
 					Failures => { ..next, browser: { ..next.browser, failure_scheduled: False, failure_active: True, failure_queue: b.failure_queue.map(|entry| { ..entry, ready: True }) } }
 				}
 			}
@@ -1437,12 +1468,20 @@ SpecRunner := [].{
 		$s
 	}
 
+	## Run [answer_gets_in_loop] from outside the event loop.
+	answer_gets : Program(state), S(state) -> S(state)
+	answer_gets = |program, s0| SpecRunner.answer_gets_in_loop(program, s0)
+
 	## Deliver an effect result to request `id`.
-	deliver : Program(state), S(state), U32, List(U8) -> S(state)
-	deliver = |program, s, id, payload| {
+	deliver_in_loop : Program(state), S(state), U32, List(U8) -> S(state)
+	deliver_in_loop = |program, s, id, payload| {
 		ready = if (payload == [7]) { ..s, browser: { ..s.browser, report_sources: s.browser.report_sources.remove(id), reports: { ..s.browser.reports, index: s.browser.reports.index.remove(Request(id)) } } } else s
-		SpecRunner.send(program, ready, SpecRunner.fx_node, id, payload)
+		SpecRunner.send_in_loop(program, ready, SpecRunner.fx_node, id, payload)
 	}
+
+	## Run [deliver_in_loop] from outside the event loop.
+	deliver : Program(state), S(state), U32, List(U8) -> S(state)
+	deliver = |program, s, id, payload| SpecRunner.deliver_in_loop(program, s, id, payload)
 
 	## Deliver `payload` to every live subscription `pick` selects.
 	broadcast : Program(state), S(state), ({ id : U32, sub : Sub } -> Bool), List(U8) -> S(state)
@@ -2036,8 +2075,8 @@ SpecRunner := [].{
 	## capturing listener), then it gets `blur`, and the element gaining focus
 	## gets `focus`; each event carries the element's value and is delivered
 	## only when a handler listens. Nothing happens when focus stays.
-	move_focus : Program(state), S(state), U64 -> S(state)
-	move_focus = |program, s0, to| {
+	move_focus_in_loop : Program(state), S(state), U64 -> S(state)
+	move_focus_in_loop = |program, s0, to| {
 		if s0.applying_focus {
 			return SpecRunner.queue_focus(s0, to)
 		}
@@ -2047,7 +2086,7 @@ SpecRunner := [].{
 			from = s0.focused
 			changed = if from != 0 and SpecRunner.text_control(Dom.node(s0.dom, from - 1)) {
 				shown = SpecRunner.value_of(s0.dom, from - 1)
-				if (shown != s0.focus_value) SpecRunner.fire_if(program, s0, from - 1, "change", shown) else s0
+				if (shown != s0.focus_value) SpecRunner.fire_if_in_loop(program, s0, from - 1, "change", shown) else s0
 			} else {
 				s0
 			}
@@ -2056,10 +2095,14 @@ SpecRunner := [].{
 				_ => changed
 			}
 			s1 = { ..landed, focused: to, deferred: NoValue, focus_value: if (to == 0) "" else SpecRunner.value_of(landed.dom, to - 1) }
-			s2 = if (from == 0) s1 else SpecRunner.fire_if(program, s1, from - 1, "blur", SpecRunner.value_of(s1.dom, from - 1))
-			if (to == 0) s2 else SpecRunner.fire_if(program, s2, to - 1, "focus", SpecRunner.value_of(s2.dom, to - 1))
+			s2 = if (from == 0) s1 else SpecRunner.fire_if_in_loop(program, s1, from - 1, "blur", SpecRunner.value_of(s1.dom, from - 1))
+			if (to == 0) s2 else SpecRunner.fire_if_in_loop(program, s2, to - 1, "focus", SpecRunner.value_of(s2.dom, to - 1))
 		}
 	}
+
+	## Run [move_focus_in_loop] from outside the event loop.
+	move_focus : Program(state), S(state), U64 -> S(state)
+	move_focus = |program, s0, to| SpecRunner.move_focus_in_loop(program, s0, to)
 
 	## Browser state uses parent paths and modal lifetimes, independent of engine sites.
 	inside : Dom.Model, U64, U64 -> Bool
@@ -2355,8 +2398,8 @@ SpecRunner := [].{
 	}
 
 	## A changed offset raises the element's own scroll event, never an ancestor's.
-	set_scroll : Program(state), S(state), { target : U64, top : U32, left : U32 } -> S(state)
-	set_scroll = |program, s, { target: i, top, left }| {
+	set_scroll_in_loop : Program(state), S(state), { target : U64, top : U32, left : U32 } -> S(state)
+	set_scroll_in_loop = |program, s, { target: i, top, left }| {
 		prior = Dom.node(s.dom, i).scroll
 		if prior.top == top and prior.left == left {
 			return s
@@ -2364,15 +2407,19 @@ SpecRunner := [].{
 		changed = { ..s, dom: Dom.modify(s.dom, i, |n| { ..n, scroll: { top, left } }) }
 		handler = Dom.target(changed.dom, i, "scroll", False) ?? return changed
 		if handler.kind == 6 {
-			SpecRunner.queue_report(program, { state: changed, source: Scroll({ element: i, handler: handler.handler }), node: handler.node, handler: handler.handler, owner: Dom.lookup(changed.dom, handler.node), payload: SpecRunner.put_u32(SpecRunner.put_u32([], top), left) })
-		} else SpecRunner.send(program, changed, handler.node, handler.handler, [])
+			SpecRunner.queue_report_in_loop(program, { state: changed, source: Scroll({ element: i, handler: handler.handler }), node: handler.node, handler: handler.handler, owner: Dom.lookup(changed.dom, handler.node), payload: SpecRunner.put_u32(SpecRunner.put_u32([], top), left) })
+		} else SpecRunner.send_in_loop(program, changed, handler.node, handler.handler, [])
 	}
+
+	## Run [set_scroll_in_loop] from outside the event loop.
+	set_scroll : Program(state), S(state), { target : U64, top : U32, left : U32 } -> S(state)
+	set_scroll = |program, s, { target: i, top, left }| SpecRunner.set_scroll_in_loop(program, s, { target: i, top, left })
 
 	## Explicit commands keep their observable command record. Handled scrollers
 	## additionally model only geometry-free offsets; unsupported placement fails
 	## the spec rather than inventing a layout or changing an application's fault.
-	perform_scroll : Program(state), S(state), U64, Dom.RefAction -> S(state)
-	perform_scroll = |program, s, i, action| {
+	perform_scroll_in_loop : Program(state), S(state), U64, Dom.RefAction -> S(state)
+	perform_scroll_in_loop = |program, s, i, action| {
 		recorded = SpecRunner.record_scroll(s, i, action)
 		match action {
 			To({ top, left, .. }) => {
@@ -2389,7 +2436,7 @@ SpecRunner := [].{
 					Px(pixels) => pixels
 					End => crash "SpecRunner.perform_scroll: End refused"
 				}
-				SpecRunner.set_scroll(program, recorded, { target: i, top: edge(top, prior.top), left: edge(left, prior.left) })
+				SpecRunner.set_scroll_in_loop(program, recorded, { target: i, top: edge(top, prior.top), left: edge(left, prior.left) })
 			}
 			IntoView(_) => {
 				var $at = Dom.node(s.dom, i).parent
@@ -2404,6 +2451,10 @@ SpecRunner := [].{
 			Focus(_) => crash "SpecRunner.perform_scroll: focus is not scrolling"
 		}
 	}
+
+	## Run [perform_scroll_in_loop] from outside the event loop.
+	perform_scroll : Program(state), S(state), U64, Dom.RefAction -> S(state)
+	perform_scroll = |program, s, i, action| SpecRunner.perform_scroll_in_loop(program, s, i, action)
 
 	# ------------------------------------------------------------- locators
 
