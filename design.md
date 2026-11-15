@@ -4611,6 +4611,14 @@ know nothing of the platform.
   alone, and requires the native host's live allocation and byte counters
   flat after a warm-up. A recorded answer goes to the request at the same
   place among those in flight, so the soak needs no knowledge of the app.
+  Each replayed call must repeat its recorded call's work (rows created and
+  removed, scopes created and disposed, turns, requests issued and results
+  delivered), or the cycle is not the recorded round trip and the soak
+  says so rather than measuring another sequence. **Target:** an event is
+  replayed to its recorded node id, so a round trip whose events reach a
+  row it re-creates passes only while the engine's free ids give that row
+  the same id each cycle; such a row is to be named by a place that
+  survives its re-creation, as a request is named by its place in flight.
 - **Contract tests** (`tests/`) cover the host (`host.zig` tests: staging,
   containment, refusal after poison) and the runtime (`runtime.mjs` against the
   wire protocol: every opcode, payload encoding, effect performance and

@@ -5004,12 +5004,48 @@ SpecRunner := [].{
 
 	## One call a spec made into the engine, as a soak records it: the node
 	## and handler (for a result, the request's place among those in flight,
-	## since a later cycle issues it under a new id), the payload, and the
-	## handles an event carrying files held.
-	Call : { node : U32, handler : [Handler(U32), InFlight(U64)], payload : List(U8), files : [Event, Files(List(Box(U64)))] }
+	## since a later cycle issues it under a new id), the payload, the
+	## handles an event carrying files held, and the work it did
+	## (`SpecRunner.round_trip_work`), which each replay of it must repeat.
+	Call : { node : U32, handler : [Handler(U32), InFlight(U64)], payload : List(U8), files : [Event, Files(List(Box(U64)))], work : List(U64) }
 
-	## An instance and the calls made into it since the recording began.
-	Recorded(state) : { inst : state, calls : List(Call) }
+	## An instance, the calls made into it since the recording began, and
+	## the round-trip counters after the latest call, from which the next
+	## call's work is measured.
+	Recorded(state) : { inst : state, calls : List(Call), counted : List(U64) }
+
+	## The counters of a work record that say what a call did to the app,
+	## whatever ids it did it under: rows created (`INST`), rows removed,
+	## scopes created and disposed, turns, requests issued and results
+	## delivered. A replayed round trip repeats each recorded call's change
+	## of every one of them.
+	round_trip_counters : List({ index : U64, name : Str })
+	round_trip_counters = [
+		{ index: 1, name: "rows created" },
+		{ index: 22, name: "rows removed" },
+		{ index: 25, name: "scopes created" },
+		{ index: 26, name: "scopes disposed" },
+		{ index: 30, name: "turns" },
+		{ index: 32, name: "requests issued" },
+		{ index: 33, name: "results delivered" },
+	]
+
+	## The round-trip counters of one work record, in `round_trip_counters`
+	## order. Each is cumulative, so a call's work is the difference of the
+	## records before and after it (`SpecRunner.work_between`).
+	round_trip_work : List(U8) -> List(U64)
+	round_trip_work = |wbuf| {
+		counters = Dom.decode_work(wbuf).counters
+		SpecRunner.round_trip_counters.map(|counter| counters.get(counter.index) ?? 0)
+	}
+
+	## What a call did: the change of each round-trip counter across it.
+	work_between : List(U64), List(U64) -> List(U64)
+	work_between = |earlier, later| later.map_with_index(|value, i| value - (earlier.get(i) ?? 0))
+
+	## A call's work as a reader reads it, `name n` for each counter.
+	show_work : List(U64) -> Str
+	show_work = |work| Str.join_with(SpecRunner.round_trip_counters.map_with_index(|counter, i| "${counter.name} ${(work.get(i) ?? 0).to_str()}"), ", ")
 
 	## `program`, recording every `event` and `files` call made into it.
 	recording : Program(state) -> Program(Recorded(state))
@@ -5025,17 +5061,19 @@ SpecRunner := [].{
 			keys: program.keys,
 			init: |boot| {
 				(inst, cmds, wbuf) = init(boot)
-				({ inst, calls: [] }, cmds, wbuf)
+				({ inst, calls: [], counted: SpecRunner.round_trip_work(wbuf) }, cmds, wbuf)
 			},
-			event: |{ inst: prior, calls }, buf, wbuf, node, h, payload| {
-				call = { node, handler: SpecRunner.handler_of(live(prior), node, h), payload, files: Event }
+			event: |{ inst: prior, calls, counted }, buf, wbuf, node, h, payload| {
+				handler = SpecRunner.handler_of(live(prior), node, h)
 				(inst, cmds, w) = event(prior, buf, wbuf, node, h, payload)
-				({ inst, calls: calls.append(call) }, cmds, w)
+				after = SpecRunner.round_trip_work(w)
+				({ inst, calls: calls.append({ node, handler, payload, files: Event, work: SpecRunner.work_between(counted, after) }), counted: after }, cmds, w)
 			},
-			files: |{ inst: prior, calls }, buf, wbuf, node, h, record, handles| {
-				call = { node, handler: SpecRunner.handler_of(live(prior), node, h), payload: record, files: Files(handles) }
+			files: |{ inst: prior, calls, counted }, buf, wbuf, node, h, record, handles| {
+				handler = SpecRunner.handler_of(live(prior), node, h)
 				(inst, cmds, w) = files(prior, buf, wbuf, node, h, record, handles)
-				({ inst, calls: calls.append(call) }, cmds, w)
+				after = SpecRunner.round_trip_work(w)
+				({ inst, calls: calls.append({ node, handler, payload: record, files: Files(handles), work: SpecRunner.work_between(counted, after) }), counted: after }, cmds, w)
 			},
 			settled: |r| settled(r.inst),
 			live: |r| live(r.inst),
@@ -5060,18 +5098,25 @@ SpecRunner := [].{
 	## each cycle's net live allocations and bytes, read from the host's
 	## counters before and after it. A recorded answer goes to the request
 	## at its recorded place among those in flight; a cycle that has no
-	## request there is not a round trip.
-	replay! : Program(state), { inst : state, buf : List(U8), wbuf : List(U8) }, List(Call), U64, Host => Try(List({ allocations : I64, bytes : I64 }), Str)
-	replay! = |program, { inst, buf, wbuf }, calls, cycles, host| {
+	## request there is not a round trip. Nor is one in which a call does
+	## other work than its recorded call did (`round_trip_counters`): an
+	## event that reaches a freed node, or a node the cycle gave to
+	## something else, is no longer the recorded round trip, and a soak that
+	## went on would measure a different, often idle, sequence.
+	replay! : Program(state), { inst : state, buf : List(U8), wbuf : List(U8), counted : List(U64) }, List(Call), U64, Host => Try(List({ allocations : I64, bytes : I64 }), Str)
+	replay! = |program, { inst, buf, wbuf, counted }, calls, cycles, host| {
 		var $inst = inst
 		var $buf = buf
 		var $wbuf = wbuf
+		var $counted = counted
 		var $nets = List.with_capacity(cycles)
 		var $c = 0.U64
 		while $c < cycles {
 			allocations = (host.live_allocations!)()
 			bytes = (host.live_bytes!)()
+			var $k = 0.U64
 			for call in calls {
+				$k = $k + 1
 				handler = match call.handler {
 					Handler(h) => h
 					InFlight(i) =>
@@ -5087,6 +5132,12 @@ SpecRunner := [].{
 				$inst = next
 				$buf = cmds
 				$wbuf = w
+				after = SpecRunner.round_trip_work(w)
+				work = SpecRunner.work_between($counted, after)
+				if work != call.work {
+					return Err("cycle ${($c + 1).to_str()}'s call ${$k.to_str()} (node ${call.node.to_str()}) did ${SpecRunner.show_work(work)}, where the recorded call did ${SpecRunner.show_work(call.work)}: the replay is not the recorded round trip")
+				}
+				$counted = after
 			}
 			after_allocations = (host.live_allocations!)()
 			after_bytes = (host.live_bytes!)()
@@ -5140,7 +5191,7 @@ SpecRunner := [].{
 		if ran.inst.calls.is_empty() {
 			return Err(failed("the steps after the last mark-metrics call nothing in the engine, so there is no round trip to repeat"))
 		}
-		nets = SpecRunner.replay!(program, { inst: ran.inst.inst, buf: ran.buf, wbuf: ran.wbuf }, ran.inst.calls, cycles, host).map_err(failed)?
+		nets = SpecRunner.replay!(program, { inst: ran.inst.inst, buf: ran.buf, wbuf: ran.wbuf, counted: ran.inst.counted }, ran.inst.calls, cycles, host).map_err(failed)?
 		SpecRunner.flat(nets, warm).map_err(failed)?
 		Ok(nets)
 	}
@@ -7190,3 +7241,17 @@ expect {
 	state = { ..base, dom: two }
 	SpecRunner.implicit_inputs(one, form) == 1 and SpecRunner.implicit_inputs(two, form) == 2 and SpecRunner.set_checked(program, state, TestId("invalid"), True).is_err() and SpecRunner.give_files(program, state, ChooseFiles(TestId("invalid"), []), []).is_err() and Dom.attr_of(Dom.node(two, first), "type") == "txet"
 }
+
+## A soak reads a call's work from the counters of the work records around
+## it, by their index in the record; a counter the record lacks reads 0.
+expect {
+	record = |values| SpecRunner.put_u32(values.fold(SpecRunner.put_u32([], values.len().to_u32_wrap()), SpecRunner.put_u64), 0)
+	counters = List.repeat(0.U64, 34).map_with_index(|_, i| i)
+	earlier = SpecRunner.round_trip_work(record(counters))
+	later = SpecRunner.round_trip_work(record(counters.map_with_index(|value, i| if (i == 1 or i == 30) value + 1 else value)))
+	{ earlier, work: SpecRunner.work_between(earlier, later), short: SpecRunner.round_trip_work(record([7, 8])) } == { earlier: [1, 22, 25, 26, 30, 32, 33], work: [1, 0, 0, 0, 1, 0, 0], short: [8, 0, 0, 0, 0, 0, 0] }
+}
+
+## A replayed call that did other work than its recorded call is named by
+## every counter, so the report says what the replay missed.
+expect SpecRunner.show_work([1, 0, 2, 2, 1, 0, 0]) == "rows created 1, rows removed 0, scopes created 2, scopes disposed 2, turns 1, requests issued 0, results delivered 0"

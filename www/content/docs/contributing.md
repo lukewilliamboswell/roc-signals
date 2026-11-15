@@ -531,7 +531,15 @@ warm-up (`--warm N`, two by default) to leave no allocation and no byte
 live. An answer the spec gave (an HTTP stub, a worker job's answer, a port
 answer) is replayed as it was first given, to the request at the same place
 among those in flight; a cycle that leaves no request there is not a round
-trip, and the soak says so. It is a leak check, never a baseline. Each
+trip, and the soak says so. Every replayed call must also do the work its
+recorded call did: the same rows created and removed, scopes created and
+disposed, turns, requests issued and results delivered. An event replayed
+to a node the cycle has freed, or has given to something else, does other
+work, and the soak names the cycle and the call rather than measuring a
+different, often idle, sequence. An event is replayed under its recorded
+node id, so a round trip whose events reach a row it created, or one an
+earlier cycle created in another's place, can pass only while the engine's
+free ids happen to give that row the same id each cycle. It is a leak check, never a baseline. Each
 example but the CSV Converter keeps one round-trip spec
 (`round-trip-*.scm`), which `check` runs as an ordinary spec in both
 runners and `check-slow` soaks (`Slow.native_soaks`). A soak records an
