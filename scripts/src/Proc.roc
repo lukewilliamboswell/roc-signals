@@ -135,12 +135,32 @@ Proc := [].{
 		)
 	}
 
-	## Limit compiler processes by CPU and memory capacity, reserving 16 GiB
-	## per process by default. This is scheduling headroom, not a compiler
-	## memory guarantee. ROC_SIGNALS_BUILD_JOBS explicitly overrides the memory
-	## choice, still capped by available CPUs. Runtime replays use cpus! instead.
-	compiler_jobs! : () => Try(U64, _)
-	compiler_jobs! = || {
+	## How much memory one compiler process of a batch is given, by what it
+	## compiles. `App` is `roc check`, `roc test` or `roc build` (at any
+	## `--opt`) of an app, a docs sample or a fixture that imports the
+	## platform: 4 GiB, from peaks measured on nightly-2026-11-14-a87808d
+	## (macOS arm64, `/usr/bin/time -l`): 3.1 GB for a development native
+	## runner of tests/apps/tasks, 3.5 GB for a development Wasm build of
+	## tests/apps/files, 3.3 GB for a `--opt=size` Wasm build of the Kanban
+	## board, 1.0 GB for `roc test` of the Kanban board. `FuzzTarget` is a
+	## fuzz target's build or `roc test`, whose optimized builds of the whole
+	## engine package were observed far above that: 16 GiB.
+	Footprint : [App, FuzzTarget]
+
+	## The bytes `footprint` reserves per compiler process.
+	reserve : Footprint -> U64
+	reserve = |footprint| match footprint {
+		App => 4294967296
+		FuzzTarget => 17179869184
+	}
+
+	## Limit compiler processes by CPU and memory capacity, reserving
+	## `Proc.reserve(footprint)` per process. This is scheduling headroom,
+	## not a compiler memory guarantee. ROC_SIGNALS_BUILD_JOBS explicitly
+	## overrides the memory choice, still capped by available CPUs. Runtime
+	## replays use cpus! instead.
+	compiler_jobs! : Footprint => Try(U64, _)
+	compiler_jobs! = |footprint| {
 		probe = Proc.capture!({ program: "node", args: ["-p", "const os = require('node:os'); const bound = process.constrainedMemory(); [os.availableParallelism(), Math.min(os.totalmem(), bound || Infinity)].join(' ')"], cwd: "." })?
 		(cpus, memory) = match Str.from_utf8_lossy(probe).trim().split_on(" ") {
 			[cores, bytes] => (
@@ -153,7 +173,7 @@ Proc := [].{
 			return Err(CapacityProbeFailed)
 		}
 		requested = match Env.var_str!("ROC_SIGNALS_BUILD_JOBS") {
-			Err(VarNotFound(_)) => (memory // 17179869184).max(1)
+			Err(VarNotFound(_)) => Proc.memory_jobs(memory, footprint)
 			Err(_) => return Err(InvalidBuildJobs)
 			Ok(text) => {
 				if text.is_empty() or !text.to_utf8().all(|byte| byte >= '0' and byte <= '9') {
@@ -168,6 +188,11 @@ Proc := [].{
 		}
 		Ok(requested.min(cpus))
 	}
+
+	## How many compiler processes of `footprint` fit in `memory` bytes: at
+	## least one, so a small machine still runs the batch, one at a time.
+	memory_jobs : U64, Footprint -> U64
+	memory_jobs = |memory, footprint| (memory // Proc.reserve(footprint)).max(1)
 
 	## How many jobs to run at once: the machine's online CPUs.
 	cpus! : () => U64
@@ -189,3 +214,8 @@ Proc := [].{
 	warn! : Str => {}
 	warn! = |line| Stderr.line!(line) ?? {}
 }
+
+## A GitHub-hosted 16 GB runner, whose kernel reports about 15.6 GiB, runs
+## three app compilers at once and one fuzz target's; a machine with less
+## memory than one reservation still runs one.
+expect (Proc.memory_jobs(16_757_000_000, App), Proc.memory_jobs(16_757_000_000, FuzzTarget), Proc.memory_jobs(2_000_000_000, App)) == (3, 1, 1)

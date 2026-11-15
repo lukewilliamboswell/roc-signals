@@ -13,7 +13,7 @@ import src/Proc
 ## retain input order even though completion order differs. No speed threshold
 ## is asserted; the child's deadline only prevents a broken scheduler hanging.
 main! = |_args| {
-	capacity = Proc.compiler_jobs!()?
+	capacity = Proc.compiler_jobs!(App)?
 	root = Path.display(Env.cwd!()?)
 	dir = "${root}/.build/parallel-contract"
 	if Path.exists!(Path.utf8(dir))? {

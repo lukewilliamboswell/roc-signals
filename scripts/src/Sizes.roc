@@ -151,7 +151,7 @@ Sizes := [].{
 			Path.create_all!(Path.utf8(dir))?
 			$jobs = $jobs.append(SpecSuite.build_job(o, "size", "examples/${slug}/main.roc", "wasm32", "${dir}/app.wasm"))
 		}
-		results = Proc.parallel!($jobs, Proc.compiler_jobs!()?)?
+		results = Proc.parallel!($jobs, Proc.compiler_jobs!(App)?)?
 		var $failures = []
 		for (slug, result) in List.map2(slugs, results, |slug, result| (slug, result)) {
 			if result.code != 0 {

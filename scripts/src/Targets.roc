@@ -124,7 +124,7 @@ Targets := [].{
 	## at a time.
 	fuzz_expects! : SpecSuite.Options => Try(List(Str), _)
 	fuzz_expects! = |o| {
-		results = Proc.parallel!(Targets.fuzz_targets.map(|t| { program: o.compiler, args: ["test", t.main], cwd: o.root }), Proc.compiler_jobs!()?)?
+		results = Proc.parallel!(Targets.fuzz_targets.map(|t| { program: o.compiler, args: ["test", t.main], cwd: o.root }), Proc.compiler_jobs!(FuzzTarget)?)?
 		Ok(List.map2(Targets.fuzz_targets, results, |t, r| if (r.code == 0) [] else ["roc test ${t.main} failed (an expect of fuzz target ${t.name} does not hold): ${r.output.trim()}"]).join())
 	}
 
@@ -145,7 +145,7 @@ Targets := [].{
 			SpecSuite.fresh_dir!("${o.build_dir}/fuzz/${t.name}")?
 			$jobs = $jobs.append({ program: o.compiler, args: ["build", "--fuzz", "--opt=speed", "--timings", t.main, "--output=${Targets.exe_of(o, t)}"], cwd: o.root })
 		}
-		results = Proc.parallel!($jobs, Proc.compiler_jobs!()?)?
+		results = Proc.parallel!($jobs, Proc.compiler_jobs!(FuzzTarget)?)?
 		Ok(List.map2(fuzzes, results, |t, r| { name: t.name, problems: if (r.code == 0) [] else ["fuzz ${t.name}: build exited with ${r.code.to_str()}: ${r.output.trim()}"] }))
 	}
 
@@ -203,7 +203,7 @@ Targets := [].{
 			SpecSuite.fresh_dir!("${o.build_dir}/fuzz-smoke/${target.name}")?
 		}
 		build_start = Monotonic.now!()
-		built = Proc.parallel!(fuzzes.map(|target| Targets.smoke_build_job(o, target)), Proc.compiler_jobs!()?)?
+		built = Proc.parallel!(fuzzes.map(|target| Targets.smoke_build_job(o, target)), Proc.compiler_jobs!(FuzzTarget)?)?
 		build_elapsed = build_start.elapsed!()
 		Proc.note!("== fuzz-smoke compiler batch: ${build_elapsed.to_str()}")
 		var $outcomes = []

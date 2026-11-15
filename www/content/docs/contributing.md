@@ -770,8 +770,13 @@ the Node it was recorded with.
 
 Compiler batches refill a vacant process slot as soon as a job finishes;
 their logs and results retain input order. The default compiler concurrency
-reserves 16 GiB per process, using the smaller of physical and constrained
-memory, and never exceeds available CPUs. This is scheduling headroom, not a
+reserves memory per process by what it compiles (`Proc.Footprint`), using
+the smaller of physical and constrained memory, and never exceeds
+available CPUs: 4 GiB for an app's, a docs sample's or a fixture's
+`roc check`, `roc test` or `roc build` at any `--opt` (the peaks measured
+were 3.1 to 3.5 GB for development builds and 3.3 GB for a `--opt=size`
+build), so a 16 GB CI runner compiles three at a time, and 16 GiB for a
+fuzz target's, one at a time. This is scheduling headroom, not a
 compiler memory guarantee. Set `ROC_SIGNALS_BUILD_JOBS` to a positive integer
 to choose a different process limit; it is still capped by CPUs. Independent
 task invocations have independent budgets, so coordinate them when sharing a

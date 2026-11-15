@@ -340,7 +340,7 @@ cross_links! = |o| {
 		Path.create_all!(Path.utf8(dir))?
 		$jobs = $jobs.append(SpecSuite.build_job(o, "dev", "tests/apps/tasks/main.roc", host.target, "${dir}/runner"))
 	}
-	results = Proc.parallel!($jobs, Proc.compiler_jobs!()?)?
+	results = Proc.parallel!($jobs, Proc.compiler_jobs!(App)?)?
 	Ok(List.map2(PlatformTest.spec_hosts, results, |host, r| (host.target, r)).keep_if(|(_, r)| r.code != 0).map(|(target, r)| "spec runner for ${target} does not link: ${r.output.trim()}"))
 }
 
@@ -398,7 +398,7 @@ script_tests! = |o| {
 		$roots = $roots.append({ path, text: Path.read_utf8!(Path.utf8(path))? })
 	}
 	plan = script_test_plan($roots)
-	results = Proc.parallel!(plan.test.map(|path| { program: o.tooling, args: ["test", path], cwd: "." }), Proc.compiler_jobs!()?)?
+	results = Proc.parallel!(plan.test.map(|path| { program: o.tooling, args: ["test", path], cwd: "." }), Proc.compiler_jobs!(App)?)?
 	Ok(plan.problems.concat(List.map2(plan.test, results, |path, r| (path, r)).keep_if(|(_, r)| r.code != 0).map(|(path, r)| "roc-stable test ${path} failed (exit ${r.code.to_str()}): ${r.output.trim()}")))
 }
 
