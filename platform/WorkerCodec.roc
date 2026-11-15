@@ -69,13 +69,20 @@ WorkerCodec := [].{
 
 	## The reader's configuration, cursor, the files handed to it and the
 	## open dictionaries, behind `State`.
-	StateBody := { cbor : Cbor, reader : Cbor.Reader, files : List(Engine.File), dicts : List(OpenDict) }
+	StateBody := { cbor : Cbor, reader : Cbor.Reader, files : List(Engine.File), dicts : Dicts }
 
 	## A dictionary a parse has opened: the keys it still has to read, and
 	## the sign of a float zero key it has read. Builtin float equality makes
 	## `0.0` and `-0.0` one key, so a dictionary holding both is refused
 	## rather than losing an entry (https://github.com/roc-lang/roc/issues/13057).
 	OpenDict : { keys : [Left(U64), UntilDone], zero : [Unseen, Positive, Negative] }
+
+	## The dictionaries a parse has open: the innermost one beside the list
+	## of those around it, innermost last. Counting a key changes only the
+	## innermost, a plain value, so a key touches no list; the list changes
+	## only where one dictionary opens inside another or closes. With none
+	## open, `inner` counts no keys (`Left(0)`).
+	Dicts : { inner : OpenDict, outer : List(OpenDict) }
 
 	## The opaque format each derived or handwritten codec dispatches on. Its
 	## hooks forward representation work to the pinned CBOR implementation.
@@ -723,7 +730,7 @@ decode_payload = |bytes, files| {
 	Shape : a
 	opened = Cbor.Reader.new(bytes, { key_order: Sorted, unknown_fields: Reject, max_depth: max_cbor_depth, forms: Encoder })?
 	encoding = WorkerCodec.Format.{}
-	{ value, rest } = Shape.parser_for(encoding)(WorkerCodec.State.(WorkerCodec.StateBody.{ cbor: opened.cbor, reader: opened.reader, files, dicts: [] }))?
+	{ value, rest } = Shape.parser_for(encoding)(WorkerCodec.State.(WorkerCodec.StateBody.{ cbor: opened.cbor, reader: opened.reader, files, dicts: no_dicts }))?
 	Cbor.Reader.finish(reader_of(rest))?
 	Ok(value)
 }
@@ -790,41 +797,50 @@ files_of = |WorkerCodec.State.(WorkerCodec.StateBody.({ files, .. }))| files
 with_reader : WorkerCodec.State, Cbor.Reader -> WorkerCodec.State
 with_reader = |WorkerCodec.State.(WorkerCodec.StateBody.({ cbor, files, dicts, .. })), reader| WorkerCodec.State.(WorkerCodec.StateBody.{ cbor, reader, files, dicts })
 
+## No dictionary open: the innermost place counts no keys.
+no_dicts : WorkerCodec.Dicts
+no_dicts = { inner: { keys: Left(0), zero: Unseen }, outer: [] }
+
 ## The open dictionaries without the counted ones whose keys have all been
-## read. The last one left is the dictionary whose key is being read:
+## read. The innermost one left is the dictionary whose key is being read:
 ## a dictionary nested in a key or a value is opened, and finishes its keys,
 ## between two keys of the dictionary around it.
-unfinished : List(WorkerCodec.OpenDict) -> List(WorkerCodec.OpenDict)
-unfinished = |dicts| match dicts.last() {
-	Ok({ keys: Left(0), .. }) => unfinished(dicts.drop_last(1))
+unfinished : WorkerCodec.Dicts -> WorkerCodec.Dicts
+unfinished = |dicts| match (dicts.inner.keys, dicts.outer.last()) {
+	(Left(0), Ok(around)) => unfinished({ inner: around, outer: dicts.outer.drop_last(1) })
 	_ => dicts
 }
 
 ## Note a dictionary the parse opens. One with no entries has no keys to
 ## check. The finished ones are dropped first, so the list stays within the
 ## reader's nesting bound.
-opened_dict : List(WorkerCodec.OpenDict), [Left(U64), UntilDone] -> List(WorkerCodec.OpenDict)
+opened_dict : WorkerCodec.Dicts, [Left(U64), UntilDone] -> WorkerCodec.Dicts
 opened_dict = |dicts, keys| match keys {
 	Left(0) => dicts
-	_ => unfinished(dicts).append({ keys, zero: Unseen })
+	_ => {
+		open = unfinished(dicts)
+		outer = if (open.inner.keys == Left(0)) open.outer else open.outer.append(open.inner)
+		{ inner: { keys, zero: Unseen }, outer }
+	}
 }
 
 ## Count one key read against the innermost unfinished dictionary.
-read_key : List(WorkerCodec.OpenDict) -> List(WorkerCodec.OpenDict)
+read_key : WorkerCodec.Dicts -> WorkerCodec.Dicts
 read_key = |dicts| {
 	open = unfinished(dicts)
-	match open.last() {
-		Ok({ keys: Left(left), zero }) => open.drop_last(1).append({ keys: Left(left - 1), zero })
+	match open.inner.keys {
+		Left(left) if left > 0 => { ..open, inner: { ..open.inner, keys: Left(left - 1) } }
 		_ => open
 	}
 }
 
 ## Drop an uncounted dictionary its reader has found the end of.
-closed_dict : List(WorkerCodec.OpenDict) -> List(WorkerCodec.OpenDict)
+closed_dict : WorkerCodec.Dicts -> WorkerCodec.Dicts
 closed_dict = |dicts| {
 	open = unfinished(dicts)
-	match open.last() {
-		Ok({ keys: UntilDone, .. }) => open.drop_last(1)
+	match (open.inner.keys, open.outer.last()) {
+		(UntilDone, Ok(around)) => { inner: around, outer: open.outer.drop_last(1) }
+		(UntilDone, Err(ListWasEmpty)) => no_dicts
 		_ => open
 	}
 }
@@ -836,15 +852,15 @@ closed_dict = |dicts| {
 ## format admits (a number, `Bool`, `Str` or a tag without payloads) has the
 ## builtin equality, so this is the only collision a key can have under the
 ## strict reader.
-float_key : List(WorkerCodec.OpenDict), [NotZero, Positive, Negative] -> Try(List(WorkerCodec.OpenDict), [BothZeros])
+float_key : WorkerCodec.Dicts, [NotZero, Positive, Negative] -> Try(WorkerCodec.Dicts, [BothZeros])
 float_key = |dicts, key| {
 	open = unfinished(dicts)
-	match (key, open.last()) {
+	match (key, open.inner) {
 		(NotZero, _) => Ok(open)
-		(_, Err(ListWasEmpty)) => Ok(open)
-		(Positive, Ok({ zero: Negative, .. })) => Err(BothZeros)
-		(Negative, Ok({ zero: Positive, .. })) => Err(BothZeros)
-		(Positive, Ok(current)) => Ok(open.drop_last(1).append({ ..current, zero: Positive }))
-		(Negative, Ok(current)) => Ok(open.drop_last(1).append({ ..current, zero: Negative }))
+		(_, { keys: Left(0), .. }) => Ok(open)
+		(Positive, { zero: Negative, .. }) => Err(BothZeros)
+		(Negative, { zero: Positive, .. }) => Err(BothZeros)
+		(Positive, current) => Ok({ ..open, inner: { ..current, zero: Positive } })
+		(Negative, current) => Ok({ ..open, inner: { ..current, zero: Negative } })
 	}
 }
