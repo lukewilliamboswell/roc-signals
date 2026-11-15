@@ -1901,10 +1901,16 @@ SpecRunner := [].{
 	## does not model. It models `required` (for the controls it applies to,
 	## except a radio button, whose group decides), an email control's single
 	## address and a number control's integer value within `min` and `max`.
-	## `pattern`, `minlength`, `step`, `min` or `max` on another control, a
-	## URL or a `multiple` email control holding a value, a non-integer number,
-	## a `required` radio button, and a time, week or local date and time
-	## control holding a value are not modelled.
+	## It also models four constraints that never block a submission, as
+	## headless Chrome shows: a range control's `min`, `max` and `step` (its
+	## value is always sanitized into them), `pattern` and `minlength` on an
+	## empty control (they constrain only a value; `required` is modelled on
+	## its own), `pattern` on a textarea (it does not apply there) and
+	## `step="any"` in any letter case (no step). `pattern` or `minlength` on
+	## a control holding a value, another `step`, `min` or `max` outside a
+	## number or range control, a URL or a `multiple` email control holding a
+	## value, a non-integer number, a `required` radio button, and a time,
+	## week or local date and time control holding a value are not modelled.
 	unmodelled_constraint : Dom.Model, U64 -> Try({}, Str)
 	unmodelled_constraint = |dom, form| {
 		bad = SpecRunner.find_index(
@@ -1915,10 +1921,11 @@ SpecRunner := [].{
 				kind = Dom.input_type(n)
 				v = Dom.live_value(n, "value")
 				input = Dom.html_tag(n, "input")
-				(SpecRunner.validated_control(n) and !SpecRunner.actually_disabled(dom, k) and (Dom.has_attr(n, "pattern")
-					or Dom.has_attr(n, "minlength")
-					or (input and Dom.has_attr(n, "step"))
-					or (input and kind != "number" and (Dom.has_attr(n, "min") or Dom.has_attr(n, "max")))
+				range = input and kind == "range"
+				(SpecRunner.validated_control(n) and !SpecRunner.actually_disabled(dom, k) and ((Dom.has_attr(n, "pattern") and v != "" and !Dom.html_tag(n, "textarea"))
+					or (Dom.has_attr(n, "minlength") and v != "")
+					or (input and !range and Dom.has_attr(n, "step") and Dom.enum_attr(n, "step") != "any")
+					or (input and kind != "number" and !range and (Dom.has_attr(n, "min") or Dom.has_attr(n, "max")))
 					or (input and kind == "url" and v != "")
 					or (input and kind == "email" and Dom.has_attr(n, "multiple") and v != "")
 					or (input and kind == "number" and (!SpecRunner.is_integer(v) or (Dom.has_attr(n, "min") and !SpecRunner.is_integer(Dom.attr_of(n, "min"))) or (Dom.has_attr(n, "value") and !SpecRunner.is_integer(Dom.attr_of(n, "value")))))
@@ -1929,7 +1936,7 @@ SpecRunner := [].{
 		match bad {
 			Ok(i) => {
 				n = Dom.node(dom, i)
-				Err("unmodelled: the form's <${n.tag}${if (Dom.html_tag(n, "input")) " type=${Dom.input_type(n)}" else ""}> carries a constraint the native runner does not model (pattern, minlength, step, min or max outside a number, a URL, multiple addresses, a non-integer number, a required radio button, or a time, week or local date and time value), so it cannot say whether the form submits")
+				Err("unmodelled: the form's <${n.tag}${if (Dom.html_tag(n, "input")) " type=${Dom.input_type(n)}" else ""}> carries a constraint the native runner does not model (pattern or minlength on a value, a step other than any, min or max outside a number or range, a URL, multiple addresses, a non-integer number, a required radio button, or a time, week or local date and time value), so it cannot say whether the form submits")
 			}
 			Err(_) => Ok({})
 		}
@@ -5887,24 +5894,40 @@ expect {
 }
 
 ## A form with a constraint the oracle does not model cannot be judged; a
-## read-only or disabled control with one takes no part, and a modelled form
-## is judged as before.
+## read-only or disabled control with one takes no part, a modelled form
+## is judged as before, and the constraints that never block a submission
+## (a range's bounds and step, pattern or minlength on an empty control,
+## pattern on a textarea, step="any") are judged satisfied.
 expect {
-	add = |dom, parent, tag, attrs| {
-		(d, i) = Dom.add_node(dom, { ..Dom.empty_node, tag, attrs: Dom.attributes(attrs) })
+	add = |dom, parent, tag, attrs, value| {
+		(d, i) = Dom.add_node(dom, { ..Dom.empty_node, tag, attrs: Dom.attributes(attrs), props: if (value == "") [] else [("value", value)] })
 		(Dom.insert(d, parent, i, Err(End)), i)
 	}
-	form_with = |attrs| {
-		(d1, form) = add(Dom.new({}), Dom.new({}).root, "form", [])
-		(d2, _) = add(d1, form, "input", attrs)
+	form_with = |tag, attrs, value| {
+		(d1, form) = add(Dom.new({}), Dom.new({}).root, "form", [], "")
+		(d2, _) = add(d1, form, tag, attrs, value)
 		(d2, form)
 	}
-	judged = |attrs| {
-		(dom, form) = form_with(attrs)
+	judged_as = |tag, attrs, value| {
+		(dom, form) = form_with(tag, attrs, value)
 		SpecRunner.unmodelled_constraint(dom, form).is_ok()
 	}
+	judged = |attrs| judged_as("input", attrs, "")
 	actual = [judged([("pattern", "a+")]), judged([("pattern", "a+"), ("readonly", "")]), judged([("pattern", "a+"), ("disabled", "")]), judged([("type", "number"), ("min", "1"), ("max", "9")]), judged([("type", "number"), ("step", "2")]), judged([("type", "date"), ("min", "2026-01-01")]), judged([("required", ""), ("type", "radio")]), judged([("required", "")])]
-	actual == [False, True, True, True, False, False, False, True]
+	satisfied = [
+		judged([("type", "range"), ("min", "2"), ("max", "8"), ("step", "3")]),
+		judged([("minlength", "3")]),
+		judged_as("textarea", [("pattern", "a+")], "zzz"),
+		judged([("type", "number"), ("step", "Any")]),
+		judged([("step", "any")]),
+	]
+	still = [
+		judged_as("input", [("pattern", "a+")], "zzz"),
+		judged_as("input", [("minlength", "3")], "ab"),
+		judged([("type", "date"), ("step", "2")]),
+		judged([("type", "range"), ("pattern", "a+")]),
+	]
+	actual == [True, True, True, True, False, False, False, True] and satisfied == [True, True, True, True, True] and still == [False, False, False, True]
 }
 
 ## `required` applies only where HTML says: a required hidden input never
