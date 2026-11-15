@@ -88,22 +88,24 @@ CheckPlan := [].{
 	spare_parts : List(U64)
 	spare_parts = [1, 2]
 
-	## The builds of `SpecSuite.build!` a stage uses beyond the per-app
-	## stages': app names for native runners and for browser builds
-	## (`tests/apps/NAME` for a test app no list names). A stage not named
+	## The builds of the shared batch (`SpecSuite.build_all!`) a stage uses
+	## beyond the per-app stages': app names for native runners, for
+	## development browser builds and for shipping (`--opt=size`) browser
+	## builds (`tests/apps/NAME` for a test app no list names). A stage not named
 	## here makes what it needs itself (`own_builds`), or nothing.
-	needs : Str -> { natives : List(Str), webs : List(Str) }
+	needs : Str -> { natives : List(Str), webs : List(Str), sized : List(Str) }
 	needs = |stage| match stage {
-		"native lifetime contracts" => { natives: ["files", "dbg"], webs: [] }
-		"grammar coverage" => { natives: ["kanban-board"], webs: [] }
+		"native lifetime contracts" => { natives: ["files", "dbg"], webs: [], sized: [] }
+		"grammar coverage" => { natives: ["kanban-board"], webs: [], sized: [] }
 		"runtime contracts in Chrome" => {
 			natives: ["controls", "table", "services", "prerender"],
 			webs: ["tests/apps/effects", "controls", "services", "workers", "files", "file-effects", "ports", "markup", "construction", "table", "outbox", "dbg", "dbg-job-only", "prepared", "tasks", "deep-payload", "prerender"],
+			sized: [],
 		}
-		"runtime unit tests" => { natives: [], webs: ["write-scaling"] }
-		"example journeys in Chrome" => { natives: [], webs: ["worker-lab", "reading-list", "status-page", "log-explorer", "million-row-explorer", "conduit"] }
-		"release dry run" => { natives: [], webs: SpecSuite.apps }
-		_ => { natives: [], webs: [] }
+		"runtime unit tests" => { natives: [], webs: ["write-scaling"], sized: ["write-scaling"] }
+		"example journeys in Chrome" => { natives: [], webs: ["worker-lab", "reading-list", "status-page", "log-explorer", "million-row-explorer", "conduit"], sized: [] }
+		"release dry run" => { natives: [], webs: SpecSuite.apps, sized: [] }
+		_ => { natives: [], webs: [], sized: [] }
 	}
 
 	## One build: a root, the system it is built for (`native` is the native
@@ -129,7 +131,6 @@ CheckPlan := [].{
 		"docs samples" => inputs.samples.map(|dir| [{ root: "${dir}/main.roc", target: "native", opt: "dev" }, { root: "${dir}/main.roc", target: "wasm32", opt: "dev" }]).join()
 		"example sizes" => inputs.catalog.map(|slug| { root: "examples/${slug}/main.roc", target: "wasm32", opt: "size" })
 		"declaration refusals" => [{ root: "tests/fixtures/declarations/main.roc", target: "native", opt: "dev" }]
-		"runtime unit tests" => [{ root: "tests/apps/write-scaling/main.roc", target: "wasm32", opt: "size" }]
 		"runtime contracts in Chrome" => [
 			{ root: "scripts/unicode_symbols.roc", target: "host", opt: "dev" },
 			{ root: "tests/key-contracts/picture-path-no-init.roc.txt", target: "native", opt: "dev" },
@@ -147,7 +148,7 @@ CheckPlan := [].{
 	## so they are not the gate's to share and are not listed.
 	builds_made : Plan, Inputs -> List({ build : Build, used_by : List(Str) })
 	builds_made = |p, inputs| {
-		made = CheckPlan.builds(p)
+		made = CheckPlan.builds(p, inputs.size_specs)
 		users = |name, kind| {
 			own = if (CheckPlan.runs(p, "specs") and p.apps.contains(name)) ["specs"] else []
 			needed = p.stages.keep_if(
@@ -156,15 +157,20 @@ CheckPlan := [].{
 					match kind {
 						Native => n.natives.contains(name)
 						Web => n.webs.contains(name)
+						Sized => n.sized.contains(name)
 					}
 				},
 			)
-			own.concat(needed)
+			mine = match kind {
+				Sized => if (inputs.size_specs.contains(name) and own != []) own else []
+				_ => own
+			}
+			mine.concat(needed)
 		}
 		root_of = |name| if (name.starts_with("tests/apps/")) "${name}/main.roc" else "${SpecSuite.dir_of(name)}/main.roc"
 		batch = made.natives.map(|name| { build: { root: root_of(name), target: "native", opt: "dev" }, used_by: users(name, Native) })
 			.concat(made.webs.map(|name| { build: { root: root_of(name), target: "wasm32", opt: "dev" }, used_by: users(name, Web) }))
-		sized = if (CheckPlan.runs(p, "specs")) p.apps.keep_if(|name| inputs.size_specs.contains(name)).map(|name| { build: { root: root_of(name), target: "wasm32", opt: "size" }, used_by: ["specs"] }) else []
+		sized = made.sized.map(|name| { build: { root: root_of(name), target: "wasm32", opt: "size" }, used_by: users(name, Sized) })
 		own = p.stages.map(|stage| CheckPlan.own_builds(stage, inputs).map(|build| { build, used_by: [stage] })).join()
 		batch.concat(sized).concat(own)
 	}
@@ -286,15 +292,18 @@ CheckPlan := [].{
 	## The builds a plan's stages use, each named once (two jobs writing one
 	## build would race): the native runner and browser build of each of its
 	## apps when it runs the per-app stages (whose specs, walks and broken
-	## specs use them), then those its other stages need. Empty when it
-	## runs no stage that needs builds.
-	builds : Plan -> { natives : List(Str), webs : List(Str) }
-	builds = |p| {
+	## specs use them), with the shipping builds of those of its apps in
+	## `size_specs` (whose compiler-keyed skips run specs on that build),
+	## then those its other stages need. Empty when it runs no stage that
+	## needs builds.
+	builds : Plan, List(Str) -> { natives : List(Str), webs : List(Str), sized : List(Str) }
+	builds = |p, size_specs| {
 		own = if (CheckPlan.runs(p, "specs")) p.apps else []
 		extra = p.stages.map(CheckPlan.needs)
 		{
 			natives: dedup(own.concat(extra.map(|n| n.natives).join())),
 			webs: dedup(own.concat(extra.map(|n| n.webs).join())),
+			sized: dedup(own.keep_if(|name| size_specs.contains(name)).concat(extra.map(|n| n.sized).join())),
 		}
 	}
 
@@ -342,7 +351,9 @@ CheckPlan := [].{
 				$lines = $lines.append(CheckPlan.refusal(error))
 			}
 		}
-		$lines.append("signals.roc's own builds (its apps' runners and --opt=size modules, which it checks) are the tool's and not listed")
+		$lines
+			.append("signals.roc's own builds (its apps' runners and --opt=size modules, which it checks) are the tool's and not listed")
+			.append("with --without-sizes, as CI runs it, the example sizes' --opt=size builds are not made here: CI's Site job builds those modules to publish them and reports their sizes")
 	}
 
 	## Every build a plan makes, one line each: its root, target and opt,
@@ -481,7 +492,7 @@ expect {
 expect {
 	match CheckPlan.plan(CheckPlan.stages, CheckPlan.parts, SpecSuite.spec_apps, Whole) {
 		Ok(p) => {
-			b = CheckPlan.builds(p)
+			b = CheckPlan.builds(p, [])
 			p.stages == CheckPlan.stages.map(|s| s.name) and p.apps == SpecSuite.spec_apps and p.skip == [] and SpecSuite.spec_apps.all(|a| b.natives.contains(a) and b.webs.contains(a)) and b.webs.contains("tests/apps/effects")
 		}
 		Err(_) => Bool.False
@@ -507,7 +518,7 @@ expect {
 expect {
 	all = [{ name: "a", placement: Part(1) }, { name: "specs", placement: PerApp }, { name: "grammar coverage", placement: Part(2) }]
 	match CheckPlan.plan(all, 2, ["x", "y", "kanban-board"], OnePart({ index: 2, total: 2 })) {
-		Ok(p) => p.stages == ["specs", "grammar coverage"] and p.apps == ["y", "kanban-board"] and p.skip == [{ name: "a", part: 1 }] and CheckPlan.builds(p) == { natives: ["y", "kanban-board"], webs: ["y", "kanban-board"] } and CheckPlan.skip_line({ name: "a", part: 1 }) == "SKIP a: part 1/${CheckPlan.parts.to_str()} runs it"
+		Ok(p) => p.stages == ["specs", "grammar coverage"] and p.apps == ["y", "kanban-board"] and p.skip == [{ name: "a", part: 1 }] and CheckPlan.builds(p, []) == { natives: ["y", "kanban-board"], webs: ["y", "kanban-board"], sized: [] } and CheckPlan.skip_line({ name: "a", part: 1 }) == "SKIP a: part 1/${CheckPlan.parts.to_str()} runs it"
 		Err(_) => Bool.False
 	}
 }

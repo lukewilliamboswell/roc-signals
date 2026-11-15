@@ -168,16 +168,30 @@ Sizes := [].{
 		}
 		results = Proc.parallel!($jobs, Proc.compiler_jobs!(App)?)?
 		var $failures = []
+		var $built = []
 		for (slug, result) in List.map2(slugs, results, |slug, result| (slug, result)) {
 			if result.code != 0 {
 				$failures = $failures.append("${slug}: --opt=size module unavailable (build exit ${result.code.to_str()})")
 			} else {
-				for measurement in Sizes.measure!(options, ["${o.build_dir}/sizes/${slug}/app.wasm"])? {
-					Sizes.print!("example ${slug} (reported)", measurement)
-				}
+				$built = $built.append((slug, "${o.build_dir}/sizes/${slug}/app.wasm"))
 			}
 		}
+		Sizes.report_modules!(options, $built)?
 		Ok($failures)
+	}
+
+	## Report the raw, gzip and Brotli sizes of example modules already
+	## built at `--opt=size`, each `(slug, path)`: the size report's lines,
+	## for a caller that built the modules for its own use, as the `site`
+	## task does for the modules it publishes.
+	report_modules! : { root : Str, node : Str }, List((Str, Str)) => Try({}, _)
+	report_modules! = |options, modules| {
+		for (slug, path) in modules {
+			for measurement in Sizes.measure!(options, [path])? {
+				Sizes.print!("example ${slug} (reported)", measurement)
+			}
+		}
+		Ok({})
 	}
 
 	print! : Str, Measurement => {}

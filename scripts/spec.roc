@@ -63,7 +63,7 @@ main! = |raw_args| {
 	var $problems = []
 	var $selected = 0
 	for example in apps {
-		r = Checks.hold!($problems, Checks.run_app!(o, example, $browser))?
+		r = Checks.hold!($problems, Checks.run_app!(o, example, $browser, Build))?
 		$problems = $problems.concat(r.native.problems).concat(r.browser.problems)
 		$selected = $selected + r.selected
 	}

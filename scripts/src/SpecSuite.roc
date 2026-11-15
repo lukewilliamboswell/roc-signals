@@ -257,6 +257,39 @@ SpecSuite := [].{
 		}
 	}
 
+	## The shipping build (`--opt=size`) of an app or test app, made in the
+	## same batch as the development builds (`build_all!`) for a stage that
+	## checks the build that ships.
+	size_wasm_of : Options, Str -> Str
+	size_wasm_of = |o, name| "${o.build_dir}/wasm-size/${name}/app.wasm"
+
+	## `build!` with shipping builds too: the native runners of `natives`,
+	## the development browser builds of `webs` and the `--opt=size`
+	## browser builds of `sized` (`size_wasm_of`), all in one bounded batch,
+	## so a slow shipping build runs beside the others rather than after
+	## them. A failed build is an error.
+	build_all! : Options, { natives : List(Str), webs : List(Str), sized : List(Str) } => Try({}, _)
+	build_all! = |o, { natives, webs, sized }| {
+		var $jobs = []
+		for example in natives {
+			Path.create_all!(Path.utf8("${o.build_dir}/native/${example}"))?
+			$jobs = $jobs.append(SpecSuite.build_job(o, "dev", "${SpecSuite.dir_of(example)}/main.roc", o.target, SpecSuite.runner_of(o, example)))
+		}
+		for (w, opt) in webs.map(|w| (w, "dev")).concat(sized.map(|w| (w, "size"))) {
+			name = w.split_on("/").last() ?? w
+			dir = if (w.starts_with("tests/apps/")) w else SpecSuite.dir_of(w)
+			output = if (opt == "size") SpecSuite.size_wasm_of(o, name) else SpecSuite.wasm_of(o, name)
+			Path.create_all!(Path.utf8(output.drop_suffix("/app.wasm")))?
+			$jobs = $jobs.append(SpecSuite.build_job(o, opt, "${dir}/main.roc", "wasm32", output))
+		}
+		results = Proc.parallel!($jobs, Proc.compiler_jobs!(App)?)?
+		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| code != 0)
+		match failed.first() {
+			Ok((job, code)) => Err(BuildFailed("${Proc.show(job)} exited with ${code.to_str()}"))
+			Err(_) => Ok({})
+		}
+	}
+
 	## Where an app lives.
 	dir_of : Str -> Str
 	dir_of = |example| if (SpecSuite.test_apps.contains(example)) "tests/apps/${example}" else "examples/${example}"

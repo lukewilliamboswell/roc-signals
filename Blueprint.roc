@@ -58,7 +58,8 @@ config = [
 	# fixed examples, the docs samples, every app's specs natively and in
 	# Chrome, the broken-spec self-check, the runtime contract tests, the jfb
 	# check and the release dry run. CI runs it as parallel legs of
-	# `check -- --without-fuzz --part K/N` beside `fuzz-smoke -- --shard K/N`;
+	# `check -- --without-fuzz --without-sizes --part K/N` beside
+	# `fuzz-smoke -- --shard K/N` and the `site` task, which reports the sizes;
 	# `check -- --plan` prints what each part runs.
 	Task("check", [Use("engine"), Run(["scripts/check_all.roc", "--"])]),
 	# Declaration rejections and compile-time default-mount contracts.

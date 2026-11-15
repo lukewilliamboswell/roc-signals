@@ -113,7 +113,7 @@ These are the development environment's Blueprint tasks, not an app's
 
 | Task | What it does |
 |---|---|
-| `blueprint run check -- [--without-fuzz] [--part K/N] [--plan [--builds]]` | The pull-request gate (below), every fuzz target's fixed examples included; `--without-fuzz` skips the fuzz targets, each with a `SKIP` line, as CI's Check job does beside its Fuzz smoke job; `--part K/N` runs part K of the parts CI's Check job runs in parallel (below); `--plan` prints what each part runs and builds and runs nothing, and `--builds` adds every build |
+| `blueprint run check -- [--without-fuzz] [--without-sizes] [--part K/N] [--plan [--builds]]` | The pull-request gate (below), every fuzz target's fixed examples included; `--without-fuzz` skips the fuzz targets, each with a `SKIP` line, as CI's Check job does beside its Fuzz smoke job; `--without-sizes` skips the examples' size report with a `SKIP` line, as CI's Check job does because its Site job reports the sizes of the modules it publishes; `--part K/N` runs part K of the parts CI's Check job runs in parallel (below); `--plan` prints what each part runs and builds and runs nothing, and `--builds` adds every build |
 | `blueprint run check-slow` | Local only, never in CI: every fuzz target's fixed examples on its instrumented build, a walk of every app of 10,000 steps (`RUNNER --walk`), the native soak of each app's round-trip spec (`RUNNER --soak 48`, flat live allocations and bytes), and a long Chrome session per app |
 | `blueprint run spec -- [--browser] [--filter GLOB] [--target TARGET] [APP...]` | Some apps' specs, natively and optionally in Chrome. The native runners are built for `TARGET` (`x64musl`, `arm64mac`, `x64mac` or `x64win`); without it, for the system the task runs on as `uname -sm` names it (`x64musl` where that names none), so a contributor's Mac runs them as they are. `check` always builds for `x64musl`, as CI does. A run whose filter selects no spec fails: a filter that matches nothing is a mistake |
 | `blueprint run platform` | Build the platform's link inputs with the pinned Zig, including matching PIC musl startup and libraries, to build an app's `main.roc` by hand (a fuzz target needs none: `roc build --fuzz` fetches its roc-fuzz release) |
@@ -229,7 +229,8 @@ problems found before it.
 10. The docs samples (below).
 11. The web platform and every spec-bearing app built for both runners, with
     the raw, gzip and Brotli sizes of each example module (built separately
-    with `--opt=size`) and of the debug scripts reported, without thresholds;
+    with `--opt=size`; in CI, by the Site job, which builds those modules
+    to publish them) and of the debug scripts reported, without thresholds;
     then every app's specs natively and in Chrome. Each run of a runner must
     account for every spec it was given (see
     [Specs and contract tests](#specs-and-contract-tests)).
@@ -276,7 +277,12 @@ problems found before it.
     notes.
 21. The tool, end to end (`scripts/src/ToolCheck.roc`): the dry run's
     `signals.roc` run from empty directories as an author runs it, on the
-    counter and on the Worker Lab. `init`, `test` and `build`; every failure
+    counter and on the Worker Lab, as six independent scenarios run in
+    parallel, each a process of `scripts/tool_check.roc` (built once; run
+    it with a scenario's name to repeat one). Every build there is the
+    tool's own, the behaviour under test: about seven `--opt=size` builds
+    (the counter's plain, `dbg` and two picture builds, two failing builds
+    and the Worker Lab's) and the development runners of `test`. `init`, `test` and `build`; every failure
     it explains, each by its sentence (a misused command line, no
     `main.roc`, `index.html` or specs, a failing spec, a build error, no
     `roc` on the PATH, a compiler other than the release's); the built
@@ -290,8 +296,9 @@ Every spec must pass in both runners; there are no expected failures.
 
 Run with no option, `check` is the whole gate in one go. CI runs the same
 stages as the parallel legs of its Check job, each `check -- --without-fuzz
---part K/N`, and a pull request requires the one job named Check that
-passes only when every leg did. Where each stage runs is data in
+--without-sizes --part K/N`, and a pull request requires the one job named
+Check that passes only when every leg and the Site job (whose size report
+stands for the skipped one) did. Where each stage runs is data in
 `scripts/src/CheckPlan.roc`, never in the workflow: every stage above
 belongs to exactly one part, except the per-app stages (each app's builds
 for both runners, its specs, its short walk and its broken specs), which
@@ -307,7 +314,9 @@ another part runs (`SKIP specs ...` never appears: every part runs it for
 its apps), and a part given an N other than the plan's, or that would run
 nothing, fails. Before its first stage that needs builds, a run makes, in
 one bounded batch, the native runners and browser builds of its apps and
-of what its stages need; the tool's check runs in the release dry run's
+of what its stages need, with the `--opt=size` builds a stage checks
+(write-scaling's allocation guard, and the module a compiler-keyed skip
+runs specs on), so a slow shipping build runs beside the others; the tool's check runs in the release dry run's
 part, from its copy. `CheckPlan.builds_made` lists every build a run
 makes as its root, target and opt with the stages that use it (the
 `signals.roc` tool's own builds of its apps excepted: compiling them is

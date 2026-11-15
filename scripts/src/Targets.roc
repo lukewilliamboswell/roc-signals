@@ -302,10 +302,9 @@ Targets := [].{
 			$failures = $failures.append("fixed-report transport contracts failed (exit ${report_units.to_str()})")
 		}
 		Path.create_all!(Path.utf8(o.build_dir))?
-		size = "${o.build_dir}/write-scaling-size.wasm"
-		Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=size", "tests/apps/write-scaling/main.roc", "--output=${size}"], cwd: o.root })?
-		# The development build is the one `SpecSuite.build!` made for the
-		# app's specs (`CheckPlan.needs`), not a second build of it.
+		# Both builds come from the caller's batch (`CheckPlan.needs`): the
+		# development build the app's specs use, and its shipping build.
+		size = SpecSuite.size_wasm_of(o, "write-scaling")
 		dev = SpecSuite.wasm_of(o, "write-scaling")
 		for (build, wasm) in [("dev", dev), ("size", size)] {
 			code = Proc.status!({ program: o.node, args: ["tests/runtime/write-scaling.mjs", wasm, build], cwd: o.root })?

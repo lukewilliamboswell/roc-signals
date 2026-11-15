@@ -48,7 +48,9 @@ import src/Sizes
 ## and the fuzz targets' instrumented replays are `check-slow`.
 ## `check -- --without-fuzz` prints a `SKIP` line for each fuzz target
 ## instead of running it; CI's Check job passes it because CI's Fuzz smoke
-## job runs every target, in shards. `check -- --part K/N` runs part K of
+## job runs every target, in shards; `check -- --without-sizes` prints a
+## `SKIP` line for the size report, which CI's Site job makes from the
+## modules it publishes. `check -- --part K/N` runs part K of
 ## the `CheckPlan.parts` parts CI's Check matrix runs in parallel, printing
 ## a `SKIP` line for each stage another part runs, and `check -- --plan`
 ## prints which stages and apps each part runs and how many builds it
@@ -60,7 +62,7 @@ main! = |raw_args| {
 	args = match options(raw_args.map(OsStr.display).drop_if(|arg| arg == "--")) {
 		Ok(chosen) => chosen
 		Err(Unknown(arg)) => {
-			Proc.warn!("unknown check option ${arg}; the options are --without-fuzz, --part K/N, --plan and --plan --builds")
+			Proc.warn!("unknown check option ${arg}; the options are --without-fuzz, --without-sizes, --part K/N, --plan and --plan --builds")
 			return Err(Exit(2))
 		}
 	}
@@ -177,18 +179,29 @@ main! = |raw_args| {
 			Ok([])
 		},
 	)?
-	$run = stage!(plan, $run, "example sizes", || Sizes.report_examples!(o, |_| Bool.True))?
-	builds = CheckPlan.builds(plan)
-	if builds.natives != [] or builds.webs != [] {
-		Proc.note!("== builds: ${builds.natives.len().to_str()} native runners and ${builds.webs.len().to_str()} browser builds, ${Proc.compiler_jobs!(App)?.to_str()} at a time")
-		Checks.hold!($run.problems, SpecSuite.build!(o, builds.natives, builds.webs))?
+	$run = match args.sizes {
+		Here => stage!(plan, $run, "example sizes", || Sizes.report_examples!(o, |_| Bool.True))?
+		Elsewhere(reason) => {
+			if CheckPlan.runs(plan, "example sizes") {
+				Proc.note!("SKIP example sizes: ${reason}")
+			}
+			{ ..$run, called: $run.called.append("example sizes") }
+		}
+	}
+	# The apps whose compiler-keyed skips move specs to a shipping build on
+	# this compiler: their `--opt=size` builds join the batch.
+	size_specs = CompilerSkips.skips.keep_if(|skip| skip.compilers.contains(o.nightly)).map(|skip| skip.example)
+	builds = CheckPlan.builds(plan, size_specs)
+	if builds.natives != [] or builds.webs != [] or builds.sized != [] {
+		Proc.note!("== builds: ${builds.natives.len().to_str()} native runners, ${builds.webs.len().to_str()} browser builds and ${builds.sized.len().to_str()} shipping builds, ${Proc.compiler_jobs!(App)?.to_str()} at a time")
+		Checks.hold!($run.problems, SpecSuite.build_all!(o, builds))?
 	}
 	var $native = SpecSuite.empty_tally
 	var $browser = SpecSuite.empty_tally
 	if CheckPlan.runs(plan, "specs") {
 		Proc.note!("== specs")
 		for example in plan.apps {
-			r = Checks.hold!($run.problems.concat($native.problems).concat($browser.problems), Checks.run_app!(o, example, Bool.True))?
+			r = Checks.hold!($run.problems.concat($native.problems).concat($browser.problems), Checks.run_app!(o, example, Bool.True, Built))?
 			$native = SpecSuite.add($native, r.native)
 			$browser = SpecSuite.add($browser, r.browser)
 		}
@@ -255,17 +268,28 @@ stage! = |plan, run, name, run!| {
 	}
 }
 
-## What the arguments ask for: whether the fuzz targets run, which part of
+## Why `check -- --without-sizes` skips the size report: CI's Site job
+## builds every example's `--opt=size` module to publish it, and reports
+## its size there, so the module is built once in a CI run.
+sizes_elsewhere : Str
+sizes_elsewhere = "check --without-sizes: CI's Site job builds every example's --opt=size module and reports its size"
+
+## What the arguments ask for: whether the fuzz targets run, whether the
+## size report runs, which part of
 ## the gate, and whether only to print the plan (`--plan`), with every
 ## build of every part (`--plan --builds`).
-options : List(Str) -> Try({ fuzzing : FuzzPlan.Selection, part : CheckPlan.Selection, describe : [Run, Summary, Builds] }, [Unknown(Str)])
+options : List(Str) -> Try({ fuzzing : FuzzPlan.Selection, sizes : [Here, Elsewhere(Str)], part : CheckPlan.Selection, describe : [Run, Summary, Builds] }, [Unknown(Str)])
 options = |args| {
-	var $out = { fuzzing: Every, part: Whole, describe: Run }
+	var $out = { fuzzing: Every, sizes: Here, part: Whole, describe: Run }
 	var $rest = args
 	while $rest != [] {
 		match $rest {
 			["--without-fuzz", .. as more] if $out.fuzzing == Every => {
 				$out = { ..$out, fuzzing: Elsewhere("check --without-fuzz: CI's Fuzz smoke job replays every target") }
+				$rest = more
+			}
+			["--without-sizes", .. as more] if $out.sizes == Here => {
+				$out = { ..$out, sizes: Elsewhere(sizes_elsewhere) }
 				$rest = more
 			}
 			["--part", text, .. as more] if $out.part == Whole => {
@@ -473,11 +497,13 @@ cross_links! = |o| {
 ## `check` runs every fuzz target and the whole gate unless told the
 ## targets are replayed elsewhere or given one part; each option is given
 ## at most once.
-expect options([]) == Ok({ fuzzing: Every, part: Whole, describe: Run })
-expect options(["--part", "2/5", "--without-fuzz"]) == Ok({ fuzzing: Elsewhere("check --without-fuzz: CI's Fuzz smoke job replays every target"), part: OnePart({ index: 2, total: 5 }), describe: Run })
-expect options(["--plan"]) == Ok({ fuzzing: Every, part: Whole, describe: Summary })
-expect options(["--plan", "--builds"]) == Ok({ fuzzing: Every, part: Whole, describe: Builds })
+expect options([]) == Ok({ fuzzing: Every, sizes: Here, part: Whole, describe: Run })
+expect options(["--part", "2/5", "--without-fuzz"]) == Ok({ fuzzing: Elsewhere("check --without-fuzz: CI's Fuzz smoke job replays every target"), sizes: Here, part: OnePart({ index: 2, total: 5 }), describe: Run })
+expect options(["--plan"]) == Ok({ fuzzing: Every, sizes: Here, part: Whole, describe: Summary })
+expect options(["--plan", "--builds"]) == Ok({ fuzzing: Every, sizes: Here, part: Whole, describe: Builds })
 expect options(["--builds"]) == Err(Unknown("--builds"))
+expect options(["--without-sizes", "--without-fuzz"]) == Ok({ fuzzing: Elsewhere("check --without-fuzz: CI's Fuzz smoke job replays every target"), sizes: Elsewhere(sizes_elsewhere), part: Whole, describe: Run })
+expect options(["--without-sizes", "--without-sizes"]) == Err(Unknown("--without-sizes"))
 expect options(["--filter"]) == Err(Unknown("--filter"))
 expect options(["--part", "two"]) == Err(Unknown("--part two"))
 expect options(["--part"]) == Err(Unknown("--part"))

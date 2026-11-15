@@ -366,9 +366,11 @@ Checks := [].{
 	## explain, is a problem in the tally beside the failures it reported.
 	## A listed app with no specs at all is a problem of its native tally.
 	## Returns the tallies, how many specs the filter selected and the
-	## native runner's path.
-	run_app! : SpecSuite.Options, Str, Bool => Try({ native : SpecSuite.Tally, browser : SpecSuite.Tally, selected : U64, runner : Str }, _)
-	run_app! = |o, example, browser| {
+	## native runner's path. `shipping` says whether the `--opt=size` build
+	## a compiler-keyed skip runs specs on is to be made here (`Build`) or
+	## was made by the caller's batch (`Built`).
+	run_app! : SpecSuite.Options, Str, Bool, [Build, Built] => Try({ native : SpecSuite.Tally, browser : SpecSuite.Tally, selected : U64, runner : Str }, _)
+	run_app! = |o, example, browser, shipping| {
 		every = SpecSuite.spec_files!(example)?
 		specs = SpecSuite.select(o.filter, every)
 		runner = SpecSuite.runner_of(o, example)
@@ -386,7 +388,7 @@ Checks := [].{
 							Proc.note!(SpecSuite.skip_line(o.nightly, s))
 						}
 						t = SpecSuite.browser_specs!(o, { example, runner, wasm: SpecSuite.wasm_of(o, example), specs, skip })?
-						shipped = Checks.size_build_specs!(o, { example, runner, specs: specs.keep_if(|path| skip.contains(SpecSuite.id_of(path))) })?
+						shipped = Checks.size_build_specs!(o, { example, runner, specs: specs.keep_if(|path| skip.contains(SpecSuite.id_of(path))), shipping })?
 						total = { ..SpecSuite.add(t, shipped), skipped: t.skipped + skip.len() }
 						Proc.note!(SpecSuite.summary(example, Browser, total))
 						total
@@ -404,15 +406,17 @@ Checks := [].{
 	## ships, so a regression of it cannot hide behind the skip. Their
 	## summary is printed under `example (size Wasm)`; only their problems
 	## join the tally, whose counts belong to the development run.
-	size_build_specs! : SpecSuite.Options, { example : Str, runner : Str, specs : List(Str) } => Try(SpecSuite.Tally, _)
-	size_build_specs! = |o, { example, runner, specs }| {
+	size_build_specs! : SpecSuite.Options, { example : Str, runner : Str, specs : List(Str), shipping : [Build, Built] } => Try(SpecSuite.Tally, _)
+	size_build_specs! = |o, { example, runner, specs, shipping }| {
 		if specs.is_empty() {
 			return Ok(SpecSuite.empty_tally)
 		}
-		dir = "${o.build_dir}/wasm-size/${example}"
-		Path.create_all!(Path.utf8(dir))?
-		wasm = "${dir}/app.wasm"
-		Proc.run!(SpecSuite.build_job(o, "size", "${SpecSuite.dir_of(example)}/main.roc", "wasm32", wasm))?
+		wasm = SpecSuite.size_wasm_of(o, example)
+		# `Built`: the caller's batch made it (`SpecSuite.build_all!`).
+		if shipping == Build {
+			Path.create_all!(Path.utf8(wasm.drop_suffix("/app.wasm")))?
+			Proc.run!(SpecSuite.build_job(o, "size", "${SpecSuite.dir_of(example)}/main.roc", "wasm32", wasm))?
+		}
 		t = SpecSuite.browser_specs!(o, { example: "${example} (size Wasm)", runner, wasm, specs, skip: [] })?
 		Proc.note!(SpecSuite.summary("${example} (size Wasm)", Browser, t))
 		Ok({ ..SpecSuite.empty_tally, problems: t.problems })

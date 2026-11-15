@@ -15,6 +15,7 @@ import src/DocSamples
 import src/ExampleFiles
 import src/Proc
 import src/SpecSuite
+import src/Sizes
 import src/SiteCode
 
 ## The `site` task: build the documentation site into `dist/`
@@ -28,7 +29,8 @@ import src/SiteCode
 ## `main.roc` is built for wasm32 (`--opt=size`, as it ships) to
 ## `dist/examples/<slug>/app.wasm` beside `dist/runtime.mjs` (and its worker
 ## script, `dist/worker.mjs`), which the
-## site's `site.mjs` mounts it with. Every other file an example's page
+## site's `site.mjs` mounts it with, and its size is reported as `check`'s
+## size report reports it (CI's Check leaves that report here). Every other file an example's page
 ## loads, as `www/data/examples.toml` names it (its scripts, port handlers,
 ## simulated service and data), is copied beside its app. The checked documentation
 ## sample sources are published under `dist/samples/` for readers to download.
@@ -70,6 +72,16 @@ main! = |raw_args| {
 		Path.create_all!(Path.utf8(dir))?
 		Path.copy!(Path.utf8(SpecSuite.wasm_of(o, example)), Path.utf8("${dir}/app.wasm"))?
 	}
+	# The size report of every catalogue example, on the modules this site
+	# publishes: CI's Check runs `check -- --without-sizes` and leaves the
+	# report to this job, so each example's --opt=size module is built once.
+	catalog = Sizes.examples(Path.read_utf8!(Path.utf8("${o.root}/${ExampleFiles.catalog}"))?)?
+	unpublished = catalog.drop_if(|slug| SpecSuite.apps.contains(slug))
+	if !unpublished.is_empty() {
+		return Err(ExamplesNotPublished(unpublished))
+	}
+	Proc.note!("== example module sizes (reported)")
+	Sizes.report_modules!({ root: o.root, node: o.node }, catalog.map(|slug| (slug, SpecSuite.wasm_of(o, slug))))?
 	ExampleFiles.copy_all!(o.root, dist)?
 	SpecSuite.copy_runtime!(o.root, dist)?
 	Proc.run!({ program: "node", args: ["tests/browser/site.mjs", dist], cwd: o.root })?
