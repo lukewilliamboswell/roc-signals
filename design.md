@@ -4014,8 +4014,9 @@ oracle and never defines a meaning of its own. In particular:
   control, a malformed number, date, month or time, a color that is not
   lowercase `#rrggbb`, CR in a textarea): Chrome compares what the control
   holds, and the native runner refuses the values it knows the setter
-  changes and those it does not model (a range, week or local date and
-  time control). A form submits after the oracle's constraint validation,
+  changes and those it does not model (a range value that is not an
+  integer Chrome keeps on its integer step and bounds, and any week or local
+  date and time value). A form submits after the oracle's constraint validation,
   which models `required`, an email control's address and a number
   control's integer value within `min` and `max`, and bars disabled,
   read-only, hidden and button controls as HTML does; natively, a submit

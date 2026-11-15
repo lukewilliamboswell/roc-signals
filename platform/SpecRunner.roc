@@ -1731,8 +1731,9 @@ SpecRunner := [].{
 	## breaks, an email or URL control trims white space, a number, date,
 	## month or time control drops a value of the wrong shape, a color
 	## control rewrites one that is not a lowercase `#rrggbb`, a textarea
-	## turns CR into LF, and a file input can only be cleared. A range, week
-	## or local date and time control's sanitization is not modelled.
+	## turns CR into LF, and a file input can only be cleared. A range
+	## control's value is modelled only where Chrome keeps it (`range_keeps`);
+	## a week or local date and time control's sanitization is not modelled.
 	change_refusal : Dom.DNode, Str -> Try({}, Str)
 	change_refusal = |n, v| {
 		line_break = v.to_utf8().any(|b| b == '\n' or b == '\r')
@@ -1759,13 +1760,44 @@ SpecRunner := [].{
 			Err("a month control drops a value that is not a valid month")
 		} else if kind == "time" and v != "" and !SpecRunner.is_time(v) {
 			Err("a time control drops a value that is not a valid time")
-		} else if kind == "range" or ((kind == "week" or kind == "datetime-local") and v != "") {
+		} else if kind == "range" and !SpecRunner.range_keeps(n, v) {
+			Err("the native runner models a range control's value only as an integer within its integer min and max on its integer step, which this is not")
+		} else if (kind == "week" or kind == "datetime-local") and v != "" {
 			Err("the native runner does not model how a ${kind} control sanitizes its value")
 		} else if kind == "file" and v != "" {
 			Err("a file input's value can only be cleared")
 		} else {
 			Ok({})
 		}
+	}
+
+	## Whether a range control keeps `v` exactly as written (measured in
+	## Chrome 157): a canonical integer within the control's `min` and `max`
+	## (0 and 100 by default) on its `step` from `min` (1 by default), all of
+	## them canonical integers. Chrome clamps, rounds or rewrites anything
+	## else ("04" becomes "4"), and the oracle does not model how.
+	range_keeps : Dom.DNode, Str -> Bool
+	range_keeps = |n, v| {
+		bound = |name, default| if (Dom.has_attr(n, name)) SpecRunner.canonical_integer(Dom.attr_of(n, name)) else Ok(default)
+		match (SpecRunner.canonical_integer(v), bound("min", 0), bound("max", 100), bound("step", 1)) {
+			(Ok(x), Ok(low), Ok(high), Ok(step)) => step > 0 and low <= high and x >= low and x <= high and (x - low) % step == 0
+			_ => Bool.False
+		}
+	}
+
+	## A canonical integer: an optional `-`, then `0` or digits without a
+	## leading zero (never `-0`), within I64.
+	canonical_integer : Str -> Try(I64, [NotCanonical])
+	canonical_integer = |text| {
+		bytes = text.to_utf8()
+		negative = bytes.first() == Ok('-')
+		body = if (negative) bytes.drop_first(1) else bytes
+		canonical = !body.is_empty() and body.len() <= 18 and body.all(|c| c >= '0' and c <= '9') and (body == ['0'] or body.first() != Ok('0')) and !(negative and body == ['0'])
+		if !canonical {
+			return Err(NotCanonical)
+		}
+		magnitude = body.fold(0.I64, |acc, c| acc * 10 + (c - '0').to_i64())
+		Ok(if (negative) -magnitude else magnitude)
 	}
 
 	## A valid lowercase simple color, `#` and six lowercase hex digits,
@@ -5715,6 +5747,10 @@ expect {
 		refused(input("color", []), "#ABCDEF"),
 		refused(input("color", []), "#abcdef"),
 		refused(input("range", []), "50"),
+		refused(input("range", [("min", "0"), ("max", "9"), ("step", "1")]), "4"),
+		refused(input("range", [("min", "1"), ("step", "2")]), "4"),
+		refused(input("range", []), "04"),
+		refused(input("range", [("max", "9")]), "10"),
 		refused(input("date", []), "2026-02-30"),
 		refused(input("date", []), "2024-02-29"),
 		refused(input("date", []), "2026-11-11 12:01"),
@@ -5726,7 +5762,7 @@ expect {
 		refused({ ..Dom.empty_node, tag: "textarea" }, "a\r\nb"),
 		refused({ ..Dom.empty_node, tag: "textarea" }, "a\nb"),
 	]
-	actual == [True, False, True, True, False, True, True, False, True, False, True, True, False, True, False, True, True, True, False, True, False]
+	actual == [True, False, True, True, False, True, True, False, True, False, False, False, True, True, True, True, False, True, False, True, True, True, False, True, False]
 }
 
 ## `fill` refuses what Chrome's typing would not leave in the control as
