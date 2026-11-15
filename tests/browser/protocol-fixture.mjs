@@ -1,4 +1,4 @@
-// Independent test-owned protocol19 declarations. Raw command contracts keep
+// Independent test-owned protocol declarations. Raw command contracts keep
 // their own numbers; neither production facts nor the Roc encoder is imported.
 const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
 const utf8 = new TextEncoder();

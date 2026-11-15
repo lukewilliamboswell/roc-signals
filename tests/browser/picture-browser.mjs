@@ -1,4 +1,4 @@
-// Independent protocol19 replacement contracts for an explicitly marked picture.
+// Independent protocol replacement contracts for an explicitly marked picture.
 // CBOR facts do not add adoption; this stage applies ordinary replacement.
 import http from "node:http";
 import fs from "node:fs";

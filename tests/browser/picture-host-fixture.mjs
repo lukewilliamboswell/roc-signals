@@ -1,5 +1,5 @@
 // Test-owned declarations and a tiny real Wasm module. No Roc compiler or app
-// supplies these protocol19 fixtures or the observable init-call counter.
+// supplies these protocol fixtures or the observable init-call counter.
 import { protocolFixtureSection } from "./protocol-fixture.mjs";
 export const word = n => [n & 255, n >>> 8 & 255, n >>> 16 & 255, n >>> 24];
 const section = (tag, bytes) => [tag, ...word(bytes.length), ...bytes];

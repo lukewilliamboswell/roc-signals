@@ -1,4 +1,4 @@
-// Independent raw protocol19 identity/presence/comment contracts. No app Wasm
+// Independent raw protocol identity/presence/comment contracts. No app Wasm
 // or production encoder supplies expected numbers, names or browser facts.
 import http from "node:http";
 import fs from "node:fs";

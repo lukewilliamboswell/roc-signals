@@ -46,7 +46,7 @@ function batch() {
   const u32 = () => { const value = bytes.getUint32(at, true); at += 4; return value; };
   const str = () => { const length = u32(); const value = text.decode(new Uint8Array(bytes.buffer, bytes.byteOffset + at, length)); at += length; return value; };
   // Element and attribute names carry their resolved namespace, prefix and
-  // local name (protocol 19, Appendix B "expanded-name"). This fixture
+  // local name (Appendix B "expanded-name"). This fixture
   // emits only HTML elements, unnamespaced attributes and ordinary children.
   const name = (namespace) => { assert.equal(u8(), namespace); assert.equal(str(), ""); return str(); };
   assert.equal(u8(), 0, "fixture batches are unmarked");
