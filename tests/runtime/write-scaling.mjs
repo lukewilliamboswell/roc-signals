@@ -1,14 +1,32 @@
 // One unmeasured warm-up before each group of 21 sparse writes; the median
 // excludes fill/setup costs. Keyed samples release one earlier row, O(J_previous = 1).
 // A self-comparison at two sizes catches copies that allocation counts miss:
-// a keyed write of a table, one element of a list in a store cell, and a
-// small write beside them. Build this fixture with --opt=dev: optimized
-// writes through the host's box still copy (design.md, roc-lang/roc#13019).
+// a keyed write of a table, one element of a list in a store cell and of one
+// in local state, and a small write beside them.
+//
+// `node tests/runtime/write-scaling.mjs MODULE.wasm dev|size` names the build.
+// Each build asserts the kinds that are flat in it, so a regression fails;
+// the kinds that still copy for a compiler defect are measured and printed
+// beside their issue, so a fix shows, and nothing is claimed for them.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const file = process.argv[2];
-assert.ok(file, "usage: node tests/runtime/write-scaling.mjs DEVELOPMENT.wasm");
+const [file, build] = process.argv.slice(2);
+// What each build guarantees. A copying kind names the defect that copies it.
+const expectations = {
+  dev: {
+    flat: ["keyed", "small", "cell"],
+    copying: { local: "https://github.com/roc-lang/roc/issues/13012 (a boxed closure's captures are borrowed)" },
+  },
+  size: {
+    flat: ["small", "cell"],
+    copying: {
+      keyed: "https://github.com/roc-lang/roc/issues/12957 (a keyed write copies the table's rows; tracked with the optimized copies there)",
+      local: "https://github.com/roc-lang/roc/issues/13012 (a boxed closure's captures are borrowed)",
+    },
+  },
+};
+assert.ok(file && expectations[build], "usage: node tests/runtime/write-scaling.mjs MODULE.wasm dev|size");
 const module = await WebAssembly.compile(await readFile(file));
 const imports = {};
 for (const entry of WebAssembly.Module.imports(module)) {
@@ -78,16 +96,30 @@ for (const size of [1000, 10000]) {
   click("Bump value");
   const cell = median("Bump value");
   assert.ok([...content.values()].includes("Value 22"));
-  results.push({ size, keyed, small, cell });
+  click(`Local ${size}`);
+  click("Bump local");
+  const local = median("Bump local");
+  assert.ok([...content.values()].includes("Local 22"));
+  results.push({ size, keyed, small, cell, local });
 }
 try {
   // The measurements come first, so a failure names every kind that copies.
-  console.log(JSON.stringify({ development: true, samples: 21, results }));
-  const copied = ["keyed", "small", "cell"].flatMap(kind => {
+  console.log(JSON.stringify({ build, samples: 21, results }));
+  const growth = kind => {
     const [low, high] = results.map(result => result[kind].bytes);
-    return high <= low + 1024 ? [] : [`${kind} write allocates ${low} B at size 1000 and ${high} B at size 10000 (allowed: ${low + 1024})`];
+    return { low, high, flat: high <= low + 1024 };
+  };
+  for (const [kind, issue] of Object.entries(expectations[build].copying)) {
+    const { low, high, flat } = growth(kind);
+    console.log(flat
+      ? `${kind}: now flat in a ${build} build (${low} B at size 1000, ${high} B at 10000); assert it here and update design.md (${issue})`
+      : `${kind}: still copies in a ${build} build, ${low} B at size 1000 and ${high} B at 10000, not asserted: ${issue}`);
+  }
+  const copied = expectations[build].flat.flatMap(kind => {
+    const { low, high, flat } = growth(kind);
+    return flat ? [] : [`${kind} write allocates ${low} B at size 1000 and ${high} B at size 10000 (allowed: ${low + 1024})`];
   });
-  assert.deepEqual(copied, [], "a sparse write's allocation grows with the data it writes");
+  assert.deepEqual(copied, [], `a sparse write's allocation grows with the data it writes in a ${build} build`);
 } finally {
   wasm.drop();
   assert.equal(Number(wasm.metric(4)), 0, "no live allocations after drop");

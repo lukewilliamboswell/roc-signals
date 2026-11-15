@@ -232,7 +232,7 @@ problems found before it.
     Node tests in `tests/runtime/` (among them the work monitor's
     aggregation and bounds) and `tests/fuzz/check-report-unit.mjs`, and the
     sparse-write allocation check of `tests/apps/write-scaling` in a
-    development build.
+    development and a shipping (`--opt=size`) build.
 18. The runtime's contract tests in Chrome (`Targets.browser_contracts!`, one
     script under `tests/browser/` each): the protocol facts, names,
     namespaces and Unicode classes against the native oracle; effects,
@@ -760,14 +760,17 @@ Validate every change with the specs and the soaks. There are no exact
 allocation baselines in the gates; allocation regressions show up as soak
 growth or scaling.
 
-`check` also runs a bounded development-Wasm ownership guard in
-`tests/runtime/write-scaling.mjs`. After setup and one warm-up, it compares
-requested bytes for sparse table writes, writes of one element of a list in
-a store cell, and small-cell writes at two sizes. Allocation count alone misses a growing copy made by one allocation.
-The guard checks teardown too. It is evidence for development store ownership;
-optimized copying remains tracked by roc-lang/roc#12957, and local-state
-capture ownership by roc-lang/roc#13012. Extend the guard when those compiler
-fixes land rather than claiming shipping allocation from a development build.
+`check` also runs a bounded ownership guard in
+`tests/runtime/write-scaling.mjs`, over a development and a shipping
+(`--opt=size`) Wasm build of `tests/apps/write-scaling`. After setup and one
+warm-up, it compares the bytes requested by a keyed write of a table, a write
+of one element of a list in a store cell and of one in local state, and a
+small write, at two sizes. Allocation count alone misses a growing copy made
+by one allocation. Each build asserts the writes that are in place in it and
+prints each that still copies beside its compiler issue: in a shipping build
+the table's rows (roc-lang/roc#12957), and in both a local state's value
+(roc-lang/roc#13012). When a fix lands, move the write into the build's
+asserted list in the script. The guard checks teardown too.
 
 ## Compilers
 

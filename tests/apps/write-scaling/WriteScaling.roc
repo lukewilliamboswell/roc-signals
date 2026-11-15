@@ -3,7 +3,7 @@ import pf.Html
 
 ## A bounded fixture whose sparse writes have no data-size-dependent work:
 ## a keyed write of a table, a write of one element of a list held in a
-## store cell, and a small write beside them.
+## store cell and of one held in local state, and a small write beside them.
 WriteScaling := [Rows].{
 
 	## Heap strings make a copied table's per-row ownership cost observable.
@@ -43,6 +43,19 @@ WriteScaling := [Rows].{
 			Html.button("Values 10000", [], Engine.does([cells.values.set(List.repeat(0, 10000))])),
 			Html.button("Bump value", [], Engine.does([cells.values.update(bump)])),
 			Html.p_s(cells.values.signal().map(|values| shown("Value", values)), []),
+			Engine.state(
+				[],
+				|local| Engine.element(
+					"div",
+					[],
+					[
+						Html.button("Local 1000", [], local.update(|_| List.repeat(0, 1000))),
+						Html.button("Local 10000", [], local.update(|_| List.repeat(0, 10000))),
+						Html.button("Bump local", [], local.update(bump)),
+						Html.p_s(local.signal().map(|values| shown("Local", values)), []),
+					],
+				),
+			),
 			Engine.table_view(
 				cells.rows,
 				{

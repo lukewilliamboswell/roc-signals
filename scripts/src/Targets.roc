@@ -268,7 +268,8 @@ Targets := [].{
 	## Exercise the monitor's bounded aggregation and environment facts, including
 	## time-zone probes in UTC and Sydney, and the documented port handlers
 	## with bounded queues and browser-resource cleanup, without a browser.
-	## A development Wasm fixture also guards sparse-write allocation scaling,
+	## A Wasm fixture, built for development and for shipping (`--opt=size`),
+	## also guards sparse-write allocation scaling,
 	## and its declared protocol facts must be exactly the test-owned fixture.
 	runtime_unit! : SpecSuite.Options => Try(List(Str), _)
 	runtime_unit! = |o| {
@@ -286,14 +287,16 @@ Targets := [].{
 		if report_units != 0 {
 			$failures = $failures.append("fixed-report transport contracts failed (exit ${report_units.to_str()})")
 		}
-		wasm = "${o.build_dir}/write-scaling.wasm"
 		Path.create_all!(Path.utf8(o.build_dir))?
-		Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=dev", "tests/apps/write-scaling/main.roc", "--output=${wasm}"], cwd: o.root })?
-		code = Proc.status!({ program: o.node, args: ["tests/runtime/write-scaling.mjs", wasm], cwd: o.root })?
-		if code != 0 {
-			$failures = $failures.append("write-scaling.mjs failed (exit ${code.to_str()})")
+		for build in ["dev", "size"] {
+			wasm = "${o.build_dir}/write-scaling-${build}.wasm"
+			Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=${build}", "tests/apps/write-scaling/main.roc", "--output=${wasm}"], cwd: o.root })?
+			code = Proc.status!({ program: o.node, args: ["tests/runtime/write-scaling.mjs", wasm, build], cwd: o.root })?
+			if code != 0 {
+				$failures = $failures.append("write-scaling.mjs ${build} failed (exit ${code.to_str()})")
+			}
 		}
-		facts = Proc.status!({ program: o.node, args: ["tests/runtime/protocol-production.mjs", wasm], cwd: o.root })?
+		facts = Proc.status!({ program: o.node, args: ["tests/runtime/protocol-production.mjs", "${o.build_dir}/write-scaling-dev.wasm"], cwd: o.root })?
 		if facts != 0 {
 			$failures = $failures.append("protocol-production.mjs failed (exit ${facts.to_str()})")
 		}
