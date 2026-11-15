@@ -103,7 +103,7 @@ Checks := [].{
 			{ name: "wire-opaque-reader", expectation: Rejected(["The type State is not exposed by the module pf.Wire."]) },
 			{ name: "wire-custom-codec", expectation: Compiles },
 			{ name: "port-opaque-out", expectation: Rejected(["an instance of PortJson.Out"]) },
-			{ name: "port-opaque-body", expectation: Rejected(["an instance of PortJson.Out"]) },
+			{ name: "port-opaque-body", expectation: Rejected(["The type OutBody is not exposed by the module pf.PortJson."]) },
 			{ name: "port-custom-codec", expectation: Compiles },
 			{ name: "wire-record-key", expectation: Rejected(["which does not have a method named encode_key_start", "which does not have a method named parse_key_start"]) },
 			{ name: "wire-nominal-key", expectation: Rejected(["which does not have a method named encode_key_start", "which does not have a method named parse_key_start"]) },
