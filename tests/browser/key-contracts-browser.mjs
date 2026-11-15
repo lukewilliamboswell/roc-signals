@@ -15,7 +15,6 @@ for (let i = 2; i < process.argv.length; i += 2) {
 }
 for (const name of ["fixtures", "runtime", "chrome"]) if (!options[name]) throw new Error(`--${name} is required`);
 const fixtures = [
-  ["text-key", ["on_key", "site"]],
   ["document-bound", ["more than 32", "site"]],
   ["apply-noncontrol", ["ApplyValue", "reference \"bad\"", "site"]],
   ["apply-without-value", ["ApplyValue", "reference \"bad\"", "site"]],

@@ -53,6 +53,10 @@ Engine := [].{
 	## The same Fetch method token held by requests and File factory defaults.
 	Method : Web.Method
 
+	## A Fetch method that carries a body, for `File.upload`: never `GET` or
+	## `HEAD`, so a literal one does not compile.
+	UploadMethod : Web.UploadMethod
+
 	## The context at the top of an application without a store: the context of
 	## the [Elem] that `program`'s view returns. Nested contexts ([In], [Row])
 	## are built on top of it.
@@ -1078,7 +1082,7 @@ Engine := [].{
 		SessionStorageRemove(Str),
 		ReadBytes({ file : File, max_bytes : U64 }),
 		ReadUtf8({ file : File, max_bytes : U64 }),
-		Upload({ method : Method, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32, credentials : Credentials }),
+		Upload({ method : UploadMethod, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32, credentials : Credentials }),
 		Sha256(File),
 		ObjectUrl(File),
 
@@ -1186,11 +1190,13 @@ Engine := [].{
 	##   host than localhost does not have);
 	## - `Refused`: the in-flight bound turned the request away, as the typed
 	##   asks report
-	##   it (a raw result is `Refused` itself).
+	##   it (a raw result is `Refused` itself);
+	## - `OutsideFile`: in a task's job, a `read!` of a range that does not
+	##   lie within the file (`File.slice` answers it too).
 	##
 	## A task's job reads files with effects that answer it too, and a task
 	## that passes it on answers `Worker.Error`'s `Failed`.
-	FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
+	FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused, OutsideFile]
 
 	## Why a `Work` request produced no answer: the worker's instance faulted
 	## running the job (`Contract`, `ResourceLimit`, `OutOfMemory`, `AppCrash`
@@ -1430,18 +1436,17 @@ Engine := [].{
 	## reports Undeclared.
 	Boot : Core.Boot
 
-	## The user's UTC offsets over an inclusive millisecond span. Boot supplies
-	## a validated table; dates outside that span need an app-level decision.
+	## The user's UTC offsets over an inclusive millisecond span, as boot
+	## measured them (`boot.zone`). Opaque: only boot, which checks the table,
+	## and `utc` make one. `zone.name()` is the browser's IANA name for it
+	## (`""` when unknown), and `zone.offset_at(at_ms)` the minutes east of
+	## UTC at a time, or `Err(OutsideZone)` beyond the span, where the
+	## platform does not guess an offset and the app decides what to show.
 	Zone : Core.Zone
 
 	## An offset of zero covering the entire I64 wall-clock range.
 	utc : Zone
 	utc = Core.utc
-
-	## Read minutes east of UTC at the given timestamp. OutsideZone refuses a
-	## guess beyond the table's span; malformed hand-built tables are contracts.
-	zone_offset : Zone, I64 -> Try(I32, [OutsideZone])
-	zone_offset = |zone, at_ms| Core.zone_offset(zone, at_ms)
 
 	## A session draft read before mount, or Missing when no value was stored.
 	boot_session : Boot, Str -> Try(Str, [Missing])
@@ -1567,8 +1572,9 @@ Engine := [].{
 	}
 
 	## Listen for an event's text payload by its bare event name. Custom names
-	## may contain a colon. Retired policy/file suffixes are a contract error
-	## at mount; use `on_with` for policies and `on_files` for file handles.
+	## may contain a colon. An `EventType` never ends in a retired policy or
+	## files suffix and is never `keydown` or `keyup`: use `on_with` for
+	## policies, `on_files` for file handles and `on_key` for keys.
 	on : EventType, Handler(ctx) -> Attr(ctx)
 	on = |ev, { h }| Core.on(ev.text(), h)
 

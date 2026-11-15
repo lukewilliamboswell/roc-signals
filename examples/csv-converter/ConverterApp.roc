@@ -29,8 +29,9 @@ ConverterApp := [].{
 
 	## Why a conversion has no output: the file could not be read or is not
 	## UTF-8 (`Unreadable`, `InvalidUtf8`), the output is over the bound
-	## (`TooLarge`), or the file has no header line (`Empty`).
-	Problem : [Unreadable, TooLarge, InvalidUtf8, Empty]
+	## (`TooLarge`), the file has no header line (`Empty`), or the job asked
+	## for bytes the file does not hold (`OutsideFile`, `ZeroChunk`).
+	Problem : [Unreadable, TooLarge, InvalidUtf8, Empty, OutsideFile, ZeroChunk]
 
 	convert : Worker.Task(Job, Converted, Problem)
 	convert = Worker.task({ name: "roc-signals.example/csv-converter/convert", run!: ConverterApp.convert! })
@@ -57,7 +58,7 @@ ConverterApp := [].{
 		var $rows = 0
 		var $ragged = 0
 		var $carry = []
-		for span in source.spans(ConverterApp.chunk_bytes) {
+		for span in source.spans(ConverterApp.chunk_bytes)? {
 			bytes = source.read!(span)?
 			{ complete, rest } = Csv.lines($carry.concat(bytes))
 			var $text = ""
@@ -128,6 +129,8 @@ ConverterApp := [].{
 		InvalidUtf8 => "the file is not UTF-8 text"
 		TooLarge => "the output is larger than the converter keeps in memory"
 		Unreadable => "the browser can no longer read the file"
+		OutsideFile => "a read went past the end of the file"
+		ZeroChunk => "the file was read in chunks of no bytes"
 	}
 
 	size_text : U64 -> Str
@@ -259,7 +262,11 @@ preview = |output| Engine.state(
 			Engine.watch_latest(
 				output.lift(),
 				|converted| match converted {
-					Ok(out) => [out.slice({ start: 0, len: out.size().min(4096) }).read_bytes({})]
+					Ok(out) =>
+						match out.slice({ start: 0, len: out.size().min(4096) }) {
+							Ok(head) => [head.read_bytes({})]
+							Err(OutsideFile) => []
+						}
 					Err(NoAnswer) => []
 				},
 				lines.on_result(

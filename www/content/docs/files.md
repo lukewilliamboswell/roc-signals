@@ -64,7 +64,8 @@ or `Paste`, so an event that cannot carry files cannot be selected.
 ## How long a file lasts
 
 A `File` is an ordinary value. Keep it in a state, put it in a list, compare
-it, or take a range of it with `File.slice`. It stays available as long as
+it, or take a range of it with `File.slice`, which answers `Err(OutsideFile)`
+for a range that does not lie within the file. It stays available as long as
 some value holds it, and the app lets it go when nothing does: write the
 state without it, or let the scope holding that state be disposed.
 
@@ -106,8 +107,9 @@ the job, reading is an effect:
 slice, as text; `file.contents!()` gives its bytes, and
 `file.read!({ start, len })` reads one range, so a job can go through a
 large file a chunk at a time and keep its memory to a chunk.
-`file.spans(n)` gives those ranges, `n` bytes each and the last shorter,
-so the loop is `for span in file.spans(n) { bytes = file.read!(span)? ... }`.
+`file.spans(n)` gives those ranges, `n` bytes each and the last shorter
+(`Err(ZeroChunk)` for `n` of 0, which covers nothing), so the loop is
+`for span in file.spans(n)? { bytes = file.read!(span)? ... }`.
 These are
 effects, written with `!`, so they exist only in a job: page code is pure
 and the compiler refuses one there. On the page there are no bytes until
@@ -192,10 +194,12 @@ digest and a downloaded body, and never what a job reads in a worker.
 | Text was asked for and the bytes are not UTF-8 | `InvalidUtf8` |
 | The browser cannot do it (a digest without WebCrypto) | `Unavailable` |
 | Too many requests were in flight | `Refused` |
+| In a job, a `read!` of a range outside the file | `OutsideFile` |
 
 The effects a job calls on a file answer only what each can produce:
-`read!` and `contents!` fail with `[Unreadable]`, `contents_utf8!` with
-`[Unreadable, InvalidUtf8]`, and a builder's `append!` with `[TooLarge]`.
+`read!` fails with `[Unreadable, OutsideFile]`, `contents!` with
+`[Unreadable]`, `contents_utf8!` with `[Unreadable, InvalidUtf8]`, and a
+builder's `append!` with `[TooLarge]`.
 `?` widens each into the task's own error, which can be `FileError` or a
 union of the app's own that names just these tags beside its others.
 

@@ -475,7 +475,7 @@ Scm := [].{
 			$offsets = $offsets.append({ from_ms, minutes: Scm.zone_minutes(Scm.arg(pair, 1))? })
 			$previous = from_ms
 		}
-		Ok({ name, from_ms: -9223372036854775808, until_ms: 9223372036854775807, offsets: $offsets })
+		Core.zone_from({ name, from_ms: -9223372036854775808, until_ms: 9223372036854775807, offsets: $offsets }).map_err(|why| Scm.bad(form, why))
 	}
 
 	## Check that a declared offset fits the boot protocol's signed minute
@@ -513,12 +513,20 @@ Scm := [].{
 	## text, preserving I64 precision in JavaScript. Offsets keep their checked
 	## I32 representation and their declared order.
 	zone_json : Core.Zone -> JsonOut.Value
-	zone_json = |zone| Object([
-		JsonOut.field("name", Text(zone.name)),
-		JsonOut.field("from_ms", Text(zone.from_ms.to_str())),
-		JsonOut.field("until_ms", Text(zone.until_ms.to_str())),
-		JsonOut.field("offsets", Array(zone.offsets.map(|offset| Object([JsonOut.field("from_ms", Text(offset.from_ms.to_str())), JsonOut.field("minutes", Int(offset.minutes.to_i64()))])))),
-	])
+	zone_json = |held| {
+		zone = Core.zone_table(held)
+		Object([
+			JsonOut.field("name", Text(zone.name)),
+			JsonOut.field("from_ms", Text(zone.from_ms.to_str())),
+			JsonOut.field("until_ms", Text(zone.until_ms.to_str())),
+			JsonOut.field("offsets", Array(zone.offsets.map(|offset| Object([JsonOut.field("from_ms", Text(offset.from_ms.to_str())), JsonOut.field("minutes", Int(offset.minutes.to_i64()))])))),
+		])
+	}
+
+	## The table a spec's zone holds, for a runner that writes it into boot
+	## bytes.
+	zone_table : Core.Zone -> Core.ZoneTable
+	zone_table = |zone| Core.zone_table(zone)
 
 	## Pointer steps carry a zone-relative percentage or ask for the located
 	## element's centre. The runner rejects an ambiguous centre inside a zone.
@@ -3567,7 +3575,7 @@ expect {
 ## advances the seed, and exhausting either integer produces an error.
 expect {
 	spec = Scm.parse("(test \"facts\" (setup (initial-time \"1969-12-31T23:59:59.999Z\") (seed 340282366920938463463374607431768211455) (languages \"\" \"en-AU\") (time-zone \"test\" -60 (0 90))) (steps (set-time -100) (advance-time 18446744073709551615)))")?
-	{ now: spec.environment.now_ms, seed: spec.environment.seed, language: spec.environment.languages, at_zero: Core.zone_offset(spec.environment.zone, 0), exhausted: Scm.next_document(spec.environment).is_err(), advance: Scm.advance_clock(-9223372036854775808, 18446744073709551615), overflow: Scm.advance_clock(9223372036854775807, 1).is_err() } == {
+	{ now: spec.environment.now_ms, seed: spec.environment.seed, language: spec.environment.languages, at_zero: spec.environment.zone.offset_at(0), exhausted: Scm.next_document(spec.environment).is_err(), advance: Scm.advance_clock(-9223372036854775808, 18446744073709551615), overflow: Scm.advance_clock(9223372036854775807, 1).is_err() } == {
 		now: -1,
 		seed: 340282366920938463463374607431768211455,
 		language: ["", "en-AU"],

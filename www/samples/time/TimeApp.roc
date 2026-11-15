@@ -103,7 +103,7 @@ view = |boot| Html.div(
 ## A zone is a value with a stated span. A date outside it is an error the
 ## app handles, rather than using today's offset for a different instant.
 local_time : { zone : Engine.Zone, at_ms : I64, language : Str } -> Str
-local_time = |{ zone, at_ms, language }| match Engine.zone_offset(zone, at_ms) {
+local_time = |{ zone, at_ms, language }| match zone.offset_at(at_ms) {
 	Err(OutsideZone) => "Outside saved time zone"
 	Ok(offset_minutes) => match Time.clock_text({ at_ms, offset_minutes, language }) {
 		Ok(clock) => clock

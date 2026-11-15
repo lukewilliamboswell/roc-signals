@@ -270,7 +270,7 @@ ServicesApp := [].{
 				Html.p_s(Engine.const(boot.now_ms.to_str()), [Engine.test_id("boot-time")]),
 				Html.p_s(Engine.const(boot.seed.to_str()), [Engine.test_id("boot-seed")]),
 				Html.p_s(Engine.const(Str.join_with(boot.languages, ",")), [Engine.test_id("boot-languages")]),
-				Html.p_s(Engine.const(boot.zone.name), [Engine.test_id("boot-zone")]),
+				Html.p_s(Engine.const(boot.zone.name()), [Engine.test_id("boot-zone")]),
 				Html.p_s(st.signal().map(|s| s.clock.to_str()), [Engine.test_id("sample-time")]),
 				Engine.watch(
 					st.signal().map(|s| s.request),

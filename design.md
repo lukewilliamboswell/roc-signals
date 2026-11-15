@@ -2702,14 +2702,15 @@ by using their clock cell. Decisions remain pure functions of supplied data.
 The wall clock may move backwards; apps handle that rather than assuming a
 monotonic clock.
 
-A zone is `{ name, from_ms, until_ms, offsets }`. Each offset gives
-`{ from_ms, minutes }`, minutes east of UTC. Its span is inclusive; one to
-128 entries are strictly ascending, the first starts at the span's beginning,
-and every entry lies within it. `zone_offset(zone, time)` returns
-`OutsideZone` outside that span. It checks a hand-built table's contract,
-bounded by 128 entries, then uses binary search. It never guesses from the
-nearest offset beyond the stated span. `utc` has one zero offset over the
-whole I64 range. A zone name has at most 64 UTF-8 bytes; an unknown browser
+A zone is an opaque table `{ name, from_ms, until_ms, offsets }`. Each offset
+gives `{ from_ms, minutes }`, minutes east of UTC. Its span is inclusive; one
+to 128 entries are strictly ascending, the first starts at the span's
+beginning, and every entry lies within it. Only boot, which checks the table
+it reads, and `utc` make a zone, so no app can hand the engine a malformed
+one. `zone.name()` reads its name and `zone.offset_at(time)` returns
+`OutsideZone` outside the span, by binary search over at most 128 entries,
+with no check per call. It never guesses from the nearest offset beyond the
+stated span. `utc` has one zero offset over the whole I64 range. A zone name has at most 64 UTF-8 bytes; an unknown browser
 name is the empty string.
 
 The program declares `zone_days : U16` (366 by default, at most 7305) on each
@@ -3091,9 +3092,10 @@ rule is the platform's, since the DOM accepts an empty event type. A misspelt ty
 or an event declared on an element that never raises it, reaches nothing.
 Nothing reports that silent outcome: an earlier check would need a closed
 list kept in step with every browser and custom element.
-Literals also reject retired policy/file suffixes and text handlers on
-`keydown` or `keyup`, with the typed builder to use. Computed types retain
-those mount-time checks. No known-event catalogue restricts custom events.
+`from_str` and literals apply one rule: they also reject retired
+policy/file suffixes and text handlers on `keydown` or `keyup`, with the
+typed builder to use, so an event type an app holds never fails at mount.
+No known-event catalogue restricts custom events.
 Typed attach functions cover the events of `Html`'s controls and helpers;
 a spec that expects a handler to run fails in both runners.
 
@@ -3708,7 +3710,7 @@ interval longer than 2,147,483,647 milliseconds;
 an effect follow-up chain deeper than 64;
 a result reader given a raw result of the wrong kind; a worker catalogue with a
 duplicate name or more than 64 names; work issued for a task the
-catalogue does not hold; an upload whose method is any ASCII spelling of `GET` or `HEAD`;
+catalogue does not hold;
 a port catalogue with a duplicate name, more than
 64 ports, a name that is empty or longer than 128 bytes or an `Every` bound
 outside 1–1024; a request for an undeclared port or for a port of another
@@ -3717,16 +3719,14 @@ query outside 1–256 UTF-8 bytes, or a subscription to an undeclared query;
 a hosted effect reached outside a job, or a job's entry called on
 the page's instance; `Builder.append!`, `append_file!` or `finish!` on a
 builder that was finished, or that the call which opened it has left
-behind (a builder a prepared state kept); `File.read!` of a range outside
-the file; in the worker, a job for a name that is not a task of
+behind (a builder a prepared state kept); in the worker, a job for a name that is not a task of
 its own (a preparation's name, or a preparation's task through `work`),
 and a job of a task its preparation does not list; event payload not
-valid for its handler's payload kind (for text, not UTF-8); an event type
-ending in a retired policy or files suffix; a property on an element its
+valid for its handler's payload kind (for text, not UTF-8); a property on an element its
 row does not allow, a property declared twice on an element, or an
 attribute with a name a property row claims on that element; a controlled
-helper with reserved attributes or a `beforetoggle` handler; a text-kind
-key handler, a 33rd live document-key handler, or `ApplyValue` without a
+helper with reserved attributes or a `beforetoggle` handler; a 33rd live
+document-key handler, or `ApplyValue` without a
 declared value property at its reference; boot
 bytes or an effect result that do not follow Appendix B (truncated, trailing
 bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
@@ -3830,7 +3830,7 @@ bound and a declared behaviour at the bound:
 | Live document-key handlers | 32 per instance, structurally outside rows | `contract` at mount naming the site |
 | Declared media queries | 32 distinct queries, 1–256 UTF-8 bytes each | `contract` at catalogue construction |
 | Boot languages | 1–16 strings, at most 64 UTF-8 bytes each | Default reader retains the first that fit, or `en-US`; invalid injected readers refuse mount and invalid bytes are a named section contract fault |
-| Zone table | `zone_days` each side of mount (366 by default, at most 7305); 1–128 offsets | Default probe shortens both ends to fit, retaining mount time; outside the stated span `zone_offset` returns `OutsideZone` |
+| Zone table | `zone_days` each side of mount (366 by default, at most 7305); 1–128 offsets | Default probe shortens both ends to fit, retaining mount time; outside the stated span `offset_at` returns `OutsideZone` |
 | Zone name | 64 UTF-8 bytes | Unknown or oversized browser name is empty; invalid injected data refuses mount |
 | Live observations | One registration per observed element and kind; follows live nodes | Node resource bound; no fixed data-sized cap |
 | Leave guards | Live sites contribute a count; one runtime flag and at most one listener | No in-flight slot or refusal; unmount/recovery clear the flag, poisoning retains it |
@@ -4729,7 +4729,8 @@ text, not a universal fetch reference: an absolute URL retains its origin
 through `to_str`, including when its path begins `//`. Request URL fields remain text.
 
 
-`Web` owns the opaque `Tag`, `AttrName`, `EventType` and `Method` primitives;
+`Web` owns the opaque `Tag`, `AttrName`, `EventType`, `Method` and
+`UploadMethod` primitives;
 `Engine` aliases them beside its builders. Their literals are checked while
 compiling. `from_str` returns a typed refusal for computed text, and `text`
 retains the original spelling. Tag and attribute grammar is context-free;
@@ -4750,9 +4751,10 @@ in every ASCII case. A literal containing lowercase is refused unless Fetch
 would normalize it: DELETE, GET, HEAD, OPTIONS, POST and PUT. Computed methods
 retain Fetch's grammar and forbidden-method check, including an explicitly
 computed lowercase custom method. Requests, File factories and defaulted props
-hold this one concrete Method type. Uploads refuse every ASCII spelling of
-GET or HEAD at admission, where the file body is known; that contextual rule
-never rewrites the retained method.
+hold this one concrete Method type, except an upload's, which is an
+`UploadMethod`: a `Method` other than every ASCII spelling of GET or HEAD,
+which carry no body. A literal one is checked while compiling and a computed
+one answers `NoBody`; the rule never rewrites the retained method.
 
 The authoring API as it stands (`Engine.roc`). Types are abbreviated; `ctx` is
 the context a value or handler is used in.
@@ -4805,9 +4807,10 @@ Boot := { url : Str ?? "/", storage : List((Str, Str)) ?? [], online : Bool ?? T
           visible : Bool ?? True, storage_available : Bool ?? True, media : List((Str, Bool)) ?? [],
           now_ms : I64 ?? 0, seed : U128 ?? 0, languages : List(Str) ?? ["en-US"], zone : Zone ?? utc,
           session : List((Str, Str)) ?? [], session_available : Bool ?? True }
-Zone : { name : Str, from_ms : I64, until_ms : I64, offsets : List({ from_ms : I64, minutes : I32 }) }
+Zone                                          # opaque: made only by boot and utc
+Zone.name : Zone -> Str                       # the browser's IANA name, or ""
+Zone.offset_at : Zone, I64 -> Try(I32, [OutsideZone])   # minutes east of UTC within the span
 utc : Zone
-zone_offset : Zone, I64 -> Try(I32, [OutsideZone])
 boot_media : Boot, Str -> Try(Bool, [Undeclared])
 boot_session : Boot, Str -> Try(Str, [Missing])
 guard_leave : Signal(ctx, Bool) -> Elem(ctx)
@@ -4881,11 +4884,12 @@ HandlerOf.also : HandlerOf(ctx, p), HandlerOf(ctx, p) -> HandlerOf(ctx, p)  # bo
 Reaction.also : Reaction(ctx, a, result), Reaction(ctx, a, result) -> Reaction(ctx, a, result)
 
 # Browser names (public Web module, with Engine aliases)
-Tag, AttrName, EventType, Method             # opaque; retain authored spelling
+Tag, AttrName, EventType, Method, UploadMethod   # opaque; retain authored spelling
 Web.Tag.from_str : Str -> Try(Tag, [NotATag(Str)])
 Web.AttrName.from_str : Str -> Try(AttrName, [NotAnAttribute(Str)])
 Web.EventType.from_str : Str -> Try(EventType, [NotAnEventType(Str)])
 Web.Method.from_str : Str -> Try(Method, [NotAMethod(Str)])
+Web.UploadMethod.from_str : Str -> Try(UploadMethod, [NotAMethod(Str), NoBody(Str)])
 # Each has from_quote : Str -> Try(Self, [BadQuotedBytes(Str)]),
 # text : Self -> Str and is_eq : Self, Self -> Bool.
 
@@ -4982,13 +4986,13 @@ scroll_into_view : Str, ScrollProps -> [ScrollIntoView(Str, { block : Align, inl
 File                                          # opaque handle: a file, or a range of one
 File.name, File.mime : File -> Str
 File.size : File -> U64                       # bytes in this file or range
-File.slice : File, { start : U64, len : U64 } -> File   # contract error outside the file
-File.spans : File, U64 -> List({ start : U64, len : U64 })   # ranges of n bytes covering it, for read!
+File.slice : File, { start : U64, len : U64 } -> Try(File, [OutsideFile])   # a range of it
+File.spans : File, U64 -> Try(List({ start : U64, len : U64 }), [ZeroChunk])   # ranges of n bytes covering it, for read!
 File.read_bytes : File, ReadProps -> Ask(List(U8), FileError)
 File.read_utf8 : File, ReadProps -> Ask(Str, FileError)
 ReadProps := { max_bytes : U64 ?? 8388608 }    # under the page's maxFileBytes
 File.upload : File, UploadProps -> Ask(Response, HttpFailure)        # the file as an HTTP body
-UploadProps := { url : Str, method : Method ?? "POST", headers : List((Str, Str)) ?? [],
+UploadProps := { url : Str, method : UploadMethod ?? "POST", headers : List((Str, Str)) ?? [],
                  timeout : [Unlimited, Ms(U32)] ?? Unlimited, credentials : Credentials ?? SameOrigin }
 File.sha256 : File -> Ask(List(U8), FileError)      # 32 digest bytes
 File.object_url : File -> Ask(Str, FileError)       # URL valid while the handle lives
@@ -5003,7 +5007,7 @@ Fetched : { status : U16, headers : List((Str, Str)), body : File }
 FetchFailure : [Network(Str), Timeout, TooLarge, Refused]
 FetchError : [Network(Str), Timeout, Status(U16), TooLarge, Refused]
 # In a worker job only (a task's run!, a preparation's prepare!; effects):
-File.read! : File, { start : U64, len : U64 } => Try(List(U8), [Unreadable])
+File.read! : File, { start : U64, len : U64 } => Try(List(U8), [Unreadable, OutsideFile])
 File.contents! : File => Try(List(U8), [Unreadable])
 File.contents_utf8! : File => Try(Str, [Unreadable, InvalidUtf8])
 Files.build! : { name : Str, mime : [Auto, Mime(Str)] ?? Auto,
@@ -5072,7 +5076,7 @@ Request : [Http({ method : Method, url, headers, body, timeout_ms, cache, creden
        ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
        StorageSet(Str, Str), StorageRemove(Str), SessionStorageSet(Str, Str), SessionStorageRemove(Str), ReadBytes({ file, max_bytes }),
        ReadUtf8({ file, max_bytes }),
-       Upload({ method : Method, url, headers, body : File, timeout_ms, credentials }), Sha256(File), ObjectUrl(File),
+       Upload({ method : UploadMethod, url, headers, body : File, timeout_ms, credentials }), Sha256(File), ObjectUrl(File),
        PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
        PortSubscribe({ port, message }),
        Save({ file : File, name : Str }), Fetch({ method : Method, url, headers, timeout_ms, cache, credentials }),
@@ -5090,7 +5094,7 @@ Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Mi
        ClipboardFailed([NotAllowed, Unavailable]),
        StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] }),
        Fetched({ status : U16, headers : List((Str, Str)), body : File })]
-FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
+FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused, OutsideFile]
 PortMessage : { json : Str, blobs : List(List(U8)), files : List(File) }
 PortFailure : [Threw(Str), TooLarge, Closed]
 PortDelivery : [Latest, Every(U32)]
@@ -5671,7 +5675,7 @@ an earlier command. Scroll end is resolved at perform time.
 | 9 | `port:str message timeout_ms:u32` | Port call (`message` as for `PORT`); `timeout_ms` 0 = none, capped at 600 000 |
 | 10 | `port:str message` | Port subscription |
 | 11 | `mode:u8 token:u64 start:u64 len:u64 max_bytes:u64` | Read a file's range into the page: `mode` `1` bytes (answered tag 16), `2` text (tag 17); a range longer than `max_bytes`, or than the runtime's `maxFileBytes`, is answered tag 13 `TooLarge` unread |
-| 12 | `method:str url:str n:u32 (name:str value:str)* token:u64 start:u64 len:u64 timeout_ms:u32 cache:u8 credentials:u8 progress_ms:u32` | HTTP with a file's range as the body (answered as kind 1); a method of `GET` or `HEAD` is a `contract` error in the engine |
+| 12 | `method:str url:str n:u32 (name:str value:str)* token:u64 start:u64 len:u64 timeout_ms:u32 cache:u8 credentials:u8 progress_ms:u32` | HTTP with a file's range as the body (answered as kind 1); the method is a `Web.UploadMethod`, never `GET` or `HEAD` |
 | 13 | `algorithm:u8 token:u64 start:u64 len:u64` | Digest of a file's range: `algorithm` `1` SHA-256 (tag 18) |
 | 14 | `token:u64 start:u64 len:u64` | A URL that shows a file's range (tag 19) |
 | 15 | `method:str url:str n:u32 (name:str value:str)* timeout_ms:u32 cache:u8 credentials:u8 progress_ms:u32` | HTTP whose response body becomes a file (tag 21; failures as kind 1, a body over `maxFileBytes` tag 13 reason 2) |

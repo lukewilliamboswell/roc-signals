@@ -375,7 +375,7 @@ capture_caption = |{ captured, now_ms, zone, language }| match captured {
 	Awaiting => "just now"
 	At(at_ms) => {
 		age = Time.relative({ now_ms, captured_ms: at_ms })
-		match Engine.zone_offset(zone, at_ms) {
+		match zone.offset_at(at_ms) {
 			Err(OutsideZone) => "Captured outside saved time zone · ${age}"
 			Ok(offset_minutes) => match Time.clock_text({ at_ms, offset_minutes, language }) {
 				Ok(clock) => "Captured ${clock} · ${age}"

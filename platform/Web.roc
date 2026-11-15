@@ -177,28 +177,37 @@ Web := [].{
 		is_eq : _
 	}
 
-	## An open event type. The platform requires a nonempty name and keeps the
-	## engine's mount checks for computed retired suffixes and text key handlers.
+	## An open event type for a text handler (`on`, `on_with`): any nonempty
+	## name without a retired suffix that a text handler can hear. There is
+	## no known-event vocabulary, so a custom name (`"x:y"`) is one. One rule
+	## serves a literal, checked while compiling, and a computed name, so an
+	## event type the app holds never fails at mount.
 	EventType :: Str.{
 
-		## Accept any nonempty computed type; there is no known-event vocabulary.
+		## A computed event type, or `NotAnEventType` saying why it is not
+		## one: an empty name, a retired `:prevent` or `:files` suffix, or
+		## `keydown`/`keyup`, which a text handler never hears.
 		from_str : Str -> Try(EventType, [NotAnEventType(Str)])
-		from_str = |spelling| if (spelling.is_empty()) Err(NotAnEventType("the platform requires a nonempty event type")) else Ok(EventType.(spelling))
-
-		## Move the engine's retired-suffix and text-key rules to the literal.
-		from_quote : Str -> Try(EventType, [BadQuotedBytes(Str)])
-		from_quote = |spelling| {
+		from_str = |spelling| {
+			if spelling.is_empty() {
+				return Err(NotAnEventType("the platform requires a nonempty event type"))
+			}
 			if spelling.ends_with(":prevent") {
-				return Err(BadQuotedBytes("`:prevent` is retired: write on_with(${Str.inspect(spelling.drop_suffix(":prevent"))}, { prevent: True }, handler)"))
+				return Err(NotAnEventType("`:prevent` is retired: write on_with(${Str.inspect(spelling.drop_suffix(":prevent"))}, { prevent: True }, handler)"))
 			}
 			if spelling.ends_with(":files") {
-				return Err(BadQuotedBytes("`:files` is retired: listen for files with on_files(Change, handler), on_files(Drop, handler) or on_files(Paste, handler)"))
+				return Err(NotAnEventType("`:files` is retired: listen for files with on_files(Change, handler), on_files(Drop, handler) or on_files(Paste, handler)"))
 			}
 			if ["keydown", "keyup"].contains(spelling) {
-				return Err(BadQuotedBytes("a text handler never hears ${Str.inspect(spelling)}: listen for keys with on_key or on_document_key"))
+				return Err(NotAnEventType("a text handler never hears ${Str.inspect(spelling)}: listen for keys with on_key or on_document_key"))
 			}
-			EventType.from_str(spelling).map_err(|NotAnEventType(note)| BadQuotedBytes(note))
+			Ok(EventType.(spelling))
 		}
+
+		## A literal event type, checked while compiling by the same rule as
+		## `from_str`.
+		from_quote : Str -> Try(EventType, [BadQuotedBytes(Str)])
+		from_quote = |spelling| EventType.from_str(spelling).map_err(|NotAnEventType(note)| BadQuotedBytes(note))
 
 		## Recover the exact authored spelling for a boundary or an application log.
 		text : EventType -> Str
@@ -241,6 +250,43 @@ Web := [].{
 		## Names are equal exactly when their retained text is equal.
 		is_eq : _
 	}
+
+	## A method that carries a request body, for `File.upload`: a Fetch
+	## method (`Method`'s rules) other than `GET` and `HEAD` in any ASCII
+	## case, which carry none and so cannot send a file. A literal
+	## (`method: "PUT"`) is checked while compiling.
+	UploadMethod :: Str.{
+
+		## A computed method, `NotAMethod` when it is not one Fetch sends, or
+		## `NoBody` for `GET` and `HEAD`, whose requests carry no body.
+		from_str : Str -> Try(UploadMethod, [NotAMethod(Str), NoBody(Str)])
+		from_str = |spelling| {
+			_ = Method.from_str(spelling)?
+			upper = ascii_upper(spelling)
+			if ["GET", "HEAD"].contains(upper) {
+				return Err(NoBody("${upper} carries no body, so it cannot upload a file"))
+			}
+			Ok(UploadMethod.(spelling))
+		}
+
+		## A literal method, checked while compiling by `Method`'s literal
+		## rule and the body rule of `from_str`.
+		from_quote : Str -> Try(UploadMethod, [BadQuotedBytes(Str)])
+		from_quote = |spelling| {
+			_ = Method.from_quote(spelling)?
+			match UploadMethod.from_str(spelling) {
+				Ok(method) => Ok(method)
+				Err(NotAMethod(note)) | Err(NoBody(note)) => Err(BadQuotedBytes(note))
+			}
+		}
+
+		## The exact spelling sent.
+		text : UploadMethod -> Str
+		text = |UploadMethod.(spelling)| spelling
+
+		## Methods are equal exactly when their retained text is equal.
+		is_eq : _
+	}
 }
 
 is_ascii_alpha : U8 -> Bool
@@ -273,13 +319,31 @@ expect {
 	{
 		class_literal: Web.AttrName.from_quote("class").is_err(),
 		test_id_literal: Web.AttrName.from_quote("data-testid").is_err(),
-		retired_literal: Web.EventType.from_quote("click:prevent").is_err(),
-		retired_computed: Web.EventType.from_str("click:prevent").is_ok(),
-		key_literal: Web.EventType.from_quote("keydown").is_err(),
-		key_computed: Web.EventType.from_str("keydown").is_ok(),
 		patch_literal: Web.Method.from_quote("patch").is_err(),
 		patch_computed: Web.Method.from_str("patch").is_ok(),
-	} == { class_literal: True, test_id_literal: True, retired_literal: True, retired_computed: True, key_literal: True, key_computed: True, patch_literal: True, patch_computed: True }
+	} == { class_literal: True, test_id_literal: True, patch_literal: True, patch_computed: True }
+}
+
+## A computed event type is refused by the rule a literal is refused by,
+## so no event type an app holds can fail at mount.
+expect {
+	refused = |spelling| match Web.EventType.from_str(spelling) {
+		Ok(_) => "accepted"
+		Err(NotAnEventType(note)) => note
+	}
+	{
+		prevent: refused("click:prevent"),
+		files: refused("change:files"),
+		key: refused("keydown"),
+		literal_key: Web.EventType.from_quote("keyup").is_err(),
+		custom: refused("x:y"),
+	} == {
+		prevent: "`:prevent` is retired: write on_with(\"click\", { prevent: True }, handler)",
+		files: "`:files` is retired: listen for files with on_files(Change, handler), on_files(Drop, handler) or on_files(Paste, handler)",
+		key: "a text handler never hears \"keydown\": listen for keys with on_key or on_document_key",
+		literal_key: True,
+		custom: "accepted",
+	}
 }
 
 ## Ordinary method spellings that Fetch normalizes remain legal literals;
@@ -293,6 +357,18 @@ expect {
 		empty: Web.Method.from_str("").is_err(),
 		space: Web.Method.from_str("GE T").is_err(),
 	} == { lower_get: "get", mixed_post: "PoSt", computed_trace: True, literal_connect: True, empty: True, space: True }
+}
+
+## An upload method carries a body: GET and HEAD are refused in any case,
+## computed or literal, and any other method keeps its spelling.
+expect {
+	{
+		get: Web.UploadMethod.from_str("get"),
+		head: Web.UploadMethod.from_quote("HeAd").is_err(),
+		trace: Web.UploadMethod.from_str("TRACE").is_err(),
+		put: Web.UploadMethod.from_quote("PUT")?.text(),
+		custom: Web.UploadMethod.from_str("propfind")?.text(),
+	} == { get: Err(NoBody("GET carries no body, so it cannot upload a file")), head: True, trace: True, put: "PUT", custom: "propfind" }
 }
 
 ## The nonempty event rule is the platform's own, not a DOM restriction.

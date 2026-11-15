@@ -65,8 +65,20 @@ FileEffectsApp := [].{
 	whole : File -> File
 	whole = |f| f
 
+	## The second half of a file, which always lies within it.
 	tail_of : File -> File
-	tail_of = |f| f.slice({ start: f.size() / 2, len: f.size() - f.size() / 2 })
+	tail_of = |f| match f.slice({ start: f.size() / 2, len: f.size() - f.size() / 2 }) {
+		Ok(tail) => tail
+		Err(OutsideFile) => crash "FileEffectsApp.tail_of: the second half of a file lies within it"
+	}
+
+	## A read of the second byte alone as text, or none for a file too
+	## short to have one.
+	cut_of : File -> Ask
+	cut_of = |f| match f.slice({ start: 1, len: 1 }) {
+		Ok(cut) => Text(cut)
+		Err(OutsideFile) => Skip
+	}
 
 	sum : List(U8) -> U64
 	sum = |bytes| bytes.fold(0, |acc, b| acc + b.to_u64())
@@ -218,7 +230,7 @@ FileEffectsApp := [].{
 				Html.button("Read bytes", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Bytes(f)))),
 				Html.button("Read large", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Large(f)))),
 				Html.button("Read tail", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Bytes(FileEffectsApp.tail_of(f))))),
-				Html.button("Read cut", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Text(f.slice({ start: 1, len: 1 }))))),
+				Html.button("Read cut", [], st.update(|s| FileEffectsApp.ask_first(s, FileEffectsApp.cut_of))),
 				Html.button("Forget", [], st.update(|s| { ..s, read: Skip })),
 				FileEffectsApp.reader(v.map(|s| s.read), |r| Html.p_s(r.map(FileEffectsApp.show), [Engine.test_id("read")])),
 				Html.button("Panel", [], st.update(|s| { ..s, panel: !s.panel })),

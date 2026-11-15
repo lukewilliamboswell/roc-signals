@@ -47,7 +47,7 @@ import Picture
 LabApp := [].{
 
 	## The composed picture, as the layer that asks for it holds it.
-	Composed : Engine.Remote(File, Worker.Error([TooLarge]))
+	Composed : Engine.Remote(File, Worker.Error([TooLarge, OutsideFile]))
 
 	## The URL that shows the composed picture.
 	Link : [NoLink, Link(Str), Unlinked(Str)]
@@ -364,6 +364,7 @@ LabApp := [].{
 			Working => "Composing the picture"
 			Answered(file) => "${file.name()}, ${file.size().to_str()} bytes"
 			Failed(TooLarge) => "The picture is larger than a job may write."
+			Failed(OutsideFile) => "The picture was not composed: a strip is shorter than its header."
 			Timeout => "The picture was not composed: it timed out."
 			Refused => "The picture was not composed: too many requests were in flight."
 			TooDeep => "The picture was not composed: its answer was nested too deeply."

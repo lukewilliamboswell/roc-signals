@@ -567,9 +567,12 @@ Pure decisions take these values as data, so their tests need no real clock.
 
 ### Local dates and language
 
-`boot.zone` holds a name, inclusive `from_ms` and `until_ms`, and one to 128
-ascending offsets in minutes east of UTC. `Engine.zone_offset(zone, time)`
-returns `OutsideZone` beyond that span; handle it without guessing an offset:
+`boot.zone` is the user's offsets in minutes east of UTC over an inclusive
+span the browser measured, one to 128 of them. It is opaque: only boot and
+`Engine.utc` make one, so it is never malformed. `zone.name()` is its IANA
+name (`""` when the browser did not know one), and `zone.offset_at(time)`
+the offset at a time, or `OutsideZone` beyond the span; handle it without
+guessing an offset:
 
 {{ sample(file="time/TimeApp.roc", region="zone") }}
 

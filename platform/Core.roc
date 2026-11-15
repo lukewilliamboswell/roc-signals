@@ -581,25 +581,28 @@ Core := [].{
 		size = |f| f.len
 
 		## A range of the file, `len` bytes from `start` (relative to this file
-		## or range). A worker reading it reads only those bytes. A range that
-		## does not lie within the file is a contract error.
-		slice : File, { start : U64, len : U64 } -> File
-		slice = |f, { start, len }| {
+		## or range), or `Err(OutsideFile)` when the range does not lie within
+		## it. A worker reading the range reads only those bytes. The size of
+		## a file comes from the browser, so a range computed from it is
+		## checked here, where it is made, and the app decides what an
+		## outside range means.
+		slice : File, { start : U64, len : U64 } -> Try(File, [OutsideFile])
+		slice = |f, { start, len }|
 			if start > f.len or len > f.len - start {
-				crash "contract: File.slice of ${start.to_str()}+${len.to_str()} bytes lies outside \"${f.name}\" (${f.len.to_str()} bytes)"
+				Err(OutsideFile)
+			} else {
+				Ok({ ..f, start: f.start + start, len })
 			}
-			{ ..f, start: f.start + start, len }
-		}
 
 		## The ranges of `chunk` bytes, in order, that cover the file or range
 		## (the last one shorter, none for an empty file), each one an argument
-		## for `read!`: a job reads a large file a chunk at a time with
-		## `for span in file.spans(n) { bytes = file.read!(span)? ... }`. A
-		## chunk of 0 bytes is a contract error.
-		spans : File, U64 -> List({ start : U64, len : U64 })
+		## for `read!`, or `Err(ZeroChunk)` for a chunk of 0 bytes, which
+		## covers nothing. A job reads a large file a chunk at a time with
+		## `for span in file.spans(n)? { bytes = file.read!(span)? ... }`.
+		spans : File, U64 -> Try(List({ start : U64, len : U64 }), [ZeroChunk])
 		spans = |f, chunk| {
 			if chunk == 0 {
-				crash "contract: File.spans of \"${f.name}\" asked for spans of 0 bytes"
+				return Err(ZeroChunk)
 			}
 			var $spans = []
 			var $at = 0
@@ -608,7 +611,7 @@ Core := [].{
 				$spans = $spans.append({ start: $at, len })
 				$at = $at + len
 			}
-			$spans
+			Ok($spans)
 		}
 
 		## A request to read the file's bytes into the page, for an effect
@@ -680,24 +683,22 @@ Core := [].{
 		## browser can no longer read the file (the user's file changed or went
 		## away). One read copies the bytes once; reading a large file in chunks
 		## keeps the job's memory to a chunk. A range that does not lie within
-		## the file is a contract error. Outside a job a file has no reader:
-		## page code cannot call an effect, and the host refuses one anywhere
-		## else.
-		read! : File, { start : U64, len : U64 } => Try(List(U8), [Unreadable])
-		read! = |f, { start, len }| {
+		## the file reads nothing and answers `OutsideFile`. Outside a job a
+		## file has no reader: page code cannot call an effect, and the host
+		## refuses one anywhere else.
+		read! : File, { start : U64, len : U64 } => Try(List(U8), [Unreadable, OutsideFile])
+		read! = |f, { start, len }|
 			if start > f.len or len > f.len - start {
-				crash "contract: File.read! of ${start.to_str()}+${len.to_str()} bytes lies outside \"${f.name}\" (${f.len.to_str()} bytes)"
+				Err(OutsideFile)
+			} else {
+				read_within!(f, start, len)
 			}
-			effects = job_effects(f, "File.read!")
-			bytes = (effects.read!)(f.blob.token(), f.start + start, len)
-			if (bytes.len() == len) Ok(bytes) else Err(Unreadable)
-		}
 
 		## In a task's job: the whole file, or range, as `read!` reads it.
 		## For a file larger than a job should hold at once, read it in chunks
 		## with `read!`.
 		contents! : File => Try(List(U8), [Unreadable])
-		contents! = |f| File.read!(f, { start: 0, len: f.len })
+		contents! = |f| read_within!(f, 0, f.len)
 
 		## In a task's job: the whole file as text, `InvalidUtf8` when its
 		## bytes are not UTF-8 (a byte-order mark is kept), or `Unreadable`.
@@ -921,8 +922,8 @@ Core := [].{
 	## How to send a file as an HTTP body (`File.upload`):
 	##
 	## - `url`: where to send it; required.
-	## - `method`: `"POST"` unless the app says otherwise. A method that
-	##   carries no body (`GET`, `HEAD`) is a contract error.
+	## - `method`: `"POST"` unless the app says otherwise; a `Web.UploadMethod`,
+	##   so a method that carries no body (`GET`, `HEAD`) is not one.
 	## - `headers`: none by default; given as `(name, value)` pairs, as an
 	##   `Http` request's are.
 	## - `timeout`: `Ms(ms)` answers `Timeout` when the server has not
@@ -931,7 +932,7 @@ Core := [].{
 	## - `credentials`: SameOrigin by default, or Include for credentials across origins.
 	UploadProps := {
 		url : Str,
-		method : Web.Method ?? "POST",
+		method : Web.UploadMethod ?? "POST",
 		headers : List((Str, Str)) ?? [],
 		timeout : [Unlimited, Ms(U32)] ?? Unlimited,
 		credentials : Credentials ?? SameOrigin,
@@ -1542,7 +1543,7 @@ Core := [].{
 		SessionStorageRemove(Str),
 		ReadBytes({ file : File, max_bytes : U64 }),
 		ReadUtf8({ file : File, max_bytes : U64 }),
-		Upload({ method : Web.Method, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32, credentials : Credentials }),
+		Upload({ method : Web.UploadMethod, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32, credentials : Credentials }),
 		Sha256(File),
 		ObjectUrl(File),
 
@@ -1715,9 +1716,10 @@ Core := [].{
 	## given), it is more than the operation reads (`TooLarge`), its bytes are
 	## not UTF-8 (`InvalidUtf8`, reading text), the browser cannot perform the
 	## operation (`Unavailable`), or the in-flight bound turned the request
-	## away (`Refused`, as the typed readers report it). One type for every
+	## away (`Refused`, as the typed readers report it), or, in a job, a read
+	## asked for a range outside the file (`OutsideFile`). One type for every
 	## operation on a file; each says which arms it can produce.
-	FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
+	FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused, OutsideFile]
 
 	## A `read_bytes` result as the file's bytes or a typed [FileError]. Any
 	## other result is a contract error.
@@ -2268,38 +2270,64 @@ Core := [].{
 	decode_res : List(U8) -> Result
 	decode_res = |b| decode_res_with(b, decode_port_res)
 
-	## A zone is an offset table over an inclusive UTC-millisecond span. The
-	## first offset starts at from_ms; later offsets start strictly later.
-	Zone : { name : Str, from_ms : I64, until_ms : I64, offsets : List({ from_ms : I64, minutes : I32 }) }
+	## An offset table over an inclusive UTC-millisecond span, as boot
+	## carries it: the first offset starts at `from_ms`; later offsets start
+	## strictly later, and every one lies within the span (`check_zone`).
+	ZoneTable : { name : Str, from_ms : I64, until_ms : I64, offsets : List({ from_ms : I64, minutes : I32 }) }
+
+	## The user's UTC offsets over an inclusive millisecond span. Opaque:
+	## only boot, which checks the table it reads (`check_zone`), and `utc`
+	## make one, so reading it never meets a malformed table and needs no
+	## check per call.
+	Zone :: ZoneTable.{
+
+		## The zone's IANA name as the browser reported it, or `""` when it
+		## did not know one.
+		name : Zone -> Str
+		name = |Zone.(zone)| zone.name
+
+		## Minutes east of UTC at `at_ms`, or `OutsideZone` beyond the span
+		## the table covers, where the platform does not guess an offset. A
+		## binary search over at most 128 offsets.
+		offset_at : Zone, I64 -> Try(I32, [OutsideZone])
+		offset_at = |Zone.(zone), at_ms| {
+			if at_ms < zone.from_ms or at_ms > zone.until_ms {
+				return Err(OutsideZone)
+			}
+			var $low = 0.U64
+			var $high = zone.offsets.len()
+			while $low + 1 < $high {
+				middle = $low + ($high - $low) // 2
+				offset = zone.offsets.get(middle) ?? crash "internal: Zone.offset_at: the middle of a nonempty range has an offset"
+				if offset.from_ms <= at_ms {
+					$low = middle
+				} else {
+					$high = middle
+				}
+			}
+			Ok((zone.offsets.get($low) ?? crash "internal: Zone.offset_at: a checked zone has a first offset").minutes)
+		}
+
+		is_eq : _
+	}
+
+	## For boot and its harnesses: the zone a checked table describes, or
+	## why the table is not one. The only way to make a zone from data.
+	zone_from : ZoneTable -> Try(Zone, Str)
+	zone_from = |held| check_zone(held).map_ok(|_| Zone.(held))
+
+	## For writers of boot bytes and their harnesses: the table a zone holds.
+	zone_table : Zone -> ZoneTable
+	zone_table = |Zone.(held)| held
+
+	## For tests of boot's refusals only: a zone from a table that is not
+	## checked, so a malformed one can be written and read back.
+	zone_unchecked : ZoneTable -> Zone
+	zone_unchecked = |held| Zone.(held)
 
 	## UTC has no transitions and is valid for every I64 wall-clock timestamp.
 	utc : Zone
-	utc = { name: "UTC", from_ms: -9223372036854775808, until_ms: 9223372036854775807, offsets: [{ from_ms: -9223372036854775808, minutes: 0 }] }
-
-	## Find minutes east of UTC at a time the zone table covers. OutsideZone
-	## is data the app handles; a malformed hand-built table is a contract error.
-	zone_offset : Zone, I64 -> Try(I32, [OutsideZone])
-	zone_offset = |zone, at_ms| {
-		match check_zone(zone) {
-			Ok(_) => {}
-			Err(message) => crash "contract: zone_offset ${message}"
-		}
-		if at_ms < zone.from_ms or at_ms > zone.until_ms {
-			return Err(OutsideZone)
-		}
-		var $low = 0.U64
-		var $high = zone.offsets.len()
-		while $low + 1 < $high {
-			middle = $low + ($high - $low) // 2
-			offset = zone.offsets.get(middle) ?? crash "internal: zone_offset index"
-			if offset.from_ms <= at_ms {
-				$low = middle
-			} else {
-				$high = middle
-			}
-		}
-		Ok((zone.offsets.get($low) ?? crash "internal: zone_offset has no first offset").minutes)
-	}
+	utc = Zone.({ name: "UTC", from_ms: -9223372036854775808, until_ms: 9223372036854775807, offsets: [{ from_ms: -9223372036854775808, minutes: 0 }] })
 
 	## What the host knows before the first render: the URL, the declared storage
 	## keys' values (missing keys are absent), whether the browser is online and
@@ -2454,7 +2482,7 @@ Core := [].{
 		time = put_section(media, 7, put_u64([], boot.now_ms.to_u64_wrap()))
 		seed = put_section(time, 8, put_u128([], boot.seed))
 		languages = boot.languages.fold(put_u32([], boot.languages.len().to_u32_wrap()), put_str)
-		zone = boot.zone
+		zone = Core.zone_table(boot.zone)
 		var $offsets = put_u32(put_u64(put_u64(put_str([], zone.name), zone.from_ms.to_u64_wrap()), zone.until_ms.to_u64_wrap()), zone.offsets.len().to_u32_wrap())
 		for offset in zone.offsets {
 			$offsets = put_u32(put_u64($offsets, offset.from_ms.to_u64_wrap()), offset.minutes.to_u32_wrap())
@@ -4640,7 +4668,8 @@ static_element_place = |root, ordinal, elem| match static_element_path(root, ord
 }
 
 ## Reject element contracts before allocating its nodes: one handler per
-## bare event type, no retired suffixes, and properties used only on their
+## bare event type (no retired suffix, an invariant `Web.EventType`
+## keeps), and properties used only on their
 ## declared elements without duplicates or claimed ordinary attributes.
 ## Both plain blocks and row templates use this construction-site check.
 check_element_attrs : List(Attr(ctx)), Web.Tag, Str, List(U32), (() -> Str) -> {}
@@ -4689,11 +4718,14 @@ check_element_attrs = |attrs, resolved, placed, path, describe| {
 	for attribute in attrs {
 		match attribute {
 			On(declaration, _) => {
+				# Cannot occur: every public text handler takes a Web.EventType,
+				# whose from_str and from_quote refuse these names, and the
+				# platform's own handlers name neither.
 				if declaration.kind == 1 and (declaration.event == "keydown" or declaration.event == "keyup") {
-					crash "contract: text handler on ${declaration.event}${location()}; use on_key"
+					crash "internal: check_element_attrs: a text handler on ${declaration.event}${location()}; Web.EventType refuses it"
 				}
 				if declaration.event.ends_with(":prevent") or declaration.event.ends_with(":files") {
-					crash "contract: retired event suffix in \"${declaration.event}\"${location()}; use on_with for policies or on_files for files"
+					crash "internal: check_element_attrs: a retired event suffix in \"${declaration.event}\"${location()}; Web.EventType refuses it"
 				}
 			}
 			Property(index, _) | PropertyV(index, _) => {
@@ -7740,6 +7772,16 @@ job_effects = |f, what| match f.reach {
 	OnPage => crash "contract: ${what} on \"${f.name}\" outside a worker job; a file's effects run only in a task's job"
 }
 
+## `len` bytes at `start` of `f`, a range the caller has checked lies
+## within it, read through the job's effects; `Unreadable` when the browser
+## gave fewer bytes than asked (the file changed or went away).
+read_within! : File, U64, U64 => Try(List(U8), [Unreadable])
+read_within! = |f, start, len| {
+	effects = job_effects(f, "File.read!")
+	bytes = (effects.read!)(f.blob.token(), f.start + start, len)
+	if (bytes.len() == len) Ok(bytes) else Err(Unreadable)
+}
+
 ## A file's handle and range on the wire: `token:u64 start:u64 len:u64`.
 put_file : List(U8), File -> List(U8)
 put_file = |buf, f| {
@@ -8528,34 +8570,19 @@ request_problem = |request| match request {
 	Timer(ms) if ms > max_browser_timer_ms => Err("contract: Timer(${ms.to_str()}) is longer than a browser timer holds (2147483647 ms, about 24.8 days); the browser would fire it at once")
 	Interval(0) => Err("contract: Interval(0) has no period; the browser would fire it as fast as it can, a turn each time")
 	Interval(ms) if ms > max_browser_timer_ms => Err("contract: Interval(${ms.to_str()}) is longer than a browser timer holds (2147483647 ms, about 24.8 days); the browser would fire it as fast as it can, a turn each time")
-	Upload({ method, url, body, .. }) if upload_has_no_body(method) => Err("contract: File.upload of \"${body.name}\" to ${url} uses ${method.text()}, which carries no body")
 	_ => Ok({})
 }
 
-## Fetch normalizes these methods in every ASCII case. Compare at admission,
-## where a file body is known, without changing the method's retained spelling.
-upload_has_no_body : Web.Method -> Bool
-upload_has_no_body = |method| match method.text().to_utf8() {
-	[g, e, t] => (g == 'G' or g == 'g') and (e == 'E' or e == 'e') and (t == 'T' or t == 't')
-	[h, e, a, d] => (h == 'H' or h == 'h') and (e == 'E' or e == 'e') and (a == 'A' or a == 'a') and (d == 'D' or d == 'd')
-	_ => False
-}
-
-## File.upload shares the public request family. Every spelling Fetch would
-## normalize to GET or HEAD is refused before admission, while a body-carrying
-## method retains its exact spelling in the ask.
+## File.upload shares the public request family: an upload method that
+## cannot carry a body is not a `Web.UploadMethod`, so none reaches
+## admission, and a body-carrying method retains its exact spelling in the
+## ask.
 expect {
 	file = Core.held_file(Box.box(1.U64))
-	refused = ["GET", "get", "GeT", "HEAD", "head", "HeAd"].all(
-		|method| {
-			checked = Web.Method.from_str(method) ?? crash "valid method in upload contract expect"
-			request = file.upload({ url: "/upload", method: checked }).sent()
-			request_problem(request) == Err("contract: File.upload of \"\" to /upload uses ${method}, which carries no body")
-		},
-	)
+	refused = ["GET", "get", "GeT", "HEAD", "head", "HeAd"].all(|method| Web.UploadMethod.from_str(method).is_err())
 	accepted = ["POST", "post", "PROPFIND", "custom"].all(
 		|method| {
-			checked = Web.Method.from_str(method) ?? crash "valid method in upload contract expect"
+			checked = Web.UploadMethod.from_str(method) ?? crash "valid method in upload contract expect"
 			request = file.upload({ url: "/upload", method: checked }).sent()
 			request_problem(request).is_ok() and match request {
 				Upload(props) => props.method.text() == method
@@ -9567,8 +9594,7 @@ boot_sections = |queries| [
 				$at = $at + 12
 			}
 			boot_end(body, $at)?
-			zone = { name, from_ms, until_ms, offsets: $offsets }
-			check_zone(zone)?
+			zone = Core.zone_from({ name, from_ms, until_ms, offsets: $offsets })?
 			Ok({ ..boot, zone })
 		},
 	},
@@ -9597,9 +9623,9 @@ boot_sections = |queries| [
 	},
 ]
 
-## The zone shape is checked at the boot boundary and for a hand-built
-## value passed to zone_offset. No malformed table is treated as a UTC guess.
-check_zone : Core.Zone -> Try({}, Str)
+## The zone shape is checked at the boot boundary, the one door to a
+## `Zone`. No malformed table is treated as a UTC guess.
+check_zone : Core.ZoneTable -> Try({}, Str)
 check_zone = |zone| {
 	if zone.name.count_utf8_bytes() > 64 {
 		return Err("zone name exceeds 64 UTF-8 bytes")
@@ -10030,8 +10056,10 @@ expect {
 	Core.driver(program).tasks == ["plain", "owner", "prepared-task", "empty-owner"]
 }
 
-## A file's spans cover it in order, the last one shorter, and a range's
-## spans are relative to the range, as `read!` reads them.
+## A file's spans cover it in order, the last one shorter, a range's
+## spans are relative to the range, as `read!` reads them, a chunk of 0
+## bytes is refused, and a range outside the file is refused where it is
+## made.
 expect {
 	file = |len| match Core.placed_file(Core.held_file(Box.box(1)), { name: "log", mime: "", size: 10, start: 0, len }) {
 		Ok(placed) => placed
@@ -10042,13 +10070,17 @@ expect {
 		\\ten by ten: ${Str.inspect(file(10).spans(10))}
 		\\ten by twenty: ${Str.inspect(file(10).spans(20))}
 		\\empty: ${Str.inspect(file(0).spans(4))}
-		\\range: ${Str.inspect(file(10).slice({ start: 3, len: 5 }).spans(2))}
+		\\range: ${Str.inspect(file(10).slice({ start: 3, len: 5 }).map_ok(|range| range.spans(2)))}
+		\\zero: ${Str.inspect(file(10).spans(0))}
+		\\outside: ${Str.inspect(file(10).slice({ start: 8, len: 3 }).map_ok(|range| range.size()))}
 	expected =
-		\\ten by four: [{ len: 4, start: 0 }, { len: 4, start: 4 }, { len: 2, start: 8 }]
-		\\ten by ten: [{ len: 10, start: 0 }]
-		\\ten by twenty: [{ len: 10, start: 0 }]
-		\\empty: []
-		\\range: [{ len: 2, start: 0 }, { len: 2, start: 2 }, { len: 1, start: 4 }]
+		\\ten by four: Ok([{ len: 4, start: 0 }, { len: 4, start: 4 }, { len: 2, start: 8 }])
+		\\ten by ten: Ok([{ len: 10, start: 0 }])
+		\\ten by twenty: Ok([{ len: 10, start: 0 }])
+		\\empty: Ok([])
+		\\range: Ok(Ok([{ len: 2, start: 0 }, { len: 2, start: 2 }, { len: 1, start: 4 }]))
+		\\zero: Err(ZeroChunk)
+		\\outside: Err(OutsideFile)
 	actual == expected
 }
 
@@ -11234,32 +11266,37 @@ expect {
 ## Signed wall time, all seed bits and bounded author data survive the wire.
 expect {
 	boot : Core.Boot
-	boot = { now_ms: -9223372036854775808, seed: 340282366920938463463374607431768211455, languages: ["", "en-AU"], zone: { name: "test", from_ms: -100, until_ms: 100, offsets: [{ from_ms: -100, minutes: -60 }, { from_ms: 0, minutes: 90 }] } }
+	boot = { now_ms: -9223372036854775808, seed: 340282366920938463463374607431768211455, languages: ["", "en-AU"], zone: Core.zone_unchecked({ name: "test", from_ms: -100, until_ms: 100, offsets: [{ from_ms: -100, minutes: -60 }, { from_ms: 0, minutes: 90 }] }) }
 	Core.read_boot(Core.write_boot(boot)) == Ok(boot) and Core.decode_res(put_u64([5], (-123.I64).to_u64_wrap())) == Fired(-123)
 }
 
-## Zone lookup includes both endpoints and gives each transition its new offset.
+## Zone lookup includes both endpoints and gives each transition its new
+## offset; a table that breaks the zone rules makes no zone.
 expect {
-	zone = { name: "test", from_ms: -100.I64, until_ms: 100.I64, offsets: [{ from_ms: -100.I64, minutes: -60.I32 }, { from_ms: 0.I64, minutes: 90.I32 }] }
-	[-101.I64, -100, -1, 0, 100, 101].map(|at| Core.zone_offset(zone, at)) == [Err(OutsideZone), Ok(-60), Ok(-60), Ok(90), Ok(90), Err(OutsideZone)] and Core.zone_offset(Core.utc, -9223372036854775808) == Ok(0) and Core.zone_offset(Core.utc, 9223372036854775807) == Ok(0)
+	zone = Core.zone_from({ name: "test", from_ms: -100.I64, until_ms: 100.I64, offsets: [{ from_ms: -100.I64, minutes: -60.I32 }, { from_ms: 0.I64, minutes: 90.I32 }] })?
+	[-101.I64, -100, -1, 0, 100, 101].map(|at| zone.offset_at(at)) == [Err(OutsideZone), Ok(-60), Ok(-60), Ok(90), Ok(90), Err(OutsideZone)]
+		and Core.utc.offset_at(-9223372036854775808) == Ok(0)
+		and Core.utc.offset_at(9223372036854775807) == Ok(0)
+		and Core.zone_from({ name: "x", from_ms: 0, until_ms: 1, offsets: [{ from_ms: 1, minutes: 0 }] }).is_err()
 }
 
 ## Boot rejects malformed language and zone facts instead of repairing them.
 expect {
 	base : Core.Boot
 	base = {}
+	utc_table = Core.zone_table(Core.utc)
 	bad = [
 		{ ..base, languages: [] },
 		{ ..base, languages: List.repeat("x", 17) },
 		{ ..base, languages: [Str.repeat("λ", 33)] },
-		{ ..base, zone: { ..Core.utc, name: Str.repeat("x", 65) } },
-		{ ..base, zone: { ..Core.utc, from_ms: 1, until_ms: 0 } },
-		{ ..base, zone: { ..Core.utc, offsets: [] } },
-		{ ..base, zone: { ..Core.utc, offsets: [{ from_ms: 0, minutes: 0 }] } },
-		{ ..base, zone: { name: "x", from_ms: 0, until_ms: 1, offsets: [{ from_ms: 0, minutes: 0 }, { from_ms: 0, minutes: 1 }] } },
-		{ ..base, zone: { name: "x", from_ms: 0, until_ms: 1, offsets: [{ from_ms: 0, minutes: 0 }, { from_ms: 2, minutes: 1 }] } },
+		{ ..base, zone: Core.zone_unchecked({ ..utc_table, name: Str.repeat("x", 65) }) },
+		{ ..base, zone: Core.zone_unchecked({ ..utc_table, from_ms: 1, until_ms: 0 }) },
+		{ ..base, zone: Core.zone_unchecked({ ..utc_table, offsets: [] }) },
+		{ ..base, zone: Core.zone_unchecked({ ..utc_table, offsets: [{ from_ms: 0, minutes: 0 }] }) },
+		{ ..base, zone: Core.zone_unchecked({ name: "x", from_ms: 0, until_ms: 1, offsets: [{ from_ms: 0, minutes: 0 }, { from_ms: 0, minutes: 1 }] }) },
+		{ ..base, zone: Core.zone_unchecked({ name: "x", from_ms: 0, until_ms: 1, offsets: [{ from_ms: 0, minutes: 0 }, { from_ms: 2, minutes: 1 }] }) },
 	]
-	bad.all(|boot| Core.read_boot(Core.write_boot(boot)).is_err()) and Core.read_boot(Core.write_boot({ zone: { name: "", from_ms: 0, until_ms: 0, offsets: [{ from_ms: 0, minutes: -2147483648 }] } })).is_ok()
+	bad.all(|boot| Core.read_boot(Core.write_boot(boot)).is_err()) and Core.read_boot(Core.write_boot({ zone: Core.zone_unchecked({ name: "", from_ms: 0, until_ms: 0, offsets: [{ from_ms: 0, minutes: -2147483648 }] }) })).is_ok()
 }
 
 ## One guard owns just its last Boolean, so a flip or disposal adjusts the

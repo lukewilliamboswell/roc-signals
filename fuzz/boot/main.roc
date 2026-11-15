@@ -44,7 +44,7 @@ target = Fuzz.target_with({
 	examples: [
 		Fuzz.example({ name: "empty-defaults", revision: "1", make: || [] }),
 		Fuzz.example({ name: "sections-defaults", revision: "2", make: || Core.write_boot({}) }),
-		Fuzz.example({ name: "all-facts", revision: "3", make: || Core.write_boot({ url: "/a?b#c", storage: [("a", ""), ("a", "two")], session: [("draft", "λ")], online: False, visible: False, now_ms: -123, seed: 340282366920938463463374607431768211455, languages: ["", "en-AU"], zone: { name: "test", from_ms: -500, until_ms: 500, offsets: [{ from_ms: -500, minutes: -60 }, { from_ms: 0, minutes: 90 }] } }) }),
+		Fuzz.example({ name: "all-facts", revision: "3", make: || Core.write_boot({ url: "/a?b#c", storage: [("a", ""), ("a", "two")], session: [("draft", "λ")], online: False, visible: False, now_ms: -123, seed: 340282366920938463463374607431768211455, languages: ["", "en-AU"], zone: Core.zone_unchecked({ name: "test", from_ms: -500, until_ms: 500, offsets: [{ from_ms: -500, minutes: -60 }, { from_ms: 0, minutes: 90 }] }) }) }),
 		Fuzz.example({ name: "storage-unavailable", revision: "2", make: || Core.write_boot({ storage_available: False }) }),
 		Fuzz.example({ name: "invalid-unavailable-pairs", revision: "2", make: || Core.write_boot({ storage_available: False, storage: [("a", "b")] }) }),
 		Fuzz.example({ name: "session-unavailable", revision: "2", make: || Core.write_boot({ session_available: False }) }),

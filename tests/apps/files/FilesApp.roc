@@ -156,7 +156,11 @@ FilesApp := [Shelf].{
 
 	tail_of : List(File) -> List(File)
 	tail_of = |files| match files {
-		[first, ..] => [first.slice({ start: first.size() / 2, len: first.size() - first.size() / 2 })]
+		[first, ..] =>
+			match first.slice({ start: first.size() / 2, len: first.size() - first.size() / 2 }) {
+				Ok(tail) => [tail]
+				Err(OutsideFile) => crash "FilesApp.tail_of: the second half of a file lies within it"
+			}
 		[] => []
 	}
 

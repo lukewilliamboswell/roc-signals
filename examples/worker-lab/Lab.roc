@@ -789,6 +789,7 @@ Lab := [].{
 			InvalidUtf8 => "the file is not text"
 			Unavailable => "the browser cannot do that here"
 			Refused => "too many requests were in flight"
+			OutsideFile => "a read went past the end of the file"
 		}
 
 	# ---------------------------------------------------------------- totals

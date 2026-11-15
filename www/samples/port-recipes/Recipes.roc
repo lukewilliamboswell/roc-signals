@@ -54,7 +54,7 @@ Recipes := [].{
 				Geolocation.view({}),
 				Media.view({}),
 				Display.view({}),
-				Dates.view({ now_ms: boot.now_ms, languages: boot.languages, zone: boot.zone.name }),
+				Dates.view({ now_ms: boot.now_ms, languages: boot.languages, zone: boot.zone.name() }),
 				Canvas.view({ reduced: Engine.boot_media(boot, "(prefers-reduced-motion: reduce)") ?? False }),
 			],
 		),

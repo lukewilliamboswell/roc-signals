@@ -34,7 +34,7 @@ ExplorerApp := [].{
 
 	## Why a log has no index: the browser could not read the file, it is
 	## empty, or no line of it starts with a timestamp and a level.
-	Problem : [Unreadable, Empty, NotALog]
+	Problem : [Unreadable, Empty, NotALog, OutsideFile, ZeroChunk]
 
 	## The prepared state: the log's handle, kept to read lines from later,
 	## and its index.
@@ -52,7 +52,7 @@ ExplorerApp := [].{
 			return Err(Empty)
 		}
 		var $indexer = Log.indexer
-		for span in file.spans(ExplorerApp.chunk_bytes) {
+		for span in file.spans(ExplorerApp.chunk_bytes)? {
 			$indexer = Log.feed($indexer, file.read!(span)?)
 		}
 		index = Log.finish($indexer)
@@ -156,6 +156,8 @@ ExplorerApp := [].{
 		Unreadable => "The browser can no longer read this file. Choose it again."
 		Empty => "The file is empty."
 		NotALog => "This does not look like a log: no line starts with a timestamp and a level."
+		OutsideFile => "A line the index points at lies past the end of the file. Choose it again."
+		ZeroChunk => "The file was read in chunks of no bytes."
 	}
 
 	## A task's state as one line of text: working, why it failed, or what

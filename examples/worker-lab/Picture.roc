@@ -28,18 +28,19 @@ Picture := [].{
 	}
 
 	## Composes a drawing's strips into one picture.
-	compose : Worker.Task(Lab.Composition, File, [TooLarge])
+	compose : Worker.Task(Lab.Composition, File, [TooLarge, OutsideFile])
 	compose = Worker.task({ name: Lab.compose_task, run!: Picture.compose! })
 
 	## A header for the whole picture, then each strip after its own header,
 	## by reference: the job reads no strip, and the picture's pixels are
-	## the strips' own bytes.
-	compose! : Lab.Composition => Try(File, [TooLarge])
+	## the strips' own bytes. A strip shorter than its header has no pixels
+	## to take: `OutsideFile`.
+	compose! : Lab.Composition => Try(File, [TooLarge, OutsideFile])
 	compose! = |{ name, width, height, strips }| {
 		out = Files.build!({ name, mime: Mime("image/bmp") })
 		out.append!(Lab.bmp_header({ width, height }))?
 		for part in strips {
-			out.append_file!(part.slice({ start: Lab.bmp_header_bytes, len: part.size() - Lab.bmp_header_bytes }))
+			out.append_file!(part.slice({ start: Lab.bmp_header_bytes, len: part.size() - part.size().min(Lab.bmp_header_bytes) })?)
 		}
 		Ok(out.finish!())
 	}

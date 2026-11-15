@@ -599,7 +599,7 @@ SpecRunner := [].{
 			$byte = $byte + 1
 		}
 		languages = env.languages.fold(SpecRunner.put_u32([], env.languages.len().to_u32_wrap()), SpecRunner.put_str)
-		zone = env.zone
+		zone = Scm.zone_table(env.zone)
 		var $offsets = SpecRunner.put_u32(SpecRunner.put_u64(SpecRunner.put_u64(SpecRunner.put_str([], zone.name), zone.from_ms.to_u64_wrap()), zone.until_ms.to_u64_wrap()), zone.offsets.len().to_u32_wrap())
 		for offset in zone.offsets {
 			$offsets = SpecRunner.put_u32(SpecRunner.put_u64($offsets, offset.from_ms.to_u64_wrap()), offset.minutes.to_u32_wrap())

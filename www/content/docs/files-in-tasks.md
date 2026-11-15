@@ -64,15 +64,17 @@ job can do with one:
 
 | Effect | What it does |
 |---|---|
-| `file.read!({ start, len })` | The range's bytes, copied once into the job's memory, or `Err(Unreadable)` |
+| `file.read!({ start, len })` | The range's bytes, copied once into the job's memory, `Err(Unreadable)`, or `Err(OutsideFile)` for a range that does not lie within the file |
 | `file.contents!()`, `file.contents_utf8!()` | The whole file or range, as bytes or text; `Err(Unreadable)`, or `Err(InvalidUtf8)` when text was asked for and it is not UTF-8 |
 | `Files.build!({ name, mime, start_from })` | A new builder; `mime` defaults to `Auto` (the type of the file it starts from, or none), `start_from` to `Empty` |
 | `builder.append!(bytes)` | Append a copy of `bytes`; `Err(TooLarge)` past the job's output bound |
 | `builder.append_file!(file)` | Append a file the job holds, or a range of one, by reference: nothing is copied |
 | `builder.finish!()` | The finished file, holding everything appended in order |
 
-`file.name()`, `file.size()`, `file.mime()` and `file.slice(...)` are plain
-functions and work in a job as they do on the page.
+`file.name()`, `file.size()`, `file.mime()`, `file.slice(...)` (a range, or
+`Err(OutsideFile)`) and `file.spans(n)` (the ranges of `n` bytes that cover
+the file, or `Err(ZeroChunk)`) are plain functions and work in a job as they
+do on the page.
 
 Effects exist only inside a job: a task's `run!`, or a preparation's
 `prepare!` and its tasks. Page code cannot call one (the compiler refuses

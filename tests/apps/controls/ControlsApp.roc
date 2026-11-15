@@ -270,8 +270,6 @@ ControlsApp := [].{
 					"div",
 					[],
 					[
-						{ name: "Retired prevent suffix", fault: RetiredPrevent },
-						{ name: "Retired files suffix", fault: RetiredFiles },
 						{ name: "Duplicate click policies", fault: ClickPolicies },
 						{ name: "Duplicate change kinds", fault: ChangeKinds },
 						{ name: "Checked property on div", fault: CheckedDiv },
@@ -282,11 +280,9 @@ ControlsApp := [].{
 				),
 				Engine.switch(
 					property_state.signal().map(|s| s.fault),
-					[Clean, RetiredPrevent, RetiredFiles, ClickPolicies, ChangeKinds, CheckedDiv, AttributeValue, DuplicateProperty, FileValue],
+					[Clean, ClickPolicies, ChangeKinds, CheckedDiv, AttributeValue, DuplicateProperty, FileValue],
 					|fault| match fault {
 						Clean => Engine.text("")
-						RetiredPrevent => Engine.element("button", [Engine.on(Engine.EventType.from_str("click:prevent") ?? crash "the retired-suffix fixture uses a nonempty event type", property_state.update(|s| s))], [])
-						RetiredFiles => Engine.element("input", [Engine.on(Engine.EventType.from_str("change:files") ?? crash "the retired-suffix fixture uses a nonempty event type", property_state.update(|s| s))], [])
 						ClickPolicies => Engine.element("button", [Engine.on("click", property_state.update(|s| s)), Engine.on_with("click", { prevent: True }, property_state.update(|s| s))], [])
 						ChangeKinds => Engine.element("input", [Engine.on("change", property_state.update(|s| s)), Engine.on_files(Change, property_state.update(|s| s))], [])
 						CheckedDiv => Engine.element("div", [Engine.prop(Engine.Prop.checked, True)], [])

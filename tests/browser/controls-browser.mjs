@@ -478,8 +478,6 @@ for (const [button, where] of [
   await ctx.close();
 }
 for (const [button, expected] of [
-  ["Retired prevent suffix", 'contract: retired event suffix in "click:prevent" at site /0/6/1; use on_with for policies or on_files for files'],
-  ["Retired files suffix", 'contract: retired event suffix in "change:files" at site /0/6/1; use on_with for policies or on_files for files'],
   ["Duplicate click policies", 'contract: two handlers for the "click" event on one <button> at site /0/6/1: an element takes one handler per event; run both from one with Handler.also'],
   ["Duplicate change kinds", 'contract: two handlers for the "change" event on one <input> at site /0/6/1: an element takes one handler per event; run both from one with Handler.also'],
   ["Checked property on div", 'contract: property "checked" is not allowed on <div> at site /0/6/1'],
