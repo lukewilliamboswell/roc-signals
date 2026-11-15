@@ -5310,10 +5310,9 @@ block_inst = |block0| {
 ## The instance moves the store into each call's Root context and takes it back
 ## from Pending. The Changed pass rearms only written tables after refreshing
 ## readers; their last writing turn's record remains until the next write.
-## TODO https://github.com/roc-lang/roc/issues/12957: moving the store out
-## fixes development ownership, and driven directly an optimized write of a
-## store cell is in place (`drain`); through the host's box an optimized
-## write of a list cell or a table's rows still copies them.
+## TODO https://github.com/roc-lang/roc/issues/12957: a write of a store cell
+## is in place in every build (with `drain` and `AppBody`), but an optimized
+## build still copies a table's rows on each keyed write of it.
 store_inst : Tables(st), Layers, Block(Root(st)) -> Inst(Root(st))
 store_inst = |tables0, wrote0, block0| {
 	held = { tables: tables0, wrote: wrote0, block: block0 }
@@ -9864,15 +9863,7 @@ flush_turn = |incoming, programs| {
 ## before it reaches the depth bound.
 ##
 ## The loop carries the store, the site tree and the turn in three
-## variables and rebuilds the instance once, after it. Carried as one
-## `var` holding the whole instance, `--opt=speed` and `--opt=size`
-## copied a written list on every event that reaches this function, even
-## one whose queue is empty and whose loop never runs: 8 bytes per element
-## of a `List(U64)` in local state or in a store cell. This works around an
-## optimizer defect (a `while` loop over a `var` holding a record of
-## refcounted fields) tracked with the optimized copies of
-## https://github.com/roc-lang/roc/issues/12957; it has no standalone
-## reproduction yet.
+## variables and rebuilds the instance once, after it.
 drain : App(st) -> App(st)
 drain = |Core.App.(AppBody.({ store: store0, root: root0, tx: tx0, programs }))| {
 	var $store = store0

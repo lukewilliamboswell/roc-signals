@@ -223,7 +223,7 @@ Release := [].{
 		\\
 		\\## Store ownership
 		\\
-		\\The instance holds its store as plain data beside its sites and moves it through each turn. A bounded development-Wasm check compares the bytes a sparse write requests at two table sizes. That does not establish flat allocations in optimized builds, where a large value can still be copied on a write ([roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957)), nor for local state, which a site's boxed closure captures ([roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012)). These are compiler limitations, not different reactive semantics.
+		\\The instance holds its store as plain data beside its sites and moves it through each turn. A check compares the bytes a sparse write requests at two sizes, in a development and a shipping (`--opt=size`) build: a write of one element of a list in a store cell, and a small write, are in place in both. In a shipping build a keyed write of a table still copies the table's rows ([roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957)), and in both builds a write of a local state's value copies it, because a site's boxed closure captures it ([roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012)). These are compiler limitations, not different reactive semantics.
 }
 
 ## Examples name the released bundle instead of the working tree.
