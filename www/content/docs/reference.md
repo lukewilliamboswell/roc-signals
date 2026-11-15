@@ -365,6 +365,29 @@ The browser tests also pass `manualIntervals` (intervals tick only when the
 test says), `window` and `document`; an app's page has no reason to set
 them.
 
+## First page
+
+`roc signals.roc build --picture URL...` writes, for each URL, an
+`index.html` holding the app's first frame: the native runner mounts the
+app for that URL and renders its ordinary mount batch, before any request
+is answered. The page stays inert until the module loads; the runtime then
+replaces the built nodes with its ordinary mount, in the same task, and
+lifts the inertness before the batch's effects run. Built nodes are never
+reused. See [Build a first page](@/docs/getting-started.md#build-a-first-page).
+
+| Attribute (no namespace) | On | Meaning |
+|---|---|---|
+| `data-roc-picture` | The template's one mount root | The root the build fills and the runtime replaces; removed once mounted |
+| `data-roc-picture-inert-parent=""` | The immediate HTML parent of a non-HTML (SVG, MathML) root | That parent holds the inertness; its element children are the root and, optionally, a `script` with `type="application/json"` and `data-roc-picture-envelope="1"` |
+| `data-roc-picture-inert="added"` | The inert owner | Written by the build when it added `inert`, so the runtime removes only that; reserved, never authored |
+| `data-roc-failed` | The mount root | Set by the runtime on a root that held a picture when the module fails to load or the instance faults, with `onFault` called. A picture that never mounted stays inert until a retry or recovery succeeds |
+
+A picture carries markup only. A control's `value` and `checked` appear
+through their attributes, a `textarea`'s value as its text and a
+`select`'s through its options' `selected`. Pointer zones and keymaps have
+no markup and arrive with the mount. A controlled dialog or popover is
+shown after a batch, never in markup, so a picture shows it closed.
+
 ## Limits
 
 | Resource | Bound | At the bound |

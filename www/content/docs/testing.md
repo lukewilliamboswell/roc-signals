@@ -952,6 +952,19 @@ spec files:
   selects by file name.
 - `build/app-specs --emit-steps specs/*.scm` prints the parsed steps that
   the browser runner (`tests/browser/replay.mjs`) replays.
+- `build/app-specs --prerender URL --template index.html` prints, as one
+  JSON line, the first page `roc signals.roc build --picture URL` writes
+  (see [Build a first page](@/docs/getting-started.md#build-a-first-page)):
+  it mounts the app for `URL`, requires the settle check to pass, and
+  renders the mount batch through the same `Dom.roc` model the specs
+  assert against, refusing a frame the browser would parse differently.
+  `--picture-path URL` prints only the file that URL is written to. Both
+  take no spec files.
+
+No step asserts on a picture. It is the app's mount batch for that URL
+alone, before any storage read, focus or answer that follows it, and the
+runtime replaces it with the same mount; a spec that boots at the URL
+with `(initial-location URL)` tests the page that replaces it.
 
 ## Walks
 
