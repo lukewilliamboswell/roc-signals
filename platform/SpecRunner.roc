@@ -1166,9 +1166,13 @@ SpecRunner := [].{
 	# The event loop. The functions named `*_in_loop` deliver an event, drain
 	# the focus and callback queues and fire the events those cause, so they
 	# call each other. Every call from outside the loop goes through the
-	# wrapper of the same name without the suffix: the compiler re-expands a
-	# generic recursive group of two or more functions at every call into it
-	# from another function, and a wrapper is expanded once and then replayed.
+	# wrapper of the same name without the suffix.
+	# TODO https://github.com/roc-lang/roc/issues/13092: the compiler
+	# re-expands a generic recursive group of two or more functions at every
+	# call into it from another function, and a wrapper is expanded once and
+	# then replayed. Without the wrappers a development build of any app took
+	# three times as long; they go, with the suffix, once the compiler reuses
+	# a finished group.
 
 	## Dispatch `ev` if a handler listens for it on the way up from node `i`.
 	fire_if_in_loop : Program(state), S(state), U64, Str, Str -> S(state)
@@ -2281,9 +2285,10 @@ SpecRunner := [].{
 			}
 		}
 		# Changing a dialog's display mode closes it before invoking the new method.
-		# This calls itself rather than `change_shown`, so the two are not one
-		# recursive group: the compiler re-expands a generic recursive group of
-		# two or more functions at every call into it.
+		# TODO https://github.com/roc-lang/roc/issues/13092: this calls itself
+		# rather than `change_shown`, so the two are not one recursive group:
+		# the compiler re-expands a generic recursive group of two or more
+		# functions at every call into it.
 		if old != Hidden and value != Hidden {
 			$s = SpecRunner.change_shown_with($s, { target: i, value: Hidden, focus: Restore })
 		}
