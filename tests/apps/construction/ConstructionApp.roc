@@ -11,7 +11,7 @@ ConstructionApp := [].{
 		Bool.False,
 		|changed| Engine.element(
 			"main",
-			[],
+			[Engine.test_id("construction-frame")],
 			[
 				Engine.element("button", [Engine.on_click(changed.update(|_| Bool.True))], [Engine.text("Trigger construction")]),
 				match mode {
