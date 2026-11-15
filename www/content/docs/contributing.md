@@ -182,7 +182,10 @@ problems found before it.
 1. Every script names the `roc-stable` nightly that `Blueprint.roc` pins,
    except `scripts/unicode_symbols.roc`, which `roc` builds and which names
    no compiler, and no other Roc file names a compiler; no two source paths differ only
-   in letter case, which a checkout on macOS or Windows would merge.
+   in letter case, which a checkout on macOS or Windows would merge; and
+   every script a `Blueprint.roc` task starts (the first element of its
+   `Run`) is tracked by git as executable (mode 100755), since most tasks
+   never run in CI to show one that is not.
 2. `roc fmt --check` over every Roc source.
 3. Every file `www/data/examples.toml` names exists, and every example is in
    a section of the examples index.

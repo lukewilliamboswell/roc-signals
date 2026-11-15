@@ -66,6 +66,9 @@ main! = |raw_args| {
 	Proc.note!("== file names")
 	$problems = Checks.gather!($problems, file_names!())?
 
+	Proc.note!("== script modes")
+	$problems = Checks.gather!($problems, script_modes!())?
+
 	Proc.note!("== formatting")
 	$problems = Checks.gather!($problems, check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "tests/fixtures", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check"))?
 	$problems = Checks.gather!($problems, check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts"))?
@@ -186,6 +189,41 @@ source_dirs = ["platform", "cli", "examples", "tests", "fuzz", "scripts", "www/s
 ## No two source files have paths that differ only in letter case. macOS and
 ## Windows keep one file for such a pair, so a checkout there silently loses
 ## the other, and a build that needs both fails.
+## Every script a Blueprint task starts is executable in git: a task's
+## script that is not (mode 100755) cannot be started on a fresh checkout,
+## and most tasks never run in CI to show it.
+script_modes! : () => Try(List(Str), _)
+script_modes! = || {
+	blueprint = Path.read_utf8!(Path.utf8("Blueprint.roc"))?
+	scripts = task_scripts(blueprint)
+	listed = Proc.capture!({ program: "git", args: ["ls-files", "-s", "--"].concat(scripts), cwd: "." })?
+	Ok(mode_problems(scripts, Str.from_utf8_lossy(listed)))
+}
+
+## The script each `Run([...])` of a Blueprint task starts: its first
+## element, when it is a path (a bare program such as `node` is not).
+task_scripts : Str -> List(Str)
+task_scripts = |text| text.split_on("Run([\"").drop_first(1).keep_oks(|rest| rest.split_on("\"").first()).keep_if(|first| first.contains("/"))
+
+## One problem for each script that `git ls-files -s` does not list as an
+## executable file (mode 100755), or does not list at all.
+mode_problems : List(Str), Str -> List(Str)
+mode_problems = |scripts, listed| {
+	modes = listed.split_on("\n").keep_oks(
+		|line| match line.split_on("\t") {
+			[stage, path] => Ok({ path, mode: stage.split_on(" ").first() ?? "" })
+			_ => Err(NotAnEntry)
+		},
+	)
+	scripts.keep_oks(
+		|script| match modes.find_first(|m| m.path == script) {
+			Ok({ mode: "100755", .. }) => Err(Executable)
+			Ok({ mode, .. }) => Ok("${script} is started by a Blueprint task but its git mode is ${mode}, not 100755: run git update-index --chmod=+x ${script}")
+			Err(_) => Ok("${script} is started by a Blueprint task but git does not track it")
+		},
+	)
+}
+
 file_names! : () => Try(List(Str), _)
 file_names! = || {
 	var $files = []
@@ -379,4 +417,18 @@ expect {
 	driver = { path: "scripts/b.roc", text: "app [main!] {\n\tpf: \"../platform/main-fuzz.roc\",\n}\n" }
 	tested_driver = { path: "scripts/c.roc", text: "app [main!] {\n\tpf: \"../platform/main-fuzz.roc\",\n}\nexpect 1 == 1\n" }
 	script_test_plan([plain, driver, tested_driver]) == { test: ["scripts/a.roc"], problems: ["scripts/c.roc imports the platform package, so no gate runs its own expects; move them to a module under scripts/src that a tested root imports"] }
+}
+
+## A task's script is the first element of its `Run`, when it is a path.
+expect task_scripts("Task(\"a\", [Use(\"e\"), Run([\"scripts/a.roc\", \"--\"])]),\nTask(\"s\", [Run([\"node\", \"www/serve.mjs\"])]),\nTask(\"b\", [Run([\"scripts/b.roc\"])])") == ["scripts/a.roc", "scripts/b.roc"]
+
+## A script that is not executable, or not tracked, is a problem; an
+## executable one is not.
+expect {
+	listed = "100755 0123abcd 0\tscripts/a.roc\n100644 4567ef01 0\tscripts/b.roc\n"
+	mode_problems(["scripts/a.roc", "scripts/b.roc", "scripts/c.roc"], listed)
+		== [
+			"scripts/b.roc is started by a Blueprint task but its git mode is 100644, not 100755: run git update-index --chmod=+x scripts/b.roc",
+			"scripts/c.roc is started by a Blueprint task but git does not track it",
+		]
 }
