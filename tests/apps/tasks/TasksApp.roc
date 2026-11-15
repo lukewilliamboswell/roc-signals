@@ -10,10 +10,10 @@ import pf.Worker
 ## - "Upload" gives the app files. "Upper" upper-cases the first one in a
 ##   worker, four bytes at a time (or 1 MiB, "Upper in 1 MiB chunks"),
 ##   into a new file; "Overflow" copies it three times, which a small
-##   `max-output-bytes` refuses; "Many" answers
-##   with 17 files, one more than a job may return, which is a contract
-##   error in the job's worker; "Few" answers with three, which a page
-##   holding 62 files has no room for.
+##   `max-output-bytes` refuses; "Sixteen" answers with 16 files, as many
+##   as a job may return; "Many" answers with 17, one more, which the
+##   worker refuses as `TooManyFiles` and is kept; "Few" answers with
+##   three, which a page holding 62 files has no room for.
 ## - "Reread" builds a file from the first one and reads the built file
 ##   back in the same job.
 ## - "Square" squares a number and calls no effect, so it answers even
@@ -297,6 +297,7 @@ TasksApp := [].{
 				Html.button("Linger", [], st.update(TasksApp.ask(|f| Linger(f)))),
 				Html.button("Reread", [], st.update(TasksApp.ask(|f| Reread(f)))),
 				Html.button("Twice", [], st.update(|s| { ..s, run: Twice(s.batch), outcome: "running" })),
+				Html.button("Sixteen", [], st.update(|s| { ..s, run: Many(16), outcome: "running" })),
 				Html.button("Many", [], st.update(|s| { ..s, run: Many(17), outcome: "running" })),
 				Html.button("Few", [], st.update(|s| { ..s, run: Many(3), outcome: "running" })),
 				Html.button("Square", [], st.update(|s| { ..s, run: Square(7), outcome: "running" })),

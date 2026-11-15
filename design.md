@@ -2251,11 +2251,11 @@ because an error left to inference does not resolve.
   `Blob`s, which the browser does not page to disk, and a larger in-memory
   `Blob` was measured unreadable. Beyond it `append!` answers `TooLarge` and
   the job decides. An answer holds at most 16 files, which the worker's
-  engine checks (a larger answer is a `contract` error, so the job is
-  `Lost(Contract)`); when the page has no free slots for an answer's files
-  nothing is minted and the job receives `WorkLost(ResourceLimit)`. A
-  job holds at most 64 handles (files and builders) at once, else it is a
-  `resource_limit` fault of its worker.
+  engine checks: a larger answer is answered `TooManyFiles`, none of its
+  files reach the page, and the worker is kept; when the page has no free
+  slots for an answer's files nothing is minted and the job receives
+  `WorkLost(ResourceLimit)`. A job holds at most 64 handles (files and
+  builders) at once, else it is a `resource_limit` fault of its worker.
 - **The native runner** runs a job in a child process and serves the same
   hosted functions from the spec's files: each file the job was sent holds
   its bytes, a builder collects copies, finishing moves them behind a fresh
