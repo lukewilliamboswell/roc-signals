@@ -608,9 +608,10 @@ location Chrome reports instead.
 | `(set-visibility hidden)` | Change page visibility and notify `VisibilityChanges` subscribers |
 | `(expect-cleanup "name" N)` | The `on_cleanup` site named `name` has run N times |
 
-An interval step's `MS` is a period an interval can have: 1 to 4294967295.
-The parser refuses any other at its position, so a step never names a period
-that would wrap onto a different one.
+An interval step's `MS` is a period an interval can have: 1 to 2147483647,
+the longest a browser timer holds, past which the engine refuses an
+interval. The parser refuses any other at its position, so a step never
+names a period no interval can have, or one that would wrap onto another.
 
 `expect-request` and `progress-effect` number the **current pending list**,
 in issue order, including timers, calls and jobs. Completed and cancelled

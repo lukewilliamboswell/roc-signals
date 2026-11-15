@@ -304,10 +304,14 @@ Two compiler defects touch tables today, each with its upstream issue:
   is, not a `while` loop over a `var` that holds the table: the loop copies
   the table on every pass in an optimised build
   ([roc-lang/roc#12971](https://github.com/roc-lang/roc/issues/12971)).
-- An optimised build can still copy a large table on each write
-  ([roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957)).
-  The instance holds its store outside the site's boxed closure; a bounded
-  development-Wasm guard checks sparse-write bytes at two table sizes.
-  That development result does not establish flat shipping allocations. The
-  platform is designed for the fix, and nothing in an app changes when it
-  lands.
+- A shipping build copies a table's rows on every keyed write
+  ([roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957));
+  a development build writes them in place. A write of one element of a
+  list in a store cell is in place in both, while a local state's value is
+  copied on every write in every build
+  ([roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012)).
+  An allocation guard (`tests/runtime/write-scaling.mjs`) runs on a
+  development and a `--opt=size` build: it fails if a write that is in
+  place starts to copy, and prints each that copies, so the fix shows when
+  it lands. The platform is designed for the fix, and nothing in an app
+  changes when it lands.

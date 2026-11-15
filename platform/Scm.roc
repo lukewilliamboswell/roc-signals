@@ -626,18 +626,19 @@ Scm := [].{
 	}
 
 	## An interval's period, as the engine can issue one: at least 1 ms, and
-	## no wider than the `INTERVAL` command's U32 field, so a step names
-	## exactly the period it compares with and never one that wraps onto
-	## another. A period no live interval has fails at run time in both
-	## runners; one no interval can have fails here, at its position.
+	## at most 2147483647 ms, the longest a browser timer holds, past which
+	## the engine refuses an interval (`max_browser_timer_ms` in `Core.roc`), so a
+	## step names exactly a period an interval can have and never one that
+	## wraps onto another. A period no live interval has fails at run time
+	## in both runners; one no interval can have fails here, at its position.
 	interval_period : Sx -> Try(U32, Problem)
 	interval_period = |sx| {
 		n = Scm.unsigned(sx, "the period")?
 		if n == 0 {
 			return Err(Scm.bad(sx, "the period must be at least 1 ms: no interval has a period of 0"))
 		}
-		if n > 4294967295 {
-			return Err(Scm.bad(sx, "the period must be at most 4294967295 ms, the widest an interval's period can be"))
+		if n > 2147483647 {
+			return Err(Scm.bad(sx, "the period must be at most 2147483647 ms, the longest an interval can have"))
 		}
 		Ok(n.to_u32_wrap())
 	}
@@ -3100,27 +3101,30 @@ expect {
 expect problem_of("(test \"t\"\n  (steps\n    (click (label \"a\"))\n    (frobnicate 1)))") == "x.scm:4:5: unknown step frobnicate"
 
 ## Setup vocabulary is not a step, and steps are not setup.
-## An interval's period is bounded where it is written: 0 and a period past
-## the INTERVAL command's U32 field are refused at the period's position,
-## so `(tick-interval 4294968296)` can never wrap onto a 1000 ms interval.
+## An interval's period is bounded where it is written: 0 and a period
+## longer than the engine lets an interval have are refused at the
+## period's position, so `(tick-interval 4294968296)` can never wrap onto
+## a 1000 ms interval and `(tick-interval 2147483648)` never names one.
 expect {
 	actual = [
 		problem_of("(test \"t\" (steps (tick-interval 4294968296)))"),
+		problem_of("(test \"t\" (steps (tick-interval 2147483648)))"),
 		problem_of("(test \"t\" (steps (tick-interval 0)))"),
 		problem_of("(test \"t\" (steps (expect-interval 4294967296 1)))"),
 		problem_of("(test \"t\" (steps (tick-interval 7) (tick-interval-if-active 0)))"),
 	]
 	expected = [
-		"x.scm:1:33: the period must be at most 4294967295 ms, the widest an interval's period can be",
+		"x.scm:1:33: the period must be at most 2147483647 ms, the longest an interval can have",
+		"x.scm:1:33: the period must be at most 2147483647 ms, the longest an interval can have",
 		"x.scm:1:33: the period must be at least 1 ms: no interval has a period of 0",
-		"x.scm:1:35: the period must be at most 4294967295 ms, the widest an interval's period can be",
+		"x.scm:1:35: the period must be at most 2147483647 ms, the longest an interval can have",
 		"x.scm:1:61: the period must be at least 1 ms: no interval has a period of 0",
 	]
 	actual == expected
 }
 
-## The widest period parses as itself, unwrapped, and so does the narrowest.
-expect Scm.parse("(test \"t\" (steps (tick-interval 4294967295) (expect-interval 1 0 :never-started)))").map_ok(|spec| spec.steps.map(|st| st.op)) == Ok([TickInterval(4294967295), ExpectInterval({ period_ms: 1, count: 0 })])
+## The longest period parses as itself, and so does the shortest.
+expect Scm.parse("(test \"t\" (steps (tick-interval 2147483647) (expect-interval 1 0 :never-started)))").map_ok(|spec| spec.steps.map(|st| st.op)) == Ok([TickInterval(2147483647), ExpectInterval({ period_ms: 1, count: 0 })])
 
 ## A setup file the browser runner could not give the app exactly is refused
 ## where it is declared: a name that cannot be written to disk for
