@@ -189,6 +189,10 @@ Release := [].{
 		\\
 		\\An `expect-absent` needs the same locator in another step that requires it to match. Previously passing unanchored guards fail to parse at that step. Add an assertion where the existing story draws the element, or use `:never-drawn` for a branch the story never draws; the marker leaves its spelling unchecked.
 		\\
+		\\## Upgrading worker payloads
+		\\
+		\\`Wire.encode`, `Wire.try_encode` and `Wire.decode` are removed, with `Wire`'s format types. Worker tasks keep deriving their codecs through `Wire.Sendable` and need no change. An app that wrote CBOR bytes of its own with them depends on roc-cbor instead and chooses its own schema and persistence contract.
+		\\
 		\\## Use this release
 		\\
 		\\```roc

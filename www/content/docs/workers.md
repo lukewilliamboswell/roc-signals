@@ -684,11 +684,11 @@ accumulator is distinct from the writer its add callback supplies for each
 item. A handwritten parser that opens a dictionary with `parse_dict_start`
 calls `parse_dict_after_key` after each key, as a derived one does.
 
-The former `Wire.encode`, `Wire.try_encode` and `Wire.decode` helpers leave the
-public API in this release. An app needing CBOR bytes of its own should depend
-on roc-cbor and choose its own schema and persistence contract. Worker tasks
-continue to derive their codecs through `Wire.Sendable`; their source does not
-need replacement encode or decode calls.
+`Wire` encodes and decodes only the payloads the platform carries between
+instances; it offers no encode or decode of its own. An app that needs CBOR
+bytes of its own depends on roc-cbor and chooses its own schema and
+persistence contract. A worker task's types derive their codecs through
+`Wire.Sendable`, so a task's source calls no encoder or decoder.
 
 Every payload is decoded strictly. A value crosses only if it nests at
 most 128 levels: each list, set, dictionary, record, tuple, tag with a
