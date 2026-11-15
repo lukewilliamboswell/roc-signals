@@ -15,9 +15,23 @@ TopLayerApp := [].{
 	toggled : Modal -> Modal
 	toggled = |s| { ..s, toggles: s.toggles + 1 }
 
+	## A dialog beside a page-wide keymap. `blocks` says whether that keymap
+	## prevents Escape; each count is one delivery of the keymap's key, the
+	## dialog's `cancel` or its `close`.
+	Guard : { open : Bool, blocks : Bool, keys : U64, cancels : U64, closes : U64 }
+
+	## The page-wide keymap: it hears Escape while the guarded dialog is open,
+	## and prevents it only when the dialog was opened to be guarded.
+	guard_keymap : Guard -> Engine.Keymap
+	guard_keymap = |g| if (g.blocks) Engine.Keymap.prevent([Engine.Chord.plain("Escape")]) else Engine.Keymap.keep([Engine.Chord.plain("Escape")])
+
+	## The counts in the order the guarded dialog's spec reads them.
+	guard_events : Guard -> Str
+	guard_events = |g| "${g.keys.to_str()}|${g.cancels.to_str()}|${g.closes.to_str()}"
+
 	view : {} -> Elem(Root)
 	view = |_| Engine.state(
-		{ modal: { open: False, closes: 0.U64, toggles: 0.U64 }, inline: False, ignored: False, prevent: False, pop_a: False, pop_b: False, manual: False, initial: True, rows: ["a", "b"], row_open: False, row_modal: False, dismissable: [], requests: Engine.outbox({}), log: "" },
+		{ modal: { open: False, closes: 0.U64, toggles: 0.U64 }, inline: False, ignored: False, prevent: False, pop_a: False, pop_b: False, manual: False, initial: True, rows: ["a", "b"], row_open: False, row_modal: False, dismissable: [], requests: Engine.outbox({}), log: "", guard: { open: False, blocks: False, keys: 0.U64, cancels: 0.U64, closes: 0.U64 } },
 		|st| Engine.element(
 			"section",
 			[],
@@ -63,8 +77,25 @@ TopLayerApp := [].{
 					[
 						Engine.on_with("cancel", { prevent: True }, Engine.does([])),
 					],
-					[Html.button("Prevented inside", [], Engine.does([])), Html.button("Close prevented", [], st.update(|s| { ..s, prevent: False }))],
+					[
+						Html.button("Prevented inside", [], Engine.does([])),
+						Html.button("Close prevented", [], st.update(|s| { ..s, prevent: False })),
+					],
 				),
+				Html.button("Open guarded", [], st.update(|s| { ..s, guard: { ..s.guard, open: True, blocks: True } })),
+				Html.button("Open passing", [], st.update(|s| { ..s, guard: { ..s.guard, open: True, blocks: False } })),
+				Html.dialog(
+					"Guarded",
+					{ open: st.signal().map(|s| s.guard.open), on_close: st.set_value(|s, open| { ..s, guard: { ..s.guard, open, closes: s.guard.closes + 1 } }) },
+					[Html.on_cancel(st.update(|s| { ..s, guard: { ..s.guard, cancels: s.guard.cancels + 1 } }))],
+					[Html.button("Close guarded", [], st.update(|s| { ..s, guard: { ..s.guard, open: False } }))],
+				),
+				Engine.when(
+					st.signal().map(|s| s.guard.open),
+					|| Engine.element("span", [Engine.on_document_key({ keymap: st.signal().map(|s| TopLayerApp.guard_keymap(s.guard)) }, st.update(|s| { ..s, guard: { ..s.guard, keys: s.guard.keys + 1 } }))], []),
+					|| Engine.text(""),
+				),
+				Html.p_s(st.signal().map(|s| TopLayerApp.guard_events(s.guard)), [Engine.test_id("guard-events")]),
 				Html.popover("Auto A", { open: st.signal().map(|s| s.pop_a), on_toggle: st.set_value(|s, open| { ..s, pop_a: open }) }, [], [Html.button("Inside A", [], Engine.does([])), Html.button("Open B from A", [], st.update(|s| { ..s, pop_b: True }))]),
 				Html.popover("Auto B", { open: st.signal().map(|s| s.pop_b), on_toggle: st.set_value(|s, open| { ..s, pop_b: open }) }, [], [Html.button("Inside B", [], Engine.does([])), Html.button("Open modal from B", [], st.update(|s| { ..s, modal: { ..s.modal, open: True } }))]),
 				Html.popover("Manual", { open: st.signal().map(|s| s.manual), on_toggle: st.set_value(|s, open| { ..s, manual: open }), dismiss: Manual }, [], [Html.button("Close manual", [], st.update(|s| { ..s, manual: False }))]),

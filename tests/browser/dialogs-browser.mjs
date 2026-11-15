@@ -238,6 +238,25 @@ try {
     }
     check("real outside pointer Down then Up light-dismisses only on Up", open, [true, false]); await context.close();
   }
+  // A document-scoped keymap listens on the document in the bubbling phase,
+  // as the runtime's does. Preventing a real Escape there makes no close
+  // request: the dialog stays open and hears neither `cancel` nor `close`.
+  // Passing it, the same listener leaves Escape to close the dialog.
+  for (const prevent of [true, false]) {
+    const context = await browser.createBrowserContext(); const inputPage = await context.newPage();
+    await inputPage.goto(`http://127.0.0.1:${server.address().port}/`);
+    await inputPage.evaluate((prevent) => {
+      document.body.innerHTML = '<dialog><button>First</button></dialog>'; window.__keymapFacts = [];
+      const dialog = document.querySelector("dialog");
+      for (const type of ["cancel", "close"]) dialog.addEventListener(type, () => __keymapFacts.push(type));
+      document.addEventListener("keydown", (event) => { __keymapFacts.push(`key:${event.key}`); if (prevent && event.key === "Escape") event.preventDefault(); });
+      dialog.showModal();
+    }, prevent);
+    await inputPage.pressSpec({ key: "Escape", code: "Escape" }, [{ key: "Escape", code: "Escape", vk: 27 }]);
+    await inputPage.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    check(`a document keymap that ${prevent ? "prevents" : "passes"} Escape ${prevent ? "keeps the dialog open" : "lets it close"}`, await inputPage.evaluate(() => [document.querySelector("dialog").open, __keymapFacts]), prevent ? [true, ["key:Escape"]] : [false, ["key:Escape", "cancel", "close"]]);
+    await context.close();
+  }
   for (const action of ["insert", "delete", "mouse", "pen", "touch"]) {
     const context = await browser.createBrowserContext(); const inputPage = await context.newPage();
     await inputPage.goto(`http://127.0.0.1:${server.address().port}/`);
@@ -268,5 +287,6 @@ try {
     await context.close();
   }
 } finally { await browser.close(); await new Promise((resolve) => server.close(resolve)); }
+
 if (failures) process.exit(1);
 console.log("dialogs-browser: all pass");
