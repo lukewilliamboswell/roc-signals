@@ -287,10 +287,18 @@ Form := {}.{
 
 	# ------------------------------------------------------------- text helpers
 
-	## Comma-separated option list, trimmed, with blanks discarded.
+	## Comma-separated option list, trimmed, with blanks discarded, each
+	## option at its first place. The preview's select offers options keyed
+	## by their text, and to the person answering an option typed twice is
+	## one choice, so it is offered once.
 	options_of : Str -> List(Str)
-	options_of = |text|
-		text.split_on(",").map(|part| part.trim()).keep_if(|part| !part.is_empty())
+	options_of = |text| {
+		(kept, _) = text.split_on(",").map(|part| part.trim()).keep_if(|part| !part.is_empty()).fold(
+			([], Set.empty()),
+			|(held, seen), option| if (seen.contains(option)) (held, seen) else (held.append(option), seen.insert(option)),
+		)
+		kept
+	}
 
 	contains_text : Str, Str -> Bool
 	contains_text = |haystack, needle| haystack.split_on(needle).len() > 1
@@ -590,6 +598,9 @@ three = [1, 2, 3].map(|number| { key: number, row: Form.new_field(Form.text_kind
 
 ## The starting form's fields stand in the order of their numbers.
 expect Form.ordered(Form.initial_fields) == [1, 2]
+
+## An option typed twice is offered once, at its first place.
+expect Form.options_of(" Red, Blue,, Red ,Green") == ["Red", "Blue", "Green"]
 
 ## A new field is named for its kind and number, is optional, and stands last.
 expect {
