@@ -208,6 +208,12 @@ const MAX_URLS_PER_FILE = 16;
 // The longest timeout a job may have (the engine caps `timeout_ms` at
 // this), and the bound on a cancelled job that finishes and has none.
 const MAX_TIMEOUT_MS = 600000;
+// The platform's bound on a worker's `forget` (design.md, "Prepared
+// state"): one that has not answered by then is discarded as a lost
+// worker. A forget only drops a state, so ending its worker loses nothing
+// but a spawn; without the bound a worker that died silently would keep
+// every job waiting for it.
+const FORGET_DEADLINE_MS = 10000;
 const RES_PORT_ANSWER = 14;
 const RES_PORT_FAILED = 15;
 const RES_FETCHED = 21;
@@ -2554,7 +2560,9 @@ class WorkPool {
   // whose `forget` has not answered holds nothing but takes no job yet: if
   // that forget faults its instance is poisoned, and a job posted behind it
   // would be lost. The job waits for it (its answer pumps the queue) rather
-  // than starting another worker, so placement is as it was, only later.
+  // than starting another worker, so placement is as it was, only later;
+  // a forget is far cheaper than a spawn, and its deadline
+  // (FORGET_DEADLINE_MS) bounds the wait.
   free() {
     let lru = null, forgetting = false;
     for (const s of this.slots) {
@@ -2636,7 +2644,7 @@ class WorkPool {
       for (const job of this.queue.splice(0)) this.settle(job, { lost: LOST_EXECUTOR, message: `worker could not start: ${e}` });
       return null;
     }
-    const slot = { worker, job: null, seq: this.monitor.instanceSpawned("worker"), key: null, used: 0, forgetting: 0 };
+    const slot = { worker, job: null, seq: this.monitor.instanceSpawned("worker"), key: null, used: 0, forgetting: 0, forgetTimer: null };
     this.created += 1;
     worker.onmessage = (event) => this.answer(slot, event.data);
     worker.onerror = (event) => {
@@ -2650,13 +2658,30 @@ class WorkPool {
   }
 
   // Let go of `slot`'s state: it is idle, and takes no job until the
-  // forget answers (see free()).
+  // forget answers (see free()), or until FORGET_DEADLINE_MS passes with
+  // no answer, when the worker is discarded as lost and no job with it.
   evict(slot, cause) {
     if (slot.key === null) return;
     slot.key = null;
     slot.forgetting += 1;
+    if (slot.forgetTimer === null) {
+      slot.forgetTimer = setTimeout(() => {
+        slot.forgetTimer = null;
+        if (!this.closed && slot.forgetting > 0) this.lose(slot, LOST_EXECUTOR, `worker did not answer its forget within ${FORGET_DEADLINE_MS} ms`);
+      }, FORGET_DEADLINE_MS);
+    }
     slot.worker.postMessage({ type: "forget" });
     this.monitor.stateEvicted(slot.seq, cause);
+  }
+
+  // A forget of `slot` was answered: the deadline stops once none is
+  // pending.
+  forgot(slot) {
+    slot.forgetting -= 1;
+    if (slot.forgetting === 0 && slot.forgetTimer !== null) {
+      clearTimeout(slot.forgetTimer);
+      slot.forgetTimer = null;
+    }
   }
 
   // The runtime let go of these file tokens: no state prepared from one of
@@ -2687,7 +2712,7 @@ class WorkPool {
       return;
     }
     if (m.type === "forgot") {
-      slot.forgetting -= 1;
+      this.forgot(slot);
       if (this.slots.includes(slot)) {
         this.monitor.instanceMemory(slot.seq, m.mem);
         this.pump();
@@ -2701,7 +2726,7 @@ class WorkPool {
     // A fault with no job on the worker is its forget's (or an idle
     // instance's): the instance is poisoned and is never sent another job.
     if (m.type === "fault" && (slot.forgetting > 0 || slot.job === null)) {
-      if (slot.forgetting > 0) slot.forgetting -= 1;
+      if (slot.forgetting > 0) this.forgot(slot);
       this.lose(slot, m.code >= 1 && m.code <= 5 ? m.code : LOST_EXECUTOR, m.message);
       return;
     }
@@ -2748,6 +2773,8 @@ class WorkPool {
     this.slots.splice(i, 1);
     slot.worker.terminate();
     this.terminated += 1;
+    if (slot.forgetTimer !== null) clearTimeout(slot.forgetTimer);
+    slot.forgetTimer = null;
     if (slot.job !== null) {
       slot.job.slot = null;
       if (slot.job.finishing && slot.job.timer !== null) clearTimeout(slot.job.timer);

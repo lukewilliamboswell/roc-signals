@@ -2340,8 +2340,9 @@ are all of that kind.
 - **Release.** No kept state outlives its file: when the page releases a
   handle, every state keyed on it is let go (at once on an idle worker,
   after its job on a busy one). A worker letting go of its state takes no
-  job until that `forget` has answered; a `forget` that faults poisons the
-  worker, which is discarded with no job lost. A worker whose linear
+  job until that `forget` has answered, for at most 10 s (see
+  [Bounds](#bounds)); a `forget` that faults or does not answer in time
+  discards the worker with no job lost. A worker whose linear
   memory has grown past the `maxWorkerBytes` mount option is retired after
   its job, its state with it, since linear memory never shrinks.
 - **Cancellation.** `on_cancel: Finish` is what keeps a state across a
@@ -2445,7 +2446,13 @@ deployment allows is a mount option, named `max…Bytes` or `maxWorkers`
   `Finish`) or timeout — is terminating its worker, which is replaced when the
   next job needs one; there are no cooperative checkpoints. A worker whose
   linear memory has grown past `maxWorkerBytes` (a mount option, default 128
-  MiB) is retired after its job.
+  MiB) is retired after its job. A worker letting go of its prepared state
+  takes no job until its `forget` answers; a forget is the platform's work,
+  not an app's, so its bound is the platform's: one not answered within 10
+  s is discarded as a lost worker (`executor`), with no job lost, and the
+  jobs waiting for it are placed again. Discarding it loses only a spawn,
+  since the state was being dropped, and it keeps a worker that died
+  without a word from holding the pool.
 - **Prepared states.** At most one per worker, so at most `maxWorkers`;
   each is bounded with its worker by `maxWorkerBytes`.
 - **Job output.** A job appends at most `maxOutputBytes` (a mount option,
@@ -3826,6 +3833,7 @@ bound and a declared behaviour at the bound:
 | Workers per runtime | `maxWorkers` (default: core count, at most 8) | Jobs queue |
 | Prepared states | One per worker | The least recently used idle holder's is replaced |
 | A worker's linear memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is retired, its state with it |
+| A worker's pending `forget` | 10 s | The worker is discarded as lost; no job is lost |
 | Queued and running jobs | The in-flight cap | Typed `Refused` follow-up |
 | Worker output held by the host | 1 | Previous one freed |
 | Staged payloads | 1 | Previous one freed |

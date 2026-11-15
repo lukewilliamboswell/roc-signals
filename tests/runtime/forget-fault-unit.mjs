@@ -3,6 +3,7 @@
 // next job; eviction may cost time, never an answer. The pool is the runtime's
 // own, reached through a runtime mounted on nothing; only Worker is fake.
 import assert from "node:assert/strict";
+import { mock } from "node:test";
 import { RocEngineRuntime } from "../../platform/runtime.mjs";
 
 const check = async (name, test) => {
@@ -133,6 +134,99 @@ await check("with room in the pool, a job waits for the forgetting worker rather
   held.answerJob([2]);
   assert.deepEqual([...results.get(second).output], [2]);
 });
+
+// A worker that dies silently while it forgets (no `error` event, no
+// `forgot` or fault reply) must not hold the pool: the platform's forget
+// deadline discards it as a lost worker, with no job lost, and the jobs
+// waiting for it run elsewhere. The pool's timers are mocked; microtasks
+// (its pumps) still run, so they are drained with resolved promises.
+const FORGET_DEADLINE_MS = 10000;
+const drain = async () => { for (let i = 0; i < 4; i += 1) await Promise.resolve(); };
+const withClock = async (test) => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try { await test(); } finally { mock.timers.reset(); }
+};
+
+await check("a job with no timeout waiting behind a forget that never answers runs on a fresh worker at the deadline", () => withClock(async () => {
+  const { pool, results, submit, prepared, release } = fixture();
+  submit(prepared);
+  const [held] = workers;
+  held.answerJob([1]);
+  release();
+  const second = submit();
+  await drain();
+  mock.timers.tick(FORGET_DEADLINE_MS - 1);
+  await drain();
+  assert.equal(workers.length, 1, "before the deadline the job still waits for the forget");
+  assert(!held.terminated);
+  mock.timers.tick(1);
+  await drain();
+  assert(held.terminated, "the silent worker is terminated at the deadline");
+  assert(!pool.slots.some(slot => slot.worker === held), "the silent worker left the pool");
+  assert.equal(held.jobs().length, 1, "the silent worker is never sent another job");
+  assert.equal(workers.length, 2);
+  assert.equal(workers[1].jobs().length, 1, "the waiting job goes to a fresh worker");
+  workers[1].answerJob([2]);
+  assert.deepEqual([...results.get(second).output], [2]);
+  assert.equal(pool.slots.length, 1);
+}));
+
+await check("at the pool's bound a silent forget is discarded and only its place is taken", () => withClock(async () => {
+  const { pool, results, submit, prepared, release } = fixture(2);
+  submit(prepared);
+  const [held] = workers;
+  held.answerJob([1]);
+  const busy = submit();
+  await drain();
+  assert.equal(workers.length, 2, "a second worker runs the second job");
+  release();
+  const third = submit();
+  await drain();
+  assert.equal(workers.length, 2, "at the bound the third job waits");
+  mock.timers.tick(FORGET_DEADLINE_MS);
+  await drain();
+  assert(held.terminated);
+  assert(!workers[1].terminated, "the busy worker is untouched");
+  assert.equal(workers.length, 3);
+  assert.equal(workers[2].jobs().length, 1);
+  workers[1].answerJob([2]);
+  workers[2].answerJob([3]);
+  assert.deepEqual([...results.get(busy).output], [2]);
+  assert.deepEqual([...results.get(third).output], [3]);
+  assert.equal(pool.slots.length, 2);
+}));
+
+await check("a forget answered in time stops its deadline", () => withClock(async () => {
+  const { pool, submit, prepared, release } = fixture();
+  submit(prepared);
+  const [held] = workers;
+  held.answerJob([1]);
+  release();
+  held.reply({ type: "forgot", mem: [65536] });
+  mock.timers.tick(FORGET_DEADLINE_MS * 2);
+  await drain();
+  assert(!held.terminated, "an answered forget never discards its worker");
+  assert.equal(pool.slots.length, 1);
+}));
+
+await check("unmounting while a forget is pending ends its worker and its deadline", () => withClock(async () => {
+  const { runtime, pool, results, submit, prepared, release } = fixture();
+  submit(prepared);
+  const [held] = workers;
+  held.answerJob([1]);
+  release();
+  const waiting = submit();
+  await drain();
+  pool.shutdown();
+  assert(held.terminated);
+  const ended = pool.terminated;
+  mock.timers.tick(FORGET_DEADLINE_MS);
+  await drain();
+  assert.equal(pool.terminated, ended, "the deadline does nothing after shutdown");
+  assert.equal(workers.length, 1, "no worker is started after shutdown");
+  assert.equal(results.get(waiting), undefined, "a job dropped by shutdown is never answered");
+  assert.equal(runtime.poisoned, null);
+}));
 
 // Inline mode: the second instance runs on the page's thread, and its
 // forget is reached from the page's own apply when the page lets a file
