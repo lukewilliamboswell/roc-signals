@@ -200,12 +200,20 @@ Notes := {}.{
 		}
 	}
 
+	## The stored notes, each record that reads as a note (`decode_note`).
+	## The board draws notes keyed by id, so of two records under one id
+	## (storage another tab or a hand edit left) only the first is a note,
+	## as a malformed record is dropped.
 	decode_notes : Str -> List(Note)
 	decode_notes = |text|
 		if text.trim() == "" {
 			[]
 		} else {
-			text.split_on(";").join_map(Notes.decode_note)
+			(kept, _) = text.split_on(";").join_map(Notes.decode_note).fold(
+				([], Set.empty()),
+				|(held, seen), note| if (seen.contains(note.id)) (held, seen) else (held.append(note), seen.insert(note.id)),
+			)
+			kept
 		}
 
 	## Encoding a note and decoding it again reproduces it exactly, which is
@@ -223,6 +231,9 @@ Notes := {}.{
 
 	## A slot outside the outbox is not a note this app can hold, so it is dropped.
 	expect Notes.decode_notes("n0|9|1|r7|Generator hours") == []
+
+	## Of two stored records under one id only the first is a note.
+	expect Notes.decode_notes("n0|0|1|r7|First;n0|1|0|r7|Second").map(|note| note.body) == ["First"]
 
 	## The notes in the boot storage (none when the key is absent).
 	stored_notes : List((Str, Str)) -> List(Note)
