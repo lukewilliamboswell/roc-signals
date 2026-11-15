@@ -35,6 +35,8 @@ try {
     const text = (id, value) => join([12], u32(id), str(value));
     const title = value => join([17], str(value));
     const mark = (...types) => join([24], u32(types.length), ...types.map(str));
+    // The browser's own transition, called past the fixture's stub.
+    window.__startViewTransition = arg => Document.prototype.startViewTransition.call(document, arg);
     window.__transitionFixture = (options = {}) => {
       const root = document.createElement("main"); document.body.append(root);
       const memory = new WebAssembly.Memory({ initial: 64 }); let length = 0, releases = 0;
@@ -46,12 +48,21 @@ try {
         starts.push({ arg, update: typeof arg === "function" ? arg : arg.update, transition, ready, finish });
         return transition;
       });
-      const doc = new Proxy(document, { get(target, key) {
-        if (key === "startViewTransition") return options.absent ? undefined : start;
-        if (key === "visibilityState") return options.hidden ? "hidden" : "visible";
-        const value = Reflect.get(target, key, target); return typeof value === "function" ? value.bind(target) : value;
-      } });
-      const rt = new RocEngineRuntime(x, root, { manualEffects: true, ...options, document: doc });
+      // The runtime holds the real document: its element factory refuses a
+      // node whose ownerDocument is any other object, so a proxy of the
+      // document cannot stand in for it. The fixture controls only the two
+      // members a marked batch reads, as own properties of the document that
+      // shadow Document.prototype until this fixture ends.
+      const owner = { absent: options.absent, hidden: options.hidden, start };
+      window.__transitionDocument = owner;
+      for (const [key, get] of [["startViewTransition", () => owner.absent ? undefined : owner.start], ["visibilityState", () => owner.hidden ? "hidden" : "visible"]]) {
+        Object.defineProperty(document, key, { configurable: true, get: () => window.__transitionDocument === owner ? get() : Reflect.get(Document.prototype, key, document) });
+      }
+      const restore = () => {
+        if (window.__transitionDocument !== owner) return;
+        window.__transitionDocument = null; delete document.startViewTransition; delete document.visibilityState;
+      };
+      const rt = new RocEngineRuntime(x, root, { manualEffects: true, ...options });
       __bindProtocolFixture(rt);
       const original = rt.perform.bind(rt);
       rt.perform = fx => { effects.push([fx.op, root.childNodes.length]); original(fx); };
@@ -61,7 +72,7 @@ try {
         const bytes = join([flags], ...parts); new Uint8Array(memory.buffer).set(bytes); length = bytes.length;
         rt.busy = true; try { rt.guard(() => rt.apply()); } finally { rt.busy = rt.pendingTransition !== null; } rt.drainQueue();
       };
-      const end = () => { rt.unmount(); root.remove(); };
+      const end = () => { rt.unmount(); root.remove(); restore(); };
       return { rt, root, x, starts, calls, effects, raw, end, elem, text, title, mark, join, u32, str, get releases() { return releases; } };
     };
   });
@@ -376,7 +387,7 @@ try {
       const style = document.createElement("style"); style.textContent = `:root{view-transition-name:none}::view-transition-group(*){animation-duration:2s}::view-transition-old(root),::view-transition-new(root){animation-duration:2s}${allow ? "::view-transition,::view-transition-group(*),::view-transition-image-pair(*),::view-transition-old(*),::view-transition-new(*){pointer-events:none}" : ""}`; document.head.append(style);
       let transition;
       const decoration = document.createElement("aside"); decoration.style.cssText = "position:fixed;left:200px;top:200px;width:20px;height:20px;background:red;view-transition-name:decoration"; document.body.append(decoration);
-      const f = __transitionFixture({ manualEffects: false, start(arg) { transition = document.startViewTransition(arg); return transition; } });
+      const f = __transitionFixture({ manualEffects: false, start(arg) { transition = __startViewTransition(arg); return transition; } });
       f.raw(0, f.elem(1, "button")); const button = f.rt.statics[1]; button.textContent = "overlay target"; button.style.cssText = "position:fixed;left:10px;top:70px;width:150px;height:40px";
       let clicks = 0; button.addEventListener("click", () => { clicks++; });
       f.raw(1, f.mark()); await transition.ready;
@@ -389,7 +400,7 @@ try {
     }), [allow ? 1 : 0, false, null]);
   }
   const duplicates = await page.evaluate(async () => {
-    const f = __transitionFixture({ manualEffects: false, start: document.startViewTransition.bind(document) });
+    const f = __transitionFixture({ manualEffects: false, start: __startViewTransition });
     f.raw(0, f.elem(1), f.elem(2)); f.rt.statics[1].style.viewTransitionName = "same-name"; f.rt.statics[2].style.viewTransitionName = "same-name";
     const events = []; f.rt.monitor.subscribe(event => { if (event.kind === "transition") events.push(event.state); });
     f.raw(1, f.elem(3), f.mark()); await f.rt.idle(); const result = [f.root.childNodes.length, f.rt.poisoned, events.includes("ready-rejected")]; f.end(); return result;
@@ -397,7 +408,7 @@ try {
   check("duplicate CSS names reject only the animation and still publish the batch", duplicates, [3, null, true]);
   const real = await page.evaluate(async () => {
     if (typeof document.startViewTransition !== "function") return "absent";
-    const f = __transitionFixture({ start: document.startViewTransition.bind(document) });
+    const f = __transitionFixture({ start: __startViewTransition });
     f.raw(0, f.elem(1)); f.rt.statics[1].style.viewTransitionName = "duplicate";
     const original = f.rt.perform.bind(f.rt); f.rt.perform = fx => original(fx);
     f.raw(1, f.elem(2), f.mark("shelf")); f.rt.statics[1].style.viewTransitionName = "duplicate";
