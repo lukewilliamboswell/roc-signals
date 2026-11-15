@@ -69,6 +69,12 @@ contract("a preparation's input longer than the input is a contract fault", work
 contract("a preparation's files beyond the request's files are a contract fault", work({ flag: 1, prep: [...text("index"), ...word(0), ...word(1)] }), /preparation operands/);
 contract("a preparation cut before its operands is a contract fault", work({ flag: 1, prep: [...text("index"), ...word(0)] }), /work request/);
 contract("a truncated preparation name is a contract fault", work({ flag: 1, prep: [...word(1000)] }), /work request/);
+// A file the runtime does not hold, or a name that is not UTF-8, can only
+// come from an engine and runtime that disagree: a contract fault too.
+const invalidName = [...word(2), 0xc3, 0x28];
+contract("a file handle the runtime does not hold is a contract fault", work({ files: [[...word(77), ...word(0), ...word(0), ...word(0), ...word(0), ...word(0)]] }), /file handle 77/);
+contract("a task name that is not UTF-8 is a contract fault", [0, FX, ...word(1), 8, ...invalidName, ...word(0), ...word(0), ...word(0), 1, 0], /task name is not UTF-8/);
+contract("a preparation name that is not UTF-8 is a contract fault", work({ flag: 1, prep: [...invalidName, ...word(0), ...word(0)] }), /preparation name is not UTF-8/);
 
 // onWorkerFault is the page's own observer, called just before a lost
 // job's WorkLost result is delivered: one that throws must not keep that

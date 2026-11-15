@@ -898,7 +898,10 @@ const COMMAND_APPLIERS = {
       // Any other value, or an operand outside the request, is a contract
       // fault (design.md, Appendix B, FX kinds), like the HTTP policy bytes.
       const within = (n, what) => { if (n > u8.length - at) throw new ContractFault(`contract: work request ${what} does not lie within the request`); };
-      const name = what => { within(4, what); within(4 + dv.getUint32(at, true), what); return str(); };
+      const name = what => {
+        within(4, what); within(4 + dv.getUint32(at, true), what);
+        try { return str(); } catch (error) { if (error instanceof TypeError) throw new ContractFault(`contract: work request ${what} is not UTF-8`); throw error; }
+      };
       const task = name("task name");
       within(4, "input length");
       const n = dv.getUint32(at, true);
@@ -919,7 +922,7 @@ const COMMAND_APPLIERS = {
       for (let i = 0; i < refs; i += 1) {
         const { token, start, len } = fileRange(dv, at);
         const file = reader.mode === "preflight" ? undefined : this.files.get(token);
-        if (reader.mode !== "preflight" && file === undefined) throw new Error(`a work request names file handle ${token}, which this runtime does not hold`);
+        if (reader.mode !== "preflight" && file === undefined) throw new ContractFault(`contract: a work request names file handle ${token}, which this runtime does not hold`);
         if (reader.mode !== "preflight") { files.push(file); ranges.push(token, start, len); }
         at += 24;
       }
