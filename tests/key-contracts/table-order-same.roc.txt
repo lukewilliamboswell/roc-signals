@@ -4,7 +4,7 @@ import pf.Engine
 import pf.Html
 
 Tag := [App]
-store = Engine.store(App, Engine.table([{ key: 1.U64, row: 1.U64 }, { key: 2, row: 2 }]))
+store = Engine.store(App, Engine.table(Engine.Table.empty({}).insert(1.U64, 1.U64).insert(2, 2)))
 
 main : Engine.Program
 main = Engine.program_store({}, |_| store, |_| Engine.table_view(store.cells(), {

@@ -76,9 +76,9 @@ touches; see [Tables and Table Views](@/docs/tables-and-views.md).
 
 | Area | Symbols |
 |---|---|
-| Building | `from_list` (two rows with one key: contract error) |
-| Keyed writes | `insert` (a key already present: contract error), `put` (insert or replace), `replace`, `update`, `remove` (each leaves the table unchanged for a key it does not hold) |
-| Whole rewrites | `load` (replace every row), `update_all` (change every row) |
+| Building | `from_list` (`Err(DuplicateKey(key))` for two rows with one key), `empty` |
+| Keyed writes | `insert` (leaves the table unchanged for a key it holds), `put` (insert or replace), `replace`, `update`, `remove` (each leaves the table unchanged for a key it does not hold) |
+| Whole rewrites | `update_all` (change every row); a `set` of a new table replaces every row |
 | Reading | `get` (a `Try(v, [Missing])`), `contains`, `len`, `fold` and `to_list` (every row with its key; both in no particular order) |
 | This turn's changes | `changes` (each written key with its row as it was, or `Rewritten`), `inverse` (the writes that undo this turn's, or `Err(Rewritten)`), `apply` (a list of `Put(k, v)` and `Remove(k)`) |
 
@@ -441,7 +441,7 @@ construction site, for example `contract: duplicate key "r0" in each at site
 
 | Class | Cause |
 |---|---|
-| `contract` | A rule of the API was broken: a duplicate key in an `each`, two live references with one name, a `switch` value outside its cases, a row template that is not a single element, two handlers for one event type on one element, an event type ending in a retired suffix, a property on an element its row does not allow or declared twice, an attribute with a name a property row claims on that element, a value property on a file input, an invalid media catalogue or an undeclared media subscription, a controlled helper with reserved attributes or a `beforetoggle` handler, a text-kind key handler, a 33rd live document-key handler, `ApplyValue` without a declared value property at its reference, a decision whose list replaces a cell an earlier write of the same list wrote, `Table.insert` of a key already present, a table built from two rows with one key, two rows of a plan with its own `compare` that compare `Same`, a view's row read after its key left the table in the same event, an effect feedback loop, an outbox posted twice in one turn, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
+| `contract` | A rule of the API was broken: a duplicate key in an `each`, two live references with one name, a `switch` value outside its cases, a row template that is not a single element, two handlers for one event type on one element, an event type ending in a retired suffix, a property on an element its row does not allow or declared twice, an attribute with a name a property row claims on that element, a value property on a file input, an invalid media catalogue or an undeclared media subscription, a controlled helper with reserved attributes or a `beforetoggle` handler, a text-kind key handler, a 33rd live document-key handler, `ApplyValue` without a declared value property at its reference, a decision whose list replaces a cell an earlier write of the same list wrote, two rows of a plan with its own `compare` that compare `Same`, a view's row read after its key left the table in the same event, an effect feedback loop, an outbox posted twice in one turn, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
 | `resource_limit` | A bound in the table above |
 | `out_of_memory` | The Wasm heap could not grow |
 | `app_crash` | `crash` in app code, or a Roc runtime error |

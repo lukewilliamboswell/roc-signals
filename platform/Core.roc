@@ -333,9 +333,9 @@ Core := [].{
 	## identity no table read from a Store value carries.
 	TableCell(st) : { cell : U64, clear : (st -> st), stamp : (st -> st), live : (st -> st), finish : (st -> st), ready : (st -> Bool) }
 
-	## The description of one cell holding a [Table] of `rows`, by key. It
+	## The description of one cell holding a [Table], starting at `start`. It
 	## is an ordinary cell: a decision changes it with `Cell.update` and the
-	## table's own operations (`insert`, `put`, `update`, `remove`, `load`),
+	## table's own operations (`insert`, `put`, `update`, `remove`),
 	## so each write records the rows it changed, and `table_view` draws a
 	## filtered, sorted window of it from those changes.
 	##
@@ -346,16 +346,16 @@ Core := [].{
 	## stale. The first modifier of a turn clears the previous writing turn's
 	## changes; the root rearms that step after every reader has refreshed.
 	## Other modifiers of this event keep the first earlier row per key.
-	table : List({ key : k, row : v }) -> Cells(whole, Table(k, v), Cell(whole, Table(k, v)))
+	table : Table(k, v) -> Cells(whole, Table(k, v), Cell(whole, Table(k, v)))
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-	table = |rows| Core.table_of(rows, |table_data| table_data, |table_data| table_data)
+	table = |start| Core.table_of(start, |table_data| table_data, |table_data| table_data)
 
 	## Build the generated table lens through its public wrapper. Conversions
 	## move the representation whole; the guard and bookkeeping remain here.
-	table_of : List({ key : k, row : v }), (Table(k, v) -> wrapped), (wrapped -> Table(k, v)) -> Cells(whole, wrapped, Cell(whole, wrapped))
+	table_of : Table(k, v), (Table(k, v) -> wrapped), (wrapped -> Table(k, v)) -> Cells(whole, wrapped, Cell(whole, wrapped))
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-	table_of = |rows, wrap, unwrap| {
-		init = wrap(Table.from_list(rows))
+	table_of = |start, wrap, unwrap| {
+		init = wrap(start)
 		{
 			init,
 			count: 1,
@@ -10314,7 +10314,7 @@ expect {
 		Keyed(record) => record.len()
 		Rewritten => 0
 	}
-	edited = TableCore.begin_changes(Table.from_list([{ key: 1.U64, row: "a" }])).update(1, |row| "${row}!")
+	edited = TableCore.begin_changes(Table.from_list([{ key: 1.U64, row: "a" }])?).update(1, |row| "${row}!")
 	tables = {
 		cells: Dict.empty()
 			.insert(6, { cell: 6, clear: |(a, b)| (TableCore.clear_changes(a), b), stamp: |st| st, live: |st| st, finish: |(a, b)| (TableCore.finish_changes(a), b), ready: |_| True })
@@ -10347,7 +10347,7 @@ expect {
 ## but its first modifier sees an empty new record. Two updates keep the first
 ## earlier row, unrelated writes retain it, and the next writing turn replaces it.
 expect {
-	store = Core.store_of({}, { items: Core.table([{ key: 1.U64, row: 10.U64 }, { key: 2, row: 20 }]), note: Core.cell(0.U64) }.Core.Cells)
+	store = Core.store_of({}, { items: Core.table(Table.from_list([{ key: 1.U64, row: 10.U64 }, { key: 2, row: 20 }])?), note: Core.cell(0.U64) }.Core.Cells)
 	cells = store.cells()
 	first = store.after([cells.items.update(|table| table.put(1, 11))])
 	preceding = first.read(cells.items).inverse()?
@@ -10385,7 +10385,7 @@ expect {
 ## A reset and its refinements are one pure turn. The rewrite remains whole
 ## through the refinements; a later keyed writing turn starts its own record.
 expect {
-	description = { items: Core.table([{ key: 1.U64, row: 10.U64 }]), count: Core.cell(0.U64) }.Core.Cells.with_reset(|cells, reset| { cells, reset })
+	description = { items: Core.table(Table.from_list([{ key: 1.U64, row: 10.U64 }])?), count: Core.cell(0.U64) }.Core.Cells.with_reset(|cells, reset| { cells, reset })
 	store = Core.store_of({}, description)
 	group = store.cells()
 	cells = group.cells
@@ -10410,7 +10410,7 @@ expect {
 ## A pure turn writing one table leaves another table's last writing record
 ## intact. Boot initialization still clears both records without a write.
 expect {
-	store = Core.store_of({}, { left: Core.table([{ key: 1.U64, row: 10.U64 }]), right: Core.table([{ key: 1.U64, row: 20.U64 }]), note: Core.cell(0.U64) }.Core.Cells)
+	store = Core.store_of({}, { left: Core.table(Table.from_list([{ key: 1.U64, row: 10.U64 }])?), right: Core.table(Table.from_list([{ key: 1.U64, row: 20.U64 }])?), note: Core.cell(0.U64) }.Core.Cells)
 	cells = store.cells()
 	both = store.after([cells.left.update(|table| table.put(1, 11)), cells.right.update(|table| table.put(1, 21))])
 	left = both.after([cells.left.update(|table| table.put(1, 12))])
@@ -10433,7 +10433,7 @@ expect {
 ## A chained pure snapshot cannot impersonate a mounted table whose next
 ## record starts at the same count. Loading it remains a whole rewrite.
 expect {
-	store = Core.store_of({}, Core.table([{ key: 1.U64, row: 10.U64 }, { key: 2, row: 20 }]))
+	store = Core.store_of({}, Core.table(Table.from_list([{ key: 1.U64, row: 10.U64 }, { key: 2, row: 20 }])?))
 	cell = store.cells()
 	snapshot = store.after([cell.update(|table| table.put(1, 11))]).after([cell.update(|table| table.put(2, 21))]).read(cell)
 	live = (cell.modify)(store.initial().st, |table| table.put(1, 111))
@@ -10596,7 +10596,7 @@ expect {
 ## A table view names references from its typed key signal. A keyed removal
 ## retires just that drawn row's name and preserves the other row's address.
 expect {
-	store = Core.store_of({}, Core.table([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }]))
+	store = Core.store_of({}, Core.table(Table.from_list([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }])?))
 	cell = store.cells()
 	view = Core.element(
 		"div",
@@ -10915,7 +10915,7 @@ expect {
 ## The same for a table view's row whose toggle removes its key from the
 ## table through the table's cell.
 expect {
-	store = Core.store_of({}, Core.table([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }]).map(|c| { todos: c }))
+	store = Core.store_of({}, Core.table(Table.from_list([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }])?).map(|c| { todos: c }))
 	todos = store.cells().todos
 	plan = |_| { keep: |_, _| Bool.True, sort: |k, _| k, compare: |a, b| if (a < b) Before else if (a > b) After else Same }
 	view = Core.element("main", [], [Core.table_view(todos, { query: Core.const({}), plan, window: Core.const({ start: 0, count: 10 }) }, |key, _| Core.controlled_popover({ label: "Help", open: Core.const(True), on_toggle: Core.store_handler_by(key, |k, _| [todos.update(|t| t.remove(k))]), dismiss: Auto, attrs: [], children: [] }))])
@@ -10932,7 +10932,7 @@ expect {
 ## poisoned and the view stays settled. A row that only left the window
 ## still reads the row the table holds.
 expect {
-	store = Core.store_of({}, { todos: Core.table([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }]), seen: Core.cell(0.U64), win: Core.cell({ start: 0.U64, count: 10.U64 }) }.Core.Cells)
+	store = Core.store_of({}, { todos: Core.table(Table.from_list([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }])?), seen: Core.cell(0.U64), win: Core.cell({ start: 0.U64, count: 10.U64 }) }.Core.Cells)
 	todos = store.cells().todos
 	seen = store.cells().seen
 	win = store.cells().win

@@ -27,7 +27,7 @@ LabStore := [Bench].{
 		{
 			run: Engine.cell(0.U64),
 			work: {
-				jobs: Engine.table([]),
+				jobs: Engine.table(Engine.Table.empty({})),
 				refused: Engine.cell(0.U64),
 				ticks: Engine.cell(0.U64),
 				save: Engine.cell(Engine.outbox({})),
@@ -47,7 +47,7 @@ LabStore := [Bench].{
 				next = run + 1
 				[
 					LabStore.cells.run.set(next),
-					LabStore.cells.work.jobs.update(|jobs| Lab.admit(jobs.load(Lab.jobs_for(params, next)))),
+					LabStore.cells.work.jobs.update(|_| Lab.admit(Lab.jobs_for(params, next))),
 					LabStore.cells.work.ticks.set(0),
 				]
 			}

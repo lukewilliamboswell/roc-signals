@@ -226,9 +226,13 @@ The layers, in order of preference:
    of the turn) with a classified diagnostic naming the rule and the
    construction site. It poisons the instance, and recovery is a fresh one
    (see [Error Containment](#error-containment)). How much outside input
-   arrives is a bound instead, the next layer's. Outside data that breaks a
-   rule the app must keep, such as two rows with one key in a server's
-   answer, is still this layer: the app checks data where it enters.
+   arrives is a bound instead, the next layer's. Outside data that would
+   break a rule the app keeps, such as two rows with one key in a server's
+   answer, is the previous layer's where the constructor it enters through
+   answers it as a value: `Table.from_list` answers `DuplicateKey(key)`, so
+   the type keeps the rule and the app decides what the user sees. Where
+   no constructor does yet (an `each` site's list), the app checks data
+   where it enters.
 4. **Bounded.** Every queue, table and buffer that grows with outside input
    has a declared bound and a declared behaviour at it (see
    [Boundedness](#boundedness)): a typed refusal where the work can be
@@ -642,7 +646,7 @@ far apart; because every context reaches the store, no level between them has
 to carry it.
 
 - **Described once.** An app describes its store with Roc's record builder:
-  each field is `Engine.cell(init)`, `Engine.table(rows)` or another
+  each field is `Engine.cell(init)`, `Engine.table(start)` or another
   description, so a feature describes its own cells and the app nests them:
   `{ session: Engine.cell(Anonymous), article: Article.cells({}) }.Engine.Cells`.
   The builder combines fields pairwise (`Cells.map2`), so a description's
@@ -775,13 +779,19 @@ table drawn through a view.
 ### Tables and views
 
 A *table* is a store cell that holds rows by key, made with
-`Engine.table(rows)`. Its cell is an ordinary `Cell(st, Table(k, v))`; its
+`Engine.table(start)` from the table it starts at. Its cell is an ordinary `Cell(st, Table(k, v))`; its
 value changes only through the table's own operations, and each of them
 names the rows it touches.
 
 - **Rows by key.** `Table(k, v)` maps a key to a row, finding it by the key's
   own equality and hash. `insert`, `put`, `replace`, `update` and `remove`
-  each touch one key; `load` and `update_all` replace every row. `get`,
+  each touch one key; `update_all` replaces every row, and so does a `set`
+  of a new table. `Table.from_list` builds a table from keyed rows, or
+  answers `DuplicateKey(key)` for the first key two rows share, and
+  `Table.empty` is a table with no rows. Rows written in the program are
+  checked while compiling: a top-level constant that matches on
+  `from_list` and crashes on `Err` is evaluated by the compiler, so a
+  repeated key is a compile error naming it. `get`,
   `contains` and `len` read, and so do `fold` and `to_list`, which visit
   every row in no particular order. A table has no order of its own: an
   order the user chooses is a field of the row that a view sorts by.
@@ -810,8 +820,10 @@ names the rows it touches.
 
 `Table.update`, `replace` and `remove` of a key the table does not hold leave
 it as it was, because an earlier write of the same event may have removed
-that row. `Table.insert` of a key already present, and a table built from two
-rows with one key, are `contract` errors.
+that row. `Table.insert` of a key the table holds leaves it as it was, as
+`update` of a key it does not hold does: a decision that must tell the user
+the key exists reads the table first. A table cannot be built from two rows
+with one key: `Table.from_list` answers `DuplicateKey(key)`.
 
 A *table view* (a view in this section) draws part of a table: the rows a query
 keeps, in the query's order, and of those only the rows inside a window.
@@ -1208,9 +1220,9 @@ Rules:
   diagnostic naming the key and the site path; it is never an alias.
 - **A table's key is a typed value.** A table, and every view of it, finds a
   row by the key's own equality and hash, never by a text made from the key.
-  A key occurs once in a table by construction: building a table from two
-  rows with one key, or inserting a key already present, is a `contract`
-  error.
+  A key occurs once in a table by construction: `Table.from_list` answers
+  `DuplicateKey(key)` for two rows with one key, and `insert` of a held key
+  leaves the table as it was.
 - **Engine ids are private.** DOM node ids, handler numbers, site ids, cell
   positions and effect ids are dense integers minted by the engine. Apps
   never see them; focus targets are named references scoped to the element
@@ -3689,8 +3701,7 @@ two handlers for one event on one element; a decision whose list
 replaces a cell an earlier write of the same list wrote (named by the site
 whose handler or reaction fired, the cell's position in the store and the
 two writes' places in the list, since the record builder hands the engine
-no field names); `Table.insert` of a key
-already present; a table built from two rows with one key; two rows of a plan with its own `compare` that compare `Same`; a table view's row read after its key left the table in
+no field names); two rows of a plan with its own `compare` that compare `Same`; a table view's row read after its key left the table in
 the same event;
 a typed timeout of `Ms(0)`, an interval of zero milliseconds, or a timer or
 interval longer than 2,147,483,647 milliseconds;
@@ -4824,7 +4835,7 @@ Signal.to_text_signal : Signal(ctx, a) -> Signal(ctx, Str) where [a.to_str : a -
 # The store: cells, their description and the store built from it
 cell : a -> Cells(whole, a, Cell(whole, a))                       # one cell starting at a value; a store of
                                               # one cell: Engine.cell(x).map(|c| { c: c })
-table : List({ key : k, row : v })                                # one cell holding rows by key;
+table : Table(k, v)                                               # one cell holding rows by key, from its start;
         -> Cells(whole, Table(k, v), Cell(whole, Table(k, v)))    # k has is_eq and to_hash
 Cells(whole, st, h)                           # opaque: a description; { a: .., b: .. }.Engine.Cells
 Cells.map2 : Cells(whole, a, ha), Cells(whole, b, hb), (ha, hb -> hc)
@@ -5100,9 +5111,10 @@ has `is_eq` and `to_hash`:
 
 ```roc
 Table(k, v)                                   # opaque: rows by key and this turn's changes
-Table.from_list : List({ key : k, row : v }) -> Table(k, v)             # two rows with one key: contract error
-Table.load : Table(k, v), List({ key : k, row : v }) -> Table(k, v)     # replace every row: a whole rewrite
-Table.insert : Table(k, v), k, v -> Table(k, v)                         # a key already present: contract error
+Table.from_list : List({ key : k, row : v })
+                  -> Try(Table(k, v), [DuplicateKey(k)])                # the first key two rows share
+Table.empty : {} -> Table(k, v)                                         # no rows
+Table.insert : Table(k, v), k, v -> Table(k, v)                         # a key the table holds: unchanged
 Table.put : Table(k, v), k, v -> Table(k, v)                            # insert or replace
 Table.replace : Table(k, v), k, v -> Table(k, v)                        # a missing key: unchanged
 Table.update : Table(k, v), k, (v -> v) -> Table(k, v)                  # a missing key: unchanged

@@ -94,6 +94,14 @@ TableApp := [Todos].{
 		$rows
 	}
 
+	## The table of `sample(count)`, whose keys are the numbers below
+	## `count`, after `drop` leaves out some of them; no key repeats.
+	sample_table : U64, (U64 -> Bool) -> Table(U64, Todo)
+	sample_table = |count, drop| match Table.from_list(TableApp.sample(count).drop_if(|entry| drop(entry.key))) {
+		Ok(table) => table
+		Err(DuplicateKey(key)) => crash "TableApp.sample_table: the key ${key.to_str()} repeats"
+	}
+
 	todo_of : U64, U64 -> Todo
 	todo_of = |key, count| {
 		title: "Task ${key.to_str()}",
@@ -155,10 +163,10 @@ TableApp := [Todos].{
 
 	description = {
 		items: {
-			todos: Engine.table([]),
+			todos: Engine.table(Table.empty({})),
 			next: Engine.cell(0.U64),
 		}.Engine.Cells.with_reset(|item_cells, reset| { todos: item_cells.todos, next: item_cells.next, reset }),
-		shadow: Engine.table([]),
+		shadow: Engine.table(Table.empty({})),
 		listing: Engine.cell({ show: Open, order: ByQty }),
 		window: Engine.cell({ start: 0.U64, count: 30.U64 }),
 		late: Engine.cell(Hidden),
@@ -182,8 +190,8 @@ TableApp := [Todos].{
 	## The store as a setup starts it: both tables at the setup's size.
 	start : Setup -> Engine.Store(_, _)
 	start = |setup| TableApp.store
-		.with_initial(TableApp.cells.items.todos, Table.from_list(TableApp.sample(setup.rows)))
-		.with_initial(TableApp.cells.shadow, Table.from_list(TableApp.sample(setup.rows)))
+		.with_initial(TableApp.cells.items.todos, TableApp.sample_table(setup.rows, |_| False))
+		.with_initial(TableApp.cells.shadow, TableApp.sample_table(setup.rows, |_| False))
 		.with_initial(TableApp.cells.items.next, setup.rows)
 		.with_initial(TableApp.cells.window, { start: 0, count: setup.window })
 
@@ -203,7 +211,7 @@ TableApp := [Todos].{
 				.after([todos.update(|table| table.put(setup.rows, { title: "Snapshot row", status: Open, qty: -1 }))])
 				.read(todos)
 			OtherStore => Engine.store(TableApp.Todos, TableApp.description)
-				.with_initial(todos, Table.from_list(TableApp.sample(setup.rows).drop_if(|entry| entry.key == 0)))
+				.with_initial(todos, TableApp.sample_table(setup.rows, |key| key == 0))
 				.read(todos)
 		}
 	}
@@ -217,11 +225,11 @@ TableApp := [Todos].{
 	]
 
 	## What "Reset" writes: the table a setup starts with, as a new table
-	## (`Table.from_list`), and the key after its last, so that the next
+	## (`sample_table`), and the key after its last, so that the next
 	## to-do added takes a key the table does not hold.
 	restored : Setup -> List(Engine.Write(_))
 	restored = |setup| [
-		TableApp.cells.items.todos.set(Table.from_list(TableApp.sample(setup.rows))),
+		TableApp.cells.items.todos.set(TableApp.sample_table(setup.rows, |_| False)),
 		TableApp.cells.items.next.set(setup.rows),
 	]
 

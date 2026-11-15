@@ -17,13 +17,19 @@ The snippets on this page come from a league table, `www/samples/scores/`.
 
 ## A table is a cell
 
-`Engine.table(rows)` describes a cell of the store that holds rows by key:
+`Engine.table(start)` describes a cell of the store that holds rows by key,
+starting at the table `start`:
 
 {{ sample(file="scores/Scores.roc", region="table") }}
 
 - The key is a typed value of your choosing, here a `U64`. A table finds a
-  row through the key's own equality and hash, and a key occurs once: two
-  rows with one key are a contract error.
+  row through the key's own equality and hash, and a key occurs once.
+- `Table.from_list(rows)` builds a table, or answers `Err(DuplicateKey(key))`
+  naming the first key two rows share. The roster is a top-level constant
+  that matches on it and crashes on `Err`: the compiler evaluates a
+  top-level constant, so a key written twice in the program's own rows is a
+  compile error naming the key, and the running app never meets it.
+- A table that starts empty starts at `Table.empty({})`.
 - A table has no order of its own. An order the user sees is worked out by a
   table view, from the rows' fields.
 - The table is held in an ordinary cell, `Scores.cells.league.players`, read with
@@ -36,11 +42,11 @@ which rows it touched:
 
 | Operation | What it writes |
 |---|---|
-| `table.insert(key, row)` | A row under a new key. A key already present is a contract error |
+| `table.insert(key, row)` | A row under a new key. A key the table holds leaves it unchanged: read `contains` first when the user must be told |
 | `table.put(key, row)` | The row at `key`, inserted or replaced |
 | `table.update(key, f)`, `table.replace(key, row)` | The row at `key`. A key the table does not hold leaves it unchanged |
 | `table.remove(key)` | Removes the row at `key`. A missing key leaves the table unchanged |
-| `table.update_all(f)`, `table.load(rows)` | Every row: a whole rewrite |
+| `table.update_all(f)` | Every row: a whole rewrite |
 | `table.get(key)`, `table.contains(key)`, `table.len()` | Nothing: they read |
 | `table.fold(start, f)`, `table.to_list()` | Nothing: they read every row, in no particular order. `to_list` gives each row with its key; sort the list before showing or comparing it |
 
@@ -166,16 +172,25 @@ The toolbar attaches them, with the two kinds of whole rewrite:
 Write a table with `update`, never with a `set` of a table built from a
 reading of the cell: that copies the table.
 
+### Rows from outside
+
+Rows that arrive at run time (a server's answer, storage, a file) enter
+through `Table.from_list`, in the decision that receives them. On `Ok`
+the decision sets the table into its cell; on `Err(DuplicateKey(key))` it
+writes a state of the app's own instead, which the page shows like any
+other failure of what arrived. The Reading List example refuses a shelf
+with two books under one id this way, and names the id.
+
 ### Whole rewrites
 
-`update_all`, `load`, a `set` of a new table (`Table.from_list(rows)`) and a
+`update_all`, a `set` of a new table (`Table.from_list(rows)`) and a
 generated reset replace every row. They do not record each key: every table view
 of the table builds itself again, with a pass over the table and a sort.
 Rows that are in the window before and after are kept, not created again.
 
 The `league` group's reset puts the table back to the rows it was described
-with. A table described as `Engine.table([])` and filled later, with
-`with_initial` or a `load`, resets to empty.
+with. A table described as `Engine.table(Table.empty({}))` and filled later,
+with `with_initial` or a `set`, resets to empty.
 
 ## Several table views, and plain readers
 
@@ -265,7 +280,8 @@ list is sorted or filtered on the page, or when it is long.
   drawn rows before the event with the final window once, preserving every
   drawn row that remains in it.
 - A write to a key the table does not hold writes nothing and reports
-  nothing: an earlier write of the same event may have removed the row.
+  nothing: an earlier write of the same event may have removed the row. An
+  `insert` of a key it holds writes nothing too.
 - A row read after its key left the table in the same event is a contract
   error.
 - `Table.changes` retains the last turn that wrote this table, including

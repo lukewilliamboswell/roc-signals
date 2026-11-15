@@ -18,11 +18,20 @@ import Kanban
 ## handle, so a cell of another store is a type error here.
 AppStore := [KanbanBoard].{
 
+	## The cards the board starts with, by title. A top-level constant is
+	## evaluated while compiling, so a title `Kanban.initial_cards` gave
+	## twice would be a compile error naming it.
+	initial_cards : Engine.Table(Str, Kanban.Card)
+	initial_cards = match Engine.Table.from_list(Kanban.initial_cards) {
+		Ok(table) => table
+		Err(DuplicateKey(title)) => crash "AppStore.initial_cards lists the card ${title} twice"
+	}
+
 	## The store: its name, and its cells with their starting values.
 	store = Engine.store(
 		AppStore.KanbanBoard,
 		{
-			cards: Engine.table(Kanban.initial_cards),
+			cards: Engine.table(AppStore.initial_cards),
 			filter: Engine.cell(""),
 			limit: Engine.cell("1"),
 			drag: Engine.cell(Board.idle_drag),

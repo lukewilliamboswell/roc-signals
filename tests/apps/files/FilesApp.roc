@@ -40,7 +40,7 @@ FilesApp := [Shelf].{
 		{
 			inbox: Engine.cell([]),
 			note: Engine.cell("nothing arrived"),
-			table_files: Engine.table([]),
+			table_files: Engine.table(Table.empty({})),
 			table_refused: Engine.cell(0.U64),
 		}.Engine.Cells,
 	)
@@ -56,8 +56,11 @@ FilesApp := [Shelf].{
 		if files.is_empty() {
 			counted
 		} else {
-			rows = files.map_with_index(|file, key| { key, row: file })
-			[FilesApp.cells.table_files.update(|table| table.load(rows))].concat(counted)
+			# A file's place in the offer is its key, and places do not repeat.
+			match Table.from_list(files.map_with_index(|file, key| { key, row: file })) {
+				Ok(table) => [FilesApp.cells.table_files.set(table)].concat(counted)
+				Err(DuplicateKey(key)) => crash "FilesApp.arrived_in_table: the offer's place ${key.to_str()} repeats"
+			}
 		}
 	}
 

@@ -35,10 +35,19 @@ SheetStore := [Workbook].{
 	keyboard_start : Keyboard
 	keyboard_start = { anchor: 0, saved: "", pending: False, commands: Engine.outbox({}) }
 
+	## The sheet a visit opens with. A top-level constant is evaluated while
+	## compiling, so a row key `Sheet.rows_of` gave twice would be a compile
+	## error naming it.
+	opening : Table(U64, Sheet.Row)
+	opening = match Table.from_list(Sheet.rows_of(Sheet.initial_cells)) {
+		Ok(table) => table
+		Err(DuplicateKey(key)) => crash "SheetStore.opening: the sheet's row ${key.to_str()} is listed twice"
+	}
+
 	store = Engine.store(
 		SheetStore.Workbook,
 		{
-			sheet: Engine.table(Sheet.rows_of(Sheet.initial_cells)),
+			sheet: Engine.table(SheetStore.opening),
 			selected: Engine.cell(0.U64),
 			editing: Engine.cell(Resting),
 			keyboard: Engine.cell(SheetStore.keyboard_start),
@@ -248,7 +257,7 @@ expect {
 
 ## An edit writes the row typed into and the rows holding its dependents, and no others: rows 2, 5, 6, 7 and 8 for B2, and row 12 alone for C12.
 expect {
-	opened = Table.from_list(Sheet.rows_of(Sheet.initial_cells))
+	opened = SheetStore.opening
 	written = |table| table.inverse().map_ok(|undo| undo.len())
 	(written(SheetStore.retyped(opened, 9, "1500")), written(SheetStore.retyped(opened, 90, "9")), written(SheetStore.retyped(opened, 9, "1200"))) == (Ok(5), Ok(1), Ok(0))
 }

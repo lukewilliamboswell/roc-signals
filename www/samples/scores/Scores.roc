@@ -9,16 +9,21 @@ Scores := [League].{
 	# region table
 	Player : { name : Str, team : [Red, Blue], points : I64 }
 
-	## The players a league starts with, each under its key.
-	roster : List({ key : U64, row : Player })
-	roster = [
+	## The players a league starts with, each under its key. A top-level
+	## constant is evaluated while compiling, so a key written twice here is
+	## a compile error naming it.
+	roster : Table(U64, Player)
+	roster = match Table.from_list([
 		{ key: 1, row: { name: "Ada", team: Red, points: 30 } },
 		{ key: 2, row: { name: "Ben", team: Blue, points: 25 } },
 		{ key: 3, row: { name: "Cy", team: Red, points: 20 } },
 		{ key: 4, row: { name: "Di", team: Blue, points: 15 } },
 		{ key: 5, row: { name: "Eve", team: Red, points: 10 } },
 		{ key: 6, row: { name: "Flo", team: Blue, points: 5 } },
-	]
+	]) {
+		Ok(table) => table
+		Err(DuplicateKey(key)) => crash "Scores.roster lists the key ${key.to_str()} twice"
+	}
 
 	## What the board shows: which players, in which order. Plain data,
 	## which a view compares to know when to build itself again.

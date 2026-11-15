@@ -413,7 +413,7 @@ expect {
 ## for the table and another for the window would remove a row and create
 ## it again.
 expect {
-	table = Table.from_list(numbered(10, 20))
+	table = Table.from_list(numbered(10, 20))?
 	view = View.build(table, { query: by_key(U64.highest), window: { start: 0, count: 4 }, limit: 8, site: "view expect" })
 	written = table.insert(5, 5)
 	followed = view.follow(written)
@@ -431,7 +431,7 @@ expect {
 ## them: what a rebuild costs is the table, so the changes are weighed against
 ## the table. Changes large next to the table cause a rebuild.
 expect {
-	table = Table.from_list(numbered(0, 200))
+	table = Table.from_list(numbered(0, 200))?
 	view = View.build(table, { query: by_key(10), window: { start: 0, count: U64.highest }, limit: 8, site: "view expect" })
 	few = numbered(0, 10).fold(table, |acc, { key, row }| acc.put(key, row + 1))
 	many = numbered(0, 40).fold(table, |acc, { key, row }| acc.put(key, row + 1))

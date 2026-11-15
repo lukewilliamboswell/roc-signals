@@ -4,10 +4,7 @@ import pf.Engine
 
 Brand := [Construction]
 
-rows : List({ key : U64, row : U64 })
-rows = []
-
-store = Engine.store(Construction, Engine.table(rows))
+store = Engine.store(Construction, Engine.table(Engine.Table.empty({})))
 
 main : Engine.Program
 main = Engine.program_store({}, |_| store, |_| Engine.element("table", [], [Engine.table_view(store.cells(), {

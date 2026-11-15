@@ -495,9 +495,10 @@ Lab := [].{
 
 	# ------------------------------------------------------------------ runs
 
-	## The jobs of run `run` with parameters `p`, every one waiting: the
-	## rows a run's table is loaded with.
-	jobs_for : Params, U64 -> List({ key : U64, row : Job })
+	## The jobs of run `run` with parameters `p`, every one waiting under
+	## its index: the table a run replaces the last run's with. The indexes
+	## below `p.jobs` are the keys, so none repeats.
+	jobs_for : Params, U64 -> Jobs
 	jobs_for = |p, run| {
 		var $rows = List.with_capacity(p.jobs)
 		var $i = 0.U64
@@ -505,7 +506,10 @@ Lab := [].{
 			$rows = $rows.append({ key: $i, row: { index: $i, run, attempt: 0, timeout: p.timeout, task: Lab.task_of(p, $i), phase: Waiting } })
 			$i = $i + 1
 		}
-		$rows
+		match Table.from_list($rows) {
+			Ok(jobs) => jobs
+			Err(DuplicateKey(index)) => crash "Lab.jobs_for: the job index ${index.to_str()} repeats"
+		}
 	}
 
 	## How a listing selects and orders a run's jobs: the `plan` of both

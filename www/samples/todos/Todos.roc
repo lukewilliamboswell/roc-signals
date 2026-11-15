@@ -18,7 +18,7 @@ Todos := [TodoList].{
 	store = Engine.store(
 		Todos.TodoList,
 		{
-			todos: Engine.table([]),
+			todos: Engine.table(Table.empty({})),
 			next: Engine.cell(0.U64),
 			draft: Engine.cell(""),
 		}.Engine.Cells,
@@ -202,14 +202,18 @@ Todos := [TodoList].{
 		)
 
 	## The store a visit starts with: the saved to-dos under the keys 0, 1,
-	## 2 and so on, and the key after the last as the next.
+	## 2 and so on, and the key after the last as the next. A to-do's place
+	## in the saved text is its key, and no place repeats.
 	start : Engine.Boot -> Engine.Store(_, _)
 	start = |boot| {
 		saved = Todos.decode(Engine.boot_storage(boot, "todos") ?? "")
-		rows = saved.map_with_index(|todo, index| { key: index, row: todo })
-		Todos.store
-			.with_initial(Todos.cells.todos, Table.from_list(rows))
-			.with_initial(Todos.cells.next, saved.len())
+		match Table.from_list(saved.map_with_index(|todo, index| { key: index, row: todo })) {
+			Ok(todos) =>
+				Todos.store
+					.with_initial(Todos.cells.todos, todos)
+					.with_initial(Todos.cells.next, saved.len())
+			Err(DuplicateKey(place)) => crash "Todos.start: the saved place ${place.to_str()} repeats"
+		}
 	}
 
 	program : Engine.Program
@@ -247,7 +251,7 @@ expect {
 ## The saved text reads back as the same to-dos, in the order they were added.
 expect {
 	todos = [{ title: "Water the plants", status: Open }, { title: "Buy milk", status: Done }]
-	table = Table.from_list(todos.map_with_index(|todo, index| { key: index, row: todo }))
+	table = Table.from_list(todos.map_with_index(|todo, index| { key: index, row: todo }))?
 	Todos.encode(table) == "-Water the plants\n+Buy milk" and Todos.decode(Todos.encode(table)) == todos
 }
 # endregion storage-expect

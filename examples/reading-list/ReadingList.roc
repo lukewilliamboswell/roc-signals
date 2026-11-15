@@ -63,7 +63,7 @@ ReadingList := [Books].{
 	store = Engine.store(
 		ReadingList.Books,
 		{
-			books: Engine.table([]),
+			books: Engine.table(Table.empty({})),
 			copy: Engine.cell(Loading),
 			showing: Engine.cell(Everything),
 			form: Engine.cell(ReadingList.blank),
@@ -109,20 +109,20 @@ ReadingList := [Books].{
 		kept.sort_with(|a, b| (query.compare)((query.sort)(a.id, a), (query.sort)(b.id, b)))
 	}
 
-	## The table brought to hold exactly `books`. A book that is new or
-	## differs is put and one the database no longer holds is removed, so
-	## the table records exactly those; a book that is the same is not
-	## written, and its row does no work. The database reports its whole
-	## copy after every write, this tab's own included, so most of what
-	## arrives is what the table already holds.
-	synced : Table(Str, BookStorage.Book), List(BookStorage.Book) -> Table(Str, BookStorage.Book)
+	## The table brought to hold exactly `books`, the database's copy as
+	## it entered at the door (`checked`). A book that is new or differs is
+	## put and one the database no longer holds is removed, so the table
+	## records exactly those; a book that is the same is not written, and
+	## its row does no work. The database reports its whole copy after
+	## every write, this tab's own included, so most of what arrives is
+	## what the table already holds.
+	synced : Table(Str, BookStorage.Book), Table(Str, BookStorage.Book) -> Table(Str, BookStorage.Book)
 	synced = |table, books| {
-		stored = Set.from_list(books.map(|book| book.id))
-		gone = table.fold([], |acc, id, _| if (stored.contains(id)) acc else acc.append(id))
+		gone = table.fold([], |acc, id, _| if (books.contains(id)) acc else acc.append(id))
 		# Folds over the keys, not a `while` loop over a `var` that holds
 		# the table: the loop copies the table on every pass in an
 		# optimised build (roc-lang/roc#12971).
-		put = books.fold(table, |acc, book| if (acc.get(book.id) == Ok(book)) acc else acc.put(book.id, book))
+		put = books.fold(table, |acc, id, book| if (acc.get(id) == Ok(book)) acc else acc.put(id, book))
 		gone.fold(put, |acc, id| acc.remove(id))
 	}
 
@@ -336,7 +336,7 @@ next_id = |state| {
 }
 
 ## The write that makes the app's copy the database's.
-restock : List(BookStorage.Book) -> Engine.Write(_)
+restock : Table(Str, BookStorage.Book) -> Engine.Write(_)
 restock = |books| ReadingList.cells.books.update(|table| ReadingList.synced(table, books))
 
 next_shelf : BookStorage.Shelf -> BookStorage.Shelf
@@ -347,18 +347,17 @@ next_shelf = |shelf|
 		Finished => Reading
 	}
 
-## The database's books, or why there are none. The port's type guarantees
-## each book's shape, but not that ids are distinct, and the table keys
-## its rows by id: of two books under one id only one could be a row, so
-## they are refused here, at the door.
-checked : Try(List(BookStorage.Book), Port.Error) -> Try(List(BookStorage.Book), Str)
+## The database's books by id, or why there are none. The port's type
+## guarantees each book's shape, but not that ids are distinct, and the
+## table keys its rows by id: of two books under one id only one could be a
+## row, so they are refused here, at the door, naming the id.
+checked : Try(List(BookStorage.Book), Port.Error) -> Try(Table(Str, BookStorage.Book), Str)
 checked = |answer|
 	match answer {
 		Ok(books) =>
-			if Set.from_list(books.map(|b| b.id)).len() == books.len() {
-				Ok(books)
-			} else {
-				Err("it holds two books under one id.")
+			match Table.from_list(books.map(|book| { key: book.id, row: book })) {
+				Ok(table) => Ok(table)
+				Err(DuplicateKey(id)) => Err("it holds two books under the id ${id}.")
 			}
 		Err(error) => Err(explain(error))
 	}
@@ -413,8 +412,8 @@ expect {
 		\\first: ["Piranesi", "Dune"] Loaded
 		\\late: ["Dune"]
 		\\failed: Your shelf could not be read: the store did not answer in time.
-		\\one id twice: Your shelf could not be read: it holds two books under one id.
-		\\then: 2 A change made in another tab could not be read: it holds two books under one id.
+		\\one id twice: Your shelf could not be read: it holds two books under the id b1.
+		\\then: 2 A change made in another tab could not be read: it holds two books under the id b1.
 	actual == expected
 }
 
@@ -540,15 +539,16 @@ expect {
 ## what the table holds, in whatever order, one for a book that moved, and
 ## one for a book that is gone.
 expect {
-	table = Table.from_list([{ key: "b1", row: dune }, { key: "b2", row: piranesi }])
+	shelf = |books| Table.from_list(books.map(|book| { key: book.id, row: book }))
+	table = shelf([dune, piranesi])?
 	written = |synced| match synced.inverse() {
 		Ok(writes) => writes.len().to_str()
 		Err(Rewritten) => "every row"
 	}
-	fewer = ReadingList.synced(table, [dune])
+	fewer = ReadingList.synced(table, shelf([dune])?)
 	actual =
-		\\same: ${written(ReadingList.synced(table, [piranesi, dune]))}
-		\\moved: ${written(ReadingList.synced(table, [{ ..dune, shelf: Reading }, piranesi]))}
+		\\same: ${written(ReadingList.synced(table, shelf([piranesi, dune])?))}
+		\\moved: ${written(ReadingList.synced(table, shelf([{ ..dune, shelf: Reading }, piranesi])?))}
 		\\fewer: ${written(fewer)}, ${fewer.len().to_str()} left
 	expected =
 		\\same: 0

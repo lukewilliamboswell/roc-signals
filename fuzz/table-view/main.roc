@@ -38,10 +38,11 @@ import pf.Engine exposing [Elem, Signal, State, Table]
 ##   of its group, a copy saved earlier, the other table, a Store value), keyed writes in
 ##   order (insert, put, replace, update, remove; a run of up to 16 puts or
 ##   updates, which crosses the size at which a view rebuilds instead of
-##   absorbing the changes; a whole rewrite by `load` or `update_all`; an
-##   undo of the turn so far), as one `update` or one for each, an undo of
-##   the last turn that wrote the table (the reading control's decision
-##   reads the table's inverse before its writes), a write of
+##   absorbing the changes; a whole rewrite by a new table (`from_list`)
+##   or `update_all`; an undo of the turn so far), as one `update` or one
+##   for each, an undo of the last turn that wrote the table (the reading
+##   control's decision reads the table's inverse before its writes), a
+##   write of
 ##   `spare`, a copy of the table saved, `a`'s listing and window, the lanes
 ##   and whether `c` is mounted. It fires from a control whose handler is
 ##   the decision alone, one whose decision also reads the tables it may
@@ -142,6 +143,13 @@ bumped = |item, code| match code % 4 {
 ## `count` rows (at most `key_space`) under distinct keys.
 entries : U64, U64 -> List(Entry)
 entries = |seed, count| span(count).map(|i| { key: (seed + i * 5) % key_space, row: item_of(seed + i * 3) })
+
+## The table of `rows`, whose keys `entries` makes distinct.
+table_of : List(Entry) -> Table(U64, Item)
+table_of = |rows| match Table.from_list(rows) {
+	Ok(table) => table
+	Err(DuplicateKey(key)) => crash "table-view: entries gave the key ${key.to_str()} twice"
+}
 
 ## How a listing selects and orders rows: the `plan` of every view.
 query_plan : Listing -> Engine.QueryPlan(U64, Item, (Order.Direction(U64), U64))
@@ -265,8 +273,10 @@ first_lanes = [0, 2]
 
 ## One write of a table. `Insert` of a key the table holds writes nothing;
 ## `Fill(from, count, seed)` puts `count` consecutive keys and
-## `Sweep(from, count, code)` updates them; `Load` and `All` replace every
-## row; `Undo` applies the inverse of what the turn has written so far.
+## `Sweep(from, count, code)` updates them; `Load` (a new table from
+## `from_list`) and `All` replace every row; `Undo` applies the inverse of
+## what the table it is given records: what the turn has written so far,
+## or, after a `Load` in the same `update`, what was written since.
 Op : [
 	Insert(U64, Item),
 	Put(U64, Item),
@@ -499,11 +509,11 @@ store = Engine.store(
 	Tag.TableView,
 	{
 		items: {
-			rows: Engine.table(described),
+			rows: Engine.table(table_of(described)),
 			serial: Engine.cell(0.U64),
 		}.Engine.Cells.with_reset(|made, reset| { rows: made.rows, serial: made.serial, reset }),
-		spare: Engine.table(first_spare),
-		saved: Engine.cell(Table.from_list([])),
+		spare: Engine.table(table_of(first_spare)),
+		saved: Engine.cell(Table.empty({})),
 		listing: Engine.cell(first_listing),
 		window: Engine.cell(first_window),
 		shown: Engine.cell(False),
@@ -516,7 +526,7 @@ cells = store.cells()
 
 ## The store as a session starts it.
 started : {} -> Engine.Store(_, _)
-started = |{}| store.with_initial(cells.items.rows, Table.from_list(first_rows))
+started = |{}| store.with_initial(cells.items.rows, table_of(first_rows))
 
 ## What a decision's control read before the event wrote anything: the
 ## table of `rows`, the copy in `saved` and the table of `spare`.
@@ -525,11 +535,7 @@ Reading : [Unread, Read({ now : Table(U64, Item), kept : Table(U64, Item), lent 
 ## One write of a table.
 applied : Table(U64, Item), Op -> Table(U64, Item)
 applied = |table, op| match op {
-	Insert(key, item) =>
-		match table.get(key) {
-			Ok(_) => table
-			Err(Missing) => table.insert(key, item)
-		}
+	Insert(key, item) => table.insert(key, item)
 	Put(key, item) => table.put(key, item)
 	Replace(key, item) => table.replace(key, item)
 	Update(key, code) => table.update(key, |item| bumped(item, code))
@@ -538,7 +544,7 @@ applied = |table, op| match op {
 	# `var` holding the table (roc-lang/roc#12971).
 	Fill(from, count, seed) => span(count).fold(table, |acc, i| acc.put((from + i) % key_space, item_of(seed + i)))
 	Sweep(from, count, code) => span(count).fold(table, |acc, i| acc.update((from + i) % key_space, |item| bumped(item, code)))
-	Load(seed, count) => table.load(entries(seed, count))
+	Load(seed, count) => table_of(entries(seed, count))
 	All(code) => table.update_all(|_, item| bumped(item, code))
 	Undo =>
 		match table.inverse() {
@@ -552,10 +558,10 @@ writes_of : Decision, Reading -> List(Engine.Write(_))
 writes_of = |d, reading| {
 	rows = cells.items.rows
 	head = match (d.head, reading) {
-		(Fresh(seed, count), _) => [rows.set(Table.from_list(entries(seed, count)))]
+		(Fresh(seed, count), _) => [rows.set(table_of(entries(seed, count)))]
 		(Snapshot(seed, count), _) => {
 			snapshot = started({})
-				.after([rows.update(|table| table.load(entries(seed, count)))])
+				.after([rows.set(table_of(entries(seed, count)))])
 				.with_initial(cells.items.serial, 0)
 				.read(rows)
 			[rows.set(snapshot)]
@@ -893,7 +899,9 @@ with_row = |rows, key, row|
 		rows.append({ key, row })
 	}
 
-## One write of a table, on the model's rows.
+## One write of a table, on the model's rows, in an `update` of its own: a
+## `Load` there is a whole rewrite, which leaves a later `Undo` nothing to
+## go by.
 model_op : Written, Op -> Written
 model_op = |t, op| match op {
 	Insert(key, item) => if (t.rows.any(|e| e.key == key)) t else { ..t, rows: t.rows.append({ key, row: item }) }
@@ -906,6 +914,18 @@ model_op = |t, op| match op {
 	Load(seed, count) => { ..t, rows: entries(seed, count), rewritten: True }
 	All(code) => { ..t, rows: t.rows.map(|e| { key: e.key, row: bumped(e.row, code) }), rewritten: True }
 	Undo => if (t.rewritten) t else { ..t, rows: t.began }
+}
+
+## One write of a table among the writes one `update` folds: a `Load`
+## there hands the writes after it a new table, which records them, so an
+## `Undo` after it goes back to the rows loaded.
+folded_op : Written, Op -> Written
+folded_op = |t, op| match op {
+	Load(seed, count) => {
+		loaded = entries(seed, count)
+		{ rows: loaded, began: loaded, rewritten: False }
+	}
+	_ => model_op(t, op)
 }
 
 ## The model after a decision fired from `control`.
@@ -934,7 +954,15 @@ decided = |m, control, d| {
 		(_, Wrote(rows)) => { rows, began: m.rows, rewritten: False }
 		_ => { rows: m.rows, began: m.rows, rewritten: False }
 	}
-	after_ops = d.ops.fold(began, model_op)
+	after_ops = d.ops.fold(began, if (d.split) model_op else folded_op)
+	# A `Load` folded into one `update` hands back a new table, which the
+	# cell stores as a whole rewrite, however the writes after it read it.
+	loaded_whole = !d.split and d.ops.any(
+		|op| match op {
+			Load(_, _) => True
+			_ => False
+		},
+	)
 	restored = match d.head {
 		Restore => has_reading
 		_ => False
@@ -953,7 +981,7 @@ decided = |m, control, d| {
 			Unknown
 		} else if !writes_rows {
 			m.undo
-		} else if after_ops.rewritten {
+		} else if after_ops.rewritten or loaded_whole {
 			Whole
 		} else {
 			Before(m.rows)

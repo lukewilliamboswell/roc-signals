@@ -229,9 +229,9 @@ decides what to show, and `why` names the port and the place.
 
 The type is all that is checked. A rule of your own that the type cannot
 state is yours to check where the value arrives: the Reading List keys its
-rows by book id, and an `Engine.each` given two rows with one key is a
-contract error that stops the app, so it refuses a list of books with an
-id twice as it refuses one of the wrong shape.
+rows by book id, so it builds its table with `Table.from_list`, which
+answers `Err(DuplicateKey(id))` for two books under one id, and it refuses
+such a list as it refuses one of the wrong shape, naming the id.
 
 ## Errors and bounds
 

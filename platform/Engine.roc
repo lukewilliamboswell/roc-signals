@@ -242,17 +242,38 @@ Engine := [].{
 	## has no display order: its table views choose filtering and order.
 	Table(k, v) :: { t : TableCore.Table(k, v) }.{
 
-		## Build a table from keyed rows, for a starting value or replacement. Two rows
-		## with the same key are a contract error; the table has no order of its own.
-		from_list : List({ key : k, row : v }) -> Table(k, v)
+		## Build a table from keyed rows, or `Err(DuplicateKey(key))` naming the
+		## first key two rows share. This is the door for rows from outside (a
+		## server's answer, storage, a file): the decision that receives them
+		## matches the result and shows the refusal as a state of its own, and
+		## writing the table into its cell (`books.set(table)`) is a whole
+		## rewrite, so every table view rebuilds in the size of the table.
+		##
+		## Rows written in the program are checked while compiling: a top-level
+		## constant that matches the result and crashes on `Err` is evaluated
+		## by the compiler, so a repeated key is a compile error naming it.
+		##
+		## ```
+		## initial_cards : Engine.Table(Str, Card)
+		## initial_cards = match Engine.Table.from_list(Kanban.cards) {
+		##     Ok(table) => table
+		##     Err(DuplicateKey(title)) => crash "initial_cards lists the card ${title} twice"
+		## }
+		## ```
+		##
+		## The table has no order of its own.
+		from_list : List({ key : k, row : v }) -> Try(Table(k, v), [DuplicateKey(k)])
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-		from_list = |entries| { t: TableCore.Table.from_list(entries) }
+		from_list = |entries| match TableCore.Table.from_list(entries) {
+			Ok(built) => Ok({ t: built })
+			Err(DuplicateKey(key)) => Err(DuplicateKey(key))
+		}
 
-		## Replace every row with these entries. Every table view rebuilds in the size
-		## of the table. Duplicate keys are a contract error.
-		load : Table(k, v), List({ key : k, row : v }) -> Table(k, v)
-			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-		load = |{ t }, entries| { t: t.load(entries) }
+		## A table with no rows: the start of a table cell that is filled at run
+		## time (`Engine.table(Engine.Table.empty({}))`), or a value to set when
+		## every row should go.
+		empty : {} -> Table(k, v)
+		empty = |_| { t: TableCore.Table.empty({}) }
 
 		## Count the rows currently in the table, without building a list.
 		len : Table(k, v) -> U64
@@ -264,14 +285,17 @@ Engine := [].{
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		get = |{ t }, key| t.get(key)
 
-		## Whether a key has a row. Use this before insert when the decision must
-		## choose how to handle an existing key.
+		## Whether a key has a row. A decision that must tell the user a key
+		## already exists reads this before it inserts.
 		contains : Table(k, v), k -> Bool
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		contains = |{ t }, key| t.contains(key)
 
-		## Add a row at a new key. An existing key is a contract error; use put to
-		## insert or replace. A table view of the cell sees the new row in this turn.
+		## Add a row at a key the table does not hold. A key it holds leaves the
+		## table as it was, as `update` of a key it does not hold does: a decision
+		## that must tell the user the key exists reads the table first
+		## (`contains`), and `put` inserts or replaces. A table view of the cell
+		## sees the new row in this turn.
 		insert : Table(k, v), k, v -> Table(k, v)
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		insert = |{ t }, key, row| { t: t.insert(key, row) }
@@ -337,12 +361,17 @@ Engine := [].{
 		apply = |{ t }, writes| { t: t.apply(writes) }
 	}
 
-	## The description of one cell holding a table of `rows` by key
-	## (`Table`), for rows that are edited by key and drawn as a list:
+	## The description of one cell holding a table, starting at `start`,
+	## for rows that are edited by key and drawn as a list:
 	##
 	## ```
-	## { todos: Engine.table(Todo.sample), query: Engine.cell(Todo.all) }.Engine.Cells
+	## { todos: Engine.table(Engine.Table.empty({})), query: Engine.cell(Todo.all) }.Engine.Cells
 	## ```
+	##
+	## A table that starts with rows written in the program starts at a
+	## top-level constant built with `Table.from_list`, which the compiler
+	## checks for a repeated key; rows that arrive at run time are written
+	## in by a decision (`todos.set(table)`).
 	##
 	## Its cell is an ordinary [Cell]. A decision changes the table with
 	## the table's own operations, so every write records the rows it
@@ -355,7 +384,7 @@ Engine := [].{
 	##
 	## `table_view` draws a filtered, sorted window of the table from that
 	## changes, at the cost of the rows written, never of the table. A write
-	## that leaves another table in the cell than the one it held (a `put`
+	## that leaves another table in the cell than the one it held (a `set`
 	## of a new one from `Table.from_list`, a copy kept from earlier) is a
 	## whole rewrite: every view of the cell rebuilds.
 	##
@@ -363,9 +392,9 @@ Engine := [].{
 	## (`todos.signal().map(|table| table.len())`). Such a reader is
 	## re-evaluated on every write of the table, and pruned if its result
 	## is equal; only a row of a `table_view` wakes for its own row alone.
-	table : List({ key : k, row : v }) -> Cells(whole, Table(k, v), Cell(whole, Table(k, v)))
+	table : Table(k, v) -> Cells(whole, Table(k, v), Cell(whole, Table(k, v)))
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-	table = |rows| { d: Core.table_of(rows, outer, inner).map(wrap_cell) }
+	table = |{ t }| { d: Core.table_of(t, outer, inner).map(wrap_cell) }
 
 	## The primitive form of a table-view plan: keep selects rows, sort gives
 	## their placement values, and compare orders those values. Prefer sort_by

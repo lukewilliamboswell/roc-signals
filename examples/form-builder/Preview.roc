@@ -246,7 +246,7 @@ first_problem_of = |table, answers| {
 ## A problem follows the form's order, including a tie broken by key;
 ## valid answers and a form with no fields have no target to reveal.
 expect {
-	table = Table.from_list(Form.initial_fields)
+	table = Table.from_list(Form.initial_fields)?
 	reordered = table.update(1, |field| { ..field, place: 3 })
 	tied = table.update(2, |field| { ..field, place: 1 })
 	answered = Form.set_answer_text(Form.set_answer_text(Form.no_answers, 1, "Ada"), 2, "ada@example.com")
@@ -255,7 +255,7 @@ expect {
 		reordered: first_problem_of(reordered, Form.no_answers),
 		tied: first_problem_of(tied, Form.no_answers),
 		answered: first_problem_of(table, answered),
-		empty: first_problem_of(Table.from_list([]), Form.no_answers),
+		empty: first_problem_of(Table.empty({}), Form.no_answers),
 	} == {
 		initial: FirstProblem(1),
 		reordered: FirstProblem(2),
@@ -266,4 +266,4 @@ expect {
 }
 
 ## A broken rule is a problem even for an optional field with no answer.
-expect first_problem_of(Table.from_list([{ key: 3, row: Form.new_field(Form.select_kind, 3) }]), Form.no_answers) == FirstProblem(3)
+expect first_problem_of(Table.empty({}).insert(3, Form.new_field(Form.select_kind, 3)), Form.no_answers) == FirstProblem(3)

@@ -27,12 +27,21 @@ import Schema
 ## handle, so a cell of another store is a type error here.
 AppStore := [FormBuilder].{
 
+	## The fields a form starts with, by field number. A top-level constant
+	## is evaluated while compiling, so a number `Form.initial_fields` gave
+	## twice would be a compile error naming it.
+	initial_fields : Engine.Table(U64, Form.Field)
+	initial_fields = match Engine.Table.from_list(Form.initial_fields) {
+		Ok(table) => table
+		Err(DuplicateKey(key)) => crash "AppStore.initial_fields: the field number ${key.to_str()} is listed twice"
+	}
+
 	## The store: its name, and its cells with their starting values.
 	store = Engine.store(
 		AppStore.FormBuilder,
 		{
 			schema: {
-				fields: Engine.table(Form.initial_fields),
+				fields: Engine.table(AppStore.initial_fields),
 				next: Engine.cell(Form.initial_next),
 			}.Engine.Cells,
 			answers: Engine.cell(Form.no_answers),

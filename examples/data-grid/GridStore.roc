@@ -23,10 +23,19 @@ import GridData
 ## hands it.
 GridStore := [Grid].{
 
+	## The dataset the grid opens with, by row id. A top-level constant is
+	## evaluated while compiling, so an id `GridData.all_rows` gave twice
+	## would be a compile error naming it.
+	opening : Table(U64, GridData.Row)
+	opening = match Table.from_list(GridData.all_rows) {
+		Ok(table) => table
+		Err(DuplicateKey(id)) => crash "GridStore.opening: the row id ${id.to_str()} is listed twice"
+	}
+
 	store = Engine.store(
 		GridStore.Grid,
 		{
-			rows: Engine.table(GridData.all_rows),
+			rows: Engine.table(GridStore.opening),
 			filter: Engine.cell(""),
 			sort: Engine.cell(GridData.first_sort),
 			page: Engine.cell(0.U64),
@@ -149,6 +158,6 @@ expect {
 ## Selecting every matching row writes only the rows it changes: of ten matching rows with one selected already, nine.
 expect {
 	entries = GridData.generate_rows(20).map(|entry| if (entry.key == 3) { key: 3, row: GridData.marked(entry.row, Selected) } else entry)
-	selected = GridStore.with_matching(Table.from_list(entries), "Node-000", Selected)
+	selected = GridStore.with_matching(Table.from_list(entries)?, "Node-000", Selected)
 	selected.inverse().map_ok(|undo| undo.len()) == Ok(9)
 }

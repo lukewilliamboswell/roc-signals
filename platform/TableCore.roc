@@ -14,21 +14,27 @@ TableCore := [].{
 		phase : [Ready, Writing],
 	}.{
 
-		## Build an unassigned, ready table with no recorded writes. Duplicate
-		## keys fail here before a cell can admit ambiguous identity.
-		from_list : List({ key : k, row : v }) -> Table(k, v)
+		## Build an unassigned, ready table with no recorded writes from keyed
+		## rows, or `Err(DuplicateKey(key))` naming the first key two rows share,
+		## before a cell can admit ambiguous identity. Inserting each row is the
+		## check: a dictionary that does not grow already held the key.
+		from_list : List({ key : k, row : v }) -> Try(Table(k, v), [DuplicateKey(k)])
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-		from_list = |entries| { rows: rows_of(entries), record: Dict.empty(), whole: Keyed, version: 0, start: 0, id: 0, phase: Ready }
-
-		## Replace rows and discard keyed history while preserving cell identity
-		## and recording phase. The incremented version forces a view rebuild;
-		## constructing the dictionary is linear in entries.
-		load : Table(k, v), List({ key : k, row : v }) -> Table(k, v)
-			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-		load = |table, entries| {
-			{ record, version: now, start, id, phase, .. } = table
-			{ rows: rows_of(entries), record: if (record.is_empty()) record else Dict.empty(), whole: Rewritten, version: now + 1, start, id, phase }
+		from_list = |entries| {
+			var $rows = Dict.with_capacity(entries.len())
+			for { key, row } in entries {
+				before = $rows.len()
+				$rows = $rows.insert(key, row)
+				if $rows.len() == before {
+					return Err(DuplicateKey(key))
+				}
+			}
+			Ok({ rows: $rows, record: Dict.empty(), whole: Keyed, version: 0, start: 0, id: 0, phase: Ready })
 		}
+
+		## An unassigned, ready table with no rows and no recorded writes.
+		empty : {} -> Table(k, v)
+		empty = |_| { rows: Dict.empty(), record: Dict.empty(), whole: Keyed, version: 0, start: 0, id: 0, phase: Ready }
 
 		## Read the dictionary count without walking rows or the change record.
 		len : Table(k, v) -> U64
@@ -49,14 +55,12 @@ TableCore := [].{
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		contains = |table, key| table.rows.contains(key)
 
-		## Reject duplicate identity before recording an absent key. The shared
-		## write path retains only the first pre-write state of this key.
+		## Record an absent key and add its row. A key the table holds leaves
+		## the table as it was and records nothing, as `update` of a missing key
+		## does.
 		insert : Table(k, v), k, v -> Table(k, v)
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-		insert = |table, key, row| match table.rows.get(key) {
-			Ok(_) => crash "contract: Table.insert: the key is already present; use put to insert or replace"
-			Err(_) => write(table, key, Absent, Ok(row))
-		}
+		insert = |table, key, row| if (table.rows.contains(key)) table else write(table, key, Absent, Ok(row))
 
 		## Capture the current row or absence for the shared write path, which
 		## keeps the first earlier row even when this key is written again.
@@ -221,18 +225,6 @@ TableCore := [].{
 		}
 }
 
-## The rows of `entries` by key.
-rows_of : List({ key : k, row : v }) -> Dict(k, v)
-	where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-rows_of = |entries| {
-	rows = entries.fold(Dict.with_capacity(entries.len()), |acc, { key, row }| acc.insert(key, row))
-	if rows.len() != entries.len() {
-		crash "contract: a table's rows: two rows have the same key"
-	} else {
-		rows
-	}
-}
-
 ## Remember `key`'s state when the turn began (its first write wins) and
 ## apply the write: `Ok(row)` stores the row, `Err(Missing)` removes it.
 write : Table(k, v), k, [Absent, Was(v)], Try(v, [Missing]) -> Table(k, v)
@@ -266,7 +258,7 @@ recorded = |table| match table.changes() {
 
 ## A key written twice keeps its first state, and the inverse undoes the turn.
 expect {
-	t0 = Table.from_list([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }])
+	t0 = Table.from_list([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }])?
 	t1 = t0.update(1, |r| "${r}!").update(1, |r| "${r}?").remove(2).insert(3, "c")
 	undone = match t1.inverse() {
 		Ok(writes) => t1.apply(writes)
@@ -290,7 +282,7 @@ expect {
 ## `contains` follows the writes, and `to_list` gives every row once with
 ## its key, whatever order the table holds them in.
 expect {
-	table = Table.from_list([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }, { key: 3, row: "c" }]).remove(2).put(4, "d")
+	table = Table.from_list([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }, { key: 3, row: "c" }])?.remove(2).put(4, "d")
 	listed = table.to_list().sort_with(|x, y| if (x.key < y.key) Before else if (x.key > y.key) After else Same)
 	(table.contains(1), table.contains(2), table.contains(4), listed) == (Bool.True, Bool.False, Bool.True, [{ key: 1, row: "a" }, { key: 3, row: "c" }, { key: 4, row: "d" }])
 }
@@ -299,10 +291,10 @@ expect {
 ## another cell's and a copy from before the last clear are each stored as a
 ## whole rewrite.
 expect {
-	cell = TableCore.with_id(Table.from_list([{ key: 1.U64, row: "a" }]), 7)
+	cell = TableCore.with_id(Table.from_list([{ key: 1.U64, row: "a" }])?, 7)
 	before = TableCore.mark(cell)
 	own = TableCore.kept(cell.put(2, "b"), before)
-	fresh = TableCore.kept(Table.from_list([{ key: 9.U64, row: "z" }]), before)
+	fresh = TableCore.kept(Table.from_list([{ key: 9.U64, row: "z" }])?, before)
 	other = TableCore.kept(TableCore.with_id(cell, 8).put(2, "b"), before)
 	later = TableCore.clear_changes(cell.put(2, "b"))
 	stale = TableCore.kept(cell.put(3, "c"), TableCore.mark(later))
@@ -329,7 +321,7 @@ expect {
 ## A writing turn keeps the first earlier row of each key. Closing it
 ## preserves that record; only the next writing turn replaces it.
 expect {
-	started = TableCore.begin_changes(Table.from_list([{ key: 1.U64, row: "a" }]))
+	started = TableCore.begin_changes(Table.from_list([{ key: 1.U64, row: "a" }])?)
 	wrote_first = TableCore.begin_changes(started.put(1, "b")).put(1, "c")
 	first = TableCore.finish_changes(wrote_first)
 	second = TableCore.finish_changes(TableCore.begin_changes(first).put(1, "d"))
@@ -339,4 +331,25 @@ expect {
 		ready: TableCore.is_ready(first),
 	}
 	actual == { first_inverse: [Put(1, "a")], second_inverse: [Put(1, "c")], ready: True }
+}
+
+## Two rows with one key are refused with the key; an insert at a held key
+## leaves the table as it was and records nothing.
+expect {
+	refused = Table.from_list([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }, { key: 1, row: "c" }])
+	table = Table.from_list([{ key: 1.U64, row: "a" }])?
+	inserted = table.insert(1, "z")
+	actual =
+		\\refused: ${Str.inspect(refused.map_ok(|t| t.len()))}
+		\\row 1: ${Str.inspect(inserted.get(1))}
+		\\recorded: ${Str.inspect(recorded(inserted))}
+		\\added: ${Str.inspect(inserted.insert(2, "b").len())}
+		\\empty: ${Str.inspect(Table.empty({}).insert(5.U64, "e").len())}
+	expected =
+		\\refused: Err(DuplicateKey(1))
+		\\row 1: Ok("a")
+		\\recorded: Ok(0)
+		\\added: 2
+		\\empty: 1
+	actual == expected
 }
