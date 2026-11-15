@@ -35,7 +35,9 @@ Outline := {}.{
 
 	## Heading spine of a parsed document, in document order, with a unique
 	## anchor slug per heading. Duplicate titles get a "-2", "-3", ... suffix so
-	## keyed rows keep a stable identity.
+	## keyed rows keep a stable identity; a suffixed slug that another heading
+	## already took ("# A", "# A", "# A 2") takes the next free suffix, since
+	## the outline draws its rows keyed by slug and the text is the user's.
 	headings : List(Markdown.Block) -> List(Outline.Heading)
 	headings = |blocks|
 		blocks.fold({ headings: [], used: [] }, collect_heading).headings
@@ -46,19 +48,28 @@ Outline := {}.{
 			Heading(level) => {
 				text = Markdown.plain_text(block.text)
 				base = slugify(text)
-				seen = state.used.keep_if(|value| value == base).len()
-				slug = if seen == 0 {
-					base
-				} else {
-					"${base}-${(seen + 1).to_str()}"
-				}
+				slug = free_slug(state.used, base)
 				{
 					headings: state.headings.append({ level, text, slug }),
-					used: state.used.append(base),
+					used: state.used.append(slug),
 				}
 			}
 			_ => state
 		}
+
+	## `base` when no earlier heading took it, else the first of `base-2`,
+	## `base-3`, ... that none took.
+	free_slug : List(Str), Str -> Str
+	free_slug = |used, base| {
+		if !used.contains(base) {
+			return base
+		}
+		var $n = 2.U64
+		while used.contains("${base}-${$n.to_str()}") {
+			$n = $n + 1
+		}
+		"${base}-${$n.to_str()}"
+	}
 
 	## Lowercase ASCII slug: letters and digits survive, every other run of
 	## bytes collapses to a single "-", and leading/trailing dashes never
@@ -202,6 +213,11 @@ expect Outline.headings(Markdown.parse("# Alpha\n\ntext\n\n## Beta")) == [
 ## Duplicate titles are disambiguated with a counter so row keys stay distinct
 ## and stable across redraws.
 expect Outline.headings(Markdown.parse("# Alpha\n\n# Alpha")).map(|heading| heading.slug) == ["alpha", "alpha-2"]
+
+## A heading whose own slug is a suffixed one an earlier heading took gets
+## the next free suffix, in either order, so no two rows share a key.
+expect Outline.headings(Markdown.parse("# A\n\n# A\n\n# A 2")).map(|heading| heading.slug) == ["a", "a-2", "a-2-2"]
+	and Outline.headings(Markdown.parse("# A 2\n\n# A\n\n# A")).map(|heading| heading.slug) == ["a-2", "a", "a-3"]
 
 ## Numbering on prefixes each row label with its position.
 expect Outline.rows([{ level: 3, text: "Beta", slug: "beta" }], True).map(|row| row.label) == ["1. Beta"]
