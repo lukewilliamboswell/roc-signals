@@ -2612,6 +2612,7 @@ so both spec runners read them: specs assert the cumulative ones as the
 outstanding with `expect-pending-effects` and `expect-interval` instead. The
 effect-channel fuzz model asserts all of them exactly after every step.
 `effects_progress` separately counts delivered transfer reports (index 47),
+including those a `keep_current` site withholds from an older step, and
 excluding replaced reports; they do not increment `effects_delivered`.
 
 ### Observation
@@ -4567,7 +4568,7 @@ metric: soak plateaus assert it.
 | `scopes_created` / `scopes_disposed` | Scopes mounted / disposed: `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites |
 | `dirty_source_roots` | What a turn wrote: one for each cell, and one for each layer when its readers are refreshed, whether its site started the pass, joined it or was reached by the walk after it (a layer disposed before then counts none; a `resource` answer that folds to an equal value writes none, and a decision that returns no write counts nothing) |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
-| `effects_progress` | Delivered transfer reports, excluding replacements; the request remains in flight and the final-delivery counter is unchanged |
+| `effects_progress` | Delivered transfer reports, including those withheld by `keep_current`, excluding replacements; the request remains in flight and the final-delivery counter is unchanged |
 | `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters"): awaited requests issued (one `FX` each), results delivered to their site (including withheld keep_current results), stale results dropped, requests refused at the in-flight cap, requests cancelled (one `CANCEL` each), requests reparented to a surviving ancestor, and reparented writes skipped because their state was retired |
 | `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it, and `PROP`/`HPROP` whose row claims an attribute; natively from the oracle, in Chrome from a MutationObserver of the mirrored attributes |
 | `expect-interval ms n` | Live `INTERVAL` subscriptions with period `ms` |
@@ -5678,7 +5679,7 @@ that has run, in first-run order, with its run count.
 | 44 | Live observations (`observations_live`), a gauge |
 | 45 | Marked batches (`view_transitions`; `TRANSITION`, opcode 24), excluded from `patches_emitted` |
 | 46 | Guard commands (`GUARD`, opcode 25), excluded from `patches_emitted` |
-| 47 | Transfer progress reports delivered (`effects_progress`); excludes replaced reports and does not increment final results (`effects_delivered`) |
+| 47 | Transfer progress reports delivered (`effects_progress`), including those withheld by `keep_current`; excludes replaced reports and does not increment final results (`effects_delivered`) |
 | 48 | `COMMENT` commands emitted (opcode 26), counted separately from text-node commands |
 
 Index 0 is unused; the record has 49 entries, indices 0 through 48. The metric

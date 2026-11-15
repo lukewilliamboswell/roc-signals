@@ -856,7 +856,7 @@ does not fail your spec.
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons in keyed reconciliation |
 | `effects_issued` | Awaited requests issued (HTTP, timers, storage reads, subscriptions, worker jobs); a refused request is not issued |
 | `effects_delivered` | Results delivered to their site, including `Refused` and answers withheld by `keep_current`; progress excluded |
-| `effects_progress` | Transfer progress reports delivered to a progress handler; replaced reports excluded |
+| `effects_progress` | Transfer progress reports delivered to their site, including those `keep_current` withholds from its progress handler; replaced reports excluded |
 | `effects_stale` | Results dropped because their request was no longer in flight |
 | `effects_refused` | Requests refused because the in-flight table was full |
 | `effects_cancelled` | Requests stopped because their site was disposed or superseded |
