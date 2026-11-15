@@ -4764,7 +4764,12 @@ These are unresolved mechanism choices within the contracts above.
   a history, without a reading of the table that would copy it.
 - **Row writes that name their row.** Whether a write to a table should say
   which row it writes, so that the same-cell rule can refuse a row replaced
-  twice in one decision's list.
+  twice in one decision's list. A table cell written only by row writes the
+  engine applies (put, remove, load) cannot be handed a table from anywhere
+  else, so the table's identity and the cell's guard, which tell the cell's
+  own table from another, would go with that change. So would the table
+  cell's place among ordinary cells: `set`, `update`, a reset and
+  `with_initial` would no longer be its writes.
 - **Tables outside the store.** Whether a table may live in local state, with
   changes that some site other than the root clears.
 - **Code-size levers.** How much of the per-state-type, per-context and
