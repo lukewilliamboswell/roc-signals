@@ -343,7 +343,10 @@ Checks := [].{
 	## the browser's worker must both report the class the task's crash
 	## has), and a focus feedback loop that both runners must stop with
 	## resource_limit rather than hanging the replay. Report-frame mutations
-	## also hold both runners to rejecting an invalid hold lifecycle.
+	## also hold both runners to rejecting an invalid hold lifecycle. State
+	## assertions on a paragraph, which has no shown, checked, disabled or
+	## value state, must fail in both runners with one message rather than
+	## read a default.
 	broken_specs : List(Broken)
 	broken_specs = [
 		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press (label \"Keyboard editable\") \"Enter\")", rejection: "unmodelled" },
@@ -360,6 +363,10 @@ Checks := [].{
 		{ example: "kanban-board", spec: "examples/kanban-board/specs/initial-render.scm", good: "(expect-text (test-id \"board-total\") \"5\")", bad: "(expect-text (test-id \"board-total\") \"6\")", rejection: "expected \\\"6\\\"" },
 		{ example: "workers", spec: "tests/apps/workers/specs/crash.scm", good: "(expect-text (test-id \"log\") \"crash:lost AppCrash\")", bad: "(expect-text (test-id \"log\") \"crash:lost Contract\")", rejection: "expected \\\"crash:lost Contract\\\"" },
 		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(click (role button :name \"Start focus loop\"))", rejection: "resource_limit" },
+		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(expect-shown (test-id \"state\") hidden)", rejection: "is neither a dialog nor a popover, so it has no shown state" },
+		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(expect-checked (test-id \"state\") false)", rejection: "has no checked state: it is not an <input>" },
+		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(expect-disabled (test-id \"state\") false)", rejection: "has no disabled state" },
+		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(expect-value (test-id \"state\") \"\")", rejection: "has no live value property" },
 		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(hold-reports)", bad: "(hold-reports) (hold-reports)", rejection: "reports are already held" },
 		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(hold-reports)", bad: "(release-reports)", rejection: "reports are not held" },
 		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(expect-reports-replaced 0)", bad: "(hold-reports)", rejection: "spec ended while reports were held" },

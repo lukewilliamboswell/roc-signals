@@ -345,9 +345,9 @@ These are step errors, with no fabricated release or cancellation.
 | Step | Passes when |
 |---|---|
 | `(expect-text LOC "text")` | The element's text content is exactly `text` |
-| `(expect-value LOC "value")` | The control's value is `value` |
-| `(expect-checked LOC BOOL)` | The control's checked state is `BOOL` |
-| `(expect-disabled LOC BOOL)` | The control's disabled state is `BOOL` |
+| `(expect-value LOC "value")` | The control's value is `value`; the element must be an `input`, `textarea`, `select`, `option` or `button` |
+| `(expect-checked LOC BOOL)` | The control's checked state is `BOOL`; the element must be an `input` |
+| `(expect-disabled LOC BOOL)` | The control's own disabled state is `BOOL`; the element must be a `button`, `input`, `select`, `textarea`, `option`, `optgroup` or `fieldset` |
 | `(expect-attr LOC name "value")` | The attribute `name` is present with that value. On property-table elements, `value` reads the live value and `checked` reads `"true"`/`"false"`; elsewhere they read ordinary attributes. `disabled` reads `"true"`/`"false"` |
 | `(expect-has-attr LOC name)` | The attribute reading is present, including an empty string, with any value |
 | `(expect-no-attr LOC name)` | The attribute `name` is absent; another step of this spec must show the same name present, on any locator |
@@ -357,6 +357,11 @@ These are step errors, with no fabricated release or cancellation.
 | `(expect-absent LOC :never-drawn)` | The locator matches nothing in a story that never draws it. No step of this spec may require that locator to match; its spelling remains unchecked |
 | `(expect-focused LOC)` | The located element is the document's active element |
 | `(expect-no-focus)` | No page element holds focus; the active element is the document body |
+
+A state assertion on an element that has no such state fails in both runners
+rather than reading a default: a paragraph is not unchecked, enabled or hidden,
+it has no checked, disabled or shown state at all. These are HTML elements of
+exactly that local name.
 
 An absence alone cannot catch a misspelt locator or one the app renamed. Show
 where the story draws it with a step such as `expect-visible`, `expect-text`
@@ -404,7 +409,7 @@ their mirrored attributes. `patches_emitted` includes `PROP` and `HPROP`.
 
 | Step | Passes when |
 |---|---|
-| `(expect-shown LOC hidden\|open\|modal\|popover)` | The live dialog or popover has exactly that shown state |
+| `(expect-shown LOC hidden\|open\|modal\|popover)` | The live dialog or popover has exactly that shown state; any other element fails the step |
 | `(expect-scroll K LOC into-view\|to)` | The K-th performed explicit scroll command targeted this element and had this kind; K starts at 1 |
 | `(expect-scrolls N)` | Exactly N explicit scroll commands were performed in this document |
 

@@ -419,9 +419,19 @@ async function expectText(page, loc, want) {
   if (got !== want) throw new Error(`${showLoc(loc)} text ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
 }
 
+// `checked` is an HTML input's, `disabled` an HTML control's own state, as
+// `SpecRunner` reads them; any other element has neither and the step fails
+// with the oracle's message rather than comparing `undefined`.
 async function expectProp(page, s, what) {
   await need(page, s.loc);
-  const got = await onEl(page, s.loc, (e, w) => (w === "checked" ? e.checked : e.disabled), what);
+  const got = await onEl(page, s.loc, (e, w) => {
+    const html = e.namespaceURI === "http://www.w3.org/1999/xhtml";
+    if (w === "checked") return html && e.localName === "input" ? e.checked : null;
+    return html && ["button", "input", "select", "textarea", "option", "optgroup", "fieldset"].includes(e.localName) ? e.disabled : null;
+  }, what);
+  if (got === null) throw new Error(what === "checked"
+    ? `${showLoc(s.loc)} has no checked state: it is not an <input>`
+    : `${showLoc(s.loc)} has no disabled state: it is not a button, input, select, textarea, option, optgroup or fieldset`);
   if (got !== s.value) throw new Error(`${showLoc(s.loc)} ${what} ${got}, expected ${s.value}`);
 }
 
@@ -938,9 +948,13 @@ const STEPS = {
   },
   "expect-shown": async (page, step) => {
     await need(page, step.loc);
-    const actual = await onEl(page, step.loc, (element) => element.tagName === "DIALOG"
-      ? !element.open ? "hidden" : element.matches(":modal") ? "modal" : "open"
-      : element.hasAttribute("popover") ? element.matches(":popover-open") ? "popover" : "hidden" : "unsupported");
+    const actual = await onEl(page, step.loc, (element) => {
+      const html = element.namespaceURI === "http://www.w3.org/1999/xhtml";
+      if (html && element.localName === "dialog") return !element.open ? "hidden" : element.matches(":modal") ? "modal" : "open";
+      if (html && element.hasAttribute("popover")) return element.matches(":popover-open") ? "popover" : "hidden";
+      return null;
+    });
+    if (actual === null) throw new Error(`${showLoc(step.loc)} is neither a dialog nor a popover, so it has no shown state`);
     if (actual !== step.shown) throw new Error(`${showLoc(step.loc)} is ${actual}, expected ${step.shown}`);
   },
   "expect-transitions": async (page, step) => {
@@ -1049,7 +1063,10 @@ const STEPS = {
   "expect-text": (page, s) => expectText(page, s.loc, s.text),
   "expect-value": async (page, s) => {
     await need(page, s.loc);
-    const got = await onEl(page, s.loc, (e) => e.value);
+    // A value control as `SpecRunner` reads one: `<output>` or `<li>` has a
+    // `value` property too, which the oracle does not model.
+    const got = await onEl(page, s.loc, (e) => e.namespaceURI === "http://www.w3.org/1999/xhtml" && ["input", "textarea", "select", "option", "button"].includes(e.localName) ? e.value : null);
+    if (got === null) throw new Error(`${showLoc(s.loc)} has no live value property`);
     if (got !== s.text) throw new Error(`${showLoc(s.loc)} value ${JSON.stringify(got)}, expected ${JSON.stringify(s.text)}`);
   },
   "expect-focused": async (page, s) => {

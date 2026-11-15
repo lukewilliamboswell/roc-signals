@@ -1593,10 +1593,26 @@ SpecRunner := [].{
 			Err(NotALink)
 		}
 
+	## The elements with a `disabled` state of their own, which
+	## `expect-disabled` reads: HTML's form controls, options, option groups
+	## and field sets.
+	disableable : Dom.DNode -> Bool
+	disableable = |n| ["button", "input", "select", "textarea", "option", "optgroup", "fieldset"].any(|local| Dom.html_tag(n, local))
+
+	## A shown state as a spec writes it.
+	shown_word : Dom.Shown -> Str
+	shown_word = |shown|
+		match shown {
+			Hidden => "hidden"
+			Open => "open"
+			Modal => "modal"
+			Popover => "popover"
+		}
+
 	## Read the model’s effective disabled flag for native input eligibility.
 	## Ordinary raw attribute text is observed separately by attribute assertions.
 	disabled : Dom.DNode -> Bool
-	disabled = |n| n.namespace == Dom.html_namespace and ["button", "input", "select", "textarea", "option", "optgroup", "fieldset"].contains(n.tag) and Dom.has_attr(n, "disabled")
+	disabled = |n| SpecRunner.disableable(n) and Dom.has_attr(n, "disabled")
 
 	## Whether Chrome focuses node `n` when it is clicked or `.focus()`ed.
 	focusable : Dom.DNode -> Bool
@@ -2322,8 +2338,11 @@ SpecRunner := [].{
 				check(found.kind == 1 and found.namespace == namespace and found.tag == name, "${Scm.show_loc(target)} element is namespace ${Str.inspect(found.namespace)} local ${Str.inspect(found.tag)}, expected namespace ${Str.inspect(namespace)} local ${Str.inspect(name)}")
 			}
 			ExpectShown(loc, want) => {
-				i = SpecRunner.need(dom, loc)?
-				check(Dom.node(dom, i).shown == want, "${Scm.show_loc(loc)} is ${Str.inspect(Dom.node(dom, i).shown)}, expected ${Str.inspect(want)}")
+				n = Dom.node(dom, SpecRunner.need(dom, loc)?)
+				if !SpecRunner.top_layer_candidate(n) {
+					return Err("${Scm.show_loc(loc)} is neither a dialog nor a popover, so it has no shown state")
+				}
+				check(n.shown == want, "${Scm.show_loc(loc)} is ${SpecRunner.shown_word(n.shown)}, expected ${SpecRunner.shown_word(want)}")
 			}
 			ExpectTransitions(count) => {
 				h = dom.transitions
@@ -2466,11 +2485,19 @@ SpecRunner := [].{
 				check(got == want, "${Scm.show_loc(loc)} value ${JsonOut.quote(got)}, expected ${JsonOut.quote(want)}")
 			}
 			ExpectChecked(loc, want) => {
-				got = Dom.live_value(Dom.node(dom, SpecRunner.need(dom, loc)?), "checked") == "true"
+				n = Dom.node(dom, SpecRunner.need(dom, loc)?)
+				if !Dom.html_tag(n, "input") {
+					return Err("${Scm.show_loc(loc)} has no checked state: it is not an <input>")
+				}
+				got = Dom.live_value(n, "checked") == "true"
 				check(got == want, "${Scm.show_loc(loc)} checked ${SpecRunner.bool_str(got)}, expected ${SpecRunner.bool_str(want)}")
 			}
 			ExpectDisabled(loc, want) => {
-				got = SpecRunner.disabled(Dom.node(dom, SpecRunner.need(dom, loc)?))
+				n = Dom.node(dom, SpecRunner.need(dom, loc)?)
+				if !SpecRunner.disableable(n) {
+					return Err("${Scm.show_loc(loc)} has no disabled state: it is not a button, input, select, textarea, option, optgroup or fieldset")
+				}
+				got = SpecRunner.disabled(n)
 				check(got == want, "${Scm.show_loc(loc)} disabled ${SpecRunner.bool_str(got)}, expected ${SpecRunner.bool_str(want)}")
 			}
 			ExpectVisible(loc) => {

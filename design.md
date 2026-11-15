@@ -4097,7 +4097,12 @@ animation; specs assert engine intent and final DOM.
 `(dismiss)` is Escape down and up at current focus, honoring key prevention,
 CloseWatcher cancellation and native dialog/auto-popover dismissal.
 `(expect-shown LOC hidden|open|modal|popover)` tests live shown state rather
-than document presence. Actions refuse hidden dialog/popover descendants
+than document presence, of an HTML `dialog` or an HTML element with `popover`.
+On any other element it fails in both runners, as `expect-checked` does on an
+element that is not an HTML `input`, `expect-disabled` on one that is not an
+HTML form control, option, option group or field set, and `expect-value` on
+one that is not an HTML `input`, `textarea`, `select`, `option` or `button`:
+an element without that state has no default reading. Actions refuse hidden dialog/popover descendants
 and elements outside the top modal; observations may read inert background.
 Tab skips inert elements. The driver settles native callbacks after mount
 and each step with the bounded passive observation described above.
