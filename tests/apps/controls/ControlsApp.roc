@@ -177,6 +177,26 @@ ControlsApp := [].{
 			Html.button("Duplicate row", [], st.update(|s| { ..s, rows: s.rows.append("r0") })),
 			Engine.element("ul", [Engine.test_id("rows")], [Engine.each(st.signal().map(|s| s.rows), |r| r, |row| Engine.element("li", [], [Engine.text_s(row.key())]))]),
 
+			## A list item has no text value (the browser's `value` of an `li` is
+			## a number): its focus and blur handlers run with an empty value.
+			Engine.element(
+				"ul",
+				[Engine.attr("role", "listbox"), Html.aria_label("Choices")],
+				[
+					Engine.element(
+						"li",
+						[
+							Engine.attr("role", "option"),
+							Engine.attr("tabindex", "0"),
+							Html.aria_label("Focusable item"),
+							Engine.on("focus", st.set_value(|s, v| ControlsApp.log(s, "item-focus:${v}"))),
+							Engine.on("blur", st.set_value(|s, v| ControlsApp.log(s, "item-blur:${v}"))),
+						],
+						[Engine.text("Item")],
+					),
+				],
+			),
+
 			## Containment: two handlers for one event on one element (a
 			## contract error at mount, never a silently dropped listener).
 			Html.button("Two handlers", [], st.update(|s| { ..s, twice: OnElement })),

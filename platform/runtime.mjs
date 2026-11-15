@@ -1272,17 +1272,24 @@ function filesOf(event) {
   return list ? Array.from(list) : [];
 }
 
+// A target's text value: its `value` when that is a string, else empty. An
+// element with no text value (`<li>`, `<meter>` and `<progress>` give a
+// number; most elements give none) has the empty value the native runner
+// gives it too.
+function textValueOf(t) {
+  return typeof t.value === "string" ? t.value : "";
+}
+
 function payloadOf(event) {
   const t = event.target;
   switch (event.type) {
     case "focusin":
     case "focusout":
-      return t.value ?? "";
     case "input":
-      return t.value ?? "";
+      return textValueOf(t);
     case "change":
       if (t.type === "checkbox" || t.type === "radio") return t.checked ? "true" : "false";
-      return t.value ?? "";
+      return textValueOf(t);
     default:
       return "";
   }
@@ -3802,7 +3809,7 @@ export class RocEngineRuntime {
         } else {
           if (type === "scroll") this.observeManualScroll(declaring);
           const payload = this.protocol.PAYLOAD_KINDS[handler.kind].payload(event);
-          if (handler.kind === this.protocol.KIND_TEXT && (typeof payload !== "string" || !payload.isWellFormed())) {
+          if (handler.kind === this.protocol.KIND_TEXT && !payload.isWellFormed()) {
             this.refuseText(type);
             return;
           }

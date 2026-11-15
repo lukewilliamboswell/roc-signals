@@ -5550,10 +5550,12 @@ An event is `event(node, handler)` with the payload staged first:
   the default of every `submit` that reaches the mount root); `input` → the
   target's value; `change` → `"true"`/`"false"` for a checkbox or radio, else the value;
   `focus`/`blur` (listened as
-  `focusin`/`focusout`) → the target's value. A value that is not a
-  well-formed string stages nothing: the event is not delivered, as with
-  pasted text, and as a key or code that is not well-formed is heard by no
-  keymap.
+  `focusin`/`focusout`) → the target's value. A target's value is its
+  `value` when that is a string, and empty for an element with no text
+  value (`<li>`, `<meter>` and `<progress>` give a number, most elements
+  none), as the native runner gives it. A string that is not well-formed
+  stages nothing: the event is not delivered, as with pasted text, and as
+  a key or code that is not well-formed is heard by no keymap.
 - **Files-kind DOM events:** a handler declared with the files kind on
   `change`, `drop` or `paste` receives the target's `files`, the drop's
   `dataTransfer.files` or the paste's `clipboardData.files`, captured while
@@ -5764,7 +5766,7 @@ site; an unknown kind number in commands is an `executor` fault.
 
 | Kind | Payload layout | Delivering export | Allowed event types |
 |---|---|---|---|
-| 1 Text | UTF-8, with the per-type meanings in Event records | `event` | Any bare type except `keydown` and `keyup`; a value that is not a well-formed string is not delivered |
+| 1 Text | UTF-8, with the per-type meanings in Event records | `event` | Any bare type except `keydown` and `keyup`; a value that is not a string is empty, and a string that is not well-formed is not delivered |
 | 2 Files | `minted:u32 refused:u32 (size:u64 name:str type:str)*minted`, with staged handles in order | `event_files` | `change`, `drop`, `paste`; no files means no dispatch. `drop` prevents both its default and `dragover`'s default |
 | 3 Pointer | `id:u32 kind:u8 button:u8 buttons:u16 mods:u8 primary:u8 at:u8 [x:u16 y:u16 zone:str]` | `event` | `pointerdown`, `pointermove`, `pointerup`, `pointercancel` |
 | 4 Key | `flags:u8 key:str code:str heard:u8 heard_key:str` | `event` | `keydown`, `keyup`; pass over a local handler whose keymap hears nothing; a key or code that is not well-formed is heard by none |

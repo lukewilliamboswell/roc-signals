@@ -303,6 +303,25 @@ try {
       return { refused, after };
     });
     check("a text-kind value that is not well-formed is not delivered and never poisons", textKind, { refused: [null, 0, 1], after: [["a", "b"]] });
+    // An element whose `value` is not a string (`HTMLLIElement.value` is a
+    // number) has no text value: its text-kind events deliver an empty
+    // payload, as the native runner gives, and are never counted refused.
+    const noTextValue = await page.evaluate(() => {
+      const f = window.__fixture();
+      const elem = (node, parent, tag) => f.join(new Uint8Array([8]), f.u32(node), f.u32(parent), f.u32(0), new Uint8Array([0]), f.str(""), f.str(tag), new Uint8Array([0]));
+      const listen = (node, handler, type) => f.join(new Uint8Array([11]), f.u32(node), f.u32(handler), f.str(type), new Uint8Array([1]), f.u32(0));
+      f.raw(f.join(new Uint8Array([0]), elem(1, 0, "li"), listen(1, 7, "focus"), elem(2, 0, "li"), listen(2, 8, "input"), elem(3, 0, "ul"), listen(3, 9, "blur"), elem(4, 3, "li"), elem(5, 0, "meter"), listen(5, 10, "focus")));
+      const [focusable, editable, list, meter] = [...f.root.children];
+      focusable.tabIndex = 0; editable.contentEditable = "true"; list.firstChild.tabIndex = 0; meter.tabIndex = 0;
+      const values = [typeof focusable.value, typeof meter.value];
+      focusable.focus();
+      editable.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      list.firstChild.focus(); list.firstChild.blur();
+      meter.focus();
+      const delivered = [f.calls.map(call => [call.handler, call.payload]), f.rt.textRefused, f.rt.poisoned]; f.end();
+      return { values, delivered };
+    });
+    check("a text-kind event on an element with no text value delivers an empty payload", noTextValue, { values: ["number", "number"], delivered: [[[7, []], [8, []], [9, []], [10, []]], 0, null] });
     const unhandled = await page.evaluate(() => {
       const f = window.__fixture();
       f.raw(f.join(new Uint8Array([0, 8]), f.u32(1), f.u32(0), f.u32(0), new Uint8Array([0]), f.str(""), f.str("div"), new Uint8Array([0]), new Uint8Array([8]), f.u32(2), f.u32(0), f.u32(0), new Uint8Array([0]), f.str(""), f.str("div"), new Uint8Array([0]), new Uint8Array([11]), f.u32(2), f.u32(7), f.str("paste"), new Uint8Array([9]), f.u32(0)));
