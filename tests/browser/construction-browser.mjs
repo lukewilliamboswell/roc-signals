@@ -1,5 +1,7 @@
 // Real app dispatch must refuse the same bounded constructor rules as the
 // native event fixtures, before publishing the failing turn's command batch.
+// A text hole directly in a table is refused when it mounts, whatever it
+// holds then, so its two modes fail at mount rather than at the click.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -12,8 +14,8 @@ const cases = [
   { mode: "branch", rule: "the HTML parser would close the paragraph first", site: "/0/0" },
   { mode: "row", rule: "the HTML parser would close the paragraph first", site: "/0/0/0/0" },
   { mode: "state", rule: "the HTML parser would close the paragraph first", site: "/0/0/0" },
-  { mode: "text", rule: "the HTML parser would move the text outside the table", site: "/0" },
-  { mode: "row-text", rule: "the HTML parser would move the text outside the table", site: "/0/0" },
+  { mode: "text", rule: "the HTML parser would move the text outside the table", site: "/0", atMount: true },
+  { mode: "row-text", rule: "the HTML parser would move the text outside the table", site: "/0/0", atMount: true },
 ];
 const server = http.createServer((request, response) => {
   const name = path.basename(new URL(request.url, "http://x").pathname);
@@ -43,6 +45,11 @@ try {
         const faults = [];
         const runtime = await mountRocEngineApp({ wasmUrl: "/app.wasm", root, onFault: (fault) => faults.push(fault) });
         const initial = { healthy: !runtime.poisoned, button: root.querySelector("button")?.textContent, faults: faults.length };
+        if (runtime.poisoned) {
+          const fault = runtime.poisoned;
+          runtime.unmount();
+          return { initial, class: fault.class, message: fault.message, faults: faults.length, unchanged: true, listeners: runtime.listening.size, documents: runtime.documentListeners.size };
+        }
         const before = root.innerHTML;
         root.querySelector("button").click();
         const fault = runtime.poisoned;
@@ -50,11 +57,12 @@ try {
         runtime.unmount();
         return { initial, class: fault?.class, message: fault?.message, faults: faults.length, unchanged, listeners: runtime.listening.size, documents: runtime.documentListeners.size };
       });
-      const pass = result.initial.healthy && result.initial.button === "Trigger construction" && result.initial.faults === 0 &&
+      const mounted = test.atMount ? !result.initial.healthy : result.initial.healthy && result.initial.button === "Trigger construction" && result.initial.faults === 0;
+      const pass = mounted &&
         result.class === "contract" && result.message.includes(test.rule) && result.message.includes(`at site ${test.site}`) &&
         result.faults === 1 && result.unchanged && result.listeners === 0 && result.documents === 0;
       if (!pass) failures += 1;
-      console.log(`${pass ? "ok  " : "FAIL"} construction ${test.mode}: actual dispatch refuses ${test.rule} at ${test.site}${pass ? "" : ` ${JSON.stringify(result)}`}`);
+      console.log(`${pass ? "ok  " : "FAIL"} construction ${test.mode}: ${test.atMount ? "mount" : "actual dispatch"} refuses ${test.rule} at ${test.site}${pass ? "" : ` ${JSON.stringify(result)}`}`);
     } finally { await context.close(); }
   }
 } finally { await browser.close(); await new Promise((resolve) => server.close(resolve)); }

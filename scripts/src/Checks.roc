@@ -199,6 +199,8 @@ Checks := [].{
 			{ name: "construction-raw-svg-colon", expectation: Compiles },
 			{ name: "construction-raw-svg-colon-refused", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["contract: raw <:foo> cannot be created under <svg>", "must begin with an ASCII letter", "at site / (element /0)"] }) },
 			{ name: "construction-empty-table-view", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["contract: <tr> inside <table>: the HTML parser would insert a table section first in the row template of a table view at site /0"] }) },
+			{ name: "construction-text-hole", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["contract: text inside <table>: the HTML parser would move the text outside the table; a text hole here can hold text, whatever it holds now at site /0"] }) },
+			{ name: "construction-row-text-hole", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["contract: text inside <table>: the HTML parser would move the text outside the table; a text hole here can hold text, whatever it holds now in the row template of an each at site /0"] }) },
 		]
 		dir = "${o.build_dir}/key-type-errors"
 		SpecSuite.fresh_dir!(dir)?
@@ -279,8 +281,8 @@ Checks := [].{
 			{ name: "construction-later-branch", rejection: "close the paragraph first", prefix: "contract:", code: 70 },
 			{ name: "construction-later-row", rejection: "close the paragraph first", prefix: "contract:", code: 70 },
 			{ name: "construction-later-state", rejection: "close the paragraph first", prefix: "contract:", code: 70 },
-			{ name: "construction-later-text", rejection: "move the text outside the table", prefix: "contract:", code: 70 },
-			{ name: "construction-later-row-text", rejection: "move the text outside the table", prefix: "contract:", code: 70 },
+			{ name: "construction-later-text", rejection: "move the text outside the table; a text hole here can hold text", prefix: "contract:", code: 70 },
+			{ name: "construction-later-row-text", rejection: "move the text outside the table; a text hole here can hold text", prefix: "contract:", code: 70 },
 		]
 		dir = "${o.build_dir}/key-contracts"
 		SpecSuite.fresh_dir!(dir)?

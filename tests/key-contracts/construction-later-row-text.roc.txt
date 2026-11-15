@@ -6,8 +6,9 @@ app [main] {
 import pf.Engine
 import oracle.Core
 
-## Drive the same later-turn constructor shape as ConstructionApp through
-## the native engine before this fixture can produce its dummy page.
+## Drive ConstructionApp's text-in-a-table shape through the native engine
+## before this fixture can produce its dummy page. The text hole can hold
+## text later, so the mount refuses it, before the event that would.
 main : Engine.Program
 main = Engine.program(|| {
     view = Core.state(Bool.False, |changed| Core.element("main", [], [

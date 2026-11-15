@@ -4799,6 +4799,7 @@ mount_elem = |block, env, root_elem, elem, depth, path, parent, before, top, sol
 			(add_node(block, id, top), tx2)
 		}
 		TextV(v) => {
+			check_text_hole(scope.enclosing.construction, { varies: eff_mask(v) != 0, site: path, placement: "" })
 			(id, tx1) = alloc_id(tx)
 			read = checked_text_read(v.read, { context: scope.enclosing.construction, site: path, placement: "" })
 			s = read(env)
@@ -5812,6 +5813,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 		}
 		TextV(v) => {
 			check_construction_text(enclosing.construction, { value: "", site, placement: placed })
+			check_text_hole(enclosing.construction, { varies: eff_mask(v) != 0, site, placement: placed })
 			checked = checked_text_read(v.read, { context: enclosing.construction, site, placement: placed })
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
 			t2 = put_str(tree.append(2), "")
@@ -12012,6 +12014,23 @@ check_construction_text = |context, { value, site, placement }| match DomConstru
 	Err(problem) => crash "contract: ${construction_problem(problem)}${placement} at site ${show_path(site)}"
 }
 
+## A text hole that reads something that can change (a layer, a cell, a
+## row) can come to hold text, so in a context that admits no text (inside
+## `<table>`, `<tbody>`, `<tr>`, ...) the hole itself is refused when it
+## mounts, whatever it holds then: the rule follows the program's shape,
+## not its data. The probe is one non-whitespace text; a constant hole
+## keeps the value check of `checked_text_read`.
+check_text_hole : DomConstruction.Context, { varies : Bool, site : List(U32), placement : Str } -> {}
+check_text_hole = |context, { varies, site, placement }|
+	if !varies {
+		{}
+	} else {
+		match DomConstruction.text(context, "x") {
+			Ok(_) => {}
+			Err(problem) => crash "contract: ${construction_problem(problem)}; a text hole here can hold text, whatever it holds now${placement} at site ${show_path(site)}"
+		}
+	}
+
 ## Text holes retain finite enclosing facts beside their existing reader,
 ## never an element description or another copy of application storage.
 checked_text_read : (ctx -> Str), { context : DomConstruction.Context, site : List(U32), placement : Str } -> (ctx -> Str)
@@ -12069,8 +12088,11 @@ expect {
 	Core.settled(Core.mount(view)).is_ok()
 }
 
-## A kept row's restricted text reader checks its new value and remains an
-## ordinary hole. Legal whitespace changes settle through the normal turn.
+## A text hole directly in a table that can change is refused when it is
+## constructed, whatever it holds: only whitespace there now (a row's
+## item) is no promise about later (the construction-text-hole and
+## construction-row-text-hole fixtures pin the refusal while compiling). A
+## constant whitespace hole there is legal and settles like any other.
 expect {
 	view = Core.state(
 		False,
@@ -12079,7 +12101,7 @@ expect {
 			[],
 			[
 				Core.element("button", [Core.on_click(changed.update(|value| !value))], []),
-				Core.each(changed.signal().map(|value| [if (value) "\t" else " "]), |_| "one", |row| Core.element("table", [], [Core.text_s(row.item())])),
+				Core.element("table", [], [Core.text_s(Core.const(" "))]),
 			],
 		),
 	)

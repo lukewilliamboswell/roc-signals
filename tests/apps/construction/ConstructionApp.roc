@@ -5,7 +5,9 @@ import pf.Engine exposing [Elem, Root]
 ## and site through the native driver and actual browser dispatch.
 ConstructionApp := [].{
 
-	## Each mode exercises one deferred mount or text replacement boundary.
+	## Each mode exercises one deferred mount boundary. The two text modes
+	## put a text hole directly in a table, which is refused when the mode
+	## mounts, whatever the hole holds then.
 	view : Str -> Elem(Root)
 	view = |mode| Engine.state(
 		Bool.False,

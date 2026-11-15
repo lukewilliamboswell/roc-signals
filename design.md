@@ -1799,9 +1799,13 @@ names retain their grammar-only escape; vocabulary checks belong at literals.
 
 Dynamic sites receive the context of their enclosing element. Row templates
 are checked once at site construction even for an empty list or table view;
-branches and drawn rows are checked when mounted. Restricted table text is
-checked when created and when replaced, in the size of the new text, without
-retaining an earlier value. The bounded constructor check is not a claim of
+branches and drawn rows are checked when mounted. A text hole that reads
+something that can change (a layer, a cell, a row) directly in a context
+that admits no text, such as a `<table>`, is refused where it is
+constructed, whatever it holds then: it can come to hold text, so the rule
+follows the program's shape, not its data. Restricted constant text is
+checked when created, and a hole's text when replaced, in the size of the
+new text, without retaining an earlier value. The bounded constructor check is not a claim of
 complete HTML parsing: the independent full parsed-picture check covers
 repairs outside its declared subset. A default mount reaching a construction
 error fails at the app's compile-time mount declaration; later paths fail in
