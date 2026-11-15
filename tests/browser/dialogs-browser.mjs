@@ -4,10 +4,12 @@ import { installProtocolFixture } from "./protocol-fixture.mjs";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
+import { spawnSync } from "node:child_process";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
 
-const options = parseArgs(process.argv.slice(2), [], ["runtime"]);
+const options = parseArgs(process.argv.slice(2), ["runner"], ["wasm", "runtime", "runner"]);
 const files = runtimeFiles(options.runtime);
 const server = http.createServer((request, response) => {
   const name = path.basename(new URL(request.url, "http://x").pathname);
@@ -288,5 +290,68 @@ try {
   }
 } finally { await browser.close(); await new Promise((resolve) => server.close(resolve)); }
 
+// Every row of the user-activation table (`Scm.activation_table`, which the
+// parser emits with each spec) has a case. A row is pinned either by a
+// measured round of `top-layer-activation.scm`, run here in Chrome and
+// natively, or by being a step the replay performs without input to the page,
+// which must say "never". A round is the steps between an Escape that spent
+// the activation the dialog was opened with and the next close request (a
+// `dismiss`, or a `press` of Escape, which is then itself the measured step):
+// a prevented `cancel` holds only when those steps granted activation. A new
+// step without a row fails the parser's own check; a new row without a case
+// fails here. Each round starts in a new document (`navigate`), so no round
+// depends on what an earlier one left in the browser's close watchers.
+const NOT_INPUT = {
+  "the replay leaves or changes the document, its history or another tab's storage": ["navigate", "history-back", "history-forward", "leave-page", "storage-elsewhere", "storage-elsewhere-removed", "storage-elsewhere-cleared"],
+  "the replay answers effects, work and ports through the runtime's manual hooks": ["stub-http", "stub-http-reject", "run-effect", "progress-effect", "lose-work", "time-out-work", "answer-port", "emit-port", "close-port", "fail-port"],
+  "the replay sets the environment from script": ["set-time", "advance-time", "set-media", "tick-interval", "tick-interval-if-active"],
+  "the replay supplies layout reports from script": ["scroll", "report-size", "report-seen", "hold-reports", "release-reports"],
+  "the step only reads": ["expect-shown", "expect-session-storage", "expect-clipboard", "expect-clipboard-html", "expect-scroll", "expect-transition", "expect-media-subscriptions", "expect-no-focus", "expect-updates", "expect-request", "expect-port-subscription-arg", "expect-files", "expect-pending-work", "expect-cleanup", "expect-interval", "expect-current-location", "expect-document-title", "expect-local-storage", "expect-no-local-storage", "expect-no-session-storage", "expect-upload", "expect-port-call", "expect-port-sent", "expect-port-sends", "expect-port-subscriptions", "expect-saved"],
+};
+{
+  const here = path.dirname(new URL(import.meta.url).pathname);
+  const fixture = path.join(here, "../apps/controls/specs/top-layer-activation.scm");
+  const emitted = spawnSync(options.runner, ["--emit-steps", fixture], { encoding: "utf8", timeout: 30000 });
+  if (emitted.status !== 0) throw new Error(`--emit-steps failed: ${emitted.stderr}`);
+  const spec = JSON.parse(emitted.stdout.trim());
+  const grant = new Map(spec.activation_table.map((row) => [row.op, row.grant]));
+  const measured = new Set(); const disagreements = [];
+  let round = null;
+  for (let i = 0; i < spec.steps.length; i += 1) {
+    const step = spec.steps[i];
+    const escape = step.op === "dismiss" || (step.op === "press" && step.key.key === "Escape");
+    if (round !== null && escape) {
+      const ops = round.length ? round.map((s) => s.op) : [step.op];
+      if (step.op === "press") ops.push("press");
+      const outcome = spec.steps[i + 1];
+      if (outcome?.op !== "expect-shown") throw new Error(`the round closed at line ${step.line} is not followed by expect-shown`);
+      ops.forEach((op) => measured.add(op));
+      // Unconditional rows decide a round's outcome without reading the page.
+      if (ops.every((op) => grant.get(op) === "never") && outcome.shown !== "hidden") disagreements.push(`line ${outcome.line}: ${ops.join(", ")} never grant activation, yet the round expects ${outcome.shown}`);
+      if (ops.some((op) => grant.get(op) === "always") && outcome.shown !== "modal") disagreements.push(`line ${outcome.line}: ${ops.join(", ")} always grant activation, yet the round expects ${outcome.shown}`);
+      round = null;
+    } else if (step.op === "navigate") {
+      // A new document starts with no activation; its steps open the dialog.
+      round = null;
+    } else if (round !== null) {
+      round.push(step);
+    }
+    if (step.op === "dismiss" && spec.steps[i + 1]?.op === "expect-shown" && spec.steps[i + 1].shown === "modal") { round = []; i += 1; }
+  }
+  const notInput = Object.values(NOT_INPUT).flat();
+  const rows = [...grant.keys()];
+  check("every activation row is measured by a round or performed without input", rows.filter((op) => !measured.has(op) && !notInput.includes(op)), []);
+  check("every row performed without input is a row, says never and has no round", notInput.filter((op) => grant.get(op) !== "never" || measured.has(op)), []);
+  check("every row that can grant activation is measured", rows.filter((op) => grant.get(op) !== "never" && !measured.has(op)), []);
+  check("each round's expected outcome agrees with its unconditional rows", disagreements, []);
+  const steps = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-activation-")), "steps.jsonl");
+  fs.writeFileSync(steps, emitted.stdout);
+  const replay = spawnSync(process.execPath, [path.join(here, "replay.mjs"), "--wasm", options.wasm, "--runtime", options.runtime, "--steps", steps, "--chrome", options.chrome, "--json-lines"], { encoding: "utf8", timeout: 180000 });
+  fs.rmSync(path.dirname(steps), { recursive: true, force: true });
+  const results = replay.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  check("the activation rounds pass in Chrome", [replay.status, results.map((r) => [r.id, r.status, r.failure?.message ?? null])], [0, [["top-layer-activation", "passed", null]]]);
+  const native = spawnSync(options.runner, [fixture], { encoding: "utf8", timeout: 30000 });
+  check("the activation rounds pass natively", native.status, 0);
+}
 if (failures) process.exit(1);
 console.log("dialogs-browser: all pass");

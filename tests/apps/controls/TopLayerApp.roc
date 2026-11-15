@@ -31,7 +31,7 @@ TopLayerApp := [].{
 
 	view : {} -> Elem(Root)
 	view = |_| Engine.state(
-		{ modal: { open: False, closes: 0.U64, toggles: 0.U64 }, inline: False, ignored: False, prevent: False, pop_a: False, pop_b: False, manual: False, initial: True, rows: ["a", "b"], row_open: False, row_modal: False, dismissable: [], requests: Engine.outbox({}), log: "", guard: { open: False, blocks: False, keys: 0.U64, cancels: 0.U64, closes: 0.U64 } },
+		{ modal: { open: False, closes: 0.U64, toggles: 0.U64 }, inline: False, ignored: False, prevent: False, pop_a: False, pop_b: False, manual: False, initial: True, rows: ["a", "b"], row_open: False, row_modal: False, dismissable: [], requests: Engine.outbox({}), log: "", guard: { open: False, blocks: False, keys: 0.U64, cancels: 0.U64, closes: 0.U64 }, ticked: False, typed: "", choice: "one" },
 		|st| Engine.element(
 			"section",
 			[],
@@ -80,6 +80,42 @@ TopLayerApp := [].{
 					[
 						Html.button("Prevented inside", [], Engine.does([])),
 						Html.button("Close prevented", [], st.update(|s| { ..s, prevent: False })),
+						# One control for each step the user-activation table names, so
+						# that a spec can perform it inside this dialog and read whether
+						# it granted activation from whether the next Escape is held.
+						Html.button("Prevented disabled", [Html.disabled(Engine.const(True))], Engine.does([])),
+						Html.checkbox(Engine.const("Prevented box"), st.signal().map(|s| s.ticked), [], st.set_value(|s, ticked| { ..s, ticked })),
+						Html.text_input(Engine.const("Prevented text"), "text", st.signal().map(|s| s.typed), [], st.set_value(|s, typed| { ..s, typed })),
+						Html.select(
+							Engine.const("Prevented choice"),
+							st.signal().map(|s| s.choice),
+							Engine.const(["one", "two"]),
+							{ key: |c| c, label: |c| c },
+							[],
+							st.set_value(
+								|s, chose| match chose {
+									Chose(choice) => { ..s, choice }
+									NotOffered => s
+								},
+							),
+						),
+						Html.form("Prevented form", [Html.on_submit(Engine.does([]))], [Html.submit_button("Prevented submit", [])]),
+						Html.file_input(Engine.const("Prevented file"), {}, Engine.does([])),
+						Engine.element("div", [Html.aria_label("Prevented drop"), Html.on_drop_files(Engine.does([])), Html.on_paste_files(Engine.does([]))], [Engine.text("Drop files")]),
+						Engine.element("div", [Html.aria_label("Prevented paste"), Html.on_paste_text(Engine.does([]))], [Engine.text("Paste text")]),
+						Engine.element(
+							"div",
+							[
+								Engine.test_id("prevented-zone"),
+								Html.zone("prevented"),
+								Engine.attr("style", "width:160px;height:60px;touch-action:none;user-select:none"),
+								Html.on_pointer_down(Engine.does([])),
+								Html.on_pointer_move(Engine.does([])),
+								Html.on_pointer_up(Engine.does([])),
+								Html.on_pointer_cancel(Engine.does([])),
+							],
+							[Engine.text("Pointer zone")],
+						),
 					],
 				),
 				Html.button("Open guarded", [], st.update(|s| { ..s, guard: { ..s.guard, open: True, blocks: True } })),

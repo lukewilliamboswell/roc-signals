@@ -396,7 +396,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "construction-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "construction")])?)
 				.concat(Targets.browser!(o, "pointer-browser.mjs", ["--wasm", controls])?)
 				.concat(Targets.browser!(o, "keys-browser.mjs", ["--wasm", controls])?)
-				.concat(Targets.browser!(o, "dialogs-browser.mjs", ["--wasm", controls])?)
+				.concat(Targets.browser!(o, "dialogs-browser.mjs", ["--wasm", controls, "--runner", SpecSuite.runner_of(o, "controls")])?)
 				.concat(Targets.browser!(o, "layout-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "table"), "--runner", SpecSuite.runner_of(o, "table")])?)
 				.concat(Targets.browser!(o, "outbox-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "outbox")])?)
 				.concat(Targets.browser!(o, "services-browser.mjs", ["--wasm", services])?)
