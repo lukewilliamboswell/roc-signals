@@ -89,7 +89,10 @@ async function announce(root, runtime) {
 }
 
 async function mountInto(root, wasmUrl, title, errorTarget = null) {
-  root.replaceChildren();
+  // A root marked `data-roc-picture` holds a built first page, which the
+  // runtime keeps inert and replaces with the mount; any other root is
+  // emptied, as an earlier app may have left nodes in it.
+  if (!root.hasAttributeNS(null, "data-roc-picture")) root.replaceChildren();
   if (errorTarget) {
     errorTarget.hidden = true;
     errorTarget.classList.add("hidden");
