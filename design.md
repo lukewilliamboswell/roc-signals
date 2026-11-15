@@ -3395,6 +3395,90 @@ name. `Html.flag_maybe` is `Present("true")` while its flag is true and
 `Absent` otherwise. A static attribute that should not exist is normally
 omitted from its element's attributes.
 
+## Markup Literals
+
+A *markup literal* is a string literal, with or without interpolated holes,
+whose expected type is `Html.Markup(ctx)` or `Svg.Markup(ctx)`. It writes a
+mostly fixed piece of a view as markup and is checked while the module
+compiles. `markup.to_elem()` gives an ordinary `Elem(ctx)`, placed among
+constructors like any other element. `Html.Markup` is an HTML fragment,
+with SVG and MathML embedded where the HTML parser embeds them; `Svg.Markup`
+is an SVG fragment whose root is an SVG element: a standalone `svg`, or a
+part of a drawing such as `g` or `path`.
+
+**Checked while compiling, by the pinned parser.** The type's `from_quote`
+and `from_interpolation` hooks run when the compiler evaluates the literal,
+and they hand its fixed segments to the pinned roc-parser release: its
+`Html` parser in a body fragment context, or its `Svg` parser, each
+requiring the exact authored structure and exact foreign spelling. The
+platform writes no markup grammar or vocabulary of its own. The parser
+checks syntax, element and attribute names against its vocabulary, each
+fixed attribute value against its attribute's grammar (an input's `type`,
+a Boolean attribute, `hidden`, an ARIA value, `viewBox`, path data), content
+models and the exact case of SVG names. A rejection is a compile error at
+the literal, with the line and column inside it, in words the platform
+writes over the parser's typed problem. A literal in a function nothing
+calls is not checked until something calls it (see
+[Compiler Limitations](#compiler-limitations)).
+
+**The repair rule at the literal.** Markup the HTML parser would rearrange
+is refused, not built as a different tree: the parsed tree must be exactly
+the written nesting, so a block in a `p`, table structure outside a table,
+a nested `a` or a child of a void element is a compile error at the
+literal, and every element that is not void is closed explicitly. A
+foreign name in the wrong case, which HTML parsing would silently correct,
+is refused with the spelling it would become. A literal whose root is a
+table part (`tr`, `td`, `tbody`, …) is parsed again in a template's content
+context, where such a root is legal, and accepted only when that parse is
+exact. What the literal cannot see is its own root against the element a
+constructor places it in; that is the construction check of
+[A prerendered first page](#a-prerendered-first-page), with the same rule,
+and an `Svg.Markup` whose root is not `svg` is refused there under a parent
+that is not SVG.
+
+**Holes are signal parts.** A hole is a part of the kind a signal literal
+takes (`part.to_text_signal`), and one literal's parts share one type, so
+a plain value beside a signal is lifted with `Engine.const`. A hole stands
+in two places only: in text, and as the whole of a quoted attribute value.
+The parser places it by an explicit token, never by a placeholder in the
+text, and refuses a hole anywhere else: in a tag or attribute name, in part
+of a value, in a comment or a declaration. A hole
+lowers to an ordinary text or attribute hole: it keeps its declared reads,
+a constant part is drawn once, and its values are text the engine sets,
+never parsed as markup and not checked against the attribute's grammar. A
+value that needs that check belongs on a constructor of a typed value.
+
+**Refused by the platform.** On top of the parser's rules a literal
+refuses an event-handler attribute (`onclick`), fixed or not; a hole as
+the value of a Boolean attribute, since presence cannot follow text; an
+attribute a property row claims on its element (`value` and `checked` on
+an input), which `Engine.prop` sets; a document declaration or processing
+instruction; and anything but exactly one element root, including a
+comment or text beside it.
+
+**Lowered to ordinary elements.** `to_elem` builds, when the view is
+constructed, the elements `Engine.element` would build from the tree the
+compiler checked: exact expanded names, fixed attributes with explicit
+presence (a Boolean attribute written bare or with its own name is present
+with empty text), `class` and `data-testid` through `class` and `test_id`
+or their signal forms, authored comments as comment nodes, and a
+`template`'s children in its content fragment. Whitespace-only text that
+holds a line break is indentation and makes no node; other text is kept
+exactly. Construction is linear in the literal; nothing is parsed then or
+on an update, and the literal adds no site kind, hole kind or command. An
+explicit call of a hook parses the segments it is given at that call.
+
+**Handlers and dynamic structure stay constructors.** A literal holds no
+handler and no child element: neither is a text signal, so no part could
+say which position it fits. Listening, controls, `when`, `each`, table
+views and components are constructors and typed `Html` functions placed
+around a literal or inside the children of a constructor beside it. A
+literal and the typed element functions build the same elements; the
+literal is for structure that is mostly fixed (a card, a drawing, a static
+table header) and checks what a name type cannot see, a value against its
+attribute and an element against its parent, while a constructor checks a
+name alone and sets the value it is given.
+
 ## Dialogs, Popovers and Scrolling
 
 `Html.dialog(label, props, attrs, children)` pairs a required `open` signal
@@ -5316,8 +5400,26 @@ Html.popover : Str, Html.PopoverProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> 
 Html.on_cancel : Handler(ctx) -> Attr(ctx)
 ```
 
-**Target vocabulary.** An `Svg` module and a typed style API, and handler-level
-request occurrences. Each lands with an engine change,
+Markup literals (see [Markup Literals](#markup-literals)) are `Html.Markup`
+and, in `Svg` (`platform/Svg.roc`), `Svg.Markup`, the same three members on
+each; `Svg` exposes nothing else, and other SVG is built with
+`Engine.element`:
+
+```roc
+Html.Markup(ctx)                              # opaque: a checked HTML fragment and its bound parts
+Html.Markup.from_quote : Str -> Try(Html.Markup(ctx), [BadQuotedBytes(Str)])
+Html.Markup.from_interpolation : List(Str) -> Try((Iter(part) -> Html.Markup(ctx)), [InvalidInterpolation(Str)])
+    where [part.to_text_signal : part -> Signal(ctx, Str)]
+Html.Markup.to_elem : Html.Markup(ctx) -> Elem(ctx)
+Svg.Markup(ctx)                               # opaque: a checked SVG fragment with an SVG element root
+Svg.Markup.from_quote : Str -> Try(Svg.Markup(ctx), [BadQuotedBytes(Str)])
+Svg.Markup.from_interpolation : List(Str) -> Try((Iter(part) -> Svg.Markup(ctx)), [InvalidInterpolation(Str)])
+    where [part.to_text_signal : part -> Signal(ctx, Str)]
+Svg.Markup.to_elem : Svg.Markup(ctx) -> Elem(ctx)
+```
+
+**Target vocabulary.** A typed style API, and handler-level request
+occurrences. Each lands with an engine change,
 a native spec, a runtime contract test, a demonstration and, where it
 touches the wire, an Appendix B entry.
 
