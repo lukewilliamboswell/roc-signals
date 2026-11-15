@@ -114,18 +114,31 @@ Api := {}.{
 	tags_uri : Str
 	tags_uri = tags.request_target()
 
+	## A page of articles. The page draws them keyed by slug, so a page
+	## that lists one slug twice is malformed: it is refused here, where it
+	## arrives, naming the slug. An article's tags are a set to the reader,
+	## so a tag listed twice is drawn once.
 	decode_feed : Str -> Api.Remote(Api.FeedPage)
 	decode_feed = |body| {
 		parse : Str -> Try(Api.FeedPage, [InvalidJson(Str)])
 		parse = Json.parser_camel()
-		to_remote(parse(body))
+		match to_remote(parse(body)) {
+			Ready(page) =>
+				match Api.repeated(page.articles, |article| article.slug) {
+					Ok(slug) => Failed("The server listed the article ${slug} twice.")
+					Err(NoRepeat) => Ready({ ..page, articles: page.articles.map(|article| { ..article, tag_list: Api.distinct(article.tag_list) }) })
+				}
+			other => other
+		}
 	}
 
+	## One article. Its tags are a set to the reader: a tag listed twice is
+	## drawn once.
 	decode_article : Str -> Api.Remote(Api.Article)
 	decode_article = |body| {
 		parse : Str -> Try({ article : Api.Article }, [InvalidJson(Str)])
 		parse = Json.parser_camel()
-		to_remote(parse(body).map_ok(|envelope| envelope.article))
+		to_remote(parse(body).map_ok(|envelope| { ..envelope.article, tag_list: Api.distinct(envelope.article.tag_list) }))
 	}
 
 	decode_profile : Str -> Api.Remote(Api.Profile)
@@ -135,18 +148,55 @@ Api := {}.{
 		to_remote(parse(body).map_ok(|envelope| envelope.profile))
 	}
 
+	## An article's comments. The page draws them keyed by id, so a list
+	## that holds one id twice is malformed: it is refused here, naming the
+	## id.
 	decode_comments : Str -> Api.Remote(List(Api.Comment))
 	decode_comments = |body| {
 		parse : Str -> Try({ comments : List(Api.Comment) }, [InvalidJson(Str)])
 		parse = Json.parser_camel()
-		to_remote(parse(body).map_ok(|envelope| envelope.comments))
+		match to_remote(parse(body).map_ok(|envelope| envelope.comments)) {
+			Ready(comments) =>
+				match Api.repeated(comments, |comment| comment.id.to_str()) {
+					Ok(id) => Failed("The server listed the comment ${id} twice.")
+					Err(NoRepeat) => Ready(comments)
+				}
+			other => other
+		}
 	}
 
+	## The popular tags, each once: a tag listed twice is drawn once.
 	decode_tags : Str -> Api.Remote(List(Str))
 	decode_tags = |body| {
 		parse : Str -> Try({ tags : List(Str) }, [InvalidJson(Str)])
 		parse = Json.parser_camel()
-		to_remote(parse(body).map_ok(|envelope| envelope.tags))
+		to_remote(parse(body).map_ok(|envelope| Api.distinct(envelope.tags)))
+	}
+
+	## The tags in the order given, each at its first place. The page draws
+	## a list of tags keyed by the tag, and to the reader a tag listed twice
+	## is the same tag.
+	distinct : List(Str) -> List(Str)
+	distinct = |listed| {
+		(kept, _) = listed.fold(
+			([], Set.empty()),
+			|(held, seen), tag| if (seen.contains(tag)) (held, seen) else (held.append(tag), seen.insert(tag)),
+		)
+		kept
+	}
+
+	## The first key of `items` that an earlier item already had, if any.
+	repeated : List(a), (a -> Str) -> Try(Str, [NoRepeat])
+	repeated = |items, key_of| {
+		var $seen = Set.empty()
+		for item in items {
+			key = key_of(item)
+			if $seen.contains(key) {
+				return Ok(key)
+			}
+			$seen = $seen.insert(key)
+		}
+		Err(NoRepeat)
 	}
 
 	## Every fetch surface renders `Remote` the same three ways, so the
@@ -368,3 +418,34 @@ expect Api.author_articles_uri("x&favorited=anna") == "/api/articles?limit=20&of
 
 ## Unsafe supplied resource names retain their typed refusal.
 expect Api.article_uri("..") == Err(DotSegment("..")) and Api.profile_uri(".") == Err(DotSegment(".")) and Api.comments_uri("") == Err(EmptySegment)
+
+## A tag a server lists twice is drawn once, at its first place, in an
+## article, a page of articles and the popular tags.
+expect {
+	article = |tags| "{\"slug\":\"s\",\"title\":\"T\",\"description\":\"\",\"body\":\"\",\"tagList\":${tags},\"createdAt\":\"\",\"favorited\":false,\"favoritesCount\":0,\"author\":{\"username\":\"u\",\"bio\":\"\",\"image\":\"\",\"following\":false}}"
+	one = Api.decode_article("{\"article\":${article("[\"rust\",\"roc\",\"rust\"]")}}")
+	page = Api.decode_feed("{\"articles\":[${article("[\"a\",\"a\"]")}],\"articlesCount\":1}")
+	tags = Api.decode_tags("{\"tags\":[\"b\",\"a\",\"b\"]}")
+	(
+		match one {
+			Ready(a) => a.tag_list
+			_ => []
+		},
+		match page {
+			Ready(p) => p.articles.map(|a| a.tag_list)
+			_ => []
+		},
+		tags,
+	)
+		== (["rust", "roc"], [["a"]], Ready(["b", "a"]))
+}
+
+## A page that lists one article twice, or comments that hold one id twice,
+## is refused where it arrives, naming the repeat.
+expect {
+	article = "{\"slug\":\"twice\",\"title\":\"T\",\"description\":\"\",\"tagList\":[],\"createdAt\":\"\",\"favorited\":false,\"favoritesCount\":0,\"author\":{\"username\":\"u\",\"bio\":\"\",\"image\":\"\",\"following\":false}}"
+	comment = "{\"id\":7,\"createdAt\":\"\",\"body\":\"b\",\"author\":{\"username\":\"u\",\"bio\":\"\",\"image\":\"\",\"following\":false}}"
+	feed = Api.decode_feed("{\"articles\":[${article},${article}],\"articlesCount\":2}")
+	comments = Api.decode_comments("{\"comments\":[${comment},${comment}]}")
+	(Api.failure_message(feed), Api.failure_message(comments)) == ("The server listed the article twice twice.", "The server listed the comment 7 twice.")
+}

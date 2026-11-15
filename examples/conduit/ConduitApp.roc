@@ -333,8 +333,11 @@ ConduitApp := [].{
 	react_settings : M, Submit, Try(Engine.Response, Engine.HttpFailure) -> M
 	react_settings = |m, _req, res| { ..m, settings: { ..m.settings, result: Api.classify_auth(Api.response_of(res)) } }
 
+	## The tags typed into the editor, trimmed, without empty ones, each at
+	## its first place: "rust, rust" is one tag, so the request sends it
+	## once.
 	parse_tags : Str -> List(Str)
-	parse_tags = |raw| raw.split_on(",").map(|part| part.trim()).keep_if(|tag| !tag.is_empty())
+	parse_tags = |raw| Api.distinct(raw.split_on(",").map(|part| part.trim()).keep_if(|tag| !tag.is_empty()))
 
 	article_body : Str, Str, Str, List(Str) -> Str
 	article_body = |title, description, body, tags| {
@@ -574,7 +577,7 @@ ConduitApp := [].{
 							),
 							|| Engine.text_s("${shown.map(|a| a.favorites_count)} favorites"),
 						),
-						Engine.element("div", [Engine.class("flex flex-wrap gap-1")], [Engine.each(art.map(|a| a.tag_list), |t| t, |row| ConduitApp.tag_pill(row))]),
+						Engine.element("div", [Engine.attr("aria-label", "Tags"), Engine.class("flex flex-wrap gap-1")], [Engine.each(art.map(|a| a.tag_list), |t| t, |row| ConduitApp.tag_pill(row))]),
 					],
 				),
 				Html.p_s(
@@ -1131,6 +1134,10 @@ ConduitApp := [].{
 	program = Engine.program_store({ storage_keys: ["conduit.jwt", "conduit.username"], max_inflight: 32 }, AppStore.start, |_| ConduitApp.view({}))
 
 }
+
+## Tags typed into the editor are trimmed, empty ones dropped, and a tag
+## typed twice is sent once, at its first place.
+expect ConduitApp.parse_tags(" rust, roc,, rust ,") == ["rust", "roc"]
 
 ## An accepted sign-in records the answer, asks to go home and brings the user in.
 expect {
