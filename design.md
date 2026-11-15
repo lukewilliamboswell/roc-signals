@@ -5298,7 +5298,7 @@ space. A dash means that section does not occur in that direction.
 | 13 | mount-root | — | `expanded-name` | The actual mount element's namespace URI, optional prefix and exact local name; an HTML `div` for empty driver boot |
 
 Section 12 is one deterministic CBOR item, encoded with the content-addressed
-roc-cbor 0.6.2 release named in both platform roots. Its root map has exactly
+roc-cbor 0.6.3 release named in both platform roots. Its root map has exactly
 the eleven fields `ops`, `kinds`, `policies`, `properties`, `http_cache`,
 `http_credentials`, `namespaces`, `text_entry_excluded`, `fault_classes`,
 `template_nodes` and `child_containers`. These field names and their types

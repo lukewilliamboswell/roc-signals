@@ -77,7 +77,7 @@ is pinned by package URL in the platform and tooling. Copyright © 2023 Luke Bos
 Permissive License (UPL), Version 1.0. Its LICENSE accompanies that package.
 
 Protocol consumer metadata is encoded with
-[roc-cbor 0.6.2](https://github.com/lukewilliamboswell/roc-cbor/releases/tag/0.6.2),
+[roc-cbor 0.6.3](https://github.com/lukewilliamboswell/roc-cbor/releases/tag/0.6.3),
 pinned by its content-addressed bundle URL in both platform roots. Copyright
 © 2026 Heorhii Bulakh and subsequent roc-cbor authors
 (<https://github.com/Karakatiza666/roc-cbor/graphs/contributors>); Universal

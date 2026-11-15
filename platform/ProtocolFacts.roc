@@ -33,7 +33,7 @@ ProtocolFacts := [].{
 				unknown_fields: Reject,
 				max_depth: 4,
 				max_items: 7383,
-				empty_byte_lists: Reject,
+				forms: Encoder,
 			},
 		)?
 		if !valid_facts(facts) {

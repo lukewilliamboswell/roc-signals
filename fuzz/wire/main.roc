@@ -1,5 +1,5 @@
 app [target] {
-	cbor: "https://github.com/lukewilliamboswell/roc-cbor/releases/download/0.6.2/2xhPdWbS9DQqooG9zXnTqBk9Vkx3LqLsPiEkVxAZ2skD.tar.zst",
+	cbor: "https://github.com/lukewilliamboswell/roc-cbor/releases/download/0.6.3/J3xX4n61WoMZKK3tdWTnZBdKaVbi8SvXvmtC5i3qDAER.tar.zst",
 	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.2/3kyiehxxzwAsjM23uCQGJ3Hx7dAAdzSGtK3k9Jq7Egtu.tar.zst",
 	pf: "../../platform/main-fuzz.roc",
 }

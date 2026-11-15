@@ -697,7 +697,7 @@ reject malformed declarations before init, compare every valid Unicode scalar
 between the native oracle and Chrome, and check that one mounted module cannot
 change another's protocol bindings. `protocol-facts` fixed replays check the
 bounded declaration codec; compiler checks do not replace those replays.
-Section 12 uses deterministic CBOR from the released roc-cbor 0.6.2 package.
+Section 12 uses deterministic CBOR from the released roc-cbor 0.6.3 package.
 Both platform roots pin the same content-addressed URL, checked by `check`.
 The reader bounds bytes, depth and data items before its typed parse, and
 checks all vocabulary limits before acceptance. A transport change bumps the

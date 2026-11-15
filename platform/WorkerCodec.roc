@@ -699,7 +699,7 @@ encode_payload = |value| {
 decode_payload : List(U8), List(Engine.File) -> Try(a, WorkerCodec.Error) where [a.WorkerCodec.Sendable]
 decode_payload = |bytes, files| {
 	Shape : a
-	opened = Cbor.Reader.new(bytes, { key_order: Sorted, unknown_fields: Reject, max_depth: max_cbor_depth, decimals: EncoderForm, floats: EncoderForm, empty_byte_lists: Reject })?
+	opened = Cbor.Reader.new(bytes, { key_order: Sorted, unknown_fields: Reject, max_depth: max_cbor_depth, forms: Encoder })?
 	encoding = WorkerCodec.Format.{}
 	{ value, rest } = Shape.parser_for(encoding)(WorkerCodec.State.(WorkerCodec.StateBody.{ cbor: opened.cbor, reader: opened.reader, files, dicts: [] }))?
 	Cbor.Reader.finish(reader_of(rest))?
