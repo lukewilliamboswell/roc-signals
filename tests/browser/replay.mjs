@@ -203,7 +203,9 @@ async function click(page, state, loc, real) {
   const box = await onEl(page, loc, (e) => {
     e.scrollIntoView({ block: "nearest", inline: "nearest" });
     const r = e.getBoundingClientRect();
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2, disabled: e.disabled === true };
+    // `:disabled`, not the `disabled` property: a control in a disabled
+    // field set takes no click either (`SpecRunner.actually_disabled`).
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, disabled: e.matches(":disabled") };
   });
   if (box.disabled) {
     if (real) throw new Error(`${showLoc(loc)} is disabled`);
@@ -353,7 +355,11 @@ const FILLABLE = ["text", "password", "email", "search", "tel", "url", "number"]
 // only a valid floating-point number or ""); focus it, select its contents
 // and replace them with one real input event (`insertText`; a delete when
 // the value is empty and the control is not), so the app sees one `input`
-// with the whole value, exactly as the native runner delivers it.
+// with the whole value, exactly as the native runner delivers it. A value
+// Chrome's typing would not leave as given is refused first, with the
+// native runner's message (`SpecRunner.fill_refusal`): a read-only
+// control, text longer than `maxlength`, a line break in a single-line
+// control, CR in a textarea, white space around an email address.
 async function fill(page, loc, v) {
   await reachable(page, loc);
   const r = await onEl(
@@ -363,8 +369,17 @@ async function fill(page, loc, v) {
       const html = e.namespaceURI === "http://www.w3.org/1999/xhtml";
       const type = html && e.localName === "input" ? e.type : "";
       if (!(html && (e.localName === "textarea" || (e.localName === "input" && fillable.includes(type))))) return { error: "cannot be filled" };
-      if (e.disabled) return { error: "is disabled" };
+      if (e.matches(":disabled")) return { error: "is disabled" };
       if (type === "number" && v !== "" && !/^-?(\d+(\.\d+)?|\.\d+)([eE][-+]?\d+)?$/.test(v)) return { error: `cannot hold ${JSON.stringify(v)}` };
+      if (e.readOnly) return { error: "is read-only" };
+      if (e.maxLength >= 0 && v.length > e.maxLength) return { error: `cannot hold ${JSON.stringify(v)}: it is longer than its maxlength ${e.maxLength}` };
+      if (e.localName !== "textarea" && /[\n\r]/.test(v)) return { error: `cannot hold ${JSON.stringify(v)}: a single-line control turns a line break into a space` };
+      if (e.localName === "textarea" && v.includes("\r")) return { error: `cannot hold ${JSON.stringify(v)}: a textarea turns a carriage return into a line feed` };
+      if (type === "email") {
+        const trim = (t) => t.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, "");
+        const kept = v.replace(/[\n\r]/g, "");
+        if ((e.multiple ? kept.split(",").map(trim).join(",") : trim(kept)) !== v) return { error: `cannot hold ${JSON.stringify(v)}: an email control trims white space` };
+      }
       e.focus();
       if (typeof e.select === "function") e.select();
       return { empty: e.value === "" };
@@ -466,7 +481,7 @@ async function chooseFiles(page, s, state) {
   await reachable(page, s.loc);
   const r = await onEl(page, s.loc, (e, n) => {
     if (e.namespaceURI !== "http://www.w3.org/1999/xhtml" || e.localName !== "input" || e.type !== "file") return { error: "is not a file input" };
-    if (e.disabled) return { error: "is disabled" };
+    if (e.matches(":disabled")) return { error: "is disabled" };
     if (n > 1 && !e.multiple) return { error: `takes one file, not ${n}` };
     return {};
   }, files.length);
@@ -1041,7 +1056,15 @@ const STEPS = {
         if (e.type === "radio" || e.type === "checkbox") {
           if (e.value !== v) return `has value ${JSON.stringify(e.value)}, not ${JSON.stringify(v)}`;
           e.checked = true;
-        } else e.value = v;
+        } else {
+          e.value = v;
+          // The step claims the control holds `v`: an input or textarea
+          // whose value setter rewrote it fails, as the native runner
+          // refuses it (`SpecRunner.change_refusal`). A select keeps a
+          // foreign value's `NotOffered` meaning.
+          const html = e.namespaceURI === "http://www.w3.org/1999/xhtml";
+          if (html && (e.localName === "input" || e.localName === "textarea") && e.value !== v) return `cannot take ${JSON.stringify(v)}: Chrome's value setter makes it ${JSON.stringify(e.value)}`;
+        }
         e.dispatchEvent(new Event("change", { bubbles: true }));
         return null;
       },

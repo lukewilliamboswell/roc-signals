@@ -195,6 +195,12 @@ ControlsApp := [].{
 				),
 				|| Engine.text(""),
 			),
+			# Controls whose typing Chrome would change: fill refuses each in
+			# both runners rather than deliver a value the browser would not.
+			Engine.element("input", [Html.aria_label("Read-only field"), Engine.attr("readonly", "")], []),
+			Engine.element("input", [Html.aria_label("Short field"), Engine.attr("maxlength", "3")], []),
+			Engine.element("input", [Html.aria_label("Email field"), Engine.attr("type", "email")], []),
+			Engine.element("fieldset", [Html.disabled(Engine.const(True))], [Engine.element("input", [Html.aria_label("Fenced field")], [])]),
 			Engine.element("p", [Engine.test_id("state")], [Engine.text_s(st.signal().map(|s| "${s.plain}|${s.upper}"))]),
 			Engine.element("pre", [Engine.test_id("log")], [Engine.text_s(st.signal().map(|s| Str.join_with(s.log, "|")))]),
 			ControlsApp.properties({}),

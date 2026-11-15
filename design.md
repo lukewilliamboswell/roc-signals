@@ -4002,7 +4002,27 @@ oracle and never defines a meaning of its own. In particular:
   the batch and raise the same focus events as programmatic focus in
   Chrome, each as a turn. `expect-focused LOC` checks the active element,
   and `expect-no-focus` checks that focus is on the document body;
-- `fill` is Playwright's: it refuses a control that cannot hold the value;
+- `fill` is Playwright's: it refuses a control that cannot hold the value.
+  Both runners refuse, with one message, what Chrome's typing would not
+  leave as given: a disabled control (its own `disabled`, or a disabled
+  field set's outside its first legend, which the oracle models as HTML
+  does), a read-only one, text longer than `maxlength` in UTF-16 code
+  units, a line break in a single-line control (Chrome types a space), CR
+  in a textarea (Chrome types LF) and white space around an email address.
+  A scripted `change` fails when the control's value setter would rewrite
+  the value (a line break in a text control, white space in an email or URL
+  control, a malformed number, date, month or time, a color that is not
+  lowercase `#rrggbb`, CR in a textarea): Chrome compares what the control
+  holds, and the native runner refuses the values it knows the setter
+  changes and those it does not model (a range, week or local date and
+  time control). A form submits after the oracle's constraint validation,
+  which models `required`, an email control's address and a number
+  control's integer value within `min` and `max`, and bars disabled,
+  read-only, hidden and button controls as HTML does; natively, a submit
+  of a form whose controls carry a constraint the oracle does not model
+  (`pattern`, `minlength`, `step`, a URL value, a required radio group,
+  and the rest `SpecRunner.unmodelled_constraint` names) fails the step
+  rather than guess whether Chrome submits;
 - an element behaves as its exact namespace and local name say, as the
   browser's element interfaces do (#225, #246): HTML's `hidden`, `popover`
   and `contenteditable` act only on HTML elements, so an SVG `<g hidden>` is

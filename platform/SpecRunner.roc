@@ -1622,6 +1622,310 @@ SpecRunner := [].{
 	disabled : Dom.DNode -> Bool
 	disabled = |n| SpecRunner.disableable(n) and Dom.has_attr(n, "disabled")
 
+	## Whether node `i` is disabled as Chrome's `:disabled` reads it, which
+	## decides whether it takes focus, a click or input: its own `disabled`, an
+	## option's disabled `optgroup` parent, or for a `button`, `input`,
+	## `select`, `textarea` or `fieldset`, an ancestor `fieldset` with
+	## `disabled` unless the node lies inside that field set's first `legend`
+	## child (HTML, "disabled form controls"). `expect-disabled` and the
+	## `disabled` attribute reading stay the node's own state, as the
+	## `disabled` property is.
+	actually_disabled : Dom.Model, U64 -> Bool
+	actually_disabled = |dom, i| {
+		n = Dom.node(dom, i)
+		if !SpecRunner.disableable(n) {
+			return Bool.False
+		}
+		if Dom.has_attr(n, "disabled") {
+			return Bool.True
+		}
+		if Dom.html_tag(n, "option") or Dom.html_tag(n, "optgroup") {
+			return Dom.html_tag(n, "option") and n.parent != 0 and Dom.html_tag(Dom.node(dom, n.parent - 1), "optgroup") and Dom.has_attr(Dom.node(dom, n.parent - 1), "disabled")
+		}
+		var $child = i
+		var $at = n.parent
+		while $at != 0 {
+			m = Dom.node(dom, $at - 1)
+			if Dom.html_tag(m, "fieldset") and Dom.has_attr(m, "disabled") {
+				legend = m.kids.find_first(|k| Dom.html_tag(Dom.node(dom, k), "legend"))
+				if legend != Ok($child) {
+					return Bool.True
+				}
+			}
+			$child = $at - 1
+			$at = m.parent
+		}
+		Bool.False
+	}
+
+	## The input types `readonly` applies to, which bars them from constraint
+	## validation; a textarea too.
+	readonly_types : List(Str)
+	readonly_types = ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"]
+
+	## The input types `required` applies to; a textarea and a select too.
+	required_types : List(Str)
+	required_types = ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number", "checkbox", "radio", "file"]
+
+	## A control's `maxlength` as Chrome reads it: HTML's rules for parsing
+	## a non-negative integer (leading ASCII white space, an optional `+`,
+	## digits, anything after them ignored), at most 2147483647; anything
+	## else sets no limit.
+	max_length : Dom.DNode -> Try(U64, [NoLimit])
+	max_length = |n| {
+		if !Dom.has_attr(n, "maxlength") {
+			return Err(NoLimit)
+		}
+		bytes = Dom.attr_of(n, "maxlength").to_utf8()
+		var $at = 0
+		while [' ', '\t', '\n', 12, '\r'].contains(bytes.get($at) ?? 0) {
+			$at = $at + 1
+		}
+		if bytes.get($at) == Ok('+') {
+			$at = $at + 1
+		}
+		var $value = 0.U64
+		var $digits = 0.U64
+		while (bytes.get($at) ?? 0) >= '0' and (bytes.get($at) ?? 0) <= '9' {
+			$value = $value * 10 + ((bytes.get($at) ?? '0') - '0').to_u64()
+			$digits = $digits + 1
+			$at = $at + 1
+			if $value > 2147483647 {
+				return Err(NoLimit)
+			}
+		}
+		if ($digits == 0) Err(NoLimit) else Ok($value)
+	}
+
+	## A text's length in UTF-16 code units, which is what `maxlength` counts:
+	## a character outside the Basic Multilingual Plane counts two.
+	utf16_len : Str -> U64
+	utf16_len = |text| text.to_utf8().fold(0, |count, b| if (b >= 0xF0) count + 2 else if (b >= 0x80 and b < 0xC0) count else count + 1)
+
+	## An email control's value as Chrome sanitizes it: line breaks dropped
+	## and ASCII white space trimmed, around each comma-separated address
+	## when it takes `multiple`.
+	email_sanitized : Dom.DNode, Str -> Str
+	email_sanitized = |n, v| {
+		kept = Str.from_utf8(v.to_utf8().drop_if(|b| b == '\n' or b == '\r')) ?? v
+		if Dom.has_attr(n, "multiple") {
+			Str.join_with(kept.split_on(",").map(SpecRunner.trim_ascii_space), ",")
+		} else {
+			SpecRunner.trim_ascii_space(kept)
+		}
+	}
+
+	## Text with ASCII white space (TAB, LF, FF, CR, space) trimmed from both ends.
+	trim_ascii_space : Str -> Str
+	trim_ascii_space = |text| {
+		bytes = text.to_utf8()
+		space = |b| [' ', '\t', '\n', 12, '\r'].contains(b)
+		first = bytes.find_first_index(|b| !space(b)) ?? bytes.len()
+		end = (bytes.find_last_index(|b| !space(b)) ?? 0) + 1
+		if first >= end "" else Str.from_utf8(bytes.sublist({ start: first, len: end - first })) ?? text
+	}
+
+	## Why a scripted `change` cannot set control `n` to `v` as the step
+	## says: Chrome's value setter would sanitize it into another value, or
+	## the oracle does not model how it would. A text control drops line
+	## breaks, an email or URL control trims white space, a number, date,
+	## month or time control drops a value of the wrong shape, a color
+	## control rewrites one that is not a lowercase `#rrggbb`, a textarea
+	## turns CR into LF, and a file input can only be cleared. A range, week
+	## or local date and time control's sanitization is not modelled.
+	change_refusal : Dom.DNode, Str -> Try({}, Str)
+	change_refusal = |n, v| {
+		line_break = v.to_utf8().any(|b| b == '\n' or b == '\r')
+		if Dom.html_tag(n, "textarea") {
+			return if (v.contains("\r")) Err("a textarea turns a carriage return into a line feed") else Ok({})
+		}
+		if !Dom.html_tag(n, "input") {
+			return Ok({})
+		}
+		kind = Dom.input_type(n)
+		if ["text", "search", "tel", "password"].contains(kind) and line_break {
+			Err("a single-line control drops a line break")
+		} else if kind == "email" and SpecRunner.email_sanitized(n, v) != v {
+			Err("an email control drops line breaks and trims white space")
+		} else if kind == "url" and (line_break or SpecRunner.trim_ascii_space(v) != v) {
+			Err("a URL control drops line breaks and trims white space")
+		} else if kind == "number" and v != "" and !SpecRunner.is_float(v) {
+			Err("a number control drops a value that is not a number")
+		} else if kind == "color" and !SpecRunner.is_simple_color(v) {
+			Err("a color control rewrites a value that is not a lowercase #rrggbb color")
+		} else if kind == "date" and v != "" and !SpecRunner.is_date(v) {
+			Err("a date control drops a value that is not a valid date")
+		} else if kind == "month" and v != "" and !SpecRunner.is_month(v) {
+			Err("a month control drops a value that is not a valid month")
+		} else if kind == "time" and v != "" and !SpecRunner.is_time(v) {
+			Err("a time control drops a value that is not a valid time")
+		} else if kind == "range" or ((kind == "week" or kind == "datetime-local") and v != "") {
+			Err("the native runner does not model how a ${kind} control sanitizes its value")
+		} else if kind == "file" and v != "" {
+			Err("a file input's value can only be cleared")
+		} else {
+			Ok({})
+		}
+	}
+
+	## A valid lowercase simple color, `#` and six lowercase hex digits,
+	## which a color control keeps as written.
+	is_simple_color : Str -> Bool
+	is_simple_color = |v|
+		match v.to_utf8() {
+			['#', .. as hex] => hex.len() == 6 and hex.all(|c| (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'))
+			_ => Bool.False
+		}
+
+	## Exactly `count` ASCII digits as a number, or nothing.
+	digits_value : List(U8), U64 -> Try(U64, [NotDigits])
+	digits_value = |bytes, count|
+		if bytes.len() != count or !bytes.all(|c| c >= '0' and c <= '9') {
+			Err(NotDigits)
+		} else {
+			Ok(bytes.fold(0, |acc, c| acc * 10 + (c - '0').to_u64()))
+		}
+
+	## A valid month string with a four-digit year from 0001: `YYYY-MM`.
+	## (Chrome accepts longer years too; a spec does not need them.)
+	is_month : Str -> Bool
+	is_month = |v|
+		match v.split_on("-") {
+			[y, m] =>
+				match (SpecRunner.digits_value(y.to_utf8(), 4), SpecRunner.digits_value(m.to_utf8(), 2)) {
+					(Ok(year), Ok(month)) => year >= 1 and month >= 1 and month <= 12
+					_ => Bool.False
+				}
+			_ => Bool.False
+		}
+
+	## A valid date string with a four-digit year from 0001: `YYYY-MM-DD`
+	## naming a day of that month, February 29 only in a leap year.
+	is_date : Str -> Bool
+	is_date = |v|
+		match v.split_on("-") {
+			[y, m, d] =>
+				match (SpecRunner.digits_value(y.to_utf8(), 4), SpecRunner.digits_value(m.to_utf8(), 2), SpecRunner.digits_value(d.to_utf8(), 2)) {
+					(Ok(year), Ok(month), Ok(day)) => {
+						leap = (year % 4 == 0 and year % 100 != 0) or year % 400 == 0
+						days = if (month == 2) (if (leap) 29 else 28) else if ([4, 6, 9, 11].contains(month)) 30 else 31
+						year >= 1 and month >= 1 and month <= 12 and day >= 1 and day <= days
+					}
+					_ => Bool.False
+				}
+			_ => Bool.False
+		}
+
+	## A valid time string: `HH:MM`, optionally `:SS` and a fraction of one
+	## to three digits.
+	is_time : Str -> Bool
+	is_time = |v| {
+		two = |p| SpecRunner.digits_value(p.to_utf8(), 2)
+		(clock, fraction_ok) = match v.split_on(".") {
+			[c] => (c, Bool.True)
+			[c, f] => (c, f.to_utf8().len() >= 1 and f.to_utf8().len() <= 3 and f.to_utf8().all(|b| b >= '0' and b <= '9'))
+			_ => (v, Bool.False)
+		}
+		match clock.split_on(":").map(two) {
+			[Ok(h), Ok(m)] => !v.contains(".") and h <= 23 and m <= 59
+			[Ok(h), Ok(m), Ok(sec)] => fraction_ok and h <= 23 and m <= 59 and sec <= 59
+			_ => Bool.False
+		}
+	}
+
+	## Why `fill` cannot give control `n` exactly `v`, as Chrome's typing
+	## would not: it is read-only, `v` is longer than its `maxlength`, a
+	## single-line control turns a line break into a space, a textarea turns
+	## CR into LF, and an email control trims white space. The browser
+	## runner refuses the same inputs with the same messages.
+	fill_refusal : Dom.DNode, Str -> Try({}, Str)
+	fill_refusal = |n, v| {
+		textarea = Dom.html_tag(n, "textarea")
+		if Dom.has_attr(n, "readonly") {
+			return Err("is read-only")
+		}
+		match SpecRunner.max_length(n) {
+			Ok(limit) if SpecRunner.utf16_len(v) > limit => return Err("cannot hold ${JsonOut.quote(v)}: it is longer than its maxlength ${limit.to_str()}")
+			_ => {}
+		}
+		if !textarea and v.to_utf8().any(|b| b == '\n' or b == '\r') {
+			return Err("cannot hold ${JsonOut.quote(v)}: a single-line control turns a line break into a space")
+		}
+		if textarea and v.contains("\r") {
+			return Err("cannot hold ${JsonOut.quote(v)}: a textarea turns a carriage return into a line feed")
+		}
+		if Dom.input_type(n) == "email" and SpecRunner.email_sanitized(n, v) != v {
+			return Err("cannot hold ${JsonOut.quote(v)}: an email control trims white space")
+		}
+		Ok({})
+	}
+
+	## Why the oracle cannot decide whether a form would submit: a control
+	## that takes part in its validation carries a constraint the oracle
+	## does not model. It models `required` (for the controls it applies to,
+	## except a radio button, whose group decides), an email control's single
+	## address and a number control's integer value within `min` and `max`.
+	## `pattern`, `minlength`, `step`, `min` or `max` on another control, a
+	## URL or a `multiple` email control holding a value, a non-integer number,
+	## a `required` radio button, and a time, week or local date and time
+	## control holding a value are not modelled.
+	unmodelled_constraint : Dom.Model, U64 -> Try({}, Str)
+	unmodelled_constraint = |dom, form| {
+		bad = SpecRunner.find_index(
+			dom,
+			form,
+			|k| {
+				n = Dom.node(dom, k)
+				kind = Dom.input_type(n)
+				v = Dom.live_value(n, "value")
+				input = Dom.html_tag(n, "input")
+				(SpecRunner.validated_control(n) and !SpecRunner.actually_disabled(dom, k) and (
+					Dom.has_attr(n, "pattern")
+						or Dom.has_attr(n, "minlength")
+						or (input and Dom.has_attr(n, "step"))
+						or (input and kind != "number" and (Dom.has_attr(n, "min") or Dom.has_attr(n, "max")))
+						or (input and kind == "url" and v != "")
+						or (input and kind == "email" and Dom.has_attr(n, "multiple") and v != "")
+						or (input and kind == "number" and (!SpecRunner.is_integer(v) or (Dom.has_attr(n, "min") and !SpecRunner.is_integer(Dom.attr_of(n, "min"))) or (Dom.has_attr(n, "value") and !SpecRunner.is_integer(Dom.attr_of(n, "value")))))
+						or (input and kind == "radio" and Dom.has_attr(n, "required"))
+						or (input and ["time", "week", "datetime-local"].contains(kind) and v != "")
+				))
+			},
+		)
+		match bad {
+			Ok(i) => {
+				n = Dom.node(dom, i)
+				Err("unmodelled: the form's <${n.tag}${if (Dom.html_tag(n, "input")) " type=${Dom.input_type(n)}" else ""}> carries a constraint the native runner does not model (pattern, minlength, step, min or max outside a number, a URL, multiple addresses, a non-integer number, a required radio button, or a time, week or local date and time value), so it cannot say whether the form submits")
+			}
+			Err(_) => Ok({})
+		}
+	}
+
+	## "" or an optionally negative run of digits: a number control value
+	## that a default step of 1 from a base of 0 keeps valid.
+	is_integer : Str -> Bool
+	is_integer = |v| {
+		bytes = v.to_utf8()
+		body = if (bytes.first() == Ok('-')) bytes.drop_first(1) else bytes
+		v == "" or (!body.is_empty() and body.all(|c| c >= '0' and c <= '9'))
+	}
+
+	## Whether node `n`, taken alone, takes part in constraint validation: an
+	## HTML input, textarea or select that is not a button or hidden input
+	## and not read-only. Whether it is disabled needs its ancestors
+	## (`actually_disabled`).
+	validated_control : Dom.DNode -> Bool
+	validated_control = |n| {
+		kind = Dom.input_type(n)
+		if Dom.html_tag(n, "input") {
+			!["hidden", "button", "submit", "reset", "image"].contains(kind) and !(Dom.has_attr(n, "readonly") and SpecRunner.readonly_types.contains(kind))
+		} else if Dom.html_tag(n, "textarea") {
+			!Dom.has_attr(n, "readonly")
+		} else {
+			Dom.html_tag(n, "select")
+		}
+	}
+
 	## Whether Chrome focuses node `n` when it is clicked or `.focus()`ed.
 	focusable : Dom.DNode -> Bool
 	focusable = |n| {
@@ -1641,7 +1945,7 @@ SpecRunner := [].{
 	focusable_in : Dom.Model, U64 -> Bool
 	focusable_in = |dom, i| {
 		target = Dom.node(dom, i)
-		if !SpecRunner.focusable(target) {
+		if !SpecRunner.focusable(target) or SpecRunner.actually_disabled(dom, i) {
 			return Bool.False
 		}
 		if !SpecRunner.intrinsic_focusable(target) and target.parent != 0 and Dom.content_editable(dom, target.parent - 1) {
@@ -2248,7 +2552,7 @@ SpecRunner := [].{
 			Never => False
 			Always => True
 			WhenClicked => match op {
-				Click(loc) => SpecRunner.find(s.dom, loc).map_ok(|i| !SpecRunner.disabled(Dom.node(s.dom, i))) ?? False
+				Click(loc) => SpecRunner.find(s.dom, loc).map_ok(|i| !SpecRunner.actually_disabled(s.dom, i)) ?? False
 				Check(loc) => SpecRunner.find(s.dom, loc).map_ok(|i| Dom.live_value(Dom.node(s.dom, i), "checked") != "true") ?? False
 				Uncheck(loc) => SpecRunner.find(s.dom, loc).map_ok(|i| Dom.live_value(Dom.node(s.dom, i), "checked") == "true") ?? False
 				_ => crash "activation table: clicked policy requires check or uncheck"
@@ -2425,11 +2729,11 @@ SpecRunner := [].{
 			Click(loc) => {
 				i = SpecRunner.need(dom, loc)?
 				# A browser delivers no click to a disabled control.
-				if (SpecRunner.disabled(Dom.node(dom, i))) Ok(s) else SpecRunner.mouse_click(program, s, i)
+				if (SpecRunner.actually_disabled(dom, i)) Ok(s) else SpecRunner.mouse_click(program, s, i)
 			}
 			RealClick(loc) => {
 				i = SpecRunner.need(dom, loc)?
-				if (SpecRunner.disabled(Dom.node(dom, i))) Err("${Scm.show_loc(loc)} is disabled") else SpecRunner.mouse_click(program, s, i)
+				if (SpecRunner.actually_disabled(dom, i)) Err("${Scm.show_loc(loc)} is disabled") else SpecRunner.mouse_click(program, s, i)
 			}
 			Fill(loc, v) => SpecRunner.fill(program, s, loc, v)
 			ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, SpecRunner.file_count(dom, op) ?? 0))
@@ -2467,6 +2771,7 @@ SpecRunner := [].{
 					}
 					Ok(SpecRunner.fire_if(program, SpecRunner.check_on(s, i), i, "change", "true"))
 				} else {
+					SpecRunner.change_refusal(n, v) ? |why| "${Scm.show_loc(loc)} cannot take ${JsonOut.quote(v)}: ${why}"
 					Ok(SpecRunner.fire_if(program, SpecRunner.set_attr(s, i, "value", v), i, "change", v))
 				}
 			}
@@ -2475,7 +2780,7 @@ SpecRunner := [].{
 				if !Dom.html_tag(Dom.node(dom, i), "form") {
 					return Err("${Scm.show_loc(loc)} is not a <form>")
 				}
-				Ok(SpecRunner.submit_form(program, s, i))
+				SpecRunner.submit_form(program, s, i)
 			}
 			ExpectFocused(loc) => check(s.focused == SpecRunner.need(dom, loc)? + 1, "${Scm.show_loc(loc)} does not hold focus")
 			ExpectNoFocus => check(s.focused == 0, "an element still holds focus")
@@ -2843,12 +3148,13 @@ SpecRunner := [].{
 		if !(Dom.html_tag(n, "textarea") or (Dom.html_tag(n, "input") and SpecRunner.fillable.contains(kind))) {
 			return Err("${Scm.show_loc(loc)} cannot be filled")
 		}
-		if SpecRunner.disabled(n) {
+		if SpecRunner.actually_disabled(s.dom, i) {
 			return Err("${Scm.show_loc(loc)} is disabled")
 		}
 		if kind == "number" and v != "" and !SpecRunner.is_float(v) {
 			return Err("${Scm.show_loc(loc)} cannot hold ${JsonOut.quote(v)}")
 		}
+		SpecRunner.fill_refusal(n, v) ? |why| "${Scm.show_loc(loc)} ${why}"
 		s1 = SpecRunner.move_focus(program, s, i + 1)
 		if v == "" and Dom.live_value(Dom.node(s1.dom, i), "value") == "" {
 			return Ok(s1)
@@ -2956,7 +3262,7 @@ SpecRunner := [].{
 	## performs its unprevented control, form or navigation default.
 	key_activate : Program(state), S(state), U64 -> Try(S(state), Str)
 	key_activate = |program, s, i| {
-		if !SpecRunner.attached(s.dom, i) or SpecRunner.disabled(Dom.node(s.dom, i)) {
+		if !SpecRunner.attached(s.dom, i) or SpecRunner.actually_disabled(s.dom, i) {
 			return Ok(s)
 		}
 		prevented = SpecRunner.prevents(s.dom, i, "click")
@@ -3019,7 +3325,7 @@ SpecRunner := [].{
 							button = Dom.find($s.dom, form, |m| (Dom.html_tag(m, "button") and Dom.input_type(m) == "submit") or (Dom.html_tag(m, "input") and Dom.input_type(m) == "submit"))
 							$s = match button {
 								Ok(i) => SpecRunner.key_activate(program, $s, i)?
-								Err(_) => if (SpecRunner.implicit_inputs($s.dom, form) <= 1) SpecRunner.submit_form(program, $s, form) else $s
+								Err(_) => if (SpecRunner.implicit_inputs($s.dom, form) <= 1) SpecRunner.submit_form(program, $s, form)? else $s
 							}
 						}
 						Err(_) => {}
@@ -3089,7 +3395,7 @@ SpecRunner := [].{
 		if (Dom.live_value(n, "checked") == "true") == want {
 			return Ok(s)
 		}
-		s1 = if (SpecRunner.disabled(n)) s else SpecRunner.mouse_click(program, s, i)?
+		s1 = if (SpecRunner.actually_disabled(s.dom, i)) s else SpecRunner.mouse_click(program, s, i)?
 		now = SpecRunner.find(s1.dom, loc).map_ok(|k| Dom.live_value(Dom.node(s1.dom, k), "checked") == "true") ?? !want
 		if (now == want) Ok(s1) else Err("clicking ${Scm.show_loc(loc)} did not ${if (want) "check" else "uncheck"} it")
 	}
@@ -3443,7 +3749,7 @@ SpecRunner := [].{
 			}
 		} else if (Dom.html_tag(n, "button") and kind == "submit") or (Dom.html_tag(n, "input") and kind == "submit") {
 			match SpecRunner.ancestor(s.dom, i, |m| Dom.html_tag(m, "form")) {
-				Ok(form) => Ok(SpecRunner.submit_form(program, s, form))
+				Ok(form) => SpecRunner.submit_form(program, s, form)
 				Err(_) => Ok(s)
 			}
 		} else {
@@ -3462,6 +3768,24 @@ SpecRunner := [].{
 		}
 	}
 
+	## The first node index, depth-first from node `i` (itself included),
+	## that satisfies `pred`, for a test that needs the node's ancestors.
+	find_index : Dom.Model, U64, (U64 -> Bool) -> Try(U64, [NotFound])
+	find_index = |dom, i, pred| {
+		if pred(i) {
+			return Ok(i)
+		}
+		for k in Dom.node(dom, i).kids {
+			match SpecRunner.find_index(dom, k, pred) {
+				Ok(found) => {
+					return Ok(found)
+				}
+				Err(_) => {}
+			}
+		}
+		Err(NotFound)
+	}
+
 	## The nearest node at or above node `i` that satisfies `pred`.
 	ancestor : Dom.Model, U64, (Dom.DNode -> Bool) -> Try(U64, [NotFound])
 	ancestor = |dom, i, pred| {
@@ -3477,22 +3801,27 @@ SpecRunner := [].{
 
 	## Submit form `i` as `requestSubmit` does: a form whose controls are not
 	## all valid fires no `submit`.
-	submit_form : Program(state), S(state), U64 -> S(state)
-	submit_form = |program, s, i| if (SpecRunner.form_valid(s.dom, i)) SpecRunner.fire_if(program, s, i, "submit", "") else s
+	submit_form : Program(state), S(state), U64 -> Try(S(state), Str)
+	submit_form = |program, s, i| {
+		SpecRunner.unmodelled_constraint(s.dom, i)?
+		Ok(if (SpecRunner.form_valid(s.dom, i)) SpecRunner.fire_if(program, s, i, "submit", "") else s)
+	}
 
 	## Constraint validation over the enabled controls inside form `i`: a
 	## `required` control must have a value (a checkbox must be checked), an
 	## email field a valid address, and a number field a value within its
 	## `min` and `max`.
 	form_valid : Dom.Model, U64 -> Bool
-	form_valid = |dom, i| Dom.find(dom, i, |n| SpecRunner.invalid(n)).is_err()
+	form_valid = |dom, i| SpecRunner.find_index(dom, i, |k| SpecRunner.invalid(dom, k)).is_err()
 
 	## Apply the explicitly modeled required, email and numeric-range rules
-	## to enabled controls. Other HTML constraints are outside this helper’s model.
-	invalid : Dom.DNode -> Bool
-	invalid = |n| {
-		control = Dom.html_tag(n, "input") or Dom.html_tag(n, "textarea") or Dom.html_tag(n, "select")
-		if !control or SpecRunner.disabled(n) {
+	## to the controls that take part in validation: not disabled (through a
+	## field set too), not read-only, not a button or hidden input. Other HTML
+	## constraints are refused before this (`unmodelled_constraint`).
+	invalid : Dom.Model, U64 -> Bool
+	invalid = |dom, i| {
+		n = Dom.node(dom, i)
+		if !SpecRunner.validated_control(n) or SpecRunner.actually_disabled(dom, i) {
 			Bool.False
 		} else {
 			kind = Dom.input_type(n)
@@ -3503,7 +3832,8 @@ SpecRunner := [].{
 					(Ok(limit), Ok(x)) => out_of_range(x, limit)
 					_ => Bool.False
 				}
-			(SpecRunner.flag_on(n, "required") and missing)
+			applies = !Dom.html_tag(n, "input") or SpecRunner.required_types.contains(kind)
+			(applies and SpecRunner.flag_on(n, "required") and missing)
 				or (kind == "email" and v != "" and !SpecRunner.is_email(v))
 				or (kind == "number" and v != "" and (bound("min", |x, m| x < m) or bound("max", |x, m| x > m)))
 		}
@@ -3735,7 +4065,7 @@ SpecRunner := [].{
 			if !Dom.is_file_input(n) {
 				return Err("${Scm.show_loc(loc)} is not a file input")
 			}
-			if SpecRunner.disabled(n) {
+			if SpecRunner.actually_disabled(dom, i) {
 				return Err("${Scm.show_loc(loc)} is disabled")
 			}
 			if names.len() > 1 and !Dom.has_attr(n, "multiple") {
@@ -4135,7 +4465,7 @@ SpecRunner := [].{
 			i = $stack.last() ?? 0
 			$stack = $stack.drop_last(1)
 			n = Dom.node(dom, i)
-			if !SpecRunner.disabled(n) {
+			if !SpecRunner.actually_disabled(dom, i) {
 				for listener in n.hs {
 					if listener.kind != 3 {
 						$out = $out.append((i, listener.event))
@@ -4202,7 +4532,7 @@ SpecRunner := [].{
 			n = Dom.node(dom, i)
 			has_zone = !Dom.live_value(n, "pointer_zone").is_empty()
 			is_grip = n.hs.any(|h| h.kind == 3 and h.event == "pointerdown")
-			if has_zone and !SpecRunner.disabled(n) and (what == Zones or is_grip) {
+			if has_zone and !SpecRunner.actually_disabled(dom, i) and (what == Zones or is_grip) {
 				id = Dom.attr_of(n, "data-testid")
 				label = Dom.attr_of(n, "aria-label")
 				if !id.is_empty() {
@@ -5366,6 +5696,118 @@ expect {
 		row_restored: SpecRunner.attr_value(row_restored, row, "aria-label")?,
 	}
 	actual == { plain_empty: "", ordinary_checked: "", plain_absent: Err(Absent), static_empty: "", row_empty: "", row_absent: Err(Absent), row_restored: "" }
+}
+
+## A scripted `change` the browser's value setter would rewrite (as measured
+## in Chrome 157) is refused natively; a value it keeps is not.
+expect {
+	input = |kind, attrs| { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)].concat(attrs)) }
+	refused = |n, v| SpecRunner.change_refusal(n, v).is_err()
+	actual = [
+		refused(input("text", []), "a\nb"),
+		refused(input("text", []), "a\tb"),
+		refused(input("email", []), " a@b "),
+		refused(input("email", [("multiple", "")]), "a@b, c@d"),
+		refused(input("email", [("multiple", "")]), "a@b,c@d"),
+		refused(input("url", []), " http://x "),
+		refused(input("number", []), "2x"),
+		refused(input("number", []), "1e3"),
+		refused(input("color", []), "#ABCDEF"),
+		refused(input("color", []), "#abcdef"),
+		refused(input("range", []), "50"),
+		refused(input("date", []), "2026-02-30"),
+		refused(input("date", []), "2024-02-29"),
+		refused(input("date", []), "2026-11-11 12:01"),
+		refused(input("time", []), "10:00:00.5"),
+		refused(input("time", []), "25:00"),
+		refused(input("month", []), "2026-13"),
+		refused(input("week", []), "2026-W53"),
+		refused(input("hidden", []), " a\nb "),
+		refused({ ..Dom.empty_node, tag: "textarea" }, "a\r\nb"),
+		refused({ ..Dom.empty_node, tag: "textarea" }, "a\nb"),
+	]
+	actual == [True, False, True, True, False, True, True, False, True, False, True, True, False, True, False, True, True, True, False, True, False]
+}
+
+## `fill` refuses what Chrome's typing would not leave in the control as
+## given: a read-only control, text over `maxlength` (counted in UTF-16, the
+## limit read by HTML's integer rules), a line break in a single-line
+## control, CR in a textarea, white space around an email address.
+expect {
+	input = |kind, attrs| { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)].concat(attrs)) }
+	refused = |n, v| SpecRunner.fill_refusal(n, v).is_err()
+	actual = [
+		refused(input("text", [("readonly", "")]), "abc"),
+		refused(input("text", [("maxlength", "3")]), "abcd"),
+		refused(input("text", [("maxlength", "3")]), "abc"),
+		refused(input("text", [("maxlength", "3")]), "a😀b"),
+		refused(input("text", [("maxlength", " 2abc")]), "abc"),
+		refused(input("text", [("maxlength", "-1")]), "abc"),
+		refused(input("text", []), "a\nb"),
+		refused(input("text", []), " lead"),
+		refused({ ..Dom.empty_node, tag: "textarea" }, "a\nb"),
+		refused({ ..Dom.empty_node, tag: "textarea" }, "a\rb"),
+		refused(input("email", []), " a@b "),
+		refused(input("url", []), " http://x "),
+	]
+	actual == [True, True, False, True, True, False, True, False, False, True, True, False]
+}
+
+## A control in a disabled field set is disabled, unless it lies in that
+## field set's first legend; an option of a disabled group is disabled too.
+## The field set's own `disabled` property, which `expect-disabled` reads,
+## stays the control's own.
+expect {
+	add = |dom, parent, tag, attrs| {
+		(d, i) = Dom.add_node(dom, { ..Dom.empty_node, tag, attrs: Dom.attributes(attrs) })
+		(Dom.insert(d, parent, i, Err(End)), i)
+	}
+	(d1, fieldset) = add(Dom.new({}), Dom.new({}).root, "fieldset", [("disabled", "")])
+	(d2, legend) = add(d1, fieldset, "legend", [])
+	(d3, in_legend) = add(d2, legend, "input", [])
+	(d4, second_legend) = add(d3, fieldset, "legend", [])
+	(d5, in_second) = add(d4, second_legend, "input", [])
+	(d6, plain) = add(d5, fieldset, "input", [])
+	(d7, group) = add(d6, d6.root, "optgroup", [("disabled", "")])
+	(d8, option) = add(d7, group, "option", [])
+	actual = [in_legend, in_second, plain, option].map(|i| SpecRunner.actually_disabled(d8, i))
+	actual == [False, True, True, True] and !SpecRunner.disabled(Dom.node(d8, plain))
+}
+
+## A form with a constraint the oracle does not model cannot be judged; a
+## read-only or disabled control with one takes no part, and a modelled form
+## is judged as before.
+expect {
+	add = |dom, parent, tag, attrs| {
+		(d, i) = Dom.add_node(dom, { ..Dom.empty_node, tag, attrs: Dom.attributes(attrs) })
+		(Dom.insert(d, parent, i, Err(End)), i)
+	}
+	form_with = |attrs| {
+		(d1, form) = add(Dom.new({}), Dom.new({}).root, "form", [])
+		(d2, _) = add(d1, form, "input", attrs)
+		(d2, form)
+	}
+	judged = |attrs| {
+		(dom, form) = form_with(attrs)
+		SpecRunner.unmodelled_constraint(dom, form).is_ok()
+	}
+	actual = [judged([("pattern", "a+")]), judged([("pattern", "a+"), ("readonly", "")]), judged([("pattern", "a+"), ("disabled", "")]), judged([("type", "number"), ("min", "1"), ("max", "9")]), judged([("type", "number"), ("step", "2")]), judged([("type", "date"), ("min", "2026-01-01")]), judged([("required", ""), ("type", "radio")]), judged([("required", "")])]
+	actual == [False, True, True, True, False, False, False, True]
+}
+
+## `required` applies only where HTML says: a required hidden input never
+## blocks submission, a required read-only text input is barred.
+expect {
+	add = |dom, parent, tag, attrs| {
+		(d, i) = Dom.add_node(dom, { ..Dom.empty_node, tag, attrs: Dom.attributes(attrs) })
+		(Dom.insert(d, parent, i, Err(End)), i)
+	}
+	valid = |attrs| {
+		(d1, form) = add(Dom.new({}), Dom.new({}).root, "form", [])
+		(d2, _) = add(d1, form, "input", attrs)
+		SpecRunner.form_valid(d2, form)
+	}
+	[valid([("required", ""), ("type", "hidden")]), valid([("required", ""), ("readonly", "")]), valid([("required", "")])] == [True, True, False]
 }
 
 ## Locators and focusability use presence rather than nonempty text. Empty
