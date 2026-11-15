@@ -310,6 +310,8 @@ Two compiler defects touch tables today, each with its upstream issue:
   list in a store cell is in place in both, while a local state's value is
   copied on every write in every build
   ([roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012)).
+  Until that is fixed, keep a large or often-edited value, such as a long
+  list or a document, in a store cell rather than in local state.
   An allocation guard (`tests/runtime/write-scaling.mjs`) runs on a
   development and a `--opt=size` build: it fails if a write that is in
   place starts to copy, and prints each that copies, so the fix shows when

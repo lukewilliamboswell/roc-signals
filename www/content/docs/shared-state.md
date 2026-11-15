@@ -88,6 +88,13 @@ A `set` of a value built from a reading of the same cell is allowed, but for
 a large value it copies: the reading is still held while the new value is
 built. Use `update` for anything large.
 
+A large or often-edited value (a long list, a document being edited)
+belongs in a store cell rather than in local state, even when only one
+piece of the view reads it. An `update` of a list in a cell is in place in
+every build, while a local state's value is copied on every write, because
+the site's closure holds it
+([roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012)).
+
 `state.update(f)` is a handler, while `cell.update(f)` is a write. A decision
 or `Engine.does([..])` turns a list of cell writes into a handler. Both apply
 a function to the current state; their return types say who applies it.
