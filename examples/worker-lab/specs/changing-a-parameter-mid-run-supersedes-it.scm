@@ -3,6 +3,7 @@
     (fill (label "Jobs") "20")
     (fill (label "Weight") "1")
     (click (role button :name "Start"))
+    (expect-visible (test-id "job-4"))
     (run-effect 1)
     (run-effect 2)
     (run-effect 3)

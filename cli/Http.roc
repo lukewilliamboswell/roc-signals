@@ -43,13 +43,13 @@ Http :: [].{
 
 	## A complete response that closes the connection.
 	response : { status : [Found, Missing, NotAllowed], content_type : Str, body : List(U8) } -> List(U8)
-	response = |{ status, content_type, body }| {
+	response = |{ status, content_type: body_type, body }| {
 		line = match status {
 			Found => "200 OK"
 			Missing => "404 Not Found"
 			NotAllowed => "405 Method Not Allowed"
 		}
-		head = "HTTP/1.1 ${line}\r\ncontent-type: ${content_type}\r\ncontent-length: ${body.len().to_str()}\r\ncache-control: no-store\r\nconnection: close\r\n\r\n"
+		head = "HTTP/1.1 ${line}\r\ncontent-type: ${body_type}\r\ncontent-length: ${body.len().to_str()}\r\ncache-control: no-store\r\nconnection: close\r\n\r\n"
 		head.to_utf8().concat(body)
 	}
 

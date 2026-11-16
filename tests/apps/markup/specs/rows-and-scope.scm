@@ -1,0 +1,17 @@
+(test "literal row templates move intact and conditional literals dispose normally"
+  (steps
+    (expect-text (test-id "html-one") "one")
+    (expect-text (test-id "html-two") "two")
+    (expect-text (test-id "literal-region") "first")
+    (mark-metrics)
+    (click (role button :name "Swap rows"))
+    (expect-element (test-id "svg-one") svg "g")
+    (expect-element (test-id "foreign-two") html "div")
+    (expect-text (test-id "html-one") "one")
+    (expect-text (test-id "html-two") "two")
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    (click (role button :name "Toggle region"))
+    (expect-absent (test-id "literal-region"))
+    (click (role button :name "Toggle region"))
+    (expect-text (test-id "literal-region") "first")))

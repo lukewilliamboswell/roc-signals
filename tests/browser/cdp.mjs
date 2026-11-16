@@ -12,7 +12,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export async function launch({ executablePath, timeoutMs = 20000 }) {
+// `args` adds command-line switches, such as `--js-flags=...` to pin the
+// engine's Wasm tiers for a test of stack depth.
+export async function launch({ executablePath, timeoutMs = 20000, args = [] }) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-chrome-"));
   const child = spawn(
     executablePath,
@@ -25,6 +27,7 @@ export async function launch({ executablePath, timeoutMs = 20000 }) {
       "--disable-extensions",
       "--remote-debugging-port=0",
       `--user-data-dir=${profile}`,
+      ...args,
       "about:blank",
     ],
     { stdio: ["ignore", "ignore", "pipe"], detached: true },
@@ -417,6 +420,25 @@ class Page {
     await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
     await this.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
     await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+  }
+
+  // The parser supplies the US key table, so replay and native input share
+  // physical codes and the requirement to spell Shift explicitly.
+  async specKey(chord, keyTable, phase) {
+    if (phase !== "down" && phase !== "up") throw new Error(`unknown spec key phase ${phase}`);
+    const definition = keyTable.find((entry) => entry.key === chord.key && entry.code === chord.code);
+    if (!definition) throw new Error(`press has no parser key definition for ${JSON.stringify(chord.key)}`);
+    const modifiers = (chord.alt ? 1 : 0) | (chord.ctrl ? 2 : 0) | (chord.meta ? 4 : 0) | (chord.shift ? 8 : 0);
+    const text = !chord.ctrl && !chord.meta && (chord.key.length === 1 ? chord.key : chord.key === "Enter" ? "\r" : undefined);
+    if (!Number.isInteger(definition.vk) || definition.vk < 0 || definition.vk > 255) throw new Error("press parser key definition has no valid virtual key code");
+    const fields = { key: chord.key, code: chord.code, modifiers, windowsVirtualKeyCode: definition.vk };
+    if (phase === "down") await this.send("Input.dispatchKeyEvent", { ...fields, type: text ? "keyDown" : "rawKeyDown", ...(text ? { text, unmodifiedText: text } : {}) });
+    else await this.send("Input.dispatchKeyEvent", { ...fields, type: "keyUp" });
+  }
+
+  async pressSpec(chord, keyTable) {
+    await this.specKey(chord, keyTable, "down");
+    await this.specKey(chord, keyTable, "up");
   }
 
   // `key` and `type` for the spec replay: one key press, and typed text.

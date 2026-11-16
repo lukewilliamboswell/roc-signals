@@ -17,7 +17,7 @@ ArticlePage := [].{
 	## What the answer to a posted comment writes, decided once from the
 	## form as it is when the answer arrives: the form records how it
 	## ended, and an accepted comment asks for the list again.
-	comment_answered : CommentForm, Fetch.Submit, Engine.Result -> List(Engine.Write(_))
+	comment_answered : CommentForm, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure) -> List(Engine.Write(_))
 	comment_answered = |form, sent, res| {
 		art = AppStore.cells.article.cells
 		answer = form.answered(sent, res)
@@ -28,7 +28,7 @@ ArticlePage := [].{
 	## What the answer to a deletion of the article writes, decided once
 	## from the story as it is when the answer arrives: the story records
 	## the answer, and a deleted article asks to go home.
-	delete_answered : Story, Fetch.Submit, Engine.Result -> List(Engine.Write(_))
+	delete_answered : Story, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure) -> List(Engine.Write(_))
 	delete_answered = |story, sent, res| {
 		answer = story.delete_answered(sent, res)
 		recorded = AppStore.cells.article.cells.story.set(answer.story)

@@ -1,0 +1,13 @@
+app [main] { pf: platform "<PLATFORM>" }
+
+import pf.Engine
+
+main : Engine.Program
+main = Engine.program(|| Engine.element("table", [], [Engine.element("tr", [], [])]))
+
+## These construction fixtures have no shared store.
+Store : {}
+
+## The default mount must reject the authored repair at compile time.
+mounted : U64
+mounted = Engine.mounts(main)

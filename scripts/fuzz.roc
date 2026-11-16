@@ -1,25 +1,30 @@
 #!/usr/bin/env roc-stable
 app [main!] {
-	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.27.0/9yjxqdGTP4xSpSEmDazwTmRsehfRZzA19pwEKkR6fj1g.tar.zst",
-	roc: "nightly-2026-11-10-f7d1f19",
+	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst",
+	roc: "nightly-2026-11-14-a87808d",
 }
 
 import cli.OsStr
 import cli.Path
 import src/Checks
+import src/FuzzPlan
 import src/Proc
+import src/SpecSuite
 import src/Targets
 
-## The `fuzz` task, a campaign: `fuzz.roc -- [--time SECONDS] [--timeout
-## SECONDS] [TARGET...]` (default: every roc-fuzz target, 600 seconds of
-## exploration each, and a 300-second timeout per input: an app target's
-## inputs are whole sessions, leak-checked, and take seconds each). Each target explores
-## (roc-fuzz `explore`; its declared examples are `check`'s and
-## `check-slow`'s job) from its corpus under `.fuzz-out/<target>/corpus`
-## (kept between campaigns, and in CI by the Actions cache) and writes its
-## roc-fuzz report, findings included, to `.fuzz-out/<target>/report`. A target that finds a failure
-## fails the task; reduce the finding to a `Fuzz.saved` example beside the
-## target so `check` replays it.
+## The `fuzz` task, a campaign, run on a contributor's machine and never
+## in CI: `fuzz.roc -- [--time SECONDS] [--timeout SECONDS] [TARGET...]`
+## (default: every roc-fuzz target, 600 seconds of exploration each, and a
+## 300-second timeout per input: an app target's inputs are whole sessions,
+## leak-checked, and take seconds each). Each target is built instrumented
+## and explores (roc-fuzz `explore`; its fixed examples are `check`'s and
+## `check-slow`'s job) from its corpus under `.fuzz-out/<target>/corpus`,
+## kept between campaigns on that machine, and writes its roc-fuzz report,
+## findings included, to `.fuzz-out/<target>/report`. A target that does
+## not build, or finds a failure, fails the task; reduce a finding to a
+## `Fuzz.saved` example beside the target so every replay keeps it fixed.
+## Targets not named are printed as `SKIP` lines, and the run ends with one
+## line accounting for every registered target (`FuzzPlan`).
 main! = |raw_args| {
 	args = raw_args.map(OsStr.display).drop_if(|a| a == "--")
 	var $time = "600"
@@ -47,29 +52,39 @@ main! = |raw_args| {
 		return Err(Exit(2))
 	}
 	o = Checks.options!({ filter: "*" })?
-	selected = if ($names.is_empty()) Targets.fuzz_targets else Targets.fuzz_targets.keep_if(|t| $names.contains(t.name))
-	chosen = Targets.runnable_fuzz!(o, selected)
-	if chosen.is_empty() {
-		return Ok({})
-	}
+	selection = if ($names.is_empty()) Every else Named($names)
 	Checks.prepare_platform!(o)?
-	Targets.build_fuzz_all!(o, chosen)?
-	var $failed = []
-	for t in chosen {
-		out = "${o.root}/.fuzz-out/${t.name}"
-		Path.create_all!(Path.utf8("${out}/corpus"))?
-		report = "${out}/report"
-		if Path.exists!(Path.utf8(report))? {
-			Path.delete_all!(Path.utf8(report))?
-		}
-		Proc.note!("== fuzz ${t.name} (${$time} s)")
-		code = Proc.status!({ program: Targets.exe_of(o, t), args: ["explore", "${out}/corpus", "--time=${$time}", "--timeout=${$timeout}", "--report-dir=${report}", "--print-final-stats"], cwd: out })?
-		if code != 0 {
-			$failed = $failed.append("fuzz ${t.name}: exited with ${code.to_str()}; see ${report}")
+	problems = FuzzPlan.run!(Targets.fuzz_targets, selection, |selected| campaign!(o, selected, { time: $time, timeout: $timeout }))?
+	Checks.finish!("fuzz", problems)
+}
+
+## Build the selected targets instrumented and explore each one that
+## built. One outcome per target: the failed builds', then the campaigns'.
+campaign! : SpecSuite.Options, List(Targets.Fuzz), { time : Str, timeout : Str } => Try(List(FuzzPlan.Outcome), _)
+campaign! = |o, selected, limits| {
+	built = Targets.build_fuzz_all!(o, selected)?
+	var $outcomes = built.keep_if(|b| !b.problems.is_empty())
+	for t in selected {
+		if built.any(|b| b.name == t.name and b.problems.is_empty()) {
+			found = Checks.hold!($outcomes.map(|outcome| outcome.problems).join(), explore!(o, t, limits))?
+			$outcomes = $outcomes.append({ name: t.name, problems: found })
 		}
 	}
-	for f in $failed {
-		Proc.warn!("FAIL ${f}")
+	Ok($outcomes)
+}
+
+## Explore one target from its kept corpus into a fresh report. A target
+## that finds a failure is a problem; one that cannot be started aborts the
+## campaign, after the findings of the targets before it are printed.
+explore! : SpecSuite.Options, Targets.Fuzz, { time : Str, timeout : Str } => Try(List(Str), _)
+explore! = |o, t, { time, timeout }| {
+	out = "${o.root}/.fuzz-out/${t.name}"
+	Path.create_all!(Path.utf8("${out}/corpus"))?
+	report = "${out}/report"
+	if Path.exists!(Path.utf8(report))? {
+		Path.delete_all!(Path.utf8(report))?
 	}
-	if ($failed.is_empty()) Ok({}) else Err(Exit(1))
+	Proc.note!("== fuzz ${t.name} (${time} s)")
+	code = Proc.status!({ program: Targets.exe_of(o, t), args: ["explore", "${out}/corpus", "--time=${time}", "--timeout=${timeout}", "--report-dir=${report}", "--print-final-stats"], cwd: out })?
+	Ok(if (code == 0) [] else ["fuzz ${t.name}: exited with ${code.to_str()}; see ${report}"])
 }

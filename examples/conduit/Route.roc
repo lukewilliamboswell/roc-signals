@@ -1,8 +1,5 @@
-## Conduit route model: `Route.Location` <-> `Route` parsing and formatting
-## plus per-route document titles. Routing stays app code by design: no router
-## DSL and no platform route table.
-## The published static demo keeps one real document URL and encodes logical
-## routes in its hash, so every deep link survives a GitHub Pages refresh.
+## Conduit pages, decoded route parts, feed choices, and document titles.
+## URL encoding and the static demo fragment layout belong to Locations.
 
 Route := [
 	Home(Route.Feed),
@@ -17,32 +14,8 @@ Route := [
 	NotFound,
 ].{
 
-	## A browser location, split into its path, query and hash.
+	## The document location as encoded URL components; Locations owns its text.
 	Location : { path : Str, query : Str, hash : Str }
-
-	## Parse a URL path (path ? query # hash) as the host reports it.
-	parse_url : Str -> Route.Location
-	parse_url = |url| {
-		(before, hash) = match url.split_first("#") {
-			Ok(s) => (s.before, s.after)
-			Err(_) => (url, "")
-		}
-		match before.split_first("?") {
-			Ok(s) => { path: s.before, query: s.after, hash }
-			Err(_) => { path: before, query: "", hash }
-		}
-	}
-
-	## The URL a location spells (the inverse of `parse_url`).
-	to_url : Route.Location -> Str
-	to_url = |loc| {
-		q = if (loc.query.is_empty()) "" else "?${loc.query}"
-		h = if (loc.hash.is_empty()) "" else "#${loc.hash}"
-		"${loc.path}${q}${h}"
-	}
-
-	of_url : Str -> Route
-	of_url = |url| from_location(parse_url(url))
 
 	Feed : { page : U64, tag : [AllTags, Tagged(Str)], source : [Global, Yours] }
 
@@ -69,92 +42,38 @@ Route := [
 	default_feed : Route.Feed
 	default_feed = { page: 1, tag: AllTags, source: Global }
 
-	demo_base_path : Str
-	demo_base_path = "/roc-signals/examples/conduit/"
-
 	home : Route
 	home = Home(default_feed)
 
-	home_location : Route.Location
-	home_location = location_for("/", "")
-
-	login_location : Route.Location
-	login_location = location_for("/login", "")
-
-	register_location : Route.Location
-	register_location = location_for("/register", "")
-
-	feed_location : Route.Feed -> Route.Location
-	feed_location = |feed| location_for("/", feed_query(feed))
-
-	article_location : Str -> Route.Location
-	article_location = |slug| location_for("/article/${slug}", "")
-
-	profile_location : Str -> Route.Location
-	profile_location = |username| location_for("/profile/${username}", "")
-
-	profile_favorites_location : Str -> Route.Location
-	profile_favorites_location = |username| location_for("/profile/${username}/favorites", "")
-
-	from_location : Route.Location -> Route
-	from_location = |location| {
-		logical = logical_location(location.hash)
-		path = logical.path
-		if path == "/" {
-			Home(parse_feed(logical.query))
-		} else if path == "/login" {
-			Login
-		} else if path == "/register" {
-			Register
-		} else if path == "/settings" {
-			Settings
-		} else if path == "/editor" {
-			EditorNew
-		} else if path.starts_with("/editor/") {
-			slug_route(path.drop_prefix("/editor/"), |slug| EditorEdit(slug))
-		} else if path.starts_with("/article/") {
-			slug_route(path.drop_prefix("/article/"), |slug| Article(slug))
-		} else if path.starts_with("/profile/") {
-			profile_route(path.drop_prefix("/profile/"))
-		} else {
-			NotFound
-		}
+	## Choose a page from decoded parts; names remain one segment even with slashes.
+	from_parts : List(Str), List((Str, Str)) -> Route
+	from_parts = |segments, pairs| match segments {
+		[] => Home(parse_feed(pairs))
+		["login"] => Login
+		["register"] => Register
+		["settings"] => Settings
+		["editor"] => EditorNew
+		["editor", name] if !name.is_empty() => EditorEdit(name)
+		["article", name] if !name.is_empty() => Article(name)
+		["profile", name] if !name.is_empty() => Profile(name)
+		["profile", name, "favorites"] if !name.is_empty() => ProfileFavorites(name)
+		_ => NotFound
 	}
 
-	to_location : Route -> Route.Location
-	to_location = |route|
-		match route {
-			Home(feed) => feed_location(feed)
-			Login => login_location
-			Register => register_location
-			Settings => location_for("/settings", "")
-			EditorNew => location_for("/editor", "")
-			EditorEdit(slug) => location_for("/editor/${slug}", "")
-			Article(slug) => article_location(slug)
-			Profile(username) => profile_location(username)
-			ProfileFavorites(username) => profile_favorites_location(username)
-			NotFound => home_location
-		}
-
-	location_for : Str, Str -> Route.Location
-	location_for = |path, query| {
-		hash =
-			if query.is_empty() {
-				path
-			} else {
-				"${path}?${query}"
-			}
-		{ path: demo_base_path, query: "", hash }
+	## Describe a route using decoded names and ordered query pairs.
+	to_parts : Route -> { segments : List(Str), pairs : List((Str, Str)) }
+	to_parts = |route| match route {
+		Home(feed) => { segments: [], pairs: feed_pairs(feed) }
+		Login => { segments: ["login"], pairs: [] }
+		Register => { segments: ["register"], pairs: [] }
+		Settings => { segments: ["settings"], pairs: [] }
+		EditorNew => { segments: ["editor"], pairs: [] }
+		EditorEdit(name) => { segments: ["editor", name], pairs: [] }
+		Article(name) => { segments: ["article", name], pairs: [] }
+		Profile(name) => { segments: ["profile", name], pairs: [] }
+		ProfileFavorites(name) => { segments: ["profile", name, "favorites"], pairs: [] }
+		NotFound => { segments: ["not-found"], pairs: [] }
 	}
-
-	logical_location : Str -> { path : Str, query : Str }
-	logical_location = |hash|
-		if hash.is_empty() {
-			{ path: "/", query: "" }
-		} else {
-			hash.split_first("?").map_ok(|split| { path: split.before, query: split.after })
-				?? { path: hash, query: "" }
-		}
 
 	title : Route -> Str
 	title = |route|
@@ -209,109 +128,71 @@ Route := [
 			_ => ""
 		}
 
-	slug_route : Str, (Str -> Route) -> Route
-	slug_route = |slug, make|
-		if valid_segment(slug) {
-			make(slug)
+	## Read recognized feed fields in order, retaining the last valid value.
+	parse_feed : List((Str, Str)) -> Route.Feed
+	parse_feed = |pairs| pairs.fold(
+		default_feed,
+		|feed, (name, value)|
+			match name {
+				"page" => match U64.from_str(value) {
+					Ok(page) if page >= 1 => { ..feed, page }
+					_ => feed
+				}
+				"feed" if value == "yours" => { ..feed, source: Yours }
+				"tag" if !value.is_empty() => { ..feed, tag: Tagged(value) }
+				_ => feed
+			},
+	)
+
+	## Write only nondefault feed fields, in the app's stable order.
+	feed_pairs : Route.Feed -> List((Str, Str))
+	feed_pairs = |feed| {
+		source = if feed.source == Yours {
+			[("feed", "yours")]
 		} else {
-			NotFound
+			[]
 		}
-
-	profile_route : Str -> Route
-	profile_route = |rest|
-		match rest.split_first("/") {
-			Ok(split) =>
-				if split.after == "favorites" and valid_segment(split.before) {
-					ProfileFavorites(split.before)
-				} else {
-					NotFound
-				}
-			Err(_) =>
-				if valid_segment(rest) {
-					Profile(rest)
-				} else {
-					NotFound
-				}
+		page = if feed.page > 1 {
+			[("page", feed.page.to_str())]
+		} else {
+			[]
 		}
-
-	valid_segment : Str -> Bool
-	valid_segment = |segment|
-		!segment.is_empty() and segment.split_first("/").is_err()
-
-	parse_feed : Str -> Route.Feed
-	parse_feed = |query|
-		query.split_on("&").fold(
-			default_feed,
-			|feed, pair|
-				if pair.starts_with("page=") {
-					# 0 stands in for "unparseable", and is rejected by the same
-					# guard that rejects an explicit page=0.
-					page = U64.from_str(pair.drop_prefix("page=")) ?? 0
-					if page >= 1 {
-						{ ..feed, page: page }
-					} else {
-						feed
-					}
-				} else if pair == "feed=yours" {
-					{ ..feed, source: Yours }
-				} else if pair.starts_with("tag=") {
-					tag_value = pair.drop_prefix("tag=")
-					if tag_value.is_empty() {
-						feed
-					} else {
-						{ ..feed, tag: Tagged(tag_value) }
-					}
-				} else {
-					feed
-				},
-		)
-
-	feed_query : Route.Feed -> Str
-	feed_query = |feed| {
-		source_part =
-			match feed.source {
-				Yours => "feed=yours"
-				Global => ""
-			}
-		page_part =
-			if feed.page > 1 {
-				"page=${feed.page.to_str()}"
-			} else {
-				""
-			}
-		tag_part =
-			match feed.tag {
-				Tagged(tag) => "tag=${tag}"
-				AllTags => ""
-			}
-		parts = [source_part, page_part, tag_part].keep_if(|part| !part.is_empty())
-		Str.join_with(parts, "&")
+		tag = match feed.tag {
+			Tagged(value) => [("tag", value)]
+			AllTags => []
+		}
+		source.concat(page).concat(tag)
 	}
 }
 
-## An article deep link survives the hash round trip with its slug intact.
-expect Route.from_location(Route.article_location("how-to-train-your-dragon")).is_eq(Article("how-to-train-your-dragon"))
+## Reserved text stays one decoded profile segment in the route model.
+expect ["a/b", "anna?x", "c#", "c&c", "%41", ".", ".."].all(
+	|name| {
+		parts = Route.to_parts(Profile(name))
+		Route.from_parts(parts.segments, parts.pairs) == Profile(name)
+	},
+)
 
-## Page, tag, and source all round trip through the feed query string together.
+## Page, tag, and source survive decoded pairs together.
 expect {
-	feed = { page: 3, tag: Tagged("dragons"), source: Global }
-	Route.from_location(Route.feed_location(feed)).is_eq(Home(feed))
+	feed = { page: 3, tag: Tagged("café & c++"), source: Yours }
+	Route.parse_feed(Route.feed_pairs(feed)) == feed
 }
 
-## The authenticated feed is spelled by source alone; page 1 and no tag stay off the query.
-expect Route.feed_query({ page: 1, tag: AllTags, source: Yours }) == "feed=yours"
+## Default feed fields are omitted and invalid page numbers leave the last valid one.
+expect Route.feed_pairs(Route.default_feed) == [] and Route.parse_feed([("page", "2"), ("page", "0"), ("page", "bad")]).page == 2
 
-## A non-default page and a tag are both emitted, page first.
-expect Route.feed_query({ page: 2, tag: Tagged("roc"), source: Global }) == "page=2&tag=roc"
+## Profile favorites and unknown trailing parts stay distinct routes.
+expect Route.from_parts(["profile", "alice", "favorites"], []) == ProfileFavorites("alice") and Route.from_parts(["profile", "alice", "extra"], []) == NotFound
 
-## `is_eq` separates two routes of the same kind by their payload.
-expect !Route.is_eq(Profile("alice"), Profile("bob"))
+## Equality separates payloads and page kinds.
+expect !Route.is_eq(Profile("alice"), Profile("bob")) and !Route.is_eq(NotFound, Route.home)
 
-## ...and separates NotFound from Home, which share the demo base path.
-expect !Route.is_eq(NotFound, Route.home)
+## An article's parts preserve its full slug independently of URL syntax.
+expect Route.from_parts(Route.to_parts(Article("how-to-train-your-dragon")).segments, []) == Article("how-to-train-your-dragon")
 
-## The favorites tab is a distinct route from the profile it hangs off.
-expect Route.from_location({ path: "/", query: "", hash: "/profile/alice/favorites" }).is_eq(ProfileFavorites("alice"))
+## The authenticated feed has one source pair while default page and tag are omitted.
+expect Route.feed_pairs({ page: 1, tag: AllTags, source: Yours }) == [("feed", "yours")]
 
-## An unrecognised trailing profile segment is NotFound, not a silent profile match.
-expect Route.from_location({ path: "/", query: "", hash: "/profile/alice/extra" }).is_eq(NotFound)
+## A nondefault page precedes its tag in the app's stable pair order.
+expect Route.feed_pairs({ page: 2, tag: Tagged("roc"), source: Global }) == [("page", "2"), ("tag", "roc")]

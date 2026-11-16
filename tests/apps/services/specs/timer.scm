@@ -4,6 +4,6 @@
     (expect-pending-effects 1)
     (run-effect 1)
     (expect-pending-effects 0)
-    (expect-text (test-id "delayed") "Fired")
+    (expect-text (test-id "delayed") "Fired(0)")
   )
 )

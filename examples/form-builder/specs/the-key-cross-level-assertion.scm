@@ -9,17 +9,24 @@
     ; the key cross level assertion
     ; Tighten a rule in the DESIGNER and watch previously-valid PREVIEW input turn
     ; invalid, with the form's submittable state flipping in the same turn.
+    (click (role button :name "Settings f1"))
     (fill (label "Minimum f1") "5")
     (expect-text (test-id "preview-f1-verdict") "Must be at least 5 characters")
     (expect-attr (label "Answer f1") aria-invalid "true")
     (expect-value (label "Answer f1") "Ada")
     (expect-text (test-id "preview-status") "1")
     (expect-text (test-id "submittable-state") "Not ready")
-    (expect-disabled (role button :name "Submit form") true)
+    (expect-disabled (role button :name "Submit form") false)
+    (click (role button :name "Done f1"))
+    (click (role button :name "Submit form"))
+    (expect-shown (test-id "form-problems") popover)
+    (dismiss)
     ; Relaxing the same rule restores validity without touching the answer.
+    (click (role button :name "Settings f1"))
     (fill (label "Minimum f1") "2")
     (expect-text (test-id "preview-f1-verdict") "Valid")
     (expect-text (test-id "submittable-state") "Ready to submit")
     (expect-disabled (role button :name "Submit form") false)
+    (click (role button :name "Done f1"))
   )
 )

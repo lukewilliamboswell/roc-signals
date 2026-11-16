@@ -1,0 +1,15 @@
+(test "Deep payload — an answer one level past the bound is TooDeep, and the next job answers"
+  (steps
+    (fill (label "Levels") "129")
+    (click (role button :name "Ask"))
+    (expect-pending-work "test.roc-signals/deep-payload/make" 1)
+    (run-effect 1)
+    (expect-text (test-id "asked") "too deep")
+    (fill (label "Levels") "128")
+    (click (role button :name "Ask"))
+    (expect-pending-work "test.roc-signals/deep-payload/make" 1)
+    (run-effect 2)
+    (expect-text (test-id "asked") "128 levels")
+    (expect-pending-effects 0)
+  )
+)

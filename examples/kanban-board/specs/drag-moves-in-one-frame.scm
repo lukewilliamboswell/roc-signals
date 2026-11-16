@@ -1,0 +1,15 @@
+(test "Kanban board — one frame of moves delivers only the newest gap"
+  (steps
+    (pointer-down (test-id "grip-Draft onboarding copy"))
+    (mark-metrics)
+    (hold-reports)
+    (pointer-move (role region :name "Ship search filters") :at 50 25)
+    (pointer-move (role region :name "Audit billing events") :at 50 25)
+    (pointer-move (test-id "lane-end-review"))
+    (expect-reports-replaced 2)
+    (expect-text (test-id "drag-status") "Moving Draft onboarding copy to Backlog, place 1")
+    (release-reports)
+    (expect-metric-delta dirty_source_roots 1)
+    (expect-text (test-id "drag-status") "Moving Draft onboarding copy to Review, place 2")
+    (pointer-up (test-id "lane-end-review"))
+    (expect-text (test-id "card-position-Draft onboarding copy") "2 of 2 in Review")))

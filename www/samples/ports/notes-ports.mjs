@@ -44,7 +44,7 @@ export default {
   },
   "example.org/notes/put": {
     call: async (note) => {
-      await run("readwrite", (store) => store.put({ ...note, saved_ms: String(Date.now()) }));
+      await run("readwrite", (store) => store.put(note));
       others.postMessage("changed");
       bump();
     },

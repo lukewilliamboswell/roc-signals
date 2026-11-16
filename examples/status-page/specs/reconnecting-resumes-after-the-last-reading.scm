@@ -1,0 +1,17 @@
+(test "Status page — Reconnecting resumes after the last reading"
+  (setup (seed 7))
+  (steps
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":9,\"at_ms\":\"1762852802250\",\"p95_ms\":{\"api\":140,\"web\":150,\"database\":115,\"notifications\":190},\"dropped\":0}}")
+    (close-port "roc-signals.example/status-page/latency")
+    (run-effect 6)
+    (expect-port-subscription-arg "roc-signals.example/status-page/latency" 1 "{\"after\":9,\"seed\":2026}")
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":10,\"at_ms\":\"1762852802500\",\"p95_ms\":{\"api\":140,\"web\":150,\"database\":115,\"notifications\":190},\"dropped\":0}}")
+    (expect-text (test-id "live-received") "2")
+    (close-port "roc-signals.example/status-page/latency")
+    (run-effect 7)
+    (expect-port-subscription-arg "roc-signals.example/status-page/latency" 1 "{\"after\":10,\"seed\":2026}")
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":90,\"at_ms\":\"1762852822500\",\"p95_ms\":{\"api\":140,\"web\":150,\"database\":115,\"notifications\":190},\"dropped\":16}}")
+    (expect-text (test-id "live-dropped") "16")
+    (expect-text (test-id "live-rejected") "0")
+  )
+)

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Roc Signals port recipes</title>
+    <style>
+      body { max-width: 56rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; }
+      .recipe, .recipe-call, .recipe-command { margin-block: 1rem; }
+      button { margin: 0 .5rem .5rem 0; padding: .5rem; }
+      #error { color: #b91c1c; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <p>Serve over localhost or HTTPS. Build <code>main.roc</code> as <code>app.wasm</code> and put the platform runtime files beside this page. The socket buttons expect an SSE service at <code>/events</code> and a WebSocket service at <code>/socket</code>.</p>
+    <div id="app"></div>
+    <!-- Browser media is outside the engine's root and inside a shadow element. -->
+    <recipe-camera id="camera"></recipe-camera>
+    <p id="error" role="status"></p>
+    <script type="module">
+      import { mountRocEngineApp } from "./runtime.mjs";
+      import { createPorts } from "./ports.mjs";
+      import { registerCamera } from "./media.mjs";
+      import { registerGauge } from "./gauge.mjs";
+      registerCamera();
+      registerGauge();
+      const error = document.getElementById("error");
+      try {
+        const runtime = await mountRocEngineApp({
+          wasmUrl: "./app.wasm",
+          root: document.getElementById("app"),
+          ports: createPorts({ camera: document.getElementById("camera"), fullscreenTarget: document.documentElement }),
+          onPortFault: (fault) => { error.textContent = `${fault.port}: ${fault.message}`; },
+        });
+        window.addEventListener("pagehide", () => runtime.unmount(), { once: true });
+      } catch (failure) { error.textContent = String(failure); }
+    </script>
+  </body>
+</html>

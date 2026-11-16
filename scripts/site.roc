@@ -1,18 +1,21 @@
 #!/usr/bin/env roc-stable
 app [main!] {
-	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.27.0/9yjxqdGTP4xSpSEmDazwTmRsehfRZzA19pwEKkR6fj1g.tar.zst",
-	parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/3.0.0/6xsRdRqenJrAb4wG7HaST4Xh349vD5sHAJDsKTK6E3dr.tar.zst",
-	roc: "nightly-2026-11-10-f7d1f19",
+	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst",
+	http: "https://github.com/roc-lang/http/releases/download/1.0.0/6ZUwqYhCS8PU9Mo6MF7oV82ET2o7KYb57CLKDq4cq4sS.tar.zst",
+	parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.3/FTL1xt1rA9nXzoYkhFAW9yF75Kn52bS3cpBr7wZNfPq2.tar.zst",
+	roc: "nightly-2026-11-14-a87808d",
 }
 
 import cli.OsStr
 import cli.Path
 import src/ApiDocs
 import src/Checks
+import src/ClassCheck
 import src/DocSamples
 import src/ExampleFiles
 import src/Proc
 import src/SpecSuite
+import src/Sizes
 import src/SiteCode
 
 ## The `site` task: build the documentation site into `dist/`
@@ -26,7 +29,8 @@ import src/SiteCode
 ## `main.roc` is built for wasm32 (`--opt=size`, as it ships) to
 ## `dist/examples/<slug>/app.wasm` beside `dist/runtime.mjs` (and its worker
 ## script, `dist/worker.mjs`), which the
-## site's `site.mjs` mounts it with. Every other file an example's page
+## site's `site.mjs` mounts it with, and its size is reported as `check`'s
+## size report reports it (CI's Check leaves that report here). Every other file an example's page
 ## loads, as `www/data/examples.toml` names it (its scripts, port handlers,
 ## simulated service and data), is copied beside its app. The checked documentation
 ## sample sources are published under `dist/samples/` for readers to download.
@@ -55,6 +59,7 @@ main! = |raw_args| {
 	Proc.run!({ program: o.tooling, args: ["test", "scripts/site.roc"], cwd: o.root })?
 	SiteCode.build!()?
 	Proc.run!({ program: "tailwindcss", args: ["-c", "www/tailwind.config.js", "-i", "www/input.css", "-o", "www/static/signals.css", "--minify"], cwd: o.root })?
+	ClassCheck.run!(o.root)?
 	Proc.run!({ program: "zola", args: zola.concat(["check", "--skip-external-links"]), cwd: o.root })?
 	Proc.run!({ program: "zola", args: zola.concat(["build", "--output-dir", dist, "--force"]).concat(options.base_url), cwd: o.root })?
 	DocSamples.copy!({ root: o.root, dist, publish_roc: SiteCode.published_source })?
@@ -67,6 +72,16 @@ main! = |raw_args| {
 		Path.create_all!(Path.utf8(dir))?
 		Path.copy!(Path.utf8(SpecSuite.wasm_of(o, example)), Path.utf8("${dir}/app.wasm"))?
 	}
+	# The size report of every catalogue example, on the modules this site
+	# publishes: CI's Check runs `check -- --without-sizes` and leaves the
+	# report to this job, so each example's --opt=size module is built once.
+	catalog = Sizes.examples(Path.read_utf8!(Path.utf8("${o.root}/${ExampleFiles.catalog}"))?)?
+	unpublished = catalog.drop_if(|slug| SpecSuite.apps.contains(slug))
+	if !unpublished.is_empty() {
+		return Err(ExamplesNotPublished(unpublished))
+	}
+	Proc.note!("== example module sizes (reported)")
+	Sizes.report_modules!({ root: o.root, node: o.node }, catalog.map(|slug| (slug, SpecSuite.wasm_of(o, slug))))?
 	ExampleFiles.copy_all!(o.root, dist)?
 	SpecSuite.copy_runtime!(o.root, dist)?
 	Proc.run!({ program: "node", args: ["tests/browser/site.mjs", dist], cwd: o.root })?

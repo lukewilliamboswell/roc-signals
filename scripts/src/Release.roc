@@ -11,8 +11,8 @@ import ToolRelease
 ##   `platform/main.roc` with every module it uses, the Wasm host, the native
 ##   spec runner's link inputs for every system it builds for (Linux
 ##   x86-64, macOS on Apple silicon and Intel, Windows x86-64),
-##   `runtime.mjs` and its worker script `worker.mjs`;
-## - `runtime.mjs` and `worker.mjs` on their own, for pages that load an app
+##   `runtime.mjs`, its fact readers `environment.mjs` and `worker.mjs`;
+## - `runtime.mjs`, `environment.mjs` and `worker.mjs` on their own, for pages that load an app
 ##   (the runtime loads the worker script from beside itself);
 ## - the `signals.roc` tool: its package, `signals-<hash>.tar.zst` (`cli/`
 ##   with the runtime files, the scaffold and a generated `Bundle.roc`
@@ -31,7 +31,7 @@ Release := [].{
 
 	## The platform files a bundle carries, relative to `platform/`.
 	bundle_files : List(Str)
-	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "Worker.roc", "Wire.roc", "Port.roc", "PortJson.roc", "Core.roc", "Table.roc", "View.roc", "Seq.roc", "EngineOnly.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
+	bundle_files = ["main.roc", "Engine.roc", "Web.roc", "Spelling.roc", "MarkupAdvice.roc", "MarkupLiteral.roc", "Clipboard.roc", "Html.roc", "Svg.roc", "Layout.roc", "Order.roc", "Url.roc", "Worker.roc", "Wire.roc", "WorkerCodec.roc", "Port.roc", "PortJson.roc", "PortRegistry.roc", "Protocol.roc", "ProtocolFacts.roc", "Core.roc", "TableCore.roc", "View.roc", "Seq.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "PicturePage.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
 
 	archive_name : Str -> Str
 	archive_name = |version| "roc-signals-examples-${version}"
@@ -112,6 +112,7 @@ Release := [].{
 		root = "${stage}/${name}"
 		SpecSuite.fresh_dir!(stage)?
 		Path.create_all!(Path.utf8("${root}/runtime"))?
+		SpecSuite.copy_runtime!(o.root, "${root}/runtime")?
 		Path.copy!(Path.utf8("${o.root}/tests/release/check.mjs"), Path.utf8("${root}/runtime/check.mjs"))?
 		var $problems = []
 		var $cases = []
@@ -135,7 +136,7 @@ Release := [].{
 			for spec in SpecSuite.files_with!("examples/${example}/specs", ".scm")? {
 				Path.copy!(Path.utf8(spec), Path.utf8("${dir}/specs/${spec.split_on("/").last() ?? spec}"))?
 			}
-			{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/release/check.mjs", SpecSuite.wasm_of(o, example)], cwd: o.root })?
+			{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/release/check.mjs", SpecSuite.wasm_of(o, example), SpecSuite.runtime], cwd: o.root })?
 			if code != 0 {
 				$problems = $problems.append("release: ${example} does not mount: ${Str.from_utf8_lossy(stdout)}")
 			}
@@ -151,12 +152,7 @@ Release := [].{
 		Proc.run!({ program: "zip", args: ["-q", "-r", "-X", "${out}/${name}.zip", name], cwd: stage })?
 
 		tooling = Str.from_utf8_lossy(Proc.capture!({ program: o.tooling, args: ["version"], cwd: o.root })?).trim()
-		limitations = if SpecSuite.has_broken_optimizer(o.nightly) {
-			"\n## Compiler limitations\n\nThis nightly crashes when optimizing the store apps ([roc-lang/roc#12976](https://github.com/roc-lang/roc/issues/12976)). The site examples use `--opt=dev`; every example's native and browser specs still run. `signals.roc build` automatically uses `--opt=dev` with an explicit warning; direct builds need `roc build --opt=dev --target=wasm32` on this nightly. Optimized walks, shipping browser soaks and worker scaling are explicitly skipped, so this release has no shipping performance or allocation validation on this compiler. Fuzzing is skipped because roc-fuzz 0.6.0's Linux inputs are not PIC ([roc-lang/roc#12949](https://github.com/roc-lang/roc/pull/12949)). Windows CI always attempts the current CLI init and prints its retained log. A failed init may quarantine the remaining CLI journey on this nightly only if its diagnostics form a nonempty subset of the three exact captured basic-cli 0.28 Locale/Path failures ([basic-cli#555](https://github.com/roc-lang/basic-cli/issues/555)). Each may appear once, and every error, cause and summary must agree; other failures remain fatal and successful init continues every CLI check. CI has reproduced Locale failures with basic-cli 0.27 and 0.28; the underlying cause remains unproven. Native specs remain enabled; remove this quarantine when basic-cli#555 is resolved. Each skip expires on the next nightly, which retries the original check.\n"
-		} else {
-			""
-		}
-		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), "${Release.notes(version, bundle_url, { compiler, tooling })}${limitations}")?
+		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), Release.notes(version, bundle_url, { compiler, tooling }))?
 		Proc.note!("release ${version}: ${out}")
 		Ok($problems)
 	}
@@ -173,7 +169,7 @@ Release := [].{
 		\\An example's other files are its own: JavaScript its author wrote (port
 		\\handlers, a simulated service), a page that mounts it, data it downloads.
 		\\JavaScript several examples load (custom elements) is in `examples/shared/`.
-		\\The platform's `runtime.mjs` and `worker.mjs` are separate release assets.
+		\\The platform's `runtime.mjs`, `environment.mjs` and `worker.mjs` are separate release assets.
 		\\`spec.json` and `runtime/check.mjs` are the compatibility suite the
 		\\nightly workflow runs against the latest Roc nightly.
 
@@ -185,13 +181,32 @@ Release := [].{
 		\\
 		\\<!-- What changed, for app authors. Write this on GitHub before publishing. -->
 		\\
+		\\## Debug output
+		\\
+		\\A deployed app containing `dbg` now prints its values on the browser console. Remove each `dbg` before deploying; optimized builds retain it and warn. Mount with `dbg: "off"` to silence values and keep them off faults, but formatting still costs work.
+		\\
+		\\## Upgrading specs
+		\\
+		\\A step that passes because the thing it names is absent, or counts zero of it, now needs evidence that the name is spelt right. A spec without it fails to parse at that step, in both runners and `--emit-steps`, even if it passed before. The evidence is another step of the same spec, before or after, or a marker saying the story never has the thing; a marker leaves the spelling unchecked, and is refused when the spec has the evidence.
+		\\
+		\\- `(expect-absent LOC)` needs a step that requires `LOC` to match, such as `expect-visible` or `click`. Add one where the story draws the element, or write `(expect-absent LOC :never-drawn)`.
+		\\- `(expect-no-attr LOC NAME)` needs an `expect-attr` or `expect-has-attr` of `NAME`, on any locator. Add `(expect-has-attr LOC NAME)` where the story writes the attribute with a value the spec cannot state, or write `(expect-no-attr LOC NAME :never-written)`.
+		\\- `(expect-cleanup NAME 0)` needs an `expect-cleanup` count of at least one for `NAME`, or write `(expect-cleanup NAME 0 :never-runs)`.
+		\\- `(expect-interval MS 0)` and `(tick-interval-if-active MS)` need a `tick-interval MS` or an `expect-interval MS` count of at least one, or end with `:never-started`.
+		\\
+		\\A port, worker task or media query that a step names must be one the program declares, of the kind the step uses, and a key in `expect-no-local-storage` or `expect-no-session-storage` one the program declares or the spec seeds or shows. These fail the same way, at the step, before anything runs; correct the name.
+		\\
+		\\## Upgrading worker payloads
+		\\
+		\\`Wire.encode`, `Wire.try_encode` and `Wire.decode` are removed, with `Wire`'s format types. Worker tasks keep deriving their codecs through `Wire.Sendable` and need no change. An app that wrote CBOR bytes of its own with them depends on roc-cbor instead and chooses its own schema and persistence contract.
+		\\
 		\\## Use this release
 		\\
 		\\```roc
 		\\app [main] { pf: platform "${bundle_url}" }
 		\\```
 		\\
-		\\Load apps with this release's `runtime.mjs`, served beside its `worker.mjs`.
+		\\Load apps with this release's `runtime.mjs`, served beside `environment.mjs` and `worker.mjs`.
 		\\
 		\\## Start an app
 		\\
@@ -207,6 +222,19 @@ Release := [].{
 		\\- Built and tested with `${compiler}`, the latest Roc nightly when the release
 		\\  was built.
 		\\- Release tooling ran on `${tooling}` (`roc-stable`).
+		\\${Release.store_ownership}
+
+	## What the platform cannot yet promise about in-place writes, under every
+	## compiler a release can be built with: the compiler limitations that
+	## `design.md` lists for roc-lang/roc#12957 and #13012. It is in every
+	## release's notes while those limitations are, and is removed, with its
+	## `expect`, in the commit that removes their rows from `design.md`.
+	store_ownership : Str
+	store_ownership =
+		\\
+		\\## Store ownership
+		\\
+		\\The instance holds its store as plain data beside its sites and moves it through each turn. A check compares the bytes a sparse write requests at two sizes, in a development and a shipping (`--opt=size`) build: a write of one element of a list in a store cell, and a small write, are in place in both. In a shipping build a keyed write of a table still copies the table's rows ([roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957)), and in both builds a write of a local state's value copies it, because a site's boxed closure captures it ([roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012)). These are compiler limitations, not different reactive semantics.
 }
 
 ## Examples name the released bundle instead of the working tree.
@@ -220,6 +248,22 @@ expect Release.released_main("app [main] { pf: platform \"https://y\" }", "u") =
 
 ## Recorded output is escaped as JSON.
 expect Release.json_str("a\"b\nc") == "\"a\\\"b\\nc\""
+
+## Every release's notes disclose the open store-ownership limitations,
+## whatever compiler built it; this goes with `Release.store_ownership`.
+expect {
+	text = Release.notes("1.0.0", "https://x/1.0.0/h.tar.zst", { compiler: "roc nightly-x", tooling: "roc nightly-y" })
+	text.contains("\n## Store ownership\n") and text.contains("roc-lang/roc#12957") and text.contains("roc-lang/roc#13012")
+}
+
+## The notes tell a spec's author each evidence rule that now refuses a
+## previously passing spec, with the step or marker that satisfies it.
+expect {
+	text = Release.notes("1.0.0", "https://x/1.0.0/h.tar.zst", { compiler: "roc nightly-x", tooling: "roc nightly-y" })
+	steps = ["(expect-absent LOC)", "(expect-no-attr LOC NAME)", "(expect-has-attr LOC NAME)", "(expect-cleanup NAME 0)", "(expect-interval MS 0)", "(tick-interval-if-active MS)"]
+	markers = [":never-drawn)", ":never-written)", ":never-runs)", ":never-started`"]
+	text.contains("\n## Upgrading specs\n") and steps.all(|step| text.contains("`${step}`")) and markers.all(|marker| text.contains(marker))
+}
 
 ## The entry point and its modules are archived; a fuzz target is not.
 expect [Release.is_archived("e/main.roc"), Release.is_archived("e/fuzz-csv.roc"), Release.is_archived("e/Api.roc"), Release.is_archived("e/Fuzzy.roc")] == [True, False, True, True]

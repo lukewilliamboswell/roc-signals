@@ -17,12 +17,15 @@
 // `change` event, which an app hears with an ordinary change handler. An
 // element without the attribute reports nothing.
 //
+// `data-background`, when present, supplies the paper and plot background
+// color chosen by Roc beside the figure. The renderer makes no media query.
+//
 // It reads `window.Plotly`, which the example page loads (deferred, before
 // this module) from a pinned CDN URL.
 const config = { responsive: true, displaylogo: false };
 
 class PlumeChart extends HTMLElement {
-  static observedAttributes = ["data-figure"];
+  static observedAttributes = ["data-figure", "data-background"];
 
   // Whether this element listens to Plotly's clicks; `Plotly.purge` drops
   // the listener with the rest of its state.
@@ -53,7 +56,9 @@ class PlumeChart extends HTMLElement {
       return;
     }
     const { data, layout } = JSON.parse(figure);
-    window.Plotly.react(this, data, layout, config);
+    const background = this.getAttribute("data-background");
+    const drawnLayout = background === null ? layout : { ...layout, paper_bgcolor: background, plot_bgcolor: background };
+    window.Plotly.react(this, data, drawnLayout, config);
     if (!this.#listening && this.dataset.click === "x" && typeof this.on === "function") {
       this.on("plotly_click", (event) => {
         const point = event?.points?.[0];

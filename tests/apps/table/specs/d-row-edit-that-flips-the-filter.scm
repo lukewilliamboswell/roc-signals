@@ -3,6 +3,7 @@
     ; Row 0 done: it leaves the main list (open rows), where the 31st row
     ; enters, and enters the list of done rows at its top, where the fifth
     ; row leaves. Two rows removed and two created (14 holes and 1).
+    (expect-visible (label "Qty 0"))
     (mark-metrics)
     (click (label "Done 0"))
     (expect-absent (label "Qty 0"))

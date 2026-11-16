@@ -106,3 +106,10 @@ expect {
 		("; comment", "comment"),
 	].all(|(text, category)| tokens.contains({ text, category }))
 }
+
+## The explicit absence marker keeps its source bytes and keyword category.
+expect {
+	source = "(expect-absent (label \"Other\") :never-drawn)"
+	tokens = ScmHighlight.tokens(source)
+	{ source: Str.join_with(tokens.map(|token| token.text), ""), marker: tokens.keep_if(|token| token.text == ":never-drawn") } == { source, marker: [{ text: ":never-drawn", category: "type" }] }
+}

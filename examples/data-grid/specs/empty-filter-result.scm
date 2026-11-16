@@ -1,6 +1,11 @@
 (test "Data grid — empty filter result"
   (steps
     ; Bring the page to the state this spec starts from.
+    (expect-visible (test-id "row-name-7"))
+    (expect-visible (test-id "row-team-7"))
+    (expect-visible (test-id "row-score-7"))
+    (expect-visible (label "Note for Node-0007"))
+    (expect-visible (label "Select Node-0007"))
     (mark-metrics)
     (click (role button :name "Sort by score"))
     (mark-metrics)
@@ -42,7 +47,6 @@
     (expect-text (test-id "rows-showing") "Showing 0 of 0 rows")
     (expect-text (test-id "page-label") "Page 1 of 1")
     (expect-visible (text "No rows match the filter"))
-    (expect-absent (text "Filter matches rows"))
     (expect-absent (test-id "row-name-7"))
     (expect-absent (test-id "row-team-7"))
     (expect-absent (test-id "row-score-7"))
@@ -59,11 +63,9 @@
     (expect-text (test-id "sort-caption") "Sorted by score ascending")
     (expect-text (test-id "summary-matching") "0")
     (expect-visible (text "No rows match the filter"))
-    (expect-absent (text "Filter matches rows"))
     (click (role button :name "Sort by score"))
     (expect-text (test-id "sort-caption") "Sorted by score descending")
     (expect-visible (text "No rows match the filter"))
-    (expect-absent (text "Filter matches rows"))
     (click (role button :name "Sort by id"))
     (expect-text (test-id "sort-caption") "Sorted by id ascending")
     (expect-metric-delta rows_created 0)

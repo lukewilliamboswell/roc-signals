@@ -7,6 +7,7 @@ import MarkdownView
 import Nav
 import Parts
 import Route
+import Locations
 import Session
 import Styles
 
@@ -31,11 +32,11 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 	Props(st) : { story : Cell(st, Story), session : Cell(st, Session), nav : Nav.Asked(st) }
 
 	init : Str -> Story
-	init = |slug| { slug, article: Fetch.no_load({}), refetch: 0, fav: Fetch.no_submit, fav_result: FavoriteIdle, del: Fetch.no_submit, del_result: DeleteIdle }
+	init = |article_slug| { slug: article_slug, article: Fetch.no_load({}), refetch: 0, fav: Fetch.no_submit, fav_result: FavoriteIdle, del: Fetch.no_submit, del_result: DeleteIdle }
 
 	## The same story model pointed at another article.
 	moved_to : Story, Str -> Story
-	moved_to = |s, slug| { ..s, slug }
+	moved_to = |s, article_slug| { ..s, slug: article_slug }
 
 	slug : Story -> Str
 	slug = |s| s.slug
@@ -46,14 +47,16 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 		if s.slug.is_empty() {
 			Fetch.no_req
 		} else {
-			uri = Api.article_uri(s.slug)
-			{ key: "${uri}#${s.refetch.to_str()}", uri, token: "" }
+			match Api.article_uri(s.slug) {
+				Ok(uri) => { key: "${uri}#${s.refetch.to_str()}", uri, token: "" }
+				Err(_) => Fetch.no_req
+			}
 		}
 	}
 
 	## Keep an answer only if it is for the load wanted now.
-	stored : Story, Fetch.LoadReq, Engine.Result -> Story
-	stored = |s, sent, res| if (Story.req(s).key != sent.key) s else { ..s, article: { key: sent.key, value: Api.decode_get(Api.response_of(res), Api.decode_article) } }
+	stored : Story, Fetch.LoadReq, Try(Engine.Response, Engine.HttpFailure) -> Story
+	stored = |s, sent, res| { ..s, article: { key: sent.key, value: Api.decode_get(Api.response_of(res), Api.decode_article) } }
 
 	## What to show now: the article, a failure, or loading.
 	current : Story -> Api.Remote(Api.Article)
@@ -96,16 +99,12 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 		{ ..s, fav: Fetch.next(s.fav, method, Api.favorite_uri(s.slug), "", session.token()), fav_result: FavoriteIdle }
 	}
 
-	favorite_answered : Story, Fetch.Submit, Engine.Result -> Story
-	favorite_answered = |s, sent, res| {
-		if sent.serial != s.fav.serial {
-			s
-		} else {
-			outcome = Story.classify_favorite(Api.response_of(res))
-			match outcome {
-				FavoriteAccepted(_) => { ..s, fav_result: outcome, refetch: s.refetch + 1 }
-				_ => { ..s, fav_result: outcome }
-			}
+	favorite_answered : Story, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure) -> Story
+	favorite_answered = |s, _sent, res| {
+		outcome = Story.classify_favorite(Api.response_of(res))
+		match outcome {
+			FavoriteAccepted(_) => { ..s, fav_result: outcome, refetch: s.refetch + 1 }
+			_ => { ..s, fav_result: outcome }
 		}
 	}
 
@@ -115,14 +114,10 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 
 	## The story after the answer to a deletion, and whether the article is
 	## gone. Its owner decides where to go when it is.
-	delete_answered : Story, Fetch.Submit, Engine.Result -> { story : Story, deleted : Bool }
-	delete_answered = |s, sent, res| {
-		if sent.serial != s.del.serial {
-			{ story: s, deleted: False }
-		} else {
-			outcome = Fetch.classify_delete(Api.response_of(res), "article")
-			{ story: { ..s, del_result: outcome }, deleted: outcome == DeleteAccepted }
-		}
+	delete_answered : Story, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure) -> { story : Story, deleted : Bool }
+	delete_answered = |s, _sent, res| {
+		outcome = Fetch.classify_delete(Api.response_of(res), "article")
+		{ story: { ..s, del_result: outcome }, deleted: outcome == DeleteAccepted }
 	}
 
 	## The site that loads the article.
@@ -135,7 +130,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 
 	## The site that sends a deletion. `answer` is the owner's reaction,
 	## because a deleted article changes more than the story.
-	delete_site : State(ctx, Story), Engine.Reaction(ctx, Fetch.Submit) -> Elem(ctx)
+	delete_site : State(ctx, Story), Engine.Reaction(ctx, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure)) -> Elem(ctx)
 	delete_site = |story, answer| Fetch.submit_site(story.signal().map(|s| s.del), answer)
 
 	## The article, drawn over its cell, with `below` under it.
@@ -222,7 +217,7 @@ delete_error : Story -> Str
 delete_error = |s| Fetch.delete_error(s.del_result)
 
 profile_url : Str -> Str
-profile_url = |name| Route.to_url(Route.profile_location(name))
+profile_url = |name| Locations.to_url(Locations.profile_location(name))
 
 expect Story.init("s").req().key == "/api/articles/s#0"
 expect Story.init("s").deleting(Session.SignedIn({ token: "t", username: "kim" })).del.method == "DELETE"

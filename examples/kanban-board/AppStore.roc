@@ -11,18 +11,30 @@ import Kanban
 ##   the summary read.
 ## - `limit`: the text of the WIP limit box, read by each column's badge
 ##   and the summary.
+## - `drag`: the board's active gesture, including its owning pointer and
+##   the gap currently under it.
 ##
 ## The module's one tag is the store's name: it is part of the type of every
 ## handle, so a cell of another store is a type error here.
 AppStore := [KanbanBoard].{
 
+	## The cards the board starts with, by title. A top-level constant is
+	## evaluated while compiling, so a title `Kanban.initial_cards` gave
+	## twice would be a compile error naming it.
+	initial_cards : Engine.Table(Str, Kanban.Card)
+	initial_cards = match Engine.Table.from_list(Kanban.initial_cards) {
+		Ok(table) => table
+		Err(DuplicateKey(title)) => crash "AppStore.initial_cards lists the card ${title} twice"
+	}
+
 	## The store: its name, and its cells with their starting values.
 	store = Engine.store(
 		AppStore.KanbanBoard,
 		{
-			cards: Engine.table(Kanban.initial_cards),
+			cards: Engine.table(AppStore.initial_cards),
 			filter: Engine.cell(""),
 			limit: Engine.cell("1"),
+			drag: Engine.cell(Board.idle_drag),
 		}.Engine.Cells,
 	)
 
@@ -59,6 +71,52 @@ expect {
 	actual == expected
 }
 
+## Releasing a drag moves its card and clears its owner in one pure
+## transition, without an engine or browser deciding either write.
+expect {
+	cells = AppStore.cells
+	dragging : Board.Drag
+	dragging = Dragging({ title: "Draft onboarding copy", pointer: 7, over: Before("Ship search filters") })
+	before = AppStore.store.with_initial(cells.drag, dragging)
+	pointer : Engine.Pointer
+	pointer = { id: 7, kind: Mouse, button: Main, buttons: 0, modifiers: { shift: Bool.False, ctrl: Bool.False, alt: Bool.False, meta: Bool.False }, primary: Bool.True, at: In({ zone: "card:Ship search filters", x: 5000, y: 2500 }) }
+	after = before.after(Board.finished_drag({ cards: cells.cards, drag: cells.drag }, { before: dragging, listing: Kanban.initial_cards, pointer }))
+	{
+		drag: after.read(cells.drag),
+		lanes: Kanban.all_columns.map(|column| Kanban.lane(after.read(cells.cards).to_list(), column)),
+		written_cards: after.read(cells.cards).inverse()?.len(),
+	} == {
+		drag: Board.idle_drag,
+		lanes: [["Design login screen"], ["Draft onboarding copy", "Ship search filters"], ["Audit billing events"], ["Rotate API keys"]],
+		written_cards: 3,
+	}
+}
+
+## An unchanged gap and another pointer both leave the active drag alone.
+## Its own cancellation clears it without editing the cards.
+expect {
+	cells = AppStore.cells
+	dragging : Board.Drag
+	dragging = Dragging({ title: "Draft onboarding copy", pointer: 7, over: Before("Ship search filters") })
+	pointer : Engine.Pointer
+	pointer = { id: 7, kind: Mouse, button: None, buttons: 1, modifiers: { shift: Bool.False, ctrl: Bool.False, alt: Bool.False, meta: Bool.False }, primary: Bool.True, at: In({ zone: "card:Ship search filters", x: 5000, y: 1000 }) }
+	before = AppStore.store.with_initial(cells.drag, dragging)
+	cancelled = before.after(Board.cancelled_drag(cells.drag, { before: dragging, pointer }))
+	{
+		unchanged: Board.moved_drag(cells.drag, { before: dragging, pointer }).is_empty(),
+		other: Board.moved_drag(cells.drag, { before: dragging, pointer: { ..pointer, id: 8, at: Outside } }).is_empty(),
+		second_press: Board.started_drag(cells.drag, { before: dragging, title: "Ship search filters", pointer: { ..pointer, id: 8, button: Main } }).is_empty(),
+		drag: cancelled.read(cells.drag),
+		cards: cancelled.read(cells.cards).to_list().len(),
+	} == {
+		unchanged: Bool.True,
+		other: Bool.True,
+		second_press: Bool.True,
+		drag: Board.idle_drag,
+		cards: Kanban.initial_cards.len(),
+	}
+}
+
 ## A move inside a column exchanges two cards, and the two moves of one event apply in order.
 expect {
 	cards = AppStore.cells.cards
@@ -90,4 +148,19 @@ expect {
 		\\now first: Ok({ column: Backlog, flags: 0, place: 0 })
 		\\written: 2 cards
 	actual == expected
+}
+
+## A move inside a column writes two keyed cards, a move past its top
+## writes none, and a later turn records only its own cards after an earlier move.
+expect {
+	cards = AppStore.cells.cards
+	up = AppStore.store.after(Board.moved_within(cards, { title: "Design login screen", toward: Upward }))
+	top = AppStore.store.after(Board.moved_within(cards, { title: "Draft onboarding copy", toward: Upward }))
+	across = AppStore.store.after(Board.moved_across(cards, { title: "Draft onboarding copy", toward: Rightward }))
+	within = across.after(Board.moved_within(cards, { title: "Ship search filters", toward: Downward }))
+	{
+		up: up.read(cards).inverse()?.len(),
+		top: top.read(cards).inverse()?.len(),
+		chained: within.read(cards).inverse()?.len(),
+	} == { up: 2, top: 0, chained: 2 }
 }

@@ -14,6 +14,7 @@
     (click (role button :name "Append a section"))
     (click (role button :name "Append a section"))
     (click (role button :name "Load heading drill"))
+    (expect-visible (test-id "toc:alpha"))
     (mark-metrics)
     (click (role button :name "Move the last section up"))
     (mark-metrics)

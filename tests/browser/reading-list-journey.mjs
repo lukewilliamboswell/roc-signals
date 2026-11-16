@@ -7,7 +7,8 @@
 // a reload finds them again; a second tab sees the first's changes and the
 // first the second's; a record the app does not understand is reported as
 // the typed error, not a fault; and nothing a handler does reaches the
-// console as a fault.
+// console as a fault. A book with an optional empty author also leaves no
+// Roc allocations behind after removal and unmount, using the real ports.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -26,6 +27,11 @@ const files = {
 };
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
+  if (u.pathname === "/ownership.html") {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end('<!doctype html><meta charset="utf-8"><div id="app"></div>');
+    return;
+  }
   const f = u.pathname.endsWith("/") ? files["index.html"] : files[path.basename(u.pathname)];
   if (!f) {
     res.writeHead(404);
@@ -36,7 +42,7 @@ const server = http.createServer((req, res) => {
   res.end(fs.readFileSync(f));
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
-// 127.0.0.1 is a secure context, so crypto.randomUUID is there.
+// The runtime reads the browser seed and clock; the port only stores Roc data.
 const base = `http://127.0.0.1:${server.address().port}/reading-list/`;
 const browser = await launch({ executablePath: opts.chrome });
 
@@ -142,17 +148,17 @@ const has = (name) => window.__has(name);
 const first = await open();
 await until(first, "a new store opens empty", status, "No books yet. Add the first one above.");
 await first.evaluate(() => window.__add("Dune", "Frank Herbert"));
-await until(first, "the store numbers the first book", status, "1 book");
+await until(first, "Roc mints and stamps the first book", status, "1 book");
 await first.evaluate(() => window.__add("Piranesi", "Susanna Clarke"));
 await until(first, "and the second, newest first", titles, ["Piranesi", "Dune"]);
 await first.evaluate(() => window.__click("Start reading Dune"));
 await until(first, "moving a book shows at once", has, true, "Finish Dune");
 await until(
   first,
-  "IndexedDB holds each book as the port's JSON: a tag's name for the shelf, a U64 as digits, the store's own id",
+  "IndexedDB holds each book as the port's JSON: a tag's name for the shelf, an I64 as signed digits, Roc's seeded id",
   async () =>
     (await window.__stored())
-      .map((b) => ({ title: b.title, author: b.author, shelf: b.shelf, added: /^[0-9]+$/.test(b.added_ms), id: /^[0-9a-f-]{36}$/.test(b.id) }))
+      .map((b) => ({ title: b.title, author: b.author, shelf: b.shelf, added: /^-?[0-9]+$/.test(b.added_ms), id: /^b-[0-9a-f]{16}$/.test(b.id) }))
       .sort((a, b) => a.title.localeCompare(b.title)),
   [
     { title: "Dune", author: "Frank Herbert", shelf: "Reading", added: true, id: true },
@@ -206,6 +212,52 @@ check(
 );
 
 await ctx.close();
+
+// Each optional-author case starts with a fresh IndexedDB. The real timer,
+// call and stored subscription all finish before disposal; removing the
+// book and unmounting must release every Roc allocation, including empty
+// strings encoded in the outbound request.
+for (const author of ["", "An author"]) {
+  const ownershipContext = await browser.createBrowserContext();
+  const page = await ownershipContext.newPage();
+  page.on("pageerror", (e) => pageErrors.push(String(e)));
+  await page.evaluateOnNewDocument(install);
+  await page.goto(`http://127.0.0.1:${server.address().port}/ownership.html`);
+  await page.evaluate(async () => {
+    const { mountRocEngineApp } = await import("/runtime.mjs");
+    const { default: ports } = await import("/ports.mjs");
+    window.__rt = await mountRocEngineApp({ wasmUrl: "/app.wasm", root: document.getElementById("app"), ports });
+  });
+  await until(page, "ownership case opens empty", status, "No books yet. Add the first one above.");
+  await page.evaluate((author) => window.__add("Owned book", author), author);
+  await until(page, "optional author is stored unchanged", async () => (await window.__stored()).map((book) => book.author), [author]);
+  await until(page, "the added book is drawn", titles, ["Owned book"]);
+  await page.evaluate(() => window.__click("Remove Owned book"));
+  await until(page, "the removed book leaves IndexedDB", async () => (await window.__stored()).length, 0);
+  await until(page, "the removed book leaves the view", titles, []);
+  const released = await page.evaluate(async () => {
+    const rt = window.__rt;
+    const deadline = performance.now() + 2000;
+    let quiet = 0;
+    while (quiet < 10) {
+      if (performance.now() >= deadline) throw new Error("ownership case did not settle");
+      let timer;
+      try {
+        await Promise.race([rt.idle(), new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("ownership case did not become idle")), Math.max(1, deadline - performance.now()));
+        })]);
+      } finally { clearTimeout(timer); }
+      const busy = [...rt.live.values()].some((entry) => entry.kind === "portcall");
+      quiet = busy || rt.busy || rt.queue.length || !rt.nativeEventsReady() ? 0 : quiet + 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    rt.unmount();
+    return { allocations: Number(rt.x.metric(4)), bytes: Number(rt.x.metric(5)), errors: window.__errors };
+  });
+  check(`unmount releases the book with ${author === "" ? "an empty" : "a nonempty"} author`, released, { allocations: 0, bytes: 0, errors: [] });
+  await ownershipContext.close();
+}
+check("ownership cases have no page errors", pageErrors, []);
 await browser.close();
 server.close();
 console.log(failures === 0 ? "== reading-list journey: all pass" : `== reading-list journey: ${failures} failures`);

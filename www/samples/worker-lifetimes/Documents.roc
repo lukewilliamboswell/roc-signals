@@ -92,7 +92,7 @@ Documents := [].{
 	rows = |st|
 		Html.ul(
 			[],
-			[Engine.each(st.signal().map(|s| s.docs), |d| d.id, |row| Documents.row(st, row))],
+			[Engine.each(st.signal().map(|s| s.docs), |d| d.id, |row_ref| Documents.row(st, row_ref))],
 		)
 
 	row : State(Ctx, S), RowRef(Ctx, Doc) -> Elem(Line)
@@ -127,6 +127,7 @@ Documents := [].{
 		match error {
 			Timeout => "This took too long."
 			Refused => "Too much is running."
+			TooDeep | NanKeys | TooManyFiles => "The answer could not be sent."
 			Lost(_) => "Counting failed."
 		}
 
@@ -169,11 +170,11 @@ Documents := [].{
 							|ask|
 								match ask {
 									Idle => []
-									Export({ docs, .. }) => [Documents.report.request(docs)]
+									Export({ docs, .. }) => [Documents.report.ask(docs)]
 								},
 							st.on_result(
 								|s, _, res|
-									match Documents.report.result(res) {
+									match res {
 										Ok(text) => { ..s, report: text }
 										Err(error) => { ..s, report: Documents.problem(error) }
 									},

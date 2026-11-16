@@ -15,6 +15,13 @@ import pf.Html
 ## - A flood: 100 rows that each fetch at mount, far past the in-flight
 ##   bound of 32, so one turn queues 68 refusals; each reaction counts its
 ##   answer at the top level.
+## - A deluge, offered only at the address `/?offers=deluge`: 5000 rows
+##   that each fetch at mount, so one turn queues thousands of refusals,
+##   more follow-up turns than the breadth bound allows one call. The bound
+##   counts only the follow-ups that follow-ups queue, so the turn
+##   completes. The rows and the tally of their answers are two local
+##   states of the deluge's own, so a refusal's turn writes the tally and
+##   never reads the list.
 ## - A `state` below a `derive` and below a `resource`, mounted with the
 ##   page, and layers that exist only in a branch mounted after the first
 ##   (two `when`s that start closed, a `switch` that starts on a plain case, and a `when`
@@ -54,8 +61,8 @@ SupersedeApp := [].{
 	initial : S
 	initial = { query: "", results: "", rate: 0, ticks: 0, item: "", rows: [], panel: False, picked: "1", solo: False, late: False, inner: False, case: "plain", flood: [], refused: 0, answered: 0 }
 
-	answer_of : Str, Engine.Result -> Str
-	answer_of = |id, res| match Engine.http_text(res) {
+	answer_of : Str, Try(Str, Engine.HttpError) -> Str
+	answer_of = |id, res| match res {
 		Ok(body) => "${id}:${body}"
 		Err(e) => "${id}:${Str.inspect(e)}"
 	}
@@ -63,14 +70,15 @@ SupersedeApp := [].{
 	## The resource configuration every item view uses: a request and a 2 s
 	## slow-answer timer per item. The timer's tick after the answer changes
 	## nothing, so its fold returns the layer unchanged and readers prune.
-	item_cfg : { init : Load, pending : (Load, Str -> Load), plan : (Str -> List(Engine.Request)), resolve : (Load, Str, Engine.Result -> Load) }
+	item_cfg : { init : Load, pending : (Load, Str -> Load), plan : (Str -> List(Engine.Ask([Body(Str), Slow], Engine.HttpError))), resolve : (Load, Str, Try([Body(Str), Slow], Engine.HttpError) -> Load) }
 	item_cfg = {
 		init: SupersedeApp.idle,
 		pending: |s, id| { ..s, pending: id, slow: False },
-		plan: |id| if (id == "") [] else [Http({ method: "GET", url: "/item/${id}", headers: [], body: "", timeout_ms: 1000 }), Timer(2000)],
+		plan: |id| if (id == "") [] else [Engine.http_body({ url: "/item/${id}", timeout: Ms(1000) }).map_ok(|body| Body(body)), Engine.timer(2000).map_ok(|_| Slow)],
 		resolve: |s, id, res| match res {
-			Fired => if (s.pending == "") s else { ..s, slow: True }
-			_ => { pending: "", answer: SupersedeApp.answer_of(id, res), previous: s.answer, slow: False }
+			Ok(Slow) => if (s.pending == "") s else { ..s, slow: True }
+			Ok(Body(body)) => { pending: "", answer: SupersedeApp.answer_of(id, Ok(body)), previous: s.answer, slow: False }
+			Err(error) => { pending: "", answer: SupersedeApp.answer_of(id, Err(error)), previous: s.answer, slow: False }
 		},
 	}
 
@@ -100,7 +108,7 @@ SupersedeApp := [].{
 				{
 					init: "",
 					pending: |_, (k, v)| "loading ${k}/${v.to_str()}",
-					plan: |(k, v)| [Http({ method: "GET", url: "/row/${k}/${v.to_str()}", headers: [], body: "", timeout_ms: 0 })],
+					plan: |(k, v)| [Engine.http_body({ url: "/row/${k}/${v.to_str()}" })],
 					resolve: |_, (k, v), res| SupersedeApp.answer_of("${k}/${v.to_str()}", res),
 				},
 				|l| Html.span_s(l, [Engine.test_id_s(key.lift().map(|k| "row ${k}"))]),
@@ -133,7 +141,7 @@ SupersedeApp := [].{
 			[
 				Html.button("Inc late", [], c.update(|n| n + 1)),
 				Html.p_s(c.signal().map(|n| "late ${n.to_str()}"), [Engine.test_id("late")]),
-				Engine.watch_changes(c.signal(), |n| [Title("late ${n.to_str()}")], Engine.ignore({})),
+				Engine.watch_changes(c.signal(), |n| [Engine.command(Title("late ${n.to_str()}"))], Engine.ignore({})),
 			],
 		),
 	)
@@ -148,7 +156,7 @@ SupersedeApp := [].{
 			Engine.derive(Engine.const(2.U64), |_| SupersedeApp.counter("derived")),
 			Engine.resource(
 				Engine.const("r"),
-				{ init: 0.U64, pending: |n, _| n, plan: |_| [Timer(50)], resolve: |n, _, _| n + 1 },
+				{ init: 0.U64, pending: |n, _| n, plan: |_| [Engine.timer(50)], resolve: |n, _, _| n + 1 },
 				|l| Engine.element(
 					"div",
 					[],
@@ -193,8 +201,64 @@ SupersedeApp := [].{
 		$keys
 	}
 
-	view : State(Ctx, S) -> Elem(Ctx)
-	view = |st| {
+	## What the page offers, chosen by the address it boots at. The deluge is
+	## offered at `/?offers=deluge` alone: once its 5000 rows are drawn, every
+	## later step of a walk would check 5000 rows, and a walk mounts at `/`.
+	Offer : [Standard, WithDeluge]
+
+	offer_at : Str -> Offer
+	offer_at = |url| if (url == "/?offers=deluge") WithDeluge else Standard
+
+	## How many rows a deluge draws: with 32 requests admitted, more refusals
+	## than the breadth bound's 4096 follow-up turns.
+	deluge_size : U64
+	deluge_size = 5000
+
+	## The deluge: its rows' keys in one local state and, below it, the
+	## tally of their answers in another, which each row's reaction writes.
+	deluge : {} -> Elem(Ctx)
+	deluge = |_| Engine.state(
+		[],
+		|keys| Engine.state(
+			{ refused: 0.U64, answered: 0.U64 },
+			|tally| Engine.element(
+				"div",
+				[],
+				[
+					Html.button("Deluge", [], keys.lift().update(|_| SupersedeApp.flood_keys(SupersedeApp.deluge_size))),
+					Html.p_s(tally.signal().map(|t| "refused ${t.refused.to_str()}, answered ${t.answered.to_str()}"), [Engine.test_id("deluge")]),
+					Html.ul(
+						[],
+						[
+							Engine.each(
+								keys.signal().lift(),
+								|k| k,
+								|row| Html.li(
+									[],
+									[
+										Engine.watch(
+											row.key(),
+											|k| [Engine.http_body({ url: "/deluge/${k}" })],
+											tally.lift_row().on_result(
+												|t, _, r| match r {
+													Err(Refused) => { ..t, refused: t.refused + 1 }
+													_ => { ..t, answered: t.answered + 1 }
+												},
+											),
+										),
+										Engine.text_s(row.key()),
+									],
+								),
+							),
+						],
+					),
+				],
+			),
+		),
+	)
+
+	view : State(Ctx, S), Offer -> Elem(Ctx)
+	view = |st, offer| {
 		v = st.signal()
 		Html.div(
 			"supersede",
@@ -205,7 +269,7 @@ SupersedeApp := [].{
 				Html.button("Clear", [], st.update(|s| { ..s, query: "" })),
 				Engine.watch_latest(
 					v.map(|s| s.query),
-					|q| if (q == "") [] else [Http({ method: "GET", url: "/search?q=${q}", headers: [], body: "", timeout_ms: 1000 })],
+					|q| if (q == "") [] else [Engine.http_body({ url: "/search?q=${q}", timeout: Ms(1000) })],
 					st.on_result(|s, q, r| { ..s, results: SupersedeApp.answer_of(q, r) }),
 				),
 				Html.p_s(v.map(|s| s.results), [Engine.test_id("results")]),
@@ -215,7 +279,7 @@ SupersedeApp := [].{
 				Html.button("Pause", [], st.update(|s| { ..s, rate: 0 })),
 				Engine.watch_latest(
 					v.map(|s| s.rate),
-					|r| if (r == 0) [] else [Interval(r)],
+					|r| if (r == 0) [] else [Engine.interval(r)],
 					st.on_result(|s, _, _| { ..s, ticks: s.ticks + 1 }),
 				),
 				Html.p_s(v.map(|s| s.ticks.to_str()), [Engine.test_id("ticks")]),
@@ -260,10 +324,10 @@ SupersedeApp := [].{
 								[
 									Engine.watch(
 										row.key(),
-										|k| [Http({ method: "GET", url: "/flood/${k}", headers: [], body: "", timeout_ms: 0 })],
+										|k| [Engine.http_body({ url: "/flood/${k}" })],
 										st.lift_row().on_result(
 											|s, _, r| match r {
-												Refused => { ..s, refused: s.refused + 1 }
+												Err(Refused) => { ..s, refused: s.refused + 1 }
 												_ => { ..s, answered: s.answered + 1 }
 											},
 										),
@@ -274,6 +338,10 @@ SupersedeApp := [].{
 						),
 					],
 				),
+				match offer {
+					WithDeluge => SupersedeApp.deluge({})
+					Standard => Engine.text("")
+				},
 				Html.button("Toggle solo", [], st.update(|s| { ..s, solo: !s.solo })),
 				Engine.when(v.map(|s| s.solo), || SupersedeApp.solo_branch({}), || Engine.text("solo closed")),
 				Html.button("Toggle late", [], st.update(|s| { ..s, late: !s.late })),
@@ -295,5 +363,5 @@ SupersedeApp := [].{
 
 	## The program both hosts run.
 	program : Engine.Program
-	program = Engine.program(|| Engine.state(SupersedeApp.initial, |st| SupersedeApp.view(st)))
+	program = Engine.program_boot({ storage_keys: [], max_inflight: 32 }, |boot| Engine.state(SupersedeApp.initial, |st| SupersedeApp.view(st, SupersedeApp.offer_at(boot.url))))
 }

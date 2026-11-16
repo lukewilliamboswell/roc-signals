@@ -27,15 +27,6 @@ Compiler :: [].{
 	version_of : Str -> Str
 	version_of = |text| text.trim().split_on(" ").last() ?? text.trim()
 
-	## The optimizer regression affects this exact nightly. Both the tool and
-	## repository automation retry optimized builds on every other version.
-	## Remove with the matching guard in scripts/src/SpecSuite.roc; the two
-	## packages cannot import each other's private modules.
-	has_broken_optimizer : Str -> Bool
-	has_broken_optimizer = |nightly| nightly == "nightly-2026-11-11-7679cc5"
-
-	optimizer_issue = "https://github.com/roc-lang/roc/issues/12976"
-
 	## A sentence to add to a failed build's report when the compiler is not
 	## the one the release was tested with, since a compiler change can
 	## break an app that has no error of its own. Empty when they agree.
@@ -95,6 +86,12 @@ Compiler :: [].{
 			_ => report
 		}
 
+	## The report an author should see after a successful build. Suppress the
+	## compiler's explicit clean summary; keep every other report visible so
+	## warnings and changes to the compiler's report format cannot disappear.
+	report_on_success : Str -> Str
+	report_on_success = |report| if (report.contains("0 errors and 0 warnings")) "" else report.trim()
+
 	## The side file a build writes before it replaces `output`: `.next`
 	## before the extension, so a Windows program keeps its `.exe`.
 	side_of : Str -> Str
@@ -151,10 +148,6 @@ Compiler :: [].{
 ## The version is the last word of `roc version`.
 expect Compiler.version_of("Roc compiler version nightly-2026-11-10-f7d1f19\n") == "nightly-2026-11-10-f7d1f19"
 
-## The compatibility fallback cannot hide optimized coverage on a different
-## compiler version, including a newer nightly that still needs checking.
-expect [Compiler.has_broken_optimizer("nightly-2026-11-10-f7d1f19"), Compiler.has_broken_optimizer("nightly-2026-11-11-7679cc5"), Compiler.has_broken_optimizer("nightly-2026-11-12-next")] == [False, True, False]
-
 ## Warnings alone are a successful build; errors and signals are not.
 expect [Compiler.verdict(Exited(0)), Compiler.verdict(Exited(2)), Compiler.verdict(Exited(1)), Compiler.verdict(Signaled(9))] == [Succeeded, Succeeded, Failed, Failed]
 
@@ -172,3 +165,11 @@ expect Compiler.platform_of("app [main] { pf: platform \"https://x/y.tar.zst\" }
 
 ## A module with no platform says so.
 expect Compiler.platform_of("Counter := [].{}") == Err(NoPlatform)
+
+## Successful reports suppress only the compiler's explicit clean marker.
+expect [
+	"0 errors and 0 warnings found in 1ms.",
+	"\n  warning: dbg in optimized build\n",
+	"new compiler report format",
+	"  ",
+].map(Compiler.report_on_success) == ["", "warning: dbg in optimized build", "new compiler report format", ""]

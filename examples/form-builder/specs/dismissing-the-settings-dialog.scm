@@ -1,0 +1,18 @@
+(test "Form Builder — Settings mounts its controls and Escape restores focus"
+  (steps
+    (expect-absent (label "Required f1"))
+    (click (role button :name "Settings f1"))
+    (expect-shown (test-id "settings-f1") modal)
+    (expect-checked (label "Required f1") true)
+    (fill (label "Minimum f1") "3")
+    (dismiss)
+    (expect-shown (test-id "settings-f1") hidden)
+    (expect-absent (label "Minimum f1"))
+    (expect-focused (role button :name "Settings f1"))
+    (click (role button :name "Settings f1"))
+    (expect-value (label "Minimum f1") "3")
+    (click (role button :name "Done f1"))
+    (expect-shown (test-id "settings-f1") hidden)
+    (expect-focused (role button :name "Settings f1"))
+  )
+)

@@ -1,4 +1,5 @@
-(test "Reading List — the shelf loads from the store, and the store numbers a new book"
+(test "Reading List — the shelf loads from the store, and Roc mints and stamps new books"
+  (setup (seed 7) (initial-time 1731200000000))
   (steps
     ; At start the app asks for the stored books and listens for changes.
     (expect-text (test-id "status") "Opening your shelf…")
@@ -11,22 +12,25 @@
     (expect-disabled (role button :name "Add book") false)
     (fill (label "Title") " ")
     (expect-disabled (role button :name "Add book") true)
-    ; The store gives the book its id and the time it was added.
+    ; A timer samples the app clock before Roc sends a complete book.
     (fill (label "Title") "Dune")
     (fill (label "Author") "Frank Herbert")
     (click (role button :name "Add book"))
     (expect-value (label "Title") "")
     (expect-value (label "Author") "")
-    (expect-port-call 2 "roc-signals.example/reading-list/add" "{\"author\":\"Frank Herbert\",\"title\":\"Dune\"}")
-    (answer-port 2 reply "{\"id\":\"b1\",\"title\":\"Dune\",\"author\":\"Frank Herbert\",\"shelf\":\"WantToRead\",\"added_ms\":\"1731200000000\"}")
+    (run-effect 2)
+    (expect-port-call 3 "roc-signals.example/reading-list/add" "{\"added_ms\":\"1731200000000\",\"author\":\"Frank Herbert\",\"id\":\"b-63cbe1e459320dd7\",\"shelf\":\"WantToRead\",\"title\":\"Dune\"}")
+    (answer-port 3 reply "{\"added_ms\":\"1731200000000\",\"author\":\"Frank Herbert\",\"id\":\"b-63cbe1e459320dd7\",\"shelf\":\"WantToRead\",\"title\":\"Dune\"}")
     (expect-text (test-id "status") "1 book")
     (expect-text (label "Want to read") "Want to read (1)")
     (expect-visible (role button :name "Start reading Dune"))
     ; The same title again is a second request, and the newest is first.
     (fill (label "Title") "Dune")
+    (advance-time 500)
     (submit (label "Add a book"))
-    (expect-port-call 3 "roc-signals.example/reading-list/add" "{\"author\":\"\",\"title\":\"Dune\"}")
-    (answer-port 3 reply "{\"id\":\"b2\",\"title\":\"Dune\",\"author\":\"\",\"shelf\":\"WantToRead\",\"added_ms\":\"1731200000500\"}")
+    (run-effect 4)
+    (expect-port-call 5 "roc-signals.example/reading-list/add" "{\"added_ms\":\"1731200000500\",\"author\":\"\",\"id\":\"b-044c3cd7f43c661c\",\"shelf\":\"WantToRead\",\"title\":\"Dune\"}")
+    (answer-port 5 reply "{\"added_ms\":\"1731200000500\",\"author\":\"\",\"id\":\"b-044c3cd7f43c661c\",\"shelf\":\"WantToRead\",\"title\":\"Dune\"}")
     (expect-text (test-id "status") "2 books")
     (expect-text (label "Books") "DuneUnknown authorWant to readStartRemoveDuneFrank HerbertWant to readStartRemove")
     (expect-text (test-id "note") "")

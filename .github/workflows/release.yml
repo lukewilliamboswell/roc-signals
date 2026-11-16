@@ -67,6 +67,9 @@ jobs:
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - env:
           VERSION: ${{ inputs.version }}
+          # The release compares the API with the latest published release
+          # through GitHub's API, which rate-limits anonymous requests.
+          GH_TOKEN: ${{ github.token }}
         run: blueprint run release -- --version "$VERSION" --output-dir dist-release
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:

@@ -1,0 +1,16 @@
+(test "timeout discards held progress before delivering the final result"
+  (setup (file "a.txt" "text/plain" "abcd"))
+  (steps
+    (choose-files (label "Upload") "a.txt")
+    (click (role button :name "Send progress"))
+    (mark-metrics)
+    (hold-reports)
+    (progress-effect 1 sending 1 4)
+    (stub-http-reject "timed out" :kind timeout :detail "")
+    (run-effect 1)
+    (expect-text (test-id "transfer-progress") "waiting")
+    (expect-text (test-id "transfer-result") "send failed Timeout")
+    (expect-metric-delta effects_progress 0)
+    (expect-metric-delta effects_delivered 1)
+    (expect-pending-effects 0)
+    (release-reports)))

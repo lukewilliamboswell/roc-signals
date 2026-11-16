@@ -1,6 +1,7 @@
 (test "Status page — First incident arrives, with three updates in publish order"
   (steps
     ; Bring the page to the state this spec starts from.
+    (expect-visible (text "No incidents reported in the last 90 days."))
     (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")
     (run-effect 1)
     (stub-http "web" :url "/api/status/web" :status 200 :body "operational|99.99")

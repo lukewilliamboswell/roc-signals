@@ -329,6 +329,32 @@ async function open(options = {}) {
     x.boot_keys();
     x.payload_reserve(0);
     x.init();
+    // Empty bytes are observationally the same as the complete default
+    // sections, whose location is "/" (not an empty URL).
+    const commands = (e) => Array.from(new Uint8Array(e.memory.buffer, e.cmd_ptr(), e.cmd_len()));
+    const work = (e) => Array.from(new Uint8Array(e.memory.buffer, e.work_ptr(), e.work_len()));
+    const defaults = new Uint8Array([
+      1, 5, 0, 0, 0, 1, 0, 0, 0, 47,
+      2, 5, 0, 0, 0, 1, 0, 0, 0, 0,
+      3, 1, 0, 0, 0, 1,
+      4, 1, 0, 0, 0, 1,
+      6, 0, 0, 0, 0,
+      7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      8, 16, 0, 0, 0, ...new Array(16).fill(0),
+      9, 13, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 101, 110, 45, 85, 83,
+      10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67,
+      0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127,
+      1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0,
+      11, 5, 0, 0, 0, 1, 0, 0, 0, 0,
+      13, 12, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 100, 105, 118,
+    ]);
+    const other = (await WebAssembly.instantiate(module, pageImports(module))).exports;
+    other.boot_keys();
+    const p = other.payload_reserve(defaults.length);
+    new Uint8Array(other.memory.buffer, p, defaults.length).set(defaults);
+    other.init();
+    const emptyDefault = JSON.stringify([commands(x), work(x)]) === JSON.stringify([commands(other), work(other)]);
+    other.drop();
     let trapped = false;
     try {
       x.work();
@@ -336,11 +362,12 @@ async function open(options = {}) {
       trapped = true;
     }
     const err = new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len()));
-    return { names, thrown, trapped, fault: x.fault(), message: err.startsWith("contract: work() was called on the page's instance") };
+    return { names, thrown, emptyDefault, trapped, fault: x.fault(), message: err.startsWith("contract: work() was called on the page's instance") };
   });
   check("the page's imports are throwing stubs, and work() on a mounted instance is a contract fault", r, {
     names: ["js_builder_append", "js_builder_append_file", "js_builder_finish", "js_builder_open", "js_file_read", "js_file_size"],
     thrown: [true, true, true, true, true, true],
+    emptyDefault: true,
     trapped: true,
     fault: 1,
     message: true,

@@ -1,0 +1,16 @@
+(test "Form Builder — keep a field or confirm deleting it"
+  (steps
+    (click (role button :name "Delete f1"))
+    (expect-shown (test-id "confirm-delete") modal)
+    (expect-focused (role button :name "Keep"))
+    (click (role button :name "Keep"))
+    (expect-shown (test-id "confirm-delete") hidden)
+    (expect-visible (role region :name "Field f1"))
+    (expect-focused (role button :name "Delete f1"))
+    (click (role button :name "Delete f1"))
+    (click (role button :name "Delete"))
+    (expect-shown (test-id "confirm-delete") hidden)
+    (expect-absent (role region :name "Field f1"))
+    (expect-focused (role button :name "Add text field"))
+  )
+)

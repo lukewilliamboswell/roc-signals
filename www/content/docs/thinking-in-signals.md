@@ -33,7 +33,13 @@ The parts that can change are *sites*. A site is one of:
 - an **effect** (`Engine.watch`, `Engine.watch_changes`, `Engine.on_cleanup`),
   which asks the outside world to do something.
 
-Between them sit *holes*: text and attributes whose content comes from a signal.
+Between them sit *holes*: text, attributes and element properties whose content comes from a signal.
+
+Attribute text can be empty without being absent. `attr_s` always sets a
+present value; `attr_presence` takes a signal of `Absent` or `Present(text)`
+when the attribute should come and go. The hole compares both presence and
+text, so changing between absent and empty is an update, while repeating
+either is pruned.
 
 Your view function is not called again after mount. There is no second tree
 to compare with the first: the engine knows, from how the description was
@@ -105,6 +111,24 @@ Three or more signals combine with Roc's record builder: a record of signals
 followed by `.Engine.Signal` is one signal of the record, and reads what each
 field reads. The [Tutorial](@/docs/tutorial.md#adding-a-to-do-one-decision)
 reads three cells that way.
+
+A quoted text literal can stand wherever a text signal is expected. An
+interpolation there combines the declared reads of its signal parts into one
+text signal:
+
+{{ sample(file="counter/Counter.roc", region="view") }}
+
+A plain `Str` variable still needs `Engine.const(value)`. Each interpolation
+has one part type; convert different signal value types with `to_text_signal`
+before combining them. An application type can provide its own
+`to_text_signal`, returning a signal made through the public API.
+
+A constant's `map` runs once when it is built. `map2` runs once when both
+inputs are constant; with one constant it preserves the other input's keyed
+selection. A varying signal maps whenever read. Row keys remain varying even
+when they read no state layer. Literal text and constant ordinary attributes
+are drawn once; control properties in cloned rows still initialize each clone,
+and references retain their usual lifetime and addressing rules.
 
 A signal carries the set of states and cells it reads, fixed by how it was
 built. The engine never runs your code to discover its dependencies. When

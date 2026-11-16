@@ -90,8 +90,8 @@ message_row = |model0, row, is_selected| {
 	)
 }
 
-star : Model, Str, Str -> Model
-star = |m, id, flag| { ..m, messages: m.messages.map(|msg| if (msg.id == id) { ..msg, starred: flag == "true" } else msg) }
+star : Model, Str, Bool -> Model
+star = |m, id, flag| { ..m, messages: m.messages.map(|msg| if (msg.id == id) { ..msg, starred: flag } else msg) }
 
 # endregion row
 
@@ -144,3 +144,10 @@ page = |model|
 			Engine.state(3, stars),
 		],
 	)
+
+## The instance holds this store beside its site tree.
+Store : {}
+
+## Check that the default first page mounts while this app compiles.
+mounted : U64
+mounted = Engine.mounts(main)

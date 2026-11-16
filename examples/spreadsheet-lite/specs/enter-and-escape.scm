@@ -1,0 +1,18 @@
+(test "Enter commits through the formula bar and Escape restores focused text"
+  (steps
+    (fill (label "B2") "1500")
+    (press "Escape")
+    (expect-value (label "B2") "1200")
+    (expect-focused (label "B2"))
+    (press "Enter")
+    (expect-focused (label "Formula"))
+    (fill (label "Formula") "1700")
+    (press "Escape")
+    (expect-value (label "Formula") "1200")
+    (expect-focused (label "Formula"))
+    (fill (label "Formula") "1800")
+    (press "Enter")
+    (expect-focused (label "B3"))
+    (expect-value (label "B2") "1800")
+    (press "F2")
+    (expect-focused (label "Formula"))))

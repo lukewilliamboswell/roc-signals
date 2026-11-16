@@ -29,8 +29,9 @@ ConverterApp := [].{
 
 	## Why a conversion has no output: the file could not be read or is not
 	## UTF-8 (`Unreadable`, `InvalidUtf8`), the output is over the bound
-	## (`TooLarge`), or the file has no header line (`Empty`).
-	Problem : [Unreadable, TooLarge, InvalidUtf8, Empty]
+	## (`TooLarge`), the file has no header line (`Empty`), or the job asked
+	## for bytes the file does not hold (`OutsideFile`, `ZeroChunk`).
+	Problem : [Unreadable, TooLarge, InvalidUtf8, Empty, OutsideFile, ZeroChunk]
 
 	convert : Worker.Task(Job, Converted, Problem)
 	convert = Worker.task({ name: "roc-signals.example/csv-converter/convert", run!: ConverterApp.convert! })
@@ -57,7 +58,7 @@ ConverterApp := [].{
 		var $rows = 0
 		var $ragged = 0
 		var $carry = []
-		for span in source.spans(ConverterApp.chunk_bytes) {
+		for span in source.spans(ConverterApp.chunk_bytes)? {
 			bytes = source.read!(span)?
 			{ complete, rest } = Csv.lines($carry.concat(bytes))
 			var $text = ""
@@ -128,6 +129,8 @@ ConverterApp := [].{
 		InvalidUtf8 => "the file is not UTF-8 text"
 		TooLarge => "the output is larger than the converter keeps in memory"
 		Unreadable => "the browser can no longer read the file"
+		OutsideFile => "a read went past the end of the file"
+		ZeroChunk => "the file was read in chunks of no bytes"
 	}
 
 	size_text : U64 -> Str
@@ -170,9 +173,10 @@ ConverterApp := [].{
 								Html.label_for("Format", "converter-format", [Engine.class("field-label")]),
 								Html.select(
 									Engine.const("Format"),
-									AppStore.cells.format.signal().map(AppStore.option_of),
+									AppStore.cells.format.signal(),
+									Engine.const([Tsv, JsonLines]),
+									{ key: AppStore.option_of, label: |format| if (format == Tsv) "TSV" else "JSON lines" },
 									[Engine.class("input"), Engine.attr("id", "converter-format")],
-									[Html.option("tsv", "TSV"), Html.option("jsonl", "JSON lines")],
 									Engine.handle(AppStore.format_picked),
 								),
 							],
@@ -199,10 +203,17 @@ ConverterApp := [].{
 				Engine.watch_latest(
 					source.map(|s| s.sample),
 					|sample| match sample {
-						Loading => [File.fetch({ url: "sample.csv" })]
+						Loading => [
+							File.fetch({ url: "sample.csv" }).map(
+								|response| match response {
+									Ok({ status: code, body, .. }) => if (code >= 200 and code < 300) Ok(body) else Err(Status(code))
+									Err(error) => Err(error)
+								},
+							),
+						]
 						Idle => []
 					},
-					Engine.react(|_, res| AppStore.sample_arrived(Engine.fetched(res))),
+					Engine.react(|_, res| AppStore.sample_arrived(res)).with_progress({}, Engine.react_progress(|_, transfer| AppStore.sample_progress(transfer))),
 				),
 				Html.p_s(source.map(|s| s.note), [Engine.class("muted"), Engine.test_id("note")]),
 			],
@@ -222,7 +233,7 @@ chooser : {} -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 chooser = |{}| Engine.element(
 	"section",
-	[Engine.class("panel grid gap-4 border-dashed p-5"), Html.aria_label("Drop a CSV file"), Html.on_drop_files(Engine.handle_files(AppStore.chosen))],
+	[Engine.class("panel grid gap-4 border-dashed p-5"), Html.aria_label("Drop a CSV file"), Html.on_drop_files(Engine.handle(AppStore.chosen))],
 	[
 		Html.h2("Choose a CSV", "card-title"),
 		Html.p("Drop a CSV file here, choose one from your device, or load the sample.", "muted"),
@@ -231,7 +242,7 @@ chooser = |{}| Engine.element(
 			[Engine.class("field")],
 			[
 				Engine.element("span", [Engine.class("field-label")], [Engine.text("CSV file")]),
-				Html.file_input(Engine.const("CSV file"), { accept: Types(".csv,text/csv") }, Engine.handle_files(AppStore.chosen)),
+				Html.file_input(Engine.const("CSV file"), { accept: Types(".csv,text/csv") }, Engine.handle(AppStore.chosen)),
 			],
 		),
 		Html.div("toolbar", [Html.button("Load the sample", [Engine.class("button")], Engine.does(AppStore.sample_asked))]),
@@ -251,11 +262,15 @@ preview = |output| Engine.state(
 			Engine.watch_latest(
 				output.lift(),
 				|converted| match converted {
-					Ok(out) => [out.slice({ start: 0, len: out.size().min(4096) }).read_bytes({})]
+					Ok(out) =>
+						match out.slice({ start: 0, len: out.size().min(4096) }) {
+							Ok(head) => [head.read_bytes({})]
+							Err(OutsideFile) => []
+						}
 					Err(NoAnswer) => []
 				},
 				lines.on_result(
-					|_, _, res| match Engine.file_bytes(res) {
+					|_, _, res| match res {
 						Ok(bytes) => ConverterApp.first_lines(bytes, 6)
 						Err(_) => ""
 					},
@@ -303,7 +318,7 @@ result = |{}| Worker.resource_when(
 					),
 					preview(remote.map(|latest| latest.answered().map_ok(|c| c.output))),
 					# Saving, in the turn of the click that asked for it.
-					Engine.on_post(save.signal(), |out| [File.save(out, {})], Engine.ignore({})),
+					Engine.on_post(save.signal(), |out| [Engine.command(File.save(out, {}))], Engine.ignore({})),
 				],
 			)
 		},

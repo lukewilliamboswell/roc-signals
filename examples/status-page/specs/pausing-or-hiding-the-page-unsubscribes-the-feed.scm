@@ -1,7 +1,7 @@
 (test "Status page — Pausing or hiding the page unsubscribes the feed"
   (steps
     (expect-port-subscriptions "roc-signals.example/status-page/latency" 1)
-    (emit-port "roc-signals.example/status-page/latency" "{\"seq\":1,\"at_ms\":\"1762852800250\",\"p95_ms\":{\"api\":140,\"web\":150,\"database\":115,\"notifications\":190},\"dropped\":0}")
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":1,\"at_ms\":\"1762852800250\",\"p95_ms\":{\"api\":140,\"web\":150,\"database\":115,\"notifications\":190},\"dropped\":0}}")
 
     ; Pausing disposes the subscription's site, which ends the
     ; subscription (the feed's JavaScript is told to stop) and the chart's
@@ -17,7 +17,7 @@
     (click (role button :name "Resume the feed"))
     (expect-port-subscriptions "roc-signals.example/status-page/latency" 1)
     (expect-text (test-id "live-status") "Connecting to the latency feed")
-    (emit-port "roc-signals.example/status-page/latency" "{\"seq\":41,\"at_ms\":\"1762852810250\",\"p95_ms\":{\"api\":141,\"web\":150,\"database\":115,\"notifications\":190},\"dropped\":0}")
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":41,\"at_ms\":\"1762852810250\",\"p95_ms\":{\"api\":141,\"web\":150,\"database\":115,\"notifications\":190},\"dropped\":0}}")
     (expect-text (test-id "live-received") "2")
 
     ; A hidden page has no feed, as it has no polling; showing it again

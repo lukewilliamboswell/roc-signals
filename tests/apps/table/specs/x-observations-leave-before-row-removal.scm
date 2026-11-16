@@ -1,0 +1,18 @@
+(test "template and nested-state observations release before row REMOVE and CLEAR"
+  (steps
+    (expect-observed 0)
+    (click (role button :name "Show observed rows"))
+    (expect-observed 9)
+    (report-size (label "Observed size 1") 200 40)
+    (expect-text (label "Observed size 1") "40")
+    (report-seen (label "Observed row 1") yes 500)
+    (click (role button :name "Remove observed row"))
+    (expect-observed 6)
+    (expect-absent (label "Observed size 1"))
+    (click (role button :name "Clear observed rows"))
+    (expect-observed 0)
+    (click (role button :name "Show observed rows"))
+    (expect-observed 9)
+    (expect-text (label "Observed size 1") "0")
+    (click (role button :name "Clear observed rows"))
+    (expect-observed 0)))

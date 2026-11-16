@@ -1,0 +1,22 @@
+(test "Services — connectivity and visibility survive a new document"
+  (setup
+    (local-storage "clock.stopped" "seed"))
+  (steps
+    (click (role button :name "Start"))
+    (tick-interval 1000)
+    (tick-interval 1000)
+    (click (role button :name "Stop"))
+    (expect-local-storage "clock.stopped" "2")
+    (set-online offline)
+    (set-visibility hidden)
+    (navigate "/next-document")
+    (expect-current-location "/next-document")
+    (expect-local-storage "clock.stopped" "2")
+    (expect-text (test-id "online") "offline")
+    (expect-text (test-id "visible") "hidden")
+    (expect-interval 5000 0)
+    (set-online online)
+    (set-visibility visible)
+    (expect-text (test-id "online") "online")
+    (expect-text (test-id "visible") "visible")
+    (expect-interval 5000 1)))

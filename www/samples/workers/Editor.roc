@@ -59,7 +59,7 @@ Editor := [].{
 	length = |v|
 		Engine.derive(
 			v.map(|s| Words.split(s.text).len()),
-			|n| Html.p_s(n.map(|count| "${count.to_str()} words"), [Engine.test_id("length")]),
+			|n| Html.p_s(n.map(|words| "${words.to_str()} words"), [Engine.test_id("length")]),
 		)
 	# endregion cheap
 
@@ -93,6 +93,7 @@ Editor := [].{
 		match error {
 			Timeout => "This took too long."
 			Refused => "Too much is running; edit the text to try again."
+			TooDeep | NanKeys | TooManyFiles => "The answer could not be sent."
 			Lost(_) => "The analysis failed."
 		}
 	# endregion derive
@@ -148,9 +149,9 @@ Editor := [].{
 					|ask|
 						match ask {
 							Idle => []
-							Count({ text, .. }) => [Words.frequencies.request(text)]
+							Count({ text, .. }) => [Words.frequencies.ask(text)]
 						},
-					st.on_result(|s, _, res| { ..s, counted: Editor.counted(Words.frequencies.result(res)) }),
+					st.on_result(|s, _, res| { ..s, counted: Editor.counted(res) }),
 				),
 				Html.p_s(v.map(|s| Editor.show_counted(s.counted)), [Engine.test_id("counted")]),
 			],
@@ -198,7 +199,9 @@ Editor := [].{
 	}
 
 	## `Worker.status` reads the resource as one union: the task's own error
-	## (`Failed`) beside the ways a job can produce no answer at all.
+	## (`Failed`) beside the ways a job can produce no answer at all,
+	## including the payload's refusals (`TooDeep`, `NanKeys`,
+	## `TooManyFiles`), which leave the worker as it was.
 	show_total : Engine.Remote(U64, Worker.Error([NotANumber(Str)])) -> Str
 	show_total = |remote|
 		match Worker.status(remote) {
@@ -207,6 +210,9 @@ Editor := [].{
 			Failed(NotANumber(word)) => "\"${word}\" is not a number"
 			Timeout => "Adding took too long."
 			Refused => "Too much is running; edit the numbers to try again."
+			TooDeep => "The answer was nested too deeply to send."
+			NanKeys => "The answer held two NaN keys in one dictionary."
+			TooManyFiles => "The answer held more files than a job may return."
 			Lost(_) => "Adding failed."
 		}
 	# endregion failing-view

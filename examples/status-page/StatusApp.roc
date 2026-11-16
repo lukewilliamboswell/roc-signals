@@ -65,8 +65,8 @@ StatusApp := [].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	poll = |url, answered| Engine.watch_latest(
 		StatusStore.cells.serial.signal(),
-		|_| [Http({ method: "GET", url, headers: [], body: "", timeout_ms: 0 })],
-		Engine.react(|_serial, res| answered(Engine.http_text(res))),
+		|_| [Engine.http_body({ url, cache: NoStore })],
+		Engine.react(|_serial, res| answered(res)),
 	)
 
 	## One component row: name on the left, uptime and a state badge on the
@@ -148,9 +148,9 @@ StatusApp := [].{
 
 	## The page, under the rollup of the four checks. Everything else it
 	## draws it reads from the store's cells where it draws it.
-	page : Signal(ctx, Status.Tally) -> Elem(ctx)
+	page : Signal(ctx, Status.Tally), Engine.Boot -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	page = |totals| {
+	page = |totals, boot| {
 		cells = StatusStore.cells
 		visible = cells.visible.signal()
 		Html.div(
@@ -219,13 +219,13 @@ StatusApp := [].{
 						),
 					],
 				),
-				Live.view({ visible: cells.visible }),
+				Live.view({ visible: cells.visible, seed: boot.seed, initially_visible: boot.visible }),
 				StatusApp.incidents_panel(cells.feed.signal()),
 				# Polling lives inside the visible branch, so hiding the page
 				# disposes the interval. Already-admitted checks finish.
 				Engine.when(
 					visible,
-					|| Html.div("hidden", [Engine.watch(Engine.const({}), |_| [Interval(5000)], Engine.react(|_, _| StatusStore.refreshed))]),
+					|| Html.div("hidden", [Engine.watch(Engine.const({}), |_| [Engine.interval(5000)], Engine.react(|_, _| StatusStore.refreshed))]),
 					|| Html.div("hidden", []),
 				),
 				StatusApp.poll("/api/status/api", |answer| StatusStore.answered(Api, Status.check_of(answer))),
@@ -235,11 +235,11 @@ StatusApp := [].{
 				StatusApp.poll("/api/status/incidents", |answer| [cells.feed.set(Status.feed_of(answer))]),
 				Engine.watch(
 					Engine.const({}),
-					|_| [VisibilityChanges],
+					|_| [Engine.visibility_changes({})],
 					Engine.react_by(
 						visible,
 						|was, _, res| match res {
-							Visible(now) => StatusStore.shown(was, now)
+							Ok(now) => StatusStore.shown(was, now)
 							_ => []
 						},
 					),
@@ -251,11 +251,11 @@ StatusApp := [].{
 
 	## The page under one rollup of the checks, which every reader of the
 	## rollup shares.
-	view : {} -> Elem(Engine.StoreRoot(_))
-	view = |{}| Engine.derive(StatusStore.totals({}), StatusApp.page)
+	view : Engine.Boot -> Elem(Engine.StoreRoot(_))
+	view = |boot| Engine.derive(StatusStore.totals({}), |totals| StatusApp.page(totals, boot))
 
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner.
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, StatusStore.start, |_boot| StatusApp.view({})).with_ports(Latency.registrations)
+	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, StatusStore.start, StatusApp.view).with_ports(Latency.registrations)
 }

@@ -1,0 +1,15 @@
+app [main] { pf: platform "<PLATFORM>" }
+
+import pf.Engine
+
+## A text hole directly in a table can hold text later, whatever it holds
+## at mount, so the hole itself is refused, not its first value.
+main : Engine.Program
+main = Engine.program(|| Engine.state(Bool.False, |changed| Engine.element("table", [], [Engine.text_s(changed.signal().map(|value| if (value) "bad text" else ""))])))
+
+## Construction fixtures hold no shared store.
+Store : {}
+
+## Check the default first page while compiling.
+mounted : U64
+mounted = Engine.mounts(main)

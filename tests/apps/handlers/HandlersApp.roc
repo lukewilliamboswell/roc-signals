@@ -94,7 +94,7 @@ HandlersApp := [].{
 			[
 				HandlersApp.reader("count", count.lift().signal().map(|v| v.to_str())),
 				HandlersApp.reader("log", log.signal()),
-				Engine.watch(Engine.const("tick"), |_| [Timer(10)], count.lift().on_result(|c, _, _| c + 1).also(log.on_result(|l, a, _| "${l}${a};"))),
+				Engine.watch(Engine.const("tick"), |_| [Engine.timer(10)], count.lift().on_result(|c, _, _| c + 1).also(log.on_result(|l, a, _| "${l}${a};"))),
 			],
 		),
 	)
@@ -118,7 +118,7 @@ HandlersApp := [].{
 						[
 							HandlersApp.reader("pair", seen),
 							Html.button("Raise both", [], inner.update(|n| n + 1).also(outer.lift().lift().update(|n| n + 1))),
-							Engine.watch_changes(seen, |text| [Title("pair ${text}"), Timer(10)], Engine.ignore({})),
+							Engine.watch_changes(seen, |text| [Engine.command(Title("pair ${text}")), Engine.timer(10)], Engine.ignore({})),
 						],
 					)
 				},
@@ -154,7 +154,7 @@ HandlersApp := [].{
 								[
 									HandlersApp.reader("mixed", seen),
 									Html.button("Raise outer and inner", [], inner.lift().update(|n| n + 1).also(outer.lift().lift().update(|n| n + 1))),
-									Engine.watch_changes(seen, |text| [Title("mixed ${text}"), Timer(10)], Engine.ignore({})),
+									Engine.watch_changes(seen, |text| [Engine.command(Title("mixed ${text}")), Engine.timer(10)], Engine.ignore({})),
 								],
 							)
 						},
@@ -196,7 +196,7 @@ HandlersApp := [].{
 										[
 											Html.p_s(seen, [Engine.test_id_s(r.key().lift())]),
 											Html.button_s(r.key().lift().map(|k| "Rate ${k}"), [], clicks.update(|n| n + 1).also(rows.lift_row().lift().update_by(r.key().lift(), HandlersApp.starred))),
-											Engine.watch_changes(seen.map2(r.key().lift(), |text, k| "${k} ${text}"), |text| [Title("rated ${text}"), Timer(10)], Engine.ignore({})),
+											Engine.watch_changes(seen.map2(r.key().lift(), |text, k| "${k} ${text}"), |text| [Engine.command(Title("rated ${text}")), Engine.timer(10)], Engine.ignore({})),
 										],
 									)
 								},
@@ -234,10 +234,14 @@ HandlersApp := [].{
 	)
 
 	program : Engine.Program
-	program = Engine.program(
-		|| Html.div(
+	program = Engine.program_boot(
+		{},
+		|boot| Html.div(
 			"handlers",
 			[
+				HandlersApp.presses({}),
+				HandlersApp.keyboard({}),
+				HandlersApp.keyboard_document(boot.url),
 				Engine.state("none", HandlersApp.owner),
 				HandlersApp.counter({}),
 				Engine.state(0.I64, HandlersApp.answers),
@@ -245,6 +249,69 @@ HandlersApp := [].{
 				HandlersApp.rated({}),
 				HandlersApp.closing({}),
 				HandlersApp.mixed({}),
+			],
+		),
+	)
+
+	## Enter navigation replaces the document between down and up. The new
+	## instance owns the release, so its document handler counts it once.
+	keyboard_document : Str -> Elem(Engine.Root)
+	keyboard_document = |url| Engine.state(
+		0.I64,
+		|ups| Engine.element(
+			"section",
+			[Engine.on_document_key({ on: Up, keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("Enter")])) }, ups.update(|n| n + 1))],
+			[
+				Engine.element("a", [Html.aria_label("Next keyboard document"), Engine.attr("href", "/next-keyboard-document")], [Engine.text("Next keyboard document")]),
+				Html.p_s(ups.signal().map(|n| n.to_str()), [Engine.test_id("document-key-ups")]),
+				Engine.element("p", [Engine.test_id("keyboard-document-url")], [Engine.text(url)]),
+			],
+		),
+	)
+
+	## Keyboard declarations exercise pass-over, live maps, row holes and
+	## document lifetime without giving the app a second handler mechanism.
+	keyboard : {} -> Elem(Engine.Root)
+	keyboard = |_| Engine.state(
+		{ log: "", inner: True, modal: False, row: True, value: "initial", out: Engine.outbox({}) },
+		|state| {
+			append = |label| state.update(|s| { ..s, log: "${s.log}${label};" })
+			map = Engine.Keymap.prevent([Engine.Chord.plain("F2")])
+			Engine.element(
+				"section",
+				[
+					Engine.on_key({ keymap: Engine.const(map) }, append("outer")),
+				],
+				[
+					Engine.element("span", [Engine.on_document_key({ keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("F4")])) }, append("shell"))], []),
+					Html.p_s(state.signal().map(|s| s.log), [Engine.test_id("key-log")]),
+					Engine.element("button", [Engine.test_id("key-inner"), Engine.on_key({ keymap: state.signal().map(|s| if (s.inner) Engine.Keymap.prevent([Engine.Chord.plain("F3")]) else Engine.Keymap.prevent([])) }, append("inner"))], [Engine.text("Key target")]),
+					Html.button("Toggle keymap", [], state.update(|s| { ..s, inner: !s.inner })),
+					Html.button("Toggle shortcut scope", [], state.update(|s| { ..s, modal: !s.modal })),
+					Engine.when(state.signal().map(|s| s.modal), || Engine.element("aside", [Engine.on_document_key({ keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("F4")])) }, append("modal"))], [Engine.text("Shortcut scope")]), || Engine.text("")),
+					Engine.each(Engine.const(["one", "two"]), |key| key, |row| Engine.element("button", [Engine.test_id_s(row.key().map(|key| "key-row-${key}")), Engine.on_key({ keymap: row.key().map(|key| Engine.Keymap.prevent([Engine.Chord.plain(if (key == "one") "F5" else "F6")])) }, state.lift_row().update(|s| { ..s, log: "${s.log}row;" }))], [Engine.text_s(row.key())])),
+					Engine.element("div", [Html.aria_label("Keyboard editable"), Engine.attr("contenteditable", "true")], [Engine.text("Editable host")]),
+					Engine.element("a", [Html.aria_label("Unprevented shortcut link"), Engine.attr("href", "#shortcut")], [Engine.text("Unprevented shortcut link")]),
+					Engine.element("a", [Html.aria_label("Prevented shortcut link"), Engine.attr("href", "#shortcut"), Engine.on_key({ keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("Enter").with_ctrl()])) }, append("link"))], [Engine.text("Prevented shortcut link")]),
+					Engine.element("input", [Html.aria_label("Keyboard text"), Engine.ref("key-value"), Engine.prop_s(Engine.Prop.value, state.signal().map(|s| s.value)), Html.on_input(state.set_value(|s, value| { ..s, value })), Engine.on_key({ keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("Escape")])) }, state.update(|s| { ..s, value: "initial", out: s.out.post(ApplyValue("key-value")) }))], []),
+					Engine.on_post(state.signal().map(|s| s.out), |request| [Engine.command(request)], Engine.ignore({})),
+				],
+			)
+		},
+	)
+
+	## Both runners deliver the same click sequence, including pointer moves.
+	## A prevented pointerdown suppresses the compatibility mouse events and
+	## focus change while still delivering pointerup and click.
+	presses : {} -> Elem(ctx)
+	presses = |_props| Engine.state(
+		"",
+		|events| Html.div(
+			"",
+			[
+				Engine.element("button", ["pointermove", "mousemove", "pointerdown", "mousedown", "focus", "pointerup", "mouseup", "click"].map(|event| Engine.on(event, events.update(|log| "${log}${event.text()};"))).concat([Html.aria_label("Record click")]), [Engine.text("Record click")]),
+				Engine.element("button", ["pointermove", "mousemove", "pointerdown", "mousedown", "focus", "pointerup", "mouseup", "click"].map(|event| Engine.on_with(event, { prevent: event == "pointerdown" }, events.update(|log| "${log}${event.text()};"))).concat([Html.aria_label("Record prevented click")]), [Engine.text("Record prevented click")]),
+				Html.p_s(events.signal(), [Engine.test_id("press-events")]),
 			],
 		),
 	)

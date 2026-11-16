@@ -11,10 +11,15 @@ window.__loc = function (loc) {
   const { kind } = loc;
   const a = kind === "role" ? loc.role : loc.value;
   const b = loc.name;
+  // Implicit roles are HTML elements by their exact local name, and an SVG
+  // `a`, as `SpecRunner.implicit_role` reads them: `tagName` would fold the
+  // case of an HTML element's name and ignore its namespace.
   const role = (el) => {
-    const r = el.getAttribute("role");
+    const r = el.getAttributeNS(null, "role");
     if (r) return r;
-    const t = el.tagName.toLowerCase();
+    if (el.namespaceURI === "http://www.w3.org/2000/svg" && el.localName === "a") return "link";
+    if (el.namespaceURI !== "http://www.w3.org/1999/xhtml") return "";
+    const t = el.localName;
     if (t === "button") return "button";
     if (t === "a") return "link";
     if (t === "section") return "region";
@@ -23,14 +28,14 @@ window.__loc = function (loc) {
     if (/^h[1-6]$/.test(t)) return "heading";
     return "";
   };
-  const name = (el) => el.getAttribute("aria-label") || el.textContent;
+  const name = (el) => el.getAttributeNS(null, "aria-label") || el.textContent;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
   let n = walker.nextNode();
   while (n) {
     if (n.nodeType === 3) {
       if (kind === "text" && n.nodeValue === a) return n.parentNode;
-    } else if (kind === "label" && n.getAttribute("aria-label") === a) return n;
-    else if (kind === "test-id" && n.getAttribute("data-testid") === a) return n;
+    } else if (kind === "label" && n.getAttributeNS(null, "aria-label") === a) return n;
+    else if (kind === "test-id" && n.getAttributeNS(null, "data-testid") === a) return n;
     else if (kind === "role" && role(n) === a && name(n) === b) return n;
     n = walker.nextNode();
   }

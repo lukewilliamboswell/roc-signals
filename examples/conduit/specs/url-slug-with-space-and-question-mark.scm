@@ -1,0 +1,15 @@
+(test "Conduit URL — slug with space and question mark"
+  (setup (initial-location "/roc-signals/examples/conduit/#/"))
+  (steps
+    (stub-http "feed" :url "/api/articles?limit=20&offset=0" :status 200 :body "{\"articles\":[{\"slug\":\"a b?c\",\"title\":\"Exact reserved slug\",\"description\":\"Reserved description\",\"tagList\":[],\"createdAt\":\"2026-06-01T08:00:00.000Z\",\"favorited\":false,\"favoritesCount\":0,\"author\":{\"username\":\"anna?x\",\"bio\":\"Reserved name\",\"image\":\"\",\"following\":false}}],\"articlesCount\":1}")
+    (run-effect 1)
+    (stub-http "tags" :url "/api/tags" :status 200 :body "{\"tags\":[]}")
+    (run-effect 2)
+    (click (role link :name "Exact reserved slug"))
+    (expect-current-location "/roc-signals/examples/conduit/#/article/a%20b%3Fc")
+    (stub-http "exact article" :url "/api/articles/a%20b%3Fc" :status 200 :body "{\"article\":{\"slug\":\"a b?c\",\"title\":\"Exact reserved slug\",\"description\":\"Reserved description\",\"body\":\"Reserved body\",\"tagList\":[],\"createdAt\":\"2026-06-01T08:00:00.000Z\",\"favorited\":false,\"favoritesCount\":0,\"author\":{\"username\":\"anna?x\",\"bio\":\"Reserved name\",\"image\":\"\",\"following\":false}}}")
+    (run-effect 3)
+    (expect-document-title "Exact reserved slug - Conduit")
+    (expect-visible (text "Reserved body"))
+  )
+)

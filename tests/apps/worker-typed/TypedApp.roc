@@ -73,6 +73,9 @@ TypedApp := [].{
 	show_error = |error| match error {
 		Timeout => "timed out"
 		Refused => "refused"
+		TooDeep => "too deep"
+		NanKeys => "NaN keys"
+		TooManyFiles => "too many files"
 		Lost(_) => "lost"
 	}
 
@@ -104,6 +107,9 @@ TypedApp := [].{
 		Err(Failed(NotANumber(text))) => "not a number: ${text}"
 		Err(Timeout) => "timed out"
 		Err(Refused) => "refused"
+		Err(TooDeep) => "too deep"
+		Err(NanKeys) => "NaN keys"
+		Err(TooManyFiles) => "too many files"
 		Err(Lost(_)) => "lost"
 	}
 
@@ -119,6 +125,9 @@ TypedApp := [].{
 		Err(Failed(Empty)) => "empty"
 		Err(Timeout) => "timed out"
 		Err(Refused) => "refused"
+		Err(TooDeep) => "too deep"
+		Err(NanKeys) => "NaN keys"
+		Err(TooManyFiles) => "too many files"
 		Err(Lost(_)) => "lost"
 	}
 
@@ -143,20 +152,20 @@ TypedApp := [].{
 				Html.button("Parse", [], st.update(|s| { ..s, submitted: { n: s.submitted.n + 1, text: s.text }, parsed: "parsing" })),
 				Engine.watch_latest(
 					v.map(|s| s.submitted),
-					|{ n, text }| if (n == 0) [] else [TypedApp.parse.request(text)],
-					st.on_result(|s, _, res| { ..s, parsed: TypedApp.show_parsed(TypedApp.parse.result(res)) }),
+					|{ n, text }| if (n == 0) [] else [TypedApp.parse.ask(text)],
+					st.on_result(|s, _, res| { ..s, parsed: TypedApp.show_parsed(res) }),
 				),
 				Html.p_s(v.map(|s| s.parsed), [Engine.test_id("parsed")]),
 				Html.button("Shout", [], st.update(|s| { ..s, shouted: { n: s.shouted.n + 1, text: s.text } })),
 				Engine.watch_latest(
 					v.map(|s| s.shouted),
-					|{ n, text }| if (n == 0) [] else [TypedApp.loud.request(text)],
-					st.on_result(|s, _, res| { ..s, loud: TypedApp.show_loud(TypedApp.loud.result(res)) }),
+					|{ n, text }| if (n == 0) [] else [TypedApp.loud.ask(text)],
+					st.on_result(|s, _, res| { ..s, loud: TypedApp.show_loud(res) }),
 				),
 				Engine.watch_latest(
 					v.map(|s| s.shouted),
-					|{ n, text }| if (n == 0) [] else [TypedApp.checked.request(text)],
-					st.on_result(|s, _, res| { ..s, checked: TypedApp.show_checked(TypedApp.checked.result(res)) }),
+					|{ n, text }| if (n == 0) [] else [TypedApp.checked.ask(text)],
+					st.on_result(|s, _, res| { ..s, checked: TypedApp.show_checked(res) }),
 				),
 				Html.p_s(v.map(|s| s.loud), [Engine.test_id("loud")]),
 				Html.p_s(v.map(|s| s.checked), [Engine.test_id("checked")]),

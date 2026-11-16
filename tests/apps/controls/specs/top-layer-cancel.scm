@@ -1,0 +1,16 @@
+(test "Top layer — cancellation is honored once per user activation"
+  (setup (initial-location "/#top-layer"))
+  (steps
+    (click (role button :name "Open prevented"))
+    (dismiss)
+    (expect-shown (label "Prevented") modal)
+    (dismiss)
+    (expect-shown (label "Prevented") hidden)
+    (click (role button :name "Open prevented"))
+    (dismiss)
+    (expect-shown (label "Prevented") modal)
+    (press "F2")
+    (dismiss)
+    (expect-shown (label "Prevented") modal)
+    (click (role button :name "Close prevented"))
+    (expect-shown (label "Prevented") hidden)))

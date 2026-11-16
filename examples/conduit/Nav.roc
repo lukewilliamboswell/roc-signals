@@ -22,15 +22,15 @@ Nav := [].{
 	## A link with a fixed label, class and URL.
 	link : Asked(st), Str, Str, Str -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
-	link = |nav, label, cls, url| Engine.element("a", [Engine.class(cls), Engine.attr("href", url), Engine.on("click:prevent", Nav.go(nav, url))], [Engine.text(label)])
+	link = |nav, label, cls, url| Engine.element("a", [Engine.class(cls), Engine.attr("href", url), Engine.on_with("click", { prevent: True }, Nav.go(nav, url))], [Engine.text(label)])
 
 	## A link whose class follows a value.
 	link_c : Asked(st), Str, Signal(ctx, Str), Str -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
-	link_c = |nav, label, cls, url| Engine.element("a", [Engine.class_s(cls), Engine.attr("href", url), Engine.on("click:prevent", Nav.go(nav, url))], [Engine.text(label)])
+	link_c = |nav, label, cls, url| Engine.element("a", [Engine.class_s(cls), Engine.attr("href", url), Engine.on_with("click", { prevent: True }, Nav.go(nav, url))], [Engine.text(label)])
 
 	## A link whose label and URL follow values.
 	link_s : Asked(st), Signal(ctx, Str), Str, Signal(ctx, Str) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
-	link_s = |nav, label, cls, url| Engine.element("a", [Engine.class(cls), Engine.attr_s("href", url), Engine.on("click:prevent", Nav.go_by(nav, url))], [Engine.text_s(label)])
+	link_s = |nav, label, cls, url| Engine.element("a", [Engine.class(cls), Engine.attr_s("href", url), Engine.on_with("click", { prevent: True }, Nav.go_by(nav, url))], [Engine.text_s(label)])
 }

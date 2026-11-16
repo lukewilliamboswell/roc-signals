@@ -1,0 +1,18 @@
+(test "Commands ask for fullscreen and wake while subscriptions report actual state"
+  (steps
+    (expect-port-subscriptions "example.org/recipes/fullscreen-state" 1)
+    (expect-port-subscriptions "example.org/recipes/wake-state" 1)
+    (click (role button :name "Enter fullscreen"))
+    (expect-port-sent "example.org/recipes/fullscreen" 1 "{}")
+    (expect-text (test-id "fullscreen-result") "Windowed")
+    (emit-port "example.org/recipes/fullscreen-state" "true")
+    (expect-text (test-id "fullscreen-result") "Fullscreen")
+    (click (role button :name "Toggle wake lock"))
+    (expect-port-sent "example.org/recipes/wake" 1 "true")
+    (expect-text (test-id "wake-result") "Wake lock released")
+    (emit-port "example.org/recipes/wake-state" "true")
+    (expect-text (test-id "wake-result") "Wake lock held")
+    (click (role button :name "Toggle wake lock"))
+    (expect-port-sent "example.org/recipes/wake" 2 "false")
+    (emit-port "example.org/recipes/wake-state" "false")
+    (expect-text (test-id "wake-result") "Wake lock released")))

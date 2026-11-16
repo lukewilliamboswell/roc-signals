@@ -106,7 +106,8 @@ It gives `body` a value of type `Engine.Remote(output, Worker.Error(error))`:
   job works: `remote.answered() ?? default` shows a fallback, and
   `.map_ok(f)` picks from it. `Worker.status(remote)` is the whole resource as
   one union, `Unasked`, `Working`, `Answered(output)`, the task's own
-  `Failed(error)`, `Timeout`, `Refused` or `Lost(fault)`, for a view that
+  `Failed(error)`, `Timeout`, `Refused`, `TooDeep`, `NanKeys`, `TooManyFiles` or
+  `Lost(fault)`, for a view that
   says something different in each case (see [Failures](#failures)).
 - To show an answer beside state the resource does not hold (the page of
   results the user is on, say), lift the state in and combine the two:
@@ -156,8 +157,8 @@ body never needs to write that out.
 When the user decides when a job runs, keep the request in state and use
 `Engine.watch_latest` (see
 [Effects and the Browser](@/docs/effects-and-browser.md#superseding-sites)).
-`task.request(input)` is the request for its plan, and `task.result(res)`
-reads its result as `Try(output, Worker.Error(error))`:
+`task.ask(input)` is the ask for its plan, and its reaction receives the
+job's result as `Try(output, Worker.Error(error))`:
 
 {{ sample(file="workers/Editor.roc", region="model") }}
 
@@ -258,8 +259,9 @@ text; `file.contents!()` gives its bytes and `file.read!({ start, len })` a
 range of them. A read can fail, because the user may have changed or
 deleted the file since choosing it, so each effect answers a `Try`, and `?`
 passes its error on as the task's own. A read fails only with
-`Unreadable` (and `InvalidUtf8` when text was asked for), so the task's
-error can be any union that has those tags; here it is `Engine.FileError`.
+`Unreadable` (`OutsideFile` too for a range, and `InvalidUtf8` when text
+was asked for), so the task's error can be any union that has those tags;
+here it is `Engine.FileError`.
 
 A job can also write. `Files.build!` (from `import pf.Files`) opens a builder, `append!` copies bytes
 into it, and `finish!` turns it into a new, immutable `File` that the
@@ -418,6 +420,14 @@ sources and a timeline of entries a minute; its overview and its chart are
 answered from the index alone, and its search and its viewer read only the
 lines they need.
 
+The viewer follows its native scrollbar, asking the worker for only the
+fixed-height lines that fit. Its spacer is capped at 8,000,000 pixels; for a
+taller log the scroll map is proportional, while paging and “Go to line”
+keep fine movement available. Jumps scroll instantly, and their scroll
+echoes write nothing, so one jump asks for one window. Superseded window
+jobs use `on_cancel: Finish` to keep the worker's prepared index for the
+next question.
+
 Two costs come with a state like this:
 
 - A question about the whole text, such as a search for a word, reads the
@@ -485,6 +495,11 @@ changes, so tell the user, as the rows do, or ask again from a button.
 Jobs beyond the number of workers wait for a free one. The pool's size is
 the page's `maxWorkers` option (see [Serving the app](#serving-the-app)).
 
+Task and prepared-task timeouts use `Unlimited` for none, or `Ms(ms)` with
+at least one millisecond. `Ms(0)` is a contract error when `Worker.task` or
+the preparation's task constructor is called. A bad top-level constant
+fails while compiling; a computed bad timeout faults when constructed.
+
 **A timeout stops a job that takes too long.** `timeout: Ms(ms)` stops a
 job that has not answered `ms` milliseconds after it was asked for, and
 delivers the result `Timeout`:
@@ -536,6 +551,9 @@ tells them apart:
 | `Failed(error)` | The task answered `Err(error)`: a failure of its own, which it chose |
 | `Timeout` | The job's timeout expired, and it was stopped |
 | `Refused` | Too many requests were in flight; the job was never started |
+| `TooDeep` | The input or the answer nested more than 128 levels of lists, sets, dictionaries, records, tuples, tags with a payload and files; nothing was sent or answered, and the worker was kept |
+| `NanKeys` | The input or the answer held a dictionary with more than one NaN key, which a payload cannot tell apart; nothing was sent or answered, and the worker was kept |
+| `TooManyFiles` | The answer held more than 16 files; nothing was answered, and the worker was kept |
 | `Lost(fault)` | The job crashed, or no worker could run it |
 
 **The task's own error.** A calculation that can fail on its input (text
@@ -551,8 +569,8 @@ the two into one union, so a view matches each case once:
 {{ sample(file="workers/Editor.roc", region="failing-view") }}
 
 With `request` and `result`, the same cases are `Ok(value)`,
-`Err(Failed(error))`, `Err(Timeout)`, `Err(Refused)` and
-`Err(Lost(fault))`.
+`Err(Failed(error))`, `Err(Timeout)`, `Err(Refused)`, `Err(TooDeep)`,
+`Err(NanKeys)`, `Err(TooManyFiles)` and `Err(Lost(fault))`.
 
 **A long job.** A job cannot be stopped from inside: there are no
 checkpoints, and stopping one ends its worker. Split long work into
@@ -570,7 +588,7 @@ working. The next job starts a new worker.
 | Fault | Cause |
 |---|---|
 | `AppCrash`, `OutOfMemory`, `ExpectFailed` | The job crashed, ran out of memory, or failed an `expect` |
-| `Contract` | The job broke a rule of the API: an answer holding more than 16 files, a payload nested too deep, a builder used after `finish!` |
+| `Contract` | The job broke a rule of the API: a builder used after `finish!` |
 | `ResourceLimit` | The job held more than 64 files and builders at once, or the page had no room for the files of its answer |
 | `Unavailable` | No worker could run the job (below) |
 | `Executor` | The worker script itself failed |
@@ -589,7 +607,15 @@ reaches the view, and a total whose job is lost (see [Testing](#testing)).
 A task's input, output and error must be `Wire.Sendable`. Most types are,
 with no code from you: numbers, `Bool`, `Str`, lists, sets, dictionaries,
 records, tuples and tag unions of those, and `File`, which crosses as a
-handle.
+handle. A dictionary key must be a number, `Bool`, `Str` or a tag union
+without payloads. A key that is a tuple, a record or a nominal type is a
+compile error at the task's declaration, naming the missing method
+`encode_key_start`: its equality is its type's own, which the format
+cannot see, so two keys the type equates would silently become one entry
+([roc#13057](https://github.com/roc-lang/roc/issues/13057)), and the
+compiler cannot yet build such a key's codec
+([roc#12919](https://github.com/roc-lang/roc/issues/12919)). Use a
+`Dict(Str, v)` or a list of pairs instead.
 
 {{ sample(file="wire.roc", region="structural") }}
 
@@ -629,16 +655,49 @@ field.) Inside a payload, use a tag union of your own, such as
 `[Parsed(U64), NotANumber(Str)]`.
 
 For bulk bytes the page already holds, wrap the `List(U8)` in `Wire.Bytes`.
-It is encoded exactly like the list but copied as one block rather than
-byte by byte:
+It is encoded and read as one CBOR byte string rather than item by item.
+An empty `Bytes` is an empty byte string, while an ordinary empty derived
+list is an empty array, and the strict reader reads each only as its own
+type. Both ends of a job always have the same types, so this never refuses
+a payload one instance sends another:
 
 {{ sample(file="wire.roc", region="bytes") }}
 
-Every payload is decoded strictly. A value nested more than 512 containers
-deep cannot cross either way, and either way only the job is lost: an input
-that deep fails to decode in the worker, and an answer that deep is refused
-in the worker before it is sent, so the job is `Lost(Contract)` and the
-console names the task and the bound. Keep payloads plain: each payload
+Payloads use the pinned roc-cbor format. Records carry field names, dictionaries
+have sorted keys, and every number uses the writer's preferred representation.
+The two instances are the same compiled module; payload bytes are not a format
+for an app to persist across releases. A float keeps its zero sign, while all
+NaN payloads become one canonical NaN. A dictionary with `F32` or `F64` keys
+cannot hold both `0.0` and `-0.0`, which float equality makes one key, so a
+payload holding both is refused rather than read as one entry. NaN is not
+equal to itself, so such a dictionary can hold several NaN keys, but a
+payload writes every NaN alike: one NaN key crosses, and a dictionary with
+two is not sent. Its job's result is `NanKeys`, as `TooDeep` below.
+
+A handwritten codec is generic over its format and names only the hooks it
+calls: an `encoder_for` of type `format -> (T, enc -> Try(enc, []))` whose
+`where` clause lists, say, `format.encode_list` and `format.encode_str`, and
+which calls them through a local alias of `format`. It never names the
+platform's format or its states, which are not public: pass each supplied
+state through the hooks, as a derived codec does. A list, tuple or tag's
+accumulator is distinct from the writer its add callback supplies for each
+item. A handwritten parser that opens a dictionary with `parse_dict_start`
+calls `parse_dict_after_key` after each key, as a derived one does.
+
+`Wire` encodes and decodes only the payloads the platform carries between
+instances; it offers no encode or decode of its own. An app that needs CBOR
+bytes of its own depends on roc-cbor and chooses its own schema and
+persistence contract. A worker task's types derive their codecs through
+`Wire.Sendable`, so a task's source calls no encoder or decoder.
+
+Every payload is decoded strictly. A value crosses only if it nests at
+most 128 levels: each list, set, dictionary, record, tuple, tag with a
+payload and file is one level of the path down to it. A deeper input is
+not sent and its job's result is `TooDeep` at once; a deeper answer is not
+sent either, and the job's result is `TooDeep`. Either way the worker and
+its prepared state are kept, and nothing is lost. The bound is what a
+browser worker can encode safely on every build; a handwritten codec that
+recurses without the container hooks is not counted. Keep payloads plain: each payload
 type adds code to the module.
 
 ## When a worker is worth it
@@ -675,16 +734,16 @@ returns add code too, usually far less than the task itself.
 
 ## Serving the app
 
-The runtime starts its workers from `worker.mjs`, which it loads from beside
-`runtime.mjs`, so the two are served together, from the same origin as the
-page. `roc signals.roc serve` does this, and `roc signals.roc build` puts
-both beside the app's module in `dist/` (see
+The runtime starts its workers from `worker.mjs`, beside `runtime.mjs`.
+It also imports `environment.mjs` for browser facts. Serve all three together,
+from the same origin as the page. `roc signals.roc serve` does this, and `roc signals.roc build` puts
+the runtime files beside the app's module in `dist/` (see
 [Getting Started](@/docs/getting-started.md#build-it-for-deployment)).
-Serving the files yourself, copy both from the release, or from `platform/`
+Serving the files yourself, copy all three from the release, or from `platform/`
 in a checkout:
 
 ```sh
-cp platform/runtime.mjs platform/worker.mjs my-site/
+cp platform/runtime.mjs platform/environment.mjs platform/worker.mjs my-site/
 ```
 
 A worker receives the module the page already compiled, so `app.wasm` is not
@@ -800,3 +859,13 @@ the sites that issue it and react to its answer (`Worker.resource`, `watch_lates
 `Engine.resource`). The handles are the same idea, and so are the `!`
 effects on them; what is different is that a job's effects cannot wait, and
 that a handle crosses to the job by token rather than being shared.
+
+## Debugging a task
+
+A job’s `dbg` lines appear on the page console with `[dbg task "name"]` when
+its answer or fault arrives. Preparation output precedes task output; a kept
+preparation prints only when it actually runs. A cancelled job allowed to
+finish still prints, while a stopped, timed-out or lost worker loses its
+buffer with its memory. While investigating that job, lengthen its timeout
+or call its function from an `expect`. `dbg: "off"` applies to jobs too.
+See [Debugging](@/docs/debugging.md) before deploying debug statements.

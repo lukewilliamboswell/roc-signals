@@ -6,6 +6,7 @@
     ; The overview is asked above the tabs, so leaving its tab keeps its
     ; job; the viewer asks its own beside it.
     (click (role button :name "Viewer"))
+    (report-size (test-id "viewer-viewport") 800 1000)
     (expect-pending-work "roc-signals.example/log-explorer/overview" 1)
     (expect-pending-work "roc-signals.example/log-explorer/window" 1)
     (run-effect 2)

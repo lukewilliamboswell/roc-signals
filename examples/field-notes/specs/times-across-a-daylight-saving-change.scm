@@ -1,0 +1,21 @@
+(test "Field notes — times across a daylight saving change"
+  (setup
+    (seed 7)
+    (initial-online offline)
+    (initial-time 0)
+    (languages "en-AU")
+    (time-zone "Example/DST" 60 (60000 120)))
+  (steps
+    (fill (label "Note body") "Before")
+    (click (role button :name "Save note"))
+    (run-effect 1)
+    (expect-text (test-id "captured-n-63cbe1e459320dd7") "Captured 01:00 · just now")
+    (set-time 60000)
+    (fill (label "Note body") "After")
+    (click (role button :name "Save note"))
+    (run-effect 2)
+    (tick-interval 30000)
+    (expect-text (test-id "captured-n-63cbe1e459320dd7") "Captured 01:00 · 1 min ago")
+    (expect-text (test-id "captured-n-044c3cd7f43c661c") "Captured 02:01 · just now")
+    (expect-attr (test-id "captured-n-63cbe1e459320dd7") datetime "1970-01-01T00:00:00Z")
+    (expect-attr (test-id "captured-n-044c3cd7f43c661c") datetime "1970-01-01T00:01:00Z")))

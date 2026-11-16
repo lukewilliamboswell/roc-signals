@@ -114,7 +114,7 @@ DeepApp := [].{
 							[
 								Engine.resource(
 									Engine.const("r"),
-									{ init: 0.I64, pending: |n, _| n, plan: |_| [Timer(50)], resolve: |n, _, _| n + 1 },
+									{ init: 0.I64, pending: |n, _| n, plan: |_| [Engine.timer(50)], resolve: |n, _, _| n + 1 },
 									|answers| DeepApp.reader("answers", answers),
 								),
 								Engine.state({}, |_| Engine.derive(s12.lift().signal().map(|n| n * 2), |d| DeepApp.below_d(a12.lift().lift(), s12.lift().lift(), d))),

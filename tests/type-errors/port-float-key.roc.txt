@@ -1,0 +1,16 @@
+app [main] { pf: platform "<PLATFORM>" }
+
+import pf.Engine
+import pf.Port
+
+## A float has many texts for one key and keys NaN never equals, so a
+## dictionary keyed by one cannot cross a port: the port's derived codec has
+## no float key, and the compiler refuses it.
+call : Port.Call({}, Dict(F64, U8))
+call = Port.call({ name: "test.roc-signals/float-key" })
+
+main : Engine.Program
+main = Engine.program(|| Engine.watch(Engine.const({}), |_| [call.ask({})], Engine.ignore({}))).with_ports([call.registration()])
+
+## No shared store is declared by this contract fixture.
+Store : {}

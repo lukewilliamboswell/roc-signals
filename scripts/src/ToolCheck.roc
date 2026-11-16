@@ -15,6 +15,7 @@ import ToolRelease
 ## on the Worker Lab; every failure the tool explains (a misused command
 ## line, a missing `main.roc`, `index.html` or spec, a failing spec, a build
 ## error, no `roc` on the PATH, a compiler other than the release's); the
+## explicit first pictures, route-collision publication refusal, and the
 ## built `dist/` mounting from a plain static server in Chrome with a worker
 ## running jobs (`tests/browser/tool-dist.mjs`); and `serve` in Chrome
 ## (`tests/browser/tool-serve.mjs`).
@@ -37,120 +38,239 @@ ToolCheck := [].{
 		}
 	}
 
-	## Run the whole check. Returns the problems found.
+	## The tool's check as independent scenarios, each from its own empty
+	## directory with its own copy of the dry run's `signals.roc`: the
+	## commands and `init` (no builds), the counter's specs and builds with
+	## the compiler's reports, its first pictures, the failures the tool
+	## explains, the Worker Lab as a new app, and `serve` in Chrome. Every
+	## scenario's builds are the tool's own (`signals.roc build` compiles at
+	## `--opt=size`, `test` a development runner), which is what it checks,
+	## so a scenario shares none; the scenarios share nothing either, so they
+	## run in parallel (`run!`).
+	scenarios : List(Str)
+	scenarios = ["commands", "counter", "pictures", "failures", "lab", "serve"]
+
+	## Run every scenario, `Proc.compiler_jobs!(App)` at a time (each runs
+	## one compiler at a time), each as a process of `scripts/tool_check.roc`
+	## built once. Each scenario's output is printed whole, in order, and
+	## its `FAIL` lines are the problems returned; a scenario that fails
+	## without one is a problem naming its exit code.
 	run! : SpecSuite.Options => Try(List(Str), _)
 	run! = |o| {
+		SpecSuite.fresh_dir!("${o.build_dir}/tool-check")?
+		runner = "${o.build_dir}/tool-check-runner"
+		Proc.run!({ program: o.tooling, args: ["build", "--opt=dev", "scripts/tool_check.roc", "--output=${runner}"], cwd: o.root })?
+		limit = Proc.compiler_jobs!(App)?
+		Proc.note!("== signals.roc: ${ToolCheck.scenarios.len().to_str()} scenarios, ${limit.to_str()} at a time")
+		results = Proc.parallel!(ToolCheck.scenarios.map(|name| { program: runner, args: [name], cwd: o.root }), limit)?
+		Ok(List.map2(ToolCheck.scenarios, results, |name, r| scenario_problems(name, r)).join())
+	}
+
+	## Run one scenario of `scenarios` in `.build/tool-check/NAME`. Returns
+	## the problems found.
+	scenario! : SpecSuite.Options, Str => Try(List(Str), _)
+	scenario! = |o, name| {
 		shim = "${o.build_dir}/release/signals.roc"
 		package_url = ToolCheck.package_of(Path.read_utf8!(Path.utf8(shim))?) ? |_| NoPackageInToolApp(shim)
 		roc = Str.from_utf8_lossy(Proc.capture!({ program: "sh", args: ["-c", "command -v ${o.compiler}"], cwd: o.root })?).trim()
-		scratch = "${o.build_dir}/tool-check"
+		scratch = "${o.build_dir}/tool-check/${name}"
 		SpecSuite.fresh_dir!(scratch)?
 		Path.copy!(Path.utf8(shim), Path.utf8("${scratch}/signals.roc"))?
 		tool = { roc, shim: "${scratch}/signals.roc", package_url, package_main: "${ToolRelease.stage_of(o)}/main.roc", platform_main: "${o.root}/platform/main.roc", path: Inherit }
 		counter = "${scratch}/counter"
 		lab = "${scratch}/lab"
 		var $problems = []
+		match name {
+			"commands" => {
+				# Command help works before an app exists and performs no command work.
+				before_help = Path.list!(Path.utf8(scratch))?.map(Path.display).sort_with(SpecSuite.compare_str)
+				for command in ["init", "serve", "build", "test"] {
+					for flag in ["--help", "-h"] {
+						$problems = $problems.concat(judge(run_tool!(tool, scratch, [command, flag])?, { code: 0, says: ["Usage: roc signals.roc ${command}", "This is roc-signals", "tested with Roc", "Documentation:"] }))
+					}
+				}
+				if Path.list!(Path.utf8(scratch))?.map(Path.display).sort_with(SpecSuite.compare_str) != before_help {
+					$problems = $problems.append("signals.roc command help changed files in an empty app directory")
+				}
 
-		# Command help works before an app exists and performs no command work.
-		before_help = Path.list!(Path.utf8(scratch))?.map(Path.display).sort_with(SpecSuite.compare_str)
-		for command in ["init", "serve", "build", "test"] {
-			for flag in ["--help", "-h"] {
-				$problems = $problems.concat(judge(run_tool!(tool, scratch, [command, flag])?, { code: 0, says: ["Usage: roc signals.roc ${command}", "This is roc-signals", "tested with Roc", "Documentation:"] }))
+				# Creating an app, and what init refuses.
+				$problems = $problems.concat(judge(run_tool!(tool, scratch, ["init", "counter"])?, { code: 0, says: ["Created the app counter, a counter on roc-signals", "  cd counter\n  roc signals.roc serve"] }))
+				for file in ["signals.roc", "main.roc", "Counter.roc", "index.html", "specs/counter.scm", ".gitignore"] {
+					if !(Path.exists!(Path.utf8("${counter}/${file}"))?) {
+						$problems = $problems.append("signals.roc init did not write ${file}")
+					}
+				}
+				main = Path.read_utf8!(Path.utf8("${counter}/main.roc"))?
+				if !main.contains("platform \"https://") or Path.read_utf8!(Path.utf8("${counter}/Counter.roc"))?.contains("# region") {
+					$problems = $problems.append("signals.roc init: main.roc must name the release's platform, and Counter.roc must have no region markers")
+				}
+				$problems = $problems.concat(judge(run_tool!(tool, scratch, ["init", "counter"])?, { code: 1, says: ["counter/signals.roc already exists, so init changed nothing"] }))
+				$problems = $problems.concat(judge(run_tool!(tool, counter, ["init"])?, { code: 1, says: ["Counter.roc already exists, so init changed nothing"] }))
+				Path.create_all!(Path.utf8("${scratch}/empty"))?
+				$problems = $problems.concat(judge(run_tool!(tool, "${scratch}/empty", ["init", "app"])?, { code: 1, says: ["init copies signals.roc into the new app, but there is no signals.roc in this directory, so app was not created."] }))
+
+				# A misused command line, and a directory with no app.
+				$problems = $problems.concat(judge(run_tool!(tool, scratch, ["srve"])?, { code: 2, says: ["There is no command \"srve\". The commands are init, serve, build and test"] }))
+				$problems = $problems.concat(judge(run_tool!(tool, counter, ["serve", "--port", "http"])?, { code: 2, says: ["--port takes a port number from 1 to 65535, and \"http\" is not one."] }))
+				$problems = $problems.concat(judge(run_tool!(tool, counter, ["build", "--watch"])?, { code: 2, says: ["build does not take \"--watch\"."] }))
+				$problems = $problems.concat(judge(run_tool!(tool, scratch, ["build"])?, { code: 1, says: ["There is no main.roc here, so there is no app to work on."] }))
 			}
-		}
-		if Path.list!(Path.utf8(scratch))?.map(Path.display).sort_with(SpecSuite.compare_str) != before_help {
-			$problems = $problems.append("signals.roc command help changed files in an empty app directory")
-		}
-
-		# Creating an app, and what init refuses.
-		$problems = $problems.concat(judge(run_tool!(tool, scratch, ["init", "counter"])?, { code: 0, says: ["Created the app counter, a counter on roc-signals", "  cd counter\n  roc signals.roc serve"] }))
-		for file in ["signals.roc", "main.roc", "Counter.roc", "index.html", "specs/counter.scm", ".gitignore"] {
-			if !(Path.exists!(Path.utf8("${counter}/${file}"))?) {
-				$problems = $problems.append("signals.roc init did not write ${file}")
+			"counter" => {
+				$problems = $problems.concat(ToolCheck.new_app!(tool, scratch, "counter")?)
+				# The counter's specs and its deployable build.
+				$problems = $problems.concat(ToolCheck.compiler_reports!({ tool, dir: counter })?)
+				$problems = $problems.concat(dist_problems!(o, counter)?)
 			}
-		}
-		main = Path.read_utf8!(Path.utf8("${counter}/main.roc"))?
-		if !main.contains("platform \"https://") or Path.read_utf8!(Path.utf8("${counter}/Counter.roc"))?.contains("# region") {
-			$problems = $problems.append("signals.roc init: main.roc must name the release's platform, and Counter.roc must have no region markers")
-		}
-		$problems = $problems.concat(judge(run_tool!(tool, scratch, ["init", "counter"])?, { code: 1, says: ["counter/signals.roc already exists, so init changed nothing"] }))
-		$problems = $problems.concat(judge(run_tool!(tool, counter, ["init"])?, { code: 1, says: ["Counter.roc already exists, so init changed nothing"] }))
-		Path.create_all!(Path.utf8("${scratch}/empty"))?
-		$problems = $problems.concat(judge(run_tool!(tool, "${scratch}/empty", ["init", "app"])?, { code: 1, says: ["init copies signals.roc into the new app, but there is no signals.roc in this directory, so app was not created."] }))
-
-		# A misused command line, and a directory with no app.
-		$problems = $problems.concat(judge(run_tool!(tool, scratch, ["srve"])?, { code: 2, says: ["There is no command \"srve\". The commands are init, serve, build and test"] }))
-		$problems = $problems.concat(judge(run_tool!(tool, counter, ["serve", "--port", "http"])?, { code: 2, says: ["--port takes a port number from 1 to 65535, and \"http\" is not one."] }))
-		$problems = $problems.concat(judge(run_tool!(tool, counter, ["build", "--watch"])?, { code: 2, says: ["build does not take \"--watch\"."] }))
-		$problems = $problems.concat(judge(run_tool!(tool, scratch, ["build"])?, { code: 1, says: ["There is no main.roc here, so there is no app to work on."] }))
-
-		# The counter's specs and its deployable build.
-		$problems = $problems.concat(judge(run_tool!(tool, counter, ["test"])?, { code: 0, says: ["Running 1 spec:", "  passed  the counter counts both ways", "The spec passed."] }))
-		$problems = $problems.concat(judge(run_tool!(tool, counter, ["build"])?, { code: 0, says: ["Built the app into dist/:", "  dist/index.html", "/app.wasm", "/runtime.mjs", "/worker.mjs"] }))
-		$problems = $problems.concat(dist_problems!(o, counter)?)
-
-		# What the tool says when something is missing or wrong.
-		Path.rename!(Path.utf8("${counter}/index.html"), Path.utf8("${counter}/away.html"))?
-		$problems = $problems.concat(judge(run_tool!(tool, counter, ["build"])?, { code: 1, says: ["There is no index.html here, and the app needs a page to mount it."] }))
-		$problems = $problems.concat(judge(run_tool!(tool, counter, ["serve"])?, { code: 1, says: ["There is no index.html here"] }))
-		Path.rename!(Path.utf8("${counter}/away.html"), Path.utf8("${counter}/index.html"))?
-		spec = Path.read_utf8!(Path.utf8("${counter}/specs/counter.scm"))?
-		Path.write_utf8!(Path.utf8("${counter}/specs/wrong.scm"), spec.replace_each("\"2\"", "\"3\""))?
-		$problems = $problems.concat(judge(run_tool!(tool, counter, ["test"])?, { code: 1, says: ["  FAILED  the counter counts both ways", "specs/wrong.scm:", "expected \"3\"", "Of 2 specs, 1 failed, 1 passed."] }))
-		Path.delete!(Path.utf8("${counter}/specs/wrong.scm"))?
-		Path.rename!(Path.utf8("${counter}/specs"), Path.utf8("${counter}/specs-away"))?
-		$problems = $problems.concat(judge(run_tool!(tool, counter, ["test"])?, { code: 1, says: ["There are no specs to run: specs/ holds no .scm files."] }))
-		Path.rename!(Path.utf8("${counter}/specs-away"), Path.utf8("${counter}/specs"))?
-		source = Path.read_utf8!(Path.utf8("${counter}/Counter.roc"))?
-		Path.write_utf8!(Path.utf8("${counter}/Counter.roc"), source.replace_each("Engine.state(0,", "Engine.state(\"zero\","))?
-		$problems = $problems.concat(judge(run_tool!(tool, counter, ["build"])?, { code: 1, says: ["Counter.roc", "The build failed: the compiler's report is above."] }))
-		# A compiler other than the release's: a `roc` that reports another
-		# version and otherwise runs the real one.
-		other = "${scratch}/other-roc"
-		Path.create_all!(Path.utf8(other))?
-		Path.write_utf8!(Path.utf8("${other}/roc"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 'Roc compiler version nightly-2000-01-01-0000000'; exit 0; fi\nexec '${roc}' \"$@\"\n")?
-		Proc.run!({ program: "chmod", args: ["+x", "${other}/roc"], cwd: o.root })?
-		$problems = $problems.concat(judge(run_tool!({ ..tool, path: Prepend(other) }, counter, ["build"])?, { code: 1, says: ["The build failed", "and `roc version` says nightly-2000-01-01-0000000. If the errors are not in your code, install"] }))
-		Path.write_utf8!(Path.utf8("${counter}/Counter.roc"), source)?
-		$problems = $problems.concat(judge(run_tool!({ ..tool, path: Only("/usr/bin:/bin") }, counter, ["build"])?, { code: 1, says: ["The Roc compiler is not on your PATH as `roc`, so the app cannot be built."] }))
-
-		# A worker-using app: the Worker Lab's modules and specs in a new app.
-		$problems = $problems.concat(judge(run_tool!(tool, scratch, ["init", "lab"])?, { code: 0, says: ["Created the app lab"] }))
-		Path.delete!(Path.utf8("${lab}/Counter.roc"))?
-		Path.delete!(Path.utf8("${lab}/specs/counter.scm"))?
-		for file in SpecSuite.roc_files!("examples/worker-lab")?.keep_if(|f| !f.ends_with("/main.roc") and Release.is_archived(f)) {
-			Path.copy!(Path.utf8(file), Path.utf8("${lab}/${file.split_on("/").last() ?? file}"))?
-		}
-		lab_specs = SpecSuite.files_with!("examples/worker-lab/specs", ".scm")?
-		for file in lab_specs {
-			Path.copy!(Path.utf8(file), Path.utf8("${lab}/specs/${file.split_on("/").last() ?? file}"))?
-		}
-		Path.write_utf8!(Path.utf8("${lab}/main.roc"), main.replace_each("import Counter", "import LabApp").replace_each("Counter.program", "LabApp.program"))?
-		$problems = $problems.concat(judge(run_tool!(tool, lab, ["test"])?, { code: 0, says: ["All ${lab_specs.len().to_str()} specs passed."] }))
-		# A style the page links goes into the hashed directory; a file
-		# under public/ keeps its name at the top of dist/.
-		Path.write_utf8!(Path.utf8("${lab}/style.css"), "body { margin: 0; }\n")?
-		Path.create_all!(Path.utf8("${lab}/public"))?
-		Path.write_utf8!(Path.utf8("${lab}/public/robots.txt"), "User-agent: *\n")?
-		page = Path.read_utf8!(Path.utf8("${lab}/index.html"))?
-		Path.write_utf8!(Path.utf8("${lab}/index.html"), page.replace_first("</head>", "<link rel=\"stylesheet\" href=\"style.css\"></head>"))?
-		$problems = $problems.concat(judge(run_tool!(tool, lab, ["build"])?, { code: 0, says: ["Built the app into dist/:", "/style.css", "  dist/robots.txt"] }))
-		$problems = $problems.concat(dist_problems!(o, lab)?)
-		built = Path.read_utf8!(Path.utf8("${lab}/dist/index.html"))?
-		if !built.contains("href=\"assets/") or !(Path.exists!(Path.utf8("${lab}/dist/robots.txt"))?) {
-			$problems = $problems.append("signals.roc build: the page's style must be hashed and public/robots.txt copied to dist/robots.txt")
-		}
-		dist_code = Proc.status!({ program: o.node, args: ["tests/browser/tool-dist.mjs", "--dist", "${lab}/dist", "--chrome", o.chrome], cwd: o.root })?
-		if dist_code != 0 {
-			$problems = $problems.append("tests/browser/tool-dist.mjs failed (exit ${dist_code.to_str()})")
-		}
-
-		# `serve` in Chrome, on the counter.
-		serve_code = Proc.status!({ program: o.node, args: ["tests/browser/tool-serve.mjs", "--app", counter, "--roc", roc, "--package", package_url, "--package-main", tool.package_main, "--platform", tool.platform_main, "--chrome", o.chrome], cwd: o.root })?
-		if serve_code != 0 {
-			$problems = $problems.append("tests/browser/tool-serve.mjs failed (exit ${serve_code.to_str()})")
+			"pictures" => {
+				$problems = $problems.concat(ToolCheck.new_app!(tool, scratch, "counter")?)
+				$problems = $problems.concat(ToolCheck.picture_builds!(o, { tool, dir: counter })?)
+			}
+			"failures" => {
+				$problems = $problems.concat(ToolCheck.new_app!(tool, scratch, "counter")?)
+				# What the tool says when something is missing or wrong.
+				Path.rename!(Path.utf8("${counter}/index.html"), Path.utf8("${counter}/away.html"))?
+				$problems = $problems.concat(judge(run_tool!(tool, counter, ["build"])?, { code: 1, says: ["There is no index.html here, and the app needs a page to mount it."] }))
+				$problems = $problems.concat(judge(run_tool!(tool, counter, ["serve"])?, { code: 1, says: ["There is no index.html here"] }))
+				Path.rename!(Path.utf8("${counter}/away.html"), Path.utf8("${counter}/index.html"))?
+				spec = Path.read_utf8!(Path.utf8("${counter}/specs/counter.scm"))?
+				Path.write_utf8!(Path.utf8("${counter}/specs/wrong.scm"), spec.replace_each("\"2\"", "\"3\""))?
+				$problems = $problems.concat(judge(run_tool!(tool, counter, ["test"])?, { code: 1, says: ["  FAILED  the counter counts both ways", "specs/wrong.scm:", "expected \"3\"", "Of 2 specs, 1 failed, 1 passed."] }))
+				Path.delete!(Path.utf8("${counter}/specs/wrong.scm"))?
+				Path.rename!(Path.utf8("${counter}/specs"), Path.utf8("${counter}/specs-away"))?
+				$problems = $problems.concat(judge(run_tool!(tool, counter, ["test"])?, { code: 1, says: ["There are no specs to run: specs/ holds no .scm files."] }))
+				Path.rename!(Path.utf8("${counter}/specs-away"), Path.utf8("${counter}/specs"))?
+				source = Path.read_utf8!(Path.utf8("${counter}/Counter.roc"))?
+				Path.write_utf8!(Path.utf8("${counter}/Counter.roc"), source.replace_each("Engine.state(0,", "Engine.state(\"zero\","))?
+				$problems = $problems.concat(judge(run_tool!(tool, counter, ["build"])?, { code: 1, says: ["Counter.roc", "The build failed: the compiler's report is above."] }))
+				# A compiler other than the release's: a `roc` that reports another
+				# version and otherwise runs the real one.
+				other = "${scratch}/other-roc"
+				Path.create_all!(Path.utf8(other))?
+				Path.write_utf8!(Path.utf8("${other}/roc"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 'Roc compiler version nightly-2000-01-01-0000000'; exit 0; fi\nexec '${roc}' \"$@\"\n")?
+				Proc.run!({ program: "chmod", args: ["+x", "${other}/roc"], cwd: o.root })?
+				$problems = $problems.concat(judge(run_tool!({ ..tool, path: Prepend(other) }, counter, ["build"])?, { code: 1, says: ["The build failed", "and `roc version` says nightly-2000-01-01-0000000. If the errors are not in your code, install"] }))
+				Path.write_utf8!(Path.utf8("${counter}/Counter.roc"), source)?
+				$problems = $problems.concat(judge(run_tool!({ ..tool, path: Only("/usr/bin:/bin") }, counter, ["build"])?, { code: 1, says: ["The Roc compiler is not on your PATH as `roc`, so the app cannot be built."] }))
+			}
+			"lab" => {
+				# A worker-using app: the Worker Lab's modules and specs in a new app.
+				$problems = $problems.concat(judge(run_tool!(tool, scratch, ["init", "lab"])?, { code: 0, says: ["Created the app lab"] }))
+				Path.delete!(Path.utf8("${lab}/Counter.roc"))?
+				Path.delete!(Path.utf8("${lab}/specs/counter.scm"))?
+				for file in SpecSuite.roc_files!("examples/worker-lab")?.keep_if(|f| !f.ends_with("/main.roc") and Release.is_archived(f)) {
+					Path.copy!(Path.utf8(file), Path.utf8("${lab}/${file.split_on("/").last() ?? file}"))?
+				}
+				lab_specs = SpecSuite.files_with!("examples/worker-lab/specs", ".scm")?
+				for file in lab_specs {
+					Path.copy!(Path.utf8(file), Path.utf8("${lab}/specs/${file.split_on("/").last() ?? file}"))?
+				}
+				# The example's own entry file, store type included, under the
+				# scaffold's platform header.
+				header = Path.read_utf8!(Path.utf8("${lab}/main.roc"))?.split_on("\n").first() ?? ""
+				example_main = Path.read_utf8!(Path.utf8("examples/worker-lab/main.roc"))?
+				Path.write_utf8!(Path.utf8("${lab}/main.roc"), Str.join_with([header].concat(example_main.split_on("\n").drop_first(1)), "\n"))?
+				$problems = $problems.concat(judge(run_tool!(tool, lab, ["test"])?, { code: 0, says: ["All ${lab_specs.len().to_str()} specs passed."] }))
+				# A style the page links goes into the hashed directory; a file
+				# under public/ keeps its name at the top of dist/.
+				Path.write_utf8!(Path.utf8("${lab}/style.css"), "body { margin: 0; }\n")?
+				Path.create_all!(Path.utf8("${lab}/public"))?
+				Path.write_utf8!(Path.utf8("${lab}/public/robots.txt"), "User-agent: *\n")?
+				page = Path.read_utf8!(Path.utf8("${lab}/index.html"))?
+				Path.write_utf8!(Path.utf8("${lab}/index.html"), page.replace_first("</head>", "<link rel=\"stylesheet\" href=\"style.css\"></head>"))?
+				$problems = $problems.concat(judge(run_tool!(tool, lab, ["build"])?, { code: 0, says: ["Built the app into dist/:", "/style.css", "  dist/robots.txt"] }))
+				$problems = $problems.concat(dist_problems!(o, lab)?)
+				built = Path.read_utf8!(Path.utf8("${lab}/dist/index.html"))?
+				if !built.contains("href=\"assets/") or !(Path.exists!(Path.utf8("${lab}/dist/robots.txt"))?) {
+					$problems = $problems.append("signals.roc build: the page's style must be hashed and public/robots.txt copied to dist/robots.txt")
+				}
+				dist_code = Proc.status!({ program: o.node, args: ["tests/browser/tool-dist.mjs", "--dist", "${lab}/dist", "--chrome", o.chrome], cwd: o.root })?
+				if dist_code != 0 {
+					$problems = $problems.append("tests/browser/tool-dist.mjs failed (exit ${dist_code.to_str()})")
+				}
+			}
+			"serve" => {
+				$problems = $problems.concat(ToolCheck.new_app!(tool, scratch, "counter")?)
+				# `serve` in Chrome, on the counter.
+				serve_code = Proc.status!({ program: o.node, args: ["tests/browser/tool-serve.mjs", "--app", counter, "--roc", roc, "--package", package_url, "--package-main", tool.package_main, "--platform", tool.platform_main, "--chrome", o.chrome], cwd: o.root })?
+				if serve_code != 0 {
+					$problems = $problems.append("tests/browser/tool-serve.mjs failed (exit ${serve_code.to_str()})")
+				}
+			}
+			_ => {
+				$problems = $problems.append("signals.roc: there is no scenario ${name}; the scenarios are ${Str.join_with(ToolCheck.scenarios, ", ")}")
+			}
 		}
 		Ok($problems)
+	}
+
+	## Create the app `name` in `dir` with `init`, as a scenario starts; a
+	## refused `init` is a problem.
+	new_app! : Tool, Str, Str => Try(List(Str), _)
+	new_app! = |tool, dir, name| Ok(judge(run_tool!(tool, dir, ["init", name])?, { code: 0, says: ["Created the app ${name}"] }))
+
+	## A real dbg reaches the optimized compiler warning; a harmless local-name
+	## warning also exercises the development compiler used by test. Both tool
+	## commands succeed and print their compiler reports. Restore the app before
+	## propagating process errors so later checks see the original clean source.
+	compiler_reports! : { tool : Tool, dir : Str } => Try(List(Str), _)
+	compiler_reports! = |{ tool, dir }| {
+		clean_test = run_tool!(tool, dir, ["test"])?
+		clean_build = run_tool!(tool, dir, ["build"])?
+		var $problems = judge(clean_test, { code: 0, says: ["Running 1 spec:", "  passed  the counter counts both ways", "The spec passed."] })
+		$problems = $problems.concat(judge(clean_build, { code: 0, says: ["Built the app into dist/:", "  dist/index.html", "/app.wasm", "/runtime.mjs", "/worker.mjs", "/environment.mjs"] }))
+		for clean in [clean_test, clean_build] {
+			if clean.output.contains("0 errors and 0 warnings") or clean.output.contains("duplicate definition") or clean.output.contains("dbg in optimized build") {
+				$problems = $problems.append("signals.roc ${Str.join_with(clean.args, " ")} printed a compiler report for a clean app")
+			}
+		}
+		path = Path.utf8("${dir}/Counter.roc")
+		source = Path.read_utf8!(path)?
+		before = "program = Engine.program(|| Engine.state(0, Counter.view))"
+		if !source.contains(before) {
+			return Err(NoCounterProgramInWarningFixture)
+		}
+		warning_source = source
+			.replace_each(before, "program = Engine.program(|| {\n\t\tdbg \"tool-warning-probe\"\n\t\tEngine.state(0, Counter.view)\n\t})")
+			.replace_each("|count|", "|view|")
+			.replace_each("count.", "view.")
+		Path.write_utf8!(path, warning_source)?
+		built = run_tool!(tool, dir, ["build"])
+		tested = run_tool!(tool, dir, ["test"])
+		restored = Path.write_utf8!(path, source)
+		restored?
+		build_report = built?
+		test_report = tested?
+		$problems = $problems.concat(judge(build_report, { code: 0, says: ["Counter.roc", "duplicate definition", "Built the app into dist/:"] }))
+		$problems = $problems.concat(judge(test_report, { code: 0, says: ["Counter.roc", "duplicate definition", "The spec passed."] }))
+		if !(build_report.output.contains("dbg") and build_report.output.contains("optimized build")) {
+			$problems = $problems.append("signals.roc build discarded the real optimized dbg warning")
+		}
+		Ok($problems)
+	}
+
+	## Exercise explicit root/nested routes and one failed publication on the
+	## small scaffold app. The full prior output is compared after the collision;
+	## the browser independently checks painted markup and the real mount.
+	picture_builds! : SpecSuite.Options, { tool : Tool, dir : Str } => Try(List(Str), _)
+	picture_builds! = |o, { tool, dir }| {
+		built = run_tool!(tool, dir, ["build", "--picture", "/", "/nested/?open=1#list"])?
+		var $problems = ToolCheck.judge(built, { code: 0, says: ["Built the app into dist/:", "dist/index.html", "dist/nested/index.html"] })
+		if built.code != 0 {
+			return Ok($problems)
+		}
+		page = Path.read_utf8!(Path.utf8("${dir}/dist/index.html"))?
+		nested = Path.read_utf8!(Path.utf8("${dir}/dist/nested/index.html"))?
+		if !page.contains("data-roc-picture-inert=\"added\"") or !nested.contains("data-roc-picture-inert=\"added\"") or !nested.contains("../assets/") {
+			$problems = $problems.append("picture build must emit owned inert first frames and nested relative asset URLs")
+		}
+		before = dist_snapshot!("${dir}/dist")?
+		collision = run_tool!(tool, dir, ["build", "--picture", "/nested/?open=1", "/nested/?open=2#other"])?
+		$problems = $problems.concat(ToolCheck.judge(collision, { code: 1, says: ["both write nested/index.html", "query and fragment variants"] }))
+		if dist_snapshot!("${dir}/dist")? != before {
+			$problems = $problems.append("a refused picture route collision changed the published dist tree")
+		}
+		code = Proc.status!({ program: o.node, args: ["tests/browser/tool-picture.mjs", "--dist", "${dir}/dist", "--chrome", o.chrome], cwd: o.root })?
+		Ok(if (code == 0) $problems else $problems.append("tests/browser/tool-picture.mjs failed (exit ${code.to_str()})"))
 	}
 
 	## The package URL `signals.roc` names.
@@ -202,6 +322,17 @@ run_tool! = |tool, dir, args| {
 	Ok({ code, output: text, args })
 }
 
+## Snapshot only the bounded scaffold fixture's published files. This is a
+## test oracle for publication atomicity, never a production cache or identity.
+dist_snapshot! : Str => Try(List({ path : Str, bytes : List(U8) }), _)
+dist_snapshot! = |dir| {
+	var $files = []
+	for path in SpecSuite.files_under!(dir, "")?.sort_with(SpecSuite.compare_str) {
+		$files = $files.append({ path: path.drop_prefix("${dir}/"), bytes: Path.read_bytes!(Path.utf8(path))? })
+	}
+	Ok($files)
+}
+
 ## The built `dist/` of the app in `dir`: its page names the hashed
 ## module and runtime, and the module mounts with the release check
 ## helper.
@@ -219,14 +350,32 @@ dist_problems! = |o, dir| {
 			$problems = $problems.append("signals.roc build: dist/index.html does not name ${url}")
 		}
 	}
-	for file in ["app.wasm", "runtime.mjs", "worker.mjs"] {
+	for file in ["app.wasm"].concat(SpecSuite.runtime_files) {
 		if !(Path.exists!(Path.utf8("${hashed}/${file}"))?) {
 			$problems = $problems.append("signals.roc build: dist/assets/${name}/ has no ${file}")
 		}
 	}
-	{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/release/check.mjs", "${hashed}/app.wasm"], cwd: o.root })?
+	{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/release/check.mjs", "${hashed}/app.wasm", "${hashed}/runtime.mjs"], cwd: o.root })?
 	Ok(if (code == 0) $problems else $problems.append("signals.roc build: the module in ${dir}/dist does not mount: ${Str.from_utf8_lossy(stdout)}"))
 }
+
+## A scenario's problems from its process: its `FAIL` lines, or, when it
+## failed without one, its exit code.
+scenario_problems : Str, { code : I32, output : Str } -> List(Str)
+scenario_problems = |name, { code, output }| {
+	failed = output.split_on("\n").keep_oks(|line| if (line.starts_with("FAIL ")) Ok("signals.roc ${name}: ${line.drop_prefix("FAIL ")}") else Err(NotAFailure))
+	if code == 0 {
+		[]
+	} else if failed.is_empty() {
+		["signals.roc ${name}: the scenario exited with ${code.to_str()} (see its output above)"]
+	} else {
+		failed
+	}
+}
+
+## A passing scenario has no problems; a failing one gives its FAIL lines,
+## or its exit code when it printed none.
+expect (scenario_problems("lab", { code: 0, output: "ok\n" }), scenario_problems("lab", { code: 1, output: "x\nFAIL a\nFAIL b\n" }), scenario_problems("lab", { code: 70, output: "crash\n" })) == ([], ["signals.roc lab: a", "signals.roc lab: b"], ["signals.roc lab: the scenario exited with 70 (see its output above)"])
 
 ## A run passes when its code and every sentence match.
 expect ToolCheck.judge({ code: 0, output: "Built. All done.", args: ["build"] }, { code: 0, says: ["Built."] }) == []

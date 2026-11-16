@@ -1,0 +1,22 @@
+(test "Deep payload — the measured worst shapes cross both ways at the bound, and past it are refused before they are sent"
+  (steps
+    (fill (label "Levels") "128")
+    (click (role button :name "Echo nested"))
+    (expect-pending-work "test.roc-signals/deep-payload/echo-nested" 1)
+    (run-effect 1)
+    (expect-text (test-id "nested") "128 levels")
+    (click (role button :name "Echo fat"))
+    (expect-pending-work "test.roc-signals/deep-payload/echo-fat" 1)
+    (run-effect 2)
+    (expect-text (test-id "fat") "128 levels")
+    ; Each shape adds two levels at a time: 130 is the first past the bound.
+    (fill (label "Levels") "130")
+    (click (role button :name "Echo nested"))
+    (expect-pending-work "test.roc-signals/deep-payload/echo-nested" 0)
+    (expect-text (test-id "nested") "too deep")
+    (click (role button :name "Echo fat"))
+    (expect-pending-work "test.roc-signals/deep-payload/echo-fat" 0)
+    (expect-text (test-id "fat") "too deep")
+    (expect-pending-effects 0)
+  )
+)

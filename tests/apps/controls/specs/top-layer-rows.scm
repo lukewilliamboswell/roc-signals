@@ -1,0 +1,15 @@
+(test "Top layer — shown row properties survive moves and release disposed owners"
+  (setup (initial-location "/#top-layer"))
+  (steps
+    (click (role button :name "Open row dialogs"))
+    (expect-shown (test-id "dialog-a") open)
+    (expect-shown (test-id "dialog-b") open)
+    (click (role button :name "Reverse shown rows"))
+    (expect-shown (test-id "dialog-a") open)
+    (expect-shown (test-id "dialog-b") open)
+    (click (role button :name "Remove shown rows"))
+    (expect-absent (test-id "dialog-a"))
+    (expect-absent (test-id "dialog-b"))
+    (click (role button :name "Restore shown rows"))
+    (expect-shown (test-id "dialog-a") hidden)
+    (expect-shown (test-id "dialog-b") hidden)))

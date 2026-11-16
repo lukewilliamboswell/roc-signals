@@ -29,7 +29,7 @@ ranges it needs straight into the worker's memory.
 
 ## Receiving files
 
-`State.on_files` makes a handler for the files an event carries. Its reducer
+`State.set_value` makes a handler for the files an event carries. Its reducer
 receives them and how many there were beyond what the app can hold at once:
 
 {{ sample(file="files/Upload.roc", region="state") }}
@@ -41,8 +41,8 @@ Attach it to a file input with `Html.file_input`, to a drop target with
 
 A reducer writes one state. When the files belong in the store, or one
 drop must write several cells that agree, the handler is a decision:
-`Engine.handle_files(decide)` gives `decide` the same `Received` and
-applies the list of writes it returns, and `Engine.handle_files_by(v,
+`Engine.handle(decide)` gives `decide` the same `Received` and
+applies the list of writes it returns, and `Engine.handle_by(v,
 decide)` also gives it the value `v` holds when the files arrive
 ([Shared State](@/docs/shared-state.md#decisions)). `first.also(second)`
 makes one handler of two, so a drop can write local state and run a
@@ -55,14 +55,21 @@ The browser opens its own chooser when the user clicks the file input, so
 there is nothing to set up for permissions. A drop target lets a dropped
 file land there instead of the browser opening it.
 
+The handler family is generic over its payload: `FilesHandler(ctx)` is
+`HandlerOf(ctx, Received)`, made with the same reducers, decisions and
+`also` as a text handler. Attaching a files handler to a text event is a
+compile error. For a raw element, `Engine.on_files` takes `Change`, `Drop`
+or `Paste`, so an event that cannot carry files cannot be selected.
+
 ## How long a file lasts
 
 A `File` is an ordinary value. Keep it in a state, put it in a list, compare
-it, or take a range of it with `File.slice`. It stays available as long as
+it, or take a range of it with `File.slice`, which answers `Err(OutsideFile)`
+for a range that does not lie within the file. It stays available as long as
 some value holds it, and the app lets it go when nothing does: write the
 state without it, or let the scope holding that state be disposed.
 
-Two things hold a file longer than you might expect:
+Several holders can keep a file longer than you might expect:
 
 - A slice of a list (`take_first`, `drop_first`, `sublist`) keeps the whole
   list's files alive. To keep some files and let the rest go, build a new
@@ -73,6 +80,10 @@ Two things hold a file longer than you might expect:
   effect site holds its files the same way, until the state is written
   without it, and an outbox holds its last post's files until the next
   post.
+- A table keeps earlier rows from its last writing turn. Removing a row
+  containing a file can leave that file held in the changes until the next
+  write of the table or disposal of its holder. Unrelated turns keep it,
+  and it still counts against the file bound.
 
 An app holds at most 64 files at once, counting the files a job answered
 with and downloaded ones. Files an event carries beyond that are not
@@ -96,8 +107,9 @@ the job, reading is an effect:
 slice, as text; `file.contents!()` gives its bytes, and
 `file.read!({ start, len })` reads one range, so a job can go through a
 large file a chunk at a time and keep its memory to a chunk.
-`file.spans(n)` gives those ranges, `n` bytes each and the last shorter,
-so the loop is `for span in file.spans(n) { bytes = file.read!(span)? ... }`.
+`file.spans(n)` gives those ranges, `n` bytes each and the last shorter
+(`Err(ZeroChunk)` for `n` of 0, which covers nothing), so the loop is
+`for span in file.spans(n)? { bytes = file.read!(span)? ... }`.
 These are
 effects, written with `!`, so they exist only in a job: page code is pure
 and the compiler refuses one there. On the page there are no bytes until
@@ -119,6 +131,11 @@ downloading.
 
 ## Acting on a file where it lives
 
+`File.upload` and `File.fetch` timeouts use `Unlimited` for none, or
+`Ms(ms)` with at least one millisecond, capped at ten minutes. `Ms(0)` is a
+contract error when the request is constructed; it does not mean an
+immediate timeout or no timeout.
+
 An operation on a file is a request, made in an effect site's plan like any
 other, which the runtime performs on the browser's own file:
 
@@ -126,17 +143,21 @@ other, which the runtime performs on the browser's own file:
 
 - `file.upload({ url })` sends the file, or a range of it, as an HTTP
   request's body. `method` (`"POST"` unless you say), `headers` (none) and
-  `timeout` (`Unlimited`, or `Ms(ms)`) are optional. The browser streams it
-  from the file. Read the answer with `http_text`, as for any HTTP request; like
-  one, it is still answered when the site that made it is disposed. A file
+  `timeout` (`Unlimited`, or `Ms(ms)`) and `credentials` (`SameOrigin`, or
+  `Include`) are optional. The browser streams it
+  from the file. Its typed answer is the full response, including status,
+  headers and text body. Map it when the app wants a particular status
+  policy. Like HTTP, it is still answered when its site is disposed. A file
   the browser can no longer read fails it as a network failure.
-- `File.sha256(file)` answers the SHA-256 digest, 32 bytes, with
-  `file_digest`. The browser reads the range into a buffer of its own, not
+  Attach a [progress handler](@/docs/effects-and-browser.md#transfer-progress)
+  to its reaction to report sending counts. Cross-origin upload progress
+  requires the server to answer a CORS preflight.
+- `File.sha256(file)` answers `Ok(digest)`, 32 bytes. The browser reads the range into a buffer of its own, not
   the page's memory; more than `maxFileBytes` is `TooLarge`, and a page
   outside a secure context (plain HTTP from another host than localhost)
   has no WebCrypto and answers `Unavailable`.
 - `File.object_url(file)` answers a URL for an `<img>`'s or a `<video>`'s
-  `src`, with `file_url`. The URL works exactly as long as some value holds
+  `src`, delivered as `Ok(url)`. The URL works exactly as long as some value holds
   the file: keep the file beside the URL. Asking again for the same range
   answers the same URL; one file gives at most 16 ranges URLs.
 
@@ -152,7 +173,7 @@ cancelled when their site is disposed; an upload is kept.
 
 For a small file in a simple app, bringing its bytes into the page is
 acceptable: ask for them with `file.read_bytes({})` or `file.read_utf8({})`,
-and read the answer with `file_bytes` or `file_text`. It is a request, not a
+and receive `Try(List(U8), FileError)` or `Try(Str, FileError)` in the reaction. It is a request, not a
 value, because the bytes are not on the page until the browser has read
 them. Its cost is honest: the browser reads the file into a buffer on the
 page's thread, and the bytes are copied once into the page's memory, where
@@ -173,10 +194,12 @@ digest and a downloaded body, and never what a job reads in a worker.
 | Text was asked for and the bytes are not UTF-8 | `InvalidUtf8` |
 | The browser cannot do it (a digest without WebCrypto) | `Unavailable` |
 | Too many requests were in flight | `Refused` |
+| In a job, a `read!` of a range outside the file | `OutsideFile` |
 
 The effects a job calls on a file answer only what each can produce:
-`read!` and `contents!` fail with `[Unreadable]`, `contents_utf8!` with
-`[Unreadable, InvalidUtf8]`, and a builder's `append!` with `[TooLarge]`.
+`read!` fails with `[Unreadable, OutsideFile]`, `contents!` with
+`[Unreadable]`, `contents_utf8!` with `[Unreadable, InvalidUtf8]`, and a
+builder's `append!` with `[TooLarge]`.
 `?` widens each into the task's own error, which can be `FileError` or a
 union of the app's own that names just these tags beside its others.
 
@@ -189,9 +212,9 @@ so both runners give it the same bytes:
 
 `(file NAME TYPE TEXT [REPEAT])` declares a file whose contents are `TEXT`
 repeated; `choose-files`, `drop-files` and `paste-files` give the app named
-files; `expect-files N` checks how many files the app holds. In Chrome a
-chosen file must get the type the spec declares, which the browser decides
-from the file's name.
+files; `expect-files N` checks how many files the app holds. Each step
+gives the app exactly the declared name, type and contents, in both
+runners and on every system: a type is never inferred from a name.
 
 Operations on a file wait for `run-effect`. `expect-upload N NAME START LEN`
 checks which file and range an upload sends, and a digest is computed for

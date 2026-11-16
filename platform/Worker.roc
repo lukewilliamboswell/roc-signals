@@ -1,6 +1,7 @@
 import Core
 import Engine exposing [Elem, In, Signal]
 import Wire
+import WorkerCodec
 
 ## Worker tasks: registered Roc functions an app runs off the page's thread.
 ##
@@ -50,11 +51,19 @@ Worker := [].{
 
 	## Why a job has no output: the task answered with its own `error`
 	## (`Failed`), its timeout expired and it was stopped (`Timeout`), the
-	## in-flight bound turned the request away (`Refused`), or the worker
-	## could not run it or failed running it (`Lost`, with the fault class;
-	## the diagnostic goes to the page's console). A crash in a job is
-	## `Lost`, never `Failed`: `Failed` is only what `run!` chose to answer.
-	Error(error) : [Failed(error), Timeout, Refused, Lost(Engine.WorkFault)]
+	## in-flight bound turned the request away (`Refused`), its input or its
+	## answer nested containers deeper than a payload may hold, 128 levels of
+	## lists, sets, dictionaries, records, tuples, tags with a payload and
+	## files (`TooDeep`: nothing was sent, or nothing answered, and the
+	## worker and its prepared state are kept), its input or its answer
+	## held a dictionary with more than one NaN key, which a payload cannot
+	## tell apart (`NanKeys`, likewise), its answer held more than
+	## 16 files (`TooManyFiles`: nothing was answered, the worker is kept, and
+	## the files stay the job's), or the worker could not run
+	## it or failed running it (`Lost`, with the fault class; the diagnostic
+	## goes to the page's console). A crash in a job is `Lost`, never
+	## `Failed`: `Failed` is only what `run!` chose to answer.
+	Error(error) : [Failed(error), Timeout, Refused, TooDeep, NanKeys, TooManyFiles, Lost(Engine.WorkFault)]
 
 	## The error of a task that cannot fail: a type with no values.
 	## `Worker.Task(Str, U64, Worker.Never)` declares a task that always
@@ -67,12 +76,12 @@ Worker := [].{
 		is_eq : _
 
 		## Never called: there is no value to encode.
-		encoder_for : Wire.Format -> (Never, Wire.Enc -> Try(Wire.Enc, []))
+		encoder_for : WorkerCodec.Format -> (Never, WorkerCodec.Enc -> Try(WorkerCodec.Enc, []))
 		encoder_for = |_| |_, _| crash "internal: a Never value was encoded, and Never has no values"
 
 		## Any bytes are not a `Never`: there is no value to decode.
-		parser_for : Wire.Format -> (Wire.State -> Try({ value : Never, rest : Wire.State }, Wire.Error))
-		parser_for = |_| |_| Err(UnknownTag)
+		parser_for : WorkerCodec.Format -> (WorkerCodec.State -> Try({ value : Never, rest : WorkerCodec.State }, WorkerCodec.Error))
+		parser_for = |format| |state| Err(WorkerCodec.Format.invalid_value(format, state))
 	}
 
 	## What `task` is told about a task.
@@ -89,7 +98,8 @@ Worker := [].{
 	##   milliseconds after it was requested and answers `Timeout`; the time a
 	##   request waits for a free worker counts, and the platform caps it at
 	##   ten minutes. `Unlimited`, the default, lets a job run until it
-	##   answers or its site stops it.
+	##   answers or its site stops it. `Ms(0)` is a contract error; use
+	##   `Unlimited` explicitly for no timeout.
 	## - `on_dispose`: what disposing the site that asked for a job does to
 	##   it: `Stop` it (the default), or `Keep` it running and deliver its
 	##   answer to the nearest surviving ancestor, for a job whose work must
@@ -118,9 +128,9 @@ Worker := [].{
 		timeout_ms : U32,
 		on_dispose : [Stop, Keep],
 		on_cancel : [Stop, Finish],
-		send : (input -> { bytes : List(U8), files : List(Engine.File) }),
-		receive : (List(U8), List(Engine.File) -> Try(output, error)),
-		entry! : (List(U8), List(Core.File) => List(U8)),
+		send : (input -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep, NanKeys])),
+		receive : (List(U8), List(Engine.File) -> Answer(output, error)),
+		entry! : (List(U8), List(Engine.File) => List(U8)),
 	}.{
 
 		## The task's entry for `Program.with_workers`. Register each task
@@ -131,23 +141,30 @@ Worker := [].{
 		registration : Task(input, output, error) -> Engine.Registration
 		registration = |t| Core.registration(t.name, t.entry!)
 
+		## Ask for a job and carry this task's output reader with its input.
+		ask : Task(input, output, error), input -> Engine.Ask(output, Error(error))
+		ask = |t, input| Engine.ask_of(t, input)
+
 		## The task's name, as the props record gave it: what a request
 		## carries, what the monitor and a spec's `expect-pending-work` name
 		## the task's jobs by, and what a stand-in dispatches on.
 		name : Task(input, output, error) -> Str
 		name = |t| t.name
 
-		## A request for a job of the task on `input`, for an effect site's
-		## plan. The input is a snapshot: it is encoded when the request is
+		## The raw request of a job on `input`, for the asker protocol and pure
+		## tests. Use `ask` in a typed plan. The input is encoded when the request is
 		## issued, and later changes to the state it came from do not reach
-		## the job. The files it holds travel as handles.
+		## the job. The files it holds travel as handles. An input nested past
+		## the payload bound is not sent: the request is refused, and its result
+		## is `TooDeep`; one with two NaN keys in a dictionary likewise, and its
+		## result is `NanKeys`.
 		request : Task(input, output, error), input -> Engine.Request
-		request = |t, input| {
-			{ bytes, files } = (t.send)(input)
-			Work({ task: t.name, input: bytes, files, timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: Unprepared })
+		request = |t, input| match (t.send)(input) {
+			Ok({ bytes, files }) => Work({ task: t.name, input: bytes, files, timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: Unprepared, refusal: None })
+			Err(why) => Work({ task: t.name, input: [], files: [], timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: Unprepared, refusal: refusal_of(why) })
 		}
 
-		## The answer to a `request`, for an effect site's reaction: the
+		## Read a raw result through the task's declared protocol: the
 		## task's output, whose files are now handles the page holds, or why
 		## there is none (see [Error]). A result that is not from a worker
 		## request is a contract error.
@@ -170,7 +187,7 @@ Worker := [].{
 			timeout_ms: timeout_ms_of(timeout),
 			on_dispose,
 			on_cancel,
-			send: |input| sent(input),
+			send: |input| sent(name, input),
 			receive: |bytes, files| received(name, bytes, files),
 			entry!: |bytes, files| answer_of(name, run!(held_input(name, bytes, files))),
 		}
@@ -218,7 +235,7 @@ Worker := [].{
 	## How a resource that follows a task stands, in one match: no job asked
 	## for yet (`Unasked`), a job `Working`, its answer, or why there is
 	## none: the task's own error (`Failed`) beside the platform's.
-	Status(output, error) : [Unasked, Working, Answered(output), Failed(error), Timeout, Refused, Lost(Engine.WorkFault)]
+	Status(output, error) : [Unasked, Working, Answered(output), Failed(error), Timeout, Refused, TooDeep, NanKeys, TooManyFiles, Lost(Engine.WorkFault)]
 
 	## A worker resource's value as a [Status], so a view matches one flat union
 	## instead of `Failed(Failed(problem))`. While a newer job is `Working`,
@@ -230,6 +247,9 @@ Worker := [].{
 		(Idle, Failed(Failed(error))) => Failed(error)
 		(Idle, Failed(Timeout)) => Timeout
 		(Idle, Failed(Refused)) => Refused
+		(Idle, Failed(TooDeep)) => TooDeep
+		(Idle, Failed(NanKeys)) => NanKeys
+		(Idle, Failed(TooManyFiles)) => TooManyFiles
 		(Idle, Failed(Lost(fault))) => Lost(fault)
 		(Idle, Unanswered) => Unasked
 	}
@@ -260,74 +280,7 @@ Worker := [].{
 	## would give, and a task never changes the state. A preparation that
 	## fails (`prepare!` answers `Err(error)`) answers each of its tasks'
 	## jobs `Failed(error)`. The state never crosses to the page.
-	Preparation(init, state, error) :: {
-		name : Str,
-		build! : (List(U8), List(Core.File) => Try(state, error)),
-		send : (init -> { bytes : List(U8), files : List(Engine.File) }),
-		fail : (error -> List(U8)),
-	}.{
-
-		## The task a props record describes, over this preparation's state:
-		## `document.task({ name, run!: |lines, input| Ok(search(lines, input)) })`
-		## answers `run!(state, input)` from the state the preparation
-		## built. The input and the output must be `Wire.Sendable`, and the
-		## task shares the preparation's error type. Names share the
-		## catalogue's namespace with every other task.
-		task : Preparation(init, state, error), PreparedTaskProps(state, input, output, error) -> PreparedTask(init, state, input, output, error)
-			where [input.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
-		task = |p, props| {
-			{ name, run!, timeout, on_dispose, on_cancel } = props
-			{
-				name,
-				prep: p.name,
-				timeout_ms: timeout_ms_of(timeout),
-				on_dispose,
-				on_cancel,
-				send_init: p.send,
-				send_input: |input| sent(input),
-				receive: |bytes, files| received(name, bytes, files),
-				entry: {
-					name,
-					run!: |state, bytes, files| answer_of(name, run!(state, held_input(name, bytes, files))),
-				},
-			}
-		}
-
-		## The preparation's entry for `Program.with_workers`, with the
-		## entries of the tasks that read its state
-		## (`document.registration([summary.registration(), search.registration()])`).
-		## It registers the preparation's name and each task's name; a name
-		## registered twice is a contract error when the app mounts, and a job
-		## of a task the preparation does not list is a contract error in the
-		## worker.
-		registration : Preparation(init, state, error), List(PreparedTaskEntry(state)) -> Engine.Registration
-		registration = |p, entries| {
-			name = p.name
-			build! = p.build!
-			fail = p.fail
-			Core.registration_prepared(
-				name,
-				entries.map(|e| e.name),
-				|bytes, handles| {
-					built = build!(bytes, handles)
-					Core.kept(
-						name,
-						|asked, tbytes, thandles| match entries.find_first(|e| e.name == asked) {
-							Ok(e) =>
-								match built {
-									Ok(state) => {
-										run! = e.run!
-										run!(state, tbytes, thandles)
-									}
-									Err(error) => fail(error)
-								}
-							Err(_) => crash "contract: worker task \"${asked}\" is not a task of the preparation \"${name}\""
-						},
-					)
-				},
-			)
-		}
-	}
+	Preparation(init, state, error) : WorkerPreparation(init, state, error)
 
 	## The preparation a props record describes:
 	## `Worker.preparation({ name: "example.org/notes/document", prepare!: |text| Ok(lines_of(text)) })`.
@@ -346,7 +299,7 @@ Worker := [].{
 		{
 			name,
 			build!: |bytes, files| prepare!(held_input(name, bytes, files)),
-			send: |init| sent(init),
+			send: |init| sent(name, init),
 			fail: |error| encoded_answer(name, error, 1),
 		}
 	}
@@ -369,11 +322,11 @@ Worker := [].{
 	## A preparation's task's entry for its preparation's `registration`,
 	## from the task's `registration()`: the task's name and how it runs on
 	## the typed state.
-	PreparedTaskEntry(state) :: { name : Str, run! : (state, List(U8), List(Core.File) => List(U8)) }
+	PreparedTaskEntry(state) :: { name : Str, run! : (state, List(U8), List(Engine.File) => List(U8)) }
 
 	## A task of a preparation, from a `Question(init, input)` to `output`,
 	## failing with the preparation's `error`. Use it as a [Task] is used:
-	## `request` and `result` in an effect site, or `Worker.resource` and
+	## `ask` in an effect site, or `Worker.resource` and
 	## `Worker.resource_when`.
 	PreparedTask(init, state, input, output, error) :: {
 		name : Str,
@@ -381,9 +334,9 @@ Worker := [].{
 		timeout_ms : U32,
 		on_dispose : [Stop, Keep],
 		on_cancel : [Stop, Finish],
-		send_init : (init -> { bytes : List(U8), files : List(Engine.File) }),
-		send_input : (input -> { bytes : List(U8), files : List(Engine.File) }),
-		receive : (List(U8), List(Engine.File) -> Try(output, error)),
+		send_init : (init -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep, NanKeys])),
+		send_input : (input -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep, NanKeys])),
+		receive : (List(U8), List(Engine.File) -> Answer(output, error)),
 		entry : PreparedTaskEntry(state),
 	}.{
 
@@ -395,15 +348,23 @@ Worker := [].{
 		name : PreparedTask(init, state, input, output, error) -> Str
 		name = |t| t.name
 
-		## A request to run the task on `input` over the preparation's
-		## `init`, for an effect site's plan. Both are snapshots, encoded
-		## when the request is issued.
+		## Ask over a preparation with this task's own result reader retained.
+		ask : PreparedTask(init, state, input, output, error), Question(init, input) -> Engine.Ask(output, Error(error))
+		ask = |t, input| Engine.ask_of(t, input)
+
+		## The raw request to run the task on `input` over the preparation's
+		## `init`, for the asker protocol and pure tests. Both are snapshots,
+		## encoded when the request is made. Use `ask` in a typed plan. If
+		## either is nested past the payload bound, nothing is sent and the
+		## result is `TooDeep`; if either holds two NaN keys in a dictionary,
+		## `NanKeys`.
 		request : PreparedTask(init, state, input, output, error), Question(init, input) -> Engine.Request
-		request = |t, { init, input }| {
-			initialized = (t.send_init)(init)
-			asked = (t.send_input)(input)
-			of = Prepared({ name: t.prep, input_len: initialized.bytes.len(), input_files: initialized.files.len() })
-			Work({ task: t.name, input: initialized.bytes.concat(asked.bytes), files: initialized.files.concat(asked.files), timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: of })
+		request = |t, { init, input }| match ((t.send_init)(init), (t.send_input)(input)) {
+			(Ok(initialized), Ok(asked)) => {
+				of = Prepared({ name: t.prep, input_len: initialized.bytes.len(), input_files: initialized.files.len() })
+				Work({ task: t.name, input: initialized.bytes.concat(asked.bytes), files: initialized.files.concat(asked.files), timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: of, refusal: None })
+			}
+			(Err(why), _) | (_, Err(why)) => Work({ task: t.name, input: [], files: [], timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: Prepared({ name: t.prep, input_len: 0, input_files: 0 }), refusal: refusal_of(why) })
 		}
 
 		## The answer to a `request`, as `Task.result`.
@@ -412,19 +373,99 @@ Worker := [].{
 	}
 }
 
+## The public preparation aliases this opaque implementation. Its methods
+## have a distinct lexical scope from Worker.task while retaining the same
+## bytes, file readers and one captured preparation state.
+WorkerPreparation(init, state, error) :: {
+	name : Str,
+	build! : (List(U8), List(Engine.File) => Try(state, error)),
+	send : (init -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep, NanKeys])),
+	fail : (error -> List(U8)),
+}.{
+
+	## The task a props record describes, over this preparation's state:
+	## `document.task({ name, run!: |lines, input| Ok(search(lines, input)) })`
+	## answers `run!(state, input)` from the state the preparation
+	## built. The input and the output must be `Wire.Sendable`, and the
+	## task shares the preparation's error type. Names share the
+	## catalogue's namespace with every other task.
+	task : Worker.Preparation(init, state, error), Worker.PreparedTaskProps(state, input, output, error) -> Worker.PreparedTask(init, state, input, output, error)
+		where [input.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
+	task = |p, props| {
+		{ name, run!, timeout, on_dispose, on_cancel } = props
+		{
+			name,
+			prep: p.name,
+			timeout_ms: timeout_ms_of(timeout),
+			on_dispose,
+			on_cancel,
+			send_init: p.send,
+			send_input: |input| sent(name, input),
+			receive: |bytes, files| received(name, bytes, files),
+			entry: {
+				name,
+				run!: |state, bytes, files| answer_of(name, run!(state, held_input(name, bytes, files))),
+			},
+		}
+	}
+
+	## The preparation's entry for `Program.with_workers`, with the
+	## entries of the tasks that read its state
+	## (`document.registration([summary.registration(), search.registration()])`).
+	## It registers the preparation's name and each task's name; a name
+	## registered twice is a contract error when the app mounts, and a job
+	## of a task the preparation does not list is a contract error in the
+	## worker.
+	registration : Worker.Preparation(init, state, error), List(Worker.PreparedTaskEntry(state)) -> Engine.Registration
+	registration = |p, entries| {
+		name = p.name
+		build! = p.build!
+		fail = p.fail
+		Core.registration_prepared(
+			name,
+			entries.map(|e| e.name),
+			|bytes, handles| {
+				built = build!(bytes, handles)
+				Core.kept(
+					name,
+					|asked, tbytes, thandles| match entries.find_first(|e| e.name == asked) {
+						Ok(e) =>
+							match built {
+								Ok(state) => {
+									run! = e.run!
+									run!(state, tbytes, thandles)
+								}
+								Err(error) => fail(error)
+							}
+						Err(_) => crash "contract: worker task \"${asked}\" is not a task of the preparation \"${name}\""
+					},
+				)
+			},
+		)
+	}
+}
+
 ## A job's input, decoded with the files its worker's host minted handles
-## for, in the request's order, which carry the job's effects.
-held_input : Str, List(U8), List(Core.File) -> input where [input.Wire.Sendable]
-held_input = |name, bytes, files| match Wire.decode_with_held(bytes, files) {
+## for, in the request's order, which carry the job's effects. The page
+## wrote it with the same compiled module, and the reader accepts every
+## value the writer writes (`WorkerCodec.max_cbor_depth`), so a refusal is
+## a platform bug, or a handwritten codec whose parser does not read what
+## its encoder writes: the app's contract error.
+held_input : Str, List(U8), List(Engine.File) -> input where [input.Wire.Sendable]
+held_input = |name, bytes, files| match WorkerCodec.decode_with_held(bytes, files) {
 	Ok(input) => input
 	Err(_) => crash "contract: worker task \"${name}\" was sent bytes that are not its input type"
 }
 
 ## A job's answer as its entry returns it: the tokens of the files it
 ## holds, then its bytes and a byte that says whether it is `Ok` (0) or
-## `Err` (1). An answer nesting containers deeper than the page decodes, or
-## holding more files than an answer may, is a contract error here, in the
-## worker, where it is contained.
+## `Err` (1). An answer nested past the payload bound is the one byte `2`
+## with no files (its files drop with the value), which the page reads as
+## `TooDeep`; the worker and its prepared state are kept. One holding a
+## dictionary with two NaN keys is the one byte `4`, read as `NanKeys`,
+## likewise. An answer holding more files than an answer may is the one
+## byte `3` with no files, read as `TooManyFiles`; its files stay the job's
+## and drop with it.
 answer_of : Str, Try(output, error) -> List(U8) where [output.Wire.Sendable, error.Wire.Sendable]
 answer_of = |name, answer| match answer {
 	Ok(value) => encoded_answer(name, value, 0)
@@ -433,60 +474,78 @@ answer_of = |name, answer| match answer {
 
 ## One side of an answer, with its flag byte.
 encoded_answer : Str, value, U8 -> List(U8) where [value.Wire.Sendable]
-encoded_answer = |name, value, flag| {
-	encoded = Wire.encode_with_files(value)
-	if encoded.deep {
-		crash "contract: worker task \"${name}\" returned a value nested deeper than 512 containers, which the page cannot decode"
-	}
-	Core.task_answer(name, encoded.bytes.append(flag), encoded.files)
+encoded_answer = |name, value, flag| match WorkerCodec.encode_with_files(name, value) {
+	Ok({ files, .. }) if files.len() > Core.answer_file_limit => Core.task_answer(name, [3], [])
+	Ok({ bytes, files }) => Core.task_answer(name, bytes.append(flag), files)
+	Err(TooDeep) => Core.task_answer(name, [2], [])
+	Err(NanKeys) => Core.task_answer(name, [4], [])
 }
 
-## A job's answer as the page reads it: the output or the task's error,
-## with the files the page now holds for it.
-received : Str, List(U8), List(Engine.File) -> Try(output, error) where [output.Wire.Sendable, error.Wire.Sendable]
+## A job's answer as the page reads it: the task's output, its own error,
+## or that its answer was nested past the payload bound, held two NaN keys
+## in a dictionary or held more files than an answer may.
+Answer(output, error) : [Value(output), TaskError(error), TooDeep, NanKeys, TooManyFiles]
+
+## A job's answer as the page reads it, with the files the page now holds
+## for it. The decode failures are platform bugs: both instances are one
+## compiled module, and the reader accepts every value the writer writes
+## (`WorkerCodec.max_cbor_depth`). The one exception is a handwritten codec
+## whose parser does not read what its encoder writes, the app's contract
+## error.
+received : Str, List(U8), List(Engine.File) -> Answer(output, error) where [output.Wire.Sendable, error.Wire.Sendable]
 received = |name, bytes, files| {
 	body = bytes.drop_last(1)
 	match bytes.last() {
-		Ok(0) => match Wire.decode_with_held(body, files) {
-			Ok(value) => Ok(value)
+		Ok(0) => match WorkerCodec.decode_with_held(body, files) {
+			Ok(value) => Value(value)
 			Err(_) => crash "contract: worker task \"${name}\" answered with bytes that are not its output type"
 		}
-		Ok(1) => match Wire.decode_with_held(body, files) {
-			Ok(error) => Err(error)
+		Ok(1) => match WorkerCodec.decode_with_held(body, files) {
+			Ok(error) => TaskError(error)
 			Err(_) => crash "contract: worker task \"${name}\" answered with bytes that are not its error type"
 		}
+		Ok(2) if body.is_empty() => TooDeep
+		Ok(3) if body.is_empty() => TooManyFiles
+		Ok(4) if body.is_empty() => NanKeys
 		_ => crash "contract: worker task \"${name}\" answered without saying whether it succeeded"
 	}
 }
 
 ## A worker request's result as a task's: its answer, or why there is none.
-answered : Engine.Result, (List(U8), List(Engine.File) -> Try(output, error)) -> Try(output, [Failed(error), Timeout, Refused, Lost(Engine.WorkFault)])
+answered : Engine.Result, (List(U8), List(Engine.File) -> Answer(output, error)) -> Try(output, [Failed(error), Timeout, Refused, TooDeep, NanKeys, TooManyFiles, Lost(Engine.WorkFault)])
 answered = |res, receive| match res {
 	Work({ output, files }) =>
 		match receive(output, files) {
-			Ok(value) => Ok(value)
-			Err(error) => Err(Failed(error))
+			Value(value) => Ok(value)
+			TaskError(error) => Err(Failed(error))
+			TooDeep => Err(TooDeep)
+			NanKeys => Err(NanKeys)
+			TooManyFiles => Err(TooManyFiles)
 		}
+	WorkRefused(TooDeep) => Err(TooDeep)
+	WorkRefused(NanKeys) => Err(NanKeys)
 	WorkLost(fault) => Err(Lost(fault))
 	Timeout => Err(Timeout)
 	Refused => Err(Refused)
 	_ => crash "contract: Worker.result was given a result that is not from a worker request"
 }
 
-## A request's payload and the files it refers to. A page input nested too
-## deep is sent anyway and refused in the worker, where that is contained.
-sent : input -> { bytes : List(U8), files : List(Engine.File) } where [input.Wire.Sendable]
-sent = |input| {
-	{ bytes, files, deep: _ } = Wire.encode_with_files(input)
-	{ bytes, files }
+## A request's payload and the files it refers to, or why it is not sent:
+## `TooDeep` when the input is nested past the payload bound, `NanKeys` when
+## a dictionary in it holds two NaN keys.
+sent : Str, input -> Try({ bytes : List(U8), files : List(Engine.File) }, [TooDeep, NanKeys]) where [input.Wire.Sendable]
+sent = |name, input| WorkerCodec.encode_with_files(name, input)
+
+## Why a request's input is not sent, as the request's `refusal`.
+refusal_of : [TooDeep, NanKeys] -> [None, TooDeep, NanKeys]
+refusal_of = |why| match why {
+	TooDeep => TooDeep
+	NanKeys => NanKeys
 }
 
-## A timeout as the request carries it: `0` is none.
+## Use the shared timeout conversion so Ms(0) cannot become no deadline.
 timeout_ms_of : [Unlimited, Ms(U32)] -> U32
-timeout_ms_of = |timeout| match timeout {
-	Unlimited => 0
-	Ms(ms) => ms
-}
+timeout_ms_of = Core.timeout_wire
 
 ## A task's request carries its name, its timeout and its policies, and
 ## its answer is read back as an output or the task's own error; a
@@ -502,8 +561,8 @@ expect {
 	actual =
 		\\name: ${parse.name()}
 		\\request: ${shape}
-		\\good: ${Str.inspect(parse.result(answer(Wire.encode(7.U64).append(0))))}
-		\\bad: ${Str.inspect(parse.result(answer(Wire.encode(NotANumber("seven")).append(1))))}
+		\\good: ${Str.inspect(parse.result(answer(WorkerCodec.encode(7.U64).append(0))))}
+		\\bad: ${Str.inspect(parse.result(answer(WorkerCodec.encode(NotANumber("seven")).append(1))))}
 		\\late: ${Str.inspect(parse.result(Timeout))}
 		\\lost: ${Str.inspect(parse.result(WorkLost(AppCrash)))}
 	expected =
@@ -520,13 +579,92 @@ expect {
 expect {
 	double : Worker.Task(U64, U64, Worker.Never)
 	double = Worker.task({ name: "test/double", run!: |n| Ok(n * 2) })
-	shown = match double.result(Work({ output: Wire.encode(42.U64).append(0), files: [] })) {
+	shown = match double.result(Work({ output: WorkerCodec.encode(42.U64).append(0), files: [] })) {
 		Ok(n) => n.to_str()
 		Err(Timeout) => "late"
 		Err(Refused) => "refused"
+		Err(TooDeep) => "too deep"
+		Err(NanKeys) => "NaN keys"
+		Err(TooManyFiles) => "too many files"
 		Err(Lost(_)) => "lost"
 	}
 	shown == "42"
+}
+
+## A chain of one-payload tags, `levels` deep, to nest an input or an answer.
+Chain := [Link(Chain), End].{
+	parser_for : _
+	encoder_for : _
+	is_eq : _
+}
+
+## `levels` nested links around the end.
+chain : U64 -> Chain
+chain = |levels| {
+	var $value = Chain.End
+	for _ in (0.U64).until(levels) {
+		$value = Chain.Link($value)
+	}
+	$value
+}
+
+## Nesting past the payload bound sends nothing and answers `TooDeep`: an
+## input 129 links deep is a request refused before it is sent, with no
+## bytes and no files, an answer that deep is the one flag byte 2, and the
+## page reads both as `TooDeep`. An input at the bound is sent. An answer
+## holding 17 files is the one flag byte 3, read as `TooManyFiles`. A
+## dictionary with two NaN keys is refused the same way as `NanKeys`, an
+## input before it is sent and an answer as the one flag byte 4.
+expect {
+	echo : Worker.Task(Chain, Chain, Worker.Never)
+	echo = Worker.task({ name: "test/echo-chain", run!: |value| Ok(value) })
+	deep_answer : Try(Chain, Worker.Never)
+	deep_answer = Ok(chain(129))
+	collect : Worker.Task(U64, List(Engine.File), Worker.Never)
+	collect = Worker.task({ name: "test/collect", run!: |_| Ok([]) })
+	seventeen : List(Engine.File)
+	seventeen = (1.U64).until(18).fold([], |held, token| held.append(Core.held_file(Box.box(token))))
+	many : Try(List(Engine.File), Worker.Never)
+	many = Ok(seventeen)
+	many_answer = answer_of("test/collect", many)
+	keys : Worker.Task(Dict(F64, U8), Dict(F64, U8), Worker.Never)
+	keys = Worker.task({ name: "test/keys", run!: |value| Ok(value) })
+	nans = Dict.empty().insert(F64.nan, 1).insert(F64.nan, 2)
+	nan_answer : Try(Dict(F64, U8), Worker.Never)
+	nan_answer = Ok(nans)
+	shape = |request| match request {
+		Work({ input, files, refusal, .. }) => Str.inspect((input.is_empty(), files.len(), refusal))
+		_ => "not a work request"
+	}
+	actual =
+		\\at: ${shape(echo.request(chain(128)))}
+		\\past: ${shape(echo.request(chain(129)))}
+		\\answer: ${Str.inspect(answer_of("test/echo-chain", deep_answer))}
+		\\read: ${Str.inspect(echo.result(Work({ output: [2], files: [] })))}
+		\\refused: ${Str.inspect(echo.result(WorkRefused(TooDeep)))}
+		\\status: ${Str.inspect(Worker.status({ request: Idle, answer: Failed(TooDeep) }))}
+		\\many: ${Str.inspect(many_answer)}
+		\\many_read: ${Str.inspect(collect.result(Work({ output: [3], files: [] })))}
+		\\nan_input: ${shape(keys.request(nans))}
+		\\nan_answer: ${Str.inspect(answer_of("test/keys", nan_answer))}
+		\\nan_read: ${Str.inspect(keys.result(Work({ output: [4], files: [] })))}
+		\\nan_refused: ${Str.inspect(keys.result(WorkRefused(NanKeys)))}
+		\\nan_status: ${Str.inspect(Worker.status({ request: Idle, answer: Failed(NanKeys) }))}
+	expected =
+		\\at: (False, 0, None)
+		\\past: (True, 0, TooDeep)
+		\\answer: [0, 0, 0, 0, 2]
+		\\read: Err(TooDeep)
+		\\refused: Err(TooDeep)
+		\\status: TooDeep
+		\\many: [0, 0, 0, 0, 3]
+		\\many_read: Err(TooManyFiles)
+		\\nan_input: (True, 0, NanKeys)
+		\\nan_answer: [0, 0, 0, 0, 4]
+		\\nan_read: Err(NanKeys)
+		\\nan_refused: Err(NanKeys)
+		\\nan_status: NanKeys
+	actual == expected
 }
 
 ## A layer that follows a task keeps its previous answer while the next is
@@ -536,9 +674,9 @@ expect {
 	double = Worker.task({ name: "test/double", run!: |n| Ok(n * 2) })
 	follow = Core.follow_when(double)
 	first = (follow.pending)(follow.init, Run(1))
-	answered_now = (follow.resolve)(first, Run(1), Work({ output: Wire.encode(2.U64).append(0), files: [] }))
+	answered_now = (follow.resolve)(first, Run(1), Ok(2))
 	again = (follow.pending)(answered_now, Run(2))
-	failed = (follow.resolve)(again, Run(2), Refused)
+	failed = (follow.resolve)(again, Run(2), Err(Refused))
 	skipped = (follow.pending)(failed, Skip)
 	actual =
 		\\first: ${Str.inspect(first)}
@@ -595,9 +733,9 @@ expect {
 	double : Worker.Task(U64, U64, [Odd])
 	double = Worker.task({ name: "test/double-even", run!: |n| if (n % 2 == 0) Ok(n * 2) else Err(Odd) })
 	gather = Core.gather(double)
-	answer : U64 -> Engine.Result
-	answer = |n| Work({ output: Wire.encode(n).append(0), files: [] })
-	odd = Work({ output: Wire.encode(Odd).append(1), files: [] })
+	answer : U64 -> Try(U64, Worker.Error([Odd]))
+	answer = |n| Ok(n)
+	odd = Err(Failed(Odd))
 	asked = (gather.pending)(gather.init, [2, 4, 6])
 	last = (gather.resolve)(asked, [2, 4, 6], 2, answer(12))
 	first = (gather.resolve)(last, [2, 4, 6], 0, answer(4))
@@ -605,7 +743,7 @@ expect {
 	again = (gather.pending)(all, [1, 2])
 	one = (gather.resolve)(again, [1, 2], 1, answer(4))
 	failed = (gather.resolve)(one, [1, 2], 0, odd)
-	refused = (gather.resolve)((gather.pending)(failed, [2, 4]), [2, 4], 1, Refused)
+	refused = (gather.resolve)((gather.pending)(failed, [2, 4]), [2, 4], 1, Err(Refused))
 	show : Engine.Gathered(U64, Worker.Error([Odd])) -> Str
 	show = |g| "${Str.inspect(g.jobs)} ${Str.inspect(g.all)}"
 	actual =
@@ -643,10 +781,23 @@ expect {
 	actual =
 		\\name: ${nth.name()}
 		\\request: ${shape}
-		\\answer: ${Str.inspect(nth.result(Work({ output: Wire.encode("b").append(0), files: [] })))}
+		\\answer: ${Str.inspect(nth.result(Work({ output: WorkerCodec.encode("b").append(0), files: [] })))}
 	expected =
 		\\name: test/lines/nth
-		\\request: ("test/lines/nth", [3, 97, 10, 98, 1, 0, 0, 0, 0, 0, 0, 0], 40, Finish, Prepared({ input_files: 0, input_len: 4, name: "test/lines" }))
+		\\request: ("test/lines/nth", [99, 97, 10, 98, 1], 40, Finish, Prepared({ input_files: 0, input_len: 4, name: "test/lines" }))
 		\\answer: Ok("b")
+	actual == expected
+}
+
+## Both task forms expose an ask with the protocol's exact request data.
+expect {
+	task : Worker.Task(U64, U64, Worker.Never)
+	task = Worker.task({ name: "test/ask", run!: |n| Ok(n + 1) })
+	preparation : Worker.Preparation(Str, U64, Worker.Never)
+	preparation = Worker.preparation({ name: "test/ask-prepared", prepare!: |text| Ok(text.count_utf8_bytes()) })
+	prepared = preparation.task({ name: "test/ask-prepared/add", run!: |length, n| Ok(length + n) })
+	question = { init: "input", input: 7.U64 }
+	actual = { task: task.ask(7).sent(), prepared: prepared.ask(question).sent() }
+	expected = { task: task.request(7), prepared: prepared.request(question) }
 	actual == expected
 }

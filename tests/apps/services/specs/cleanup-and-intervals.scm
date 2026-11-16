@@ -12,8 +12,9 @@
     (click (role button :name "Stop"))
     (expect-interval 1000 0)
     (expect-cleanup "clock cleanup" 1)
-    ; The cleanup saw the branch's last environment and issued a command.
+    ; The cleanup saw the branch's last environment and issued its commands.
     (expect-document-title "stopped at 2")
+    (expect-local-storage "clock.stopped" "2")
     (tick-interval-if-active 1000)
     (expect-text (test-id "ticks") "2")
     (click (role button :name "Start"))
@@ -21,5 +22,6 @@
     (click (role button :name "Stop"))
     (expect-cleanup "clock cleanup" 2)
     (expect-document-title "stopped at 3")
+    (expect-local-storage "clock.stopped" "3")
   )
 )

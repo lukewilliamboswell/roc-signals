@@ -1,4 +1,5 @@
 import pf.Engine exposing [Elem, In, Root, State]
+import pf.Url
 import pf.Html
 
 ## A search box. Submitting the form fetches results over HTTP; while
@@ -17,20 +18,23 @@ Search := [].{
 	program : Engine.Program
 	program = Engine.program(|| Engine.state({ draft: "", query: "", round: 0, live: Bool.False, status: Idle }, Search.view))
 
+	search_url : Url
+	search_url = "/api/search"
+
 	# region requests
 	## One GET per search or refresh; nothing before the first search.
-	requests : { query : Str, round : U64 } -> List(Engine.Request)
+	requests : { query : Str, round : U64 } -> List(Engine.Ask(Str, Engine.HttpError))
 	requests = |{ query, .. }|
 		if query == "" {
 			[]
 		} else {
-			[Http({ method: "GET", url: "/api/search?q=${query}", headers: [], body: "", timeout_ms: 5000 })]
+			[Engine.http_body({ url: search_url.append_query_param("q", query).request_target(), timeout: Ms(5000) })]
 		}
 
 	## Keep the body of a successful response, or the typed failure.
-	answered : S, { query : Str, round : U64 }, Engine.Result -> S
+	answered : S, { query : Str, round : U64 }, Try(Str, Engine.HttpError) -> S
 	answered = |s, _, res|
-		match Engine.http_text(res) {
+		match res {
 			Ok(body) => { ..s, status: Found(body) }
 			Err(err) => { ..s, status: Failed(err) }
 		}
@@ -60,10 +64,10 @@ Search := [].{
 						Html.submit_button("Search", []),
 					],
 				),
-				Html.checkbox(Engine.const("Auto-refresh"), v.map(|s| s.live), [], st.set_value(|s, p| { ..s, live: p == "true" })),
+				Html.checkbox(Engine.const("Auto-refresh"), v.map(|s| s.live), [], st.set_value(|s, p| { ..s, live: p })),
 				Engine.when(
 					v.map(|s| s.live),
-					|| Engine.watch(Engine.const({}), |_| [Interval(30000)], st.on_result(|s, _, _| { ..s, round: s.round + 1 })),
+					|| Engine.watch(Engine.const({}), |_| [Engine.interval(30000)], st.on_result(|s, _, _| { ..s, round: s.round + 1 })),
 					|| Engine.text(""),
 				),
 				Engine.watch_changes(v.map(|s| { query: s.query, round: s.round }), Search.requests, st.on_result(Search.answered)),

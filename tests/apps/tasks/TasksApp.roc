@@ -10,10 +10,10 @@ import pf.Worker
 ## - "Upload" gives the app files. "Upper" upper-cases the first one in a
 ##   worker, four bytes at a time (or 1 MiB, "Upper in 1 MiB chunks"),
 ##   into a new file; "Overflow" copies it three times, which a small
-##   `max-output-bytes` refuses; "Many" answers
-##   with 17 files, one more than a job may return, which is a contract
-##   error in the job's worker; "Few" answers with three, which a page
-##   holding 62 files has no room for.
+##   `max-output-bytes` refuses; "Sixteen" answers with 16 files, as many
+##   as a job may return; "Many" answers with 17, one more, which the
+##   worker refuses as `TooManyFiles` and is kept; "Few" answers with
+##   three, which a page holding 62 files has no room for.
 ## - "Reread" builds a file from the first one and reads the built file
 ##   back in the same job.
 ## - "Square" squares a number and calls no effect, so it answers even
@@ -215,20 +215,22 @@ TasksApp := [].{
 		_ => s
 	}
 
-	plan : Run -> List(Engine.Request)
+	Answer : [Built(File), Log(File), Counted(U64), Size(U64), Reread(Str), Many(List(File))]
+
+	plan : Run -> List(Engine.Ask(Answer, Worker.Error(Engine.FileError)))
 	plan = |run| match run {
 		Idle => []
-		Upper(input) => [TasksApp.upper.request(input)]
-		Append(input) => [TasksApp.append.request(input)]
-		Count(input) => [TasksApp.count_lines.request(input)]
-		Overflow(file) => [TasksApp.overflow.request(file)]
-		Crash(file) => [TasksApp.crashes.request(file)]
-		Twice(n) => [TasksApp.twice.request(n)]
-		Many(n) => [TasksApp.many.request(n)]
-		Square(n) => [TasksApp.square.request(n)]
-		Timed(file) => [TasksApp.timed.request(file)]
-		Linger(file) => [TasksApp.lingering.request(file)]
-		Reread(file) => [TasksApp.reread.request(file)]
+		Upper(input) => [TasksApp.upper.ask(input).map_ok(|answer| Built(answer))]
+		Append(input) => [TasksApp.append.ask(input).map_ok(|answer| Log(answer))]
+		Count(input) => [TasksApp.count_lines.ask(input).map_ok(|answer| Counted(answer))]
+		Overflow(file) => [TasksApp.overflow.ask(file).map_ok(|answer| Built(answer))]
+		Crash(file) => [TasksApp.crashes.ask(file).map_ok(|answer| Size(answer))]
+		Twice(n) => [TasksApp.twice.ask(n).map_ok(|answer| Size(answer))]
+		Many(n) => [TasksApp.many.ask(n).map_ok(|answer| Many(answer))]
+		Square(n) => [TasksApp.square.ask(n).map_ok(|answer| Size(answer))]
+		Timed(file) => [TasksApp.timed.ask(file).map_ok(|answer| Size(answer))]
+		Linger(file) => [TasksApp.lingering.ask(file).map_ok(|answer| Size(answer))]
+		Reread(file) => [TasksApp.reread.ask(file).map_ok(|answer| Reread(answer))]
 	}
 
 	describe : File -> Str
@@ -237,41 +239,22 @@ TasksApp := [].{
 	## What a job's answer does to the state. The job is done, so `run` goes
 	## back to `Idle`: a request's input in state holds the files it names,
 	## and keeping it would keep them alive.
-	answered : S, Run, Engine.Result -> S
+	answered : S, Run, Outcome(Answer) -> S
 	answered = |s, run, res| {
 		next = TasksApp.took(s, run, res)
 		{ ..next, run: Idle }
 	}
 
-	took : S, Run, Engine.Result -> S
-	took = |s, run, res| match run {
-		Idle => s
-		Upper(_) => TasksApp.took_file(s, TasksApp.upper.result(res), |f| { ..s, built: [f] })
-		Append(_) => TasksApp.took_file(s, TasksApp.append.result(res), |f| { ..s, log: [f] })
-		Overflow(_) => TasksApp.took_file(s, TasksApp.overflow.result(res), |f| { ..s, built: [f] })
-		Count(_) =>
-			match TasksApp.count_lines.result(res) {
-				Ok(n) => { ..s, outcome: "lines ${n.to_str()}" }
-				Err(Failed(e)) => { ..s, outcome: "error ${Str.inspect(e)}" }
-				Err(e) => { ..s, outcome: "failed ${Str.inspect(e)}" }
-			}
-		Crash(_) => TasksApp.took_size(s, TasksApp.crashes.result(res))
-		Twice(_) => TasksApp.took_size(s, TasksApp.twice.result(res))
-		Timed(_) => TasksApp.took_size(s, TasksApp.timed.result(res))
-		Linger(_) => TasksApp.took_size(s, TasksApp.lingering.result(res))
-		Square(_) => TasksApp.took_size(s, TasksApp.square.result(res))
-		Reread(_) =>
-			match TasksApp.reread.result(res) {
-				Ok(text) => { ..s, outcome: "reread ${text}" }
-				Err(Failed(e)) => { ..s, outcome: "error ${Str.inspect(e)}" }
-				Err(e) => { ..s, outcome: "failed ${Str.inspect(e)}" }
-			}
-		Many(_) =>
-			match TasksApp.many.result(res) {
-				Ok(files) => { ..s, outcome: "files ${files.len().to_str()}" }
-				Err(Failed(e)) => { ..s, outcome: "error ${Str.inspect(e)}" }
-				Err(e) => { ..s, outcome: "failed ${Str.inspect(e)}" }
-			}
+	took : S, Run, Outcome(Answer) -> S
+	took = |s, _, res| match res {
+		Ok(Built(file)) => TasksApp.took_file(s, Ok(file), |f| { ..s, built: [f] })
+		Ok(Log(file)) => TasksApp.took_file(s, Ok(file), |f| { ..s, log: [f] })
+		Ok(Counted(n)) => { ..s, outcome: "lines ${n.to_str()}" }
+		Ok(Size(n)) => TasksApp.took_size(s, Ok(n))
+		Ok(Reread(text)) => { ..s, outcome: "reread ${text}" }
+		Ok(Many(files)) => { ..s, outcome: "files ${files.len().to_str()}" }
+		Err(Failed(e)) => { ..s, outcome: "error ${Str.inspect(e)}" }
+		Err(e) => { ..s, outcome: "failed ${Str.inspect(e)}" }
 	}
 
 	took_file : S, Outcome(File), (File -> S) -> S
@@ -305,7 +288,7 @@ TasksApp := [].{
 		Html.div(
 			"tasks",
 			[
-				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.on_files(TasksApp.received)),
+				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.set_value(TasksApp.received)),
 				Html.button("Upper", [], st.update(TasksApp.ask(|f| Upper({ source: f, chunk: 4 })))),
 				Html.button("Upper in 1 MiB chunks", [], st.update(TasksApp.ask(|f| Upper({ source: f, chunk: 1048576 })))),
 				Html.button("Overflow", [], st.update(TasksApp.ask(|f| Overflow(f)))),
@@ -314,6 +297,7 @@ TasksApp := [].{
 				Html.button("Linger", [], st.update(TasksApp.ask(|f| Linger(f)))),
 				Html.button("Reread", [], st.update(TasksApp.ask(|f| Reread(f)))),
 				Html.button("Twice", [], st.update(|s| { ..s, run: Twice(s.batch), outcome: "running" })),
+				Html.button("Sixteen", [], st.update(|s| { ..s, run: Many(16), outcome: "running" })),
 				Html.button("Many", [], st.update(|s| { ..s, run: Many(17), outcome: "running" })),
 				Html.button("Few", [], st.update(|s| { ..s, run: Many(3), outcome: "running" })),
 				Html.button("Square", [], st.update(|s| { ..s, run: Square(7), outcome: "running" })),
@@ -344,8 +328,9 @@ TasksApp := [].{
 						Idle => []
 					},
 					st.on_result(
-						|s, _, res| match Engine.fetched(res) {
-							Ok(body) => { ..s, fetched: [body], outcome: "fetched ${TasksApp.describe(body)}" }
+						|s, _, res| match res {
+							Ok({ status, body, .. }) if status >= 200 and status < 300 => { ..s, fetched: [body], outcome: "fetched ${TasksApp.describe(body)}" }
+							Ok({ status, .. }) => { ..s, outcome: "fetch failed ${Str.inspect(Status(status))}" }
 							Err(e) => { ..s, outcome: "fetch failed ${Str.inspect(e)}" }
 						},
 					),
@@ -364,7 +349,7 @@ TasksApp := [].{
 									_ => []
 								},
 								preview.on_result(
-									|_, _, res| match Engine.file_text(res) {
+									|_, _, res| match res {
 										Ok(text) => text
 										Err(e) => "unread ${Str.inspect(e)}"
 									},
@@ -377,8 +362,8 @@ TasksApp := [].{
 				Engine.watch_changes(
 					v.map(|s| s.save),
 					|save| match save {
-						Save(f, "", _) => [File.save(f, {})]
-						Save(f, name, _) => [File.save(f, { name: Named(name) })]
+						Save(f, "", _) => [Engine.command(File.save(f, {}))]
+						Save(f, name, _) => [Engine.command(File.save(f, { name: Named(name) }))]
 						Idle => []
 					},
 					Engine.ignore({}),
@@ -392,19 +377,19 @@ TasksApp := [].{
 							Engine.watch_latest(
 								v.map(|s| s.files.first()),
 								|first| match first {
-									Ok(f) => [TasksApp.stopped.request(f)]
+									Ok(f) => [TasksApp.stopped.ask(f)]
 									Err(_) => []
 								},
-								st.on_result(|s, _, res| { ..s, kept: "stopped answered ${Str.inspect(TasksApp.stopped.result(res))}" }),
+								st.on_result(|s, _, res| { ..s, kept: "stopped answered ${Str.inspect(res)}" }),
 							),
 							Engine.watch_latest(
 								v.map(|s| s.files.first()),
 								|first| match first {
-									Ok(f) => [TasksApp.kept.request(f)]
+									Ok(f) => [TasksApp.kept.ask(f)]
 									Err(_) => []
 								},
 								st.on_result(
-									|s, _, res| match TasksApp.kept.result(res) {
+									|s, _, res| match res {
 										Ok(n) => { ..s, kept: "kept ${n.to_str()}" }
 										Err(e) => { ..s, kept: "kept failed ${Str.inspect(e)}" }
 									},
@@ -421,11 +406,11 @@ TasksApp := [].{
 										Engine.watch_latest(
 											v.map(|s| s.files.first()).lift(),
 											|first| match first {
-												Ok(f) => [TasksApp.kept.request(f)]
+												Ok(f) => [TasksApp.kept.ask(f)]
 												Err(_) => []
 											},
 											noted.on_result(
-												|_, _, res| match TasksApp.kept.result(res) {
+												|_, _, res| match res {
 													Ok(n) => "noted ${n.to_str()}"
 													Err(e) => "noted failed ${Str.inspect(e)}"
 												},

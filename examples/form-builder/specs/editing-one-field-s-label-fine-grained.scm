@@ -5,10 +5,12 @@
     (fill (label "Answer f2") "ada@example")
     (fill (label "Answer f2") "ada@example.com")
     (click (role button :name "Submit form"))
+    (click (role button :name "Settings f1"))
     (fill (label "Minimum f1") "5")
     (fill (label "Minimum f1") "2")
 
     ; editing one field's label, fine grained
+    (click (role button :name "Done f1"))
     (mark-metrics)
     (fill (label "Label f1") "Given name")
     ; The keystroke writes one field's row. Each of the two views of the
@@ -29,10 +31,12 @@
     (expect-value (label "Answer f2") "ada@example.com")
     (expect-value (label "Label f2") "Work email")
     ; required is a rule too: toggling it re-derives the preview label and verdict
+    (click (role button :name "Settings f2"))
     (uncheck (label "Required f2"))
     (expect-text (test-id "field-f2-summary") "Optional")
     (expect-text (test-id "preview-f2-label") "Work email")
     (check (label "Required f2"))
     (expect-text (test-id "preview-f2-label") "Work email (required)")
+    (click (role button :name "Done f2"))
   )
 )

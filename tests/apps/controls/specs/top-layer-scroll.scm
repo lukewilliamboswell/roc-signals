@@ -1,0 +1,18 @@
+(test "Top layer — scroll commands share reference ordering and stale accounting"
+  (setup (initial-location "/#top-layer"))
+  (steps
+    (expect-scrolls 0)
+    (click (role button :name "Scroll into target"))
+    (expect-scrolls 1)
+    (expect-scroll 1 (role button :name "Target") into-view)
+    (expect-focused (role button :name "Target"))
+    (click (role button :name "Scroll to target"))
+    (expect-scrolls 2)
+    (expect-scroll 2 (role button :name "Target") to)
+    (mark-metrics)
+    (click (role button :name "Scroll missing"))
+    (expect-scrolls 2)
+    (expect-metric-delta effects_stale 1)
+    (click (role button :name "Focus target in place"))
+    (expect-focused (role button :name "Target"))
+    (expect-scrolls 2)))

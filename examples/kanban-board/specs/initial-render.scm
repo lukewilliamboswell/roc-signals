@@ -20,7 +20,7 @@
     (expect-text (test-id "count-backlog") "2 cards")
     (expect-text (test-id "matching-backlog") "2 shown")
     (expect-text (test-id "wip-backlog") "Over 2/1")
-    (expect-absent (test-id "empty-backlog"))
+    (expect-absent (test-id "empty-backlog") :never-drawn)
     (expect-attr (role region :name "Backlog") data-wip "over")
     (expect-text (test-id "count-progress") "1 card")
     (expect-text (test-id "matching-progress") "1 shown")
@@ -42,7 +42,7 @@
     (expect-text (test-id "card-position-Ship search filters") "1 of 1 in In Progress")
     (expect-text (test-id "card-position-Audit billing events") "1 of 1 in Review")
     (expect-text (test-id "card-position-Rotate API keys") "1 of 1 in Done")
-    (expect-absent (test-id "card-flags-Draft onboarding copy"))
+    (expect-absent (test-id "card-flags-Draft onboarding copy") :never-drawn)
     (expect-attr (role region :name "Draft onboarding copy") data-card "Draft onboarding copy")
     ; boundary controls on mount
     (expect-disabled (role button :name "Move left: Draft onboarding copy") true)

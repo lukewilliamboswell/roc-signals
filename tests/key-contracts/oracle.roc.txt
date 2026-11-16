@@ -1,0 +1,62 @@
+app [main] {
+    pf: platform "<PLATFORM>",
+    oracle: "<ORACLE>",
+}
+
+import pf.Engine
+import oracle.Core
+import oracle.Dom
+
+## The contracts the native oracle and the engine package keep, one case per
+## first page, chosen by the path the instance boots at, so each case runs
+## through the one native runner this fixture builds. It names the internal
+## engine package, which only a fixture (never a test app under tests/apps)
+## may, so it stays a generated fixture. Each case is the view of the
+## fixture it replaced; the root path breaks no contract.
+main : Engine.Program
+main = Engine.program_boot({}, |boot| case(boot.url))
+
+case = |path| match path {
+    "/oracle-flags" => count_nodes(Dom.apply(Dom.new({}), [2]))
+    "/oracle-missing-transition" => count_nodes(Dom.apply(Dom.new({}), [1, 17, 0, 0, 0, 0]))
+    "/oracle-unmarked-transition" => count_nodes(Dom.apply(Dom.new({}), [0, 24, 0, 0, 0, 0]))
+    "/oracle-transition-trailing" => count_nodes(Dom.apply(Dom.new({}), [1, 24, 0, 0, 0, 0, 17, 0, 0, 0, 0]))
+    "/oracle-transition-truncated" => count_nodes(Dom.apply(Dom.new({}), [1, 24, 1, 0, 0, 0]))
+    "/oracle-namespace" => count_nodes(Dom.apply(Dom.new({}), [0, 8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255]))
+    "/oracle-content-container" => count_nodes(Dom.apply(Dom.new({}), [0, 8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 'd', 'i', 'v', 1]))
+    "/oracle-leading-zero" => {
+        parsed = Dom.parse_keymap("pa----01:a")
+        Engine.text(parsed.exact.len().to_str())
+    }
+    "/oracle-apply-file" => {
+        (model, input) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input" })
+        rendered = Dom.set_property_on(model, input, 1, "", 1)
+        file = Dom.set_attr_on(rendered, input, "type", "FILE")
+        applied = Dom.apply_value(file, input, 1)
+        Engine.text(Dom.live_value(Dom.node(applied, input), "value"))
+    }
+    "/construction-later-branch" => later(|changed| Core.element("p", [], [Core.when(changed.signal(), || Core.element("div", [], []), || Core.text(""))]))
+    "/construction-later-row" => later(|changed| Core.element("p", [], [Core.each(changed.signal().map(|value| if value [1.U64] else []), |value| value.to_str(), |_row| Core.element("span", [], [Core.when(Core.const(Bool.True), || Core.element("div", [], []), || Core.text(""))]))]))
+    "/construction-later-state" => later(|changed| Core.element("p", [], [Core.when(changed.signal(), || Core.state(0.U64, |_local| Core.element("div", [], [])), || Core.text(""))]))
+    "/construction-later-text" => later(|changed| Core.element("table", [], [Core.text_s(changed.signal().map(|value| if value "bad text" else ""))]))
+    "/construction-later-row-text" => later(|changed| Core.each(changed.signal().map(|value| [if value "bad text" else " "]), |_| "one", |row| Core.element("table", [], [Core.text_s(row.item())])))
+    _ => Engine.text("oracle contracts: boot at a case's path")
+}
+
+count_nodes = |decoded| Engine.text(decoded.nodes.len().to_str())
+
+## Drive a later-turn constructor shape through the native engine before
+## this page is produced: mount a button and `shape(changed)`, then click
+## the button, as ConstructionApp does.
+later = |shape| {
+    view = Core.state(Bool.False, |changed| Core.element("main", [], [
+        Core.element("button", [Core.on_click(changed.update(|_| Bool.True))], [Core.text("Trigger construction")]),
+        shape(changed),
+    ]))
+    (ready, _) = Core.take_cmds(Core.mount(view), [])
+    clicked = Core.event(ready, 2, 0, "")
+    Engine.text(Core.work_counters(clicked).len().to_str())
+}
+
+## No shared store is declared by these contract cases.
+Store : {}

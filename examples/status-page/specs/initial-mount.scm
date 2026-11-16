@@ -32,6 +32,6 @@
     (expect-visible (text "No incidents reported in the last 90 days."))
     (expect-interval 5000 1)
     (expect-pending-effects 5)
-    (expect-cleanup "status page cleanup" 0)
+    (expect-cleanup "status page cleanup" 0 :never-runs)
   )
 )

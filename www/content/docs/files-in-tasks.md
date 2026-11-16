@@ -64,15 +64,17 @@ job can do with one:
 
 | Effect | What it does |
 |---|---|
-| `file.read!({ start, len })` | The range's bytes, copied once into the job's memory, or `Err(Unreadable)` |
+| `file.read!({ start, len })` | The range's bytes, copied once into the job's memory, `Err(Unreadable)`, or `Err(OutsideFile)` for a range that does not lie within the file |
 | `file.contents!()`, `file.contents_utf8!()` | The whole file or range, as bytes or text; `Err(Unreadable)`, or `Err(InvalidUtf8)` when text was asked for and it is not UTF-8 |
 | `Files.build!({ name, mime, start_from })` | A new builder; `mime` defaults to `Auto` (the type of the file it starts from, or none), `start_from` to `Empty` |
 | `builder.append!(bytes)` | Append a copy of `bytes`; `Err(TooLarge)` past the job's output bound |
 | `builder.append_file!(file)` | Append a file the job holds, or a range of one, by reference: nothing is copied |
 | `builder.finish!()` | The finished file, holding everything appended in order |
 
-`file.name()`, `file.size()`, `file.mime()` and `file.slice(...)` are plain
-functions and work in a job as they do on the page.
+`file.name()`, `file.size()`, `file.mime()`, `file.slice(...)` (a range, or
+`Err(OutsideFile)`) and `file.spans(n)` (the ranges of `n` bytes that cover
+the file, or `Err(ZeroChunk)`) are plain functions and work in a job as they
+do on the page.
 
 Effects exist only inside a job: a task's `run!`, or a preparation's
 `prepare!` and its tasks. Page code cannot call one (the compiler refuses
@@ -136,14 +138,23 @@ is ready. Choosing where to save (a save dialog) is not built yet.
 ## Downloading into a file
 
 `File.fetch({ url })` is an HTTP request whose response body becomes a file
-the page holds. The body stays in the browser (a large one on disk) and never
-enters the page's memory; read the answer with `Engine.fetched`, or match
-`Fetched({ status, headers, body })` to read the status and headers. The
+the page holds. Ordinarily the body stays in the browser (a large one on
+disk) and never enters Wasm memory. Its typed success holds `status`,
+`headers` and a file `body` for every HTTP status. Map the response when
+the app wants only a 2xx body; `Status` is an explicit application policy. The
 file is a file like any other, so a task can process it:
 
 {{ sample(file="tasks/Convert.roc", region="fetch") }}
 
 {{ sample(file="tasks/Convert.roc", region="measure") }}
+
+`File.FetchProps` also accepts `cache` (`Default` unless specified) and
+`credentials` (`SameOrigin` or `Include`). Attach a
+[progress handler](@/docs/effects-and-browser.md#transfer-progress) to follow
+receiving counts. Default-cache downloads use XHR for progress; a non-default
+cache mode with progress uses a fetch stream and holds the body in JavaScript
+memory up to `maxFileBytes`. A mount's own `fetch` is always used when supplied
+and has the same stream cost for progress.
 
 A body larger than the page's `maxFileBytes` mount option (256 MiB by
 default) is `Err(TooLarge)`. Like an HTTP request, a fetch is kept when its
@@ -154,7 +165,7 @@ site is disposed and answered to the nearest surviving ancestor.
 | Limit | Default | Beyond it |
 |---|---|---|
 | Bytes a job appends to its builders | `maxOutputBytes`, 256 MiB | `append!` answers `Err(TooLarge)`; the job decides |
-| Files in one answer | 16 | The job is `Lost(Contract)`; nothing is delivered |
+| Files in one answer | 16, each file the answer holds counted once per place it appears (a file in a record with an absent optional field is counted once) | The job's result is `TooManyFiles`; nothing is delivered, and the worker is kept |
 | Room on the page for an answer's files | 64 files held at once | The job is `Lost(ResourceLimit)`; nothing is delivered |
 | Files and builders a job holds at once | 64 | The job is `Lost(ResourceLimit)` |
 | A fetched body | `maxFileBytes`, 256 MiB | `Err(TooLarge)` |

@@ -37,6 +37,6 @@
     (expect-pending-effects 0)
     (expect-current-location "/roc-signals/examples/conduit/#/?tag=roc")
     (expect-visible (text "Latest-wins request replacement"))
-    (expect-absent (text "No articles are here... yet."))
+    (expect-absent (text "No articles are here... yet.") :never-drawn)
   )
 )

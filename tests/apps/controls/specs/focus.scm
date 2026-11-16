@@ -1,0 +1,15 @@
+(test "Focus commands move focus, select text and blur in both runners"
+  (steps
+    (expect-no-focus)
+    (click (role button :name "Focus upper"))
+    (expect-focused (label "Upper"))
+    (click (role button :name "Select plain"))
+    (expect-focused (label "Plain"))
+    (click (role button :name "Blur plain"))
+    (expect-no-focus)
+    (click (role button :name "Focus paragraph"))
+    (expect-focused (role button :name "Focus paragraph"))
+    (mark-metrics)
+    (click (role button :name "Focus missing"))
+    (expect-focused (role button :name "Focus missing"))
+    (expect-metric-delta effects_stale 1)))

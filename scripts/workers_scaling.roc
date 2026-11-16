@@ -1,11 +1,10 @@
 #!/usr/bin/env roc-stable
 app [main!] {
-	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.27.0/9yjxqdGTP4xSpSEmDazwTmRsehfRZzA19pwEKkR6fj1g.tar.zst",
-	roc: "nightly-2026-11-10-f7d1f19",
+	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst",
+	roc: "nightly-2026-11-14-a87808d",
 }
 
 import src/Checks
-import src/Slow
 import src/SpecSuite
 import src/Targets
 
@@ -17,5 +16,5 @@ import src/Targets
 main! = |_args| {
 	o = Checks.options!({ filter: "*" })?
 	SpecSuite.build_web_platform!(o)?
-	Slow.finish!("workers-scaling", Targets.workers_scaling!(o)?)
+	Checks.finish!("workers-scaling", Targets.workers_scaling!(o)?)
 }

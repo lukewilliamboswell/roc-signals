@@ -11,7 +11,7 @@
     ; A message writes only the feed's own state: the checks, the cards and
     ; the uptime history do no work for it, and no rows are made.
     (mark-metrics)
-    (emit-port "roc-signals.example/status-page/latency" "{\"seq\":1,\"at_ms\":\"1762852800250\",\"p95_ms\":{\"api\":140,\"web\":150,\"database\":115,\"notifications\":190},\"dropped\":0}")
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":1,\"at_ms\":\"1762852800250\",\"p95_ms\":{\"api\":140,\"web\":150,\"database\":115,\"notifications\":190},\"dropped\":0}}")
     (expect-metric-delta rows_created 0)
     (expect-metric-delta scopes_created 0)
     (expect-text (test-id "live-status") "Live: a reading of every service's p95 every 250 ms")
@@ -22,10 +22,10 @@
     ; starts a new segment (a null y in the figure). The API's p95 in
     ; readings 4 and 5 is over its 300 ms objective: a shaded band marks the
     ; stretch, from the first reading over to the first back under.
-    (emit-port "roc-signals.example/status-page/latency" "{\"seq\":2,\"at_ms\":\"1762852800500\",\"p95_ms\":{\"api\":150,\"web\":152,\"database\":116,\"notifications\":188},\"dropped\":0}")
-    (emit-port "roc-signals.example/status-page/latency" "{\"seq\":4,\"at_ms\":\"1762852801000\",\"p95_ms\":{\"api\":620,\"web\":149,\"database\":190,\"notifications\":191},\"dropped\":0}")
-    (emit-port "roc-signals.example/status-page/latency" "{\"seq\":5,\"at_ms\":\"1762852801250\",\"p95_ms\":{\"api\":780,\"web\":151,\"database\":205,\"notifications\":187},\"dropped\":0}")
-    (emit-port "roc-signals.example/status-page/latency" "{\"seq\":6,\"at_ms\":\"1762852801500\",\"p95_ms\":{\"api\":180,\"web\":150,\"database\":120,\"notifications\":189},\"dropped\":0}")
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":2,\"at_ms\":\"1762852800500\",\"p95_ms\":{\"api\":150,\"web\":152,\"database\":116,\"notifications\":188},\"dropped\":0}}")
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":4,\"at_ms\":\"1762852801000\",\"p95_ms\":{\"api\":620,\"web\":149,\"database\":190,\"notifications\":191},\"dropped\":0}}")
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":5,\"at_ms\":\"1762852801250\",\"p95_ms\":{\"api\":780,\"web\":151,\"database\":205,\"notifications\":187},\"dropped\":0}}")
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":6,\"at_ms\":\"1762852801500\",\"p95_ms\":{\"api\":180,\"web\":150,\"database\":120,\"notifications\":189},\"dropped\":0}}")
     (expect-text (test-id "live-received") "5")
     (expect-text (test-id "live-api-p95") "180 ms")
 
@@ -38,7 +38,7 @@
 
     ; The feed says it dropped readings its buffer could not hold, and the
     ; page shows the count.
-    (emit-port "roc-signals.example/status-page/latency" "{\"seq\":30,\"at_ms\":\"1762852807500\",\"p95_ms\":{\"api\":170,\"web\":150,\"database\":120,\"notifications\":189},\"dropped\":16}")
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":30,\"at_ms\":\"1762852807500\",\"p95_ms\":{\"api\":170,\"web\":150,\"database\":120,\"notifications\":189},\"dropped\":16}}")
     (expect-text (test-id "live-dropped") "16")
   )
 )

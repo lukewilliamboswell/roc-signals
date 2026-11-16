@@ -340,22 +340,44 @@ Status := [].{
 
 	## `"inc-42~major~Elevated errors~10:02@Investigating^10:20@Identified"`,
 	## incidents separated by `#`. An empty payload is an empty timeline.
-	parse_feed : Str -> List(Incident)
-	parse_feed = |payload|
+	## The timeline draws incidents keyed by id, so a feed with an incident
+	## that has no id, or with two incidents under one id, is malformed: it
+	## is refused here, where it arrives, with what is wrong with it, rather
+	## than drawn with an id the feed did not give.
+	parse_feed : Str -> Try(List(Incident), Str)
+	parse_feed = |payload| {
 		if payload == "" {
-			[]
-		} else {
-			payload.split_on("#").map(parse_incident)
+			return Ok([])
 		}
+		var $seen = Set.empty()
+		var $incidents = []
+		for raw in payload.split_on("#") {
+			incident = match parse_incident(raw) {
+				Ok(parsed) => parsed
+				Err(MissingId) => return Err("incident ${($incidents.len() + 1).to_str()} has no id")
+			}
+			if $seen.contains(incident.id) {
+				return Err("two incidents share the id ${incident.id}")
+			}
+			$seen = $seen.insert(incident.id)
+			$incidents = $incidents.append(incident)
+		}
+		Ok($incidents)
+	}
 
-	parse_incident : Str -> Incident
+	## One incident, or `MissingId` when its id field is absent or empty: an
+	## incident's id is what the timeline knows it by, so none is made up.
+	parse_incident : Str -> Try(Incident, [MissingId])
 	parse_incident = |raw| {
 		parts = raw.split_on("~")
-		id = field_at(parts, 0, "unknown")
+		id = field_at(parts, 0, "")
+		if id.is_empty() {
+			return Err(MissingId)
+		}
 		severity = Severity.from_str(field_at(parts, 1, "minor"))
 		title = field_at(parts, 2, "Untitled incident")
 		updates = parse_updates(id, field_at(parts, 3, ""))
-		{ id, severity, title, latest: latest_body(updates), updates }
+		Ok({ id, severity, title, latest: latest_body(updates), updates })
 	}
 
 	field_at : List(Str), U64, Str -> Str
@@ -406,43 +428,57 @@ Status := [].{
 		updates.fold("no updates yet", |_, update| update_summary({ time: update.time, body: update.body }))
 
 	## An empty payload is an empty timeline, not one blank incident.
-	expect parse_feed("") == []
+	expect parse_feed("").map_ok(List.len) == Ok(0)
 
 	## An incident takes its severity from the second field of the payload.
-	expect Severity.is_eq(parse_incident("inc-42~major~Elevated errors~10:02@Investigating^10:20@Identified").severity, Severity.Major)
+	expect {
+		incident = parse_incident("inc-42~major~Elevated errors~10:02@Investigating^10:20@Identified")?
+		Severity.is_eq(incident.severity, Severity.Major)
+	}
 
 	## The headline of an incident is its most recently published update.
-	expect parse_incident("inc-42~major~Elevated errors~10:02@Investigating^10:20@Identified").latest == "10:20 - Identified"
+	expect parse_incident("inc-42~major~Elevated errors~10:02@Investigating^10:20@Identified").map_ok(|i| i.latest) == Ok("10:20 - Identified")
 
 	## Every published update is kept, so the timeline shows the full history.
-	expect parse_incident("inc-42~major~Elevated errors~10:02@Investigating^10:20@Identified").updates.len() == 2
+	expect parse_incident("inc-42~major~Elevated errors~10:02@Investigating^10:20@Identified").map_ok(|i| i.updates.len()) == Ok(2)
+
+	## A feed whose incident has no id, or two incidents under one id, is
+	## refused with what is wrong; distinct ids are read in order.
+	expect {
+		actual = (
+			parse_feed("inc-1~minor~A#inc-2~major~B").map_ok(|list| list.map(|i| i.id)),
+			parse_feed("inc-1~minor~A#inc-1~major~B").map_ok(|list| list.len()),
+			parse_feed("inc-1~minor~A#~major~B").map_ok(|list| list.len()),
+		)
+		actual == (Ok(["inc-1", "inc-2"]), Err("two incidents share the id inc-1"), Err("incident 2 has no id"))
+	}
 
 	## An update's list key pairs the incident id with the 1-based sequence number.
 	expect {
-		update = parse_incident("inc-42~major~Elevated errors~10:02@Investigating").updates.get(0)?
+		update = parse_incident("inc-42~major~Elevated errors~10:02@Investigating")?.updates.get(0)?
 		update.key == "inc-42#1"
 	}
 
 	## The timestamp column holds only the part before the "@" separator.
 	expect {
-		update = parse_incident("inc-42~major~Elevated errors~10:02@Investigating").updates.get(0)?
+		update = parse_incident("inc-42~major~Elevated errors~10:02@Investigating")?.updates.get(0)?
 		update.time == "10:02"
 	}
 
 	## The body column holds only the part after the "@" separator.
 	expect {
-		update = parse_incident("inc-42~major~Elevated errors~10:02@Investigating").updates.get(0)?
+		update = parse_incident("inc-42~major~Elevated errors~10:02@Investigating")?.updates.get(0)?
 		update.body == "Investigating"
 	}
 
 	## The announcement text joins the sequence number back onto the one-line summary.
 	expect {
-		update = parse_incident("inc-42~major~Elevated errors~10:02@Investigating").updates.get(0)?
+		update = parse_incident("inc-42~major~Elevated errors~10:02@Investigating")?.updates.get(0)?
 		update.text == "inc-42 update 1 - 10:02 - Investigating"
 	}
 
 	## A field the feed left out falls back rather than dropping the incident.
-	expect parse_incident("inc-7").title == "Untitled incident"
+	expect parse_incident("inc-7").map_ok(|i| i.title) == Ok("Untitled incident")
 
 	## An incident with no updates yet says so instead of showing an empty line.
 	expect latest_body([]) == "no updates yet"
@@ -455,6 +491,9 @@ Status := [].{
 
 	failed_feed : Str -> Feed
 	failed_feed = |err| { items: [], status: "Incident feed unavailable (${err})" }
+
+	malformed_feed : Str -> Feed
+	malformed_feed = |why| { items: [], status: "Incident feed could not be read: ${why}" }
 
 	## A check result: the parsed payload, or why the refresh did not come
 	## back.
@@ -469,9 +508,19 @@ Status := [].{
 	feed_of : Try(Str, Engine.HttpError) -> Feed
 	feed_of = |result|
 		match result {
-			Ok(text) => ready_feed(parse_feed(text))
+			Ok(text) =>
+				match parse_feed(text) {
+					Ok(items) => ready_feed(items)
+					Err(why) => malformed_feed(why)
+				}
 			Err(err) => failed_feed(Str.inspect(err))
 		}
+
+	## A malformed feed shows no timeline and says why.
+	expect {
+		feed = feed_of(Ok("inc-1~minor~A#inc-1~minor~B"))
+		(feed.items.len(), feed.status) == (0, "Incident feed could not be read: two incidents share the id inc-1")
+	}
 
 	## A refresh that timed out is reported by its typed error.
 	expect check_detail("", check_of(Err(Timeout))) == "Last refresh failed: Timeout"

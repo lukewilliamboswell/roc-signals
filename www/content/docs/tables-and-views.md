@@ -17,13 +17,19 @@ The snippets on this page come from a league table, `www/samples/scores/`.
 
 ## A table is a cell
 
-`Engine.table(rows)` describes a cell of the store that holds rows by key:
+`Engine.table(start)` describes a cell of the store that holds rows by key,
+starting at the table `start`:
 
 {{ sample(file="scores/Scores.roc", region="table") }}
 
 - The key is a typed value of your choosing, here a `U64`. A table finds a
-  row through the key's own equality and hash, and a key occurs once: two
-  rows with one key are a contract error.
+  row through the key's own equality and hash, and a key occurs once.
+- `Table.from_list(rows)` builds a table, or answers `Err(DuplicateKey(key))`
+  naming the first key two rows share. The roster is a top-level constant
+  that matches on it and crashes on `Err`: the compiler evaluates a
+  top-level constant, so a key written twice in the program's own rows is a
+  compile error naming the key, and the running app never meets it.
+- A table that starts empty starts at `Table.empty({})`.
 - A table has no order of its own. An order the user sees is worked out by a
   table view, from the rows' fields.
 - The table is held in an ordinary cell, `Scores.cells.league.players`, read with
@@ -36,11 +42,11 @@ which rows it touched:
 
 | Operation | What it writes |
 |---|---|
-| `table.insert(key, row)` | A row under a new key. A key already present is a contract error |
+| `table.insert(key, row)` | A row under a new key. A key the table holds leaves it unchanged: read `contains` first when the user must be told |
 | `table.put(key, row)` | The row at `key`, inserted or replaced |
 | `table.update(key, f)`, `table.replace(key, row)` | The row at `key`. A key the table does not hold leaves it unchanged |
 | `table.remove(key)` | Removes the row at `key`. A missing key leaves the table unchanged |
-| `table.update_all(f)`, `table.load(rows)` | Every row: a whole rewrite |
+| `table.update_all(f)` | Every row: a whole rewrite |
 | `table.get(key)`, `table.contains(key)`, `table.len()` | Nothing: they read |
 | `table.fold(start, f)`, `table.to_list()` | Nothing: they read every row, in no particular order. `to_list` gives each row with its key; sort the list before showing or comparing it |
 
@@ -65,16 +71,28 @@ into a `QueryPlan(k, v, s)`, the three functions a table view needs:
 
 {{ sample(file="scores/Scores.roc", region="plan") }}
 
-- `keep` says whether a row is in the table view.
-- `sort` gives the value the row is ordered by.
-- `compare` orders two sort values, answering `Before`, `Same` or `After`.
+`Engine.sort_by` takes `keep`, which selects rows, and `sort`, which gives a
+row's sort value. It compares that value by its type's `order_relative_to`,
+then breaks a tie by the key's own order. A table has no insertion order for
+ties to keep. The key's order must agree with its equality: `Same` exactly
+when the keys are equal.
 
-The order must be total: `compare` may answer `Same` only for a row's own
-sort value, and two rows that compare `Same` are a contract error. End the
-sort value with the key, as `Place` does, whatever the sorted field. A field
-that never ties before or after an event can still tie during one: when one
-event swaps two rows' places, the table view takes its writes one key at a time,
-and after the first both rows hold the same place.
+`Order.asc`, `Order.desc` and `Order.directed(value, descending)` keep both
+directions in one type. `Order.pair(first, second)` compares two priorities;
+nest pairs for more. `Order.utf8(text)` gives identifiers an explicit UTF-8
+byte order, with no allocation during comparison. It is not a reader's
+language-sensitive order: uppercase ASCII precedes lowercase, and different
+normalization forms stay different. Normalize at input when the app requires
+it, and give names an application-defined order when byte order is unsuitable.
+A nominal sort value can provide its own `order_relative_to`, just like a
+number does.
+
+The primitive `QueryPlan` also accepts an explicit `compare`, like
+`List.sort_with` beside `List.sort_by`. Use it for a key without its own order,
+such as `Str`. Its order must be total: `Same` identifies only a row's own
+sort value. Include the key wherever the sorted field can tie. Two rows can
+tie between the keyed writes of one event even when they do not tie before
+or after it; two different rows comparing `Same` are a contract error.
 
 The query is data rather than the functions themselves because functions
 cannot be compared: given a record of functions, the site could not tell a
@@ -96,6 +114,26 @@ leaves or moves costs a comparison across all of them.
 
 Here the listing and the window are cells, so buttons change them. Either
 could as well be local state or a constant: each is just a `Signal`.
+
+### Following a scrollbar
+
+A fixed-height list can write the same window from a scroll report instead
+of a paging button:
+
+{{ sample(file="scores/Scores.roc", region="scroll") }}
+
+The scroller's CSS fixes its height, and every row uses the height the
+window calculation assumes. A spacer keeps the full row count's height;
+only the drawn rows change with the window. Set `overflow-anchor: none`
+and keep the spacer independent of drawn rows, so a window write cannot
+move the scrollbar and produce another scroll report. A size report can
+also change the window's count as its container grows or shrinks. Both
+writes use the ordinary turn and preserve rows kept by the final window.
+
+This model assumes fixed-height rows. Measuring each row, page scrolling
+and variable-height virtualization are outside the platform's layout
+vocabulary. [Scrolling and layout](@/docs/effects-and-browser.md#scrolling-and-layout)
+describes size/seen observations and their lifetimes.
 
 ## A drawn row is handed its row
 
@@ -134,16 +172,25 @@ The toolbar attaches them, with the two kinds of whole rewrite:
 Write a table with `update`, never with a `set` of a table built from a
 reading of the cell: that copies the table.
 
+### Rows from outside
+
+Rows that arrive at run time (a server's answer, storage, a file) enter
+through `Table.from_list`, in the decision that receives them. On `Ok`
+the decision sets the table into its cell; on `Err(DuplicateKey(key))` it
+writes a state of the app's own instead, which the page shows like any
+other failure of what arrived. The Reading List example refuses a shelf
+with two books under one id this way, and names the id.
+
 ### Whole rewrites
 
-`update_all`, `load`, a `set` of a new table (`Table.from_list(rows)`) and a
+`update_all`, a `set` of a new table (`Table.from_list(rows)`) and a
 generated reset replace every row. They do not record each key: every table view
 of the table builds itself again, with a pass over the table and a sort.
 Rows that are in the window before and after are kept, not created again.
 
 The `league` group's reset puts the table back to the rows it was described
-with. A table described as `Engine.table([])` and filled later, with
-`with_initial` or a `load`, resets to empty.
+with. A table described as `Engine.table(Table.empty({}))` and filled later,
+with `with_initial` or a `set`, resets to empty.
 
 ## Several table views, and plain readers
 
@@ -233,26 +280,40 @@ list is sorted or filtered on the page, or when it is long.
   drawn rows before the event with the final window once, preserving every
   drawn row that remains in it.
 - A write to a key the table does not hold writes nothing and reports
-  nothing: an earlier write of the same event may have removed the row.
+  nothing: an earlier write of the same event may have removed the row. An
+  `insert` of a key it holds writes nothing too.
 - A row read after its key left the table in the same event is a contract
   error.
-- `Table.inverse` gives the writes that undo what this turn wrote, and
-  `Table.apply` applies such a list, for an undo history. The changes from a
-  turn are gone when the turn ends, so take the inverse in the event
-  that made the writes.
+- `Table.changes` retains the last turn that wrote this table, including
+  across unrelated turns. The next writing turn clears it before its first
+  modifier runs; further writes in that event keep the first earlier row
+  per key. A signal can read these changes like any other part of the cell.
+- `Table.inverse` gives writes that undo those retained changes, and
+  `Table.apply` applies them. A later event's decision can read the inverse
+  before its writes begin and use it to undo the last writing turn. Inside
+  a modifier the inverse describes that event's writes instead. Keep an
+  inverse in a history cell if it must survive the next write of the table.
+  Earlier rows are held until that next write or disposal of their holder;
+  there is no time bound, and no earlier whole table is kept. The next
+  writing turn pays for freeing those earlier rows, so a single keyed write
+  can also pay cleanup proportional to the previous turn's recorded keys.
 
-Three compiler defects touch tables today, each with its upstream issue:
+Two compiler defects touch tables today, each with its upstream issue:
 
 - Many writes to a table in one event are a fold over the keys, as `awarded`
   is, not a `while` loop over a `var` that holds the table: the loop copies
   the table on every pass in an optimised build
   ([roc-lang/roc#12971](https://github.com/roc-lang/roc/issues/12971)).
-- A row template that needs something from outside is a lambda that passes
-  it on with the key and the row, `|key, row| template(extra, key, row)`,
-  not a function returned from a helper, which `roc check` rejects
-  ([roc-lang/roc#12970](https://github.com/roc-lang/roc/issues/12970)).
-- An optimised build copies a large table on each write, where a development
-  build updates it in place
-  ([roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957)). The
-  platform is designed for the fix, and nothing in an app changes when it
-  lands.
+- A shipping build copies a table's rows on every keyed write
+  ([roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957));
+  a development build writes them in place. A write of one element of a
+  list in a store cell is in place in both, while a local state's value is
+  copied on every write in every build
+  ([roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012)).
+  Until that is fixed, keep a large or often-edited value, such as a long
+  list or a document, in a store cell rather than in local state.
+  An allocation guard (`tests/runtime/write-scaling.mjs`) runs on a
+  development and a `--opt=size` build: it fails if a write that is in
+  place starts to copy, and prints each that copies, so the fix shows when
+  it lands. The platform is designed for the fix, and nothing in an app
+  changes when it lands.

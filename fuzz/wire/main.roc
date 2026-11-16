@@ -1,11 +1,15 @@
 app [target] {
-	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst",
+	cbor: "https://github.com/lukewilliamboswell/roc-cbor/releases/download/0.6.3/J3xX4n61WoMZKK3tdWTnZBdKaVbi8SvXvmtC5i3qDAER.tar.zst",
+	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.2/3kyiehxxzwAsjM23uCQGJ3Hx7dAAdzSGtK3k9Jq7Egtu.tar.zst",
 	pf: "../../platform/main-fuzz.roc",
 }
 
 import fz.Fuzz
+import Saved
+import cbor.Cbor
 import pf.Core
 import pf.Engine
+import pf.WorkerCodec
 import pf.Wire
 
 ## The worker wire format is total and canonical over arbitrary bytes.
@@ -26,6 +30,10 @@ import pf.Wire
 ## is a table entry's handle with the name, type and range its payload
 ## gives, a range that lies within its size, and a decoded value re-encodes
 ## to a payload and file list that decode back to it.
+##
+## In the writer's direction, every input also describes a `Gen`, a value
+## nested on either side of the writer's bound with the deepest leaves: a
+## value the writer accepts is read back equal.
 Shape : [Dot, Circle(F64), Rect({ w : U32, h : U32 }), Path(List((I16, I16)))]
 
 Kind : [A, B(U16, Str), C({ x : I8 })]
@@ -55,6 +63,72 @@ Rich : {
 	note : Try(Str, [Missing]),
 }
 
+## A recursive type the writer's direction builds from an input: each
+## counted level is a tag with two payloads, one with one, a record or a
+## list, and the leaves are the deepest a level can hold.
+Gen := [Link(Gen, Dec), Wide(Gen, U128), One(Gen), Wrap({ inner : Gen }), Items(List(Gen)), End].{
+	parser_for : _
+	encoder_for : _
+	is_eq : _
+}
+
+## The leaves `Gen` holds: a `Dec` with a 64-bit and with a bignum
+## mantissa, and a `U128` within and past 64 bits.
+dec_leaves : List(Dec)
+dec_leaves = [0.5, 100000000000.000000001, -100000000000.000000001, 100.0 / 3.0, 7]
+
+u128_leaves : List(U128)
+u128_leaves = [1, 18446744073709551616, U128.highest]
+
+## The `Gen` an input describes: its first byte is the number of levels
+## (so both sides of the writer's bound are reached), and each later byte
+## chooses a level's shape and leaf, those bytes repeating as needed.
+gen_of : List(U8) -> Gen
+gen_of = |input| {
+	levels = input.first() ?? 0
+	rest = input.drop_first(1)
+	at = |i| if (rest.is_empty()) 0 else rest.get(i % rest.len()) ?? 0
+	var $value = Gen.End
+	for i in (0.U64).until(levels.to_u64()) {
+		choice = at(i)
+		$value = match choice % 5 {
+			0 => Gen.Link($value, dec_leaves.get((choice // 5).to_u64() % dec_leaves.len()) ?? 0)
+			1 => Gen.Wide($value, u128_leaves.get((choice // 5).to_u64() % u128_leaves.len()) ?? 0)
+			2 => Gen.One($value)
+			3 => Gen.Wrap({ inner: $value })
+			_ => Gen.Items([$value])
+		}
+	}
+	$value
+}
+
+## Why the `Gen` an input describes breaks the writer's promise, if it
+## does: a value the writer accepts is read back equal.
+written_problem : List(U8) -> Try({}, Str)
+written_problem = |input| {
+	value = gen_of(input)
+	match WorkerCodec.try_encode(value) {
+		Ok(bytes) => {
+			back : Try(Gen, WorkerCodec.Error)
+			back = WorkerCodec.decode(bytes)
+			match back {
+				Ok(again) if again == value => Ok({})
+				Ok(_) => Err("a written Gen is read back as another value")
+				Err(problem) => Err("a written Gen is refused by the reader: ${Str.inspect(problem)}")
+			}
+		}
+		Err(TooDeep) => Ok({})
+		Err(NanKeys) => Err("a Gen, which has no dictionary, holds two NaN keys")
+	}
+}
+
+## Crash when the `Gen` an input describes breaks the writer's promise.
+written! : List(U8) => {}
+written! = |input| match written_problem(input) {
+	Ok({}) => {}
+	Err(problem) => crash problem
+}
+
 ## A value holding files, as a worker task's input does.
 Filed : { title : Str, docs : List(Engine.File), extra : Try(Engine.File, [Missing]) }
 
@@ -63,8 +137,8 @@ Filed : { title : Str, docs : List(Engine.File), extra : Try(Engine.File, [Missi
 table_of : {} -> List(Engine.File)
 table_of = |_| [Core.held_file(Box.box(1)), Core.held_file(Box.box(2))]
 
-decode_filed : List(U8), List(Engine.File) -> Try(Filed, Wire.Error)
-decode_filed = |input, table| Wire.decode_with_held(input, table)
+decode_filed : List(U8), List(Engine.File) -> Try(Filed, WorkerCodec.Error)
+decode_filed = |input, table| WorkerCodec.decode_with_held(input, table)
 
 Canon : {
 	id : U64,
@@ -91,29 +165,33 @@ bytes_per_input_byte = 64
 fixed_bytes : U64
 fixed_bytes = 65536
 
-decode_rich : List(U8) -> Try(Rich, Wire.Error)
-decode_rich = |bytes| Wire.decode(bytes)
+decode_rich : List(U8) -> Try(Rich, WorkerCodec.Error)
+decode_rich = |bytes| WorkerCodec.decode(bytes)
 
-decode_canon : List(U8) -> Try(Canon, Wire.Error)
-decode_canon = |bytes| Wire.decode(bytes)
+decode_canon : List(U8) -> Try(Canon, WorkerCodec.Error)
+decode_canon = |bytes| WorkerCodec.decode(bytes)
 
-decode_strs : List(U8) -> Try(List(Str), Wire.Error)
-decode_strs = |bytes| Wire.decode(bytes)
+decode_strs : List(U8) -> Try(List(Str), WorkerCodec.Error)
+decode_strs = |bytes| WorkerCodec.decode(bytes)
 
-decode_words : List(U8) -> Try(Dict(Str, U8), Wire.Error)
-decode_words = |bytes| Wire.decode(bytes)
+decode_words : List(U8) -> Try(Dict(Str, U8), WorkerCodec.Error)
+decode_words = |bytes| WorkerCodec.decode(bytes)
 
-decode_profiles : List(U8) -> Try(List(Profile), Wire.Error)
-decode_profiles = |bytes| Wire.decode(bytes)
+decode_profiles : List(U8) -> Try(List(Profile), WorkerCodec.Error)
+decode_profiles = |bytes| WorkerCodec.decode(bytes)
 
-decode_kinds : List(U8) -> Try(List(Kind), Wire.Error)
-decode_kinds = |bytes| Wire.decode(bytes)
+decode_kinds : List(U8) -> Try(List(Kind), WorkerCodec.Error)
+decode_kinds = |bytes| WorkerCodec.decode(bytes)
 
-decode_node : List(U8) -> Try(Node, Wire.Error)
-decode_node = |bytes| Wire.decode(bytes)
+decode_node : List(U8) -> Try(Node, WorkerCodec.Error)
+decode_node = |bytes| WorkerCodec.decode(bytes)
 
-decode_colors : List(U8) -> Try(Dict([Red, Green, Blue], List(I16)), Wire.Error)
-decode_colors = |bytes| Wire.decode(bytes)
+decode_colors : List(U8) -> Try(Dict([Red, Green, Blue], List(I16)), WorkerCodec.Error)
+decode_colors = |bytes| WorkerCodec.decode(bytes)
+
+## Preferred scalar forms still must not let numeric float-key aliases overwrite entries.
+decode_float_keys : List(U8) -> Try(Dict(F64, Str), WorkerCodec.Error)
+decode_float_keys = |bytes| WorkerCodec.decode(bytes)
 
 ## Crash unless a decode's peak memory is within the bound for `input`.
 check_bound! : Str, List(U8), Fuzz.Stats => {}
@@ -128,15 +206,22 @@ check_bound! = |label, input, stats| {
 
 ## Decode `input` as the canonical type `a`, within the memory bound. An
 ## accepted input must be exactly the encoding of the value it decodes to.
-canonical! : Str, List(U8), (List(U8) -> Try(a, Wire.Error)) => {} where [a.Wire.Sendable]
+canonical! : Str, List(U8), (List(U8) -> Try(a, WorkerCodec.Error)) => {} where [a.Wire.Sendable]
 canonical! = |label, input, decode| {
 	measured = Fuzz.measure!(label, || decode(input))
 	check_bound!(label, input, measured.stats)
 	match measured.value {
-		Ok(value) => {
-			if Wire.encode(value) != input {
-				crash "an accepted ${label} input is not the encoding of the value it decodes to"
-			}
+		# The reader's backstop counts CBOR levels and admits values nested
+		# past the writer's bound on the app's own levels; such a value is
+		# refused as `TooDeep`, never written as other bytes. The reader
+		# refuses two equal keys in one map, and every NaN is read from the
+		# one canonical form, so an accepted input never holds two NaN keys
+		# in one dictionary.
+		Ok(value) => match WorkerCodec.try_encode(value) {
+			Ok(bytes) if bytes != input => crash "an accepted ${label} input is not the encoding of the value it decodes to"
+			Ok(_) => {}
+			Err(TooDeep) => {}
+			Err(NanKeys) => crash "an accepted ${label} input holds two NaN keys in one dictionary"
 		}
 		Err(_) => {}
 	}
@@ -147,13 +232,22 @@ test! = |input| {
 	rich = Fuzz.measure!("Rich", || decode_rich(input))
 	check_bound!("Rich", input, rich.stats)
 	match rich.value {
-		Ok(value) => {
-			payload = Wire.encode(value)
-			match decode_rich(payload) {
-				Ok(again) if Wire.encode(again) == payload => {}
-				Ok(_) => crash "a re-encoded Rich decodes to a value with a different encoding"
-				Err(problem) => crash "a re-encoded Rich is refused: ${Str.inspect(problem)}"
+		Ok(value) => match WorkerCodec.try_encode(value) {
+			Ok(payload) => {
+				well_formed : Try(Cbor.Value, _)
+				well_formed = Cbor.parse(payload)
+				if well_formed.is_err() {
+					crash "an encoded Rich is not a CBOR item"
+				}
+				match decode_rich(payload) {
+					Ok(again) if WorkerCodec.try_encode(again) == Ok(payload) => {}
+					Ok(_) => crash "a re-encoded Rich decodes to a value with a different encoding"
+					Err(problem) => crash "a re-encoded Rich is refused: ${Str.inspect(problem)}"
+				}
 			}
+			# Nested past the writer's bound, as the canonical rule allows.
+			Err(TooDeep) => {}
+			Err(NanKeys) => crash "a decoded Rich, whose dictionary keys are text, holds two NaN keys"
 		}
 		Err(_) => {}
 	}
@@ -172,7 +266,16 @@ test! = |input| {
 			if !all.all(|f| within(Core.file_parts(f))) {
 				crash "a decoded file's range lies outside its size"
 			}
-			again = Wire.encode_with_files(value)
+			again = match WorkerCodec.encode_with_files("wire fuzz", value) {
+				Ok(encoded) => encoded
+				Err(TooDeep) => crash "a decoded Filed, which cannot nest, is refused as too deep"
+				Err(NanKeys) => crash "a decoded Filed, which has no dictionary, holds two NaN keys"
+			}
+			well_formed : Try(Cbor.Value, _)
+			well_formed = Cbor.parse(again.bytes)
+			if well_formed.is_err() {
+				crash "an encoded Filed is not a CBOR item"
+			}
 			match decode_filed(again.bytes, again.files) {
 				Ok(back) if back == value => {}
 				Ok(_) => crash "a re-encoded Filed decodes to a different value"
@@ -190,6 +293,8 @@ test! = |input| {
 	canonical!("List(Kind)", input, decode_kinds)
 	canonical!("Node", input, decode_node)
 	canonical!("Dict(color, List(I16))", input, decode_colors)
+	canonical!("Dict(F64, Str)", input, decode_float_keys)
+	written!(input)
 	Fuzz.keep
 }
 
@@ -240,20 +345,65 @@ sample_filed = {
 		Ok(f) => f
 		Err(_) => crash "an empty range lies within an empty file"
 	}
-	Wire.encode_with_files({ title: "t", docs: [empty], extra: Err(Missing) }).bytes
+	# Annotated: an unannotated `Err(Missing)` is a tag union of its own,
+	# not the `Try` the derivation omits as an absent optional field.
+	seed : Filed
+	seed = { title: "t", docs: [empty], extra: Err(Missing) }
+	match WorkerCodec.encode_with_files("wire fuzz", seed) {
+		Ok(encoded) => encoded.bytes
+		Err(TooDeep) => crash "a seed Filed, which cannot nest, is refused as too deep"
+		Err(NanKeys) => crash "a seed Filed, which has no dictionary, holds two NaN keys"
+	}
 }
 
 target = Fuzz.target_with!({
 	examples: [
-		Fuzz.example({ name: "rich", revision: "1", make: || Wire.encode(sample_rich) }),
-		Fuzz.example({ name: "canon", revision: "1", make: || Wire.encode(sample_canon) }),
-		Fuzz.example({ name: "rich-truncated", revision: "1", make: || Wire.encode(sample_rich).drop_last(1) }),
-		Fuzz.example({ name: "canon-trailing", revision: "1", make: || Wire.encode(sample_canon).append(0) }),
-		Fuzz.example({ name: "empty", revision: "1", make: || [] }),
-		Fuzz.example({ name: "filed", revision: "1", make: || sample_filed }),
+		Fuzz.saved({ name: "rich", revision: "2", bytes: Saved.rich }),
+		Fuzz.saved({ name: "canon", revision: "2", bytes: Saved.canon }),
+		Fuzz.saved({ name: "rich-truncated", revision: "2", bytes: Saved.rich.drop_last(1) }),
+		Fuzz.saved({ name: "canon-trailing", revision: "2", bytes: Saved.canon.append(0) }),
+		Fuzz.saved({ name: "empty", revision: "2", bytes: [] }),
+		Fuzz.saved({ name: "filed", revision: "2", bytes: Saved.filed }),
+		Fuzz.saved({ name: "canon-money-float", revision: "1", bytes: Saved.canon_money_float }),
+		Fuzz.saved({ name: "canon-absent-note", revision: "1", bytes: Saved.canon_absent_note }),
+		Fuzz.saved({ name: "float-key-zero-alias", revision: "1", bytes: [0xa2, 0xf9, 0, 0, 0x61, 0x61, 0xf9, 0x80, 0, 0x61, 0x62] }),
+		# 128 two-payload tags, the last holding a `Dec` with a bignum
+		# mantissa: the deepest CBOR the writer writes.
+		Fuzz.saved({ name: "written-deepest-dec", revision: "1", bytes: [128, 5] }),
+		Fuzz.saved({ name: "written-deepest-u128", revision: "1", bytes: [128, 11] }),
+		Fuzz.saved({ name: "written-past-bound", revision: "1", bytes: [129, 5] }),
 	],
 	name: "wire",
 	generator: Fuzz.raw_bytes,
 	test!,
 	show: |input| Str.inspect(input),
 })
+
+## A saved full Canon with floating money must be refused without weakening canonical equality.
+expect decode_canon(Saved.canon_money_float).is_err()
+
+## Independent complete Rich seed reaches every maintained derived shape.
+expect decode_rich(Saved.rich) == Ok(sample_rich)
+
+## Independent complete Canon seed is accepted and re-encodes byte-for-byte.
+expect decode_canon(Saved.canon) == Ok(sample_canon) and WorkerCodec.encode(sample_canon) == Saved.canon
+
+## A `Try(a, [Missing])` field holding `Err(Missing)` has one encoding: no
+## entry. The Canon seed without its `note` entry decodes to that value and
+## re-encodes byte for byte, and the same field spelled as the tag `Err`
+## holding `Missing` is refused.
+expect {
+	absent = { ..sample_canon, note: Err(Missing) }
+	spelled : Try({ note : Try(Str, [Missing]) }, WorkerCodec.Error)
+	spelled = WorkerCodec.decode([0xa1, 0x64, 0x6e, 0x6f, 0x74, 0x65, 0xa1, 0x63, 0x45, 0x72, 0x72, 0x67, 0x4d, 0x69, 0x73, 0x73, 0x69, 0x6e, 0x67])
+	decode_canon(Saved.canon_absent_note) == Ok(absent) and WorkerCodec.encode(absent) == Saved.canon_absent_note and spelled.is_err()
+}
+
+## The six-item file metadata array agrees with the owned-handle encoder.
+expect sample_filed == Saved.filed
+
+## The deepest values the writer writes, with a `Dec` whose mantissa is a
+## bignum and a `U128` past 64 bits at the bound, are read back equal, and
+## one level past it is refused.
+expect [[128, 5], [128, 11], [129, 5], [127, 5]].all(|input| written_problem(input) == Ok({}))
+expect WorkerCodec.try_encode(gen_of([129, 5])) == Err(TooDeep)

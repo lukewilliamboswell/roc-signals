@@ -12,7 +12,7 @@ Parts := [].{
 	button_s = |label, cls, h| Engine.element("button", [Engine.attr("type", "button"), Engine.class(cls), Engine.on_click(h)], [Engine.text_s(label)])
 
 	textarea : Str, Signal(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)
-	textarea = |name, v, h| Engine.element("textarea", [Engine.attr("aria-label", name), Engine.class(Styles.field), Engine.attr_s("value", v), Engine.on("input", h)], [])
+	textarea = |name, v, h| Engine.element("textarea", [Engine.attr("aria-label", name), Engine.class(Styles.field), Engine.prop_s(Engine.Prop.value, v), Engine.on("input", h)], [])
 
 	keyed_lines : List(Str) -> List({ key : Str, text : Str })
 	keyed_lines = |lines| {

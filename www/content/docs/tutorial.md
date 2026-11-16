@@ -168,10 +168,10 @@ the query's order. The query is plain data, here which to-dos to show, and
 
 {{ sample(file="todos/Todos.roc", region="plan") }}
 
-`keep` chooses the rows, `sort` gives the value a row is ordered by, and
-`compare` orders two of those values (`by_key` answers `Before`, `Same` or
-`After` for two keys, the smaller first). Keys are handed out in order, so
-sorting by key is the order the to-dos were added in.
+`keep` chooses the rows and `sort` gives the value a row is ordered by.
+`Engine.sort_by` uses that value's own order and then the key's order for a
+tie. Keys are handed out in order, so sorting by key is the order the to-dos
+were added in.
 
 {{ sample(file="todos/Todos.roc", region="list") }}
 
@@ -191,7 +191,7 @@ handed the row's key and a `State` of the row:
 
 {{ sample(file="todos/Todos.roc", region="row") }}
 
-The checkbox reads and writes its own row through `todo`: it cannot touch
+The checkbox delivers a Boolean checked state and reads and writes its own row through `todo`: it cannot touch
 another row. Removing a row changes the table itself, so the button's
 handler is a decision over the table's cell, given the row's key when it is
 pressed. Each control's accessible name includes the title, which is how
@@ -286,9 +286,7 @@ The first command checks the module's pure decisions and storage format; the
 second checks all four `.scm` files against the app. `build` writes a deployable
 `dist/` with the browser module, page and matching runtime. Serve that directory
 over HTTP to deploy it; [Getting Started](@/docs/getting-started.md#build-it-for-deployment)
-explains what to keep together. Check the tool's build output for the
-optimization mode: a compiler workaround may explicitly select `--opt=dev`
-instead of the usual `--opt=size`, as Getting Started explains.
+explains what to keep together.
 
 You have a running app, its editable source and a test suite. As you make it
 your own, use the specs to state what should stay true about adding, checking,

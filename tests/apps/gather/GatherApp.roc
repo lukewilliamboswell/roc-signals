@@ -74,6 +74,9 @@ GatherApp := [].{
 		Failed(Unlucky) => "unlucky"
 		Timeout => "timeout"
 		Refused => "refused"
+		TooDeep => "too deep"
+		NanKeys => "NaN keys"
+		TooManyFiles => "too many files"
 		Lost(_) => "lost"
 	}
 
@@ -89,6 +92,9 @@ GatherApp := [].{
 			Failed(Unlucky) => "failed: unlucky"
 			Timeout => "failed: timeout"
 			Refused => "failed: refused"
+			TooDeep => "failed: too deep"
+			NanKeys => "failed: NaN keys"
+			TooManyFiles => "failed: too many files"
 			Lost(_) => "failed: lost"
 		}
 	}
@@ -102,7 +108,7 @@ GatherApp := [].{
 				Engine.const("Fail the second shard"),
 				st.signal().map(|s| s.second == Fails),
 				[],
-				st.set_value(|s, checked| { ..s, second: if (checked == "true") Fails else Counts }),
+				st.set_value(|s, checked| { ..s, second: if (checked) Fails else Counts }),
 			),
 			Worker.gather(
 				GatherApp.count,

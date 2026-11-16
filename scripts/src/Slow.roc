@@ -1,16 +1,18 @@
 import cli.Path
 import Checks
+import FuzzPlan
 import Proc
 import SpecSuite
 import Targets
 
-## The slow suite: the fuzz targets' examples, the walks and the soaks.
+## The slow suite: the fuzz targets' fixed examples on instrumented
+## builds, the walks and the soaks.
 Slow := [].{
 
-	## The apps soaked in Chrome: every example, and the worker app (soak.mjs
-	## holds its jobs and checks its worker instance flat too).
+	## The apps soaked in Chrome: every example and the worker/debug fixtures
+	## (soak.mjs holds jobs and checks their worker instances flat too).
 	browser_soak_apps : List(Str)
-	browser_soak_apps = SpecSuite.apps.append("worker-search")
+	browser_soak_apps = SpecSuite.apps.append("worker-search").append("dbg")
 
 	## A native soak: one app's round-trip spec, which the app's native spec
 	## runner repeats on the engine alone with flat live allocations and
@@ -27,14 +29,16 @@ Slow := [].{
 		{ example: "conduit", spec: "round-trip-sign-in-page-and-home" },
 		{ example: "field-notes", spec: "round-trip-draft-filter-and-reorder" },
 		{ example: "status-page", spec: "round-trip-refresh-answered-healthy" },
-		{ example: "spreadsheet-lite", spec: "round-trip-edit-reorder-filter-and-mode" },
+		{ example: "spreadsheet-lite", spec: "round-trip-keyboard" },
 		{ example: "worker-lab", spec: "round-trip-a-run-answered-and-reset" },
 		{ example: "reading-list", spec: "round-trip-finish-and-read-again" },
-		{ example: "log-explorer", spec: "round-trip-search-on-the-timeline" },
+		{ example: "log-explorer", spec: "round-trip-scroll" },
 		{ example: "million-row-explorer", spec: "round-trip-clear-and-restore-a-category" },
 		{ example: "supersede", spec: "round-trip-late-branch" },
 		{ example: "worker-search", spec: "round-trip-search-and-report" },
 		{ example: "table", spec: "round-trip-edit-scroll-and-rewrite" },
+		{ example: "prerender", spec: "round-trip" },
+		{ example: "dbg", spec: "round-trip-dbg" },
 	]
 
 	## How many times a native soak repeats its round trip.
@@ -57,13 +61,14 @@ Slow := [].{
 		Ok(List.map2(Slow.native_soaks, results, |s, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["native soak ${s.example} ${s.spec}: ${r.output.trim()}"]).join())
 	}
 
-	## The apps walked: every spec app but the three whose pages offer a
+	## The apps walked: every spec app except those whose pages offer a
 	## contract error on purpose (a job of an unregistered task, a port used
-	## as the wrong kind, an outbox posted twice in a turn), which a walk
+	## as the wrong kind, an outbox posted twice in a turn, duplicate control
+	## references, a focus loop or a debug fault control), which a walk
 	## reaches within a few hundred steps and which, as it must, poisons
 	## the instance. Their specs and Chrome contract tests cover them.
 	walk_apps : List(Str)
-	walk_apps = SpecSuite.spec_apps.drop_if(|name| ["workers", "ports", "outbox"].contains(name))
+	walk_apps = SpecSuite.spec_apps.drop_if(|name| ["workers", "ports", "outbox", "controls", "dbg"].contains(name))
 
 	## One walk: an app, how many steps, and from which seed.
 	Walk : { name : Str, steps : U64, seed : U64 }
@@ -96,16 +101,12 @@ Slow := [].{
 	## step, which must leave nothing allocated (`RUNNER --walk`).
 	walks! : SpecSuite.Options => Try(List(Str), _)
 	walks! = |o| {
-		if SpecSuite.has_broken_optimizer(o.nightly) {
-			Proc.note!("SKIP optimized 10,000-step walks (${SpecSuite.optimizer_issue}): ${o.nightly} crashes building the runners; native specs, short walks and native soaks still run with --opt=dev. Restore on the next nightly.")
-			return Ok([])
-		}
 		var $builds = []
 		for name in Slow.walk_apps {
 			Path.create_all!(Path.utf8("${o.build_dir}/walk/${name}"))?
-			$builds = $builds.append(SpecSuite.build_job(o, "speed", "${SpecSuite.dir_of(name)}/main.roc", SpecSuite.native_target, Slow.walker_of(o, name)))
+			$builds = $builds.append(SpecSuite.build_job(o, "speed", "${SpecSuite.dir_of(name)}/main.roc", o.target, Slow.walker_of(o, name)))
 		}
-		built = Proc.parallel!($builds, Proc.cpus!())?
+		built = Proc.parallel!($builds, Proc.compiler_jobs!(App)?)?
 		match List.map2(Slow.walk_apps, built, |name, r| (name, r.code)).keep_if(|(_, c)| c != 0).first() {
 			Ok((name, c)) => return Err(BuildFailed("walk runner ${name}: build exited with ${c.to_str()}"))
 			Err(_) => {}
@@ -123,55 +124,41 @@ Slow := [].{
 	short_walk_steps : U64
 	short_walk_steps = 300
 
-	## A short walk of every walked app, for `check`: 300 steps from seed 7
-	## on the native spec runner `check` has already built, in parallel. It
-	## catches a walk that fails early (a stale reader, a leak, a job or an
-	## answer the runner cannot deliver) on every pull request; the long
-	## walks are `walks!`.
-	short_walks! : SpecSuite.Options => Try(List(Str), _)
-	short_walks! = |o| {
+	## A short walk of each of the walked apps `names` (all of
+	## `Slow.walk_apps` for the whole gate, a part's share in CI), for
+	## `check`: 300 steps from seed 7 on the native spec runner `check` has
+	## already built, in parallel. It catches a walk that fails early (a
+	## stale reader, a leak, a job or an answer the runner cannot deliver)
+	## on every pull request; the long walks are `walks!`.
+	short_walks! : SpecSuite.Options, List(Str) => Try(List(Str), _)
+	short_walks! = |o, names| {
 		var $jobs = []
-		for name in Slow.walk_apps {
+		for name in names {
 			files = Slow.walk_files!(name)?
 			$jobs = $jobs.append({ program: SpecSuite.runner_of(o, name), args: ["--walk", Slow.short_walk_steps.to_str(), "--seed", "7"].concat(files), cwd: o.root })
 		}
 		results = Proc.parallel!($jobs, Proc.cpus!())?
-		Ok(List.map2(Slow.walk_apps, results, |name, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["short walk ${name}: ${r.output.trim()}"]).join())
+		Ok(List.map2(names, results, |name, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["short walk ${name}: ${r.output.trim()}"]).join())
 	}
 
-	## Every fuzz target's examples, every app's walk and native soak, then
-	## every app's browser soak.
+	## Every fuzz target's fixed examples on the instrumented builds a
+	## campaign explores (which `check`'s plain builds do not compile), every
+	## app's walk and native soak, then every app's browser soak.
 	soak! : SpecSuite.Options => Try(List(Str), _)
 	soak! = |o| {
 		Checks.prepare_platform!(o)?
 		SpecSuite.build_web_platform!(o)?
-		Proc.note!("== fuzz targets")
-		var $problems = Targets.fuzz_check_all!(o, Targets.fuzz_targets)?
+		Proc.note!("== fuzz targets, instrumented")
+		var $problems = FuzzPlan.run!(Targets.fuzz_targets, Every, |fuzzes| Targets.fuzz_check_all!(o, fuzzes))?
 		Proc.note!("== walks")
-		$problems = $problems.concat(Slow.walks!(o)?)
+		$problems = Checks.gather!($problems, Slow.walks!(o))?
 		Proc.note!("== native soaks")
-		$problems = $problems.concat(Slow.native_soak!(o)?)
-		if SpecSuite.has_broken_optimizer(o.nightly) {
-			Proc.note!("SKIP shipping-build browser soaks (${SpecSuite.optimizer_issue}): ${o.nightly} cannot build the optimized artifacts; a dev build cannot establish shipping allocation plateaus. Restore on the next nightly.")
-		} else {
-			SpecSuite.build_with!(o, [], Slow.browser_soak_apps, "size")?
-			for example in Slow.browser_soak_apps {
-				Proc.note!("== browser soak ${example}")
-				$problems = $problems.concat(Targets.browser_soak!(o, example, SpecSuite.wasm_of(o, example))?)
-			}
+		$problems = Checks.gather!($problems, Slow.native_soak!(o))?
+		Checks.hold!($problems, SpecSuite.build_with!(o, [], Slow.browser_soak_apps, "size"))?
+		for example in Slow.browser_soak_apps {
+			Proc.note!("== browser soak ${example}")
+			$problems = Checks.gather!($problems, Targets.browser_soak!(o, example, SpecSuite.wasm_of(o, example)))?
 		}
 		Ok($problems)
 	}
-
-	finish! : Str, List(Str) => Try({}, [Exit(I32)])
-	finish! = |task, problems|
-		if problems.is_empty() {
-			Proc.note!("${task}: passed")
-			Ok({})
-		} else {
-			for p in problems {
-				Proc.warn!("FAIL ${p}")
-			}
-			Err(Exit(1))
-		}
 }

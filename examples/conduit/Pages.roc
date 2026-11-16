@@ -1,5 +1,8 @@
+import pf.Url
+import pf.Engine
 import Api
 import Route
+import Locations
 
 ## The pages' own state, one cell of the app's store (`AppStore`): every
 ## page's loads and forms but the article page's (`Article`). Where the
@@ -15,7 +18,7 @@ Pages := [].{
 	LoadReq : { key : Str, uri : Str, token : Str }
 
 	## A mutation request snapshot; serial 0 = nothing submitted.
-	Submit : { serial : U64, method : Str, url : Str, body : Str, token : Str }
+	Submit : { serial : U64, method : Engine.Method, url : Try(Str, Url.SegmentErr), body : Str, token : Str }
 
 	Loads : {
 		feed : Loaded(Api.FeedPage),
@@ -46,7 +49,7 @@ Pages := [].{
 	}
 
 	no_submit : Submit
-	no_submit = { serial: 0, method: "", url: "", body: "", token: "" }
+	no_submit = { serial: 0, method: "GET", url: Err(EmptySegment), body: "", token: "" }
 
 	no_load : {} -> Loaded(a)
 	no_load = |_| { key: "", value: Loading }
@@ -73,7 +76,7 @@ Pages := [].{
 	## The pages after a move from `from` to `url`: the same kind of page
 	## keeps its models; another kind starts every page again.
 	moved : Model, Str, Str -> Model
-	moved = |m, from, url| if (Route.kind(Route.of_url(url)) == Route.kind(Route.of_url(from))) m else Pages.init(url)
+	moved = |m, from, url| if (Route.kind(Locations.of_url(url)) == Route.kind(Locations.of_url(from))) m else Pages.init(url)
 }
 
 expect Pages.moved(Pages.init("/#/login"), "/#/login", "/#/register").auth == Pages.auth0

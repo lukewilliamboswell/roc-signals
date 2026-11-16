@@ -266,7 +266,7 @@ const sha = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
 }
 
 // A digest is WebCrypto's SHA-256 of the range; a range over maxFileBytes
-// is TooLarge unread, and a browser without WebCrypto is Unavailable.
+// is TooLarge unread, and an absent digest service is Unavailable.
 {
   const { page, ctx } = await open();
   const r = await page.evaluate(async () => {
@@ -291,7 +291,11 @@ const sha = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
   const ctx = await browser.createBrowserContext();
   const page = await ctx.newPage();
   await page.evaluateOnNewDocument(install);
-  await page.evaluateOnNewDocument(() => Object.defineProperty(window, "crypto", { value: {}, configurable: true }));
+  await page.evaluateOnNewDocument(() => {
+    // Mount still needs entropy; remove only the digest service this case tests.
+    const getRandomValues = window.crypto.getRandomValues.bind(window.crypto);
+    Object.defineProperty(window, "crypto", { value: { getRandomValues }, configurable: true });
+  });
   await page.goto(`${base}/`);
   await page.evaluate(() => window.__mount({}));
   const r = await page.evaluate(async () => {
@@ -299,7 +303,7 @@ const sha = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
     window.__click("Digest");
     return window.__until("digest", (t) => t !== "waiting");
   });
-  check("a digest without WebCrypto is Unavailable", r, "digest failed Unavailable");
+  check("a digest without SubtleCrypto is Unavailable", r, "digest failed Unavailable");
   await ctx.close();
 }
 

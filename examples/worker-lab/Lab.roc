@@ -1,5 +1,4 @@
-import pf.Engine
-import pf.Table
+import pf.Engine exposing [Table]
 import pf.Worker
 
 ## Worker Lab's model: the parameters a person sets, the jobs of a run and
@@ -147,18 +146,28 @@ Lab := [].{
 
 	# ------------------------------------------------------------ parameters
 
-	workload_from_str : Str -> Workload
-	workload_from_str = |text|
-		match text {
-			"tiles" => Tiles
-			"faulty" => Faulty
-			"draw" => Draw
-			_ => Primes
-		}
+	## The workloads offered in the menu, in presentation order.
+	workloads : List(Workload)
+	workloads = [Primes, Tiles, Faulty, Draw]
+
+	workload_label : Workload -> Str
+	workload_label = |workload| match workload {
+		Primes => "Count primes"
+		Tiles => "Draw tiles"
+		Faulty => "Count primes, every fourth job crashing"
+		Draw => "Draw the Mandelbrot set"
+	}
+
+	## A foreign selection preserves the current form.
+	workload_picked : Form, [Chose(Workload), NotOffered] -> Form
+	workload_picked = |form_value, picked| match picked {
+		Chose(workload) => { ..form_value, workload }
+		NotOffered => form_value
+	}
 
 	## The `select` value, and the only place it is spelled.
-	workload_to_str : Workload -> Str
-	workload_to_str = |workload|
+	workload_key : Workload -> Str
+	workload_key = |workload|
 		match workload {
 			Primes => "primes"
 			Tiles => "tiles"
@@ -486,9 +495,10 @@ Lab := [].{
 
 	# ------------------------------------------------------------------ runs
 
-	## The jobs of run `run` with parameters `p`, every one waiting: the
-	## rows a run's table is loaded with.
-	jobs_for : Params, U64 -> List({ key : U64, row : Job })
+	## The jobs of run `run` with parameters `p`, every one waiting under
+	## its index: the table a run replaces the last run's with. The indexes
+	## below `p.jobs` are the keys, so none repeats.
+	jobs_for : Params, U64 -> Jobs
 	jobs_for = |p, run| {
 		var $rows = List.with_capacity(p.jobs)
 		var $i = 0.U64
@@ -496,20 +506,22 @@ Lab := [].{
 			$rows = $rows.append({ key: $i, row: { index: $i, run, attempt: 0, timeout: p.timeout, task: Lab.task_of(p, $i), phase: Waiting } })
 			$i = $i + 1
 		}
-		$rows
+		match Table.from_list($rows) {
+			Ok(jobs) => jobs
+			Err(DuplicateKey(index)) => crash "Lab.jobs_for: the job index ${index.to_str()} repeats"
+		}
 	}
 
 	## How a listing selects and orders a run's jobs: the `plan` of both
 	## views of the run, the job grid and the picture's bands.
-	listed : Listing -> Engine.QueryPlan(U64, Job, U64)
-	listed = |listing| {
+	listed : Listing -> Engine.QueryPlan(U64, Job, (U64, U64))
+	listed = |listing| Engine.sort_by({
 		keep: |_, job| match listing {
 			Every => True
 			Strips => Lab.is_strip(job)
 		},
 		sort: |index, _| index,
-		compare: |a, b| if (a < b) Before else if (a > b) After else Same,
-	}
+	})
 
 	## Fold over a run's jobs in index order.
 	fold_jobs : Jobs, state, (state, Job -> state) -> state
@@ -649,6 +661,9 @@ Lab := [].{
 		match error {
 			Timeout => Timeout
 			Refused => Refused
+			TooDeep => Failed("nested too deeply to send")
+			NanKeys => Failed("a dictionary with two NaN keys cannot be sent")
+			TooManyFiles => Failed("more files than an answer may hold")
 			Lost(fault) => Lost(fault)
 		}
 
@@ -775,6 +790,7 @@ Lab := [].{
 			InvalidUtf8 => "the file is not text"
 			Unavailable => "the browser cannot do that here"
 			Refused => "too many requests were in flight"
+			OutsideFile => "a read went past the end of the file"
 		}
 
 	# ---------------------------------------------------------------- totals
@@ -922,11 +938,11 @@ Lab := [].{
 
 	## A strip's shape, so its band's placeholder takes the room the strip
 	## will. A job that draws no strip has none.
-	strip_style : Job -> Str
+	strip_style : Job -> [Absent, Present(Str)]
 	strip_style = |job|
 		match job.task {
-			Strip({ width, rows, .. }) => "aspect-ratio: ${width.to_str()} / ${rows.to_str()}"
-			_ => ""
+			Strip({ width, rows, .. }) => Present("aspect-ratio: ${width.to_str()} / ${rows.to_str()}")
+			_ => Absent
 		}
 }
 
@@ -985,3 +1001,6 @@ expect {
 	typed = { ..Lab.form, workload: Draw, jobs_text: "61" }
 	Lab.problem(typed) == "A picture has from 1 to 60 strips: the page holds every strip, and the picture, as a file."
 }
+
+## A foreign workload leaves the authored form intact, including its numeric drafts.
+expect Lab.workload_picked({ ..Lab.form, workload: Tiles, jobs_text: "12" }, NotOffered) == { ..Lab.form, workload: Tiles, jobs_text: "12" }

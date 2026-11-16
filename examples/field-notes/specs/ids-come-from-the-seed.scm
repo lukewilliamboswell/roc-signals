@@ -1,0 +1,21 @@
+(test "Field notes — ids come from the seed"
+  (setup
+    (seed 7)
+    (initial-online offline)
+    (initial-time 0))
+  (steps
+    (fill (label "Note body") "First")
+    (click (role button :name "Save note"))
+    (run-effect 1)
+    (fill (label "Note body") "Second")
+    (click (role button :name "Save note"))
+    (run-effect 2)
+    (expect-visible (role region :name "Note n-63cbe1e459320dd7"))
+    (expect-visible (role region :name "Note n-044c3cd7f43c661c"))
+    (navigate "/next-document")
+    (fill (label "Note body") "Third")
+    (click (role button :name "Save note"))
+    (run-effect 1)
+    (expect-visible (role region :name "Note n-9e5651b0ef953636"))
+    (expect-value (label "Body n-63cbe1e459320dd7") "First")
+    (expect-value (label "Body n-044c3cd7f43c661c") "Second")))

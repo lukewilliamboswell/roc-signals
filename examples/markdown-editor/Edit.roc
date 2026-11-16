@@ -1,7 +1,7 @@
 ## Source-text editing commands for the toolbar. Each one is a pure
 ## `Str -> Str` transform that a toolbar button applies to the document's
-## cell (`AppStore.edited`), so the document's text is the only state a
-## command touches.
+## source through `AppStore.edited`, whose decision also records its revision
+## and draft. These transforms themselves know nothing of the store.
 ##
 ## A "section" is a heading line plus everything up to the next heading line.
 ## Anything before the first heading is the preamble.

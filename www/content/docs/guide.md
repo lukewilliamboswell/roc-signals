@@ -49,6 +49,7 @@ Read these in order; each builds on the one before.
 - [Local State, Events, and Forms](@/docs/state-and-events.md): state that
   belongs to one piece of the view, handlers, controlled inputs, derived
   values, and starting state again.
+- [Markup Literals](@/docs/markup.md): checked HTML and SVG with signal holes.
 - [Shared State](@/docs/shared-state.md): the store and its cells, writes as
   values, decisions and how to test them, and resets.
 - [Tables and Table Views](@/docs/tables-and-views.md): rows held by key, and a

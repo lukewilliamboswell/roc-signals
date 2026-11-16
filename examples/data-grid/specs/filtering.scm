@@ -1,6 +1,7 @@
 (test "Data grid — filtering"
   (steps
     ; Bring the page to the state this spec starts from.
+    (expect-visible (test-id "row-name-0"))
     (mark-metrics)
     (click (role button :name "Sort by score"))
     (mark-metrics)

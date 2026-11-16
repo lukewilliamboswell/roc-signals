@@ -101,7 +101,7 @@ Primes := [].{
 			Unasked => ""
 			Working => all.answered().map_ok(|counts| "${counts.sum().to_str()} (counting…)") ?? "Counting…"
 			Answered(counts) => "${counts.sum().to_str()} primes"
-			Timeout | Refused | Lost(_) => "The count failed."
+			Timeout | Refused | TooDeep | NanKeys | TooManyFiles | Lost(_) => "The count failed."
 		}
 	# endregion gather
 

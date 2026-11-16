@@ -1,6 +1,7 @@
 (test "Data grid — sorting"
   (steps
     ; Sorting by a column, and reversing it.
+    (expect-visible (test-id "row-name-1"))
     (mark-metrics)
     (click (role button :name "Sort by score"))
     (expect-text (test-id "sort-caption") "Sorted by score ascending")

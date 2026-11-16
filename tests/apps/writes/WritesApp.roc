@@ -46,7 +46,7 @@ WritesApp := [Writes].{
 			form: {
 				draft: Engine.cell(""),
 				sent: Engine.cell(0.I64),
-			}.Engine.Cells.with_reset(|cells, reset| { cells, reset }),
+			}.Engine.Cells.with_reset(|form_cells, reset| { cells: form_cells, reset }),
 			score: Engine.cell(0.I64),
 			bonus: Engine.cell(0.I64),
 		}.Engine.Cells,
@@ -171,7 +171,7 @@ WritesApp := [Writes].{
 					[
 						WritesApp.reader("paired", seen),
 						Html.button("Tap and score", [], taps.update(|n| n + 1).also(Engine.handle(|_| [WritesApp.cells.score.update(|n| n + 1)]))),
-						Engine.watch_changes(seen, |text| [Title("paired ${text}"), Timer(10)], Engine.ignore({})),
+						Engine.watch_changes(seen, |text| [Engine.command(Title("paired ${text}")), Engine.timer(10)], Engine.ignore({})),
 					],
 				)
 			},
@@ -197,7 +197,7 @@ WritesApp := [Writes].{
 					[
 						WritesApp.reader("rewarded", seen),
 						Html.button("Tap and reward", [], taps.lift().update(|n| n + 1).also(Engine.does([WritesApp.cells.bonus.update(|n| n + 1)]))),
-						Engine.watch_changes(seen, |text| [Title("rewarded ${text}"), Timer(10)], Engine.ignore({})),
+						Engine.watch_changes(seen, |text| [Engine.command(Title("rewarded ${text}")), Engine.timer(10)], Engine.ignore({})),
 					],
 				)
 			},
@@ -224,7 +224,7 @@ WritesApp := [Writes].{
 			WritesApp.rewarded({}),
 			Engine.watch_changes(
 				WritesApp.cells.left.signal(),
-				|_| [Self],
+				|_| [Engine.again({})],
 				Engine.react_by(WritesApp.cells.right.signal(), |right, left, _| [WritesApp.cells.log.set("left ${left.to_str()} right ${right.to_str()}")]),
 			),
 		],

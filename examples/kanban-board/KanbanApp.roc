@@ -28,7 +28,7 @@ KanbanApp := [].{
 
 ## What the board is drawn over: the cells of this app's store that `Board`
 ## reads and writes.
-board = { cards: AppStore.cells.cards, filter: AppStore.cells.filter, limit: AppStore.cells.limit }
+board = { cards: AppStore.cells.cards, filter: AppStore.cells.filter, limit: AppStore.cells.limit, drag: AppStore.cells.drag }
 
 ## The page under the board's tally: the controls, the summary and the
 ## four columns.
@@ -46,6 +46,7 @@ page = |sizes| Html.div(
 			],
 		),
 		controls({}),
+		Board.drag_status(board, sizes),
 		summary(sizes),
 		Html.div("grid gap-4 md:grid-cols-2 xl:grid-cols-4", Kanban.all_columns.map(|column| Board.lane(board, column, sizes))),
 	],
@@ -73,7 +74,7 @@ controls = |{}| Engine.state(
 						labelled_field(
 							{ label: "Filter cards", look: "min-w-0 flex-1 basis-56" },
 							Html.text_input(
-								Engine.const("Filter cards"),
+								"Filter cards",
 								"text",
 								AppStore.cells.filter.signal(),
 								[Engine.class("input"), Engine.attr("placeholder", "Search titles, e.g. billing")],
@@ -83,7 +84,7 @@ controls = |{}| Engine.state(
 						labelled_field(
 							{ label: "WIP limit", look: "w-28 shrink-0" },
 							Html.number_input(
-								Engine.const("WIP limit"),
+								"WIP limit",
 								AppStore.cells.limit.signal(),
 								[Engine.class("input"), Engine.attr("placeholder", "3"), Engine.attr("min", "0")],
 								Engine.handle(|text| [AppStore.cells.limit.set(text)]),
@@ -92,7 +93,7 @@ controls = |{}| Engine.state(
 						labelled_field(
 							{ label: "New card title", look: "min-w-0 flex-1 basis-56" },
 							Html.text_input(
-								Engine.const("New card title"),
+								"New card title",
 								"text",
 								draft.signal(),
 								[Engine.class("input"), Engine.attr("placeholder", "Write release notes")],
@@ -124,9 +125,9 @@ summary = |sizes| {
 			Html.div(
 				"stat-grid",
 				[
-					stat_tile({ label: "Board total", id: "board-total" }, sizes.map(|tally| Kanban.cards_held(tally).to_str())),
-					stat_tile({ label: "Matching filter", id: "board-matching" }, sizes.map(|tally| Kanban.cards_shown(tally).to_str())),
-					stat_tile({ label: "Columns over WIP", id: "board-over" }, over.map(|count| count.to_str())),
+					stat_tile({ label: "Board total", id: "board-total" }, "${sizes.map(Kanban.cards_held)}"),
+					stat_tile({ label: "Matching filter", id: "board-matching" }, "${sizes.map(Kanban.cards_shown)}"),
+					stat_tile({ label: "Columns over WIP", id: "board-over" }, "${over}"),
 				],
 			),
 			Engine.when(
@@ -144,4 +145,12 @@ labelled_field = |{ label, look }, control| Html.div("field ${look}", [Html.p(la
 
 ## One figure of the summary, under its caption.
 stat_tile : { label : Str, id : Str }, Signal(ctx, Str) -> Elem(ctx)
-stat_tile = |{ label, id }, value| Html.div("stat", [Html.p(label, "stat-label"), Html.p_s(value, [Engine.class("stat-value"), Engine.test_id(id)])])
+stat_tile = |{ label, id }, value| {
+	markup : Html.Markup(ctx)
+	markup =
+		\\<div class="stat">
+		\\  <p class="stat-label">${Engine.const(label)}</p>
+		\\  <p class="stat-value" data-testid="${Engine.const(id)}">${value}</p>
+		\\</div>
+	markup.to_elem()
+}

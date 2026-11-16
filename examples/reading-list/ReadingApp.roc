@@ -1,7 +1,7 @@
 import pf.Engine exposing [Elem, Handler, Row, Signal, State]
 import pf.Html
 import ReadingList
-import Store
+import BookStorage
 
 ## Reading List: the books you want to read, are reading and have finished,
 ## kept in the browser's IndexedDB through ports, so they are still there
@@ -15,8 +15,9 @@ import Store
 ## Four effect sites connect the store to the database: one loads the
 ## books at start, one listens for the database's copy after any tab
 ## writes, one asks the database to add each book the reader posts, and one
-## sends each change's posted commands. Everything else is ordinary view
-## code.
+## sends each change's posted commands. Two change-only sites mark shelf
+## and book-count changes for browser view transitions; the app owns their CSS.
+## An additional site samples the clock before Roc mints a new book.
 ReadingApp := [].{
 
 	## The page, and the four effect sites that connect the store to the
@@ -25,6 +26,7 @@ ReadingApp := [].{
 	view = |{}| Html.div(
 		"app-shell app-shell-narrow",
 		[
+			Engine.element("style", [], [Engine.text(motion_css)]),
 			Html.section(
 				"Reading List",
 				"app-header",
@@ -40,19 +42,29 @@ ReadingApp := [].{
 			# it arrives.
 			Engine.watch(
 				Engine.const({}),
-				|_| [Store.load.request({})],
-				Engine.react_by(ReadingList.cells.copy.signal(), |copy, _, res| ReadingList.loaded(copy, Store.load.result(res))),
+				|_| [BookStorage.ports.load.ask({})],
+				Engine.react_by(ReadingList.cells.copy.signal(), |copy, _, res| ReadingList.loaded(copy, res)),
 			),
 			# The database's books again after any tab writes, for as long
 			# as the app runs.
 			Engine.watch(
 				Engine.const({}),
-				|_| [Store.stored.subscribe({})],
-				Engine.react(|_, res| ReadingList.restocked(Store.stored.message(res))),
+				|_| [BookStorage.ports.stored.ask({})],
+				Engine.react(|_, res| ReadingList.restocked(res)),
 			),
-			# A new book, which the database numbers. `on_post` never stops
+			# Read the time a task after submission. Refusal uses the last
+			# sampled clock; each answer mints its own complete book in Roc.
+			Engine.on_post(
+				ReadingList.cells.stamping.signal(),
+				|_| [Engine.timer(0)],
+				Engine.react_by(
+					{ state: ReadingList.cells.id_state.signal(), clock: ReadingList.cells.clock.signal() }.Signal,
+					|at, form, result| ReadingList.stamped({ at, form, result }),
+				),
+			),
+			# A new book, ready to store. `on_post` never stops
 			# an earlier add for a later one: each answer arrives.
-			Engine.on_post(ReadingList.cells.adding.signal(), |asked| [Store.add.request(asked)], Engine.react(|asked, res| ReadingList.added(asked, Store.add.result(res)))),
+			Engine.on_post(ReadingList.cells.adding.signal(), |asked| [BookStorage.ports.add.ask(asked)], Engine.react(ReadingList.added)),
 			# Every change's commands, sent in the turn of the click that
 			# made them.
 			Engine.on_post(ReadingList.cells.writes.signal(), ReadingList.requests, Engine.ignore({})),
@@ -64,8 +76,8 @@ ReadingApp := [].{
 	## it.
 	program : Engine.Program
 	program =
-		Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_| ReadingList.store, |_| ReadingApp.view({}))
-			.with_ports(Store.registrations)
+		Engine.program_store({ storage_keys: [], max_inflight: 32 }, ReadingList.start, |_| ReadingApp.view({}))
+			.with_ports(BookStorage.registrations)
 }
 
 ## A labelled text box of the form.
@@ -120,7 +132,7 @@ shelf_button = |counted, { label, showing }|
 ## One book, a row of the list: its title and author, its shelf, and what
 ## can be done with it. The row reads its own book, so a move to another
 ## shelf re-evaluates this row and no other.
-book : Signal(Row(ctx, Str), Str), State(Row(ctx, Str), Store.Book) -> Elem(Row(ctx, Str))
+book : Signal(Row(ctx, Str), Str), State(Row(ctx, Str), BookStorage.Book) -> Elem(Row(ctx, Str))
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 book = |id, row| {
 	held = row.signal()
@@ -128,7 +140,12 @@ book = |id, row| {
 	action = held.map(ReadingList.next_action)
 	Engine.element(
 		"li",
-		[Engine.class("card flex flex-wrap items-center justify-between gap-3 p-3"), Engine.attr_s("aria-label", title)],
+		[
+			Engine.class("card flex flex-wrap items-center justify-between gap-3 p-3"),
+			Engine.attr_s("aria-label", title),
+			# App keys name snapshots; the prefix also supports older UUID keys.
+			Engine.attr_s("style", id.map(|key| "view-transition-name: book-${key}")),
+		],
 		[
 			Html.div(
 				"grid",
@@ -164,14 +181,18 @@ shelves : {} -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 shelves = |{}| {
 	books = ReadingList.cells.books
-	showing = ReadingList.cells.showing.signal()
 	Engine.derive(
 		books.signal().map(ReadingList.tally),
 		|counted| {
+			showing = ReadingList.cells.showing.signal()
 			Html.section(
 				"Shelves",
 				"panel grid gap-3 p-4",
 				[
+					# These values choose the animation, including changes from a port result.
+					# Neither marks mount; typing touches neither value.
+					Engine.watch_changes(showing, |_| [Engine.command(ViewTransition(["shelf"]))], Engine.ignore({})),
+					Engine.watch_changes(counted, |_| [Engine.command(ViewTransition(["books"]))], Engine.ignore({})),
 					Html.div(
 						"toolbar",
 						[
@@ -199,7 +220,7 @@ shelves = |{}| {
 						],
 					),
 					Html.action_button(
-						Engine.const("Remove finished books"),
+						"Remove finished books",
 						counted.map(|c| ReadingList.count(c, Only(Finished)) == 0),
 						[Engine.class("button-ghost button-sm justify-self-start")],
 						Engine.handle_by(books.signal().map(ReadingList.finished_ids), |ids, _| ReadingList.finished_removed(ids)),
@@ -210,3 +231,54 @@ shelves = |{}| {
 		},
 	)
 }
+
+## The app carries one stylesheet in its DOM, so a standalone mount and the
+## documentation site use the same motion without app-specific runtime code.
+## Disposed books survive only as browser snapshots, never as retained nodes.
+## Only books are captured: the form and shelf controls stay interactive.
+## Controls inside a captured book wait until its animation finishes.
+motion_css : Str
+motion_css =
+	\\ :root { view-transition-name: none; }
+	\\ .book { view-transition-class: book; }
+	\\ ::view-transition { pointer-events: none; }
+	\\ ::view-transition-group(.book) {
+	\\   animation-duration: 220ms;
+	\\   animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+	\\ }
+	\\ ::view-transition-old(.book):only-child {
+	\\   animation: reading-book-leave 160ms ease-in both;
+	\\ }
+	\\ ::view-transition-new(.book):only-child {
+	\\   animation: reading-book-arrive 220ms ease-out both;
+	\\ }
+	\\ :root:active-view-transition-type(shelf)::view-transition-group(.book) {
+	\\   animation: none;
+	\\ }
+	\\ :root:active-view-transition-type(shelf)::view-transition-old(.book) {
+	\\   animation: reading-fade-out 120ms ease-out both;
+	\\ }
+	\\ :root:active-view-transition-type(shelf)::view-transition-new(.book) {
+	\\   animation: reading-fade-in 160ms ease-out both;
+	\\ }
+	\\ @keyframes reading-book-arrive {
+	\\   from { opacity: 0; translate: 0 0.5rem; }
+	\\   to { opacity: 1; translate: 0 0; }
+	\\ }
+	\\ @keyframes reading-book-leave {
+	\\   from { opacity: 1; translate: 0 0; }
+	\\   to { opacity: 0; translate: 0 -0.35rem; }
+	\\ }
+	\\ @keyframes reading-fade-in { from { opacity: 0; } to { opacity: 1; } }
+	\\ @keyframes reading-fade-out { from { opacity: 1; } to { opacity: 0; } }
+	\\ @supports not (view-transition-name: none) {
+	\\   .book { transition: opacity 180ms ease-out, translate 180ms ease-out; }
+	\\   @starting-style { .book { opacity: 0; translate: 0 0.5rem; } }
+	\\ }
+	\\ @media (prefers-reduced-motion: reduce) {
+	\\   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) {
+	\\     animation: none !important;
+	\\   }
+	\\   .book { transition: none; }
+	\\   @starting-style { .book { opacity: 1; translate: none; } }
+	\\ }

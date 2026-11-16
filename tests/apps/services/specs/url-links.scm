@@ -1,0 +1,16 @@
+(test "Services — url links"
+  (setup (initial-location "/url-probe/history?before=%26#start"))
+  (steps
+    (click (role link :name "Follow raw fragment"))
+    (expect-current-location "/url-probe/history?before=%26#l=caf%C3%A9%20au%20lait%22%3C%3E%60{}'?#")
+    (expect-text (test-id "received-location") "/url-probe/history?before=%26#l=caf%C3%A9%20au%20lait%22%3C%3E%60{}'?#")
+    (history-back)
+    (expect-current-location "/url-probe/history?before=%26#start")
+    (expect-text (test-id "received-location") "/url-probe/history?before=%26#start")
+    (history-forward)
+    (expect-current-location "/url-probe/history?before=%26#l=caf%C3%A9%20au%20lait%22%3C%3E%60{}'?#")
+    (expect-text (test-id "received-location") "/url-probe/history?before=%26#l=caf%C3%A9%20au%20lait%22%3C%3E%60{}'?#")
+    (click (role link :name "Follow raw relative path"))
+    (expect-current-location "/url-probe/next%20caf%C3%A9?word=%C3%A7a%20va%27%22#tag=%C3%A9%20%22%60")
+    (expect-text (test-id "received-location") "/url-probe/next%20caf%C3%A9?word=%C3%A7a%20va%27%22#tag=%C3%A9%20%22%60")
+  ))

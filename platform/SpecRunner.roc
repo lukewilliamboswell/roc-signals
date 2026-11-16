@@ -1,6 +1,8 @@
+import Protocol
 import Dom
 import Scm
 import JsonOut
+import PicturePage
 
 ## The native `.scm` spec runner.
 ##
@@ -46,11 +48,14 @@ import JsonOut
 ##   (and fails when there is none); `set-online` and `set-visibility` change
 ##   the modelled browser and deliver the new value to every live
 ##   subscription of that kind.
-## - A click is a real mouse click: `mousedown`, focus moves to the nearest
-##   focusable element (or away), `mouseup`, `click`, then the default action
+## - A click delivers `pointermove`, `mousemove`, `pointerdown`, `mousedown`,
+##   focus moves to the nearest focusable element (or away), `pointerup`,
+##   `mouseup`, `click`, then the default action
 ##   unless the dispatched click handler prevented it: a checkbox toggles, a
 ##   radio checks (each with `input` and `change`), a submit button submits
-##   its form if the form's controls are valid, and a link navigates.
+##   its form if the form's controls are valid, and a link navigates. A prevented
+##   `pointerdown` suppresses `mousedown`, `mouseup` and the focus change.
+##   Hover boundary events are outside the spec language.
 ## - Focus moves as Chrome moves it, and each move delivers `change` to a text
 ##   control the user changed since it gained focus, then `blur` to the
 ##   element losing focus and `focus` to the one gaining it, when handlers
@@ -75,11 +80,15 @@ SpecRunner := [].{
 	## An app as its host sees it: `Core.driver` of its `Engine.Program`.
 	Program(state) : {
 		version : U32,
+
+		## Registered worker catalogue names, including preparation owners.
+		## Static metadata only; reading it never initializes the app.
+		tasks : List(Str),
 		keys : () -> List(U8),
 		init : List(U8) -> (state, List(U8), List(U8)),
 		event : state, List(U8), List(U8), U32, U32, List(U8) -> (state, List(U8), List(U8)),
 
-		## A `:files` event: its file record and the handles minted for it.
+		## An event carrying files: its file record and the handles minted for it.
 		files : state, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (state, List(U8), List(U8)),
 
 		## The engine's settle check (`Core.settled`): `Err` holds the
@@ -92,7 +101,9 @@ SpecRunner := [].{
 		live : state -> List(U32),
 	}
 
-	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub, PortSub(Str, Str)]
+	## A native subscription records the browser source it listens to, separately
+	## from its request id. The runner drives these sources explicitly through specs.
+	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub, MediaSub(Str), PortSub(Str, Str), StorageSub(Str), StorageFailures]
 
 	## A history entry: its URL and the document it belongs to.
 	Entry : { url : Str, doc : U64 }
@@ -149,20 +160,27 @@ SpecRunner := [].{
 	max_fetch_bytes = 256 * 1024 * 1024
 
 	## The modelled browser around the DOM. `doc` numbers the current document;
-	## a cross-document navigation mounts the app afresh in the next one.
+	## a cross-document navigation mounts the app afresh in the next one. `env`
+	## starts as the parser's resolved facts and holds their current values.
 	Browser : {
-		loc : Str,
+		# URL references retain empty delimiters here and in history. Boot,
+		# popstate and assertions report them through serialize_location.
+		env : Scm.Environment,
 		doc : U64,
 		back : List(Entry),
 		fwd : List(Entry),
 		title : Str,
-		storage : List({ key : Str, value : Str }),
-		online : Bool,
-		visible : Bool,
-		storage_available : Bool,
 		pending : List(Pending),
 		issued : List(U32),
-		gets : List({ id : U32, key : Str }),
+		gets : List([Read({ id : U32, key : Str, session : Bool }), Answer({ id : U32, payload : List(U8), scoped : Bool }), Failures]),
+		failure_queue : List({ id : U32, payload : List(U8), ready : Bool }),
+		failure_scheduled : Bool,
+		failure_active : Bool,
+		settings : { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64, mount_root : Scm.MountRoot },
+		guard : Bool,
+		sticky_activation : Bool,
+		clipboard : { text : Str, html : Str, writes : U64, exhausted : Bool },
+		deferred_error : Str,
 		subs : List({ id : U32, sub : Sub }),
 		stub : [NoStub, Staged(Scm.Stub)],
 
@@ -181,7 +199,41 @@ SpecRunner := [].{
 		## The most bytes a task's job may append to its builders (the
 		## `max-output-bytes` setup, else the runtime's default).
 		max_output : U64,
+
+		## The catalogue chooses which port messages report a current value.
+		latest_ports : List(Str),
+		pointers : Dict(U32, PointerState),
+		touch_multi : Bool,
+		top_layer : List(U64),
+		openers : Dict(U64, U64),
+		ui_tasks : List(UiTask),
+		ui_head : U64,
+		ui_exhausted : Bool,
+		cancel_allowed : Bool,
+		scrolls : List(ScrollRecord),
+		scroll_count : U64,
+		scroll_exhausted : Bool,
+		scroll_error : Str,
+
+		## Live report sources are indexed so cancelling or delivering one
+		## never searches the full subscription set.
+		report_sources : Dict(U32, {}),
+
+		## Policy metadata for pending network requests only; removed by final
+		## delivery or cancel, so the engine’s in-flight cap bounds this map.
+		network : Dict(U32, { method : Str, options : Dom.HttpOptions }),
+
+		## One source index and epoch over the same ingress queue as focus
+		## callbacks. Slots are absolute while a drain removes its prefix.
+		reports : { held : Bool, releasing : Bool, replaced : U64, epoch : U64, head : U64, index : Dict(ReportSource, { epoch : U64, slot : U64 }) },
 	}
+
+	## Browser task-source entries keep only never-reused model lifetimes.
+	UiTask : [Toggle(U64), Close(U64), Cancelled]
+
+	## A performed scroll retains its monotonic ordinal and model lifetime.
+	## Reusing an engine id cannot make an older observation belong to a new node.
+	ScrollRecord : { ordinal : U64, target : U64, action : Dom.RefAction }
 
 	## A setup file: its name, media type and contents.
 	SetupFile : { name : Str, mime : Str, bytes : List(U8) }
@@ -192,7 +244,9 @@ SpecRunner := [].{
 	## counters at the last `mark-metrics`, the focused node (index + 1, 0
 	## for none) and the value it showed when it gained focus, and the value
 	## the engine wrote to the focused control that the controlled-input rule
-	## holds back until blur.
+	## holds back until blur. Focus effects and their queued browser events
+	## share one iterative drain, bounded at 4096 events waiting and 4096
+	## turns delivered before returning to idle.
 	S(state) : {
 		inst : state,
 		buf : List(U8),
@@ -206,7 +260,38 @@ SpecRunner := [].{
 		focused : U64,
 		focus_value : Str,
 		deferred : Deferred,
+		after_batch : List(Dom.AfterCmd),
+		event_queue : List(Input),
+		applying_focus : Bool,
+		draining : Bool,
+		turns : U64,
+		fault : [Healthy, Poisoned(Str)],
 	}
+
+	## One ingress entry; its source fixes replacement, never its payload.
+	Input : { node : U32, handler : U32, payload : List(U8), owner : U64, source : [Occurrence, Report(ReportSource)] }
+
+	## Request ids and DOM pointer sources cannot alias. A DOM source follows
+	## its declaring element's lifetime, handler and pointer independently.
+	ReportSource := [Request(U32), Pointer({ element : U64, handler : U32, pointer : U32 }), Scroll({ element : U64, handler : U32 }), Observation({ element : U64, kind : U8 })].{
+
+		## Coalescing keys compare the complete source identity, including the
+		## model lifetime and handler where present, rather than an engine id alone.
+		is_eq : _
+
+		## Equal source identities choose the same hash bucket. Dictionary
+		## equality still distinguishes collisions before replacing a waiting report.
+		to_hash : _
+	}
+
+	## A pointer either has no in-zone point or carries the resolved zone and
+	## encoded coordinates. No browser layout is invented by this record.
+	PointerAt : [Outside, In({ zone : Str, x : U16, y : U16 })]
+
+	## Gesture state keeps model lifetimes for the press and capture targets,
+	## using index-plus-one so zero means absent. Device policy and placement survive
+	## across moves until release or cancellation completes the gesture.
+	PointerState : { id : U32, kind : [Mouse, Pen, Touch], button : [Main, Middle, Secondary], modifiers : U8, primary : Bool, down : U64, capture : U64, moved : Bool, suppress_mouse : Bool, at : PointerAt }
 
 	## A control value held back while its control has focus (design.md,
 	## "Controlled inputs").
@@ -224,18 +309,26 @@ SpecRunner := [].{
 
 	# ------------------------------------------------------------ wire bytes
 
+	## Append one little-endian protocol operand to an owned payload buffer.
+	## This is the native driver’s encoder, independent of command decoding in Dom.
 	put_u32 : List(U8), U32 -> List(U8)
 	put_u32 = |b, n| b.concat([n.bitwise_and(0xFF).to_u8_wrap(), n.shr_zf_wrap(8).bitwise_and(0xFF).to_u8_wrap(), n.shr_zf_wrap(16).bitwise_and(0xFF).to_u8_wrap(), n.shr_zf_wrap(24).to_u8_wrap()])
 
+	## Append a full-width protocol operand as two little-endian words. Handle
+	## tokens and byte ranges retain their bits without a floating-point conversion.
 	put_u64 : List(U8), U64 -> List(U8)
 	put_u64 = |b, n| SpecRunner.put_u32(SpecRunner.put_u32(b, n.to_u32_wrap()), n.shr_zf_wrap(32).to_u32_wrap())
 
+	## Append UTF-8 text with its byte length as the protocol’s U32 prefix.
+	## The input buffer is consumed, allowing subsequent appends to reuse its storage.
 	put_str : List(U8), Str -> List(U8)
 	put_str = |b, s| {
 		bytes = s.to_utf8()
 		SpecRunner.put_u32(b, bytes.len().to_u32_wrap()).concat(bytes)
 	}
 
+	## Read a complete little-endian operand or answer Short. The enclosing
+	## reader chooses the diagnostic instead of accepting a partial value.
 	get_u32 : List(U8), U64 -> Try(U32, [Short])
 	get_u32 = |b, at| {
 		b0 = b.get(at) ? |_| Short
@@ -263,35 +356,284 @@ SpecRunner := [].{
 		(text, at + 4 + len)
 	}
 
-	## The declared storage keys: `count:u32 (key:str)*`.
+	## Read the local-storage declaration section the program's keys encoder
+	## wrote. Both mandatory declaration sections are consumed exactly, including
+	## the port catalogue the native runner does not otherwise need.
 	decode_keys : List(U8) -> List(Str)
-	decode_keys = |b| {
-		n = SpecRunner.get_u32(b, 0) ?? crash "contract: storage key list is truncated"
+	decode_keys = |b| SpecRunner.decode_declarations(b).keys
+
+	## The closed shape of a declared port, independent of request execution.
+	PortKind : [Command, Call, Subscription]
+
+	## A port's validated name and kind from declaration section five.
+	DeclaredPort : { name : Str, kind : PortKind }
+
+	## Spec validation retains only the declaration facts its steps can name.
+	Declarations : { keys : List(Str), ports : List(DeclaredPort), latest_ports : List(Str), media : List(Str), zone_days : U16, session_keys : List(Str) }
+
+	## Decode both declaration sections once: only the catalogue decides
+	## whether a subscription's messages are reports.
+	decode_declarations : List(U8) -> Declarations
+	decode_declarations = |b| {
+		if b.first() != Ok(2) {
+			crash "contract: declaration section 2 (local-storage) is missing"
+		}
+		len = (SpecRunner.get_u32(b, 1) ?? crash "contract: declaration section 2 (local-storage) has a short header").to_u64()
+		if len > b.len() - 5 {
+			crash "contract: declaration section 2 (local-storage) has a short body"
+		}
+		body = b.sublist({ start: 5, len })
+		n = SpecRunner.get_u32(body, 0) ?? crash "contract: declaration section 2 (local-storage) has a short key count"
 		var $at = 4.U64
 		var $keys = []
 		var $i = 0.U32
 		while $i < n {
-			len = (SpecRunner.get_u32(b, $at) ?? crash "contract: storage key list is truncated").to_u64()
-			key = Str.from_utf8(b.sublist({ start: $at + 4, len })) ?? crash "contract: storage key is not UTF-8"
+			key_len = (SpecRunner.get_u32(body, $at) ?? crash "contract: declaration section 2 (local-storage) has a short key").to_u64()
+			if key_len > body.len() - $at - 4 {
+				crash "contract: declaration section 2 (local-storage) has a short key"
+			}
+			key = Str.from_utf8(body.sublist({ start: $at + 4, len: key_len })) ?? crash "contract: declaration section 2 (local-storage) key is not UTF-8"
 			$keys = $keys.append(key)
-			$at = $at + 4 + len
+			$at = $at + 4 + key_len
 			$i = $i + 1
 		}
-		$keys
+		if $at != body.len() {
+			crash "contract: declaration section 2 (local-storage) has trailing bytes"
+		}
+		port_at = 5 + len
+		if b.get(port_at) != Ok(5) {
+			crash "contract: declaration section 5 (ports) is missing or out of order"
+		}
+		port_len = (SpecRunner.get_u32(b, port_at + 1) ?? crash "contract: declaration section 5 (ports) has a short header").to_u64()
+		if port_len > b.len() - port_at - 5 {
+			crash "contract: declaration section 5 (ports) has a short body or trailing bytes"
+		}
+		ports = b.sublist({ start: port_at + 5, len: port_len })
+		count = SpecRunner.get_u32(ports, 0) ?? crash "contract: declaration section 5 (ports) has a short count"
+		if count > 64 {
+			crash "contract: declaration section 5 (ports) has more than 64 ports"
+		}
+		$at = 4
+		$i = 0
+		var $names = []
+		var $latest_ports = []
+		var $declared_ports = []
+		while $i < count {
+			name_len = (SpecRunner.get_u32(ports, $at) ?? crash "contract: declaration section 5 (ports) has a short name").to_u64()
+			if name_len < 1 or name_len > 128 or name_len > ports.len() - $at - 4 {
+				crash "contract: declaration section 5 (ports) has an invalid name length"
+			}
+			name = Str.from_utf8(ports.sublist({ start: $at + 4, len: name_len })) ?? crash "contract: declaration section 5 (ports) name is not UTF-8"
+			if $names.contains(name) {
+				crash "contract: declaration section 5 (ports) has a duplicate name"
+			}
+			$names = $names.append(name)
+			$at = $at + 4 + name_len
+			kind = ports.get($at) ?? crash "contract: declaration section 5 (ports) has a short kind"
+			delivery = ports.get($at + 1) ?? crash "contract: declaration section 5 (ports) has a short delivery"
+			bound = SpecRunner.get_u32(ports, $at + 2) ?? crash "contract: declaration section 5 (ports) has a short bound"
+			is_shape = match kind {
+				1 | 2 => delivery == 0 and bound == 0
+				3 => (delivery == 1 and bound >= 1 and bound <= 1024) or (delivery == 2 and bound == 1)
+				_ => Bool.False
+			}
+			if !is_shape {
+				crash "contract: declaration section 5 (ports) has an invalid shape"
+			}
+			port_kind = match kind {
+				1 => Command
+				2 => Call
+				3 => Subscription
+				_ => crash "SpecRunner.decode_declarations: validated port kind is missing"
+			}
+			$declared_ports = $declared_ports.append({ name, kind: port_kind })
+			if kind == 3 and delivery == 2 {
+				$latest_ports = $latest_ports.append(name)
+			}
+			$at = $at + 6
+			$i = $i + 1
+		}
+		if $at != ports.len() {
+			crash "contract: declaration section 5 (ports) has trailing body bytes"
+		}
+		media_at = port_at + 5 + port_len
+		if b.get(media_at) != Ok(6) {
+			crash "contract: declaration section 6 (media) is missing or out of order"
+		}
+		media_len = (SpecRunner.get_u32(b, media_at + 1) ?? crash "contract: declaration section 6 (media) has a short header").to_u64()
+		if media_len > b.len() - media_at - 5 {
+			crash "contract: declaration section 6 (media) has a short body or trailing bytes"
+		}
+		media = b.sublist({ start: media_at + 5, len: media_len })
+		media_count = SpecRunner.get_u32(media, 0) ?? crash "contract: declaration section 6 (media) has a short count"
+		if media_count > 32 {
+			crash "contract: declaration section 6 (media) has more than 32 queries"
+		}
+		$at = 4
+		$i = 0
+		var $queries = []
+		while $i < media_count {
+			query_len = (SpecRunner.get_u32(media, $at) ?? crash "contract: declaration section 6 (media) has a short query").to_u64()
+			if query_len < 1 or query_len > 256 or query_len > media.len() - $at - 4 {
+				crash "contract: declaration section 6 (media) has an invalid query length"
+			}
+			query = Str.from_utf8(media.sublist({ start: $at + 4, len: query_len })) ?? crash "contract: declaration section 6 (media) query is not UTF-8"
+			if $queries.contains(query) {
+				crash "contract: declaration section 6 (media) has a duplicate query"
+			}
+			$queries = $queries.append(query)
+			$at = $at + 4 + query_len
+			$i = $i + 1
+		}
+		if $at != media.len() {
+			crash "contract: declaration section 6 (media) has trailing body bytes"
+		}
+		zone_at = media_at + 5 + media_len
+		if b.get(zone_at) != Ok(10) {
+			crash "contract: declaration section 10 (time-zone) is missing or out of order"
+		}
+		zone_len = SpecRunner.get_u32(b, zone_at + 1) ?? crash "contract: declaration section 10 (time-zone) has a short header"
+		if zone_len != 2 {
+			crash "contract: declaration section 10 (time-zone) needs exactly two days bytes"
+		}
+		days = (b.get(zone_at + 5) ?? crash "contract: declaration section 10 truncated days").to_u16() + (b.get(zone_at + 6) ?? crash "contract: declaration section 10 truncated days").to_u16().shl_wrap(8)
+		if days > 7305 {
+			crash "contract: declaration section 10 (time-zone) days exceed 7305"
+		}
+		session_at = zone_at + 7
+		if b.get(session_at) != Ok(11) {
+			crash "contract: declaration section11 session-storage missing"
+		}
+		length = (SpecRunner.get_u32(b, session_at + 1) ?? crash "contract: session-storage short length").to_u64()
+		if session_at + 5 + length != b.len() {
+			crash "contract: session-storage length mismatch"
+		}
+		session_body = b.sublist({ start: session_at + 5, len: length })
+		session_count = (SpecRunner.get_u32(session_body, 0) ?? crash "contract: session-storage missing key session_count").to_u64()
+		var $session_cursor = 4.U64
+		var $session = []
+		while $session.len() < session_count {
+			(key, next) = Dom.str(session_body, $session_cursor)
+			$session_cursor = next
+			$session = $session.append(key)
+		}
+		if $session_cursor != session_body.len() {
+			crash "contract: session-storage trailing bytes"
+		}
+		{ keys: $keys, ports: $declared_ports, latest_ports: $latest_ports, media: $queries, zone_days: days, session_keys: $session }
 	}
 
+	## Check every named declaration before a spec is emitted or executed.
+	## Same-spec storage evidence can appear before or after an absence. The
+	## transient indexes contain names only and are dropped before mounting.
+	declared : Program(state), Scm.Spec -> Try({}, Scm.Problem)
+	declared = |program, spec| {
+		declarations = SpecRunner.decode_declarations((program.keys)())
+		contexts = spec.setup.map(|entry| { pos: entry.pos, form: "setup", evidence: Scm.setup_evidence(entry.item) }).concat(spec.steps.map(|step| { pos: step.pos, form: Scm.op_name(step.op), evidence: Scm.evidence(step.op) }))
+		local_keys = declarations.keys.fold(Dict.empty(), |keys, key| keys.insert({ store: Local, key }, {}))
+		declared_keys = declarations.session_keys.fold(local_keys, |keys, key| keys.insert({ store: Session, key }, {}))
+		storage = contexts.fold(
+			declared_keys,
+			|keys, context| context.evidence.shows.fold(
+				keys,
+				|known, subject| match subject {
+					Storage(key) => known.insert(key, {})
+					Locator(_) | Attribute(_) | Cleanup(_) | Interval(_) => known
+				},
+			),
+		)
+		names = {
+			ports: declarations.ports.fold(Dict.empty(), |ports, port| ports.insert(port.name, port.kind)),
+			tasks: program.tasks.fold(Dict.empty(), |tasks, task| tasks.insert(task, {})),
+			media: declarations.media.fold(Dict.empty(), |queries, query| queries.insert(query, {})),
+			storage,
+		}
+		for context in contexts {
+			for requirement in context.evidence.needs {
+				match declared_need(requirement, names) {
+					Ok({}) => {}
+					Err(message) => return Err({ pos: context.pos, message: "${context.form} ${message}" })
+				}
+			}
+		}
+		Ok({})
+	}
+
+	## Parsing and declaration checks share one early boundary for normal,
+	## emitted and walked specs. No app initializer or effect runs here.
+	parse_declared : Program(state), Str -> Try(Scm.Spec, Scm.Problem)
+	parse_declared = |program, text| {
+		spec = Scm.parse(text)?
+		SpecRunner.declared(program, spec)?
+		Ok(spec)
+	}
+
+	## Encode a resolved boolean using the wire’s exact zero/one vocabulary.
 	flag_byte : Bool -> U8
 	flag_byte = |b| if (b) 1 else 0
 
-	## Boot bytes: `url:str count:u32 (key:str value:str)* online:u8
-	## visible:u8 storage:u8`, declared keys that hold a value only.
-	encode_boot : Str, List({ key : Str, value : Str }), { online : Bool, visible : Bool, storage_available : Bool } -> List(U8)
-	encode_boot = |url, kvs, { online, visible, storage_available }| {
-		var $b = SpecRunner.put_u32(SpecRunner.put_str([], url), kvs.len().to_u32_wrap())
-		for { key, value } in kvs {
-			$b = SpecRunner.put_str(SpecRunner.put_str($b, key), value)
+	## One length-bounded boot section. The runner writes every section in
+	## protocol order; its encoder is independent of the engine's decoder.
+	put_section : List(U8), { tag : U8, body : List(U8) } -> List(U8)
+	put_section = |bytes, { tag, body }| SpecRunner.put_u32(bytes.append(tag), body.len().to_u32_wrap()).concat(body)
+
+	## Encode the resolved browser facts as the mandatory boot sections. The
+	## caller filters local storage to the program's declared keys first.
+	encode_boot : Scm.Environment -> List(U8)
+	encode_boot = |env| SpecRunner.encode_mount(env, Scm.default_mount_root)
+
+	## The engine-only root section follows the app environment but never becomes
+	## an app-visible Boot field. This encoder is independent of Core's reader.
+	encode_mount : Scm.Environment, Scm.MountRoot -> List(U8)
+	encode_mount = |env, mount_root| {
+		var $storage = SpecRunner.put_u32([SpecRunner.flag_byte(env.storage_available)], env.storage.len().to_u32_wrap())
+		for (key, value) in env.storage {
+			$storage = SpecRunner.put_str(SpecRunner.put_str($storage, key), value)
 		}
-		$b.append(SpecRunner.flag_byte(online)).append(SpecRunner.flag_byte(visible)).append(SpecRunner.flag_byte(storage_available))
+		var $seed = []
+		var $number = env.seed
+		var $byte = 0.U64
+		while $byte < 16 {
+			$seed = $seed.append($number.to_u8_wrap())
+			$number = $number.shr_zf_wrap(8)
+			$byte = $byte + 1
+		}
+		languages = env.languages.fold(SpecRunner.put_u32([], env.languages.len().to_u32_wrap()), SpecRunner.put_str)
+		zone = Scm.zone_table(env.zone)
+		var $offsets = SpecRunner.put_u32(SpecRunner.put_u64(SpecRunner.put_u64(SpecRunner.put_str([], zone.name), zone.from_ms.to_u64_wrap()), zone.until_ms.to_u64_wrap()), zone.offsets.len().to_u32_wrap())
+		for offset in zone.offsets {
+			$offsets = SpecRunner.put_u32(SpecRunner.put_u64($offsets, offset.from_ms.to_u64_wrap()), offset.minutes.to_u32_wrap())
+		}
+		[
+			{ tag: 1, body: SpecRunner.put_str([], env.url) },
+			{ tag: 2, body: $storage },
+			{ tag: 3, body: [SpecRunner.flag_byte(env.online)] },
+			{ tag: 4, body: [SpecRunner.flag_byte(env.visible)] },
+			{ tag: 6, body: env.media.map(|(_, matched)| SpecRunner.flag_byte(matched)) },
+			{ tag: 7, body: SpecRunner.put_u64([], env.now_ms.to_u64_wrap()) },
+			{ tag: 8, body: $seed },
+			{ tag: 9, body: languages },
+			{ tag: 10, body: $offsets },
+			{ tag: 11, body: env.session.fold(SpecRunner.put_u32([SpecRunner.flag_byte(env.session_available)], env.session.len().to_u32_wrap()), |bytes, (key, value)| SpecRunner.put_str(SpecRunner.put_str(bytes, key), value)) },
+		].fold([], SpecRunner.put_section).concat(SpecRunner.put_section([], { tag: 13, body: SpecRunner.root_bytes(mount_root) }))
+	}
+
+	## Canonical namespace tags preserve the actual wrapper's URI, prefix and
+	## local identity. Names are already resolved and checked by the parser.
+	root_bytes : Scm.MountRoot -> List(U8)
+	root_bytes = |root| {
+		namespace = match root.namespace {
+			"http://www.w3.org/1999/xhtml" => [0.U8]
+			"http://www.w3.org/2000/svg" => [1]
+			"http://www.w3.org/1998/Math/MathML" => [2]
+			"" => [3]
+			uri => SpecRunner.put_str([4], uri)
+		}
+		body = SpecRunner.put_str(SpecRunner.put_str(namespace, root.prefix), root.local)
+		if body.len() > 65_536 {
+			crash "contract: mount-root exceeds 65536 encoded bytes"
+		}
+		body
 	}
 
 	## An HTTP result payload: tag 1, `status:u16 n:u32 (name:str value:str)* body:rest`.
@@ -352,6 +694,8 @@ SpecRunner := [].{
 		}
 	}
 
+	## Build the ordinary effect-result payload for a fixture failure. Timeout
+	## is a bare result tag; a network failure carries its detail as trailing UTF-8.
 	encode_reject : Scm.RejectKind, Str -> List(U8)
 	encode_reject = |kind, detail|
 		match kind {
@@ -378,29 +722,93 @@ SpecRunner := [].{
 	## assert no work metrics).
 	take_batch : S(state), state, List(U8) -> S(state)
 	take_batch = |s, inst, cmds| {
-		before = s.dom.nodes.len()
-		r = Dom.apply_full(s.dom, cmds)
-		var $ops = s.ops
-		for op in r.ops {
-			$ops = $ops.set(op.to_u64(), ($ops.get(op.to_u64()) ?? 0) + 1) ?? $ops
-		}
-		var $w = s.writes
-		while $w.len() < r.dom.nodes.len() {
-			$w = $w.append(0)
-		}
-		for i in r.written {
-			# A node written in the batch that created it counts its creation
-			# only.
-			if i < before {
-				$w = $w.set(i, ($w.get(i) ?? 0) + 1) ?? $w
-				n = Dom.node(r.dom, i)
-				if n.tag == "" and n.parent != 0 {
-					$w = $w.set(n.parent - 1, ($w.get(n.parent - 1) ?? 0) + 1) ?? $w
+		before_count = s.dom.nodes.len()
+		var $s = { ..s, inst, buf: cmds }
+		var $at = 0.U64
+		while $at < cmds.len() {
+			prior = $s
+			r = Dom.apply_next(prior.dom, cmds, $at)
+			$at = r.next
+			var $ops = prior.ops
+			for op in r.ops {
+				$ops = $ops.set(op.to_u64(), ($ops.get(op.to_u64()) ?? 0) + 1) ?? $ops
+			}
+			var $w = prior.writes
+			while $w.len() < r.dom.nodes.len() {
+				$w = $w.append(0)
+			}
+			for i in r.written {
+				if i < before_count {
+					$w = $w.set(i, ($w.get(i) ?? 0) + 1) ?? $w
+					n = Dom.node(r.dom, i)
+					if n.kind == 2 and n.parent != 0 {
+						$w = $w.set(n.parent - 1, ($w.get(n.parent - 1) ?? 0) + 1) ?? $w
+					}
 				}
 			}
+			focused = if (prior.focused != 0 and !SpecRunner.attached(r.dom, prior.focused - 1)) 0 else prior.focused
+			held = SpecRunner.hold_focused({ ..prior, focused }, r.dom, r.values)
+			$s = { ..prior, dom: held.dom, focused, deferred: held.deferred, browser: prior.browser, ops: $ops, writes: $w }
+			for fx in r.fx {
+				match fx {
+					Ref(command) => {
+						$s = { ..$s, after_batch: $s.after_batch.append(Ref(command)) }
+					}
+					Shown(command) => {
+						# Closing happens now, before a following REMOVE can erase content.
+						if command.value == Hidden {
+							$s = SpecRunner.change_shown($s, command.target, Hidden)
+						}
+						else {
+							$s = { ..$s, after_batch: $s.after_batch.append(Show(command)) }
+						}
+					}
+					_ => {
+						$s = { ..$s, after_batch: $s.after_batch.append(Effect(fx)) }
+					}
+				}
+			}
+			if r.ops == [4] {
+				for i in $s.browser.top_layer {
+					if Dom.node(prior.dom, i).detach_count != Dom.node($s.dom, i).detach_count or SpecRunner.pressed_path($s.dom, i).any(|p| Dom.node(prior.dom, p.node).detach_count != p.count) {
+						value = if (Dom.node($s.dom, i).shown == Modal) Open else Hidden
+						$s = { ..$s, dom: Dom.modify($s.dom, i, |n| { ..n, shown: value }), focused: if ($s.focused != 0 and SpecRunner.inside($s.dom, $s.focused - 1, i)) 0 else $s.focused }
+					}
+				}
+				b = $s.browser
+				$s = { ..$s, browser: { ..b, top_layer: b.top_layer.keep_if(|i| Dom.node($s.dom, i).shown == Modal or Dom.node($s.dom, i).shown == Popover) } }
+			}
+			# Detached top-layer lifetimes do not restore focus or invent close events.
+			b = $s.browser
+			$s = { ..$s, browser: { ..b, top_layer: b.top_layer.keep_if(|i| SpecRunner.attached($s.dom, i)) } }
 		}
-		held = SpecRunner.hold_focused(s, r.dom, r.values)
-		{ ..s, inst, buf: cmds, dom: held.dom, deferred: held.deferred, browser: SpecRunner.absorb(s.browser, r.fx), ops: $ops, writes: $w }
+		if cmds.first() == Ok(1) {
+			# The browser starts non-node effects before the deferred DOM update.
+			# Native application has no animation gap, but retains that ordering.
+			prior = $s
+			queued = prior.after_batch.drop_first(s.after_batch.len())
+			early = |command| match command {
+				Effect(_) => True
+				Ref(_) | Show(_) => False
+			}
+			$s = { ..prior, after_batch: s.after_batch.concat(queued.keep_if(early)).concat(queued.keep_if(|command| !early(command))) }
+		}
+		$s
+	}
+
+	## Whether a model node still belongs to the mounted document. Removing a
+	## focused subtree clears focus without raising blur, as the browser does.
+	attached : Dom.Model, U64 -> Bool
+	attached = |dom, i| {
+		var $at = i
+		while $at != dom.root {
+			parent = Dom.node(dom, $at).parent
+			if parent == 0 {
+				return Bool.False
+			}
+			$at = parent - 1
+		}
+		Bool.True
 	}
 
 	## The controlled-input rule, as the runtime applies it: a `value` write
@@ -409,11 +817,11 @@ SpecRunner := [].{
 	## control keeps showing what the user typed until blur.
 	hold_focused : S(state), Dom.Model, List((U64, Str)) -> { dom : Dom.Model, deferred : Deferred }
 	hold_focused = |s, dom, values| {
-		if s.focused == 0 or Dom.node(s.dom, s.focused - 1).tag == "select" {
+		if s.focused == 0 or Dom.html_tag(Dom.node(s.dom, s.focused - 1), "select") {
 			return { dom, deferred: s.deferred }
 		}
 		i = s.focused - 1
-		shown = Dom.attr_of(Dom.node(s.dom, i), "value")
+		shown = Dom.live_value(Dom.node(s.dom, i), "value")
 		var $deferred = s.deferred
 		var $wrote = Bool.False
 		for (node, v) in values {
@@ -423,7 +831,7 @@ SpecRunner := [].{
 			}
 		}
 		if $wrote {
-			{ dom: Dom.set_attr_on(dom, i, "value", shown), deferred: $deferred }
+			{ dom: Dom.set_live_on(dom, i, "value", shown), deferred: $deferred }
 		} else {
 			{ dom, deferred: $deferred }
 		}
@@ -433,26 +841,32 @@ SpecRunner := [].{
 	## that calls the engine directly), at `url` with `storage`.
 	adopt : state, List(U8), Str, List({ key : Str, value : Str }) -> S(state)
 	adopt = |inst, cmds, url, storage| {
-		browser = SpecRunner.fresh_browser({ url, storage, online: Bool.True, visible: Bool.True, storage_available: Bool.True })
-		s0 = SpecRunner.fresh(inst, browser)
+		browser = SpecRunner.fresh_browser({ url, storage: storage.map(|kv| (kv.key, kv.value)) })
+		initial = SpecRunner.fresh(inst, browser)
+		root = browser.settings.mount_root
+		s0 = { ..initial, dom: Dom.modify(initial.dom, initial.dom.root, |element| { ..element, namespace: root.namespace, prefix: root.prefix, tag: root.local, svg: root.namespace == Dom.svg_namespace }) }
 		SpecRunner.take_batch(s0, inst, cmds)
 	}
 
 	## The modelled browser of a fresh document at `url`.
-	fresh_browser : { url : Str, storage : List({ key : Str, value : Str }), online : Bool, visible : Bool, storage_available : Bool } -> Browser
-	fresh_browser = |{ url, storage, online, visible, storage_available }| {
-		loc: url,
+	fresh_browser : Scm.Environment -> Browser
+	fresh_browser = |env| {
+		env,
 		doc: 0,
 		back: [],
 		fwd: [],
 		title: "",
-		storage,
-		online,
-		visible,
-		storage_available,
 		pending: [],
 		issued: [],
 		gets: [],
+		failure_queue: [],
+		failure_scheduled: False,
+		failure_active: False,
+		settings: { local_full: False, session_full: False, clipboard_denied: False, max_paste: 4194304, mount_root: Scm.default_mount_root },
+		guard: False,
+		sticky_activation: False,
+		clipboard: { text: "", html: "", writes: 0, exhausted: False },
+		deferred_error: "",
 		subs: [],
 		stub: NoStub,
 		files: [],
@@ -460,46 +874,116 @@ SpecRunner := [].{
 		port_log: [],
 		saves: [],
 		max_output: SpecRunner.max_output_bytes,
+		latest_ports: [],
+		pointers: Dict.empty(),
+		touch_multi: Bool.False,
+		top_layer: [],
+		openers: Dict.empty(),
+		ui_tasks: [],
+		ui_head: 0,
+		ui_exhausted: False,
+		cancel_allowed: Bool.False,
+		scrolls: [],
+		scroll_count: 0,
+		scroll_exhausted: Bool.False,
+		scroll_error: "",
+		report_sources: Dict.empty(),
+		network: Dict.empty(),
+		reports: { held: Bool.False, releasing: Bool.False, replaced: 0, epoch: 0, head: 0, index: Dict.empty() },
 	}
 
 	## A runner state for instance `inst` before its first batch.
 	fresh : state, Browser -> S(state)
-	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 20), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue }
+	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, Protocol.ops.len() + 1), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, after_batch: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
 
-	set_store : List({ key : Str, value : Str }), Str, Str -> List({ key : Str, value : Str })
-	set_store = |l, key, value| l.keep_if(|kv| kv.key != key).append({ key, value })
+	## Replace a browser-storage fixture’s pair at a key, leaving other keys
+	## in order. This is linear in the fixture pairs and does not write a Roc cell.
+	set_store : List((Str, Str)), Str, Str -> List((Str, Str))
+	set_store = |l, key, value| l.keep_if(|(name, _)| name != key).append((key, value))
 
 	## Apply one batch's effect commands to the modelled browser.
 	absorb : Browser, List(Dom.FxCmd) -> Browser
-	absorb = |b0, fx| {
+	absorb = |browser, commands| SpecRunner.absorb_limit(browser, commands, 4096)
+
+	## Failure callbacks share the ingress capacity, including while effects run.
+	absorb_limit : Browser, List(Dom.FxCmd), U64 -> Browser
+	absorb_limit = |b0, fx, capacity| {
 		var $b = b0
 		for c in fx {
+			if !$b.deferred_error.is_empty() {
+				break
+			}
 			b = $b
 			$b = match c {
-				Http(id, _, url, _, body, _) => { ..b, pending: b.pending.append({ id, url, body, kind: HttpRequest }), issued: b.issued.append(id) }
-				Get(id, key) => { ..b, gets: b.gets.append({ id, key }) }
+				Http(id, method, url, _, body, _, options) => { ..b, network: b.network.insert(id, { method, options }), report_sources: if (options.progress_ms > 0) b.report_sources.insert(id, {}) else b.report_sources, pending: b.pending.append({ id, url, body, kind: HttpRequest }), issued: b.issued.append(id) }
+				Guard(on) => { ..b, guard: on }
+				SessionGet(id, key) => { ..b, gets: b.gets.append(Read({ id, key, session: True })) }
+				StorageSub(id, key) => { ..b, subs: b.subs.append({ id, sub: StorageSub(key) }), report_sources: b.report_sources.insert(id, {}) }
+				StorageFailures(id) => { ..b, subs: b.subs.append({ id, sub: StorageFailures }) }
+				Clipboard(id, value) => {
+					denied = b.settings.clipboard_denied
+					{
+						..b,
+						clipboard: if (denied) b.clipboard else {
+							text: value.text,
+							html: match value.html {
+								Plain => ""
+								Html(markup) => markup
+							},
+							writes: if (b.clipboard.writes == 18446744073709551615) b.clipboard.writes else b.clipboard.writes + 1,
+							exhausted: b.clipboard.exhausted or b.clipboard.writes == 18446744073709551615,
+						},
+						gets: b.gets.append(Answer({ id, payload: if (denied) [24, 1] else [23], scoped: False })),
+					}
+				}
+				SessionSet(key, value) => SpecRunner.storage_write(b, { capacity, session: True, key, value: Present(value) })
+				SessionRemove(key) => SpecRunner.storage_write(b, { capacity, session: True, key, value: Absent })
+				Get(id, key) => { ..b, gets: b.gets.append(Read({ id, key, session: False })) }
 				Timer(id, _) => { ..b, pending: b.pending.append({ id, url: "timer", body: "", kind: TimerRequest }), issued: b.issued.append(id) }
 				Work(id, job) => { ..b, pending: b.pending.append({ id, url: "work", body: "", kind: WorkRequest(job) }), issued: b.issued.append(id) }
 				Interval(id, ms) => { ..b, subs: b.subs.append({ id, sub: Interval(ms) }) }
 				Pop(id) => { ..b, subs: b.subs.append({ id, sub: Pop }) }
-				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }) }
-				VisibilitySub(id) => { ..b, subs: b.subs.append({ id, sub: VisibilitySub }) }
-				Cancel(id) => { ..b, pending: b.pending.keep_if(|p| p.id != id), subs: b.subs.keep_if(|x| x.id != id) }
-				Push(url) => { ..b, back: b.back.append({ url: b.loc, doc: b.doc }), loc: SpecRunner.resolve_in_document(b.loc, url), fwd: [] }
-				Replace(url) => { ..b, loc: SpecRunner.resolve_in_document(b.loc, url) }
+				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }), report_sources: b.report_sources.insert(id, {}) }
+				VisibilitySub(id) => { ..b, subs: b.subs.append({ id, sub: VisibilitySub }), report_sources: b.report_sources.insert(id, {}) }
+				MediaSub(id, query) => { ..b, subs: b.subs.append({ id, sub: MediaSub(query) }), report_sources: b.report_sources.insert(id, {}) }
+				Cancel(id) => {
+					failures = b.failure_queue.keep_if(|entry| entry.id != id)
+					tasks = b.gets.keep_if(
+						|task| match task {
+							Answer(answer) => answer.id != id
+							Read(read) => read.id != id
+							Failures => !failures.is_empty()
+						},
+					)
+					{ ..b, pending: b.pending.keep_if(|request| request.id != id), subs: b.subs.keep_if(|entry| entry.id != id), gets: tasks, failure_queue: failures, failure_scheduled: b.failure_scheduled and !failures.is_empty(), reports: { ..b.reports, index: b.reports.index.remove(Request(id)) }, report_sources: b.report_sources.remove(id), network: b.network.remove(id) }
+				}
+				Push(url) =>
+					match SpecRunner.resolve_in_document(b.env.url, url) {
+						Ok(next) => { ..b, back: b.back.append({ url: b.env.url, doc: b.doc }), env: { ..b.env, url: next }, fwd: [] }
+						Err(problem) => { ..b, deferred_error: problem }
+					}
+				Replace(url) =>
+					match SpecRunner.resolve_in_document(b.env.url, url) {
+						Ok(next) => { ..b, env: { ..b.env, url: next } }
+						Err(problem) => { ..b, deferred_error: problem }
+					}
 				# Writes to unavailable storage fail in the browser and persist nothing.
-				Set(k, v) => if (b.storage_available) { ..b, storage: SpecRunner.set_store(b.storage, k, v) } else b
-				Remove(k) => if (b.storage_available) { ..b, storage: b.storage.keep_if(|kv| kv.key != k) } else b
+				Set(key, value) => SpecRunner.storage_write(b, { capacity, session: False, key, value: Present(value) })
+				Remove(key) => SpecRunner.storage_write(b, { capacity, session: False, key, value: Absent })
 				Title(t) => { ..b, title: t }
-				Focus(_, _) => b
+				Ref(_) | Shown(_) => b
 				FileRead(id, mode, file, max_bytes) => { ..b, pending: b.pending.append({ id, url: "read", body: "", kind: ReadRequest({ mode, file, max_bytes }) }), issued: b.issued.append(id) }
-				Upload(id, _, url, _, file, _) => { ..b, pending: b.pending.append({ id, url, body: "", kind: UploadRequest(file) }), issued: b.issued.append(id) }
+				Upload(id, method, url, _, file, _, options) => { ..b, network: b.network.insert(id, { method, options }), report_sources: if (options.progress_ms > 0) b.report_sources.insert(id, {}) else b.report_sources, pending: b.pending.append({ id, url, body: "", kind: UploadRequest(file) }), issued: b.issued.append(id) }
 				Digest(id, _, file) => { ..b, pending: b.pending.append({ id, url: "digest", body: "", kind: DigestRequest(file) }), issued: b.issued.append(id) }
 				FileUrl(id, file) => { ..b, pending: b.pending.append({ id, url: "url", body: "", kind: UrlRequest(file) }), issued: b.issued.append(id) }
 				PortSend(port, msg) => { ..b, port_log: b.port_log.append({ port, json: msg.json }) }
+				# A command that was not sent reaches no handler and no port log;
+				# the browser reports it to its console and `onPortFault`, which
+				# no step observes.
+				PortUnsent(_) => b
 				PortCall(id, port, msg, timeout_ms) => { ..b, pending: b.pending.append({ id, url: "port", body: "", kind: PortRequest({ port, json: msg.json, timeout_ms }) }), issued: b.issued.append(id) }
-				PortListen(id, port, msg) => { ..b, subs: b.subs.append({ id, sub: PortSub(port, msg.json) }) }
-				Fetch(id, _, url, _, _) => { ..b, pending: b.pending.append({ id, url, body: "", kind: FetchRequest }), issued: b.issued.append(id) }
+				PortListen(id, port, msg) => { ..b, subs: b.subs.append({ id, sub: PortSub(port, msg.json) }), report_sources: if (b.latest_ports.contains(port)) b.report_sources.insert(id, {}) else b.report_sources }
+				Fetch(id, method, url, _, _, options) => { ..b, network: b.network.insert(id, { method, options }), report_sources: if (options.progress_ms > 0) b.report_sources.insert(id, {}) else b.report_sources, pending: b.pending.append({ id, url, body: "", kind: FetchRequest }), issued: b.issued.append(id) }
 				# The runtime resolves a save's file when it applies the batch,
 				# while a handle the batch released still names its file.
 				Save(file, name) => { ..b, saves: b.saves.append({ name, bytes: SpecRunner.file_bytes(b, file) }) }
@@ -508,36 +992,100 @@ SpecRunner := [].{
 		$b
 	}
 
+	## Count only retained non-lossy storage failures; storage reads and copies
+	## already have the in-flight table's separate bound.
+	failure_tasks : Browser -> U64
+	failure_tasks = |browser| browser.failure_queue.len()
+
+	## The one failure timer is a task source beside individual read and copy
+	## tasks. A callback's current recipients remain separate from its next task.
+	callbacks_waiting : Browser -> Bool
+	callbacks_waiting = |browser| !browser.gets.is_empty() or browser.failure_active
+
+	## Containment forgets every scheduled answer while retaining the last guard.
+	clear_callbacks : Browser -> Browser
+	clear_callbacks = |browser| { ..browser, gets: [], failure_queue: [], failure_scheduled: False, failure_active: False }
+
+	## A write persists atomically or records an occurrence for each subscriber
+	## present at failure. Removal ignores quota, as the browser does.
+	storage_write : Browser, { capacity : U64, session : Bool, key : Str, value : [Absent, Present(Str)] } -> Browser
+	storage_write = |browser, { capacity, session, key, value }| {
+		available = if (session) browser.env.session_available else browser.env.storage_available
+		full = if (session) browser.settings.session_full else browser.settings.local_full
+		fails = !available or (full and value != Absent)
+		if fails {
+			payload = [25, if (session) 2 else 1, if (available) 1 else 2].concat(key.to_utf8())
+			answers = browser.subs.keep_if(|sub| sub.sub == StorageFailures).map(|sub| { id: sub.id, payload, ready: False })
+			if SpecRunner.failure_tasks(browser) + answers.len() > capacity {
+				{ ..browser, deferred_error: "resource_limit: storage failure recipients and ingress exceed 4096" }
+			} else { ..browser, failure_queue: browser.failure_queue.concat(answers), gets: if (browser.failure_scheduled or answers.is_empty()) browser.gets else browser.gets.append(Failures), failure_scheduled: browser.failure_scheduled or !answers.is_empty() }
+		} else {
+			pairs = if (session) browser.env.session else browser.env.storage
+			next = match value {
+				Absent => pairs.keep_if(|(name, _)| name != key)
+				Present(text) => SpecRunner.set_store(pairs, key, text)
+			}
+			{ ..browser, env: if (session) { ..browser.env, session: next } else { ..browser.env, storage: next } }
+		}
+	}
+
+	## Model one genuine other-document write. The event's value is fixed now;
+	## delivery through broadcast uses the ordinary replaceable report source.
+	storage_elsewhere : Program(state), S(state), { key : [Absent, Present(Str)], value : [Absent, Present(Str)] } -> Try(S(state), Str)
+	storage_elsewhere = |program, state, { key, value }| {
+		b = state.browser
+		pairs = b.env.storage
+		changed = match key {
+			Absent => !pairs.is_empty()
+			Present(name) => match value {
+				Absent => pairs.any(|(k, _)| k == name)
+				Present(text) => pairs.find_first(|(k, _)| k == name).map_ok(|(_, prior)| prior != text) ?? True
+			}
+		}
+		if !changed {
+			return Ok(state)
+		}
+		next = match key {
+			Absent => []
+			Present(name) => match value {
+				Absent => pairs.keep_if(|(k, _)| k != name)
+				Present(text) => SpecRunner.set_store(pairs, name, text)
+			}
+		}
+		# The unavailable fixture removes the storage getter itself. A real event
+		# still changes the other document's store, but no local area identity is
+		# available to classify it for this instance.
+		if !b.env.storage_available {
+			return Ok({ ..state, browser: { ..b, env: { ..b.env, storage: next } } })
+		}
+		payload = match value {
+			Absent => [4]
+			Present(text) => [3].concat(text.to_utf8())
+		}
+		Ok(
+			SpecRunner.broadcast(
+				program,
+				{ ..state, browser: { ..b, env: { ..b.env, storage: next } } },
+				|subscription| match subscription.sub {
+					StorageSub(name) => key == Absent or key == Present(name)
+					_ => False
+				},
+				payload,
+			),
+		)
+	}
+
 	## Mount the app with the spec's setup.
 	start : Program(state), Scm.Spec -> Try(S(state), Str)
 	start = |program, spec| {
 		if program.version != Dom.protocol_version {
 			return Err("the program speaks protocol ${program.version.to_str()}; this runner decodes ${Dom.protocol_version.to_str()}")
 		}
-		var $url = "/"
-		var $storage = []
-		var $online = Bool.True
-		var $visible = Bool.True
-		var $storage_available = Bool.True
 		var $files = []
 		var $max_output = SpecRunner.max_output_bytes
+		var $settings = { ..(SpecRunner.fresh_browser({})).settings, mount_root: spec.mount_root }
 		for entry in spec.setup {
 			match entry.item {
-				InitialLocation(url) => {
-					$url = url
-				}
-				LocalStorage({ key, value }) => {
-					$storage = SpecRunner.set_store($storage, key, value)
-				}
-				InitialOnline(o) => {
-					$online = o == Online
-				}
-				InitialVisibility(v) => {
-					$visible = v == Visible
-				}
-				LocalStorageUnavailable => {
-					$storage_available = Bool.False
-				}
 				File({ name, mime, text, repeat }) => {
 					if $files.any(|f| f.name == name) {
 						return Err("file \"${name}\" is declared twice")
@@ -547,12 +1095,28 @@ SpecRunner := [].{
 				MaxOutputBytes(n) => {
 					$max_output = n
 				}
+				LocalStorageFull => {
+					$settings = { ..$settings, local_full: True }
+				}
+				SessionStorageFull => {
+					$settings = { ..$settings, session_full: True }
+				}
+				ClipboardDenied => {
+					$settings = { ..$settings, clipboard_denied: True }
+				}
+				MaxPasteBytes(max_paste) => {
+					$settings = { ..$settings, max_paste }
+				}
+				MountRoot(_) | SessionStorage(_) | SessionStorageUnavailable | InitialLocation(_) | LocalStorage(_) | InitialOnline(_) | InitialVisibility(_) | InitialMedia(_) | InitialTime(_) | Seed(_) | Languages(_) | TimeZone(_) | LocalStorageUnavailable => {}
 			}
 		}
-		if !$storage_available and !$storage.is_empty() {
-			return Err("local-storage seeds storage that local-storage-unavailable says the app cannot read")
+		queries = SpecRunner.decode_declarations((program.keys)()).media
+		for (query, _) in spec.environment.media {
+			if !queries.contains(query) {
+				return Err("initial-media query ${JsonOut.quote(query)} is not declared")
+			}
 		}
-		s0 = SpecRunner.mount_in(program, { url: $url, storage: $storage, online: $online, visible: $visible, storage_available: $storage_available })
+		s0 = SpecRunner.mount_config(program, spec.environment, $settings)
 		b0 = s0.browser
 		Ok({ ..s0, browser: { ..b0, files: $files, max_output: $max_output } })
 	}
@@ -560,74 +1124,388 @@ SpecRunner := [].{
 	## Mount the app at `url` with `storage` as local storage; the app's
 	## declared keys that hold a value become its boot storage.
 	mount : Program(state), Str, List({ key : Str, value : Str }) -> S(state)
-	mount = |program, url, storage| SpecRunner.mount_in(program, { url, storage, online: Bool.True, visible: Bool.True, storage_available: Bool.True })
+	mount = |program, url, storage| SpecRunner.mount_in(program, { url, storage: storage.map(|kv| (kv.key, kv.value)) })
 
-	mount_in : Program(state), { url : Str, storage : List({ key : Str, value : Str }), online : Bool, visible : Bool, storage_available : Bool } -> S(state)
-	mount_in = |program, { url, storage, online, visible, storage_available }| {
-		declared = SpecRunner.decode_keys((program.keys)())
-		boot_kvs = declared.keep_oks(|k| storage.find_first(|kv| kv.key == k))
-		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot(url, if (storage_available) boot_kvs else [], { online, visible, storage_available }))
-		s0 = SpecRunner.fresh(inst, SpecRunner.fresh_browser({ url, storage, online, visible, storage_available }))
-		SpecRunner.answer_gets(program, SpecRunner.take(s0, inst, cmds, wbuf))
+	## Mount from facts the parser resolved, selecting only storage keys the
+	## program declared. The browser retains all storage for later requests.
+	mount_in : Program(state), Scm.Environment -> S(state)
+	mount_in = |program, env| SpecRunner.mount_config(program, env, (SpecRunner.fresh_browser({})).settings)
+
+	## Install fixture service behavior before mount emits any storage command.
+	mount_config : Program(state), Scm.Environment, { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64, mount_root : Scm.MountRoot } -> S(state)
+	mount_config = |program, initial_env, settings| {
+		env = { ..initial_env, url: SpecRunner.serialize_reference(initial_env.url) }
+		declarations = SpecRunner.decode_declarations((program.keys)())
+		boot_kvs = declarations.keys.keep_oks(|key| env.storage.find_first(|(name, _)| name == key))
+		boot_session = declarations.session_keys.keep_oks(|key| env.session.find_first(|(name, _)| name == key))
+		for (query, _) in env.media {
+			if !declarations.media.contains(query) {
+				crash "contract: initial-media query ${JsonOut.quote(query)} is not declared"
+			}
+		}
+		media = declarations.media.map(|query| (query, env.media.find_first(|(name, _)| name == query).map_ok(|(_, matched)| matched) ?? False))
+		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_mount({ ..env, url: SpecRunner.serialize_location(env.url), media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }, settings.mount_root))
+		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declarations.latest_ports, settings }
+		initial = SpecRunner.fresh(inst, browser)
+		root = settings.mount_root
+		s0 = { ..initial, dom: Dom.modify(initial.dom, initial.dom.root, |element| { ..element, namespace: root.namespace, prefix: root.prefix, tag: root.local, svg: root.namespace == Dom.svg_namespace }) }
+		{ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s0, draining: Bool.True }, inst, cmds, wbuf))), draining: Bool.False }
 	}
 
 	## Dispatch event `ev` with `payload` from DOM node index `i`, as the
 	## runtime's delegated listener does.
 	fire : Program(state), S(state), U64, Str, Str -> Try(S(state), Str)
 	fire = |program, s, i, ev, payload|
-		match Dom.target(s.dom, i, ev) {
+		if !SpecRunner.attached(s.dom, i) {
+			Err("event target is detached")
+		} else match Dom.target(s.dom, i, ev, Bool.True) {
 			Err(_) => Err("no ${ev} handler")
-			Ok((node, h)) => Ok(SpecRunner.send(program, s, node, h, payload.to_utf8()))
+			Ok(target) => Ok(SpecRunner.dispatch_control(program, s, i, target, payload))
 		}
 
-	## Dispatch `ev` if a handler listens for it on the way up from node `i`.
-	fire_if : Program(state), S(state), U64, Str, Str -> S(state)
-	fire_if = |program, s, i, ev, payload| SpecRunner.fire(program, s, i, ev, payload) ?? s
+	# The event loop. The functions named `*_in_loop` deliver an event, drain
+	# the focus and callback queues and fire the events those cause, so they
+	# call each other. Every call from outside the loop goes through the
+	# wrapper of the same name without the suffix.
+	# TODO https://github.com/roc-lang/roc/issues/13092: the compiler
+	# re-expands a generic recursive group of two or more functions at every
+	# call into it from another function, and a wrapper is expanded once and
+	# then replayed. Without the wrappers a development build of any app took
+	# three times as long; they go, with the suffix, once the compiler reuses
+	# a finished group.
 
-	## One host call, then the storage reads it issued, each answered in a turn
-	## of its own as the runtime answers them.
-	send : Program(state), S(state), U32, U32, List(U8) -> S(state)
-	send = |program, s, node, h, payload| {
-		(inst, cmds, wbuf) = (program.event)(s.inst, s.buf, s.wbuf, node, h, payload)
-		SpecRunner.answer_gets(program, SpecRunner.take(s, inst, cmds, wbuf))
+	## Dispatch `ev` if a handler listens for it on the way up from node `i`.
+	fire_if_in_loop : Program(state), S(state), U64, Str, Str -> S(state)
+	fire_if_in_loop = |program, s, i, ev, payload| {
+		if !SpecRunner.attached(s.dom, i) {
+			return s
+		}
+		match Dom.target(s.dom, i, ev, Bool.True) {
+			Ok(target) => SpecRunner.dispatch_control_in_loop(program, s, i, target, payload)
+			_ => s
+		}
 	}
+
+	## Run [fire_if_in_loop] from outside the event loop.
+	fire_if : Program(state), S(state), U64, Str, Str -> S(state)
+	fire_if = |program, s, i, ev, payload| SpecRunner.fire_if_in_loop(program, s, i, ev, payload)
+
+	## Both native dispatch entry points have already resolved the route. Build
+	## only the payload its kind carries, without routing again or retaining a
+	## context beside the state passed to the engine.
+	dispatch_control_in_loop : Program(state), S(state), U64, Dom.Target, Str -> S(state)
+	dispatch_control_in_loop = |program, s, i, target, text| {
+		payload = if target.kind == 1 {
+			text.to_utf8()
+		} else if target.kind == 5 and target.event == "change" and Dom.checked_input(Dom.node(s.dom, i)) {
+			[if (Dom.live_value(Dom.node(s.dom, i), "checked") == "true") 1 else 0]
+		} else {
+			return s
+		}
+		SpecRunner.send_in_loop(program, s, target.node, target.handler, payload)
+	}
+
+	## Run [dispatch_control_in_loop] from outside the event loop.
+	dispatch_control : Program(state), S(state), U64, Dom.Target, Str -> S(state)
+	dispatch_control = |program, s, i, target, text| SpecRunner.dispatch_control_in_loop(program, s, i, target, text)
+
+	## One host call, then the storage reads and focus events it issued, each
+	## answered in a turn of its own as the runtime answers them. Reentrant
+	## focus callbacks wait until all of their batch's effects have landed.
+	send_in_loop : Program(state), S(state), U32, U32, List(U8) -> S(state)
+	send_in_loop = |program, s, node, h, payload| {
+		if s.fault != Healthy {
+			return s
+		}
+		if s.applying_focus or !s.event_queue.is_empty() {
+			input = { node, handler: h, payload, owner: if (node == SpecRunner.fx_node) 0 else Dom.lookup(s.dom, node), source: Occurrence }
+			if s.event_queue.len() + SpecRunner.failure_tasks(s.browser) >= 4096 {
+				if s.applying_focus or s.draining {
+					return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [], browser: SpecRunner.clear_callbacks(s.browser) }
+				}
+				# Free one slot without delivering: the occurrence must pin the
+				# remaining reports before the oldest turn can raise callbacks.
+				{ input: oldest, rest } = SpecRunner.pop_input(s)
+				b = rest.browser
+				queued = { ..rest, draining: Bool.True, turns: 0, event_queue: rest.event_queue.append(input), browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } }
+				active = SpecRunner.deliver_input_in_loop(program, { state: queued, input: oldest })
+				return SpecRunner.release_reports_in_loop(program, { ..active, draining: Bool.False })
+			}
+			b = s.browser
+			queued = { ..s, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } }, event_queue: s.event_queue.append(input) }
+			return if (s.applying_focus or s.draining) queued else SpecRunner.drain_focus_in_loop(program, queued)
+		}
+		SpecRunner.send_now_in_loop(program, { state: s, node: node, handler: h, payload: payload })
+	}
+
+	## Run [send_in_loop] from outside the event loop.
+	send : Program(state), S(state), U32, U32, List(U8) -> S(state)
+	send = |program, s, node, h, payload| SpecRunner.send_in_loop(program, s, node, h, payload)
+
+	## Run an entry already selected for delivery, without queuing it again.
+	## Its batch's focus and storage callbacks still pass through ingress.
+	send_now_in_loop : Program(state), { state : S(state), node : U32, handler : U32, payload : List(U8) } -> S(state)
+	send_now_in_loop = |program, { state: s, node, handler: h, payload }| {
+		outer = !s.draining
+		active = if (outer) { ..s, draining: Bool.True, turns: 0 } else s
+		if !outer and active.turns >= 4096 {
+			return { ..active, fault: Poisoned("resource_limit: more than 4096 turns delivered without returning to idle (an event feedback loop)"), event_queue: [], after_batch: [], browser: SpecRunner.clear_callbacks(active.browser) }
+		}
+		is_final_network = node == SpecRunner.fx_node and payload.first() != Ok(26) and active.browser.network.contains(h)
+		cleaned = if (is_final_network) { ..active, browser: { ..active.browser, report_sources: active.browser.report_sources.remove(h), network: active.browser.network.remove(h), reports: { ..active.browser.reports, index: active.browser.reports.index.remove(Request(h)) } } } else active
+		counted = { ..cleaned, turns: cleaned.turns + if (outer) 0 else 1 }
+		next = SpecRunner.answer_gets_in_loop(program, SpecRunner.engine_call(counted, |inst, buf, wbuf| (program.event)(inst, buf, wbuf, node, h, payload)))
+		if (outer) { ..SpecRunner.drain_focus_in_loop(program, next), draining: Bool.False } else next
+	}
+
+	## Move the instance and reusable buffers out before an engine call. Keeping
+	## the runner record alive across that call would retain a second store holder
+	## and make a keyed write copy its table. The oracle consumes the answer only
+	## after the old instance has moved, outside the engine's measured region.
+	engine_call : S(state), (state, List(U8), List(U8) -> (state, List(U8), List(U8))) -> S(state)
+	engine_call = |{ inst, buf, wbuf, dom, browser, work, ops, writes, mark, focused, focus_value, deferred, after_batch, event_queue, applying_focus, draining, turns, fault }, run| {
+		(next, cmds, workbuf) = run(inst, buf, wbuf)
+		SpecRunner.take({ inst: next, buf: [], wbuf: [], dom, browser, work, ops, writes, mark, focused, focus_value, deferred, after_batch, event_queue, applying_focus, draining, turns, fault }, next, cmds, workbuf)
+	}
+
+	## Apply deferred effects, showing values and reference commands in stream order.
+	## Their synchronous callbacks retain their routes and join ordinary ingress,
+	## so no callback observes a partly applied command batch.
+	drain_focus_in_loop : Program(state), S(state) -> S(state)
+	drain_focus_in_loop = |program, s0| {
+		var $s = { ..s0, draining: Bool.True }
+		while $s.fault == Healthy and (!$s.after_batch.is_empty() or !$s.event_queue.is_empty() or SpecRunner.callbacks_waiting($s.browser)) {
+			if SpecRunner.callbacks_waiting($s.browser) and !$s.event_queue.is_empty() and !SpecRunner.head_ready($s) {
+				b = $s.browser
+				$s = { ..$s, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } }
+			}
+			while $s.fault == Healthy and !$s.after_batch.is_empty() {
+				command = $s.after_batch.first() ?? crash "SpecRunner.drain_focus: not empty"
+				s = { ..$s, applying_focus: Bool.True, after_batch: $s.after_batch.drop_first(1) }
+				applied = match command {
+					Effect(fx) => {
+						browser = SpecRunner.absorb_limit(s.browser, [fx], 4096 - s.event_queue.len())
+						if (browser.deferred_error.is_empty()) { ..s, browser } else { ..s, browser: SpecRunner.clear_callbacks(browser), fault: Poisoned(browser.deferred_error), event_queue: [], after_batch: [] }
+					}
+					Show(show) => if (SpecRunner.attached(s.dom, show.target) and (if (show.property == 6) Dom.node(s.dom, show.target).shown_intent.dialog else Dom.node(s.dom, show.target).shown_intent.popover) == show.intent) SpecRunner.change_shown(s, show.target, show.value) else s
+					Ref(ref) => {
+						i = ref.target
+						live = SpecRunner.attached(s.dom, i) and (s.dom.statics.get(ref.node.to_u64()) ?? 0).bitwise_and(1099511627775) == i + 1
+						if !live {
+							s
+						} else match ref.action {
+							Focus(4) => { ..s, dom: Dom.apply_value(s.dom, i, ref.node), deferred: if (s.focused == i + 1) NoValue else s.deferred }
+							Focus(2) => if (s.focused == i + 1) SpecRunner.move_focus_in_loop(program, s, 0) else s
+							Focus(_) => if (SpecRunner.focusable_in(s.dom, i) and SpecRunner.reachable(s, i)) SpecRunner.move_focus_in_loop(program, s, i + 1) else s
+							IntoView(_) | To(_) => SpecRunner.perform_scroll_in_loop(program, s, i, ref.action)
+						}
+					}
+				}
+				$s = { ..applied, applying_focus: Bool.False }
+			}
+			if !$s.event_queue.is_empty() and SpecRunner.head_ready($s) {
+				{ input, rest } = SpecRunner.pop_input($s)
+				$s = SpecRunner.deliver_input_in_loop(program, { state: rest, input: input })
+			} else if SpecRunner.callbacks_waiting($s.browser) {
+				$s = SpecRunner.answer_gets_in_loop(program, $s)
+			} else {
+				break
+			}
+		}
+		b = $s.browser
+		if $s.event_queue.is_empty() {
+			{ ..$s, draining: s0.draining, browser: { ..b, reports: { ..b.reports, head: 0, index: Dict.empty() } } }
+		} else { ..$s, draining: s0.draining }
+	}
+
+	## Run [drain_focus_in_loop] from outside the event loop.
+	drain_focus : Program(state), S(state) -> S(state)
+	drain_focus = |program, s0| SpecRunner.drain_focus_in_loop(program, s0)
+
+	## Pop exactly one ingress slot and remove only the index that still
+	## names it. A later report from a pinned source has its own slot.
+	pop_input : S(state) -> { input : Input, rest : S(state) }
+	pop_input = |s| {
+		input = s.event_queue.first() ?? crash "SpecRunner.pop_input: queue is not empty"
+		b = s.browser
+		reports = b.reports
+		index = match input.source {
+			Report(id) => match reports.index.get(id) {
+				Ok(position) if position.slot == reports.head => reports.index.remove(id)
+				_ => reports.index
+			}
+			Occurrence => reports.index
+		}
+		{ input, rest: { ..s, event_queue: s.event_queue.drop_first(1), browser: { ..b, reports: { ..reports, head: reports.head + 1, index } } } }
+	}
+
+	## An unpinned report waits for a frame. The source index identifies its
+	## current epoch and absolute slot without searching later queue entries.
+	head_ready : S(state) -> Bool
+	head_ready = |s| {
+		if s.browser.reports.releasing {
+			return True
+		}
+		input = s.event_queue.first() ?? return False
+		match input.source {
+			Occurrence => True
+			Report(source) => match s.browser.reports.index.get(source) {
+				Ok(at) => at.epoch != s.browser.reports.epoch or at.slot != s.browser.reports.head
+				Err(_) => True
+			}
+		}
+	}
+
+	## A cancelled source or a DOM lifetime that ended cannot receive its
+	## queued input. Valid entries use the same ordinary turn path.
+	deliver_input_in_loop : Program(state), { state : S(state), input : Input } -> S(state)
+	deliver_input_in_loop = |program, { state: s, input }| {
+		live = match input.source {
+			Report(Request(id)) => s.browser.report_sources.contains(id)
+			Report(Pointer({ element, .. })) | Report(Scroll({ element, .. })) => SpecRunner.attached(s.dom, element) and (s.dom.statics.get(input.node.to_u64()) ?? 0).bitwise_and(1099511627775) == input.owner + 1
+			Report(Observation({ element, kind })) => SpecRunner.attached(s.dom, element) and Dom.node(s.dom, element).observing.bitwise_and(if (kind == 7) 1 else 2) != 0 and (s.dom.statics.get(input.node.to_u64()) ?? 0).bitwise_and(1099511627775) == input.owner + 1
+			Occurrence => {
+				current = (s.dom.statics.get(input.node.to_u64()) ?? 0).bitwise_and(1099511627775)
+				input.node == SpecRunner.fx_node or (current == input.owner + 1 and SpecRunner.attached(s.dom, input.owner))
+			}
+		}
+		if (live) SpecRunner.send_now_in_loop(program, { state: s, node: input.node, handler: input.handler, payload: input.payload }) else s
+	}
+
+	## Queue a frozen report, replacing only its source's entry in this
+	## epoch. A full idle queue drains early instead of refusing data-sized
+	## source sets; occurrences use the same queue and pin by advancing it.
+	report : Program(state), { state : S(state), id : U32, payload : List(U8) } -> S(state)
+	report = |program, { state: s, id, payload }| {
+		if !s.browser.report_sources.contains(id) {
+			return s
+		}
+		SpecRunner.queue_report(program, { state: s, source: Request(id), node: SpecRunner.fx_node, handler: id, owner: 0, payload })
+	}
+
+	## All report kinds use one queue and epoch. DOM identity is the declaring
+	## node index, which is never recycled by the oracle.
+	queue_report_in_loop : Program(state), { state : S(state), source : ReportSource, node : U32, handler : U32, owner : U64, payload : List(U8) } -> S(state)
+	queue_report_in_loop = |program, { state: s, source, node, handler, owner, payload }| {
+		is_live = match source {
+			Request(id) => s.browser.report_sources.contains(id)
+			Pointer({ element, .. }) | Scroll({ element, .. }) => SpecRunner.attached(s.dom, element) and (s.dom.statics.get(node.to_u64()) ?? 0).bitwise_and(1099511627775) == owner + 1
+			Observation({ element, kind }) => SpecRunner.attached(s.dom, element) and Dom.node(s.dom, element).observing.bitwise_and(if (kind == 7) 1 else 2) != 0 and (s.dom.statics.get(node.to_u64()) ?? 0).bitwise_and(1099511627775) == owner + 1
+		}
+		if s.fault != Healthy or !is_live {
+			return s
+		}
+		b = s.browser
+		reports = b.reports
+		match reports.index.get(source) {
+			Ok(position) if position.epoch == reports.epoch => {
+				at = position.slot - reports.head
+				prior = s.event_queue.get(at) ?? crash "SpecRunner.report: index names a queued report"
+				{ list, .. } = s.event_queue.replace(at, { ..prior, payload }) ?? crash "SpecRunner.report: queued slot exists"
+				return { ..s, event_queue: list, browser: { ..b, reports: { ..reports, replaced: reports.replaced + 1 } } }
+			}
+			_ => {}
+		}
+		if s.event_queue.len() + SpecRunner.failure_tasks(s.browser) >= 4096 {
+			if s.applying_focus or s.draining {
+				return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [], browser: { ..SpecRunner.clear_callbacks(b), reports: { ..reports, head: 0, index: Dict.empty() } } }
+			}
+			return SpecRunner.queue_report_in_loop(program, { state: SpecRunner.release_reports_in_loop(program, s), source, node, handler, owner, payload })
+		}
+		slot = reports.head + s.event_queue.len()
+		{ ..s, event_queue: s.event_queue.append({ node, handler, payload, owner, source: Report(source) }), browser: { ..b, reports: { ..reports, index: reports.index.insert(source, { epoch: reports.epoch, slot }) } } }
+	}
+
+	## Run [queue_report_in_loop] from outside the event loop.
+	queue_report : Program(state), { state : S(state), source : ReportSource, node : U32, handler : U32, owner : U64, payload : List(U8) } -> S(state)
+	queue_report = |program, { state: s, source, node, handler, owner, payload }| SpecRunner.queue_report_in_loop(program, { state: s, source, node, handler, owner, payload })
+
+	## Deliver the waiting ingress entries as ordinary turns. A held frame
+	## remains held after an occurrence drains it.
+	release_reports_in_loop : Program(state), S(state) -> S(state)
+	release_reports_in_loop = |program, s| {
+		b = s.browser
+		released = SpecRunner.drain_focus_in_loop(program, { ..s, turns: 0, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1, releasing: True } } })
+		{ ..released, browser: { ..released.browser, reports: { ..released.browser.reports, releasing: b.reports.releasing } } }
+	}
+
+	## Run [release_reports_in_loop] from outside the event loop.
+	release_reports : Program(state), S(state) -> S(state)
+	release_reports = |program, s| SpecRunner.release_reports_in_loop(program, s)
 
 	## Answer every storage read waiting for its turn: the stored value, or
 	## `Missing` when there is none or storage is unavailable.
-	answer_gets : Program(state), S(state) -> S(state)
-	answer_gets = |program, s0| {
+	answer_gets_in_loop : Program(state), S(state) -> S(state)
+	answer_gets_in_loop = |program, s0| {
 		var $s = s0
-		while !$s.browser.gets.is_empty() {
+		while $s.fault == Healthy and SpecRunner.callbacks_waiting($s.browser) and $s.event_queue.is_empty() and $s.after_batch.is_empty() {
 			b = $s.browser
-			g = b.gets.first() ?? crash "SpecRunner.answer_gets: not empty"
-			found = if (b.storage_available) b.storage.find_first(|kv| kv.key == g.key) else Err(NotFound)
-			payload = match found {
-				Ok(kv) => [3].concat(kv.value.to_utf8())
-				Err(_) => [4]
+			if b.failure_active {
+				match b.failure_queue.first() {
+					Ok(recipient) if recipient.ready => {
+						next = { ..$s, browser: { ..b, failure_queue: b.failure_queue.drop_first(1) } }
+						$s = if (b.subs.any(|entry| entry.id == recipient.id and entry.sub == StorageFailures)) SpecRunner.deliver_in_loop(program, next, recipient.id, recipient.payload) else next
+					}
+					_ => {
+						$s = { ..$s, browser: { ..b, failure_active: False } }
+					}
+				}
+			} else {
+				task = b.gets.first() ?? crash "SpecRunner.answer_gets: a callback is pending"
+				next = { ..$s, browser: { ..b, gets: b.gets.drop_first(1) } }
+				$s = match task {
+					Read({ id, key, session }) => {
+						available = if (session) b.env.session_available else b.env.storage_available
+						pairs = if (session) b.env.session else b.env.storage
+						found = if (available) pairs.find_first(|(name, _)| name == key) else Err(NotFound)
+						payload = match found {
+							Ok((_, value)) => [3].concat(value.to_utf8())
+							Err(_) => [4]
+						}
+						SpecRunner.deliver_in_loop(program, next, id, payload)
+					}
+					Answer({ id, payload, scoped }) => if (!scoped or b.subs.any(|entry| entry.id == id)) SpecRunner.deliver_in_loop(program, next, id, payload) else next
+					Failures => { ..next, browser: { ..next.browser, failure_scheduled: False, failure_active: True, failure_queue: b.failure_queue.map(|entry| { ..entry, ready: True }) } }
+				}
 			}
-			$s = SpecRunner.deliver(program, { ..$s, browser: { ..b, gets: b.gets.drop_first(1) } }, g.id, payload)
 		}
 		$s
 	}
 
+	## Run [answer_gets_in_loop] from outside the event loop.
+	answer_gets : Program(state), S(state) -> S(state)
+	answer_gets = |program, s0| SpecRunner.answer_gets_in_loop(program, s0)
+
 	## Deliver an effect result to request `id`.
+	deliver_in_loop : Program(state), S(state), U32, List(U8) -> S(state)
+	deliver_in_loop = |program, s, id, payload| {
+		ready = if (payload == [7]) { ..s, browser: { ..s.browser, report_sources: s.browser.report_sources.remove(id), reports: { ..s.browser.reports, index: s.browser.reports.index.remove(Request(id)) } } } else s
+		SpecRunner.send_in_loop(program, ready, SpecRunner.fx_node, id, payload)
+	}
+
+	## Run [deliver_in_loop] from outside the event loop.
 	deliver : Program(state), S(state), U32, List(U8) -> S(state)
-	deliver = |program, s, id, payload| SpecRunner.send(program, s, SpecRunner.fx_node, id, payload)
+	deliver = |program, s, id, payload| SpecRunner.deliver_in_loop(program, s, id, payload)
 
 	## Deliver `payload` to every live subscription `pick` selects.
 	broadcast : Program(state), S(state), ({ id : U32, sub : Sub } -> Bool), List(U8) -> S(state)
 	broadcast = |program, s0, pick, payload| {
 		var $s = s0
 		for x in s0.browser.subs.keep_if(pick) {
-			$s = SpecRunner.deliver(program, $s, x.id, payload)
+			is_report = match x.sub {
+				OnlineSub | VisibilitySub | MediaSub(_) | StorageSub(_) => Bool.True
+				PortSub(port, _) => s0.browser.latest_ports.contains(port)
+				_ => Bool.False
+			}
+			$s = if (is_report) SpecRunner.report(program, { state: $s, id: x.id, payload: payload }) else SpecRunner.deliver(program, SpecRunner.release_reports(program, $s), x.id, payload)
 		}
 		$s
 	}
 
-	## The browser moved to `browser.loc` on its own: every popstate
+	## The browser moved to `browser.env.url` on its own: every popstate
 	## subscription hears it.
 	popstate : Program(state), S(state) -> S(state)
-	popstate = |program, s| SpecRunner.broadcast(program, s, |x| x.sub == Pop, SpecRunner.encode_location(s.browser.loc))
+	popstate = |program, s| SpecRunner.broadcast(program, s, |x| x.sub == Pop, SpecRunner.encode_location(SpecRunner.serialize_location(s.browser.env.url)))
 
 	## The bytes of a handle's range, from the setup file it was given under.
 	file_bytes : Browser, { token : U64, start : U64, len : U64 } -> List(U8)
@@ -702,7 +1580,7 @@ SpecRunner := [].{
 		p = b.pending.find_first(|q| q.id == id) ? |_| "effect occurrence ${n.to_str()} is not pending (cancelled or done)"
 		rest = b.pending.keep_if(|q| q.id != id)
 		match p.kind {
-			TimerRequest => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, [5]))
+			TimerRequest => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.put_u64([5], b.env.now_ms.to_u64_wrap())))
 			WorkRequest(_) => return Err("run-effect ${n.to_str()} runs a worker job, which needs the spec command's host for its effects")
 			ReadRequest({ mode, file, max_bytes }) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.read_result(b, mode, file, max_bytes)))
 			UrlRequest(file) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.url_result(file)))
@@ -729,30 +1607,448 @@ SpecRunner := [].{
 	}
 
 	## Fire one tick of every live interval of period `ms`.
-	tick : Program(state), S(state), U64 -> S(state)
-	tick = |program, s, ms| SpecRunner.broadcast(program, s, |x| x.sub == Interval(ms.to_u32_wrap()), [5])
+	tick : Program(state), S(state), U32 -> S(state)
+	tick = |program, s, ms| SpecRunner.broadcast(program, s, |x| x.sub == Interval(ms), SpecRunner.put_u64([5], s.browser.env.now_ms.to_u64_wrap()))
 
-	live_intervals : S(state), U64 -> U64
-	live_intervals = |s, ms| s.browser.subs.count_if(|x| x.sub == Interval(ms.to_u32_wrap()))
+	## Count registered native interval sources for a wire period. A request’s
+	## callback is driven separately by tick-interval rather than by wall-clock time.
+	live_intervals : S(state), U32 -> U64
+	live_intervals = |s, ms| s.browser.subs.count_if(|x| x.sub == Interval(ms))
 
 	# ---------------------------------------------------------------- focus
 
-	## A boolean attribute (`disabled`, `hidden`, ...) is present for any value
-	## other than "" and "false", as the runtime sets it.
+	## Boolean presence and hidden enumeration states depend on presence, never
+	## on a special empty/false text convention.
 	flag_on : Dom.DNode, Str -> Bool
-	flag_on = |n, name| {
-		v = Dom.attr_of(n, name)
-		v != "" and v != "false"
+	flag_on = |n, name| Dom.has_attr(n, name)
+
+	## Whether HTML's `hidden` hides node `n`: only on an HTML element. Chrome
+	## displays and focuses an SVG `<g hidden>` and what it holds.
+	html_hidden : Dom.DNode -> Bool
+	html_hidden = |n| Dom.html_element(n) and SpecRunner.flag_on(n, "hidden")
+
+	## Whether node `n` is a dialog or a popover whose shown state hides what
+	## it holds: an HTML `dialog`, or an HTML element with `popover`.
+	top_layer_candidate : Dom.DNode -> Bool
+	top_layer_candidate = |n| Dom.html_tag(n, "dialog") or (Dom.html_element(n) and Dom.has_attr(n, "popover"))
+
+	## The URL a hyperlink navigates to, as Chrome activates one: an HTML `a`
+	## with `href`, or an SVG `a` with `href` or else the XLink `href`. Any
+	## other element, an `a` without either, or an `a` in another namespace is
+	## not a link.
+	link_href : Dom.DNode -> Try(Str, [NotALink])
+	link_href = |n|
+		if Dom.html_tag(n, "a") and Dom.has_attr(n, "href") {
+			Ok(Dom.attr_of(n, "href"))
+		} else if Dom.svg_tag(n, "a") and Dom.has_attr(n, "href") {
+			Ok(Dom.attr_of(n, "href"))
+		} else if Dom.svg_tag(n, "a") {
+			Dom.attr_ns(n, Dom.xlink_namespace, "href").map_err(|_| NotALink)
+		} else {
+			Err(NotALink)
+		}
+
+	## The elements with a `disabled` state of their own, which
+	## `expect-disabled` reads: HTML's form controls, options, option groups
+	## and field sets.
+	disableable : Dom.DNode -> Bool
+	disableable = |n| ["button", "input", "select", "textarea", "option", "optgroup", "fieldset"].any(|local| Dom.html_tag(n, local))
+
+	## A shown state as a spec writes it.
+	shown_word : Dom.Shown -> Str
+	shown_word = |shown|
+		match shown {
+			Hidden => "hidden"
+			Open => "open"
+			Modal => "modal"
+			Popover => "popover"
+		}
+
+	## Read the model’s effective disabled flag for native input eligibility.
+	## Ordinary raw attribute text is observed separately by attribute assertions.
+	disabled : Dom.DNode -> Bool
+	disabled = |n| SpecRunner.disableable(n) and Dom.has_attr(n, "disabled")
+
+	## Whether node `i` is disabled as Chrome's `:disabled` reads it, which
+	## decides whether it takes focus, a click or input: its own `disabled`, an
+	## option's disabled `optgroup` parent, or for a `button`, `input`,
+	## `select`, `textarea` or `fieldset`, an ancestor `fieldset` with
+	## `disabled` unless the node lies inside that field set's first `legend`
+	## child (HTML, "disabled form controls"). `expect-disabled` and the
+	## `disabled` attribute reading stay the node's own state, as the
+	## `disabled` property is.
+	actually_disabled : Dom.Model, U64 -> Bool
+	actually_disabled = |dom, i| {
+		n = Dom.node(dom, i)
+		if !SpecRunner.disableable(n) {
+			return Bool.False
+		}
+		if Dom.has_attr(n, "disabled") {
+			return Bool.True
+		}
+		if Dom.html_tag(n, "option") or Dom.html_tag(n, "optgroup") {
+			return Dom.html_tag(n, "option") and n.parent != 0 and Dom.html_tag(Dom.node(dom, n.parent - 1), "optgroup") and Dom.has_attr(Dom.node(dom, n.parent - 1), "disabled")
+		}
+		var $child = i
+		var $at = n.parent
+		while $at != 0 {
+			m = Dom.node(dom, $at - 1)
+			if Dom.html_tag(m, "fieldset") and Dom.has_attr(m, "disabled") {
+				legend = m.kids.find_first(|k| Dom.html_tag(Dom.node(dom, k), "legend"))
+				if legend != Ok($child) {
+					return Bool.True
+				}
+			}
+			$child = $at - 1
+			$at = m.parent
+		}
+		Bool.False
 	}
 
-	disabled : Dom.DNode -> Bool
-	disabled = |n| SpecRunner.flag_on(n, "disabled")
+	## The input types `readonly` applies to, which bars them from constraint
+	## validation; a textarea too.
+	readonly_types : List(Str)
+	readonly_types = ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"]
+
+	## The input types `required` applies to; a textarea and a select too.
+	required_types : List(Str)
+	required_types = ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number", "checkbox", "radio", "file"]
+
+	## A control's `maxlength` as Chrome reads it: HTML's rules for parsing
+	## a non-negative integer (leading ASCII white space, an optional `+`,
+	## digits, anything after them ignored), at most 2147483647; anything
+	## else sets no limit.
+	max_length : Dom.DNode -> Try(U64, [NoLimit])
+	max_length = |n| {
+		if !Dom.has_attr(n, "maxlength") {
+			return Err(NoLimit)
+		}
+		bytes = Dom.attr_of(n, "maxlength").to_utf8()
+		var $at = 0
+		while [' ', '\t', '\n', 12, '\r'].contains(bytes.get($at) ?? 0) {
+			$at = $at + 1
+		}
+		if bytes.get($at) == Ok('+') {
+			$at = $at + 1
+		}
+		var $value = 0.U64
+		var $digits = 0.U64
+		while (bytes.get($at) ?? 0) >= '0' and (bytes.get($at) ?? 0) <= '9' {
+			$value = $value * 10 + ((bytes.get($at) ?? '0') - '0').to_u64()
+			$digits = $digits + 1
+			$at = $at + 1
+			if $value > 2147483647 {
+				return Err(NoLimit)
+			}
+		}
+		if ($digits == 0) Err(NoLimit) else Ok($value)
+	}
+
+	## A text's length in UTF-16 code units, which is what `maxlength` counts:
+	## a character outside the Basic Multilingual Plane counts two.
+	utf16_len : Str -> U64
+	utf16_len = |text| text.to_utf8().fold(0, |count, b| if (b >= 0xF0) count + 2 else if (b >= 0x80 and b < 0xC0) count else count + 1)
+
+	## An email control's value as Chrome sanitizes it: line breaks dropped
+	## and ASCII white space trimmed, around each comma-separated address
+	## when it takes `multiple`.
+	email_sanitized : Dom.DNode, Str -> Str
+	email_sanitized = |n, v| {
+		kept = Str.from_utf8(v.to_utf8().drop_if(|b| b == '\n' or b == '\r')) ?? v
+		if Dom.has_attr(n, "multiple") {
+			Str.join_with(kept.split_on(",").map(SpecRunner.trim_ascii_space), ",")
+		} else {
+			SpecRunner.trim_ascii_space(kept)
+		}
+	}
+
+	## Text with ASCII white space (TAB, LF, FF, CR, space) trimmed from both ends.
+	trim_ascii_space : Str -> Str
+	trim_ascii_space = |text| {
+		bytes = text.to_utf8()
+		space = |b| [' ', '\t', '\n', 12, '\r'].contains(b)
+		first = bytes.find_first_index(|b| !space(b)) ?? bytes.len()
+		end = (bytes.find_last_index(|b| !space(b)) ?? 0) + 1
+		if (first >= end) "" else Str.from_utf8(bytes.sublist({ start: first, len: end - first })) ?? text
+	}
+
+	## Why a scripted `change` cannot set control `n` to `v` as the step
+	## says: Chrome's value setter would sanitize it into another value, or
+	## the oracle does not model how it would. A text control drops line
+	## breaks, an email or URL control trims white space, a number, date,
+	## month or time control drops a value of the wrong shape, a color
+	## control rewrites one that is not a lowercase `#rrggbb`, a textarea
+	## turns CR into LF, and a file input can only be cleared. A range
+	## control's value is modelled only where Chrome keeps it (`range_keeps`);
+	## a week or local date and time control's sanitization is not modelled.
+	change_refusal : Dom.DNode, Str -> Try({}, Str)
+	change_refusal = |n, v| {
+		line_break = v.to_utf8().any(|b| b == '\n' or b == '\r')
+		if Dom.html_tag(n, "textarea") {
+			return if (v.contains("\r")) Err("a textarea turns a carriage return into a line feed") else Ok({})
+		}
+		if !Dom.html_tag(n, "input") {
+			return Ok({})
+		}
+		kind = Dom.input_type(n)
+		if ["text", "search", "tel", "password"].contains(kind) and line_break {
+			Err("a single-line control drops a line break")
+		} else if kind == "email" and SpecRunner.email_sanitized(n, v) != v {
+			Err("an email control drops line breaks and trims white space")
+		} else if kind == "url" and (line_break or SpecRunner.trim_ascii_space(v) != v) {
+			Err("a URL control drops line breaks and trims white space")
+		} else if kind == "number" and v != "" and !SpecRunner.is_float(v) {
+			Err("a number control drops a value that is not a number")
+		} else if kind == "color" and !SpecRunner.is_simple_color(v) {
+			Err("a color control rewrites a value that is not a lowercase #rrggbb color")
+		} else if kind == "date" and v != "" and !SpecRunner.is_date(v) {
+			Err("a date control drops a value that is not a valid date")
+		} else if kind == "month" and v != "" and !SpecRunner.is_month(v) {
+			Err("a month control drops a value that is not a valid month")
+		} else if kind == "time" and v != "" and !SpecRunner.is_time(v) {
+			Err("a time control drops a value that is not a valid time")
+		} else if kind == "range" and !SpecRunner.range_keeps(n, v) {
+			Err("the native runner models a range control's value only as an integer within its integer min and max on its integer step, which this is not")
+		} else if (kind == "week" or kind == "datetime-local") and v != "" {
+			Err("the native runner does not model how a ${kind} control sanitizes its value")
+		} else if kind == "file" and v != "" {
+			Err("a file input's value can only be cleared")
+		} else {
+			Ok({})
+		}
+	}
+
+	## Whether a range control keeps `v` exactly as written (measured in
+	## Chrome 157): a canonical integer within the control's `min` and `max`
+	## (0 and 100 by default) on its `step` from `min` (1 by default), all of
+	## them canonical integers. Chrome clamps, rounds or rewrites anything
+	## else ("04" becomes "4"), and the oracle does not model how.
+	range_keeps : Dom.DNode, Str -> Bool
+	range_keeps = |n, v| {
+		bound = |name, default| if (Dom.has_attr(n, name)) SpecRunner.canonical_integer(Dom.attr_of(n, name)) else Ok(default)
+		match (SpecRunner.canonical_integer(v), bound("min", 0), bound("max", 100), bound("step", 1)) {
+			(Ok(x), Ok(low), Ok(high), Ok(step)) => step > 0 and low <= high and x >= low and x <= high and (x - low) % step == 0
+			_ => Bool.False
+		}
+	}
+
+	## A canonical integer: an optional `-`, then `0` or digits without a
+	## leading zero (never `-0`), within I64.
+	canonical_integer : Str -> Try(I64, [NotCanonical])
+	canonical_integer = |text| {
+		bytes = text.to_utf8()
+		negative = bytes.first() == Ok('-')
+		body = if (negative) bytes.drop_first(1) else bytes
+		canonical = !body.is_empty() and body.len() <= 18 and body.all(|c| c >= '0' and c <= '9') and (body == ['0'] or body.first() != Ok('0')) and !(negative and body == ['0'])
+		if !canonical {
+			return Err(NotCanonical)
+		}
+		magnitude = body.fold(0.I64, |acc, c| acc * 10 + (c - '0').to_i64())
+		Ok(if (negative) -magnitude else magnitude)
+	}
+
+	## A valid lowercase simple color, `#` and six lowercase hex digits,
+	## which a color control keeps as written.
+	is_simple_color : Str -> Bool
+	is_simple_color = |v|
+		match v.to_utf8() {
+			['#', .. as hex] => hex.len() == 6 and hex.all(|c| (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f'))
+			_ => Bool.False
+		}
+
+	## Exactly `count` ASCII digits as a number, or nothing.
+	digits_value : List(U8), U64 -> Try(U64, [NotDigits])
+	digits_value = |bytes, count|
+		if bytes.len() != count or !bytes.all(|c| c >= '0' and c <= '9') {
+			Err(NotDigits)
+		} else {
+			Ok(bytes.fold(0, |acc, c| acc * 10 + (c - '0').to_u64()))
+		}
+
+	## A valid month string with a four-digit year from 0001: `YYYY-MM`.
+	## (Chrome accepts longer years too; a spec does not need them.)
+	is_month : Str -> Bool
+	is_month = |v|
+		match v.split_on("-") {
+			[y, m] =>
+				match (SpecRunner.digits_value(y.to_utf8(), 4), SpecRunner.digits_value(m.to_utf8(), 2)) {
+					(Ok(year), Ok(month)) => year >= 1 and month >= 1 and month <= 12
+					_ => Bool.False
+				}
+			_ => Bool.False
+		}
+
+	## A valid date string with a four-digit year from 0001: `YYYY-MM-DD`
+	## naming a day of that month, February 29 only in a leap year.
+	is_date : Str -> Bool
+	is_date = |v|
+		match v.split_on("-") {
+			[y, m, d] =>
+				match (SpecRunner.digits_value(y.to_utf8(), 4), SpecRunner.digits_value(m.to_utf8(), 2), SpecRunner.digits_value(d.to_utf8(), 2)) {
+					(Ok(year), Ok(month), Ok(day)) => {
+						leap = (year % 4 == 0 and year % 100 != 0) or year % 400 == 0
+						days = if (month == 2) (if (leap) 29 else 28) else if ([4, 6, 9, 11].contains(month)) 30 else 31
+						year >= 1 and month >= 1 and month <= 12 and day >= 1 and day <= days
+					}
+					_ => Bool.False
+				}
+			_ => Bool.False
+		}
+
+	## A valid time string: `HH:MM`, optionally `:SS` and a fraction of one
+	## to three digits.
+	is_time : Str -> Bool
+	is_time = |v| {
+		two = |p| SpecRunner.digits_value(p.to_utf8(), 2)
+		(clock, fraction_ok) = match v.split_on(".") {
+			[c] => (c, Bool.True)
+			[c, f] => (c, f.to_utf8().len() >= 1 and f.to_utf8().len() <= 3 and f.to_utf8().all(|b| b >= '0' and b <= '9'))
+			_ => (v, Bool.False)
+		}
+		match clock.split_on(":").map(two) {
+			[Ok(h), Ok(m)] => !v.contains(".") and h <= 23 and m <= 59
+			[Ok(h), Ok(m), Ok(sec)] => fraction_ok and h <= 23 and m <= 59 and sec <= 59
+			_ => Bool.False
+		}
+	}
+
+	## Why `fill` cannot give control `n` exactly `v`, as Chrome's typing
+	## would not: it is read-only, `v` is longer than its `maxlength`, a
+	## single-line control turns a line break into a space, a textarea turns
+	## CR into LF, and an email control trims white space. The browser
+	## runner refuses the same inputs with the same messages.
+	fill_refusal : Dom.DNode, Str -> Try({}, Str)
+	fill_refusal = |n, v| {
+		textarea = Dom.html_tag(n, "textarea")
+		if Dom.has_attr(n, "readonly") {
+			return Err("is read-only")
+		}
+		match SpecRunner.max_length(n) {
+			Ok(limit) if SpecRunner.utf16_len(v) > limit => return Err("cannot hold ${JsonOut.quote(v)}: it is longer than its maxlength ${limit.to_str()}")
+			_ => {}
+		}
+		if !textarea and v.to_utf8().any(|b| b == '\n' or b == '\r') {
+			return Err("cannot hold ${JsonOut.quote(v)}: a single-line control turns a line break into a space")
+		}
+		if textarea and v.contains("\r") {
+			return Err("cannot hold ${JsonOut.quote(v)}: a textarea turns a carriage return into a line feed")
+		}
+		if Dom.input_type(n) == "email" and SpecRunner.email_sanitized(n, v) != v {
+			return Err("cannot hold ${JsonOut.quote(v)}: an email control trims white space")
+		}
+		Ok({})
+	}
+
+	## Why the oracle cannot decide whether a form would submit: a control
+	## that takes part in its validation carries a constraint the oracle
+	## does not model. It models `required` (for the controls it applies to,
+	## except a radio button, whose group decides), an email control's single
+	## address and a number control's integer value within `min` and `max`.
+	## It also models four constraints that never block a submission, as
+	## headless Chrome shows: a range control's `min`, `max` and `step` (its
+	## value is always sanitized into them), `pattern` and `minlength` on an
+	## empty control (they constrain only a value; `required` is modelled on
+	## its own), `pattern` on a textarea (it does not apply there) and
+	## `step="any"` in any letter case (no step). `pattern` or `minlength` on
+	## a control holding a value, another `step`, `min` or `max` outside a
+	## number or range control, a URL or a `multiple` email control holding a
+	## value, a non-integer number, a `required` radio button, and a time,
+	## week or local date and time control holding a value are not modelled.
+	unmodelled_constraint : Dom.Model, U64 -> Try({}, Str)
+	unmodelled_constraint = |dom, form| {
+		bad = SpecRunner.find_index(
+			dom,
+			form,
+			|k| {
+				n = Dom.node(dom, k)
+				kind = Dom.input_type(n)
+				v = Dom.live_value(n, "value")
+				input = Dom.html_tag(n, "input")
+				range = input and kind == "range"
+				(SpecRunner.validated_control(n) and !SpecRunner.actually_disabled(dom, k) and ((Dom.has_attr(n, "pattern") and v != "" and !Dom.html_tag(n, "textarea"))
+					or (Dom.has_attr(n, "minlength") and v != "")
+					or (input and !range and Dom.has_attr(n, "step") and Dom.enum_attr(n, "step") != "any")
+					or (input and kind != "number" and !range and (Dom.has_attr(n, "min") or Dom.has_attr(n, "max")))
+					or (input and kind == "url" and v != "")
+					or (input and kind == "email" and Dom.has_attr(n, "multiple") and v != "")
+					or (input and kind == "number" and (!SpecRunner.is_integer(v) or (Dom.has_attr(n, "min") and !SpecRunner.is_integer(Dom.attr_of(n, "min"))) or (Dom.has_attr(n, "value") and !SpecRunner.is_integer(Dom.attr_of(n, "value")))))
+					or (input and kind == "radio" and Dom.has_attr(n, "required"))
+					or (input and ["time", "week", "datetime-local"].contains(kind) and v != "")))
+			},
+		)
+		match bad {
+			Ok(i) => {
+				n = Dom.node(dom, i)
+				Err("unmodelled: the form's <${n.tag}${if (Dom.html_tag(n, "input")) " type=${Dom.input_type(n)}" else ""}> carries a constraint the native runner does not model (pattern or minlength on a value, a step other than any, min or max outside a number or range, a URL, multiple addresses, a non-integer number, a required radio button, or a time, week or local date and time value), so it cannot say whether the form submits")
+			}
+			Err(_) => Ok({})
+		}
+	}
+
+	## "" or an optionally negative run of digits: a number control value
+	## that a default step of 1 from a base of 0 keeps valid.
+	is_integer : Str -> Bool
+	is_integer = |v| {
+		bytes = v.to_utf8()
+		body = if (bytes.first() == Ok('-')) bytes.drop_first(1) else bytes
+		v == "" or (!body.is_empty() and body.all(|c| c >= '0' and c <= '9'))
+	}
+
+	## Whether node `n`, taken alone, takes part in constraint validation: an
+	## HTML input, textarea or select that is not a button or hidden input
+	## and not read-only. Whether it is disabled needs its ancestors
+	## (`actually_disabled`).
+	validated_control : Dom.DNode -> Bool
+	validated_control = |n| {
+		kind = Dom.input_type(n)
+		if Dom.html_tag(n, "input") {
+			!["hidden", "button", "submit", "reset", "image"].contains(kind) and !(Dom.has_attr(n, "readonly") and SpecRunner.readonly_types.contains(kind))
+		} else if Dom.html_tag(n, "textarea") {
+			!Dom.has_attr(n, "readonly")
+		} else {
+			Dom.html_tag(n, "select")
+		}
+	}
 
 	## Whether Chrome focuses node `n` when it is clicked or `.focus()`ed.
 	focusable : Dom.DNode -> Bool
 	focusable = |n| {
-		tag_ok = n.tag == "button" or n.tag == "input" or n.tag == "select" or n.tag == "textarea" or (n.tag == "a" and Dom.attr_of(n, "href") != "") or Dom.attr_of(n, "tabindex") != ""
-		tag_ok and !SpecRunner.disabled(n)
+		editable = Dom.html_element(n) and Dom.has_attr(n, "contenteditable") and ["", "true", "plaintext-only"].contains(Dom.enum_attr(n, "contenteditable"))
+		(SpecRunner.intrinsic_focusable(n) or editable) and !SpecRunner.disabled(n) and !SpecRunner.html_hidden(n) and !(Dom.html_tag(n, "input") and Dom.input_type(n) == "hidden")
+	}
+
+	## Native controls, links and tabindex retain focus independently of an
+	## editable ancestor; other editable nodes focus only as editing hosts.
+	## `tabindex` makes an HTML, SVG or MathML element focusable; an element in
+	## no namespace or another one cannot take focus at all.
+	intrinsic_focusable : Dom.DNode -> Bool
+	intrinsic_focusable = |n| Dom.html_tag(n, "button") or Dom.html_tag(n, "input") or Dom.html_tag(n, "select") or Dom.html_tag(n, "textarea") or SpecRunner.link_href(n).is_ok() or (Dom.has_attr(n, "tabindex") and n.kind == 1 and [Dom.html_namespace, Dom.svg_namespace, Dom.mathml_namespace].contains(n.namespace))
+
+	## Focus cannot enter a detached or hidden subtree. The oracle checks
+	## declared HTML attributes; CSS layout remains the browser's domain.
+	focusable_in : Dom.Model, U64 -> Bool
+	focusable_in = |dom, i| {
+		target = Dom.node(dom, i)
+		if !SpecRunner.focusable(target) or SpecRunner.actually_disabled(dom, i) or !SpecRunner.drawn(dom, i) {
+			return Bool.False
+		}
+		if !SpecRunner.intrinsic_focusable(target) and target.parent != 0 and Dom.content_editable(dom, target.parent - 1) {
+			return Bool.False
+		}
+		var $at = i
+		while True {
+			n = Dom.node(dom, $at)
+			if SpecRunner.html_hidden(n) or (SpecRunner.top_layer_candidate(n) and n.shown == Hidden) {
+				return Bool.False
+			}
+			if $at == dom.root {
+				return Bool.True
+			}
+			if n.parent == 0 {
+				return Bool.False
+			}
+			$at = n.parent - 1
+		}
 	}
 
 	## The node a press on node `i` focuses (index + 1): the nearest focusable
@@ -760,7 +2056,7 @@ SpecRunner := [].{
 	focus_target : Dom.Model, U64 -> U64
 	focus_target = |dom, i| {
 		n = Dom.node(dom, i)
-		if SpecRunner.focusable(n) {
+		if SpecRunner.focusable_in(dom, i) {
 			i + 1
 		} else if n.parent == 0 {
 			0
@@ -771,11 +2067,11 @@ SpecRunner := [].{
 
 	## A control whose edits fire `change` when it loses focus.
 	text_control : Dom.DNode -> Bool
-	text_control = |n| n.tag == "textarea" or (n.tag == "input" and SpecRunner.fillable.contains(Dom.attr_of(n, "type")))
+	text_control = |n| Dom.html_tag(n, "textarea") or (Dom.html_tag(n, "input") and SpecRunner.fillable.contains(Dom.input_type(n)))
 
 	## The input types `fill` types into, as Playwright's `fill` allows.
 	fillable : List(Str)
-	fillable = ["", "text", "password", "email", "search", "tel", "url", "number"]
+	fillable = ["text", "password", "email", "search", "tel", "url", "number"]
 
 	## Move focus to node index `to` (+1; 0 blurs). The control losing focus
 	## first gets `change` if the user changed its value since it gained focus,
@@ -783,15 +2079,18 @@ SpecRunner := [].{
 	## capturing listener), then it gets `blur`, and the element gaining focus
 	## gets `focus`; each event carries the element's value and is delivered
 	## only when a handler listens. Nothing happens when focus stays.
-	move_focus : Program(state), S(state), U64 -> S(state)
-	move_focus = |program, s0, to| {
+	move_focus_in_loop : Program(state), S(state), U64 -> S(state)
+	move_focus_in_loop = |program, s0, to| {
+		if s0.applying_focus {
+			return SpecRunner.queue_focus(s0, to)
+		}
 		if s0.focused == to {
 			s0
 		} else {
 			from = s0.focused
 			changed = if from != 0 and SpecRunner.text_control(Dom.node(s0.dom, from - 1)) {
-				shown = Dom.attr_of(Dom.node(s0.dom, from - 1), "value")
-				if (shown != s0.focus_value) SpecRunner.fire_if(program, s0, from - 1, "change", shown) else s0
+				shown = SpecRunner.value_of(s0.dom, from - 1)
+				if (shown != s0.focus_value) SpecRunner.fire_if_in_loop(program, s0, from - 1, "change", shown) else s0
 			} else {
 				s0
 			}
@@ -799,19 +2098,384 @@ SpecRunner := [].{
 				Held(v) if from != 0 => SpecRunner.set_attr(changed, from - 1, "value", v)
 				_ => changed
 			}
-			s1 = { ..landed, focused: to, deferred: NoValue, focus_value: if (to == 0) "" else Dom.attr_of(Dom.node(landed.dom, to - 1), "value") }
-			s2 = if (from == 0) s1 else SpecRunner.fire_if(program, s1, from - 1, "blur", Dom.attr_of(Dom.node(s1.dom, from - 1), "value"))
-			if (to == 0) s2 else SpecRunner.fire_if(program, s2, to - 1, "focus", Dom.attr_of(Dom.node(s2.dom, to - 1), "value"))
+			s1 = { ..landed, focused: to, deferred: NoValue, focus_value: if (to == 0) "" else SpecRunner.value_of(landed.dom, to - 1) }
+			s2 = if (from == 0) s1 else SpecRunner.fire_if_in_loop(program, s1, from - 1, "blur", SpecRunner.value_of(s1.dom, from - 1))
+			if (to == 0) s2 else SpecRunner.fire_if_in_loop(program, s2, to - 1, "focus", SpecRunner.value_of(s2.dom, to - 1))
 		}
 	}
 
+	## Run [move_focus_in_loop] from outside the event loop.
+	move_focus : Program(state), S(state), U64 -> S(state)
+	move_focus = |program, s0, to| SpecRunner.move_focus_in_loop(program, s0, to)
+
+	## Browser state uses parent paths and modal lifetimes, independent of engine sites.
+	inside : Dom.Model, U64, U64 -> Bool
+	inside = |dom, i, ancestor_index| {
+		var $at = i + 1
+		while $at != 0 {
+			if $at == ancestor_index + 1 {
+				return True
+			}
+			$at = Dom.node(dom, $at - 1).parent
+		}
+		False
+	}
+
+	## Whether the browser renders node `i`, so that an action can reach it,
+	## as measured in Chrome 157. Rendering follows each element's parent: an
+	## SVG `svg`, `g`, `a` or `switch` renders only SVG children, an SVG
+	## `text`, `tspan` or `textPath` only `tspan`, `textPath` and `a`, any
+	## other SVG element (`defs`, a gradient, a shape, an unknown element such
+	## as an SVG `DIV`) no child at all, a
+	## MathML element other than a token element (`mi`, `mn`, `mo`, `ms`,
+	## `mtext`) renders only MathML children, and any other parent (HTML, an
+	## element of another namespace, `foreignObject`, a token element) renders
+	## any child except an SVG element other than `svg`. An open modal dialog
+	## or a shown popover renders in the top layer whatever its parent. The
+	## mount root sits in the page's HTML. So an HTML button under `<svg>` or under the
+	## SVG mount root has no box in Chrome, takes no click or focus, and every
+	## action on it is refused, while observations still read it.
+	drawn : Dom.Model, U64 -> Bool
+	drawn = |dom, i| {
+		var $at = i
+		while True {
+			n = Dom.node(dom, $at)
+			if $at == dom.root or n.parent == 0 {
+				# The mount root sits in the page's HTML, which draws no SVG
+				# element but `svg`.
+				return !(n.namespace == Dom.svg_namespace and n.tag != "svg")
+			}
+			if (Dom.html_tag(n, "dialog") and n.shown == Modal) or (Dom.html_element(n) and Dom.has_attr(n, "popover") and n.shown == Popover) {
+				return Bool.True
+			}
+			if n.kind == 1 and !SpecRunner.renders_child(Dom.node(dom, n.parent - 1), n) {
+				return Bool.False
+			}
+			$at = n.parent - 1
+		}
+	}
+
+	## Whether element `parent`, itself rendered, renders element `child`
+	## (`drawn`).
+	renders_child : Dom.DNode, Dom.DNode -> Bool
+	renders_child = |parent, child| {
+		svg_child = child.namespace == Dom.svg_namespace
+		if parent.kind == 1 and parent.namespace == Dom.svg_namespace and parent.tag != "foreignObject" {
+			if ["svg", "g", "a", "switch"].contains(parent.tag) {
+				svg_child
+			} else if ["text", "tspan", "textPath"].contains(parent.tag) {
+				svg_child and ["tspan", "textPath", "a"].contains(child.tag)
+			} else {
+				Bool.False
+			}
+		} else if parent.kind == 1 and parent.namespace == Dom.mathml_namespace and !["mi", "mn", "mo", "ms", "mtext"].contains(parent.tag) {
+			child.namespace == Dom.mathml_namespace
+		} else {
+			!(svg_child and child.tag != "svg")
+		}
+	}
+
+	## The refusal of an action on an element the browser does not render,
+	## in both runners' words.
+	unrendered_message : Str -> Str
+	unrendered_message = |what| "${what} is not rendered: the browser draws no HTML element inside SVG outside foreignObject, nor inside MathML outside a token element, so no action can reach it"
+
+	## Native actions reject only browser reachability facts the oracle models.
+	reachable : S(state), U64 -> Bool
+	reachable = |s, i| {
+		var $at = i + 1
+		while $at != 0 {
+			n = Dom.node(s.dom, $at - 1)
+			if SpecRunner.html_hidden(n) or (SpecRunner.top_layer_candidate(n) and n.shown == Hidden) {
+				return False
+			}
+			$at = n.parent
+		}
+		modal = s.browser.top_layer.find_last(|index| Dom.node(s.dom, index).shown == Modal)
+		match modal {
+			Ok(index) => SpecRunner.inside(s.dom, i, index)
+			Err(_) => True
+		}
+	}
+
+	## Freeze non-bubbling focus callbacks while a batch is still being applied.
+	queue_event : S(state), U64, Str, Str -> S(state)
+	queue_event = |s, i, event, payload| {
+		if !SpecRunner.attached(s.dom, i) {
+			return s
+		}
+		match Dom.target(s.dom, i, event, False) {
+			Ok(target) if target.kind == 1 and s.event_queue.len() + SpecRunner.failure_tasks(s.browser) >= 4096 => { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [], browser: SpecRunner.clear_callbacks(s.browser) }
+			Ok(target) if target.kind == 1 => {
+				b = s.browser
+				{ ..s, event_queue: s.event_queue.append({ node: target.node, handler: target.handler, payload: payload.to_utf8(), owner: Dom.lookup(s.dom, target.node), source: Occurrence }), browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } }
+			}
+			_ => s
+		}
+	}
+
+	## Focus restoration must happen while a closing dialog's contents still exist.
+	queue_focus : S(state), U64 -> S(state)
+	queue_focus = |s, to| {
+		if s.focused == to {
+			return s
+		}
+		from = s.focused
+		changed = if from != 0 and SpecRunner.text_control(Dom.node(s.dom, from - 1)) and SpecRunner.value_of(s.dom, from - 1) != s.focus_value {
+			SpecRunner.queue_event(s, from - 1, "change", SpecRunner.value_of(s.dom, from - 1))
+		} else s
+		landed = match changed.deferred {
+			Held(value) if from != 0 => { ..changed, dom: Dom.set_live_on(changed.dom, from - 1, "value", value) }
+			_ => changed
+		}
+		moved = { ..landed, focused: to, deferred: NoValue, focus_value: if (to == 0) "" else SpecRunner.value_of(landed.dom, to - 1) }
+		blurred = if (from == 0) moved else SpecRunner.queue_event(moved, from - 1, "blur", SpecRunner.value_of(moved.dom, from - 1))
+		if (to == 0) blurred else SpecRunner.queue_event(blurred, to - 1, "focus", SpecRunner.value_of(blurred.dom, to - 1))
+	}
+
+	## Appending native task observations never wraps a slot or poisons the app.
+	queue_ui : S(state), UiTask -> S(state)
+	queue_ui = |s, task| {
+		b = s.browser
+		if b.ui_exhausted {
+			return s
+		}
+		if b.ui_head > 18446744073709551615 - b.ui_tasks.len() {
+			return { ..s, browser: { ..b, ui_exhausted: True } }
+		}
+		{ ..s, browser: { ..b, ui_tasks: b.ui_tasks.append(task) } }
+	}
+
+	## Replacing a toggle cancels its old task and queues it at the new task position.
+	## A direct slot avoids scanning unrelated browser tasks during coalescing.
+	queue_toggle : S(state), U64 -> S(state)
+	queue_toggle = |s, i| {
+		b = s.browser
+		n = Dom.node(s.dom, i)
+		if b.ui_exhausted {
+			return s
+		}
+		if b.ui_head > 18446744073709551615 - b.ui_tasks.len() {
+			return { ..s, browser: { ..b, ui_exhausted: True } }
+		}
+		slot = b.ui_head + b.ui_tasks.len()
+		tasks = if (n.pending_toggle) b.ui_tasks.set(n.toggle_slot - b.ui_head, Cancelled) ?? crash "native toggle task slot" else b.ui_tasks
+		marked = { ..s, dom: Dom.modify(s.dom, i, |element| { ..element, pending_toggle: True, toggle_slot: slot }), browser: { ..b, ui_tasks: tasks } }
+		SpecRunner.queue_ui(marked, Toggle(i))
+	}
+
+	## Native show/close defaults maintain a distinct live top-layer state.
+	change_shown : S(state), U64, Dom.Shown -> S(state)
+	change_shown = |s0, i, value| SpecRunner.change_shown_with(s0, { target: i, value, focus: Restore })
+
+	## Showing a sibling or modal hides auto popovers without restoring their
+	## opener. Native close, Escape and light dismissal retain normal restoration.
+	change_shown_with : S(state), { target : U64, value : Dom.Shown, focus : [Restore, Keep] } -> S(state)
+	change_shown_with = |s0, { target: i, value, focus }| {
+		old = Dom.node(s0.dom, i).shown
+		if old == value {
+			return s0
+		}
+		var $s = s0
+		if value == Modal or (value == Popover and Dom.enum_attr(Dom.node($s.dom, i), "popover") == "auto") {
+			for other in $s.browser.top_layer {
+				if other != i and Dom.node($s.dom, other).shown == Popover and Dom.enum_attr(Dom.node($s.dom, other), "popover") == "auto" and !SpecRunner.inside($s.dom, i, other) {
+					$s = SpecRunner.change_shown_with($s, { target: other, value: Hidden, focus: Keep })
+				}
+			}
+		}
+		# Changing a dialog's display mode closes it before invoking the new method.
+		# TODO https://github.com/roc-lang/roc/issues/13092: this calls itself
+		# rather than `change_shown`, so the two are not one recursive group:
+		# the compiler re-expands a generic recursive group of two or more
+		# functions at every call into it.
+		if old != Hidden and value != Hidden {
+			$s = SpecRunner.change_shown_with($s, { target: i, value: Hidden, focus: Restore })
+		}
+		s = $s
+		b = s.browser
+		n = Dom.node(s.dom, i)
+		attrs = if Dom.html_tag(n, "dialog") {
+			if (value == Hidden) n.attrs.keep_if(|(key, _)| !key.namespace.is_empty() or key.local != "open") else n.attrs.keep_if(|(key, _)| !key.namespace.is_empty() or key.local != "open").append((Dom.unqualified("open"), ""))
+		} else n.attrs
+		dom = Dom.modify(s.dom, i, |current| { ..current, shown: value, attrs })
+		changed = { ..s, dom, browser: { ..b, top_layer: if (value == Modal or value == Popover) b.top_layer.keep_if(|other| other != i).append(i) else b.top_layer.keep_if(|other| other != i), openers: if (value == Hidden) b.openers.remove(i) else b.openers.insert(i, s.focused) } }
+		queued = SpecRunner.queue_toggle(changed, i)
+		if value == Hidden {
+			opener = b.openers.get(i) ?? 0
+			restored = if focus == Restore and opener != 0 and (old == Modal or (s.focused != 0 and SpecRunner.inside(s.dom, s.focused - 1, i))) and SpecRunner.attached(queued.dom, opener - 1) and SpecRunner.focusable_in(queued.dom, opener - 1) {
+				SpecRunner.queue_focus(queued, opener)
+			} else if s.focused != 0 and SpecRunner.inside(s.dom, s.focused - 1, i) {
+				# Hiding focused content leaves body active when no visible opener
+				# is restored, including a modal re-shown after its row moved.
+				SpecRunner.queue_focus(queued, 0)
+			} else queued
+			if Dom.html_tag(n, "dialog") {
+				SpecRunner.queue_ui(restored, Close(i))
+			} else restored
+		} else {
+			autofocus = Dom.find(queued.dom, i, |child| Dom.has_attr(child, "autofocus"))
+			chosen = match autofocus {
+				Ok(target) if SpecRunner.focusable_in(queued.dom, target) => target + 1
+				_ if Dom.html_tag(n, "dialog") => SpecRunner.focus_order(queued.dom, i).first().map_ok(|target| target + 1) ?? i + 1
+				_ => 0
+			}
+			if (chosen == 0) queued else SpecRunner.queue_focus(queued, chosen)
+		}
+	}
+
+	## UI tasks read live state at delivery, then enter the ordinary event path.
+	deliver_ui : Program(state), S(state) -> S(state)
+	deliver_ui = |program, s| {
+		task = s.browser.ui_tasks.first() ?? crash "SpecRunner.deliver_ui: pending task"
+		b = s.browser
+		rest = b.ui_tasks.drop_first(1)
+		next = { ..s, browser: { ..b, ui_tasks: rest, ui_head: if (rest.is_empty()) 0 else b.ui_head + 1 } }
+		if task == Cancelled {
+			return next
+		}
+		(index, event) = match task {
+			Toggle(i) => (i, "toggle")
+			Close(i) => (i, "close")
+			Cancelled => crash "native UI task was already skipped"
+		}
+		cleared = match task {
+			Toggle(_) => { ..next, dom: Dom.modify(next.dom, index, |n| { ..n, pending_toggle: False }) }
+			Close(_) => next
+			Cancelled => crash "native UI task was already skipped"
+		}
+		if !SpecRunner.attached(cleared.dom, index) {
+			return cleared
+		}
+		match Dom.target(cleared.dom, index, event, False) {
+			Ok(target) => {
+				payload = if (target.kind == 5) [if (Dom.node(cleared.dom, index).shown == Hidden) 0.U8 else 1] else []
+				SpecRunner.send(program, cleared, target.node, target.handler, payload)
+			}
+			Err(_) => cleared
+		}
+	}
+
+	## Escape consumes the newest close watcher; cancellation needs fresh activation.
+	dismiss_ui : Program(state), S(state) -> S(state)
+	dismiss_ui = |program, s| {
+		i = s.browser.top_layer.find_last(|target| Dom.node(s.dom, target).shown == Modal or (Dom.node(s.dom, target).shown == Popover and Dom.enum_attr(Dom.node(s.dom, target), "popover") == "auto")) ?? return s
+		n = Dom.node(s.dom, i)
+		if n.shown == Popover {
+			if (Dom.enum_attr(n, "popover") == "auto") SpecRunner.change_shown(s, i, Hidden) else s
+		} else if n.shown == Modal {
+			prevent = s.browser.cancel_allowed and (Dom.target(s.dom, i, "cancel", False).map_ok(|target| target.policies.bitwise_and(1) != 0) ?? False)
+			next = match Dom.target(s.dom, i, "cancel", False) {
+				Ok(target) => SpecRunner.send(program, s, target.node, target.handler, [])
+				Err(_) => s
+			}
+			used = { ..next, browser: { ..next.browser, cancel_allowed: False } }
+			if (prevent) used else SpecRunner.change_shown(used, i, Hidden)
+		} else s
+	}
+
+	## Scroll observation is bounded and cannot suppress the performed command.
+	record_scroll : S(state), U64, Dom.RefAction -> S(state)
+	record_scroll = |s, i, action| {
+		b = s.browser
+		if b.scroll_exhausted {
+			return s
+		}
+		if b.scroll_count == 18446744073709551615 {
+			return { ..s, browser: { ..b, scroll_exhausted: True } }
+		}
+		ordinal = b.scroll_count + 1
+		history = b.scrolls.append({ ordinal, target: i, action })
+		{ ..s, browser: { ..b, scroll_count: ordinal, scrolls: if (history.len() > 4096) history.drop_first(1) else history } }
+	}
+
+	## Inject a layout observation only while its declared observation is live.
+	inject_observation : Program(state), S(state), { loc : Scm.Loc, kind : U8, payload : List(U8) } -> Try(S(state), Str)
+	inject_observation = |program, s, { loc, kind, payload }| {
+		i = SpecRunner.need(s.dom, loc)?
+		bit = if (kind == 7) 1.U8 else 2
+		event = if (kind == 7) "size" else "seen"
+		if Dom.node(s.dom, i).observing.bitwise_and(bit) == 0 {
+			return Err("${Scm.show_loc(loc)} has no live ${event} observation")
+		}
+		target = Dom.target(s.dom, i, event, False) ? |_| "${Scm.show_loc(loc)} has no ${event} handler"
+		Ok(SpecRunner.queue_report(program, { state: s, source: Observation({ element: i, kind }), node: target.node, handler: target.handler, owner: Dom.lookup(s.dom, target.node), payload }))
+	}
+
+	## A changed offset raises the element's own scroll event, never an ancestor's.
+	set_scroll_in_loop : Program(state), S(state), { target : U64, top : U32, left : U32 } -> S(state)
+	set_scroll_in_loop = |program, s, { target: i, top, left }| {
+		prior = Dom.node(s.dom, i).scroll
+		if prior.top == top and prior.left == left {
+			return s
+		}
+		changed = { ..s, dom: Dom.modify(s.dom, i, |n| { ..n, scroll: { top, left } }) }
+		handler = Dom.target(changed.dom, i, "scroll", False) ?? return changed
+		if handler.kind == 6 {
+			SpecRunner.queue_report_in_loop(program, { state: changed, source: Scroll({ element: i, handler: handler.handler }), node: handler.node, handler: handler.handler, owner: Dom.lookup(changed.dom, handler.node), payload: SpecRunner.put_u32(SpecRunner.put_u32([], top), left) })
+		} else SpecRunner.send_in_loop(program, changed, handler.node, handler.handler, [])
+	}
+
+	## Run [set_scroll_in_loop] from outside the event loop.
+	set_scroll : Program(state), S(state), { target : U64, top : U32, left : U32 } -> S(state)
+	set_scroll = |program, s, { target: i, top, left }| SpecRunner.set_scroll_in_loop(program, s, { target: i, top, left })
+
+	## Explicit commands keep their observable command record. Handled scrollers
+	## additionally model only geometry-free offsets; unsupported placement fails
+	## the spec rather than inventing a layout or changing an application's fault.
+	perform_scroll_in_loop : Program(state), S(state), U64, Dom.RefAction -> S(state)
+	perform_scroll_in_loop = |program, s, i, action| {
+		recorded = SpecRunner.record_scroll(s, i, action)
+		match action {
+			To({ top, left, .. }) => {
+				if Dom.target(s.dom, i, "scroll", False).is_err() {
+					return recorded
+				}
+				if top == End or left == End {
+					return { ..recorded, browser: { ..recorded.browser, scroll_error: "ScrollTo End on an element that handles scroll needs layout; use a scroll step" } }
+				}
+				prior = Dom.node(s.dom, i).scroll
+				edge = |value, prior_offset| match value {
+					Keep => prior_offset
+					Start => 0
+					Px(pixels) => pixels
+					End => crash "SpecRunner.perform_scroll: End refused"
+				}
+				SpecRunner.set_scroll_in_loop(program, recorded, { target: i, top: edge(top, prior.top), left: edge(left, prior.left) })
+			}
+			IntoView(_) => {
+				var $at = Dom.node(s.dom, i).parent
+				while $at != 0 {
+					if Dom.target(s.dom, $at - 1, "scroll", False).is_ok() {
+						return { ..recorded, browser: { ..recorded.browser, scroll_error: "ScrollIntoView inside an element that handles scroll needs layout; use a scroll step" } }
+					}
+					$at = Dom.node(s.dom, $at - 1).parent
+				}
+				recorded
+			}
+			Focus(_) => crash "SpecRunner.perform_scroll: focus is not scrolling"
+		}
+	}
+
+	## Run [perform_scroll_in_loop] from outside the event loop.
+	perform_scroll : Program(state), S(state), U64, Dom.RefAction -> S(state)
+	perform_scroll = |program, s, i, action| SpecRunner.perform_scroll_in_loop(program, s, i, action)
+
 	# ------------------------------------------------------------- locators
 
+	## Prefer an explicit role, otherwise use the runner’s closed element
+	## fallbacks. This is the supported locator vocabulary, not a full ARIA tree.
+	## The fallbacks are HTML elements by their exact local name, and an SVG
+	## `a`, which is a link too (`tests/browser/locate.js` reads the same).
 	implicit_role : Dom.DNode -> Str
 	implicit_role = |n| {
 		explicit = Dom.attr_of(n, "role")
 		if explicit != "" {
 			explicit
+		} else if Dom.svg_tag(n, "a") {
+			"link"
+		} else if !Dom.html_element(n) {
+			""
 		} else {
 			match n.tag {
 				"button" => "button"
@@ -825,19 +2489,23 @@ SpecRunner := [].{
 		}
 	}
 
+	## Prefer a nonempty aria-label, otherwise join child text in DOM order.
+	## Role locators use this supported naming rule without consulting layout.
 	accessible_name : Dom.Model, Dom.DNode -> Str
 	accessible_name = |dom, n| {
 		l = Dom.attr_of(n, "aria-label")
 		if (l != "") l else Str.join_with(n.kids.map(|k| Dom.text_of(dom, k)), "")
 	}
 
+	## Compare one model node with a semantic locator. Attribute locators require
+	## presence independently of text; a text locator addresses an exact text leaf.
 	matches : Dom.Model, Dom.DNode, Scm.Loc -> Bool
 	matches = |dom, n, loc|
 		match loc {
-			Label(x) => n.tag != "" and Dom.attr_of(n, "aria-label") == x
-			TestId(x) => n.tag != "" and Dom.attr_of(n, "data-testid") == x
-			Role({ role, name }) => n.tag != "" and SpecRunner.implicit_role(n) == role and SpecRunner.accessible_name(dom, n) == name
-			Text(x) => n.tag == "" and n.text == x
+			Label(x) => n.kind == 1 and Dom.has_attr(n, "aria-label") and Dom.attr_of(n, "aria-label") == x
+			TestId(x) => n.kind == 1 and Dom.has_attr(n, "data-testid") and Dom.attr_of(n, "data-testid") == x
+			Role({ role, name }) => n.kind == 1 and SpecRunner.implicit_role(n) == role and SpecRunner.accessible_name(dom, n) == name
+			Text(x) => n.kind == 2 and n.text == x
 		}
 
 	## The element a locator names (a `text` locator names the element holding
@@ -846,59 +2514,68 @@ SpecRunner := [].{
 	find = |dom, loc| {
 		i = Dom.find(dom, dom.root, |n| SpecRunner.matches(dom, n, loc))?
 		n = Dom.node(dom, i)
-		if (n.tag == "" and n.parent != 0) Ok(n.parent - 1) else Ok(i)
+		if (n.kind == 2 and n.parent != 0) Ok(n.parent - 1) else Ok(i)
 	}
 
+	## Resolve a required locator and report its authored spelling when absent.
+	## Input and positive assertions share this failure instead of becoming no-ops.
 	need : Dom.Model, Scm.Loc -> Try(U64, Str)
 	need = |dom, loc| SpecRunner.find(dom, loc).map_err(|_| "no element ${Scm.show_loc(loc)}")
 
+	## Produce the true/false text used by control-state observations and
+	## legacy text payloads; it does not choose attribute presence.
 	bool_str : Bool -> Str
 	bool_str = |b| if (b) "true" else "false"
 
+	## Model a browser edit without emitting or counting an engine command.
+	## Value and checked update live control properties; other names update attributes.
 	set_attr : S(state), U64, Str, Str -> S(state)
-	set_attr = |s, i, name, v| { ..s, dom: Dom.set_attr_on(s.dom, i, name, v) }
+	set_attr = |s, i, name, v| { ..s, dom: if (name == "value" or name == "checked") Dom.set_live_on(s.dom, i, name, v) else Dom.set_attr_on(s.dom, i, name, v) }
 
-	## A control's live value: a `<select>` shows the value only when one of
-	## its options has it.
+	## Read an option through its DOM value getter, including collapsed fallback
+	## text. A select exposes its live value only when one of its options has it.
 	value_of : Dom.Model, U64 -> Str
 	value_of = |dom, i| {
 		n = Dom.node(dom, i)
-		v = Dom.attr_of(n, "value")
-		if n.tag == "select" and Dom.find(dom, i, |o| o.tag == "option" and Dom.attr_of(o, "value") == v).is_err() {
+		v = Dom.live_value(n, "value")
+		if Dom.html_tag(n, "option") {
+			Dom.option_value(dom, i)
+		} else if Dom.html_tag(n, "select") and !SpecRunner.has_option(dom, { root: i, value: v }) {
 			""
-		} else {
-			v
+		} else if Dom.html_tag(n, "input") and ["checkbox", "radio"].contains(Dom.input_type(n)) and !Dom.has_attr(n, "value") {
+			"on"
+		} else v
+	}
+
+	## Option matching uses the same explicit-value or fallback-text getter as
+	## value assertions. A present empty value remains a real empty choice.
+	has_option : Dom.Model, { root : U64, value : Str } -> Bool
+	has_option = |dom, { root, value }| {
+		n = Dom.node(dom, root)
+		if Dom.html_tag(n, "option") and SpecRunner.value_of(dom, root) == value {
+			return Bool.True
 		}
+		n.kids.any(|child| SpecRunner.has_option(dom, { root: child, value }))
 	}
 
 	## What `expect-attr` reads, as the browser runner reads it: `checked` and
 	## `disabled` as "true"/"false" from the live state, `value` as the live
-	## value, a boolean attribute as "" when present, `class` as set, and any
-	## other attribute as set unless the engine set it to "" (which removes it).
+	## value. `class` and ordinary attributes keep their literal text,
+	## including an explicitly present empty string.
 	attr_value : Dom.Model, U64, Str -> Try(Str, [Absent])
 	attr_value = |dom, i, name| {
 		n = Dom.node(dom, i)
 		raw = Dom.attr_of(n, name)
-		if name == "checked" {
-			Ok(SpecRunner.bool_str(raw == "true"))
+		if name == "checked" and Dom.html_tag(n, "input") {
+			Ok(SpecRunner.bool_str(Dom.live_value(n, "checked") == "true"))
 		} else if name == "disabled" {
 			Ok(SpecRunner.bool_str(SpecRunner.disabled(n)))
-		} else if name == "value" {
+		} else if name == "value" and ["input", "textarea", "select", "option"].any(|local| Dom.html_tag(n, local)) {
 			Ok(SpecRunner.value_of(dom, i))
-		} else if SpecRunner.bool_attrs.contains(name) {
-			if (SpecRunner.flag_on(n, name)) Ok("") else Err(Absent)
-		} else if name == "class" {
-			if (n.attrs.any(|(k, _)| k == "class")) Ok(raw) else Err(Absent)
-		} else if raw == "" {
-			Err(Absent)
-		} else {
+		} else if Dom.has_attr(n, name) {
 			Ok(raw)
-		}
+		} else Err(Absent)
 	}
-
-	## The attributes the runtime treats as boolean (design.md, Appendix B).
-	bool_attrs : List(Str)
-	bool_attrs = ["selected", "readonly", "required", "hidden", "multiple", "open"]
 
 	# ----------------------------------------------------------------- steps
 
@@ -941,12 +2618,16 @@ SpecRunner := [].{
 		# Every issued request is one FX command and every cancelled one a
 		# CANCEL (design.md, "Counters"), so the effect counters must agree
 		# with the commands too.
-		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent")] {
+		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent"), (41, 21, "properties set"), (42, 22, "row properties set"), (43, 23, "registrations released"), (45, 24, "view transitions"), (46, 25, "leave guard commands"), (48, 26, "comments created")] {
 			engine = s.work.counters.get(counter) ?? 0
 			oracle = s.ops.get(op) ?? 0
 			if engine != oracle {
 				return Err("the engine counted ${engine.to_str()} effects ${what} but emitted ${oracle.to_str()} ${Dom.op_name(op.to_u8_wrap())} commands")
 			}
+		}
+		observed = s.work.counters.get(44) ?? 0
+		if observed != s.dom.observed_count {
+			return Err("the engine counted ${observed.to_str()} live observations, but the oracle holds ${s.dom.observed_count.to_str()}")
 		}
 		Ok({})
 	}
@@ -956,21 +2637,30 @@ SpecRunner := [].{
 	## commands that pass emitted and the first element they would change, as
 	## the oracle renders it now and after them.
 	check_settled : Program(state), S(state) -> Try({}, Str)
-	check_settled = |program, s| match (program.settled)(s.inst) {
-		Ok(_) => Ok({})
-		Err({ cmds, note }) => {
-			r = Dom.apply_full(s.dom, cmds)
-			first = match r.written.first() {
-				Ok(i) => {
-					n = Dom.node(r.dom, i)
-					el = if (n.tag == "" and n.parent != 0) n.parent - 1 else i
-					was = if (el < s.dom.nodes.len()) Dom.render(s.dom, el) else "(new)"
-					"; first write: ${was} -> ${Dom.render(r.dom, el)}${SpecRunner.landmark(r.dom, el)}"
+	check_settled = |program, s| {
+		if !s.browser.scroll_error.is_empty() {
+			return Err(s.browser.scroll_error)
+		}
+		match s.fault {
+			Poisoned(message) => return Err(message)
+			Healthy => {}
+		}
+		match (program.settled)(s.inst) {
+			Ok(_) => Ok({})
+			Err({ cmds, note }) => {
+				r = Dom.apply_full(s.dom, cmds)
+				first = match r.written.first() {
+					Ok(i) => {
+						n = Dom.node(r.dom, i)
+						el = if (n.kind == 2 and n.parent != 0) n.parent - 1 else i
+						was = if (el < s.dom.nodes.len()) SpecRunner.render_diagnostic(s.dom, el) else "(new)"
+						"; first write: ${was} -> ${SpecRunner.render_diagnostic(r.dom, el)}${SpecRunner.landmark(r.dom, el)}"
+					}
+					Err(_) => if (r.fx.is_empty()) "" else "; first effect: ${Str.inspect(r.fx.first() ?? crash "not empty")}"
 				}
-				Err(_) => if (r.fx.is_empty()) "" else "; first effect: ${Str.inspect(r.fx.first() ?? crash "not empty")}"
+				effects = if (note.is_empty()) "" else "; effect channel: ${note}"
+				Err("a reader was left stale: a settle pass over every layer emitted ${Dom.describe(r.ops)}${first}${effects}")
 			}
-			effects = if (note.is_empty()) "" else "; effect channel: ${note}"
-			Err("a reader was left stale: a settle pass over every layer emitted ${Dom.describe(r.ops)}${first}${effects}")
 		}
 	}
 
@@ -998,27 +2688,231 @@ SpecRunner := [].{
 	## has a case here (the match has no catch-all).
 	one : Program(state), S(state), Scm.Op -> Try(S(state), Str)
 	one = |program, s, op| {
+		match op {
+			LeavePage(_) if s.browser.reports.held => return Err("leave-page cannot navigate while reports are held")
+			LeavePage(_) if !s.browser.pointers.is_empty() => return Err("leave-page cannot navigate while a pointer is down")
+			_ => {}
+		}
+		activated = SpecRunner.activate_step(s, op)
+		ready = if (SpecRunner.is_occurrence(activated, op)) SpecRunner.release_reports(program, activated) else activated
+		next = SpecRunner.one_ready(program, ready, op)?
+		settled = if (next.browser.reports.held) next else SpecRunner.release_reports(program, next)
+		if settled.browser.scroll_error.is_empty() {
+			Ok(settled)
+		} else {
+			Err(settled.browser.scroll_error)
+		}
+	}
+
+	## Activation policy comes from the same complete grammar table emitted for Chrome.
+	activate_step : S(state), Scm.Op -> S(state)
+	activate_step = |s, op| {
+		grant = match Scm.activation_for(op) {
+			Never => False
+			Always => True
+			WhenClicked => match op {
+				Click(loc) => SpecRunner.find(s.dom, loc).map_ok(|i| !SpecRunner.actually_disabled(s.dom, i)) ?? False
+				Check(loc) => SpecRunner.find(s.dom, loc).map_ok(|i| Dom.live_value(Dom.node(s.dom, i), "checked") != "true") ?? False
+				Uncheck(loc) => SpecRunner.find(s.dom, loc).map_ok(|i| Dom.live_value(Dom.node(s.dom, i), "checked") == "true") ?? False
+				_ => crash "activation table: clicked policy requires check or uncheck"
+			}
+			WhenTyped => match op {
+				Fill(_, value) => value != ""
+				_ => crash "activation table: typed policy requires fill"
+			}
+			KeyboardPress => match op {
+				Press(press) => press.key.key != "Escape"
+				_ => crash "activation table: keyboard policy requires press"
+			}
+			PointerPress => match op {
+				PointerDown(press) => press.kind != Touch
+				_ => crash "activation table: pointer-down policy requires pointer-down"
+			}
+			PointerRelease => match op {
+				PointerUp(place) => s.browser.pointers.get(place.id).map_ok(|pointer| pointer.kind == Touch) ?? False
+				_ => crash "activation table: pointer-up policy requires pointer-up"
+			}
+		}
+		if (grant) { ..s, browser: { ..s.browser, cancel_allowed: True, sticky_activation: True } } else s
+	}
+
+	## Classify only declarations and step meanings. Assertions and fixtures
+	## do not flush a held frame, and an unchanged fact raises no report.
+	is_occurrence : S(state), Scm.Op -> Bool
+	is_occurrence = |s, op| match op {
+		RunEffect(n) => match s.browser.stub {
+			Staged(Reject({ kind: Timeout, .. })) if n > 0 => match s.browser.issued.get(n - 1) {
+				Ok(id) => match s.browser.pending.find_first(|request| request.id == id) {
+					Ok(request) => match request.kind {
+						HttpRequest | UploadRequest(_) | FetchRequest => False
+						_ => True
+					}
+					Err(_) => True
+				}
+				Err(_) => True
+			}
+			_ => True
+		}
+		Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | LeavePage(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
+		PasteText(loc, _) => match SpecRunner.find(s.dom, loc) {
+			Err(_) => False
+			Ok(node) => match Dom.target(s.dom, node, "paste", True) {
+				Ok(target) => target.kind == 1 or target.kind == 9
+				Err(_) => False
+			}
+		}
+		PointerDown(_) | PointerUp(_) | PointerCancel(_) => Bool.True
+		PointerMove(place) => !SpecRunner.paced_move(s, place)
+		EmitPort({ port, .. }) => !s.browser.latest_ports.contains(port)
+		_ => Bool.False
+	}
+
+	## Interpret a step after its occurrence boundary has drained. Keeping
+	## this match exhaustive makes every parser extension visible here.
+	one_ready : Program(state), S(state), Scm.Op -> Try(S(state), Str)
+	one_ready = |program, s, op| {
+		match op {
+			Click(loc) | RealClick(loc) | Fill(loc, _) | Focus(loc) | Blur(loc) | Check(loc) | Uncheck(loc) | SelectOption(loc, _) | Change(loc, _) | Submit(loc) | ChooseFiles(loc, _) | DropFiles(loc, _) | PasteFiles(loc, _) | PasteText(loc, _) => {
+				i = SpecRunner.need(s.dom, loc)?
+				if !SpecRunner.drawn(s.dom, i) {
+					return Err(SpecRunner.unrendered_message(Scm.show_loc(loc)))
+				}
+				if !SpecRunner.reachable(s, i) {
+					return Err("${Scm.show_loc(loc)} is unreachable: hidden dialog/popover or outside the topmost modal")
+				}
+			}
+			PointerDown(press) => {
+				i = SpecRunner.need(s.dom, press.target)?
+				if !SpecRunner.drawn(s.dom, i) {
+					return Err(SpecRunner.unrendered_message(Scm.show_loc(press.target)))
+				}
+				if !SpecRunner.reachable(s, i) {
+					return Err("pointer target is unreachable: hidden dialog/popover or outside the topmost modal")
+				}
+			}
+			PointerMove(place) | PointerUp(place) => {
+				i = SpecRunner.need(s.dom, place.target)?
+				if !SpecRunner.drawn(s.dom, i) {
+					return Err(SpecRunner.unrendered_message(Scm.show_loc(place.target)))
+				}
+				if !SpecRunner.reachable(s, i) {
+					return Err("pointer target is unreachable: hidden dialog/popover or outside the topmost modal")
+				}
+			}
+			Press({ target: At(loc), .. }) => {
+				i = SpecRunner.need(s.dom, loc)?
+				if !SpecRunner.drawn(s.dom, i) {
+					return Err(SpecRunner.unrendered_message(Scm.show_loc(loc)))
+				}
+				if !SpecRunner.reachable(s, i) {
+					return Err("press target is unreachable: hidden dialog/popover or outside the topmost modal")
+				}
+			}
+			_ => {}
+		}
 		dom = s.dom
 		b = s.browser
 		check = |ok, msg| if (ok) Ok(s) else Err(msg)
 		match op {
+			Dismiss => SpecRunner.press_key(program, s, { target: Focused, key: { key: "Escape", code: "Escape", ctrl: False, alt: False, shift: False, meta: False } })
+			ExpectElement({ target, namespace, name }) => {
+				i = SpecRunner.need(dom, target)?
+				found = Dom.node(dom, i)
+				check(found.kind == 1 and found.namespace == namespace and found.tag == name, "${Scm.show_loc(target)} element is namespace ${Str.inspect(found.namespace)} local ${Str.inspect(found.tag)}, expected namespace ${Str.inspect(namespace)} local ${Str.inspect(name)}")
+			}
+			ExpectShown(loc, want) => {
+				n = Dom.node(dom, SpecRunner.need(dom, loc)?)
+				if !SpecRunner.top_layer_candidate(n) {
+					return Err("${Scm.show_loc(loc)} is neither a dialog nor a popover, so it has no shown state")
+				}
+				check(n.shown == want, "${Scm.show_loc(loc)} is ${SpecRunner.shown_word(n.shown)}, expected ${SpecRunner.shown_word(want)}")
+			}
+			ExpectTransitions(count) => {
+				h = dom.transitions
+				if h.exhausted {
+					Err("transition observation ordinal exhausted")
+				}
+				else check(h.count == count, "transition batches performed ${h.count.to_str()}, expected ${count.to_str()}")
+			}
+			ExpectTransition({ at, types }) => {
+				h = dom.transitions
+				if h.exhausted {
+					return Err("transition observation ordinal exhausted")
+				}
+				if at > h.count {
+					return Err("transition ordinal ${at.to_str()} was not performed")
+				}
+				record = h.records.get(at) ? |_| "transition ordinal ${at.to_str()} is unavailable in retained history (newest 4096, at most 1048576 encoded type bytes)"
+				check(record.types == types, "transition ordinal ${at.to_str()} has types ${Str.inspect(record.types)}, expected ${Str.inspect(types)}")
+			}
+			ExpectScrolls(count) => {
+				if b.scroll_exhausted {
+					Err("scroll observation ordinal exhausted")
+				}
+				else check(b.scroll_count == count, "scroll commands performed ${b.scroll_count.to_str()}, expected ${count.to_str()}")
+			}
+			ExpectScroll({ ordinal, target, kind }) => {
+				if b.scroll_exhausted {
+					return Err("scroll observation ordinal exhausted")
+				}
+				if ordinal <= b.scroll_count and b.scroll_count - ordinal >= 4096 {
+					return Err("scroll ordinal ${ordinal.to_str()} is older than retained history (newest 4096)")
+				}
+				record = b.scrolls.find_first(|r| r.ordinal == ordinal) ? |_| "scroll ordinal ${ordinal.to_str()} was not performed"
+				i = SpecRunner.need(dom, target)?
+				actual = match record.action {
+					IntoView(_) => IntoView
+					To(_) => To
+					Focus(_) => crash "scroll history contains focus"
+				}
+				check(record.target == i and actual == kind, "scroll ordinal ${ordinal.to_str()} does not name ${Scm.show_loc(target)} with ${Str.inspect(kind)}")
+			}
+			Scroll({ target, top, left }) => {
+				i = SpecRunner.need(dom, target)?
+				Ok(SpecRunner.set_scroll(program, s, { target: i, top, left }))
+			}
+			ReportSize({ target, width, height }) => SpecRunner.inject_observation(program, s, { loc: target, kind: 7, payload: SpecRunner.put_u32(SpecRunner.put_u32([], width), height) })
+			ReportSeen({ target, intersecting, ratio_permille }) => SpecRunner.inject_observation(program, s, { loc: target, kind: 8, payload: [SpecRunner.flag_byte(intersecting), ratio_permille.bitwise_and(255).to_u8_wrap(), ratio_permille.shr_zf_wrap(8).to_u8_wrap()] })
+			SetMedia({ query, matches: is_match }) => {
+				previous = b.env.media.find_first(|(name, _)| name == query) ? |_| "set-media query ${JsonOut.quote(query)} is not declared"
+				if previous.1 == is_match {
+					Ok(s)
+				} else {
+					changed = { ..s, browser: { ..b, env: { ..b.env, media: b.env.media.map(|(name, old)| (name, if (name == query) is_match else old)) } } }
+					Ok(SpecRunner.broadcast(program, changed, |sub| sub.sub == MediaSub(query), [22, SpecRunner.flag_byte(is_match)]))
+				}
+			}
+			ExpectObserved(count) => check(dom.observed_count == count and (s.work.counters.get(44) ?? 0) == count, "${dom.observed_count.to_str()} live observations, expected ${count.to_str()}")
+			ExpectMediaSubscriptions({ query, count }) => {
+				if !b.env.media.any(|(name, _)| name == query) {
+					return Err("expect-media-subscriptions query ${JsonOut.quote(query)} is not declared")
+				}
+				got = b.subs.count_if(|sub| sub.sub == MediaSub(query))
+				check(got == count, "${got.to_str()} live media subscriptions for ${JsonOut.quote(query)}, expected ${count.to_str()}")
+			}
+			HoldReports => if (b.reports.held) Err("hold-reports while reports are already held") else Ok({ ..s, browser: { ..b, reports: { ..b.reports, held: Bool.True } } })
+			ReleaseReports => if (!b.reports.held) Err("release-reports while reports are not held") else Ok(SpecRunner.release_reports(program, { ..s, browser: { ..b, reports: { ..b.reports, held: Bool.False } } }))
+			ExpectReportsReplaced(count) => check(b.reports.replaced == count, "reports replaced ${b.reports.replaced.to_str()} times, expected ${count.to_str()}")
+			PointerDown(press) => SpecRunner.pointer_down(program, s, press)
+			PointerMove(place) => SpecRunner.pointer_move(program, s, place)
+			PointerUp(place) => SpecRunner.pointer_up(program, s, place)
+			PointerCancel(id) => SpecRunner.pointer_cancel(program, s, id)
 			Click(loc) => {
 				i = SpecRunner.need(dom, loc)?
 				# A browser delivers no click to a disabled control.
-				if (SpecRunner.disabled(Dom.node(dom, i))) Ok(s) else SpecRunner.mouse_click(program, s, i)
+				if (SpecRunner.actually_disabled(dom, i)) Ok(s) else SpecRunner.mouse_click(program, s, i)
 			}
 			RealClick(loc) => {
 				i = SpecRunner.need(dom, loc)?
-				if (SpecRunner.disabled(Dom.node(dom, i))) Err("${Scm.show_loc(loc)} is disabled") else SpecRunner.mouse_click(program, s, i)
+				if (SpecRunner.actually_disabled(dom, i)) Err("${Scm.show_loc(loc)} is disabled") else SpecRunner.mouse_click(program, s, i)
 			}
 			Fill(loc, v) => SpecRunner.fill(program, s, loc, v)
-			ChooseFiles(_, names) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, names.len()))
-			DropFiles(_, names) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, names.len()))
-			PasteFiles(_, names) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, names.len()))
+			ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, SpecRunner.file_count(dom, op) ?? 0))
 			ExpectFiles(_) => Err("expect-files counts the handles live in the host; the spec command runs it, through its host")
+			Press(press) => SpecRunner.press_key(program, s, press)
 			Focus(loc) => {
 				i = SpecRunner.need(dom, loc)?
-				if (SpecRunner.focusable(Dom.node(dom, i))) Ok(SpecRunner.move_focus(program, s, i + 1)) else Ok(s)
+				if (SpecRunner.focusable_in(dom, i)) Ok(SpecRunner.move_focus(program, s, i + 1)) else Ok(s)
 			}
 			Blur(loc) => {
 				i = SpecRunner.need(dom, loc)?
@@ -1029,10 +2923,10 @@ SpecRunner := [].{
 			SelectOption(loc, v) => {
 				i = SpecRunner.need(dom, loc)?
 				n = Dom.node(dom, i)
-				if n.tag != "select" {
+				if !Dom.html_tag(n, "select") {
 					return Err("${Scm.show_loc(loc)} is not a <select>")
 				}
-				if Dom.find(dom, i, |o| o.tag == "option" and Dom.attr_of(o, "value") == v).is_err() {
+				if !SpecRunner.has_option(dom, { root: i, value: v }) {
 					return Err("${Scm.show_loc(loc)} has no option ${JsonOut.quote(v)}")
 				}
 				s1 = SpecRunner.fire_if(program, SpecRunner.set_attr(s, i, "value", v), i, "input", v)
@@ -1041,37 +2935,53 @@ SpecRunner := [].{
 			Change(loc, v) => {
 				i = SpecRunner.need(dom, loc)?
 				n = Dom.node(dom, i)
-				kind = Dom.attr_of(n, "type")
-				if n.tag == "input" and (kind == "radio" or kind == "checkbox") {
-					if Dom.attr_of(n, "value") != v {
-						return Err("${Scm.show_loc(loc)} has value ${JsonOut.quote(Dom.attr_of(n, "value"))}, not ${JsonOut.quote(v)}")
+				kind = Dom.input_type(n)
+				if Dom.html_tag(n, "input") and (kind == "radio" or kind == "checkbox") {
+					if SpecRunner.value_of(dom, i) != v {
+						return Err("${Scm.show_loc(loc)} has value ${JsonOut.quote(SpecRunner.value_of(dom, i))}, not ${JsonOut.quote(v)}")
 					}
 					Ok(SpecRunner.fire_if(program, SpecRunner.check_on(s, i), i, "change", "true"))
 				} else {
+					SpecRunner.change_refusal(n, v) ? |why| "${Scm.show_loc(loc)} cannot take ${JsonOut.quote(v)}: ${why}"
 					Ok(SpecRunner.fire_if(program, SpecRunner.set_attr(s, i, "value", v), i, "change", v))
 				}
 			}
 			Submit(loc) => {
 				i = SpecRunner.need(dom, loc)?
-				if Dom.node(dom, i).tag != "form" {
+				if !Dom.html_tag(Dom.node(dom, i), "form") {
 					return Err("${Scm.show_loc(loc)} is not a <form>")
 				}
-				Ok(SpecRunner.submit_form(program, s, i))
+				SpecRunner.submit_form(program, s, i)
 			}
+			ExpectFocused(loc) => check(s.focused == SpecRunner.need(dom, loc)? + 1, "${Scm.show_loc(loc)} does not hold focus")
+			ExpectNoFocus => check(s.focused == 0, "an element still holds focus")
 			ExpectText(loc, want) => {
 				got = Dom.text_of(dom, SpecRunner.need(dom, loc)?)
 				check(got == want, "${Scm.show_loc(loc)} text ${JsonOut.quote(got)}, expected ${JsonOut.quote(want)}")
 			}
 			ExpectValue(loc, want) => {
-				got = SpecRunner.value_of(dom, SpecRunner.need(dom, loc)?)
+				i = SpecRunner.need(dom, loc)?
+				n = Dom.node(dom, i)
+				if !["input", "textarea", "select", "option", "button"].any(|local| Dom.html_tag(n, local)) {
+					return Err("${Scm.show_loc(loc)} has no live value property")
+				}
+				got = SpecRunner.value_of(dom, i)
 				check(got == want, "${Scm.show_loc(loc)} value ${JsonOut.quote(got)}, expected ${JsonOut.quote(want)}")
 			}
 			ExpectChecked(loc, want) => {
-				got = Dom.attr_of(Dom.node(dom, SpecRunner.need(dom, loc)?), "checked") == "true"
+				n = Dom.node(dom, SpecRunner.need(dom, loc)?)
+				if !Dom.html_tag(n, "input") {
+					return Err("${Scm.show_loc(loc)} has no checked state: it is not an <input>")
+				}
+				got = Dom.live_value(n, "checked") == "true"
 				check(got == want, "${Scm.show_loc(loc)} checked ${SpecRunner.bool_str(got)}, expected ${SpecRunner.bool_str(want)}")
 			}
 			ExpectDisabled(loc, want) => {
-				got = SpecRunner.disabled(Dom.node(dom, SpecRunner.need(dom, loc)?))
+				n = Dom.node(dom, SpecRunner.need(dom, loc)?)
+				if !SpecRunner.disableable(n) {
+					return Err("${Scm.show_loc(loc)} has no disabled state: it is not a button, input, select, textarea, option, optgroup or fieldset")
+				}
+				got = SpecRunner.disabled(n)
 				check(got == want, "${Scm.show_loc(loc)} disabled ${SpecRunner.bool_str(got)}, expected ${SpecRunner.bool_str(want)}")
 			}
 			ExpectVisible(loc) => {
@@ -1084,6 +2994,11 @@ SpecRunner := [].{
 					Ok(got) => check(got == value, "${Scm.show_loc(target)} ${name}=${JsonOut.quote(got)}, expected ${JsonOut.quote(value)}")
 					Err(Absent) => Err("${Scm.show_loc(target)} has no ${name} attribute, expected ${JsonOut.quote(value)}")
 				}
+			ExpectHasAttr({ target, name }) =>
+				match SpecRunner.attr_value(dom, SpecRunner.need(dom, target)?, name) {
+					Ok(_) => Ok(s)
+					Err(Absent) => Err("${Scm.show_loc(target)} has no ${name} attribute")
+				}
 			ExpectNoAttr({ target, name }) =>
 				match SpecRunner.attr_value(dom, SpecRunner.need(dom, target)?, name) {
 					Ok(got) => Err("${Scm.show_loc(target)} has ${name}=${JsonOut.quote(got)}")
@@ -1094,15 +3009,66 @@ SpecRunner := [].{
 				got = 1 + (s.writes.get(i) ?? 0)
 				check(got == n, "${Scm.show_loc(loc)} was written ${got.to_str()} times (its creation and every later update), expected ${n.to_str()}")
 			}
-			ExpectLocation(want) => check(b.loc == want, "location ${JsonOut.quote(b.loc)}, expected ${JsonOut.quote(want)}")
+			ExpectLocation(want) => {
+				got = SpecRunner.serialize_location(b.env.url)
+				check(got == want, "location ${JsonOut.quote(got)}, expected ${JsonOut.quote(want)}")
+			}
 			ExpectTitle(want) => check(b.title == want, "title ${JsonOut.quote(b.title)}, expected ${JsonOut.quote(want)}")
 			ExpectLocalStorage({ key, value }) => {
-				got = b.storage.find_first(|kv| kv.key == key).map_ok(|kv| JsonOut.quote(kv.value)) ?? "<missing>"
+				got = b.env.storage.find_first(|(name, _)| name == key).map_ok(|(_, stored)| JsonOut.quote(stored)) ?? "<missing>"
 				check(got == JsonOut.quote(value), "local storage ${key} = ${got}, expected ${JsonOut.quote(value)}")
 			}
-			ExpectNoLocalStorage(key) => check(!b.storage.any(|kv| kv.key == key), "local storage ${key} is present")
+			ExpectNoLocalStorage(key) => check(!b.env.storage.any(|(name, _)| name == key), "local storage ${key} is present")
 			ExpectPendingEffects(n) => check(b.pending.len() == n, "expected ${n.to_str()} pending effects, got ${b.pending.len().to_str()}")
 			RunEffect(n) => SpecRunner.run_effect(program, s, n)
+			ExpectRequest({ n, checks }) => {
+				if n == 0 {
+					return Err("pending request index is one-based")
+				}
+				request = b.pending.get(n - 1) ? |_| "pending request ${n.to_str()} does not exist"
+				network = b.network.get(request.id) ? |_| "pending request ${n.to_str()} is not HTTP, upload or fetch"
+				for field in checks {
+					actual = match field.key {
+						"method" => network.method
+						"url" => request.url
+						"cache" => network.options.cache
+						"credentials" => network.options.credentials
+						_ => crash "SpecRunner: parser supplied unknown request field"
+					}
+					if actual != field.value {
+						return Err("request ${n.to_str()} ${field.key}: expected ${JsonOut.quote(field.value)}, got ${JsonOut.quote(actual)}")
+					}
+				}
+				Ok(s)
+			}
+			ProgressEffect({ n, direction, done, total }) => {
+				if n == 0 {
+					return Err("pending request index is one-based")
+				}
+				request = b.pending.get(n - 1) ? |_| "pending request ${n.to_str()} does not exist"
+				network = b.network.get(request.id) ? |_| "pending request ${n.to_str()} is not a transfer"
+				if network.options.progress_ms == 0 {
+					return Err("pending request ${n.to_str()} did not request progress")
+				}
+				bytes = SpecRunner.put_u64([26, if (direction == Sending) 1 else 2], done)
+				payload = match total {
+					Unknown => SpecRunner.put_u64(bytes.append(0), 0)
+					Known(count) => SpecRunner.put_u64(bytes.append(1), count)
+				}
+				Ok(SpecRunner.report(program, { state: s, id: request.id, payload }))
+			}
+			ExpectPortSubscriptionArg({ port, n, json }) => {
+				active = b.subs.keep_if(|entry| SpecRunner.on_port(entry.sub, port))
+				if n == 0 {
+					return Err("active subscription index is one-based")
+				}
+				entry = active.get(n - 1) ? |_| "active subscription ${n.to_str()} does not exist for ${port}"
+				actual = match entry.sub {
+					PortSub(_, value) => value
+					_ => crash "SpecRunner: selected port subscription changed kind"
+				}
+				check(actual == json, "active subscription ${n.to_str()} argument differs: ${JsonOut.quote(actual)}")
+			}
 			LoseWork({ occurrence, fault }) => {
 				job = SpecRunner.pending_job(s, occurrence)?
 				SpecRunner.deliver_job(program, s, job.id, SpecRunner.encode_lost(fault))
@@ -1129,17 +3095,55 @@ SpecRunner := [].{
 					NoStub => Ok({ ..s, browser: { ..b, stub: Staged(stub) } })
 					Staged(_) => Err("a stub is already staged; run-effect answers one at a time")
 				}
+			PasteText(loc, text) => {
+				i = SpecRunner.find(s.dom, loc) ? |_| "paste target was not found"
+				declaration = match Dom.target(s.dom, i, "paste", True) {
+					Ok(target) => target
+					Err(_) => return Ok(s)
+				}
+				if declaration.kind == 9 {
+					payload = if (text.count_utf8_bytes() > s.browser.settings.max_paste) [1] else [0].concat(text.to_utf8())
+					Ok(SpecRunner.send(program, s, declaration.node, declaration.handler, payload))
+				} else if declaration.kind == 1 {
+					Ok(SpecRunner.send(program, s, declaration.node, declaration.handler, []))
+				} else Ok(s)
+			}
+			StorageElsewhere({ key, value }) => SpecRunner.storage_elsewhere(program, s, { key: Present(key), value: Present(value) })
+			StorageElsewhereRemoved(key) => SpecRunner.storage_elsewhere(program, s, { key: Present(key), value: Absent })
+			StorageElsewhereCleared => SpecRunner.storage_elsewhere(program, s, { key: Absent, value: Absent })
+			LeavePage({ url: raw_url, outcome }) => {
+				url = SpecRunner.serialize_reference(raw_url)
+				if SpecRunner.same_document(s.browser.env.url, raw_url) {
+					return Err("leave-page requires a different document")
+				}
+				asks = s.browser.guard and s.browser.sticky_activation
+				if asks {
+					match outcome {
+						Stay => Ok(s)
+						Leave => SpecRunner.navigate(program, { ..s, browser: { ..s.browser, guard: False } }, url)
+						Unasked => Err("leave-page expected no question but the guard asks")
+					}
+				} else if (outcome == Unasked) SpecRunner.navigate(program, s, url) else Err("leave-page expected a question but the browser does not ask")
+			}
+			ExpectSessionStorage({ key, value }) => {
+				found = s.browser.env.session.find_first(|(name, _)| name == key).map_ok(|(_, text)| text)
+				if (found == Ok(value)) Ok(s) else Err("session storage ${JsonOut.quote(key)} differs: ${Str.inspect(found)}")
+			}
+			ExpectNoSessionStorage(key) => if (s.browser.env.session.any(|(name, _)| name == key)) Err("session storage ${JsonOut.quote(key)} unexpectedly has a value") else Ok(s)
+			ExpectClipboard(text) => if (s.browser.clipboard.exhausted) Err("clipboard observation ordinal exhausted") else if (s.browser.clipboard.text == text) Ok(s) else Err("clipboard text differs")
+			ExpectClipboardHtml(html) => if (s.browser.clipboard.exhausted) Err("clipboard observation ordinal exhausted") else if (s.browser.clipboard.html == html) Ok(s) else Err("clipboard HTML differs")
+			ExpectClipboardWrites(count) => if (s.browser.clipboard.exhausted) Err("clipboard observation ordinal exhausted") else if (s.browser.clipboard.writes == count) Ok(s) else Err("clipboard write count differs: ${s.browser.clipboard.writes.to_str()}")
 			Navigate(url) => SpecRunner.navigate(program, s, url)
 			HistoryBack =>
 				match b.back.last() {
 					Ok(prev) if prev.doc != b.doc => Err("history-back crosses documents, which specs do not model")
-					Ok(prev) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.drop_last(1), fwd: [{ url: b.loc, doc: b.doc }].concat(b.fwd), loc: prev.url } }))
+					Ok(prev) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.drop_last(1), fwd: [{ url: b.env.url, doc: b.doc }].concat(b.fwd), env: { ..b.env, url: prev.url } } }))
 					Err(_) => Err("history-back with no history")
 				}
 			HistoryForward =>
 				match b.fwd.first() {
 					Ok(next) if next.doc != b.doc => Err("history-forward crosses documents, which specs do not model")
-					Ok(next) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, fwd: b.fwd.drop_first(1), back: b.back.append({ url: b.loc, doc: b.doc }), loc: next.url } }))
+					Ok(next) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, fwd: b.fwd.drop_first(1), back: b.back.append({ url: b.env.url, doc: b.doc }), env: { ..b.env, url: next.url } } }))
 					Err(_) => Err("history-forward with no forward entry")
 				}
 			TickInterval(ms) =>
@@ -1157,21 +3161,26 @@ SpecRunner := [].{
 				got = s.work.cleanups.find_first(|(n, _)| n == name).map_ok(|(_, k)| k) ?? 0
 				check(got == count, "cleanup ${JsonOut.quote(name)} ran ${got.to_str()} times, expected ${count.to_str()}")
 			}
+			SetTime(now_ms) => Ok({ ..s, browser: { ..b, env: { ..b.env, now_ms } } })
+			AdvanceTime(duration) => {
+				now_ms = Scm.advance_clock(b.env.now_ms, duration)?
+				Ok({ ..s, browser: { ..b, env: { ..b.env, now_ms } } })
+			}
 			SetOnline(o) => {
 				on = o == Online
-				if on == b.online {
+				if on == b.env.online {
 					Ok(s)
 				} else {
-					s1 = { ..s, browser: { ..b, online: on } }
+					s1 = { ..s, browser: { ..b, env: { ..b.env, online: on } } }
 					Ok(SpecRunner.broadcast(program, s1, |x| x.sub == OnlineSub, [8, SpecRunner.flag_byte(on)]))
 				}
 			}
 			SetVisibility(v) => {
 				vis = v == Visible
-				if vis == b.visible {
+				if vis == b.env.visible {
 					Ok(s)
 				} else {
-					s1 = { ..s, browser: { ..b, visible: vis } }
+					s1 = { ..s, browser: { ..b, env: { ..b.env, visible: vis } } }
 					Ok(SpecRunner.broadcast(program, s1, |x| x.sub == VisibilitySub, [9, SpecRunner.flag_byte(vis)]))
 				}
 			}
@@ -1265,12 +3274,16 @@ SpecRunner := [].{
 	encode_port_reply : Str -> List(U8)
 	encode_port_reply = |json| SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_str([14], json), 0), 0)
 
+	## Select only subscriptions of the named port. Other source families
+	## cannot contribute to a port-subscription assertion.
 	on_port : Sub, Str -> Bool
 	on_port = |sub, port| match sub {
 		PortSub(p, _) => p == port
 		_ => Bool.False
 	}
 
+	## Count registered subscriptions for a port across its arguments.
+	## Message delivery and queued messages remain separate from this source count.
 	port_subscriptions : S(state), Str -> U64
 	port_subscriptions = |s, port| s.browser.subs.count_if(|x| SpecRunner.on_port(x.sub, port))
 
@@ -1278,13 +3291,15 @@ SpecRunner := [].{
 	## terminal `payload`: each leaves the browser's live set, as the runtime
 	## forgets it, and receives it as its last turn.
 	end_port : Program(state), S(state), Str, List(U8) -> Try(S(state), Str)
-	end_port = |program, s, port, payload| {
+	end_port = |program, initial, port, payload| {
+		s = SpecRunner.release_reports(program, initial)
 		b = s.browser
 		ending = b.subs.keep_if(|x| SpecRunner.on_port(x.sub, port))
 		if ending.is_empty() {
 			return Err("no live subscription on port ${JsonOut.quote(port)}")
 		}
-		var $s = { ..s, browser: { ..b, subs: b.subs.keep_if(|x| !SpecRunner.on_port(x.sub, port)) } }
+		report_sources = ending.fold(b.report_sources, |sources, sub| sources.remove(sub.id))
+		var $s = { ..s, browser: { ..b, subs: b.subs.keep_if(|x| !SpecRunner.on_port(x.sub, port)), report_sources } }
 		for x in ending {
 			$s = SpecRunner.deliver(program, $s, x.id, payload)
 		}
@@ -1300,23 +3315,214 @@ SpecRunner := [].{
 	fill = |program, s, loc, v| {
 		i = SpecRunner.need(s.dom, loc)?
 		n = Dom.node(s.dom, i)
-		kind = Dom.attr_of(n, "type")
-		if !(n.tag == "textarea" or (n.tag == "input" and SpecRunner.fillable.contains(kind))) {
+		kind = Dom.input_type(n)
+		if !(Dom.html_tag(n, "textarea") or (Dom.html_tag(n, "input") and SpecRunner.fillable.contains(kind))) {
 			return Err("${Scm.show_loc(loc)} cannot be filled")
 		}
-		if SpecRunner.disabled(n) {
+		if SpecRunner.actually_disabled(s.dom, i) {
 			return Err("${Scm.show_loc(loc)} is disabled")
 		}
 		if kind == "number" and v != "" and !SpecRunner.is_float(v) {
 			return Err("${Scm.show_loc(loc)} cannot hold ${JsonOut.quote(v)}")
 		}
+		SpecRunner.fill_refusal(n, v) ? |why| "${Scm.show_loc(loc)} ${why}"
 		s1 = SpecRunner.move_focus(program, s, i + 1)
-		if v == "" and Dom.attr_of(Dom.node(s1.dom, i), "value") == "" {
+		if v == "" and Dom.live_value(Dom.node(s1.dom, i), "value") == "" {
 			return Ok(s1)
 		}
 		# An input that echoes the held value makes it moot.
 		s2 = if (s1.deferred == Held(v)) { ..s1, deferred: NoValue } else s1
 		Ok(SpecRunner.fire_if(program, SpecRunner.set_attr(s2, i, "value", v), i, "input", v))
+	}
+
+	## Deliver one keyboard phase with the entry selected by the rendered map.
+	## Prevention is captured before the handler can change that rendered map.
+	key_phase : Program(state), S(state), Str, Scm.Key -> (S(state), Bool)
+	key_phase = |program, s, event, key| {
+		i = if (s.focused == 0) s.dom.root else s.focused - 1
+		input = { key: key.key, code: key.code, ctrl: key.ctrl, alt: key.alt, shift: key.shift, meta: key.meta, composing: Bool.False }
+		matched = Dom.key_target(s.dom, i, event, input) ?? return (s, Bool.False)
+		flags = (if (key.ctrl) 1.U8 else 0).bitwise_or(if (key.alt) 2 else 0).bitwise_or(if (key.shift) 4 else 0).bitwise_or(if (key.meta) 8 else 0)
+		heard = matched.heard
+		hflags = (if (heard.ctrl) 1.U8 else 0).bitwise_or(if (heard.alt) 2 else 0).bitwise_or(if (heard.shift) 4 else 0).bitwise_or(if (heard.meta) 8 else 0)
+		payload = SpecRunner.put_str(SpecRunner.put_str([flags], key.key), key.code).append(hflags)
+		(SpecRunner.send(program, s, matched.target.node, matched.target.handler, SpecRunner.put_str(payload, heard.key)), matched.prevent)
+	}
+
+	## A refused default comes from Scm's emitted data, shared with Chrome.
+	key_unmodelled : Dom.Model, U64, Scm.Key -> Bool
+	key_unmodelled = |dom, i, key| {
+		n = Dom.node(dom, i)
+		kind = Dom.input_type(n)
+		text = Dom.html_tag(n, "textarea") or (Dom.html_tag(n, "input") and !Scm.key_control_types.text_input_excluded.contains(kind)) or Dom.content_editable(dom, i)
+		choice = Dom.html_tag(n, "select") or (Dom.html_tag(n, "input") and Scm.key_control_types.choice_input_types.contains(kind))
+		Scm.unmodelled_key_defaults.any(
+			|row| {
+				applies = (row.control == "text" and text) or (row.control == "textarea" and Dom.html_tag(n, "textarea")) or (row.control == "choice" and choice) or (row.control == "link" and SpecRunner.link_href(n).is_ok()) or (row.control == "editable" and Dom.content_editable(dom, i))
+				applies and row.keys.any(
+					|rule| {
+						if rule == "printable" {
+							key.key.to_utf8().len() == 1 and !key.ctrl and !key.meta
+						}
+						else if rule.starts_with("modified:") {
+							(key.ctrl or key.alt or key.shift or key.meta) and key.key == (Str.from_utf8(rule.to_utf8().drop_first(9)) ?? crash "SpecRunner.key_unmodelled: ASCII rule")
+						}
+						else if rule.starts_with("primary:") {
+							(key.ctrl or key.meta) and Dom.key_label(key.key) == Dom.key_label(Str.from_utf8(rule.to_utf8().drop_first(8)) ?? crash "SpecRunner.key_unmodelled: ASCII rule")
+						}
+						else rule == key.key
+					},
+				)
+			},
+		)
+	}
+
+	## DOM order, rather than allocation order, determines sequential focus.
+	focus_order : Dom.Model, U64 -> List(U64)
+	focus_order = |dom, i| {
+		n = Dom.node(dom, i)
+		head = if (SpecRunner.focusable_in(dom, i) and !(Dom.attr_of(n, "tabindex").starts_with("-"))) [i] else []
+		n.kids.fold(head, |out, child| out.concat(SpecRunner.focus_order(dom, child)))
+	}
+
+	## Positive tabindex values precede ordinary DOM order; leaving either
+	## end of the sequence focuses the body as Chrome does.
+	key_tab : Program(state), S(state), Bool -> S(state)
+	key_tab = |program, s, backwards| {
+		modal = s.browser.top_layer.find_last(|i| Dom.node(s.dom, i).shown == Modal)
+		ordered = SpecRunner.focus_order(s.dom, modal ?? s.dom.root).fold([], |out, i| out.append({ index: i, order: out.len(), tab: U64.from_str(Dom.attr_of(Dom.node(s.dom, i), "tabindex")) ?? 0 })).sort_with(
+			|a, b| {
+				if a.tab == b.tab {
+					if (a.order < b.order) Before else if (a.order > b.order) After else Same
+				} else if a.tab == 0 {
+					After
+				} else if b.tab == 0 {
+					Before
+				} else if a.tab < b.tab {
+					Before
+				} else {
+					After
+				}
+			},
+		).map(|entry| entry.index)
+		if ordered.is_empty() {
+			return SpecRunner.move_focus(program, s, 0)
+		}
+		current = ordered.find_first_index(|i| s.focused == i + 1)
+		next = match current {
+			Err(_) => if (backwards) ordered.len() - 1 else 0
+			Ok(at) => if backwards {
+				if (at == 0) ordered.len() else at - 1
+			} else {
+				at + 1
+			}
+		}
+		SpecRunner.move_focus(program, s, ordered.get(next).map_ok(|i| i + 1) ?? 0)
+	}
+
+	## Without a default submit button, HTML submits only when at most one
+	## input in the form is of a kind that blocks implicit submission.
+	implicit_inputs : Dom.Model, U64 -> U64
+	implicit_inputs = |dom, i| {
+		n = Dom.node(dom, i)
+		own = if (Dom.html_tag(n, "input") and ["text", "search", "url", "tel", "email", "password", "date", "month", "week", "time", "datetime-local", "number"].contains(Dom.input_type(n))) 1 else 0
+		n.kids.fold(own, |count, child| count + SpecRunner.implicit_inputs(dom, child))
+	}
+
+	## Keyboard activation raises click without inventing pointer events, then
+	## performs its unprevented control, form or navigation default.
+	key_activate : Program(state), S(state), U64 -> Try(S(state), Str)
+	key_activate = |program, s, i| {
+		if !SpecRunner.attached(s.dom, i) or SpecRunner.actually_disabled(s.dom, i) {
+			return Ok(s)
+		}
+		prevented = SpecRunner.prevents(s.dom, i, "click")
+		next = SpecRunner.fire_if(program, s, i, "click", "")
+		if (prevented) Ok(next) else SpecRunner.default_action(program, next, i)
+	}
+
+	## A press focuses its optional locator, raises down and up, and models
+	## only defaults whose meaning does not need a caret or browser layout.
+	Pressed : { key : Scm.Key, document : U64, down_index : U64, activation_path : List({ node : U64, parent : U64, count : U64 }), prevented : Bool }
+
+	## Pure drivers can take both phases when no browser task needs servicing.
+	press_key : Program(state), S(state), Scm.KeyPress -> Try(S(state), Str)
+	press_key = |program, s, press| {
+		(down, context) = SpecRunner.press_down(program, s, press)?
+		SpecRunner.press_up(program, down, context)
+	}
+
+	## Save only physical press evidence across the browser's intervening tasks.
+	press_down : Program(state), S(state), Scm.KeyPress -> Try((S(state), Pressed), Str)
+	press_down = |program, s0, press| {
+		var $s = match press.target {
+			Focused => s0
+			At(loc) => {
+				i = SpecRunner.need(s0.dom, loc)?
+				if !SpecRunner.reachable(s0, i) {
+					return Err("press target is unreachable: hidden dialog/popover or outside the topmost modal")
+				}
+				if (SpecRunner.focusable_in(s0.dom, i)) SpecRunner.move_focus(program, s0, i + 1) else s0
+			}
+		}
+		key = press.key
+		document = $s.browser.doc
+		down_index = if ($s.focused == 0) $s.dom.root else $s.focused - 1
+		activation_path = SpecRunner.pressed_path($s.dom, down_index)
+		unmodelled = SpecRunner.key_unmodelled($s.dom, down_index, key)
+		(down, prevented) = SpecRunner.key_phase(program, $s, "keydown", key)
+		$s = down
+		if !prevented and unmodelled {
+			return Err("press ${key.key} has an unmodelled browser default; use fill for text input or prevent it with a keymap")
+		}
+		if !prevented {
+			if key.key == "Escape" {
+				$s = SpecRunner.dismiss_ui(program, $s)
+			}
+			else if key.key == "Tab" and !key.ctrl and !key.alt and !key.meta {
+				$s = SpecRunner.key_tab(program, $s, key.shift)
+			}
+			else if key.key == "Enter" {
+				n = Dom.node($s.dom, down_index)
+				if SpecRunner.link_href(n).is_ok() or (!key.ctrl and !key.meta and (Dom.html_tag(n, "button") or (Dom.html_tag(n, "input") and ["button", "submit", "reset"].contains(Dom.input_type(n))))) {
+					$s = SpecRunner.key_activate(program, $s, down_index)?
+				}
+				else if Dom.html_tag(n, "input") and !key.ctrl and !key.meta and ["file", "color"].contains(Dom.input_type(n)) {
+					$s = SpecRunner.key_activate(program, $s, down_index)?
+				}
+				else if Dom.html_tag(n, "input") and !key.ctrl and !key.meta {
+					match SpecRunner.ancestor($s.dom, down_index, |m| Dom.html_tag(m, "form")) {
+						Ok(form) => {
+							button = Dom.find($s.dom, form, |m| (Dom.html_tag(m, "button") and Dom.input_type(m) == "submit") or (Dom.html_tag(m, "input") and Dom.input_type(m) == "submit"))
+							$s = match button {
+								Ok(i) => SpecRunner.key_activate(program, $s, i)?
+								Err(_) => if (SpecRunner.implicit_inputs($s.dom, form) <= 1) SpecRunner.submit_form(program, $s, form)? else $s
+							}
+						}
+						Err(_) => {}
+					}
+				}
+			}
+		}
+		Ok((SpecRunner.drain_focus(program, $s), { key, document, down_index, activation_path, prevented }))
+	}
+
+	## Key-up resolves the live focused element after navigation and native UI tasks.
+	press_up : Program(state), S(state), Pressed -> Try(S(state), Str)
+	press_up = |program, s0, { key, document, down_index, activation_path, prevented }| {
+		var $s = s0
+		up_index = if ($s.focused == 0) $s.dom.root else $s.focused - 1
+		(up, up_prevented) = SpecRunner.key_phase(program, $s, "keyup", key)
+		$s = up
+		# Space arms only the element that received its down. A focus change
+		# or disposal cannot transfer that activation to the keyup target.
+		if key.key == " " and $s.browser.doc == document and !prevented and !up_prevented and up_index == down_index and $s.focused == down_index + 1 and SpecRunner.attached($s.dom, down_index) and activation_path.all(|p| Dom.node($s.dom, p.node).detach_count == p.count) {
+			n = Dom.node($s.dom, up_index)
+			if Dom.html_tag(n, "button") or (Dom.html_tag(n, "input") and ["button", "submit", "reset", "checkbox", "radio"].contains(Dom.input_type(n))) {
+				$s = SpecRunner.key_activate(program, $s, up_index)?
+			}
+		}
+		Ok($s)
 	}
 
 	## A valid floating-point number (HTML): `-? (D+ (. D+)? | . D+) ([eE] [+-]? D+)?`.
@@ -1350,18 +3556,18 @@ SpecRunner := [].{
 	set_checked = |program, s, loc, want| {
 		i = SpecRunner.need(s.dom, loc)?
 		n = Dom.node(s.dom, i)
-		kind = if (n.tag == "input") Dom.attr_of(n, "type") else ""
+		kind = if (Dom.html_tag(n, "input")) Dom.input_type(n) else ""
 		if kind != "checkbox" and kind != "radio" {
 			return Err("${Scm.show_loc(loc)} is not a checkbox or radio button")
 		}
 		if kind == "radio" and !want {
 			return Err("${Scm.show_loc(loc)} is a radio button, which cannot be unchecked")
 		}
-		if (Dom.attr_of(n, "checked") == "true") == want {
+		if (Dom.live_value(n, "checked") == "true") == want {
 			return Ok(s)
 		}
-		s1 = if (SpecRunner.disabled(n)) s else SpecRunner.mouse_click(program, s, i)?
-		now = SpecRunner.find(s1.dom, loc).map_ok(|k| Dom.attr_of(Dom.node(s1.dom, k), "checked") == "true") ?? !want
+		s1 = if (SpecRunner.actually_disabled(s.dom, i)) s else SpecRunner.mouse_click(program, s, i)?
+		now = SpecRunner.find(s1.dom, loc).map_ok(|k| Dom.live_value(Dom.node(s1.dom, k), "checked") == "true") ?? !want
 		if (now == want) Ok(s1) else Err("clicking ${Scm.show_loc(loc)} did not ${if (want) "check" else "uncheck"} it")
 	}
 
@@ -1371,13 +3577,13 @@ SpecRunner := [].{
 	check_on = |s, i| {
 		n = Dom.node(s.dom, i)
 		group = Dom.attr_of(n, "name")
-		s1 = if Dom.attr_of(n, "type") == "radio" and group != "" {
+		s1 = if Dom.input_type(n) == "radio" and group != "" {
 			var $d = s.dom
 			var $k = 0.U64
 			while $k < $d.nodes.len() {
 				m = Dom.node($d, $k)
-				if $k != i and m.tag == "input" and Dom.attr_of(m, "type") == "radio" and Dom.attr_of(m, "name") == group and Dom.attr_of(m, "checked") == "true" {
-					$d = Dom.set_attr_on($d, $k, "checked", "false")
+				if $k != i and Dom.html_tag(m, "input") and Dom.input_type(m) == "radio" and Dom.attr_of(m, "name") == group and Dom.live_value(m, "checked") == "true" {
+					$d = Dom.set_live_on($d, $k, "checked", "false")
 				}
 				$k = $k + 1
 			}
@@ -1388,18 +3594,302 @@ SpecRunner := [].{
 		SpecRunner.set_attr(s1, i, "checked", "true")
 	}
 
-	## A real mouse click on node `i`, in Chrome's order: `mousedown`, then
-	## focus moves (the default action of the press), then `mouseup` and
-	## `click`, then the click's default action unless the dispatched click
-	## handler prevented it (design.md, "The `.scm` spec language").
+	## Default prevention is read from the nearest declaration's policy bits;
+	## a files drop also prevents by its payload kind's rule.
+	prevents : Dom.Model, U64, Str -> Bool
+	prevents = |dom, i, event| SpecRunner.attached(dom, i) and (Dom.target(dom, i, event, Bool.True).map_ok(|target| target.policies.bitwise_and(1) != 0 or (target.kind == 2 and event == "drop")) ?? Bool.False)
+
+	## Only a declared paced pointermove is a report step. Capture changes
+	## routing, while the located node still supplies the zone under the point.
+	paced_move : S(state), Scm.PointerPlace -> Bool
+	paced_move = |s, place| {
+		i = SpecRunner.find(s.dom, place.target) ?? return Bool.False
+		p = s.browser.pointers.get(place.id) ?? SpecRunner.idle_pointer(place.id)
+		target = SpecRunner.pointer_target(s, { pointer: p, target: i })
+		listener = Dom.target(s.dom, target, "pointermove", Bool.True) ?? return Bool.False
+		listener.kind == 3 and listener.policies.bitwise_and(8) != 0
+	}
+
+	## Create an unpressed mouse identity with no target or capture. A real
+	## press supplies the device and policy before any movement is delivered.
+	idle_pointer : U32 -> PointerState
+	idle_pointer = |id| { id, kind: Mouse, button: Main, modifiers: 0, primary: Bool.True, down: 0, capture: 0, moved: Bool.False, suppress_mouse: Bool.False, at: Outside }
+
+	## Honor capture only while that exact model lifetime is attached.
+	## A stale or absent capture falls back to the step’s already-resolved target.
+	pointer_target : S(state), { pointer : PointerState, target : U64 } -> U64
+	pointer_target = |s, { pointer, target }| if (pointer.capture != 0 and SpecRunner.attached(s.dom, pointer.capture - 1)) pointer.capture - 1 else target
+
+	## A centre inside somebody else's zone has no native geometry. Explicit
+	## percentages name that zone directly; Outside needs no measured position.
+	pointer_point : Dom.Model, { target : U64, at : Scm.PointerPoint } -> Try(PointerAt, Str)
+	pointer_point = |dom, { target, at }| match (Dom.zone_of(dom, target), at) {
+		(Err(_), Centre) => Ok(Outside)
+		(Err(_), Percent(_)) => Err("give :at only for a locator in a pointer zone")
+		(Ok(zone), Centre) if zone.index != target => Err("LOC lies in zone ${zone.key}; give :at in that zone with the pointer steps")
+		(Ok(zone), Centre) => Ok(In({ zone: zone.key, x: 5000, y: 5000 }))
+		(Ok(zone), Percent({ x, y })) => Ok(In({ zone: zone.key, x: x * 100, y: y * 100 }))
+	}
+
+	## Encode the shared pointer button discriminant and held-buttons mask.
+	## Middle and secondary use different mask ordering from the discriminant.
+	pointer_button : [Main, Middle, Secondary] -> { code : U8, held : U16 }
+	pointer_button = |button| match button {
+		Main => { code: 1, held: 1 }
+		Middle => { code: 2, held: 4 }
+		Secondary => { code: 3, held: 2 }
+	}
+
+	## Encode the pointer kind independently of Core's decoder. A cancelled
+	## pointer always carries Outside, and only a press/release changes a button.
+	pointer_payload : { pointer : PointerState, event : Str, at : PointerAt } -> List(U8)
+	pointer_payload = |{ pointer, event, at }| {
+		button = SpecRunner.pointer_button(pointer.button)
+		kind : U8
+		kind = match pointer.kind {
+			Mouse => 0
+			Pen => 1
+			Touch => 2
+		}
+		held = if (event == "pointerup" or event == "pointercancel" or pointer.down == 0) 0.U16 else button.held
+		bytes = SpecRunner.put_u32([], pointer.id).concat([kind, if (event == "pointerdown" or event == "pointerup") button.code else 0, held.bitwise_and(255).to_u8_wrap(), held.shr_zf_wrap(8).to_u8_wrap(), pointer.modifiers, if (pointer.primary) 1 else 0])
+		match at {
+			Outside => bytes.append(0)
+			In({ zone, x, y }) => SpecRunner.put_str(bytes.concat([1, x.bitwise_and(255).to_u8_wrap(), x.shr_zf_wrap(8).to_u8_wrap(), y.bitwise_and(255).to_u8_wrap(), y.shr_zf_wrap(8).to_u8_wrap()]), zone)
+		}
+	}
+
+	## Capture belongs to the declaring element, even when a row's routing id
+	## is on an ancestor. A paced move shares ordinary ingress and pruning.
+	fire_pointer : Program(state), S(state), { target : U64, pointer : PointerState, event : Str, at : PointerAt } -> S(state)
+	fire_pointer = |program, s, { target, pointer, event, at }| {
+		if !SpecRunner.attached(s.dom, target) {
+			return s
+		}
+		listener = Dom.target(s.dom, target, event, Bool.True) ?? return s
+		if listener.kind == 1 or listener.kind == 2 {
+			return SpecRunner.send(program, s, listener.node, listener.handler, [])
+		}
+		captured = if (event == "pointerdown" and listener.policies.bitwise_and(4) != 0) { ..pointer, capture: listener.declaring + 1 } else pointer
+		b = s.browser
+		ready = if (event == "pointerdown") { ..s, browser: { ..b, pointers: b.pointers.insert(pointer.id, captured) } } else s
+		payload = SpecRunner.pointer_payload({ pointer: captured, event, at })
+		if listener.policies.bitwise_and(8) != 0 {
+			SpecRunner.queue_report(program, { state: ready, source: Pointer({ element: listener.declaring, handler: listener.handler, pointer: pointer.id }), node: listener.node, handler: listener.handler, owner: Dom.lookup(s.dom, listener.node), payload })
+		} else {
+			SpecRunner.send(program, ready, listener.node, listener.handler, payload)
+		}
+	}
+
+	## A press establishes the physical pointer before its handler runs. The
+	## browser driver has one non-touch channel or at most sixteen contacts.
+	pointer_down : Program(state), S(state), Scm.PointerPress -> Try(S(state), Str)
+	pointer_down = |program, s, press| {
+		if s.browser.pointers.contains(press.id) {
+			return Err("pointer ${press.id.to_str()} is already down")
+		}
+		if s.browser.pointers.values().any(|p| (p.kind == Touch) != (press.kind == Touch)) {
+			return Err("touch and mouse or pen gestures cannot be active together")
+		}
+		if press.kind != Touch and s.browser.pointers.values().any(|p| p.kind != Touch) {
+			return Err("only one mouse or pen pointer may be down")
+		}
+		if press.kind == Touch and s.browser.pointers.values().count_if(|p| p.kind == Touch) >= 16 {
+			return Err("at most 16 active touch pointers are supported by the browser driver")
+		}
+		if press.kind != Mouse and press.id == 1 {
+			return Err("pointer id 1 is reserved for the mouse")
+		}
+		if press.kind == Mouse and press.id != 1 {
+			return Err("the mouse pointer id is 1")
+		}
+		i = SpecRunner.need(s.dom, press.target)?
+		at = SpecRunner.pointer_point(s.dom, { target: i, at: press.at })?
+		prevented = SpecRunner.prevents(s.dom, i, "pointerdown")
+		pointer = { id: press.id, kind: press.kind, button: press.button, modifiers: press.modifiers, primary: !s.browser.pointers.values().any(|p| p.kind == press.kind), down: i + 1, capture: if (press.kind == Touch) i + 1 else 0, moved: Bool.False, suppress_mouse: prevented, at }
+		b = s.browser
+		s1 = SpecRunner.fire_pointer(program, { ..s, browser: { ..b, pointers: b.pointers.insert(press.id, pointer), touch_multi: if (press.kind == Touch) b.pointers.values().any(|p| p.kind == Touch) or b.touch_multi else b.touch_multi } }, { target: i, pointer, event: "pointerdown", at })
+		if press.kind == Touch or prevented {
+			return Ok(s1)
+		}
+		mouse_prevented = SpecRunner.prevents(s1.dom, i, "mousedown")
+		s2 = SpecRunner.fire_if(program, s1, i, "mousedown", "")
+		Ok(if (mouse_prevented) s2 else SpecRunner.move_focus(program, s2, SpecRunner.focus_target(s2.dom, i)))
+	}
+
+	## Hit-test data comes from the located zone even when capture sends the
+	## event to a different element. The frozen result can then be paced.
+	pointer_move : Program(state), S(state), Scm.PointerPlace -> Try(S(state), Str)
+	pointer_move = |program, s, place| {
+		pointer = match s.browser.pointers.get(place.id) {
+			Ok(p) => p
+			Err(_) if place.id == 1 => SpecRunner.idle_pointer(1)
+			Err(_) => return Err("pointer ${place.id.to_str()} is not down")
+		}
+		i = SpecRunner.need(s.dom, place.target)?
+		at = SpecRunner.pointer_point(s.dom, { target: i, at: place.at })?
+		if pointer.kind == Touch and at == pointer.at {
+			return Err("a touch move must leave the tap slop")
+		}
+		next_pointer = { ..pointer, at, moved: Bool.True }
+		b = s.browser
+		stored = if (pointer.down == 0) s else { ..s, browser: { ..b, pointers: b.pointers.insert(pointer.id, next_pointer) } }
+		target = SpecRunner.pointer_target(stored, { pointer: next_pointer, target: i })
+		next = SpecRunner.fire_pointer(program, stored, { target, pointer: next_pointer, event: "pointermove", at })
+		Ok(if (pointer.kind == Touch or pointer.suppress_mouse) next else SpecRunner.fire_if(program, next, target, "mousemove", ""))
+	}
+
+	## Snapshot only a pressed element's ancestor path. Counts come from MOVE,
+	## REMOVE and CLEAR, so detecting a dislodged press never retains a DOM copy.
+	pressed_path : Dom.Model, U64 -> List({ node : U64, parent : U64, count : U64 })
+	pressed_path = |dom, i| {
+		var $at = i + 1
+		var $out = []
+		while $at != 0 {
+			n = Dom.node(dom, $at - 1)
+			$out = $out.append({ node: $at - 1, parent: n.parent, count: n.detach_count })
+			$at = n.parent
+		}
+		$out
+	}
+
+	## Find the click target shared by press and release paths. Only those
+	## ancestor chains are traversed; unrelated subtrees are not searched.
+	common_ancestor : Dom.Model, { pressed : U64, released : U64 } -> U64
+	common_ancestor = |dom, { pressed, released }| {
+		parents = SpecRunner.pressed_path(dom, pressed).fold(Dict.empty(), |found, p| found.insert(p.node, {}))
+		var $at = released + 1
+		while $at != 0 {
+			if parents.contains($at - 1) {
+				return $at - 1
+			}
+			$at = Dom.node(dom, $at - 1).parent
+		}
+		dom.root
+	}
+
+	## A release follows any older report and uses the capture that is still
+	## live, rather than a recycled route or a disposed pressed element.
+	pointer_up : Program(state), S(state), Scm.PointerPlace -> Try(S(state), Str)
+	pointer_up = |program, s, place| {
+		pointer = s.browser.pointers.get(place.id) ? |_| "pointer ${place.id.to_str()} is not down"
+		i = SpecRunner.need(s.dom, place.target)?
+		at = SpecRunner.pointer_point(s.dom, { target: i, at: place.at })?
+		SpecRunner.pointer_up_at(program, s, { pointer, target: i, at })
+	}
+
+	## Complete a release at an already-resolved point, including the pointer
+	## sequence of a click whose initial target may since have been disposed.
+	pointer_up_at : Program(state), S(state), { pointer : PointerState, target : U64, at : PointerAt } -> Try(S(state), Str)
+	pointer_up_at = |program, s, { pointer, target: i, at }| {
+		target = SpecRunner.pointer_target(s, { pointer, target: i })
+		had_capture = pointer.capture != 0 and SpecRunner.attached(s.dom, pointer.capture - 1)
+		pressed = if (had_capture) pointer.capture - 1 else pointer.down - 1
+		path = SpecRunner.pressed_path(s.dom, pressed)
+		dismissed = if (pointer.button == Main) SpecRunner.light_dismiss(s, pointer.down - 1, i) else s
+		after_up = SpecRunner.fire_pointer(program, dismissed, { target, pointer, event: "pointerup", at })
+		b = after_up.browser
+		remaining = b.pointers.remove(pointer.id)
+		touch_multi = b.touch_multi
+		released = { ..after_up, browser: { ..b, pointers: remaining, touch_multi: if (remaining.values().any(|p| p.kind == Touch)) touch_multi else Bool.False } }
+		if pointer.kind == Touch and (pointer.moved or touch_multi) {
+			return Ok(released)
+		}
+		dislodged = path.find_first(|p| Dom.node(released.dom, p.node).detach_count != p.count)
+		mouse_target = match dislodged {
+			Ok(p) => if (p.parent == 0) released.dom.root else p.parent - 1
+			Err(_) => target
+		}
+		var $next = released
+		if pointer.kind == Touch and !pointer.suppress_mouse {
+			$next = SpecRunner.fire_if(program, $next, mouse_target, "mousemove", "")
+			mouse_prevented = SpecRunner.prevents($next.dom, mouse_target, "mousedown")
+			$next = SpecRunner.fire_if(program, $next, mouse_target, "mousedown", "")
+			if !mouse_prevented {
+				$next = SpecRunner.move_focus(program, $next, SpecRunner.focus_target($next.dom, mouse_target))
+			}
+		}
+		if !pointer.suppress_mouse {
+			$next = SpecRunner.fire_if(program, $next, mouse_target, "mouseup", "")
+		}
+		if dislodged.is_ok() {
+			return Ok($next)
+		}
+		click_target = if (had_capture) pressed else SpecRunner.common_ancestor($next.dom, { pressed: pointer.down - 1, released: i })
+		event = if (pointer.button == Main) "click" else "auxclick"
+		prevented = SpecRunner.prevents($next.dom, click_target, event)
+		$next = SpecRunner.fire_if(program, $next, click_target, event, "")
+		if (prevented or pointer.button != Main) Ok($next) else SpecRunner.default_action(program, $next, click_target)
+	}
+
+	## Light dismissal uses both actual press and release targets, never layout guesses.
+	light_dismiss : S(state), U64, U64 -> S(state)
+	light_dismiss = |s0, down, up| {
+		var $s = s0
+		for i in s0.browser.top_layer {
+			if Dom.node($s.dom, i).shown == Popover and Dom.enum_attr(Dom.node($s.dom, i), "popover") == "auto" and !SpecRunner.inside($s.dom, down, i) and !SpecRunner.inside($s.dom, up, i) {
+				$s = SpecRunner.change_shown($s, i, Hidden)
+			}
+		}
+		$s
+	}
+
+	## CDP cancellation ends its whole touch set, so a named cancel is valid
+	## only while that one contact remains. Nothing is synthesized for a subset.
+	pointer_cancel : Program(state), S(state), U32 -> Try(S(state), Str)
+	pointer_cancel = |program, s, id| {
+		pointer = s.browser.pointers.get(id) ? |_| "pointer ${id.to_str()} is not down"
+		if pointer.kind != Touch {
+			return Err("pointer-cancel requires a touch pointer")
+		}
+		if s.browser.pointers.values().count_if(|p| p.kind == Touch) != 1 {
+			return Err("pointer-cancel cannot cancel only the named touch while other touches are down")
+		}
+		target = SpecRunner.pointer_target(s, { pointer, target: pointer.down - 1 })
+		next = SpecRunner.fire_pointer(program, s, { target, pointer, event: "pointercancel", at: Outside })
+		b = next.browser
+		Ok({ ..next, browser: { ..b, pointers: b.pointers.remove(id), touch_multi: Bool.False } })
+	}
+
+	## A click delivers Chrome's pointer and mouse sequence at the destination.
+	## Preventing pointerdown suppresses compatibility mouse press/release and
+	## its focus change; pointerup and click still arrive.
+	## Refresh a click's pointer-kind centre contract at every actual phase:
+	## earlier handlers may have installed a new zone or pointer declaration.
+	click_pointer_point : Dom.Model, { located : U64, routing : U64, event : Str } -> Try(PointerAt, Str)
+	click_pointer_point = |dom, { located, routing, event }| {
+		if !SpecRunner.attached(dom, located) or !SpecRunner.attached(dom, routing) {
+			return Ok(Outside)
+		}
+		listener = Dom.target(dom, routing, event, Bool.True) ?? return Ok(Outside)
+		if (listener.kind == 3) SpecRunner.pointer_point(dom, { target: located, at: Centre }) else Ok(Outside)
+	}
+
+	## Deliver the complete click sequence through the same typed pointer
+	## dispatch as explicit gestures, rechecking each phase against the live DOM.
 	mouse_click : Program(state), S(state), U64 -> Try(S(state), Str)
 	mouse_click = |program, s0, i| {
-		s1 = SpecRunner.fire_if(program, s0, i, "mousedown", "")
-		s2 = SpecRunner.move_focus(program, s1, SpecRunner.focus_target(s1.dom, i))
-		s3 = SpecRunner.fire_if(program, s2, i, "mouseup", "")
-		prevented = Dom.prevents(s3.dom, i, "click")
-		s4 = SpecRunner.fire_if(program, s3, i, "click", "")
-		if (prevented) Ok(s4) else SpecRunner.default_action(program, s4, i)
+		if !s0.browser.pointers.is_empty() {
+			return Err("a click cannot start while a pointer gesture is down")
+		}
+		at_move = SpecRunner.click_pointer_point(s0.dom, { located: i, routing: i, event: "pointermove" })?
+		idle = SpecRunner.idle_pointer(1)
+		s1 = SpecRunner.fire_pointer(program, s0, { target: i, pointer: idle, event: "pointermove", at: at_move })
+		s2 = SpecRunner.fire_if(program, s1, i, "mousemove", "")
+		at_down = SpecRunner.click_pointer_point(s2.dom, { located: i, routing: i, event: "pointerdown" })?
+		press_prevented = SpecRunner.prevents(s2.dom, i, "pointerdown")
+		pointer = { ..idle, down: i + 1, suppress_mouse: press_prevented, at: at_down }
+		b = s2.browser
+		s3 = SpecRunner.fire_pointer(program, { ..s2, browser: { ..b, pointers: b.pointers.insert(1, pointer) } }, { target: i, pointer, event: "pointerdown", at: at_down })
+		s4 = if (press_prevented or !SpecRunner.attached(s3.dom, i)) s3 else {
+			mouse_prevented = SpecRunner.prevents(s3.dom, i, "mousedown")
+			pressed = SpecRunner.fire_if(program, s3, i, "mousedown", "")
+			if (mouse_prevented) pressed else SpecRunner.move_focus(program, pressed, SpecRunner.focus_target(pressed.dom, i))
+		}
+		captured = s4.browser.pointers.get(1) ?? pointer
+		routing = SpecRunner.pointer_target(s4, { pointer: captured, target: i })
+		at_up = SpecRunner.click_pointer_point(s4.dom, { located: i, routing, event: "pointerup" })?
+		SpecRunner.pointer_up_at(program, s4, { pointer: captured, target: i, at: at_up })
 	}
 
 	## The browser's default action for a click on node `i`: a checkbox
@@ -1407,35 +3897,64 @@ SpecRunner := [].{
 	## button submits its form, and a link navigates.
 	default_action : Program(state), S(state), U64 -> Try(S(state), Str)
 	default_action = |program, s, i| {
+		if !SpecRunner.attached(s.dom, i) {
+			return Ok(s)
+		}
+		match s.fault {
+			Poisoned(message) => return Err(message)
+			Healthy => {}
+		}
 		n = Dom.node(s.dom, i)
-		kind = Dom.attr_of(n, "type")
-		on_value = if (Dom.attr_of(n, "value") == "") "on" else Dom.attr_of(n, "value")
-		if n.tag == "input" and kind == "checkbox" {
-			want = Dom.attr_of(n, "checked") != "true"
+		kind = Dom.input_type(n)
+		on_value = SpecRunner.value_of(s.dom, i)
+		if Dom.html_tag(n, "input") and kind == "checkbox" {
+			want = Dom.live_value(n, "checked") != "true"
 			s1 = SpecRunner.fire_if(program, SpecRunner.set_attr(s, i, "checked", SpecRunner.bool_str(want)), i, "input", on_value)
 			Ok(SpecRunner.fire_if(program, s1, i, "change", SpecRunner.bool_str(want)))
-		} else if n.tag == "input" and kind == "radio" {
-			if Dom.attr_of(n, "checked") == "true" {
+		} else if Dom.html_tag(n, "input") and kind == "radio" {
+			if Dom.live_value(n, "checked") == "true" {
 				Ok(s)
 			} else {
 				s1 = SpecRunner.fire_if(program, SpecRunner.check_on(s, i), i, "input", on_value)
 				Ok(SpecRunner.fire_if(program, s1, i, "change", "true"))
 			}
-		} else if (n.tag == "button" and (kind == "" or kind == "submit")) or (n.tag == "input" and kind == "submit") {
-			match SpecRunner.ancestor(s.dom, i, |m| m.tag == "form") {
-				Ok(form) => Ok(SpecRunner.submit_form(program, s, form))
+		} else if (Dom.html_tag(n, "button") and kind == "submit") or (Dom.html_tag(n, "input") and kind == "submit") {
+			match SpecRunner.ancestor(s.dom, i, |m| Dom.html_tag(m, "form")) {
+				Ok(form) => SpecRunner.submit_form(program, s, form)
 				Err(_) => Ok(s)
 			}
 		} else {
-			match SpecRunner.ancestor(s.dom, i, |m| m.tag == "a" and Dom.attr_of(m, "href") != "") {
+			match SpecRunner.ancestor(s.dom, i, |m| SpecRunner.link_href(m).is_ok()) {
 				Ok(a) => {
-					href = Dom.attr_of(Dom.node(s.dom, a), "href")
-					url = SpecRunner.resolve(s.browser.loc, href) ? |_| "the click navigates to ${href}, which leaves the app"
+					href = SpecRunner.link_href(Dom.node(s.dom, a)) ?? ""
+					url = SpecRunner.resolve_target(s.browser.env.url, href) ? |problem|
+						match problem {
+							External => "the click navigates to ${href}, which leaves the app"
+							Unmodelled(why) => "unmodelled: the click navigates to ${href}, which holds ${why}; the native runner's location model does not resolve it"
+						}
 					SpecRunner.navigate(program, s, url)
 				}
 				Err(_) => Ok(s)
 			}
 		}
+	}
+
+	## The first node index, depth-first from node `i` (itself included),
+	## that satisfies `pred`, for a test that needs the node's ancestors.
+	find_index : Dom.Model, U64, (U64 -> Bool) -> Try(U64, [NotFound])
+	find_index = |dom, i, pred| {
+		if pred(i) {
+			return Ok(i)
+		}
+		for k in Dom.node(dom, i).kids {
+			match SpecRunner.find_index(dom, k, pred) {
+				Ok(found) => {
+					return Ok(found)
+				}
+				Err(_) => {}
+			}
+		}
+		Err(NotFound)
 	}
 
 	## The nearest node at or above node `i` that satisfies `pred`.
@@ -1453,31 +3972,39 @@ SpecRunner := [].{
 
 	## Submit form `i` as `requestSubmit` does: a form whose controls are not
 	## all valid fires no `submit`.
-	submit_form : Program(state), S(state), U64 -> S(state)
-	submit_form = |program, s, i| if (SpecRunner.form_valid(s.dom, i)) SpecRunner.fire_if(program, s, i, "submit", "") else s
+	submit_form : Program(state), S(state), U64 -> Try(S(state), Str)
+	submit_form = |program, s, i| {
+		SpecRunner.unmodelled_constraint(s.dom, i)?
+		Ok(if (SpecRunner.form_valid(s.dom, i)) SpecRunner.fire_if(program, s, i, "submit", "") else s)
+	}
 
 	## Constraint validation over the enabled controls inside form `i`: a
 	## `required` control must have a value (a checkbox must be checked), an
 	## email field a valid address, and a number field a value within its
 	## `min` and `max`.
 	form_valid : Dom.Model, U64 -> Bool
-	form_valid = |dom, i| Dom.find(dom, i, |n| SpecRunner.invalid(n)).is_err()
+	form_valid = |dom, i| SpecRunner.find_index(dom, i, |k| SpecRunner.invalid(dom, k)).is_err()
 
-	invalid : Dom.DNode -> Bool
-	invalid = |n| {
-		control = n.tag == "input" or n.tag == "textarea" or n.tag == "select"
-		if !control or SpecRunner.disabled(n) {
+	## Apply the explicitly modeled required, email and numeric-range rules
+	## to the controls that take part in validation: not disabled (through a
+	## field set too), not read-only, not a button or hidden input. Other HTML
+	## constraints are refused before this (`unmodelled_constraint`).
+	invalid : Dom.Model, U64 -> Bool
+	invalid = |dom, i| {
+		n = Dom.node(dom, i)
+		if !SpecRunner.validated_control(n) or SpecRunner.actually_disabled(dom, i) {
 			Bool.False
 		} else {
-			kind = Dom.attr_of(n, "type")
-			v = Dom.attr_of(n, "value")
-			missing = if (kind == "checkbox" or kind == "radio") Dom.attr_of(n, "checked") != "true" else v == ""
+			kind = Dom.input_type(n)
+			v = Dom.live_value(n, "value")
+			missing = if (kind == "checkbox" or kind == "radio") Dom.live_value(n, "checked") != "true" else v == ""
 			bound = |name, out_of_range|
 				match (F64.from_str(Dom.attr_of(n, name)), F64.from_str(v)) {
 					(Ok(limit), Ok(x)) => out_of_range(x, limit)
 					_ => Bool.False
 				}
-			(SpecRunner.flag_on(n, "required") and missing)
+			applies = !Dom.html_tag(n, "input") or SpecRunner.required_types.contains(kind)
+			(applies and SpecRunner.flag_on(n, "required") and missing)
 				or (kind == "email" and v != "" and !SpecRunner.is_email(v))
 				or (kind == "number" and v != "" and (bound("min", |x, m| x < m) or bound("max", |x, m| x > m)))
 		}
@@ -1500,36 +4027,124 @@ SpecRunner := [].{
 			_ => Bool.False
 		}
 
+	## Recognize ASCII letters and digits for the native email-validation
+	## rule; bytes outside that set do not gain ASCII letter meaning.
 	alnum : U8 -> Bool
 	alnum = |c| (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')
+
+	## Apply Chrome's path, special-query and fragment percent-encode sets
+	## to a one-origin location. Existing escapes are kept. This is not a
+	## URL parser: dot segments, backslashes and hosts are not modelled, and
+	## a reference that needs them is refused before it gets here
+	## (`Scm.unmodelled_location`). The sets are Chrome's as measured, which
+	## add `|` to WHATWG's path set; the engine's `Url` module percent-encodes
+	## its own URLs separately (`platform/Url.roc`, `percent_encode`), and
+	## this oracle deliberately shares none of that code.
+	## Input preprocessing trims C0/space edges and removes tabs, LF and CR
+	## globally before applying the three component-specific sets. Empty
+	## query/fragment delimiters are omitted, as location.search/hash report.
+	serialize_location : Str -> Str
+	serialize_location = |url| {
+		reference = SpecRunner.serialize_reference(url)
+		fragment_parts = reference.split_on("#")
+		query_parts = (fragment_parts.first() ?? "").split_on("?")
+		path = query_parts.first() ?? ""
+		query = Str.join_with(query_parts.drop_first(1), "?")
+		fragment = Str.join_with(fragment_parts.drop_first(1), "#")
+		"${path}${if (query.is_empty()) "" else "?${query}"}${if (fragment.is_empty()) "" else "#${fragment}"}"
+	}
+
+	## Retain empty component delimiters in the browser's stored reference.
+	## In particular an empty query differs from no query for document identity,
+	## though location.search reports both as empty. Only reporting drops them.
+	serialize_reference : Str -> Str
+	serialize_reference = |url| {
+		hex = "0123456789ABCDEF".to_utf8()
+		var $part = Path
+		var $bytes = []
+		for byte in Scm.location_input(url).to_utf8() {
+			if byte == '#' and $part != Fragment {
+				$part = Fragment
+				$bytes = $bytes.append(byte)
+			} else if byte == '?' and $part == Path {
+				$part = Query
+				$bytes = $bytes.append(byte)
+			} else {
+				encoded = byte <= ' ' or byte > '~' or match $part {
+					Path => ['"', '<', '>', '^', '`', '{', '|', '}'].contains(byte)
+					Query => ['"', '<', '>', '\''].contains(byte)
+					Fragment => ['"', '<', '>', '`'].contains(byte)
+				}
+				if encoded {
+					$bytes = $bytes.append('%').append(hex.get((byte / 16).to_u64()) ?? crash "URL high nibble").append(hex.get((byte % 16).to_u64()) ?? crash "URL low nibble")
+				} else {
+					$bytes = $bytes.append(byte)
+				}
+			}
+		}
+		Str.from_utf8($bytes) ?? crash "URL serialization produces ASCII"
+	}
 
 	## `url` resolved against `base`, both path-absolute: a fragment, a query or
 	## an absolute path; a relative path resolves against `base`'s directory.
 	## A URL with a scheme or an authority leaves the app.
-	resolve : Str, Str -> Try(Str, [External])
-	resolve = |base, url| {
+	resolve : Str, Str -> Try(Str, [External, Unmodelled(Str)])
+	resolve = |base, url| Ok(SpecRunner.serialize_location(SpecRunner.resolve_target(base, url)?))
+
+	## Resolve a reference while retaining empty component delimiters: an
+	## explicit empty fragment still selects same-document navigation even
+	## though the reported location omits its hash.
+	## A reference with a scheme (`mailto:`, `https:`) or an authority leaves
+	## the app; one whose path needs a backslash or a dot segment read is
+	## `Unmodelled`, never guessed (`Scm.unmodelled_location`).
+	resolve_target : Str, Str -> Try(Str, [External, Unmodelled(Str)])
+	resolve_target = |base, raw_url| {
+		url = Scm.location_input(raw_url)
+		if Scm.has_scheme(url) {
+			return Err(External)
+		}
+		match Scm.unmodelled_location(url) {
+			Ok({}) => {}
+			Err(OtherHost) => return Err(External)
+			Err(Unmodelled(why)) => return Err(Unmodelled(why))
+		}
 		path_q = SpecRunner.before(base, "#")
 		path = SpecRunner.before(path_q, "?")
-		if url.contains("://") or url.starts_with("//") {
-			Err(External)
+		resolved = if url.is_empty() {
+			path_q
 		} else if url.starts_with("#") {
-			Ok("${path_q}${url}")
+			"${path_q}${url}"
 		} else if url.starts_with("?") {
-			Ok("${path}${url}")
+			"${path}${url}"
 		} else if url.starts_with("/") {
-			Ok(url)
+			url
 		} else {
 			dir = match path.split_on("/").drop_last(1) {
 				[] => ""
 				parts => Str.join_with(parts, "/")
 			}
-			Ok("${dir}/${url}")
+			"${dir}/${url}"
 		}
+		Ok(resolved)
 	}
 
 	## A history URL the app pushed or replaced: it stays in the document.
-	resolve_in_document : Str, Str -> Str
-	resolve_in_document = |base, url| SpecRunner.resolve(base, url) ?? crash "contract: the app pushed ${url}, which leaves the app"
+	## The History API keeps the current URL for an exactly empty argument;
+	## a nonempty argument that preprocesses to empty is instead resolved.
+	## A URL that leaves the app, or one the location model cannot resolve as
+	## Chrome would, is the step's failure, with its message: the app's data
+	## decides it, so it is never a crash of the runner.
+	resolve_in_document : Str, Str -> Try(Str, Str)
+	resolve_in_document = |base, url|
+		if url.is_empty() {
+			Ok(base)
+		} else {
+			match SpecRunner.resolve_target(base, url) {
+				Ok(target) => Ok(SpecRunner.serialize_reference(target))
+				Err(External) => Err("contract: the app pushed ${JsonOut.quote(url)}, which leaves the app")
+				Err(Unmodelled(why)) => Err("unmodelled: the app pushed ${JsonOut.quote(url)}, which holds ${why}; the native runner's location model does not resolve it")
+			}
+		}
 
 	## The part of `s` before the first `sep`.
 	before : Str, Str -> Str
@@ -1538,21 +4153,31 @@ SpecRunner := [].{
 	## The HTML same-document rule: `to` has a fragment and differs from
 	## `from` only in it.
 	same_document : Str, Str -> Bool
-	same_document = |from, to| to.contains("#") and SpecRunner.before(from, "#") == SpecRunner.before(to, "#")
+	same_document = |from, to| Scm.location_input(to).contains("#") and SpecRunner.before(SpecRunner.serialize_reference(from), "#") == SpecRunner.before(SpecRunner.serialize_reference(to), "#")
 
 	## Navigate to `url` as a user would: within the document, a new history
 	## entry and a popstate; otherwise the app mounts afresh at `url` in a new
 	## document, with the same local storage, connectivity and visibility.
 	navigate : Program(state), S(state), Str -> Try(S(state), Str)
-	navigate = |program, s, url| {
+	navigate = |program, s, raw_url| {
+		url = SpecRunner.serialize_reference(raw_url)
 		b = s.browser
-		entry = { url: b.loc, doc: b.doc }
-		if SpecRunner.same_document(b.loc, url) {
-			Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.append(entry), loc: url, fwd: [] } }))
+		entry = { url: b.env.url, doc: b.doc }
+		if SpecRunner.same_document(b.env.url, raw_url) {
+			Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.append(entry), env: { ..b.env, url }, fwd: [] } }))
 		} else {
-			s1 = SpecRunner.mount_in(program, { url, storage: b.storage, online: b.online, visible: b.visible, storage_available: b.storage_available })
+			if b.guard and b.sticky_activation {
+				return Err("guarded cross-document navigation must use leave-page")
+			}
+			if !b.pointers.is_empty() {
+				return Err("cross-document navigation while a pointer is down")
+			}
+			if b.reports.held {
+				return Err("cross-document navigation while reports are held")
+			}
+			s1 = SpecRunner.mount_config(program, Scm.next_document({ ..b.env, url })?, b.settings)
 			b1 = s1.browser
-			Ok({ ..s1, mark: s.mark, browser: { ..b1, doc: b.doc + 1, back: b.back.append(entry), fwd: [], files: b.files, given: b.given, max_output: b.max_output } })
+			Ok({ ..s1, mark: s.mark, browser: { ..b1, doc: b.doc + 1, sticky_activation: b.sticky_activation, back: b.back.append(entry), fwd: [], files: b.files, given: b.given, max_output: b.max_output } })
 		}
 	}
 
@@ -1571,22 +4196,27 @@ SpecRunner := [].{
 		$out
 	}
 
-	## How many files a file step gives the app.
-	file_count : Scm.Op -> Try(U64, [NoFiles])
-	file_count = |op|
-		match op {
-			ChooseFiles(_, names) => Ok(names.len())
-			DropFiles(_, names) => Ok(names.len())
-			PasteFiles(_, names) => Ok(names.len())
-			_ => Err(NoFiles)
+	## Only a files declaration stages handles. A text declaration, or no
+	## listener, leaves the selected browser files outside the Roc instance.
+	file_count : Dom.Model, Scm.Op -> Try(U64, [NoFiles])
+	file_count = |dom, op| {
+		(loc, event, count) = match op {
+			ChooseFiles(target, names) => (target, "change", names.len())
+			DropFiles(target, names) => (target, "drop", names.len())
+			PasteFiles(target, names) => (target, "paste", names.len())
+			_ => return Err(NoFiles)
 		}
+		i = SpecRunner.find(dom, loc) ?? return Ok(0)
+		declaration = Dom.target(dom, i, event, Bool.True) ?? return Ok(0)
+		Ok(if (declaration.kind == 2) count else 0)
+	}
 
 	## `choose-files`, `drop-files` and `paste-files`: the user gives the app
 	## the named setup files, as the browser's `change` on a file input,
 	## `drop` or `paste` event (design.md, "Files"). `handles` are the
 	## handles the host minted, as many as it had room for; the rest are
 	## refused, as the record says. The located element (or, for a drop or a
-	## paste, an ancestor) must have a `:files` handler for the event, and a
+	## paste, an ancestor) supplies the nearest declaration for the event, and a
 	## file input must take as many files as are chosen.
 	give_files : Program(state), S(state), Scm.Op, List(Box(U64)) -> Try(S(state), Str)
 	give_files = |program, s, op, handles| {
@@ -1598,24 +4228,47 @@ SpecRunner := [].{
 		}
 		dom = s.dom
 		i = SpecRunner.need(dom, loc)?
+		if !SpecRunner.drawn(dom, i) {
+			return Err(SpecRunner.unrendered_message(Scm.show_loc(loc)))
+		}
+		if !SpecRunner.reachable(s, i) {
+			return Err("${Scm.show_loc(loc)} is unreachable: hidden dialog/popover or outside the topmost modal")
+		}
 		n = Dom.node(dom, i)
 		if ev == "change" {
-			if n.tag != "input" or Dom.attr_of(n, "type") != "file" {
+			if !Dom.is_file_input(n) {
 				return Err("${Scm.show_loc(loc)} is not a file input")
 			}
-			if SpecRunner.disabled(n) {
+			if SpecRunner.actually_disabled(dom, i) {
 				return Err("${Scm.show_loc(loc)} is disabled")
 			}
-			if names.len() > 1 and Dom.attr_of(n, "multiple") == "" {
+			if names.len() > 1 and !Dom.has_attr(n, "multiple") {
 				return Err("${Scm.show_loc(loc)} takes one file, not ${names.len().to_str()}")
 			}
 		}
-		(node, h) = Dom.files_target(dom, i, ev) ? |_| "no ${ev} handler that takes files at ${Scm.show_loc(loc)}"
 		var $files = []
 		for name in names {
 			f = s.browser.files.find_first(|g| g.name == name) ? |_| "no setup file named \"${name}\""
 			$files = $files.append(f)
 		}
+		text = if ev == "change" {
+			match names.first() {
+				Ok(name) => "C:\\fakepath\\${name}"
+				Err(_) => ""
+			}
+		} else ""
+		selected = if (ev == "change") SpecRunner.set_attr(s, i, "value", text) else s
+		target = match Dom.target(dom, i, ev, Bool.True) {
+			Ok(declaration) => declaration
+			Err(_) => return Ok(selected)
+		}
+		if target.kind == 1 {
+			return Ok(SpecRunner.send(program, selected, target.node, target.handler, text.to_utf8()))
+		}
+		if names.is_empty() {
+			return Ok(selected)
+		}
+
 		minted = handles.len()
 		var $record = SpecRunner.put_u32(SpecRunner.put_u32([], minted.to_u32_wrap()), (names.len() - minted).to_u32_wrap())
 		var $given = s.browser.given
@@ -1626,10 +4279,10 @@ SpecRunner := [].{
 			$given = $given.append({ token: Box.unbox(handle), name: f.name })
 			$k = $k + 1
 		}
-		b = s.browser
-		s1 = { ..s, browser: { ..b, given: $given } }
-		(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, node, h, $record, handles)
-		Ok(SpecRunner.answer_gets(program, SpecRunner.take(s1, inst, cmds, wbuf)))
+		b = selected.browser
+		s1 = { ..selected, browser: { ..b, given: $given } }
+		next = SpecRunner.engine_call({ ..s1, draining: Bool.True, turns: 0 }, |inst, buf, wbuf| (program.files)(inst, buf, wbuf, target.node, target.handler, $record, handles))
+		Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, next)), draining: Bool.False })
 	}
 
 	## The pending worker job or fetch that step `op` answers, when `op` is
@@ -1686,7 +4339,8 @@ SpecRunner := [].{
 	## tag 10's files are minted as the page's handles (`handles`, which
 	## `mint!` gave) and kept as files the runner can read back, named `#N`
 	## beside the spec's own files, and the answer goes to the app through
-	## the effect node with those handles, as the runtime delivers it. Tag 11
+	## the effect node with those handles, as the runtime delivers it. An answer
+	## without files uses event; only a file-bearing answer uses files. Tag 11
 	## passes through. An empty record is a job that did not finish within
 	## the runner's bound, which fails the step: a spec's time is manual, and
 	## a job's timeout expires only when the spec says so. When the host had
@@ -1716,6 +4370,9 @@ SpecRunner := [].{
 				if handles.len() < n {
 					return Ok(SpecRunner.deliver(program, rest, id, [11, 2]))
 				}
+				if n == 0 {
+					return Ok(SpecRunner.deliver(program, rest, id, SpecRunner.put_u32([10], 0).concat(output)))
+				}
 				var $payload = SpecRunner.put_u32([10], n.to_u32_wrap())
 				var $files = rest.browser.files
 				var $given = rest.browser.given
@@ -1732,8 +4389,8 @@ SpecRunner := [].{
 				}
 				rb = rest.browser
 				s1 = { ..rest, browser: { ..rb, files: $files, given: $given } }
-				(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, SpecRunner.fx_node, id, $payload.concat(output), handles)
-				Ok(SpecRunner.answer_gets(program, SpecRunner.take(s1, inst, cmds, wbuf)))
+				next = SpecRunner.engine_call({ ..s1, draining: Bool.True, turns: 0 }, |inst, buf, wbuf| (program.files)(inst, buf, wbuf, SpecRunner.fx_node, id, $payload.concat(output), handles))
+				Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, next)), draining: Bool.False })
 			}
 			_ => Ok(SpecRunner.deliver(program, rest, id, record))
 		}
@@ -1773,9 +4430,9 @@ SpecRunner := [].{
 				}
 				record = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u64($record, bytes.len()), name), mime)
 				rb = rest.browser
-				s1 = { ..rest, browser: { ..rb, files: rb.files.append({ name: key, mime, bytes }), given: rb.given.append({ token: Box.unbox(handle), name: key }) } }
-				(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, SpecRunner.fx_node, id, record, handles)
-				Ok(SpecRunner.answer_gets(program, SpecRunner.take(s1, inst, cmds, wbuf)))
+				s1 = { ..rest, browser: { ..rb, files: rb.files.append({ name: key, mime, bytes }), given: rb.given.append({ token: Box.unbox(handle), name: key }), network: rb.network.remove(id), report_sources: rb.report_sources.remove(id), reports: { ..rb.reports, index: rb.reports.index.remove(Request(id)) } } }
+				next = SpecRunner.engine_call({ ..s1, draining: Bool.True, turns: 0 }, |inst, buf, wbuf| (program.files)(inst, buf, wbuf, SpecRunner.fx_node, id, record, handles))
+				Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, next)), draining: Bool.False })
 			}
 		}
 	}
@@ -1793,8 +4450,37 @@ SpecRunner := [].{
 
 	## The host services a replay uses: running a worker job in a child
 	## process, minting and counting file handles in the host's heap, and
-	## digesting bytes.
-	Host : { work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64 }
+	## digesting bytes, and a monotonic clock for observation deadlines.
+	Host : { now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64, mute_dbg! : Bool => {} }
+
+	## The settle oracle evaluates readers speculatively. Mute only that
+	## evaluation and restore output before reporting either result. Real
+	## events, mounts and child jobs retain their ordinary native output.
+	check_settled! : Program(state), { host : Host, inst : S(state) } => Try({}, Str)
+	check_settled! = |program, { host, inst }| {
+		(host.mute_dbg!)(True)
+		result = SpecRunner.check_settled(program, inst)
+		(host.mute_dbg!)(False)
+		result
+	}
+
+	## Native observation yields between browser tasks and never changes app fault state.
+	pump_ui! : Program(state), Host, S(state) => Try(S(state), Str)
+	pump_ui! = |program, host, initial| {
+		started = (host.now_ns!)()
+		var $s = initial
+		while !$s.browser.ui_tasks.is_empty() or $s.browser.ui_exhausted {
+			if $s.browser.ui_exhausted {
+				return Err("UI observation task slots exhausted")
+			}
+			if (host.now_ns!)() - started >= 20000000000 {
+				return Err("UI observation did not reach idle within 20 seconds")
+			}
+			# A browser task starts a fresh ingress turn budget.
+			$s = SpecRunner.drain_focus(program, SpecRunner.deliver_ui(program, { ..$s, draining: False, turns: 0 }))
+		}
+		Ok($s)
+	}
 
 	## Where a spec failed: the step's index, the step, and why.
 	Failure : { step : U64, at : Scm.Step, message : Str }
@@ -1818,7 +4504,8 @@ SpecRunner := [].{
 			Ok(s) => s
 			Err(message) => return Err({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })
 		}
-		match SpecRunner.check_settled(program, $s) {
+		$s = SpecRunner.pump_ui!(program, host, $s).map_err(|message| { step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })?
+		match SpecRunner.check_settled!(program, { host, inst: $s }) {
 			Ok(_) => {}
 			Err(message) => return Err({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message: "after mount, ${message}" })
 		}
@@ -1830,7 +4517,7 @@ SpecRunner := [].{
 			# engine, not a step, so the browser runner has no equivalent.
 			match SpecRunner.step!(program, host, $s, step.op) {
 				Ok(s2) => {
-					match SpecRunner.check_settled(program, s2) {
+					match SpecRunner.check_settled!(program, { host, inst: s2 }) {
 						Ok(_) => {}
 						Err(message) => return Err({ step: $i, at: step, message })
 					}
@@ -1840,6 +4527,9 @@ SpecRunner := [].{
 			}
 			$i = $i + 1
 		}
+		if $s.browser.reports.held {
+			return Err({ step: spec.steps.len() - 1, at: spec.steps.last() ?? crash "a parsed spec has steps", message: "spec ended while reports were held" })
+		}
 		Ok($s)
 	}
 
@@ -1848,23 +4538,39 @@ SpecRunner := [].{
 	## file given through handles it mints, a digest it computes, the live
 	## handle count) through `host`, every other step through `one`.
 	step! : Program(state), Host, S(state), Scm.Op => Try(S(state), Str)
-	step! = |program, host, s, op|
-		match (SpecRunner.file_count(op), op) {
-			(Ok(n), _) => SpecRunner.give_files(program, s, op, (host.mint_files!)(n))
-			(_, ExpectFiles(n)) => {
-				live = (host.live_files!)()
-				if (live == n) Ok(s) else Err("expected ${n.to_str()} live file handles, found ${live.to_str()}")
+	step! = |program, host, initial, op| {
+		s = if (SpecRunner.is_occurrence(initial, op)) SpecRunner.release_reports(program, initial) else initial
+		result = match op {
+			Press(press) => {
+				activated = SpecRunner.activate_step(s, op)
+				(down, context) = SpecRunner.press_down(program, activated, press)?
+				ready = SpecRunner.pump_ui!(program, host, down)?
+				SpecRunner.press_up(program, ready, context)
 			}
-			_ =>
-				match (SpecRunner.held_of(s, op), SpecRunner.digest_of(s, op)) {
-					(Ok(WorkJob(job)), _) => SpecRunner.deliver_work!(program, s, job.id, (host.work!)(job.payload, job.files, job.prepare, job.prepare_files, job.max_output), host.mint_files!)
-					(Ok(FetchAnswer({ id, stub })), _) => SpecRunner.deliver_fetch!(program, s, id, stub, host.mint_files!)
-					(Err(message), _) if message != "not held" => Err(message)
-					(_, Ok({ id, bytes: Digest(bytes) })) => Ok(SpecRunner.deliver_digest(program, s, id, [18].concat((host.sha256!)(bytes))))
-					(_, Ok({ id, bytes: TooLarge })) => Ok(SpecRunner.deliver_digest(program, s, id, [13, 2]))
-					(_, Err(NoDigest)) => SpecRunner.one(program, s, op)
+			Dismiss => {
+				(down, context) = SpecRunner.press_down(program, s, { target: Focused, key: { key: "Escape", code: "Escape", ctrl: False, alt: False, shift: False, meta: False } })?
+				ready = SpecRunner.pump_ui!(program, host, down)?
+				SpecRunner.press_up(program, ready, context)
+			}
+			_ => match (SpecRunner.file_count(s.dom, op), op) {
+				(Ok(n), _) => SpecRunner.give_files(program, s, op, (host.mint_files!)(n))
+				(_, ExpectFiles(n)) => {
+					live = (host.live_files!)()
+					if (live == n) Ok(s) else Err("expected ${n.to_str()} live file handles, found ${live.to_str()}")
 				}
+				_ =>
+					match (SpecRunner.held_of(s, op), SpecRunner.digest_of(s, op)) {
+						(Ok(WorkJob(job)), _) => SpecRunner.deliver_work!(program, s, job.id, (host.work!)(job.payload, job.files, job.prepare, job.prepare_files, job.max_output), host.mint_files!)
+						(Ok(FetchAnswer({ id, stub })), _) => SpecRunner.deliver_fetch!(program, s, id, stub, host.mint_files!)
+						(Err(message), _) if message != "not held" => Err(message)
+						(_, Ok({ id, bytes: Digest(bytes) })) => Ok(SpecRunner.deliver_digest(program, s, id, [18].concat((host.sha256!)(bytes))))
+						(_, Ok({ id, bytes: TooLarge })) => Ok(SpecRunner.deliver_digest(program, s, id, [13, 2]))
+						(_, Err(NoDigest)) => SpecRunner.one(program, s, op)
+					}
+			}
 		}
+		SpecRunner.pump_ui!(program, host, result?)
+	}
 
 	# ----------------------------------------------------------------- walks
 
@@ -1933,10 +4639,11 @@ SpecRunner := [].{
 			i = $stack.last() ?? 0
 			$stack = $stack.drop_last(1)
 			n = Dom.node(dom, i)
-			if Dom.attr_of(n, "disabled") != "true" {
-				for (ev, _) in n.hs {
-					base = ev.split_on(":").first() ?? ev
-					$out = $out.append((i, base))
+			if !SpecRunner.actually_disabled(dom, i) and SpecRunner.drawn(dom, i) {
+				for listener in n.hs {
+					if listener.kind != 3 {
+						$out = $out.append((i, listener.event))
+					}
 				}
 			}
 			var $k = n.kids.len()
@@ -1947,6 +4654,11 @@ SpecRunner := [].{
 		}
 		$out
 	}
+
+	## A walk cannot accept a leave dialog. Skip click targets inside anchors
+	## while a guard is on; that click could itself grant sticky activation.
+	walk_candidates : S(state) -> List((U64, Str))
+	walk_candidates = |state| SpecRunner.candidates(state.dom).keep_if(|(index, event)| !(state.browser.guard and event == "click" and SpecRunner.ancestor(state.dom, index, |entry| SpecRunner.link_href(entry).is_ok()).is_ok()))
 
 	## The payload a browser would send for event `ev` on node `i`. For
 	## text, half the time a value the specs typed into a control the same
@@ -1967,19 +4679,81 @@ SpecRunner := [].{
 		if ev == "input" {
 			typed()
 		} else if ev == "change" {
-			if Dom.attr_of(n, "type") == "checkbox" {
-				if (Dom.attr_of(n, "checked") == "true") "false" else "true"
-			} else if n.tag == "select" {
-				opts = n.kids.map(|k| Dom.attr_of(Dom.node(dom, k), "value"))
+			if Dom.input_type(n) == "checkbox" {
+				if (Dom.live_value(n, "checked") == "true") "false" else "true"
+			} else if Dom.html_tag(n, "select") {
+				opts = n.kids.map(|k| SpecRunner.value_of(dom, k))
 				if (opts.is_empty()) "" else pick(opts)
 			} else {
 				typed()
 			}
 		} else if ev == "focus" or ev == "blur" {
-			Dom.attr_of(n, "value")
+			SpecRunner.value_of(dom, i)
 		} else {
 			""
 		}
+	}
+
+	## Walks enumerate only the live tree, as they enumerate controls. A grip
+	## owns its zone, so its centre has the same meaning in both runners.
+	pointer_places : Dom.Model, [Grips, Zones] -> List({ target : Scm.Loc, index : U64 })
+	pointer_places = |dom, what| {
+		var $stack = [dom.root]
+		var $out = []
+		while !$stack.is_empty() {
+			i = $stack.last() ?? crash "SpecRunner.pointer_places: stack has a node"
+			$stack = $stack.drop_last(1)
+			n = Dom.node(dom, i)
+			has_zone = !Dom.live_value(n, "pointer_zone").is_empty()
+			is_grip = n.hs.any(|h| h.kind == 3 and h.event == "pointerdown")
+			if has_zone and !SpecRunner.actually_disabled(dom, i) and SpecRunner.drawn(dom, i) and (what == Zones or is_grip) {
+				id = Dom.attr_of(n, "data-testid")
+				label = Dom.attr_of(n, "aria-label")
+				if !id.is_empty() {
+					$out = $out.append({ target: TestId(id), index: i })
+				} else if !label.is_empty() {
+					$out = $out.append({ target: Label(label), index: i })
+				}
+			}
+			$stack = $stack.concat(n.kids)
+		}
+		$out
+	}
+
+	## A gesture is made from the ordinary pointer steps, with settling checked
+	## at every boundary rather than only at the final release or cancel.
+	walk_pointer! : Program(state), { host : Host, inst : S(state), target : Scm.Loc, choice : U64 } => Try(S(state), Str)
+	walk_pointer! = |program, { host, inst, target, choice }| {
+		kind = if (choice % 4 == 3) Touch else Mouse
+		id = if (kind == Mouse) 1.U32 else 2.U32
+		var $s = SpecRunner.one(program, inst, PointerDown({ target, at: Centre, id, kind, button: Main, modifiers: 0 }))?
+		SpecRunner.check_settled!(program, { host, inst: $s })?
+		$s = SpecRunner.one(program, $s, HoldReports)?
+		var $last = { target, at: Centre, id }
+		var $count = 0.U64
+		while $count < 2 + choice % 2 {
+			places = SpecRunner.pointer_places($s.dom, Zones)
+			if places.is_empty() {
+				break
+			}
+			place = places.get((choice + $count) % places.len()) ?? crash "SpecRunner.walk_pointer: place index is bounded"
+			$last = { target: place.target, at: Percent({ x: if ($count % 2 == 0) 25 else 75, y: 50 }), id }
+			$s = SpecRunner.one(program, $s, PointerMove($last))?
+			SpecRunner.check_settled!(program, { host, inst: $s })?
+			$count = $count + 1
+		}
+		$s = SpecRunner.one(program, $s, ReleaseReports)?
+		SpecRunner.check_settled!(program, { host, inst: $s })?
+		if kind == Touch and choice % 8 == 3 {
+			$s = SpecRunner.one(program, $s, PointerCancel(id))?
+		} else if SpecRunner.find($s.dom, $last.target).is_ok() {
+			$s = SpecRunner.one(program, $s, PointerUp($last))?
+		} else {
+			pointer = $s.browser.pointers.get(id) ? |_| "a walk's active pointer disappeared"
+			$s = SpecRunner.pointer_up_at(program, $s, { pointer, target: $s.dom.root, at: Outside })?
+		}
+		SpecRunner.check_settled!(program, { host, inst: $s })?
+		Ok($s)
 	}
 
 	## The fault classes a walk loses a worker job to, in the order a byte
@@ -1991,17 +4765,43 @@ SpecRunner := [].{
 	## a pending request, tick a live interval, change visibility or
 	## connectivity for a live subscription, or deliver a message the specs
 	## emit on a port with a live subscription.
-	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str)]
+	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str), BurstOnline, BurstVisibility, BurstPort(Str), PointerGesture(Scm.Loc), LayoutReport({ target : Scm.Loc, kind : U8 }), ToggleMedia(Str), MoveClock]
+
+	## Walks enumerate named live observations as they enumerate controls and
+	## pointer zones. Their injected facts need no browser geometry.
+	layout_reports : Dom.Model -> List(Service)
+	layout_reports = |dom| {
+		var $stack = [dom.root]
+		var $out = []
+		while !$stack.is_empty() {
+			i = $stack.last() ?? crash "SpecRunner.layout_reports: nonempty stack"
+			$stack = $stack.drop_last(1)
+			n = Dom.node(dom, i)
+			test_id = Dom.attr_of(n, "data-testid")
+			label = Dom.attr_of(n, "aria-label")
+			if !test_id.is_empty() or !label.is_empty() {
+				target = if (!test_id.is_empty()) TestId(test_id) else Label(label)
+				for listener in n.hs {
+					if listener.kind >= 6 and listener.kind <= 8 {
+						$out = $out.append(LayoutReport({ target, kind: listener.kind }))
+					}
+				}
+			}
+			$stack = $stack.concat(n.kids)
+		}
+		$out
+	}
 
 	## Every service the browser can do now, in a fixed order.
 	services : Book, S(state) -> List(Service)
 	services = |bk, s| {
 		b = s.browser
-		var $out = b.pending.map(|p| Answer(p))
+		var $out = [MoveClock].concat(b.pending.map(|p| Answer(p))).concat(SpecRunner.pointer_places(s.dom, Grips).map(|p| PointerGesture(p.target))).concat(SpecRunner.layout_reports(s.dom))
 		var $ticks = []
 		var $ports = []
 		var $vis = Bool.False
 		var $online = Bool.False
+		var $media = []
 		for x in b.subs {
 			match x.sub {
 				Interval(ms) if !$ticks.contains(ms) => {
@@ -2013,15 +4813,19 @@ SpecRunner := [].{
 				OnlineSub => {
 					$online = Bool.True
 				}
+				MediaSub(query) if !$media.contains(query) => {
+					$media = $media.append(query)
+				}
 				PortSub(port, _) if !$ports.contains(port) and bk.messages.any(|m| m.port == port) => {
 					$ports = $ports.append(port)
 				}
 				_ => {}
 			}
 		}
-		$out = $out.concat($ticks.map(|ms| Tick(ms))).concat($ports.map(|p| Emit(p)))
-		$out = if ($vis) $out.append(ToggleVisibility) else $out
-		if ($online) $out.append(ToggleOnline) else $out
+		$out = $out.concat($ticks.map(|ms| Tick(ms))).concat($ports.map(|p| Emit(p))).concat($media.map(|query| ToggleMedia(query)))
+		$out = $out.concat($ports.keep_if(|port| b.latest_ports.contains(port)).map(|port| BurstPort(port)))
+		$out = if ($vis) $out.append(ToggleVisibility).append(BurstVisibility) else $out
+		if ($online) $out.append(ToggleOnline).append(BurstOnline) else $out
 	}
 
 	## The answer a walk gives an HTTP request (or an upload or a fetch):
@@ -2066,6 +4870,40 @@ SpecRunner := [].{
 	serve! = |program, host, bk, s, service, v| {
 		b = s.browser
 		match service {
+			LayoutReport({ target, kind }) => {
+				op = match kind {
+					6 => Scroll({ target, top: ((v % 20) * 20).to_u32_wrap(), left: 0 })
+					7 => ReportSize({ target, width: (160 * (1 + v % 4)).to_u32_wrap(), height: (80 * (1 + v % 6)).to_u32_wrap() })
+					8 => ReportSeen({ target, intersecting: v % 2 == 0, ratio_permille: if (v % 2 == 0) 500 else 0 })
+					_ => crash "SpecRunner.serve!: layout service kind"
+				}
+				Ok((SpecRunner.one(program, s, op)?, { what: Scm.op_name(op), kind: Service }))
+			}
+			ToggleMedia(query) => {
+				prior = b.env.media.find_first(|(name, _)| name == query) ? |_| "a live media subscription has no declared query"
+				Ok((SpecRunner.one(program, s, SetMedia({ query, matches: !prior.1 }))?, { what: "set-media ${query}", kind: Service }))
+			}
+			PointerGesture(target) => Ok((SpecRunner.walk_pointer!(program, { host, inst: s, target, choice: v })?, { what: "pointer gesture", kind: UserEvent }))
+			BurstOnline | BurstVisibility | BurstPort(_) => {
+				var $s = SpecRunner.one(program, s, HoldReports)?
+				var $count = 0.U64
+				while $count < 2 + v % 2 {
+					current = $s.browser
+					op = match service {
+						BurstOnline => SetOnline(if (current.env.online) Offline else Online)
+						BurstVisibility => SetVisibility(if (current.env.visible) Hidden else Visible)
+						BurstPort(port) => {
+							messages = bk.messages.keep_if(|m| m.port == port)
+							json = (messages.get((v + $count) % messages.len().max(1)) ?? { port, json: "null" }).json
+							EmitPort({ port, json })
+						}
+						_ => crash "SpecRunner.serve!: a burst service"
+					}
+					$s = SpecRunner.one(program, $s, op)?
+					$count = $count + 1
+				}
+				Ok((SpecRunner.one(program, $s, ReleaseReports)?, { what: "report burst", kind: Service }))
+			}
 			Answer(p) => {
 				n = (b.issued.find_first_index(|id| id == p.id) ? |_| "a pending request was never issued") + 1
 				staged = |stub| { ..s, browser: { ..b, stub: Staged(stub) } }
@@ -2091,9 +4929,23 @@ SpecRunner := [].{
 				}
 				Ok((s2, { what: "${Scm.op_name(op)} ${n.to_str()} ${p.url}", kind }))
 			}
-			Tick(ms) => Ok((SpecRunner.one(program, s, TickInterval(ms.to_u64()))?, { what: "tick-interval ${ms.to_str()}", kind: Service }))
-			ToggleVisibility => Ok((SpecRunner.one(program, s, SetVisibility(if (b.visible) Hidden else Visible))?, { what: "set-visibility", kind: Service }))
-			ToggleOnline => Ok((SpecRunner.one(program, s, SetOnline(if (b.online) Offline else Online))?, { what: "set-online", kind: Service }))
+			Tick(ms) => {
+				advanced = SpecRunner.one(program, s, AdvanceTime(ms.to_u64()))?
+				Ok((SpecRunner.one(program, advanced, TickInterval(ms))?, { what: "advance-time and tick-interval ${ms.to_str()}", kind: Service }))
+			}
+			MoveClock => {
+				duration = 1000 + v % 86399001
+				op = if v % 8 == 0 {
+					back = b.env.now_ms.to_i128() - duration.to_i128()
+					if back < -9223372036854775808 {
+						return Err("walk clock moved below I64 range")
+					}
+					SetTime(back.to_i64_wrap())
+				} else AdvanceTime(duration)
+				Ok((SpecRunner.one(program, s, op)?, { what: Scm.op_name(op), kind: Service }))
+			}
+			ToggleVisibility => Ok((SpecRunner.one(program, s, SetVisibility(if (b.env.visible) Hidden else Visible))?, { what: "set-visibility", kind: Service }))
+			ToggleOnline => Ok((SpecRunner.one(program, s, SetOnline(if (b.env.online) Offline else Online))?, { what: "set-online", kind: Service }))
 			Emit(port) => {
 				messages = bk.messages.keep_if(|m| m.port == port)
 				json = (messages.get(v % messages.len().max(1)) ?? { port, json: "null" }).json
@@ -2110,7 +4962,7 @@ SpecRunner := [].{
 	walk_step! : Program(state), Host, Book, S(state), U8, U8 => Try((S(state), Did), Str)
 	walk_step! = |program, host, bk, s, pick, b| {
 		offered = SpecRunner.services(bk, s)
-		cs = SpecRunner.candidates(s.dom)
+		cs = SpecRunner.walk_candidates(s)
 		if pick >= 0xC0 and !offered.is_empty() {
 			x = b.to_u64()
 			service = offered.get(x % offered.len()) ?? crash "SpecRunner.walk_step!: a service"
@@ -2121,7 +4973,7 @@ SpecRunner := [].{
 			(i, ev) = cs.get(pick.to_u64() % cs.len()) ?? crash "SpecRunner.walk_step!: a candidate"
 			payload = SpecRunner.payload_for(bk, s.dom, i, ev, b)
 			s1 = if ev == "input" or ev == "change" {
-				name = if (Dom.attr_of(Dom.node(s.dom, i), "type") == "checkbox") "checked" else "value"
+				name = if (Dom.input_type(Dom.node(s.dom, i)) == "checkbox") "checked" else "value"
 				SpecRunner.set_attr(s, i, name, payload)
 			} else {
 				s
@@ -2166,7 +5018,7 @@ SpecRunner := [].{
 	walk! = |program, host, specs, { steps, seed }| {
 		first = specs.first() ? |_| { step: 0, message: "a walk needs at least one spec" }
 		var $s = SpecRunner.start(program, { ..first, steps: [] }).map_err(|message| { step: 0, message })?
-		match SpecRunner.check_settled(program, $s) {
+		match SpecRunner.check_settled!(program, { host, inst: $s }) {
 			Ok(_) => {}
 			Err(message) => return Err({ step: 0, message: "after mount, ${message}" })
 		}
@@ -2181,7 +5033,7 @@ SpecRunner := [].{
 			failed = |message| Err({ step: $i + 1, message: "${message}\n  after: ${Str.join_with($trail, "\n         ")}" })
 			match done {
 				Ok((s2, { what, kind })) => {
-					match SpecRunner.check_settled(program, s2) {
+					match SpecRunner.check_settled!(program, { host, inst: s2 }) {
 						Ok(_) => {}
 						Err(message) => return failed("${what}: ${message}")
 					}
@@ -2209,14 +5061,65 @@ SpecRunner := [].{
 		Ok($tally)
 	}
 
-	## One call a spec made into the engine, as a soak records it: the node
-	## and handler (for a result, the request's place among those in flight,
-	## since a later cycle issues it under a new id), the payload, and the
-	## handles a `:files` call carried.
-	Call : { node : U32, handler : [Handler(U32), InFlight(U64)], payload : List(U8), files : [Event, Files(List(Box(U64)))] }
+	## One call a spec made into the engine, as a soak records it: what it
+	## went to (`Target`), the payload, the handles an event carrying files
+	## held, and the work it did (`SpecRunner.round_trip_work`), which each
+	## replay of it must repeat.
+	Call : { target : Target, payload : List(U8), files : [Event, Files(List(Box(U64)))], work : List(U64) }
 
-	## An instance and the calls made into it since the recording began.
-	Recorded(state) : { inst : state, calls : List(Call) }
+	## What a recorded call went to, named so that a later cycle finds the
+	## same thing under the ids that cycle gave it. An event goes to the
+	## listener for `event` on the node at `path` in the drawn tree (child
+	## indexes from the mount root, whose own path is empty), since a row
+	## or a branch the cycle re-creates comes back at its place under a new
+	## id. A result goes to the request at its place among those in flight
+	## (`InFlight`), or, for a request no longer in flight such as a
+	## subscription's, under its id (`Result`). An event whose node the
+	## oracle could not place is `Unplaced`, and the soak refuses it.
+	Target : [Place(Place), InFlight(U64), Result(U32), Unplaced(U32, U32)]
+
+	## A listener named by where it is: its node's path from the mount root
+	## and the event type it listens for.
+	Place : { path : List(U64), event : Str }
+
+	## An instance, the calls made into it since the recording began, the
+	## round-trip counters after the latest call, from which the next
+	## call's work is measured, and the oracle's model of the page, from
+	## which the next call's place is read.
+	Recorded(state) : { inst : state, calls : List(Call), counted : List(U64), dom : Dom.Model }
+
+	## The counters of a work record that say what a call did to the app,
+	## whatever ids it did it under: rows created (`INST`), rows removed,
+	## scopes created and disposed, turns, requests issued and results
+	## delivered. A replayed round trip repeats each recorded call's change
+	## of every one of them.
+	round_trip_counters : List({ index : U64, name : Str })
+	round_trip_counters = [
+		{ index: 1, name: "rows created" },
+		{ index: 22, name: "rows removed" },
+		{ index: 25, name: "scopes created" },
+		{ index: 26, name: "scopes disposed" },
+		{ index: 30, name: "turns" },
+		{ index: 32, name: "requests issued" },
+		{ index: 33, name: "results delivered" },
+	]
+
+	## The round-trip counters of one work record, in `round_trip_counters`
+	## order. Each is cumulative, so a call's work is the difference of the
+	## records before and after it (`SpecRunner.work_between`).
+	round_trip_work : List(U8) -> List(U64)
+	round_trip_work = |wbuf| {
+		counters = Dom.decode_work(wbuf).counters
+		SpecRunner.round_trip_counters.map(|counter| counters.get(counter.index) ?? 0)
+	}
+
+	## What a call did: the change of each round-trip counter across it.
+	work_between : List(U64), List(U64) -> List(U64)
+	work_between = |earlier, later| later.map_with_index(|value, i| value - (earlier.get(i) ?? 0))
+
+	## A call's work as a reader reads it, `name n` for each counter.
+	show_work : List(U64) -> Str
+	show_work = |work| Str.join_with(SpecRunner.round_trip_counters.map_with_index(|counter, i| "${counter.name} ${(work.get(i) ?? 0).to_str()}"), ", ")
 
 	## `program`, recording every `event` and `files` call made into it.
 	recording : Program(state) -> Program(Recorded(state))
@@ -2228,75 +5131,186 @@ SpecRunner := [].{
 		live = program.live
 		{
 			version: program.version,
+			tasks: program.tasks,
 			keys: program.keys,
 			init: |boot| {
 				(inst, cmds, wbuf) = init(boot)
-				({ inst, calls: [] }, cmds, wbuf)
+				({ inst, calls: [], counted: SpecRunner.round_trip_work(wbuf), dom: Dom.apply(Dom.new({}), cmds) }, cmds, wbuf)
 			},
-			event: |r, buf, wbuf, node, h, payload| {
-				call = { node, handler: SpecRunner.handler_of(live(r.inst), node, h), payload, files: Event }
-				(inst, cmds, w) = event(r.inst, buf, wbuf, node, h, payload)
-				({ inst, calls: r.calls.append(call) }, cmds, w)
+			event: |{ inst: prior, calls, counted, dom }, buf, wbuf, node, h, payload| {
+				target = SpecRunner.target_of(dom, live(prior), node, h)
+				(inst, cmds, w) = event(prior, buf, wbuf, node, h, payload)
+				after = SpecRunner.round_trip_work(w)
+				({ inst, calls: calls.append({ target, payload, files: Event, work: SpecRunner.work_between(counted, after) }), counted: after, dom: Dom.apply(dom, cmds) }, cmds, w)
 			},
-			files: |r, buf, wbuf, node, h, record, handles| {
-				call = { node, handler: SpecRunner.handler_of(live(r.inst), node, h), payload: record, files: Files(handles) }
-				(inst, cmds, w) = files(r.inst, buf, wbuf, node, h, record, handles)
-				({ inst, calls: r.calls.append(call) }, cmds, w)
+			files: |{ inst: prior, calls, counted, dom }, buf, wbuf, node, h, record, handles| {
+				target = SpecRunner.target_of(dom, live(prior), node, h)
+				(inst, cmds, w) = files(prior, buf, wbuf, node, h, record, handles)
+				after = SpecRunner.round_trip_work(w)
+				({ inst, calls: calls.append({ target, payload: record, files: Files(handles), work: SpecRunner.work_between(counted, after) }), counted: after, dom: Dom.apply(dom, cmds) }, cmds, w)
 			},
 			settled: |r| settled(r.inst),
 			live: |r| live(r.inst),
 		}
 	}
 
-	## How a soak names the handler of a call: a result by the place of its
-	## request among those in flight, anything else as it is.
-	handler_of : List(U32), U32, U32 -> [Handler(U32), InFlight(U64)]
-	handler_of = |live, node, h|
+	## How a soak names what a call went to (`Target`): a result by the
+	## place of its request among those in flight, an event by the place
+	## of the listener the oracle's model routes it through.
+	target_of : Dom.Model, List(U32), U32, U32 -> Target
+	target_of = |dom, live, node, h|
 		if node == SpecRunner.fx_node {
 			match live.find_first_index(|id| id == h) {
 				Ok(i) => InFlight(i)
-				Err(_) => Handler(h)
+				Err(_) => Result(h)
 			}
 		} else {
-			Handler(h)
+			match SpecRunner.listener_place(dom, node, h) {
+				Ok(place) => Place(place)
+				Err(Unplaced) => Unplaced(node, h)
+			}
 		}
 
-	## Replay `calls` `cycles` times on the engine alone (no DOM model, the
-	## command and work buffers lent back as the hosts lend them), and give
-	## each cycle's net live allocations and bytes, read from the host's
-	## counters before and after it. A recorded answer goes to the request
-	## at its recorded place among those in flight; a cycle that has no
-	## request there is not a round trip.
-	replay! : Program(state), { inst : state, buf : List(U8), wbuf : List(U8) }, List(Call), U64, Host => Try(List({ allocations : I64, bytes : I64 }), Str)
-	replay! = |program, { inst, buf, wbuf }, calls, cycles, host| {
+	## The path of a drawn node: its index among its parent's children at
+	## each level, from the mount root down. A node that is not in the
+	## drawn tree has no path.
+	node_path : Dom.Model, U64 -> Try(List(U64), [Undrawn])
+	node_path = |dom, index| {
+		var $at = index
+		var $path = []
+		while $at != dom.root {
+			n = dom.nodes.get($at) ? |_| Undrawn
+			if n.parent == 0 {
+				return Err(Undrawn)
+			}
+			parent = dom.nodes.get(n.parent - 1) ? |_| Undrawn
+			$path = $path.append(parent.kids.find_first_index(|kid| kid == $at) ? |_| Undrawn)
+			$at = n.parent - 1
+		}
+		Ok(List.repeat(0, $path.len()).map_with_index(|_, i| $path.get($path.len() - 1 - i) ?? 0))
+	}
+
+	## The drawn node at a path, if there is one.
+	node_at : Dom.Model, List(U64) -> Try(U64, [NoNode])
+	node_at = |dom, path| {
+		var $at = dom.root
+		for i in path {
+			n = dom.nodes.get($at) ? |_| NoNode
+			$at = n.kids.get(i) ? |_| NoNode
+		}
+		Ok($at)
+	}
+
+	## Where the listener an event to `node` with handler `h` went through
+	## is: the drawn node in that node's subtree that declares a listener
+	## the oracle routes to exactly (`node`, `h`), and its event type. A
+	## node the oracle does not know, or no such listener, is `Unplaced`.
+	listener_place : Dom.Model, U32, U32 -> Try(Place, [Unplaced])
+	listener_place = |dom, node, h| {
+		bound = (dom.statics.get(node.to_u64()) ?? 0).bitwise_and(1099511627775)
+		if node != 0 and bound == 0 {
+			return Err(Unplaced)
+		}
+		var $stack = [if (node == 0) dom.root else bound - 1]
+		while !$stack.is_empty() {
+			at = $stack.last() ?? crash "SpecRunner.listener_place: a nonempty stack has a last node"
+			$stack = $stack.drop_last(1)
+			n = dom.nodes.get(at) ? |_| Unplaced
+			for listener in n.hs {
+				if listener.handler == h and Dom.target(dom, at, listener.event, False) == Ok({ node, handler: h, event: listener.event, kind: listener.kind, policies: listener.policies, declaring: at }) {
+					path = SpecRunner.node_path(dom, at) ? |_| Unplaced
+					return Ok({ path, event: listener.event })
+				}
+			}
+			$stack = $stack.concat(n.kids)
+		}
+		Err(Unplaced)
+	}
+
+	## The node and handler a place names now: the drawn node at its path,
+	## routed for its event type as the oracle routes an event there.
+	resolve_place : Dom.Model, Place -> Try({ node : U32, handler : U32 }, [NoNode, NoListener])
+	resolve_place = |dom, { path, event }| {
+		at = SpecRunner.node_at(dom, path)?
+		target = Dom.target(dom, at, event, False) ? |NoHandler| NoListener
+		if target.declaring != at {
+			return Err(NoListener)
+		}
+		Ok({ node: target.node, handler: target.handler })
+	}
+
+	## A place as a reader reads it.
+	show_place : Place -> Str
+	show_place = |{ path, event }| "the ${event} listener at [${Str.join_with(path.map(|i| i.to_str()), " ")}]"
+
+	## Replay `calls` `cycles` times, the command and work buffers lent back
+	## as the hosts lend them, and give each cycle's net live allocations
+	## and bytes: the sum, over its calls, of the host's counters after the
+	## engine's call less those before it, so what is measured is the
+	## engine's alone. Between calls, outside that measure, the oracle's
+	## model of the page follows the commands (from a copy of them, so the
+	## model holds no part of the engine's buffer), and each call's target
+	## is found in it: an event goes to the listener at its recorded place
+	## (`Place`), whatever id the cycle gave that node, and a recorded answer
+	## to the request at its recorded place among those in flight. A cycle
+	## whose model has no such listener, or no request at that place, is not
+	## a round trip. Nor is one in which a call does other work than its
+	## recorded call did (`round_trip_counters`): such a cycle is no longer
+	## the recorded round trip, and a soak that went on would measure a
+	## different, often idle, sequence.
+	replay! : Program(state), { inst : state, buf : List(U8), wbuf : List(U8), counted : List(U64), dom : Dom.Model }, List(Call), U64, Host => Try(List({ allocations : I64, bytes : I64 }), Str)
+	replay! = |program, { inst, buf, wbuf, counted, dom }, calls, cycles, host| {
 		var $inst = inst
 		var $buf = buf
 		var $wbuf = wbuf
+		var $counted = counted
+		var $dom = dom
 		var $nets = List.with_capacity(cycles)
 		var $c = 0.U64
 		while $c < cycles {
-			allocations = (host.live_allocations!)()
-			bytes = (host.live_bytes!)()
+			cycle = ($c + 1).to_str()
+			var $allocations = 0.I64
+			var $bytes = 0.I64
+			var $k = 0.U64
 			for call in calls {
-				handler = match call.handler {
-					Handler(h) => h
+				$k = $k + 1
+				{ node, handler } = match call.target {
+					Place(place) =>
+						match SpecRunner.resolve_place($dom, place) {
+							Ok(found) => found
+							Err(NoNode) => return Err("cycle ${cycle}'s call ${$k.to_str()} goes to ${SpecRunner.show_place(place)}, and the cycle has drawn no node there: the steps after the last mark-metrics do not return the app to where they started")
+							Err(NoListener) => return Err("cycle ${cycle}'s call ${$k.to_str()} goes to ${SpecRunner.show_place(place)}, and the node the cycle drew there has no such listener: the steps after the last mark-metrics do not return the app to where they started")
+						}
 					InFlight(i) =>
 						match (program.live)($inst).get(i) {
-							Ok(id) => id
-							Err(_) => return Err("cycle ${($c + 1).to_str()} has no request in flight at place ${(i + 1).to_str()}, which the recorded cycle answered: the steps after the last mark-metrics do not return the app to where they started")
+							Ok(id) => { node: SpecRunner.fx_node, handler: id }
+							Err(_) => return Err("cycle ${cycle} has no request in flight at place ${(i + 1).to_str()}, which the recorded cycle answered: the steps after the last mark-metrics do not return the app to where they started")
 						}
+					Result(id) => { node: SpecRunner.fx_node, handler: id }
+					Unplaced(id, h) => return Err("call ${$k.to_str()} went to node ${id.to_str()} with handler ${h.to_str()}, which the oracle's model places at no listener in the drawn tree")
 				}
+				allocations = (host.live_allocations!)()
+				bytes = (host.live_bytes!)()
 				(next, cmds, w) = match call.files {
-					Event => (program.event)($inst, $buf, $wbuf, call.node, handler, call.payload)
-					Files(handles) => (program.files)($inst, $buf, $wbuf, call.node, handler, call.payload, handles)
+					Event => (program.event)($inst, $buf, $wbuf, node, handler, call.payload)
+					Files(handles) => (program.files)($inst, $buf, $wbuf, node, handler, call.payload, handles)
 				}
+				after_allocations = (host.live_allocations!)()
+				after_bytes = (host.live_bytes!)()
+				$allocations = $allocations + after_allocations.to_i64_wrap() - allocations.to_i64_wrap()
+				$bytes = $bytes + after_bytes.to_i64_wrap() - bytes.to_i64_wrap()
+				$dom = Dom.apply($dom, cmds.map(|byte| byte))
 				$inst = next
 				$buf = cmds
 				$wbuf = w
+				after = SpecRunner.round_trip_work(w)
+				work = SpecRunner.work_between($counted, after)
+				if work != call.work {
+					return Err("cycle ${cycle}'s call ${$k.to_str()} (node ${node.to_str()}) did ${SpecRunner.show_work(work)}, where the recorded call did ${SpecRunner.show_work(call.work)}: the replay is not the recorded round trip")
+				}
+				$counted = after
 			}
-			after_allocations = (host.live_allocations!)()
-			after_bytes = (host.live_bytes!)()
-			$nets = $nets.append({ allocations: after_allocations.to_i64_wrap() - allocations.to_i64_wrap(), bytes: after_bytes.to_i64_wrap() - bytes.to_i64_wrap() })
+			$nets = $nets.append({ allocations: $allocations, bytes: $bytes })
 			$c = $c + 1
 		}
 		Ok($nets)
@@ -2346,7 +5360,7 @@ SpecRunner := [].{
 		if ran.inst.calls.is_empty() {
 			return Err(failed("the steps after the last mark-metrics call nothing in the engine, so there is no round trip to repeat"))
 		}
-		nets = SpecRunner.replay!(program, { inst: ran.inst.inst, buf: ran.buf, wbuf: ran.wbuf }, ran.inst.calls, cycles, host).map_err(failed)?
+		nets = SpecRunner.replay!(program, { inst: ran.inst.inst, buf: ran.buf, wbuf: ran.wbuf, counted: ran.inst.counted, dom: ran.inst.dom }, ran.inst.calls, cycles, host).map_err(failed)?
 		SpecRunner.flat(nets, warm).map_err(failed)?
 		Ok(nets)
 	}
@@ -2355,7 +5369,93 @@ SpecRunner := [].{
 
 	## The host services the `spec` command uses, passed in by the test
 	## program (the test platform's `Cli`), so this package stays pure.
-	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64 }
+	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64, mute_dbg! : Bool => {} }
+
+	## Bounded diagnostic rendering is best effort only in an existing failure
+	## report. A renderer refusal remains visible instead of masking stale state.
+	render_diagnostic : Dom.Model, U64 -> Str
+	render_diagnostic = |model, root| match Dom.render(model, { root, mode: Diagnostic, limits: { max_bytes: 65536, max_nodes: 4096, max_depth: 256 } }) {
+		Ok(rendered) => rendered.markup
+		Err(problem) => "(diagnostic rendering refused: ${Str.inspect(problem)})"
+	}
+
+	## Keep the picture command separate from spec-selection options. An exact
+	## mode consumes no spec files and cannot accidentally run a soak or walk.
+	prerender_args : List(Str) -> Try([Specs, PicturePath(Str), Picture({ url : Str, template : Str })], Str)
+	prerender_args = |args| match args {
+		["--picture-path", url] if !url.starts_with("--") => Ok(PicturePath(url))
+		["--prerender", url, "--template", template] if !url.starts_with("--") and !template.starts_with("--") => Ok(Picture({ url, template }))
+		_ if args.contains("--prerender") or args.contains("--template") or args.contains("--picture-path") => Err("use RUNNER --prerender URL --template FILE, or RUNNER --picture-path URL, with no spec or other mode options")
+		_ => Ok(Specs)
+	}
+
+	## Project a route before template URL rewriting. This reads no app state,
+	## declarations or file and calls neither init nor an effect/result path.
+	picture_path_line : Str -> Try(Str, Str)
+	picture_path_line = |url| {
+		path = PicturePage.route(url) ? |InvalidRoute(message)| message
+		Ok(
+			JsonOut.render(
+				Object([
+					JsonOut.field("protocol", Text("roc-signals/picture-path/v1")),
+					JsonOut.field("url", Text(url)),
+					JsonOut.field("path", Text(path)),
+				]),
+			),
+		)
+	}
+
+	## Render only the engine's ordinary init batch. Storage answers, focus
+	## delivery and other host inputs are later turns and never enter this frame.
+	## The host adapter only reads the template and prints the completed JSON.
+	prerender_main! : Program(state), { io : Io, options : { url : Str, template : Str } } => I32
+	prerender_main! = |program, { io, options }| match SpecRunner.prerender_page!(program, { io, url: options.url, template: options.template }) {
+		Ok(json) => {
+			(io.stdout!)("${json}\n")
+			0
+		}
+		Err(message) => {
+			(io.stderr!)("${message}\n")
+			1
+		}
+	}
+
+	## Gather one complete response before stdout can expose a partial page.
+	## There is one init call and no later host input in this fallible workflow.
+	prerender_page! : Program(state), { io : Io, url : Str, template : Str } => Try(Str, Str)
+	prerender_page! = |program, { io, url, template: path_to_template }| {
+		resolved = PicturePage.resolve(url) ? |InvalidRoute(message)| message
+		bytes = (io.read_file!)(path_to_template)
+		if bytes.len() > 16777216 {
+			return Err("picture template exceeds 16777216 bytes")
+		}
+		text = Str.from_utf8(bytes) ? |_| "picture template is not valid UTF-8"
+		template = PicturePage.parse(text) ? |InvalidTemplate(message)| message
+		if program.version != Dom.protocol_version {
+			return Err("picture program and oracle protocol versions differ")
+		}
+		declarations = SpecRunner.decode_declarations((program.keys)())
+		environment : Scm.Environment
+		environment = { url: SpecRunner.serialize_location(resolved.boot_url), media: declarations.media.map(|query| (query, False)) }
+		# init drains its own engine follow-ups. Do not call mount_config,
+		# answer_gets, drain_focus or pump_ui here: those deliver later inputs.
+		(inst, commands, _work) = (program.init)(SpecRunner.encode_mount(environment, template.root()))
+		(program.settled)(inst) ? |failure| "after picture mount, a reader was left stale: ${failure.note}"
+		model = Dom.apply(template.overlay(Dom.new({})), commands)
+		rendered = Dom.render(model, { root: model.root, scope: MountEnvelope, mode: Picture, enclosing: template.parent(), limits: { max_bytes: 16777216, max_nodes: 262144, max_depth: 1024 } }) ? |problem| "picture renderer refused the frame: ${Str.inspect(problem)}"
+		page = template.page({ markup: rendered.markup, max_bytes: 16777216 }) ? |PageLimit({ maximum, required })| "picture page needs ${required.to_str()} UTF-8 bytes; maximum is ${maximum.to_str()} bytes"
+		Ok(
+			JsonOut.render(
+				Object([
+					JsonOut.field("protocol", Text("roc-signals/prerender/v1")),
+					JsonOut.field("url", Text(url)),
+					JsonOut.field("path", Text(resolved.path)),
+					JsonOut.field("page", Text(page)),
+					JsonOut.field("metadata", Array([])),
+				]),
+			),
+		)
+	}
 
 	## The command line: which specs, whether to emit their steps or the
 	## grammar instead, and whether to soak them (`soak` cycles of the round
@@ -2366,13 +5466,18 @@ SpecRunner := [].{
 	## file's steps.
 	Options : { filter : Str, emit_steps : Bool, grammar : Bool, soak : [NoSoak, Soak({ cycles : U64, warm : U64 })], walk : [NoWalk, Walk({ steps : U64, seed : U64 })], files : List(Str) }
 
+	## The runner’s command synopsis names its ordinary, recorded, generated
+	## and grammar modes without changing the executable spec vocabulary.
 	usage : Str
-	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --walk STEPS [--seed N] FILE.scm...\n       RUNNER --grammar\n"
+	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --walk STEPS [--seed N] FILE.scm...\n       RUNNER --grammar\n       RUNNER --prerender URL --template FILE\n       RUNNER --picture-path URL\n"
 
 	## The number after an option, as a count.
 	count_arg : List(Str), U64, Str -> Try(U64, Str)
 	count_arg = |args, i, option| U64.from_str(args.get(i + 1) ?? "").map_err(|_| "${option} needs a count")
 
+	## Validate runner modes, numeric options and required spec files before
+	## loading a program. Unknown options and incompatible walk/soak/emission modes
+	## return a command-line error; grammar mode needs no spec files.
 	parse_args : List(Str) -> Try(Options, Str)
 	parse_args = |args| {
 		var $o = { filter: "*", emit_steps: Bool.False, grammar: Bool.False, soak: NoSoak, walk: NoWalk, files: [] }
@@ -2449,6 +5554,8 @@ SpecRunner := [].{
 	glob : Str, Str -> Bool
 	glob = |pattern, text| SpecRunner.glob_bytes(pattern.to_utf8(), text.to_utf8())
 
+	## Match the runner’s small star/question-mark filter over UTF-8 bytes.
+	## This only selects named specs; it never alters a selected story’s steps.
 	glob_bytes : List(U8), List(U8) -> Bool
 	glob_bytes = |p, t|
 		match p {
@@ -2458,6 +5565,8 @@ SpecRunner := [].{
 			[c, .. as rest] => t.first() == Ok(c) and SpecRunner.glob_bytes(rest, t.drop_first(1))
 		}
 
+	## Preserve the failure phase, classification, step and authored source
+	## position in machine-readable output. All diagnostic text goes through JsonOut.
 	failure_json : Str, Str, Str, U64, Scm.Pos -> JsonOut.Value
 	failure_json = |phase, kind, message, step, pos|
 		Object([
@@ -2469,6 +5578,9 @@ SpecRunner := [].{
 			JsonOut.field("column", Nat(pos.column)),
 		])
 
+	## Emit one complete versioned result line, including duration and the
+	## structured failure or null. The shared schema lets tooling tally real runner
+	## results without reparsing human-facing diagnostics.
 	result_line : { id : Str, name : Str, status : Str, duration_ns : U64, failure : JsonOut.Value } -> Str
 	result_line = |r|
 		JsonOut.render(
@@ -2489,6 +5601,26 @@ SpecRunner := [].{
 	## browser runner's `--check-grammar`.
 	main! : Program(state), Io, List(Str) => I32
 	main! = |program, io, args| {
+		match SpecRunner.prerender_args(args) {
+			Ok(PicturePath(url)) => {
+				match SpecRunner.picture_path_line(url) {
+					Ok(json) => {
+						(io.stdout!)("${json}\n")
+						return 0
+					}
+					Err(message) => {
+						(io.stderr!)("${message}\n")
+						return 1
+					}
+				}
+			}
+			Ok(Picture(options)) => return SpecRunner.prerender_main!(program, { io, options })
+			Ok(Specs) => {}
+			Err(message) => {
+				(io.stderr!)("${message}\n")
+				return 2
+			}
+		}
 		opts = match SpecRunner.parse_args(args) {
 			Ok(o) => o
 			Err(msg) => {
@@ -2510,7 +5642,7 @@ SpecRunner := [].{
 			if SpecRunner.glob(opts.filter, id) {
 				text = Str.from_utf8((io.read_file!)(path)) ?? ""
 				t0 = (io.now_ns!)()
-				match Scm.parse(text) {
+				match SpecRunner.parse_declared(program, text) {
 					Err(problem) => {
 						$counts = { ..$counts, error: $counts.error + 1 }
 						(io.stdout!)(
@@ -2521,7 +5653,7 @@ SpecRunner := [].{
 						(io.stdout!)("${JsonOut.render(Scm.to_json(id, spec))}\n")
 					}
 					Ok(spec) => {
-						host = { work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes! }
+						host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes!, mute_dbg!: io.mute_dbg! }
 						outcome = match opts.soak {
 							NoSoak => SpecRunner.run!(program, host, spec)
 							Soak(soak) =>
@@ -2558,11 +5690,11 @@ SpecRunner := [].{
 	}
 
 	## Every spec file, parsed, or the first problem.
-	parsed! : (Str => List(U8)), List(Str) => Try(List(Scm.Spec), Str)
-	parsed! = |read_file!, paths| {
+	parsed! : Program(state), { read_file! : Str => List(U8), paths : List(Str) } => Try(List(Scm.Spec), Str)
+	parsed! = |program, { read_file!, paths }| {
 		var $specs = []
 		for path in paths {
-			match Scm.parse(Str.from_utf8(read_file!(path)) ?? "") {
+			match SpecRunner.parse_declared(program, Str.from_utf8(read_file!(path)) ?? "") {
 				Ok(spec) => {
 					$specs = $specs.append(spec)
 				}
@@ -2576,7 +5708,7 @@ SpecRunner := [].{
 	## (`walk!`): everything it allocates is its own.
 	walk_files! : Program(state), Host, (Str => List(U8)), List(Str), { steps : U64, seed : U64 } => Try(Tally, { step : U64, message : Str })
 	walk_files! = |program, host, read_file!, paths, walk| {
-		specs = SpecRunner.parsed!(read_file!, paths).map_err(|message| { step: 0, message })?
+		specs = SpecRunner.parsed!(program, { read_file!, paths }).map_err(|message| { step: 0, message })?
 		SpecRunner.walk!(program, host, specs, walk)
 	}
 
@@ -2591,14 +5723,14 @@ SpecRunner := [].{
 		# Parse every file first, so a malformed one is reported as such;
 		# the walk parses them again inside its measured call, so what they
 		# hold is allocated and freed within it.
-		match SpecRunner.parsed!(io.read_file!, paths).map_ok(|_| {}) {
+		match SpecRunner.parsed!(program, { read_file!: io.read_file!, paths }).map_ok(|_| {}) {
 			Ok({}) => {}
 			Err(message) => {
 				(io.stderr!)("${message}\n")
 				return 2
 			}
 		}
-		host = { work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes! }
+		host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes!, mute_dbg!: io.mute_dbg! }
 		t0 = (io.now_ns!)()
 		allocations = (host.live_allocations!)()
 		bytes = (host.live_bytes!)()
@@ -2629,8 +5761,8 @@ SpecRunner := [].{
 }
 
 ## Wire encoding: strings are length-prefixed, integers little-endian, and
-## the boot bytes end with the online, visible and storage flags.
-expect SpecRunner.encode_boot("/a", [{ key: "k", value: "v" }], { online: Bool.False, visible: Bool.True, storage_available: Bool.False }) == [2, 0, 0, 0, '/', 'a', 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 0, 1, 0]
+## each boot section is tagged and length-bounded in ascending order.
+expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1, 6, 0, 0, 0, 0, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 13, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 101, 110, 45, 85, 83, 10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 11, 5, 0, 0, 0, 1, 0, 0, 0, 0, 13, 12, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 'd', 'i', 'v']
 
 ## An HTTP result carries status, headers and the body as the rest.
 expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6, 0x01, 1, 0, 0, 0, 1, 0, 0, 0, 'a', 1, 0, 0, 0, 'b', 'x']
@@ -2639,7 +5771,7 @@ expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6
 expect SpecRunner.encode_reject(Timeout, "") == [7] and SpecRunner.encode_reject(Network, "offline") == [2, 'o', 'f', 'f', 'l', 'i', 'n', 'e']
 
 ## Declared storage keys decode from `count:u32 (key:str)*`.
-expect SpecRunner.decode_keys([2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c']) == ["a", "bc"]
+expect SpecRunner.decode_keys([2, 15, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c', 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0]) == ["a", "bc"]
 
 ## Filters match ids shell-style.
 expect {
@@ -2683,3 +5815,1648 @@ expect [AppCrash, Unavailable, Executor].map(SpecRunner.encode_lost) == [[11, 4]
 ## An answer with no files is result tag 10, a zero file count, then the
 ## answer's bytes.
 expect SpecRunner.encode_answer([42, 0]) == [10, 0, 0, 0, 0, 42, 0]
+
+## Exactly 4096 chained focus turns settle. Commands emitted by focus handlers
+## join the same drain, which stays iterative instead of growing the call stack.
+expect {
+	program : SpecRunner.Program(U64)
+	program = {
+		version: Dom.protocol_version,
+		tasks: [],
+		keys: || [],
+		init: |_| (0, [], []),
+		event: |count, _buf, _work, node, _handler, _payload| {
+			next = count + 1
+			cmds = if (next == 4096) [] else SpecRunner.put_u32([0, 18, 1], if (node == 1) 2 else 1)
+			(next, cmds, List.repeat(0, 8))
+		},
+		files: |count, _buf, _work, _node, _handler, _payload, _files| (count, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	base = Dom.new({})
+	(d1, a) = Dom.add_node(base, { ..Dom.empty_node, tag: "input", rn: 1, hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
+	(d2, b) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", rn: 2, hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
+	dom_root = base.root
+	dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, dom_root, a, Err(End)), dom_root, b, Err(End)), 1, a), 2, b)
+	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	done = SpecRunner.drain_focus(program, { ..s, dom, draining: Bool.True, after_batch: [Ref({ action: Focus(1), node: 1, target: Dom.lookup(dom, 1) })] })
+	{ count: done.inst, turns: done.turns, queued: done.after_batch.len(), focused: done.focused } == { count: 4096, turns: 4096, queued: 0, focused: b + 1 }
+}
+
+## Both focus effects in one batch land before either handler runs. A focus
+## command from the first handler joins behind the second's queued event.
+expect {
+	program : SpecRunner.Program(List(U32))
+	program = {
+		version: Dom.protocol_version,
+		tasks: [],
+		keys: || [],
+		init: |_| ([], [], []),
+		event: |seen, _buf, _work, node, _handler, _payload| (seen.append(node), if (node == 1) SpecRunner.put_u32([0, 18, 1], 3) else [], List.repeat(0, 8)),
+		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	var $dom = Dom.new({})
+	for id in [1.U32, 2, 3] {
+		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input", rn: id, hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
+		$dom = Dom.bind(Dom.insert(d, d.root, i, Err(End)), id, i)
+	}
+	s = SpecRunner.fresh([], SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	done = SpecRunner.drain_focus(program, { ..s, dom: $dom, after_batch: [Ref({ action: Focus(1), node: 1, target: Dom.lookup($dom, 1) }), Ref({ action: Focus(1), node: 2, target: Dom.lookup($dom, 2) })] })
+	{ seen: done.inst, focused: done.focused } == { seen: [1, 2, 3], focused: Dom.lookup(done.dom, 3) + 1 }
+}
+
+## A focus loop stops before its 4097th queued turn. The poisoned model
+## rejects later engine calls and reports the same classified fault as Chrome.
+expect {
+	program : SpecRunner.Program(U64)
+	program = {
+		version: Dom.protocol_version,
+		tasks: [],
+		keys: || [],
+		init: |_| (0, [], []),
+		event: |count, _buf, _work, node, _handler, _payload| (count + 1, SpecRunner.put_u32([0, 18, 1], if (node == 1) 2 else 1), List.repeat(0, 8)),
+		files: |count, _buf, _work, _node, _handler, _payload, _files| (count, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	var $dom = Dom.new({})
+	for id in [1.U32, 2] {
+		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input", rn: id, hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
+		$dom = Dom.bind(Dom.insert(d, d.root, i, Err(End)), id, i)
+	}
+	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	stopped = SpecRunner.drain_focus(program, { ..s, dom: $dom, after_batch: [Ref({ action: Focus(1), node: 1, target: Dom.lookup($dom, 1) })] })
+	refused = SpecRunner.send(program, stopped, 1, 0, [])
+	{ count: refused.inst, turns: refused.turns, check: SpecRunner.check_settled(program, refused) } == { count: 4096, turns: 4096, check: Err("resource_limit: more than 4096 turns delivered without returning to idle (an event feedback loop)") }
+}
+
+## Focus uses bubbling focusin in the browser, so the app's focus name can
+## reach an ancestor. Queued focus keeps the old owner's identity: an earlier
+## handler removing it and recycling its id cannot fire its replacement.
+expect {
+	program : SpecRunner.Program(List(U32))
+	program = {
+		version: Dom.protocol_version,
+		tasks: [],
+		keys: || [],
+		init: |_| ([], [], []),
+		event: |seen, _buf, _work, id, _handler, _payload| {
+			cmds = if (id == 1) SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([5], 2).append(8), 2), 0), 0).append(0), ""), "input").append(0) else []
+			(seen.append(id), [0].concat(cmds), List.repeat(0, 8))
+		},
+		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	var $dom = Dom.new({})
+	for id in [1.U32, 2, 10] {
+		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input", rn: id, hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
+		$dom = Dom.bind(Dom.insert(d, d.root, i, Err(End)), id, i)
+	}
+	(d1, child) = Dom.add_node($dom, { ..Dom.empty_node, tag: "input" })
+	dom = Dom.insert(d1, Dom.lookup(d1, 10), child, Err(End))
+	s = SpecRunner.fresh([], SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	bubbled = SpecRunner.fire(program, { ..s, dom }, child, "focus", "")?
+	done = SpecRunner.drain_focus(program, { ..s, dom, after_batch: [Ref({ action: Focus(1), node: 1, target: Dom.lookup(dom, 1) }), Ref({ action: Focus(1), node: 2, target: Dom.lookup(dom, 2) })] })
+	{ ancestor: bubbled.inst, seen: done.inst, focused: done.focused, turns: done.turns } == { ancestor: [10], seen: [1], focused: 0, turns: 1 }
+}
+
+## A focus command cannot enter a hidden input, a hidden element or a hidden
+## ancestor. A later removal in the same batch can retire its resolved target;
+## applying that command then does nothing, as the browser's missing lookup does.
+expect {
+	program : SpecRunner.Program(U64)
+	program = {
+		version: Dom.protocol_version,
+		tasks: [],
+		keys: || [],
+		init: |_| (0, [], []),
+		event: |seen, _buf, _work, _node, _handler, _payload| (seen + 1, [], List.repeat(0, 8)),
+		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	var $dom = Dom.new({})
+	for item in [{ id: 1.U32, tag: "input", attrs: [] }, { id: 2, tag: "input", attrs: Dom.attributes([("type", "hidden")]) }, { id: 3, tag: "input", attrs: Dom.attributes([("hidden", "true")]) }, { id: 4, tag: "div", attrs: Dom.attributes([("hidden", "true")]) }, { id: 5, tag: "input", attrs: [] }] {
+		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: item.tag, attrs: item.attrs })
+		parent = if (item.id == 5) Dom.lookup(d, 4) else d.root
+		$dom = Dom.bind(Dom.insert(d, parent, i, Err(End)), item.id, i)
+	}
+	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	focused = SpecRunner.drain_focus(program, { ..s, dom: $dom, after_batch: [1.U32, 2, 3, 5].map(|id| Ref({ action: Focus(1), node: id, target: Dom.lookup($dom, id) })) })
+	cmds = SpecRunner.put_u32([18, 1], 1).concat(SpecRunner.put_u32([5], 1))
+	removed = SpecRunner.drain_focus(program, SpecRunner.take_batch(focused, 0, [0].concat(cmds)))
+	{ kept: focused.focused, removed: removed.focused, calls: removed.inst, waiting: removed.after_batch.len() } == { kept: Dom.lookup(focused.dom, 1) + 1, removed: 0, calls: 0, waiting: 0 }
+}
+
+## A declaration's kind and policy bits survive the wire independently of
+## its event name. Property commands retain their live values and mirrors.
+expect {
+	element = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([8], 1), 0), 0).append(0), ""), "input").append(0)
+	listener = SpecRunner.put_u32(SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32([11], 1), 7), "change").append(2), 2)
+	value = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(1), "first")
+	checked = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(2), "true")
+	decoded = Dom.apply_full(Dom.new({}), [0].concat(element).concat(listener).concat(value).concat(checked))
+	i = Dom.lookup(decoded.dom, 1)
+	target = Dom.target(decoded.dom, i, "change", Bool.True)?
+	n = Dom.node(decoded.dom, i)
+	{ target, value: Dom.live_value(n, "value"), checked: Dom.live_value(n, "checked"), mirror: Dom.attr_of(n, "value"), values: decoded.values, writes: decoded.written } == {
+		target: { node: 1, handler: 7, event: "change", kind: 2, policies: 2, declaring: i },
+		value: "first",
+		checked: "true",
+		mirror: "first",
+		values: [(i, "first")],
+		writes: [i, i],
+	}
+}
+
+## A property template hole consumes one value at INST and HPROP updates
+## that same resolved element. Its sibling event hole keeps its own kind.
+expect {
+	tree = SpecRunner.put_str(SpecRunner.put_str([1, 0], ""), "input").concat([0, 0, 0])
+	holes = SpecRunner.put_u32(SpecRunner.put_str([2, 6, 0, 2, 3, 0, 0], "change").append(1), 1)
+	template = tree.concat(holes)
+	define = SpecRunner.put_u32(SpecRunner.put_u32([7], 0), template.len().to_u32_wrap()).concat(template)
+	instance = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([1], 1), 0), 0), 0), "false")
+	update = SpecRunner.put_str(SpecRunner.put_u32([22], 1).append(0), "true")
+	decoded = Dom.apply_full(Dom.new({}), [0].concat(define).concat(instance).concat(update))
+	i = Dom.lookup(decoded.dom, 1)
+	{ checked: Dom.live_value(Dom.node(decoded.dom, i), "checked"), target: Dom.target(decoded.dom, i, "change", Bool.True)?, writes: decoded.written, ops: decoded.ops } == {
+		checked: "true",
+		target: { node: 1, handler: 0, event: "change", kind: 1, policies: 1, declaring: i },
+		writes: [i],
+		ops: [7, 1, 22],
+	}
+}
+
+## An ordinary value attribute on a custom element never overwrites its
+## own live property. The spec's attribute and value assertions see each.
+expect {
+	(d1, i) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "custom-field", props: [("value", "live")] })
+	dom = Dom.bind(d1, 1, i)
+	attribute = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1).append(3), ""), "value").append(1), "attribute")
+	decoded = Dom.apply(dom, [0].concat(attribute))
+	{ attr: SpecRunner.attr_value(decoded, i, "value")?, value: SpecRunner.value_of(decoded, i) } == { attr: "attribute", value: "live" }
+}
+
+## Attribute commands retain empty text independently from absence. The
+## same distinction survives static template attributes, INST operands and
+## HATTR updates, without changing ordinary checked attributes into properties.
+expect {
+	element = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([8], 1), 0), 0).append(0), ""), "img").append(0)
+	empty_alt = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1).append(3), ""), "alt").append(1), "")
+	removed_alt = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1).append(3), ""), "alt").append(0)
+	ordinary_checked = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1).append(3), ""), "checked").append(1), "")
+	present = Dom.apply(Dom.new({}), [0].concat(element).concat(empty_alt).concat(ordinary_checked))
+	i = Dom.lookup(present, 1)
+	removed = Dom.apply(present, [0].concat(removed_alt))
+	static_attrs = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str([1, 0], ""), "img").concat([0, 1, 3]), ""), "alt"), "")
+	template = SpecRunner.put_str(SpecRunner.put_str(static_attrs.concat([0, 1, 2, 0, 3]), ""), "aria-label")
+	define = SpecRunner.put_u32(SpecRunner.put_u32([7], 0), template.len().to_u32_wrap()).concat(template)
+	instance = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([1], 2), 0), 0), 0).append(1), "")
+	row_present = Dom.apply(removed, [0].concat(define).concat(instance))
+	row = Dom.lookup(row_present, 2)
+	row_absent = Dom.apply(row_present, SpecRunner.put_u32([0, 3], 2).concat([0, 0]))
+	row_restored = Dom.apply(row_absent, SpecRunner.put_str(SpecRunner.put_u32([0, 3], 2).concat([0, 1]), ""))
+	actual = {
+		plain_empty: SpecRunner.attr_value(present, i, "alt")?,
+		ordinary_checked: SpecRunner.attr_value(present, i, "checked")?,
+		plain_absent: SpecRunner.attr_value(removed, i, "alt"),
+		static_empty: SpecRunner.attr_value(row_present, row, "alt")?,
+		row_empty: SpecRunner.attr_value(row_present, row, "aria-label")?,
+		row_absent: SpecRunner.attr_value(row_absent, row, "aria-label"),
+		row_restored: SpecRunner.attr_value(row_restored, row, "aria-label")?,
+	}
+	actual == { plain_empty: "", ordinary_checked: "", plain_absent: Err(Absent), static_empty: "", row_empty: "", row_absent: Err(Absent), row_restored: "" }
+}
+
+## A scripted `change` the browser's value setter would rewrite (as measured
+## in Chrome 157) is refused natively; a value it keeps is not.
+expect {
+	input = |kind, attrs| { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)].concat(attrs)) }
+	refused = |n, v| SpecRunner.change_refusal(n, v).is_err()
+	actual = [
+		refused(input("text", []), "a\nb"),
+		refused(input("text", []), "a\tb"),
+		refused(input("email", []), " a@b "),
+		refused(input("email", [("multiple", "")]), "a@b, c@d"),
+		refused(input("email", [("multiple", "")]), "a@b,c@d"),
+		refused(input("url", []), " http://x "),
+		refused(input("number", []), "2x"),
+		refused(input("number", []), "1e3"),
+		refused(input("color", []), "#ABCDEF"),
+		refused(input("color", []), "#abcdef"),
+		refused(input("range", []), "50"),
+		refused(input("range", [("min", "0"), ("max", "9"), ("step", "1")]), "4"),
+		refused(input("range", [("min", "1"), ("step", "2")]), "4"),
+		refused(input("range", []), "04"),
+		refused(input("range", [("max", "9")]), "10"),
+		refused(input("date", []), "2026-02-30"),
+		refused(input("date", []), "2024-02-29"),
+		refused(input("date", []), "2026-11-11 12:01"),
+		refused(input("time", []), "10:00:00.5"),
+		refused(input("time", []), "25:00"),
+		refused(input("month", []), "2026-13"),
+		refused(input("week", []), "2026-W53"),
+		refused(input("hidden", []), " a\nb "),
+		refused({ ..Dom.empty_node, tag: "textarea" }, "a\r\nb"),
+		refused({ ..Dom.empty_node, tag: "textarea" }, "a\nb"),
+	]
+	actual == [True, False, True, True, False, True, True, False, True, False, False, False, True, True, True, True, False, True, False, True, True, True, False, True, False]
+}
+
+## `fill` refuses what Chrome's typing would not leave in the control as
+## given: a read-only control, text over `maxlength` (counted in UTF-16, the
+## limit read by HTML's integer rules), a line break in a single-line
+## control, CR in a textarea, white space around an email address.
+expect {
+	input = |kind, attrs| { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)].concat(attrs)) }
+	refused = |n, v| SpecRunner.fill_refusal(n, v).is_err()
+	actual = [
+		refused(input("text", [("readonly", "")]), "abc"),
+		refused(input("text", [("maxlength", "3")]), "abcd"),
+		refused(input("text", [("maxlength", "3")]), "abc"),
+		refused(input("text", [("maxlength", "3")]), "a😀b"),
+		refused(input("text", [("maxlength", " 2abc")]), "abc"),
+		refused(input("text", [("maxlength", "-1")]), "abc"),
+		refused(input("text", []), "a\nb"),
+		refused(input("text", []), " lead"),
+		refused({ ..Dom.empty_node, tag: "textarea" }, "a\nb"),
+		refused({ ..Dom.empty_node, tag: "textarea" }, "a\rb"),
+		refused(input("email", []), " a@b "),
+		refused(input("url", []), " http://x "),
+	]
+	actual == [True, True, False, True, True, False, True, False, False, True, True, False]
+}
+
+## A control in a disabled field set is disabled, unless it lies in that
+## field set's first legend; an option of a disabled group is disabled too.
+## The field set's own `disabled` property, which `expect-disabled` reads,
+## stays the control's own.
+expect {
+	add = |dom, parent, tag, attrs| {
+		(d, i) = Dom.add_node(dom, { ..Dom.empty_node, tag, attrs: Dom.attributes(attrs) })
+		(Dom.insert(d, parent, i, Err(End)), i)
+	}
+	(d1, fieldset) = add(Dom.new({}), Dom.new({}).root, "fieldset", [("disabled", "")])
+	(d2, legend) = add(d1, fieldset, "legend", [])
+	(d3, in_legend) = add(d2, legend, "input", [])
+	(d4, second_legend) = add(d3, fieldset, "legend", [])
+	(d5, in_second) = add(d4, second_legend, "input", [])
+	(d6, plain) = add(d5, fieldset, "input", [])
+	(d7, group) = add(d6, d6.root, "optgroup", [("disabled", "")])
+	(d8, option) = add(d7, group, "option", [])
+	actual = [in_legend, in_second, plain, option].map(|i| SpecRunner.actually_disabled(d8, i))
+	actual == [False, True, True, True] and !SpecRunner.disabled(Dom.node(d8, plain))
+}
+
+## A form with a constraint the oracle does not model cannot be judged; a
+## read-only or disabled control with one takes no part, a modelled form
+## is judged as before, and the constraints that never block a submission
+## (a range's bounds and step, pattern or minlength on an empty control,
+## pattern on a textarea, step="any") are judged satisfied.
+expect {
+	add = |dom, parent, tag, attrs, value| {
+		(d, i) = Dom.add_node(dom, { ..Dom.empty_node, tag, attrs: Dom.attributes(attrs), props: if (value == "") [] else [("value", value)] })
+		(Dom.insert(d, parent, i, Err(End)), i)
+	}
+	form_with = |tag, attrs, value| {
+		(d1, form) = add(Dom.new({}), Dom.new({}).root, "form", [], "")
+		(d2, _) = add(d1, form, tag, attrs, value)
+		(d2, form)
+	}
+	judged_as = |tag, attrs, value| {
+		(dom, form) = form_with(tag, attrs, value)
+		SpecRunner.unmodelled_constraint(dom, form).is_ok()
+	}
+	judged = |attrs| judged_as("input", attrs, "")
+	actual = [judged([("pattern", "a+")]), judged([("pattern", "a+"), ("readonly", "")]), judged([("pattern", "a+"), ("disabled", "")]), judged([("type", "number"), ("min", "1"), ("max", "9")]), judged([("type", "number"), ("step", "2")]), judged([("type", "date"), ("min", "2026-01-01")]), judged([("required", ""), ("type", "radio")]), judged([("required", "")])]
+	satisfied = [
+		judged([("type", "range"), ("min", "2"), ("max", "8"), ("step", "3")]),
+		judged([("minlength", "3")]),
+		judged_as("textarea", [("pattern", "a+")], "zzz"),
+		judged([("type", "number"), ("step", "Any")]),
+		judged([("step", "any")]),
+	]
+	still = [
+		judged_as("input", [("pattern", "a+")], "zzz"),
+		judged_as("input", [("minlength", "3")], "ab"),
+		judged([("type", "date"), ("step", "2")]),
+		judged([("type", "range"), ("pattern", "a+")]),
+	]
+	actual == [True, True, True, True, False, False, False, True] and satisfied == [True, True, True, True, True] and still == [False, False, False, True]
+}
+
+## `required` applies only where HTML says: a required hidden input never
+## blocks submission, a required read-only text input is barred.
+expect {
+	add = |dom, parent, tag, attrs| {
+		(d, i) = Dom.add_node(dom, { ..Dom.empty_node, tag, attrs: Dom.attributes(attrs) })
+		(Dom.insert(d, parent, i, Err(End)), i)
+	}
+	valid = |attrs| {
+		(d1, form) = add(Dom.new({}), Dom.new({}).root, "form", [])
+		(d2, _) = add(d1, form, "input", attrs)
+		SpecRunner.form_valid(d2, form)
+	}
+	[valid([("required", ""), ("type", "hidden")]), valid([("required", ""), ("readonly", "")]), valid([("required", "")])] == [True, True, False]
+}
+
+## The browser renders an HTML element inside SVG only through
+## foreignObject, and inside MathML only through a token element; an open
+## modal dialog renders in the top layer wherever it is. Each case matches
+## a measurement in Chrome 157.
+expect {
+	svg = Dom.svg_namespace
+	math = Dom.mathml_namespace
+	html = Dom.html_namespace
+	leaf = |chain| {
+		var $dom = Dom.new({})
+		var $parent = $dom.root
+		for (namespace, tag) in chain {
+			(d, i) = Dom.add_node($dom, { ..Dom.empty_node, namespace, tag })
+			$dom = Dom.insert(d, $parent, i, Err(End))
+			$parent = i
+		}
+		($dom, $parent)
+	}
+	visible_in = |chain| {
+		(dom, i) = leaf(chain)
+		SpecRunner.drawn(dom, i)
+	}
+	actual = [
+		visible_in([(svg, "svg"), (html, "button")]),
+		visible_in([(svg, "svg"), (svg, "g"), (html, "button")]),
+		visible_in([(svg, "svg"), (svg, "foreignObject"), (html, "button")]),
+		visible_in([(svg, "svg"), (svg, "foreignObject"), (svg, "svg"), (html, "button")]),
+		visible_in([(svg, "svg"), (svg, "foreignObject"), (svg, "g")]),
+		visible_in([(math, "math"), (html, "button")]),
+		visible_in([(math, "math"), (math, "mrow"), (math, "mtext"), (html, "button")]),
+		visible_in([(svg, "svg"), (svg, "DIV"), (html, "section"), (html, "button")]),
+		visible_in([(html, "div"), ("urn:x", "entry"), (html, "button")]),
+		visible_in([(svg, "svg"), ("urn:x", "entry"), (html, "button")]),
+		visible_in([(html, "div"), (svg, "g")]),
+		visible_in([(math, "math"), (svg, "svg")]),
+	]
+	(modal_dom, button) = leaf([(svg, "svg"), (svg, "g"), (html, "dialog"), (html, "button")])
+	dialog = Dom.node(modal_dom, button).parent - 1
+	shown = Dom.modify(modal_dom, dialog, |n| { ..n, shown: Modal })
+	more = [
+		visible_in([(svg, "svg"), (svg, "DIV"), (svg, "circle")]),
+		visible_in([(svg, "svg"), (svg, "defs"), (svg, "circle")]),
+		visible_in([(svg, "svg"), (svg, "g"), (svg, "a"), (svg, "circle")]),
+		visible_in([(svg, "svg"), (svg, "text"), (svg, "tspan")]),
+		visible_in([(svg, "svg"), (svg, "g"), (svg, "foreignObject"), (html, "button")]),
+	]
+	(fo_root, fo_child) = leaf([(html, "div")])
+	unrooted = Dom.modify(fo_root, fo_root.root, |n| { ..n, namespace: svg, tag: "foreignObject" })
+	more == [False, False, True, True, True] and !SpecRunner.drawn(unrooted, fo_child) and
+		actual == [False, False, True, False, False, False, True, False, True, False, False, False] and SpecRunner.drawn(shown, button) and !SpecRunner.drawn(modal_dom, button)
+}
+
+## Locators and focusability use presence rather than nonempty text. Empty
+## labels and test ids locate only elements that actually declare them.
+expect {
+	dom = Dom.new({})
+	plain = { ..Dom.empty_node, tag: "a" }
+	empty = { ..plain, attrs: Dom.attributes([("aria-label", ""), ("data-testid", ""), ("href", "")]) }
+	actual = {
+		missing_label: SpecRunner.matches(dom, plain, Label("")),
+		empty_label: SpecRunner.matches(dom, empty, Label("")),
+		missing_id: SpecRunner.matches(dom, plain, TestId("")),
+		empty_id: SpecRunner.matches(dom, empty, TestId("")),
+		missing_href: SpecRunner.focusable(plain),
+		empty_href: SpecRunner.focusable(empty),
+	}
+	actual == { missing_label: Bool.False, empty_label: Bool.True, missing_id: Bool.False, empty_id: Bool.True, missing_href: Bool.False, empty_href: Bool.True }
+}
+
+## An empty option value is distinct from an absent one: only the absent
+## value falls back to the option's text. Empty controlled values retain their
+## mirrors, while checked false removes its mirror explicitly.
+expect {
+	(d1, select) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "select" })
+	(d2, option) = Dom.add_node(d1, { ..Dom.empty_node, tag: "option" })
+	(d3, text) = Dom.add_node(d2, { ..Dom.empty_node, namespace: "", kind: 2, text: "All works" })
+	(d4, input) = Dom.add_node(d3, { ..Dom.empty_node, tag: "input" })
+	tree = Dom.insert(Dom.insert(d4, select, option, Err(End)), option, text, Err(End))
+	values = Dom.set_property_on(Dom.set_property_on(tree, option, 1, "", 2), select, 1, "", 1)
+	checked = Dom.set_property_on(Dom.set_property_on(values, input, 2, "true", 3), input, 2, "false", 3)
+	actual = {
+		fallback: SpecRunner.value_of(tree, option),
+		empty_option: SpecRunner.value_of(checked, option),
+		select_match: SpecRunner.has_option(checked, { root: select, value: "" }),
+		option_mirror: Dom.node(checked, option).attrs,
+		select_mirror: Dom.node(checked, select).attrs,
+		unchecked_mirror: Dom.node(checked, input).attrs,
+	}
+	actual == { fallback: "All works", empty_option: "", select_match: Bool.True, option_mirror: Dom.attributes([("value", "")]), select_mirror: Dom.attributes([("value", "")]), unchecked_mirror: [] }
+}
+
+## A checkbox without a declared value has the browser's default "on".
+## A button's ordinary value attribute reflects its own standard property,
+## so its focus payload remains that value without a PROP declaration.
+expect {
+	program : SpecRunner.Program(List(Str))
+	program = {
+		version: Dom.protocol_version,
+		tasks: [],
+		keys: || [],
+		init: |_| ([], [], []),
+		event: |seen, _buf, _work, _node, _handler, payload| (seen.append(Str.from_utf8(payload) ?? crash "test payload is UTF-8"), [], List.repeat(0, 8)),
+		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	(d1, checkbox) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", rn: 1, attrs: Dom.attributes([("type", "checkbox"), ("aria-label", "Raw checkbox")]), hs: [{ event: "change", handler: 0, kind: 1, policies: 0 }] })
+	(d2, button) = Dom.add_node(d1, { ..Dom.empty_node, tag: "button", rn: 2, attrs: Dom.attributes([("value", "button payload"), ("aria-label", "Value button")]), hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, checkbox, Err(End)), d2.root, button, Err(End)), 1, checkbox), 2, button)
+	s = SpecRunner.fresh([], SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	changed = SpecRunner.one(program, { ..s, dom }, Change(Label("Raw checkbox"), "on"))?
+	focused = SpecRunner.one(program, changed, Focus(Label("Value button")))?
+	{ events: focused.inst, checkbox: Dom.live_value(Dom.node(focused.dom, checkbox), "checked"), default: SpecRunner.value_of(focused.dom, checkbox), button: SpecRunner.value_of(focused.dom, button) } == {
+		events: ["true", "button payload"],
+		checkbox: "true",
+		default: "on",
+		button: "button payload",
+	}
+}
+
+## Only a files declaration stages handles. The same selected files reach a
+## text declaration as its ordinary file-input value, and an empty choice
+## reaches text but dispatches nothing to a files declaration. Multiple-file
+## admission depends on attribute presence, including empty and false text;
+## an input without that attribute still refuses a multi-file choice.
+expect {
+	program : SpecRunner.Program({ events : List(Str), files : U64 })
+	program = {
+		version: Dom.protocol_version,
+		tasks: [],
+		keys: || [],
+		init: |_| ({ events: [], files: 0 }, [], []),
+		event: |seen, _buf, _work, _node, _handler, payload| ({ ..seen, events: seen.events.append(Str.from_utf8(payload) ?? crash "test payload is UTF-8") }, [], List.repeat(0, 8)),
+		files: |seen, _buf, _work, _node, _handler, _payload, _files| ({ ..seen, files: seen.files + 1 }, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	(d1, input) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", rn: 1, attrs: Dom.attributes([("type", "FILE"), ("aria-label", "Choice")]), hs: [{ event: "change", handler: 0, kind: 2, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, input, Err(End)), 1, input)
+	base = SpecRunner.fresh({ events: [], files: 0 }, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	s = { ..base, dom, browser: { ..base.browser, files: [{ name: "a.txt", mime: "text/plain", bytes: [65] }] } }
+	op = ChooseFiles(Label("Choice"), ["a.txt"])
+	text = Dom.modify(dom, input, |n| { ..n, hs: [{ event: "change", handler: 0, kind: 1, policies: 0 }] })
+	with_text = SpecRunner.give_files(program, { ..s, dom: text }, op, [])?
+	empty_text = SpecRunner.give_files(program, with_text, ChooseFiles(Label("Choice"), []), [])?
+	empty_files = SpecRunner.give_files(program, s, ChooseFiles(Label("Choice"), []), [])?
+	accepted = SpecRunner.give_files(program, s, op, [])?
+	wrong_type = Dom.set_attr_on(dom, input, "type", "Text")
+	refused = SpecRunner.give_files(program, { ..s, dom: wrong_type }, op, [])
+	too_many = SpecRunner.give_files(program, s, ChooseFiles(Label("Choice"), ["a.txt", "a.txt"]), [])
+	multiple = ["", "false", "named"].all(
+		|value| SpecRunner.give_files(program, { ..s, dom: Dom.set_attr_on(dom, input, "multiple", value) }, ChooseFiles(Label("Choice"), ["a.txt", "a.txt"]), []).map_ok(|next| next.inst.files == 1) == Ok(True),
+	)
+	accepted.inst.files == 1 and refused.is_err() and too_many.is_err() and multiple and { files_count: SpecRunner.file_count(dom, op)?, text_count: SpecRunner.file_count(text, op)?, events: empty_text.inst.events, files: empty_files.inst.files } == {
+		files_count: 1,
+		text_count: 0,
+		events: ["C:\\fakepath\\a.txt", ""],
+		files: 0,
+	}
+}
+
+## A protocol probe records delivered inputs without reactive semantics;
+## the ingress tests can distinguish frozen payloads and exact turn order.
+report_probe : {} -> SpecRunner.Program(List({ id : U32, payload : List(U8) }))
+report_probe = |_| {
+	version: Dom.protocol_version,
+	tasks: [],
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0],
+	init: |_| ([], [0, 13, 1, 0, 0, 0, 6, 13, 2, 0, 0, 0, 7], List.repeat(0, 8)),
+	event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), [], List.repeat(0, 8)),
+	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+	settled: |_| Ok({}),
+	live: |_| [],
+}
+
+## A source keeps its first queue position while replacement freezes its
+## newest payload; assertions inside the held frame observe no turn.
+expect {
+	program = report_probe({})
+	s = SpecRunner.mount_in(program, {})
+	a = SpecRunner.one(program, s, HoldReports)?
+	b = SpecRunner.one(program, a, SetOnline(Offline))?
+	c = SpecRunner.one(program, b, SetVisibility(Hidden))?
+	d = SpecRunner.one(program, c, SetOnline(Online))?
+	_ = SpecRunner.one(program, d, ExpectReportsReplaced(1))?
+	before = d.inst
+	after = SpecRunner.one(program, d, ReleaseReports)?
+	{ before, delivered: after.inst, indexed: after.browser.reports.index.len() } == {
+		before: [],
+		delivered: [{ id: 1, payload: [8, 1] }, { id: 2, payload: [9, 0] }],
+		indexed: 0,
+	}
+}
+
+## An occurrence pins reports in constant work by advancing the epoch;
+## later reports begin behind it and cannot overwrite the earlier payload.
+expect {
+	program = report_probe({})
+	s = SpecRunner.mount_in(program, {})
+	a = SpecRunner.report(program, { state: s, id: 1, payload: [8, 0] })
+	b = SpecRunner.send(program, { ..a, applying_focus: Bool.True }, SpecRunner.fx_node, 9, [5])
+	c = SpecRunner.report(program, { state: b, id: 1, payload: [8, 1] })
+	d = SpecRunner.report(program, { state: c, id: 1, payload: [8, 0] })
+	after = SpecRunner.release_reports(program, { ..d, applying_focus: Bool.False })
+	{ seen: after.inst, replacements: after.browser.reports.replaced, indexed: after.browser.reports.index.len() } == {
+		seen: [{ id: 1, payload: [8, 0] }, { id: 9, payload: [5] }, { id: 1, payload: [8, 0] }],
+		replacements: 1,
+		indexed: 0,
+	}
+}
+
+## Cancelling a source discards both pinned and replaceable reports; a
+## later report from the cancelled source neither queues nor counts.
+expect {
+	program = report_probe({})
+	s = SpecRunner.mount_in(program, {})
+	a = SpecRunner.report(program, { state: s, id: 1, payload: [8, 0] })
+	b = SpecRunner.send(program, { ..a, applying_focus: Bool.True }, SpecRunner.fx_node, 9, [5])
+	c = SpecRunner.report(program, { state: b, id: 1, payload: [8, 1] })
+	cancelled = { ..c, applying_focus: Bool.False, browser: SpecRunner.absorb(c.browser, [Cancel(1)]) }
+	after = SpecRunner.release_reports(program, SpecRunner.report(program, { state: cancelled, id: 1, payload: [8, 0] }))
+	{ seen: after.inst, replacements: after.browser.reports.replaced, indexed: after.browser.reports.index.len(), live_sources: after.browser.report_sources.len() } == {
+		seen: [{ id: 9, payload: [5] }],
+		replacements: 0,
+		indexed: 0,
+		live_sources: 1,
+	}
+}
+
+## A hold belongs to one document: nested holds, unmatched releases and a
+## new document during a hold fail before they can change that contract.
+expect {
+	program = report_probe({})
+	s = SpecRunner.mount_in(program, {})
+	held = SpecRunner.one(program, s, HoldReports)?
+	{ nested: SpecRunner.one(program, held, HoldReports).map_ok(|_| {}), unmatched: SpecRunner.one(program, s, ReleaseReports).map_ok(|_| {}), navigation: SpecRunner.one(program, held, Navigate("/next")).map_ok(|_| {}) } == {
+		nested: Err("hold-reports while reports are already held"),
+		unmatched: Err("release-reports while reports are not held"),
+		navigation: Err("cross-document navigation while reports are held"),
+	}
+}
+
+## At the idle ingress bound, an occurrence pins the waiting reports before
+## the oldest runs, and all 4096 remaining entries fit and deliver normally.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, {})
+	var $sources = initial.browser.report_sources
+	var $id = 1.U32
+	while $id <= 4096 {
+		$sources = $sources.insert($id, {})
+		$id = $id + 1
+	}
+	var $s = { ..initial, browser: { ..initial.browser, report_sources: $sources } }
+	$id = 1
+	while $id <= 4096 {
+		$s = SpecRunner.report(program, { state: $s, id: $id, payload: [8, 0] })
+		$id = $id + 1
+	}
+	after = SpecRunner.send(program, $s, SpecRunner.fx_node, 9000, [5])
+	{ fault: after.fault, delivered: after.inst.len(), last: after.inst.last()?, queued: after.event_queue.len(), indexed: after.browser.reports.index.len() } == {
+		fault: Healthy,
+		delivered: 4097,
+		last: { id: 9000, payload: [5] },
+		queued: 0,
+		indexed: 0,
+	}
+}
+
+## Storage is read when its later task runs, after preceding ingress and
+## batch focus effects: a queued occurrence's write must precede the read.
+expect {
+	base = report_probe({})
+	program = {
+		..base,
+		event: |seen, _buf, _work, _node, id, payload| {
+			commands = match id {
+				1 => SpecRunner.put_str([13, 3, 0, 0, 0, 2], "k")
+				9 => SpecRunner.put_str(SpecRunner.put_str([16, 1], "k"), "new")
+				_ => []
+			}
+			(seen.append({ id, payload }), [0].concat(commands), List.repeat(0, 8))
+		},
+	}
+	initial = SpecRunner.mount_in(program, { storage: [("k", "old")] })
+	queued = SpecRunner.report(program, { state: initial, id: 1, payload: [8, 0] })
+	after = SpecRunner.send(program, queued, SpecRunner.fx_node, 9, [])
+	{ delivered: after.inst, pending_reads: after.browser.gets } == {
+		delivered: [{ id: 1, payload: [8, 0] }, { id: 9, payload: [] }, { id: 3, payload: [3, 'n', 'e', 'w'] }],
+		pending_reads: [],
+	}
+}
+
+## A protocol recorder isolates browser input ordering from application logic.
+## Pointer payload validation remains the real engine's separate contract.
+pointer_probe : {} -> SpecRunner.Program(List({ handler : U32, payload : List(U8) }))
+pointer_probe = |_props| {
+	version: Dom.protocol_version,
+	tasks: [],
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0],
+	init: |_| ([], [], List.repeat(0, 8)),
+	event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), [], List.repeat(0, 8)),
+	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+	settled: |_| Ok({}),
+	live: |_| [],
+}
+
+## Neither an old capturing element nor its recycled routing id receives a
+## later release. The actual live target's ancestor handles it, with no stale
+## click or default navigation from the detached anchor.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, old) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "a", rn: 1, attrs: Dom.attributes([("data-testid", "old"), ("href", "/phantom")]), props: [("pointer_zone", "old")], hs: [{ event: "pointerdown", handler: 1, kind: 3, policies: 4 }, { event: "pointerup", handler: 2, kind: 3, policies: 0 }, { event: "click", handler: 3, kind: 1, policies: 0 }] })
+	(d2, outside) = Dom.add_node(d1, { ..Dom.empty_node, tag: "div", rn: 2, attrs: Dom.attributes([("data-testid", "outside")]), hs: [{ event: "pointerup", handler: 4, kind: 3, policies: 0 }] })
+	dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, old, Err(End)), d2.root, outside, Err(End)), 1, old), 2, outside)
+	down = SpecRunner.one(program, { ..base, dom }, PointerDown({ target: TestId("old"), at: Centre, id: 1, kind: Mouse, button: Main, modifiers: 0 }))?
+	detached = Dom.detach(Dom.forget_subtree(down.dom, old), old)
+	(d3, replacement) = Dom.add_node(detached, { ..Dom.empty_node, tag: "a", rn: 1, attrs: Dom.attributes([("href", "/replacement")]), hs: [{ event: "pointerup", handler: 5, kind: 3, policies: 0 }, { event: "click", handler: 6, kind: 1, policies: 0 }] })
+	up = SpecRunner.one(program, { ..down, dom: Dom.bind(Dom.insert(d3, d3.root, replacement, Err(End)), 1, replacement) }, PointerUp({ target: TestId("outside"), at: Centre, id: 1 }))?
+	{ handlers: up.inst.map(|event| event.handler), url: up.browser.env.url, active: up.browser.pointers.len() } == { handlers: [1, 4], url: "/", active: 0 }
+}
+
+## A multi-contact touch set never synthesizes a tap's mouse events, even
+## after its nonprimary contact ends. A later single tap starts fresh.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, zone) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: Dom.attributes([("data-testid", "zone")]), props: [("pointer_zone", "zone")], hs: [{ event: "pointerdown", handler: 1, kind: 3, policies: 4 }, { event: "pointerup", handler: 2, kind: 3, policies: 0 }, { event: "mousemove", handler: 4, kind: 1, policies: 0 }, { event: "mousedown", handler: 5, kind: 1, policies: 0 }, { event: "mouseup", handler: 6, kind: 1, policies: 0 }, { event: "click", handler: 7, kind: 1, policies: 0 }] })
+	s = { ..base, dom: Dom.bind(Dom.insert(d1, d1.root, zone, Err(End)), 1, zone) }
+	press = { target: TestId("zone"), at: Centre, id: 2, kind: Touch, button: Main, modifiers: 0 }
+	a = SpecRunner.one(program, s, PointerDown(press))?
+	b = SpecRunner.one(program, a, PointerDown({ ..press, id: 3 }))?
+	c = SpecRunner.one(program, b, PointerUp({ target: TestId("zone"), at: Centre, id: 3 }))?
+	d = SpecRunner.one(program, c, PointerUp({ target: TestId("zone"), at: Centre, id: 2 }))?
+	e = SpecRunner.one(program, d, PointerDown(press))?
+	f = SpecRunner.one(program, e, PointerUp({ target: TestId("zone"), at: Centre, id: 2 }))?
+	f.inst.map(|event| event.handler) == [1, 1, 2, 2, 1, 2, 4, 5, 6, 7]
+}
+
+## A mousedown can install the first typed pointer handler. The centre rule
+## is checked again for pointerup instead of trusting the initial click tree.
+expect {
+	probe = pointer_probe({})
+	zone = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(3), "dynamic")
+	listener = SpecRunner.put_u32(SpecRunner.put_u32([11], 1), 8)
+	commands = zone.concat(SpecRunner.put_str(listener, "pointerup").concat([3, 0, 0, 0, 0]))
+	program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) [0].concat(commands) else [], List.repeat(0, 8)) }
+	base = SpecRunner.mount_in(program, {})
+	(d1, parent) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1 })
+	(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "button", rn: 2, hs: [{ event: "mousedown", handler: 9, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, parent, Err(End)), parent, child, Err(End)), 1, parent), 2, child)
+	SpecRunner.mouse_click(program, { ..base, dom }, child) == Err("LOC lies in zone dynamic; give :at in that zone with the pointer steps")
+}
+
+## A zone installed on LOC itself has a defined centre. The later typed
+## pointerup reads that zone after mousedown's command batch has applied.
+expect {
+	probe = pointer_probe({})
+	zone = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(3), "dynamic")
+	listener = SpecRunner.put_u32(SpecRunner.put_u32([11], 1), 8)
+	commands = zone.concat(SpecRunner.put_str(listener, "pointerup").concat([3, 0, 0, 0, 0]))
+	program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) [0].concat(commands) else [], List.repeat(0, 8)) }
+	base = SpecRunner.mount_in(program, {})
+	(d1, button) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, hs: [{ event: "mousedown", handler: 9, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, button, Err(End)), 1, button)
+	after = SpecRunner.mouse_click(program, { ..base, dom }, button)?
+	after.inst == [
+		{ handler: 9, payload: [] },
+		{ handler: 8, payload: [1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 136, 19, 136, 19, 7, 0, 0, 0, 'd', 'y', 'n', 'a', 'm', 'i', 'c'] },
+	]
+}
+
+## ApplyValue lands the rendered value when a user's draft differs but the
+## value hole emitted nothing; applying to another node keeps focused state.
+expect {
+	probe = pointer_probe({})
+	base = SpecRunner.fresh([], SpecRunner.fresh_browser({}))
+	(d1, input) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "input", rn: 1, attrs: Dom.attributes([("value", "rendered")]), props: [("value", "draft")] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, input, Err(End)), 1, input)
+	state = { ..base, dom, focused: input + 1, after_batch: [Ref({ node: 1, action: Focus(4), target: Dom.lookup(dom, 1) })] }
+	after = SpecRunner.drain_focus(probe, state)
+	{ shown: Dom.live_value(Dom.node(after.dom, input), "value"), focus: after.focused, held: after.deferred } == { shown: "rendered", focus: input + 1, held: NoValue }
+}
+
+## Space does not transfer an armed activation when its keydown focuses
+## another button, including when the original button is removed first.
+expect {
+	focus = SpecRunner.put_u32([18, 1], 2)
+	commands = [focus, SpecRunner.put_u32([5], 1).concat(focus)]
+	commands.map(
+		|batch| {
+			probe = pointer_probe({})
+			program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) [0].concat(batch) else [], List.repeat(0, 8)) }
+			base = SpecRunner.mount_in(program, {})
+			(d1, a) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, attrs: Dom.attributes([("type", "button")]), keymaps: Dict.empty().insert("keydown", Dom.parse_keymap("a*")), hs: [{ event: "keydown", handler: 9, kind: 4, policies: 0 }, { event: "click", handler: 6, kind: 1, policies: 0 }] })
+			(d2, b) = Dom.add_node(d1, { ..Dom.empty_node, tag: "button", rn: 2, attrs: Dom.attributes([("type", "button")]), keymaps: Dict.empty().insert("keyup", Dom.parse_keymap("a*")), hs: [{ event: "keyup", handler: 8, kind: 4, policies: 0 }, { event: "click", handler: 7, kind: 1, policies: 0 }] })
+			dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, a, Err(End)), d2.root, b, Err(End)), 1, a), 2, b)
+			after = SpecRunner.press_key(program, { ..base, dom, focused: a + 1 }, { target: Focused, key: { key: " ", code: "Space", ctrl: False, alt: False, shift: False, meta: False } })?
+			Ok(after.inst.map(|event| event.handler))
+		},
+	) == [Ok([9, 8]), Ok([9, 8])]
+}
+
+## Control and Meta suppress Enter activation on a button; Alt and Shift
+## preserve it. Space remains an activation for each modifier on keyup.
+expect {
+	probe = pointer_probe({})
+	base = SpecRunner.mount_in(probe, {})
+	(d1, button) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, attrs: Dom.attributes([("type", "button")]), hs: [{ event: "click", handler: 7, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, button, Err(End)), 1, button)
+	state = { ..base, dom, focused: button + 1 }
+	keys = [
+		{ key: "Enter", code: "Enter", ctrl: True, alt: False, shift: False, meta: False },
+		{ key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: True },
+		{ key: "Enter", code: "Enter", ctrl: False, alt: True, shift: False, meta: False },
+		{ key: "Enter", code: "Enter", ctrl: False, alt: False, shift: True, meta: False },
+	]
+	enter = keys.map(|key| SpecRunner.press_key(probe, state, { target: Focused, key }).map_ok(|s| s.inst.map(|event| event.handler)))
+	space = keys.map(|key| SpecRunner.press_key(probe, state, { target: Focused, key: { ..key, key: " ", code: "Space" } }).map_ok(|s| s.inst.map(|event| event.handler)))
+	{ enter, space } == { enter: [Ok([]), Ok([]), Ok([7]), Ok([7])], space: [Ok([7]), Ok([7]), Ok([7]), Ok([7])] }
+}
+
+## Modified link Enter is refused from the shared parser data because its
+## current-document, new-context or download default depends on the system.
+expect {
+	(d1, link) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "a", attrs: Dom.attributes([("href", "#next")]) })
+	plain = { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False }
+	[plain, { ..plain, ctrl: True }, { ..plain, alt: True }, { ..plain, shift: True }, { ..plain, meta: True }].map(|key| SpecRunner.key_unmodelled(d1, link, key)) == [Bool.False, Bool.True, Bool.True, Bool.True, Bool.True]
+}
+
+## Enter on checkbox, radio and range can submit a form. File and color
+## instead activate their own input, without an implicit submit.
+expect {
+	["checkbox", "radio", "range", "file", "color"].map(
+		|kind| {
+			probe = pointer_probe({})
+			base = SpecRunner.mount_in(probe, {})
+			(d1, form) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "form", rn: 1, hs: [{ event: "submit", handler: 9, kind: 1, policies: 0 }] })
+			(d2, input) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", rn: 2, attrs: Dom.attributes([("type", kind)]), hs: [{ event: "click", handler: 3, kind: 1, policies: 0 }] })
+			(d3, submit) = Dom.add_node(d2, { ..Dom.empty_node, tag: "button", rn: 3, attrs: Dom.attributes([("type", "submit")]) })
+			dom = Dom.bind(Dom.bind(Dom.bind(Dom.insert(Dom.insert(Dom.insert(d3, d3.root, form, Err(End)), form, input, Err(End)), form, submit, Err(End)), 1, form), 2, input), 3, submit)
+			after = SpecRunner.press_key(probe, { ..base, dom, focused: input + 1 }, { target: Focused, key: { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False } })?
+			Ok(after.inst.map(|event| event.handler))
+		},
+	) == [Ok([9]), Ok([9]), Ok([9]), Ok([3]), Ok([3])]
+}
+
+## Contenteditable focus belongs to an editing host. Inherited, invalid and
+## nested editable descendants need tabindex; a false island starts a host.
+expect {
+	(d1, host) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", parent: 1, attrs: Dom.attributes([("contenteditable", "TRUE")]) })
+	(d2, inherited) = Dom.add_node(d1, { ..Dom.empty_node, tag: "span", parent: host + 1 })
+	(d3, nested) = Dom.add_node(d2, { ..Dom.empty_node, tag: "div", parent: host + 1, attrs: Dom.attributes([("contenteditable", "true")]) })
+	(d4, invalid) = Dom.add_node(d3, { ..Dom.empty_node, tag: "span", parent: host + 1, attrs: Dom.attributes([("contenteditable", "invalid")]) })
+	(d5, barrier) = Dom.add_node(d4, { ..Dom.empty_node, tag: "div", parent: host + 1, attrs: Dom.attributes([("contenteditable", "false")]) })
+	(d6, island) = Dom.add_node(d5, { ..Dom.empty_node, tag: "div", parent: barrier + 1, attrs: Dom.attributes([("contenteditable", "plaintext-only")]) })
+	(d7, tabbed) = Dom.add_node(d6, { ..Dom.empty_node, tag: "div", parent: host + 1, attrs: Dom.attributes([("contenteditable", "true"), ("tabindex", "0")]) })
+	[host, inherited, nested, invalid, barrier, island, tabbed].map(|i| SpecRunner.focusable_in(d7, i)) == [Bool.True, Bool.False, Bool.False, Bool.False, Bool.False, Bool.True, Bool.True]
+}
+
+## Enter and printable input on an editable host are refused by the same
+## rule data the browser runner consumes; named inert keys remain available.
+expect {
+	(d1, host) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", attrs: Dom.attributes([("contenteditable", "true")]) })
+	base = { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False }
+	[base, { ..base, key: "j", code: "KeyJ" }, { ..base, key: "F2", code: "F2" }].map(|key| SpecRunner.key_unmodelled(d1, host, key)) == [Bool.True, Bool.True, Bool.False]
+}
+
+## A bounded scroll observer keeps newest ordinals and never aliases a recycled id.
+expect {
+	base = SpecRunner.mount_in(pointer_probe({}), {})
+	(d1, old) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button" })
+	dom = Dom.bind(Dom.insert(d1, d1.root, old, Err(End)), 1, old)
+	var $s = { ..base, dom }
+	for _ in List.repeat({}, 4097) {
+		$s = SpecRunner.record_scroll($s, old, IntoView({ block: 3, inline: 3, behavior: 0 }))
+	}
+	retained = $s
+	removed = Dom.detach(Dom.forget_subtree(retained.dom, old), old)
+	(d2, fresh) = Dom.add_node(removed, { ..Dom.empty_node, tag: "button" })
+	rebound = Dom.bind(Dom.insert(d2, d2.root, fresh, Err(End)), 1, fresh)
+	maxed = { ..retained, dom: rebound, browser: { ..retained.browser, scroll_count: 18446744073709551615 } }
+	exhausted = SpecRunner.record_scroll(maxed, fresh, To({ top: End, left: Keep, behavior: 1 }))
+	{
+		count: retained.browser.scroll_count,
+		length: retained.browser.scrolls.len(),
+		oldest: retained.browser.scrolls.first().map_ok(|r| r.ordinal),
+		identity: retained.browser.scrolls.last().map_ok(|r| r.target != fresh),
+		exhausted: exhausted.browser.scroll_exhausted,
+		wrapped: exhausted.browser.scroll_count,
+		fault: exhausted.fault,
+	} == { count: 4097, length: 4096, oldest: Ok(2), identity: Ok(True), exhausted: True, wrapped: 18446744073709551615, fault: Healthy }
+}
+
+## Every private shown decision supersedes an earlier deferred show in its batch.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, dialog) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "dialog" })
+	dom = Dom.bind(Dom.insert(d1, d1.root, dialog, Err(End)), 1, dialog)
+	prop = |value| SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(6), value)
+	done = SpecRunner.drain_focus(program, SpecRunner.take_batch({ ..base, dom }, base.inst, [0].concat(prop("modal")).concat(prop("hidden"))))
+	{ shown: Dom.node(done.dom, dialog).shown, tasks: done.browser.ui_tasks.len(), focus: done.focused } == { shown: Hidden, tasks: 0, focus: 0 }
+}
+
+## Toggle task coalescing preserves a scalar lifetime and reads state on delivery.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, popover) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: Dom.attributes([("popover", "manual")]), hs: [{ event: "toggle", handler: 5, kind: 5, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, popover, Err(End)), 1, popover)
+	shown = SpecRunner.change_shown({ ..base, dom }, popover, Popover)
+	hidden = SpecRunner.change_shown(shown, popover, Hidden)
+	delivered = SpecRunner.deliver_ui(program, SpecRunner.deliver_ui(program, hidden))
+	{ tasks: hidden.browser.ui_tasks.count_if(|task| task != Cancelled), pending: Dom.node(delivered.dom, popover).pending_toggle, payloads: delivered.inst.map(|event| event.payload) } == { tasks: 1, pending: False, payloads: [[0]] }
+}
+
+## Modal focus, inertness, and non-modal restoration follow native browser defaults.
+expect {
+	base = SpecRunner.mount_in(pointer_probe({}), {})
+	(d1, opener) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button" })
+	(d2, dialog) = Dom.add_node(d1, { ..Dom.empty_node, tag: "dialog" })
+	(d3, input) = Dom.add_node(d2, { ..Dom.empty_node, tag: "input" })
+	dom = Dom.insert(Dom.insert(Dom.insert(d3, d3.root, opener, Err(End)), d3.root, dialog, Err(End)), dialog, input, Err(End))
+	shown = SpecRunner.change_shown({ ..base, dom, focused: opener + 1 }, dialog, Modal)
+	hidden = SpecRunner.change_shown(shown, dialog, Hidden)
+	inline = SpecRunner.change_shown({ ..base, dom, focused: opener + 1 }, dialog, Open)
+	removed = { ..inline, dom: Dom.detach(inline.dom, input), focused: 0 }
+	closed_inline = SpecRunner.change_shown(removed, dialog, Hidden)
+	{ focused: shown.focused, inert: SpecRunner.reachable(shown, opener), inside: SpecRunner.reachable(shown, input), restored: hidden.focused, removed: closed_inline.focused } == { focused: input + 1, inert: False, inside: True, restored: opener + 1, removed: 0 }
+}
+
+## A queued close samples the live reopened dialog in either legal task-source order.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, dialog) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "dialog", rn: 1, shown: Modal, hs: [{ event: "close", handler: 6, kind: 5, policies: 0 }, { event: "toggle", handler: 7, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, dialog, Err(End)), 1, dialog)
+	[[Close(dialog), Toggle(dialog)], [Toggle(dialog), Close(dialog)]].map(
+		|tasks| {
+			queued = { ..base, dom, browser: { ..base.browser, ui_tasks: tasks } }
+			done = SpecRunner.deliver_ui(program, SpecRunner.deliver_ui(program, queued))
+			{
+				shown: Dom.node(done.dom, dialog).shown,
+				close: done.inst.find_first(|event| event.handler == 6).map_ok(|event| event.payload),
+				toggles: done.inst.count_if(|event| event.handler == 7),
+			}
+		},
+	) == List.repeat({ shown: Modal, close: Ok([1.U8]), toggles: 1 }, 2)
+}
+
+## Observer diagnostics distinguish retained history and exhaustion from app faults.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	old = { ..base, browser: { ..base.browser, scroll_count: 4097 } }
+	maxed = { ..base, browser: { ..base.browser, scroll_exhausted: True } }
+	{
+		old: SpecRunner.one(program, old, ExpectScroll({ ordinal: 1, target: TestId("unused"), kind: IntoView })).map_ok(|_| {}),
+		max: SpecRunner.one(program, maxed, ExpectScrolls(0)).map_ok(|_| {}),
+		fault: maxed.fault,
+	} == { old: Err("scroll ordinal 1 is older than retained history (newest 4096)"), max: Err("scroll observation ordinal exhausted"), fault: Healthy }
+}
+
+## An ordinary open attribute keeps raw dialogs non-modal and their controls reachable.
+expect {
+	base = SpecRunner.mount_in(pointer_probe({}), {})
+	(d1, dialog) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "dialog" })
+	(d2, input) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input" })
+	dom = Dom.insert(Dom.insert(d2, d2.root, dialog, Err(End)), dialog, input, Err(End))
+	opened = Dom.set_attr_on(dom, dialog, "open", "true")
+	hidden = Dom.remove_attr_on(opened, dialog, "open")
+	{ shown: Dom.node(opened, dialog).shown, reached: SpecRunner.reachable({ ..base, dom: opened }, input), focus: SpecRunner.focusable_in(opened, input), hidden: SpecRunner.reachable({ ..base, dom: hidden }, input) } == { shown: Open, reached: True, focus: True, hidden: False }
+}
+
+## Intent supersession belongs to one property; an unrelated private row cannot cancel it.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, dialog) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "dialog", attrs: Dom.attributes([("popover", "manual")]) })
+	dom = Dom.bind(Dom.insert(d1, d1.root, dialog, Err(End)), 1, dialog)
+	prop = |property, value| SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(property), value)
+	done = SpecRunner.drain_focus(program, SpecRunner.take_batch({ ..base, dom }, base.inst, [0].concat(prop(6, "modal")).concat(prop(7, "false"))))
+	Dom.node(done.dom, dialog).shown == Modal
+}
+
+## A new document cannot inherit a Space activation even when model indices coincide.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, button) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, hs: [{ event: "click", handler: 7, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, button, Err(End)), 1, button)
+	old = { ..base, dom, focused: button + 1 }
+	(_, context) = SpecRunner.press_down(program, old, { target: Focused, key: { key: " ", code: "Space", ctrl: False, alt: False, shift: False, meta: False } })?
+	# Fresh documents may allocate exactly the same model indices and detach counts.
+	fresh = { ..base, dom, focused: button + 1, browser: { ..base.browser, doc: 1 } }
+	done = SpecRunner.press_up(program, fresh, context)?
+	Ok(done.inst.is_empty()) == Ok(True)
+}
+
+## Media declarations retain their written order and boot pairs are ordered
+## by that catalogue, with unspecified declared queries starting false.
+expect {
+	query_body = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([], 2), "wide"), "dark")
+	base = pointer_probe({})
+	program = { ..base, keys: || SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: query_body }).concat([10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0]), init: |boot| ([{ handler: 0.U32, payload: boot }], [], List.repeat(0.U8, 8)) }
+	mounted = SpecRunner.mount_in(program, { media: [("dark", True)] })
+	{ media: mounted.browser.env.media, flags: mounted.inst.first()?.payload.sublist({ start: 37, len: 2 }) } == { media: [("wide", False), ("dark", True)], flags: [0.U8, 1] }
+}
+
+## Observations in a row share its release owner even when their target also
+## has a command alias. Releasing that alias alone cannot end the row's work.
+expect {
+	(d1, root) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "section" })
+	(d2, target) = Dom.add_node(d1, { ..Dom.empty_node, tag: "div" })
+	placed = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, root, Err(End)), root, target, Err(End)), 1, root), 2, target)
+	observed = Dom.observe(Dom.observe(placed, { owner: root, target, kind: 7 }), { owner: root, target, kind: 8 })
+	alias = Dom.release_observed(observed, target)
+	released = Dom.release_observed(alias, root)
+	removed = Dom.apply(released, SpecRunner.put_u32([0, 5], 1))
+	{ live: observed.observed_count, alias_live: alias.observed_count, flags: Dom.node(alias, target).observing, indexed: Dom.node(alias, root).observed, after: removed.observed_count, removed_alias: removed.statics.get(2) } == { live: 2, alias_live: 2, flags: 3.U8, indexed: [target], after: 0, removed_alias: Ok(0) }
+}
+
+## Layout reports freeze their payloads and replace only their own source;
+## a repeated scroll to the current offset raises no event.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: Dom.attributes([("aria-label", "List")]), hs: [{ event: "scroll", handler: 2, kind: 6, policies: 8 }, { event: "size", handler: 3, kind: 7, policies: 8 }, { event: "seen", handler: 4, kind: 8, policies: 40 }] })
+	placed = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
+	dom = Dom.observe(Dom.observe(placed, { owner: index, target: index, kind: 7 }), { owner: index, target: index, kind: 8 })
+	start = SpecRunner.one(program, { ..base, dom }, HoldReports)?
+	a = SpecRunner.one(program, start, ReportSize({ target: Label("List"), width: 1, height: 2 }))?
+	b = SpecRunner.one(program, a, ReportSeen({ target: Label("List"), intersecting: True, ratio_permille: 500 }))?
+	c = SpecRunner.one(program, b, Scroll({ target: Label("List"), top: 20, left: 0 }))?
+	d = SpecRunner.one(program, c, ReportSize({ target: Label("List"), width: 3, height: 4 }))?
+	e = SpecRunner.one(program, d, Scroll({ target: Label("List"), top: 40, left: 0 }))?
+	f = SpecRunner.one(program, e, Scroll({ target: Label("List"), top: 40, left: 0 }))?
+	done = SpecRunner.one(program, f, ReleaseReports)?
+	{ held: f.inst, replaced: f.browser.reports.replaced, seen: done.inst, offset: Dom.node(done.dom, index).scroll } == { held: [], replaced: 2, seen: [{ handler: 3.U32, payload: [3.U8, 0, 0, 0, 4, 0, 0, 0] }, { handler: 4, payload: [1, 244, 1] }, { handler: 2, payload: [40, 0, 0, 0, 0, 0, 0, 0] }], offset: { top: 40.U32, left: 0.U32 } }
+}
+
+## A scroll command's report raised after a turn waits during a held frame.
+## A later occurrence pins it, and its input precedes that occurrence.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, hs: [{ event: "scroll", handler: 2, kind: 6, policies: 8 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
+	start = SpecRunner.one(program, { ..base, dom }, HoldReports)?
+	command = SpecRunner.perform_scroll(program, start, index, To({ top: Px(20), left: Keep, behavior: 1 }))
+	waiting = SpecRunner.drain_focus(program, command)
+	done = SpecRunner.send(program, waiting, SpecRunner.fx_node, 9, [])
+	{ waiting: waiting.inst, queued: waiting.event_queue.len(), shown: done.inst, held: done.browser.reports.held } == { waiting: [], queued: 1, shown: [{ handler: 2.U32, payload: [20.U8, 0, 0, 0, 0, 0, 0, 0] }, { handler: 9, payload: [] }], held: True }
+}
+
+## End and descendant reveal need geometry, so refusing their native proof
+## is a step failure while the app remains healthy. Revealing the scroller
+## itself does not move its own viewport and remains allowed.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, scroller) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, hs: [{ event: "scroll", handler: 2, kind: 6, policies: 8 }] })
+	(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "p" })
+	dom = Dom.bind(Dom.insert(Dom.insert(d2, d2.root, scroller, Err(End)), scroller, child, Err(End)), 1, scroller)
+	start = { ..base, dom }
+	ended = SpecRunner.perform_scroll(program, start, scroller, To({ top: End, left: Keep, behavior: 1 }))
+	revealed = SpecRunner.perform_scroll(program, start, child, IntoView({ block: 3, inline: 3, behavior: 1 }))
+	self = SpecRunner.perform_scroll(program, start, scroller, IntoView({ block: 3, inline: 3, behavior: 1 }))
+	{ end_refused: !ended.browser.scroll_error.is_empty(), child_refused: !revealed.browser.scroll_error.is_empty(), self_allowed: self.browser.scroll_error.is_empty(), faults: [ended.fault, revealed.fault, self.fault] } == { end_refused: True, child_refused: True, self_allowed: True, faults: [Healthy, Healthy, Healthy] }
+}
+
+## An ordinary text scroll remains an occurrence during a held frame: it
+## delivers older reports before its empty payload and keeps the hold active.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: Dom.attributes([("aria-label", "List")]), hs: [{ event: "scroll", handler: 2, kind: 1, policies: 0 }, { event: "size", handler: 3, kind: 7, policies: 8 }] })
+	placed = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
+	dom = Dom.observe(placed, { owner: index, target: index, kind: 7 })
+	held = SpecRunner.one(program, { ..base, dom }, HoldReports)?
+	pending = SpecRunner.one(program, held, ReportSize({ target: Label("List"), width: 10, height: 20 }))?
+	done = SpecRunner.one(program, pending, Scroll({ target: Label("List"), top: 30, left: 0 }))?
+	{ seen: done.inst, held: done.browser.reports.held, queued: done.event_queue.len() } == { seen: [{ handler: 3.U32, payload: [10.U8, 0, 0, 0, 20, 0, 0, 0] }, { handler: 2, payload: [] }], held: True, queued: 0 }
+}
+
+## An occurrence pins the reports ahead of it, while a scroll report its own
+## command raises waits behind it for the next released frame.
+expect {
+	base_program = pointer_probe({})
+	command = SpecRunner.put_u32(SpecRunner.put_u32([18, 7], 1).append(3), 40).concat([0, 1])
+	program = { ..base_program, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) [0].concat(command) else [], List.repeat(0.U8, 8)) }
+	base = SpecRunner.mount_in(program, {})
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, hs: [{ event: "scroll", handler: 2, kind: 6, policies: 8 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
+	held = SpecRunner.one(program, { ..base, dom }, HoldReports)?
+	older = SpecRunner.set_scroll(program, held, { target: index, top: 20, left: 0 })
+	after_occurrence = SpecRunner.send(program, older, SpecRunner.fx_node, 9, [])
+	done = SpecRunner.one(program, after_occurrence, ReleaseReports)?
+	{ at_occurrence: after_occurrence.inst, waiting: after_occurrence.event_queue.len(), after_frame: done.inst } == { at_occurrence: [{ handler: 2.U32, payload: [20.U8, 0, 0, 0, 0, 0, 0, 0] }, { handler: 9, payload: [] }], waiting: 1, after_frame: [{ handler: 2, payload: [20, 0, 0, 0, 0, 0, 0, 0] }, { handler: 9, payload: [] }, { handler: 2, payload: [40, 0, 0, 0, 0, 0, 0, 0] }] }
+}
+
+## Injected observations require live declarations, and media facts cannot
+## silently create a query the program never declared.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: Dom.attributes([("aria-label", "List")]) })
+	dom = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
+	state = { ..base, dom }
+	spec = Scm.parse("(test \"undeclared\" (setup (initial-media \"dark\" true)) (steps (mark-metrics)))")?
+	{
+		size: SpecRunner.one(program, state, ReportSize({ target: Label("List"), width: 10, height: 20 })).map_ok(|_| {}),
+		seen: SpecRunner.one(program, state, ReportSeen({ target: Label("List"), intersecting: True, ratio_permille: 500 })).map_ok(|_| {}),
+		media: SpecRunner.one(program, state, SetMedia({ query: "dark", matches: True })).map_ok(|_| {}),
+		boot: SpecRunner.start(program, spec).map_ok(|_| {}),
+	} == {
+		size: Err("(label \"List\") has no live size observation"),
+		seen: Err("(label \"List\") has no live seen observation"),
+		media: Err("set-media query \"dark\" is not declared"),
+		boot: Err("initial-media query \"dark\" is not declared"),
+	}
+}
+
+## A declared media source uses the shared report queue: newest matches
+## replace earlier ones, unchanged facts raise nothing, and cancellation
+## drops waiting answers while retaining the query's environment value.
+expect {
+	base_program = pointer_probe({})
+	declarations = SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "dark") }).concat([10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0])
+	listen = SpecRunner.put_str(SpecRunner.put_u32([13], 1).append(16), "dark")
+	program = { ..base_program, keys: || declarations, init: |_boot| ([], [0].concat(listen), List.repeat(0.U8, 8)) }
+	base = SpecRunner.mount_in(program, {})
+	held = SpecRunner.one(program, base, HoldReports)?
+	first = SpecRunner.one(program, held, SetMedia({ query: "dark", matches: True }))?
+	second = SpecRunner.one(program, first, SetMedia({ query: "dark", matches: False }))?
+	unchanged = SpecRunner.one(program, second, SetMedia({ query: "dark", matches: False }))?
+	answered = SpecRunner.one(program, unchanged, ReleaseReports)?
+	waiting = SpecRunner.one(program, SpecRunner.one(program, answered, HoldReports)?, SetMedia({ query: "dark", matches: True }))?
+	cancelled = SpecRunner.take_batch(waiting, waiting.inst, SpecRunner.put_u32([0, 14], 1))
+	done = SpecRunner.one(program, cancelled, ReleaseReports)?
+	{ seen: done.inst, replacements: done.browser.reports.replaced, sources: done.browser.report_sources.len(), subscriptions: done.browser.subs.len(), media: done.browser.env.media } == { seen: [{ handler: 1.U32, payload: [22.U8, 0] }], replacements: 1, sources: 0, subscriptions: 0, media: [("dark", True)] }
+}
+
+## Marked batches start non-node effects before references, preserving order
+## within each class. Ordinary batches keep their original stream order.
+expect {
+	base = SpecRunner.fresh(0.U64, SpecRunner.fresh_browser({}))
+	(d, target) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button" })
+	dom = Dom.bind(Dom.insert(d, d.root, target, Err(End)), 1, target)
+	commands = SpecRunner.put_u32([18, 1], 1).concat(SpecRunner.put_str([17], "early"))
+	marked = SpecRunner.take_batch({ ..base, dom }, 0, [1].concat(commands).concat([24, 0, 0, 0, 0]))
+	ordinary = SpecRunner.take_batch({ ..base, dom }, 0, [0].concat(commands))
+	ref = Ref({ node: 1, target, action: Focus(1) })
+	{ marked: marked.after_batch, ordinary: ordinary.after_batch } == { marked: [Effect(Title("early")), ref], ordinary: [ref, Effect(Title("early"))] }
+}
+
+## Assertion failures distinguish an unperformed ordinal, an evicted record
+## and exhaustion of observation, without turning any into an app fault.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	dom = Dom.transition(base.dom, ["shelf"])
+	seen = { ..base, dom }
+	evicted = { ..seen, dom: { ..dom, transitions: { ..dom.transitions, records: Dict.empty() } } }
+	exhausted = { ..seen, dom: { ..dom, transitions: { ..dom.transitions, exhausted: True } } }
+	{
+		seen: SpecRunner.one(program, seen, ExpectTransition({ at: 1, types: ["shelf"] })).map_ok(|_| {}),
+		missing: SpecRunner.one(program, seen, ExpectTransition({ at: 2, types: [] })).map_ok(|_| {}),
+		evicted: SpecRunner.one(program, evicted, ExpectTransition({ at: 1, types: [] })).map_ok(|_| {}),
+		exhausted: SpecRunner.one(program, exhausted, ExpectTransitions(0)).map_ok(|_| {}),
+	} == {
+		seen: Ok({}),
+		missing: Err("transition ordinal 2 was not performed"),
+		evicted: Err("transition ordinal 1 is unavailable in retained history (newest 4096, at most 1048576 encoded type bytes)"),
+		exhausted: Err("transition observation ordinal exhausted"),
+	}
+}
+
+## Clock steps change only the next sampled input. They cannot route a turn
+## or modify already-recorded boot facts, and overflow remains a runner error.
+expect {
+	program = report_probe({})
+	start = SpecRunner.mount_in(program, { now_ms: -1 })
+	set = SpecRunner.one(program, start, SetTime(-9223372036854775808))?
+	advanced = SpecRunner.one(program, set, AdvanceTime(18446744073709551615))?
+	{ seen: advanced.inst, now: advanced.browser.env.now_ms, overflow: SpecRunner.one(program, advanced, AdvanceTime(1)).is_err() } == { seen: [], now: 9223372036854775807, overflow: True }
+}
+
+## Failed writes share one bounded task FIFO; no subscriber means no retained work.
+expect {
+	initial = { ..SpecRunner.fresh_browser({}), settings: { local_full: True, session_full: False, clipboard_denied: False, max_paste: 4194304, mount_root: Scm.default_mount_root } }
+	subscribed = SpecRunner.absorb(initial, [StorageFailures(1)])
+	full = SpecRunner.absorb(subscribed, List.repeat(Set("draft", "value"), 4096))
+	overflow = SpecRunner.absorb(full, [Set("draft", "another")])
+	canceled = SpecRunner.absorb(full, [Cancel(1), StorageFailures(2), Set("draft", "new")])
+	combined = SpecRunner.absorb_limit(subscribed, List.repeat(Set("draft", "value"), 4096), 4095)
+	silent = SpecRunner.absorb(initial, [Set("draft", "value")])
+	{ full: SpecRunner.failure_tasks(full), fits: full.deferred_error.is_empty(), overflow: !overflow.deferred_error.is_empty(), retained: SpecRunner.failure_tasks(overflow), freed: SpecRunner.failure_tasks(canceled), successor: canceled.deferred_error.is_empty(), combined: !combined.deferred_error.is_empty(), silent: silent.gets.is_empty() } == { full: 4096, fits: True, overflow: True, retained: 4096, freed: 1, successor: True, combined: True, silent: True }
+}
+
+## The clipboard's observation ordinal can exhaust without refusing the actual copy.
+expect {
+	program = report_probe({})
+	state = SpecRunner.mount_in(program, {})
+	before = { ..state.browser, clipboard: { text: "old", html: "", writes: 18446744073709551614, exhausted: False } }
+	last = SpecRunner.absorb(before, [Clipboard(1, { text: "last counted", html: Plain })])
+	exhausted = SpecRunner.absorb(last, [Clipboard(2, { text: "still copied", html: Html("<p>still copied</p>") })])
+	observed = { ..state, browser: exhausted }
+	{ last: last.clipboard.writes, last_valid: !last.clipboard.exhausted, text: exhausted.clipboard.text, exhausted: exhausted.clipboard.exhausted, callbacks: exhausted.gets.len(), assertion: SpecRunner.one(program, observed, ExpectClipboard("still copied")).is_err(), fault: observed.fault } == { last: 18446744073709551615, last_valid: True, text: "still copied", exhausted: True, callbacks: 2, assertion: True, fault: Healthy }
+}
+
+## A canceled clipboard answer is forgotten after the write has happened.
+expect {
+	browser = SpecRunner.absorb(SpecRunner.fresh_browser({}), [Clipboard(1, { text: "kept", html: Plain }), Cancel(1)])
+	{ text: browser.clipboard.text, writes: browser.clipboard.writes, callbacks: browser.gets.len() } == { text: "kept", writes: 1, callbacks: 0 }
+}
+
+## Sticky leave activation survives consumption of a CloseWatcher opportunity.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, {})
+	activated = SpecRunner.activate_step(initial, Press({ target: Focused, key: { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False } }))
+	consumed = { ..activated, browser: { ..activated.browser, cancel_allowed: False, guard: True } }
+	{ stays: SpecRunner.one(program, consumed, LeavePage({ url: "/next", outcome: Stay })).is_ok(), ordinary: SpecRunner.one(program, consumed, Navigate("/next")).is_err(), no_question: SpecRunner.one(program, consumed, LeavePage({ url: "/next", outcome: Unasked })).is_err() } == { stays: True, ordinary: True, no_question: True }
+}
+
+## A supported same-origin navigation inherits sticky activation but resets
+## the CloseWatcher opportunity; a later dirty document can therefore ask again.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, {})
+	activated = SpecRunner.activate_step(initial, Press({ target: Focused, key: { key: "Enter", code: "Enter", ctrl: False, alt: False, shift: False, meta: False } }))
+	next = SpecRunner.one(program, activated, Navigate("/next"))?
+	guarded = { ..next, browser: { ..next.browser, guard: True } }
+	held = SpecRunner.one(program, guarded, HoldReports)?
+	{ fresh: initial.browser.sticky_activation, inherited: next.browser.sticky_activation, close_allowance: next.browser.cancel_allowed, document: next.browser.doc, asks: SpecRunner.one(program, guarded, LeavePage({ url: "/later", outcome: Stay })).is_ok(), held_refused: SpecRunner.one(program, held, LeavePage({ url: "/later", outcome: Stay })).is_err() } == { fresh: False, inherited: True, close_allowance: False, document: 1, asks: True, held_refused: True }
+}
+
+## A scripted guarded stay still rejects a physical press in progress before
+## routing or draining anything, just as the Chrome navigation driver does.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, {})
+	pointer = { id: 1.U32, kind: Mouse, button: Main, modifiers: 0.U8, primary: True, down: 0.U64, capture: 0.U64, moved: False, suppress_mouse: False, at: Outside }
+	pressed = { ..initial, browser: { ..initial.browser, pointers: initial.browser.pointers.insert(1, pointer), guard: True, sticky_activation: True } }
+	SpecRunner.one(program, pressed, LeavePage({ url: "/next", outcome: Stay })).is_err()
+}
+
+## A nested click handler can follow its ancestor link, so a guarded walk
+## excludes that span even before the first activation, retaining ordinary buttons.
+expect {
+	base = SpecRunner.fresh(0.U64, SpecRunner.fresh_browser({}))
+	(first, anchor) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "a", attrs: Dom.attributes([("href", "/next")]) })
+	(second, span) = Dom.add_node(first, { ..Dom.empty_node, tag: "span", hs: [{ event: "click", handler: 0, kind: 1, policies: 0 }] })
+	(third, button) = Dom.add_node(second, { ..Dom.empty_node, tag: "button", hs: [{ event: "click", handler: 1, kind: 1, policies: 0 }] })
+	dom = Dom.insert(Dom.insert(Dom.insert(third, third.root, anchor, Err(End)), anchor, span, Err(End)), third.root, button, Err(End))
+	guarded = { ..base, dom, browser: { ..base.browser, guard: True } }
+	{ ordinary: SpecRunner.candidates(dom), guarded: SpecRunner.walk_candidates(guarded), sticky: guarded.browser.sticky_activation } == { ordinary: [(span, "click"), (button, "click")], guarded: [(button, "click")], sticky: False }
+}
+
+## A getter-unavailable fixture still permits the other document's write,
+## but cannot identify its local area for reports; its backing value is retained.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, { storage_available: False })
+	subscribed = { ..initial, browser: SpecRunner.absorb(initial.browser, [StorageSub(3, "document")]) }
+	changed = SpecRunner.one(program, subscribed, StorageElsewhere({ key: "document", value: "remote" }))?
+	{ pairs: changed.browser.env.storage, available: changed.browser.env.storage_available, delivered: changed.inst } == { pairs: [("document", "remote")], available: False, delivered: [] }
+}
+
+## One failure task batches its original recipients ahead of an already
+## scheduled read; a failed write raised by its first answer waits for the next task.
+expect {
+	base_program = report_probe({})
+	program = {
+		..base_program,
+		event: |seen, _buffer, _work, _node, id, payload| {
+			commands = if (seen.is_empty()) [0, 16, 1, 1, 0, 0, 0, 'd', 1, 0, 0, 0, 'x'] else []
+			(seen.append({ id, payload }), commands, List.repeat(0.U8, 8))
+		},
+	}
+	initial = SpecRunner.mount_in(program, {})
+	configured = { ..initial.browser, settings: { ..initial.browser.settings, local_full: True } }
+	browser = SpecRunner.absorb(configured, [StorageFailures(9), Set("a", "x"), Get(10, "missing"), Set("c", "x")])
+	queued = { ..initial, browser }
+	done = SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, queued))
+	{ delivered: done.inst, remaining: SpecRunner.failure_tasks(done.browser), scheduled: done.browser.failure_scheduled, active: done.browser.failure_active } == {
+		delivered: [{ id: 9, payload: [25, 1, 1, 'a'] }, { id: 9, payload: [25, 1, 1, 'c'] }, { id: 10, payload: [4] }, { id: 9, payload: [25, 1, 1, 'd'] }],
+		remaining: 0,
+		scheduled: False,
+		active: False,
+	}
+}
+
+## A timeout stub changes only a network result’s ordering; running an unrelated
+## timer remains an occurrence that delivers earlier held reports first.
+expect {
+	browser = SpecRunner.fresh_browser({})
+	timer = SpecRunner.fresh({}, { ..browser, stub: Staged(Reject({ kind: Timeout, detail: "" })), issued: [1], pending: [{ id: 1, url: "timer", body: "", kind: TimerRequest }] })
+	network = { ..timer, browser: { ..timer.browser, pending: [{ id: 1, url: "/request", body: "", kind: HttpRequest }] } }
+	{ timer: SpecRunner.is_occurrence(timer, RunEffect(1)), network: SpecRunner.is_occurrence(network, RunEffect(1)), unissued: SpecRunner.is_occurrence(network, RunEffect(2)) } == { timer: True, network: False, unissued: True }
+}
+
+## Effective text controls include invalid raw keywords without rewriting them.
+expect {
+	["Text", "EMAIL", "password", "txet", ""].map(|kind| SpecRunner.text_control({ ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", kind)]) })) == [True, True, True, True, True]
+}
+
+## The three WHATWG component sets differ: apostrophes stay in path and
+## fragment, while backticks and braces stay in a special-scheme query.
+expect [
+	SpecRunner.serialize_location("/x/#/?tag=café au lait") == "/x/#/?tag=caf%C3%A9%20au%20lait",
+	SpecRunner.serialize_location("/p\"<>`{}?q=\"<>'`{}#f=\"<>`{}' ?#") == "/p%22%3C%3E%60%7B%7D?q=%22%3C%3E%27`{}#f=%22%3C%3E%60{}'%20?#",
+	SpecRunner.serialize_location("/p%26?q=%26#%26") == "/p%26?q=%26#%26",
+	SpecRunner.serialize_location("/a\u(0000)b?q=\u(0001)#\u(007f)") == "/a%00b?q=%01#%7F",
+].all(|answer| answer)
+
+## Chrome preprocesses URL input before determining whether it is a query,
+## fragment or relative path. Interior TAB/LF/CR disappear; other C0 bytes
+## are encoded unless they are part of the trimmed edges.
+expect {
+	actual = [
+		SpecRunner.serialize_location("/a\tb\nc\rd?q=x\ty#z\nw"),
+		SpecRunner.serialize_location(" \u(0001)/x?q#f\u(001f) "),
+		SpecRunner.resolve("/dir/leaf?old#start", " \u(0001)\t?new=ca\tfé au\r lait\n#é\u(001f) ") ?? "external",
+		SpecRunner.resolve("/dir/leaf?old#start", " \t child café\r ") ?? "external",
+	]
+	actual == ["/abcd?q=xy#zw", "/x?q#f", "/dir/leaf?new=caf%C3%A9%20au%20lait#%C3%A9", "/dir/child%20caf%C3%A9"]
+}
+
+## The path set is Chrome's, which percent-encodes exactly these printable
+## bytes in a path (measured in Chrome 157): space, `"`, `<`, `>`, `^`, `` ` ``,
+## `{`, `|` and `}`; a query encodes space, `"`, `'`, `<` and `>`, and a fragment
+## space, `"`, `<`, `>` and `` ` ``. Every other printable byte stays.
+expect {
+	var $printable = []
+	var $b = 0x20.U8
+	while $b <= 0x7E {
+		if !['#', '?', '%', '/', '\\'].contains($b) {
+			$printable = $printable.append($b)
+		}
+		$b = $b + 1
+	}
+	printable = $printable
+	encoded = |prefix, wrap| printable.keep_if(|b| SpecRunner.serialize_location(wrap(Str.from_utf8([b]) ?? "")) != wrap(Str.from_utf8([b]) ?? "")).map(|b| Str.from_utf8([b]) ?? "").prepend(prefix)
+	actual = [encoded("path", |c| "/a${c}b"), encoded("query", |c| "/?a${c}b"), encoded("fragment", |c| "/#a${c}b")]
+	actual == [["path", " ", "\"", "<", ">", "^", "`", "{", "|", "}"], ["query", " ", "\"", "'", "<", ">"], ["fragment", " ", "\"", "<", ">", "`"]]
+}
+
+## An app's history URL with a `|` is reported as Chrome serializes it.
+expect SpecRunner.serialize_location("/a|b^c?q=|^#|^") == "/a%7Cb%5Ec?q=|^#|^"
+
+## A reference with a scheme, or whose path names a host (through a
+## backslash too), leaves the app; a query holding `://` does not. A
+## backslash or a dot segment in the path is unmodelled, never resolved by
+## a guess.
+expect {
+	base = "/dir/leaf"
+	actual = ["mailto:a@b", "tel:1", "a:b", "//h2/x", "\\\\h2/x", "/\\h2/x", "/x?u=http://y", "../x", "x/./y", "a\\b", "/a/%2e%2E"].map(|url| SpecRunner.resolve(base, url))
+	expected = [Err(External), Err(External), Err(External), Err(External), Err(External), Err(External), Ok("/x?u=http://y"), Err(Unmodelled("the dot segment .., which Chrome resolves away")), Err(Unmodelled("the dot segment ., which Chrome resolves away")), Err(Unmodelled("a backslash, which Chrome reads as /")), Err(Unmodelled("the dot segment %2e%2E, which Chrome resolves away"))]
+	actual == expected
+}
+
+## An app's push the model cannot resolve fails the step with its message,
+## and one that leaves the app is a contract failure, never a runner crash.
+expect [SpecRunner.resolve_in_document("/d/e", "/a/../b"), SpecRunner.resolve_in_document("/d/e", "https://x.test/"), SpecRunner.resolve_in_document("/d/e", "/a|b")] == [Err("unmodelled: the app pushed \"/a/../b\", which holds the dot segment .., which Chrome resolves away; the native runner's location model does not resolve it"), Err("contract: the app pushed \"https://x.test/\", which leaves the app"), Ok("/a%7Cb")]
+
+## Existing escapes and their spelling survive repeated ingress unchanged.
+expect {
+	urls = ["/x%2f?q=%26#%zz", "/x/#/?tag=café au lait", "/p\"<>`{}?q=\"<>'`{}#f=\"<>`{}' ?#"]
+	urls.all(|url| SpecRunner.serialize_location(SpecRunner.serialize_location(url)) == SpecRunner.serialize_location(url))
+}
+
+## Initial documents and both navigation paths retain serialized locations.
+## A same-document leave target is classified only after serialization.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, { url: "/with space#old" })
+	navigated = SpecRunner.one(program, initial, Navigate(" /next café?word=ça va'\"#é ` "))?
+	left = SpecRunner.one(program, navigated, LeavePage({ url: "/last café?word=ça va'\"#é `", outcome: Unasked }))?
+	{
+		initial: initial.browser.env.url,
+		navigated: navigated.browser.env.url,
+		left: left.browser.env.url,
+		same_document_refused: SpecRunner.one(program, initial, LeavePage({ url: "/with space#new", outcome: Unasked })).is_err(),
+	} == {
+		initial: "/with%20space#old",
+		navigated: "/next%20caf%C3%A9?word=%C3%A7a%20va%27%22#%C3%A9%20%60",
+		left: "/last%20caf%C3%A9?word=%C3%A7a%20va%27%22#%C3%A9%20%60",
+		same_document_refused: True,
+	}
+}
+
+## Location reporting omits empty query and fragment delimiters without
+## losing the fact an explicit empty fragment is same-document navigation.
+expect {
+	base = "/dir/leaf?old#start"
+	{
+		reported: ["/x?", "/x#", "/x?#", "/x?#?", "/x??#", "/x##"].map(SpecRunner.serialize_location),
+		resolved_empty: SpecRunner.resolve(base, ""),
+		resolved_blank: SpecRunner.resolve(base, " \t\n\r "),
+		history_empty: SpecRunner.resolve_in_document(base, ""),
+		history_blank: SpecRunner.resolve_in_document(base, " \t\n\r "),
+		empty_fragment: SpecRunner.same_document(base, "/dir/leaf?old#"),
+		retained_delimiter: SpecRunner.resolve_target(base, "#"),
+	} == {
+		reported: ["/x", "/x", "/x", "/x#?", "/x??", "/x##"],
+		resolved_empty: Ok("/dir/leaf?old"),
+		resolved_blank: Ok("/dir/leaf?old"),
+		history_empty: Ok("/dir/leaf?old#start"),
+		history_blank: Ok("/dir/leaf?old"),
+		empty_fragment: True,
+		retained_delimiter: Ok("/dir/leaf?old#"),
+	}
+}
+
+## The browser stores empty-query presence through history even though boot,
+## popstate and location assertions report no question mark for that query.
+expect {
+	program = report_probe({})
+	initial = SpecRunner.mount_in(program, { url: "/x?" })
+	{
+		stored: initial.browser.env.url,
+		reported: SpecRunner.one(program, initial, ExpectLocation("/x")).is_ok(),
+		query_removed: SpecRunner.same_document("/x?", "/x#next"),
+		query_kept: SpecRunner.same_document("/x?", "/x?#next"),
+		query_added: SpecRunner.same_document("/x", "/x?#next"),
+	} == { stored: "/x?", reported: True, query_removed: False, query_kept: True, query_added: False }
+}
+
+## Prerender is one exact command, never mixed with ordinary spec options.
+expect SpecRunner.prerender_args(["--prerender", "/tasks?open=1#list", "--template", "index.html"]) == Ok(Picture({ url: "/tasks?open=1#list", template: "index.html" }))
+
+## Extra positional specs cannot turn a picture build into another runner mode.
+expect SpecRunner.prerender_args(["--prerender", "/", "--template", "index.html", "story.scm"]).is_err()
+
+## A missing URL or template is a usage failure before any template is read.
+expect SpecRunner.prerender_args(["--prerender", "/"]).is_err()
+
+## Existing ordinary spec argument parsing remains selected without new input.
+expect SpecRunner.prerender_args(["--filter", "round*", "round-trip.scm"]) == Ok(Specs)
+
+## Route projection is a separate no-init mode with one explicit URL.
+expect SpecRunner.prerender_args(["--picture-path", "/tasks?open=1#list"]) == Ok(PicturePath("/tasks?open=1#list"))
+
+## The path response echoes query/hash input without making them a filename.
+expect SpecRunner.picture_path_line("/tasks?open=1#list") == Ok("{\"protocol\":\"roc-signals/picture-path/v1\",\"url\":\"/tasks?open=1#list\",\"path\":\"tasks/index.html\"}")
+
+## Select matching and option assertions use collapsed fallback text rather
+## than raw textContent. Qualified value attributes and script text do not
+## impersonate the option's ordinary value getter.
+expect {
+	select = { ..Dom.empty_node, tag: "select", props: [("value", "A B")], kids: [1] }
+	option = { ..Dom.empty_node, tag: "option", attrs: [({ namespace: "urn:fields", prefix: "x", local: "value" }, "ignored")], kids: [2, 3, 4] }
+	first = { ..Dom.empty_node, namespace: "", kind: 2, text: " \tA " }
+	script = { ..Dom.empty_node, tag: "script", kids: [5] }
+	last = { ..Dom.empty_node, namespace: "", kind: 2, text: "\n B\r " }
+	ignored = { ..Dom.empty_node, namespace: "", kind: 2, text: "BAD" }
+	dom = { ..Dom.new({}), nodes: [select, option, first, script, last, ignored] }
+	wrong = Dom.set_live_on(dom, 0, "value", "A BAD B")
+	SpecRunner.value_of(dom, 1) == "A B" and SpecRunner.value_of(dom, 0) == "A B" and SpecRunner.value_of(wrong, 0) == "" and !SpecRunner.has_option(dom, { root: 0, value: "A BAD B" })
+}
+
+## Explicit empty or whitespace-bearing option values win over fallback text;
+## neither assertion nor select matching trims or substitutes their value.
+expect {
+	select = { ..Dom.empty_node, tag: "select", props: [("value", "")], kids: [1] }
+	option = { ..Dom.empty_node, tag: "option", attrs: Dom.attributes([("value", "")]), kids: [2] }
+	text = { ..Dom.empty_node, namespace: "", kind: 2, text: "fallback" }
+	dom = { ..Dom.new({}), nodes: [select, option, text] }
+	exact = " \t exact\n "
+	with_exact = Dom.set_attr_on(Dom.set_live_on(dom, 0, "value", exact), 1, "value", exact)
+	SpecRunner.value_of(dom, 1) == "" and SpecRunner.has_option(dom, { root: 0, value: "" }) and !SpecRunner.has_option(dom, { root: 0, value: "fallback" }) and SpecRunner.value_of(with_exact, 1) == exact and SpecRunner.value_of(with_exact, 0) == exact
+}
+
+## Candidate selection skips disabled HTML controls by effective presence,
+## including option and fieldset handlers, without dropping an enabled peer.
+expect {
+	listener = { event: "click", handler: 0.U32, kind: 0.U8, policies: 0.U32 }
+	(d1, button) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "button", hs: [listener] })
+	(d2, option) = Dom.add_node(d1, { ..Dom.empty_node, tag: "option", hs: [listener] })
+	(d3, fieldset) = Dom.add_node(d2, { ..Dom.empty_node, tag: "fieldset", hs: [listener] })
+	(d4, enabled) = Dom.add_node(d3, { ..Dom.empty_node, tag: "button", hs: [listener] })
+	dom = [button, option, fieldset, enabled].fold(d4, |model, index| Dom.insert(model, model.root, index, Err(End)))
+	["", "named", "false"].all(
+		|value| {
+			disabled = [button, option, fieldset].fold(dom, |model, index| Dom.set_attr_on(model, index, "disabled", value))
+			SpecRunner.candidates(disabled) == [(enabled, "click")]
+		},
+	)
+}
+
+## Presence assertions use the same reading as exact attribute assertions.
+## A live false property is still present while an unwritten ordinary
+## attribute is absent, and an ordinary empty string remains present.
+expect {
+	(dom, control) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("title", "")]) })
+	SpecRunner.attr_value(dom, control, "title") == Ok("") and
+		SpecRunner.attr_value(dom, control, "alt") == Err(Absent) and
+			SpecRunner.attr_value(dom, control, "disabled") == Ok("false") and
+				SpecRunner.attr_value(dom, control, "checked") == Ok("false") and
+					SpecRunner.attr_value(dom, control, "value") == Ok("")
+}
+
+# A spec's names are immutable, transient validation inputs, never app values.
+DeclarationNames : { ports : Dict(Str, SpecRunner.PortKind), tasks : Dict(Str, {}), media : Dict(Str, {}), storage : Dict(Scm.StorageSubject, {}) }
+
+port_kind_text : SpecRunner.PortKind -> Str
+port_kind_text = |kind| match kind {
+	Command => "command"
+	Call => "call"
+	Subscription => "subscription"
+}
+
+declared_need : Scm.Need, DeclarationNames -> Try({}, Str)
+declared_need = |requirement, names| match requirement {
+	Story(_) => Ok({})
+	Port({ name, kind }) => match names.ports.get(name) {
+		Err(_) => Err("names port ${JsonOut.quote(name)}, which the program does not declare")
+		Ok(actual) if actual != kind => Err("names port ${JsonOut.quote(name)}, which is a ${port_kind_text(actual)} port; this step requires a ${port_kind_text(kind)} port")
+		Ok(_) => Ok({})
+	}
+	Task(name) => if (names.tasks.contains(name)) Ok({}) else Err("names worker catalogue entry ${JsonOut.quote(name)}, which the program does not register")
+	Media(query) => if (names.media.contains(query)) Ok({}) else Err("names media query ${JsonOut.quote(query)}, which the program does not declare")
+	Storage(key) => if (names.storage.contains(key)) Ok({}) else {
+		store = match key.store {
+			Local => "local-storage"
+			Session => "session-storage"
+		}
+		Err("names ${store} key ${JsonOut.quote(key.key)}, which is neither declared nor seeded or positively established in this spec")
+	}
+}
+
+## Declaration validation reads catalogue names only: every runtime callback
+## in this probe crashes, so accepting a spec cannot accidentally initialize it.
+declaration_probe : {} -> SpecRunner.Program({})
+declaration_probe = |_| {
+	version: Dom.protocol_version,
+	tasks: ["task", "owner", "prepared-task", "empty-owner"],
+	keys: || {
+		ports = [
+			{ name: "command", kind: 1.U8, delivery: 0.U8, bound: 0.U32 },
+			{ name: "call", kind: 2, delivery: 0, bound: 0 },
+			{ name: "subscription", kind: 3, delivery: 2, bound: 1 },
+		]
+		port_bytes = ports.fold(SpecRunner.put_u32([], ports.len().to_u32_wrap()), |bytes, port| SpecRunner.put_u32(SpecRunner.put_str(bytes, port.name).append(port.kind).append(port.delivery), port.bound))
+		[
+			{ tag: 2.U8, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "local") },
+			{ tag: 5, body: port_bytes },
+			{ tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "screen") },
+			{ tag: 10, body: [110, 1] },
+			{ tag: 11, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "session") },
+		].fold([], SpecRunner.put_section)
+	},
+	init: |_| crash "declaration probe unexpectedly initialized",
+	event: |_, _, _, _, _, _| crash "declaration probe unexpectedly entered an event",
+	files: |_, _, _, _, _, _, _| crash "declaration probe unexpectedly staged files",
+	settled: |_| crash "declaration probe unexpectedly inspected state",
+	live: |_| crash "declaration probe unexpectedly inspected requests",
+}
+
+## All declared port shapes, media, storage and worker catalogue names pass
+## before any app code runs, at positive and zero counts alike.
+expect {
+	program = declaration_probe({})
+	[
+		"(expect-port-call 1 \"call\" \"null\")",
+		"(expect-port-sent \"command\" 1 \"null\")",
+		"(expect-port-sends \"command\" 0)",
+		"(expect-port-subscriptions \"subscription\" 0)",
+		"(expect-port-subscription-arg \"subscription\" 1 \"null\")",
+		"(emit-port \"subscription\" \"null\") (close-port \"subscription\") (fail-port \"subscription\" \"lost\")",
+		"(expect-pending-work \"task\" 0) (expect-pending-work \"prepared-task\" 1) (expect-pending-work \"owner\" 0) (expect-pending-work \"empty-owner\" 0)",
+		"(set-media \"screen\" true) (expect-media-subscriptions \"screen\" 0)",
+		"(expect-no-local-storage \"local\") (expect-no-session-storage \"session\")",
+	].all(|steps| SpecRunner.parse_declared(program, "(test \"known\" (steps ${steps}))").is_ok())
+}
+
+## Unknown names and wrong port kinds fail at the original step position;
+## an early zero cannot conceal a misspelling.
+expect {
+	program = declaration_probe({})
+	cases = [
+		{ step: "(expect-pending-work \"missing\" 0)", message: "expect-pending-work names worker catalogue entry \"missing\", which the program does not register" },
+		{ step: "(expect-port-sends \"missing\" 0)", message: "expect-port-sends names port \"missing\", which the program does not declare" },
+		{ step: "(expect-port-subscriptions \"missing\" 0)", message: "expect-port-subscriptions names port \"missing\", which the program does not declare" },
+		{ step: "(expect-port-sends \"subscription\" 0)", message: "expect-port-sends names port \"subscription\", which is a subscription port; this step requires a command port" },
+		{ step: "(expect-port-subscriptions \"command\" 0)", message: "expect-port-subscriptions names port \"command\", which is a command port; this step requires a subscription port" },
+		{ step: "(expect-port-call 1 \"command\" \"null\")", message: "expect-port-call names port \"command\", which is a command port; this step requires a call port" },
+		{ step: "(set-media \"missing\" true)", message: "set-media names media query \"missing\", which the program does not declare" },
+		{ step: "(expect-media-subscriptions \"missing\" 0)", message: "expect-media-subscriptions names media query \"missing\", which the program does not declare" },
+	]
+	cases.all(|case| SpecRunner.parse_declared(program, "(test \"unknown\"\n  (steps\n    ${case.step}))").map_ok(|_| {}) == Err({ pos: { line: 3, column: 5 }, message: case.message }))
+}
+
+## Seeded and positive evidence can establish an undeclared storage key in
+## either order, while the stores remain distinct even for equal key text.
+expect {
+	program = declaration_probe({})
+	accepted = [
+		"(test \"seed\" (setup (local-storage \"extra\" \"value\")) (steps (expect-no-local-storage \"extra\")))",
+		"(test \"seed\" (setup (session-storage \"extra\" \"value\")) (steps (expect-no-session-storage \"extra\")))",
+		"(test \"positive later\" (steps (expect-no-local-storage \"extra\") (expect-local-storage \"extra\" \"value\")))",
+		"(test \"positive first\" (steps (expect-session-storage \"extra\" \"value\") (expect-no-session-storage \"extra\")))",
+		"(test \"elsewhere\" (steps (expect-no-local-storage \"extra\") (storage-elsewhere \"extra\" \"value\")))",
+	]
+	rejected = [
+		"(test \"missing\" (steps (expect-no-local-storage \"extra\")))",
+		"(test \"missing\" (steps (expect-no-session-storage \"extra\")))",
+		"(test \"other store\" (setup (local-storage \"extra\" \"value\")) (steps (expect-no-session-storage \"extra\")))",
+		"(test \"other key\" (steps (expect-local-storage \"other\" \"value\") (expect-no-local-storage \"extra\")))",
+		"(test \"removed\" (steps (storage-elsewhere-removed \"extra\") (expect-no-local-storage \"extra\")))",
+		"(test \"cleared\" (steps (storage-elsewhere-cleared) (expect-no-local-storage \"extra\")))",
+	]
+	accepted.all(|text| SpecRunner.parse_declared(program, text).is_ok()) and rejected.all(|text| SpecRunner.parse_declared(program, text).is_err())
+}
+
+## Setup media is checked at its own position before emit, and recording
+## forwards the catalogue metadata without evaluating an instance callback.
+expect {
+	program = declaration_probe({})
+	known = SpecRunner.parse_declared(program, "(test \"media\" (setup (initial-media \"screen\" true)) (steps (mark-metrics)))")?
+	unknown = SpecRunner.parse_declared(program, "(test \"media\"\n  (setup\n    (initial-media \"missing\" true))\n  (steps (mark-metrics)))")
+	SpecRunner.declared(program, known)?
+	{ unknown: unknown.map_ok(|_| {}), recorded: SpecRunner.recording(program).tasks } == {
+		unknown: Err({ pos: { line: 3, column: 5 }, message: "setup names media query \"missing\", which the program does not declare" }),
+		recorded: ["task", "owner", "prepared-task", "empty-owner"],
+	}
+}
+
+## Invalid raw input types still block implicit submission as text controls,
+## and never acquire checked or file-input actions from their raw spelling.
+expect {
+	program = report_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, form) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "form" })
+	(d2, first) = Dom.add_node(d1, { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", "txet"), ("data-testid", "invalid")]) })
+	one = Dom.insert(Dom.insert(d2, d2.root, form, Err(End)), form, first, Err(End))
+	(d3, second) = Dom.add_node(one, { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", "text")]) })
+	two = Dom.insert(d3, form, second, Err(End))
+	state = { ..base, dom: two }
+	SpecRunner.implicit_inputs(one, form) == 1 and SpecRunner.implicit_inputs(two, form) == 2 and SpecRunner.set_checked(program, state, TestId("invalid"), True).is_err() and SpecRunner.give_files(program, state, ChooseFiles(TestId("invalid"), []), []).is_err() and Dom.attr_of(Dom.node(two, first), "type") == "txet"
+}
+
+## A soak reads a call's work from the counters of the work records around
+## it, by their index in the record; a counter the record lacks reads 0.
+expect {
+	record = |values| SpecRunner.put_u32(values.fold(SpecRunner.put_u32([], values.len().to_u32_wrap()), SpecRunner.put_u64), 0)
+	counters = List.repeat(0.U64, 34).map_with_index(|_, i| i)
+	earlier = SpecRunner.round_trip_work(record(counters))
+	later = SpecRunner.round_trip_work(record(counters.map_with_index(|value, i| if (i == 1 or i == 30) value + 1 else value)))
+	{ earlier, work: SpecRunner.work_between(earlier, later), short: SpecRunner.round_trip_work(record([7, 8])) } == { earlier: [1, 22, 25, 26, 30, 32, 33], work: [1, 0, 0, 0, 1, 0, 0], short: [8, 0, 0, 0, 0, 0, 0] }
+}
+
+## A replayed call that did other work than its recorded call is named by
+## every counter, so the report says what the replay missed.
+expect SpecRunner.show_work([1, 0, 2, 2, 1, 0, 0]) == "rows created 1, rows removed 0, scopes created 2, scopes disposed 2, turns 1, requests issued 0, results delivered 0"
+
+## A soak names an event by the place of its listener in the drawn tree,
+## so a row the cycle re-creates under another id is found again at its
+## place; a place with no node, or a node without the listener, is refused.
+expect {
+	base = Dom.new({})
+	(made, list) = Dom.add_node(base, { ..Dom.empty_node, tag: "ul" })
+	drawn = Dom.insert(made, base.root, list, Err(End))
+	row = |dom, id| {
+		(added, at) = Dom.add_node(dom, { ..Dom.empty_node, tag: "li", rn: id, hs: [{ event: "click", handler: 3, kind: 0, policies: 0 }] })
+		(Dom.set_row(Dom.insert(added, list, at, Err(End)), id, at, 0), at)
+	}
+	(one, _) = row(drawn, 7)
+	(two, second) = row(one, 8)
+	place = SpecRunner.listener_place(two, 8, 3)
+	removed = Dom.detach(two, second)
+	(again, _) = row(removed, 12)
+	{
+		place,
+		again: place.map_ok(|found| SpecRunner.resolve_place(again, found)),
+		removed: place.map_ok(|found| SpecRunner.resolve_place(removed, found)),
+		other_event: SpecRunner.resolve_place(again, { path: [0, 1], event: "input" }),
+		unknown: SpecRunner.listener_place(two, 99, 3),
+		other_handler: SpecRunner.listener_place(two, 8, 4),
+		root: SpecRunner.node_path(two, base.root),
+	}
+		== {
+			place: Ok({ path: [0, 1], event: "click" }),
+			again: Ok(Ok({ node: 12, handler: 3 })),
+			removed: Ok(Err(NoNode)),
+			other_event: Err(NoListener),
+			unknown: Err(Unplaced),
+			other_handler: Err(Unplaced),
+			root: Ok([]),
+		}
+}

@@ -5,6 +5,7 @@ import Comments
 import Nav
 import Pages
 import Route
+import Locations
 import Session
 import Story
 
@@ -58,7 +59,7 @@ AppStore := [Conduit].{
 	username_key = "conduit.username"
 
 	home_url : Str
-	home_url = Route.to_url(Route.home_location)
+	home_url = Locations.to_url(Locations.home_location)
 
 	## The store a reader starts with: the session kept in local storage
 	## and the location the page was opened at.
@@ -116,7 +117,7 @@ AppStore := [Conduit].{
 
 ## A move to another kind of page starts the article page's cells again.
 expect {
-	article = Route.to_url(Route.article_location("a"))
+	article = Locations.to_url(Locations.article_location("a"))
 	typed = AppStore.store.after([AppStore.cells.loc.set(article), AppStore.cells.article.cells.form.set(CommentForm.init.typed("x"))])
 	home = typed.after(AppStore.moved({ loc: article, session: Session.Anonymous }, AppStore.home_url))
 	home.read(AppStore.cells.article.cells.form) == CommentForm.init and home.read(AppStore.cells.loc) == AppStore.home_url
@@ -124,9 +125,20 @@ expect {
 
 ## A move between two articles keeps the comment box and points the story at the new one.
 expect {
-	first = Route.to_url(Route.article_location("a"))
-	second = Route.to_url(Route.article_location("b"))
+	first = Locations.to_url(Locations.article_location("a"))
+	second = Locations.to_url(Locations.article_location("b"))
 	typed = AppStore.store.after([AppStore.cells.loc.set(first), AppStore.cells.article.cells.form.set(CommentForm.init.typed("x"))])
 	moved = typed.after(AppStore.moved({ loc: first, session: Session.Anonymous }, second))
 	moved.read(AppStore.cells.article.cells.form) == CommentForm.init.typed("x") and moved.read(AppStore.cells.article.cells.story).slug() == "b"
+}
+
+## Leaving a page kind starts every page's state again, including drafts,
+## submissions and loads outside the article page's own cells.
+expect {
+	login = Locations.to_url(Locations.login_location)
+	pages = Pages.init(login)
+	dirty = { ..pages, auth: { ..pages.auth, username: "kim" }, settings: { ..pages.settings, bio: "draft bio" }, editor: { ..pages.editor, title: "draft article" }, prof: { ..pages.prof, refetch: 3 }, loads: { ..pages.loads, feed: { key: "old feed", value: Loading } } }
+	typed = AppStore.store.after([AppStore.cells.loc.set(login), AppStore.cells.pages.set(dirty)])
+	home = typed.after(AppStore.moved({ loc: login, session: Session.Anonymous }, AppStore.home_url))
+	home.read(AppStore.cells.pages) == Pages.init(AppStore.home_url)
 }

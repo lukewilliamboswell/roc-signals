@@ -1,0 +1,15 @@
+(test "Services — url resolve preprocessing"
+  (setup (initial-location "/url-probe/history?before=%26#start"))
+  (steps
+    (click (role button :name "Push preprocessed query"))
+    (expect-current-location "/url-probe/history?clean=caf%C3%A9%20au%20lait#value=%C3%A9")
+    (history-back)
+    (expect-current-location "/url-probe/history?before=%26#start")
+    (expect-text (test-id "received-location") "/url-probe/history?before=%26#start")
+    (history-forward)
+    (expect-current-location "/url-probe/history?clean=caf%C3%A9%20au%20lait#value=%C3%A9")
+    (expect-text (test-id "received-location") "/url-probe/history?clean=caf%C3%A9%20au%20lait#value=%C3%A9")
+    (click (role link :name "Follow preprocessed relative path"))
+    (expect-current-location "/url-probe/next%20caf%C3%A9?word=%C3%A7a%20va#tag=%C3%A9")
+    (expect-text (test-id "received-location") "/url-probe/next%20caf%C3%A9?word=%C3%A7a%20va#tag=%C3%A9")
+  ))

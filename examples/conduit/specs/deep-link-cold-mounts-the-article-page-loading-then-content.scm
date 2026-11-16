@@ -28,7 +28,7 @@
     (expect-document-title "Keyed lists without tears - Conduit")
     (expect-visible (role link :name "kim"))
     (expect-visible (role link :name "Settings"))
-    (expect-absent (role link :name "Sign in"))
+    (expect-absent (role link :name "Sign in") :never-drawn)
     ; Comments were admitted with the article and can finish independently.
     (stub-http "empty comments" :url "/api/articles/keyed-lists-without-tears/comments" :status 200 :body "{\"comments\":[]}")
     (run-effect 2)

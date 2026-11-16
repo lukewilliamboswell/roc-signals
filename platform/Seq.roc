@@ -8,7 +8,8 @@
 ## own entries whatever the table holds meanwhile.
 ##
 ## The comparison is passed to every call rather than stored, and must be a
-## total order on the entries held: two entries comparing `Same` is a contract
+## total order on the entries held. Engine.sort_by supplies one with key
+## tie-breaks; an explicit comparator must maintain it too: two entries comparing `Same` is a contract
 ## error, since an entry is found again by its sort value alone.
 Seq(k, s) :: { chunks : List(List({ sort : s, key : k })), count : U64, limit : U64 }.{
 
@@ -47,9 +48,10 @@ Seq(k, s) :: { chunks : List(List({ sort : s, key : k })), count : U64, limit : 
 	chunk_count = |seq| seq.chunks.len()
 
 	## Insert an entry at its place under `compare`. An entry comparing `Same`
-	## as one already held is a contract error.
-	insert : Seq(k, s), { sort : s, key : k }, (s, s -> [Before, Same, After]) -> Seq(k, s)
-	insert = |seq, entry, compare| {
+	## as one already held is a contract error; `site` names the owning view
+	## in that diagnostic.
+	insert : Seq(k, s), { sort : s, key : k }, (s, s -> [Before, Same, After]), Str -> Seq(k, s)
+	insert = |seq, entry, compare, site| {
 		{ chunks, count, limit } = seq
 		if chunks.is_empty() {
 			{ chunks: [List.with_capacity(limit.min(64) + 1).append(entry)], count: 1, limit }
@@ -63,7 +65,7 @@ Seq(k, s) :: { chunks : List(List({ sort : s, key : k })), count : U64, limit : 
 			match prev.get(at) {
 				Ok(there) =>
 					if compare(there.sort, entry.sort) == Same {
-						crash "contract: two rows of a table view compare Same; a table view's order must be total, so its sort value must break ties by key"
+						crash "contract: two rows of a table view compare Same; a table view's order must be total, so its sort value must break ties by key at site ${site}"
 					} else {
 						{}
 					}
@@ -328,7 +330,7 @@ compare_u64 = |a, b| if (a < b) Before else if (a > b) After else Same
 expect {
 	start = Seq.empty(8)
 	keys = upto(0, 200).map(|i| (i * 7919) % 211)
-	full = keys.fold(start, |seq, key| seq.insert({ sort: key, key }, compare_u64))
+	full = keys.fold(start, |seq, key| seq.insert({ sort: key, key }, compare_u64, "sequence expect"))
 	halved = keys.keep_if(|key| key % 4 != 0).fold(full, |seq, key| seq.remove(key, compare_u64))
 	expected = keys.keep_if(|key| key % 4 == 0).sort_with(compare_u64)
 	halved.to_list().map(|e| e.key) == expected and halved.len() == expected.len()

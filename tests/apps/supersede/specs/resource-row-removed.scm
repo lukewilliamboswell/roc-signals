@@ -1,6 +1,7 @@
 (test "Supersede — a removed row's late answer writes nothing"
   (steps
     (click (role button :name "Load rows"))
+    (expect-visible (test-id "row a"))
     (click (role button :name "Drop a"))
     (expect-absent (test-id "row a"))
     ; Its admitted request reparents to the each site and still completes.

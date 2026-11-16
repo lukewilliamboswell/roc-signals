@@ -16,6 +16,7 @@
 //! Running out of memory or a Roc crash traps the instance (no recovery).
 const std = @import("std");
 const resources = @import("resources.zig");
+const dbg_text = @import("dbg.zig");
 
 const RocList = extern struct {
     ptr: ?[*]u8,
@@ -250,8 +251,39 @@ fn outOfMemory(size: usize) noreturn {
     poison(3);
 }
 
+// ---------------------------------------------------------------------------
+// `dbg` (design.md, "The Thin Wasm Host"). Page code is pure, so `dbg` is the
+// one way it can say something that is not a command. The text of each `dbg`
+// a call ran is kept in `dbg.zig`'s buffer, in static storage, until the next
+// call into Roc, or the next staging of a payload (`payload_reserve`) or of
+// handles (`files_stage`), clears it: the runtime reads it after the call
+// returns, or after it trapped, since a trap leaves the buffer as it was.
+
+/// The `dbg` text of the last call into Roc: 4096 bytes of entries, one
+/// entry keeping at most 1024 bytes of its text.
+var dbg: dbg_text.Buffer(4096, 1024) = .{};
+
+/// Roc's `dbg`: keep the inspected value's text for the runtime. It never
+/// allocates and never fails.
 export fn roc_dbg(bytes: [*]const u8, len: usize) callconv(.c) void {
-    if (fault_class == 0) keepError(bytes, len);
+    dbg.append(bytes[0..len]);
+}
+
+/// The address of the last call's `dbg` text: `dropped:u32`, then each entry
+/// as `len:u32 kept:u32 text:kept`. It stays readable after the call returns
+/// or traps, until the next call into Roc or the next `payload_reserve` or
+/// `files_stage` clears it, so the runtime reads it before staging anything
+/// for the next call. Static storage: it never allocates, and answers when
+/// the instance is poisoned.
+export fn dbg_ptr() callconv(.c) usize {
+    return @intFromPtr(&dbg.region);
+}
+
+/// The length in bytes of the region at `dbg_ptr()`, valid for as long as
+/// that region is: 0 when the last call ran no `dbg` (or the buffer has been
+/// cleared since), which lets the runtime skip reading it.
+export fn dbg_len() callconv(.c) usize {
+    return dbg.len();
 }
 
 export fn roc_expect_failed(bytes: [*]const u8, len: usize) callconv(.c) void {
@@ -286,20 +318,29 @@ fn refuseIfPoisoned() void {
 // ---------------------------------------------------------------------------
 // JavaScript-facing exports.
 
-/// Before mount: the storage keys the app declares (count:u32 then key:str
-/// each), readable through `cmd_ptr`/`cmd_len` until `init`. JavaScript reads
-/// their values and stages the boot bytes with `payload_reserve`.
+/// Before mount: the program's declaration sections, readable through
+/// `cmd_ptr`/`cmd_len` until `init`. JavaScript reads the declared browser
+/// facts and stages their boot sections with `payload_reserve`; the host
+/// forwards both byte lists without interpreting their sections.
 export fn boot_keys() callconv(.c) void {
     refuseIfPoisoned();
+    dbg.clear();
     if (state != null or cmds.ptr != null) @trap();
     cmds = roc_engine_keys();
 }
 
-/// Mount the app with the staged boot bytes (URL and storage values; empty
-/// when nothing was staged): builds the instance and leaves the mount
-/// commands readable. The key list buffer, if any, is released by Roc.
-export fn init() callconv(.c) void {
+/// Mount the app with the staged boot bytes: the boot sections (tags 1–4,
+/// 6–11 and 13 of design.md's Boot table, in ascending order) that
+/// JavaScript staged with `payload_reserve`, or empty when nothing was
+/// staged. The staged payload moves into `roc_engine_init`, which decodes and
+/// checks the sections (a malformed one is a `contract` crash); the host then
+/// releases the declaration buffer `boot_keys` left, if any. Builds the
+/// engine state the host then holds and leaves the mount commands
+/// readable through `cmd_ptr`/`cmd_len`. Returns 1 when the call ran a `dbg`,
+/// otherwise 0. Traps when poisoned or already mounted.
+export fn init() callconv(.c) u32 {
     refuseIfPoisoned();
+    dbg.clear();
     if (state != null) @trap();
     const boot = pending_payload;
     pending_payload = RocList.empty;
@@ -310,6 +351,7 @@ export fn init() callconv(.c) void {
     cmds = step.cmds;
     work = step.work;
     releaseList(keys);
+    return @intFromBool(dbg.used != 0);
 }
 
 /// Drop one reference to a Roc `List(U8)` the host owns (no-op for empty or
@@ -338,6 +380,7 @@ var pending_payload: RocList = RocList.empty;
 /// after this call (the allocation may grow memory).
 export fn payload_reserve(len: usize) callconv(.c) usize {
     refuseIfPoisoned();
+    dbg.clear();
     dropPending();
     if (len == 0) return 0;
     const base: [*]u8 = @ptrCast(allocRaw(len + @sizeOf(usize), @alignOf(usize)));
@@ -357,8 +400,9 @@ fn dropPending() void {
 /// bytes are handed back to Roc for reuse; the staged payload (if any) moves
 /// into Roc, which owns and frees it. The new commands are readable until the
 /// next call.
-export fn event(node: u32, handler: u32) callconv(.c) void {
+export fn event(node: u32, handler: u32) callconv(.c) u32 {
     refuseIfPoisoned();
+    dbg.clear();
     const owned = state orelse @trap();
     const buf = cmds;
     const wbuf = work;
@@ -371,6 +415,7 @@ export fn event(node: u32, handler: u32) callconv(.c) void {
     state = step.state;
     cmds = step.cmds;
     work = step.work;
+    return @intFromBool(dbg.used != 0);
 }
 
 /// Run one worker job (design.md, "Workers" and Appendix B). The staged
@@ -392,6 +437,7 @@ export fn event(node: u32, handler: u32) callconv(.c) void {
 /// before the call, so nothing dangles. Exported as `work` (the name
 /// `work` here is the work record's slot).
 fn runWork() callconv(.c) void {
+    if (fault_class == 0) dbg.clear();
     refuseIfWorkOnPage("work");
     const payload = pending_payload;
     const handles = pending_blobs;
@@ -472,6 +518,7 @@ fn forgetHeld() void {
 /// every builder the preparation opened when it returns, so a builder the
 /// state keeps is refused to every later job.
 export fn prepare() callconv(.c) void {
+    if (fault_class == 0) dbg.clear();
     refuseIfWorkOnPage("prepare");
     forgetHeld();
     const previous = cmds;
@@ -493,6 +540,7 @@ export fn prepare() callconv(.c) void {
 /// as for `work`. Traps when no state is held: the runtime asks only an
 /// instance it prepared.
 export fn ask() callconv(.c) void {
+    if (fault_class == 0) dbg.clear();
     refuseIfWorkOnPage("ask");
     const owned = held orelse @trap();
     held = null;
@@ -515,6 +563,7 @@ export fn ask() callconv(.c) void {
 /// last job's output is released with it, so afterwards the instance holds
 /// nothing a job left behind.
 export fn forget() callconv(.c) void {
+    if (fault_class == 0) dbg.clear();
     if (fault_class != 0) return;
     forgetHeld();
     const previous = cmds;
@@ -551,6 +600,7 @@ var tokens: [max_files]u64 = @splat(0);
 /// call.
 export fn files_stage(n: u32) callconv(.c) u32 {
     refuseIfPoisoned();
+    dbg.clear();
     dropPendingBlobs();
     const want = @min(@as(usize, n), max_files - blobs.live_count);
     if (want == 0) return 0;
@@ -580,11 +630,12 @@ export fn files_tokens() callconv(.c) usize {
     return @intFromPtr(&tokens);
 }
 
-/// A `:files` event (design.md, Appendix B): the staged payload is the
+/// A files-kind event (design.md, Appendix B): the staged payload is the
 /// event's file record and the staged handles its files, in order; both move
 /// into Roc for one turn, like `event`.
-export fn event_files(node: u32, handler: u32) callconv(.c) void {
+export fn event_files(node: u32, handler: u32) callconv(.c) u32 {
     refuseIfPoisoned();
+    dbg.clear();
     const owned = state orelse @trap();
     const buf = cmds;
     const wbuf = work;
@@ -599,6 +650,7 @@ export fn event_files(node: u32, handler: u32) callconv(.c) void {
     state = step.state;
     cmds = step.cmds;
     work = step.work;
+    return @intFromBool(dbg.used != 0);
 }
 
 /// After JavaScript has applied a batch and performed its effects: free the
@@ -744,6 +796,7 @@ comptime {
 /// Teardown. Idempotent at the containment boundary: a poisoned instance
 /// (or one already dropped) does nothing.
 export fn drop() callconv(.c) void {
+    if (fault_class == 0) dbg.clear();
     if (fault_class != 0 or state == null) return;
     dropPending();
     const owned = state orelse @trap();

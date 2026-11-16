@@ -2,9 +2,14 @@ name: CI
 
 # Every Linux job runs a Blueprint task, so CI and contributors run the same
 # commands: `blueprint run check` is the pull-request gate (the release dry
-# run included), and `blueprint run site` builds the site, its API docs and
-# its live examples. The macOS and Windows jobs run apps' specs with the
-# spec runner `roc build` makes there, as an app author on that system does. A push to main also deploys that build to GitHub Pages,
+# run included), run here as Check (`check -- --without-fuzz
+# --without-sizes`, in parts of `check -- --part K/N`), Fuzz smoke (every
+# registered fuzz target's fixed examples, in shards of `fuzz-smoke`) and
+# Site: `blueprint run site` builds the site, its API docs and its live
+# examples, whose --opt=size modules it also reports by size for the gate. CI never runs a fuzz campaign: campaigns are a
+# contributor's `blueprint run fuzz`. The macOS and Windows jobs run apps'
+# specs with the spec runner `roc build` makes there, as an app author on
+# that system does. A push to main also deploys that build to GitHub Pages,
 # so the published site always matches main.
 
 on:
@@ -36,9 +41,87 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: echo "tag=$(gh api repos/roc-lang/nightlies/releases/latest --jq .tag_name)" >> "$GITHUB_OUTPUT"
 
+  # The pull-request gate, `check -- --without-fuzz --without-sizes`, as
+  # parallel legs:
+  # each runs part K of N, where K and N are this matrix's own job index
+  # and size. Which stages each part runs, how the apps' per-app stages
+  # (their builds, their specs in both runners, walks and broken specs)
+  # are dealt among the parts (by need: an app a part's own stages use is
+  # that part's, so no build is made by two legs), and every build each
+  # part makes, is `CheckPlan` in the script, never this file:
+  # `check -- --plan [--builds]` prints it. A part whose N is not the
+  # plan's, or that would run nothing, fails; each part prints a SKIP line
+  # for every stage another part runs. A leg compiles three apps at a time
+  # (4 GiB per compiler process on a 16 GB runner). The legs pass
+  # --without-sizes: the size report of the examples' --opt=size modules is
+  # made by the Site job, which builds those modules to publish them, so
+  # each is built once in a run; the Check result below needs it too.
+  check-part:
+    name: Check (part ${{ matrix.part }})
+    needs: nightly
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@14a895879f6fea8c2d1a546a2a56c8502decb2a0
+        with:
+          cache: 'true'
+          cache-workload: engine
+      - uses: roc-lang/setup-roc@f5a74bf90aa694b43ab4a7cbfdb19273bc6aa697
+        with:
+          version: nightly-new-compiler
+          nightly-tag: ${{ needs.nightly.outputs.tag }}
+      - run: blueprint check
+      # The fuzz targets are the Fuzz smoke job's; check prints a SKIP line
+      # for each and accounts for every registered target.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          INDEX: ${{ strategy.job-index }}
+          TOTAL: ${{ strategy.job-total }}
+        run: blueprint run check -- --without-fuzz --without-sizes --part "$((INDEX + 1))/$TOTAL"
+
+  # One result for the whole matrix, the check a pull request requires:
+  # it passes only when every part passed and the Site job, which makes
+  # the gate's size report of the examples' shipping modules, passed.
   check:
     name: Check
+    needs: [check-part, site]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - env:
+          PARTS: ${{ needs.check-part.result }}
+          SITE: ${{ needs.site.result }}
+        run: |
+          echo "check parts: $PARTS; site (the size report): $SITE"
+          test "$PARTS" = success
+          test "$SITE" = success
+
+  # Every registered fuzz target's fixed examples (declared examples and
+  # saved regressions) on a plain optimized build: each target compiles,
+  # links and runs, and nothing explores. The targets come from the
+  # registry (`Targets.fuzz_targets`), never from this file: each leg runs
+  # shard K of N, where K and N are this matrix's own job index and size,
+  # so a new target lands in some shard, and a leg whose shard would hold
+  # no target fails. Each leg compiles one target at a time (16 GiB per
+  # compiler process), so the legs are what run the compilers in parallel.
+  fuzz-shard:
+    name: Fuzz smoke (shard ${{ matrix.shard }})
     needs: nightly
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -55,8 +138,35 @@ jobs:
         with:
           version: nightly-new-compiler
           nightly-tag: ${{ needs.nightly.outputs.tag }}
-      - run: blueprint check
-      - run: blueprint run check
+      - env:
+          INDEX: ${{ strategy.job-index }}
+          TOTAL: ${{ strategy.job-total }}
+        run: blueprint run fuzz-smoke -- --shard "$((INDEX + 1))/$TOTAL"
+      # A failing target's build and check logs, roc-fuzz report and
+      # validation are gone with the runner unless they are uploaded.
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: fuzz-smoke-${{ matrix.shard }}
+          path: .build/fuzz-smoke/
+          if-no-files-found: warn
+          retention-days: 7
+
+  # One result for the whole matrix, the check a pull request requires:
+  # it passes only when every shard passed.
+  fuzz:
+    name: Fuzz smoke
+    needs: fuzz-shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - env:
+          RESULT: ${{ needs.fuzz-shard.result }}
+        run: |
+          echo "fuzz smoke shards: $RESULT"
+          test "$RESULT" = success
 
   # The spec runner's link inputs for every system, cross-compiled on Linux
   # with the pinned Zig exactly as the release builds them.
@@ -116,6 +226,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@14a895879f6fea8c2d1a546a2a56c8502decb2a0
+        with:
+          cache: 'true'
+          cache-workload: engine
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: spec-inputs
@@ -169,39 +283,7 @@ jobs:
           cli_url=$(sed -n 's/.*cli: platform "\(.*\)",/\1/p' cli/main.roc)
           printf '%s\n' 'app [main!] {' "	cli: platform \"$cli_url\"," "	signals: \"$root/cli/main.roc\"," '}' '' 'import signals.Signals' '' 'main! = |args| Signals.run!(args)' > signals.roc
           echo "== init ($cli_url, $ROC_NIGHTLY)"
-          mkdir -p .build
-          init_log=.build/cli-init.log
-          init_status=0
-          roc signals.roc init tool-app > "$init_log" 2>&1 || init_status=$?
-          cat "$init_log"
-          if [ "$init_status" -ne 0 ]; then
-            # This compiler reports varying subsets of three captured
-            # basic-cli 0.28 diagnostics. Each exact package/location may
-            # appear once; every error, cause and summary must be accounted
-            # for. Remove when basic-cli#555 is resolved. New nightlies retry
-            # without this exemption. Native specs above still run.
-            locale_253=$(grep -Ec 'compile time crash.*2yhxoR7cZPSYbyUzPWULFw8AA6QEcdsgFNRmzu7pZbst[/\\]Locale\.roc:253:11' "$init_log" || true)
-            locale_291=$(grep -Ec 'compile time crash.*2yhxoR7cZPSYbyUzPWULFw8AA6QEcdsgFNRmzu7pZbst[/\\]Locale\.roc:291:11' "$init_log" || true)
-            path_literal=$(grep -Ec 'compile time crash.*2yhxoR7cZPSYbyUzPWULFw8AA6QEcdsgFNRmzu7pZbst[/\\]Path\.roc:739:1' "$init_log" || true)
-            locale_errors=$((locale_253 + locale_291))
-            known_errors=$((locale_errors + path_literal))
-            if [ "$RUNNER_OS" = Windows ] && [ "$ROC_NIGHTLY" = nightly-2026-11-11-7679cc5 ] && [ "$init_status" -eq 1 ] &&
-               [ "$known_errors" -gt 0 ] && [ "$locale_253" -le 1 ] && [ "$locale_291" -le 1 ] && [ "$path_literal" -le 1 ] &&
-               [ "$(grep -c '✗' "$init_log")" -eq "$known_errors" ] &&
-               [ "$(grep -Fc 'This definition crashed during compile-time evaluation.' "$init_log")" -eq "$known_errors" ] &&
-               [ "$(grep -Fc 'locale = "en-US"' "$init_log")" -eq "$locale_errors" ] &&
-               [ "$(grep -Fc 'quoted_literal_path = "config.txt"' "$init_log")" -eq "$path_literal" ] &&
-               [ "$(grep -Fc 'The crash happened in the module Url (line 909, column 8)' "$init_log")" -eq "$locale_errors" ] &&
-               [ "$(grep -Fc 'The crash happened in the module Bundle (line 30, column 17)' "$init_log")" -eq "$path_literal" ] &&
-               [ "$(grep -Fc 'The crash happened in the module ' "$init_log")" -eq "$known_errors" ] &&
-               [ "$(grep -Fc 'This Roc program overflowed its stack memory.' "$init_log")" -eq "$known_errors" ] &&
-               [ "$(grep -Ec '[0-9]+ errors? and [0-9]+ warnings?' "$init_log")" -eq 1 ] &&
-               grep -Eq "(^|[^0-9])$known_errors errors? and 0 warnings" "$init_log"; then
-              echo "::notice::SKIP remaining Windows CLI journey after the reported basic-cli compile-time stack overflows (https://github.com/roc-lang/basic-cli/issues/555); remove this quarantine when resolved. Init output is retained in $init_log."
-              exit 0
-            fi
-            exit "$init_status"
-          fi
+          roc signals.roc init tool-app || exit 1
           cd tool-app
           echo "== test"
           roc signals.roc test || failed=1
@@ -213,12 +295,12 @@ jobs:
           ls .signals/test/runner$EXE || failed=1
           echo "== build"
           roc signals.roc build || failed=1
-          ls dist/index.html dist/assets/*/app.wasm dist/assets/*/runtime.mjs dist/assets/*/worker.mjs || failed=1
+          ls dist/index.html dist/assets/*/app.wasm dist/assets/*/runtime.mjs dist/assets/*/worker.mjs dist/assets/*/environment.mjs || failed=1
           echo "== serve"
           roc signals.roc serve --port 8123 > serve.txt 2>&1 &
           for i in $(seq 1 120); do curl -sf -o /dev/null http://127.0.0.1:8123/ && break; sleep 1; done
           cat serve.txt
-          for f in "/ text/html" "/runtime.mjs text/javascript" "/app.wasm application/wasm"; do
+          for f in "/ text/html" "/runtime.mjs text/javascript" "/environment.mjs text/javascript" "/app.wasm application/wasm"; do
             set -- $f
             type=$(curl -s -o /dev/null -w '%{content_type}' "http://127.0.0.1:8123$1")
             echo "$1: $type"
@@ -231,7 +313,7 @@ jobs:
     name: Site
     needs: nightly
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -254,10 +336,10 @@ jobs:
 
   # Publishes the site the Site job built. Only main deploys: the
   # github-pages environment admits no other branch. The deploy waits for
-  # Check, so a main that fails its gate is never published.
+  # Check and Fuzz smoke, so a main that fails its gate is never published.
   deploy-site:
     name: Deploy site
-    needs: [check, site]
+    needs: [check, fuzz, site]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10

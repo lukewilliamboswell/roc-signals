@@ -18,20 +18,23 @@ Feed := [].{
 	## because the page fell more than a few seconds behind.
 	Batch : { sales : List(Sale), dropped : U32 }
 
-	## Live orders, `per_second` of them, in batches about four times a
-	## second. Every batch carries orders the page must count, so none may
-	## be replaced by a newer one: up to four wait while the page is busy,
-	## and beyond them the JavaScript holds its orders back and sends them
-	## with the next batch.
-	orders : Port.Subscription({ per_second : U32 }, Batch)
-	orders = Port.subscription({ name: Feed.name, delivery: Every(4) })
+	## The module's named ports, declared once and registered together.
+	Ports : {
+		## Live orders, `per_second` of them, in batches about four times a
+		## second. Every batch carries orders the page must count, so none may
+		## be replaced by a newer one: up to four wait while the page is busy,
+		## and beyond them the JavaScript holds its orders back and sends them
+		## with the next batch.
+		orders : Port.Subscription({ per_second : U32 }, Batch),
+	}
 
-	## The port's name, which the page's meter also reads the monitor by
-	## (a subscription has no `name()` to ask, as a task has).
-	name : Str
-	name = "roc-signals.example/million-row-explorer/orders"
+	## The same values serve requests and the derived program catalogue.
+	ports : Ports
+	ports = {
+		orders: Port.subscription({ name: "roc-signals.example/million-row-explorer/orders", delivery: Every(4) }),
+	}
 
 	## The program's entry for `Program.with_ports`.
 	registrations : List(Engine.PortRegistration)
-	registrations = [Feed.orders.registration()]
+	registrations = Port.registrations(Feed.ports)
 }
