@@ -620,7 +620,7 @@ expect {
 }
 
 ## The shipped skips name specs of their app, on the verified nightlies only.
-expect CompilerSkips.skips.all(|s| s.example == "files" and s.issue == "roc-lang/roc#13020" and s.compilers == ["nightly-2026-11-13-03dce41", "nightly-2026-11-14-a87808d"])
+expect CompilerSkips.skips.all(|s| s.example == "files" and s.issue == "roc-lang/roc#13020" and s.compilers == ["nightly-2026-11-13-03dce41", "nightly-2026-11-14-a87808d", "nightly-2026-11-15-f25da45"])
 
 ## The summary shows a skip, which is never a pass.
 expect SpecSuite.summary("files", Browser, { ..SpecSuite.empty_tally, passed: 12, skipped: 2 }) == "files (Browser): 12 passed, 0 failed, 2 skipped"

@@ -26,4 +26,4 @@ CompilerSkips := [].{
 
 ## The nightlies on which roc-lang/roc#13020 was verified to fail these specs.
 verified_13020 : List(Str)
-verified_13020 = ["nightly-2026-11-13-03dce41", "nightly-2026-11-14-a87808d"]
+verified_13020 = ["nightly-2026-11-13-03dce41", "nightly-2026-11-14-a87808d", "nightly-2026-11-15-f25da45"]
