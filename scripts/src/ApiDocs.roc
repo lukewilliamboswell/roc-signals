@@ -181,31 +181,20 @@ ApiDocs := [].{
 	## The reviewed repairs of published baselines; empty once the latest
 	## release is one `roc bump` reads as it shipped.
 	##
-	## 0.5.0's `Table` methods take an `EngineOnly` (`Table.version :
-	## Table(k, v), EngineOnly -> U64`), a type from a module 0.5.0 does not
-	## expose, so that only the engine can call them. `roc bump` refuses to
-	## extract an API whose signatures name a type outside it ("The old
-	## package's public API references the type `EngineOnly`, which is not
-	## itself part of the exposed API"), although `roc check` accepts the
-	## package. The repair exposes `EngineOnly`, the one name the baseline
-	## then has beyond what shipped; 0.6.0 has no `EngineOnly`, so the
-	## comparison reports it removed. Upstream:
-	## https://github.com/roc-lang/roc/issues/13080. When the latest release
-	## is 0.6.0 this entry no longer applies and `baseline_plan` fails until
-	## it is removed.
+	## 0.6.0's `Wire.Sendable` constraint names the unexposed `WorkerCodec`
+	## types, as the candidate does. The same extraction workaround adds
+	## that module to a copy of the published root, without changing the
+	## bundle or exposing it to apps. The digest binds the repair to the
+	## exact published asset. Upstream:
+	## https://github.com/roc-lang/roc/issues/13080. Once 0.6.0 is no longer
+	## the latest release, `baseline_plan` fails until this entry is retired.
 	baseline_repairs : List(BaselineRepair)
 	baseline_repairs = [
 		{
-			version: "0.5.0",
-			sha256: "8134fe1b069bd1360e40340304d30d4530813f1501cce6c8aceb688304d3b14b",
-			reason: "EngineOnly is exposed, since roc bump cannot extract an API that names a type from an unexposed module",
-			edits: [
-				{
-					before: "\texposes [Engine, Files, Html, Port, PortJson, Table, Wire, Worker]\n",
-					after: "\texposes [Engine, EngineOnly, Files, Html, Port, PortJson, Table, Wire, Worker]\n",
-				},
-				{ before: "import Engine\nimport Files\n", after: "import Engine\nimport EngineOnly\nimport Files\n" },
-			],
+			version: "0.6.0",
+			sha256: "ea59cb6c5577ed1be8322946edfc1f7b6effcd8160e369de976eeca7d63829e0",
+			reason: ApiDocs.candidate_repair.reason,
+			edits: ApiDocs.candidate_repair.edits,
 		},
 	]
 
@@ -439,13 +428,13 @@ expect {
 	actual == expected
 }
 
-## 0.5.0's repair adds exactly `EngineOnly` to the exposed modules of its
+## 0.6.0's repair adds exactly `WorkerCodec` to the exposed modules of its
 ## published root, and nothing else.
 expect {
-	repair = ApiDocs.baseline_repairs.find_first(|r| r.version == "0.5.0")?
-	published = "platform \"\"\n\trequires {}\n\texposes [Engine, Files, Html, Port, PortJson, Table, Wire, Worker]\n\tpackages {}\n\tprovides {}\nimport Core\nimport Engine\nimport Files\n"
+	repair = ApiDocs.baseline_repairs.find_first(|r| r.version == "0.6.0")?
+	published = "platform \"\"\n\trequires {}\n\texposes [Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, Wire, Worker]\n\tpackages {}\n\tprovides {}\nimport Core\nimport Wire\nimport Worker\n"
 	repaired = ApiDocs.repaired_root(published, repair.edits)?
-	{ before: ApiDocs.modules(published)?, after: ApiDocs.modules(repaired)? } == { before: ["Engine", "Files", "Html", "Port", "PortJson", "Table", "Wire", "Worker"], after: ["Engine", "EngineOnly", "Files", "Html", "Port", "PortJson", "Table", "Wire", "Worker"] }
+	{ before: ApiDocs.modules(published)?, after: ApiDocs.modules(repaired)? } == { before: ["Clipboard", "Engine", "Files", "Html", "Layout", "Order", "Port", "PortJson", "Svg", "Url", "Web", "Wire", "Worker"], after: ["Clipboard", "Engine", "Files", "Html", "Layout", "Order", "Port", "PortJson", "Svg", "Url", "Web", "Wire", "WorkerCodec", "Worker"] }
 }
 
 ## An edit whose text is missing or repeated refuses the baseline rather
