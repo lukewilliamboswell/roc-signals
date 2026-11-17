@@ -1593,7 +1593,7 @@ Dom := [].{
 							crash "unknown PBKDF2 hash"
 						}
 						_ = Dom.u32(b, $at + 1)
-						(_, password_end) = Dom.raw(b, $at + 5)
+						(_, password_end) = Dom.str(b, $at + 5)
 						(_, salt_end) = Dom.raw(b, password_end)
 						$at = salt_end
 					} else if crypto_op == 3 or crypto_op == 4 {

@@ -926,7 +926,7 @@ export fn cmd_len() callconv(.c) usize {
 }
 
 /// The engine's work record after the last call, readable until the next
-/// `event` or `drop` (0 and 0 before mount).
+/// `event`, `event_files`, `event_key` or `drop` (0 and 0 before mount).
 export fn work_ptr() callconv(.c) usize {
     return if (work.ptr) |p| @intFromPtr(p) else 0;
 }

@@ -5662,8 +5662,8 @@ warm-up neither allocates.
 | `ask()` | In a worker instance: run the staged payload and handles, a job of a preparation's task, on the kept state (`roc_engine_ask`, effects allowed); the answer is readable as for `work()`. Traps when no state is kept, and refuses like `work()` |
 | `forget()` | In a worker instance: release the kept state, if any, and the previous answer. No-op when poisoned |
 | `protocol_version() -> u32` | The engine's protocol version; answers before mount and when poisoned |
-| `cmd_ptr()`, `cmd_len()` | The current command batch (in a worker instance, the last job's answer), valid until the next call of `boot_keys`, `init`, `event`, `event_files`, `work`, `prepare`, `ask`, `forget` or `drop` |
-| `work_ptr()`, `work_len()` | The work record returned with the last call, valid until the next `event` or `drop` |
+| `cmd_ptr()`, `cmd_len()` | The current command batch (in a worker instance, the last job's answer), valid until the next call of `boot_keys`, `init`, `event`, `event_files`, `event_key`, `work`, `prepare`, `ask`, `forget` or `drop` |
+| `work_ptr()`, `work_len()` | The work record returned with the last call, valid until the next `event`, `event_files`, `event_key` or `drop` |
 | `drop()` | Teardown; no-op when poisoned or already dropped |
 | `fault() -> u32` | `0` healthy, `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed |
 | `err_ptr()`, `err_len()` | Diagnostic text (≤ 512 bytes), independent of debug output |

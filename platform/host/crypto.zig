@@ -13,7 +13,9 @@ pub const tag_length = Aes.tag_length;
 
 /// PBKDF2-HMAC over the exact UTF-8 password and salt bytes. The caller
 /// validates the deployment's iteration ceiling before doing this work.
-pub fn derive(password: []const u8, salt: []const u8, iterations: u32, hash: KdfHash) error{InvalidIterations}!Key {
+/// Invalid UTF-8 is rejected before PBKDF2, never repaired or normalized.
+pub fn derive(password: []const u8, salt: []const u8, iterations: u32, hash: KdfHash) error{ InvalidIterations, InvalidPasswordUtf8 }!Key {
+    try validatePassword(password);
     if (iterations == 0) return error.InvalidIterations;
     var key: Key = undefined;
     switch (hash) {
@@ -21,6 +23,12 @@ pub fn derive(password: []const u8, salt: []const u8, iterations: u32, hash: Kdf
         .sha512 => std.crypto.pwhash.pbkdf2(&key, password, salt, iterations, std.crypto.auth.hmac.sha2.HmacSha512) catch unreachable,
     }
     return key;
+}
+
+/// Check the wire's password invariant before parameter refusals or native
+/// cryptographic work. Empty UTF-8 is valid; no text conversion changes bytes.
+pub fn validatePassword(password: []const u8) error{InvalidPasswordUtf8}!void {
+    if (!std.unicode.utf8ValidateSlice(password)) return error.InvalidPasswordUtf8;
 }
 
 /// Write ciphertext followed by its full 128-bit GCM tag, exactly the layout
@@ -87,6 +95,17 @@ test "PBKDF2 SHA-256 and SHA-512 match published one-iteration vectors" {
     try std.testing.expectEqualStrings("120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b", &std.fmt.bytesToHex(sha256, .lower));
     try std.testing.expectEqualStrings("867f70cf1ade02cff3752599a3a53dc4af34c7a669815ae5d513554e1c8cf252", &std.fmt.bytesToHex(sha512, .lower));
     try std.testing.expectError(error.InvalidIterations, derive("password", "salt", 0, .sha256));
+}
+
+test "password wire bytes require exact UTF-8 before PBKDF2 and allow empty text" {
+    for ([_][]const u8{ &.{0xff}, &.{ 0xc0, 0x80 }, &.{ 0xed, 0xa0, 0x80 }, &.{ 0xe2, 0x82 } }) |password| {
+        try std.testing.expectError(error.InvalidPasswordUtf8, validatePassword(password));
+        try std.testing.expectError(error.InvalidPasswordUtf8, derive(password, "0123456789abcdef", 1, .sha256));
+    }
+    try validatePassword("");
+    try validatePassword("é😀");
+    var key = try derive("", "0123456789abcdef", 1, .sha256);
+    defer erase(&key);
 }
 
 test "AES-256-GCM matches the NIST zero-key zero-IV vector and WebCrypto tag layout" {

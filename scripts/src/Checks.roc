@@ -271,6 +271,11 @@ Checks := [].{
 	key_contracts! = |o| {
 		cases = [
 			{ name: "oracle-flags", rejection: "unknown command batch flags", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-crypto-password-invalid", rejection: "bad utf8", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-crypto-password-overlong", rejection: "bad utf8", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-crypto-password-surrogate", rejection: "bad utf8", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-crypto-password-truncated", rejection: "bad utf8", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-crypto-password-empty", rejection: "", prefix: "", code: 0, program: Oracle },
 			{ name: "oracle-missing-transition", rejection: "marked batch is missing TRANSITION", prefix: "executor:", code: 70, program: Oracle },
 			{ name: "oracle-unmarked-transition", rejection: "TRANSITION requires marked batch", prefix: "executor:", code: 70, program: Oracle },
 			{ name: "oracle-transition-trailing", rejection: "TRANSITION must be last", prefix: "executor:", code: 70, program: Oracle },

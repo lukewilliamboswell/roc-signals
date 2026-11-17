@@ -476,6 +476,7 @@ fn hostedCrypto(request: RocList, random_offset: u64, held: RocList, max_bytes: 
             const password = reader.bytes();
             const salt = reader.bytes();
             reader.end();
+            crypto.validatePassword(password) catch fail("contract: crypto password is not UTF-8", "");
             if (hash != 1 and hash != 3) fail("internal: invalid native PBKDF2 hash", "");
             if (iterations == 0 or salt.len < 16) return cryptoFailure(3);
             if (iterations > max_iterations or password.len + salt.len > max_bytes) return cryptoFailure(2);
