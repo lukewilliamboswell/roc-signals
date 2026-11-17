@@ -144,6 +144,11 @@ await check("production randomness chunks CSPRNG calls and never falls back", as
   const failed = fixture({ window: { crypto: { getRandomValues() { throw new Error("no entropy"); } } } });
   failed.apply(batch(1, wide(1))); failed.runtime.manual = false; await failed.runtime.runEffect(1);
   assert.deepEqual([...failed.calls.at(-1).payload], [30, 1]);
+  const encrypting = fixture(); await keyOf(encrypting);
+  encrypting.runtime.win = { crypto: { subtle: webcrypto.subtle, getRandomValues() { throw new Error("no entropy"); } } };
+  encrypting.apply(batch(3, [...wide(100), ...block([]), ...block([])], 2));
+  encrypting.runtime.manual = false; await encrypting.runtime.runEffect(2);
+  assert.deepEqual([...encrypting.calls.at(-1).payload], [30, 1]);
 });
 
 await check("invalid parameters and deployment bounds refuse without browser work", async () => {
@@ -155,7 +160,7 @@ await check("invalid parameters and deployment bounds refuse without browser wor
     [derive(1, text("password"), new Uint8Array(15), 1), [30, 3]],
     [derive(1, text("password"), new Uint8Array(16), 0), [30, 3]],
     [derive(1, text("password that exceeds the combined input bound")), [30, 2]],
-    [batch(5, [3, ...block([])]), [30, 2]],
+    [batch(5, [3, ...block(new Uint8Array(33))]), [30, 2]],
   ];
   for (const [bytes, expected] of cases) {
     f.apply(bytes); assert.equal(f.runtime.poisoned, null); await f.runtime.runEffect(1);
@@ -217,4 +222,63 @@ await check("a late key after unmount never stages a handle or delivers a result
   f.runtime.unmount(); assert.equal(await completed, true); assert.equal(f.runtime.cryptoActive, 1);
   resolveKey({ opaque: "late key" }); await settle();
   assert.equal(f.minted(), 0); assert.equal(f.calls.length, 0); assert.equal(f.runtime.cryptoActive, 0);
+});
+
+await check("combined byte ceilings accept exactly the native contract and refuse one byte more", async () => {
+  const f = fixture({ maxCryptoBytes: 32, maxCryptoIterations: 100 });
+  const run = async bytes => { f.apply(bytes); await f.runtime.runEffect(1); return flatten(f.calls.at(-1).payload); };
+  // Password plus salt, rather than either independently, is the input cost.
+  assert.deepEqual(await run(derive(1, new Uint8Array(16), new Uint8Array(16), 100)), Buffer.from([27]));
+  assert.deepEqual(await run(derive(1, new Uint8Array(17), new Uint8Array(16), 100)), Buffer.from([30, 2]));
+  const plaintext = new Uint8Array(8).fill(11), associated = new Uint8Array(8).fill(22);
+  const sealed = await run(batch(3, [...wide(100), ...block(plaintext), ...block(associated)]));
+  assert.equal(sealed[0], 29); assert.equal(sealed.length, 37);
+  assert.deepEqual(await run(batch(3, [...wide(100), ...block(new Uint8Array(9)), ...block(associated)])), Buffer.from([30, 2]));
+  assert.deepEqual(await run(batch(3, [...wide(100), ...block(plaintext), ...block(new Uint8Array(9))])), Buffer.from([30, 2]));
+  const iv = sealed.subarray(1, 13), ciphertext = sealed.subarray(13);
+  assert.deepEqual(await run(batch(4, [...wide(100), ...block(iv), ...block(ciphertext), ...block(associated)])), Buffer.concat([Buffer.from([28]), plaintext]));
+  assert.deepEqual(await run(batch(4, [...wide(100), ...block(iv), ...block(ciphertext), ...block(new Uint8Array(9))])), Buffer.from([30, 2]));
+  assert.deepEqual(await run(batch(4, [...wide(100), ...block(new Uint8Array(11)), ...block(ciphertext), ...block(associated)])), Buffer.from([30, 3]));
+  assert.deepEqual(await run(batch(4, [...wide(100), ...block(iv), ...block(new Uint8Array(15)), ...block([])])), Buffer.from([30, 3]));
+  assert.equal((await run(batch(5, [3, ...block(new Uint8Array(32))]))).length, 65);
+  assert.deepEqual(await run(batch(5, [3, ...block(new Uint8Array(33))])), Buffer.from([30, 2]));
+  assert.equal((await run(batch(1, wide(32)))).length, 33);
+  assert.deepEqual(await run(batch(1, wide(33))), Buffer.from([30, 2]));
+  f.runtime.unmount();
+  const zero = fixture({ maxCryptoBytes: 0 });
+  zero.apply(batch(5, [3, ...block([])])); await zero.runtime.runEffect(1);
+  assert.equal(flatten(zero.calls.at(-1).payload).length, 65, "fixed SHA-512 output does not consume the bulk input limit");
+});
+
+await check("manual pending operations reserve the same 32 slots as running operations", async () => {
+  const f = fixture();
+  for (let id = 1; id <= 33; id++) f.apply(batch(1, wide(1), id));
+  await settle();
+  assert.equal(f.runtime.cryptoActive, 32);
+  assert.equal(f.runtime.pendingEffects().length, 32);
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].handler, 33);
+  assert.deepEqual([...f.calls[0].payload], [30, 5]);
+  f.runtime.cancel(1); assert.equal(f.runtime.cryptoActive, 31);
+  f.apply(batch(1, wide(1), 34)); assert.equal(f.runtime.cryptoActive, 32);
+  assert.equal(f.runtime.pendingEffects().at(-1).id, 34);
+  await f.runtime.runEffect(34); assert.equal(f.runtime.cryptoActive, 31);
+  f.runtime.unmount(); assert.equal(f.runtime.cryptoActive, 0);
+});
+
+await check("64 retained keys remain usable while sequential derivations release executor slots", async () => {
+  const f = fixture();
+  for (let index = 0; index < 64; index++) {
+    f.apply(derive()); await f.runtime.runEffect(1);
+    assert.deepEqual([...f.calls.at(-1).payload], [27]);
+    assert.equal(f.runtime.keys.size, index + 1);
+    assert.equal(f.runtime.cryptoActive, 0);
+  }
+  f.apply(derive()); await f.runtime.runEffect(1);
+  assert.deepEqual([...f.calls.at(-1).payload], [30, 5]);
+  assert.equal(f.runtime.keys.size, 64);
+  f.releases([100]); f.runtime.releaseKeys(); f.room(1);
+  f.apply(derive()); await f.runtime.runEffect(1);
+  assert.deepEqual([...f.calls.at(-1).payload], [27]);
+  assert.equal(f.runtime.keys.size, 64); assert.equal(f.runtime.keys.has(100), false);
+  f.runtime.unmount(); assert.equal(f.runtime.keys.size, 0);
 });

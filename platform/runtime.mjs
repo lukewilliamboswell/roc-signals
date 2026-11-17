@@ -130,11 +130,13 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // is staged only when its ordinary ingress turn runs. No raw key bytes enter
 // the page's Wasm memory. Browser failures are typed results, including
 // NotAuthentic for a rejected GCM tag; they never become fabricated plaintext.
-// maxCryptoBytes bounds input blocks together and output bytes (8 MiB by
-// default, at most 64 MiB); maxCryptoIterations caps PBKDF2 work (one million
+// maxCryptoBytes bounds bulk input blocks together, plus encryption's 16-byte
+// authentication tag (8 MiB by default, at most 64 MiB). Fixed-size IVs and
+// digest outputs add bounded overhead. maxCryptoIterations caps PBKDF2 work (one million
 // by default, at most ten million). Exceeding either answers TooLarge.
 // SubtleCrypto has no abort operation: CANCEL drops its answer but its work
-// keeps one of 32 physical slots until completion. Further work is Refused.
+// keeps one of 32 physical slots until completion. Pending manual operations
+// reserve a slot too; further work is Refused.
 // This count survives recovery, so replacing the instance cannot evade it.
 // In manual mode runEffect really performs the operation and uses the two
 // spec runners' deterministic SHA-256 entropy stream, never production's
@@ -1093,7 +1095,10 @@ const COMMAND_APPLIERS = {
       else if (action === 4) request = { action: "decrypt", key: key(), iv: bytes(), ciphertext: bytes(), associated: bytes() };
       else if (action === 5) request = { action: "digest", hash: hash(false), bytes: bytes() };
       else throw new ContractFault(`contract: invalid crypto operation ${action}`);
-      const tooLarge = total > this.maxCryptoBytes;
+      // IVs have a fixed, separately checked 12-byte shape. Charge bulk
+      // inputs together and encryption's extra authentication tag.
+      const charged = total - (action === 4 ? request.iv.length : 0) + (action === 3 ? 16 : 0);
+      const tooLarge = charged > this.maxCryptoBytes;
       if (reader.mode !== "preflight") {
         for (const field of ["password", "salt", "plaintext", "associated", "iv", "ciphertext", "bytes"]) {
           const range = request[field];
@@ -4987,33 +4992,41 @@ export class RocEngineRuntime {
     throw new Error(`unknown file operation ${fx.op}`);
   }
 
-  // Browser work retains a slot even after CANCEL, because SubtleCrypto has
-  // no abort operation. A completion from an old instance cannot mint a key
-  // or deliver a result into a recovered one.
-  startCrypto(fx, settled) {
-    let open = true;
-    const close = () => {
-      if (!open) return;
-      open = false;
-      if (settled) settled();
+  // Pending work reserves an executor slot as soon as its batch performs.
+  // Cancelling pending manual work releases that slot immediately. Started
+  // SubtleCrypto has no abort operation and keeps it until its promise settles.
+  holdCrypto(fx) {
+    const entry = { kind: "crypto", req: fx, running: false, reserved: this.cryptoActive < MAX_CRYPTO_OPERATIONS, settled: null };
+    if (entry.reserved) this.cryptoActive += 1;
+    entry.cancel = () => {
+      if (!entry.running && entry.reserved) { entry.reserved = false; this.cryptoActive -= 1; }
+      const done = entry.settled; entry.settled = null;
+      if (done) done();
     };
-    const entry = { kind: "crypto", req: fx, running: true, cancel: close };
     this.live.set(fx.id, entry);
+    return entry;
+  }
+
+  // A completion from an old instance cannot mint a key or deliver a result
+  // into a recovered one. The physical slot count survives that recovery.
+  startCrypto(entry, settled = null) {
+    const fx = entry.req;
+    entry.running = true;
+    entry.settled = settled;
     const finish = payload => {
-      if (this.live.get(fx.id) !== entry || this.poisoned || this.ending) { close(); return; }
-      this.live.delete(fx.id);
-      this.result(fx.id, payload);
-      close();
+      if (entry.reserved) { entry.reserved = false; this.cryptoActive -= 1; }
+      if (this.live.get(fx.id) === entry && !this.poisoned && !this.ending) {
+        this.live.delete(fx.id);
+        this.result(fx.id, payload);
+      }
+      const done = entry.settled; entry.settled = null;
+      if (done) done();
     };
-    if (this.cryptoActive >= MAX_CRYPTO_OPERATIONS) {
+    if (!entry.reserved) {
       Promise.resolve().then(() => finish(new Uint8Array([RES_CRYPTO_FAILED, CRYPTO_REFUSED])));
       return;
     }
-    this.cryptoActive += 1;
-    this.cryptoAnswer(fx).then(
-      payload => { this.cryptoActive -= 1; finish(payload); },
-      () => { this.cryptoActive -= 1; finish(new Uint8Array([RES_CRYPTO_FAILED, CRYPTO_FAILED])); },
-    );
+    this.cryptoAnswer(fx).then(finish, () => finish(new Uint8Array([RES_CRYPTO_FAILED, CRYPTO_FAILED])));
   }
 
   // Only manualEffects uses a deterministic byte stream, shared by the two
@@ -5073,10 +5086,11 @@ export class RocEngineRuntime {
       } catch { return failed(CRYPTO_FAILED); }
     }
     if (fx.action === "encrypt") {
-      if (fx.plaintext.length + 28 > this.maxCryptoBytes) return failed(CRYPTO_TOO_LARGE);
       if (!c?.subtle || typeof c.subtle.encrypt !== "function" || (this.manual ? typeof c.subtle.digest !== "function" : typeof c.getRandomValues !== "function")) return failed(CRYPTO_UNAVAILABLE);
+      let iv;
+      try { iv = await this.cryptoRandom(12); }
+      catch { return failed(CRYPTO_UNAVAILABLE); }
       try {
-        const iv = await this.cryptoRandom(12);
         const answer = await c.subtle.encrypt({ name: "AES-GCM", iv, additionalData: fx.associated, tagLength: 128 }, fx.key, fx.plaintext);
         return { parts: [new Uint8Array([RES_CRYPTO_SEALED]), iv, new Uint8Array(answer)] };
       } catch { return failed(CRYPTO_FAILED); }
@@ -5089,8 +5103,6 @@ export class RocEngineRuntime {
       } catch (error) { return failed(error?.name === "OperationError" ? CRYPTO_NOT_AUTHENTIC : CRYPTO_FAILED); }
     }
     if (fx.action === "digest") {
-      const length = fx.hash === 1 ? 32 : fx.hash === 2 ? 48 : 64;
-      if (length > this.maxCryptoBytes) return failed(CRYPTO_TOO_LARGE);
       if (typeof c?.subtle?.digest !== "function") return failed(CRYPTO_UNAVAILABLE);
       try { return bytes(new Uint8Array(await c.subtle.digest(fx.hash === 1 ? "SHA-256" : fx.hash === 2 ? "SHA-384" : "SHA-512", fx.bytes))); }
       catch { return failed(CRYPTO_FAILED); }
@@ -5390,10 +5402,9 @@ export class RocEngineRuntime {
         return;
       }
       case "crypto": {
-        if (this.manual) {
-          this.live.set(fx.id, { kind: "crypto", req: fx, cancel: () => {} });
-          this.issued.push(fx.id);
-        } else this.startCrypto(fx);
+        const entry = this.holdCrypto(fx);
+        if (this.manual && entry.reserved) this.issued.push(fx.id);
+        else this.startCrypto(entry);
         return;
       }
       case "read":
@@ -6244,8 +6255,7 @@ export class RocEngineRuntime {
     // Crypto and file operations are really performed; each promise resolves
     // once its result turn was delivered or cancellation dropped the answer.
     if (e.kind === "crypto") {
-      this.live.delete(id);
-      return new Promise(resolve => this.startCrypto(e.req, () => resolve(true)));
+      return new Promise(resolve => this.startCrypto(e, () => resolve(true)));
     }
     if (e.kind === "file") {
       this.live.delete(id);
