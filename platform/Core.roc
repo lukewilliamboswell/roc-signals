@@ -8740,7 +8740,9 @@ put_fx_progress = |c, id, req, progress_ms| {
 ## before admission, so no u32 cast can truncate an app's bytes.
 put_crypto : List(U8), CryptoRequest -> List(U8)
 put_crypto = |buf, operation| {
-	bytes = |out, value| put_u32(out, value.len().to_u32_wrap()).concat(value)
+	# Let empty byte lists drop normally: concat leaks empty to_utf8 backing
+	# in development Wasm: https://github.com/roc-lang/roc/issues/13017.
+	bytes = |out, value| if (value.is_empty()) put_u32(out, 0) else put_u32(out, value.len().to_u32_wrap()).concat(value)
 	hash_code = |hash| match hash {
 		Sha256 => 1
 		Sha384 => 2
