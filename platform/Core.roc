@@ -550,6 +550,34 @@ Core := [].{
 		token = |Blob.(b)| Box.unbox(b)
 	}
 
+	## A non-extractable AES-256-GCM key. Only a derived-key result can
+	## construct one. Equality identifies the same live handle; inspection
+	## reveals neither its token nor key material. No wire codec is provided.
+	CryptoKey :: Box(U64).{
+
+		## Whether both values hold the same key.
+		is_eq : CryptoKey, CryptoKey -> Bool
+		is_eq = |CryptoKey.(left), CryptoKey.(right)| Box.unbox(left) == Box.unbox(right)
+
+		## A redacted description, safe for diagnostic output.
+		to_inspect : CryptoKey -> Str
+		to_inspect = |_key| "<Crypto.Key>"
+	}
+
+	## The closed browser-crypto vocabulary. Keys never cross to workers or
+	## ports. The request's parameters are app meaning; mount options cap cost.
+	CryptoRequest : [
+		RandomBytes(U64),
+		DeriveKey({ password : Str, salt : List(U8), iterations : U32, hash : [Sha256, Sha512] }),
+		Encrypt({ key : CryptoKey, plaintext : List(U8), associated : List(U8) }),
+		Decrypt({ key : CryptoKey, iv : List(U8), ciphertext : List(U8), associated : List(U8) }),
+		Hash({ hash : [Sha256, Sha384, Sha512], bytes : List(U8) }),
+	]
+
+	## Browser crypto failures are values. Authentication never releases a
+	## plaintext prefix. Refused includes engine, key-heap and executor caps.
+	CryptoError : [Unavailable, TooLarge, InvalidParameters, NotAuthentic, Refused, Failed]
+
 	## A file the user gave the app, or a range of one: a handle with its name,
 	## size and type, never its bytes on the page. Read its bytes in a worker
 	## task's job, with effects that bring across exactly the range the job
@@ -1507,6 +1535,7 @@ Core := [].{
 		SessionStorageGet(Str),
 		StorageChanges(Str),
 		StorageWriteFailures,
+		Crypto(CryptoRequest),
 		ClipboardWrite({ text : Str, html : [Plain, Html(Str)] }),
 		Timer(U32),
 		Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })], refusal : [None, TooDeep, NanKeys] }),
@@ -1651,7 +1680,7 @@ Core := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
+	Result : [CryptoKey(CryptoKey), CryptoBytes(List(U8)), CryptoSealed({ iv : List(U8), ciphertext : List(U8) }), CryptoFailed(CryptoError), Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
@@ -3159,7 +3188,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 20
+	protocol_version = 21
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -3272,7 +3301,7 @@ Core := [].{
 	## `tasks` contains registered worker catalogue names, including preparation
 	## owners. It is bounded immutable metadata, not executable-job evidence;
 	## reading it initializes no instance and retains no application state.
-	driver : Program(st) -> { version : U32, tasks : List(Str), keys : () -> List(U8), init : List(U8) -> (App(st), List(U8), List(U8)), event : App(st), List(U8), List(U8), U32, U32, List(U8) -> (App(st), List(U8), List(U8)), files : App(st), List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App(st), List(U8), List(U8)), settled : App(st) -> Try({}, { cmds : List(U8), note : Str }), live : App(st) -> List(U32) }
+	driver : Program(st) -> { version : U32, tasks : List(Str), keys : () -> List(U8), init : List(U8) -> (App(st), List(U8), List(U8)), event : App(st), List(U8), List(U8), U32, U32, List(U8) -> (App(st), List(U8), List(U8)), files : App(st), List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App(st), List(U8), List(U8)), key : App(st), List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App(st), List(U8), List(U8)), settled : App(st) -> Try({}, { cmds : List(U8), note : Str }), live : App(st) -> List(U32) }
 	driver = |p| {
 		init = p.init
 		tasks = p.worker_names
@@ -3287,6 +3316,18 @@ Core := [].{
 			keys: || put_section(put_section(put_media_table((ports.table)(keys(), ports.decls), media), 10, [zone_days.to_u8_wrap(), zone_days.shr_zf_wrap(8).to_u8_wrap()]), 11, session_keys.fold(put_u32([], session_keys.len().to_u32_wrap()), put_str)),
 			init: |boot| init({ workers: tasks, ports, media }, boot),
 			event: p.event,
+			key: |inst, buf, wbuf, node, handler, payload, handles| {
+				if node != fx_node or payload != [27] {
+					crash "contract: a key result needs the effect node and exactly tag 27"
+				}
+				key = match handles {
+					[handle] => CryptoKey.(handle)
+					_ => crash "contract: a key result needs exactly one staged key handle"
+				}
+				App.(AppBody.({ store, root, tx, programs })) = inst
+				fresh = App.(AppBody.{ store, root, tx: { ..tx, cmds: buf.clear() }, programs })
+				finish(Core.result(fresh, handler, CryptoKey(key)), [], wbuf)
+			},
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
 				App.(AppBody.({ store, root, tx, programs })) = inst
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
@@ -7938,6 +7979,25 @@ decode_res_with = |b, port_res| {
 		Online(flag())
 	} else if tag == 9 {
 		Visible(flag())
+	} else if tag == 28 {
+		CryptoBytes(b.drop_first(1))
+	} else if tag == 29 {
+		if b.len() < 29 {
+			crash "contract: a sealed result needs a 12-byte IV and at least a 16-byte tag"
+		}
+		CryptoSealed({ iv: b.sublist({ start: 1, len: 12 }), ciphertext: b.drop_first(13) })
+	} else if tag == 30 {
+		CryptoFailed(
+			match b {
+				[30, 1] => Unavailable
+				[30, 2] => TooLarge
+				[30, 3] => InvalidParameters
+				[30, 4] => NotAuthentic
+				[30, 5] => Refused
+				[30, 6] => Failed
+				_ => crash "contract: a crypto failure needs one known reason byte"
+			},
+		)
 	} else if tag == 23 {
 		bare(Copied)
 	} else if tag == 24 {
@@ -8642,6 +8702,7 @@ put_fx_progress = |c, id, req, progress_ms| {
 		SessionStorageGet(key) => put_str(head.append(17), key)
 		StorageChanges(key) => put_str(head.append(18), key)
 		StorageWriteFailures => head.append(20)
+		Crypto(operation) => put_crypto(head.append(21), operation)
 		ClipboardWrite({ text, html }) => match html {
 			Plain => put_str(head.append(19), text).append(0)
 			Html(markup) => put_str(put_str(head.append(19), text).append(1), markup)
@@ -8675,12 +8736,87 @@ put_fx_progress = |c, id, req, progress_ms| {
 	}
 }
 
+## Encode crypto operands independently of the oracle. Lengths are checked
+## before admission, so no u32 cast can truncate an app's bytes.
+put_crypto : List(U8), CryptoRequest -> List(U8)
+put_crypto = |buf, operation| {
+	bytes = |out, value| put_u32(out, value.len().to_u32_wrap()).concat(value)
+	hash_code = |hash| match hash {
+		Sha256 => 1
+		Sha384 => 2
+		Sha512 => 3
+	}
+	match operation {
+		RandomBytes(count) => put_u64(buf.append(1), count)
+		DeriveKey(props) => bytes(
+			bytes(
+				put_u32(
+					buf.append(2).append((
+						match props.hash {
+							Sha256 => 1
+							Sha512 => 3
+						}
+					)),
+					props.iterations,
+				),
+				props.password.to_utf8(),
+			),
+			props.salt,
+		)
+		Encrypt(props) => bytes(bytes(put_u64(buf.append(3), crypto_key_token(props.key)), props.plaintext), props.associated)
+		Decrypt(props) => bytes(bytes(bytes(put_u64(buf.append(4), crypto_key_token(props.key)), props.iv), props.ciphertext), props.associated)
+		Hash(props) => bytes(buf.append(5).append(hash_code(props.hash)), props.bytes)
+	}
+}
+
+## Tokens are platform machinery, absent from the app-facing Key namespace.
+crypto_key_token : CryptoKey -> U64
+crypto_key_token = |CryptoKey.(handle)| Box.unbox(handle)
+
+## Bound every app-sized operand before serializing it. Invalid algorithm
+## parameters are typed failures too: salt and IV often arrive from a file.
+crypto_problem : CryptoRequest -> Try({}, CryptoError)
+crypto_problem = |operation| {
+	limit = 67108864.U64
+	match operation {
+		RandomBytes(count) => if (count > limit) Err(TooLarge) else Ok({})
+		DeriveKey(props) => if props.password.count_utf8_bytes() > limit or props.salt.len() > limit - props.password.count_utf8_bytes() {
+			Err(TooLarge)
+		} else if props.iterations == 0 or props.salt.len() < 16 {
+			Err(InvalidParameters)
+		} else if props.iterations > 10000000 {
+			Err(TooLarge)
+		} else {
+			Ok({})
+		}
+		Encrypt(props) => if (props.plaintext.len() > limit - 16 or props.associated.len() > limit - 16 - props.plaintext.len()) Err(TooLarge) else Ok({})
+		Decrypt(props) => if props.iv.len() != 12 or props.ciphertext.len() < 16 {
+			Err(InvalidParameters)
+		} else if (props.ciphertext.len() > limit or props.associated.len() > limit - props.ciphertext.len()) Err(TooLarge) else Ok({})
+		Hash(props) => if (props.bytes.len() > limit) Err(TooLarge) else Ok({})
+	}
+}
+
 ## Admit an awaited request (or refuse it when the table is full).
 fx_admit : Tx, List(U32), Request -> (U32, Tx)
 fx_admit = |tx, path, req| fx_admit_progress(tx, path, req, 0)
 
 fx_admit_progress : Tx, List(U32), Request, U32 -> (U32, Tx)
 fx_admit_progress = |tx, path, req, progress_ms| {
+	match req {
+		Crypto(operation) => match crypto_problem(operation) {
+			Err(reason) => return fx_refuse(tx, path, CryptoFailed(reason))
+			Ok(_) => {}
+		}
+		_ => {}
+	}
+	match req {
+		Crypto(operation) => match crypto_problem(operation) {
+			Err(error) => return fx_refuse(tx, path, CryptoFailed(error))
+			Ok(_) => {}
+		}
+		_ => {}
+	}
 	match request_problem(req) {
 		Ok(_) => {}
 		Err(message) => crash "${message} (site ${show_path(path)})"

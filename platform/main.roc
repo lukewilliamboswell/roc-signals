@@ -27,7 +27,7 @@ platform ""
 	requires {
 		[Store : st] for main : Engine.Program(st)
 	}
-	exposes [Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, Wire, Worker]
+	exposes [Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, WebCrypto, Wire, Worker]
 	packages { cbor: "https://github.com/lukewilliamboswell/roc-cbor/releases/download/0.6.3/J3xX4n61WoMZKK3tdWTnZBdKaVbi8SvXvmtC5i3qDAER.tar.zst", parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.3/FTL1xt1rA9nXzoYkhFAW9yF75Kn52bS3cpBr7wZNfPq2.tar.zst", unicode: "https://github.com/roc-lang/unicode/releases/download/4.3.3/AJfFMmhvmbgn7THAF1E1sofC3dZaVWPFmVV7GH8Bc7k7.tar.zst" }
 	provides {
 		"roc_engine_ask": ask_for_host!,
@@ -36,6 +36,7 @@ platform ""
 		"roc_engine_files": files_for_host,
 		"roc_engine_forget": forget_for_host,
 		"roc_engine_init": init_for_host,
+		"roc_engine_key": key_for_host,
 		"roc_engine_keys": keys_for_host,
 		"roc_engine_prepare": prepare_for_host!,
 		"roc_engine_version": version_for_host,
@@ -67,7 +68,7 @@ platform ""
 		inputs_dir: "targets/",
 		wasm32: {
 			inputs: ["host.wasm", app],
-			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "work", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len", "dbg_ptr", "dbg_len"],
+			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "event_key", "keys_stage", "keys_tokens", "keys_released", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "work", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len", "dbg_ptr", "dbg_len"],
 		},
 		x64musl: { inputs: ["rcrt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
 		arm64mac: { inputs: ["libhost.a", app] },
@@ -77,6 +78,7 @@ platform ""
 
 import Cli
 import Clipboard
+import WebCrypto
 import Core
 import Effects
 import Engine
@@ -160,6 +162,14 @@ init_for_host = |boot| {
 event_for_host : Handle, List(U8), List(U8), U32, U32, List(U8) -> Step
 event_for_host = |boxed, buf, wbuf, node, handler, payload| {
 	(next, cmds, work) = (Core.driver(main).event)(release(boxed), buf, wbuf, node, handler, payload)
+	{ cmds, state: hold(next), work }
+}
+
+## A derived key's result. The typed key handles move from the host's one
+## staged set into Roc; an event of another kind may never carry them.
+key_for_host : Handle, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> Step
+key_for_host = |boxed, buf, wbuf, node, handler, payload, handles| {
+	(next, cmds, work) = (Core.driver(main).key)(release(boxed), buf, wbuf, node, handler, payload, handles)
 	{ cmds, state: hold(next), work }
 }
 

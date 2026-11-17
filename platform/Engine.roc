@@ -50,6 +50,16 @@ Engine := [].{
 	## Open nonempty event types, including computed custom event names.
 	EventType : Web.EventType
 
+	## A non-extractable AES-256-GCM key. Keep it in state while unlocked;
+	## writing that state without it releases the key with its last reference.
+	CryptoKey : Core.CryptoKey
+
+	## The crypto operations carried by a raw request; WebCrypto builds typed asks.
+	CryptoRequest : Core.CryptoRequest
+
+	## Why cryptography produced no answer. Authentication reveals no plaintext.
+	CryptoError : Core.CryptoError
+
 	## The same Fetch method token held by requests and File factory defaults.
 	Method : Web.Method
 
@@ -1046,6 +1056,7 @@ Engine := [].{
 		SessionStorageGet(Str),
 		StorageChanges(Str),
 		StorageWriteFailures,
+		Crypto(CryptoRequest),
 		ClipboardWrite({ text : Str, html : [Plain, Html(Str)] }),
 		Timer(U32),
 		Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })], refusal : [None, TooDeep, NanKeys] }),
@@ -1159,7 +1170,7 @@ Engine := [].{
 	## message was nested past the port format's bound and nothing was
 	## sent, or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
+	Result : [CryptoKey(CryptoKey), CryptoBytes(List(U8)), CryptoSealed({ iv : List(U8), ciphertext : List(U8) }), CryptoFailed(CryptoError), Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name and the files its `{"$file":N}` markers
