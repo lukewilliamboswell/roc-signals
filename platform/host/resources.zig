@@ -238,3 +238,33 @@ test "abandoning a heap forgets live and retired slots" {
     try std.testing.expectEqual(@as(usize, 0), heap.live_count);
     try std.testing.expect(heap.mint(3) != null);
 }
+
+test "key and file heaps have disjoint tokens and independently reuse retired slots" {
+    var files: Heap(.blob, 1, void) = .{};
+    var keys: Heap(.key, 1, void) = .{};
+    const file = files.mint({}).?;
+    const key = keys.mint({}).?;
+    const old_key = key.*;
+    try std.testing.expect(file.* != key.*);
+    try std.testing.expect(keys.get(file.*) == null);
+    try std.testing.expect(files.get(key.*) == null);
+    try std.testing.expectEqual(Route.retired, keys.route(@ptrFromInt(@intFromPtr(key) - 8)));
+    try std.testing.expect(keys.get(old_key) != null);
+    try std.testing.expect(keys.mint({}) == null);
+    var token: u64 = 0;
+    try std.testing.expect(keys.releaseOne(&token, struct {
+        fn done(_: *void) void {}
+    }.done));
+    try std.testing.expectEqual(old_key, token);
+    const next_key = keys.mint({}).?;
+    try std.testing.expect(next_key.* != old_key);
+    try std.testing.expect(keys.get(old_key) == null);
+    try std.testing.expect(files.get(file.*) != null);
+}
+
+test "an exhausted key generation refuses a new lifetime without wrapping" {
+    var keys: Heap(.key, 1, void) = .{};
+    keys.generations[0] = max_generation;
+    try std.testing.expect(keys.mint({}) == null);
+    try std.testing.expectEqual(@as(usize, 0), keys.live_count);
+}

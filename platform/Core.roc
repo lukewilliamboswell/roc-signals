@@ -561,7 +561,7 @@ Core := [].{
 
 		## A redacted description, safe for diagnostic output.
 		to_inspect : CryptoKey -> Str
-		to_inspect = |_key| "<Crypto.Key>"
+		to_inspect = |_key| "<WebCrypto.Key>"
 	}
 
 	## The closed browser-crypto vocabulary. Keys never cross to workers or
@@ -8810,13 +8810,6 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 		}
 		_ => {}
 	}
-	match req {
-		Crypto(operation) => match crypto_problem(operation) {
-			Err(error) => return fx_refuse(tx, path, CryptoFailed(error))
-			Ok(_) => {}
-		}
-		_ => {}
-	}
 	match request_problem(req) {
 		Ok(_) => {}
 		Err(message) => crash "${message} (site ${show_path(path)})"
@@ -12326,3 +12319,42 @@ expect {
 	view = Core.element("main", [], [Core.element("math", [], [Core.text("raw HTML")]), Core.element_named(svg, [], [Core.element_named(html, [], [Core.text("explicit HTML")])])])
 	Core.settled(Core.mount(view)).is_ok()
 }
+
+## Crypto rejects invalid external envelope parameters as values before any
+## wire bytes are produced; it never turns them into a contract error.
+expect {
+	key = Core.CryptoKey.(Box.box(1.U64))
+	{
+		zero_iterations: crypto_problem(DeriveKey({ password: "", salt: List.repeat(0, 16), iterations: 0, hash: Sha256 })),
+		short_salt: crypto_problem(DeriveKey({ password: "", salt: [], iterations: 1, hash: Sha512 })),
+		short_iv: crypto_problem(Decrypt({ key, iv: [], ciphertext: List.repeat(0, 16), associated: [] })),
+		short_ciphertext: crypto_problem(Decrypt({ key, iv: List.repeat(0, 12), ciphertext: [], associated: [] })),
+		excess_random: crypto_problem(RandomBytes(67108865)),
+		empty_random: crypto_problem(RandomBytes(0)),
+	} == {
+		zero_iterations: Err(InvalidParameters),
+		short_salt: Err(InvalidParameters),
+		short_iv: Err(InvalidParameters),
+		short_ciphertext: Err(InvalidParameters),
+		excess_random: Err(TooLarge),
+		empty_random: Ok({}),
+	}
+}
+
+## Crypto's bytes and sealed result keep exact binary values. Failure reasons
+## remain closed typed data, and the envelope includes the full GCM tag.
+expect {
+	sealed = List.repeat(7.U8, 12).concat(List.repeat(9, 16))
+	{
+		bytes: Core.decode_res([28, 0, 255]),
+		sealed: Core.decode_res([29].concat(sealed)),
+		failures: [1.U8, 2, 3, 4, 5, 6].map(|reason| Core.decode_res([30, reason])),
+	} == {
+		bytes: CryptoBytes([0, 255]),
+		sealed: CryptoSealed({ iv: List.repeat(7, 12), ciphertext: List.repeat(9, 16) }),
+		failures: [CryptoFailed(Unavailable), CryptoFailed(TooLarge), CryptoFailed(InvalidParameters), CryptoFailed(NotAuthentic), CryptoFailed(Refused), CryptoFailed(Failed)],
+	}
+}
+
+## A crypto key's public inspection never reveals the host token.
+expect Str.inspect(Core.CryptoKey.(Box.box(123456789.U64))) == "<WebCrypto.Key>"

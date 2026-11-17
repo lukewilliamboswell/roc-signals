@@ -705,13 +705,21 @@ export fn keys_stage(n: u32) callconv(.c) u32 {
     if (want == 0) return 0;
     // A list of box pointers, each element the address of a handle's payload.
     const elems: [*]usize = @ptrCast(@alignCast(refcountedList(want, @sizeOf(usize))));
-    for (0..want) |i| {
-        const payload = key_heap.mint({}) orelse unreachable;
-        elems[i] = @intFromPtr(payload);
-        key_tokens[i] = payload.*;
+    var minted: usize = 0;
+    while (minted < want) : (minted += 1) {
+        // A generation-exhausted slot stays unavailable: refusing a key is
+        // preferable to wrapping its token or aliasing an earlier lifetime.
+        const payload = key_heap.mint({}) orelse break;
+        elems[minted] = @intFromPtr(payload);
+        key_tokens[minted] = payload.*;
     }
-    pending_keys = .{ .ptr = @ptrCast(elems), .len = want, .cap = want << 1 };
-    return @intCast(want);
+    if (minted == 0) {
+        _ = freeRaw(@as([*]u8, @ptrCast(elems)) - 2 * @sizeOf(usize), @alignOf(usize));
+        return 0;
+    }
+    (elems - 2)[0] = minted;
+    pending_keys = .{ .ptr = @ptrCast(elems), .len = minted, .cap = want << 1 };
+    return @intCast(minted);
 }
 
 /// Release staged handles no call took: nothing in Roc refers to them yet,

@@ -326,7 +326,7 @@ reconsidered.
   never holds a JavaScript value, and is never called by it; every message is
   data in a declared encoding with the channel's id, bound, scope and
   lifetime. A capability the platform models (HTTP, storage, timers, history,
-  focus, workers, files, layout observation, media queries, time, entropy,
+  focus, workers, files, cryptography, layout observation, media queries, time, entropy,
   the user's languages and time zone, and writing the clipboard) is not a
   port's business. Reading the clipboard on demand remains a port. Formatting
   with the browser's CLDR data is not modelled and may use a port. A live
@@ -2848,7 +2848,8 @@ only when its ordinary result turn is delivered; a canceled or stale result
 never mints a key. Poisoning, unmount and recovery release browser keys.
 
 Deployment limits are `maxCryptoBytes` (8 MiB by default, at most 64 MiB)
-and `maxCryptoIterations` (1,000,000 by default, at most 10,000,000).
+and `maxCryptoIterations` (1,000,000 by default, from 1 to 10,000,000).
+The byte ceiling may be zero; constant-sized digest output does not count.
 The byte ceiling counts the combined password and salt for derivation,
 plaintext and associated data plus the 16-byte output tag for encryption,
 ciphertext and associated data for decryption, the input of a digest, or the
@@ -2860,7 +2861,7 @@ answers `Refused`. Retired slots remain reserved until the post-effect drain.
 
 Browser SubtleCrypto cannot abort an operation. Cancellation discards its
 answer, but the executor keeps its operation count until the promise settles.
-At most 32 crypto operations may be running, including canceled ones; another
+At most 32 crypto operations may be pending or running, including canceled running ones; another
 answers `Refused`. Recovery does not reset that count while old work still
 runs. There is no retry queue. This bounds the work that canceled requests
 could otherwise keep starting beyond the engine's in-flight bound.
@@ -2881,7 +2882,9 @@ only randomness with an explicitly test-only deterministic stream, reset at
 each document: concatenate SHA-256 blocks of UTF-8 `roc-signals spec crypto`,
 one zero byte and an eight-byte little-endian block index starting at zero.
 Consume bytes in `run-effect` execution order, retaining the unused suffix of
-a block. This never uses the production boot seed and is not encryption for
+a block. The native executor addresses that same stream by its U64 byte offset
+and refuses exhaustion as `Failed`, without wrapping; browser replay follows
+the same byte bound. This never uses the production boot seed and is not encryption for
 real data. The native host keeps key material only behind typed handles,
 wipes it on release, and gives a deferred operation a private, bounded key
 hold before reclaiming an issuing batch's released handles. These holds
@@ -3804,16 +3807,18 @@ There is no other host state. No registry of values, closures, listeners,
 timers or tasks lives in Zig: timers, network requests and work are performed
 by the runtime from `FX` commands and come back as events.
 
-The one table the host keeps is the **blob heap** of file handles (see
-[Files](#files)): a fixed array of slots in static storage, each the
-allocation of one `Box(U64)` Roc holds, whose payload is the token the
-runtime knows a browser `Blob` by. It is not a registry of Roc values: the
+The host keeps **typed handle heaps**, one for files (see [Files](#files))
+and one for cryptographic keys (see [Bytes in text and cryptography](#bytes-in-text-and-cryptography)):
+fixed arrays of slots in static storage, each the allocation of one
+`Box(U64)` Roc holds, whose payload is the token the runtime knows a browser
+`Blob` or non-extractable `CryptoKey` by. Tokens carry their heap kind, so a
+file token never resolves as a key. It is not a registry of Roc values: the
 host never holds a handle, and Roc's own reference count decides when one
 goes. `roc_dealloc` offers each address to the heap first (two compares, no
 scan); the heap retires a slot whose last reference went instead of freeing
 it, so its token stays valid until the runtime has performed the call's
 effects, which may still name it, and then drains the released tokens with
-`files_released`. A drop inside a Roc call therefore never reaches
+`files_released` or `keys_released`. A drop inside a Roc call therefore never reaches
 JavaScript. Handles for an event are staged like its payload: at most one
 staged set, released by the host itself if no call takes it. The host lays
 the set out as Roc lays out a list of refcounted values, with the list's
@@ -4049,7 +4054,7 @@ bound and a declared behaviour at the bound:
 | Crypto keys live in one instance | 64, separate typed heap | Typed Refused for another derivation |
 | Crypto bytes per operation | maxCryptoBytes, default 8 MiB, at most 64 MiB, combined operands/output tag as stated above | Typed TooLarge before cryptographic work |
 | PBKDF2 iterations | maxCryptoIterations, default 1,000,000, at most 10,000,000 | Typed TooLarge |
-| Running browser crypto operations | 32, canceled operations included until settled | Typed Refused, no queue |
+| Pending or running browser crypto operations | 32, canceled operations included until settled | Typed Refused, no queue |
 | File handles live in one instance | 64 | The event's further files are not delivered and are counted in `Received.refused` |
 | Bytes one read of a file into the page takes | The read's `max_bytes` (default 8 MiB), at most `maxFileBytes`; reads in flight are bounded by the in-flight cap | Typed `FileFailed(TooLarge)`, unread |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
@@ -5870,11 +5875,11 @@ An event is `event(node, handler)` with the payload staged first:
 | 23 | — | `Copied`; no trailing bytes |
 | 24 | `reason:u8` | `ClipboardFailed`: `1` NotAllowed, `2` Unavailable |
 | 25 | `store:u8 reason:u8 key:rest` | `StorageFailed`: store `1` Local, `2` Session; reason `1` Quota, `2` Unavailable |
+| 26 | `direction:u8 done:u64 known:u8 total:u64` | Transfer progress, not a `Result`: direction `1` Sending, `2` Receiving; known `0` Unknown (total must be zero), `1` Known. Exactly 19 bytes including the tag. Keeps the id live; a live request without a progress handler is a contract error |
 | 27 | Exactly the tag, no body | `CryptoKey`, through `event_key` with exactly one staged key handle; never through `event` or `event_files` |
 | 28 | `bytes:rest` (raw) | `CryptoBytes` (random, digest or authenticated plaintext) |
 | 29 | `iv:12 raw bytes ciphertext:rest` (at least 16 bytes) | `CryptoSealed`; ciphertext includes the 128-bit GCM tag |
 | 30 | `reason:u8` | `CryptoFailed`: 1 Unavailable, 2 TooLarge, 3 InvalidParameters, 4 NotAuthentic, 5 Refused, 6 Failed; exactly two bytes including tag |
-| 26 | `direction:u8 done:u64 known:u8 total:u64` | Transfer progress, not a `Result`: direction `1` Sending, `2` Receiving; known `0` Unknown (total must be zero), `1` Known. Exactly 19 bytes including the tag. Keeps the id live; a live request without a progress handler is a contract error |
 
 A result payload that does not follow this table (unknown tag, bytes after a
 bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file

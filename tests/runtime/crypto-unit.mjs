@@ -282,3 +282,11 @@ await check("64 retained keys remain usable while sequential derivations release
   assert.equal(f.runtime.keys.size, 64); assert.equal(f.runtime.keys.has(100), false);
   f.runtime.unmount(); assert.equal(f.runtime.keys.size, 0);
 });
+
+await check("zero random bytes succeeds without requiring a secure source", async () => {
+  const f = fixture({ window: { crypto: {}, addEventListener() {}, removeEventListener() {}, navigator: {} } });
+  f.apply(batch(1, wide(0), 1));
+  await f.runtime.runEffect(1);
+  assert.deepEqual(flatten(f.calls.at(-1).payload), Buffer.from([28]));
+  f.runtime.unmount();
+});

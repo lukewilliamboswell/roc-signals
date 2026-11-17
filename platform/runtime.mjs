@@ -5071,6 +5071,7 @@ export class RocEngineRuntime {
     if (fx.tooLarge) return failed(CRYPTO_TOO_LARGE);
     if (fx.action === "random") {
       if (fx.count > BigInt(this.maxCryptoBytes)) return failed(CRYPTO_TOO_LARGE);
+      if (fx.count === 0n) return bytes(new Uint8Array(0));
       if (!c || (this.manual ? typeof c.subtle?.digest !== "function" : typeof c.getRandomValues !== "function")) return failed(CRYPTO_UNAVAILABLE);
       try { return bytes(await this.cryptoRandom(Number(fx.count))); }
       catch { return failed(CRYPTO_UNAVAILABLE); }
