@@ -1639,8 +1639,8 @@ Scm := [].{
 			name: "max-crypto-bytes",
 			parse: |form, args| {
 				count = Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the byte count")?
-				if count < 1 or count > 67108864 {
-					return Err(Scm.bad(form, "max-crypto-bytes must be between 1 and 67108864"))
+				if count > 67108864 {
+					return Err(Scm.bad(form, "max-crypto-bytes must be between 0 and 67108864"))
 				}
 				Ok(MaxCryptoBytes(count))
 			},
@@ -3966,5 +3966,5 @@ expect {
 
 ## Invalid cryptographic deployment ceilings and negative key counts are errors.
 expect {
-	["(setup (max-crypto-bytes 0))", "(setup (max-crypto-bytes 67108865))", "(setup (max-crypto-iterations 0))", "(setup (max-crypto-iterations 10000001))"].all(|setup| Scm.parse("(test \"bad\" ${setup} (steps (mark-metrics)))").is_err()) and Scm.parse("(test \"bad\" (steps (expect-keys -1)))").is_err()
+	["(setup (max-crypto-bytes -1))", "(setup (max-crypto-bytes 67108865))", "(setup (max-crypto-iterations 0))", "(setup (max-crypto-iterations 10000001))"].all(|setup| Scm.parse("(test \"bad\" ${setup} (steps (mark-metrics)))").is_err()) and Scm.parse("(test \"bad\" (steps (expect-keys -1)))").is_err()
 }

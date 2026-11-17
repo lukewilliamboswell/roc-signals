@@ -4488,21 +4488,51 @@ SpecRunner := [].{
 	## Resolve newly issued crypto key operands before the host drains retired
 	## page-key slots. Each private hold is owned by its pending request and
 	## drops on result or cancel; its heap is bounded independently at 32.
-	capture_crypto! : Host, S(state) => S(state)
-	capture_crypto! = |host, state| {
-		var $pending = []
-		for pending in state.browser.pending {
-			kind = match pending.kind {
-				CryptoRequest({ request, held: Uncaptured }) => {
-					op = Dom.byte(request, 0)
-					handles = if (op == 3 or op == 4) (host.hold_key!)(Dom.u64(request, 1)) else []
-					CryptoRequest({ request, held: Captured(CryptoHold.(handles)) })
+	capture_crypto! : Program(state), Host, S(state) => S(state)
+	capture_crypto! = |program, host, state| {
+		var $state = state
+		var $turns = 0.U64
+		while True {
+			var $pending = []
+			var $refused = []
+			var $count = 0.U64
+			for pending in $state.browser.pending {
+				match pending.kind {
+					CryptoRequest({ request, held }) => {
+						$count = $count + 1
+						if $count > 32 {
+							$refused = $refused.append(pending.id)
+						} else {
+							key = match held {
+								Captured(_) => held
+								Uncaptured => {
+									op = Dom.byte(request, 0)
+									handles = if (op == 3 or op == 4) (host.hold_key!)(Dom.u64(request, 1)) else []
+									Captured(CryptoHold.(handles))
+								}
+							}
+							$pending = $pending.append({ ..pending, kind: CryptoRequest({ request, held: key }) })
+						}
+					}
+					_ => {
+						$pending = $pending.append(pending)
+					}
 				}
-				other => other
 			}
-			$pending = $pending.append({ ..pending, kind })
+			$state = { ..$state, browser: { ..$state.browser, pending: $pending } }
+			if $refused.is_empty() {
+				break
+			}
+			for id in $refused {
+				$turns = $turns + 1
+				if $turns > 4096 {
+					return { ..$state, fault: Poisoned("resource_limit: more than 4096 crypto refusal turns in one drain") }
+				}
+				$state = SpecRunner.deliver(program, $state, id, [30, 5])
+			}
 		}
-		{ ..state, browser: { ..state.browser, pending: $pending } }
+		_ = (host.live_keys!)()
+		$state
 	}
 
 	## Perform a pending crypto primitive with real native algorithms, then
@@ -4567,7 +4597,7 @@ SpecRunner := [].{
 			Ok(s) => s
 			Err(message) => return Err({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })
 		}
-		$s = SpecRunner.capture_crypto!(host, $s)
+		$s = SpecRunner.capture_crypto!(program, host, $s)
 		$s = SpecRunner.pump_ui!(program, host, $s).map_err(|message| { step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })?
 		match SpecRunner.check_settled!(program, { host, inst: $s }) {
 			Ok(_) => {}
@@ -4603,7 +4633,7 @@ SpecRunner := [].{
 	## handle count) through `host`, every other step through `one`.
 	step! : Program(state), Host, S(state), Scm.Op => Try(S(state), Str)
 	step! = |program, host, initial, op| {
-		captured = SpecRunner.capture_crypto!(host, initial)
+		captured = SpecRunner.capture_crypto!(program, host, initial)
 		s = if (SpecRunner.is_occurrence(captured, op)) SpecRunner.release_reports(program, captured) else captured
 		result = match op {
 			ExpectKeys(count) => {
@@ -4644,7 +4674,7 @@ SpecRunner := [].{
 					}
 			}
 		}
-		Ok(SpecRunner.capture_crypto!(host, SpecRunner.pump_ui!(program, host, result?)?))
+		Ok(SpecRunner.capture_crypto!(program, host, SpecRunner.pump_ui!(program, host, result?)?))
 	}
 
 	# ----------------------------------------------------------------- walks
@@ -5140,7 +5170,7 @@ SpecRunner := [].{
 	## went to (`Target`), the payload, the handles an event carrying files
 	## held, and the work it did (`SpecRunner.round_trip_work`), which each
 	## replay of it must repeat.
-	Call : { target : Target, payload : List(U8), files : [Event, Files(List(Box(U64))), Keys(List(Box(U64)))], work : List(U64) }
+	Call : { target : Target, payload : List(U8), files : [Event, Files(List(Box(U64))), Keys(List(U8))], work : List(U64) }
 
 	## What a recorded call went to, named so that a later cycle finds the
 	## same thing under the ids that cycle gave it. An event goes to the
@@ -5161,7 +5191,7 @@ SpecRunner := [].{
 	## round-trip counters after the latest call, from which the next
 	## call's work is measured, and the oracle's model of the page, from
 	## which the next call's place is read.
-	Recorded(state) : { inst : state, calls : List(Call), counted : List(U64), dom : Dom.Model }
+	Recorded(state) : { inst : state, calls : List(Call), counted : List(U64), dom : Dom.Model, crypto_recipes : Dict(U32, List(U8)) }
 
 	## The counters of a work record that say what a call did to the app,
 	## whatever ids it did it under: rows created (`INST`), rows removed,
@@ -5211,29 +5241,52 @@ SpecRunner := [].{
 			keys: program.keys,
 			init: |boot| {
 				(inst, cmds, wbuf) = init(boot)
-				({ inst, calls: [], counted: SpecRunner.round_trip_work(wbuf), dom: Dom.apply(Dom.new({}), cmds) }, cmds, wbuf)
+				recorded = { inst, calls: [], counted: SpecRunner.round_trip_work(wbuf), dom: Dom.new({}), crypto_recipes: Dict.empty() }
+				(SpecRunner.recorded_commands(recorded, cmds), cmds, wbuf)
 			},
-			event: |{ inst: prior, calls, counted, dom }, buf, wbuf, node, h, payload| {
-				target = SpecRunner.target_of(dom, live(prior), node, h)
-				(inst, cmds, w) = event(prior, buf, wbuf, node, h, payload)
+			event: |recorded, buf, wbuf, node, h, payload| {
+				target = SpecRunner.target_of(recorded.dom, live(recorded.inst), node, h)
+				(inst, cmds, w) = event(recorded.inst, buf, wbuf, node, h, payload)
 				after = SpecRunner.round_trip_work(w)
-				({ inst, calls: calls.append({ target, payload, files: Event, work: SpecRunner.work_between(counted, after) }), counted: after, dom: Dom.apply(dom, cmds) }, cmds, w)
+				next = { ..recorded, inst, calls: recorded.calls.append({ target, payload, files: Event, work: SpecRunner.work_between(recorded.counted, after) }), counted: after, crypto_recipes: if (node == SpecRunner.fx_node) recorded.crypto_recipes.remove(h) else recorded.crypto_recipes }
+				(SpecRunner.recorded_commands(next, cmds), cmds, w)
 			},
-			files: |{ inst: prior, calls, counted, dom }, buf, wbuf, node, h, record, handles| {
-				target = SpecRunner.target_of(dom, live(prior), node, h)
-				(inst, cmds, w) = files(prior, buf, wbuf, node, h, record, handles)
+			files: |recorded, buf, wbuf, node, h, payload, handles| {
+				target = SpecRunner.target_of(recorded.dom, live(recorded.inst), node, h)
+				(inst, cmds, w) = files(recorded.inst, buf, wbuf, node, h, payload, handles)
 				after = SpecRunner.round_trip_work(w)
-				({ inst, calls: calls.append({ target, payload: record, files: Files(handles), work: SpecRunner.work_between(counted, after) }), counted: after, dom: Dom.apply(dom, cmds) }, cmds, w)
+				next = { ..recorded, inst, calls: recorded.calls.append({ target, payload, files: Files(handles), work: SpecRunner.work_between(recorded.counted, after) }), counted: after }
+				(SpecRunner.recorded_commands(next, cmds), cmds, w)
 			},
-			key: |{ inst: prior, calls, counted, dom }, buf, wbuf, node, h, record, handles| {
-				target = SpecRunner.target_of(dom, live(prior), node, h)
-				(inst, cmds, w) = key(prior, buf, wbuf, node, h, record, handles)
+			key: |recorded, buf, wbuf, node, h, payload, handles| {
+				target = SpecRunner.target_of(recorded.dom, live(recorded.inst), node, h)
+				recipe = recorded.crypto_recipes.get(h) ?? crash "SpecRunner.recording: key result has no derivation recipe"
+				(inst, cmds, w) = key(recorded.inst, buf, wbuf, node, h, payload, handles)
 				after = SpecRunner.round_trip_work(w)
-				({ inst, calls: calls.append({ target, payload: record, files: Keys(handles), work: SpecRunner.work_between(counted, after) }), counted: after, dom: Dom.apply(dom, cmds) }, cmds, w)
+				next = { ..recorded, inst, calls: recorded.calls.append({ target, payload, files: Keys(recipe), work: SpecRunner.work_between(recorded.counted, after) }), counted: after, crypto_recipes: recorded.crypto_recipes.remove(h) }
+				(SpecRunner.recorded_commands(next, cmds), cmds, w)
 			},
 			settled: |r| settled(r.inst),
 			live: |r| live(r.inst),
 		}
+	}
+
+	## Only live derivations retain their request recipe. A key-result recording
+	## stores that recipe, never a key reference; native soak replay derives the
+	## same mathematical key afresh outside its measured engine call. Thus a
+	## recorded lock releases the public handle exactly as the real run did.
+	recorded_commands : Recorded(state), List(U8) -> Recorded(state)
+	recorded_commands = |recorded, commands| {
+		decoded = Dom.apply_full(recorded.dom, commands)
+		recipes = decoded.fx.fold(
+			recorded.crypto_recipes,
+			|prior, effect| match effect {
+				Crypto(id, request) if Dom.byte(request, 0) == 2 => prior.insert(id, request)
+				Cancel(id) => prior.remove(id)
+				_ => prior
+			},
+		)
+		{ ..recorded, dom: decoded.dom, crypto_recipes: recipes }
 	}
 
 	## How a soak names what a call went to (`Target`): a result by the
@@ -5371,11 +5424,21 @@ SpecRunner := [].{
 					Result(id) => { node: SpecRunner.fx_node, handler: id }
 					Unplaced(id, h) => return Err("call ${$k.to_str()} went to node ${id.to_str()} with handler ${h.to_str()}, which the oracle's model places at no listener in the drawn tree")
 				}
+				key_handles = match call.files {
+					Keys(recipe) => {
+						answer = (host.crypto!)(recipe, 0, [], 67108864, 10000000)
+						if answer.payload != [27] or answer.keys.len() != 1 {
+							return Err("soak could not recreate its recorded key")
+						}
+						answer.keys
+					}
+					_ => []
+				}
 				allocations = (host.live_allocations!)()
 				bytes = (host.live_bytes!)()
 				(next, cmds, w) = match call.files {
 					Event => (program.event)($inst, $buf, $wbuf, node, handler, call.payload)
-					Keys(handles) => (program.key)($inst, $buf, $wbuf, node, handler, call.payload, handles)
+					Keys(_) => (program.key)($inst, $buf, $wbuf, node, handler, call.payload, key_handles)
 					Files(handles) => (program.files)($inst, $buf, $wbuf, node, handler, call.payload, handles)
 				}
 				after_allocations = (host.live_allocations!)()
@@ -5393,6 +5456,7 @@ SpecRunner := [].{
 				}
 				$counted = after
 			}
+			_ = (host.live_keys!)()
 			$nets = $nets.append({ allocations: $allocations, bytes: $bytes })
 			$c = $c + 1
 		}

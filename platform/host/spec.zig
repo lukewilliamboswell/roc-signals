@@ -519,7 +519,7 @@ fn hostedCrypto(request: RocList, random_offset: u64, held: RocList, max_bytes: 
             if (op == 4 and iv.len != 12) return cryptoFailure(3);
             if (input.len + associated.len + (if (op == 3) @as(usize, 16) else 0) > max_bytes) return cryptoFailure(2);
             if (op == 4) {
-                if (input.len < 16) return cryptoFailure(4);
+                if (input.len < 16) return cryptoFailure(3);
                 const payload = newBytes(1 + input.len - 16);
                 const output = mutableBytes(payload);
                 output[0] = 28;
