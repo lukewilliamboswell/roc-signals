@@ -446,26 +446,6 @@ fn mutableBytes(bytes: RocList) []u8 {
     return if (bytes.elements) |pointer| @as([*]u8, @ptrCast(pointer))[0..bytes.length] else &.{};
 }
 
-// This deliberately has no production entropy source. Only the native spec
-// backend calls it; the browser's manual backend implements the same stream.
-fn specCryptoRandom(output: []u8, offset: u64) void {
-    const prefix = "roc-signals spec crypto\x00";
-    var material: [prefix.len + 8]u8 = undefined;
-    @memcpy(material[0..prefix.len], prefix);
-    var position = offset;
-    var written: usize = 0;
-    while (written < output.len) {
-        std.mem.writeInt(u64, material[prefix.len..][0..8], position / 32, .little);
-        var block: [32]u8 = undefined;
-        std.crypto.hash.sha2.Sha256.hash(&material, &block, .{});
-        const start: usize = @intCast(position % 32);
-        const count = @min(output.len - written, 32 - start);
-        @memcpy(output[written..][0..count], block[start..][0..count]);
-        written += count;
-        position += count;
-    }
-}
-
 /// `Cli.crypto!`: perform the wire primitive with the native host's real
 /// SHA-2, PBKDF2 and AES-GCM. Lists move into this call and are released here;
 /// returned lists each have one reference. Keys never enter a Roc byte list.
@@ -487,7 +467,7 @@ fn hostedCrypto(request: RocList, random_offset: u64, held: RocList, max_bytes: 
             const payload = newBytes(1 + @as(usize, @intCast(count)));
             const output = mutableBytes(payload);
             output[0] = 28;
-            specCryptoRandom(output[1..], random_offset);
+            crypto.specRandom(output[1..], random_offset);
             return .{ .keys = empty, .payload = payload, .random_used = count };
         },
         2 => {
@@ -532,7 +512,7 @@ fn hostedCrypto(request: RocList, random_offset: u64, held: RocList, max_bytes: 
             const payload = newBytes(1 + 12 + input.len + 16);
             const output = mutableBytes(payload);
             output[0] = 29;
-            specCryptoRandom(output[1..13], random_offset);
+            crypto.specRandom(output[1..13], random_offset);
             crypto.encrypt(output[13..], key.*, output[1..13].*, input, associated);
             return .{ .keys = empty, .payload = payload, .random_used = 12 };
         },

@@ -61,6 +61,26 @@ pub fn erase(key: *Key) void {
     std.crypto.secureZero(u8, key);
 }
 
+/// Deterministic bytes for the native spec backend alone. The browser manual
+/// backend implements this same stream; production never calls this function.
+pub fn specRandom(output: []u8, offset: u64) void {
+    const prefix = "roc-signals spec crypto\x00";
+    var material: [prefix.len + 8]u8 = undefined;
+    @memcpy(material[0..prefix.len], prefix);
+    var position = offset;
+    var written: usize = 0;
+    while (written < output.len) {
+        std.mem.writeInt(u64, material[prefix.len..][0..8], position / 32, .little);
+        var block: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(&material, &block, .{});
+        const start: usize = @intCast(position % 32);
+        const count = @min(output.len - written, 32 - start);
+        @memcpy(output[written..][0..count], block[start..][0..count]);
+        written += count;
+        position += count;
+    }
+}
+
 test "PBKDF2 SHA-256 and SHA-512 match published one-iteration vectors" {
     const sha256 = try derive("password", "salt", 1, .sha256);
     const sha512 = try derive("password", "salt", 1, .sha512);
@@ -107,4 +127,15 @@ test "digests match SHA-2 known answers and erasing clears the held material" {
     try std.testing.expectEqualStrings("ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f", &std.fmt.bytesToHex(sha512, .lower));
     erase(&sha256);
     try std.testing.expectEqualSlices(u8, &@as(Key, @splat(0)), &sha256);
+}
+
+test "manual crypto entropy has exact blocks and preserves leftovers across requests" {
+    var together: [48]u8 = undefined;
+    var split: [48]u8 = undefined;
+    specRandom(&together, 0);
+    specRandom(split[0..16], 0);
+    specRandom(split[16..28], 16);
+    specRandom(split[28..], 28);
+    try std.testing.expectEqualSlices(u8, &together, &split);
+    try std.testing.expectEqualStrings("5e60aa77b3e5d4ecbad38612bdff46d7abf177ccadba293d2fd0b2f17d7a5dd1832ba8682ab91c2e6476fc488fc7d89c", &std.fmt.bytesToHex(together, .lower));
 }
