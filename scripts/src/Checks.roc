@@ -120,7 +120,7 @@ Checks := [].{
 			{ name: "layout-size-text", expectation: Rejected(["width: U32"]) },
 			{ name: "layout-seen-text", expectation: Rejected(["ratio_permille: U16"]) },
 			{ name: "link-scheme", expectation: Rejected(["unsupported link scheme", "javascript"]) },
-			{ name: "link-override", expectation: ConstantCrash({ at: "main = Engine.program(|| Html.link(\"Checked\", \"/guide\", [Engine.attr(\"HREF\", \"javascript:alert(1)\")]))", rules: ["Html.link destination cannot be overridden", "Checked"] }) },
+			{ name: "link-override", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["Html.link destination cannot be overridden", "Checked"] }) },
 			{ name: "timeout-zero", expectation: Rejected(["a timeout of Ms(0)"]) },
 			{ name: "port-float-key", expectation: Rejected(["parse_key_f64"]) },
 			{ name: "checkbox-text-payload", expectation: Rejected(["This string literal is being used where a non-string type is needed", "Bool"]) },

@@ -55,7 +55,7 @@ function batch() {
     if (op === 8) { u32(); u32(); u32(); name(0); assert.equal(u8(), 0); }
     else if (op === 9) { const node = u32(), attribute = name(3); assert.equal(u8(), 1); const value = str(); if (attribute === "aria-label") labels.set(value, node); }
     else if (op === 10) { const node = u32(), parent = u32(); u32(); const value = str(); content.set(node, value); if (listeners.has(parent)) labels.set(value, parent); }
-    else if (op === 11) { const node = u32(), handler = u32(); assert.equal(str(), "click"); assert.equal(u8(), 1); assert.equal(u32(), 0); listeners.set(node, handler); }
+    else if (op === 11) { const node = u32(), handler = u32(); assert.equal(str(), "click"); assert.equal(u8(), 10); assert.equal(u32(), 0); listeners.set(node, handler); }
     else if (op === 12) { content.set(u32(), str()); }
     else if (op === 7) { const id = u32(), length = u32(); templates.set(id, length); at += length; }
     else if (op === 1) { const node = u32(); u32(); u32(); assert.ok(templates.has(u32())); content.set(node, str()); }
@@ -71,6 +71,9 @@ function click(label, measured = false) {
   const node = labels.get(label);
   assert.ok(node !== undefined && listeners.has(node), `missing actionable ${label}`);
   if (measured) wasm.reset_metrics();
+  // Include staging in the measured turn. A plain Click has no modifiers or link.
+  const pointer = wasm.payload_reserve(2);
+  new Uint8Array(wasm.memory.buffer, pointer, 2).set([0, 0]);
   wasm.event(node, listeners.get(node));
   const bytes = Number(wasm.metric(2)), allocations = Number(wasm.metric(0));
   batch();
