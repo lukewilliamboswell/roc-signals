@@ -19,6 +19,7 @@ CryptoApp := [].{
 		opened : Str,
 		fresh_iv : Bool,
 		panel : Bool,
+		offline_seal : Bool,
 		latest : [Idle, Run(U64)],
 	}
 
@@ -34,6 +35,7 @@ CryptoApp := [].{
 		opened: "",
 		fresh_iv: False,
 		panel: False,
+		offline_seal: False,
 		latest: Idle,
 	}
 
@@ -141,6 +143,24 @@ CryptoApp := [].{
 				),
 				Html.p_s(reading.map(|s| Str.inspect(s.fresh_iv)), [Engine.test_id("fresh-iv")]),
 				Engine.on_post_by(reading.map(|s| s.posts), reading, CryptoApp.plan, state.on_result(CryptoApp.answered)),
+				Html.button("Arm offline seal", [], state.update(|s| { ..s, offline_seal: True })),
+				# This report can flush during another request's run-effect step.
+				# Its batch must capture the old key before that step drains releases.
+				Engine.when(
+					reading.map(|s| s.offline_seal),
+					|| Engine.watch(
+						Engine.const({}),
+						|_| [Engine.online_changes({})],
+						state.on_result(
+							|s, _, result| match result {
+								Ok(False) => { ..CryptoApp.post(s, SealAndLock), offline_seal: False }
+								Ok(True) => s
+								Err(Refused) => { ..s, offline_seal: False, notice: "offline subscription refused" }
+							},
+						),
+					),
+					|| Engine.text(""),
+				),
 				Html.button("Panel", [], state.update(|s| { ..s, panel: !s.panel })),
 				Engine.when(
 					reading.map(|s| s.panel),
