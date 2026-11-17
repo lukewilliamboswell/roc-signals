@@ -3271,7 +3271,7 @@ export class RocEngineRuntime {
     this.cryptoActive = 0;
     // Test-only deterministic entropy. Production never derives secure random
     // bytes from the app's boot seed, its wall clock or a fallback PRNG.
-    this.cryptoEntropy = { counter: 0n, remainder: new Uint8Array(0), tail: Promise.resolve() };
+    this.cryptoEntropy = { used: 0n, counter: 0n, remainder: new Uint8Array(0), tail: Promise.resolve() };
     this.maxCryptoBytes = options.maxCryptoBytes ?? DEFAULT_CRYPTO_BYTES;
     if (!Number.isInteger(this.maxCryptoBytes) || this.maxCryptoBytes < 0 || this.maxCryptoBytes > MAX_CRYPTO_BYTES) throw new Error(`maxCryptoBytes must be a whole number from 0 to ${MAX_CRYPTO_BYTES}`);
     this.maxCryptoIterations = options.maxCryptoIterations ?? DEFAULT_CRYPTO_ITERATIONS;
@@ -3689,7 +3689,7 @@ export class RocEngineRuntime {
     this.live = new Map();
     this.files = new Map();
     this.keys = new Map();
-    this.cryptoEntropy = { counter: 0n, remainder: new Uint8Array(0), tail: Promise.resolve() };
+    this.cryptoEntropy = { used: 0n, counter: 0n, remainder: new Uint8Array(0), tail: Promise.resolve() };
     this.revokeUrls();
     this.issued = [];
     this.reportEpoch = {};
@@ -5040,6 +5040,7 @@ export class RocEngineRuntime {
     }
     const state = this.cryptoEntropy;
     const generate = async () => {
+      if (state.used > U64_MAX - BigInt(count)) throw new RangeError("manual crypto entropy byte count exhausted");
       const bytes = new Uint8Array(count);
       let at = 0;
       while (at < count) {
@@ -5056,6 +5057,7 @@ export class RocEngineRuntime {
         state.remainder = state.remainder.slice(take);
         at += take;
       }
+      state.used += BigInt(count);
       return bytes;
     };
     const result = state.tail.then(generate);
@@ -5073,7 +5075,7 @@ export class RocEngineRuntime {
       if (fx.count === 0n) return bytes(new Uint8Array(0));
       if (!c || (this.manual ? typeof c.subtle?.digest !== "function" : typeof c.getRandomValues !== "function")) return failed(CRYPTO_UNAVAILABLE);
       try { return bytes(await this.cryptoRandom(Number(fx.count))); }
-      catch { return failed(CRYPTO_UNAVAILABLE); }
+      catch (error) { return failed(this.manual && error instanceof RangeError ? CRYPTO_FAILED : CRYPTO_UNAVAILABLE); }
     }
     if (fx.action === "derive") {
       if (fx.iterations === 0 || fx.salt.length < 16) return failed(CRYPTO_INVALID_PARAMETERS);
@@ -5089,7 +5091,7 @@ export class RocEngineRuntime {
       if (!c?.subtle || typeof c.subtle.encrypt !== "function" || (this.manual ? typeof c.subtle.digest !== "function" : typeof c.getRandomValues !== "function")) return failed(CRYPTO_UNAVAILABLE);
       let iv;
       try { iv = await this.cryptoRandom(12); }
-      catch { return failed(CRYPTO_UNAVAILABLE); }
+      catch (error) { return failed(this.manual && error instanceof RangeError ? CRYPTO_FAILED : CRYPTO_UNAVAILABLE); }
       try {
         const answer = await c.subtle.encrypt({ name: "AES-GCM", iv, additionalData: fx.associated, tagLength: 128 }, fx.key, fx.plaintext);
         return { parts: [new Uint8Array([RES_CRYPTO_SEALED]), iv, new Uint8Array(answer)] };
@@ -6746,7 +6748,7 @@ function manualPortPayload(answer) {
   if (answer.closed) return portFailed(3);
   if (answer.threw !== undefined) return portFailed(1, answer.threw);
   const blobs = (answer.blobs ?? []).map(blob => {
-    if (blob instanceof Uint8Array) return blob;
+    if (blob instanceof Uint8Array) return blob.slice();
     if (!Array.isArray(blob) || !blob.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) throw new TypeError("manual port byte blocks must contain integers from 0 to 255");
     return Uint8Array.from(blob);
   });

@@ -315,3 +315,14 @@ await check("full U64 key tokens stay distinct through staging, lookup, release 
   assert.equal(f.runtime.poisoned, null);
   f.runtime.unmount();
 });
+
+
+await check("manual entropy refuses U64 byte-count exhaustion without advancing its stream", async () => {
+  const f = fixture();
+  f.runtime.cryptoEntropy.used = (1n << 64n) - 1n;
+  f.apply(batch(1, wide(1), 1)); await f.runtime.runEffect(1);
+  assert.deepEqual(flatten(f.calls.at(-1).payload), Buffer.from([30, 6]));
+  assert.equal(f.runtime.cryptoEntropy.counter, 0n);
+  assert.equal(f.runtime.cryptoEntropy.used, (1n << 64n) - 1n);
+  f.runtime.unmount();
+});

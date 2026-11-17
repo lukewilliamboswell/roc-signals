@@ -2857,7 +2857,9 @@ requested random-byte count. A request beyond a limit answers `TooLarge`
 before cryptographic work or output allocation. Core refuses requests beyond
 the structural maximum before encoding lengths. Each instance has 64 key
 slots, separate from its 64 file slots; a derivation without a free key slot
-answers `Refused`. Retired slots remain reserved until the post-effect drain.
+answers `Refused`. An exhausted token generation also refuses another key,
+never wrapping or aliasing an earlier lifetime. Retired slots remain reserved
+until the post-effect drain.
 
 Browser SubtleCrypto cannot abort an operation. Cancellation discards its
 answer, but the executor keeps its operation count until the promise settles.
@@ -2882,7 +2884,8 @@ only randomness with an explicitly test-only deterministic stream, reset at
 each document: concatenate SHA-256 blocks of UTF-8 `roc-signals spec crypto`,
 one zero byte and an eight-byte little-endian block index starting at zero.
 Consume bytes in `run-effect` execution order, retaining the unused suffix of
-a block. The native executor addresses that same stream by its U64 byte offset
+a block. Its consumed-byte count is U64; an operation that would overflow it
+answers `Failed` without consuming bytes. The native executor addresses that same stream by its U64 byte offset
 and refuses exhaustion as `Failed`, without wrapping; browser replay follows
 the same byte bound. This never uses the production boot seed and is not encryption for
 real data. The native host keeps key material only behind typed handles,
@@ -4168,7 +4171,13 @@ of steps written against the rendered UI:
   numbering: `expect-port-call N port json` checks its message and
   `answer-port N reply|throw|too-large|timeout` answers it (an answer's JSON
   is delivered as written, so a spec can answer what the app's type does
-  not accept). Subscriptions are addressed by port: `emit-port`,
+  not accept). Optional `:bytes ("BASE64" ...)` on a reply or
+  `emit-port` supplies byte blocks beside that unchanged JSON. The one Roc
+  parser strictly decodes canonical Base64 once and emits the resulting bytes
+  for browser replay. Numeric `$bytes` markers still name zero-based blocks;
+  neither runner rewrites JSON or infers an attachment from a string. Invalid
+  base64, duplicate/unknown fields and attachments on failure answers are hard
+  parse errors. Subscriptions are addressed by port: `emit-port`,
   `close-port`, `fail-port` and `expect-port-subscriptions`.
   `expect-port-subscription-arg port K json` checks the one-based K-th
   currently active subscription on that port, retaining no history. Commands are

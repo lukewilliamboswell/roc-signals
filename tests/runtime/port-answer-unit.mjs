@@ -143,3 +143,17 @@ await check("a textual bytes marker is left as text and creates no attachment", 
   runtime.answerPort(23, { json });
   assert.deepEqual(results, [[23, [14, ...word(encoded.length), ...encoded, ...word(0), ...word(0)]]]);
 });
+
+
+await check("manual binary reports retain their bytes from message arrival", () => {
+  const { runtime } = mount({}); runtime.manual = true;
+  runtime.portDecls = new Map([["p", { delivery: 2, bound: 1 }]]);
+  runtime.performPortSub({ op: "portsub", id: 24, port: "p", msg: message });
+  let waiting;
+  runtime.report = (_id, payload) => { waiting = payload; return false; };
+  const source = Uint8Array.from([0, 255]);
+  assert.equal(runtime.messagePort("p", { json: '{"$bytes":0}', blobs: [source] }), 1);
+  source.fill(7);
+  assert.deepEqual([...waiting.parts.at(-2)], [0, 255]);
+  runtime.unmount();
+});
