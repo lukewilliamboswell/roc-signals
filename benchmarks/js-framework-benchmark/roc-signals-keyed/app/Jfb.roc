@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Handler, In, Keyed, Root, Row, RowRef, State]
+import pf.Engine exposing [Elem, HandlerOf, In, Keyed, Root, Row, RowRef, State]
 
 ## The js-framework-benchmark keyed table: two states (rows model, selected
 ## key), one keyed `each` whose template is described once per site.
@@ -96,7 +96,7 @@ Jfb := [].{
 		{ rows: rows.clear(), next_id, seed }
 	}
 
-	button : Str, Str, Handler(Ctx) -> Elem(Ctx)
+	button : Str, Str, HandlerOf(Ctx, Engine.Click) -> Elem(Ctx)
 	button = |id, label, h| Engine.element(
 		"div",
 		[Engine.class("col-sm-6 smallpad")],

@@ -115,6 +115,17 @@ among the children for a visible title.
 
 Anything else is `Engine.element(tag, attrs, children)`.
 
+`Html.unsafe_html(tag, attrs, html_signal)` imports opaque browser-parsed HTML
+without escaping, validation or sanitization. It owns a stable wrapper without
+engine children; equal source prunes, changed source replaces all descendants.
+Imported descendants are outside spec locators and native text observation, and
+pictures refuse the wrapper even when empty. See [Markup](@/docs/markup.md).
+
+`Web.Link` checks link scheme policy. `from_str` returns
+`Try(Link, [UnsupportedScheme(Str)])`; literals use `from_quote`, `text` retains
+accepted authored text, and equality compares that text. `Html.link` requires it;
+`Html.href` and `Html.href_s` support custom layouts with explicit absence.
+
 ## Layout
 
 `import pf.Layout` provides plain report data with no engine dependency:
@@ -217,9 +228,10 @@ prevents the default action, and `stop` prevents a bubbling event from
 reaching page listeners above the mount. `stop` has no effect on an event
 that does not bubble, so its own target can still receive it.
 
-| Text event or files declaration | Payload |
+| Event declaration | Payload |
 |---|---|
-| `click`, `submit` | empty |
+| `on_click`, `on_click_with`, button helpers | `Click`: modifiers and optional authored nearest-link facts |
+| Raw text-kind `click`, `submit` | empty |
 | `input` | the control's value |
 | `change` | `"true"` or `"false"` for a checkbox or radio, else the value |
 | `keydown`, `keyup` | the key |
@@ -230,6 +242,10 @@ that does not bubble, so its own target can still receive it.
 HTML checkbox or radio. `Html.select` delivers `Chose(value)` from its current
 offered list, or `NotOffered`. These typed payloads use `HandlerOf(ctx, p)`;
 `from_payload_by` converts an incoming payload using a current signal reading.
+
+`Engine.on_click` and button helpers receive `Engine.Click`, with modifier
+flags and optional nearest-link facts. `on_click_with` declares a static policy;
+generic text-kind click listeners keep their payload.
 
 ## Browser names and methods
 
@@ -526,7 +542,7 @@ it mounts.
 ## Protocol
 
 The command stream, event records, boot bytes and program declarations are versioned together. The
-current protocol is version 21: every nonempty page batch starts with a flags
+current protocol is version 22: every nonempty page batch starts with a flags
 byte, and a marked batch ends with `TRANSITION` (opcode 24). Worker answers
 have no page-batch header. Session storage adds section 11, and `GUARD` is
 opcode 25. Expanded names carry namespace, prefix and local name; elements
@@ -534,6 +550,8 @@ carry an explicit child-container role, and literal comments use `COMMENT`
 (opcode 26). A port command the engine did not send, because its message
 nests past the port format's 512 containers, is `UNSENT` (opcode 27).
 Engine-only boot section 13 carries the measured mount root.
+Typed clicks use payload kind 10; opaque HTML uses private property row 8.
+Both reuse the existing counters.
 Clipboard and failed storage writes have typed results; paste
 text has its own payload kind. HTTP carries cache, credentials and an optional
 progress interval; transfer reports use tag 26 and counter 47. The full wire protocol is Appendix B of

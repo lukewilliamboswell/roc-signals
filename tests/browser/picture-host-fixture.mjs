@@ -10,7 +10,7 @@ const vector = values => [...leb(values.length), ...values.flat()];
 const part = (tag, bytes) => [tag, ...leb(bytes.length), ...bytes];
 export function pictureHostModule({ dropTrap = false } = {}) {
   const names = ["protocol_version", "boot_keys", "cmd_ptr", "cmd_len", "payload_reserve", "init", "files_released", "fault", "work_len", "metric", "drop", "init_calls", "dbg_ptr", "dbg_len"];
-  const bodies = [[0x41, 21], [0x41, 0, 0x24, 0, 0x41, ...leb(pictureDeclarations.length), 0x24, 1], [0x23, 0], [0x23, 1], [0x41, ...leb(65536)],
+  const bodies = [[0x41, 22], [0x41, 0, 0x24, 0, 0x41, ...leb(pictureDeclarations.length), 0x24, 1], [0x23, 0], [0x23, 1], [0x41, ...leb(65536)],
     [0x23, 2, 0x41, 1, 0x6a, 0x24, 2, 0x41, ...leb(16384), 0x24, 0, 0x41, 1, 0x24, 1], [0x41, 0], [0x41, 0], [0x41, 0], [0x42, 0], dropTrap ? [0x00] : [], [0x23, 2], [0x41, 0], [0x41, 0]].map(code => { const body = [0, ...code, 0x0b]; return [...leb(body.length), ...body]; });
   const bytes = Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0,
     ...part(1, vector([[0x60, 0, 1, 0x7f], [0x60, 0, 0], [0x60, 1, 0x7f, 1, 0x7f], [0x60, 0, 1, 0x7e]])),

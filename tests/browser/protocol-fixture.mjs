@@ -29,11 +29,11 @@ export const protocolFixtureFacts = {
   ops: codes(["INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD", "COMMENT", "UNSENT"]),
   kinds: [
     ["TEXT", []], ["FILES", ["change", "drop", "paste"]], ["POINTER", ["pointerdown", "pointermove", "pointerup", "pointercancel"]],
-    ["KEY", ["keydown", "keyup"]], ["OPEN_STATE", ["close", "toggle", "change"]], ["SCROLL", ["scroll"]], ["SIZE", ["size"]], ["SEEN", ["seen"]], ["PASTE", ["paste"]],
+    ["KEY", ["keydown", "keyup"]], ["OPEN_STATE", ["close", "toggle", "change"]], ["SCROLL", ["scroll"]], ["SIZE", ["size"]], ["SEEN", ["seen"]], ["PASTE", ["paste"]], ["CLICK", ["click"]],
   ].map(([name, events], i) => ({ code: i + 1, name, events })),
   policies: ["PREVENT", "STOP", "CAPTURE", "PACED", "DOCUMENT", "AHEAD"].map((name, i) => ({ bit: 1 << i, name })),
   properties: [
-    ["value", ["input", "textarea", "select", "option"]], ["checked", ["input"]], ["pointer_zone", []], ["keymap_down", []], ["keymap_up", []], ["shown", ["dialog"]], ["popover_shown", []],
+    ["value", ["input", "textarea", "select", "option"]], ["checked", ["input"]], ["pointer_zone", []], ["keymap_down", []], ["keymap_up", []], ["shown", ["dialog"]], ["popover_shown", []], ["inner_html", []],
   ].map(([name, elements], i) => ({ index: i + 1, name, elements })),
   http_cache: codes(["default", "no-store", "reload", "no-cache", "force-cache"]), http_credentials: codes(["same-origin", "include"]),
   namespaces: codes(["HTML", "SVG", "MATHML", "NONE", "URI"], 0),
@@ -60,7 +60,7 @@ export async function installProtocolFixture(page) {
       const memory = new WebAssembly.Memory({ initial: 2 });
       let length = 0;
       const x = {
-        memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 21,
+        memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 22,
         boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
         cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
         init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },

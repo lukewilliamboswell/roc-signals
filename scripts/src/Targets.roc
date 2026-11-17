@@ -21,6 +21,7 @@ Targets := [].{
 
 	fuzz_targets : List(Fuzz)
 	fuzz_targets = [
+		{ name: "links", main: "fuzz/links/main.roc" },
 		{ name: "base64", main: "fuzz/base64/main.roc" },
 		{ name: "crypto", main: "fuzz/crypto/main.roc" },
 		{ name: "boot", main: "fuzz/boot/main.roc" },
@@ -394,6 +395,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "fx-browser.mjs", ["--wasm", fx])?)
 				.concat(Targets.browser!(o, "controls-browser.mjs", ["--wasm", controls])?)
 				.concat(Targets.browser!(o, "effective-types-refusals.mjs", ["--wasm", controls, "--native", SpecSuite.runner_of(o, "controls")])?)
+				.concat(Targets.browser!(o, "unsafe-html-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "unsafe-html"), "--runner", SpecSuite.runner_of(o, "unsafe-html")])?)
 				.concat(Targets.browser!(o, "markup-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "markup")])?)
 				.concat(Targets.browser!(o, "construction-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "construction")])?)
 				.concat(Targets.browser!(o, "pointer-browser.mjs", ["--wasm", controls])?)

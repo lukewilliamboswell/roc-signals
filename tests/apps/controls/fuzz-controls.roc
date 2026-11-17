@@ -44,7 +44,8 @@ fire! : S, Scm.Loc, Str, Str => (S, List(Dom.FxCmd))
 fire! = |s, loc, ev, payload| {
 	i = SpecRunner.find(s.dom, loc) ?? crash "no ${Scm.show_loc(loc)}"
 	target = Dom.target(s.dom, i, ev, Bool.True) ?? crash "no ${ev} handler on ${Scm.show_loc(loc)}"
-	(a, c) = Core.take_cmds(Core.event(s.eng, target.node, target.handler, payload), [])
+	bytes = if (target.kind == 10) SpecRunner.click_payload(s.dom, i, { ctrl: False, alt: False, shift: False, meta: False }) else payload.to_utf8()
+	(a, c) = Core.take_cmds(Core.deliver(s.eng, target.node, target.handler, Ev(bytes)), [])
 	(d2, _, fx) = Dom.apply_fx(s.dom, c)
 	settled(a, d2, ({ eng: a, dom: d2, steps: s.steps + 1 }, fx))
 }

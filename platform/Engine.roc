@@ -130,8 +130,8 @@ Engine := [].{
 
 	## `handle(decide)` is a handler that writes the cells `decide` names,
 	## given the event's payload (an input's text, a checkbox's Boolean checked
-	## state or `""` for a click): one pure function decides a transition
-	## that spans cells.
+	## state or a click's modifiers and link facts): one pure function decides
+	## a transition that spans cells.
 	##
 	## ```
 	## Engine.on_click(Engine.handle(|_| [cells.count.update(|n| n + 1), cells.last.set("bumped")]))
@@ -1604,6 +1604,10 @@ Engine := [].{
 	## bubbling event before it reaches listeners outside the mount.
 	Policy : Core.Policy
 
+	## Facts captured for one click: ctrl, alt, shift, meta, and link as NoLink
+	## or Link({ href, target, download }). Text is authored, never URL-resolved.
+	Click : Core.Click
+
 	## A pointer's state when the browser dispatches it. `at` is the nearest
 	## declared zone under the pointer, independently of capture; its x and y
 	## are fractions from 0 to 10000. `Outside` means there is no usable zone.
@@ -1725,9 +1729,15 @@ Engine := [].{
 		Varies(value) => Core.ref_s(value)
 	}
 
-	## A `click` listener; its payload is empty.
-	on_click : Handler(ctx) -> Attr(ctx)
+	## Receive modifiers and the nearest link's authored destination, target and
+	## download presence, captured at dispatch within this mount.
+	on_click : HandlerOf(ctx, Click) -> Attr(ctx)
 	on_click = |{ h }| Core.on_click(h)
+
+	## Receive typed click facts with synchronous prevention and propagation
+	## declared here. Roc receives raw destinations and decides app navigation.
+	on_click_with : Policy, HandlerOf(ctx, Click) -> Attr(ctx)
+	on_click_with = |policy, { h }| Core.on_click_with(policy, h)
 
 	## Receive handles from `Change` on a file input, `Drop` on a drop target,
 	## or `Paste`. `Drop` prevents the browser's default for drop and dragover

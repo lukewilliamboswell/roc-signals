@@ -84,12 +84,12 @@ AppStore := [Conduit].{
 	here = |{}| AppStore.cells.loc.signal().map2(AppStore.cells.session.signal(), |loc, session| { loc, session })
 
 	## A handler that asks to go to `url`.
-	go : Str -> Handler(ctx)
+	go : Str -> Engine.HandlerOf(ctx, payload)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	go = |url| Nav.go(AppStore.cells.nav, url)
 
 	## A handler that asks to go to the URL `url` holds when the event fires.
-	go_by : Signal(ctx, Str) -> Handler(ctx)
+	go_by : Signal(ctx, Str) -> Engine.HandlerOf(ctx, payload)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	go_by = |url| Nav.go_by(AppStore.cells.nav, url)
 

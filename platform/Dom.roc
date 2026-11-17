@@ -1006,7 +1006,7 @@ Dom := [].{
 			if Dom.node(dom, i).tag.is_empty() {
 				crash "executor: pointer zone property requires an element"
 			}
-			return if property == 3 {
+			return if property == 3 or property == 8 {
 				Dom.set_live_on(dom, i, name, value)
 			} else {
 				Dom.modify(dom, i, |n| { ..n, keymaps: n.keymaps.insert(if (property == 4) "keydown" else "keyup", Dom.parse_keymap(value)) })
@@ -1855,12 +1855,20 @@ Dom := [].{
 	render : Model, RenderProps -> Try(Rendered, RenderError)
 	render = render_model
 
+	## Presence, including an empty string, marks imported HTML as opaque. The
+	## oracle retains the command without parsing or inventing descendants.
+	is_opaque : DNode -> Bool
+	is_opaque = |element| element.props.any(|(name, _)| name == "inner_html")
+
 	## Collect text-leaf contents through the subtree's ordered children.
 	## This models textContent for assertions, independently of layout,
 	## attributes and live control properties.
 	text_of : Model, U64 -> Str
 	text_of = |dom, i| {
 		n = Dom.node(dom, i)
+		if Dom.is_opaque(n) {
+			crash "unsupported observation: unsafe HTML text is opaque to specs"
+		}
 		if (n.kind == 3) "" else if (n.kind == 2) n.text else Str.join_with(n.kids.map(|k| Dom.text_of(dom, k)), "")
 	}
 
@@ -1887,6 +1895,9 @@ Dom := [].{
 		n = Dom.node(dom, i)
 		if pred(n) {
 			return Ok(i)
+		}
+		if Dom.is_opaque(n) {
+			return Err(NotFound)
 		}
 		for k in n.kids {
 			match Dom.find(dom, k, pred) {
@@ -2474,6 +2485,9 @@ collect_option_value = |dom, { root, max_nodes, max_bytes }| {
 		}
 		return Ok(value)
 	}
+	if Dom.find(dom, root, Dom.is_opaque).is_ok() {
+		crash "unsupported observation: unsafe HTML option text is opaque to specs"
+	}
 	var $stack = []
 	var $pieces = []
 	var $bytes = 0.U64
@@ -2557,6 +2571,9 @@ attribute_keyword = |element, attribute, value| {
 render_model : Dom.Model, Dom.RenderProps -> Try(Dom.Rendered, Dom.RenderError)
 render_model = |dom, props| {
 	root = dom.nodes.get(props.root).map_err(|_| InvalidModel({ model: props.root, rule: "missing root lifetime" }))?
+	if Dom.is_opaque(root) {
+		return Err(InvalidModel({ model: props.root, rule: "unsafe HTML is opaque; a prerendered picture cannot contain Html.unsafe_html, even with empty contents" }))
+	}
 	root_name = if (root.kind == 1) ElementRoot(render_name(root)) else NonElementRoot
 	if props.scope != Subtree and root.kind != 1 {
 		return Err(InvalidModel({ model: props.root, rule: "picture contents require an actual element root" }))
@@ -2667,6 +2684,9 @@ render_children = |dom, { state, models, container, depth, mode, initial_lf }| {
 
 render_element : Dom.Model, { state : RenderState, model : U64, node : Dom.DNode, depth : U64 } -> Try({ state : RenderState, ordinal : U64 }, Dom.RenderError)
 render_element = |dom, { state, model, node, depth }| {
+	if Dom.is_opaque(node) {
+		return Err(InvalidModel({ model, rule: "unsafe HTML is opaque; a prerendered picture cannot contain Html.unsafe_html, even with empty contents" }))
+	}
 	props = state.props
 	deferred_selected = node.namespace == Dom.html_namespace and node.tag == "option" and match state.selection {
 		Uncontrolled => False
@@ -3319,4 +3339,15 @@ expect {
 	raw_false = Dom.set_attr_on(dom, 0, "checked", "false")
 	raw_true = Dom.set_attr_on(dom, 0, "checked", "true")
 	Dom.has_attr(Dom.node(on, 0), "checked") and Dom.attr_of(Dom.node(on, 0), "checked") == "" and Dom.live_value(Dom.node(on, 0), "checked") == "true" and !Dom.has_attr(Dom.node(off, 0), "checked") and Dom.live_value(Dom.node(off, 0), "checked") == "false" and Dom.attr_of(Dom.node(raw_false, 0), "checked") == "false" and Dom.attr_of(Dom.node(raw_true, 0), "checked") == "true"
+}
+
+## The private HTML row retains even empty source, creates no oracle children,
+## and refuses pictures by declaration presence rather than active-content scans.
+expect {
+	(base, index) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "section" })
+	with_html = Dom.set_property_on(base, index, 8, "<b>opaque</b>", 1)
+	empty_html = Dom.set_property_on(with_html, index, 8, "", 1)
+	Dom.is_opaque(Dom.node(empty_html, index)) and Dom.node(empty_html, index).kids.is_empty() and
+		Dom.node(with_html, index).props == [("inner_html", "<b>opaque</b>")] and
+			Dom.render(empty_html, { root: index, mode: Picture, limits: { max_bytes: 1024, max_nodes: 10, max_depth: 10 } }).is_err()
 }

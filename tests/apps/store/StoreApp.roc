@@ -66,7 +66,7 @@ StoreApp := [Hundred].{
 	reader : Str, Signal(ctx, Str) -> Elem(ctx)
 	reader = |name, v| Html.p_s(v.map(|s| "${name}=${s}"), [Engine.test_id(name)])
 
-	button : Str, Engine.Handler(ctx) -> Elem(ctx)
+	button : Str, Engine.HandlerOf(ctx, Engine.Click) -> Elem(ctx)
 	button = |label, h| Engine.element("button", [Engine.on_click(h)], [Engine.text(label)])
 
 	## A reader and a button for one cell, in any scope.

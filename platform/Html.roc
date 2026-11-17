@@ -1,6 +1,8 @@
 import parser.MarkupFacts
 import Engine exposing [Attr, Elem, FilesHandler, Handler, HandlerOf, Signal]
 import Layout
+import Core
+import Web
 import Spelling
 import MarkupLiteral
 
@@ -218,12 +220,12 @@ Html := [].{
 
 	## `button(label, attrs, handler)`: a button with a static label that runs
 	## `handler` on click.
-	button : Str, List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
+	button : Str, List(Attr(ctx)), HandlerOf(ctx, Engine.Click) -> Elem(ctx)
 	button = |label, attrs, h| Engine.element("button", attrs.append(Engine.on_click(h)), [Engine.text(label)])
 
 	## `icon_button(glyph, name, class, handler)`: a button showing `glyph`
 	## whose accessible name follows `name`, for icon-only actions.
-	icon_button : Str, Signal(ctx, Str), Str, Handler(ctx) -> Elem(ctx)
+	icon_button : Str, Signal(ctx, Str), Str, HandlerOf(ctx, Engine.Click) -> Elem(ctx)
 	icon_button = |glyph, name, cls, h| Engine.element("button", [Engine.attr_s("aria-label", name), Engine.attr("type", "button"), Engine.class(cls), Engine.on_click(h)], [Engine.text(glyph)])
 
 	## `text_input(name, type, value, attrs, handler)`: an `input` of the given
@@ -380,9 +382,40 @@ Html := [].{
 	li = |attrs, kids| Engine.element("li", attrs, kids)
 
 	## `link(label, href, attrs)`: a link to `href` whose accessible name is its
-	## label. Following it is ordinary browser navigation.
-	link : Str, Str, List(Attr(ctx)) -> Elem(ctx)
-	link = |label, href, attrs| Engine.element("a", [Engine.attr("href", href)].concat(attrs), [Engine.text(label)])
+	## label. Following it is ordinary browser navigation. The destination must
+	## be checked; extra href attributes are a construction contract error.
+	link : Str, Web.Link, List(Attr(ctx)) -> Elem(ctx)
+	link = |label, destination, attrs| Core.checked_link(label, destination, attrs)
+
+	## Set a checked destination on a custom link layout. Scheme checking belongs
+	## to Web.Link; raw Engine.attr remains available for deliberate raw text.
+	href : Web.Link -> Attr(ctx)
+	href = |destination| Engine.attr("href", destination.text())
+
+	## Follow an explicitly optional checked destination. Absent removes an
+	## earlier href; repeated absence and equal authored text prune normally.
+	href_s : Signal(ctx, [Absent, Present(Web.Link)]) -> Attr(ctx)
+	href_s = |destination| Engine.attr_presence(
+		"href",
+		destination.map(
+			|presence| match presence {
+				Absent => Absent
+				Present(checked) => Present(checked.text())
+			},
+		),
+	)
+
+	## Parse HTML into a stable wrapper with ordinary attributes and handlers.
+	## No escaping, validation or sanitization is performed: the app owns safety.
+	## Browser insertion rules apply: nested scripts are ordinarily inert, while
+	## inline handlers, custom elements and embedded documents can execute code.
+	## Descendants are opaque to the engine and specs and have no engine state,
+	## references or requests. Replacement receives no inferred JavaScript cleanup.
+	## Equal strings emit nothing. Comparison costs string size; parsing and
+	## replacement cost the imported content. Engine updates never traverse it.
+	## Pictures refuse this wrapper even when its initial HTML is empty.
+	unsafe_html : Engine.Tag, List(Attr(ctx)), Signal(ctx, Str) -> Elem(ctx)
+	unsafe_html = |tag, attrs, html| Core.unsafe_html(tag, attrs, Engine.attr_s("title", html))
 
 	## `label_for(text, for_id, attrs)`: a caption for the control whose `id` is `for_id`.
 	label_for : Str, Str, List(Attr(ctx)) -> Elem(ctx)
@@ -444,12 +477,12 @@ Html := [].{
 	form = |name, attrs, kids| Engine.element("form", [Engine.attr("aria-label", name)].concat(attrs), kids)
 
 	## A button whose label follows a value.
-	button_s : Signal(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
+	button_s : Signal(ctx, Str), List(Attr(ctx)), HandlerOf(ctx, Engine.Click) -> Elem(ctx)
 	button_s = |label, attrs, h| Engine.element("button", attrs.append(Engine.on_click(h)), [Engine.text_s(label)])
 
 	## `action_button(label, disabled, attrs, handler)`: a button whose label
 	## follows a value and that is disabled while `disabled` is true.
-	action_button : Signal(ctx, Str), Signal(ctx, Bool), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
+	action_button : Signal(ctx, Str), Signal(ctx, Bool), List(Attr(ctx)), HandlerOf(ctx, Engine.Click) -> Elem(ctx)
 	action_button = |label, off, attrs, h| Engine.element("button", [Html.disabled(off)].concat(attrs).append(Engine.on_click(h)), [Engine.text_s(label)])
 
 	## A button that submits its enclosing form (handle it with `on_submit`).

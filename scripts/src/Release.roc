@@ -181,6 +181,14 @@ Release := [].{
 		\\
 		\\<!-- What changed, for app authors. Write this on GitHub before publishing. -->
 		\\
+		\\## Breaking: checked links and typed clicks
+		\\
+		\\`Html.link` now requires `Web.Link`. Literal destinations are checked during compilation; computed destinations use `Web.Link.from_str` and explicitly handle `UnsupportedScheme`. `Html.href` and `Html.href_s` support custom layouts and explicit absence. Raw attributes keep their semantics.
+		\\
+		\\`Engine.on_click` and button helpers receive `Engine.Click`, carrying modifiers and nearest-link authored href, target and download presence. Use `on_click_with` for synchronous policies. Generic `on("click", ...)` retains its text payload. Rebuild modules with this release's protocol 22 runtime and worker.
+		\\
+		\\`Html.unsafe_html` imports HTML into a stable wrapper without escaping, validation or sanitization. Imported descendants are opaque to specs and receive no engine lifecycle. Pictures containing the wrapper are refused, including empty initial content.
+		\\
 		\\## Debug output
 		\\
 		\\A deployed app containing `dbg` now prints its values on the browser console. Remove each `dbg` before deploying; optimized builds retain it and warn. Mount with `dbg: "off"` to silence values and keep them off faults, but formatting still costs work.

@@ -5,7 +5,7 @@ Protocol := [].{
 
 	## A consumer's supported framing version, checked independently of Core.
 	version : U32
-	version = 21
+	version = 22
 
 	## One named byte value; the name carries no executable protocol behavior.
 	Code : { code : U8, name : Str }
@@ -72,6 +72,7 @@ Protocol := [].{
 		{ code: 7, name: "SIZE", events: ["size"] },
 		{ code: 8, name: "SEEN", events: ["seen"] },
 		{ code: 9, name: "PASTE", events: ["paste"] },
+		{ code: 10, name: "CLICK", events: ["click"] },
 	]
 
 	## Look up metadata only; the caller decides how an unknown kind fails.
@@ -104,6 +105,7 @@ Protocol := [].{
 		{ index: 5, name: "keymap_up", elements: [] },
 		{ index: 6, name: "shown", elements: ["dialog"] },
 		{ index: 7, name: "popover_shown", elements: [] },
+		{ index: 8, name: "inner_html", elements: [] },
 	]
 
 	## A missing row is a protocol mismatch, classified by the consuming boundary.

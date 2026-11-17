@@ -661,7 +661,7 @@ click! : S, Str => E
 click! = |s, name| {
 	i = SpecRunner.find(s.dom, Role({ role: "button", name })) ?? crash "no button ${name}"
 	target = Dom.target(s.dom, i, "click", Bool.True) ?? crash "no handler"
-	(a, c) = Core.take_cmds(Core.event(s.eng, target.node, target.handler, ""), [])
+	(a, c) = Core.take_cmds(Core.event(s.eng, target.node, target.handler, if (target.kind == 10) "\u(0000)\u(0000)" else ""), [])
 	apply!(s, a, c)
 }
 
@@ -954,7 +954,7 @@ media_apply = |held, step| {
 			}
 			found = SpecRunner.find(dom, Role({ role: "button", name })) ?? crash "missing media control"
 			target = Dom.target(dom, found, "click", True) ?? crash "missing media handler"
-			Core.event(eng, target.node, target.handler, "")
+			Core.event(eng, target.node, target.handler, if (target.kind == 10) "\u(0000)\u(0000)" else "")
 		}
 	}
 	(next, commands) = Core.take_cmds(changed, [])
@@ -1022,7 +1022,7 @@ run_transitions = |program| {
 		1.U64,
 		|st| Core.element(
 			"button",
-			[Core.on_click(st.set_value(|_, payload| U64.from_str(payload) ?? 0))],
+			[Core.on("click", st.set_value(|_, payload| U64.from_str(payload) ?? 0))],
 			[
 				Core.watch(
 					st.signal(),
@@ -1198,8 +1198,8 @@ run_persistence = |bytes| {
 			"main",
 			[],
 			[
-				Core.element("button", [Core.on_click(state.update(|value| { ..value, query: value.query + 1 }))], [Core.text("query")]),
-				Core.element("button", [Core.on_click(state.update(|value| { ..value, shown: !value.shown }))], [Core.text("toggle")]),
+				Core.element("button", [Core.on("click", state.update(|value| { ..value, query: value.query + 1 }))], [Core.text("query")]),
+				Core.element("button", [Core.on("click", state.update(|value| { ..value, shown: !value.shown }))], [Core.text("toggle")]),
 				Core.when(state.signal().map(|value| value.shown), || Core.watch_latest(state.signal().map(|value| value.query), |query| persist_plan(query).map(Core.raw), Core.ignore({})), || Core.text("")),
 			],
 		),
@@ -1266,8 +1266,8 @@ run_progress = |bytes| {
 			"main",
 			[],
 			[
-				Core.element("button", [Core.on_click(state.update(|value| { ..value, query: value.query + 1 }))], [Core.text("query")]),
-				Core.element("button", [Core.on_click(state.update(|value| { ..value, shown: !value.shown }))], [Core.text("toggle")]),
+				Core.element("button", [Core.on("click", state.update(|value| { ..value, query: value.query + 1 }))], [Core.text("query")]),
+				Core.element("button", [Core.on("click", state.update(|value| { ..value, shown: !value.shown }))], [Core.text("toggle")]),
 				Core.text_s(state.signal().map(|value| "${value.progress.to_str()}/${value.answered.to_str()}")),
 				Core.when(
 					state.signal().map(|value| value.shown),

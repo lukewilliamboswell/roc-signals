@@ -105,7 +105,7 @@ sequence = |bytes| {
 			}
 			index = SpecRunner.find($dom, Text(label)) ?? crash "crypto sequence button absent"
 			route = Dom.target($dom, index, "click", True) ?? crash "crypto sequence route absent"
-			(program.event)($engine, $buffer, $work, route.node, route.handler, [])
+			(program.event)($engine, $buffer, $work, route.node, route.handler, [0, 0])
 		}
 		if $cancels {
 			$cancelled = $cancelled + $live.len()

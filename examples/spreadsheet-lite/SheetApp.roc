@@ -132,7 +132,7 @@ SheetApp := [].{
 	stat_tile = |label, value, id| Html.div("stat", [Html.p(label, "stat-label"), Html.p_s(value, [Engine.test_id(id), Engine.class("stat-value")])])
 
 	## A button whose label says what a click will do.
-	switch_button : Signal(ctx, Str), Handler(ctx) -> Elem(ctx)
+	switch_button : Signal(ctx, Str), Engine.HandlerOf(ctx, Engine.Click) -> Elem(ctx)
 	switch_button = |label, handler| Html.button_s(label, [Engine.attr("type", "button"), Engine.class("button button-sm")], handler)
 
 	## The formula bar: the selected cell as the sheet holds it now. It

@@ -10,6 +10,58 @@ import Spelling
 ## Each value retains its original spelling; these types never normalize it.
 Web := [].{
 
+	## A link destination whose explicit scheme is HTTP, HTTPS, mailto or tel,
+	## or a relative reference. This checks scheme policy only: it establishes
+	## no hostname validity, reachability or trustworthiness. Raw attributes and
+	## unsafe HTML remain explicit unchecked paths.
+	Link :: Str.{
+
+		## Check computed text using browser URL preprocessing for scheme detection:
+		## trim C0 controls and spaces, remove TAB/LF/CR, and fold ASCII case.
+		## Accepted text is retained exactly, including its authored whitespace.
+		from_str : Str -> Try(Link, [UnsupportedScheme(Str)])
+		from_str = |authored| {
+			bytes = authored.to_utf8()
+			var $start = 0.U64
+			var $end = bytes.len()
+			while $start < $end and (bytes.get($start) ?? crash "Web.Link: start") <= 32 {
+				$start = $start + 1
+			}
+			while $end > $start and (bytes.get($end - 1) ?? crash "Web.Link: end") <= 32 {
+				$end = $end - 1
+			}
+			cleaned = bytes.sublist({ start: $start, len: $end - $start }).keep_if(|byte| byte != 9 and byte != 10 and byte != 13)
+			match cleaned {
+				[first, ..] if is_ascii_alpha(first) => {
+					var $scheme = []
+					for byte in cleaned {
+						if byte == ':' {
+							name = Str.from_utf8($scheme) ?? crash "Web.Link: ASCII scheme"
+							return if (["http", "https", "mailto", "tel"].contains(name)) Ok(Link.(authored)) else Err(UnsupportedScheme(name))
+						}
+						if !(is_ascii_alpha(byte) or (byte >= '0' and byte <= '9') or byte == '+' or byte == '-' or byte == '.') {
+							return Ok(Link.(authored))
+						}
+						$scheme = $scheme.append(if (byte >= 'A' and byte <= 'Z') byte + 32 else byte)
+					}
+				}
+				_ => {}
+			}
+			Ok(Link.(authored))
+		}
+
+		## A literal follows the same policy; a rejected scheme fails compilation.
+		from_quote : Str -> Try(Link, [BadQuotedBytes(Str)])
+		from_quote = |authored| Link.from_str(authored).map_err(|UnsupportedScheme(scheme)| BadQuotedBytes("unsupported link scheme ${Str.inspect(scheme)}; use a relative reference, http, https, mailto or tel"))
+
+		## The accepted authored destination, without normalization or resolution.
+		text : Link -> Str
+		text = |Link.(authored)| authored
+
+		## Equality compares retained authored text, not resolved browser URLs.
+		is_eq : _
+	}
+
 	## An explicit element or attribute namespace. Uri keeps extension namespaces
 	## available without adding them to the platform's vocabulary. An empty URI
 	## has the DOM's no-namespace meaning.
@@ -641,4 +693,16 @@ expect {
 					name.in_namespace({ namespace: Uri("urn:entry\u(1FFFE)") }).is_ok() and
 						name.in_namespace({ namespace: Uri("http://www.w3.org/2000/xmlns/") }).is_ok() and
 							Web.Tag.from_str("entry")?.in_namespace({ namespace: Uri("urn:entry\u(0000)") }).is_ok()
+}
+
+## Checked destinations retain accepted input and reject obfuscated schemes.
+expect {
+	accepted = ["", "../guide", "//example.test", "#part", "?q=a:b", "/a:b", " HTTPs://example.test ", "mail\nto:a@b", "tel:+123", "1x:relative", "a/b:relative", "é:relative"]
+	accepted.all(
+		|text| match Web.Link.from_str(text) {
+			Ok(link) => link.text() == text
+			Err(_) => False
+		},
+	) and
+		["javascript:alert(1)", " JaVa\tScRiPt:alert(1) ", "\u(0000)data:text/html,x\u(001F)", "vbscript:x", "blob:x", "file:///x", "x+y.z:x"].all(|text| Web.Link.from_str(text).is_err())
 }

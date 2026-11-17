@@ -1,3 +1,5 @@
+import pf.Html
+import pf.Web
 import pf.Engine exposing [Elem, Row, RowRef, Signal]
 import Markdown
 
@@ -23,7 +25,20 @@ MarkdownView := [].{
 						Strong => Engine.element("strong", [], [Engine.text_s(text)])
 						Code => Engine.element("code", [Engine.class("bg-zinc-100 px-1 font-mono")], [Engine.text_s(text)])
 						Image => Engine.element("img", [Engine.attr_s("src", href), Engine.attr_s("alt", text)], [])
-						Link => Engine.element("a", [Engine.attr_s("href", href)], [Engine.text_s(text)])
+						Link => Engine.element(
+							"a",
+							[
+								Html.href_s(
+									href.map(
+										|authored| match Web.Link.from_str(authored) {
+											Ok(destination) => Present(destination)
+											Err(UnsupportedScheme(_)) => Absent
+										},
+									),
+								),
+							],
+							[Engine.text_s(text)],
+						)
 						Text => Engine.text_s(text)
 					},
 				),

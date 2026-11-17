@@ -119,6 +119,8 @@ Checks := [].{
 			{ name: "layout-scroll-text", expectation: Rejected(["top: U32"]) },
 			{ name: "layout-size-text", expectation: Rejected(["width: U32"]) },
 			{ name: "layout-seen-text", expectation: Rejected(["ratio_permille: U16"]) },
+			{ name: "link-scheme", expectation: Rejected(["unsupported link scheme", "javascript"]) },
+			{ name: "link-override", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["Html.link destination cannot be overridden", "Checked"] }) },
 			{ name: "timeout-zero", expectation: Rejected(["a timeout of Ms(0)"]) },
 			{ name: "port-float-key", expectation: Rejected(["parse_key_f64"]) },
 			{ name: "checkbox-text-payload", expectation: Rejected(["This string literal is being used where a non-string type is needed", "Bool"]) },
@@ -454,6 +456,8 @@ Checks := [].{
 	## browser does not draw because it sits under an SVG mount root.
 	broken_specs : List(Broken)
 	broken_specs = [
+		{ example: "unsafe-html", spec: "tests/apps/unsafe-html/specs/round-trip-html.scm", good: "(expect-attr (test-id \"opaque\") aria-label \"Imported\")", bad: "(expect-text (test-id \"opaque\") \"Imported heading\")", rejection: "opaque" },
+		{ example: "unsafe-html", spec: "tests/apps/unsafe-html/specs/round-trip-html.scm", good: "(expect-attr (test-id \"opaque\") aria-label \"Imported\")", bad: "(click (test-id \"opaque\"))", rejection: "opaque" },
 		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press (label \"Keyboard editable\") \"Enter\")", rejection: "unmodelled" },
 		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press \"Escape\")", bad: "(press (label \"Keyboard editable\") \"j\")", rejection: "unmodelled" },
 		{ example: "handlers", spec: "tests/apps/handlers/specs/keyboard.scm", good: "(press (label \"Prevented shortcut link\") \"Control+Enter\")", bad: "(press (label \"Unprevented shortcut link\") \"Shift+Enter\")", rejection: "unmodelled" },
