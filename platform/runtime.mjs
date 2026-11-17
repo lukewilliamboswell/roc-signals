@@ -1074,9 +1074,7 @@ const COMMAND_APPLIERS = {
       };
       const key = () => {
         within(8);
-        const encoded = dv.getBigUint64(at, true); at += 8;
-        if (encoded > BigInt(Number.MAX_SAFE_INTEGER)) throw new ContractFault("contract: a crypto request's key token is not a safe integer");
-        const token = Number(encoded);
+        const token = dv.getBigUint64(at, true); at += 8;
         if (reader.mode === "preflight") return null;
         const object = this.keys.get(token);
         if (object === undefined) throw new ContractFault(`contract: a crypto request names key handle ${token}, which this runtime does not hold`);
@@ -3266,7 +3264,8 @@ export class RocEngineRuntime {
     this.fetch = options.fetch ?? null;
     // token -> File for every file the app holds a handle on (see "Files").
     this.files = new Map();
-    // CryptoKey objects stay behind their own typed host handles. Operations
+    // CryptoKey objects stay behind their own typed host handles. Tokens
+    // remain exact U64 BigInts through staging, lookup and release. Operations
     // capture the object before draining releases, just as file operations do.
     this.keys = new Map();
     this.cryptoActive = 0;
@@ -4502,7 +4501,7 @@ export class RocEngineRuntime {
       return this.callEvent(node, handler);
     }
     const tokens = new DataView(this.x.memory.buffer, this.x.keys_tokens(), 8);
-    this.keys.set(tokenAt(tokens, 0), key);
+    this.keys.set(tokens.getBigUint64(0, true), key);
     this.stage(new Uint8Array([RES_CRYPTO_KEY]));
     this.calling = true;
     const said = this.x.event_key(node, handler);
@@ -4515,7 +4514,7 @@ export class RocEngineRuntime {
     const count = this.x.keys_released();
     if (count === 0) return;
     const tokens = new DataView(this.x.memory.buffer, this.x.keys_tokens(), 8 * count);
-    for (let index = 0; index < count; index += 1) this.keys.delete(tokenAt(tokens, index));
+    for (let index = 0; index < count; index += 1) this.keys.delete(tokens.getBigUint64(8 * index, true));
   }
 
   // Revoke every object URL made for a file (poisoning, recovery, unmount).
@@ -5404,7 +5403,9 @@ export class RocEngineRuntime {
       }
       case "crypto": {
         const entry = this.holdCrypto(fx);
-        if (this.manual && entry.reserved) this.issued.push(fx.id);
+        // A refused manual operation waits for the same runEffect step as an
+        // admitted one. Its reservation decision is fixed at issue time.
+        if (this.manual) this.issued.push(fx.id);
         else this.startCrypto(entry);
         return;
       }

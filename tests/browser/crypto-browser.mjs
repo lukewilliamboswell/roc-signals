@@ -41,7 +41,8 @@ try {
     const section = (tag, bytes) => [tag, ...word(bytes.length), ...bytes];
     const declarations = Uint8Array.from([...section(2, word(0)), ...section(5, word(0)), ...section(6, word(0)), ...section(10, [110, 1]), ...section(11, word(0)), ...fixtureSection]);
     const memory = new WebAssembly.Memory({ initial: 3 });
-    let length = 0, staged = 0, token = 100n, release = [], keyStages = 0;
+    const keyBase = 18446744073709551614n;
+    let length = 0, staged = 0, token = keyBase, release = [], keyStages = 0;
     const calls = [];
     const x = {
       memory, protocol_version: () => PROTOCOL_VERSION, dbg_ptr: () => 0, dbg_len: () => 0,
@@ -72,7 +73,7 @@ try {
     const checks = [], check = (name, condition) => { if (!condition) throw new Error(name); checks.push(name); };
     for (const [place, hash] of [1, 3].entries()) {
       const answer = await run(2, [hash, ...word(50), ...block(new TextEncoder().encode(password)), ...block(salt)], true);
-      const keyToken = 100 + place, key = runtime.keys.get(keyToken);
+      const keyToken = keyBase + BigInt(place), key = runtime.keys.get(keyToken);
       check(`PBKDF2 hash ${hash} stages exactly one opaque key`, answer.length === 1 && answer[0] === 27 && keyStages === place + 1);
       check(`PBKDF2 hash ${hash} creates non-extractable AES-256-GCM`, key instanceof CryptoKey && !key.extractable && key.algorithm.name === "AES-GCM" && key.algorithm.length === 256 && key.usages.join(",") === "encrypt,decrypt");
       let denied = false;
@@ -81,24 +82,24 @@ try {
       const opened = await run(4, [...wide(keyToken), ...block(iv), ...block(vectors[place]), ...block(associated)], true);
       check(`PBKDF2 hash ${hash} decrypts the independent AES vector`, JSON.stringify(opened) === JSON.stringify([28, ...plain]));
     }
-    const sealed = await run(3, [...wide(100), ...block(plain), ...block(associated)], true);
-    const again = await run(3, [...wide(100), ...block(plain), ...block(associated)], true);
+    const sealed = await run(3, [...wide(keyBase), ...block(plain), ...block(associated)], true);
+    const again = await run(3, [...wide(keyBase), ...block(plain), ...block(associated)], true);
     check("encryption generates fresh 96-bit IVs", sealed[0] === 29 && sealed.length === 29 + plain.length && JSON.stringify(sealed.slice(1, 13)) !== JSON.stringify(again.slice(1, 13)));
-    const opened = await run(4, [...wide(100), ...block(sealed.slice(1, 13)), ...block(sealed.slice(13)), ...block(associated)], true);
+    const opened = await run(4, [...wide(keyBase), ...block(sealed.slice(1, 13)), ...block(sealed.slice(13)), ...block(associated)], true);
     check("production AES-GCM preserves all binary bytes", JSON.stringify(opened) === JSON.stringify([28, ...plain]));
     const damaged = sealed.slice(13); damaged[0] ^= 1;
-    const bad = await run(4, [...wide(100), ...block(sealed.slice(1, 13)), ...block(damaged), ...block(associated)], true);
-    const wrongContext = await run(4, [...wide(100), ...block(sealed.slice(1, 13)), ...block(sealed.slice(13)), ...block([99])], true);
-    const wrongKey = await run(4, [...wide(101), ...block(sealed.slice(1, 13)), ...block(sealed.slice(13)), ...block(associated)], true);
+    const bad = await run(4, [...wide(keyBase), ...block(sealed.slice(1, 13)), ...block(damaged), ...block(associated)], true);
+    const wrongContext = await run(4, [...wide(keyBase), ...block(sealed.slice(1, 13)), ...block(sealed.slice(13)), ...block([99])], true);
+    const wrongKey = await run(4, [...wide(keyBase + 1n), ...block(sealed.slice(1, 13)), ...block(sealed.slice(13)), ...block(associated)], true);
     check("damaged data, associated data and a wrong key are NotAuthentic", [bad, wrongContext, wrongKey].every(answer => answer.length === 2 && answer[0] === 30 && answer[1] === 4));
     const random = await run(1, wide(65537), true);
     check("production randomness exceeds one getRandomValues call safely", random[0] === 28 && random.length === 65538);
     const digests = [];
     for (const hash of [1, 2, 3]) digests.push(await run(5, [hash, ...block([97, 98, 99])], true));
     // A request can use a key whose final Roc reference went in this batch.
-    release = [100];
-    const kept = await run(3, [...wide(100), ...block(plain), ...block([])], true);
-    check("a performed request retains its key after the handle release", kept[0] === 29 && !runtime.keys.has(100) && runtime.keys.has(101));
+    release = [keyBase];
+    const kept = await run(3, [...wide(keyBase), ...block(plain), ...block([])], true);
+    check("a performed request retains its key after the handle release", kept[0] === 29 && !runtime.keys.has(keyBase) && runtime.keys.has(keyBase + 1n));
     runtime.unmount(); root.remove();
     check("unmount drops every remaining browser key", runtime.keys.size === 0);
     return { checks, digests };

@@ -44,7 +44,7 @@ function fixture(options = {}) {
   const runtime = new RocEngineRuntime(x, root, { manualEffects: true, window, ...options });
   runtime.protocol = readDeclarations(x).bindings;
   return {
-    runtime, calls, x, minted: () => minted, room: count => { room = count; },
+    runtime, calls, x, minted: () => minted, room: count => { room = count; }, nextToken: value => { nextToken = BigInt(value); },
     releases: tokens => { released = tokens.map(BigInt); },
     apply(bytes) { new Uint8Array(memory.buffer).set(bytes); commandLength = bytes.length; quiet(() => runtime.guard(() => runtime.apply())); },
   };
@@ -57,7 +57,7 @@ async function keyOf(fixtureValue, hash = 1) {
   assert.equal(await fixtureValue.runtime.runEffect(1), true);
   assert.deepEqual([...fixtureValue.calls.at(-1).payload], [27]);
   assert.equal(fixtureValue.calls.at(-1).keyed, true);
-  return fixtureValue.runtime.keys.get(100);
+  return fixtureValue.runtime.keys.get(100n);
 }
 
 await check("PBKDF2 SHA-256 and SHA-512 yield non-extractable AES-256-GCM keys", async () => {
@@ -185,8 +185,8 @@ await check("key slots refuse atomically and released tokens drop only their own
   f.room(0); f.apply(derive()); await f.runtime.runEffect(1);
   assert.equal(f.runtime.keys.size, 1); assert.equal(f.minted(), 1);
   assert.deepEqual([...f.calls.at(-1).payload], [30, 5]); assert.equal(f.calls.at(-1).keyed, false);
-  f.runtime.keys.set(101, {}); f.releases([100]); f.runtime.releaseKeys();
-  assert.equal(f.runtime.keys.has(100), false); assert.equal(f.runtime.keys.has(101), true);
+  f.runtime.keys.set(101n, {}); f.releases([100]); f.runtime.releaseKeys();
+  assert.equal(f.runtime.keys.has(100n), false); assert.equal(f.runtime.keys.has(101n), true);
   f.runtime.unmount(); assert.equal(f.runtime.keys.size, 0);
 });
 
@@ -250,18 +250,22 @@ await check("combined byte ceilings accept exactly the native contract and refus
   assert.equal(flatten(zero.calls.at(-1).payload).length, 65, "fixed SHA-512 output does not consume the bulk input limit");
 });
 
-await check("manual pending operations reserve the same 32 slots as running operations", async () => {
+await check("manual admission and refusal stay fixed until their explicit execution step", async () => {
   const f = fixture();
   for (let id = 1; id <= 33; id++) f.apply(batch(1, wide(1), id));
   await settle();
   assert.equal(f.runtime.cryptoActive, 32);
-  assert.equal(f.runtime.pendingEffects().length, 32);
-  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].handler, 33);
-  assert.deepEqual([...f.calls[0].payload], [30, 5]);
-  f.runtime.cancel(1); assert.equal(f.runtime.cryptoActive, 31);
-  f.apply(batch(1, wide(1), 34)); assert.equal(f.runtime.cryptoActive, 32);
+  assert.equal(f.runtime.pendingEffects().length, 33);
+  assert.equal(f.calls.length, 0, "manual refusal waits for runEffect");
+  await f.runtime.runEffect(1); assert.equal(f.runtime.cryptoActive, 31);
+  assert.deepEqual([...f.calls.at(-1).payload].slice(0, 1), [28]);
+  await f.runtime.runEffect(33);
+  assert.deepEqual([...f.calls.at(-1).payload], [30, 5], "freeing a slot cannot turn an earlier refusal into admission");
+  assert.equal(f.runtime.cryptoActive, 31);
+  f.runtime.cancel(2); assert.equal(f.runtime.cryptoActive, 30);
+  f.apply(batch(1, wide(1), 34)); assert.equal(f.runtime.cryptoActive, 31);
   assert.equal(f.runtime.pendingEffects().at(-1).id, 34);
-  await f.runtime.runEffect(34); assert.equal(f.runtime.cryptoActive, 31);
+  await f.runtime.runEffect(34); assert.equal(f.runtime.cryptoActive, 30);
   f.runtime.unmount(); assert.equal(f.runtime.cryptoActive, 0);
 });
 
@@ -279,7 +283,7 @@ await check("64 retained keys remain usable while sequential derivations release
   f.releases([100]); f.runtime.releaseKeys(); f.room(1);
   f.apply(derive()); await f.runtime.runEffect(1);
   assert.deepEqual([...f.calls.at(-1).payload], [27]);
-  assert.equal(f.runtime.keys.size, 64); assert.equal(f.runtime.keys.has(100), false);
+  assert.equal(f.runtime.keys.size, 64); assert.equal(f.runtime.keys.has(100n), false);
   f.runtime.unmount(); assert.equal(f.runtime.keys.size, 0);
 });
 
@@ -288,5 +292,26 @@ await check("zero random bytes succeeds without requiring a secure source", asyn
   f.apply(batch(1, wide(0), 1));
   await f.runtime.runEffect(1);
   assert.deepEqual(flatten(f.calls.at(-1).payload), Buffer.from([28]));
+  f.runtime.unmount();
+});
+
+await check("full U64 key tokens stay distinct through staging, lookup, release and in-flight capture", async () => {
+  const f = fixture();
+  const first = 18446744073709551614n, second = first + 1n;
+  f.nextToken(first);
+  f.apply(derive(1)); await f.runtime.runEffect(1);
+  f.apply(derive(3)); await f.runtime.runEffect(1);
+  assert.equal(f.runtime.keys.size, 2);
+  assert.equal(f.runtime.keys.has(first), true); assert.equal(f.runtime.keys.has(second), true);
+  assert.notEqual(f.runtime.keys.get(first), f.runtime.keys.get(second));
+  f.releases([first]);
+  f.apply(batch(3, [...wide(first), ...block(text("first key")), ...block([])], 3));
+  assert.equal(f.runtime.keys.has(first), false); assert.equal(f.runtime.keys.has(second), true);
+  await f.runtime.runEffect(3); assert.equal(flatten(f.calls.at(-1).payload)[0], 29);
+  f.releases([second]);
+  f.apply(batch(3, [...wide(second), ...block(text("second key")), ...block([])], 4));
+  assert.equal(f.runtime.keys.size, 0);
+  await f.runtime.runEffect(4); assert.equal(flatten(f.calls.at(-1).payload)[0], 29);
+  assert.equal(f.runtime.poisoned, null);
   f.runtime.unmount();
 });
