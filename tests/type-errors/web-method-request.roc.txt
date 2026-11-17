@@ -7,5 +7,3 @@ request : Engine.Request
 request = Fetch({ method, url: "/", headers: [], timeout_ms: 0, cache: Default, credentials: SameOrigin })
 main : Engine.Program
 main = Engine.program(|| Engine.text(""))
-
-Store : {}

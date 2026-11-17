@@ -5,4 +5,3 @@ kind : Html.InputType
 kind = Unlisted
 main : Engine.Program
 main = Engine.program(|| Html.text_input(Engine.const("Typed input"), kind, Engine.const(""), [], Engine.does([])))
-Store : {}

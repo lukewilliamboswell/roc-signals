@@ -10,6 +10,3 @@ job = Worker.task({ name: "test/record-key", run!: |value| Ok(value.len()) })
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("record dictionary key")).with_workers([job.registration()])
-
-## This contract has no shared store.
-Store : {}

@@ -689,8 +689,10 @@ to carry it.
   the store as plain data beside its site tree, never inside a site's closure.
   Each root call moves it into the root context and returns it with the write
   set, so a write at any depth receives its cell's value uniquely owned. The
-  app's entry names that storage type as `Store`; the platform's `Program(st)`
-  carries it through mount and events without exposing engine state.
+  platform's `Program(st)` carries that storage type through mount and
+  events without exposing engine state. The app never names it: the
+  platform's `requires` clause binds `Store` to the type inferred from the
+  app's `main`.
 - **Started again by a write.** A cell lives as long as the instance and is
   never disposed, so state that should start fresh, such as a page's form
   once the reader leaves the page, is started again on purpose.
@@ -5106,7 +5108,7 @@ boot_media : Boot, Str -> Try(Bool, [Undeclared])
 boot_session : Boot, Str -> Try(Str, [Missing])
 guard_leave : Signal(ctx, Bool) -> Elem(ctx)
 Paste : [Text(Str), TooLarge]
-Program(st)                                   # opaque; the app binds it as `main` and names st as Store
+Program(st)                                   # opaque; the app binds it as `main`, and st is inferred as the platform's Store
 Program.with_workers : Program(st), List(Registration) -> Program(st)   # the worker catalogue
 Registration                                  # opaque: a task or preparation; Worker makes one
 mounts : Program(st) -> U64                 # check the default first page at compile time

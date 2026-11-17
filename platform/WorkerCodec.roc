@@ -364,6 +364,16 @@ WorkerCodec := [].{
 			Done(reader) => Ok(Done(State.(StateBody.{ cbor: config, reader, files: files, dicts: closed_dict(dicts) })))
 		}
 
+		## An entry whose key the dictionary already holds. The CBOR reader
+		## has refused keys that are the same in the bytes, so this one is
+		## equal only to the key type's `is_eq`; CBOR refuses it too, and a
+		## job's payload never has one of two values chosen for it.
+		parse_dict_duplicate_key : Format, State -> Try([KeepFirst(State), KeepLast(State)], Error)
+		parse_dict_duplicate_key = |_, State.(StateBody.({ cbor: config, reader: cursor, files, dicts }))| match Cbor.parse_dict_duplicate_key(config, cursor)? {
+			KeepFirst(reader) => Ok(KeepFirst(State.(StateBody.{ cbor: config, reader, files: files, dicts: dicts })))
+			KeepLast(reader) => Ok(KeepLast(State.(StateBody.{ cbor: config, reader, files: files, dicts: dicts })))
+		}
+
 		## Advance within the checked container, preserving its associated files.
 		parse_record_after_field : Format, State -> Try([Continue(State), Done(State)], Error)
 		parse_record_after_field = |_, State.(StateBody.({ cbor: config, reader: cursor, files, dicts }))| match Cbor.parse_record_after_field(config, cursor)? {

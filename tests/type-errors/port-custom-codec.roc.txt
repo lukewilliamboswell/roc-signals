@@ -32,6 +32,3 @@ sent = [log.send(Words.(["a", "b"]))]
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("public handwritten port codec"))
-
-## This contract has no shared store.
-Store : {}

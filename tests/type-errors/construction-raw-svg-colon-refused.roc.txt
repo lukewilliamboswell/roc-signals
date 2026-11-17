@@ -10,9 +10,6 @@ colon = Web.Tag.from_str(":foo") ?? crash "fixture: grammar-valid raw name"
 main : Engine.Program
 main = Engine.program(|| Engine.element("svg", [], [Engine.element(colon, [], [])]))
 
-## These construction fixtures have no shared store.
-Store : {}
-
 ## The default mount must refuse the name at compile time, naming its site.
 mounted : U64
 mounted = Engine.mounts(main)

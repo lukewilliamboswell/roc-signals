@@ -5,5 +5,3 @@ name : Str
 name = "x"
 main : Engine.Program
 main = Engine.program(|| Engine.element("div", [Engine.attr("data-${name}", "yes")], []))
-
-Store : {}

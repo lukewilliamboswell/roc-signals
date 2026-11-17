@@ -29,6 +29,3 @@ job = Worker.task({ name: "test/public-wire-codec", run!: |value| Ok(value) })
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("public handwritten codec")).with_workers([job.registration()])
-
-## This contract has no shared store.
-Store : {}

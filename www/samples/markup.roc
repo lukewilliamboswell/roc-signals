@@ -40,9 +40,6 @@ view = |state| {
 main : Engine.Program
 main = Engine.program(|| Engine.state(0.U64, view))
 
-## The instance holds this store beside its site tree.
-Store : {}
-
 ## Check the first page while this sample compiles.
 mounted : U64
 mounted = Engine.mounts(main)

@@ -12,9 +12,6 @@ import Notes
 main : Engine.Program
 main = NotesApp.program
 
-## The instance holds this store beside its site tree.
-Store : Engine.Stored(AppStore, (Notes.Board, (Str, (Bool, (I64, (Engine.Outbox(Str), Engine.Outbox({})))))))
-
 ## Check that the default first page mounts while this app compiles.
 mounted : U64
 mounted = Engine.mounts(main)

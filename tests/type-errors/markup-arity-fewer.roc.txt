@@ -11,6 +11,5 @@ view = {
 }
 main : Engine.Program
 main = Engine.program(|| view)
-Store : {}
 mounted : U64
 mounted = Engine.mounts(main)

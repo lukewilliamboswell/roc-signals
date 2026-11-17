@@ -7,4 +7,3 @@ attribute : Engine.AttrName
 attribute = Web.AttrName.from_str("aria-future-proposal") ?? crash "valid future attribute"
 main : Engine.Program
 main = Engine.program(|| Engine.element(tag, [Engine.attr(attribute, "yes")], []))
-Store : {}

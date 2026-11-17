@@ -5,5 +5,3 @@ name : Str
 name = "div"
 main : Engine.Program
 main = Engine.program(|| Engine.element(name, [], []))
-
-Store : {}

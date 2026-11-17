@@ -1743,9 +1743,8 @@ Engine := [].{
 	## tasks its `Work` requests may name:
 	## `Engine.program(view).with_workers([count.registration()])` for a
 	## `Worker.task`, and `with_ports` the ports the page's JavaScript supplies.
-	## The parameter names the plain store the instance holds beside its sites.
-	## An app declares it once as Store in its entry; the compiler prints the
-	## concrete type when that declaration is missing or out of date.
+	## The parameter is the type of the plain store the instance holds beside
+	## its sites. The app never names it: the platform infers it from `main`.
 	Program(st) : Core.Program(st)
 
 	## Check the default first page while the app compiles. Bind this call as

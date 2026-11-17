@@ -5,5 +5,3 @@ value : Web.AttrName
 value = "data-testid"
 main : Engine.Program
 main = Engine.program(|| Engine.text(value.text()))
-
-Store : {}

@@ -14,4 +14,3 @@ Second := [].{
 program = Engine.program(|| Engine.text("")).with_ports(First.registrations).with_ports(Second.registrations)
 main : Engine.Program
 main = program
-Store : {}

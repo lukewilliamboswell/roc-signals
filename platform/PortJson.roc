@@ -579,6 +579,13 @@ PortJson := [].{
 		parse_dict_after_entry : Format, State -> Try([Continue(State), Done(State)], Error)
 		parse_dict_after_entry = |_, state| after_entry(state, close_curly)
 
+		## An entry whose key the dictionary already holds. Each key has one
+		## text, so this is a name the object repeats; keeping either value
+		## would decode something the port's answer did not say, so it is
+		## refused at the end of the entry.
+		parse_dict_duplicate_key : Format, State -> Try([KeepFirst(State), KeepLast(State)], Error)
+		parse_dict_duplicate_key = |_, state| Err(Expected("a key the object has not given", state.pos))
+
 		## A `Str` key, with a leading `$` doubled.
 		encode_key_str : Format, Str, Out -> Try(Out, [])
 		encode_key_str = |_, value, out| Ok(write(out, |t| write_string(t, if (Str.starts_with(value, "$")) "$${value}" else value)))
@@ -1536,6 +1543,18 @@ expect {
 	integers : Try(Dict(I32, U8), PortJson.Error)
 	integers = from_text("{\"0\":1,\"-3\":2,\"2147483647\":3}")
 	zeros.is_err() and negative_zero.is_err() and unsigned_zero.is_err() and integers == Ok(Dict.from_list([(0, 1), (-3, 2), (2147483647, 3)]))
+}
+
+## A name the object repeats is refused, not settled by keeping one value.
+expect {
+	repeated : Try(Dict(Str, U8), PortJson.Error)
+	repeated = from_text("{\"a\":1,\"a\":2}")
+	repeated_number : Try(Dict(U8, U8), PortJson.Error)
+	repeated_number = from_text("{\"1\":1,\"2\":2,\"1\":3}")
+	match (repeated, repeated_number) {
+		(Err(Expected("a key the object has not given", _)), Err(Expected("a key the object has not given", _))) => Bool.True
+		_ => Bool.False
+	}
 }
 
 ## A decimal key is accepted only as `Dec.to_str` writes it: `"1"`, `"1.0"`

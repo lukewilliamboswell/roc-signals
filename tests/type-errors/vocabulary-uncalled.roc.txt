@@ -6,4 +6,3 @@ unreached = |_| "dvi"
 
 main : Engine.Program
 main = Engine.program(|| Engine.text(""))
-Store : {}

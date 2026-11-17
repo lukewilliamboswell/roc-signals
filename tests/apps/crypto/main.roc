@@ -7,8 +7,6 @@ import CryptoApp
 main : Engine.Program
 main = Engine.program_boot({ max_inflight: 64 }, |_boot| Engine.state(CryptoApp.initial, CryptoApp.view))
 
-Store : {}
-
 ## Check the default first page while compiling the fixture.
 mounted : U64
 mounted = Engine.mounts(main)

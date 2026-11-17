@@ -7,6 +7,3 @@ forged = WebCrypto.Key.(Box.box(1.U64))
 
 main : Engine.Program
 main = Engine.program(|| Engine.text(Str.inspect(forged)))
-
-## This fixture uses local state only.
-Store : {}

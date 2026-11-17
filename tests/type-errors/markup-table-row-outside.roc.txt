@@ -14,9 +14,6 @@ view = {
 main : Engine.Program
 main = Engine.program(|| view)
 
-## These construction fixtures have no shared store.
-Store : {}
-
 ## The default mount must refuse the placement at compile time.
 mounted : U64
 mounted = Engine.mounts(main)

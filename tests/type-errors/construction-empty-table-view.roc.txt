@@ -13,9 +13,6 @@ main = Engine.program_store({}, |_| store, |_| Engine.element("table", [], [Engi
     window: Engine.const(Engine.every_row),
 }, |_, _| Engine.element("tr", [], []))]))
 
-## The table remains empty; its row shape must still be checked.
-Store : Engine.Stored(Brand, Engine.Table(U64, U64))
-
 ## Check the table-view shape at the default mount's construction site.
 mounted : U64
 mounted = Engine.mounts(main)

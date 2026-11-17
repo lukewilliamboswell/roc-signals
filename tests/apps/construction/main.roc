@@ -8,9 +8,6 @@ import ConstructionApp
 main : Engine.Program
 main = Engine.program_boot({}, |boot| ConstructionApp.view(mode_from_url(boot.url)))
 
-## Construction tests hold no shared store.
-Store : {}
-
 ## The default route is a legal first page.
 mounted : U64
 mounted = Engine.mounts(main)

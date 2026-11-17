@@ -8,9 +8,6 @@ rows = []
 main : Engine.Program
 main = Engine.program(|| Engine.element("table", [], [Engine.each(Engine.const(rows), |n| n.to_str(), |_row| Engine.element("tr", [], []))]))
 
-## These construction fixtures have no shared store.
-Store : {}
-
 ## The default mount must reject the authored repair at compile time.
 mounted : U64
 mounted = Engine.mounts(main)

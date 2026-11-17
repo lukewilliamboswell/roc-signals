@@ -22,9 +22,6 @@ store = Engine.store(App, Engine.table(Engine.Table.empty({}).insert(1.U64, 1.U6
 
 Tag := [App]
 
-## The table case's generated store storage type.
-Store : Engine.Stored(Tag, Engine.Table(U64, U64))
-
 ## The view of the case at `path`: a deliberate contract mistake, or, at
 ## `/raw-controlled-attributes`, raw attributes that must stay ordinary.
 case = |path| match path {
@@ -53,7 +50,7 @@ case = |path| match path {
 			|_, row| Html.li([], [Engine.text_s(row.signal().map(U64.to_str))]),
 		)
 	"/signal-text-manual-arity" => {
-		join : Iter(Engine.Signal(Engine.StoreRoot(Store), Str)) -> Engine.Signal(Engine.StoreRoot(Store), Str)
+		join : Iter(Engine.Signal(Engine.StoreRoot(_), Str)) -> Engine.Signal(Engine.StoreRoot(_), Str)
 		join = Engine.Signal.from_interpolation(["before", "after"]) ?? crash "interpolation hook unexpectedly rejected text segments"
 		Engine.text_s(join([].iter()))
 	}

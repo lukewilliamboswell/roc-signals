@@ -3,9 +3,6 @@ import pf.Engine
 import pf.Html
 import pf.Worker
 
-## This fixture has no shared store and no page debug observations.
-Store : {}
-
 ## The job is the only source of debug text in this compiled module.
 job : Worker.Task(I64, Str, Worker.Never)
 job = Worker.task({
