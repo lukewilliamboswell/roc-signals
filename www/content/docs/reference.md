@@ -1,6 +1,6 @@
 +++
 title = "Reference"
-description = "The Engine, Files, Html, Layout, Clipboard, Worker, Wire, Port and PortJson APIs at a glance, the platform's limits, and its error classes."
+description = "The Engine, Files, Html, Layout, Clipboard, Base64, Worker, Wire, Port and PortJson APIs at a glance, the platform's limits, and its error classes."
 weight = 19
 template = "page.html"
 +++
@@ -8,7 +8,7 @@ template = "page.html"
 # Reference
 
 The [API documentation](../../api/api/) is generated from the platform's source
-and documents every public symbol of `Engine`, `Files`, `Html`, `Svg`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port`, `PortJson`, `Order`, `Url` and `Web`,
+and documents every public symbol of `Engine`, `Files`, `Html`, `Svg`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port`, `PortJson`, `Base64`, `Order`, `Url` and `Web`,
 including members inherited through public aliases: the authoring API.
 Operations only the engine may perform belong to unexposed modules. The engine's storage and executable values are opaque; its implementation
 and the interfaces its hosts and test harnesses use live in the platform's
@@ -142,6 +142,17 @@ See [Scrolling and layout](@/docs/effects-and-browser.md#scrolling-and-layout).
 | Jobs from an effect site | `Task.request`, `Task.result` (a `Try(output, Error(error))`), `Error(error)` (`Failed(error)`, `Timeout`, `Refused`, `Lost(WorkFault)`), `Never` (the error of a task that cannot fail) |
 | Resources | `resource`, `resource_when` (for a task or a preparation's task), holding an `Engine.Remote(output, Error(error))`; `gather` (one job per input), holding an `Engine.Gathered(output, Error(error))`; `status`, a resource as one `Status(output, error)`: `Unasked`, `Working`, `Answered(output)`, `Failed(error)`, `Timeout`, `Refused` or `Lost(WorkFault)` |
 | Preparations | `preparation`, `PreparationProps(init, state, error)` (`name`, `prepare! : init => Try(state, error)`), `Preparation(init, state, error)`, `Preparation.task`, `PreparedTaskProps(state, input, output, error)` (`name`, `run! : state, input => Try(output, error)`, `timeout`, `on_dispose`, `on_cancel`, as a task's), `Preparation.registration` (given its tasks' registrations), `PreparedTask(init, state, input, output, error)`, `PreparedTask.registration`, `PreparedTask.name`, `PreparedTaskEntry(state)`, `PreparedTask.request`, `PreparedTask.result`, `Question(init, input)` (`init`, `input`) |
+
+## Base64
+
+`Base64` is a pure RFC 4648 codec for binary data in text-only storage and
+formats. `encode : List(U8) -> Str` writes the standard alphabet with padding
+and no line breaks. `decode : Str -> Try(List(U8), [NotBase64])` requires
+that canonical form: it rejects whitespace, URL alphabet symbols, missing or
+extra padding, padding before the end and nonzero unused bits. Empty text
+decodes to empty bytes. Both operations take linear time and output space.
+
+{{ sample(file="base64.roc", region="codec") }}
 
 ## Wire
 

@@ -21,6 +21,7 @@ Targets := [].{
 
 	fuzz_targets : List(Fuzz)
 	fuzz_targets = [
+		{ name: "base64", main: "fuzz/base64/main.roc" },
 		{ name: "boot", main: "fuzz/boot/main.roc" },
 		{ name: "scm-parse", main: "fuzz/scm-parse/main.roc" },
 		{ name: "protocol-facts", main: "fuzz/protocol-facts/main.roc" },
