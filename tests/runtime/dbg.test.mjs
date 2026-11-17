@@ -78,7 +78,7 @@ test('actual worker aggregates preparation text and retains it on task staging r
   const memory=new WebAssembly.Memory({initial:2});let length=0,debugLength=0,stagingRefusal=false,pointerReads=0;
   const put=text=>{const data=[...new TextEncoder().encode(text)];const encoded=[...word(0),...word(data.length),...word(data.length),...data];new Uint8Array(memory.buffer).set(encoded,8192);debugLength=encoded.length;};
   const x={memory,protocol_version:()=>PROTOCOL_VERSION,metric:index=>index===8?1n:0n,
-    forget(){debugLength=0;},payload_reserve:()=>4096,files_stage:n=>stagingRefusal&&n?0:n,files_tokens:()=>128,files_released:()=>0,
+    forget(){debugLength=0;},payload_reserve:()=>4096,files_stage:n=>stagingRefusal&&n?0:n,files_tokens:()=>128,files_released:()=>0,keys_released:()=>0,
     prepare(){put('prepared observation');},work(){this.ask();},ask(){put('task observation');new Uint8Array(memory.buffer).fill(0,0,4);length=4;},
     cmd_ptr:()=>0,cmd_len:()=>length,dbg_len:()=>debugLength,dbg_ptr(){pointerReads++;return 8192;},fault:()=>0};
   const messages=[];globalThis.self={postMessage:message=>messages.push(message)};

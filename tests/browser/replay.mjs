@@ -649,7 +649,7 @@ const PORT_STEPS = {
     const c = await page.evaluate(`(${pendingPortCall})(${s.count})`);
     if (c.error) throw new Error(c.error);
     if (s.answer === "timeout" && !(c.timeout > 0)) throw new Error(`the call on port ${JSON.stringify(c.port)} has no timeout, so it cannot time out`);
-    const answer = s.answer === "reply" ? { json: s.json } : s.answer === "throw" ? { threw: s.text } : s.answer === "too-large" ? { tooLarge: true } : { timeout: true };
+    const answer = s.answer === "reply" ? { json: s.json, blobs: s.blobs ?? [] } : s.answer === "throw" ? { threw: s.text } : s.answer === "too-large" ? { tooLarge: true } : { timeout: true };
     const ok = await page.evaluate((id, answer) => window.__rt.answerPort(id, answer), c.id, answer);
     if (!ok) throw new Error(`the call on port ${JSON.stringify(c.port)} could not be answered`);
     return settle(page);
@@ -664,7 +664,7 @@ const PORT_STEPS = {
     const got = await page.evaluate((port) => window.__rt.portLog.filter((c) => c.port === port).length, s.port);
     if (got !== s.count) throw new Error(`port ${JSON.stringify(s.port)} was sent ${got} commands, expected ${s.count}`);
   },
-  "emit-port": (page, s) => portMessage(page, s.port, { json: s.json }),
+  "emit-port": (page, s) => portMessage(page, s.port, { json: s.json, blobs: s.blobs ?? [] }),
   "close-port": (page, s) => portMessage(page, s.port, { closed: true }),
   "fail-port": (page, s) => portMessage(page, s.port, { threw: s.text }),
   "expect-port-subscription-arg": async (page, s) => {
@@ -1192,9 +1192,9 @@ const STEPS = {
         // A spec's time is manual, so the job's own timeout never ends it;
         // the runner's bound (as the native runner's) fails a job that never
         // finishes instead of hanging.
-        // An operation on a file the app holds is really performed, on the
-        // file Chrome holds; the step waits for its result turn.
-        if (e.kind === "file") {
+        // File operations use Chrome's file, and crypto uses real WebCrypto
+        // with manual test entropy; the step waits for the result turn.
+        if (e.kind === "file" || e.kind === "crypto") {
           return Promise.resolve(rt.runEffect(id)).then(() => ({ used: false }));
         }
         if (e.kind === "work") {
@@ -1268,6 +1268,10 @@ const STEPS = {
   "choose-files": (page, s, state) => chooseFiles(page, s, state),
   "drop-files": (page, s, state) => giveFiles(page, s, state, "drop"),
   "paste-files": (page, s, state) => giveFiles(page, s, state, "paste"),
+  "expect-keys": async (page, s) => {
+    const count = await page.evaluate(() => Number(window.__rt.x.metric(7)));
+    if (count !== s.count) throw new Error(`expected ${s.count} live key handles, found ${count}`);
+  },
   "expect-files": async (page, s) => {
     const n = await page.evaluate(() => Number(window.__rt.x.metric(6)));
     if (n !== s.count) throw new Error(`expected ${s.count} live file handles, found ${n}`);
@@ -1425,6 +1429,8 @@ const SETUP = {
   "local-storage-full": out => { out.mount.manualLocalStorageFull = true; },
   "clipboard-denied": out => { out.mount.manualClipboardDenied = true; },
   "max-paste-bytes": (out, step) => { out.mount.maxPasteBytes = step.count; },
+  "max-crypto-bytes": (out, step) => { out.mount.maxCryptoBytes = step.count; },
+  "max-crypto-iterations": (out, step) => { out.mount.maxCryptoIterations = step.count; },
   "initial-online": () => {},
   "initial-visibility": () => {},
   "initial-media": () => {},

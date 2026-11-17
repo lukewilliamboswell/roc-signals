@@ -59,7 +59,7 @@ Read these in order; each builds on the one before.
 - [Components](@/docs/components.md): a type, its operations and a view that
   is handed the cells it uses.
 - [Effects and the Browser](@/docs/effects-and-browser.md): HTTP, storage,
-  timers, navigation, focus and cleanup.
+  timers, cryptography, navigation, focus and cleanup.
 - [Structuring an App](@/docs/app-architecture.md): modules, where each piece
   of state goes, and keeping updates local.
 

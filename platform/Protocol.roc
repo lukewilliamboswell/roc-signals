@@ -5,7 +5,7 @@ Protocol := [].{
 
 	## A consumer's supported framing version, checked independently of Core.
 	version : U32
-	version = 20
+	version = 21
 
 	## One named byte value; the name carries no executable protocol behavior.
 	Code : { code : U8, name : Str }

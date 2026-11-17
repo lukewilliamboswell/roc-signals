@@ -1,0 +1,40 @@
+(test "A report captures its encryption key before another result drains releases"
+  (steps
+    (click (role button :name "Unlock SHA-256"))
+    (run-effect 1)
+    (expect-keys 1)
+    ; Leave a derivation of a different key pending while the old key is live.
+    (fill (label "Password") "replacement password")
+    (click (role button :name "Unlock SHA-256"))
+    (expect-pending-effects 1)
+    (click (role button :name "Arm offline seal"))
+    (hold-reports)
+    (set-online offline)
+    (expect-text (test-id "key") "unlocked")
+    (expect-keys 1)
+    ; This occurrence flushes the offline report first. That report issues
+    ; encryption and its Self follow-up drops the last reference to the old
+    ; key. The pending derivation then supplies the replacement key.
+    (run-effect 2)
+    (expect-text (test-id "key") "unlocked")
+    (expect-keys 1)
+    (expect-pending-effects 1)
+    (release-reports)
+    (run-effect 3)
+    (expect-text (test-id "result") "sealed iv=12 bytes=25")
+    ; Encryption used the captured old key, not the replacement key.
+    (click (role button :name "Open"))
+    (run-effect 4)
+    (expect-text (test-id "result") "failed NotAuthentic")
+    (expect-text (test-id "plaintext") "")
+    (click (role button :name "Lock"))
+    (expect-keys 0)
+    (fill (label "Password") "correct horse")
+    (click (role button :name "Unlock SHA-256"))
+    (run-effect 5)
+    (click (role button :name "Open"))
+    (run-effect 6)
+    (expect-text (test-id "plaintext") "secret λ")
+    (click (role button :name "Lock"))
+    (expect-keys 0)
+    (expect-pending-effects 0)))

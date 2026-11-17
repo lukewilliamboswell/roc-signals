@@ -34,7 +34,7 @@ const max_generation: u64 = std.math.maxInt(u64) >> token_generation_shift;
 /// The kinds of handle, and the byte their tokens carry, so a token of one
 /// kind never resolves in a heap of another. Zero is reserved: it is never a
 /// token.
-pub const Kind = enum(u8) { blob = 1 };
+pub const Kind = enum(u8) { blob = 1, key = 2, crypto_hold = 3 };
 
 /// What a heap made of an address `roc_dealloc` offered it.
 pub const Route = enum { not_owned, retired, corrupt };
@@ -55,7 +55,7 @@ pub const Slot = extern struct {
 pub fn deallocOffset(comptime kind: Kind) usize {
     return switch (kind) {
         // A `Box(U64)`: its payload minus the payload's alignment.
-        .blob => 0,
+        .blob, .key, .crypto_hold => 0,
     };
 }
 
@@ -154,14 +154,14 @@ pub fn Heap(comptime kind: Kind, comptime capacity: usize, comptime T: type) typ
         }
 
         fn encode(index: usize, generation: u64) u64 {
-            return (generation << token_generation_shift) | (@as(u64, @intFromEnum(kind)) << token_index_bits) | @as(u64, @intCast(index + 1));
+            return (generation << token_generation_shift) | (@as(u64, @backingInt(kind)) << token_index_bits) | @as(u64, @intCast(index + 1));
         }
 
         /// The slot index a token of this heap names, or null.
         fn decode(token: u64) ?usize {
             const encoded = token & token_index_mask;
             if (encoded == 0 or encoded > capacity) return null;
-            if ((token >> token_index_bits) & token_kind_mask != @intFromEnum(kind)) return null;
+            if ((token >> token_index_bits) & token_kind_mask != @backingInt(kind)) return null;
             if (token >> token_generation_shift == 0) return null;
             return @intCast(encoded - 1);
         }
@@ -237,4 +237,34 @@ test "abandoning a heap forgets live and retired slots" {
     heap.abandon(nothing);
     try std.testing.expectEqual(@as(usize, 0), heap.live_count);
     try std.testing.expect(heap.mint(3) != null);
+}
+
+test "key and file heaps have disjoint tokens and independently reuse retired slots" {
+    var files: Heap(.blob, 1, void) = .{};
+    var keys: Heap(.key, 1, void) = .{};
+    const file = files.mint({}).?;
+    const key = keys.mint({}).?;
+    const old_key = key.*;
+    try std.testing.expect(file.* != key.*);
+    try std.testing.expect(keys.get(file.*) == null);
+    try std.testing.expect(files.get(key.*) == null);
+    try std.testing.expectEqual(Route.retired, keys.route(@ptrFromInt(@intFromPtr(key) - 8)));
+    try std.testing.expect(keys.get(old_key) != null);
+    try std.testing.expect(keys.mint({}) == null);
+    var token: u64 = 0;
+    try std.testing.expect(keys.releaseOne(&token, struct {
+        fn done(_: *void) void {}
+    }.done));
+    try std.testing.expectEqual(old_key, token);
+    const next_key = keys.mint({}).?;
+    try std.testing.expect(next_key.* != old_key);
+    try std.testing.expect(keys.get(old_key) == null);
+    try std.testing.expect(files.get(file.*) != null);
+}
+
+test "an exhausted key generation refuses a new lifetime without wrapping" {
+    var keys: Heap(.key, 1, void) = .{};
+    keys.generations[0] = max_generation;
+    try std.testing.expect(keys.mint({}) == null);
+    try std.testing.expectEqual(@as(usize, 0), keys.live_count);
 }

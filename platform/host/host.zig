@@ -41,6 +41,7 @@ extern fn roc_engine_init(boot: RocList) callconv(.c) Step;
 extern fn roc_engine_event(state: *anyopaque, buf: RocList, wbuf: RocList, node: u32, handler: u32, payload: RocList) callconv(.c) Step;
 extern fn roc_engine_drop(state: *anyopaque, buf: RocList, wbuf: RocList) callconv(.c) void;
 extern fn roc_engine_files(state: *anyopaque, buf: RocList, wbuf: RocList, node: u32, handler: u32, record: RocList, blobs: RocList) callconv(.c) Step;
+extern fn roc_engine_key(state: *anyopaque, buf: RocList, wbuf: RocList, node: u32, handler: u32, record: RocList, keys: RocList) callconv(.c) Step;
 extern fn roc_engine_work(payload: RocList, handles: RocList) callconv(.c) RocList;
 
 var state: ?*anyopaque = null;
@@ -171,6 +172,11 @@ export fn roc_alloc(size: usize, align_arg: usize) callconv(.c) *anyopaque {
 }
 
 export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
+    switch (key_heap.route(ptr)) {
+        .not_owned => {},
+        .retired => return,
+        .corrupt => corruptHandle(),
+    }
     switch (blobs.route(ptr)) {
         .not_owned => _ = freeRaw(ptr, align_arg),
         .retired => return,
@@ -179,7 +185,7 @@ export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
 }
 
 export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.c) *anyopaque {
-    if (blobs.contains(ptr)) corruptHandle();
+    if (blobs.contains(ptr) or key_heap.contains(ptr)) corruptHandle();
     const user: [*]u8 = @ptrCast(ptr);
     const header: *const Header = @ptrFromInt(@intFromPtr(user) - @sizeOf(Header));
     const copied = @min(header.requested, size);
@@ -228,7 +234,9 @@ fn poison(class: u32) noreturn {
     work = RocList.empty;
     pending_payload = RocList.empty;
     pending_blobs = RocList.empty;
+    pending_keys = RocList.empty;
     blobs.abandon(nothing);
+    key_heap.abandon(nothing);
     state = null;
     held = null;
     @trap();
@@ -239,7 +247,7 @@ fn nothing(_: anytype) void {}
 /// Roc freed or resized an address inside the handle table that is not a
 /// handle's last release: the instance's ownership is incoherent.
 fn corruptHandle() noreturn {
-    const msg = "internal: a file handle was released twice or resized";
+    const msg = "internal: a resource handle was released twice or resized";
     keepError(msg.ptr, msg.len);
     poison(4);
 }
@@ -602,6 +610,7 @@ export fn files_stage(n: u32) callconv(.c) u32 {
     refuseIfPoisoned();
     dbg.clear();
     dropPendingBlobs();
+    dropPendingKeys();
     const want = @min(@as(usize, n), max_files - blobs.live_count);
     if (want == 0) return 0;
     // A list of box pointers, each element the address of a handle's payload.
@@ -661,6 +670,104 @@ export fn files_released() callconv(.c) u32 {
     var n: usize = 0;
     var token: u64 = 0;
     while (n < max_files and blobs.releaseOne(&token, nothing)) : (n += 1) tokens[n] = token;
+    return @intCast(n);
+}
+
+// ---------------------------------------------------------------------------
+// Non-extractable crypto keys use a separate typed heap. Like files, Roc owns
+// their Box(U64) references; JS releases the browser key only after effects.
+
+/// The most key handles live at once in one instance (design.md,
+/// "Boundedness"). Derivation beyond the free slots answers Refused.
+const max_keys: usize = 64;
+
+var key_heap: resources.Heap(.key, max_keys, void) = .{};
+
+/// The handles minted for the next `event_key`, as a Roc
+/// `List(Box(U64))` the host owns until the call moves it into Roc.
+var pending_keys: RocList = RocList.empty;
+
+/// The tokens of the staged handles, then of the released ones, for
+/// JavaScript to read (`keys_tokens`).
+var key_tokens: [max_keys]u64 = @splat(0);
+
+/// Mint up to `n` handles for the next `event_key`, as many as there are
+/// free slots: returns how many, their tokens readable at `keys_tokens()`.
+/// Handles staged before and never delivered are released first, so at most
+/// one staged set exists. JavaScript must re-read `memory.buffer` after this
+/// call.
+export fn keys_stage(n: u32) callconv(.c) u32 {
+    refuseIfPoisoned();
+    dbg.clear();
+    dropPendingKeys();
+    dropPendingBlobs();
+    const want = @min(@as(usize, n), max_keys - key_heap.live_count);
+    if (want == 0) return 0;
+    // A list of box pointers, each element the address of a handle's payload.
+    const elems: [*]usize = @ptrCast(@alignCast(refcountedList(want, @sizeOf(usize))));
+    var minted: usize = 0;
+    while (minted < want) : (minted += 1) {
+        // A generation-exhausted slot stays unavailable: refusing a key is
+        // preferable to wrapping its token or aliasing an earlier lifetime.
+        const payload = key_heap.mint({}) orelse break;
+        elems[minted] = @intFromPtr(payload);
+        key_tokens[minted] = payload.*;
+    }
+    if (minted == 0) {
+        _ = freeRaw(@as([*]u8, @ptrCast(elems)) - 2 * @sizeOf(usize), @alignOf(usize));
+        return 0;
+    }
+    (elems - 2)[0] = minted;
+    pending_keys = .{ .ptr = @ptrCast(elems), .len = minted, .cap = want << 1 };
+    return @intCast(minted);
+}
+
+/// Release staged handles no call took: nothing in Roc refers to them yet,
+/// so the host retires them itself.
+fn dropPendingKeys() void {
+    const p = pending_keys.ptr orelse return;
+    const elems: [*]usize = @ptrCast(@alignCast(p));
+    for (0..pending_keys.len) |i| _ = key_heap.route(@ptrFromInt(elems[i] - 8));
+    _ = freeRaw(p - 2 * @sizeOf(usize), @alignOf(usize));
+    pending_keys = RocList.empty;
+}
+
+/// Where `keys_stage` and `keys_released` leave their tokens.
+export fn keys_tokens() callconv(.c) usize {
+    return @intFromPtr(&key_tokens);
+}
+
+/// A derived-key result (design.md, Appendix B): the staged payload is tag
+/// 27 alone and the staged set holds exactly one key handle. Both move
+/// into Roc for one turn, like `event`.
+export fn event_key(node: u32, handler: u32) callconv(.c) u32 {
+    refuseIfPoisoned();
+    dbg.clear();
+    const owned = state orelse @trap();
+    const buf = cmds;
+    const wbuf = work;
+    const record = pending_payload;
+    const staged = pending_keys;
+    state = null;
+    cmds = RocList.empty;
+    work = RocList.empty;
+    pending_payload = RocList.empty;
+    pending_keys = RocList.empty;
+    const step = roc_engine_key(owned, buf, wbuf, node, handler, record, staged);
+    state = step.state;
+    cmds = step.cmds;
+    work = step.work;
+    return @intFromBool(dbg.used != 0);
+}
+
+/// After JavaScript has applied a batch and performed its effects: free the
+/// slots of the handles Roc released and return how many, their tokens
+/// readable at `keys_tokens()`, so the runtime lets their `CryptoKey`s go.
+export fn keys_released() callconv(.c) u32 {
+    if (fault_class != 0) return 0;
+    var n: usize = 0;
+    var token: u64 = 0;
+    while (n < max_keys and key_heap.releaseOne(&token, nothing)) : (n += 1) key_tokens[n] = token;
     return @intCast(n);
 }
 
@@ -799,6 +906,8 @@ export fn drop() callconv(.c) void {
     if (fault_class == 0) dbg.clear();
     if (fault_class != 0 or state == null) return;
     dropPending();
+    dropPendingBlobs();
+    dropPendingKeys();
     const owned = state orelse @trap();
     const buf = cmds;
     const wbuf = work;
@@ -817,7 +926,7 @@ export fn cmd_len() callconv(.c) usize {
 }
 
 /// The engine's work record after the last call, readable until the next
-/// `event` or `drop` (0 and 0 before mount).
+/// `event`, `event_files`, `event_key` or `drop` (0 and 0 before mount).
 export fn work_ptr() callconv(.c) usize {
     return if (work.ptr) |p| @intFromPtr(p) else 0;
 }
@@ -829,7 +938,7 @@ export fn work_len() callconv(.c) usize {
 /// Base of the engine's work counters in `metric`.
 const work_base: u32 = 16;
 
-/// Allocator counters (0-5), the live file handles (6), whether a prepared
+/// Allocator counters (0-5), the live file handles (6), live crypto keys (7), whether a prepared
 /// state is held (8: 1 or 0), the engine's work counters (`16 + k` reads
 /// counter `k` of the work record; 0 past its end), and a measurement
 /// probe, the sizes of the first allocations (100-131). The work counters
@@ -838,6 +947,7 @@ const work_base: u32 = 16;
 export fn metric(index: u32) callconv(.c) u64 {
     if (index >= 100 and index < 132) return sizes[index - 100];
     if (index == 6) return blobs.live_count;
+    if (index == 7) return key_heap.live_count;
     if (index == 8) return @intFromBool(held != null);
     if (index >= work_base and index < 100) return workCounter(index - work_base);
     return if (index < counters.len) counters[index] else 0;

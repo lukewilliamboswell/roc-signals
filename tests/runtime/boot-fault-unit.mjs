@@ -44,7 +44,7 @@ const fakeHost = ({ declarations = null, fault = 0, message = "" } = {}) => {
     init() { calls.init++; if (code !== 0) throw new WebAssembly.RuntimeError("unreachable"); cmdLen = 0; return 0; },
     event() { if (code !== 0) throw new WebAssembly.RuntimeError("unreachable"); return 0; },
     fault: () => code, err_ptr: () => 4096, err_len: () => errLen,
-    files_released: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
+    files_released: () => 0, keys_released: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
   };
   return { x, calls };
 };

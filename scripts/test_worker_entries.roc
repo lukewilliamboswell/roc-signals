@@ -53,6 +53,7 @@ probe = |_props| {
 	init: |_boot| ({}, [], List.repeat(0, 8)),
 	event: |inst, _buf, _work, _node, _handler, _payload| (inst, [], List.repeat(0, 8)),
 	files: |inst, _buf, _work, _node, _handler, _payload, _handles| (inst, [], List.repeat(0, 8)),
+	key: |_inst, _buf, _work, _node, _handler, _payload, _keys| crash "worker answer entered the crypto key result entry",
 	settled: |_inst| Ok({}),
 	live: |_inst| [7],
 }
@@ -64,12 +65,14 @@ describe = |calls| calls.map(
 		entry: match call.files {
 			Event => "event"
 			Files(_) => "files"
+			Keys(_) => "key"
 		},
 		target: call.target,
 		payload: call.payload,
 		handles: match call.files {
 			Event => []
 			Files(handles) => handles.map(Box.unbox)
+			Keys(_) => []
 		},
 	},
 )

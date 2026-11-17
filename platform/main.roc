@@ -27,7 +27,7 @@ platform ""
 	requires {
 		[Store : st] for main : Engine.Program(st)
 	}
-	exposes [Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, Wire, Worker]
+	exposes [Base64, Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, WebCrypto, Wire, Worker]
 	packages { cbor: "https://github.com/lukewilliamboswell/roc-cbor/releases/download/0.6.3/J3xX4n61WoMZKK3tdWTnZBdKaVbi8SvXvmtC5i3qDAER.tar.zst", parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.3/FTL1xt1rA9nXzoYkhFAW9yF75Kn52bS3cpBr7wZNfPq2.tar.zst", unicode: "https://github.com/roc-lang/unicode/releases/download/4.3.3/AJfFMmhvmbgn7THAF1E1sofC3dZaVWPFmVV7GH8Bc7k7.tar.zst" }
 	provides {
 		"roc_engine_ask": ask_for_host!,
@@ -36,6 +36,7 @@ platform ""
 		"roc_engine_files": files_for_host,
 		"roc_engine_forget": forget_for_host,
 		"roc_engine_init": init_for_host,
+		"roc_engine_key": key_for_host,
 		"roc_engine_keys": keys_for_host,
 		"roc_engine_prepare": prepare_for_host!,
 		"roc_engine_version": version_for_host,
@@ -50,10 +51,13 @@ platform ""
 		"roc_task_open": Hosted.open!,
 		"roc_task_read": Hosted.read!,
 		"roc_task_size": Hosted.size!,
+		"roc_test_crypto": Cli.crypto!,
 		"roc_test_file_exists": Cli.file_exists!,
+		"roc_test_hold_key": Cli.hold_key!,
 		"roc_test_live_allocations": Cli.live_allocations!,
 		"roc_test_live_bytes": Cli.live_bytes!,
 		"roc_test_live_files": Cli.live_files!,
+		"roc_test_live_keys": Cli.live_keys!,
 		"roc_test_mint_files": Cli.mint_files!,
 		"roc_test_mute_dbg": Cli.mute_dbg!,
 		"roc_test_now_ns": Cli.now_ns!,
@@ -67,7 +71,7 @@ platform ""
 		inputs_dir: "targets/",
 		wasm32: {
 			inputs: ["host.wasm", app],
-			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "work", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len", "dbg_ptr", "dbg_len"],
+			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "event_key", "keys_stage", "keys_tokens", "keys_released", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "work", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len", "dbg_ptr", "dbg_len"],
 		},
 		x64musl: { inputs: ["rcrt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
 		arm64mac: { inputs: ["libhost.a", app] },
@@ -75,8 +79,10 @@ platform ""
 		x64win: { inputs: ["host.lib", app, "kernel32.lib"] },
 	}
 
+import Base64
 import Cli
 import Clipboard
+import WebCrypto
 import Core
 import Effects
 import Engine
@@ -163,6 +169,14 @@ event_for_host = |boxed, buf, wbuf, node, handler, payload| {
 	{ cmds, state: hold(next), work }
 }
 
+## A derived key's result. The typed key handles move from the host's one
+## staged set into Roc; an event of another kind may never carry them.
+key_for_host : Handle, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> Step
+key_for_host = |boxed, buf, wbuf, node, handler, payload, handles| {
+	(next, cmds, work) = (Core.driver(main).key)(release(boxed), buf, wbuf, node, handler, payload, handles)
+	{ cmds, state: hold(next), work }
+}
+
 ## A files-kind event: the file record and the handles the host minted for its
 ## files, which move into the engine with the call.
 files_for_host : Handle, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> Step
@@ -209,4 +223,4 @@ drop_for_host = |_boxed, _buf, _wbuf| {}
 ## The native spec runner: `SpecRunner.main!` over this app's `main`, with
 ## the native host's file and output services.
 spec_main_for_host! : List(Str) => I32
-spec_main_for_host! = |args| SpecRunner.main!(Core.driver(main), { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns!, work!: Cli.work!, mint_files!: Cli.mint_files!, live_files!: Cli.live_files!, sha256!: Cli.sha256!, live_allocations!: Cli.live_allocations!, live_bytes!: Cli.live_bytes!, mute_dbg!: Cli.mute_dbg! }, args)
+spec_main_for_host! = |args| SpecRunner.main!(Core.driver(main), { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns!, work!: Cli.work!, mint_files!: Cli.mint_files!, live_files!: Cli.live_files!, sha256!: Cli.sha256!, crypto!: Cli.crypto!, hold_key!: Cli.hold_key!, live_keys!: Cli.live_keys!, live_allocations!: Cli.live_allocations!, live_bytes!: Cli.live_bytes!, mute_dbg!: Cli.mute_dbg! }, args)

@@ -223,6 +223,7 @@ const ports = await page.evaluate(async () => {
   handlers[prefix + "nest-log"] = { command: () => {} };
   handlers[prefix + "ticks"] = { subscribe: (_arg, context) => { window.__ticksReport = context; } };
   handlers[prefix + "feed"] = { subscribe: (_arg, context) => { window.__feedReport = context; } };
+  handlers[prefix + "binary"] = { push: true };
   const rt = await mountRocEngineApp({ wasmUrl: "/app.wasm", root, ports: handlers, environment: { visible: () => { if (bad === "type") return "hidden"; if (bad) throw new Error("report visibility failed"); return true; } }, maxPortBytes: 16 });
   const click = (label) => [...root.querySelectorAll("button")].find((button) => button.textContent === label).click();
   const log = () => root.querySelector("[data-testid=log]").textContent;

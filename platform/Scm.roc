@@ -2,6 +2,7 @@ import Protocol
 import JsonOut
 import Core
 import Web
+import Base64
 
 ## The `.scm` spec language: the one parser both spec runners use.
 ##
@@ -302,6 +303,10 @@ Scm := [].{
 		LocalStorageFull,
 		ClipboardDenied,
 		MaxPasteBytes(U64),
+
+		## Deployment ceilings for cryptographic input/output and PBKDF2 work.
+		MaxCryptoBytes(U64),
+		MaxCryptoIterations(U32),
 		MountRoot(MountRoot),
 
 		## A file the spec's file steps can give the app: its name, its media
@@ -401,7 +406,7 @@ Scm := [].{
 					}
 					{ ..env, session_available: False }
 				}
-				MountRoot(_) | File(_) | MaxOutputBytes(_) | SessionStorageFull | LocalStorageFull | ClipboardDenied | MaxPasteBytes(_) => env
+				MountRoot(_) | File(_) | MaxOutputBytes(_) | SessionStorageFull | LocalStorageFull | ClipboardDenied | MaxPasteBytes(_) | MaxCryptoBytes(_) | MaxCryptoIterations(_) => env
 			}
 		}
 		Ok($env)
@@ -759,6 +764,9 @@ Scm := [].{
 
 		## Exactly `count` file handles are live in the app's instance.
 		ExpectFiles(U64),
+
+		## Cryptographic keys held by Roc after the preceding call.
+		ExpectKeys(U64),
 		TickInterval(U32),
 		TickIntervalIfActive(U32),
 		ExpectCleanup({ name : Str, count : U64 }),
@@ -811,9 +819,9 @@ Scm := [].{
 		## Exactly `count` commands were sent on `port` in this document.
 		ExpectPortSends({ port : Str, count : U64 }),
 
-		## Deliver `json` to every live subscription on `port`; a step with
-		## none live fails.
-		EmitPort({ port : Str, json : Str }),
+		## Deliver untouched JSON and explicit byte blocks to every live
+		## subscription on `port`; a step with none live fails.
+		EmitPort({ port : Str, json : Str, blobs : List(List(U8)) }),
 
 		## The JavaScript ends every live subscription on `port` (`Closed`).
 		ClosePort(Str),
@@ -834,9 +842,14 @@ Scm := [].{
 	]
 
 	## How a spec answers a pending port call: JSON text (delivered as it is
-	## written, so a spec can answer what the app's type does not accept), a
-	## throw with its message, an answer too large, or its timeout expiring.
-	PortAnswer : [Reply(Str), Throw(Str), TooLarge, Timeout]
+	## written, so a spec can answer what the app's type does not accept),
+	## with optional decoded byte blocks; a throw with its message, an answer
+	## too large, or its timeout expiring.
+	PortAnswer : [Reply(PortMessage), Throw(Str), TooLarge, Timeout]
+
+	## Fixture JSON stays verbatim; explicitly supplied byte blocks sit beside
+	## it as ordinary PortJson blobs, addressed by their zero-based positions.
+	PortMessage : { json : Str, blobs : List(List(U8)) }
 
 	## A step with the position of its form.
 	Step : { op : Op, pos : Pos }
@@ -996,7 +1009,7 @@ Scm := [].{
 		ChooseFiles(loc, _) => { shows: [Locator(loc)], needs: [] }
 		DropFiles(loc, _) => { shows: [Locator(loc)], needs: [] }
 		PasteFiles(loc, _) => { shows: [Locator(loc)], needs: [] }
-		ExpectFiles(_) => { shows: [], needs: [] }
+		ExpectFiles(_) | ExpectKeys(_) => { shows: [], needs: [] }
 		TickInterval(period) => { shows: [Interval(period)], needs: [] }
 		TickIntervalIfActive(period) => { shows: [], needs: [Story(Interval(period))] }
 		ExpectCleanup({ name, count }) => if (count == 0) { shows: [], needs: [Story(Cleanup(name))] } else { shows: [Cleanup(name)], needs: [] }
@@ -1058,7 +1071,7 @@ Scm := [].{
 		SessionStorageFull => { shows: [], needs: [] }
 		LocalStorageFull => { shows: [], needs: [] }
 		ClipboardDenied => { shows: [], needs: [] }
-		MaxPasteBytes(_) => { shows: [], needs: [] }
+		MaxPasteBytes(_) | MaxCryptoBytes(_) | MaxCryptoIterations(_) => { shows: [], needs: [] }
 		MountRoot(_) => { shows: [], needs: [] }
 		File(_) => { shows: [], needs: [] }
 		MaxOutputBytes(_) => { shows: [], needs: [] }
@@ -1628,6 +1641,26 @@ Scm := [].{
 				Ok(File({ name, mime, text: Scm.string(Scm.arg(args, 2), "the contents")?, repeat }))
 			},
 		},
+		{
+			name: "max-crypto-bytes",
+			parse: |form, args| {
+				count = Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the byte count")?
+				if count > 67108864 {
+					return Err(Scm.bad(form, "max-crypto-bytes must be between 0 and 67108864"))
+				}
+				Ok(MaxCryptoBytes(count))
+			},
+		},
+		{
+			name: "max-crypto-iterations",
+			parse: |form, args| {
+				count = Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the iteration count")?
+				if count < 1 or count > 10000000 {
+					return Err(Scm.bad(form, "max-crypto-iterations must be between 1 and 10000000"))
+				}
+				Ok(MaxCryptoIterations(count.to_u32_wrap()))
+			},
+		},
 		{ name: "max-output-bytes", parse: |form, args| Ok(MaxOutputBytes(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the byte count")?)) },
 	]
 
@@ -2142,6 +2175,7 @@ Scm := [].{
 		{ name: "choose-files", parse: |form, args| Scm.loc_files(form, args).map_ok(|(l, names)| ChooseFiles(l, names)) },
 		{ name: "drop-files", parse: |form, args| Scm.loc_files(form, args).map_ok(|(l, names)| DropFiles(l, names)) },
 		{ name: "paste-files", parse: |form, args| Scm.loc_files(form, args).map_ok(|(l, names)| PasteFiles(l, names)) },
+		{ name: "expect-keys", parse: |form, args| Ok(ExpectKeys(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the key count")?)) },
 		{ name: "expect-files", parse: |form, args| Ok(ExpectFiles(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the file count")?)) },
 		{
 			name: "expect-pending-work",
@@ -2220,8 +2254,10 @@ Scm := [].{
 		{
 			name: "emit-port",
 			parse: |form, args| {
-				a = Scm.arity(form, args, 2)?
-				Ok(EmitPort({ port: Scm.port_name(Scm.arg(a, 0))?, json: Scm.string(Scm.arg(a, 1), "the message JSON")? }))
+				if args.len() < 2 {
+					return Err(Scm.bad(form, "emit-port needs the port name and message JSON"))
+				}
+				Ok(EmitPort({ port: Scm.port_name(Scm.arg(args, 0))?, json: Scm.string(Scm.arg(args, 1), "the message JSON")?, blobs: Scm.port_blobs(form, args.drop_first(2))? }))
 			},
 		},
 		{ name: "close-port", parse: |form, args| Ok(ClosePort(Scm.port_name(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
@@ -2261,20 +2297,68 @@ Scm := [].{
 		if (name == "") Err(Scm.bad(sx, "the port name must not be empty")) else Ok(name)
 	}
 
-	## `(answer-port N reply "json")`, `(answer-port N throw "message")`,
+	## `(answer-port N reply "json" [:bytes ("base64" ...)])`,
+	## `(answer-port N throw "message")`,
 	## `(answer-port N too-large)` or `(answer-port N timeout)`.
 	port_answer : Sx, List(Sx) -> Try(Op, Problem)
 	port_answer = |form, args| {
 		occurrence = Scm.unsigned(args.get(0) ? |_| Scm.bad(form, "answer-port needs the effect occurrence"), "the effect occurrence")?
 		kind_sx = args.get(1) ? |_| Scm.bad(form, "answer-port needs how to answer: reply, throw, too-large or timeout")
 		answer = match Scm.symbol(kind_sx, "the answer")? {
-			"reply" => Reply(Scm.string(Scm.arg(Scm.arity(form, args, 3)?, 2), "the reply JSON")?)
+			"reply" => {
+				if args.len() < 3 {
+					return Err(Scm.bad(form, "a port reply needs its JSON text"))
+				}
+				Reply({ json: Scm.string(Scm.arg(args, 2), "the reply JSON")?, blobs: Scm.port_blobs(form, args.drop_first(3))? })
+			}
 			"throw" => Throw(Scm.string(Scm.arg(Scm.arity(form, args, 3)?, 2), "the thrown message")?)
 			"too-large" => Scm.arity(form, args, 2).map_ok(|_| TooLarge)?
 			"timeout" => Scm.arity(form, args, 2).map_ok(|_| Timeout)?
 			other => return Err(Scm.bad(kind_sx, "unknown answer ${other}; a port call is answered with reply, throw, too-large or timeout"))
 		}
 		Ok(AnswerPort({ occurrence, answer }))
+	}
+
+	## A fixture's only optional message field is :bytes, a list of canonical
+	## padded base64 strings. Decoding happens at the parser's input boundary;
+	## neither runner infers attachments from a JSON string or repairs its JSON.
+	port_blobs : Sx, List(Sx) -> Try(List(List(U8)), Problem)
+	port_blobs = |form, args| {
+		fields = Scm.keywords(form, args)?
+		var $out = []
+		for field in fields {
+			if field.key != ":bytes" {
+				return Err(Scm.bad(field.value, "unknown port message field ${field.key}; only :bytes is accepted"))
+			}
+			items = match field.value {
+				List(values, _) => values
+				_ => return Err(Scm.bad(field.value, ":bytes must be a list of base64 strings"))
+			}
+			for item in items {
+				encoded = Scm.string(item, "a :bytes attachment")?
+				decoded = Base64.decode(encoded) ? |_| Scm.bad(item, "a :bytes attachment must be canonical padded base64")
+				$out = $out.append(decoded)
+			}
+		}
+		Ok($out)
+	}
+
+	## Browser replay receives already decoded byte blocks. Omit the field for
+	## no attachments so existing plain-JSON fixtures retain their exact shape.
+	port_message_json : PortMessage -> List({ key : Str, value : JsonOut.Value })
+	port_message_json = |{ json, blobs }| {
+		fields = [JsonOut.field("json", Text(json))]
+		if blobs.is_empty() {
+			fields
+		} else {
+			values = blobs.map(
+				|blob| {
+					bytes = blob.map(|byte| Nat(byte.to_u64()))
+					Array(bytes)
+				},
+			)
+			fields.append(JsonOut.field("blobs", Array(values)))
+		}
 	}
 
 	## Dispatch one executable form through the closed step registry and retain
@@ -2508,6 +2592,7 @@ Scm := [].{
 		{ op: "drop-files", grant: Never },
 		{ op: "paste-files", grant: Never },
 		{ op: "expect-files", grant: Never },
+		{ op: "expect-keys", grant: Never },
 		{ op: "expect-pending-work", grant: Never },
 		{ op: "tick-interval", grant: Never },
 		{ op: "tick-interval-if-active", grant: Never },
@@ -2617,6 +2702,7 @@ Scm := [].{
 			DropFiles(_, _) => "drop-files"
 			PasteFiles(_, _) => "paste-files"
 			ExpectFiles(_) => "expect-files"
+			ExpectKeys(_) => "expect-keys"
 			TickInterval(_) => "tick-interval"
 			TickIntervalIfActive(_) => "tick-interval-if-active"
 			ExpectCleanup(_) => "expect-cleanup"
@@ -2811,6 +2897,8 @@ Scm := [].{
 			LocalStorageFull => ("local-storage-full", [])
 			ClipboardDenied => ("clipboard-denied", [])
 			MaxPasteBytes(n) => ("max-paste-bytes", [JsonOut.field("count", Nat(n))])
+			MaxCryptoBytes(n) => ("max-crypto-bytes", [JsonOut.field("count", Nat(n))])
+			MaxCryptoIterations(n) => ("max-crypto-iterations", [JsonOut.field("count", Nat(n.to_u64()))])
 			File({ name, mime, text, repeat }) => ("file", [JsonOut.field("name", Text(name)), JsonOut.field("type", Text(mime)), JsonOut.field("text", Text(text)), JsonOut.field("count", Nat(repeat))])
 			MaxOutputBytes(n) => ("max-output-bytes", [JsonOut.field("count", Nat(n))])
 		}
@@ -2935,7 +3023,7 @@ Scm := [].{
 			ChooseFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
 			DropFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
 			PasteFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
-			ExpectFiles(n) => [JsonOut.field("count", Nat(n))]
+			ExpectFiles(n) | ExpectKeys(n) => [JsonOut.field("count", Nat(n))]
 			TickInterval(ms) => [JsonOut.field("period_ms", Nat(ms.to_u64()))]
 			TickIntervalIfActive(ms) => [JsonOut.field("period_ms", Nat(ms.to_u64()))]
 			ExpectCleanup({ name, count }) => [JsonOut.field("name", Text(name)), JsonOut.field("count", Nat(count))]
@@ -2978,7 +3066,7 @@ Scm := [].{
 			AnswerPort({ occurrence, answer }) =>
 				[JsonOut.field("count", Nat(occurrence))].concat(
 					match answer {
-						Reply(json) => [JsonOut.field("answer", Text("reply")), JsonOut.field("json", Text(json))]
+						Reply(message) => [JsonOut.field("answer", Text("reply"))].concat(Scm.port_message_json(message))
 						Throw(message) => [JsonOut.field("answer", Text("throw")), text(message)]
 						TooLarge => [JsonOut.field("answer", Text("too-large"))]
 						Timeout => [JsonOut.field("answer", Text("timeout"))]
@@ -2986,7 +3074,7 @@ Scm := [].{
 				)
 			ExpectPortSent({ port, index, json }) => [JsonOut.field("port", Text(port)), JsonOut.field("index", Nat(index)), JsonOut.field("json", Text(json))]
 			ExpectPortSends({ port, count }) => [JsonOut.field("port", Text(port)), JsonOut.field("count", Nat(count))]
-			EmitPort({ port, json }) => [JsonOut.field("port", Text(port)), JsonOut.field("json", Text(json))]
+			EmitPort({ port, json, blobs }) => [JsonOut.field("port", Text(port))].concat(Scm.port_message_json({ json, blobs }))
 			ClosePort(port) => [JsonOut.field("port", Text(port))]
 			FailPort({ port, message }) => [JsonOut.field("port", Text(port)), text(message)]
 			ExpectPortSubscriptions({ port, count }) => [JsonOut.field("port", Text(port)), JsonOut.field("count", Nat(count))]
@@ -3763,6 +3851,7 @@ expect {
 		"lose-work",
 		"time-out-work",
 		"expect-files",
+		"expect-keys",
 		"expect-pending-work",
 		"tick-interval",
 		"tick-interval-if-active",
@@ -3922,4 +4011,59 @@ expect {
 		Err(problem) => problem.pos == { line: 3, column: 3 } and problem.message.contains("title") and problem.message.contains(":never-written")
 		Ok(_) => Bool.False
 	}
+}
+
+## Crypto deployment limits are bounded before either runner mounts; keys have
+## an ordinary nonnegative handle-count assertion.
+expect {
+	valid = Scm.parse("(test \"crypto\" (setup (max-crypto-bytes 64) (max-crypto-iterations 600000)) (steps (expect-keys 0)))")?
+	valid.setup.map(|entry| entry.item) == [MaxCryptoBytes(64), MaxCryptoIterations(600000)] and valid.steps.map(|step| step.op) == [ExpectKeys(0)]
+}
+
+## Invalid cryptographic deployment ceilings and negative key counts are errors.
+expect {
+	["(setup (max-crypto-bytes -1))", "(setup (max-crypto-bytes 67108865))", "(setup (max-crypto-iterations 0))", "(setup (max-crypto-iterations 10000001))"].all(|setup| Scm.parse("(test \"bad\" ${setup} (steps (mark-metrics)))").is_err()) and Scm.parse("(test \"bad\" (steps (expect-keys -1)))").is_err()
+}
+
+## Port fixtures decode explicit canonical base64 blocks while retaining raw
+## JSON, including malformed JSON intended to exercise an app's decoder.
+expect {
+	json = "{\"$bytes\":1}"
+	story = "(test \"binary fixtures\" (steps (answer-port 1 reply ${JsonOut.quote(json)} :bytes (\"\" \"AP+A\")) (emit-port \"binary\" \"{bad JSON\" :bytes (\"AA==\"))))"
+	spec = Scm.parse(story)?
+	spec.steps.map(|step| step.op) == [
+		AnswerPort({ occurrence: 1, answer: Reply({ json, blobs: [[], [0, 255, 128]] }) }),
+		EmitPort({ port: "binary", json: "{bad JSON", blobs: [[0]] }),
+	]
+}
+
+## Unattached port fixtures keep their original replay JSON, and attached
+## blocks cross as decoded integers rather than a second base64 decoder.
+expect {
+	plain = Scm.parse("(test \"plain\" (steps (answer-port 1 reply \"raw\") (emit-port \"binary\" \"raw\")))")?
+	attached = Scm.parse("(test \"attached\" (steps (answer-port 1 reply \"raw\" :bytes (\"AP8=\"))))")?
+	plain_json = JsonOut.render(Scm.spec_fields("p", plain))
+	attached_json = JsonOut.render(Scm.spec_fields("p", attached))
+	!plain_json.contains("\"blobs\"") and attached_json.contains("\"json\":\"raw\",\"blobs\":[[0,255]]")
+}
+
+## Port byte attachments reject malformed base64, duplicate or unknown
+## keywords, non-list blocks and every attachment on a failure answer.
+expect {
+	bad = [
+		"(answer-port 1 reply \"null\" :bytes (\"AB==\"))",
+		"(answer-port 1 reply \"null\" :bytes (\"AP8\"))",
+		"(answer-port 1 reply \"null\" :bytes (\"AP8=\\n\"))",
+		"(answer-port 1 reply \"null\" :bytes (\"AA-_\"))",
+		"(answer-port 1 reply \"null\" :bytes () :bytes ())",
+		"(answer-port 1 reply \"null\" :bytes \"AA==\")",
+		"(answer-port 1 reply \"null\" :bytes (1))",
+		"(answer-port 1 reply \"null\" :unknown ())",
+		"(answer-port 1 throw \"failed\" :bytes ())",
+		"(answer-port 1 timeout :bytes ())",
+		"(answer-port 1 too-large :bytes ())",
+		"(emit-port \"binary\" \"null\" :bytes (\"AB==\"))",
+		"(emit-port \"binary\" \"null\" :bytes () :bytes ())",
+	]
+	bad.all(|step| Scm.parse("(test \"invalid attachment\" (steps ${step}))").is_err())
 }

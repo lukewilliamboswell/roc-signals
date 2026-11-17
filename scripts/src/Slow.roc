@@ -22,6 +22,7 @@ Slow := [].{
 	## The native soaks, one round trip per app.
 	native_soaks : List(NativeSoak)
 	native_soaks = [
+		{ example: "crypto", spec: "round-trip-lock-and-open" },
 		{ example: "form-builder", spec: "round-trip-answer-and-reorder" },
 		{ example: "kanban-board", spec: "round-trip-add-and-delete-a-card" },
 		{ example: "data-grid", spec: "round-trip-filter-and-page" },
@@ -37,6 +38,7 @@ Slow := [].{
 		{ example: "supersede", spec: "round-trip-late-branch" },
 		{ example: "worker-search", spec: "round-trip-search-and-report" },
 		{ example: "table", spec: "round-trip-edit-scroll-and-rewrite" },
+		{ example: "ports", spec: "round-trip-bytes" },
 		{ example: "prerender", spec: "round-trip" },
 		{ example: "dbg", spec: "round-trip-dbg" },
 	]

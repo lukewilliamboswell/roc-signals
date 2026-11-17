@@ -8,8 +8,8 @@ template = "page.html"
 # Ports
 
 The platform models the browser services most apps need: HTTP, local
-and session storage, timers, history, focus, connectivity, workers, files
-and clipboard writes. When your
+and session storage, timers, history, focus, connectivity, workers, files,
+clipboard writes and cryptography. When your
 app needs one it does not model, such as IndexedDB, a save-file picker, a
 WebSocket or a payment sheet, reach it through a **port**.
 
@@ -362,12 +362,22 @@ counts in the same numbering as `run-effect`:
 |---|---|
 | `(expect-port-call N "port" "json")` | Occurrence N is a pending call on `port` whose message is exactly `json` |
 | `(answer-port N reply "json")` | Answer it with `json`, as written (so a spec can answer what your type does not accept) |
+| `(answer-port N reply "json" :bytes ("BASE64" ...))` | Answer with JSON and explicit byte blocks, indexed by numeric `$bytes` markers in that JSON |
 | `(answer-port N throw "message")`, `(answer-port N too-large)`, `(answer-port N timeout)` | Answer it `Threw`, `TooLarge` or, for a call with a timeout, `Timeout` |
 | `(emit-port "port" "json")` | Deliver a message to every live subscription on `port` |
+| `(emit-port "port" "json" :bytes ("BASE64" ...))` | Deliver JSON and explicit byte blocks to every live subscription on `port` |
 | `(close-port "port")`, `(fail-port "port" "message")` | End every live subscription on `port` with `Closed` or `Threw` |
 | `(expect-port-subscriptions "port" n)` | Exactly `n` subscriptions on `port` are live |
 | `(expect-port-subscription-arg "port" k "json")` | The one-based `k`-th currently active subscription on `port` has exactly this argument |
 | `(expect-port-sent "port" k "json")`, `(expect-port-sends "port" n)` | The `k`-th command sent on `port` carried `json`; `n` were sent |
+
+The optional `:bytes` list holds standard canonical padded base64 strings.
+The parser decodes them once, and both runners deliver the resulting blocks
+beside the JSON, in list order. An empty string supplies an empty block;
+`{"$bytes":0}` refers to the first block. JSON is delivered exactly as written,
+so malformed JSON or an invalid index can still test the app's decoding
+failure. Unknown or repeated fields, invalid base64 and attachments on a
+`throw`, `too-large` or `timeout` answer are spec errors.
 
 Commands are not awaited, so `expect-pending-effects` does not count them.
 To show what a reload does, `(navigate "/elsewhere")` mounts the app in a
@@ -388,7 +398,7 @@ geolocation, media capture, fullscreen, wake lock and batched locale formatting.
 ## A port, an effect or a worker?
 
 - **The platform models it:** use its effect. HTTP, storage, timers,
-  history, focus and files need no JavaScript, and specs model them fully.
+  history, focus, files and [cryptography](@/docs/effects-and-browser.md#cryptography-and-bytes-in-text) need no application JavaScript, and specs model them fully.
 - **Your own Roc code off the page's thread** (a slow calculation, or
   reading and building files): use a [worker](@/docs/workers.md) task. It
   needs no JavaScript.

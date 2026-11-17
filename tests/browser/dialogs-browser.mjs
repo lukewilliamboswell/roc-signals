@@ -43,7 +43,7 @@ try {
     window.__dialogFixture = () => {
       const root = document.createElement("main"); document.body.append(root);
       const memory = new WebAssembly.Memory({ initial: 2 }); let length = 0;
-      const exports = { memory, cmd_ptr: () => 0, cmd_len: () => length, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
+      const exports = { memory, cmd_ptr: () => 0, cmd_len: () => length, keys_released: () => 0, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
       const rt = new RocEngineRuntime(exports, root, { manualEffects: true });
       __bindProtocolFixture(rt);
       rt.controlListeners(); rt.nativeEventListeners(); rt.documentKeyListeners(); rt.listen("submit");
@@ -306,7 +306,7 @@ const NOT_INPUT = {
   "the replay answers effects, work and ports through the runtime's manual hooks": ["stub-http", "stub-http-reject", "run-effect", "progress-effect", "lose-work", "time-out-work", "answer-port", "emit-port", "close-port", "fail-port"],
   "the replay sets the environment from script": ["set-time", "advance-time", "set-media", "tick-interval", "tick-interval-if-active"],
   "the replay supplies layout reports from script": ["scroll", "report-size", "report-seen", "hold-reports", "release-reports"],
-  "the step only reads": ["expect-shown", "expect-session-storage", "expect-clipboard", "expect-clipboard-html", "expect-scroll", "expect-transition", "expect-media-subscriptions", "expect-no-focus", "expect-updates", "expect-request", "expect-port-subscription-arg", "expect-files", "expect-pending-work", "expect-cleanup", "expect-interval", "expect-current-location", "expect-document-title", "expect-local-storage", "expect-no-local-storage", "expect-no-session-storage", "expect-upload", "expect-port-call", "expect-port-sent", "expect-port-sends", "expect-port-subscriptions", "expect-saved"],
+  "the step only reads": ["expect-shown", "expect-session-storage", "expect-clipboard", "expect-clipboard-html", "expect-scroll", "expect-transition", "expect-media-subscriptions", "expect-no-focus", "expect-updates", "expect-request", "expect-port-subscription-arg", "expect-files", "expect-keys", "expect-pending-work", "expect-cleanup", "expect-interval", "expect-current-location", "expect-document-title", "expect-local-storage", "expect-no-local-storage", "expect-no-session-storage", "expect-upload", "expect-port-call", "expect-port-sent", "expect-port-sends", "expect-port-subscriptions", "expect-saved"],
 };
 {
   const here = path.dirname(new URL(import.meta.url).pathname);

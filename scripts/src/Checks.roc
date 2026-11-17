@@ -110,6 +110,10 @@ Checks := [].{
 			{ name: "ask-reaction-type", expectation: Rejected(["type mismatch"]) },
 			{ name: "ask-mixed-plan", expectation: Rejected(["incompatible types"]) },
 			{ name: "ask-await-command", expectation: Rejected(["Engine.Command"]) },
+			{ name: "crypto-key-forge", expectation: Rejected(["cannot use opaque nominal type", "Core.CryptoKey"]) },
+			{ name: "crypto-key-token", expectation: Rejected(["This token method is being called on a value whose type doesn't have that method"]) },
+			{ name: "crypto-key-worker", expectation: Rejected(["method named encoder_for", "Core.CryptoKey"]) },
+			{ name: "crypto-key-port", expectation: Rejected(["method named encoder_for", "Core.CryptoKey"]) },
 			{ name: "ask-private-constructor", expectation: Rejected(["cannot use opaque nominal type", "You're attempting to create an instance of Core.Ask, but it's an opaque type."]) },
 			{ name: "ask-private-reader", expectation: Rejected(["The type Ask does not have an associated", "named read."]) },
 			{ name: "layout-scroll-text", expectation: Rejected(["top: U32"]) },
@@ -267,6 +271,11 @@ Checks := [].{
 	key_contracts! = |o| {
 		cases = [
 			{ name: "oracle-flags", rejection: "unknown command batch flags", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-crypto-password-invalid", rejection: "bad utf8", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-crypto-password-overlong", rejection: "bad utf8", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-crypto-password-surrogate", rejection: "bad utf8", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-crypto-password-truncated", rejection: "bad utf8", prefix: "executor:", code: 70, program: Oracle },
+			{ name: "oracle-crypto-password-empty", rejection: "", prefix: "", code: 0, program: Oracle },
 			{ name: "oracle-missing-transition", rejection: "marked batch is missing TRANSITION", prefix: "executor:", code: 70, program: Oracle },
 			{ name: "oracle-unmarked-transition", rejection: "TRANSITION requires marked batch", prefix: "executor:", code: 70, program: Oracle },
 			{ name: "oracle-transition-trailing", rejection: "TRANSITION must be last", prefix: "executor:", code: 70, program: Oracle },

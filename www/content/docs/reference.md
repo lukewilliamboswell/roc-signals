@@ -1,6 +1,6 @@
 +++
 title = "Reference"
-description = "The Engine, Files, Html, Layout, Clipboard, Worker, Wire, Port and PortJson APIs at a glance, the platform's limits, and its error classes."
+description = "The Engine, Files, Html, Layout, Clipboard, Base64, WebCrypto, Worker, Wire, Port and PortJson APIs at a glance, the platform's limits, and its error classes."
 weight = 19
 template = "page.html"
 +++
@@ -8,7 +8,7 @@ template = "page.html"
 # Reference
 
 The [API documentation](../../api/api/) is generated from the platform's source
-and documents every public symbol of `Engine`, `Files`, `Html`, `Svg`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port`, `PortJson`, `Order`, `Url` and `Web`,
+and documents every public symbol of `Engine`, `Files`, `Html`, `Svg`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port`, `PortJson`, `Base64`, `WebCrypto`, `Order`, `Url` and `Web`,
 including members inherited through public aliases: the authoring API.
 Operations only the engine may perform belong to unexposed modules. The engine's storage and executable values are opaque; its implementation
 and the interfaces its hosts and test harnesses use live in the platform's
@@ -142,6 +142,30 @@ See [Scrolling and layout](@/docs/effects-and-browser.md#scrolling-and-layout).
 | Jobs from an effect site | `Task.request`, `Task.result` (a `Try(output, Error(error))`), `Error(error)` (`Failed(error)`, `Timeout`, `Refused`, `Lost(WorkFault)`), `Never` (the error of a task that cannot fail) |
 | Resources | `resource`, `resource_when` (for a task or a preparation's task), holding an `Engine.Remote(output, Error(error))`; `gather` (one job per input), holding an `Engine.Gathered(output, Error(error))`; `status`, a resource as one `Status(output, error)`: `Unasked`, `Working`, `Answered(output)`, `Failed(error)`, `Timeout`, `Refused` or `Lost(WorkFault)` |
 | Preparations | `preparation`, `PreparationProps(init, state, error)` (`name`, `prepare! : init => Try(state, error)`), `Preparation(init, state, error)`, `Preparation.task`, `PreparedTaskProps(state, input, output, error)` (`name`, `run! : state, input => Try(output, error)`, `timeout`, `on_dispose`, `on_cancel`, as a task's), `Preparation.registration` (given its tasks' registrations), `PreparedTask(init, state, input, output, error)`, `PreparedTask.registration`, `PreparedTask.name`, `PreparedTaskEntry(state)`, `PreparedTask.request`, `PreparedTask.result`, `Question(init, input)` (`init`, `input`) |
+
+## Base64
+
+`Base64` is a pure RFC 4648 codec for binary data in text-only storage and
+formats. `encode : List(U8) -> Str` writes the standard alphabet with padding
+and no line breaks. `decode : Str -> Try(List(U8), [NotBase64])` requires
+that canonical form: it rejects whitespace, URL alphabet symbols, missing or
+extra padding, padding before the end and nonzero unused bits. Empty text
+decodes to empty bytes. Both operations take linear time and output space.
+
+{{ sample(file="base64.roc", region="codec") }}
+
+## WebCrypto
+
+`WebCrypto` provides scoped typed asks for cryptography. See
+[Cryptography and bytes in text](@/docs/effects-and-browser.md#cryptography-and-bytes-in-text).
+
+| Area | Symbols |
+|---|---|
+| Secure bytes and hashing | `random_bytes : U64 -> Ask(List(U8), Error)`; `digest : Hash, List(U8) -> Ask(List(U8), Error)`; `Hash`: `Sha256`, `Sha384`, `Sha512` |
+| Key derivation | `Key` (opaque, non-extractable, lifetime follows Roc references); `derive_key : DeriveProps -> Ask(Key, Error)`; `DeriveProps`: required `password`, `salt`, `iterations`, `hash ?? Sha256` (`Sha256` or `Sha512`) |
+| Authenticated encryption | `encrypt : Key, EncryptProps -> Ask(Sealed, Error)`; `EncryptProps`: `plaintext`, `associated ?? []`; `Sealed`: `iv`, `ciphertext`, including the tag; fresh 12-byte IV generated for every encryption |
+| Authentication | `decrypt : Key, DecryptProps -> Ask(List(U8), Error)`; `DecryptProps`: `iv`, `ciphertext`, `associated ?? []`; authentication failure returns no plaintext |
+| Failures | `Error`: `Unavailable`, `TooLarge`, `InvalidParameters`, `NotAuthentic`, `Refused`, `Failed` |
 
 ## Wire
 
@@ -344,6 +368,8 @@ optional.
 | `maxOutputBytes` | 256 MiB | Bytes one job may append to its builders; beyond it `append!` answers `TooLarge` | [Files in Tasks](@/docs/files-in-tasks.md#limits) |
 | `onWorkerFault` | none | Called with `{ id, task, class, message }` when a job is lost | [Workers](@/docs/workers.md#serving-the-app) |
 | `maxFileBytes` | 256 MiB | Bytes one read into the page takes, whatever its `max_bytes`; bytes one digest reads; bytes of one fetched body. Beyond it `FileFailed(TooLarge)`. A job's reads in a worker are not bounded by it | [Files](@/docs/files.md) |
+| `maxCryptoBytes` | 8 MiB | Combined cryptographic operands and encryption tag, from 0 to 64 MiB; fixed digest output excluded; beyond it `TooLarge` | [Cryptography](@/docs/effects-and-browser.md#cryptography-and-bytes-in-text) |
+| `maxCryptoIterations` | 1,000,000 | PBKDF2 iterations, at most 10,000,000; beyond it `TooLarge` | [Cryptography](@/docs/effects-and-browser.md#cryptography-and-bytes-in-text) |
 | `ports` | none | The page's handlers, one per port the app declares; a missing or extra one refuses the mount | [Ports](@/docs/ports.md) |
 | `maxPortBytes` | 4 MiB (at most 64 MiB) | One port answer or message, JSON text and bytes together; beyond it `TooLarge` | [Ports](@/docs/ports.md) |
 | `onPortFault` | none | Called when a command handler or an unsubscribe function fails | [Ports](@/docs/ports.md) |
@@ -431,6 +457,10 @@ shown after a batch, never in markup, so a picture shows it closed.
 | A worker's memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is ended after the job, its prepared state with it; the console warns once per preparation whose state was too large to keep |
 | Files an app holds at once | 64 | Further files an event carries are not delivered (`Received.refused` counts them); a download with no room is `FileFailed(TooLarge)` |
 | Bytes one page read takes | Its `max_bytes` (default 8 MiB), at most `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
+| Crypto keys an app holds | 64, separate from file handles | Another derivation answers `Refused` |
+| Crypto executor admission | 32 operations awaiting execution or running, including canceled running ones | Further operations answer `Refused`; they do not wait for capacity |
+| Cryptographic byte operands and encryption tag | `maxCryptoBytes`, default 8 MiB, from 0 to 64 MiB | `TooLarge` |
+| PBKDF2 iterations | `maxCryptoIterations`, default 1,000,000, at most 10,000,000 | `TooLarge` |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | URLs one file gives | 16 ranges, revoked when the file is let go | `FileFailed(TooLarge)` |
 | Ports a program declares | 64, names 1 to 128 bytes | Contract error where the catalogue is built: a compile error for a top-level program, otherwise when the program is built |
@@ -496,7 +526,7 @@ it mounts.
 ## Protocol
 
 The command stream, event records, boot bytes and program declarations are versioned together. The
-current protocol is version 20: every nonempty page batch starts with a flags
+current protocol is version 21: every nonempty page batch starts with a flags
 byte, and a marked batch ends with `TRANSITION` (opcode 24). Worker answers
 have no page-batch header. Session storage adds section 11, and `GUARD` is
 opcode 25. Expanded names carry namespace, prefix and local name; elements

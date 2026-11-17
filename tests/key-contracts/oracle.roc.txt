@@ -18,6 +18,11 @@ main = Engine.program_boot({}, |boot| case(boot.url))
 
 case = |path| match path {
     "/oracle-flags" => count_nodes(Dom.apply(Dom.new({}), [2]))
+    "/oracle-crypto-password-invalid" => crypto_password([255])
+    "/oracle-crypto-password-overlong" => crypto_password([192, 128])
+    "/oracle-crypto-password-surrogate" => crypto_password([237, 160, 128])
+    "/oracle-crypto-password-truncated" => crypto_password([226, 130])
+    "/oracle-crypto-password-empty" => crypto_password([])
     "/oracle-missing-transition" => count_nodes(Dom.apply(Dom.new({}), [1, 17, 0, 0, 0, 0]))
     "/oracle-unmarked-transition" => count_nodes(Dom.apply(Dom.new({}), [0, 24, 0, 0, 0, 0]))
     "/oracle-transition-trailing" => count_nodes(Dom.apply(Dom.new({}), [1, 24, 0, 0, 0, 0, 17, 0, 0, 0, 0]))
@@ -44,6 +49,13 @@ case = |path| match path {
 }
 
 count_nodes = |decoded| Engine.text(decoded.nodes.len().to_str())
+
+## Passwords share the string framing but must preserve their exact bytes.
+## Salt stays raw; malformed password UTF-8 is an oracle contract failure.
+crypto_password = |password| {
+    bytes = [0.U8, 13, 1, 0, 0, 0, 21, 2, 1, 1, 0, 0, 0, password.len().to_u8_wrap(), 0, 0, 0].concat(password).concat([16, 0, 0, 0]).concat(List.repeat(0, 16))
+    count_nodes(Dom.apply(Dom.new({}), bytes))
+}
 
 ## Drive a later-turn constructor shape through the native engine before
 ## this page is produced: mount a button and `shape(changed)`, then click

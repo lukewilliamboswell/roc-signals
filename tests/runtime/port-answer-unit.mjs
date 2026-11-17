@@ -28,7 +28,7 @@ const mount = handler => {
     boot_keys() { new Uint8Array(memory.buffer).set(declarations); cmdLen = declarations.length; },
     cmd_ptr: () => 0, cmd_len: () => cmdLen, payload_reserve: () => 65536,
     init() { cmdLen = 0; return 0; }, event: () => 0, fault: () => 0, err_ptr: () => 0, err_len: () => 0,
-    files_released: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
+    files_released: () => 0, keys_released: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
   };
   const runtime = new RocEngineRuntime(x, fakeRoot(), {
     document: { ...events }, window: { ...events, location: { pathname: "/", search: "", hash: "" } },
@@ -117,4 +117,43 @@ await check("emit with a value whose getter throws gives the emitter its error a
   assert.equal(runtime.live.has(11), true);
   await settled();
   assert.deepEqual(results, []);
+});
+
+await check("manual call fixtures keep malformed JSON and explicit binary attachments unchanged", () => {
+  const { runtime, results } = mount({}); runtime.manual = true;
+  runtime.performPortCall({ op: "portcall", id: 21, port: "p", msg: message, timeout: 0 });
+  assert.equal(runtime.answerPort(21, { json: "{bad", blobs: [[], [0, 255, 128]] }), true);
+  assert.deepEqual(results, [[21, [14, 4, 0, 0, 0, 123, 98, 97, 100, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 255, 128, 0, 0, 0, 0]]]);
+});
+
+await check("manual subscriptions receive ordered byte blocks beside numeric markers", () => {
+  const { runtime, results } = mount({}); runtime.manual = true;
+  runtime.portDecls = new Map([["p", { delivery: 1, bound: 4 }]]);
+  runtime.performPortSub({ op: "portsub", id: 22, port: "p", msg: message });
+  const json = '{"$bytes":1}';
+  assert.equal(runtime.messagePort("p", { json, blobs: [[0], [128, 255]] }), 1);
+  const encoded = [...new TextEncoder().encode(json)];
+  assert.deepEqual(results, [[22, [14, ...word(encoded.length), ...encoded, ...word(2), ...word(1), 0, ...word(2), 128, 255, ...word(0)]]]);
+});
+
+await check("a textual bytes marker is left as text and creates no attachment", () => {
+  const { runtime, results } = mount({}); runtime.manual = true;
+  runtime.performPortCall({ op: "portcall", id: 23, port: "p", msg: message, timeout: 0 });
+  const json = '{"$bytes":"AP8="}', encoded = [...new TextEncoder().encode(json)];
+  runtime.answerPort(23, { json });
+  assert.deepEqual(results, [[23, [14, ...word(encoded.length), ...encoded, ...word(0), ...word(0)]]]);
+});
+
+
+await check("manual binary reports retain their bytes from message arrival", () => {
+  const { runtime } = mount({}); runtime.manual = true;
+  runtime.portDecls = new Map([["p", { delivery: 2, bound: 1 }]]);
+  runtime.performPortSub({ op: "portsub", id: 24, port: "p", msg: message });
+  let waiting;
+  runtime.report = (_id, payload) => { waiting = payload; return false; };
+  const source = Uint8Array.from([0, 255]);
+  assert.equal(runtime.messagePort("p", { json: '{"$bytes":0}', blobs: [source] }), 1);
+  source.fill(7);
+  assert.deepEqual([...waiting.parts.at(-2)], [0, 255]);
+  runtime.unmount();
 });

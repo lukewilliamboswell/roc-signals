@@ -21,7 +21,7 @@ const vector = entries => [...leb(entries.length), ...entries.flat()];
 const moduleBytes = (() => {
   const names = ["protocol_version", "boot_keys", "cmd_ptr", "cmd_len", "payload_reserve", "init", "files_released", "fault", "work_len", "metric", "drop", "dbg_ptr", "dbg_len"];
   const bodies = [
-    [0x41, 20],
+    [0x41, 21],
     [0x41, 0, 0x24, 0, 0x41, ...leb(declarations.length), 0x24, 1],
     [0x23, 0], [0x23, 1], [0x41, ...leb(65536)],
     [0x41, ...leb(16384), 0x24, 0, 0x41, 1, 0x24, 1],
@@ -33,7 +33,7 @@ const moduleBytes = (() => {
     ...wasmSection(3, vector([0, 1, 0, 0, 2, 1, 0, 0, 0, 3, 1, 0, 0].map(i => [i]))),
     ...wasmSection(5, [1, 0, 2]),
     ...wasmSection(6, vector([[0x7f, 1, 0x41, 0, 0x0b], [0x7f, 1, 0x41, 0, 0x0b]])),
-    ...wasmSection(7, vector([...names.map((name, i) => [...wasmString(name), 0, ...leb(i)]), [...wasmString("memory"), 2, 0]])),
+    ...wasmSection(7, vector([...names.map((name, i) => [...wasmString(name), 0, ...leb(i)]), [...wasmString("keys_released"), 0, ...leb(6)], [...wasmString("memory"), 2, 0]])),
     ...wasmSection(10, vector(bodies)),
     ...wasmSection(11, [1, 0, 0x41, 0, 0x0b, ...leb(declarations.length), ...declarations]),
   ]);
@@ -63,7 +63,7 @@ try {
     const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const checks = [], check = (name, ok) => checks.push([name, !!ok]);
-    const fixture = ({ marked = true, batch = [0], version = 20, trap = false, authoredInert = null, ownedInert = false, invalidInert = false, namespacedInert = false, bootTrap = null, beforeInit = () => {} } = {}) => {
+    const fixture = ({ marked = true, batch = [0], version = 21, trap = false, authoredInert = null, ownedInert = false, invalidInert = false, namespacedInert = false, bootTrap = null, beforeInit = () => {} } = {}) => {
       const root = document.createElement("div");
       if (marked) root.setAttribute("data-roc-picture", "");
       if (authoredInert !== null) root.setAttribute("inert", authoredInert);
@@ -84,7 +84,7 @@ try {
           write(declarations);
         }, cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
         init() { initCalls++; beforeInit(root, old); if (trap) throw new Error("init trap"); write(batch); return 0; },
-        event() { events++; write([0]); return 0; }, files_released: () => 0, fault: () => code, err_ptr: () => 4096, err_len: () => errLength, work_len: () => 0, metric: () => 0n, drop() {},
+        event() { events++; write([0]); return 0; }, keys_released: () => 0, files_released: () => 0, fault: () => code, err_ptr: () => 4096, err_len: () => errLength, work_len: () => 0, metric: () => 0n, drop() {},
       };
       const runtime = new RocEngineRuntime(x, root, { manualEffects: true, onFault: fault => faults.push(fault) });
       return { root, old, comment, oldText, runtime, faults, get events() { return events; }, get initCalls() { return initCalls; }, get bootCalls() { return bootCalls; }, cleanup() { runtime.unmount(); root.remove(); } };

@@ -15,7 +15,7 @@ app with `ports.mjs`; a camera preview is outside the engine's mount root,
 and the gauge draws inside its own shadow root.
 
 The platform already models HTTP, storage, timers, history, focus, workers,
-files, clipboard writes and observations of layout and media queries. Use
+files, cryptography, clipboard writes and observations of layout and media queries. Use
 those requests for those services. The examples here never bypass the
 engine's routing or keep Roc values in JavaScript.
 

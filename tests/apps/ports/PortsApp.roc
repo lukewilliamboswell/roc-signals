@@ -13,6 +13,11 @@ import pf.Wire
 ##   answered to the app, the subscription is cancelled.
 ## - "Feed" toggles a subscription to `feed` (`Every(4)`) with argument
 ##   `"news"`.
+## - "Binary feed" toggles a typed byte subscription, whose exact byte list
+##   appears in the log, including bytes that cannot be UTF-8.
+## - "Binary feed" subscribes to binary messages and logs every byte, so
+##   explicit byte fixtures test delivery and report replacement exactly.
+## - "Clear log" releases accumulated answers for the binary round trip.
 ## - "Echo" calls `echo` with "Size" bytes (`Wire.Bytes`) and logs the
 ##   length and the first and last byte of the answer.
 ## - "Inspect" calls `inspect` with the first chosen file; "Make" calls
@@ -29,6 +34,7 @@ PortsApp := [].{
 		gets : U64,
 		panel : Bool,
 		feed : Bool,
+		binary : Bool,
 		size : Str,
 		echoes : Press,
 		inspects : U64,
@@ -49,7 +55,7 @@ PortsApp := [].{
 	Ctx : In(Root, S)
 
 	initial : S
-	initial = { sends: 0, gets: 0, panel: False, feed: False, size: "4", echoes: { n: 0, size: "" }, inspects: 0, makes: 0, chosen: [], made: [], depth: "1", nests: { n: 0, size: "" }, nest_logs: { n: 0, size: "" }, undeclared: 0, wrong: 0, log: [] }
+	initial = { sends: 0, gets: 0, panel: False, feed: False, binary: False, size: "4", echoes: { n: 0, size: "" }, inspects: 0, makes: 0, chosen: [], made: [], depth: "1", nests: { n: 0, size: "" }, nest_logs: { n: 0, size: "" }, undeclared: 0, wrong: 0, log: [] }
 
 	## A chain of one-payload tags: each link is one JSON object deep.
 	Nest := [Link(Nest), End].{
@@ -71,6 +77,7 @@ PortsApp := [].{
 		make : Port.Call(Str, Engine.File),
 		ticks : Port.Subscription({}, U64),
 		feed : Port.Subscription(Str, Str),
+		binary : Port.Subscription({}, Wire.Bytes),
 		nest : Port.Call(Nest, U64),
 		nest_log : Port.Command(Nest),
 	}
@@ -85,6 +92,7 @@ PortsApp := [].{
 		make: Port.call({ name: "test.roc-signals/make" }),
 		ticks: Port.subscription({ name: "test.roc-signals/ticks", delivery: Latest }),
 		feed: Port.subscription({ name: "test.roc-signals/feed", delivery: Every(4) }),
+		binary: Port.subscription({ name: "test.roc-signals/binary", delivery: Latest }),
 		nest: Port.call({ name: "test.roc-signals/nest" }),
 		nest_log: Port.command({ name: "test.roc-signals/nest-log" }),
 	}
@@ -161,6 +169,12 @@ PortsApp := [].{
 					|on| if (on) [PortsApp.ports.feed.ask("news")] else [],
 					st.on_result(|s, _, r| PortsApp.log_line(s, "feed:${PortsApp.shown(r, |t| t)}")),
 				),
+				Html.button("Binary feed", [], st.update(|s| { ..s, binary: !s.binary })),
+				Engine.watch_latest(
+					v.map(|s| s.binary),
+					|on| if (on) [PortsApp.ports.binary.ask({})] else [],
+					st.on_result(|s, _, r| PortsApp.log_line(s, "binary:${PortsApp.shown(r, |bytes| Str.inspect(bytes.to_list()))}")),
+				),
 				Html.text_input(Engine.const("Size"), "text", v.map(|s| s.size), [], st.set_value(|s, t| { ..s, size: t })),
 				Html.button("Echo", [], st.update(|s| { ..s, echoes: { n: s.echoes.n + 1, size: s.size } })),
 				Engine.watch_changes(
@@ -203,6 +217,7 @@ PortsApp := [].{
 				Engine.watch_changes(v.map(|s| s.undeclared), |_| [Engine.command(PortCommand({ port: "test.roc-signals/undeclared", message: { json: "null", blobs: [], files: [] }, refusal: None }))], Engine.ignore({})),
 				Html.button("Wrong", [], st.update(|s| { ..s, wrong: s.wrong + 1 })),
 				Engine.watch_changes(v.map(|s| s.wrong), |_| [Engine.raw(PortSubscribe({ port: "test.roc-signals/get", message: { json: "{}", blobs: [], files: [] }, refusal: None }))], Engine.ignore({})),
+				Html.button("Clear log", [], st.update(|s| { ..s, log: [] })),
 				Html.p_s(v.map(|s| Str.join_with(s.log, "|")), [Engine.test_id("log")]),
 			],
 		)

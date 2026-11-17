@@ -240,7 +240,7 @@ const inlineFixture = () => {
     const answer = out => { const bytes = new Uint8Array(memory.buffer); bytes.set([0, 0, 0, 0, ...out], 1024); return 4 + out.length; };
     let cmdLen = 0;
     const exports = {
-      memory, dbg_len: () => 0, dbg_ptr: () => 0, metric: () => 0n, files_released: () => 0, files_tokens: () => 0,
+      memory, dbg_len: () => 0, dbg_ptr: () => 0, metric: () => 0n, files_released: () => 0, keys_released: () => 0, files_tokens: () => 0,
       files_stage: n => n, payload_reserve: () => 2048, cmd_ptr: () => 1024, cmd_len: () => cmdLen,
       fault: () => fault, err_ptr: () => 0, err_len: () => 0,
       forget() { if (instance.forgetTraps) { fault = 4; throw new WebAssembly.RuntimeError("unreachable"); } },

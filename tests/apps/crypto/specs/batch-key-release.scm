@@ -1,0 +1,18 @@
+(test "A batch resolves its encryption key before draining its last release"
+  (steps
+    (click (role button :name "Unlock SHA-256"))
+    (run-effect 1)
+    (expect-keys 1)
+    (click (role button :name "Seal and lock"))
+    (expect-text (test-id "key") "locked")
+    (expect-keys 0)
+    (expect-pending-effects 1)
+    (run-effect 2)
+    (expect-text (test-id "result") "sealed iv=12 bytes=25")
+    (click (role button :name "Unlock SHA-256"))
+    (run-effect 3)
+    (click (role button :name "Open"))
+    (run-effect 4)
+    (expect-text (test-id "plaintext") "secret λ")
+    (click (role button :name "Lock"))
+    (expect-keys 0)))

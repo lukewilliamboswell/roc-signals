@@ -1,0 +1,16 @@
+(test "Disposal cancels a pending derivation and drops a delivered panel key"
+  (steps
+    (mark-metrics)
+    (click (role button :name "Panel"))
+    (expect-text (test-id "panel") "waiting")
+    (expect-pending-effects 1)
+    (click (role button :name "Panel"))
+    (expect-pending-effects 0)
+    (expect-metric-delta effects_cancelled 1)
+    (expect-keys 0)
+    (click (role button :name "Panel"))
+    (run-effect 2)
+    (expect-text (test-id "panel") "derived")
+    (expect-keys 1)
+    (click (role button :name "Panel"))
+    (expect-keys 0)))

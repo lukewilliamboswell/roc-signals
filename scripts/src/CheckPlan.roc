@@ -99,7 +99,7 @@ CheckPlan := [].{
 		"grammar coverage" => { natives: ["kanban-board"], webs: [], sized: [] }
 		"runtime contracts in Chrome" => {
 			natives: ["controls", "table", "services", "prerender"],
-			webs: ["tests/apps/effects", "controls", "services", "workers", "files", "file-effects", "ports", "markup", "construction", "table", "outbox", "dbg", "dbg-job-only", "prepared", "tasks", "deep-payload", "prerender"],
+			webs: ["tests/apps/effects", "controls", "services", "workers", "files", "file-effects", "ports", "markup", "construction", "table", "outbox", "dbg", "dbg-job-only", "prepared", "tasks", "deep-payload", "prerender", "crypto"],
 			sized: [],
 		}
 		"runtime unit tests" => { natives: [], webs: ["write-scaling"], sized: ["write-scaling"] }

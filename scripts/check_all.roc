@@ -159,7 +159,8 @@ main! = |raw_args| {
 		|| {
 			resources = check!({ program: o.zig, args: ["test", "platform/host/resources.zig"], cwd: "." }, "zig test platform/host/resources.zig")?
 			debug = check!({ program: o.zig, args: ["test", "platform/host/dbg.zig"], cwd: "." }, "zig test platform/host/dbg.zig")?
-			Ok(resources.concat(debug))
+			crypto = check!({ program: o.zig, args: ["test", "platform/host/crypto.zig"], cwd: "." }, "zig test platform/host/crypto.zig")?
+			Ok(resources.concat(debug).concat(crypto))
 		},
 	)?
 	$run = stage!(plan, $run, "cross links", || cross_links!(o))?

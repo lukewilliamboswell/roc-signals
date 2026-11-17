@@ -31,7 +31,7 @@ const fakeHost = (local, session) => {
     cmd_ptr: () => 0, cmd_len: () => cmdLen, payload_reserve: count => { staged = count; return 65536; },
     init() { boot = new Uint8Array(memory.buffer, 65536, staged).slice(); cmdLen = 0; return 0; },
     event: () => 0, fault: () => 0, err_ptr: () => 0, err_len: () => 0,
-    files_released: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
+    files_released: () => 0, keys_released: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
   };
   return { x, boot: () => boot };
 };
