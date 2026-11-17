@@ -355,3 +355,51 @@ await check("empty, BOM and NUL passwords and UTF-8 spanning validation chunks k
     f.runtime.unmount();
   }
 });
+
+await check("an earlier queued cancellation drops a completed key before any handle is minted", async () => {
+  const f = fixture(), order = [];
+  const deliver = f.runtime.deliver.bind(f.runtime);
+  f.runtime.deliver = (node, handler, payload) => {
+    if (node === 42) { order.push("cancel"); f.runtime.cancel(1); }
+    else { order.push("key"); deliver(node, handler, payload); }
+  };
+  f.apply(derive());
+  const completed = f.runtime.runEffect(1);
+  // A waiting batch holds ordinary FIFO ingress while the browser finishes.
+  f.runtime.busy = true;
+  f.runtime.dispatch(42, 0, new Uint8Array(0));
+  await completed;
+  assert.equal(f.runtime.queue.length, 2);
+  assert.equal(f.runtime.cryptoActive, 0);
+  assert.equal(f.minted(), 0);
+  f.runtime.busy = false;
+  f.runtime.drainQueue();
+  assert.deepEqual(order, ["cancel"]);
+  assert.equal(f.minted(), 0);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.runtime.live.size, 0);
+  f.runtime.unmount();
+});
+
+await check("a live completed key keeps its ordinary FIFO position until delivery", async () => {
+  const f = fixture(), order = [];
+  const deliver = f.runtime.deliver.bind(f.runtime);
+  f.runtime.deliver = (node, handler, payload) => {
+    if (node === 42) order.push("first");
+    else { order.push("key"); deliver(node, handler, payload); }
+  };
+  f.apply(derive());
+  const completed = f.runtime.runEffect(1);
+  f.runtime.busy = true;
+  f.runtime.dispatch(42, 0, new Uint8Array(0));
+  await completed;
+  assert.equal(f.runtime.queue.length, 2);
+  assert.equal(f.minted(), 0);
+  f.runtime.busy = false;
+  f.runtime.drainQueue();
+  assert.deepEqual(order, ["first", "key"]);
+  assert.equal(f.minted(), 1);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.runtime.live.size, 0);
+  f.runtime.unmount();
+});

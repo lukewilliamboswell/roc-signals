@@ -5026,10 +5026,10 @@ export class RocEngineRuntime {
     entry.settled = settled;
     const finish = payload => {
       if (entry.reserved) { entry.reserved = false; this.cryptoActive -= 1; }
-      if (this.live.get(fx.id) === entry && !this.poisoned && !this.ending) {
-        this.live.delete(fx.id);
-        this.result(fx.id, payload);
-      }
+      // Keep the terminal occurrence cancelable while it waits behind an
+      // earlier FIFO input. In particular, a canceled key must never mint a
+      // host handle; the ordinary delivery hook retires its owner instead.
+      if (!this.poisoned && !this.ending) this.finishTransfer(fx.id, entry, payload);
       const done = entry.settled; entry.settled = null;
       if (done) done();
     };
