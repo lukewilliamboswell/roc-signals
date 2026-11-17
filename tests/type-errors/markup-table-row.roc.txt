@@ -15,9 +15,6 @@ row = |item| {
 main : Engine.Program
 main = Engine.program(|| Engine.element("table", [], [Engine.element("tbody", [], [Engine.each(Engine.const(["a", "b"]), |name| name, row)])]))
 
-## These construction fixtures have no shared store.
-Store : {}
-
 ## The default mount constructs the row template and draws both rows.
 mounted : U64
 mounted = Engine.mounts(main)

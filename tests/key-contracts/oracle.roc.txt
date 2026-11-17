@@ -70,6 +70,3 @@ later = |shape| {
     clicked = Core.event(ready, 2, 0, "\u(0000)\u(0000)")
     Engine.text(Core.work_counters(clicked).len().to_str())
 }
-
-## No shared store is declared by these contract cases.
-Store : {}

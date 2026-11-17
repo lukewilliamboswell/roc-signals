@@ -8,9 +8,6 @@ main = Engine.program_boot({}, |boot| {
  Engine.text("unreachable")
 })
 
-## This fixture has no shared store.
-Store : {}
-
 ## Force the default first page to mount during compilation.
 mounted : U64
 mounted = Engine.mounts(main)

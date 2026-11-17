@@ -5,5 +5,3 @@ value : Web.Tag
 value = ""
 main : Engine.Program
 main = Engine.program(|| Engine.text(value.text()))
-
-Store : {}

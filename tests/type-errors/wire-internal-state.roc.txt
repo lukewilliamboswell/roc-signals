@@ -7,6 +7,3 @@ bad = Wire.encode_state(7.U64)
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("wire API contract"))
-
-## This contract has no shared store.
-Store : {}

@@ -9,6 +9,3 @@ bad = PortJson.Out.(PortJson.OutBody.{ text: [], blobs: [], files: [], depth: 0,
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("port API contract"))
-
-## This contract has no shared store.
-Store : {}

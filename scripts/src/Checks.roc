@@ -70,7 +70,7 @@ Checks := [].{
 			{ name: "web-method-space", expectation: Rejected(["one or more token characters"]) },
 			{ name: "web-text-tag", expectation: Rejected(["This argument has the type: Str But the function needs the first argument to be: Engine.Tag"]) },
 			{ name: "web-interpolation", expectation: Rejected(["Web.AttrName"]) },
-			{ name: "web-shared-constant", expectation: Rejected(["Web.AttrName", "Str"]) },
+			{ name: "web-shared-constant", expectation: Rejected(["AttrName", "Str"]) },
 			{ name: "web-method-request", expectation: Rejected(["Fetch({ cache: [Default, ForceCache, NoCache, NoStore, Reload], credentials: [Include, SameOrigin], headers: List((Str, Str)), method: Str,", "But the annotation says it should be: Engine.Request"]) },
 			{ name: "web-method-upload", expectation: Rejected(["method: Str ?? …", "But upload needs the first argument to be: Core.UploadProps"]) },
 			{ name: "web-upload-get", expectation: Rejected(["GET carries no body, so it cannot upload a file"]) },

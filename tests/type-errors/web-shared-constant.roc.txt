@@ -4,5 +4,3 @@ import pf.Web
 name = "aria-label"
 main : Engine.Program
 main = Engine.program(|| Engine.element("div", [Engine.attr(name, "yes")], [Engine.text(name)]))
-
-Store : {}

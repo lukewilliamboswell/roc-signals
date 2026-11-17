@@ -13,9 +13,6 @@ main = Engine.program_store({}, |_| store, |_| Engine.table_view(store.cells(), 
  window: Engine.const(Engine.every_row),
 }, |_, row| Html.li([], [Engine.text_s(row.signal().map(U64.to_str))])))
 
-## The table's generated store storage type.
-Store : Engine.Stored(Tag, Engine.Table(U64, U64))
-
 ## Check the default first page.
 mounted : U64
 mounted = Engine.mounts(main)

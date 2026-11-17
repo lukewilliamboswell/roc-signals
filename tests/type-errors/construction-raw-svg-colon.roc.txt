@@ -10,9 +10,6 @@ raw = |text| Engine.element(Web.Tag.from_str(text) ?? crash "fixture: grammar-va
 main : Engine.Program
 main = Engine.program(|| Engine.element("svg", [], [raw("xlink:x"), raw("xml:foo"), raw("xmlns:foo")]))
 
-## These construction fixtures have no shared store.
-Store : {}
-
 ## The default mount constructs every raw name at compile time.
 mounted : U64
 mounted = Engine.mounts(main)

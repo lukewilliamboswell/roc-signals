@@ -5,5 +5,3 @@ value : Web.Method
 value = "TRACE"
 main : Engine.Program
 main = Engine.program(|| Engine.text(value.text()))
-
-Store : {}

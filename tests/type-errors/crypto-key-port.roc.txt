@@ -8,6 +8,3 @@ send_key = Port.command({ name: "key" })
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("key")).with_ports(Port.registrations({ key: send_key }))
-
-## This fixture uses local state only.
-Store : {}

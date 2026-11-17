@@ -5,5 +5,3 @@ value : Web.EventType
 value = "click:prevent"
 main : Engine.Program
 main = Engine.program(|| Engine.text(value.text()))
-
-Store : {}

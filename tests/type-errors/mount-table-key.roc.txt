@@ -12,6 +12,3 @@ rows = match Engine.Table.from_list([{ key: 1.U64, row: "one" }, { key: 1, row: 
 
 main : Engine.Program
 main = Engine.program(|| Engine.text(rows.len().to_str()))
-
-## This fixture has no shared store.
-Store : {}

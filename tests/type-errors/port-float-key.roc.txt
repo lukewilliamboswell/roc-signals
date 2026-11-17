@@ -11,6 +11,3 @@ call = Port.call({ name: "test.roc-signals/float-key" })
 
 main : Engine.Program
 main = Engine.program(|| Engine.watch(Engine.const({}), |_| [call.ask({})], Engine.ignore({}))).with_ports([call.registration()])
-
-## No shared store is declared by this contract fixture.
-Store : {}

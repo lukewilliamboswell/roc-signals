@@ -6,4 +6,3 @@ value = "geolocation"
 
 main : Engine.Program
 main = Engine.program(|| Engine.text(""))
-Store : {}

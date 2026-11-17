@@ -19,8 +19,6 @@ read_envelope = |stored| Base64.decode(stored)
 main : Engine.Program
 main = Engine.program(|| Html.p(saved_envelope, ""))
 
-Store : {}
-
 ## The persisted text round-trips to the exact binary envelope.
 expect read_envelope(saved_envelope)? == [0, 255, 128, 1]
 

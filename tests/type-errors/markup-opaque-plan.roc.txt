@@ -10,4 +10,3 @@ view = {
 }
 main : Engine.Program
 main = Engine.program(|| view)
-Store : {}
