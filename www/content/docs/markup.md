@@ -75,3 +75,55 @@ whose grammar the application chooses to validate itself.
 is bound and never used, until something calls it
 ([roc-lang/roc#13003](https://github.com/roc-lang/roc/issues/13003)). A
 component library's view is checked once an app or a constant calls it.
+
+## Imported HTML
+
+`Html.unsafe_html(tag, attrs, html_signal)` asks the browser to parse a string
+through `innerHTML`. It keeps a stable wrapper with ordinary attributes and
+handlers. Equal strings emit nothing; a changed string replaces every imported
+descendant. The wrapper has no engine-managed children.
+
+{{ sample(file="unsafe-html.roc", region="example") }}
+
+Contents receive no escaping, validation or sanitization. Your application owns
+their safety. Browser insertion behavior applies: nested scripts are ordinarily
+inert, while inline handlers, custom elements and embedded documents can execute
+code. Raw destination attributes remain raw. Replacement and removal provide no
+inferred Roc cleanup or cancellation for JavaScript started by those contents.
+
+Imported descendants have no engine identity, references, handlers, state or
+requests. Attributes resembling engine metadata remain HTML data. Both spec
+runners exclude imported descendants from locators. Wrapper attributes remain
+observable; imported text, names derived from that text and interaction requiring
+those descendants fail explicitly. Test those browser behaviors directly in a
+browser contract. Prerendered pictures refuse any unsafe-HTML wrapper, including
+one whose initial string is empty; ordinary builds and mounting work normally.
+
+String comparison costs the size of the strings. Browser parsing and replacement
+cost the imported content. Engine updates never traverse imported descendants.
+
+## Checked link destinations
+
+`Html.link` requires `Web.Link`. A literal is checked during compilation;
+`Web.Link.from_str` returns `Try` for computed text. Handle
+`UnsupportedScheme(scheme)` explicitly. `Html.href` sets a checked destination
+on a custom layout; `Html.href_s` takes `Absent` or `Present(Web.Link)`.
+Choosing `Absent` removes an earlier destination; repeated absence prunes.
+Extra attributes passed to `Html.link` cannot override its destination.
+
+The policy accepts relative references and explicit HTTP, HTTPS, mailto and tel
+schemes. It detects schemes after the browser's C0/space trimming, TAB/LF/CR
+removal and ASCII case folding, and retains accepted authored text exactly.
+This checks scheme policy, not hostname validity, reachability or destination
+trustworthiness. Raw `Engine.attr`, computed markup APIs and unsafe HTML keep
+their existing meanings. Image-source and exported-HTML policies belong to
+the application.
+
+`Engine.on_click` and button helpers receive `Engine.Click`: `ctrl`, `alt`,
+`shift`, `meta`, and `link`, either `NoLink` or
+`Link({ href, target, download })`. Link text is authored, never absolute-URL
+resolved; `download` is attribute presence. Nested targets find the nearest HTML
+or SVG anchor within the mount, with SVG href preceding qualified XLink href.
+`Engine.on_click_with(policy, handler)` declares synchronous prevention and
+propagation. The handler decides app navigation from those facts. Generic
+`Engine.on("click", handler)` keeps its text payload.

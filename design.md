@@ -3596,6 +3596,60 @@ table header) and checks what a name type cannot see, a value against its
 attribute and an element against its parent, while a constructor checks a
 name alone and sets the value it is given.
 
+## Opaque HTML and checked destinations
+
+`Html.unsafe_html(tag, attrs, html_signal)` is an explicit escape hatch for
+computed HTML. It creates one stable wrapper with ordinary attributes and
+handlers and no engine-managed children. A private `inner_html` property uses
+ordinary property holes and equality pruning, including row templates. Equal
+strings emit nothing; each changed command assigns `innerHTML` once and replaces
+all imported descendants. Comparison costs string size; browser parsing and
+replacement follow the content. Engine updates never traverse those descendants.
+
+This is an explicit exception to exact authored-tree checking and complete native
+DOM observation. The browser parses the string; the oracle retains it without
+parsing. Imported descendants have no engine ids, references, handlers, state or
+scoped requests. Metadata-like attribute spellings remain ordinary HTML data.
+Both spec runners exclude imported descendants from locators; wrapper attributes
+remain observable. Operations requiring imported text, descendant-derived names
+or faithful interaction fail explicitly. Browser contracts inspect imported
+content directly. Pictures containing an unsafe wrapper, even initially empty,
+are refused. Ordinary builds and mounting remain supported.
+
+Contents receive no escaping, validation or sanitization. Browser insertion
+behavior applies: nested scripts are ordinarily inert, but inline handlers,
+custom elements and embedded documents can execute code. Safety is the app
+author's responsibility; no earlier platform layer can determine the intended
+trust policy. Replacement and removal follow wrapper ownership, without inferred
+Roc cleanup or cancellation of JavaScript the content started. A queued DOM event
+retains its original target only in its existing bounded ingress entry and is
+dropped if that target was detached, even if its routing wrapper survives.
+
+`Web.Link` is opaque. `from_str` returns `Try(Link, [UnsupportedScheme(Str)])`;
+`from_quote` rejects literals during compilation, `text` preserves accepted
+authored text, and equality compares that text. Relative references and explicit
+HTTP, HTTPS, mailto and tel schemes are accepted. Scheme detection trims leading
+and trailing C0 controls and spaces, removes TAB/LF/CR throughout, and folds ASCII
+case as the browser does. It checks scheme policy, not hostname validity,
+reachability or destination trustworthiness.
+
+`Html.link` requires a checked destination and refuses extra attributes that
+replace it at construction. `Html.href` supplies one for custom link layouts;
+`Html.href_s` takes explicit `Absent` or `Present(Web.Link)`. Apps handle refusal;
+choosing `Absent` removes any earlier destination and repeated absence prunes.
+Raw `Engine.attr`, computed markup APIs and unsafe HTML retain their semantics.
+Image-source and exported-HTML restrictions remain explicit application rules.
+
+`Engine.on_click` receives `HandlerOf(ctx, Click)`; `on_click_with` adds static
+`Policy`. Button helpers use that same payload. A click captures modifiers and
+optional nearest-link facts (authored href, target attribute text and download
+presence) through one ancestor walk bounded by the mount. HTML and SVG anchors
+are supported; SVG href precedes qualified XLink href. JavaScript passes raw
+text, never resolved URLs or browser nodes; navigation is Roc's decision.
+Prevention stays synchronous and declaration-driven. Generic `on("click", ...)`
+retains its text payload. Native specs exercise managed links; browser contracts
+exercise opaque descendants. Malformed payloads are routed-site contract faults.
+
 ## Dialogs, Popovers and Scrolling
 
 `Html.dialog(label, props, attrs, children)` pairs a required `open` signal
@@ -5232,7 +5286,9 @@ attr_presence : AttrName, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
 on : EventType, Handler(ctx) -> Attr(ctx)          # bare event type; text kind, no policy
 Policy := { prevent : Bool ?? False, stop : Bool ?? False }
 on_with : EventType, Policy, Handler(ctx) -> Attr(ctx)
-on_click : Handler(ctx) -> Attr(ctx)
+on_click : HandlerOf(ctx, Click) -> Attr(ctx)
+on_click_with : Policy, HandlerOf(ctx, Click) -> Attr(ctx)
+Click : { ctrl : Bool, alt : Bool, shift : Bool, meta : Bool, link : [NoLink, Link({ href : Str, target : Str, download : Bool })] }
 Pointer : { id : U32, kind : [Mouse, Pen, Touch, Other],
             button : [None, Main, Middle, Secondary, Back, Forward, Other(U8)],
             buttons : U16, modifiers : { shift : Bool, ctrl : Bool, alt : Bool, meta : Bool },
@@ -5577,7 +5633,7 @@ a leading U+FEFF in names and values, including a worker's hosted arguments.
 Unknown closed-vocabulary names cannot become known names by dropping that
 character. Invalid UTF-8 is rejected at each strict protocol boundary.
 
-This appendix is protocol version **21**. The engine declares it
+This appendix is protocol version **22**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -5604,7 +5660,7 @@ roc-lang/roc#12953 workaround (see [Compiler Limitations](#compiler-limitations)
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (21) |
+| `roc_engine_version` | `() -> u32` | The protocol version (22) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Handle, List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -5921,8 +5977,8 @@ ordinary id rule.
 - The runtime indexes nodes by id alone. It records each row root's site, so
   `CLEAR parent site` forgets exactly that site's rows through a per-site row
   set; `Dom.roc` does the same.
-- Because ids are reused, the runtime drops a queued DOM event whose element
-  has left the document or whose id now names a different element, before it
+- Because ids are reused, the runtime drops a queued DOM event whose original
+  target or routing element has left the document or whose id now names a different element, before it
   reaches the engine.
 - `0xffffffff` is the effect node and never names a DOM node.
 - An HTML template's intrinsic content fragment has no engine id. Commands
@@ -6088,6 +6144,11 @@ site; an unknown kind number in commands is an `executor` fault.
 | 7 Size | `width:u32 height:u32` | `event` | `size`, observation report |
 | 8 Seen | `intersecting:u8 ratio:u16` | `event` | `seen`, observation report |
 | 9 Paste | `status:u8 [text:rest]` | `event` | `paste`; `0` Text with UTF-8 body, `1` TooLarge with no body; prevents default; text that is not well-formed is not delivered |
+| 10 Click | `mods:u8 link:u8 [href:str target:str download:u8]` | `event` | `click`; Ctrl 1, Alt 2, Shift 4, Meta 8; link 0 NoLink or 1 Link; only 1 carries strings and download (strictly 0/1) |
+
+Kind **10** rejects unknown modifier bits, link or download flags, invalid UTF-8,
+truncation and trailing bytes. Link strings retain authored text. Text the browser
+holds that is not well-formed suppresses delivery after declared policies act.
 
 Kind **9** rejects any status except 0 or 1, trailing bytes after TooLarge
 and invalid UTF-8 text as routed-site contract faults. Unknown clipboard or
@@ -6167,7 +6228,7 @@ listened as `focusin` and `focusout`.
 
 **Element properties.** `PROP`, `HPROP` and property holes use this closed
 table. Each encoded value is a `str`; the row decides its type and meaning.
-Rows 1–5 apply in stream order; rows 6–7 have the timing below. `value` and `checked` mirror their
+Rows 1–5 and 8 apply in stream order; rows 6–7 have the timing below. `value` and `checked` mirror their
 attribute; `pointer_zone` has no attribute mirror. An empty
 `value` sets the live value to empty text and keeps `value=""`, so an
 option remains the empty choice. A false `checked` removes its mirrored
@@ -6182,6 +6243,11 @@ attribute; true keeps it present.
 | 5 | `keymap_up` | Any element | Encoded keymap for its paired keyup handler | None | Stream |
 | 6 | `shown` | Controlled dialog | `hidden`, `open`, `modal`; guarded by live-state table above | `open` (reserved, not a string mirror) | Hidden in stream; showing after batch, guarded by latest intent |
 | 7 | `popover_shown` | Controlled element with one static auto/manual popover declaration | Exactly `true` or `false`, guarded by live state | None; helper owns its static `popover` declaration | False in stream; true after batch, guarded by latest intent |
+| 8 | `inner_html` | Unsafe HTML wrapper only, with no engine children | `Str`, exact HTML source; browser parses through innerHTML | None | Stream, exactly when commanded |
+
+Row 8 is private to `Html.unsafe_html`, never a public Prop constructor.
+Pictures refuse its presence even for empty content; the oracle keeps its text
+without parsing it. It adds no site, queue or standalone counter.
 
 Rows 6 and 7 and their echo attachment are helper-only, with the attribute
 and event restrictions stated above. A prerendered picture renders rows 1

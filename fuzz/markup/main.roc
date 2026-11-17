@@ -54,7 +54,7 @@ run = |input| {
 		caption = if (event % 3 == 0) "Same" else "Next"
 		button = Dom.find($dom, $dom.root, |node| node.tag == "button" and Dom.attr_of(node, "aria-label") == caption) ?? crash "markup update button missing"
 		listener = Dom.target($dom, button, "click", True) ?? crash "markup update listener missing"
-		(after, emitted) = Core.take_cmds(Core.event($engine, listener.node, listener.handler, ""), [])
+		(after, emitted) = Core.take_cmds(Core.event($engine, listener.node, listener.handler, "\u(0000)\u(0000)"), [])
 		$engine = after
 		$dom = Dom.apply($dom, emitted)
 		if event % 3 != 0 {

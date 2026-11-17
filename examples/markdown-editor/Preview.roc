@@ -1,3 +1,4 @@
+import pf.Web
 import pf.Engine exposing [Elem, Row, RowRef, Signal]
 import pf.Html
 import Markdown
@@ -61,7 +62,21 @@ segment_view = |row, style| {
 		Strong => Engine.element("strong", [], [Engine.text_s(text)])
 		Code => Engine.element("code", [], [Engine.text_s(text)])
 		Image => Engine.element("img", [Engine.attr_s("src", href), Engine.attr_s("alt", text), Engine.class("max-w-full")], [])
-		Link => Engine.element("a", [Engine.attr_s("href", href), Engine.class("font-medium text-accent-700 underline underline-offset-2")], [Engine.text_s(text)])
+		Link => Engine.element(
+			"a",
+			[
+				Html.href_s(
+					href.map(
+						|authored| match Web.Link.from_str(authored) {
+							Ok(destination) => Present(destination)
+							Err(UnsupportedScheme(_)) => Absent
+						},
+					),
+				),
+				Engine.class("font-medium text-accent-700 underline underline-offset-2"),
+			],
+			[Engine.text_s(text)],
+		)
 		Plain => Engine.text_s(text)
 	}
 }

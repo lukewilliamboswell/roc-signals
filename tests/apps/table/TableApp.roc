@@ -241,7 +241,7 @@ TableApp := [Todos].{
 
 	## A button named `name`, with no text of its own, so that a list's
 	## text is its rows' keys and numbers alone.
-	action : Signal(ctx, Str), Handler(ctx) -> Elem(ctx)
+	action : Signal(ctx, Str), Engine.HandlerOf(ctx, Engine.Click) -> Elem(ctx)
 	action = |name, handler| Engine.element("button", [Html.aria_label_s(name), Engine.attr("type", "button"), Engine.on_click(handler)], [])
 
 	## One row of the main list: its key, a done checkbox, its title, its

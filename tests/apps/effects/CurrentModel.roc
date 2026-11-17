@@ -67,9 +67,9 @@ page = |_| Core.state(
 		"main",
 		[],
 		[
-			Core.element("button", [Core.on_click(state.set_value(|s, payload| { ..s, question: U64.from_str(payload) ?? crash "CurrentModel: controlled question is not a number" }))], [Core.text("set")]),
-			Core.element("button", [Core.on_click(state.update(|s| { ..s, shown: !s.shown }))], [Core.text("toggle")]),
-			Core.element("button", [Core.on_click(state.set_value(|s, payload| { ..s, shown: False, question: U64.from_str(payload) ?? crash "CurrentModel: controlled hidden question is not a number" }))], [Core.text("hide")]),
+			Core.element("button", [Core.on("click", state.set_value(|s, payload| { ..s, question: U64.from_str(payload) ?? crash "CurrentModel: controlled question is not a number" }))], [Core.text("set")]),
+			Core.element("button", [Core.on("click", state.update(|s| { ..s, shown: !s.shown }))], [Core.text("toggle")]),
+			Core.element("button", [Core.on("click", state.set_value(|s, payload| { ..s, shown: False, question: U64.from_str(payload) ?? crash "CurrentModel: controlled hidden question is not a number" }))], [Core.text("hide")]),
 			Core.text_s(state.signal().map(|s| "${s.question.to_str()}/${s.answered.to_str()}/${s.progress.to_str()}/${if (s.shown) "shown" else "hidden"}")),
 			Core.when(
 				state.signal().map(|s| s.shown),

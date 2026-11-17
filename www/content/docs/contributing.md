@@ -1056,3 +1056,12 @@ observations and fault/console behavior; `tests/native/dbg-output.mjs` rejects
 extra settle-reader output. Its intentional fault controls exclude it from
 walks; its round trip remains a native soak. Debug observations add no SCM
 step. The host’s buffer is independently checked by `zig test platform/host/dbg.zig`.
+
+
+The `unsafe-html` test app keeps imported descendants opaque in paired specs.
+Its Chrome contract checks the browser parser, inline handlers, custom elements,
+link click facts, stale queued targets and malformed payloads directly. Its round
+trip is a native allocation soak. `structure` replays generated opaque-source
+updates, row moves and disposal against fresh mounts and `Core.settled`; `links`
+checks scheme policy against an independent model, with browser URL differentials
+in the HTML contract. Picture refusal includes initially empty wrappers.

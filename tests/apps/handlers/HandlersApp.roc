@@ -44,7 +44,7 @@ HandlersApp := [].{
 
 	## A packaged picker with private open state. Its owner passes down what
 	## to do when a date is picked; the click closes the picker as well.
-	picker : Handler(ctx) -> Elem(ctx)
+	picker : Engine.HandlerOf(ctx, Engine.Click) -> Elem(ctx)
 	picker = |picked| Engine.state(
 		True,
 		|open| Html.div(

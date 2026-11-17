@@ -181,7 +181,7 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // text is never interpreted as absence, including empty or false text.
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 21;
+export const PROTOCOL_VERSION = 22;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -1252,6 +1252,15 @@ function applyAttribute(runtime, u8, dv, at, el, name) {
 }
 
 const PROPERTY_APPLIERS = {
+  inner_html: {
+    elements: [],
+    apply(el, value) {
+      // This private row is emitted only by Html.unsafe_html, which has no
+      // engine children. Imported attribute spellings never assign routing.
+      el.__opaqueHtml = true;
+      el.innerHTML = value;
+    },
+  },
   value: {
     elements: ["input", "textarea", "select", "option"],
     apply(el, value, node) {
@@ -1415,6 +1424,7 @@ function payloadOf(event) {
 const PAYLOAD_APPLIERS = {
   TEXT: { events: [], payload: payloadOf },
   PASTE: { events: ["paste"] },
+  CLICK: { events: ["click"] },
   FILES: {
     events: ["change", "drop", "paste"],
     payload(event) {
@@ -3897,7 +3907,13 @@ export class RocEngineRuntime {
     let handler = null;
     let declaring = null;
     let heard = null;
+    let routing = null;
+    let link = null;
     while (node && node !== this.root) {
+      if (type === "click" && link === null && node.localName === "a" && ["http://www.w3.org/1999/xhtml", "http://www.w3.org/2000/svg"].includes(node.namespaceURI)) {
+        const href = node.getAttributeNS(null, "href") ?? (node.namespaceURI === "http://www.w3.org/2000/svg" ? node.getAttributeNS("http://www.w3.org/1999/xlink", "href") : null);
+        if (href !== null) link = { href, target: node.getAttributeNS(null, "target") ?? "", download: node.hasAttributeNS(null, "download") };
+      }
       if (handler === null && (event.bubbles || node === event.target) && node.__h !== undefined) {
         const h = node.__h[type];
         if (h !== undefined && !(h.policies & this.protocol.POLICY_DOCUMENT)) {
@@ -3905,71 +3921,79 @@ export class RocEngineRuntime {
           if (h.kind !== this.protocol.KIND_KEY || match) { handler = h; declaring = node; heard = match; }
         }
       }
-      if (node.__rn !== undefined && handler !== null) {
-        if (heard?.prevent || (handler.policies & this.protocol.POLICY_PREVENT) !== 0 || (handler.kind === this.protocol.KIND_FILES && type === "drop") || handler.kind === this.protocol.KIND_PASTE) this.protocol.POLICIES[this.protocol.POLICY_PREVENT].perform(event);
-        // A non-bubbling event is heard during capture; stopping it there
-        // would prevent its target's own listeners from running.
-        if (event.bubbles && (handler.policies & this.protocol.POLICY_STOP) !== 0) this.protocol.POLICIES[this.protocol.POLICY_STOP].perform(event);
-        if ((handler.policies & this.protocol.POLICY_CAPTURE) !== 0) {
-          try { declaring.setPointerCapture(event.pointerId); }
-          catch (_) {
-            this.captureRefused += 1;
-            this.monitor.emit({ kind: "pointer-capture-refused", pointer: event.pointerId, at: this.monitor.tick() });
-          }
-        }
-        if (handler.kind === this.protocol.KIND_KEY) {
-          this.heardKeys.add(event);
-          this.dispatch(node.__rn, handler.h, keyPayload(event, heard), node);
-        } else if (handler.kind === this.protocol.KIND_POINTER) {
-          const pointer = this.pointerPayload(event);
-          if (this.manual) {
-            if (this.pointerLog.length >= MAX_QUEUED) {
-              this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} pointer dispatches before the replay drained its log`), "resource_limit");
-              return;
-            }
-            this.pointerLog.push({ type, id: event.pointerId, kind: event.pointerType || "other", at: pointer.at, paced: (handler.policies & this.protocol.POLICY_PACED) !== 0 });
-          }
-          const source = (handler.policies & this.protocol.POLICY_PACED) !== 0 ? this.pointerSource(declaring, handler, event.pointerId) : undefined;
-          this.dispatch(node.__rn, handler.h, pointer.bytes, node, source);
-        } else if (handler.kind === this.protocol.KIND_PASTE) {
-          // getData returns the whole DOMString; the browser exposes no
-          // pre-read size check. UTF-8 needs at least one byte per UTF-16
-          // code unit, so reject this lower bound before any Unicode scan.
-          const text = event.clipboardData?.getData("text/plain") ?? "";
-          if (text.length > this.maxPasteBytes) {
-            this.dispatch(node.__rn, handler.h, new Uint8Array([1]), node);
-            return;
-          }
-          // Text Roc cannot hold is not repaired into other text: the paste
-          // is not delivered, as the declaration's prevention still acts.
-          if (!text.isWellFormed()) {
-            this.refuseText(type);
-            return;
-          }
-          let bytes = 0;
-          for (const character of text) {
-            const point = character.codePointAt(0);
-            bytes += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
-            if (bytes > this.maxPasteBytes) break;
-          }
-          const payload = bytes > this.maxPasteBytes ? new Uint8Array([1]) : concat([new Uint8Array([0]), utf8enc.encode(text)]);
-          this.dispatch(node.__rn, handler.h, payload, node);
-        } else if (handler.kind === this.protocol.KIND_SCROLL) {
-          this.observeManualScroll(declaring);
-          const position = this.scrollPosition(declaring);
-          this.dispatch(node.__rn, handler.h, concat([u32(position.top), u32(position.left)]), node, this.elementReportSource(declaring, type, handler));
-        } else {
-          if (type === "scroll") this.observeManualScroll(declaring);
-          const payload = this.protocol.PAYLOAD_KINDS[handler.kind].payload(event);
-          if (handler.kind === this.protocol.KIND_TEXT && !payload.isWellFormed()) {
-            this.refuseText(type);
-            return;
-          }
-          if (payload !== null) this.dispatch(node.__rn, handler.h, payload, node);
-        }
+      if (routing === null && node.__rn !== undefined && handler !== null) routing = node;
+      node = node.parentNode;
+    }
+    if (node !== this.root || routing === null) return;
+    node = routing;
+    if (heard?.prevent || (handler.policies & this.protocol.POLICY_PREVENT) !== 0 || (handler.kind === this.protocol.KIND_FILES && type === "drop") || handler.kind === this.protocol.KIND_PASTE) this.protocol.POLICIES[this.protocol.POLICY_PREVENT].perform(event);
+    // A non-bubbling event is heard during capture; stopping it there
+    // would prevent its target's own listeners from running.
+    if (event.bubbles && (handler.policies & this.protocol.POLICY_STOP) !== 0) this.protocol.POLICIES[this.protocol.POLICY_STOP].perform(event);
+    if ((handler.policies & this.protocol.POLICY_CAPTURE) !== 0) {
+      try { declaring.setPointerCapture(event.pointerId); }
+      catch (_) {
+        this.captureRefused += 1;
+        this.monitor.emit({ kind: "pointer-capture-refused", pointer: event.pointerId, at: this.monitor.tick() });
+      }
+    }
+    if (handler.kind === this.protocol.KIND_KEY) {
+      this.heardKeys.add(event);
+      this.dispatch(node.__rn, handler.h, keyPayload(event, heard), node, undefined, event.target);
+    } else if (handler.kind === this.protocol.KIND_CLICK) {
+      if (link !== null && (!link.href.isWellFormed() || !link.target.isWellFormed())) {
+        this.refuseText(type);
         return;
       }
-      node = node.parentNode;
+      const flags = (event.ctrlKey ? 1 : 0) | (event.altKey ? 2 : 0) | (event.shiftKey ? 4 : 0) | (event.metaKey ? 8 : 0);
+      const payload = link === null ? new Uint8Array([flags, 0]) : concat([new Uint8Array([flags, 1]), encStr(link.href), encStr(link.target), new Uint8Array([link.download ? 1 : 0])]);
+      this.dispatch(node.__rn, handler.h, payload, node, undefined, event.target);
+    } else if (handler.kind === this.protocol.KIND_POINTER) {
+      const pointer = this.pointerPayload(event);
+      if (this.manual) {
+        if (this.pointerLog.length >= MAX_QUEUED) {
+          this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} pointer dispatches before the replay drained its log`), "resource_limit");
+          return;
+        }
+        this.pointerLog.push({ type, id: event.pointerId, kind: event.pointerType || "other", at: pointer.at, paced: (handler.policies & this.protocol.POLICY_PACED) !== 0 });
+      }
+      const source = (handler.policies & this.protocol.POLICY_PACED) !== 0 ? this.pointerSource(declaring, handler, event.pointerId) : undefined;
+      this.dispatch(node.__rn, handler.h, pointer.bytes, node, source, event.target);
+    } else if (handler.kind === this.protocol.KIND_PASTE) {
+      // getData returns the whole DOMString; the browser exposes no
+      // pre-read size check. UTF-8 needs at least one byte per UTF-16
+      // code unit, so reject this lower bound before any Unicode scan.
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (text.length > this.maxPasteBytes) {
+        this.dispatch(node.__rn, handler.h, new Uint8Array([1]), node, undefined, event.target);
+        return;
+      }
+      // Text Roc cannot hold is not repaired into other text: the paste
+      // is not delivered, as the declaration's prevention still acts.
+      if (!text.isWellFormed()) {
+        this.refuseText(type);
+        return;
+      }
+      let bytes = 0;
+      for (const character of text) {
+        const point = character.codePointAt(0);
+        bytes += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+        if (bytes > this.maxPasteBytes) break;
+      }
+      const payload = bytes > this.maxPasteBytes ? new Uint8Array([1]) : concat([new Uint8Array([0]), utf8enc.encode(text)]);
+      this.dispatch(node.__rn, handler.h, payload, node, undefined, event.target);
+    } else if (handler.kind === this.protocol.KIND_SCROLL) {
+      this.observeManualScroll(declaring);
+      const position = this.scrollPosition(declaring);
+      this.dispatch(node.__rn, handler.h, concat([u32(position.top), u32(position.left)]), node, this.elementReportSource(declaring, type, handler), event.target);
+    } else {
+      if (type === "scroll") this.observeManualScroll(declaring);
+      const payload = this.protocol.PAYLOAD_KINDS[handler.kind].payload(event);
+      if (handler.kind === this.protocol.KIND_TEXT && !payload.isWellFormed()) {
+        this.refuseText(type);
+        return;
+      }
+      if (payload !== null) this.dispatch(node.__rn, handler.h, payload, node, undefined, event.target);
     }
   }
 
@@ -3997,7 +4021,7 @@ export class RocEngineRuntime {
           if (heard.prevent) event.preventDefault();
           if (h.policies & this.protocol.POLICY_STOP) this.protocol.POLICIES[this.protocol.POLICY_STOP].perform(event);
           this.heardKeys.add(event);
-          this.dispatch(declaring.__rn, h.h, keyPayload(event, heard), declaring);
+          this.dispatch(declaring.__rn, h.h, keyPayload(event, heard), declaring, undefined, this.root.contains(event.target) ? event.target : undefined);
           return;
         }
       });
@@ -4242,7 +4266,7 @@ export class RocEngineRuntime {
   // An occurrence pins every earlier report in O(1) by advancing the epoch.
   // Reports replace only their own source's entry from the current epoch.
   // The linked queue makes appending and draining constant work per entry.
-  dispatch(node, handler, payload, el, source) {
+  dispatch(node, handler, payload, el, source, target) {
     if (this.picturePending) {
       if (source?.dom) source.retire();
       return;
@@ -4261,6 +4285,9 @@ export class RocEngineRuntime {
         const waiting = this.reportSources.get(source);
         if (waiting !== undefined && waiting.epoch === this.reportEpoch) {
           waiting.payload = payload;
+          // A replaceable report belongs to its newest original target too.
+          // The earlier imported descendant may already have been detached.
+          waiting.target = target;
           this.reportsReplaced += 1;
           this.guard(() => this.scheduleReports());
           return true;
@@ -4299,7 +4326,7 @@ export class RocEngineRuntime {
         // older delivery can synchronously emit another report.
         active = this.takeIngress();
       }
-      const entry = { node, handler, payload, el, source, owner, epoch: this.reportEpoch, next: null };
+      const entry = { node, handler, payload, el, target, source, owner, epoch: this.reportEpoch, next: null };
       if (this.queue.tail === null) this.queue.head = entry;
       else this.queue.tail.next = entry;
       this.queue.tail = entry;
@@ -4355,10 +4382,12 @@ export class RocEngineRuntime {
   // A disposed source or recycled DOM id never receives its queued input.
   // Clear the payload even on a dropped entry so no browser files linger.
   takePayload(entry) {
-    const { node, payload, el } = entry;
+    const { node, payload, el, target } = entry;
     entry.payload = null;
+    entry.target = undefined;
     if (payload === null || (entry.owner && (entry.owner.dom ? !entry.owner.isLive() : this.live.get(entry.source) !== entry.owner))) return null;
     if (el !== undefined && (!el.isConnected || el.__rn !== node)) return null;
+    if (target !== undefined && (!target.isConnected || !this.root.contains(target))) return null;
     if (payload.isLive && !payload.isLive()) return null;
     return payload;
   }
@@ -4601,8 +4630,11 @@ export class RocEngineRuntime {
       if (this.modalOrder) this.modalOrder.remove(node);
       node.__shownControl = undefined;
       node.__popoverControl = undefined;
-      for (let child = node.firstChild; child; child = child.nextSibling) pending.push(child);
-      if (node.__childTarget && node.__childTarget !== node) pending.push(node.__childTarget);
+      // Imported descendants have no engine ownership to release.
+      if (!node.__opaqueHtml) {
+        for (let child = node.firstChild; child; child = child.nextSibling) pending.push(child);
+        if (node.__childTarget && node.__childTarget !== node) pending.push(node.__childTarget);
+      }
       if (node.__site !== undefined) {
         this.sites[node.__site].delete(node.__rn);
         for (const id of node.__aliases) this.statics[id] = undefined;

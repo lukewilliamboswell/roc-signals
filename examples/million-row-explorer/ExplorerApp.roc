@@ -1,3 +1,4 @@
+import pf.Web
 import pf.Engine exposing [Elem, Signal]
 import pf.Html
 import pf.Worker
@@ -95,7 +96,7 @@ ExplorerApp := [].{
 						Html.p_attrs("${Explorer.grouped(size)} orders. Generate", [Engine.class("field-label"), Engine.test_id("size")]),
 					]
 						# Each size is a link: the page loads again at that size.
-						.concat(Explorer.sizes.map(|other| Html.link(Explorer.grouped(other), "?orders=${other.to_str()}", [Engine.class("button button-sm")]))),
+						.concat(Explorer.sizes.map(|other| Html.link(Explorer.grouped(other), Web.Link.from_str("?orders=${other.to_str()}") ?? crash "internal: relative order link", [Engine.class("button button-sm")]))),
 				),
 				Html.div(
 					"toolbar",

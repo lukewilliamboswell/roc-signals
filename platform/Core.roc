@@ -1,4 +1,5 @@
 import Web
+import Spelling
 import Layout
 import TableCore exposing [Table]
 import View
@@ -2599,6 +2600,44 @@ Core := [].{
 		kids,
 	)
 
+	## Html supplies an ordinary attribute as a signal carrier because Engine's
+	## Signal wrapper is opaque. Its name is discarded here, never emitted or
+	## interpreted at the host boundary. Only this constructor creates row 8,
+	## always with no engine children; no public property exposes it.
+	unsafe_html : Web.Tag, List(Attr(ctx)), Attr(ctx) -> Elem(ctx)
+	unsafe_html = |tag, attrs, contents| Core.element_named(
+		tag,
+		attrs.append(
+			match contents {
+				Static(_, html) => Property(8, html)
+				Dyn(_, value) => PropertyV(
+					8,
+					value.map(
+						|presence| match presence {
+							Present(html) => html
+							Absent => crash "internal: Html.unsafe_html requires present content"
+						},
+					),
+				)
+				_ => crash "internal: Html.unsafe_html content carrier"
+			},
+		),
+		[],
+	)
+
+	## The checked helper's extras must not replace its destination. Attribute
+	## names are known at construction even when their values are signals.
+	checked_link : Str, Web.Link, List(Attr(ctx)) -> Elem(ctx)
+	checked_link = |label, destination, attrs| {
+		for attribute in attrs {
+			match attribute {
+				Static(name, _) | Dyn(name, _) if (name.namespace() == None and (if (name.is_qualified()) name.local() else Spelling.ascii_lower(name.local())) == "href") => crash "contract: Html.link destination cannot be overridden by an extra href attribute (Html.link ${Str.inspect(label)})"
+				_ => {}
+			}
+		}
+		Core.element("a", [Core.attr("href", destination.text())].concat(attrs), [Core.text(label)])
+	}
+
 	## Internal vocabulary construction keeps its private shown row paired with its handler.
 	controlled_dialog : { label : Str, open : Signal(ctx, Bool), on_close : HandlerOf(ctx, Bool), modal : [Modal, NonModal], attrs : List(Attr(ctx)), children : List(Elem(ctx)) } -> Elem(ctx)
 	controlled_dialog = |props| Core.element(
@@ -2713,6 +2752,10 @@ Core := [].{
 	## Static dispatch policies, checked by the compiler. Prevention and
 	## propagation must be decided before an event's synchronous window closes.
 	Policy := { prevent : Bool ?? False, stop : Bool ?? False }
+
+	## Browser facts captured for one click. A link's href and target are authored
+	## attribute text, never an absolute URL; download records attribute presence.
+	Click : { ctrl : Bool, alt : Bool, shift : Bool, meta : Bool, link : [NoLink, Link({ href : Str, target : Str, download : Bool })] }
 
 	## A pointer's state at dispatch. Its nearest zone is application text;
 	## coordinates are shares of that zone's box, from 0 to 10000 inclusive.
@@ -2936,9 +2979,13 @@ Core := [].{
 	ref_s : Signal(ctx, Str) -> Attr(ctx)
 	ref_s = |value| Ref(value)
 
-	## A `click` listener; its payload is empty.
-	on_click : Handler(ctx) -> Attr(ctx)
-	on_click = |h| Core.on("click", h)
+	## Receive the click's modifiers and nearest link facts captured at dispatch.
+	on_click : HandlerOf(ctx, Click) -> Attr(ctx)
+	on_click = |handler| Core.on_click_with({}, handler)
+
+	## Attach a typed click with synchronous, declaration-driven prevention.
+	on_click_with : Policy, HandlerOf(ctx, Click) -> Attr(ctx)
+	on_click_with = |policy, handler| attach_kind("click", click_kind, policy_bits(policy), handler)
 
 	## `on_files(event, handler)` listens for the files an event carries:
 	## `"change"` on a file input, `"drop"` (whose default the runtime
@@ -3188,7 +3235,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 21
+	protocol_version = 22
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -4154,6 +4201,7 @@ property_row = |index| match index {
 	5 => { name: "keymap_up", elements: [], counter: 0 }
 	6 => { name: "shown", elements: ["dialog"], counter: 0 }
 	7 => { name: "popover_shown", elements: [], counter: 0 }
+	8 => { name: "inner_html", elements: [], counter: 0 }
 	_ => crash "internal: unknown property row ${index.to_str()}"
 }
 
@@ -10718,7 +10766,7 @@ expect {
 		[{ key: "a", name: "first" }, { key: "b", name: "second" }],
 		|state| Core.element(
 			"div",
-			[Core.on_click(state.update(|_| [{ key: "b", name: "first" }, { key: "c", name: "third" }]))],
+			[Core.on("click", state.update(|_| [{ key: "b", name: "first" }, { key: "c", name: "third" }]))],
 			[
 				Core.each(state.signal(), |item| item.key, |row| Core.element("button", [Core.ref_s(row.field(|item| item.name))], [])),
 			],
@@ -10795,7 +10843,7 @@ expect {
 	cell = store.cells()
 	view = Core.element(
 		"div",
-		[Core.on_click(Core.store_handler(|_| [cell.update(|table| table.remove(1))]))],
+		[Core.on("click", Core.store_handler(|_| [cell.update(|table| table.remove(1))]))],
 		[
 			Core.table_view(
 				cell,
@@ -10824,7 +10872,7 @@ expect {
 		|state| Core.element(
 			"div",
 			[
-				Core.on_click(state.set_value(|_, payload| if (payload == "remove") Absent else Present(payload))),
+				Core.on("click", state.set_value(|_, payload| if (payload == "remove") Absent else Present(payload))),
 				Core.attr_presence("title", state.signal()),
 			],
 			[],
@@ -11007,7 +11055,7 @@ expect {
 				"main",
 				[],
 				[
-					Core.element("button", [Core.on_click(visible.update(|_| False))], []),
+					Core.element("button", [Core.on("click", visible.update(|_| False))], []),
 					Core.when(visible.signal(), || Core.element("div", [Core.on_document_key({ keymap: Core.const(Core.Keymap.keep([Core.Chord.plain("Escape")])) }, visible.update(|value| value))], [Core.cleanup("doc-λ")]), || Core.text("")),
 				],
 			),
@@ -11137,8 +11185,8 @@ expect {
 		"main",
 		[],
 		[
-			Core.element("button", [Core.on_click(Core.store_handler(|_| [todos.update(|t| t.remove(1))]))], []),
-			Core.element("button", [Core.on_click(Core.store_handler(|_| [win.set({ start: 1, count: 10 })]))], []),
+			Core.element("button", [Core.on("click", Core.store_handler(|_| [todos.update(|t| t.remove(1))]))], []),
+			Core.element("button", [Core.on("click", Core.store_handler(|_| [win.set({ start: 1, count: 10 })]))], []),
 			Core.table_view(todos, { query: Core.const({}), plan, window: win.signal() }, |_, row| Core.element("p", [], [row_part(row)])),
 		],
 	)
@@ -11187,7 +11235,7 @@ expect {
 ## their HPROP addresses, immediately after each MOVE in stream order.
 expect {
 	handler = { run: |env, _, _| (env, no_layers) }
-	view = Core.state(["a", "b", "c"], |rows| Core.element("main", [Core.on_click(rows.update(|_| ["c", "b", "a"]))], [Core.each(rows.signal(), |key| key, |_| Core.element("article", [Core.attr_presence("title", Core.const(Absent))], [Core.controlled_popover({ label: "Help", open: Core.const(True), on_toggle: handler, dismiss: Manual, attrs: [], children: [] })]))]))
+	view = Core.state(["a", "b", "c"], |rows| Core.element("main", [Core.on("click", rows.update(|_| ["c", "b", "a"]))], [Core.each(rows.signal(), |key| key, |_| Core.element("article", [Core.attr_presence("title", Core.const(Absent))], [Core.controlled_popover({ label: "Help", open: Core.const(True), on_toggle: handler, dismiss: Manual, attrs: [], children: [] })]))]))
 	mounted = Core.mount(view)
 	(clean, _) = Core.take_cmds(mounted, [])
 	moved = Core.event(clean, 1, 0, "")
@@ -11228,7 +11276,8 @@ expect {
 		|st| Core.element(
 			"main",
 			[
-				Core.on_click(
+				Core.on(
+					"click",
 					st.update(
 						|s| {
 							phase: s.phase + 1,
@@ -11273,7 +11322,8 @@ expect {
 		|st| Core.element(
 			"main",
 			[
-				Core.on_click(
+				Core.on(
+					"click",
 					st.update(
 						|s| {
 							phase: s.phase + 1,
@@ -11394,7 +11444,7 @@ expect {
 				"main",
 				[],
 				[
-					Core.element("button", [Core.on_click(visible.update(|_| False))], []),
+					Core.element("button", [Core.on("click", visible.update(|_| False))], []),
 					Core.when(visible.signal(), || Core.element("div", [Core.on_size(visible.update(|value| value)), Core.on_seen({}, visible.update(|value| value))], []), || Core.text("")),
 				],
 			),
@@ -11412,7 +11462,7 @@ expect {
 		0.U64,
 		|st| Core.element(
 			"button",
-			[Core.on_click(st.update(|n| n + 1))],
+			[Core.on("click", st.update(|n| n + 1))],
 			[
 				Core.watch(st.signal(), |_| [ViewTransition(["shelf", "books", "shelf"]), ViewTransition([])].map(Core.command), Core.ignore({})),
 				Core.watch(st.signal(), |_| [ViewTransition(["books", "detail"])].map(Core.command), Core.ignore({})),
@@ -11501,7 +11551,7 @@ expect {
 
 ## Replacing one true guard with another within a turn never toggles the warning.
 expect {
-	initial = Core.mount(Core.state(True, |selected| Core.element("main", [], [Core.element("button", [Core.on_click(selected.update(|on| !on))], []), Core.when(selected.signal(), || Core.guard_leave(Core.const(True)), || Core.guard_leave(Core.const(True)))])))
+	initial = Core.mount(Core.state(True, |selected| Core.element("main", [], [Core.element("button", [Core.on("click", selected.update(|on| !on))], []), Core.when(selected.signal(), || Core.guard_leave(Core.const(True)), || Core.guard_leave(Core.const(True)))])))
 	(ready, _) = Core.take_cmds(initial, [])
 	changed = Core.event(ready, 2, 0, "")
 	(settled, commands) = Core.take_cmds(changed, [])
@@ -11510,7 +11560,7 @@ expect {
 
 ## False signals and scope disposal remove exactly their own guard contribution.
 expect {
-	initial = Core.mount(Core.state(True, |on| Core.element("main", [], [Core.element("button", [Core.on_click(on.update(|value| !value))], []), Core.guard_leave(on.signal()), Core.when(on.signal(), || Core.guard_leave(Core.const(True)), || Core.text(""))])))
+	initial = Core.mount(Core.state(True, |on| Core.element("main", [], [Core.element("button", [Core.on("click", on.update(|value| !value))], []), Core.guard_leave(on.signal()), Core.when(on.signal(), || Core.guard_leave(Core.const(True)), || Core.text(""))])))
 	(ready, _) = Core.take_cmds(initial, [])
 	changed = Core.event(ready, 2, 0, "")
 	{ guards: tx_of(changed).fx.guard.live, emitted: tx_of(changed).fx.guard.emitted, commands: Core.work_counters(changed).get(46), pending: Core.fx_live(changed), settled: Core.settled(changed).is_ok() } == { guards: 0, emitted: False, commands: Ok(2), pending: [], settled: True }
@@ -11545,8 +11595,8 @@ expect {
 				"main",
 				[],
 				[
-					Core.element("button", [Core.on_click(state.update(|value| { ..value, value: 1 }))], []),
-					Core.element("button", [Core.on_click(state.update(|value| { ..value, value: 2, out: value.out.post(7.U64) }))], []),
+					Core.element("button", [Core.on("click", state.update(|value| { ..value, value: 1 }))], []),
+					Core.element("button", [Core.on("click", state.update(|value| { ..value, value: 2, out: value.out.post(7.U64) }))], []),
 					Core.on_post_by(state.signal().map(|value| value.out), state.signal().map(|value| if (value.value == 2) value.value else crash "reading sampled without a post"), |value, item| [Core.command(Title("${value.to_str()}:${item.to_str()}"))], Core.ignore({})),
 				],
 			),
@@ -11568,7 +11618,7 @@ expect {
 				"main",
 				[],
 				[
-					Core.element("button", [Core.on_click(shown.update(|_| False))], []),
+					Core.element("button", [Core.on("click", shown.update(|_| False))], []),
 					Core.when(
 						shown.signal(),
 						|| Core.state(
@@ -11618,7 +11668,7 @@ expect {
 				"main",
 				[],
 				[
-					Core.element("button", [Core.on_click(state.update(|value| { ..value, box: value.box.post(9.U64) }))], []),
+					Core.element("button", [Core.on("click", state.update(|value| { ..value, box: value.box.post(9.U64) }))], []),
 					Core.text_s(state.signal().map(|value| value.count.to_str())),
 					Core.on_post(state.signal().map(|value| value.box), |_| [Core.http({ url: "/post" })], Core.ignore({}).with_progress({}, state.on_progress(|value, item, transfer| { ..value, count: item + transfer.done }))),
 				],
@@ -12261,7 +12311,7 @@ expect {
 			"main",
 			[],
 			[
-				Core.element("button", [Core.on_click(changed.update(|value| !value))], []),
+				Core.element("button", [Core.on("click", changed.update(|value| !value))], []),
 				Core.element("table", [], [Core.text_s(Core.const(" "))]),
 			],
 		),
@@ -12280,7 +12330,7 @@ expect {
 			"main",
 			[],
 			[
-				Core.element("button", [Core.on_click(shown.update(|value| !value))], []),
+				Core.element("button", [Core.on("click", shown.update(|value| !value))], []),
 				Core.element("table", [], [Core.when(shown.signal(), || Core.element("tbody", [], [Core.element("tr", [], [Core.element("td", [], [Core.text("later")])])]), || Core.text(""))]),
 			],
 		),
@@ -12362,3 +12412,46 @@ expect {
 
 ## A crypto key's public inspection never reveals the host token.
 expect Str.inspect(Core.CryptoKey.(Box.box(123456789.U64))) == "<WebCrypto.Key>"
+
+click_kind : Core.Kind(Core.Click)
+click_kind = {
+	code: 10,
+	decode: |payload, site| match payload {
+		Ev(bytes) => read_click(bytes) ?? crash "contract: malformed click payload at site ${show_path(site)}"
+		_ => crash "contract: malformed click payload at site ${show_path(site)}"
+	},
+}
+
+## Click strings are strict UTF-8 and all fields consume their exact framing.
+read_click : List(U8) -> Try(Core.Click, [InvalidClick])
+read_click = |bytes| {
+	flags = bytes.first() ? |_| InvalidClick
+	if flags > 15 {
+		return Err(InvalidClick)
+	}
+	link = match bytes.get(1) ? |_| InvalidClick {
+		0 if bytes.len() == 2 => NoLink
+		1 => {
+			(href, after_href) = boot_str(bytes, 2) ? |_| InvalidClick
+			(target, after_target) = boot_str(bytes, after_href) ? |_| InvalidClick
+			download = bytes.get(after_target) ? |_| InvalidClick
+			if download > 1 or after_target + 1 != bytes.len() {
+				return Err(InvalidClick)
+			}
+			Link({ href, target, download: download == 1 })
+		}
+		_ => return Err(InvalidClick)
+	}
+	Ok({ ctrl: flags.bitwise_and(1) != 0, alt: flags.bitwise_and(2) != 0, shift: flags.bitwise_and(4) != 0, meta: flags.bitwise_and(8) != 0, link })
+}
+
+## Typed clicks preserve authored facts and reject malformed flags and framing.
+expect {
+	plain = read_click([15, 0])?
+	control = read_click([1, 0])?
+	linked = read_click(put_str(put_str([0, 1], "../a"), "_blank").append(1))?
+	plain == { ctrl: True, alt: True, shift: True, meta: True, link: NoLink } and
+		control == { ctrl: True, alt: False, shift: False, meta: False, link: NoLink } and
+			linked.link == Link({ href: "../a", target: "_blank", download: True }) and
+				[[], [0], [16, 0], [0, 2], [0, 0, 0], [0, 1], put_str(put_str([0, 1], ""), "").append(2), put_str(put_str([0, 1], ""), "").concat([0, 0])].all(|bytes| read_click(bytes).is_err())
+}

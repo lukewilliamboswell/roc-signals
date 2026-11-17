@@ -1223,6 +1223,34 @@ SpecRunner := [].{
 	fire_if : Program(state), S(state), U64, Str, Str -> S(state)
 	fire_if = |program, s, i, ev, payload| SpecRunner.fire_if_in_loop(program, s, i, ev, payload)
 
+	## Capture raw link facts from the original target's ancestors, bounded by
+	## the mount. Native specs never parse or interact with imported descendants.
+	click_payload : Dom.Model, U64, { ctrl : Bool, alt : Bool, shift : Bool, meta : Bool } -> List(U8)
+	click_payload = |dom, index, mods| {
+		flags = (if (mods.ctrl) 1.U8 else 0) + (if (mods.alt) 2 else 0) + (if (mods.shift) 4 else 0) + (if (mods.meta) 8 else 0)
+		var $at = index
+		while $at != dom.root {
+			node = Dom.node(dom, $at)
+			match SpecRunner.link_href(node) {
+				Ok(href) => return SpecRunner.put_str(SpecRunner.put_str([flags, 1], href), Dom.attr_of(node, "target")).append(if (Dom.has_attr(node, "download")) 1 else 0)
+				Err(NotALink) => {}
+			}
+			if node.parent == 0 {
+				break
+			}
+			$at = node.parent - 1
+		}
+		[flags, 0]
+	}
+
+	## Keyboard and pointer activation capture their own modifiers, before the
+	## click turn changes the page. Generic click listeners retain text payloads.
+	click_with_modifiers : Program(state), S(state), U64, { ctrl : Bool, alt : Bool, shift : Bool, meta : Bool } -> S(state)
+	click_with_modifiers = |program, s, i, modifiers| {
+		listener = Dom.target(s.dom, i, "click", Bool.True) ?? return s
+		if (listener.kind == 10) SpecRunner.send(program, s, listener.node, listener.handler, SpecRunner.click_payload(s.dom, i, modifiers)) else SpecRunner.fire_if(program, s, i, "click", "")
+	}
+
 	## Both native dispatch entry points have already resolved the route. Build
 	## only the payload its kind carries, without routing again or retaining a
 	## context beside the state passed to the engine.
@@ -1230,6 +1258,8 @@ SpecRunner := [].{
 	dispatch_control_in_loop = |program, s, i, target, text| {
 		payload = if target.kind == 1 {
 			text.to_utf8()
+		} else if target.kind == 10 and target.event == "click" {
+			SpecRunner.click_payload(s.dom, i, { ctrl: False, alt: False, shift: False, meta: False })
 		} else if target.kind == 5 and target.event == "change" and Dom.checked_input(Dom.node(s.dom, i)) {
 			[if (Dom.live_value(Dom.node(s.dom, i), "checked") == "true") 1 else 0]
 		} else {
@@ -2528,7 +2558,9 @@ SpecRunner := [].{
 	accessible_name : Dom.Model, Dom.DNode -> Str
 	accessible_name = |dom, n| {
 		l = Dom.attr_of(n, "aria-label")
-		if (l != "") l else Str.join_with(n.kids.map(|k| Dom.text_of(dom, k)), "")
+		if (l != "") l else if Dom.is_opaque(n) {
+			crash "unsupported observation: unsafe HTML accessible name requires an explicit aria-label"
+		} else Str.join_with(n.kids.map(|k| Dom.text_of(dom, k)), "")
 	}
 
 	## Compare one model node with a semantic locator. Attribute locators require
@@ -2544,17 +2576,47 @@ SpecRunner := [].{
 
 	## The element a locator names (a `text` locator names the element holding
 	## the text node).
-	find : Dom.Model, Scm.Loc -> Try(U64, [NotFound])
+	find : Dom.Model, Scm.Loc -> Try(U64, [NotFound, OpaqueHtml])
 	find = |dom, loc| {
-		i = Dom.find(dom, dom.root, |n| SpecRunner.matches(dom, n, loc))?
+		i = SpecRunner.find_in(dom, dom.root, loc)?
 		n = Dom.node(dom, i)
 		if (n.kind == 2 and n.parent != 0) Ok(n.parent - 1) else Ok(i)
+	}
+
+	## A matching role cannot silently invent a descendant-derived name from
+	## opaque content. Attribute locators still observe the ordinary wrapper.
+	find_in : Dom.Model, U64, Scm.Loc -> Try(U64, [NotFound, OpaqueHtml])
+	find_in = |dom, index, loc| {
+		n = Dom.node(dom, index)
+		match loc {
+			Role({ role, .. }) if n.kind == 1 and SpecRunner.implicit_role(n) == role and Dom.attr_of(n, "aria-label").is_empty() and Dom.find(dom, index, Dom.is_opaque).is_ok() => return Err(OpaqueHtml)
+			_ => {}
+		}
+		if SpecRunner.matches(dom, n, loc) {
+			return Ok(index)
+		}
+		if Dom.is_opaque(n) {
+			return Err(NotFound)
+		}
+		for child in n.kids {
+			match SpecRunner.find_in(dom, child, loc) {
+				Ok(found) => return Ok(found)
+				Err(OpaqueHtml) => return Err(OpaqueHtml)
+				Err(NotFound) => {}
+			}
+		}
+		Err(NotFound)
 	}
 
 	## Resolve a required locator and report its authored spelling when absent.
 	## Input and positive assertions share this failure instead of becoming no-ops.
 	need : Dom.Model, Scm.Loc -> Try(U64, Str)
-	need = |dom, loc| SpecRunner.find(dom, loc).map_err(|_| "no element ${Scm.show_loc(loc)}")
+	need = |dom, loc| SpecRunner.find(dom, loc).map_err(
+		|problem| match problem {
+			NotFound => "no element ${Scm.show_loc(loc)}"
+			OpaqueHtml => "unsupported observation: unsafe HTML accessible name requires an explicit aria-label"
+		},
+	)
 
 	## Produce the true/false text used by control-state observations and
 	## legacy text payloads; it does not choose attribute presence.
@@ -2808,6 +2870,9 @@ SpecRunner := [].{
 		match op {
 			Click(loc) | RealClick(loc) | Fill(loc, _) | Focus(loc) | Blur(loc) | Check(loc) | Uncheck(loc) | SelectOption(loc, _) | Change(loc, _) | Submit(loc) | ChooseFiles(loc, _) | DropFiles(loc, _) | PasteFiles(loc, _) | PasteText(loc, _) => {
 				i = SpecRunner.need(s.dom, loc)?
+				if Dom.find(s.dom, i, Dom.is_opaque).is_ok() {
+					return Err("unsupported interaction: unsafe HTML descendants are opaque to specs")
+				}
 				if !SpecRunner.drawn(s.dom, i) {
 					return Err(SpecRunner.unrendered_message(Scm.show_loc(loc)))
 				}
@@ -2991,11 +3056,18 @@ SpecRunner := [].{
 			ExpectFocused(loc) => check(s.focused == SpecRunner.need(dom, loc)? + 1, "${Scm.show_loc(loc)} does not hold focus")
 			ExpectNoFocus => check(s.focused == 0, "an element still holds focus")
 			ExpectText(loc, want) => {
-				got = Dom.text_of(dom, SpecRunner.need(dom, loc)?)
+				index = SpecRunner.need(dom, loc)?
+				if Dom.find(dom, index, Dom.is_opaque).is_ok() {
+					return Err("unsupported observation: unsafe HTML text is opaque to specs")
+				}
+				got = Dom.text_of(dom, index)
 				check(got == want, "${Scm.show_loc(loc)} text ${JsonOut.quote(got)}, expected ${JsonOut.quote(want)}")
 			}
 			ExpectValue(loc, want) => {
 				i = SpecRunner.need(dom, loc)?
+				if Dom.find(dom, i, Dom.is_opaque).is_ok() {
+					return Err("unsupported observation: unsafe HTML control contents are opaque to specs")
+				}
 				n = Dom.node(dom, i)
 				if !["input", "textarea", "select", "option", "button"].any(|local| Dom.html_tag(n, local)) {
 					return Err("${Scm.show_loc(loc)} has no live value property")
@@ -3023,7 +3095,11 @@ SpecRunner := [].{
 				_ = SpecRunner.need(dom, loc)?
 				Ok(s)
 			}
-			ExpectAbsent(loc) => check(SpecRunner.find(dom, loc).is_err(), "${Scm.show_loc(loc)} is present")
+			ExpectAbsent(loc) => match SpecRunner.find(dom, loc) {
+				Err(NotFound) => Ok(s)
+				Err(OpaqueHtml) => Err("unsupported observation: unsafe HTML accessible name requires an explicit aria-label")
+				Ok(_) => Err("${Scm.show_loc(loc)} is present")
+			}
 			ExpectAttr({ target, name, value }) =>
 				match SpecRunner.attr_value(dom, SpecRunner.need(dom, target)?, name) {
 					Ok(got) => check(got == value, "${Scm.show_loc(target)} ${name}=${JsonOut.quote(got)}, expected ${JsonOut.quote(value)}")
@@ -3471,13 +3547,13 @@ SpecRunner := [].{
 
 	## Keyboard activation raises click without inventing pointer events, then
 	## performs its unprevented control, form or navigation default.
-	key_activate : Program(state), S(state), U64 -> Try(S(state), Str)
-	key_activate = |program, s, i| {
+	key_activate : Program(state), S(state), U64, Scm.Key -> Try(S(state), Str)
+	key_activate = |program, s, i, key| {
 		if !SpecRunner.attached(s.dom, i) or SpecRunner.actually_disabled(s.dom, i) {
 			return Ok(s)
 		}
 		prevented = SpecRunner.prevents(s.dom, i, "click")
-		next = SpecRunner.fire_if(program, s, i, "click", "")
+		next = SpecRunner.click_with_modifiers(program, s, i, { ctrl: key.ctrl, alt: key.alt, shift: key.shift, meta: key.meta })
 		if (prevented) Ok(next) else SpecRunner.default_action(program, next, i)
 	}
 
@@ -3506,6 +3582,9 @@ SpecRunner := [].{
 			}
 		}
 		key = press.key
+		if key.key == "Tab" and Dom.find($s.dom, $s.dom.root, Dom.is_opaque).is_ok() {
+			return Err("unsupported interaction: Tab focus order includes opaque unsafe HTML")
+		}
 		document = $s.browser.doc
 		down_index = if ($s.focused == 0) $s.dom.root else $s.focused - 1
 		activation_path = SpecRunner.pressed_path($s.dom, down_index)
@@ -3525,17 +3604,17 @@ SpecRunner := [].{
 			else if key.key == "Enter" {
 				n = Dom.node($s.dom, down_index)
 				if SpecRunner.link_href(n).is_ok() or (!key.ctrl and !key.meta and (Dom.html_tag(n, "button") or (Dom.html_tag(n, "input") and ["button", "submit", "reset"].contains(Dom.input_type(n))))) {
-					$s = SpecRunner.key_activate(program, $s, down_index)?
+					$s = SpecRunner.key_activate(program, $s, down_index, key)?
 				}
 				else if Dom.html_tag(n, "input") and !key.ctrl and !key.meta and ["file", "color"].contains(Dom.input_type(n)) {
-					$s = SpecRunner.key_activate(program, $s, down_index)?
+					$s = SpecRunner.key_activate(program, $s, down_index, key)?
 				}
 				else if Dom.html_tag(n, "input") and !key.ctrl and !key.meta {
 					match SpecRunner.ancestor($s.dom, down_index, |m| Dom.html_tag(m, "form")) {
 						Ok(form) => {
 							button = Dom.find($s.dom, form, |m| (Dom.html_tag(m, "button") and Dom.input_type(m) == "submit") or (Dom.html_tag(m, "input") and Dom.input_type(m) == "submit"))
 							$s = match button {
-								Ok(i) => SpecRunner.key_activate(program, $s, i)?
+								Ok(i) => SpecRunner.key_activate(program, $s, i, key)?
 								Err(_) => if (SpecRunner.implicit_inputs($s.dom, form) <= 1) SpecRunner.submit_form(program, $s, form)? else $s
 							}
 						}
@@ -3559,7 +3638,7 @@ SpecRunner := [].{
 		if key.key == " " and $s.browser.doc == document and !prevented and !up_prevented and up_index == down_index and $s.focused == down_index + 1 and SpecRunner.attached($s.dom, down_index) and activation_path.all(|p| Dom.node($s.dom, p.node).detach_count == p.count) {
 			n = Dom.node($s.dom, up_index)
 			if Dom.html_tag(n, "button") or (Dom.html_tag(n, "input") and ["button", "submit", "reset", "checkbox", "radio"].contains(Dom.input_type(n))) {
-				$s = SpecRunner.key_activate(program, $s, up_index)?
+				$s = SpecRunner.key_activate(program, $s, up_index, key)?
 			}
 		}
 		Ok($s)
@@ -3858,7 +3937,7 @@ SpecRunner := [].{
 		click_target = if (had_capture) pressed else SpecRunner.common_ancestor($next.dom, { pressed: pointer.down - 1, released: i })
 		event = if (pointer.button == Main) "click" else "auxclick"
 		prevented = SpecRunner.prevents($next.dom, click_target, event)
-		$next = SpecRunner.fire_if(program, $next, click_target, event, "")
+		$next = if (event == "click") SpecRunner.click_with_modifiers(program, $next, click_target, { shift: pointer.modifiers.bitwise_and(1) != 0, ctrl: pointer.modifiers.bitwise_and(2) != 0, alt: pointer.modifiers.bitwise_and(4) != 0, meta: pointer.modifiers.bitwise_and(8) != 0 }) else SpecRunner.fire_if(program, $next, click_target, event, "")
 		if (prevented or pointer.button != Main) Ok($next) else SpecRunner.default_action(program, $next, click_target)
 	}
 
@@ -4758,7 +4837,7 @@ SpecRunner := [].{
 	## A walk cannot accept a leave dialog. Skip click targets inside anchors
 	## while a guard is on; that click could itself grant sticky activation.
 	walk_candidates : S(state) -> List((U64, Str))
-	walk_candidates = |state| SpecRunner.candidates(state.dom).keep_if(|(index, event)| !(state.browser.guard and event == "click" and SpecRunner.ancestor(state.dom, index, |entry| SpecRunner.link_href(entry).is_ok()).is_ok()))
+	walk_candidates = |state| SpecRunner.candidates(state.dom).keep_if(|(index, event)| !Dom.find(state.dom, index, Dom.is_opaque).is_ok() and !(state.browser.guard and event == "click" and SpecRunner.ancestor(state.dom, index, |entry| SpecRunner.link_href(entry).is_ok()).is_ok()))
 
 	## The payload a browser would send for event `ev` on node `i`. For
 	## text, half the time a value the specs typed into a control the same
@@ -7651,4 +7730,17 @@ expect {
 		},
 	)
 	{ refused: status(33)?, later: status(34)?, pending: changed.pending.len() } == { refused: "refused", later: "reserved", pending: 33 }
+}
+
+## A role locator cannot invent a name from opaque source. An explicit
+## wrapper label remains observable, and imported text is never a locator.
+expect {
+	base = Dom.new({})
+	section = Dom.modify(base, base.root, |entry| { ..entry, tag: "section" })
+	opaque = Dom.set_property_on(section, section.root, 8, "<h2>Imported</h2>", 1)
+	labelled = Dom.modify(opaque, opaque.root, |entry| { ..entry, attrs: Dom.attributes([("aria-label", "Imported")]) })
+	known = SpecRunner.find_in(labelled, labelled.root, Role({ role: "region", name: "Imported" }))?
+	known == labelled.root and
+		SpecRunner.find_in(opaque, opaque.root, Role({ role: "region", name: "Imported" })) == Err(OpaqueHtml) and
+			SpecRunner.find_in(opaque, opaque.root, Text("Imported")) == Err(NotFound)
 }

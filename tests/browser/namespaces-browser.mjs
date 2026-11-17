@@ -27,7 +27,7 @@ try {
     const memory = new WebAssembly.Memory({ initial: 2 });
     let length = 0;
     const root = document.createElement("div"); document.body.append(root);
-    const exports = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 21,
+    const exports = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 22,
       boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
       cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
       init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },
@@ -164,7 +164,7 @@ try {
     const fresh = (wrapper, doc = document) => {
       const memory = new WebAssembly.Memory({ initial: 2 });
       let length = 0, reserved = 0, initCalls = 0, boot;
-      const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 21,
+      const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 22,
         boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
         cmd_ptr: () => 0, cmd_len: () => length,
         payload_reserve(size) { reserved = size; return 65536; },

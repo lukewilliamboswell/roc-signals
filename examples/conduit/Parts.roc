@@ -5,10 +5,10 @@ import Styles
 ## any context.
 Parts := [].{
 
-	button : Str, Str, Engine.Handler(ctx) -> Elem(ctx)
+	button : Str, Str, Engine.HandlerOf(ctx, Engine.Click) -> Elem(ctx)
 	button = |label, cls, h| Engine.element("button", [Engine.attr("type", "button"), Engine.class(cls), Engine.on_click(h)], [Engine.text(label)])
 
-	button_s : Signal(ctx, Str), Str, Engine.Handler(ctx) -> Elem(ctx)
+	button_s : Signal(ctx, Str), Str, Engine.HandlerOf(ctx, Engine.Click) -> Elem(ctx)
 	button_s = |label, cls, h| Engine.element("button", [Engine.attr("type", "button"), Engine.class(cls), Engine.on_click(h)], [Engine.text_s(label)])
 
 	textarea : Str, Signal(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)

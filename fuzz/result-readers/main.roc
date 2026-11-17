@@ -153,7 +153,7 @@ sequence = |{ mode, bytes }| {
 			}
 			index = SpecRunner.find($dom, Text(if (node == 3) "issue" else if (node == 4) "toggle" else "sample")) ?? crash "reader model button absent"
 			route = Dom.target($dom, index, "click", True) ?? crash "reader model route absent"
-			Core.event($engine, route.node, route.handler, "")
+			Core.event($engine, route.node, route.handler, "\u(0000)\u(0000)")
 		}
 		if $issue {
 			$live = $live.append({ id: $next, item: $query, marker: marker(if (mode == Posted) $sample else $query), orphan: False })
@@ -233,7 +233,7 @@ ownership_view = |_| Engine.state(
 
 ownership_round : Core.App({}), Dom.Target, U64 -> Core.App({})
 ownership_round = |engine, route, round| {
-	(posted, _) = Core.take_cmds(Core.event(engine, route.node, route.handler, ""), [])
+	(posted, _) = Core.take_cmds(Core.event(engine, route.node, route.handler, "\u(0000)\u(0000)"), [])
 	id = Core.fx_live(posted).first() ?? crash "reader admission did not retain one subscription"
 	# A nonterminal message and progress-free subscription keep the reader;
 	# Closed and Threw both retire it. Repeating the terminal result is stale.
@@ -331,9 +331,9 @@ current_ownership_view = |_| Engine.state(
 
 current_round : Core.App({}), Dom.Target -> Core.App({})
 current_round = |engine, route| {
-	(first, _) = Core.take_cmds(Core.event(engine, route.node, route.handler, ""), [])
+	(first, _) = Core.take_cmds(Core.event(engine, route.node, route.handler, "\u(0000)\u(0000)"), [])
 	old = Core.fx_live(first)
-	(second, _) = Core.take_cmds(Core.event(first, route.node, route.handler, ""), [])
+	(second, _) = Core.take_cmds(Core.event(first, route.node, route.handler, "\u(0000)\u(0000)"), [])
 	live = Core.fx_live(second)
 	if old.len() != 2 or live.len() != 4 {
 		crash "current requests were cancelled or not admitted"

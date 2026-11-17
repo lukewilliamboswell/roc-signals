@@ -640,7 +640,7 @@ entries_text = |rows| Str.join_with(rows.sort_with(|x, y| compare_u64(x.key, y.k
 ## A button named `name` with no text of its own, so a row's text is its
 ## key, its row and its marks alone.
 press : Str, Engine.Handler(ctx) -> Elem(ctx)
-press = |name, handler| Engine.element("button", [Engine.attr("data-do", name), Engine.on_click(handler)], [])
+press = |name, handler| Engine.element("button", [Engine.attr("data-do", name), Engine.on("click", handler)], [])
 
 ## One row of a view of `table`: `key:rank:shade`, then `:marks` from a
 ## state of the row's own. `bump` and `tint` write the row through its

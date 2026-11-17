@@ -52,7 +52,8 @@ The handler's declaration chooses its payload kind. `Html.text_input` and
 `textarea` deliver the control's text on `input`. `Html.checkbox` delivers
 its Boolean checked state on `change`. `Html.select` delivers `Chose(value)`
 from its current offered choices, or `NotOffered` when a removed or foreign
-key arrives. A click or submit handler receives empty text. Raw text-kind
+key arrives. Click helpers deliver `Engine.Click`, with modifiers and optional
+nearest-link facts. A submit handler receives empty text. Raw text-kind
 `Engine.on("change", handler)` retains its string payload; use `on_checked`
 when attaching a Boolean handler to a checkbox or radio yourself.
 
@@ -81,6 +82,15 @@ above the mount root. For an event that does not bubble, `stop` does
 nothing, so its target still receives it. Policies are static, chosen
 before dispatch; a misspelt field does not compile. Event types are bare
 names: retired `:prevent` and `:files` suffixes are contract errors.
+
+Click handlers attached with `Engine.on_click`, `on_click_with` or a button
+helper receive `Engine.Click`. Its modifier flags are `ctrl`, `alt`, `shift` and
+`meta`. `link` is `NoLink` or `Link({ href, target, download })`, captured at
+dispatch from the nearest HTML or SVG link inside the mount. The strings are
+authored attribute text and `download` is presence. Use `on_click_with` to declare
+synchronous prevention; a Roc handler cannot decide it after dispatch.
+`Engine.on("click", handler)` remains available for a text payload. Checked
+link destinations and imported HTML are described in [Markup](@/docs/markup.md).
 
 ## Keys and shortcuts
 

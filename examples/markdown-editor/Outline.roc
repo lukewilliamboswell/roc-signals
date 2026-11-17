@@ -1,3 +1,4 @@
+import pf.Web
 import pf.Engine exposing [Elem, RowRef, Signal]
 import pf.Html
 import Markdown
@@ -188,7 +189,19 @@ row_view = |row| Engine.element(
 	[
 		Engine.element(
 			"a",
-			[Engine.test_id_s(row.key()), Engine.attr_s("href", row.field(|r| r.href)), Engine.attr_s("data-level", row.field(|r| r.level_text)), Engine.class("block px-2 py-1 text-sm text-zinc-700 transition hover:bg-zinc-100 hover:text-accent-700")],
+			[
+				Engine.test_id_s(row.key()),
+				Html.href_s(
+					row.field(|r| r.href).map(
+						|authored| match Web.Link.from_str(authored) {
+							Ok(destination) => Present(destination)
+							Err(UnsupportedScheme(_)) => Absent
+						},
+					),
+				),
+				Engine.attr_s("data-level", row.field(|r| r.level_text)),
+				Engine.class("block px-2 py-1 text-sm text-zinc-700 transition hover:bg-zinc-100 hover:text-accent-700"),
+			],
 			[Engine.text_s(row.field(|r| r.label))],
 		),
 	],

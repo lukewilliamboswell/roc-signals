@@ -305,7 +305,7 @@ card_row = |{ cards, drag, column, size, marker }, title, card| {
 
 ## A card's button: a glyph whose accessible name and tooltip say what it
 ## does to which card ("Move left: Rotate API keys"), disabled while `off`.
-card_button : { glyph : Str, action : Str, look : Str, title : Signal(ctx, Str), off : Signal(ctx, Bool) }, Handler(ctx) -> Elem(ctx)
+card_button : { glyph : Str, action : Str, look : Str, title : Signal(ctx, Str), off : Signal(ctx, Bool) }, Engine.HandlerOf(ctx, Engine.Click) -> Elem(ctx)
 card_button = |{ glyph, action, look, title, off }, on_press| {
 	name = title.map(|card_title| "${action}: ${card_title}")
 	Engine.element(

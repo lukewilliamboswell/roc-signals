@@ -219,7 +219,7 @@ flat = |n, g, inner| match n {
 	Bump2(i, j) => {
 		count = g.wrs.len().max(1)
 		match (g.wrs.get(i % count), g.wrs.get(j % count)) {
-			(Ok(first), Ok(second)) if !g.pure => Core.element("button", [Core.on_click(first.update(|x| x + 1).also(second.update(|x| x + 1)))], [Core.text("++")])
+			(Ok(first), Ok(second)) if !g.pure => Core.element("button", [Core.on("click", first.update(|x| x + 1).also(second.update(|x| x + 1)))], [Core.text("++")])
 			_ => bump_button(g, i)
 		}
 	}
@@ -249,7 +249,7 @@ flat = |n, g, inner| match n {
 				Core.state(
 					0.U64,
 					|st| {
-						own = if (pure) [] else [Core.element("button", [Core.on_click(st.update(|x| x + 1))], [Core.text("+")])]
+						own = if (pure) [] else [Core.element("button", [Core.on("click", st.update(|x| x + 1))], [Core.text("+")])]
 						g2 = { vals: lifted.append(st.signal()), wrs: if (pure) lwrs else lwrs.append(st), pure }
 						Core.element("div", [], [show(st.signal())].concat(own).append(layer(body, g2)))
 					},
@@ -423,7 +423,7 @@ view = |tree, pure, init| Core.state(
 		[],
 		[
 			show(st.signal()),
-			Core.element("button", [Core.on_click(st.update(|x| x + 1))], [Core.text("+")]),
+			Core.element("button", [Core.on("click", st.update(|x| x + 1))], [Core.text("+")]),
 			flat_list(tree, { vals: [st.signal()], wrs: [st], pure }, Below({ layer: root_l2, row: row_1 })),
 			# Generated document handlers live outside rows and are repeatedly
 			# mounted/disposed by ordinary turns. Dom's independent detach check
@@ -812,6 +812,7 @@ series = |seed, count| {
 ## property's leak-checked region, so both replay the exact same histories.
 run_input : Input -> {}
 run_input = |{ mode, tree, events }| {
+	unsafe_html_history(events)
 	constant_tree_property(decode(tree))
 	if mode == 3 {
 		observation_release_case({})
@@ -835,6 +836,7 @@ ex = |name, mode, tree, events| { name, input: { mode, tree, events } }
 
 fixed_cases : List(Case)
 fixed_cases = [
+	ex("opaque-html-updates-moves-and-disposal", 0, [], [0, 1, 2, 3, 0, 3, 2, 0, 1, 0, 0, 0]),
 	ex("constant-text-and-attributes", 0, [3, 5, 0, 1, 0, 0, 7, 0, 1, 0, 0, 3, 0, 1, 0, 0, 1, 0, 1], []),
 	# `When(0, [Show(0)], [Layer(state, 0, [Show(1), Bump(1)])])`: a state
 	# that exists only in the branch the `when` mounts second, written by
@@ -886,7 +888,7 @@ observation_release_case = |_props| {
 				"main",
 				[],
 				[
-					Core.element("button", [Core.on_click(visible.update(|value| !value))], []),
+					Core.element("button", [Core.on("click", visible.update(|value| !value))], []),
 					Core.when(
 						visible.signal(),
 						|| Core.element(
@@ -1039,4 +1041,73 @@ expect {
 		half_seen(1, result.written, result.fx, 1)
 	}
 	classify(element.concat(ordinary("data-aa")).concat(ordinary("data-bb"))) == Ok({}) and classify(element.concat(builtin).concat(alias)) == Err("node 1 was created by the turn and then written again by it")
+}
+
+HtmlHistory : { content : U64, visible : Bool, reversed : Bool }
+
+## A bounded HTML vocabulary deliberately includes source browsers repair or
+## execute. The oracle must retain every byte without interpreting that source.
+history_html : U64 -> Str
+history_html = |choice| ["", "<h2>one</h2>", "<table><tr><td>two", "<script>raw()</script>", "<a href='javascript:raw()'>three</a>"].get(choice % 5) ?? crash "bounded HTML vocabulary"
+
+history_after : HtmlHistory, U8 -> HtmlHistory
+history_after = |before, operation| match operation % 4 {
+	0 => { ..before, content: before.content + 1 }
+	1 => before
+	2 => { ..before, reversed: !before.reversed }
+	_ => { ..before, visible: !before.visible }
+}
+
+history_view : HtmlHistory -> Core.Elem(Core.Root({}))
+history_view = |initial| Core.state(
+	initial,
+	|state| Core.element(
+		"main",
+		[],
+		[
+			Core.element("button", [Core.on("click", state.set_value(|before, payload| history_after(before, U8.from_str(payload) ?? crash "generated operation")))], [Core.text("advance")]),
+			Core.when(state.signal().map(|value| value.visible), || Core.unsafe_html("section", [], Core.attr_s("title", state.signal().map(|value| history_html(value.content)))), || Core.text("")),
+			Core.each(state.signal().map(|value| if (value.reversed) ["b", "a"] else ["a", "b"]), |key| key, |row| Core.unsafe_html("article", [], Core.attr_s("title", row.key().map2(state.signal().lift_row(), |key, value| "${key}:${history_html(value.content)}")))),
+		],
+	),
+)
+
+## Compare only observable engine-authored structure and retained opaque source,
+## independently of renderer parsing, engine ids and recycled model indices.
+history_snapshot : Dom.Model, U64 -> Str
+history_snapshot = |dom, index| {
+	entry = Dom.node(dom, index)
+	Str.inspect({ tag: entry.tag, text: entry.text, attrs: entry.attrs, props: entry.props, children: entry.kids.map(|child| history_snapshot(dom, child)) })
+}
+
+## Every generated HTML update history settles and equals a fresh mount. Equal
+## writes emit no patch; row moves keep the same scopes, and disposal releases
+## ordinary wrapper ownership. The enclosing target checks allocation balance.
+unsafe_html_history : List(U8) -> {}
+unsafe_html_history = |operations| {
+	initial = { content: 0.U64, visible: True, reversed: False }
+	(ready, commands) = Core.take_cmds(Core.mount(history_view(initial)), [])
+	var $engine = ready
+	var $dom = Dom.apply(Dom.new({}), commands)
+	var $model = initial
+	for operation in operations {
+		button = Dom.button_with_text($dom, "advance") ?? crash "HTML history button"
+		listener = Dom.click_target($dom, button) ?? crash "HTML history route"
+		(updated_engine, batch) = Core.take_cmds(Core.event($engine, listener.node, listener.handler, operation.to_str()), [])
+		$engine = updated_engine
+		$dom = Dom.apply($dom, batch)
+		$model = history_after($model, operation)
+		if operation % 4 == 1 and !batch.is_empty() {
+			crash "equal opaque HTML emitted commands"
+		}
+		if Core.settled($engine).is_err() {
+			crash "opaque HTML readers were left stale"
+		}
+		(_, fresh_batch) = Core.take_cmds(Core.mount(history_view($model)), [])
+		fresh = Dom.apply(Dom.new({}), fresh_batch)
+		if history_snapshot($dom, $dom.root) != history_snapshot(fresh, fresh.root) {
+			crash "opaque HTML differs from fresh mount"
+		}
+	}
+	{}
 }

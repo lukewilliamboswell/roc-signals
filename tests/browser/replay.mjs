@@ -125,6 +125,9 @@ async function settle(page) {
 
 // These are oracle-known top-layer facts, without layout or hit testing.
 async function reachable(page, loc) {
+  await onEl(page, loc, element => {
+    if (element && window.__specOpaque(element)) throw new Error("unsupported interaction: unsafe HTML descendants are opaque to specs");
+  });
   await need(page, loc);
   const reason = await onEl(page, loc, (element) => {
     // The browser draws no HTML element inside SVG outside foreignObject, nor
@@ -222,6 +225,7 @@ async function navigating(page, state, act, known = undefined) {
 // control: `click` then does nothing, and `real-click` fails.
 async function click(page, state, loc, real) {
   await reachable(page, loc);
+
   const box = await onEl(page, loc, (e) => {
     e.scrollIntoView({ block: "nearest", inline: "nearest" });
     const r = e.getBoundingClientRect();
@@ -413,7 +417,7 @@ async function fill(page, loc, v) {
   if (v === "") {
     if (!r.empty) await page.evaluate(() => document.execCommand("delete"));
   } else await page.insertText(v);
-  const got = await onEl(page, loc, (e) => e.value);
+  const got = await onEl(page, loc, (e) => { if (window.__specOpaque(e)) throw new Error("unsupported observation: unsafe HTML control contents are opaque to specs"); return e.value; });
   if (got !== v) throw new Error(`${showLoc(loc)} holds ${JSON.stringify(got)} after filling ${JSON.stringify(v)}`);
   return settle(page);
 }
@@ -452,7 +456,7 @@ const attrOf = (e, n) => {
 
 async function expectText(page, loc, want) {
   await need(page, loc);
-  const got = await onEl(page, loc, (e) => e.textContent);
+  const got = await onEl(page, loc, (e) => window.__specText(e));
   if (got !== want) throw new Error(`${showLoc(loc)} text ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
 }
 
@@ -790,6 +794,10 @@ async function flushKeyInput(page) {
 // Keep the actual KeyboardEvent until dispatch has returned. A passive CDP
 // binding preserves its prevented flag even when a key activates navigation.
 async function press(page, step, state) {
+  if (step.key.key === "Tab") await page.evaluate(() => {
+    const walker = document.createTreeWalker(window.__rt.root, NodeFilter.SHOW_ELEMENT);
+    while (walker.nextNode()) if (walker.currentNode.__opaqueHtml) throw new Error("unsupported interaction: Tab focus order includes opaque unsafe HTML");
+  });
   if (step.loc) {
     await reachable(page, step.loc);
     await onEl(page, step.loc, (element) => element.focus());
