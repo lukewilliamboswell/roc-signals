@@ -27,11 +27,11 @@ try {
     const memory = new WebAssembly.Memory({ initial: 2 });
     let length = 0;
     const root = document.createElement("div"); document.body.append(root);
-    const exports = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 20,
+    const exports = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 21,
       boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
       cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
       init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },
-      files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
+      keys_released: () => 0, files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
     };
     const runtime = new RocEngineRuntime(exports, root, { manualEffects: true });
     runtime.mount();
@@ -164,12 +164,12 @@ try {
     const fresh = (wrapper, doc = document) => {
       const memory = new WebAssembly.Memory({ initial: 2 });
       let length = 0, reserved = 0, initCalls = 0, boot;
-      const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 20,
+      const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 21,
         boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
         cmd_ptr: () => 0, cmd_len: () => length,
         payload_reserve(size) { reserved = size; return 65536; },
         init() { initCalls++; boot = [...new Uint8Array(memory.buffer, 65536, reserved)]; new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },
-        files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
+        keys_released: () => 0, files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
       };
       const rt = new RocEngineRuntime(x, wrapper, { manualEffects: true, document: doc });
       return { rt, get initCalls() { return initCalls; }, get boot() { return boot; }, raw(bytes) { new Uint8Array(memory.buffer).set([0, ...bytes]); length = bytes.length + 1; rt.guard(() => rt.applyBatch()); } };

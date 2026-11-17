@@ -28,7 +28,7 @@ const mount = handler => {
     boot_keys() { new Uint8Array(memory.buffer).set(declarations); cmdLen = declarations.length; },
     cmd_ptr: () => 0, cmd_len: () => cmdLen, payload_reserve: () => 65536,
     init() { cmdLen = 0; return 0; }, event: () => 0, fault: () => 0, err_ptr: () => 0, err_len: () => 0,
-    files_released: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
+    files_released: () => 0, keys_released: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
   };
   const runtime = new RocEngineRuntime(x, fakeRoot(), {
     document: { ...events }, window: { ...events, location: { pathname: "/", search: "", hash: "" } },

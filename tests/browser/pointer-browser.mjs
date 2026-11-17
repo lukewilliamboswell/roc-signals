@@ -76,7 +76,7 @@ await page.evaluate(async () => {
   window.__pointerFixture = (manual = true) => {
     const root = document.createElement("div"); document.body.append(root);
     const memory = new WebAssembly.Memory({ initial: 1 }); let length = 0;
-    const x = { memory, cmd_ptr: () => 0, cmd_len: () => length, files_released: () => 0, metric: () => 0n, work_len: () => 0, drop: () => {} };
+    const x = { memory, cmd_ptr: () => 0, cmd_len: () => length, keys_released: () => 0, files_released: () => 0, metric: () => 0n, work_len: () => 0, drop: () => {} };
     const frames = new Map(); let nextFrame = 0;
     const win = { requestAnimationFrame: (callback) => { frames.set(++nextFrame, callback); return nextFrame; }, cancelAnimationFrame: (id) => frames.delete(id) };
     const rt = new RocEngineRuntime(x, root, { manualEffects: manual, window: win, environment: { visible: () => true } });

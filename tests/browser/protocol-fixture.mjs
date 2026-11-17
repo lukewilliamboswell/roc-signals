@@ -60,11 +60,11 @@ export async function installProtocolFixture(page) {
       const memory = new WebAssembly.Memory({ initial: 2 });
       let length = 0;
       const x = {
-        memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 20,
+        memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 21,
         boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
         cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
         init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },
-        files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop() {},
+        keys_released: () => 0, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop() {},
       };
       const root = document.createElement("div");
       const runtime = new Runtime(x, root, { manualEffects: true });

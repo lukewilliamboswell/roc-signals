@@ -67,14 +67,14 @@ try {
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const section = (tag, body) => [tag, ...word(body.length), ...body];
     const prefix = [section(2, word(0)), section(5, word(0)), section(6, word(0)), section(10, [110, 1]), section(11, word(0))].flat();
-    const make = (declarations, version = 20) => {
+    const make = (declarations, version = 21) => {
       const memory = new WebAssembly.Memory({ initial: 2 }); let length = 0, initCalls = 0;
       const root = document.createElement("div"); document.body.append(root);
       const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => version,
         boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
         cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
         init() { initCalls++; new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },
-        files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
+        keys_released: () => 0, files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
       };
       const runtime = new RocEngineRuntime(x, root, { manualEffects: true });
       return { runtime, root, get initCalls() { return initCalls; }, raw(bytes) { new Uint8Array(memory.buffer).set(bytes); length = bytes.length; runtime.apply(); }, end() { runtime.unmount(); root.remove(); } };
@@ -86,9 +86,9 @@ try {
       check(name, refused && fixture.initCalls === 0); fixture.root.remove();
     };
     for (const [name, item, detail] of cases) reject(name, item, detail ?? null);
-    const oldModule = make(Uint8Array.from([...prefix, ...fixture]), 19);
+    const oldModule = make(Uint8Array.from([...prefix, ...fixture]), 20);
     let oldRefused = false;
-    try { oldModule.runtime.mount(); } catch (error) { oldRefused = error.message.includes("protocol 19 is not the protocol 20"); }
+    try { oldModule.runtime.mount(); } catch (error) { oldRefused = error.message.includes("protocol 20 is not the protocol 21"); }
     check("the previous transport version refuses before init", oldRefused && oldModule.initCalls === 0);
     oldModule.root.remove();
     const workerMismatch = await new Promise((resolve, reject) => {
@@ -96,11 +96,11 @@ try {
       const timer = setTimeout(() => { worker.terminate(); reject(new Error("worker version guard timed out")); }, 5000);
       worker.onmessage = event => { clearTimeout(timer); worker.terminate(); resolve(event.data); };
       worker.onerror = event => { clearTimeout(timer); worker.terminate(); reject(new Error(event.message)); };
-      worker.postMessage({ type: "init", module: null, version: 19 });
+      worker.postMessage({ type: "init", module: null, version: 20 });
       // Init intentionally has no failure reply until a job awaits its promise.
       worker.postMessage({ type: "job", mode: "work", payload: new ArrayBuffer(0) });
     });
-    check("the worker rejects the previous version before instantiation", workerMismatch.type === "fault" && workerMismatch.code === 0 && workerMismatch.message === "worker could not start: page runtime protocol 19 is not the protocol 20 this worker implements");
+    check("the worker rejects the previous version before instantiation", workerMismatch.type === "fault" && workerMismatch.code === 0 && workerMismatch.message === "worker could not start: page runtime protocol 20 is not the protocol 21 this worker implements");
     const metadataOnly = make(Uint8Array.from([...prefix, ...fixture]));
     const factories = new Map(["createElement", "createElementNS", "createTextNode", "createComment", "createDocumentFragment"].map(name => [name, document[name]]));
     const objectKinds = ["Blob", "File", "Worker", "MutationObserver", "ResizeObserver", "IntersectionObserver"];

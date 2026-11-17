@@ -24,7 +24,7 @@ const runtimeWith = batch => {
     memory, protocol_version: () => PROTOCOL_VERSION, dbg_ptr: () => 0, dbg_len: () => 0,
     boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
     cmd_ptr: () => 0, cmd_len: () => length, fault: () => 0, err_ptr: () => 0, err_len: () => 0,
-    files_released: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
+    files_released: () => 0, keys_released: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
   };
   const root = { nodeType: 1, hasAttributeNS: () => false, addEventListener() {}, removeEventListener() {}, textContent: "" };
   const runtime = new RocEngineRuntime(x, root, { manualEffects: true, module: {} });

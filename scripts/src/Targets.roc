@@ -292,7 +292,7 @@ Targets := [].{
 		Proc.run!({ program: o.tooling, args: ["scripts/test_parallel.roc"], cwd: o.root })?
 		Proc.run!({ program: o.tooling, args: ["scripts/test_protocol.roc"], cwd: o.root })?
 		Proc.run!({ program: o.tooling, args: ["scripts/test_worker_entries.roc"], cwd: o.root })?
-		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs", "protocol-facts.mjs", "boot-fault-unit.mjs", "forget-fault-unit.mjs", "work-request-unit.mjs", "storage-text-unit.mjs", "port-answer-unit.mjs", "conduit-urls.mjs", "dbg.test.mjs", "replay-errors.test.mjs"] {
+		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs", "protocol-facts.mjs", "boot-fault-unit.mjs", "forget-fault-unit.mjs", "work-request-unit.mjs", "crypto-unit.mjs", "storage-text-unit.mjs", "port-answer-unit.mjs", "conduit-urls.mjs", "dbg.test.mjs", "replay-errors.test.mjs"] {
 			code = Proc.status!({ program: o.node, args: ["tests/runtime/${script}"], cwd: o.root })?
 			if code != 0 {
 				$failures = $failures.append("${script} failed (exit ${code.to_str()})")
@@ -412,6 +412,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "file-effects-browser.mjs", ["--wasm", file_effects])?)
 				.concat(Targets.browser!(o, "http-progress-browser.mjs", ["--wasm", file_effects])?)
 				.concat(Targets.browser!(o, "file-transfer-memory-browser.mjs", [])?)
+				.concat(Targets.browser!(o, "crypto-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "prepared-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "prepared")])?)
 				.concat(Targets.browser!(o, "ports-browser.mjs", ["--wasm", ports])?)
 				.concat(Targets.browser!(o, "reports-browser.mjs", ["--wasm", ports])?)

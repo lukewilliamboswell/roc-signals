@@ -55,7 +55,7 @@ async function fixture() {
       let length = declarations.length, payloadLength = 0, boot;
       const exports = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => PROTOCOL_VERSION, boot_keys: () => {}, cmd_ptr: () => 0, cmd_len: () => length,
         payload_reserve: count => { payloadLength = count; return 65536; }, init: () => { boot = new Uint8Array(memory.buffer, 65536, payloadLength).slice(); length = 0; return 0; },
-        files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
+        keys_released: () => 0, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
       const root = document.createElement("div"); document.getElementById("app").append(root);
       const rt = new RocEngineRuntime(exports, root, { manualEffects: true, ...options, environment: { now: () => 0, seed: () => new Uint8Array(16), ...options.environment } });
       rt.mount();

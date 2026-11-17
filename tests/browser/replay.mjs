@@ -1268,6 +1268,10 @@ const STEPS = {
   "choose-files": (page, s, state) => chooseFiles(page, s, state),
   "drop-files": (page, s, state) => giveFiles(page, s, state, "drop"),
   "paste-files": (page, s, state) => giveFiles(page, s, state, "paste"),
+  "expect-keys": async (page, s) => {
+    const count = await page.evaluate(() => Number(window.__rt.x.metric(7)));
+    if (count !== s.count) throw new Error(`expected ${s.count} live key handles, found ${count}`);
+  },
   "expect-files": async (page, s) => {
     const n = await page.evaluate(() => Number(window.__rt.x.metric(6)));
     if (n !== s.count) throw new Error(`expected ${s.count} live file handles, found ${n}`);
@@ -1425,6 +1429,8 @@ const SETUP = {
   "local-storage-full": out => { out.mount.manualLocalStorageFull = true; },
   "clipboard-denied": out => { out.mount.manualClipboardDenied = true; },
   "max-paste-bytes": (out, step) => { out.mount.maxPasteBytes = step.count; },
+  "max-crypto-bytes": (out, step) => { out.mount.maxCryptoBytes = step.count; },
+  "max-crypto-iterations": (out, step) => { out.mount.maxCryptoIterations = step.count; },
   "initial-online": () => {},
   "initial-visibility": () => {},
   "initial-media": () => {},

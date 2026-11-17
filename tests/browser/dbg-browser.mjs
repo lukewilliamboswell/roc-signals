@@ -127,7 +127,7 @@ try {
     const make=(bootTrap=false)=>{
       const memory=new WebAssembly.Memory({initial:2});let length=0,debugLength=0,reads=0;
       const put=text=>{const bytes=[...new TextEncoder().encode(text)];const encoded=[...word(0),...word(bytes.length),...word(bytes.length),...bytes];new Uint8Array(memory.buffer).set(encoded,8192);debugLength=encoded.length;};
-      const x={memory,protocol_version:()=>PROTOCOL_VERSION,boot_keys(){put('declarations');if(bootTrap)throw Error('keys trap');new Uint8Array(memory.buffer).set(declarations);length=declarations.length;},payload_reserve:()=>65536,cmd_ptr:()=>0,cmd_len:()=>length,init(){debugLength=0;length=0;return 0;},event(){debugLength=0;return 0;},event_files(){debugLength=0;return 0;},files_released:()=>0,work_len:()=>0,fault:()=>0,metric:()=>0n,drop(){},dbg_len(){reads++;return debugLength;},dbg_ptr:()=>8192};
+      const x={memory,protocol_version:()=>PROTOCOL_VERSION,boot_keys(){put('declarations');if(bootTrap)throw Error('keys trap');new Uint8Array(memory.buffer).set(declarations);length=declarations.length;},payload_reserve:()=>65536,cmd_ptr:()=>0,cmd_len:()=>length,init(){debugLength=0;length=0;return 0;},event(){debugLength=0;return 0;},event_files(){debugLength=0;return 0;},keys_released: () => 0, files_released:()=>0,work_len:()=>0,fault:()=>0,metric:()=>0n,drop(){},dbg_len(){reads++;return debugLength;},dbg_ptr:()=>8192};
       const root=document.createElement('div');document.body.append(root);
       const rt=new RocEngineRuntime(x,root,{manualEffects:true});return {x,rt,put,reads:()=>reads};
     };

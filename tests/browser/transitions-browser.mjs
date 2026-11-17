@@ -41,7 +41,7 @@ try {
       const root = document.createElement("main"); document.body.append(root);
       const memory = new WebAssembly.Memory({ initial: 64 }); let length = 0, releases = 0;
       const calls = [], starts = [], effects = [];
-      const x = { memory, cmd_ptr: () => 0, cmd_len: () => length, files_released: () => { releases++; return 0; }, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {}, payload_reserve: () => { throw new Error("unexpected staging"); } };
+      const x = { memory, cmd_ptr: () => 0, cmd_len: () => length, keys_released: () => 0, files_released: () => { releases++; return 0; }, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {}, payload_reserve: () => { throw new Error("unexpected staging"); } };
       const start = options.start ?? (arg => {
         let ready, finish;
         const transition = { ready: new Promise(r => { ready = r; }), finished: new Promise(r => { finish = r; }), skips: 0, skipTransition() { this.skips++; } };

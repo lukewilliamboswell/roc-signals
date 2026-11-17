@@ -43,7 +43,7 @@ try {
     window.__dialogFixture = () => {
       const root = document.createElement("main"); document.body.append(root);
       const memory = new WebAssembly.Memory({ initial: 2 }); let length = 0;
-      const exports = { memory, cmd_ptr: () => 0, cmd_len: () => length, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
+      const exports = { memory, cmd_ptr: () => 0, cmd_len: () => length, keys_released: () => 0, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
       const rt = new RocEngineRuntime(exports, root, { manualEffects: true });
       __bindProtocolFixture(rt);
       rt.controlListeners(); rt.nativeEventListeners(); rt.documentKeyListeners(); rt.listen("submit");

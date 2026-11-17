@@ -121,6 +121,25 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // until runEffect(id) performs them. An upload (kind 12) is an HTTP request
 // whose body is the range, which the browser streams from the file; it is
 // performed, held and answered as an HTTP request (kind 1) is.
+// WebCrypto (FX kind 21) is an awaited, scoped primitive: random bytes,
+// PBKDF2 to a non-extractable AES-256-GCM key, authenticated encryption with
+// a fresh 96-bit IV, authenticated decryption, or a SHA digest. Keys live in
+// a separate typed host heap and this runtime holds each CryptoKey under its
+// token until keys_released reports its last Roc reference. A request takes
+// the object while applying its batch, before release draining; a result key
+// is staged only when its ordinary ingress turn runs. No raw key bytes enter
+// the page's Wasm memory. Browser failures are typed results, including
+// NotAuthentic for a rejected GCM tag; they never become fabricated plaintext.
+// maxCryptoBytes bounds input blocks together and output bytes (8 MiB by
+// default, at most 64 MiB); maxCryptoIterations caps PBKDF2 work (one million
+// by default, at most ten million). Exceeding either answers TooLarge.
+// SubtleCrypto has no abort operation: CANCEL drops its answer but its work
+// keeps one of 32 physical slots until completion. Further work is Refused.
+// This count survives recovery, so replacing the instance cannot evade it.
+// In manual mode runEffect really performs the operation and uses the two
+// spec runners' deterministic SHA-256 entropy stream, never production's
+// CSPRNG and never the app's boot seed.
+//
 // Ports (design.md, "Request kinds"): services the page's own JavaScript
 // supplies, passed as options.ports, one entry per port the app declares:
 // { command(value, { port }) }, { call(value, { signal, port }) },
@@ -160,7 +179,7 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // text is never interpreted as absence, including empty or false text.
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 20;
+export const PROTOCOL_VERSION = 21;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -222,6 +241,24 @@ const RES_COPIED = 23;
 const RES_CLIPBOARD_FAILED = 24;
 const RES_STORAGE_FAILED = 25;
 const RES_PROGRESS = 26;
+const RES_CRYPTO_KEY = 27;
+const RES_CRYPTO_BYTES = 28;
+const RES_CRYPTO_SEALED = 29;
+const RES_CRYPTO_FAILED = 30;
+const CRYPTO_UNAVAILABLE = 1;
+const CRYPTO_TOO_LARGE = 2;
+const CRYPTO_INVALID_PARAMETERS = 3;
+const CRYPTO_NOT_AUTHENTIC = 4;
+const CRYPTO_REFUSED = 5;
+const CRYPTO_FAILED = 6;
+
+// SubtleCrypto operations cannot be aborted. Cancelled work therefore keeps
+// one of these slots until its promise settles, separately from engine ids.
+const MAX_CRYPTO_OPERATIONS = 32;
+export const DEFAULT_CRYPTO_BYTES = 8 * 1024 * 1024;
+export const MAX_CRYPTO_BYTES = 64 * 1024 * 1024;
+export const DEFAULT_CRYPTO_ITERATIONS = 1000000;
+export const MAX_CRYPTO_ITERATIONS = 10000000;
 
 // The default and largest bound on one port answer or message, JSON text
 // and bytes together (options.maxPortBytes).
@@ -1010,6 +1047,60 @@ const COMMAND_APPLIERS = {
       queueEffect(this, reader, { op: "clipboard", id, text, html: htmlFlag ? str() : null });
     } else if (kind === 20) {
       queueEffect(this, reader, { op: "storagefailures", id });
+    } else if (kind === 21) {
+      // Crypto operands are raw bytes, never text repaired by a decoder.
+      // Bound all blocks before copying any out of linear memory.
+      const within = count => {
+        if (count > u8.length - at) throw new ContractFault("contract: crypto request operand does not lie within the request");
+      };
+      within(1);
+      const action = u8[at++];
+      let total = 0;
+      const bytes = () => {
+        within(4);
+        const length = dv.getUint32(at, true); at += 4;
+        within(length);
+        const range = { at, length };
+        total += length; at += length;
+        return range;
+      };
+      const hash = derivation => {
+        within(1);
+        const algorithm = u8[at++];
+        if (algorithm !== 1 && algorithm !== 3 && (derivation || algorithm !== 2)) throw new ContractFault(`contract: invalid crypto hash ${algorithm}`);
+        return algorithm;
+      };
+      const key = () => {
+        within(8);
+        const encoded = dv.getBigUint64(at, true); at += 8;
+        if (encoded > BigInt(Number.MAX_SAFE_INTEGER)) throw new ContractFault("contract: a crypto request's key token is not a safe integer");
+        const token = Number(encoded);
+        if (reader.mode === "preflight") return null;
+        const object = this.keys.get(token);
+        if (object === undefined) throw new ContractFault(`contract: a crypto request names key handle ${token}, which this runtime does not hold`);
+        return object;
+      };
+      let request;
+      if (action === 1) {
+        within(8);
+        const count = dv.getBigUint64(at, true); at += 8;
+        request = { action: "random", count };
+      } else if (action === 2) {
+        const algorithm = hash(true);
+        within(4); const iterations = dv.getUint32(at, true); at += 4;
+        request = { action: "derive", hash: algorithm, iterations, password: bytes(), salt: bytes() };
+      } else if (action === 3) request = { action: "encrypt", key: key(), plaintext: bytes(), associated: bytes() };
+      else if (action === 4) request = { action: "decrypt", key: key(), iv: bytes(), ciphertext: bytes(), associated: bytes() };
+      else if (action === 5) request = { action: "digest", hash: hash(false), bytes: bytes() };
+      else throw new ContractFault(`contract: invalid crypto operation ${action}`);
+      const tooLarge = total > this.maxCryptoBytes;
+      if (reader.mode !== "preflight") {
+        for (const field of ["password", "salt", "plaintext", "associated", "iv", "ciphertext", "bytes"]) {
+          const range = request[field];
+          if (range !== undefined) request[field] = tooLarge ? null : u8.slice(range.at, range.at + range.length);
+        }
+      }
+      queueEffect(this, reader, { op: "crypto", id, ...request, tooLarge });
     } else throw new Error(`unknown effect kind ${kind}`);
     return at;
   },
@@ -3170,6 +3261,17 @@ export class RocEngineRuntime {
     this.fetch = options.fetch ?? null;
     // token -> File for every file the app holds a handle on (see "Files").
     this.files = new Map();
+    // CryptoKey objects stay behind their own typed host handles. Operations
+    // capture the object before draining releases, just as file operations do.
+    this.keys = new Map();
+    this.cryptoActive = 0;
+    // Test-only deterministic entropy. Production never derives secure random
+    // bytes from the app's boot seed, its wall clock or a fallback PRNG.
+    this.cryptoEntropy = { counter: 0n, remainder: new Uint8Array(0), tail: Promise.resolve() };
+    this.maxCryptoBytes = options.maxCryptoBytes ?? DEFAULT_CRYPTO_BYTES;
+    if (!Number.isInteger(this.maxCryptoBytes) || this.maxCryptoBytes < 0 || this.maxCryptoBytes > MAX_CRYPTO_BYTES) throw new Error(`maxCryptoBytes must be a whole number from 0 to ${MAX_CRYPTO_BYTES}`);
+    this.maxCryptoIterations = options.maxCryptoIterations ?? DEFAULT_CRYPTO_ITERATIONS;
+    if (!Number.isInteger(this.maxCryptoIterations) || this.maxCryptoIterations < 1 || this.maxCryptoIterations > MAX_CRYPTO_ITERATIONS) throw new Error(`maxCryptoIterations must be a whole number from 1 to ${MAX_CRYPTO_ITERATIONS}`);
     // token -> Map(range -> object URL) for the URLs made for a handle's
     // ranges, revoked when the handle is released.
     this.urls = new Map();
@@ -3514,6 +3616,7 @@ export class RocEngineRuntime {
     this.pushSubs.clear();
     this.stopWorkers();
     this.files.clear();
+    this.keys.clear();
     this.revokeUrls();
     this.fxOut = [];
     this.nativeObservationError = null;
@@ -3581,6 +3684,8 @@ export class RocEngineRuntime {
     this.clearIngress();
     this.live = new Map();
     this.files = new Map();
+    this.keys = new Map();
+    this.cryptoEntropy = { counter: 0n, remainder: new Uint8Array(0), tail: Promise.resolve() };
     this.revokeUrls();
     this.issued = [];
     this.reportEpoch = {};
@@ -3634,6 +3739,7 @@ export class RocEngineRuntime {
     try { this.x.drop(); }
     finally {
       this.files.clear();
+      this.keys.clear();
       this.revokeUrls();
       this.root.textContent = "";
       clearPictureBootstrap(this);
@@ -4340,6 +4446,7 @@ export class RocEngineRuntime {
   // One engine call for an event: a files-kind event stages its handles and
   // file record (design.md, Appendix B); other events stage their bytes or text.
   call(node, handler, payload) {
+    if (payload !== null && typeof payload === "object" && payload.cryptoKey !== undefined) return this.callKey(node, handler, payload.cryptoKey);
     if (payload !== null && typeof payload === "object" && payload.parts !== undefined) return this.callPort(node, handler, payload);
     if (payload === null || typeof payload !== "object" || payload.files === undefined) {
       this.stage(payload);
@@ -4362,6 +4469,7 @@ export class RocEngineRuntime {
   // after its batch was applied and its effects performed, so a request in
   // the batch that named one has already taken its file.
   releaseFiles() {
+    this.releaseKeys();
     const n = this.x.files_released();
     if (n === 0) return;
     const tokens = new DataView(this.x.memory.buffer, this.x.files_tokens(), 8 * n);
@@ -4378,6 +4486,31 @@ export class RocEngineRuntime {
     }
     // No prepared state outlives the file it was prepared from.
     if (this.pool !== null) this.pool.released(released);
+  }
+
+  // Key objects enter only on an ordinary result turn. Staging cannot run
+  // while a view-transition batch owns the waiting command buffer.
+  callKey(node, handler, key) {
+    const count = this.x.keys_stage(1);
+    if (count !== 1) {
+      this.stage(new Uint8Array([RES_CRYPTO_FAILED, CRYPTO_REFUSED]));
+      return this.callEvent(node, handler);
+    }
+    const tokens = new DataView(this.x.memory.buffer, this.x.keys_tokens(), 8);
+    this.keys.set(tokenAt(tokens, 0), key);
+    this.stage(new Uint8Array([RES_CRYPTO_KEY]));
+    this.calling = true;
+    const said = this.x.event_key(node, handler);
+    this.calling = false;
+    if (said === 1) this.takeDbg(null);
+    return said;
+  }
+
+  releaseKeys() {
+    const count = this.x.keys_released();
+    if (count === 0) return;
+    const tokens = new DataView(this.x.memory.buffer, this.x.keys_tokens(), 8 * count);
+    for (let index = 0; index < count; index += 1) this.keys.delete(tokenAt(tokens, index));
   }
 
   // Revoke every object URL made for a file (poisoning, recovery, unmount).
@@ -4854,6 +4987,117 @@ export class RocEngineRuntime {
     throw new Error(`unknown file operation ${fx.op}`);
   }
 
+  // Browser work retains a slot even after CANCEL, because SubtleCrypto has
+  // no abort operation. A completion from an old instance cannot mint a key
+  // or deliver a result into a recovered one.
+  startCrypto(fx, settled) {
+    let open = true;
+    const close = () => {
+      if (!open) return;
+      open = false;
+      if (settled) settled();
+    };
+    const entry = { kind: "crypto", req: fx, running: true, cancel: close };
+    this.live.set(fx.id, entry);
+    const finish = payload => {
+      if (this.live.get(fx.id) !== entry || this.poisoned || this.ending) { close(); return; }
+      this.live.delete(fx.id);
+      this.result(fx.id, payload);
+      close();
+    };
+    if (this.cryptoActive >= MAX_CRYPTO_OPERATIONS) {
+      Promise.resolve().then(() => finish(new Uint8Array([RES_CRYPTO_FAILED, CRYPTO_REFUSED])));
+      return;
+    }
+    this.cryptoActive += 1;
+    this.cryptoAnswer(fx).then(
+      payload => { this.cryptoActive -= 1; finish(payload); },
+      () => { this.cryptoActive -= 1; finish(new Uint8Array([RES_CRYPTO_FAILED, CRYPTO_FAILED])); },
+    );
+  }
+
+  // Only manualEffects uses a deterministic byte stream, shared by the two
+  // spec runners. Production reads the browser's CSPRNG with no fallback.
+  cryptoRandom(count) {
+    const service = (this.win && this.win.crypto) ?? globalThis.crypto;
+    if (!this.manual) {
+      const bytes = new Uint8Array(count);
+      // getRandomValues accepts at most 65536 bytes in one call.
+      for (let at = 0; at < count; at += 65536) service.getRandomValues(bytes.subarray(at, Math.min(count, at + 65536)));
+      return Promise.resolve(bytes);
+    }
+    const state = this.cryptoEntropy;
+    const generate = async () => {
+      const bytes = new Uint8Array(count);
+      let at = 0;
+      while (at < count) {
+        if (state.remainder.length === 0) {
+          if (state.counter > U64_MAX) throw new Error("manual crypto entropy exhausted its U64 counter");
+          const counter = new Uint8Array(8);
+          new DataView(counter.buffer).setBigUint64(0, state.counter, true);
+          const input = concat([utf8enc.encode("roc-signals spec crypto"), new Uint8Array([0]), counter]);
+          state.counter += 1n;
+          state.remainder = new Uint8Array(await service.subtle.digest("SHA-256", input));
+        }
+        const take = Math.min(bytes.length - at, state.remainder.length);
+        bytes.set(state.remainder.subarray(0, take), at);
+        state.remainder = state.remainder.slice(take);
+        at += take;
+      }
+      return bytes;
+    };
+    const result = state.tail.then(generate);
+    state.tail = result.then(() => {}, () => {});
+    return result;
+  }
+
+  async cryptoAnswer(fx) {
+    const failed = reason => new Uint8Array([RES_CRYPTO_FAILED, reason]);
+    const bytes = value => ({ parts: [new Uint8Array([RES_CRYPTO_BYTES]), value] });
+    const c = (this.win && this.win.crypto) ?? globalThis.crypto;
+    if (fx.tooLarge) return failed(CRYPTO_TOO_LARGE);
+    if (fx.action === "random") {
+      if (fx.count > BigInt(this.maxCryptoBytes)) return failed(CRYPTO_TOO_LARGE);
+      if (!c || (this.manual ? typeof c.subtle?.digest !== "function" : typeof c.getRandomValues !== "function")) return failed(CRYPTO_UNAVAILABLE);
+      try { return bytes(await this.cryptoRandom(Number(fx.count))); }
+      catch { return failed(CRYPTO_UNAVAILABLE); }
+    }
+    if (fx.action === "derive") {
+      if (fx.iterations === 0 || fx.salt.length < 16) return failed(CRYPTO_INVALID_PARAMETERS);
+      if (fx.iterations > this.maxCryptoIterations) return failed(CRYPTO_TOO_LARGE);
+      if (!c?.subtle || typeof c.subtle.importKey !== "function" || typeof c.subtle.deriveKey !== "function") return failed(CRYPTO_UNAVAILABLE);
+      try {
+        const material = await c.subtle.importKey("raw", fx.password, "PBKDF2", false, ["deriveKey"]);
+        const key = await c.subtle.deriveKey({ name: "PBKDF2", salt: fx.salt, iterations: fx.iterations, hash: fx.hash === 1 ? "SHA-256" : "SHA-512" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+        return { cryptoKey: key };
+      } catch { return failed(CRYPTO_FAILED); }
+    }
+    if (fx.action === "encrypt") {
+      if (fx.plaintext.length + 28 > this.maxCryptoBytes) return failed(CRYPTO_TOO_LARGE);
+      if (!c?.subtle || typeof c.subtle.encrypt !== "function" || (this.manual ? typeof c.subtle.digest !== "function" : typeof c.getRandomValues !== "function")) return failed(CRYPTO_UNAVAILABLE);
+      try {
+        const iv = await this.cryptoRandom(12);
+        const answer = await c.subtle.encrypt({ name: "AES-GCM", iv, additionalData: fx.associated, tagLength: 128 }, fx.key, fx.plaintext);
+        return { parts: [new Uint8Array([RES_CRYPTO_SEALED]), iv, new Uint8Array(answer)] };
+      } catch { return failed(CRYPTO_FAILED); }
+    }
+    if (fx.action === "decrypt") {
+      if (fx.iv.length !== 12 || fx.ciphertext.length < 16) return failed(CRYPTO_INVALID_PARAMETERS);
+      if (typeof c?.subtle?.decrypt !== "function") return failed(CRYPTO_UNAVAILABLE);
+      try {
+        return bytes(new Uint8Array(await c.subtle.decrypt({ name: "AES-GCM", iv: fx.iv, additionalData: fx.associated, tagLength: 128 }, fx.key, fx.ciphertext)));
+      } catch (error) { return failed(error?.name === "OperationError" ? CRYPTO_NOT_AUTHENTIC : CRYPTO_FAILED); }
+    }
+    if (fx.action === "digest") {
+      const length = fx.hash === 1 ? 32 : fx.hash === 2 ? 48 : 64;
+      if (length > this.maxCryptoBytes) return failed(CRYPTO_TOO_LARGE);
+      if (typeof c?.subtle?.digest !== "function") return failed(CRYPTO_UNAVAILABLE);
+      try { return bytes(new Uint8Array(await c.subtle.digest(fx.hash === 1 ? "SHA-256" : fx.hash === 2 ? "SHA-384" : "SHA-512", fx.bytes))); }
+      catch { return failed(CRYPTO_FAILED); }
+    }
+    throw new ContractFault(`contract: unknown crypto operation ${fx.action}`);
+  }
+
   // A later decision invalidates a deferred show, including a hide already
   // applied in stream order. Object tokens have no generation that can wrap.
   decideShown(element, property, value, node) {
@@ -5143,6 +5387,13 @@ export class RocEngineRuntime {
           return;
         }
         this.startWork(fx, null);
+        return;
+      }
+      case "crypto": {
+        if (this.manual) {
+          this.live.set(fx.id, { kind: "crypto", req: fx, cancel: () => {} });
+          this.issued.push(fx.id);
+        } else this.startCrypto(fx);
         return;
       }
       case "read":
@@ -5990,8 +6241,12 @@ export class RocEngineRuntime {
       this.live.delete(id);
       return new Promise((resolve) => this.startWork(e.req, () => resolve(true)));
     }
-    // An operation on a file is really performed; the promise resolves once
-    // its result turn has been delivered, or once it was cancelled instead.
+    // Crypto and file operations are really performed; each promise resolves
+    // once its result turn was delivered or cancellation dropped the answer.
+    if (e.kind === "crypto") {
+      this.live.delete(id);
+      return new Promise(resolve => this.startCrypto(e.req, () => resolve(true)));
+    }
     if (e.kind === "file") {
       this.live.delete(id);
       return new Promise((resolve) => this.startFileOp(e.req, () => resolve(true)));
