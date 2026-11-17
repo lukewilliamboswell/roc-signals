@@ -5,7 +5,7 @@ import CryptoApp
 
 ## Cryptographic primitives and key ownership, driven by paired native/Chrome specs.
 main : Engine.Program
-main = Engine.program(|| Engine.state(CryptoApp.initial, CryptoApp.view))
+main = Engine.program_boot({ max_inflight: 64 }, |_boot| Engine.state(CryptoApp.initial, CryptoApp.view))
 
 Store : {}
 

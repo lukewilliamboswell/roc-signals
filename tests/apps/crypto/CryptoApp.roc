@@ -6,7 +6,7 @@ import pf.WebCrypto
 ## The fixture uses 1,000 PBKDF2 iterations to keep repeated spec and soak runs
 ## inexpensive. This is a test cost, not a password-storage recommendation.
 CryptoApp := [].{
-	Action : [Random(U64), Hash(WebCrypto.Hash), Derive([Sha256, Sha512]), Seal, SealAndLock, Open([Correct, ChangedAssociated, ChangedCiphertext, InvalidIv]), InvalidSalt, InvalidIterations, ExcessiveIterations]
+	Action : [Random(U64), Batch33, EmptyHash, Hash(WebCrypto.Hash), Derive([Sha256, Sha512]), Seal, SealAndLock, Open([Correct, ChangedAssociated, ChangedCiphertext, InvalidIv]), InvalidSalt, InvalidIterations, ExcessiveIterations]
 	Answer : [Random(List(U8)), Hashed(List(U8)), Derived(WebCrypto.Key), Sealed(WebCrypto.Sealed), Opened(List(U8)), LockNow]
 	S : {
 		password : Str,
@@ -43,6 +43,8 @@ CryptoApp := [].{
 	plan : S, Action -> List(Engine.Ask(Answer, WebCrypto.Error))
 	plan = |s, action| match action {
 		Random(count) => [WebCrypto.random_bytes(count).map_ok(|value| Random(value))]
+		Batch33 => List.repeat(WebCrypto.random_bytes(1).map_ok(|value| Random(value)), 33)
+		EmptyHash => [WebCrypto.digest(Sha512, []).map_ok(|value| Hashed(value))]
 		Hash(hash) => [WebCrypto.digest(hash, "abc".to_utf8()).map_ok(|value| Hashed(value))]
 		Derive(hash) => [WebCrypto.derive_key({ password: s.password, salt: s.salt, iterations: 1000, hash }).map_ok(|value| Derived(value))]
 		InvalidSalt => [WebCrypto.derive_key({ password: s.password, salt: [], iterations: 1000 }).map_ok(|value| Derived(value))]
@@ -106,6 +108,8 @@ CryptoApp := [].{
 				Html.text_input(Engine.const("Password"), "password", reading.map(|s| s.password), [], state.set_value(|s, password| { ..s, password })),
 				Html.text_input(Engine.const("Plaintext"), "text", reading.map(|s| s.plaintext), [], state.set_value(|s, plaintext| { ..s, plaintext })),
 				CryptoApp.control(state, { label: "Random zero", action: Random(0) }),
+				CryptoApp.control(state, { label: "Random batch 33", action: Batch33 }),
+				CryptoApp.control(state, { label: "Empty SHA-512", action: EmptyHash }),
 				CryptoApp.control(state, { label: "New salt", action: Random(16) }),
 				CryptoApp.control(state, { label: "Random large", action: Random(1024) }),
 				CryptoApp.control(state, { label: "SHA-256", action: Hash(Sha256) }),
