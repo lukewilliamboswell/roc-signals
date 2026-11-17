@@ -5356,6 +5356,7 @@ ignore : {} -> Reaction(ctx, a, result)
 on_cleanup : Str, Signal(ctx, a), (a -> List(Command)) -> Elem(ctx)   # an awaited request does not compile
 cleanup : Str -> Elem(ctx)
 Request : [Http({ method : Method, url, headers, body, timeout_ms, cache, credentials }), StorageGet(Str), SessionStorageGet(Str), Timer(U32),
+       Crypto(CryptoRequest),
        Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32,
               on_dispose : [Stop, Keep], on_cancel : [Stop, Finish],
               prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })],
@@ -5379,6 +5380,8 @@ Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectTex
        StorageSet(Str, Str), StorageRemove(Str), SessionStorageSet(Str, Str), SessionStorageRemove(Str),
        PortCommand({ port, message, refusal : [None, TooDeep] }), Save({ file : File, name : Str }), ViewTransition(List(Str))]     # the requests that await nothing: a cleanup's plan
 Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
+       CryptoKey(CryptoKey), CryptoBytes(List(U8)),
+       CryptoSealed({ iv : List(U8), ciphertext : List(U8) }), CryptoFailed(CryptoError),
        Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused,
        Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault),
        WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError),
