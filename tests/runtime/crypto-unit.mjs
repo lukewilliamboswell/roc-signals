@@ -46,7 +46,7 @@ function fixture(options = {}) {
   return {
     runtime, calls, x, minted: () => minted, room: count => { room = count; }, nextToken: value => { nextToken = BigInt(value); },
     releases: tokens => { released = tokens.map(BigInt); },
-    apply(bytes) { new Uint8Array(memory.buffer).set(bytes); commandLength = bytes.length; quiet(() => runtime.guard(() => runtime.apply())); },
+    apply(bytes, mode = "normal") { new Uint8Array(memory.buffer).set(bytes); commandLength = bytes.length; quiet(() => runtime.guard(() => mode === "preflight" ? runtime.applyBatch("preflight", { definitions: new Map() }) : runtime.apply())); },
   };
 }
 const derive = (hash = 1, password = text("correct horse"), salt = new Uint8Array(16).fill(7), iterations = 10) => batch(2, [hash, ...word(iterations), ...block(password), ...block(salt)]);
@@ -325,4 +325,33 @@ await check("manual entropy refuses U64 byte-count exhaustion without advancing 
   assert.equal(f.runtime.cryptoEntropy.counter, 0n);
   assert.equal(f.runtime.cryptoEntropy.used, (1n << 64n) - 1n);
   f.runtime.unmount();
+});
+
+await check("malformed password UTF-8 is a contract fault before work, including oversize and preflight requests", () => {
+  const malformed = [[255], [128], [0xc0, 0x80], [0xe2, 0x82], [0xed, 0xa0, 0x80], [0xf4, 0x90, 0x80, 0x80], [...new Uint8Array(65535).fill(97), 0xc3]];
+  for (const mode of ["normal", "preflight"]) {
+    for (const maxCryptoBytes of [0, 131072]) {
+      for (const password of malformed) {
+        let calls = 0;
+        const f = fixture({ manualEffects: false, maxCryptoBytes, window: { crypto: { subtle: { importKey() { calls++; }, deriveKey() { calls++; } } } } });
+        f.apply(derive(1, Uint8Array.from(password)), mode);
+        assert.equal(f.runtime.poisoned?.class, "contract");
+        assert.match(f.runtime.poisoned.message, /crypto password.*UTF-8/);
+        assert.equal(calls, 0);
+        assert.equal(f.runtime.cryptoActive, 0);
+      }
+    }
+  }
+});
+
+await check("empty, BOM and NUL passwords and UTF-8 spanning validation chunks keep their exact bytes", async () => {
+  for (const password of [new Uint8Array(0), text("\uFEFFp\0é"), Uint8Array.from([...new Uint8Array(65535).fill(97), 0xc3, 0xa9])]) {
+    const f = fixture();
+    f.apply(derive(1, password));
+    assert.equal(f.runtime.poisoned, null);
+    assert.deepEqual(f.runtime.pendingEffects()[0].password, password);
+    await f.runtime.runEffect(1);
+    assert.deepEqual([...f.calls.at(-1).payload], [27]);
+    f.runtime.unmount();
+  }
 });

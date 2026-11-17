@@ -1088,7 +1088,19 @@ const COMMAND_APPLIERS = {
       } else if (action === 2) {
         const algorithm = hash(true);
         within(4); const iterations = dv.getUint32(at, true); at += 4;
-        request = { action: "derive", hash: algorithm, iterations, password: bytes(), salt: bytes() };
+        const password = bytes();
+        // A password is Roc text. Validate even refused/preflight requests,
+        // with bounded temporary text and without changing its original bytes.
+        try {
+          const validator = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+          const end = password.at + password.length;
+          for (let offset = password.at; offset < end; offset += 65536) validator.decode(u8.subarray(offset, Math.min(offset + 65536, end)), { stream: true });
+          validator.decode();
+        } catch (error) {
+          if (error instanceof TypeError) throw new ContractFault("contract: crypto password is not valid UTF-8");
+          throw error;
+        }
+        request = { action: "derive", hash: algorithm, iterations, password, salt: bytes() };
       } else if (action === 3) request = { action: "encrypt", key: key(), plaintext: bytes(), associated: bytes() };
       else if (action === 4) request = { action: "decrypt", key: key(), iv: bytes(), ciphertext: bytes(), associated: bytes() };
       else if (action === 5) request = { action: "digest", hash: hash(false), bytes: bytes() };
