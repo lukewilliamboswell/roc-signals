@@ -209,6 +209,8 @@ deployment limit.
 | `(clipboard-denied)` | Clipboard writes answer `ClipboardFailed(NotAllowed)` |
 | `(max-paste-bytes N)` | The deployment's paste-text byte limit, 4 MiB by default; 0 through 9007199254740991 |
 | `(file "name" "type" "text" [REPEAT])` | Declare a file the steps can give the app: its name, its MIME type, and its contents, `text` repeated `REPEAT` times (once without it). The name is not empty, has no `/` or NUL byte, is not `.` or `..`, and is at most 255 bytes of UTF-8, since Chrome's runner writes it to disk under that name; the type is lowercase printable ASCII, which a browser's `File` keeps as written |
+| `(max-crypto-bytes N)` | Cryptographic byte ceiling, the runtime's `maxCryptoBytes`: 1–67,108,864 bytes (8 MiB without it) |
+| `(max-crypto-iterations N)` | PBKDF2 iteration ceiling, the runtime's `maxCryptoIterations`: 1–10,000,000 (1,000,000 without it) |
 | `(max-output-bytes N)` | The most bytes a [task](@/docs/workers.md)'s job may append to its builders, the runtime's `maxOutputBytes` mount option (256 MiB without it) |
 
 Effects never run on their own in a spec: HTTP requests, timers and worker
@@ -594,10 +596,10 @@ location Chrome reports instead.
 |---|---|
 | `(stub-http "label" :url "/api/x" :status 200 :body "…")` | Stage an HTTP answer; optional `:headers (("name" "value") …)`, default `content-type: application/json`. `:status` is 100–999. Staging a second answer before one is used fails |
 | `(stub-http-reject "label" :kind network :detail "offline")` | Stage a failure: `network` with the browser's message, or `timeout` with an empty `:detail` |
-| `(run-effect N)` | Answer the N-th HTTP request, upload, fetch, timer, worker job or operation on a file the current document issued (1-based, in issue order; port calls share the numbering but are answered with `answer-port` (see [Ports](#ports)); subscriptions, commands and storage reads not counted). It must still be pending. A timer fires; a worker job runs its task (in Chrome in a real worker, natively in a child process that serves the job's effects from the setup files, the step waiting for its result: a task that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request or an upload takes the staged answer, and an HTTP response's `:url` must equal the request's; a page read, a digest or a file URL is performed on the setup file (see [Files](#files)) |
+| `(run-effect N)` | Answer the N-th HTTP request, upload, fetch, timer, worker job, cryptographic operation or operation on a file the current document issued (1-based, in issue order; port calls share the numbering but are answered with `answer-port` (see [Ports](#ports)); subscriptions, commands and storage reads not counted). It must still be pending. A timer fires; a worker job runs its task (in Chrome in a real worker, natively in a child process that serves the job's effects from the setup files, the step waiting for its result: a task that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request or an upload takes the staged answer, and an HTTP response's `:url` must equal the request's; a page read, a digest or a file URL is performed on the setup file (see [Files](#files)); cryptography performs real PBKDF2, AES-GCM or SHA-2, with the same deterministic test entropy in both runners |
 | `(expect-request N :method "GET" :url "/api/status" :cache no-store :credentials include)` | Assert selected fields of currently pending HTTP, upload or fetch occurrence N; every keyword is optional. Cache values are `default`, `no-store`, `reload`, `no-cache`, `force-cache`; credentials are `same-origin`, `include` |
 | `(progress-effect N sending 1024 4096)` | Report progress for pending occurrence N without answering it; direction is `sending` or `receiving`, counts are exact U64, and the total may be `unknown`. Fails when N did not ask for progress; honours `hold-reports` |
-| `(expect-pending-effects N)` | Exactly N HTTP requests, uploads, fetches, timers, worker jobs, operations on files and port calls are waiting to be answered |
+| `(expect-pending-effects N)` | Exactly N HTTP requests, uploads, fetches, timers, worker jobs, operations on files, cryptographic operations and port calls are waiting to be answered |
 | `(expect-pending-work "task" N)` | Exactly N worker jobs of the task of that name are waiting |
 | `(lose-work N FAULT)` | Answer the N-th effect occurrence, a pending worker job, as `WorkLost(FAULT)` without running it. `FAULT` is `contract`, `resource_limit`, `out_of_memory`, `app_crash`, `expect_failed`, `unavailable` or `executor` |
 | `(time-out-work N)` | Expire the timeout of the N-th effect occurrence, a pending worker job: it receives `Timeout` without running. A job without a timeout fails the step |
@@ -758,6 +760,7 @@ that needs deterministic stamps makes them in Roc, as Reading List does.
 | `(choose-files LOC "name" …)` | The user chooses the named setup files in the file input |
 | `(drop-files LOC "name" …)` | The user drops the named setup files on the element |
 | `(paste-files LOC "name" …)` | The user pastes the named setup files into the element |
+| `(expect-keys N)` | The app holds exactly N [cryptographic key handles](@/docs/effects-and-browser.md#cryptography-and-bytes-in-text); a pending request may keep its browser key after its Roc handle is released |
 | `(expect-files N)` | The app holds exactly N [file handles](@/docs/files.md) |
 | `(expect-upload N "name" START LEN)` | The N-th effect occurrence is a pending upload whose body is `LEN` bytes from `START` of the setup file `name` |
 | `(expect-saved K "name" "text")` | The K-th file (from 1) the app saved in this document (`File.save`) was saved under `name` and held exactly `text` |

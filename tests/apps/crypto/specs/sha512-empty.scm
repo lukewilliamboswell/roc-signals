@@ -1,0 +1,15 @@
+(test "PBKDF2 SHA-512 derives an AES key and authenticates empty plaintext"
+  (steps
+    (click (role button :name "Unlock SHA-512"))
+    (run-effect 1)
+    (expect-text (test-id "key") "unlocked")
+    (fill (label "Plaintext") "")
+    (click (role button :name "Seal"))
+    (run-effect 2)
+    (expect-text (test-id "result") "sealed iv=12 bytes=16")
+    (click (role button :name "Open"))
+    (run-effect 3)
+    (expect-text (test-id "result") "opened")
+    (expect-text (test-id "plaintext") "")
+    (click (role button :name "Reset"))
+    (expect-keys 0)))

@@ -1194,7 +1194,7 @@ const STEPS = {
         // finishes instead of hanging.
         // An operation on a file the app holds is really performed, on the
         // file Chrome holds; the step waits for its result turn.
-        if (e.kind === "file") {
+        if (e.kind === "file" || e.kind === "crypto") {
           return Promise.resolve(rt.runEffect(id)).then(() => ({ used: false }));
         }
         if (e.kind === "work") {

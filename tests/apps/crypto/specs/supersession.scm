@@ -1,0 +1,15 @@
+(test "Supersession and cancellation use the ordinary effect channel"
+  (steps
+    (mark-metrics)
+    (click (role button :name "Latest 16"))
+    (expect-pending-effects 1)
+    (click (role button :name "Latest 17"))
+    (expect-pending-effects 1)
+    (expect-metric-delta effects_cancelled 1)
+    (run-effect 2)
+    (expect-text (test-id "latest") "random 17")
+    (click (role button :name "Latest 16"))
+    (click (role button :name "Cancel latest"))
+    (expect-text (test-id "latest") "idle")
+    (expect-pending-effects 0)
+    (expect-metric-delta effects_cancelled 2)))

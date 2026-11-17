@@ -624,6 +624,69 @@ clock fires nothing. Page JavaScript still has its real clock; a port must
 not mint these app timestamps. Workers get no boot or clock service: send
 any time or randomness a job needs in its ordinary input.
 
+## Cryptography and bytes in text
+
+`WebCrypto` provides secure random bytes, PBKDF2 key derivation, AES-256-GCM
+encryption and decryption, and SHA-256/384/512 digests. They are typed asks:
+use them in ordinary effect sites, with the same in-flight bound, result
+turns, cancellation and counters as other requests. They are scoped;
+disposing their site or superseding its input discards the answer.
+
+An encrypted project needs a fresh salt, an application-chosen KDF cost and
+an envelope containing that salt, the KDF parameters, IV and ciphertext.
+Those choices stay in Roc. The platform derives a non-extractable AES key
+from the exact UTF-8 password, without normalization, and generates a fresh
+12-byte IV for every encryption. Applications cannot supply an encryption
+IV. Ciphertext includes its 16-byte authentication tag. Associated data,
+such as a project id, is authenticated without being encrypted or returned.
+
+{{ sample(file="webcrypto.roc", region="requests") }}
+
+`WebCrypto.random_bytes(16)` generates a salt. It uses secure browser entropy
+independently of `boot.seed`; there is no fallback to a pseudorandom stream.
+`WebCrypto.digest` takes `Sha256`, `Sha384` or `Sha512` and bytes. For a file
+already behind a handle, use `File.sha256` to avoid reading it into Roc.
+
+Keep `WebCrypto.Key` in the cell or local state that represents an unlocked
+session. A key has no bytes accessor, export, port encoding or worker
+encoding. Its lifetime follows Roc references, including any values that
+still hold it after a cell is written; a key is neither a project name nor
+a token the application must release. Dispose or supersede pending unlock
+work when locking, so an earlier answer cannot unlock the session again.
+
+{{ sample(file="webcrypto.roc", region="ownership") }}
+
+The closed `WebCrypto.Error` distinguishes `NotAuthentic` (a wrong key,
+modified ciphertext or wrong associated data; no plaintext is delivered),
+`InvalidParameters` (salt shorter than 16 bytes, zero iterations, a non-12-byte
+IV or ciphertext shorter than the tag), `TooLarge` (a deployment ceiling),
+`Refused` (admission or key slots), `Unavailable` (secure browser cryptography
+is absent) and `Failed` (another cryptographic service failure).
+
+Mount options `maxCryptoBytes` (8 MiB by default, at most 64 MiB) and
+`maxCryptoIterations` (1,000,000 by default, at most 10,000,000) cap requests;
+the app still chooses its own salt, iteration count and envelope. The byte
+ceiling counts password and salt together, plaintext and associated data
+plus the 16-byte tag, ciphertext and associated data, a digest's input, or
+the number of random bytes requested. Each instance holds at most 64 keys.
+At most 32 cryptographic operations run at once, including canceled operations
+whose browser promises have not yet settled. Another answers `Refused`.
+
+For binary data in a text-only place, such as local storage, use the pure
+`Base64` module. Its standard RFC 4648 encoding includes padding and no line
+breaks. Decoding accepts only canonical base64 and answers `NotBase64` for
+whitespace, URL alphabet symbols, malformed padding or nonzero unused bits.
+Base64 is an encoding; authenticate the decoded encrypted envelope before
+using its plaintext.
+
+{{ sample(file="base64.roc", region="codec") }}
+
+Both spec runners perform real PBKDF2, AES-GCM and SHA-2 on `run-effect`.
+Their random bytes are the same deterministic test stream, independent of
+the boot seed. Tests can therefore exercise lock/unlock and tampering without
+replacing encryption with a fake. `expect-keys` checks live handles;
+`max-crypto-bytes` and `max-crypto-iterations` in setup test deployment refusals.
+
 ## Navigation
 
 {{ sample(file="effects.roc", region="routing") }}
