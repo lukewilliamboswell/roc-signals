@@ -1,6 +1,7 @@
 // Production CSPRNG and SubtleCrypto against independent Node vectors. Raw
 // wire requests and fake staging exports isolate the runtime from the Roc
 // producer; paired app specs separately drive real host handles.
+import assert from "node:assert/strict";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
