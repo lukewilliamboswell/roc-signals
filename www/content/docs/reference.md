@@ -458,7 +458,7 @@ shown after a batch, never in markup, so a picture shows it closed.
 | Files an app holds at once | 64 | Further files an event carries are not delivered (`Received.refused` counts them); a download with no room is `FileFailed(TooLarge)` |
 | Bytes one page read takes | Its `max_bytes` (default 8 MiB), at most `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | Crypto keys an app holds | 64, separate from file handles | Another derivation answers `Refused` |
-| Pending or running crypto operations, including canceled running ones | 32 | Another operation answers `Refused` until a slot is free |
+| Crypto executor admission | 32 operations awaiting execution or running, including canceled running ones | Further operations answer `Refused`; they do not wait for capacity |
 | Cryptographic byte operands and encryption tag | `maxCryptoBytes`, default 8 MiB, from 0 to 64 MiB | `TooLarge` |
 | PBKDF2 iterations | `maxCryptoIterations`, default 1,000,000, at most 10,000,000 | `TooLarge` |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |

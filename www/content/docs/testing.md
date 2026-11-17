@@ -652,6 +652,13 @@ newest reaches the app:
 
 ### Answering effects
 
+Cryptographic operations use real cryptography with deterministic test entropy.
+The crypto executor reserves capacity as the batch is performed. In manual
+mode an operation refused by its 32-operation bound still waits for
+`run-effect` to deliver `Refused`; freeing capacity does not retry it. It
+therefore remains in `expect-pending-effects` until that result is delivered.
+
+
 Stage one answer immediately before each `run-effect` that answers an HTTP
 request: both runners hold a single staged answer, which that `run-effect`
 consumes. A request that is answered after its owner was disposed is still

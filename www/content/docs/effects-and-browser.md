@@ -670,9 +670,10 @@ The app still chooses its own salt, iteration count and envelope. The byte
 ceiling counts password and salt together, plaintext and associated data
 plus the 16-byte tag, ciphertext and associated data, a digest's input, or
 the number of random bytes requested. Each instance holds at most 64 keys.
-At most 32 cryptographic operations may be pending or running. Canceled
-operations that already started still count until their browser promises
-settle. Another operation answers `Refused`.
+The cryptographic executor admits at most 32 operations, counting those
+awaiting execution and those already running. A canceled running operation
+still counts until its browser promise settles. Another operation answers
+`Refused` instead of waiting for capacity.
 
 For binary data in a text-only place, such as local storage, use the pure
 `Base64` module. Its standard RFC 4648 encoding includes padding and no line
