@@ -368,7 +368,7 @@ optional.
 | `maxOutputBytes` | 256 MiB | Bytes one job may append to its builders; beyond it `append!` answers `TooLarge` | [Files in Tasks](@/docs/files-in-tasks.md#limits) |
 | `onWorkerFault` | none | Called with `{ id, task, class, message }` when a job is lost | [Workers](@/docs/workers.md#serving-the-app) |
 | `maxFileBytes` | 256 MiB | Bytes one read into the page takes, whatever its `max_bytes`; bytes one digest reads; bytes of one fetched body. Beyond it `FileFailed(TooLarge)`. A job's reads in a worker are not bounded by it | [Files](@/docs/files.md) |
-| `maxCryptoBytes` | 8 MiB | Combined cryptographic operands and encryption tag, at most 64 MiB; beyond it `TooLarge` | [Cryptography](@/docs/effects-and-browser.md#cryptography-and-bytes-in-text) |
+| `maxCryptoBytes` | 8 MiB | Combined cryptographic operands and encryption tag, from 0 to 64 MiB; fixed digest output excluded; beyond it `TooLarge` | [Cryptography](@/docs/effects-and-browser.md#cryptography-and-bytes-in-text) |
 | `maxCryptoIterations` | 1,000,000 | PBKDF2 iterations, at most 10,000,000; beyond it `TooLarge` | [Cryptography](@/docs/effects-and-browser.md#cryptography-and-bytes-in-text) |
 | `ports` | none | The page's handlers, one per port the app declares; a missing or extra one refuses the mount | [Ports](@/docs/ports.md) |
 | `maxPortBytes` | 4 MiB (at most 64 MiB) | One port answer or message, JSON text and bytes together; beyond it `TooLarge` | [Ports](@/docs/ports.md) |
@@ -458,8 +458,8 @@ shown after a batch, never in markup, so a picture shows it closed.
 | Files an app holds at once | 64 | Further files an event carries are not delivered (`Received.refused` counts them); a download with no room is `FileFailed(TooLarge)` |
 | Bytes one page read takes | Its `max_bytes` (default 8 MiB), at most `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | Crypto keys an app holds | 64, separate from file handles | Another derivation answers `Refused` |
-| Running crypto operations, including canceled ones | 32 | Another operation answers `Refused` until one settles |
-| Cryptographic byte operands and encryption tag | `maxCryptoBytes`, default 8 MiB, at most 64 MiB | `TooLarge` |
+| Pending or running crypto operations, including canceled running ones | 32 | Another operation answers `Refused` until a slot is free |
+| Cryptographic byte operands and encryption tag | `maxCryptoBytes`, default 8 MiB, from 0 to 64 MiB | `TooLarge` |
 | PBKDF2 iterations | `maxCryptoIterations`, default 1,000,000, at most 10,000,000 | `TooLarge` |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | URLs one file gives | 16 ranges, revoked when the file is let go | `FileFailed(TooLarge)` |

@@ -209,7 +209,7 @@ deployment limit.
 | `(clipboard-denied)` | Clipboard writes answer `ClipboardFailed(NotAllowed)` |
 | `(max-paste-bytes N)` | The deployment's paste-text byte limit, 4 MiB by default; 0 through 9007199254740991 |
 | `(file "name" "type" "text" [REPEAT])` | Declare a file the steps can give the app: its name, its MIME type, and its contents, `text` repeated `REPEAT` times (once without it). The name is not empty, has no `/` or NUL byte, is not `.` or `..`, and is at most 255 bytes of UTF-8, since Chrome's runner writes it to disk under that name; the type is lowercase printable ASCII, which a browser's `File` keeps as written |
-| `(max-crypto-bytes N)` | Cryptographic byte ceiling, the runtime's `maxCryptoBytes`: 1–67,108,864 bytes (8 MiB without it) |
+| `(max-crypto-bytes N)` | Cryptographic byte ceiling, the runtime's `maxCryptoBytes`: 0–67,108,864 bytes (8 MiB without it) |
 | `(max-crypto-iterations N)` | PBKDF2 iteration ceiling, the runtime's `maxCryptoIterations`: 1–10,000,000 (1,000,000 without it) |
 | `(max-output-bytes N)` | The most bytes a [task](@/docs/workers.md)'s job may append to its builders, the runtime's `maxOutputBytes` mount option (256 MiB without it) |
 

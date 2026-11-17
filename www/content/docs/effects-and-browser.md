@@ -664,13 +664,15 @@ IV or ciphertext shorter than the tag), `TooLarge` (a deployment ceiling),
 is absent) and `Failed` (another cryptographic service failure).
 
 Mount options `maxCryptoBytes` (8 MiB by default, at most 64 MiB) and
-`maxCryptoIterations` (1,000,000 by default, at most 10,000,000) cap requests;
-the app still chooses its own salt, iteration count and envelope. The byte
+`maxCryptoIterations` (1,000,000 by default, from 1 to 10,000,000) cap requests;
+the byte ceiling may be zero, and the fixed digest output does not count.
+The app still chooses its own salt, iteration count and envelope. The byte
 ceiling counts password and salt together, plaintext and associated data
 plus the 16-byte tag, ciphertext and associated data, a digest's input, or
 the number of random bytes requested. Each instance holds at most 64 keys.
-At most 32 cryptographic operations run at once, including canceled operations
-whose browser promises have not yet settled. Another answers `Refused`.
+At most 32 cryptographic operations may be pending or running. Canceled
+operations that already started still count until their browser promises
+settle. Another operation answers `Refused`.
 
 For binary data in a text-only place, such as local storage, use the pure
 `Base64` module. Its standard RFC 4648 encoding includes padding and no line
