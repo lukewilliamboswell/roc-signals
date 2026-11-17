@@ -172,7 +172,7 @@ export fn roc_alloc(size: usize, align_arg: usize) callconv(.c) *anyopaque {
 }
 
 export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
-    switch (keys.route(ptr)) {
+    switch (key_heap.route(ptr)) {
         .not_owned => {},
         .retired => return,
         .corrupt => corruptHandle(),
@@ -185,7 +185,7 @@ export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
 }
 
 export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.c) *anyopaque {
-    if (blobs.contains(ptr) or keys.contains(ptr)) corruptHandle();
+    if (blobs.contains(ptr) or key_heap.contains(ptr)) corruptHandle();
     const user: [*]u8 = @ptrCast(ptr);
     const header: *const Header = @ptrFromInt(@intFromPtr(user) - @sizeOf(Header));
     const copied = @min(header.requested, size);
@@ -236,7 +236,7 @@ fn poison(class: u32) noreturn {
     pending_blobs = RocList.empty;
     pending_keys = RocList.empty;
     blobs.abandon(nothing);
-    keys.abandon(nothing);
+    key_heap.abandon(nothing);
     state = null;
     held = null;
     @trap();
@@ -681,7 +681,7 @@ export fn files_released() callconv(.c) u32 {
 /// "Boundedness"). Derivation beyond the free slots answers Refused.
 const max_keys: usize = 64;
 
-var keys: resources.Heap(.key, max_keys, void) = .{};
+var key_heap: resources.Heap(.key, max_keys, void) = .{};
 
 /// The handles minted for the next `event_key`, as a Roc
 /// `List(Box(U64))` the host owns until the call moves it into Roc.
@@ -701,12 +701,12 @@ export fn keys_stage(n: u32) callconv(.c) u32 {
     dbg.clear();
     dropPendingKeys();
     dropPendingBlobs();
-    const want = @min(@as(usize, n), max_keys - keys.live_count);
+    const want = @min(@as(usize, n), max_keys - key_heap.live_count);
     if (want == 0) return 0;
     // A list of box pointers, each element the address of a handle's payload.
     const elems: [*]usize = @ptrCast(@alignCast(refcountedList(want, @sizeOf(usize))));
     for (0..want) |i| {
-        const payload = keys.mint({}) orelse unreachable;
+        const payload = key_heap.mint({}) orelse unreachable;
         elems[i] = @intFromPtr(payload);
         key_tokens[i] = payload.*;
     }
@@ -719,7 +719,7 @@ export fn keys_stage(n: u32) callconv(.c) u32 {
 fn dropPendingKeys() void {
     const p = pending_keys.ptr orelse return;
     const elems: [*]usize = @ptrCast(@alignCast(p));
-    for (0..pending_keys.len) |i| _ = keys.route(@ptrFromInt(elems[i] - 8));
+    for (0..pending_keys.len) |i| _ = key_heap.route(@ptrFromInt(elems[i] - 8));
     _ = freeRaw(p - 2 * @sizeOf(usize), @alignOf(usize));
     pending_keys = RocList.empty;
 }
@@ -759,7 +759,7 @@ export fn keys_released() callconv(.c) u32 {
     if (fault_class != 0) return 0;
     var n: usize = 0;
     var token: u64 = 0;
-    while (n < max_keys and keys.releaseOne(&token, nothing)) : (n += 1) key_tokens[n] = token;
+    while (n < max_keys and key_heap.releaseOne(&token, nothing)) : (n += 1) key_tokens[n] = token;
     return @intCast(n);
 }
 
@@ -939,7 +939,7 @@ const work_base: u32 = 16;
 export fn metric(index: u32) callconv(.c) u64 {
     if (index >= 100 and index < 132) return sizes[index - 100];
     if (index == 6) return blobs.live_count;
-    if (index == 7) return keys.live_count;
+    if (index == 7) return key_heap.live_count;
     if (index == 8) return @intFromBool(held != null);
     if (index >= work_base and index < 100) return workCounter(index - work_base);
     return if (index < counters.len) counters[index] else 0;

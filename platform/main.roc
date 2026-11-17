@@ -77,7 +77,6 @@ platform ""
 	}
 
 import Base64
-import Base64
 import Cli
 import Clipboard
 import WebCrypto

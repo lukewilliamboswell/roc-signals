@@ -2794,6 +2794,103 @@ I64/U128 values as decimal strings. Only the app's readers are controlled:
 page JavaScript and port handlers still read their real clock, so an example
 that needs deterministic stamps makes them in Roc.
 
+### Bytes in text and cryptography
+
+`Base64` is a pure utility for bytes an app keeps in a text service, such as
+local storage or a text envelope. `encode` writes standard RFC 4648 base64
+with padding. `decode` accepts only that canonical form: no whitespace,
+URL alphabet, missing or extra padding, or nonzero unused bits. It answers
+`NotBase64` instead of repairing input. Both operations are linear in input
+and output. Storage remains text; a port's byte blocks remain byte blocks.
+
+`WebCrypto` supplies cryptography as typed asks in the ordinary effect
+channel. Encrypted project files and browser storage need fresh salt,
+password-based key derivation, authenticated encryption and hashes. An app
+would otherwise implement these through ports and maintain a key registry in
+its own JavaScript. The platform owns primitives and lifetime; Roc owns the
+password, KDF cost, associated data, envelope and lock/unlock decisions.
+
+- `random_bytes(count)` asks for secure bytes independently of the boot seed.
+  Production uses `crypto.getRandomValues`, in chunks of at most 65,536 bytes,
+  with no fallback. A zero-byte request succeeds without an entropy read.
+- `derive_key` derives an AES-256-GCM key with PBKDF2-HMAC-SHA-256 or
+  SHA-512, using the exact UTF-8 password, the app's salt and required
+  iteration count. Salt is at least 16 bytes and iterations at least one;
+  invalid external envelope parameters answer `InvalidParameters`.
+  No normalization, envelope interpretation or password-strength policy is
+  inferred. A browser key is non-extractable and usable only for encrypt and
+  decrypt. No import, export, key serialization or worker/port transfer is
+  provided.
+- A `WebCrypto.Key` is opaque and holds one `Box(U64)` in a separate typed
+  key heap. Its Roc reference count is its lifetime, exactly as a file's
+  is: storage may keep it while unlocked, and writing that storage without
+  it releases it when its last reference goes. The host holds only its
+  token, never key material; the runtime holds the browser `CryptoKey`.
+  Equality means the same live handle. Inspection is redacted. A key is
+  neither a project id nor a manually released token.
+- `encrypt(key, { plaintext, associated })` creates a fresh secure 12-byte
+  IV for each operation and returns `{ iv, ciphertext }`. Ciphertext includes
+  the appended 128-bit GCM tag. An app cannot supply an encryption IV.
+  `decrypt` takes that fragment and the same associated data; wrong keys,
+  changed ciphertext and changed associated data answer `NotAuthentic`,
+  without any plaintext. An IV other than 12 bytes or ciphertext shorter
+  than its tag answers `InvalidParameters`.
+- `digest` hashes bytes with SHA-256, SHA-384 or SHA-512. A file already
+  behind a handle uses `File.sha256` to avoid bringing its bytes into Roc.
+
+Every crypto operation is scoped, takes an in-flight slot and follows ordinary
+routing, retained typed readers, supersession, cancellation and counters.
+Disposal cancels it. The executor resolves a named key when performing the
+batch's effect, before draining released handles; a request therefore keeps
+its browser key even if Roc dropped its last reference in the issuing call.
+Marked transitions resolve it with other early effects. A key result is staged
+only when its ordinary result turn is delivered; a canceled or stale result
+never mints a key. Poisoning, unmount and recovery release browser keys.
+
+Deployment limits are `maxCryptoBytes` (8 MiB by default, at most 64 MiB)
+and `maxCryptoIterations` (1,000,000 by default, at most 10,000,000).
+The byte ceiling counts the combined password and salt for derivation,
+plaintext and associated data plus the 16-byte output tag for encryption,
+ciphertext and associated data for decryption, the input of a digest, or the
+requested random-byte count. A request beyond a limit answers `TooLarge`
+before cryptographic work or output allocation. Core refuses requests beyond
+the structural maximum before encoding lengths. Each instance has 64 key
+slots, separate from its 64 file slots; a derivation without a free key slot
+answers `Refused`. Retired slots remain reserved until the post-effect drain.
+
+Browser SubtleCrypto cannot abort an operation. Cancellation discards its
+answer, but the executor keeps its operation count until the promise settles.
+At most 32 crypto operations may be running, including canceled ones; another
+answers `Refused`. Recovery does not reset that count while old work still
+runs. There is no retry queue. This bounds the work that canceled requests
+could otherwise keep starting beyond the engine's in-flight bound.
+
+Failure follows the ordinary layers: closed hash types prevent unsupported
+algorithms, external envelope mistakes answer `InvalidParameters`, byte and
+iteration ceilings answer `TooLarge`, admission/keys/executor bounds answer
+`Refused`, missing secure cryptography answers `Unavailable`, failed GCM
+authentication answers `NotAuthentic`, and another cryptographic service
+failure answers `Failed`. Malformed wire data and wrong result kinds are
+contract errors, never authentication failures. Crashes remain contained.
+JavaScript garbage collection and browser key implementations provide no
+promise of immediate physical erasure; locking releases the platform's
+references, not every copy a browser or a compromised page could hold.
+
+Both spec runners use real PBKDF2, AES-GCM and SHA-2. Manual effects replace
+only randomness with an explicitly test-only deterministic stream, reset at
+each document: concatenate SHA-256 blocks of UTF-8 `roc-signals spec crypto`,
+one zero byte and an eight-byte little-endian block index starting at zero.
+Consume bytes in `run-effect` execution order, retaining the unused suffix of
+a block. This never uses the production boot seed and is not encryption for
+real data. The native host keeps key material only behind typed handles,
+wipes it on release, and gives a deferred operation a private, bounded key
+hold before reclaiming an issuing batch's released handles. These holds
+are native executor machinery, not additional app keys or Roc key bytes.
+`run-effect` performs one pending crypto operation; `expect-keys` observes
+live app key handles; `max-crypto-bytes` and `max-crypto-iterations` setup forms
+supply deployment limits. Known-answer vectors, tampering, cancellation,
+last-reference release and native/browser round trips hold these contracts.
+
 ### Connectivity, visibility and media
 
 As sections of [the environment at boot](#the-environment-at-boot), whether
@@ -3949,6 +4046,10 @@ bound and a declared behaviour at the bound:
 | Diagnostic text | 512 bytes | Truncated |
 | `dbg` text of one call |4096 bytes of entries;1024 bytes of one entry’s text | Oldest entries dropped and counted; text cut at a code point with full length retained |
 | A job’s `dbg` text sent to the page | At most two call buffers, preparation and task | A stopped/lost worker sends none |
+| Crypto keys live in one instance | 64, separate typed heap | Typed Refused for another derivation |
+| Crypto bytes per operation | maxCryptoBytes, default 8 MiB, at most 64 MiB, combined operands/output tag as stated above | Typed TooLarge before cryptographic work |
+| PBKDF2 iterations | maxCryptoIterations, default 1,000,000, at most 10,000,000 | Typed TooLarge |
+| Running browser crypto operations | 32, canceled operations included until settled | Typed Refused, no queue |
 | File handles live in one instance | 64 | The event's further files are not delivered and are counted in `Received.refused` |
 | Bytes one read of a file into the page takes | The read's `max_bytes` (default 8 MiB), at most `maxFileBytes`; reads in flight are bounded by the in-flight cap | Typed `FileFailed(TooLarge)`, unread |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
@@ -4879,6 +4980,18 @@ These are unresolved mechanism choices within the contracts above.
 
 ## Appendix A: API Surface
 
+`Base64.encode : List(U8) -> Str` and
+`Base64.decode : Str -> Try(List(U8), [NotBase64])` provide canonical padded
+RFC 4648 bytes in text. `WebCrypto` provides opaque `Key`, `Hash` (Sha256,
+Sha384, Sha512), `Error` and `Sealed` (`{ iv, ciphertext }`), and typed asks:
+`random_bytes(count)`, `derive_key({ password, salt, iterations, hash })`
+(hash defaults to Sha256), `encrypt(key, { plaintext, associated })`,
+`decrypt(key, { iv, ciphertext, associated })` (associated defaults to empty),
+and `digest(hash, bytes)`. Each answers the operation's output or `Error`:
+Unavailable, TooLarge, InvalidParameters, NotAuthentic, Refused, Failed.
+Key methods are equality and redacted inspection only; no key token is public.
+
+
 `Url` is a pure app utility; the engine does not use it. A checked value is
 root-relative or has an explicit HTTP(S) origin. Builders take decoded text;
 `append_path_segments` refuses empty and dot names, while `append_query_param`
@@ -5447,7 +5560,7 @@ a leading U+FEFF in names and values, including a worker's hosted arguments.
 Unknown closed-vocabulary names cannot become known names by dropping that
 character. Invalid UTF-8 is rejected at each strict protocol boundary.
 
-This appendix is protocol version **20**. The engine declares it
+This appendix is protocol version **21**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -5474,11 +5587,12 @@ roc-lang/roc#12953 workaround (see [Compiler Limitations](#compiler-limitations)
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (20) |
+| `roc_engine_version` | `() -> u32` | The protocol version (21) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Handle, List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
 | `roc_engine_files` | `Handle, List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A files-kind event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port answer (14) or a fetched file (21) |
+| `roc_engine_key` | `Handle, List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A derived key result: the effect node, request id, exactly the byte 27 and exactly one staged key handle from the key heap; anything else is a contract error |
 | `roc_engine_drop` | `Handle, List(U8), List(U8) -> {}` | Teardown |
 | `roc_engine_work` | `List(U8), List(Box(U64)) => List(U8)` | A worker instance's job (effectful): payload `name:str input:rest` and the handles the instance's host minted for the files the request named, in its order; returns the answer, `n:u32 (token:u64)*n output:rest`: the instance's tokens of the files the answer holds (in the order its payload refers to them), then the answer's bytes, a list of its own. `name` is a `str` (a `u32` length), while `input` is one CBOR item (RFC 8949), so a harness meets both encodings in one buffer. `output` is one such item, the job's `Ok` value or `Err` error, followed by one byte, `0` or `1`, which the typed layer writes and reads; an answer nested past the payload bound is the one byte `2`, one holding more than 16 files the one byte `3` and one holding a dictionary with two NaN keys the one byte `4`, each with no files, which the typed layer reads as `TooDeep`, `TooManyFiles` and `NanKeys`. The item is what the task's type derives over the platform's payload format, written and read by the pinned roc-cbor release in its derived forms: integers in their shortest head (a bignum past 64 bits), floats in the shortest width that keeps the value (the zero sign kept, every NaN one NaN), `Dec` an integer when it is whole and fits 64 bits and otherwise a normalized decimal fraction, text, a non-empty `List(U8)` and every `Wire.Bytes` a byte string, other lists, sets and tuples arrays, a record a map with a text key per field present (an absent optional field, `name ?: a` or a `Try(a, [Missing])` field holding `Err(Missing)`, has no entry, its one encoding; the reader reads a missing entry as absent and refuses the field spelled as a tag), a `Dict` a map, and a tag its name, or a one-entry map from its name to its payload (an array when it has several). Every map's keys are in RFC 8949 section 4.2.1 bytewise encoded-key order. A file is the six-item array `[place, name, type, size, start, len]`, `place` its index in the list of handles passed beside the bytes, which the reader checks against that list and the file's range. The reader is strict, with no leniency: shortest heads, keys in that order and none repeated, no record field the type lacks, each `F32`, `F64` and `Dec` only in its writer's form, an empty byte string only as a `Wire.Bytes` and an empty array only as a list (so the two empty forms never read as each other; both ends always have the same type), a CBOR depth of at most 259, and nothing after the item. The writer bounds the value's own nesting at 128 levels, one for each list, set, dictionary, record, tuple, tag with a payload and file, and does not descend past it; 259 is the deepest CBOR structure such a value writes (a tag with several payloads is a map and an array, and the deepest leaf, a decimal fraction whose mantissa is past 64 bits, its tag, its array and a bignum's tag; `WorkerCodec.max_cbor_depth` gives the derivation), a backstop the reader applies before any typed callback, so the reader accepts everything the writer writes. A dictionary's key is a number, `Bool`, text or a tag without payloads; a key of any other type is refused when the app is checked. A dictionary whose keys are `F32` or `F64` and that holds both `0.0` and `-0.0`, which float equality makes one key, is refused at the second key (roc-lang/roc#13057). One NaN key crosses and is read back as a NaN key; a dictionary holding two, which every NaN being written as one NaN would make two equal keys, is not written: its input is not sent (`NanKeys`) and its answer is the flag byte `4`. Anything else is `InvalidCbor(position)` or `MissingRequiredField(name)`, which the receiving instance makes a `contract` crash naming the task; both instances are one compiled module, so that is a platform bug. A name the catalogue does not hold, a preparation's name or a preparation's task's name, a payload without a name, is a `contract` crash (it poisons that worker instance only) |
 | `roc_engine_prepare` | `List(U8), List(Box(U64)) => Box(Core.Kept)` | Prepare a state to keep (effectful): payload `prep:str init:rest` (the preparation's name and its own input) and the handles of the preparation's files; returns the state. A name that is not a preparation is a `contract` crash |
@@ -5523,6 +5637,10 @@ warm-up neither allocates.
 | `event(node, handler) -> u32` | One turn with the staged payload; its commands become readable. Returns 1 when the call ran a `dbg`, otherwise 0 |
 | `files_stage(n) -> u32` | Mint handles for the next `event_files`, as many of `n` as the blob heap has free slots (64 at most live), and return how many; their tokens (`u64` each) are readable at `files_tokens()`. Releases an undelivered staged set first |
 | `event_files(node, handler) -> u32` | A files-kind event: staged payload and handles move into `roc_engine_files`. Returns 1 when the call ran a `dbg`, otherwise 0 |
+| `keys_stage(n) -> u32` | Mint up to n key handles in the separate 64-slot typed heap; return count and publish tokens through `keys_tokens()`. The single staged handle set is replaced, freeing undelivered staging first. Refresh memory views after staging |
+| `event_key(node, handler) -> u32` | Move the staged payload and key handles into `roc_engine_key`; return the call's debug flag as `event` does |
+| `keys_tokens() -> ptr` | Tokens left by key staging or release |
+| `keys_released() -> u32` | After the batch and its effects, reclaim retired key slots and publish their tokens through `keys_tokens()`; the runtime releases their CryptoKeys. Zero when poisoned |
 | `files_released() -> u32` | After a batch is applied and its effects performed: free the slots of the handles Roc released since the last drain and return how many; their tokens are readable at `files_tokens()`, and the runtime lets their files go. `0` when poisoned |
 | `files_tokens() -> ptr` | The tokens `files_stage` or `files_released` left |
 | `work()` | A worker instance's job: the staged payload and the handles staged with `files_stage` move into `roc_engine_work`, the hosted effects may act for the length of the call, and the answer stays readable through `cmd_ptr`/`cmd_len` until the next call, the previous one released first. Traps when the instance is poisoned; a `contract` fault when an engine state is mounted in this instance (the page's) |
@@ -5536,7 +5654,7 @@ warm-up neither allocates.
 | `fault() -> u32` | `0` healthy, `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed |
 | `err_ptr()`, `err_len()` | Diagnostic text (≤ 512 bytes), independent of debug output |
 | `dbg_ptr()`, `dbg_len()` | The last call’s debug buffer: `dropped:u32 (len:u32 kept:u32 text:kept)*`; 0 bytes when no entry. Entries occupy at most 4096 bytes, each text at most 1024; `len` retains its full byte length. Valid until the next call or payload/handle staging, including after a trap; answers when poisoned |
-| `metric(i) -> u64` | Allocator counters: `0` allocations, `1` deallocations, `2` requested bytes, `3` reallocations, `4` live allocations, `5` live bytes; `6` live file handles (retired ones included until drained); `8` whether a prepared state is kept (`1` or `0`). `16 + k`: counter `k` of the work record (0 past its end) |
+| `metric(i) -> u64` | Allocator counters: `0` allocations, `1` deallocations, `2` requested bytes, `3` reallocations, `4` live allocations, `5` live bytes; `6` live file handles and `7` live key handles (retired ones included until drained); `8` whether a prepared state is kept (`1` or `0`). `16 + k`: counter `k` of the work record (0 past its end) |
 | `reset_metrics()` | Reset counters 0–3 |
 | `memory` | Linear memory |
 
@@ -5752,6 +5870,10 @@ An event is `event(node, handler)` with the payload staged first:
 | 23 | — | `Copied`; no trailing bytes |
 | 24 | `reason:u8` | `ClipboardFailed`: `1` NotAllowed, `2` Unavailable |
 | 25 | `store:u8 reason:u8 key:rest` | `StorageFailed`: store `1` Local, `2` Session; reason `1` Quota, `2` Unavailable |
+| 27 | Exactly the tag, no body | `CryptoKey`, through `event_key` with exactly one staged key handle; never through `event` or `event_files` |
+| 28 | `bytes:rest` (raw) | `CryptoBytes` (random, digest or authenticated plaintext) |
+| 29 | `iv:12 raw bytes ciphertext:rest` (at least 16 bytes) | `CryptoSealed`; ciphertext includes the 128-bit GCM tag |
+| 30 | `reason:u8` | `CryptoFailed`: 1 Unavailable, 2 TooLarge, 3 InvalidParameters, 4 NotAuthentic, 5 Refused, 6 Failed; exactly two bytes including tag |
 | 26 | `direction:u8 done:u64 known:u8 total:u64` | Transfer progress, not a `Result`: direction `1` Sending, `2` Receiving; known `0` Unknown (total must be zero), `1` Known. Exactly 19 bytes including the tag. Keeps the id live; a live request without a progress handler is a contract error |
 
 A result payload that does not follow this table (unknown tag, bytes after a
@@ -5871,6 +5993,21 @@ an earlier command. Scroll end is resolved at perform time.
 | 18 | `key:str` | StorageChanges report subscription; event values use tags 3 and 4 |
 | 19 | `text:str html:u8 [html:str]` | Clipboard write; flag `0` plain text, `1` text and HTML; answers tag 23 or 24 |
 | 20 | — | StorageWriteFailures occurrence subscription; answers tag 25 one task after a failed write |
+| 21 | `operation:u8 operands` | Crypto operations, below; scoped and awaited |
+
+Crypto operands use `bytes` as a u32 length followed by raw bytes. Operation
+1 is random bytes, `count:u64`; 2 is derive key, `hash:u8 iterations:u32
+password:bytes salt:bytes`; 3 is encrypt, `token:u64 plaintext:bytes
+associated:bytes`; 4 is decrypt, `token:u64 iv:bytes ciphertext:bytes
+associated:bytes`; 5 is digest, `hash:u8 input:bytes`. Hash codes are 1
+SHA-256, 2 SHA-384, 3 SHA-512; derivation accepts only 1 and 3. Password bytes
+are exact UTF-8. Tokens must resolve in the key heap, never the file heap.
+Unknown operations/hashes, malformed framing and unknown tokens are protocol
+faults. Valid framing with invalid envelope parameters is a typed result.
+Result 27 owns the host-minted key reference; 28 owns its bytes; 29 owns its
+IV and ciphertext. Staging moves these into one Roc turn. A trap abandons
+its staged handles with the poisoned heap, and the runtime releases its keys.
+
 
 FX kinds 1, 12 and 15 encode cache as `1` Default, `2` NoStore,
 `3` Reload, `4` NoCache, `5` ForceCache, and credentials as `1` SameOrigin,
