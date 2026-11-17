@@ -8748,8 +8748,10 @@ put_crypto = |buf, operation| {
 	}
 	match operation {
 		RandomBytes(count) => put_u64(buf.append(1), count)
+		# The string writer also avoids the empty to_utf8/concat leak in
+		# development Wasm: https://github.com/roc-lang/roc/issues/13017.
 		DeriveKey(props) => bytes(
-			bytes(
+			put_str(
 				put_u32(
 					buf.append(2).append((
 						match props.hash {
@@ -8759,7 +8761,7 @@ put_crypto = |buf, operation| {
 					)),
 					props.iterations,
 				),
-				props.password.to_utf8(),
+				props.password,
 			),
 			props.salt,
 		)
