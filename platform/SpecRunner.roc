@@ -986,7 +986,21 @@ SpecRunner := [].{
 				Ref(_) | Shown(_) => b
 				FileRead(id, mode, file, max_bytes) => { ..b, pending: b.pending.append({ id, url: "read", body: "", kind: ReadRequest({ mode, file, max_bytes }) }), issued: b.issued.append(id) }
 				Upload(id, method, url, _, file, _, options) => { ..b, network: b.network.insert(id, { method, options }), report_sources: if (options.progress_ms > 0) b.report_sources.insert(id, {}) else b.report_sources, pending: b.pending.append({ id, url, body: "", kind: UploadRequest(file) }), issued: b.issued.append(id) }
-				Crypto(id, request) => { ..b, pending: b.pending.append({ id, url: "crypto", body: "", kind: CryptoRequest({ request, held: Uncaptured }) }), issued: b.issued.append(id) }
+				Crypto(id, request) => {
+					# Reserve when this FX performs, before later commands or turns can
+					# cancel its predecessors. Capture may wait for a native boundary;
+					# an executor refusal cannot become admitted while it waits.
+					reserved = b.pending.fold(
+						0.U64,
+						|count, pending| match pending.kind {
+							CryptoRequest({ held: Refused, .. }) => count
+							CryptoRequest(_) => count + 1
+							_ => count
+						},
+					)
+					held = if (reserved < 32) Uncaptured else Refused
+					{ ..b, pending: b.pending.append({ id, url: "crypto", body: "", kind: CryptoRequest({ request, held }) }), issued: b.issued.append(id) }
+				}
 				Digest(id, _, file) => { ..b, pending: b.pending.append({ id, url: "digest", body: "", kind: DigestRequest(file) }), issued: b.issued.append(id) }
 				FileUrl(id, file) => { ..b, pending: b.pending.append({ id, url: "url", body: "", kind: UrlRequest(file) }), issued: b.issued.append(id) }
 				PortSend(port, msg) => { ..b, port_log: b.port_log.append({ port, json: msg.json }) }
@@ -4496,24 +4510,12 @@ SpecRunner := [].{
 	capture_crypto! : Program(state), Host, S(state) => S(state)
 	capture_crypto! = |_program, host, state| {
 		var $pending = []
-		var $reserved = state.browser.pending.keep_if(
-			|pending| match pending.kind {
-				CryptoRequest({ held: Captured(_), .. }) => True
-				_ => False
-			},
-		).len()
 		for pending in state.browser.pending {
 			kind = match pending.kind {
 				CryptoRequest({ request, held: Uncaptured }) => {
-					held = if $reserved >= 32 {
-						Refused
-					} else {
-						$reserved = $reserved + 1
-						op = Dom.byte(request, 0)
-						handles = if (op == 3 or op == 4) (host.hold_key!)(Dom.u64(request, 1)) else []
-						Captured(CryptoHold.(handles))
-					}
-					CryptoRequest({ request, held })
+					op = Dom.byte(request, 0)
+					handles = if (op == 3 or op == 4) (host.hold_key!)(Dom.u64(request, 1)) else []
+					CryptoRequest({ request, held: Captured(CryptoHold.(handles)) })
 				}
 				other => other
 			}
@@ -4623,7 +4625,11 @@ SpecRunner := [].{
 	step! : Program(state), Host, S(state), Scm.Op => Try(S(state), Str)
 	step! = |program, host, initial, op| {
 		captured = SpecRunner.capture_crypto!(program, host, initial)
-		s = if (SpecRunner.is_occurrence(captured, op)) SpecRunner.release_reports(program, captured) else captured
+		released = if (SpecRunner.is_occurrence(captured, op)) SpecRunner.release_reports(program, captured) else captured
+		# Releasing earlier reports can issue a crypto request and drop its
+		# last page key. Resolve that request before this step enters a host
+		# primitive whose ordinary release drain may reuse the retired slot.
+		s = SpecRunner.capture_crypto!(program, host, released)
 		result = match op {
 			ExpectKeys(count) => {
 				live = (host.live_keys!)()
@@ -7628,3 +7634,21 @@ CryptoHold :: List(Box(U64)).{
 ## Port fixture payloads keep raw JSON and byte blocks in their declared
 ## order; empty blocks still occupy their own index, and files remain absent.
 expect SpecRunner.encode_port_reply({ json: "{bad", blobs: [[], [0, 255, 128]] }) == [14, 4, 0, 0, 0, '{', 'b', 'a', 'd', 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 255, 128, 0, 0, 0, 0]
+
+## Executor admission is decided in FX order, even when no native capture
+## boundary occurs before an earlier request is cancelled. The 33rd stays
+## refused; only a subsequently issued request can take the newly free slot.
+expect {
+	request = SpecRunner.put_u64([1], 1)
+	commands = (1.U32..=33).iter().fold([], |out, id| out.append(Crypto(id, request)))
+	issued = SpecRunner.absorb(SpecRunner.fresh_browser({}), commands)
+	changed = SpecRunner.absorb(issued, [Cancel(1), Crypto(34, request)])
+	status = |id| changed.pending.find_first(|pending| pending.id == id).map_ok(
+		|pending| match pending.kind {
+			CryptoRequest({ held: Refused, .. }) => "refused"
+			CryptoRequest({ held: Uncaptured, .. }) => "reserved"
+			_ => "unexpected"
+		},
+	)
+	{ refused: status(33)?, later: status(34)?, pending: changed.pending.len() } == { refused: "refused", later: "reserved", pending: 33 }
+}
