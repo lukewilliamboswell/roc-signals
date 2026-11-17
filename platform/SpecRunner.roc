@@ -148,7 +148,7 @@ SpecRunner := [].{
 
 		## A checked crypto request with a private native key snapshot, when it
 		## names a key. Captured after the issuing batch, before releases drain.
-		CryptoRequest({ request : List(U8), held : [Uncaptured, Captured(CryptoHold)] }),
+		CryptoRequest({ request : List(U8), held : [Uncaptured, Captured(CryptoHold), Refused] }),
 	]
 
 	## The most bytes a digest or a page read reads: the runtime's default
@@ -4489,50 +4489,33 @@ SpecRunner := [].{
 	## page-key slots. Each private hold is owned by its pending request and
 	## drops on result or cancel; its heap is bounded independently at 32.
 	capture_crypto! : Program(state), Host, S(state) => S(state)
-	capture_crypto! = |program, host, state| {
-		var $state = state
-		var $turns = 0.U64
-		while True {
-			var $pending = []
-			var $refused = []
-			var $count = 0.U64
-			for pending in $state.browser.pending {
-				match pending.kind {
-					CryptoRequest({ request, held }) => {
-						$count = $count + 1
-						if $count > 32 {
-							$refused = $refused.append(pending.id)
-						} else {
-							key = match held {
-								Captured(_) => held
-								Uncaptured => {
-									op = Dom.byte(request, 0)
-									handles = if (op == 3 or op == 4) (host.hold_key!)(Dom.u64(request, 1)) else []
-									Captured(CryptoHold.(handles))
-								}
-							}
-							$pending = $pending.append({ ..pending, kind: CryptoRequest({ request, held: key }) })
-						}
+	capture_crypto! = |_program, host, state| {
+		var $pending = []
+		var $reserved = state.browser.pending.keep_if(
+			|pending| match pending.kind {
+				CryptoRequest({ held: Captured(_), .. }) => True
+				_ => False
+			},
+		).len()
+		for pending in state.browser.pending {
+			kind = match pending.kind {
+				CryptoRequest({ request, held: Uncaptured }) => {
+					held = if $reserved >= 32 {
+						Refused
+					} else {
+						$reserved = $reserved + 1
+						op = Dom.byte(request, 0)
+						handles = if (op == 3 or op == 4) (host.hold_key!)(Dom.u64(request, 1)) else []
+						Captured(CryptoHold.(handles))
 					}
-					_ => {
-						$pending = $pending.append(pending)
-					}
+					CryptoRequest({ request, held })
 				}
+				other => other
 			}
-			$state = { ..$state, browser: { ..$state.browser, pending: $pending } }
-			if $refused.is_empty() {
-				break
-			}
-			for id in $refused {
-				$turns = $turns + 1
-				if $turns > 4096 {
-					return { ..$state, fault: Poisoned("resource_limit: more than 4096 crypto refusal turns in one drain") }
-				}
-				$state = SpecRunner.deliver(program, $state, id, [30, 5])
-			}
+			$pending = $pending.append({ ..pending, kind })
 		}
 		_ = (host.live_keys!)()
-		$state
+		{ ..state, browser: { ..state.browser, pending: $pending } }
 	}
 
 	## Perform a pending crypto primitive with real native algorithms, then
@@ -4543,6 +4526,7 @@ SpecRunner := [].{
 		id = state.browser.issued.get(occurrence - 1) ? |_| "crypto effect was never issued"
 		pending = state.browser.pending.find_first(|request| request.id == id) ? |_| "crypto effect is no longer pending"
 		{ request, held } = match pending.kind {
+			CryptoRequest({ held: Refused, .. }) => return Ok(SpecRunner.deliver(program, { ..state, browser: { ..state.browser, pending: state.browser.pending.keep_if(|waiting| waiting.id != id) } }, id, [30, 5]))
 			CryptoRequest({ request: operands, held: Captured(CryptoHold.(handles)) }) => { request: operands, held: handles }
 			_ => return Err("effect is not a captured crypto request")
 		}
@@ -5424,18 +5408,15 @@ SpecRunner := [].{
 					Result(id) => { node: SpecRunner.fx_node, handler: id }
 					Unplaced(id, h) => return Err("call ${$k.to_str()} went to node ${id.to_str()} with handler ${h.to_str()}, which the oracle's model places at no listener in the drawn tree")
 				}
-				key_handles = match call.files {
-					Keys(recipe) => {
-						answer = (host.crypto!)(recipe, 0, [], 67108864, 10000000)
-						if answer.payload != [27] or answer.keys.len() != 1 {
-							return Err("soak could not recreate its recorded key")
-						}
-						answer.keys
-					}
-					_ => []
-				}
+				# Count staging and consuming a fresh key-handle list together. The
+				# recorder holds only the derivation recipe, so no original key or
+				# argument-list reference survives to hide its release.
 				allocations = (host.live_allocations!)()
 				bytes = (host.live_bytes!)()
+				key_handles = match call.files {
+					Keys(recipe) => SpecRunner.recreate_key!(host, recipe)?
+					_ => []
+				}
 				(next, cmds, w) = match call.files {
 					Event => (program.event)($inst, $buf, $wbuf, node, handler, call.payload)
 					Keys(_) => (program.key)($inst, $buf, $wbuf, node, handler, call.payload, key_handles)
@@ -5461,6 +5442,18 @@ SpecRunner := [].{
 			$c = $c + 1
 		}
 		Ok($nets)
+	}
+
+	## A recorded derivation recreates the same mathematical key. The host's
+	## temporary result payload is dropped before returning the sole handle
+	## list, whose allocation and consumption are measured as one boundary.
+	recreate_key! : Host, List(U8) => Try(List(Box(U64)), Str)
+	recreate_key! = |host, recipe| {
+		answer = (host.crypto!)(recipe, 0, [], 67108864, 10000000)
+		if answer.payload != [27] or answer.keys.len() != 1 {
+			return Err("soak could not recreate its recorded key")
+		}
+		Ok(answer.keys)
 	}
 
 	## Every cycle after the first `warm` leaves nothing live behind.
@@ -5882,8 +5875,9 @@ SpecRunner := [].{
 		allocations = (host.live_allocations!)()
 		bytes = (host.live_bytes!)()
 		files = (host.live_files!)()
+		keys = (host.live_keys!)()
 		walked = SpecRunner.walk_files!(program, host, io.read_file!, paths, walk)
-		left = { allocations: (host.live_allocations!)().to_i64_wrap() - allocations.to_i64_wrap(), bytes: (host.live_bytes!)().to_i64_wrap() - bytes.to_i64_wrap(), files: (host.live_files!)().to_i64_wrap() - files.to_i64_wrap() }
+		left = { allocations: (host.live_allocations!)().to_i64_wrap() - allocations.to_i64_wrap(), bytes: (host.live_bytes!)().to_i64_wrap() - bytes.to_i64_wrap(), files: (host.live_files!)().to_i64_wrap() - files.to_i64_wrap(), keys: (host.live_keys!)().to_i64_wrap() - keys.to_i64_wrap() }
 		id = "walk-${walk.steps.to_str()}-seed-${walk.seed.to_str()}"
 		# The paths are read after the measured call, so their list is not
 		# freed inside it, where it would count as freeing more than the
@@ -5897,7 +5891,7 @@ SpecRunner := [].{
 		}
 		match walked {
 			Err({ step, message }) => failure!(step, message)
-			Ok(_) if left.allocations != 0 or left.bytes != 0 or left.files != 0 => failure!(walk.steps, "the walk left ${left.allocations.to_str()} allocations, ${left.bytes.to_str()} bytes and ${left.files.to_str()} file handles live")
+			Ok(_) if left.allocations != 0 or left.bytes != 0 or left.files != 0 or left.keys != 0 => failure!(walk.steps, "the walk left ${left.allocations.to_str()} allocations, ${left.bytes.to_str()} bytes and ${left.files.to_str()} file handles and ${left.keys.to_str()} keys live")
 			Ok(t) => {
 				(io.stdout!)("${SpecRunner.result_line({ id, name, status: "passed", duration_ns: dt, failure: Null })}\n")
 				(io.stderr!)("walk: ${walk.steps.to_str()} steps from seed ${walk.seed.to_str()}: ${t.events.to_str()} user events, ${t.served.to_str()} services (${t.jobs.to_str()} worker jobs run), ${t.idle.to_str()} idle; nothing left live (${(dt // 1_000_000).to_str()} ms)\n")

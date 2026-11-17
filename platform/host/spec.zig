@@ -398,11 +398,10 @@ fn hostedHoldKey(token: u64) callconv(.c) RocList {
     return oneBox(pointer);
 }
 
-const CryptoAnswer = extern struct {
-    keys: RocList,
-    payload: RocList,
-    random_used: u64,
-};
+// `roc glue` for Cli.crypto!'s concrete signature puts numeric fields before
+// refcounted lists on both pointer widths: random_used, keys, payload. Keep
+// each field's offset pinned to that generated layout, not just total size.
+const CryptoAnswer = @import("crypto_result.zig").Result(RocList);
 
 fn cryptoFailure(reason: u8) CryptoAnswer {
     return .{ .keys = bytesList(&.{}), .payload = bytesList(&.{ 30, reason }), .random_used = 0 };
