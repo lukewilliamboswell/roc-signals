@@ -66,7 +66,8 @@ later = |shape| {
         shape(changed),
     ]))
     (ready, _) = Core.take_cmds(Core.mount(view), [])
-    clicked = Core.event(ready, 2, 0, "")
+    # A plain typed click has no modifiers and no nearest link.
+    clicked = Core.event(ready, 2, 0, "\u(0000)\u(0000)")
     Engine.text(Core.work_counters(clicked).len().to_str())
 }
 
