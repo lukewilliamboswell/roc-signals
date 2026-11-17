@@ -8,8 +8,8 @@ template = "page.html"
 # Ports
 
 The platform models the browser services most apps need: HTTP, local
-and session storage, timers, history, focus, connectivity, workers, files
-and clipboard writes. When your
+and session storage, timers, history, focus, connectivity, workers, files,
+clipboard writes and cryptography. When your
 app needs one it does not model, such as IndexedDB, a save-file picker, a
 WebSocket or a payment sheet, reach it through a **port**.
 
@@ -388,7 +388,7 @@ geolocation, media capture, fullscreen, wake lock and batched locale formatting.
 ## A port, an effect or a worker?
 
 - **The platform models it:** use its effect. HTTP, storage, timers,
-  history, focus and files need no JavaScript, and specs model them fully.
+  history, focus, files and [cryptography](@/docs/effects-and-browser.md#cryptography-and-bytes-in-text) need no application JavaScript, and specs model them fully.
 - **Your own Roc code off the page's thread** (a slow calculation, or
   reading and building files): use a [worker](@/docs/workers.md) task. It
   needs no JavaScript.

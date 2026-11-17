@@ -1192,8 +1192,8 @@ const STEPS = {
         // A spec's time is manual, so the job's own timeout never ends it;
         // the runner's bound (as the native runner's) fails a job that never
         // finishes instead of hanging.
-        // An operation on a file the app holds is really performed, on the
-        // file Chrome holds; the step waits for its result turn.
+        // File operations use Chrome's file, and crypto uses real WebCrypto
+        // with manual test entropy; the step waits for the result turn.
         if (e.kind === "file" || e.kind === "crypto") {
           return Promise.resolve(rt.runEffect(id)).then(() => ({ used: false }));
         }
