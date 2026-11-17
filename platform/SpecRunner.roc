@@ -3231,7 +3231,7 @@ SpecRunner := [].{
 			AnswerPort({ occurrence, answer }) => {
 				call = SpecRunner.pending_port_call(s, occurrence)?
 				payload = match answer {
-					Reply(json) => SpecRunner.encode_port_reply(json)
+					Reply(message) => SpecRunner.encode_port_reply(message)
 					Throw(message) => [15, 1].concat(message.to_utf8())
 					TooLarge => [15, 2]
 					Timeout =>
@@ -3254,11 +3254,11 @@ SpecRunner := [].{
 				got = b.port_log.count_if(|c| c.port == port)
 				check(got == count, "port ${JsonOut.quote(port)} was sent ${got.to_str()} commands, expected ${count.to_str()}")
 			}
-			EmitPort({ port, json }) =>
+			EmitPort({ port, json, blobs }) =>
 				if SpecRunner.port_subscriptions(s, port) == 0 {
 					Err("no live subscription on port ${JsonOut.quote(port)}")
 				} else {
-					Ok(SpecRunner.broadcast(program, s, |x| SpecRunner.on_port(x.sub, port), SpecRunner.encode_port_reply(json)))
+					Ok(SpecRunner.broadcast(program, s, |x| SpecRunner.on_port(x.sub, port), SpecRunner.encode_port_reply({ json, blobs })))
 				}
 			ClosePort(port) => SpecRunner.end_port(program, s, port, [15, 3])
 			FailPort({ port, message }) => SpecRunner.end_port(program, s, port, [15, 1].concat(message.to_utf8()))
@@ -3290,10 +3290,15 @@ SpecRunner := [].{
 		}
 	}
 
-	## A port answer's payload (result tag 14) carrying `json` and no bytes
-	## or files.
-	encode_port_reply : Str -> List(U8)
-	encode_port_reply = |json| SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_str([14], json), 0), 0)
+	## A port fixture's ordinary result-tag-14 payload: untouched JSON, its
+	## explicit byte blocks in order, and no files. Byte markers are decoded by
+	## the app's PortJson type, as for a real JavaScript answer.
+	encode_port_reply : Scm.PortMessage -> List(U8)
+	encode_port_reply = |{ json, blobs }| {
+		header = SpecRunner.put_u32(SpecRunner.put_str([14], json), blobs.len().to_u32_wrap())
+		payload = blobs.fold(header, |out, blob| SpecRunner.put_u32(out, blob.len().to_u32_wrap()).concat(blob))
+		SpecRunner.put_u32(payload, 0)
+	}
 
 	## Select only subscriptions of the named port. Other source families
 	## cannot contribute to a port-subscription assertion.
@@ -4674,7 +4679,7 @@ SpecRunner := [].{
 		rejects : List(Scm.Stub),
 		port_answers : List({ port : Str, answer : Scm.PortAnswer }),
 		loose_answers : List(Scm.PortAnswer),
-		messages : List({ port : Str, json : Str }),
+		messages : List({ port : Str, json : Str, blobs : List(List(U8)) }),
 		typed : List({ loc : Scm.Loc, value : Str }),
 	}
 
@@ -4983,8 +4988,8 @@ SpecRunner := [].{
 						BurstVisibility => SetVisibility(if (current.env.visible) Hidden else Visible)
 						BurstPort(port) => {
 							messages = bk.messages.keep_if(|m| m.port == port)
-							json = (messages.get((v + $count) % messages.len().max(1)) ?? { port, json: "null" }).json
-							EmitPort({ port, json })
+							message = messages.get((v + $count) % messages.len().max(1)) ?? { port, json: "null", blobs: [] }
+							EmitPort(message)
 						}
 						_ => crash "SpecRunner.serve!: a burst service"
 					}
@@ -5037,8 +5042,8 @@ SpecRunner := [].{
 			ToggleOnline => Ok((SpecRunner.one(program, s, SetOnline(if (b.env.online) Offline else Online))?, { what: "set-online", kind: Service }))
 			Emit(port) => {
 				messages = bk.messages.keep_if(|m| m.port == port)
-				json = (messages.get(v % messages.len().max(1)) ?? { port, json: "null" }).json
-				Ok((SpecRunner.one(program, s, EmitPort({ port, json }))?, { what: "emit-port ${port}", kind: Service }))
+				message = messages.get(v % messages.len().max(1)) ?? { port, json: "null", blobs: [] }
+				Ok((SpecRunner.one(program, s, EmitPort(message))?, { what: "emit-port ${port}", kind: Service }))
 			}
 		}
 	}
@@ -7619,3 +7624,7 @@ CryptoHold :: List(Box(U64)).{
 	is_eq : CryptoHold, CryptoHold -> Bool
 	is_eq = |CryptoHold.(left), CryptoHold.(right)| left.map(Box.unbox) == right.map(Box.unbox)
 }
+
+## Port fixture payloads keep raw JSON and byte blocks in their declared
+## order; empty blocks still occupy their own index, and files remain absent.
+expect SpecRunner.encode_port_reply({ json: "{bad", blobs: [[], [0, 255, 128]] }) == [14, 4, 0, 0, 0, '{', 'b', 'a', 'd', 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 255, 128, 0, 0, 0, 0]

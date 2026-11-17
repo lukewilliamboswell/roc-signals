@@ -118,3 +118,28 @@ await check("emit with a value whose getter throws gives the emitter its error a
   await settled();
   assert.deepEqual(results, []);
 });
+
+await check("manual call fixtures keep malformed JSON and explicit binary attachments unchanged", () => {
+  const { runtime, results } = mount({}); runtime.manual = true;
+  runtime.performPortCall({ op: "portcall", id: 21, port: "p", msg: message, timeout: 0 });
+  assert.equal(runtime.answerPort(21, { json: "{bad", blobs: [[], [0, 255, 128]] }), true);
+  assert.deepEqual(results, [[21, [14, 4, 0, 0, 0, 123, 98, 97, 100, 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 255, 128, 0, 0, 0, 0]]]);
+});
+
+await check("manual subscriptions receive ordered byte blocks beside numeric markers", () => {
+  const { runtime, results } = mount({}); runtime.manual = true;
+  runtime.portDecls = new Map([["p", { delivery: 1, bound: 4 }]]);
+  runtime.performPortSub({ op: "portsub", id: 22, port: "p", msg: message });
+  const json = '{"$bytes":1}';
+  assert.equal(runtime.messagePort("p", { json, blobs: [[0], [128, 255]] }), 1);
+  const encoded = [...new TextEncoder().encode(json)];
+  assert.deepEqual(results, [[22, [14, ...word(encoded.length), ...encoded, ...word(2), ...word(1), 0, ...word(2), 128, 255, ...word(0)]]]);
+});
+
+await check("a textual bytes marker is left as text and creates no attachment", () => {
+  const { runtime, results } = mount({}); runtime.manual = true;
+  runtime.performPortCall({ op: "portcall", id: 23, port: "p", msg: message, timeout: 0 });
+  const json = '{"$bytes":"AP8="}', encoded = [...new TextEncoder().encode(json)];
+  runtime.answerPort(23, { json });
+  assert.deepEqual(results, [[23, [14, ...word(encoded.length), ...encoded, ...word(0), ...word(0)]]]);
+});

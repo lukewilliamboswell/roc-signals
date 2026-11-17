@@ -2,6 +2,7 @@ import Protocol
 import JsonOut
 import Core
 import Web
+import Base64
 
 ## The `.scm` spec language: the one parser both spec runners use.
 ##
@@ -818,9 +819,9 @@ Scm := [].{
 		## Exactly `count` commands were sent on `port` in this document.
 		ExpectPortSends({ port : Str, count : U64 }),
 
-		## Deliver `json` to every live subscription on `port`; a step with
-		## none live fails.
-		EmitPort({ port : Str, json : Str }),
+		## Deliver untouched JSON and explicit byte blocks to every live
+		## subscription on `port`; a step with none live fails.
+		EmitPort({ port : Str, json : Str, blobs : List(List(U8)) }),
 
 		## The JavaScript ends every live subscription on `port` (`Closed`).
 		ClosePort(Str),
@@ -841,9 +842,14 @@ Scm := [].{
 	]
 
 	## How a spec answers a pending port call: JSON text (delivered as it is
-	## written, so a spec can answer what the app's type does not accept), a
-	## throw with its message, an answer too large, or its timeout expiring.
-	PortAnswer : [Reply(Str), Throw(Str), TooLarge, Timeout]
+	## written, so a spec can answer what the app's type does not accept),
+	## with optional decoded byte blocks; a throw with its message, an answer
+	## too large, or its timeout expiring.
+	PortAnswer : [Reply(PortMessage), Throw(Str), TooLarge, Timeout]
+
+	## Fixture JSON stays verbatim; explicitly supplied byte blocks sit beside
+	## it as ordinary PortJson blobs, addressed by their zero-based positions.
+	PortMessage : { json : Str, blobs : List(List(U8)) }
 
 	## A step with the position of its form.
 	Step : { op : Op, pos : Pos }
@@ -2248,8 +2254,10 @@ Scm := [].{
 		{
 			name: "emit-port",
 			parse: |form, args| {
-				a = Scm.arity(form, args, 2)?
-				Ok(EmitPort({ port: Scm.port_name(Scm.arg(a, 0))?, json: Scm.string(Scm.arg(a, 1), "the message JSON")? }))
+				if args.len() < 2 {
+					return Err(Scm.bad(form, "emit-port needs the port name and message JSON"))
+				}
+				Ok(EmitPort({ port: Scm.port_name(Scm.arg(args, 0))?, json: Scm.string(Scm.arg(args, 1), "the message JSON")?, blobs: Scm.port_blobs(form, args.drop_first(2))? }))
 			},
 		},
 		{ name: "close-port", parse: |form, args| Ok(ClosePort(Scm.port_name(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
@@ -2289,20 +2297,68 @@ Scm := [].{
 		if (name == "") Err(Scm.bad(sx, "the port name must not be empty")) else Ok(name)
 	}
 
-	## `(answer-port N reply "json")`, `(answer-port N throw "message")`,
+	## `(answer-port N reply "json" [:bytes ("base64" ...)])`,
+	## `(answer-port N throw "message")`,
 	## `(answer-port N too-large)` or `(answer-port N timeout)`.
 	port_answer : Sx, List(Sx) -> Try(Op, Problem)
 	port_answer = |form, args| {
 		occurrence = Scm.unsigned(args.get(0) ? |_| Scm.bad(form, "answer-port needs the effect occurrence"), "the effect occurrence")?
 		kind_sx = args.get(1) ? |_| Scm.bad(form, "answer-port needs how to answer: reply, throw, too-large or timeout")
 		answer = match Scm.symbol(kind_sx, "the answer")? {
-			"reply" => Reply(Scm.string(Scm.arg(Scm.arity(form, args, 3)?, 2), "the reply JSON")?)
+			"reply" => {
+				if args.len() < 3 {
+					return Err(Scm.bad(form, "a port reply needs its JSON text"))
+				}
+				Reply({ json: Scm.string(Scm.arg(args, 2), "the reply JSON")?, blobs: Scm.port_blobs(form, args.drop_first(3))? })
+			}
 			"throw" => Throw(Scm.string(Scm.arg(Scm.arity(form, args, 3)?, 2), "the thrown message")?)
 			"too-large" => Scm.arity(form, args, 2).map_ok(|_| TooLarge)?
 			"timeout" => Scm.arity(form, args, 2).map_ok(|_| Timeout)?
 			other => return Err(Scm.bad(kind_sx, "unknown answer ${other}; a port call is answered with reply, throw, too-large or timeout"))
 		}
 		Ok(AnswerPort({ occurrence, answer }))
+	}
+
+	## A fixture's only optional message field is :bytes, a list of canonical
+	## padded base64 strings. Decoding happens at the parser's input boundary;
+	## neither runner infers attachments from a JSON string or repairs its JSON.
+	port_blobs : Sx, List(Sx) -> Try(List(List(U8)), Problem)
+	port_blobs = |form, args| {
+		fields = Scm.keywords(form, args)?
+		var $out = []
+		for field in fields {
+			if field.key != ":bytes" {
+				return Err(Scm.bad(field.value, "unknown port message field ${field.key}; only :bytes is accepted"))
+			}
+			items = match field.value {
+				List(values, _) => values
+				_ => return Err(Scm.bad(field.value, ":bytes must be a list of base64 strings"))
+			}
+			for item in items {
+				encoded = Scm.string(item, "a :bytes attachment")?
+				decoded = Base64.decode(encoded) ? |_| Scm.bad(item, "a :bytes attachment must be canonical padded base64")
+				$out = $out.append(decoded)
+			}
+		}
+		Ok($out)
+	}
+
+	## Browser replay receives already decoded byte blocks. Omit the field for
+	## no attachments so existing plain-JSON fixtures retain their exact shape.
+	port_message_json : PortMessage -> List({ key : Str, value : JsonOut.Value })
+	port_message_json = |{ json, blobs }| {
+		fields = [JsonOut.field("json", Text(json))]
+		if blobs.is_empty() {
+			fields
+		} else {
+			values = blobs.map(
+				|blob| {
+					bytes = blob.map(|byte| Nat(byte.to_u64()))
+					Array(bytes)
+				},
+			)
+			fields.append(JsonOut.field("blobs", Array(values)))
+		}
 	}
 
 	## Dispatch one executable form through the closed step registry and retain
@@ -3010,7 +3066,7 @@ Scm := [].{
 			AnswerPort({ occurrence, answer }) =>
 				[JsonOut.field("count", Nat(occurrence))].concat(
 					match answer {
-						Reply(json) => [JsonOut.field("answer", Text("reply")), JsonOut.field("json", Text(json))]
+						Reply(message) => [JsonOut.field("answer", Text("reply"))].concat(Scm.port_message_json(message))
 						Throw(message) => [JsonOut.field("answer", Text("throw")), text(message)]
 						TooLarge => [JsonOut.field("answer", Text("too-large"))]
 						Timeout => [JsonOut.field("answer", Text("timeout"))]
@@ -3018,7 +3074,7 @@ Scm := [].{
 				)
 			ExpectPortSent({ port, index, json }) => [JsonOut.field("port", Text(port)), JsonOut.field("index", Nat(index)), JsonOut.field("json", Text(json))]
 			ExpectPortSends({ port, count }) => [JsonOut.field("port", Text(port)), JsonOut.field("count", Nat(count))]
-			EmitPort({ port, json }) => [JsonOut.field("port", Text(port)), JsonOut.field("json", Text(json))]
+			EmitPort({ port, json, blobs }) => [JsonOut.field("port", Text(port))].concat(Scm.port_message_json({ json, blobs }))
 			ClosePort(port) => [JsonOut.field("port", Text(port))]
 			FailPort({ port, message }) => [JsonOut.field("port", Text(port)), text(message)]
 			ExpectPortSubscriptions({ port, count }) => [JsonOut.field("port", Text(port)), JsonOut.field("count", Nat(count))]
@@ -3967,4 +4023,47 @@ expect {
 ## Invalid cryptographic deployment ceilings and negative key counts are errors.
 expect {
 	["(setup (max-crypto-bytes -1))", "(setup (max-crypto-bytes 67108865))", "(setup (max-crypto-iterations 0))", "(setup (max-crypto-iterations 10000001))"].all(|setup| Scm.parse("(test \"bad\" ${setup} (steps (mark-metrics)))").is_err()) and Scm.parse("(test \"bad\" (steps (expect-keys -1)))").is_err()
+}
+
+## Port fixtures decode explicit canonical base64 blocks while retaining raw
+## JSON, including malformed JSON intended to exercise an app's decoder.
+expect {
+	json = "{\"$bytes\":1}"
+	story = "(test \"binary fixtures\" (steps (answer-port 1 reply ${JsonOut.quote(json)} :bytes (\"\" \"AP+A\")) (emit-port \"binary\" \"{bad JSON\" :bytes (\"AA==\"))))"
+	spec = Scm.parse(story)?
+	spec.steps.map(|step| step.op) == [
+		AnswerPort({ occurrence: 1, answer: Reply({ json, blobs: [[], [0, 255, 128]] }) }),
+		EmitPort({ port: "binary", json: "{bad JSON", blobs: [[0]] }),
+	]
+}
+
+## Unattached port fixtures keep their original replay JSON, and attached
+## blocks cross as decoded integers rather than a second base64 decoder.
+expect {
+	plain = Scm.parse("(test \"plain\" (steps (answer-port 1 reply \"raw\") (emit-port \"binary\" \"raw\")))")?
+	attached = Scm.parse("(test \"attached\" (steps (answer-port 1 reply \"raw\" :bytes (\"AP8=\"))))")?
+	plain_json = JsonOut.render(Scm.spec_fields("p", plain))
+	attached_json = JsonOut.render(Scm.spec_fields("p", attached))
+	!plain_json.contains("\"blobs\"") and attached_json.contains("\"json\":\"raw\",\"blobs\":[[0,255]]")
+}
+
+## Port byte attachments reject malformed base64, duplicate or unknown
+## keywords, non-list blocks and every attachment on a failure answer.
+expect {
+	bad = [
+		"(answer-port 1 reply \"null\" :bytes (\"AB==\"))",
+		"(answer-port 1 reply \"null\" :bytes (\"AP8\"))",
+		"(answer-port 1 reply \"null\" :bytes (\"AP8=\\n\"))",
+		"(answer-port 1 reply \"null\" :bytes (\"AA-_\"))",
+		"(answer-port 1 reply \"null\" :bytes () :bytes ())",
+		"(answer-port 1 reply \"null\" :bytes \"AA==\")",
+		"(answer-port 1 reply \"null\" :bytes (1))",
+		"(answer-port 1 reply \"null\" :unknown ())",
+		"(answer-port 1 throw \"failed\" :bytes ())",
+		"(answer-port 1 timeout :bytes ())",
+		"(answer-port 1 too-large :bytes ())",
+		"(emit-port \"binary\" \"null\" :bytes (\"AB==\"))",
+		"(emit-port \"binary\" \"null\" :bytes () :bytes ())",
+	]
+	bad.all(|step| Scm.parse("(test \"invalid attachment\" (steps ${step}))").is_err())
 }

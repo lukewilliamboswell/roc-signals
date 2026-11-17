@@ -649,7 +649,7 @@ const PORT_STEPS = {
     const c = await page.evaluate(`(${pendingPortCall})(${s.count})`);
     if (c.error) throw new Error(c.error);
     if (s.answer === "timeout" && !(c.timeout > 0)) throw new Error(`the call on port ${JSON.stringify(c.port)} has no timeout, so it cannot time out`);
-    const answer = s.answer === "reply" ? { json: s.json } : s.answer === "throw" ? { threw: s.text } : s.answer === "too-large" ? { tooLarge: true } : { timeout: true };
+    const answer = s.answer === "reply" ? { json: s.json, blobs: s.blobs ?? [] } : s.answer === "throw" ? { threw: s.text } : s.answer === "too-large" ? { tooLarge: true } : { timeout: true };
     const ok = await page.evaluate((id, answer) => window.__rt.answerPort(id, answer), c.id, answer);
     if (!ok) throw new Error(`the call on port ${JSON.stringify(c.port)} could not be answered`);
     return settle(page);
@@ -664,7 +664,7 @@ const PORT_STEPS = {
     const got = await page.evaluate((port) => window.__rt.portLog.filter((c) => c.port === port).length, s.port);
     if (got !== s.count) throw new Error(`port ${JSON.stringify(s.port)} was sent ${got} commands, expected ${s.count}`);
   },
-  "emit-port": (page, s) => portMessage(page, s.port, { json: s.json }),
+  "emit-port": (page, s) => portMessage(page, s.port, { json: s.json, blobs: s.blobs ?? [] }),
   "close-port": (page, s) => portMessage(page, s.port, { closed: true }),
   "fail-port": (page, s) => portMessage(page, s.port, { threw: s.text }),
   "expect-port-subscription-arg": async (page, s) => {

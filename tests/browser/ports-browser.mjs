@@ -119,6 +119,7 @@ function install() {
         };
       },
     },
+    [`${P}binary`]: { push: true },
     [`${P}feed`]: {
       subscribe: (arg, { emit, close, signal }) => {
         seen.feedArg = arg;
@@ -202,7 +203,7 @@ async function open(options = {}, mountWith = null) {
     `port "${P}get" is declared by the app as a call, but options.ports["${P}get"] is a command handler`,
     `options.ports["${P}log"] must have exactly one of command, call, subscribe (functions) or push: true`,
     "mounted",
-    "the app declares 9 ports (\"test.roc-sign",
+    "the app declares 10 ports (\"test.roc-sig",
   ]);
   await ctx.close();
 }

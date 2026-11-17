@@ -818,13 +818,23 @@ awaited requests.
 |---|---|
 | `(expect-port-call N "port" "json")` | The N-th effect occurrence is a pending call on `port` whose message is exactly `json` |
 | `(answer-port N reply "json")` | Answer that call with `json`, as written (so a spec can answer what the app's type does not accept) |
+| `(answer-port N reply "json" :bytes ("BASE64" ...))` | Answer with JSON and explicit byte blocks, indexed by numeric `$bytes` markers in that JSON |
 | `(answer-port N throw "message")`, `(answer-port N too-large)`, `(answer-port N timeout)` | Answer it `Threw`, `TooLarge` or, for a call with a timeout, `Timeout` |
 | `(emit-port "port" "json")` | Deliver a message to every live subscription on `port`; fails when none is live |
+| `(emit-port "port" "json" :bytes ("BASE64" ...))` | Deliver JSON and explicit byte blocks to every live subscription on `port` |
 | `(close-port "port")`, `(fail-port "port" "message")` | End every live subscription on `port` with `Closed` or `Threw` |
 | `(expect-port-subscriptions "port" N)` | Exactly N subscriptions on `port` are live |
 | `(expect-port-subscription-arg "port" k "json")` | The one-based k-th currently active subscription on `port` has exactly this argument; no subscription history is retained |
 | `(expect-port-sent "port" K "json")` | The K-th command (from 1) sent on `port` carried exactly `json` |
 | `(expect-port-sends "port" N)` | Exactly N commands were sent on `port` |
+
+The optional `:bytes` list holds standard canonical padded base64 strings.
+The parser decodes them once, and both runners deliver the resulting blocks
+beside the JSON, in list order. An empty string supplies an empty block;
+`{"$bytes":0}` refers to the first block. JSON is delivered exactly as written,
+so malformed JSON or an invalid index can still test the app's decoding
+failure. Unknown or repeated fields, invalid base64 and attachments on a
+`throw`, `too-large` or `timeout` answer are spec errors.
 
 `run-effect` on a port call fails and names `answer-port`. Commands are
 not awaited, so `expect-pending-effects` does not count them. See

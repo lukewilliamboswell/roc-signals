@@ -6736,14 +6736,20 @@ function portFailed(klass, text = "") {
   return { parts, files: [] };
 }
 
-// A spec's answer: JSON text verbatim, a throw, TooLarge, Timeout or
-// Closed.
+// A spec's answer: JSON text verbatim with explicit decoded byte blocks,
+// a throw, TooLarge, Timeout or Closed. Numeric byte markers remain ordinary
+// PortJson; JSON text itself is never inspected or rewritten here.
 function manualPortPayload(answer) {
   if (answer.timeout) return { parts: [new Uint8Array([RES_TIMEOUT])], files: [] };
   if (answer.tooLarge) return portFailed(2);
   if (answer.closed) return portFailed(3);
   if (answer.threw !== undefined) return portFailed(1, answer.threw);
-  const p = portReplyPayload({ json: answer.json, blobs: [], files: [] });
+  const blobs = (answer.blobs ?? []).map(blob => {
+    if (blob instanceof Uint8Array) return blob;
+    if (!Array.isArray(blob) || !blob.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) throw new TypeError("manual port byte blocks must contain integers from 0 to 255");
+    return Uint8Array.from(blob);
+  });
+  const p = portReplyPayload({ json: answer.json, blobs, files: [] });
   return { parts: p.parts, files: [] };
 }
 
