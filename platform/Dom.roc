@@ -1137,6 +1137,9 @@ Dom := [].{
 		## A digest of a file's range: id, algorithm (1 SHA-256) and the file.
 		Digest(U32, U8, { token : U64, start : U64, len : U64 }),
 
+		## One crypto primitive, retaining its independently checked operands.
+		Crypto(U32, List(U8)),
+
 		## A URL that shows a file's range: id and the file.
 		FileUrl(U32, { token : U64, start : U64, len : U64 }),
 
@@ -1577,6 +1580,43 @@ Dom := [].{
 					(key, next) = Dom.str(b, $at)
 					$at = next
 					$fx = $fx.append(if (kind == 17) SessionGet(id, key) else StorageSub(id, key))
+				} else if kind == 21 {
+					crypto_start = $at
+					crypto_op = Dom.byte(b, $at)
+					$at = $at + 1
+					if crypto_op == 1 {
+						_ = Dom.u64(b, $at)
+						$at = $at + 8
+					} else if crypto_op == 2 {
+						hash = Dom.byte(b, $at)
+						if hash != 1 and hash != 3 {
+							crash "unknown PBKDF2 hash"
+						}
+						_ = Dom.u32(b, $at + 1)
+						(_, password_end) = Dom.raw(b, $at + 5)
+						(_, salt_end) = Dom.raw(b, password_end)
+						$at = salt_end
+					} else if crypto_op == 3 or crypto_op == 4 {
+						_ = Dom.u64(b, $at)
+						$at = $at + 8
+						if crypto_op == 4 {
+							(_, iv_end) = Dom.raw(b, $at)
+							$at = iv_end
+						}
+						(_, input_end) = Dom.raw(b, $at)
+						(_, associated_end) = Dom.raw(b, input_end)
+						$at = associated_end
+					} else if crypto_op == 5 {
+						hash = Dom.byte(b, $at)
+						if hash < 1 or hash > 3 {
+							crash "unknown crypto digest hash"
+						}
+						(_, input_end) = Dom.raw(b, $at + 1)
+						$at = input_end
+					} else {
+						crash "unknown crypto operation"
+					}
+					$fx = $fx.append(Crypto(id, b.sublist({ start: crypto_start, len: $at - crypto_start })))
 				} else if kind == 20 {
 					$fx = $fx.append(StorageFailures(id))
 				} else if kind == 19 {

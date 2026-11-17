@@ -71,4 +71,21 @@ Cli := [].{
 	## computes it for a file's digest, so a spec gets the same digest in
 	## both runners.
 	sha256! : List(U8) => List(U8)
+
+	## Perform one native crypto primitive for the spec runner. `request` is the
+	## checked FX-kind-21 operand record. Key material remains in the host's
+	## typed heaps; `held` is the private pending request's zero-or-one handle.
+	## The deterministic spec stream starts at `random_offset` and the answer
+	## reports how many bytes it consumed. Returned handles and payload have
+	## one reference owned by Roc, including a key discarded by its reaction.
+	crypto! : List(U8), U64, List(Box(U64)), U64, U32 => { keys : List(Box(U64)), payload : List(U8), random_used : U64 }
+
+	## Capture the browser request's key at batch application, before draining
+	## page-key releases. This mints a private hold, never a second page key.
+	## An empty list means the bounded native pending heap refused the hold.
+	hold_key! : U64 => List(Box(U64))
+
+	## Drain retired page keys and pending holds, erasing their native material,
+	## then count page-key handles only, as the browser's key gauge does.
+	live_keys! : () => U64
 }

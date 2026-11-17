@@ -28,6 +28,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const resources = @import("resources.zig");
+const crypto = @import("crypto.zig");
 
 /// The system's services: files, output, time, memory, the process and
 /// its job children.
@@ -165,6 +166,16 @@ export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
         .retired => return,
         .corrupt => fail("internal: a file handle was released twice", ""),
     }
+    switch (keys.route(ptr)) {
+        .not_owned => {},
+        .retired => return,
+        .corrupt => fail("internal: a crypto key was released twice", ""),
+    }
+    switch (crypto_holds.route(ptr)) {
+        .not_owned => {},
+        .retired => return,
+        .corrupt => fail("internal: a crypto hold was released twice", ""),
+    }
     const user: [*]u8 = @ptrCast(ptr);
     live_allocations -= 1;
     live_bytes -= @as(*const usize, @ptrCast(@alignCast(user - header_size))).*;
@@ -172,7 +183,7 @@ export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
 }
 
 export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.c) *anyopaque {
-    if (blobs.contains(ptr)) fail("internal: a file handle was resized", "");
+    if (blobs.contains(ptr) or keys.contains(ptr) or crypto_holds.contains(ptr)) fail("internal: a resource handle was resized", "");
     const user: [*]u8 = @ptrCast(ptr);
     const old = @as(*const usize, @ptrCast(@alignCast(user - header_size))).*;
     const next = roc_alloc(size, align_arg);
@@ -352,6 +363,226 @@ fn hostedLiveFiles() callconv(.c) u64 {
 /// same 32 bytes Chrome would. The argument is released here (a hosted
 /// function owns it) and the digest is a fresh list whose single reference
 /// passes to Roc.
+// Native spec backend for WebCrypto. A page key has Roc's lifetime. A
+// pending primitive owns a separate private hold, mirroring the browser
+// request's captured CryptoKey; it never revives the page's retired box.
+var keys: resources.Heap(.key, 64, crypto.Key) = .{};
+var crypto_holds: resources.Heap(.crypto_hold, 32, crypto.Key) = .{};
+
+fn drainKeys() void {
+    var token: u64 = 0;
+    while (keys.releaseOne(&token, crypto.erase)) {}
+    while (crypto_holds.releaseOne(&token, crypto.erase)) {}
+}
+
+fn hostedLiveKeys() callconv(.c) u64 {
+    drainKeys();
+    return keys.live_count;
+}
+
+fn oneBox(pointer: *u64) RocList {
+    const base: [*]usize = @ptrCast(@alignCast(roc_alloc(3 * @sizeOf(usize), @alignOf(usize))));
+    base[0] = 1;
+    base[1] = 1;
+    base[2] = @intFromPtr(pointer);
+    return .{ .elements = base + 2, .length = 1, .capacity_or_alloc_ptr = 2 };
+}
+
+fn hostedHoldKey(token: u64) callconv(.c) RocList {
+    // Do not drain the page's key heap here: this command can name the last
+    // handle the issuing batch retired, just like a browser request can.
+    var released: u64 = 0;
+    while (crypto_holds.releaseOne(&released, crypto.erase)) {}
+    const key = keys.get(token) orelse fail("internal: crypto request named an unknown key", "");
+    const pointer = crypto_holds.mint(key.*) orelse return bytesList(&.{});
+    return oneBox(pointer);
+}
+
+const CryptoAnswer = extern struct {
+    keys: RocList,
+    payload: RocList,
+    random_used: u64,
+};
+
+fn cryptoFailure(reason: u8) CryptoAnswer {
+    return .{ .keys = bytesList(&.{}), .payload = bytesList(&.{ 30, reason }), .random_used = 0 };
+}
+
+const CryptoReader = struct {
+    input: []const u8,
+    at: usize = 0,
+
+    fn take(self: *CryptoReader, length: usize) []const u8 {
+        if (length > self.input.len - self.at) fail("internal: truncated native crypto request", "");
+        const part = self.input[self.at..][0..length];
+        self.at += length;
+        return part;
+    }
+
+    fn byte(self: *CryptoReader) u8 {
+        return self.take(1)[0];
+    }
+
+    fn int(self: *CryptoReader, comptime T: type) T {
+        return std.mem.readInt(T, self.take(@sizeOf(T))[0..@sizeOf(T)], .little);
+    }
+
+    fn bytes(self: *CryptoReader) []const u8 {
+        return self.take(self.int(u32));
+    }
+
+    fn end(self: *CryptoReader) void {
+        if (self.at != self.input.len) fail("internal: trailing native crypto request bytes", "");
+    }
+};
+
+fn newBytes(length: usize) RocList {
+    if (length == 0) return bytesList(&.{});
+    const base: [*]u8 = @ptrCast(roc_alloc(@sizeOf(usize) + length, @alignOf(usize)));
+    @as(*isize, @ptrCast(@alignCast(base))).* = 1;
+    return .{ .elements = base + @sizeOf(usize), .length = length, .capacity_or_alloc_ptr = length << 1 };
+}
+
+fn mutableBytes(bytes: RocList) []u8 {
+    return if (bytes.elements) |pointer| @as([*]u8, @ptrCast(pointer))[0..bytes.length] else &.{};
+}
+
+// This deliberately has no production entropy source. Only the native spec
+// backend calls it; the browser's manual backend implements the same stream.
+fn specCryptoRandom(output: []u8, offset: u64) void {
+    const prefix = "roc-signals spec crypto\x00";
+    var material: [prefix.len + 8]u8 = undefined;
+    @memcpy(material[0..prefix.len], prefix);
+    var position = offset;
+    var written: usize = 0;
+    while (written < output.len) {
+        std.mem.writeInt(u64, material[prefix.len..][0..8], position / 32, .little);
+        var block: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(&material, &block, .{});
+        const start: usize = @intCast(position % 32);
+        const count = @min(output.len - written, 32 - start);
+        @memcpy(output[written..][0..count], block[start..][0..count]);
+        written += count;
+        position += count;
+    }
+}
+
+/// `Cli.crypto!`: perform the wire primitive with the native host's real
+/// SHA-2, PBKDF2 and AES-GCM. Lists move into this call and are released here;
+/// returned lists each have one reference. Keys never enter a Roc byte list.
+/// `random_offset` addresses the deterministic spec stream, and random_used
+/// counts only bytes a successful primitive consumed. A failed decrypt never
+/// publishes any plaintext.
+fn hostedCrypto(request: RocList, random_offset: u64, held: RocList, max_bytes: u64, max_iterations: u32) callconv(.c) CryptoAnswer {
+    defer releaseBytes(request);
+    defer releaseHandles(held);
+    var reader: CryptoReader = .{ .input = mutableBytes(request) };
+    const op = reader.byte();
+    const empty = bytesList(&.{});
+    switch (op) {
+        1 => {
+            const count = reader.int(u64);
+            reader.end();
+            if (count > max_bytes) return cryptoFailure(2);
+            if (random_offset > std.math.maxInt(u64) - count) return cryptoFailure(6);
+            const payload = newBytes(1 + @as(usize, @intCast(count)));
+            const output = mutableBytes(payload);
+            output[0] = 28;
+            specCryptoRandom(output[1..], random_offset);
+            return .{ .keys = empty, .payload = payload, .random_used = count };
+        },
+        2 => {
+            const hash = reader.byte();
+            const iterations = reader.int(u32);
+            const password = reader.bytes();
+            const salt = reader.bytes();
+            reader.end();
+            if (hash != 1 and hash != 3) fail("internal: invalid native PBKDF2 hash", "");
+            if (iterations == 0 or salt.len < 16) return cryptoFailure(3);
+            if (iterations > max_iterations or password.len + salt.len > max_bytes) return cryptoFailure(2);
+            drainKeys();
+            if (keys.live_count == 64) return cryptoFailure(5);
+            var key = crypto.derive(password, salt, iterations, if (hash == 1) .sha256 else .sha512) catch unreachable;
+            defer crypto.erase(&key);
+            const pointer = keys.mint(key) orelse return cryptoFailure(5);
+            return .{ .keys = oneBox(pointer), .payload = bytesList(&.{27}), .random_used = 0 };
+        },
+        3, 4 => {
+            _ = reader.int(u64); // page token, already resolved into the private hold
+            const iv = if (op == 4) reader.bytes() else &.{};
+            const input = reader.bytes();
+            const associated = reader.bytes();
+            reader.end();
+            if (held.length != 1) return cryptoFailure(5);
+            const pointers: [*]*u64 = @ptrCast(@alignCast(held.elements.?));
+            const key = crypto_holds.get(pointers[0].*) orelse fail("internal: crypto request lost its held key", "");
+            if (op == 4 and iv.len != 12) return cryptoFailure(3);
+            if (input.len + associated.len + (if (op == 3) @as(usize, 16) else 0) > max_bytes) return cryptoFailure(2);
+            if (op == 4) {
+                if (input.len < 16) return cryptoFailure(4);
+                const payload = newBytes(1 + input.len - 16);
+                const output = mutableBytes(payload);
+                output[0] = 28;
+                crypto.decrypt(output[1..], key.*, iv[0..12].*, input, associated) catch {
+                    releaseBytes(payload);
+                    return cryptoFailure(4);
+                };
+                return .{ .keys = empty, .payload = payload, .random_used = 0 };
+            }
+            if (random_offset > std.math.maxInt(u64) - 12) return cryptoFailure(6);
+            const payload = newBytes(1 + 12 + input.len + 16);
+            const output = mutableBytes(payload);
+            output[0] = 29;
+            specCryptoRandom(output[1..13], random_offset);
+            crypto.encrypt(output[13..], key.*, output[1..13].*, input, associated);
+            return .{ .keys = empty, .payload = payload, .random_used = 12 };
+        },
+        5 => {
+            const algorithm = reader.byte();
+            const input = reader.bytes();
+            reader.end();
+            if (algorithm < 1 or algorithm > 3) fail("internal: invalid native digest hash", "");
+            if (input.len > max_bytes) return cryptoFailure(2);
+            const length: usize = switch (algorithm) {
+                1 => 32,
+                2 => 48,
+                else => 64,
+            };
+            const payload = newBytes(1 + length);
+            const output = mutableBytes(payload);
+            output[0] = 28;
+            crypto.digest(output[1..], switch (algorithm) {
+                1 => .sha256,
+                2 => .sha384,
+                else => .sha512,
+            }, input);
+            return .{ .keys = empty, .payload = payload, .random_used = 0 };
+        },
+        else => fail("internal: unknown native crypto operation", ""),
+    }
+}
+
+fn releaseHandles(handles: RocList) void {
+    if (handles.elements) |pointer| {
+        const payload: [*]usize = @ptrCast(@alignCast(pointer));
+        const address = if (handles.capacity_or_alloc_ptr & 1 != 0) handles.capacity_or_alloc_ptr & ~@as(usize, 1) else @intFromPtr(pointer);
+        const rc: *isize = @ptrFromInt(address - @sizeOf(usize));
+        if (rc.* == 0) return;
+        rc.* -= 1;
+        if (rc.* != 0) return;
+        const base = address - 2 * @sizeOf(usize);
+        const length = @as(*const usize, @ptrFromInt(base)).*;
+        const original: [*]usize = @ptrFromInt(address);
+        for (original[0..length]) |box| {
+            const box_rc: *isize = @ptrFromInt(box - @sizeOf(usize));
+            box_rc.* -= 1;
+            if (box_rc.* == 0) roc_dealloc(@ptrFromInt(box - 8), 8);
+        }
+        _ = payload;
+        roc_dealloc(@ptrFromInt(base), @alignOf(usize));
+    }
+}
+
 fn hostedSha256(bytes: RocList) callconv(.c) RocList {
     defer releaseBytes(bytes);
     const data: []const u8 = if (bytes.elements) |e| @as([*]const u8, @ptrCast(e))[0..bytes.length] else &.{};
@@ -901,6 +1132,9 @@ comptime {
 
 comptime {
     @export(&hostedWork, .{ .name = "roc_test_work" });
+    @export(&hostedCrypto, .{ .name = "roc_test_crypto" });
+    @export(&hostedHoldKey, .{ .name = "roc_test_hold_key" });
+    @export(&hostedLiveKeys, .{ .name = "roc_test_live_keys" });
     @export(&hostedMintFiles, .{ .name = "roc_test_mint_files" });
     @export(&hostedLiveFiles, .{ .name = "roc_test_live_files" });
     @export(&hostedReadFile, .{ .name = "roc_test_read_file" });

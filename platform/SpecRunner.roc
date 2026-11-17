@@ -91,6 +91,9 @@ SpecRunner := [].{
 		## An event carrying files: its file record and the handles minted for it.
 		files : state, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (state, List(U8), List(U8)),
 
+		## A crypto-key result with its freshly minted zero-or-one key handle.
+		key : state, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (state, List(U8), List(U8)),
+
 		## The engine's settle check (`Core.settled`): `Err` holds the
 		## commands a pass over every layer emitted on a discarded copy.
 		settled : state -> Try({}, { cmds : List(U8), note : Str }),
@@ -142,6 +145,10 @@ SpecRunner := [].{
 		## `run-effect` answers it with the staged stub, its body as the
 		## file, through a handle the host mints.
 		FetchRequest,
+
+		## A checked crypto request with a private native key snapshot, when it
+		## names a key. Captured after the issuing batch, before releases drain.
+		CryptoRequest({ request : List(U8), held : [Uncaptured, Captured(CryptoHold)] }),
 	]
 
 	## The most bytes a digest or a page read reads: the runtime's default
@@ -176,7 +183,7 @@ SpecRunner := [].{
 		failure_queue : List({ id : U32, payload : List(U8), ready : Bool }),
 		failure_scheduled : Bool,
 		failure_active : Bool,
-		settings : { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64, mount_root : Scm.MountRoot },
+		settings : { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64, max_crypto_bytes : U64, max_crypto_iterations : U32, mount_root : Scm.MountRoot },
 		guard : Bool,
 		sticky_activation : Bool,
 		clipboard : { text : Str, html : Str, writes : U64, exhausted : Bool },
@@ -199,6 +206,9 @@ SpecRunner := [].{
 		## The most bytes a task's job may append to its builders (the
 		## `max-output-bytes` setup, else the runtime's default).
 		max_output : U64,
+
+		## Byte offset of the deterministic manual crypto entropy stream.
+		crypto_random_offset : U64,
 
 		## The catalogue chooses which port messages report a current value.
 		latest_ports : List(Str),
@@ -688,6 +698,7 @@ SpecRunner := [].{
 			TimerRequest => Err("effect occurrence ${n.to_str()} is a timer, not a worker job")
 			ReadRequest(_) => Err("effect occurrence ${n.to_str()} is a file read, not a worker job")
 			UploadRequest(_) => Err("effect occurrence ${n.to_str()} is an upload, not a worker job")
+			CryptoRequest(_) => Err("crypto is not a worker job")
 			DigestRequest(_) => Err("effect occurrence ${n.to_str()} is a digest, not a worker job")
 			UrlRequest(_) => Err("effect occurrence ${n.to_str()} is a file URL, not a worker job")
 			PortRequest({ port, .. }) => Err("effect occurrence ${n.to_str()} is a call on port ${JsonOut.quote(port)}, not a worker job")
@@ -862,7 +873,7 @@ SpecRunner := [].{
 		failure_queue: [],
 		failure_scheduled: False,
 		failure_active: False,
-		settings: { local_full: False, session_full: False, clipboard_denied: False, max_paste: 4194304, mount_root: Scm.default_mount_root },
+		settings: { local_full: False, session_full: False, clipboard_denied: False, max_paste: 4194304, max_crypto_bytes: 8388608, max_crypto_iterations: 1000000, mount_root: Scm.default_mount_root },
 		guard: False,
 		sticky_activation: False,
 		clipboard: { text: "", html: "", writes: 0, exhausted: False },
@@ -874,6 +885,7 @@ SpecRunner := [].{
 		port_log: [],
 		saves: [],
 		max_output: SpecRunner.max_output_bytes,
+		crypto_random_offset: 0,
 		latest_ports: [],
 		pointers: Dict.empty(),
 		touch_multi: Bool.False,
@@ -974,6 +986,7 @@ SpecRunner := [].{
 				Ref(_) | Shown(_) => b
 				FileRead(id, mode, file, max_bytes) => { ..b, pending: b.pending.append({ id, url: "read", body: "", kind: ReadRequest({ mode, file, max_bytes }) }), issued: b.issued.append(id) }
 				Upload(id, method, url, _, file, _, options) => { ..b, network: b.network.insert(id, { method, options }), report_sources: if (options.progress_ms > 0) b.report_sources.insert(id, {}) else b.report_sources, pending: b.pending.append({ id, url, body: "", kind: UploadRequest(file) }), issued: b.issued.append(id) }
+				Crypto(id, request) => { ..b, pending: b.pending.append({ id, url: "crypto", body: "", kind: CryptoRequest({ request, held: Uncaptured }) }), issued: b.issued.append(id) }
 				Digest(id, _, file) => { ..b, pending: b.pending.append({ id, url: "digest", body: "", kind: DigestRequest(file) }), issued: b.issued.append(id) }
 				FileUrl(id, file) => { ..b, pending: b.pending.append({ id, url: "url", body: "", kind: UrlRequest(file) }), issued: b.issued.append(id) }
 				PortSend(port, msg) => { ..b, port_log: b.port_log.append({ port, json: msg.json }) }
@@ -1104,6 +1117,12 @@ SpecRunner := [].{
 				ClipboardDenied => {
 					$settings = { ..$settings, clipboard_denied: True }
 				}
+				MaxCryptoBytes(max_crypto_bytes) => {
+					$settings = { ..$settings, max_crypto_bytes }
+				}
+				MaxCryptoIterations(max_crypto_iterations) => {
+					$settings = { ..$settings, max_crypto_iterations }
+				}
 				MaxPasteBytes(max_paste) => {
 					$settings = { ..$settings, max_paste }
 				}
@@ -1132,7 +1151,7 @@ SpecRunner := [].{
 	mount_in = |program, env| SpecRunner.mount_config(program, env, (SpecRunner.fresh_browser({})).settings)
 
 	## Install fixture service behavior before mount emits any storage command.
-	mount_config : Program(state), Scm.Environment, { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64, mount_root : Scm.MountRoot } -> S(state)
+	mount_config : Program(state), Scm.Environment, { local_full : Bool, session_full : Bool, clipboard_denied : Bool, max_paste : U64, max_crypto_bytes : U64, max_crypto_iterations : U32, mount_root : Scm.MountRoot } -> S(state)
 	mount_config = |program, initial_env, settings| {
 		env = { ..initial_env, url: SpecRunner.serialize_reference(initial_env.url) }
 		declarations = SpecRunner.decode_declarations((program.keys)())
@@ -1584,6 +1603,7 @@ SpecRunner := [].{
 			WorkRequest(_) => return Err("run-effect ${n.to_str()} runs a worker job, which needs the spec command's host for its effects")
 			ReadRequest({ mode, file, max_bytes }) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.read_result(b, mode, file, max_bytes)))
 			UrlRequest(file) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.url_result(file)))
+			CryptoRequest(_) => return Err("run-effect needs the native crypto host")
 			DigestRequest(_) => return Err("run-effect ${n.to_str()} answers a digest, which the spec command's host computes")
 			PortRequest({ port, .. }) => return Err("effect occurrence ${n.to_str()} is a call on port ${JsonOut.quote(port)}; answer it with answer-port")
 			FetchRequest => return Err("run-effect ${n.to_str()} answers a fetch, whose body the spec command's host holds as a file")
@@ -2908,6 +2928,7 @@ SpecRunner := [].{
 			}
 			Fill(loc, v) => SpecRunner.fill(program, s, loc, v)
 			ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, SpecRunner.file_count(dom, op) ?? 0))
+			ExpectKeys(_) => Err("expect-keys needs the native crypto host")
 			ExpectFiles(_) => Err("expect-files counts the handles live in the host; the spec command runs it, through its host")
 			Press(press) => SpecRunner.press_key(program, s, press)
 			Focus(loc) => {
@@ -4451,7 +4472,7 @@ SpecRunner := [].{
 	## The host services a replay uses: running a worker job in a child
 	## process, minting and counting file handles in the host's heap, and
 	## digesting bytes, and a monotonic clock for observation deadlines.
-	Host : { now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64, mute_dbg! : Bool => {} }
+	Host : { now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), crypto! : List(U8), U64, List(Box(U64)), U64, U32 => { keys : List(Box(U64)), payload : List(U8), random_used : U64 }, hold_key! : U64 => List(Box(U64)), live_keys! : () => U64, live_allocations! : () => U64, live_bytes! : () => U64, mute_dbg! : Bool => {} }
 
 	## The settle oracle evaluates readers speculatively. Mute only that
 	## evaluation and restore output before reporting either result. Real
@@ -4462,6 +4483,48 @@ SpecRunner := [].{
 		result = SpecRunner.check_settled(program, inst)
 		(host.mute_dbg!)(False)
 		result
+	}
+
+	## Resolve newly issued crypto key operands before the host drains retired
+	## page-key slots. Each private hold is owned by its pending request and
+	## drops on result or cancel; its heap is bounded independently at 32.
+	capture_crypto! : Host, S(state) => S(state)
+	capture_crypto! = |host, state| {
+		var $pending = []
+		for pending in state.browser.pending {
+			kind = match pending.kind {
+				CryptoRequest({ request, held: Uncaptured }) => {
+					op = Dom.byte(request, 0)
+					handles = if (op == 3 or op == 4) (host.hold_key!)(Dom.u64(request, 1)) else []
+					CryptoRequest({ request, held: Captured(CryptoHold.(handles)) })
+				}
+				other => other
+			}
+			$pending = $pending.append({ ..pending, kind })
+		}
+		{ ..state, browser: { ..state.browser, pending: $pending } }
+	}
+
+	## Perform a pending crypto primitive with real native algorithms, then
+	## deliver its result through the same turn and opaque-key boundary as the
+	## browser. Manual entropy advances only by the primitive's reported use.
+	run_crypto! : Program(state), Host, S(state), U64 => Try(S(state), Str)
+	run_crypto! = |program, host, state, occurrence| {
+		id = state.browser.issued.get(occurrence - 1) ? |_| "crypto effect was never issued"
+		pending = state.browser.pending.find_first(|request| request.id == id) ? |_| "crypto effect is no longer pending"
+		{ request, held } = match pending.kind {
+			CryptoRequest({ request: operands, held: Captured(CryptoHold.(handles)) }) => { request: operands, held: handles }
+			_ => return Err("effect is not a captured crypto request")
+		}
+		browser = state.browser
+		answer = (host.crypto!)(request, browser.crypto_random_offset, held, browser.settings.max_crypto_bytes, browser.settings.max_crypto_iterations)
+		next_browser = { ..browser, crypto_random_offset: browser.crypto_random_offset + answer.random_used, pending: browser.pending.keep_if(|waiting| waiting.id != id) }
+		ready = { ..state, browser: next_browser }
+		if answer.keys.is_empty() {
+			return Ok(SpecRunner.deliver(program, ready, id, answer.payload))
+		}
+		next = SpecRunner.engine_call({ ..ready, draining: Bool.True, turns: 0 }, |inst, buf, wbuf| (program.key)(inst, buf, wbuf, SpecRunner.fx_node, id, answer.payload, answer.keys))
+		Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, next)), draining: Bool.False })
 	}
 
 	## Native observation yields between browser tasks and never changes app fault state.
@@ -4504,6 +4567,7 @@ SpecRunner := [].{
 			Ok(s) => s
 			Err(message) => return Err({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })
 		}
+		$s = SpecRunner.capture_crypto!(host, $s)
 		$s = SpecRunner.pump_ui!(program, host, $s).map_err(|message| { step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })?
 		match SpecRunner.check_settled!(program, { host, inst: $s }) {
 			Ok(_) => {}
@@ -4539,8 +4603,19 @@ SpecRunner := [].{
 	## handle count) through `host`, every other step through `one`.
 	step! : Program(state), Host, S(state), Scm.Op => Try(S(state), Str)
 	step! = |program, host, initial, op| {
-		s = if (SpecRunner.is_occurrence(initial, op)) SpecRunner.release_reports(program, initial) else initial
+		captured = SpecRunner.capture_crypto!(host, initial)
+		s = if (SpecRunner.is_occurrence(captured, op)) SpecRunner.release_reports(program, captured) else captured
 		result = match op {
+			ExpectKeys(count) => {
+				live = (host.live_keys!)()
+				if (live == count) Ok(s) else Err("expected ${count.to_str()} live keys, found ${live.to_str()}")
+			}
+			RunEffect(occurrence) if s.browser.pending.any(
+				|pending| match pending.kind {
+					CryptoRequest(_) => s.browser.issued.get(occurrence - 1) == Ok(pending.id)
+					_ => False
+				},
+			) => SpecRunner.run_crypto!(program, host, s, occurrence)
 			Press(press) => {
 				activated = SpecRunner.activate_step(s, op)
 				(down, context) = SpecRunner.press_down(program, activated, press)?
@@ -4569,7 +4644,7 @@ SpecRunner := [].{
 					}
 			}
 		}
-		SpecRunner.pump_ui!(program, host, result?)
+		Ok(SpecRunner.capture_crypto!(host, SpecRunner.pump_ui!(program, host, result?)?))
 	}
 
 	# ----------------------------------------------------------------- walks
@@ -4920,7 +4995,7 @@ SpecRunner := [].{
 						}
 					HttpRequest | UploadRequest(_) | FetchRequest => (RunEffect(n), staged(SpecRunner.http_answer(bk, p.url, v)))
 					PortRequest({ port, timeout_ms, .. }) => (AnswerPort({ occurrence: n, answer: SpecRunner.port_answer(bk, port, timeout_ms, v) }), s)
-					TimerRequest | ReadRequest(_) | UrlRequest(_) | DigestRequest(_) => (RunEffect(n), s)
+					TimerRequest | ReadRequest(_) | UrlRequest(_) | DigestRequest(_) | CryptoRequest(_) => (RunEffect(n), s)
 				}
 				s2 = SpecRunner.step!(program, host, at, op)?
 				kind = match (p.kind, op) {
@@ -5065,7 +5140,7 @@ SpecRunner := [].{
 	## went to (`Target`), the payload, the handles an event carrying files
 	## held, and the work it did (`SpecRunner.round_trip_work`), which each
 	## replay of it must repeat.
-	Call : { target : Target, payload : List(U8), files : [Event, Files(List(Box(U64)))], work : List(U64) }
+	Call : { target : Target, payload : List(U8), files : [Event, Files(List(Box(U64))), Keys(List(Box(U64)))], work : List(U64) }
 
 	## What a recorded call went to, named so that a later cycle finds the
 	## same thing under the ids that cycle gave it. An event goes to the
@@ -5127,6 +5202,7 @@ SpecRunner := [].{
 		init = program.init
 		event = program.event
 		files = program.files
+		key = program.key
 		settled = program.settled
 		live = program.live
 		{
@@ -5148,6 +5224,12 @@ SpecRunner := [].{
 				(inst, cmds, w) = files(prior, buf, wbuf, node, h, record, handles)
 				after = SpecRunner.round_trip_work(w)
 				({ inst, calls: calls.append({ target, payload: record, files: Files(handles), work: SpecRunner.work_between(counted, after) }), counted: after, dom: Dom.apply(dom, cmds) }, cmds, w)
+			},
+			key: |{ inst: prior, calls, counted, dom }, buf, wbuf, node, h, record, handles| {
+				target = SpecRunner.target_of(dom, live(prior), node, h)
+				(inst, cmds, w) = key(prior, buf, wbuf, node, h, record, handles)
+				after = SpecRunner.round_trip_work(w)
+				({ inst, calls: calls.append({ target, payload: record, files: Keys(handles), work: SpecRunner.work_between(counted, after) }), counted: after, dom: Dom.apply(dom, cmds) }, cmds, w)
 			},
 			settled: |r| settled(r.inst),
 			live: |r| live(r.inst),
@@ -5293,6 +5375,7 @@ SpecRunner := [].{
 				bytes = (host.live_bytes!)()
 				(next, cmds, w) = match call.files {
 					Event => (program.event)($inst, $buf, $wbuf, node, handler, call.payload)
+					Keys(handles) => (program.key)($inst, $buf, $wbuf, node, handler, call.payload, handles)
 					Files(handles) => (program.files)($inst, $buf, $wbuf, node, handler, call.payload, handles)
 				}
 				after_allocations = (host.live_allocations!)()
@@ -5369,7 +5452,7 @@ SpecRunner := [].{
 
 	## The host services the `spec` command uses, passed in by the test
 	## program (the test platform's `Cli`), so this package stays pure.
-	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64, mute_dbg! : Bool => {} }
+	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), crypto! : List(U8), U64, List(Box(U64)), U64, U32 => { keys : List(Box(U64)), payload : List(U8), random_used : U64 }, hold_key! : U64 => List(Box(U64)), live_keys! : () => U64, live_allocations! : () => U64, live_bytes! : () => U64, mute_dbg! : Bool => {} }
 
 	## Bounded diagnostic rendering is best effort only in an existing failure
 	## report. A renderer refusal remains visible instead of masking stale state.
@@ -5653,7 +5736,7 @@ SpecRunner := [].{
 						(io.stdout!)("${JsonOut.render(Scm.to_json(id, spec))}\n")
 					}
 					Ok(spec) => {
-						host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes!, mute_dbg!: io.mute_dbg! }
+						host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, crypto!: io.crypto!, hold_key!: io.hold_key!, live_keys!: io.live_keys!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes!, mute_dbg!: io.mute_dbg! }
 						outcome = match opts.soak {
 							NoSoak => SpecRunner.run!(program, host, spec)
 							Soak(soak) =>
@@ -5730,7 +5813,7 @@ SpecRunner := [].{
 				return 2
 			}
 		}
-		host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes!, mute_dbg!: io.mute_dbg! }
+		host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, crypto!: io.crypto!, hold_key!: io.hold_key!, live_keys!: io.live_keys!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes!, mute_dbg!: io.mute_dbg! }
 		t0 = (io.now_ns!)()
 		allocations = (host.live_allocations!)()
 		bytes = (host.live_bytes!)()
@@ -5831,6 +5914,7 @@ expect {
 			(next, cmds, List.repeat(0, 8))
 		},
 		files: |count, _buf, _work, _node, _handler, _payload, _files| (count, [], List.repeat(0, 8)),
+		key: |state, _buf, _work, _node, _handler, _payload, _keys| (state, [], List.repeat(0, 8)),
 		settled: |_| Ok({}),
 		live: |_| [],
 	}
@@ -5855,6 +5939,7 @@ expect {
 		init: |_| ([], [], []),
 		event: |seen, _buf, _work, node, _handler, _payload| (seen.append(node), if (node == 1) SpecRunner.put_u32([0, 18, 1], 3) else [], List.repeat(0, 8)),
 		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		key: |state, _buf, _work, _node, _handler, _payload, _keys| (state, [], List.repeat(0, 8)),
 		settled: |_| Ok({}),
 		live: |_| [],
 	}
@@ -5879,6 +5964,7 @@ expect {
 		init: |_| (0, [], []),
 		event: |count, _buf, _work, node, _handler, _payload| (count + 1, SpecRunner.put_u32([0, 18, 1], if (node == 1) 2 else 1), List.repeat(0, 8)),
 		files: |count, _buf, _work, _node, _handler, _payload, _files| (count, [], List.repeat(0, 8)),
+		key: |state, _buf, _work, _node, _handler, _payload, _keys| (state, [], List.repeat(0, 8)),
 		settled: |_| Ok({}),
 		live: |_| [],
 	}
@@ -5908,6 +5994,7 @@ expect {
 			(seen.append(id), [0].concat(cmds), List.repeat(0, 8))
 		},
 		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		key: |state, _buf, _work, _node, _handler, _payload, _keys| (state, [], List.repeat(0, 8)),
 		settled: |_| Ok({}),
 		live: |_| [],
 	}
@@ -5936,6 +6023,7 @@ expect {
 		init: |_| (0, [], []),
 		event: |seen, _buf, _work, _node, _handler, _payload| (seen + 1, [], List.repeat(0, 8)),
 		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		key: |state, _buf, _work, _node, _handler, _payload, _keys| (state, [], List.repeat(0, 8)),
 		settled: |_| Ok({}),
 		live: |_| [],
 	}
@@ -6268,6 +6356,7 @@ expect {
 		init: |_| ([], [], []),
 		event: |seen, _buf, _work, _node, _handler, payload| (seen.append(Str.from_utf8(payload) ?? crash "test payload is UTF-8"), [], List.repeat(0, 8)),
 		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		key: |state, _buf, _work, _node, _handler, _payload, _keys| (state, [], List.repeat(0, 8)),
 		settled: |_| Ok({}),
 		live: |_| [],
 	}
@@ -6299,6 +6388,7 @@ expect {
 		init: |_| ({ events: [], files: 0 }, [], []),
 		event: |seen, _buf, _work, _node, _handler, payload| ({ ..seen, events: seen.events.append(Str.from_utf8(payload) ?? crash "test payload is UTF-8") }, [], List.repeat(0, 8)),
 		files: |seen, _buf, _work, _node, _handler, _payload, _files| ({ ..seen, files: seen.files + 1 }, [], List.repeat(0, 8)),
+		key: |state, _buf, _work, _node, _handler, _payload, _keys| (state, [], List.repeat(0, 8)),
 		settled: |_| Ok({}),
 		live: |_| [],
 	}
@@ -6336,6 +6426,7 @@ report_probe = |_| {
 	init: |_| ([], [0, 13, 1, 0, 0, 0, 6, 13, 2, 0, 0, 0, 7], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+	key: |state, _buf, _work, _node, _handler, _payload, _keys| (state, [], List.repeat(0, 8)),
 	settled: |_| Ok({}),
 	live: |_| [],
 }
@@ -6468,6 +6559,7 @@ pointer_probe = |_props| {
 	init: |_| ([], [], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+	key: |state, _buf, _work, _node, _handler, _payload, _keys| (state, [], List.repeat(0, 8)),
 	settled: |_| Ok({}),
 	live: |_| [],
 }
@@ -6957,7 +7049,7 @@ expect {
 
 ## Failed writes share one bounded task FIFO; no subscriber means no retained work.
 expect {
-	initial = { ..SpecRunner.fresh_browser({}), settings: { local_full: True, session_full: False, clipboard_denied: False, max_paste: 4194304, mount_root: Scm.default_mount_root } }
+	initial = { ..SpecRunner.fresh_browser({}), settings: { local_full: True, session_full: False, clipboard_denied: False, max_paste: 4194304, max_crypto_bytes: 8388608, max_crypto_iterations: 1000000, mount_root: Scm.default_mount_root } }
 	subscribed = SpecRunner.absorb(initial, [StorageFailures(1)])
 	full = SpecRunner.absorb(subscribed, List.repeat(Set("draft", "value"), 4096))
 	overflow = SpecRunner.absorb(full, [Set("draft", "another")])
@@ -7324,6 +7416,7 @@ declaration_probe = |_| {
 	init: |_| crash "declaration probe unexpectedly initialized",
 	event: |_, _, _, _, _, _| crash "declaration probe unexpectedly entered an event",
 	files: |_, _, _, _, _, _, _| crash "declaration probe unexpectedly staged files",
+	key: |_, _, _, _, _, _, _| crash "declaration probe unexpectedly staged keys",
 	settled: |_| crash "declaration probe unexpectedly inspected state",
 	live: |_| crash "declaration probe unexpectedly inspected requests",
 }
@@ -7459,4 +7552,12 @@ expect {
 			other_handler: Err(Unplaced),
 			root: Ok([]),
 		}
+}
+
+## The native driver's private request hold compares only opaque tokens. It
+## carries no material into Roc, and dropping it lets the native heap erase
+## its captured key. This is never part of the app-facing API.
+CryptoHold :: List(Box(U64)).{
+	is_eq : CryptoHold, CryptoHold -> Bool
+	is_eq = |CryptoHold.(left), CryptoHold.(right)| left.map(Box.unbox) == right.map(Box.unbox)
 }

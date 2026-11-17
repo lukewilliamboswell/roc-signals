@@ -302,6 +302,10 @@ Scm := [].{
 		LocalStorageFull,
 		ClipboardDenied,
 		MaxPasteBytes(U64),
+
+		## Deployment ceilings for cryptographic input/output and PBKDF2 work.
+		MaxCryptoBytes(U64),
+		MaxCryptoIterations(U32),
 		MountRoot(MountRoot),
 
 		## A file the spec's file steps can give the app: its name, its media
@@ -401,7 +405,7 @@ Scm := [].{
 					}
 					{ ..env, session_available: False }
 				}
-				MountRoot(_) | File(_) | MaxOutputBytes(_) | SessionStorageFull | LocalStorageFull | ClipboardDenied | MaxPasteBytes(_) => env
+				MountRoot(_) | File(_) | MaxOutputBytes(_) | SessionStorageFull | LocalStorageFull | ClipboardDenied | MaxPasteBytes(_) | MaxCryptoBytes(_) | MaxCryptoIterations(_) => env
 			}
 		}
 		Ok($env)
@@ -759,6 +763,9 @@ Scm := [].{
 
 		## Exactly `count` file handles are live in the app's instance.
 		ExpectFiles(U64),
+
+		## Cryptographic keys held by Roc after the preceding call.
+		ExpectKeys(U64),
 		TickInterval(U32),
 		TickIntervalIfActive(U32),
 		ExpectCleanup({ name : Str, count : U64 }),
@@ -996,7 +1003,7 @@ Scm := [].{
 		ChooseFiles(loc, _) => { shows: [Locator(loc)], needs: [] }
 		DropFiles(loc, _) => { shows: [Locator(loc)], needs: [] }
 		PasteFiles(loc, _) => { shows: [Locator(loc)], needs: [] }
-		ExpectFiles(_) => { shows: [], needs: [] }
+		ExpectFiles(_) | ExpectKeys(_) => { shows: [], needs: [] }
 		TickInterval(period) => { shows: [Interval(period)], needs: [] }
 		TickIntervalIfActive(period) => { shows: [], needs: [Story(Interval(period))] }
 		ExpectCleanup({ name, count }) => if (count == 0) { shows: [], needs: [Story(Cleanup(name))] } else { shows: [Cleanup(name)], needs: [] }
@@ -1058,7 +1065,7 @@ Scm := [].{
 		SessionStorageFull => { shows: [], needs: [] }
 		LocalStorageFull => { shows: [], needs: [] }
 		ClipboardDenied => { shows: [], needs: [] }
-		MaxPasteBytes(_) => { shows: [], needs: [] }
+		MaxPasteBytes(_) | MaxCryptoBytes(_) | MaxCryptoIterations(_) => { shows: [], needs: [] }
 		MountRoot(_) => { shows: [], needs: [] }
 		File(_) => { shows: [], needs: [] }
 		MaxOutputBytes(_) => { shows: [], needs: [] }
@@ -1628,6 +1635,26 @@ Scm := [].{
 				Ok(File({ name, mime, text: Scm.string(Scm.arg(args, 2), "the contents")?, repeat }))
 			},
 		},
+		{
+			name: "max-crypto-bytes",
+			parse: |form, args| {
+				count = Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the byte count")?
+				if count < 1 or count > 67108864 {
+					return Err(Scm.bad(form, "max-crypto-bytes must be between 1 and 67108864"))
+				}
+				Ok(MaxCryptoBytes(count))
+			},
+		},
+		{
+			name: "max-crypto-iterations",
+			parse: |form, args| {
+				count = Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the iteration count")?
+				if count < 1 or count > 10000000 {
+					return Err(Scm.bad(form, "max-crypto-iterations must be between 1 and 10000000"))
+				}
+				Ok(MaxCryptoIterations(count.to_u32_wrap()))
+			},
+		},
 		{ name: "max-output-bytes", parse: |form, args| Ok(MaxOutputBytes(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the byte count")?)) },
 	]
 
@@ -2142,6 +2169,7 @@ Scm := [].{
 		{ name: "choose-files", parse: |form, args| Scm.loc_files(form, args).map_ok(|(l, names)| ChooseFiles(l, names)) },
 		{ name: "drop-files", parse: |form, args| Scm.loc_files(form, args).map_ok(|(l, names)| DropFiles(l, names)) },
 		{ name: "paste-files", parse: |form, args| Scm.loc_files(form, args).map_ok(|(l, names)| PasteFiles(l, names)) },
+		{ name: "expect-keys", parse: |form, args| Ok(ExpectKeys(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the key count")?)) },
 		{ name: "expect-files", parse: |form, args| Ok(ExpectFiles(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the file count")?)) },
 		{
 			name: "expect-pending-work",
@@ -2508,6 +2536,7 @@ Scm := [].{
 		{ op: "drop-files", grant: Never },
 		{ op: "paste-files", grant: Never },
 		{ op: "expect-files", grant: Never },
+		{ op: "expect-keys", grant: Never },
 		{ op: "expect-pending-work", grant: Never },
 		{ op: "tick-interval", grant: Never },
 		{ op: "tick-interval-if-active", grant: Never },
@@ -2617,6 +2646,7 @@ Scm := [].{
 			DropFiles(_, _) => "drop-files"
 			PasteFiles(_, _) => "paste-files"
 			ExpectFiles(_) => "expect-files"
+			ExpectKeys(_) => "expect-keys"
 			TickInterval(_) => "tick-interval"
 			TickIntervalIfActive(_) => "tick-interval-if-active"
 			ExpectCleanup(_) => "expect-cleanup"
@@ -2811,6 +2841,8 @@ Scm := [].{
 			LocalStorageFull => ("local-storage-full", [])
 			ClipboardDenied => ("clipboard-denied", [])
 			MaxPasteBytes(n) => ("max-paste-bytes", [JsonOut.field("count", Nat(n))])
+			MaxCryptoBytes(n) => ("max-crypto-bytes", [JsonOut.field("count", Nat(n))])
+			MaxCryptoIterations(n) => ("max-crypto-iterations", [JsonOut.field("count", Nat(n.to_u64()))])
 			File({ name, mime, text, repeat }) => ("file", [JsonOut.field("name", Text(name)), JsonOut.field("type", Text(mime)), JsonOut.field("text", Text(text)), JsonOut.field("count", Nat(repeat))])
 			MaxOutputBytes(n) => ("max-output-bytes", [JsonOut.field("count", Nat(n))])
 		}
@@ -2935,7 +2967,7 @@ Scm := [].{
 			ChooseFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
 			DropFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
 			PasteFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
-			ExpectFiles(n) => [JsonOut.field("count", Nat(n))]
+			ExpectFiles(n) | ExpectKeys(n) => [JsonOut.field("count", Nat(n))]
 			TickInterval(ms) => [JsonOut.field("period_ms", Nat(ms.to_u64()))]
 			TickIntervalIfActive(ms) => [JsonOut.field("period_ms", Nat(ms.to_u64()))]
 			ExpectCleanup({ name, count }) => [JsonOut.field("name", Text(name)), JsonOut.field("count", Nat(count))]
@@ -3763,6 +3795,7 @@ expect {
 		"lose-work",
 		"time-out-work",
 		"expect-files",
+		"expect-keys",
 		"expect-pending-work",
 		"tick-interval",
 		"tick-interval-if-active",
@@ -3922,4 +3955,16 @@ expect {
 		Err(problem) => problem.pos == { line: 3, column: 3 } and problem.message.contains("title") and problem.message.contains(":never-written")
 		Ok(_) => Bool.False
 	}
+}
+
+## Crypto deployment limits are bounded before either runner mounts; keys have
+## an ordinary nonnegative handle-count assertion.
+expect {
+	valid = Scm.parse("(test \"crypto\" (setup (max-crypto-bytes 64) (max-crypto-iterations 600000)) (steps (expect-keys 0)))")?
+	valid.setup.map(|entry| entry.item) == [MaxCryptoBytes(64), MaxCryptoIterations(600000)] and valid.steps.map(|step| step.op) == [ExpectKeys(0)]
+}
+
+## Invalid cryptographic deployment ceilings and negative key counts are errors.
+expect {
+	["(setup (max-crypto-bytes 0))", "(setup (max-crypto-bytes 67108865))", "(setup (max-crypto-iterations 0))", "(setup (max-crypto-iterations 10000001))"].all(|setup| Scm.parse("(test \"bad\" ${setup} (steps (mark-metrics)))").is_err()) and Scm.parse("(test \"bad\" (steps (expect-keys -1)))").is_err()
 }
