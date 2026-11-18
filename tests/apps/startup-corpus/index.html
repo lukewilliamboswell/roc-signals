@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Startup corpus</title></head>
+<body>
+<div id="app" data-roc-picture></div>
+<script type="module">
+import { mountRocEngineApp } from "/runtime.mjs";
+window.__start = async () => {
+  window.__rt = await mountRocEngineApp({ wasmUrl: "/app.wasm?roc-build=corpus", root: document.getElementById("app"), manualEffects: true });
+  if (window.__rt.poisoned) throw new Error(window.__rt.poisoned.message);
+  return window.__rt;
+};
+</script>
+</body>
+</html>
