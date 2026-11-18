@@ -180,6 +180,12 @@ SpecRunner := [].{
 		pending : List(Pending),
 		issued : List(U32),
 		gets : List([Read({ id : U32, key : Str, session : Bool }), Answer({ id : U32, payload : List(U8), scoped : Bool }), Failures]),
+
+		## Only declared storage keys are sampled by an environment request.
+		environment_keys : { local : List(Str), session : List(Str) },
+
+		## A single mechanical task registration, supplied only by a spec step.
+		opportunity : [None, Some(U64)],
 		failure_queue : List({ id : U32, payload : List(U8), ready : Bool }),
 		failure_scheduled : Bool,
 		failure_active : Bool,
@@ -379,7 +385,10 @@ SpecRunner := [].{
 	DeclaredPort : { name : Str, kind : PortKind }
 
 	## Spec validation retains only the declaration facts its steps can name.
-	Declarations : { keys : List(Str), ports : List(DeclaredPort), latest_ports : List(Str), media : List(Str), zone_days : U16, session_keys : List(Str) }
+	Declarations : { keys : List(Str), ports : List(DeclaredPort), latest_ports : List(Str), media : List(Str), zone_days : U16, session_keys : List(Str), startup : StartupProfile }
+
+	## The native adapter reads fixed entry facts, never the app's route values.
+	StartupProfile : [Legacy, Deterministic({ root : Scm.MountRoot, entries : List(Str), fallback : U32 })]
 
 	## Decode both declaration sections once: only the catalogue decides
 	## whether a subscription's messages are reports.
@@ -515,7 +524,7 @@ SpecRunner := [].{
 			crash "contract: declaration section11 session-storage missing"
 		}
 		length = (SpecRunner.get_u32(b, session_at + 1) ?? crash "contract: session-storage short length").to_u64()
-		if session_at + 5 + length != b.len() {
+		if session_at + 5 + length > b.len() {
 			crash "contract: session-storage length mismatch"
 		}
 		session_body = b.sublist({ start: session_at + 5, len: length })
@@ -530,7 +539,59 @@ SpecRunner := [].{
 		if $session_cursor != session_body.len() {
 			crash "contract: session-storage trailing bytes"
 		}
-		{ keys: $keys, ports: $declared_ports, latest_ports: $latest_ports, media: $queries, zone_days: days, session_keys: $session }
+		startup_at = session_at + 5 + length
+		if b.get(startup_at) != Ok(14) {
+			crash "contract: declaration section 14 (startup) is missing or out of order"
+		}
+		startup_length = (SpecRunner.get_u32(b, startup_at + 1) ?? crash "contract: startup declaration short length").to_u64()
+		if startup_at + 5 + startup_length != b.len() {
+			crash "contract: startup declaration length mismatch"
+		}
+		startup = SpecRunner.decode_startup(b.sublist({ start: startup_at + 5, len: startup_length }))
+		{ keys: $keys, ports: $declared_ports, latest_ports: $latest_ports, media: $queries, zone_days: days, session_keys: $session, startup }
+	}
+
+	## Validate bounded declaration transport before constructing lists or selecting
+	## an entry. These are independent consumer checks, not Core's route lookup.
+	decode_startup : List(U8) -> StartupProfile
+	decode_startup = |bytes| match bytes {
+		[0] => Legacy
+		[1, ..] => {
+			if bytes.len() > 131_081 {
+				crash "contract: startup declaration exceeds root and catalogue bounds"
+			}
+			(root, after_root) = Dom.expanded_name(bytes, 1, True)
+			if after_root - 1 > 65536 {
+				crash "contract: startup root exceeds 65536 bytes"
+			}
+			count = (SpecRunner.get_u32(bytes, after_root) ?? crash "contract: startup entry count is truncated").to_u64()
+			if count == 0 or count > 4096 {
+				crash "contract: startup needs 1 to 4096 entries"
+			}
+			var $at = after_root + 4
+			var $entries = []
+			while $entries.len() < count {
+				length = (SpecRunner.get_u32(bytes, $at) ?? crash "contract: startup entry length is truncated").to_u64()
+				if length > 2048 or $at + 4 > bytes.len() or length > bytes.len() - $at - 4 {
+					crash "contract: startup entry path exceeds its bound or is truncated"
+				}
+				(path, next) = Dom.str(bytes, $at)
+				if $entries.contains(path) {
+					crash "contract: startup entry path is repeated"
+				}
+				$entries = $entries.append(path)
+				$at = next
+			}
+			if $at - after_root - 4 > 65536 or $at + 4 != bytes.len() {
+				crash "contract: startup entry paths exceed 65536 bytes or have trailing bytes"
+			}
+			fallback = SpecRunner.get_u32(bytes, $at) ?? crash "contract: startup fallback is truncated"
+			if fallback != 0xffffffff and fallback.to_u64() >= count {
+				crash "contract: startup fallback is not a declared entry"
+			}
+			Deterministic({ root, entries: $entries, fallback })
+		}
+		_ => crash "contract: startup declaration has an unknown profile"
 	}
 
 	## Check every named declaration before a spec is emitted or executed.
@@ -595,7 +656,15 @@ SpecRunner := [].{
 	## The engine-only root section follows the app environment but never becomes
 	## an app-visible Boot field. This encoder is independent of Core's reader.
 	encode_mount : Scm.Environment, Scm.MountRoot -> List(U8)
-	encode_mount = |env, mount_root| {
+	encode_mount = |env, mount_root| SpecRunner.encode_startup_mount(env, mount_root, [0])
+
+	## Keep private startup input separate from the environment snapshot payload.
+	encode_startup_mount : Scm.Environment, Scm.MountRoot, List(U8) -> List(U8)
+	encode_startup_mount = |env, mount_root, startup| SpecRunner.encode_environment(env).concat(SpecRunner.put_section([], { tag: 13, body: SpecRunner.root_bytes(mount_root) })).concat(SpecRunner.put_section([], { tag: 14, body: startup }))
+
+	## Independent environment/result encoding includes no mount or startup facts.
+	encode_environment : Scm.Environment -> List(U8)
+	encode_environment = |env| {
 		var $storage = SpecRunner.put_u32([SpecRunner.flag_byte(env.storage_available)], env.storage.len().to_u32_wrap())
 		for (key, value) in env.storage {
 			$storage = SpecRunner.put_str(SpecRunner.put_str($storage, key), value)
@@ -625,7 +694,7 @@ SpecRunner := [].{
 			{ tag: 9, body: languages },
 			{ tag: 10, body: $offsets },
 			{ tag: 11, body: env.session.fold(SpecRunner.put_u32([SpecRunner.flag_byte(env.session_available)], env.session.len().to_u32_wrap()), |bytes, (key, value)| SpecRunner.put_str(SpecRunner.put_str(bytes, key), value)) },
-		].fold([], SpecRunner.put_section).concat(SpecRunner.put_section([], { tag: 13, body: SpecRunner.root_bytes(mount_root) }))
+		].fold([], SpecRunner.put_section)
 	}
 
 	## Canonical namespace tags preserve the actual wrapper's URI, prefix and
@@ -870,6 +939,8 @@ SpecRunner := [].{
 		pending: [],
 		issued: [],
 		gets: [],
+		environment_keys: { local: [], session: [] },
+		opportunity: None,
 		failure_queue: [],
 		failure_scheduled: False,
 		failure_active: False,
@@ -927,6 +998,14 @@ SpecRunner := [].{
 			}
 			b = $b
 			$b = match c {
+				Startup(_) | StartupComplete => b
+				StartupAck => crash "internal: startup acknowledgement must enter the driver after cold effects"
+				Opportunity({ action, generation }) => { ..b, opportunity: if (action == 1) Some(generation) else None }
+				Environment(id) => {
+					env = b.env
+					facts = { ..env, url: SpecRunner.serialize_location(env.url), storage: if (env.storage_available) env.storage.keep_if(|(name, _)| b.environment_keys.local.contains(name)) else [], session: if (env.session_available) env.session.keep_if(|(name, _)| b.environment_keys.session.contains(name)) else [] }
+					{ ..b, gets: b.gets.append(Answer({ id, payload: [31].concat(SpecRunner.encode_environment(facts)), scoped: False })) }
+				}
 				Http(id, method, url, _, body, _, options) => { ..b, network: b.network.insert(id, { method, options }), report_sources: if (options.progress_ms > 0) b.report_sources.insert(id, {}) else b.report_sources, pending: b.pending.append({ id, url, body, kind: HttpRequest }), issued: b.issued.append(id) }
 				Guard(on) => { ..b, guard: on }
 				SessionGet(id, key) => { ..b, gets: b.gets.append(Read({ id, key, session: True })) }
@@ -1177,12 +1256,16 @@ SpecRunner := [].{
 			}
 		}
 		media = declarations.media.map(|query| (query, env.media.find_first(|(name, _)| name == query).map_ok(|(_, matched)| matched) ?? False))
-		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_mount({ ..env, url: SpecRunner.serialize_location(env.url), media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }, settings.mount_root))
-		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declarations.latest_ports, settings }
+		startup = match declarations.startup {
+			Legacy => [0.U8]
+			Deterministic(_) => SpecRunner.put_u32([1, 0], 0xffffffff)
+		}
+		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_startup_mount({ ..env, url: SpecRunner.serialize_location(env.url), media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }, settings.mount_root, startup))
+		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declarations.latest_ports, settings, environment_keys: { local: declarations.keys, session: declarations.session_keys } }
 		initial = SpecRunner.fresh(inst, browser)
 		root = settings.mount_root
 		s0 = { ..initial, dom: Dom.modify(initial.dom, initial.dom.root, |element| { ..element, namespace: root.namespace, prefix: root.prefix, tag: root.local, svg: root.namespace == Dom.svg_namespace }) }
-		{ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s0, draining: Bool.True }, inst, cmds, wbuf))), draining: Bool.False }
+		{ ..SpecRunner.drain_focus(program, SpecRunner.take({ ..s0, draining: Bool.True }, inst, cmds, wbuf)), draining: Bool.False }
 	}
 
 	## Dispatch event `ev` with `payload` from DOM node index `i`, as the
@@ -1346,6 +1429,7 @@ SpecRunner := [].{
 				command = $s.after_batch.first() ?? crash "SpecRunner.drain_focus: not empty"
 				s = { ..$s, applying_focus: Bool.True, after_batch: $s.after_batch.drop_first(1) }
 				applied = match command {
+					Effect(StartupAck) => SpecRunner.send_now_in_loop(program, { state: s, node: SpecRunner.fx_node, handler: 0, payload: [254] })
 					Effect(fx) => {
 						browser = SpecRunner.absorb_limit(s.browser, [fx], 4096 - s.event_queue.len())
 						if (browser.deferred_error.is_empty()) { ..s, browser } else { ..s, browser: SpecRunner.clear_callbacks(browser), fault: Poisoned(browser.deferred_error), event_queue: [], after_batch: [] }
@@ -6064,7 +6148,7 @@ SpecRunner := [].{
 
 ## Wire encoding: strings are length-prefixed, integers little-endian, and
 ## each boot section is tagged and length-bounded in ascending order.
-expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1, 6, 0, 0, 0, 0, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 13, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 101, 110, 45, 85, 83, 10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 11, 5, 0, 0, 0, 1, 0, 0, 0, 0, 13, 12, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 'd', 'i', 'v']
+expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1, 6, 0, 0, 0, 0, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 13, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 101, 110, 45, 85, 83, 10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 11, 5, 0, 0, 0, 1, 0, 0, 0, 0, 13, 12, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 'd', 'i', 'v', 14, 1, 0, 0, 0, 0]
 
 ## An HTTP result carries status, headers and the body as the rest.
 expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6, 0x01, 1, 0, 0, 0, 1, 0, 0, 0, 'a', 1, 0, 0, 0, 'b', 'x']
@@ -6073,7 +6157,7 @@ expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6
 expect SpecRunner.encode_reject(Timeout, "") == [7] and SpecRunner.encode_reject(Network, "offline") == [2, 'o', 'f', 'f', 'l', 'i', 'n', 'e']
 
 ## Declared storage keys decode from `count:u32 (key:str)*`.
-expect SpecRunner.decode_keys([2, 15, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c', 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0]) == ["a", "bc"]
+expect SpecRunner.decode_keys([2, 15, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c', 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0, 14, 1, 0, 0, 0, 0]) == ["a", "bc"]
 
 ## Filters match ids shell-style.
 expect {
@@ -6641,13 +6725,33 @@ report_probe : {} -> SpecRunner.Program(List({ id : U32, payload : List(U8) }))
 report_probe = |_| {
 	version: Dom.protocol_version,
 	tasks: [],
-	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0],
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0, 14, 1, 0, 0, 0, 0],
 	init: |_| ([], [0, 13, 1, 0, 0, 0, 6, 13, 2, 0, 0, 0, 7], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
 	key: |state, _buf, _work, _node, _handler, _payload, _keys| (state, [], List.repeat(0, 8)),
 	settled: |_| Ok({}),
 	live: |_| [],
+}
+
+## Cold effects finish before acknowledgement, queued answers wait behind it,
+## and an armed placeholder opportunity is never implicitly delivered.
+expect {
+	base = report_probe({})
+	set = |value| SpecRunner.put_str(SpecRunner.put_str([16, 1], "k"), value)
+	program = { ..base, event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), if (payload == [254]) [0].concat(set("ack")).concat([31, 1, 7, 0, 0, 0, 0, 0, 0, 0, 30]) else [], List.repeat(0, 8)) }
+	browser = { ..SpecRunner.fresh_browser({}), environment_keys: { local: ["k"], session: [] } }
+	initial = SpecRunner.fresh([], browser)
+	cold = [0, 28, 0, 0, 0, 0, 0].concat(set("cold")).concat([13, 9, 0, 0, 0, 22, 29])
+	ready = SpecRunner.drain_focus(program, SpecRunner.take(initial, [], cold, List.repeat(0, 8)))
+	snapshot = ready.inst.get(1)?
+	{
+		order: ready.inst.map(|event| event.id),
+		ack: ready.inst.first()?.payload,
+		snapshot: snapshot.payload == [31].concat(SpecRunner.encode_environment({ storage: [("k", "cold")] })),
+		current: ready.browser.env.storage,
+		opportunity: ready.browser.opportunity,
+	} == { order: [0, 9], ack: [254], snapshot: True, current: [("k", "ack")], opportunity: Some(7) }
 }
 
 ## A source keeps its first queue position while replacement freezes its
@@ -6774,7 +6878,7 @@ pointer_probe : {} -> SpecRunner.Program(List({ handler : U32, payload : List(U8
 pointer_probe = |_props| {
 	version: Dom.protocol_version,
 	tasks: [],
-	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0],
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0, 14, 1, 0, 0, 0, 0],
 	init: |_| ([], [], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
@@ -7082,7 +7186,7 @@ expect {
 expect {
 	query_body = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([], 2), "wide"), "dark")
 	base = pointer_probe({})
-	program = { ..base, keys: || SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: query_body }).concat([10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0]), init: |boot| ([{ handler: 0.U32, payload: boot }], [], List.repeat(0.U8, 8)) }
+	program = { ..base, keys: || SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: query_body }).concat([10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0, 14, 1, 0, 0, 0, 0]), init: |boot| ([{ handler: 0.U32, payload: boot }], [], List.repeat(0.U8, 8)) }
 	mounted = SpecRunner.mount_in(program, { media: [("dark", True)] })
 	{ media: mounted.browser.env.media, flags: mounted.inst.first()?.payload.sublist({ start: 37, len: 2 }) } == { media: [("wide", False), ("dark", True)], flags: [0.U8, 1] }
 }
@@ -7206,7 +7310,7 @@ expect {
 ## drops waiting answers while retaining the query's environment value.
 expect {
 	base_program = pointer_probe({})
-	declarations = SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "dark") }).concat([10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0])
+	declarations = SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "dark") }).concat([10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0, 14, 1, 0, 0, 0, 0])
 	listen = SpecRunner.put_str(SpecRunner.put_u32([13], 1).append(16), "dark")
 	program = { ..base_program, keys: || declarations, init: |_boot| ([], [0].concat(listen), List.repeat(0.U8, 8)) }
 	base = SpecRunner.mount_in(program, {})
@@ -7630,6 +7734,7 @@ declaration_probe = |_| {
 			{ tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "screen") },
 			{ tag: 10, body: [110, 1] },
 			{ tag: 11, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "session") },
+			{ tag: 14, body: [0] },
 		].fold([], SpecRunner.put_section)
 	},
 	init: |_| crash "declaration probe unexpectedly initialized",
