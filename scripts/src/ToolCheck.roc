@@ -136,6 +136,13 @@ ToolCheck := [].{
 				Path.write_utf8!(Path.utf8("${counter}/specs/wrong.scm"), spec.replace_each("\"2\"", "\"3\""))?
 				$problems = $problems.concat(judge(run_tool!(tool, counter, ["test"])?, { code: 1, says: ["  FAILED  the counter counts both ways", "specs/wrong.scm:", "expected \"3\"", "Of 2 specs, 1 failed, 1 passed."] }))
 				Path.delete!(Path.utf8("${counter}/specs/wrong.scm"))?
+				Path.write_utf8!(Path.utf8("${counter}/specs/unevidenced.scm"), "(test \"suite evidence typo\" (steps (expect-absent (test-id \"never-seen-typo\") :never-drawn)))\n")?
+				rejected = run_tool!(tool, counter, ["test"])?
+				$problems = $problems.concat(judge(rejected, { code: 1, says: ["ERROR", "unevidenced.scm", "never-seen-typo", "vacuous negative assertion"] }))
+				if rejected.output.contains("Running ") or rejected.output.contains("  passed  the counter counts both ways") {
+					$problems = $problems.append("suite evidence refusal reported unexecuted stories as running or passed")
+				}
+				Path.delete!(Path.utf8("${counter}/specs/unevidenced.scm"))?
 				Path.rename!(Path.utf8("${counter}/specs"), Path.utf8("${counter}/specs-away"))?
 				$problems = $problems.concat(judge(run_tool!(tool, counter, ["test"])?, { code: 1, says: ["There are no specs to run: specs/ holds no .scm files."] }))
 				Path.rename!(Path.utf8("${counter}/specs-away"), Path.utf8("${counter}/specs"))?

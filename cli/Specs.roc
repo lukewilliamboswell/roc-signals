@@ -48,7 +48,6 @@ Specs :: [].{
 			Failed(report) => return Err(BuildFailed({ report, version }))
 		}
 		count = specs.len()
-		Stdout.line!("Running ${count.to_str()} spec${if (count == 1) "" else "s"}:")?
 		program = "${Project.with_slashes(Path.display(Env.cwd!()?))}/${runner}"
 		evidence = Cmd.new(OsStr.from_str(program)).args(["--check-suite"].concat(specs).map(OsStr.from_str)).stdout(Capture).stderr(Capture).run!() ? |_| RunnerFailed({ cause: NotStarted, detail: program })
 		checked = Specs.outcomes(Str.from_utf8_lossy(evidence.stdout_bytes))
@@ -57,11 +56,12 @@ Specs :: [].{
 			Err({ cause, detail }) => return Err(RunnerFailed({ cause, detail: "suite evidence: ${detail}\n${Str.from_utf8_lossy(evidence.stderr_bytes)}" }))
 		}
 		if checked.any(|outcome| outcome.status != Passed) {
-			for outcome in checked {
+			for outcome in checked.keep_if(|outcome| outcome.status != Passed) {
 				Stdout.line!(Specs.show(outcome))?
 			}
 			return Err(SpecsFailed)
 		}
+		Stdout.line!("Running ${count.to_str()} spec${if (count == 1) "" else "s"}:")?
 		output = Cmd.new(OsStr.from_str(program)).args(specs.map(OsStr.from_str)).stdout(Capture).stderr(Capture).run!() ? |_| RunnerFailed({ cause: NotStarted, detail: program })
 		results = Specs.outcomes(Str.from_utf8_lossy(output.stdout_bytes))
 		match Specs.unaccounted({ ids: specs.map(Specs.id_of), status: output.status, results }) {
