@@ -33,7 +33,7 @@ Dom := [].{
 
 	## Diagnostics inspect one subtree; a picture serializes its actual mount
 	## element's contents and validates them in that element's parse context.
-	RenderProps := { root : U64, scope : [Subtree, Contents, MountEnvelope] ?? Subtree, mode : [Diagnostic, Picture] ?? Diagnostic, startup : [Plain, Annotated] ?? Plain, limits : RenderLimits, scripting : Bool ?? True, enclosing : [Unspecified, Document, Element(ExpandedName)] ?? Unspecified }
+	RenderProps := { root : U64, scope : [Subtree, Contents, MountEnvelope] ?? Subtree, mode : [Diagnostic, Picture] ?? Diagnostic, startup : [Plain, Annotated] ?? Plain, frame : [Unstamped, Frame({ entry : U32, token : Str })] ?? Unstamped, limits : RenderLimits, scripting : Bool ?? True, enclosing : [Unspecified, Document, Element(ExpandedName)] ?? Unspecified }
 
 	## Physical ordinals name positions in one rendered picture only. They are
 	## never engine addresses, application keys or identities across mounts.
@@ -2620,7 +2620,14 @@ attribute_keyword = |element, attribute, value| {
 }
 
 render_model : Dom.Model, Dom.RenderProps -> Try(Dom.Rendered, Dom.RenderError)
-render_model = |dom, props| {
+render_model = |dom, requested_props| {
+	props = if requested_props.startup == Annotated {
+		limits = requested_props.limits
+		{ ..requested_props, limits: { max_bytes: if (limits.max_bytes < 16777216) limits.max_bytes else 16777216, max_nodes: if (limits.max_nodes < 262144) limits.max_nodes else 262144, max_depth: if (limits.max_depth < 1024) limits.max_depth else 1024 } }
+	} else requested_props
+	if props.startup == Plain and props.frame != Unstamped {
+		return Err(InvalidModel({ model: props.root, rule: "a startup frame receipt requires annotated rendering" }))
+	}
 	root = dom.nodes.get(props.root).map_err(|_| InvalidModel({ model: props.root, rule: "missing root lifetime" }))?
 	if Dom.is_opaque(root) {
 		return Err(InvalidModel({ model: props.root, rule: "unsafe HTML is opaque; a prerendered picture cannot contain Html.unsafe_html, even with empty contents" }))
@@ -3600,7 +3607,16 @@ render_annotations = |dom, state| {
 		$scaffolds = $scaffolds.insert(owner, ($scaffolds.get(owner) ?? []).append(scaffold))
 	}
 	index = { ordinals: $ordinals, scaffolds: $scaffolds, gates: state.startup_gates, bindings: $bindings }
-	root = startup_attributes(dom, index, { model: state.props.root, physical: Mount, state })?
+	base_root = startup_attributes(dom, index, { model: state.props.root, physical: Mount, state })?
+	root = match state.props.frame {
+		Unstamped => base_root
+		Frame({ entry, token }) => {
+			if entry == 4294967295 or token.is_empty() or token.count_utf8_bytes() > 8388608 or !token.to_utf8().all(|byte| (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_' or byte == '-') {
+				return Err(InvalidModel({ model: state.props.root, rule: "startup frame requires a concrete entry and an ASCII build token" }))
+			}
+			base_root.append(({ namespace: "", prefix: "", local: "data-roc-frame" }, "1:${entry.to_str()}:${token}"))
+		}
+	}
 	var $state = state
 	var $annotation_bytes = 0.U64
 	for (_, value) in root {
@@ -3708,4 +3724,15 @@ expect {
 	binding = frame.set(2, 1)?
 	bound = Dom.bind_cold(source, binding)
 	bound.dom.nodes.len() == 2 and Dom.node(bound.dom, 1).detach_count == 0 and bound.dom == source
+}
+
+## The renderer stamps a checked build receipt while reserving annotation
+## names against authored markup. Host-template integration never rewrites
+## already serialized application text or attributes.
+expect {
+	dom = { ..Dom.new({}), nodes: [{ ..Dom.empty_node, tag: "div", kids: [1] }, { ..Dom.empty_node, tag: "p" }] }
+	props : Dom.RenderProps
+	props = { root: 0, scope: MountEnvelope, enclosing: Element({ namespace: Dom.html_namespace, prefix: "", local: "body" }), mode: Picture, startup: Annotated, frame: Frame({ entry: 2, token: "build_123-Ab" }), limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }
+	rendered = Dom.render(dom, props)?
+	rendered.markup.contains("data-roc-frame=\"1:2:build_123-Ab\"") and Dom.render(dom, { ..props, frame: Frame({ entry: 2, token: "bad:token" }) }).is_err()
 }
