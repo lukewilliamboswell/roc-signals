@@ -132,6 +132,12 @@ try {
       event(node, handler) { const payload = new Uint8Array(memory.buffer, 200000, 1)[0]; calls.push([handler, payload]); write(handler === 0 && payload === 254 ? [0, 30] : []); return 0; },
       keys_released: () => 0, files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
     };
+    const legacyRoot = document.createElement('div'); document.body.append(legacyRoot);
+    const legacyDeclarations = [...declarations.slice(0, declarations.length - 5 - startupDeclaration.length), ...section(14, [0])];
+    const legacyHost = { ...host, boot_keys() { write(legacyDeclarations); }, init() { write([0, 31, 1, 1, 0, 0, 0, 0, 0, 0, 0]); return 0; } };
+    const legacyRuntime = new RocEngineRuntime(legacyHost, legacyRoot, { manualEffects: true }); legacyRuntime.mount();
+    check('ordinary legacy construction can register placeholder opportunities', !legacyRuntime.poisoned && legacyRuntime.opportunity?.generation === 1n && legacyRuntime.startupPhase === 'plain');
+    legacyRuntime.runOpportunity(); legacyRuntime.unmount(); legacyRoot.remove(); calls.length = 0;
     const runtime = new RocEngineRuntime(host, f.root, { startupBuildToken: 'build', manualEffects: true });
     runtime.perform = effect => { effects.push(effect.op); runtime.result(9, new Uint8Array([4])); };
     runtime.mount();

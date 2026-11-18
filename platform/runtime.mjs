@@ -5109,7 +5109,7 @@ export class RocEngineRuntime {
       }
       if (op === this.protocol.OP_OPPORTUNITY) {
         const action = u8[at], generation = dv.getBigUint64(at + 1, true); at += 9;
-        if (action > 1 || generation === 0n || !["ack", "complete"].includes(this.startupPhase)) throw new Error("startup: opportunity operands or phase");
+        if (action > 1 || generation === 0n || this.startupPhase === "cold") throw new Error("startup: opportunity operands or phase");
         if (!scanning) this.requestOpportunity(action, generation);
         continue;
       }
