@@ -21,6 +21,67 @@ import parser.Markup
 
 Core := [].{
 
+	## Test-only observations of the producer's actual codecs and constructors.
+	## The independent consumer vocabulary is compared outside Core; importing
+	## it here would let a producer and oracle share the same numbering mistake.
+	protocol_evidence : () -> { kinds : List({ code : U8, name : Str }), properties : List({ index : U8, name : Str, elements : List(Str) }), policies : List({ bit : U32, name : Str }), http_cache : List({ code : U8, name : Str }), http_credentials : List({ code : U8, name : Str }), namespaces : List({ code : U8, name : Str }), template_nodes : List({ code : U8, name : Str }), child_containers : List({ code : U8, name : Str }) }
+	protocol_evidence = || {
+		paced = protocol_policy(Core.on_pointer_paced(protocol_handler({})))
+		keymap = Core.const(Core.Keymap.keep([]))
+		template = resolve_element(Web.Tag.from_str("template") ?? crash "internal: protocol template name", root_enclosing)
+		{
+			kinds: [
+				{ code: text_kind.code, name: "TEXT" },
+				{ code: files_kind.code, name: "FILES" },
+				{ code: pointer_kind(Down).code, name: "POINTER" },
+				{ code: key_kind.code, name: "KEY" },
+				{ code: open_kind.code, name: "OPEN_STATE" },
+				{ code: scroll_kind.code, name: "SCROLL" },
+				{ code: size_kind.code, name: "SIZE" },
+				{ code: seen_kind.code, name: "SEEN" },
+				{ code: paste_kind.code, name: "PASTE" },
+				{ code: click_kind.code, name: "CLICK" },
+			],
+			properties: [
+				{ index: Core.Prop.value.index, name: "value" },
+				{ index: Core.Prop.checked.index, name: "checked" },
+				{ index: Core.Prop.pointer_zone.index, name: "pointer_zone" },
+				{ index: protocol_property_index(Core.element("div", [attach_key(keymap, Down, False, False, protocol_handler({}))], [])), name: "keymap_down" },
+				{ index: protocol_property_index(Core.element("div", [attach_key(keymap, Up, False, False, protocol_handler({}))], [])), name: "keymap_up" },
+				{ index: protocol_property_index(Core.controlled_dialog({ label: "", open: Core.const(False), on_close: protocol_handler({}), modal: Modal, attrs: [], children: [] })), name: "shown" },
+				{ index: protocol_property_index(Core.controlled_popover({ label: "", open: Core.const(False), on_toggle: protocol_handler({}), dismiss: Auto, attrs: [], children: [] })), name: "popover_shown" },
+				{ index: protocol_property_index(Core.unsafe_html(Web.Tag.from_str("div") ?? crash "internal: protocol wrapper name", [], Core.attr_s("title", Core.const("")))), name: "inner_html" },
+			].map(
+				|property| {
+					row = property_row(property.index)
+					if row.name != property.name {
+						crash "internal: protocol property constructor disagrees with its row"
+					}
+					{ index: property.index, name: property.name, elements: row.elements }
+				},
+			),
+			policies: [
+				{ bit: policy_bits({ prevent: True }), name: "PREVENT" },
+				{ bit: policy_bits({ stop: True }), name: "STOP" },
+				{ bit: protocol_policy(Core.on_pointer_capture(protocol_handler({}))), name: "CAPTURE" },
+				{ bit: paced, name: "PACED" },
+				{ bit: protocol_policy(attach_key(Core.const(Core.Keymap.keep([])), Down, False, True, protocol_handler({}))), name: "DOCUMENT" },
+				{ bit: protocol_policy(Core.on_seen({ ahead: True }, protocol_handler({}))).bitwise_xor(paced), name: "AHEAD" },
+			],
+			http_cache: [
+				{ cache: Default, name: "default" },
+				{ cache: NoStore, name: "no-store" },
+				{ cache: Reload, name: "reload" },
+				{ cache: NoCache, name: "no-cache" },
+				{ cache: ForceCache, name: "force-cache" },
+			].map(|row| { code: put_http_options([], row.cache, SameOrigin, 0).first() ?? crash "internal: protocol cache byte", name: row.name }),
+			http_credentials: [{ credentials: SameOrigin, name: "same-origin" }, { credentials: Include, name: "include" }].map(|row| { code: put_http_options([], Default, row.credentials, 0).get(1) ?? crash "internal: protocol credentials byte", name: row.name }),
+			namespaces: [{ namespace: Html, name: "HTML" }, { namespace: Svg, name: "SVG" }, { namespace: MathML, name: "MATHML" }, { namespace: None, name: "NONE" }, { namespace: Uri("urn:protocol"), name: "URI" }].map(|row| { code: put_namespace([], row.namespace).first() ?? crash "internal: protocol namespace byte", name: row.name }),
+			template_nodes: [{ elem: Core.element("div", [], []), name: "ELEMENT" }, { elem: Core.text(""), name: "TEXT" }, { elem: Core.comment(""), name: "COMMENT" }].map(|row| { code: compile_elem(plan_empty({}), row.elem, [], 0, [], " in a protocol probe", root_enclosing).tree.first() ?? crash "internal: protocol template byte", name: row.name }),
+			child_containers: [{ code: checked_container(template, Children), name: "CHILDREN" }, { code: checked_container(template, TemplateContent), name: "TEMPLATE_CONTENT" }],
+		}
+	}
+
 	## The context at the top of the application: the context of the [Elem] that
 	## `program`'s view returns. Nested contexts ([In], [Row]) are built on top
 	## of it.
@@ -3986,6 +4047,36 @@ read_pointer = |bytes| match bytes {
 
 policy_bits : Core.Policy -> U32
 policy_bits = |{ prevent, stop }| (if (prevent) 1.U32 else 0).bitwise_or(if (stop) 2 else 0)
+
+## A codec probe constructs declarations without keeping or running app state.
+protocol_handler : {} -> Core.HandlerOf(Core.Root({}), p)
+protocol_handler = |_| { run: |context, _, _| (context, no_layers) }
+
+## Observe the policies the real attachment path would put on the wire.
+protocol_policy : Core.Attr(ctx) -> U32
+protocol_policy = |attribute| match attribute {
+	On(declaration, _) => declaration.policies
+	KeyOn(declaration, _, _) => declaration.policies
+	_ => crash "internal: protocol probe requires a listener"
+}
+
+## Read the lowered declaration the real constructor hands to mounting.
+protocol_property_index : Core.Elem(Core.Root({})) -> U8
+protocol_property_index = |elem| match elem {
+	Element(_, attrs, _) => {
+		attribute = attrs.find_first(
+			|candidate| match candidate {
+				Property(_, _) | PropertyV(_, _) => True
+				_ => False
+			},
+		) ?? crash "internal: protocol probe requires a property"
+		match attribute {
+			Property(index, _) | PropertyV(index, _) => index
+			_ => crash "internal: protocol probe found a property"
+		}
+	}
+	_ => crash "internal: protocol probe requires an element"
+}
 
 attach_kind : Str, Core.Kind(p), U32, Core.HandlerOf(ctx, p) -> Attr(ctx)
 attach_kind = |event, { code, decode }, policies, { run }| On(

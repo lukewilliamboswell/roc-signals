@@ -7,6 +7,7 @@ app [main!] {
 }
 
 import cli.Path
+import pf.Core
 import pf.Protocol
 import src/ApiSurface
 import src/Proc
@@ -15,6 +16,11 @@ import src/UnionShape
 ## Check authored protocol rows without generating architectural authority.
 ## Both package roots must declare identical, published internal dependencies.
 main! = |_args| {
+	producer = Core.protocol_evidence()
+	consumer = { ..consumer_vocabulary, kinds: Protocol.kinds.map(|row| { code: row.code, name: row.name }) }
+	if !vocabulary_agrees(consumer) {
+		return Err(ProducerVocabularyMismatch({ producer, consumer }))
+	}
 	design = Path.read_utf8!(Path.utf8("design.md"))?
 	appendix = design.split_on("## Appendix B: Wire Protocol").last() ?? return Err(MissingAppendix)
 	rows = appendix.split_on("\n").map(|line| line.trim())
@@ -76,6 +82,35 @@ main! = |_args| {
 	Proc.note!("Protocol authority rows, Appendix A's request, command and result unions and package roots agree")
 	Ok({})
 }
+
+## Compare independently authored consumer rows with the actual producer paths.
+## This module may know both sides; the engine and oracle may not share code.
+vocabulary_agrees : { kinds : List(Protocol.Code), properties : List(Protocol.Property), policies : List(Protocol.Policy), http_cache : List(Protocol.Code), http_credentials : List(Protocol.Code), namespaces : List(Protocol.Code), template_nodes : List(Protocol.Code), child_containers : List(Protocol.Code) } -> Bool
+vocabulary_agrees = |consumer| Core.protocol_evidence() == consumer
+
+## These names are consumer authority. Core's observations come from its actual
+## attach functions, property constructors and encoding paths, never these rows.
+consumer_vocabulary = {
+	kinds: Protocol.kinds.map(|row| { code: row.code, name: row.name }),
+	properties: Protocol.properties,
+	policies: Protocol.policies,
+	http_cache: Protocol.http_cache,
+	http_credentials: Protocol.http_credentials,
+	namespaces: Protocol.namespaces,
+	template_nodes: Protocol.template_nodes,
+	child_containers: Protocol.child_containers,
+}
+
+## Every swapped kind, property, policy and encoding number is rejected;
+## identical consumer tables cannot conceal drift from the producer's codecs.
+expect {
+	facts = consumer_vocabulary
+	vocabulary_agrees(facts) and facts.kinds.all(|changed| !vocabulary_agrees({ ..facts, kinds: changed_code(facts.kinds, changed.name) })) and facts.properties.all(|changed| !vocabulary_agrees({ ..facts, properties: facts.properties.map(|row| if (row.name == changed.name) { ..row, index: row.index.bitwise_xor(1) } else row) })) and facts.policies.all(|changed| !vocabulary_agrees({ ..facts, policies: facts.policies.map(|row| if (row.name == changed.name) { ..row, bit: row.bit.shl_wrap(1) } else row) })) and facts.http_cache.all(|changed| !vocabulary_agrees({ ..facts, http_cache: changed_code(facts.http_cache, changed.name) })) and facts.http_credentials.all(|changed| !vocabulary_agrees({ ..facts, http_credentials: changed_code(facts.http_credentials, changed.name) })) and facts.namespaces.all(|changed| !vocabulary_agrees({ ..facts, namespaces: changed_code(facts.namespaces, changed.name) })) and facts.template_nodes.all(|changed| !vocabulary_agrees({ ..facts, template_nodes: changed_code(facts.template_nodes, changed.name) })) and facts.child_containers.all(|changed| !vocabulary_agrees({ ..facts, child_containers: changed_code(facts.child_containers, changed.name) }))
+}
+
+## Change one valid row to another number while preserving all its names.
+changed_code : List(Protocol.Code), Str -> List(Protocol.Code)
+changed_code = |rows, name| rows.map(|row| if (row.name == name) { ..row, code: row.code.bitwise_xor(1) } else row)
 
 ## Ignore authored spacing and name capitalization, retaining every actual
 ## character so an obsolete payload label cannot match another name.
