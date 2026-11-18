@@ -6,7 +6,9 @@ name: CI
 # --without-sizes`, in parts of `check -- --part K/N`), Fuzz smoke (every
 # registered fuzz target's fixed examples, in shards of `fuzz-smoke`) and
 # Site: `blueprint run site` builds the site, its API docs and its live
-# examples, whose --opt=size modules it also reports by size for the gate. CI never runs a fuzz campaign: campaigns are a
+# examples, whose --opt=size modules it also reports by size for the gate.
+# `startup-browsers` checks the bounded startup corpus in three engines.
+# CI never runs a fuzz campaign: campaigns are a
 # contributor's `blueprint run fuzz`. The macOS and Windows jobs run apps'
 # specs with the spec runner `roc build` makes there, as an app author on
 # that system does. A push to main also deploys that build to GitHub Pages,
@@ -89,11 +91,11 @@ jobs:
         run: blueprint run check -- --without-fuzz --without-sizes --part "$((INDEX + 1))/$TOTAL"
 
   # One result for the whole matrix, the check a pull request requires:
-  # it passes only when every part passed and the Site job, which makes
-  # the gate's size report of the examples' shipping modules, passed.
+  # it passes only when every part, the Site size report and the additional
+  # startup browser boundary corpus passed.
   check:
     name: Check
-    needs: [check-part, site]
+    needs: [check-part, site, startup-browsers]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -102,10 +104,44 @@ jobs:
       - env:
           PARTS: ${{ needs.check-part.result }}
           SITE: ${{ needs.site.result }}
+          STARTUP: ${{ needs.startup-browsers.result }}
         run: |
-          echo "check parts: $PARTS; site (the size report): $SITE"
+          echo "check parts: $PARTS; site (the size report): $SITE; startup browsers: $STARTUP"
           test "$PARTS" = success
           test "$SITE" = success
+          test "$STARTUP" = success
+
+  # A small browser-boundary corpus, independent of the full Chrome SCM suite.
+  # Blueprint locks Playwright; its CLI installs matching browser revisions.
+  startup-browsers:
+    name: Startup browser boundaries
+    needs: nightly
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@14a895879f6fea8c2d1a546a2a56c8502decb2a0
+        with:
+          cache: 'true'
+          cache-workload: startup-browsers
+      - uses: roc-lang/setup-roc@f5a74bf90aa694b43ab4a7cbfdb19273bc6aa697
+        with:
+          version: nightly-new-compiler
+          nightly-tag: ${{ needs.nightly.outputs.tag }}
+      - env:
+          ROC_SIGNALS_BUILD_JOBS: '1'
+        run: blueprint run startup-browsers -- --with-deps
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: startup-browser-boundaries
+          path: .build/startup-browsers/
+          if-no-files-found: warn
+          retention-days: 7
 
   # Every registered fuzz target's fixed examples (declared examples and
   # saved regressions) on a plain optimized build: each target compiles,

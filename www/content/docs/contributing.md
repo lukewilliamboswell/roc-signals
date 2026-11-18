@@ -119,6 +119,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run platform` | Build the platform's link inputs with the pinned Zig, including matching PIC musl startup and libraries, to build an app's `main.roc` by hand (a fuzz target needs none: `roc build --fuzz` fetches its roc-fuzz release) |
 | `blueprint run jfb` | Build the js-framework-benchmark app as the benchmark measures it (`--opt=speed`) and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
+| `blueprint run startup-browsers -- [--with-deps]` | The small startup boundary corpus in Chromium, Firefox and WebKit: independent malformed-wire/native-state controls plus native prerendered HTML adopted by the same typed app compiled to Wasm. Builds only that app; the full SCM suite keeps its native/Chrome validation |
 | `blueprint run fuzz-smoke -- [TARGET...]` | Every registered fuzz target's fixed examples on plain optimized native builds, or the named targets; `-- --shard K/N` runs shard K of N, as CI does; never explores |
 | `blueprint run sizes -- [--runtime-only]` | Check shipped JavaScript Brotli sizes (gzip is reported); without the flag, also build and report each example's shipping module and development-only scripts |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign (600 s of exploration per target by default), local only: CI never runs one |
@@ -490,6 +491,20 @@ published tree unchanged. The legacy Worker Lab must explicitly opt out before
 its plain build runs real browser workers. A compiler-boundary edit injection
 checks that the project inventory guard refuses publication and preserves the
 same complete tree.
+
+`blueprint run startup-browsers` is the additional engine-boundary gate. Its
+test-only `playwright-core` 1.65.1 archive is SHA-256 locked in `Blueprint.lock`,
+and its CLI installs the matching Chromium, Firefox and WebKit revisions in
+Playwright's shared cache (`PLAYWRIGHT_BROWSERS_PATH` can select another cache).
+Use `-- --with-deps` on Linux to install the browsers' system dependencies too,
+as CI does. This adds no npm project or application runtime dependency. The
+task builds `tests/apps/startup-corpus` natively and as Wasm, then runs that
+producer/consumer corpus and the independently encoded startup controls in
+each engine. Native pages, browser versions, retained-node/state observations
+and per-corpus logs are kept in `.build/startup-browsers/` (under
+`ROC_SIGNALS_BUILD_DIR` when set). CI uploads those artifacts and requires this
+job in its aggregate Check result; it does not replay every SCM spec in three
+engines.
 
 The production workflow is `roc signals.roc build` from an app directory. It
 reads the compiled finite entry catalogue and stages all annotated pages with
