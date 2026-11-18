@@ -4,14 +4,18 @@ import pf.Engine
 import pf.Html
 import pf.Web
 
-Store : {}
+store = Engine.store(Corpus, Engine.cell(0.I64).map(|score| { score: score }))
+
+cells = store.cells()
+
+Store : Engine.Stored([Corpus], I64)
 
 entries = Engine.entries({}, [{ path: "/", route: "first" }, { path: "/second/", route: "second" }])
 
 ## Both declared pages use the same pure typed construction. Browser facts
 ## arrive only through the ordinary snapshot request after the cold barrier.
 main : Engine.Program
-main = Engine.program_startup({ storage_keys: ["corpus"], zone_days: 0 }, entries, view)
+main = Engine.program_startup_store({ storage_keys: ["corpus"], zone_days: 0 }, entries, |route| store.with_initial(cells.score, if (route == "first") 40 else 90), view)
 
 ## The default cold frame is checked independently of later snapshot delivery.
 mounted : U64
@@ -32,7 +36,7 @@ xlink = (Web.AttrName.from_str("href") ?? crash "invalid corpus attribute").in_n
 
 ## The initial Self changes a text hole only after binding. A snapshot issued
 ## before the cold storage write observes the later acknowledgement's write.
-view : Str -> Engine.Elem(Engine.Root)
+view : Str -> Engine.Elem(Engine.StoreRoot(_))
 view = |route| Engine.state(
 	{ count: 0.I64, environment: "waiting" },
 	|state| {
@@ -42,6 +46,8 @@ view = |route| Engine.state(
 			"",
 			[
 				Engine.element("p", [Engine.test_id("route")], [Engine.text(route)]),
+				Html.p_s(cells.score.signal().to_text_signal(), [Engine.test_id("store-score")]),
+				Html.button("Add store score", [Engine.test_id("store-increment")], Engine.does([cells.score.update(|score| score + 1)])),
 				Engine.element("p", [Engine.test_id("selection")], [Engine.text("alpha"), Engine.text(""), Engine.text("beta")]),
 				Engine.element("img", [Engine.test_id("image"), Engine.attr("src", "/startup-image.svg"), Engine.attr("alt", "Blue hills"), Engine.attr("width", "160"), Engine.attr("height", "90")], []),
 				Engine.element("iframe", [Engine.test_id("frame"), Engine.attr("src", "/startup-frame"), Engine.attr("title", "Retained native document")], []),

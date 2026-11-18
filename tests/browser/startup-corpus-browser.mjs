@@ -52,10 +52,12 @@ try {
   } else providers = [{ name: 'chrome', open: () => launch({ executablePath: options.chrome }) }];
   for (const provider of providers) {
     const browser = await provider.open();
+    const livePages = [], caseRecords = [];
     try {
       const version = typeof browser.version === 'function' ? browser.version() : (await browser.conn.send('Browser.getVersion')).product;
       for (const [entry, route] of ['/', '/second/'].entries()) {
         const page = await browser.newPage();
+        let kept = false;
         try {
           await page.goto(`http://127.0.0.1:${server.address().port}${route}`);
           await page.waitForFunction(() => typeof window.__start === 'function');
@@ -65,7 +67,7 @@ try {
           const cold = await page.evaluate(({ entry }) => {
             const root = document.getElementById('app');
             const query = id => root.querySelector(`[data-testid="${id}"]`);
-            const ids = ['route', 'selection', 'image', 'frame', 'video', 'counter', 'environment', 'increment', 'textarea', 'no-match', 'option-first', 'option-second', 'authored-inert', 'template', 'svg', 'svg-link', 'foreign-html', 'math', 'row-a', 'row-b', 'tail-a', 'tail-b', 'waiting'];
+            const ids = ['route', 'store-score', 'store-increment', 'selection', 'image', 'frame', 'video', 'counter', 'environment', 'increment', 'textarea', 'no-match', 'option-first', 'option-second', 'authored-inert', 'template', 'svg', 'svg-link', 'foreign-html', 'math', 'row-a', 'row-b', 'tail-a', 'tail-b', 'waiting'];
             window.__kept = new Map(ids.map(id => [id, query(id)]));
             window.__content = query('template').content.querySelector('[data-testid="content-span"]');
             window.__resources = { document: query('frame').contentDocument, videoTime: query('video').currentTime, sourceWrites: 0 };
@@ -74,11 +76,12 @@ try {
             document.getSelection().setBaseAndExtent(selected, entry ? 7 : 1, selected, entry ? 1 : 7);
             // An embedded entry selects its fixed route, even at another live URL.
             history.replaceState(null, '', '/unlisted?client=1#before');
-            return { frame: root.getAttribute('data-roc-frame'), route: query('route').textContent, counter: query('counter').textContent, environment: query('environment').textContent, rootInert: root.inert, buttonInert: query('increment').inert, textareaInert: query('textarea').inert, authored: query('authored-inert').getAttribute('inert'), optionCount: query('no-match').options.length, selectedIndex: query('no-match').selectedIndex, selection: document.getSelection().toString() };
+            return { frame: root.getAttribute('data-roc-frame'), route: query('route').textContent, score: query('store-score').textContent, counter: query('counter').textContent, environment: query('environment').textContent, rootInert: root.inert, buttonInert: query('increment').inert, textareaInert: query('textarea').inert, authored: query('authored-inert').getAttribute('inert'), optionCount: query('no-match').options.length, selectedIndex: query('no-match').selectedIndex, selection: document.getSelection().toString() };
           }, { entry });
           const requestsBefore = Object.fromEntries(resourceCounts);
           assert.equal(cold.frame, `1:${entry}:corpus`);
           assert.equal(cold.route, entry ? 'second' : 'first');
+          assert.equal(cold.score, entry ? '90' : '40');
           assert.equal(cold.counter, '0'); assert.equal(cold.environment, 'waiting');
           assert.equal(cold.rootInert, false); assert.equal(cold.buttonInert, true); assert.equal(cold.textareaInert, true);
           assert.equal(cold.authored, 'author-inert'); assert.equal(cold.optionCount, 3); assert.equal(cold.selectedIndex, 2); assert.equal(cold.selection, 'lphabe');
@@ -112,12 +115,35 @@ try {
           const requestsAfter = Object.fromEntries(resourceCounts);
           assert.equal(native.imageLoaded, true); assert.equal(native.documentLoaded, true); assert.equal(native.documentRetained, true); assert.equal(native.sourceWrites, 0); assert.equal(native.playing, true); assert.ok(native.progress > .08, 'retained native video keeps progressing after binding and replacement');
           assert.deepEqual(requestsAfter, requestsBefore, 'native binding and placeholder activation issue no extra resource request');
-          await page.evaluate(() => window.__rt.unmount());
           const record = { browser: provider.name, version, route, cold, committed, active, native, requestsBefore, requestsAfter };
-          reports.push(record); console.log(`PASS ${provider.name} ${version} native producer → same Wasm ${route}`);
-        } finally { await page.close(); }
+          reports.push(record); caseRecords.push(record); livePages.push(page); kept = true;
+          console.log(`PASS ${provider.name} ${version} native producer → same Wasm ${route}`);
+        } finally { if (!kept) await page.close(); }
       }
-    } finally { await browser.close(); }
+      // Both native-produced fixed-store routes remain live simultaneously.
+      // Writes enter through their real controls; neither store nor local
+      // state is changed through a test-only engine seam.
+      const inspect = page => page.evaluate(() => ({ score: document.querySelector('[data-testid="store-score"]').textContent, local: document.querySelector('[data-testid="counter"]').textContent, fault: window.__rt.poisoned, retained: [...window.__kept].filter(([id]) => id !== 'waiting').every(([id, node]) => document.querySelector(`[data-testid="${id}"]`) === node) }));
+      const initial = await Promise.all(livePages.map(inspect));
+      assert.deepEqual(initial.map(({ score, local }) => [score, local]), [['40', '2'], ['90', '2']]);
+      await livePages[0].evaluate(() => { document.querySelector('[data-testid="store-increment"]').click(); document.querySelector('[data-testid="increment"]').click(); });
+      const afterFirst = await Promise.all(livePages.map(inspect));
+      assert.deepEqual(afterFirst.map(({ score, local }) => [score, local]), [['41', '3'], ['90', '2']]);
+      await livePages[1].evaluate(() => { document.querySelector('[data-testid="store-increment"]').click(); document.querySelector('[data-testid="store-increment"]').click(); });
+      const afterSecond = await Promise.all(livePages.map(inspect));
+      assert.deepEqual(afterSecond.map(({ score, local }) => [score, local]), [['41', '3'], ['92', '2']]);
+      const firstDropped = await livePages[0].evaluate(() => { window.__rt.unmount(); return [document.getElementById('app').childNodes.length, Number(window.__rt.x.metric(4)), Number(window.__rt.x.metric(5))]; });
+      assert.deepEqual(firstDropped, [0, 0, 0]);
+      await livePages[1].evaluate(() => { document.querySelector('[data-testid="store-increment"]').click(); document.querySelector('[data-testid="increment"]').click(); });
+      const survivor = await inspect(livePages[1]);
+      assert.deepEqual([survivor.score, survivor.local], ['93', '3']);
+      assert.ok([...initial, ...afterFirst, ...afterSecond, survivor].every(value => value.fault === null && value.retained));
+      const secondDropped = await livePages[1].evaluate(() => { window.__rt.unmount(); return [Number(window.__rt.x.metric(4)), Number(window.__rt.x.metric(5))]; });
+      assert.deepEqual(secondDropped, [0, 0]);
+      const independence = { initial, afterFirst, afterSecond, firstDropped, survivor, secondDropped };
+      for (const record of caseRecords) record.independence = independence;
+      console.log(`PASS ${provider.name} ${version} simultaneous fixed stores/local states and surviving instance`);
+    } finally { for (const page of livePages) await page.close(); await browser.close(); }
   }
   if (options.output) fs.writeFileSync(path.join(options.output, 'browser-results.json'), JSON.stringify(reports, null, 2) + '\n');
 } finally { await new Promise(resolve => server.close(resolve)); }
