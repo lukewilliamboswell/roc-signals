@@ -2337,6 +2337,17 @@ write. One synchronous body is not preemptible; expensive authors divide work
 at placeholder/component boundaries. Preserve scope disposal, effects,
 reparenting, handles and uniqueness exactly as ordinary branch mounting does.
 
+The private ready-owner index is a compressed radix tree over U64 addresses.
+For Q > 0 live entries it has Q leaves and Q-1 forks, in addition to each owner's
+route path; an empty index retains none. Removing an entry immediately collapses
+its now-unary parent. There are no historical owner records or retained
+peak-capacity slots. Each traversal
+visits at most 64 forks; insertion and removal each use at most two traversals.
+Updates rebuild only that bounded path, preserving changed-set work even in
+compiler shapes where builtin dictionary removal makes the next insertion copy
+all entries (roc-lang/roc#13194). Structural validation and equality walk the
+index only in diagnostics, never on an ordinary update path.
+
 #### Descriptions, instance construction and DOM binding
 
 Description preparation, runtime parameter binding, instance construction and
@@ -5431,6 +5442,7 @@ of them is platform semantics.
 | [roc-lang/roc#12978](https://github.com/roc-lang/roc/issues/12978) | Since `nightly-2026-11-11-7679cc5`, a method's nominal defaulted props reject `{}` inside a callback stored in a record passed to a generic function | The File Effects test app gives its empty read props the explicit `Engine.ReadProps` type before constructing the callback, preserving the default read bound and every spec |
 | [roc-lang/roc#12949](https://github.com/roc-lang/roc/pull/12949) | Native links now require PIC libraries and PIE startup; roc-fuzz 0.6.0's immutable Linux inputs predate that requirement | The platform builds matching PIC musl inputs with its pinned Zig. Fuzz examples and campaigns always attempt their requested targets; compiler, linker and runtime failures fail the task. Linux needs matching PIC roc-fuzz inputs |
 | [roc-lang/roc#12846](https://github.com/roc-lang/roc/issues/12846) | A record captured by one closure is copied on every update under `--opt=speed/size` in some call shapes | Sites return rebuilt closures from each branch; row sites rebuilt before running a handler |
+| [roc-lang/roc#13194](https://github.com/roc-lang/roc/issues/13194) | On `nightly-2026-11-15-f25da45`, a Wasm dictionary moved through one opaque boxed holder allocates in proportion to all entries when reinserting after removal, in both development and size builds. Native direct-loop and some optimized engine shapes do not reproduce it; the cause is not established | The placeholder ready-owner index uses a private compressed U64 radix tree: at most 64 forks per traversal, at most two traversals per edit, and only live entries retained. Restore the builtin dictionary only after the upstream fix and development/shipping Wasm scaling controls prove that removal/reinsertion no longer copies the whole pending set |
 | [roc-lang/roc#12841](https://github.com/roc-lang/roc/issues/12841) | A list captured by two closures is copied on every update | One closure per site's storage |
 | [roc-lang/roc#12847](https://github.com/roc-lang/roc/issues/12847) | Calling a closure from a borrowed position emits a second copy of its body | Owned child-call loops; code size |
 | [roc-lang/roc#12848](https://github.com/roc-lang/roc/issues/12848) | Every proc gets `inlinehint`; `--opt=size` emits no `minsize` | Code size of larger apps |
@@ -6466,9 +6478,13 @@ plain mounting. Initial binding never attempts to adopt a guessed replacement
 for those children. The Core adopted-mode check and independent renderer each
 enforce their part of this policy. The native producer first finishes its
 ordinary cold mount and acknowledgement, retaining only the plain oracle
-model after that engine instance is dropped. It then constructs a fresh binding
-instance, checks its commands against that model through `Dom.bind_cold`, and
-acknowledges it before publishing. This catches an unsupported dynamic writer
+model and decoded cold effects after that engine instance is dropped. It then
+constructs a fresh binding instance, checks its commands against that model
+through `Dom.bind_cold`, and
+compares the ordered effect traces, preserving every operand and request
+address while allowing only the fresh/bind startup mode to differ. It
+acknowledges that instance before publishing. This catches an unsupported
+dynamic writer
 whose absent initial value leaves no physical attribute in the model, without
 keeping or serializing mounted engine state. A diagnostic rendering in Plain
 mode retains its ordinary meaning.

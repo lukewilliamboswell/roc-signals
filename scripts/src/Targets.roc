@@ -403,6 +403,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "unsafe-html-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "unsafe-html"), "--runner", SpecSuite.runner_of(o, "unsafe-html")])?)
 				.concat(Targets.browser!(o, "markup-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "markup")])?)
 				.concat(Targets.browser!(o, "placeholder-queue-cost.mjs", ["--wasm", SpecSuite.wasm_of(o, "startup-queue")])?)
+				.concat(Targets.browser!(o, "placeholder-queue-cost.mjs", ["--wasm", SpecSuite.size_wasm_of(o, "startup-queue")])?)
 				.concat(Targets.browser!(o, "description-preparation.mjs", ["--wasm", SpecSuite.wasm_of(o, "description-preparation")])?)
 				.concat(Targets.browser!(o, "construction-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "construction")])?)
 				.concat(Targets.browser!(o, "pointer-browser.mjs", ["--wasm", controls])?)

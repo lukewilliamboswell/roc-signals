@@ -5846,15 +5846,15 @@ SpecRunner := [].{
 				if template.root() != facts.root {
 					return Err("the template mount root differs from the declared startup root")
 				}
-				cold = SpecRunner.capture_startup(
+				captured = SpecRunner.capture_startup(
 					program,
 					{
 						boot: SpecRunner.encode_startup_mount(environment, template.root(), SpecRunner.put_u32([1, 0], entry)),
 						overlay: template.overlay_startup(Dom.new({})),
 					},
 				)?
-				SpecRunner.validate_startup_binding(program, { boot: SpecRunner.encode_startup_mount(environment, template.root(), SpecRunner.put_u32([1, 1], entry)), cold })?
-				(cold, Annotated, Frame({ entry, token }))
+				SpecRunner.validate_startup_binding(program, { boot: SpecRunner.encode_startup_mount(environment, template.root(), SpecRunner.put_u32([1, 1], entry)), cold: captured.dom, effects: captured.effects })?
+				(captured.dom, Annotated, Frame({ entry, token }))
 			}
 		}
 		rendered = Dom.render(model, { root: model.root, scope: MountEnvelope, mode: Picture, startup, frame, enclosing: template.parent(), limits: { max_bytes: 16777216, max_nodes: 262144, max_depth: 1024 } }) ? |problem| "picture renderer refused the frame: ${Str.inspect(problem)}"
@@ -5873,24 +5873,36 @@ SpecRunner := [].{
 	}
 
 	## End the ordinary instance's lifetime before returning only its plain cold
-	## oracle model. No App or Roc value representing its storage crosses into
-	## the separate binding initialization, and no hosted effect is performed.
-	capture_startup : Program(state), { boot : List(U8), overlay : Dom.Model } -> Try(Dom.Model, Str)
+	## oracle model and ordered effect trace. No App or value representing its
+	## storage crosses into binding initialization; hosted effects never run here.
+	capture_startup : Program(state), { boot : List(U8), overlay : Dom.Model } -> Try({ dom : Dom.Model, effects : List(Dom.FxCmd) }, Str)
 	capture_startup = |program, { boot, overlay }| {
 		(inst, commands, work) = (program.init)(boot)
-		cold = Dom.apply(overlay, commands)
-		SpecRunner.acknowledge_startup(program, { inst, commands, work, model: cold })?
-		Ok(cold)
+		cold = Dom.apply_full(overlay, commands)
+		SpecRunner.acknowledge_startup(program, { inst, commands, work, model: cold.dom })?
+		Ok({ dom: cold.dom, effects: cold.fx })
 	}
 
 	## Validate declaration-sensitive binding rules even when a forbidden dynamic
 	## writer was initially absent and left no attribute in the serialized model.
-	## The independent oracle checks the complete cold plan before its ACK.
-	validate_startup_binding : Program(state), { boot : List(U8), cold : Dom.Model } -> Try({}, Str)
-	validate_startup_binding = |program, { boot, cold }| {
+	## The independent oracle checks the complete cold plan and ordered effects
+	## before its ACK. A profile cannot silently change or omit an initial request.
+	validate_startup_binding : Program(state), { boot : List(U8), cold : Dom.Model, effects : List(Dom.FxCmd) } -> Try({}, Str)
+	validate_startup_binding = |program, { boot, cold, effects }| {
 		(inst, commands, work) = (program.init)(boot)
 		bound = Dom.bind_cold(cold, commands)
+		if !SpecRunner.startup_effects_match({ fresh: effects, bound: bound.fx }) {
+			return Err("binding startup effects differ from the producer's ordered cold effects")
+		}
 		SpecRunner.acknowledge_startup(program, { inst, commands, work, model: bound.dom })
+	}
+
+	## Fresh and bound construction differ only in the transport profile byte.
+	## Keep every effect operand, request address and position in the trace exact.
+	startup_effects_match : { fresh : List(Dom.FxCmd), bound : List(Dom.FxCmd) } -> Bool
+	startup_effects_match = |{ fresh: constructed, bound }| match (constructed, bound) {
+		([Startup({ mode: 0, entry: fresh_entry }), .. as fresh_rest], [Startup({ mode: 1, entry: bound_entry }), .. as bound_rest]) => fresh_entry == bound_entry and fresh_rest == bound_rest
+		_ => False
 	}
 
 	## Each profile must complete its real private barrier and settle, while the
@@ -8157,4 +8169,23 @@ expect {
 	known == labelled.root and
 		SpecRunner.find_in(opaque, opaque.root, Role({ role: "region", name: "Imported" })) == Err(OpaqueHtml) and
 			SpecRunner.find_in(opaque, opaque.root, Text("Imported")) == Err(NotFound)
+}
+
+## Matching cold DOM cannot excuse a changed initial request or service order.
+## Only the declared fresh/bind transport modes differ between these traces.
+expect {
+	fresh = [Startup({ mode: 0, entry: 2 }), Environment(7), Set("draft", "cold"), StartupAck]
+	bound = [Startup({ mode: 1, entry: 2 }), Environment(7), Set("draft", "cold"), StartupAck]
+	mutants = [
+		[Startup({ mode: 1, entry: 3 }), Environment(7), Set("draft", "cold"), StartupAck],
+		[Startup({ mode: 1, entry: 2 }), Set("draft", "cold"), StartupAck],
+		[Startup({ mode: 1, entry: 2 }), Environment(8), Set("draft", "cold"), StartupAck],
+		[Startup({ mode: 1, entry: 2 }), Environment(7), Set("draft", "changed"), StartupAck],
+		[Startup({ mode: 1, entry: 2 }), Set("draft", "cold"), Environment(7), StartupAck],
+		[Startup({ mode: 1, entry: 2 }), Environment(7), Set("draft", "cold")],
+		[Startup({ mode: 0, entry: 2 }), Environment(7), Set("draft", "cold"), StartupAck],
+	]
+	SpecRunner.startup_effects_match({ fresh, bound }) and
+		mutants.all(|changed| !SpecRunner.startup_effects_match({ fresh, bound: changed })) and
+			!SpecRunner.startup_effects_match({ fresh: bound, bound })
 }

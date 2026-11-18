@@ -32,7 +32,7 @@ Release := [].{
 
 	## The platform files a bundle carries, relative to `platform/`.
 	bundle_files : List(Str)
-	bundle_files = ["main.roc", "Base64.roc", "Engine.roc", "Web.roc", "Spelling.roc", "MarkupAdvice.roc", "MarkupLiteral.roc", "Clipboard.roc", "WebCrypto.roc", "Html.roc", "Svg.roc", "Layout.roc", "Order.roc", "Url.roc", "Worker.roc", "Wire.roc", "WorkerCodec.roc", "Port.roc", "PortJson.roc", "PortRegistry.roc", "Protocol.roc", "ProtocolFacts.roc", "Core.roc", "EntryRoutes.roc", "SignalCore.roc", "TableCore.roc", "View.roc", "Seq.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "PicturePage.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "host/crypto.zig", "host/crypto_result.zig", "host/crypto_abi.zig", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
+	bundle_files = ["main.roc", "Base64.roc", "Engine.roc", "Web.roc", "Spelling.roc", "MarkupAdvice.roc", "MarkupLiteral.roc", "Clipboard.roc", "WebCrypto.roc", "Html.roc", "Svg.roc", "Layout.roc", "Order.roc", "Url.roc", "Worker.roc", "Wire.roc", "WorkerCodec.roc", "Port.roc", "PortJson.roc", "PortRegistry.roc", "Protocol.roc", "ProtocolFacts.roc", "Core.roc", "ReadyIndex.roc", "EntryRoutes.roc", "SignalCore.roc", "TableCore.roc", "View.roc", "Seq.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "PicturePage.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "host/crypto.zig", "host/crypto_result.zig", "host/crypto_abi.zig", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
 
 	archive_name : Str -> Str
 	archive_name = |version| "roc-signals-examples-${version}"
@@ -170,7 +170,7 @@ Release := [].{
 		\\An example's other files are its own: JavaScript its author wrote (port
 		\\handlers, a simulated service), a page that mounts it, data it downloads.
 		\\JavaScript several examples load (custom elements) is in `examples/shared/`.
-		\\The platform's `runtime.mjs`, `environment.mjs` and `worker.mjs` are separate release assets.
+		\\The platform's `runtime.mjs`, `environment.mjs`, `startup.mjs` and `worker.mjs` are separate release assets.
 		\\`spec.json` and `runtime/check.mjs` are the compatibility suite the
 		\\nightly workflow runs against the latest Roc nightly.
 
@@ -182,11 +182,17 @@ Release := [].{
 		\\
 		\\<!-- What changed, for app authors. Write this on GitHub before publishing. -->
 		\\
+		\\## Deterministic startup and deferred content
+		\\
+		\\`Engine.entries` supplies one finite typed route catalogue. New sites use `Engine.program_startup` or `Engine.program_startup_store`; `signals.roc build` prerenders every declared entry by default. Serve matching generated HTML and module assets together. `--no-prerender` builds a plain page; existing Boot-dependent initializers must migrate before using annotated startup.
+		\\
+		\\Ordinary initial content survives startup. `Html.placeholder` combines checked `Html.Static` content with a deferred live body; readiness and browser-task opportunities activate it through ordinary scoped turns. Use `Engine.environment` for live browser facts after startup. Protocol 23 requires rebuilding modules and deploying their matching runtime files together.
+		\\
 		\\## Breaking: checked links and typed clicks
 		\\
 		\\`Html.link` now requires `Web.Link`. Literal destinations are checked during compilation; computed destinations use `Web.Link.from_str` and explicitly handle `UnsupportedScheme`. `Html.href` and `Html.href_s` support custom layouts and explicit absence. Raw attributes keep their semantics.
 		\\
-		\\`Engine.on_click` and button helpers receive `Engine.Click`, carrying modifiers and nearest-link authored href, target and download presence. Use `on_click_with` for synchronous policies. Generic `on("click", ...)` retains its text payload. Rebuild modules with this release's protocol 22 runtime and worker.
+		\\`Engine.on_click` and button helpers receive `Engine.Click`, carrying modifiers and nearest-link authored href, target and download presence. Use `on_click_with` for synchronous policies. Generic `on("click", ...)` retains its text payload. Rebuild modules with this release's protocol 23 runtime, startup helper and worker.
 		\\
 		\\`Html.unsafe_html` imports HTML into a stable wrapper without escaping, validation or sanitization. Imported descendants are opaque to specs and receive no engine lifecycle. Pictures containing the wrapper are refused, including empty initial content.
 		\\
@@ -196,7 +202,7 @@ Release := [].{
 		\\
 		\\## Upgrading specs
 		\\
-		\\A step that passes because the thing it names is absent, or counts zero of it, now needs evidence that the name is spelt right. A spec without it fails to parse at that step, in both runners and `--emit-steps`, even if it passed before. The evidence is another step of the same spec, before or after, or a marker saying the story never has the thing; a marker leaves the spelling unchecked, and is refused when the spec has the evidence.
+		\\A step that passes because the thing it names is absent, or counts zero of it, now needs evidence that the name is spelt right. A spec without it fails to parse at that step, in both runners and `--emit-steps`, even if it passed before. The evidence is another step of the same spec, before or after, or a marker saying the story never has the thing. A marker requires positive evidence in another spec of the app's suite, and is refused when its own story already has that evidence.
 		\\
 		\\- `(expect-absent LOC)` needs a step that requires `LOC` to match, such as `expect-visible` or `click`. Add one where the story draws the element, or write `(expect-absent LOC :never-drawn)`.
 		\\- `(expect-no-attr LOC NAME)` needs an `expect-attr` or `expect-has-attr` of `NAME`, on any locator. Add `(expect-has-attr LOC NAME)` where the story writes the attribute with a value the spec cannot state, or write `(expect-no-attr LOC NAME :never-written)`.
