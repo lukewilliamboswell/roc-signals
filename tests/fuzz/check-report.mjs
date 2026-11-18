@@ -67,7 +67,11 @@ function checkRegions(regions) {
     need(stats.peak_live_bytes >= stats.entry_live_bytes && stats.peak_live_bytes >= stats.exit_live_bytes, "invalid allocation peak");
     if (index === 0) {
       need(parent === 0n && region.name === "$property" && occurrence === 1, "missing outer property region");
-      need(stats.exit_live_allocs === 0n && stats.exit_live_bytes === 0n, "outer property leaked allocations or bytes");
+      // These gauges include the target's live framework metadata, so a
+      // property need not finish at absolute zero. Reject regional growth;
+      // the host's independent pre-input/post-callback leak check remains
+      // authoritative when releasing the input could mask a leaked value.
+      need(stats.exit_live_allocs <= stats.entry_live_allocs && stats.exit_live_bytes <= stats.entry_live_bytes, "outer property grew live allocations or bytes");
     } else need(parent !== 0n, "multiple outer property regions");
   }
 }

@@ -776,6 +776,16 @@ and its saved regressions (`Fuzz.saved`, in the target's source); a replay
 of them shows the target compiles, links and runs, and finds nothing new.
 Finding new inputs is a campaign's job.
 
+Fixed-report validation checks the host's successful exit and leak-detection
+policy, every declared input and its hash, worker results, trace topology,
+allocation balance and peaks. Live-allocation gauges are absolute: a target's
+framework metadata can remain live before and after a property. The outer
+property must not grow its live allocations or bytes; it need not end at
+absolute zero. The roc-fuzz host independently checks the physical allocation
+baseline before creating the input and after the callback returns. A host
+leak finding fails the replay even when releasing the input masks growth
+inside the measured region.
+
 | Where | What runs | Build | How long |
 |---|---|---|---|
 | CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in six shards (`fuzz-smoke -- --shard K/6`), beside Check (`check -- --without-fuzz`, in parts) | Plain `--opt=speed` | Estimated from the figures below at 15 to 30 minutes a shard, the one with `structure` the longest; each shard is allowed 60 |
