@@ -22,6 +22,7 @@ import src/Proc
 import src/SpecSuite
 import src/Slow
 import src/Targets
+import src/ProtocolEvidence
 import src/ToolCheck
 import src/Sizes
 
