@@ -406,5 +406,35 @@ try {
     }
     return checks;
   }, [...protocolFixtureSection]);
+  await page.evaluate(async () => {
+    const { StartupFrame } = await import('/startup.mjs');
+    const word = value => [value & 255, value >>> 8 & 255, value >>> 16 & 255, value >>> 24];
+    const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
+    const facts = (ordinal, aliases) => [...word(ordinal), ...word(aliases.length), ...aliases.flatMap(word), ...word(0)];
+    const node = (element, ordinal, aliases, children, flags = 0) => {
+      element.setAttribute('data-roc-node', btoa(String.fromCharCode(1, ...facts(ordinal, aliases))));
+      element.setAttribute('data-roc-children', btoa(String.fromCharCode(1, flags, ...word(children.length), ...children.flat(), 0, ...word(0), ...word(0))));
+    };
+    const root = document.createElement('div'); root.id = 'startup-details-probe'; root.setAttribute('data-roc-frame', '1:0:build');
+    root.innerHTML = '<details inert open><summary>Native details</summary></details>';
+    document.body.append(root);
+    node(root, 0, [0], [[1, ...word(1)]]); node(root.firstChild, 1, [1], [[1, ...word(2)]], 1); node(root.firstChild.firstChild, 2, [2], [[2, ...facts(3, [3]), ...text('Native details')]]);
+    window.__detailsFrame = new StartupFrame(root, 'build'); window.__detailsFrame.normalize();
+    window.__detailsFrame.bind(1, 1); window.__detailsFrame.bind(2, 1); window.__detailsFrame.bind(3, 2);
+  });
+  const clickDetails = async () => {
+    const box = await page.evaluate(() => { const node = document.querySelector('#startup-details-probe summary'); node.scrollIntoView({ block: 'center' }); const rect = node.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }; });
+    if (typeof page.clickAt === 'function') await page.clickAt(box);
+    else await page.mouse.click(box.x, box.y);
+  };
+  await clickDetails();
+  checks.push(['a trusted summary click cannot change the gated declared details state', await page.evaluate(() => document.querySelector('#startup-details-probe details').open)]);
+  await page.evaluate(() => { window.__detailsFrame.finish(); delete window.__detailsFrame; });
+  await clickDetails();
+  checks.push(['details native interaction resumes when its producer gate is restored', await page.evaluate(() => { const details = document.querySelector('#startup-details-probe details'); const restored = !details.inert && !details.open; details.parentElement.remove(); return restored; })]);
+  checks.push(['native named details grouping removes authored open despite inert', await page.evaluate(() => {
+    const root = document.createElement('div'); root.innerHTML = '<details inert open name="startup-probe-group"><summary>First</summary></details><details inert open name="startup-probe-group"><summary>Second</summary></details>'; document.body.append(root);
+    const mutated = !(root.firstChild.open && root.lastChild.open) && root.firstChild.inert && root.lastChild.inert; root.remove(); return mutated;
+  })]);
   for (const [name, passed] of checks) { if (!passed) throw new Error(`FAIL ${name}`); console.log(`PASS ${name}`); }
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

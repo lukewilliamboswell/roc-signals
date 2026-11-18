@@ -3481,6 +3481,9 @@ startup_gate = |state, { model, node }| {
 	if node.namespace == Dom.html_namespace and node.tag == "selectedcontent" {
 		return Err(InvalidModel({ model, rule: "annotated startup refuses selectedcontent native child mutation; defer construction or use plain mounting" }))
 	}
+	if node.namespace == Dom.html_namespace and node.tag == "details" and Dom.has_attr(node, "name") {
+		return Err(InvalidModel({ model, rule: "annotated startup refuses named details native group mutation; defer construction or use plain mounting" }))
+	}
 	if (node.namespace == Dom.html_namespace and (node.tag.contains("-") or Dom.has_attr(node, "is"))) or (node.tag == "script" and [Dom.html_namespace, Dom.svg_namespace].contains(node.namespace)) {
 		return Err(InvalidModel({ model, rule: "annotated startup refuses executable or custom-element markup; defer construction or use plain mounting" }))
 	}
@@ -3489,7 +3492,7 @@ startup_gate = |state, { model, node }| {
 			return Err(InvalidModel({ model, rule: "annotated startup refuses inline handlers and reserved annotation attributes" }))
 		}
 	}
-	native_control = node.namespace == Dom.html_namespace and ["form", "input", "button", "select", "textarea", "option", "label", "fieldset", "output"].contains(node.tag)
+	native_control = node.namespace == Dom.html_namespace and ["form", "input", "button", "select", "textarea", "option", "label", "fieldset", "output", "details"].contains(node.tag)
 	editable = node.namespace == Dom.html_namespace and Dom.has_attr(node, "contenteditable") and Spelling.ascii_lower(Dom.attr_of(node, "contenteditable")) != "false"
 	gates = if (owned or native_control or editable) state.startup_gates.insert(model, {}) else state.startup_gates
 	Ok({ ..state, startup_owned: owned, startup_gates: gates })
@@ -3684,10 +3687,10 @@ expect {
 }
 
 ## Producer gates preserve authored inert text and leave independent media and
-## links available. Native forms/labels gate even without their own listener.
+## links available. Native forms/labels/details gate without their own listener.
 expect {
-	root = { ..Dom.empty_node, tag: "div", kids: [1, 2, 3, 4] }
-	dom = { ..Dom.new({}), nodes: [root, { ..Dom.empty_node, tag: "video" }, { ..Dom.empty_node, tag: "a" }, { ..Dom.empty_node, tag: "label" }, { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("inert", "authored")]) }] }
+	root = { ..Dom.empty_node, tag: "div", kids: [1, 2, 3, 4, 5] }
+	dom = { ..Dom.new({}), nodes: [root, { ..Dom.empty_node, tag: "video" }, { ..Dom.empty_node, tag: "a" }, { ..Dom.empty_node, tag: "label" }, { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("inert", "authored")]) }, { ..Dom.empty_node, tag: "details", attrs: Dom.attributes([("open", "")]) }] }
 	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, startup: Annotated, limits: { max_bytes: 8192, max_nodes: 32, max_depth: 8 } }) ?? crash "annotated gates"
 	attrs = picture.physical.keep_oks(
 		|item| match item {
@@ -3695,7 +3698,7 @@ expect {
 			_ => Err({})
 		},
 	)
-	attrs == [Err(NotFound), Err(NotFound), Ok(""), Ok("authored")]
+	attrs == [Err(NotFound), Err(NotFound), Ok(""), Ok("authored"), Ok("")]
 }
 
 ## Inherited ownership is carried by the renderer walk and ends at siblings;
@@ -3765,6 +3768,19 @@ expect {
 	props = { root: 0, scope: Contents, startup: Annotated, limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }
 	refused = match Dom.render(dom, props) {
 		Err(InvalidModel({ rule, .. })) => rule.contains("declarative shadow roots")
+		_ => False
+	}
+	refused and Dom.render(dom, { ..props, startup: Plain }).is_ok()
+}
+
+## Native named details groups can remove authored open attributes while
+## parsing, even under inert. Only ordinary details receive a temporary gate.
+expect {
+	dom = { ..Dom.new({}), nodes: [{ ..Dom.empty_node, tag: "div", kids: [1] }, { ..Dom.empty_node, tag: "details", attrs: Dom.attributes([("name", "accordion"), ("open", "")]) }] }
+	props : Dom.RenderProps
+	props = { root: 0, scope: Contents, startup: Annotated, limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }
+	refused = match Dom.render(dom, props) {
+		Err(InvalidModel({ rule, .. })) => rule.contains("named details native group mutation")
 		_ => False
 	}
 	refused and Dom.render(dom, { ..props, startup: Plain }).is_ok()
