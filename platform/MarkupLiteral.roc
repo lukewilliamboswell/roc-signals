@@ -112,19 +112,12 @@ MarkupLiteral := [].{
 	## Capture each homogeneous part once. The compiler supplies exact arity;
 	## manual calls have the same named contract boundary as signal assemblers.
 	bind : Plan, Iter(Engine.Signal(ctx, Str)) -> List(Engine.Signal(ctx, Str))
-	bind = |Plan.(plan), parts| {
-		var $bound = []
-		for part in parts {
-			if $bound.len() == plan.parts {
-				crash "contract: markup interpolation has more parts than its fixed segments"
-			}
-			$bound = $bound.append(part)
-		}
-		if $bound.len() != plan.parts {
-			crash "contract: markup interpolation has fewer parts than its fixed segments"
-		}
-		$bound
-	}
+	bind = |plan, parts| bind_parts(plan, parts)
+
+	## A static placeholder retains text bindings, without a signal reader or
+	## live context. Its arity follows the same checked plan as ordinary markup.
+	bind_static : Plan, Iter(Str) -> List(Str)
+	bind_static = |plan, parts| bind_parts(plan, parts)
 
 	## Build ordinary engine elements. Parts retain their read signatures and
 	## constant mark; no parser, source text or special reactive site is retained.
@@ -135,6 +128,23 @@ MarkupLiteral := [].{
 			Core.require_parent(element, [Svg])
 		} else element
 	}
+}
+
+## One arity boundary for every homogeneous kind of checked markup binding.
+## The returned list owns each part; no iterator or live environment is kept.
+bind_parts : MarkupLiteral.Plan, Iter(part) -> List(part)
+bind_parts = |MarkupLiteral.Plan.(plan), parts| {
+	var $bound = []
+	for part in parts {
+		if $bound.len() == plan.parts {
+			crash "contract: markup interpolation has more parts than its fixed segments"
+		}
+		$bound = $bound.append(part)
+	}
+	if $bound.len() != plan.parts {
+		crash "contract: markup interpolation has fewer parts than its fixed segments"
+	}
+	$bound
 }
 
 Attribute : { name : Web.AttrName, value : [Fixed(Str), Part(U64)] }
@@ -389,4 +399,30 @@ expect {
 	roots = ["<tr><td>x</td></tr>", "<td>x</td>", "<th>x</th>", "<tbody><tr><td>x</td></tr></tbody>", "<thead><tr><th>x</th></tr></thead>", "<caption>x</caption>", "<colgroup><col></colgroup>", "<col>"]
 	repaired = ["<tr><div>x</div></tr>", "<td>x</td><tr><td>y</td></tr>", "<p><div>x</div></p>"]
 	roots.all(|source| MarkupLiteral.compile([source], HtmlFragment).is_ok()) and repaired.all(|source| MarkupLiteral.compile([source], HtmlFragment).is_err())
+}
+
+## The parser must keep a sole text hole inside every authored parent. The
+## reference is written with constructors, independently of the parsed tree:
+## comparing two consumers of the parser would accept the same ancestry bug.
+expect {
+	plan = MarkupLiteral.compile(["<section><div><p>", "</p></div><aside>fixed</aside></section>"], HtmlFragment)?
+	literal = MarkupLiteral.render(plan, [Engine.const("live")])
+	ordinary = Engine.element("section", [], [Engine.element("div", [], [Engine.element("p", [], [Engine.text_s(Engine.const("live"))])]), Engine.element("aside", [], [Engine.text("fixed")])])
+	Core.take_cmds(Core.mount(literal), []).1 == Core.take_cmds(Core.mount(ordinary), []).1
+}
+
+## Template content has its own container; a sole text binding remains the
+## span's child inside that content, rather than a sibling of the template.
+expect {
+	plan = MarkupLiteral.compile(["<template><div><span>", "</span></div></template>"], HtmlFragment)?
+	literal = MarkupLiteral.render(plan, [Engine.const("inert")])
+	ordinary = Core.template_content(Engine.element("template", [], [Engine.element("div", [], [Engine.element("span", [], [Engine.text_s(Engine.const("inert"))])])]))
+	Core.take_cmds(Core.mount(literal), []).1 == Core.take_cmds(Core.mount(ordinary), []).1
+}
+
+## Static placeholder text is retained exactly; escaping belongs to ordinary
+## element lowering and rendering, not to the binding's ownership boundary.
+expect {
+	plan = MarkupLiteral.compile(["<p>", "</p>"], HtmlFragment)?
+	MarkupLiteral.bind_static(plan, ["<>&"].iter()) == ["<>&"]
 }
