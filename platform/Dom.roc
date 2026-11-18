@@ -1,4 +1,5 @@
 import Spelling
+import Base64
 import parser.MarkupFacts
 import Protocol
 import parser.Html as MarkupHtml
@@ -32,7 +33,7 @@ Dom := [].{
 
 	## Diagnostics inspect one subtree; a picture serializes its actual mount
 	## element's contents and validates them in that element's parse context.
-	RenderProps := { root : U64, scope : [Subtree, Contents, MountEnvelope] ?? Subtree, mode : [Diagnostic, Picture] ?? Diagnostic, limits : RenderLimits, scripting : Bool ?? True, enclosing : [Unspecified, Document, Element(ExpandedName)] ?? Unspecified }
+	RenderProps := { root : U64, scope : [Subtree, Contents, MountEnvelope] ?? Subtree, mode : [Diagnostic, Picture] ?? Diagnostic, startup : [Plain, Annotated] ?? Plain, limits : RenderLimits, scripting : Bool ?? True, enclosing : [Unspecified, Document, Element(ExpandedName)] ?? Unspecified }
 
 	## Physical ordinals name positions in one rendered picture only. They are
 	## never engine addresses, application keys or identities across mounts.
@@ -65,7 +66,7 @@ Dom := [].{
 	## The one walk supplies markup and canonical facts together. Diagnostic
 	## output is not a parse-back certification; picture mode returns only after
 	## the parser independently agrees with the declared physical projection.
-	Rendered : { markup : Str, root_name : [ElementRoot(ExpandedName), NonElementRoot], physical : List(PictureNode), containers : List(PictureContainer), logical : List(LogicalNode), text_runs : List(TextRun), scaffolds : List(Scaffold) }
+	Rendered : { markup : Str, root_annotations : List((ExpandedName, Str)), root_name : [ElementRoot(ExpandedName), NonElementRoot], physical : List(PictureNode), containers : List(PictureContainer), logical : List(LogicalNode), text_runs : List(TextRun), scaffolds : List(Scaffold) }
 
 	## Rendering refuses an exceeded caller limit, an incoherent model, or a
 	## picture the independent parser cannot reproduce. Each failure identifies
@@ -2434,7 +2435,7 @@ RenderSelection : [Uncontrolled, Controlled({ owner : U64, value : Str, multiple
 
 RenderToken : [Open(U64), Close(U64), Text({ node : U64, mode : MarkupFacts.TextBehavior, initial_lf : Bool }), Comment(U64), EnvelopeOpen({ name : Dom.ExpandedName, attributes : List((Dom.ExpandedName, Str)) }), EnvelopeClose(Dom.ExpandedName)]
 
-RenderState : { tokens : List(RenderToken), minimum_bytes : U64, physical : List(Dom.PictureNode), containers : List(Dom.PictureContainer), logical : List(Dom.LogicalNode), text_runs : List(Dom.TextRun), scaffolds : List(Dom.Scaffold), seen : Dict(U64, {}), selection : RenderSelection, props : Dom.RenderProps }
+RenderState : { tokens : List(RenderToken), minimum_bytes : U64, physical : List(Dom.PictureNode), containers : List(Dom.PictureContainer), logical : List(Dom.LogicalNode), text_runs : List(Dom.TextRun), scaffolds : List(Dom.Scaffold), seen : Dict(U64, {}), selection : RenderSelection, startup_owned : Bool, startup_gates : Dict(U64, {}), props : Dom.RenderProps }
 
 ## The plan's lower byte bound rejects oversized text before joining a run or
 ## scanning it for UTF-16 boundaries. Final escaping is bounded separately.
@@ -2584,9 +2585,12 @@ render_model = |dom, props| {
 	if props.mode == Picture and props.scope == MountEnvelope and props.enclosing == Unspecified {
 		return Err(InvalidModel({ model: props.root, rule: "a mount envelope requires its actual enclosing parse context" }))
 	}
-	initial = { tokens: [], minimum_bytes: 0, physical: [], containers: [], logical: [], text_runs: [], scaffolds: [], seen: Dict.empty(), selection: Uncontrolled, props }
+	initial = { tokens: [], minimum_bytes: 0, physical: [], containers: [], logical: [], text_runs: [], scaffolds: [], seen: Dict.empty(), selection: Uncontrolled, startup_owned: False, startup_gates: Dict.empty(), props }
 	allocated = render_container(initial, { owner: Mount, role: Children })?
 	var $state = allocated.state
+	if props.startup == Annotated {
+		$state = startup_gate($state, { model: props.root, node: root })?
+	}
 	if props.scope == Subtree {
 		models = if (root.kind == 4) root.kids else [props.root]
 		$state = render_children(dom, { state: $state, models, container: allocated.ordinal, depth: 0, mode: Data, initial_lf: False })?
@@ -2606,15 +2610,21 @@ render_model = |dom, props| {
 			$state = { ..$state, tokens: $state.tokens.append(EnvelopeClose(name)) }
 		}
 	}
+	annotations = if props.startup == Annotated {
+		render_annotations(dom, $state)?
+	} else {
+		{ state: $state, root: [] }
+	}
+	$state = annotations.state
 	markup = render_emit($state).map_err(
 		|error| match error {
 			RenderLimit({ resource: Bytes, .. }) => RenderLimit({ resource: Bytes, maximum: props.limits.max_bytes })
 			other => other
 		},
 	)?
-	rendered = { markup, root_name, physical: $state.physical, containers: $state.containers, logical: $state.logical, text_runs: $state.text_runs, scaffolds: $state.scaffolds }
+	rendered = { markup, root_annotations: annotations.root, root_name, physical: $state.physical, containers: $state.containers, logical: $state.logical, text_runs: $state.text_runs, scaffolds: $state.scaffolds }
 	if props.mode == Picture {
-		render_parse_back(rendered, { props, root_attributes: root.attrs })?
+		render_parse_back(rendered, { props, root_attributes: root.attrs.concat(annotations.root) })?
 	}
 	Ok(rendered)
 }
@@ -2687,14 +2697,15 @@ render_element = |dom, { state, model, node, depth }| {
 	if Dom.is_opaque(node) {
 		return Err(InvalidModel({ model, rule: "unsafe HTML is opaque; a prerendered picture cannot contain Html.unsafe_html, even with empty contents" }))
 	}
-	props = state.props
+	checked = if (state.props.startup == Annotated) startup_gate(state, { model, node })? else state
+	props = checked.props
 	deferred_selected = node.namespace == Dom.html_namespace and node.tag == "option" and match state.selection {
 		Uncontrolled => False
 		Controlled(selection) => selection.eligible
 	}
 	name = render_name(node)
 	behavior = render_behavior(name, props.scripting)
-	var $reserved = render_reserve(state, 2 + Dom.written_name(name).count_utf8_bytes() + if (behavior.is_void) 0 else 3 + Dom.written_name(name).count_utf8_bytes())?
+	var $reserved = render_reserve(checked, 2 + Dom.written_name(name).count_utf8_bytes() + if (behavior.is_void) 0 else 3 + Dom.written_name(name).count_utf8_bytes())?
 	for (key, value) in node.attrs {
 		if !(deferred_selected and key.namespace.is_empty() and key.local == "selected") {
 			$reserved = render_reserve($reserved, Dom.written_name(key).count_utf8_bytes() + 4)?
@@ -2800,7 +2811,7 @@ render_element = |dom, { state, model, node, depth }| {
 	if !behavior.is_void {
 		$state = { ..$state, tokens: $state.tokens.append(Close(ordinal)) }
 	}
-	Ok({ state: $state, ordinal })
+	Ok({ state: { ..$state, startup_owned: state.startup_owned }, ordinal })
 }
 
 render_scaffold : RenderState, Dom.Scaffold -> Try(RenderState, Dom.RenderError)
@@ -3350,4 +3361,283 @@ expect {
 	Dom.is_opaque(Dom.node(empty_html, index)) and Dom.node(empty_html, index).kids.is_empty() and
 		Dom.node(with_html, index).props == [("inner_html", "<b>opaque</b>")] and
 			Dom.render(empty_html, { root: index, mode: Picture, limits: { max_bytes: 1024, max_nodes: 10, max_depth: 10 } }).is_err()
+}
+
+## Cold annotations describe the renderer's logical projection, not identity.
+## All joins are indexed once: no element scans the frame's scaffold list.
+StartupIndex : { ordinals : Dict(U64, U64), scaffolds : Dict(U64, List(Dom.Scaffold)), gates : Dict(U64, {}), bindings : U64 }
+
+startup_u32 : List(U8), U64 -> List(U8)
+startup_u32 = |bytes, value| bytes.append(value.to_u8_wrap()).append(value.shr_zf_wrap(8).to_u8_wrap()).append(value.shr_zf_wrap(16).to_u8_wrap()).append(value.shr_zf_wrap(24).to_u8_wrap())
+
+startup_str : List(U8), Str -> List(U8)
+startup_str = |bytes, text| {
+	framed = startup_u32(bytes, text.count_utf8_bytes())
+	if (text.is_empty()) framed else framed.concat(text.to_utf8())
+}
+
+startup_presence : List(U8), [Absent, Present(Str)] -> List(U8)
+startup_presence = |bytes, presence| match presence {
+	Absent => bytes.append(0)
+	Present(text) => startup_str(bytes.append(1), text)
+}
+
+startup_node : Dom.Model, StartupIndex, U64, List(U8) -> List(U8)
+startup_node = |dom, index, model, bytes| {
+	node = Dom.node(dom, model)
+	ordinal = index.ordinals.get(model) ?? crash "Dom.startup: missing logical ordinal"
+	var $out = startup_u32(startup_u32(bytes, ordinal), node.ids.len())
+	for id in node.ids {
+		$out = startup_u32($out, id.to_u64())
+	}
+	$out = startup_u32($out, node.ht.len())
+	for target in node.ht {
+		$out = startup_u32($out, index.ordinals.get(target) ?? crash "Dom.startup: missing row-hole ordinal")
+	}
+	$out
+}
+
+startup_children : Dom.Model, StartupIndex, List(U64), List(U8) -> List(U8)
+startup_children = |dom, index, models, bytes| {
+	var $out = startup_u32(bytes, models.len())
+	for model in models {
+		node = Dom.node(dom, model)
+		$out = $out.append(node.kind)
+		if node.kind == 1 {
+			$out = startup_u32($out, index.ordinals.get(model) ?? crash "Dom.startup: child ordinal")
+		} else {
+			$out = startup_str(startup_node(dom, index, model, $out), node.text)
+		}
+	}
+	$out
+}
+
+## Own/inherited handlers gate their subtree; native controls, forms and
+## editable surfaces are always gates. Label gates are conservative, so a
+## declared association never remains active beside a gated target.
+startup_gate : RenderState, { model : U64, node : Dom.DNode } -> Try(RenderState, Dom.RenderError)
+startup_gate = |state, { model, node }| {
+	owned = state.startup_owned or !node.hs.is_empty() or !node.props.is_empty()
+	if node.tag.contains("-") or Dom.has_attr(node, "is") or (node.tag == "script" and [Dom.html_namespace, Dom.svg_namespace].contains(node.namespace)) {
+		return Err(InvalidModel({ model, rule: "annotated startup refuses executable or custom-element markup; defer construction or use plain mounting" }))
+	}
+	for (name, _) in node.attrs {
+		if name.namespace.is_empty() and (Spelling.ascii_lower(name.local).starts_with("on") or ["data-roc-frame", "data-roc-node", "data-roc-children"].contains(name.local)) {
+			return Err(InvalidModel({ model, rule: "annotated startup refuses inline handlers and reserved annotation attributes" }))
+		}
+	}
+	native_control = node.namespace == Dom.html_namespace and ["form", "input", "button", "select", "textarea", "option", "label", "fieldset", "output"].contains(node.tag)
+	editable = node.namespace == Dom.html_namespace and Dom.has_attr(node, "contenteditable") and Spelling.ascii_lower(Dom.attr_of(node, "contenteditable")) != "false"
+	gates = if (owned or native_control or editable) state.startup_gates.insert(model, {}) else state.startup_gates
+	Ok({ ..state, startup_owned: owned, startup_gates: gates })
+}
+
+startup_attributes : Dom.Model, StartupIndex, { model : U64, physical : [Mount, Element(U64)], state : RenderState } -> Try(List((Dom.ExpandedName, Str)), Dom.RenderError)
+startup_attributes = |dom, index, { model, physical, state }| {
+	node = Dom.node(dom, model)
+	added_inert = index.gates.contains(model) and !Dom.has_attr(node, "inert")
+	scaffolds = match physical {
+		Mount => []
+		Element(owner) => index.scaffolds.get(owner) ?? []
+	}
+	control = scaffolds.find_first(
+		|item| match item {
+			ControlText(_) => True
+			_ => False
+		},
+	)
+	flags = (if (added_inert) 1.U8 else 0) + (if (control.is_ok()) 2 else 0)
+	var $children = startup_children(dom, index, node.kids, [1, flags])
+	match node.content {
+		None => {
+			$children = $children.append(0)
+		}
+		Some(fragment) => {
+			$children = startup_children(dom, index, Dom.node(dom, fragment).kids, $children.append(1))
+		}
+	}
+	match control {
+		Ok(ControlText({ physical_text, .. })) => {
+			text = match physical_text {
+				Omitted => ""
+				Node(at) => match state.physical.get(at) ?? crash "Dom.startup: control text" {
+					Text(value) => value
+					_ => crash "Dom.startup: control scaffold kind"
+				}
+			}
+			$children = startup_str($children, text)
+		}
+		_ => {}
+	}
+	overrides = scaffolds.keep_if(
+		|item| match item {
+			AttributeOverride(_) => True
+			_ => False
+		},
+	)
+	$children = startup_u32($children, overrides.len())
+	for item in overrides {
+		match item {
+			AttributeOverride(value) => {
+				$children = startup_str(startup_str(startup_str($children, value.name.namespace), value.name.prefix), value.name.local)
+				$children = startup_presence(startup_presence($children, value.logical), value.physical)
+			}
+			_ => {}
+		}
+	}
+	options = scaffolds.keep_if(
+		|item| match item {
+			NoSelectionOption(_) => True
+			_ => False
+		},
+	)
+	$children = startup_u32($children, options.len())
+	for item in options {
+		match item {
+			NoSelectionOption(value) => {
+				# The renderer appends this sole scaffold after ordinary children.
+				# Its explicit physical ordinal is converted using the owner's
+				# container, whose children are already final from the same walk.
+				owner = match state.physical.get(value.owner) ?? crash "Dom.startup: option owner" {
+					Element(element) => element
+					_ => crash "Dom.startup: option owner kind"
+				}
+				container = state.containers.get(owner.children) ?? crash "Dom.startup: option container"
+				$children = startup_u32($children, container.children.len() - 1)
+			}
+			_ => {}
+		}
+	}
+	name = |local| { namespace: "", prefix: "", local }
+	var $attrs = [(name("data-roc-node"), Base64.encode(startup_node(dom, index, model, [1]))), (name("data-roc-children"), Base64.encode($children))]
+	if added_inert {
+		$attrs = $attrs.append((name("inert"), ""))
+	}
+	Ok($attrs)
+}
+
+render_annotations : Dom.Model, RenderState -> Try({ state : RenderState, root : List((Dom.ExpandedName, Str)) }, Dom.RenderError)
+render_annotations = |dom, state| {
+	if state.props.scope == Subtree {
+		return Err(InvalidModel({ model: state.props.root, rule: "annotated startup requires mount contents or a mount envelope" }))
+	}
+	var $ordinals = Dict.empty().insert(state.props.root, 0)
+	var $physical_models = Dict.empty()
+	var $bindings = 1.U64 + Dom.node(dom, state.props.root).ids.len()
+	var $position = 0.U64
+	for logical in state.logical {
+		position = $position
+		$position = $position + 1
+		$ordinals = $ordinals.insert(logical.model, position + 1)
+		$bindings = $bindings + 1 + Dom.node(dom, logical.model).ids.len()
+		match logical.target {
+			Node(physical) => {
+				$physical_models = $physical_models.insert(physical, logical.model)
+			}
+			_ => {}
+		}
+	}
+	if $bindings > 262144 {
+		return Err(RenderLimit({ resource: Nodes, maximum: 262144 }))
+	}
+	var $scaffolds = Dict.empty()
+	for scaffold in state.scaffolds {
+		owner = match scaffold {
+			ControlText(value) => value.owner
+			AttributeOverride(value) => value.owner
+			NoSelectionOption(value) => value.owner
+		}
+		$scaffolds = $scaffolds.insert(owner, ($scaffolds.get(owner) ?? []).append(scaffold))
+	}
+	index = { ordinals: $ordinals, scaffolds: $scaffolds, gates: state.startup_gates, bindings: $bindings }
+	root = startup_attributes(dom, index, { model: state.props.root, physical: Mount, state })?
+	var $state = state
+	var $annotation_bytes = 0.U64
+	for (_, value) in root {
+		$annotation_bytes = $annotation_bytes + value.count_utf8_bytes()
+	}
+	if $annotation_bytes > 8388608 {
+		return Err(RenderLimit({ resource: Bytes, maximum: 8388608 }))
+	}
+	var $physical_at = 0.U64
+	while $physical_at < $state.physical.len() {
+		position = $physical_at
+		$physical_at = $physical_at + 1
+		physical = $state.physical.get(position) ?? crash "Dom.startup: physical position"
+		match physical {
+			Element(element) => match $physical_models.get(position) {
+				Err(_) => {}
+				Ok(model) => {
+					attrs = startup_attributes(dom, index, { model, physical: Element(position), state: $state })?
+					for (_, value) in attrs {
+						$annotation_bytes = $annotation_bytes + value.count_utf8_bytes()
+					}
+					if $annotation_bytes > 8388608 {
+						return Err(RenderLimit({ resource: Bytes, maximum: 8388608 }))
+					}
+					$state = { ..$state, physical: $state.physical.set(position, Element({ ..element, attributes: element.attributes.concat(attrs) })) ?? crash "Dom.startup: annotation owner" }
+				}
+			}
+			_ => {}
+		}
+	}
+	var $tokens = []
+	for token in $state.tokens {
+		$tokens = $tokens.append(
+			match token {
+				EnvelopeOpen(value) => EnvelopeOpen({ ..value, attributes: value.attributes.concat(root) })
+				other => other
+			},
+		)
+	}
+	Ok({ state: { ..$state, tokens: $tokens }, root })
+}
+
+## Frame ordinals include omitted text and stay separate from arbitrary alias
+## numbers. Row holes bind directly even after nested content shifts a path.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	row = { ..Dom.empty_node, tag: "p", kids: [2, 3, 4], ids: [700], ht: [4] }
+	empty = { ..Dom.empty_node, kind: 2, ids: [900] }
+	text = { ..Dom.empty_node, kind: 2, text: "𝄞<&" }
+	anchor = { ..Dom.empty_node, kind: 3, ids: [800], text: "authored" }
+	dom = { ..Dom.new({}), nodes: [root, row, empty, text, anchor] }
+	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, startup: Annotated, limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }) ?? crash "annotated row"
+	element = match picture.physical.first() ?? crash "annotated element" {
+		Element(value) => value
+		_ => crash "annotated element kind"
+	}
+	node_annotation = element.attributes.find_first(|(name, _)| name.local == "data-roc-node").map_ok(|(_, value)| value) ?? crash "node annotation"
+	Base64.decode(node_annotation) == Ok([1, 1, 0, 0, 0, 1, 0, 0, 0, 188, 2, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0]) and picture.root_annotations.len() == 2 and picture.text_runs.first().map_ok(|run| run.parts.map(|part| part.utf16_units)) == Ok([0, 4])
+}
+
+## Producer gates preserve authored inert text and leave independent media and
+## links available. Native forms/labels gate even without their own listener.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1, 2, 3, 4] }
+	dom = { ..Dom.new({}), nodes: [root, { ..Dom.empty_node, tag: "video" }, { ..Dom.empty_node, tag: "a" }, { ..Dom.empty_node, tag: "label" }, { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("inert", "authored")]) }] }
+	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, startup: Annotated, limits: { max_bytes: 8192, max_nodes: 32, max_depth: 8 } }) ?? crash "annotated gates"
+	attrs = picture.physical.keep_oks(
+		|item| match item {
+			Element(element) => Ok(element.attributes.find_first(|(name, _)| name.local == "inert").map_ok(|(_, value)| value))
+			_ => Err({})
+		},
+	)
+	attrs == [Err(NotFound), Err(NotFound), Ok(""), Ok("authored")]
+}
+
+## Inherited ownership is carried by the renderer walk and ends at siblings;
+## a handler never makes a separate native media sibling inert.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1, 3] }
+	owner = { ..Dom.empty_node, tag: "section", kids: [2], props: [("pointer_zone", "managed")] }
+	dom = { ..Dom.new({}), nodes: [root, owner, { ..Dom.empty_node, tag: "video" }, { ..Dom.empty_node, tag: "video" }] }
+	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, startup: Annotated, limits: { max_bytes: 8192, max_nodes: 32, max_depth: 8 } })?
+	gated = picture.physical.keep_oks(
+		|item| match item {
+			Element(element) => Ok(element.attributes.any(|(name, _)| name.local == "inert"))
+			_ => Err({})
+		},
+	)
+	gated == [True, True, False]
 }
