@@ -6,10 +6,11 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { launch } from './cdp.mjs';
 import { parseArgs, runtimeFiles } from './args.mjs';
 import { protocolFixtureSection } from './protocol-fixture.mjs';
-const options = parseArgs(process.argv.slice(2), [], ['runtime']);
+const options = parseArgs(process.argv.slice(2), ['playwright', 'browser'], ['runtime']);
 const files = runtimeFiles(options.runtime);
 files['startup.mjs'] = path.join(path.dirname(options.runtime), 'startup.mjs');
 const server = http.createServer((request, response) => {
@@ -22,7 +23,10 @@ const server = http.createServer((request, response) => {
   response.end(file ? fs.readFileSync(file) : '<!doctype html><body></body>');
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const browser = await launch({ executablePath: options.chrome });
+const automation = options.playwright ? await import(pathToFileURL(path.resolve(options.playwright)).href) : null;
+const engine = automation?.[options.browser ?? 'chromium'];
+if (automation && !engine?.launch) throw new Error(`unknown browser ${options.browser}`);
+const browser = engine ? await engine.launch({ headless: true }) : await launch({ executablePath: options.chrome });
 try {
   const page = await browser.newPage(); await page.goto(`http://127.0.0.1:${server.address().port}/`);
   const checks = await page.evaluate(async protocolSection => {
@@ -57,6 +61,43 @@ try {
       check('cold transport facts are released', frame.ordinals.size === 0 && frame.aliases.size === 0 && frame.selection === null);
       f.root.remove();
     }
+    const getSelection = document.getSelection;
+    for (const [name, hidden, backward, refuses] of [
+      ['collapse and extend preserve backward direction without setBaseAndExtent', ['setBaseAndExtent'], true, false],
+      ['forward selection needs no directional setter', ['setBaseAndExtent', 'collapse', 'extend'], false, false],
+      ['unrestorable backward direction refuses before mutation', ['setBaseAndExtent', 'collapse', 'extend'], true, true],
+    ]) {
+      const f = fixture(), selection = getSelection.call(document), original = f.p.firstChild;
+      selection.setBaseAndExtent(original, backward ? 5 : 1, original, backward ? 1 : 5);
+      const exposed = new Proxy(selection, { get(target, key) { if (hidden.includes(key)) return undefined; const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value; } });
+      let refused = false;
+      try {
+        document.getSelection = () => exposed;
+        const frame = new StartupFrame(f.root, 'build'); frame.normalize();
+        for (const [id, kind] of [[1, 1], [2, 2], [3, 2], [4, 2], [5, 1]]) frame.bind(id, kind);
+        frame.finish();
+      } catch (error) { refused = error.message.includes('unsupported selection direction'); }
+      finally { document.getSelection = getSelection; }
+      check(name, refuses ? refused && f.p.firstChild === original && f.p.childNodes.length === 1 : !refused && selection.toString() === 'bcde' && (backward ? selection.anchorOffset === 3 && selection.focusOffset === 1 : selection.anchorOffset === 1 && selection.focusOffset === 3));
+      f.root.remove();
+    }
+    const multiple = fixture(), multipleSelection = getSelection.call(document), multipleText = multiple.p.firstChild;
+    const early = document.createRange(), late = document.createRange(); early.setStart(multipleText, 0); early.setEnd(multipleText, 1); late.setStart(multipleText, 4); late.setEnd(multipleText, 5);
+    multipleSelection.removeAllRanges(); multipleSelection.addRange(late); multipleSelection.addRange(early);
+    if (multipleSelection.rangeCount === 2) {
+      const frame = new StartupFrame(multiple.root, 'build'); frame.normalize();
+      for (const [id, kind] of [[1, 1], [2, 2], [3, 2], [4, 2], [5, 1]]) frame.bind(id, kind); frame.finish();
+      check('multiple native ranges retain their forward primary endpoints', multipleSelection.rangeCount === 2 && multipleSelection.toString() === 'ae' && multipleSelection.anchorNode === multiple.p.firstChild && multipleSelection.anchorOffset === 0 && multipleSelection.focusNode === multiple.p.firstChild && multipleSelection.focusOffset === 1);
+    }
+    multiple.root.remove();
+    const backwardMultiple = fixture(), backwardText = backwardMultiple.p.firstChild; let backwardMultipleRefused = false;
+    try {
+      document.getSelection = () => ({ rangeCount: 2, anchorNode: backwardText, anchorOffset: 5, focusNode: backwardText, focusOffset: 4, getRangeAt(index) { return { startContainer: backwardText, startOffset: index ? 4 : 0, endContainer: backwardText, endOffset: index ? 5 : 1 }; } });
+      new StartupFrame(backwardMultiple.root, 'build');
+    } catch (error) { backwardMultipleRefused = error.message.includes('unsupported multi-range selection direction'); }
+    finally { document.getSelection = getSelection; }
+    check('unrestorable multi-range direction refuses before mutation', backwardMultipleRefused && backwardMultiple.p.firstChild === backwardText && backwardMultiple.p.childNodes.length === 1);
+    backwardMultiple.root.remove();
     const boundary = fixture(), containerSelection = document.getSelection();
     containerSelection.setBaseAndExtent(boundary.p, 0, boundary.p, 1);
     const boundaryFrame = new StartupFrame(boundary.root, 'build'); boundaryFrame.normalize();
@@ -73,6 +114,8 @@ try {
       ['unknown annotation version', f => f.p.setAttribute('data-roc-node', encode([2, ...facts(1, [1])]))],
       ['noncanonical Base64 padding', f => f.p.setAttribute('data-roc-node', f.p.getAttribute('data-roc-node').replace(/=$/, ''))],
       ['duplicate engine address', f => node(f.video, 5, [1], [])],
+      ['mount address on a non-root element', f => node(f.video, 5, [0], [])],
+      ['mount address on logical text', f => node(f.p, 1, [1], [[2, ...facts(2, [0]), ...text('abcdef')]])],
       ['duplicate logical ordinal', f => node(f.video, 1, [5], [])],
       ['missing declared physical child', f => f.video.remove()],
       ['unexpected physical child', f => f.root.append(document.createTextNode('foreign'))],

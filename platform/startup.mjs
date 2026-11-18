@@ -39,6 +39,7 @@ function facts(reader, budget, kind) {
   budget.bindings += 1 + aliases.length;
   assert(budget.bindings <= STARTUP_LIMITS.nodes, 'logical binding resource limit');
   assert(aliases.every(id => id !== 0xffffffff), 'reserved effect address');
+  assert(aliases.every(id => id !== 0 || kind === 1 && ordinal === 0), 'reserved mount address');
   return { ordinal, aliases, holes, kind, node: null };
 }
 function children(reader, budget) {
@@ -219,7 +220,16 @@ function captureSelection(document) {
   assert(selection.rangeCount <= STARTUP_LIMITS.ranges, 'selection range resource limit');
   const ranges = [];
   for (let at = 0; at < selection.rangeCount; at++) { const range = selection.getRangeAt(at); ranges.push({ start: [range.startContainer, range.startOffset], end: [range.endContainer, range.endOffset] }); }
-  return { selection, document, ranges, anchor: [selection.anchorNode, selection.anchorOffset], focus: [selection.focusNode, selection.focusOffset] };
+  const anchor = [selection.anchorNode, selection.anchorOffset], focus = [selection.focusNode, selection.focusOffset];
+  const same = (left, right) => left[0] === right[0] && left[1] === right[1];
+  const primary = ranges.findIndex(range => same(anchor, range.start) && same(focus, range.end));
+  // Range insertion can restore a forward primary range by inserting it last.
+  // Direction setters clear every other range, so a backward multi-range
+  // selection cannot be faithfully rebuilt with the standard Selection API.
+  assert(ranges.length <= 1 || primary !== -1, 'unsupported multi-range selection direction');
+  const directional = typeof selection.setBaseAndExtent === 'function' ? 'base' : typeof selection.collapse === 'function' && typeof selection.extend === 'function' ? 'extend' : null;
+  assert(ranges.length !== 1 || primary !== -1 || directional !== null, 'unsupported selection direction');
+  return { selection, document, ranges, anchor, focus, primary, directional };
 }
 function restoreSelection(saved, maps) {
   if (!saved) return;
@@ -231,6 +241,10 @@ function restoreSelection(saved, maps) {
   };
   const { selection, document, ranges } = saved;
   selection.removeAllRanges();
-  for (const bounds of ranges) { const range = document.createRange(); range.setStart(...endpoint(bounds.start)); range.setEnd(...endpoint(bounds.end)); selection.addRange(range); }
-  if (ranges.length === 1 && selection.setBaseAndExtent && saved.anchor[0]) selection.setBaseAndExtent(...endpoint(saved.anchor), ...endpoint(saved.focus));
+  const ordered = ranges.length > 1 ? [...ranges.filter((_, index) => index !== saved.primary), ranges[saved.primary]] : ranges;
+  for (const bounds of ordered) { const range = document.createRange(); range.setStart(...endpoint(bounds.start)); range.setEnd(...endpoint(bounds.end)); selection.addRange(range); }
+  if (ranges.length === 1 && saved.anchor[0]) {
+    if (saved.directional === 'base') selection.setBaseAndExtent(...endpoint(saved.anchor), ...endpoint(saved.focus));
+    else if (saved.directional === 'extend') { selection.collapse(...endpoint(saved.anchor)); selection.extend(...endpoint(saved.focus)); }
+  }
 }
