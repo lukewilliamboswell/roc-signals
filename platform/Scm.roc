@@ -1115,6 +1115,29 @@ Scm := [].{
 		Ok({})
 	}
 
+	## Check a parsed suite's negative names against positive evidence anywhere
+	## in that suite. This does not run stories together or change their setup:
+	## it rejects assertions about names no story has ever required or observed.
+	suite_problems : List(Spec) -> List({ spec_index : U64, problem : Problem })
+	suite_problems = |specs| {
+		anchors = specs.fold([], |all, spec| spec.steps.fold(all, |found, step| found.concat(Scm.evidence(step.op).shows)))
+		var $problems = []
+		for (spec, index) in specs.map_with_index(|spec, index| (spec, index)) {
+			for step in spec.steps {
+				for need in Scm.evidence(step.op).needs {
+					match need {
+						Story(subject) if !anchors.contains(subject) => {
+							facts = Scm.story_facts(subject)
+							$problems = $problems.append({ spec_index: index, problem: { pos: step.pos, message: "${Scm.op_name(step.op)} ${facts.name}: no spec in this app's suite ${facts.shows} ${facts.description} with this name; correct the name or remove this vacuous negative assertion" } })
+						}
+						_ => {}
+					}
+				}
+			}
+		}
+		$problems
+	}
+
 	## One family's marker and actionable diagnostic accompany its typed
 	## subject. Storage obligations are resolved against program facts instead.
 	story_facts : Subject -> { marker : Str, name : Str, description : Str, shows : Str, remedy : Str }
@@ -3983,6 +4006,29 @@ expect {
 							Scm.parse("(test \"never\" (steps ${story.marked}))").is_ok() and
 								Scm.parse("(test \"redundant\" (steps ${story.marked} ${story.positive}))").is_err(),
 	)
+}
+
+## Suite markers need positive evidence in another independent story, regardless
+## of file order. Typos cannot establish their own evidence or move a diagnostic.
+expect {
+	families = [
+		{ negative: "(expect-absent (test-id \"drawn\") :never-drawn)", positive: "(expect-visible (test-id \"drawn\"))" },
+		{ negative: "(expect-no-attr (test-id \"a\") title :never-written)", positive: "(expect-has-attr (test-id \"b\") title)" },
+		{ negative: "(expect-cleanup \"cleanup\" 0 :never-runs)", positive: "(expect-cleanup \"cleanup\" 1)" },
+		{ negative: "(expect-interval 500 0 :never-started)", positive: "(expect-interval 500 1)" },
+	]
+	families.all(
+		|family| {
+			negative = Scm.parse("(test \"negative\"\n (steps\n  ${family.negative}))") ?? crash "negative fixture"
+			positive = Scm.parse("(test \"positive\" (steps ${family.positive}))") ?? crash "positive fixture"
+			missing = Scm.suite_problems([negative])
+			Scm.suite_problems([negative, positive]).is_empty() and Scm.suite_problems([positive, negative]).is_empty() and missing.len() == 1 and (missing.first() ?? crash "missing problem").problem.pos == { line: 3, column: 3 }
+		},
+	) and {
+		typo = Scm.parse("(test \"typo\" (steps (expect-absent (role button :name \"Delte\") :never-drawn)))")?
+		correct = Scm.parse("(test \"correct\" (steps (click (role button :name \"Delete\"))))")?
+		Scm.suite_problems([typo, correct]).len() == 1
+	}
 }
 
 ## Markers cannot cross families, hide positive counts or survive emission;

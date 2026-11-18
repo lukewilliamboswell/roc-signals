@@ -353,10 +353,10 @@ These are step errors, with no fabricated release or cancellation.
 | `(expect-attr LOC name "value")` | The attribute `name` is present with that value. On property-table elements, `value` reads the live value and `checked` reads `"true"`/`"false"`; elsewhere they read ordinary attributes. `disabled` reads `"true"`/`"false"` |
 | `(expect-has-attr LOC name)` | The attribute reading is present, including an empty string, with any value |
 | `(expect-no-attr LOC name)` | The attribute `name` is absent; another step of this spec must show the same name present, on any locator |
-| `(expect-no-attr LOC name :never-written)` | The attribute is absent in a story that never shows that name present; its spelling remains unchecked |
+| `(expect-no-attr LOC name :never-written)` | The attribute is absent in a story that never shows that name present; another spec in this app's suite must show it |
 | `(expect-visible LOC)` | The locator matches an element in the document |
 | `(expect-absent LOC)` | The locator matches nothing now. Another step of this spec must require the same locator to match, before or after this step |
-| `(expect-absent LOC :never-drawn)` | The locator matches nothing in a story that never draws it. No step of this spec may require that locator to match; its spelling remains unchecked |
+| `(expect-absent LOC :never-drawn)` | The locator matches nothing in a story that never draws it. No step of this spec may require that locator to match; another spec in this app's suite must require it |
 | `(expect-focused LOC)` | The located element is the document's active element |
 | `(expect-no-focus)` | No page element holds focus; the active element is the document body |
 
@@ -371,12 +371,20 @@ or `click`, using exactly the same locator. The anchor may occur later when
 the absence checks something not drawn yet. An anchor proves that spelling
 matches at that step; it does not prove the two steps identify the same element.
 Use `:never-drawn` for a branch the story never draws. The parser rejects that
-marker if the story already has an anchor, naming its line.
+marker if the story already has an anchor, naming its line. The suite also
+checks that some other spec requires exactly that locator. A misspelt marker
+cannot establish its own evidence; remove an absence assertion for a name
+that no story ever shows.
 
 Previously passing specs with an unanchored `expect-absent` fail to parse at
 that step in both runners and `--emit-steps`. Add an assertion where the
 existing story draws the element, or mark a branch the story never draws
 with `:never-drawn`.
+
+The suite check reads all the app's spec files even when a filter selects one
+story to execute. Stories keep independent setup and can run in any order:
+positive evidence checks spelling, without making one story depend on another
+story's execution.
 
 The parser checks names using the strongest available evidence: program
 declarations first, another step in this spec next, then an explicit marker
@@ -897,7 +905,9 @@ element or service:
   `tick-interval-if-active MS` require a positive interval count or
   `tick-interval MS` of the same period, or `:never-started`. A marker is
   rejected when the spec has that evidence. The assertions still check the
-  exact count; a conditional tick still delivers nothing when inactive.
+  exact count; a conditional tick still delivers nothing when inactive. A
+  marked subject must have that positive evidence in another spec in the
+  app's suite, even when the run selects only this story.
 
 Natively, every work step also checks that the engine's per-command
 counters agree with the commands the oracle decoded, and that every issued
@@ -967,6 +977,9 @@ hand, build the entry point for your system's target and pass the runner
 spec files:
 
 - `roc build --target=x64musl main.roc --output=build/app-specs`
+- `build/app-specs --check-suite specs/*.scm` checks every negative marker's
+  positive evidence across the full app suite without mounting. Run it before
+  selecting stories by hand; the tool and repository tasks do this for you.
 - `build/app-specs specs/*.scm` runs them and prints one JSON result line
   per spec, with the failing step's file, line and column; `--filter GLOB`
   selects by file name.

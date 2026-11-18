@@ -250,8 +250,9 @@ problems found before it.
     account for every spec it was given (see
     [Specs and contract tests](#specs-and-contract-tests)).
 12. The native lifetime contracts: file handles across pages run in fixed
-    orders in one runner process (`tests/native/file-lifetimes.mjs`), and the
-    native runner's `dbg` output (`tests/native/dbg-output.mjs`).
+    orders in one runner process (`tests/native/file-lifetimes.mjs`), the
+    native runner's `dbg` output (`tests/native/dbg-output.mjs`), and suite
+    evidence validation (`tests/native/suite-evidence.mjs`).
 13. A walk of 300 steps of every walked app in its native runner (below).
 14. The check that the browser runner handles every form of the grammar and
     nothing else, and that a file its `choose-files` gives the app is read
@@ -403,6 +404,43 @@ runs in both runners from one parser, `platform/Scm.roc`. An unknown step
 is a parse error, and both runners implement every step, with Chrome as the
 reference for what it means. The language is
 documented in [Testing](@/docs/testing.md).
+
+Before executing a selected story or emitting its browser steps, the suite
+runs `RUNNER --check-suite FILE.scm...` over every spec file for that app.
+Each `:never-drawn`, `:never-written`, `:never-runs` or `:never-started`
+subject must have positive evidence somewhere in that suite. A marker cannot
+validate its own spelling; a name no story ever shows needs no negative
+assertion. Stories still start independently, and filtering does not narrow
+the files checked for evidence. This mode mounts nothing, reports one ordinary
+result per file, and distinguishes parse failures from missing suite evidence.
+
+Chrome replay fixes its page profile before navigation: a 1280 by 900 CSS-pixel
+viewport, device scale factor 1, zero-width scrollbars and bundled IBM Plex Sans
+and Mono fonts (`tests/browser/fonts/`, with their license). The fonts load
+before the first step, including after cross-document navigation; a missing
+font fails the replay. App-authored typography still applies. Scroll steps must
+reach their exact requested offsets, and pointer `:at` steps must hit their
+declared target under this profile; the native oracle gains no layout model.
+`tests/browser/page-profile.test.mjs` starts from different device metrics and
+checks the profile across repeated navigation. Geometry outside this profile
+belongs in a browser contract with its dimensions stated explicitly.
+
+CI runs the Log Explorer, Kanban Board, table test app and scores sample in
+both runners on macOS Apple Silicon, macOS Intel and Windows through
+`tests/native/selected-specs.mjs`. Those systems also run the debug apps and
+the native debug output contract, including a worker child's stderr. The
+complete app suites run in the Linux Check jobs; these selected portability
+checks do not replace them.
+
+Protocol checks compare the consumer metadata against observations of Core's
+actual kind/policy constructors, property constructors and rows, HTTP option
+encoders, namespace encoder, template compiler and child-container checks
+(`scripts/test_protocol.roc`, with a wrong-number control for every row).
+Core imports no consumer metadata. Opcode producer checks remain independent
+wire fixtures. Lists without a Core counterpart have their own tests:
+`keys-browser.mjs` checks every OutsideText input type, and
+`boot-fault-unit.mjs` rejects every exclusion omission and fault-class row
+swap while checking host codes 1–5 before declaration metadata exists.
 
 The suite (`check`, `spec`, the docs samples) hands each runner exactly the
 spec files it selected and judges the run as a whole

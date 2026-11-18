@@ -328,7 +328,8 @@ Targets := [].{
 	native_contracts! = |o| {
 		code = Proc.status!({ program: o.node, args: ["tests/native/file-lifetimes.mjs", "--runner", SpecSuite.runner_of(o, "files")], cwd: o.root })?
 		debug_code = Proc.status!({ program: o.node, args: ["tests/native/dbg-output.mjs", "--runner", SpecSuite.runner_of(o, "dbg")], cwd: o.root })?
-		Ok((if (code == 0) [] else ["native file lifetime contracts failed (exit ${code.to_str()})"]).concat(if (debug_code == 0) [] else ["native dbg output contracts failed (exit ${debug_code.to_str()})"]))
+		suite_code = Proc.status!({ program: o.node, args: ["tests/native/suite-evidence.mjs", "--runner", SpecSuite.runner_of(o, "dbg")], cwd: o.root })?
+		Ok((if (code == 0) [] else ["native file lifetime contracts failed (exit ${code.to_str()})"]).concat(if (debug_code == 0) [] else ["native dbg output contracts failed (exit ${debug_code.to_str()})"]).concat(if (suite_code == 0) [] else ["native suite evidence contracts failed (exit ${suite_code.to_str()})"]))
 	}
 
 	## Build the deliberately crashing app only for its native query contract.
@@ -385,7 +386,8 @@ Targets := [].{
 		bits = Proc.capture!({ program: unicode_runner, args: [], cwd: o.root })?
 		Path.write_bytes!(Path.utf8(unicode_bits), bits)?
 		Ok(
-			Targets.browser!(o, "protocol-facts-browser.mjs", [])?
+			Targets.browser!(o, "page-profile.test.mjs", [])?
+				.concat(Targets.browser!(o, "protocol-facts-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "picture-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "picture-parent-browser.mjs", [])?)
 				.concat(Targets.prerender_contract!(o)?)

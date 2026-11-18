@@ -5694,12 +5694,12 @@ SpecRunner := [].{
 	## `walk` walks the app instead (`walk!`): `steps` seeded steps from
 	## `seed`, mounted as the first file's setup and answered from every
 	## file's steps.
-	Options : { filter : Str, emit_steps : Bool, grammar : Bool, soak : [NoSoak, Soak({ cycles : U64, warm : U64 })], walk : [NoWalk, Walk({ steps : U64, seed : U64 })], files : List(Str) }
+	Options : { filter : Str, emit_steps : Bool, grammar : Bool, check_suite : Bool, soak : [NoSoak, Soak({ cycles : U64, warm : U64 })], walk : [NoWalk, Walk({ steps : U64, seed : U64 })], files : List(Str) }
 
 	## The runner’s command synopsis names its ordinary, recorded, generated
 	## and grammar modes without changing the executable spec vocabulary.
 	usage : Str
-	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --walk STEPS [--seed N] FILE.scm...\n       RUNNER --grammar\n       RUNNER --prerender URL --template FILE\n       RUNNER --picture-path URL\n"
+	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --walk STEPS [--seed N] FILE.scm...\n       RUNNER --check-suite FILE.scm...\n       RUNNER --grammar\n       RUNNER --prerender URL --template FILE\n       RUNNER --picture-path URL\n"
 
 	## The number after an option, as a count.
 	count_arg : List(Str), U64, Str -> Try(U64, Str)
@@ -5710,17 +5710,24 @@ SpecRunner := [].{
 	## return a command-line error; grammar mode needs no spec files.
 	parse_args : List(Str) -> Try(Options, Str)
 	parse_args = |args| {
-		var $o = { filter: "*", emit_steps: Bool.False, grammar: Bool.False, soak: NoSoak, walk: NoWalk, files: [] }
+		var $o = { filter: "*", emit_steps: Bool.False, grammar: Bool.False, check_suite: Bool.False, soak: NoSoak, walk: NoWalk, files: [] }
 		var $warm = 2.U64
 		var $seed = 7.U64
+		var $suite_modifier = Bool.False
 		var $i = 0.U64
 		while $i < args.len() {
 			a = args.get($i) ?? ""
+			if a.starts_with("--") and a != "--check-suite" {
+				$suite_modifier = Bool.True
+			}
 			if a == "--filter" {
 				$o = { ..$o, filter: args.get($i + 1) ? |_| "--filter needs a pattern" }
 				$i = $i + 2
 			} else if a == "--emit-steps" {
 				$o = { ..$o, emit_steps: Bool.True }
+				$i = $i + 1
+			} else if a == "--check-suite" {
+				$o = { ..$o, check_suite: Bool.True }
 				$i = $i + 1
 			} else if a == "--grammar" {
 				$o = { ..$o, grammar: Bool.True }
@@ -5763,6 +5770,9 @@ SpecRunner := [].{
 				}
 				{ ..$o, walk: Walk({ steps, seed: $seed }) }
 			}
+		}
+		if $o.check_suite and $suite_modifier {
+			return Err("--check-suite takes only spec files")
 		}
 		if $o.grammar {
 			if ($o.files.is_empty() and !$o.emit_steps and $o.soak == NoSoak and $o.walk == NoWalk) Ok($o) else Err("--grammar takes no other arguments")
@@ -5824,6 +5834,64 @@ SpecRunner := [].{
 			]),
 		)
 
+	## Validate all app files without mounting. File order and per-story setup
+	## do not supply evidence; only positive steps establish a negative name.
+	check_suite! : Program(state), Io, List(Str) => I32
+	check_suite! = |program, io, files| {
+		var $parsed = []
+		for path in files {
+			$parsed = $parsed.append(SpecRunner.parse_declared(program, Str.from_utf8((io.read_file!)(path)) ?? ""))
+		}
+		parsed = $parsed
+		valid = parsed.keep_oks(|answer| answer)
+		problems = Scm.suite_problems(valid)
+		var $valid_index = 0.U64
+		var $failed = Bool.False
+		for (path, index) in files.map_with_index(|path, index| (path, index)) {
+			answer = parsed.get(index) ?? crash "suite parse count"
+			(name, problem) = match answer {
+				Err(error) => ("", Err(error))
+				Ok(spec) => {
+					missing = problems.find_first(|item| item.spec_index == $valid_index)
+					$valid_index = $valid_index + 1
+					(
+						spec.name,
+						match missing {
+							Ok(item) => Err(item.problem)
+							Err(_) => Ok({})
+						},
+					)
+				}
+			}
+			failure = match problem {
+				Ok(_) => Null
+				Err(error) => {
+					$failed = Bool.True
+					(phase, kind) = match answer {
+						Err(_) => ("parse", "parse")
+						Ok(_) => ("suite", "evidence")
+					}
+					SpecRunner.failure_json(phase, kind, Scm.show_problem(path, error), 0, error.pos)
+				}
+			}
+			(io.stdout!)(
+				"${
+					SpecRunner.result_line({
+						id: SpecRunner.id_of(path),
+						name,
+						status: match problem {
+							Ok(_) => "passed"
+							Err(_) => "error"
+						},
+						duration_ns: 0,
+						failure,
+					})
+				}\n",
+			)
+		}
+		if ($failed) 1 else 0
+	}
+
 	## The `spec` command: parse every file, then either emit the parsed steps
 	## as JSON lines (`--emit-steps`) or run each spec and print one
 	## `spec-result` JSON line per spec. Exit 0 when nothing failed. `--grammar`
@@ -5861,6 +5929,9 @@ SpecRunner := [].{
 		if opts.grammar {
 			(io.stdout!)("${JsonOut.render(Scm.grammar_json)}\n")
 			return 0
+		}
+		if opts.check_suite {
+			return SpecRunner.check_suite!(program, io, opts.files)
 		}
 		match opts.walk {
 			Walk(walk) => return SpecRunner.walk_main!(program, io, opts.files, walk)
@@ -6013,7 +6084,7 @@ expect {
 ## Options parse; unknown options (the retired `--pending-phase3` among them),
 ## empty file lists and a soak no longer than its warm-up are refused.
 expect {
-	o = SpecRunner.parse_args(["--filter", "a*", "x.scm"]) ?? { filter: "", emit_steps: Bool.False, grammar: Bool.False, soak: NoSoak, walk: NoWalk, files: [] }
+	o = SpecRunner.parse_args(["--filter", "a*", "x.scm"]) ?? { filter: "", emit_steps: Bool.False, grammar: Bool.False, check_suite: Bool.False, soak: NoSoak, walk: NoWalk, files: [] }
 	soaked = SpecRunner.parse_args(["--soak", "48", "--warm", "3", "x.scm"]).map_ok(|p| p.soak)
 	o.filter == "a*" and o.files == ["x.scm"] and soaked == Ok(Soak({ cycles: 48, warm: 3 })) and SpecRunner.parse_args(["--soak", "2", "x.scm"]).is_err() and SpecRunner.parse_args(["--soak", "x.scm"]).is_err() and SpecRunner.parse_args(["--pending-phase3", "x.scm"]).is_err() and SpecRunner.parse_args([]).is_err() and SpecRunner.parse_args(["--grammar"]).is_ok() and SpecRunner.parse_args(["--grammar", "x.scm"]).is_err()
 }

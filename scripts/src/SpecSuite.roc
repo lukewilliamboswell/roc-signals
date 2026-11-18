@@ -386,15 +386,29 @@ SpecSuite := [].{
 		Ok({ code, lines: Str.from_utf8_lossy(stdout).split_on("\n") })
 	}
 
-	## Run `specs` (paths of `example`'s specs) with its native runner and
-	## judge the run.
+	## Check every file in a suite before a filter selects individual stories.
+	## The ordinary result protocol makes omissions and unexpected exits fail too.
+	suite_evidence! : { example : Str, runner : Str, specs : List(Str) } => Try(List(Str), _)
+	suite_evidence! = |{ example, runner, specs }| {
+		run = SpecSuite.run_native!(runner, ["--check-suite"].concat(specs))?
+		tally = SpecSuite.judge({ example: "${example} suite evidence", stage: Native, expected: specs.map(SpecSuite.id_of), run })
+		Ok(tally.problems)
+	}
+
+	## Run selected stories, checking negative names against all files beside
+	## them first. Suite validation never depends on a filter's selected subset.
 	native_specs! : { example : Str, runner : Str, specs : List(Str) } => Try(Tally, _)
 	native_specs! = |{ example, runner, specs }|
 		if specs.is_empty() {
 			Ok(SpecSuite.empty_tally)
 		} else {
+			first = specs.first() ?? crash "nonempty specs"
+			directory = Str.join_with(first.split_on("/").drop_last(1), "/")
+			every = SpecSuite.files_with!(directory, ".scm")?
+			problems = SpecSuite.suite_evidence!({ example, runner, specs: every })?
 			run = SpecSuite.run_native!(runner, specs)?
-			Ok(SpecSuite.judge({ example, stage: Native, expected: specs.map(SpecSuite.id_of), run }))
+			tally = SpecSuite.judge({ example, stage: Native, expected: specs.map(SpecSuite.id_of), run })
+			Ok({ ..tally, problems: problems.concat(tally.problems) })
 		}
 
 	## The specs of `example` the filter `pattern` selects: those whose id it

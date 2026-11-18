@@ -1,7 +1,6 @@
 (test "opaque HTML round trip prunes equals and preserves row lifetimes"
   (steps
     (expect-attr (test-id "opaque") aria-label "Imported")
-    (expect-absent (test-id "forged") :never-drawn)
     (mark-metrics)
     (click (role button :name "Equal HTML"))
     (expect-metric-delta patches_emitted 0)

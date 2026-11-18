@@ -53,6 +53,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { launch } from "./cdp.mjs";
+import { configureSpecPage, readySpecPage } from "./page-profile.mjs";
 import { applicationErrors, DBG_PRINT_FAILURE } from "./replay-errors.mjs";
 import { verifyPointerRecords, verifyClickEvents, beginPointerInput, endPointerInput } from "./pointer-log.mjs";
 
@@ -173,6 +174,7 @@ async function mounted(page) {
   await page.waitForFunction("window.__ready || window.__error");
   const err = await page.evaluate(() => window.__error ?? null);
   if (err) throw new Error(`mount failed: ${err}`);
+  await readySpecPage(page);
   await settle(page);
 }
 
@@ -1715,6 +1717,7 @@ for (const spec of specs) {
   let failed = null;
   let i = 0;
   try {
+    await configureSpecPage(page);
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
     const state = { context, stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mountRoot: setup.mountRoot, mount: setup.mount, environmentScript: null, holdingReports: false, pointers: new Map(), activationTable: spec.activation_table, keyTable: spec.key_table, keyDefaults: spec.unmodelled_key_defaults, keyControlTypes: spec.key_control_types };

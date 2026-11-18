@@ -201,8 +201,9 @@ jobs:
   # them); only the system itself shows the runner works there. Each runner
   # builds a small app's and the worker apps' spec runners from those
   # inputs, as an app author on that system does, and runs their specs:
-  # worker jobs in child processes, a crashing job, preparations, deadlines
-  # and the file services. Then two specs that must fail: one expecting the
+  # worker jobs in child processes, a crashing job, preparations, deadlines,
+  # debug output and the file services. Geometry and modifier suites also
+  # run in Chrome on each system. Then two specs that must fail: one expecting the
   # wrong fault class for a crash, and one whose job never finishes, which
   # the runner ends at its 30 s bound.
   native-specs:
@@ -216,7 +217,7 @@ jobs:
           - { name: macOS (Intel), os: macos-15-intel, target: x64mac, exe: '' }
           - { name: Windows, os: windows-2025, target: x64win, exe: .exe }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 50
     permissions:
       contents: read
     defaults:
@@ -244,12 +245,13 @@ jobs:
           BUILD: .build/native
         run: |
           failed=0
-          for app in examples/form-builder tests/apps/files tests/apps/tasks tests/apps/prepared tests/apps/workers; do
+          for app in examples/form-builder tests/apps/files tests/apps/tasks tests/apps/prepared tests/apps/workers tests/apps/dbg tests/apps/dbg-job-only; do
             name=$(basename "$app")
             runner="$BUILD/$name/runner$EXE"
             mkdir -p "$BUILD/$name"
             echo "== $app"
             roc build --opt=dev --target="$TARGET" "$app/main.roc" --output="$runner" || { failed=1; continue; }
+            "$runner" --check-suite "$app"/specs/*.scm > "$BUILD/$name/suite.jsonl" || failed=1
             "$runner" "$app"/specs/*.scm > "$BUILD/$name/results.jsonl" || failed=1
             grep -v '"status":"passed"' "$BUILD/$name/results.jsonl" || true
           done
@@ -266,6 +268,22 @@ jobs:
           fi
           grep -q 'did not finish within 30 s' "$BUILD/bound.jsonl" || { echo "the bound did not end the job:"; cat "$BUILD/bound.jsonl"; failed=1; }
           exit $failed
+      - name: Geometry and modifier specs in Chrome
+        env:
+          TARGET: ${{ matrix.target }}
+          EXE: ${{ matrix.exe }}
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            chrome='C:/Program Files/Google/Chrome/Application/chrome.exe'
+          else
+            chrome='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+          fi
+          test -x "$chrome" || { echo "Chrome is missing: $chrome"; exit 1; }
+          node tests/native/selected-specs.mjs --roc roc --target "$TARGET" --exe "$EXE" --chrome "$chrome" --build .build/native-conformance
+      - name: Native debug output contract
+        env:
+          EXE: ${{ matrix.exe }}
+        run: node tests/native/dbg-output.mjs --runner ".build/native/dbg/runner$EXE"
       # The signals.roc tool as an author on this system runs it: the
       # checkout's package (cli/, whose Bundle.roc reads the runtime and the
       # scaffold from the working tree) in place of a release's, and an app
