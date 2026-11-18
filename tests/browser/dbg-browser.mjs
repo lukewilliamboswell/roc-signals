@@ -122,7 +122,7 @@ try {
     const {RocEngineRuntime,PROTOCOL_VERSION}=await import('/runtime.mjs');
     const word=n=>[n&255,n>>>8&255,n>>>16&255,n>>>24];
     const part=(tag,bytes)=>[tag,...word(bytes.length),...bytes];
-    const declarations=new Uint8Array([...part(2,word(0)),...part(5,word(0)),...part(6,word(0)),...part(10,[110,1]),...part(11,word(0)),...section]);
+    const declarations=new Uint8Array([...part(2,word(0)),...part(5,word(0)),...part(6,word(0)),...part(10,[110,1]),...part(11,word(0)),...section,...part(14,[0])]);
     let logs=[],errors=0;console.log=line=>logs.push(line);console.error=()=>errors++;
     const make=(bootTrap=false)=>{
       const memory=new WebAssembly.Memory({initial:2});let length=0,debugLength=0,reads=0;
