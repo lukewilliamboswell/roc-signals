@@ -10,14 +10,16 @@ import { pathToFileURL } from 'node:url';
 import { launch } from './cdp.mjs';
 import { parseArgs, runtimeFiles } from './args.mjs';
 import { protocolFixtureSection } from './protocol-fixture.mjs';
+import { resourceReply } from './startup-media.mjs';
 const options = parseArgs(process.argv.slice(2), ['playwright', 'browser'], ['runtime']);
 const files = runtimeFiles(options.runtime);
 files['startup.mjs'] = path.join(path.dirname(options.runtime), 'startup.mjs');
+files['startup-media.mjs'] = new URL('./startup-media.mjs', import.meta.url);
 const server = http.createServer((request, response) => {
   const route = new URL(request.url, 'http://x').pathname;
   if (route === '/empty.wasm') { response.setHeader('content-type', 'application/wasm'); response.end(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])); return; }
   if (route === '/startup-frame') { response.setHeader('cache-control', 'no-store'); response.end('<!doctype html><title>Native frame</title>'); return; }
-  if (route === '/startup.webm') { response.setHeader('content-type', 'video/webm'); response.end(fs.readFileSync(new URL('./fixtures/startup.webm', import.meta.url))); return; }
+  if (route === '/startup.webm') { const reply = resourceReply({ method: request.method, range: request.headers.range, type: 'video/webm', body: fs.readFileSync(new URL('./fixtures/startup.webm', import.meta.url)) }); response.writeHead(reply.status, reply.headers); response.end(reply.body); return; }
   const file = files[path.basename(route)];
   response.setHeader('content-type', file ? 'text/javascript' : 'text/html');
   response.end(file ? fs.readFileSync(file) : '<!doctype html><body></body>');
@@ -32,6 +34,7 @@ try {
   const checks = await page.evaluate(async protocolSection => {
     const { StartupFrame } = await import('/startup.mjs');
     const { RocEngineRuntime, readDeclarations, mountRocEngineApp } = await import('/runtime.mjs');
+    const { observePlayback, playbackContinuity } = await import('/startup-media.mjs');
     const word = value => [value & 255, value >>> 8 & 255, value >>> 16 & 255, value >>> 24];
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const facts = (ordinal, aliases = [], holes = []) => [...word(ordinal), ...word(aliases.length), ...aliases.flatMap(word), ...word(holes.length), ...holes.flatMap(word)];
@@ -362,19 +365,29 @@ try {
     // A native-state oracle must reject pause/restart/replacement mutants;
     // identity alone would let a paused video or restarted animation pass.
     const style = document.createElement('style'); style.textContent = '@keyframes roc-startup-pulse {from {opacity:.2} to {opacity:1}}'; document.head.append(style);
-    for (const mutation of ['none', 'pause-video', 'pause-animation', 'restart-video', 'restart-animation', 'replace-video', 'reload-frame']) {
+    for (const [range, status, length] of [['bytes=0-7', 206, 8], ['bytes=-8', 206, 8], ['bytes=99999999-', 416, 0]]) {
+      const response = await fetch('/startup.webm', { headers: { Range: range } });
+      check(`media byte-range transport ${range} answers ${status}`, response.status === status && (await response.arrayBuffer()).byteLength === length && response.headers.get('content-range')?.startsWith(status === 206 ? 'bytes ' : 'bytes */'));
+    }
+    for (const mutation of ['none', 'range-continuation', 'native-loop', 'pause-video', 'pause-resume-video', 'pause-animation', 'restart-video', 'restart-animation', 'replace-video', 'load-video', 'reset-video-src', 'reload-frame']) {
       const resources = document.createElement('div'); resources.setAttribute('data-roc-frame', '1:2:build');
       const video = document.createElement('video'), iframe = document.createElement('iframe'), animation = document.createElement('div'), placeholder = document.createElement('section');
       video.src = '/startup.webm'; video.muted = true; video.loop = true; video.setAttribute('muted', ''); iframe.src = '/startup-frame'; animation.style.animation = 'roc-startup-pulse 2s linear infinite';
       const loaded = new Promise((resolve, reject) => { const timer = setTimeout(() => reject(new Error('native frame load timed out')), 5000); iframe.onload = () => { clearTimeout(timer); resolve(); }; });
       resources.append(video, iframe, animation, placeholder); document.body.append(resources); await loaded; await video.play();
       getComputedStyle(animation).opacity; await new Promise(resolve => setTimeout(resolve, 400));
+      if (mutation === 'native-loop') { const seeked = new Promise(resolve => video.addEventListener('seeked', resolve, { once: true })); video.currentTime = video.duration - .12; await seeked; }
       const prior = { video, time: video.currentTime, animation: animation.getAnimations()[0], frame: iframe, document: iframe.contentDocument }; prior.animationTime = prior.animation.currentTime;
+      const playback = observePlayback(video);
       node(resources, 0, [0], [1, 2, 3, 6].map(id => [1, ...word(id)])); node(video, 1, [1], []); node(iframe, 2, [2], []); node(animation, 3, [3], []); node(placeholder, 6, [6], []);
       if (mutation === 'pause-video') video.pause();
+      if (mutation === 'pause-resume-video') { video.pause(); await video.play(); }
       if (mutation === 'pause-animation') prior.animation.pause();
       if (mutation === 'restart-video') video.currentTime = 0;
       if (mutation === 'restart-animation') prior.animation.currentTime = 0;
+      if (mutation === 'range-continuation') { const response = await fetch('/startup.webm', { headers: { Range: 'bytes=470-' } }); if (response.status !== 206) throw new Error('range continuation did not receive partial content'); await response.arrayBuffer(); }
+      if (mutation === 'load-video') { video.load(); await video.play(); }
+      if (mutation === 'reset-video-src') { video.src = '/startup.webm'; await video.play(); }
       let currentVideo = video;
       if (mutation === 'replace-video') { currentVideo = video.cloneNode(true); video.replaceWith(currentVideo); currentVideo.muted = true; await currentVideo.play(); }
       if (mutation === 'reload-frame') { const next = new Promise(resolve => { iframe.onload = resolve; }); iframe.setAttribute('src', '/startup-frame'); await next; }
@@ -387,8 +400,10 @@ try {
       const resourceRuntime = new RocEngineRuntime(resourceHost, resources, { startupBuildToken: 'build', manualEffects: true }); resourceRuntime.mount();
       await new Promise(resolve => setTimeout(resolve, 240));
       const retainedAnimation = animation.getAnimations()[0];
-      const accepted = !resourceRuntime.poisoned && resourceRuntime.lookup(1) === prior.video && !currentVideo.paused && currentVideo.currentTime - prior.time > .08 && retainedAnimation === prior.animation && retainedAnimation.playState === 'running' && retainedAnimation.currentTime - prior.animationTime > 80 && resourceRuntime.lookup(2) === prior.frame && iframe.contentDocument === prior.document && resourceSets === 0 && resourceRuntime.lookup(7)?.localName === 'button';
-      check(`native resource continuity oracle ${mutation === 'none' ? 'accepts real handoff' : 'rejects ' + mutation}`, accepted === (mutation === 'none'));
+      const accepted = !resourceRuntime.poisoned && resourceRuntime.lookup(1) === prior.video && playbackContinuity(playback, currentVideo).accepted && retainedAnimation === prior.animation && retainedAnimation.playState === 'running' && retainedAnimation.currentTime - prior.animationTime > 80 && resourceRuntime.lookup(2) === prior.frame && iframe.contentDocument === prior.document && resourceSets === 0 && resourceRuntime.lookup(7)?.localName === 'button';
+      const permitted = mutation === 'none' || mutation === 'range-continuation' || mutation === 'native-loop';
+      check(`native resource continuity oracle ${permitted ? 'accepts ' + (mutation === 'none' ? 'real handoff' : mutation) : 'rejects ' + mutation}`, accepted === permitted);
+      playback.stop();
       resourceRuntime.unmount(); resources.remove();
     }
     style.remove();
