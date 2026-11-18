@@ -422,19 +422,31 @@ try {
     window.__detailsFrame = new StartupFrame(root, 'build'); window.__detailsFrame.normalize();
     window.__detailsFrame.bind(1, 1); window.__detailsFrame.bind(2, 1); window.__detailsFrame.bind(3, 2);
   });
-  const clickDetails = async () => {
-    const box = await page.evaluate(() => { const node = document.querySelector('#startup-details-probe summary'); node.scrollIntoView({ block: 'center' }); const rect = node.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }; });
+  const trustedClick = async selector => {
+    const box = await page.evaluate(selector => { const node = document.querySelector(selector); node.scrollIntoView({ block: 'center' }); const rect = node.getBoundingClientRect(); return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }; }, selector);
     if (typeof page.clickAt === 'function') await page.clickAt(box);
     else await page.mouse.click(box.x, box.y);
   };
-  await clickDetails();
+  await trustedClick('#startup-details-probe summary');
   checks.push(['a trusted summary click cannot change the gated declared details state', await page.evaluate(() => document.querySelector('#startup-details-probe details').open)]);
   await page.evaluate(() => { window.__detailsFrame.finish(); delete window.__detailsFrame; });
-  await clickDetails();
+  await trustedClick('#startup-details-probe summary');
   checks.push(['details native interaction resumes when its producer gate is restored', await page.evaluate(() => { const details = document.querySelector('#startup-details-probe details'); const restored = !details.inert && !details.open; details.parentElement.remove(); return restored; })]);
   checks.push(['native named details grouping removes authored open despite inert', await page.evaluate(() => {
     const root = document.createElement('div'); root.innerHTML = '<details inert open name="startup-probe-group"><summary>First</summary></details><details inert open name="startup-probe-group"><summary>Second</summary></details>'; document.body.append(root);
     const mutated = !(root.firstChild.open && root.lastChild.open) && root.firstChild.inert && root.lastChild.inert; root.remove(); return mutated;
   })]);
+  // These associations deliberately cross a hypothetical managed root. Their
+  // native default activation bypasses target inert, which is why this is an
+  // author ownership precondition rather than a reason to scan/gate the page.
+  await page.evaluate(() => {
+    const probe = document.createElement('div'); probe.id = 'startup-external-probe';
+    probe.innerHTML = '<label id="startup-external-label" for="startup-owned-check">External label</label><button id="startup-external-submit" form="startup-owned-form">External submit</button><div data-owned-root><form inert id="startup-owned-form"><input inert type="checkbox" id="startup-owned-check"></form></div>';
+    probe.__submits = 0; probe.querySelector('form').addEventListener('submit', event => { event.preventDefault(); probe.__submits++; }); document.body.append(probe);
+  });
+  await trustedClick('#startup-external-label');
+  checks.push(['an external native label can activate its inert owned target', await page.evaluate(() => { const target = document.querySelector('#startup-owned-check'); return target.inert && target.checked; })]);
+  await trustedClick('#startup-external-submit');
+  checks.push(['an external native submit control can submit an inert owned form', await page.evaluate(() => { const probe = document.querySelector('#startup-external-probe'); const activated = probe.querySelector('form').inert && probe.__submits === 1; probe.remove(); return activated; })]);
   for (const [name, passed] of checks) { if (!passed) throw new Error(`FAIL ${name}`); console.log(`PASS ${name}`); }
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
