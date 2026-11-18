@@ -1721,7 +1721,11 @@ for (const spec of specs) {
   }
   const context = await browser.createBrowserContext();
   const page = await context.newPage();
-  page.on("console", (message) => { if (message.text().startsWith("[dbg") || message.text().startsWith(DBG_PRINT_FAILURE)) console.error(message.text()); });
+  page.on("console", (message) => {
+    const text = message.text();
+    if (text.startsWith("[dbg") || text.startsWith(DBG_PRINT_FAILURE)) console.error(text);
+    else if (text.startsWith("roc worker fault [")) console.error(text.slice(0, 16384));
+  });
   const t0 = Date.now();
   let failed = null;
   let i = 0;
