@@ -2300,6 +2300,12 @@ Once Active, readiness changes do not send a site back to Waiting. One
 opportunity mounts at most one eligible body, using current state. Nested
 placeholders become eligible when their enclosing live body mounts.
 
+Activation consumes the waiting site's readiness and one-shot body factory.
+The active site owns its live block and transport anchor; it must not retain
+an unused factory that captures the body's original runtime input beside its
+current state. An authored reset or remount recipe retains the values it
+actually needs through its ordinary handler or scope ownership.
+
 Roc requests one cancellable browser-task opportunity while ready work exists.
 Its result enters the normal turn mechanism after BootstrapCommitted. The
 runtime only supplies that opportunity; Roc selects the FIFO owner. One
