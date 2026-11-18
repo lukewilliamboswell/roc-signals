@@ -415,16 +415,18 @@ assertion. Stories still start independently, and filtering does not narrow
 the files checked for evidence. This mode mounts nothing, reports one ordinary
 result per file, and distinguishes parse failures from missing suite evidence.
 
-Chrome replay fixes its page profile before navigation: a 1280 by 900 CSS-pixel
-viewport, device scale factor 1, zero-width scrollbars and bundled IBM Plex Sans
-and Mono fonts (`tests/browser/fonts/`, with their license). The fonts load
+Chrome replay brings its page to the foreground before navigation and fixes
+its profile: a 1280 by 900 CSS-pixel viewport, device scale factor 1, zero-width
+scrollbars and bundled IBM Plex Sans and Mono fonts (`tests/browser/fonts/`, with their license). The fonts load
 before the first step, including after cross-document navigation; a missing
 font fails the replay. App-authored typography still applies. Scroll steps must
 reach their exact requested offsets, and pointer `:at` steps must hit their
 declared target under this profile; the native oracle gains no layout model.
 `tests/browser/page-profile.test.mjs` starts from different device metrics and
-checks the profile across repeated navigation. Geometry outside this profile
-belongs in a browser contract with its dimensions stated explicitly.
+checks foreground frame delivery and the profile across repeated navigation.
+Scroll observations require an actual animation frame and its following task
+within the existing idle deadline; starvation fails with the page’s visibility
+and focus state. Geometry outside this profile belongs in a browser contract with its dimensions stated explicitly.
 
 CI runs the Log Explorer, Kanban Board, table test app and scores sample in
 both runners on macOS Apple Silicon, macOS Intel and Windows through

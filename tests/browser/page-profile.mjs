@@ -16,6 +16,9 @@ button, input, select, textarea { font-family: SignalsSpec; }
 // Install before navigation. The early observer covers documents with no head
 // yet, and the init script repeats for every cross-document app navigation.
 export async function configureSpecPage(page) {
+  // An actionable spec page is the foreground target. Some headless builds
+  // stop animation frames in background tabs, even though CDP still runs JS.
+  await page.send("Page.bringToFront");
   await page.send("Emulation.setDeviceMetricsOverride", viewport);
   await page.send("Page.setFontFamilies", { fontFamilies: {
     standard: "SignalsSpec", serif: "SignalsSpec", sansSerif: "SignalsSpec", fixed: "SignalsSpecMono",

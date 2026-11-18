@@ -55,6 +55,7 @@ import { fileURLToPath } from "node:url";
 import { launch } from "./cdp.mjs";
 import { runtimeFiles } from "./args.mjs";
 import { configureSpecPage, readySpecPage } from "./page-profile.mjs";
+import { observeManualScrolls } from "./scroll-observation.mjs";
 import { applicationErrors, DBG_PRINT_FAILURE } from "./replay-errors.mjs";
 import { verifyPointerRecords, verifyClickEvents, beginPointerInput, endPointerInput } from "./pointer-log.mjs";
 
@@ -114,11 +115,7 @@ async function settle(page) {
     });
     if (observation.error) throw new Error(`native UI observation failed: ${observation.error}`);
     if (observation.ready && !observation.pending) {
-      await page.evaluate(async () => {
-        const rt = window.__rt;
-        if (rt?.manualScrollers?.size) await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
-        rt?.checkManualScrolls();
-      });
+      await page.evaluate(observeManualScrolls, deadline);
       return;
     }
     if (Date.now() >= deadline) throw new Error("native UI observation timed out waiting for actual callbacks");
