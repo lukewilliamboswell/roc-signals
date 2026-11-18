@@ -1793,6 +1793,18 @@ Engine := [].{
 		where [route.is_eq : route, route -> Bool, route.to_hash : route, Hasher -> Hasher]
 	entries = EntryRoutes.make
 
+	## Build a deterministic first frame for every declared entry. The callback
+	## receives its fixed route, without live Boot. Later browser facts arrive
+	## through ordinary effects; generated pages bind the complete initial DOM.
+	program_startup : ProgramProps, Entries(route), (route -> Elem(Root)) -> Program({})
+	program_startup = |cfg, catalogue, view| Core.program_startup(cfg, catalogue, |_| Core.no_store, view)
+
+	## Start each deterministic route with its own fresh store and scopes. The
+	## fixed-route initializer may return an ordinary prepared Store description;
+	## it cannot sample the browser's live Boot or share mounted instance state.
+	program_startup_store : ProgramProps, Entries(route), (route -> Store(st, h)), (route -> Elem(StoreRoot(st))) -> Program(st)
+	program_startup_store = |cfg, catalogue, initial, view| Core.program_startup(cfg, catalogue, |route| initial(route).s.initial(), view)
+
 	## The [Program] for an app that needs no boot data: mount `view()` with the
 	## default in-flight bound of 32.
 	program : (() -> Elem(Root)) -> Program({})

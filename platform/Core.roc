@@ -1,4 +1,5 @@
 import Web
+import EntryRoutes
 import Spelling
 import Layout
 import TableCore exposing [Table]
@@ -2408,10 +2409,10 @@ Core := [].{
 	## must end in section13; every body is consumed and the root is bounded
 	## before text decoding. Existing roots need not be reconstructible by an
 	## element factory: these are measured identity facts, not creation requests.
-	read_mount : List(U8), List(Str) -> Try({ boot : Boot, root : MountRoot }, Str)
+	read_mount : List(U8), List(Str) -> Try({ boot : Boot, root : MountRoot, startup : StartupBoot }, Str)
 	read_mount = |bytes, queries| {
 		if bytes.is_empty() {
-			return Ok({ boot: Core.read_environment([], queries)?, root: Core.default_mount_root })
+			return Ok({ boot: Core.read_environment([], queries)?, root: Core.default_mount_root, startup: Legacy })
 		}
 		var $boot = Core.read_environment([], queries)?
 		var $at = 0.U64
@@ -2444,12 +2445,27 @@ Core := [].{
 		if start > bytes.len() or length.to_u64() > bytes.len() - start {
 			return Err("${context} truncated body")
 		}
-		if start + length.to_u64() != bytes.len() {
-			return Err("${context} trailing bytes or section")
-		}
 		root = read_mount_root(bytes.sublist({ start, len: length.to_u64() })) ? |reason| "${context} ${reason}"
-		Ok({ boot: $boot, root })
+		next_section = start + length.to_u64()
+		startup_context = "contract: boot section 14 (startup)"
+		if bytes.get(next_section) != Ok(14) {
+			return Err("${startup_context} missing, unknown, repeated or out-of-order section")
+		}
+		startup_length = boot_u32(bytes, next_section + 1) ? |reason| "${startup_context} ${reason}"
+		body_start = next_section + 5
+		if body_start > bytes.len() or startup_length.to_u64() > bytes.len() - body_start or body_start + startup_length.to_u64() != bytes.len() {
+			return Err("${startup_context} truncated body or trailing bytes")
+		}
+		startup = read_startup_boot(bytes.sublist({ start: body_start, len: startup_length.to_u64() })) ? |reason| "${startup_context} ${reason}"
+		Ok({ boot: $boot, root, startup })
 	}
+
+	## Private startup framing is separate from app-visible Boot. A concrete
+	## entry is mandatory when binding; fresh entry selection may use pathname.
+	StartupBoot : [Legacy, Fixed({ mode : U8, entry : U32 })]
+
+	## Internal program metadata used by declarations and the build catalogue.
+	StartupProfile : [Legacy, Deterministic({ paths : List(Str), fallback : [None, Some(U32)], root : MountRoot })]
 
 	## Decode boot sections without crashing. Empty bytes mean `Boot {}`;
 	## otherwise every section must occur once in ascending order. Membership
@@ -2505,7 +2521,12 @@ Core := [].{
 	## Encode an app environment beside engine-only root facts. Harnesses retain
 	## both, while app code is handed only Boot. The root body has a 64 KiB bound.
 	write_mount : Boot, MountRoot -> List(U8)
-	write_mount = |boot, mount_root| {
+	write_mount = |boot, mount_root| Core.write_startup_mount(boot, mount_root, Legacy)
+
+	## Harness encoding of fixed-entry startup input. The host stages these
+	## bytes whole; only the engine interprets profile, mode and entry selection.
+	write_startup_mount : Boot, MountRoot, StartupBoot -> List(U8)
+	write_startup_mount = |boot, mount_root, startup_boot| {
 		location = put_section([], 1, put_str([], boot.url))
 		var $storage = put_u32([if (boot.storage_available) 1 else 0], boot.storage.len().to_u32_wrap())
 		for (key, value) in boot.storage {
@@ -2530,7 +2551,11 @@ Core := [].{
 		if root_body.len() > 65_536 {
 			crash "contract: boot section 13 (mount-root) exceeds 65536 bytes"
 		}
-		put_section(environment, 13, root_body)
+		startup_body = match startup_boot {
+			Legacy => [0]
+			Fixed({ mode, entry }) => put_u32([1, mode], entry)
+		}
+		put_section(put_section(environment, 13, root_body), 14, startup_body)
 	}
 
 	## The boot value of a declared storage key, or `Missing` if it has none.
@@ -3151,7 +3176,7 @@ Core := [].{
 	take_cmds : App(st), List(U8) -> (App(st), List(U8))
 	take_cmds = |App.(AppBody.({ store, root, tx, programs })), buf| {
 		{ cmds, next, free, routes, work, paths, site_free, observations, fx } = tx
-		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch } = fx
+		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
 		{ mounting, asked, types, seen: _ } = batch
 		var $cmds = cmds
 		if asked {
@@ -3163,7 +3188,7 @@ Core := [].{
 		} else if $cmds.len() == 1 {
 			$cmds = $cmds.clear()
 		}
-		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
+		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
 		(App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2 }, programs }), $cmds)
 	}
 
@@ -3183,7 +3208,7 @@ Core := [].{
 			$out = $out.append(work_get(tx.work, $i))
 			$i = $i + 1
 		}
-		$out.concat(fx_counters(a)).concat([work_get(tx.work, w_port_sends), work_get(tx.work, 41), work_get(tx.work, 42), work_get(tx.work, 43), tx.fx.observed.live, work_get(tx.work, 45), work_get(tx.work, 46), work_get(tx.work, 47), work_get(tx.work, 48)])
+		$out.concat(fx_counters(a)).concat([work_get(tx.work, w_port_sends), work_get(tx.work, 41), work_get(tx.work, 42), work_get(tx.work, 43), tx.fx.observed.live, work_get(tx.work, 45), work_get(tx.work, 46), work_get(tx.work, 47), work_get(tx.work, 48), work_get(tx.work, 49), work_get(tx.work, 50), work_get(tx.work, 51), work_get(tx.work, 52), work_get(tx.work, 53), work_get(tx.work, 54), work_get(tx.work, 55), work_get(tx.work, 56)])
 	}
 
 	# ------------------------------------------------------------------
@@ -3235,7 +3260,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 22
+	protocol_version = 23
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -3300,6 +3325,7 @@ Core := [].{
 	## `program` or `program_boot` and bind it as `main`.
 	Program(st) :: {
 		version : U32,
+		startup : StartupProfile,
 		keys : () -> List(U8),
 		init : Catalogue, List(U8) -> (App(st), List(U8), List(U8)),
 		event : App(st), List(U8), List(U8), U32, U32, List(U8) -> (App(st), List(U8), List(U8)),
@@ -3360,7 +3386,7 @@ Core := [].{
 		{
 			version: p.version,
 			tasks,
-			keys: || put_section(put_section(put_media_table((ports.table)(keys(), ports.decls), media), 10, [zone_days.to_u8_wrap(), zone_days.shr_zf_wrap(8).to_u8_wrap()]), 11, session_keys.fold(put_u32([], session_keys.len().to_u32_wrap()), put_str)),
+			keys: || put_section(put_section(put_section(put_media_table((ports.table)(keys(), ports.decls), media), 10, [zone_days.to_u8_wrap(), zone_days.shr_zf_wrap(8).to_u8_wrap()]), 11, session_keys.fold(put_u32([], session_keys.len().to_u32_wrap()), put_str)), 14, startup_declaration(p.startup)),
 			init: |boot| init({ workers: tasks, ports, media }, boot),
 			event: p.event,
 			key: |inst, buf, wbuf, node, handler, payload, handles| {
@@ -3372,11 +3398,17 @@ Core := [].{
 					_ => crash "contract: a key result needs exactly one staged key handle"
 				}
 				App.(AppBody.({ store, root, tx, programs })) = inst
+				if tx.fx.startup.pending {
+					crash "contract: bootstrap acknowledgement required before a key result"
+				}
 				fresh = App.(AppBody.{ store, root, tx: { ..tx, cmds: buf.clear() }, programs })
 				finish(Core.result(fresh, handler, CryptoKey(key)), [], wbuf)
 			},
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
 				App.(AppBody.({ store, root, tx, programs })) = inst
+				if tx.fx.startup.pending {
+					crash "contract: bootstrap acknowledgement required before files ingress"
+				}
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
 				fresh = App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs })
 				handles = blobs.map(|b| Blob.(b))
@@ -3523,7 +3555,20 @@ Core := [].{
 	## the store starts with at mount (`Store.initial`), from the boot data,
 	## and `view` the UI over it.
 	program_store : ProgramProps, (Boot -> Start(st)), (Boot -> Elem(Root(st))) -> Program(st)
-	program_store = |cfg, start, view| {
+	program_store = |cfg, start, view| Core.program_profile(cfg, Legacy, |input| start(input.boot), |input| view(input.boot), |_| Ok(0))
+
+	## Fixed initial-route callbacks cannot read live Boot. Catalogue and view
+	## descriptions may be shared; each init constructs independent storage.
+	program_startup : ProgramProps, EntryRoutes.Catalogue(route), (route -> Start(st)), (route -> Elem(Root(st))) -> Program(st)
+	program_startup = |cfg, entry_catalogue, start, view| {
+		facts = EntryRoutes.facts(entry_catalogue)
+		Core.program_profile(cfg, Deterministic(facts), |input| start(EntryRoutes.at(entry_catalogue, input.entry)), |input| view(EntryRoutes.at(entry_catalogue, input.entry)), |url| EntryRoutes.select(entry_catalogue, url).map_err(|UnknownEntry(path)| "contract: no declared initial entry for ${Str.inspect(path)} and no fallback"))
+	}
+
+	## One pure program boundary for legacy and deterministic initialization.
+	## The private entry input never reaches an application's Boot callback.
+	program_profile : ProgramProps, StartupProfile, ({ boot : Boot, entry : U32 } -> Start(st)), ({ boot : Boot, entry : U32 } -> Elem(Root(st))), (Str -> Try(U32, Str)) -> Program(st)
+	program_profile = |cfg, profile, start, view, select_entry| {
 		if cfg.zone_days > 7305 {
 			crash "contract: ProgramProps.zone_days must be at most 7305"
 		}
@@ -3533,6 +3578,7 @@ Core := [].{
 		}
 		{
 			version: Core.protocol_version,
+			startup: profile,
 			keys: || {
 				declarations = [
 					{
@@ -3563,10 +3609,46 @@ Core := [].{
 						crash "contract: boot section 11 (session-storage) pair for undeclared key \"${key}\""
 					}
 				}
-				finish(mount_start_in(cfg.max_inflight, names, start(b), view(b), enclosing_root(mounted.root)), [], [])
+				match profile {
+					Legacy => {
+						if mounted.startup != Legacy {
+							crash "contract: a legacy program cannot bind an annotated startup frame"
+						}
+						input = { boot: b, entry: 0 }
+						finish(mount_start_in(cfg.max_inflight, names, start(input), view(input), enclosing_root(mounted.root)), [], [])
+					}
+					Deterministic(facts) => {
+						selected = if (boot.is_empty()) { mode: 0.U8, entry: 0.U32 } else match mounted.startup {
+							Legacy => crash "contract: deterministic startup needs boot section 14 profile 1"
+							Fixed(value) => value
+						}
+						actual_root = if (boot.is_empty()) facts.root else mounted.root
+						if put_expanded_name([], actual_root.namespace, actual_root.prefix, actual_root.local) != put_expanded_name([], facts.root.namespace, facts.root.prefix, facts.root.local) {
+							crash "contract: actual mount root differs from the declared startup root"
+						}
+						entry = if selected.entry == 0xffffffff {
+							select_entry(b.url) ?? crash "contract: no declared initial entry matches the pathname"
+						} else selected.entry
+						if entry.to_u64() >= facts.paths.len() {
+							crash "contract: startup entry is not in the compiled catalogue"
+						}
+						input = { boot: b, entry }
+						finish(mount_cold(cfg.max_inflight, names, start(input), view(input), enclosing_root(actual_root), selected.mode, entry), [], [])
+					}
+				}
 			},
 			event: |inst, buf, wbuf, node, handler, payload| {
 				App.(AppBody.({ store, root, tx, programs })) = inst
+				if node == fx_node and handler == 0 and payload == [254] {
+					if !tx.fx.startup.pending {
+						crash "contract: bootstrap acknowledgement is not pending"
+					}
+					pending = App.(AppBody.{ store, root, tx: { ..tx, cmds: buf.clear() }, programs })
+					return finish(complete_startup(pending), [], wbuf)
+				}
+				if tx.fx.startup.pending {
+					crash "contract: bootstrap acknowledgement required before ordinary ingress"
+				}
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
 				fresh = App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs })
 				if node == fx_node {
@@ -4029,15 +4111,15 @@ w_port_sends = 40
 ## released registrations (43), live observations (44), marked batches (45),
 ## guard commands (46) and accepted transfer progress turns (47).
 w_record_count : U64
-w_record_count = w_count + 17
+w_record_count = w_count + 25
 
 ## The work counters as plain fields (`c01` is counter 1): bumping one
 ## updates a value in the accumulator and never allocates, so counting
 ## cannot cost an allocation or a copy on any path.
-Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64, c45 : U64, c46 : U64, c47 : U64, c48 : U64 }
+Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64, c45 : U64, c46 : U64, c47 : U64, c48 : U64, c49 : U64, c50 : U64, c51 : U64, c52 : U64, c53 : U64, c54 : U64, c55 : U64, c56 : U64 }
 
 work_zero : Work
-work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0, c45: 0, c46: 0, c47: 0, c48: 0 }
+work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0, c45: 0, c46: 0, c47: 0, c48: 0, c49: 0, c50: 0, c51: 0, c52: 0, c53: 0, c54: 0, c55: 0, c56: 0 }
 
 ## Add `n` to counter `i`; counter 0 (and any index past the last) is the
 ## unused sink.
@@ -4082,6 +4164,14 @@ add_work = |w, i, n| match i {
 	46 => { ..w, c46: w.c46 + n }
 	47 => { ..w, c47: w.c47 + n }
 	48 => { ..w, c48: w.c48 + n }
+	49 => { ..w, c49: w.c49 + n }
+	50 => { ..w, c50: w.c50 + n }
+	51 => { ..w, c51: w.c51 + n }
+	52 => { ..w, c52: w.c52 + n }
+	53 => { ..w, c53: w.c53 + n }
+	54 => { ..w, c54: w.c54 + n }
+	55 => { ..w, c55: w.c55 + n }
+	56 => { ..w, c56: w.c56 + n }
 	_ => w
 }
 
@@ -4127,6 +4217,14 @@ work_get = |w, i| match i {
 	46 => w.c46
 	47 => w.c47
 	48 => w.c48
+	49 => w.c49
+	50 => w.c50
+	51 => w.c51
+	52 => w.c52
+	53 => w.c53
+	54 => w.c54
+	55 => w.c55
+	56 => w.c56
 	_ => 0
 }
 
@@ -4179,7 +4277,7 @@ put_presence = |bytes, presence| match presence {
 ## opcode is counted in the work counters; property commands use the
 ## dedicated PROP and HPROP slots (design.md, "Work assertions").
 emit_op : Tx, U8, (List(U8) -> List(U8)) -> Tx
-emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else if (op == 25) 46 else if (op == 26) 48 else op.to_u64(), 1), paths, site_free, observations, fx }
+emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else if (op == 25) 46 else if (op == 26) 48 else if (op >= 28 and op <= 31) op.to_u64() + 21 else op.to_u64(), 1), paths, site_free, observations, fx }
 
 ## Add `n` to work counter `i`.
 bump : Tx, U64, U64 -> Tx
@@ -4265,9 +4363,9 @@ release_node = |tx, owner| {
 ## Move the registration index out before modifying it, leaving no second
 ## holder in Fx that would make each observed-node change copy the index.
 with_registrations : Fx, (List(U32), LiveObservations -> (List(U32), LiveObservations)) -> Fx
-with_registrations = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }, change| {
+with_registrations = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, change| {
 	(documents, observations) = change(document_nodes, observed)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups, guard, batch }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups, guard, startup, batch }
 }
 
 ## Release a static node id and its route.
@@ -4327,9 +4425,9 @@ drop_name = |fx, { node, name, path }| if (name.is_empty()) fx else with_refs(
 ## Move the reference indexes and pending checks out of the accumulator so
 ## updates retain one holder for each map, list and reverse-index column.
 with_refs : Fx, (RefMap, List(List(RefOwned)), List(TurnEnd) -> (RefMap, List(List(RefOwned)), List(TurnEnd))) -> Fx
-with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }, change| {
+with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, change| {
 	(names, positions, checks) = change(refs, ref_pos, focus)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups, guard, batch }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups, guard, startup, batch }
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
@@ -7755,13 +7853,44 @@ mount_start = |max, programs, start, elem| mount_start_in(max, programs, start, 
 ## The program boundary supplies measured finite root facts without giving
 ## them to an app's Boot reader or retaining another copy of its store.
 mount_start_in : U64, Catalogue, Core.Start(st), Elem(Root(st)), Enclosing -> App(st)
-mount_start_in = |max, programs, { st, tables }, elem, enclosing| {
+mount_start_in = |max, programs, start, elem, enclosing| mount_initial(max, programs, start, elem, enclosing, None)
+
+## Build one cold plan without draining its queued initial reactions. The
+## frame is fixed before any lifetime may disappear and recycle an address.
+mount_cold : U64, Catalogue, Core.Start(st), Elem(Root(st)), Enclosing, U8, U32 -> App(st)
+mount_cold = |max, programs, start, elem, enclosing, mode, entry| mount_initial(max, programs, start, elem, enclosing, Some({ mode, entry }))
+
+mount_initial : U64, Catalogue, Core.Start(st), Elem(Root(st)), Enclosing, [None, Some({ mode : U8, entry : U32 })] -> App(st)
+mount_initial = |max, programs, { st, tables }, elem, enclosing, cold| {
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = new_tx([])
-	tx0 = { cmds, next, free, routes, work, paths, site_free, observations, fx: { ..fx, max } }
-	(block, tx) = mount_block(Root.{ store: st }, elem, 0, [], 0, 0, { cap: 0, enclosing }, tx0)
+	tx0 = { cmds, next, free, routes, work, paths, site_free, observations, fx: { ..fx, max, startup: { ..fx.startup, pending: cold != None } } }
+	tx1 = match cold {
+		None => tx0
+		Some({ mode, entry }) => emit_op(tx0, 28, |bytes| put_u32(bytes.append(mode), entry))
+	}
+	(block, tx) = mount_block(Root.{ store: st }, elem, 0, [], 0, 0, { cap: 0, enclosing }, tx1)
 	written = tables.fold(0.U128, |acc, cell, _| acc.bitwise_or(cell_bit(cell)))
-	Core.App.(AppBody.({ store, root, tx: mounted, programs: catalogue })) = drain(Core.App.(AppBody.{ store: st, root: store_inst({ cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs }))
-	Core.App.(AppBody.{ store, root, tx: with_fx(mounted, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), programs: catalogue })
+	initial = Core.App.(AppBody.{ store: st, root: store_inst({ cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs })
+	match cold {
+		Some(_) => {
+			Core.App.(AppBody.({ store, root, tx: waiting, programs: names })) = initial
+			Core.App.(AppBody.{ store, root, tx: emit_op(waiting, 29, |bytes| bytes), programs: names })
+		}
+		None => {
+			Core.App.(AppBody.({ store, root, tx: mounted, programs: names })) = drain(initial)
+			Core.App.(AppBody.{ store, root, tx: with_fx(mounted, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), programs: names })
+		}
+	}
+}
+
+## The runtime invokes this only after the complete cold batch and effects.
+## Quiet startup still returns a correctly framed completion command.
+complete_startup : App(st) -> App(st)
+complete_startup = |Core.App.(AppBody.({ store, root, tx, programs }))| {
+	fresh = Core.App.(AppBody.{ store, root, tx: with_fx(start_batch(tx), |effects| { ..effects, startup: { ..effects.startup, pending: False } }), programs })
+	Core.App.(AppBody.({ store: live_store, root: live_root, tx: live_tx, programs: live_names })) = drain(fresh)
+	complete = emit_op(with_fx(live_tx, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), 30, |bytes| bytes)
+	Core.App.(AppBody.{ store: live_store, root: live_root, tx: complete, programs: live_names })
 }
 
 ## A files-kind event's record (design.md, Appendix B), `count:u32
@@ -8355,6 +8484,13 @@ RefOwned : { name : Str, path : List(U32) }
 ## Registration owners are node addresses, not application data or identity.
 LiveObservations : { owners : Dict(U32, U64), live : U64 }
 
+ReadyEntry : { path : List(U32), previous : U64, next : U64 }
+
+StartupState : { pending : Bool, next : U64, head : U64, tail : U64, ready : Dict(U64, ReadyEntry), armed : [None, Some(U64)], generation : U64 }
+
+startup_empty : StartupState
+startup_empty = { pending: False, next: 1, head: 0, tail: 0, ready: Dict.empty(), armed: None, generation: 0 }
+
 Fx : {
 	next : U32,
 	inner : U32,
@@ -8386,6 +8522,7 @@ Fx : {
 	## `on_cleanup` runs, by name, in first-run order.
 	cleanups : List((Str, U64)),
 	guard : { live : U64, emitted : Bool },
+	startup : StartupState,
 
 	## Types accumulated across every turn of one host call, never across calls.
 	batch : TransitionBatch,
@@ -8426,12 +8563,12 @@ PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe
 TransitionBatch : { mounting : Bool, asked : Bool, types : List(Str), seen : Dict(Str, {}) }
 
 fx_empty : Fx
-fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: { entries: [], waiting: Dict.empty() }, max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
+fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: { entries: [], waiting: Dict.empty() }, max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, startup: startup_empty, batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
 
 ## Collect a request without allocating an awaited id. Removing the batch from
 ## its holder before updating keeps its hash set and ordered list unique.
 collect_transition : Fx, List(Str) -> Fx
-collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }, names| {
+collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, names| {
 	{ mounting, asked, types, seen } = batch
 	var $types = types
 	var $seen = seen
@@ -8443,7 +8580,7 @@ collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale,
 			}
 		}
 	}
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen } }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen } }
 }
 
 ## The first follow-up id: follow-ups are a space of their own, above
@@ -8868,12 +9005,12 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 	}
 	# A port request's bytes are written at the end of the turn.
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = turn_end_later(tx, path, req)
-	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch } = fx
+	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
 	if live.len() >= max {
-		fx2 = { next: id + 1, inner, live, queue: follow_up(queue, { id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
+		fx2 = { next: id + 1, inner, live, queue: follow_up(queue, { id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }
 		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2 })
 	} else {
-		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req), progress: progress_ms > 0 and supports_progress(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
+		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req), progress: progress_ms > 0 and supports_progress(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }
 		(id, { cmds: put_req(cmds, id, req, progress_ms), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2 })
 	}
 }
@@ -12454,4 +12591,38 @@ expect {
 		control == { ctrl: True, alt: False, shift: False, meta: False, link: NoLink } and
 			linked.link == Link({ href: "../a", target: "_blank", download: True }) and
 				[[], [0], [16, 0], [0, 2], [0, 0, 0], [0, 1], put_str(put_str([0, 1], ""), "").append(2), put_str(put_str([0, 1], ""), "").concat([0, 0])].all(|bytes| read_click(bytes).is_err())
+}
+
+## Validate private startup boot framing before entry indexing or construction.
+read_startup_boot : List(U8) -> Try(Core.StartupBoot, Str)
+read_startup_boot = |bytes| match bytes {
+	[0] => Ok(Legacy)
+	[1, mode, ..] if bytes.len() == 6 and mode <= 1 => {
+		entry = boot_u32(bytes, 2)?
+		if mode == 1 and entry == 0xffffffff {
+			Err("binding requires a concrete entry")
+		} else Ok(Fixed({ mode, entry }))
+	}
+	_ => Err("invalid profile, mode, length or trailing bytes")
+}
+
+## Only paths/root/fallback cross as declarations; no route value or live Boot
+## is serialized. The root and path byte budgets bound this metadata section.
+startup_declaration : Core.StartupProfile -> List(U8)
+startup_declaration = |profile| match profile {
+	Legacy => [0]
+	Deterministic({ paths, root, fallback }) => {
+		root_bytes = put_expanded_name([], root.namespace, root.prefix, root.local)
+		if root_bytes.len() > 65536 {
+			crash "resource_limit: declared startup mount identity exceeds 65536 bytes"
+		}
+		out = paths.fold(put_u32([1].concat(root_bytes), paths.len().to_u32_wrap()), put_str)
+		put_u32(
+			out,
+			match fallback {
+				None => 0xffffffff
+				Some(index) => index
+			},
+		)
+	}
 }
