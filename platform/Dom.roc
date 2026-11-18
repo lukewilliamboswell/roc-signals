@@ -1097,6 +1097,12 @@ Dom := [].{
 
 	## An effect command, decoded independently of the engine.
 	FxCmd : [
+		## Cold bootstrap metadata and its private barriers are not app requests.
+		Startup({ mode : U8, entry : U32 }),
+		StartupAck,
+		StartupComplete,
+		Opportunity({ action : U8, generation : U64 }),
+		Environment(U32),
 		Http(U32, Str, Str, List((Str, Str)), Str, U32, HttpOptions),
 		Get(U32, Str),
 		SessionGet(U32, Str),
@@ -1224,6 +1230,24 @@ Dom := [].{
 	apply_full = |dom0, b| {
 		r = Dom.decode_commands(dom0, b, { start: 0, one: Bool.False })
 		{ dom: r.dom, ops: r.ops, fx: r.fx, written: r.written, values: r.values }
+	}
+
+	## Validate a binding plan against the producer's complete cold logical
+	## frame, independently of Core. This oracle-only replay constructs plain
+	## descriptions for comparison, never another mounted app or engine state.
+	## Returning the source preserves every lifetime and its detach count.
+	bind_cold : Model, List(U8) -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64), values : List((U64, Str)) }
+	bind_cold = |source, bytes| {
+		if bytes.len() < 8 or Dom.byte(bytes, 1) != 28 or Dom.byte(bytes, 2) != 1 or Dom.byte(bytes, bytes.len() - 1) != 29 {
+			crash "executor: bind_cold requires one complete annotated cold batch"
+		}
+		root = Dom.node(source, source.root)
+		seed = { ..Dom.new({}), nodes: [{ ..Dom.empty_node, namespace: root.namespace, prefix: root.prefix, tag: root.tag, container: root.container, svg: root.svg, attrs: root.attrs }] }
+		decoded = Dom.apply_full(seed, bytes)
+		if decoded.dom != source {
+			crash "executor: startup logical plan disagrees with producer frame"
+		}
+		{ ..decoded, dom: source }
 	}
 
 	## Decode one command at its byte position, allowing the browser model to
@@ -1581,6 +1605,8 @@ Dom := [].{
 					(key, next) = Dom.str(b, $at)
 					$at = next
 					$fx = $fx.append(if (kind == 17) SessionGet(id, key) else StorageSub(id, key))
+				} else if kind == 22 {
+					$fx = $fx.append(Environment(id))
 				} else if kind == 21 {
 					crypto_start = $at
 					crypto_op = Dom.byte(b, $at)
@@ -1722,6 +1748,30 @@ Dom := [].{
 				(name, a1) = Dom.str(b, $at + 24)
 				$at = a1
 				$fx = $fx.append(Save(file, name))
+			} else if op == 28 {
+				if intent != 1 or flags != 0 {
+					crash "executor: STARTUP must begin an unmarked cold batch"
+				}
+				mode = Dom.byte(b, $at)
+				entry = Dom.u32(b, $at + 1)
+				if mode > 1 or entry == 4294967295 {
+					crash "executor: invalid startup mode or entry"
+				}
+				$at = $at + 5
+				$fx = $fx.append(Startup({ mode, entry }))
+			} else if op == 29 or op == 30 {
+				if flags != 0 or $at != b.len() {
+					crash "executor: startup barrier must be terminal and unmarked"
+				}
+				$fx = $fx.append(if (op == 29) StartupAck else StartupComplete)
+			} else if op == 31 {
+				action = Dom.byte(b, $at)
+				generation = Dom.u64(b, $at + 1)
+				if action > 1 or generation == 0 {
+					crash "executor: invalid opportunity action or generation"
+				}
+				$at = $at + 9
+				$fx = $fx.append(Opportunity({ action, generation }))
 			} else if op == 25 {
 				on = Dom.byte(b, $at)
 				if on > 1 {
@@ -3418,7 +3468,7 @@ startup_children = |dom, index, models, bytes| {
 startup_gate : RenderState, { model : U64, node : Dom.DNode } -> Try(RenderState, Dom.RenderError)
 startup_gate = |state, { model, node }| {
 	owned = state.startup_owned or !node.hs.is_empty() or !node.props.is_empty()
-	if node.tag.contains("-") or Dom.has_attr(node, "is") or (node.tag == "script" and [Dom.html_namespace, Dom.svg_namespace].contains(node.namespace)) {
+	if (node.namespace == Dom.html_namespace and (node.tag.contains("-") or Dom.has_attr(node, "is"))) or (node.tag == "script" and [Dom.html_namespace, Dom.svg_namespace].contains(node.namespace)) {
 		return Err(InvalidModel({ model, rule: "annotated startup refuses executable or custom-element markup; defer construction or use plain mounting" }))
 	}
 	for (name, _) in node.attrs {
@@ -3640,4 +3690,22 @@ expect {
 		},
 	)
 	gated == [True, True, False]
+}
+
+## Private startup records are independently decoded without consuming an
+## awaited slot; quiet acknowledgement batches retain valid framing.
+expect {
+	cold = Dom.apply_full(Dom.new({}), [0, 28, 0, 2, 0, 0, 0, 13, 9, 0, 0, 0, 22, 29])
+	committed = Dom.apply_full(cold.dom, [0, 31, 1, 1, 0, 0, 0, 0, 0, 0, 0, 30])
+	cold.fx == [Startup({ mode: 0, entry: 2 }), Environment(9), StartupAck] and committed.fx == [Opportunity({ action: 1, generation: 1 }), StartupComplete] and cold.dom.nodes.len() == 1
+}
+
+## Binding validates the complete deterministic plan while retaining the
+## producer's lifetimes, aliases and row-hole targets without a detach.
+expect {
+	frame = [0, 28, 0, 0, 0, 0, 0, 8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 'p', 0, 29]
+	source = Dom.apply(Dom.new({}), frame)
+	binding = frame.set(2, 1)?
+	bound = Dom.bind_cold(source, binding)
+	bound.dom.nodes.len() == 2 and Dom.node(bound.dom, 1).detach_count == 0 and bound.dom == source
 }
