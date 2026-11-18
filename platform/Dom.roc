@@ -3475,6 +3475,9 @@ startup_children = |dom, index, models, bytes| {
 startup_gate : RenderState, { model : U64, node : Dom.DNode } -> Try(RenderState, Dom.RenderError)
 startup_gate = |state, { model, node }| {
 	owned = state.startup_owned or !node.hs.is_empty() or !node.props.is_empty()
+	if node.namespace == Dom.html_namespace and node.tag == "template" and Dom.has_attr(node, "shadowrootmode") {
+		return Err(InvalidModel({ model, rule: "annotated startup refuses declarative shadow roots; defer construction or use plain mounting" }))
+	}
 	if node.namespace == Dom.html_namespace and node.tag == "selectedcontent" {
 		return Err(InvalidModel({ model, rule: "annotated startup refuses selectedcontent native child mutation; defer construction or use plain mounting" }))
 	}
@@ -3749,6 +3752,19 @@ expect {
 	props = { root: 0, scope: Contents, startup: Annotated, limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }
 	refused = match Dom.render(dom, props) {
 		Err(InvalidModel({ rule, .. })) => rule.contains("selectedcontent native child mutation")
+		_ => False
+	}
+	refused and Dom.render(dom, { ..props, startup: Plain }).is_ok()
+}
+
+## A declarative shadow-root template disappears from ordinary children while
+## HTML parses. It cannot carry an owned cold-frame child container.
+expect {
+	dom = { ..Dom.new({}), nodes: [{ ..Dom.empty_node, tag: "div", kids: [1] }, { ..Dom.empty_node, tag: "template", attrs: Dom.attributes([("shadowrootmode", "open")]) }] }
+	props : Dom.RenderProps
+	props = { root: 0, scope: Contents, startup: Annotated, limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }
+	refused = match Dom.render(dom, props) {
+		Err(InvalidModel({ rule, .. })) => rule.contains("declarative shadow roots")
 		_ => False
 	}
 	refused and Dom.render(dom, { ..props, startup: Plain }).is_ok()

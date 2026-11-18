@@ -124,17 +124,26 @@ try {
       check('native selectedcontent cloning despite inert cannot become an unchecked binding', nativeMutationRefused && nativeContent.childNodes.length > 0);
     }
     nativeSelectRoot.remove();
+    const shadowFrame = document.createElement('iframe');
+    const shadowLoaded = new Promise((resolve, reject) => { const timer = setTimeout(() => reject(new Error('declarative shadow fixture timed out')), 5000); shadowFrame.onload = () => { clearTimeout(timer); resolve(); }; });
+    shadowFrame.srcdoc = `<div id="host" inert data-roc-frame="1:0:build" data-roc-node="${encode([1, ...facts(0, [0])])}" data-roc-children="${encode([1, 0, ...word(1), 1, ...word(1), 0, ...word(0), ...word(0)])}"><template shadowrootmode="open"><span>Native shadow</span></template></div>`;
+    document.body.append(shadowFrame); await shadowLoaded;
+    const shadowOwner = shadowFrame.contentDocument.getElementById('host'); let shadowRefused = false;
+    try { new StartupFrame(shadowOwner, 'build'); } catch (error) { shadowRefused = error.message.startsWith('startup:'); }
+    check('native declarative shadow parsing removes the ordinary template before binding', shadowOwner.shadowRoot?.textContent === 'Native shadow' && shadowOwner.childNodes.length === 0 && shadowRefused);
+    shadowFrame.remove();
     const section = (tag, bytes) => [tag, ...word(bytes.length), ...bytes];
     const htmlName = local => [0, ...text(''), ...text(local)];
     const startupDeclaration = [1, ...htmlName('div'), ...word(3), ...text('/'), ...text('/a/'), ...text('/b/'), ...word(0xffffffff)];
     const declarations = [...section(2, word(0)), ...section(5, word(0)), ...section(6, word(0)), ...section(10, [110, 1]), ...section(11, word(0)), ...protocolSection, ...section(14, startupDeclaration)];
+    const coldGet = [13, ...word(9), 2, ...text('example')];
     const batch = [0, 28, 1, ...word(2),
       8, ...word(1), ...word(0), ...word(0), ...htmlName('p'), 0,
       10, ...word(2), ...word(1), ...word(0), ...text('ab'),
       10, ...word(3), ...word(1), ...word(0), ...text(''),
       10, ...word(4), ...word(1), ...word(0), ...text('cdef'),
       8, ...word(5), ...word(0), ...word(0), ...htmlName('video'), 0,
-      13, ...word(9), 2, ...text('example'), 29];
+      ...coldGet, 29];
     const f = fixture(), memory = new WebAssembly.Memory({ initial: 4 }); let length = 0; const calls = [], effects = [];
     const write = bytes => { new Uint8Array(memory.buffer).set(bytes); length = bytes.length; };
     const host = { memory, protocol_version: () => 23, dbg_len: () => 0, dbg_ptr: () => 0,
@@ -143,12 +152,73 @@ try {
       event(node, handler) { const payload = new Uint8Array(memory.buffer, 200000, 1)[0]; calls.push([handler, payload]); write(handler === 0 && payload === 254 ? [0, 30] : []); return 0; },
       keys_released: () => 0, files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
     };
+    const neutralDeclarations = [...section(2, [...word(1), ...text('example')]), ...section(5, word(0)), ...section(6, [...word(1), ...text('(color)')]), ...section(10, [0, 0]), ...section(11, [...word(1), ...text('draft')]), ...protocolSection, ...section(14, startupDeclaration)];
+    const domOnly = batch.slice(0, -coldGet.length - 1);
+    const throwingCounts = { local: 0, session: 0, localRead: 0, sessionRead: 0, online: 0, visible: 0, matchMedia: 0, now: 0, seed: 0, languages: 0, timeZone: 0 };
+    const throwingEnvironment = Object.fromEntries(['online', 'visible', 'matchMedia', 'now', 'seed', 'languages', 'timeZone'].map(key => [key, () => { throwingCounts[key]++; throw new Error('deliberately unavailable ' + key); }]));
+    const lazyWindow = new Proxy(window, { get(target, key) {
+      if (key === 'localStorage') { throwingCounts.local++; return { getItem() { throwingCounts.localRead++; return 'local'; } }; }
+      if (key === 'sessionStorage') { throwingCounts.session++; return { getItem() { throwingCounts.sessionRead++; return 'session'; } }; }
+      const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    const neutral = fixture();
+    const neutralHost = { ...host, boot_keys() { write(neutralDeclarations); }, init() { write([...domOnly, 29]); return 0; } };
+    const neutralRuntime = new RocEngineRuntime(neutralHost, neutral.root, { window: lazyWindow, environment: throwingEnvironment, startupBuildToken: 'build', manualEffects: true }); neutralRuntime.mount();
+    check('deterministic bootstrap reads no live environment or storage service', !neutralRuntime.poisoned && Object.values(throwingCounts).every(count => count === 0));
+    write([0, 13, ...word(77), 22]); neutralRuntime.apply(); await new Promise(resolve => setTimeout(resolve, 0));
+    check('only a later snapshot reaches throwing readers and classifies their fault', neutralRuntime.poisoned?.class === 'executor' && throwingCounts.now === 1 && throwingCounts.localRead === 1 && throwingCounts.sessionRead === 1);
+    neutralRuntime.unmount(); neutral.root.remove(); calls.length = 0;
+    const sampled = fixture(), reads = { now: 0, seed: 0, languages: 0, timeZone: 0, online: 0, visible: 0, matchMedia: 0 };
+    const localValues = new Map([['example', 'before']]), sessionValues = new Map([['draft', 'current']]);
+    const store = values => ({ getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) });
+    const counted = (key, value) => () => { reads[key]++; return value; };
+    const environment = { now: counted('now', 42n), seed: counted('seed', new Uint8Array(16).fill(7)), languages: counted('languages', ['en-NZ']), timeZone: counted('timeZone', { name: 'UTC', from_ms: -(1n << 63n), until_ms: (1n << 63n) - 1n, offsets: [{ from_ms: -(1n << 63n), minutes: 0 }] }), online: counted('online', false), visible: counted('visible', true), matchMedia: counted('matchMedia', { matches: true, addEventListener() {}, removeEventListener() {} }) };
+    const originalLocation = location.pathname + location.search + location.hash; let snapshotPayload = null, reserved = 0;
+    const sampledHost = { ...host, boot_keys() { write(neutralDeclarations); }, payload_reserve(length) { reserved = length; return 200000; }, init() { write([...domOnly, 13, ...word(77), 22, 16, 1, ...text('example'), ...text('cold'), 29]); return 0; }, event(_node, handler) {
+      if (handler === 0) write([0, 16, 1, ...text('example'), ...text('ack'), 15, 2, ...text('/after-ack?query#fragment'), 30]);
+      else { snapshotPayload = new Uint8Array(memory.buffer, 200000, reserved).slice(); write([]); }
+      return 0;
+    } };
+    const sampledRuntime = new RocEngineRuntime(sampledHost, sampled.root, { environment, storage: store(localValues), sessionStorage: store(sessionValues), startupBuildToken: 'build', manualEffects: true }); sampledRuntime.mount();
+    check('snapshot stays unsampled through cold and acknowledgement batches', !sampledRuntime.poisoned && Object.values(reads).every(count => count === 0) && localValues.get('example') === 'ack');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const sections = new Map(); let payloadAt = 1;
+    while (payloadAt < snapshotPayload.length) { const tag = snapshotPayload[payloadAt], length = new DataView(snapshotPayload.buffer).getUint32(payloadAt + 1, true); sections.set(tag, snapshotPayload.slice(payloadAt + 5, payloadAt + 5 + length)); payloadAt += 5 + length; }
+    const stringAt = (bytes, at) => { const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(at, true); return { text: new TextDecoder().decode(bytes.subarray(at + 4, at + 4 + length)), next: at + 4 + length }; };
+    const localSection = sections.get(2), localKey = stringAt(localSection, 5), localValue = stringAt(localSection, localKey.next);
+    check('snapshot callback sees cold and acknowledgement writes and current history', snapshotPayload[0] === 31 && stringAt(sections.get(1), 0).text === '/after-ack?query#fragment' && localKey.text === 'example' && localValue.text === 'ack' && !sections.has(13) && !sections.has(14) && Object.values(reads).every(count => count === 1));
+    sampledRuntime.unmount(); sampled.root.remove(); history.replaceState(null, '', originalLocation);
     const legacyRoot = document.createElement('div'); document.body.append(legacyRoot);
     const legacyDeclarations = [...declarations.slice(0, declarations.length - 5 - startupDeclaration.length), ...section(14, [0])];
     const legacyHost = { ...host, boot_keys() { write(legacyDeclarations); }, init() { write([0, 31, 1, 1, 0, 0, 0, 0, 0, 0, 0]); return 0; } };
     const legacyRuntime = new RocEngineRuntime(legacyHost, legacyRoot, { manualEffects: true }); legacyRuntime.mount();
     check('ordinary legacy construction can register placeholder opportunities', !legacyRuntime.poisoned && legacyRuntime.opportunity?.generation === 1n && legacyRuntime.startupPhase === 'plain');
-    legacyRuntime.runOpportunity(); legacyRuntime.unmount(); legacyRoot.remove(); calls.length = 0;
+    const transitionDescriptor = Object.getOwnPropertyDescriptor(document, 'startViewTransition'); let transitionUpdate = null;
+    const actions = [], register = legacyRuntime.requestOpportunity.bind(legacyRuntime);
+    legacyRuntime.requestOpportunity = (action, generation) => { actions.push([action, generation.toString()]); register(action, generation); };
+    try {
+      Object.defineProperty(document, 'startViewTransition', { configurable: true, value: argument => { transitionUpdate = typeof argument === 'function' ? argument : argument.update; return { ready: Promise.resolve(), finished: Promise.resolve(), skipTransition() {} }; } });
+      const invalidatedCallback = legacyRuntime.opportunity.deliver;
+      write([1, 31, 0, 1, 0, 0, 0, 0, 0, 0, 0, 24, ...word(0)]); legacyRuntime.busy = true; legacyRuntime.apply();
+      invalidatedCallback();
+      check('marked batches cancel opportunities before their deferred DOM update', legacyRuntime.opportunity === null && legacyRuntime.pendingTransition !== null && legacyRuntime.queue.length === 0);
+      transitionUpdate();
+      write([1, 8, ...word(99), ...word(0), ...word(0), ...htmlName('div'), 0, 31, 1, 2, 0, 0, 0, 0, 0, 0, 0, 24, ...word(0)]); legacyRuntime.busy = true; legacyRuntime.apply();
+      const beforeOpportunity = calls.length; legacyRuntime.runOpportunity();
+      check('early transition opportunity callbacks wait behind the busy ingress barrier', legacyRuntime.opportunity?.generation === 2n && legacyRuntime.queue.length === 1 && calls.length === beforeOpportunity && legacyRoot.childNodes.length === 0);
+      transitionUpdate();
+      check('transition update drains one opportunity without repeating its registration', !legacyRuntime.poisoned && legacyRuntime.lookup(99)?.localName === 'div' && legacyRuntime.opportunity === null && calls.length === beforeOpportunity + 1 && JSON.stringify(actions) === JSON.stringify([[0, '1'], [1, '2']]));
+    } finally {
+      if (transitionDescriptor) Object.defineProperty(document, 'startViewTransition', transitionDescriptor); else delete document.startViewTransition;
+    }
+    legacyRuntime.requestOpportunity(1, 3n); const beforeInvalidCancel = legacyRuntime.opportunity;
+    write([0, 31, 0, 4, 0, 0, 0, 0, 0, 0, 0]); let futureCancel = null;
+    try { legacyRuntime.apply(); } catch (error) { futureCancel = error; }
+    check('a future cancellation frame refuses before replacing its registration', futureCancel?.message.includes('no matching registration') && legacyRuntime.opportunity === beforeInvalidCancel && legacyRuntime.opportunityGeneration === 3n);
+    write([0, 31, 0, 3, 0, 0, 0, 0, 0, 0, 0]); legacyRuntime.apply(); let repeatedCancel = null;
+    try { legacyRuntime.apply(); } catch (error) { repeatedCancel = error; }
+    check('a cancellation frame without a registration is a protocol error', repeatedCancel?.message.includes('no matching registration') && legacyRuntime.opportunity === null && legacyRuntime.opportunityGeneration === 3n);
+    legacyRuntime.unmount(); legacyRoot.remove(); calls.length = 0;
     const runtime = new RocEngineRuntime(host, f.root, { startupBuildToken: 'build', manualEffects: true });
     runtime.perform = effect => { effects.push(effect.op); runtime.result(9, new Uint8Array([4])); };
     runtime.mount();

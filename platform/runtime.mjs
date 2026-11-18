@@ -3470,17 +3470,13 @@ export class RocEngineRuntime {
       ports: () => this.portStats(),
       maxWorkers: this.maxWorkers,
     });
-    this.storage = options.storage ?? (() => {
-      try {
-        return this.win.localStorage;
-      } catch (_) {
-        return null;
-      }
-    })();
-    this.sessionStorage = options.sessionStorage ?? (() => {
-      try { return this.win.sessionStorage; }
-      catch { return null; }
-    })();
+    // Acquiring a browser storage service can itself throw. Fixed bootstrap
+    // does not consult it until a declared effect actually needs that service.
+    this.storage = options.storage ?? null;
+    this.sessionStorage = options.sessionStorage ?? null;
+    this.storageResolved = options.storage != null;
+    this.sessionResolved = options.sessionStorage != null;
+
   }
 
   // The last applied GUARD is the complete policy. This listener never
@@ -3606,8 +3602,35 @@ export class RocEngineRuntime {
     }
   }
 
+  storageService(session) {
+    const field = session ? "sessionStorage" : "storage";
+    const resolved = session ? "sessionResolved" : "storageResolved";
+    if (!this[resolved]) {
+      this[resolved] = true;
+      try { this[field] = this.win?.[session ? "sessionStorage" : "localStorage"] ?? null; }
+      catch { this[field] = null; }
+    }
+    return this[field];
+  }
+
   bootBytes(snapshot = false) {
     const mountRoot = mountRootBytes(this.root, this.protocol);
+    if (!snapshot && this.startupProfile?.profile === 1) {
+      const url = this.startup || this.startupEntry !== null ? "/" : this.win?.location?.pathname ?? "/";
+      const minTime = -(1n << 63n), maxTime = (1n << 63n) - 1n;
+      const sections = [
+        [1, encStr(url)], [2, concat([new Uint8Array([1]), u32(0)])],
+        [3, new Uint8Array([1])], [4, new Uint8Array([1])],
+        [6, new Uint8Array(this.mediaQueries.length)], [7, i64Bytes(0n)],
+        [8, new Uint8Array(16)], [9, concat([u32(1), encStr("en-US")])],
+        [10, concat([encStr("UTC"), i64Bytes(minTime), i64Bytes(maxTime), u32(1), i64Bytes(minTime), i32Bytes(0)])],
+        [11, concat([new Uint8Array([1]), u32(0)])], [13, mountRoot],
+        [14, concat([new Uint8Array([1, this.startup ? 1 : 0]), u32(this.startupEntry ?? 0xffffffff)])],
+      ];
+      return concat(sections.map(([tag, body]) => concat([new Uint8Array([tag]), u32(body.length), body])));
+    }
+    this.storageService(false);
+    this.storageService(true);
     // Read before mount with the port table (see mount()).
     const keys = this.bootKeys;
     // Storage is unavailable when there is none, any read throws or any
@@ -5036,7 +5059,11 @@ export class RocEngineRuntime {
 
   requestOpportunity(action, generation) {
     if (generation === 0n || generation < this.opportunityGeneration) throw new Error("startup: invalid opportunity generation");
-    if (action === 0) { this.cancelOpportunity(); this.opportunityGeneration = generation; return; }
+    if (action === 0) {
+      if (this.opportunity?.generation !== generation) throw new Error("startup: opportunity cancellation has no matching registration");
+      this.cancelOpportunity();
+      return;
+    }
     if (action !== 1 || generation <= this.opportunityGeneration || this.opportunity) throw new Error("startup: repeated opportunity registration");
     this.opportunityGeneration = generation;
     const task = { generation, timer: null, channel: null, posted: false, deliver: null };
@@ -5108,9 +5135,11 @@ export class RocEngineRuntime {
         continue;
       }
       if (op === this.protocol.OP_OPPORTUNITY) {
+        if (mode === "update" && batch.spans.has(offset)) { at = batch.spans.get(offset); continue; }
         const action = u8[at], generation = dv.getBigUint64(at + 1, true); at += 9;
         if (action > 1 || generation === 0n || this.startupPhase === "cold") throw new Error("startup: opportunity operands or phase");
-        if (!scanning) this.requestOpportunity(action, generation);
+        queueEffect(this, reader, { op: "opportunity", action, generation });
+        if (mode === "early") batch.spans.set(offset, at);
         continue;
       }
       if (op === this.protocol.OP_TRANSITION) {
@@ -5451,6 +5480,9 @@ export class RocEngineRuntime {
   perform(fx) {
     const w = this.win;
     switch (fx.op) {
+      case "opportunity":
+        this.requestOpportunity(fx.action, fx.generation);
+        return;
       case "environment": {
         const entry = { kind: "environment", req: fx, cancel: () => clearTimeout(entry.timer) };
         this.live.set(fx.id, entry);
@@ -5530,7 +5562,7 @@ export class RocEngineRuntime {
       case "set":
       case "remove":
         try {
-          const store = fx.session ? this.sessionStorage : this.storage;
+          const store = this.storageService(fx.session);
           if (!store) throw new Error("storage is unavailable");
           if (fx.op === "set") store.setItem(fx.key, fx.value);
           else store.removeItem(fx.key);
@@ -5595,6 +5627,7 @@ export class RocEngineRuntime {
         return;
       }
       case "storagechanges": {
+        this.storageService(false);
         let ids = this.storageChanges.get(fx.key);
         if (!ids) { ids = new Set(); this.storageChanges.set(fx.key, ids); }
         ids.add(fx.id);
@@ -5680,7 +5713,7 @@ export class RocEngineRuntime {
           this.live.delete(fx.id);
           let v = null;
           try {
-            const store = fx.op === "sessionget" ? this.sessionStorage : this.storage;
+            const store = this.storageService(fx.op === "sessionget");
             v = store ? store.getItem(fx.key) : null;
           } catch (_) {
             v = null;
