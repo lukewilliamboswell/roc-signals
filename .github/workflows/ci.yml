@@ -326,6 +326,14 @@ jobs:
           done
           curl -s http://127.0.0.1:8123/ | grep -q '__signals/events' || { echo "no reload script in the page"; failed=1; }
           exit $failed
+      - name: Preserve failed native and Chrome conformance inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-conformance-${{ matrix.target }}
+          path: .build/native-conformance/
+          if-no-files-found: warn
+          retention-days: 3
 
   site:
     name: Site
