@@ -135,9 +135,9 @@ PortJson := [].{
 		Shape : a
 		parse_shape = Shape.parser_for(Format.Default)
 		text = Str.to_utf8(json)
-		read = parse_shape(State.{ text, pos: 0, blobs, files, depth: 0, null_record: False, dicts: DictKeys.Outside })?
+		read = parse_shape(state_of(PortJsonBody.State.{ text, pos: 0, blobs, files, depth: 0, null_record: False, dicts: DictKeys.Outside }))?
 		end = skip_ws(read.rest)
-		if (end.pos == text.len()) Ok(read.value) else Err(Trailing(end.pos))
+		if (position_of(end) == text.len()) Ok(read.value) else Err(Trailing(position_of(end)))
 	}
 
 	## A sentence for an `Error`, for diagnostics and for the typed port
@@ -165,18 +165,10 @@ PortJson := [].{
 	## lists (https://github.com/roc-lang/roc/issues/13081).
 	Out :: PortJsonBody.Out
 
-	## The decoder's cursor: the text, the position, the message's blobs, how
-	## deep the open containers are, whether a `null` is standing in for
-	## the record being read, and the names read in each open dictionary.
-	## Applications never construct one.
-	State := { text : List(U8), pos : U64, blobs : List(List(U8)), files : List(Engine.File), depth : U64, null_record : Bool, dicts : DictKeys }
-
-	## Only dictionaries push a frame. Recording a key edits the innermost
-	## set without touching the boxed outer frames; records, arrays and tags
-	## move them unchanged. Retained decoded names occupy at most the input's key
-	## bytes, and at most 512 dictionaries can be open. Closing one releases
-	## its set; any error drops every remaining frame with the cursor.
-	DictKeys := [Outside, Inside({ names : Set(Str), outer : Box(DictKeys) })]
+	## A cursor passed between a message type's parsing hooks. A handwritten
+	## parser passes on the next cursor returned by its format's hooks; it
+	## cannot construct one or reset the decoder's position and limits.
+	State :: Box(PortJsonBody.State)
 
 	## The format marker the compiler dispatches on. Its methods are the
 	## derivation hooks; applications call `encode` and `decode` instead.
@@ -184,7 +176,7 @@ PortJson := [].{
 
 		## A key of an enumeration dictionary named a tag the type lacks.
 		invalid_value : Format, State -> Error
-		invalid_value = |_, state| Expected("a known tag", state.pos)
+		invalid_value = |_, state| Expected("a known tag", position_of(state))
 
 		## A record lacked a required field.
 		missing_field : Format, Str -> Error
@@ -215,7 +207,7 @@ PortJson := [].{
 			} else if literal(s, "false") {
 				Ok({ value: False, rest: advance(s, 5) })
 			} else {
-				Err(Expected("true or false", s.pos))
+				Err(Expected("true or false", position_of(s)))
 			}
 		}
 
@@ -350,7 +342,7 @@ PortJson := [].{
 		parse_dec = |_, state| {
 			s = skip_ws(state)
 			token = number_text(s)?
-			value = Dec.from_str(token.text) ? |_| OutOfRange(s.pos)
+			value = Dec.from_str(token.text) ? |_| OutOfRange(position_of(s))
 			Ok({ value, rest: token.rest })
 		}
 
@@ -371,7 +363,7 @@ PortJson := [].{
 		parse_list_start = |_, state| {
 			s = skip_ws(state)
 			if byte_at(s) != open_square {
-				return Err(Expected("an array", s.pos))
+				return Err(Expected("an array", position_of(s)))
 			}
 			Ok(Uncounted(deeper(advance(s, 1))?))
 		}
@@ -410,7 +402,7 @@ PortJson := [].{
 				return Ok(Uncounted(with_null(advance(s, 4), True)))
 			}
 			if byte_at(s) != open_curly {
-				return Err(Expected("an object", s.pos))
+				return Err(Expected("an object", position_of(s)))
 			}
 			Ok(Uncounted(deeper(advance(s, 1))?))
 		}
@@ -419,7 +411,7 @@ PortJson := [].{
 		## is consumed here and reads as absent.
 		parse_record_field : Format, Encoding.FieldName.FieldNames(_shape), State -> Try([Field({ field : Encoding.FieldName(_shape), rest : State }), TryField({ name : Str, rest : State }), TryFieldCaseless({ name : Str, rest : State }), Continue(State), Done(State)], Error)
 		parse_record_field = |_, _, state| {
-			if state.null_record {
+			if (body_of(state)).null_record {
 				return Ok(Done(with_null(state, False)))
 			}
 			s = skip_ws(state)
@@ -457,7 +449,7 @@ PortJson := [].{
 		parse_tuple_start = |_, state, _| {
 			s = skip_ws(state)
 			if byte_at(s) != open_square {
-				return Err(Expected("an array of ${"a tuple's"} items", s.pos))
+				return Err(Expected("an array of ${"a tuple's"} items", position_of(s)))
 			}
 			deeper(advance(s, 1))
 		}
@@ -471,7 +463,7 @@ PortJson := [].{
 		parse_tuple_end = |_, state, _| {
 			s = skip_ws(state)
 			if byte_at(s) != close_square {
-				return Err(Expected("the end of a tuple", s.pos))
+				return Err(Expected("the end of a tuple", position_of(s)))
 			}
 			Ok(shallower(advance(s, 1)))
 		}
@@ -507,7 +499,7 @@ PortJson := [].{
 				return bare_tag(encoding, spec, name.value, name.rest)
 			}
 			if byte_at(s) != open_curly {
-				return Err(Expected("a tag", s.pos))
+				return Err(Expected("a tag", position_of(s)))
 			}
 			opened = deeper(advance(s, 1))?
 			name = read_string(skip_ws(opened))?
@@ -521,7 +513,7 @@ PortJson := [].{
 					state: payload_at,
 					start_payloads: |current, count|
 						if count == 0 {
-							Err(Expected("a tag with payloads, not ${tag}", current.pos))
+							Err(Expected("a tag with payloads, not ${tag}", position_of(current)))
 						} else if count == 1 {
 							Ok(current)
 						} else {
@@ -569,7 +561,7 @@ PortJson := [].{
 		parse_dict_start = |_, state| {
 			s = skip_ws(state)
 			if byte_at(s) != open_curly {
-				return Err(Expected("an object", s.pos))
+				return Err(Expected("an object", position_of(s)))
 			}
 			opened = deeper(advance(s, 1))?
 			Ok(Uncounted(open_dict(opened)))
@@ -601,7 +593,7 @@ PortJson := [].{
 		parse_key_str : Format, State -> Try({ value : Str, rest : State }, Error)
 		parse_key_str = |_, state| {
 			s = skip_ws(state)
-			at = s.pos
+			at = position_of(s)
 			read = read_key(s)?
 			if Str.starts_with(read.value, "$$") {
 				Ok({ value: Str.drop_prefix(read.value, "$"), rest: read.rest })
@@ -620,7 +612,7 @@ PortJson := [].{
 		parse_key_bool : Format, State -> Try({ value : Bool, rest : State }, Error)
 		parse_key_bool = |_, state| {
 			s = skip_ws(state)
-			at = s.pos
+			at = position_of(s)
 			read = read_key(s)?
 			if read.value == "true" {
 				Ok({ value: True, rest: read.rest })
@@ -719,7 +711,7 @@ PortJson := [].{
 		parse_key_dec : Format, State -> Try({ value : Dec, rest : State }, Error)
 		parse_key_dec = |_, state| {
 			s = skip_ws(state)
-			at = s.pos
+			at = position_of(s)
 			read = read_key(s)?
 			if !is_number(Str.to_utf8(read.value)) {
 				return Err(Expected("a decimal key", at))
@@ -758,16 +750,16 @@ PortJson := [].{
 		parse_bytes = |_, state| {
 			s = skip_ws(state)
 			if byte_at(s) != open_curly {
-				return Err(Expected("a bytes marker", s.pos))
+				return Err(Expected("a bytes marker", position_of(s)))
 			}
 			key = read_string(skip_ws(advance(s, 1)))?
 			if key.value != "$bytes" {
-				return Err(Expected("a bytes marker", s.pos))
+				return Err(Expected("a bytes marker", position_of(s)))
 			}
 			index_at = skip_ws(expect_byte(key.rest, colon)?)
 			index = parse_int(index_at, Narrow, U64.from_str)?
 			end = expect_byte(index.rest, close_curly)?
-			blob = s.blobs.get(index.value) ? |_| NoSuchBlob(index.value)
+			blob = (body_of(s)).blobs.get(index.value) ? |_| NoSuchBlob(index.value)
 			Ok({ value: blob, rest: end })
 		}
 
@@ -785,16 +777,16 @@ PortJson := [].{
 		parse_file = |_, state| {
 			s = skip_ws(state)
 			if byte_at(s) != open_curly {
-				return Err(Expected("a file marker", s.pos))
+				return Err(Expected("a file marker", position_of(s)))
 			}
 			key = read_string(skip_ws(advance(s, 1)))?
 			if key.value != "$file" {
-				return Err(Expected("a file marker", s.pos))
+				return Err(Expected("a file marker", position_of(s)))
 			}
 			index_at = skip_ws(expect_byte(key.rest, colon)?)
 			index = parse_int(index_at, Narrow, U64.from_str)?
 			end = expect_byte(index.rest, close_curly)?
-			file = s.files.get(index.value) ? |_| NoSuchFile(index.value)
+			file = (body_of(s)).files.get(index.value) ? |_| NoSuchFile(index.value)
 			Ok({ value: file, rest: end })
 		}
 	}
@@ -804,6 +796,9 @@ PortJson := [].{
 	## hooks and cannot build one.
 	Entries :: PortJsonBody.Entries
 }
+
+## The private reader metadata, never an application-facing codec type.
+DictKeys : PortJsonBody.DictKeys
 
 ## How deep containers may nest in a message: the bound on the decoder's
 ## recursion, and on the encoder's, which refuses a value nested deeper.
@@ -841,29 +836,62 @@ comma = 44
 minus : U8
 minus = 45
 
+## One private box owns the reader body. This reader's record cursor copies its name
+## set on every insertion on the verified upstream compiler, even without
+## file values (https://github.com/roc-lang/roc/issues/13196); boxing it
+## keeps the set uniquely owned. Moving the cursor
+## allocates a constant-sized box, so total allocation stays proportional
+## to the input. The port-json fuzz target bounds cumulative requested
+## bytes as well as peak memory. Only this module opens the cursor.
+body_of : PortJson.State -> PortJsonBody.State
+body_of = |PortJson.State.(held)| Box.unbox(held)
+
+state_of : PortJsonBody.State -> PortJson.State
+state_of = |body| PortJson.State.(Box.box(body))
+
+position_of : PortJson.State -> U64
+position_of = |state| (body_of(state)).pos
+
 ## The byte under the cursor, or 0 at the end (0 never begins JSON).
 byte_at : PortJson.State -> U8
-byte_at = |state| state.text.get(state.pos) ?? 0
+byte_at = |state| {
+	body = body_of(state)
+	body.text.get(body.pos) ?? 0
+}
 
 advance : PortJson.State, U64 -> PortJson.State
-advance = |state, width| PortJson.State.{ text: state.text, pos: state.pos + width, blobs: state.blobs, files: state.files, depth: state.depth, null_record: state.null_record, dicts: state.dicts }
+advance = |state, width| {
+	PortJsonBody.State.({ text, pos, blobs, files, depth, null_record, dicts }) = body_of(state)
+	state_of(PortJsonBody.State.{ text, pos: pos + width, blobs, files, depth, null_record, dicts })
+}
 
 move_to : PortJson.State, U64 -> PortJson.State
-move_to = |state, pos| PortJson.State.{ text: state.text, pos, blobs: state.blobs, files: state.files, depth: state.depth, null_record: state.null_record, dicts: state.dicts }
+move_to = |state, pos| {
+	PortJsonBody.State.({ text, pos: _, blobs, files, depth, null_record, dicts }) = body_of(state)
+	state_of(PortJsonBody.State.{ text, pos, blobs, files, depth, null_record, dicts })
+}
 
 with_null : PortJson.State, Bool -> PortJson.State
-with_null = |state, null_record| PortJson.State.{ text: state.text, pos: state.pos, blobs: state.blobs, files: state.files, depth: state.depth, null_record, dicts: state.dicts }
+with_null = |state, null_record| {
+	PortJsonBody.State.({ text, pos, blobs, files, depth, null_record: _, dicts }) = body_of(state)
+	state_of(PortJsonBody.State.{ text, pos, blobs, files, depth, null_record, dicts })
+}
 
 ## Move the enclosing frame into one box; no earlier cursor retains it.
 open_dict : PortJson.State -> PortJson.State
-open_dict = |PortJson.State.({ text, pos, blobs, files, depth, null_record, dicts })|
-	PortJson.State.{ text, pos, blobs, files, depth, null_record, dicts: PortJson.DictKeys.Inside({ names: Set.empty(), outer: Box.box(dicts) }) }
+open_dict = |state| {
+	PortJsonBody.State.({ text, pos, blobs, files, depth, null_record, dicts }) = body_of(state)
+	state_of(PortJsonBody.State.{ text, pos, blobs, files, depth, null_record, dicts: DictKeys.Inside({ names: Set.empty(), outer: Box.box(dicts) }) })
+}
 
 ## Close only a dictionary frame; its enclosing containers need no frame.
 close_dict : PortJson.State -> Try(PortJson.State, PortJson.Error)
-close_dict = |PortJson.State.({ text, pos, blobs, files, depth, null_record, dicts })| match dicts {
-	Outside => Err(Expected("an open dictionary", pos))
-	Inside({ names: _, outer }) => Ok(PortJson.State.{ text, pos, blobs, files, depth, null_record, dicts: Box.unbox(outer) })
+close_dict = |state| {
+	PortJsonBody.State.({ text, pos, blobs, files, depth, null_record, dicts }) = body_of(state)
+	match dicts {
+		Outside => Err(Expected("an open dictionary", pos))
+		Inside({ names: _, outer }) => Ok(state_of(PortJsonBody.State.{ text, pos, blobs, files, depth, null_record, dicts: Box.unbox(outer) }))
+	}
 }
 
 ## The supported key parsers each accept one decoded name per Roc key.
@@ -872,16 +900,16 @@ close_dict = |PortJson.State.({ text, pos, blobs, files, depth, null_record, dic
 read_key : PortJson.State -> Try({ value : Str, rest : PortJson.State }, PortJson.Error)
 read_key = |state| {
 	s = skip_ws(state)
-	at = s.pos
-	read = read_string(s)?
-	PortJson.State.({ text, pos, blobs, files, depth, null_record, dicts }) = read.rest
+	at = position_of(s)
+	{ value, rest } = read_string(s)?
+	PortJsonBody.State.({ text, pos, blobs, files, depth, null_record, dicts }) = body_of(rest)
 	match dicts {
 		Outside => Err(Expected("an open dictionary", at))
 		Inside({ names, outer }) => {
-			if names.contains(read.value) {
+			if names.contains(value) {
 				return Err(Expected("a key the object has not given", at))
 			}
-			Ok({ value: read.value, rest: PortJson.State.{ text, pos, blobs, files, depth, null_record, dicts: PortJson.DictKeys.Inside({ names: names.insert(read.value), outer }) } })
+			Ok({ value, rest: state_of(PortJsonBody.State.{ text, pos, blobs, files, depth, null_record, dicts: DictKeys.Inside({ names: names.insert(value), outer }) }) })
 		}
 	}
 }
@@ -889,22 +917,26 @@ read_key = |state| {
 ## Open a container, refusing one past the nesting bound.
 deeper : PortJson.State -> Try(PortJson.State, PortJson.Error)
 deeper = |state| {
-	if state.depth >= max_depth {
+	PortJsonBody.State.({ text, pos, blobs, files, depth, null_record, dicts }) = body_of(state)
+	if depth >= max_depth {
 		return Err(TooDeep)
 	}
-	Ok(PortJson.State.{ text: state.text, pos: state.pos, blobs: state.blobs, files: state.files, depth: state.depth + 1, null_record: state.null_record, dicts: state.dicts })
+	Ok(state_of(PortJsonBody.State.{ text, pos, blobs, files, depth: depth + 1, null_record, dicts }))
 }
 
 shallower : PortJson.State -> PortJson.State
-shallower = |state| PortJson.State.{ text: state.text, pos: state.pos, blobs: state.blobs, files: state.files, depth: state.depth - 1, null_record: state.null_record, dicts: state.dicts }
+shallower = |state| {
+	PortJsonBody.State.({ text, pos, blobs, files, depth, null_record, dicts }) = body_of(state)
+	state_of(PortJsonBody.State.{ text, pos, blobs, files, depth: depth - 1, null_record, dicts })
+}
 
 ## Skip JSON whitespace: space, tab, line feed, carriage return.
 skip_ws : PortJson.State -> PortJson.State
 skip_ws = |state| {
-	var $pos = state.pos
+	var $pos = position_of(state)
 	var $more = True
 	while $more {
-		match state.text.get($pos) {
+		match (body_of(state)).text.get($pos) {
 			Ok(b) if b == 32 or b == 9 or b == 10 or b == 13 => {
 				$pos = $pos + 1
 			}
@@ -913,14 +945,14 @@ skip_ws = |state| {
 			}
 		}
 	}
-	if ($pos == state.pos) state else move_to(state, $pos)
+	if ($pos == position_of(state)) state else move_to(state, $pos)
 }
 
 ## Whether the text at the cursor begins with `word`.
 literal : PortJson.State, Str -> Bool
 literal = |state, word| {
 	bytes = Str.to_utf8(word)
-	state.text.sublist({ start: state.pos, len: bytes.len() }) == bytes
+	(body_of(state)).text.sublist({ start: position_of(state), len: bytes.len() }) == bytes
 }
 
 ## Skip whitespace, then require `byte` and step over it.
@@ -930,7 +962,7 @@ expect_byte = |state, byte| {
 	if byte_at(s) == byte {
 		Ok(advance(s, 1))
 	} else {
-		Err(Syntax(s.pos))
+		Err(Syntax(position_of(s)))
 	}
 }
 
@@ -942,11 +974,11 @@ after_entry = |state, close| {
 	b = byte_at(s)
 	if b == comma {
 		next = skip_ws(advance(s, 1))
-		if (byte_at(next) == close) Err(Syntax(next.pos)) else Ok(Continue(next))
+		if (byte_at(next) == close) Err(Syntax(position_of(next))) else Ok(Continue(next))
 	} else if b == close {
 		Ok(Done(shallower(advance(s, 1))))
 	} else {
-		Err(Syntax(s.pos))
+		Err(Syntax(position_of(s)))
 	}
 }
 
@@ -959,8 +991,8 @@ bare_tag = |encoding, spec, tag, state|
 			tag,
 			encoding,
 			state,
-			start_payloads: |current, count| if (count == 0) Ok(current) else Err(Expected("an object holding the payloads of ${tag}", current.pos)),
-			next_payload: |current, _, _| Err(Syntax(current.pos)),
+			start_payloads: |current, count| if (count == 0) Ok(current) else Err(Expected("an object holding the payloads of ${tag}", position_of(current))),
+			next_payload: |current, _, _| Err(Syntax(position_of(current))),
 			finish_payloads: |current, _| Ok(current),
 			missing: UnknownTag(tag),
 		},
@@ -970,10 +1002,10 @@ bare_tag = |encoding, spec, tag, state|
 read_string : PortJson.State -> Try({ value : Str, rest : PortJson.State }, PortJson.Error)
 read_string = |state| {
 	if byte_at(state) != quote {
-		return Err(Expected("a string", state.pos))
+		return Err(Expected("a string", position_of(state)))
 	}
-	text = state.text
-	start = state.pos + 1
+	text = (body_of(state)).text
+	start = position_of(state) + 1
 	# Most strings have no escape: find the closing quote and take the run.
 	var $i = start
 	var $plain = True
@@ -1159,12 +1191,12 @@ number_text = |s| {
 	if byte_at(s) == quote {
 		read = read_string(s)?
 		if !is_number(Str.to_utf8(read.value)) {
-			return Err(Expected("a number", s.pos))
+			return Err(Expected("a number", position_of(s)))
 		}
 		return Ok({ text: read.value, rest: read.rest })
 	}
-	end = number_end(s.text, s.pos) ? |_| Expected("a number", s.pos)
-	text = Str.from_utf8(s.text.sublist({ start: s.pos, len: end - s.pos })) ? |_| Syntax(s.pos)
+	end = number_end((body_of(s)).text, position_of(s)) ? |_| Expected("a number", position_of(s))
+	text = Str.from_utf8((body_of(s)).text.sublist({ start: position_of(s), len: end - position_of(s) })) ? |_| Syntax(position_of(s))
 	Ok({ text, rest: move_to(s, end) })
 }
 
@@ -1177,24 +1209,24 @@ parse_int = |state, width, from_str| {
 		if byte_at(s) == quote {
 			read = read_string(s)?
 			if !is_integer(Str.to_utf8(read.value)) {
-				return Err(Expected("an integer", s.pos))
+				return Err(Expected("an integer", position_of(s)))
 			}
 			(read.value, read.rest, True)
 		} else {
-			end = number_end(s.text, s.pos) ? |_| Expected("an integer", s.pos)
-			whole = s.text.sublist({ start: s.pos, len: end - s.pos })
+			end = number_end((body_of(s)).text, position_of(s)) ? |_| Expected("an integer", position_of(s))
+			whole = (body_of(s)).text.sublist({ start: position_of(s), len: end - position_of(s) })
 			if !is_integer(whole) {
-				return Err(OutOfRange(s.pos))
+				return Err(OutOfRange(position_of(s)))
 			}
-			(Str.from_utf8(whole) ? |_| Syntax(s.pos), move_to(s, end), False)
+			(Str.from_utf8(whole) ? |_| Syntax(position_of(s)), move_to(s, end), False)
 		}
 	if !quoted and width == Wide {
-		magnitude = U128.from_str(Str.drop_prefix(text, "-")) ? |_| OutOfRange(s.pos)
+		magnitude = U128.from_str(Str.drop_prefix(text, "-")) ? |_| OutOfRange(position_of(s))
 		if magnitude > max_safe {
-			return Err(OutOfRange(s.pos))
+			return Err(OutOfRange(position_of(s)))
 		}
 	}
-	value = from_str(text) ? |_| OutOfRange(s.pos)
+	value = from_str(text) ? |_| OutOfRange(position_of(s))
 	Ok({ value, rest })
 }
 
@@ -1205,7 +1237,7 @@ parse_int = |state, width, from_str| {
 parse_key_int : PortJson.State, (Str -> Try(a, _)), (a -> Str) -> Try({ value : a, rest : PortJson.State }, PortJson.Error)
 parse_key_int = |state, from_str, to_str| {
 	s = skip_ws(state)
-	at = s.pos
+	at = position_of(s)
 	read = read_key(s)?
 	if !is_integer(Str.to_utf8(read.value)) {
 		return Err(Expected("an integer key", at))
@@ -1224,14 +1256,14 @@ parse_float = |state, from_str| {
 	if byte_at(s) == quote {
 		read = read_string(s)?
 		if read.value == "NaN" or read.value == "Infinity" or read.value == "-Infinity" {
-			value = from_str(read.value) ? |_| OutOfRange(s.pos)
+			value = from_str(read.value) ? |_| OutOfRange(position_of(s))
 			return Ok({ value, rest: read.rest })
 		}
-		return Err(Expected("a number", s.pos))
+		return Err(Expected("a number", position_of(s)))
 	}
-	end = number_end(s.text, s.pos) ? |_| Expected("a number", s.pos)
-	text = Str.from_utf8(s.text.sublist({ start: s.pos, len: end - s.pos })) ? |_| Syntax(s.pos)
-	value = from_str(text) ? |_| OutOfRange(s.pos)
+	end = number_end((body_of(s)).text, position_of(s)) ? |_| Expected("a number", position_of(s))
+	text = Str.from_utf8((body_of(s)).text.sublist({ start: position_of(s), len: end - position_of(s) })) ? |_| Syntax(position_of(s))
+	value = from_str(text) ? |_| OutOfRange(position_of(s))
 	Ok({ value, rest: move_to(s, end) })
 }
 
@@ -1273,7 +1305,7 @@ skip_value = |state| {
 	} else if literal(s, "false") {
 		Ok(advance(s, 5))
 	} else {
-		end = number_end(s.text, s.pos) ? |_| Syntax(s.pos)
+		end = number_end((body_of(s)).text, position_of(s)) ? |_| Syntax(position_of(s))
 		Ok(move_to(s, end))
 	}
 }

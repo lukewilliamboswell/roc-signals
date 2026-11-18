@@ -93,6 +93,16 @@ bytes_per_input_byte = 128
 fixed_bytes : U64
 fixed_bytes = 262144
 
+## Total decoder work must also be linear in the input. A copying cursor
+## can allocate quadratically while its peak stays small; the peak bound
+## alone cannot catch that regression. Allow ordinary cursor boxes, string
+## decoding and dictionary growth with room beyond their measured cost.
+requested_bytes_per_input_byte : U64
+requested_bytes_per_input_byte = 2048
+
+fixed_requested_bytes : U64
+fixed_requested_bytes = 1048576
+
 message : List(U8) -> PortJson.Message
 message = |input| { json: Str.from_utf8_lossy(input), blobs, files: [] }
 
@@ -148,6 +158,10 @@ check_bound! = |label, input, stats| {
 	bound = bytes_per_input_byte * input.len() + fixed_bytes
 	if grown > bound {
 		crash "decoding ${input.len().to_str()} bytes as ${label} peaked ${grown.to_str()} bytes above its entry, over the bound of ${bound.to_str()}"
+	}
+	requested_bound = requested_bytes_per_input_byte * input.len() + fixed_requested_bytes
+	if stats.requested_bytes > requested_bound {
+		crash "decoding ${input.len().to_str()} bytes as ${label} requested ${stats.requested_bytes.to_str()} total bytes, over the linear bound of ${requested_bound.to_str()}"
 	}
 	{}
 }
@@ -267,6 +281,21 @@ sample_canon = {
 from_javascript : Str
 from_javascript = " [ { \"who\" : { \"nick\" : null , \"name\" : \"\\u00e9\\ud83e\\udd8a\\/\" } } ,\n   \"1e3\", 1.5e-3, 9007199254740991, { \"$bytes\" : 1 }, { \"Branch\": { \"kids\": [ { \"Leaf\": \"x\" } ], \"label\": 3 } } ]"
 
+## Distinct names force the decoder to grow its live name set. Raw saved
+## inputs bypass the fixture-value decoder's node budget, so the larger
+## input reaches PortJson rather than being refused by the fuzz harness.
+distinct_keys : U64 -> List(U8)
+distinct_keys = |count| {
+	var $json = "{".to_utf8()
+	for at in (0.U64).until(count) {
+		if at > 0 {
+			$json = $json.append(44)
+		}
+		$json = $json.concat("\"k${at.to_str()}\":1".to_utf8())
+	}
+	$json.append(125)
+}
+
 target = Fuzz.target_with!({
 	examples: [
 		Fuzz.example({ name: "rich", revision: "1", make: || text_of(sample_rich) }),
@@ -287,6 +316,8 @@ target = Fuzz.target_with!({
 		Fuzz.example({ name: "repeated-escaped-key", revision: "1", make: || Str.to_utf8("{\"a\":1,\"\\u0061\":2}") }),
 		Fuzz.example({ name: "repeated-integer-key", revision: "1", make: || Str.to_utf8("{\"1\":1,\"2\":2,\"1\":3}") }),
 		Fuzz.example({ name: "repeated-key-before-invalid-value", revision: "1", make: || Str.to_utf8("{\"a\":1,\"a\":invalid}") }),
+		Fuzz.saved({ name: "distinct-keys1000", revision: "1", bytes: distinct_keys(1000) }),
+		Fuzz.saved({ name: "distinct-keys10000", revision: "1", bytes: distinct_keys(10000) }),
 	],
 	name: "port-json",
 	generator: Fuzz.raw_bytes,
