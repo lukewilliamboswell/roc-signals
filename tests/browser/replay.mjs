@@ -53,6 +53,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { launch } from "./cdp.mjs";
+import { runtimeFiles } from "./args.mjs";
 import { configureSpecPage, readySpecPage } from "./page-profile.mjs";
 import { applicationErrors, DBG_PRINT_FAILURE } from "./replay-errors.mjs";
 import { verifyPointerRecords, verifyClickEvents, beginPointerInput, endPointerInput } from "./pointer-log.mjs";
@@ -1675,10 +1676,7 @@ const specs = fs
 const files = {
   "index.html": path.join(here, "index.html"),
   "locate.js": path.join(here, "locate.js"),
-  "runtime.mjs": opts.runtime,
-  // The runtime's worker script, which it loads from beside itself.
-  "worker.mjs": path.join(path.dirname(opts.runtime), "worker.mjs"),
-  "environment.mjs": path.join(path.dirname(opts.runtime), "environment.mjs"),
+  ...runtimeFiles(opts.runtime),
   "app.wasm": opts.wasm,
 };
 const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };

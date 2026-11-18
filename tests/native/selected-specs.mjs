@@ -1,4 +1,5 @@
-// The same geometry/modifier stories on every native CI system. The SCM
+// Geometry/modifiers, startup opportunities and prepared-description lifetimes
+// run as the same stories on every native CI system. The SCM
 // parser emits the browser's steps; this driver never interprets SCM itself.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -28,7 +29,7 @@ const records = (source, ids, protocol) => {
   }
 };
 
-for (const app of ["examples/log-explorer", "examples/kanban-board", "tests/apps/table", "www/samples/scores"]) {
+for (const app of ["examples/log-explorer", "examples/kanban-board", "tests/apps/table", "www/samples/scores", "tests/apps/startup", "tests/apps/description-preparation"]) {
   const dir = path.resolve(options.build, path.basename(app));
   fs.mkdirSync(dir, { recursive: true });
   const specs = fs.readdirSync(`${app}/specs`).filter(file => file.endsWith(".scm")).sort().map(file => `${app}/specs/${file}`);
