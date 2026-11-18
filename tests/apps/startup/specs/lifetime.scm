@@ -1,5 +1,5 @@
 (test "fixed routes keep placeholders until an explicit ready opportunity"
-  (setup (initial-url "/about/?live=1#hash"))
+  (setup (initial-location "/about/?live=1#hash"))
   (steps
     (expect-text (test-id "route") "about")
     (expect-text (test-id "waiting") "Loading")

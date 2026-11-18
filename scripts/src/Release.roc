@@ -11,8 +11,9 @@ import ToolRelease
 ##   `platform/main.roc` with every module it uses, the Wasm host, the native
 ##   spec runner's link inputs for every system it builds for (Linux
 ##   x86-64, macOS on Apple silicon and Intel, Windows x86-64),
-##   `runtime.mjs`, its fact readers `environment.mjs` and `worker.mjs`;
-## - `runtime.mjs`, `environment.mjs` and `worker.mjs` on their own, for pages that load an app
+##   `runtime.mjs`, its fact readers `environment.mjs`, startup binder
+##   `startup.mjs` and `worker.mjs`;
+## - `runtime.mjs`, `environment.mjs`, `startup.mjs` and `worker.mjs` on their own, for pages that load an app
 ##   (the runtime loads the worker script from beside itself);
 ## - the `signals.roc` tool: its package, `signals-<hash>.tar.zst` (`cli/`
 ##   with the runtime files, the scaffold and a generated `Bundle.roc`

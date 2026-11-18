@@ -5,6 +5,7 @@
 import "../platform/runtime.mjs" as runtime_mjs : Str
 import "../platform/worker.mjs" as worker_mjs : Str
 import "../platform/environment.mjs" as environment_mjs : Str
+import "../platform/startup.mjs" as startup_mjs : Str
 import "../www/samples/counter/Counter.roc" as scaffold_counter_roc : Str
 import "../www/samples/counter/index.html" as scaffold_index_html : Str
 import "../www/samples/counter/main.roc" as scaffold_main_roc : Str
@@ -36,6 +37,7 @@ Bundle := [].{
 		{ path: "runtime.mjs", text: runtime_mjs },
 		{ path: "worker.mjs", text: worker_mjs },
 		{ path: "environment.mjs", text: environment_mjs },
+		{ path: "startup.mjs", text: startup_mjs },
 	]
 
 	## The files `init` writes: the counter of the documentation's Getting

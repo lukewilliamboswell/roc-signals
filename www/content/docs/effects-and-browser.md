@@ -382,7 +382,13 @@ turn for every frame.
 
 ## Startup data
 
-Values the app needs before its first render come in the boot data.
+For a deterministic prerendered entry, request live facts after construction
+with `Engine.environment`; see [Startup and Deferred Content](@/docs/startup.md).
+Its typed answer has the same fields described below. The existing boot-based
+constructors remain available for pages whose first render intentionally reads
+live facts.
+
+Values a boot-based app needs before its first render come in the boot data.
 `Engine.program_boot` declares the storage keys to read, and receives the URL,
 those values, and whether the browser is online, the page visible and local
 storage usable:

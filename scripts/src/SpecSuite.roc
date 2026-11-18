@@ -15,7 +15,7 @@ SpecSuite := [].{
 	## runtime copies all of them side by side (`copy_runtime!`); the browser
 	## tests serve the same list (`tests/browser/args.mjs`).
 	runtime_files : List(Str)
-	runtime_files = ["runtime.mjs", "worker.mjs", "environment.mjs"]
+	runtime_files = ["runtime.mjs", "worker.mjs", "environment.mjs", "startup.mjs"]
 
 	## Copy every runtime file from `root`'s `platform/` into `dir`.
 	copy_runtime! : Str, Str => Try({}, _)
@@ -34,7 +34,7 @@ SpecSuite := [].{
 	## browser services, work counters, worker jobs (byte-level and typed) and
 	## superseding effect sites the examples do not exercise.
 	test_apps : List(Str)
-	test_apps = ["unsafe-html", "crypto", "services", "workers", "worker-typed", "supersede", "worker-search", "files", "file-effects", "prepared", "description-preparation", "ports", "tasks", "gather", "outbox", "deep", "deep-payload", "handlers", "remount", "store", "writes", "table", "controls", "write-scaling", "keep-current", "signal-text", "markup", "namespaces", "construction", "prerender", "dbg", "dbg-job-only"]
+	test_apps = ["unsafe-html", "crypto", "services", "workers", "worker-typed", "supersede", "worker-search", "files", "file-effects", "prepared", "description-preparation", "startup", "ports", "tasks", "gather", "outbox", "deep", "deep-payload", "handlers", "remount", "store", "writes", "table", "controls", "write-scaling", "keep-current", "signal-text", "markup", "namespaces", "construction", "prerender", "dbg", "dbg-job-only"]
 
 	## Every spec-bearing app, examples first.
 	spec_apps : List(Str)
