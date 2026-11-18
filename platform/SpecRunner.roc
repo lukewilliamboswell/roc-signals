@@ -179,13 +179,14 @@ SpecRunner := [].{
 		title : Str,
 		pending : List(Pending),
 		issued : List(U32),
-		gets : List([Read({ id : U32, key : Str, session : Bool }), Answer({ id : U32, payload : List(U8), scoped : Bool }), Failures]),
+		gets : List([Read({ id : U32, key : Str, session : Bool }), EnvironmentRead(U32), Answer({ id : U32, payload : List(U8), scoped : Bool }), Failures]),
 
 		## Only declared storage keys are sampled by an environment request.
 		environment_keys : { local : List(Str), session : List(Str) },
 
 		## A single mechanical task registration, supplied only by a spec step.
 		opportunity : [None, Some(U64)],
+		opportunity_generation : U64,
 		failure_queue : List({ id : U32, payload : List(U8), ready : Bool }),
 		failure_scheduled : Bool,
 		failure_active : Bool,
@@ -941,6 +942,7 @@ SpecRunner := [].{
 		gets: [],
 		environment_keys: { local: [], session: [] },
 		opportunity: None,
+		opportunity_generation: 0,
 		failure_queue: [],
 		failure_scheduled: False,
 		failure_active: False,
@@ -1000,12 +1002,12 @@ SpecRunner := [].{
 			$b = match c {
 				Startup(_) | StartupComplete => b
 				StartupAck => crash "internal: startup acknowledgement must enter the driver after cold effects"
-				Opportunity({ action, generation }) => { ..b, opportunity: if (action == 1) Some(generation) else None }
-				Environment(id) => {
-					env = b.env
-					facts = { ..env, url: SpecRunner.serialize_location(env.url), storage: if (env.storage_available) env.storage.keep_if(|(name, _)| b.environment_keys.local.contains(name)) else [], session: if (env.session_available) env.session.keep_if(|(name, _)| b.environment_keys.session.contains(name)) else [] }
-					{ ..b, gets: b.gets.append(Answer({ id, payload: [31].concat(SpecRunner.encode_environment(facts)), scoped: False })) }
+				Opportunity({ action, generation }) => match (action, b.opportunity) {
+					(1, None) if generation > b.opportunity_generation => { ..b, opportunity: Some(generation), opportunity_generation: generation }
+					(0, Some(current)) if generation == current => { ..b, opportunity: None }
+					_ => { ..b, deferred_error: "startup: opportunity command does not name a fresh registration or its current cancellation" }
 				}
+				Environment(id) => { ..b, gets: b.gets.append(EnvironmentRead(id)) }
 				Http(id, method, url, _, body, _, options) => { ..b, network: b.network.insert(id, { method, options }), report_sources: if (options.progress_ms > 0) b.report_sources.insert(id, {}) else b.report_sources, pending: b.pending.append({ id, url, body, kind: HttpRequest }), issued: b.issued.append(id) }
 				Guard(on) => { ..b, guard: on }
 				SessionGet(id, key) => { ..b, gets: b.gets.append(Read({ id, key, session: True })) }
@@ -1043,6 +1045,7 @@ SpecRunner := [].{
 						|task| match task {
 							Answer(answer) => answer.id != id
 							Read(read) => read.id != id
+							EnvironmentRead(request) => request != id
 							Failures => !failures.is_empty()
 						},
 					)
@@ -1110,7 +1113,7 @@ SpecRunner := [].{
 
 	## Containment forgets every scheduled answer while retaining the last guard.
 	clear_callbacks : Browser -> Browser
-	clear_callbacks = |browser| { ..browser, gets: [], failure_queue: [], failure_scheduled: False, failure_active: False }
+	clear_callbacks = |browser| { ..browser, gets: [], failure_queue: [], failure_scheduled: False, failure_active: False, opportunity: None }
 
 	## A write persists atomically or records an occurrence for each subscriber
 	## present at failure. Removal ignores quota, as the browser does.
@@ -1260,7 +1263,14 @@ SpecRunner := [].{
 			Legacy => [0.U8]
 			Deterministic(_) => SpecRunner.put_u32([1, 0], 0xffffffff)
 		}
-		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_startup_mount({ ..env, url: SpecRunner.serialize_location(env.url), media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }, settings.mount_root, startup))
+		# Fixed-entry construction observes only the pathname used to select the
+		# route. Keep the actual browser facts for the later environment task.
+		boot_env : Scm.Environment
+		boot_env = match declarations.startup {
+			Legacy => { ..env, url: SpecRunner.serialize_location(env.url), media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }
+			Deterministic(_) => { url: SpecRunner.before(SpecRunner.before(env.url, "#"), "?"), media: declarations.media.map(|query| (query, False)) }
+		}
+		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_startup_mount(boot_env, settings.mount_root, startup))
 		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declarations.latest_ports, settings, environment_keys: { local: declarations.keys, session: declarations.session_keys } }
 		initial = SpecRunner.fresh(inst, browser)
 		root = settings.mount_root
@@ -1601,6 +1611,11 @@ SpecRunner := [].{
 				task = b.gets.first() ?? crash "SpecRunner.answer_gets: a callback is pending"
 				next = { ..$s, browser: { ..b, gets: b.gets.drop_first(1) } }
 				$s = match task {
+					EnvironmentRead(id) => {
+						env = b.env
+						facts = { ..env, url: SpecRunner.serialize_location(env.url), storage: if (env.storage_available) env.storage.keep_if(|(name, _)| b.environment_keys.local.contains(name)) else [], session: if (env.session_available) env.session.keep_if(|(name, _)| b.environment_keys.session.contains(name)) else [] }
+						SpecRunner.deliver_in_loop(program, next, id, [31].concat(SpecRunner.encode_environment(facts)))
+					}
 					Read({ id, key, session }) => {
 						available = if (session) b.env.session_available else b.env.storage_available
 						pairs = if (session) b.env.session else b.env.storage
@@ -5762,7 +5777,8 @@ SpecRunner := [].{
 	}
 
 	## Gather one complete response before stdout can expose a partial page.
-	## There is one init call and no later host input in this fallible workflow.
+	## Capture init's cold model, validating its private acknowledgement separately
+	## without serving effects or including follow-ups in the published frame.
 	prerender_page! : Program(state), { io : Io, url : Str, template : Str, build_token : [Unstamped, BuildToken(Str)] } => Try(Str, Str)
 	prerender_page! = |program, { io, url, template: path_to_template, build_token }| {
 		resolved = PicturePage.resolve(url) ? |InvalidRoute(message)| message
@@ -5835,7 +5851,7 @@ SpecRunner := [].{
 	## The runner’s command synopsis names its ordinary, recorded, generated
 	## and grammar modes without changing the executable spec vocabulary.
 	usage : Str
-	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --walk STEPS [--seed N] FILE.scm...\n       RUNNER --check-suite FILE.scm...\n       RUNNER --grammar\n       RUNNER --prerender URL --template FILE\n       RUNNER --picture-path URL\n"
+	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --walk STEPS [--seed N] FILE.scm...\n       RUNNER --check-suite FILE.scm...\n       RUNNER --grammar\n       RUNNER --startup-catalogue\n       RUNNER --prerender URL --template FILE [--build-token TOKEN]\n       RUNNER --picture-path URL\n"
 
 	## The number after an option, as a count.
 	count_arg : List(Str), U64, Str -> Try(U64, Str)
@@ -6798,24 +6814,64 @@ report_probe = |_| {
 	live: |_| [],
 }
 
-## Cold effects finish before acknowledgement, queued answers wait behind it,
-## and an armed placeholder opportunity is never implicitly delivered.
+## An environment task samples after cold and acknowledgement effects, even
+## when its request preceded a storage write; opportunities remain explicit.
 expect {
 	base = report_probe({})
 	set = |value| SpecRunner.put_str(SpecRunner.put_str([16, 1], "k"), value)
 	program = { ..base, event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), if (payload == [254]) [0].concat(set("ack")).concat([31, 1, 7, 0, 0, 0, 0, 0, 0, 0, 30]) else [], List.repeat(0, 8)) }
 	browser = { ..SpecRunner.fresh_browser({}), environment_keys: { local: ["k"], session: [] } }
 	initial = SpecRunner.fresh([], browser)
-	cold = [0, 28, 0, 0, 0, 0, 0].concat(set("cold")).concat([13, 9, 0, 0, 0, 22, 29])
+	cold = [0, 28, 0, 0, 0, 0, 0, 13, 9, 0, 0, 0, 22].concat(set("cold")).append(29)
 	ready = SpecRunner.drain_focus(program, SpecRunner.take(initial, [], cold, List.repeat(0, 8)))
 	snapshot = ready.inst.get(1)?
 	{
 		order: ready.inst.map(|event| event.id),
 		ack: ready.inst.first()?.payload,
-		snapshot: snapshot.payload == [31].concat(SpecRunner.encode_environment({ storage: [("k", "cold")] })),
+		snapshot: snapshot.payload == [31].concat(SpecRunner.encode_environment({ storage: [("k", "ack")] })),
 		current: ready.browser.env.storage,
 		opportunity: ready.browser.opportunity,
 	} == { order: [0, 9], ack: [254], snapshot: True, current: [("k", "ack")], opportunity: Some(7) }
+}
+
+## Fixed startup transports neutral construction facts, retaining the live
+## fixture solely for the later task. Legacy mounting still sees its Boot.
+expect {
+	base = report_probe({})
+	profile = SpecRunner.put_u32(SpecRunner.put_str(SpecRunner.put_u32([1].concat(SpecRunner.root_bytes(Scm.default_mount_root)), 1), "/tasks/"), 0xffffffff)
+	program = { ..base, keys: || SpecRunner.put_section((base.keys)().drop_last(6), { tag: 14, body: profile }), init: |boot| ([{ id: 0, payload: boot }], [0, 13, 9, 0, 0, 0, 22], List.repeat(0, 8)) }
+	live : Scm.Environment
+	live = { url: "/tasks/?live=1#part", storage: [("private", "value")], online: False, visible: False, now_ms: 1234, seed: 99, languages: ["fr"], storage_available: False, session_available: False }
+	fixed = SpecRunner.mount_in(program, live)
+	legacy = SpecRunner.mount_in({ ..program, keys: base.keys }, live)
+	{
+		fixed: fixed.inst.first()?.payload,
+		legacy: legacy.inst.first()?.payload,
+		live: fixed.browser.env,
+		snapshot: fixed.inst.get(1)?.payload,
+	} == {
+		fixed: SpecRunner.encode_startup_mount({ url: "/tasks/" }, Scm.default_mount_root, SpecRunner.put_u32([1, 0], 0xffffffff)),
+		legacy: SpecRunner.encode_mount({ ..live, storage: [] }, Scm.default_mount_root),
+		live,
+		snapshot: [31].concat(SpecRunner.encode_environment({ ..live, storage: [] })),
+	}
+}
+
+## Cancellation names exactly the current registration, and generations cannot
+## be reused after cancellation or delivery. Malformed wire intent is contained.
+expect {
+	base = SpecRunner.fresh_browser({})
+	armed = SpecRunner.absorb(base, [Opportunity({ action: 1, generation: 3 })])
+	cancelled = SpecRunner.absorb(armed, [Opportunity({ action: 0, generation: 3 })])
+	consumed = { ..armed, opportunity: None }
+	{
+		no_registration: !SpecRunner.absorb(base, [Opportunity({ action: 0, generation: 3 })]).deferred_error.is_empty(),
+		future_cancellation: !SpecRunner.absorb(armed, [Opportunity({ action: 0, generation: 4 })]).deferred_error.is_empty(),
+		double_registration: !SpecRunner.absorb(armed, [Opportunity({ action: 1, generation: 4 })]).deferred_error.is_empty(),
+		reused_generation: !SpecRunner.absorb(cancelled, [Opportunity({ action: 1, generation: 3 })]).deferred_error.is_empty(),
+		cancelled: cancelled.opportunity,
+		successor: SpecRunner.absorb(consumed, [Opportunity({ action: 1, generation: 4 })]).opportunity,
+	} == { no_registration: True, future_cancellation: True, double_registration: True, reused_generation: True, cancelled: None, successor: Some(4) }
 }
 
 ## The spec supplies exactly one armed task through ordinary occurrence ingress,
@@ -6825,7 +6881,7 @@ expect {
 	start = SpecRunner.mount_in(program, {})
 	held = SpecRunner.one(program, start, HoldReports)?
 	report = SpecRunner.one(program, held, SetOnline(Offline))?
-	armed = { ..report, browser: { ..report.browser, opportunity: Some(7) } }
+	armed = { ..report, browser: SpecRunner.absorb(report.browser, [Opportunity({ action: 1, generation: 7 })]) }
 	delivered = SpecRunner.one(program, armed, RunOpportunity)?
 	{
 		inputs: delivered.inst,
