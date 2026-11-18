@@ -254,7 +254,7 @@ problems found before it.
     orders in one runner process (`tests/native/file-lifetimes.mjs`), the
     native runner's `dbg` output (`tests/native/dbg-output.mjs`), and suite
     evidence validation (`tests/native/suite-evidence.mjs`).
-13. A walk of 300 steps of every walked app in its native runner (below).
+13. Zero-step and 300-step walks of every walked app in its native runner (below).
 14. The check that the browser runner handles every form of the grammar and
     nothing else, and that a file its `choose-files` gives the app is read
     from disk (`replay.mjs --check-choose-files`: once its disk file is
@@ -660,7 +660,7 @@ or file handle may be left live. A failure names the step and the last six
 things the walk did. The walk needs nothing written for an app, so every
 app with specs is walked: `check-slow` walks each (`Slow.walks`: 10,000
 steps from seed 7 on a runner built at `--opt=speed`, the Markdown Editor
-five times for 2,000), and `check` 300 steps on the runner it built for the
+five times for 2,000), and `check` zero steps and 300 steps on the runner it built for the
 specs. The four test apps whose pages offer a contract error or a focus loop
 on purpose (`workers`, `ports`, `outbox`, `controls`) are not walked: a walk reaches that error and
 the instance is poisoned, as it must be. The walk is the spec runner's, so

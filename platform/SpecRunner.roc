@@ -6256,6 +6256,21 @@ SpecRunner := [].{
 		SpecRunner.walk!(program, host, specs, walk)
 	}
 
+	## Immutable inputs whose lifetime belongs outside the native walk's
+	## allocation interval. This contains descriptions and paths, never a live
+	## App or site storage. The box moves through the measured call unchanged;
+	## its paths are consumed for the result name after the final counters.
+	WalkInputs(state) : { program : Program(state), host : Host, read_file! : Str => List(U8), paths : List(Str) }
+
+	## Return the immutable owner with the plain outcome, after the walk has
+	## dropped its engine state and oracle. No App escapes this call.
+	walk_owned! : Box(WalkInputs(state)), { steps : U64, seed : U64 } => (Box(WalkInputs(state)), Try(Tally, { step : U64, message : Str }))
+	walk_owned! = |inputs, walk| {
+		given = Box.unbox(inputs)
+		outcome = SpecRunner.walk_files!(given.program, given.host, given.read_file!, given.paths, walk)
+		(inputs, outcome)
+	}
+
 	## The `--walk` command: parse every file, walk the app (`walk!`), and
 	## print one `spec-result` line for the walk. Beside the settle check
 	## after every step, the walk must leave nothing behind: the live
@@ -6275,18 +6290,20 @@ SpecRunner := [].{
 			}
 		}
 		host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, crypto!: io.crypto!, hold_key!: io.hold_key!, live_keys!: io.live_keys!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes!, mute_dbg!: io.mute_dbg! }
+		inputs = Box.box({ program, host, read_file!: io.read_file!, paths })
 		t0 = (io.now_ns!)()
-		allocations = (host.live_allocations!)()
-		bytes = (host.live_bytes!)()
-		files = (host.live_files!)()
-		keys = (host.live_keys!)()
-		walked = SpecRunner.walk_files!(program, host, io.read_file!, paths, walk)
-		left = { allocations: (host.live_allocations!)().to_i64_wrap() - allocations.to_i64_wrap(), bytes: (host.live_bytes!)().to_i64_wrap() - bytes.to_i64_wrap(), files: (host.live_files!)().to_i64_wrap() - files.to_i64_wrap(), keys: (host.live_keys!)().to_i64_wrap() - keys.to_i64_wrap() }
+		allocations = (io.live_allocations!)()
+		bytes = (io.live_bytes!)()
+		files = (io.live_files!)()
+		keys = (io.live_keys!)()
+		(returned, walked) = SpecRunner.walk_owned!(inputs, walk)
+		left = { allocations: (io.live_allocations!)().to_i64_wrap() - allocations.to_i64_wrap(), bytes: (io.live_bytes!)().to_i64_wrap() - bytes.to_i64_wrap(), files: (io.live_files!)().to_i64_wrap() - files.to_i64_wrap(), keys: (io.live_keys!)().to_i64_wrap() - keys.to_i64_wrap() }
+		completed_paths = Box.unbox(returned).paths
 		id = "walk-${walk.steps.to_str()}-seed-${walk.seed.to_str()}"
-		# The paths are read after the measured call, so their list is not
-		# freed inside it, where it would count as freeing more than the
-		# walk allocated.
-		name = "a walk of ${walk.steps.to_str()} steps from seed ${walk.seed.to_str()} over ${Str.join_with(paths, " ")}"
+		# All call inputs stay in one immutable owner until this real use of
+		# its paths after the snapshot. Freeing a description allocated before
+		# the interval inside it would incorrectly report a negative balance.
+		name = "a walk of ${walk.steps.to_str()} steps from seed ${walk.seed.to_str()} over ${Str.join_with(completed_paths, " ")}"
 		dt = (io.now_ns!)() - t0
 		failure! = |step, message| {
 			(io.stdout!)("${SpecRunner.result_line({ id, name, status: "failed", duration_ns: dt, failure: SpecRunner.failure_json("walk", "assertion", message, step, { line: 0, column: 0 }) })}\n")
