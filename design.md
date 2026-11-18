@@ -5899,7 +5899,7 @@ on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> 
 ignore : {} -> Reaction(ctx, a, result)
 on_cleanup : Str, Signal(ctx, a), (a -> List(Command)) -> Elem(ctx)   # an awaited request does not compile
 cleanup : Str -> Elem(ctx)
-Request : [Http({ method : Method, url, headers, body, timeout_ms, cache, credentials }), StorageGet(Str), SessionStorageGet(Str), Timer(U32),
+Request : [Http({ method : Method, url, headers, body, timeout_ms, cache, credentials }), EnvironmentSnapshot, StorageGet(Str), SessionStorageGet(Str), Timer(U32),
        Crypto(CryptoRequest),
        Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32,
               on_dispose : [Stop, Keep], on_cancel : [Stop, Finish],
@@ -5923,7 +5923,7 @@ Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectTex
        ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
        StorageSet(Str, Str), StorageRemove(Str), SessionStorageSet(Str, Str), SessionStorageRemove(Str),
        PortCommand({ port, message, refusal : [None, TooDeep] }), Save({ file : File, name : Str }), ViewTransition(List(Str))]     # the requests that await nothing: a cleanup's plan
-Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
+Result : [Environment(Boot), Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        CryptoKey(CryptoKey), CryptoBytes(List(U8)),
        CryptoSealed({ iv : List(U8), ciphertext : List(U8) }), CryptoFailed(CryptoError),
        Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused,
@@ -6367,6 +6367,77 @@ In the port table, `kind` is `1` command, `2` call, `3` subscription;
 `delivery` is `0` for a command or call, `1` every or `2` latest;
 `bound` is n for every, `1` for latest, `0` otherwise. The catalogue's
 existing bounds and validation apply within its section.
+
+### Annotated startup frames
+
+The reserved no-namespace attributes are `data-roc-frame`, `data-roc-node` and
+`data-roc-children`. Their exact local names in another namespace are ordinary
+application attributes. Attribute-name literals refuse reserved spellings;
+computed names can still be explicitly qualified before use, while ordinary
+attribute builders, markup lowering and element construction reject reserved
+no-namespace use. This keeps transport ownership separate from foreign names.
+
+`data-roc-frame` is `1:<entry>:<build-token>`, with a canonical decimal u32 entry
+(no leading zeros) and a nonempty token containing only ASCII letters, digits,
+underscore and hyphen. It occurs only on the declared root. The expected token
+comes from an explicit module URL receipt or mount option, never from a DOM
+hash. The remaining annotation values are canonical padded Base64 of the
+following little-endian records, including zero unused padding bits. A malformed
+encoding, unknown version/flag, duplicate address, missing target, wrong owner,
+trailing bytes or exhausted bound refuses before normalization mutates DOM.
+
+A node record is `version:u8=1 ordinal:u32 aliases:u32+ids holes:u32+ordinals`,
+where each counted list is its u32 length followed by u32 values. Root ordinal
+is zero; other ordinals are frame-local logical positions supplied by the
+producer. They are transport addresses, never application identity. `aliases`
+names engine command addresses for that node and `holes` supplies row-template
+hole targets explicitly, including nested sites whose drawn siblings can shift
+physical child positions. No engine address may occur twice or equal
+`0xffffffff`.
+
+A child record has `kind:u8`: `1 ordinal:u32` references an element node record;
+`2` text and `3` comment carry the node fields without the version byte, then
+`text:str`. A child list is `n:u32` followed by exactly n records. The children
+annotation is:
+
+```
+version:u8=1 flags:u8
+ordinary:child-list
+content-present:u8 [template-content:child-list]
+[physical-control-text:str]                 # flags bit 1
+noverrides:u32 (namespace:str prefix:str local:str logical:presence physical:presence)*
+nremove:u32 (ordinary-physical-child-index:u32)*
+```
+
+Flag bit 0 means the producer added an HTML inert gate; bit 1 means a native
+text-control scaffold. No other bits are accepted. Presence is exactly `0`
+absent or `1 value:str` present. Template content exists only for an HTML
+`template`. Overrides assert the producer's physical attributes before restoring
+their declared logical values. Removed children are only the exact producer
+option-selection scaffolds, with their fixed empty value, hidden and selected
+attributes; they are checked before removal.
+
+The producer bounds a page to 16 MiB, physical and logical bindings/aliases to
+262,144, depth to 1024 and aggregate annotation values to 8 MiB. Readers check
+counts against both these bounds and remaining encoded bytes before allocating.
+Text metadata carries exact logical text, including empty and adjacent nodes;
+binding asserts each physical run and normalizes only that declared partition.
+At most 64 native selection ranges are captured before normalization, with
+endpoints and forward/backward direction restored without user-agent sniffing.
+Indexes and range maps are released when binding completes. The runtime keeps
+only its ordinary live node/template references afterward. Template definitions
+remain pure checked shapes while adopting; their detached DOM clone skeleton is
+materialized only if a later fresh `INST` needs it, avoiding duplicate resource
+loads during adoption.
+
+Annotated frames refuse executable/custom-element content, inline handlers,
+opaque HTML, declarative shadow-root templates and HTML `selectedcontent` whose
+browser-owned cloning changes authored children before startup. A placeholder
+can defer such construction until the ordinary live phase, or the site can use
+plain mounting. Initial binding never attempts to adopt a guessed replacement
+for those children. The Core adopted-mode check and independent renderer each
+carry this policy; a diagnostic rendering in Plain mode retains its ordinary
+meaning.
 
 ### Work record
 

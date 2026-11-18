@@ -1311,6 +1311,12 @@ Core := [].{
 			|env, args, tx| {
 				depth = layer(args.depth)
 				plan = compile(template(RowRef.{ depth }), depth, args.path, "an each", args.enclosing)
+				if tx.fx.startup.pending and !plan.initial_problem.is_empty() {
+					crash "contract: ${plan.initial_problem} at site ${show_path(args.path)}"
+				}
+				if tx.fx.startup.adopting and !plan.adoption_problem.is_empty() {
+					crash "contract: ${plan.adoption_problem} at site ${show_path(args.path)}"
+				}
 				(site, tx1) = alloc_site(tx, args.path)
 				tpl = template_bytes(plan)
 				tx2 = emit_op(tx1, 7, |c| put_u32(put_u32(c, site), tpl.len().to_u32_wrap()).concat(tpl))
@@ -1406,6 +1412,12 @@ Core := [].{
 				}
 				depth = layer(args.depth)
 				plan = compile(template(view_key({}), view_row(source, depth, args.path)), depth, args.path, "a table view", args.enclosing)
+				if tx.fx.startup.pending and !plan.initial_problem.is_empty() {
+					crash "contract: ${plan.initial_problem} at site ${show_path(args.path)}"
+				}
+				if tx.fx.startup.adopting and !plan.adoption_problem.is_empty() {
+					crash "contract: ${plan.adoption_problem} at site ${show_path(args.path)}"
+				}
 				(site, tx1) = alloc_site(tx, args.path)
 				tpl = template_bytes(plan)
 				tx2 = emit_op(tx1, 7, |c| put_u32(put_u32(c, site), tpl.len().to_u32_wrap()).concat(tpl))
@@ -3780,6 +3792,13 @@ Core := [].{
 						if entry.to_u64() >= facts.paths.len() {
 							crash "contract: startup entry is not in the compiled catalogue"
 						}
+						if selected.mode == 1 {
+							declared = (Web.Tag.from_str(facts.root.local) ?? crash "internal: checked entry root local name").in_namespace({ namespace: facts.root.namespace, prefix: facts.root.prefix }) ?? crash "internal: checked entry root expanded name"
+							root_problem = cold_element_problem(declared, [])
+							if !root_problem.is_empty() {
+								crash "contract: ${root_problem} on declared mount root"
+							}
+						}
 						input = { boot: b, entry }
 						finish(mount_cold(cfg.max_inflight, names, start(input), view(input), enclosing_root(actual_root), selected.mode, entry), [], [])
 					}
@@ -4924,6 +4943,72 @@ declares_value = |attrs| attrs.any(
 	},
 )
 
+## Initial binding needs one writer per expanded attribute, including a fixed
+## and a signal writer. Prefixes do not distinguish DOM attribute identity.
+## Check fresh cold construction too, before model projection can collapse
+## two writes into the last value and conceal the invalid description.
+initial_attribute_problem : Web.Tag, List(Core.Attr(ctx)) -> Str
+initial_attribute_problem = |tag, attrs| {
+	var $seen = Dict.empty()
+	for attribute in attrs {
+		match attribute {
+			Static(name, _) | Dyn(name, _) => {
+				effective = resolve_attribute(name, tag)
+				key = (namespace_uri(effective.namespace()), effective.local())
+				if $seen.contains(key) {
+					return "deterministic startup has two writers for expanded attribute ${Str.inspect(name.text())}"
+				}
+				$seen = $seen.insert(key, {})
+			}
+			_ => {}
+		}
+	}
+	""
+}
+
+## A retained frame cannot execute authored code, upgrade custom elements,
+## clone selected content, create a declarative shadow root, or contain an
+## opaque HTML region before binding. Fresh construction after the barrier is
+## ordinary DOM construction; deferred bodies therefore need no special mode.
+cold_element_problem : Web.Tag, List(Core.Attr(ctx)) -> Str
+cold_element_problem = |tag, attrs| {
+	namespace = match tag.namespace() {
+		Explicit(value) => namespace_uri(value)
+		Inherit => crash "internal: unresolved cold element"
+	}
+	html = namespace == "http://www.w3.org/1999/xhtml"
+	if html and tag.local().contains("-") {
+		return "annotated startup refuses a custom HTML element; defer it or use plain mounting"
+	}
+	if tag.local() == "script" and ["http://www.w3.org/1999/xhtml", "http://www.w3.org/2000/svg"].contains(namespace) {
+		return "annotated startup refuses script content; defer it or use plain mounting"
+	}
+	if html and tag.local() == "selectedcontent" {
+		return "annotated startup refuses selectedcontent browser-owned cloning; defer the control or use plain mounting"
+	}
+	for attribute in attrs {
+		match attribute {
+			Static(name, _) | Dyn(name, _) => {
+				effective = resolve_attribute(name, tag)
+				if effective.namespace() == None and effective.prefix() == Unprefixed {
+					if Spelling.ascii_lower(effective.local()).starts_with("on") {
+						return "annotated startup refuses an inline handler attribute"
+					}
+					if html and effective.local() == "is" {
+						return "annotated startup refuses custom-element upgrade via is"
+					}
+					if html and tag.local() == "template" and effective.local() == "shadowrootmode" {
+						return "annotated startup refuses declarative shadow-root construction; defer it or use plain mounting"
+					}
+				}
+			}
+			Property(8, _) | PropertyV(8, _) => return "annotated startup refuses opaque HTML content; defer it or use plain mounting"
+			_ => {}
+		}
+	}
+	""
+}
+
 ## The first event that two of an element's attributes both handle, if any.
 ## The runtime keeps one listener per event and element, so a second
 ## handler would be silently dropped: binding it is a contract error
@@ -5157,6 +5242,18 @@ mount_elem = |block, env, root_elem, elem, depth, path, parent, before, top, sol
 			container = checked_container(tag, authored.container)
 			children_context = child_enclosing(scope.enclosing, { name: tag, site: path, placement: "", describe: || static_element_place(root_elem, block.nodes.len(), elem) })
 			check_element_attrs(attrs, tag, "", path, || static_element_place(root_elem, block.nodes.len(), elem))
+			if tx.fx.startup.pending {
+				problem = initial_attribute_problem(tag, attrs)
+				if !problem.is_empty() {
+					crash "contract: ${problem} at site ${show_path(path)}"
+				}
+			}
+			if tx.fx.startup.adopting {
+				problem = cold_element_problem(tag, attrs)
+				if !problem.is_empty() {
+					crash "contract: ${problem} at site ${show_path(path)}"
+				}
+			}
 			(id, tx1) = alloc_id(tx)
 			tx2 = emit_op(tx1, 8, |c| put_element_name(put_u32(put_u32(put_u32(c, id), parent), at), tag).append(container))
 			var $b = add_node(block, id, top)
@@ -6253,10 +6350,12 @@ Plan(ctx) : {
 	mounts : List(Mount(ctx)),
 	ncols : U64,
 	kreads : U128,
+	adoption_problem : Str,
+	initial_problem : Str,
 }
 
 plan_empty : {} -> Plan(ctx)
-plan_empty = |_| { tree: [], htab: [], holes: [], handlers: [], mounts: [], ncols: 0, kreads: 0 }
+plan_empty = |_| { tree: [], htab: [], holes: [], handlers: [], mounts: [], ncols: 0, kreads: 0, adoption_problem: "", initial_problem: "" }
 
 put_path : List(U8), U8, List({ container : U8, index : U8 }) -> List(U8)
 put_path = |buf, kind, path| path.fold(buf.append(kind).append(narrow(path.len(), "nesting depth of a hole")), |out, step| out.append(step.container).append(step.index))
@@ -6267,7 +6366,7 @@ narrow : U64, Str -> U8
 narrow = |n, what| if (n > 255) crash "resource_limit: a row template's ${what} is ${n.to_str()}; the template encoding allows at most 255" else n.to_u8_wrap()
 
 val_hole : Plan(ctx), { kind : U8, value : Signal(ctx, [Absent, Present(Str)]), extra : List(U8), counter : U64, evaluated : Bool } -> Plan(ctx)
-val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, value: v, extra, counter, evaluated }| {
+val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem }, { kind, value: v, extra, counter, evaluated }| {
 	{ mask, read, sel } = v
 	(smask, skey) = match sel {
 		NoSel => (0, |_| "")
@@ -6276,7 +6375,7 @@ val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, valu
 	property = if (kind == 6) extra.last() ?? crash "internal: property row has an index" else 0
 	live = mask.bitwise_or(smask) != 0 or property == 6 or property == 7
 	hole = { is_observation: False, evaluated, kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else counter, value_control: kind == 5 and counter == 1, property }
-	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
+	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads, adoption_problem, initial_problem }
 }
 
 compile_elem : Plan(ctx), Elem(ctx), List({ container : U8, index : U8 }), U64, List(U32), Str, Enclosing -> Plan(ctx)
@@ -6298,8 +6397,16 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 				}
 			}
 			nstatic = $nstatic
-			var $p = plan
-			{ tree, htab, holes, handlers, mounts, ncols, kreads } = $p
+			var $p = {
+				..plan,
+				adoption_problem: if plan.adoption_problem.is_empty() {
+					cold_element_problem(tag, attrs)
+				} else plan.adoption_problem,
+				initial_problem: if plan.initial_problem.is_empty() {
+					initial_attribute_problem(tag, attrs)
+				} else plan.initial_problem,
+			}
+			{ tree, htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem } = $p
 			var $tree = put_element_name(tree.append(1), tag).append(container).append(narrow(nstatic, "static attributes on one element"))
 			var $htab = htab
 			var $holes = holes
@@ -6312,19 +6419,19 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 						$tree = put_str(put_attribute_name($tree, resolve_attribute(name, tag)), value)
 					}
 					Dyn(name, v) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 2, value: v, extra: put_attribute_name(put_path([], 2, path), resolve_attribute(name, tag)), counter: 0, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0, adoption_problem: "", initial_problem: "" }, { kind: 2, value: v, extra: put_attribute_name(put_path([], 2, path), resolve_attribute(name, tag)), counter: 0, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
 					}
 					Property(index, encoded) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: Core.const(Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: False })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0, adoption_problem: "", initial_problem: "" }, { kind: 6, value: Core.const(Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: False })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
 					}
 					PropertyV(index, value) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: value.map(|encoded| Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0, adoption_problem: "", initial_problem: "" }, { kind: 6, value: value.map(|encoded| Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
@@ -6336,7 +6443,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 						$handlers = $handlers.append(bound)
 					}
 					Ref(value) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 5, value: value.map(|encoded| Present(encoded)), extra: put_path([], 5, path), counter: if (value_control) 1 else 0, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0, adoption_problem: "", initial_problem: "" }, { kind: 5, value: value.map(|encoded| Present(encoded)), extra: put_path([], 5, path), counter: if (value_control) 1 else 0, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
@@ -6344,7 +6451,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 				}
 			}
 			$tree = $tree.append(narrow(kids.len(), "children of one element"))
-			$p = { tree: $tree, htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads }
+			$p = { tree: $tree, htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads, adoption_problem, initial_problem }
 			var $i = 0.U8
 			for kid in kids {
 				$p = compile_elem($p, kid, path.append({ container, index: $i }), depth, site, placed, children_context)
@@ -6363,22 +6470,22 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 		Fragment(_) => crash "internal: a fragment is only a dynamic branch, never a row template node"
 		Text(s) => {
 			check_construction_text(enclosing.construction, { value: s, site, placement: placed })
-			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
-			{ tree: put_str(tree.append(2), s), htab, holes, handlers, mounts, ncols, kreads }
+			{ tree, htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem } = plan
+			{ tree: put_str(tree.append(2), s), htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem }
 		}
 		TextV(v) => {
 			check_construction_text(enclosing.construction, { value: "", site, placement: placed })
 			check_text_hole(enclosing.construction, { varies: eff_mask(v) != 0, site, placement: placed })
 			checked = checked_text_read(v.read, { context: enclosing.construction, site, placement: placed })
-			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
+			{ tree, htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem } = plan
 			t2 = put_str(tree.append(2), "")
-			val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads }, { kind: 1, value: { ..v.map(|encoded| Present(encoded)), read: |context| Present(checked(context)) }, extra: put_path([], 1, path), counter: 0, evaluated: True })
+			val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem }, { kind: 1, value: { ..v.map(|encoded| Present(encoded)), read: |context| Present(checked(context)) }, extra: put_path([], 1, path), counter: 0, evaluated: True })
 		}
 		Site(m, rf) => {
 			check_construction_text(enclosing.construction, { value: "", site, placement: "${placed} (nested site anchor)" })
-			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
+			{ tree, htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem } = plan
 			hole = { is_observation: False, evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0, value_control: False, property: 0 }
-			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(mount_in_context(m, enclosing)), ncols, kreads: kreads.bitwise_or(rf(depth)) }
+			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(mount_in_context(m, enclosing)), ncols, kreads: kreads.bitwise_or(rf(depth)), adoption_problem, initial_problem }
 		}
 	}
 }
@@ -8225,7 +8332,28 @@ mount_cold = |max, programs, start, elem, enclosing, mode, entry| mount_initial(
 mount_initial : U64, Catalogue, Core.Start(st), Elem(Root(st)), Enclosing, [None, Some({ mode : U8, entry : U32 })] -> App(st)
 mount_initial = |max, programs, { st, tables }, elem, enclosing, cold| {
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = new_tx([])
-	tx0 = { cmds, next, free, routes, work, paths, site_free, observations, fx: { ..fx, max, startup: { ..fx.startup, pending: cold != None } } }
+	tx0 = {
+		cmds,
+		next,
+		free,
+		routes,
+		work,
+		paths,
+		site_free,
+		observations,
+		fx: {
+			..fx,
+			max,
+			startup: {
+				..fx.startup,
+				pending: cold != None,
+				adopting: match cold {
+					Some({ mode, .. }) => mode == 1
+					None => False
+				},
+			},
+		},
+	}
 	tx1 = match cold {
 		None => tx0
 		Some({ mode, entry }) => emit_op(tx0, 28, |bytes| put_u32(bytes.append(mode), entry))
@@ -8249,7 +8377,7 @@ mount_initial = |max, programs, { st, tables }, elem, enclosing, cold| {
 ## Quiet startup still returns a correctly framed completion command.
 complete_startup : App(st) -> App(st)
 complete_startup = |Core.App.(AppBody.({ store, root, tx, programs }))| {
-	fresh = Core.App.(AppBody.{ store, root, tx: with_fx(start_batch(tx), |effects| { ..effects, startup: { ..effects.startup, pending: False } }), programs })
+	fresh = Core.App.(AppBody.{ store, root, tx: with_fx(start_batch(tx), |effects| { ..effects, startup: { ..effects.startup, pending: False, adopting: False } }), programs })
 	Core.App.(AppBody.({ store: live_store, root: live_root, tx: live_tx, programs: live_names })) = drain(fresh)
 	complete = emit_op(with_fx(live_tx, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), 30, |bytes| bytes)
 	Core.App.(AppBody.{ store: live_store, root: live_root, tx: complete, programs: live_names })
@@ -8850,10 +8978,10 @@ LiveObservations : { owners : Dict(U32, U64), live : U64 }
 
 ReadyEntry : { path : List(U32), previous : U64, next : U64 }
 
-StartupState : { pending : Bool, next : U64, head : U64, tail : U64, ready : Dict(U64, ReadyEntry), armed : [None, Some(U64)], generation : U64 }
+StartupState : { pending : Bool, adopting : Bool, next : U64, head : U64, tail : U64, ready : Dict(U64, ReadyEntry), armed : [None, Some(U64)], generation : U64 }
 
 startup_empty : StartupState
-startup_empty = { pending: False, next: 1, head: 0, tail: 0, ready: Dict.empty(), armed: None, generation: 0 }
+startup_empty = { pending: False, adopting: False, next: 1, head: 0, tail: 0, ready: Dict.empty(), armed: None, generation: 0 }
 
 Fx : {
 	next : U32,
@@ -13064,4 +13192,47 @@ expect {
 		stale: 1,
 		settled: True,
 	}
+}
+
+## Cold admission uses expanded identities; foreign same-local attributes and
+## SVG hyphenated names remain ordinary. Row plans carry the same early refusal.
+expect {
+	resolve = |text| resolve_element(Web.Tag.from_str(text) ?? crash "test tag", root_enclosing)
+	plain = cold_element_problem(resolve("div"), []).is_empty()
+	custom = !cold_element_problem(resolve("x-control"), []).is_empty()
+	selected = !cold_element_problem(resolve("selectedcontent"), []).is_empty()
+	script = !cold_element_problem(resolve("script"), []).is_empty()
+	inline = !cold_element_problem(resolve("div"), [Core.attr("onclick", "x()")]).is_empty()
+	shadow = !cold_element_problem(resolve("template"), [Core.attr("shadowrootmode", "open")]).is_empty()
+	foreign_name = Web.AttrName.from_str("onclick")?.in_namespace({ namespace: Uri("urn:app") })?
+	foreign_ok = cold_element_problem(resolve("div"), [Core.attr_named(foreign_name, "data")]).is_empty()
+	row = compile(Core.element("selectedcontent", [], []), 1, [], "an each", root_enclosing)
+	{ plain, custom, selected, script, inline, shadow, foreign_ok, template_refusal: !row.adoption_problem.is_empty() } == { plain: True, custom: True, selected: True, script: True, inline: True, shadow: True, foreign_ok: True, template_refusal: True }
+}
+
+## Closed service command bytes and monotonic generations are checked against
+## independent golden bytes, separately from runtime's opcode role binding.
+expect {
+	armed = ready_arm(ready_append(new_tx([]), 7, [3]))
+	cancelled = ready_arm(ready_remove(armed, 7))
+	rearmed = ready_arm(ready_append(cancelled, 8, [4]))
+	armed.cmds == [0, 31, 1, 1, 0, 0, 0, 0, 0, 0, 0] and
+		cancelled.cmds == armed.cmds.concat([31, 0, 1, 0, 0, 0, 0, 0, 0, 0]) and
+			rearmed.cmds == cancelled.cmds.concat([31, 1, 2, 0, 0, 0, 0, 0, 0, 0]) and
+				work_get(rearmed.work, 52) == 3 and work_get(rearmed.work, 53) == 2 and work_get(rearmed.work, 54) == 1
+}
+
+## Initial attribute identity uses URI and local name, including HTML folding;
+## two prefixes do not create two writers. Other namespaces remain distinct.
+expect {
+	tag = resolve_element(Web.Tag.from_str("div")?, root_enclosing)
+	folded = initial_attribute_problem(tag, [Core.attr("DATA-X", "one"), Core.attr_s("data-x", Core.const("two"))])
+	name = Web.AttrName.from_str("same")?
+	left = name.in_namespace({ namespace: Uri("urn:app"), prefix: Prefix("a") })?
+	right = name.in_namespace({ namespace: Uri("urn:app"), prefix: Prefix("b") })?
+	other = name.in_namespace({ namespace: Uri("urn:other"), prefix: Prefix("b") })?
+	aliases = initial_attribute_problem(tag, [Core.attr_named(left, "one"), Core.attr_named(right, "two")])
+	distinct = initial_attribute_problem(tag, [Core.attr_named(left, "one"), Core.attr_named(other, "two")])
+	plan = compile(Core.element("div", [Core.attr("data-x", "one"), Core.attr("data-x", "two")], []), 1, [], "an each", root_enclosing)
+	!folded.is_empty() and !aliases.is_empty() and distinct.is_empty() and !plan.initial_problem.is_empty()
 }
