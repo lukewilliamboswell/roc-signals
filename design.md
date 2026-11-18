@@ -697,9 +697,9 @@ to carry it.
   Each root call moves it into the root context and returns it with the write
   set, so a write at any depth receives its cell's value uniquely owned. The
   platform's `Program(st)` carries that storage type through mount and
-  events without exposing engine state. The app never names it: the
-  platform's `requires` clause binds `Store` to the type inferred from the
-  app's `main`.
+  events without exposing engine state. The platform's `requires` clause
+  binds `Store` to the type inferred from the app's `main`; no separate
+  app-level `Store` declaration is required.
 - **Started again by a write.** A cell lives as long as the instance and is
   never disposed, so state that should start fresh, such as a page's form
   once the reader leaves the page, is started again on purpose.

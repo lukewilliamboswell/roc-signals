@@ -1712,7 +1712,8 @@ Engine := [].{
 	## `Engine.program(view).with_workers([count.registration()])` for a
 	## `Worker.task`, and `with_ports` the ports the page's JavaScript supplies.
 	## The parameter is the type of the plain store the instance holds beside
-	## its sites. The app never names it: the platform infers it from `main`.
+	## its sites. The platform infers it from `main`; no separate app-level
+	## `Store` declaration is required.
 	Program(st) : Core.Program(st)
 
 	## Check the default first page while the app compiles. Bind this call as

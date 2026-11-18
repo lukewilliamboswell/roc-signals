@@ -84,10 +84,10 @@ long, so annotations write `_` for it, here and in `Engine.Write(_)` and
 mentions a store takes the store's type as a parameter, as `Props(st)` does in
 [Components](@/docs/components.md).
 
-The app never writes the store's type down, not even in `main.roc`: the
-compiler infers it from `main`. The instance holds this storage beside its
-sites and moves it through each turn; it is not captured by the root site's
-closure.
+The compiler infers the store's type from `main`; no separate `Store`
+declaration is required in `main.roc`. The instance holds this storage beside
+its sites and moves it through each turn; it is not captured by the root
+site's closure.
 
 A write to a cell wakes the readers of that cell and no one else's. Adding
 tea re-evaluates what reads the cart and the notice. The line that counts
