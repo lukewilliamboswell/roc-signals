@@ -43,7 +43,7 @@ try {
     window.__rt = { manualScrollers: new Set([1]), checkManualScrolls() { window.__scrollChecks += 1; } };
     window.requestAnimationFrame = () => 0;
   });
-  await assert.rejects(page.evaluate(observeManualScrolls, Date.now() + 100), /scroll observation received no animation frame before its idle deadline/);
+  await assert.rejects(page.evaluate(observeManualScrolls, Date.now() + 100), /scroll observation frame and following task did not complete before the idle deadline/);
   assert.equal(await page.evaluate(() => window.__scrollChecks), 0);
   await page.evaluate(() => { window.requestAnimationFrame = window.__realRAF; });
   await page.evaluate(observeManualScrolls, Date.now() + 20000);

@@ -4,7 +4,7 @@ export async function observeManualScrolls(deadline) {
   const rt = window.__rt;
   if (rt?.manualScrollers?.size) {
     let frame, task, timer;
-    const starved = () => new Error(`scroll observation received no animation frame before its idle deadline (visibility=${document.visibilityState}, focused=${document.hasFocus()})`);
+    const starved = () => new Error(`scroll observation frame and following task did not complete before the idle deadline (visibility=${document.visibilityState}, focused=${document.hasFocus()})`);
     try {
       await new Promise((resolve, reject) => {
         const remaining = deadline - Date.now();
