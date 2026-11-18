@@ -3,8 +3,6 @@ app [main] { pf: platform "../../../platform/main.roc" }
 import pf.Engine
 import pf.Html
 
-Store : {}
-
 Kind := [Direct, Deferred, Retained, DeferredRetained]
 
 Options : { count : U64, seed : U64, kind : Kind }
