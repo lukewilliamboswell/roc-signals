@@ -5045,9 +5045,9 @@ SpecRunner := [].{
 
 	## What the browser around the app can do next, besides the user: answer
 	## a pending request, tick a live interval, change visibility or
-	## connectivity for a live subscription, or deliver a message the specs
-	## emit on a port with a live subscription.
-	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str), BurstOnline, BurstVisibility, BurstPort(Str), PointerGesture(Scm.Loc), LayoutReport({ target : Scm.Loc, kind : U8 }), ToggleMedia(Str), MoveClock]
+	## connectivity for a live subscription, supply an armed placeholder task,
+	## or deliver a message the specs emit on a port with a live subscription.
+	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str), BurstOnline, BurstVisibility, BurstPort(Str), PointerGesture(Scm.Loc), LayoutReport({ target : Scm.Loc, kind : U8 }), ToggleMedia(Str), MoveClock, SupplyOpportunity]
 
 	## Walks enumerate named live observations as they enumerate controls and
 	## pointer zones. Their injected facts need no browser geometry.
@@ -5079,6 +5079,9 @@ SpecRunner := [].{
 	services = |bk, s| {
 		b = s.browser
 		var $out = [MoveClock].concat(b.pending.map(|p| Answer(p))).concat(SpecRunner.pointer_places(s.dom, Grips).map(|p| PointerGesture(p.target))).concat(SpecRunner.layout_reports(s.dom))
+		if b.opportunity != None {
+			$out = $out.append(SupplyOpportunity)
+		}
 		var $ticks = []
 		var $ports = []
 		var $vis = Bool.False
@@ -5152,6 +5155,7 @@ SpecRunner := [].{
 	serve! = |program, host, bk, s, service, v| {
 		b = s.browser
 		match service {
+			SupplyOpportunity => Ok((SpecRunner.one(program, s, RunOpportunity)?, { what: "run-opportunity", kind: Service }))
 			LayoutReport({ target, kind }) => {
 				op = match kind {
 					6 => Scroll({ target, top: ((v % 20) * 20).to_u32_wrap(), left: 0 })
@@ -5356,9 +5360,10 @@ SpecRunner := [].{
 	## or a branch the cycle re-creates comes back at its place under a new
 	## id. A result goes to the request at its place among those in flight
 	## (`InFlight`), or, for a request no longer in flight such as a
-	## subscription's, under its id (`Result`). An event whose node the
-	## oracle could not place is `Unplaced`, and the soak refuses it.
-	Target : [Place(Place), InFlight(U64), Result(U32), Unplaced(U32, U32)]
+	## subscription's, under its id (`Result`). A platform opportunity names the
+	## currently armed task, never the first cycle's private generation. An event
+	## whose node the oracle could not place is `Unplaced`, and the soak refuses it.
+	Target : [Place(Place), InFlight(U64), Result(U32), PlatformOpportunity, Unplaced(U32, U32)]
 
 	## A listener named by where it is: its node's path from the mount root
 	## and the event type it listens for.
@@ -5384,6 +5389,10 @@ SpecRunner := [].{
 		{ index: 30, name: "turns" },
 		{ index: 32, name: "requests issued" },
 		{ index: 33, name: "results delivered" },
+		{ index: 53, name: "opportunities requested" },
+		{ index: 54, name: "opportunities cancelled" },
+		{ index: 55, name: "opportunities delivered" },
+		{ index: 56, name: "stale opportunities" },
 	]
 
 	## The round-trip counters of one work record, in `round_trip_counters`
@@ -5422,7 +5431,7 @@ SpecRunner := [].{
 				(SpecRunner.recorded_commands(recorded, cmds), cmds, wbuf)
 			},
 			event: |recorded, buf, wbuf, node, h, payload| {
-				target = SpecRunner.target_of(recorded.dom, live(recorded.inst), node, h)
+				target = if (node == SpecRunner.fx_node and h == 0 and payload.len() == 9 and payload.first() == Ok(255)) PlatformOpportunity else SpecRunner.target_of(recorded.dom, live(recorded.inst), node, h)
 				(inst, cmds, w) = event(recorded.inst, buf, wbuf, node, h, payload)
 				after = SpecRunner.round_trip_work(w)
 				next = { ..recorded, inst, calls: recorded.calls.append({ target, payload, files: Event, work: SpecRunner.work_between(recorded.counted, after) }), counted: after, crypto_recipes: if (node == SpecRunner.fx_node) recorded.crypto_recipes.remove(h) else recorded.crypto_recipes }
@@ -5570,13 +5579,14 @@ SpecRunner := [].{
 	## recorded call did (`round_trip_counters`): such a cycle is no longer
 	## the recorded round trip, and a soak that went on would measure a
 	## different, often idle, sequence.
-	replay! : Program(state), { inst : state, buf : List(U8), wbuf : List(U8), counted : List(U64), dom : Dom.Model }, List(Call), U64, Host => Try(List({ allocations : I64, bytes : I64 }), Str)
-	replay! = |program, { inst, buf, wbuf, counted, dom }, calls, cycles, host| {
+	replay! : Program(state), { inst : state, buf : List(U8), wbuf : List(U8), counted : List(U64), dom : Dom.Model, opportunity : [None, Some(U64)] }, List(Call), U64, Host => Try(List({ allocations : I64, bytes : I64 }), Str)
+	replay! = |program, { inst, buf, wbuf, counted, dom, opportunity }, calls, cycles, host| {
 		var $inst = inst
 		var $buf = buf
 		var $wbuf = wbuf
 		var $counted = counted
 		var $dom = dom
+		var $opportunity = opportunity
 		var $nets = List.with_capacity(cycles)
 		var $c = 0.U64
 		while $c < cycles {
@@ -5599,19 +5609,24 @@ SpecRunner := [].{
 							Err(_) => return Err("cycle ${cycle} has no request in flight at place ${(i + 1).to_str()}, which the recorded cycle answered: the steps after the last mark-metrics do not return the app to where they started")
 						}
 					Result(id) => { node: SpecRunner.fx_node, handler: id }
+					PlatformOpportunity => { node: SpecRunner.fx_node, handler: 0 }
 					Unplaced(id, h) => return Err("call ${$k.to_str()} went to node ${id.to_str()} with handler ${h.to_str()}, which the oracle's model places at no listener in the drawn tree")
 				}
-				# Count staging and consuming a fresh key-handle list together. The
-				# recorder holds only the derivation recipe, so no original key or
-				# argument-list reference survives to hide its release.
+				# Count staging and consuming fresh platform payloads and key-handle
+				# lists together. A remapped generation has no retained original list
+				# whose reference would keep its consumption from freeing storage.
 				allocations = (host.live_allocations!)()
 				bytes = (host.live_bytes!)()
+				payload = SpecRunner.replay_payload(call.target, call.payload, $opportunity) ? |message| "cycle ${cycle}'s call ${$k.to_str()}: ${message}"
+				if call.target == PlatformOpportunity {
+					$opportunity = None
+				}
 				key_handles = match call.files {
 					Keys(recipe) => SpecRunner.recreate_key!(host, recipe)?
 					_ => []
 				}
 				(next, cmds, w) = match call.files {
-					Event => (program.event)($inst, $buf, $wbuf, node, handler, call.payload)
+					Event => (program.event)($inst, $buf, $wbuf, node, handler, payload)
 					Keys(_) => (program.key)($inst, $buf, $wbuf, node, handler, call.payload, key_handles)
 					Files(handles) => (program.files)($inst, $buf, $wbuf, node, handler, call.payload, handles)
 				}
@@ -5619,7 +5634,15 @@ SpecRunner := [].{
 				after_bytes = (host.live_bytes!)()
 				$allocations = $allocations + after_allocations.to_i64_wrap() - allocations.to_i64_wrap()
 				$bytes = $bytes + after_bytes.to_i64_wrap() - bytes.to_i64_wrap()
-				$dom = Dom.apply($dom, cmds.map(|byte| byte))
+				decoded = Dom.apply_full($dom, cmds.map(|byte| byte))
+				$dom = decoded.dom
+				for effect in decoded.fx {
+					$opportunity = match effect {
+						Opportunity({ action: 1, generation }) => Some(generation)
+						Opportunity({ action: 0, .. }) => None
+						_ => $opportunity
+					}
+				}
 				$inst = next
 				$buf = cmds
 				$wbuf = w
@@ -5635,6 +5658,16 @@ SpecRunner := [].{
 			$c = $c + 1
 		}
 		Ok($nets)
+	}
+
+	## Resolve platform scheduling transport immediately before its normal turn.
+	## A replay without the semantic service is an invalid round trip, never an
+	## obsolete occurrence that could make an otherwise idle cycle appear flat.
+	replay_payload : Target, List(U8), [None, Some(U64)] -> Try(List(U8), Str)
+	replay_payload = |target, original, opportunity| match (target, opportunity) {
+		(PlatformOpportunity, Some(generation)) => Ok(SpecRunner.put_u64([255], generation))
+		(PlatformOpportunity, None) => Err("no placeholder opportunity is armed: the steps after the last mark-metrics do not return the app to where they started")
+		_ => Ok(original)
 	}
 
 	## A recorded derivation recreates the same mathematical key. The host's
@@ -5693,7 +5726,7 @@ SpecRunner := [].{
 		if ran.inst.calls.is_empty() {
 			return Err(failed("the steps after the last mark-metrics call nothing in the engine, so there is no round trip to repeat"))
 		}
-		nets = SpecRunner.replay!(program, { inst: ran.inst.inst, buf: ran.buf, wbuf: ran.wbuf, counted: ran.inst.counted, dom: ran.inst.dom }, ran.inst.calls, cycles, host).map_err(failed)?
+		nets = SpecRunner.replay!(program, { inst: ran.inst.inst, buf: ran.buf, wbuf: ran.wbuf, counted: ran.inst.counted, dom: ran.inst.dom, opportunity: ran.browser.opportunity }, ran.inst.calls, cycles, host).map_err(failed)?
 		SpecRunner.flat(nets, warm).map_err(failed)?
 		Ok(nets)
 	}
@@ -7974,15 +8007,44 @@ expect {
 ## it, by their index in the record; a counter the record lacks reads 0.
 expect {
 	record = |values| SpecRunner.put_u32(values.fold(SpecRunner.put_u32([], values.len().to_u32_wrap()), SpecRunner.put_u64), 0)
-	counters = List.repeat(0.U64, 34).map_with_index(|_, i| i)
+	counters = List.repeat(0.U64, 57).map_with_index(|_, i| i)
 	earlier = SpecRunner.round_trip_work(record(counters))
 	later = SpecRunner.round_trip_work(record(counters.map_with_index(|value, i| if (i == 1 or i == 30) value + 1 else value)))
-	{ earlier, work: SpecRunner.work_between(earlier, later), short: SpecRunner.round_trip_work(record([7, 8])) } == { earlier: [1, 22, 25, 26, 30, 32, 33], work: [1, 0, 0, 0, 1, 0, 0], short: [8, 0, 0, 0, 0, 0, 0] }
+	{ earlier, work: SpecRunner.work_between(earlier, later), short: SpecRunner.round_trip_work(record([7, 8])) } == { earlier: [1, 22, 25, 26, 30, 32, 33, 53, 54, 55, 56], work: [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], short: [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
 }
 
 ## A replayed call that did other work than its recorded call is named by
 ## every counter, so the report says what the replay missed.
-expect SpecRunner.show_work([1, 0, 2, 2, 1, 0, 0]) == "rows created 1, rows removed 0, scopes created 2, scopes disposed 2, turns 1, requests issued 0, results delivered 0"
+expect SpecRunner.show_work([1, 0, 2, 2, 1, 0, 0]) == "rows created 1, rows removed 0, scopes created 2, scopes disposed 2, turns 1, requests issued 0, results delivered 0, opportunities requested 0, opportunities cancelled 0, opportunities delivered 0, stale opportunities 0"
+
+## Recording captures a scheduling occurrence rather than an obsolete byte
+## token; replay resolves the currently armed generation and refuses its loss.
+expect {
+	program = SpecRunner.recording(report_probe({}))
+	initial = SpecRunner.mount_in(program, {})
+	(recorded, _, _) = (program.event)(initial.inst, initial.buf, initial.wbuf, SpecRunner.fx_node, 0, [255, 1, 0, 0, 0, 0, 0, 0, 0])
+	call = recorded.calls.last()?
+	{
+		target: call.target,
+		fresh: SpecRunner.replay_payload(call.target, call.payload, Some(99)),
+		missing: SpecRunner.replay_payload(call.target, call.payload, None).is_err(),
+		ordinary: SpecRunner.replay_payload(Result(9), [5], Some(99)),
+	} == { target: PlatformOpportunity, fresh: Ok([255, 99, 0, 0, 0, 0, 0, 0, 0]), missing: True, ordinary: Ok([5]) }
+}
+
+## A walk offers one armed task alongside its other services. Merely listing
+## services neither consumes that task nor mounts a placeholder body.
+expect {
+	initial = SpecRunner.mount_in(report_probe({}), {})
+	armed = { ..initial, browser: SpecRunner.absorb(initial.browser, [Opportunity({ action: 1, generation: 7 })]) }
+	offered = |state| SpecRunner.services(SpecRunner.book([]), state).keep_if(
+		|service| match service {
+			SupplyOpportunity => True
+			_ => False
+		},
+	).len()
+	{ idle: offered(initial), armed: offered(armed), pending: armed.browser.opportunity } == { idle: 0, armed: 1, pending: Some(7) }
+}
 
 ## A soak names an event by the place of its listener in the drawn tree,
 ## so a row the cycle re-creates under another id is found again at its
