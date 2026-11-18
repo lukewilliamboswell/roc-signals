@@ -189,11 +189,11 @@ view = |initial| Core.state(
 					|| Core.placeholder(
 						reading.map(|cfg| cfg.first),
 						fallback("first"),
-						|| body({ name: "first", version, child: Child(Core.placeholder(reading.lift().map(|cfg| cfg.nested), fallback("nested"), || body({ name: "nested", version: version.lift(), child: Leaf }))) }),
+						body_factory({ name: "first", version, seed: initial.payload_seed, child: Child(Core.placeholder(reading.lift().map(|cfg| cfg.nested), fallback("nested"), body_factory({ name: "nested", version: version.lift(), seed: initial.payload_seed, child: Leaf }))) }),
 					),
 					|| Core.text(""),
 				),
-				Core.placeholder(reading.map(|cfg| cfg.second), fallback("second"), || body({ name: "second", version, child: Leaf })),
+				Core.placeholder(reading.map(|cfg| cfg.second), fallback("second"), body_factory({ name: "second", version, seed: initial.payload_seed, child: Leaf })),
 			]),
 		)
 	},
@@ -202,15 +202,24 @@ view = |initial| Core.state(
 fallback : Str -> Core.Elem(ctx)
 fallback = |name| Core.element("p", [Core.attr("data-testid", "wait-${name}")], [Core.text("${name} waiting")])
 
-body : { name : Str, version : Core.Signal(ctx, U64), child : [Leaf, Child(Core.Elem(Core.In(ctx, U64)))] } -> Core.Elem(ctx)
-body = |{ name, version, child }| Core.state(
-	0.U64,
+## Captured payloads are constructed from unknown input before the deferred
+## factory runs. They are mutable local storage only after activation; disposal
+## and remount must reset them while unrelated waiting/active owners survive.
+body_factory : { name : Str, version : Core.Signal(ctx, U64), seed : U64, child : [Leaf, Child(Core.Elem(Core.In(ctx, List(U64))))] } -> (() -> Core.Elem(ctx))
+body_factory = |{ name, version, seed, child }| {
+	initial = List.repeat(seed, 128).update(0, |_| 0) ?? crash "fixed payload has slot zero"
+	|| body({ name, version, child, initial })
+}
+
+body : { name : Str, version : Core.Signal(ctx, U64), initial : List(U64), child : [Leaf, Child(Core.Elem(Core.In(ctx, List(U64))))] } -> Core.Elem(ctx)
+body = |{ name, version, child, initial }| Core.state(
+	initial,
 	|local| Core.element(
 		"section",
 		[Core.attr("data-testid", "live-${name}")],
 		[
-			Core.element("p", [], [Core.text_s(local.signal().map2(version.lift(), |count, revision| "${name}:${count.to_str()}:${revision.to_str()}"))]),
-			Core.element("button", [Core.attr("aria-label", "Bump ${name}"), Core.on("click", local.update(|count| count + 1))], [Core.text("Bump ${name}")]),
+			Core.element("p", [], [Core.text_s(local.signal().map2(version.lift(), |values, revision| "${name}:${(values.first() ?? 0).to_str()}:${revision.to_str()}"))]),
+			Core.element("button", [Core.attr("aria-label", "Bump ${name}"), Core.on("click", local.update(|values| values.update(0, |count| count + 1) ?? crash "live payload has slot zero"))], [Core.text("Bump ${name}")]),
 		].concat(
 			match child {
 				Leaf => []
@@ -340,6 +349,7 @@ test! = |input| {
 
 fixed : List({ name : Str, input : Input })
 fixed = [
+	{ name: "captured-payloads-mutate-and-remount-independently", input: { initial: 199, mode: 3, events: [4, 9, 9, 4, 10, 4, 11, 11, 3, 3, 4, 9, 4, 11] } },
 	{ name: "false-true-appends-behind-existing-owner", input: { initial: 3, mode: 0, events: [6, 0, 0, 4, 4, 2, 4] } },
 	{ name: "cancelled-generation-cannot-name-remounted-site", input: { initial: 1, mode: 2, events: [6, 3, 3, 5, 4, 5, 7] } },
 	{ name: "nested-waits-behind-sibling-and-resets-with-parent", input: { initial: 7, mode: 3, events: [4, 4, 4, 8, 9, 10, 11, 3, 3, 4, 4] } },

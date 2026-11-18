@@ -99,8 +99,8 @@ CheckPlan := [].{
 		"grammar coverage" => { natives: ["kanban-board"], webs: [], sized: [] }
 		"runtime contracts in Chrome" => {
 			natives: ["unsafe-html", "controls", "table", "services", "prerender", "startup-corpus"],
-			webs: ["unsafe-html", "tests/apps/effects", "controls", "services", "workers", "files", "file-effects", "ports", "markup", "description-preparation", "startup", "startup-corpus", "startup-queue", "construction", "table", "outbox", "dbg", "dbg-job-only", "prepared", "tasks", "deep-payload", "prerender", "crypto"],
-			sized: ["startup-queue"],
+			webs: ["unsafe-html", "tests/apps/effects", "controls", "services", "workers", "files", "file-effects", "ports", "markup", "description-preparation", "startup", "startup-corpus", "startup-queue", "placeholder-retention", "construction", "table", "outbox", "dbg", "dbg-job-only", "prepared", "tasks", "deep-payload", "prerender", "crypto"],
+			sized: ["startup-queue", "placeholder-retention"],
 		}
 		"runtime unit tests" => { natives: [], webs: ["write-scaling"], sized: ["write-scaling"] }
 		"example journeys in Chrome" => { natives: [], webs: ["worker-lab", "reading-list", "status-page", "log-explorer", "million-row-explorer", "conduit"], sized: [] }

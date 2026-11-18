@@ -1506,7 +1506,7 @@ Core := [].{
 				} else tx4
 				reads = eff_mask(ready).bitwise_or(elem_reads(body(), args.depth))
 				cfg = { ready, body, anchor, id, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
-				(placeholder_inst(cfg, False, block), reads, tx5)
+				(placeholder_inst(cfg, block), reads, tx5)
 			},
 		),
 		|depth| eff_mask(ready).bitwise_or(elem_reads(body(), depth)),
@@ -5740,37 +5740,35 @@ state_inst = |s0, block0, depth0, waits0| {
 	)
 }
 
-## A conditional site. The branch is rebuilt when the condition changes.
+## A waiting placeholder owns its one-shot factory and readiness recipe.
+## Activation consumes both: the live instance retains only its anchor and block.
 Placeholder(ctx) : { ready : Signal(ctx, Bool), body : (() -> Elem(ctx)), anchor : U32, id : U64, depth : U64, path : List(U32), cap : U128, enclosing : Enclosing }
 
 ## Rebuild each owned closure directly in its returning branch, preserving
 ## unique block ownership on the compiler's optimized paths (roc#12846).
-placeholder_inst : Placeholder(ctx), Bool, Block(ctx) -> Inst(ctx)
-placeholder_inst = |cfg0, active0, block0| {
-	held = { cfg: cfg0, active: active0, block: block0 }
+placeholder_inst : Placeholder(ctx), Block(ctx) -> Inst(ctx)
+placeholder_inst = |cfg0, block0| {
+	held = { cfg: cfg0, block: block0 }
 	Inst(
 		|env, msg, tx| {
-			{ cfg, active, block } = held
+			{ cfg, block } = held
 			match msg {
 				Changed(mask) => {
-					if active {
-						(next, tx1) = refresh(block, env, mask, tx)
-						(placeholder_inst(cfg, True, next), Done, tx1)
-					} else if mask.bitwise_and(eff_mask(cfg.ready)) != 0 {
+					if mask.bitwise_and(eff_mask(cfg.ready)) != 0 {
 						eligible = (cfg.ready.read)(env)
 						tx1 = count_evals(tx, 1)
 						tx2 = if eligible {
 							ready_append(tx1, cfg.id, cfg.path)
 						} else ready_remove(tx1, cfg.id)
-						(placeholder_inst(cfg, False, block), Done, tx2)
-					} else (placeholder_inst(cfg, False, block), Done, tx)
+						(placeholder_inst(cfg, block), Done, tx2)
+					} else (placeholder_inst(cfg, block), Done, tx)
 				}
 				Fire(path, pos, handler, payload) => {
 					activation = match payload {
 						Activate(id) => id == cfg.id
 						_ => False
 					}
-					if activation and pos == path.len() and !active {
+					if activation and pos == path.len() {
 						eligible = (cfg.ready.read)(env)
 						tx1 = ready_remove(count_evals(tx, 1), cfg.id)
 						if eligible {
@@ -5781,18 +5779,18 @@ placeholder_inst = |cfg0, active0, block0| {
 								crash "internal: placeholder static body owned requests"
 							}
 							(next, tx3) = mount_block(env, (cfg.body)(), cfg.depth, cfg.path, 0, cfg.anchor, { cap: cfg.cap, enclosing: cfg.enclosing }, tx2)
-							(placeholder_inst(cfg, True, next), Pending(env, no_layers), tx3)
-						} else (placeholder_inst(cfg, False, block), Pending(env, no_layers), tx1)
+							(active_placeholder_inst(cfg.anchor, next), Pending(env, no_layers), tx3)
+						} else (placeholder_inst(cfg, block), Pending(env, no_layers), tx1)
 					} else match fire_target(block, path, pos) {
 						Leaf => {
 							(next, out, tx1) = fire_leaf(block, env, handler, payload, path, tx)
-							(placeholder_inst(cfg, active, next), out, tx1)
+							(placeholder_inst(cfg, next), out, tx1)
 						}
 						Kid => {
 							(next, out, tx1) = fire_kid(block, env, path, pos, handler, payload, tx)
-							(placeholder_inst(cfg, active, next), out, tx1)
+							(placeholder_inst(cfg, next), out, tx1)
 						}
-						Miss => (placeholder_inst(cfg, active, block), Pending(env, no_layers), tx)
+						Miss => (placeholder_inst(cfg, block), Pending(env, no_layers), tx)
 					}
 				}
 				Dispose(remove) => {
@@ -5801,6 +5799,45 @@ placeholder_inst = |cfg0, active0, block0| {
 						emit_op(tx1, 5, |bytes| put_u32(bytes, cfg.anchor))
 					} else tx1
 					(noop({}), Orphaned(orphans), free_id(tx2, cfg.anchor))
+				}
+			}
+		},
+	)
+}
+
+## Once activated, a placeholder cannot use its factory or readiness again.
+## Retaining either can retain runtime inputs beside the live site's storage,
+## causing a whole input buffer to survive its first write. The single closure
+## owns only the active block and its transport anchor; authored Reset handlers
+## inside the block keep any input they actually need in the ordinary way.
+active_placeholder_inst : U32, Block(ctx) -> Inst(ctx)
+active_placeholder_inst = |anchor0, block0| {
+	held = { anchor: anchor0, block: block0 }
+	Inst(
+		|env, msg, tx| {
+			{ anchor, block } = held
+			match msg {
+				Changed(mask) => {
+					(next, tx1) = refresh(block, env, mask, tx)
+					(active_placeholder_inst(anchor, next), Done, tx1)
+				}
+				Fire(path, pos, handler, payload) => match fire_target(block, path, pos) {
+					Leaf => {
+						(next, out, tx1) = fire_leaf(block, env, handler, payload, path, tx)
+						(active_placeholder_inst(anchor, next), out, tx1)
+					}
+					Kid => {
+						(next, out, tx1) = fire_kid(block, env, path, pos, handler, payload, tx)
+						(active_placeholder_inst(anchor, next), out, tx1)
+					}
+					Miss => (active_placeholder_inst(anchor, block), Pending(env, no_layers), tx)
+				}
+				Dispose(remove) => {
+					(orphans, tx1) = dispose_block(block, env, remove, bump(tx, w_scopes_disposed, 1))
+					tx2 = if remove {
+						emit_op(tx1, 5, |bytes| put_u32(bytes, anchor))
+					} else tx1
+					(noop({}), Orphaned(orphans), free_id(tx2, anchor))
 				}
 			}
 		},

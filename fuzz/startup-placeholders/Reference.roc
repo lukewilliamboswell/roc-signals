@@ -8,7 +8,7 @@ Reference := [].{
 	Phase := [Absent, Waiting, Active(U64)].{
 		is_eq : _
 	}
-	Configuration : { first : Bool, second : Bool, nested : Bool, shown : Bool, version : U64 }
+	Configuration : { first : Bool, second : Bool, nested : Bool, shown : Bool, version : U64, payload_seed : U64 }
 	Action := [ToggleFirst, ToggleSecond, ToggleNested, ToggleShown, Same, Pulse, Both, BumpFirst, BumpSecond, BumpNested].{
 		is_eq : _
 	}
@@ -20,7 +20,7 @@ Reference := [].{
 
 	initial : U8 -> Model
 	initial = |bits| {
-		configuration = { first: bits.bitwise_and(1) != 0, second: bits.bitwise_and(2) != 0, nested: bits.bitwise_and(4) != 0, shown: True, version: 0 }
+		configuration = { first: bits.bitwise_and(1) != 0, second: bits.bitwise_and(2) != 0, nested: bits.bitwise_and(4) != 0, shown: True, version: 0, payload_seed: bits.to_u64() }
 		{ configuration, first: Waiting, second: Waiting, nested: Absent, queue: eligible(eligible([], { owner: First, ready: configuration.first }), { owner: Second, ready: configuration.second }), delivered: 0, stale: 0, created: 3, disposed: 0 }
 	}
 
