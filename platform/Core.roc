@@ -1,5 +1,6 @@
 import Web
 import EntryRoutes
+import ReadyIndex
 import Spelling
 import Layout
 import TableCore exposing [Table]
@@ -5806,8 +5807,9 @@ placeholder_inst = |cfg0, active0, block0| {
 	)
 }
 
-## A linked dictionary gives one entry per ready lifetime and constant-time
-## append/removal, with no pending-site walk on an ordinary write.
+## FIFO links address live ready lifetimes through a compressed U64 radix index.
+## Each index operation traverses at most two paths of 64 forks; no operation
+## scans pending owners or retains a disposed owner. See ReadyIndex for storage costs.
 ready_append : Tx, U64, List(U32) -> Tx
 ready_append = |tx, id, path| with_fx(
 	tx,
@@ -5820,7 +5822,7 @@ ready_append = |tx, id, path| with_fx(
 				queue.ready
 			} else {
 				last = queue.ready.get(queue.tail) ?? crash "internal: ready tail missing"
-				queue.ready.insert(queue.tail, { ..last, next: id })
+				queue.ready.insert({ key: queue.tail, value: { ..last, next: id } })
 			}
 			{
 				..effects,
@@ -5830,7 +5832,7 @@ ready_append = |tx, id, path| with_fx(
 						id
 					} else queue.head,
 					tail: id,
-					ready: entries.insert(id, { path, previous: queue.tail, next: 0 }),
+					ready: entries.insert({ key: id, value: { path, previous: queue.tail, next: 0 } }),
 				},
 			}
 		}
@@ -5850,13 +5852,13 @@ ready_remove = |tx, id| with_fx(
 					without
 				} else {
 					previous = without.get(entry.previous) ?? crash "internal: ready previous missing"
-					without.insert(entry.previous, { ..previous, next: entry.next })
+					without.insert({ key: entry.previous, value: { ..previous, next: entry.next } })
 				}
 				right = if entry.next == 0 {
 					left
 				} else {
 					next = left.get(entry.next) ?? crash "internal: ready next missing"
-					left.insert(entry.next, { ..next, previous: entry.previous })
+					left.insert({ key: entry.next, value: { ..next, previous: entry.previous } })
 				}
 				{
 					..effects,
@@ -8983,10 +8985,10 @@ LiveObservations : { owners : Dict(U32, U64), live : U64 }
 
 ReadyEntry : { path : List(U32), previous : U64, next : U64 }
 
-StartupState : { pending : Bool, adopting : Bool, next : U64, head : U64, tail : U64, ready : Dict(U64, ReadyEntry), armed : [None, Some(U64)], generation : U64 }
+StartupState : { pending : Bool, adopting : Bool, next : U64, head : U64, tail : U64, ready : ReadyIndex.ReadyIndex(ReadyEntry), armed : [None, Some(U64)], generation : U64 }
 
 startup_empty : StartupState
-startup_empty = { pending: False, adopting: False, next: 1, head: 0, tail: 0, ready: Dict.empty(), armed: None, generation: 0 }
+startup_empty = { pending: False, adopting: False, next: 1, head: 0, tail: 0, ready: ReadyIndex.ReadyIndex.empty(), armed: None, generation: 0 }
 
 Fx : {
 	next : U32,
@@ -10869,7 +10871,8 @@ settle_note = |a, b| {
 		("end-of-turn focus requests, program checks and port requests", a.focus.len(), b.focus.len() - drifts.len()),
 	]
 	changed = pairs.keep_if(|(_, x, y)| x != y).map(|(name, x, y)| "${name} ${x.to_str()} -> ${y.to_str()}")
-	Str.join_with(drifts.concat(changed).concat(if (a.startup.ready != b.startup.ready) ["placeholder ready owners changed"] else []).concat(if (b.batch.asked) ["view transition requested by settle check"] else []), ", ")
+	invalid = if (!a.startup.ready.is_valid() or !b.startup.ready.is_valid()) ["invalid placeholder ready index"] else []
+	Str.join_with(drifts.concat(changed).concat(invalid).concat(if (a.startup.ready != b.startup.ready) ["placeholder ready owners changed"] else []).concat(if (b.batch.asked) ["view transition requested by settle check"] else []), ", ")
 }
 
 ## The worker catalogue lists its names in order, and a duplicate name or a

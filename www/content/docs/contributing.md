@@ -728,6 +728,14 @@ the port message format's decoder (`fuzz/port-json`), URL parsing, builders
 and readers (`fuzz/url`), and DOM/Fetch name grammar (`fuzz/names`). Every
 target that drives the engine runs the settle check after every step.
 
+`fuzz/startup-placeholders` checks readiness and scoped replacement against a
+separate list-based FIFO/lifetime model. Its histories include cold-frame
+acknowledgement, zero in-flight capacity, false/true reappend, parent disposal
+and remount, nested activation, local state, current values at late activation
+and retained stale callbacks. It checks authored trees, exact text work and
+registration commands, generation lifetimes, task counters and allocation
+balance; it never reads the engine's queue to decide an expected outcome.
+
 An example's targets check its own pure logic and import nothing of the
 platform: `fuzz-<subject>.roc` beside the modules it imports, named for
 what it checks (the CSV Converter's `fuzz-csv.roc`, the Spreadsheet's
