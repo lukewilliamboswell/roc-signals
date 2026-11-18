@@ -43,6 +43,9 @@ view = |route| Engine.state(
 			[
 				Engine.element("p", [Engine.test_id("route")], [Engine.text(route)]),
 				Engine.element("p", [Engine.test_id("selection")], [Engine.text("alpha"), Engine.text(""), Engine.text("beta")]),
+				Engine.element("img", [Engine.test_id("image"), Engine.attr("src", "/startup-image.svg"), Engine.attr("alt", "Blue hills"), Engine.attr("width", "160"), Engine.attr("height", "90")], []),
+				Engine.element("iframe", [Engine.test_id("frame"), Engine.attr("src", "/startup-frame"), Engine.attr("title", "Retained native document")], []),
+				Engine.element("video", [Engine.test_id("video"), Engine.attr("src", "/startup.webm"), Engine.attr("muted", ""), Engine.attr("loop", ""), Engine.attr("preload", "auto"), Engine.attr("width", "32"), Engine.attr("height", "24")], []),
 				Engine.element("p", [Engine.test_id("counter")], [Engine.text_s(state.signal().map(|value| value.count.to_str()))]),
 				Engine.element("p", [Engine.test_id("environment")], [Engine.text_s(state.signal().map(|value| value.environment))]),
 				Html.button("Increment", [Engine.test_id("increment")], state.update(|value| { ..value, count: value.count + 1 })),

@@ -43,6 +43,13 @@ in that frame remains the same browser node while the engine attaches its
 handlers and references. Later signal changes and scope disposal still work
 normally.
 
+Keep this image as ordinary initial content, beside the placeholder shown
+below. The sample keeps `landscape.svg` under `public/`, so the built page can
+load `/landscape.svg` on every declared route. Startup retains the
+image while a later opportunity replaces only the placeholder.
+
+{{ sample(file="startup/main.roc", region="retained") }}
+
 The producer writes standard `data-roc-*` annotations describing its logical
 nodes, text boundaries and controls. Startup binds the whole frame and checks
 that description. It tolerates browser text partitioning within the declared

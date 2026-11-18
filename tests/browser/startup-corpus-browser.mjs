@@ -22,8 +22,19 @@ for (const route of ['/', '/second/']) {
   if (options.output) { fs.mkdirSync(options.output, { recursive: true }); fs.writeFileSync(path.join(options.output, route === '/' ? 'first.json' : 'second.json'), result.stdout); }
 }
 const files = runtimeFiles(options.runtime);
+const resourceCounts = new Map();
+const resources = new Map([
+  ['/startup-image.svg', ['image/svg+xml', fs.readFileSync(new URL('../../www/samples/startup/public/landscape.svg', import.meta.url))]],
+  ['/startup.webm', ['video/webm', fs.readFileSync(new URL('./fixtures/startup.webm', import.meta.url))]],
+  ['/startup-frame', ['text/html', Buffer.from('<!doctype html><title>Retained native document</title><p>Native frame</p>')]],
+]);
 const server = http.createServer((request, response) => {
   const route = new URL(request.url, 'http://local').pathname;
+  if (resources.has(route)) {
+    resourceCounts.set(route, (resourceCounts.get(route) ?? 0) + 1);
+    const [type, body] = resources.get(route);
+    response.writeHead(200, { 'content-type': type, 'content-length': body.length, 'cache-control': 'no-store' }); response.end(body); return;
+  }
   if (route === '/app.wasm') { response.setHeader('content-type', 'application/wasm'); response.end(fs.readFileSync(options.wasm)); return; }
   const file = files[path.basename(route)];
   response.setHeader('content-type', file ? 'text/javascript' : 'text/html');
@@ -48,18 +59,24 @@ try {
         try {
           await page.goto(`http://127.0.0.1:${server.address().port}${route}`);
           await page.waitForFunction(() => typeof window.__start === 'function');
+          await page.evaluate(async () => { const video = document.querySelector('[data-testid="video"]'); video.muted = true; await video.play(); });
+          await page.waitForFunction(() => { const video = document.querySelector('[data-testid="video"]'), image = document.querySelector('[data-testid="image"]'); return image.complete && image.naturalWidth > 0 && video.buffered.length > 0 && video.buffered.end(video.buffered.length - 1) >= video.duration - .01; });
+          await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 200)));
           const cold = await page.evaluate(({ entry }) => {
             const root = document.getElementById('app');
             const query = id => root.querySelector(`[data-testid="${id}"]`);
-            const ids = ['route', 'selection', 'counter', 'environment', 'increment', 'textarea', 'no-match', 'option-first', 'option-second', 'authored-inert', 'template', 'svg', 'svg-link', 'foreign-html', 'math', 'row-a', 'row-b', 'tail-a', 'tail-b', 'waiting'];
+            const ids = ['route', 'selection', 'image', 'frame', 'video', 'counter', 'environment', 'increment', 'textarea', 'no-match', 'option-first', 'option-second', 'authored-inert', 'template', 'svg', 'svg-link', 'foreign-html', 'math', 'row-a', 'row-b', 'tail-a', 'tail-b', 'waiting'];
             window.__kept = new Map(ids.map(id => [id, query(id)]));
             window.__content = query('template').content.querySelector('[data-testid="content-span"]');
+            window.__resources = { document: query('frame').contentDocument, videoTime: query('video').currentTime, sourceWrites: 0 };
+            for (const id of ['image', 'frame', 'video']) { const element = query(id), original = element.setAttributeNS; element.setAttributeNS = function(namespace, name, value) { if (name === 'src') window.__resources.sourceWrites++; return original.call(this, namespace, name, value); }; }
             const selected = query('selection').firstChild;
             document.getSelection().setBaseAndExtent(selected, entry ? 7 : 1, selected, entry ? 1 : 7);
             // An embedded entry selects its fixed route, even at another live URL.
             history.replaceState(null, '', '/unlisted?client=1#before');
             return { frame: root.getAttribute('data-roc-frame'), route: query('route').textContent, counter: query('counter').textContent, environment: query('environment').textContent, rootInert: root.inert, buttonInert: query('increment').inert, textareaInert: query('textarea').inert, authored: query('authored-inert').getAttribute('inert'), optionCount: query('no-match').options.length, selectedIndex: query('no-match').selectedIndex, selection: document.getSelection().toString() };
           }, { entry });
+          const requestsBefore = Object.fromEntries(resourceCounts);
           assert.equal(cold.frame, `1:${entry}:corpus`);
           assert.equal(cold.route, entry ? 'second' : 'first');
           assert.equal(cold.counter, '0'); assert.equal(cold.environment, 'waiting');
@@ -87,8 +104,16 @@ try {
             return { fault: window.__rt.poisoned, counter: root.querySelector('[data-testid="counter"]').textContent, active: root.querySelector('[data-testid="active"]')?.textContent, waiting: root.querySelector('[data-testid="waiting"]') !== null, retained: [...window.__kept].filter(([id]) => id !== 'waiting').every(([id, node]) => root.querySelector(`[data-testid="${id}"]`) === node), pending: window.__rt.opportunity !== null };
           });
           assert.equal(active.fault, null); assert.equal(active.counter, '2'); assert.equal(active.active, 'Live active'); assert.equal(active.waiting, false); assert.equal(active.retained, true); assert.equal(active.pending, false);
+          const native = await page.evaluate(async () => {
+            const query = id => document.querySelector(`[data-testid="${id}"]`), prior = window.__resources, video = query('video'), before = video.currentTime;
+            await new Promise(resolve => setTimeout(resolve, 240));
+            return { imageLoaded: query('image').complete && query('image').naturalWidth === 160, documentLoaded: prior.document?.body?.textContent === 'Native frame', documentRetained: query('frame').contentDocument === prior.document, sourceWrites: prior.sourceWrites, playing: !video.paused, beforeStartup: prior.videoTime, before, after: video.currentTime, duration: video.duration, progress: (video.currentTime - before + video.duration) % video.duration };
+          });
+          const requestsAfter = Object.fromEntries(resourceCounts);
+          assert.equal(native.imageLoaded, true); assert.equal(native.documentLoaded, true); assert.equal(native.documentRetained, true); assert.equal(native.sourceWrites, 0); assert.equal(native.playing, true); assert.ok(native.progress > .08, 'retained native video keeps progressing after binding and replacement');
+          assert.deepEqual(requestsAfter, requestsBefore, 'native binding and placeholder activation issue no extra resource request');
           await page.evaluate(() => window.__rt.unmount());
-          const record = { browser: provider.name, version, route, cold, committed, active };
+          const record = { browser: provider.name, version, route, cold, committed, active, native, requestsBefore, requestsAfter };
           reports.push(record); console.log(`PASS ${provider.name} ${version} native producer → same Wasm ${route}`);
         } finally { await page.close(); }
       }

@@ -13,7 +13,17 @@ main = Engine.program_startup({}, entries, |route| page(route))
 # endregion entries
 
 page : Str -> Engine.Elem(Engine.Root)
-page = |route| Html.div("", [Html.h1(route, ""), controls({}), current_location({})])
+page = |route| Html.div("", [Html.h1(route, ""), landscape({}), controls({}), current_location({})])
+
+# region retained
+landscape : {} -> Engine.Elem(ctx)
+landscape = |_| Engine.element(
+	"img",
+	[Engine.attr("src", "/landscape.svg"), Engine.attr("alt", "Blue hills beneath a pale sky"), Engine.attr("width", "160"), Engine.attr("height", "90")],
+	[],
+)
+
+# endregion retained
 
 # region placeholder
 controls : {} -> Engine.Elem(ctx)
