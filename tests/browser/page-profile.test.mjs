@@ -14,6 +14,7 @@ try {
   await configureSpecPage(page);
   const document = "<!doctype html><body><button>Button</button><div style='height:90px;width:120px;overflow:scroll'><div style='height:1000px'>scroll</div></div><pre>monospace</pre>";
   for (let load = 0; load < 2; load += 1) {
+    await other.send("Page.bringToFront");
     await page.goto(`data:text/html,${encodeURIComponent(document)}`);
     await readySpecPage(page);
     const state = await page.evaluate(async () => {

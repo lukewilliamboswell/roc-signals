@@ -415,7 +415,7 @@ assertion. Stories still start independently, and filtering does not narrow
 the files checked for evidence. This mode mounts nothing, reports one ordinary
 result per file, and distinguishes parse failures from missing suite evidence.
 
-Chrome replay brings its page to the foreground before navigation and fixes
+Chrome replay brings its page to the foreground before and after navigation and fixes
 its profile: a 1280 by 900 CSS-pixel viewport, device scale factor 1, zero-width
 scrollbars and bundled IBM Plex Sans and Mono fonts (`tests/browser/fonts/`, with their license). The fonts load
 before the first step, including after cross-document navigation; a missing

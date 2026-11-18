@@ -42,6 +42,9 @@ export async function configureSpecPage(page) {
 
 // A missing font fails the replay instead of silently using platform fallback.
 export async function readySpecPage(page) {
+  // Cross-document navigation can reset headless target visibility. Establish
+  // the actionable page again before observing frames or delivering a step.
+  await page.send("Page.bringToFront");
   await page.evaluate(async () => {
     for (const family of ["SignalsSpec", "SignalsSpecMono"]) {
       const loaded = await document.fonts.load(`16px ${family}`);
