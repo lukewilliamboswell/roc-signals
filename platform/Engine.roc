@@ -2,6 +2,7 @@ import Core
 import Web
 import Layout
 import TableCore
+import EntryRoutes
 
 ## The authoring API of the roc-signals web platform: the reactive engine as an
 ## app sees it.
@@ -278,7 +279,7 @@ Engine := [].{
 		## The table has no order of its own.
 		from_list : List({ key : k, row : v }) -> Try(Table(k, v), [DuplicateKey(k)])
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-		from_list = |entries| match TableCore.Table.from_list(entries) {
+		from_list = |keyed_rows| match TableCore.Table.from_list(keyed_rows) {
 			Ok(built) => Ok({ t: built })
 			Err(DuplicateKey(key)) => Err(DuplicateKey(key))
 		}
@@ -1771,6 +1772,26 @@ Engine := [].{
 	## A worker task or preparation for `Program.with_workers`. Make one with
 	## a typed task's or preparation's `registration` (see `Worker`).
 	Registration : Core.Registration
+
+	## A canonical root-relative initial-entry path. Literal and computed path
+	## constructors refuse query/fragment facts and spellings needing repair.
+	EntryPath : EntryRoutes.Path
+
+	## Declared mount identity and an optional fallback entry path. Defaults
+	## describe an HTML div and refuse unknown paths instead of selecting home.
+	EntryProps : EntryRoutes.Props
+
+	## An immutable finite route catalogue reused by build enumeration, initial
+	## entry selection and typed path lookup. Each mounted app owns fresh state.
+	Entries(route) : EntryRoutes.Catalogue(route)
+
+	## Declare concrete initial entries once. Paths and typed routes are unique;
+	## a fallback must name a declared path. An invalid constant fails while the
+	## catalogue is built. The catalogue holds at most 4096 entries and 65536
+	## encoded path bytes, with each path at most 2048 UTF-8 bytes.
+	entries : EntryProps, List({ path : EntryPath, route : route }) -> Entries(route)
+		where [route.is_eq : route, route -> Bool, route.to_hash : route, Hasher -> Hasher]
+	entries = EntryRoutes.make
 
 	## The [Program] for an app that needs no boot data: mount `view()` with the
 	## default in-flight bound of 32.

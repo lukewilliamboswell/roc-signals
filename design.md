@@ -5119,7 +5119,13 @@ it fails.
 An `expect-absent` names a locator that another step of the same spec requires
 to match, or says `:never-drawn`; the parser rejects any other, so a misspelt or
 renamed locator fails at parse instead of passing. A marker on an anchored
-locator is also a parse error. Locators are compared exactly as written.
+locator is also a parse error. Locators are compared exactly as written. Suite validation also requires a
+positive observation of every family-marked subject somewhere in that app's
+complete spec suite. It runs before filtering or emission, so selecting one
+story cannot hide missing spelling evidence. A subject never positively drawn,
+written, run or started anywhere needs no vacuous negative assertion. The
+runner's explicit suite-check mode checks syntax and this evidence without
+mounting an engine; parser failures retain their parse classification.
 
 Names in negative and zero-count assertions need evidence before a runner
 can trust their spelling. The program's declarations are the first authority
@@ -5134,8 +5140,8 @@ name on any locator; a positive cleanup count shows a cleanup name; a
 positive interval count or `tick-interval` shows a period. Otherwise the
 negative carries its family marker: `:never-written`, `:never-runs` or
 `:never-started`. A marker on an anchored subject is an error. These markers
-are parser-only, just as `:never-drawn` is; they never change an operation's
-runner meaning. One exhaustive `Scm.evidence` classifies every operation,
+establish the per-spec negative form, with suite-wide positive spelling evidence
+as for `:never-drawn`; they never change an operation's runner meaning. One exhaustive `Scm.evidence` classifies every operation,
 and the locator query and declaration preflight consume its projections.
 Setup has its own exhaustive classification and retains its source position.
 
@@ -5623,6 +5629,20 @@ Registration                                  # opaque: a task or preparation; W
 mounts : Program(st) -> U64                 # check the default first page at compile time
 Program.with_ports : Program(st), List(PortRegistration) -> Program(st) # the ports the page supplies
 PortRegistration                              # opaque: a port's name and shape; Port makes one
+
+# Deterministic initial entries
+EntryPath                                      # checked canonical root-relative path
+EntryPath.from_str : Str -> Try(EntryPath, [InvalidEntryPath(Str)])
+EntryPath.from_quote : Str -> Try(EntryPath, [BadQuotedBytes(Str)])
+EntryPath.text : EntryPath -> Str
+EntryPath.link : EntryPath -> Web.Link
+EntryProps := { namespace : Web.Namespace ?? Html, prefix : Web.Prefix ?? Unprefixed,
+                local : Str ?? "div", fallback : [None, Some(EntryPath)] ?? None }
+Entries(route)                                 # immutable routes, fixed inputs, no live instance storage
+entries : EntryProps, List({ path : EntryPath, route : route }) -> Entries(route)
+    where [route.is_eq : route, route -> Bool, route.to_hash : route, Hasher -> Hasher]
+Entries.path : Entries(route), route -> Try(EntryPath, [NotAnEntry])
+    where [route.is_eq : route, route -> Bool, route.to_hash : route, Hasher -> Hasher]
 
 # Signals
 const : a -> Signal(ctx, a)
