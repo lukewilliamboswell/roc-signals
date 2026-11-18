@@ -5609,6 +5609,10 @@ ProgramProps := { storage_keys : List(Str) ?? [], session_keys : List(Str) ?? []
 program_boot : ProgramProps, (Boot -> Elem(Root)) -> Program({})
 program_store : ProgramProps, (Boot -> Store(st, h)),
                 (Boot -> Elem(StoreRoot(st))) -> Program(st)         # store held beside the sites
+program_startup : ProgramProps, Entries(route), (route -> Elem(Root)) -> Program({})
+program_startup_store : ProgramProps, Entries(route), (route -> Store(st, h)),
+                        (route -> Elem(StoreRoot(st))) -> Program(st)
+environment : {} -> Ask(Boot, [Refused])         # live facts arrive through an ordinary result
 Root                                          # the top context of a program without a store
 StoreRoot(st)                                 # the top context of a program whose store's storage is st
 Boot := { url : Str ?? "/", storage : List((Str, Str)) ?? [], online : Bool ?? True,
@@ -5643,6 +5647,13 @@ entries : EntryProps, List({ path : EntryPath, route : route }) -> Entries(route
     where [route.is_eq : route, route -> Bool, route.to_hash : route, Hasher -> Hasher]
 Entries.path : Entries(route), route -> Try(EntryPath, [NotAnEntry])
     where [route.is_eq : route, route -> Bool, route.to_hash : route, Hasher -> Hasher]
+
+# Explicit deferred content
+Html.Static                                   # checked fixed markup or escaped text; no live readers
+Html.Static.from_quote : Str -> Try(Html.Static, [BadQuotedBytes(Str)])
+Html.Static.text : Str -> Html.Static
+Html.PlaceholderProps(ctx) := { ready : Signal(ctx, Bool) ?? const(True) }
+Html.placeholder : Html.PlaceholderProps(ctx), Html.Static, (() -> Elem(ctx)) -> Elem(ctx)
 
 # Signals
 const : a -> Signal(ctx, a)
@@ -6110,7 +6121,7 @@ a leading U+FEFF in names and values, including a worker's hosted arguments.
 Unknown closed-vocabulary names cannot become known names by dropping that
 character. Invalid UTF-8 is rejected at each strict protocol boundary.
 
-This appendix is protocol version **22**. The engine declares it
+This appendix is protocol version **23**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -6217,7 +6228,9 @@ allocations since reset; that is a measurement probe, not protocol.
    the port table, before calling `init()`.
 2. Read the declared storage keys and environment facts; stage the boot
    sections with `payload_reserve`.
-3. `init()`; apply the mount batch.
+3. `init()`; apply the mount batch. For deterministic startup, apply the
+   complete cold DOM, restore producer gates and perform its effects, then send
+   the private acknowledgement before delivering queued ordinary input.
 
 Both buffers are sequences of `tag:u8 len:u32 body:len`. They share one tag
 space. A dash means that section does not occur in that direction.
@@ -6237,6 +6250,7 @@ space. A dash means that section does not occur in that direction.
 | 11 | session-storage | `n:u32 (key:str)*n` | `available:u8 n:u32 (key:str value:str)*n` | `sessionStorage` service; available, no pairs |
 | 12 | protocol | The bounded metadata item below | — | ProtocolFacts appended by the platform root; mandatory |
 | 13 | mount-root | — | `expanded-name` | The actual mount element's namespace URI, optional prefix and exact local name; an HTML `div` for empty driver boot |
+| 14 | startup | `profile:u8`; profile `1` then `root:expanded-name n:u32 (path:str)*n fallback:u32` | `profile:u8`; profile `1` then `mode:u8 entry:u32` | Required for every program; profile `0` is the legacy entry, `1` a deterministic catalogue |
 
 Section 12 is one deterministic CBOR item, encoded with the content-addressed
 roc-cbor 0.6.3 release named in both platform roots. Its root map has exactly
@@ -6275,7 +6289,9 @@ applier implements, and `text_entry_excluded` exactly the runtime's own
 closed list of HTML input types outside text entry, which decides where an
 `outside_text` keymap entry is heard. Any other list refuses the mount, so
 a module cannot silently change what a role does. A contract test also
-compares a built module's facts with the test-owned fixture. Fault codes are fixed by the host, so
+compares a built module's facts with the test-owned fixture. The input exclusion list has no Core constructor counterpart: the runtime's
+keyboard contract exercises every listed excluded type and every text-entry
+control, with omission mutants. Fault codes are fixed by the host, so
 the runtime keeps its own table of their classes, classifies a trap with it
 before any declaration is read (a `boot_keys` trap is contained like any
 other), and refuses `fault_classes` that are not exactly that table in that
@@ -6291,8 +6307,8 @@ and vocabulary checks apply before acceptance; the JavaScript schema reader
 also bounds each array and text length before constructing its value.
 
 Each applicable section is required exactly once, in ascending tag order:
-boot has 1–4, 6–11 and 13; compiled-module declarations have 2, 5, 6, 10, 11 and 12. The pure engine driver
-retains its internal sections 2, 5, 6, 10 and 11; the native runner reads
+boot has 1–4, 6–11, 13 and 14; compiled-module declarations have 2, 5, 6, 10, 11, 12 and 14. The pure engine driver
+retains its internal sections 2, 5, 6, 10, 11 and 14; the native runner reads
 consumer facts directly. Unknown, repeated, out-of-order
 or missing sections are errors; tags are not a compatibility mechanism.
 The length bounds the body exactly, with no trailing bytes. Flags are
@@ -6326,6 +6342,26 @@ only ordered flags. `read_boot(bytes)` uses an empty catalogue. Mount also
 checks storage-key membership against the program's declarations. Empty
 boot bytes default every declared media query to false. Media declarations
 reject duplicates, more than 32 queries and query lengths outside 1–256 bytes.
+
+Startup profile `0` has no operands, exactly one byte. Profile `1` declares
+1–4096 concrete canonical root-relative paths, each 1–2048 UTF-8 bytes,
+without query or fragment; their aggregate encoded strings occupy at most
+65,536 bytes. The expanded root is at most 65,536 encoded bytes and the whole
+section at most 262,144 bytes. `fallback` is a catalogue index or `0xffffffff`
+for none. The catalogue rejects duplicate paths and duplicate typed routes.
+A fixed boot body is exactly six bytes: profile `1`, mode `0` fresh or `1`
+bind, then its entry index. Entry `0xffffffff` is legal only for fresh mode;
+Roc selects its pathname or the explicit fallback. A bind always names a
+concrete catalogue entry. The profile must match the compiled program and the
+actual root must match its namespace URI, prefix and exact local name. Empty
+driver boot selects the first declared entry and declared root for a fixed
+program. Query and fragment are later environment facts, never entry identity.
+
+The platform's metadata append keeps section 12 before section 14. No field
+is inferred from a URL's asset-directory spelling. A generated module URL's
+explicit `roc-build` query receipt or the loader's `startupBuildToken` identifies
+the build; if both are present they must agree. Frame marker
+`data-roc-frame="1:<entry>:<token>"` must match that receipt and catalogue.
 
 In the port table, `kind` is `1` command, `2` call, `3` subscription;
 `delivery` is `0` for a command or call, `1` every or `2` latest;
@@ -6363,8 +6399,12 @@ that has run, in first-run order, with its run count.
 | 46 | Guard commands (`GUARD`, opcode 25), excluded from `patches_emitted` |
 | 47 | Transfer progress reports delivered (`effects_progress`), including those withheld by `keep_current`; excludes replaced reports and does not increment final results (`effects_delivered`) |
 | 48 | `COMMENT` commands emitted (opcode 26), counted separately from text-node commands |
+| 49, 50, 51 | `startup`, `startup_ack`, `startup_complete`: commands 28, 29 and 30 |
+| 52 | `opportunity_commands`: request/cancel commands 31 |
+| 53, 54 | `opportunity_requested`, `opportunity_cancelled`: one task registration armed/cancelled |
+| 55, 56 | `opportunity_delivered`, `opportunity_stale`: valid occurrences and cancelled/old generations |
 
-Index 0 is unused; the record has 49 entries, indices 0 through 48. The metric
+Index 0 is unused; the record has 57 entries, indices 0 through 56. The metric
 names the spec language accepts map onto these indices (`platform/Scm.roc`, `metric_names`).
 
 ### Event records
@@ -6425,6 +6465,7 @@ An event is `event(node, handler)` with the payload staged first:
 | 28 | `bytes:rest` (raw) | `CryptoBytes` (random, digest or authenticated plaintext) |
 | 29 | `iv:12 raw bytes ciphertext:rest` (at least 16 bytes) | `CryptoSealed`; ciphertext includes the 128-bit GCM tag |
 | 30 | `reason:u8` | `CryptoFailed`: 1 Unavailable, 2 TooLarge, 3 InvalidParameters, 4 NotAuthentic, 5 Refused, 6 Failed; exactly two bytes including tag |
+| 31 | Environment sections 1–4 and 6–11, in ordinary boot framing | `Environment(Boot)` from FX kind 22; no mount-root or startup section |
 
 A result payload that does not follow this table (unknown tag, bytes after a
 bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file
@@ -6432,6 +6473,13 @@ failure other than `1`–`3`, a digest that is not 32 bytes, a port failure othe
 than `1`–`3`, a port answer, job answer or fetched body whose file count is not
 the handles staged with it, a truncated HTTP record, text that is not UTF-8) is
 a `contract` fault.
+
+Private adapter events also use node `0xffffffff`, handler `0`: exactly `[254]`
+acknowledges a pending cold batch; `[255] generation:u64` supplies a placeholder
+task occurrence. A repeated/nonpending acknowledgement, an opportunity before
+acknowledgement, or malformed private framing is a contract error. An old
+cancelled generation is counted stale and reaches no owner. These are ordinary
+page calls, never app-facing requests or worker results.
 
 Progress uses the same effect node and request id as its final result. Unknown
 directions, unknown total flags, nonzero Unknown totals, truncation or trailing
@@ -6500,6 +6548,23 @@ command batches and have no header.
 | 25 | `GUARD` | `on:u8`, strictly `0` or `1`; performed with effects, at most once per turn |
 | 26 | `COMMENT` | `node parent before data:str` — an authored static comment |
 | 27 | `UNSENT` | `port:str reason:u8` — a port command not sent, in its place; `reason` is strictly `1`, a message nested past the port format's 512 containers. Performed with effects as `PORT` is: the runtime calls no handler and reports it to the console and `onPortFault` (`kind` `"command"`) |
+| 28 | `STARTUP` | `mode:u8 entry:u32` — first command of an unmarked cold batch, fresh `0` or bind `1` |
+| 29 | `STARTUP_ACK` | No operands; last command of that cold batch |
+| 30 | `STARTUP_COMPLETE` | No operands; last command of the unmarked acknowledgement batch, including a quiet acknowledgement |
+| 31 | `OPPORTUNITY` | `action:u8 generation:u64`, action `0` cancel or `1` request; nonzero monotonic generation, one registration per instance |
+
+The startup cold plan contains the same ordinary construction commands in
+fresh and bind modes. Binding asserts and attaches the whole annotated frame;
+it performs no application-state diff or regional repair. All cold effects run
+after its complete DOM plan and before acknowledgement. Synchronous answers
+wait in the existing bounded input queue until `STARTUP_COMPLETE`. The private
+acknowledgement drains initial follow-ups, so a request issued in the cold plan
+is physically issued before a follow-up can cancel it. Opportunity delivery
+rechecks readiness and lifetime in Roc, selects one FIFO owner and runs that
+replacement as one ordinary turn. It does not consume `max_inflight` and does
+not run a body early when waiting work grows. The adapter supplies a cancellable
+MessageChannel task (setTimeout(0) fallback); manual runners hold it until an
+explicit `(run-opportunity)`.
 
 `before = 0` appends to `parent`'s explicitly selected child container;
 otherwise the node is inserted before
@@ -6544,6 +6609,7 @@ an earlier command. Scroll end is resolved at perform time.
 | 19 | `text:str html:u8 [html:str]` | Clipboard write; flag `0` plain text, `1` text and HTML; answers tag 23 or 24 |
 | 20 | — | StorageWriteFailures occurrence subscription; answers tag 25 one task after a failed write |
 | 21 | `operation:u8 operands` | Crypto operations, below; scoped and awaited |
+| 22 | — | Current declared environment snapshot, answered one task later with tag 31; scoped and awaited, with ordinary typed Refused at the in-flight bound |
 
 Crypto operands use `bytes` as a u32 length followed by raw bytes. Operation
 1 is random bytes, `count:u64`; 2 is derive key, `hash:u8 iterations:u32

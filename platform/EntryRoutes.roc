@@ -125,7 +125,7 @@ EntryRoutes := [].{
 	select : Catalogue(route), Str -> Try(U32, [UnknownEntry(Str)])
 	select = |catalogue, url| {
 		path = match Url.parse(url) {
-			Ok(parsed) if parsed.origin() == Relative => parsed.path()
+			Ok(parsed) => parsed.path()
 			_ => return Err(UnknownEntry(url))
 		}
 		match catalogue.by_path.get(path) {
@@ -163,4 +163,10 @@ expect {
 expect {
 	entries = EntryRoutes.make({ fallback: Some("/") }, [{ path: "/", route: 7.U64 }])
 	EntryRoutes.at(entries, EntryRoutes.select(entries, "/unknown/42?live=1")?) == 7
+}
+
+## A plain browser mount supplies an absolute URL; only its path selects UI.
+expect {
+	entries = EntryRoutes.make({}, [{ path: "/tasks/", route: "tasks" }])
+	EntryRoutes.select(entries, "https://example.com/tasks/?q=live#hash") == Ok(0)
 }

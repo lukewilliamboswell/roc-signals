@@ -1471,6 +1471,34 @@ Core := [].{
 		|d| eff_mask(cond).bitwise_or(elem_reads(yes(), d)).bitwise_or(elem_reads(no(), d)),
 	)
 
+	## An owning deferred body. Static content is an ordinary checked description;
+	## only the active block owns live state and effects. Readiness is sampled by
+	## Changed and again on the routed opportunity, never by the task adapter.
+	placeholder : Signal(ctx, Bool), Elem(ctx), (() -> Elem(ctx)) -> Elem(ctx)
+	placeholder = |ready, static, body| Site(
+		Mount(
+			|env, args, tx| {
+				check_construction_text(args.enclosing.construction, { value: "", site: args.path, placement: " (placeholder anchor)" })
+				(anchor, tx1) = alloc_id(tx)
+				tx2 = emit_op(tx1, 10, |bytes| put_str(put_u32(put_u32(put_u32(bytes, anchor), args.parent), args.before), ""))
+				id = tx2.fx.startup.next
+				if id == 18446744073709551615 {
+					crash "resource_limit: placeholder lifetime address exhausted"
+				}
+				tx3 = with_fx(tx2, |effects| { ..effects, startup: { ..effects.startup, next: id + 1 } })
+				(block, tx4) = mount_block(env, static, args.depth, args.path, 0, anchor, { cap: args.cap, enclosing: args.enclosing }, bump(count_evals(tx3, 1), w_scopes_created, 1))
+				eligible = (ready.read)(env)
+				tx5 = if eligible {
+					ready_append(tx4, id, args.path)
+				} else tx4
+				reads = eff_mask(ready).bitwise_or(elem_reads(body(), args.depth))
+				cfg = { ready, body, anchor, id, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
+				(placeholder_inst(cfg, False, block), reads, tx5)
+			},
+		),
+		|depth| eff_mask(ready).bitwise_or(elem_reads(body(), depth)),
+	)
+
 	## `switch(sel, cases, body)` builds `body(k)` for the current value `k` of
 	## `sel`, and rebuilds it when `sel` changes to a different case. `cases` lists
 	## every value `sel` can take, so the site listens to everything any branch
@@ -1594,6 +1622,7 @@ Core := [].{
 	Request : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Web.Method, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32, cache : Cache, credentials : Credentials }),
+		EnvironmentSnapshot,
 		StorageGet(Str),
 		SessionStorageGet(Str),
 		StorageChanges(Str),
@@ -1743,7 +1772,7 @@ Core := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [CryptoKey(CryptoKey), CryptoBytes(List(U8)), CryptoSealed({ iv : List(U8), ciphertext : List(U8) }), CryptoFailed(CryptoError), Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
+	Result : [Environment(Boot), CryptoKey(CryptoKey), CryptoBytes(List(U8)), CryptoSealed({ iv : List(U8), ciphertext : List(U8) }), CryptoFailed(CryptoError), Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
@@ -1882,6 +1911,19 @@ Core := [].{
 		|raw_result| match raw_result {
 			Ok(response) => if (response.status >= 200 and response.status < 300) Ok(response.body) else Err(Status(response.status))
 			Err(error) => Err(error)
+		},
+	)
+
+	## Read current browser facts through the ordinary effect channel. This
+	## cannot affect deterministic initial construction. Declared storage/media
+	## inputs bound the answer; refusing admission returns Refused.
+	environment : {} -> Ask(Boot, [Refused])
+	environment = |_| Core.make_ask(
+		EnvironmentSnapshot,
+		|answer| match answer {
+			Environment(facts) => Ok(facts)
+			Refused => Err(Refused)
+			_ => crash "contract: environment ask received a non-environment result"
 		},
 	)
 
@@ -2363,7 +2405,7 @@ Core := [].{
 	## encoding (unknown tag, truncated, trailing bytes, text that is not UTF-8) is
 	## a contract error: the host broke the protocol, and nothing is guessed.
 	decode_res : List(U8) -> Result
-	decode_res = |b| decode_res_with(b, decode_port_res)
+	decode_res = |b| decode_res_with(b, decode_port_res, [])
 
 	## An offset table over an inclusive UTC-millisecond span, as boot
 	## carries it: the first offset starts at `from_ms`; later offsets start
@@ -2588,6 +2630,21 @@ Core := [].{
 	## bytes whole; only the engine interprets profile, mode and entry selection.
 	write_startup_mount : Boot, MountRoot, StartupBoot -> List(U8)
 	write_startup_mount = |boot, mount_root, startup_boot| {
+		environment_bytes = Core.write_environment(boot)
+		root_body = put_expanded_name([], mount_root.namespace, mount_root.prefix, mount_root.local)
+		if root_body.len() > 65_536 {
+			crash "contract: boot section 13 (mount-root) exceeds 65536 bytes"
+		}
+		startup_body = match startup_boot {
+			Legacy => [0]
+			Fixed({ mode, entry }) => put_u32([1, mode], entry)
+		}
+		put_section(put_section(environment_bytes, 13, root_body), 14, startup_body)
+	}
+
+	## Encode only the declared app-visible facts, without mount or startup data.
+	write_environment : Boot -> List(U8)
+	write_environment = |boot| {
 		location = put_section([], 1, put_str([], boot.url))
 		var $storage = put_u32([if (boot.storage_available) 1 else 0], boot.storage.len().to_u32_wrap())
 		for (key, value) in boot.storage {
@@ -2607,17 +2664,12 @@ Core := [].{
 		}
 		zone_bytes = put_section(put_section(seed, 9, languages), 10, $offsets)
 		body = boot.session.fold(put_u32([if (boot.session_available) 1 else 0], boot.session.len().to_u32_wrap()), |bytes, (key, value)| put_str(put_str(bytes, key), value))
-		environment = put_section(zone_bytes, 11, body)
-		root_body = put_expanded_name([], mount_root.namespace, mount_root.prefix, mount_root.local)
-		if root_body.len() > 65_536 {
-			crash "contract: boot section 13 (mount-root) exceeds 65536 bytes"
-		}
-		startup_body = match startup_boot {
-			Legacy => [0]
-			Fixed({ mode, entry }) => put_u32([1, mode], entry)
-		}
-		put_section(put_section(environment, 13, root_body), 14, startup_body)
+		put_section(zone_bytes, 11, body)
 	}
+
+	## Harness result encoding for the ordinary environment snapshot request.
+	environment_result : Boot -> List(U8)
+	environment_result = |boot| [31].concat(Core.write_environment(boot))
 
 	## The boot value of a declared storage key, or `Missing` if it has none.
 	boot_storage : Boot, Str -> Try(Str, [Missing])
@@ -2776,7 +2828,12 @@ Core := [].{
 
 	## Preserve a checked attribute's expanded identity and exact-case intent.
 	attr_named : Web.AttrName, Str -> Attr(ctx)
-	attr_named = |name, value| Static(name, value)
+	attr_named = |name, value| {
+		if Core.attribute_reserved(name) {
+			crash "contract: attribute ${Str.inspect(name.text())} is reserved for startup transport"
+		}
+		Static(name, value)
+	}
 
 	## Follow a signal with an attribute, writing only when it changes. An
 	## empty string or "false" keeps any attribute present. Names claimed by
@@ -2784,6 +2841,11 @@ Core := [].{
 	## `prop_s` for live control state.
 	attr_s : Str, Signal(ctx, Str) -> Attr(ctx)
 	attr_s = |name, v| Core.attr_named_s(Web.AttrName.from_str(name) ?? crash "internal: invalid attribute name", v)
+
+	## Reserved no-namespace transport names never become authored attributes.
+	## Names in another namespace retain their ordinary expanded identity.
+	attribute_reserved : Web.AttrName -> Bool
+	attribute_reserved = |name| name.namespace() == None and name.prefix() == Unprefixed and ["data-roc-frame", "data-roc-node", "data-roc-children"].contains(name.local())
 
 	## Classify an already-resolved attribute against the element's live property
 	## claims. Literal lowering uses the same policy before emission, with its own
@@ -2805,7 +2867,7 @@ Core := [].{
 
 	## One ordinary attribute reader with an explicitly checked name.
 	attr_named_s : Web.AttrName, Signal(ctx, Str) -> Attr(ctx)
-	attr_named_s = |name, value| Dyn(name, value.map(|encoded| Present(encoded)))
+	attr_named_s = |name, value| Core.attr_named_presence(name, value.map(|encoded| Present(encoded)))
 
 	## Follow explicit attribute presence. `Present("")` keeps an empty
 	## attribute; `Absent` alone removes it. Names claimed by control properties
@@ -2817,7 +2879,12 @@ Core := [].{
 	## Explicit presence shares the ordinary reader and equality cutoff while
 	## retaining the complete name through static and template construction.
 	attr_named_presence : Web.AttrName, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
-	attr_named_presence = |name, value| Dyn(name, value)
+	attr_named_presence = |name, value| {
+		if Core.attribute_reserved(name) {
+			crash "contract: attribute ${Str.inspect(name.text())} is reserved for startup transport"
+		}
+		Dyn(name, value)
+	}
 
 	## A static `class` attribute.
 	class : Str -> Attr(ctx)
@@ -3202,6 +3269,26 @@ Core := [].{
 			Err(Stale) => App.(AppBody.{ store, root, tx, programs })
 			Ok((path, h)) => drain(turn(App.(AppBody.{ store, root, tx: start_batch(tx), programs }), path, h, payload))
 		}
+	}
+
+	## Harness observation of the one adapter registration; no app payload.
+	startup_opportunity : App(st) -> [None, Some(U64)]
+	startup_opportunity = |App.(AppBody.({ tx, .. }))| tx.fx.startup.armed
+
+	## A supplied browser-task occurrence takes the ordinary path/Fire/settle
+	## turn. Generations from cancelled registrations cannot reach new owners.
+	opportunity : App(st), U64 -> App(st)
+	opportunity = |App.(AppBody.({ store, root, tx, programs })), generation| {
+		if tx.fx.startup.pending {
+			crash "contract: placeholder opportunity before bootstrap acknowledgement"
+		}
+		if tx.fx.startup.armed != Some(generation) {
+			return App.(AppBody.{ store, root, tx: bump(tx, 56, 1), programs })
+		}
+		id = tx.fx.startup.head
+		entry = tx.fx.startup.ready.get(id) ?? crash "internal: armed placeholder task without a ready owner"
+		tx1 = with_fx(bump(start_batch(tx), 55, 1), |effects| { ..effects, startup: { ..effects.startup, armed: None } })
+		drain(turn(App.(AppBody.{ store, root, tx: tx1, programs }), entry.path, 0, Activate(id)))
 	}
 
 	## For test platforms and harnesses: deliver an effect result for request `id`,
@@ -3684,7 +3771,7 @@ Core := [].{
 							Fixed(value) => value
 						}
 						actual_root = if (boot.is_empty()) facts.root else mounted.root
-						if put_expanded_name([], actual_root.namespace, actual_root.prefix, actual_root.local) != put_expanded_name([], facts.root.namespace, facts.root.prefix, facts.root.local) {
+						if namespace_uri(actual_root.namespace) != namespace_uri(facts.root.namespace) or actual_root.prefix != facts.root.prefix or actual_root.local != facts.root.local {
 							crash "contract: actual mount root differs from the declared startup root"
 						}
 						entry = if selected.entry == 0xffffffff {
@@ -3712,8 +3799,28 @@ Core := [].{
 				}
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
 				fresh = App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs })
+				if node == fx_node and handler == 0 and payload.first() == Ok(255) {
+					if payload.len() != 9 {
+						crash "contract: placeholder opportunity needs exactly one generation"
+					}
+					return finish(Core.opportunity(fresh, get_u64(payload, 1, "placeholder opportunity")), [], wbuf)
+				}
 				if node == fx_node {
-					finish(if (payload.first() == Ok(26)) Core.progress(fresh, handler, decode_progress(payload)) else Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
+					if payload.first() == Ok(26) {
+						finish(Core.progress(fresh, handler, decode_progress(payload)), [], wbuf)
+					} else {
+						res = decode_res_with(payload, programs.ports.decode, media)
+						match res {
+							Environment(facts) => {
+								check_boot_keys(facts, cfg.storage_keys) ?? crash "contract: environment snapshot has an undeclared storage key"
+								if facts.session.any(|(key, _)| !cfg.session_keys.contains(key)) {
+									crash "contract: environment snapshot has an undeclared session key"
+								}
+							}
+							_ => {}
+						}
+						finish(Core.result(fresh, handler, res), [], wbuf)
+					}
 				} else {
 					finish(deliver(fresh, node, handler, Ev(payload)), [], wbuf)
 				}
@@ -3788,7 +3895,7 @@ Mount(ctx) := [Mount((ctx, Args, Tx -> (Inst(ctx), U128, Tx)))]
 ## the written layers below it (`waits_for_outer`). Each of them joined that
 ## pass if the pass reached its site; the walk refreshes, at its own site,
 ## each one the pass did not reach, and stops at the deepest of them.
-Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(EffectInput), Settle(Layers, Bool), OpenState(Bool)]
+Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(EffectInput), Settle(Layers, Bool), OpenState(Bool), Activate(U64)]
 
 ## Whether a payload is a `Settle` walk, and if so whether it names a
 ## layer below index `depth`, so that it goes on past the state site there.
@@ -5024,6 +5131,9 @@ check_element_attrs = |attrs, resolved, placed, path, describe| {
 			}
 			Static(name, _) | Dyn(name, _) => {
 				effective = resolve_attribute(name, resolved)
+				if Core.attribute_reserved(effective) {
+					crash "contract: attribute ${Str.inspect(name.text())} is reserved for startup transport${location()}"
+				}
 				match Core.attribute_claim(resolved, effective) {
 					Claimed(_) => crash "contract: attribute \"${name.text()}\" on <${tag}> is claimed by a property${location()}; use prop or prop_s"
 					Unclaimed => {}
@@ -5528,6 +5638,167 @@ state_inst = |s0, block0, depth0, waits0| {
 }
 
 ## A conditional site. The branch is rebuilt when the condition changes.
+Placeholder(ctx) : { ready : Signal(ctx, Bool), body : (() -> Elem(ctx)), anchor : U32, id : U64, depth : U64, path : List(U32), cap : U128, enclosing : Enclosing }
+
+## Rebuild each owned closure directly in its returning branch, preserving
+## unique block ownership on the compiler's optimized paths (roc#12846).
+placeholder_inst : Placeholder(ctx), Bool, Block(ctx) -> Inst(ctx)
+placeholder_inst = |cfg0, active0, block0| {
+	held = { cfg: cfg0, active: active0, block: block0 }
+	Inst(
+		|env, msg, tx| {
+			{ cfg, active, block } = held
+			match msg {
+				Changed(mask) => {
+					if active {
+						(next, tx1) = refresh(block, env, mask, tx)
+						(placeholder_inst(cfg, True, next), Done, tx1)
+					} else if mask.bitwise_and(eff_mask(cfg.ready)) != 0 {
+						eligible = (cfg.ready.read)(env)
+						tx1 = count_evals(tx, 1)
+						tx2 = if eligible {
+							ready_append(tx1, cfg.id, cfg.path)
+						} else ready_remove(tx1, cfg.id)
+						(placeholder_inst(cfg, False, block), Done, tx2)
+					} else (placeholder_inst(cfg, False, block), Done, tx)
+				}
+				Fire(path, pos, handler, payload) => {
+					activation = match payload {
+						Activate(id) => id == cfg.id
+						_ => False
+					}
+					if activation and pos == path.len() and !active {
+						eligible = (cfg.ready.read)(env)
+						tx1 = ready_remove(count_evals(tx, 1), cfg.id)
+						if eligible {
+							(orphans, tx2) = dispose_block(block, env, True, bump(bump(tx1, w_scopes_disposed, 1), w_scopes_created, 1))
+							# Static has no requests; keeping this assertion protects the
+							# private constructor against a second effect-bearing body.
+							if !orphans.is_empty() {
+								crash "internal: placeholder static body owned requests"
+							}
+							(next, tx3) = mount_block(env, (cfg.body)(), cfg.depth, cfg.path, 0, cfg.anchor, { cap: cfg.cap, enclosing: cfg.enclosing }, tx2)
+							(placeholder_inst(cfg, True, next), Pending(env, no_layers), tx3)
+						} else (placeholder_inst(cfg, False, block), Pending(env, no_layers), tx1)
+					} else match fire_target(block, path, pos) {
+						Leaf => {
+							(next, out, tx1) = fire_leaf(block, env, handler, payload, path, tx)
+							(placeholder_inst(cfg, active, next), out, tx1)
+						}
+						Kid => {
+							(next, out, tx1) = fire_kid(block, env, path, pos, handler, payload, tx)
+							(placeholder_inst(cfg, active, next), out, tx1)
+						}
+						Miss => (placeholder_inst(cfg, active, block), Pending(env, no_layers), tx)
+					}
+				}
+				Dispose(remove) => {
+					(orphans, tx1) = dispose_block(block, env, remove, bump(ready_remove(tx, cfg.id), w_scopes_disposed, 1))
+					tx2 = if remove {
+						emit_op(tx1, 5, |bytes| put_u32(bytes, cfg.anchor))
+					} else tx1
+					(noop({}), Orphaned(orphans), free_id(tx2, cfg.anchor))
+				}
+			}
+		},
+	)
+}
+
+## A linked dictionary gives one entry per ready lifetime and constant-time
+## append/removal, with no pending-site walk on an ordinary write.
+ready_append : Tx, U64, List(U32) -> Tx
+ready_append = |tx, id, path| with_fx(
+	tx,
+	|effects| {
+		queue = effects.startup
+		if queue.ready.contains(id) {
+			effects
+		} else {
+			entries = if queue.tail == 0 {
+				queue.ready
+			} else {
+				last = queue.ready.get(queue.tail) ?? crash "internal: ready tail missing"
+				queue.ready.insert(queue.tail, { ..last, next: id })
+			}
+			{
+				..effects,
+				startup: {
+					..queue,
+					head: if queue.head == 0 {
+						id
+					} else queue.head,
+					tail: id,
+					ready: entries.insert(id, { path, previous: queue.tail, next: 0 }),
+				},
+			}
+		}
+	},
+)
+
+ready_remove : Tx, U64 -> Tx
+ready_remove = |tx, id| with_fx(
+	tx,
+	|effects| {
+		queue = effects.startup
+		match queue.ready.get(id) {
+			Err(_) => effects
+			Ok(entry) => {
+				without = queue.ready.remove(id)
+				left = if entry.previous == 0 {
+					without
+				} else {
+					previous = without.get(entry.previous) ?? crash "internal: ready previous missing"
+					without.insert(entry.previous, { ..previous, next: entry.next })
+				}
+				right = if entry.next == 0 {
+					left
+				} else {
+					next = left.get(entry.next) ?? crash "internal: ready next missing"
+					left.insert(entry.next, { ..next, previous: entry.previous })
+				}
+				{
+					..effects,
+					startup: {
+						..queue,
+						head: if queue.head == id {
+							entry.next
+						} else queue.head,
+						tail: if queue.tail == id {
+							entry.previous
+						} else queue.tail,
+						ready: right,
+					},
+				}
+			}
+		}
+	},
+)
+
+## Only at the complete call boundary: no callback can name work from a
+## half-settled turn. One registration remains bounded independently of sites.
+ready_arm : Tx -> Tx
+ready_arm = |tx| {
+	queue = tx.fx.startup
+	if queue.pending {
+		return tx
+	}
+	match queue.armed {
+		Some(generation) if queue.head == 0 => {
+			tx1 = with_fx(tx, |effects| { ..effects, startup: { ..effects.startup, armed: None } })
+			emit_op(bump(tx1, 54, 1), 31, |bytes| put_u64(bytes.append(0), generation))
+		}
+		None if queue.head != 0 => {
+			if queue.generation == 18446744073709551615 {
+				crash "resource_limit: placeholder task generation exhausted"
+			}
+			generation = queue.generation + 1
+			tx1 = with_fx(tx, |effects| { ..effects, startup: { ..effects.startup, armed: Some(generation), generation } })
+			emit_op(bump(tx1, 53, 1), 31, |bytes| put_u64(bytes.append(1), generation))
+		}
+		_ => tx
+	}
+}
+
 When(ctx) : { cond : Signal(ctx, Bool), yes : (() -> Elem(ctx)), no : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128, enclosing : Enclosing }
 
 ## `adopted`: orphans reparented to this site when a branch it disposed
@@ -8201,8 +8472,8 @@ decode_progress = |bytes| {
 	{ direction, done, total }
 }
 
-decode_res_with : List(U8), (List(U8), List(Blob) -> Result) -> Result
-decode_res_with = |b, port_res| {
+decode_res_with : List(U8), (List(U8), List(Blob) -> Result), List(Str) -> Result
+decode_res_with = |b, port_res, queries| {
 	tag = b.first() ?? crash "contract: empty effect result"
 	text = |n| Str.from_utf8(b.drop_first(n)) ?? crash "contract: effect result text is not UTF-8"
 	bare = |r| if (b.len() == 1) r else crash "contract: effect result tag ${tag.to_str()} carries unexpected bytes"
@@ -8228,6 +8499,8 @@ decode_res_with = |b, port_res| {
 			$i = $i + 1
 		}
 		Http({ status, headers: $hs, body: text($at) })
+	} else if tag == 31 {
+		Environment(Core.read_environment(b.drop_first(1), queries) ?? crash "contract: malformed environment snapshot result")
 	} else if tag == 7 {
 		bare(Timeout)
 	} else if tag == 2 {
@@ -8974,6 +9247,7 @@ put_fx_progress = |c, id, req, progress_ms| {
 			}
 			put_http_options(put_u32(put_str($b, body), min_u32(timeout_ms, max_timeout_ms)), cache, credentials, progress_ms)
 		}
+		EnvironmentSnapshot => head.append(22)
 		StorageGet(k) => put_str(head.append(2), k)
 		SessionStorageGet(key) => put_str(head.append(17), key)
 		StorageChanges(key) => put_str(head.append(18), key)
@@ -10369,7 +10643,7 @@ drain = |Core.App.(AppBody.({ store: store0, root: root0, tx: tx0, programs }))|
 			$tx = tx2
 		}
 	}
-	Core.App.(AppBody.{ store: $store, root: $root, tx: $tx, programs })
+	Core.App.(AppBody.{ store: $store, root: $root, tx: ready_arm($tx), programs })
 }
 
 ## The turn state of an instance, for this module's tests.
@@ -10424,6 +10698,11 @@ work_bytes = |Core.App.(AppBody.({ tx, .. })), buf| {
 	$b = put_u64($b, work_get(counters, 46))
 	$b = put_u64($b, work_get(counters, 47))
 	$b = put_u64($b, work_get(counters, 48))
+	var $startup_counter = 49.U64
+	while $startup_counter <= 56 {
+		$b = put_u64($b, work_get(counters, $startup_counter))
+		$startup_counter = $startup_counter + 1
+	}
 	runs = tx.fx.cleanups
 	$b = put_u32($b, runs.len().to_u32_wrap())
 	for (name, k) in runs {
@@ -10457,7 +10736,7 @@ settle_note = |a, b| {
 		("end-of-turn focus requests, program checks and port requests", a.focus.len(), b.focus.len() - drifts.len()),
 	]
 	changed = pairs.keep_if(|(_, x, y)| x != y).map(|(name, x, y)| "${name} ${x.to_str()} -> ${y.to_str()}")
-	Str.join_with(drifts.concat(changed).concat(if (b.batch.asked) ["view transition requested by settle check"] else []), ", ")
+	Str.join_with(drifts.concat(changed).concat(if (a.startup.ready != b.startup.ready) ["placeholder ready owners changed"] else []).concat(if (b.batch.asked) ["view transition requested by settle check"] else []), ", ")
 }
 
 ## The worker catalogue lists its names in order, and a duplicate name or a
@@ -11183,7 +11462,7 @@ expect {
 expect {
 	program = Core.driver(Core.program_boot({ storage_keys: ["theme", "theme"] }, |_| Core.text("")))
 	keys = put_str(put_str(put_u32([], 2), "theme"), "theme")
-	(program.keys)() == put_section(put_section(put_media_table(put_section(put_section([], 2, keys), 5, put_u32([], 0)), []), 10, [110, 1]), 11, put_u32([], 0))
+	(program.keys)() == put_section(put_section(put_section(put_media_table(put_section(put_section([], 2, keys), 5, put_u32([], 0)), []), 10, [110, 1]), 11, put_u32([], 0)), 14, [0])
 }
 
 ## A storage declaration and every port shape retain their bodies inside
@@ -11200,7 +11479,7 @@ expect {
 	command = put_u32(put_str(put_u32([], 3), "command").concat([1, 0]), 0)
 	call_bytes = put_u32(put_str(command, "call").concat([2, 0]), 0)
 	ports = put_u32(put_str(call_bytes, "updates").concat([3, 1]), 3)
-	(program.keys)() == put_section(put_section(put_media_table(put_section(put_section([], 2, keys), 5, ports), []), 10, [110, 1]), 11, put_u32([], 0))
+	(program.keys)() == put_section(put_section(put_section(put_media_table(put_section(put_section([], 2, keys), 5, ports), []), 10, [110, 1]), 11, put_u32([], 0)), 14, [0])
 }
 
 ## Pointer bytes retain the browser's button, modifier and zone facts without
@@ -11274,7 +11553,7 @@ expect encode_keymap(Core.Keymap.prevent([Core.Chord.plain("")]).concat(Core.Key
 expect read_key(put_str(put_str(put_str([0], "Escape"), "").append(0), "")).is_err()
 
 ## Serialized work retains RELEASE at counter 43 and starts the cleanup table
-## after all 49 counters, including a multibyte cleanup name and its run count.
+## after all 57 counters, including a multibyte cleanup name and its run count.
 expect {
 	mounted = Core.mount(
 		Core.state(
@@ -11304,7 +11583,7 @@ expect {
 	(name, after_name) = get_str(bytes, cleanup_at + 4, "cleanup name")
 	runs = get_u64(bytes, after_name, "cleanup runs")
 	{ count, counters_match: $decoded == counters, released: $decoded.get(43), names, name, runs, consumed: after_name + 8 == bytes.len() } == {
-		count: 49,
+		count: 57,
 		counters_match: True,
 		released: Ok(1),
 		names: 1,
@@ -12715,5 +12994,74 @@ startup_declaration = |profile| match profile {
 				Some(index) => index
 			},
 		)
+	}
+}
+
+## Cold construction publishes its frame before any queued Self reaction.
+## A quiet acknowledgement is still a complete framed protocol batch.
+expect {
+	entry = EntryRoutes.make({}, [{ path: EntryRoutes.Path.from_str("/")?, route: "home" }])
+	program = Core.driver(Core.program_startup({}, entry, |_| Core.no_store, |_| Core.text("cold")))
+	(mounted, cold, _) = (program.init)([])
+	(_, ack, _) = (program.event)(mounted, [], [], fx_node, 0, [254])
+	cold == [0, 28, 0, 0, 0, 0, 0].concat(put_str(put_u32(put_u32(put_u32([10], 1), 0), 0), "cold")).append(29) and ack == [0, 30]
+}
+
+## An environment snapshot carries every public fact, including declared
+## media, while rejecting mount/startup sections and unknown trailing data.
+expect {
+	facts : Core.Boot
+	facts = { url: "/route?query#fragment", now_ms: -7, seed: 41, media: [("(color)", True)], storage: [("theme", "dark")], session: [("draft", "x")] }
+	payload = Core.environment_result(facts)
+	parsed = decode_res_with(payload, decode_port_res, ["(color)"])
+	decoded = match parsed {
+		Environment(value) => value
+		_ => crash "internal: snapshot decode expected"
+	}
+	Core.write_environment(decoded) == Core.write_environment(facts) and
+		Core.read_environment(Core.write_mount(facts, Core.default_mount_root), ["(color)"]).is_err() and
+			Core.read_environment(Core.write_environment(facts).append(0), ["(color)"]).is_err() and
+				put_fx([], 7, EnvironmentSnapshot) == [13, 7, 0, 0, 0, 22] and
+					(
+						match Core.environment({}) {
+							Core.Ask.(ask) => (ask.read)(Refused)
+						}
+					) == Err(Refused)
+}
+
+## One task replaces one FIFO owner; nested bodies become eligible only
+## after their parent mounts. A cancelled old generation cannot activate it.
+expect {
+	inner = || Core.placeholder(Core.const(True), Core.text("inner waiting"), || Core.text("inner active"))
+	first = Core.placeholder(Core.const(True), Core.text("first waiting"), inner)
+	second = Core.placeholder(Core.const(True), Core.text("second waiting"), || Core.text("second active"))
+	mounted = Core.mount_store(0, Core.no_store, Fragment([first, second]))
+	g1 = match Core.startup_opportunity(mounted) {
+		Some(value) => value
+		None => crash "expected initial task"
+	}
+	(a1, _) = Core.take_cmds(mounted, [])
+	a2 = Core.opportunity(a1, g1)
+	q2 = (tx_of(a2)).fx.startup
+	g2 = match Core.startup_opportunity(a2) {
+		Some(value) => value
+		None => crash "expected next task"
+	}
+	# first's nested site appends behind the second existing owner.
+	owner2 = q2.ready.get(q2.head)?
+	g2_before = Core.work_counters(a2).get(55)?
+	a3 = Core.opportunity(a2, g1)
+	g3_before = Core.work_counters(a3).get(55)?
+	(a4, _) = Core.take_cmds(a3, [])
+	a5 = Core.opportunity(a4, g2)
+	q5 = (tx_of(a5)).fx.startup
+	{ first_left: q2.ready.len(), second_path: owner2.path, nested_left: q5.ready.len(), delivered: g2_before, after_stale: g3_before, stale: Core.work_counters(a5).get(56)?, settled: Core.settled(a5).is_ok() } == {
+		first_left: 2,
+		second_path: [1],
+		nested_left: 1,
+		delivered: 1,
+		after_stale: 1,
+		stale: 1,
+		settled: True,
 	}
 }

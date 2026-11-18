@@ -58,6 +58,9 @@ MarkupLiteral := [].{
 							return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "a markup literal holds no handlers: listen with Engine.on or Html's controls")))
 						}
 						attr_name = attribute_name(attribute.name).map_err(|NotAnAttribute(note)| BadLiteral(at_offset(parsed.parsed, attribute.span.start, note)))?
+						if Core.attribute_reserved(attr_name) {
+							return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "this no-namespace data-roc attribute is reserved for startup transport")))
+						}
 						match Core.attribute_claim(tag, attr_name) {
 							Unclaimed => {}
 							Claimed(property) => return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "${sample(attribute.name.local)} on ${name_label(name)} is claimed by Engine.Prop.${property}; use Engine.prop or Engine.prop_s on a constructor, or Html's typed controls")))

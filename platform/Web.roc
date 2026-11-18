@@ -173,6 +173,9 @@ Web := [].{
 		from_quote : Str -> Try(AttrName, [BadQuotedBytes(Str)])
 		from_quote = |spelling| {
 			folded = Spelling.ascii_lower(spelling)
+			if ["data-roc-frame", "data-roc-node", "data-roc-children"].contains(folded) {
+				return Err(BadQuotedBytes("${Str.inspect(spelling)} is reserved for startup transport; a foreign namespaced attribute needs explicit from_str and in_namespace construction"))
+			}
 			read_as = if (folded == spelling) "" else "an HTML element reads ${Str.inspect(spelling)} as ${Str.inspect(folded)}: "
 			if folded == "class" {
 				return Err(BadQuotedBytes("${read_as}set `class` with Engine.class or Engine.class_s"))
@@ -705,4 +708,12 @@ expect {
 		},
 	) and
 		["javascript:alert(1)", " JaVa\tScRiPt:alert(1) ", "\u(0000)data:text/html,x\u(001F)", "vbscript:x", "blob:x", "file:///x", "x+y.z:x"].all(|text| Web.Link.from_str(text).is_err())
+}
+
+## Literal transport names cannot masquerade as authored startup annotations.
+## A separately namespaced attribute with the same local spelling is ordinary.
+expect {
+	reserved = ["data-roc-frame", "data-roc-node", "data-roc-children", "DATA-ROC-NODE"]
+	foreign = Web.AttrName.from_str("data-roc-node")?.in_namespace({ namespace: Uri("urn:app") })?
+	reserved.all(|name| Web.AttrName.from_quote(name).is_err()) and foreign.namespace() == Uri("urn:app")
 }
