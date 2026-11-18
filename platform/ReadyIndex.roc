@@ -62,7 +62,8 @@ ReadyIndex(a) :: { tree : [Empty, Filled(Node(a))], count : U64 }.{
 	}
 
 	## A diagnostic-only structural comparison. Canonical forks make equality
-	## independent of insertion order; cost is O(Q), never part of an update.
+	## independent of insertion order; cost is O(Q) plus value equality, never
+	## part of an update. ReadyEntry equality also compares stored route paths.
 	is_eq : ReadyIndex(a), ReadyIndex(a) -> Bool
 		where [a.is_eq : a, a -> Bool]
 	is_eq = |first, second| first.count == second.count and match (first.tree, second.tree) {
@@ -260,12 +261,23 @@ expect {
 	keys = [0.U64, 1, 2, 3, 255, 256, 257, 0x7fffffffffffffff, 0x8000000000000000, 0x8000000000000001, 0xfffffffffffffffe, 0xffffffffffffffff]
 	var $index = ReadyIndex.empty()
 	var $model = Dict.empty()
+	var $removed = Dict.empty()
+	var $live_removals = 0.U64
+	var $reinsertions = 0.U64
 	for turn in 0.U64..<96 {
 		key = keys.get((turn * 7) % keys.len()) ?? crash "fixed key position"
-		if turn % 3 == 0 {
+		if (turn // keys.len()) % 3 == 0 {
+			if $model.contains(key) {
+				$live_removals = $live_removals + 1
+				$removed = $removed.insert(key, {})
+			}
 			$index = $index.remove(key)
 			$model = $model.remove(key)
 		} else {
+			if $removed.contains(key) {
+				$reinsertions = $reinsertions + 1
+				$removed = $removed.remove(key)
+			}
 			$index = $index.insert({ key, value: turn })
 			$model = $model.insert(key, turn)
 		}
@@ -278,5 +290,5 @@ expect {
 			}
 		}
 	}
-	True
+	$live_removals > 0 and $reinsertions > 0
 }
