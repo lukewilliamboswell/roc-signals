@@ -1,7 +1,7 @@
 // Independent malformed-transport and native-selection controls. The producer's
 // real native/Wasm handoff is exercised separately; these fixtures deliberately
 // write their own bytes rather than borrowing the producer's encoder.
-// fixtures/startup.webm is a tiny silent generated clip; only playback
+// The corpus public/startup.webm is a tiny silent generated clip; only playback
 // progress is asserted, independently of its pixels.
 import http from 'node:http';
 import fs from 'node:fs';
@@ -19,7 +19,7 @@ const server = http.createServer((request, response) => {
   const route = new URL(request.url, 'http://x').pathname;
   if (route === '/empty.wasm') { response.setHeader('content-type', 'application/wasm'); response.end(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])); return; }
   if (route === '/startup-frame') { response.setHeader('cache-control', 'no-store'); response.end('<!doctype html><title>Native frame</title>'); return; }
-  if (route === '/startup.webm') { const reply = resourceReply({ method: request.method, range: request.headers.range, type: 'video/webm', body: fs.readFileSync(new URL('./fixtures/startup.webm', import.meta.url)) }); response.writeHead(reply.status, reply.headers); response.end(reply.body); return; }
+  if (route === '/startup.webm') { const reply = resourceReply({ method: request.method, range: request.headers.range, type: 'video/webm', body: fs.readFileSync(new URL('../apps/startup-corpus/public/startup.webm', import.meta.url)) }); response.writeHead(reply.status, reply.headers); response.end(reply.body); return; }
   const file = files[path.basename(route)];
   response.setHeader('content-type', file ? 'text/javascript' : 'text/html');
   response.end(file ? fs.readFileSync(file) : '<!doctype html><body></body>');

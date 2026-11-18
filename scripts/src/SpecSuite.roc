@@ -452,7 +452,9 @@ SpecSuite := [].{
 		if replayed.is_empty() {
 			return Ok(emitted)
 		}
-		{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", SpecSuite.runtime, "--steps", steps_file, "--chrome", o.chrome, "--json-lines"], cwd: "." })?
+		public = "${SpecSuite.dir_of(example)}/public"
+		public_args = if (Path.exists!(Path.utf8(public))?) ["--public", public] else []
+		{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", SpecSuite.runtime, "--steps", steps_file, "--chrome", o.chrome, "--json-lines"].concat(public_args), cwd: "." })?
 		replay = SpecSuite.judge({ example, stage: Replay, expected: replayed, run: { code, lines: Str.from_utf8_lossy(stdout).split_on("\n") } })
 		Ok(SpecSuite.add(emitted, replay))
 	}

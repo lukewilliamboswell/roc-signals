@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { launch } from './cdp.mjs';
 import { parseArgs, runtimeFiles } from './args.mjs';
 import { resourceReply } from './startup-media.mjs';
+import { publicAsset } from './public-assets.mjs';
 const options = parseArgs(process.argv.slice(2), ['runner', 'template', 'playwright', 'browser', 'output'], ['runner', 'template', 'wasm', 'runtime']);
 const pages = new Map();
 for (const route of ['/', '/second/']) {
@@ -26,16 +27,13 @@ const files = runtimeFiles(options.runtime);
 files['startup-media.mjs'] = new URL('./startup-media.mjs', import.meta.url);
 const resourceCounts = new Map();
 const resourceRequests = []; let resourceSequence = 0;
-const resources = new Map([
-  ['/startup-image.svg', ['image/svg+xml', fs.readFileSync(new URL('../../www/samples/startup/public/landscape.svg', import.meta.url))]],
-  ['/startup.webm', ['video/webm', fs.readFileSync(new URL('./fixtures/startup.webm', import.meta.url))]],
-  ['/startup-frame', ['text/html', Buffer.from('<!doctype html><title>Retained native document</title><p>Native frame</p>')]],
-]);
+const publicDirectory = new URL('../apps/startup-corpus/public/', import.meta.url);
 const server = http.createServer((request, response) => {
   const route = new URL(request.url, 'http://local').pathname;
-  if (resources.has(route)) {
+  const asset = publicAsset(publicDirectory, route);
+  if (asset) {
     resourceCounts.set(route, (resourceCounts.get(route) ?? 0) + 1);
-    const [type, body] = resources.get(route);
+    const { type, body } = asset;
     const reply = resourceReply({ method: request.method, range: request.headers.range, type, body });
     const record = { sequence: ++resourceSequence, route, method: request.method, range: request.headers.range ?? null, status: reply.status, contentRange: reply.headers['content-range'] ?? null, bytes: reply.headers['content-length'] };
     if (resourceRequests.length === 128) resourceRequests.shift(); resourceRequests.push(record);
@@ -43,6 +41,7 @@ const server = http.createServer((request, response) => {
   }
   if (route === '/app.wasm') { response.setHeader('content-type', 'application/wasm'); response.end(fs.readFileSync(options.wasm)); return; }
   const file = files[path.basename(route)];
+  if (!file && !pages.has(route)) { response.writeHead(404); response.end(); return; }
   response.setHeader('content-type', file ? 'text/javascript' : 'text/html');
   response.end(file ? fs.readFileSync(file) : pages.get(route) ?? '<!doctype html>');
 });
@@ -148,7 +147,7 @@ try {
           const requestsAfter = Object.fromEntries(resourceCounts);
           assert.equal(native.imageLoaded, true); assert.equal(native.documentLoaded, true); assert.equal(native.documentRetained, true); assert.equal(native.sourceWrites, 0); assert.equal(native.playing, true, 'retained native video remains playing'); assert.ok(native.progress > .08, 'retained native video keeps progressing after binding and replacement');
           assert.equal(native.continuity.accepted, true, 'native video keeps its source, lifecycle and advancing timeline');
-          for (const route of ['/startup-image.svg', '/startup-frame']) assert.equal(requestsAfter[route], requestsBefore[route], `${route} is not requested again`);
+          for (const route of ['/startup-image.svg', '/startup-frame.html']) assert.equal(requestsAfter[route], requestsBefore[route], `${route} is not requested again`);
           const duringBinding = resourceRequests.filter(request => request.sequence > requestStart);
           assert.ok(duringBinding.every(request => request.route === '/startup.webm' && request.range !== null && request.status === 206), 'additional video transport consists only of successful byte-range continuations');
           await page.evaluate(() => window.__resources.playback.stop());

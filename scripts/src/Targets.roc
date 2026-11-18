@@ -388,6 +388,7 @@ Targets := [].{
 		Path.write_bytes!(Path.utf8(unicode_bits), bits)?
 		Ok(
 			Targets.browser!(o, "page-profile.test.mjs", [])?
+				.concat(Targets.browser!(o, "public-assets.test.mjs", [])?)
 				.concat(Targets.browser!(o, "protocol-facts-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "picture-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "startup-annotations-browser.mjs", [])?)

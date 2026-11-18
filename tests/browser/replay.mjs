@@ -1,5 +1,5 @@
 // replay.mjs --wasm APP.wasm --runtime runtime.mjs --steps STEPS.jsonl
-//            [--chrome PATH] [--filter REGEX] [--out RESULTS.json] [--json-lines]
+//            [--public DIR] [--chrome PATH] [--filter REGEX] [--out RESULTS.json] [--json-lines]
 // replay.mjs --check-grammar GRAMMAR.json
 //
 // The browser spec runner. It replays specs in real headless Chrome, one
@@ -56,6 +56,8 @@ import { launch } from "./cdp.mjs";
 import { runtimeFiles } from "./args.mjs";
 import { configureSpecPage, readySpecPage } from "./page-profile.mjs";
 import { observeManualScrolls } from "./scroll-observation.mjs";
+import { publicAsset, isRouteNavigation } from "./public-assets.mjs";
+import { resourceReply } from "./startup-media.mjs";
 import { applicationErrors, DBG_PRINT_FAILURE } from "./replay-errors.mjs";
 import { verifyPointerRecords, verifyClickEvents, beginPointerInput, endPointerInput } from "./pointer-log.mjs";
 
@@ -73,6 +75,7 @@ function parseArgs(argv) {
     if (a === "--wasm") o.wasm = val();
     else if (a === "--runtime") o.runtime = val();
     else if (a === "--steps") o.steps = val();
+    else if (a === "--public") o.public = val();
     else if (a === "--chrome") o.chrome = val();
     else if (a === "--filter") o.filter = new RegExp(val());
     else if (a === "--out") o.out = val();
@@ -1547,6 +1550,7 @@ const ENVIRONMENT_SECTIONS = {
 async function installEnvironment(page, state, seed = false) {
   if (state.environmentScript !== null) await page.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: state.environmentScript });
   const install = (environment, mount, seed, appliers, mountRoot) => {
+    if (window !== window.top) return;
     window.__env = environment;
     window.__mountOptions = { ...mount, environment: {} };
     window.__mountRoot = mountRoot;
@@ -1573,6 +1577,7 @@ async function installEnvironment(page, state, seed = false) {
 // page-side half of `expect-updates` (per node, the attribute and text
 // mutations after the callback that inserted it).
 function install(attrOfSource) {
+  if (window !== window.top) return;
   // Its OS-dependent timing is outside the portable grammar, as hover is.
   window.addEventListener("contextmenu", (event) => { event.preventDefault(); event.stopImmediatePropagation(); }, true);
   for (const type of ["gotpointercapture", "lostpointercapture"]) window.addEventListener(type, (event) => event.stopImmediatePropagation(), true);
@@ -1677,14 +1682,20 @@ const files = {
   "app.wasm": opts.wasm,
 };
 const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };
-// Files are served by basename under any path (apps mount under a base path,
-// e.g. /roc-signals/examples/conduit/), and a directory as index.html.
+// Runtime files work under app base paths. Public files retain exact paths
+// under the explicitly supplied directory; route fallback is navigation-only.
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
   if (u.pathname === "/storage-driver.html") {
     res.writeHead(200, { "content-type": "text/html" }); res.end("<!doctype html><title>storage driver</title>"); return;
   }
-  const f = u.pathname.endsWith("/") || path.extname(u.pathname) === "" ? files["index.html"] : files[path.basename(u.pathname)];
+  const known = files[path.basename(u.pathname)];
+  const asset = known ? null : publicAsset(opts.public, u.pathname);
+  if (asset) {
+    const reply = resourceReply({ method: req.method, range: req.headers.range, ...asset });
+    res.writeHead(reply.status, reply.headers); res.end(reply.body); return;
+  }
+  const f = known ?? (isRouteNavigation(req, u.pathname) ? files["index.html"] : null);
   if (!f || !fs.existsSync(f)) {
     res.writeHead(u.pathname === "/favicon.ico" ? 204 : 404);
     res.end();

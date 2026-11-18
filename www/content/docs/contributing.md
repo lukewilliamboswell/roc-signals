@@ -428,6 +428,13 @@ Scroll observations require an actual animation frame and its following task
 within the existing idle deadline; starvation fails with the page’s visibility
 and focus state. Geometry outside this profile belongs in a browser contract with its dimensions stated explicitly.
 
+Ordinary Chrome replay serves an app's `public/` files from the origin root.
+The suite supplies `--public DIR`; pass the same option to a direct
+`tests/browser/replay.mjs` invocation. Only top-level route navigation gets
+the replay document. Missing resource and iframe URLs return 404. Embedded
+documents keep their own content and are outside the top-level instance's
+environment setup and mutation observer.
+
 CI runs the Log Explorer, Kanban Board, table test app and scores sample in
 both runners on macOS Apple Silicon, macOS Intel and Windows through
 `tests/native/selected-specs.mjs`. Those systems also run the debug apps and

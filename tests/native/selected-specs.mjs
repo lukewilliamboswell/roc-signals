@@ -68,7 +68,8 @@ for (const app of ["examples/log-explorer", "examples/kanban-board", "tests/apps
   records(steps, ids, null);
   const stepsPath = path.join(dir, "steps.jsonl");
   fs.writeFileSync(stepsPath, steps);
-  const browser = run(process.execPath, ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", "platform/runtime.mjs", "--steps", stepsPath, "--chrome", options.chrome, "--json-lines"]);
+  const publicArgs = fs.existsSync(path.join(app, "public")) ? ["--public", path.join(app, "public")] : [];
+  const browser = run(process.execPath, ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", "platform/runtime.mjs", "--steps", stepsPath, "--chrome", options.chrome, "--json-lines", ...publicArgs]);
   records(browser, ids, "roc-signals/spec-result/v2");
   fs.writeFileSync(path.join(dir, "browser.jsonl"), browser);
   console.log(`${app}: ${specs.length} specs passed natively and in Chrome`);
