@@ -164,6 +164,12 @@ class Browser {
     this.profile = profile;
   }
 
+  // The running browser reports its version through one portable protocol;
+  // desktop Chrome's --version command does not exit on every system.
+  async version() {
+    return this.conn.send("Browser.getVersion");
+  }
+
   // An isolated context: fresh storage, fresh pages.
   async createBrowserContext() {
     const { browserContextId } = await this.conn.send("Target.createBrowserContext");

@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
+import { launch } from "../browser/cdp.mjs";
 
 const options = Object.fromEntries(Array.from({ length: (process.argv.length - 2) / 2 }, (_, i) => [process.argv[2 + i * 2].replace(/^--/, ""), process.argv[3 + i * 2]]));
 for (const key of ["roc", "target", "exe", "chrome", "build"]) assert.ok(Object.hasOwn(options, key), `--${key} is required`);
@@ -33,7 +34,12 @@ const run = (program, args) => {
   return result.stdout;
 };
 run(options.roc, ["version"]);
-run(options.chrome, ["--version"]);
+const versionBrowser = await launch({ executablePath: options.chrome });
+try {
+  fs.writeFileSync(path.join(logs, "browser-version.json"), JSON.stringify(await versionBrowser.version(), null, 2));
+} finally {
+  await versionBrowser.close();
+}
 const records = (source, ids, protocol) => {
   const rows = source.trim().split("\n").map(JSON.parse);
   assert.equal(rows.length, ids.length, "every file needs exactly one result");
