@@ -501,19 +501,18 @@ its plain build runs real browser workers. A compiler-boundary edit injection
 checks that the project inventory guard refuses publication and preserves the
 same complete tree.
 
-`blueprint run startup-browsers` is the additional engine-boundary gate. Its
+`blueprint run startup-browsers` is an opt-in local engine-boundary check. Its
 test-only `playwright-core` 1.65.1 archive is SHA-256 locked in `Blueprint.lock`,
 and its CLI installs the matching Chromium, Firefox and WebKit revisions in
 Playwright's shared cache (`PLAYWRIGHT_BROWSERS_PATH` can select another cache).
-Use `-- --with-deps` on Linux to install the browsers' system dependencies too,
-as CI does. This adds no npm project or application runtime dependency. The
+Use `-- --with-deps` on Linux to install the browsers' system dependencies too.
+This adds no npm project or application runtime dependency. The
 task builds `tests/apps/startup-corpus` natively and as Wasm, then runs that
 producer/consumer corpus and the independently encoded startup controls in
 each engine. Native pages, browser versions, retained-node/state observations
 and per-corpus logs are kept in `.build/startup-browsers/` (under
-`ROC_SIGNALS_BUILD_DIR` when set). CI uploads those artifacts and requires this
-job in its aggregate Check result; it does not replay every SCM spec in three
-engines.
+`ROC_SIGNALS_BUILD_DIR` when set). This task is not run or required by CI;
+the ordinary native and Chrome SCM suites remain CI's application checks.
 
 The production workflow is `roc signals.roc build` from an app directory. It
 reads the compiled finite entry catalogue and stages all annotated pages with
