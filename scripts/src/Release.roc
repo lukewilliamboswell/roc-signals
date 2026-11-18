@@ -188,6 +188,10 @@ Release := [].{
 		\\
 		\\Ordinary initial content survives startup. `Html.placeholder` combines checked `Html.Static` content with a deferred live body; readiness and browser-task opportunities activate it through ordinary scoped turns. Use `Engine.environment` for live browser facts after startup. Protocol 23 requires rebuilding modules and deploying their matching runtime files together.
 		\\
+		\\The compiler infers the store's type from `main`; a separate app-level `Store` declaration is no longer required. This needs a Roc compiler containing roc-lang/roc#13142.
+		\\
+		\\Port JSON refuses repeated decoded dictionary property names, including names written with different JSON escapes. Handwritten port codecs pass decoder cursors returned by the format's hooks; applications cannot construct a cursor themselves.
+		\\
 		\\## Breaking: checked links and typed clicks
 		\\
 		\\`Html.link` now requires `Web.Link`. Literal destinations are checked during compilation; computed destinations use `Web.Link.from_str` and explicitly handle `UnsupportedScheme`. `Html.href` and `Html.href_s` support custom layouts and explicit absence. Raw attributes keep their semantics.
