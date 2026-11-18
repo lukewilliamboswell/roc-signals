@@ -3475,6 +3475,9 @@ startup_children = |dom, index, models, bytes| {
 startup_gate : RenderState, { model : U64, node : Dom.DNode } -> Try(RenderState, Dom.RenderError)
 startup_gate = |state, { model, node }| {
 	owned = state.startup_owned or !node.hs.is_empty() or !node.props.is_empty()
+	if node.namespace == Dom.html_namespace and node.tag == "selectedcontent" {
+		return Err(InvalidModel({ model, rule: "annotated startup refuses selectedcontent native child mutation; defer construction or use plain mounting" }))
+	}
 	if (node.namespace == Dom.html_namespace and (node.tag.contains("-") or Dom.has_attr(node, "is"))) or (node.tag == "script" and [Dom.html_namespace, Dom.svg_namespace].contains(node.namespace)) {
 		return Err(InvalidModel({ model, rule: "annotated startup refuses executable or custom-element markup; defer construction or use plain mounting" }))
 	}
@@ -3735,4 +3738,18 @@ expect {
 	props = { root: 0, scope: MountEnvelope, enclosing: Element({ namespace: Dom.html_namespace, prefix: "", local: "body" }), mode: Picture, startup: Annotated, frame: Frame({ entry: 2, token: "build_123-Ab" }), limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }
 	rendered = Dom.render(dom, props)?
 	rendered.markup.contains("data-roc-frame=\"1:2:build_123-Ab\"") and Dom.render(dom, { ..props, frame: Frame({ entry: 2, token: "bad:token" }) }).is_err()
+}
+
+## Native selectedcontent clones selected option children even under inert.
+## Cold ownership therefore refuses it independently of browser support;
+## ordinary construction remains available after a placeholder activates.
+expect {
+	dom = { ..Dom.new({}), nodes: [{ ..Dom.empty_node, tag: "div", kids: [1] }, { ..Dom.empty_node, tag: "selectedcontent" }] }
+	props : Dom.RenderProps
+	props = { root: 0, scope: Contents, startup: Annotated, limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }
+	refused = match Dom.render(dom, props) {
+		Err(InvalidModel({ rule, .. })) => rule.contains("selectedcontent native child mutation")
+		_ => False
+	}
+	refused and Dom.render(dom, { ..props, startup: Plain }).is_ok()
 }

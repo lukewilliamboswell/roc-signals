@@ -113,6 +113,17 @@ try {
     const contentFrame = new StartupFrame(templateRoot, 'build'); contentFrame.normalize(); contentFrame.bind(1, 1); contentFrame.bind(2, 1); contentFrame.bind(3, 2); contentFrame.finish();
     check('template content has its own retained container and logical bindings', templateNode.childNodes.length === 0 && templateNode.content.firstChild === contentElement && templateNode.textContent === '');
     templateRoot.remove();
+    const nativeSelectRoot = document.createElement('div'); nativeSelectRoot.setAttribute('data-roc-frame', '1:0:build');
+    nativeSelectRoot.innerHTML = '<select inert style="appearance:base-select"><button inert><selectedcontent inert></selectedcontent></button><option selected inert><span>Native copy</span></option></select>';
+    document.body.append(nativeSelectRoot);
+    const nativeSelect = nativeSelectRoot.firstChild, nativeButton = nativeSelect.firstChild, nativeContent = nativeButton.firstChild, nativeOption = nativeSelect.lastChild, nativeSpan = nativeOption.firstChild;
+    node(nativeSelectRoot, 0, [0], [[1, ...word(1)]]); node(nativeSelect, 1, [1], [[1, ...word(2)], [1, ...word(4)]]); node(nativeButton, 2, [2], [[1, ...word(3)]]); node(nativeContent, 3, [3], []); node(nativeOption, 4, [4], [[1, ...word(5)]]); node(nativeSpan, 5, [5], [[2, ...facts(6, [6]), ...text('Native copy')]]);
+    if (nativeContent.childNodes.length) {
+      let nativeMutationRefused = false;
+      try { new StartupFrame(nativeSelectRoot, 'build'); } catch (error) { nativeMutationRefused = error.message.startsWith('startup:'); }
+      check('native selectedcontent cloning despite inert cannot become an unchecked binding', nativeMutationRefused && nativeContent.childNodes.length > 0);
+    }
+    nativeSelectRoot.remove();
     const section = (tag, bytes) => [tag, ...word(bytes.length), ...bytes];
     const htmlName = local => [0, ...text(''), ...text(local)];
     const startupDeclaration = [1, ...htmlName('div'), ...word(3), ...text('/'), ...text('/a/'), ...text('/b/'), ...word(0xffffffff)];

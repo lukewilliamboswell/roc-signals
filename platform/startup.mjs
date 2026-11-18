@@ -67,9 +67,10 @@ function childFacts(reader, budget) {
 export class StartupFrame {
   constructor(root, expectedToken) {
     const marker = root.getAttributeNS(null, FRAME);
+    assert(marker !== null && marker.length <= STARTUP_LIMITS.annotations, 'frame annotation resource limit');
     assert(typeof expectedToken === 'string' && /^[A-Za-z0-9_-]+$/.test(expectedToken), 'missing or invalid expected build token');
-    const match = /^1:(0|[1-9][0-9]*):([A-Za-z0-9_-]+)$/.exec(marker ?? '');
-    assert(match && Number(match[1]) <= 0xffffffff && match[2] === expectedToken, 'frame/build compatibility');
+    const match = /^1:(0|[1-9][0-9]{0,9}):([A-Za-z0-9_-]+)$/.exec(marker ?? '');
+    assert(match && Number(match[1]) < 0xffffffff && match[2] === expectedToken, 'frame/build compatibility');
     this.entry = Number(match[1]); this.root = root;
     this.ordinals = new Map(); this.aliases = new Map(); this.elements = []; this.gates = []; this.containers = [];
     this.endpointMaps = new Map(); this.used = new Set([0]); this.usedOrdinals = new Set([0]); this.byNode = new Map(); this.placement = new Map();
