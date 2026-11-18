@@ -5,4 +5,3 @@ main = Engine.program(|| {
  reader = Engine.Signal.to_core(Engine.const("private"))
  Engine.text(Str.inspect(reader))
 })
-Store : {}

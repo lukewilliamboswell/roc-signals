@@ -1,8 +1,6 @@
 app [main] { pf: platform "../../../platform/main.roc" }
 import pf.Engine
 import pf.Html
-Store : Engine.Stored([QueueScaling], Bool)
-
 Kind := [Placeholders, Conditionals].{
 	is_eq : _
 	to_hash : _

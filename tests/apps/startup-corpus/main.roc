@@ -8,8 +8,6 @@ store = Engine.store(Corpus, Engine.cell(0.I64).map(|score| { score: score }))
 
 cells = store.cells()
 
-Store : Engine.Stored([Corpus], I64)
-
 entries = Engine.entries({}, [{ path: "/", route: "first" }, { path: "/second/", route: "second" }])
 
 ## Both declared pages use the same pure typed construction. Browser facts

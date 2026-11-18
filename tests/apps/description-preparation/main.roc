@@ -5,7 +5,5 @@ import DescriptionApp
 main : Engine.Program
 main = DescriptionApp.program
 
-Store : Engine.Stored(DescriptionApp, (I64, (I64, (Bool, List(Str)))))
-
 mounted : U64
 mounted = Engine.mounts(main)

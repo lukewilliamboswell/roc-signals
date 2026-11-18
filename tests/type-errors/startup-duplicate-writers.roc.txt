@@ -3,6 +3,5 @@ import pf.Engine
 entries = Engine.entries({}, [{ path: "/", route: {} }])
 main : Engine.Program
 main = Engine.program_startup({}, entries, |_| Engine.element("div", [Engine.class("one"), Engine.class_s("two")], []))
-Store : {}
 mounted : U64
 mounted = Engine.mounts(main)

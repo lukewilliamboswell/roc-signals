@@ -2,8 +2,6 @@ app [main] { pf: platform "../../../platform/main.roc" }
 
 import pf.Engine
 
-Store : {}
-
 entries = Engine.entries({}, [{ path: "/", route: {} }])
 
 ## This writer is absent in the ordinary frame but has constructor-sensitive

@@ -6,8 +6,6 @@ store = Engine.store(Page, { count: Engine.cell(0.I64), ready: Engine.cell(False
 
 cells = store.cells()
 
-Store : Engine.Stored([Page], (I64, (Bool, Bool)))
-
 entries = Engine.entries({}, [{ path: "/", route: "home" }, { path: "/about/", route: "about" }])
 
 main : Engine.Program

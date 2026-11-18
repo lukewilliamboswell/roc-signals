@@ -2,8 +2,6 @@ app [main] { pf: platform "../../../platform/main.roc" }
 import pf.Engine
 import pf.Html
 
-Store : {}
-
 # region entries
 entries = Engine.entries({}, [{ path: "/", route: "home" }, { path: "/about/", route: "about" }])
 

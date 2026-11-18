@@ -6,8 +6,6 @@ store = Engine.store(PreparedPage, Engine.cell(0.I64).map(|count| { count: count
 
 cells = store.cells()
 
-Store : Engine.Stored([PreparedPage], I64)
-
 # region description
 ## A description can be prepared before any instance has a value to read.
 prepared_page : Engine.Elem(Engine.StoreRoot(_))
