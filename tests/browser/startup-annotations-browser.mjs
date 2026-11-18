@@ -304,7 +304,7 @@ try {
     const template = [...templateElement('div', [[2, ...text('')], templateElement('span', [[2, ...text('tail')]])]), 2, 4, 1, 0, 0, 5, 1, 0, 1];
     const rowBatch = [0, 28, 1, ...word(2), 7, ...word(1), ...word(template.length), ...template,
       1, ...word(10), ...word(0), ...word(0), ...word(1), ...word(11), ...word(12),
-      8, ...word(13), ...word(10), ...word(11), ...htmlName('p'), 0,
+      8, ...word(13), ...word(0), ...word(11), ...htmlName('p'), 0,
       10, ...word(14), ...word(13), ...word(0), ...text('nested'), 29];
     const rowHost = { ...host, init() { write(rowBatch); return 0; }, event(_node, handler) { write(handler === 0 ? [0, 30] : [0, 1, ...word(20), ...word(0), ...word(0), ...word(1), ...word(21), ...word(22)]); return 0; } };
     const rowRuntime = new RocEngineRuntime(rowHost, rowRoot, { startupBuildToken: 'build', manualEffects: true });

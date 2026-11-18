@@ -4816,8 +4816,10 @@ export class RocEngineRuntime {
 
   place(el, parent, before) {
     if (this.startup) {
-      const owner = this.lookup(parent), container = parent === 0 ? owner : owner.__childTarget ?? owner;
-      this.startup.assertPlaced(el, container, before === 0 ? null : this.lookup(before));
+      const anchor = before === 0 ? null : this.lookup(before);
+      const owner = anchor ? null : this.lookup(parent);
+      const container = anchor ? anchor.parentNode : parent === 0 ? owner : owner.__childTarget ?? owner;
+      this.startup.assertPlaced(el, container, anchor);
       return;
     }
     if (before === 0) {
