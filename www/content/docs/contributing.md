@@ -152,7 +152,12 @@ examples' class literals against that stylesheet: a string literal given as
 the class argument of `Engine.class` or of any `Html` function that passes
 one of its parameters to `Engine.class` (found in `platform/Html.roc`, so a
 new constructor is checked with no other edit), and one given to a record
-field named `class`, as an app's props carry it. An undefined class fails
+field named `class`, as an app's props carry it. Fixed `class` attributes in
+explicit `Html.Markup` and `Svg.Markup` declarations and literal suffixes are
+also checked with the pinned markup parser. Whole dynamic attribute holes
+remain dynamic; ordinary strings containing HTML remain prose. Roc escapes,
+markup character references and multiline strings retain their source lines.
+An undefined class fails
 the build with its source file and line. Complete static words around an
 interpolation are checked. A class built by a function, or held in a value
 under another name before it reaches a class argument, is not a literal at a

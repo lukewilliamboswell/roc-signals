@@ -1,4 +1,7 @@
 import parser.RocSyntax
+import parser.Html as ParsedHtml
+import parser.Svg as ParsedSvg
+import parser.MarkupTemplate
 import SourceText
 import cli.Path
 import SpecSuite
@@ -308,7 +311,183 @@ ClassCheck := [].{
 				Err(_) => {}
 			}
 		}
+		for selected in ClassCheck.markup_literals(parsed).sort_with(
+			|a, b| if a.literal.start < b.literal.start {
+				Before
+			} else if a.literal.start > b.literal.start {
+				After
+			} else Same,
+		) {
+			scanned = ClassCheck.markup_uses(parsed, selected.literal, selected.mode, $lines)?
+			$uses = $uses.concat(scanned.uses)
+			$literals = $literals + scanned.literals
+		}
 		Ok({ uses: $uses, literals: $literals })
+	}
+
+	## Explicit markup annotations and literal suffixes select markup, never
+	## strings merely containing angle brackets. Annotation lookup stays among
+	## siblings so an identically named declaration in another scope cannot
+	## turn ordinary prose into markup.
+	markup_literals : RocSyntax.Parsed -> List({ literal : RocSyntax.Node, mode : [Html, Svg] })
+	markup_literals = |parsed| {
+		var $out = []
+		for parent in parsed.nodes {
+			siblings = ClassCheck.children(parsed, parent)
+			for declaration in siblings.keep_if(|node| node.kind == Declaration) {
+				match ClassCheck.children(parsed, declaration) {
+					[name, value] => {
+						for annotation in siblings.keep_if(|node| node.kind == TypeAnnotation) {
+							match ClassCheck.children(parsed, annotation) {
+								[annotated, ty, ..] if ClassCheck.text(parsed, annotated) == ClassCheck.text(parsed, name) => {
+									base = if ty.kind == TypeApply {
+										ClassCheck.children(parsed, ty).first() ?? ty
+									} else ty
+									mode = match ClassCheck.text(parsed, base) {
+										"Html.Markup" => Html
+										"Svg.Markup" => Svg
+										_ => Other
+									}
+									match ClassCheck.string_literal(parsed, value) {
+										Ok(literal) => {
+											match mode {
+												Html => {
+													$out = $out.append({ literal, mode: Html })
+												}
+												Svg => {
+													$out = $out.append({ literal, mode: Svg })
+												}
+												Other => {}
+											}
+										}
+										Err(_) => {}
+									}
+								}
+								_ => {}
+							}
+						}
+					}
+					_ => {}
+				}
+			}
+			if parent.kind == TypedLiteral {
+				match siblings {
+					[value, namespace, name] if ClassCheck.text(parsed, name) == "Markup" => {
+						mode = match ClassCheck.text(parsed, namespace) {
+							"Html" => Html
+							"Svg" => Svg
+							_ => Other
+						}
+						match ClassCheck.string_literal(parsed, value) {
+							Ok(literal) => {
+								match mode {
+									Html => {
+										$out = $out.append({ literal, mode: Html })
+									}
+									Svg => {
+										$out = $out.append({ literal, mode: Svg })
+									}
+									Other => {}
+								}
+							}
+							Err(_) => {}
+						}
+					}
+					_ => {}
+				}
+			}
+		}
+		$out
+	}
+
+	## Decode the Roc literal while retaining origins. Hole boundaries are
+	## passed to the markup parser as segments, never invented placeholders.
+	markup_uses : RocSyntax.Parsed, RocSyntax.Node, [Html, Svg], List(U64) -> Try({ uses : List(Use), literals : U64 }, U64)
+	markup_uses = |parsed, literal, mode, lines| {
+		var $segments = []
+		var $segment = []
+		var $points = []
+		for part in ClassCheck.children(parsed, literal) {
+			if part.kind == StringSegment {
+				bytes = parsed.source.sublist({ start: part.start, len: part.end - part.start })
+				points = if literal.kind == MultilineStringLiteral {
+					bytes.map_with_index(|byte, offset| { byte, at: part.start + offset })
+				} else SourceText.quoted(bytes, part.start)
+				$segment = $segment.concat(points)
+				$points = $points.concat(points)
+			} else if part.kind == Interpolation {
+				$segments = $segments.append(Str.from_utf8_lossy($segment.map(|point| point.byte)))
+				$segment = []
+			}
+		}
+		$segments = $segments.append(Str.from_utf8_lossy($segment.map(|point| point.byte)))
+		plan = ClassCheck.parse_markup($segments, mode) ? |_| lines.get(literal.start) ?? 1
+		var $uses = []
+		var $literals = 0
+		for (node, node_index) in plan.parsed.tree.nodes.map_with_index(|node, index| (node, index)) {
+			for (attribute, attribute_index) in node.attributes.map_with_index(|attribute, index| (attribute, index)) {
+				if attribute.name.namespace == NoNamespace and attribute.name.local == "class" and !plan.slots.any(|slot| slot.target == AttributeSlot({ node: node_index, attribute: attribute_index })) {
+					$literals = $literals + 1
+					original = $points.sublist({ start: attribute.span.start, len: attribute.span.end - attribute.span.start })
+					$uses = $uses.concat(ClassCheck.attribute_uses(original, mode, lines))
+				}
+			}
+		}
+		Ok({ uses: $uses, literals: $literals })
+	}
+
+	## The same strict parser reads source and whole-attribute holes. Table
+	## fragments require HTML's template context, as in the platform literal.
+	parse_markup : List(Str), [Html, Svg] -> Try(MarkupTemplate.Plan, _)
+	parse_markup = |segments, mode| match mode {
+		Svg => ParsedSvg.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True })
+		Html => match ParsedHtml.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True }) {
+			Ok(plan) => Ok(plan)
+			Err(_) => ParsedHtml.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True, context_element: "template" })
+		}
+	}
+
+	## The parser selected this attribute's exact span. Decode its value one
+	## authored line at a time through that same parser; HTML references and
+	## XML normalization remain parser policy, and each token keeps its Roc
+	## source line even when Roc escapes or references introduce whitespace.
+	attribute_uses : List(Point), [Html, Svg], List(U64) -> List(Use)
+	attribute_uses = |attribute, mode, lines| {
+		equals = attribute.find_first_index(|point| point.byte == '=') ?? return []
+		var $start = equals + 1
+		while $start < attribute.len() and ClassCheck.is_space((attribute.get($start) ?? crash "within attribute").byte) {
+			$start = $start + 1
+		}
+		value = attribute.drop_first($start)
+		first = value.first() ?? return []
+		quoted = first.byte == '\'' or first.byte == '"'
+		points = if (quoted) value.drop_first(1).drop_last(1) else value
+		quote = if (quoted) Str.from_utf8_lossy([first.byte]) else ""
+		var $uses = []
+		var $at = 0
+		while $at < points.len() {
+			start = $at
+			origin = (points.get(start) ?? crash "within attribute").at
+			line = lines.get(origin) ?? 1
+			while $at < points.len() and lines.get((points.get($at) ?? crash "within attribute").at) == Ok(line) {
+				$at = $at + 1
+			}
+			raw = Str.from_utf8_lossy(points.sublist({ start, len: $at - start }).map(|point| point.byte))
+			source = match mode {
+				Html => "<div class=${quote}${raw}${quote}></div>"
+				Svg => "<g class=${quote}${raw}${quote}/>"
+			}
+			# Every chunk ends at an authored newline (HTML whitespace), so
+			# splitting cannot join a class word or character reference.
+			plan = ClassCheck.parse_markup([source], mode) ?? crash "a selected fixed class attribute remains valid on each source line"
+			for node in plan.parsed.tree.nodes {
+				for attr in node.attributes {
+					decoded = attr.value.to_utf8().map(|byte| { byte, at: origin })
+					$uses = $uses.concat(ClassCheck.words(decoded, { left: True, right: True }, lines))
+				}
+			}
+		}
+		$uses
 	}
 
 	## Select the literal at each constructor’s class argument. A dynamic
@@ -507,4 +686,49 @@ expect {
 expect {
 	source = "value = Engine.class(\n  \\\\literal\\nname\n)\n"
 	sample_uses(source)? == [{ name: "literal\\nname", line: 2 }]
+}
+
+## Explicit HTML/SVG annotations and literal suffixes inspect fixed class
+## attributes, including nested elements beside live text and class holes.
+expect {
+	source = "html : Html.Markup(ctx)\nhtml = \"<div class='known missing'><span class='inner'>\${count}</span><i class='\${chosen}'></i></div>\"\nsvg : Svg.Markup(ctx)\nsvg = \"<svg class='icon'><g class='shape'></g></svg>\"\nsuffix = \"<p class='suffix'></p>\".Html.Markup"
+	sample_uses(source) == Ok([{ name: "known", line: 2 }, { name: "missing", line: 2 }, { name: "inner", line: 2 }, { name: "icon", line: 4 }, { name: "shape", line: 4 }, { name: "suffix", line: 5 }])
+}
+
+## Roc escapes and markup references decode before class tokenization,
+## retaining the original authored line for every token.
+expect {
+	source = "view : Html.Markup(ctx)\nview = \"<div class='one&#32;two\\nthree\\u(20)four'></div>\"\n"
+	sample_uses(source) == Ok([{ name: "one", line: 2 }, { name: "two", line: 2 }, { name: "three", line: 2 }, { name: "four", line: 2 }])
+}
+
+## Raw multiline markup retains each class's actual source line. Static
+## classes beside an interpolation remain checked; a whole class hole does not.
+expect {
+	source = "view : Html.Markup(ctx)\nview =\n    \\\\<div class=\"first\n    \\\\second&#x20;third\"><span class=\"last\">\${count}</span></div>\n"
+	sample_uses(source) == Ok([{ name: "first", line: 3 }, { name: "second", line: 4 }, { name: "third", line: 4 }, { name: "last", line: 4 }])
+}
+
+## Prose, unrelated attributes, comments and another scope's identically
+## named Str declaration cannot be mistaken for a typed markup literal.
+expect {
+	source =
+		\\view : Html.Markup(ctx)
+		\\view = "<div title='not-a-class'><!-- class='comment' --></div>"
+		\\prose : Str
+		\\prose = "<div class='ordinary'></div>"
+		\\nested = |{}| {
+		\\    view : Str
+		\\    view = "<div class='ordinary-too'></div>"
+		\\    view
+		\\}
+	sample_uses(source) == Ok([])
+}
+
+## The post-Tailwind comparison rejects a missing markup class at its
+## authored line and succeeds when the stylesheet defines that class.
+expect {
+	source = "view : Svg.Markup(ctx)\nview =\n  \\\\<svg class=\"known\">\n  \\\\  <g class=\"missing\"></g>\n  \\\\</svg>\n"
+	uses = sample_uses(source)?
+	ClassCheck.missing(ClassCheck.selectors(".known {}"), uses) == [{ name: "missing", line: 4 }] and ClassCheck.missing(ClassCheck.selectors(".known {} .missing {}"), uses) == []
 }
