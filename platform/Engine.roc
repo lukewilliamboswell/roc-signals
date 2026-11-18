@@ -698,7 +698,8 @@ Engine := [].{
 	## Request current URL, connectivity, visibility, time, entropy, languages,
 	## time zone and declared storage/media values after construction. Use this
 	## to update deterministic initial UI from live facts. The normal in-flight
-	## bound applies; admission beyond it answers Err(Refused).
+	## bound applies; admission beyond it answers Err(Refused). Facts are sampled
+	## when the next browser-task read runs, after startup acknowledgement.
 	environment : {} -> Ask(Boot, [Refused])
 	environment = Core.environment
 
@@ -1400,7 +1401,8 @@ Engine := [].{
 	on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Ask(output, error))), Reaction(ctx, item, Try(output, error)) -> Elem(ctx)
 	on_post_by = |box, reading, plan, reaction| Core.on_post_by(core_signal(box), core_signal(reading), plan, reaction)
 
-	## What the host knows before the first render: the URL, independently
+	## Environment facts from a boot-based first render or an environment
+	## request: the URL, independently
 	## declared local and session storage keys' values (missing keys are absent),
 	## whether each storage service is available, and whether the browser is
 	## online and the page visible. An unavailable service has an empty list;
@@ -1409,13 +1411,13 @@ Engine := [].{
 	## All fields have defaults: a URL of `/`, empty available local and session
 	## storage, online and visible, with no media queries, time and seed zero,
 	## en-US and full-range UTC. The wall time, entropy seed, languages and zone
-	## are fixed facts for this instance; a fresh clock sample arrives on Fired.
-	## Declared media values arrive before first paint; boot_media reads one or
+	## stay fixed within this returned value; request fresh facts or use a timer
+	## for another clock sample. boot_media reads a declared query or
 	## reports Undeclared.
 	Boot : Core.Boot
 
 	## The user's UTC offsets over an inclusive millisecond span, as boot
-	## measured them (`boot.zone`). Opaque: only boot, which checks the table,
+	## measured them (`boot.zone`). Opaque: only checked boot/environment data,
 	## and `utc` make one. `zone.name()` is the browser's IANA name for it
 	## (`""` when unknown), and `zone.offset_at(at_ms)` the minutes east of
 	## UTC at a time, or `Err(OutsideZone)` beyond the span, where the

@@ -390,6 +390,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "protocol-facts-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "picture-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "startup-annotations-browser.mjs", [])?)
+				.concat(Targets.browser!(o, "startup-corpus-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "startup-corpus"), "--runner", SpecSuite.runner_of(o, "startup-corpus"), "--template", "tests/apps/startup-corpus/index.html"])?)
 				.concat(Targets.browser!(o, "picture-parent-browser.mjs", [])?)
 				.concat(Targets.prerender_contract!(o)?)
 				.concat(Targets.browser!(o, "names-browser.mjs", [])?)

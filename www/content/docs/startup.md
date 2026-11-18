@@ -60,6 +60,16 @@ acknowledges the frame and drains queued initial reactions. The mount completes
 after this acknowledgement. An initial reaction can update the page then; it
 does not change which page was adopted.
 
+Keep native associations inside the managed root: labels and their targets,
+forms and their associated controls, and radio groups. An external label or
+submit button can still change or submit a gated target in a browser. The app
+owns this boundary, including elements added later by page scripts.
+
+Annotated startup refuses executable or custom-element content, inline
+handlers, opaque HTML, declarative shadow roots, `selectedcontent` and named
+`details` groups. Their browser behavior can change the frame before binding.
+Defer these constructions in a placeholder body or use `--no-prerender`.
+
 ## Explicit placeholders
 
 `Html.placeholder` owns static content and a deferred live body. Its static
@@ -110,7 +120,9 @@ state from its typed result:
 
 {{ sample(file="startup/main.roc", region="environment") }}
 
-The answer has the familiar `Boot` fields, sampled after construction. Declare
+The answer has the familiar `Boot` fields, sampled when the next browser-task
+read runs after startup acknowledgement. Initial fixed construction does not
+call the live environment readers. Declare
 needed storage keys, session keys and media queries in `ProgramProps`; the
 request uses those declarations. It occupies a normal awaited slot and answers
 `Err(Refused)` when admission exceeds `max_inflight`. A synchronous host answer

@@ -325,7 +325,8 @@ ClassCheck := [].{
 		Ok({ uses: $uses, literals: $literals })
 	}
 
-	## Explicit markup annotations and literal suffixes select markup, never
+	## Explicit markup/static annotations, literal suffixes and the static
+	## content argument of Html.placeholder select markup, never
 	## strings merely containing angle brackets. Annotation lookup stays among
 	## siblings so an identically named declaration in another scope cannot
 	## turn ordinary prose into markup.
@@ -344,7 +345,7 @@ ClassCheck := [].{
 										ClassCheck.children(parsed, ty).first() ?? ty
 									} else ty
 									mode = match ClassCheck.text(parsed, base) {
-										"Html.Markup" => Html
+										"Html.Markup" | "Html.Static" => Html
 										"Svg.Markup" => Svg
 										_ => Other
 									}
@@ -370,9 +371,22 @@ ClassCheck := [].{
 					_ => {}
 				}
 			}
+			if parent.kind == Call {
+				match siblings {
+					[callee, _props, value, _body] if ClassCheck.function_name(parsed, callee) == "Html.placeholder" => {
+						match ClassCheck.string_literal(parsed, value) {
+							Ok(literal) => {
+								$out = $out.append({ literal, mode: Html })
+							}
+							Err(_) => {}
+						}
+					}
+					_ => {}
+				}
+			}
 			if parent.kind == TypedLiteral {
 				match siblings {
-					[value, namespace, name] if ClassCheck.text(parsed, name) == "Markup" => {
+					[value, namespace, name] if ClassCheck.text(parsed, name) == "Markup" or (ClassCheck.text(parsed, namespace) == "Html" and ClassCheck.text(parsed, name) == "Static") => {
 						mode = match ClassCheck.text(parsed, namespace) {
 							"Html" => Html
 							"Svg" => Svg
@@ -731,4 +745,11 @@ expect {
 	source = "view : Svg.Markup(ctx)\nview =\n  \\\\<svg class=\"known\">\n  \\\\  <g class=\"missing\"></g>\n  \\\\</svg>\n"
 	uses = sample_uses(source)?
 	ClassCheck.missing(ClassCheck.selectors(".known {}"), uses) == [{ name: "missing", line: 4 }] and ClassCheck.missing(ClassCheck.selectors(".known {} .missing {}"), uses) == []
+}
+
+## First-class static content participates in the same source-position class
+## check; computed escaped text and lookalike prose do not become markup.
+expect {
+	source = "fixed : Html.Static\nfixed = \"<p class='named'></p>\"\ninline = Html.placeholder({}, \"<p class='direct'></p>\", || body)\nsuffix = \"<p class='suffixed'></p>\".Html.Static\ntext = Html.Static.text(\"<p class='prose'></p>\")"
+	sample_uses(source) == Ok([{ name: "named", line: 2 }, { name: "direct", line: 3 }, { name: "suffixed", line: 4 }])
 }

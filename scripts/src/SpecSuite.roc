@@ -34,7 +34,7 @@ SpecSuite := [].{
 	## browser services, work counters, worker jobs (byte-level and typed) and
 	## superseding effect sites the examples do not exercise.
 	test_apps : List(Str)
-	test_apps = ["unsafe-html", "crypto", "services", "workers", "worker-typed", "supersede", "worker-search", "files", "file-effects", "prepared", "description-preparation", "startup", "ports", "tasks", "gather", "outbox", "deep", "deep-payload", "handlers", "remount", "store", "writes", "table", "controls", "write-scaling", "keep-current", "signal-text", "markup", "namespaces", "construction", "prerender", "dbg", "dbg-job-only"]
+	test_apps = ["unsafe-html", "crypto", "services", "workers", "worker-typed", "supersede", "worker-search", "files", "file-effects", "prepared", "description-preparation", "startup", "startup-effects", "startup-corpus", "ports", "tasks", "gather", "outbox", "deep", "deep-payload", "handlers", "remount", "store", "writes", "table", "controls", "write-scaling", "keep-current", "signal-text", "markup", "namespaces", "construction", "prerender", "dbg", "dbg-job-only"]
 
 	## Every spec-bearing app, examples first.
 	spec_apps : List(Str)

@@ -1830,7 +1830,8 @@ fragment and session data enter in later normal result turns.
 Do not serialize a user's live Boot or store to obtain determinism. Apps needing
 current browser data request an environment snapshot after bootstrap through
 an ordinary typed one-shot effect. That service samples the existing declared
-storage/environment inputs and answers with Boot-shaped public data; it follows
+storage/environment inputs when its next-task read runs, after the bootstrap
+acknowledgement, and answers with Boot-shaped public data; it follows
 normal admission, refusal, ownership and result-turn rules. Its constructor is
 available with this startup entry; its result cannot change the bootstrap call.
 Other later HTTP, storage, media, time and entropy results use their normal
@@ -2131,7 +2132,11 @@ every browser. Capture at most 64 current ranges plus primary direction before
 mutation; map text offsets and container boundaries using only the declared
 partitions, and restore before node effects. This bounded browser state is not
 application state or identity and is released before another Roc call. An
-excess range count is a named startup resource refusal before DOM changes;
+excess range count is a named startup resource refusal before DOM changes.
+A backward single range needs `setBaseAndExtent` or `collapse` plus `extend`;
+an unsupported direction capability, or a backward/complex multi-range primary
+that those APIs cannot restore without clearing other ranges, refuses before
+normalization. Forward multi-range restoration keeps the primary range last;
 controlled value writes still own their usual selection behavior. No browser
 sniffing or inferred text matching is needed.
 
@@ -2207,6 +2212,19 @@ that gate from the declared form-control relation in the same bounded producer
 pass/index, or refuse an unsupported relation. Do not infer it by rescanning DOM
 ancestors for each control. Browser-owned playback and selection of declared
 native content remain permitted.
+
+Native associations must stay within the managed root: a label and its target,
+a form and every associated control, and native radio groups cannot connect
+managed content to elements outside that root. The producer and engine own no
+outside elements to gate or restore. In browsers, an external label can toggle
+an inert target, and an external submit button can submit an inert form. The
+app author must keep these relationships inside the root, including when later
+page scripts add elements; startup does not sweep the surrounding document.
+Browser contract probes exercise these external associations to preserve this
+ownership requirement. Within the root, native details controls are gated;
+named details groups are refused because parsing can remove an authored `open`
+attribute through the group's native exclusivity before startup can bind it.
+
 Restore only producer-added inert facts, preserving authored inert/disabled
 values. Do not add disabled as a second producer gate.
 Independent native text/links outside these gated ranges remain available; an
@@ -6148,7 +6166,7 @@ roc-lang/roc#12953 workaround (see [Compiler Limitations](#compiler-limitations)
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (22) |
+| `roc_engine_version` | `() -> u32` | The protocol version (23) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Handle, List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -6349,6 +6367,9 @@ without query or fragment; their aggregate encoded strings occupy at most
 65,536 bytes. The expanded root is at most 65,536 encoded bytes and the whole
 section at most 262,144 bytes. `fallback` is a catalogue index or `0xffffffff`
 for none. The catalogue rejects duplicate paths and duplicate typed routes.
+Fixed-profile initial environment sections carry neutral defaults; only the
+fresh pathname is used for entry selection. They do not sample live storage,
+clock, entropy, locale, media or zone readers. Those facts are sampled by FX22.
 A fixed boot body is exactly six bytes: profile `1`, mode `0` fresh or `1`
 bind, then its entry index. Entry `0xffffffff` is legal only for fresh mode;
 Roc selects its pathname or the explicit fallback. A bind always names a
@@ -6393,7 +6414,7 @@ producer. They are transport addresses, never application identity. `aliases`
 names engine command addresses for that node and `holes` supplies row-template
 hole targets explicitly, including nested sites whose drawn siblings can shift
 physical child positions. No engine address may occur twice or equal
-`0xffffffff`.
+`0xffffffff`; address zero is allowed only on the element with root ordinal zero.
 
 A child record has `kind:u8`: `1 ordinal:u32` references an element node record;
 `2` text and `3` comment carry the node fields without the version byte, then
@@ -6423,7 +6444,11 @@ counts against both these bounds and remaining encoded bytes before allocating.
 Text metadata carries exact logical text, including empty and adjacent nodes;
 binding asserts each physical run and normalizes only that declared partition.
 At most 64 native selection ranges are captured before normalization, with
-endpoints and forward/backward direction restored without user-agent sniffing.
+endpoints and primary direction restored when the standard API can express
+them, without user-agent sniffing. Backward single ranges use
+`setBaseAndExtent` or `collapse` plus `extend`; missing required capabilities
+and backward/complex multi-range primaries refuse before normalization rather
+than losing ranges or flipping direction.
 Indexes and range maps are released when binding completes. The runtime keeps
 only its ordinary live node/template references afterward. Template definitions
 remain pure checked shapes while adopting; their detached DOM clone skeleton is
@@ -6432,12 +6457,21 @@ loads during adoption.
 
 Annotated frames refuse executable/custom-element content, inline handlers,
 opaque HTML, declarative shadow-root templates and HTML `selectedcontent` whose
-browser-owned cloning changes authored children before startup. A placeholder
+browser-owned cloning changes authored children before startup. Named HTML
+`details` groups are refused because native exclusivity can remove authored
+`open` attributes while parsing. These rules cover dynamic attribute writers
+even when their initial value is absent. A placeholder
 can defer such construction until the ordinary live phase, or the site can use
 plain mounting. Initial binding never attempts to adopt a guessed replacement
 for those children. The Core adopted-mode check and independent renderer each
-carry this policy; a diagnostic rendering in Plain mode retains its ordinary
-meaning.
+enforce their part of this policy. The native producer first finishes its
+ordinary cold mount and acknowledgement, retaining only the plain oracle
+model after that engine instance is dropped. It then constructs a fresh binding
+instance, checks its commands against that model through `Dom.bind_cold`, and
+acknowledges it before publishing. This catches an unsupported dynamic writer
+whose absent initial value leaves no physical attribute in the model, without
+keeping or serializing mounted engine state. A diagnostic rendering in Plain
+mode retains its ordinary meaning.
 
 ### Work record
 
@@ -6640,9 +6674,9 @@ explicit `(run-opportunity)`.
 `before = 0` appends to `parent`'s explicitly selected child container;
 otherwise the node is inserted before
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
-the batch is applied and performed after it, as are 19, 20 and 27 (a save's
+the batch is applied and performed after it, as are 19, 20, 27 and 31 (a save's
 file is resolved when the batch is applied). For a marked batch starting a
-view transition, the first read instead performs 13–17, 19, 20, 25 and 27 before
+view transition, the first read instead performs 13–17, 19, 20, 25, 27 and 31 before
 DOM application; the second read applies DOM and then performs `REF` and
 queued shown-property work, each class in stream order. See
 [Applied in a view transition](#applied-in-a-view-transition) for the
@@ -6680,7 +6714,7 @@ an earlier command. Scroll end is resolved at perform time.
 | 19 | `text:str html:u8 [html:str]` | Clipboard write; flag `0` plain text, `1` text and HTML; answers tag 23 or 24 |
 | 20 | — | StorageWriteFailures occurrence subscription; answers tag 25 one task after a failed write |
 | 21 | `operation:u8 operands` | Crypto operations, below; scoped and awaited |
-| 22 | — | Current declared environment snapshot, answered one task later with tag 31; scoped and awaited, with ordinary typed Refused at the in-flight bound |
+| 22 | — | Declared environment snapshot sampled in its next-task read, answered with tag 31; scoped and awaited, with ordinary typed Refused at the in-flight bound |
 
 Crypto operands use `bytes` as a u32 length followed by raw bytes. Operation
 1 is random bytes, `count:u64`; 2 is derive key, `hash:u8 iterations:u32

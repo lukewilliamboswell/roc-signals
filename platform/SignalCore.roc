@@ -4,6 +4,9 @@ import Core
 ## Value and its pure combinators. Conversion to engine readers stays in this
 ## unexposed module namespace, outside the public type's members.
 SignalCore := [].{
+
+	## A declared reading in a context. Mapping a constant prepares its result
+	## once; mapping a varying signal preserves the reads that refresh it.
 	Value(ctx, a) :: [Fixed(a), Varies(Core.Signal(ctx, a))].{
 
 		## Transform a signal without changing its reads. A constant is mapped

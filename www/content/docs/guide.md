@@ -56,6 +56,8 @@ Read these in order; each builds on the one before.
   sorted, filtered window of them that follows each write.
 - [Conditionals and Lists](@/docs/dynamic-structure.md): `when`, `switch`,
   `each`, row identity and lifetimes.
+- [Startup and Deferred Content](@/docs/startup.md): fixed entry routes,
+  retained initial content, placeholders and later environment facts.
 - [Components](@/docs/components.md): a type, its operations and a view that
   is handed the cells it uses.
 - [Effects and the Browser](@/docs/effects-and-browser.md): HTTP, storage,

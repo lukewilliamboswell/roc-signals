@@ -2481,15 +2481,16 @@ Core := [].{
 	utc : Zone
 	utc = Zone.({ name: "UTC", from_ms: -9223372036854775808, until_ms: 9223372036854775807, offsets: [{ from_ms: -9223372036854775808, minutes: 0 }] })
 
-	## What the host knows before the first render: the URL, the declared storage
+	## Facts decoded for a boot-based first render or an environment result:
+	## the URL, the declared storage
 	## keys' values (missing keys are absent), whether the browser is online and
 	## the page visible, and whether local storage is available at all. When it is
 	## not, the storage list is empty and `StorageSet`/`StorageRemove` do not
 	## persist, so an app that relies on reloads surviving can say so. All
 	## fields have defaults: a URL of `/`, empty available storage, online
 	## and visible, with no media queries, wall time and seed zero, en-US and
-	## full-range UTC. Time, seed, languages and zone stay fixed for the instance;
-	## timers supply fresh time through Fired. Pure tests may name only the facts
+	## full-range UTC. Each returned record is an immutable sample; another
+	## environment request samples again, and timers supply time through Fired. Pure tests may name only the facts
 	## they need; a program supplies declared queries in their declaration order.
 	Boot := {
 		url : Str ?? "/",
@@ -4967,8 +4968,9 @@ initial_attribute_problem = |tag, attrs| {
 }
 
 ## A retained frame cannot execute authored code, upgrade custom elements,
-## clone selected content, create a declarative shadow root, or contain an
-## opaque HTML region before binding. Fresh construction after the barrier is
+## clone selected content, change details-group attributes through native
+## exclusivity, create a declarative shadow root, or contain an opaque HTML
+## region before binding. Fresh construction after the barrier is
 ## ordinary DOM construction; deferred bodies therefore need no special mode.
 cold_element_problem : Web.Tag, List(Core.Attr(ctx)) -> Str
 cold_element_problem = |tag, attrs| {
@@ -4993,6 +4995,9 @@ cold_element_problem = |tag, attrs| {
 				if effective.namespace() == None and effective.prefix() == Unprefixed {
 					if Spelling.ascii_lower(effective.local()).starts_with("on") {
 						return "annotated startup refuses an inline handler attribute"
+					}
+					if html and tag.local() == "details" and effective.local() == "name" {
+						return "annotated startup refuses named details groups whose native exclusivity changes authored attributes; defer the group or use plain mounting"
 					}
 					if html and effective.local() == "is" {
 						return "annotated startup refuses custom-element upgrade via is"
@@ -13204,10 +13209,11 @@ expect {
 	script = !cold_element_problem(resolve("script"), []).is_empty()
 	inline = !cold_element_problem(resolve("div"), [Core.attr("onclick", "x()")]).is_empty()
 	shadow = !cold_element_problem(resolve("template"), [Core.attr("shadowrootmode", "open")]).is_empty()
+	details = !cold_element_problem(resolve("details"), [Core.attr("name", "group")]).is_empty()
 	foreign_name = Web.AttrName.from_str("onclick")?.in_namespace({ namespace: Uri("urn:app") })?
 	foreign_ok = cold_element_problem(resolve("div"), [Core.attr_named(foreign_name, "data")]).is_empty()
 	row = compile(Core.element("selectedcontent", [], []), 1, [], "an each", root_enclosing)
-	{ plain, custom, selected, script, inline, shadow, foreign_ok, template_refusal: !row.adoption_problem.is_empty() } == { plain: True, custom: True, selected: True, script: True, inline: True, shadow: True, foreign_ok: True, template_refusal: True }
+	{ plain, custom, selected, script, inline, shadow, details, foreign_ok, template_refusal: !row.adoption_problem.is_empty() } == { plain: True, custom: True, selected: True, script: True, inline: True, shadow: True, details: True, foreign_ok: True, template_refusal: True }
 }
 
 ## Closed service command bytes and monotonic generations are checked against

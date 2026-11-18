@@ -135,7 +135,7 @@ Checks := [].{
 			{ name: "sort-record", expectation: Rejected(["order_relative_to"]) },
 			{ name: "sort-key", expectation: Rejected(["order_relative_to"]) },
 			{ name: "signal-text-str-part", expectation: Rejected(["to_text_signal"]) },
-			{ name: "signal-text-mixed-parts", expectation: Rejected(["✗ type mismatch", "It has the type: Engine.Signal(Engine.Root, U64) But you are trying to use it as: Engine.Signal(Engine.Root, Str)"]) },
+			{ name: "signal-text-mixed-parts", expectation: Rejected(["✗ type mismatch", "It has the type: Engine.Signal(Engine.Root, U64)", "But you are trying to use it as:", "(Engine.Root, Str)"]) },
 			{ name: "signal-text-record-part", expectation: Rejected(["to_str"]) },
 			{ name: "signal-text-shared-literal", expectation: Rejected(["type mismatch", "Engine.Signal"]) },
 			{ name: "signal-text-positive", expectation: Compiles },
