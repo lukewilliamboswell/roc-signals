@@ -47,7 +47,9 @@ target = Fuzz.target_with({
 		Fuzz.example({ name: "truncated", revision: "4", make: || ProtocolFacts.encode(Protocol.facts).drop_last(1) }),
 		Fuzz.example({ name: "trailing", revision: "4", make: || ProtocolFacts.encode(Protocol.facts).append(0) }),
 		Fuzz.example({ name: "unknown-first-field", revision: "4", make: || [0xab, 0x63, 'b', 'a', 'd'].concat(ProtocolFacts.encode(Protocol.facts).drop_first(5)) }),
-		Fuzz.example({ name: "repeated-field", revision: "4", make: || ProtocolFacts.encode(Protocol.facts).concat(ProtocolFacts.encode(Protocol.facts)) }),
+		# Keep this raw-byte witness out of the framework's encoded-value node
+		# budget: two complete facts items can contain 4096 or more byte values.
+		Fuzz.saved({ name: "repeated-field", revision: "5", bytes: ProtocolFacts.encode(Protocol.facts).concat(ProtocolFacts.encode(Protocol.facts)) }),
 		Fuzz.example({ name: "oversized-count", revision: "4", make: || [0xab, 0x63, 'o', 'p', 's', 0x9a, 255, 255, 255, 255] }),
 		Fuzz.example({ name: "duplicate-names", revision: "4", make: || ProtocolFacts.encode({ ..Protocol.facts, namespaces: [{ code: 0, name: "HTML" }, { code: 1, name: "HTML" }] }) }),
 		Fuzz.example({ name: "non-dense-opcodes", revision: "4", make: || ProtocolFacts.encode({ ..Protocol.facts, ops: [{ code: 2, name: "INST" }] }) }),
