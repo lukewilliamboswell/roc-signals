@@ -94,7 +94,7 @@ check("a runtime-classified fault before section 12 is read does not need the fa
 });
 
 const facts = change => { const value = structuredClone(protocolFixtureFacts); change(value); return value; };
-const declarations = value => Uint8Array.from([...prefix, ...protocolFixtureSectionOf(value)]);
+const declarations = value => Uint8Array.from([...prefix, ...protocolFixtureSectionOf(value), ...part(14, [0])]);
 const refuses = (name, value, detail) => check(name, () => {
   const { x, calls } = fakeHost({ declarations: declarations(value) });
   assert.throws(() => readDeclarations(x), error => error.message.startsWith("contract: declaration section 12 (protocol)") && error.message.includes(detail));

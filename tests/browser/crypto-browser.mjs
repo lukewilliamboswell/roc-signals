@@ -39,7 +39,7 @@ try {
     const wide = value => { const bytes = new Uint8Array(8); new DataView(bytes.buffer).setBigUint64(0, BigInt(value), true); return [...bytes]; };
     const block = bytes => [...word(bytes.length), ...bytes];
     const section = (tag, bytes) => [tag, ...word(bytes.length), ...bytes];
-    const declarations = Uint8Array.from([...section(2, word(0)), ...section(5, word(0)), ...section(6, word(0)), ...section(10, [110, 1]), ...section(11, word(0)), ...fixtureSection]);
+    const declarations = Uint8Array.from([...section(2, word(0)), ...section(5, word(0)), ...section(6, word(0)), ...section(10, [110, 1]), ...section(11, word(0)), ...fixtureSection, ...section(14, [0])]);
     const memory = new WebAssembly.Memory({ initial: 3 });
     const keyBase = 18446744073709551614n;
     let length = 0, staged = 0, token = keyBase, release = [], keyStages = 0;

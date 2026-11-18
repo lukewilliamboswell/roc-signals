@@ -11,7 +11,7 @@ const files = runtimeFiles(options.runtime);
 const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
 const string = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
 const section = (tag, bytes) => [tag, ...word(bytes.length), ...bytes];
-const declarations = [section(2, word(0)), section(5, word(0)), section(6, word(0)), section(10, [110, 1]), section(11, word(0)), [...protocolFixtureSection]].flat();
+const declarations = [section(2, word(0)), section(5, word(0)), section(6, word(0)), section(10, [110, 1]), section(11, word(0)), [...protocolFixtureSection], section(14, [0])].flat();
 // A tiny test-owned real module gives recovery a fresh instance. The module
 // exposes fixed declaration and empty mount buffers; no app/compiler is used.
 const leb = n => { const out = []; do { const b = n & 127; n >>>= 7; out.push(b | (n ? 128 : 0)); } while (n); return out; };
@@ -21,7 +21,7 @@ const vector = entries => [...leb(entries.length), ...entries.flat()];
 const moduleBytes = (() => {
   const names = ["protocol_version", "boot_keys", "cmd_ptr", "cmd_len", "payload_reserve", "init", "files_released", "fault", "work_len", "metric", "drop", "dbg_ptr", "dbg_len"];
   const bodies = [
-    [0x41, 22],
+    [0x41, 23],
     [0x41, 0, 0x24, 0, 0x41, ...leb(declarations.length), 0x24, 1],
     [0x23, 0], [0x23, 1], [0x41, ...leb(65536)],
     [0x41, ...leb(16384), 0x24, 0, 0x41, 1, 0x24, 1],
@@ -63,7 +63,7 @@ try {
     const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const checks = [], check = (name, ok) => checks.push([name, !!ok]);
-    const fixture = ({ marked = true, batch = [0], version = 22, trap = false, authoredInert = null, ownedInert = false, invalidInert = false, namespacedInert = false, bootTrap = null, beforeInit = () => {} } = {}) => {
+    const fixture = ({ marked = true, batch = [0], version = 23, trap = false, authoredInert = null, ownedInert = false, invalidInert = false, namespacedInert = false, bootTrap = null, beforeInit = () => {} } = {}) => {
       const root = document.createElement("div");
       if (marked) root.setAttribute("data-roc-picture", "");
       if (authoredInert !== null) root.setAttribute("inert", authoredInert);

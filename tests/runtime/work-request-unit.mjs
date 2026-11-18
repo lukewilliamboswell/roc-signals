@@ -15,7 +15,7 @@ const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
 const part = (tag, bytes) => [tag, ...word(bytes.length), ...bytes];
 const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
 const FX = protocolFixtureFacts.ops.find(row => row.name === "FX").code;
-const declarations = Uint8Array.from([...part(2, word(0)), ...part(5, word(0)), ...part(6, word(0)), ...part(10, [110, 1]), ...part(11, word(0)), ...protocolFixtureSection]);
+const declarations = Uint8Array.from([...part(2, word(0)), ...part(5, word(0)), ...part(6, word(0)), ...part(10, [110, 1]), ...part(11, word(0)), ...protocolFixtureSection, ...part(14, [0])]);
 
 const runtimeWith = batch => {
   const memory = new WebAssembly.Memory({ initial: 2 });
