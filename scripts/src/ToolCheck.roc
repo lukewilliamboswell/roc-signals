@@ -280,7 +280,9 @@ ToolCheck := [].{
 		suffix = if (target.ends_with("win")) ".exe" else ""
 		query_runner = "${o.build_dir}/startup-query${suffix}"
 		Proc.run!({ program: o.compiler, args: ["build", "--opt=dev", "--target=${target}", "tests/fixtures/startup-query/main.roc", "--output=${query_runner}"], cwd: o.root })?
-		producer_code = Proc.status!({ program: o.node, args: ["tests/native/startup-producer.mjs", "--runner", "${dir}/.signals/build/picture-runner${suffix}", "--query-runner", query_runner, "--template", "${fixture}/index.html"], cwd: o.root })?
+		unsafe_runner = "${o.build_dir}/startup-absent-writer${suffix}"
+		Proc.run!({ program: o.compiler, args: ["build", "--opt=dev", "--target=${target}", "tests/fixtures/startup-absent-writer/main.roc", "--output=${unsafe_runner}"], cwd: o.root })?
+		producer_code = Proc.status!({ program: o.node, args: ["tests/native/startup-producer.mjs", "--runner", "${dir}/.signals/build/picture-runner${suffix}", "--query-runner", query_runner, "--unsafe-runner", unsafe_runner, "--template", "${fixture}/index.html"], cwd: o.root })?
 		if producer_code != 0 {
 			$problems = $problems.append("native startup producer contracts failed (exit ${producer_code.to_str()})")
 		}
@@ -309,8 +311,27 @@ ToolCheck := [].{
 		if dist_snapshot!("${dir}/dist")? != before {
 			$problems = $problems.append("a refused declared entry collision changed the published dist tree")
 		}
+		original_main = Path.read_utf8!(Path.utf8("${dir}/main.roc"))?
+		unsafe_source = Path.read_utf8!(Path.utf8("tests/fixtures/startup-absent-writer/main.roc"))?
+		Path.write_utf8!(Path.utf8("${dir}/main.roc"), Str.join_with([header].concat(unsafe_source.split_on("\n").drop_first(1)), "\n"))?
+		unsafe_build = run_tool!(tool, dir, ["build"])
+		Path.write_utf8!(Path.utf8("${dir}/main.roc"), original_main)?
+		$problems = $problems.concat(ToolCheck.judge(unsafe_build?, { code: 1, says: ["annotated startup refuses custom-element upgrade via is"] }))
+		if dist_snapshot!("${dir}/dist")? != before {
+			$problems = $problems.append("an initially absent forbidden writer published an unbindable frame")
+		}
 		code = Proc.status!({ program: o.node, args: ["tests/browser/tool-picture.mjs", "--dist", "${dir}/dist", "--chrome", o.chrome], cwd: o.root })?
-		Ok(if (code == 0) $problems else $problems.append("tests/browser/tool-picture.mjs failed (exit ${code.to_str()})"))
+		$problems = if (code == 0) $problems else $problems.append("tests/browser/tool-picture.mjs failed (exit ${code.to_str()})")
+		# This same public program is valid for explicit fresh construction.
+		Path.write_utf8!(Path.utf8("${dir}/main.roc"), Str.join_with([header].concat(unsafe_source.split_on("\n").drop_first(1)), "\n"))?
+		plain_build = run_tool!(tool, dir, ["build", "--no-prerender"])
+		Path.write_utf8!(Path.utf8("${dir}/main.roc"), original_main)?
+		$problems = $problems.concat(ToolCheck.judge(plain_build?, { code: 0, says: ["Built the app into dist/:"] }))
+		plain_page = Path.read_utf8!(Path.utf8("${dir}/dist/index.html"))?
+		if plain_page.contains("data-roc-frame=") {
+			$problems = $problems.append("--no-prerender published an annotated frame for a fresh-only program")
+		}
+		Ok($problems)
 	}
 
 	## The package URL `signals.roc` names.

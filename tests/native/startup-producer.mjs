@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 
 const options = {};
 for (let at = 2; at < process.argv.length; at += 2) options[process.argv[at].replace(/^--/, "")] = process.argv[at + 1];
-for (const name of ["runner", "query-runner", "template"]) assert.ok(options[name], `--${name} is required`);
+for (const name of ["runner", "query-runner", "unsafe-runner", "template"]) assert.ok(options[name], `--${name} is required`);
 const invoke = (runner, args, status = 0) => {
   const result = spawnSync(path.resolve(runner), args, { encoding: "utf8", timeout: 30000, maxBuffer: 32 * 1024 * 1024 });
   assert.ifError(result.error);
@@ -49,6 +49,10 @@ try {
   fs.writeFileSync(wrongRoot, '<!doctype html><html><head><title>Wrong</title></head><body><section data-roc-picture></section></body></html>');
   assert.match(invoke(options["query-runner"], ["--prerender", "/", "--template", wrongRoot, "--build-token", "receipt"], 1).stderr, /template mount root differs/);
   assert.match(invoke(options["query-runner"], ["--prerender", "/", "--template", options.template, "--build-token", "receipt"], 70).stderr, /startup query unexpectedly initialized/);
+  const plain = path.join(temp, "plain.scm");
+  fs.writeFileSync(plain, '(test "ordinary construction" (steps (expect-text (text "plain construction") "plain construction")))');
+  assert.equal(JSON.parse(invoke(options["unsafe-runner"], [plain]).stdout).status, "passed");
+  assert.match(invoke(options["unsafe-runner"], ["--prerender", "/", "--template", options.template, "--build-token", "receipt"], 70).stderr, /annotated startup refuses custom-element upgrade via is/);
   console.log("startup producer: declaration-only catalogue, exact entries, cold Self/refusal capture, acknowledgement and root/token refusals");
 } finally {
   fs.rmSync(temp, { recursive: true, force: true });

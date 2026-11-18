@@ -499,8 +499,12 @@ The original template's exact quoted `app.wasm`/`./app.wasm` loader reference
 receives `?roc-build=<asset hash>` before rendering; app-emitted markup and
 reserved annotations are never searched or rewritten. The native producer
 publishes the cold frame, validating its acknowledgement separately without
-performing hosted effects or providing their answers. Changes to this producer
-or the native oracle retain applicable optimized roc-fuzz fixed-example replays
+performing hosted effects or providing their answers. It also starts a separate
+binding instance and checks its cold plan through `Dom.bind_cold` and its real
+acknowledgement before publication. The ordinary instance is dropped before
+the binding instance starts; only plain oracle metadata survives between them.
+This catches declaration-sensitive writers even when initially absent. Changes
+to this producer or the native oracle retain applicable optimized roc-fuzz fixed-example replays
 as well as native and browser contracts; frontend checks supplement those gates.
 
 A change to the wire protocol changes the engine's encoder and decoders,

@@ -1009,7 +1009,8 @@ spec files:
   prints, as one JSON line, the annotated first page the default build writes
   (see [Build a first page](@/docs/getting-started.md#build-a-first-page)):
   PATH must exactly name a declared entry. It captures the cold frame before
-  queued Self/refusal follow-ups, separately validates the acknowledgement,
+  queued Self/refusal follow-ups, validates ordinary and binding profiles with
+  their separate acknowledgements,
   and renders through `Dom.roc`, without performing hosted effects or giving
   external answers. TOKEN must match the published loader's asset receipt.
   Legacy replacement pictures retain `--prerender URL --template index.html`

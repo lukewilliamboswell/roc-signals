@@ -5812,6 +5812,7 @@ SpecRunner := [].{
 	## Gather one complete response before stdout can expose a partial page.
 	## Capture init's cold model, validating its private acknowledgement separately
 	## without serving effects or including follow-ups in the published frame.
+	## A second, separately scoped instance validates the actual binding profile.
 	prerender_page! : Program(state), { io : Io, url : Str, template : Str, build_token : [Unstamped, BuildToken(Str)] } => Try(Str, Str)
 	prerender_page! = |program, { io, url, template: path_to_template, build_token }| {
 		resolved = PicturePage.resolve(url) ? |InvalidRoute(message)| message
@@ -5845,15 +5846,14 @@ SpecRunner := [].{
 				if template.root() != facts.root {
 					return Err("the template mount root differs from the declared startup root")
 				}
-				boot = SpecRunner.encode_startup_mount(environment, template.root(), SpecRunner.put_u32([1, 0], entry))
-				(inst, commands, work) = (program.init)(boot)
-				cold = Dom.apply(template.overlay_startup(Dom.new({})), commands)
-				(live, committed, _work) = (program.event)(inst, commands, work, SpecRunner.fx_node, 0, [254])
-				validated = Dom.apply_full(cold, committed)
-				if !validated.fx.contains(StartupComplete) {
-					return Err("bootstrap acknowledgement did not complete")
-				}
-				(program.settled)(live) ? |failure| "after bootstrap acknowledgement, a reader was left stale: ${failure.note}"
+				cold = SpecRunner.capture_startup(
+					program,
+					{
+						boot: SpecRunner.encode_startup_mount(environment, template.root(), SpecRunner.put_u32([1, 0], entry)),
+						overlay: template.overlay_startup(Dom.new({})),
+					},
+				)?
+				SpecRunner.validate_startup_binding(program, { boot: SpecRunner.encode_startup_mount(environment, template.root(), SpecRunner.put_u32([1, 1], entry)), cold })?
 				(cold, Annotated, Frame({ entry, token }))
 			}
 		}
@@ -5870,6 +5870,40 @@ SpecRunner := [].{
 				]),
 			),
 		)
+	}
+
+	## End the ordinary instance's lifetime before returning only its plain cold
+	## oracle model. No App or Roc value representing its storage crosses into
+	## the separate binding initialization, and no hosted effect is performed.
+	capture_startup : Program(state), { boot : List(U8), overlay : Dom.Model } -> Try(Dom.Model, Str)
+	capture_startup = |program, { boot, overlay }| {
+		(inst, commands, work) = (program.init)(boot)
+		cold = Dom.apply(overlay, commands)
+		SpecRunner.acknowledge_startup(program, { inst, commands, work, model: cold })?
+		Ok(cold)
+	}
+
+	## Validate declaration-sensitive binding rules even when a forbidden dynamic
+	## writer was initially absent and left no attribute in the serialized model.
+	## The independent oracle checks the complete cold plan before its ACK.
+	validate_startup_binding : Program(state), { boot : List(U8), cold : Dom.Model } -> Try({}, Str)
+	validate_startup_binding = |program, { boot, cold }| {
+		(inst, commands, work) = (program.init)(boot)
+		bound = Dom.bind_cold(cold, commands)
+		SpecRunner.acknowledge_startup(program, { inst, commands, work, model: bound.dom })
+	}
+
+	## Each profile must complete its real private barrier and settle, while the
+	## producer retains the model from before queued Self/refusal follow-ups.
+	acknowledge_startup : Program(state), { inst : state, commands : List(U8), work : List(U8), model : Dom.Model } -> Try({}, Str)
+	acknowledge_startup = |program, { inst, commands, work, model }| {
+		(live, committed, _work) = (program.event)(inst, commands, work, SpecRunner.fx_node, 0, [254])
+		validated = Dom.apply_full(model, committed)
+		if !validated.fx.contains(StartupComplete) {
+			return Err("bootstrap acknowledgement did not complete")
+		}
+		(program.settled)(live) ? |failure| "after bootstrap acknowledgement, a reader was left stale: ${failure.note}"
+		Ok({})
 	}
 
 	## The command line: which specs, whether to emit their steps or the
