@@ -76,9 +76,14 @@ ReadingApp := [].{
 	## it.
 	program : Engine.Program
 	program =
-		Engine.program_store({ storage_keys: [], max_inflight: 32 }, ReadingList.start, |_| ReadingApp.view({}))
+		Engine.program_store({ storage_keys: [], max_inflight: 32 }, ReadingList.start, |_| prepared_page)
 			.with_ports(BookStorage.registrations)
 }
+
+## An immutable description of the page, including its declared cell reads.
+## Each mount still calls ReadingList.start and owns its store and live scopes.
+prepared_page : Elem(Engine.StoreRoot(_))
+prepared_page = ReadingApp.view({})
 
 ## A labelled text box of the form.
 field : { label : Str, value : Signal(ctx, Str), placeholder : Str, typed : Handler(ctx) } -> Elem(ctx)

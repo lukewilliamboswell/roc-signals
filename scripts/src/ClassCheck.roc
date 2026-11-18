@@ -318,7 +318,7 @@ ClassCheck := [].{
 				After
 			} else Same,
 		) {
-			scanned = ClassCheck.markup_uses(parsed, selected.literal, selected.mode, $lines)?
+			scanned = ClassCheck.markup_uses(parsed, { literal: selected.literal, mode: selected.mode, lines: $lines })?
 			$uses = $uses.concat(scanned.uses)
 			$literals = $literals + scanned.literals
 		}
@@ -402,8 +402,8 @@ ClassCheck := [].{
 
 	## Decode the Roc literal while retaining origins. Hole boundaries are
 	## passed to the markup parser as segments, never invented placeholders.
-	markup_uses : RocSyntax.Parsed, RocSyntax.Node, [Html, Svg], List(U64) -> Try({ uses : List(Use), literals : U64 }, U64)
-	markup_uses = |parsed, literal, mode, lines| {
+	markup_uses : RocSyntax.Parsed, { literal : RocSyntax.Node, mode : [Html, Svg], lines : List(U64) } -> Try({ uses : List(Use), literals : U64 }, U64)
+	markup_uses = |parsed, { literal, mode, lines }| {
 		var $segments = []
 		var $segment = []
 		var $points = []
@@ -429,7 +429,7 @@ ClassCheck := [].{
 				if attribute.name.namespace == NoNamespace and attribute.name.local == "class" and !plan.slots.any(|slot| slot.target == AttributeSlot({ node: node_index, attribute: attribute_index })) {
 					$literals = $literals + 1
 					original = $points.sublist({ start: attribute.span.start, len: attribute.span.end - attribute.span.start })
-					$uses = $uses.concat(ClassCheck.attribute_uses(original, mode, lines))
+					$uses = $uses.concat(ClassCheck.attribute_uses(original, { mode, lines }))
 				}
 			}
 		}
@@ -451,8 +451,8 @@ ClassCheck := [].{
 	## authored line at a time through that same parser; HTML references and
 	## XML normalization remain parser policy, and each token keeps its Roc
 	## source line even when Roc escapes or references introduce whitespace.
-	attribute_uses : List(Point), [Html, Svg], List(U64) -> List(Use)
-	attribute_uses = |attribute, mode, lines| {
+	attribute_uses : List(Point), { mode : [Html, Svg], lines : List(U64) } -> List(Use)
+	attribute_uses = |attribute, { mode, lines }| {
 		equals = attribute.find_first_index(|point| point.byte == '=') ?? return []
 		var $start = equals + 1
 		while $start < attribute.len() and ClassCheck.is_space((attribute.get($start) ?? crash "within attribute").byte) {

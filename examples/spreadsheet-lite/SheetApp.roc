@@ -344,7 +344,7 @@ SheetApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner.
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_boot| SheetStore.store, |_boot| SheetApp.view({}))
+	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_boot| SheetStore.store, |_boot| prepared_page)
 }
 
 ## The label of the mode button: the mode a click changes to.
@@ -391,3 +391,7 @@ expect {
 	ring = " relative z-10 bg-accent-50 ring-2 ring-inset ring-accent-600"
 	(SheetApp.tone_class(Text, Selected).ends_with(ring), SheetApp.tone_class(Text, Unselected).contains("bg-accent-50")) == (True, False)
 }
+
+## The fixed page description is shared; each mount still owns its live store.
+prepared_page : Elem(Engine.StoreRoot(_))
+prepared_page = SheetApp.view({})
