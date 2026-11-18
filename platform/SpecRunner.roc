@@ -2798,7 +2798,7 @@ SpecRunner := [].{
 		# Every issued request is one FX command and every cancelled one a
 		# CANCEL (design.md, "Counters"), so the effect counters must agree
 		# with the commands too.
-		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent"), (41, 21, "properties set"), (42, 22, "row properties set"), (43, 23, "registrations released"), (45, 24, "view transitions"), (46, 25, "leave guard commands"), (48, 26, "comments created")] {
+		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent"), (41, 21, "properties set"), (42, 22, "row properties set"), (43, 23, "registrations released"), (45, 24, "view transitions"), (46, 25, "leave guard commands"), (48, 26, "comments created"), (49, 28, "startup frames"), (50, 29, "startup acknowledgements"), (51, 30, "startup completions"), (52, 31, "opportunity commands")] {
 			engine = s.work.counters.get(counter) ?? 0
 			oracle = s.ops.get(op) ?? 0
 			if engine != oracle {
@@ -2933,7 +2933,7 @@ SpecRunner := [].{
 			}
 			_ => True
 		}
-		Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | LeavePage(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
+		RunOpportunity | Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | LeavePage(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
 		PasteText(loc, _) => match SpecRunner.find(s.dom, loc) {
 			Err(_) => False
 			Ok(node) => match Dom.target(s.dom, node, "paste", True) {
@@ -3074,6 +3074,10 @@ SpecRunner := [].{
 				check(got == count, "${got.to_str()} live media subscriptions for ${JsonOut.quote(query)}, expected ${count.to_str()}")
 			}
 			HoldReports => if (b.reports.held) Err("hold-reports while reports are already held") else Ok({ ..s, browser: { ..b, reports: { ..b.reports, held: Bool.True } } })
+			RunOpportunity => match b.opportunity {
+				None => Err("run-opportunity requires an armed placeholder opportunity")
+				Some(generation) => Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, opportunity: None } }, 0, SpecRunner.put_u64([255], generation)))
+			}
 			ReleaseReports => if (!b.reports.held) Err("release-reports while reports are not held") else Ok(SpecRunner.release_reports(program, { ..s, browser: { ..b, reports: { ..b.reports, held: Bool.False } } }))
 			ExpectReportsReplaced(count) => check(b.reports.replaced == count, "reports replaced ${b.reports.replaced.to_str()} times, expected ${count.to_str()}")
 			PointerDown(press) => SpecRunner.pointer_down(program, s, press)
@@ -5695,12 +5699,35 @@ SpecRunner := [].{
 
 	## Keep the picture command separate from spec-selection options. An exact
 	## mode consumes no spec files and cannot accidentally run a soak or walk.
-	prerender_args : List(Str) -> Try([Specs, PicturePath(Str), Picture({ url : Str, template : Str })], Str)
+	prerender_args : List(Str) -> Try([Specs, StartupCatalogue, PicturePath(Str), Picture({ url : Str, template : Str, build_token : [Unstamped, BuildToken(Str)] })], Str)
 	prerender_args = |args| match args {
+		["--startup-catalogue"] => Ok(StartupCatalogue)
 		["--picture-path", url] if !url.starts_with("--") => Ok(PicturePath(url))
-		["--prerender", url, "--template", template] if !url.starts_with("--") and !template.starts_with("--") => Ok(Picture({ url, template }))
-		_ if args.contains("--prerender") or args.contains("--template") or args.contains("--picture-path") => Err("use RUNNER --prerender URL --template FILE, or RUNNER --picture-path URL, with no spec or other mode options")
+		["--prerender", url, "--template", template] if !url.starts_with("--") and !template.starts_with("--") => Ok(Picture({ url, template, build_token: Unstamped }))
+		["--prerender", url, "--template", template, "--build-token", token] if !url.starts_with("--") and !template.starts_with("--") and SpecRunner.is_build_token(token) => Ok(Picture({ url, template, build_token: BuildToken(token) }))
+		_ if args.contains("--prerender") or args.contains("--template") or args.contains("--picture-path") or args.contains("--startup-catalogue") or args.contains("--build-token") => Err("use RUNNER --startup-catalogue, RUNNER --prerender URL --template FILE [--build-token TOKEN], or RUNNER --picture-path URL, with no spec or other mode options")
 		_ => Ok(Specs)
+	}
+
+	## Build receipts are bounded ASCII tokens, never HTML or script fragments.
+	is_build_token : Str -> Bool
+	is_build_token = |token| !token.is_empty() and token.count_utf8_bytes() <= 128 and token.to_utf8().all(|byte| (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_' or byte == '-')
+
+	## Catalogue inspection reads only compiled declarations. A legacy initializer
+	## cannot silently become a deterministic entry by a build option.
+	startup_catalogue_line : Program(state) -> Try(Str, Str)
+	startup_catalogue_line = |program| match SpecRunner.decode_declarations((program.keys)()).startup {
+		Legacy => Err("default builds need Engine.program_startup or program_startup_store; migrate live Boot reads to a later environment request, or build with --no-prerender")
+		Deterministic({ root, entries, fallback }) => Ok(
+			JsonOut.render(
+				Object([
+					JsonOut.field("protocol", Text("roc-signals/startup-catalogue/v1")),
+					JsonOut.field("entries", Array(entries.map(|entry| Text(entry)))),
+					JsonOut.field("root", Array(SpecRunner.root_bytes(root).map(|byte| Nat(byte.to_u64())))),
+					JsonOut.field("fallback", Nat(fallback.to_u64())),
+				]),
+			),
+		)
 	}
 
 	## Project a route before template URL rewriting. This reads no app state,
@@ -5722,8 +5749,8 @@ SpecRunner := [].{
 	## Render only the engine's ordinary init batch. Storage answers, focus
 	## delivery and other host inputs are later turns and never enter this frame.
 	## The host adapter only reads the template and prints the completed JSON.
-	prerender_main! : Program(state), { io : Io, options : { url : Str, template : Str } } => I32
-	prerender_main! = |program, { io, options }| match SpecRunner.prerender_page!(program, { io, url: options.url, template: options.template }) {
+	prerender_main! : Program(state), { io : Io, options : { url : Str, template : Str, build_token : [Unstamped, BuildToken(Str)] } } => I32
+	prerender_main! = |program, { io, options }| match SpecRunner.prerender_page!(program, { io, url: options.url, template: options.template, build_token: options.build_token }) {
 		Ok(json) => {
 			(io.stdout!)("${json}\n")
 			0
@@ -5736,8 +5763,8 @@ SpecRunner := [].{
 
 	## Gather one complete response before stdout can expose a partial page.
 	## There is one init call and no later host input in this fallible workflow.
-	prerender_page! : Program(state), { io : Io, url : Str, template : Str } => Try(Str, Str)
-	prerender_page! = |program, { io, url, template: path_to_template }| {
+	prerender_page! : Program(state), { io : Io, url : Str, template : Str, build_token : [Unstamped, BuildToken(Str)] } => Try(Str, Str)
+	prerender_page! = |program, { io, url, template: path_to_template, build_token }| {
 		resolved = PicturePage.resolve(url) ? |InvalidRoute(message)| message
 		bytes = (io.read_file!)(path_to_template)
 		if bytes.len() > 16777216 {
@@ -5751,12 +5778,37 @@ SpecRunner := [].{
 		declarations = SpecRunner.decode_declarations((program.keys)())
 		environment : Scm.Environment
 		environment = { url: SpecRunner.serialize_location(resolved.boot_url), media: declarations.media.map(|query| (query, False)) }
-		# init drains its own engine follow-ups. Do not call mount_config,
-		# answer_gets, drain_focus or pump_ui here: those deliver later inputs.
-		(inst, commands, _work) = (program.init)(SpecRunner.encode_mount(environment, template.root()))
-		(program.settled)(inst) ? |failure| "after picture mount, a reader was left stale: ${failure.note}"
-		model = Dom.apply(template.overlay(Dom.new({})), commands)
-		rendered = Dom.render(model, { root: model.root, scope: MountEnvelope, mode: Picture, enclosing: template.parent(), limits: { max_bytes: 16777216, max_nodes: 262144, max_depth: 1024 } }) ? |problem| "picture renderer refused the frame: ${Str.inspect(problem)}"
+		(model, startup, frame) = match declarations.startup {
+			Legacy => {
+				if build_token != Unstamped {
+					return Err("an annotated build token requires a deterministic startup entry")
+				}
+				(inst, commands, _work) = (program.init)(SpecRunner.encode_mount(environment, template.root()))
+				(program.settled)(inst) ? |failure| "after picture mount, a reader was left stale: ${failure.note}"
+				(Dom.apply(template.overlay(Dom.new({})), commands), Plain, Unstamped)
+			}
+			Deterministic(facts) => {
+				token = match build_token {
+					BuildToken(value) if SpecRunner.is_build_token(value) => value
+					_ => return Err("a deterministic prerender needs --build-token TOKEN from its matching asset build")
+				}
+				entry = facts.entries.map_with_index(|path, index| { path, index }).find_first(|candidate| candidate.path == url).map_ok(|candidate| candidate.index.to_u32_wrap()) ? |_| "prerender URL must exactly name a declared concrete entry path"
+				if template.root() != facts.root {
+					return Err("the template mount root differs from the declared startup root")
+				}
+				boot = SpecRunner.encode_startup_mount(environment, template.root(), SpecRunner.put_u32([1, 0], entry))
+				(inst, commands, work) = (program.init)(boot)
+				cold = Dom.apply(template.overlay_startup(Dom.new({})), commands)
+				(live, committed, _work) = (program.event)(inst, commands, work, SpecRunner.fx_node, 0, [254])
+				validated = Dom.apply_full(cold, committed)
+				if !validated.fx.contains(StartupComplete) {
+					return Err("bootstrap acknowledgement did not complete")
+				}
+				(program.settled)(live) ? |failure| "after bootstrap acknowledgement, a reader was left stale: ${failure.note}"
+				(cold, Annotated, Frame({ entry, token }))
+			}
+		}
+		rendered = Dom.render(model, { root: model.root, scope: MountEnvelope, mode: Picture, startup, frame, enclosing: template.parent(), limits: { max_bytes: 16777216, max_nodes: 262144, max_depth: 1024 } }) ? |problem| "picture renderer refused the frame: ${Str.inspect(problem)}"
 		page = template.page({ markup: rendered.markup, max_bytes: 16777216 }) ? |PageLimit({ maximum, required })| "picture page needs ${required.to_str()} UTF-8 bytes; maximum is ${maximum.to_str()} bytes"
 		Ok(
 			JsonOut.render(
@@ -5984,6 +6036,18 @@ SpecRunner := [].{
 	main! : Program(state), Io, List(Str) => I32
 	main! = |program, io, args| {
 		match SpecRunner.prerender_args(args) {
+			Ok(StartupCatalogue) => {
+				match SpecRunner.startup_catalogue_line(program) {
+					Ok(line) => {
+						(io.stdout!)("${line}\n")
+						return 0
+					}
+					Err(problem) => {
+						(io.stderr!)("${problem}\n")
+						return 1
+					}
+				}
+			}
 			Ok(PicturePath(url)) => {
 				match SpecRunner.picture_path_line(url) {
 					Ok(json) => {
@@ -6752,6 +6816,28 @@ expect {
 		current: ready.browser.env.storage,
 		opportunity: ready.browser.opportunity,
 	} == { order: [0, 9], ack: [254], snapshot: True, current: [("k", "ack")], opportunity: Some(7) }
+}
+
+## The spec supplies exactly one armed task through ordinary occurrence ingress,
+## draining earlier held reports first and refusing a second unarmed delivery.
+expect {
+	program = report_probe({})
+	start = SpecRunner.mount_in(program, {})
+	held = SpecRunner.one(program, start, HoldReports)?
+	report = SpecRunner.one(program, held, SetOnline(Offline))?
+	armed = { ..report, browser: { ..report.browser, opportunity: Some(7) } }
+	delivered = SpecRunner.one(program, armed, RunOpportunity)?
+	{
+		inputs: delivered.inst,
+		still_held: delivered.browser.reports.held,
+		next: delivered.browser.opportunity,
+		unarmed_refused: SpecRunner.one(program, delivered, RunOpportunity).is_err(),
+	} == {
+		inputs: [{ id: 1, payload: [8, 0] }, { id: 0, payload: [255, 7, 0, 0, 0, 0, 0, 0, 0] }],
+		still_held: True,
+		next: None,
+		unarmed_refused: True,
+	}
 }
 
 ## A source keeps its first queue position while replacement freezes its
@@ -7613,7 +7699,7 @@ expect {
 }
 
 ## Prerender is one exact command, never mixed with ordinary spec options.
-expect SpecRunner.prerender_args(["--prerender", "/tasks?open=1#list", "--template", "index.html"]) == Ok(Picture({ url: "/tasks?open=1#list", template: "index.html" }))
+expect SpecRunner.prerender_args(["--prerender", "/tasks?open=1#list", "--template", "index.html"]) == Ok(Picture({ url: "/tasks?open=1#list", template: "index.html", build_token: Unstamped }))
 
 ## Extra positional specs cannot turn a picture build into another runner mode.
 expect SpecRunner.prerender_args(["--prerender", "/", "--template", "index.html", "story.scm"]).is_err()

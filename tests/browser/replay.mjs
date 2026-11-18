@@ -1049,6 +1049,9 @@ const STEPS = {
   "pointer-up": pointerStep,
   "pointer-cancel": pointerStep,
   ...PORT_STEPS,
+  "run-opportunity": async (page) => {
+    await page.evaluate(() => window.__rt.runOpportunity());
+  },
   "hold-reports": async (page, _s, state) => {
     if (state.holdingReports) throw new Error("reports are already held");
     state.holdingReports = true;

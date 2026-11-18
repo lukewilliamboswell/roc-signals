@@ -32,6 +32,16 @@ PicturePage := [].{
 			Dom.modify(model, model.root, |node| { ..node, namespace: name.namespace, prefix: name.prefix, tag: name.local, svg: name.namespace == Dom.svg_namespace, attrs: attrs.concat(added).append(({ namespace: "", prefix: "", local: "data-roc-picture" }, "")) })
 		}
 
+		## Annotated startup retains authored root attributes without the legacy
+		## blanket gate. The renderer adds all reserved annotations in its one walk;
+		## an explicit foreign root owner is still gated by page replacement below.
+		overlay_startup : Template, Dom.Model -> Dom.Model
+		overlay_startup = |template, model| {
+			name = template.root_name
+			attrs = template.attributes.keep_if(|(attribute, _)| !(attribute.namespace.is_empty() and attribute.prefix.is_empty() and attribute.local == "data-roc-picture"))
+			Dom.modify(model, model.root, |node| { ..node, namespace: name.namespace, prefix: name.prefix, tag: name.local, svg: name.namespace == Dom.svg_namespace, attrs })
+		}
+
 		## Apply the checked root replacement and, when needed, one insertion
 		## at its declared parent's opening-token boundary. All other authored
 		## bytes remain untouched. The complete size is checked before joining.
