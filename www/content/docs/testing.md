@@ -90,6 +90,14 @@ typed list of steps. Two runners consume that list:
   runtime applies the stream correctly and that real browser events reach
   the app as the native runner modelled them.
 
+For a deterministic startup entry, both runners finish cold construction and
+its private acknowledgement before the first step. Initial Self/refusal
+follow-ups settle there. Placeholder opportunities stay held in spec mode:
+only `run-opportunity` supplies one, so elapsed test-process time cannot
+activate a body. An environment task samples the current facts when its
+callback runs, after acknowledgement effects, then answers through the ordinary
+result turn, like storage reads.
+
 `roc signals.roc test` prints compiler warnings before running the specs. Warnings
 do not change its success status: a warning-only build can still run a passing
 story. The tool's `build` and `serve` commands show those reports too.
@@ -605,6 +613,7 @@ location Chrome reports instead.
 | `(stub-http "label" :url "/api/x" :status 200 :body "…")` | Stage an HTTP answer; optional `:headers (("name" "value") …)`, default `content-type: application/json`. `:status` is 100–999. Staging a second answer before one is used fails |
 | `(stub-http-reject "label" :kind network :detail "offline")` | Stage a failure: `network` with the browser's message, or `timeout` with an empty `:detail` |
 | `(run-effect N)` | Answer the N-th HTTP request, upload, fetch, timer, worker job, cryptographic operation or operation on a file the current document issued (1-based, in issue order; port calls share the numbering but are answered with `answer-port` (see [Ports](#ports)); subscriptions, commands and storage reads not counted). It must still be pending. A timer fires; a worker job runs its task (in Chrome in a real worker, natively in a child process that serves the job's effects from the setup files, the step waiting for its result: a task that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request or an upload takes the staged answer, and an HTTP response's `:url` must equal the request's; a page read, a digest or a file URL is performed on the setup file (see [Files](#files)); cryptography performs real PBKDF2, AES-GCM or SHA-2, with the same deterministic test entropy in both runners |
+| `(run-opportunity)` | Deliver exactly one currently armed placeholder opportunity through the ordinary turn. Fails when none is armed; grants no user activation. Earlier held reports drain first; the hold itself remains in force |
 | `(expect-request N :method "GET" :url "/api/status" :cache no-store :credentials include)` | Assert selected fields of currently pending HTTP, upload or fetch occurrence N; every keyword is optional. Cache values are `default`, `no-store`, `reload`, `no-cache`, `force-cache`; credentials are `same-origin`, `include` |
 | `(progress-effect N sending 1024 4096)` | Report progress for pending occurrence N without answering it; direction is `sending` or `receiving`, counts are exact U64, and the total may be `unknown`. Fails when N did not ask for progress; honours `hold-reports` |
 | `(expect-pending-effects N)` | Exactly N HTTP requests, uploads, fetches, timers, worker jobs, operations on files, cryptographic operations and port calls are waiting to be answered |
@@ -871,6 +880,10 @@ does not fail your spec.
 | `rows_updated` | Rows kept whose content was written: a row of an `each` whose item changed, and a drawn row a table view draws before and after the event whose row in the table was written. Pinned beside `rows_created`, `rows_removed` and `rows_moved`, it says exactly which drawn rows of a table view a write woke |
 | `rows_moved` | Rows moved |
 | `view_transitions` | Host-call batches marked for animation, including result turns; never mount |
+| `startup` / `startup_ack` / `startup_complete` | Cold frame declarations, private acknowledgement requests and completed bootstrap records |
+| `opportunity_commands` | Arm/cancel records for the one browser-task opportunity |
+| `opportunity_requested` / `opportunity_cancelled` | Opportunity registrations armed / cancelled |
+| `opportunity_delivered` / `opportunity_stale` | Accepted / obsolete opportunity occurrences |
 | `create_element` | Elements created |
 | `bind_event` | Event listeners bound |
 | `set_metadata` | Document title writes |
@@ -985,19 +998,29 @@ spec files:
   selects by file name.
 - `build/app-specs --emit-steps specs/*.scm` prints the parsed steps that
   the browser runner (`tests/browser/replay.mjs`) replays.
-- `build/app-specs --prerender URL --template index.html` prints, as one
-  JSON line, the first page `roc signals.roc build --picture URL` writes
+- `build/app-specs --soak 48 specs/round-trip.scm` repeats the engine calls
+  after the last `mark-metrics`, requiring the same structural work and flat
+  live allocations. Placeholder opportunities resolve the current armed task
+  each cycle; a missing task fails the round trip.
+- `build/app-specs --startup-catalogue` prints the compiled concrete entry
+  paths and root facts without initializing an instance. A legacy entry
+  refuses this mode with the explicit `--no-prerender` migration path.
+- `build/app-specs --prerender PATH --template index.html --build-token TOKEN`
+  prints, as one JSON line, the annotated first page the default build writes
   (see [Build a first page](@/docs/getting-started.md#build-a-first-page)):
-  it mounts the app for `URL`, requires the settle check to pass, and
-  renders the mount batch through the same `Dom.roc` model the specs
-  assert against, refusing a frame the browser would parse differently.
-  `--picture-path URL` prints only the file that URL is written to. Both
-  take no spec files.
+  PATH must exactly name a declared entry. It captures the cold frame before
+  queued Self/refusal follow-ups, separately validates the acknowledgement,
+  and renders through `Dom.roc`, without performing hosted effects or giving
+  external answers. TOKEN must match the published loader's asset receipt.
+  Legacy replacement pictures retain `--prerender URL --template index.html`
+  without a token. `--picture-path URL` projects only the output filename.
+  These modes take no spec files.
 
-No step asserts on a picture. It is the app's mount batch for that URL
-alone, before any storage read, focus or answer that follows it, and the
-runtime replaces it with the same mount; a spec that boots at the URL
-with `(initial-location URL)` tests the page that replaces it.
+No ordinary step asserts on the cold HTML itself. A spec starting at its entry
+with `(initial-location URL)` tests the app after bootstrap, then controls its
+later effects and placeholder opportunities. Native producer and real-browser
+contracts separately check the cold frame, retained DOM identities and startup
+barrier.
 
 ## Walks
 
@@ -1006,7 +1029,9 @@ mounts it as the first spec's setup says and takes 300 seeded steps
 (`--seed N` chooses another sequence). Each step is something a user could
 do to a control that is live at that moment, or a service the browser would
 perform: answering a pending request from the answers the specs stage,
-ticking a live interval, delivering a message a spec emits on a port. After
+ticking a live interval, supplying an armed placeholder opportunity, or
+delivering a message a spec emits on a port. An opportunity is an explicit
+chosen service; merely taking another step does not activate a body. After
 every step the settle check must pass, and at the end nothing the app
 allocated may be left live. A failure names the step and the last things
 the walk did.

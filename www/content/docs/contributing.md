@@ -478,21 +478,34 @@ paired spec keeps the actual SVG mount root. Pure template checks cover the
 parent/descriptor edge, reserved owner facts and aggregate output bounds;
 parent attributes are inserted only at a public parser opening-token boundary.
 The raw startup contracts cover producer-owned inertness across failure, retry
-and recovery. The tool's end-to-end check builds root and nested pictures and
-compares the complete published tree after a route-collision refusal.
+and recovery. These legacy replacement contracts remain separate from the
+annotated path. Its native contract app (`tests/fixtures/startup-build`) declares
+home/tasks entries and initial Self/refusal follow-ups. `startup-producer.mjs`
+checks declaration-only catalogue inspection, cold-frame capture, completed
+acknowledgement and root/token refusals. The tool's end-to-end check builds every
+declared entry by default, holds Wasm in Chrome, observes the cold page, then
+checks retained nodes, later scope replacement, interaction and the nested
+entry's shared asset receipt. A colliding declared output must leave the entire
+published tree unchanged. The legacy Worker Lab must explicitly opt out before
+its plain build runs real browser workers. A compiler-boundary edit injection
+checks that the project inventory guard refuses publication and preserves the
+same complete tree.
 
-The production workflow is `roc signals.roc build --picture URL...` from an
-app directory; it renders only the ordinary init batch, without delivering
-host answers. Startup uses ordinary replacement; it does not emit adoption
-claims, stage measured adoption facts or reuse the built node objects.
-Adoption remains a future Target in `design.md`. Changes to this producer or
-to the native oracle retain applicable actual optimized roc-fuzz fixed-example
-replays as well as native and Chrome contracts; frontend checks supplement
-those gates.
+The production workflow is `roc signals.roc build` from an app directory. It
+reads the compiled finite entry catalogue and stages all annotated pages with
+shared immutable assets. `--no-prerender` is the explicit plain-page path for a
+legacy or custom loader; legacy `--picture URL...` remains replacement-only.
+The original template's exact quoted `app.wasm`/`./app.wasm` loader reference
+receives `?roc-build=<asset hash>` before rendering; app-emitted markup and
+reserved annotations are never searched or rewritten. The native producer
+publishes the cold frame, validating its acknowledgement separately without
+performing hosted effects or providing their answers. Changes to this producer
+or the native oracle retain applicable optimized roc-fuzz fixed-example replays
+as well as native and browser contracts; frontend checks supplement those gates.
 
 A change to the wire protocol changes the engine's encoder and decoders,
 `platform/Dom.roc`, both hosts (`platform/host/host.zig`,
-`platform/host/spec.zig`), `platform/runtime.mjs`, `platform/environment.mjs`, `platform/worker.mjs`,
+`platform/host/spec.zig`), `platform/runtime.mjs`, `platform/startup.mjs`, `platform/environment.mjs`, `platform/worker.mjs`,
 the contract tests under `tests/` and Appendix B of `design.md` together,
 and bumps the protocol version.
 

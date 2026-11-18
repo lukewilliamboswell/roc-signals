@@ -11,7 +11,7 @@ Counter := [].{
 
 	## The program both platforms run.
 	program : Engine.Program
-	program = Engine.program(|| Engine.state(0, Counter.view))
+	program = Engine.program_startup({}, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_route| Engine.state(0, Counter.view))
 
 	view : State(Ctx, I64) -> Elem(Ctx)
 	view = |count|
