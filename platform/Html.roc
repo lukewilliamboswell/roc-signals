@@ -1,4 +1,4 @@
-import parser.MarkupFacts
+import parser.Markup
 import Engine exposing [Attr, Elem, FilesHandler, Handler, HandlerOf, Signal]
 import Layout
 import Core
@@ -111,7 +111,7 @@ Html := [].{
 			"reset" => Ok(Reset)
 			"button" => Ok(Button)
 			_ => {
-				words = MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { namespace: NoNamespace, prefix: Unprefixed, local: "type" }) ?? crash "Html.InputType: parser must describe input type keywords"
+				words = Markup.Name.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: "type" } }) ?? crash "Html.InputType: parser must describe input type keywords"
 				hint = Spelling.suggest(keyword, words)
 				advice = if (hint.is_empty()) " choose a listed HTML input keyword" else hint
 				Err(NotAnInputType("${Str.inspect(keyword)} is not an input type;${advice}"))
@@ -569,7 +569,7 @@ hidden_presence = |state| match state {
 expect {
 	kinds : List(Html.InputType)
 	kinds = [Hidden, Text, Search, Tel, Url, Email, Password, Date, Month, Week, Time, DatetimeLocal, Number, Range, Color, Checkbox, Radio, File, Submit, Image, Reset, Button]
-	kinds.map(|kind| kind.text()) == MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { namespace: NoNamespace, prefix: Unprefixed, local: "type" })?
+	kinds.map(|kind| kind.text()) == Markup.Name.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: "type" } })?
 }
 
 ## Both literal and computed keyword checks fold only ASCII spelling.

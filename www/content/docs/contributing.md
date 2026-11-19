@@ -24,7 +24,7 @@ the `blueprint` release that `Blueprint.roc` names (no Nix is needed) and the
 current Roc nightly as `roc` (see [Compilers](#compilers)). `blueprint shell`
 opens a shell with the tools on `PATH`.
 
-The platform and tooling pin the published roc-parser 6.0.0-rc.3 package.
+The platform and tooling pin the published roc-parser 6.0.0-rc.5 package.
 Roc downloads it automatically; no sibling parser checkout or setup task is needed.
 
 Chrome is the machine's `google-chrome` for now, because blueprint cannot yet

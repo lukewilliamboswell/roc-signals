@@ -1,6 +1,5 @@
 import Spelling
 import Base64
-import parser.MarkupFacts
 import Protocol
 import parser.Html as MarkupHtml
 import parser.Markup
@@ -2347,19 +2346,19 @@ expect {
 
 ## The transport's six ordinary boolean names belong to the parser's HTML
 ## vocabulary. Hidden has a different grammar and is checked separately.
-expect [("input", "disabled"), ("option", "selected"), ("input", "readonly"), ("input", "required"), ("select", "multiple"), ("details", "open")].all(|(element, attribute)| MarkupFacts.is_boolean_attribute({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: element }, { namespace: NoNamespace, prefix: Unprefixed, local: attribute })) and !MarkupFacts.is_boolean_attribute({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: "div" }, { namespace: NoNamespace, prefix: Unprefixed, local: "hidden" })
+expect [("input", "disabled"), ("option", "selected"), ("input", "readonly"), ("input", "required"), ("select", "multiple"), ("details", "open")].all(|(element, attribute)| Markup.Name.is_boolean_attribute({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: element }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: attribute } })) and !Markup.Name.is_boolean_attribute({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: "div" }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: "hidden" } })
 
 ## Preserve the legacy wire convention without describing hidden as a boolean
 ## attribute or applying a browser default to its explicit enumeration.
-expect MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "div" }, { namespace: NoNamespace, prefix: Unprefixed, local: "hidden" }) == Ok(["", "hidden", "until-found"])
+expect Markup.Name.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "div" }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: "hidden" } }) == Ok(["", "hidden", "until-found"])
 
 ## OutsideText is platform policy over real HTML input keywords; the parser
 ## does not choose the policy or repair an unknown type into a known one.
-expect MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { namespace: NoNamespace, prefix: Unprefixed, local: "type" }).map_ok(|keywords| Protocol.text_entry_excluded.all(|keyword| keywords.contains(keyword))) == Ok(True)
+expect Markup.Name.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: "type" } }).map_ok(|keywords| Protocol.text_entry_excluded.all(|keyword| keywords.contains(keyword))) == Ok(True)
 
 ## The controlled popover policy deliberately supports auto/manual, while
 ## the parser's complete grammar also describes empty and hint spellings.
-expect MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "div" }, { namespace: NoNamespace, prefix: Unprefixed, local: "popover" }) == Ok(["", "auto", "manual", "hint"])
+expect Markup.Name.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "div" }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: "popover" } }) == Ok(["", "auto", "manual", "hint"])
 
 ## Independent DOM local-name grammar. UTF-8 validity is established by str;
 ## no XML Unicode-name ranges or engine construction helpers are shared.
@@ -2464,7 +2463,7 @@ render_utf16_units = |text| text.to_utf8().fold(0.U64, |units, byte| if (byte < 
 
 ## Character references preserve text without making data into syntax. Raw
 ## text modes are verified by parse-back rather than escaped into other text.
-render_text : Str, MarkupFacts.TextBehavior -> Str
+render_text : Str, [Data, Rcdata, RawText, ScriptData, Plaintext] -> Str
 render_text = |text, mode| match mode {
 	Data | Rcdata => text.replace_each("&", "&amp;").replace_each("<", "&lt;").replace_each(">", "&gt;").replace_each("\r", "&#13;")
 	RawText | ScriptData | Plaintext => text
@@ -2483,7 +2482,7 @@ expect {
 
 RenderSelection : [Uncontrolled, Controlled({ owner : U64, value : Str, multiple : Bool, matched : Bool, eligible : Bool })]
 
-RenderToken : [Open(U64), Close(U64), Text({ node : U64, mode : MarkupFacts.TextBehavior, initial_lf : Bool }), Comment(U64), EnvelopeOpen({ name : Dom.ExpandedName, attributes : List((Dom.ExpandedName, Str)) }), EnvelopeClose(Dom.ExpandedName)]
+RenderToken : [Open(U64), Close(U64), Text({ node : U64, mode : [Data, Rcdata, RawText, ScriptData, Plaintext], initial_lf : Bool }), Comment(U64), EnvelopeOpen({ name : Dom.ExpandedName, attributes : List((Dom.ExpandedName, Str)) }), EnvelopeClose(Dom.ExpandedName)]
 
 RenderState : { tokens : List(RenderToken), minimum_bytes : U64, physical : List(Dom.PictureNode), containers : List(Dom.PictureContainer), logical : List(Dom.LogicalNode), text_runs : List(Dom.TextRun), scaffolds : List(Dom.Scaffold), seen : Dict(U64, {}), selection : RenderSelection, startup_owned : Bool, startup_gates : Dict(U64, {}), props : Dom.RenderProps }
 
@@ -2601,10 +2600,10 @@ render_container = |state, { owner, role }| {
 render_name : Dom.DNode -> Dom.ExpandedName
 render_name = |node| { namespace: node.namespace, prefix: node.prefix, local: node.tag }
 
-render_behavior : Dom.ExpandedName, Bool -> { is_void : Bool, text_mode : MarkupFacts.TextBehavior, initial_lf : MarkupFacts.InitialNewlineState }
+render_behavior : Dom.ExpandedName, Bool -> { is_void : Bool, text_mode : [Data, Rcdata, RawText, ScriptData, Plaintext], initial_lf : Markup.InitialNewlineState }
 render_behavior = |name, scripting| {
 	expanded = render_parser_name(name)
-	{ is_void: MarkupFacts.is_void_element(expanded), text_mode: MarkupFacts.text_behavior(expanded, scripting), initial_lf: MarkupFacts.initial_newline(expanded) }
+	{ is_void: Markup.Name.is_void_element(expanded), text_mode: Markup.Name.text_behavior(expanded, { scripting: if (scripting) Enabled else Disabled }), initial_lf: Markup.Name.initial_newline(expanded) }
 }
 
 render_parser_name : Dom.ExpandedName -> Markup.Name
@@ -2614,7 +2613,7 @@ render_parser_name = |name| { namespace: if (name.namespace.is_empty()) NoNamesp
 ## matching without changing the attribute's stored value or applying defaults.
 attribute_keyword : Str, Str, Str -> Try(Str, [NotEnumerated, InvalidKeyword])
 attribute_keyword = |element, attribute, value| {
-	words = MarkupFacts.enumerated_values({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: element }, { namespace: NoNamespace, prefix: Unprefixed, local: attribute })?
+	words = Markup.Name.enumerated_values({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: element }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: attribute } })?
 	folded = Spelling.ascii_lower(value)
 	if (words.contains(folded)) Ok(folded) else Err(InvalidKeyword)
 }
@@ -2662,7 +2661,7 @@ render_model = |dom, requested_props| {
 			}
 			$state = { ..$state, tokens: $state.tokens.append(EnvelopeOpen({ name, attributes: root.attrs })) }
 		}
-		$state = render_children(dom, { state: $state, models: root.kids, container: allocated.ordinal, depth: 0, mode: behavior.text_mode, initial_lf: behavior.initial_lf == Pending })?
+		$state = render_children(dom, { state: $state, models: root.kids, container: allocated.ordinal, depth: 0, mode: behavior.text_mode, initial_lf: behavior.initial_lf.is_pending() })?
 		if props.scope == MountEnvelope and !behavior.is_void {
 			$state = { ..$state, tokens: $state.tokens.append(EnvelopeClose(name)) }
 		}
@@ -2688,7 +2687,7 @@ render_model = |dom, requested_props| {
 
 ## Consecutive logical text nodes have one physical parse node. Empty parts
 ## stay in the explicit partition; an all-empty run consumes no physical node.
-render_children : Dom.Model, { state : RenderState, models : List(U64), container : U64, depth : U64, mode : MarkupFacts.TextBehavior, initial_lf : Bool } -> Try(RenderState, Dom.RenderError)
+render_children : Dom.Model, { state : RenderState, models : List(U64), container : U64, depth : U64, mode : [Data, Rcdata, RawText, ScriptData, Plaintext], initial_lf : Bool } -> Try(RenderState, Dom.RenderError)
 render_children = |dom, { state, models, container, depth, mode, initial_lf }| {
 	var $state = state
 	var $children = []
@@ -2818,9 +2817,9 @@ render_element = |dom, { state, model, node, depth }| {
 	}
 	if is_html and name.local == "textarea" and select_value.is_ok() {
 		(_, value) = select_value ?? crash "Dom.render: textarea value"
-		$state = render_control_text(dom, { state: $state, models: node.kids, owner: ordinal, container: children, value, depth: depth + 1, mode: behavior.text_mode, initial_lf: behavior.initial_lf == Pending })?
+		$state = render_control_text(dom, { state: $state, models: node.kids, owner: ordinal, container: children, value, depth: depth + 1, mode: behavior.text_mode, initial_lf: behavior.initial_lf.is_pending() })?
 	} else {
-		$state = render_children(dom, { state: $state, models: node.kids, container: children, depth: depth + 1, mode: behavior.text_mode, initial_lf: behavior.initial_lf == Pending })?
+		$state = render_children(dom, { state: $state, models: node.kids, container: children, depth: depth + 1, mode: behavior.text_mode, initial_lf: behavior.initial_lf.is_pending() })?
 	}
 	match $content {
 		NoContent => {}
@@ -2918,7 +2917,7 @@ render_override = |state, { owner, attributes, name, value }| {
 ## A controlled textarea's source text is a declared producer scaffold. The
 ## engine's ordinary text/comment lifetimes are explicitly constructed later,
 ## with their data in the claims rather than inferred by JavaScript.
-render_control_text : Dom.Model, { state : RenderState, models : List(U64), owner : U64, container : U64, value : Str, depth : U64, mode : MarkupFacts.TextBehavior, initial_lf : Bool } -> Try(RenderState, Dom.RenderError)
+render_control_text : Dom.Model, { state : RenderState, models : List(U64), owner : U64, container : U64, value : Str, depth : U64, mode : [Data, Rcdata, RawText, ScriptData, Plaintext], initial_lf : Bool } -> Try(RenderState, Dom.RenderError)
 render_control_text = |dom, { state, models, owner, container, value, depth, mode, initial_lf }| {
 	if !value.is_empty() and depth > state.props.limits.max_depth {
 		return Err(RenderLimit({ resource: Depth, maximum: state.props.limits.max_depth }))
@@ -3131,8 +3130,13 @@ render_parse_back = |rendered, { props, root_attributes }| {
 	source = if (document) "<!doctype html>${rendered.markup}" else rendered.markup
 	maximum = if (props.limits.max_nodes > 18_446_744_073_709_551_612) 18_446_744_073_709_551_615 else props.limits.max_nodes + 3
 	depth = if (props.limits.max_depth > 18_446_744_073_709_551_612) 18_446_744_073_709_551_615 else props.limits.max_depth + 3
-	parsed = MarkupHtml.parse_source(source, { recovery: Browser, exact_structure: True, strict_foreign_spelling: True, scripting: props.scripting, context_namespace: context.namespace, context_element: context.local, max_source_bytes: source.count_utf8_bytes(), max_nodes: maximum, max_elements: maximum, max_attributes: props.limits.max_bytes, max_depth: depth }, !document)
-		.map_err(|InvalidMarkup(error)| ParseFailure({ line: error.line, column: error.column, rule: Str.inspect(error.problem) }))?
+	parsed = MarkupHtml.parse_source(source, { mode: if (document) Document else Fragment, options: { recovery: Browser, exact_structure: True, strict_foreign_spelling: True, scripting: props.scripting, context_namespace: context.namespace, context_element: context.local, max_source_bytes: source.count_utf8_bytes(), max_nodes: maximum, max_elements: maximum, max_attributes: props.limits.max_bytes, max_depth: depth } })
+		.map_err(
+			|InvalidMarkup(error)| match error.location {
+				Text({ line, column, .. }) | LineColumn({ line, column }) => ParseFailure({ line, column, rule: Str.inspect(error.problem) })
+				_ => ParseMismatch({ physical: 0, rule: "parser refused serialized source at ${Str.inspect(error.location)}: ${Str.inspect(error.problem)}" })
+			},
+		)?
 	var $roots = parsed.tree.roots
 	if document {
 		$roots = $roots.keep_if(

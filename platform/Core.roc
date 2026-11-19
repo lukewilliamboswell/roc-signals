@@ -6,7 +6,7 @@ import Layout
 import TableCore exposing [Table]
 import View
 import MarkupAdvice
-import parser.DomConstruction
+import parser.Html as ParsedHtml
 import parser.Markup
 
 ## The reactive engine behind the roc-signals web platform, written in Roc:
@@ -3900,7 +3900,7 @@ Args : { depth : U64, path : List(U32), parent : U32, before : U32, sole : Bool,
 
 ## Actual parent identity and the raw constructor's child namespace travel
 ## through sites, never recovered by walking the engine tree or the DOM.
-Enclosing : { namespace : Web.Namespace, prefix : Web.Prefix, local : Str, raw_namespace : Web.Namespace, construction : DomConstruction.Context }
+Enclosing : { namespace : Web.Namespace, prefix : Web.Prefix, local : Str, raw_namespace : Web.Namespace, construction : ParsedHtml.RepairContext }
 
 Scope : { cap : U128, enclosing : Enclosing }
 
@@ -12587,7 +12587,7 @@ child_enclosing = |parent, { name, site, placement, describe }| {
 		}
 		crash "contract: raw <${name.text()}> cannot be created under <${parent.local}>: ${refusal}; write the name in lowercase starting with a letter, or qualify it with Web.Tag.in_namespace${placement} at site ${show_path(site)}${describe()}"
 	}
-	construction = match DomConstruction.enter(
+	construction = match ParsedHtml.RepairContext.child(
 		parent.construction,
 		construction_name({
 			namespace: match name.namespace() {
@@ -12599,7 +12599,7 @@ child_enclosing = |parent, { name, site, placement, describe }| {
 		}),
 	) {
 		Ok(context) => context
-		Err(problem) => crash "contract: ${construction_problem(problem)}${placement} at site ${show_path(site)}${describe()}"
+		Err(InvalidConstruction(error)) => crash "contract: ${construction_problem(error.problem)}${placement} at site ${show_path(site)}${describe()}"
 	}
 	namespace = match name.namespace() {
 		Explicit(value) => value
@@ -12747,7 +12747,7 @@ enclosing_root = |root| {
 		"" => None
 		other => Uri(other)
 	}
-	{ namespace, prefix: root.prefix, local: root.local, raw_namespace: if (namespace == Svg and root.local != "foreignObject") Svg else Html, construction: DomConstruction.root({ parent: construction_name(root) }) }
+	{ namespace, prefix: root.prefix, local: root.local, raw_namespace: if (namespace == Svg and root.local != "foreignObject") Svg else Html, construction: ParsedHtml.RepairContext.from_parent({ parent: construction_name(root) }) }
 }
 
 ## Root facts round-trip beside Boot without becoming an app-visible field.
@@ -12878,7 +12878,7 @@ construction_name = |name| {
 }
 
 ## Keep the parser's rule and the shared wording; the boundary adds its site.
-construction_advice : DomConstruction.RepairDetail -> Str
+construction_advice : _ -> Str
 construction_advice = |repair| MarkupAdvice.construction(
 	repair.rule,
 	{
@@ -12892,17 +12892,17 @@ construction_advice = |repair| MarkupAdvice.construction(
 
 ## Distinguish a proven parser repair from missing attribute evidence. Both
 ## remain contained construction diagnostics; neither guesses a legal case.
-construction_problem : DomConstruction.Problem -> Str
+construction_problem : ParsedHtml.RepairProblem -> Str
 construction_problem = |problem| match problem {
 	Repair(detail) => construction_advice(detail)
 	Unsupported({ parent, child, reason: AttributeDependentTableInput }) => MarkupAdvice.unsupported_table_input({ parent: "<${parent.local}>", child: "<${child.local}>" })
 }
 
 ## Only restricted table text scans the new value. No earlier value is held.
-check_construction_text : DomConstruction.Context, { value : Str, site : List(U32), placement : Str } -> {}
-check_construction_text = |context, { value, site, placement }| match DomConstruction.text(context, value) {
+check_construction_text : ParsedHtml.RepairContext, { value : Str, site : List(U32), placement : Str } -> {}
+check_construction_text = |context, { value, site, placement }| match ParsedHtml.RepairContext.text(context, value) {
 	Ok(_) => {}
-	Err(problem) => crash "contract: ${construction_problem(problem)}${placement} at site ${show_path(site)}"
+	Err(InvalidConstruction(error)) => crash "contract: ${construction_problem(error.problem)}${placement} at site ${show_path(site)}"
 }
 
 ## A text hole that reads something that can change (a layer, a cell, a
@@ -12911,20 +12911,20 @@ check_construction_text = |context, { value, site, placement }| match DomConstru
 ## mounts, whatever it holds then: the rule follows the program's shape,
 ## not its data. The probe is one non-whitespace text; a constant hole
 ## keeps the value check of `checked_text_read`.
-check_text_hole : DomConstruction.Context, { varies : Bool, site : List(U32), placement : Str } -> {}
+check_text_hole : ParsedHtml.RepairContext, { varies : Bool, site : List(U32), placement : Str } -> {}
 check_text_hole = |context, { varies, site, placement }|
 	if !varies {
 		{}
 	} else {
-		match DomConstruction.text(context, "x") {
+		match ParsedHtml.RepairContext.text(context, "x") {
 			Ok(_) => {}
-			Err(problem) => crash "contract: ${construction_problem(problem)}; a text hole here can hold text, whatever it holds now${placement} at site ${show_path(site)}"
+			Err(InvalidConstruction(error)) => crash "contract: ${construction_problem(error.problem)}; a text hole here can hold text, whatever it holds now${placement} at site ${show_path(site)}"
 		}
 	}
 
 ## Text holes retain finite enclosing facts beside their existing reader,
 ## never an element description or another copy of application storage.
-checked_text_read : (ctx -> Str), { context : DomConstruction.Context, site : List(U32), placement : Str } -> (ctx -> Str)
+checked_text_read : (ctx -> Str), { context : ParsedHtml.RepairContext, site : List(U32), placement : Str } -> (ctx -> Str)
 checked_text_read = |read, facts| |environment| {
 	value = read(environment)
 	check_construction_text(facts.context, { value, site: facts.site, placement: facts.placement })
@@ -12940,26 +12940,26 @@ expect {
 ## Each sibling resumes the parent's bounded context. A nested paragraph
 ## restriction persists through a span, while a button scope ends it.
 expect {
-	paragraph = DomConstruction.enter(root_enclosing.construction, construction_name({ namespace: Html, prefix: Unprefixed, local: "p" }))?
-	span = DomConstruction.enter(paragraph, construction_name({ namespace: Html, prefix: Unprefixed, local: "span" }))?
-	button = DomConstruction.enter(paragraph, construction_name({ namespace: Html, prefix: Unprefixed, local: "button" }))?
+	paragraph = ParsedHtml.RepairContext.child(root_enclosing.construction, construction_name({ namespace: Html, prefix: Unprefixed, local: "p" }))?
+	span = ParsedHtml.RepairContext.child(paragraph, construction_name({ namespace: Html, prefix: Unprefixed, local: "span" }))?
+	button = ParsedHtml.RepairContext.child(paragraph, construction_name({ namespace: Html, prefix: Unprefixed, local: "button" }))?
 	block = construction_name({ namespace: Html, prefix: Unprefixed, local: "div" })
 	{
-		nested: DomConstruction.enter(span, block).is_err(),
-		outside: DomConstruction.enter(root_enclosing.construction, block).is_ok(),
-		button_scope: DomConstruction.enter(button, block).is_ok(),
+		nested: ParsedHtml.RepairContext.child(span, block).is_err(),
+		outside: ParsedHtml.RepairContext.child(root_enclosing.construction, block).is_ok(),
+		button_scope: ParsedHtml.RepairContext.child(button, block).is_ok(),
 	} == { nested: True, outside: True, button_scope: True }
 }
 
 ## Restricted table text accepts HTML whitespace only, including the empty
 ## anchor; a nonbreaking space is content which the parser would relocate.
 expect {
-	table = DomConstruction.root({ parent: construction_name({ namespace: Html, prefix: Unprefixed, local: "table" }) })
+	table = ParsedHtml.RepairContext.from_parent({ parent: construction_name({ namespace: Html, prefix: Unprefixed, local: "table" }) })
 	{
-		empty: DomConstruction.text(table, "").is_ok(),
-		space: DomConstruction.text(table, " \t\r\n").is_ok(),
-		content: DomConstruction.text(table, "row").is_err(),
-		nbsp: DomConstruction.text(table, "\u(00A0)").is_err(),
+		empty: ParsedHtml.RepairContext.text(table, "").is_ok(),
+		space: ParsedHtml.RepairContext.text(table, " \t\r\n").is_ok(),
+		content: ParsedHtml.RepairContext.text(table, "row").is_err(),
+		nbsp: ParsedHtml.RepairContext.text(table, "\u(00A0)").is_err(),
 	} == { empty: True, space: True, content: True, nbsp: True }
 }
 
@@ -13034,7 +13034,7 @@ expect {
 		{ namespace: Html, prefix: Unprefixed, local: "template" },
 		{ namespace: Svg, prefix: Unprefixed, local: "h:div" },
 	]
-	roots.all(|root| DomConstruction.enter(enclosing_root(root).construction, construction_name({ namespace: Html, prefix: Unprefixed, local: "raw-unknown" })).is_ok())
+	roots.all(|root| ParsedHtml.RepairContext.child(enclosing_root(root).construction, construction_name({ namespace: Html, prefix: Unprefixed, local: "raw-unknown" })).is_ok())
 }
 
 ## Unsupported attribute-dependent table inputs stay distinct from a proven

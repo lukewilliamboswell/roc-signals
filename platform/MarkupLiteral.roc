@@ -1,4 +1,3 @@
-import parser.MarkupFacts
 import Engine
 import Core
 import Web
@@ -7,8 +6,6 @@ import Spelling
 import parser.Html as ParsedHtml
 import parser.Svg as ParsedSvg
 import parser.Markup
-import parser.MarkupTemplate
-import parser.Literal
 
 ## Compile checked markup to a small immutable constructor plan. Only this
 ## compile path sees parser source and syntax; bound holes keep ordinary signals.
@@ -29,10 +26,11 @@ MarkupLiteral := [].{
 		if segments.is_empty() {
 			return Err(BadLiteral("line 1, column 1: a markup interpolation needs at least one fixed segment"))
 		}
-		parsed = match mode {
+		validated = match mode {
 			HtmlFragment => html_segments(segments)
 			SvgFragment => ParsedSvg.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True })
 		}.map_err(|InvalidMarkup(error)| BadLiteral(parser_problem(error)))?
+		parsed = validated.metadata()
 		var $texts = Dict.empty()
 		var $attributes = Dict.empty()
 		for slot in parsed.slots {
@@ -54,7 +52,7 @@ MarkupLiteral := [].{
 					var $attrs = []
 					var $attribute_index = 0.U64
 					for attribute in node.attributes {
-						if MarkupFacts.is_event_handler(name, attribute.name) {
+						if Markup.Name.is_event_handler(name, { attribute: attribute.name }) {
 							return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "a markup literal holds no handlers: listen with Engine.on or Html's controls")))
 						}
 						attr_name = attribute_name(attribute.name).map_err(|NotAnAttribute(note)| BadLiteral(at_offset(parsed.parsed, attribute.span.start, note)))?
@@ -66,7 +64,7 @@ MarkupLiteral := [].{
 							Claimed(property) => return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "${sample(attribute.name.local)} on ${name_label(name)} is claimed by Engine.Prop.${property}; use Engine.prop or Engine.prop_s on a constructor, or Html's typed controls")))
 						}
 						hole = $attributes.get(($node_index, $attribute_index))
-						boolean = MarkupFacts.is_boolean_attribute(name, attribute.name)
+						boolean = Markup.Name.is_boolean_attribute(name, { attribute: attribute.name })
 						if boolean and hole.is_ok() {
 							return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "a Boolean attribute cannot have a text hole: use Html.boolean or a typed control on a constructor")))
 						}
@@ -226,7 +224,7 @@ at_node = |parsed, node, note| at_offset(
 
 at_offset : Markup.Parsed, U64, Str -> Str
 at_offset = |parsed, offset, note| {
-	position = Literal.position(Str.from_utf8_lossy(parsed.source.bytes), offset)
+	position = (parsed.source).position(offset)
 	"line ${position.line.to_str()}, column ${position.column.to_str()}: ${note}"
 }
 
@@ -237,7 +235,7 @@ at_offset = |parsed, offset, note| {
 # only when that parse is exact and its root is a table part. Every other
 # literal keeps the body parse and its diagnostic. Where a table-part root
 # may be placed is the construction check's: a <tr> in a <div> is refused.
-html_segments : List(Str) -> Try(MarkupTemplate.Plan, [InvalidMarkup(Markup.Error)])
+html_segments : List(Str) -> Try(Markup.Template.Plan, [InvalidMarkup(Markup.Error)])
 html_segments = |segments|
 	match ParsedHtml.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True }) {
 		Ok(plan) => Ok(plan)
@@ -250,11 +248,11 @@ html_segments = |segments|
 
 # Whether a parse has an HTML table-part root; compile still requires
 # exactly one element root.
-table_part_root : MarkupTemplate.Plan -> Bool
+table_part_root : Markup.Template.Plan -> Bool
 table_part_root = |plan|
-	plan.parsed.tree.roots.any(
+	(plan.metadata().parsed.tree.roots).any(
 		|index|
-			match plan.parsed.tree.nodes.get(index) {
+			match plan.metadata().parsed.tree.nodes.get(index) {
 				Ok(node) =>
 					match node.kind {
 						Element(name) => name.namespace == Uri(Markup.html_namespace) and ["tr", "td", "th", "tbody", "thead", "tfoot", "caption", "colgroup", "col"].contains(name.local)
@@ -265,38 +263,60 @@ table_part_root = |plan|
 	)
 
 parser_problem : Markup.Error -> Str
-parser_problem = |error| "line ${error.line.to_str()}, column ${error.column.to_str()}: ${problem_words(error.problem)}"
+parser_problem = |error| "${MarkupAdvice.location(error.location)}: ${problem_words(error.problem)}"
 
 problem_words : Markup.Problem -> Str
 problem_words = |problem| match problem {
-	SyntaxError(note) => note
+	SyntaxError(note) => "invalid XML syntax: ${Str.inspect(note)}"
 	HtmlSyntax(UnexpectedDoctype) => "a markup literal is an element UI fragment, not a document declaration"
 	HtmlSyntax(code) => "invalid HTML syntax: ${Str.inspect(code)}"
 	HtmlStructure({ reason, .. }) => MarkupAdvice.repair(reason)
 	NonCanonicalName({ authored, expected, .. }) => "foreign name ${sample(authored)} would be adjusted to ${sample(expected)}; write the exact spelling"
 	NamespaceError(reason) => "invalid namespace: ${Str.inspect(reason)}"
-	WrongRoot({ expected, actual }) => "expected ${short_text(expected)}, found ${short_text(actual)}"
-	UnknownElement(name) => "${sample(name)} is not an element in the pinned parser vocabulary${Spelling.suggest(name, MarkupFacts.element_names(Uri(Markup.html_namespace)).concat(MarkupFacts.element_names(Uri(Markup.svg_namespace))))}"
+	WrongRoot({ expected, actual }) => "expected <${short_text(expected.local)}> in ${Str.inspect(expected.namespace)}, found ${Str.inspect(actual)}"
+	UnknownElement(name) => "${sample(name)} is not an element in the pinned parser vocabulary${Spelling.suggest(name, Markup.element_names(Uri(Markup.html_namespace)).concat(Markup.element_names(Uri(Markup.svg_namespace))))}"
 	UnknownAttribute({ element, attribute }) => {
 		hint = if attribute.starts_with("aria-") {
-			Spelling.suggest(attribute, MarkupFacts.aria_attribute_names)
+			Spelling.suggest(attribute, Markup.aria_attribute_names)
 		} else ""
 		"<${short_text(element)}> has no attribute ${sample(attribute)}${hint}"
 	}
-	InvalidValue({ attribute, value, expected }) => {
+	InvalidValue({ attribute, value: excerpt, expected }) => {
+		value = Str.from_utf8_lossy(excerpt.bytes)
 		hint = match expected {
 			Keyword(words) => Spelling.suggest(value, words)
 			_ => ""
 		}
 		"${sample(value)} is not a value of ${short_text(attribute)}; expected ${grammar_words(expected)}${hint}"
 	}
-	InvalidChildren({ element, expected }) => "<${short_text(element)}> requires ${short_text(expected)}"
-	Unsupported(note) => note
+	InvalidChildren({ element, expected }) => "<${short_text(element)}> requires ${children_words(expected)}"
+	Unsupported(note) => "unsupported markup: ${Str.inspect(note)}"
 	LimitExceeded(limit) => "markup exceeds the parser's ${Str.inspect(limit)} limit"
-	SourceTooLarge(maximum) => "markup source exceeds ${maximum.to_str()} bytes"
-	ResourceLimit(resource) => "markup exceeds the parser's ${short_text(resource)} limit"
-	Interpolation({ index, reason }) => "hole index ${index.to_str()}: ${reason}"
+	Interpolation({ index, reason }) => "hole index ${index.to_str()}: ${Str.inspect(reason)}"
 	BindingCount({ expected, actual }) => "markup has ${actual.to_str()} bound parts but requires ${expected.to_str()}"
+}
+
+children_words : Markup.ChildGrammar -> Str
+children_words = |grammar| match grammar {
+	AllowedParent(name) => "a <${short_text(name)}> parent"
+	ImageAlternative => "an alt attribute on an image"
+	ImageInputAttributes => "src and alt attributes on an image input"
+	NoNestedAnchor => "content without nested links"
+	NoInteractiveContent => "content without interactive descendants"
+	OptionContent => "valid option content"
+	SelectButtonDescendant => "a button inside a select"
+	NoChildren => "no children"
+	ElementsOnly => "element children"
+	NamedElements(names) => Str.join_with(names.map(|name| "<${short_text(name)}>"), ", ")
+	TextOnly => "text content"
+	MathElements => "MathML children"
+	SvgElements => "SVG children"
+	ChildCount(count) => "${count.to_str()} children"
+	BaseAndScriptPairs => "a base followed by script pairs"
+	ScriptsAndPrescripts => "scripts and prescripts"
+	ScriptPairs => "script pairs"
+	ExpressionAndAnnotations => "an expression followed by annotations"
+	SvgContentModel => "the SVG content model"
 }
 
 grammar_words : Markup.ValueGrammar -> Str
@@ -314,7 +334,7 @@ grammar_words = |grammar| match grammar {
 	Color => "a color"
 	Paint => "an SVG paint value"
 	AspectRatio => "an aspect-ratio value"
-	Language(note) => short_text(note)
+	Language(note) => Str.inspect(note)
 }
 
 name_label : Markup.Name -> Str

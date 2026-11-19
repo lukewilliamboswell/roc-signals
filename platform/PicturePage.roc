@@ -1,3 +1,4 @@
+import MarkupAdvice
 import Dom
 import Scm
 import Url
@@ -73,7 +74,11 @@ PicturePage := [].{
 		{ parsed, host, unchecked_from } = match exact_structure(page) {
 			Ok(checked) => { parsed: checked, host: checked.source, unchecked_from: checked.source.bytes.len() }
 			Err(InvalidMarkup(problem)) => {
-				refused = InvalidTemplate("${problem.line.to_str()}:${problem.column.to_str()}: ${Str.inspect(problem.problem)}")
+				position = match problem.location {
+					Text({ line, column, .. }) | LineColumn({ line, column }) => "${line.to_str()}:${column.to_str()}"
+					_ => MarkupAdvice.location(problem.location)
+				}
+				refused = InvalidTemplate("${position}: ${Str.inspect(problem.problem)}")
 				after_body = without_space_after_body(page, problem.problem) ?? return Err(refused)
 				checked = exact_structure(after_body.page) ?? return Err(refused)
 				{ parsed: checked, host: after_body.host, unchecked_from: after_body.from }
@@ -237,7 +242,7 @@ expect PicturePage.parse("<!doctype html><html><head></head><body><div data-roc-
 ## The picture's check of the host page: its authored nesting, with no
 ## browser repair, and SVG and MathML names spelled as the DOM spells them.
 exact_structure : Str -> Try(Markup.Parsed, [InvalidMarkup(Markup.Error)])
-exact_structure = |page| ParsedHtml.parse_source(page, { exact_structure: True, strict_foreign_spelling: True }, False)
+exact_structure = |page| ParsedHtml.parse_source(page, { options: { exact_structure: True, strict_foreign_spelling: True } })
 
 ## Whitespace after the body's end tag, before or after `</html>`, is
 ## outside the picture's claim: it is what a file's final newline is. A

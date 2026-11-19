@@ -1,10 +1,11 @@
 app [target] {
 	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.2/3kyiehxxzwAsjM23uCQGJ3Hx7dAAdzSGtK3k9Jq7Egtu.tar.zst",
-	parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.3/FTL1xt1rA9nXzoYkhFAW9yF75Kn52bS3cpBr7wZNfPq2.tar.zst",
+	parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.5/822J9njyNR1vgyX1KG4ck496dBx3AnLfvn2zHXn15Ksw.tar.zst",
 	pf: "../../platform/main-fuzz.roc",
 }
 
 import fz.Fuzz
+import parser.Markup
 import pf.Core
 import pf.Dom
 import pf.Engine
@@ -12,7 +13,6 @@ import pf.MarkupLiteral
 import pf.Html
 import parser.Html as ParsedHtml
 import parser.Svg as ParsedSvg
-import parser.MarkupTemplate
 import Reference
 
 Input : { shape : U8, tree : List(U8), values : List(U8), events : List(U8) }
@@ -101,7 +101,7 @@ source = |input| match input.shape % 6 {
 	_ => ["<template data-n='app-node'><span>", "</span><!--roc:node=9--></template>"]
 }
 
-assert_picture : Core.App({}), Dom.Model, MarkupTemplate.Plan, List(U8), U64, U64 -> {}
+assert_picture : Core.App({}), Dom.Model, Markup.Template.Plan, List(U8), U64, U64 -> {}
 assert_picture = |engine, dom, parsed, bytes, phase, parts| {
 	main = Dom.find(dom, dom.root, |node| node.tag == "main") ?? crash "markup main missing"
 	root = (dom.nodes.get(main) ?? crash "markup main index").kids.get(2) ?? crash "markup fragment missing"

@@ -64,7 +64,7 @@ config = [
 	# check and the release dry run. CI runs it as parallel legs of
 	# `check -- --without-fuzz --without-sizes --part K/N` beside
 	# `fuzz-smoke -- --shard K/N` and the `site` task, which reports the sizes;
-	# `startup-browsers` supplies the additional browser-engine boundary gate.
+	# `startup-browsers` is an opt-in local check of browser-engine boundaries.
 	# `check -- --plan` prints what each part runs.
 	Task("check", [Use("engine"), Run(["scripts/check_all.roc", "--"])]),
 	# Declaration rejections and compile-time default-mount contracts.
