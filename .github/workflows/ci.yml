@@ -303,6 +303,11 @@ jobs:
           echo "== init ($cli_url, $ROC_NIGHTLY)"
           roc signals.roc init tool-app || exit 1
           cd tool-app
+          visible_path='parent/long-visible-directory-with-more-than-24-bytes/file.txt'
+          hidden_path='parent/.hidden-directory-with-more-than-24-bytes/file.txt'
+          mkdir -p parent/long-visible-directory-with-more-than-24-bytes parent/.hidden-directory-with-more-than-24-bytes
+          printf '%s\n' 'visible asset' > "$visible_path"
+          printf '%s\n' 'hidden asset' > "$hidden_path"
           echo "== test"
           roc signals.roc test || failed=1
           sed 's/"2")/"3")/' specs/counter.scm > specs/wrong.scm
@@ -314,6 +319,10 @@ jobs:
           echo "== build"
           roc signals.roc build || failed=1
           ls dist/index.html dist/assets/*/app.wasm dist/assets/*/runtime.mjs dist/assets/*/worker.mjs dist/assets/*/environment.mjs || failed=1
+          cmp "$visible_path" dist/assets/*/"$visible_path" || failed=1
+          for asset_dir in dist/assets/*; do
+            if [ -e "$asset_dir/$hidden_path" ]; then echo "build copied a hidden asset"; failed=1; fi
+          done
           echo "== serve"
           roc signals.roc serve --port 8123 > serve.txt 2>&1 &
           for i in $(seq 1 120); do curl -sf -o /dev/null http://127.0.0.1:8123/ && break; sleep 1; done
@@ -324,6 +333,10 @@ jobs:
             echo "$1: $type"
             case "$type" in "$2"*) ;; *) failed=1 ;; esac
           done
+          visible_status=$(curl -s -o ../served-visible.txt -w '%{http_code}' "http://127.0.0.1:8123/$visible_path")
+          [ "$visible_status" = 200 ] && cmp "$visible_path" ../served-visible.txt || failed=1
+          hidden_status=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8123/$hidden_path")
+          [ "$hidden_status" = 404 ] || failed=1
           curl -s http://127.0.0.1:8123/ | grep -q '__signals/events' || { echo "no reload script in the page"; failed=1; }
           exit $failed
       - name: Preserve failed native and Chrome conformance inputs
