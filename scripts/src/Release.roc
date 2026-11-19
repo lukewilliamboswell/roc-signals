@@ -192,6 +192,12 @@ Release := [].{
 		\\
 		\\Port JSON refuses repeated decoded dictionary property names, including names written with different JSON escapes. Handwritten port codecs pass decoder cursors returned by the format's hooks; applications cannot construct a cursor themselves.
 		\\
+		\\## Compiler compatibility and contributor checks
+		\\
+		\\On exactly `nightly-2026-11-18-a520eed`, `signals.roc` builds requested development Wasm with `--opt=size` to avoid unwanted native imports in browser workers ([roc#13195](https://github.com/roc-lang/roc/issues/13195)). It prints the skipped profile and the actual profile; all behavior checks still run. Rebuilds take longer while this workaround is active. Other compiler versions retry the requested profile.
+		\\
+		\\Checked markup uses published roc-parser 6.0.0-rc.5. Contributor fuzz checks use roc-fuzz 0.7.0 suites, sharing builds while retaining each property's examples, corpus and strict leak checks. Compiler workarounds carry upstream TODOs and remain separate from application semantics.
+		\\
 		\\## Breaking: checked links and typed clicks
 		\\
 		\\`Html.link` now requires `Web.Link`. Literal destinations are checked during compilation; computed destinations use `Web.Link.from_str` and explicitly handle `UnsupportedScheme`. `Html.href` and `Html.href_s` support custom layouts and explicit absence. Raw attributes keep their semantics.
@@ -225,7 +231,7 @@ Release := [].{
 		\\app [main] { pf: platform "${bundle_url}" }
 		\\```
 		\\
-		\\Load apps with this release's `runtime.mjs`, served beside `environment.mjs` and `worker.mjs`.
+		\\Load apps with this release's `runtime.mjs`, served beside `environment.mjs`, `startup.mjs` and `worker.mjs`.
 		\\
 		\\## Start an app
 		\\

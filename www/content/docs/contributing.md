@@ -1118,7 +1118,7 @@ assets with `blueprint run release` and creates a draft GitHub release with:
   one platform whose `main.roc` builds for `wasm32` (the browser module) and
   `x64musl`, `arm64mac`, `x64mac` and `x64win` (the native spec runner),
   with the link inputs of each;
-- `runtime.mjs`, its `environment.mjs` fact readers and `worker.mjs`, served together;
+- `runtime.mjs`, its `environment.mjs` fact readers, `startup.mjs` and `worker.mjs`, served together;
 - `signals-<hash>.tar.zst`, the `signals.roc` tool's package, and
   `signals.roc`, the small app an author downloads to run it: it names
   basic-cli and that package, and pins no compiler;
