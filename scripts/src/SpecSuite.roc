@@ -353,7 +353,15 @@ SpecSuite := [].{
 	## A spec's id, as every runner reports it: its file name without the
 	## directory or `.scm` (`SpecRunner.id_of`).
 	id_of : Str -> Str
-	id_of = |path| (path.split_on("/").last() ?? path).drop_suffix(".scm")
+	# TODO(https://github.com/roc-lang/roc/issues/13221): restore split_on
+	# once the compiler preserves interior filename slices on x64 dev builds.
+	id_of = |path| {
+		base = match path.split_last("/") {
+			Ok(parts) => parts.after
+			Err(_) => path
+		}
+		base.drop_suffix(".scm")
+	}
 
 	## The value of `"key":"..."` in a JSON line (no escapes inside).
 	json_field : Str, Str -> Str
