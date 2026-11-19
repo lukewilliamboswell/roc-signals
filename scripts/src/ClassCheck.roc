@@ -1,7 +1,7 @@
 import parser.RocSyntax
 import parser.Html as ParsedHtml
 import parser.Svg as ParsedSvg
-import parser.MarkupTemplate
+import parser.Markup
 import SourceText
 import cli.Path
 import SpecSuite
@@ -286,7 +286,7 @@ ClassCheck := [].{
 	## positions once for diagnostics. A syntax diagnostic fails the check.
 	analyze : List(Constructor), Str -> Try({ uses : List(Use), literals : U64 }, U64)
 	analyze = |constructors, source| {
-		parsed = RocSyntax.parse_str(source)
+		parsed = RocSyntax.parse_str(source, {})
 		var $line = 1.U64
 		var $lines = []
 		for b in parsed.source {
@@ -297,7 +297,13 @@ ClassCheck := [].{
 		}
 		$lines = $lines.append($line)
 		if !parsed.diagnostics.is_empty() {
-			return Err($lines.get((parsed.diagnostics.first() ?? crash "has diagnostics").start) ?? 1)
+			diagnostic = parsed.diagnostics.first() ?? crash "has diagnostics"
+			return match diagnostic.location {
+				ByteOffset(offset) => Err($lines.get(offset) ?? 1)
+				Text(position) => Err(position.line)
+				LineColumn(position) => Err(position.line)
+				_ => crash "ClassCheck.analyze: retained source diagnostic needs a text position or byte offset"
+			}
 		}
 		var $uses = []
 		var $literals = 0
@@ -436,11 +442,12 @@ ClassCheck := [].{
 		}
 		$segments = $segments.append(Str.from_utf8_lossy($segment.map(|point| point.byte)))
 		plan = ClassCheck.parse_markup($segments, mode) ? |_| lines.get(literal.start) ?? 1
+		metadata = plan.metadata()
 		var $uses = []
 		var $literals = 0
-		for (node, node_index) in plan.parsed.tree.nodes.map_with_index(|node, index| (node, index)) {
+		for (node, node_index) in metadata.parsed.tree.nodes.map_with_index(|node, index| (node, index)) {
 			for (attribute, attribute_index) in node.attributes.map_with_index(|attribute, index| (attribute, index)) {
-				if attribute.name.namespace == NoNamespace and attribute.name.local == "class" and !plan.slots.any(|slot| slot.target == AttributeSlot({ node: node_index, attribute: attribute_index })) {
+				if attribute.name.namespace == NoNamespace and attribute.name.local == "class" and !metadata.slots.any(|slot| slot.target == AttributeSlot({ node: node_index, attribute: attribute_index })) {
 					$literals = $literals + 1
 					original = $points.sublist({ start: attribute.span.start, len: attribute.span.end - attribute.span.start })
 					$uses = $uses.concat(ClassCheck.attribute_uses(original, { mode, lines }))
@@ -452,7 +459,7 @@ ClassCheck := [].{
 
 	## The same strict parser reads source and whole-attribute holes. Table
 	## fragments require HTML's template context, as in the platform literal.
-	parse_markup : List(Str), [Html, Svg] -> Try(MarkupTemplate.Plan, _)
+	parse_markup : List(Str), [Html, Svg] -> Try(Markup.Template.Plan, _)
 	parse_markup = |segments, mode| match mode {
 		Svg => ParsedSvg.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True })
 		Html => match ParsedHtml.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True }) {
@@ -494,7 +501,7 @@ ClassCheck := [].{
 			# Every chunk ends at an authored newline (HTML whitespace), so
 			# splitting cannot join a class word or character reference.
 			plan = ClassCheck.parse_markup([source], mode) ?? crash "a selected fixed class attribute remains valid on each source line"
-			for node in plan.parsed.tree.nodes {
+			for node in plan.metadata().parsed.tree.nodes {
 				for attr in node.attributes {
 					decoded = attr.value.to_utf8().map(|byte| { byte, at: origin })
 					$uses = $uses.concat(ClassCheck.words(decoded, { left: True, right: True }, lines))
@@ -676,7 +683,7 @@ expect {
 ## lengths or create whitespace. Malformed Roc is refused rather than skipped.
 expect {
 	uses = sample_uses("# café\nvalue = Html.div(\n  \"ok\\nmissing\",\n  [],\n)\n")?
-	uses == [{ name: "ok", line: 3 }, { name: "missing", line: 3 }] and sample_uses("value = Engine.class(\"unfinished").is_err()
+	uses == [{ name: "ok", line: 3 }, { name: "missing", line: 3 }] and sample_uses("# café\nvalue = Engine.class(\"unfinished") == Err(2)
 }
 
 ## Missing words are diagnosed after CSS and Roc escape decoding agree.
