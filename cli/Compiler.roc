@@ -5,6 +5,7 @@ import cli.Path
 import cli.Stdout
 import Bundle
 import CompilerProfile
+import Text
 
 ## Running the Roc compiler on the app: every build the tool makes goes
 ## through here, so each one names the same entry point, reports failures the
@@ -161,7 +162,9 @@ Compiler :: [].{
 	platform_of : Str -> Try(Str, [NoPlatform])
 	platform_of = |source|
 		match source.split_on("platform \"") {
-			[_, rest, ..] => rest.split_on("\"").first().map_err(|_| NoPlatform)
+			# TODO https://github.com/roc-lang/roc/issues/13221: a sliced long
+			# release URL otherwise includes the closing quote on x64mac dev.
+			[_, rest, ..] => Text.split(rest, '"').first().map_err(|_| NoPlatform)
 			_ => Err(NoPlatform)
 		}
 }
@@ -200,3 +203,9 @@ expect ["  Roc compiler version nightly-2026-11-18-a520eed\n", "nightly-2026-11-
 
 ## Side paths preserve long and Unicode components and the first extension boundary.
 expect ["a/long-basename-abcdefghijklmnopqrstuvwxyz-123456789.wasm", "a/éñ.wasm", "/a//runner.debug.exe", "", "/", ".hidden"].map(Compiler.side_of) == ["a/long-basename-abcdefghijklmnopqrstuvwxyz-123456789.next.wasm", "a/éñ.next.wasm", "/a//runner.next.debug.exe", ".next", "/.next", ".next.hidden"]
+
+## Released platform URLs exclude the quote that ends their header field.
+expect {
+	url = "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.7.0-rc1/long-released-platform-bundle-name-123456789.tar.zst"
+	Compiler.platform_of("app [main] { pf: platform \"${url}\" }\n\nimport Counter\n\nmain = Counter.program\n") == Ok(url)
+}

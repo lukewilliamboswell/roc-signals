@@ -78,7 +78,9 @@ Init :: [].{
 	with_platform = |source, url|
 		match source.split_on("platform \"") {
 			[before, rest, ..] => {
-				after = rest.split_on("\"").drop_first(1)
+				# TODO https://github.com/roc-lang/roc/issues/13221: preserve
+				# the source after a long release URL without sliced quote parts.
+				after = Text.split(rest, '"').drop_first(1)
 				"${before}platform \"${url}\"${Str.join_with(after, "\"")}"
 			}
 			_ => source
@@ -157,4 +159,13 @@ expect {
 	kept = "import pf.Engine exposing [Elem, In, Root, State]\n\nñ = \"héllo\"\n"
 	Init.without_regions("# region imports\n${kept}\t# endregion imports\n") == kept
 		and ["", "\n", "\n\n", "last line", "last line\n", "# region removed"].map(Init.without_regions) == ["", "\n", "\n\n", "last line", "last line\n", ""]
+}
+
+## A long release URL changes without changing any source around its quotes.
+expect {
+	old = "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.6.0/long-released-platform-bundle-name-123456789.tar.zst"
+	new = "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.7.0-rc1/long-released-platform-bundle-name-123456789.tar.zst"
+	before = "app [main] { pf: platform \""
+	after = "\" }\n\nimport Counter\n\nmain = Counter.program\n"
+	Init.with_platform("${before}${old}${after}", new) == "${before}${new}${after}"
 }
