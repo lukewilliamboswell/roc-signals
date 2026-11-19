@@ -53,7 +53,7 @@ main! = |raw_args| {
 	}
 	o = Checks.options!({ filter: "*" })?
 	selection = if ($names.is_empty()) Every else Named($names)
-	Checks.prepare_platform!(o)?
+	# Published roc-fuzz supplies the pure targets' native link inputs.
 	problems = FuzzPlan.run!(Targets.fuzz_targets, selection, |selected| campaign!(o, selected, { time: $time, timeout: $timeout }))?
 	Checks.finish!("fuzz", problems)
 }
