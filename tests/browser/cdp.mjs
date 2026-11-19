@@ -22,6 +22,11 @@ export async function launch({ executablePath, timeoutMs = 20000, args = [] }) {
       "--headless=new",
       "--no-sandbox",
       "--disable-gpu",
+      // Chromium's test switch prevents nondeterministic OS window occlusion
+      // from backgrounding an otherwise foreground page. CDP focus alone can
+      // leave a headless macOS document hidden and stop its real frames.
+      // https://source.chromium.org/chromium/chromium/src/+/main:content/public/common/content_switches.cc
+      "--disable-backgrounding-occluded-windows",
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-extensions",

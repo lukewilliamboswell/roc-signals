@@ -7,6 +7,7 @@ import { observeManualScrolls } from "./scroll-observation.mjs";
 const options = parseArgs(process.argv.slice(2), [], []);
 const browser = await launch({ executablePath: options.chrome });
 try {
+  assert.ok(browser.child.spawnargs.includes("--disable-backgrounding-occluded-windows"));
   const page = await browser.newPage();
   const other = await browser.newPage();
   await other.send("Page.bringToFront");
@@ -37,6 +38,14 @@ try {
     });
     assert.deepEqual(state, { width: viewport.width, height: viewport.height, scale: 1, family: "SignalsSpec", button: "SignalsSpec", scrollbar: 0, scroll: 500, fonts: ["loaded", "loaded"], styles: 1, visibility: "visible", focused: true });
   }
+  // Minimizing the actual browser window still changes document visibility;
+  // the occlusion switch does not emulate visibility or synthesize frames.
+  const { windowId } = await browser.conn.send("Browser.getWindowForTarget", { targetId: page.targetId });
+  await browser.conn.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "minimized" } });
+  assert.equal(await page.evaluate(() => document.visibilityState), "hidden");
+  await browser.conn.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
+  await readySpecPage(page);
+  assert.equal(await page.evaluate(() => document.visibilityState), "visible");
   // A stalled frame must fail without inventing a scroll observation.
   await page.evaluate(() => {
     window.__realRAF = requestAnimationFrame;
