@@ -27,7 +27,15 @@ Compiler :: [].{
 
 	## The version word of `roc version`'s output.
 	version_of : Str -> Str
-	version_of = |text| text.trim().split_on(" ").last() ?? text.trim()
+	version_of = |text| {
+		# TODO https://github.com/roc-lang/roc/issues/13221: extracting a
+		# split_on element corrupts interior text in x64mac dev builds.
+		trimmed = text.trim()
+		match trimmed.split_last(" ") {
+			Ok({ after, .. }) => after
+			Err(_) => trimmed
+		}
+	}
 
 	## A sentence to add to a failed build's report when the compiler is not
 	## the one the release was tested with, since a compiler change can
@@ -106,14 +114,17 @@ Compiler :: [].{
 	## before the extension, so a Windows program keeps its `.exe`.
 	side_of : Str -> Str
 	side_of = |output| {
-		parts = output.split_on("/")
-		name = parts.last() ?? output
-		side_name = match name.split_on(".") {
-			[stem] => "${stem}.next"
-			[stem, .. as rest] => "${stem}.next.${Str.join_with(rest, ".")}"
-			[] => "${name}.next"
+		# TODO https://github.com/roc-lang/roc/issues/13221: preserve path
+		# components without extracting interior strings from split_on's list.
+		{ prefix, name } = match output.split_last("/") {
+			Ok({ before, after }) => { prefix: "${before}/", name: after }
+			Err(_) => { prefix: "", name: output }
 		}
-		Str.join_with(parts.drop_last(1).append(side_name), "/")
+		side_name = match name.split_first(".") {
+			Ok({ before, after }) => "${before}.next.${after}"
+			Err(_) => "${name}.next"
+		}
+		"${prefix}${side_name}"
 	}
 
 	## The compiler exits 0 for a clean build, 2 when there are only
@@ -183,3 +194,9 @@ expect [
 	"new compiler report format",
 	"  ",
 ].map(Compiler.report_on_success) == ["", "warning: dbg in optimized build", "new compiler report format", ""]
+
+## Compiler version output preserves long words, whitespace and a bare version.
+expect ["  Roc compiler version nightly-2026-11-18-a520eed\n", "nightly-2026-11-18-a520eed", "Roc  compiler  version  nightly-2026-11-18-a520eed", "  ", ""].map(Compiler.version_of) == ["nightly-2026-11-18-a520eed", "nightly-2026-11-18-a520eed", "nightly-2026-11-18-a520eed", "", ""]
+
+## Side paths preserve long and Unicode components and the first extension boundary.
+expect ["a/long-basename-abcdefghijklmnopqrstuvwxyz-123456789.wasm", "a/éñ.wasm", "/a//runner.debug.exe", "", "/", ".hidden"].map(Compiler.side_of) == ["a/long-basename-abcdefghijklmnopqrstuvwxyz-123456789.next.wasm", "a/éñ.next.wasm", "/a//runner.next.debug.exe", ".next", "/.next", ".next.hidden"]

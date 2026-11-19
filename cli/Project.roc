@@ -23,15 +23,15 @@ Project :: [].{
 
 	role : Str -> Role
 	role = |path| {
-		parts = path.split_on("/")
-		top = parts.first() ?? path
-		if parts.any(|part| part.starts_with(".")) {
+		# TODO https://github.com/roc-lang/roc/issues/13221: a long interior
+		# component can lose its leading dot when extracted from split_on.
+		if path.starts_with(".") or path.contains("/.") {
 			Ignored
-		} else if top == "dist" and parts.len() > 1 {
+		} else if path.starts_with("dist/") {
 			Ignored
-		} else if top == "specs" and parts.len() > 1 {
+		} else if path.starts_with("specs/") {
 			Spec
-		} else if top == "public" and parts.len() > 1 {
+		} else if path.starts_with("public/") {
 			Public
 		} else if path == "index.html" {
 			Page
@@ -140,3 +140,6 @@ expect {
 	after = [{ path: "a.roc", modified: 1 }, { path: "b.roc", modified: 2 }, { path: "d.roc", modified: 1 }]
 	Project.changes(before, after) == ["b.roc", "c.roc", "d.roc"]
 }
+
+## Hidden components remain excluded even inside long, nested paths.
+expect ["parent/.hidden-directory-with-more-than-24-bytes/file.txt", "parent/.hidden/file.roc", "public/parent/.hidden-file-with-more-than-24-bytes.txt", "parent/plain-file-with-more-than-24-bytes.txt", "dist/", "dist", "specs/", "public/"].map(Project.role) == [Ignored, Ignored, Ignored, Asset, Ignored, Asset, Spec, Public]

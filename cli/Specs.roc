@@ -8,6 +8,7 @@ import cli.System
 import Bundle
 import Compiler
 import Project
+import Text
 
 ## `test`: build the app's native spec runner and run every spec in
 ## `specs/`. The runner drives the app's real engine without a browser, so
@@ -177,8 +178,7 @@ Specs :: [].{
 	## order the specs were given.
 	outcomes : Str -> List(Outcome)
 	outcomes = |report|
-		report
-			.split_on("\n")
+		Text.lines(report)
 			.keep_if(|line| line.starts_with("{"))
 			.map(
 				|line| {

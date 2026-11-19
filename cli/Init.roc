@@ -3,6 +3,7 @@ import cli.Path
 import cli.Stdout
 import Bundle
 import Project
+import Text
 
 ## `init [DIR]`: create an app, the counter of the documentation's Getting
 ## Started page, in `DIR` (by default, this directory). It writes only files
@@ -45,16 +46,24 @@ Init :: [].{
 		}
 		for step in steps {
 			target = Init.place(dir, step.path)
-			parent = target.split_on("/").drop_last(1)
-			if !parent.is_empty() {
-				Path.create_all!(Path.utf8(Str.join_with(parent, "/")))?
+			# TODO https://github.com/roc-lang/roc/issues/13221: do not extract
+			# and rejoin parent components from split_on's interior strings.
+			match target.split_last("/") {
+				Ok({ before, .. }) => Path.create_all!(Path.utf8(before))?
+				Err(_) => {}
 			}
 			match step.contents {
 				Text(text) => Path.write_utf8!(Path.utf8(target), text)?
 				CopyOf(source) => Path.copy!(Path.utf8(source), Path.utf8(target))?
 			}
 		}
-		name = if (dir == ".") (Project.with_slashes(Path.display(Env.cwd!()?)).split_on("/").last() ?? ".") else dir
+		name = if dir == "." {
+			cwd = Project.with_slashes(Path.display(Env.cwd!()?))
+			match cwd.split_last("/") {
+				Ok({ after, .. }) => after
+				Err(_) => cwd
+			}
+		} else dir
 		Stdout.line!(Init.summary({ dir, name, paths: steps.map(|step| step.path) }))?
 		Ok({})
 	}
@@ -79,7 +88,7 @@ Init :: [].{
 	## documentation quotes it by.
 	without_regions : Str -> Str
 	without_regions = |source| {
-		lines = source.split_on("\n").drop_if(|line| line.trim().starts_with("# region ") or line.trim().starts_with("# endregion "))
+		lines = Text.lines(source).drop_if(|line| line.trim().starts_with("# region ") or line.trim().starts_with("# endregion "))
 		Str.join_with(lines, "\n")
 	}
 
@@ -142,3 +151,10 @@ expect {
 
 ## Every file goes inside the new directory.
 expect [Init.place("my-app/", "specs/counter.scm"), Init.place(".", "main.roc")] == ["my-app/specs/counter.scm", "main.roc"]
+
+## Region removal preserves every other byte, including long, Unicode and empty lines.
+expect {
+	kept = "import pf.Engine exposing [Elem, In, Root, State]\n\nñ = \"héllo\"\n"
+	Init.without_regions("# region imports\n${kept}\t# endregion imports\n") == kept
+		and ["", "\n", "\n\n", "last line", "last line\n", "# region removed"].map(Init.without_regions) == ["", "\n", "\n\n", "last line", "last line\n", ""]
+}
