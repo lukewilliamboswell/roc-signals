@@ -78,7 +78,7 @@ jobs:
           cache-workload: engine
       - uses: roc-lang/setup-roc@dd81390553b0a1236aedb61cdd4c0ed7cf7eaec4
         with:
-          version: nightly-new-compiler
+          version: nightly
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint check
       # The fuzz targets are the Fuzz smoke job's; check prints a SKIP line
@@ -136,7 +136,7 @@ jobs:
           cache-workload: engine
       - uses: roc-lang/setup-roc@dd81390553b0a1236aedb61cdd4c0ed7cf7eaec4
         with:
-          version: nightly-new-compiler
+          version: nightly
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - env:
           INDEX: ${{ strategy.job-index }}
@@ -187,7 +187,7 @@ jobs:
           cache-workload: engine
       - uses: roc-lang/setup-roc@dd81390553b0a1236aedb61cdd4c0ed7cf7eaec4
         with:
-          version: nightly-new-compiler
+          version: nightly
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint run platform
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -237,7 +237,7 @@ jobs:
           path: platform/targets
       - uses: roc-lang/setup-roc@dd81390553b0a1236aedb61cdd4c0ed7cf7eaec4
         with:
-          version: nightly-new-compiler
+          version: nightly
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - env:
           TARGET: ${{ matrix.target }}
@@ -352,7 +352,7 @@ jobs:
           cache-workload: site
       - uses: roc-lang/setup-roc@dd81390553b0a1236aedb61cdd4c0ed7cf7eaec4
         with:
-          version: nightly-new-compiler
+          version: nightly
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint run site
       - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
