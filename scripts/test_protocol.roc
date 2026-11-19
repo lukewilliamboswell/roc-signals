@@ -1,20 +1,27 @@
 #!/usr/bin/env roc-stable
 app [main!] {
 	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst",
-	parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.3/FTL1xt1rA9nXzoYkhFAW9yF75Kn52bS3cpBr7wZNfPq2.tar.zst",
+	parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.5/822J9njyNR1vgyX1KG4ck496dBx3AnLfvn2zHXn15Ksw.tar.zst",
 	pf: "../platform/main-fuzz.roc",
 	roc: "nightly-2026-11-14-a87808d",
 }
 
 import cli.Path
+import pf.Core
 import pf.Protocol
 import src/ApiSurface
 import src/Proc
 import src/UnionShape
+import src/ProtocolEvidence
 
 ## Check authored protocol rows without generating architectural authority.
 ## Both package roots must declare identical, published internal dependencies.
 main! = |_args| {
+	producer = Core.protocol_evidence()
+	consumer = { ..consumer_vocabulary, kinds: Protocol.kinds.map(|row| { code: row.code, name: row.name }) }
+	if !ProtocolEvidence.mutations_rejected(producer, consumer) {
+		return Err(ProducerVocabularyMismatch({ producer, consumer }))
+	}
 	design = Path.read_utf8!(Path.utf8("design.md"))?
 	appendix = design.split_on("## Appendix B: Wire Protocol").last() ?? return Err(MissingAppendix)
 	rows = appendix.split_on("\n").map(|line| line.trim())
@@ -75,6 +82,19 @@ main! = |_args| {
 	}
 	Proc.note!("Protocol authority rows, Appendix A's request, command and result unions and package roots agree")
 	Ok({})
+}
+
+## These names are consumer authority. Core's observations come from its actual
+## attach functions, property constructors and encoding paths, never these rows.
+consumer_vocabulary = {
+	kinds: Protocol.kinds.map(|row| { code: row.code, name: row.name }),
+	properties: Protocol.properties,
+	policies: Protocol.policies,
+	http_cache: Protocol.http_cache,
+	http_credentials: Protocol.http_credentials,
+	namespaces: Protocol.namespaces,
+	template_nodes: Protocol.template_nodes,
+	child_containers: Protocol.child_containers,
 }
 
 ## Ignore authored spacing and name capitalization, retaining every actual

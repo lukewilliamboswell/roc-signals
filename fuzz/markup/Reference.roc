@@ -1,6 +1,4 @@
-import parser.MarkupFacts
 import parser.Markup
-import parser.MarkupTemplate
 import parser.Html as ParsedHtml
 import parser.Svg as ParsedSvg
 
@@ -17,8 +15,8 @@ Reference := [].{
 
 	## Substitute values by the parser's original slot index, including every
 	## projected clone target. Only the declared indentation policy drops text.
-	render : MarkupTemplate.Plan, List(Str) -> List(Node)
-	render = |plan, values| plan.parsed.tree.roots.map(|root| draw(plan, root, values)).join()
+	render : Markup.Template.Plan, List(Str) -> List(Node)
+	render = |plan, values| plan.metadata().parsed.tree.roots.map(|root| draw(plan, root, values)).join()
 
 	## Comment data never contributes to the DOM's textContent reading.
 	text : List(Node) -> Str
@@ -47,17 +45,17 @@ name_of = |name| {
 	},
 }
 
-draw : MarkupTemplate.Plan, U64, List(Str) -> List(Reference.Node)
+draw : Markup.Template.Plan, U64, List(Str) -> List(Reference.Node)
 draw = |plan, index, values| {
-	node = plan.parsed.tree.nodes.get(index) ?? crash "reference: parser child index is missing"
+	node = plan.metadata().parsed.tree.nodes.get(index) ?? crash "reference: parser child index is missing"
 	match node.kind {
 		Element(name) => {
 			var $attributes = []
 			var $position = 0.U64
 			for attribute in node.attributes {
-				value = match plan.slots.find_first(|slot| slot.target == AttributeSlot({ node: index, attribute: $position })) {
+				value = match plan.metadata().slots.find_first(|slot| slot.target == AttributeSlot({ node: index, attribute: $position })) {
 					Ok(slot) => values.get(slot.index) ?? crash "reference: attribute part is missing"
-					Err(_) => if MarkupFacts.is_boolean_attribute(name, attribute.name) {
+					Err(_) => if Markup.Name.is_boolean_attribute(name, { attribute: attribute.name }) {
 						""
 					} else attribute.value
 				}
@@ -68,7 +66,7 @@ draw = |plan, index, values| {
 			is_template = name.namespace == Uri(Markup.html_namespace) and name.local == "template"
 			[Element({ name: name_of(name), attributes: $attributes, children: if (is_template) [] else descendants, content: if (is_template) descendants else [] })]
 		}
-		Text(value) => match plan.slots.find_first(|slot| slot.target == TextSlot({ node: index })) {
+		Text(value) => match plan.metadata().slots.find_first(|slot| slot.target == TextSlot({ node: index })) {
 			Ok(slot) => [Text(values.get(slot.index) ?? crash "reference: text part is missing")]
 			Err(_) => if (omitted_indentation(value)) [] else [Text(value)]
 		}
@@ -101,7 +99,7 @@ expect {
 ## The same source binding fans out to the option and its selectedcontent clone.
 expect {
 	plan = ParsedHtml.parse_segments(["<select><button><selectedcontent></selectedcontent></button><option selected>", "</option></select>"], { exact_structure: True, strict_foreign_spelling: True })?
-	Reference.text(Reference.render(plan, ["chosen"])) == "chosenchosen" and plan.slots.len() == 2
+	Reference.text(Reference.render(plan, ["chosen"])) == "chosenchosen" and plan.metadata().slots.len() == 2
 }
 
 ## One-line spaces, NBSP and mixed pre content remain literal text.

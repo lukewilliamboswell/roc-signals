@@ -16,7 +16,7 @@ const encoder = new TextEncoder();
 const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
 const part = (tag, bytes) => [tag, ...word(bytes.length), ...bytes];
 const keys = list => [...word(list.length), ...list.flatMap(key => { const bytes = [...encoder.encode(key)]; return [...word(bytes.length), ...bytes]; })];
-const declarations = (local, session) => Uint8Array.from([...part(2, keys(local)), ...part(5, word(0)), ...part(6, word(0)), ...part(10, [110, 1]), ...part(11, keys(session)), ...protocolFixtureSection]);
+const declarations = (local, session) => Uint8Array.from([...part(2, keys(local)), ...part(5, word(0)), ...part(6, word(0)), ...part(10, [110, 1]), ...part(11, keys(session)), ...protocolFixtureSection, ...part(14, [0])]);
 const fakeRoot = () => ({ nodeType: 1, namespaceURI: "http://www.w3.org/1999/xhtml", prefix: null, localName: "div", hasAttributeNS: () => false, addEventListener() {}, removeEventListener() {}, textContent: "" });
 
 // A host that answers the declarations, keeps the boot bytes `init` was

@@ -8,9 +8,6 @@ import NamespacesApp
 main : Engine.Program
 main = NamespacesApp.program
 
-## This fixture has local state only; no shared store is needed.
-Store : {}
-
 ## Compile the ordinary default HTML root along with the fixture.
 mounted : U64
 mounted = Engine.mounts(main)

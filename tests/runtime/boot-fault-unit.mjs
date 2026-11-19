@@ -74,12 +74,17 @@ check("a contract trap in boot_keys is contained, classified and reported once",
   assert(runtime.refused >= 1);
 });
 
-check("a resource_limit trap in boot_keys keeps the host's class", () => {
-  const { x } = fakeHost({ fault: 2, message: "resource_limit: more than 64 ports" });
-  const runtime = new RocEngineRuntime(x, fakeRoot(), { manualEffects: true });
-  quietly(() => runtime.mount());
-  assert.equal(runtime.poisoned?.class, "resource_limit");
-});
+// Numeric expectations belong to this fixture, independently of the module's
+// metadata and the runtime's own table. Every host class works before metadata.
+for (const [code, label] of [[1, "contract"], [2, "resource_limit"], [3, "out_of_memory"], [4, "app_crash"], [5, "expect_failed"]]) {
+  check(`host fault ${code} remains ${label} before section 12`, () => {
+    const { x } = fakeHost({ fault: code, message: `${label}: fixture` });
+    const runtime = new RocEngineRuntime(x, fakeRoot(), { manualEffects: true });
+    quietly(() => runtime.mount());
+    assert.equal(runtime.poisoned?.class, label);
+    assert.equal(runtime.poisoned.code, code);
+  });
+}
 
 check("a runtime-classified fault before section 12 is read does not need the facts", () => {
   const { x } = fakeHost({ declarations: Uint8Array.from(prefix) });
@@ -89,7 +94,7 @@ check("a runtime-classified fault before section 12 is read does not need the fa
 });
 
 const facts = change => { const value = structuredClone(protocolFixtureFacts); change(value); return value; };
-const declarations = value => Uint8Array.from([...prefix, ...protocolFixtureSectionOf(value)]);
+const declarations = value => Uint8Array.from([...prefix, ...protocolFixtureSectionOf(value), ...part(14, [0])]);
 const refuses = (name, value, detail) => check(name, () => {
   const { x, calls } = fakeHost({ declarations: declarations(value) });
   assert.throws(() => readDeclarations(x), error => error.message.startsWith("contract: declaration section 12 (protocol)") && error.message.includes(detail));
@@ -109,6 +114,12 @@ refuses("reordered fault classes refuse the mount", facts(f => { [f.fault_classe
 refuses("short fault classes refuse the mount", facts(f => { f.fault_classes = ["none", "contract"]; }), "fault classes");
 refuses("an extra fault class refuses the mount", facts(f => { f.fault_classes.push("other"); }), "fault classes");
 refuses("an unknown fault class refuses the mount", facts(f => { f.fault_classes[4] = "crash"; }), "fault classes");
+for (let index = 0; index < protocolFixtureFacts.fault_classes.length; index++) {
+  refuses(`fault class row ${index} cannot exchange meanings with its neighbour`, facts(f => {
+    const next = (index + 1) % f.fault_classes.length;
+    [f.fault_classes[index], f.fault_classes[next]] = [f.fault_classes[next], f.fault_classes[index]];
+  }), "fault classes");
+}
 refuses("an unknown HTTP cache name refuses the mount", facts(f => { f.http_cache[1].name = "no-storage"; }), 'unknown HTTP cache name "no-storage"');
 refuses("a cache name fetch refuses outside same-origin mode refuses the mount", facts(f => { f.http_cache[4].name = "only-if-cached"; }), 'unknown HTTP cache name "only-if-cached"');
 refuses("an unknown HTTP credentials name refuses the mount", facts(f => { f.http_credentials[0].name = "same_origin"; }), 'unknown HTTP credentials name "same_origin"');
@@ -117,6 +128,11 @@ refuses("an unknown HTTP credentials name refuses the mount", facts(f => { f.htt
 refuses("text-entry exclusions without checkbox refuse the mount", facts(f => { f.text_entry_excluded = f.text_entry_excluded.filter(name => name !== "checkbox"); }), "text-entry exclusions");
 refuses("text-entry exclusions with an extra type refuse the mount", facts(f => { f.text_entry_excluded.push("text"); }), "text-entry exclusions");
 refuses("text-entry exclusions with an unknown type refuse the mount", facts(f => { f.text_entry_excluded[0] = "buton"; }), "text-entry exclusions");
+for (const type of protocolFixtureFacts.text_entry_excluded) {
+  refuses(`text-entry policy cannot omit ${type}`, facts(f => {
+    f.text_entry_excluded = f.text_entry_excluded.filter(name => name !== type);
+  }), "text-entry exclusions");
+}
 refuses("a payload kind's events without one the runtime reads refuse the mount", facts(f => { f.kinds[3].events = ["keydown"]; }), "payload kind KEY events");
 refuses("a payload kind's events with one the runtime does not read refuse the mount", facts(f => { f.kinds[8].events.push("drop"); }), "payload kind PASTE events");
 refuses("a restricted payload kind made unrestricted refuses the mount", facts(f => { f.kinds[1].events = []; }), "payload kind FILES events");

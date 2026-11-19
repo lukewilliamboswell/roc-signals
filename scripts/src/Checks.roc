@@ -70,7 +70,7 @@ Checks := [].{
 			{ name: "web-method-space", expectation: Rejected(["one or more token characters"]) },
 			{ name: "web-text-tag", expectation: Rejected(["This argument has the type: Str But the function needs the first argument to be: Engine.Tag"]) },
 			{ name: "web-interpolation", expectation: Rejected(["Web.AttrName"]) },
-			{ name: "web-shared-constant", expectation: Rejected(["Web.AttrName", "Str"]) },
+			{ name: "web-shared-constant", expectation: Rejected(["AttrName", "Str"]) },
 			{ name: "web-method-request", expectation: Rejected(["Fetch({ cache: [Default, ForceCache, NoCache, NoStore, Reload], credentials: [Include, SameOrigin], headers: List((Str, Str)), method: Str,", "But the annotation says it should be: Engine.Request"]) },
 			{ name: "web-method-upload", expectation: Rejected(["method: Str ?? …", "But upload needs the first argument to be: Core.UploadProps"]) },
 			{ name: "web-upload-get", expectation: Rejected(["GET carries no body, so it cannot upload a file"]) },
@@ -103,6 +103,7 @@ Checks := [].{
 			{ name: "wire-opaque-reader", expectation: Rejected(["The type State is not exposed by the module pf.Wire."]) },
 			{ name: "wire-custom-codec", expectation: Compiles },
 			{ name: "port-opaque-out", expectation: Rejected(["an instance of PortJson.Out"]) },
+			{ name: "port-opaque-state", expectation: Rejected(["an instance of PortJson.State"]) },
 			{ name: "port-opaque-body", expectation: Rejected(["The type OutBody is not exposed by the module pf.PortJson."]) },
 			{ name: "port-custom-codec", expectation: Compiles },
 			{ name: "wire-record-key", expectation: Rejected(["which does not have a method named encode_key_start", "which does not have a method named parse_key_start"]) },
@@ -115,6 +116,11 @@ Checks := [].{
 			{ name: "crypto-key-worker", expectation: Rejected(["method named encoder_for", "Core.CryptoKey"]) },
 			{ name: "crypto-key-port", expectation: Rejected(["method named encoder_for", "Core.CryptoKey"]) },
 			{ name: "ask-private-constructor", expectation: Rejected(["cannot use opaque nominal type", "You're attempting to create an instance of Core.Ask, but it's an opaque type."]) },
+			{ name: "startup-reserved-literal", expectation: Rejected(["reserved for startup transport"]) },
+			{ name: "startup-reserved-computed", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["reserved for startup transport"] }) },
+			{ name: "startup-duplicate-writers", expectation: ConstantCrash({ at: "mounted = Engine.mounts(main)", rules: ["deterministic startup has two writers", "site"] }) },
+			{ name: "startup-foreign-annotation-name", expectation: Compiles },
+			{ name: "signal-private-reader", expectation: Rejected(["to_core"]) },
 			{ name: "ask-private-reader", expectation: Rejected(["The type Ask does not have an associated", "named read."]) },
 			{ name: "layout-scroll-text", expectation: Rejected(["top: U32"]) },
 			{ name: "layout-size-text", expectation: Rejected(["width: U32"]) },
@@ -130,7 +136,7 @@ Checks := [].{
 			{ name: "sort-record", expectation: Rejected(["order_relative_to"]) },
 			{ name: "sort-key", expectation: Rejected(["order_relative_to"]) },
 			{ name: "signal-text-str-part", expectation: Rejected(["to_text_signal"]) },
-			{ name: "signal-text-mixed-parts", expectation: Rejected(["✗ type mismatch", "It has the type: Engine.Signal(Engine.Root, U64) But you are trying to use it as: Engine.Signal(Engine.Root, Str)"]) },
+			{ name: "signal-text-mixed-parts", expectation: Rejected(["✗ type mismatch", "It has the type: Engine.Signal(Engine.Root, U64)", "But you are trying to use it as:", "(Engine.Root, Str)"]) },
 			{ name: "signal-text-record-part", expectation: Rejected(["to_str"]) },
 			{ name: "signal-text-shared-literal", expectation: Rejected(["type mismatch", "Engine.Signal"]) },
 			{ name: "signal-text-positive", expectation: Compiles },
@@ -331,6 +337,9 @@ Checks := [].{
 			Oracle => "${oracle_dir}/runner"
 		}
 		wasm = "${dir}/app.wasm"
+		if !in_browser.listed.is_empty() {
+			SpecSuite.note_profile!(o, "dev")
+		}
 		jobs = [
 			{ program: Contracts, job: SpecSuite.build_job(o, "dev", "tests/apps/key-contracts/main.roc", o.target, runner_of(Contracts)) },
 			{ program: Oracle, job: SpecSuite.build_job(o, "dev", "${oracle_dir}/main.roc", o.target, runner_of(Oracle)) },
@@ -401,7 +410,7 @@ Checks := [].{
 						t = SpecSuite.browser_specs!(o, { example, runner, wasm: SpecSuite.wasm_of(o, example), specs, skip })?
 						shipped = Checks.size_build_specs!(o, { example, runner, specs: specs.keep_if(|path| skip.contains(SpecSuite.id_of(path))), shipping })?
 						total = { ..SpecSuite.add(t, shipped), skipped: t.skipped + skip.len() }
-						Proc.note!(SpecSuite.summary(example, Browser, total))
+						Proc.note!(SpecSuite.summary(SpecSuite.browser_label(o, example), Browser, total))
 						total
 					}
 				}

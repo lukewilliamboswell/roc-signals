@@ -7,9 +7,6 @@ import pf.Engine
 main : Engine.Program
 main = Engine.program(|| Engine.each(Engine.const([" "]), |_| "one", |row| Engine.element("table", [], [Engine.text_s(row.item())])))
 
-## Construction fixtures hold no shared store.
-Store : {}
-
 ## Check the default first page while compiling.
 mounted : U64
 mounted = Engine.mounts(main)

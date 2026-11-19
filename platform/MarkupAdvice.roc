@@ -1,9 +1,19 @@
 import parser.Markup
-import parser.DomConstruction
+import parser.Parser
 
 ## Human wording for parser-owned construction rules. Validation stays with
 ## the parser; the engine and a literal add their own site or source position.
 MarkupAdvice := [].{
+
+	## Format retained source coordinates without inventing a text position for
+	## binary or generated diagnostics.
+	location : Parser.Location -> Str
+	location = |source_location| match source_location {
+		Text({ line, column, .. }) | LineColumn({ line, column }) => "line ${line.to_str()}, column ${column.to_str()}"
+		ByteOffset(offset) => "byte ${offset.to_str()}"
+		InputOffset(offset) => "input offset ${offset.to_str()}"
+		Unavailable(reason) => "source position unavailable (${Str.inspect(reason)})"
+	}
 
 	## Describe the parser's exact-structure refusal without inventing element
 	## provenance discarded by its public diagnostic. The caller adds the source site.
@@ -23,7 +33,7 @@ MarkupAdvice := [].{
 	## Keep the finite constructor's exact repair category and supplied labels.
 	## This is independent of the literal/renderer StructureReason wording;
 	## each caller adds its own construction site or authored source position.
-	construction : DomConstruction.RepairRule, { parent : Str, child : Str } -> Str
+	construction : [CloseParagraph, InsertTableSection, InvalidTableChild, TablePartOutsideTable, NestedAnchor, NestedForm, NestedButton, CloseListItem, CloseDescriptionItem, CloseOption, CloseHeading, ChildOfVoid, ElementInTextContent, FosterTableText], { parent : Str, child : Str } -> Str
 	construction = |rule, labels| {
 		parent = bounded_label(labels.parent)
 		child = bounded_label(labels.child)

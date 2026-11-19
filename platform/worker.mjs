@@ -280,7 +280,7 @@ function runJob(x, m) {
   return { output, objects: out, call, ret, prepareMs, dbg: jobDbg };
 }
 
-const PROTOCOL_VERSION = 22;
+const PROTOCOL_VERSION = 23;
 
 async function start(module, version) {
   if (version !== PROTOCOL_VERSION) throw new Error(`page runtime protocol ${version} is not the protocol ${PROTOCOL_VERSION} this worker implements`);

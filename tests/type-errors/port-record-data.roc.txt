@@ -6,4 +6,3 @@ ports = { actions: { command: Port.command({ name: "test/command" }), label: "no
 registrations = Port.registrations(ports)
 main : Engine.Program
 main = Engine.program(|| Engine.text("")).with_ports(registrations)
-Store : {}

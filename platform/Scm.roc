@@ -737,6 +737,7 @@ Scm := [].{
 		ExpectUpdates(Loc, U64),
 		StubHttp({ label : Str, stub : Stub }),
 		RunEffect(U64),
+		RunOpportunity,
 		ExpectRequest({ n : U64, checks : List({ key : Str, value : Str }) }),
 		ProgressEffect({ n : U64, direction : [Sending, Receiving], done : U64, total : [Known(U64), Unknown] }),
 		ExpectPortSubscriptionArg({ port : Str, n : U64, json : Str }),
@@ -999,6 +1000,7 @@ Scm := [].{
 		ExpectUpdates(loc, _) => { shows: [Locator(loc)], needs: [] }
 		StubHttp(_) => { shows: [], needs: [] }
 		RunEffect(_) => { shows: [], needs: [] }
+		RunOpportunity => { shows: [], needs: [] }
 		ExpectRequest(_) => { shows: [], needs: [] }
 		ProgressEffect(_) => { shows: [], needs: [] }
 		ExpectPortSubscriptionArg({ port, .. }) => { shows: [], needs: [Port({ name: port, kind: Subscription })] }
@@ -1113,6 +1115,29 @@ Scm := [].{
 			}
 		}
 		Ok({})
+	}
+
+	## Check a parsed suite's negative names against positive evidence anywhere
+	## in that suite. This does not run stories together or change their setup:
+	## it rejects assertions about names no story has ever required or observed.
+	suite_problems : List(Spec) -> List({ spec_index : U64, problem : Problem })
+	suite_problems = |specs| {
+		anchors = specs.fold([], |all, spec| spec.steps.fold(all, |found, step| found.concat(Scm.evidence(step.op).shows)))
+		var $problems = []
+		for (spec, index) in specs.map_with_index(|spec, index| (spec, index)) {
+			for step in spec.steps {
+				for need in Scm.evidence(step.op).needs {
+					match need {
+						Story(subject) if !anchors.contains(subject) => {
+							facts = Scm.story_facts(subject)
+							$problems = $problems.append({ spec_index: index, problem: { pos: step.pos, message: "${Scm.op_name(step.op)} ${facts.name}: no spec in this app's suite ${facts.shows} ${facts.description} with this name; correct the name or remove this vacuous negative assertion" } })
+						}
+						_ => {}
+					}
+				}
+			}
+		}
+		$problems
 	}
 
 	## One family's marker and actionable diagnostic accompany its typed
@@ -2130,6 +2155,7 @@ Scm := [].{
 		{ name: "stub-http", parse: |form, args| Ok(StubHttp(Scm.http_fixture(form, "stub-http", args)?)) },
 		{ name: "stub-http-reject", parse: |form, args| Ok(StubHttp(Scm.http_fixture(form, "stub-http-reject", args)?)) },
 		{ name: "run-effect", parse: |form, args| Ok(RunEffect(Scm.count1(form, args, "the effect occurrence")?)) },
+		{ name: "run-opportunity", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| RunOpportunity) },
 		{ name: "expect-request", parse: Scm.request_assertion },
 		{
 			name: "progress-effect",
@@ -2498,6 +2524,14 @@ Scm := [].{
 		{ name: "effects_skipped", counters: [38] },
 		{ name: "effects_progress", counters: [47] },
 		{ name: "view_transitions", counters: [45] },
+		{ name: "startup", counters: [49] },
+		{ name: "startup_ack", counters: [50] },
+		{ name: "startup_complete", counters: [51] },
+		{ name: "opportunity_commands", counters: [52] },
+		{ name: "opportunity_requested", counters: [53] },
+		{ name: "opportunity_cancelled", counters: [54] },
+		{ name: "opportunity_delivered", counters: [55] },
+		{ name: "opportunity_stale", counters: [56] },
 	]
 
 	## The counters a metric name sums.
@@ -2523,6 +2557,7 @@ Scm := [].{
 	## Browser replay consumes the emitted table; the native runner reads it here.
 	activation_table : List({ op : Str, grant : Activation })
 	activation_table = [
+		{ op: "run-opportunity", grant: Never },
 		{ op: "paste-text", grant: Never },
 		{ op: "storage-elsewhere", grant: Never },
 		{ op: "storage-elsewhere-removed", grant: Never },
@@ -2691,6 +2726,7 @@ Scm := [].{
 			StubHttp({ stub: Reply(_), .. }) => "stub-http"
 			StubHttp({ stub: Reject(_), .. }) => "stub-http-reject"
 			RunEffect(_) => "run-effect"
+			RunOpportunity => "run-opportunity"
 			ExpectRequest(_) => "expect-request"
 			ProgressEffect(_) => "progress-effect"
 			ExpectPortSubscriptionArg(_) => "expect-port-subscription-arg"
@@ -3031,7 +3067,7 @@ Scm := [].{
 			Navigate(url) => [text(url)]
 			SetVisibility(v) => [text(Scm.visibility_name(v))]
 			SetOnline(o) => [text(Scm.online_name(o))]
-			HoldReports | ReleaseReports => []
+			HoldReports | ReleaseReports | RunOpportunity => []
 			ExpectReportsReplaced(n) => [JsonOut.field("count", Nat(n))]
 			HistoryBack => []
 			HistoryForward => []
@@ -3381,7 +3417,7 @@ expect {
 		\\${problem_of("(test \"t\" (steps (expect-metric-delta-at-most rows_painted 0)))")}
 		\\${JsonOut.render(Scm.spec_fields("m", spec))}
 	expected =
-		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, registrations_released, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped, effects_progress, view_transitions
+		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, registrations_released, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped, effects_progress, view_transitions, startup, startup_ack, startup_complete, opportunity_commands, opportunity_requested, opportunity_cancelled, opportunity_delivered, opportunity_stale
 		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","now_ms":"0","seed":"0","languages":["en-US"],"zone":{"name":"UTC","from_ms":"-9223372036854775808","until_ms":"9223372036854775807","offsets":[{"from_ms":"-9223372036854775808","minutes":0}]},"storage":[],"storage_available":true,"session":[],"session_available":true,"online":true,"visible":true,"media":[]},"mount_root":{"namespace":"http://www.w3.org/1999/xhtml","prefix":"","local":"div"},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
 }
@@ -3844,6 +3880,7 @@ expect {
 		"stub-http",
 		"stub-http-reject",
 		"run-effect",
+		"run-opportunity",
 		"expect-request",
 		"progress-effect",
 		"expect-port-subscription-arg",
@@ -3983,6 +4020,42 @@ expect {
 							Scm.parse("(test \"never\" (steps ${story.marked}))").is_ok() and
 								Scm.parse("(test \"redundant\" (steps ${story.marked} ${story.positive}))").is_err(),
 	)
+}
+
+## Suite markers need positive evidence in another independent story, regardless
+## of file order. Typos cannot establish their own evidence or move a diagnostic.
+expect {
+	families = [
+		{ negative: "(expect-absent (test-id \"drawn\") :never-drawn)", positive: "(expect-visible (test-id \"drawn\"))" },
+		{ negative: "(expect-no-attr (test-id \"a\") title :never-written)", positive: "(expect-has-attr (test-id \"b\") title)" },
+		{ negative: "(expect-cleanup \"cleanup\" 0 :never-runs)", positive: "(expect-cleanup \"cleanup\" 1)" },
+		{ negative: "(expect-interval 500 0 :never-started)", positive: "(expect-interval 500 1)" },
+	]
+	families.all(
+		|family| {
+			negative = Scm.parse("(test \"negative\"\n (steps\n  ${family.negative}))") ?? crash "negative fixture"
+			positive = Scm.parse("(test \"positive\" (steps ${family.positive}))") ?? crash "positive fixture"
+			missing = Scm.suite_problems([negative])
+			Scm.suite_problems([negative, positive]).is_empty() and Scm.suite_problems([positive, negative]).is_empty() and missing.len() == 1 and (missing.first() ?? crash "missing problem").problem.pos == { line: 3, column: 3 }
+		},
+	) and {
+		typo = Scm.parse("(test \"typo\" (steps (expect-absent (role button :name \"Delte\") :never-drawn)))")?
+		correct = Scm.parse("(test \"correct\" (steps (click (role button :name \"Delete\"))))")?
+		Scm.suite_problems([typo, correct]).len() == 1
+	}
+}
+
+## One explicit opportunity has no input payload or activation grant; arguments
+## are errors, and replay receives the same closed operation as the native runner.
+expect {
+	spec = Scm.parse("(test \"progress\" (steps (run-opportunity)))")?
+	actual = {
+		op: spec.steps.first()?.op,
+		grant: Scm.activation_for(RunOpportunity),
+		encoded: JsonOut.render(Scm.step_json({ op: RunOpportunity, pos: { line: 1, column: 1 } })),
+		argument_refused: Scm.parse("(test \"bad\" (steps (run-opportunity 1)))").is_err(),
+	}
+	actual == { op: RunOpportunity, grant: Never, encoded: "{\"op\":\"run-opportunity\",\"line\":1,\"column\":1}", argument_refused: True }
 }
 
 ## Markers cannot cross families, hide positive counts or survive emission;

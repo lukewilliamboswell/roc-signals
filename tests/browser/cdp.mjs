@@ -22,6 +22,11 @@ export async function launch({ executablePath, timeoutMs = 20000, args = [] }) {
       "--headless=new",
       "--no-sandbox",
       "--disable-gpu",
+      // Chromium's test switch prevents nondeterministic OS window occlusion
+      // from backgrounding an otherwise foreground page. CDP focus alone can
+      // leave a headless macOS document hidden and stop its real frames.
+      // https://source.chromium.org/chromium/chromium/src/+/main:content/public/common/content_switches.cc
+      "--disable-backgrounding-occluded-windows",
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-extensions",
@@ -96,30 +101,46 @@ class Connection {
     this.next = 1;
     this.waiting = new Map();
     this.listeners = new Map();
+    // A passive bounded protocol trace survives a renderer that stops answering.
+    // Keep names/timings only, never function arguments or application payloads.
+    this.trace = [];
+    this.traceAt = 0;
     ws.onmessage = (m) => {
       const msg = JSON.parse(typeof m.data === "string" ? m.data : m.data.toString());
       if (msg.id !== undefined) {
         const w = this.waiting.get(msg.id);
+        this.remember("answer", w?.method ?? "late answer", msg.id, msg.sessionId);
         if (!w) return;
         this.waiting.delete(msg.id);
         if (msg.error) w.reject(new Error(`${w.method}: ${msg.error.message}`));
         else w.resolve(msg.result);
       } else {
+        this.remember("event", msg.method, null, msg.sessionId);
         const key = `${msg.sessionId ?? ""}:${msg.method}`;
         for (const fn of this.listeners.get(key) ?? []) fn(msg.params);
       }
     };
   }
 
+  remember(direction, method, id, sessionId) {
+    this.trace[this.traceAt] = { ms: Math.round(performance.now()), direction, method, id, session: sessionId ?? null };
+    this.traceAt = (this.traceAt + 1) % 128;
+  }
+
+  recent() {
+    return this.trace.length < 128 ? this.trace : this.trace.slice(this.traceAt).concat(this.trace.slice(0, this.traceAt));
+  }
+
   send(method, params = {}, sessionId = undefined) {
     const id = this.next++;
     const msg = { id, method, params };
     if (sessionId) msg.sessionId = sessionId;
+    this.remember("request", method, id, sessionId);
     // A protocol call that never answers fails the test instead of hanging it.
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiting.delete(id);
-        reject(new Error(`${method}: no answer within 120 s`));
+        reject(new Error(`${method}: no answer within 120 s; recent protocol trace ${JSON.stringify(this.recent())}`));
       }, 120000);
       this.waiting.set(id, {
         resolve: (v) => (clearTimeout(timer), resolve(v)),
@@ -146,6 +167,12 @@ class Browser {
     this.child = child;
     this.conn = conn;
     this.profile = profile;
+  }
+
+  // The running browser reports its version through one portable protocol;
+  // desktop Chrome's --version command does not exit on every system.
+  async version() {
+    return this.conn.send("Browser.getVersion");
   }
 
   // An isolated context: fresh storage, fresh pages.

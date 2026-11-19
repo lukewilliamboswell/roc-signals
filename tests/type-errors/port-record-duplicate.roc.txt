@@ -6,4 +6,3 @@ ports = { first: Port.command({ name: "test/duplicate" }), second: Port.command(
 registrations = Port.registrations(ports)
 main : Engine.Program
 main = Engine.program(|| Engine.text("")).with_ports(registrations)
-Store : {}

@@ -1,0 +1,16 @@
+(test "active body keeps an original payload its Reset handler still needs"
+  (setup (initial-location "/deferred-retained-large/"))
+  (steps
+    (expect-text (test-id "waiting") "waiting")
+    (run-opportunity)
+    (expect-absent (test-id "waiting"))
+    (click (role button :name "Bump"))
+    (expect-text (test-id "value") "1")
+    (click (role button :name "Bump"))
+    (expect-text (test-id "value") "2")
+    (click (role button :name "Reset"))
+    (expect-text (test-id "value") "0")
+    (click (role button :name "Toggle region"))
+    (expect-absent (test-id "value"))
+    (click (role button :name "Toggle region"))
+    (expect-text (test-id "waiting") "waiting")))

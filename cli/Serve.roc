@@ -98,7 +98,8 @@ Serve :: [].{
 					reason = Str.join_with(waiting, ", ")
 					if waiting.any(|path| path.ends_with(".roc")) {
 						Stdout.line!("${reason} changed; rebuilding...")?
-						child = Compiler.command!(side_build).spawn!() ? |_| RocMissing
+						command = Compiler.command!(side_build)?
+						child = command.spawn!() ? |_| RocMissing
 						$build = Running({ child, started: Monotonic.now!(), reason })
 					} else {
 						Stdout.line!("${reason} changed; reloading the open pages.")?

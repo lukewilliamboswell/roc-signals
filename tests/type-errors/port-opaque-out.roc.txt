@@ -17,6 +17,3 @@ sent = PortJson.encode(Forged.Forged)
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("port API contract"))
-
-## This contract has no shared store.
-Store : {}

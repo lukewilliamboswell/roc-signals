@@ -1,3 +1,5 @@
+import Text
+
 ## The little HTTP the development server speaks: which file a request asks
 ## for, and the bytes of a response. Only `GET` and `HEAD` of files and one
 ## event stream; every response closes its connection.
@@ -21,7 +23,7 @@ Http :: [].{
 	## Route a request line such as `GET /index.html HTTP/1.1`.
 	route : Str, List(Str) -> Route
 	route = |line, runtime_names|
-		match line.split_on(" ") {
+		match Text.split(line, ' ') {
 			[method, target, ..] if method == "GET" or method == "HEAD" => {
 				path = target.split_on("?").first() ?? target
 				if path == "/" or path == "/index.html" {
@@ -60,7 +62,7 @@ Http :: [].{
 	## a multi-line compiler report arrives whole.
 	event : Str, Str -> Str
 	event = |name, data| {
-		lines = data.split_on("\n").map(|line| "data: ${line.drop_suffix("\r")}")
+		lines = Text.lines(data).map(|line| "data: ${line.drop_suffix("\r")}")
 		"event: ${name}\n${Str.join_with(lines, "\n")}\n\n"
 	}
 
@@ -107,7 +109,7 @@ Http :: [].{
 ## hidden, no backslash.
 is_safe : Str -> Bool
 is_safe = |path|
-	!path.is_empty() and !path.contains("\\") and path.split_on("/").all(|part| !part.is_empty() and !part.starts_with("."))
+	!path.is_empty() and !path.contains("\\") and Text.split(path, '/').all(|part| !part.is_empty() and !part.starts_with("."))
 
 ## Decode `%XX` escapes. A malformed escape or a result that is not UTF-8 is
 ## refused.
@@ -181,3 +183,10 @@ expect ["runtime.mjs", "app.wasm", "index.html", "x.bin"].map(Http.content_type)
 
 ## The script goes first in the head, or first in a page without one.
 expect [Http.inject("<html><head><title>x</title></head>", "S"), Http.inject("<p>x", "S")] == ["<html><head>S<title>x</title></head>", "S<p>x"]
+
+## Long request paths keep their method and hidden-component refusal intact.
+expect {
+	Http.route("GET /parent/long-visible-directory-with-more-than-24-bytes/file.txt HTTP/1.1", []) == File("parent/long-visible-directory-with-more-than-24-bytes/file.txt")
+		and Http.route("GET /parent/.hidden-directory-with-more-than-24-bytes/file.txt HTTP/1.1", []) == Refused
+		and Http.event("error", "the first lengthy compiler report line — λ\nthe second lengthy compiler report line — ñ\n") == "event: error\ndata: the first lengthy compiler report line — λ\ndata: the second lengthy compiler report line — ñ\ndata: \n\n"
+}

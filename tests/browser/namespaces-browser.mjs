@@ -23,11 +23,11 @@ try {
     const word = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, n >>> 24];
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const section = (tag, bytes) => [tag, ...word(bytes.length), ...bytes];
-    const declarations = [section(2, word(0)), section(5, word(0)), section(6, word(0)), section(10, [110, 1]), section(11, word(0)), fixture].flat();
+    const declarations = [section(2, word(0)), section(5, word(0)), section(6, word(0)), section(10, [110, 1]), section(11, word(0)), fixture, section(14, [0])].flat();
     const memory = new WebAssembly.Memory({ initial: 2 });
     let length = 0;
     const root = document.createElement("div"); document.body.append(root);
-    const exports = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 22,
+    const exports = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 23,
       boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
       cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
       init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },
@@ -164,7 +164,7 @@ try {
     const fresh = (wrapper, doc = document) => {
       const memory = new WebAssembly.Memory({ initial: 2 });
       let length = 0, reserved = 0, initCalls = 0, boot;
-      const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 22,
+      const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 23,
         boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
         cmd_ptr: () => 0, cmd_len: () => length,
         payload_reserve(size) { reserved = size; return 65536; },
@@ -242,7 +242,7 @@ try {
     }
     const wrapper = document.createElementNS(svg, "s:foreignObject"); document.body.append(wrapper);
     const measured = fresh(wrapper); measured.rt.mount();
-    const expectedRoot = [13, ...word(1 + text("s").length + text("foreignObject").length), 1, ...text("s"), ...text("foreignObject")];
+    const expectedRoot = [13, ...word(1 + text("s").length + text("foreignObject").length), 1, ...text("s"), ...text("foreignObject"), ...section(14, [0])];
     check("boot carries the actual wrapper URI prefix and exact local in engine-only section13", JSON.stringify(measured.boot.slice(-expectedRoot.length)) === JSON.stringify(expectedRoot));
     measured.rt.unmount(); wrapper.remove();
     runtime.unmount(); root.remove();

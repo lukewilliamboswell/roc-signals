@@ -6,7 +6,8 @@ name: CI
 # --without-sizes`, in parts of `check -- --part K/N`), Fuzz smoke (every
 # registered fuzz target's fixed examples, in shards of `fuzz-smoke`) and
 # Site: `blueprint run site` builds the site, its API docs and its live
-# examples, whose --opt=size modules it also reports by size for the gate. CI never runs a fuzz campaign: campaigns are a
+# examples, whose --opt=size modules it also reports by size for the gate.
+# CI never runs a fuzz campaign: campaigns are a
 # contributor's `blueprint run fuzz`. The macOS and Windows jobs run apps'
 # specs with the spec runner `roc build` makes there, as an app author on
 # that system does. A push to main also deploys that build to GitHub Pages,
@@ -71,13 +72,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@14a895879f6fea8c2d1a546a2a56c8502decb2a0
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@6c796f299012707d2e9bad23fd6449ed93f1f475
         with:
           cache: 'true'
           cache-workload: engine
-      - uses: roc-lang/setup-roc@f5a74bf90aa694b43ab4a7cbfdb19273bc6aa697
+      - uses: roc-lang/setup-roc@dd81390553b0a1236aedb61cdd4c0ed7cf7eaec4
         with:
-          version: nightly-new-compiler
+          version: nightly
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint check
       # The fuzz targets are the Fuzz smoke job's; check prints a SKIP line
@@ -89,8 +90,7 @@ jobs:
         run: blueprint run check -- --without-fuzz --without-sizes --part "$((INDEX + 1))/$TOTAL"
 
   # One result for the whole matrix, the check a pull request requires:
-  # it passes only when every part passed and the Site job, which makes
-  # the gate's size report of the examples' shipping modules, passed.
+  # it passes only when every part and the Site size report passed.
   check:
     name: Check
     needs: [check-part, site]
@@ -130,13 +130,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@14a895879f6fea8c2d1a546a2a56c8502decb2a0
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@6c796f299012707d2e9bad23fd6449ed93f1f475
         with:
           cache: 'true'
           cache-workload: engine
-      - uses: roc-lang/setup-roc@f5a74bf90aa694b43ab4a7cbfdb19273bc6aa697
+      - uses: roc-lang/setup-roc@dd81390553b0a1236aedb61cdd4c0ed7cf7eaec4
         with:
-          version: nightly-new-compiler
+          version: nightly
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - env:
           INDEX: ${{ strategy.job-index }}
@@ -181,13 +181,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@14a895879f6fea8c2d1a546a2a56c8502decb2a0
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@6c796f299012707d2e9bad23fd6449ed93f1f475
         with:
           cache: 'true'
           cache-workload: engine
-      - uses: roc-lang/setup-roc@f5a74bf90aa694b43ab4a7cbfdb19273bc6aa697
+      - uses: roc-lang/setup-roc@dd81390553b0a1236aedb61cdd4c0ed7cf7eaec4
         with:
-          version: nightly-new-compiler
+          version: nightly
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint run platform
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -201,8 +201,9 @@ jobs:
   # them); only the system itself shows the runner works there. Each runner
   # builds a small app's and the worker apps' spec runners from those
   # inputs, as an app author on that system does, and runs their specs:
-  # worker jobs in child processes, a crashing job, preparations, deadlines
-  # and the file services. Then two specs that must fail: one expecting the
+  # worker jobs in child processes, a crashing job, preparations, deadlines,
+  # debug output and the file services. Geometry and modifier suites also
+  # run in Chrome on each system. Then two specs that must fail: one expecting the
   # wrong fault class for a crash, and one whose job never finishes, which
   # the runner ends at its 30 s bound.
   native-specs:
@@ -216,7 +217,7 @@ jobs:
           - { name: macOS (Intel), os: macos-15-intel, target: x64mac, exe: '' }
           - { name: Windows, os: windows-2025, target: x64win, exe: .exe }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 50
     permissions:
       contents: read
     defaults:
@@ -226,7 +227,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@14a895879f6fea8c2d1a546a2a56c8502decb2a0
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@6c796f299012707d2e9bad23fd6449ed93f1f475
         with:
           cache: 'true'
           cache-workload: engine
@@ -234,9 +235,9 @@ jobs:
         with:
           name: spec-inputs
           path: platform/targets
-      - uses: roc-lang/setup-roc@f5a74bf90aa694b43ab4a7cbfdb19273bc6aa697
+      - uses: roc-lang/setup-roc@dd81390553b0a1236aedb61cdd4c0ed7cf7eaec4
         with:
-          version: nightly-new-compiler
+          version: nightly
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - env:
           TARGET: ${{ matrix.target }}
@@ -244,12 +245,13 @@ jobs:
           BUILD: .build/native
         run: |
           failed=0
-          for app in examples/form-builder tests/apps/files tests/apps/tasks tests/apps/prepared tests/apps/workers; do
+          for app in examples/form-builder tests/apps/files tests/apps/tasks tests/apps/prepared tests/apps/workers tests/apps/dbg tests/apps/dbg-job-only; do
             name=$(basename "$app")
             runner="$BUILD/$name/runner$EXE"
             mkdir -p "$BUILD/$name"
             echo "== $app"
             roc build --opt=dev --target="$TARGET" "$app/main.roc" --output="$runner" || { failed=1; continue; }
+            "$runner" --check-suite "$app"/specs/*.scm > "$BUILD/$name/suite.jsonl" || failed=1
             "$runner" "$app"/specs/*.scm > "$BUILD/$name/results.jsonl" || failed=1
             grep -v '"status":"passed"' "$BUILD/$name/results.jsonl" || true
           done
@@ -266,6 +268,22 @@ jobs:
           fi
           grep -q 'did not finish within 30 s' "$BUILD/bound.jsonl" || { echo "the bound did not end the job:"; cat "$BUILD/bound.jsonl"; failed=1; }
           exit $failed
+      - name: Geometry and modifier specs in Chrome
+        env:
+          TARGET: ${{ matrix.target }}
+          EXE: ${{ matrix.exe }}
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            chrome='C:/Program Files/Google/Chrome/Application/chrome.exe'
+          else
+            chrome='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+          fi
+          test -x "$chrome" || { echo "Chrome is missing: $chrome"; exit 1; }
+          node tests/native/selected-specs.mjs --roc roc --target "$TARGET" --exe "$EXE" --chrome "$chrome" --build .build/native-conformance
+      - name: Native debug output contract
+        env:
+          EXE: ${{ matrix.exe }}
+        run: node tests/native/dbg-output.mjs --runner ".build/native/dbg/runner$EXE"
       # The signals.roc tool as an author on this system runs it: the
       # checkout's package (cli/, whose Bundle.roc reads the runtime and the
       # scaffold from the working tree) in place of a release's, and an app
@@ -285,6 +303,11 @@ jobs:
           echo "== init ($cli_url, $ROC_NIGHTLY)"
           roc signals.roc init tool-app || exit 1
           cd tool-app
+          visible_path='parent/long-visible-directory-with-more-than-24-bytes/file.txt'
+          hidden_path='parent/.hidden-directory-with-more-than-24-bytes/file.txt'
+          mkdir -p parent/long-visible-directory-with-more-than-24-bytes parent/.hidden-directory-with-more-than-24-bytes
+          printf '%s\n' 'visible asset' > "$visible_path"
+          printf '%s\n' 'hidden asset' > "$hidden_path"
           echo "== test"
           roc signals.roc test || failed=1
           sed 's/"2")/"3")/' specs/counter.scm > specs/wrong.scm
@@ -296,6 +319,10 @@ jobs:
           echo "== build"
           roc signals.roc build || failed=1
           ls dist/index.html dist/assets/*/app.wasm dist/assets/*/runtime.mjs dist/assets/*/worker.mjs dist/assets/*/environment.mjs || failed=1
+          cmp "$visible_path" dist/assets/*/"$visible_path" || failed=1
+          for asset_dir in dist/assets/*; do
+            if [ -e "$asset_dir/$hidden_path" ]; then echo "build copied a hidden asset"; failed=1; fi
+          done
           echo "== serve"
           roc signals.roc serve --port 8123 > serve.txt 2>&1 &
           for i in $(seq 1 120); do curl -sf -o /dev/null http://127.0.0.1:8123/ && break; sleep 1; done
@@ -306,8 +333,20 @@ jobs:
             echo "$1: $type"
             case "$type" in "$2"*) ;; *) failed=1 ;; esac
           done
+          visible_status=$(curl -s -o ../served-visible.txt -w '%{http_code}' "http://127.0.0.1:8123/$visible_path")
+          [ "$visible_status" = 200 ] && cmp "$visible_path" ../served-visible.txt || failed=1
+          hidden_status=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8123/$hidden_path")
+          [ "$hidden_status" = 404 ] || failed=1
           curl -s http://127.0.0.1:8123/ | grep -q '__signals/events' || { echo "no reload script in the page"; failed=1; }
           exit $failed
+      - name: Preserve failed native and Chrome conformance inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-conformance-${{ matrix.target }}
+          path: .build/native-conformance/
+          if-no-files-found: warn
+          retention-days: 3
 
   site:
     name: Site
@@ -320,13 +359,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@14a895879f6fea8c2d1a546a2a56c8502decb2a0
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@6c796f299012707d2e9bad23fd6449ed93f1f475
         with:
           cache: 'true'
           cache-workload: site
-      - uses: roc-lang/setup-roc@f5a74bf90aa694b43ab4a7cbfdb19273bc6aa697
+      - uses: roc-lang/setup-roc@dd81390553b0a1236aedb61cdd4c0ed7cf7eaec4
         with:
-          version: nightly-new-compiler
+          version: nightly
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint run site
       - if: github.event_name == 'push' && github.ref == 'refs/heads/main'

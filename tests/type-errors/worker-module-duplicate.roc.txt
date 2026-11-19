@@ -8,6 +8,3 @@ job = Worker.task({ name: "test/duplicate-worker", run!: |value| Ok(value) })
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("")).with_workers([job.registration()]).with_workers([job.registration()])
-
-## This fixture has no shared store or default-mount constant.
-Store : {}

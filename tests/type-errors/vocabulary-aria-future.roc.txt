@@ -6,4 +6,3 @@ value = "aria-future-proposal"
 
 main : Engine.Program
 main = Engine.program(|| Engine.text(""))
-Store : {}

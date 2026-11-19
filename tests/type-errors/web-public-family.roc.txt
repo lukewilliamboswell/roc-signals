@@ -15,5 +15,3 @@ upload : Engine.File -> Engine.Ask(Engine.Response, Engine.HttpFailure)
 upload = |file| file.upload({ url: "/" })
 main : Engine.Program
 main = Engine.program(|| Engine.element(tag, [Engine.attr(attribute, method.text())], [Engine.text(event.text())]))
-
-Store : {}

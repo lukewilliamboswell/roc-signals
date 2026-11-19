@@ -2,6 +2,8 @@ import Core
 import Web
 import Layout
 import TableCore
+import EntryRoutes
+import SignalCore
 
 ## The authoring API of the roc-signals web platform: the reactive engine as an
 ## app sees it.
@@ -278,7 +280,7 @@ Engine := [].{
 		## The table has no order of its own.
 		from_list : List({ key : k, row : v }) -> Try(Table(k, v), [DuplicateKey(k)])
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-		from_list = |entries| match TableCore.Table.from_list(entries) {
+		from_list = |keyed_rows| match TableCore.Table.from_list(keyed_rows) {
 			Ok(built) => Ok({ t: built })
 			Err(DuplicateKey(key)) => Err(DuplicateKey(key))
 		}
@@ -497,7 +499,7 @@ Engine := [].{
 	## contract error.
 	table_view : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
 		where [ctx.store : () -> Reach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
-	table_view = |{ c }, { query, plan, window }, template| Core.table_view(inner_cell(c), { query: core_signal(query), plan, window: core_signal(window) }, |key, row| template(Varies(key), { s: row }))
+	table_view = |{ c }, { query, plan, window }, template| Core.table_view(inner_cell(c), { query: core_signal(query), plan, window: core_signal(window) }, |key, row| template(SignalCore.varying(key), { s: row }))
 
 	## An app's store: the cells it holds, their starting values, and the
 	## cells it gives to readers. Build it once with `store`, as a top-level value a
@@ -582,61 +584,7 @@ Engine := [].{
 	## read: `{ filter: cells.filter.signal(), sort: cells.sort.signal() }.Engine.Signal`.
 	## It is how a decision takes a reading of several cells (`handle_by`,
 	## `react_by`) and how a table view's query is made of two.
-	Signal(ctx, a) :: [Fixed(a), Varies(Core.Signal(ctx, a))].{
-
-		## Transform a signal without changing its reads. A constant is mapped
-		## once at construction; a varying input is mapped whenever it is read.
-		map : Signal(ctx, a), (a -> b) -> Signal(ctx, b)
-		map = |signal, f| match signal {
-			Fixed(value) => Fixed(f(value))
-			Varies(value) => Varies(value.map(f))
-		}
-
-		## Combine two readings, or map once when both inputs are constant.
-		## One constant input preserves the other's keyed selection. Two varying
-		## inputs read their union, as does the signal record builder.
-		map2 : Signal(ctx, a), Signal(ctx, b), (a, b -> c) -> Signal(ctx, c)
-		map2 = |left, right, f| match (left, right) {
-			(Fixed(a), Fixed(b)) => Fixed(f(a, b))
-			(Fixed(a), Varies(b)) => Varies(b.map(|value| f(a, value)))
-			(Varies(a), Fixed(b)) => Varies(a.map(|value| f(value, b)))
-			(Varies(a), Varies(b)) => Varies(a.map2(b, f))
-		}
-
-		## Use this reading inside a nested state or derived layer, preserving
-		## its dependencies. A constant needs no reader in either context.
-		lift : Signal(ctx, a) -> Signal(In(ctx, s), a)
-		lift = |signal| match signal {
-			Fixed(value) => Fixed(value)
-			Varies(value) => Varies(value.lift())
-		}
-
-		## Use this reading inside a row, preserving its dependencies. A row key
-		## remains varying even though it reads no layer.
-		lift_row : Signal(ctx, a) -> Signal(Row(ctx, item), a)
-		lift_row = |signal| match signal {
-			Fixed(value) => Fixed(value)
-			Varies(value) => Varies(value.lift_row())
-		}
-
-		## A text literal is a constant signal. It can be used wherever a text
-		## signal is expected, without wrapping the literal in Engine.const.
-		from_quote : Str -> Try(Signal(ctx, Str), [BadQuotedBytes(Str)])
-		from_quote = |quoted| Ok(Fixed(quoted))
-
-		## Join constant text and signal parts into one text reading. Fixed parts
-		## are assembled at construction; varying parts share one reader. Parts
-		## must provide to_text_signal, so a plain Str value is wrapped in const.
-		from_interpolation : List(Str) -> Try((Iter(part) -> Signal(ctx, Str)), [InvalidInterpolation(Str)])
-			where [part.to_text_signal : part -> Signal(ctx, Str)]
-		from_interpolation = |segments| Ok(|parts| interpolate_text(segments, parts.map(|part| part.to_text_signal())))
-
-		## Use a signal's user-facing text as an interpolation part. Convert
-		## different part value types to text signals before combining them.
-		to_text_signal : Signal(ctx, a) -> Signal(ctx, Str)
-			where [a.to_str : a -> Str]
-		to_text_signal = |signal| signal.map(|value| value.to_str())
-	}
+	Signal(ctx, a) : SignalCore.Value(ctx, a)
 
 	## An event handler usable in context `ctx`: what an event writes, given
 	## a payload of type `p`. An attach function chooses the payload kind, so
@@ -747,6 +695,14 @@ Engine := [].{
 	http_body : HttpProps -> Ask(Str, HttpError)
 	http_body = Core.http_body
 
+	## Request current URL, connectivity, visibility, time, entropy, languages,
+	## time zone and declared storage/media values after construction. Use this
+	## to update deterministic initial UI from live facts. The normal in-flight
+	## bound applies; admission beyond it answers Err(Refused). Facts are sampled
+	## when the next browser-task read runs, after startup acknowledgement.
+	environment : {} -> Ask(Boot, [Refused])
+	environment = Core.environment
+
 	## Sample the wall clock once after the delay; Timer(0) is a legal sample.
 	timer : U32 -> Ask(I64, [Refused])
 	timer = Core.timer
@@ -845,7 +801,7 @@ Engine := [].{
 
 		## The state's current value.
 		signal : State(ctx, s) -> Signal(ctx, s)
-		signal = |{ s }| Varies(s.signal())
+		signal = |{ s }| SignalCore.varying(s.signal())
 
 		## A handler that replaces the state with `f` of it, ignoring the event's
 		## payload.
@@ -909,12 +865,12 @@ Engine := [].{
 
 		## The row's key. It is fixed for the row's lifetime, so it never triggers a refresh.
 		key : RowRef(outer, item) -> Signal(Row(outer, item), Str)
-		key = |{ r }| Varies(r.key())
+		key = |{ r }| SignalCore.varying(r.key())
 
 		## A projection of the row's item. It is re-evaluated only for rows whose new
 		## item differs from the old one.
 		field : RowRef(outer, item), (item -> a) -> Signal(Row(outer, item), a)
-		field = |{ r }, f| Varies(r.field(f))
+		field = |{ r }, f| SignalCore.varying(r.field(f))
 
 		## The row's whole item, for a handler or a reaction that takes it
 		## as its reading (`Engine.handle_by(row.item(), ..)`). Like `field`,
@@ -922,12 +878,12 @@ Engine := [].{
 		## old one; a hole that shows one part of the item reads that part
 		## with `field`.
 		item : RowRef(outer, item) -> Signal(Row(outer, item), item)
-		item = |{ r }| Varies(r.item())
+		item = |{ r }| SignalCore.varying(r.item())
 
 		## `yes` or `no` from a [Keyed] selection, depending on whether this row's key
 		## is the selected one.
 		select : RowRef(outer, item), Keyed(outer, v) -> Signal(Row(outer, item), v)
-		select = |{ r }, kd| Varies(r.select(kd))
+		select = |{ r }, kd| SignalCore.varying(r.select(kd))
 	}
 
 	## An attribute, event listener or focus reference on an element, in context
@@ -1010,7 +966,7 @@ Engine := [].{
 	## places. Values from the enclosing context enter `body` with `lift`.
 	derive : Signal(ctx, a), (Signal(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	derive = |input, body| Core.derive(core_signal(input), |v| body(Varies(v)))
+	derive = |input, body| Core.derive(core_signal(input), |v| body(SignalCore.varying(v)))
 
 	## A request from an effect site.
 	##
@@ -1055,6 +1011,7 @@ Engine := [].{
 	Request : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Method, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32, cache : Cache, credentials : Credentials }),
+		EnvironmentSnapshot,
 		StorageGet(Str),
 		SessionStorageGet(Str),
 		StorageChanges(Str),
@@ -1174,7 +1131,7 @@ Engine := [].{
 	## sent, or a response whose body is a file
 	## (`Fetched`). Cryptography answers with a `CryptoKey`, `CryptoBytes`,
 	## `CryptoSealed` or typed `CryptoFailed`; use WebCrypto to read them.
-	Result : [CryptoKey(CryptoKey), CryptoBytes(List(U8)), CryptoSealed({ iv : List(U8), ciphertext : List(U8) }), CryptoFailed(CryptoError), Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
+	Result : [Environment(Boot), CryptoKey(CryptoKey), CryptoBytes(List(U8)), CryptoSealed({ iv : List(U8), ciphertext : List(U8) }), CryptoFailed(CryptoError), Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name and the files its `{"$file":N}` markers
@@ -1360,7 +1317,7 @@ Engine := [].{
 	## skipped and counted. Signals from outside enter `body` with `lift`.
 	resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Ask(output, error))), resolve : (s, a, Try(output, error) -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
-	resource = |input, cfg, body| Core.resource(core_signal(input), cfg, |v| body(Varies(v)))
+	resource = |input, cfg, body| Core.resource(core_signal(input), cfg, |v| body(SignalCore.varying(v)))
 
 	## What a resource that follows one answer holds (`Worker.resource`,
 	## `Port.resource`): whether a request for the current input is in flight,
@@ -1405,7 +1362,7 @@ Engine := [].{
 	## allows (32 by default). Disposal follows `resource`.
 	gather : asker, Signal(ctx, List(input)), (Signal(In(ctx, Gathered(output, error)), Gathered(output, error)) -> Elem(In(ctx, Gathered(output, error)))) -> Elem(ctx)
 		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
-	gather = |asker, inputs, body| Core.resource_at(core_signal(inputs), Core.gather(asker), |v| body(Varies(v)))
+	gather = |asker, inputs, body| Core.resource_at(core_signal(inputs), Core.gather(asker), |v| body(SignalCore.varying(v)))
 
 	## An outbox in the app's state: the latest thing a handler posted for
 	## an `on_post` site to send. A handler posts with `box.post(item)`,
@@ -1444,7 +1401,8 @@ Engine := [].{
 	on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Ask(output, error))), Reaction(ctx, item, Try(output, error)) -> Elem(ctx)
 	on_post_by = |box, reading, plan, reaction| Core.on_post_by(core_signal(box), core_signal(reading), plan, reaction)
 
-	## What the host knows before the first render: the URL, independently
+	## Environment facts from a boot-based first render or an environment
+	## request: the URL, independently
 	## declared local and session storage keys' values (missing keys are absent),
 	## whether each storage service is available, and whether the browser is
 	## online and the page visible. An unavailable service has an empty list;
@@ -1453,13 +1411,13 @@ Engine := [].{
 	## All fields have defaults: a URL of `/`, empty available local and session
 	## storage, online and visible, with no media queries, time and seed zero,
 	## en-US and full-range UTC. The wall time, entropy seed, languages and zone
-	## are fixed facts for this instance; a fresh clock sample arrives on Fired.
-	## Declared media values arrive before first paint; boot_media reads one or
+	## stay fixed within this returned value; request fresh facts or use a timer
+	## for another clock sample. boot_media reads a declared query or
 	## reports Undeclared.
 	Boot : Core.Boot
 
 	## The user's UTC offsets over an inclusive millisecond span, as boot
-	## measured them (`boot.zone`). Opaque: only boot, which checks the table,
+	## measured them (`boot.zone`). Opaque: only checked boot/environment data,
 	## and `utc` make one. `zone.name()` is the browser's IANA name for it
 	## (`""` when unknown), and `zone.offset_at(at_ms)` the minutes east of
 	## UTC at a time, or `Err(OutsideZone)` beyond the span, where the
@@ -1501,7 +1459,7 @@ Engine := [].{
 
 	## A signal that never changes. It reads no state or cell, so it triggers no refresh.
 	const : a -> Signal(ctx, a)
-	const = |value| Fixed(value)
+	const = |value| SignalCore.fixed(value)
 
 	## Build an element from a checked tag, attributes and children. `Html`
 	## offers typed helpers for common elements and controls.
@@ -1543,9 +1501,9 @@ Engine := [].{
 	## A text node whose content follows a value; the DOM is written only when
 	## the text changes.
 	text_s : Signal(ctx, Str) -> Elem(ctx)
-	text_s = |signal| match signal {
-		Fixed(value) => Core.text(value)
-		Varies(value) => Core.text_s(value)
+	text_s = |signal| match SignalCore.representation(signal) {
+		Constant(value) => Core.text(value)
+		Reading(value) => Core.text_s(value)
 	}
 
 	## Set literal attribute text, including empty and "false" text as present.
@@ -1559,9 +1517,9 @@ Engine := [].{
 	## an element property are rejected on that property's elements; use
 	## `prop_s` for live control state.
 	attr_s : AttrName, Signal(ctx, Str) -> Attr(ctx)
-	attr_s = |name, signal| match signal {
-		Fixed(value) => Core.attr_named(name, value)
-		Varies(value) => Core.attr_named_s(name, value)
+	attr_s = |name, signal| match SignalCore.representation(signal) {
+		Constant(value) => Core.attr_named(name, value)
+		Reading(value) => Core.attr_named_s(name, value)
 	}
 
 	## Follow explicit presence: empty and "false" text remain present, and
@@ -1577,9 +1535,9 @@ Engine := [].{
 
 	## A `class` attribute that follows a value.
 	class_s : Signal(ctx, Str) -> Attr(ctx)
-	class_s = |signal| match signal {
-		Fixed(value) => Core.class(value)
-		Varies(value) => Core.class_s(value)
+	class_s = |signal| match SignalCore.representation(signal) {
+		Constant(value) => Core.class(value)
+		Reading(value) => Core.class_s(value)
 	}
 
 	## A static `data-testid` attribute, for spec locators.
@@ -1588,9 +1546,9 @@ Engine := [].{
 
 	## A `data-testid` attribute that follows a value.
 	test_id_s : Signal(ctx, Str) -> Attr(ctx)
-	test_id_s = |signal| match signal {
-		Fixed(value) => Core.test_id(value)
-		Varies(value) => Core.test_id_s(value)
+	test_id_s = |signal| match SignalCore.representation(signal) {
+		Constant(value) => Core.test_id(value)
+		Reading(value) => Core.test_id_s(value)
 	}
 
 	## Listen for an event's text payload by its bare event name. Custom names
@@ -1691,9 +1649,9 @@ Engine := [].{
 
 	## Follow a signal with a property, writing only when its value changes.
 	prop_s : Prop(a), Signal(ctx, a) -> Attr(ctx)
-	prop_s = |{ p }, signal| match signal {
-		Fixed(value) => Core.prop(p, value)
-		Varies(value) => Core.prop_s(p, value)
+	prop_s = |{ p }, signal| match SignalCore.representation(signal) {
+		Constant(value) => Core.prop(p, value)
+		Reading(value) => Core.prop_s(p, value)
 	}
 
 	## Where the browser aligns a target within its scrolling ancestors.
@@ -1724,9 +1682,9 @@ Engine := [].{
 	## registers nothing; two live elements with one name are a contract error
 	## checked at the end of the turn. Changing a name emits no DOM command.
 	ref_s : Signal(ctx, Str) -> Attr(ctx)
-	ref_s = |signal| match signal {
-		Fixed(value) => Core.ref(value)
-		Varies(value) => Core.ref_s(value)
+	ref_s = |signal| match SignalCore.representation(signal) {
+		Constant(value) => Core.ref(value)
+		Reading(value) => Core.ref_s(value)
 	}
 
 	## Receive modifiers and the nearest link's authored destination, target and
@@ -1753,9 +1711,9 @@ Engine := [].{
 	## tasks its `Work` requests may name:
 	## `Engine.program(view).with_workers([count.registration()])` for a
 	## `Worker.task`, and `with_ports` the ports the page's JavaScript supplies.
-	## The parameter names the plain store the instance holds beside its sites.
-	## An app declares it once as Store in its entry; the compiler prints the
-	## concrete type when that declaration is missing or out of date.
+	## The parameter is the type of the plain store the instance holds beside
+	## its sites. The platform infers it from `main`; no separate app-level
+	## `Store` declaration is required.
 	Program(st) : Core.Program(st)
 
 	## Check the default first page while the app compiles. Bind this call as
@@ -1771,6 +1729,38 @@ Engine := [].{
 	## A worker task or preparation for `Program.with_workers`. Make one with
 	## a typed task's or preparation's `registration` (see `Worker`).
 	Registration : Core.Registration
+
+	## A canonical root-relative initial-entry path. Literal and computed path
+	## constructors refuse query/fragment facts and spellings needing repair.
+	EntryPath : EntryRoutes.Path
+
+	## Declared mount identity and an optional fallback entry path. Defaults
+	## describe an HTML div and refuse unknown paths instead of selecting home.
+	EntryProps : EntryRoutes.Props
+
+	## An immutable finite route catalogue reused by build enumeration, initial
+	## entry selection and typed path lookup. Each mounted app owns fresh state.
+	Entries(route) : EntryRoutes.Catalogue(route)
+
+	## Declare concrete initial entries once. Paths and typed routes are unique;
+	## a fallback must name a declared path. An invalid constant fails while the
+	## catalogue is built. The catalogue holds at most 4096 entries and 65536
+	## encoded path bytes, with each path at most 2048 UTF-8 bytes.
+	entries : EntryProps, List({ path : EntryPath, route : route }) -> Entries(route)
+		where [route.is_eq : route, route -> Bool, route.to_hash : route, Hasher -> Hasher]
+	entries = EntryRoutes.make
+
+	## Build a deterministic first frame for every declared entry. The callback
+	## receives its fixed route, without live Boot. Later browser facts arrive
+	## through ordinary effects; generated pages bind the complete initial DOM.
+	program_startup : ProgramProps, Entries(route), (route -> Elem(Root)) -> Program({})
+	program_startup = |cfg, catalogue, view| Core.program_startup(cfg, catalogue, |_| Core.no_store, view)
+
+	## Start each deterministic route with its own fresh store and scopes. The
+	## fixed-route initializer may return an ordinary prepared Store description;
+	## it cannot sample the browser's live Boot or share mounted instance state.
+	program_startup_store : ProgramProps, Entries(route), (route -> Store(st, h)), (route -> Elem(StoreRoot(st))) -> Program(st)
+	program_startup_store = |cfg, catalogue, initial, view| Core.program_startup(cfg, catalogue, |route| initial(route).s.initial(), view)
 
 	## The [Program] for an app that needs no boot data: mount `view()` with the
 	## default in-flight bound of 32.
@@ -1807,7 +1797,7 @@ EngineCell(st, a) :: { c : Core.Cell(st, a) }.{
 	## The cell's current value.
 	signal : Engine.Cell(st, a) -> Engine.Signal(ctx, a)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
-	signal = |{ c }| Varies(c.signal())
+	signal = |{ c }| SignalCore.varying(c.signal())
 
 	## The cell as a [Engine.State] of the context this is called in, for a
 	## component that takes a `State(ctx, a)` and should not care whether
@@ -1865,37 +1855,7 @@ expect {
 ## Convert the public representation only at an engine boundary. Constants
 ## become readers here, without keeping a second holder beside their value.
 core_signal : Engine.Signal(ctx, a) -> Core.Signal(ctx, a)
-core_signal = |signal| match signal {
-	Fixed(value) => Core.const(value)
-	Varies(value) => value
-}
-
-## The compiler supplies one more segment than parts. Check that same rule
-## for a manual hook call rather than silently dropping text or a part.
-interpolate_text : List(Str), Iter(Engine.Signal(ctx, Str)) -> Engine.Signal(ctx, Str)
-interpolate_text = |segments, parts| {
-	var $fixed = [segments.first() ?? crash "contract: Signal.from_interpolation needs an initial text segment"]
-	var $varying = []
-	var $index = 1.U64
-	for part in parts {
-		next = segments.get($index) ?? crash "contract: Signal.from_interpolation has more parts than text segments"
-		match part {
-			Fixed(value) => {
-				$fixed = $fixed.append(value).append(next)
-			}
-			Varies(value) => {
-				$varying = $varying.append({ prefix: Str.join_with($fixed, ""), value })
-				$fixed = [next]
-			}
-		}
-		$index = $index + 1
-	}
-	if $index != segments.len() {
-		crash "contract: Signal.from_interpolation has fewer parts than text segments"
-	}
-	suffix = Str.join_with($fixed, "")
-	if ($varying.is_empty()) Fixed(suffix) else Varies(Core.join_text($varying, suffix))
-}
+core_signal = SignalCore.to_core
 
 ## Literal and all-fixed interpolation results stay fixed through mapping
 ## and lifting, without inferring constants from a signal's mask.
@@ -1906,8 +1866,8 @@ expect {
 	joined = "before ${Engine.const("fixed")} after"
 	mapped : Engine.Signal(Engine.Row(Engine.In(Engine.Root, {}), Str), Str)
 	mapped = literal.map(|text| "${text}!").lift().lift_row()
-	actual = match (mapped, joined) {
-		(Fixed(a), Fixed(b)) => { mapped: a, joined: b }
+	actual = match (SignalCore.representation(mapped), SignalCore.representation(joined)) {
+		(Constant(a), Constant(b)) => { mapped: a, joined: b }
 		_ => { mapped: "varying", joined: "varying" }
 	}
 	actual == { mapped: "literal!", joined: "before fixed after" }
@@ -1917,7 +1877,7 @@ expect {
 ## declared dependencies; explicit text conversion combines differing types.
 expect {
 	count : Engine.Signal(U64, U64)
-	count = Varies({ mask: 1, read: |value| value, sel: NoSel })
+	count = SignalCore.varying({ mask: 1, read: |value| value, sel: NoSel })
 	caption : Engine.Signal(U64, Str)
 	caption = "count ${count}!"
 	mixed : Engine.Signal(U64, Str)
@@ -1929,7 +1889,7 @@ expect {
 ## map2 keeps a varying row's selection when its other input is truly fixed.
 expect {
 	selected : Engine.Signal(Str, Str)
-	selected = Varies({ mask: 0, read: |key| key, sel: Sel(8, |key| key) })
+	selected = SignalCore.varying({ mask: 0, read: |key| key, sel: Sel(8, |key| key) })
 	joined = selected.map2(Engine.const("!"), |key, ending| "${key}${ending}")
 	value = core_signal(joined)
 	selection = match value.sel {

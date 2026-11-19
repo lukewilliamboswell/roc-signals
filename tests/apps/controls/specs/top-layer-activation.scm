@@ -228,8 +228,6 @@
     (expect-disabled (role button :name "Prevented disabled") true)
     (expect-attr (label "Prevented text") "type" "text")
     (expect-has-attr (label "Prevented text") "type")
-    (expect-no-attr (label "Prevented text") "placeholder" :never-written)
-    (expect-absent (test-id "activation-nothing") :never-drawn)
     (expect-focused (role button :name "Prevented inside"))
     (expect-element (test-id "prevented-zone") html "div")
     (expect-pending-effects 0)

@@ -84,7 +84,9 @@ try {
       const absent = sessionStorage.getItem("draft") === null;
       f.end();
       const unavailable = window.__fixture({ sessionStorage: { getItem: () => { throw Error("blocked"); } } }, ["draft"]);
-      const bootFlag = unavailable.boot.at(-5); unavailable.end();
+      let bootFlag;
+      for (let at = 0; at < unavailable.boot.length;) { const tag = unavailable.boot[at], length = new DataView(unavailable.boot.buffer).getUint32(at + 1, true); if (tag === 11) bootFlag = unavailable.boot[at + 5]; at += 5 + length; }
+      unavailable.end();
       return { session, expected, before, answer, absent, bootFlag };
     });
     check("session boot section has the declared values and availability", result.session, result.expected);

@@ -42,7 +42,7 @@ try {
       if (produced) { owner.setAttributeNS(null, "inert", ""); owner.setAttributeNS(null, "data-roc-picture-inert", "added"); }
       const memory = new WebAssembly.Memory({ initial: 2 }); let length = 0, calls = 0, faults = [];
       const write = bytes => { new Uint8Array(memory.buffer).set(bytes); length = bytes.length; };
-      const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 22, boot_keys() { write(declarations); }, cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
+      const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 23, boot_keys() { write(declarations); }, cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
         init() { calls++; init(); const ns = kind === "svg" ? 1 : kind === "math" ? 2 : 0, tag = kind === "svg" ? "foreignObject" : kind === "math" ? "mtext" : "div";
           const attribute = (id, key, value) => [9, ...word(id), 3, ...text(""), ...text(key), 1, ...text(value)];
           write([0, 8, ...word(1), ...word(0), ...word(0), ns, ...text(""), ...text(tag), 0,

@@ -24,7 +24,7 @@ the `blueprint` release that `Blueprint.roc` names (no Nix is needed) and the
 current Roc nightly as `roc` (see [Compilers](#compilers)). `blueprint shell`
 opens a shell with the tools on `PATH`.
 
-The platform and tooling pin the published roc-parser 6.0.0-rc.3 package.
+The platform and tooling pin the published roc-parser 6.0.0-rc.5 package.
 Roc downloads it automatically; no sibling parser checkout or setup task is needed.
 
 Chrome is the machine's `google-chrome` for now, because blueprint cannot yet
@@ -119,6 +119,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run platform` | Build the platform's link inputs with the pinned Zig, including matching PIC musl startup and libraries, to build an app's `main.roc` by hand (a fuzz target needs none: `roc build --fuzz` fetches its roc-fuzz release) |
 | `blueprint run jfb` | Build the js-framework-benchmark app as the benchmark measures it (`--opt=speed`) and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
+| `blueprint run startup-browsers -- [--with-deps]` | The small startup boundary corpus in Chromium, Firefox and WebKit: independent malformed-wire/native-state controls plus native prerendered HTML adopted by the same typed app compiled to Wasm. Builds only that app; the full SCM suite keeps its native/Chrome validation |
 | `blueprint run fuzz-smoke -- [TARGET...]` | Every registered fuzz target's fixed examples on plain optimized native builds, or the named targets; `-- --shard K/N` runs shard K of N, as CI does; never explores |
 | `blueprint run sizes -- [--runtime-only]` | Check shipped JavaScript Brotli sizes (gzip is reported); without the flag, also build and report each example's shipping module and development-only scripts |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign (600 s of exploration per target by default), local only: CI never runs one |
@@ -152,7 +153,12 @@ examples' class literals against that stylesheet: a string literal given as
 the class argument of `Engine.class` or of any `Html` function that passes
 one of its parameters to `Engine.class` (found in `platform/Html.roc`, so a
 new constructor is checked with no other edit), and one given to a record
-field named `class`, as an app's props carry it. An undefined class fails
+field named `class`, as an app's props carry it. Fixed `class` attributes in
+explicit `Html.Markup` and `Svg.Markup` declarations and literal suffixes are
+also checked with the pinned markup parser. Whole dynamic attribute holes
+remain dynamic; ordinary strings containing HTML remain prose. Roc escapes,
+markup character references and multiline strings retain their source lines.
+An undefined class fails
 the build with its source file and line. Complete static words around an
 interpolation are checked. A class built by a function, or held in a value
 under another name before it reaches a class argument, is not a literal at a
@@ -245,9 +251,10 @@ problems found before it.
     account for every spec it was given (see
     [Specs and contract tests](#specs-and-contract-tests)).
 12. The native lifetime contracts: file handles across pages run in fixed
-    orders in one runner process (`tests/native/file-lifetimes.mjs`), and the
-    native runner's `dbg` output (`tests/native/dbg-output.mjs`).
-13. A walk of 300 steps of every walked app in its native runner (below).
+    orders in one runner process (`tests/native/file-lifetimes.mjs`), the
+    native runner's `dbg` output (`tests/native/dbg-output.mjs`), and suite
+    evidence validation (`tests/native/suite-evidence.mjs`).
+13. Zero-step and 300-step walks of every walked app in its native runner (below).
 14. The check that the browser runner handles every form of the grammar and
     nothing else, and that a file its `choose-files` gives the app is read
     from disk (`replay.mjs --check-choose-files`: once its disk file is
@@ -399,6 +406,54 @@ is a parse error, and both runners implement every step, with Chrome as the
 reference for what it means. The language is
 documented in [Testing](@/docs/testing.md).
 
+Before executing a selected story or emitting its browser steps, the suite
+runs `RUNNER --check-suite FILE.scm...` over every spec file for that app.
+Each `:never-drawn`, `:never-written`, `:never-runs` or `:never-started`
+subject must have positive evidence somewhere in that suite. A marker cannot
+validate its own spelling; a name no story ever shows needs no negative
+assertion. Stories still start independently, and filtering does not narrow
+the files checked for evidence. This mode mounts nothing, reports one ordinary
+result per file, and distinguishes parse failures from missing suite evidence.
+
+Chrome replay disables OS occlusion backgrounding with Chromium's testing switch;
+minimized windows still report hidden, and frame delivery is never synthesized.
+It brings its page to the foreground before and after navigation and fixes
+its profile: a 1280 by 900 CSS-pixel viewport, device scale factor 1, zero-width
+scrollbars and bundled IBM Plex Sans and Mono fonts (`tests/browser/fonts/`, with their license). The fonts load
+before the first step, including after cross-document navigation; a missing
+font fails the replay. App-authored typography still applies. Scroll steps must
+reach their exact requested offsets, and pointer `:at` steps must hit their
+declared target under this profile; the native oracle gains no layout model.
+`tests/browser/page-profile.test.mjs` starts from different device metrics and
+checks foreground frame delivery and the profile across repeated navigation.
+Scroll observations require an actual animation frame and its following task
+within the existing idle deadline; starvation fails with the page’s visibility
+and focus state. Geometry outside this profile belongs in a browser contract with its dimensions stated explicitly.
+
+Ordinary Chrome replay serves an app's `public/` files from the origin root.
+The suite supplies `--public DIR`; pass the same option to a direct
+`tests/browser/replay.mjs` invocation. Only top-level route navigation gets
+the replay document. Missing resource and iframe URLs return 404. Embedded
+documents keep their own content and are outside the top-level instance's
+environment setup and mutation observer.
+
+CI runs the Log Explorer, Kanban Board, table test app and scores sample in
+both runners on macOS Apple Silicon, macOS Intel and Windows through
+`tests/native/selected-specs.mjs`. Those systems also run the debug apps and
+the native debug output contract, including a worker child's stderr. The
+complete app suites run in the Linux Check jobs; these selected portability
+checks do not replace them.
+
+Protocol checks compare the consumer metadata against observations of Core's
+actual kind/policy constructors, property constructors and rows, HTTP option
+encoders, namespace encoder, template compiler and child-container checks
+(`scripts/test_protocol.roc`, with a wrong-number control for every row).
+Core imports no consumer metadata. Opcode producer checks remain independent
+wire fixtures. Lists without a Core counterpart have their own tests:
+`keys-browser.mjs` checks every OutsideText input type, and
+`boot-fault-unit.mjs` rejects every exclusion omission and fault-class row
+swap while checking host codes 1–5 before declaration metadata exists.
+
 The suite (`check`, `spec`, the docs samples) hands each runner exactly the
 spec files it selected and judges the run as a whole
 (`SpecSuite.judge`): every selected spec must have exactly one result line,
@@ -435,21 +490,51 @@ paired spec keeps the actual SVG mount root. Pure template checks cover the
 parent/descriptor edge, reserved owner facts and aggregate output bounds;
 parent attributes are inserted only at a public parser opening-token boundary.
 The raw startup contracts cover producer-owned inertness across failure, retry
-and recovery. The tool's end-to-end check builds root and nested pictures and
-compares the complete published tree after a route-collision refusal.
+and recovery. These legacy replacement contracts remain separate from the
+annotated path. Its native contract app (`tests/fixtures/startup-build`) declares
+home/tasks entries and initial Self/refusal follow-ups. `startup-producer.mjs`
+checks declaration-only catalogue inspection, cold-frame capture, completed
+acknowledgement and root/token refusals. The tool's end-to-end check builds every
+declared entry by default, holds Wasm in Chrome, observes the cold page, then
+checks retained nodes, later scope replacement, interaction and the nested
+entry's shared asset receipt. A colliding declared output must leave the entire
+published tree unchanged. The legacy Worker Lab must explicitly opt out before
+its plain build runs real browser workers. A compiler-boundary edit injection
+checks that the project inventory guard refuses publication and preserves the
+same complete tree.
 
-The production workflow is `roc signals.roc build --picture URL...` from an
-app directory; it renders only the ordinary init batch, without delivering
-host answers. Startup uses ordinary replacement; it does not emit adoption
-claims, stage measured adoption facts or reuse the built node objects.
-Adoption remains a future Target in `design.md`. Changes to this producer or
-to the native oracle retain applicable actual optimized roc-fuzz fixed-example
-replays as well as native and Chrome contracts; frontend checks supplement
-those gates.
+`blueprint run startup-browsers` is an opt-in local engine-boundary check. Its
+test-only `playwright-core` 1.65.1 archive is SHA-256 locked in `Blueprint.lock`,
+and its CLI installs the matching Chromium, Firefox and WebKit revisions in
+Playwright's shared cache (`PLAYWRIGHT_BROWSERS_PATH` can select another cache).
+Use `-- --with-deps` on Linux to install the browsers' system dependencies too.
+This adds no npm project or application runtime dependency. The
+task builds `tests/apps/startup-corpus` natively and as Wasm, then runs that
+producer/consumer corpus and the independently encoded startup controls in
+each engine. Native pages, browser versions, retained-node/state observations
+and per-corpus logs are kept in `.build/startup-browsers/` (under
+`ROC_SIGNALS_BUILD_DIR` when set). This task is not run or required by CI;
+the ordinary native and Chrome SCM suites remain CI's application checks.
+
+The production workflow is `roc signals.roc build` from an app directory. It
+reads the compiled finite entry catalogue and stages all annotated pages with
+shared immutable assets. `--no-prerender` is the explicit plain-page path for a
+legacy or custom loader; legacy `--picture URL...` remains replacement-only.
+The original template's exact quoted `app.wasm`/`./app.wasm` loader reference
+receives `?roc-build=<asset hash>` before rendering; app-emitted markup and
+reserved annotations are never searched or rewritten. The native producer
+publishes the cold frame, validating its acknowledgement separately without
+performing hosted effects or providing their answers. It also starts a separate
+binding instance and checks its cold plan through `Dom.bind_cold` and its real
+acknowledgement before publication. The ordinary instance is dropped before
+the binding instance starts; only plain oracle metadata survives between them.
+This catches declaration-sensitive writers even when initially absent. Changes
+to this producer or the native oracle retain applicable optimized roc-fuzz fixed-example replays
+as well as native and browser contracts; frontend checks supplement those gates.
 
 A change to the wire protocol changes the engine's encoder and decoders,
 `platform/Dom.roc`, both hosts (`platform/host/host.zig`,
-`platform/host/spec.zig`), `platform/runtime.mjs`, `platform/environment.mjs`, `platform/worker.mjs`,
+`platform/host/spec.zig`), `platform/runtime.mjs`, `platform/startup.mjs`, `platform/environment.mjs`, `platform/worker.mjs`,
 the contract tests under `tests/` and Appendix B of `design.md` together,
 and bumps the protocol version.
 
@@ -576,7 +661,7 @@ or file handle may be left live. A failure names the step and the last six
 things the walk did. The walk needs nothing written for an app, so every
 app with specs is walked: `check-slow` walks each (`Slow.walks`: 10,000
 steps from seed 7 on a runner built at `--opt=speed`, the Markdown Editor
-five times for 2,000), and `check` 300 steps on the runner it built for the
+five times for 2,000), and `check` zero steps and 300 steps on the runner it built for the
 specs. The four test apps whose pages offer a contract error or a focus loop
 on purpose (`workers`, `ports`, `outbox`, `controls`) are not walked: a walk reaches that error and
 the instance is poisoned, as it must be. The walk is the spec runner's, so
@@ -627,8 +712,9 @@ that answers them.
 
 ## Fuzzing
 
-Every fuzz target is an ordinary [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz)
-app, whose platform (`fz`) is a roc-fuzz release. There are two kinds.
+Every fuzz property has an ordinary [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz)
+app using the published 0.7.0 platform (`fz`). Its implementation and saved
+inputs live beside the modules it tests. There are two kinds.
 
 The platform's own targets import the engine package,
 `platform/main-fuzz.roc`, as `pf`; they are its only users. They live under
@@ -652,6 +738,14 @@ shorthand), the worker wire format's decoder (`fuzz/wire`),
 the port message format's decoder (`fuzz/port-json`), URL parsing, builders
 and readers (`fuzz/url`), and DOM/Fetch name grammar (`fuzz/names`). Every
 target that drives the engine runs the settle check after every step.
+
+`fuzz/startup-placeholders` checks readiness and scoped replacement against a
+separate list-based FIFO/lifetime model. Its histories include cold-frame
+acknowledgement, zero in-flight capacity, false/true reappend, parent disposal
+and remount, nested activation, local state, current values at late activation
+and retained stale callbacks. It checks authored trees, exact text work and
+registration commands, generation lifetimes, task counters and allocation
+balance; it never reads the engine's queue to decide an expected outcome.
 
 An example's targets check its own pure logic and import nothing of the
 platform: `fuzz-<subject>.roc` beside the modules it imports, named for
@@ -679,18 +773,43 @@ not its inputs, carry the value.
 
 ### What runs where
 
-Every target is registered in `Targets.fuzz_targets`, and every run starts
-from that registry. A target's fixed examples are its declared examples
+Every member is registered in `Targets.fuzz_targets`, with its standalone
+app, canonical property module and suite root, and every run starts from that
+registry. Six suite apps share builds across the 30 members: rendering,
+lifecycle, codecs, syntax, example text and example data. The examples still
+import only their own pure modules. A `fuzz-package.roc` manifest exposes
+private property modules to a suite; it adds no application API and does not
+ship in the examples archive.
+
+The driver builds each selected suite once, verifies its complete
+`--list-targets` inventory, then selects each member with `--target=NAME`.
+Members retain their names, declared examples, saved input bytes, models,
+corpora, baselines and report directories. Named selection builds only the
+suites it needs. CI shards assign whole suites, so a suite is compiled once
+across the six shards. Testing each suite root includes its members' top-level
+`expect`s.
+
+A target's fixed examples are its declared examples
 and its saved regressions (`Fuzz.saved`, in the target's source); a replay
 of them shows the target compiles, links and runs, and finds nothing new.
 Finding new inputs is a campaign's job.
 
+Fixed-report validation checks the host's successful exit and leak-detection
+policy, every declared input and its hash, worker results, trace topology,
+allocation balance and peaks. Live-allocation gauges are absolute: a target's
+framework metadata can remain live before and after a property. The outer
+property must not grow its live allocations or bytes; it need not end at
+absolute zero. The roc-fuzz host independently checks the physical allocation
+baseline before creating the input and after the callback returns. A host
+leak finding fails the replay even when releasing the input masks growth
+inside the measured region.
+
 | Where | What runs | Build | How long |
 |---|---|---|---|
-| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in six shards (`fuzz-smoke -- --shard K/6`), beside Check (`check -- --without-fuzz`, in parts) | Plain `--opt=speed` | Estimated from the figures below at 15 to 30 minutes a shard, the one with `structure` the longest; each shard is allowed 60 |
-| `blueprint run check` | The same replays as CI's Fuzz smoke job, every target, in one run | Plain `--opt=speed` | Its compilers dominate: estimated at 25 to 40 minutes on an Apple-silicon Mac that compiles one target at a time |
-| `blueprint run fuzz-smoke` | Every target's fixed examples, or those named, or one shard | Plain `--opt=speed` | As `check`'s, or a few seconds for one platform-free target |
-| `blueprint run check-slow`, local only | Every target's fixed examples on the build a campaign explores | Instrumented `--fuzz` | About a third longer to compile than the plain builds |
+| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in six shards (`fuzz-smoke -- --shard K/6`), beside Check (`check -- --without-fuzz`, in parts) | Plain optimized profile (below) | Each shard is allowed 60 minutes; compiler and replay durations are reported |
+| `blueprint run check` | The same replays as CI's Fuzz smoke job, every target, in one run | Plain optimized profile (below) | Depends on the selected suites; compiler and replay durations are reported |
+| `blueprint run fuzz-smoke` | Every target's fixed examples, or those named, or one shard | Plain optimized profile (below) | Depends on the selected suites; compiler and replay durations are reported |
+| `blueprint run check-slow`, local only | Every target's fixed examples on the build a campaign explores | Instrumented `--fuzz` | Instrumented compiler and replay durations are reported |
 | `blueprint run fuzz`, local only | A campaign: each selected target explores from its corpus under `.fuzz-out/` | Instrumented `--fuzz` | 600 s per target by default (`--time S`), plus its build |
 
 CI never runs a campaign, on a schedule or otherwise, and never keeps a
@@ -700,17 +819,19 @@ corpus. Run one on your machine with
 failure, reduce it and add it to the target's examples with `Fuzz.saved`,
 so every later replay, CI's included, keeps it fixed.
 
-The costs behind those figures: on an Apple-silicon Mac, the 12
-platform-free targets compiled instrumented in about 62 s together and
-replayed in under 2 s; a batch of 13 targets that import the engine
-package compiled instrumented in about 1,780 s and replayed in about 17 s,
-and `structure`, the largest, compiled in 539 s plain against 717 s
-instrumented. A target
-that imports the engine package compiles the package itself, and a compiler
-process is given 16 GiB, so a CI runner compiles one target at a time; the
-shards are what run the compilers in parallel, and a CI runner is slower
-than that Mac. That is too long to add to the Check job, which is why CI
-runs the replays as a job of their own.
+The compiler budget remains 16 GiB per fuzz suite, so a CI runner compiles
+one suite at a time; the six shards distribute those builds across runners.
+Reports keep compiler and replay batch durations separately. Do not compare
+those batch durations as individual member timings.
+
+The requested native fuzz profile is `--opt=speed`, with `--fuzz` added for
+instrumented builds. For exactly `nightly-2026-11-18-a520eed`, the shared
+compiler-profile policy selects `--opt=size` for native fuzzing to avoid
+[roc-lang/roc#13197](https://github.com/roc-lang/roc/issues/13197). It prints the
+unavailable and actual profiles, retains every member and replay, and records
+the actual compiler flags, optimizer and profile in the evidence. Other
+compiler versions retry speed. Remove this compatibility row once the
+upstream compiler defect is fixed.
 
 ### No target is left out silently
 
@@ -876,6 +997,19 @@ nightly automatically retries the original work. Remove the branch once the
 upstream fix is available; do not extend a skip to an unverified compiler
 version.
 
+On `nightly-2026-11-18-a520eed`, development Wasm retains native-runner
+imports and cannot start a worker ([roc-lang/roc#13195](https://github.com/roc-lang/roc/issues/13195)).
+The complete compatibility match is `cli/compiler-profiles.tsv`: the CLI,
+Roc builders and direct Node CI driver read that same table. They print
+`SKIP` for the unavailable development profile and build with `--opt=size`
+instead. Every story and contract still runs; summaries identify size Wasm,
+and allocation guards use size's expectations. A shared shipping artifact is
+built and measured once, never counted as development coverage. Other
+compiler versions retry development builds automatically. For a manual raw
+build on this nightly, use `roc build --target=wasm32 --opt=size main.roc`;
+`signals.roc serve` selects it automatically. Native builds are unaffected.
+The shipping optimizer makes development rebuilds slower on this nightly.
+
 A spec a compiler defect keeps from passing is skipped the same way, and
 only through `scripts/src/CompilerSkips.roc`: each entry names the app, the
 spec, the runner and build it skips in (Chrome on the development Wasm build
@@ -1004,7 +1138,7 @@ assets with `blueprint run release` and creates a draft GitHub release with:
   one platform whose `main.roc` builds for `wasm32` (the browser module) and
   `x64musl`, `arm64mac`, `x64mac` and `x64win` (the native spec runner),
   with the link inputs of each;
-- `runtime.mjs`, its `environment.mjs` fact readers and `worker.mjs`, served together;
+- `runtime.mjs`, its `environment.mjs` fact readers, `startup.mjs` and `worker.mjs`, served together;
 - `signals-<hash>.tar.zst`, the `signals.roc` tool's package, and
   `signals.roc`, the small app an author downloads to run it: it names
   basic-cli and that package, and pins no compiler;

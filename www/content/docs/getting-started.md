@@ -97,11 +97,6 @@ point by hand, use the platform bundle URL from the
 
 {{ sample(file="counter/main.roc") }}
 
-The entry also declares `Store`, the type of the app's shared storage. This
-counter uses only local state, so its `Store` is `{}`. An app with cells
-names the type the compiler prints for its `program_store` result; keep
-that declaration in step with its store description.
-
 The platform builds this one file for two kinds of target:
 `--target=wasm32` gives the module the browser runs, and your system's
 native target gives the app's native spec runner: `x64musl` on Linux,
@@ -227,56 +222,73 @@ lists each file it wrote with its size. The layout is:
 
 ## Build a first page
 
-The scaffold marks its HTML mount element with `data-roc-picture`. To include
-an initial view in the HTML sent by your static server, choose explicit URLs:
+`roc signals.roc build` prerenders every concrete entry declared by the app's
+`Engine.entries` catalogue. The scaffold uses `Engine.program_startup` with one
+entry, `/`. An app declaring `/` and `/tasks/` gets `dist/index.html` and
+`dist/tasks/index.html`, sharing the same immutable assets:
 
 ```sh
-roc signals.roc build --picture / '/tasks/?open=1#list'
+roc signals.roc build
 ```
 
-This writes `dist/index.html` and `dist/tasks/index.html`, alongside the same
-hashed assets. HTTP(S) URLs are accepted too; their pathname, query and
-fragment supply the app's initial location. No origin or user session is
-invented. Query or fragment variants of one path cannot share an output file,
-so the build refuses a list containing both `/tasks?open=1` and `/tasks?open=2`.
+The catalogue supplies each path's fixed initial route to the app. The build
+uses that same entry, view and engine to produce its HTML. It does not crawl
+links or enumerate every possible database id. Declare a finite set of concrete
+entries, or build an explicit shell and configure the static host's fallback.
+Query and fragment values are later browser facts, rather than additional pages.
 
-The native runner initializes the actual app once per URL and renders its
-ordinary first command batch. Network, storage, worker and timer answers,
-focus and layout arrive later in the running browser. The HTML frame stays
-inert while the module loads. The runtime replaces those built nodes with its
-ordinary mount, releases the inertness the builder added, then performs the
-batch's effects. This is ordinary replacement: built node objects are not
-adopted or reused. Adoption is a future capability. An `inert` attribute you
-authored on the inert owner remains intact.
+The browser binds the complete first frame using private engine annotations.
+Ordinary content keeps its DOM objects through startup. Managed controls, forms
+and editable surfaces wait behind producer-added gates; declared native content
+can remain useful while the module loads. Once the frame is bound, initial
+follow-ups settle through the ordinary engine. A declared update or scope
+replacement may then change content. Explicit placeholders can defer a live body
+and replace their static content in later turns.
 
-A template needs exactly one authored `data-roc-picture` mount root. An HTML
-root owns its temporary inertness. For an SVG, MathML or other non-HTML root,
-author an immediate HTML parent with `data-roc-picture-inert-parent=""`.
-Its only element child must be the mount root, optionally followed by an HTML
-`script` with `type="application/json"` and `data-roc-picture-envelope="1"`.
-Text and comments are allowed around those elements. A template content
-fragment cannot be the parent. The builder adds no wrapper and keeps the
-actual mount root unchanged. The template must be HTML that a browser takes
-as written: the builder refuses one it would repair, such as a `p` holding a
-`div`, before the app starts. Whitespace after `</body>`, such as the file's
-final newline, is published unchanged.
+Startup callbacks receive the fixed route, without live Boot data. Apps needing
+current browser facts request an environment snapshot after bootstrap. Existing
+Boot-reading entries remain supported through the explicit plain-page opt-out:
 
-Leave `data-roc-picture-inert` out of the inert owner's authored attributes:
-the builder reserves it to record inertness it added. Authored `inert` text
-on the owner remains intact after startup. The parent marker also remains.
-These attributes use no-namespace identity; the same spelling on a descendant
-or in another namespace remains data. Asset URLs are projected before the
-app's rendered markup is inserted, so an app title containing `app.wasm`
-remains unchanged.
+```sh
+roc signals.roc build --no-prerender
+```
 
-The scaffold includes a `noscript` notice and styles `data-roc-failed` on the
-actual mount root when startup fails. A failed first page stays inert until
-a successful retry or recovery.
+A default build refuses an ineligible app instead of silently omitting its
+first pages. `--no-prerender` creates the page through ordinary runtime mounting.
+Legacy apps can still request replacement-only pictures with `--picture URL...`;
+those old pictures retain their inert-then-replace behavior.
 
-The complete output is staged before publication. A refused route or invalid
-frame leaves the published `dist/` intact. Replacing an existing directory
-uses a backup and rename with rollback, rather than an atomic directory
-exchange. This mode requires one of the native-runner systems listed above.
+A build template marks exactly one authored mount root with `data-roc-picture`.
+The generated annotated page uses private `data-roc-frame`, `data-roc-node` and
+`data-roc-children` attributes; leave those names to the engine. An HTML root gets
+no automatic blanket gate. For an SVG, MathML or other non-HTML root, author an
+immediate HTML parent marked `data-roc-picture-inert-parent=""`; its only ordinary
+element child is the mount root. This explicit owner stays inert through
+startup. The builder adds no wrapper or enclosing namespace and refuses a
+host template the browser would repair. Authored `inert` text is preserved.
+
+Keep the scaffold's loader shape: its `wasmUrl` names the quoted relative file
+`app.wasm` or `./app.wasm`. Build stamps that reference with an explicit
+`?roc-build=…` receipt matching the generated frame and immutable assets, including
+on nested pages. The CLI refuses a template without this supported reference;
+use `--no-prerender` for that template. A separate build integration may supply
+the matching receipt through the runtime's `startupBuildToken` option.
+Asset references are projected in the original template before app markup is
+inserted, so app text and attributes resembling asset names stay unchanged.
+
+Deploy the generated HTML and its matching assets together. Missing or modified
+annotations and mismatched build receipts are startup faults; there is no
+automatic local repair. The scaffold styles `data-roc-failed` on the root. A
+faulted first page remains inert until explicit fresh recovery or reload.
+
+Keep the project and external compiler inputs unchanged during a build. The
+tool checks the project's file inventory and modification times before
+publication and refuses detected edits, preserving the previous `dist/`.
+
+The complete output is staged before publication. A refused entry, output-path
+collision or invalid frame leaves the published `dist/` intact. Replacing an
+existing directory uses a backup and rename with rollback. Prerendering requires
+one of the native-runner systems listed above.
 
 ## Working in a checkout
 

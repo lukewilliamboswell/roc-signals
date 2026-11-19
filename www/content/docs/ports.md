@@ -215,6 +215,10 @@ types. The JavaScript receives plain data and answers plain data:
 | `Wire.Bytes` | `Uint8Array` (an answer may also be an `ArrayBuffer`) |
 | `Engine.File` | the browser's `File`; an answer may be a `File` or `Blob` |
 
+Within one dictionary, repeated decoded property names answer `Undecodable`,
+including names written with different JSON escapes. The same name may occur
+in separate dictionaries.
+
 Bytes and files are never turned into text. Bytes are copied once in each
 direction, and a file's contents never cross at all: the JavaScript
 receives the browser's own `File` and can store it in IndexedDB, upload it

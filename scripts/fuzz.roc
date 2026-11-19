@@ -53,7 +53,7 @@ main! = |raw_args| {
 	}
 	o = Checks.options!({ filter: "*" })?
 	selection = if ($names.is_empty()) Every else Named($names)
-	Checks.prepare_platform!(o)?
+	# Published roc-fuzz supplies the pure targets' native link inputs.
 	problems = FuzzPlan.run!(Targets.fuzz_targets, selection, |selected| campaign!(o, selected, { time: $time, timeout: $timeout }))?
 	Checks.finish!("fuzz", problems)
 }
@@ -85,6 +85,6 @@ explore! = |o, t, { time, timeout }| {
 		Path.delete_all!(Path.utf8(report))?
 	}
 	Proc.note!("== fuzz ${t.name} (${time} s)")
-	code = Proc.status!({ program: Targets.exe_of(o, t), args: ["explore", "${out}/corpus", "--time=${time}", "--timeout=${timeout}", "--report-dir=${report}", "--print-final-stats"], cwd: out })?
+	code = Proc.status!({ program: Targets.exe_of(o, t), args: ["--target=${t.name}", "explore", "${out}/corpus", "--time=${time}", "--timeout=${timeout}", "--report-dir=${report}", "--print-final-stats"], cwd: out })?
 	Ok(if (code == 0) [] else ["fuzz ${t.name}: exited with ${code.to_str()}; see ${report}"])
 }

@@ -15,7 +15,7 @@ const host = process.platform === "darwin" ? "arm64mac" : "x64musl";
 let checks = 0, serial = 0;
 const encode = value => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? JSON.rawJSON(item.toString()) : item);
 const write = (file, value) => fs.writeFileSync(file, encode(value));
-function fixture({ profile = "fixed-examples-plain", empty = false, large = false } = {}) {
+function fixture({ profile = "fixed-examples-plain", empty = false, large = false, baseline = 0 } = {}) {
   const directory = path.join(root, String(serial++)); fs.mkdirSync(directory);
   const reportDir = path.join(directory, "report"); fs.mkdirSync(reportDir);
   const binary = path.join(directory, "target"); fs.writeFileSync(binary, "synthetic transport fixture, not compiled Roc");
@@ -27,6 +27,14 @@ function fixture({ profile = "fixed-examples-plain", empty = false, large = fals
     const input = typeof declaration.bytes === "string" ? Buffer.from(declaration.bytes) : Buffer.from(declaration.bytes);
     const inputFile = path.join(reportDir, `example-${index}.bin`); fs.writeFileSync(inputFile, input);
     const stats = { allocs: large ? 9007199254740993n : 1, reallocs: 0, deallocs: large ? 9007199254740993n : 1, requested_bytes: large ? 18446744073709551615n : 1, entry_live_allocs: 0, entry_live_bytes: 0, exit_live_allocs: 0, exit_live_bytes: 0, peak_live_bytes: 1 };
+    if (baseline > 0) Object.assign(stats, {
+      // An allocation-free property frees its input while framework metadata
+      // remains live. Deliberately vary the baseline: no magic allowance.
+      allocs: 0, deallocs: 2, requested_bytes: 0,
+      entry_live_allocs: baseline + 2, exit_live_allocs: baseline,
+      entry_live_bytes: baseline * 128 + input.length,
+      exit_live_bytes: baseline * 128, peak_live_bytes: baseline * 128 + input.length,
+    });
     const observations = [{ id: 1, parent_id: 0, name: "$property", occurrence: 1, complete: true, stats }];
     const diagnostics = { format: "roc-fuzz-trace/1", metric_version: "roc-fuzz-allocations/1", metric_valid: true, trace_rules_valid: true, trace_rules_passed: true, capture_complete: true, complete: true, regions: observations, rules: [], events: [{ kind: "begin", sequence: 1 }, { kind: "end", sequence: 2 }], gap: null };
     const worker = { format: "roc-fuzz-worker/1", metric_version: "roc-fuzz-allocations/1", accepted: true, metric_valid: true, trace_rules_passed: true, capture_complete: true, observations, diagnostics };
@@ -37,10 +45,10 @@ function fixture({ profile = "fixed-examples-plain", empty = false, large = fals
   write(path.join(reportDir, "report.json"), report); write(path.join(reportDir, "prepared-examples.json"), prepared);
   return { directory, reportDir, binary, report, prepared, options: { reportDir, target: "demo", profile, binary, exitCode: 0, hostTarget: host } };
 }
-async function refused(label, mutate) {
-  const test = fixture(); mutate(test);
+async function refused(label, mutate, expected, fixtureOptions) {
+  const test = fixture(fixtureOptions); mutate(test);
   write(path.join(test.reportDir, "report.json"), test.report); write(path.join(test.reportDir, "prepared-examples.json"), test.prepared);
-  await assert.rejects(() => validateReport(test.options), undefined, label); checks++;
+  await assert.rejects(() => validateReport(test.options), expected, label); checks++;
 }
 function cli(test, overrides = {}) {
   const options = { ...test.options, ...overrides };
@@ -48,14 +56,36 @@ function cli(test, overrides = {}) {
     "--report-dir", options.reportDir, "--target", options.target, "--profile", options.profile,
     "--binary", options.binary, "--check-exit", String(options.exitCode), "--build-exit", String(overrides.buildExit ?? 0),
     "--build-log", path.join(test.directory, "build.log"), "--check-log", path.join(test.directory, "check.log"),
-    "--compiler-version", "unit-test", "--build-cwd", test.directory, "--build-batch-ns", "42", "--check-batch-ns", "7",
-    "--build-command", "roc", "build", ...(overrides.covered ? ["--fuzz"] : []), "--opt=speed", "--timings", "entry.roc", `--output=${test.binary}`,
+    "--member-entry", "entry.roc", "--compiler-version", overrides.compilerVersion ?? "unit-test", "--build-cwd", test.directory, "--build-batch-ns", "42", "--check-batch-ns", "7",
+    "--build-command", "roc", "build", ...(overrides.covered ? ["--fuzz"] : []), `--opt=${overrides.optimizer ?? "speed"}`, "--timings", "entry.roc", `--output=${test.binary}`,
   ], { encoding: "utf8" });
 }
 try {
   const plain = await validateReport(fixture().options), covered = await validateReport(fixture({ profile: "default" }).options);
   assert.equal(compareProfiles(covered, plain).fixed_examples, 2); checks++;
   const empty = await validateReport(fixture({ empty: true }).options); assert.equal(empty.fixed_examples, 0); checks++;
+  for (const baseline of [3, 17, 111]) {
+    const retained = await validateReport(fixture({ baseline }).options);
+    const stats = retained.semantics[0].observations[0].stats;
+    assert.equal(stats.allocs, 0);
+    assert.equal(stats.exit_live_allocs, baseline); checks++;
+  }
+  // The host checks before input allocation and after the callback, outside
+  // the measured region. Releasing an input can hide a leak in region deltas;
+  // a host finding still fails even when the region has no net growth.
+  await refused("host finding despite falling region gauges", t => {
+    t.report.outcome = "finding";
+    t.report.examples[0].finding_kind = "leak";
+  }, /quality check or baseline failed/, { baseline: 17 });
+  await refused("individual host leak despite passed summary", t => {
+    t.report.examples[0].finding_kind = "leak";
+  }, /utf8: replay failed/, { baseline: 17 });
+  await refused("live allocation growth with balanced accounting", t => {
+    Object.assign(t.report.examples[0].observations[0].stats, { allocs: 2, exit_live_allocs: 1 });
+  }, /outer property grew live allocations or bytes/);
+  await refused("live byte growth with valid peak", t => {
+    t.report.examples[0].observations[0].stats.exit_live_bytes = 1;
+  }, /outer property grew live allocations or bytes/);
   const siblings = fixture();
   for (const [index, example] of siblings.report.examples.entries()) {
     const outer = example.observations[0];
@@ -101,7 +131,6 @@ try {
     ["incomplete capture", t => { t.report.examples[0].capture_complete = false; }],
     ["trace gap", t => { t.report.examples[0].diagnostics.gap = { lost: 1 }; }],
     ["missing detailed events", t => { delete t.report.examples[0].diagnostics.events; }],
-    ["outer leak", t => { t.report.examples[0].observations[0].stats.exit_live_bytes = 1; }],
     ["allocation imbalance", t => { t.report.examples[0].observations[0].stats.deallocs = 0; }],
     ["U64 overflow", t => { t.report.examples[0].observations[0].stats.requested_bytes = 18446744073709551616n; }],
     ["fractional metric", t => { t.report.examples[0].observations[0].stats.requested_bytes = 1.5; }],
@@ -126,6 +155,22 @@ try {
     const result = cli(test, overrides); assert.equal(result.status, expected, result.stderr);
     assert.equal(JSON.parse(fs.readFileSync(path.join(test.directory, "validation.json"))).passed, expected === 0);
     assert.ok(fs.readFileSync(path.join(test.reportDir, "report.json")).equals(before)); checks++;
+  }
+  // Compatibility selects a compiler profile, never fewer replay cases.
+  // The exact affected compiler may use size; a future compiler must retry
+  // speed, and the recorded optimizer must match the real command.
+  for (const [compilerVersion, optimizer, expected] of [
+    ["nightly-2026-11-18-a520eed", "size", 0],
+    ["nightly-2026-11-19-future", "size", 1],
+    ["nightly-2026-11-18-a520eed", "speed", 1],
+  ]) {
+    const test = fixture({ profile: "fixed-examples-plain-size" });
+    const result = cli(test, { compilerVersion, optimizer });
+    assert.equal(result.status, expected, result.stderr);
+    const validation = JSON.parse(fs.readFileSync(path.join(test.directory, "validation.json")));
+    assert.equal(validation.passed, expected === 0);
+    if (expected === 0) assert.equal(validation.build.optimizer, "size");
+    checks++;
   }
   console.log(`Fixed-report transport contracts: ${checks} checks passed (no Roc compiler or property replay)`);
 } finally { fs.rmSync(root, { recursive: true, force: true }); }

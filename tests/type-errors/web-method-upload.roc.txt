@@ -7,5 +7,3 @@ ask : Engine.File -> Engine.Ask(Engine.Response, Engine.HttpFailure)
 ask = |file| file.upload({ url: "/", method })
 main : Engine.Program
 main = Engine.program(|| Engine.text(""))
-
-Store : {}

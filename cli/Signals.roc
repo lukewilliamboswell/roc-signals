@@ -22,7 +22,7 @@ Signals :: [].{
 
 	## Explicit routes for the build command, visible through this package
 	## rather than an implementation-module type in command diagnostics.
-	BuildProps := { pictures : List(Str) ?? [] }.{
+	BuildProps := { pictures : List(Str) ?? [], no_prerender : Bool ?? False }.{
 
 		## Options compare their explicit route lists in order. Filesystem route
 		## equivalence and collision checks belong to the native output planner.
@@ -43,7 +43,7 @@ Signals :: [].{
 			Ok(CommandHelp(command)) => Stdout.line!(Signals.command_usage(command))
 			Ok(Init(dir)) => Init.run!(dir)
 			Ok(Serve(options)) => Serve.run!(options)
-			Ok(Build(options)) => Dist.run!({ pictures: options.pictures })
+			Ok(Build(options)) => Dist.run!({ pictures: options.pictures, no_prerender: options.no_prerender })
 			Ok(Test) => Specs.run!()
 			Err(problem) => Err(problem)
 		}
@@ -75,6 +75,7 @@ Signals :: [].{
 					_ => Err(BadPort(value))
 				}
 			["build"] => Ok(Build({ pictures: [] }))
+			["build", "--no-prerender"] => Ok(Build({ no_prerender: True }))
 			["build", "--picture", .. as pictures] if !pictures.is_empty() and !pictures.any(|url| url.starts_with("--")) => Ok(
 				Build(
 					{ pictures: pictures },
@@ -123,12 +124,15 @@ Signals :: [].{
 			"build" =>
 				\\Build the app for deployment to a static web host.
 				\\
-				\\Usage: roc signals.roc build [--picture URL...]
+				\\Usage: roc signals.roc build [--no-prerender | --picture URL...]
 				\\
 				\\Run from the app's directory, containing main.roc and index.html.
 				\\The output replaces dist/. Serve that directory with a static HTTP server.
 				\\Normally uses --opt=size; a compiler workaround reports any change of mode.
-				\\--picture takes explicit HTTP(S) or root-relative URLs. Each writes its
+				\\By default every declared startup entry is prerendered and adopts its
+				\\first frame. --no-prerender builds a plain page, including legacy apps
+				\\that read live Boot values at startup.
+				\\--picture retains legacy explicit HTTP(S) or root-relative pictures. Each writes its
 				\\first frame to PATH/index.html; query/hash variants of one path collide.
 				\\The template must mark exactly one mount root with data-roc-picture.
 			"test" =>
@@ -178,6 +182,8 @@ Signals :: [].{
 			PictureRunnerFailed({ url, reason }) => { code: 1, text: "The native picture runner for ${url} failed: ${reason}." }
 			PictureFailed({ url, report }) => { code: 1, text: "The picture for ${url} was refused:\n${report.trim()}" }
 			PictureResponseInvalid(url) => { code: 1, text: "The native picture runner returned an invalid response for ${url}." }
+			MissingStartupReceipt => { code: 1, text: "Annotated startup needs the template loader's wasmUrl to name the quoted relative file app.wasm or ./app.wasm, so build can stamp its matching asset receipt. Use the generated loader, or --no-prerender for another loader integration." }
+			BuildInputsChanged(paths) => { code: 1, text: "Build inputs changed while compiling: ${Str.join_with(paths, ", ")}. The existing dist/ was preserved; rerun build after the project stops changing." }
 			PictureRouteCollision({ first, second, path }) => { code: 1, text: "Picture routes ${first} and ${second} both write ${path}; query and fragment variants cannot share one output file." }
 			UnsafeOutputPath(path) => { code: 1, text: "The build refused unsafe output path ${path}." }
 			OutputCollision({ first, second }) => { code: 1, text: "Build outputs ${first} and ${second} overlap; dist was not changed." }
@@ -197,7 +203,7 @@ Signals :: [].{
 		match command {
 			"init" => "Use it as `roc signals.roc init [DIR]`."
 			"serve" => "Use it as `roc signals.roc serve [--port N]`."
-			"build" => "Use it as `roc signals.roc build [--picture URL...]`."
+			"build" => "Use it as `roc signals.roc build [--no-prerender | --picture URL...]`."
 			_ => "Use it as `roc signals.roc ${command}`, with nothing after it."
 		}
 }
@@ -242,6 +248,9 @@ expect {
 
 ## Picture URLs are explicit arguments; query and hash remain the runner's input.
 expect Signals.parse(["build", "--picture", "/", "/tasks?open=1#list"]) == Ok(Build({ pictures: ["/", "/tasks?open=1#list"] }))
+
+## Plain construction is an explicit opt-out; it cannot also select pictures.
+expect Signals.parse(["build", "--no-prerender"]) == Ok(Build({ no_prerender: True })) and Signals.parse(["build", "--no-prerender", "--picture", "/"]).is_err() and Signals.parse(["build", "--picture", "/", "--no-prerender"]).is_err()
 
 ## A picture switch needs at least one URL and cannot swallow another option.
 expect Signals.parse(["build", "--picture"]).is_err() and Signals.parse(["build", "--picture", "/", "--watch"]).is_err()

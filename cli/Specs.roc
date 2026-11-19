@@ -8,6 +8,7 @@ import cli.System
 import Bundle
 import Compiler
 import Project
+import Text
 
 ## `test`: build the app's native spec runner and run every spec in
 ## `specs/`. The runner drives the app's real engine without a browser, so
@@ -48,8 +49,20 @@ Specs :: [].{
 			Failed(report) => return Err(BuildFailed({ report, version }))
 		}
 		count = specs.len()
-		Stdout.line!("Running ${count.to_str()} spec${if (count == 1) "" else "s"}:")?
 		program = "${Project.with_slashes(Path.display(Env.cwd!()?))}/${runner}"
+		evidence = Cmd.new(OsStr.from_str(program)).args(["--check-suite"].concat(specs).map(OsStr.from_str)).stdout(Capture).stderr(Capture).run!() ? |_| RunnerFailed({ cause: NotStarted, detail: program })
+		checked = Specs.outcomes(Str.from_utf8_lossy(evidence.stdout_bytes))
+		match Specs.unaccounted({ ids: specs.map(Specs.id_of), status: evidence.status, results: checked }) {
+			Ok({}) => {}
+			Err({ cause, detail }) => return Err(RunnerFailed({ cause, detail: "suite evidence: ${detail}\n${Str.from_utf8_lossy(evidence.stderr_bytes)}" }))
+		}
+		if checked.any(|outcome| outcome.status != Passed) {
+			for outcome in checked.keep_if(|outcome| outcome.status != Passed) {
+				Stdout.line!(Specs.show(outcome))?
+			}
+			return Err(SpecsFailed)
+		}
+		Stdout.line!("Running ${count.to_str()} spec${if (count == 1) "" else "s"}:")?
 		output = Cmd.new(OsStr.from_str(program)).args(specs.map(OsStr.from_str)).stdout(Capture).stderr(Capture).run!() ? |_| RunnerFailed({ cause: NotStarted, detail: program })
 		results = Specs.outcomes(Str.from_utf8_lossy(output.stdout_bytes))
 		match Specs.unaccounted({ ids: specs.map(Specs.id_of), status: output.status, results }) {
@@ -72,8 +85,16 @@ Specs :: [].{
 
 	## A spec's id as the runner reports it: its file name without the
 	## directory or `.scm`.
+	## TODO https://github.com/roc-lang/roc/issues/13221: split_on().last()
+	## corrupts long interior strings in x64mac dev; split_last preserves them.
 	id_of : Str -> Str
-	id_of = |path| (path.split_on("/").last() ?? path).drop_suffix(".scm")
+	id_of = |path| {
+		base = match path.split_last("/") {
+			Ok(parts) => parts.after
+			Err(_) => path
+		}
+		base.drop_suffix(".scm")
+	}
 
 	## Why a run of the runner does not account for exactly the specs it was
 	## given, by the rule the repository's own suite applies
@@ -157,8 +178,7 @@ Specs :: [].{
 	## order the specs were given.
 	outcomes : Str -> List(Outcome)
 	outcomes = |report|
-		report
-			.split_on("\n")
+		Text.lines(report)
 			.keep_if(|line| line.starts_with("{"))
 			.map(
 				|line| {
@@ -308,4 +328,4 @@ expect {
 }
 
 ## A spec's id is its file name without the directory or `.scm`.
-expect ["specs/counter.scm", "counter.scm", "a/b/c.d.scm"].map(Specs.id_of) == ["counter", "counter", "c.d"]
+expect ["specs/counter.scm", "counter.scm", "a/b/c.d.scm", "specs/round-trip-search-on-the-timeline.scm", "rép/λ-long-identifier-with-unicode.scm", "a/", "a/.scm", "a/x.scm.scm", "a/no-suffix"].map(Specs.id_of) == ["counter", "counter", "c.d", "round-trip-search-on-the-timeline", "λ-long-identifier-with-unicode", "", "", "x.scm", "no-suffix"]

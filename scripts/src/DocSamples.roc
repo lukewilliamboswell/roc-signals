@@ -120,6 +120,9 @@ DocSamples := [].{
 		}
 		with_specs = $with_specs
 		Proc.note!("== docs samples: native and browser builds of the ${with_specs.len().to_str()} samples with specs, ${limit.to_str()} at a time")
+		if !with_specs.is_empty() {
+			SpecSuite.note_profile!(o, "dev")
+		}
 		builds = Proc.parallel!(
 			with_specs.map(|s| [SpecSuite.build_job(o, "dev", "${s.dir}/main.roc", o.target, s.runner), SpecSuite.build_job(o, "dev", "${s.dir}/main.roc", "wasm32", s.wasm)]).join(),
 			limit,
@@ -127,7 +130,7 @@ DocSamples := [].{
 		for (sample, index) in with_specs.map_with_index(|sample, index| (sample, index)) {
 			native = builds.get(2 * index) ?? { code: -1, output: "" }
 			web = builds.get(2 * index + 1) ?? { code: -1, output: "" }
-			if native.code != 0 or web.code != 0 {
+			if !SpecSuite.build_succeeded(native.code) or !SpecSuite.build_succeeded(web.code) {
 				$problems = $problems.append("docs sample ${sample.dir} does not build")
 			} else {
 				specs = SpecSuite.files_with!("${sample.dir}/specs", ".scm")?
@@ -135,7 +138,11 @@ DocSamples := [].{
 				in_browser = SpecSuite.browser_specs!(o, { example: sample.name, runner: sample.runner, wasm: sample.wasm, specs, skip: [] })?
 				for t in [(Native, in_native), (Browser, in_browser)] {
 					(runner_kind, tally) = t
-					Proc.note!(SpecSuite.summary(sample.dir, runner_kind, tally))
+					label = match runner_kind {
+						Native => sample.dir
+						Browser => SpecSuite.browser_label(o, sample.dir)
+					}
+					Proc.note!(SpecSuite.summary(label, runner_kind, tally))
 					$problems = $problems.concat(tally.problems)
 				}
 			}

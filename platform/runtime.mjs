@@ -1,3 +1,4 @@
+import { StartupFrame } from "./startup.mjs";
 import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, checkedSeed, browserSeed, checkedZone, probeTimeZone } from "./environment.mjs";
 
 // Browser runtime of the web platform. The engine, which is Roc code
@@ -181,7 +182,7 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // text is never interpreted as absence, including empty or false text.
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 22;
+export const PROTOCOL_VERSION = 23;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -593,7 +594,7 @@ const TEMPLATE_NODE_APPLIERS = {
   ELEMENT(reader) {
     const name = expandedName(reader, true);
     const element = reader.dry
-      ? { children: [], content: name.namespace === HTML_NS && name.local === "template" ? [] : null }
+      ? { nodeType: 1, name, attributes: [], children: [], content: name.namespace === HTML_NS && name.local === "template" ? [] : null }
       : createResolvedElement(reader.doc, name);
     let code, target;
     if (reader.dry) {
@@ -603,11 +604,12 @@ const TEMPLATE_NODE_APPLIERS = {
       target = container === CONTAINER_APPLIERS.TEMPLATE_CONTENT ? element.content : element.children;
       if (!target) throw new Error("template content requires an HTML template");
     } else ({ code, target } = readContainer(reader, element));
+    if (reader.dry) element.container = code;
     if (reader.dry ? target === element.content : target !== element) reader.contentOwners.push(reader.path.slice());
     const attributes = reader.u8[reader.at++];
     for (let index = 0; index < attributes; index += 1) {
       const attribute = expandedName(reader, false), value = nameString(reader);
-      if (!reader.dry) setAttr(element, attribute, value);
+      if (reader.dry) element.attributes.push({ name: attribute, value }); else setAttr(element, attribute, value);
     }
     const children = reader.u8[reader.at++];
     for (let index = 0; index < children; index += 1) {
@@ -618,8 +620,8 @@ const TEMPLATE_NODE_APPLIERS = {
     }
     return element;
   },
-  TEXT(reader) { const value = nameString(reader); return reader.dry ? {} : reader.doc.createTextNode(value); },
-  COMMENT(reader) { const value = nameString(reader); return reader.dry ? {} : reader.doc.createComment(value); },
+  TEXT(reader) { const value = nameString(reader); return reader.dry ? { nodeType: 3, text: value } : reader.doc.createTextNode(value); },
+  COMMENT(reader) { const value = nameString(reader); return reader.dry ? { nodeType: 8, text: value } : reader.doc.createComment(value); },
 };
 
 function templateNode(reader) {
@@ -698,7 +700,7 @@ function applyHoleCommand(reader) {
   const n = dv.getUint32(at + 5, true);
   const target = row.__ht[u8[at + 4]];
   const v = readStr(u8, at + 9, n);
-  if (op === this.protocol.OP_TEXT) target.nodeValue = v;
+  if (op === this.protocol.OP_TEXT) { if (this.startup) { if (target.nodeValue !== v) throw new Error("startup: initial hole text assertion"); } else target.nodeValue = v; }
   else {
     if (hole.kind !== HOLE_PROP) throw new Error("HPROP names a non-property hole");
     setProp(target, hole.prop, v, node, this);
@@ -713,9 +715,18 @@ function applyNodeCommand(reader) {
   const before = dv.getUint32(reader.at + 8, true);
   reader.at += 12;
   const element = op === this.protocol.OP_ELEM;
-  const el = element ? createResolvedElement(doc, expandedName(reader, true))
-    : op === this.protocol.OP_COMMENT ? doc.createComment(nameString(reader)) : doc.createTextNode(nameString(reader));
-  if (element) readContainer(reader, el);
+  const name = element ? expandedName(reader, true) : null;
+  const text = element ? null : nameString(reader);
+  let el;
+  if (this.startup) {
+    const record = this.startup.bind(node, element ? 1 : op === this.protocol.OP_COMMENT ? 3 : 2);
+    el = record.node;
+    if (element ? el.namespaceURI !== (name.namespace || null) || el.prefix !== name.prefix || el.localName !== name.local : el.nodeValue !== text) throw new Error(`startup: node ${node} name or text assertion`);
+    if (element) readContainer(reader, el);
+  } else {
+    el = element ? createResolvedElement(doc, name) : op === this.protocol.OP_COMMENT ? doc.createComment(text) : doc.createTextNode(text);
+    if (element) readContainer(reader, el);
+  }
   el.__id = node;
   this.place(el, parent, before);
   if (element && el.namespaceURI === HTML_NS && el.localName === "option") settleSelect(el.parentNode);
@@ -737,10 +748,15 @@ const COMMAND_APPLIERS = {
     const parent = dv.getUint32(at + 4, true);
     const before = dv.getUint32(at + 8, true);
     const site = dv.getUint32(at + 12, true);
-    const tpl = this.templates[site];
+    let tpl = this.templates[site];
+    if (!this.startup && tpl.dry) {
+      tpl = { ...tpl, root: materializeTemplate(this, tpl.root), dry: false };
+      this.templates[site] = tpl;
+    }
     at += 16;
-    const el = tpl.root.cloneNode(true);
-    for (const path of tpl.contentOwners) {
+    const retained = this.startup ? this.startup.bind(node, 1) : null;
+    const el = retained ? retained.node : tpl.root.cloneNode(true);
+    for (const path of retained ? [] : tpl.contentOwners) {
       const owner = walk(el, path, this.protocol);
       owner.__childTarget = CONTAINER_APPLIERS.TEMPLATE_CONTENT(owner);
     }
@@ -749,7 +765,9 @@ const COMMAND_APPLIERS = {
     // Hole targets are resolved once, here: a nested site inserting
     // content into the row later shifts sibling indices.
     const targets = new Array(holes.length);
-    for (let i = 0; i < holes.length; i += 1) targets[i] = walk(el, holes[i].path, this.protocol);
+    if (retained && retained.holes.length !== holes.length) throw new Error("startup: row-hole count");
+    for (let i = 0; i < holes.length; i += 1) targets[i] = retained ? this.startup.ordinals.get(retained.holes[i]).node : walk(el, holes[i].path, this.protocol);
+    if (retained) assertStartupTemplate(this, tpl, el, targets);
     el.__ht = targets;
     el.__aliases = [];
     for (let i = 0; i < holes.length; i += 1) {
@@ -757,7 +775,9 @@ const COMMAND_APPLIERS = {
       const target = targets[i];
       if (hole.kind === HOLE_TEXT) {
         const n = dv.getUint32(at, true);
-        target.nodeValue = readStr(u8, at + 4, n);
+        const value = readStr(u8, at + 4, n);
+        if (retained) { if (target.nodeValue !== value) throw new Error("startup: row text assertion"); }
+        else target.nodeValue = value;
         at += 4 + n;
       } else if (hole.kind === HOLE_ATTR) {
         at = applyAttribute(this, u8, dv, at, target, hole.name);
@@ -772,6 +792,7 @@ const COMMAND_APPLIERS = {
         this.registerLayout(target, hole.name, hole.entry, el);
       } else if (hole.kind === HOLE_BIND || hole.kind === HOLE_REF) {
         const id = dv.getUint32(at, true);
+        if (retained && this.startup.bind(id, hole.kind === HOLE_BIND ? 2 : 1).node !== target) throw new Error("startup: row-hole address assertion");
         this.statics[id] = target;
         el.__aliases.push(id);
         at += 4;
@@ -842,7 +863,7 @@ const COMMAND_APPLIERS = {
     let at = reader.at;
     const tpl = dv.getUint32(at, true);
     const n = dv.getUint32(at + 4, true);
-    this.templates[tpl] = mode === "update" ? batch.definitions.get(offset) : this.parseTemplate(u8, dv, at + 8, n);
+    this.templates[tpl] = mode === "update" || this.startup ? batch.definitions.get(offset) : this.parseTemplate(u8, dv, at + 8, n);
     this.sites[tpl] = new Set();
     at += 8 + n;
     return at;
@@ -892,7 +913,9 @@ const COMMAND_APPLIERS = {
     let at = reader.at;
     const el = this.lookup(dv.getUint32(at, true));
     const n = dv.getUint32(at + 4, true);
-    el.nodeValue = readStr(u8, at + 8, n);
+    const value = readStr(u8, at + 8, n);
+    if (this.startup) { if (el.nodeValue !== value) throw new Error("startup: initial text assertion"); }
+    else el.nodeValue = value;
     at += 8 + n;
     return at;
   },
@@ -1049,6 +1072,8 @@ const COMMAND_APPLIERS = {
       queueEffect(this, reader, { op: "clipboard", id, text, html: htmlFlag ? str() : null });
     } else if (kind === 20) {
       queueEffect(this, reader, { op: "storagefailures", id });
+    } else if (kind === 22) {
+      queueEffect(this, reader, { op: "environment", id });
     } else if (kind === 21) {
       // Crypto operands are raw bytes, never text repaired by a decoder.
       // Bound all blocks before copying any out of linear memory.
@@ -1225,6 +1250,7 @@ const COMMAND_APPLIERS = {
     queueEffect(this, reader, { op: "unsent", port });
     return at + 4 + n + 1;
   },
+  STARTUP() {}, STARTUP_ACK() {}, STARTUP_COMPLETE() {}, OPPORTUNITY() {},
   TRANSITION(reader) {
     const { mode, len, flags, dv, u8, batch } = reader;
     let at = reader.at;
@@ -1240,8 +1266,74 @@ const COMMAND_APPLIERS = {
   },
 };
 
+// Cold templates stay as checked descriptions: constructing a detached img or
+// iframe skeleton would itself repeat resource work before any row is cloned.
+// A later fresh row materializes the ordinary clone template once.
+function materializeTemplate(runtime, shape) {
+  if (shape.nodeType === 3) return runtime.doc.createTextNode(shape.text);
+  if (shape.nodeType === 8) return runtime.doc.createComment(shape.text);
+  const element = createResolvedElement(runtime.doc, shape.name);
+  for (const attribute of shape.attributes) setAttr(element, attribute.name, attribute.value);
+  const target = runtime.protocol.CONTAINERS[shape.container](element);
+  if (target !== element) element.__childTarget = target;
+  for (const child of shape.children) element.appendChild(materializeTemplate(runtime, child));
+  if (shape.content) for (const child of shape.content) element.content.appendChild(materializeTemplate(runtime, child));
+  return element;
+}
+
+function assertStartupTemplate(runtime, template, actual, targets) {
+  const holeTargets = new Map();
+  for (let at = 0; at < template.holes.length; at++) {
+    const hole = template.holes[at], skeleton = walkShape(template.root, hole.path, runtime.protocol);
+    let facts = holeTargets.get(skeleton);
+    if (!facts) { facts = { target: targets[at], holes: [] }; holeTargets.set(skeleton, facts); }
+    if (facts.target !== targets[at]) throw new Error("startup: row holes disagree on target");
+    facts.holes.push(hole);
+  }
+  const stack = [{ skeleton: template.root, node: actual }];
+  while (stack.length) {
+    const { skeleton, node } = stack.pop(), facts = holeTargets.get(skeleton);
+    if (facts && facts.target !== node) throw new Error("startup: row-hole skeleton assertion");
+    if (skeleton.nodeType !== node.nodeType) throw new Error("startup: template node kind assertion");
+    runtime.startup.consumeSkeleton(node);
+    if (node.nodeType === 1) {
+      if (node.namespaceURI !== skeleton.name.namespace || node.localName !== skeleton.name.local || node.prefix !== skeleton.name.prefix) throw new Error("startup: template expanded-name assertion");
+      for (const attribute of skeleton.attributes) {
+        if (facts?.holes.some(hole => hole.kind === HOLE_ATTR && hole.name.namespace === attribute.name.namespace && hole.name.local === attribute.name.local)) continue;
+        if (node.getAttributeNS(attribute.name.namespace, attribute.name.local) !== attribute.value) throw new Error("startup: template static attribute assertion");
+      }
+      if (runtime.protocol.CONTAINERS[skeleton.container] === CONTAINER_APPLIERS.TEMPLATE_CONTENT) node.__childTarget = CONTAINER_APPLIERS.TEMPLATE_CONTENT(node);
+      const containers = [[skeleton.children, node]];
+      if (skeleton.content) containers.push([skeleton.content, node.content]);
+      for (const [children, target] of containers) {
+        let current = target.firstChild;
+        for (const child of children) {
+          const childFacts = holeTargets.get(child);
+          if (childFacts?.holes.some(hole => hole.kind === HOLE_BIND)) {
+            // Only the explicit site anchor admits cold dynamic siblings.
+            // Their own normal creation commands must bind every address.
+            while (current && current !== childFacts.target) current = current.nextSibling;
+          }
+          if (!current) throw new Error("startup: missing template child");
+          stack.push({ skeleton: child, node: current }); current = current.nextSibling;
+        }
+        if (current) throw new Error("startup: unexpected template child");
+        runtime.startup.seedPlacement(target, target.lastChild);
+      }
+    } else if (!facts?.holes.some(hole => hole.kind === HOLE_TEXT || hole.kind === HOLE_BIND) && skeleton.text !== node.nodeValue) throw new Error("startup: template static text assertion");
+  }
+}
+
 function applyAttribute(runtime, u8, dv, at, el, name) {
   const present = u8[at++];
+  if (runtime.startup) {
+    let value = null;
+    if (present === 1) { const length = dv.getUint32(at, true); value = readStr(u8, at + 4, length); at += 4 + length; }
+    else if (present !== 0) throw new Error(`invalid attribute presence ${present}`);
+    const attribute = el.getAttributeNodeNS(name.namespace || null, name.local);
+    if ((attribute?.value ?? null) !== value || attribute && attribute.prefix !== name.prefix) throw new Error(`startup: attribute ${name.local} assertion`);
+    return at;
+  }
   if (present === 0) el.removeAttributeNS(name.namespace, name.local);
   else if (present === 1) {
     const n = dv.getUint32(at, true);
@@ -3211,7 +3303,14 @@ export class RocEngineRuntime {
   constructor(exports, root, options = {}) {
     this.x = exports;
     this.root = root;
-    this.pictureManaged = markedPicture(root);
+    this.startupBuildToken = options.startupBuildToken;
+    this.startup = null;
+    this.startupPhase = root.hasAttributeNS(null, "data-roc-frame") ? "cold" : "plain";
+    this.startupEntry = null;
+    this.startupRecovery = false;
+    this.opportunity = null;
+    this.opportunityGeneration = 0n;
+    this.pictureManaged = markedPicture(root) && !root.hasAttributeNS(null, "data-roc-frame");
     this.picturePending = this.pictureManaged;
     if (this.picturePending) holdPicture(root);
     this.doc = options.document ?? globalThis.document;
@@ -3371,17 +3470,13 @@ export class RocEngineRuntime {
       ports: () => this.portStats(),
       maxWorkers: this.maxWorkers,
     });
-    this.storage = options.storage ?? (() => {
-      try {
-        return this.win.localStorage;
-      } catch (_) {
-        return null;
-      }
-    })();
-    this.sessionStorage = options.sessionStorage ?? (() => {
-      try { return this.win.sessionStorage; }
-      catch { return null; }
-    })();
+    // Acquiring a browser storage service can itself throw. Fixed bootstrap
+    // does not consult it until a declared effect actually needs that service.
+    this.storage = options.storage ?? null;
+    this.sessionStorage = options.sessionStorage ?? null;
+    this.storageResolved = options.storage != null;
+    this.sessionResolved = options.sessionStorage != null;
+
   }
 
   // The last applied GUARD is the complete policy. This listener never
@@ -3482,6 +3577,19 @@ export class RocEngineRuntime {
       this.sessionKeys = boot.sessionKeys;
       this.mediaQueries = boot.media;
       this.zoneDays = boot.zoneDays;
+      this.startupProfile = boot.startup;
+      if (boot.startup.profile === 1) {
+        this.startupPhase = "cold";
+        if (this.root.namespaceURI !== HTML_NS) holdPicture(this.root);
+        const marker = this.root.getAttributeNS(null, "data-roc-frame");
+        if (marker !== null && !this.startupRecovery) {
+          const match = /^1:(0|[1-9][0-9]*):/.exec(marker);
+          if (match && Number(match[1]) < boot.startup.paths.length) this.startupEntry = Number(match[1]);
+          this.startup = new StartupFrame(this.root, this.startupBuildToken);
+          if (this.startup.entry >= boot.startup.paths.length) throw new Error("startup: frame entry outside route catalogue");
+          this.startupEntry = this.startup.entry;
+        }
+      } else if (this.root.hasAttributeNS(null, "data-roc-frame")) throw new Error("startup: annotated frame requires deterministic entry");
       this.portDecls = new Map(boot.decls.map((d) => [d.name, d]));
       checkPortHandlers(boot.decls, this.ports, this.manual);
       const bytes = this.bootBytes();
@@ -3489,13 +3597,40 @@ export class RocEngineRuntime {
       this.guard(() => this.mountInner(bytes));
       this.drainQueue();
     } catch (error) {
-      if (this.pictureManaged && !this.poisoned) this.contain(error, "executor");
+      if ((this.pictureManaged || this.startupPhase !== "plain") && !this.poisoned) this.contain(error, "executor");
       throw error;
     }
   }
 
-  bootBytes() {
+  storageService(session) {
+    const field = session ? "sessionStorage" : "storage";
+    const resolved = session ? "sessionResolved" : "storageResolved";
+    if (!this[resolved]) {
+      this[resolved] = true;
+      try { this[field] = this.win?.[session ? "sessionStorage" : "localStorage"] ?? null; }
+      catch { this[field] = null; }
+    }
+    return this[field];
+  }
+
+  bootBytes(snapshot = false) {
     const mountRoot = mountRootBytes(this.root, this.protocol);
+    if (!snapshot && this.startupProfile?.profile === 1) {
+      const url = this.startup || this.startupEntry !== null ? "/" : this.win?.location?.pathname ?? "/";
+      const minTime = -(1n << 63n), maxTime = (1n << 63n) - 1n;
+      const sections = [
+        [1, encStr(url)], [2, concat([new Uint8Array([1]), u32(0)])],
+        [3, new Uint8Array([1])], [4, new Uint8Array([1])],
+        [6, new Uint8Array(this.mediaQueries.length)], [7, i64Bytes(0n)],
+        [8, new Uint8Array(16)], [9, concat([u32(1), encStr("en-US")])],
+        [10, concat([encStr("UTC"), i64Bytes(minTime), i64Bytes(maxTime), u32(1), i64Bytes(minTime), i32Bytes(0)])],
+        [11, concat([new Uint8Array([1]), u32(0)])], [13, mountRoot],
+        [14, concat([new Uint8Array([1, this.startup ? 1 : 0]), u32(this.startupEntry ?? 0xffffffff)])],
+      ];
+      return concat(sections.map(([tag, body]) => concat([new Uint8Array([tag]), u32(body.length), body])));
+    }
+    this.storageService(false);
+    this.storageService(true);
     // Read before mount with the port table (see mount()).
     const keys = this.bootKeys;
     // Storage is unavailable when there is none, any read throws or any
@@ -3545,7 +3680,10 @@ export class RocEngineRuntime {
       { tag: 9, write: () => concat([u32(languages.length), ...languages.map(encStr)]) },
       { tag: 10, write: () => concat([encStr(zone.name), i64Bytes(zone.from_ms), i64Bytes(zone.until_ms), u32(zone.offsets.length), ...zone.offsets.flatMap(offset => [i64Bytes(offset.from_ms), i32Bytes(offset.minutes)])]) },
       { tag: 11, write: () => concat([new Uint8Array([sessionOk ? 1 : 0]), u32(session.length), ...session.flatMap(([key, value]) => [encStr(key), encStr(value)])]) },
-      { tag: 13, write: () => mountRoot },
+      ...(!snapshot ? [
+        { tag: 13, write: () => mountRoot },
+        { tag: 14, write: () => this.startupProfile?.profile === 1 ? concat([new Uint8Array([1, this.startup ? 1 : 0]), u32(this.startupEntry ?? 0xffffffff)]) : new Uint8Array([0]) },
+      ] : []),
     ];
     return concat(sections.map(({ tag, write }) => {
       const body = write();
@@ -3568,6 +3706,21 @@ export class RocEngineRuntime {
       this.calling = false;
       if (said === 1) this.takeDbg(null);
       this.apply();
+      if (this.startupProfile?.profile === 1 && !this.poisoned && !this.ending) {
+        if (this.startupPhase !== "ack") throw new Error("startup: missing cold acknowledgement request");
+        this.stage(new Uint8Array([254]));
+        this.calling = true;
+        const acknowledgementSaid = x.event(FX_NODE, 0);
+        this.calling = false;
+        if (acknowledgementSaid === 1) this.takeDbg(null);
+        this.apply();
+        if (this.startupPhase !== "complete") throw new Error("startup: missing completion");
+        this.startupRecovery = false;
+        if (this.startupFaultGate) {
+          if (this.startupFaultGate.added) this.startupFaultGate.owner.removeAttributeNS(null, "inert");
+          this.startupFaultGate = null;
+        }
+      }
     } finally {
       this.busy = this.pendingTransition !== null;
     }
@@ -3600,7 +3753,17 @@ export class RocEngineRuntime {
   // did not classify is an executor failure.
   contain(error, klass = null) {
     this.cancelTransition();
+    this.cancelOpportunity();
     if (this.poisoned) return;
+    if (this.startupPhase !== "plain" && this.startupPhase !== "complete") {
+      let owner = this.root[PICTURE_HOLD]?.owner;
+      if (!owner) { try { owner = this.root.namespaceURI === HTML_NS ? this.root : pictureInertOwner(this.root); } catch { /* no valid declared HTML owner exists */ } }
+      if (owner) {
+        this.startupFaultGate ??= { owner, added: !owner.hasAttributeNS(null, "inert") };
+        if (this.startupFaultGate.added) owner.setAttributeNS(null, "inert", "");
+      }
+      this.startup = null;
+    }
     if (this.pictureManaged) failPicture(this.root);
     if (this.picturePending) keepPictureHold(this.root);
     let code = 0;
@@ -3696,6 +3859,11 @@ export class RocEngineRuntime {
   // A fresh instance from the same module; the poisoned one is abandoned.
   async recover() {
     this.cancelTransition();
+    this.cancelOpportunity();
+    this.startupRecovery = true;
+    this.opportunityGeneration = 0n;
+    this.startup = null;
+    this.startupPhase = "plain";
     this.setLeaveGuard(false);
     this.clearStorageFailures();
     for (const id of [...this.live.keys()]) this.cancel(id);
@@ -3744,6 +3912,7 @@ export class RocEngineRuntime {
 
   unmount() {
     this.cancelTransition();
+    this.cancelOpportunity();
     this.setLeaveGuard(false);
     this.clearStorageFailures();
     this.monitor.runtimeEnding("unmount");
@@ -4491,6 +4660,7 @@ export class RocEngineRuntime {
   // One engine call for an event: a files-kind event stages its handles and
   // file record (design.md, Appendix B); other events stage their bytes or text.
   call(node, handler, payload) {
+    if (payload?.opportunity) this.cancelOpportunity();
     if (payload !== null && typeof payload === "object" && payload.cryptoKey !== undefined) return this.callKey(node, handler, payload.cryptoKey);
     if (payload !== null && typeof payload === "object" && payload.parts !== undefined) return this.callPort(node, handler, payload);
     if (payload === null || typeof payload !== "object" || payload.files === undefined) {
@@ -4645,6 +4815,13 @@ export class RocEngineRuntime {
   }
 
   place(el, parent, before) {
+    if (this.startup) {
+      const anchor = before === 0 ? null : this.lookup(before);
+      const owner = anchor ? null : this.lookup(parent);
+      const container = anchor ? anchor.parentNode : parent === 0 ? owner : owner.__childTarget ?? owner;
+      this.startup.assertPlaced(el, container, anchor);
+      return;
+    }
     if (before === 0) {
       const owner = this.lookup(parent);
       (parent === 0 ? owner : owner.__childTarget ?? owner).appendChild(el);
@@ -4693,7 +4870,7 @@ export class RocEngineRuntime {
       holes.push(hole);
     }
     if (at !== start + len) throw new Error("template length mismatch");
-    return { root, holes, contentOwners: reader.contentOwners };
+    return { root, holes, contentOwners: reader.contentOwners, dry };
   }
 
   // One shared promise covers both a deferred update and its animation. Manual
@@ -4763,11 +4940,27 @@ export class RocEngineRuntime {
         batch.definitions.clear();
       }
     }
+    if (this.startupPhase === "cold" && this.startup) {
+      if (flags !== 0) throw new Error("startup: cold batch must be unmarked");
+      const batch = { definitions: new Map(), expected: new Set([0]) };
+      this.applyBatch("preflight", batch);
+      this.startup.expectAliases(batch.expected);
+      this.startup.normalize();
+      this.applyBatch("normal", batch);
+      this.startup.finish();
+      this.startup = null;
+      this.restoreStartupGates();
+      batch.definitions.clear();
+      this.flushEffects();
+      if (!this.poisoned && !this.ending) this.releaseFiles();
+      return len;
+    }
     const animate = flags === 1 && this.viewTransitions === "document" && this.doc.visibilityState !== "hidden" && typeof this.doc.startViewTransition === "function";
     if (!animate) {
       const batch = { types: null };
       this.applyBatch("normal", batch);
       finishPicture(this);
+      if (this.startupPhase === "ack") this.restoreStartupGates();
       this.flushEffects();
       if (this.poisoned || this.ending) return len;
       this.releaseFiles();
@@ -4849,6 +5042,61 @@ export class RocEngineRuntime {
     return len;
   }
 
+  restoreStartupGates() {
+    restorePictureHold(this);
+    this.root.removeAttributeNS(null, PICTURE_FAILED);
+    if (this.startupFaultGate) {
+      if (this.startupFaultGate.added) this.startupFaultGate.owner.removeAttributeNS(null, "inert");
+      this.startupFaultGate = null;
+    }
+  }
+
+  cancelOpportunity() {
+    const task = this.opportunity;
+    if (!task) return;
+    this.opportunity = null;
+    if (task.channel) { task.channel.port1.close(); task.channel.port2.close(); }
+    if (task.timer !== null) clearTimeout(task.timer);
+  }
+
+  requestOpportunity(action, generation) {
+    if (generation === 0n || generation < this.opportunityGeneration) throw new Error("startup: invalid opportunity generation");
+    if (action === 0) {
+      if (this.opportunity?.generation !== generation) throw new Error("startup: opportunity cancellation has no matching registration");
+      this.cancelOpportunity();
+      return;
+    }
+    if (action !== 1 || generation <= this.opportunityGeneration || this.opportunity) throw new Error("startup: repeated opportunity registration");
+    this.opportunityGeneration = generation;
+    const task = { generation, timer: null, channel: null, posted: false, deliver: null };
+    this.opportunity = task;
+    const deliver = () => {
+      if (this.opportunity !== task || task.posted || this.poisoned || this.ending) return;
+      task.posted = true;
+      // Keep the registration while the bounded ingress occurrence waits.
+      // Delivery clears it immediately before entering Roc.
+      const payload = new Uint8Array(9); payload[0] = 255;
+      new DataView(payload.buffer).setBigUint64(1, generation, true);
+      this.dispatch(FX_NODE, 0, { parts: [payload], opportunity: task, isLive: () => this.opportunity === task });
+    };
+    task.deliver = deliver;
+    if (this.manual) return;
+    const Channel = this.win?.MessageChannel ?? globalThis.MessageChannel;
+    if (typeof Channel === "function") { task.channel = new Channel(); task.channel.port1.onmessage = deliver; task.channel.port2.postMessage(null); }
+    else task.timer = setTimeout(deliver, 0);
+  }
+
+  // Manual specs supply this closed platform occurrence explicitly, just as
+  // they release ordinary effect answers. No pending registration is an
+  // invalid test step, never a fabricated stale callback.
+  runOpportunity() {
+    if (!this.manual) throw new Error("runOpportunity requires manualEffects");
+    const task = this.opportunity;
+    if (!task || task.posted || this.poisoned || this.ending) throw new Error("run-opportunity has no pending startup opportunity");
+    task.deliver();
+    if (this.poisoned) throw new Error(this.poisoned.message);
+  }
+
   applyBatch(mode = "normal", batch = {}) {
     const x = this.x;
     const len = x.cmd_len();
@@ -4872,6 +5120,30 @@ export class RocEngineRuntime {
       const offset = at;
       const op = u8[at];
       at += 1;
+      if (op === this.protocol.OP_STARTUP) {
+        if (offset !== 1 || flags !== 0 || this.startupPhase !== "cold") throw new Error("startup: STARTUP must begin cold batch");
+        const startupMode = u8[at], entry = dv.getUint32(at + 1, true); at += 5;
+        if (entry >= this.startupProfile.paths.length || startupMode !== (this.startup ? 1 : 0) || this.startupEntry !== null && entry !== this.startupEntry) throw new Error("startup: cold mode or entry mismatch");
+        batch.startupBegun = true;
+        if (!scanning) this.startupEntry = entry;
+        continue;
+      }
+      if (op === this.protocol.OP_STARTUP_ACK || op === this.protocol.OP_STARTUP_COMPLETE) {
+        if (at !== len || flags !== 0) throw new Error("startup: barrier must be terminal and unmarked");
+        const expected = op === this.protocol.OP_STARTUP_ACK ? "cold" : "ack";
+        if (expected === "cold" && !batch.startupBegun) throw new Error("startup: missing initial STARTUP command");
+        if (this.startupPhase !== expected) throw new Error("startup: duplicate or out-of-order barrier");
+        if (!scanning) this.startupPhase = expected === "cold" ? "ack" : "complete";
+        continue;
+      }
+      if (op === this.protocol.OP_OPPORTUNITY) {
+        if (mode === "update" && batch.spans.has(offset)) { at = batch.spans.get(offset); continue; }
+        const action = u8[at], generation = dv.getBigUint64(at + 1, true); at += 9;
+        if (action > 1 || generation === 0n || this.startupPhase === "cold") throw new Error("startup: opportunity operands or phase");
+        queueEffect(this, reader, { op: "opportunity", action, generation });
+        if (mode === "early") batch.spans.set(offset, at);
+        continue;
+      }
       if (op === this.protocol.OP_TRANSITION) {
         reader.at = at; reader.marked = marked;
         at = this.protocol.COMMANDS[op].call(this, reader);
@@ -4891,12 +5163,13 @@ export class RocEngineRuntime {
           }
           case this.protocol.OP_INST: {
             const site = dv.getUint32(at + 12, true), template = shadow.get(site) ?? this.templates[site];
+            batch.expected?.add(dv.getUint32(at, true));
             if (!template) throw new Error(`INST names unknown template ${site}`);
             at += 16;
             for (const hole of template.holes) {
               if (hole.kind === HOLE_TEXT || hole.kind === HOLE_PROP) skipString();
               else if (hole.kind === HOLE_ATTR) skipAttribute();
-              else if (hole.kind === HOLE_BIND || hole.kind === HOLE_REF) at += 4;
+              else if (hole.kind === HOLE_BIND || hole.kind === HOLE_REF) { batch.expected?.add(dv.getUint32(at, true)); at += 4; }
             }
             break;
           }
@@ -4907,6 +5180,7 @@ export class RocEngineRuntime {
           case this.protocol.OP_MOVE: case this.protocol.OP_CLEAR: at += 8; break;
           case this.protocol.OP_RELEASE: case this.protocol.OP_REMOVE: at += 4; break;
           case this.protocol.OP_ELEM: {
+            batch.expected?.add(dv.getUint32(at, true));
             reader.at = at + 12;
             const name = expandedName(reader, true);
             const container = reader.protocol.CONTAINERS[u8[reader.at++]];
@@ -4915,7 +5189,7 @@ export class RocEngineRuntime {
             at = reader.at;
             break;
           }
-          case this.protocol.OP_TEXTNODE: case this.protocol.OP_COMMENT: at += 12; skipString(); break;
+          case this.protocol.OP_TEXTNODE: case this.protocol.OP_COMMENT: batch.expected?.add(dv.getUint32(at, true)); at += 12; skipString(); break;
           case this.protocol.OP_ATTR: at += 4; reader.at = at; expandedName(reader, false); at = reader.at; skipAttribute(); break;
           case this.protocol.OP_LISTEN: {
             const n = dv.getUint32(at + 8, true);
@@ -5208,6 +5482,20 @@ export class RocEngineRuntime {
   perform(fx) {
     const w = this.win;
     switch (fx.op) {
+      case "opportunity":
+        this.requestOpportunity(fx.action, fx.generation);
+        return;
+      case "environment": {
+        const entry = { kind: "environment", req: fx, cancel: () => clearTimeout(entry.timer) };
+        this.live.set(fx.id, entry);
+        entry.timer = setTimeout(() => this.guard(() => {
+          if (this.live.get(fx.id) !== entry) return;
+          const bytes = concat([new Uint8Array([31]), this.bootBytes(true)]);
+          this.live.delete(fx.id);
+          this.result(fx.id, bytes);
+        }), 0);
+        return;
+      }
       case "guardleave":
         this.setLeaveGuard(fx.on);
         return;
@@ -5276,7 +5564,7 @@ export class RocEngineRuntime {
       case "set":
       case "remove":
         try {
-          const store = fx.session ? this.sessionStorage : this.storage;
+          const store = this.storageService(fx.session);
           if (!store) throw new Error("storage is unavailable");
           if (fx.op === "set") store.setItem(fx.key, fx.value);
           else store.removeItem(fx.key);
@@ -5341,6 +5629,7 @@ export class RocEngineRuntime {
         return;
       }
       case "storagechanges": {
+        this.storageService(false);
         let ids = this.storageChanges.get(fx.key);
         if (!ids) { ids = new Set(); this.storageChanges.set(fx.key, ids); }
         ids.add(fx.id);
@@ -5426,7 +5715,7 @@ export class RocEngineRuntime {
           this.live.delete(fx.id);
           let v = null;
           try {
-            const store = fx.op === "sessionget" ? this.sessionStorage : this.storage;
+            const store = this.storageService(fx.op === "sessionget");
             v = store ? store.getItem(fx.key) : null;
           } catch (_) {
             v = null;
@@ -6598,6 +6887,26 @@ function readDeclarationBytes(bytes) {
       for (let n = r.u32(); n > 0; n -= 1) out.sessionKeys.push(r.str());
     } },
     { tag: 12, name: "protocol", read: r => { out.protocol = readProtocolFacts(r.bytes(r.remaining())); } },
+    { tag: 14, name: "startup", read: r => {
+      if (r.remaining() > 262144) throw new Error("startup declaration resource limit");
+      const profile = r.u8();
+      if (profile === 0) { out.startup = { profile }; return; }
+      if (profile !== 1) throw new Error("unknown startup profile");
+      const rootStart = r.remaining(), namespace = r.u8();
+      if (namespace > 4) throw new Error("unknown root namespace");
+      const uri = namespace === 4 ? r.str() : [HTML_NS, SVG_NS, MATHML_NS, ""][namespace];
+      const prefix = r.str(), local = r.str();
+      if (rootStart - r.remaining() > 65536) throw new Error("startup root resource limit");
+      const count = r.u32(); if (count < 1 || count > 4096) throw new Error("startup route count");
+      const paths = [], unique = new Set(); let total = 0;
+      for (let at = 0; at < count; at++) {
+        const path = r.str(), bytes = utf8enc.encode(path).length; total += bytes + 4;
+        if (bytes < 1 || bytes > 2048 || total > 65536 || !path.startsWith("/") || path.startsWith("//") || /[?#\\\u0000-\u0020]/.test(path) || unique.has(path)) throw new Error("invalid or duplicate startup path");
+        paths.push(path); unique.add(path);
+      }
+      const fallback = r.u32(); if (fallback !== 0xffffffff && fallback >= count) throw new Error("startup fallback");
+      out.startup = { profile, root: { namespace: uri, prefix, local }, paths, fallback };
+    } },
   ];
   let at = 0;
   for (const section of sections) {
@@ -6801,22 +7110,34 @@ function manualPortPayload(answer) {
 }
 
 export async function mountRocEngineApp({ wasmUrl, root, ...options }) {
-  const picture = markedPicture(root);
+  const annotated = root?.nodeType === 1 && root.hasAttributeNS(null, "data-roc-frame");
+  const picture = !annotated && markedPicture(root);
   let runtime = null;
   try {
-    if (picture) holdPicture(root);
+    const receipt = new URL(wasmUrl, root.ownerDocument?.baseURI ?? globalThis.location?.href).searchParams.getAll("roc-build");
+    if (receipt.length > 1 || receipt.length === 1 && !/^[A-Za-z0-9_-]+$/.test(receipt[0])) throw new Error("startup: invalid explicit module build receipt");
+    if (receipt.length && options.startupBuildToken !== undefined && options.startupBuildToken !== receipt[0]) throw new Error("startup: module receipt and expected build token disagree");
+    const startupBuildToken = options.startupBuildToken ?? receipt[0];
+    if (picture || annotated && root.namespaceURI !== HTML_NS) holdPicture(root);
     const response = await fetch(wasmUrl);
     if (!response.ok) throw new Error(`failed to fetch ${wasmUrl}: ${response.status}`);
     const module = await WebAssembly.compile(await response.arrayBuffer());
     const instance = await WebAssembly.instantiate(module, pageImports(module));
-    runtime = new RocEngineRuntime(instance.exports, root, { ...options, module });
+    runtime = new RocEngineRuntime(instance.exports, root, { ...options, startupBuildToken, module });
     runtime.mount();
     return runtime;
   } catch (error) {
-    if (picture) {
+    if (picture || annotated) {
       if (runtime) {
         if (!runtime.poisoned) runtime.contain(error, "executor");
-      } else pictureLoadFault(root, error, options.onFault);
+      } else {
+        if (annotated && !root[PICTURE_HOLD]) {
+          // Contain a failed load only after failure. The generated HTML's
+          // own partial gates preserve independent native content while loading.
+          try { holdPicture(root); } catch { /* an invalid declared edge is the reported fault */ }
+        }
+        pictureLoadFault(root, error, options.onFault);
+      }
     }
     throw error;
   }

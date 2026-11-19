@@ -32,15 +32,21 @@ inside it. The runtime never decides anything: it does what the commands say.
    then binds those names to its implementations for that instance. Names and
    closed lists come from `Protocol.roc`; the Roc engine keeps its own numbers
    and behavior, and the native oracle keeps independent command decoding.
-2. It asks for the app's declared storage keys, reads them, and stages the
-   boot bytes: the URL, those values, and the online, visibility and storage
-   flags.
-3. `init()` runs your `program`. The engine starts the store, if the app has
-   one, from the boot data; runs the view, once; builds the static structure
-   and mounts every site; and returns one batch of commands: create these
-   elements, set these attributes, listen for these events, start these
-   effects.
-4. The runtime applies the batch to the mount root, then performs the effects.
+2. For a deterministic entry it stages the declared root and entry with neutral
+   environment fields. A fresh plain load supplies its pathname for Roc to
+   select. A legacy boot-based entry instead reads its declared environment
+   and storage inputs before staging them.
+3. `init()` constructs fresh store and site storage and returns its command
+   batch. A fixed entry receives its route and fixed configuration; a legacy
+   entry receives its live boot facts. Waiting placeholders mount only their
+   static content.
+4. The runtime applies that complete batch and performs its effects. An
+   annotated frame binds its existing nodes. The runtime then acknowledges a
+   fixed cold frame, allowing initial follow-ups to settle before queued input
+   enters. A later environment request samples live facts in its next-task read.
+
+See [Startup and Deferred Content](@/docs/startup.md) for the binding contract,
+control gates, explicit replacement and recovery.
 
 ## One event
 

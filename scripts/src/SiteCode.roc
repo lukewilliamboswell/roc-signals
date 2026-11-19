@@ -16,7 +16,7 @@ SiteCode := [].{
 	## intact; the checked-in source still compiles against the local platform.
 	published_source : Str -> Str
 	published_source = |source| {
-		parsed = RocSyntax.parse_str(source)
+		parsed = RocSyntax.parse_str(source, {})
 		root = match parsed.nodes.get(parsed.root) {
 			Ok(node) => node
 			Err(_) => return source
@@ -25,7 +25,15 @@ SiteCode := [].{
 			Ok(node) if node.kind == Header => node
 			_ => return source
 		}
-		if parsed.source != source.to_utf8() or parsed.diagnostics.any(|diagnostic| diagnostic.start <= header.end) {
+		# Rewriting needs a source byte position; an unavailable position
+		# cannot establish that the header is safe to change.
+		if parsed.source != source.to_utf8() or parsed.diagnostics.any(
+			|diagnostic| match diagnostic.location {
+				ByteOffset(offset) => offset <= header.end
+				Text(position) => position.offset <= header.end
+				_ => True
+			},
+		) {
 			return source
 		}
 		var $urls = []

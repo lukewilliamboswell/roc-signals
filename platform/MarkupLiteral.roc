@@ -1,4 +1,3 @@
-import parser.MarkupFacts
 import Engine
 import Core
 import Web
@@ -7,8 +6,7 @@ import Spelling
 import parser.Html as ParsedHtml
 import parser.Svg as ParsedSvg
 import parser.Markup
-import parser.MarkupTemplate
-import parser.Literal
+import parser.Parser
 
 ## Compile checked markup to a small immutable constructor plan. Only this
 ## compile path sees parser source and syntax; bound holes keep ordinary signals.
@@ -29,10 +27,11 @@ MarkupLiteral := [].{
 		if segments.is_empty() {
 			return Err(BadLiteral("line 1, column 1: a markup interpolation needs at least one fixed segment"))
 		}
-		parsed = match mode {
+		validated = match mode {
 			HtmlFragment => html_segments(segments)
 			SvgFragment => ParsedSvg.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True })
 		}.map_err(|InvalidMarkup(error)| BadLiteral(parser_problem(error)))?
+		parsed = validated.metadata()
 		var $texts = Dict.empty()
 		var $attributes = Dict.empty()
 		for slot in parsed.slots {
@@ -54,16 +53,19 @@ MarkupLiteral := [].{
 					var $attrs = []
 					var $attribute_index = 0.U64
 					for attribute in node.attributes {
-						if MarkupFacts.is_event_handler(name, attribute.name) {
+						if Markup.Name.is_event_handler(name, { attribute: attribute.name }) {
 							return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "a markup literal holds no handlers: listen with Engine.on or Html's controls")))
 						}
 						attr_name = attribute_name(attribute.name).map_err(|NotAnAttribute(note)| BadLiteral(at_offset(parsed.parsed, attribute.span.start, note)))?
+						if Core.attribute_reserved(attr_name) {
+							return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "this no-namespace data-roc attribute is reserved for startup transport")))
+						}
 						match Core.attribute_claim(tag, attr_name) {
 							Unclaimed => {}
 							Claimed(property) => return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "${sample(attribute.name.local)} on ${name_label(name)} is claimed by Engine.Prop.${property}; use Engine.prop or Engine.prop_s on a constructor, or Html's typed controls")))
 						}
 						hole = $attributes.get(($node_index, $attribute_index))
-						boolean = MarkupFacts.is_boolean_attribute(name, attribute.name)
+						boolean = Markup.Name.is_boolean_attribute(name, { attribute: attribute.name })
 						if boolean and hole.is_ok() {
 							return Err(BadLiteral(at_offset(parsed.parsed, attribute.span.start, "a Boolean attribute cannot have a text hole: use Html.boolean or a typed control on a constructor")))
 						}
@@ -112,19 +114,12 @@ MarkupLiteral := [].{
 	## Capture each homogeneous part once. The compiler supplies exact arity;
 	## manual calls have the same named contract boundary as signal assemblers.
 	bind : Plan, Iter(Engine.Signal(ctx, Str)) -> List(Engine.Signal(ctx, Str))
-	bind = |Plan.(plan), parts| {
-		var $bound = []
-		for part in parts {
-			if $bound.len() == plan.parts {
-				crash "contract: markup interpolation has more parts than its fixed segments"
-			}
-			$bound = $bound.append(part)
-		}
-		if $bound.len() != plan.parts {
-			crash "contract: markup interpolation has fewer parts than its fixed segments"
-		}
-		$bound
-	}
+	bind = |plan, parts| bind_parts(plan, parts)
+
+	## A static placeholder retains text bindings, without a signal reader or
+	## live context. Its arity follows the same checked plan as ordinary markup.
+	bind_static : Plan, Iter(Str) -> List(Str)
+	bind_static = |plan, parts| bind_parts(plan, parts)
 
 	## Build ordinary engine elements. Parts retain their read signatures and
 	## constant mark; no parser, source text or special reactive site is retained.
@@ -135,6 +130,23 @@ MarkupLiteral := [].{
 			Core.require_parent(element, [Svg])
 		} else element
 	}
+}
+
+## One arity boundary for every homogeneous kind of checked markup binding.
+## The returned list owns each part; no iterator or live environment is kept.
+bind_parts : MarkupLiteral.Plan, Iter(part) -> List(part)
+bind_parts = |MarkupLiteral.Plan.(plan), parts| {
+	var $bound = []
+	for part in parts {
+		if $bound.len() == plan.parts {
+			crash "contract: markup interpolation has more parts than its fixed segments"
+		}
+		$bound = $bound.append(part)
+	}
+	if $bound.len() != plan.parts {
+		crash "contract: markup interpolation has fewer parts than its fixed segments"
+	}
+	$bound
 }
 
 Attribute : { name : Web.AttrName, value : [Fixed(Str), Part(U64)] }
@@ -213,7 +225,7 @@ at_node = |parsed, node, note| at_offset(
 
 at_offset : Markup.Parsed, U64, Str -> Str
 at_offset = |parsed, offset, note| {
-	position = Literal.position(Str.from_utf8_lossy(parsed.source.bytes), offset)
+	position = (parsed.source).position(offset)
 	"line ${position.line.to_str()}, column ${position.column.to_str()}: ${note}"
 }
 
@@ -224,7 +236,7 @@ at_offset = |parsed, offset, note| {
 # only when that parse is exact and its root is a table part. Every other
 # literal keeps the body parse and its diagnostic. Where a table-part root
 # may be placed is the construction check's: a <tr> in a <div> is refused.
-html_segments : List(Str) -> Try(MarkupTemplate.Plan, [InvalidMarkup(Markup.Error)])
+html_segments : List(Str) -> Try(Markup.Template.Plan, [InvalidMarkup(Markup.Error)])
 html_segments = |segments|
 	match ParsedHtml.parse_segments(segments, { exact_structure: True, strict_foreign_spelling: True }) {
 		Ok(plan) => Ok(plan)
@@ -237,11 +249,11 @@ html_segments = |segments|
 
 # Whether a parse has an HTML table-part root; compile still requires
 # exactly one element root.
-table_part_root : MarkupTemplate.Plan -> Bool
+table_part_root : Markup.Template.Plan -> Bool
 table_part_root = |plan|
-	plan.parsed.tree.roots.any(
+	(plan.metadata().parsed.tree.roots).any(
 		|index|
-			match plan.parsed.tree.nodes.get(index) {
+			match plan.metadata().parsed.tree.nodes.get(index) {
 				Ok(node) =>
 					match node.kind {
 						Element(name) => name.namespace == Uri(Markup.html_namespace) and ["tr", "td", "th", "tbody", "thead", "tfoot", "caption", "colgroup", "col"].contains(name.local)
@@ -252,38 +264,76 @@ table_part_root = |plan|
 	)
 
 parser_problem : Markup.Error -> Str
-parser_problem = |error| "line ${error.line.to_str()}, column ${error.column.to_str()}: ${problem_words(error.problem)}"
+parser_problem = |error| "${MarkupAdvice.location(error.location)}: ${problem_words(error.problem)}"
 
 problem_words : Markup.Problem -> Str
 problem_words = |problem| match problem {
-	SyntaxError(note) => note
+	SyntaxError(note) => "invalid XML syntax: ${Str.inspect(note)}"
 	HtmlSyntax(UnexpectedDoctype) => "a markup literal is an element UI fragment, not a document declaration"
 	HtmlSyntax(code) => "invalid HTML syntax: ${Str.inspect(code)}"
 	HtmlStructure({ reason, .. }) => MarkupAdvice.repair(reason)
 	NonCanonicalName({ authored, expected, .. }) => "foreign name ${sample(authored)} would be adjusted to ${sample(expected)}; write the exact spelling"
 	NamespaceError(reason) => "invalid namespace: ${Str.inspect(reason)}"
-	WrongRoot({ expected, actual }) => "expected ${short_text(expected)}, found ${short_text(actual)}"
-	UnknownElement(name) => "${sample(name)} is not an element in the pinned parser vocabulary${Spelling.suggest(name, MarkupFacts.element_names(Uri(Markup.html_namespace)).concat(MarkupFacts.element_names(Uri(Markup.svg_namespace))))}"
+	WrongRoot({ expected, actual }) => "expected <${short_text(expected.local)}> in ${Str.inspect(expected.namespace)}, found ${Str.inspect(actual)}"
+	UnknownElement(name) => "${sample(name)} is not an element in the pinned parser vocabulary${Spelling.suggest(name, Markup.element_names(Uri(Markup.html_namespace)).concat(Markup.element_names(Uri(Markup.svg_namespace))))}"
 	UnknownAttribute({ element, attribute }) => {
 		hint = if attribute.starts_with("aria-") {
-			Spelling.suggest(attribute, MarkupFacts.aria_attribute_names)
+			Spelling.suggest(attribute, Markup.aria_attribute_names)
 		} else ""
 		"<${short_text(element)}> has no attribute ${sample(attribute)}${hint}"
 	}
-	InvalidValue({ attribute, value, expected }) => {
-		hint = match expected {
-			Keyword(words) => Spelling.suggest(value, words)
-			_ => ""
-		}
-		"${sample(value)} is not a value of ${short_text(attribute)}; expected ${grammar_words(expected)}${hint}"
+	InvalidValue({ attribute, value: excerpt, expected }) => {
+		hint = if excerpt.total_bytes == excerpt.bytes.len() {
+			match expected {
+				Keyword(words) => Spelling.suggest(Str.from_utf8_lossy(excerpt.bytes), words)
+				_ => ""
+			}
+		} else ""
+		"${excerpt_sample(excerpt)} is not a value of ${short_text(attribute)}; expected ${grammar_words(expected)}${hint}"
 	}
-	InvalidChildren({ element, expected }) => "<${short_text(element)}> requires ${short_text(expected)}"
-	Unsupported(note) => note
+	InvalidChildren({ element, expected }) => "<${short_text(element)}> requires ${children_words(expected)}"
+	Unsupported(note) => "unsupported markup: ${Str.inspect(note)}"
 	LimitExceeded(limit) => "markup exceeds the parser's ${Str.inspect(limit)} limit"
-	SourceTooLarge(maximum) => "markup source exceeds ${maximum.to_str()} bytes"
-	ResourceLimit(resource) => "markup exceeds the parser's ${short_text(resource)} limit"
-	Interpolation({ index, reason }) => "hole index ${index.to_str()}: ${reason}"
+	Interpolation({ index, reason }) => "hole index ${index.to_str()}: ${interpolation_words(reason)}"
 	BindingCount({ expected, actual }) => "markup has ${actual.to_str()} bound parts but requires ${expected.to_str()}"
+}
+
+interpolation_words : Markup.InterpolationProblem -> Str
+interpolation_words = |reason| match reason {
+	RawTextHole => "holes are not allowed in raw script/style content"
+	MissingStaticSegment => "an interpolation requires at least one static segment"
+	TextHoleForbidden(element) => "text holes are not allowed inside <${short_text(element)}>"
+	RecoveryRequired => "a template requires exact authored structure without parser repairs"
+	SplitCharacterReference => "a hole cannot split a character reference"
+	InvalidHolePosition => "expected character data or an entire quoted attribute value"
+	MultipleAttributeHoles => "an attribute value requires one whole-value hole"
+	MarkupDelimiterHole => "holes are not allowed in comments, declarations or markup delimiters"
+	IncompleteHoleMarkup => "a hole cannot complete unfinished markup"
+	LostAttributeHole => "the parser did not retain the attribute hole"
+	CdataHoleNamespace => "a CDATA hole requires a foreign namespace"
+}
+
+children_words : Markup.ChildGrammar -> Str
+children_words = |grammar| match grammar {
+	AllowedParent(name) => "a <${short_text(name)}> parent"
+	ImageAlternative => "an alt attribute on an image"
+	ImageInputAttributes => "src and alt attributes on an image input"
+	NoNestedAnchor => "content without nested links"
+	NoInteractiveContent => "content without interactive descendants"
+	OptionContent => "valid option content"
+	SelectButtonDescendant => "a button inside a select"
+	NoChildren => "no children"
+	ElementsOnly => "element children"
+	NamedElements(names) => Str.join_with(names.map(|name| "<${short_text(name)}>"), ", ")
+	TextOnly => "text content"
+	MathElements => "MathML children"
+	SvgElements => "SVG children"
+	ChildCount(count) => "${count.to_str()} children"
+	BaseAndScriptPairs => "a base followed by script pairs"
+	ScriptsAndPrescripts => "scripts and prescripts"
+	ScriptPairs => "script pairs"
+	ExpressionAndAnnotations => "an expression followed by annotations"
+	SvgContentModel => "the SVG content model"
 }
 
 grammar_words : Markup.ValueGrammar -> Str
@@ -301,13 +351,28 @@ grammar_words = |grammar| match grammar {
 	Color => "a color"
 	Paint => "an SVG paint value"
 	AspectRatio => "an aspect-ratio value"
-	Language(note) => short_text(note)
+	Language(note) => Str.inspect(note)
 }
 
 name_label : Markup.Name -> Str
 name_label = |name| match name.prefix {
 	Unprefixed => "<${short_text(name.local)}>"
 	Prefix(value) => "<${short_text(value)}:${short_text(name.local)}>"
+}
+
+## An owned excerpt may end within a UTF-8 scalar. Display only its valid
+## prefix, and retain the parser's truncation fact rather than inventing text.
+excerpt_sample : Parser.Excerpt -> Str
+excerpt_sample = |excerpt| {
+	var $bytes = excerpt.bytes
+	while Bool.True {
+		match Str.from_utf8($bytes) {
+			Ok(text) => return if (excerpt.total_bytes > $bytes.len()) "${Str.inspect(text)}…" else Str.inspect(text)
+			Err(_) => {
+				$bytes = $bytes.drop_last(1)
+			}
+		}
+	}
 }
 
 sample : Str -> Str
@@ -389,4 +454,77 @@ expect {
 	roots = ["<tr><td>x</td></tr>", "<td>x</td>", "<th>x</th>", "<tbody><tr><td>x</td></tr></tbody>", "<thead><tr><th>x</th></tr></thead>", "<caption>x</caption>", "<colgroup><col></colgroup>", "<col>"]
 	repaired = ["<tr><div>x</div></tr>", "<td>x</td><tr><td>y</td></tr>", "<p><div>x</div></p>"]
 	roots.all(|source| MarkupLiteral.compile([source], HtmlFragment).is_ok()) and repaired.all(|source| MarkupLiteral.compile([source], HtmlFragment).is_err())
+}
+
+## The parser must keep a sole text hole inside every authored parent. The
+## reference is written with constructors, independently of the parsed tree:
+## comparing two consumers of the parser would accept the same ancestry bug.
+expect {
+	plan = MarkupLiteral.compile(["<section><div><p>", "</p></div><aside>fixed</aside></section>"], HtmlFragment)?
+	literal = MarkupLiteral.render(plan, [Engine.const("live")])
+	ordinary = Engine.element("section", [], [Engine.element("div", [], [Engine.element("p", [], [Engine.text_s(Engine.const("live"))])]), Engine.element("aside", [], [Engine.text("fixed")])])
+	Core.take_cmds(Core.mount(literal), []).1 == Core.take_cmds(Core.mount(ordinary), []).1
+}
+
+## Template content has its own container; a sole text binding remains the
+## span's child inside that content, rather than a sibling of the template.
+expect {
+	plan = MarkupLiteral.compile(["<template><div><span>", "</span></div></template>"], HtmlFragment)?
+	literal = MarkupLiteral.render(plan, [Engine.const("inert")])
+	ordinary = Core.template_content(Engine.element("template", [], [Engine.element("div", [], [Engine.element("span", [], [Engine.text_s(Engine.const("inert"))])])]))
+	Core.take_cmds(Core.mount(literal), []).1 == Core.take_cmds(Core.mount(ordinary), []).1
+}
+
+## Static placeholder text is retained exactly; escaping belongs to ordinary
+## element lowering and rendering, not to the binding's ownership boundary.
+expect {
+	plan = MarkupLiteral.compile(["<p>", "</p>"], HtmlFragment)?
+	MarkupLiteral.bind_static(plan, ["<>&"].iter()) == ["<>&"]
+}
+
+## Sole holes remain inside authored formatting, anchor and form parents.
+## Each reference is a constructor tree, independent of the parser's slots.
+expect {
+	["strong", "a", "form"].all(
+		|name| {
+			tag = Web.Tag.from_str(name) ?? crash "fixed authored HTML name"
+			plan = MarkupLiteral.compile(["<section><${name}>", "</${name}></section>"], HtmlFragment) ?? crash "fixed authored literal"
+			actual = MarkupLiteral.render(plan, [Engine.const("<>&")])
+			expected = Engine.element("section", [], [Engine.element(tag, [], [Engine.text_s(Engine.const("<>&"))])])
+			Core.take_cmds(Core.mount(actual), []).1 == Core.take_cmds(Core.mount(expected), []).1
+		},
+	)
+}
+
+## Adjacent holes stay separate children of the authored formatting element.
+expect {
+	plan = MarkupLiteral.compile(["<section><strong>", "", "</strong></section>"], HtmlFragment)?
+	actual = MarkupLiteral.render(plan, [Engine.const("first"), Engine.const("second")])
+	expected = Engine.element("section", [], [Engine.element("strong", [], [Engine.text_s(Engine.const("first")), Engine.text_s(Engine.const("second"))])])
+	Core.take_cmds(Core.mount(actual), []).1 == Core.take_cmds(Core.mount(expected), []).1
+}
+
+## Nested formatting and fixed text keep both holes in their written order.
+expect {
+	plan = MarkupLiteral.compile(["<section><strong>before<em>", "</em>middle", "after</strong></section>"], HtmlFragment)?
+	actual = MarkupLiteral.render(plan, [Engine.const("inner"), Engine.const("outer")])
+	expected = Engine.element("section", [], [Engine.element("strong", [], [Engine.text("before"), Engine.element("em", [], [Engine.text_s(Engine.const("inner"))]), Engine.text("middle"), Engine.text_s(Engine.const("outer")), Engine.text("after")])])
+	Core.take_cmds(Core.mount(actual), []).1 == Core.take_cmds(Core.mount(expected), []).1
+}
+
+## A bounded parser excerpt still says that the authored value was longer.
+expect {
+	match MarkupLiteral.compile(["<input disabled='${Str.repeat("x", 100)}'>"], HtmlFragment) {
+		Err(BadLiteral(note)) => note == "line 1, column 8: ${Str.inspect(Str.repeat("x", 40))}… is not a value of disabled; expected \"\", \"disabled\""
+		Ok(_) => False
+	}
+}
+
+## A scalar cut by the parser's byte bound is omitted, never replaced by a
+## character that the app author did not write.
+expect {
+	match MarkupLiteral.compile(["<input disabled='${Str.repeat("a", 38)}🚀tail'>"], HtmlFragment) {
+		Err(BadLiteral(note)) => note == "line 1, column 8: ${Str.inspect(Str.repeat("a", 38))}… is not a value of disabled; expected \"\", \"disabled\""
+		Ok(_) => False
+	}
 }

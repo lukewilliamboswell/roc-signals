@@ -8,5 +8,3 @@ method = match Engine.File.fetch({ url: "/" }).sent() {
 }
 main : Engine.Program
 main = Engine.program(|| Engine.text(method))
-
-Store : {}

@@ -40,4 +40,3 @@ main : Engine.Program
 main = Engine.program(view)
 
 ## This sample has no shared store.
-Store : {}

@@ -8,7 +8,7 @@ import Targets
 ## every registered target either in its list to run or in its list to
 ## skip, with the reason, and the only reasons a plan can hold are the ones
 ## `contributing.md` sanctions: the person named other targets, the target
-## belongs to another shard of CI's Fuzz smoke job, or the run was told its
+## belongs to a suite in another shard of CI's Fuzz smoke job, or the run was told its
 ## targets are replayed elsewhere. After the run, `account` prints a `SKIP`
 ## line for each skipped target and one accounting line, and turns anything
 ## the plan does not explain (a target to run without exactly one result, a
@@ -19,7 +19,7 @@ FuzzPlan := [].{
 	## Why a registered target is not run by this run.
 	Skip : [NotNamed, OtherShard(Shard), Elsewhere(Str)]
 
-	## One of `total` disjoint parts of the registry, numbered from 1.
+	## One of `total` disjoint sets of suites, numbered from 1.
 	Shard : { index : U64, total : U64 }
 
 	## What a run was asked to run: every target, those named, one shard of
@@ -59,7 +59,9 @@ FuzzPlan := [].{
 				}
 				var $run = []
 				var $skip = []
-				for (position, target) in registry.map_with_index(|target, position| (position, target)) {
+				suites = Targets.suite_builds(registry)
+				for target in registry {
+					position = suites.find_first_index(|suite| suite.main == target.suite) ?? crash "fuzz shard missing suite"
 					owner = position % shard.total + 1
 					if owner == shard.index {
 						$run = $run.append(target)
@@ -82,7 +84,7 @@ FuzzPlan := [].{
 		NothingRegistered => "fuzz: Targets.fuzz_targets registers no target"
 		UnknownTarget(name) => "fuzz: ${name} is not a registered target"
 		NoSuchShard({ index, total }) => "fuzz: shard ${index.to_str()}/${total.to_str()} is not one of ${total.to_str()} shards numbered from 1"
-		EmptyShard({ index, total }) => "fuzz: shard ${index.to_str()}/${total.to_str()} receives no target; use at most as many shards as there are targets"
+		EmptyShard({ index, total }) => "fuzz: shard ${index.to_str()}/${total.to_str()} receives no target; use at most as many shards as there are suites"
 	}
 
 	## Parse `K/N`, shard K of N.
@@ -157,7 +159,7 @@ FuzzPlan := [].{
 }
 
 registry_of : List(Str) -> List(Targets.Fuzz)
-registry_of = |names| names.map(|name| { name, main: "fuzz/${name}/main.roc" })
+registry_of = |names| names.map(|name| { name, main: "fuzz/${name}/main.roc", property: "fuzz/${name}/Property.roc", suite: "fuzz/${name}/main.roc" })
 
 passed : List(Str) -> List(FuzzPlan.Outcome)
 passed = |names| names.map(|name| { name, problems: [] })
@@ -269,4 +271,18 @@ expect {
 			"fuzz c: registered, but the run placed it 0 times among the targets it runs and skips",
 			"fuzz: 1 ran and 1 skipped do not account for 3 registered targets",
 		]
+}
+
+## Shared-build members stay together in a shard, so the CI shards compile
+## every suite once while retaining one outcome and report per member.
+expect {
+	registry = [
+		{ name: "a", main: "fuzz/a/main.roc", property: "fuzz/a/main.roc", suite: "One.roc" },
+		{ name: "b", main: "fuzz/b/main.roc", property: "fuzz/b/main.roc", suite: "Two.roc" },
+		{ name: "c", main: "fuzz/c/main.roc", property: "fuzz/c/main.roc", suite: "One.roc" },
+	]
+	match (FuzzPlan.plan(registry, InShard({ index: 1, total: 2 })), FuzzPlan.plan(registry, InShard({ index: 2, total: 2 }))) {
+		(Ok(first), Ok(second)) => first.run.map(|member| member.name) == ["a", "c"] and second.run.map(|member| member.name) == ["b"]
+		_ => False
+	}
 }

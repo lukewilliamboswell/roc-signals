@@ -3,4 +3,3 @@ import pf.Engine
 import pf.Html
 
 main = Engine.program(|| Html.link("Unsafe", "java\tscript:alert(1)", []))
-Store : {}

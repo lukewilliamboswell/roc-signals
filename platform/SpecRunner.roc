@@ -179,7 +179,14 @@ SpecRunner := [].{
 		title : Str,
 		pending : List(Pending),
 		issued : List(U32),
-		gets : List([Read({ id : U32, key : Str, session : Bool }), Answer({ id : U32, payload : List(U8), scoped : Bool }), Failures]),
+		gets : List([Read({ id : U32, key : Str, session : Bool }), EnvironmentRead(U32), Answer({ id : U32, payload : List(U8), scoped : Bool }), Failures]),
+
+		## Only declared storage keys are sampled by an environment request.
+		environment_keys : { local : List(Str), session : List(Str) },
+
+		## A single mechanical task registration, supplied only by a spec step.
+		opportunity : [None, Some(U64)],
+		opportunity_generation : U64,
 		failure_queue : List({ id : U32, payload : List(U8), ready : Bool }),
 		failure_scheduled : Bool,
 		failure_active : Bool,
@@ -379,7 +386,10 @@ SpecRunner := [].{
 	DeclaredPort : { name : Str, kind : PortKind }
 
 	## Spec validation retains only the declaration facts its steps can name.
-	Declarations : { keys : List(Str), ports : List(DeclaredPort), latest_ports : List(Str), media : List(Str), zone_days : U16, session_keys : List(Str) }
+	Declarations : { keys : List(Str), ports : List(DeclaredPort), latest_ports : List(Str), media : List(Str), zone_days : U16, session_keys : List(Str), startup : StartupProfile }
+
+	## The native adapter reads fixed entry facts, never the app's route values.
+	StartupProfile : [Legacy, Deterministic({ root : Scm.MountRoot, entries : List(Str), fallback : U32 })]
 
 	## Decode both declaration sections once: only the catalogue decides
 	## whether a subscription's messages are reports.
@@ -515,7 +525,7 @@ SpecRunner := [].{
 			crash "contract: declaration section11 session-storage missing"
 		}
 		length = (SpecRunner.get_u32(b, session_at + 1) ?? crash "contract: session-storage short length").to_u64()
-		if session_at + 5 + length != b.len() {
+		if session_at + 5 + length > b.len() {
 			crash "contract: session-storage length mismatch"
 		}
 		session_body = b.sublist({ start: session_at + 5, len: length })
@@ -530,7 +540,59 @@ SpecRunner := [].{
 		if $session_cursor != session_body.len() {
 			crash "contract: session-storage trailing bytes"
 		}
-		{ keys: $keys, ports: $declared_ports, latest_ports: $latest_ports, media: $queries, zone_days: days, session_keys: $session }
+		startup_at = session_at + 5 + length
+		if b.get(startup_at) != Ok(14) {
+			crash "contract: declaration section 14 (startup) is missing or out of order"
+		}
+		startup_length = (SpecRunner.get_u32(b, startup_at + 1) ?? crash "contract: startup declaration short length").to_u64()
+		if startup_at + 5 + startup_length != b.len() {
+			crash "contract: startup declaration length mismatch"
+		}
+		startup = SpecRunner.decode_startup(b.sublist({ start: startup_at + 5, len: startup_length }))
+		{ keys: $keys, ports: $declared_ports, latest_ports: $latest_ports, media: $queries, zone_days: days, session_keys: $session, startup }
+	}
+
+	## Validate bounded declaration transport before constructing lists or selecting
+	## an entry. These are independent consumer checks, not Core's route lookup.
+	decode_startup : List(U8) -> StartupProfile
+	decode_startup = |bytes| match bytes {
+		[0] => Legacy
+		[1, ..] => {
+			if bytes.len() > 131_081 {
+				crash "contract: startup declaration exceeds root and catalogue bounds"
+			}
+			(root, after_root) = Dom.expanded_name(bytes, 1, True)
+			if after_root - 1 > 65536 {
+				crash "contract: startup root exceeds 65536 bytes"
+			}
+			count = (SpecRunner.get_u32(bytes, after_root) ?? crash "contract: startup entry count is truncated").to_u64()
+			if count == 0 or count > 4096 {
+				crash "contract: startup needs 1 to 4096 entries"
+			}
+			var $at = after_root + 4
+			var $entries = []
+			while $entries.len() < count {
+				length = (SpecRunner.get_u32(bytes, $at) ?? crash "contract: startup entry length is truncated").to_u64()
+				if length > 2048 or $at + 4 > bytes.len() or length > bytes.len() - $at - 4 {
+					crash "contract: startup entry path exceeds its bound or is truncated"
+				}
+				(path, next) = Dom.str(bytes, $at)
+				if $entries.contains(path) {
+					crash "contract: startup entry path is repeated"
+				}
+				$entries = $entries.append(path)
+				$at = next
+			}
+			if $at - after_root - 4 > 65536 or $at + 4 != bytes.len() {
+				crash "contract: startup entry paths exceed 65536 bytes or have trailing bytes"
+			}
+			fallback = SpecRunner.get_u32(bytes, $at) ?? crash "contract: startup fallback is truncated"
+			if fallback != 0xffffffff and fallback.to_u64() >= count {
+				crash "contract: startup fallback is not a declared entry"
+			}
+			Deterministic({ root, entries: $entries, fallback })
+		}
+		_ => crash "contract: startup declaration has an unknown profile"
 	}
 
 	## Check every named declaration before a spec is emitted or executed.
@@ -595,7 +657,15 @@ SpecRunner := [].{
 	## The engine-only root section follows the app environment but never becomes
 	## an app-visible Boot field. This encoder is independent of Core's reader.
 	encode_mount : Scm.Environment, Scm.MountRoot -> List(U8)
-	encode_mount = |env, mount_root| {
+	encode_mount = |env, mount_root| SpecRunner.encode_startup_mount(env, mount_root, [0])
+
+	## Keep private startup input separate from the environment snapshot payload.
+	encode_startup_mount : Scm.Environment, Scm.MountRoot, List(U8) -> List(U8)
+	encode_startup_mount = |env, mount_root, startup| SpecRunner.encode_environment(env).concat(SpecRunner.put_section([], { tag: 13, body: SpecRunner.root_bytes(mount_root) })).concat(SpecRunner.put_section([], { tag: 14, body: startup }))
+
+	## Independent environment/result encoding includes no mount or startup facts.
+	encode_environment : Scm.Environment -> List(U8)
+	encode_environment = |env| {
 		var $storage = SpecRunner.put_u32([SpecRunner.flag_byte(env.storage_available)], env.storage.len().to_u32_wrap())
 		for (key, value) in env.storage {
 			$storage = SpecRunner.put_str(SpecRunner.put_str($storage, key), value)
@@ -625,7 +695,7 @@ SpecRunner := [].{
 			{ tag: 9, body: languages },
 			{ tag: 10, body: $offsets },
 			{ tag: 11, body: env.session.fold(SpecRunner.put_u32([SpecRunner.flag_byte(env.session_available)], env.session.len().to_u32_wrap()), |bytes, (key, value)| SpecRunner.put_str(SpecRunner.put_str(bytes, key), value)) },
-		].fold([], SpecRunner.put_section).concat(SpecRunner.put_section([], { tag: 13, body: SpecRunner.root_bytes(mount_root) }))
+		].fold([], SpecRunner.put_section)
 	}
 
 	## Canonical namespace tags preserve the actual wrapper's URI, prefix and
@@ -870,6 +940,9 @@ SpecRunner := [].{
 		pending: [],
 		issued: [],
 		gets: [],
+		environment_keys: { local: [], session: [] },
+		opportunity: None,
+		opportunity_generation: 0,
 		failure_queue: [],
 		failure_scheduled: False,
 		failure_active: False,
@@ -927,6 +1000,14 @@ SpecRunner := [].{
 			}
 			b = $b
 			$b = match c {
+				Startup(_) | StartupComplete => b
+				StartupAck => crash "internal: startup acknowledgement must enter the driver after cold effects"
+				Opportunity({ action, generation }) => match (action, b.opportunity) {
+					(1, None) if generation > b.opportunity_generation => { ..b, opportunity: Some(generation), opportunity_generation: generation }
+					(0, Some(current)) if generation == current => { ..b, opportunity: None }
+					_ => { ..b, deferred_error: "startup: opportunity command does not name a fresh registration or its current cancellation" }
+				}
+				Environment(id) => { ..b, gets: b.gets.append(EnvironmentRead(id)) }
 				Http(id, method, url, _, body, _, options) => { ..b, network: b.network.insert(id, { method, options }), report_sources: if (options.progress_ms > 0) b.report_sources.insert(id, {}) else b.report_sources, pending: b.pending.append({ id, url, body, kind: HttpRequest }), issued: b.issued.append(id) }
 				Guard(on) => { ..b, guard: on }
 				SessionGet(id, key) => { ..b, gets: b.gets.append(Read({ id, key, session: True })) }
@@ -964,6 +1045,7 @@ SpecRunner := [].{
 						|task| match task {
 							Answer(answer) => answer.id != id
 							Read(read) => read.id != id
+							EnvironmentRead(request) => request != id
 							Failures => !failures.is_empty()
 						},
 					)
@@ -1031,7 +1113,7 @@ SpecRunner := [].{
 
 	## Containment forgets every scheduled answer while retaining the last guard.
 	clear_callbacks : Browser -> Browser
-	clear_callbacks = |browser| { ..browser, gets: [], failure_queue: [], failure_scheduled: False, failure_active: False }
+	clear_callbacks = |browser| { ..browser, gets: [], failure_queue: [], failure_scheduled: False, failure_active: False, opportunity: None }
 
 	## A write persists atomically or records an occurrence for each subscriber
 	## present at failure. Removal ignores quota, as the browser does.
@@ -1177,12 +1259,23 @@ SpecRunner := [].{
 			}
 		}
 		media = declarations.media.map(|query| (query, env.media.find_first(|(name, _)| name == query).map_ok(|(_, matched)| matched) ?? False))
-		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_mount({ ..env, url: SpecRunner.serialize_location(env.url), media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }, settings.mount_root))
-		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declarations.latest_ports, settings }
+		startup = match declarations.startup {
+			Legacy => [0.U8]
+			Deterministic(_) => SpecRunner.put_u32([1, 0], 0xffffffff)
+		}
+		# Fixed-entry construction observes only the pathname used to select the
+		# route. Keep the actual browser facts for the later environment task.
+		boot_env : Scm.Environment
+		boot_env = match declarations.startup {
+			Legacy => { ..env, url: SpecRunner.serialize_location(env.url), media, storage: if (env.storage_available) boot_kvs else [], session: if (env.session_available) boot_session else [] }
+			Deterministic(_) => { url: SpecRunner.before(SpecRunner.before(env.url, "#"), "?"), media: declarations.media.map(|query| (query, False)) }
+		}
+		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_startup_mount(boot_env, settings.mount_root, startup))
+		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declarations.latest_ports, settings, environment_keys: { local: declarations.keys, session: declarations.session_keys } }
 		initial = SpecRunner.fresh(inst, browser)
 		root = settings.mount_root
 		s0 = { ..initial, dom: Dom.modify(initial.dom, initial.dom.root, |element| { ..element, namespace: root.namespace, prefix: root.prefix, tag: root.local, svg: root.namespace == Dom.svg_namespace }) }
-		{ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s0, draining: Bool.True }, inst, cmds, wbuf))), draining: Bool.False }
+		{ ..SpecRunner.drain_focus(program, SpecRunner.take({ ..s0, draining: Bool.True }, inst, cmds, wbuf)), draining: Bool.False }
 	}
 
 	## Dispatch event `ev` with `payload` from DOM node index `i`, as the
@@ -1346,6 +1439,7 @@ SpecRunner := [].{
 				command = $s.after_batch.first() ?? crash "SpecRunner.drain_focus: not empty"
 				s = { ..$s, applying_focus: Bool.True, after_batch: $s.after_batch.drop_first(1) }
 				applied = match command {
+					Effect(StartupAck) => SpecRunner.send_now_in_loop(program, { state: s, node: SpecRunner.fx_node, handler: 0, payload: [254] })
 					Effect(fx) => {
 						browser = SpecRunner.absorb_limit(s.browser, [fx], 4096 - s.event_queue.len())
 						if (browser.deferred_error.is_empty()) { ..s, browser } else { ..s, browser: SpecRunner.clear_callbacks(browser), fault: Poisoned(browser.deferred_error), event_queue: [], after_batch: [] }
@@ -1517,6 +1611,11 @@ SpecRunner := [].{
 				task = b.gets.first() ?? crash "SpecRunner.answer_gets: a callback is pending"
 				next = { ..$s, browser: { ..b, gets: b.gets.drop_first(1) } }
 				$s = match task {
+					EnvironmentRead(id) => {
+						env = b.env
+						facts = { ..env, url: SpecRunner.serialize_location(env.url), storage: if (env.storage_available) env.storage.keep_if(|(name, _)| b.environment_keys.local.contains(name)) else [], session: if (env.session_available) env.session.keep_if(|(name, _)| b.environment_keys.session.contains(name)) else [] }
+						SpecRunner.deliver_in_loop(program, next, id, [31].concat(SpecRunner.encode_environment(facts)))
+					}
 					Read({ id, key, session }) => {
 						available = if (session) b.env.session_available else b.env.storage_available
 						pairs = if (session) b.env.session else b.env.storage
@@ -2714,7 +2813,7 @@ SpecRunner := [].{
 		# Every issued request is one FX command and every cancelled one a
 		# CANCEL (design.md, "Counters"), so the effect counters must agree
 		# with the commands too.
-		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent"), (41, 21, "properties set"), (42, 22, "row properties set"), (43, 23, "registrations released"), (45, 24, "view transitions"), (46, 25, "leave guard commands"), (48, 26, "comments created")] {
+		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent"), (41, 21, "properties set"), (42, 22, "row properties set"), (43, 23, "registrations released"), (45, 24, "view transitions"), (46, 25, "leave guard commands"), (48, 26, "comments created"), (49, 28, "startup frames"), (50, 29, "startup acknowledgements"), (51, 30, "startup completions"), (52, 31, "opportunity commands")] {
 			engine = s.work.counters.get(counter) ?? 0
 			oracle = s.ops.get(op) ?? 0
 			if engine != oracle {
@@ -2849,7 +2948,7 @@ SpecRunner := [].{
 			}
 			_ => True
 		}
-		Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | LeavePage(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
+		RunOpportunity | Dismiss | Press(_) | Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | LeavePage(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
 		PasteText(loc, _) => match SpecRunner.find(s.dom, loc) {
 			Err(_) => False
 			Ok(node) => match Dom.target(s.dom, node, "paste", True) {
@@ -2990,6 +3089,10 @@ SpecRunner := [].{
 				check(got == count, "${got.to_str()} live media subscriptions for ${JsonOut.quote(query)}, expected ${count.to_str()}")
 			}
 			HoldReports => if (b.reports.held) Err("hold-reports while reports are already held") else Ok({ ..s, browser: { ..b, reports: { ..b.reports, held: Bool.True } } })
+			RunOpportunity => match b.opportunity {
+				None => Err("run-opportunity requires an armed placeholder opportunity")
+				Some(generation) => Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, opportunity: None } }, 0, SpecRunner.put_u64([255], generation)))
+			}
 			ReleaseReports => if (!b.reports.held) Err("release-reports while reports are not held") else Ok(SpecRunner.release_reports(program, { ..s, browser: { ..b, reports: { ..b.reports, held: Bool.False } } }))
 			ExpectReportsReplaced(count) => check(b.reports.replaced == count, "reports replaced ${b.reports.replaced.to_str()} times, expected ${count.to_str()}")
 			PointerDown(press) => SpecRunner.pointer_down(program, s, press)
@@ -4942,9 +5045,9 @@ SpecRunner := [].{
 
 	## What the browser around the app can do next, besides the user: answer
 	## a pending request, tick a live interval, change visibility or
-	## connectivity for a live subscription, or deliver a message the specs
-	## emit on a port with a live subscription.
-	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str), BurstOnline, BurstVisibility, BurstPort(Str), PointerGesture(Scm.Loc), LayoutReport({ target : Scm.Loc, kind : U8 }), ToggleMedia(Str), MoveClock]
+	## connectivity for a live subscription, supply an armed placeholder task,
+	## or deliver a message the specs emit on a port with a live subscription.
+	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str), BurstOnline, BurstVisibility, BurstPort(Str), PointerGesture(Scm.Loc), LayoutReport({ target : Scm.Loc, kind : U8 }), ToggleMedia(Str), MoveClock, SupplyOpportunity]
 
 	## Walks enumerate named live observations as they enumerate controls and
 	## pointer zones. Their injected facts need no browser geometry.
@@ -4976,6 +5079,9 @@ SpecRunner := [].{
 	services = |bk, s| {
 		b = s.browser
 		var $out = [MoveClock].concat(b.pending.map(|p| Answer(p))).concat(SpecRunner.pointer_places(s.dom, Grips).map(|p| PointerGesture(p.target))).concat(SpecRunner.layout_reports(s.dom))
+		if b.opportunity != None {
+			$out = $out.append(SupplyOpportunity)
+		}
 		var $ticks = []
 		var $ports = []
 		var $vis = Bool.False
@@ -5049,6 +5155,7 @@ SpecRunner := [].{
 	serve! = |program, host, bk, s, service, v| {
 		b = s.browser
 		match service {
+			SupplyOpportunity => Ok((SpecRunner.one(program, s, RunOpportunity)?, { what: "run-opportunity", kind: Service }))
 			LayoutReport({ target, kind }) => {
 				op = match kind {
 					6 => Scroll({ target, top: ((v % 20) * 20).to_u32_wrap(), left: 0 })
@@ -5253,9 +5360,10 @@ SpecRunner := [].{
 	## or a branch the cycle re-creates comes back at its place under a new
 	## id. A result goes to the request at its place among those in flight
 	## (`InFlight`), or, for a request no longer in flight such as a
-	## subscription's, under its id (`Result`). An event whose node the
-	## oracle could not place is `Unplaced`, and the soak refuses it.
-	Target : [Place(Place), InFlight(U64), Result(U32), Unplaced(U32, U32)]
+	## subscription's, under its id (`Result`). A platform opportunity names the
+	## currently armed task, never the first cycle's private generation. An event
+	## whose node the oracle could not place is `Unplaced`, and the soak refuses it.
+	Target : [Place(Place), InFlight(U64), Result(U32), PlatformOpportunity, Unplaced(U32, U32)]
 
 	## A listener named by where it is: its node's path from the mount root
 	## and the event type it listens for.
@@ -5281,6 +5389,10 @@ SpecRunner := [].{
 		{ index: 30, name: "turns" },
 		{ index: 32, name: "requests issued" },
 		{ index: 33, name: "results delivered" },
+		{ index: 53, name: "opportunities requested" },
+		{ index: 54, name: "opportunities cancelled" },
+		{ index: 55, name: "opportunities delivered" },
+		{ index: 56, name: "stale opportunities" },
 	]
 
 	## The round-trip counters of one work record, in `round_trip_counters`
@@ -5319,7 +5431,7 @@ SpecRunner := [].{
 				(SpecRunner.recorded_commands(recorded, cmds), cmds, wbuf)
 			},
 			event: |recorded, buf, wbuf, node, h, payload| {
-				target = SpecRunner.target_of(recorded.dom, live(recorded.inst), node, h)
+				target = if (node == SpecRunner.fx_node and h == 0 and payload.len() == 9 and payload.first() == Ok(255)) PlatformOpportunity else SpecRunner.target_of(recorded.dom, live(recorded.inst), node, h)
 				(inst, cmds, w) = event(recorded.inst, buf, wbuf, node, h, payload)
 				after = SpecRunner.round_trip_work(w)
 				next = { ..recorded, inst, calls: recorded.calls.append({ target, payload, files: Event, work: SpecRunner.work_between(recorded.counted, after) }), counted: after, crypto_recipes: if (node == SpecRunner.fx_node) recorded.crypto_recipes.remove(h) else recorded.crypto_recipes }
@@ -5467,13 +5579,14 @@ SpecRunner := [].{
 	## recorded call did (`round_trip_counters`): such a cycle is no longer
 	## the recorded round trip, and a soak that went on would measure a
 	## different, often idle, sequence.
-	replay! : Program(state), { inst : state, buf : List(U8), wbuf : List(U8), counted : List(U64), dom : Dom.Model }, List(Call), U64, Host => Try(List({ allocations : I64, bytes : I64 }), Str)
-	replay! = |program, { inst, buf, wbuf, counted, dom }, calls, cycles, host| {
+	replay! : Program(state), { inst : state, buf : List(U8), wbuf : List(U8), counted : List(U64), dom : Dom.Model, opportunity : [None, Some(U64)] }, List(Call), U64, Host => Try(List({ allocations : I64, bytes : I64 }), Str)
+	replay! = |program, { inst, buf, wbuf, counted, dom, opportunity }, calls, cycles, host| {
 		var $inst = inst
 		var $buf = buf
 		var $wbuf = wbuf
 		var $counted = counted
 		var $dom = dom
+		var $opportunity = opportunity
 		var $nets = List.with_capacity(cycles)
 		var $c = 0.U64
 		while $c < cycles {
@@ -5496,19 +5609,24 @@ SpecRunner := [].{
 							Err(_) => return Err("cycle ${cycle} has no request in flight at place ${(i + 1).to_str()}, which the recorded cycle answered: the steps after the last mark-metrics do not return the app to where they started")
 						}
 					Result(id) => { node: SpecRunner.fx_node, handler: id }
+					PlatformOpportunity => { node: SpecRunner.fx_node, handler: 0 }
 					Unplaced(id, h) => return Err("call ${$k.to_str()} went to node ${id.to_str()} with handler ${h.to_str()}, which the oracle's model places at no listener in the drawn tree")
 				}
-				# Count staging and consuming a fresh key-handle list together. The
-				# recorder holds only the derivation recipe, so no original key or
-				# argument-list reference survives to hide its release.
+				# Count staging and consuming fresh platform payloads and key-handle
+				# lists together. A remapped generation has no retained original list
+				# whose reference would keep its consumption from freeing storage.
 				allocations = (host.live_allocations!)()
 				bytes = (host.live_bytes!)()
+				payload = SpecRunner.replay_payload(call.target, call.payload, $opportunity) ? |message| "cycle ${cycle}'s call ${$k.to_str()}: ${message}"
+				if call.target == PlatformOpportunity {
+					$opportunity = None
+				}
 				key_handles = match call.files {
 					Keys(recipe) => SpecRunner.recreate_key!(host, recipe)?
 					_ => []
 				}
 				(next, cmds, w) = match call.files {
-					Event => (program.event)($inst, $buf, $wbuf, node, handler, call.payload)
+					Event => (program.event)($inst, $buf, $wbuf, node, handler, payload)
 					Keys(_) => (program.key)($inst, $buf, $wbuf, node, handler, call.payload, key_handles)
 					Files(handles) => (program.files)($inst, $buf, $wbuf, node, handler, call.payload, handles)
 				}
@@ -5516,7 +5634,15 @@ SpecRunner := [].{
 				after_bytes = (host.live_bytes!)()
 				$allocations = $allocations + after_allocations.to_i64_wrap() - allocations.to_i64_wrap()
 				$bytes = $bytes + after_bytes.to_i64_wrap() - bytes.to_i64_wrap()
-				$dom = Dom.apply($dom, cmds.map(|byte| byte))
+				decoded = Dom.apply_full($dom, cmds.map(|byte| byte))
+				$dom = decoded.dom
+				for effect in decoded.fx {
+					$opportunity = match effect {
+						Opportunity({ action: 1, generation }) => Some(generation)
+						Opportunity({ action: 0, .. }) => None
+						_ => $opportunity
+					}
+				}
 				$inst = next
 				$buf = cmds
 				$wbuf = w
@@ -5532,6 +5658,16 @@ SpecRunner := [].{
 			$c = $c + 1
 		}
 		Ok($nets)
+	}
+
+	## Resolve platform scheduling transport immediately before its normal turn.
+	## A replay without the semantic service is an invalid round trip, never an
+	## obsolete occurrence that could make an otherwise idle cycle appear flat.
+	replay_payload : Target, List(U8), [None, Some(U64)] -> Try(List(U8), Str)
+	replay_payload = |target, original, opportunity| match (target, opportunity) {
+		(PlatformOpportunity, Some(generation)) => Ok(SpecRunner.put_u64([255], generation))
+		(PlatformOpportunity, None) => Err("no placeholder opportunity is armed: the steps after the last mark-metrics do not return the app to where they started")
+		_ => Ok(original)
 	}
 
 	## A recorded derivation recreates the same mathematical key. The host's
@@ -5590,7 +5726,7 @@ SpecRunner := [].{
 		if ran.inst.calls.is_empty() {
 			return Err(failed("the steps after the last mark-metrics call nothing in the engine, so there is no round trip to repeat"))
 		}
-		nets = SpecRunner.replay!(program, { inst: ran.inst.inst, buf: ran.buf, wbuf: ran.wbuf, counted: ran.inst.counted, dom: ran.inst.dom }, ran.inst.calls, cycles, host).map_err(failed)?
+		nets = SpecRunner.replay!(program, { inst: ran.inst.inst, buf: ran.buf, wbuf: ran.wbuf, counted: ran.inst.counted, dom: ran.inst.dom, opportunity: ran.browser.opportunity }, ran.inst.calls, cycles, host).map_err(failed)?
 		SpecRunner.flat(nets, warm).map_err(failed)?
 		Ok(nets)
 	}
@@ -5611,12 +5747,35 @@ SpecRunner := [].{
 
 	## Keep the picture command separate from spec-selection options. An exact
 	## mode consumes no spec files and cannot accidentally run a soak or walk.
-	prerender_args : List(Str) -> Try([Specs, PicturePath(Str), Picture({ url : Str, template : Str })], Str)
+	prerender_args : List(Str) -> Try([Specs, StartupCatalogue, PicturePath(Str), Picture({ url : Str, template : Str, build_token : [Unstamped, BuildToken(Str)] })], Str)
 	prerender_args = |args| match args {
+		["--startup-catalogue"] => Ok(StartupCatalogue)
 		["--picture-path", url] if !url.starts_with("--") => Ok(PicturePath(url))
-		["--prerender", url, "--template", template] if !url.starts_with("--") and !template.starts_with("--") => Ok(Picture({ url, template }))
-		_ if args.contains("--prerender") or args.contains("--template") or args.contains("--picture-path") => Err("use RUNNER --prerender URL --template FILE, or RUNNER --picture-path URL, with no spec or other mode options")
+		["--prerender", url, "--template", template] if !url.starts_with("--") and !template.starts_with("--") => Ok(Picture({ url, template, build_token: Unstamped }))
+		["--prerender", url, "--template", template, "--build-token", token] if !url.starts_with("--") and !template.starts_with("--") and SpecRunner.is_build_token(token) => Ok(Picture({ url, template, build_token: BuildToken(token) }))
+		_ if args.contains("--prerender") or args.contains("--template") or args.contains("--picture-path") or args.contains("--startup-catalogue") or args.contains("--build-token") => Err("use RUNNER --startup-catalogue, RUNNER --prerender URL --template FILE [--build-token TOKEN], or RUNNER --picture-path URL, with no spec or other mode options")
 		_ => Ok(Specs)
+	}
+
+	## Build receipts are bounded ASCII tokens, never HTML or script fragments.
+	is_build_token : Str -> Bool
+	is_build_token = |token| !token.is_empty() and token.count_utf8_bytes() <= 128 and token.to_utf8().all(|byte| (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_' or byte == '-')
+
+	## Catalogue inspection reads only compiled declarations. A legacy initializer
+	## cannot silently become a deterministic entry by a build option.
+	startup_catalogue_line : Program(state) -> Try(Str, Str)
+	startup_catalogue_line = |program| match SpecRunner.decode_declarations((program.keys)()).startup {
+		Legacy => Err("default builds need Engine.program_startup or program_startup_store; migrate live Boot reads to a later environment request, or build with --no-prerender")
+		Deterministic({ root, entries, fallback }) => Ok(
+			JsonOut.render(
+				Object([
+					JsonOut.field("protocol", Text("roc-signals/startup-catalogue/v1")),
+					JsonOut.field("entries", Array(entries.map(|entry| Text(entry)))),
+					JsonOut.field("root", Array(SpecRunner.root_bytes(root).map(|byte| Nat(byte.to_u64())))),
+					JsonOut.field("fallback", Nat(fallback.to_u64())),
+				]),
+			),
+		)
 	}
 
 	## Project a route before template URL rewriting. This reads no app state,
@@ -5638,8 +5797,8 @@ SpecRunner := [].{
 	## Render only the engine's ordinary init batch. Storage answers, focus
 	## delivery and other host inputs are later turns and never enter this frame.
 	## The host adapter only reads the template and prints the completed JSON.
-	prerender_main! : Program(state), { io : Io, options : { url : Str, template : Str } } => I32
-	prerender_main! = |program, { io, options }| match SpecRunner.prerender_page!(program, { io, url: options.url, template: options.template }) {
+	prerender_main! : Program(state), { io : Io, options : { url : Str, template : Str, build_token : [Unstamped, BuildToken(Str)] } } => I32
+	prerender_main! = |program, { io, options }| match SpecRunner.prerender_page!(program, { io, url: options.url, template: options.template, build_token: options.build_token }) {
 		Ok(json) => {
 			(io.stdout!)("${json}\n")
 			0
@@ -5651,9 +5810,11 @@ SpecRunner := [].{
 	}
 
 	## Gather one complete response before stdout can expose a partial page.
-	## There is one init call and no later host input in this fallible workflow.
-	prerender_page! : Program(state), { io : Io, url : Str, template : Str } => Try(Str, Str)
-	prerender_page! = |program, { io, url, template: path_to_template }| {
+	## Capture init's cold model, validating its private acknowledgement separately
+	## without serving effects or including follow-ups in the published frame.
+	## A second, separately scoped instance validates the actual binding profile.
+	prerender_page! : Program(state), { io : Io, url : Str, template : Str, build_token : [Unstamped, BuildToken(Str)] } => Try(Str, Str)
+	prerender_page! = |program, { io, url, template: path_to_template, build_token }| {
 		resolved = PicturePage.resolve(url) ? |InvalidRoute(message)| message
 		bytes = (io.read_file!)(path_to_template)
 		if bytes.len() > 16777216 {
@@ -5667,12 +5828,36 @@ SpecRunner := [].{
 		declarations = SpecRunner.decode_declarations((program.keys)())
 		environment : Scm.Environment
 		environment = { url: SpecRunner.serialize_location(resolved.boot_url), media: declarations.media.map(|query| (query, False)) }
-		# init drains its own engine follow-ups. Do not call mount_config,
-		# answer_gets, drain_focus or pump_ui here: those deliver later inputs.
-		(inst, commands, _work) = (program.init)(SpecRunner.encode_mount(environment, template.root()))
-		(program.settled)(inst) ? |failure| "after picture mount, a reader was left stale: ${failure.note}"
-		model = Dom.apply(template.overlay(Dom.new({})), commands)
-		rendered = Dom.render(model, { root: model.root, scope: MountEnvelope, mode: Picture, enclosing: template.parent(), limits: { max_bytes: 16777216, max_nodes: 262144, max_depth: 1024 } }) ? |problem| "picture renderer refused the frame: ${Str.inspect(problem)}"
+		(model, startup, frame) = match declarations.startup {
+			Legacy => {
+				if build_token != Unstamped {
+					return Err("an annotated build token requires a deterministic startup entry")
+				}
+				(inst, commands, _work) = (program.init)(SpecRunner.encode_mount(environment, template.root()))
+				(program.settled)(inst) ? |failure| "after picture mount, a reader was left stale: ${failure.note}"
+				(Dom.apply(template.overlay(Dom.new({})), commands), Plain, Unstamped)
+			}
+			Deterministic(facts) => {
+				token = match build_token {
+					BuildToken(value) if SpecRunner.is_build_token(value) => value
+					_ => return Err("a deterministic prerender needs --build-token TOKEN from its matching asset build")
+				}
+				entry = facts.entries.map_with_index(|path, index| { path, index }).find_first(|candidate| candidate.path == url).map_ok(|candidate| candidate.index.to_u32_wrap()) ? |_| "prerender URL must exactly name a declared concrete entry path"
+				if template.root() != facts.root {
+					return Err("the template mount root differs from the declared startup root")
+				}
+				captured = SpecRunner.capture_startup(
+					program,
+					{
+						boot: SpecRunner.encode_startup_mount(environment, template.root(), SpecRunner.put_u32([1, 0], entry)),
+						overlay: template.overlay_startup(Dom.new({})),
+					},
+				)?
+				SpecRunner.validate_startup_binding(program, { boot: SpecRunner.encode_startup_mount(environment, template.root(), SpecRunner.put_u32([1, 1], entry)), cold: captured.dom, effects: captured.effects })?
+				(captured.dom, Annotated, Frame({ entry, token }))
+			}
+		}
+		rendered = Dom.render(model, { root: model.root, scope: MountEnvelope, mode: Picture, startup, frame, enclosing: template.parent(), limits: { max_bytes: 16777216, max_nodes: 262144, max_depth: 1024 } }) ? |problem| "picture renderer refused the frame: ${Str.inspect(problem)}"
 		page = template.page({ markup: rendered.markup, max_bytes: 16777216 }) ? |PageLimit({ maximum, required })| "picture page needs ${required.to_str()} UTF-8 bytes; maximum is ${maximum.to_str()} bytes"
 		Ok(
 			JsonOut.render(
@@ -5687,6 +5872,52 @@ SpecRunner := [].{
 		)
 	}
 
+	## End the ordinary instance's lifetime before returning only its plain cold
+	## oracle model and ordered effect trace. No App or value representing its
+	## storage crosses into binding initialization; hosted effects never run here.
+	capture_startup : Program(state), { boot : List(U8), overlay : Dom.Model } -> Try({ dom : Dom.Model, effects : List(Dom.FxCmd) }, Str)
+	capture_startup = |program, { boot, overlay }| {
+		(inst, commands, work) = (program.init)(boot)
+		cold = Dom.apply_full(overlay, commands)
+		SpecRunner.acknowledge_startup(program, { inst, commands, work, model: cold.dom })?
+		Ok({ dom: cold.dom, effects: cold.fx })
+	}
+
+	## Validate declaration-sensitive binding rules even when a forbidden dynamic
+	## writer was initially absent and left no attribute in the serialized model.
+	## The independent oracle checks the complete cold plan and ordered effects
+	## before its ACK. A profile cannot silently change or omit an initial request.
+	validate_startup_binding : Program(state), { boot : List(U8), cold : Dom.Model, effects : List(Dom.FxCmd) } -> Try({}, Str)
+	validate_startup_binding = |program, { boot, cold, effects }| {
+		(inst, commands, work) = (program.init)(boot)
+		bound = Dom.bind_cold(cold, commands)
+		if !SpecRunner.startup_effects_match({ fresh: effects, bound: bound.fx }) {
+			return Err("binding startup effects differ from the producer's ordered cold effects")
+		}
+		SpecRunner.acknowledge_startup(program, { inst, commands, work, model: bound.dom })
+	}
+
+	## Fresh and bound construction differ only in the transport profile byte.
+	## Keep every effect operand, request address and position in the trace exact.
+	startup_effects_match : { fresh : List(Dom.FxCmd), bound : List(Dom.FxCmd) } -> Bool
+	startup_effects_match = |{ fresh: constructed, bound }| match (constructed, bound) {
+		([Startup({ mode: 0, entry: fresh_entry }), .. as fresh_rest], [Startup({ mode: 1, entry: bound_entry }), .. as bound_rest]) => fresh_entry == bound_entry and fresh_rest == bound_rest
+		_ => False
+	}
+
+	## Each profile must complete its real private barrier and settle, while the
+	## producer retains the model from before queued Self/refusal follow-ups.
+	acknowledge_startup : Program(state), { inst : state, commands : List(U8), work : List(U8), model : Dom.Model } -> Try({}, Str)
+	acknowledge_startup = |program, { inst, commands, work, model }| {
+		(live, committed, _work) = (program.event)(inst, commands, work, SpecRunner.fx_node, 0, [254])
+		validated = Dom.apply_full(model, committed)
+		if !validated.fx.contains(StartupComplete) {
+			return Err("bootstrap acknowledgement did not complete")
+		}
+		(program.settled)(live) ? |failure| "after bootstrap acknowledgement, a reader was left stale: ${failure.note}"
+		Ok({})
+	}
+
 	## The command line: which specs, whether to emit their steps or the
 	## grammar instead, and whether to soak them (`soak` cycles of the round
 	## trip after `warm` warm-up cycles; `NoSoak` runs each spec once).
@@ -5694,12 +5925,12 @@ SpecRunner := [].{
 	## `walk` walks the app instead (`walk!`): `steps` seeded steps from
 	## `seed`, mounted as the first file's setup and answered from every
 	## file's steps.
-	Options : { filter : Str, emit_steps : Bool, grammar : Bool, soak : [NoSoak, Soak({ cycles : U64, warm : U64 })], walk : [NoWalk, Walk({ steps : U64, seed : U64 })], files : List(Str) }
+	Options : { filter : Str, emit_steps : Bool, grammar : Bool, check_suite : Bool, soak : [NoSoak, Soak({ cycles : U64, warm : U64 })], walk : [NoWalk, Walk({ steps : U64, seed : U64 })], files : List(Str) }
 
 	## The runner’s command synopsis names its ordinary, recorded, generated
 	## and grammar modes without changing the executable spec vocabulary.
 	usage : Str
-	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --walk STEPS [--seed N] FILE.scm...\n       RUNNER --grammar\n       RUNNER --prerender URL --template FILE\n       RUNNER --picture-path URL\n"
+	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --walk STEPS [--seed N] FILE.scm...\n       RUNNER --check-suite FILE.scm...\n       RUNNER --grammar\n       RUNNER --startup-catalogue\n       RUNNER --prerender URL --template FILE [--build-token TOKEN]\n       RUNNER --picture-path URL\n"
 
 	## The number after an option, as a count.
 	count_arg : List(Str), U64, Str -> Try(U64, Str)
@@ -5710,17 +5941,24 @@ SpecRunner := [].{
 	## return a command-line error; grammar mode needs no spec files.
 	parse_args : List(Str) -> Try(Options, Str)
 	parse_args = |args| {
-		var $o = { filter: "*", emit_steps: Bool.False, grammar: Bool.False, soak: NoSoak, walk: NoWalk, files: [] }
+		var $o = { filter: "*", emit_steps: Bool.False, grammar: Bool.False, check_suite: Bool.False, soak: NoSoak, walk: NoWalk, files: [] }
 		var $warm = 2.U64
 		var $seed = 7.U64
+		var $suite_modifier = Bool.False
 		var $i = 0.U64
 		while $i < args.len() {
 			a = args.get($i) ?? ""
+			if a.starts_with("--") and a != "--check-suite" {
+				$suite_modifier = Bool.True
+			}
 			if a == "--filter" {
 				$o = { ..$o, filter: args.get($i + 1) ? |_| "--filter needs a pattern" }
 				$i = $i + 2
 			} else if a == "--emit-steps" {
 				$o = { ..$o, emit_steps: Bool.True }
+				$i = $i + 1
+			} else if a == "--check-suite" {
+				$o = { ..$o, check_suite: Bool.True }
 				$i = $i + 1
 			} else if a == "--grammar" {
 				$o = { ..$o, grammar: Bool.True }
@@ -5764,6 +6002,9 @@ SpecRunner := [].{
 				{ ..$o, walk: Walk({ steps, seed: $seed }) }
 			}
 		}
+		if $o.check_suite and $suite_modifier {
+			return Err("--check-suite takes only spec files")
+		}
 		if $o.grammar {
 			if ($o.files.is_empty() and !$o.emit_steps and $o.soak == NoSoak and $o.walk == NoWalk) Ok($o) else Err("--grammar takes no other arguments")
 		} else if $o.files.is_empty() {
@@ -5774,9 +6015,14 @@ SpecRunner := [].{
 	}
 
 	## A spec's id: its file name without the directory or `.scm`.
+	## TODO https://github.com/roc-lang/roc/issues/13221: split_on().last()
+	## corrupts long interior strings in x64mac dev; split_last preserves them.
 	id_of : Str -> Str
 	id_of = |path| {
-		base = path.split_on("/").last() ?? path
+		base = match path.split_last("/") {
+			Ok(parts) => parts.after
+			Err(_) => path
+		}
 		base.drop_suffix(".scm")
 	}
 
@@ -5824,6 +6070,64 @@ SpecRunner := [].{
 			]),
 		)
 
+	## Validate all app files without mounting. File order and per-story setup
+	## do not supply evidence; only positive steps establish a negative name.
+	check_suite! : Program(state), Io, List(Str) => I32
+	check_suite! = |program, io, files| {
+		var $parsed = []
+		for path in files {
+			$parsed = $parsed.append(SpecRunner.parse_declared(program, Str.from_utf8((io.read_file!)(path)) ?? ""))
+		}
+		parsed = $parsed
+		valid = parsed.keep_oks(|answer| answer)
+		problems = Scm.suite_problems(valid)
+		var $valid_index = 0.U64
+		var $failed = Bool.False
+		for (path, index) in files.map_with_index(|path, index| (path, index)) {
+			answer = parsed.get(index) ?? crash "suite parse count"
+			(name, problem) = match answer {
+				Err(error) => ("", Err(error))
+				Ok(spec) => {
+					missing = problems.find_first(|item| item.spec_index == $valid_index)
+					$valid_index = $valid_index + 1
+					(
+						spec.name,
+						match missing {
+							Ok(item) => Err(item.problem)
+							Err(_) => Ok({})
+						},
+					)
+				}
+			}
+			failure = match problem {
+				Ok(_) => Null
+				Err(error) => {
+					$failed = Bool.True
+					(phase, kind) = match answer {
+						Err(_) => ("parse", "parse")
+						Ok(_) => ("suite", "evidence")
+					}
+					SpecRunner.failure_json(phase, kind, Scm.show_problem(path, error), 0, error.pos)
+				}
+			}
+			(io.stdout!)(
+				"${
+					SpecRunner.result_line({
+						id: SpecRunner.id_of(path),
+						name,
+						status: match problem {
+							Ok(_) => "passed"
+							Err(_) => "error"
+						},
+						duration_ns: 0,
+						failure,
+					})
+				}\n",
+			)
+		}
+		if ($failed) 1 else 0
+	}
+
 	## The `spec` command: parse every file, then either emit the parsed steps
 	## as JSON lines (`--emit-steps`) or run each spec and print one
 	## `spec-result` JSON line per spec. Exit 0 when nothing failed. `--grammar`
@@ -5832,6 +6136,18 @@ SpecRunner := [].{
 	main! : Program(state), Io, List(Str) => I32
 	main! = |program, io, args| {
 		match SpecRunner.prerender_args(args) {
+			Ok(StartupCatalogue) => {
+				match SpecRunner.startup_catalogue_line(program) {
+					Ok(line) => {
+						(io.stdout!)("${line}\n")
+						return 0
+					}
+					Err(problem) => {
+						(io.stderr!)("${problem}\n")
+						return 1
+					}
+				}
+			}
 			Ok(PicturePath(url)) => {
 				match SpecRunner.picture_path_line(url) {
 					Ok(json) => {
@@ -5861,6 +6177,9 @@ SpecRunner := [].{
 		if opts.grammar {
 			(io.stdout!)("${JsonOut.render(Scm.grammar_json)}\n")
 			return 0
+		}
+		if opts.check_suite {
+			return SpecRunner.check_suite!(program, io, opts.files)
 		}
 		match opts.walk {
 			Walk(walk) => return SpecRunner.walk_main!(program, io, opts.files, walk)
@@ -5942,6 +6261,21 @@ SpecRunner := [].{
 		SpecRunner.walk!(program, host, specs, walk)
 	}
 
+	## Immutable inputs whose lifetime belongs outside the native walk's
+	## allocation interval. This contains descriptions and paths, never a live
+	## App or site storage. The box moves through the measured call unchanged;
+	## its paths are consumed for the result name after the final counters.
+	WalkInputs(state) : { program : Program(state), host : Host, read_file! : Str => List(U8), paths : List(Str) }
+
+	## Return the immutable owner with the plain outcome, after the walk has
+	## dropped its engine state and oracle. No App escapes this call.
+	walk_owned! : Box(WalkInputs(state)), { steps : U64, seed : U64 } => (Box(WalkInputs(state)), Try(Tally, { step : U64, message : Str }))
+	walk_owned! = |inputs, walk| {
+		given = Box.unbox(inputs)
+		outcome = SpecRunner.walk_files!(given.program, given.host, given.read_file!, given.paths, walk)
+		(inputs, outcome)
+	}
+
 	## The `--walk` command: parse every file, walk the app (`walk!`), and
 	## print one `spec-result` line for the walk. Beside the settle check
 	## after every step, the walk must leave nothing behind: the live
@@ -5961,18 +6295,20 @@ SpecRunner := [].{
 			}
 		}
 		host = { now_ns!: io.now_ns!, work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, crypto!: io.crypto!, hold_key!: io.hold_key!, live_keys!: io.live_keys!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes!, mute_dbg!: io.mute_dbg! }
+		inputs = Box.box({ program, host, read_file!: io.read_file!, paths })
 		t0 = (io.now_ns!)()
-		allocations = (host.live_allocations!)()
-		bytes = (host.live_bytes!)()
-		files = (host.live_files!)()
-		keys = (host.live_keys!)()
-		walked = SpecRunner.walk_files!(program, host, io.read_file!, paths, walk)
-		left = { allocations: (host.live_allocations!)().to_i64_wrap() - allocations.to_i64_wrap(), bytes: (host.live_bytes!)().to_i64_wrap() - bytes.to_i64_wrap(), files: (host.live_files!)().to_i64_wrap() - files.to_i64_wrap(), keys: (host.live_keys!)().to_i64_wrap() - keys.to_i64_wrap() }
+		allocations = (io.live_allocations!)()
+		bytes = (io.live_bytes!)()
+		files = (io.live_files!)()
+		keys = (io.live_keys!)()
+		(returned, walked) = SpecRunner.walk_owned!(inputs, walk)
+		left = { allocations: (io.live_allocations!)().to_i64_wrap() - allocations.to_i64_wrap(), bytes: (io.live_bytes!)().to_i64_wrap() - bytes.to_i64_wrap(), files: (io.live_files!)().to_i64_wrap() - files.to_i64_wrap(), keys: (io.live_keys!)().to_i64_wrap() - keys.to_i64_wrap() }
+		completed_paths = Box.unbox(returned).paths
 		id = "walk-${walk.steps.to_str()}-seed-${walk.seed.to_str()}"
-		# The paths are read after the measured call, so their list is not
-		# freed inside it, where it would count as freeing more than the
-		# walk allocated.
-		name = "a walk of ${walk.steps.to_str()} steps from seed ${walk.seed.to_str()} over ${Str.join_with(paths, " ")}"
+		# All call inputs stay in one immutable owner until this real use of
+		# its paths after the snapshot. Freeing a description allocated before
+		# the interval inside it would incorrectly report a negative balance.
+		name = "a walk of ${walk.steps.to_str()} steps from seed ${walk.seed.to_str()} over ${Str.join_with(completed_paths, " ")}"
 		dt = (io.now_ns!)() - t0
 		failure! = |step, message| {
 			(io.stdout!)("${SpecRunner.result_line({ id, name, status: "failed", duration_ns: dt, failure: SpecRunner.failure_json("walk", "assertion", message, step, { line: 0, column: 0 }) })}\n")
@@ -5993,7 +6329,7 @@ SpecRunner := [].{
 
 ## Wire encoding: strings are length-prefixed, integers little-endian, and
 ## each boot section is tagged and length-bounded in ascending order.
-expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1, 6, 0, 0, 0, 0, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 13, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 101, 110, 45, 85, 83, 10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 11, 5, 0, 0, 0, 1, 0, 0, 0, 0, 13, 12, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 'd', 'i', 'v']
+expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1, 6, 0, 0, 0, 0, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 13, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 101, 110, 45, 85, 83, 10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0, 11, 5, 0, 0, 0, 1, 0, 0, 0, 0, 13, 12, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 'd', 'i', 'v', 14, 1, 0, 0, 0, 0]
 
 ## An HTTP result carries status, headers and the body as the rest.
 expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6, 0x01, 1, 0, 0, 0, 1, 0, 0, 0, 'a', 1, 0, 0, 0, 'b', 'x']
@@ -6002,7 +6338,7 @@ expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6
 expect SpecRunner.encode_reject(Timeout, "") == [7] and SpecRunner.encode_reject(Network, "offline") == [2, 'o', 'f', 'f', 'l', 'i', 'n', 'e']
 
 ## Declared storage keys decode from `count:u32 (key:str)*`.
-expect SpecRunner.decode_keys([2, 15, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c', 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0]) == ["a", "bc"]
+expect SpecRunner.decode_keys([2, 15, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c', 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0, 14, 1, 0, 0, 0, 0]) == ["a", "bc"]
 
 ## Filters match ids shell-style.
 expect {
@@ -6013,7 +6349,7 @@ expect {
 ## Options parse; unknown options (the retired `--pending-phase3` among them),
 ## empty file lists and a soak no longer than its warm-up are refused.
 expect {
-	o = SpecRunner.parse_args(["--filter", "a*", "x.scm"]) ?? { filter: "", emit_steps: Bool.False, grammar: Bool.False, soak: NoSoak, walk: NoWalk, files: [] }
+	o = SpecRunner.parse_args(["--filter", "a*", "x.scm"]) ?? { filter: "", emit_steps: Bool.False, grammar: Bool.False, check_suite: Bool.False, soak: NoSoak, walk: NoWalk, files: [] }
 	soaked = SpecRunner.parse_args(["--soak", "48", "--warm", "3", "x.scm"]).map_ok(|p| p.soak)
 	o.filter == "a*" and o.files == ["x.scm"] and soaked == Ok(Soak({ cycles: 48, warm: 3 })) and SpecRunner.parse_args(["--soak", "2", "x.scm"]).is_err() and SpecRunner.parse_args(["--soak", "x.scm"]).is_err() and SpecRunner.parse_args(["--pending-phase3", "x.scm"]).is_err() and SpecRunner.parse_args([]).is_err() and SpecRunner.parse_args(["--grammar"]).is_ok() and SpecRunner.parse_args(["--grammar", "x.scm"]).is_err()
 }
@@ -6570,13 +6906,95 @@ report_probe : {} -> SpecRunner.Program(List({ id : U32, payload : List(U8) }))
 report_probe = |_| {
 	version: Dom.protocol_version,
 	tasks: [],
-	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0],
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0, 14, 1, 0, 0, 0, 0],
 	init: |_| ([], [0, 13, 1, 0, 0, 0, 6, 13, 2, 0, 0, 0, 7], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
 	key: |state, _buf, _work, _node, _handler, _payload, _keys| (state, [], List.repeat(0, 8)),
 	settled: |_| Ok({}),
 	live: |_| [],
+}
+
+## An environment task samples after cold and acknowledgement effects, even
+## when its request preceded a storage write; opportunities remain explicit.
+expect {
+	base = report_probe({})
+	set = |value| SpecRunner.put_str(SpecRunner.put_str([16, 1], "k"), value)
+	program = { ..base, event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), if (payload == [254]) [0].concat(set("ack")).concat([31, 1, 7, 0, 0, 0, 0, 0, 0, 0, 30]) else [], List.repeat(0, 8)) }
+	browser = { ..SpecRunner.fresh_browser({}), environment_keys: { local: ["k"], session: [] } }
+	initial = SpecRunner.fresh([], browser)
+	cold = [0, 28, 0, 0, 0, 0, 0, 13, 9, 0, 0, 0, 22].concat(set("cold")).append(29)
+	ready = SpecRunner.drain_focus(program, SpecRunner.take(initial, [], cold, List.repeat(0, 8)))
+	snapshot = ready.inst.get(1)?
+	{
+		order: ready.inst.map(|event| event.id),
+		ack: ready.inst.first()?.payload,
+		snapshot: snapshot.payload == [31].concat(SpecRunner.encode_environment({ storage: [("k", "ack")] })),
+		current: ready.browser.env.storage,
+		opportunity: ready.browser.opportunity,
+	} == { order: [0, 9], ack: [254], snapshot: True, current: [("k", "ack")], opportunity: Some(7) }
+}
+
+## Fixed startup transports neutral construction facts, retaining the live
+## fixture solely for the later task. Legacy mounting still sees its Boot.
+expect {
+	base = report_probe({})
+	profile = SpecRunner.put_u32(SpecRunner.put_str(SpecRunner.put_u32([1].concat(SpecRunner.root_bytes(Scm.default_mount_root)), 1), "/tasks/"), 0xffffffff)
+	program = { ..base, keys: || SpecRunner.put_section((base.keys)().drop_last(6), { tag: 14, body: profile }), init: |boot| ([{ id: 0, payload: boot }], [0, 13, 9, 0, 0, 0, 22], List.repeat(0, 8)) }
+	live : Scm.Environment
+	live = { url: "/tasks/?live=1#part", storage: [("private", "value")], online: False, visible: False, now_ms: 1234, seed: 99, languages: ["fr"], storage_available: False, session_available: False }
+	fixed = SpecRunner.mount_in(program, live)
+	legacy = SpecRunner.mount_in({ ..program, keys: base.keys }, live)
+	{
+		fixed: fixed.inst.first()?.payload,
+		legacy: legacy.inst.first()?.payload,
+		live: fixed.browser.env,
+		snapshot: fixed.inst.get(1)?.payload,
+	} == {
+		fixed: SpecRunner.encode_startup_mount({ url: "/tasks/" }, Scm.default_mount_root, SpecRunner.put_u32([1, 0], 0xffffffff)),
+		legacy: SpecRunner.encode_mount({ ..live, storage: [] }, Scm.default_mount_root),
+		live,
+		snapshot: [31].concat(SpecRunner.encode_environment({ ..live, storage: [] })),
+	}
+}
+
+## Cancellation names exactly the current registration, and generations cannot
+## be reused after cancellation or delivery. Malformed wire intent is contained.
+expect {
+	base = SpecRunner.fresh_browser({})
+	armed = SpecRunner.absorb(base, [Opportunity({ action: 1, generation: 3 })])
+	cancelled = SpecRunner.absorb(armed, [Opportunity({ action: 0, generation: 3 })])
+	consumed = { ..armed, opportunity: None }
+	{
+		no_registration: !SpecRunner.absorb(base, [Opportunity({ action: 0, generation: 3 })]).deferred_error.is_empty(),
+		future_cancellation: !SpecRunner.absorb(armed, [Opportunity({ action: 0, generation: 4 })]).deferred_error.is_empty(),
+		double_registration: !SpecRunner.absorb(armed, [Opportunity({ action: 1, generation: 4 })]).deferred_error.is_empty(),
+		reused_generation: !SpecRunner.absorb(cancelled, [Opportunity({ action: 1, generation: 3 })]).deferred_error.is_empty(),
+		cancelled: cancelled.opportunity,
+		successor: SpecRunner.absorb(consumed, [Opportunity({ action: 1, generation: 4 })]).opportunity,
+	} == { no_registration: True, future_cancellation: True, double_registration: True, reused_generation: True, cancelled: None, successor: Some(4) }
+}
+
+## The spec supplies exactly one armed task through ordinary occurrence ingress,
+## draining earlier held reports first and refusing a second unarmed delivery.
+expect {
+	program = report_probe({})
+	start = SpecRunner.mount_in(program, {})
+	held = SpecRunner.one(program, start, HoldReports)?
+	report = SpecRunner.one(program, held, SetOnline(Offline))?
+	armed = { ..report, browser: SpecRunner.absorb(report.browser, [Opportunity({ action: 1, generation: 7 })]) }
+	delivered = SpecRunner.one(program, armed, RunOpportunity)?
+	{
+		inputs: delivered.inst,
+		still_held: delivered.browser.reports.held,
+		next: delivered.browser.opportunity,
+		unarmed_refused: SpecRunner.one(program, delivered, RunOpportunity).is_err(),
+	} == {
+		inputs: [{ id: 1, payload: [8, 0] }, { id: 0, payload: [255, 7, 0, 0, 0, 0, 0, 0, 0] }],
+		still_held: True,
+		next: None,
+		unarmed_refused: True,
+	}
 }
 
 ## A source keeps its first queue position while replacement freezes its
@@ -6703,7 +7121,7 @@ pointer_probe : {} -> SpecRunner.Program(List({ handler : U32, payload : List(U8
 pointer_probe = |_props| {
 	version: Dom.protocol_version,
 	tasks: [],
-	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0],
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0, 14, 1, 0, 0, 0, 0],
 	init: |_| ([], [], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
@@ -7011,7 +7429,7 @@ expect {
 expect {
 	query_body = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([], 2), "wide"), "dark")
 	base = pointer_probe({})
-	program = { ..base, keys: || SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: query_body }).concat([10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0]), init: |boot| ([{ handler: 0.U32, payload: boot }], [], List.repeat(0.U8, 8)) }
+	program = { ..base, keys: || SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: query_body }).concat([10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0, 14, 1, 0, 0, 0, 0]), init: |boot| ([{ handler: 0.U32, payload: boot }], [], List.repeat(0.U8, 8)) }
 	mounted = SpecRunner.mount_in(program, { media: [("dark", True)] })
 	{ media: mounted.browser.env.media, flags: mounted.inst.first()?.payload.sublist({ start: 37, len: 2 }) } == { media: [("wide", False), ("dark", True)], flags: [0.U8, 1] }
 }
@@ -7135,7 +7553,7 @@ expect {
 ## drops waiting answers while retaining the query's environment value.
 expect {
 	base_program = pointer_probe({})
-	declarations = SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "dark") }).concat([10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0])
+	declarations = SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "dark") }).concat([10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0, 14, 1, 0, 0, 0, 0])
 	listen = SpecRunner.put_str(SpecRunner.put_u32([13], 1).append(16), "dark")
 	program = { ..base_program, keys: || declarations, init: |_boot| ([], [0].concat(listen), List.repeat(0.U8, 8)) }
 	base = SpecRunner.mount_in(program, {})
@@ -7438,7 +7856,7 @@ expect {
 }
 
 ## Prerender is one exact command, never mixed with ordinary spec options.
-expect SpecRunner.prerender_args(["--prerender", "/tasks?open=1#list", "--template", "index.html"]) == Ok(Picture({ url: "/tasks?open=1#list", template: "index.html" }))
+expect SpecRunner.prerender_args(["--prerender", "/tasks?open=1#list", "--template", "index.html"]) == Ok(Picture({ url: "/tasks?open=1#list", template: "index.html", build_token: Unstamped }))
 
 ## Extra positional specs cannot turn a picture build into another runner mode.
 expect SpecRunner.prerender_args(["--prerender", "/", "--template", "index.html", "story.scm"]).is_err()
@@ -7559,6 +7977,7 @@ declaration_probe = |_| {
 			{ tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "screen") },
 			{ tag: 10, body: [110, 1] },
 			{ tag: 11, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "session") },
+			{ tag: 14, body: [0] },
 		].fold([], SpecRunner.put_section)
 	},
 	init: |_| crash "declaration probe unexpectedly initialized",
@@ -7656,15 +8075,44 @@ expect {
 ## it, by their index in the record; a counter the record lacks reads 0.
 expect {
 	record = |values| SpecRunner.put_u32(values.fold(SpecRunner.put_u32([], values.len().to_u32_wrap()), SpecRunner.put_u64), 0)
-	counters = List.repeat(0.U64, 34).map_with_index(|_, i| i)
+	counters = List.repeat(0.U64, 57).map_with_index(|_, i| i)
 	earlier = SpecRunner.round_trip_work(record(counters))
 	later = SpecRunner.round_trip_work(record(counters.map_with_index(|value, i| if (i == 1 or i == 30) value + 1 else value)))
-	{ earlier, work: SpecRunner.work_between(earlier, later), short: SpecRunner.round_trip_work(record([7, 8])) } == { earlier: [1, 22, 25, 26, 30, 32, 33], work: [1, 0, 0, 0, 1, 0, 0], short: [8, 0, 0, 0, 0, 0, 0] }
+	{ earlier, work: SpecRunner.work_between(earlier, later), short: SpecRunner.round_trip_work(record([7, 8])) } == { earlier: [1, 22, 25, 26, 30, 32, 33, 53, 54, 55, 56], work: [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], short: [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
 }
 
 ## A replayed call that did other work than its recorded call is named by
 ## every counter, so the report says what the replay missed.
-expect SpecRunner.show_work([1, 0, 2, 2, 1, 0, 0]) == "rows created 1, rows removed 0, scopes created 2, scopes disposed 2, turns 1, requests issued 0, results delivered 0"
+expect SpecRunner.show_work([1, 0, 2, 2, 1, 0, 0]) == "rows created 1, rows removed 0, scopes created 2, scopes disposed 2, turns 1, requests issued 0, results delivered 0, opportunities requested 0, opportunities cancelled 0, opportunities delivered 0, stale opportunities 0"
+
+## Recording captures a scheduling occurrence rather than an obsolete byte
+## token; replay resolves the currently armed generation and refuses its loss.
+expect {
+	program = SpecRunner.recording(report_probe({}))
+	initial = SpecRunner.mount_in(program, {})
+	(recorded, _, _) = (program.event)(initial.inst, initial.buf, initial.wbuf, SpecRunner.fx_node, 0, [255, 1, 0, 0, 0, 0, 0, 0, 0])
+	call = recorded.calls.last()?
+	{
+		target: call.target,
+		fresh: SpecRunner.replay_payload(call.target, call.payload, Some(99)),
+		missing: SpecRunner.replay_payload(call.target, call.payload, None).is_err(),
+		ordinary: SpecRunner.replay_payload(Result(9), [5], Some(99)),
+	} == { target: PlatformOpportunity, fresh: Ok([255, 99, 0, 0, 0, 0, 0, 0, 0]), missing: True, ordinary: Ok([5]) }
+}
+
+## A walk offers one armed task alongside its other services. Merely listing
+## services neither consumes that task nor mounts a placeholder body.
+expect {
+	initial = SpecRunner.mount_in(report_probe({}), {})
+	armed = { ..initial, browser: SpecRunner.absorb(initial.browser, [Opportunity({ action: 1, generation: 7 })]) }
+	offered = |state| SpecRunner.services(SpecRunner.book([]), state).keep_if(
+		|service| match service {
+			SupplyOpportunity => True
+			_ => False
+		},
+	).len()
+	{ idle: offered(initial), armed: offered(armed), pending: armed.browser.opportunity } == { idle: 0, armed: 1, pending: Some(7) }
+}
 
 ## A soak names an event by the place of its listener in the drawn tree,
 ## so a row the cycle re-creates under another id is found again at its
@@ -7744,3 +8192,26 @@ expect {
 		SpecRunner.find_in(opaque, opaque.root, Role({ role: "region", name: "Imported" })) == Err(OpaqueHtml) and
 			SpecRunner.find_in(opaque, opaque.root, Text("Imported")) == Err(NotFound)
 }
+
+## Matching cold DOM cannot excuse a changed initial request or service order.
+## Only the declared fresh/bind transport modes differ between these traces.
+expect {
+	fresh = [Startup({ mode: 0, entry: 2 }), Environment(7), Set("draft", "cold"), StartupAck]
+	bound = [Startup({ mode: 1, entry: 2 }), Environment(7), Set("draft", "cold"), StartupAck]
+	mutants = [
+		[Startup({ mode: 1, entry: 3 }), Environment(7), Set("draft", "cold"), StartupAck],
+		[Startup({ mode: 1, entry: 2 }), Set("draft", "cold"), StartupAck],
+		[Startup({ mode: 1, entry: 2 }), Environment(8), Set("draft", "cold"), StartupAck],
+		[Startup({ mode: 1, entry: 2 }), Environment(7), Set("draft", "changed"), StartupAck],
+		[Startup({ mode: 1, entry: 2 }), Set("draft", "cold"), Environment(7), StartupAck],
+		[Startup({ mode: 1, entry: 2 }), Environment(7), Set("draft", "cold")],
+		[Startup({ mode: 0, entry: 2 }), Environment(7), Set("draft", "cold"), StartupAck],
+	]
+	SpecRunner.startup_effects_match({ fresh, bound }) and
+		mutants.all(|changed| !SpecRunner.startup_effects_match({ fresh, bound: changed })) and
+			!SpecRunner.startup_effects_match({ fresh: bound, bound })
+}
+
+## Filename IDs preserve long and Unicode components, with identical suffix
+## rules for basenames, directory paths, empty components and repeated suffixes.
+expect ["counter.scm", "specs/round-trip-search-on-the-timeline.scm", "rép/λ-long-identifier-with-unicode.scm", "a/", "a/.scm", "a/x.scm.scm", "a/no-suffix"].map(SpecRunner.id_of) == ["counter", "round-trip-search-on-the-timeline", "λ-long-identifier-with-unicode", "", "", "x.scm", "no-suffix"]

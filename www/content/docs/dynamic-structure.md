@@ -14,6 +14,14 @@ it and releases it when it goes. The snippets come from
 
 {{ sample(file="structure.roc", region="model") }}
 
+## Deferred content
+
+Use `Html.placeholder` when temporary static content should remain until a live
+body is ready and receives a browser-task opportunity. Its body then has an
+ordinary scope, with current state and normal disposal. See
+[Startup and Deferred Content](@/docs/startup.md#explicit-placeholders) for the
+contract, readiness and a compiled example.
+
 ## Conditionals
 
 `Engine.when` takes a `Signal(ctx, Bool)` and two functions, and builds only the

@@ -129,8 +129,10 @@ Slow := [].{
 
 	## A short walk of each of the walked apps `names` (all of
 	## `Slow.walk_apps` for the whole gate, a part's share in CI), for
-	## `check`: 300 steps from seed 7 on the native spec runner `check` has
-	## already built, in parallel. It catches a walk that fails early (a
+	## `check`: zero steps and 300 steps from seed 7 on the native spec
+	## runner `check` has already built, in parallel. The zero-step case
+	## checks mount/disposal and the measurement input boundary; the positive
+	## case catches a walk that fails early (a
 	## stale reader, a leak, a job or an answer the runner cannot deliver)
 	## on every pull request; the long walks are `walks!`.
 	short_walks! : SpecSuite.Options, List(Str) => Try(List(Str), _)
@@ -138,10 +140,12 @@ Slow := [].{
 		var $jobs = []
 		for name in names {
 			files = Slow.walk_files!(name)?
-			$jobs = $jobs.append({ program: SpecSuite.runner_of(o, name), args: ["--walk", Slow.short_walk_steps.to_str(), "--seed", "7"].concat(files), cwd: o.root })
+			for steps in [0, Slow.short_walk_steps] {
+				$jobs = $jobs.append({ name, steps, job: { program: SpecSuite.runner_of(o, name), args: ["--walk", steps.to_str(), "--seed", "7"].concat(files), cwd: o.root } })
+			}
 		}
-		results = Proc.parallel!($jobs, Proc.cpus!())?
-		Ok(List.map2(names, results, |name, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["short walk ${name}: ${r.output.trim()}"]).join())
+		results = Proc.parallel!($jobs.map(|run| run.job), Proc.cpus!())?
+		Ok(List.map2($jobs, results, |run, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["short walk ${run.name} (${run.steps.to_str()} steps): ${r.output.trim()}"]).join())
 	}
 
 	## Every fuzz target's fixed examples on the instrumented builds a

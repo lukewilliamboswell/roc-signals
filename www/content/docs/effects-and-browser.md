@@ -382,7 +382,13 @@ turn for every frame.
 
 ## Startup data
 
-Values the app needs before its first render come in the boot data.
+For a deterministic prerendered entry, request live facts after construction
+with `Engine.environment`; see [Startup and Deferred Content](@/docs/startup.md).
+Its typed answer has the same fields described below. The existing boot-based
+constructors remain available for pages whose first render intentionally reads
+live facts.
+
+Values a boot-based app needs before its first render come in the boot data.
 `Engine.program_boot` declares the storage keys to read, and receives the URL,
 those values, and whether the browser is online, the page visible and local
 storage usable:
@@ -527,9 +533,11 @@ business; the paste event covers text the user chooses to paste.
 
 ## Time, randomness and locale
 
-The first paint has `boot.now_ms` (I64 milliseconds since the Unix epoch),
-`boot.seed` (U128), `boot.languages` in preference order and `boot.zone`.
-They are fixed inputs for the document. `Engine.timer` and `Engine.interval`
+A boot-based first render receives `boot.now_ms` (I64 milliseconds since the
+Unix epoch), `boot.seed` (U128), `boot.languages` in preference order and
+`boot.zone`. A deterministic entry receives those fields from a later
+`Engine.environment` request. Each returned value is an immutable sample;
+request another when the app needs fresh facts. `Engine.timer` and `Engine.interval`
 answer with an I64 wall-clock sample, in milliseconds since the Unix epoch,
 when their callback ran.
 
@@ -568,7 +576,7 @@ Pure decisions take these values as data, so their tests need no real clock.
 ### Local dates and language
 
 `boot.zone` is the user's offsets in minutes east of UTC over an inclusive
-span the browser measured, one to 128 of them. It is opaque: only boot and
+span the browser measured, one to 128 of them. It is opaque: only checked boot/environment facts and
 `Engine.utc` make one, so it is never malformed. `zone.name()` is its IANA
 name (`""` when the browser did not know one), and `zone.offset_at(time)`
 the offset at a time, or `OutsideZone` beyond the span; handle it without

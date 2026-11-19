@@ -42,7 +42,7 @@ ApiDocs := [].{
 		var $problems = []
 		for file in files {
 			source = Path.read_utf8!(Path.utf8("${o.root}/${file}"))?
-			if ApiSurface.has_internal_dependency(source)? and !(ApiSurface.is_platform_target(file) and Targets.fuzz_targets.any(|target| target.main == file)) {
+			if ApiSurface.has_internal_dependency(source)? and !(Targets.fuzz_targets.any(|target| ApiSurface.is_platform_target(target.main) and (target.main == file or Targets.package_of(target) == file))) {
 				$problems = $problems.append("${file}: main-fuzz.roc is internal; only the platform's fuzz targets may name it")
 			}
 		}

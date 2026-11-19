@@ -1,5 +1,5 @@
 import Spelling
-import parser.MarkupFacts
+import Base64
 import Protocol
 import parser.Html as MarkupHtml
 import parser.Markup
@@ -32,7 +32,7 @@ Dom := [].{
 
 	## Diagnostics inspect one subtree; a picture serializes its actual mount
 	## element's contents and validates them in that element's parse context.
-	RenderProps := { root : U64, scope : [Subtree, Contents, MountEnvelope] ?? Subtree, mode : [Diagnostic, Picture] ?? Diagnostic, limits : RenderLimits, scripting : Bool ?? True, enclosing : [Unspecified, Document, Element(ExpandedName)] ?? Unspecified }
+	RenderProps := { root : U64, scope : [Subtree, Contents, MountEnvelope] ?? Subtree, mode : [Diagnostic, Picture] ?? Diagnostic, startup : [Plain, Annotated] ?? Plain, frame : [Unstamped, Frame({ entry : U32, token : Str })] ?? Unstamped, limits : RenderLimits, scripting : Bool ?? True, enclosing : [Unspecified, Document, Element(ExpandedName)] ?? Unspecified }
 
 	## Physical ordinals name positions in one rendered picture only. They are
 	## never engine addresses, application keys or identities across mounts.
@@ -65,7 +65,7 @@ Dom := [].{
 	## The one walk supplies markup and canonical facts together. Diagnostic
 	## output is not a parse-back certification; picture mode returns only after
 	## the parser independently agrees with the declared physical projection.
-	Rendered : { markup : Str, root_name : [ElementRoot(ExpandedName), NonElementRoot], physical : List(PictureNode), containers : List(PictureContainer), logical : List(LogicalNode), text_runs : List(TextRun), scaffolds : List(Scaffold) }
+	Rendered : { markup : Str, root_annotations : List((ExpandedName, Str)), root_name : [ElementRoot(ExpandedName), NonElementRoot], physical : List(PictureNode), containers : List(PictureContainer), logical : List(LogicalNode), text_runs : List(TextRun), scaffolds : List(Scaffold) }
 
 	## Rendering refuses an exceeded caller limit, an incoherent model, or a
 	## picture the independent parser cannot reproduce. Each failure identifies
@@ -608,7 +608,10 @@ Dom := [].{
 		} else {
 			site = site1 - 1
 			{ list, prev } = rows.replace(site, Dict.empty()) ?? crash "row"
-			{ nodes, statics: statics2, rows: list.set(site, prev.remove(id.to_u64())) ?? crash "row", tpls, root, documents, observed_count, transitions }
+			# TODO(https://github.com/roc-lang/roc/issues/13087): use remove once
+			# Boxy consumes its bucket data without copying the whole membership.
+			# update with Err(Missing) has the same exact-key removal semantics.
+			{ nodes, statics: statics2, rows: list.set(site, prev.update(id.to_u64(), |_prior| Err(Missing))) ?? crash "row", tpls, root, documents, observed_count, transitions }
 		}
 	}
 
@@ -1096,6 +1099,12 @@ Dom := [].{
 
 	## An effect command, decoded independently of the engine.
 	FxCmd : [
+		## Cold bootstrap metadata and its private barriers are not app requests.
+		Startup({ mode : U8, entry : U32 }),
+		StartupAck,
+		StartupComplete,
+		Opportunity({ action : U8, generation : U64 }),
+		Environment(U32),
 		Http(U32, Str, Str, List((Str, Str)), Str, U32, HttpOptions),
 		Get(U32, Str),
 		SessionGet(U32, Str),
@@ -1223,6 +1232,24 @@ Dom := [].{
 	apply_full = |dom0, b| {
 		r = Dom.decode_commands(dom0, b, { start: 0, one: Bool.False })
 		{ dom: r.dom, ops: r.ops, fx: r.fx, written: r.written, values: r.values }
+	}
+
+	## Validate a binding plan against the producer's complete cold logical
+	## frame, independently of Core. This oracle-only replay constructs plain
+	## descriptions for comparison, never another mounted app or engine state.
+	## Returning the source preserves every lifetime and its detach count.
+	bind_cold : Model, List(U8) -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64), values : List((U64, Str)) }
+	bind_cold = |source, bytes| {
+		if bytes.len() < 8 or Dom.byte(bytes, 1) != 28 or Dom.byte(bytes, 2) != 1 or Dom.byte(bytes, bytes.len() - 1) != 29 {
+			crash "executor: bind_cold requires one complete annotated cold batch"
+		}
+		root = Dom.node(source, source.root)
+		seed = { ..Dom.new({}), nodes: [{ ..Dom.empty_node, namespace: root.namespace, prefix: root.prefix, tag: root.tag, container: root.container, svg: root.svg, attrs: root.attrs }] }
+		decoded = Dom.apply_full(seed, bytes)
+		if decoded.dom != source {
+			crash "executor: startup logical plan disagrees with producer frame"
+		}
+		{ ..decoded, dom: source }
 	}
 
 	## Decode one command at its byte position, allowing the browser model to
@@ -1580,6 +1607,8 @@ Dom := [].{
 					(key, next) = Dom.str(b, $at)
 					$at = next
 					$fx = $fx.append(if (kind == 17) SessionGet(id, key) else StorageSub(id, key))
+				} else if kind == 22 {
+					$fx = $fx.append(Environment(id))
 				} else if kind == 21 {
 					crypto_start = $at
 					crypto_op = Dom.byte(b, $at)
@@ -1721,6 +1750,30 @@ Dom := [].{
 				(name, a1) = Dom.str(b, $at + 24)
 				$at = a1
 				$fx = $fx.append(Save(file, name))
+			} else if op == 28 {
+				if intent != 1 or flags != 0 {
+					crash "executor: STARTUP must begin an unmarked cold batch"
+				}
+				mode = Dom.byte(b, $at)
+				entry = Dom.u32(b, $at + 1)
+				if mode > 1 or entry == 4294967295 {
+					crash "executor: invalid startup mode or entry"
+				}
+				$at = $at + 5
+				$fx = $fx.append(Startup({ mode, entry }))
+			} else if op == 29 or op == 30 {
+				if flags != 0 or $at != b.len() {
+					crash "executor: startup barrier must be terminal and unmarked"
+				}
+				$fx = $fx.append(if (op == 29) StartupAck else StartupComplete)
+			} else if op == 31 {
+				action = Dom.byte(b, $at)
+				generation = Dom.u64(b, $at + 1)
+				if action > 1 or generation == 0 {
+					crash "executor: invalid opportunity action or generation"
+				}
+				$at = $at + 9
+				$fx = $fx.append(Opportunity({ action, generation }))
 			} else if op == 25 {
 				on = Dom.byte(b, $at)
 				if on > 1 {
@@ -1974,6 +2027,26 @@ Dom := [].{
 		d6 = Dom.forget_subtree(d5, parent)
 		actual = { parent: d6.statics.get(1)?, row: d6.statics.get(2)?, ref: d6.statics.get(3)?, members: (d6.rows.get(0)?).len() }
 		actual == { parent: 0, row: 0, ref: 0, members: 0 }
+	}
+
+	## Private alias teardown preserves other exact members and sites; repeating
+	## it for an unbound id is inert, and rebinding restores that member.
+	expect {
+		(d1, first) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "li" })
+		(d2, second) = Dom.add_node(d1, { ..Dom.empty_node, tag: "li" })
+		(d3, third) = Dom.add_node(d2, { ..Dom.empty_node, tag: "p" })
+		bound = Dom.set_row(Dom.set_row(Dom.set_row(d3, 2, first, 0), 3, second, 0), 4, third, 1)
+		removed = Dom.unbind(bound, 2)
+		inert = Dom.unbind(Dom.unbind(removed, 2), 99)
+		restored = Dom.set_row(inert, 2, first, 0)
+		actual = {
+			remaining: removed.rows.get(0)?,
+			other_site: removed.rows.get(1)?,
+			unbound: removed.statics.get(2)?,
+			inert: inert == removed,
+			restored: restored.rows.get(0)?,
+		}
+		actual == { remaining: Dict.single(3.U64, {}), other_site: Dict.single(4.U64, {}), unbound: 0, inert: Bool.True, restored: Dict.single(3.U64, {}).insert(2, {}) }
 	}
 
 	## Namespace URIs are identity data, independent from the engine's namespace
@@ -2296,19 +2369,19 @@ expect {
 
 ## The transport's six ordinary boolean names belong to the parser's HTML
 ## vocabulary. Hidden has a different grammar and is checked separately.
-expect [("input", "disabled"), ("option", "selected"), ("input", "readonly"), ("input", "required"), ("select", "multiple"), ("details", "open")].all(|(element, attribute)| MarkupFacts.is_boolean_attribute({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: element }, { namespace: NoNamespace, prefix: Unprefixed, local: attribute })) and !MarkupFacts.is_boolean_attribute({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: "div" }, { namespace: NoNamespace, prefix: Unprefixed, local: "hidden" })
+expect [("input", "disabled"), ("option", "selected"), ("input", "readonly"), ("input", "required"), ("select", "multiple"), ("details", "open")].all(|(element, attribute)| Markup.Name.is_boolean_attribute({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: element }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: attribute } })) and !Markup.Name.is_boolean_attribute({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: "div" }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: "hidden" } })
 
 ## Preserve the legacy wire convention without describing hidden as a boolean
 ## attribute or applying a browser default to its explicit enumeration.
-expect MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "div" }, { namespace: NoNamespace, prefix: Unprefixed, local: "hidden" }) == Ok(["", "hidden", "until-found"])
+expect Markup.Name.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "div" }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: "hidden" } }) == Ok(["", "hidden", "until-found"])
 
 ## OutsideText is platform policy over real HTML input keywords; the parser
 ## does not choose the policy or repair an unknown type into a known one.
-expect MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { namespace: NoNamespace, prefix: Unprefixed, local: "type" }).map_ok(|keywords| Protocol.text_entry_excluded.all(|keyword| keywords.contains(keyword))) == Ok(True)
+expect Markup.Name.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: "type" } }).map_ok(|keywords| Protocol.text_entry_excluded.all(|keyword| keywords.contains(keyword))) == Ok(True)
 
 ## The controlled popover policy deliberately supports auto/manual, while
 ## the parser's complete grammar also describes empty and hint spellings.
-expect MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "div" }, { namespace: NoNamespace, prefix: Unprefixed, local: "popover" }) == Ok(["", "auto", "manual", "hint"])
+expect Markup.Name.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "div" }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: "popover" } }) == Ok(["", "auto", "manual", "hint"])
 
 ## Independent DOM local-name grammar. UTF-8 validity is established by str;
 ## no XML Unicode-name ranges or engine construction helpers are shared.
@@ -2413,7 +2486,7 @@ render_utf16_units = |text| text.to_utf8().fold(0.U64, |units, byte| if (byte < 
 
 ## Character references preserve text without making data into syntax. Raw
 ## text modes are verified by parse-back rather than escaped into other text.
-render_text : Str, MarkupFacts.TextBehavior -> Str
+render_text : Str, [Data, Rcdata, RawText, ScriptData, Plaintext] -> Str
 render_text = |text, mode| match mode {
 	Data | Rcdata => text.replace_each("&", "&amp;").replace_each("<", "&lt;").replace_each(">", "&gt;").replace_each("\r", "&#13;")
 	RawText | ScriptData | Plaintext => text
@@ -2432,9 +2505,9 @@ expect {
 
 RenderSelection : [Uncontrolled, Controlled({ owner : U64, value : Str, multiple : Bool, matched : Bool, eligible : Bool })]
 
-RenderToken : [Open(U64), Close(U64), Text({ node : U64, mode : MarkupFacts.TextBehavior, initial_lf : Bool }), Comment(U64), EnvelopeOpen({ name : Dom.ExpandedName, attributes : List((Dom.ExpandedName, Str)) }), EnvelopeClose(Dom.ExpandedName)]
+RenderToken : [Open(U64), Close(U64), Text({ node : U64, mode : [Data, Rcdata, RawText, ScriptData, Plaintext], initial_lf : Bool }), Comment(U64), EnvelopeOpen({ name : Dom.ExpandedName, attributes : List((Dom.ExpandedName, Str)) }), EnvelopeClose(Dom.ExpandedName)]
 
-RenderState : { tokens : List(RenderToken), minimum_bytes : U64, physical : List(Dom.PictureNode), containers : List(Dom.PictureContainer), logical : List(Dom.LogicalNode), text_runs : List(Dom.TextRun), scaffolds : List(Dom.Scaffold), seen : Dict(U64, {}), selection : RenderSelection, props : Dom.RenderProps }
+RenderState : { tokens : List(RenderToken), minimum_bytes : U64, physical : List(Dom.PictureNode), containers : List(Dom.PictureContainer), logical : List(Dom.LogicalNode), text_runs : List(Dom.TextRun), scaffolds : List(Dom.Scaffold), seen : Dict(U64, {}), selection : RenderSelection, startup_owned : Bool, startup_gates : Dict(U64, {}), props : Dom.RenderProps }
 
 ## The plan's lower byte bound rejects oversized text before joining a run or
 ## scanning it for UTF-16 boundaries. Final escaping is bounded separately.
@@ -2550,10 +2623,10 @@ render_container = |state, { owner, role }| {
 render_name : Dom.DNode -> Dom.ExpandedName
 render_name = |node| { namespace: node.namespace, prefix: node.prefix, local: node.tag }
 
-render_behavior : Dom.ExpandedName, Bool -> { is_void : Bool, text_mode : MarkupFacts.TextBehavior, initial_lf : MarkupFacts.InitialNewlineState }
+render_behavior : Dom.ExpandedName, Bool -> { is_void : Bool, text_mode : [Data, Rcdata, RawText, ScriptData, Plaintext], initial_lf : Markup.InitialNewlineState }
 render_behavior = |name, scripting| {
 	expanded = render_parser_name(name)
-	{ is_void: MarkupFacts.is_void_element(expanded), text_mode: MarkupFacts.text_behavior(expanded, scripting), initial_lf: MarkupFacts.initial_newline(expanded) }
+	{ is_void: Markup.Name.is_void_element(expanded), text_mode: Markup.Name.text_behavior(expanded, { scripting: if (scripting) Enabled else Disabled }), initial_lf: Markup.Name.initial_newline(expanded) }
 }
 
 render_parser_name : Dom.ExpandedName -> Markup.Name
@@ -2563,13 +2636,20 @@ render_parser_name = |name| { namespace: if (name.namespace.is_empty()) NoNamesp
 ## matching without changing the attribute's stored value or applying defaults.
 attribute_keyword : Str, Str, Str -> Try(Str, [NotEnumerated, InvalidKeyword])
 attribute_keyword = |element, attribute, value| {
-	words = MarkupFacts.enumerated_values({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: element }, { namespace: NoNamespace, prefix: Unprefixed, local: attribute })?
+	words = Markup.Name.enumerated_values({ namespace: Uri(Markup.html_namespace), prefix: Unprefixed, local: element }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: attribute } })?
 	folded = Spelling.ascii_lower(value)
 	if (words.contains(folded)) Ok(folded) else Err(InvalidKeyword)
 }
 
 render_model : Dom.Model, Dom.RenderProps -> Try(Dom.Rendered, Dom.RenderError)
-render_model = |dom, props| {
+render_model = |dom, requested_props| {
+	props = if requested_props.startup == Annotated {
+		limits = requested_props.limits
+		{ ..requested_props, limits: { max_bytes: if (limits.max_bytes < 16777216) limits.max_bytes else 16777216, max_nodes: if (limits.max_nodes < 262144) limits.max_nodes else 262144, max_depth: if (limits.max_depth < 1024) limits.max_depth else 1024 } }
+	} else requested_props
+	if props.startup == Plain and props.frame != Unstamped {
+		return Err(InvalidModel({ model: props.root, rule: "a startup frame receipt requires annotated rendering" }))
+	}
 	root = dom.nodes.get(props.root).map_err(|_| InvalidModel({ model: props.root, rule: "missing root lifetime" }))?
 	if Dom.is_opaque(root) {
 		return Err(InvalidModel({ model: props.root, rule: "unsafe HTML is opaque; a prerendered picture cannot contain Html.unsafe_html, even with empty contents" }))
@@ -2584,9 +2664,12 @@ render_model = |dom, props| {
 	if props.mode == Picture and props.scope == MountEnvelope and props.enclosing == Unspecified {
 		return Err(InvalidModel({ model: props.root, rule: "a mount envelope requires its actual enclosing parse context" }))
 	}
-	initial = { tokens: [], minimum_bytes: 0, physical: [], containers: [], logical: [], text_runs: [], scaffolds: [], seen: Dict.empty(), selection: Uncontrolled, props }
+	initial = { tokens: [], minimum_bytes: 0, physical: [], containers: [], logical: [], text_runs: [], scaffolds: [], seen: Dict.empty(), selection: Uncontrolled, startup_owned: False, startup_gates: Dict.empty(), props }
 	allocated = render_container(initial, { owner: Mount, role: Children })?
 	var $state = allocated.state
+	if props.startup == Annotated {
+		$state = startup_gate($state, { model: props.root, node: root })?
+	}
 	if props.scope == Subtree {
 		models = if (root.kind == 4) root.kids else [props.root]
 		$state = render_children(dom, { state: $state, models, container: allocated.ordinal, depth: 0, mode: Data, initial_lf: False })?
@@ -2601,27 +2684,33 @@ render_model = |dom, props| {
 			}
 			$state = { ..$state, tokens: $state.tokens.append(EnvelopeOpen({ name, attributes: root.attrs })) }
 		}
-		$state = render_children(dom, { state: $state, models: root.kids, container: allocated.ordinal, depth: 0, mode: behavior.text_mode, initial_lf: behavior.initial_lf == Pending })?
+		$state = render_children(dom, { state: $state, models: root.kids, container: allocated.ordinal, depth: 0, mode: behavior.text_mode, initial_lf: behavior.initial_lf.is_pending() })?
 		if props.scope == MountEnvelope and !behavior.is_void {
 			$state = { ..$state, tokens: $state.tokens.append(EnvelopeClose(name)) }
 		}
 	}
+	annotations = if props.startup == Annotated {
+		render_annotations(dom, $state)?
+	} else {
+		{ state: $state, root: [] }
+	}
+	$state = annotations.state
 	markup = render_emit($state).map_err(
 		|error| match error {
 			RenderLimit({ resource: Bytes, .. }) => RenderLimit({ resource: Bytes, maximum: props.limits.max_bytes })
 			other => other
 		},
 	)?
-	rendered = { markup, root_name, physical: $state.physical, containers: $state.containers, logical: $state.logical, text_runs: $state.text_runs, scaffolds: $state.scaffolds }
+	rendered = { markup, root_annotations: annotations.root, root_name, physical: $state.physical, containers: $state.containers, logical: $state.logical, text_runs: $state.text_runs, scaffolds: $state.scaffolds }
 	if props.mode == Picture {
-		render_parse_back(rendered, { props, root_attributes: root.attrs })?
+		render_parse_back(rendered, { props, root_attributes: root.attrs.concat(annotations.root) })?
 	}
 	Ok(rendered)
 }
 
 ## Consecutive logical text nodes have one physical parse node. Empty parts
 ## stay in the explicit partition; an all-empty run consumes no physical node.
-render_children : Dom.Model, { state : RenderState, models : List(U64), container : U64, depth : U64, mode : MarkupFacts.TextBehavior, initial_lf : Bool } -> Try(RenderState, Dom.RenderError)
+render_children : Dom.Model, { state : RenderState, models : List(U64), container : U64, depth : U64, mode : [Data, Rcdata, RawText, ScriptData, Plaintext], initial_lf : Bool } -> Try(RenderState, Dom.RenderError)
 render_children = |dom, { state, models, container, depth, mode, initial_lf }| {
 	var $state = state
 	var $children = []
@@ -2687,14 +2776,15 @@ render_element = |dom, { state, model, node, depth }| {
 	if Dom.is_opaque(node) {
 		return Err(InvalidModel({ model, rule: "unsafe HTML is opaque; a prerendered picture cannot contain Html.unsafe_html, even with empty contents" }))
 	}
-	props = state.props
+	checked = if (state.props.startup == Annotated) startup_gate(state, { model, node })? else state
+	props = checked.props
 	deferred_selected = node.namespace == Dom.html_namespace and node.tag == "option" and match state.selection {
 		Uncontrolled => False
 		Controlled(selection) => selection.eligible
 	}
 	name = render_name(node)
 	behavior = render_behavior(name, props.scripting)
-	var $reserved = render_reserve(state, 2 + Dom.written_name(name).count_utf8_bytes() + if (behavior.is_void) 0 else 3 + Dom.written_name(name).count_utf8_bytes())?
+	var $reserved = render_reserve(checked, 2 + Dom.written_name(name).count_utf8_bytes() + if (behavior.is_void) 0 else 3 + Dom.written_name(name).count_utf8_bytes())?
 	for (key, value) in node.attrs {
 		if !(deferred_selected and key.namespace.is_empty() and key.local == "selected") {
 			$reserved = render_reserve($reserved, Dom.written_name(key).count_utf8_bytes() + 4)?
@@ -2750,9 +2840,9 @@ render_element = |dom, { state, model, node, depth }| {
 	}
 	if is_html and name.local == "textarea" and select_value.is_ok() {
 		(_, value) = select_value ?? crash "Dom.render: textarea value"
-		$state = render_control_text(dom, { state: $state, models: node.kids, owner: ordinal, container: children, value, depth: depth + 1, mode: behavior.text_mode, initial_lf: behavior.initial_lf == Pending })?
+		$state = render_control_text(dom, { state: $state, models: node.kids, owner: ordinal, container: children, value, depth: depth + 1, mode: behavior.text_mode, initial_lf: behavior.initial_lf.is_pending() })?
 	} else {
-		$state = render_children(dom, { state: $state, models: node.kids, container: children, depth: depth + 1, mode: behavior.text_mode, initial_lf: behavior.initial_lf == Pending })?
+		$state = render_children(dom, { state: $state, models: node.kids, container: children, depth: depth + 1, mode: behavior.text_mode, initial_lf: behavior.initial_lf.is_pending() })?
 	}
 	match $content {
 		NoContent => {}
@@ -2800,7 +2890,7 @@ render_element = |dom, { state, model, node, depth }| {
 	if !behavior.is_void {
 		$state = { ..$state, tokens: $state.tokens.append(Close(ordinal)) }
 	}
-	Ok({ state: $state, ordinal })
+	Ok({ state: { ..$state, startup_owned: state.startup_owned }, ordinal })
 }
 
 render_scaffold : RenderState, Dom.Scaffold -> Try(RenderState, Dom.RenderError)
@@ -2850,7 +2940,7 @@ render_override = |state, { owner, attributes, name, value }| {
 ## A controlled textarea's source text is a declared producer scaffold. The
 ## engine's ordinary text/comment lifetimes are explicitly constructed later,
 ## with their data in the claims rather than inferred by JavaScript.
-render_control_text : Dom.Model, { state : RenderState, models : List(U64), owner : U64, container : U64, value : Str, depth : U64, mode : MarkupFacts.TextBehavior, initial_lf : Bool } -> Try(RenderState, Dom.RenderError)
+render_control_text : Dom.Model, { state : RenderState, models : List(U64), owner : U64, container : U64, value : Str, depth : U64, mode : [Data, Rcdata, RawText, ScriptData, Plaintext], initial_lf : Bool } -> Try(RenderState, Dom.RenderError)
 render_control_text = |dom, { state, models, owner, container, value, depth, mode, initial_lf }| {
 	if !value.is_empty() and depth > state.props.limits.max_depth {
 		return Err(RenderLimit({ resource: Depth, maximum: state.props.limits.max_depth }))
@@ -3063,8 +3153,13 @@ render_parse_back = |rendered, { props, root_attributes }| {
 	source = if (document) "<!doctype html>${rendered.markup}" else rendered.markup
 	maximum = if (props.limits.max_nodes > 18_446_744_073_709_551_612) 18_446_744_073_709_551_615 else props.limits.max_nodes + 3
 	depth = if (props.limits.max_depth > 18_446_744_073_709_551_612) 18_446_744_073_709_551_615 else props.limits.max_depth + 3
-	parsed = MarkupHtml.parse_source(source, { recovery: Browser, exact_structure: True, strict_foreign_spelling: True, scripting: props.scripting, context_namespace: context.namespace, context_element: context.local, max_source_bytes: source.count_utf8_bytes(), max_nodes: maximum, max_elements: maximum, max_attributes: props.limits.max_bytes, max_depth: depth }, !document)
-		.map_err(|InvalidMarkup(error)| ParseFailure({ line: error.line, column: error.column, rule: Str.inspect(error.problem) }))?
+	parsed = MarkupHtml.parse_source(source, { mode: if (document) Document else Fragment, options: { recovery: Browser, exact_structure: True, strict_foreign_spelling: True, scripting: props.scripting, context_namespace: context.namespace, context_element: context.local, max_source_bytes: source.count_utf8_bytes(), max_nodes: maximum, max_elements: maximum, max_attributes: props.limits.max_bytes, max_depth: depth } })
+		.map_err(
+			|InvalidMarkup(error)| match error.location {
+				Text({ line, column, .. }) | LineColumn({ line, column }) => ParseFailure({ line, column, rule: Str.inspect(error.problem) })
+				_ => ParseMismatch({ physical: 0, rule: "parser refused serialized source at ${Str.inspect(error.location)}: ${Str.inspect(error.problem)}" })
+			},
+		)?
 	var $roots = parsed.tree.roots
 	if document {
 		$roots = $roots.keep_if(
@@ -3350,4 +3445,370 @@ expect {
 	Dom.is_opaque(Dom.node(empty_html, index)) and Dom.node(empty_html, index).kids.is_empty() and
 		Dom.node(with_html, index).props == [("inner_html", "<b>opaque</b>")] and
 			Dom.render(empty_html, { root: index, mode: Picture, limits: { max_bytes: 1024, max_nodes: 10, max_depth: 10 } }).is_err()
+}
+
+## Cold annotations describe the renderer's logical projection, not identity.
+## All joins are indexed once: no element scans the frame's scaffold list.
+StartupIndex : { ordinals : Dict(U64, U64), scaffolds : Dict(U64, List(Dom.Scaffold)), gates : Dict(U64, {}), bindings : U64 }
+
+startup_u32 : List(U8), U64 -> List(U8)
+startup_u32 = |bytes, value| bytes.append(value.to_u8_wrap()).append(value.shr_zf_wrap(8).to_u8_wrap()).append(value.shr_zf_wrap(16).to_u8_wrap()).append(value.shr_zf_wrap(24).to_u8_wrap())
+
+startup_str : List(U8), Str -> List(U8)
+startup_str = |bytes, text| {
+	framed = startup_u32(bytes, text.count_utf8_bytes())
+	if (text.is_empty()) framed else framed.concat(text.to_utf8())
+}
+
+startup_presence : List(U8), [Absent, Present(Str)] -> List(U8)
+startup_presence = |bytes, presence| match presence {
+	Absent => bytes.append(0)
+	Present(text) => startup_str(bytes.append(1), text)
+}
+
+startup_node : Dom.Model, StartupIndex, U64, List(U8) -> List(U8)
+startup_node = |dom, index, model, bytes| {
+	node = Dom.node(dom, model)
+	ordinal = index.ordinals.get(model) ?? crash "Dom.startup: missing logical ordinal"
+	var $out = startup_u32(startup_u32(bytes, ordinal), node.ids.len())
+	for id in node.ids {
+		$out = startup_u32($out, id.to_u64())
+	}
+	$out = startup_u32($out, node.ht.len())
+	for target in node.ht {
+		$out = startup_u32($out, index.ordinals.get(target) ?? crash "Dom.startup: missing row-hole ordinal")
+	}
+	$out
+}
+
+startup_children : Dom.Model, StartupIndex, List(U64), List(U8) -> List(U8)
+startup_children = |dom, index, models, bytes| {
+	var $out = startup_u32(bytes, models.len())
+	for model in models {
+		node = Dom.node(dom, model)
+		$out = $out.append(node.kind)
+		if node.kind == 1 {
+			$out = startup_u32($out, index.ordinals.get(model) ?? crash "Dom.startup: child ordinal")
+		} else {
+			$out = startup_str(startup_node(dom, index, model, $out), node.text)
+		}
+	}
+	$out
+}
+
+## Own/inherited handlers gate their subtree; native controls, forms and
+## editable surfaces are always gates. Label gates are conservative, so a
+## declared association never remains active beside a gated target.
+startup_gate : RenderState, { model : U64, node : Dom.DNode } -> Try(RenderState, Dom.RenderError)
+startup_gate = |state, { model, node }| {
+	owned = state.startup_owned or !node.hs.is_empty() or !node.props.is_empty()
+	if node.namespace == Dom.html_namespace and node.tag == "template" and Dom.has_attr(node, "shadowrootmode") {
+		return Err(InvalidModel({ model, rule: "annotated startup refuses declarative shadow roots; defer construction or use plain mounting" }))
+	}
+	if node.namespace == Dom.html_namespace and node.tag == "selectedcontent" {
+		return Err(InvalidModel({ model, rule: "annotated startup refuses selectedcontent native child mutation; defer construction or use plain mounting" }))
+	}
+	if node.namespace == Dom.html_namespace and node.tag == "details" and Dom.has_attr(node, "name") {
+		return Err(InvalidModel({ model, rule: "annotated startup refuses named details native group mutation; defer construction or use plain mounting" }))
+	}
+	if (node.namespace == Dom.html_namespace and (node.tag.contains("-") or Dom.has_attr(node, "is"))) or (node.tag == "script" and [Dom.html_namespace, Dom.svg_namespace].contains(node.namespace)) {
+		return Err(InvalidModel({ model, rule: "annotated startup refuses executable or custom-element markup; defer construction or use plain mounting" }))
+	}
+	for (name, _) in node.attrs {
+		if name.namespace.is_empty() and (Spelling.ascii_lower(name.local).starts_with("on") or ["data-roc-frame", "data-roc-node", "data-roc-children"].contains(name.local)) {
+			return Err(InvalidModel({ model, rule: "annotated startup refuses inline handlers and reserved annotation attributes" }))
+		}
+	}
+	native_control = node.namespace == Dom.html_namespace and ["form", "input", "button", "select", "textarea", "option", "label", "fieldset", "output", "details"].contains(node.tag)
+	editable = node.namespace == Dom.html_namespace and Dom.has_attr(node, "contenteditable") and Spelling.ascii_lower(Dom.attr_of(node, "contenteditable")) != "false"
+	gates = if (owned or native_control or editable) state.startup_gates.insert(model, {}) else state.startup_gates
+	Ok({ ..state, startup_owned: owned, startup_gates: gates })
+}
+
+startup_attributes : Dom.Model, StartupIndex, { model : U64, physical : [Mount, Element(U64)], state : RenderState } -> Try(List((Dom.ExpandedName, Str)), Dom.RenderError)
+startup_attributes = |dom, index, { model, physical, state }| {
+	node = Dom.node(dom, model)
+	added_inert = index.gates.contains(model) and !Dom.has_attr(node, "inert")
+	scaffolds = match physical {
+		Mount => []
+		Element(owner) => index.scaffolds.get(owner) ?? []
+	}
+	control = scaffolds.find_first(
+		|item| match item {
+			ControlText(_) => True
+			_ => False
+		},
+	)
+	flags = (if (added_inert) 1.U8 else 0) + (if (control.is_ok()) 2 else 0)
+	var $children = startup_children(dom, index, node.kids, [1, flags])
+	match node.content {
+		None => {
+			$children = $children.append(0)
+		}
+		Some(fragment) => {
+			$children = startup_children(dom, index, Dom.node(dom, fragment).kids, $children.append(1))
+		}
+	}
+	match control {
+		Ok(ControlText({ physical_text, .. })) => {
+			text = match physical_text {
+				Omitted => ""
+				Node(at) => match state.physical.get(at) ?? crash "Dom.startup: control text" {
+					Text(value) => value
+					_ => crash "Dom.startup: control scaffold kind"
+				}
+			}
+			$children = startup_str($children, text)
+		}
+		_ => {}
+	}
+	overrides = scaffolds.keep_if(
+		|item| match item {
+			AttributeOverride(_) => True
+			_ => False
+		},
+	)
+	$children = startup_u32($children, overrides.len())
+	for item in overrides {
+		match item {
+			AttributeOverride(value) => {
+				$children = startup_str(startup_str(startup_str($children, value.name.namespace), value.name.prefix), value.name.local)
+				$children = startup_presence(startup_presence($children, value.logical), value.physical)
+			}
+			_ => {}
+		}
+	}
+	options = scaffolds.keep_if(
+		|item| match item {
+			NoSelectionOption(_) => True
+			_ => False
+		},
+	)
+	$children = startup_u32($children, options.len())
+	for item in options {
+		match item {
+			NoSelectionOption(value) => {
+				# The renderer appends this sole scaffold after ordinary children.
+				# Its explicit physical ordinal is converted using the owner's
+				# container, whose children are already final from the same walk.
+				owner = match state.physical.get(value.owner) ?? crash "Dom.startup: option owner" {
+					Element(element) => element
+					_ => crash "Dom.startup: option owner kind"
+				}
+				container = state.containers.get(owner.children) ?? crash "Dom.startup: option container"
+				$children = startup_u32($children, container.children.len() - 1)
+			}
+			_ => {}
+		}
+	}
+	name = |local| { namespace: "", prefix: "", local }
+	var $attrs = [(name("data-roc-node"), Base64.encode(startup_node(dom, index, model, [1]))), (name("data-roc-children"), Base64.encode($children))]
+	if added_inert {
+		$attrs = $attrs.append((name("inert"), ""))
+	}
+	Ok($attrs)
+}
+
+render_annotations : Dom.Model, RenderState -> Try({ state : RenderState, root : List((Dom.ExpandedName, Str)) }, Dom.RenderError)
+render_annotations = |dom, state| {
+	if state.props.scope == Subtree {
+		return Err(InvalidModel({ model: state.props.root, rule: "annotated startup requires mount contents or a mount envelope" }))
+	}
+	var $ordinals = Dict.empty().insert(state.props.root, 0)
+	var $physical_models = Dict.empty()
+	var $bindings = 1.U64 + Dom.node(dom, state.props.root).ids.len()
+	var $position = 0.U64
+	for logical in state.logical {
+		position = $position
+		$position = $position + 1
+		$ordinals = $ordinals.insert(logical.model, position + 1)
+		$bindings = $bindings + 1 + Dom.node(dom, logical.model).ids.len()
+		match logical.target {
+			Node(physical) => {
+				$physical_models = $physical_models.insert(physical, logical.model)
+			}
+			_ => {}
+		}
+	}
+	if $bindings > 262144 {
+		return Err(RenderLimit({ resource: Nodes, maximum: 262144 }))
+	}
+	var $scaffolds = Dict.empty()
+	for scaffold in state.scaffolds {
+		owner = match scaffold {
+			ControlText(value) => value.owner
+			AttributeOverride(value) => value.owner
+			NoSelectionOption(value) => value.owner
+		}
+		$scaffolds = $scaffolds.insert(owner, ($scaffolds.get(owner) ?? []).append(scaffold))
+	}
+	index = { ordinals: $ordinals, scaffolds: $scaffolds, gates: state.startup_gates, bindings: $bindings }
+	base_root = startup_attributes(dom, index, { model: state.props.root, physical: Mount, state })?
+	root = match state.props.frame {
+		Unstamped => base_root
+		Frame({ entry, token }) => {
+			if entry == 4294967295 or token.is_empty() or token.count_utf8_bytes() > 8388608 or !token.to_utf8().all(|byte| (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_' or byte == '-') {
+				return Err(InvalidModel({ model: state.props.root, rule: "startup frame requires a concrete entry and an ASCII build token" }))
+			}
+			base_root.append(({ namespace: "", prefix: "", local: "data-roc-frame" }, "1:${entry.to_str()}:${token}"))
+		}
+	}
+	var $state = state
+	var $annotation_bytes = 0.U64
+	for (_, value) in root {
+		$annotation_bytes = $annotation_bytes + value.count_utf8_bytes()
+	}
+	if $annotation_bytes > 8388608 {
+		return Err(RenderLimit({ resource: Bytes, maximum: 8388608 }))
+	}
+	var $physical_at = 0.U64
+	while $physical_at < $state.physical.len() {
+		position = $physical_at
+		$physical_at = $physical_at + 1
+		physical = $state.physical.get(position) ?? crash "Dom.startup: physical position"
+		match physical {
+			Element(element) => match $physical_models.get(position) {
+				Err(_) => {}
+				Ok(model) => {
+					attrs = startup_attributes(dom, index, { model, physical: Element(position), state: $state })?
+					for (_, value) in attrs {
+						$annotation_bytes = $annotation_bytes + value.count_utf8_bytes()
+					}
+					if $annotation_bytes > 8388608 {
+						return Err(RenderLimit({ resource: Bytes, maximum: 8388608 }))
+					}
+					$state = { ..$state, physical: $state.physical.set(position, Element({ ..element, attributes: element.attributes.concat(attrs) })) ?? crash "Dom.startup: annotation owner" }
+				}
+			}
+			_ => {}
+		}
+	}
+	var $tokens = []
+	for token in $state.tokens {
+		$tokens = $tokens.append(
+			match token {
+				EnvelopeOpen(value) => EnvelopeOpen({ ..value, attributes: value.attributes.concat(root) })
+				other => other
+			},
+		)
+	}
+	Ok({ state: { ..$state, tokens: $tokens }, root })
+}
+
+## Frame ordinals include omitted text and stay separate from arbitrary alias
+## numbers. Row holes bind directly even after nested content shifts a path.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	row = { ..Dom.empty_node, tag: "p", kids: [2, 3, 4], ids: [700], ht: [4] }
+	empty = { ..Dom.empty_node, kind: 2, ids: [900] }
+	text = { ..Dom.empty_node, kind: 2, text: "𝄞<&" }
+	anchor = { ..Dom.empty_node, kind: 3, ids: [800], text: "authored" }
+	dom = { ..Dom.new({}), nodes: [root, row, empty, text, anchor] }
+	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, startup: Annotated, limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }) ?? crash "annotated row"
+	element = match picture.physical.first() ?? crash "annotated element" {
+		Element(value) => value
+		_ => crash "annotated element kind"
+	}
+	node_annotation = element.attributes.find_first(|(name, _)| name.local == "data-roc-node").map_ok(|(_, value)| value) ?? crash "node annotation"
+	Base64.decode(node_annotation) == Ok([1, 1, 0, 0, 0, 1, 0, 0, 0, 188, 2, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0]) and picture.root_annotations.len() == 2 and picture.text_runs.first().map_ok(|run| run.parts.map(|part| part.utf16_units)) == Ok([0, 4])
+}
+
+## Producer gates preserve authored inert text and leave independent media and
+## links available. Native forms/labels/details gate without their own listener.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1, 2, 3, 4, 5] }
+	dom = { ..Dom.new({}), nodes: [root, { ..Dom.empty_node, tag: "video" }, { ..Dom.empty_node, tag: "a" }, { ..Dom.empty_node, tag: "label" }, { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("inert", "authored")]) }, { ..Dom.empty_node, tag: "details", attrs: Dom.attributes([("open", "")]) }] }
+	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, startup: Annotated, limits: { max_bytes: 8192, max_nodes: 32, max_depth: 8 } }) ?? crash "annotated gates"
+	attrs = picture.physical.keep_oks(
+		|item| match item {
+			Element(element) => Ok(element.attributes.find_first(|(name, _)| name.local == "inert").map_ok(|(_, value)| value))
+			_ => Err({})
+		},
+	)
+	attrs == [Err(NotFound), Err(NotFound), Ok(""), Ok("authored"), Ok("")]
+}
+
+## Inherited ownership is carried by the renderer walk and ends at siblings;
+## a handler never makes a separate native media sibling inert.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1, 3] }
+	owner = { ..Dom.empty_node, tag: "section", kids: [2], props: [("pointer_zone", "managed")] }
+	dom = { ..Dom.new({}), nodes: [root, owner, { ..Dom.empty_node, tag: "video" }, { ..Dom.empty_node, tag: "video" }] }
+	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, startup: Annotated, limits: { max_bytes: 8192, max_nodes: 32, max_depth: 8 } })?
+	gated = picture.physical.keep_oks(
+		|item| match item {
+			Element(element) => Ok(element.attributes.any(|(name, _)| name.local == "inert"))
+			_ => Err({})
+		},
+	)
+	gated == [True, True, False]
+}
+
+## Private startup records are independently decoded without consuming an
+## awaited slot; quiet acknowledgement batches retain valid framing.
+expect {
+	cold = Dom.apply_full(Dom.new({}), [0, 28, 0, 2, 0, 0, 0, 13, 9, 0, 0, 0, 22, 29])
+	committed = Dom.apply_full(cold.dom, [0, 31, 1, 1, 0, 0, 0, 0, 0, 0, 0, 30])
+	cold.fx == [Startup({ mode: 0, entry: 2 }), Environment(9), StartupAck] and committed.fx == [Opportunity({ action: 1, generation: 1 }), StartupComplete] and cold.dom.nodes.len() == 1
+}
+
+## Binding validates the complete deterministic plan while retaining the
+## producer's lifetimes, aliases and row-hole targets without a detach.
+expect {
+	frame = [0, 28, 0, 0, 0, 0, 0, 8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 'p', 0, 29]
+	source = Dom.apply(Dom.new({}), frame)
+	binding = frame.set(2, 1)?
+	bound = Dom.bind_cold(source, binding)
+	bound.dom.nodes.len() == 2 and Dom.node(bound.dom, 1).detach_count == 0 and bound.dom == source
+}
+
+## The renderer stamps a checked build receipt while reserving annotation
+## names against authored markup. Host-template integration never rewrites
+## already serialized application text or attributes.
+expect {
+	dom = { ..Dom.new({}), nodes: [{ ..Dom.empty_node, tag: "div", kids: [1] }, { ..Dom.empty_node, tag: "p" }] }
+	props : Dom.RenderProps
+	props = { root: 0, scope: MountEnvelope, enclosing: Element({ namespace: Dom.html_namespace, prefix: "", local: "body" }), mode: Picture, startup: Annotated, frame: Frame({ entry: 2, token: "build_123-Ab" }), limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }
+	rendered = Dom.render(dom, props)?
+	rendered.markup.contains("data-roc-frame=\"1:2:build_123-Ab\"") and Dom.render(dom, { ..props, frame: Frame({ entry: 2, token: "bad:token" }) }).is_err()
+}
+
+## Native selectedcontent clones selected option children even under inert.
+## Cold ownership therefore refuses it independently of browser support;
+## ordinary construction remains available after a placeholder activates.
+expect {
+	dom = { ..Dom.new({}), nodes: [{ ..Dom.empty_node, tag: "div", kids: [1] }, { ..Dom.empty_node, tag: "selectedcontent" }] }
+	props : Dom.RenderProps
+	props = { root: 0, scope: Contents, startup: Annotated, limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }
+	refused = match Dom.render(dom, props) {
+		Err(InvalidModel({ rule, .. })) => rule.contains("selectedcontent native child mutation")
+		_ => False
+	}
+	refused and Dom.render(dom, { ..props, startup: Plain }).is_ok()
+}
+
+## A declarative shadow-root template disappears from ordinary children while
+## HTML parses. It cannot carry an owned cold-frame child container.
+expect {
+	dom = { ..Dom.new({}), nodes: [{ ..Dom.empty_node, tag: "div", kids: [1] }, { ..Dom.empty_node, tag: "template", attrs: Dom.attributes([("shadowrootmode", "open")]) }] }
+	props : Dom.RenderProps
+	props = { root: 0, scope: Contents, startup: Annotated, limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }
+	refused = match Dom.render(dom, props) {
+		Err(InvalidModel({ rule, .. })) => rule.contains("declarative shadow roots")
+		_ => False
+	}
+	refused and Dom.render(dom, { ..props, startup: Plain }).is_ok()
+}
+
+## Native named details groups can remove authored open attributes while
+## parsing, even under inert. Only ordinary details receive a temporary gate.
+expect {
+	dom = { ..Dom.new({}), nodes: [{ ..Dom.empty_node, tag: "div", kids: [1] }, { ..Dom.empty_node, tag: "details", attrs: Dom.attributes([("name", "accordion"), ("open", "")]) }] }
+	props : Dom.RenderProps
+	props = { root: 0, scope: Contents, startup: Annotated, limits: { max_bytes: 4096, max_nodes: 32, max_depth: 8 } }
+	refused = match Dom.render(dom, props) {
+		Err(InvalidModel({ rule, .. })) => rule.contains("named details native group mutation")
+		_ => False
+	}
+	refused and Dom.render(dom, { ..props, startup: Plain }).is_ok()
 }

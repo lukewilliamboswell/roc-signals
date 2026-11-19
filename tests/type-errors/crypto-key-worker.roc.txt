@@ -8,6 +8,3 @@ task = Worker.task({ name: "key", run!: |_key| Ok(1) })
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("key")).with_workers([task.registration()])
-
-## This fixture uses local state only.
-Store : {}

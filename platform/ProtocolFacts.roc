@@ -47,7 +47,21 @@ ProtocolFacts := [].{
 	append_declaration : List(U8) -> List(U8)
 	append_declaration = |declarations| {
 		body = ProtocolFacts.encode(Protocol.facts)
-		u32(declarations.append(12), body.len().to_u32_wrap()).concat(body)
+		var $at = 0.U64
+		while $at < declarations.len() {
+			if (declarations.get($at) ?? 255) > 12 {
+				break
+			}
+			if declarations.len() - $at < 5 {
+				crash "internal: short engine declaration framing"
+			}
+			length = (0.U64..<4).iter().fold(0.U64, |out, shift| out.bitwise_or((declarations.get($at + 1 + shift) ?? 0).to_u64().shl_wrap((shift * 8).to_u8_wrap())))
+			if length > declarations.len() - $at - 5 {
+				crash "internal: short engine declaration body"
+			}
+			$at = $at + 5 + length
+		}
+		u32(declarations.take_first($at).append(12), body.len().to_u32_wrap()).concat(body).concat(declarations.drop_first($at))
 	}
 }
 

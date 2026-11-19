@@ -54,6 +54,12 @@ ToolRelease := [].{
 				$files = $files.append(name)
 			}
 		}
+		# The profile table is read by the tool at compile time. It must be
+		# staged and bundled beside its pure policy module, not read from a
+		# contributor's checkout by a released tool.
+		if !$files.contains("compiler-profiles.tsv") or !$files.contains("CompilerProfile.roc") {
+			return Err(MissingCompilerProfiles)
+		}
 		SpecSuite.copy_runtime!(o.root, stage)?
 		scaffold = ToolRelease.scaffold_files!()?
 		for file in scaffold {

@@ -1,10 +1,11 @@
-import parser.MarkupFacts
+import parser.Markup
 import Engine exposing [Attr, Elem, FilesHandler, Handler, HandlerOf, Signal]
 import Layout
 import Core
 import Web
 import Spelling
 import MarkupLiteral
+import SignalCore
 
 ## Typed helpers for common HTML elements, attributes and events, built on
 ## `Engine.element`, `Engine.attr` and `Engine.on`.
@@ -46,6 +47,40 @@ Html := [].{
 		to_elem = |Markup.(bound)| MarkupLiteral.render(bound.plan, bound.parts)
 	}
 
+	## Temporary content for a deferred body. Checked markup and escaped text
+	## lower to ordinary descriptions, without handlers, state, refs or effects.
+	Static :: [Checked(MarkupLiteral.Plan, List(Str)), Escaped(Str)].{
+
+		## Check a fixed HTML fragment at its literal. Normal browser resources
+		## such as an image may load; engine-owned work starts in the live body.
+		from_quote : Str -> Try(Static, [BadQuotedBytes(Str)])
+		from_quote = |source| MarkupLiteral.compile([source], HtmlFragment)
+			.map_ok(|plan| Static.Checked(plan, []))
+			.map_err(|BadLiteral(note)| BadQuotedBytes(note))
+
+		## Show computed text as text, with no HTML interpretation.
+		text : Str -> Static
+		text = |value| Static.Escaped(value)
+	}
+
+	## Readiness while waiting, True by default. Once the live body mounts,
+	## later readiness changes do not replace it; its owning scope disposes it.
+	PlaceholderProps(ctx) := { ready : Signal(ctx, Bool) ?? Engine.const(True) }
+
+	## Keep static content until ready and given a browser-task opportunity.
+	## The body receives current state when its scope mounts. Preparing its
+	## immutable recipe may happen earlier to establish declared reads; live
+	## state, handlers and effects start only on activation. There is no timing
+	## guarantee while the browser is suspended. One body runs per opportunity.
+	placeholder : PlaceholderProps(ctx), Static, (() -> Elem(ctx)) -> Elem(ctx)
+	placeholder = |props, content, body| {
+		static = match content {
+			Static.Checked(plan, parts) => MarkupLiteral.render(plan, parts.map(Engine.const))
+			Static.Escaped(value) => Engine.text(value)
+		}
+		Core.placeholder(SignalCore.to_core(props.ready), static, body)
+	}
+
 	## A checked HTML input keyword. Raw Engine.attr("type", text) remains
 	## available when an app deliberately wants the browser's raw behavior.
 	InputType := [Hidden, Text, Search, Tel, Url, Email, Password, Date, Month, Week, Time, DatetimeLocal, Number, Range, Color, Checkbox, Radio, File, Submit, Image, Reset, Button].{
@@ -76,7 +111,7 @@ Html := [].{
 			"reset" => Ok(Reset)
 			"button" => Ok(Button)
 			_ => {
-				words = MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { namespace: NoNamespace, prefix: Unprefixed, local: "type" }) ?? crash "Html.InputType: parser must describe input type keywords"
+				words = Markup.Name.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: "type" } }) ?? crash "Html.InputType: parser must describe input type keywords"
 				hint = Spelling.suggest(keyword, words)
 				advice = if (hint.is_empty()) " choose a listed HTML input keyword" else hint
 				Err(NotAnInputType("${Str.inspect(keyword)} is not an input type;${advice}"))
@@ -534,7 +569,7 @@ hidden_presence = |state| match state {
 expect {
 	kinds : List(Html.InputType)
 	kinds = [Hidden, Text, Search, Tel, Url, Email, Password, Date, Month, Week, Time, DatetimeLocal, Number, Range, Color, Checkbox, Radio, File, Submit, Image, Reset, Button]
-	kinds.map(|kind| kind.text()) == MarkupFacts.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { namespace: NoNamespace, prefix: Unprefixed, local: "type" })?
+	kinds.map(|kind| kind.text()) == Markup.Name.enumerated_values({ namespace: Uri("http://www.w3.org/1999/xhtml"), prefix: Unprefixed, local: "input" }, { attribute: { namespace: NoNamespace, prefix: Unprefixed, local: "type" } })?
 }
 
 ## Both literal and computed keyword checks fold only ASCII spelling.

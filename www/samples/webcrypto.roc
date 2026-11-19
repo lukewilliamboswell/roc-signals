@@ -37,8 +37,6 @@ lock = |_session| Locked
 main : Engine.Program
 main = Engine.program(|| Html.p("Use the typed requests in an effect site.", ""))
 
-Store : {}
-
 ## The sample's first frame creates no cryptographic work.
 mounted : U64
 mounted = Engine.mounts(main)

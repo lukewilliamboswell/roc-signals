@@ -48,6 +48,26 @@ and modifier are generated from its place in the description, so two cells
 cannot overlap, and a write through one can never leave a reader of another
 showing an old value.
 
+## Prepare a description before mounting
+
+A view describes what to read and how to handle events. It does not hold the
+values of the cells it reads. When that description needs no runtime parameters,
+put the final `Elem` at the top level so Roc can prepare it while compiling:
+
+{{ sample(file="description-preparation/main.roc", region="description") }}
+
+The initializer still runs for every instance. Here its initial count comes
+from that instance's boot time; the prepared reader sees that count when it
+mounts. Each instance owns fresh store/table identities, local state, routes
+and scopes. Reusing the description never shares a mounted store or samples a
+signal early. Updates and disposal use the ordinary engine paths.
+
+Preparing a root does not prepare everything below it. A local state's view,
+a `derive` callback or a row's view receives its handle when that scope is
+created. A function that captures a runtime parameter also binds it at runtime.
+Keep those callbacks where their inputs become available; a prepared description
+is useful even when part of its construction remains later work.
+
 ## Read a cell anywhere
 
 `cell.signal()` is the cell's value, a `Signal` to `map` and show like any other.
@@ -64,11 +84,10 @@ long, so annotations write `_` for it, here and in `Engine.Write(_)` and
 mentions a store takes the store's type as a parameter, as `Props(st)` does in
 [Components](@/docs/components.md).
 
-The app's `main.roc` also names the concrete storage type as `Store`, using
-public types such as `Engine.Stored` and `Engine.Table`. The compiler prints
-that type when the declaration is missing or out of date. The instance holds
-this storage beside its sites and moves it through each turn; it is not
-captured by the root site's closure.
+The compiler infers the store's type from `main`; no separate `Store`
+declaration is required in `main.roc`. The instance holds this storage beside
+its sites and moves it through each turn; it is not captured by the root
+site's closure.
 
 A write to a cell wakes the readers of that cell and no one else's. Adding
 tea re-evaluates what reads the cart and the notice. The line that counts

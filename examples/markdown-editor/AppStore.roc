@@ -56,7 +56,7 @@ AppStore := [Editor].{
 			draft_status: Engine.cell(AppStore.initial_draft_status),
 			copy_status: Engine.cell(AppStore.initial_copy_status),
 			save_status: Engine.cell(AppStore.initial_draft_status),
-			paste_too_large: Engine.cell(False),
+			paste_too_large: Engine.cell(Bool.False),
 		}.Engine.Cells,
 	)
 
@@ -92,7 +92,7 @@ AppStore := [Editor].{
 		AppStore.cells.source.set(text),
 		AppStore.cells.revision.update(next_revision),
 		AppStore.cells.drafts.update(|box| box.post({})),
-		AppStore.cells.paste_too_large.set(False),
+		AppStore.cells.paste_too_large.set(Bool.False),
 		AppStore.cells.draft_status.set(Ready),
 		AppStore.cells.save_status.set(Ready),
 	]
@@ -104,7 +104,7 @@ AppStore := [Editor].{
 		AppStore.cells.source.update(command),
 		AppStore.cells.revision.update(next_revision),
 		AppStore.cells.drafts.update(|box| box.post({})),
-		AppStore.cells.paste_too_large.set(False),
+		AppStore.cells.paste_too_large.set(Bool.False),
 		AppStore.cells.draft_status.set(Ready),
 		AppStore.cells.save_status.set(Ready),
 	]
@@ -178,7 +178,7 @@ AppStore := [Editor].{
 	pasted : Engine.Paste -> List(Engine.Write(_))
 	pasted = |paste| match paste {
 		Text(text) => AppStore.replaced(text).append(AppStore.cells.apply_source.update(|box| box.post({})))
-		TooLarge => [AppStore.cells.paste_too_large.set(True)]
+		TooLarge => [AppStore.cells.paste_too_large.set(Bool.True)]
 	}
 
 	## Write failures cannot be treated as saved. Session quota and unavailable
@@ -281,7 +281,7 @@ expect {
 ## An oversized paste does not change the document or post a new draft.
 expect {
 	store = AppStore.store.after(AppStore.pasted(TooLarge))
-	(store.read(AppStore.cells.source), store.read(AppStore.cells.drafts).last(), store.read(AppStore.cells.paste_too_large)) == (AppStore.sample_document, Unposted, True)
+	(store.read(AppStore.cells.source), store.read(AppStore.cells.drafts).last(), store.read(AppStore.cells.paste_too_large)) == (AppStore.sample_document, Unposted, Bool.True)
 }
 
 ## A session draft starts dirty, while a saved document alone starts clean.

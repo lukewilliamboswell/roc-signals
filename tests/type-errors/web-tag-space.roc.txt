@@ -5,5 +5,3 @@ value : Web.Tag
 value = "my widget"
 main : Engine.Program
 main = Engine.program(|| Engine.text(value.text()))
-
-Store : {}

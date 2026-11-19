@@ -7,6 +7,3 @@ leak = |key| key.token()
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("opaque key"))
-
-## This fixture uses local state only.
-Store : {}

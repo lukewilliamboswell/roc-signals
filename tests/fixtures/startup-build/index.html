@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Startup build</title></head>
+  <body>
+    <div id="app" data-roc-picture></div>
+    <script type="module">
+      import { mountRocEngineApp } from "./runtime.mjs";
+      window.__runtime = await mountRocEngineApp({
+        wasmUrl: "app.wasm",
+        root: document.getElementById("app"),
+        onFault: fault => { window.__fault = `${fault.class}: ${fault.message}`; },
+      });
+      window.__ready = true;
+    </script>
+  </body>
+</html>

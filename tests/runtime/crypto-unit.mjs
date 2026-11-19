@@ -15,7 +15,7 @@ const word = value => [value & 255, (value >>> 8) & 255, (value >>> 16) & 255, v
 const wide = value => { const bytes = new Uint8Array(8); new DataView(bytes.buffer).setBigUint64(0, BigInt(value), true); return [...bytes]; };
 const block = bytes => [...word(bytes.length), ...bytes];
 const section = (tag, bytes) => [tag, ...word(bytes.length), ...bytes];
-const declarations = Uint8Array.from([...section(2, word(0)), ...section(5, word(0)), ...section(6, word(0)), ...section(10, [110, 1]), ...section(11, word(0)), ...protocolFixtureSection]);
+const declarations = Uint8Array.from([...section(2, word(0)), ...section(5, word(0)), ...section(6, word(0)), ...section(10, [110, 1]), ...section(11, word(0)), ...protocolFixtureSection, ...section(14, [0])]);
 const FX = protocolFixtureFacts.ops.find(row => row.name === "FX").code;
 const batch = (operation, operands, id = 1) => Uint8Array.from([0, FX, ...word(id), 21, operation, ...operands]);
 const flatten = payload => payload.parts ? Buffer.concat(payload.parts.map(part => Buffer.from(part))) : Buffer.from(payload);

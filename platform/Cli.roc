@@ -5,7 +5,11 @@
 ## They are served by the native host, `host/spec.zig`, alike on every
 ## system (its system services are `host/os_posix.zig` and
 ## `host/os_windows.zig`). The browser module
-## never calls them, and the Wasm link drops them. A failed read or write ends
+## never calls them, and the Wasm link must drop them. Official upstream
+## artifact `release-fast-e17a7826` retains these dead imports in development
+## Wasm (https://github.com/roc-lang/roc/issues/13195); workers correctly
+## refuse that module. Keep the closed worker vocabulary intact while the
+## compiler defect is unresolved. A failed read or write ends
 ## the process with a message: a runner that cannot read its input or report
 ## its result has nothing correct left to do.
 Cli := [].{

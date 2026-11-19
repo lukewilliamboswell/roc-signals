@@ -8,6 +8,7 @@ import cli.Stdout
 import Bundle
 import Compiler
 import Project
+import Text
 
 ## `build`: the app ready to deploy, in `dist/`. The page goes to
 ## `dist/index.html`; the app's module (built with `--opt=size`), the
@@ -27,8 +28,12 @@ Dist :: [].{
 	## `dist/`, and its bytes.
 	Asset : { path : Str, bytes : List(U8) }
 
-	## Explicit first-page routes; an ordinary build emits no pictures.
-	Options := { pictures : List(Str) ?? [] }
+	## Default builds enumerate the app's fixed entries. Legacy pictures remain
+	## explicit; no_prerender is the deliberate plain-page migration path.
+	Options := { pictures : List(Str) ?? [], no_prerender : Bool ?? False }
+
+	## The native catalogue is private build transport, never serialized app data.
+	Catalogue : { protocol : Str, entries : List(Str), root : List(U8), fallback : U32 }
 
 	## The native runner owns markup inspection and URL-to-output projection.
 	## JSON decoding is strict UTF-8 and uses Roc's built-in typed parser.
@@ -44,8 +49,18 @@ Dist :: [].{
 		if !(Path.exists!(Path.utf8("index.html"))?) {
 			return Err(NoIndexHtml)
 		}
-		version = Compiler.version!()?
+		inputs = Project.stamps!()?
 		Path.create_all!(Path.utf8(".signals/build"))?
+		# Refuse an ineligible default build before paying for a shipping module.
+		plan = if options.no_prerender {
+			Plain
+		} else {
+			runner = Dist.picture_runner!()?
+			annotated = options.pictures.is_empty()
+			urls = if (annotated) Dist.catalogue!(runner)?.entries else options.pictures
+			Pictures({ runner, annotated, routes: Dist.picture_routes!(runner, urls)? })
+		}
+		version = Compiler.version!()?
 		Stdout.line!("Building the app with `roc build --opt=size`, which takes longer than a development build...")?
 		wasm = ".signals/build/app.wasm"
 		match Compiler.build!({ target: "wasm32", opt: "size", output: wasm })? {
@@ -95,18 +110,25 @@ Dist :: [].{
 			)?
 		}
 		written = resources.map(|file| { path: file.path, bytes: file.bytes.len() })
-		pages = if options.pictures.is_empty() {
-			page = { path: "index.html", bytes: Dist.rewrite(template, { names: assets.map(|a| a.path), directory }).to_utf8() }
-			Dist.validate_outputs([{ ..page, bytes: [] }].concat(resources))?
-			Dist.stage_file!(
-				page,
-				{ staging: staging },
-			)?
-			[{ path: page.path, bytes: page.bytes.len() }]
-		} else {
-			Dist.stage_pictures!(options.pictures, { staging, names: assets.map(|a| a.path), directory, reserved: resources.map(|file| file.path), template })?
+		pages = match plan {
+			Plain => {
+				page = { path: "index.html", bytes: Dist.rewrite(template, { names: assets.map(|a| a.path), directory }).to_utf8() }
+				Dist.validate_outputs([{ ..page, bytes: [] }].concat(resources))?
+				Dist.stage_file!(
+					page,
+					{ staging: staging },
+				)?
+				[{ path: page.path, bytes: page.bytes.len() }]
+			}
+			Pictures({ runner, annotated, routes }) => Dist.stage_pictures!(routes, { staging, names: assets.map(|a| a.path), directory, reserved: resources.map(|file| file.path), template, build_token: Dist.hash(assets), program: runner, annotated })?
 		}
 		all_outputs = pages.concat(written)
+		# Native and Wasm builds must describe one unchanged project. Reuse the
+		# development server's file inventory before touching the published tree.
+		changed = Project.changes(inputs, Project.stamps!()?)
+		if !changed.is_empty() {
+			return Err(BuildInputsChanged(changed))
+		}
 		had_previous = Path.exists!(Path.utf8("dist"))?
 		if had_previous {
 			Path.rename!(Path.utf8("dist"), Path.utf8(previous))?
@@ -127,10 +149,10 @@ Dist :: [].{
 		Ok({})
 	}
 
-	## Run one real native app mount for each explicit route. All responses
-	## are captured and validated before the existing dist directory is touched.
-	stage_pictures! : List(Str), { staging : Str, names : List(Str), directory : Str, reserved : List(Str), template : Str } => Try(List({ path : Str, bytes : U64 }), _)
-	stage_pictures! = |urls, { staging, names, directory, reserved, template }| {
+	## Compile the real native entry once for catalogue inspection and rendering.
+	## No initializer runs during catalogue inspection.
+	picture_runner! : () => Try(Str, _)
+	picture_runner! = || {
 		target = Specs.target_of(System.target!())
 		if !Bundle.spec_targets.contains(target) {
 			return Err(PictureUnsupported(target))
@@ -147,9 +169,29 @@ Dist :: [].{
 			Failed(report) => return Err(BuildFailed({ report, version }))
 		}
 		program = "${Project.with_slashes(Path.display(Env.cwd!()?))}/${runner}"
+		Ok(program)
+	}
+
+	## A legacy app must explicitly opt out, rather than silently omit pages.
+	catalogue! : Str => Try(Catalogue, _)
+	catalogue! = |program| {
+		output = Cmd.new(OsStr.from_str(program)).args([OsStr.from_str("--startup-catalogue")]).stdout(Capture).stderr(Capture).output_limit(MaxBytes(1048576)).run!() ? |_| PictureRunnerFailed({ url: "startup catalogue", reason: "could not start catalogue inspection" })
+		if output.status != Exited(0) {
+			return Err(PictureFailed({ url: "startup catalogue", report: Str.from_utf8_lossy(output.stderr_bytes) }))
+		}
+		catalogue : Catalogue
+		catalogue = Json.parse(Str.from_utf8(output.stdout_bytes) ? |_| PictureResponseInvalid("startup catalogue")) ? |_| PictureResponseInvalid("startup catalogue")
+		if catalogue.protocol != "roc-signals/startup-catalogue/v1" or catalogue.entries.is_empty() or catalogue.entries.len() > 4096 or catalogue.root.is_empty() or catalogue.root.len() > 65536 or (catalogue.fallback != 0xffffffff and catalogue.fallback.to_u64() >= catalogue.entries.len()) {
+			return Err(PictureResponseInvalid("startup catalogue"))
+		}
+		Ok(catalogue)
+	}
+
+	## Project the complete route catalogue before paying for a shipping module.
+	## The native parser owns URL semantics; this tool checks output collisions.
+	picture_routes! : Str, List(Str) => Try(List({ path : Str, url : Str }), _)
+	picture_routes! = |program, urls| {
 		var $routes = []
-		var $outputs = reserved.map(|path| { path, bytes: [] })
-		var $written = []
 		for url in urls {
 			output = Cmd.new(OsStr.from_str(program)).args(["--picture-path", url].map(OsStr.from_str)).stdout(Capture).stderr(Capture).output_limit(MaxBytes(1048576)).run!() ? |problem| PictureRunnerFailed({
 				url,
@@ -172,18 +214,30 @@ Dist :: [].{
 				return Err(PictureRouteCollision({ first: $routes.find_first(|prior| Dist.output_key(prior.path) == Dist.output_key(route.path)).map_ok(|prior| prior.url) ?? crash "Dist.stage_pictures!: prior route exists", second: url, path: route.path }))
 			}
 			$routes = $routes.append({ path: route.path, url })
-			$outputs = $outputs.append({ path: route.path, bytes: [] })
 		}
-		Dist.validate_outputs($outputs)?
+		Dist.validate_outputs($routes.map(|route| { path: route.path, bytes: [] }))?
+		Ok($routes)
+	}
+
+	## Run one real native app mount for each projected route. All responses are
+	## captured and validated before the existing dist directory is touched.
+	stage_pictures! : List({ path : Str, url : Str }), { staging : Str, names : List(Str), directory : Str, reserved : List(Str), template : Str, build_token : Str, program : Str, annotated : Bool } => Try(List({ path : Str, bytes : U64 }), _)
+	stage_pictures! = |routes, { staging, names, directory, reserved, template, build_token, program, annotated }| {
+		Dist.validate_outputs(reserved.map(|path| { path, bytes: [] }).concat(routes.map(|route| { path: route.path, bytes: [] })))?
+		var $written = []
 		projected = ".signals/build/picture-template.html"
-		for route in $routes {
+		for route in routes {
 			url = route.url
 			depth = route.path.split_on("/").len() - 1
 			prefix = Str.repeat("../", depth)
 			# Rewrite only the original host template. A rendered app attribute
 			# or text which resembles an asset name must remain untouched.
-			Path.write_utf8!(Path.utf8(projected), Dist.rewrite(template, { names, directory: "${prefix}${directory}" }))?
-			output = Cmd.new(OsStr.from_str(program)).args(["--prerender", url, "--template", projected].map(OsStr.from_str)).stdout(Capture).stderr(Capture).output_limit(MaxBytes(134217728)).run!() ? |problem| PictureRunnerFailed({
+			projection = if annotated {
+				Dist.rewrite_startup(template, { names, directory: "${prefix}${directory}", build_token })?
+			} else Dist.rewrite(template, { names, directory: "${prefix}${directory}" })
+			Path.write_utf8!(Path.utf8(projected), projection)?
+			arguments = ["--prerender", url, "--template", projected].concat(if (annotated) ["--build-token", build_token] else [])
+			output = Cmd.new(OsStr.from_str(program)).args(arguments.map(OsStr.from_str)).stdout(Capture).stderr(Capture).output_limit(MaxBytes(134217728)).run!() ? |problem| PictureRunnerFailed({
 				url,
 				reason: match problem {
 					CmdErr(error) => error.to_str()
@@ -199,7 +253,7 @@ Dist :: [].{
 			if picture.protocol != "roc-signals/prerender/v1" or picture.url != url or picture.path != route.path or picture.page.is_empty() or picture.page.count_utf8_bytes() > 16777216 or !picture.metadata.is_empty() {
 				return Err(PictureResponseInvalid(url))
 			}
-			# Stage 1 emits no envelope; no fake adoption metadata is accepted.
+			# Annotations remain inside the engine-rendered page, never a side envelope.
 			page = { path: picture.path, bytes: picture.page.to_utf8() }
 			Dist.stage_file!(
 				page,
@@ -220,7 +274,13 @@ Dist :: [].{
 		if Path.exists!(Path.utf8(target))? {
 			return Err(OutputCollision({ first: "already staged filesystem target", second: file.path }))
 		}
-		Path.create_all!(Path.utf8(Str.join_with(target.split_on("/").drop_last(1), "/")))?
+		# TODO https://github.com/roc-lang/roc/issues/13221: joining split_on
+		# components corrupts long staging paths in x64mac development builds.
+		parent = match target.split_last("/") {
+			Ok({ before, .. }) => before
+			Err(_) => crash "Dist.stage_file: staged target must have a parent"
+		}
+		Path.create_all!(Path.utf8(parent))?
 		Path.write_bytes!(Path.utf8(target), file.bytes)?
 		Ok({})
 	}
@@ -229,12 +289,14 @@ Dist :: [].{
 	## drive syntax and filesystem-reserved spellings before writing a file.
 	validate_output_path : Str -> Try({}, [UnsafeOutputPath(Str)])
 	validate_output_path = |path| {
-		parts = path.split_on("/")
+		# TODO https://github.com/roc-lang/roc/issues/13221: the checks must
+		# see every authored byte, including a long component's first byte.
+		parts = Text.split(path, '/')
 		if parts.is_empty() or parts.any(|part| part.is_empty() or part == "." or part == ".." or part.ends_with(".") or part.ends_with(" ") or part.to_utf8().any(|byte| byte < 32 or byte == 127 or [':', '\\', '<', '>', '"', '|', '?', '*'].contains(byte))) {
 			return Err(UnsafeOutputPath(path))
 		}
 		for part in parts {
-			stem = Dist.output_key(part.split_on(".").first() ?? crash "Dist.validate_output_path: nonempty component")
+			stem = Dist.output_key(Text.split(part, '.').first() ?? crash "Dist.validate_output_path: nonempty component")
 			if ["con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9", "com¹", "com²", "com³", "lpt¹", "lpt²", "lpt³"].contains(stem) {
 				return Err(UnsafeOutputPath(path))
 			}
@@ -263,7 +325,9 @@ Dist :: [].{
 		}
 		for file in files {
 			var $prefix = ""
-			for part in Dist.output_key(file.path).split_on("/").drop_last(1) {
+			# The owned components also preserve long file/directory prefixes
+			# under the compiler workaround used by validate_output_path.
+			for part in Text.split(Dist.output_key(file.path), '/').drop_last(1) {
 				$prefix = if ($prefix.is_empty()) part else "${$prefix}/${part}"
 				match $known.get($prefix) {
 					Ok(first) => return Err(OutputCollision({ first, second: file.path }))
@@ -303,6 +367,23 @@ Dist :: [].{
 			}
 		}
 		$out
+	}
+
+	## Stamp only the original template's exact quoted module URL. It is an
+	## explicit build receipt; runtime never infers a token from an asset path.
+	## Rendered app text, attributes and annotations have not been produced yet.
+	rewrite_startup : Str, { names : List(Str), directory : Str, build_token : Str } -> Try(Str, [MissingStartupReceipt])
+	rewrite_startup = |page, { names, directory, build_token }| {
+		var $source = page
+		for quote in ["\"", "'"] {
+			for prefix in ["", "./"] {
+				$source = $source.replace_each("${quote}${prefix}app.wasm${quote}", "${quote}${prefix}${directory}/app.wasm?roc-build=${build_token}${quote}")
+			}
+		}
+		if $source == page {
+			return Err(MissingStartupReceipt)
+		}
+		Ok(Dist.rewrite($source, { names: names.drop_if(|name| name == "app.wasm"), directory }))
 	}
 
 	## What `build` prints: every file it wrote, with its size, and how to
@@ -353,6 +434,14 @@ expect {
 ## A file in a subdirectory is not rewritten again by a shorter name.
 expect Dist.rewrite("\"js/app.mjs\" \"app.mjs\"", { names: ["js/app.mjs", "app.mjs"], directory: "a/h" }) == "\"a/h/js/app.mjs\" \"a/h/app.mjs\""
 
+## A generated module reference carries the explicit receipt at its page depth;
+## absence of a supported loader reference refuses rather than publishing it.
+expect {
+	page = "\"./runtime.mjs\" 'app.wasm' app.wasm"
+	actual = Dist.rewrite_startup(page, { names: ["app.wasm", "runtime.mjs"], directory: "../assets/h", build_token: "receipt" })?
+	actual == "\"./../assets/h/runtime.mjs\" '../assets/h/app.wasm?roc-build=receipt' app.wasm" and Dist.rewrite_startup("<script src=\"loader.mjs\"></script>", { names: ["app.wasm"], directory: "assets/h", build_token: "receipt" }) == Err(MissingStartupReceipt)
+}
+
 ## The hash is FNV-1a, and any change to a name or a byte changes it.
 expect {
 	one = Dist.hash([{ path: "a", bytes: [1, 2] }])
@@ -382,3 +471,11 @@ expect Dist.validate_outputs([{ path: "a/one/index.html", bytes: [] }, { path: "
 
 ## A lexical neighbour cannot hide an earlier file/directory prefix conflict.
 expect Dist.validate_outputs([{ path: "a", bytes: [] }, { path: "a-file", bytes: [] }, { path: "a/b/index.html", bytes: [] }]).is_err()
+
+## Long components retain reserved-name checks and file/directory collisions.
+expect {
+	parent = "assets/long-directory-with-more-than-24-bytes"
+	Dist.validate_output_path("assets/CON.long-extension-with-more-than-24-bytes").is_err() and
+		Dist.validate_outputs([{ path: parent, bytes: [] }, { path: "${parent}/file.txt", bytes: [] }]).is_err() and
+			Dist.validate_outputs([{ path: "${parent}/one.txt", bytes: [] }, { path: "${parent}/two.txt", bytes: [] }]).is_ok()
+}

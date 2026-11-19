@@ -1,4 +1,5 @@
 import cli.Path
+import CompilerProfile
 import CompilerSkips
 import Proc
 
@@ -15,7 +16,7 @@ SpecSuite := [].{
 	## runtime copies all of them side by side (`copy_runtime!`); the browser
 	## tests serve the same list (`tests/browser/args.mjs`).
 	runtime_files : List(Str)
-	runtime_files = ["runtime.mjs", "worker.mjs", "environment.mjs"]
+	runtime_files = ["runtime.mjs", "worker.mjs", "environment.mjs", "startup.mjs"]
 
 	## Copy every runtime file from `root`'s `platform/` into `dir`.
 	copy_runtime! : Str, Str => Try({}, _)
@@ -34,7 +35,7 @@ SpecSuite := [].{
 	## browser services, work counters, worker jobs (byte-level and typed) and
 	## superseding effect sites the examples do not exercise.
 	test_apps : List(Str)
-	test_apps = ["unsafe-html", "crypto", "services", "workers", "worker-typed", "supersede", "worker-search", "files", "file-effects", "prepared", "ports", "tasks", "gather", "outbox", "deep", "deep-payload", "handlers", "remount", "store", "writes", "table", "controls", "write-scaling", "keep-current", "signal-text", "markup", "namespaces", "construction", "prerender", "dbg", "dbg-job-only"]
+	test_apps = ["unsafe-html", "crypto", "services", "workers", "worker-typed", "supersede", "worker-search", "files", "file-effects", "prepared", "description-preparation", "startup", "startup-queue", "placeholder-retention", "startup-effects", "startup-corpus", "ports", "tasks", "gather", "outbox", "deep", "deep-payload", "handlers", "remount", "store", "writes", "table", "controls", "write-scaling", "keep-current", "signal-text", "markup", "namespaces", "construction", "prerender", "dbg", "dbg-job-only"]
 
 	## Every spec-bearing app, examples first.
 	spec_apps : List(Str)
@@ -217,15 +218,55 @@ SpecSuite := [].{
 
 	## The browser build of an app or test app (built by `build!`).
 	wasm_of : Options, Str -> Str
-	wasm_of = |o, name| "${o.build_dir}/wasm/${name}/app.wasm"
+	wasm_of = |o, name|
+		if SpecSuite.web_opt(o, "dev") == "size" {
+			SpecSuite.size_wasm_of(o, name)
+		} else {
+			"${o.build_dir}/wasm/${name}/app.wasm"
+		}
+
+	## Allocation guards and result labels use the profile actually compiled,
+	## including the exact-version workaround shared with the authoring tool.
+	web_opt : Options, Str -> Str
+	web_opt = |o, requested| CompilerProfile.effective({ compiler: o.nightly, target: "wasm32", requested })
+
+	## Keep a substituted shipping run distinct from development coverage.
+	browser_label : Options, Str -> Str
+	browser_label = |o, example|
+		if (SpecSuite.web_opt(o, "dev") == "dev") example else "${example} (${SpecSuite.web_opt(o, "dev")} Wasm; development profile skipped)"
+
+	## Report the unavailable requested profile at a batch's build boundary.
+	## The jobs below remain pure plans whose command names the actual mode.
+	note_profile! : Options, Str => {}
+	note_profile! = |o, requested| {
+		notice = CompilerProfile.notice({ compiler: o.nightly, target: "wasm32", requested })
+		if !notice.is_empty() {
+			Proc.note!(notice)
+		}
+	}
+
+	## Distinct artifacts and their actual allocation contracts. A substituted
+	## size build is measured once, with size's guarantees rather than dev's.
+	allocation_builds : Options, Str -> List({ opt : Str, wasm : Str })
+	allocation_builds = |o, name|
+		[
+			{ opt: SpecSuite.web_opt(o, "dev"), wasm: SpecSuite.wasm_of(o, name) },
+			{ opt: "size", wasm: SpecSuite.size_wasm_of(o, name) },
+		].fold([], |kept, build| if (kept.contains(build)) kept else kept.append(build))
 
 	## A build of an app's `main.roc` for `target` at optimisation level `opt`.
 	build_job : Options, Str, Str, Str, Str -> Proc.Job
 	build_job = |o, opt, main, target, output| {
-		program: o.compiler,
-		args: ["build", "--opt=${opt}", "--target=${target}", main, "--output=${output}"],
-		cwd: o.root,
+		profile = { compiler: o.nightly, target, requested: opt }
+		actual = CompilerProfile.effective(profile)
+		{ program: o.compiler, args: ["build", "--opt=${actual}", "--target=${target}", main, "--output=${output}"], cwd: o.root }
 	}
+
+	## Roc exits 2 after a successful build with warnings, including intentional
+	## dbg fixtures in the size profile. Keep their reports visible; errors and
+	## process failures still prevent every dependent replay.
+	build_succeeded : I32 -> Bool
+	build_succeeded = |code| code == 0 or code == 2
 
 	## Build, in parallel (bounded by the CPU count), the native runners of
 	## `natives` and the browser builds of `webs` (app names, or
@@ -237,7 +278,10 @@ SpecSuite := [].{
 	## soak measures the memory of the shipping artifact, so it builds with
 	## `size`; everything else tests behaviour and builds with `dev`.
 	build_with! : Options, List(Str), List(Str), Str => Try({}, _)
-	build_with! = |o, natives, webs, web_opt| {
+	build_with! = |o, natives, webs, requested_web_opt| {
+		if !webs.is_empty() {
+			SpecSuite.note_profile!(o, requested_web_opt)
+		}
 		var $jobs = []
 		for example in natives {
 			Path.create_all!(Path.utf8("${o.build_dir}/native/${example}"))?
@@ -246,11 +290,12 @@ SpecSuite := [].{
 		for w in webs {
 			name = w.split_on("/").last() ?? w
 			dir = if (w.starts_with("tests/apps/")) w else SpecSuite.dir_of(w)
-			Path.create_all!(Path.utf8("${o.build_dir}/wasm/${name}"))?
-			$jobs = $jobs.append(SpecSuite.build_job(o, web_opt, "${dir}/main.roc", "wasm32", SpecSuite.wasm_of(o, name)))
+			output = SpecSuite.wasm_of(o, name)
+			Path.create_all!(Path.utf8(output.drop_suffix("/app.wasm")))?
+			$jobs = $jobs.append(SpecSuite.build_job(o, requested_web_opt, "${dir}/main.roc", "wasm32", output))
 		}
 		results = Proc.parallel!($jobs, Proc.compiler_jobs!(App)?)?
-		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| code != 0)
+		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| !SpecSuite.build_succeeded(code))
 		match failed.first() {
 			Ok((job, code)) => Err(BuildFailed("${Proc.show(job)} exited with ${code.to_str()}"))
 			Err(_) => Ok({})
@@ -270,6 +315,9 @@ SpecSuite := [].{
 	## them. A failed build is an error.
 	build_all! : Options, { natives : List(Str), webs : List(Str), sized : List(Str) } => Try({}, _)
 	build_all! = |o, { natives, webs, sized }| {
+		if !webs.is_empty() {
+			SpecSuite.note_profile!(o, "dev")
+		}
 		var $jobs = []
 		for example in natives {
 			Path.create_all!(Path.utf8("${o.build_dir}/native/${example}"))?
@@ -280,10 +328,15 @@ SpecSuite := [].{
 			dir = if (w.starts_with("tests/apps/")) w else SpecSuite.dir_of(w)
 			output = if (opt == "size") SpecSuite.size_wasm_of(o, name) else SpecSuite.wasm_of(o, name)
 			Path.create_all!(Path.utf8(output.drop_suffix("/app.wasm")))?
-			$jobs = $jobs.append(SpecSuite.build_job(o, opt, "${dir}/main.roc", "wasm32", output))
+			job = SpecSuite.build_job(o, opt, "${dir}/main.roc", "wasm32", output)
+			# An affected development request can already name this shipping
+			# artifact. Compile it once, without claiming development coverage.
+			if !$jobs.any(|existing| existing.args == job.args) {
+				$jobs = $jobs.append(job)
+			}
 		}
 		results = Proc.parallel!($jobs, Proc.compiler_jobs!(App)?)?
-		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| code != 0)
+		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| !SpecSuite.build_succeeded(code))
 		match failed.first() {
 			Ok((job, code)) => Err(BuildFailed("${Proc.show(job)} exited with ${code.to_str()}"))
 			Err(_) => Ok({})
@@ -300,7 +353,15 @@ SpecSuite := [].{
 	## A spec's id, as every runner reports it: its file name without the
 	## directory or `.scm` (`SpecRunner.id_of`).
 	id_of : Str -> Str
-	id_of = |path| (path.split_on("/").last() ?? path).drop_suffix(".scm")
+	# TODO(https://github.com/roc-lang/roc/issues/13221): restore split_on
+	# once the compiler preserves interior filename slices on x64 dev builds.
+	id_of = |path| {
+		base = match path.split_last("/") {
+			Ok(parts) => parts.after
+			Err(_) => path
+		}
+		base.drop_suffix(".scm")
+	}
 
 	## The value of `"key":"..."` in a JSON line (no escapes inside).
 	json_field : Str, Str -> Str
@@ -386,15 +447,29 @@ SpecSuite := [].{
 		Ok({ code, lines: Str.from_utf8_lossy(stdout).split_on("\n") })
 	}
 
-	## Run `specs` (paths of `example`'s specs) with its native runner and
-	## judge the run.
+	## Check every file in a suite before a filter selects individual stories.
+	## The ordinary result protocol makes omissions and unexpected exits fail too.
+	suite_evidence! : { example : Str, runner : Str, specs : List(Str) } => Try(List(Str), _)
+	suite_evidence! = |{ example, runner, specs }| {
+		run = SpecSuite.run_native!(runner, ["--check-suite"].concat(specs))?
+		tally = SpecSuite.judge({ example: "${example} suite evidence", stage: Native, expected: specs.map(SpecSuite.id_of), run })
+		Ok(tally.problems)
+	}
+
+	## Run selected stories, checking negative names against all files beside
+	## them first. Suite validation never depends on a filter's selected subset.
 	native_specs! : { example : Str, runner : Str, specs : List(Str) } => Try(Tally, _)
 	native_specs! = |{ example, runner, specs }|
 		if specs.is_empty() {
 			Ok(SpecSuite.empty_tally)
 		} else {
+			first = specs.first() ?? crash "nonempty specs"
+			directory = Str.join_with(first.split_on("/").drop_last(1), "/")
+			every = SpecSuite.files_with!(directory, ".scm")?
+			problems = SpecSuite.suite_evidence!({ example, runner, specs: every })?
 			run = SpecSuite.run_native!(runner, specs)?
-			Ok(SpecSuite.judge({ example, stage: Native, expected: specs.map(SpecSuite.id_of), run }))
+			tally = SpecSuite.judge({ example, stage: Native, expected: specs.map(SpecSuite.id_of), run })
+			Ok({ ..tally, problems: problems.concat(tally.problems) })
 		}
 
 	## The specs of `example` the filter `pattern` selects: those whose id it
@@ -438,7 +513,9 @@ SpecSuite := [].{
 		if replayed.is_empty() {
 			return Ok(emitted)
 		}
-		{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", SpecSuite.runtime, "--steps", steps_file, "--chrome", o.chrome, "--json-lines"], cwd: "." })?
+		public = "${SpecSuite.dir_of(example)}/public"
+		public_args = if (Path.exists!(Path.utf8(public))?) ["--public", public] else []
+		{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", SpecSuite.runtime, "--steps", steps_file, "--chrome", o.chrome, "--json-lines"].concat(public_args), cwd: "." })?
 		replay = SpecSuite.judge({ example, stage: Replay, expected: replayed, run: { code, lines: Str.from_utf8_lossy(stdout).split_on("\n") } })
 		Ok(SpecSuite.add(emitted, replay))
 	}
@@ -645,3 +722,19 @@ expect SpecSuite.listing_problems({ examples: ["a"], tests: ["c"], found: [{ dir
 
 ## A selection of no spec is a problem; any spec at all is not.
 expect SpecSuite.selection_problems("nothing*", 0).len() == 1 and SpecSuite.selection_problems("*", 1) == []
+
+## The allocation guard uses the effective artifact once: a520 has only
+## size coverage, while a future compiler retries separate dev and size.
+expect {
+	o = { root: "/root", build_dir: "/build", compiler: "roc", nightly: "nightly-2026-11-18-a520eed", tooling: "roc-stable", zig: "zig", node: "node", chrome: "chrome", filter: "*", target: "arm64mac" }
+	actual = {
+		affected: SpecSuite.allocation_builds(o, "fixture"),
+		future: SpecSuite.allocation_builds({ ..o, nightly: "nightly-2026-11-19-future" }, "fixture"),
+		label: SpecSuite.browser_label(o, "fixture"),
+	}
+	actual == {
+		affected: [{ opt: "size", wasm: "/build/wasm-size/fixture/app.wasm" }],
+		future: [{ opt: "dev", wasm: "/build/wasm/fixture/app.wasm" }, { opt: "size", wasm: "/build/wasm-size/fixture/app.wasm" }],
+		label: "fixture (size Wasm; development profile skipped)",
+	}
+}

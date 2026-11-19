@@ -26,6 +26,9 @@ zola_program = Fetch("zola", zola)
 
 node_program = Fetch("node", node)
 
+# Test-only automation, kept whole so cli.js and index.mjs share their package.
+playwright_program = Fetch("playwright-core", |_| Archive("https://registry.npmjs.org/playwright-core/-/playwright-core-1.65.1.tgz", TarGz, "package/cli.js"))
+
 # The roc-automation documentation renderer, which generates the API docs.
 roc_docs_program = Fetch("roc-docs", Recipes.file("https://github.com/lukewilliamboswell/roc-automation/releases/download/tools-0.10.0/roc-docs-{system}"))
 
@@ -49,6 +52,7 @@ config = [
 	# below as `chrome` and replaces this Expect once blueprint unpacks zips on
 	# Linux.
 	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["roc", "git", "curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome", "zip"])]),
+	Environment("startup-browsers", [Programs([roc_stable_program, zig_program, node_program, playwright_program]), Expect(["roc", "git", "curl", "tar", "zstd", "sha256sum", "getconf"])]),
 	# Building the documentation site, its API docs and its live examples.
 	Environment("site", [Programs([roc_stable_program, zig_program, zola_program, roc_docs_program, node_program, Fetch("tailwindcss", tailwind)]), Expect(["roc", "google-chrome"])]),
 	# Building the release assets, API docs included.
@@ -60,6 +64,7 @@ config = [
 	# check and the release dry run. CI runs it as parallel legs of
 	# `check -- --without-fuzz --without-sizes --part K/N` beside
 	# `fuzz-smoke -- --shard K/N` and the `site` task, which reports the sizes;
+	# `startup-browsers` is an opt-in local check of browser-engine boundaries.
 	# `check -- --plan` prints what each part runs.
 	Task("check", [Use("engine"), Run(["scripts/check_all.roc", "--"])]),
 	# Declaration rejections and compile-time default-mount contracts.
@@ -70,6 +75,8 @@ config = [
 	Task("check-slow", [Use("engine"), Run(["scripts/check_slow.roc"])]),
 	# One or more apps' specs: `blueprint run spec -- --browser kanban-board`.
 	Task("spec", [Use("engine"), Run(["scripts/spec.roc", "--"])]),
+	# A bounded startup boundary corpus in Chromium, Firefox and WebKit.
+	Task("startup-browsers", [Use("startup-browsers"), Run(["scripts/startup_browsers.roc", "--"])]),
 	# Build the platform's native inputs (the spec runner's host and
 	# libc), for building an app's native spec runner by hand.
 	Task("platform", [Use("engine"), Run(["scripts/build_platform.roc"])]),

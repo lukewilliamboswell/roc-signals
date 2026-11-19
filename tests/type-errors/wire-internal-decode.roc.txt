@@ -7,6 +7,3 @@ bad = Wire.decode_with_held([], [])
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("wire API contract"))
-
-## This contract has no shared store.
-Store : {}

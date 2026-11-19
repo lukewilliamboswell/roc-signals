@@ -15,7 +15,7 @@ import ToolRelease
 ## on the Worker Lab; every failure the tool explains (a misused command
 ## line, a missing `main.roc`, `index.html` or spec, a failing spec, a build
 ## error, no `roc` on the PATH, a compiler other than the release's); the
-## explicit first pictures, route-collision publication refusal, and the
+## default entry pictures, route-collision publication refusal, and the
 ## built `dist/` mounting from a plain static server in Chrome with a worker
 ## running jobs (`tests/browser/tool-dist.mjs`); and `serve` in Chrome
 ## (`tests/browser/tool-serve.mjs`).
@@ -136,6 +136,13 @@ ToolCheck := [].{
 				Path.write_utf8!(Path.utf8("${counter}/specs/wrong.scm"), spec.replace_each("\"2\"", "\"3\""))?
 				$problems = $problems.concat(judge(run_tool!(tool, counter, ["test"])?, { code: 1, says: ["  FAILED  the counter counts both ways", "specs/wrong.scm:", "expected \"3\"", "Of 2 specs, 1 failed, 1 passed."] }))
 				Path.delete!(Path.utf8("${counter}/specs/wrong.scm"))?
+				Path.write_utf8!(Path.utf8("${counter}/specs/unevidenced.scm"), "(test \"suite evidence typo\" (steps (expect-absent (test-id \"never-seen-typo\") :never-drawn)))\n")?
+				rejected = run_tool!(tool, counter, ["test"])?
+				$problems = $problems.concat(judge(rejected, { code: 1, says: ["ERROR", "unevidenced.scm", "never-seen-typo", "vacuous negative assertion"] }))
+				if rejected.output.contains("Running ") or rejected.output.contains("  passed  the counter counts both ways") {
+					$problems = $problems.append("suite evidence refusal reported unexecuted stories as running or passed")
+				}
+				Path.delete!(Path.utf8("${counter}/specs/unevidenced.scm"))?
 				Path.rename!(Path.utf8("${counter}/specs"), Path.utf8("${counter}/specs-away"))?
 				$problems = $problems.concat(judge(run_tool!(tool, counter, ["test"])?, { code: 1, says: ["There are no specs to run: specs/ holds no .scm files."] }))
 				Path.rename!(Path.utf8("${counter}/specs-away"), Path.utf8("${counter}/specs"))?
@@ -177,7 +184,11 @@ ToolCheck := [].{
 				Path.write_utf8!(Path.utf8("${lab}/public/robots.txt"), "User-agent: *\n")?
 				page = Path.read_utf8!(Path.utf8("${lab}/index.html"))?
 				Path.write_utf8!(Path.utf8("${lab}/index.html"), page.replace_first("</head>", "<link rel=\"stylesheet\" href=\"style.css\"></head>"))?
-				$problems = $problems.concat(judge(run_tool!(tool, lab, ["build"])?, { code: 0, says: ["Built the app into dist/:", "/style.css", "  dist/robots.txt"] }))
+				$problems = $problems.concat(judge(run_tool!(tool, lab, ["build"])?, { code: 1, says: ["Engine.program_startup", "--no-prerender"] }))
+				if Path.exists!(Path.utf8("${lab}/dist"))? {
+					$problems = $problems.append("an ineligible default build published dist instead of requiring explicit opt-out")
+				}
+				$problems = $problems.concat(judge(run_tool!(tool, lab, ["build", "--no-prerender"])?, { code: 0, says: ["Built the app into dist/:", "/style.css", "  dist/robots.txt"] }))
 				$problems = $problems.concat(dist_problems!(o, lab)?)
 				built = Path.read_utf8!(Path.utf8("${lab}/dist/index.html"))?
 				if !built.contains("href=\"assets/") or !(Path.exists!(Path.utf8("${lab}/dist/robots.txt"))?) {
@@ -225,12 +236,12 @@ ToolCheck := [].{
 		}
 		path = Path.utf8("${dir}/Counter.roc")
 		source = Path.read_utf8!(path)?
-		before = "program = Engine.program(|| Engine.state(0, Counter.view))"
+		before = "|_route| Engine.state(0, Counter.view)"
 		if !source.contains(before) {
 			return Err(NoCounterProgramInWarningFixture)
 		}
 		warning_source = source
-			.replace_each(before, "program = Engine.program(|| {\n\t\tdbg \"tool-warning-probe\"\n\t\tEngine.state(0, Counter.view)\n\t})")
+			.replace_each(before, "|_route| {\n\t\tdbg \"tool-warning-probe\"\n\t\tEngine.state(0, Counter.view)\n\t}")
 			.replace_each("|count|", "|view|")
 			.replace_each("count.", "view.")
 		Path.write_utf8!(path, warning_source)?
@@ -248,29 +259,79 @@ ToolCheck := [].{
 		Ok($problems)
 	}
 
-	## Exercise explicit root/nested routes and one failed publication on the
-	## small scaffold app. The full prior output is compared after the collision;
+	## Enumerate root/nested entries and refuse a conflicting publication on a
+	## dedicated startup app. The full prior output is compared after the collision;
 	## the browser independently checks painted markup and the real mount.
 	picture_builds! : SpecSuite.Options, { tool : Tool, dir : Str } => Try(List(Str), _)
 	picture_builds! = |o, { tool, dir }| {
-		built = run_tool!(tool, dir, ["build", "--picture", "/", "/nested/?open=1#list"])?
-		var $problems = ToolCheck.judge(built, { code: 0, says: ["Built the app into dist/:", "dist/index.html", "dist/nested/index.html"] })
+		header = Path.read_utf8!(Path.utf8("${dir}/main.roc"))?.split_on("\n").first() ?? ""
+		fixture = "${o.root}/tests/fixtures/startup-build"
+		main = Path.read_utf8!(Path.utf8("${fixture}/main.roc"))?
+		Path.write_utf8!(Path.utf8("${dir}/main.roc"), Str.join_with([header].concat(main.split_on("\n").drop_first(1)), "\n"))?
+		for file in ["StartupBuild.roc", "index.html"] {
+			Path.copy!(Path.utf8("${fixture}/${file}"), Path.utf8("${dir}/${file}"))?
+		}
+		built = run_tool!(tool, dir, ["build"])?
+		var $problems = ToolCheck.judge(built, { code: 0, says: ["Built the app into dist/:", "dist/index.html", "dist/tasks/index.html"] })
 		if built.code != 0 {
 			return Ok($problems)
 		}
+		target = SpecSuite.host_target(Str.from_utf8_lossy(Proc.capture!({ program: "uname", args: ["-sm"], cwd: o.root })?))?
+		suffix = if (target.ends_with("win")) ".exe" else ""
+		query_runner = "${o.build_dir}/startup-query${suffix}"
+		Proc.run!({ program: o.compiler, args: ["build", "--opt=dev", "--target=${target}", "tests/fixtures/startup-query/main.roc", "--output=${query_runner}"], cwd: o.root })?
+		unsafe_runner = "${o.build_dir}/startup-absent-writer${suffix}"
+		Proc.run!({ program: o.compiler, args: ["build", "--opt=dev", "--target=${target}", "tests/fixtures/startup-absent-writer/main.roc", "--output=${unsafe_runner}"], cwd: o.root })?
+		producer_code = Proc.status!({ program: o.node, args: ["tests/native/startup-producer.mjs", "--runner", "${dir}/.signals/build/picture-runner${suffix}", "--query-runner", query_runner, "--unsafe-runner", unsafe_runner, "--template", "${fixture}/index.html"], cwd: o.root })?
+		if producer_code != 0 {
+			$problems = $problems.append("native startup producer contracts failed (exit ${producer_code.to_str()})")
+		}
 		page = Path.read_utf8!(Path.utf8("${dir}/dist/index.html"))?
-		nested = Path.read_utf8!(Path.utf8("${dir}/dist/nested/index.html"))?
-		if !page.contains("data-roc-picture-inert=\"added\"") or !nested.contains("data-roc-picture-inert=\"added\"") or !nested.contains("../assets/") {
-			$problems = $problems.append("picture build must emit owned inert first frames and nested relative asset URLs")
+		nested = Path.read_utf8!(Path.utf8("${dir}/dist/tasks/index.html"))?
+		if !page.contains("data-roc-frame=\"1:0:") or !nested.contains("data-roc-frame=\"1:1:") or !nested.contains("../assets/") or !nested.contains("?roc-build=") or !page.contains("cold home") or !nested.contains("cold tasks") {
+			$problems = $problems.append("default build must capture each cold entry and stamp matching nested asset receipts")
 		}
 		before = dist_snapshot!("${dir}/dist")?
-		collision = run_tool!(tool, dir, ["build", "--picture", "/nested/?open=1", "/nested/?open=2#other"])?
-		$problems = $problems.concat(ToolCheck.judge(collision, { code: 1, says: ["both write nested/index.html", "query and fragment variants"] }))
+		# Inject a local edit at the compiler boundary without another expensive
+		# code-generation pass. Reusing the just-built module tests only the
+		# publication guard; the real native/Wasm pair was checked above.
+		unstable = "${dir}/.signals/build/unstable-compiler"
+		Path.create_all!(Path.utf8(unstable))?
+		Path.write_utf8!(Path.utf8("${unstable}/roc"), "#!/bin/sh\nif [ \"$1\" = build ]; then\n  cp .signals/build/app.wasm .signals/build/app.next.wasm || exit 1\n  touch StartupBuild.roc\n  exit 0\nfi\nexec '${tool.roc}' \"$@\"\n")?
+		Proc.run!({ program: "chmod", args: ["+x", "${unstable}/roc"], cwd: o.root })?
+		$problems = $problems.concat(ToolCheck.judge(run_tool!({ ..tool, path: Prepend(unstable) }, dir, ["build", "--no-prerender"])?, { code: 1, says: ["Build inputs changed while compiling", "StartupBuild.roc", "existing dist/ was preserved"] }))
 		if dist_snapshot!("${dir}/dist")? != before {
-			$problems = $problems.append("a refused picture route collision changed the published dist tree")
+			$problems = $problems.append("a detected mid-build edit changed the published dist tree")
+		}
+		source = Path.read_utf8!(Path.utf8("${dir}/StartupBuild.roc"))?
+		Path.write_utf8!(Path.utf8("${dir}/StartupBuild.roc"), source.replace_first("{ path: \"/tasks/\", route: 1 }", "{ path: \"/tasks/\", route: 1 }, { path: \"/tasks\", route: 2 }"))?
+		collision = run_tool!(tool, dir, ["build"])
+		Path.write_utf8!(Path.utf8("${dir}/StartupBuild.roc"), source)?
+		$problems = $problems.concat(ToolCheck.judge(collision?, { code: 1, says: ["both write tasks/index.html"] }))
+		if dist_snapshot!("${dir}/dist")? != before {
+			$problems = $problems.append("a refused declared entry collision changed the published dist tree")
+		}
+		original_main = Path.read_utf8!(Path.utf8("${dir}/main.roc"))?
+		unsafe_source = Path.read_utf8!(Path.utf8("tests/fixtures/startup-absent-writer/main.roc"))?
+		Path.write_utf8!(Path.utf8("${dir}/main.roc"), Str.join_with([header].concat(unsafe_source.split_on("\n").drop_first(1)), "\n"))?
+		unsafe_build = run_tool!(tool, dir, ["build"])
+		Path.write_utf8!(Path.utf8("${dir}/main.roc"), original_main)?
+		$problems = $problems.concat(ToolCheck.judge(unsafe_build?, { code: 1, says: ["annotated startup refuses custom-element upgrade via is"] }))
+		if dist_snapshot!("${dir}/dist")? != before {
+			$problems = $problems.append("an initially absent forbidden writer published an unbindable frame")
 		}
 		code = Proc.status!({ program: o.node, args: ["tests/browser/tool-picture.mjs", "--dist", "${dir}/dist", "--chrome", o.chrome], cwd: o.root })?
-		Ok(if (code == 0) $problems else $problems.append("tests/browser/tool-picture.mjs failed (exit ${code.to_str()})"))
+		$problems = if (code == 0) $problems else $problems.append("tests/browser/tool-picture.mjs failed (exit ${code.to_str()})")
+		# This same public program is valid for explicit fresh construction.
+		Path.write_utf8!(Path.utf8("${dir}/main.roc"), Str.join_with([header].concat(unsafe_source.split_on("\n").drop_first(1)), "\n"))?
+		plain_build = run_tool!(tool, dir, ["build", "--no-prerender"])
+		Path.write_utf8!(Path.utf8("${dir}/main.roc"), original_main)?
+		$problems = $problems.concat(ToolCheck.judge(plain_build?, { code: 0, says: ["Built the app into dist/:"] }))
+		plain_page = Path.read_utf8!(Path.utf8("${dir}/dist/index.html"))?
+		if plain_page.contains("data-roc-frame=") {
+			$problems = $problems.append("--no-prerender published an annotated frame for a fresh-only program")
+		}
+		Ok($problems)
 	}
 
 	## The package URL `signals.roc` names.
@@ -345,7 +406,8 @@ dist_problems! = |o, dir| {
 	}
 	name = hashed.split_on("/").last() ?? hashed
 	var $problems = []
-	for url in ["\"./assets/${name}/runtime.mjs\"", "\"assets/${name}/app.wasm\""] {
+	receipt = if (page.contains("data-roc-frame=")) "?roc-build=${name}" else ""
+	for url in ["\"./assets/${name}/runtime.mjs\"", "\"assets/${name}/app.wasm${receipt}\""] {
 		if !page.contains(url) {
 			$problems = $problems.append("signals.roc build: dist/index.html does not name ${url}")
 		}

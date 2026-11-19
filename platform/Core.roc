@@ -1,10 +1,12 @@
 import Web
+import EntryRoutes
+import ReadyIndex
 import Spelling
 import Layout
 import TableCore exposing [Table]
 import View
 import MarkupAdvice
-import parser.DomConstruction
+import parser.Html as ParsedHtml
 import parser.Markup
 
 ## The reactive engine behind the roc-signals web platform, written in Roc:
@@ -19,6 +21,67 @@ import parser.Markup
 ## stream and the host protocol.
 
 Core := [].{
+
+	## Test-only observations of the producer's actual codecs and constructors.
+	## The independent consumer vocabulary is compared outside Core; importing
+	## it here would let a producer and oracle share the same numbering mistake.
+	protocol_evidence : () -> { kinds : List({ code : U8, name : Str }), properties : List({ index : U8, name : Str, elements : List(Str) }), policies : List({ bit : U32, name : Str }), http_cache : List({ code : U8, name : Str }), http_credentials : List({ code : U8, name : Str }), namespaces : List({ code : U8, name : Str }), template_nodes : List({ code : U8, name : Str }), child_containers : List({ code : U8, name : Str }) }
+	protocol_evidence = || {
+		paced = protocol_policy(Core.on_pointer_paced(protocol_handler({})))
+		keymap = Core.const(Core.Keymap.keep([]))
+		template = resolve_element(Web.Tag.from_str("template") ?? crash "internal: protocol template name", root_enclosing)
+		{
+			kinds: [
+				{ code: text_kind.code, name: "TEXT" },
+				{ code: files_kind.code, name: "FILES" },
+				{ code: pointer_kind(Down).code, name: "POINTER" },
+				{ code: key_kind.code, name: "KEY" },
+				{ code: open_kind.code, name: "OPEN_STATE" },
+				{ code: scroll_kind.code, name: "SCROLL" },
+				{ code: size_kind.code, name: "SIZE" },
+				{ code: seen_kind.code, name: "SEEN" },
+				{ code: paste_kind.code, name: "PASTE" },
+				{ code: click_kind.code, name: "CLICK" },
+			],
+			properties: [
+				{ index: Core.Prop.value.index, name: "value" },
+				{ index: Core.Prop.checked.index, name: "checked" },
+				{ index: Core.Prop.pointer_zone.index, name: "pointer_zone" },
+				{ index: protocol_property_index(Core.element("div", [attach_key(keymap, Down, False, False, protocol_handler({}))], [])), name: "keymap_down" },
+				{ index: protocol_property_index(Core.element("div", [attach_key(keymap, Up, False, False, protocol_handler({}))], [])), name: "keymap_up" },
+				{ index: protocol_property_index(Core.controlled_dialog({ label: "", open: Core.const(False), on_close: protocol_handler({}), modal: Modal, attrs: [], children: [] })), name: "shown" },
+				{ index: protocol_property_index(Core.controlled_popover({ label: "", open: Core.const(False), on_toggle: protocol_handler({}), dismiss: Auto, attrs: [], children: [] })), name: "popover_shown" },
+				{ index: protocol_property_index(Core.unsafe_html(Web.Tag.from_str("div") ?? crash "internal: protocol wrapper name", [], Core.attr_s("title", Core.const("")))), name: "inner_html" },
+			].map(
+				|property| {
+					row = property_row(property.index)
+					if row.name != property.name {
+						crash "internal: protocol property constructor disagrees with its row"
+					}
+					{ index: property.index, name: property.name, elements: row.elements }
+				},
+			),
+			policies: [
+				{ bit: policy_bits({ prevent: True }), name: "PREVENT" },
+				{ bit: policy_bits({ stop: True }), name: "STOP" },
+				{ bit: protocol_policy(Core.on_pointer_capture(protocol_handler({}))), name: "CAPTURE" },
+				{ bit: paced, name: "PACED" },
+				{ bit: protocol_policy(attach_key(Core.const(Core.Keymap.keep([])), Down, False, True, protocol_handler({}))), name: "DOCUMENT" },
+				{ bit: protocol_policy(Core.on_seen({ ahead: True }, protocol_handler({}))).bitwise_xor(paced), name: "AHEAD" },
+			],
+			http_cache: [
+				{ cache: Default, name: "default" },
+				{ cache: NoStore, name: "no-store" },
+				{ cache: Reload, name: "reload" },
+				{ cache: NoCache, name: "no-cache" },
+				{ cache: ForceCache, name: "force-cache" },
+			].map(|row| { code: put_http_options([], row.cache, SameOrigin, 0).first() ?? crash "internal: protocol cache byte", name: row.name }),
+			http_credentials: [{ credentials: SameOrigin, name: "same-origin" }, { credentials: Include, name: "include" }].map(|row| { code: put_http_options([], Default, row.credentials, 0).get(1) ?? crash "internal: protocol credentials byte", name: row.name }),
+			namespaces: [{ namespace: Html, name: "HTML" }, { namespace: Svg, name: "SVG" }, { namespace: MathML, name: "MATHML" }, { namespace: None, name: "NONE" }, { namespace: Uri("urn:protocol"), name: "URI" }].map(|row| { code: put_namespace([], row.namespace).first() ?? crash "internal: protocol namespace byte", name: row.name }),
+			template_nodes: [{ elem: Core.element("div", [], []), name: "ELEMENT" }, { elem: Core.text(""), name: "TEXT" }, { elem: Core.comment(""), name: "COMMENT" }].map(|row| { code: compile_elem(plan_empty({}), row.elem, [], 0, [], " in a protocol probe", root_enclosing).tree.first() ?? crash "internal: protocol template byte", name: row.name }),
+			child_containers: [{ code: checked_container(template, Children), name: "CHILDREN" }, { code: checked_container(template, TemplateContent), name: "TEMPLATE_CONTENT" }],
+		}
+	}
 
 	## The context at the top of the application: the context of the [Elem] that
 	## `program`'s view returns. Nested contexts ([In], [Row]) are built on top
@@ -1249,6 +1312,12 @@ Core := [].{
 			|env, args, tx| {
 				depth = layer(args.depth)
 				plan = compile(template(RowRef.{ depth }), depth, args.path, "an each", args.enclosing)
+				if tx.fx.startup.pending and !plan.initial_problem.is_empty() {
+					crash "contract: ${plan.initial_problem} at site ${show_path(args.path)}"
+				}
+				if tx.fx.startup.adopting and !plan.adoption_problem.is_empty() {
+					crash "contract: ${plan.adoption_problem} at site ${show_path(args.path)}"
+				}
 				(site, tx1) = alloc_site(tx, args.path)
 				tpl = template_bytes(plan)
 				tx2 = emit_op(tx1, 7, |c| put_u32(put_u32(c, site), tpl.len().to_u32_wrap()).concat(tpl))
@@ -1344,6 +1413,12 @@ Core := [].{
 				}
 				depth = layer(args.depth)
 				plan = compile(template(view_key({}), view_row(source, depth, args.path)), depth, args.path, "a table view", args.enclosing)
+				if tx.fx.startup.pending and !plan.initial_problem.is_empty() {
+					crash "contract: ${plan.initial_problem} at site ${show_path(args.path)}"
+				}
+				if tx.fx.startup.adopting and !plan.adoption_problem.is_empty() {
+					crash "contract: ${plan.adoption_problem} at site ${show_path(args.path)}"
+				}
 				(site, tx1) = alloc_site(tx, args.path)
 				tpl = template_bytes(plan)
 				tx2 = emit_op(tx1, 7, |c| put_u32(put_u32(c, site), tpl.len().to_u32_wrap()).concat(tpl))
@@ -1407,6 +1482,34 @@ Core := [].{
 			},
 		),
 		|d| eff_mask(cond).bitwise_or(elem_reads(yes(), d)).bitwise_or(elem_reads(no(), d)),
+	)
+
+	## An owning deferred body. Static content is an ordinary checked description;
+	## only the active block owns live state and effects. Readiness is sampled by
+	## Changed and again on the routed opportunity, never by the task adapter.
+	placeholder : Signal(ctx, Bool), Elem(ctx), (() -> Elem(ctx)) -> Elem(ctx)
+	placeholder = |ready, static, body| Site(
+		Mount(
+			|env, args, tx| {
+				check_construction_text(args.enclosing.construction, { value: "", site: args.path, placement: " (placeholder anchor)" })
+				(anchor, tx1) = alloc_id(tx)
+				tx2 = emit_op(tx1, 10, |bytes| put_str(put_u32(put_u32(put_u32(bytes, anchor), args.parent), args.before), ""))
+				id = tx2.fx.startup.next
+				if id == 18446744073709551615 {
+					crash "resource_limit: placeholder lifetime address exhausted"
+				}
+				tx3 = with_fx(tx2, |effects| { ..effects, startup: { ..effects.startup, next: id + 1 } })
+				(block, tx4) = mount_block(env, static, args.depth, args.path, 0, anchor, { cap: args.cap, enclosing: args.enclosing }, bump(count_evals(tx3, 1), w_scopes_created, 1))
+				eligible = (ready.read)(env)
+				tx5 = if eligible {
+					ready_append(tx4, id, args.path)
+				} else tx4
+				reads = eff_mask(ready).bitwise_or(elem_reads(body(), args.depth))
+				cfg = { ready, body, anchor, id, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
+				(placeholder_inst(cfg, block), reads, tx5)
+			},
+		),
+		|depth| eff_mask(ready).bitwise_or(elem_reads(body(), depth)),
 	)
 
 	## `switch(sel, cases, body)` builds `body(k)` for the current value `k` of
@@ -1532,6 +1635,7 @@ Core := [].{
 	Request : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Web.Method, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32, cache : Cache, credentials : Credentials }),
+		EnvironmentSnapshot,
 		StorageGet(Str),
 		SessionStorageGet(Str),
 		StorageChanges(Str),
@@ -1681,7 +1785,7 @@ Core := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [CryptoKey(CryptoKey), CryptoBytes(List(U8)), CryptoSealed({ iv : List(U8), ciphertext : List(U8) }), CryptoFailed(CryptoError), Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
+	Result : [Environment(Boot), CryptoKey(CryptoKey), CryptoBytes(List(U8)), CryptoSealed({ iv : List(U8), ciphertext : List(U8) }), CryptoFailed(CryptoError), Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), WorkRefused([TooDeep, NanKeys]), PortRefused([TooDeep]), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File }), Copied, ClipboardFailed([NotAllowed, Unavailable]), StorageFailed({ store : [Local, Session], key : Str, reason : [Quota, Unavailable] })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
@@ -1820,6 +1924,19 @@ Core := [].{
 		|raw_result| match raw_result {
 			Ok(response) => if (response.status >= 200 and response.status < 300) Ok(response.body) else Err(Status(response.status))
 			Err(error) => Err(error)
+		},
+	)
+
+	## Read current browser facts through the ordinary effect channel. This
+	## cannot affect deterministic initial construction. Declared storage/media
+	## inputs bound the answer; refusing admission returns Refused.
+	environment : {} -> Ask(Boot, [Refused])
+	environment = |_| Core.make_ask(
+		EnvironmentSnapshot,
+		|answer| match answer {
+			Environment(facts) => Ok(facts)
+			Refused => Err(Refused)
+			_ => crash "contract: environment ask received a non-environment result"
 		},
 	)
 
@@ -2301,7 +2418,7 @@ Core := [].{
 	## encoding (unknown tag, truncated, trailing bytes, text that is not UTF-8) is
 	## a contract error: the host broke the protocol, and nothing is guessed.
 	decode_res : List(U8) -> Result
-	decode_res = |b| decode_res_with(b, decode_port_res)
+	decode_res = |b| decode_res_with(b, decode_port_res, [])
 
 	## An offset table over an inclusive UTC-millisecond span, as boot
 	## carries it: the first offset starts at `from_ms`; later offsets start
@@ -2365,15 +2482,16 @@ Core := [].{
 	utc : Zone
 	utc = Zone.({ name: "UTC", from_ms: -9223372036854775808, until_ms: 9223372036854775807, offsets: [{ from_ms: -9223372036854775808, minutes: 0 }] })
 
-	## What the host knows before the first render: the URL, the declared storage
+	## Facts decoded for a boot-based first render or an environment result:
+	## the URL, the declared storage
 	## keys' values (missing keys are absent), whether the browser is online and
 	## the page visible, and whether local storage is available at all. When it is
 	## not, the storage list is empty and `StorageSet`/`StorageRemove` do not
 	## persist, so an app that relies on reloads surviving can say so. All
 	## fields have defaults: a URL of `/`, empty available storage, online
 	## and visible, with no media queries, wall time and seed zero, en-US and
-	## full-range UTC. Time, seed, languages and zone stay fixed for the instance;
-	## timers supply fresh time through Fired. Pure tests may name only the facts
+	## full-range UTC. Each returned record is an immutable sample; another
+	## environment request samples again, and timers supply time through Fired. Pure tests may name only the facts
 	## they need; a program supplies declared queries in their declaration order.
 	Boot := {
 		url : Str ?? "/",
@@ -2408,10 +2526,10 @@ Core := [].{
 	## must end in section13; every body is consumed and the root is bounded
 	## before text decoding. Existing roots need not be reconstructible by an
 	## element factory: these are measured identity facts, not creation requests.
-	read_mount : List(U8), List(Str) -> Try({ boot : Boot, root : MountRoot }, Str)
+	read_mount : List(U8), List(Str) -> Try({ boot : Boot, root : MountRoot, startup : StartupBoot }, Str)
 	read_mount = |bytes, queries| {
 		if bytes.is_empty() {
-			return Ok({ boot: Core.read_environment([], queries)?, root: Core.default_mount_root })
+			return Ok({ boot: Core.read_environment([], queries)?, root: Core.default_mount_root, startup: Legacy })
 		}
 		var $boot = Core.read_environment([], queries)?
 		var $at = 0.U64
@@ -2444,12 +2562,27 @@ Core := [].{
 		if start > bytes.len() or length.to_u64() > bytes.len() - start {
 			return Err("${context} truncated body")
 		}
-		if start + length.to_u64() != bytes.len() {
-			return Err("${context} trailing bytes or section")
-		}
 		root = read_mount_root(bytes.sublist({ start, len: length.to_u64() })) ? |reason| "${context} ${reason}"
-		Ok({ boot: $boot, root })
+		next_section = start + length.to_u64()
+		startup_context = "contract: boot section 14 (startup)"
+		if bytes.get(next_section) != Ok(14) {
+			return Err("${startup_context} missing, unknown, repeated or out-of-order section")
+		}
+		startup_length = boot_u32(bytes, next_section + 1) ? |reason| "${startup_context} ${reason}"
+		body_start = next_section + 5
+		if body_start > bytes.len() or startup_length.to_u64() > bytes.len() - body_start or body_start + startup_length.to_u64() != bytes.len() {
+			return Err("${startup_context} truncated body or trailing bytes")
+		}
+		startup = read_startup_boot(bytes.sublist({ start: body_start, len: startup_length.to_u64() })) ? |reason| "${startup_context} ${reason}"
+		Ok({ boot: $boot, root, startup })
 	}
+
+	## Private startup framing is separate from app-visible Boot. A concrete
+	## entry is mandatory when binding; fresh entry selection may use pathname.
+	StartupBoot : [Legacy, Fixed({ mode : U8, entry : U32 })]
+
+	## Internal program metadata used by declarations and the build catalogue.
+	StartupProfile : [Legacy, Deterministic({ paths : List(Str), fallback : [None, Some(U32)], root : MountRoot })]
 
 	## Decode boot sections without crashing. Empty bytes mean `Boot {}`;
 	## otherwise every section must occur once in ascending order. Membership
@@ -2505,7 +2638,27 @@ Core := [].{
 	## Encode an app environment beside engine-only root facts. Harnesses retain
 	## both, while app code is handed only Boot. The root body has a 64 KiB bound.
 	write_mount : Boot, MountRoot -> List(U8)
-	write_mount = |boot, mount_root| {
+	write_mount = |boot, mount_root| Core.write_startup_mount(boot, mount_root, Legacy)
+
+	## Harness encoding of fixed-entry startup input. The host stages these
+	## bytes whole; only the engine interprets profile, mode and entry selection.
+	write_startup_mount : Boot, MountRoot, StartupBoot -> List(U8)
+	write_startup_mount = |boot, mount_root, startup_boot| {
+		environment_bytes = Core.write_environment(boot)
+		root_body = put_expanded_name([], mount_root.namespace, mount_root.prefix, mount_root.local)
+		if root_body.len() > 65_536 {
+			crash "contract: boot section 13 (mount-root) exceeds 65536 bytes"
+		}
+		startup_body = match startup_boot {
+			Legacy => [0]
+			Fixed({ mode, entry }) => put_u32([1, mode], entry)
+		}
+		put_section(put_section(environment_bytes, 13, root_body), 14, startup_body)
+	}
+
+	## Encode only the declared app-visible facts, without mount or startup data.
+	write_environment : Boot -> List(U8)
+	write_environment = |boot| {
 		location = put_section([], 1, put_str([], boot.url))
 		var $storage = put_u32([if (boot.storage_available) 1 else 0], boot.storage.len().to_u32_wrap())
 		for (key, value) in boot.storage {
@@ -2525,13 +2678,12 @@ Core := [].{
 		}
 		zone_bytes = put_section(put_section(seed, 9, languages), 10, $offsets)
 		body = boot.session.fold(put_u32([if (boot.session_available) 1 else 0], boot.session.len().to_u32_wrap()), |bytes, (key, value)| put_str(put_str(bytes, key), value))
-		environment = put_section(zone_bytes, 11, body)
-		root_body = put_expanded_name([], mount_root.namespace, mount_root.prefix, mount_root.local)
-		if root_body.len() > 65_536 {
-			crash "contract: boot section 13 (mount-root) exceeds 65536 bytes"
-		}
-		put_section(environment, 13, root_body)
+		put_section(zone_bytes, 11, body)
 	}
+
+	## Harness result encoding for the ordinary environment snapshot request.
+	environment_result : Boot -> List(U8)
+	environment_result = |boot| [31].concat(Core.write_environment(boot))
 
 	## The boot value of a declared storage key, or `Missing` if it has none.
 	boot_storage : Boot, Str -> Try(Str, [Missing])
@@ -2690,7 +2842,12 @@ Core := [].{
 
 	## Preserve a checked attribute's expanded identity and exact-case intent.
 	attr_named : Web.AttrName, Str -> Attr(ctx)
-	attr_named = |name, value| Static(name, value)
+	attr_named = |name, value| {
+		if Core.attribute_reserved(name) {
+			crash "contract: attribute ${Str.inspect(name.text())} is reserved for startup transport"
+		}
+		Static(name, value)
+	}
 
 	## Follow a signal with an attribute, writing only when it changes. An
 	## empty string or "false" keeps any attribute present. Names claimed by
@@ -2698,6 +2855,11 @@ Core := [].{
 	## `prop_s` for live control state.
 	attr_s : Str, Signal(ctx, Str) -> Attr(ctx)
 	attr_s = |name, v| Core.attr_named_s(Web.AttrName.from_str(name) ?? crash "internal: invalid attribute name", v)
+
+	## Reserved no-namespace transport names never become authored attributes.
+	## Names in another namespace retain their ordinary expanded identity.
+	attribute_reserved : Web.AttrName -> Bool
+	attribute_reserved = |name| name.namespace() == None and name.prefix() == Unprefixed and ["data-roc-frame", "data-roc-node", "data-roc-children"].contains(name.local())
 
 	## Classify an already-resolved attribute against the element's live property
 	## claims. Literal lowering uses the same policy before emission, with its own
@@ -2719,7 +2881,7 @@ Core := [].{
 
 	## One ordinary attribute reader with an explicitly checked name.
 	attr_named_s : Web.AttrName, Signal(ctx, Str) -> Attr(ctx)
-	attr_named_s = |name, value| Dyn(name, value.map(|encoded| Present(encoded)))
+	attr_named_s = |name, value| Core.attr_named_presence(name, value.map(|encoded| Present(encoded)))
 
 	## Follow explicit attribute presence. `Present("")` keeps an empty
 	## attribute; `Absent` alone removes it. Names claimed by control properties
@@ -2731,7 +2893,12 @@ Core := [].{
 	## Explicit presence shares the ordinary reader and equality cutoff while
 	## retaining the complete name through static and template construction.
 	attr_named_presence : Web.AttrName, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
-	attr_named_presence = |name, value| Dyn(name, value)
+	attr_named_presence = |name, value| {
+		if Core.attribute_reserved(name) {
+			crash "contract: attribute ${Str.inspect(name.text())} is reserved for startup transport"
+		}
+		Dyn(name, value)
+	}
 
 	## A static `class` attribute.
 	class : Str -> Attr(ctx)
@@ -3118,6 +3285,26 @@ Core := [].{
 		}
 	}
 
+	## Harness observation of the one adapter registration; no app payload.
+	startup_opportunity : App(st) -> [None, Some(U64)]
+	startup_opportunity = |App.(AppBody.({ tx, .. }))| tx.fx.startup.armed
+
+	## A supplied browser-task occurrence takes the ordinary path/Fire/settle
+	## turn. Generations from cancelled registrations cannot reach new owners.
+	opportunity : App(st), U64 -> App(st)
+	opportunity = |App.(AppBody.({ store, root, tx, programs })), generation| {
+		if tx.fx.startup.pending {
+			crash "contract: placeholder opportunity before bootstrap acknowledgement"
+		}
+		if tx.fx.startup.armed != Some(generation) {
+			return App.(AppBody.{ store, root, tx: bump(tx, 56, 1), programs })
+		}
+		id = tx.fx.startup.head
+		entry = tx.fx.startup.ready.get(id) ?? crash "internal: armed placeholder task without a ready owner"
+		tx1 = with_fx(bump(start_batch(tx), 55, 1), |effects| { ..effects, startup: { ..effects.startup, armed: None } })
+		drain(turn(App.(AppBody.{ store, root, tx: tx1, programs }), entry.path, 0, Activate(id)))
+	}
+
 	## For test platforms and harnesses: deliver an effect result for request `id`,
 	## as one turn exactly like an event. An id that is not in flight is
 	## dropped and counted `stale`.
@@ -3151,7 +3338,7 @@ Core := [].{
 	take_cmds : App(st), List(U8) -> (App(st), List(U8))
 	take_cmds = |App.(AppBody.({ store, root, tx, programs })), buf| {
 		{ cmds, next, free, routes, work, paths, site_free, observations, fx } = tx
-		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch } = fx
+		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
 		{ mounting, asked, types, seen: _ } = batch
 		var $cmds = cmds
 		if asked {
@@ -3163,7 +3350,7 @@ Core := [].{
 		} else if $cmds.len() == 1 {
 			$cmds = $cmds.clear()
 		}
-		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
+		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
 		(App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2 }, programs }), $cmds)
 	}
 
@@ -3183,7 +3370,7 @@ Core := [].{
 			$out = $out.append(work_get(tx.work, $i))
 			$i = $i + 1
 		}
-		$out.concat(fx_counters(a)).concat([work_get(tx.work, w_port_sends), work_get(tx.work, 41), work_get(tx.work, 42), work_get(tx.work, 43), tx.fx.observed.live, work_get(tx.work, 45), work_get(tx.work, 46), work_get(tx.work, 47), work_get(tx.work, 48)])
+		$out.concat(fx_counters(a)).concat([work_get(tx.work, w_port_sends), work_get(tx.work, 41), work_get(tx.work, 42), work_get(tx.work, 43), tx.fx.observed.live, work_get(tx.work, 45), work_get(tx.work, 46), work_get(tx.work, 47), work_get(tx.work, 48), work_get(tx.work, 49), work_get(tx.work, 50), work_get(tx.work, 51), work_get(tx.work, 52), work_get(tx.work, 53), work_get(tx.work, 54), work_get(tx.work, 55), work_get(tx.work, 56)])
 	}
 
 	# ------------------------------------------------------------------
@@ -3235,7 +3422,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 22
+	protocol_version = 23
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -3300,6 +3487,7 @@ Core := [].{
 	## `program` or `program_boot` and bind it as `main`.
 	Program(st) :: {
 		version : U32,
+		startup : StartupProfile,
 		keys : () -> List(U8),
 		init : Catalogue, List(U8) -> (App(st), List(U8), List(U8)),
 		event : App(st), List(U8), List(U8), U32, U32, List(U8) -> (App(st), List(U8), List(U8)),
@@ -3360,7 +3548,7 @@ Core := [].{
 		{
 			version: p.version,
 			tasks,
-			keys: || put_section(put_section(put_media_table((ports.table)(keys(), ports.decls), media), 10, [zone_days.to_u8_wrap(), zone_days.shr_zf_wrap(8).to_u8_wrap()]), 11, session_keys.fold(put_u32([], session_keys.len().to_u32_wrap()), put_str)),
+			keys: || put_section(put_section(put_section(put_media_table((ports.table)(keys(), ports.decls), media), 10, [zone_days.to_u8_wrap(), zone_days.shr_zf_wrap(8).to_u8_wrap()]), 11, session_keys.fold(put_u32([], session_keys.len().to_u32_wrap()), put_str)), 14, startup_declaration(p.startup)),
 			init: |boot| init({ workers: tasks, ports, media }, boot),
 			event: p.event,
 			key: |inst, buf, wbuf, node, handler, payload, handles| {
@@ -3372,11 +3560,17 @@ Core := [].{
 					_ => crash "contract: a key result needs exactly one staged key handle"
 				}
 				App.(AppBody.({ store, root, tx, programs })) = inst
+				if tx.fx.startup.pending {
+					crash "contract: bootstrap acknowledgement required before a key result"
+				}
 				fresh = App.(AppBody.{ store, root, tx: { ..tx, cmds: buf.clear() }, programs })
 				finish(Core.result(fresh, handler, CryptoKey(key)), [], wbuf)
 			},
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
 				App.(AppBody.({ store, root, tx, programs })) = inst
+				if tx.fx.startup.pending {
+					crash "contract: bootstrap acknowledgement required before files ingress"
+				}
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
 				fresh = App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs })
 				handles = blobs.map(|b| Blob.(b))
@@ -3523,7 +3717,20 @@ Core := [].{
 	## the store starts with at mount (`Store.initial`), from the boot data,
 	## and `view` the UI over it.
 	program_store : ProgramProps, (Boot -> Start(st)), (Boot -> Elem(Root(st))) -> Program(st)
-	program_store = |cfg, start, view| {
+	program_store = |cfg, start, view| Core.program_profile(cfg, Legacy, |input| start(input.boot), |input| view(input.boot), |_| Ok(0))
+
+	## Fixed initial-route callbacks cannot read live Boot. Catalogue and view
+	## descriptions may be shared; each init constructs independent storage.
+	program_startup : ProgramProps, EntryRoutes.Catalogue(route), (route -> Start(st)), (route -> Elem(Root(st))) -> Program(st)
+	program_startup = |cfg, entry_catalogue, start, view| {
+		facts = EntryRoutes.facts(entry_catalogue)
+		Core.program_profile(cfg, Deterministic(facts), |input| start(EntryRoutes.at(entry_catalogue, input.entry)), |input| view(EntryRoutes.at(entry_catalogue, input.entry)), |url| EntryRoutes.select(entry_catalogue, url).map_err(|UnknownEntry(path)| "contract: no declared initial entry for ${Str.inspect(path)} and no fallback"))
+	}
+
+	## One pure program boundary for legacy and deterministic initialization.
+	## The private entry input never reaches an application's Boot callback.
+	program_profile : ProgramProps, StartupProfile, ({ boot : Boot, entry : U32 } -> Start(st)), ({ boot : Boot, entry : U32 } -> Elem(Root(st))), (Str -> Try(U32, Str)) -> Program(st)
+	program_profile = |cfg, profile, start, view, select_entry| {
 		if cfg.zone_days > 7305 {
 			crash "contract: ProgramProps.zone_days must be at most 7305"
 		}
@@ -3533,6 +3740,7 @@ Core := [].{
 		}
 		{
 			version: Core.protocol_version,
+			startup: profile,
 			keys: || {
 				declarations = [
 					{
@@ -3563,14 +3771,77 @@ Core := [].{
 						crash "contract: boot section 11 (session-storage) pair for undeclared key \"${key}\""
 					}
 				}
-				finish(mount_start_in(cfg.max_inflight, names, start(b), view(b), enclosing_root(mounted.root)), [], [])
+				match profile {
+					Legacy => {
+						if mounted.startup != Legacy {
+							crash "contract: a legacy program cannot bind an annotated startup frame"
+						}
+						input = { boot: b, entry: 0 }
+						finish(mount_start_in(cfg.max_inflight, names, start(input), view(input), enclosing_root(mounted.root)), [], [])
+					}
+					Deterministic(facts) => {
+						selected = if (boot.is_empty()) { mode: 0.U8, entry: 0.U32 } else match mounted.startup {
+							Legacy => crash "contract: deterministic startup needs boot section 14 profile 1"
+							Fixed(value) => value
+						}
+						actual_root = if (boot.is_empty()) facts.root else mounted.root
+						if namespace_uri(actual_root.namespace) != namespace_uri(facts.root.namespace) or actual_root.prefix != facts.root.prefix or actual_root.local != facts.root.local {
+							crash "contract: actual mount root differs from the declared startup root"
+						}
+						entry = if selected.entry == 0xffffffff {
+							select_entry(b.url) ?? crash "contract: no declared initial entry matches the pathname"
+						} else selected.entry
+						if entry.to_u64() >= facts.paths.len() {
+							crash "contract: startup entry is not in the compiled catalogue"
+						}
+						if selected.mode == 1 {
+							declared = (Web.Tag.from_str(facts.root.local) ?? crash "internal: checked entry root local name").in_namespace({ namespace: facts.root.namespace, prefix: facts.root.prefix }) ?? crash "internal: checked entry root expanded name"
+							root_problem = cold_element_problem(declared, [])
+							if !root_problem.is_empty() {
+								crash "contract: ${root_problem} on declared mount root"
+							}
+						}
+						input = { boot: b, entry }
+						finish(mount_cold(cfg.max_inflight, names, start(input), view(input), enclosing_root(actual_root), selected.mode, entry), [], [])
+					}
+				}
 			},
 			event: |inst, buf, wbuf, node, handler, payload| {
 				App.(AppBody.({ store, root, tx, programs })) = inst
+				if node == fx_node and handler == 0 and payload == [254] {
+					if !tx.fx.startup.pending {
+						crash "contract: bootstrap acknowledgement is not pending"
+					}
+					pending = App.(AppBody.{ store, root, tx: { ..tx, cmds: buf.clear() }, programs })
+					return finish(complete_startup(pending), [], wbuf)
+				}
+				if tx.fx.startup.pending {
+					crash "contract: bootstrap acknowledgement required before ordinary ingress"
+				}
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
 				fresh = App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs })
+				if node == fx_node and handler == 0 and payload.first() == Ok(255) {
+					if payload.len() != 9 {
+						crash "contract: placeholder opportunity needs exactly one generation"
+					}
+					return finish(Core.opportunity(fresh, get_u64(payload, 1, "placeholder opportunity")), [], wbuf)
+				}
 				if node == fx_node {
-					finish(if (payload.first() == Ok(26)) Core.progress(fresh, handler, decode_progress(payload)) else Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
+					if payload.first() == Ok(26) {
+						finish(Core.progress(fresh, handler, decode_progress(payload)), [], wbuf)
+					} else {
+						res = decode_res_with(payload, programs.ports.decode, media)
+						match res {
+							Environment(facts) => {
+								check_boot_keys(facts, cfg.storage_keys) ?? crash "contract: environment snapshot has an undeclared storage key"
+								if facts.session.any(|(key, _)| !cfg.session_keys.contains(key)) {
+									crash "contract: environment snapshot has an undeclared session key"
+								}
+							}
+							_ => {}
+						}
+						finish(Core.result(fresh, handler, res), [], wbuf)
+					}
 				} else {
 					finish(deliver(fresh, node, handler, Ev(payload)), [], wbuf)
 				}
@@ -3629,7 +3900,7 @@ Args : { depth : U64, path : List(U32), parent : U32, before : U32, sole : Bool,
 
 ## Actual parent identity and the raw constructor's child namespace travel
 ## through sites, never recovered by walking the engine tree or the DOM.
-Enclosing : { namespace : Web.Namespace, prefix : Web.Prefix, local : Str, raw_namespace : Web.Namespace, construction : DomConstruction.Context }
+Enclosing : { namespace : Web.Namespace, prefix : Web.Prefix, local : Str, raw_namespace : Web.Namespace, construction : ParsedHtml.RepairContext }
 
 Scope : { cap : U128, enclosing : Enclosing }
 
@@ -3645,7 +3916,7 @@ Mount(ctx) := [Mount((ctx, Args, Tx -> (Inst(ctx), U128, Tx)))]
 ## the written layers below it (`waits_for_outer`). Each of them joined that
 ## pass if the pass reached its site; the walk refreshes, at its own site,
 ## each one the pass did not reach, and stops at the deepest of them.
-Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(EffectInput), Settle(Layers, Bool), OpenState(Bool)]
+Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(EffectInput), Settle(Layers, Bool), OpenState(Bool), Activate(U64)]
 
 ## Whether a payload is a `Settle` walk, and if so whether it names a
 ## layer below index `depth`, so that it goes on past the state site there.
@@ -3905,6 +4176,36 @@ read_pointer = |bytes| match bytes {
 policy_bits : Core.Policy -> U32
 policy_bits = |{ prevent, stop }| (if (prevent) 1.U32 else 0).bitwise_or(if (stop) 2 else 0)
 
+## A codec probe constructs declarations without keeping or running app state.
+protocol_handler : {} -> Core.HandlerOf(Core.Root({}), p)
+protocol_handler = |_| { run: |context, _, _| (context, no_layers) }
+
+## Observe the policies the real attachment path would put on the wire.
+protocol_policy : Core.Attr(ctx) -> U32
+protocol_policy = |attribute| match attribute {
+	On(declaration, _) => declaration.policies
+	KeyOn(declaration, _, _) => declaration.policies
+	_ => crash "internal: protocol probe requires a listener"
+}
+
+## Read the lowered declaration the real constructor hands to mounting.
+protocol_property_index : Core.Elem(Core.Root({})) -> U8
+protocol_property_index = |elem| match elem {
+	Element(_, attrs, _) => {
+		attribute = attrs.find_first(
+			|candidate| match candidate {
+				Property(_, _) | PropertyV(_, _) => True
+				_ => False
+			},
+		) ?? crash "internal: protocol probe requires a property"
+		match attribute {
+			Property(index, _) | PropertyV(index, _) => index
+			_ => crash "internal: protocol probe found a property"
+		}
+	}
+	_ => crash "internal: protocol probe requires an element"
+}
+
 attach_kind : Str, Core.Kind(p), U32, Core.HandlerOf(ctx, p) -> Attr(ctx)
 attach_kind = |event, { code, decode }, policies, { run }| On(
 	{ event, kind: code, policies },
@@ -4029,15 +4330,15 @@ w_port_sends = 40
 ## released registrations (43), live observations (44), marked batches (45),
 ## guard commands (46) and accepted transfer progress turns (47).
 w_record_count : U64
-w_record_count = w_count + 17
+w_record_count = w_count + 25
 
 ## The work counters as plain fields (`c01` is counter 1): bumping one
 ## updates a value in the accumulator and never allocates, so counting
 ## cannot cost an allocation or a copy on any path.
-Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64, c45 : U64, c46 : U64, c47 : U64, c48 : U64 }
+Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64, c45 : U64, c46 : U64, c47 : U64, c48 : U64, c49 : U64, c50 : U64, c51 : U64, c52 : U64, c53 : U64, c54 : U64, c55 : U64, c56 : U64 }
 
 work_zero : Work
-work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0, c45: 0, c46: 0, c47: 0, c48: 0 }
+work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0, c45: 0, c46: 0, c47: 0, c48: 0, c49: 0, c50: 0, c51: 0, c52: 0, c53: 0, c54: 0, c55: 0, c56: 0 }
 
 ## Add `n` to counter `i`; counter 0 (and any index past the last) is the
 ## unused sink.
@@ -4082,6 +4383,14 @@ add_work = |w, i, n| match i {
 	46 => { ..w, c46: w.c46 + n }
 	47 => { ..w, c47: w.c47 + n }
 	48 => { ..w, c48: w.c48 + n }
+	49 => { ..w, c49: w.c49 + n }
+	50 => { ..w, c50: w.c50 + n }
+	51 => { ..w, c51: w.c51 + n }
+	52 => { ..w, c52: w.c52 + n }
+	53 => { ..w, c53: w.c53 + n }
+	54 => { ..w, c54: w.c54 + n }
+	55 => { ..w, c55: w.c55 + n }
+	56 => { ..w, c56: w.c56 + n }
 	_ => w
 }
 
@@ -4127,6 +4436,14 @@ work_get = |w, i| match i {
 	46 => w.c46
 	47 => w.c47
 	48 => w.c48
+	49 => w.c49
+	50 => w.c50
+	51 => w.c51
+	52 => w.c52
+	53 => w.c53
+	54 => w.c54
+	55 => w.c55
+	56 => w.c56
 	_ => 0
 }
 
@@ -4179,7 +4496,7 @@ put_presence = |bytes, presence| match presence {
 ## opcode is counted in the work counters; property commands use the
 ## dedicated PROP and HPROP slots (design.md, "Work assertions").
 emit_op : Tx, U8, (List(U8) -> List(U8)) -> Tx
-emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else if (op == 25) 46 else if (op == 26) 48 else op.to_u64(), 1), paths, site_free, observations, fx }
+emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else if (op == 25) 46 else if (op == 26) 48 else if (op >= 28 and op <= 31) op.to_u64() + 21 else op.to_u64(), 1), paths, site_free, observations, fx }
 
 ## Add `n` to work counter `i`.
 bump : Tx, U64, U64 -> Tx
@@ -4265,9 +4582,9 @@ release_node = |tx, owner| {
 ## Move the registration index out before modifying it, leaving no second
 ## holder in Fx that would make each observed-node change copy the index.
 with_registrations : Fx, (List(U32), LiveObservations -> (List(U32), LiveObservations)) -> Fx
-with_registrations = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }, change| {
+with_registrations = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, change| {
 	(documents, observations) = change(document_nodes, observed)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups, guard, batch }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups, guard, startup, batch }
 }
 
 ## Release a static node id and its route.
@@ -4327,9 +4644,9 @@ drop_name = |fx, { node, name, path }| if (name.is_empty()) fx else with_refs(
 ## Move the reference indexes and pending checks out of the accumulator so
 ## updates retain one holder for each map, list and reverse-index column.
 with_refs : Fx, (RefMap, List(List(RefOwned)), List(TurnEnd) -> (RefMap, List(List(RefOwned)), List(TurnEnd))) -> Fx
-with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }, change| {
+with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, change| {
 	(names, positions, checks) = change(refs, ref_pos, focus)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups, guard, batch }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups, guard, startup, batch }
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
@@ -4628,6 +4945,76 @@ declares_value = |attrs| attrs.any(
 	},
 )
 
+## Initial binding needs one writer per expanded attribute, including a fixed
+## and a signal writer. Prefixes do not distinguish DOM attribute identity.
+## Check fresh cold construction too, before model projection can collapse
+## two writes into the last value and conceal the invalid description.
+initial_attribute_problem : Web.Tag, List(Core.Attr(ctx)) -> Str
+initial_attribute_problem = |tag, attrs| {
+	var $seen = Dict.empty()
+	for attribute in attrs {
+		match attribute {
+			Static(name, _) | Dyn(name, _) => {
+				effective = resolve_attribute(name, tag)
+				key = (namespace_uri(effective.namespace()), effective.local())
+				if $seen.contains(key) {
+					return "deterministic startup has two writers for expanded attribute ${Str.inspect(name.text())}"
+				}
+				$seen = $seen.insert(key, {})
+			}
+			_ => {}
+		}
+	}
+	""
+}
+
+## A retained frame cannot execute authored code, upgrade custom elements,
+## clone selected content, change details-group attributes through native
+## exclusivity, create a declarative shadow root, or contain an opaque HTML
+## region before binding. Fresh construction after the barrier is
+## ordinary DOM construction; deferred bodies therefore need no special mode.
+cold_element_problem : Web.Tag, List(Core.Attr(ctx)) -> Str
+cold_element_problem = |tag, attrs| {
+	namespace = match tag.namespace() {
+		Explicit(value) => namespace_uri(value)
+		Inherit => crash "internal: unresolved cold element"
+	}
+	html = namespace == "http://www.w3.org/1999/xhtml"
+	if html and tag.local().contains("-") {
+		return "annotated startup refuses a custom HTML element; defer it or use plain mounting"
+	}
+	if tag.local() == "script" and ["http://www.w3.org/1999/xhtml", "http://www.w3.org/2000/svg"].contains(namespace) {
+		return "annotated startup refuses script content; defer it or use plain mounting"
+	}
+	if html and tag.local() == "selectedcontent" {
+		return "annotated startup refuses selectedcontent browser-owned cloning; defer the control or use plain mounting"
+	}
+	for attribute in attrs {
+		match attribute {
+			Static(name, _) | Dyn(name, _) => {
+				effective = resolve_attribute(name, tag)
+				if effective.namespace() == None and effective.prefix() == Unprefixed {
+					if Spelling.ascii_lower(effective.local()).starts_with("on") {
+						return "annotated startup refuses an inline handler attribute"
+					}
+					if html and tag.local() == "details" and effective.local() == "name" {
+						return "annotated startup refuses named details groups whose native exclusivity changes authored attributes; defer the group or use plain mounting"
+					}
+					if html and effective.local() == "is" {
+						return "annotated startup refuses custom-element upgrade via is"
+					}
+					if html and tag.local() == "template" and effective.local() == "shadowrootmode" {
+						return "annotated startup refuses declarative shadow-root construction; defer it or use plain mounting"
+					}
+				}
+			}
+			Property(8, _) | PropertyV(8, _) => return "annotated startup refuses opaque HTML content; defer it or use plain mounting"
+			_ => {}
+		}
+	}
+	""
+}
+
 ## The first event that two of an element's attributes both handle, if any.
 ## The runtime keeps one listener per event and element, so a second
 ## handler would be silently dropped: binding it is a contract error
@@ -4835,6 +5222,9 @@ check_element_attrs = |attrs, resolved, placed, path, describe| {
 			}
 			Static(name, _) | Dyn(name, _) => {
 				effective = resolve_attribute(name, resolved)
+				if Core.attribute_reserved(effective) {
+					crash "contract: attribute ${Str.inspect(name.text())} is reserved for startup transport${location()}"
+				}
 				match Core.attribute_claim(resolved, effective) {
 					Claimed(_) => crash "contract: attribute \"${name.text()}\" on <${tag}> is claimed by a property${location()}; use prop or prop_s"
 					Unclaimed => {}
@@ -4858,6 +5248,18 @@ mount_elem = |block, env, root_elem, elem, depth, path, parent, before, top, sol
 			container = checked_container(tag, authored.container)
 			children_context = child_enclosing(scope.enclosing, { name: tag, site: path, placement: "", describe: || static_element_place(root_elem, block.nodes.len(), elem) })
 			check_element_attrs(attrs, tag, "", path, || static_element_place(root_elem, block.nodes.len(), elem))
+			if tx.fx.startup.pending {
+				problem = initial_attribute_problem(tag, attrs)
+				if !problem.is_empty() {
+					crash "contract: ${problem} at site ${show_path(path)}"
+				}
+			}
+			if tx.fx.startup.adopting {
+				problem = cold_element_problem(tag, attrs)
+				if !problem.is_empty() {
+					crash "contract: ${problem} at site ${show_path(path)}"
+				}
+			}
 			(id, tx1) = alloc_id(tx)
 			tx2 = emit_op(tx1, 8, |c| put_element_name(put_u32(put_u32(put_u32(c, id), parent), at), tag).append(container))
 			var $b = add_node(block, id, top)
@@ -5338,7 +5740,206 @@ state_inst = |s0, block0, depth0, waits0| {
 	)
 }
 
-## A conditional site. The branch is rebuilt when the condition changes.
+## A waiting placeholder owns its one-shot factory and readiness recipe.
+## Activation consumes both: the live instance retains only its anchor and block.
+Placeholder(ctx) : { ready : Signal(ctx, Bool), body : (() -> Elem(ctx)), anchor : U32, id : U64, depth : U64, path : List(U32), cap : U128, enclosing : Enclosing }
+
+## Rebuild each owned closure directly in its returning branch, preserving
+## unique block ownership on the compiler's optimized paths (roc#12846).
+placeholder_inst : Placeholder(ctx), Block(ctx) -> Inst(ctx)
+placeholder_inst = |cfg0, block0| {
+	held = { cfg: cfg0, block: block0 }
+	Inst(
+		|env, msg, tx| {
+			{ cfg, block } = held
+			match msg {
+				Changed(mask) => {
+					if mask.bitwise_and(eff_mask(cfg.ready)) != 0 {
+						eligible = (cfg.ready.read)(env)
+						tx1 = count_evals(tx, 1)
+						tx2 = if eligible {
+							ready_append(tx1, cfg.id, cfg.path)
+						} else ready_remove(tx1, cfg.id)
+						(placeholder_inst(cfg, block), Done, tx2)
+					} else (placeholder_inst(cfg, block), Done, tx)
+				}
+				Fire(path, pos, handler, payload) => {
+					activation = match payload {
+						Activate(id) => id == cfg.id
+						_ => False
+					}
+					if activation and pos == path.len() {
+						eligible = (cfg.ready.read)(env)
+						tx1 = ready_remove(count_evals(tx, 1), cfg.id)
+						if eligible {
+							(orphans, tx2) = dispose_block(block, env, True, bump(bump(tx1, w_scopes_disposed, 1), w_scopes_created, 1))
+							# Static has no requests; keeping this assertion protects the
+							# private constructor against a second effect-bearing body.
+							if !orphans.is_empty() {
+								crash "internal: placeholder static body owned requests"
+							}
+							(next, tx3) = mount_block(env, (cfg.body)(), cfg.depth, cfg.path, 0, cfg.anchor, { cap: cfg.cap, enclosing: cfg.enclosing }, tx2)
+							(active_placeholder_inst(cfg.anchor, next), Pending(env, no_layers), tx3)
+						} else (placeholder_inst(cfg, block), Pending(env, no_layers), tx1)
+					} else match fire_target(block, path, pos) {
+						Leaf => {
+							(next, out, tx1) = fire_leaf(block, env, handler, payload, path, tx)
+							(placeholder_inst(cfg, next), out, tx1)
+						}
+						Kid => {
+							(next, out, tx1) = fire_kid(block, env, path, pos, handler, payload, tx)
+							(placeholder_inst(cfg, next), out, tx1)
+						}
+						Miss => (placeholder_inst(cfg, block), Pending(env, no_layers), tx)
+					}
+				}
+				Dispose(remove) => {
+					(orphans, tx1) = dispose_block(block, env, remove, bump(ready_remove(tx, cfg.id), w_scopes_disposed, 1))
+					tx2 = if remove {
+						emit_op(tx1, 5, |bytes| put_u32(bytes, cfg.anchor))
+					} else tx1
+					(noop({}), Orphaned(orphans), free_id(tx2, cfg.anchor))
+				}
+			}
+		},
+	)
+}
+
+## Once activated, a placeholder cannot use its factory or readiness again.
+## Retaining either can retain runtime inputs beside the live site's storage,
+## causing a whole input buffer to survive its first write. The single closure
+## owns only the active block and its transport anchor; authored Reset handlers
+## inside the block keep any input they actually need in the ordinary way.
+active_placeholder_inst : U32, Block(ctx) -> Inst(ctx)
+active_placeholder_inst = |anchor0, block0| {
+	held = { anchor: anchor0, block: block0 }
+	Inst(
+		|env, msg, tx| {
+			{ anchor, block } = held
+			match msg {
+				Changed(mask) => {
+					(next, tx1) = refresh(block, env, mask, tx)
+					(active_placeholder_inst(anchor, next), Done, tx1)
+				}
+				Fire(path, pos, handler, payload) => match fire_target(block, path, pos) {
+					Leaf => {
+						(next, out, tx1) = fire_leaf(block, env, handler, payload, path, tx)
+						(active_placeholder_inst(anchor, next), out, tx1)
+					}
+					Kid => {
+						(next, out, tx1) = fire_kid(block, env, path, pos, handler, payload, tx)
+						(active_placeholder_inst(anchor, next), out, tx1)
+					}
+					Miss => (active_placeholder_inst(anchor, block), Pending(env, no_layers), tx)
+				}
+				Dispose(remove) => {
+					(orphans, tx1) = dispose_block(block, env, remove, bump(tx, w_scopes_disposed, 1))
+					tx2 = if remove {
+						emit_op(tx1, 5, |bytes| put_u32(bytes, anchor))
+					} else tx1
+					(noop({}), Orphaned(orphans), free_id(tx2, anchor))
+				}
+			}
+		},
+	)
+}
+
+## FIFO links address live ready lifetimes through a compressed U64 radix index.
+## Each index operation traverses at most two paths of 64 forks; no operation
+## scans pending owners or retains a disposed owner. See ReadyIndex for storage costs.
+ready_append : Tx, U64, List(U32) -> Tx
+ready_append = |tx, id, path| with_fx(
+	tx,
+	|effects| {
+		queue = effects.startup
+		if queue.ready.contains(id) {
+			effects
+		} else {
+			entries = if queue.tail == 0 {
+				queue.ready
+			} else {
+				last = queue.ready.get(queue.tail) ?? crash "internal: ready tail missing"
+				queue.ready.insert({ key: queue.tail, value: { ..last, next: id } })
+			}
+			{
+				..effects,
+				startup: {
+					..queue,
+					head: if queue.head == 0 {
+						id
+					} else queue.head,
+					tail: id,
+					ready: entries.insert({ key: id, value: { path, previous: queue.tail, next: 0 } }),
+				},
+			}
+		}
+	},
+)
+
+ready_remove : Tx, U64 -> Tx
+ready_remove = |tx, id| with_fx(
+	tx,
+	|effects| {
+		queue = effects.startup
+		match queue.ready.get(id) {
+			Err(_) => effects
+			Ok(entry) => {
+				without = queue.ready.remove(id)
+				left = if entry.previous == 0 {
+					without
+				} else {
+					previous = without.get(entry.previous) ?? crash "internal: ready previous missing"
+					without.insert({ key: entry.previous, value: { ..previous, next: entry.next } })
+				}
+				right = if entry.next == 0 {
+					left
+				} else {
+					next = left.get(entry.next) ?? crash "internal: ready next missing"
+					left.insert({ key: entry.next, value: { ..next, previous: entry.previous } })
+				}
+				{
+					..effects,
+					startup: {
+						..queue,
+						head: if queue.head == id {
+							entry.next
+						} else queue.head,
+						tail: if queue.tail == id {
+							entry.previous
+						} else queue.tail,
+						ready: right,
+					},
+				}
+			}
+		}
+	},
+)
+
+## Only at the complete call boundary: no callback can name work from a
+## half-settled turn. One registration remains bounded independently of sites.
+ready_arm : Tx -> Tx
+ready_arm = |tx| {
+	queue = tx.fx.startup
+	if queue.pending {
+		return tx
+	}
+	match queue.armed {
+		Some(generation) if queue.head == 0 => {
+			tx1 = with_fx(tx, |effects| { ..effects, startup: { ..effects.startup, armed: None } })
+			emit_op(bump(tx1, 54, 1), 31, |bytes| put_u64(bytes.append(0), generation))
+		}
+		None if queue.head != 0 => {
+			if queue.generation == 18446744073709551615 {
+				crash "resource_limit: placeholder task generation exhausted"
+			}
+			generation = queue.generation + 1
+			tx1 = with_fx(tx, |effects| { ..effects, startup: { ..effects.startup, armed: Some(generation), generation } })
+			emit_op(bump(tx1, 53, 1), 31, |bytes| put_u64(bytes.append(1), generation))
+		}
+		_ => tx
+	}
+}
+
 When(ctx) : { cond : Signal(ctx, Bool), yes : (() -> Elem(ctx)), no : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128, enclosing : Enclosing }
 
 ## `adopted`: orphans reparented to this site when a branch it disposed
@@ -5793,10 +6394,12 @@ Plan(ctx) : {
 	mounts : List(Mount(ctx)),
 	ncols : U64,
 	kreads : U128,
+	adoption_problem : Str,
+	initial_problem : Str,
 }
 
 plan_empty : {} -> Plan(ctx)
-plan_empty = |_| { tree: [], htab: [], holes: [], handlers: [], mounts: [], ncols: 0, kreads: 0 }
+plan_empty = |_| { tree: [], htab: [], holes: [], handlers: [], mounts: [], ncols: 0, kreads: 0, adoption_problem: "", initial_problem: "" }
 
 put_path : List(U8), U8, List({ container : U8, index : U8 }) -> List(U8)
 put_path = |buf, kind, path| path.fold(buf.append(kind).append(narrow(path.len(), "nesting depth of a hole")), |out, step| out.append(step.container).append(step.index))
@@ -5807,7 +6410,7 @@ narrow : U64, Str -> U8
 narrow = |n, what| if (n > 255) crash "resource_limit: a row template's ${what} is ${n.to_str()}; the template encoding allows at most 255" else n.to_u8_wrap()
 
 val_hole : Plan(ctx), { kind : U8, value : Signal(ctx, [Absent, Present(Str)]), extra : List(U8), counter : U64, evaluated : Bool } -> Plan(ctx)
-val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, value: v, extra, counter, evaluated }| {
+val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem }, { kind, value: v, extra, counter, evaluated }| {
 	{ mask, read, sel } = v
 	(smask, skey) = match sel {
 		NoSel => (0, |_| "")
@@ -5816,7 +6419,7 @@ val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, valu
 	property = if (kind == 6) extra.last() ?? crash "internal: property row has an index" else 0
 	live = mask.bitwise_or(smask) != 0 or property == 6 or property == 7
 	hole = { is_observation: False, evaluated, kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else counter, value_control: kind == 5 and counter == 1, property }
-	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
+	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads, adoption_problem, initial_problem }
 }
 
 compile_elem : Plan(ctx), Elem(ctx), List({ container : U8, index : U8 }), U64, List(U32), Str, Enclosing -> Plan(ctx)
@@ -5838,8 +6441,16 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 				}
 			}
 			nstatic = $nstatic
-			var $p = plan
-			{ tree, htab, holes, handlers, mounts, ncols, kreads } = $p
+			var $p = {
+				..plan,
+				adoption_problem: if plan.adoption_problem.is_empty() {
+					cold_element_problem(tag, attrs)
+				} else plan.adoption_problem,
+				initial_problem: if plan.initial_problem.is_empty() {
+					initial_attribute_problem(tag, attrs)
+				} else plan.initial_problem,
+			}
+			{ tree, htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem } = $p
 			var $tree = put_element_name(tree.append(1), tag).append(container).append(narrow(nstatic, "static attributes on one element"))
 			var $htab = htab
 			var $holes = holes
@@ -5852,19 +6463,19 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 						$tree = put_str(put_attribute_name($tree, resolve_attribute(name, tag)), value)
 					}
 					Dyn(name, v) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 2, value: v, extra: put_attribute_name(put_path([], 2, path), resolve_attribute(name, tag)), counter: 0, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0, adoption_problem: "", initial_problem: "" }, { kind: 2, value: v, extra: put_attribute_name(put_path([], 2, path), resolve_attribute(name, tag)), counter: 0, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
 					}
 					Property(index, encoded) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: Core.const(Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: False })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0, adoption_problem: "", initial_problem: "" }, { kind: 6, value: Core.const(Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: False })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
 					}
 					PropertyV(index, value) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: value.map(|encoded| Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0, adoption_problem: "", initial_problem: "" }, { kind: 6, value: value.map(|encoded| Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
@@ -5876,7 +6487,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 						$handlers = $handlers.append(bound)
 					}
 					Ref(value) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 5, value: value.map(|encoded| Present(encoded)), extra: put_path([], 5, path), counter: if (value_control) 1 else 0, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0, adoption_problem: "", initial_problem: "" }, { kind: 5, value: value.map(|encoded| Present(encoded)), extra: put_path([], 5, path), counter: if (value_control) 1 else 0, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
@@ -5884,7 +6495,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 				}
 			}
 			$tree = $tree.append(narrow(kids.len(), "children of one element"))
-			$p = { tree: $tree, htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads }
+			$p = { tree: $tree, htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads, adoption_problem, initial_problem }
 			var $i = 0.U8
 			for kid in kids {
 				$p = compile_elem($p, kid, path.append({ container, index: $i }), depth, site, placed, children_context)
@@ -5903,22 +6514,22 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 		Fragment(_) => crash "internal: a fragment is only a dynamic branch, never a row template node"
 		Text(s) => {
 			check_construction_text(enclosing.construction, { value: s, site, placement: placed })
-			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
-			{ tree: put_str(tree.append(2), s), htab, holes, handlers, mounts, ncols, kreads }
+			{ tree, htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem } = plan
+			{ tree: put_str(tree.append(2), s), htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem }
 		}
 		TextV(v) => {
 			check_construction_text(enclosing.construction, { value: "", site, placement: placed })
 			check_text_hole(enclosing.construction, { varies: eff_mask(v) != 0, site, placement: placed })
 			checked = checked_text_read(v.read, { context: enclosing.construction, site, placement: placed })
-			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
+			{ tree, htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem } = plan
 			t2 = put_str(tree.append(2), "")
-			val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads }, { kind: 1, value: { ..v.map(|encoded| Present(encoded)), read: |context| Present(checked(context)) }, extra: put_path([], 1, path), counter: 0, evaluated: True })
+			val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem }, { kind: 1, value: { ..v.map(|encoded| Present(encoded)), read: |context| Present(checked(context)) }, extra: put_path([], 1, path), counter: 0, evaluated: True })
 		}
 		Site(m, rf) => {
 			check_construction_text(enclosing.construction, { value: "", site, placement: "${placed} (nested site anchor)" })
-			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
+			{ tree, htab, holes, handlers, mounts, ncols, kreads, adoption_problem, initial_problem } = plan
 			hole = { is_observation: False, evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0, value_control: False, property: 0 }
-			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(mount_in_context(m, enclosing)), ncols, kreads: kreads.bitwise_or(rf(depth)) }
+			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(mount_in_context(m, enclosing)), ncols, kreads: kreads.bitwise_or(rf(depth)), adoption_problem, initial_problem }
 		}
 	}
 }
@@ -7755,13 +8366,65 @@ mount_start = |max, programs, start, elem| mount_start_in(max, programs, start, 
 ## The program boundary supplies measured finite root facts without giving
 ## them to an app's Boot reader or retaining another copy of its store.
 mount_start_in : U64, Catalogue, Core.Start(st), Elem(Root(st)), Enclosing -> App(st)
-mount_start_in = |max, programs, { st, tables }, elem, enclosing| {
+mount_start_in = |max, programs, start, elem, enclosing| mount_initial(max, programs, start, elem, enclosing, None)
+
+## Build one cold plan without draining its queued initial reactions. The
+## frame is fixed before any lifetime may disappear and recycle an address.
+mount_cold : U64, Catalogue, Core.Start(st), Elem(Root(st)), Enclosing, U8, U32 -> App(st)
+mount_cold = |max, programs, start, elem, enclosing, mode, entry| mount_initial(max, programs, start, elem, enclosing, Some({ mode, entry }))
+
+mount_initial : U64, Catalogue, Core.Start(st), Elem(Root(st)), Enclosing, [None, Some({ mode : U8, entry : U32 })] -> App(st)
+mount_initial = |max, programs, { st, tables }, elem, enclosing, cold| {
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = new_tx([])
-	tx0 = { cmds, next, free, routes, work, paths, site_free, observations, fx: { ..fx, max } }
-	(block, tx) = mount_block(Root.{ store: st }, elem, 0, [], 0, 0, { cap: 0, enclosing }, tx0)
+	tx0 = {
+		cmds,
+		next,
+		free,
+		routes,
+		work,
+		paths,
+		site_free,
+		observations,
+		fx: {
+			..fx,
+			max,
+			startup: {
+				..fx.startup,
+				pending: cold != None,
+				adopting: match cold {
+					Some({ mode, .. }) => mode == 1
+					None => False
+				},
+			},
+		},
+	}
+	tx1 = match cold {
+		None => tx0
+		Some({ mode, entry }) => emit_op(tx0, 28, |bytes| put_u32(bytes.append(mode), entry))
+	}
+	(block, tx) = mount_block(Root.{ store: st }, elem, 0, [], 0, 0, { cap: 0, enclosing }, tx1)
 	written = tables.fold(0.U128, |acc, cell, _| acc.bitwise_or(cell_bit(cell)))
-	Core.App.(AppBody.({ store, root, tx: mounted, programs: catalogue })) = drain(Core.App.(AppBody.{ store: st, root: store_inst({ cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs }))
-	Core.App.(AppBody.{ store, root, tx: with_fx(mounted, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), programs: catalogue })
+	initial = Core.App.(AppBody.{ store: st, root: store_inst({ cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs })
+	match cold {
+		Some(_) => {
+			Core.App.(AppBody.({ store, root, tx: waiting, programs: names })) = initial
+			Core.App.(AppBody.{ store, root, tx: emit_op(waiting, 29, |bytes| bytes), programs: names })
+		}
+		None => {
+			Core.App.(AppBody.({ store, root, tx: mounted, programs: names })) = drain(initial)
+			Core.App.(AppBody.{ store, root, tx: with_fx(mounted, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), programs: names })
+		}
+	}
+}
+
+## The runtime invokes this only after the complete cold batch and effects.
+## Quiet startup still returns a correctly framed completion command.
+complete_startup : App(st) -> App(st)
+complete_startup = |Core.App.(AppBody.({ store, root, tx, programs }))| {
+	fresh = Core.App.(AppBody.{ store, root, tx: with_fx(start_batch(tx), |effects| { ..effects, startup: { ..effects.startup, pending: False, adopting: False } }), programs })
+	Core.App.(AppBody.({ store: live_store, root: live_root, tx: live_tx, programs: live_names })) = drain(fresh)
+	complete = emit_op(with_fx(live_tx, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), 30, |bytes| bytes)
+	Core.App.(AppBody.{ store: live_store, root: live_root, tx: complete, programs: live_names })
 }
 
 ## A files-kind event's record (design.md, Appendix B), `count:u32
@@ -7981,8 +8644,8 @@ decode_progress = |bytes| {
 	{ direction, done, total }
 }
 
-decode_res_with : List(U8), (List(U8), List(Blob) -> Result) -> Result
-decode_res_with = |b, port_res| {
+decode_res_with : List(U8), (List(U8), List(Blob) -> Result), List(Str) -> Result
+decode_res_with = |b, port_res, queries| {
 	tag = b.first() ?? crash "contract: empty effect result"
 	text = |n| Str.from_utf8(b.drop_first(n)) ?? crash "contract: effect result text is not UTF-8"
 	bare = |r| if (b.len() == 1) r else crash "contract: effect result tag ${tag.to_str()} carries unexpected bytes"
@@ -8008,6 +8671,8 @@ decode_res_with = |b, port_res| {
 			$i = $i + 1
 		}
 		Http({ status, headers: $hs, body: text($at) })
+	} else if tag == 31 {
+		Environment(Core.read_environment(b.drop_first(1), queries) ?? crash "contract: malformed environment snapshot result")
 	} else if tag == 7 {
 		bare(Timeout)
 	} else if tag == 2 {
@@ -8355,6 +9020,13 @@ RefOwned : { name : Str, path : List(U32) }
 ## Registration owners are node addresses, not application data or identity.
 LiveObservations : { owners : Dict(U32, U64), live : U64 }
 
+ReadyEntry : { path : List(U32), previous : U64, next : U64 }
+
+StartupState : { pending : Bool, adopting : Bool, next : U64, head : U64, tail : U64, ready : ReadyIndex.ReadyIndex(ReadyEntry), armed : [None, Some(U64)], generation : U64 }
+
+startup_empty : StartupState
+startup_empty = { pending: False, adopting: False, next: 1, head: 0, tail: 0, ready: ReadyIndex.ReadyIndex.empty(), armed: None, generation: 0 }
+
 Fx : {
 	next : U32,
 	inner : U32,
@@ -8386,6 +9058,7 @@ Fx : {
 	## `on_cleanup` runs, by name, in first-run order.
 	cleanups : List((Str, U64)),
 	guard : { live : U64, emitted : Bool },
+	startup : StartupState,
 
 	## Types accumulated across every turn of one host call, never across calls.
 	batch : TransitionBatch,
@@ -8426,12 +9099,12 @@ PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe
 TransitionBatch : { mounting : Bool, asked : Bool, types : List(Str), seen : Dict(Str, {}) }
 
 fx_empty : Fx
-fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: { entries: [], waiting: Dict.empty() }, max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
+fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: { entries: [], waiting: Dict.empty() }, max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, startup: startup_empty, batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
 
 ## Collect a request without allocating an awaited id. Removing the batch from
 ## its holder before updating keeps its hash set and ordered list unique.
 collect_transition : Fx, List(Str) -> Fx
-collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }, names| {
+collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, names| {
 	{ mounting, asked, types, seen } = batch
 	var $types = types
 	var $seen = seen
@@ -8443,7 +9116,7 @@ collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale,
 			}
 		}
 	}
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen } }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen } }
 }
 
 ## The first follow-up id: follow-ups are a space of their own, above
@@ -8746,6 +9419,7 @@ put_fx_progress = |c, id, req, progress_ms| {
 			}
 			put_http_options(put_u32(put_str($b, body), min_u32(timeout_ms, max_timeout_ms)), cache, credentials, progress_ms)
 		}
+		EnvironmentSnapshot => head.append(22)
 		StorageGet(k) => put_str(head.append(2), k)
 		SessionStorageGet(key) => put_str(head.append(17), key)
 		StorageChanges(key) => put_str(head.append(18), key)
@@ -8868,12 +9542,12 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 	}
 	# A port request's bytes are written at the end of the turn.
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = turn_end_later(tx, path, req)
-	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch } = fx
+	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
 	if live.len() >= max {
-		fx2 = { next: id + 1, inner, live, queue: follow_up(queue, { id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
+		fx2 = { next: id + 1, inner, live, queue: follow_up(queue, { id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }
 		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2 })
 	} else {
-		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req), progress: progress_ms > 0 and supports_progress(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
+		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req), progress: progress_ms > 0 and supports_progress(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }
 		(id, { cmds: put_req(cmds, id, req, progress_ms), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2 })
 	}
 }
@@ -10141,7 +10815,7 @@ drain = |Core.App.(AppBody.({ store: store0, root: root0, tx: tx0, programs }))|
 			$tx = tx2
 		}
 	}
-	Core.App.(AppBody.{ store: $store, root: $root, tx: $tx, programs })
+	Core.App.(AppBody.{ store: $store, root: $root, tx: ready_arm($tx), programs })
 }
 
 ## The turn state of an instance, for this module's tests.
@@ -10196,6 +10870,11 @@ work_bytes = |Core.App.(AppBody.({ tx, .. })), buf| {
 	$b = put_u64($b, work_get(counters, 46))
 	$b = put_u64($b, work_get(counters, 47))
 	$b = put_u64($b, work_get(counters, 48))
+	var $startup_counter = 49.U64
+	while $startup_counter <= 56 {
+		$b = put_u64($b, work_get(counters, $startup_counter))
+		$startup_counter = $startup_counter + 1
+	}
 	runs = tx.fx.cleanups
 	$b = put_u32($b, runs.len().to_u32_wrap())
 	for (name, k) in runs {
@@ -10229,7 +10908,8 @@ settle_note = |a, b| {
 		("end-of-turn focus requests, program checks and port requests", a.focus.len(), b.focus.len() - drifts.len()),
 	]
 	changed = pairs.keep_if(|(_, x, y)| x != y).map(|(name, x, y)| "${name} ${x.to_str()} -> ${y.to_str()}")
-	Str.join_with(drifts.concat(changed).concat(if (b.batch.asked) ["view transition requested by settle check"] else []), ", ")
+	invalid = if (!a.startup.ready.is_valid() or !b.startup.ready.is_valid()) ["invalid placeholder ready index"] else []
+	Str.join_with(drifts.concat(changed).concat(invalid).concat(if (a.startup.ready != b.startup.ready) ["placeholder ready owners changed"] else []).concat(if (b.batch.asked) ["view transition requested by settle check"] else []), ", ")
 }
 
 ## The worker catalogue lists its names in order, and a duplicate name or a
@@ -10955,7 +11635,7 @@ expect {
 expect {
 	program = Core.driver(Core.program_boot({ storage_keys: ["theme", "theme"] }, |_| Core.text("")))
 	keys = put_str(put_str(put_u32([], 2), "theme"), "theme")
-	(program.keys)() == put_section(put_section(put_media_table(put_section(put_section([], 2, keys), 5, put_u32([], 0)), []), 10, [110, 1]), 11, put_u32([], 0))
+	(program.keys)() == put_section(put_section(put_section(put_media_table(put_section(put_section([], 2, keys), 5, put_u32([], 0)), []), 10, [110, 1]), 11, put_u32([], 0)), 14, [0])
 }
 
 ## A storage declaration and every port shape retain their bodies inside
@@ -10972,7 +11652,7 @@ expect {
 	command = put_u32(put_str(put_u32([], 3), "command").concat([1, 0]), 0)
 	call_bytes = put_u32(put_str(command, "call").concat([2, 0]), 0)
 	ports = put_u32(put_str(call_bytes, "updates").concat([3, 1]), 3)
-	(program.keys)() == put_section(put_section(put_media_table(put_section(put_section([], 2, keys), 5, ports), []), 10, [110, 1]), 11, put_u32([], 0))
+	(program.keys)() == put_section(put_section(put_section(put_media_table(put_section(put_section([], 2, keys), 5, ports), []), 10, [110, 1]), 11, put_u32([], 0)), 14, [0])
 }
 
 ## Pointer bytes retain the browser's button, modifier and zone facts without
@@ -11046,7 +11726,7 @@ expect encode_keymap(Core.Keymap.prevent([Core.Chord.plain("")]).concat(Core.Key
 expect read_key(put_str(put_str(put_str([0], "Escape"), "").append(0), "")).is_err()
 
 ## Serialized work retains RELEASE at counter 43 and starts the cleanup table
-## after all 49 counters, including a multibyte cleanup name and its run count.
+## after all 57 counters, including a multibyte cleanup name and its run count.
 expect {
 	mounted = Core.mount(
 		Core.state(
@@ -11076,7 +11756,7 @@ expect {
 	(name, after_name) = get_str(bytes, cleanup_at + 4, "cleanup name")
 	runs = get_u64(bytes, after_name, "cleanup runs")
 	{ count, counters_match: $decoded == counters, released: $decoded.get(43), names, name, runs, consumed: after_name + 8 == bytes.len() } == {
-		count: 49,
+		count: 57,
 		counters_match: True,
 		released: Ok(1),
 		names: 1,
@@ -11907,7 +12587,7 @@ child_enclosing = |parent, { name, site, placement, describe }| {
 		}
 		crash "contract: raw <${name.text()}> cannot be created under <${parent.local}>: ${refusal}; write the name in lowercase starting with a letter, or qualify it with Web.Tag.in_namespace${placement} at site ${show_path(site)}${describe()}"
 	}
-	construction = match DomConstruction.enter(
+	construction = match ParsedHtml.RepairContext.child(
 		parent.construction,
 		construction_name({
 			namespace: match name.namespace() {
@@ -11919,7 +12599,7 @@ child_enclosing = |parent, { name, site, placement, describe }| {
 		}),
 	) {
 		Ok(context) => context
-		Err(problem) => crash "contract: ${construction_problem(problem)}${placement} at site ${show_path(site)}${describe()}"
+		Err(InvalidConstruction(error)) => crash "contract: ${construction_problem(error.problem)}${placement} at site ${show_path(site)}${describe()}"
 	}
 	namespace = match name.namespace() {
 		Explicit(value) => value
@@ -12067,7 +12747,7 @@ enclosing_root = |root| {
 		"" => None
 		other => Uri(other)
 	}
-	{ namespace, prefix: root.prefix, local: root.local, raw_namespace: if (namespace == Svg and root.local != "foreignObject") Svg else Html, construction: DomConstruction.root({ parent: construction_name(root) }) }
+	{ namespace, prefix: root.prefix, local: root.local, raw_namespace: if (namespace == Svg and root.local != "foreignObject") Svg else Html, construction: ParsedHtml.RepairContext.from_parent({ parent: construction_name(root) }) }
 }
 
 ## Root facts round-trip beside Boot without becoming an app-visible field.
@@ -12198,7 +12878,7 @@ construction_name = |name| {
 }
 
 ## Keep the parser's rule and the shared wording; the boundary adds its site.
-construction_advice : DomConstruction.RepairDetail -> Str
+construction_advice : _ -> Str
 construction_advice = |repair| MarkupAdvice.construction(
 	repair.rule,
 	{
@@ -12212,17 +12892,17 @@ construction_advice = |repair| MarkupAdvice.construction(
 
 ## Distinguish a proven parser repair from missing attribute evidence. Both
 ## remain contained construction diagnostics; neither guesses a legal case.
-construction_problem : DomConstruction.Problem -> Str
+construction_problem : ParsedHtml.RepairProblem -> Str
 construction_problem = |problem| match problem {
 	Repair(detail) => construction_advice(detail)
 	Unsupported({ parent, child, reason: AttributeDependentTableInput }) => MarkupAdvice.unsupported_table_input({ parent: "<${parent.local}>", child: "<${child.local}>" })
 }
 
 ## Only restricted table text scans the new value. No earlier value is held.
-check_construction_text : DomConstruction.Context, { value : Str, site : List(U32), placement : Str } -> {}
-check_construction_text = |context, { value, site, placement }| match DomConstruction.text(context, value) {
+check_construction_text : ParsedHtml.RepairContext, { value : Str, site : List(U32), placement : Str } -> {}
+check_construction_text = |context, { value, site, placement }| match ParsedHtml.RepairContext.text(context, value) {
 	Ok(_) => {}
-	Err(problem) => crash "contract: ${construction_problem(problem)}${placement} at site ${show_path(site)}"
+	Err(InvalidConstruction(error)) => crash "contract: ${construction_problem(error.problem)}${placement} at site ${show_path(site)}"
 }
 
 ## A text hole that reads something that can change (a layer, a cell, a
@@ -12231,20 +12911,20 @@ check_construction_text = |context, { value, site, placement }| match DomConstru
 ## mounts, whatever it holds then: the rule follows the program's shape,
 ## not its data. The probe is one non-whitespace text; a constant hole
 ## keeps the value check of `checked_text_read`.
-check_text_hole : DomConstruction.Context, { varies : Bool, site : List(U32), placement : Str } -> {}
+check_text_hole : ParsedHtml.RepairContext, { varies : Bool, site : List(U32), placement : Str } -> {}
 check_text_hole = |context, { varies, site, placement }|
 	if !varies {
 		{}
 	} else {
-		match DomConstruction.text(context, "x") {
+		match ParsedHtml.RepairContext.text(context, "x") {
 			Ok(_) => {}
-			Err(problem) => crash "contract: ${construction_problem(problem)}; a text hole here can hold text, whatever it holds now${placement} at site ${show_path(site)}"
+			Err(InvalidConstruction(error)) => crash "contract: ${construction_problem(error.problem)}; a text hole here can hold text, whatever it holds now${placement} at site ${show_path(site)}"
 		}
 	}
 
 ## Text holes retain finite enclosing facts beside their existing reader,
 ## never an element description or another copy of application storage.
-checked_text_read : (ctx -> Str), { context : DomConstruction.Context, site : List(U32), placement : Str } -> (ctx -> Str)
+checked_text_read : (ctx -> Str), { context : ParsedHtml.RepairContext, site : List(U32), placement : Str } -> (ctx -> Str)
 checked_text_read = |read, facts| |environment| {
 	value = read(environment)
 	check_construction_text(facts.context, { value, site: facts.site, placement: facts.placement })
@@ -12260,26 +12940,26 @@ expect {
 ## Each sibling resumes the parent's bounded context. A nested paragraph
 ## restriction persists through a span, while a button scope ends it.
 expect {
-	paragraph = DomConstruction.enter(root_enclosing.construction, construction_name({ namespace: Html, prefix: Unprefixed, local: "p" }))?
-	span = DomConstruction.enter(paragraph, construction_name({ namespace: Html, prefix: Unprefixed, local: "span" }))?
-	button = DomConstruction.enter(paragraph, construction_name({ namespace: Html, prefix: Unprefixed, local: "button" }))?
+	paragraph = ParsedHtml.RepairContext.child(root_enclosing.construction, construction_name({ namespace: Html, prefix: Unprefixed, local: "p" }))?
+	span = ParsedHtml.RepairContext.child(paragraph, construction_name({ namespace: Html, prefix: Unprefixed, local: "span" }))?
+	button = ParsedHtml.RepairContext.child(paragraph, construction_name({ namespace: Html, prefix: Unprefixed, local: "button" }))?
 	block = construction_name({ namespace: Html, prefix: Unprefixed, local: "div" })
 	{
-		nested: DomConstruction.enter(span, block).is_err(),
-		outside: DomConstruction.enter(root_enclosing.construction, block).is_ok(),
-		button_scope: DomConstruction.enter(button, block).is_ok(),
+		nested: ParsedHtml.RepairContext.child(span, block).is_err(),
+		outside: ParsedHtml.RepairContext.child(root_enclosing.construction, block).is_ok(),
+		button_scope: ParsedHtml.RepairContext.child(button, block).is_ok(),
 	} == { nested: True, outside: True, button_scope: True }
 }
 
 ## Restricted table text accepts HTML whitespace only, including the empty
 ## anchor; a nonbreaking space is content which the parser would relocate.
 expect {
-	table = DomConstruction.root({ parent: construction_name({ namespace: Html, prefix: Unprefixed, local: "table" }) })
+	table = ParsedHtml.RepairContext.from_parent({ parent: construction_name({ namespace: Html, prefix: Unprefixed, local: "table" }) })
 	{
-		empty: DomConstruction.text(table, "").is_ok(),
-		space: DomConstruction.text(table, " \t\r\n").is_ok(),
-		content: DomConstruction.text(table, "row").is_err(),
-		nbsp: DomConstruction.text(table, "\u(00A0)").is_err(),
+		empty: ParsedHtml.RepairContext.text(table, "").is_ok(),
+		space: ParsedHtml.RepairContext.text(table, " \t\r\n").is_ok(),
+		content: ParsedHtml.RepairContext.text(table, "row").is_err(),
+		nbsp: ParsedHtml.RepairContext.text(table, "\u(00A0)").is_err(),
 	} == { empty: True, space: True, content: True, nbsp: True }
 }
 
@@ -12354,7 +13034,7 @@ expect {
 		{ namespace: Html, prefix: Unprefixed, local: "template" },
 		{ namespace: Svg, prefix: Unprefixed, local: "h:div" },
 	]
-	roots.all(|root| DomConstruction.enter(enclosing_root(root).construction, construction_name({ namespace: Html, prefix: Unprefixed, local: "raw-unknown" })).is_ok())
+	roots.all(|root| ParsedHtml.RepairContext.child(enclosing_root(root).construction, construction_name({ namespace: Html, prefix: Unprefixed, local: "raw-unknown" })).is_ok())
 }
 
 ## Unsupported attribute-dependent table inputs stay distinct from a proven
@@ -12454,4 +13134,151 @@ expect {
 		control == { ctrl: True, alt: False, shift: False, meta: False, link: NoLink } and
 			linked.link == Link({ href: "../a", target: "_blank", download: True }) and
 				[[], [0], [16, 0], [0, 2], [0, 0, 0], [0, 1], put_str(put_str([0, 1], ""), "").append(2), put_str(put_str([0, 1], ""), "").concat([0, 0])].all(|bytes| read_click(bytes).is_err())
+}
+
+## Validate private startup boot framing before entry indexing or construction.
+read_startup_boot : List(U8) -> Try(Core.StartupBoot, Str)
+read_startup_boot = |bytes| match bytes {
+	[0] => Ok(Legacy)
+	[1, mode, ..] if bytes.len() == 6 and mode <= 1 => {
+		entry = boot_u32(bytes, 2)?
+		if mode == 1 and entry == 0xffffffff {
+			Err("binding requires a concrete entry")
+		} else Ok(Fixed({ mode, entry }))
+	}
+	_ => Err("invalid profile, mode, length or trailing bytes")
+}
+
+## Only paths/root/fallback cross as declarations; no route value or live Boot
+## is serialized. The root and path byte budgets bound this metadata section.
+startup_declaration : Core.StartupProfile -> List(U8)
+startup_declaration = |profile| match profile {
+	Legacy => [0]
+	Deterministic({ paths, root, fallback }) => {
+		root_bytes = put_expanded_name([], root.namespace, root.prefix, root.local)
+		if root_bytes.len() > 65536 {
+			crash "resource_limit: declared startup mount identity exceeds 65536 bytes"
+		}
+		out = paths.fold(put_u32([1].concat(root_bytes), paths.len().to_u32_wrap()), put_str)
+		put_u32(
+			out,
+			match fallback {
+				None => 0xffffffff
+				Some(index) => index
+			},
+		)
+	}
+}
+
+## Cold construction publishes its frame before any queued Self reaction.
+## A quiet acknowledgement is still a complete framed protocol batch.
+expect {
+	entry = EntryRoutes.make({}, [{ path: EntryRoutes.Path.from_str("/")?, route: "home" }])
+	program = Core.driver(Core.program_startup({}, entry, |_| Core.no_store, |_| Core.text("cold")))
+	(mounted, cold, _) = (program.init)([])
+	(_, ack, _) = (program.event)(mounted, [], [], fx_node, 0, [254])
+	cold == [0, 28, 0, 0, 0, 0, 0].concat(put_str(put_u32(put_u32(put_u32([10], 1), 0), 0), "cold")).append(29) and ack == [0, 30]
+}
+
+## An environment snapshot carries every public fact, including declared
+## media, while rejecting mount/startup sections and unknown trailing data.
+expect {
+	facts : Core.Boot
+	facts = { url: "/route?query#fragment", now_ms: -7, seed: 41, media: [("(color)", True)], storage: [("theme", "dark")], session: [("draft", "x")] }
+	payload = Core.environment_result(facts)
+	parsed = decode_res_with(payload, decode_port_res, ["(color)"])
+	decoded = match parsed {
+		Environment(value) => value
+		_ => crash "internal: snapshot decode expected"
+	}
+	Core.write_environment(decoded) == Core.write_environment(facts) and
+		Core.read_environment(Core.write_mount(facts, Core.default_mount_root), ["(color)"]).is_err() and
+			Core.read_environment(Core.write_environment(facts).append(0), ["(color)"]).is_err() and
+				put_fx([], 7, EnvironmentSnapshot) == [13, 7, 0, 0, 0, 22] and
+					(
+						match Core.environment({}) {
+							Core.Ask.(ask) => (ask.read)(Refused)
+						}
+					) == Err(Refused)
+}
+
+## One task replaces one FIFO owner; nested bodies become eligible only
+## after their parent mounts. A cancelled old generation cannot activate it.
+expect {
+	inner = || Core.placeholder(Core.const(True), Core.text("inner waiting"), || Core.text("inner active"))
+	first = Core.placeholder(Core.const(True), Core.text("first waiting"), inner)
+	second = Core.placeholder(Core.const(True), Core.text("second waiting"), || Core.text("second active"))
+	mounted = Core.mount_store(0, Core.no_store, Fragment([first, second]))
+	g1 = match Core.startup_opportunity(mounted) {
+		Some(value) => value
+		None => crash "expected initial task"
+	}
+	(a1, _) = Core.take_cmds(mounted, [])
+	a2 = Core.opportunity(a1, g1)
+	q2 = (tx_of(a2)).fx.startup
+	g2 = match Core.startup_opportunity(a2) {
+		Some(value) => value
+		None => crash "expected next task"
+	}
+	# first's nested site appends behind the second existing owner.
+	owner2 = q2.ready.get(q2.head)?
+	g2_before = Core.work_counters(a2).get(55)?
+	a3 = Core.opportunity(a2, g1)
+	g3_before = Core.work_counters(a3).get(55)?
+	(a4, _) = Core.take_cmds(a3, [])
+	a5 = Core.opportunity(a4, g2)
+	q5 = (tx_of(a5)).fx.startup
+	{ first_left: q2.ready.len(), second_path: owner2.path, nested_left: q5.ready.len(), delivered: g2_before, after_stale: g3_before, stale: Core.work_counters(a5).get(56)?, settled: Core.settled(a5).is_ok() } == {
+		first_left: 2,
+		second_path: [1],
+		nested_left: 1,
+		delivered: 1,
+		after_stale: 1,
+		stale: 1,
+		settled: True,
+	}
+}
+
+## Cold admission uses expanded identities; foreign same-local attributes and
+## SVG hyphenated names remain ordinary. Row plans carry the same early refusal.
+expect {
+	resolve = |text| resolve_element(Web.Tag.from_str(text) ?? crash "test tag", root_enclosing)
+	plain = cold_element_problem(resolve("div"), []).is_empty()
+	custom = !cold_element_problem(resolve("x-control"), []).is_empty()
+	selected = !cold_element_problem(resolve("selectedcontent"), []).is_empty()
+	script = !cold_element_problem(resolve("script"), []).is_empty()
+	inline = !cold_element_problem(resolve("div"), [Core.attr("onclick", "x()")]).is_empty()
+	shadow = !cold_element_problem(resolve("template"), [Core.attr("shadowrootmode", "open")]).is_empty()
+	details = !cold_element_problem(resolve("details"), [Core.attr("name", "group")]).is_empty()
+	foreign_name = Web.AttrName.from_str("onclick")?.in_namespace({ namespace: Uri("urn:app") })?
+	foreign_ok = cold_element_problem(resolve("div"), [Core.attr_named(foreign_name, "data")]).is_empty()
+	row = compile(Core.element("selectedcontent", [], []), 1, [], "an each", root_enclosing)
+	{ plain, custom, selected, script, inline, shadow, details, foreign_ok, template_refusal: !row.adoption_problem.is_empty() } == { plain: True, custom: True, selected: True, script: True, inline: True, shadow: True, details: True, foreign_ok: True, template_refusal: True }
+}
+
+## Closed service command bytes and monotonic generations are checked against
+## independent golden bytes, separately from runtime's opcode role binding.
+expect {
+	armed = ready_arm(ready_append(new_tx([]), 7, [3]))
+	cancelled = ready_arm(ready_remove(armed, 7))
+	rearmed = ready_arm(ready_append(cancelled, 8, [4]))
+	armed.cmds == [0, 31, 1, 1, 0, 0, 0, 0, 0, 0, 0] and
+		cancelled.cmds == armed.cmds.concat([31, 0, 1, 0, 0, 0, 0, 0, 0, 0]) and
+			rearmed.cmds == cancelled.cmds.concat([31, 1, 2, 0, 0, 0, 0, 0, 0, 0]) and
+				work_get(rearmed.work, 52) == 3 and work_get(rearmed.work, 53) == 2 and work_get(rearmed.work, 54) == 1
+}
+
+## Initial attribute identity uses URI and local name, including HTML folding;
+## two prefixes do not create two writers. Other namespaces remain distinct.
+expect {
+	tag = resolve_element(Web.Tag.from_str("div")?, root_enclosing)
+	folded = initial_attribute_problem(tag, [Core.attr("DATA-X", "one"), Core.attr_s("data-x", Core.const("two"))])
+	name = Web.AttrName.from_str("same")?
+	left = name.in_namespace({ namespace: Uri("urn:app"), prefix: Prefix("a") })?
+	right = name.in_namespace({ namespace: Uri("urn:app"), prefix: Prefix("b") })?
+	other = name.in_namespace({ namespace: Uri("urn:other"), prefix: Prefix("b") })?
+	aliases = initial_attribute_problem(tag, [Core.attr_named(left, "one"), Core.attr_named(right, "two")])
+	distinct = initial_attribute_problem(tag, [Core.attr_named(left, "one"), Core.attr_named(other, "two")])
+	plan = compile(Core.element("div", [Core.attr("data-x", "one"), Core.attr("data-x", "two")], []), 1, [], "an each", root_enclosing)
+	!folded.is_empty() and !aliases.is_empty() and distinct.is_empty() and !plan.initial_problem.is_empty()
 }

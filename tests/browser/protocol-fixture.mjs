@@ -26,7 +26,7 @@ export const protocolFixtureSectionOf = facts => {
 };
 const codes = (values, first = 1) => values.map((name, i) => ({ code: i + first, name }));
 export const protocolFixtureFacts = {
-  ops: codes(["INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD", "COMMENT", "UNSENT"]),
+  ops: codes(["INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE", "TRANSITION", "GUARD", "COMMENT", "UNSENT", "STARTUP", "STARTUP_ACK", "STARTUP_COMPLETE", "OPPORTUNITY"]),
   kinds: [
     ["TEXT", []], ["FILES", ["change", "drop", "paste"]], ["POINTER", ["pointerdown", "pointermove", "pointerup", "pointercancel"]],
     ["KEY", ["keydown", "keyup"]], ["OPEN_STATE", ["close", "toggle", "change"]], ["SCROLL", ["scroll"]], ["SIZE", ["size"]], ["SEEN", ["seen"]], ["PASTE", ["paste"]], ["CLICK", ["click"]],
@@ -53,14 +53,14 @@ export async function installProtocolFixture(page) {
     const { RocEngineRuntime } = await import("/runtime.mjs");
     const section = Uint8Array.from(sectionBytes);
     const base = [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1, 11, 4, 0, 0, 0, 0, 0, 0, 0];
-    const declarations = Uint8Array.from([...base, ...section]);
+    const declarations = Uint8Array.from([...base, ...section, 14, 1, 0, 0, 0, 0]);
     const byConstructor = new WeakMap();
     const bind = Runtime => {
       if (byConstructor.has(Runtime)) return byConstructor.get(Runtime);
       const memory = new WebAssembly.Memory({ initial: 2 });
       let length = 0;
       const x = {
-        memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 22,
+        memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => 23,
         boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
         cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
         init() { new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },
@@ -76,7 +76,7 @@ export async function installProtocolFixture(page) {
       return bindings;
     };
     bind(RocEngineRuntime);
-    window.__protocolFixtureSection = section;
+    window.__protocolFixtureSection = Uint8Array.from([...section, 14, 1, 0, 0, 0, 0]);
     // A relative/absolute URL can instantiate the same runtime source twice.
     // Bind through the fixture's own class so its private fault constructors
     // and the functions that throw them belong to that same module instance.

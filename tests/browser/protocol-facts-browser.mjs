@@ -19,7 +19,7 @@ const cases = [
   ["unsupported property implementation refuses before init", changed(facts => facts.properties[0].name = "unknown")],
   ["unknown opcode name refuses before init", changed(facts => facts.ops.at(-1).name = "BOGUS"), 'unknown opcode name "BOGUS"'],
   ["a leading BOM cannot disguise an unknown opcode name", changed(facts => facts.ops[0].name = "\uFEFFINST")],
-  ["missing opcode name refuses before init", changed(facts => facts.ops.pop()), 'missing opcode name "UNSENT"'],
+  ["missing opcode name refuses before init", changed(facts => facts.ops.pop()), 'missing opcode name "OPPORTUNITY"'],
   ["unknown policy name refuses before init", changed(facts => facts.policies.at(-1).name = "BOGUS"), 'unknown policy name "BOGUS"'],
   ["missing policy name refuses before init", changed(facts => facts.policies.pop()), 'missing policy name "AHEAD"'],
   ["unknown namespace refuses before init", changed(facts => facts.namespaces.at(-1).name = "BOGUS"), 'unknown namespace name "BOGUS"'],
@@ -67,11 +67,11 @@ try {
     const text = value => { const bytes = [...new TextEncoder().encode(value)]; return [...word(bytes.length), ...bytes]; };
     const section = (tag, body) => [tag, ...word(body.length), ...body];
     const prefix = [section(2, word(0)), section(5, word(0)), section(6, word(0)), section(10, [110, 1]), section(11, word(0))].flat();
-    const make = (declarations, version = 22) => {
+    const make = (declarations, version = 23, complete = true) => {
       const memory = new WebAssembly.Memory({ initial: 2 }); let length = 0, initCalls = 0;
       const root = document.createElement("div"); document.body.append(root);
       const x = { memory, dbg_len: () => 0, dbg_ptr: () => 0, protocol_version: () => version,
-        boot_keys() { new Uint8Array(memory.buffer).set(declarations); length = declarations.length; },
+        boot_keys() { new Uint8Array(memory.buffer).set([...declarations, ...(complete ? section(14, [0]) : [])]); length = declarations.length + (complete ? 6 : 0); },
         cmd_ptr: () => 0, cmd_len: () => length, payload_reserve: () => 65536,
         init() { initCalls++; new Uint8Array(memory.buffer)[0] = 0; length = 1; return 0; },
         keys_released: () => 0, files_released: () => 0, fault: () => 0, work_len: () => 0, metric: () => 0n, drop() {},
@@ -81,14 +81,14 @@ try {
     };
     const checks = [], check = (name, ok) => { checks.push([name, !!ok]); };
     const reject = (name, item, detail = null) => {
-      const fixture = make(Uint8Array.from([...prefix, ...item]));
+      const fixture = make(Uint8Array.from([...prefix, ...item]), 23, !name.startsWith("truncated facts"));
       let refused = false; try { fixture.runtime.mount(); } catch (error) { refused = error.message.includes("declaration section 12 (protocol)") && (detail === null || error.message.includes(detail)); }
       check(name, refused && fixture.initCalls === 0); fixture.root.remove();
     };
     for (const [name, item, detail] of cases) reject(name, item, detail ?? null);
-    const oldModule = make(Uint8Array.from([...prefix, ...fixture]), 21);
+    const oldModule = make(Uint8Array.from([...prefix, ...fixture]), 22);
     let oldRefused = false;
-    try { oldModule.runtime.mount(); } catch (error) { oldRefused = error.message.includes("protocol 21 is not the protocol 22"); }
+    try { oldModule.runtime.mount(); } catch (error) { oldRefused = error.message.includes("protocol 22 is not the protocol 23"); }
     check("the previous transport version refuses before init", oldRefused && oldModule.initCalls === 0);
     oldModule.root.remove();
     const workerMismatch = await new Promise((resolve, reject) => {
@@ -96,11 +96,11 @@ try {
       const timer = setTimeout(() => { worker.terminate(); reject(new Error("worker version guard timed out")); }, 5000);
       worker.onmessage = event => { clearTimeout(timer); worker.terminate(); resolve(event.data); };
       worker.onerror = event => { clearTimeout(timer); worker.terminate(); reject(new Error(event.message)); };
-      worker.postMessage({ type: "init", module: null, version: 21 });
+      worker.postMessage({ type: "init", module: null, version: 22 });
       // Init intentionally has no failure reply until a job awaits its promise.
       worker.postMessage({ type: "job", mode: "work", payload: new ArrayBuffer(0) });
     });
-    check("the worker rejects the previous version before instantiation", workerMismatch.type === "fault" && workerMismatch.code === 0 && workerMismatch.message === "worker could not start: page runtime protocol 21 is not the protocol 22 this worker implements");
+    check("the worker rejects the previous version before instantiation", workerMismatch.type === "fault" && workerMismatch.code === 0 && workerMismatch.message === "worker could not start: page runtime protocol 22 is not the protocol 23 this worker implements");
     const metadataOnly = make(Uint8Array.from([...prefix, ...fixture]));
     const factories = new Map(["createElement", "createElementNS", "createTextNode", "createComment", "createDocumentFragment"].map(name => [name, document[name]]));
     const objectKinds = ["Blob", "File", "Worker", "MutationObserver", "ResizeObserver", "IntersectionObserver"];

@@ -3,6 +3,7 @@ import PlatformTest
 import Proc
 import SpecSuite
 import ToolRelease
+import Targets
 
 ## What a release publishes, built the same way for a dry run (in `check`)
 ## and for the release workflow:
@@ -11,8 +12,9 @@ import ToolRelease
 ##   `platform/main.roc` with every module it uses, the Wasm host, the native
 ##   spec runner's link inputs for every system it builds for (Linux
 ##   x86-64, macOS on Apple silicon and Intel, Windows x86-64),
-##   `runtime.mjs`, its fact readers `environment.mjs` and `worker.mjs`;
-## - `runtime.mjs`, `environment.mjs` and `worker.mjs` on their own, for pages that load an app
+##   `runtime.mjs`, its fact readers `environment.mjs`, startup binder
+##   `startup.mjs` and `worker.mjs`;
+## - `runtime.mjs`, `environment.mjs`, `startup.mjs` and `worker.mjs` on their own, for pages that load an app
 ##   (the runtime loads the worker script from beside itself);
 ## - the `signals.roc` tool: its package, `signals-<hash>.tar.zst` (`cli/`
 ##   with the runtime files, the scaffold and a generated `Bundle.roc`
@@ -31,7 +33,7 @@ Release := [].{
 
 	## The platform files a bundle carries, relative to `platform/`.
 	bundle_files : List(Str)
-	bundle_files = ["main.roc", "Base64.roc", "Engine.roc", "Web.roc", "Spelling.roc", "MarkupAdvice.roc", "MarkupLiteral.roc", "Clipboard.roc", "WebCrypto.roc", "Html.roc", "Svg.roc", "Layout.roc", "Order.roc", "Url.roc", "Worker.roc", "Wire.roc", "WorkerCodec.roc", "Port.roc", "PortJson.roc", "PortRegistry.roc", "Protocol.roc", "ProtocolFacts.roc", "Core.roc", "TableCore.roc", "View.roc", "Seq.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "PicturePage.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "host/crypto.zig", "host/crypto_result.zig", "host/crypto_abi.zig", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
+	bundle_files = ["main.roc", "Base64.roc", "Engine.roc", "Web.roc", "Spelling.roc", "MarkupAdvice.roc", "MarkupLiteral.roc", "Clipboard.roc", "WebCrypto.roc", "Html.roc", "Svg.roc", "Layout.roc", "Order.roc", "Url.roc", "Worker.roc", "Wire.roc", "WorkerCodec.roc", "Port.roc", "PortJson.roc", "PortRegistry.roc", "Protocol.roc", "ProtocolFacts.roc", "Core.roc", "ReadyIndex.roc", "EntryRoutes.roc", "SignalCore.roc", "TableCore.roc", "View.roc", "Seq.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "PicturePage.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "host/crypto.zig", "host/crypto_result.zig", "host/crypto_abi.zig", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
 
 	archive_name : Str -> Str
 	archive_name = |version| "roc-signals-examples-${version}"
@@ -42,7 +44,7 @@ Release := [].{
 	is_archived : Str -> Bool
 	is_archived = |file| {
 		name = file.split_on("/").last() ?? file
-		!(name.starts_with("fuzz-") and name.ends_with(".roc"))
+		!(name.starts_with("fuzz-") and name.ends_with(".roc")) and !Targets.fuzz_targets.any(|member| member.property == file)
 	}
 
 	## An example's own files beside its Roc modules, directly in `dir`: the
@@ -169,7 +171,7 @@ Release := [].{
 		\\An example's other files are its own: JavaScript its author wrote (port
 		\\handlers, a simulated service), a page that mounts it, data it downloads.
 		\\JavaScript several examples load (custom elements) is in `examples/shared/`.
-		\\The platform's `runtime.mjs`, `environment.mjs` and `worker.mjs` are separate release assets.
+		\\The platform's `runtime.mjs`, `environment.mjs`, `startup.mjs` and `worker.mjs` are separate release assets.
 		\\`spec.json` and `runtime/check.mjs` are the compatibility suite the
 		\\nightly workflow runs against the latest Roc nightly.
 
@@ -181,11 +183,27 @@ Release := [].{
 		\\
 		\\<!-- What changed, for app authors. Write this on GitHub before publishing. -->
 		\\
+		\\## Deterministic startup and deferred content
+		\\
+		\\`Engine.entries` supplies one finite typed route catalogue. New sites use `Engine.program_startup` or `Engine.program_startup_store`; `signals.roc build` prerenders every declared entry by default. Serve matching generated HTML and module assets together. `--no-prerender` builds a plain page; existing Boot-dependent initializers must migrate before using annotated startup.
+		\\
+		\\Ordinary initial content survives startup. `Html.placeholder` combines checked `Html.Static` content with a deferred live body; readiness and browser-task opportunities activate it through ordinary scoped turns. Use `Engine.environment` for live browser facts after startup. Protocol 23 requires rebuilding modules and deploying their matching runtime files together.
+		\\
+		\\The compiler infers the store's type from `main`; a separate app-level `Store` declaration is no longer required. This needs a Roc compiler containing roc-lang/roc#13142.
+		\\
+		\\Port JSON refuses repeated decoded dictionary property names, including names written with different JSON escapes. Handwritten port codecs pass decoder cursors returned by the format's hooks; applications cannot construct a cursor themselves.
+		\\
+		\\## Compiler compatibility and contributor checks
+		\\
+		\\On exactly `nightly-2026-11-18-a520eed`, `signals.roc` builds requested development Wasm with `--opt=size` to avoid unwanted native imports in browser workers ([roc#13195](https://github.com/roc-lang/roc/issues/13195)). It prints the skipped profile and the actual profile; all behavior checks still run. Rebuilds take longer while this workaround is active. Other compiler versions retry the requested profile.
+		\\
+		\\Checked markup uses published roc-parser 6.0.0-rc.5. Contributor fuzz checks use roc-fuzz 0.7.0 suites, sharing builds while retaining each property's examples, corpus and strict leak checks. Compiler workarounds carry upstream TODOs and remain separate from application semantics.
+		\\
 		\\## Breaking: checked links and typed clicks
 		\\
 		\\`Html.link` now requires `Web.Link`. Literal destinations are checked during compilation; computed destinations use `Web.Link.from_str` and explicitly handle `UnsupportedScheme`. `Html.href` and `Html.href_s` support custom layouts and explicit absence. Raw attributes keep their semantics.
 		\\
-		\\`Engine.on_click` and button helpers receive `Engine.Click`, carrying modifiers and nearest-link authored href, target and download presence. Use `on_click_with` for synchronous policies. Generic `on("click", ...)` retains its text payload. Rebuild modules with this release's protocol 22 runtime and worker.
+		\\`Engine.on_click` and button helpers receive `Engine.Click`, carrying modifiers and nearest-link authored href, target and download presence. Use `on_click_with` for synchronous policies. Generic `on("click", ...)` retains its text payload. Rebuild modules with this release's protocol 23 runtime, startup helper and worker.
 		\\
 		\\`Html.unsafe_html` imports HTML into a stable wrapper without escaping, validation or sanitization. Imported descendants are opaque to specs and receive no engine lifecycle. Pictures containing the wrapper are refused, including empty initial content.
 		\\
@@ -195,7 +213,7 @@ Release := [].{
 		\\
 		\\## Upgrading specs
 		\\
-		\\A step that passes because the thing it names is absent, or counts zero of it, now needs evidence that the name is spelt right. A spec without it fails to parse at that step, in both runners and `--emit-steps`, even if it passed before. The evidence is another step of the same spec, before or after, or a marker saying the story never has the thing; a marker leaves the spelling unchecked, and is refused when the spec has the evidence.
+		\\A step that passes because the thing it names is absent, or counts zero of it, now needs evidence that the name is spelt right. A spec without it fails to parse at that step, in both runners and `--emit-steps`, even if it passed before. The evidence is another step of the same spec, before or after, or a marker saying the story never has the thing. A marker requires positive evidence in another spec of the app's suite, and is refused when its own story already has that evidence.
 		\\
 		\\- `(expect-absent LOC)` needs a step that requires `LOC` to match, such as `expect-visible` or `click`. Add one where the story draws the element, or write `(expect-absent LOC :never-drawn)`.
 		\\- `(expect-no-attr LOC NAME)` needs an `expect-attr` or `expect-has-attr` of `NAME`, on any locator. Add `(expect-has-attr LOC NAME)` where the story writes the attribute with a value the spec cannot state, or write `(expect-no-attr LOC NAME :never-written)`.
@@ -214,7 +232,7 @@ Release := [].{
 		\\app [main] { pf: platform "${bundle_url}" }
 		\\```
 		\\
-		\\Load apps with this release's `runtime.mjs`, served beside `environment.mjs` and `worker.mjs`.
+		\\Load apps with this release's `runtime.mjs`, served beside `environment.mjs`, `startup.mjs` and `worker.mjs`.
 		\\
 		\\## Start an app
 		\\
@@ -275,3 +293,9 @@ expect {
 
 ## The entry point and its modules are archived; a fuzz target is not.
 expect [Release.is_archived("e/main.roc"), Release.is_archived("e/fuzz-csv.roc"), Release.is_archived("e/Api.roc"), Release.is_archived("e/Fuzzy.roc")] == [True, False, True, True]
+
+## Shared fuzz properties depend on roc-fuzz, so they do not ship as app modules.
+expect !Release.is_archived("examples/csv-converter/FuzzCsvConverterProperty.roc") and !Release.is_archived("examples/csv-converter/fuzz-package.roc") and Release.is_archived("examples/csv-converter/Csv.roc")
+
+## A domain module with a similar name is preserved unless explicitly registered.
+expect Release.is_archived("examples/csv-converter/FuzzHelperProperty.roc")

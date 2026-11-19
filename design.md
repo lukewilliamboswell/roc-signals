@@ -139,9 +139,11 @@ this document and the implementation are tracked in issues.
     function however many pieces of state it spans.
 11. **The first frame comes with the document.** A page can show its first
     frame before its module arrives: the build renders it from the app's own
-    mount. Startup replaces the built nodes with the ordinary mount before
-    effects run. **Target:** the engine may instead adopt them only when its
-    mount fingerprint and the measured tree digest agree with the built frame.
+    mount. **Target:** default site builds prerender every declared concrete
+    entry route. Fixed initial inputs let the engine bind that complete frame
+    by reserved annotations, preserving ordinary content and replacing explicit
+    placeholders later through normal scoped turns. Legacy pictures retain
+    their defined replacement startup.
 
 ### Success criteria
 
@@ -163,9 +165,12 @@ this document and the implementation are tracked in issues.
 - **First frame:** the built page paints before the module arrives, stays
   inert until ordinary mounting, and behaves like an unprerendered mount
   after replacement. Native and Chrome specs cover the same app behavior.
-  **Target adoption:** every maintained example's picture adopts in Chrome
-  and in the native runner, and the adopted page equals one built from
-  nothing. The module's size still determines when it becomes interactive.
+  **Target adoption:** deterministic entry frames bind whole in both runners,
+  with fresh independent engine state and the same subsequent behavior as a
+  plain mount. Focused browser handoff contracts establish parsing, controls,
+  selection and resource continuity across engines. No DOM digest or browser
+  consensus establishes identity. The module's size still determines when it
+  becomes interactive.
 
 ### When a capability is built
 
@@ -291,8 +296,10 @@ reconsidered.
 - **Per-request server rendering, streaming and SEO claims.** The platform
   is a client-side runtime. A first frame rendered at build time is part of
   the target design: the command stream remains the only render output, the
-  engine adopts existing DOM ids or replaces them, and JavaScript never
-  reconstructs meaning. Per-request rendering or streaming is reconsidered
+  engine commands binding of the declared annotated frame or ordinary plain
+  construction, and JavaScript never reconstructs meaning. A corrupted annotated
+  frame faults and requires explicit fresh recovery; it does not select a
+  different meaning through mismatch repair. Per-request rendering or streaming is reconsidered
   only if a build-time frame cannot serve the intended apps. Search engines
   may index a picture; the platform makes no promise about it.
 - **A native desktop GUI host.** The engine is web-only. A GUI platform would
@@ -689,8 +696,10 @@ to carry it.
   the store as plain data beside its site tree, never inside a site's closure.
   Each root call moves it into the root context and returns it with the write
   set, so a write at any depth receives its cell's value uniquely owned. The
-  app's entry names that storage type as `Store`; the platform's `Program(st)`
-  carries it through mount and events without exposing engine state.
+  platform's `Program(st)` carries that storage type through mount and
+  events without exposing engine state. The platform's `requires` clause
+  binds `Store` to the type inferred from the app's `main`; no separate
+  app-level `Store` declaration is required.
 - **Started again by a write.** A cell lives as long as the instance and is
   never disposed, so state that should start fresh, such as a page's form
   once the reader leaves the page, is started again on purpose.
@@ -1751,142 +1760,626 @@ engine-decided value rather than inferring control state from a name.
 
 ### A prerendered first page
 
-An app may opt in to a first frame rendered at build time inside
-its marked mount root. The native runner mounts the actual program for the
-requested boot, consumes its command batch through the independent oracle,
-and renders that model as a document. This is a rendering of the engine's
-output, not a second engine or an application view run in JavaScript. One
-configured oracle renderer handles diagnostics and documents. The first
-frame arrives with the document; the module's arrival decides when it
-becomes interactive.
+A first page is rendered from the app's actual pure engine output through the
+independent `Dom` oracle. The configured renderer has one node walk for markup,
+physical/logical child facts and producer scaffolds. It is not a second app
+view or a browser-side reactive interpreter. The module's arrival still decides
+when Roc-dependent controls become interactive.
 
-Startup replaces the picture immediately before applying the ordinary mount
-batch, in the same task. The producer renders one init batch without delivering
-host answers; the browser initializes the app normally for its live mount.
-The generated page carries no adoption claims or measured boot facts. The
-picture is inert until replacement. The runtime removes inertness before
-performing the batch's effects, so focus and reference commands observe the
-mounted page. An HTML mount root owns its inertness.
-A non-HTML mount root requires an explicitly marked immediate ordinary HTML
-parent with the no-namespace `data-roc-picture-inert-parent=""` attribute.
-That parent has exactly the root and, optionally, its following HTML JSON
-descriptor as element children; text and comments may surround them. The
-descriptor has no-namespace `type="application/json"` and
-`data-roc-picture-envelope="1"` attributes. A template content fragment cannot
-supply this parent. The producer never inserts a wrapper or changes the
-actual mount root, its namespace or live mounting semantics.
+Legacy opt-in pictures retain replacement startup: a marked `data-roc-picture`
+root is held inert, the ordinary init batch replaces its contents in one task,
+and producer-added inertness is lifted before node effects. Authored inert text
+is preserved. A non-HTML root requires the explicit immediate ordinary HTML
+owner marked `data-roc-picture-inert-parent`; no wrapper or enclosing namespace
+is invented. Host-template markup which its parser would repair is refused.
+The producer's opaque-HTML and exact parse-back refusals still apply.
 
-The producer adds no-namespace `inert` to this explicit owner only when it
-was absent, recording that addition with `data-roc-picture-inert="added"` on
-the owner. An authored owner cannot supply that reserved restoration fact;
-authored inert text is preserved exactly. The host template's public parser
-tokens bound any parent opening-tag insertion. The runtime retains the fact
-and its bounded hold across startup failure and retry, then removes the fact
-and only producer-added inertness after successful replacement or recovery.
-The parent marker persists; picture and failure markers belong to the actual
-root. These bootstrap facts use exact no-namespace attribute identity; the
-same spelling elsewhere or in another namespace remains data. The app
-chooses the routes to render; no origin, user session or hash route is
-invented by the build.
+**Target — deterministic annotated startup.** The following contract replaces
+the earlier target based on whole-DOM digests and matching fingerprints. It is
+an intentional architectural change: the build and page reproduce fixed initial
+inputs, bind the complete first frame by reserved engine annotations, then use
+the ordinary engine to update content and replace explicit placeholders.
 
-A picture is accepted only when the parser preserves the structure and text
-that the oracle rendered. The parser and its browser comparisons are the
-independent check of the renderer. HTML repair is also a construction contract
-error for the declared bounded subset, in live and prerendered views alike:
-paragraph closure, repaired table placement, nested anchors/forms/buttons,
-direct list/option/heading closure, children of voids and element children
-inside text-content elements. Legal insertion-mode exceptions come from the
-parser's grammar. These checks retain finite scope facts and the immediate
-parent, never an ancestor list or a scan of the existing tree. Unknown raw
-names retain their grammar-only escape; vocabulary checks belong at literals.
+#### Deterministic bootstrap is an API guarantee
 
-The host template is held to its authored nesting too: a template the parser
-would repair is refused before the app's init. Whitespace after its
-`</body>`, before or after `</html>`, as a file's final newline is, lies
-outside the picture's claim. A browser appends it to the body, where it
-renders nothing, and the producer publishes it unchanged. Any other content
-after `</body>` is repaired markup and refuses the template.
+For the same compiled app, bootstrap configuration and declared mount context,
+the initial engine state, construction order, addresses and logical mount plan
+are fixed. Fresh construction and annotated binding use different executor
+instructions for that same plan; they need not have identical wire bytes.
+The native producer and Wasm page use the same pure app/engine source under
+the supported toolchain, not literally the same executable. Their logical plans
+must be checked for agreement. No answers, user events or environment-dependent
+updates enter before the bootstrap commits.
+Ordinary external input is delivered only after the initial frame is bound.
 
-Dynamic sites receive the context of their enclosing element. Row templates
-are checked once at site construction even for an empty list or table view;
-branches and drawn rows are checked when mounted. A text hole that reads
-something that can change (a layer, a cell, a row) directly in a context
-that admits no text, such as a `<table>`, is refused where it is
-constructed, whatever it holds then: it can come to hold text, so the rule
-follows the program's shape, not its data. Restricted constant text is
-checked when created, and a hole's text when replaced, in the size of the
-new text, without retaining an earlier value. The bounded constructor check is not a claim of
-complete HTML parsing: the independent full parsed-picture check covers
-repairs outside its declared subset. A default mount reaching a construction
-error fails at the app's compile-time mount declaration; later paths fail in
-the ordinary contained turn.
+The deterministic startup entry is the default for new sites. Its view and
+store initializer receive the declared initial route, but are not handed live
+Boot data. They can prepare ordinary immutable descriptions and construct
+fresh state from fixed inputs. There are no hosted page functions and no live
+clock, randomness, URL, storage, locale or viewport reads available to those
+initializers. A callback may return a top-level prepared description; it need
+not rebuild that description every mount. Existing Boot-reading program entries
+remain supported with their current ordinary startup behavior. Eligibility is
+recorded privately by these constructors; authors cannot set a Boolean flag
+on a Boot-reading program to opt it into annotated adoption.
 
-A picture carries what markup can carry, and the element property rows
-(Appendix B) that markup cannot are not rendered. `value` and `checked`
-appear through the attributes the oracle mirrors them to (a `textarea`'s
-value as its text, a controlled `select`'s through its options'
-`selected`); a pointer zone and the two keymap rows have no
-markup and arrive with the mount; and a dialog's or popover's shown state
-is applied after the batch, so a picture shows every controlled dialog and
-popover closed until mount.
+A fixed store initializer creates each instance's own store, table identities
+and state, using the existing generated handles and ordinary engine. This is
+not serializing engine state into HTML and does not depend on #248's compiled
+state optimization.
 
-No event queue accepts interaction with an inert picture before mount. If the
-module or scripting cannot run, the picture remains inert; the root exposes
-its failed state when the runtime can report it, and the app's document gives
-its failure styling and noscript notice.
+The actual root's expanded name and container context must match the declared
+bootstrap root; the build refuses a template with another root and Roc checks
+the measured root facts at mount. Deployment supplies the matched HTML/module
+assets as one compatible build. This is a compatibility contract, not a claim
+that any HTML page generated by some version of the same app is interchangeable.
+The existing versioned protocol remains checked. The tool also stamps a single
+build token into generated frames and their generated loader/manifest, which
+names the immutable module/runtime assets. Check that token before binding;
+a stale or mismatched pair is a compatibility fault, never fresh fallback.
+This identifies the generated build, not a digest or canonicalization of DOM
+content. Serving different bytes under a content-addressed asset name violates
+the deployment contract.
 
-**Target — adoption.** Preserving built node objects is a future capability,
-separate from ordinary replacement. It must meet the following requirements
-before it can replace that startup path.
+The simplest entry has one route and no extra initial data. A multi-route site
+uses the route value declared for that generated page as its initial input.
+The producer records an entry identifier with the frame; the client resolves
+that identifier through the same compiled route catalogue. Both executions
+therefore use the same explicit route and fixed route configuration. The
+browser's current URL is not substituted during adoption. Current URL, query,
+fragment and session data enter in later normal result turns.
 
-Adoption preserves the existing nodes only on the engine's command. The
-build writes versioned node and row-hole claims separately from the owned
-DOM, the mount batch's fingerprint, and a digest of the tree and claim facts
-it expects the browser to expose. Authored comments and attributes remain
-data; their spelling never assigns an adoption role. Before init, the runtime
-measures that same canonical tree and stages the built and measured facts
-with boot bytes, separately from the app-visible Boot. Roc compares those
-facts with its own mount batch and emits adopt or replace. JavaScript never
-turns an adoption into a replacement, patches a mismatch, or judges the facts.
-An assertion that fails after adoption poisons the instance as an executor
-fault; recovery mounts afresh without a picture.
+Do not serialize a user's live Boot or store to obtain determinism. Apps needing
+current browser data request an environment snapshot after bootstrap through
+an ordinary typed one-shot effect. That service samples the existing declared
+storage/environment inputs when its next-task read runs, after the bootstrap
+acknowledgement, and answers with Boot-shaped public data; it follows
+normal admission, refusal, ownership and result-turn rules. Its constructor is
+available with this startup entry; its result cannot change the bootstrap call.
+Other later HTTP, storage, media, time and entropy results use their normal
+channels. Native image/media loading from the rendered document is browser work,
+not an engine effect held behind this barrier. Native specs control later
+result delivery explicitly.
 
-The canonical tree covers namespace URIs, optional prefixes, exact local
-names, every attribute and value, ordinary children and template content,
-text and comments. Its measurement also covers the ordered claim roles and
-logical text boundaries. Live properties changed
-by a page script, CSS, layout and nodes outside the root are outside that
-measurement. Adoption re-applies the batch's attributes, text and properties.
-The canonical form has independent Roc and JavaScript implementations, kept
-in agreement by Chrome differential tests over every maintained app's picture.
-The wire layouts and hash widths land together in Appendix B with the
-producer and consumers; a fingerprint is never an application-state registry.
+#### Bootstrap barrier and first live turn
 
-HTML omits empty text nodes and merges adjacent ones. The renderer therefore
-declares their physical text runs and a Roc-built plan for the logical text
-boundaries. On adoption, Roc explicitly commands any splitting and creation
-of empty text nodes required by that plan. The runtime verifies each claim
-and applies those instructions; it never invents boundaries or repairs a
-mismatch. Correct existing elements, comments and text nodes stay in place.
-A claim's structural position locates an already-decided engine address,
-not an application identity. Temporary claim and text-run data is bounded
-and released when mount completes or faults.
+Current Core.init drains mount-time Self/refusal follow-ups. The new entry must
+not inherit that behavior before adoption: a Self can replace an initial node
+and recycle its address, leaving no matching node for an earlier creation in
+the raw trace. Deterministic final output does not solve that replay problem.
 
-Controlled textarea and select values can require physical markup which differs
-from their ordinary logical children or attributes. The renderer declares any
-control-value text, selected-attribute override or empty-selection option as a
-scaffold, with explicit restoration facts in the measured claim envelope. These
-nodes and attributes have no application identity. On adoption, Roc commands
-removal of declared scaffolds, restoration of logical attributes and construction
-of logical text or comments which the picture could not represent directly.
-It then reapplies the ordinary control properties before effects. The runtime
-never recognizes a scaffold from its name or chooses a control value. Existing
-nodes which already represent the logical frame retain their identity.
+The important boundary is between binding the cold frame and delivering its
+queued follow-ups. Initial effect planning and admission still happen normally.
 
-A malformed adoption marker is reported and staged as absent so a normal mount
-replaces it. A picture for a different boot, a stale frame or a changed measured tree is replaced by Roc's
-verdict. Both spec runners stage these same facts and assert the verdict;
-the browser additionally proves that parsed markup and adopted nodes agree.
+```mermaid
+sequenceDiagram
+    participant Runtime as Browser runtime
+    participant Roc as Page Roc engine
+    participant DOM as Existing page DOM
+    participant Services as Browser services
+
+    Note over Runtime,Services: Runtime stays busy through both synchronous calls
+    Runtime->>Roc: Initialize with the fixed route
+    Note right of Roc: Construct state and plan requests<br/>Queue Self and refusal follow-ups
+    Roc-->>Runtime: Cold batch and private acknowledgement request
+    Runtime->>DOM: Bind the complete frame and restore declared scaffolds
+    Runtime->>DOM: Restore selection and producer-added gates
+    Runtime->>Runtime: Release cold binding facts
+    Runtime->>Services: Perform cold effects and finish batch bookkeeping
+    Note over Runtime,Services: Any synchronous results wait in the bounded input queue
+    Runtime->>Roc: BootstrapCommitted acknowledgement
+    Note right of Roc: Drain queued follow-ups as ordinary turns
+    Roc-->>Runtime: Follow-up batch, possibly with no DOM changes
+    Runtime->>DOM: Apply the complete follow-up batch
+    Runtime->>Services: Perform that batch's effects
+    Runtime->>Runtime: Finish startup and allow ordinary input delivery
+```
+
+No browser task yields between the two calls. Native document resources, such
+as images or video, may already have loaded before this sequence begins.
+
+The new constructor introduces one private acknowledgement, without a second
+effect lifecycle:
+
+1. Construct the fixed initial store, sites and DOM plan. Evaluate initial
+   request plans and apply ordinary admission, ownership and refusal rules.
+   Queue Self/refusal follow-ups normally, but stop before the root drains them.
+   No result reaction, external input or placeholder opportunity runs yet.
+2. Return and apply the entire cold create-or-bind batch, followed by its normal
+   effects. All logical nodes and handlers are bound before those effects run.
+   Requests can start here even if a queued Self will cancel them in step 3;
+   cancellation, handles, counters and result ownership remain ordinary rules.
+3. After the complete batch, effects and release bookkeeping return, answer
+   Roc's private acknowledgement request through the normal ingress. Drain the
+   queued follow-ups with ordinary complete-turn semantics. Apply that call's
+   whole batch and effects. Both startup batches are unmarked. An acknowledgement with no follow-ups or
+   DOM updates still has valid batch framing and completes startup; it cannot
+   depend on at least one Self or refusal being queued.
+4. Finish startup, release temporary indexes and allow normal input delivery.
+   `mount` resolves here; explicit placeholders can still be Waiting. Later
+   results and opportunities enter ordinary turns. No user event is replayed.
+
+Fresh and adopted mounts use this same ordering. The producer captures the cold
+frame after step 1, before acknowledging it. It separately validates the
+acknowledgement in the oracle without performing hosted effects or supplying
+external answers. Do not publish the post-follow-up DOM as the cold frame.
+Existing program entries keep their current lifecycle. This is a deliberate
+startup timing change: current init can cancel a request before the host ever
+performs it, whereas the new entry may perform then cancel that request. An app
+must not rely on cancelling an already issued request to prevent its external
+side effects; a placeholder/readiness condition can defer the request itself.
+
+The acknowledgement is one platform-only occurrence per instance, not an
+app-callable request alias, in-flight slot or callback queue. A duplicate,
+missing-state or out-of-order acknowledgement is a classified protocol fault.
+Every ingress, including file/key payload routes and results, checks the same
+startup state. Synchronous effect answers wait in the runtime's existing bounded
+input queue; acknowledgement precedes their delivery. Normal queue refusal and
+containment still apply. No Roc call reenters command decoding or invalidates a
+buffer still in use. There is no task yield between cold apply and acknowledge.
+
+Producer-added gates are restored after the complete cold DOM binds, before
+node effects (including focus) run. The runtime remains busy until the
+acknowledgement settles, so synchronous focus/change notifications cannot start
+an app turn midway through startup. No browser input task can interleave these
+synchronous calls. The resulting visible controls are usable when mount returns;
+if either call faults, startup containment holds the declared HTML root (or
+its explicit HTML owner for a foreign root) inert until fresh recovery. Native
+interaction is not promised inside a faulted fallback. Restore gates
+by their actual DOM object, never by an address that a Self may recycle.
+
+No dormant-effect start pass, effect-site index, sampled-input copy, speculative
+state or second boxed engine state is introduced. The only additional engine
+state is the bounded startup phase and the ordinary queue it already owns.
+All initial effect kinds keep their normal evaluation and lifetime semantics;
+only delivery of initial follow-ups moves across the cold-batch barrier.
+
+Default-mount and per-entry validation run through acknowledgement, preserving
+fixed request/declaration/follow-up checks. Deferred placeholder bodies retain
+separate activation specs. Do not claim validation of every unused branch.
+
+#### Build every declared entry route by default
+
+`roc signals.roc build` produces annotated prerendered HTML for every declared
+concrete entry route. There is no repeated --picture list in the normal
+workflow. The app supplies one finite typed route catalogue used for entry
+selection, URL construction and build enumeration; the CLI does not crawl links, inspect arbitrary
+Roc functions, or maintain a second route list. A single-page scaffold declares
+only `/`. Direct loads and browser reloads of any catalogue entry receive that
+entry's initial frame and adopt it with the matching app module.
+
+One catalogue supplies both the pages to build and the fixed entry selected
+when each page loads. The normal build stages every declared concrete entry.
+
+```mermaid
+flowchart TB
+    Catalogue["One typed catalogue of concrete entry routes"] --> Build["signals.roc build"]
+    subgraph Staging["Atomic staging"]
+        Pages["Annotated entry pages<br/>for example: /, /about/, /tasks/"]
+        Assets["Shared immutable module and runtime assets"]
+    end
+    Build --> Pages
+    Build --> Assets
+    Pages --> Validate["Validate every entry and check output collisions"]
+    Assets --> Validate
+    Validate --> Publish["Publish dist atomically"]
+    Publish --> Load["Direct load or reload of one entry page"]
+    Load --> Select["Its embedded entry id selects its fixed route"]
+    Select --> Adopt["Construct page state and adopt that entry's frame"]
+```
+
+Dynamic route families need concrete enumeration or a declared shell and hosting
+rule. Query and fragment values are later browser facts, not extra build pages.
+
+Route-specific startup is part of the first design, not a deferred extension.
+An entry binds a public URL path to a fixed initial route/configuration value.
+The engine emits that selected entry's annotations through the same mount.
+Only the bounded entry identifier and necessary public bootstrap facts go into
+HTML; private browser storage and the full live Boot are never captured there.
+No general snapshot of the application store is introduced.
+
+Reuse the current producer and atomic dist staging. Emit a page at each route's
+checked output path, with links to shared content-addressed module/runtime
+assets linked for its depth. Rewrite only generated loader/template references
+and the manifest, preserving the existing Dist boundary: never search/replace
+app-emitted attributes, text, annotation values or startup data. A render/refusal, unsafe path, duplicate output
+or asset collision fails the build without partially publishing dist. Query
+and fragment variants cannot produce conflicting files for one path; they
+normally affect the later live turn, not the fixed path's bootstrap.
+
+Parameterized or data-dependent route families require a finite declared set of
+concrete entries or an explicitly authored static shell. Do not claim that a
+static build enumerates every possible database id or URL. The catalogue selects initial entries and supplies canonical path/link helpers;
+it does not introduce a JavaScript router or automatically replace an app's
+ordinary navigation decisions. App state/history operations choose later views.
+
+For annotated loads, the embedded entry id is authoritative until bootstrap
+commits, even if live query/fragment differs. For a development or --no-prerender
+load, Roc resolves the pathname against declared concrete entries before it
+hands the fixed route value to the app. Query/fragment are not initializer
+inputs. Unknown paths select an explicitly declared fallback entry, or refuse
+entry selection with a classified diagnostic if there is none. A static host
+can serve an explicitly built shell for a dynamic path only through its
+configured fallback/rewrite rule; that shell retains its own entry id. The tool
+does not invent hosting rules or silently assume all unknown URLs mean `/`.
+
+Provide an explicit `--no-prerender` build opt-out. New scaffolds use the eligible
+entry by default. Existing Boot-dependent startup must migrate to a deterministic
+entry plus later facts, or use that explicit opt-out. Default builds must not
+silently omit a declared route or pretend an ineligible program has an adoptable
+picture. Plain/development mounting and old build artifacts remain separately
+defined compatibility paths.
+
+#### Content and placeholders
+
+Content present in the deterministic bootstrap is intended to survive startup.
+This is the default Keep contract for the initial frame; an additional wrapper
+function solely to restate that default is unnecessary.
+
+An explicit placeholder owns temporary static content and a live body. The
+same ordinary initial engine mount draws that static content in the producer
+and browser. There is no special picture-mode application view and no eager
+mount of the live body just to produce the picture. Its appearance is real
+initial UI whose later replacement is intentional.
+
+Both kinds of content participate in the same initial adoption. Only the
+placeholder has a planned later replacement.
+
+```mermaid
+flowchart LR
+    subgraph Before["Before the engine starts"]
+        Keep0["Ordinary content<br/>for example, an existing video"]
+        Static0["Explicit static placeholder<br/>for example, an image"]
+    end
+    subgraph Bound["After whole-frame binding"]
+        Keep1["Same video node"]
+        Static1["Same placeholder nodes"]
+    end
+    subgraph Later["Later ordinary turns"]
+        Keep2["Retained video<br/>ordinary reactive ownership"]
+        Body["Live body mounted in its owning scope"]
+    end
+    Keep0 -->|bind existing node| Keep1
+    Keep1 -->|no declared replacement| Keep2
+    Static0 -->|bind existing nodes| Static1
+    Static1 -->|ready and given an opportunity| Body
+```
+
+Retention does not freeze content: later declared updates and scope disposal
+still apply. A placeholder delays live-body instantiation; its immutable recipe
+may be prepared earlier to establish declared reads.
+
+The app-facing startup surface uses the existing Engine and Html namespaces:
+
+- `Engine.program_startup` and `program_startup_store` receive one typed entry
+  catalogue and initial-route callbacks, without live Boot. An immutable prepared
+  ordinary description can be returned by those callbacks. The catalogue also
+  supplies checked paths for links and the default build enumeration.
+- `Html.Static` placeholder content with checked markup and escaped text, without
+  live handlers, local state, refs or engine effects. Its implementation must
+  lower through ordinary descriptions and the existing renderer; it is not a
+  second generic constructor interpreter.
+- `Html.placeholder` takes nominal props, static content and a deferred live body.
+  Props contain `ready`, default True. Auto progression is the default. The
+  body may return an ordinary prepared Elem, including the existing prepared
+  store-root pattern. Static images/styles may load browser resources normally.
+- A typed environment snapshot request for post-bootstrap facts. Existing
+  ProgramProps declarations continue identifying which storage/media/zone
+  inputs the app needs; they grant no initial access to their values.
+
+Do not add generic activation policies or arbitrary priorities yet. The public
+promise is that an eligible placeholder progresses automatically, not that
+large pure Roc functions can be interrupted.
+
+Authors put shared size/aspect-ratio constraints on ordinary layout containers.
+Use native video poster when the player itself should already exist; use an
+image placeholder when constructing the player should wait. No automatic frame
+extraction, geometry inference or zero-layout-shift guarantee is introduced.
+
+#### Engine annotations and whole-frame adoption
+
+Reserve exact private attribute names for engine-generated node, frame and
+logical-child annotations. Application constructors and literals must reject
+those names; existing authored bootstrap opt-in markers remain separate.
+This deliberately changes the current design rule that all claim roles live
+outside owned DOM. No annotation is an application identity or a public id.
+
+The producer annotates the ordinary initial command output with its engine node
+addresses. Those addresses are valid here because the entire initial execution
+is the same, including keys, branches and allocation order. Generic table keys
+need no new serializer; bootstrap rows can be retained with the rest of the
+frame. After bootstrap, keyed equality and scope identity are exactly the
+existing engine rules. A node id is never inferred from text, DOM position or
+an inspected key.
+
+Element annotations give direct bindings. Parent annotations carry the logical
+child facts already available from the renderer: adjacent/empty text runs,
+comment addresses and control scaffolds. They let Roc command text splitting,
+empty text creation and scaffold restoration without wrapper elements or a
+separate whole-page envelope. Authored comments never acquire an engine role
+from their spelling. The exact private encoding must be specified with the
+wire implementation, using bounded counts and lengths.
+
+Retain the renderer's refusal of opaque `Html.unsafe_html` in a cold frame.
+Executable markup and custom-element behavior that can mutate managed structure
+before binding are outside this entry profile: refuse unsupported declarations
+at build/entry validation, rather than publish an adoptable claim. An explicit
+placeholder can defer such live construction through the ordinary engine, or
+the app can choose plain mounting. Native iframe documents remain separate
+browser-owned content. No shadow-tree or custom-element hydration protocol is
+introduced here.
+
+Roc derives create-versus-bind/assert instructions from the same cold mount
+plan. It does not execute another application view or compare application state.
+Producer creation bytes and page binding bytes may differ; their declared UI,
+addresses and effect stream must agree.
+
+Initial declarations must have one writer per expanded attribute name on each
+element. The deterministic entry rejects duplicate ordinary attribute declarations,
+as properties/listeners already reject conflicting claims. Do not assert each
+write against the final HTML of a last-write-wins sequence: even a deterministic
+`src=a; src=b` cannot bind without repeating a resource setter. This is a narrow
+new entry-profile contract, checked where descriptions/literals enter the engine,
+with the construction site named. The same rule covers template holes and
+static attributes after name expansion. Later ordinary updates remain writes.
+
+Startup performs one bounded annotation traversal, including template content,
+then binds the complete initial command batch to those nodes. It does not
+canonicalize the whole tree, hash it, compare browser snapshots, infer local
+compatibility, or discover replacement regions. Known logical-text/scaffold
+instructions are part of producing the same frame, not mismatch recovery.
+The executor preserves native selection endpoints across the text boundaries
+Roc tells it to normalize, rather than assuming `splitText` preserves them in
+every browser. Capture at most 64 current ranges plus primary direction before
+mutation; map text offsets and container boundaries using only the declared
+partitions, and restore before node effects. This bounded browser state is not
+application state or identity and is released before another Roc call. An
+excess range count is a named startup resource refusal before DOM changes.
+A backward single range needs `setBaseAndExtent` or `collapse` plus `extend`;
+an unsupported direction capability, or a backward/complex multi-range primary
+that those APIs cannot restore without clearing other ranges, refuses before
+normalization. Forward multi-range restoration keeps the primary range last;
+controlled value writes still own their usual selection behavior. No browser
+sniffing or inferred text matching is needed.
+
+The operation is O(initial frame) once. No adoption data is carried on an
+ordinary update path.
+
+The annotated path retains the existing producer limits of 16 MiB for the entire
+page, 262144 physical nodes and depth 1024. Add cold-only limits of 262144 logical
+address bindings (including aliases and omitted text) and 8 MiB aggregate
+annotation values. Count logical and physical resources separately; aggregate
+page bytes still include annotation syntax. Builds refuse excess with the route
+and resource named, leaving dist intact. These are annotated-frame limits, not
+new limits on later ordinary reactive UI.
+
+The executor validates annotation lengths and integer framing before decoding
+lists or indexing. It uses a bounded temporary map, not an array allocated by
+the largest supplied id. Every supplied address must occur in Roc's expected
+binding set; every expected address must bind. Several declared aliases may
+name one physical node where the ordinary plan allows it; one address cannot
+name two nodes. Template content has its own container. Overflow, duplicates,
+missing entries and unexpected format are executor diagnostics, not repair
+requests. Boundary corruption remains out of contract without becoming unchecked
+allocation or an unsafe memory access. Exact private spelling/byte encoding is
+an implementation proof obligation; the limits are chosen here explicitly.
+
+Roc commands adoption and its explicit bind/assert/write operations. The
+runtime resolves annotated addresses and executes them; it does not decide
+reactive identity or choose a fallback. Preconditions include unique ids,
+expected node kinds/names, expected ownership/container relationships and
+complete command bindings. Annotations are checked transport, not permission
+for arbitrary ids to index tables unchecked.
+
+Already represented attributes and text are not rewritten merely to prove
+ownership. In particular, adoption does not detach/reinsert retained elements
+or repeat correct resource source setters. Explicit property/scaffold/control
+commands still run where markup is insufficient. All engine-owned initial
+nodes are bound before initial effects or input delivery. Release the binding
+index before acknowledgement; keep only explicitly bounded gate restoration
+facts until restoration, then release them too. The engine thereafter uses its
+normal id tables, routes and site tree.
+
+#### Contract violations and native behavior
+
+Roc exclusively owns the managed structure. Third-party DOM edits, stripped or
+forged annotations and mismatched deployed assets violate the adoption contract.
+They are not a new input class for a tolerant reconciler. Where executor
+assertions detect a violation, report a classified startup diagnostic, poison
+that instance and offer the existing explicit fresh-mount recovery. Do not
+attempt local repair, retry preparation, expand replacement through active
+siblings or silently reinterpret the page. This is not a security boundary
+against scripts already running in the page.
+
+The contract concerns engine structure and declared values; it does not outlaw
+normal browser-owned media playback, selection or native UI state. Such state
+is retained where no declared Roc write owns it. Roc-controlled values have
+explicit ownership and gating before activation. An arbitrary extension's
+added disabled/inert attribute is outside the supported ownership contract;
+there is no promise to repair it or preserve its meaning.
+
+Native links and declared native content can be useful before the module
+arrives. Roc-dependent controls wait until BootstrapCommitted has settled; no
+events are captured for replay and no attempted interaction activates a body.
+
+The producer's one model walk carries ancestor event-ownership facts and marks
+controlled interactive subtrees under the supported entry profile. Own and inherited handlers,
+controlled properties and managed form behavior count. Gate managed forms and
+editable surfaces that could change engine-owned structure conservatively.
+The entry profile admits native links, media and readable content explicitly;
+forms, controls, editable surfaces and native interaction whose result changes
+managed structure remain gated even when they have no own Roc listener.
+An associated label cannot remain interactive while its target is gated: derive
+that gate from the declared form-control relation in the same bounded producer
+pass/index, or refuse an unsupported relation. Do not infer it by rescanning DOM
+ancestors for each control. Browser-owned playback and selection of declared
+native content remain permitted.
+
+Native associations must stay within the managed root: a label and its target,
+a form and every associated control, and native radio groups cannot connect
+managed content to elements outside that root. The producer and engine own no
+outside elements to gate or restore. In browsers, an external label can toggle
+an inert target, and an external submit button can submit an inert form. The
+app author must keep these relationships inside the root, including when later
+page scripts add elements; startup does not sweep the surrounding document.
+Browser contract probes exercise these external associations to preserve this
+ownership requirement. Within the root, native details controls are gated;
+named details groups are refused because parsing can remove an authored `open`
+attribute through the group's native exclusivity before startup can bind it.
+
+Restore only producer-added inert facts, preserving authored inert/disabled
+values. Do not add disabled as a second producer gate.
+Independent native text/links outside these gated ranges remain available; an
+app placing content under a controlled ancestor cannot claim that content is
+independent of that owner. Producer-inserted gates are scaffolds with explicit
+Roc restoration instructions, never browser-inferred policy.
+
+An HTML root receives no automatic whole-root inert blanket. A non-HTML root
+uses its existing explicitly declared immediate HTML inert owner until startup
+completes; no promise of early native interaction is made within that owner.
+Refuse unsupported control-gating constructions with a named build diagnostic
+rather than silently gating all unrelated content. Test ancestor handlers,
+label/target relationships, authored gates and accessibility exposure. Reject
+unsupported declarations in the entry profile; do not advertise arbitrary mixed
+HTML as supported before those tests pass. Forms retain the existing mounted
+policy of preventing native submit defaults; the pre-engine gate makes that
+handoff explicit rather than advertising working preactivation native forms.
+
+Plain mounting without a picture remains ordinary construction. Legacy
+replacement-only pictures keep their defined path. The new annotated path has
+no automatic mismatch fallback; a loader can explicitly choose a plain mount
+before entering it, and fault recovery creates a fresh instance.
+
+#### Later replacement and automatic progression
+
+All initial retained content is adopted as one frame before any deferred live
+body mounts. There are no half-adopted pending regions, retained picture claims
+waiting for future activation, or cross-call staged bootstrap commits.
+
+A placeholder is then an ordinary owning site: Waiting, Active or Disposed.
+It owns only its live description, static body and readiness bookkeeping.
+Waiting does not retain an earlier store/environment or allocate live-body
+state, subscriptions, refs or requests. The body thunk may nevertheless run to
+prepare its immutable description and declared-read signature, as ordinary
+conditional bodies already can. Auto promises deferred live instantiation, not
+that all CPU in an arbitrary description-building thunk is deferred. Never
+sample a live reading while preparing that recipe. Measure recipe preparation
+separately from mounting; top-level ordinary descriptions can reduce it. Ordinary Changed routing updates its
+readiness through declared reads; a body receives the current environment when
+it mounts. Recipe preparation may happen earlier, independently of mounting.
+
+An eligible Waiting site appears at most once in a FIFO ready queue. True-to-
+false readiness removes it; false-to-true appends it; delivery rechecks readiness
+and owner generation before constructing anything. Active sites ignore later
+readiness changes; ordinary branches dispose them. Removing a waiting site
+unlinks it and releases its description/static scopes without starting work.
+A nested placeholder becomes eligible only when its enclosing live body mounts.
+
+The two boxes inside Waiting are queue membership, not additional lifetime
+phases. The static body remains drawn until a valid opportunity mounts the live
+body or the owning scope is disposed.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Waiting
+    state Waiting {
+        state "Not in the ready queue" as Unqueued
+        state "Queued once in FIFO order" as Queued
+        state InitialReadiness <<choice>>
+        [*] --> InitialReadiness
+        InitialReadiness --> Unqueued: ready is False
+        InitialReadiness --> Queued: ready is True
+        Unqueued --> Queued: ready becomes True
+        Queued --> Unqueued: ready becomes False
+    }
+    Queued --> Active: Opportunity after startup with ready and live owner
+    Waiting --> Disposed: Owning scope disposed
+    Active --> Disposed: Owning scope disposed
+    Disposed --> [*]
+```
+
+Once Active, readiness changes do not send a site back to Waiting. One
+opportunity mounts at most one eligible body, using current state. Nested
+placeholders become eligible when their enclosing live body mounts.
+
+Activation consumes the waiting site's readiness and one-shot body factory.
+The active site owns its live block and transport anchor; it must not retain
+an unused factory that captures the body's original runtime input beside its
+current state. An authored reset or remount recipe retains the values it
+actually needs through its ordinary handler or scope ownership.
+
+Roc requests one cancellable browser-task opportunity while ready work exists.
+Its result enters the normal turn mechanism after BootstrapCommitted. The
+runtime only supplies that opportunity; Roc selects the FIFO owner. One
+opportunity mounts at most one eligible body, replacing its explicit static
+range, then applies normal settling/follow-ups and effects in that complete
+call. No speculative body awaits later DOM acceptance.
+
+This closed platform service has at most one registration per instance,
+including a callback already posted to the input queue. It is not an awaited
+app request and does not consume `max_inflight`; that bound may be zero without
+stalling placeholders. Give it explicit protocol records and counters, owner
+phase/generation checks, cancellation and teardown. It carries no app payload or
+captured environment. A callback arriving at the existing input-queue bound
+causes classified containment, never silent loss or eager activation.
+
+Use one specified browser-task adapter (`MessageChannel`, or `setTimeout(0)`
+when unavailable), with cancellation invalidating its generation. This is
+mechanical effect execution, not a host policy for choosing sites. Idle callback
+availability has no role. Automatic progression means progress as the host
+runs tasks; there is no wall-clock guarantee while a page is suspended or its
+event loop is blocked. The native runner supplies the same occurrence explicitly
+and never activates a body merely because time passed in the test process.
+
+Queue storage follows waiting sites, one entry per eligible site. There is no
+separate cap that activates overflow eagerly. Remove an entry on False or
+disposal; cancel the registration when none remain. Recheck both current
+readiness and the live generation before mounting. Completing BootstrapCommitted
+arms the first registration when the queue is nonempty, even when that acknowledgement had no follow-ups or DOM writes.
+Afterwards, queue transitions arm it when needed, and a delivered opportunity
+arms its successor only after its complete turn settles. This bounds externally retained callbacks independently of placeholder count.
+
+Each replacement costs its own static/live subtree, and unlink is O(1) with
+indexed links. No root/pending-site sweep occurs per opportunity or ordinary
+write. One synchronous body is not preemptible; expensive authors divide work
+at placeholder/component boundaries. Preserve scope disposal, effects,
+reparenting, handles and uniqueness exactly as ordinary branch mounting does.
+
+The private ready-owner index is a compressed radix tree over U64 addresses.
+For Q > 0 live entries it has Q leaves and Q-1 forks, in addition to each owner's
+route path; an empty index retains none. Removing an entry immediately collapses
+its now-unary parent. There are no historical owner records or retained
+peak-capacity slots. Each traversal
+visits at most 64 forks; insertion and removal each use at most two traversals.
+Updates rebuild only that bounded path, preserving changed-set work even in
+compiler shapes where builtin dictionary removal makes the next insertion copy
+all entries (roc-lang/roc#13194). Structural validation and equality walk the
+index only in diagnostics, never on an ordinary update path.
+
+#### Descriptions, instance construction and DOM binding
+
+Description preparation, runtime parameter binding, instance construction and
+DOM binding are distinct phases. Preparing an immutable ordinary view description
+may happen while compiling and may be reused by independent mounts. It samples
+no live state, retains no earlier environment and creates no mounted scope.
+Each instance owns fresh store/table identities and live site storage. An
+optimization must preserve this ownership and in-place update law; serving an
+immortal mounted value is not permission for first-write whole-table copies or
+allocation-counter exemptions.
+
+A placeholder's body may be prepared early to establish declared reads, while
+its state, refs, handlers and effects belong only to its later mounted scope.
+Current state reaches that scope through the normal turn, never a captured old
+store. A static placeholder uses the checked markup lowering and existing
+renderer, without another constructor interpreter.
+
+Row instances may contain dynamic sites already mounted in the cold frame.
+Their inserted siblings can shift the template skeleton's ordinary child
+positions before adoption starts. The renderer therefore supplies explicit
+row-hole targets as bounded frame-local logical ordinals. These transport
+locations do not name app identity or serialize keys. Binding asserts the
+compiled template skeleton and resolves the declared targets, skipping only
+explicitly declared dynamic ranges; it does not rediscover a row by DOM position.
 
 ### Applied in a view transition
 
@@ -4663,7 +5156,13 @@ it fails.
 An `expect-absent` names a locator that another step of the same spec requires
 to match, or says `:never-drawn`; the parser rejects any other, so a misspelt or
 renamed locator fails at parse instead of passing. A marker on an anchored
-locator is also a parse error. Locators are compared exactly as written.
+locator is also a parse error. Locators are compared exactly as written. Suite validation also requires a
+positive observation of every family-marked subject somewhere in that app's
+complete spec suite. It runs before filtering or emission, so selecting one
+story cannot hide missing spelling evidence. A subject never positively drawn,
+written, run or started anywhere needs no vacuous negative assertion. The
+runner's explicit suite-check mode checks syntax and this evidence without
+mounting an engine; parser failures retain their parse classification.
 
 Names in negative and zero-count assertions need evidence before a runner
 can trust their spelling. The program's declarations are the first authority
@@ -4678,8 +5177,8 @@ name on any locator; a positive cleanup count shows a cleanup name; a
 positive interval count or `tick-interval` shows a period. Otherwise the
 negative carries its family marker: `:never-written`, `:never-runs` or
 `:never-started`. A marker on an anchored subject is an error. These markers
-are parser-only, just as `:never-drawn` is; they never change an operation's
-runner meaning. One exhaustive `Scm.evidence` classifies every operation,
+establish the per-spec negative form, with suite-wide positive spelling evidence
+as for `:never-drawn`; they never change an operation's runner meaning. One exhaustive `Scm.evidence` classifies every operation,
 and the locator query and declaration preflight consume its projections.
 Setup has its own exhaustive classification and retains its source position.
 
@@ -4711,11 +5210,12 @@ browser — location and history, title, storage, pending requests, live subscri
 emitted. Because the oracle sees only the wire, a spec that passes natively
 exercises the same protocol the browser runtime consumes.
 
-**Target.** The oracle's configured document renderer also writes the
-prerendered first page. It remains independent of `Core.roc`; Chrome
-differential tests and the engine's digest verdict protect the page from a
-renderer error. Rendering and canonical shape follow one node walk rather
-than separate implementations that could disagree inside the oracle.
+The oracle's configured document renderer also writes the prerendered first
+page, independently of `Core.roc`. **Target:** the same walk emits bounded
+reserved node/child annotations and explicit row-hole/scaffold facts for
+whole-frame binding. Independent parser/browser contracts and authored-tree
+controls check renderer and handoff mistakes. They do not add a runtime digest,
+a JavaScript reactive model or browser-dependent identity.
 
 ### Work assertions
 
@@ -4950,6 +5450,13 @@ of them is platform semantics.
 | [roc-lang/roc#12978](https://github.com/roc-lang/roc/issues/12978) | Since `nightly-2026-11-11-7679cc5`, a method's nominal defaulted props reject `{}` inside a callback stored in a record passed to a generic function | The File Effects test app gives its empty read props the explicit `Engine.ReadProps` type before constructing the callback, preserving the default read bound and every spec |
 | [roc-lang/roc#12949](https://github.com/roc-lang/roc/pull/12949) | Native links now require PIC libraries and PIE startup; roc-fuzz 0.6.0's immutable Linux inputs predate that requirement | The platform builds matching PIC musl inputs with its pinned Zig. Fuzz examples and campaigns always attempt their requested targets; compiler, linker and runtime failures fail the task. Linux needs matching PIC roc-fuzz inputs |
 | [roc-lang/roc#12846](https://github.com/roc-lang/roc/issues/12846) | A record captured by one closure is copied on every update under `--opt=speed/size` in some call shapes | Sites return rebuilt closures from each branch; row sites rebuilt before running a handler |
+| [roc-lang/roc#13087](https://github.com/roc-lang/roc/issues/13087) | Under Boxy (`--specialize=no`, the default for size builds), `Dict.remove` copies its bucket data on every removal, making a sequence of removals quadratic; reproduced on `nightly-2026-11-18-a520eed` | The independent DOM oracle removes row membership through the equivalent `Dict.update` callback returning `Err(Missing)`. Removed keys leave the dictionary, with no tombstones, retained history or shared engine index. The original allocation-scaling guard and all inputs remain unchanged. Restore direct removal after the upstream fix passes those controls |
+| [roc-lang/roc#13221](https://github.com/roc-lang/roc/issues/13221) | On `nightly-2026-11-18-a520eed`, x64mac development builds corrupt interior strings extracted or rejoined after `Str.split_on`; retained lines from repeated `split_first` also reproduce it. Runtime inputs demonstrate lost leading bytes in filename IDs, compiler versions, scaffold lines, reports, requests and paths; the original filename control preserves its bytes on arm64mac and the Nov15 compiler | Validated filename, version and parent boundaries use equivalent `split_first`/`split_last` operations. The private CLI text helper assembles owned UTF-8 parts for affected ASCII-delimited lines, requests and path guards; hidden paths are classified directly from prefixes. No character is invented or repaired, all exact native/CLI checks remain required, and a byte comparison checks generated scaffolds. Remove the helper and workaround notes once the compiler preserves slicing |
+| [roc-lang/roc#13195](https://github.com/roc-lang/roc/issues/13195) | Official artifact `release-fast-e17a7826` and published `nightly-2026-11-18-a520eed` retain hosted imports reachable only from unexported platform provides in development Wasm; the same source on `nightly-2026-11-15-f25da45` drops them | The worker host keeps its closed import vocabulary and refuses native spec-runner I/O. On exactly `nightly-2026-11-18-a520eed`, CLI development builds and repository builders print `SKIP` for that compiler profile and use `--opt=size`, which passes the unchanged worker stories with only the declared worker imports. One complete match table, `cli/compiler-profiles.tsv`, serves the CLI, Roc scripts and direct Node CI driver. Every behavior check remains enabled; results identify the effective size profile, allocation guards use its guarantees, and shared size artifacts are built and measured once. Other compiler versions retry development builds automatically. No host imports, stubs or engine semantics change |
+| [roc-lang/roc#13196](https://github.com/roc-lang/roc/issues/13196) | On `nightly-2026-11-18-a520eed` and official artifact `release-fast-e17a7826`, an optimized native JSON reader carrying text, a position and a set copies the set on each insertion after reading a string. The same function-free, file-free source is linear on `nightly-2026-11-15-f25da45`; this is separate from #13081 | `PortJson.State` is an opaque cursor over one private boxed body. Advancing it allocates a constant-sized box, preserving linear total work at a constant-factor cost on the older compiler. Its dictionary frames retain only open dictionaries' decoded names. The port-json fuzz target bounds cumulative requested bytes as well as peak memory, with large distinct-key fixed inputs; an unboxed cursor returns only after the upstream fix and those guards establish linear work |
+| [roc-lang/roc#13197](https://github.com/roc-lang/roc/issues/13197) | Official artifact `release-fast-e17a7826` segfaults in post-check `lambda_solve` when optimizing the wire and placeholder lifecycle fuzz targets. The identical sources check on both compilers and pass optimized fixed replays on `nightly-2026-11-15-f25da45` | Optimized fixed replays remain required. The shared build-profile policy selects `--opt=size` instead of speed for native fuzz builds on exactly `nightly-2026-11-18-a520eed`, prints the substitution and records the actual profile; unknown compiler versions retry speed. Every member, saved input, model and leak check still runs. A compiler or replay failure remains a failed gate, and no compiler patch is part of the platform |
+| [roc-lang/roc#13217](https://github.com/roc-lang/roc/issues/13217) | On `nightly-2026-11-18-a520eed`, parsing a CBOR `Value` through roc-cbor 0.6.3's generic whole-item entrypoint retains one allocation, even for one integer byte; the same ordinary native program and strict fuzz replay release it on `nightly-2026-11-15-f25da45` | The wire fuzz target validates encoded bytes through `Cbor.Raw.from_bytes`, which enforces the same strict whole-item rules without constructing an unused recursive value tree. Every original input, codec round trip and leak check remains required. Remove the workaround note after the compiler fix; the raw validation remains sufficient for this property |
+| [roc-lang/roc#13194](https://github.com/roc-lang/roc/issues/13194) | On `nightly-2026-11-15-f25da45`, a Wasm dictionary moved through one opaque boxed holder allocates in proportion to all entries when reinserting after removal, in both development and size builds. Native direct-loop and some optimized engine shapes do not reproduce it; the cause is not established | The placeholder ready-owner index uses a private compressed U64 radix tree: at most 64 forks per traversal, at most two traversals per edit, and only live entries retained. Restore the builtin dictionary only after the upstream fix and development/shipping Wasm scaling controls prove that removal/reinsertion no longer copies the whole pending set |
 | [roc-lang/roc#12841](https://github.com/roc-lang/roc/issues/12841) | A list captured by two closures is copied on every update | One closure per site's storage |
 | [roc-lang/roc#12847](https://github.com/roc-lang/roc/issues/12847) | Calling a closure from a borrowed position emits a second copy of its body | Owned child-call loops; code size |
 | [roc-lang/roc#12848](https://github.com/roc-lang/roc/issues/12848) | Every proc gets `inlinehint`; `--opt=size` emits no `minsize` | Code size of larger apps |
@@ -5146,6 +5653,10 @@ ProgramProps := { storage_keys : List(Str) ?? [], session_keys : List(Str) ?? []
 program_boot : ProgramProps, (Boot -> Elem(Root)) -> Program({})
 program_store : ProgramProps, (Boot -> Store(st, h)),
                 (Boot -> Elem(StoreRoot(st))) -> Program(st)         # store held beside the sites
+program_startup : ProgramProps, Entries(route), (route -> Elem(Root)) -> Program({})
+program_startup_store : ProgramProps, Entries(route), (route -> Store(st, h)),
+                        (route -> Elem(StoreRoot(st))) -> Program(st)
+environment : {} -> Ask(Boot, [Refused])         # live facts arrive through an ordinary result
 Root                                          # the top context of a program without a store
 StoreRoot(st)                                 # the top context of a program whose store's storage is st
 Boot := { url : Str ?? "/", storage : List((Str, Str)) ?? [], online : Bool ?? True,
@@ -5160,12 +5671,33 @@ boot_media : Boot, Str -> Try(Bool, [Undeclared])
 boot_session : Boot, Str -> Try(Str, [Missing])
 guard_leave : Signal(ctx, Bool) -> Elem(ctx)
 Paste : [Text(Str), TooLarge]
-Program(st)                                   # opaque; the app binds it as `main` and names st as Store
+Program(st)                                   # opaque; the app binds it as `main`, and st is inferred as the platform's Store
 Program.with_workers : Program(st), List(Registration) -> Program(st)   # the worker catalogue
 Registration                                  # opaque: a task or preparation; Worker makes one
 mounts : Program(st) -> U64                 # check the default first page at compile time
 Program.with_ports : Program(st), List(PortRegistration) -> Program(st) # the ports the page supplies
 PortRegistration                              # opaque: a port's name and shape; Port makes one
+
+# Deterministic initial entries
+EntryPath                                      # checked canonical root-relative path
+EntryPath.from_str : Str -> Try(EntryPath, [InvalidEntryPath(Str)])
+EntryPath.from_quote : Str -> Try(EntryPath, [BadQuotedBytes(Str)])
+EntryPath.text : EntryPath -> Str
+EntryPath.link : EntryPath -> Web.Link
+EntryProps := { namespace : Web.Namespace ?? Html, prefix : Web.Prefix ?? Unprefixed,
+                local : Str ?? "div", fallback : [None, Some(EntryPath)] ?? None }
+Entries(route)                                 # immutable routes, fixed inputs, no live instance storage
+entries : EntryProps, List({ path : EntryPath, route : route }) -> Entries(route)
+    where [route.is_eq : route, route -> Bool, route.to_hash : route, Hasher -> Hasher]
+Entries.path : Entries(route), route -> Try(EntryPath, [NotAnEntry])
+    where [route.is_eq : route, route -> Bool, route.to_hash : route, Hasher -> Hasher]
+
+# Explicit deferred content
+Html.Static                                   # checked fixed markup or escaped text; no live readers
+Html.Static.from_quote : Str -> Try(Html.Static, [BadQuotedBytes(Str)])
+Html.Static.text : Str -> Html.Static
+Html.PlaceholderProps(ctx) := { ready : Signal(ctx, Bool) ?? const(True) }
+Html.placeholder : Html.PlaceholderProps(ctx), Html.Static, (() -> Elem(ctx)) -> Elem(ctx)
 
 # Signals
 const : a -> Signal(ctx, a)
@@ -5411,7 +5943,7 @@ on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> 
 ignore : {} -> Reaction(ctx, a, result)
 on_cleanup : Str, Signal(ctx, a), (a -> List(Command)) -> Elem(ctx)   # an awaited request does not compile
 cleanup : Str -> Elem(ctx)
-Request : [Http({ method : Method, url, headers, body, timeout_ms, cache, credentials }), StorageGet(Str), SessionStorageGet(Str), Timer(U32),
+Request : [Http({ method : Method, url, headers, body, timeout_ms, cache, credentials }), EnvironmentSnapshot, StorageGet(Str), SessionStorageGet(Str), Timer(U32),
        Crypto(CryptoRequest),
        Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32,
               on_dispose : [Stop, Keep], on_cancel : [Stop, Finish],
@@ -5435,7 +5967,7 @@ Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectTex
        ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
        StorageSet(Str, Str), StorageRemove(Str), SessionStorageSet(Str, Str), SessionStorageRemove(Str),
        PortCommand({ port, message, refusal : [None, TooDeep] }), Save({ file : File, name : Str }), ViewTransition(List(Str))]     # the requests that await nothing: a cleanup's plan
-Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
+Result : [Environment(Boot), Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        CryptoKey(CryptoKey), CryptoBytes(List(U8)),
        CryptoSealed({ iv : List(U8), ciphertext : List(U8) }), CryptoFailed(CryptoError),
        Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused,
@@ -5633,7 +6165,7 @@ a leading U+FEFF in names and values, including a worker's hosted arguments.
 Unknown closed-vocabulary names cannot become known names by dropping that
 character. Invalid UTF-8 is rejected at each strict protocol boundary.
 
-This appendix is protocol version **22**. The engine declares it
+This appendix is protocol version **23**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -5660,7 +6192,7 @@ roc-lang/roc#12953 workaround (see [Compiler Limitations](#compiler-limitations)
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (22) |
+| `roc_engine_version` | `() -> u32` | The protocol version (23) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Handle, List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -5740,7 +6272,9 @@ allocations since reset; that is a measurement probe, not protocol.
    the port table, before calling `init()`.
 2. Read the declared storage keys and environment facts; stage the boot
    sections with `payload_reserve`.
-3. `init()`; apply the mount batch.
+3. `init()`; apply the mount batch. For deterministic startup, apply the
+   complete cold DOM, restore producer gates and perform its effects, then send
+   the private acknowledgement before delivering queued ordinary input.
 
 Both buffers are sequences of `tag:u8 len:u32 body:len`. They share one tag
 space. A dash means that section does not occur in that direction.
@@ -5760,6 +6294,7 @@ space. A dash means that section does not occur in that direction.
 | 11 | session-storage | `n:u32 (key:str)*n` | `available:u8 n:u32 (key:str value:str)*n` | `sessionStorage` service; available, no pairs |
 | 12 | protocol | The bounded metadata item below | — | ProtocolFacts appended by the platform root; mandatory |
 | 13 | mount-root | — | `expanded-name` | The actual mount element's namespace URI, optional prefix and exact local name; an HTML `div` for empty driver boot |
+| 14 | startup | `profile:u8`; profile `1` then `root:expanded-name n:u32 (path:str)*n fallback:u32` | `profile:u8`; profile `1` then `mode:u8 entry:u32` | Required for every program; profile `0` is the legacy entry, `1` a deterministic catalogue |
 
 Section 12 is one deterministic CBOR item, encoded with the content-addressed
 roc-cbor 0.6.3 release named in both platform roots. Its root map has exactly
@@ -5798,7 +6333,9 @@ applier implements, and `text_entry_excluded` exactly the runtime's own
 closed list of HTML input types outside text entry, which decides where an
 `outside_text` keymap entry is heard. Any other list refuses the mount, so
 a module cannot silently change what a role does. A contract test also
-compares a built module's facts with the test-owned fixture. Fault codes are fixed by the host, so
+compares a built module's facts with the test-owned fixture. The input exclusion list has no Core constructor counterpart: the runtime's
+keyboard contract exercises every listed excluded type and every text-entry
+control, with omission mutants. Fault codes are fixed by the host, so
 the runtime keeps its own table of their classes, classifies a trap with it
 before any declaration is read (a `boot_keys` trap is contained like any
 other), and refuses `fault_classes` that are not exactly that table in that
@@ -5814,8 +6351,8 @@ and vocabulary checks apply before acceptance; the JavaScript schema reader
 also bounds each array and text length before constructing its value.
 
 Each applicable section is required exactly once, in ascending tag order:
-boot has 1–4, 6–11 and 13; compiled-module declarations have 2, 5, 6, 10, 11 and 12. The pure engine driver
-retains its internal sections 2, 5, 6, 10 and 11; the native runner reads
+boot has 1–4, 6–11, 13 and 14; compiled-module declarations have 2, 5, 6, 10, 11, 12 and 14. The pure engine driver
+retains its internal sections 2, 5, 6, 10, 11 and 14; the native runner reads
 consumer facts directly. Unknown, repeated, out-of-order
 or missing sections are errors; tags are not a compatibility mechanism.
 The length bounds the body exactly, with no trailing bytes. Flags are
@@ -5850,10 +6387,121 @@ checks storage-key membership against the program's declarations. Empty
 boot bytes default every declared media query to false. Media declarations
 reject duplicates, more than 32 queries and query lengths outside 1–256 bytes.
 
+Startup profile `0` has no operands, exactly one byte. Profile `1` declares
+1–4096 concrete canonical root-relative paths, each 1–2048 UTF-8 bytes,
+without query or fragment; their aggregate encoded strings occupy at most
+65,536 bytes. The expanded root is at most 65,536 encoded bytes and the whole
+section at most 262,144 bytes. `fallback` is a catalogue index or `0xffffffff`
+for none. The catalogue rejects duplicate paths and duplicate typed routes.
+Fixed-profile initial environment sections carry neutral defaults; only the
+fresh pathname is used for entry selection. They do not sample live storage,
+clock, entropy, locale, media or zone readers. Those facts are sampled by FX22.
+A fixed boot body is exactly six bytes: profile `1`, mode `0` fresh or `1`
+bind, then its entry index. Entry `0xffffffff` is legal only for fresh mode;
+Roc selects its pathname or the explicit fallback. A bind always names a
+concrete catalogue entry. The profile must match the compiled program and the
+actual root must match its namespace URI, prefix and exact local name. Empty
+driver boot selects the first declared entry and declared root for a fixed
+program. Query and fragment are later environment facts, never entry identity.
+
+The platform's metadata append keeps section 12 before section 14. No field
+is inferred from a URL's asset-directory spelling. A generated module URL's
+explicit `roc-build` query receipt or the loader's `startupBuildToken` identifies
+the build; if both are present they must agree. Frame marker
+`data-roc-frame="1:<entry>:<token>"` must match that receipt and catalogue.
+
 In the port table, `kind` is `1` command, `2` call, `3` subscription;
 `delivery` is `0` for a command or call, `1` every or `2` latest;
 `bound` is n for every, `1` for latest, `0` otherwise. The catalogue's
 existing bounds and validation apply within its section.
+
+### Annotated startup frames
+
+The reserved no-namespace attributes are `data-roc-frame`, `data-roc-node` and
+`data-roc-children`. Their exact local names in another namespace are ordinary
+application attributes. Attribute-name literals refuse reserved spellings;
+computed names can still be explicitly qualified before use, while ordinary
+attribute builders, markup lowering and element construction reject reserved
+no-namespace use. This keeps transport ownership separate from foreign names.
+
+`data-roc-frame` is `1:<entry>:<build-token>`, with a canonical decimal u32 entry
+(no leading zeros) and a nonempty token containing only ASCII letters, digits,
+underscore and hyphen. It occurs only on the declared root. The expected token
+comes from an explicit module URL receipt or mount option, never from a DOM
+hash. The remaining annotation values are canonical padded Base64 of the
+following little-endian records, including zero unused padding bits. A malformed
+encoding, unknown version/flag, duplicate address, missing target, wrong owner,
+trailing bytes or exhausted bound refuses before normalization mutates DOM.
+
+A node record is `version:u8=1 ordinal:u32 aliases:u32+ids holes:u32+ordinals`,
+where each counted list is its u32 length followed by u32 values. Root ordinal
+is zero; other ordinals are frame-local logical positions supplied by the
+producer. They are transport addresses, never application identity. `aliases`
+names engine command addresses for that node and `holes` supplies row-template
+hole targets explicitly, including nested sites whose drawn siblings can shift
+physical child positions. No engine address may occur twice or equal
+`0xffffffff`; address zero is allowed only on the element with root ordinal zero.
+
+A child record has `kind:u8`: `1 ordinal:u32` references an element node record;
+`2` text and `3` comment carry the node fields without the version byte, then
+`text:str`. A child list is `n:u32` followed by exactly n records. The children
+annotation is:
+
+```
+version:u8=1 flags:u8
+ordinary:child-list
+content-present:u8 [template-content:child-list]
+[physical-control-text:str]                 # flags bit 1
+noverrides:u32 (namespace:str prefix:str local:str logical:presence physical:presence)*
+nremove:u32 (ordinary-physical-child-index:u32)*
+```
+
+Flag bit 0 means the producer added an HTML inert gate; bit 1 means a native
+text-control scaffold. No other bits are accepted. Presence is exactly `0`
+absent or `1 value:str` present. Template content exists only for an HTML
+`template`. Overrides assert the producer's physical attributes before restoring
+their declared logical values. Removed children are only the exact producer
+option-selection scaffolds, with their fixed empty value, hidden and selected
+attributes; they are checked before removal.
+
+The producer bounds a page to 16 MiB, physical and logical bindings/aliases to
+262,144, depth to 1024 and aggregate annotation values to 8 MiB. Readers check
+counts against both these bounds and remaining encoded bytes before allocating.
+Text metadata carries exact logical text, including empty and adjacent nodes;
+binding asserts each physical run and normalizes only that declared partition.
+At most 64 native selection ranges are captured before normalization, with
+endpoints and primary direction restored when the standard API can express
+them, without user-agent sniffing. Backward single ranges use
+`setBaseAndExtent` or `collapse` plus `extend`; missing required capabilities
+and backward/complex multi-range primaries refuse before normalization rather
+than losing ranges or flipping direction.
+Indexes and range maps are released when binding completes. The runtime keeps
+only its ordinary live node/template references afterward. Template definitions
+remain pure checked shapes while adopting; their detached DOM clone skeleton is
+materialized only if a later fresh `INST` needs it, avoiding duplicate resource
+loads during adoption.
+
+Annotated frames refuse executable/custom-element content, inline handlers,
+opaque HTML, declarative shadow-root templates and HTML `selectedcontent` whose
+browser-owned cloning changes authored children before startup. Named HTML
+`details` groups are refused because native exclusivity can remove authored
+`open` attributes while parsing. These rules cover dynamic attribute writers
+even when their initial value is absent. A placeholder
+can defer such construction until the ordinary live phase, or the site can use
+plain mounting. Initial binding never attempts to adopt a guessed replacement
+for those children. The Core adopted-mode check and independent renderer each
+enforce their part of this policy. The native producer first finishes its
+ordinary cold mount and acknowledgement, retaining only the plain oracle
+model and decoded cold effects after that engine instance is dropped. It then
+constructs a fresh binding instance, checks its commands against that model
+through `Dom.bind_cold`, and
+compares the ordered effect traces, preserving every operand and request
+address while allowing only the fresh/bind startup mode to differ. It
+acknowledges that instance before publishing. This catches an unsupported
+dynamic writer
+whose absent initial value leaves no physical attribute in the model, without
+keeping or serializing mounted engine state. A diagnostic rendering in Plain
+mode retains its ordinary meaning.
 
 ### Work record
 
@@ -5886,8 +6534,12 @@ that has run, in first-run order, with its run count.
 | 46 | Guard commands (`GUARD`, opcode 25), excluded from `patches_emitted` |
 | 47 | Transfer progress reports delivered (`effects_progress`), including those withheld by `keep_current`; excludes replaced reports and does not increment final results (`effects_delivered`) |
 | 48 | `COMMENT` commands emitted (opcode 26), counted separately from text-node commands |
+| 49, 50, 51 | `startup`, `startup_ack`, `startup_complete`: commands 28, 29 and 30 |
+| 52 | `opportunity_commands`: request/cancel commands 31 |
+| 53, 54 | `opportunity_requested`, `opportunity_cancelled`: one task registration armed/cancelled |
+| 55, 56 | `opportunity_delivered`, `opportunity_stale`: valid occurrences and cancelled/old generations |
 
-Index 0 is unused; the record has 49 entries, indices 0 through 48. The metric
+Index 0 is unused; the record has 57 entries, indices 0 through 56. The metric
 names the spec language accepts map onto these indices (`platform/Scm.roc`, `metric_names`).
 
 ### Event records
@@ -5948,6 +6600,7 @@ An event is `event(node, handler)` with the payload staged first:
 | 28 | `bytes:rest` (raw) | `CryptoBytes` (random, digest or authenticated plaintext) |
 | 29 | `iv:12 raw bytes ciphertext:rest` (at least 16 bytes) | `CryptoSealed`; ciphertext includes the 128-bit GCM tag |
 | 30 | `reason:u8` | `CryptoFailed`: 1 Unavailable, 2 TooLarge, 3 InvalidParameters, 4 NotAuthentic, 5 Refused, 6 Failed; exactly two bytes including tag |
+| 31 | Environment sections 1–4 and 6–11, in ordinary boot framing | `Environment(Boot)` from FX kind 22; no mount-root or startup section |
 
 A result payload that does not follow this table (unknown tag, bytes after a
 bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file
@@ -5955,6 +6608,13 @@ failure other than `1`–`3`, a digest that is not 32 bytes, a port failure othe
 than `1`–`3`, a port answer, job answer or fetched body whose file count is not
 the handles staged with it, a truncated HTTP record, text that is not UTF-8) is
 a `contract` fault.
+
+Private adapter events also use node `0xffffffff`, handler `0`: exactly `[254]`
+acknowledges a pending cold batch; `[255] generation:u64` supplies a placeholder
+task occurrence. A repeated/nonpending acknowledgement, an opportunity before
+acknowledgement, or malformed private framing is a contract error. An old
+cancelled generation is counted stale and reaches no owner. These are ordinary
+page calls, never app-facing requests or worker results.
 
 Progress uses the same effect node and request id as its final result. Unknown
 directions, unknown total flags, nonzero Unknown totals, truncation or trailing
@@ -6023,13 +6683,30 @@ command batches and have no header.
 | 25 | `GUARD` | `on:u8`, strictly `0` or `1`; performed with effects, at most once per turn |
 | 26 | `COMMENT` | `node parent before data:str` — an authored static comment |
 | 27 | `UNSENT` | `port:str reason:u8` — a port command not sent, in its place; `reason` is strictly `1`, a message nested past the port format's 512 containers. Performed with effects as `PORT` is: the runtime calls no handler and reports it to the console and `onPortFault` (`kind` `"command"`) |
+| 28 | `STARTUP` | `mode:u8 entry:u32` — first command of an unmarked cold batch, fresh `0` or bind `1` |
+| 29 | `STARTUP_ACK` | No operands; last command of that cold batch |
+| 30 | `STARTUP_COMPLETE` | No operands; last command of the unmarked acknowledgement batch, including a quiet acknowledgement |
+| 31 | `OPPORTUNITY` | `action:u8 generation:u64`, action `0` cancel or `1` request; nonzero monotonic generation, one registration per instance |
+
+The startup cold plan contains the same ordinary construction commands in
+fresh and bind modes. Binding asserts and attaches the whole annotated frame;
+it performs no application-state diff or regional repair. All cold effects run
+after its complete DOM plan and before acknowledgement. Synchronous answers
+wait in the existing bounded input queue until `STARTUP_COMPLETE`. The private
+acknowledgement drains initial follow-ups, so a request issued in the cold plan
+is physically issued before a follow-up can cancel it. Opportunity delivery
+rechecks readiness and lifetime in Roc, selects one FIFO owner and runs that
+replacement as one ordinary turn. It does not consume `max_inflight` and does
+not run a body early when waiting work grows. The adapter supplies a cancellable
+MessageChannel task (setTimeout(0) fallback); manual runners hold it until an
+explicit `(run-opportunity)`.
 
 `before = 0` appends to `parent`'s explicitly selected child container;
 otherwise the node is inserted before
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
-the batch is applied and performed after it, as are 19, 20 and 27 (a save's
+the batch is applied and performed after it, as are 19, 20, 27 and 31 (a save's
 file is resolved when the batch is applied). For a marked batch starting a
-view transition, the first read instead performs 13–17, 19, 20, 25 and 27 before
+view transition, the first read instead performs 13–17, 19, 20, 25, 27 and 31 before
 DOM application; the second read applies DOM and then performs `REF` and
 queued shown-property work, each class in stream order. See
 [Applied in a view transition](#applied-in-a-view-transition) for the
@@ -6067,6 +6744,7 @@ an earlier command. Scroll end is resolved at perform time.
 | 19 | `text:str html:u8 [html:str]` | Clipboard write; flag `0` plain text, `1` text and HTML; answers tag 23 or 24 |
 | 20 | — | StorageWriteFailures occurrence subscription; answers tag 25 one task after a failed write |
 | 21 | `operation:u8 operands` | Crypto operations, below; scoped and awaited |
+| 22 | — | Declared environment snapshot sampled in its next-task read, answered with tag 31; scoped and awaited, with ordinary typed Refused at the in-flight bound |
 
 Crypto operands use `bytes` as a u32 length followed by raw bytes. Operation
 1 is random bytes, `count:u64`; 2 is derive key, `hash:u8 iterations:u32
