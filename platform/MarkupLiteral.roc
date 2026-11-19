@@ -6,6 +6,7 @@ import Spelling
 import parser.Html as ParsedHtml
 import parser.Svg as ParsedSvg
 import parser.Markup
+import parser.Parser
 
 ## Compile checked markup to a small immutable constructor plan. Only this
 ## compile path sees parser source and syntax; bound holes keep ordinary signals.
@@ -282,12 +283,13 @@ problem_words = |problem| match problem {
 		"<${short_text(element)}> has no attribute ${sample(attribute)}${hint}"
 	}
 	InvalidValue({ attribute, value: excerpt, expected }) => {
-		value = Str.from_utf8_lossy(excerpt.bytes)
-		hint = match expected {
-			Keyword(words) => Spelling.suggest(value, words)
-			_ => ""
-		}
-		"${sample(value)} is not a value of ${short_text(attribute)}; expected ${grammar_words(expected)}${hint}"
+		hint = if excerpt.total_bytes == excerpt.bytes.len() {
+			match expected {
+				Keyword(words) => Spelling.suggest(Str.from_utf8_lossy(excerpt.bytes), words)
+				_ => ""
+			}
+		} else ""
+		"${excerpt_sample(excerpt)} is not a value of ${short_text(attribute)}; expected ${grammar_words(expected)}${hint}"
 	}
 	InvalidChildren({ element, expected }) => "<${short_text(element)}> requires ${children_words(expected)}"
 	Unsupported(note) => "unsupported markup: ${Str.inspect(note)}"
@@ -356,6 +358,21 @@ name_label : Markup.Name -> Str
 name_label = |name| match name.prefix {
 	Unprefixed => "<${short_text(name.local)}>"
 	Prefix(value) => "<${short_text(value)}:${short_text(name.local)}>"
+}
+
+## An owned excerpt may end within a UTF-8 scalar. Display only its valid
+## prefix, and retain the parser's truncation fact rather than inventing text.
+excerpt_sample : Parser.Excerpt -> Str
+excerpt_sample = |excerpt| {
+	var $bytes = excerpt.bytes
+	while Bool.True {
+		match Str.from_utf8($bytes) {
+			Ok(text) => return if (excerpt.total_bytes > $bytes.len()) "${Str.inspect(text)}…" else Str.inspect(text)
+			Err(_) => {
+				$bytes = $bytes.drop_last(1)
+			}
+		}
+	}
 }
 
 sample : Str -> Str
@@ -463,4 +480,51 @@ expect {
 expect {
 	plan = MarkupLiteral.compile(["<p>", "</p>"], HtmlFragment)?
 	MarkupLiteral.bind_static(plan, ["<>&"].iter()) == ["<>&"]
+}
+
+## Sole holes remain inside authored formatting, anchor and form parents.
+## Each reference is a constructor tree, independent of the parser's slots.
+expect {
+	["strong", "a", "form"].all(
+		|name| {
+			tag = Web.Tag.from_str(name) ?? crash "fixed authored HTML name"
+			plan = MarkupLiteral.compile(["<section><${name}>", "</${name}></section>"], HtmlFragment) ?? crash "fixed authored literal"
+			actual = MarkupLiteral.render(plan, [Engine.const("<>&")])
+			expected = Engine.element("section", [], [Engine.element(tag, [], [Engine.text_s(Engine.const("<>&"))])])
+			Core.take_cmds(Core.mount(actual), []).1 == Core.take_cmds(Core.mount(expected), []).1
+		},
+	)
+}
+
+## Adjacent holes stay separate children of the authored formatting element.
+expect {
+	plan = MarkupLiteral.compile(["<section><strong>", "", "</strong></section>"], HtmlFragment)?
+	actual = MarkupLiteral.render(plan, [Engine.const("first"), Engine.const("second")])
+	expected = Engine.element("section", [], [Engine.element("strong", [], [Engine.text_s(Engine.const("first")), Engine.text_s(Engine.const("second"))])])
+	Core.take_cmds(Core.mount(actual), []).1 == Core.take_cmds(Core.mount(expected), []).1
+}
+
+## Nested formatting and fixed text keep both holes in their written order.
+expect {
+	plan = MarkupLiteral.compile(["<section><strong>before<em>", "</em>middle", "after</strong></section>"], HtmlFragment)?
+	actual = MarkupLiteral.render(plan, [Engine.const("inner"), Engine.const("outer")])
+	expected = Engine.element("section", [], [Engine.element("strong", [], [Engine.text("before"), Engine.element("em", [], [Engine.text_s(Engine.const("inner"))]), Engine.text("middle"), Engine.text_s(Engine.const("outer")), Engine.text("after")])])
+	Core.take_cmds(Core.mount(actual), []).1 == Core.take_cmds(Core.mount(expected), []).1
+}
+
+## A bounded parser excerpt still says that the authored value was longer.
+expect {
+	match MarkupLiteral.compile(["<input disabled='${Str.repeat("x", 100)}'>"], HtmlFragment) {
+		Err(BadLiteral(note)) => note == "line 1, column 8: ${Str.inspect(Str.repeat("x", 40))}… is not a value of disabled; expected \"\", \"disabled\""
+		Ok(_) => False
+	}
+}
+
+## A scalar cut by the parser's byte bound is omitted, never replaced by a
+## character that the app author did not write.
+expect {
+	match MarkupLiteral.compile(["<input disabled='${Str.repeat("a", 38)}🚀tail'>"], HtmlFragment) {
+		Err(BadLiteral(note)) => note == "line 1, column 8: ${Str.inspect(Str.repeat("a", 38))}… is not a value of disabled; expected \"\", \"disabled\""
+		Ok(_) => False
+	}
 }
