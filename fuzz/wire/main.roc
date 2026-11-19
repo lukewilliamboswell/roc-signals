@@ -234,8 +234,11 @@ test! = |input| {
 	match rich.value {
 		Ok(value) => match WorkerCodec.try_encode(value) {
 			Ok(payload) => {
-				well_formed : Try(Cbor.Value, _)
-				well_formed = Cbor.parse(payload)
+				# TODO(https://github.com/roc-lang/roc/issues/13217): remove this
+				# workaround note once the compiler fix is pinned. Raw checks the
+				# same strict whole item without constructing an unused Value tree.
+				well_formed : Try(Cbor.Raw, _)
+				well_formed = Cbor.Raw.from_bytes(payload)
 				if well_formed.is_err() {
 					crash "an encoded Rich is not a CBOR item"
 				}
@@ -271,8 +274,8 @@ test! = |input| {
 				Err(TooDeep) => crash "a decoded Filed, which cannot nest, is refused as too deep"
 				Err(NanKeys) => crash "a decoded Filed, which has no dictionary, holds two NaN keys"
 			}
-			well_formed : Try(Cbor.Value, _)
-			well_formed = Cbor.parse(again.bytes)
+			well_formed : Try(Cbor.Raw, _)
+			well_formed = Cbor.Raw.from_bytes(again.bytes)
 			if well_formed.is_err() {
 				crash "an encoded Filed is not a CBOR item"
 			}
