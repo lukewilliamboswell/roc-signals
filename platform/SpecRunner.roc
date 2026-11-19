@@ -6015,9 +6015,14 @@ SpecRunner := [].{
 	}
 
 	## A spec's id: its file name without the directory or `.scm`.
+	## TODO https://github.com/roc-lang/roc/issues/13221: split_on().last()
+	## corrupts long interior strings in x64mac dev; split_last preserves them.
 	id_of : Str -> Str
 	id_of = |path| {
-		base = path.split_on("/").last() ?? path
+		base = match path.split_last("/") {
+			Ok(parts) => parts.after
+			Err(_) => path
+		}
 		base.drop_suffix(".scm")
 	}
 
@@ -8206,3 +8211,7 @@ expect {
 		mutants.all(|changed| !SpecRunner.startup_effects_match({ fresh, bound: changed })) and
 			!SpecRunner.startup_effects_match({ fresh: bound, bound })
 }
+
+## Filename IDs preserve long and Unicode components, with identical suffix
+## rules for basenames, directory paths, empty components and repeated suffixes.
+expect ["counter.scm", "specs/round-trip-search-on-the-timeline.scm", "rép/λ-long-identifier-with-unicode.scm", "a/", "a/.scm", "a/x.scm.scm", "a/no-suffix"].map(SpecRunner.id_of) == ["counter", "round-trip-search-on-the-timeline", "λ-long-identifier-with-unicode", "", "", "x.scm", "no-suffix"]
