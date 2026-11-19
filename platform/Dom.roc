@@ -608,7 +608,10 @@ Dom := [].{
 		} else {
 			site = site1 - 1
 			{ list, prev } = rows.replace(site, Dict.empty()) ?? crash "row"
-			{ nodes, statics: statics2, rows: list.set(site, prev.remove(id.to_u64())) ?? crash "row", tpls, root, documents, observed_count, transitions }
+			# TODO(https://github.com/roc-lang/roc/issues/13087): use remove once
+			# Boxy consumes its bucket data without copying the whole membership.
+			# update with Err(Missing) has the same exact-key removal semantics.
+			{ nodes, statics: statics2, rows: list.set(site, prev.update(id.to_u64(), |_prior| Err(Missing))) ?? crash "row", tpls, root, documents, observed_count, transitions }
 		}
 	}
 
@@ -2024,6 +2027,26 @@ Dom := [].{
 		d6 = Dom.forget_subtree(d5, parent)
 		actual = { parent: d6.statics.get(1)?, row: d6.statics.get(2)?, ref: d6.statics.get(3)?, members: (d6.rows.get(0)?).len() }
 		actual == { parent: 0, row: 0, ref: 0, members: 0 }
+	}
+
+	## Private alias teardown preserves other exact members and sites; repeating
+	## it for an unbound id is inert, and rebinding restores that member.
+	expect {
+		(d1, first) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "li" })
+		(d2, second) = Dom.add_node(d1, { ..Dom.empty_node, tag: "li" })
+		(d3, third) = Dom.add_node(d2, { ..Dom.empty_node, tag: "p" })
+		bound = Dom.set_row(Dom.set_row(Dom.set_row(d3, 2, first, 0), 3, second, 0), 4, third, 1)
+		removed = Dom.unbind(bound, 2)
+		inert = Dom.unbind(Dom.unbind(removed, 2), 99)
+		restored = Dom.set_row(inert, 2, first, 0)
+		actual = {
+			remaining: removed.rows.get(0)?,
+			other_site: removed.rows.get(1)?,
+			unbound: removed.statics.get(2)?,
+			inert: inert == removed,
+			restored: restored.rows.get(0)?,
+		}
+		actual == { remaining: Dict.single(3.U64, {}), other_site: Dict.single(4.U64, {}), unbound: 0, inert: Bool.True, restored: Dict.single(3.U64, {}).insert(2, {}) }
 	}
 
 	## Namespace URIs are identity data, independent from the engine's namespace
