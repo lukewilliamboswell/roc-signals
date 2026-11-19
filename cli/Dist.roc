@@ -8,6 +8,7 @@ import cli.Stdout
 import Bundle
 import Compiler
 import Project
+import Text
 
 ## `build`: the app ready to deploy, in `dist/`. The page goes to
 ## `dist/index.html`; the app's module (built with `--opt=size`), the
@@ -273,7 +274,13 @@ Dist :: [].{
 		if Path.exists!(Path.utf8(target))? {
 			return Err(OutputCollision({ first: "already staged filesystem target", second: file.path }))
 		}
-		Path.create_all!(Path.utf8(Str.join_with(target.split_on("/").drop_last(1), "/")))?
+		# TODO https://github.com/roc-lang/roc/issues/13221: joining split_on
+		# components corrupts long staging paths in x64mac development builds.
+		parent = match target.split_last("/") {
+			Ok({ before, .. }) => before
+			Err(_) => crash "Dist.stage_file: staged target must have a parent"
+		}
+		Path.create_all!(Path.utf8(parent))?
 		Path.write_bytes!(Path.utf8(target), file.bytes)?
 		Ok({})
 	}
@@ -282,12 +289,14 @@ Dist :: [].{
 	## drive syntax and filesystem-reserved spellings before writing a file.
 	validate_output_path : Str -> Try({}, [UnsafeOutputPath(Str)])
 	validate_output_path = |path| {
-		parts = path.split_on("/")
+		# TODO https://github.com/roc-lang/roc/issues/13221: the checks must
+		# see every authored byte, including a long component's first byte.
+		parts = Text.split(path, '/')
 		if parts.is_empty() or parts.any(|part| part.is_empty() or part == "." or part == ".." or part.ends_with(".") or part.ends_with(" ") or part.to_utf8().any(|byte| byte < 32 or byte == 127 or [':', '\\', '<', '>', '"', '|', '?', '*'].contains(byte))) {
 			return Err(UnsafeOutputPath(path))
 		}
 		for part in parts {
-			stem = Dist.output_key(part.split_on(".").first() ?? crash "Dist.validate_output_path: nonempty component")
+			stem = Dist.output_key(Text.split(part, '.').first() ?? crash "Dist.validate_output_path: nonempty component")
 			if ["con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9", "com¹", "com²", "com³", "lpt¹", "lpt²", "lpt³"].contains(stem) {
 				return Err(UnsafeOutputPath(path))
 			}
@@ -316,7 +325,9 @@ Dist :: [].{
 		}
 		for file in files {
 			var $prefix = ""
-			for part in Dist.output_key(file.path).split_on("/").drop_last(1) {
+			# The owned components also preserve long file/directory prefixes
+			# under the compiler workaround used by validate_output_path.
+			for part in Text.split(Dist.output_key(file.path), '/').drop_last(1) {
 				$prefix = if ($prefix.is_empty()) part else "${$prefix}/${part}"
 				match $known.get($prefix) {
 					Ok(first) => return Err(OutputCollision({ first, second: file.path }))
@@ -460,3 +471,11 @@ expect Dist.validate_outputs([{ path: "a/one/index.html", bytes: [] }, { path: "
 
 ## A lexical neighbour cannot hide an earlier file/directory prefix conflict.
 expect Dist.validate_outputs([{ path: "a", bytes: [] }, { path: "a-file", bytes: [] }, { path: "a/b/index.html", bytes: [] }]).is_err()
+
+## Long components retain reserved-name checks and file/directory collisions.
+expect {
+	parent = "assets/long-directory-with-more-than-24-bytes"
+	Dist.validate_output_path("assets/CON.long-extension-with-more-than-24-bytes").is_err() and
+		Dist.validate_outputs([{ path: parent, bytes: [] }, { path: "${parent}/file.txt", bytes: [] }]).is_err() and
+			Dist.validate_outputs([{ path: "${parent}/one.txt", bytes: [] }, { path: "${parent}/two.txt", bytes: [] }]).is_ok()
+}
