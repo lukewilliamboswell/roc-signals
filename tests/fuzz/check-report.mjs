@@ -6,6 +6,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { effectiveProfile } from "../compiler-profile.mjs";
 
 const JSON_LIMIT = 32 * 1024 * 1024;
 const INPUT_LIMIT = 1024 * 1024;
@@ -84,7 +85,7 @@ function checkTrace(trace, observations) {
 function nativeHost() {
   if (process.platform === "darwin" && process.arch === "arm64") return "arm64mac";
   if (process.platform === "linux" && process.arch === "x64") return "x64musl";
-  throw new Error("roc-fuzz 0.6.1 has no native platform for this host");
+  throw new Error("roc-fuzz 0.7.0 has no native platform for this host");
 }
 
 // Covered and plain profiles use exactly this validator. Expected names and
@@ -142,7 +143,7 @@ export function compareProfiles(covered, plain) {
 }
 
 function argsOf(argv) {
-  const known = new Set(["report-dir", "target", "profile", "binary", "check-exit", "build-exit", "build-log", "check-log", "compiler-version", "build-cwd", "build-batch-ns", "check-batch-ns"]), options = {};
+  const known = new Set(["report-dir", "target", "profile", "binary", "check-exit", "build-exit", "build-log", "check-log", "compiler-version", "build-cwd", "build-batch-ns", "check-batch-ns", "member-entry"]), options = {};
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index].replace(/^--/, "");
     if (key === "build-command") {
@@ -161,20 +162,24 @@ async function main(argv) {
   let options;
   try {
     options = argsOf(argv);
-    need(options.profile === "fixed-examples-plain", "the smoke facade requires the plain fixed profile");
+    const optimizer = effectiveProfile({ compiler: options["compiler-version"], target: "native-fuzz", requested: "speed" });
+    const profile = optimizer === "speed" ? "fixed-examples-plain" : `fixed-examples-plain-${optimizer}`;
+    need(options.profile === profile, "the smoke facade requires the actual plain fixed profile");
     need(options["build-exit"] === "0", `compiler/linker exited ${options["build-exit"]}`);
     const binary = path.resolve(options.binary), cwd = path.resolve(options["build-cwd"]);
     const entry = options.buildCommand[4];
     const output = options.buildCommand[5];
-    const expected = ["build", "--opt=speed", "--timings", entry, output];
+    const expected = ["build", `--opt=${optimizer}`, "--timings", entry, output];
     need(options.buildCommand.length === expected.length + 1 && isDeepStrictEqual(options.buildCommand.slice(1), expected), "unexpected smoke compiler flags");
     need(typeof output === "string" && output.startsWith("--output=") && path.resolve(cwd, output.slice(9)) === binary, "smoke output path mismatch");
     need(typeof entry === "string" && entry.endsWith(".roc") && !path.isAbsolute(entry) && path.resolve(cwd, entry).startsWith(cwd + path.sep), "missing relative target entry");
+    const memberEntry = options["member-entry"];
+    need(memberEntry.endsWith(".roc") && !path.isAbsolute(memberEntry) && path.resolve(cwd, memberEntry).startsWith(cwd + path.sep), "missing relative property source");
     const checkExit = Number(options["check-exit"]);
     need(Number.isInteger(checkExit), "invalid check exit status");
     const result = await validateReport({ reportDir: options["report-dir"], target: options.target, profile: options.profile, binary, exitCode: checkExit });
     const { semantics: _semantics, ...summary } = result;
-    summary.build = { instrumentation: false, optimizer: "speed", command: options.buildCommand, cwd, compiler_version: options["compiler-version"], entry_sha256: await hashFile(path.join(cwd, entry)), log_sha256: await hashFile(options["build-log"]), check_log_sha256: await hashFile(options["check-log"]), build_batch_ns: integer(BigInt(options["build-batch-ns"]), "build batch duration").toString(), check_batch_ns: integer(BigInt(options["check-batch-ns"]), "check batch duration").toString() };
+    summary.build = { instrumentation: false, optimizer, command: options.buildCommand, cwd, compiler_version: options["compiler-version"], entry_sha256: await hashFile(path.join(cwd, entry)), member_entry: memberEntry, member_entry_sha256: await hashFile(path.join(cwd, memberEntry)), log_sha256: await hashFile(options["build-log"]), check_log_sha256: await hashFile(options["check-log"]), build_batch_ns: integer(BigInt(options["build-batch-ns"]), "build batch duration").toString(), check_batch_ns: integer(BigInt(options["check-batch-ns"]), "check batch duration").toString() };
     // This records the known entry and command, not a discovered dependency
     // graph or executable cache. Final matched proofs supply frozen manifests.
     fs.writeFileSync(path.join(path.dirname(path.resolve(options["report-dir"])), "validation.json"), stringify(summary) + "\n");

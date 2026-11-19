@@ -1,0 +1,2 @@
+## Private property modules shared by standalone fuzz apps and repository suites.
+package [FuzzMarkupProperty] { fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.7.0/HBigHQhVZWEF2EkLxpYK35u8P6UNsAmPYxpNFTxXK1Br.tar.zst", parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.5/822J9njyNR1vgyX1KG4ck496dBx3AnLfvn2zHXn15Ksw.tar.zst", pf: "../../platform/main-fuzz.roc" }

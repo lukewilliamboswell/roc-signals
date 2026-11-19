@@ -710,8 +710,9 @@ that answers them.
 
 ## Fuzzing
 
-Every fuzz target is an ordinary [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz)
-app, whose platform (`fz`) is a roc-fuzz release. There are two kinds.
+Every fuzz property has an ordinary [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz)
+app using the published 0.7.0 platform (`fz`). Its implementation and saved
+inputs live beside the modules it tests. There are two kinds.
 
 The platform's own targets import the engine package,
 `platform/main-fuzz.roc`, as `pf`; they are its only users. They live under
@@ -770,8 +771,23 @@ not its inputs, carry the value.
 
 ### What runs where
 
-Every target is registered in `Targets.fuzz_targets`, and every run starts
-from that registry. A target's fixed examples are its declared examples
+Every member is registered in `Targets.fuzz_targets`, with its standalone
+app, canonical property module and suite root, and every run starts from that
+registry. Six suite apps share builds across the 30 members: rendering,
+lifecycle, codecs, syntax, example text and example data. The examples still
+import only their own pure modules. A `fuzz-package.roc` manifest exposes
+private property modules to a suite; it adds no application API and does not
+ship in the examples archive.
+
+The driver builds each selected suite once, verifies its complete
+`--list-targets` inventory, then selects each member with `--target=NAME`.
+Members retain their names, declared examples, saved input bytes, models,
+corpora, baselines and report directories. Named selection builds only the
+suites it needs. CI shards assign whole suites, so a suite is compiled once
+across the six shards. Testing each suite root includes its members' top-level
+`expect`s.
+
+A target's fixed examples are its declared examples
 and its saved regressions (`Fuzz.saved`, in the target's source); a replay
 of them shows the target compiles, links and runs, and finds nothing new.
 Finding new inputs is a campaign's job.
@@ -788,10 +804,10 @@ inside the measured region.
 
 | Where | What runs | Build | How long |
 |---|---|---|---|
-| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in six shards (`fuzz-smoke -- --shard K/6`), beside Check (`check -- --without-fuzz`, in parts) | Plain `--opt=speed` | Estimated from the figures below at 15 to 30 minutes a shard, the one with `structure` the longest; each shard is allowed 60 |
-| `blueprint run check` | The same replays as CI's Fuzz smoke job, every target, in one run | Plain `--opt=speed` | Its compilers dominate: estimated at 25 to 40 minutes on an Apple-silicon Mac that compiles one target at a time |
-| `blueprint run fuzz-smoke` | Every target's fixed examples, or those named, or one shard | Plain `--opt=speed` | As `check`'s, or a few seconds for one platform-free target |
-| `blueprint run check-slow`, local only | Every target's fixed examples on the build a campaign explores | Instrumented `--fuzz` | About a third longer to compile than the plain builds |
+| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in six shards (`fuzz-smoke -- --shard K/6`), beside Check (`check -- --without-fuzz`, in parts) | Plain optimized profile (below) | Each shard is allowed 60 minutes; compiler and replay durations are reported |
+| `blueprint run check` | The same replays as CI's Fuzz smoke job, every target, in one run | Plain optimized profile (below) | Depends on the selected suites; compiler and replay durations are reported |
+| `blueprint run fuzz-smoke` | Every target's fixed examples, or those named, or one shard | Plain optimized profile (below) | Depends on the selected suites; compiler and replay durations are reported |
+| `blueprint run check-slow`, local only | Every target's fixed examples on the build a campaign explores | Instrumented `--fuzz` | Instrumented compiler and replay durations are reported |
 | `blueprint run fuzz`, local only | A campaign: each selected target explores from its corpus under `.fuzz-out/` | Instrumented `--fuzz` | 600 s per target by default (`--time S`), plus its build |
 
 CI never runs a campaign, on a schedule or otherwise, and never keeps a
@@ -801,17 +817,19 @@ corpus. Run one on your machine with
 failure, reduce it and add it to the target's examples with `Fuzz.saved`,
 so every later replay, CI's included, keeps it fixed.
 
-The costs behind those figures: on an Apple-silicon Mac, the 12
-platform-free targets compiled instrumented in about 62 s together and
-replayed in under 2 s; a batch of 13 targets that import the engine
-package compiled instrumented in about 1,780 s and replayed in about 17 s,
-and `structure`, the largest, compiled in 539 s plain against 717 s
-instrumented. A target
-that imports the engine package compiles the package itself, and a compiler
-process is given 16 GiB, so a CI runner compiles one target at a time; the
-shards are what run the compilers in parallel, and a CI runner is slower
-than that Mac. That is too long to add to the Check job, which is why CI
-runs the replays as a job of their own.
+The compiler budget remains 16 GiB per fuzz suite, so a CI runner compiles
+one suite at a time; the six shards distribute those builds across runners.
+Reports keep compiler and replay batch durations separately. Do not compare
+those batch durations as individual member timings.
+
+The requested native fuzz profile is `--opt=speed`, with `--fuzz` added for
+instrumented builds. For exactly `nightly-2026-11-18-a520eed`, the shared
+compiler-profile policy selects `--opt=size` for native fuzzing to avoid
+[roc-lang/roc#13197](https://github.com/roc-lang/roc/issues/13197). It prints the
+unavailable and actual profiles, retains every member and replay, and records
+the actual compiler flags, optimizer and profile in the evidence. Other
+compiler versions retry speed. Remove this compatibility row once the
+upstream compiler defect is fixed.
 
 ### No target is left out silently
 

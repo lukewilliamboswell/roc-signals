@@ -2,56 +2,135 @@ import cli.Path
 import cli.Monotonic
 import Proc
 import SpecSuite
+import CompilerProfile
 
 ## The roc-fuzz targets, the browser contract tests, the soak runs and the
 ## js-framework-benchmark check.
 ##
-## Each target is an ordinary roc-fuzz app, whose platform is a roc-fuzz
-## release the compiler fetches. Roc resolves an app's sibling modules from
-## the directory of its main file, so a target lives beside the modules it
-## imports:
-##
-## - the platform's own targets under `fuzz/` and beside the test apps under
-##   `tests/apps/` (`fuzz-<subject>.roc`), which import the engine package,
-##   `platform/main-fuzz.roc`, as `pf`;
-## - an example's targets of its own pure logic, `fuzz-<subject>.roc`
-##   beside the modules they import, which import nothing of the platform.
+## Every property remains beside the modules and saved inputs it tests, with a
+## thin standalone roc-fuzz app. Six repository suite roots share the compiler
+## work; the member registry names its standalone root, canonical property
+## module and suite explicitly. Selection, reports and failures stay per member.
+## Platform properties use the private engine package; example properties
+## continue to test only their app's pure modules.
 Targets := [].{
-	Fuzz : { name : Str, main : Str }
+	Fuzz : { name : Str, main : Str, property : Str, suite : Str }
 
 	fuzz_targets : List(Fuzz)
 	fuzz_targets = [
-		{ name: "links", main: "fuzz/links/main.roc" },
-		{ name: "base64", main: "fuzz/base64/main.roc" },
-		{ name: "crypto", main: "fuzz/crypto/main.roc" },
-		{ name: "boot", main: "fuzz/boot/main.roc" },
-		{ name: "scm-parse", main: "fuzz/scm-parse/main.roc" },
-		{ name: "protocol-facts", main: "fuzz/protocol-facts/main.roc" },
-		{ name: "wire", main: "fuzz/wire/main.roc" },
-		{ name: "structure", main: "fuzz/structure/main.roc" },
-		{ name: "dom", main: "fuzz/dom/main.roc" },
-		{ name: "markup", main: "fuzz/markup/main.roc" },
-		{ name: "startup-placeholders", main: "fuzz/startup-placeholders/main.roc" },
-		{ name: "table-view", main: "fuzz/table-view/main.roc" },
-		{ name: "result-readers", main: "fuzz/result-readers/main.roc" },
-		{ name: "port-json", main: "fuzz/port-json/main.roc" },
-		{ name: "url", main: "fuzz/url/main.roc" },
-		{ name: "names", main: "fuzz/names/main.roc" },
-		{ name: "form-builder", main: "examples/form-builder/fuzz-rules.roc" },
-		{ name: "kanban-board", main: "examples/kanban-board/fuzz-board.roc" },
-		{ name: "data-grid", main: "examples/data-grid/fuzz-rows.roc" },
-		{ name: "markdown-editor", main: "examples/markdown-editor/fuzz-sections.roc" },
-		{ name: "markdown-html", main: "examples/markdown-editor/fuzz-html.roc" },
-		{ name: "conduit", main: "examples/conduit/fuzz-routes.roc" },
-		{ name: "field-notes", main: "examples/field-notes/fuzz-outbox.roc" },
-		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/fuzz-formulas.roc" },
-		{ name: "fx-channel", main: "tests/apps/effects/fuzz-channel.roc" },
-		{ name: "controls", main: "tests/apps/controls/fuzz-controls.roc" },
-		{ name: "csv-converter", main: "examples/csv-converter/fuzz-csv.roc" },
-		{ name: "log-explorer", main: "examples/log-explorer/fuzz-index.roc" },
-		{ name: "log-scroll-map", main: "examples/log-explorer/fuzz-scroll-map.roc" },
-		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc" },
+		{ name: "links", main: "fuzz/links/main.roc", property: "fuzz/links/FuzzLinksProperty.roc", suite: "FuzzSyntax.roc" },
+		{ name: "base64", main: "fuzz/base64/main.roc", property: "fuzz/base64/FuzzBase64Property.roc", suite: "FuzzSyntax.roc" },
+		{ name: "crypto", main: "fuzz/crypto/main.roc", property: "fuzz/crypto/FuzzCryptoProperty.roc", suite: "FuzzCodecs.roc" },
+		{ name: "boot", main: "fuzz/boot/main.roc", property: "fuzz/boot/FuzzBootProperty.roc", suite: "FuzzCodecs.roc" },
+		{ name: "scm-parse", main: "fuzz/scm-parse/main.roc", property: "fuzz/scm-parse/FuzzScmParseProperty.roc", suite: "FuzzSyntax.roc" },
+		{ name: "protocol-facts", main: "fuzz/protocol-facts/main.roc", property: "fuzz/protocol-facts/FuzzProtocolFactsProperty.roc", suite: "FuzzSyntax.roc" },
+		{ name: "wire", main: "fuzz/wire/main.roc", property: "fuzz/wire/FuzzWireProperty.roc", suite: "FuzzCodecs.roc" },
+		{ name: "structure", main: "fuzz/structure/main.roc", property: "fuzz/structure/FuzzStructureProperty.roc", suite: "FuzzRendering.roc" },
+		{ name: "dom", main: "fuzz/dom/main.roc", property: "fuzz/dom/FuzzDomProperty.roc", suite: "FuzzRendering.roc" },
+		{ name: "markup", main: "fuzz/markup/main.roc", property: "fuzz/markup/FuzzMarkupProperty.roc", suite: "FuzzRendering.roc" },
+		{ name: "startup-placeholders", main: "fuzz/startup-placeholders/main.roc", property: "fuzz/startup-placeholders/FuzzStartupPlaceholdersProperty.roc", suite: "FuzzLifecycle.roc" },
+		{ name: "table-view", main: "fuzz/table-view/main.roc", property: "fuzz/table-view/FuzzTableViewProperty.roc", suite: "FuzzLifecycle.roc" },
+		{ name: "result-readers", main: "fuzz/result-readers/main.roc", property: "fuzz/result-readers/FuzzResultReadersProperty.roc", suite: "FuzzCodecs.roc" },
+		{ name: "port-json", main: "fuzz/port-json/main.roc", property: "fuzz/port-json/FuzzPortJsonProperty.roc", suite: "FuzzCodecs.roc" },
+		{ name: "url", main: "fuzz/url/main.roc", property: "fuzz/url/FuzzUrlProperty.roc", suite: "FuzzSyntax.roc" },
+		{ name: "names", main: "fuzz/names/main.roc", property: "fuzz/names/FuzzNamesProperty.roc", suite: "FuzzSyntax.roc" },
+		{ name: "form-builder", main: "examples/form-builder/fuzz-rules.roc", property: "examples/form-builder/FuzzFormBuilderProperty.roc", suite: "FuzzExampleData.roc" },
+		{ name: "kanban-board", main: "examples/kanban-board/fuzz-board.roc", property: "examples/kanban-board/FuzzKanbanBoardProperty.roc", suite: "FuzzExampleData.roc" },
+		{ name: "data-grid", main: "examples/data-grid/fuzz-rows.roc", property: "examples/data-grid/FuzzDataGridProperty.roc", suite: "FuzzExampleData.roc" },
+		{ name: "markdown-editor", main: "examples/markdown-editor/fuzz-sections.roc", property: "examples/markdown-editor/FuzzMarkdownEditorProperty.roc", suite: "FuzzExampleText.roc" },
+		{ name: "markdown-html", main: "examples/markdown-editor/fuzz-html.roc", property: "examples/markdown-editor/FuzzMarkdownHtmlProperty.roc", suite: "FuzzExampleText.roc" },
+		{ name: "conduit", main: "examples/conduit/fuzz-routes.roc", property: "examples/conduit/FuzzConduitProperty.roc", suite: "FuzzExampleText.roc" },
+		{ name: "field-notes", main: "examples/field-notes/fuzz-outbox.roc", property: "examples/field-notes/FuzzFieldNotesProperty.roc", suite: "FuzzExampleText.roc" },
+		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/fuzz-formulas.roc", property: "examples/spreadsheet-lite/FuzzSpreadsheetLiteProperty.roc", suite: "FuzzExampleData.roc" },
+		{ name: "fx-channel", main: "tests/apps/effects/fuzz-channel.roc", property: "tests/apps/effects/FuzzFxChannelProperty.roc", suite: "FuzzLifecycle.roc" },
+		{ name: "controls", main: "tests/apps/controls/fuzz-controls.roc", property: "tests/apps/controls/FuzzControlsProperty.roc", suite: "FuzzLifecycle.roc" },
+		{ name: "csv-converter", main: "examples/csv-converter/fuzz-csv.roc", property: "examples/csv-converter/FuzzCsvConverterProperty.roc", suite: "FuzzExampleText.roc" },
+		{ name: "log-explorer", main: "examples/log-explorer/fuzz-index.roc", property: "examples/log-explorer/FuzzLogExplorerProperty.roc", suite: "FuzzExampleData.roc" },
+		{ name: "log-scroll-map", main: "examples/log-explorer/fuzz-scroll-map.roc", property: "examples/log-explorer/FuzzLogScrollMapProperty.roc", suite: "FuzzExampleData.roc" },
+		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc", property: "examples/million-row-explorer/FuzzMillionRowExplorerAggregatesProperty.roc", suite: "FuzzExampleData.roc" },
 	]
+
+	## One compiler job for each selected suite, in first-member order. Members
+	## keep their own inventory, reports and accounting; only the build is shared.
+	suite_builds : List(Fuzz) -> List(Fuzz)
+	suite_builds = |members| members.fold(
+		[],
+		|known, member|
+			if known.any(|suite| suite.main == member.suite) {
+				known
+			} else {
+				known.append({ name: member.suite.drop_suffix(".roc"), main: member.suite, property: member.suite, suite: member.suite })
+			},
+	)
+
+	## An executable must expose exactly its registered members, even when a
+	## command selects just one. A missing or extra member is a broken suite.
+	suite_inventory_problems : List(Str), I32, Str -> List(Str)
+	suite_inventory_problems = |expected, code, output| {
+		actual = output.trim().split_on("\n").drop_if(Str.is_empty)
+		if code != 0 or actual.sort_with(SpecSuite.compare_str) != expected.sort_with(SpecSuite.compare_str) {
+			["fuzz suite inventory mismatch: expected ${Str.inspect(expected)}, got exit ${code.to_str()} ${Str.inspect(actual)}"]
+		} else {
+			[]
+		}
+	}
+
+	## Check the published host's inventory after each successful new build.
+	## Never reuse an old executable or infer membership from a passed message.
+	check_suite_builds! : SpecSuite.Options, List(Fuzz), List({ code : I32, output : Str }), Bool => Try(List({ code : I32, output : Str }), _)
+	check_suite_builds! = |o, suites, built, plain| {
+		var $results = []
+		for (suite, result) in List.map2(suites, built, |suite, result| (suite, result)) {
+			executable = if plain {
+				Targets.smoke_exe_of(o, suite)
+			} else {
+				Targets.exe_of(o, suite)
+			}
+			if result.code != 0 {
+				$results = $results.append(result)
+			} else if !(Path.exists!(Path.utf8(executable))?) {
+				$results = $results.append({ code: 1, output: "${result.output}\nfuzz compiler produced no suite executable" })
+			} else {
+				inventory = Proc.output!({ program: executable, args: ["--list-targets"], cwd: o.root })?
+				expected = Targets.fuzz_targets.keep_if(|member| member.suite == suite.main).map(|member| member.name)
+				problems = Targets.suite_inventory_problems(expected, inventory.code, Str.from_utf8_lossy(inventory.stdout))
+				$results = $results.append({
+					code: if problems.is_empty() {
+						0
+					} else {
+						1
+					},
+					output: Str.join_with([result.output].concat(problems), "\n"),
+				})
+			}
+		}
+		Ok($results)
+	}
+
+	## A member's private package manifest, kept beside its source and models.
+	package_of : Fuzz -> Str
+	package_of = |member| "${Str.join_with(member.main.split_on("/").drop_last(1), "/")}/fuzz-package.roc"
+
+	## Exact compiler compatibility is shared with the CLI and Node drivers.
+	## TODO https://github.com/roc-lang/roc/issues/13197: remove the native-fuzz
+	## row once the affected compiler's speed specialisation is fixed.
+	fuzz_opt : SpecSuite.Options -> Str
+	fuzz_opt = |o| CompilerProfile.effective({ compiler: o.nightly, target: "native-fuzz", requested: "speed" })
+
+	fuzz_profile : SpecSuite.Options -> Str
+	fuzz_profile = |o| if Targets.fuzz_opt(o) == "speed" {
+		"fixed-examples-plain"
+	} else {
+		"fixed-examples-plain-${Targets.fuzz_opt(o)}"
+	}
+
+	fuzz_notice! : SpecSuite.Options => {}
+	fuzz_notice! = |o| {
+		notice = CompilerProfile.notice({ compiler: o.nightly, target: "native-fuzz", requested: "speed" })
+		if !notice.is_empty() {
+			Proc.note!(notice)
+		}
+	}
 
 	## The directories a fuzz target may live in.
 	target_dirs : List(Str)
@@ -62,6 +141,10 @@ Targets := [].{
 	## or any app whose header names a roc-fuzz release as its platform.
 	is_target : Str, Str -> Bool
 	is_target = |path, text| {
+		first = text.split_on("\n").find_first(|line| !line.trim().is_empty() and !line.trim().starts_with("#")) ?? ""
+		if path.ends_with("/fuzz-package.roc") and first.starts_with("package ") {
+			return False
+		}
 		parts = path.split_on("/")
 		name = parts.last() ?? path
 		under_fuzz = parts.len() == 3 and parts.first() == Ok("fuzz") and name == "main.roc"
@@ -123,38 +206,67 @@ Targets := [].{
 	## `roc test`: a target's own pure tests (its model, its saved seeds
 	## against independent bytes) are no replay's business, since a build
 	## and replay of the target runs its examples, not its `expect`s. Each
-	## target is its own root, with the platform's dependency graph when it
-	## imports the engine package, so the compiler runs them `compiler_jobs`
-	## at a time.
+	## suite root imports every selected member's unchanged tests, including
+	## model and saved-byte tests. Shared imports are tested once per suite.
 	fuzz_expects! : SpecSuite.Options => Try(List(Str), _)
 	fuzz_expects! = |o| {
-		results = Proc.parallel!(Targets.fuzz_targets.map(|t| { program: o.compiler, args: ["test", t.main], cwd: o.root }), Proc.compiler_jobs!(FuzzTarget)?)?
-		Ok(List.map2(Targets.fuzz_targets, results, |t, r| if (r.code == 0) [] else ["roc test ${t.main} failed (an expect of fuzz target ${t.name} does not hold): ${r.output.trim()}"]).join())
+		suites = Targets.suite_builds(Targets.fuzz_targets)
+		results = Proc.parallel!(suites.map(|suite| { program: o.compiler, args: ["test", suite.main], cwd: o.root }), Proc.compiler_jobs!(FuzzTarget)?)?
+		Ok(
+			List.map2(
+				suites,
+				results,
+				|suite, result| if result.code == 0 {
+					[]
+				} else {
+					["roc test ${suite.main} failed: ${result.output.trim()}"]
+				},
+			).join(),
+		)
 	}
 
 	## Where a target's executable is built.
 	exe_of : SpecSuite.Options, Fuzz -> Str
-	exe_of = |o, { name, .. }| "${o.build_dir}/fuzz/${name}/target"
+	exe_of = |o, member| "${o.build_dir}/fuzz-suites/${member.suite.drop_suffix(".roc")}/target"
 
-	## Build fuzz targets in parallel, with coverage instrumentation, as a
-	## campaign explores them. `--fuzz` needs the LLVM backend, so these
-	## builds use `--opt=speed` (the compiler refuses `--opt=dev`). Phase
-	## timings distinguish compiler cost from fixed-example replay cost. One
-	## outcome per target, in order: a build that fails is that target's
-	## problem, and the other targets are still built.
+	## Build each selected suite once with coverage instrumentation. Optimized
+	## profiles use LLVM; the exact-version compatibility policy can select size
+	## instead of speed. A failed suite build fails every selected member in it,
+	## and independent suites are still built.
 	build_fuzz_all! : SpecSuite.Options, List(Fuzz) => Try(List({ name : Str, problems : List(Str) }), _)
 	build_fuzz_all! = |o, fuzzes| {
-		var $jobs = []
-		for t in fuzzes {
-			SpecSuite.fresh_dir!("${o.build_dir}/fuzz/${t.name}")?
-			$jobs = $jobs.append({ program: o.compiler, args: ["build", "--fuzz", "--opt=speed", "--timings", t.main, "--output=${Targets.exe_of(o, t)}"], cwd: o.root })
+		Targets.fuzz_notice!(o)
+		suites = Targets.suite_builds(fuzzes)
+		for member in fuzzes {
+			SpecSuite.fresh_dir!("${o.build_dir}/fuzz/${member.name}")?
 		}
-		results = Proc.parallel!($jobs, Proc.compiler_jobs!(FuzzTarget)?)?
-		Ok(List.map2(fuzzes, results, |t, r| { name: t.name, problems: if (r.code == 0) [] else ["fuzz ${t.name}: build exited with ${r.code.to_str()}: ${r.output.trim()}"] }))
+		var $jobs = []
+		for suite in suites {
+			SpecSuite.fresh_dir!("${o.build_dir}/fuzz-suites/${suite.name}")?
+			$jobs = $jobs.append({ program: o.compiler, args: ["build", "--fuzz", "--opt=${Targets.fuzz_opt(o)}", "--timings", suite.main, "--output=${Targets.exe_of(o, suite)}"], cwd: o.root })
+		}
+		raw_results = Proc.parallel!($jobs, Proc.compiler_jobs!(FuzzTarget)?)?
+		results = Targets.check_suite_builds!(o, suites, raw_results, False)?
+		Ok(
+			fuzzes.map(
+				|member| {
+					index = suites.find_first_index(|suite| suite.main == member.suite) ?? crash "fuzz suite missing compiler job"
+					result = results.get(index) ?? crash "fuzz suite missing compiler result"
+					{
+						name: member.name,
+						problems: if result.code == 0 {
+							[]
+						} else {
+							["fuzz ${member.name}: suite ${member.suite} build exited ${result.code.to_str()}: ${result.output.trim()}"]
+						},
+					}
+				},
+			),
+		)
 	}
 
 	check_job : SpecSuite.Options, Fuzz -> Proc.Job
-	check_job = |o, t| { program: Targets.exe_of(o, t), args: ["check", "--timeout=1800"], cwd: "${o.build_dir}/fuzz/${t.name}" }
+	check_job = |o, t| { program: Targets.exe_of(o, t), args: ["--target=${t.name}", "check", "--timeout=1800"], cwd: "${o.build_dir}/fuzz/${t.name}" }
 
 	## A target's check, judged: a finding (a failed property, a leak, a soak
 	## cycle that does not return to flat live bytes) is a problem. Exact
@@ -183,12 +295,12 @@ Targets := [].{
 	## The explicit fixed-example lane has its own executables. Campaigns and
 	## covered checks continue to use exe_of and never consult this directory.
 	smoke_exe_of : SpecSuite.Options, Fuzz -> Str
-	smoke_exe_of = |o, { name, .. }| "${o.build_dir}/fuzz-smoke/${name}/target"
+	smoke_exe_of = |o, member| "${o.build_dir}/fuzz-smoke-suites/${member.suite.drop_suffix(".roc")}/target"
 
-	## A plain optimized build of the same actual roc-fuzz app. This job is
-	## separate from covered build_fuzz_all!; it never supplies a campaign.
+	## A plain optimized build of the actual suite app. This job is separate
+	## from covered build_fuzz_all!; it never supplies a campaign.
 	smoke_build_job : SpecSuite.Options, Fuzz -> Proc.Job
-	smoke_build_job = |o, t| { program: o.compiler, args: ["build", "--opt=speed", "--timings", t.main, "--output=${Targets.smoke_exe_of(o, t)}"], cwd: o.root }
+	smoke_build_job = |o, t| { program: o.compiler, args: ["build", "--opt=${Targets.fuzz_opt(o)}", "--timings", t.suite, "--output=${Targets.smoke_exe_of(o, t)}"], cwd: o.root }
 
 	## Check every declared example of each selected target. A failed build
 	## result blocks only its own replay; other built targets are checked.
@@ -206,8 +318,20 @@ Targets := [].{
 		for target in fuzzes {
 			SpecSuite.fresh_dir!("${o.build_dir}/fuzz-smoke/${target.name}")?
 		}
+		Targets.fuzz_notice!(o)
+		suites = Targets.suite_builds(fuzzes)
+		for suite in suites {
+			SpecSuite.fresh_dir!("${o.build_dir}/fuzz-smoke-suites/${suite.name}")?
+		}
 		build_start = Monotonic.now!()
-		built = Proc.parallel!(fuzzes.map(|target| Targets.smoke_build_job(o, target)), Proc.compiler_jobs!(FuzzTarget)?)?
+		raw_suites = Proc.parallel!(suites.map(|suite| Targets.smoke_build_job(o, suite)), Proc.compiler_jobs!(FuzzTarget)?)?
+		built_suites = Targets.check_suite_builds!(o, suites, raw_suites, True)?
+		built = fuzzes.map(
+			|member| {
+				index = suites.find_first_index(|suite| suite.main == member.suite) ?? crash "fuzz smoke suite missing compiler job"
+				built_suites.get(index) ?? crash "fuzz smoke suite missing compiler result"
+			},
+		)
 		build_elapsed = build_start.elapsed!()
 		Proc.note!("== fuzz-smoke compiler batch: ${build_elapsed.to_str()}")
 		var $outcomes = []
@@ -225,7 +349,7 @@ Targets := [].{
 		}
 		check_start = Monotonic.now!()
 		checked = Proc.parallel!(
-			$ready.map(|target| { program: Targets.smoke_exe_of(o, target), args: ["check", "--timeout=1800", "--profile=fixed-examples-plain", "--report-dir=${o.build_dir}/fuzz-smoke/${target.name}/report"], cwd: "${o.build_dir}/fuzz-smoke/${target.name}" }),
+			$ready.map(|target| { program: Targets.smoke_exe_of(o, target), args: ["--target=${target.name}", "check", "--timeout=1800", "--profile=${Targets.fuzz_profile(o)}", "--report-dir=${o.build_dir}/fuzz-smoke/${target.name}/report"], cwd: "${o.build_dir}/fuzz-smoke/${target.name}" }),
 			Proc.cpus!(),
 		)?
 		check_elapsed = check_start.elapsed!()
@@ -243,8 +367,10 @@ Targets := [].{
 					"${dir}/report",
 					"--target",
 					outcome.target.name,
+					"--member-entry",
+					outcome.target.property,
 					"--profile",
-					"fixed-examples-plain",
+					Targets.fuzz_profile(o),
 					"--binary",
 					Targets.smoke_exe_of(o, outcome.target),
 					"--build-exit",
@@ -522,15 +648,15 @@ Targets := [].{
 
 ## A target in the tree that is not listed is named, and so is a listed one
 ## that is gone.
-expect Targets.registry_problems([{ name: "a", main: "fuzz/a/main.roc" }, { name: "b", main: "examples/b/fuzz-b.roc" }], [], ["examples/b/fuzz-b.roc", "tests/apps/c/fuzz-c.roc"]) == ["tests/apps/c/fuzz-c.roc is a fuzz target that neither Targets.fuzz_targets lists nor Targets.fuzz_skipped skips with a reason, so no task builds or replays it", "the Targets registry names fuzz/a/main.roc, which is not a fuzz target in the tree"]
+expect Targets.registry_problems([{ name: "a", main: "fuzz/a/main.roc", property: "fuzz/a/main.roc", suite: "fuzz/a/main.roc" }, { name: "b", main: "examples/b/fuzz-b.roc", property: "examples/b/fuzz-b.roc", suite: "examples/b/fuzz-b.roc" }], [], ["examples/b/fuzz-b.roc", "tests/apps/c/fuzz-c.roc"]) == ["tests/apps/c/fuzz-c.roc is a fuzz target that neither Targets.fuzz_targets lists nor Targets.fuzz_skipped skips with a reason, so no task builds or replays it", "the Targets registry names fuzz/a/main.roc, which is not a fuzz target in the tree"]
 
 ## Equal lists in any order agree, and a skip with a reason accounts for its
 ## target.
-expect Targets.registry_problems([{ name: "a", main: "fuzz/a/main.roc" }], [{ main: "examples/b/fuzz-b.roc", reason: "needs a browser" }], ["examples/b/fuzz-b.roc", "fuzz/a/main.roc"]) == []
+expect Targets.registry_problems([{ name: "a", main: "fuzz/a/main.roc", property: "fuzz/a/main.roc", suite: "fuzz/a/main.roc" }], [{ main: "examples/b/fuzz-b.roc", reason: "needs a browser" }], ["examples/b/fuzz-b.roc", "fuzz/a/main.roc"]) == []
 
 ## A skip without a reason, a file both listed and skipped, and a name or file
 ## named twice are each reported once.
-expect Targets.registry_problems([{ name: "a", main: "fuzz/a/main.roc" }, { name: "a", main: "fuzz/a/main.roc" }], [{ main: "fuzz/a/main.roc", reason: " " }], ["fuzz/a/main.roc"]) == ["fuzz/a/main.roc is both listed in Targets.fuzz_targets and skipped in Targets.fuzz_skipped", "Targets.fuzz_skipped skips fuzz/a/main.roc without a reason", "the Targets registry names the name a more than once", "the Targets registry names the file fuzz/a/main.roc more than once"]
+expect Targets.registry_problems([{ name: "a", main: "fuzz/a/main.roc", property: "fuzz/a/main.roc", suite: "fuzz/a/main.roc" }, { name: "a", main: "fuzz/a/main.roc", property: "fuzz/a/main.roc", suite: "fuzz/a/main.roc" }], [{ main: "fuzz/a/main.roc", reason: " " }], ["fuzz/a/main.roc"]) == ["fuzz/a/main.roc is both listed in Targets.fuzz_targets and skipped in Targets.fuzz_skipped", "Targets.fuzz_skipped skips fuzz/a/main.roc without a reason", "the Targets registry names the name a more than once", "the Targets registry names the file fuzz/a/main.roc more than once"]
 
 ## A skipped target is printed with its reason.
 expect Targets.skip_line({ main: "fuzz/a/main.roc", reason: "needs a browser" }) == "SKIP fuzz target fuzz/a/main.roc: needs a browser"
@@ -541,8 +667,29 @@ expect [
 	Targets.is_target("fuzz/z/main.roc", ""),
 	Targets.is_target("examples/x/fuzz-y.roc", ""),
 	Targets.is_target("tests/apps/x/fuzz-y.roc", ""),
-	Targets.is_target("examples/x/Rules.roc", "app [target] {\n\tfz: platform \"https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.2/h.tar.zst\",\n}\n"),
+	Targets.is_target("examples/x/Rules.roc", "app [target] {\n\tfz: platform \"https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.7.0/h.tar.zst\",\n}\n"),
 	Targets.is_target("fuzz/wire/Saved.roc", "module [saved]\n"),
 	Targets.is_target("fuzz/z/lib/main.roc", ""),
 	Targets.is_target("examples/x/main.roc", "app [main] { pf: platform \"../../platform/main.roc\" }\n"),
 ] == [True, True, True, True, False, False, False]
+
+## A suite's complete inventory is exact, independent of presentation order.
+expect Targets.suite_inventory_problems(["a", "b"], 0, "b\na\n") == []
+expect !Targets.suite_inventory_problems(["a", "b"], 0, "a\n").is_empty()
+expect !Targets.suite_inventory_problems(["a"], 0, "a\na\n").is_empty()
+expect !Targets.suite_inventory_problems(["a"], 0, "a\nb\n").is_empty()
+expect !Targets.suite_inventory_problems(["a"], 1, "a\n").is_empty()
+
+## Build grouping never coalesces member reports or drops a selected member.
+expect {
+	members = [
+		{ name: "a", main: "fuzz/a/main.roc", property: "fuzz/a/main.roc", suite: "One.roc" },
+		{ name: "b", main: "fuzz/b/main.roc", property: "fuzz/b/main.roc", suite: "Two.roc" },
+		{ name: "c", main: "fuzz/c/main.roc", property: "fuzz/c/main.roc", suite: "One.roc" },
+	]
+	Targets.suite_builds(members).map(|suite| suite.main) == ["One.roc", "Two.roc"]
+}
+
+## Only real package manifests bypass app discovery, never an app with that name.
+expect !Targets.is_target("fuzz/dom/fuzz-package.roc", "## Private members\npackage [Property] { fz: platform \"release\" }\n")
+expect Targets.is_target("fuzz/dom/fuzz-package.roc", "app [target] {}\n")

@@ -56,8 +56,8 @@ function cli(test, overrides = {}) {
     "--report-dir", options.reportDir, "--target", options.target, "--profile", options.profile,
     "--binary", options.binary, "--check-exit", String(options.exitCode), "--build-exit", String(overrides.buildExit ?? 0),
     "--build-log", path.join(test.directory, "build.log"), "--check-log", path.join(test.directory, "check.log"),
-    "--compiler-version", "unit-test", "--build-cwd", test.directory, "--build-batch-ns", "42", "--check-batch-ns", "7",
-    "--build-command", "roc", "build", ...(overrides.covered ? ["--fuzz"] : []), "--opt=speed", "--timings", "entry.roc", `--output=${test.binary}`,
+    "--member-entry", "entry.roc", "--compiler-version", overrides.compilerVersion ?? "unit-test", "--build-cwd", test.directory, "--build-batch-ns", "42", "--check-batch-ns", "7",
+    "--build-command", "roc", "build", ...(overrides.covered ? ["--fuzz"] : []), `--opt=${overrides.optimizer ?? "speed"}`, "--timings", "entry.roc", `--output=${test.binary}`,
   ], { encoding: "utf8" });
 }
 try {
@@ -155,6 +155,22 @@ try {
     const result = cli(test, overrides); assert.equal(result.status, expected, result.stderr);
     assert.equal(JSON.parse(fs.readFileSync(path.join(test.directory, "validation.json"))).passed, expected === 0);
     assert.ok(fs.readFileSync(path.join(test.reportDir, "report.json")).equals(before)); checks++;
+  }
+  // Compatibility selects a compiler profile, never fewer replay cases.
+  // The exact affected compiler may use size; a future compiler must retry
+  // speed, and the recorded optimizer must match the real command.
+  for (const [compilerVersion, optimizer, expected] of [
+    ["nightly-2026-11-18-a520eed", "size", 0],
+    ["nightly-2026-11-19-future", "size", 1],
+    ["nightly-2026-11-18-a520eed", "speed", 1],
+  ]) {
+    const test = fixture({ profile: "fixed-examples-plain-size" });
+    const result = cli(test, { compilerVersion, optimizer });
+    assert.equal(result.status, expected, result.stderr);
+    const validation = JSON.parse(fs.readFileSync(path.join(test.directory, "validation.json")));
+    assert.equal(validation.passed, expected === 0);
+    if (expected === 0) assert.equal(validation.build.optimizer, "size");
+    checks++;
   }
   console.log(`Fixed-report transport contracts: ${checks} checks passed (no Roc compiler or property replay)`);
 } finally { fs.rmSync(root, { recursive: true, force: true }); }

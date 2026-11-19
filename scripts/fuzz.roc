@@ -1,7 +1,7 @@
 #!/usr/bin/env roc-stable
 app [main!] {
 	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst",
-	roc: "nightly-2026-11-14-a87808d",
+	roc: "nightly-2026-11-18-a520eed",
 }
 
 import cli.OsStr
@@ -85,6 +85,6 @@ explore! = |o, t, { time, timeout }| {
 		Path.delete_all!(Path.utf8(report))?
 	}
 	Proc.note!("== fuzz ${t.name} (${time} s)")
-	code = Proc.status!({ program: Targets.exe_of(o, t), args: ["explore", "${out}/corpus", "--time=${time}", "--timeout=${timeout}", "--report-dir=${report}", "--print-final-stats"], cwd: out })?
+	code = Proc.status!({ program: Targets.exe_of(o, t), args: ["--target=${t.name}", "explore", "${out}/corpus", "--time=${time}", "--timeout=${timeout}", "--report-dir=${report}", "--print-final-stats"], cwd: out })?
 	Ok(if (code == 0) [] else ["fuzz ${t.name}: exited with ${code.to_str()}; see ${report}"])
 }

@@ -3,6 +3,7 @@ import PlatformTest
 import Proc
 import SpecSuite
 import ToolRelease
+import Targets
 
 ## What a release publishes, built the same way for a dry run (in `check`)
 ## and for the release workflow:
@@ -43,7 +44,7 @@ Release := [].{
 	is_archived : Str -> Bool
 	is_archived = |file| {
 		name = file.split_on("/").last() ?? file
-		!(name.starts_with("fuzz-") and name.ends_with(".roc"))
+		!(name.starts_with("fuzz-") and name.ends_with(".roc")) and !Targets.fuzz_targets.any(|member| member.property == file)
 	}
 
 	## An example's own files beside its Roc modules, directly in `dir`: the
@@ -292,3 +293,9 @@ expect {
 
 ## The entry point and its modules are archived; a fuzz target is not.
 expect [Release.is_archived("e/main.roc"), Release.is_archived("e/fuzz-csv.roc"), Release.is_archived("e/Api.roc"), Release.is_archived("e/Fuzzy.roc")] == [True, False, True, True]
+
+## Shared fuzz properties depend on roc-fuzz, so they do not ship as app modules.
+expect !Release.is_archived("examples/csv-converter/FuzzCsvConverterProperty.roc") and !Release.is_archived("examples/csv-converter/fuzz-package.roc") and Release.is_archived("examples/csv-converter/Csv.roc")
+
+## A domain module with a similar name is preserved unless explicitly registered.
+expect Release.is_archived("examples/csv-converter/FuzzHelperProperty.roc")

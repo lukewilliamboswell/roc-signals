@@ -10,8 +10,8 @@ import "compiler-profiles.tsv" as profile_data : Str
 CompilerProfile :: [].{
 
 	## The actual optimisation mode. Native and shipping requests are unchanged
-	## unless a row explicitly names them; currently only a520 development Wasm
-	## uses size, whose worker imports obey the platform's closed vocabulary.
+	## unless a row explicitly names them. Native-fuzz is a tooling purpose,
+	## so its row cannot affect an ordinary native application build.
 	effective : { compiler : Str, target : Str, requested : Str } -> Str
 	effective = |given|
 		match rows.find_first(|row| row.compiler == given.compiler and row.target == given.target and row.requested == given.requested) {
@@ -74,4 +74,15 @@ expect {
 expect {
 	bad = ["a\tb\tc\td", "a\tb\tc\td\t", "a\tb\tc\t\tissue", "a\tb\tc\td\tissue\na\tb\tc\te\tissue"]
 	bad.all(|text| read_rows(text).is_err()) and read_rows("") == Ok([])
+}
+
+## The fuzz fallback applies only to the exact compiler and tooling purpose.
+## TODO https://github.com/roc-lang/roc/issues/13197: remove its table row
+## once speed specialisation works; future compilers already retry speed.
+expect {
+	given = { compiler: "nightly-2026-11-18-a520eed", target: "native-fuzz", requested: "speed" }
+	CompilerProfile.effective(given) == "size" and
+		CompilerProfile.effective({ ..given, compiler: "nightly-2026-11-19-future" }) == "speed" and
+			["arm64mac", "x64musl", "x64mac", "x64win"].all(|target| CompilerProfile.effective({ ..given, target }) == "speed") and
+				CompilerProfile.notice(given) == "SKIP native-fuzz --opt=speed on nightly-2026-11-18-a520eed: https://github.com/roc-lang/roc/issues/13197; using --opt=size, with every behavior check retained."
 }
