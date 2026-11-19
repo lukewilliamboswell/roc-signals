@@ -1,12 +1,13 @@
-## Internal text boundaries used by the scaffold and native spec report.
+## Internal text boundaries for CLI source, reports, requests and paths.
 Text :: [].{
 
 	## Split at an ASCII separator without retaining slices of the source.
 	## Each part owns its UTF-8 buffer, including empty and final empty parts.
+	## Time and output memory are linear in the source's UTF-8 bytes.
 	## A non-ASCII separator is an internal contract error: splitting at a UTF-8
 	## continuation byte could produce invalid text.
 	## TODO https://github.com/roc-lang/roc/issues/13221: ordinary string
-	## splitting corrupts retained lines in x64mac development builds. Remove
+	## splitting corrupts retained slices in x64mac development builds. Remove
 	## this owned-byte workaround once the compiler preserves those slices.
 	split : Str, U8 -> List(Str)
 	split = |source, separator| {
