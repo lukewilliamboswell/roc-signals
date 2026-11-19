@@ -262,6 +262,12 @@ SpecSuite := [].{
 		{ program: o.compiler, args: ["build", "--opt=${actual}", "--target=${target}", main, "--output=${output}"], cwd: o.root }
 	}
 
+	## Roc exits 2 after a successful build with warnings, including intentional
+	## dbg fixtures in the size profile. Keep their reports visible; errors and
+	## process failures still prevent every dependent replay.
+	build_succeeded : I32 -> Bool
+	build_succeeded = |code| code == 0 or code == 2
+
 	## Build, in parallel (bounded by the CPU count), the native runners of
 	## `natives` and the browser builds of `webs` (app names, or
 	## `tests/apps/NAME` for a test app). A failed build is an error.
@@ -289,7 +295,7 @@ SpecSuite := [].{
 			$jobs = $jobs.append(SpecSuite.build_job(o, requested_web_opt, "${dir}/main.roc", "wasm32", output))
 		}
 		results = Proc.parallel!($jobs, Proc.compiler_jobs!(App)?)?
-		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| code != 0)
+		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| !SpecSuite.build_succeeded(code))
 		match failed.first() {
 			Ok((job, code)) => Err(BuildFailed("${Proc.show(job)} exited with ${code.to_str()}"))
 			Err(_) => Ok({})
@@ -330,7 +336,7 @@ SpecSuite := [].{
 			}
 		}
 		results = Proc.parallel!($jobs, Proc.compiler_jobs!(App)?)?
-		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| code != 0)
+		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| !SpecSuite.build_succeeded(code))
 		match failed.first() {
 			Ok((job, code)) => Err(BuildFailed("${Proc.show(job)} exited with ${code.to_str()}"))
 			Err(_) => Ok({})

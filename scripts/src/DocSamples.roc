@@ -130,7 +130,7 @@ DocSamples := [].{
 		for (sample, index) in with_specs.map_with_index(|sample, index| (sample, index)) {
 			native = builds.get(2 * index) ?? { code: -1, output: "" }
 			web = builds.get(2 * index + 1) ?? { code: -1, output: "" }
-			if native.code != 0 or web.code != 0 {
+			if !SpecSuite.build_succeeded(native.code) or !SpecSuite.build_succeeded(web.code) {
 				$problems = $problems.append("docs sample ${sample.dir} does not build")
 			} else {
 				specs = SpecSuite.files_with!("${sample.dir}/specs", ".scm")?
