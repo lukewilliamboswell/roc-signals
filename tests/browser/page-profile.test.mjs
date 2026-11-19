@@ -42,9 +42,11 @@ try {
   // the occlusion switch does not emulate visibility or synthesize frames.
   const { windowId } = await browser.conn.send("Browser.getWindowForTarget", { targetId: page.targetId });
   await browser.conn.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "minimized" } });
+  await page.waitForFunction(() => document.visibilityState === "hidden");
   assert.equal(await page.evaluate(() => document.visibilityState), "hidden");
   await browser.conn.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "normal" } });
   await readySpecPage(page);
+  await page.waitForFunction(() => document.visibilityState === "visible");
   assert.equal(await page.evaluate(() => document.visibilityState), "visible");
   // A stalled frame must fail without inventing a scroll observation.
   await page.evaluate(() => {
