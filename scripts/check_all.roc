@@ -111,7 +111,7 @@ main! = |raw_args| {
 		$run,
 		"formatting",
 		|| {
-			sources = check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "tests/fixtures", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?
+			sources = check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "tests/fixtures", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"].concat(Targets.suite_builds(Targets.fuzz_targets).map(|suite| suite.main)), cwd: "." }, "roc fmt --check")?
 			scripts = check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts")?
 			Ok(sources.concat(scripts))
 		},
