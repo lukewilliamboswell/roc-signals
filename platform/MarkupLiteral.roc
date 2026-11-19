@@ -292,8 +292,23 @@ problem_words = |problem| match problem {
 	InvalidChildren({ element, expected }) => "<${short_text(element)}> requires ${children_words(expected)}"
 	Unsupported(note) => "unsupported markup: ${Str.inspect(note)}"
 	LimitExceeded(limit) => "markup exceeds the parser's ${Str.inspect(limit)} limit"
-	Interpolation({ index, reason }) => "hole index ${index.to_str()}: ${Str.inspect(reason)}"
+	Interpolation({ index, reason }) => "hole index ${index.to_str()}: ${interpolation_words(reason)}"
 	BindingCount({ expected, actual }) => "markup has ${actual.to_str()} bound parts but requires ${expected.to_str()}"
+}
+
+interpolation_words : Markup.InterpolationProblem -> Str
+interpolation_words = |reason| match reason {
+	RawTextHole => "holes are not allowed in raw script/style content"
+	MissingStaticSegment => "an interpolation requires at least one static segment"
+	TextHoleForbidden(element) => "text holes are not allowed inside <${short_text(element)}>"
+	RecoveryRequired => "a template requires exact authored structure without parser repairs"
+	SplitCharacterReference => "a hole cannot split a character reference"
+	InvalidHolePosition => "expected character data or an entire quoted attribute value"
+	MultipleAttributeHoles => "an attribute value requires one whole-value hole"
+	MarkupDelimiterHole => "holes are not allowed in comments, declarations or markup delimiters"
+	IncompleteHoleMarkup => "a hole cannot complete unfinished markup"
+	LostAttributeHole => "the parser did not retain the attribute hole"
+	CdataHoleNamespace => "a CDATA hole requires a foreign namespace"
 }
 
 children_words : Markup.ChildGrammar -> Str

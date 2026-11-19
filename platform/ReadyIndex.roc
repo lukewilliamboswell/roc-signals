@@ -11,6 +11,8 @@
 ## allocation growth: https://github.com/roc-lang/roc/issues/13194. The standalone
 ## reproduction measures both dev and size; this is a narrow internal workaround,
 ## not a change to public table storage or to placeholder scheduling meaning.
+## TODO(https://github.com/roc-lang/roc/issues/13194): restore Dict after the
+## fixed compiler passes removal/reinsertion scaling in both Wasm profiles.
 ReadyIndex(a) :: { tree : [Empty, Filled(Node(a))], count : U64 }.{
 
 	## Empty has no retained nodes or earlier owner data.

@@ -843,6 +843,8 @@ minus = 45
 ## allocates a constant-sized box, so total allocation stays proportional
 ## to the input. The port-json fuzz target bounds cumulative requested
 ## bytes as well as peak memory. Only this module opens the cursor.
+## TODO(https://github.com/roc-lang/roc/issues/13196): remove the private box
+## once the fixed compiler passes the cumulative-allocation guards.
 body_of : PortJson.State -> PortJsonBody.State
 body_of = |PortJson.State.(held)| Box.unbox(held)
 
