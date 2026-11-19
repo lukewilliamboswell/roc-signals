@@ -7,6 +7,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import { launch } from "../browser/cdp.mjs";
+import { effectiveProfile, profileNotice } from "../compiler-profile.mjs";
 
 const options = Object.fromEntries(Array.from({ length: (process.argv.length - 2) / 2 }, (_, i) => [process.argv[2 + i * 2].replace(/^--/, ""), process.argv[3 + i * 2]]));
 for (const key of ["roc", "target", "exe", "chrome", "build"]) assert.ok(Object.hasOwn(options, key), `--${key} is required`);
@@ -33,7 +34,11 @@ const run = (program, args) => {
   assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stdout}`);
   return result.stdout;
 };
-run(options.roc, ["version"]);
+const compiler = run(options.roc, ["version"]).trim().split(/\s+/).at(-1);
+const profile = { compiler, target: "wasm32", requested: "dev" };
+const effective = effectiveProfile(profile);
+if (profileNotice(profile)) console.log(profileNotice(profile));
+fs.writeFileSync(path.join(logs, "compiler-profile.json"), JSON.stringify({ ...profile, effective }, null, 2));
 const versionBrowser = await launch({ executablePath: options.chrome });
 try {
   fs.writeFileSync(path.join(logs, "browser-version.json"), JSON.stringify(await versionBrowser.version(), null, 2));
@@ -62,7 +67,7 @@ for (const app of ["examples/log-explorer", "examples/kanban-board", "tests/apps
   const runner = path.join(dir, `runner${options.exe}`);
   const wasm = path.join(dir, "app.wasm");
   run(options.roc, ["build", "--opt=dev", `--target=${options.target}`, `${app}/main.roc`, `--output=${runner}`]);
-  run(options.roc, ["build", "--opt=dev", "--target=wasm32", `${app}/main.roc`, `--output=${wasm}`]);
+  run(options.roc, ["build", `--opt=${effective}`, "--target=wasm32", `${app}/main.roc`, `--output=${wasm}`]);
   for (const args of [["--check-suite", ...specs], specs]) records(run(runner, args), ids, "roc-signals/spec-result/v2");
   const steps = run(runner, ["--emit-steps", ...specs]);
   records(steps, ids, null);
@@ -72,5 +77,5 @@ for (const app of ["examples/log-explorer", "examples/kanban-board", "tests/apps
   const browser = run(process.execPath, ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", "platform/runtime.mjs", "--steps", stepsPath, "--chrome", options.chrome, "--json-lines", ...publicArgs]);
   records(browser, ids, "roc-signals/spec-result/v2");
   fs.writeFileSync(path.join(dir, "browser.jsonl"), browser);
-  console.log(`${app}: ${specs.length} specs passed natively and in Chrome`);
+  console.log(`${app}: ${specs.length} specs passed natively and in Chrome (--opt=${effective})`);
 }

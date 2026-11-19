@@ -2,7 +2,9 @@ import cli.Cmd
 import cli.Env
 import cli.OsStr
 import cli.Path
+import cli.Stdout
 import Bundle
+import CompilerProfile
 
 ## Running the Roc compiler on the app: every build the tool makes goes
 ## through here, so each one names the same entry point, reports failures the
@@ -41,14 +43,21 @@ Compiler :: [].{
 	## The command for a build. `ROC_SIGNALS_PLATFORM`, when set, names a
 	## platform `main.roc` to use in place of the release's bundle: it is
 	## how roc-signals' own tests run the tool against a working tree.
-	command! : Build => Cmd.Command
+	command! : Build => Try(Cmd.Command, _)
 	command! = |{ target, opt, output }| {
+		compiler = Compiler.version!()?
+		profile = { compiler, target, requested: opt }
+		actual = CompilerProfile.effective(profile)
+		notice = CompilerProfile.notice(profile)
+		if !notice.is_empty() {
+			Stdout.line!(notice)?
+		}
 		replace = match Env.var_str!("ROC_SIGNALS_PLATFORM") {
 			Ok(path) if !path.is_empty() => ["--replace-dep", Bundle.platform_url, path]
 			_ => []
 		}
-		args = ["build", "--target=${target}", "--opt=${opt}"].concat(replace).concat(["main.roc", "--output=${output}"])
-		Cmd.new("roc").args(args.map(OsStr.from_str)).stdout(Capture).stderr(MergeWithStdout)
+		args = ["build", "--target=${target}", "--opt=${actual}"].concat(replace).concat(["main.roc", "--output=${output}"])
+		Ok(Cmd.new("roc").args(args.map(OsStr.from_str)).stdout(Capture).stderr(MergeWithStdout))
 	}
 
 	## Build and wait. Answers `Built(report)` when the compiler finished
@@ -56,10 +65,11 @@ Compiler :: [].{
 	## `Failed(report)`. The output file is written only on success: the
 	## compiler writes its output even when the app has errors, so the build
 	## goes to a side file that replaces `output` only when it succeeds.
-	build! : Build => Try([Built(Str), Failed(Str)], [RocMissing, BuildIoFailed(Str)])
+	build! : Build => Try([Built(Str), Failed(Str)], _)
 	build! = |build| {
 		side = Compiler.side_of(build.output)
-		result = Compiler.command!({ ..build, output: side }).run!() ? |_| RocMissing
+		command = Compiler.command!({ ..build, output: side })?
+		result = command.run!() ? |_| RocMissing
 		Compiler.finish!(build.output, result.status, result.stdout_bytes)
 	}
 

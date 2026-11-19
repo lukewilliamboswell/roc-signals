@@ -977,6 +977,19 @@ nightly automatically retries the original work. Remove the branch once the
 upstream fix is available; do not extend a skip to an unverified compiler
 version.
 
+On `nightly-2026-11-18-a520eed`, development Wasm retains native-runner
+imports and cannot start a worker ([roc-lang/roc#13195](https://github.com/roc-lang/roc/issues/13195)).
+The complete compatibility match is `cli/compiler-profiles.tsv`: the CLI,
+Roc builders and direct Node CI driver read that same table. They print
+`SKIP` for the unavailable development profile and build with `--opt=size`
+instead. Every story and contract still runs; summaries identify size Wasm,
+and allocation guards use size's expectations. A shared shipping artifact is
+built and measured once, never counted as development coverage. Other
+compiler versions retry development builds automatically. For a manual raw
+build on this nightly, use `roc build --target=wasm32 --opt=size main.roc`;
+`signals.roc serve` selects it automatically. Native builds are unaffected.
+The shipping optimizer makes development rebuilds slower on this nightly.
+
 A spec a compiler defect keeps from passing is skipped the same way, and
 only through `scripts/src/CompilerSkips.roc`: each entry names the app, the
 spec, the runner and build it skips in (Chrome on the development Wasm build

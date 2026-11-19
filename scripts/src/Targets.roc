@@ -295,7 +295,7 @@ Targets := [].{
 		Proc.run!({ program: o.tooling, args: ["scripts/test_parallel.roc"], cwd: o.root })?
 		Proc.run!({ program: o.tooling, args: ["scripts/test_protocol.roc"], cwd: o.root })?
 		Proc.run!({ program: o.tooling, args: ["scripts/test_worker_entries.roc"], cwd: o.root })?
-		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs", "protocol-facts.mjs", "boot-fault-unit.mjs", "forget-fault-unit.mjs", "work-request-unit.mjs", "crypto-unit.mjs", "storage-text-unit.mjs", "port-answer-unit.mjs", "conduit-urls.mjs", "dbg.test.mjs", "replay-errors.test.mjs"] {
+		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs", "protocol-facts.mjs", "boot-fault-unit.mjs", "forget-fault-unit.mjs", "work-request-unit.mjs", "crypto-unit.mjs", "storage-text-unit.mjs", "port-answer-unit.mjs", "conduit-urls.mjs", "dbg.test.mjs", "replay-errors.test.mjs", "compiler-profile.test.mjs"] {
 			code = Proc.status!({ program: o.node, args: ["tests/runtime/${script}"], cwd: o.root })?
 			if code != 0 {
 				$failures = $failures.append("${script} failed (exit ${code.to_str()})")
@@ -308,12 +308,13 @@ Targets := [].{
 		Path.create_all!(Path.utf8(o.build_dir))?
 		# Both builds come from the caller's batch (`CheckPlan.needs`): the
 		# development build the app's specs use, and its shipping build.
-		size = SpecSuite.size_wasm_of(o, "write-scaling")
 		dev = SpecSuite.wasm_of(o, "write-scaling")
-		for (build, wasm) in [("dev", dev), ("size", size)] {
-			code = Proc.status!({ program: o.node, args: ["tests/runtime/write-scaling.mjs", wasm, build], cwd: o.root })?
+		# A substituted size artifact must satisfy size's allocation contract,
+		# never development's stronger keyed-write expectation (#12957).
+		for build in SpecSuite.allocation_builds(o, "write-scaling") {
+			code = Proc.status!({ program: o.node, args: ["tests/runtime/write-scaling.mjs", build.wasm, build.opt], cwd: o.root })?
 			if code != 0 {
-				$failures = $failures.append("write-scaling.mjs ${build} failed (exit ${code.to_str()})")
+				$failures = $failures.append("write-scaling.mjs ${build.opt} failed (exit ${code.to_str()})")
 			}
 		}
 		facts = Proc.status!({ program: o.node, args: ["tests/runtime/protocol-production.mjs", dev], cwd: o.root })?
@@ -357,6 +358,18 @@ Targets := [].{
 	## build that `browser_contracts!` runs.
 	unicode_symbols_root : Str
 	unicode_symbols_root = "scripts/unicode_symbols.roc"
+
+	## Run allocation/lifetime controls once per effective artifact, identifying
+	## its actual profile rather than replaying one size artifact as dev too.
+	profile_contract! : SpecSuite.Options, { example : Str, script : Str } => Try(List(Str), _)
+	profile_contract! = |o, { example, script }| {
+		var $problems = []
+		for build in SpecSuite.allocation_builds(o, example) {
+			Proc.note!("== ${script}: --opt=${build.opt}")
+			$problems = $problems.concat(Targets.browser!(o, script, ["--wasm", build.wasm])?)
+		}
+		Ok($problems)
+	}
 
 	## The runtime contract tests in Chrome, on test apps built by
 	## `SpecSuite.build!`: the protocol facts, names, namespaces and Unicode
@@ -403,10 +416,8 @@ Targets := [].{
 				.concat(Targets.browser!(o, "effective-types-refusals.mjs", ["--wasm", controls, "--native", SpecSuite.runner_of(o, "controls")])?)
 				.concat(Targets.browser!(o, "unsafe-html-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "unsafe-html"), "--runner", SpecSuite.runner_of(o, "unsafe-html")])?)
 				.concat(Targets.browser!(o, "markup-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "markup")])?)
-				.concat(Targets.browser!(o, "placeholder-queue-cost.mjs", ["--wasm", SpecSuite.wasm_of(o, "startup-queue")])?)
-				.concat(Targets.browser!(o, "placeholder-queue-cost.mjs", ["--wasm", SpecSuite.size_wasm_of(o, "startup-queue")])?)
-				.concat(Targets.browser!(o, "placeholder-retention.mjs", ["--wasm", SpecSuite.wasm_of(o, "placeholder-retention")])?)
-				.concat(Targets.browser!(o, "placeholder-retention.mjs", ["--wasm", SpecSuite.size_wasm_of(o, "placeholder-retention")])?)
+				.concat(Targets.profile_contract!(o, { example: "startup-queue", script: "placeholder-queue-cost.mjs" })?)
+				.concat(Targets.profile_contract!(o, { example: "placeholder-retention", script: "placeholder-retention.mjs" })?)
 				.concat(Targets.browser!(o, "description-preparation.mjs", ["--wasm", SpecSuite.wasm_of(o, "description-preparation")])?)
 				.concat(Targets.browser!(o, "construction-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "construction")])?)
 				.concat(Targets.browser!(o, "pointer-browser.mjs", ["--wasm", controls])?)
@@ -500,7 +511,8 @@ Targets := [].{
 			Measured => "speed"
 			Checked => "dev"
 		}
-		Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=${opt}", "${Targets.jfb_dir}/app/main.roc", "--output=${dist}/app.wasm"], cwd: o.root })?
+		SpecSuite.note_profile!(o, opt)
+		Proc.run!(SpecSuite.build_job(o, opt, "${Targets.jfb_dir}/app/main.roc", "wasm32", "${dist}/app.wasm"))?
 		SpecSuite.copy_runtime!(o.root, dist)?
 		Path.copy!(Path.utf8("${o.root}/${Targets.jfb_dir}/src/main.mjs"), Path.utf8("${dist}/main.mjs"))?
 		code = Proc.status!({ program: o.node, args: ["tests/browser/jfb-check.mjs", "--dist", dist, "--chrome", o.chrome], cwd: o.root })?

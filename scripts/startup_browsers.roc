@@ -40,6 +40,7 @@ main! = |raw_args| {
 	main = "tests/apps/startup-corpus/main.roc"
 	runner = "${o.build_dir}/runner"
 	wasm = "${o.build_dir}/app.wasm"
+	SpecSuite.note_profile!(o, "dev")
 	Proc.run!(SpecSuite.build_job(o, "dev", main, target, runner))?
 	Proc.run!(SpecSuite.build_job(o, "dev", main, "wasm32", wasm))?
 	var $problems = []

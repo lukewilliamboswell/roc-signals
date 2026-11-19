@@ -337,6 +337,9 @@ Checks := [].{
 			Oracle => "${oracle_dir}/runner"
 		}
 		wasm = "${dir}/app.wasm"
+		if !in_browser.listed.is_empty() {
+			SpecSuite.note_profile!(o, "dev")
+		}
 		jobs = [
 			{ program: Contracts, job: SpecSuite.build_job(o, "dev", "tests/apps/key-contracts/main.roc", o.target, runner_of(Contracts)) },
 			{ program: Oracle, job: SpecSuite.build_job(o, "dev", "${oracle_dir}/main.roc", o.target, runner_of(Oracle)) },
@@ -407,7 +410,7 @@ Checks := [].{
 						t = SpecSuite.browser_specs!(o, { example, runner, wasm: SpecSuite.wasm_of(o, example), specs, skip })?
 						shipped = Checks.size_build_specs!(o, { example, runner, specs: specs.keep_if(|path| skip.contains(SpecSuite.id_of(path))), shipping })?
 						total = { ..SpecSuite.add(t, shipped), skipped: t.skipped + skip.len() }
-						Proc.note!(SpecSuite.summary(example, Browser, total))
+						Proc.note!(SpecSuite.summary(SpecSuite.browser_label(o, example), Browser, total))
 						total
 					}
 				}
