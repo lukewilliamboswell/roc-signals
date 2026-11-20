@@ -130,7 +130,7 @@ Checks := [].{
 			{ name: "timeout-zero", expectation: Rejected(["a timeout of Ms(0)"]) },
 			{ name: "port-float-key", expectation: Rejected(["parse_key_f64"]) },
 			{ name: "checkbox-text-payload", expectation: Rejected(["This string literal is being used where a non-string type is needed", "Bool"]) },
-			{ name: "select-text-payload", expectation: Rejected(["The sixth argument", "[Chose(Str), NotOffered]"]) },
+			{ name: "select-text-payload", expectation: Rejected(["type mismatch", "[Chose(Str), NotOffered"]) },
 			{ name: "sort-tuple", expectation: Rejected(["order_relative_to"]) },
 			{ name: "sort-tag", expectation: Rejected(["order_relative_to"]) },
 			{ name: "sort-record", expectation: Rejected(["order_relative_to"]) },
