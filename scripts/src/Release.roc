@@ -195,7 +195,7 @@ Release := [].{
 		\\
 		\\## Compiler compatibility and contributor checks
 		\\
-		\\On exactly `nightly-2026-11-18-a520eed`, `signals.roc` builds requested development Wasm with `--opt=size` to avoid unwanted native imports in browser workers ([roc#13195](https://github.com/roc-lang/roc/issues/13195)). It prints the skipped profile and the actual profile; all behavior checks still run. Rebuilds take longer while this workaround is active. Other compiler versions retry the requested profile.
+		\\On `nightly-2026-11-18-a520eed` and `nightly-2026-11-19-54c51c9`, `signals.roc` builds requested development Wasm with `--opt=size` to avoid unwanted native imports in browser workers ([roc#13195](https://github.com/roc-lang/roc/issues/13195)). It prints the skipped profile and the actual profile; all behavior checks still run. Rebuilds take longer while this workaround is active. Other compiler versions retry the requested profile.
 		\\
 		\\Checked markup uses published roc-parser 6.0.0-rc.5. Contributor fuzz checks use roc-fuzz 0.7.0 suites, sharing builds while retaining each property's examples, corpus and strict leak checks. Compiler workarounds carry upstream TODOs and remain separate from application semantics.
 		\\

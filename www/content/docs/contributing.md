@@ -825,12 +825,13 @@ Reports keep compiler and replay batch durations separately. Do not compare
 those batch durations as individual member timings.
 
 The requested native fuzz profile is `--opt=speed`, with `--fuzz` added for
-instrumented builds. For exactly `nightly-2026-11-18-a520eed`, the shared
-compiler-profile policy selects `--opt=size` for native fuzzing to avoid
+instrumented builds. On `nightly-2026-11-18-a520eed` and
+`nightly-2026-11-19-54c51c9`, the shared compiler-profile policy selects
+`--opt=size` for native fuzzing to avoid
 [roc-lang/roc#13197](https://github.com/roc-lang/roc/issues/13197). It prints the
 unavailable and actual profiles, retains every member and replay, and records
 the actual compiler flags, optimizer and profile in the evidence. Other
-compiler versions retry speed. Remove this compatibility row once the
+compiler versions retry speed. Remove these compatibility rows once the
 upstream compiler defect is fixed.
 
 ### No target is left out silently
@@ -997,8 +998,9 @@ nightly automatically retries the original work. Remove the branch once the
 upstream fix is available; do not extend a skip to an unverified compiler
 version.
 
-On `nightly-2026-11-18-a520eed`, development Wasm retains native-runner
-imports and cannot start a worker ([roc-lang/roc#13195](https://github.com/roc-lang/roc/issues/13195)).
+On `nightly-2026-11-18-a520eed` and `nightly-2026-11-19-54c51c9`,
+development Wasm retains native-runner imports and cannot start a worker
+([roc-lang/roc#13195](https://github.com/roc-lang/roc/issues/13195)).
 The complete compatibility match is `cli/compiler-profiles.tsv`: the CLI,
 Roc builders and direct Node CI driver read that same table. They print
 `SKIP` for the unavailable development profile and build with `--opt=size`
