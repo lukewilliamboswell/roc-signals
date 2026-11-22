@@ -258,5 +258,51 @@ for (const bound of [2, 3]) {
   if (missing.length > 0) { failed += 1; console.log(`FAIL bound ${bound}: the generator never reached ${missing.join(", ")}`); }
   console.log(`bound ${bound}: ${SEEDS} seeds, ${JSON.stringify(witness)}`);
 }
+
+// The native spec runner's ingress model must deliver what this runtime
+// delivers. Its `expect`s replay scripts at bound 3 (`ingress_replay` in
+// platform/SpecRunner.roc, under `roc test`) against the deliveries
+// recorded there; this replays the same scripts here. A script is
+// space-separated steps: `rN` a report from source N, `o` an occurrence,
+// `f` a frame, `cN` a cancel of source N. Step k (from 1) carries k, and a
+// delivery is `handler:k`. `--emit-differential COUNT` prints fresh
+// scripts with this runtime's deliveries.
+const replayScript = (script) => {
+  const rt = new RocEngineRuntime({ drop() {}, fault: () => 0 }, fakeRoot(), { manualEffects: true, document: { ...events }, window: { ...events }, environment: { visible: () => true } });
+  rt.queue = new Ingress(3);
+  for (const id of [1, 2, 3, 4]) rt.live.set(id, { cancel() {} });
+  const out = [];
+  rt.deliver = (_node, handler, payload) => { out.push(`${handler}:${payload}`); };
+  script.split(" ").forEach((op, at) => {
+    const k = at + 1;
+    if (op === "f") rt.releaseReports();
+    else if (op === "o") rt.result(9000, k);
+    else if (op[0] === "r") rt.report(Number(op.slice(1)), k);
+    else if (op[0] === "c") rt.cancel(Number(op.slice(1)));
+    else throw new Error(`unknown ingress script step ${op}`);
+  });
+  if (rt.poisoned) out.push("poisoned");
+  rt.unmount();
+  return out.join(" ");
+};
+const emit = process.argv.indexOf("--emit-differential");
+if (emit >= 0) {
+  const rand = generator(7);
+  for (let i = 0; i < Number(process.argv[emit + 1]); i += 1) {
+    const ops = [];
+    for (let n = 0; n < 14 + rand(10); n += 1) { const p = rand(12); ops.push(p < 7 ? `r${1 + rand(4)}` : p < 10 ? "o" : p < 11 ? "f" : `c${1 + rand(4)}`); }
+    const script = ops.join(" ");
+    console.log(`\tingress_replay("${script}") == "${replayScript(script)}",`);
+  }
+} else {
+  const roc = (await import("node:fs")).readFileSync(new URL("../../platform/SpecRunner.roc", import.meta.url), "utf8");
+  const cases = [...roc.matchAll(/ingress_replay\("([^"]*)"\) == "([^"]*)"/g)];
+  if (cases.length === 0) { failed += 1; console.log("FAIL differential: no ingress_replay cases in SpecRunner.roc"); }
+  for (const [, script, want] of cases) {
+    const got = replayScript(script);
+    if (got !== want) { failed += 1; console.log(`FAIL differential "${script}": runtime delivers "${got}", the native model "${want}"`); }
+  }
+  console.log(`differential: ${cases.length} scripts replayed against the native model's recorded deliveries`);
+}
 if (failed > 0) process.exitCode = 1;
 else console.log("ingress-unit: all pass");
