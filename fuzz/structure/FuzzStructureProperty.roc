@@ -6,12 +6,14 @@ import pf.SpecRunner
 import pf.WorkerCodec
 import pf.Wire
 import pf.Worker
+import Reference
 
 ## Generated structure: bytes decode into a site tree and a session over it,
 ## so the engine meets nestings no fixed app happens to contain.
 ##
-## The tree is at most 5 deep and 40 nodes, over every site kind; the only
-## awaited requests are timers and worker jobs:
+## The tree is at most 5 deep and 40 nodes, over every site kind
+## (`Reference.Node` says what each node draws); the only awaited requests
+## are timers and worker jobs:
 ## - `Control(i)`: text and checkbox properties reading a layer, including
 ##   inside row templates; equality pruning is checked by the settle pass
 ##   and their final values by the fresh-mount model;
@@ -26,25 +28,39 @@ import pf.Worker
 ##   as `pair x~d~y`. Whatever an event writes, `d` is `x * 2 + 1` once every
 ##   write is in place and the `derive` has followed, so a text or a title
 ##   in which it is not is one new value seen beside one old one;
-## - `When(i, yes, no)` on a layer's parity and `Switch(i, a, b, c)` on it
-##   modulo 3;
-## - `Layer(kind, i, body)`: a `state`, a `derive` of a layer, a `resource`
-##   whose `pending` follows its input, a `resource` that issues a timer and
+## - `When(sel, yes, no)` on the parity of what `sel` selects and
+##   `Switch(sel, a, b, c)` on it modulo 3, where `sel` reads one layer or
+##   two together (`Sel`);
+## - `Layer(kind, i, body)`: a `state`, a `derive` of a layer (`2x + 1`, or
+##   `x // 2`, which can leave its value unchanged), a `resource` whose
+##   `pending` follows its input, a `resource` that issues a timer and
 ##   counts its answers, or a `resource` that issues a worker job for its
 ##   input and folds its output, its loss or its timeout; each shows its own
 ##   value and a `state` gets a button of its own;
-## - `Each(i, body)`: rows whose keys are a layer-dependent permutation, each
-##   row a `div` showing its key and holding `body`. Rows nest in rows, and
-##   an `li` row would not: through the `div` of a layer between them, the
-##   HTML parser closes the outer `li` at the inner one, which mount refuses;
+## - `Each(sel, body)`: the rows `Reference.rows_of` gives for what `sel`
+##   selects, keyed by a key that leaves and comes back as the value moves
+##   and holding an item that changes under a kept key; each row a `div`
+##   showing `key:item` and holding `body`. Rows nest in rows, and an `li`
+##   row would not: through the `div` of a layer between them, the HTML
+##   parser closes the outer `li` at the inner one, which mount refuses;
 ## - `Watch(k, i)`: a `watch`, `on_change` or `latest` that sets the title.
+##
+## Indices count from the start below 128 and from the end at 128 and above
+## (`Reference.place`). The decoder is biased toward one shape bytes alone
+## rarely build (`two_writes`): a button writing the root and a state below
+## it, with a structural reader of both below them, one through a derived
+## value, holding state.
 ##
 ## The contexts a tree can nest through are typed by hand (the generator's
 ## levels): three layers below the root state, a row at each of the first
 ## three levels, and one layer inside a row. Below the last level a `Layer`
 ## or an `Each` draws its body in place and adds no scope. That keeps the
 ## generator monomorphic: a recursive generator over the typed contexts
-## would need polymorphic recursion, which the compiler rejects.
+## would need polymorphic recursion, which the compiler rejects. So the
+## levels cannot express a scope five deep below the root's (a layer or a
+## row at the last level), any scope inside a row that is itself inside a
+## row, or a third scope inside a row; a generated shape that needs one is
+## drawn in place, and `Reference` draws it in place too.
 ##
 ## The session clicks any live button or answers any live request: a timer
 ## fires; a worker job is answered by its task's stand-in (`triple`), or is lost
@@ -60,21 +76,22 @@ import pf.Worker
 ##   their initial value and resources issue nothing), so the page is a
 ##   function of the root's value: after every step the rendered DOM must
 ##   equal a fresh mount whose root starts at the number of clicks so far;
+## - in the valued modes (4, one session; 5, a seeded series) every state
+##   is written, resources issue nothing and the session only clicks, so the
+##   page is a function of the tree and the local states alive: after every
+##   click its texts and its click candidates must be those `Reference.page`
+##   draws from scratch for the states `Reference.clicked` holds. A kept
+##   scope whose state the engine started again, a state carried across a
+##   removal, or a reader that settled on one new value beside one old one
+##   shows up as a different text. The series' shape shares are held to
+##   minimums (`valued_tally`);
 ## - the session frees everything it allocated.
 
-Node := [
-	Show(U64),
-	Guard(U64),
-	Control(U64),
-	Bump(U64),
-	Bump2(U64, U64),
-	Pair(U64, U64),
-	When(U64, List(Node), List(Node)),
-	Switch(U64, List(Node), List(Node), List(Node)),
-	Layer(U64, U64, List(Node)),
-	Each(U64, List(Node)),
-	Watch(U64, U64),
-]
+Node : Reference.Node
+
+Sel : Reference.Sel
+
+Row : Reference.Row
 
 # ------------------------------------------------------------------ decoding
 
@@ -123,25 +140,80 @@ node = |d0, depth| {
 				(Bump2(i, j), d3)
 			}
 		3 => {
-			(yes, d3) = nodes(d2, depth)
-			(no, d4) = nodes(d3, depth)
-			(When(i, yes, no), d4)
+			(sel, d3) = selector(b, i, d2)
+			(yes, d4) = nodes(d3, depth)
+			(no, d5) = nodes(d4, depth)
+			(When(sel, yes, no), d5)
 		}
 		4 => {
-			(a, d3) = nodes(d2, depth)
-			(c1, d4) = nodes(d3, depth)
-			(c2, d5) = nodes(d4, depth)
-			(Switch(i, a, c1, c2), d5)
+			(sel, d3) = selector(b, i, d2)
+			(a, d4) = nodes(d3, depth)
+			(c1, d5) = nodes(d4, depth)
+			(c2, d6) = nodes(d5, depth)
+			(Switch(sel, a, c1, c2), d6)
 		}
 		5 | 6 => {
 			(body, d3) = nodes(d2, depth)
 			(Layer(b // 10, i, body), d3)
 		}
 		7 | 8 => {
-			(body, d3) = nodes(d2, depth)
-			(Each(i, body), d3)
+			(sel, d3) = selector(b, i, d2)
+			(body, d4) = nodes(d3, depth)
+			(Each(sel, body), d4)
 		}
-		_ => (Watch(b // 10, i), d2)
+		_ =>
+			if b >= 100 {
+				two_writes(i, d2, depth)
+			} else {
+				(Watch(b // 10, i), d2)
+			}
+	}
+}
+
+## A structural reader's selector: two values when the tens digit of its
+## node byte is odd, else one.
+selector : U64, U64, Reader -> (Sel, Reader)
+selector = |b, i, d|
+	if (b // 10) % 2 == 1 {
+		(j, d2) = next(d)
+		(Two(i, j), d2)
+	} else {
+		(One(i), d)
+	}
+
+## A shape the generator is biased toward, since bytes alone rarely build
+## it: one button writes the root state and a state below it, and below
+## both a structural reader follows both writes, one through a derived
+## value, with a state in each branch or row that the session can move away
+## from 0. Two passes, in either order, would show that reader one new
+## value beside one old one and dispose and remount what it holds.
+##
+## `v` picks the shape. With `v % 2 == 0` the derived value is between the
+## two writes (a `derive` or a `resource` of the root, or the item of a row
+## keyed by the root), so it follows the outer write; otherwise it is a
+## `derive` of the inner state, below it. `(v // 2) % 3` picks the reader: a
+## `when`, a `switch` or an `each`. Indices count from the end (128 is the
+## nearest value or state, `Reference.place`); index 0 is the root. The
+## nodes after the reader are decoded from the bytes that follow.
+two_writes : U64, Reader, U64 -> (Node, Reader)
+two_writes = |v, d0, depth| {
+	(rest, d1) = nodes({ ..d0, left: d0.left - d0.left.min(6) }, depth)
+	held = [Layer(0, 0, [])]
+	reader = |sel| match (v // 2) % 3 {
+		0 => When(sel, held, held)
+		1 => Switch(sel, held, held, held)
+		_ => Each(sel, held)
+	}
+	if v % 2 == 0 {
+		inner = Layer(0, 0, [Bump2(0, 128), reader(Two(129, 128))].concat(rest))
+		outer = match (v // 6) % 3 {
+			0 => Layer(1, 0, [inner])
+			1 => Layer(2, 0, [inner])
+			_ => Each(One(0), [inner])
+		}
+		(outer, d1)
+	} else {
+		(Layer(0, 0, [Layer(1, 128, [Bump2(0, 128), reader(Two(0, 128))].concat(rest))]), d1)
 	}
 }
 
@@ -151,40 +223,42 @@ decode = |bytes| nodes({ bytes, pos: 0, left: 40 }, 5).0
 # ---------------------------------------------------------------- generating
 
 ## What a node can read and write where it is built. `pure`: writes go to the
-## root only and resources issue nothing (mode 0).
-G(ctx) : { vals : List(Core.Signal(ctx, U64)), wrs : List(Core.State(ctx, U64)), pure : Bool }
+## root only and resources issue nothing (mode 0). `valued`: every state is
+## written and resources issue nothing (modes 4 and 5, checked against
+## `Reference.page`).
+G(ctx) : { vals : List(Core.Signal(ctx, U64)), wrs : List(Core.State(ctx, U64)), pure : Bool, valued : Bool }
 
 ## How to build what nests below a layer and inside a row, at a level that
 ## has typed levels below it; at the bottom, a layer's or a row's body is
 ## drawn in place.
 Inner(ctx) : [
-	Below({ layer : (List(Node), G(Core.In(ctx, U64)) -> Core.Elem(Core.In(ctx, U64))), row : (List(Node), G(Core.Row(ctx, U64)) -> Core.Elem(Core.Row(ctx, U64))) }),
+	Below({ layer : (List(Node), G(Core.In(ctx, U64)) -> Core.Elem(Core.In(ctx, U64))), row : (List(Node), G(Core.Row(ctx, Row)) -> Core.Elem(Core.Row(ctx, Row))) }),
 	Bottom,
 ]
 
-## 0, 1, ... `n - 1`.
-upto : U64 -> List(U64)
-upto = |n| {
-	var $out = []
-	var $k = 0.U64
-	while $k < n {
-		$out = $out.append($k)
-		$k = $k + 1
-	}
-	$out
+val_of : G(ctx), U64 -> Core.Signal(ctx, U64)
+val_of = |g, i| Reference.pick(g.vals, i, Core.const(0))
+
+## The writable state `i` names (`Reference.place`).
+wr_of : G(ctx), U64 -> Try(Core.State(ctx, U64), [Nothing])
+wr_of = |g, i| match g.wrs.get(Reference.place(g.wrs.len(), i)) {
+	Ok(w) => Ok(w)
+	Err(_) => Err(Nothing)
 }
 
-pick : List(a), U64, a -> a
-pick = |l, i, fallback| l.get(i % l.len().max(1)) ?? fallback
-
-val_of : G(ctx), U64 -> Core.Signal(ctx, U64)
-val_of = |g, i| pick(g.vals, i, Core.const(0))
+## What a `when`, a `switch` or an `each` follows: one signal, or two read
+## together as their sum.
+chosen : G(ctx), Sel -> Core.Signal(ctx, U64)
+chosen = |g, sel| match sel {
+	One(i) => val_of(g, i)
+	Two(i, j) => val_of(g, i).map2(val_of(g, j), |x, y| x + y)
+}
 
 ## A button whose click adds 1 to writable `i` (none when nothing is
 ## writable).
 bump_button : G(ctx), U64 -> Core.Elem(ctx)
 bump_button = |g, i|
-	match g.wrs.get(i % g.wrs.len().max(1)) {
+	match wr_of(g, i) {
 		Ok(w) => Core.element("button", [Core.on_with("click", { prevent: i % 2 == 0, stop: i % 3 == 0 }, w.update(|n| n + 1)), Core.on_size(w.update(|value| value)), Core.on_seen({ ahead: i % 2 == 0 }, w.update(|value| value))], [Core.text("+")])
 		Err(_) => Core.text("-")
 	}
@@ -212,8 +286,7 @@ flat = |n, g, inner| match n {
 	)
 	Bump(i) => bump_button(g, i)
 	Bump2(i, j) => {
-		count = g.wrs.len().max(1)
-		match (g.wrs.get(i % count), g.wrs.get(j % count)) {
+		match (wr_of(g, i), wr_of(g, j)) {
 			(Ok(first), Ok(second)) if !g.pure => Core.element("button", [Core.on("click", first.update(|x| x + 1).also(second.update(|x| x + 1)))], [Core.text("++")])
 			_ => bump_button(g, i)
 		}
@@ -230,8 +303,8 @@ flat = |n, g, inner| match n {
 			},
 		)
 	}
-	When(i, yes, no) => Core.when(val_of(g, i).map(|x| x % 2 == 0), || flat_list(yes, g, inner), || flat_list(no, g, inner))
-	Switch(i, a, b, c) => Core.switch(val_of(g, i).map(|x| x % 3), [0, 1, 2], |k| flat_list(if (k == 0) a else if (k == 1) b else c, g, inner))
+	When(sel, yes, no) => Core.when(chosen(g, sel).map(|x| x % 2 == 0), || flat_list(yes, g, inner), || flat_list(no, g, inner))
+	Switch(sel, a, b, c) => Core.switch(chosen(g, sel).map(|x| x % 3), [0, 1, 2], |k| flat_list(if (k == 0) a else if (k == 1) b else c, g, inner))
 	Layer(kind, i, body) => match inner {
 		Bottom => flat_list(body, g, Bottom)
 		Below({ layer, .. }) => {
@@ -239,45 +312,44 @@ flat = |n, g, inner| match n {
 			lifted = g.vals.map(|x| x.lift())
 			lwrs = g.wrs.map(|w| w.lift())
 			pure = g.pure
+			valued = g.valued
 			k = kind % 5
 			if k == 0 {
 				Core.state(
 					0.U64,
 					|st| {
 						own = if (pure) [] else [Core.element("button", [Core.on("click", st.update(|x| x + 1))], [Core.text("+")])]
-						g2 = { vals: lifted.append(st.signal()), wrs: if (pure) lwrs else lwrs.append(st), pure }
+						g2 = { vals: lifted.append(st.signal()), wrs: if (pure) lwrs else lwrs.append(st), pure, valued }
 						Core.element("div", [], [show(st.signal())].concat(own).append(layer(body, g2)))
 					},
 				)
 			} else if k == 1 {
-				Core.derive(v.map(|x| x * 2 + 1), |d| Core.element("div", [], [show(d), layer(body, { vals: lifted.append(d), wrs: lwrs, pure })]))
-			} else if k == 2 or pure {
-				Core.resource(v, { init: 0.U64, pending: |_, a| a + 7, plan: |_| [], resolve: |s, _, _| s }, |r| Core.element("div", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+				Core.derive(v.map(|x| Reference.derived(kind, x)), |d| Core.element("div", [], [show(d), layer(body, { vals: lifted.append(d), wrs: lwrs, pure, valued })]))
+			} else if k == 2 or pure or valued {
+				Core.resource(v, { init: 0.U64, pending: |_, a| a + 7, plan: |_| [], resolve: |s, _, _| s }, |r| Core.element("div", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure, valued })]))
 			} else if k == 3 {
-				Core.resource(v, { init: 0.U64, pending: |_, a| a * 10, plan: |_| [Core.timer(10)], resolve: |s, _, _| s + 1 }, |r| Core.element("div", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+				Core.resource(v, { init: 0.U64, pending: |_, a| a * 10, plan: |_| [Core.timer(10)], resolve: |s, _, _| s + 1 }, |r| Core.element("div", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure, valued })]))
 			} else {
-				Core.resource(v, job_cfg, |r| Core.element("div", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+				Core.resource(v, job_cfg, |r| Core.element("div", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure, valued })]))
 			}
 		}
 	}
-	Each(i, body) => match inner {
+	Each(sel, body) => match inner {
 		Bottom => flat_list(body, g, Bottom)
 		Below({ row, .. }) => {
-			rows = val_of(g, i).map(
-				|x| {
-					upto(x % 5).map(|j| (j * (x + 3) + x) % 7).fold([], |acc, k| if (acc.contains(k)) acc else acc.append(k))
-				},
-			)
+			rows = chosen(g, sel).map(Reference.rows_of)
 			vals = g.vals
 			wrs = g.wrs
 			pure = g.pure
+			valued = g.valued
 			Core.each(
 				rows,
-				|k| k.to_str(),
+				|each_row| each_row.key.to_str(),
 				|r| {
-					item = r.field(|k| k)
-					g2 = { vals: vals.map(|x| x.lift_row()).append(item), wrs: wrs.map(|w| w.lift_row()), pure }
-					Core.element("div", [], [show(item), row(body, g2)])
+					item = r.field(|each_row| each_row.item)
+					label = r.field(|each_row| "${each_row.key.to_str()}:${each_row.item.to_str()}")
+					g2 = { vals: vals.map(|x| x.lift_row()).append(item), wrs: wrs.map(|w| w.lift_row()), pure, valued }
+					Core.element("div", [], [Core.text_s(label), row(body, g2)])
 				},
 			)
 		}
@@ -366,11 +438,11 @@ R3 : Core.In(R2, U64)
 
 R4 : Core.In(R3, U64)
 
-W1 : Core.Row(R1, U64)
+W1 : Core.Row(R1, Row)
 
-W2 : Core.Row(R2, U64)
+W2 : Core.Row(R2, Row)
 
-W3 : Core.Row(R3, U64)
+W3 : Core.Row(R3, Row)
 
 V1 : Core.In(W1, U64)
 
@@ -410,8 +482,8 @@ row_3_layer : List(Node), G(V3) -> Core.Elem(V3)
 row_3_layer = |ns, g| flat_list(ns, g, Below({ layer: bottom, row: bottom }))
 
 ## The page: the root state starting at `init`, then the tree.
-view : List(Node), Bool, U64 -> Core.Elem(Core.Root({}))
-view = |tree, pure, init| Core.state(
+view : List(Node), Bool, Bool, U64 -> Core.Elem(Core.Root({}))
+view = |tree, pure, valued, init| Core.state(
 	init,
 	|st| Core.element(
 		"main",
@@ -419,7 +491,7 @@ view = |tree, pure, init| Core.state(
 		[
 			show(st.signal()),
 			Core.element("button", [Core.on("click", st.update(|x| x + 1))], [Core.text("+")]),
-			flat_list(tree, { vals: [st.signal()], wrs: [st], pure }, Below({ layer: root_l2, row: row_1 })),
+			flat_list(tree, { vals: [st.signal()], wrs: [st], pure, valued }, Below({ layer: root_l2, row: row_1 })),
 			# Generated document handlers live outside rows and are repeatedly
 			# mounted/disposed by ordinary turns. Dom's independent detach check
 			# rejects any missing RELEASE, including ancestor removal.
@@ -467,8 +539,12 @@ S : { eng : Core.App({}), dom : Dom.Model, clicks : U64, jobs : List((U32, List(
 ## Mount through the program's driver, so the worker catalogue is the one
 ## a host would see.
 mount : List(Node), Bool, U64 -> S
-mount = |tree, pure, init| {
-	program = Core.program(|| view(tree, pure, init)).with_workers([tripler.registration()])
+mount = |tree, pure, init| mount_as(tree, pure, False, init)
+
+## `mount`, in valued mode when `valued`.
+mount_as : List(Node), Bool, Bool, U64 -> S
+mount_as = |tree, pure, valued, init| {
+	program = Core.program(|| view(tree, pure, valued, init)).with_workers([tripler.registration()])
 	(a, c, _) = (Core.driver(program).init)([])
 	absorb({ eng: a, dom: Dom.new({}), clicks: 0, jobs: [], guard: False }, a, c, "")
 }
@@ -710,6 +786,122 @@ run = |tree, pure, events| {
 	{}
 }
 
+# ---------------------------------------------------------- the value model
+
+# Modes 4 and 5 (valued): every state is written by clicks and nothing is
+# awaited, so the page is a function of the tree and of the local states
+# that are alive. `Reference.page` is that function, written from each
+# node's meaning and from nothing in the engine.
+
+## What the comparison reads of the oracle's DOM: every text node that is
+## not empty, in document order. Wrapper elements, attributes, properties
+## and the order among nodes that are not text are left out, so the
+## comparison does not depend on how `flat` nests its `div`s, and it cannot
+## see a wrong attribute, a wrong property or a misplaced element without
+## text.
+page_texts : Dom.Model, U64 -> List(Str)
+page_texts = |dom, index| {
+	entry = Dom.node(dom, index)
+	if entry.kind == 2 {
+		if (entry.text.is_empty()) [] else [entry.text]
+	} else if entry.kind == 3 {
+		[]
+	} else {
+		entry.kids.fold([], |acc, kid| acc.concat(page_texts(dom, kid)))
+	}
+}
+
+## The page the engine drew must show the texts the model draws from
+## scratch, button labels included, in document order, and offer as many
+## click candidates as the model has buttons (the model's buttons are the
+## page's click candidates, in the same order, so the session clicks the
+## same button in both).
+agree : S, List(Node), Reference.Held, Str -> {}
+agree = |s, tree, held, what| {
+	want = Reference.page(tree, held)
+	got = page_texts(s.dom, s.dom.root)
+	if got != Reference.texts(want) {
+		crash "${what}: the page differs from the value model:\n  engine ${Str.inspect(got)}\n  model  ${Str.inspect(Reference.texts(want))}\n  states ${Str.inspect(held)}"
+	}
+	if click_candidates(s.dom).len() != Reference.buttons(want) {
+		crash "${what}: the page offers ${click_candidates(s.dom).len().to_str()} buttons, the value model ${Reference.buttons(want).to_str()}"
+	}
+	{}
+}
+
+## Mode 4: a session of clicks, each compared with the value model. Every
+## second event byte chooses the button; the first is the op byte of the
+## other modes and is not read, since valued mode only clicks.
+run_valued : List(Node), List(U8) -> Reference.Tally
+run_valued = |tree, events| {
+	var $s = settle_check(mount_as(tree, False, True, 0), "mount")
+	var $seen = Reference.start
+	var $tally = Reference.no_tally
+	agree($s, tree, $seen.held, "mount")
+	var $i = 0.U64
+	while $i + 1 < events.len() {
+		b = (events.get($i + 1) ?? 0).to_u64()
+		k = b % Reference.buttons(Reference.page(tree, $seen.held)).max(1)
+		(s1, what0) = step($s, 0, b)
+		what = "valued step ${($i // 2).to_str()} (${what0}, button ${k.to_str()})"
+		$s = settle_check(s1, what)
+		r = Reference.click(tree, $seen, k)
+		$seen = r.seen
+		agree($s, tree, $seen.held, what)
+		$tally = Reference.add($tally, r.tally)
+		$i = $i + 2
+	}
+	$tally
+}
+
+## The trees and click bytes of the seeded valued series: `count` inputs of
+## 160 bytes from `seed`, the first 80 a tree and every second byte of the
+## rest a click (`run_valued`).
+valued_inputs : U64, U64 -> List({ tree : List(Node), events : List(U8) })
+valued_inputs = |seed, count| {
+	var $x = seed
+	var $k = 0.U64
+	var $out = []
+	while $k < count {
+		var $bytes = []
+		var $j = 0.U64
+		while $j < 160 {
+			$x = SpecRunner.prng($x)
+			$bytes = $bytes.append($x.shr_zf_wrap(40).to_u8_wrap())
+			$j = $j + 1
+		}
+		$out = $out.append({ tree: decode($bytes.take_first(80)), events: $bytes.drop_first(80) })
+		$k = $k + 1
+	}
+	$out
+}
+
+## The seed and length of the valued series (mode 5).
+valued_seed : U64
+valued_seed = 17
+
+valued_count : U64
+valued_count = 400
+
+## Mode 5: the seeded valued series, each session against the engine.
+valued_series : U64, U64 -> Reference.Tally
+valued_series = |seed, count| valued_inputs(seed, count).fold(Reference.no_tally, |tally, input| Reference.add(tally, run_valued(input.tree, input.events)))
+
+## The same series in the model alone: what it exercises, with no engine.
+valued_tally : U64, U64 -> Reference.Tally
+valued_tally = |seed, count| valued_inputs(seed, count).fold(
+	Reference.no_tally,
+	|tally, input| {
+		var $clicks = []
+		var $i = 1.U64
+		while $i < input.events.len() {
+			$clicks = $clicks.append(input.events.get($i) ?? 0)
+			$i = $i + 2
+		}
+		Reference.add(tally, Reference.session(input.tree, $clicks))
+	},
+)
+
 ## The same arbitrary shape also builds a tree containing only fixed text
 ## and attributes. Its independent preorder model checks every title and text;
 ## zero sampled evaluations proves constants did not become dynamic holes.
@@ -721,11 +913,17 @@ constant_caption = |branch| match branch {
 	Bump(index) => "bump-${index.to_str()}"
 	Bump2(left, right) => "bump-${left.to_str()}-${right.to_str()}"
 	Pair(left, right) => "pair-${left.to_str()}-${right.to_str()}"
-	When(index, _, _) => "when-${index.to_str()}"
-	Switch(index, _, _, _) => "switch-${index.to_str()}"
+	When(sel, _, _) => "when-${sel_caption(sel)}"
+	Switch(sel, _, _, _) => "switch-${sel_caption(sel)}"
 	Layer(kind, index, _) => "layer-${kind.to_str()}-${index.to_str()}"
-	Each(index, _) => "each-${index.to_str()}"
+	Each(sel, _) => "each-${sel_caption(sel)}"
 	Watch(kind, index) => "watch-${kind.to_str()}-${index.to_str()}"
+}
+
+sel_caption : Sel -> Str
+sel_caption = |sel| match sel {
+	One(index) => index.to_str()
+	Two(left, right) => "${left.to_str()}+${right.to_str()}"
 }
 
 constant_elements : List(Node) -> List(Engine.Elem(Engine.Root))
@@ -803,13 +1001,37 @@ series = |seed, count| {
 	{}
 }
 
+## The valued series reaches the shapes that expose an event's writes
+## settled out of order or a kept row's state lost, in shares of its clicks
+## at least half of those at which it found both by hand (the inner-first
+## two-pass bug and a kept row reset on a list change): clicks writing two
+## states one structural reader follows, of which some through a derived
+## value; clicks disposing a state that was not at 0; rows drawn again after
+## a removal; and kept rows whose item changed.
+expect {
+	t = valued_tally(valued_seed, valued_count)
+	{
+		both_read: t.both_read * 1000 >= t.clicks * 15,
+		through_derived: t.through_derived * 1000 >= t.clicks * 15,
+		disposed_live: t.disposed_live * 1000 >= t.clicks * 20,
+		reinserted: t.reinserted * 10 >= t.clicks * 10,
+		kept_changed: t.kept_changed * 10 >= t.clicks * 4,
+	} == { both_read: True, through_derived: True, disposed_live: True, reinserted: True, kept_changed: True }
+}
+
 ## One runner serves ordinary preflight expects and the compiled fuzz
 ## property's leak-checked region, so both replay the exact same histories.
 run_input : Input -> {}
 run_input = |{ mode, tree, events }| {
 	unsafe_html_history(events)
 	constant_tree_property(decode(tree))
-	if mode == 3 {
+	if mode == 5 {
+		_tally = valued_series(valued_seed + tree.len().to_u64(), valued_count)
+		{}
+	} else if mode == 4 {
+		_tally = run_valued(decode(tree), events)
+		{}
+	} else if mode == 3 {
 		observation_release_case({})
 	} else if mode == 2 {
 		series(11 + tree.len().to_u64(), 400)
@@ -853,6 +1075,41 @@ fixed_cases = [
 	ex("observation-release", 3, [], []),
 	ex("observations-in-rows", 0, [1, 7, 0, 1, 2, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
 	ex("series", 2, [], []),
+	ex("valued-series", 5, [], []),
+	# `Layer(state A, [Layer(state B, [When(Two(A, B), [Layer(state C, [])], []), Bump2(A, B)])])`:
+	# a `when` on the parity of two states one click writes together. The
+	# sum's parity is unchanged, so the branch and its state must be kept;
+	# a selector read between the two writes would dispose and remount it.
+	ex("valued-when-of-two-writes", 4, [1, 5, 0, 1, 5, 0, 2, 13, 1, 2, 1, 5, 0, 0, 0, 12, 1, 2], [0, 3, 0, 3, 0, 4, 0, 1, 0, 1, 0, 3, 0, 4]),
+	# The same with an `each` whose rows follow A + B and hold a state each.
+	ex("valued-rows-of-two-writes", 4, [1, 5, 0, 1, 5, 0, 2, 17, 1, 2, 1, 5, 0, 0, 12, 1, 2], [0, 3, 0, 3, 0, 4, 0, 1, 0, 3, 0, 5, 0, 7, 0, 6]),
+	# `Layer(derive D = 2R + 1, [Layer(state B, [Each(Two(D, B), [Layer(state C, [])]), Bump2(R, B)])])`:
+	# rows follow a `derive` of the root and a state below it, and one
+	# click writes both. A pass for B before the root's would draw the rows
+	# for the new B beside the old D, dropping rows the click keeps.
+	ex("valued-rows-of-outer-derive", 4, [1, 15, 0, 1, 5, 0, 2, 17, 1, 2, 1, 5, 0, 0, 12, 0, 1], [0, 3, 0, 3, 0, 2, 0, 5, 0, 4, 0, 6, 0, 2]),
+	# `Layer(state B, [Layer(derive D = 2B + 1, [Each(Two(R, D), [Layer(state C, [])]), Bump2(R, B)])])`:
+	# rows follow the root and a `derive` of a state above them. A pass for
+	# the root before B's would draw the rows for the new root beside the
+	# old D.
+	ex("valued-rows-of-inner-derive", 4, [1, 5, 0, 1, 15, 1, 2, 17, 0, 2, 1, 5, 0, 0, 12, 0, 1], [0, 3, 0, 3, 0, 2, 0, 5, 0, 4, 0, 6, 0, 2]),
+	# `Layer(derive D = 2R + 1, [Layer(state B, [Switch(Two(D, B), [C], [C], [C]), Bump2(R, B)])])`,
+	# each case holding a state C: the click adds 3 to D + B, so the case
+	# and its state are kept. With B's pass first (inner first) the case
+	# moves on and back, and C starts again at 0.
+	ex("valued-switch-of-outer-derive", 4, [1, 15, 0, 1, 5, 0, 2, 14, 1, 2, 1, 5, 0, 0, 1, 5, 0, 0, 1, 5, 0, 0, 12, 0, 1], [0, 2, 0, 2, 0, 3, 0, 2, 0, 3]),
+	# `Layer(state B, [Layer(derive D = 2B + 1, [Switch(Two(R, D), [C], [C], [C]), Bump2(R, B)])])`:
+	# the same with the derived value below the inner write. With the
+	# root's pass first (outer first) the case moves on and back.
+	# `When(One(R), [Each(One(R), [])], [Layer(resource of R, [Layer(state B, [Layer(derive of B, [Bump2(R, B)])])])])`:
+	# the click writes the root and B, the root's pass leaves the branch
+	# that holds B for the one with the rows, and the walk for B, which
+	# waited, must not follow the event's path into the new branch.
+	ex("valued-walk-into-remounted-branch", 4, [1, 3, 0, 1, 7, 0, 0, 1, 25, 0, 1, 5, 0, 1, 15, 128, 1, 12, 0, 128], [0, 0, 0, 2]),
+	# `Layer(derive H = R // 2, [Show(H), Bump(R)])`: every second click
+	# leaves the halved value as it was, and its readers must not move.
+	ex("valued-halving-derive", 4, [1, 65, 0, 2, 0, 128, 2, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
+	ex("valued-switch-of-inner-derive", 4, [1, 5, 0, 1, 15, 1, 2, 14, 0, 2, 1, 5, 0, 0, 1, 5, 0, 0, 1, 5, 0, 0, 12, 0, 1], [0, 2, 0, 2, 0, 3, 0, 2, 0, 3]),
 ]
 
 ## Every declared fixed history runs in the ordinary preflight as well.
@@ -863,14 +1120,14 @@ expect fixed_cases.map(|case| run_input(case.input)) == List.repeat({}, fixed_ca
 fuzz_target = Fuzz.target_with!({
 	name: "structure",
 	examples: fixed_cases.map(|case| Fuzz.example({ name: case.name, revision: "1", make: || case.input })),
-	generator: { mode: Fuzz.u8_in(0, 1), tree: Fuzz.list(Fuzz.u8, 80), events: Fuzz.list(Fuzz.u8, 80) }.Fuzz,
+	generator: { mode: Fuzz.map(Fuzz.u8_in(0, 2), |m| if (m == 2) 4 else m), tree: Fuzz.list(Fuzz.u8, 80), events: Fuzz.list(Fuzz.u8, 80) }.Fuzz,
 	test!,
 	show: Str.inspect,
 })
 
 ## Ordinary root turns repeatedly dispose generated document shortcuts. The
 ## independent DOM oracle refuses any detached declaration without RELEASE.
-expect run([Show(0), When(0, [Show(0)], [])], Bool.True, [0, 0, 0, 0, 0, 0, 0, 0]) == {}
+expect run([Show(0), When(One(0), [Show(0)], [])], Bool.True, [0, 0, 0, 0, 0, 0, 0, 0]) == {}
 
 ## A branch owns both ordinary and template observations, including nested
 ## row state. Closing, reopening and closing it leaves no registration alive.
@@ -940,7 +1197,7 @@ expect observation_release_case({}) == {}
 expect {
 	bytes = [1.U8, 3, 0, 0, 1, 20, 0]
 	match decode(bytes) {
-		[When(0, [], [Control(0)])] => run(decode(bytes), True, [0, 0, 0, 0]) == {}
+		[When(One(0), [], [Control(0)])] => run(decode(bytes), True, [0, 0, 0, 0]) == {}
 		_ => False
 	}
 }
