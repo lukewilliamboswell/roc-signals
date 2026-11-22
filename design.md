@@ -5481,7 +5481,7 @@ wrote are what CI replays.
 The reference is about the programs its kernel can express, and the
 vectors about the trees the Roc structure generator can build: a property
 that needs a shape neither has (deeper nesting than the generator's typed
-levels, a `derive` that recomputes an equal value) is not covered by them.
+levels, a timer, a job or an effect) is not covered by them.
 The proofs in `oracle/` are about the models, not about the engine.
 
 ### Fuzzing, walks, soak and contract tests

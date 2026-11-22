@@ -27,7 +27,7 @@ The coordinator keeps this table current. States: `todo`, `active`,
 | WP-21 | `Sig` module, `Pass` type, schedule table | 1 | `wp/oracle-sig` | merged | Inner-first seeded bug now lives in `Sig.at_state` |
 | WP-16 | Walk into a scope the pass remounted | 1 | `wp/oracle-walk-fix` | merged | `fresh` flag on block-choosing sites; `walk_stops` |
 | WP-22 | Probe and the checks that read it | 2 | `wp/oracle-probe` | active | From 5b07b0c3 |
-| WP-23 | Vector replay and oracle sensitivity | 2 | `wp/oracle-vectors` | active | From 5b07b0c3; first realigns `Turns.Structure` with WP-14's generator |
+| WP-23 | Vector replay and oracle sensitivity | 2 | `wp/oracle-vectors` | merged | `twoPassOuter`, `noJoinKeep`, `pruneWakes` are rejected by count only: WP-22's count model must reject them |
 | WP-31 | `Reconcile` planner | 3 | `wp/oracle-reconcile` | todo | After WP-22 |
 | WP-32 | `FxCore` and nested effect scopes | 3 | `wp/oracle-fx` | todo | After WP-22 |
 | WP-40 | Close out and pull request | 4 | `integration/reactivity-oracle` | todo | |
