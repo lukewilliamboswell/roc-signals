@@ -744,21 +744,23 @@ expect vectors_hold(vector_model, "model")
 expect vectors_hold(vector_code, "code")
 
 ## `events` are a session's bytes. Mode 0 runs the session, as every
-## generated input does; mode 1 runs a seeded series of sessions instead;
-## mode 2 replays the vector at index `events[0]` through the code.
+## generated input does; mode 1 with no events runs a seeded series of
+## sessions instead; mode 2 with one event replays the vector that byte
+## names through the code. Any other input, whatever its mode byte, runs
+## the session, so exploration never repeats one fixed series.
 Input : { mode : U8, events : List(U8) }
 
 test! : Input => Fuzz.Outcome
 test! = |{ mode, events }| {
-	if mode == 1 {
+	if mode == 1 and events.is_empty() {
 		Fuzz.expect_no_leaks!(|| series(200))
-	} else if mode == 2 {
+	} else if mode == 2 and events.len() == 1 {
 		Fuzz.expect_no_leaks!(
 			|| {
-				vector = match events {
-					[at] => ChangeVectors.vectors.get(at.to_u64()) ?? crash "table-changes: no vector at ${at.to_str()}"
-					_ => crash "table-changes: a vector replay names one index"
-				}
+				# A declared example names its vector by index; an explored input
+				# may name any number, counted round the file.
+				at = (events.first() ?? 0).to_u64() % ChangeVectors.vectors.len()
+				vector = ChangeVectors.vectors.get(at) ?? crash "table-changes: the vector file is empty"
 				match vector_code(vector) {
 					Ok(_) => {}
 					Err(problem) => crash "table-changes: ${problem}"

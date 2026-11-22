@@ -1036,10 +1036,11 @@ run_input = |{ mode, tree, events }| {
 		_tally = run_valued(decode(tree), events)
 		{}
 	} else if mode == 6 {
-		vector = match tree {
-			[at] => Vectors.good.get(at.to_u64()) ?? crash "structure: no vector at ${at.to_str()}"
-			_ => crash "structure: a vector replay names one index"
-		}
+		# A declared example names its vector by index; an explored input
+		# may name any number, so it replays the vector its first byte names,
+		# counted round the file.
+		at = (tree.first() ?? 0).to_u64() % Vectors.good.len()
+		vector = Vectors.good.get(at) ?? crash "structure: the vector file is empty"
 		_tally = run_valued(vector.tree, Vectors.clicks(vector))
 		{}
 	} else if mode == 3 {

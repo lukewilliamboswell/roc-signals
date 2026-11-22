@@ -844,21 +844,23 @@ expect vectors_hold(vector_model, "model")
 expect vectors_hold(vector_code, "code")
 
 ## `events` are a session's bytes. Mode 0 runs the session, as every
-## generated input does; mode 1 runs a seeded series of sessions instead;
-## mode 2 replays the vector at index `events[0]` through the code.
+## generated input does; mode 1 with no events runs a seeded series of
+## sessions instead; mode 2 with one event replays the vector that byte
+## names through the code. Any other input, whatever its mode byte, runs
+## the session, so exploration never repeats one fixed series.
 Input : { mode : U8, events : List(U8) }
 
 test! : Input => Fuzz.Outcome
 test! = |{ mode, events }| {
-	if mode == 1 {
+	if mode == 1 and events.is_empty() {
 		Fuzz.expect_no_leaks!(|| series(200))
-	} else if mode == 2 {
+	} else if mode == 2 and events.len() == 1 {
 		Fuzz.expect_no_leaks!(
 			|| {
-				vector = match events {
-					[at] => FollowVectors.vectors.get(at.to_u64()) ?? crash "view-follow: no vector at ${at.to_str()}"
-					_ => crash "view-follow: a vector replay names one index"
-				}
+				# A declared example names its vector by index; an explored input
+				# may name any number, counted round the file.
+				at = (events.first() ?? 0).to_u64() % FollowVectors.vectors.len()
+				vector = FollowVectors.vectors.get(at) ?? crash "view-follow: the vector file is empty"
 				match vector_code(vector) {
 					Ok(_) => {}
 					Err(problem) => crash "view-follow: ${problem}"
@@ -876,7 +878,7 @@ ex = |name, steps| Fuzz.example({ name, revision: "1", make: || { mode: 0, event
 
 fuzz_target = Fuzz.target_with!({
 	name: "view-follow",
-	examples: written_cases.map(|written| ex(written.name, written.steps)).append(Fuzz.example({ name: "series", revision: "1", make: || { mode: 1, events: [] } })).concat(FollowVectors.vectors.map_with_index(|vector, at| Fuzz.example({ name: "vector-${vector.seed.to_str()}", revision: "1", make: || { mode: 2, events: [at.to_u8_wrap()] } }))),
+	examples: written_cases.map(|written| ex(written.name, written.steps)).append(Fuzz.example({ name: "series", revision: "1", make: || { mode: 1, events: [] } })).append(Fuzz.example({ name: "vector-index-past-end", revision: "1", make: || { mode: 2, events: [200] } })).concat(FollowVectors.vectors.map_with_index(|vector, at| Fuzz.example({ name: "vector-${vector.seed.to_str()}", revision: "1", make: || { mode: 2, events: [at.to_u8_wrap()] } }))),
 	generator: { mode: Fuzz.constant(0), events: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
 	test!,
 	show: |{ mode, events }| if (mode == 1) "a seeded series" else if (mode == 2) "vector ${Str.inspect(events)}" else Str.inspect(steps_of(events)),
