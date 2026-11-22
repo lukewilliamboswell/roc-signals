@@ -3288,6 +3288,139 @@ function finishPicture(runtime) {
   clearPictureBootstrap(runtime);
 }
 
+// The ingress queue (design.md, "Re-entrancy" and "Reports and
+// occurrences"): one FIFO of inputs waiting for their turns, and an index
+// from each report source to its replaceable entry of the current epoch.
+// It decides admission, replacement, pinning, cancellation and which entry
+// a drain takes next; the runtime keeps `busy`, delivery, payload liveness
+// checks and drain scheduling. It holds no timer, DOM node or engine, so a
+// test can drive it alone (tests/runtime/ingress-unit.mjs). Every operation
+// is constant work per entry it touches. `bound` is a constructor parameter
+// so a test can reach it with a few inputs.
+//
+// An input is `{ node, handler, payload, el, target, source, owner }`; a
+// report has a `source` and an `owner` (the live effect entry or the DOM
+// report source) whose `reports` set names its queued entries, and
+// `owner.retire()`, when present, is called once an entry leaves.
+export class Ingress {
+  constructor(bound = MAX_QUEUED) {
+    if (!Number.isInteger(bound) || bound < 1) throw new RangeError(`ingress bound must be a positive integer (got ${bound})`);
+    this.bound = bound;
+    this.head = null;
+    this.tail = null;
+    this.length = 0;
+    // A source's replaceable entry. An occurrence pins every earlier report
+    // in O(1) by replacing the epoch, so an index entry of an older epoch
+    // is never replaced again.
+    this.sources = new Map();
+    this.epoch = {};
+  }
+
+  // Whatever is left after a drain waits for a frame.
+  get needsFrame() {
+    return this.length > 0;
+  }
+
+  // Admit one input. The outcome says what the runtime must do:
+  // `replaced` (a waiting report took the new payload in place), `now` (an
+  // idle occurrence with nothing ahead of it is delivered at once, never
+  // queued), `shared` (another queue holding `shared` entries against the
+  // same bound is full), `poison` (the bound is exceeded while a turn runs),
+  // or `queued`, with `active` the oldest entry taken out to make room,
+  // which the runtime delivers as the initiating turn, and `forced` when
+  // that room was made by applying a waiting view transition.
+  admit(input, { busy, transitionWaiting = false, shared = 0 }) {
+    const report = input.source !== undefined;
+    if (report) {
+      const waiting = this.sources.get(input.source);
+      if (waiting !== undefined && waiting.epoch === this.epoch) {
+        waiting.payload = input.payload;
+        // A replaceable report belongs to its newest original target too.
+        // The earlier imported descendant may already have been detached.
+        waiting.target = input.target;
+        return { kind: "replaced", entry: waiting };
+      }
+    } else this.epoch = {};
+    if (!report && !busy && this.length === 0) return { kind: "now" };
+    if (shared > 0 && this.length + shared >= this.bound) return { kind: "shared" };
+    let active = null, forced = false;
+    if (this.length >= this.bound && transitionWaiting) {
+      // Reserve the oldest entry as the active delivery, as on an idle
+      // full queue. Admit this input before any older turn can raise a
+      // newer report; the queue stays within its bound.
+      active = this.take();
+      forced = true;
+    }
+    if (this.length >= this.bound) {
+      if (busy) return { kind: "poison" };
+      // Reports and occurrences both take their FIFO place before an
+      // older delivery can synchronously emit another report.
+      active = this.take();
+    }
+    const entry = input;
+    entry.epoch = this.epoch;
+    entry.next = null;
+    if (this.tail === null) this.head = entry;
+    else this.tail.next = entry;
+    this.tail = entry;
+    this.length += 1;
+    if (report) {
+      this.sources.set(entry.source, entry);
+      if (!entry.owner.reports) entry.owner.reports = new Set();
+      entry.owner.reports.add(entry);
+    }
+    return { kind: "queued", entry, active, forced };
+  }
+
+  // Taking the head retires just that entry's index and ownership links.
+  take() {
+    const entry = this.head;
+    this.head = entry.next;
+    this.length -= 1;
+    if (this.length === 0) this.tail = null;
+    if (entry.source !== undefined) {
+      if (this.sources.get(entry.source) === entry) this.sources.delete(entry.source);
+      entry.owner.reports.delete(entry);
+      if (entry.owner.retire) entry.owner.retire();
+    }
+    return entry;
+  }
+
+  // The entry a drain delivers next, taken out of the queue, or null where
+  // the drain stops: at `before`, or, unless `reports` (a frame), at a live
+  // report of the current epoch, which waits for its frame.
+  next(reports = false, before = null) {
+    const entry = this.head;
+    if (entry === null || entry === before) return null;
+    if (entry.source !== undefined && entry.epoch === this.epoch && !reports && entry.payload !== null) return null;
+    return this.take();
+  }
+
+  // CANCEL: a source owns its queued entries, including pinned earlier
+  // reports. Visit only that source, release payloads immediately and let
+  // the drain skip the dead queue cells without scanning others.
+  cancel(source, owner) {
+    this.sources.delete(source);
+    if (owner.reports) {
+      for (const entry of owner.reports) entry.payload = null;
+      owner.reports.clear();
+    }
+  }
+
+  // Poison, unmount and recovery discard the queue and its index.
+  clear() {
+    for (const entry of this.sources.values()) {
+      entry.owner.reports.clear();
+      if (entry.owner.retire) entry.owner.retire();
+    }
+    this.head = null;
+    this.tail = null;
+    this.length = 0;
+    this.sources.clear();
+    this.epoch = {};
+  }
+}
+
 // A module can fail before there is a runtime whose containment path can
 // report it. Keep the document's picture and use the same fault vocabulary.
 function pictureLoadFault(root, error, onFault) {
@@ -3336,9 +3469,7 @@ export class RocEngineRuntime {
     this.transitionEpoch = {};
     this.viewTransitions = options.viewTransitions ?? "document";
     if (this.viewTransitions !== "document" && this.viewTransitions !== "off") throw new TypeError('viewTransitions must be "document" or "off"');
-    this.queue = { head: null, tail: null, length: 0 };
-    this.reportSources = new Map();
-    this.reportEpoch = {};
+    this.queue = new Ingress();
     this.reportsReplaced = 0;
     this.reportDrain = null;
     this.reportDue = false;
@@ -3882,7 +4013,6 @@ export class RocEngineRuntime {
     this.cryptoEntropy = { used: 0n, counter: 0n, remainder: new Uint8Array(0), tail: Promise.resolve() };
     this.revokeUrls();
     this.issued = [];
-    this.reportEpoch = {};
     this.reportsReplaced = 0;
     this.pointerLog = [];
     this.captureRefused = 0;
@@ -4432,9 +4562,8 @@ export class RocEngineRuntime {
     return log;
   }
 
-  // An occurrence pins every earlier report in O(1) by advancing the epoch.
-  // Reports replace only their own source's entry from the current epoch.
-  // The linked queue makes appending and draining constant work per entry.
+  // Admission is the ingress queue's decision (`Ingress.admit`); the runtime
+  // checks the source is live, delivers, and schedules the drains.
   dispatch(node, handler, payload, el, source, target) {
     if (this.picturePending) {
       if (source?.dom) source.retire();
@@ -4449,22 +4578,16 @@ export class RocEngineRuntime {
     const owner = report ? source.dom ? source : this.live.get(source) : null;
     if (owner?.dom) owner.dispatching += 1;
     try {
-      if (report) {
-        if (owner === undefined || (owner.dom && !owner.isLive())) return;
-        const waiting = this.reportSources.get(source);
-        if (waiting !== undefined && waiting.epoch === this.reportEpoch) {
-          waiting.payload = payload;
-          // A replaceable report belongs to its newest original target too.
-          // The earlier imported descendant may already have been detached.
-          waiting.target = target;
-          this.reportsReplaced += 1;
-          this.guard(() => this.scheduleReports());
-          return true;
-        }
+      if (report && (owner === undefined || (owner.dom && !owner.isLive()))) return;
+      const transition = this.pendingTransition?.phase === "waiting" ? this.pendingTransition : null;
+      const outcome = this.queue.admit({ node, handler, payload, el, target, source, owner }, { busy: this.busy, transitionWaiting: transition !== null, shared: this.storageFailureCount });
+      if (outcome.kind === "replaced") {
+        this.reportsReplaced += 1;
+        this.guard(() => this.scheduleReports());
+        return true;
       }
-      if (!report) this.reportEpoch = {};
-      // Keep an idle occurrence synchronous, including its user activation.
-      if (!report && !this.busy && this.queue.length === 0) {
+      if (outcome.kind === "now") {
+        // Keep an idle occurrence synchronous, including its user activation.
         this.busy = true;
         try {
           this.guard(() => this.deliver(node, handler, payload));
@@ -4474,39 +4597,17 @@ export class RocEngineRuntime {
         this.drainQueue();
         return false;
       }
-      if (this.storageFailureCount > 0 && this.queue.length + this.storageFailureCount >= MAX_QUEUED) {
+      if (outcome.kind === "shared") {
         this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} pending storage failures and ingress entries`), "resource_limit");
         return;
       }
-      let active = null, waiting = null;
-      if (this.queue.length >= MAX_QUEUED && this.pendingTransition?.phase === "waiting") {
-        // Reserve the oldest entry as the active delivery, as on an idle
-        // full queue. Admit this input before any older turn can raise a
-        // newer report; the linked queue stays within MAX_QUEUED.
-        waiting = this.pendingTransition;
-        active = this.takeIngress();
+      if (outcome.kind === "poison") {
+        this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} events queued behind one batch (an event feedback loop)`), "resource_limit");
+        return;
       }
-      if (this.queue.length >= MAX_QUEUED) {
-        if (this.busy) {
-          this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} events queued behind one batch (an event feedback loop)`), "resource_limit");
-          return;
-        }
-        // Reports and occurrences both take their FIFO place before an
-        // older delivery can synchronously emit another report.
-        active = this.takeIngress();
-      }
-      const entry = { node, handler, payload, el, target, source, owner, epoch: this.reportEpoch, next: null };
-      if (this.queue.tail === null) this.queue.head = entry;
-      else this.queue.tail.next = entry;
-      this.queue.tail = entry;
-      this.queue.length += 1;
-      if (report) {
-        this.reportSources.set(source, entry);
-        if (!owner.reports) owner.reports = new Set();
-        owner.reports.add(entry);
-        this.guard(() => this.scheduleReports());
-      }
-      if (waiting !== null) waiting.update("queue", false);
+      const { entry, active } = outcome;
+      if (report) this.guard(() => this.scheduleReports());
+      if (outcome.forced) transition.update("queue", false);
       if (this.poisoned || this.ending) {
         if (active !== null) active.payload = null;
         return false;
@@ -4532,20 +4633,6 @@ export class RocEngineRuntime {
     } finally {
       if (owner?.dom) { owner.dispatching -= 1; owner.retire(); }
     }
-  }
-
-  // Taking the head retires just that entry's index and ownership links.
-  takeIngress() {
-    const entry = this.queue.head;
-    this.queue.head = entry.next;
-    this.queue.length -= 1;
-    if (this.queue.length === 0) this.queue.tail = null;
-    if (entry.source !== undefined) {
-      if (this.reportSources.get(entry.source) === entry) this.reportSources.delete(entry.source);
-      entry.owner.reports.delete(entry);
-      if (entry.owner.retire) entry.owner.retire();
-    }
-    return entry;
   }
 
   // A disposed source or recycled DOM id never receives its queued input.
@@ -4574,11 +4661,9 @@ export class RocEngineRuntime {
     this.reportDue = false;
     if (reports) this.cancelReportDrain();
     let turns = 0;
-    while (!this.busy && !this.poisoned && this.queue.length > 0) {
-      const entry = this.queue.head;
-      if (entry === before) break;
-      if (entry.source !== undefined && entry.epoch === this.reportEpoch && !reports && entry.payload !== null) break;
-      this.takeIngress();
+    while (!this.busy && !this.poisoned) {
+      const entry = this.queue.next(reports, before);
+      if (entry === null) break;
       const payload = this.takePayload(entry);
       if (payload === null) continue;
       if (turns >= MAX_QUEUED) {
@@ -4593,7 +4678,7 @@ export class RocEngineRuntime {
         this.busy = this.pendingTransition !== null;
       }
     }
-    if (this.queue.length === 0) this.cancelReportDrain();
+    if (!this.queue.needsFrame) this.cancelReportDrain();
     else if (!this.poisoned) this.guard(() => this.scheduleReports());
   }
 
@@ -4633,25 +4718,19 @@ export class RocEngineRuntime {
     if (drain.timer !== null) clearTimeout(drain.timer);
   }
 
-  // A source owns its queued entries, including pinned earlier reports.
-  // CANCEL visits only that source, releases payloads immediately and lets
-  // the ordinary drain skip the dead queue cells without scanning others.
+  // The ingress queue's report source index, as contract tests observe it.
+  get reportSources() {
+    return this.queue.sources;
+  }
+
+  // CANCEL of a report source (`Ingress.cancel`).
   dropReports(id, owner) {
-    this.reportSources.delete(id);
-    if (owner.reports) {
-      for (const entry of owner.reports) entry.payload = null;
-      owner.reports.clear();
-    }
+    this.queue.cancel(id, owner);
   }
 
   clearIngress() {
     this.cancelReportDrain();
-    for (const entry of this.reportSources.values()) {
-      entry.owner.reports.clear();
-      if (entry.owner.retire) entry.owner.retire();
-    }
-    this.queue = { head: null, tail: null, length: 0 };
-    this.reportSources.clear();
+    this.queue.clear();
     this.reportDue = false;
     this.pointerLog = [];
     for (const owner of this.live.values()) if (owner.reports) owner.reports.clear();
