@@ -22,12 +22,12 @@ partial def toS : List Node → List Inst → Option Static.S
 wrote more than one thing. -/
 def linkStep (g : Cfg) (p : Prog) (s : Instance) (ev : Ident) : Option (Bool × Bool) := do
   let (h, env, sites) ← locate p.body s.root ⟨s.cells, []⟩ [] ev
-  let ws := h.map fun (r, e) => (r, e.eval env.get)
+  let ws := h.writes env fun i => sites.getD i false
   let lw := ws.filterMap fun
-    | (.layer i, v) => if sites.getD i false then some (i, v) else none
+    | (.layer i, v) => some (i, v)
     | _ => none
   let cw := ws.filterMap fun
-    | (.cell c, v) => if c < s.cells.length then some (c, v) else none
+    | (.cell c, v) => some (c, v)
     | _ => none
   let cells := cw.foldl (fun cs (c, v) => cs.set c v) s.cells
   -- `Wrote`: every written state site takes its value and waits.

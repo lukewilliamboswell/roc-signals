@@ -3,6 +3,10 @@ A generator of programs from a stream of choices. Random digits give a
 seeded random program; counting through every stream the generator can ask
 for (`nextDigits`) gives every program within the bounds (a program repeats
 where the size bound cuts a block short of the length chosen for it).
+
+This is the kernel's own generator, wider than the Roc generator's (store
+cells, selectors over two reads, writes of any amount). It drives the
+checks; the vectors use the Roc generator's trees (`Turns.Structure`).
 -/
 import Turns.Kernel
 namespace Turns

@@ -5,6 +5,10 @@ signature abstraction.
 The fragment is modelled on its own here, as a chain of sites, so that
 every function is structurally recursive. It shares `Expr`, `Expr.eval` and
 `Expr.reads` with the executable model and nothing else.
+
+Trusted for: the theorems below, about this model. That the model is the
+executable algorithm is tested, not proved (`Turns.ProofLink`, `check
+link`).
 -/
 import Turns.Kernel
 namespace Turns.Static

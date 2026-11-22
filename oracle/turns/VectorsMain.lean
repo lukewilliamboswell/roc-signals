@@ -1,11 +1,15 @@
 /-
-`lake exe bridge`: write traces, and check trace files against the
-reference semantics.
+`lake exe vectors`: write the structure target's vector files from the
+reference, and check vector files against it.
+
+  vectors structure <vectors.trace> <vectors-bad.trace>
+  vectors check <file>...
+
+A trace with no `variant` line must be accepted by the reference. A trace
+with one must be rejected, by the observation and at the step it names.
 -/
 import Turns
-open Turns
-
-def nat (s : String) : Nat := s.toNat?.getD 0
+open Turns Turns.Structure
 
 def parseBug : String → Option Bug
   | "none" => some .none
@@ -21,17 +25,23 @@ def parseBug : String → Option Bug
   | "pruneWakes" => some .pruneWakes
   | _ => none
 
-/-- A trace as an engine would produce it: the incremental model is driven
-by clicks on its own page, and its page and evaluation count are recorded. -/
-def modelTrace (g : Cfg) (gp : GenP) (name : String) (seed nsteps : Nat) : Trace := Id.run do
-  let (p, _) := decode gp (randoms seed 256)
+/-- The known-bad algorithms, by the name a `variant` line gives them. -/
+def badAlgorithms : List (String × Bug) :=
+  ["twoPassInner", "twoPassOuter", "noJoinKeep", "noJoinClear", "perWrite", "rowReset",
+    "rowResurrect", "noWalk", "underSig", "pruneWakes"].filterMap fun n => (parseBug n).map (n, ·)
+
+/-- A trace as the incremental algorithm `g` observes it: driven by the
+same click choices on its own page, with its page and its evaluation log
+recorded after each. -/
+def modelTrace (g : Cfg) (tree : List RNode) (name : String) (clicks : List Nat) : Trace := Id.run do
+  let p := toKernel tree
   let (s0, dom0, _) := mountProg g p
   let mut s := s0
   let mut dom := dom0
   let mut steps := #[]
-  for r in randoms (seed + 1000003) nsteps do
+  for r in clicks do
     let buttons := (flatDoms [] dom).filterMap fun
-      | (id, .button) => some id
+      | (id, .button _) => some id
       | _ => none
     if buttons.isEmpty then break
     let k := r % buttons.length
@@ -43,80 +53,154 @@ def modelTrace (g : Cfg) (gp : GenP) (name : String) (seed nsteps : Nat) : Trace
           | .ok d => d
           | .error _ => dom
         steps := steps.push { button := k, page := (flatDoms [] dom).map (·.2), evals := some tx.log.size }
-  return { name, α := g.α, prog := p, page0 := (flatDoms [] dom0).map (·.2), steps := steps.toList }
+  return { name, tree, page0 := (flatDoms [] dom0).map (·.2), steps := steps.toList }
 
-/-- A test vector: the same format, written by the reference alone. -/
-def vector (α : Alpha) (gp : GenP) (name : String) (seed nsteps : Nat) : Trace :=
-  refTrace α (decode gp (randoms seed 256)).1 name (randoms (seed + 1000003) nsteps).toList
+/-- The structure target's own directed examples, as byte inputs: the tree
+bytes and the event bytes, whose odd positions are the click choices. -/
+def byteExamples : List (String × List Nat × List Nat) := [
+  ("valued-when-of-two-writes",
+    [1, 5, 0, 1, 5, 0, 2, 3, 130, 1, 5, 0, 0, 0, 12, 1, 2],
+    [0, 3, 0, 3, 0, 4, 0, 1, 0, 1, 0, 3, 0, 4]),
+  ("valued-rows-of-two-writes",
+    [1, 5, 0, 1, 5, 0, 2, 7, 130, 1, 5, 0, 0, 12, 1, 2],
+    [0, 1, 0, 3, 0, 3, 0, 4, 0, 5, 0, 5]),
+  ("valued-rows-of-outer-derive",
+    [1, 15, 0, 1, 5, 0, 2, 7, 130, 1, 5, 0, 0, 12, 0, 1],
+    [0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 4, 0, 4, 0, 6, 0, 2]),
+  ("valued-rows-of-inner-derive",
+    [1, 5, 0, 1, 15, 1, 2, 7, 129, 1, 5, 0, 0, 12, 0, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 4, 0, 4, 0, 6, 0, 2])]
+
+def oddPositions (xs : List Nat) : List Nat :=
+  ((List.range xs.length).zip xs).filterMap fun (i, x) => if i % 2 = 1 then some x else none
+
+/-- Hand-written trees for shapes the byte examples do not hold. -/
+def treeExamples : List (String × String × List Nat) := [
+  -- Rows keyed by the root, each with a state of its own: a row kept across
+  -- a change of the list keeps its state; a key removed and inserted again
+  -- starts at 0.
+  ("rows-kept-and-reinserted", "(Each 0 ((Layer 0 0 ())))", [0, 2, 0, 0, 3, 0, 0, 0, 2]),
+  -- One click writes two nested states; a reader of the inner one only, which
+  -- the outer write's pass does not reach, is refreshed by the walk.
+  ("walk-to-inner-write", "(Layer 0 0 ((Layer 0 0 ((Show 2) (Bump2 1 2)))))", [4, 4, 2, 4]),
+  -- A `Pair` of the inner state, its derived value and the outer state, all
+  -- written by one click.
+  ("pair-of-two-writes", "(Layer 0 0 ((Layer 0 0 ((Pair 2 1) (Bump2 1 2)))))", [4, 4, 3, 4]),
+  -- A `when` on the outer state and a `derive` of the inner one, both
+  -- written by one click, with local state in the branch.
+  ("when-of-outer-and-inner-derive",
+    "(Layer 0 0 ((Layer 0 0 ((Layer 1 2 ((When 177 ((Layer 0 0 ())) ()))) (Bump2 1 2)))))",
+    [5, 3, 5, 5, 3, 5])]
+
+/-- Known-bad algorithms the generator's trees cannot tell from the
+reference, and why. -/
+def unreachable : List (String × String) := [
+  ("pruneWakes", "since every derived layer the generator builds (x * 2 + 1, x + 7) is injective, a derive it wakes never recomputes an equal value")]
+
+def seedTrees (seed : Nat) : List RNode × List Nat :=
+  let bytes := (randoms seed 80).toList.map (· % 256)
+  (decode bytes, (randoms (seed + 1000003) 8).toList.map (· % 256))
+
+def writeStructure (good bad : String) : IO UInt32 := do
+  let mut traces : Array Trace := #[]
+  for (name, tree, events) in byteExamples do
+    traces := traces.push (refTrace (decode tree) name (oddPositions events))
+  for (name, text, clicks) in treeExamples do
+    let some tree := parseTree text | IO.eprintln s!"does not parse: {text}"; return 2
+    traces := traces.push (refTrace tree name clicks)
+  for i in [0:16] do
+    let (tree, clicks) := seedTrees (100 + i)
+    traces := traces.push (refTrace tree s!"seeded-{100 + i}" clicks)
+  -- A program on which each known-bad algorithm is rejected, from the
+  -- first seed that has one.
+  let mut missing : List String := []
+  for (vname, b) in badAlgorithms do
+    let rejected := traces.any fun t =>
+      (checkTrace (modelTrace { bug := b } t.tree t.name (t.steps.map (·.button)))).observation.isSome
+    if !rejected then
+      let mut found := false
+      for seed in [1000:4000] do
+        let (tree, clicks) := seedTrees seed
+        if (checkTrace (modelTrace { bug := b } tree "" clicks)).observation.isSome then
+          traces := traces.push (refTrace tree s!"witness-{vname}-{seed}" clicks)
+          found := true
+          break
+      if !found then missing := missing ++ [vname]
+  let hg ← IO.FS.Handle.mk good .write
+  hg.putStr "# fuzz/structure vectors: written by oracle/turns (`lake exe vectors structure`); do not edit.\n"
+  hg.putStr "# Grammar and the generator these trees follow: oracle/README.md.\n"
+  for t in traces do hg.putStr t.text
+  -- The same programs and clicks, as each known-bad algorithm observes
+  -- them: at most three rejected traces per algorithm.
+  let hb ← IO.FS.Handle.mk bad .write
+  hb.putStr "# fuzz/structure known-bad observations: written by oracle/turns (`lake exe vectors structure`); do not edit.\n"
+  hb.putStr "# Every trace here must be rejected by the reference, by the observation and at the step its variant line names.\n"
+  let mut nbad := 0
+  for (vname, b) in badAlgorithms do
+    let mut n := 0
+    for t in traces do
+      if n ≥ 3 then break
+      let m := modelTrace { bug := b } t.tree t.name (t.steps.map (·.button))
+      match (checkTrace m).observation with
+      | some (o, step) =>
+          hb.putStr { m with variant := some (vname, o, step) }.text
+          n := n + 1
+      | none => pure ()
+    nbad := nbad + n
+  IO.println s!"wrote {traces.size} traces to {good} and {nbad} to {bad}"
+  for vname in missing do
+    if !(unreachable.any (·.1 == vname)) then
+      IO.eprintln s!"no program rejects {vname}"
+      return 1
+  for (vname, why) in unreachable do
+    IO.println s!"{vname}: no vector, {why}"
+  return 0
+
+def checkFiles (files : List String) : IO UInt32 := do
+  let mut failed := false
+  for file in files do
+    let text ← IO.FS.readFile file
+    match parseTraces text with
+    | .error e => IO.eprintln s!"{file}: {e}"; return 2
+    | .ok traces =>
+        let mut steps := 0
+        let mut bad := 0
+        for t in traces do
+          steps := steps + t.steps.length
+          let got := (checkTrace t).observation
+          match t.variant, got with
+          | none, none => pure ()
+          | none, some (o, n) =>
+              bad := bad + 1
+              IO.println s!"  {t.name}: rejected by the {o.name} at step {n}"
+          | some (v, o, n), some (o', n') =>
+              if o != o' || n != n' then
+                bad := bad + 1
+                IO.println s!"  {t.name} ({v}): rejected by the {o'.name} at step {n'}, not the {o.name} at step {n}"
+          | some (v, _, _), none =>
+              bad := bad + 1
+              IO.println s!"  {t.name} ({v}): accepted, but it is a known-bad observation"
+        if bad > 0 then failed := true
+        IO.println s!"{file}: traces={traces.size} steps={steps} wrong={bad}"
+  return (if failed then 1 else 0)
 
 def main (args : List String) : IO UInt32 := do
   match args with
-  | ["gen", out, bug, lm, cm, auto, seed0, count, steps] =>
-      let some b := parseBug bug | IO.eprintln "unknown bug"; return 2
-      let g : Cfg := { α := ⟨nat lm, nat cm⟩, bug := b }
-      let gp : GenP := { auto := auto = "1" }
-      let h ← IO.FS.Handle.mk out .write
-      let mut n := 0
-      for i in [0:nat count] do
-        let t := modelTrace g gp s!"{bug}-{nat seed0 + i}" (nat seed0 + i) (nat steps)
-        n := n + t.steps.length
-        h.putStr t.text
-      IO.println s!"wrote {count} traces, {n} steps to {out}"
+  | ["structure", good, bad] => writeStructure good bad
+  | "check" :: files => checkFiles files
+  | ["show", text] =>
+      match parseTree text with
+      | some tree =>
+          IO.println s!"prog{blockSx (toKernel tree).body}"
+          return 0
+      | none => IO.eprintln "does not parse"; return 2
+  | ["decode", bytes] =>
+      let tree := decode ((bytes.splitOn ",").filterMap String.toNat?)
+      IO.println (treeSx tree)
+      IO.println s!"kernel{blockSx (toKernel tree).body}"
       return 0
-  | ["vectors", out, lm, cm, seed0, count, steps, minSteps] =>
-      let h ← IO.FS.Handle.mk out .write
-      let mut seed := nat seed0
-      let mut made := 0
-      while made < nat count do
-        let t := vector ⟨nat lm, nat cm⟩ {} s!"vector-{seed}" seed (nat steps)
-        seed := seed + 1
-        if t.steps.length ≥ nat minSteps then
-          h.putStr t.text
-          made := made + 1
-      IO.println s!"wrote {made} vectors to {out}"
-      return 0
-  | "check" :: files =>
-      let mut failed := false
-      for file in files do
-        let t0 ← IO.monoNanosNow
-        let text ← IO.FS.readFile file
-        match parseTraces text with
-        | .error e => IO.eprintln s!"{file}: {e}"; return 2
-        | .ok traces =>
-            let t1 ← IO.monoNanosNow
-            let mut steps := 0
-            let mut pages := 0
-            let mut counts := 0
-            let mut shown := 0
-            for t in traces do
-              let (verdict, n) := checkTrace t
-              steps := steps + n
-              let say := fun (msg : String) => if shown < 3 then IO.println s!"  {t.name}: {msg}" else pure ()
-              match verdict with
-              | .ok => pure ()
-              | .page step expected =>
-                  pages := pages + 1
-                  let observed := if step = 0 then t.page0 else ((t.steps.drop (step - 1)).head?.map (·.page)).getD []
-                  say s!"page differs at step {step}: expected [{leavesTok expected}] observed [{leavesTok observed}]"
-                  shown := shown + 1
-              | .evals step expected =>
-                  counts := counts + 1
-                  let observed := ((t.steps.drop (step - 1)).head?.bind (·.evals)).getD 0
-                  say s!"pages agree; evaluations differ at step {step}: expected {expected} observed {observed}"
-                  shown := shown + 1
-              | .noButton step =>
-                  pages := pages + 1
-                  say s!"step {step} clicks a button the reference does not draw"
-                  shown := shown + 1
-            let t2 ← IO.monoNanosNow
-            let parseMs := (t1 - t0) / 1000000
-            let checkMs := (t2 - t1) / 1000000
-            let total := (t2 - t0).toFloat / 1e9
-            if pages + counts > 0 then failed := true
-            IO.println s!"{file}: traces={traces.size} steps={steps} pageMismatch={pages} countMismatch={counts} parse={parseMs}ms check={checkMs}ms {(traces.size.toFloat / total).round} traces/s {(steps.toFloat / total).round} steps/s"
-      return (if failed then 1 else 0)
   | _ =>
-      IO.eprintln "usage: bridge gen <out> <bug> <lm> <cm> <auto> <seed0> <count> <steps>"
-      IO.eprintln "       bridge vectors <out> <lm> <cm> <seed0> <count> <steps> <minSteps>"
-      IO.eprintln "       bridge check <file>..."
+      IO.eprintln "usage: vectors structure <vectors.trace> <vectors-bad.trace>"
+      IO.eprintln "       vectors check <file>..."
+      IO.eprintln "       vectors show <tree> | decode <byte,byte,...>"
       return 2

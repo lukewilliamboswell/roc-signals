@@ -6,7 +6,9 @@ signatures, waiting and joining, `derive` before what is below it, equality
 pruning, the walk down the event's path, and reconciliation of branches and
 rows. Its output is patch commands and a log of every evaluation.
 
-`Bug` seeds the deliberate defects the checks are measured against.
+Trusted for nothing: this is the algorithm under test, not a reference.
+`Bug.none` follows the design; every other `Bug` is a known-bad algorithm,
+a deliberate defect the checks and the vectors are measured against.
 -/
 import Turns.Spec
 namespace Turns
@@ -29,13 +31,17 @@ structure Cfg where
   α : Alpha := Alpha.exact
   bug : Bug := .none
 
+/-- The signature of a reader of `rs`. -/
+def Cfg.sigOf (g : Cfg) (rs : List Ref) : Mask :=
+  g.α.sig (if g.bug = .underSig then rs.take 1 else rs)
+
 /-- A reader's own signature. -/
-def Cfg.sig (g : Cfg) (e : Expr) : Mask :=
-  g.α.sig (if g.bug = .underSig then e.reads.take 1 else e.reads)
+def Cfg.sig (g : Cfg) (e : Expr) : Mask := g.sigOf e.reads
 
 /-- A mounted site and its storage, parallel to its `Node`. -/
 inductive Inst where
   | hole (last : Val)
+  | holes (last : List Val)
   | button
   | state (v : Val) (waiting : Bool) (kids : List Inst)
   | derive (v : Val) (kids : List Inst)
@@ -47,15 +53,17 @@ instance : Inhabited Inst := ⟨.button⟩
 /-- The page model the commands patch. -/
 inductive Dom where
   | text (v : Val)
-  | button
+  | texts (vs : List Val)
+  | button (writes : Nat)
   | box (kids : List Dom)
   | branch (cur : Option Nat) (kids : List Dom)
   | rows (rs : List (Val × List Dom))
 
-instance : Inhabited Dom := ⟨.button⟩
+instance : Inhabited Dom := ⟨.button 0⟩
 
 inductive Cmd where
   | setText (id : Ident) (v : Val)
+  | setTexts (id : Ident) (vs : List Val)
   | remove (id : Ident)                   -- a branch (`… b k`) or a row (`… r k`)
   | create (id : Ident) (frag : List Dom)
   | order (id : Ident) (keys : List Val)  -- the rows of an `each` site, in order
@@ -75,6 +83,11 @@ environment it saw. -/
 def evalAt (id : Ident) (env : Env) (e : Expr) : M Val := do
   modify fun t => { t with log := t.log.push (id, env) }
   pure (e.eval env.get)
+
+/-- One evaluation of a `joined` hole: one entry in the log, as one hole. -/
+def evalAllAt (id : Ident) (env : Env) (es : List Expr) : M (List Val) := do
+  modify fun t => { t with log := t.log.push (id, env) }
+  pure (es.map (·.eval env.get))
 
 def indexed (xs : List α) : List (Nat × α) := (List.range xs.length).zip xs
 
@@ -99,7 +112,8 @@ mutual
 partial def mountNode (g : Cfg) (env : Env) (id : Ident) (n : Node) : M (Inst × Dom) := do
   match n with
   | .show e => let v ← evalAt id env e; pure (.hole v, .text v)
-  | .bump _ => pure (.button, .button)
+  | .joined es => let vs ← evalAllAt id env es; pure (.holes vs, .texts vs)
+  | .bump h => pure (.button, .button h.length)
   | .state init body =>
       let dead := (← get).dead
       let v := if g.bug = .rowResurrect then (dead.lookup id).getD init else init
@@ -117,7 +131,7 @@ partial def mountNode (g : Cfg) (env : Env) (id : Ident) (n : Node) : M (Inst ×
       pure (.rows (rows.map (·.1)), .rows (rows.map (·.2)))
   | n =>
       match n.cases? with
-      | none => pure (.button, .button)
+      | none => pure (.button, .button 0)
       | some (sel, idx, cases) =>
           let k := idx (← evalAt id env sel)
           let (is, ds) ← mountBlock g env (id ++ [.b k]) (cases.getD k [])
@@ -140,6 +154,12 @@ partial def refreshNode (g : Cfg) (all : Bool) (m : Mask) (env : Env) (id : Iden
         let v ← evalAt id env e
         if v ≠ last then emit (.setText id v)
         pure (.hole v)
+      else pure x
+  | .joined es, .holes last =>
+      if all || hit (g.sigOf (es.flatMap Expr.reads)) m then
+        let vs ← evalAllAt id env es
+        if vs ≠ last then emit (.setTexts id vs)
+        pure (.holes vs)
       else pure x
   | .state _ body, .state v w kids =>
       -- A waiting layer joins the pass here: its bit, for its own subtree.
@@ -303,12 +323,12 @@ def turn (g : Cfg) (p : Prog) (s : Instance) (ev : Ident) : Option (Instance × 
   match locate p.body s.root ⟨s.cells, []⟩ [] ev with
   | none => none
   | some (h, env, sites) =>
-      let ws := h.map fun (r, e) => (r, e.eval env.get)
+      let ws := h.writes env fun i => sites.getD i false
       let lw := ws.filterMap fun
-        | (.layer i, v) => if sites.getD i false then some (i, v) else none
+        | (.layer i, v) => some (i, v)
         | _ => none
       let cw := ws.filterMap fun
-        | (.cell c, v) => if c < s.cells.length then some (c, v) else none
+        | (.cell c, v) => some (c, v)
         | _ => none
       let run : M Instance :=
         if g.bug = .perWrite then do
@@ -334,6 +354,9 @@ partial def patchBlock (cmd : Cmd) : Ident → List Dom → Except String (List 
 partial def patchDom (cmd : Cmd) : Ident → Dom → Except String Dom
   | [], .text _ => match cmd with
       | .setText _ v => pure (.text v)
+      | _ => throw "not a text command"
+  | [], .texts _ => match cmd with
+      | .setTexts _ vs => pure (.texts vs)
       | _ => throw "not a text command"
   | [], .rows rs => match cmd with
       | .order _ keys =>
@@ -364,6 +387,7 @@ end
 
 def Cmd.id : Cmd → Ident
   | .setText id _ => id
+  | .setTexts id _ => id
   | .remove id => id
   | .create id _ => id
   | .order id _ => id
@@ -374,7 +398,8 @@ def applyCmds (dom : List Dom) (cmds : Array Cmd) : Except String (List Dom) :=
 mutual
 partial def flatDom (id : Ident) : Dom → List (Ident × Leaf)
   | .text v => [(id, .text v)]
-  | .button => [(id, .button)]
+  | .texts vs => [(id, .texts vs)]
+  | .button n => [(id, .button n)]
   | .box kids => flatDoms id kids
   | .branch (some k) kids => flatDoms (id ++ [.b k]) kids
   | .branch none _ => []

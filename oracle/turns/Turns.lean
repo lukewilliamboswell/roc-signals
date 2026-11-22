@@ -1,9 +1,11 @@
 import Turns.Kernel
+import Turns.Text
 import Turns.Spec
 import Turns.Expect
 import Turns.Incr
 import Turns.Props
 import Turns.Gen
+import Turns.Structure
 import Turns.Trace
 import Turns.Proof
 import Turns.ProofLink

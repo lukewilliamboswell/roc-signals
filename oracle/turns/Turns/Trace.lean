@@ -1,155 +1,110 @@
 /-
-The bridge: a line-oriented text format for a program, its events and the
-pages observed after each, and a checker of an observed trace against the
-reference semantics alone.
+The vector format of `fuzz/structure`: a generated tree, its clicks and the
+page after each, as the reference gives them; and a checker of a trace
+against the reference alone. `oracle/README.md` states the grammar.
 
   trace <name>
-  alpha <lm> <cm>                 signature abstraction, for the evaluation count
-  cells <v> ...                   the store at mount
-  prog <node> ...                 the program, as s-expressions
-  page <leaf> ...                 the page at mount: a text's integer, or B for a button
-  step <k> | <leaf> ... | <n>     click the k-th live button in document order; the page
-                                  observed after it; evaluations counted, or - for none
+  variant <algorithm> <observation> <step>   only in vectors-bad: the
+                                             known-bad algorithm that
+                                             observed this trace, and the
+                                             first observation the
+                                             reference rejects
+  prog <node> ...                            the tree, in the Roc `Node`
+                                             tag names
+  page <leaf> ...                            the page at mount
+  step <k> | <leaf> ... | <n>                click the k-th live button in
+                                             document order; the page after
+                                             it; the evaluations the turn
+                                             makes, or - for none recorded
   end
+
+A leaf is a text's integer, a `Pair` text as `x~d~y`, or a button as one
+`+` per write its click makes.
+
+Trusted for: the format, and what replaying a trace against the reference
+answers. It holds no semantics of its own.
 -/
 import Turns.Expect
+import Turns.Structure
 namespace Turns
 
-def Ref.sx : Ref → String
-  | .layer i => s!"(L {i})"
-  | .cell c => s!"(C {c})"
-
-def Expr.sx : Expr → String
-  | .lit n => toString n
-  | .rd r => r.sx
-  | .add a b => s!"(+ {a.sx} {b.sx})"
-  | .mul a b => s!"(* {a.sx} {b.sx})"
-  | .mod a b => s!"(% {a.sx} {b.sx})"
-  | .eq a b => s!"(= {a.sx} {b.sx})"
-
-mutual
-partial def Node.sx : Node → String
-  | .show e => s!"(show {e.sx})"
-  | .bump h => "(bump" ++ String.join (h.map fun (r, e) => s!" ({r.sx} {e.sx})") ++ ")"
-  | .state init body => s!"(state {init}{blockSx body})"
-  | .derive e body => s!"(derive {e.sx}{blockSx body})"
-  | .when sel yes no => s!"(when {sel.sx} ({listSx yes}) ({listSx no}))"
-  | .switch sel a b c => s!"(switch {sel.sx} ({listSx a}) ({listSx b}) ({listSx c}))"
-  | .each src body => s!"(each {src.sx}{blockSx body})"
-partial def blockSx (ns : List Node) : String := String.join (ns.map fun n => " " ++ n.sx)
-partial def listSx (ns : List Node) : String := " ".intercalate (ns.map Node.sx)
-end
-
-inductive Sx where
-  | atom (s : String)
-  | list (xs : List Sx)
-
-instance : Inhabited Sx := ⟨.atom ""⟩
-
-def words (s : String) : List String := (s.splitOn " ").filter (· ≠ "")
-
-def tokens (s : String) : List String := words ((s.replace "(" " ( ").replace ")" " ) ")
-
-mutual
-partial def parseSx : List String → Option (Sx × List String)
-  | "(" :: ts => parseSxs ts []
-  | ")" :: _ => none
-  | t :: ts => some (.atom t, ts)
-  | [] => none
-partial def parseSxs : List String → List Sx → Option (Sx × List String)
-  | ")" :: ts, acc => some (.list acc.reverse, ts)
-  | ts, acc =>
-      match parseSx ts with
-      | some (x, ts') => parseSxs ts' (x :: acc)
-      | none => none
-end
-
-def toRef : Sx → Option Ref
-  | .list [.atom "L", .atom i] => i.toNat?.map .layer
-  | .list [.atom "C", .atom i] => i.toNat?.map .cell
-  | _ => none
-
-partial def toExpr : Sx → Option Expr
-  | .atom s => s.toInt?.map .lit
-  | .list [.atom "+", a, b] => do pure (.add (← toExpr a) (← toExpr b))
-  | .list [.atom "*", a, b] => do pure (.mul (← toExpr a) (← toExpr b))
-  | .list [.atom "%", a, b] => do pure (.mod (← toExpr a) (← toExpr b))
-  | .list [.atom "=", a, b] => do pure (.eq (← toExpr a) (← toExpr b))
-  | x => (toRef x).map .rd
-
-partial def toNode : Sx → Option Node
-  | .list [.atom "show", e] => do pure (.show (← toExpr e))
-  | .list (.atom "bump" :: ws) => do
-      pure (.bump (← ws.mapM fun
-        | .list [r, e] => do pure (← toRef r, ← toExpr e)
-        | _ => none))
-  | .list (.atom "state" :: .atom i :: body) => do pure (.state (← i.toInt?) (← body.mapM toNode))
-  | .list (.atom "derive" :: e :: body) => do pure (.derive (← toExpr e) (← body.mapM toNode))
-  | .list [.atom "when", e, .list yes, .list no] => do
-      pure (.when (← toExpr e) (← yes.mapM toNode) (← no.mapM toNode))
-  | .list [.atom "switch", e, .list a, .list b, .list c] => do
-      pure (.switch (← toExpr e) (← a.mapM toNode) (← b.mapM toNode) (← c.mapM toNode))
-  | .list (.atom "each" :: e :: body) => do pure (.each (← toExpr e) (← body.mapM toNode))
-  | _ => none
-
-def parseBody (s : String) : Option (List Node) :=
-  match parseSx (tokens ("(" ++ s ++ ")")) with
-  | some (.list xs, []) => xs.mapM toNode
-  | _ => none
+open Structure
 
 def Leaf.tok : Leaf → String
   | .text v => toString v
-  | .button => "B"
+  | .texts vs => "~".intercalate (vs.map toString)
+  | .button n => String.ofList (List.replicate (max n 1) '+')
 
 def leavesTok (ls : List Leaf) : String := " ".intercalate (ls.map Leaf.tok)
 
-def parseLeaves (s : String) : Option (List Leaf) :=
-  (words s).mapM fun t => if t = "B" then some .button else t.toInt?.map .text
+def parseLeaf (t : String) : Option Leaf :=
+  if t ≠ "" && t.all (· = '+') then some (.button t.length)
+  else if t.contains '~' then ((t.splitOn "~").mapM String.toInt?).map .texts
+  else t.toInt?.map .text
+
+def parseLeaves (s : String) : Option (List Leaf) := (words s).mapM parseLeaf
 
 structure TStep where
   button : Nat
   page : List Leaf
   evals : Option Nat
 
+/-- What a known-bad algorithm's trace is rejected by: the page, the
+evaluation count, or a click on a button the reference does not draw. -/
+inductive Observation where
+  | page | count | button
+  deriving DecidableEq, Repr
+
+def Observation.name : Observation → String
+  | .page => "page" | .count => "count" | .button => "button"
+
+def Observation.parse : String → Option Observation
+  | "page" => some .page | "count" => some .count | "button" => some .button
+  | _ => none
+
 structure Trace where
   name : String
-  α : Alpha
-  prog : Prog
+  variant : Option (String × Observation × Nat) := none
+  tree : List RNode
   page0 : List Leaf
   steps : List TStep
 
+def Trace.prog (t : Trace) : Prog := toKernel t.tree
+
 def Trace.text (t : Trace) : String :=
-  s!"trace {t.name}\nalpha {t.α.lm} {t.α.cm}\ncells {" ".intercalate (t.prog.cells.map toString)}\n"
-    ++ s!"prog{blockSx t.prog.body}\npage {leavesTok t.page0}\n"
+  s!"trace {t.name}\n"
+    ++ (match t.variant with
+        | some (v, o, n) => s!"variant {v} {o.name} {n}\n"
+        | none => "")
+    ++ s!"prog {treeSx t.tree}\npage {leavesTok t.page0}\n"
     ++ String.join (t.steps.map fun s =>
         s!"step {s.button} | {leavesTok s.page} | {match s.evals with | some n => toString n | none => "-"}\n")
     ++ "end\n"
 
-/-- The traces of a file, or the line that does not parse. -/
+/-- The traces of a file, or the line that does not parse. A line that
+starts with `#` is a comment. -/
 def parseTraces (text : String) : Except String (Array Trace) := do
   let mut out := #[]
-  let mut cur : Trace := { name := "", α := Alpha.exact, prog := ⟨[], []⟩, page0 := [], steps := [] }
+  let mut cur : Trace := { name := "", tree := [], page0 := [], steps := [] }
   let mut steps : Array TStep := #[]
   let mut n := 0
   for line in text.splitOn "\n" do
     n := n + 1
     let bad : Except String Unit := throw s!"line {n}: {line}"
+    if line.startsWith "#" then continue
     match line.splitOn " " with
     | ["end"] =>
         out := out.push { cur with steps := steps.toList }
+        cur := { name := "", tree := [], page0 := [], steps := [] }
         steps := #[]
     | "trace" :: rest => cur := { cur with name := " ".intercalate rest }
-    | ["alpha", a, b] =>
-        match a.toNat?, b.toNat? with
-        | some a, some b => cur := { cur with α := ⟨a, b⟩ }
+    | ["variant", v, o, k] =>
+        match Observation.parse o, k.toNat? with
+        | some o, some k => cur := { cur with variant := some (v, o, k) }
         | _, _ => bad
-    | "cells" :: vs =>
-        match (vs.filter (· ≠ "")).mapM String.toInt? with
-        | some vs => cur := { cur with prog := { cur.prog with cells := vs } }
-        | none => bad
     | "prog" :: rest =>
-        match parseBody (" ".intercalate rest) with
-        | some body => cur := { cur with prog := { cur.prog with body } }
+        match parseTree (" ".intercalate rest) with
+        | some tree => cur := { cur with tree }
         | none => bad
     | "page" :: rest =>
         match parseLeaves (" ".intercalate rest) with
@@ -167,41 +122,57 @@ def parseTraces (text : String) : Except String (Array Trace) := do
     | _ => bad
   return out
 
+/-- The first observation of a trace the reference rejects, or `ok`. -/
 inductive Verdict where
   | ok
   | page (step : Nat) (expected : List Leaf)    -- the first step whose page differs (0 is the mount)
   | evals (step : Nat) (expected : Nat)         -- the pages agree; the first evaluation count that differs
   | noButton (step : Nat)                       -- the trace clicks a button the reference does not draw
 
+def Verdict.observation : Verdict → Option (Observation × Nat)
+  | .ok => none
+  | .page n _ => some (.page, n)
+  | .evals n _ => some (.count, n)
+  | .noButton n => some (.button, n)
+
 def leavesOf (p : Prog) (w : World) : List Leaf := (pageOf (view p w)).map (·.2)
 
-/-- Replay a trace against the reference. Answers the verdict and the steps
-replayed. A page that differs ends the replay; an evaluation count that
-differs is kept while the pages go on agreeing. -/
-def checkTrace (t : Trace) : Verdict × Nat := Id.run do
-  let mut w := World.init t.prog
-  if leavesOf t.prog w != t.page0 then return (.page 0 (leavesOf t.prog w), 0)
+/-- The turn's due evaluations, by the second specification, with exact
+signatures (the engine's signature words are exact at the generator's
+depths). -/
+def dueCount (p : Prog) (w0 w1 : World) (ws : List (Target × Val)) : Nat :=
+  ((expect Alpha.exact p w0 w1 ws).readers.filter (·.due)).length
+
+/-- Replay a trace against the reference. A page that differs ends the
+replay; an evaluation count that differs is kept while the pages go on
+agreeing. -/
+def checkTrace (t : Trace) : Verdict := Id.run do
+  let p := t.prog
+  let mut w := World.init p
+  if leavesOf p w != t.page0 then return .page 0 (leavesOf p w)
   let mut n := 0
   let mut verdict := Verdict.ok
   for s in t.steps do
     n := n + 1
-    let v := view t.prog w
-    let some ev := (buttonsOf v)[s.button]? | return (.noButton n, n)
+    let v := view p w
+    let some ev := (buttonsOf v)[s.button]? | return .noButton n
     let ws := match v.lookup ev with
       | some (.button ws) => ws
       | _ => []
-    let some w1 := stepRef t.prog w ev | return (.noButton n, n)
-    let page := leavesOf t.prog w1
-    if page != s.page then return (.page n page, n)
+    let some w1 := stepRef p w ev | return .noButton n
+    let page := leavesOf p w1
+    if page != s.page then return .page n page
     if let (.ok, some observed) := (verdict, s.evals) then
-      let due := ((expect t.α t.prog w w1 ws).readers.filter (·.due)).length
+      let due := dueCount p w w1 ws
       if due != observed then verdict := .evals n due
     w := w1
-  return (verdict, n)
+  return verdict
 
-/-- A test vector: the trace the reference alone writes for a program and a
-list of clicks (each taken modulo the live buttons). -/
-def refTrace (α : Alpha) (p : Prog) (name : String) (clicks : List Nat) : Trace := Id.run do
+/-- A vector: the trace the reference alone writes for a tree and a list
+of click choices, each taken modulo the live buttons, as the structure
+target's valued session takes its event bytes. -/
+def refTrace (tree : List RNode) (name : String) (clicks : List Nat) : Trace := Id.run do
+  let p := toKernel tree
   let mut w := World.init p
   let mut steps := #[]
   for r in clicks do
@@ -214,9 +185,8 @@ def refTrace (α : Alpha) (p : Prog) (name : String) (clicks : List Nat) : Trace
       | some (.button ws) => ws
       | _ => []
     let some w1 := stepRef p w ev | break
-    let due := ((expect α p w w1 ws).readers.filter (·.due)).length
-    steps := steps.push { button := k, page := leavesOf p w1, evals := some due }
+    steps := steps.push { button := k, page := leavesOf p w1, evals := some (dueCount p w w1 ws) }
     w := w1
-  return { name, α, prog := p, page0 := leavesOf p (World.init p), steps := steps.toList }
+  return { name, tree, page0 := leavesOf p (World.init p), steps := steps.toList }
 
 end Turns
