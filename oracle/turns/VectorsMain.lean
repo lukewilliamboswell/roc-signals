@@ -55,21 +55,34 @@ def modelTrace (g : Cfg) (tree : List RNode) (name : String) (clicks : List Nat)
         steps := steps.push { button := k, page := (flatDoms [] dom).map (·.2), evals := some tx.log.size }
   return { name, tree, page0 := (flatDoms [] dom0).map (·.2), steps := steps.toList }
 
-/-- The structure target's own directed examples, as byte inputs: the tree
-bytes and the event bytes, whose odd positions are the click choices. -/
+/-- The structure target's own valued examples (`fixed_cases`, mode 4), as
+byte inputs: the tree bytes and the event bytes, whose odd positions are
+the click choices. -/
 def byteExamples : List (String × List Nat × List Nat) := [
   ("valued-when-of-two-writes",
-    [1, 5, 0, 1, 5, 0, 2, 3, 130, 1, 5, 0, 0, 0, 12, 1, 2],
+    [1, 5, 0, 1, 5, 0, 2, 13, 1, 2, 1, 5, 0, 0, 0, 12, 1, 2],
     [0, 3, 0, 3, 0, 4, 0, 1, 0, 1, 0, 3, 0, 4]),
   ("valued-rows-of-two-writes",
-    [1, 5, 0, 1, 5, 0, 2, 7, 130, 1, 5, 0, 0, 12, 1, 2],
-    [0, 1, 0, 3, 0, 3, 0, 4, 0, 5, 0, 5]),
+    [1, 5, 0, 1, 5, 0, 2, 17, 1, 2, 1, 5, 0, 0, 12, 1, 2],
+    [0, 3, 0, 3, 0, 4, 0, 1, 0, 3, 0, 5, 0, 7, 0, 6]),
   ("valued-rows-of-outer-derive",
-    [1, 15, 0, 1, 5, 0, 2, 7, 130, 1, 5, 0, 0, 12, 0, 1],
-    [0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 4, 0, 4, 0, 6, 0, 2]),
+    [1, 15, 0, 1, 5, 0, 2, 17, 1, 2, 1, 5, 0, 0, 12, 0, 1],
+    [0, 3, 0, 3, 0, 2, 0, 5, 0, 4, 0, 6, 0, 2]),
   ("valued-rows-of-inner-derive",
-    [1, 5, 0, 1, 15, 1, 2, 7, 129, 1, 5, 0, 0, 12, 0, 1],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 4, 0, 4, 0, 6, 0, 2])]
+    [1, 5, 0, 1, 15, 1, 2, 17, 0, 2, 1, 5, 0, 0, 12, 0, 1],
+    [0, 3, 0, 3, 0, 2, 0, 5, 0, 4, 0, 6, 0, 2]),
+  ("valued-switch-of-outer-derive",
+    [1, 15, 0, 1, 5, 0, 2, 14, 1, 2, 1, 5, 0, 0, 1, 5, 0, 0, 1, 5, 0, 0, 12, 0, 1],
+    [0, 2, 0, 2, 0, 3, 0, 2, 0, 3]),
+  ("valued-walk-into-remounted-branch",
+    [1, 3, 0, 1, 7, 0, 0, 1, 25, 0, 1, 5, 0, 1, 15, 128, 1, 12, 0, 128],
+    [0, 0, 0, 2]),
+  ("valued-halving-derive",
+    [1, 65, 0, 2, 0, 128, 2, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0]),
+  ("valued-switch-of-inner-derive",
+    [1, 5, 0, 1, 15, 1, 2, 14, 0, 2, 1, 5, 0, 0, 1, 5, 0, 0, 1, 5, 0, 0, 12, 0, 1],
+    [0, 2, 0, 2, 0, 3, 0, 2, 0, 3])]
 
 def oddPositions (xs : List Nat) : List Nat :=
   ((List.range xs.length).zip xs).filterMap fun (i, x) => if i % 2 = 1 then some x else none
@@ -77,9 +90,9 @@ def oddPositions (xs : List Nat) : List Nat :=
 /-- Hand-written trees for shapes the byte examples do not hold. -/
 def treeExamples : List (String × String × List Nat) := [
   -- Rows keyed by the root, each with a state of its own: a row kept across
-  -- a change of the list keeps its state; a key removed and inserted again
-  -- starts at 0.
-  ("rows-kept-and-reinserted", "(Each 0 ((Layer 0 0 ())))", [0, 2, 0, 0, 3, 0, 0, 0, 2]),
+  -- a change of the list keeps its state, and its item changes under its
+  -- key; a key removed and inserted again starts at 0.
+  ("rows-kept-and-reinserted", "(Each (One 0) ((Layer 0 0 ())))", [0, 2, 0, 0, 3, 0, 0, 0, 2]),
   -- One click writes two nested states; a reader of the inner one only, which
   -- the outer write's pass does not reach, is refreshed by the walk.
   ("walk-to-inner-write", "(Layer 0 0 ((Layer 0 0 ((Show 2) (Bump2 1 2)))))", [4, 4, 2, 4]),
@@ -89,13 +102,13 @@ def treeExamples : List (String × String × List Nat) := [
   -- A `when` on the outer state and a `derive` of the inner one, both
   -- written by one click, with local state in the branch.
   ("when-of-outer-and-inner-derive",
-    "(Layer 0 0 ((Layer 0 0 ((Layer 1 2 ((When 177 ((Layer 0 0 ())) ()))) (Bump2 1 2)))))",
-    [5, 3, 5, 5, 3, 5])]
-
-/-- Known-bad algorithms the generator's trees cannot tell from the
-reference, and why. -/
-def unreachable : List (String × String) := [
-  ("pruneWakes", "since every derived layer the generator builds (x * 2 + 1, x + 7) is injective, a derive it wakes never recomputes an equal value")]
+    "(Layer 0 0 ((Layer 0 0 ((Layer 1 2 ((When (Two 1 128) ((Layer 0 0 ())) ()))) (Bump2 1 2)))))",
+    [5, 3, 5, 5, 3, 5]),
+  -- A halving `derive` of the root with a reader of it alone and rows over
+  -- it: every second click leaves the halved value equal, and nothing below
+  -- it may be evaluated.
+  ("halving-derive-prunes", "(Layer 6 0 ((Show 128) (Each (One 128) ((Show 128))) (Bump 0)))",
+    [1, 1, 1, 1, 1, 1])]
 
 def seedTrees (seed : Nat) : List RNode × List Nat :=
   let bytes := (randoms seed 80).toList.map (· % 256)
@@ -149,11 +162,8 @@ def writeStructure (good bad : String) : IO UInt32 := do
     nbad := nbad + n
   IO.println s!"wrote {traces.size} traces to {good} and {nbad} to {bad}"
   for vname in missing do
-    if !(unreachable.any (·.1 == vname)) then
-      IO.eprintln s!"no program rejects {vname}"
-      return 1
-  for (vname, why) in unreachable do
-    IO.println s!"{vname}: no vector, {why}"
+    IO.eprintln s!"no program rejects {vname}"
+    return 1
   return 0
 
 def checkFiles (files : List String) : IO UInt32 := do

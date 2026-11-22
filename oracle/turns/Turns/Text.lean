@@ -17,12 +17,14 @@ def Expr.sx : Expr → String
   | .add a b => s!"(+ {a.sx} {b.sx})"
   | .mul a b => s!"(* {a.sx} {b.sx})"
   | .mod a b => s!"(% {a.sx} {b.sx})"
+  | .div a b => s!"(/ {a.sx} {b.sx})"
   | .eq a b => s!"(= {a.sx} {b.sx})"
 
 mutual
 partial def Node.sx : Node → String
   | .show e => s!"(show {e.sx})"
   | .joined es => "(joined" ++ String.join (es.map fun e => s!" {e.sx}") ++ ")"
+  | .keyed e => s!"(keyed {e.sx})"
   | .bump h => "(bump" ++ String.join (h.map fun (r, e) => s!" ({r.sx} {e.sx})") ++ ")"
   | .state init body => s!"(state {init}{blockSx body})"
   | .derive e body => s!"(derive {e.sx}{blockSx body})"
@@ -67,12 +69,14 @@ partial def toExpr : Sx → Option Expr
   | .list [.atom "+", a, b] => do pure (.add (← toExpr a) (← toExpr b))
   | .list [.atom "*", a, b] => do pure (.mul (← toExpr a) (← toExpr b))
   | .list [.atom "%", a, b] => do pure (.mod (← toExpr a) (← toExpr b))
+  | .list [.atom "/", a, b] => do pure (.div (← toExpr a) (← toExpr b))
   | .list [.atom "=", a, b] => do pure (.eq (← toExpr a) (← toExpr b))
   | x => (toRef x).map .rd
 
 partial def toNode : Sx → Option Node
   | .list [.atom "show", e] => do pure (.show (← toExpr e))
   | .list (.atom "joined" :: es) => do pure (.joined (← es.mapM toExpr))
+  | .list [.atom "keyed", e] => do pure (.keyed (← toExpr e))
   | .list (.atom "bump" :: ws) => do
       pure (.bump (← ws.mapM fun
         | .list [r, e] => do pure (← toRef r, ← toExpr e)

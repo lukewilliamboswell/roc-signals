@@ -9,6 +9,7 @@ import pf.Worker
 import Counts
 import ProbeRules
 import Reference
+import Vectors
 
 ## Generated structure: bytes decode into a site tree and a session over it,
 ## so the engine meets nestings no fixed app happens to contain.
@@ -87,6 +88,9 @@ import Reference
 ##   removal, or a reader that settled on one new value beside one old one
 ##   shows up as a different text. The series' shape shares are held to
 ##   minimums (`valued_tally`);
+## - in mode 6 the program and clicks of one vector Lean wrote
+##   (`Vectors`) run as a valued session, so the engine meets every tree the
+##   value model is held to;
 ## - the session frees everything it allocated.
 
 Node : Reference.Node
@@ -1077,6 +1081,13 @@ run_input = |{ mode, tree, events }| {
 	} else if mode == 4 {
 		_tally = run_valued(decode(tree), events)
 		{}
+	} else if mode == 6 {
+		vector = match tree {
+			[at] => Vectors.good.get(at.to_u64()) ?? crash "structure: no vector at ${at.to_str()}"
+			_ => crash "structure: a vector replay names one index"
+		}
+		_tally = run_valued(vector.tree, Vectors.clicks(vector))
+		{}
 	} else if mode == 3 {
 		observation_release_case({})
 	} else if mode == 2 {
@@ -1156,7 +1167,10 @@ fixed_cases = [
 	# leaves the halved value as it was, and its readers must not move.
 	ex("valued-halving-derive", 4, [1, 65, 0, 2, 0, 128, 2, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
 	ex("valued-switch-of-inner-derive", 4, [1, 5, 0, 1, 15, 1, 2, 14, 0, 2, 1, 5, 0, 0, 1, 5, 0, 0, 1, 5, 0, 0, 12, 0, 1], [0, 2, 0, 2, 0, 3, 0, 2, 0, 3]),
-]
+].concat(
+	# Mode 6: the programs and clicks of `vectors.trace`, through the engine.
+	Vectors.good.map_with_index(|vector, at| ex("vector-${vector.name}", 6, [at.to_u8_wrap()], [])),
+)
 
 ## Every declared fixed history runs in the ordinary preflight as well.
 ## This catches an invalid generated event before an expensive LLVM build;
