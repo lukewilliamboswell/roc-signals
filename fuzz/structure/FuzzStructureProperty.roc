@@ -1053,8 +1053,9 @@ series = |seed, count| {
 
 ## The valued series reaches the shapes that expose an event's writes
 ## settled out of order or a kept row's state lost, in shares of its clicks
-## at least half of those at which it found both by hand (the inner-first
-## two-pass bug and a kept row reset on a list change): clicks writing two
+## at least half of those at which the series finds each when it is put
+## into the engine (an event's writes settled by two passes, inner first,
+## and a kept row reset on a list change): clicks writing two
 ## states one structural reader follows, of which some through a derived
 ## value; clicks disposing a state that was not at 0; rows drawn again after
 ## a removal; and kept rows whose item changed.

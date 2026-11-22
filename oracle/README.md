@@ -59,8 +59,8 @@ given that a table carrying the cell's identity and start, still in its
 recording phase, describes it. `CheckMain` explores every state within small
 scopes and checks 31 rules.
 
-`lake exe check gate` runs the scopes the exploration used, each with the
-rules it is expected to fail. None fails: over the branching histories of a
+`lake exe check gate` runs a fixed set of scopes, each with the rules it is
+expected to fail. None fails: over the branching histories of a
 pure `Store` value, two histories share the cell's identity and can reach
 one count with different rows, and `kept` takes as the cell's own only a
 table still in the recording phase its modifier put it in, as `design.md`
