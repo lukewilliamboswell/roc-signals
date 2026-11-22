@@ -5531,7 +5531,11 @@ the page before the turn with the page after it. A reader is due when its
 scope is new, or when it reads, on its own path, a layer the turn wrote or
 a `derive`, `resource` or row item whose value the turn changed; a written
 state is refreshed whatever value it was given, and a `derive` that
-recomputes an equal value carries nothing below it. A write that gives a
+recomputes an equal value carries nothing below it. The same model counted
+the kernel's way (which leaves out guards, form controls and watches, and
+counts a `Pair`'s text and watch as one reader) must give every step's
+count in the structure vectors and reject each known-bad trace that only a
+count rejects, at the step Lean rejects it. A write that gives a
 state the value it had is checked on its own: its turn emits no command,
 and `dirty_source_roots` and its reader's evaluation still count it.
 

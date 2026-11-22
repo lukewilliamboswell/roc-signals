@@ -1,4 +1,5 @@
 import Reference
+import Vectors
 
 ## The count and shape model of the structure target's valued programs:
 ## how many signal reads a turn must make (work counter 21,
@@ -39,7 +40,7 @@ Counts := [].{
 	## new.
 	mount : List(Reference.Node), Reference.Held -> Turn
 	mount = |tree, held| {
-		walked = root(tree, { before: held, after: held, writes: [] }, Bool.True)
+		walked = root(tree, { before: held, after: held, writes: [], count: Engine }, Bool.True)
 		{ evals: walked.evals, created: scopes(tree, held).len(), disposed: 0, layers: [] }
 	}
 
@@ -48,7 +49,7 @@ Counts := [].{
 	## names them).
 	turn : List(Reference.Node), Reference.Held, Reference.Held, List(Str) -> Turn
 	turn = |tree, before, after, writes| {
-		walked = root(tree, { before, after, writes }, Bool.False)
+		walked = root(tree, { before, after, writes, count: Engine }, Bool.False)
 		was = scopes(tree, before)
 		now = scopes(tree, after)
 		{
@@ -57,6 +58,34 @@ Counts := [].{
 			disposed: was.keep_if(|id| !now.contains(id)).len(),
 			layers: walked.layers,
 		}
+	}
+
+	## The kernel's count of the same turn (see `Count`): what the structure
+	## vectors' `evaluations` column records.
+	kernel_evaluations : List(Reference.Node), Reference.Held, Reference.Held, List(Str) -> U64
+	kernel_evaluations = |tree, before, after, writes| root(tree, { before, after, writes, count: Kernel }, Bool.False).evals
+
+	## Replay a vector's clicks against the kernel's count: `Agrees` when
+	## every step's recorded count is the model's (a step with none recorded
+	## is not compared), else the first step (from 1) whose count differs.
+	replay : Vectors.Trace -> [Agrees, Differs(U64)]
+	replay = |trace| {
+		var $held = []
+		var $n = 0.U64
+		for step in trace.steps {
+			$n = $n + 1
+			writes = Reference.writes_at(trace.tree, $held, step.button)
+			after = Reference.clicked(trace.tree, $held, step.button)
+			match step.evaluations {
+				Counted(recorded) =>
+					if recorded != kernel_evaluations(trace.tree, $held, after, writes) {
+						return Differs($n)
+					}
+				Uncounted => {}
+			}
+			$held = after
+		}
+		Agrees
 	}
 }
 
@@ -69,7 +98,14 @@ Val : { old : U64, new : U64, bit : U64 }
 Scope : { vals : List(Val), wrs : List(Str) }
 
 ## The turn: the states held before and after, and those it wrote.
-World : { before : Reference.Held, after : Reference.Held, writes : List(Str) }
+World : { before : Reference.Held, after : Reference.Held, writes : List(Str), count : Count }
+
+## Whose count of reads: the engine's (work counter 21), or the kernel's
+## (`oracle/turns`' `Turns.Expect`, the `evaluations` column of the
+## structure vectors), which leaves out `Guard`, `Control` and `Watch`,
+## counts a `Pair`'s text and its watch as one joined reader, and does not
+## model the document shortcuts.
+Count : [Engine, Kernel]
 
 ## Reads counted and written layers refreshed so far.
 Acc : { evals : U64, layers : List(U64) }
@@ -141,7 +177,10 @@ root = |tree, world, fresh| {
 	# is built, though it reads no layer; its odd branch reads nothing.
 	built = if (fresh or (old % 2 == 0) != (new % 2 == 0)) Bool.True else Bool.False
 	keymap = if (built and new % 2 == 0) 1 else 0
-	shortcuts = reads(tree.len() * (due(fresh, carried, b) + keymap))
+	shortcuts = match world.count {
+		Engine => reads(tree.len() * (due(fresh, carried, b) + keymap))
+		Kernel => none
+	}
 	plus(plus(own, body), shortcuts)
 }
 
@@ -158,8 +197,15 @@ drawn_list = |ns, scope, level, at, world, fresh, carried| {
 
 drawn : Reference.Node, Scope, Level, Str, World, Bool, U64 -> Acc
 drawn = |n, scope, level, at, world, fresh, carried| match n {
-	Show(i) | Watch(_, i) => reads(due(fresh, carried, val_at(scope, i).bit))
-	Guard(i) | Control(i) => reads(2 * due(fresh, carried, val_at(scope, i).bit))
+	Show(i) => reads(due(fresh, carried, val_at(scope, i).bit))
+	Watch(_, i) => match world.count {
+		Engine => reads(due(fresh, carried, val_at(scope, i).bit))
+		Kernel => none
+	}
+	Guard(i) | Control(i) => match world.count {
+		Engine => reads(2 * due(fresh, carried, val_at(scope, i).bit))
+		Kernel => none
+	}
 	Bump(_) | Bump2(_, _) => none
 	Pair(i, j) => {
 		# A `derive` of `x`, and a text and a watch of `x`, the derived
@@ -169,7 +215,11 @@ drawn = |n, scope, level, at, world, fresh, carried| match n {
 		d = bit(scope.vals.len() + 1)
 		input = due(fresh, carried, x.bit)
 		inner = if (input == 1 and !fresh and x.old != x.new) carried.bitwise_or(d) else carried
-		reads(input + 2 * due(fresh, inner, x.bit.bitwise_or(d).bitwise_or(y.bit)))
+		readers = match world.count {
+			Engine => 2
+			Kernel => 1
+		}
+		reads(input + readers * due(fresh, inner, x.bit.bitwise_or(d).bitwise_or(y.bit)))
 	}
 	When(sel, yes, no) => {
 		v = chosen(scope, sel)
@@ -317,3 +367,19 @@ expect {
 ## branch are disposed and created, and the condition, the shortcut's
 ## condition and the root's text are read.
 expect Counts.turn([When(One(0), [Show(0)], [])], [], [("", 1)], [""]) == { evals: 3, created: 2, disposed: 2, layers: [1] }
+
+## Every vector Lean wrote agrees with the kernel's count, step by step.
+expect Vectors.good.keep_if(|trace| Counts.replay(trace) != Agrees).map(|trace| trace.name) == []
+
+## Every known-bad trace that only a count rejects is rejected by the
+## kernel's count at the step Lean rejects it, and agrees before it.
+expect {
+	count_only = Vectors.bad.keep_oks(
+		|trace| match trace.label {
+			KnownBad({ observation: Count, step, algorithm }) => Ok({ trace, step, algorithm })
+			_ => Err(ByPage)
+		},
+	)
+	missed = count_only.keep_if(|known| Counts.replay(known.trace) != Differs(known.step)).map(|known| "${known.algorithm} ${known.trace.name}")
+	{ missed, count: count_only.len() > 0 } == { missed: [], count: Bool.True }
+}
