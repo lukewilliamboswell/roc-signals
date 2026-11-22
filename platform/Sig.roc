@@ -220,9 +220,41 @@ Sig :: [].{
 	mask_of : Wrote -> Mask
 	mask_of = |a| a.hi.fold(a.lo, |acc, w| acc.bitwise_or(w)).to_u128().bitwise_or(a.more.fold(a.cells, |acc, w| acc.bitwise_or(w)).to_u128().shl_wrap(64))
 
+	## Fold `step` over the store cells a set names, in increasing order of
+	## position. A word that names no cell costs one test; one that does costs
+	## a step per bit up to its highest. The root ends a turn's tables with
+	## it, so only a table cell the turn wrote is visited, whichever cells
+	## share its signature bit.
+	fold_cells : Wrote, state, (state, U64 -> state) -> state
+	fold_cells = |a, start, step| {
+		var $state = fold_word(start, { bits: a.cells, base: 0 }, step)
+		var $base = 64.U64
+		for word in a.more {
+			$state = fold_word($state, { bits: word, base: $base }, step)
+			$base = $base + 64
+		}
+		$state
+	}
+
 	## How many layers and cells a set names.
 	count : Wrote -> U64
 	count = |a| a.more.fold(a.hi.fold(popcount(a.lo) + popcount(a.cells), |acc, w| acc + popcount(w)), |acc, w| acc + popcount(w))
+}
+
+## Fold `step` over the positions `base + k` for each bit `k` set in `bits`.
+fold_word : state, { bits : U64, base : U64 }, (state, U64 -> state) -> state
+fold_word = |start, { bits, base }, step| {
+	var $state = start
+	var $bits = bits
+	var $at = base
+	while $bits != 0 {
+		if $bits.bitwise_and(1) != 0 {
+			$state = step($state, $at)
+		}
+		$bits = $bits.shr_zf_wrap(1)
+		$at = $at + 1
+	}
+	$state
 }
 
 ## The bit of layer index `index` in its word of a write set.
@@ -355,4 +387,13 @@ expect {
 		turn: (Bool.False, Bool.True, Turn(Sig.bit(3).bitwise_or(Sig.bit(5)))),
 		every: (Bool.False, Bool.False),
 	}
+}
+
+## A fold over a set's cells visits exactly the cells it names, in order,
+## across words: cells 6, 70 and 134 share a signature bit and are three
+## visits, and the set's layers are none of them.
+expect {
+	a = Sig.union(Sig.union(Sig.one_cell(134), Sig.one_cell(6)), Sig.union(Sig.one_cell(70), Sig.one_layer(6)))
+	actual = (Sig.fold_cells(a, [], |cells, cell| cells.append(cell)), Sig.fold_cells(Sig.one_layer(9), [], |cells, cell| cells.append(cell)))
+	actual == ([6, 70, 134], [])
 }
