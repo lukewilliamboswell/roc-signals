@@ -1479,7 +1479,7 @@ Core := [].{
 					eff_mask(cond).bitwise_or(block.reads).bitwise_or(elem_reads(other, args.depth))
 				}
 				w = { cond, yes, no, anchor, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
-				(when_inst(w, c, [], block), reads, tx3)
+				(when_inst(w, c, [], True, block), reads, tx3)
 			},
 		),
 		|d| eff_mask(cond).bitwise_or(elem_reads(yes(), d)).bitwise_or(elem_reads(no(), d)),
@@ -1507,7 +1507,7 @@ Core := [].{
 				} else tx4
 				reads = eff_mask(ready).bitwise_or(elem_reads(body(), args.depth))
 				cfg = { ready, body, anchor, id, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
-				(placeholder_inst(cfg, block), reads, tx5)
+				(placeholder_inst(cfg, True, block), reads, tx5)
 			},
 		),
 		|depth| eff_mask(ready).bitwise_or(elem_reads(body(), depth)),
@@ -1530,7 +1530,7 @@ Core := [].{
 				(block, tx3) = mount_block(env, body(k), args.depth, args.path, 0, anchor, { cap: args.cap, enclosing: args.enclosing }, bump(count_evals(tx2, 1), w_scopes_created, 1))
 				reads = if (args.cap != 0) args.cap else switch_reads(sel, cases, body, args.depth)
 				w = { sel, cases, body, anchor, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
-				(switch_inst(w, k, [], block), reads, tx3)
+				(switch_inst(w, k, [], True, block), reads, tx3)
 			},
 		),
 		|d| switch_reads(sel, cases, body, d),
@@ -1563,7 +1563,7 @@ Core := [].{
 				(block, tx3) = mount_block(env, body(), args.depth, args.path, 0, anchor, { cap: args.cap, enclosing: args.enclosing }, bump(count_evals(tx2, 1), w_scopes_created, 1))
 				reads = if (args.cap != 0) args.cap else eff_mask(key).bitwise_or(block.reads)
 				w = { key, body, anchor, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
-				(remount_inst(w, k, [], block), reads, tx3)
+				(remount_inst(w, k, [], True, block), reads, tx3)
 			},
 		),
 		|d| eff_mask(key).bitwise_or(elem_reads(body(), d)),
@@ -3938,6 +3938,104 @@ fires = |payload| match payload {
 	_ => True
 }
 
+## Whether a `Settle` walk stops at a site that chooses its block (`when`,
+## `switch`, `remount_on`, `placeholder`). The walk addresses the event's
+## path by child positions, and such a site's positions name its current
+## block. `fresh` is set when the site builds a block, at mount or when a
+## refresh (the pass, or one the walk makes) changes its branch, case or
+## key, and cleared by every `Fire` the walk does not stop at. So on the
+## event's path it is set exactly when the turn built the block after the
+## event came down: the event's own `Fire` reached this site before the
+## turn's pass and walk did, and a stale mark from an earlier turn was
+## cleared then. Nothing else reads it. A built block holds no
+## layer the event wrote (those went with the scope disposed) and nothing
+## waits in it, since it was built from the values the turn left, so the
+## walk has nothing to do there. Rows of one `each` or table view share a
+## template, so a slot the pass gave to a new row has the old row's
+## positions down to its first such site, which is fresh; no row needs a
+## mark of its own.
+walk_stops : Payload, Bool -> Bool
+walk_stops = |payload, fresh| fresh and !fires(payload)
+
+## The branch a click left, three layers deep: the click writes the outer
+## state and the inner one together, the outer state's pass switches the
+## `when` to the branch of rows, and the inner state, which waited, went
+## with its branch. The walk for it stops at the `when`; followed by
+## position into the new branch it would reach a row with no nested
+## sites as if it held the inner state's site.
+expect {
+	button = |outer, inner| Core.state(0.U64, |_| Core.state(0.U64, |_| Core.element("button", [Core.on("click", outer.update(|n| n + 1).lift().lift().lift().also(inner.update(|n| n + 1).lift().lift()))], [])))
+	view = Core.state(0.U64, |outer| Core.element("main", [], [Core.when(outer.signal().map(|n| n > 0), || Core.each(Core.const(["a"]), |key| key, |_| Core.element("p", [], [])), || Core.state(0.U64, |inner| button(outer, inner)))]))
+	(clean, _) = Core.take_cmds(Core.mount(view), [])
+	clicked = Core.event(clean, 3, 0, "")
+	(after, commands) = Core.take_cmds(clicked, [])
+	!commands.drop_first(1).is_empty() and Core.settled(after).is_ok()
+}
+
+## The walk's own refresh: the click writes three nested states, and the
+## pass of the outermost does not reach the middle one, since nothing below
+## it reads the outermost. The walk refreshes the middle state at its site,
+## which switches its `when` and disposes the innermost state with its
+## branch; the walk then stops at the `when` it has just built.
+expect {
+	button = |top, middle, inner| Core.state(0.U64, |_| Core.state(0.U64, |_| Core.element("button", [Core.on("click", top.update(|n| n + 1).lift().lift().lift().lift().also(middle.update(|n| n + 1).lift().lift().lift()).also(inner.update(|n| n + 1).lift().lift()))], [])))
+	view = Core.state(0.U64, |top| Core.element("main", [], [Core.state(0.U64, |middle| Core.when(middle.signal().map(|n| n > 0), || Core.each(Core.const(["a"]), |key| key, |_| Core.element("p", [], [])), || Core.state(0.U64, |inner| button(top, middle, inner))))]))
+	(clean, _) = Core.take_cmds(Core.mount(view), [])
+	clicked = Core.event(clean, 3, 0, "")
+	(after, commands) = Core.take_cmds(clicked, [])
+	!commands.drop_first(1).is_empty() and Core.settled(after).is_ok()
+}
+
+## The same through a `switch` whose case the outer write changes.
+expect {
+	button = |outer, inner| Core.state(0.U64, |_| Core.state(0.U64, |_| Core.element("button", [Core.on("click", outer.update(|n| n + 1).lift().lift().lift().also(inner.update(|n| n + 1).lift().lift()))], [])))
+	view = Core.state(0.U64, |outer| Core.element("main", [], [Core.switch(outer.signal().map(|n| n % 3), [0, 1, 2], |k| if k == 0 Core.state(0.U64, |inner| button(outer, inner)) else Core.each(Core.const(["a"]), |key| key, |_| Core.element("p", [], [])))]))
+	(clean, _) = Core.take_cmds(Core.mount(view), [])
+	clicked = Core.event(clean, 3, 0, "")
+	(after, commands) = Core.take_cmds(clicked, [])
+	!commands.drop_first(1).is_empty() and Core.settled(after).is_ok()
+}
+
+## The same through a `remount_on` whose key the outer write changes: the
+## body built again holds a `when` whose branch differs from the one the
+## disposed body held, and the walk stops at the `remount_on`.
+expect {
+	button = |outer, inner| Core.state(0.U64, |_| Core.state(0.U64, |_| Core.element("button", [Core.on("click", outer.update(|n| n + 1).lift().lift().lift().also(inner.update(|n| n + 1).lift().lift()))], [])))
+	view = Core.state(0.U64, |outer| Core.element("main", [], [Core.remount_on(outer.signal(), || Core.when(outer.signal().map(|n| n > 0), || Core.each(Core.const(["a"]), |key| key, |_| Core.element("p", [], [])), || Core.state(0.U64, |inner| button(outer, inner))))]))
+	(clean, _) = Core.take_cmds(Core.mount(view), [])
+	clicked = Core.event(clean, 4, 0, "")
+	(after, commands) = Core.take_cmds(clicked, [])
+	!commands.drop_first(1).is_empty() and Core.settled(after).is_ok()
+}
+
+## A row's slot given to a new row in the same turn: the click in row `a`
+## writes the outer state, whose pass replaces row `a` with row `b` in the
+## slot `a` held, and the inner state of row `a`, which waited, went with
+## its row. The new row has the old row's positions down to its `when`,
+## which holds the other branch; the walk stops there, since the `when`
+## was built in this turn.
+expect {
+	button = |outer, inner| Core.state(0.U64, |_| Core.state(0.U64, |_| Core.element("button", [Core.on("click", outer.update(|n| n + 1).lift_row().lift().lift().lift().also(inner.update(|n| n + 1).lift().lift()))], [])))
+	view = Core.state(
+		0.U64,
+		|outer| Core.element(
+			"main",
+			[],
+			[
+				Core.each(
+					outer.signal().map(|n| if n == 0 ["a"] else ["b"]),
+					|key| key,
+					|row| Core.element("div", [], [Core.when(row.field(|key| key == "b"), || Core.each(Core.const(["x"]), |key| key, |_| Core.element("p", [], [])), || Core.state(0.U64, |inner| button(outer, inner)))]),
+				),
+			],
+		),
+	)
+	(clean, _) = Core.take_cmds(Core.mount(view), [])
+	clicked = Core.event(clean, 5, 0, "")
+	(after, commands) = Core.take_cmds(clicked, [])
+	!commands.drop_first(1).is_empty() and Core.settled(after).is_ok()
+}
+
 ## A handler in a mounted block has already fixed its payload kind. It
 ## decodes once at this boundary and then calls its typed handler.
 RoutedHandler(ctx) : { run : (ctx, Payload, List(U32) -> (ctx, Sig.Wrote)), echo : [NoEcho, Echo({ property : U8, hole : U64, showing : Str })] }
@@ -5481,12 +5579,15 @@ Placeholder(ctx) : { ready : Signal(ctx, Bool), body : (() -> Elem(ctx)), anchor
 
 ## Rebuild each owned closure directly in its returning branch, preserving
 ## unique block ownership on the compiler's optimized paths (roc#12846).
-placeholder_inst : Placeholder(ctx), Block(ctx) -> Inst(ctx)
-placeholder_inst = |cfg0, block0| {
-	held = { cfg: cfg0, block: block0 }
+## `fresh` is as for a `when` site ([when_inst]): set at mount. Activation
+## builds the live block in a turn of its own that writes nothing, so no
+## walk follows it.
+placeholder_inst : Placeholder(ctx), Bool, Block(ctx) -> Inst(ctx)
+placeholder_inst = |cfg0, fresh0, block0| {
+	held = { cfg: cfg0, fresh: fresh0, block: block0 }
 	Inst(
 		|env, msg, tx| {
-			{ cfg, block } = held
+			{ cfg, fresh, block } = held
 			match msg {
 				Changed(pass) => {
 					if Sig.meets(pass, eff_mask(cfg.ready)) {
@@ -5495,10 +5596,13 @@ placeholder_inst = |cfg0, block0| {
 						tx2 = if eligible {
 							ready_append(tx1, cfg.id, cfg.path)
 						} else ready_remove(tx1, cfg.id)
-						(placeholder_inst(cfg, block), Done, tx2)
-					} else (placeholder_inst(cfg, block), Done, tx)
+						(placeholder_inst(cfg, fresh, block), Done, tx2)
+					} else (placeholder_inst(cfg, fresh, block), Done, tx)
 				}
 				Fire(path, pos, handler, payload) => {
+					if walk_stops(payload, fresh) {
+						return (placeholder_inst(cfg, fresh, block), Pending(env, Sig.none), tx)
+					}
 					activation = match payload {
 						Activate(id) => id == cfg.id
 						_ => False
@@ -5515,17 +5619,17 @@ placeholder_inst = |cfg0, block0| {
 							}
 							(next, tx3) = mount_block(env, (cfg.body)(), cfg.depth, cfg.path, 0, cfg.anchor, { cap: cfg.cap, enclosing: cfg.enclosing }, tx2)
 							(active_placeholder_inst(cfg.anchor, next), Pending(env, Sig.none), tx3)
-						} else (placeholder_inst(cfg, block), Pending(env, Sig.none), tx1)
+						} else (placeholder_inst(cfg, False, block), Pending(env, Sig.none), tx1)
 					} else match fire_target(block, path, pos) {
 						Leaf => {
 							(next, out, tx1) = fire_leaf(block, env, handler, payload, path, tx)
-							(placeholder_inst(cfg, next), out, tx1)
+							(placeholder_inst(cfg, False, next), out, tx1)
 						}
 						Kid => {
 							(next, out, tx1) = fire_kid(block, env, path, pos, handler, payload, tx)
-							(placeholder_inst(cfg, next), out, tx1)
+							(placeholder_inst(cfg, False, next), out, tx1)
 						}
-						Miss => (placeholder_inst(cfg, block), Pending(env, Sig.none), tx)
+						Miss => (placeholder_inst(cfg, False, block), Pending(env, Sig.none), tx)
 					}
 				}
 				Dispose(remove) => {
@@ -5678,13 +5782,14 @@ ready_arm = |tx| {
 When(ctx) : { cond : Signal(ctx, Bool), yes : (() -> Elem(ctx)), no : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128, enclosing : Enclosing }
 
 ## `adopted`: orphans reparented to this site when a branch it disposed
-## left admitted requests behind.
-when_inst : When(ctx), Bool, List(Orphan(ctx)), Block(ctx) -> Inst(ctx)
-when_inst = |w0, cur0, adopted0, block0| {
-	held = { w: w0, cur: cur0, adopted: adopted0, block: block0 }
+## left admitted requests behind. `fresh`: the branch was built since the
+## last event came down through this site (see [walk_stops]).
+when_inst : When(ctx), Bool, List(Orphan(ctx)), Bool, Block(ctx) -> Inst(ctx)
+when_inst = |w0, cur0, adopted0, fresh0, block0| {
+	held = { w: w0, cur: cur0, adopted: adopted0, fresh: fresh0, block: block0 }
 	Inst(
 		|env, msg, tx| {
-			{ w, cur, adopted, block } = held
+			{ w, cur, adopted, fresh, block } = held
 			match msg {
 				Changed(pass) => {
 					if Sig.meets(pass, eff_mask(w.cond)) {
@@ -5692,35 +5797,38 @@ when_inst = |w0, cur0, adopted0, block0| {
 						t1 = count_evals(tx, 1)
 						if c == cur {
 							(b2, t2) = refresh(block, env, pass, t1)
-							(when_inst(w, cur, adopted, b2), Done, t2)
+							(when_inst(w, cur, adopted, fresh, b2), Done, t2)
 						} else {
 							(orph, t2) = dispose_block(block, env, True, bump(bump(t1, w_scopes_disposed, 1), w_scopes_created, 1))
 							elem = if (c) (w.yes)() else (w.no)()
 							(b3, t3) = mount_block(env, elem, w.depth, w.path, 0, w.anchor, { cap: w.cap, enclosing: w.enclosing }, fx_adopt(t2, w.path, orph))
-							(when_inst(w, c, adopted.concat(orph), b3), Done, t3)
+							(when_inst(w, c, adopted.concat(orph), True, b3), Done, t3)
 						}
 					} else {
 						(b2, t2) = refresh(block, env, pass, tx)
-						(when_inst(w, cur, adopted, b2), Done, t2)
+						(when_inst(w, cur, adopted, fresh, b2), Done, t2)
 					}
 				}
 				Fire(path, pos, h, payload) => {
+					if walk_stops(payload, fresh) {
+						return (when_inst(w, cur, adopted, fresh, block), Pending(env, Sig.none), tx)
+					}
 					match leaf_fx(path, pos, payload) {
 						Ok(res) => {
 							(ad2, out, t2) = adopt_deliver(adopted, env, h, res, tx)
-							(when_inst(w, cur, ad2, block), out, t2)
+							(when_inst(w, cur, ad2, False, block), out, t2)
 						}
 						Err(_) => {
 							match fire_target(block, path, pos) {
 								Leaf => {
 									(b2, out, t2) = fire_leaf(block, env, h, payload, path, tx)
-									(when_inst(w, cur, adopted, b2), out, t2)
+									(when_inst(w, cur, adopted, False, b2), out, t2)
 								}
 								Kid => {
 									(b2, out, t2) = fire_kid(block, env, path, pos, h, payload, tx)
-									(when_inst(w, cur, adopted, b2), out, t2)
+									(when_inst(w, cur, adopted, False, b2), out, t2)
 								}
-								Miss => (when_inst(w, cur, adopted, block), Pending(env, Sig.none), tx)
+								Miss => (when_inst(w, cur, adopted, False, block), Pending(env, Sig.none), tx)
 							}
 						}
 					}
@@ -7815,13 +7923,15 @@ switch_value = |sel, cases, env, path| {
 	if (cases.contains(k)) k else crash "contract: switch value is not one of its cases at site ${show_path(path)}"
 }
 
-switch_inst : Switch(ctx, k), k, List(Orphan(ctx)), Block(ctx) -> Inst(ctx)
+## A `switch` site holding the body built for case `cur`. `adopted` and
+## `fresh` are as for a `when` site ([when_inst]).
+switch_inst : Switch(ctx, k), k, List(Orphan(ctx)), Bool, Block(ctx) -> Inst(ctx)
 	where [k.is_eq : k, k -> Bool]
-switch_inst = |w0, cur0, adopted0, block0| {
-	held = { w: w0, cur: cur0, adopted: adopted0, block: block0 }
+switch_inst = |w0, cur0, adopted0, fresh0, block0| {
+	held = { w: w0, cur: cur0, adopted: adopted0, fresh: fresh0, block: block0 }
 	Inst(
 		|env, msg, tx| {
-			{ w, cur, adopted, block } = held
+			{ w, cur, adopted, fresh, block } = held
 			match msg {
 				Changed(pass) => {
 					if Sig.meets(pass, eff_mask(w.sel)) {
@@ -7829,34 +7939,37 @@ switch_inst = |w0, cur0, adopted0, block0| {
 						t1 = count_evals(tx, 1)
 						if k == cur {
 							(b2, t2) = refresh(block, env, pass, t1)
-							(switch_inst(w, cur, adopted, b2), Done, t2)
+							(switch_inst(w, cur, adopted, fresh, b2), Done, t2)
 						} else {
 							(orph, t2) = dispose_block(block, env, True, bump(bump(t1, w_scopes_disposed, 1), w_scopes_created, 1))
 							(b3, t3) = mount_block(env, (w.body)(k), w.depth, w.path, 0, w.anchor, { cap: w.cap, enclosing: w.enclosing }, fx_adopt(t2, w.path, orph))
-							(switch_inst(w, k, adopted.concat(orph), b3), Done, t3)
+							(switch_inst(w, k, adopted.concat(orph), True, b3), Done, t3)
 						}
 					} else {
 						(b2, t2) = refresh(block, env, pass, tx)
-						(switch_inst(w, cur, adopted, b2), Done, t2)
+						(switch_inst(w, cur, adopted, fresh, b2), Done, t2)
 					}
 				}
 				Fire(path, pos, h, payload) => {
+					if walk_stops(payload, fresh) {
+						return (switch_inst(w, cur, adopted, fresh, block), Pending(env, Sig.none), tx)
+					}
 					match leaf_fx(path, pos, payload) {
 						Ok(res) => {
 							(ad2, out, t2) = adopt_deliver(adopted, env, h, res, tx)
-							(switch_inst(w, cur, ad2, block), out, t2)
+							(switch_inst(w, cur, ad2, False, block), out, t2)
 						}
 						Err(_) => {
 							match fire_target(block, path, pos) {
 								Leaf => {
 									(b2, out, t2) = fire_leaf(block, env, h, payload, path, tx)
-									(switch_inst(w, cur, adopted, b2), out, t2)
+									(switch_inst(w, cur, adopted, False, b2), out, t2)
 								}
 								Kid => {
 									(b2, out, t2) = fire_kid(block, env, path, pos, h, payload, tx)
-									(switch_inst(w, cur, adopted, b2), out, t2)
+									(switch_inst(w, cur, adopted, False, b2), out, t2)
 								}
-								Miss => (switch_inst(w, cur, adopted, block), Pending(env, Sig.none), tx)
+								Miss => (switch_inst(w, cur, adopted, False, block), Pending(env, Sig.none), tx)
 							}
 						}
 					}
@@ -7877,15 +7990,16 @@ Remount(ctx, k) : { key : Signal(ctx, k), body : (() -> Elem(ctx)), anchor : U32
 
 ## A `remount_on` site holding the body built for key `cur`.
 ## `adopted`: orphans reparented to this site when a body it disposed left
-## admitted requests behind. Like `switch_inst`, every case returns a
-## rebuilt site directly (roc-lang/roc#12846).
-remount_inst : Remount(ctx, k), k, List(Orphan(ctx)), Block(ctx) -> Inst(ctx)
+## admitted requests behind; `fresh` is as for a `when` site
+## ([when_inst]). Like `switch_inst`, every case returns a rebuilt site
+## directly (roc-lang/roc#12846).
+remount_inst : Remount(ctx, k), k, List(Orphan(ctx)), Bool, Block(ctx) -> Inst(ctx)
 	where [k.is_eq : k, k -> Bool]
-remount_inst = |w0, cur0, adopted0, block0| {
-	held = { w: w0, cur: cur0, adopted: adopted0, block: block0 }
+remount_inst = |w0, cur0, adopted0, fresh0, block0| {
+	held = { w: w0, cur: cur0, adopted: adopted0, fresh: fresh0, block: block0 }
 	Inst(
 		|env, msg, tx| {
-			{ w, cur, adopted, block } = held
+			{ w, cur, adopted, fresh, block } = held
 			match msg {
 				Changed(pass) => {
 					if Sig.meets(pass, eff_mask(w.key)) {
@@ -7893,34 +8007,37 @@ remount_inst = |w0, cur0, adopted0, block0| {
 						t1 = count_evals(tx, 1)
 						if k == cur {
 							(b2, t2) = refresh(block, env, pass, t1)
-							(remount_inst(w, cur, adopted, b2), Done, t2)
+							(remount_inst(w, cur, adopted, fresh, b2), Done, t2)
 						} else {
 							(orph, t2) = dispose_block(block, env, True, bump(bump(t1, w_scopes_disposed, 1), w_scopes_created, 1))
 							(b3, t3) = mount_block(env, (w.body)(), w.depth, w.path, 0, w.anchor, { cap: w.cap, enclosing: w.enclosing }, fx_adopt(t2, w.path, orph))
-							(remount_inst(w, k, adopted.concat(orph), b3), Done, t3)
+							(remount_inst(w, k, adopted.concat(orph), True, b3), Done, t3)
 						}
 					} else {
 						(b2, t2) = refresh(block, env, pass, tx)
-						(remount_inst(w, cur, adopted, b2), Done, t2)
+						(remount_inst(w, cur, adopted, fresh, b2), Done, t2)
 					}
 				}
 				Fire(path, pos, h, payload) => {
+					if walk_stops(payload, fresh) {
+						return (remount_inst(w, cur, adopted, fresh, block), Pending(env, Sig.none), tx)
+					}
 					match leaf_fx(path, pos, payload) {
 						Ok(res) => {
 							(ad2, out, t2) = adopt_deliver(adopted, env, h, res, tx)
-							(remount_inst(w, cur, ad2, block), out, t2)
+							(remount_inst(w, cur, ad2, False, block), out, t2)
 						}
 						Err(_) => {
 							match fire_target(block, path, pos) {
 								Leaf => {
 									(b2, out, t2) = fire_leaf(block, env, h, payload, path, tx)
-									(remount_inst(w, cur, adopted, b2), out, t2)
+									(remount_inst(w, cur, adopted, False, b2), out, t2)
 								}
 								Kid => {
 									(b2, out, t2) = fire_kid(block, env, path, pos, h, payload, tx)
-									(remount_inst(w, cur, adopted, b2), out, t2)
+									(remount_inst(w, cur, adopted, False, b2), out, t2)
 								}
-								Miss => (remount_inst(w, cur, adopted, block), Pending(env, Sig.none), tx)
+								Miss => (remount_inst(w, cur, adopted, False, block), Pending(env, Sig.none), tx)
 							}
 						}
 					}

@@ -1485,12 +1485,21 @@ layers written below it join in the same way. The walk visits the sites on
 the event's path and evaluates nothing outside the subtrees it refreshes.
 
 The walk follows the event's path by child positions, not by identities,
-and the pass may have changed what lies on it. A site the pass mounted
-never waits: it was built from the values the turn left, so it has nothing
-to refresh, and the walk may enter it and pass through. A written layer
-whose scope the pass disposed is not refreshed anywhere: its value goes
-with its scope, as if the write had never been made, and it counts nothing
-in `dirty_source_roots`. Nothing is lost that a reader could see, since a
+and the turn may have changed what lies on it. Positions change only where
+the turn built a scope: a `when`, `switch`, `remount_on` or `placeholder`
+that built its block, in the pass or in a refresh the walk made, or a row
+the pass created, which may take the slot of a row it removed. Below such a
+site the event's positions name what the new block holds, not the event's
+path, so the walk never enters a block the turn built: a site that chooses
+its block stops the walk when it built that block after the event came down
+through it. Nothing there waits, since the block was built from the values
+the turn left. Rows of one `each` or table view share their template, so a
+new row in a reused slot has the old row's positions down to its first
+site that chooses its block, which was built with the row and stops the
+walk; a slot that holds no row ends it, and a kept row keeps its slot
+wherever it moves. A written layer whose scope the turn disposed is not
+refreshed anywhere: its value goes with its scope, as if the write had
+never been made, and it counts nothing in `dirty_source_roots`. Nothing is lost that a reader could see, since a
 layer is read only inside its own scope, and the event's writes to cells
 and to surviving layers stand.
 
