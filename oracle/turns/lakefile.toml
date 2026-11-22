@@ -1,0 +1,13 @@
+name = "turns"
+defaultTargets = ["Turns", "check", "vectors"]
+
+[[lean_lib]]
+name = "Turns"
+
+[[lean_exe]]
+name = "check"
+root = "CheckMain"
+
+[[lean_exe]]
+name = "vectors"
+root = "VectorsMain"
