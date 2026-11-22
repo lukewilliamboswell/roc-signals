@@ -5284,6 +5284,38 @@ operations on its own type are tested the same way. This is the check that
 sees a transition that left out a reset or wrote the wrong cell of the right
 type, which no propagation check can.
 
+### The reference semantics
+
+What a turn means is stated twice: in prose here, and as an executable
+reference in Lean 4 under `oracle/`. `oracle/turns` holds a kernel of
+programs as data, the reference (the page from scratch, and a turn as
+"apply the event's writes, then render again": a local state lives exactly
+while its identity is live, and one event's writes compose in order) and,
+separately, a second specification of the work a turn may do (which
+readers it must evaluate, what each must see, which texts it sets and
+which scopes it creates). `oracle/tables` transliterates a table's changes
+and its views and states what the record and a view mean beside them. Each
+module says what it is trusted for; the incremental algorithms there,
+including the known-bad ones, are what is checked, never a reference.
+
+The reference is the statement of a turn's meaning that the engine and the
+Roc references inside the fuzz targets are held to. It shares no code with
+them: they meet only through checked-in vector files the Lean side writes
+(`fuzz/structure/vectors.trace`, its known-bad companion, and the cover
+sets of `fuzz/table-changes` and `fuzz/view-follow`), whose grammar is in
+`oracle/README.md`. When the engine, a Roc reference and Lean disagree,
+Lean decides, unless this document says otherwise; a disagreement between
+Lean and this document is a design change, made here first and then in
+Lean, the Roc reference and the vectors, in one change. Lean runs on a
+contributor's machine (`blueprint run oracle`), not in CI; the vectors it
+wrote are what CI replays.
+
+The reference is about the programs its kernel can express, and the
+vectors about the trees the Roc structure generator can build: a property
+that needs a shape neither has (deeper nesting than the generator's typed
+levels, a `derive` that recomputes an equal value) is not covered by them.
+The proofs in `oracle/` are about the models, not about the engine.
+
 ### Fuzzing, walks, soak and contract tests
 
 Each kind of test lives where its subject does. An app's behaviour is its
