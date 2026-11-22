@@ -1,0 +1,305 @@
+# fuzz/structure vectors: written by oracle/turns (`lake exe vectors structure`); do not edit.
+# Grammar and the generator these trees follow: oracle/README.md.
+trace valued-when-of-two-writes
+prog (Layer 0 0 ((Layer 0 0 ((When 130 ((Layer 0 0 ())) ()) (Bump2 1 2)))))
+page 0 + 0 + 0 + 0 + ++
+step 3 | 0 + 0 + 0 + 1 + ++ | 1
+step 3 | 0 + 0 + 0 + 2 + ++ | 1
+step 4 | 0 + 1 + 1 + 2 + ++ | 3
+step 1 | 0 + 2 + 1 + ++ | 2
+step 1 | 0 + 3 + 1 + 0 + ++ | 3
+step 3 | 0 + 3 + 1 + 1 + ++ | 1
+step 4 | 0 + 4 + 2 + 1 + ++ | 3
+end
+trace valued-rows-of-two-writes
+prog (Layer 0 0 ((Layer 0 0 ((Each 130 ((Layer 0 0 ()))) (Bump2 1 2)))))
+page 0 + 0 + 0 + ++
+step 1 | 0 + 1 + 0 + 1 0 + ++ | 4
+step 3 | 0 + 1 + 0 + 1 1 + ++ | 1
+step 3 | 0 + 1 + 0 + 1 2 + ++ | 1
+step 4 | 0 + 2 + 1 + 3 0 + 2 0 + 1 2 + ++ | 7
+step 5 | 0 + 2 + 1 + 3 0 + 2 0 + 1 3 + ++ | 1
+step 5 | 0 + 2 + 1 + 3 0 + 2 0 + 1 4 + ++ | 1
+end
+trace valued-rows-of-outer-derive
+prog (Layer 1 0 ((Layer 0 0 ((Each 130 ((Layer 0 0 ()))) (Bump2 0 1)))))
+page 0 + 1 0 + 1 0 + ++
+step 0 | 1 + 3 0 + 3 0 + 2 0 + 1 0 + ++ | 8
+step 0 | 2 + 5 0 + ++ | 4
+step 0 | 3 + 7 0 + 0 0 + 3 0 + ++ | 8
+step 1 | 3 + 7 1 + 1 0 + 5 0 + 2 0 + ++ | 8
+step 1 | 3 + 7 2 + 2 0 + 0 0 + 5 0 + 3 0 + ++ | 6
+step 4 | 3 + 7 2 + 2 0 + 0 0 + 5 1 + 3 0 + ++ | 1
+step 4 | 3 + 7 2 + 2 0 + 0 0 + 5 2 + 3 0 + ++ | 1
+step 6 | 4 + 9 3 + 5 2 + 6 0 + ++ | 7
+step 2 | 4 + 9 3 + 5 3 + 6 0 + ++ | 1
+end
+trace valued-rows-of-inner-derive
+prog (Layer 0 0 ((Layer 1 1 ((Each 129 ((Layer 0 0 ()))) (Bump2 0 1)))))
+page 0 + 0 + 1 1 0 + ++
+step 0 | 1 + 0 + 1 2 0 + 0 0 + ++ | 6
+step 0 | 2 + 0 + 1 3 0 + 2 0 + 1 0 + ++ | 6
+step 0 | 3 + 0 + 1 4 0 + ++ | 4
+step 0 | 4 + 0 + 1 ++ | 2
+step 1 | 4 + 1 + 3 0 0 + 3 0 + ++ | 8
+step 1 | 4 + 2 + 5 2 0 + 0 0 + 5 0 + 3 0 + ++ | 8
+step 4 | 4 + 2 + 5 2 0 + 0 0 + 5 1 + 3 0 + ++ | 1
+step 4 | 4 + 2 + 5 2 0 + 0 0 + 5 2 + 3 0 + ++ | 1
+step 6 | 5 + 3 + 7 5 2 + 6 0 + ++ | 7
+step 2 | 5 + 3 + 7 5 3 + 6 0 + ++ | 1
+end
+trace rows-kept-and-reinserted
+prog (Each 0 ((Layer 0 0 ())))
+page 0 +
+step 0 | 1 + 1 0 + | 4
+step 0 | 2 + 2 0 + 0 0 + | 6
+step 0 | 3 + 3 0 + 2 0 + 1 0 + | 6
+step 0 | 4 + 4 0 + | 4
+step 1 | 4 + 4 1 + | 1
+step 0 | 5 + | 2
+step 0 | 6 + 6 0 + | 4
+step 0 | 7 + 0 0 + 3 0 + | 6
+step 2 | 7 + 0 0 + 3 1 + | 1
+end
+trace walk-to-inner-write
+prog (Layer 0 0 ((Layer 0 0 ((Show 2) (Bump2 1 2)))))
+page 0 + 0 + 0 + 0 ++
+step 0 | 1 + 0 + 0 + 0 ++ | 1
+step 0 | 2 + 0 + 0 + 0 ++ | 1
+step 2 | 2 + 0 + 1 + 1 ++ | 2
+step 0 | 3 + 0 + 1 + 1 ++ | 1
+end
+trace pair-of-two-writes
+prog (Layer 0 0 ((Layer 0 0 ((Pair 2 1) (Bump2 1 2)))))
+page 0 + 0 + 0 + 0~1~0 ++
+step 0 | 1 + 0 + 0 + 0~1~0 ++ | 1
+step 0 | 2 + 0 + 0 + 0~1~0 ++ | 1
+step 3 | 2 + 1 + 1 + 1~3~1 ++ | 4
+step 0 | 3 + 1 + 1 + 1~3~1 ++ | 1
+end
+trace when-of-outer-and-inner-derive
+prog (Layer 0 0 ((Layer 0 0 ((Layer 1 2 ((When 177 ((Layer 0 0 ())) ()))) (Bump2 1 2)))))
+page 0 + 0 + 0 + 1 ++
+step 1 | 0 + 1 + 0 + 1 0 + ++ | 3
+step 3 | 0 + 1 + 0 + 1 1 + ++ | 1
+step 0 | 1 + 1 + 0 + 1 1 + ++ | 1
+step 0 | 2 + 1 + 0 + 1 1 + ++ | 1
+step 3 | 2 + 1 + 0 + 1 2 + ++ | 1
+step 0 | 3 + 1 + 0 + 1 2 + ++ | 1
+end
+trace seeded-100
+prog (Switch 148 () ((Layer 16 166 ((When 98 ((Guard 162) (When 46 ((Switch 125 () () ()) (Each 166 ()) (Layer 19 71 ())) ((Layer 16 195 ()) (Each 22 ()) (Each 64 ()))) (Each 232 ((When 253 () ()) (Bump 250)))) ((Each 241 ((Watch 6 189) (Layer 15 27 ()) (When 149 () ()))) (Switch 248 ((When 158 () ()) (Each 135 ()) (Watch 11 178)) ((When 197 () ()) (Layer 23 143 ())) ((Show 0))))) (Show 0) (Show 0)))) ())
+page 0 +
+step 0 | 1 + | 2
+step 0 | 2 + 5 4 12 4 + 2 2 | 16
+step 1 | 3 + | 2
+step 0 | 4 + | 2
+step 0 | 5 + 11 1 0 + 5 0 + 18 5 5 | 18
+step 1 | 5 + 11 1 1 + 5 0 + 18 5 5 | 1
+step 2 | 5 + 11 1 1 + 5 1 + 18 5 5 | 1
+step 1 | 5 + 11 1 2 + 5 1 + 18 5 5 | 1
+end
+trace seeded-101
+prog (Layer 4 79 ((Each 2 ()) (Each 8 ()))) (When 191 ((When 65 () ()) (Each 29 ((Each 175 ((Switch 82 ((Layer 22 133 ())) ((Switch 200 () () ())) ((When 230 () ()) (Layer 25 180 ()))) (Switch 64 () ((Layer 24 245 ()) (Guard 172)) ((Each 38 ()))) (Each 28 ((Layer 24 70 ()) (When 80 () ())))))))) ((Layer 15 207 ((Layer 22 170 ((Bump 96) (Control 215))) (Watch 12 190))))) (Layer 16 0 ())
+page 0 + 7 1
+step 0 | 1 + 8 1 1 1 2 0 3 | 24
+step 0 | 2 + 9 2 0 2 0 2 4 0 2 0 5 | 31
+step 0 | 3 + 10 3 2 1 3 2 1 3 6 2 1 4 7 | 28
+step 0 | 4 + 11 4 4 4 1 5 2 9 | 29
+step 0 | 5 + 12 11 | 10
+step 0 | 6 + 13 6 6 6 5 6 13 | 22
+step 0 | 7 + 14 0 3 0 3 0 0 3 3 15 | 26
+step 0 | 8 + 15 1 5 2 1 5 2 1 2 0 5 3 5 6 1 3 2 17 | 57
+end
+trace seeded-102
+prog 
+page 0 +
+step 0 | 1 + | 1
+step 0 | 2 + | 1
+step 0 | 3 + | 1
+step 0 | 4 + | 1
+step 0 | 5 + | 1
+step 0 | 6 + | 1
+step 0 | 7 + | 1
+step 0 | 8 + | 1
+end
+trace seeded-103
+prog (Guard 189)
+page 0 +
+step 0 | 1 + | 1
+step 0 | 2 + | 1
+step 0 | 3 + | 1
+step 0 | 4 + | 1
+step 0 | 5 + | 1
+step 0 | 6 + | 1
+step 0 | 7 + | 1
+step 0 | 8 + | 1
+end
+trace seeded-104
+prog (Each 28 ((Switch 161 ((Each 245 ())) ((Switch 29 ((Layer 6 42 ((Layer 3 149 ()))) (Each 25 ((When 142 () ()) (Control 222) (Watch 6 240))) (Each 24 ((Layer 12 63 ())))) () ((Guard 71))) (Watch 15 222) (Switch 224 () ((Bump2 168 67) (When 85 ((Watch 5 162) (Layer 8 11 ()) (Control 143)) ((Bump2 255 250) (Layer 25 128 ()) (Layer 6 145 ()))) (When 221 ((Each 43 ())) ((Each 171 ())))) ())) ()) (Show 0))) (Show 0) (Show 0)
+page 0 + 0 0
+step 0 | 1 + 1 1 1 1 | 7
+step 0 | 2 + 2 ++ 9 2 0 2 0 2 2 2 | 19
+step 1 | 4 + 4 4 4 4 | 7
+step 0 | 5 + 5 5 | 4
+step 0 | 6 + 6 5 6 6 6 6 | 10
+step 0 | 7 + 0 15 22 0 3 7 3 15 22 3 2 1 0 3 7 7 7 | 36
+step 0 | 8 + 1 2 0 8 5 ++ ++ 0 + 11 8 2 ++ 9 2 0 8 8 8 | 33
+step 1 | 10 + 10 10 | 4
+end
+trace seeded-105
+prog 
+page 0 +
+step 0 | 1 + | 1
+step 0 | 2 + | 1
+step 0 | 3 + | 1
+step 0 | 4 + | 1
+step 0 | 5 + | 1
+step 0 | 6 + | 1
+step 0 | 7 + | 1
+step 0 | 8 + | 1
+end
+trace seeded-106
+prog 
+page 0 +
+step 0 | 1 + | 1
+step 0 | 2 + | 1
+step 0 | 3 + | 1
+step 0 | 4 + | 1
+step 0 | 5 + | 1
+step 0 | 6 + | 1
+step 0 | 7 + | 1
+step 0 | 8 + | 1
+end
+trace seeded-107
+prog 
+page 0 +
+step 0 | 1 + | 1
+step 0 | 2 + | 1
+step 0 | 3 + | 1
+step 0 | 4 + | 1
+step 0 | 5 + | 1
+step 0 | 6 + | 1
+step 0 | 7 + | 1
+step 0 | 8 + | 1
+end
+trace seeded-108
+prog 
+page 0 +
+step 0 | 1 + | 1
+step 0 | 2 + | 1
+step 0 | 3 + | 1
+step 0 | 4 + | 1
+step 0 | 5 + | 1
+step 0 | 6 + | 1
+step 0 | 7 + | 1
+step 0 | 8 + | 1
+end
+trace seeded-109
+prog 
+page 0 +
+step 0 | 1 + | 1
+step 0 | 2 + | 1
+step 0 | 3 + | 1
+step 0 | 4 + | 1
+step 0 | 5 + | 1
+step 0 | 6 + | 1
+step 0 | 7 + | 1
+step 0 | 8 + | 1
+end
+trace seeded-110
+prog (Each 127 ((Switch 137 () ((Bump 184) (Bump2 185 43) (Layer 7 92 ())) ()) (Each 132 ((When 210 ((Layer 21 177 ())) ((When 206 ((Each 185 ()) (Each 72 ())) ((Guard 90) (Layer 9 178 ()) (Layer 13 223 ()))) (Each 103 ((Guard 66))) (Bump 124))) (Layer 3 76 ()) (Each 225 ((Guard 228) (Each 223 ()) (Guard 12))))))) (Each 26 ((Layer 24 27 ((Each 193 ((When 156 ((Layer 17 106 ())) ()))) (Show 0))))) (Show 0)
+page 0 + 0
+step 0 | 1 + 1 2 0 1 8 2 0 1 1 | 20
+step 0 | 2 + 2 + ++ 9 4 0 4 2 9 4 2 0 7 2 0 2 2 | 32
+step 2 | 4 + 4 1 5 2 4 11 1 5 2 4 4 | 24
+step 0 | 5 + 5 | 4
+step 0 | 6 + 6 5 6 6 13 5 6 6 6 | 20
+step 0 | 7 + 0 + ++ 14 0 + 3 + 6 + 2 + 3 + ++ 14 0 3 6 2 0 7 0 3 7 3 10 7 7 | 48
+step 2 | 9 + 2 4 + 0 4 + 5 4 3 4 2 9 4 9 0 7 2 0 5 3 9 5 12 0 3 6 2 9 3 10 5 6 9 9 | 58
+step 1 | 10 + 10 | 4
+end
+trace seeded-111
+prog (Guard 237) (Control 175)
+page 0 +
+step 0 | 1 + | 1
+step 0 | 2 + | 1
+step 0 | 3 + | 1
+step 0 | 4 + | 1
+step 0 | 5 + | 1
+step 0 | 6 + | 1
+step 0 | 7 + | 1
+step 0 | 8 + | 1
+end
+trace seeded-112
+prog (Guard 194) (Switch 126 ((Bump2 164 144) (Layer 22 250 ())) () ())
+page 0 + ++ 7
+step 1 | 2 + | 2
+step 0 | 3 + ++ 10 | 4
+step 1 | 5 + | 2
+step 0 | 6 + ++ 13 | 4
+step 0 | 7 + | 2
+step 0 | 8 + | 2
+step 0 | 9 + ++ 16 | 4
+step 0 | 10 + | 2
+end
+trace seeded-113
+prog (Bump2 123 102)
+page 0 + ++
+step 1 | 2 + ++ | 1
+step 0 | 3 + ++ | 1
+step 0 | 4 + ++ | 1
+step 1 | 6 + ++ | 1
+step 0 | 7 + ++ | 1
+step 0 | 8 + ++ | 1
+step 1 | 10 + ++ | 1
+step 0 | 11 + ++ | 1
+end
+trace seeded-114
+prog (Switch 236 () ((Guard 188) (Each 160 ((Each 197 ()) (Each 213 ((Control 185) (Watch 12 109))) (Bump 25))) (When 41 ((Show 50) (Layer 4 10 ())) ((Layer 0 194 ()) (Each 53 ((Each 135 ((Bump2 244 212) (When 185 () ()) (Guard 97))) (Layer 6 117 ((When 238 () ()) (When 34 () ()) (Each 137 ())))))))) ())
+page 0 +
+step 0 | 1 + | 2
+step 0 | 2 + 4 6 1 5 2 + 2 9 | 14
+step 0 | 3 + | 2
+step 0 | 4 + | 2
+step 0 | 5 + 0 + | 6
+step 0 | 6 + | 2
+step 0 | 7 + | 2
+step 0 | 8 + 2 4 + 8 15 | 11
+end
+trace seeded-115
+prog (Guard 138) (Control 18)
+page 0 +
+step 0 | 1 + | 1
+step 0 | 2 + | 1
+step 0 | 3 + | 1
+step 0 | 4 + | 1
+step 0 | 5 + | 1
+step 0 | 6 + | 1
+step 0 | 7 + | 1
+step 0 | 8 + | 1
+end
+trace witness-rowResurrect-1031
+prog (Each 234 ((Layer 0 119 ((Guard 43))))) (Each 22 ((Watch 11 254) (Watch 17 47))) (Layer 4 81 ((Each 89 ((Layer 22 152 ((Watch 24 91) (Bump 102))) (Control 180))) (When 253 () ())))
+page 0 + 7 0 7 + 3 10 +
+step 2 | 1 + 2 0 + 0 0 + 1 8 1 8 + 5 12 + 2 9 + | 21
+step 5 | 2 + 4 0 + 2 0 9 2 9 + 0 7 + 5 12 + 3 10 + | 17
+step 4 | 3 + 6 0 + 3 2 1 10 | 11
+step 1 | 3 + 6 1 + 3 2 1 10 | 1
+step 0 | 4 + 1 0 + 5 0 + 2 0 + 4 11 4 11 + | 17
+step 0 | 5 + 12 5 12 + 6 13 + | 13
+step 1 | 6 + 5 0 + 6 0 + 6 13 6 13 + 1 8 + 3 10 + | 18
+step 5 | 7 + 0 0 + 3 0 + 6 0 + 2 0 + 0 3 14 0 7 + 3 10 + 6 13 + 2 9 + | 21
+end
+trace witness-noWalk-1148
+prog (Layer 5 132 ((Guard 166) (Bump2 153 34))) (Control 17)
+page 0 + 0 + ++
+step 0 | 1 + 0 + ++ | 1
+step 2 | 2 + 1 + ++ | 2
+step 1 | 2 + 2 + ++ | 1
+step 2 | 3 + 3 + ++ | 2
+step 2 | 4 + 4 + ++ | 2
+step 2 | 5 + 5 + ++ | 2
+step 1 | 5 + 6 + ++ | 1
+step 2 | 6 + 7 + ++ | 2
+end

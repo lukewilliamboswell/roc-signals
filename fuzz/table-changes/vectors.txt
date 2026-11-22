@@ -1,0 +1,389 @@
+# fuzz/table-changes vectors: written by oracle/tables (`lake exe vectors write`); do not edit.
+# Grammar: oracle/README.md.
+vector 0
+covers ops turn-start writes, update_all turn-start rewritten, put rewritten writes, fresh turn-start rewritten, ops rewritten no-write
+start 0:1 1:0
+turn on put(1,2) insert(2,1)
+  -> rows 0:1 1:2 2:1 | keyed 1=was:0 2=absent | 2 0
+turn on update_all ; on put(0,2)
+  -> rows 0:2 1:0 2:2 | rewritten | 4 2
+turn fresh 0:0 ; on update(1) insert(0,2)
+  -> rows 0:0 | rewritten | 5 4
+end
+vector 1
+covers insert turn-start writes
+start 0:1 1:0
+turn on insert(2,2)
+  -> rows 0:1 1:0 2:2 | keyed 2=absent | 1 0
+keep
+end
+vector 2
+covers fresh rewritten writes, put turn-start writes, ops keyed writes
+start 0:0
+turn fresh 0:1 1:0 ; fresh 
+  -> rows  | rewritten | 2 0
+turn on put(1,2) ; on insert(0,0) remove(1)
+  -> rows 0:0 | keyed 1=absent 0=absent | 5 2
+keep
+turn fresh 0:1 1:0
+  -> rows 0:1 1:0 | rewritten | 6 5
+end
+vector 3
+covers remove turn-start no-write, replace key-unrecorded no-write
+start 
+turn on remove(0) ; on replace(0,0)
+  -> rows  | keyed | 0 0
+keep
+turn on put(0,1) put(0,2)
+  -> rows 0:2 | keyed 0=absent | 2 0
+turn on put(0,2)
+  -> rows 0:2 | keyed 0=was:2 | 3 2
+end
+vector 5
+covers fresh keyed rewritten
+start 0:2 1:0 2:1
+turn on replace(0,0) replace(2,0) ; fresh 0:2 1:0 2:1
+  -> rows 0:2 1:0 2:1 | rewritten | 3 0
+keep
+end
+vector 6
+covers replace rewritten writes, insert turn-start no-write, update key-unrecorded no-write
+start 
+turn fresh 0:0 ; on replace(0,0)
+  -> rows 0:0 | rewritten | 2 0
+keep
+turn on insert(2,2)
+  -> rows 0:0 2:2 | keyed 2=absent | 3 2
+turn on insert(0,0) ; on update(1)
+  -> rows 0:0 2:2 | keyed | 3 3
+end
+vector 7
+covers undo turn-start no-write, replace turn-start writes, other turn-start rewritten
+start 0:2 1:0 2:1
+turn on undo ; on replace(1,0) put(1,1)
+  -> rows 0:2 1:1 2:1 | keyed 1=was:0 | 2 0
+keep
+turn on replace(1,2) ; on put(0,1) replace(1,2)
+  -> rows 0:1 1:2 2:1 | keyed 1=was:1 0=was:2 | 5 2
+turn other 0
+  -> rows 0:2 1:1 2:1 | rewritten | 6 5
+end
+vector 8
+covers update turn-start no-write, replace key-unrecorded writes
+start 0:0
+turn on put(2,2)
+  -> rows 0:0 2:2 | keyed 2=absent | 1 0
+turn fresh 0:0
+  -> rows 0:0 | rewritten | 2 1
+turn on update(1) ; on replace(0,2)
+  -> rows 0:2 | keyed 0=was:0 | 3 2
+end
+vector 10
+covers put key-unrecorded writes, replace turn-start no-write, other keyed rewritten
+start 0:1 1:0
+turn on remove(2) ; on put(0,0)
+  -> rows 0:0 1:0 | keyed 0=was:1 | 1 0
+keep
+turn fresh 0:1 1:0
+  -> rows 0:1 1:0 | rewritten | 2 1
+turn on replace(2,0) ; other 0
+  -> rows 0:0 1:0 | rewritten | 3 2
+end
+vector 18
+covers ops rewritten writes, replace key-recorded writes
+start 0:2 1:0 2:1
+turn on insert(0,2) ; on replace(0,0)
+  -> rows 0:0 1:0 2:1 | keyed 0=was:2 | 1 0
+turn on update_all ; on put(2,2) remove(2)
+  -> rows 0:1 1:1 | rewritten | 4 1
+keep
+turn on insert(2,1) ; on replace(2,1)
+  -> rows 0:1 1:1 2:1 | keyed 2=absent | 6 4
+keep
+end
+vector 22
+covers insert key-unrecorded writes
+start 0:0
+turn on put(0,1) replace(1,1) ; on remove(1) remove(0)
+  -> rows  | keyed 0=was:0 | 2 0
+keep
+turn on replace(0,1) put(1,1) ; on insert(0,2)
+  -> rows 0:2 1:1 | keyed 1=absent 0=absent | 4 2
+keep
+end
+vector 23
+covers insert key-recorded no-write
+start 
+turn on put(0,2) remove(1) ; on insert(0,2)
+  -> rows 0:2 | keyed 0=absent | 1 0
+end
+vector 24
+covers ops turn-start rewritten, remove turn-start writes
+start 0:1 1:0
+turn on remove(2) update_all ; on replace(2,1) replace(1,2)
+  -> rows 0:2 1:2 | rewritten | 2 0
+turn on remove(0)
+  -> rows 1:2 | keyed 0=was:2 | 3 2
+end
+vector 26
+covers ops turn-start no-write, ops keyed no-write
+start 
+turn on replace(0,2) insert(2,1) ; on put(0,0)
+  -> rows 0:0 2:1 | keyed 2=absent 0=absent | 2 0
+turn on insert(0,0) insert(2,0)
+  -> rows 0:0 2:1 | keyed | 2 2
+keep
+turn on insert(2,2) update(0) ; on update(1) insert(0,1)
+  -> rows 0:1 2:1 | keyed 0=was:0 | 3 2
+keep
+end
+vector 30
+covers saved turn-start rewritten
+start 
+turn on insert(0,2)
+  -> rows 0:2 | keyed 0=absent | 1 0
+keep
+turn saved 0 replace(0,1)
+  -> rows 0:1 | rewritten | 2 1
+turn on put(2,0)
+  -> rows 0:1 2:0 | keyed 2=absent | 3 2
+end
+vector 33
+covers update turn-start writes, saved keyed rewritten
+start 0:0
+turn on update(0) put(1,2) ; on replace(0,1) replace(2,2)
+  -> rows 0:1 1:2 | keyed 0=was:0 1=absent | 3 0
+keep
+turn other 0
+  -> rows 0:1 1:2 | rewritten | 4 3
+keep
+turn on update(1) ; saved 1
+  -> rows 0:1 1:2 | rewritten | 6 4
+end
+vector 41
+covers put key-recorded writes
+start 0:0
+turn on insert(1,2) ; on put(1,0)
+  -> rows 0:0 1:0 | keyed 1=absent | 2 0
+keep
+end
+vector 49
+covers ops keyed rewritten
+start 0:1 1:0
+turn on insert(2,0) ; on update_all remove(1)
+  -> rows 0:2 2:1 | rewritten | 3 0
+turn on replace(0,1)
+  -> rows 0:1 2:1 | keyed 0=was:2 | 4 3
+keep
+end
+vector 53
+covers replace rewritten no-write
+start 
+turn on put(0,1) update_all ; on replace(1,0)
+  -> rows 0:2 | rewritten | 2 0
+turn on put(1,0)
+  -> rows 0:2 1:0 | keyed 1=absent | 3 2
+end
+vector 56
+covers insert key-unrecorded no-write, remove key-unrecorded writes
+start 0:1 1:0
+turn on put(0,0) ; on replace(1,0) insert(0,2)
+  -> rows 0:0 1:0 | keyed 0=was:1 1=was:0 | 2 0
+turn on insert(2,1) ; on insert(0,0)
+  -> rows 0:0 1:0 2:1 | keyed 2=absent | 3 2
+turn on undo ; on remove(0)
+  -> rows 1:0 2:1 | keyed 0=was:0 | 4 3
+keep
+end
+vector 76
+covers update_all keyed rewritten
+start 0:1 1:0
+turn on replace(1,1)
+  -> rows 0:1 1:1 | keyed 1=was:0 | 1 0
+keep
+turn on insert(0,1) undo ; on update_all
+  -> rows 0:2 1:2 | rewritten | 2 1
+end
+vector 86
+covers update key-recorded writes
+start 
+turn on insert(2,2) insert(1,1) ; on insert(1,0)
+  -> rows 1:1 2:2 | keyed 2=absent 1=absent | 2 0
+keep
+turn on put(2,2) ; on update(2)
+  -> rows 1:1 2:0 | keyed 2=was:2 | 4 2
+turn fresh 0:2 1:0 2:1
+  -> rows 0:2 1:0 2:1 | rewritten | 5 4
+end
+vector 94
+covers insert rewritten writes
+start 0:1 1:0
+turn on replace(2,2) remove(0)
+  -> rows 1:0 | keyed 0=was:1 | 1 0
+keep
+turn on insert(1,0)
+  -> rows 1:0 | keyed | 1 1
+turn saved 0 ; on insert(0,1)
+  -> rows 0:1 1:0 | rewritten | 3 1
+keep
+end
+vector 96
+covers remove key-unrecorded no-write
+start 0:0
+turn on insert(1,2) ; on remove(2)
+  -> rows 0:0 1:2 | keyed 1=absent | 1 0
+turn on insert(0,2) insert(2,0)
+  -> rows 0:0 1:2 2:0 | keyed 2=absent | 2 1
+turn on insert(0,1)
+  -> rows 0:0 1:2 2:0 | keyed | 2 2
+end
+vector 167
+covers insert rewritten no-write
+start 0:0
+turn fresh 0:2 1:0 2:1 ; on insert(2,2)
+  -> rows 0:2 1:0 2:1 | rewritten | 1 0
+turn on put(1,1)
+  -> rows 0:2 1:1 2:1 | keyed 1=was:0 | 2 1
+end
+vector 172
+covers insert key-recorded writes
+start 0:2 1:0 2:1
+turn on remove(2) ; on insert(2,2)
+  -> rows 0:2 1:0 2:2 | keyed 2=was:1 | 2 0
+keep
+turn on put(0,1)
+  -> rows 0:1 1:0 2:2 | keyed 0=was:2 | 3 2
+keep
+turn fresh 0:2 1:0 2:1 ; on put(0,0) remove(0)
+  -> rows 1:0 2:1 | rewritten | 6 3
+end
+vector 179
+covers undo keyed writes
+start 0:2 1:0 2:1
+turn on remove(2) insert(0,2) ; on undo
+  -> rows 0:2 1:0 2:1 | keyed 2=was:1 | 2 0
+turn on put(0,1) put(2,2)
+  -> rows 0:1 1:0 2:2 | keyed 0=was:2 2=was:1 | 4 2
+keep
+end
+vector 214
+covers update key-unrecorded writes
+start 0:1 1:0
+turn on undo put(0,1) ; on replace(2,2)
+  -> rows 0:1 1:0 | keyed 0=was:1 | 1 0
+keep
+turn on put(2,1) ; on update(0)
+  -> rows 0:2 1:0 2:1 | keyed 2=absent 0=was:1 | 3 1
+turn on replace(1,1) update(0)
+  -> rows 0:0 1:1 2:1 | keyed 1=was:0 0=was:2 | 5 3
+end
+vector 227
+covers undo keyed no-write
+start 0:0
+turn on put(1,2) ; on replace(1,1)
+  -> rows 0:0 1:1 | keyed 1=absent | 2 0
+turn on insert(0,2) ; on undo
+  -> rows 0:0 1:1 | keyed | 2 2
+keep
+end
+vector 284
+covers update rewritten writes
+start 0:1 1:0
+turn on put(0,0)
+  -> rows 0:0 1:0 | keyed 0=was:1 | 1 0
+turn on replace(2,0) ; fresh 
+  -> rows  | rewritten | 2 1
+turn fresh 0:2 1:0 2:1 ; on update(2)
+  -> rows 0:2 1:0 2:2 | rewritten | 4 2
+keep
+end
+vector 287
+covers update rewritten no-write
+start 0:1 1:0
+turn fresh  ; on update(0)
+  -> rows  | rewritten | 1 0
+keep
+end
+vector 293
+covers remove key-recorded writes
+start 0:1 1:0
+turn on put(2,2) insert(1,2)
+  -> rows 0:1 1:0 2:2 | keyed 2=absent | 1 0
+keep
+turn on put(2,2) ; on remove(2)
+  -> rows 0:1 1:0 | keyed 2=was:2 | 3 1
+end
+vector 297
+covers replace key-recorded no-write
+start 0:0
+turn on insert(2,2)
+  -> rows 0:0 2:2 | keyed 2=absent | 1 0
+keep
+turn saved 0
+  -> rows 0:0 2:2 | rewritten | 2 1
+turn on insert(1,0) remove(1) ; on replace(1,0)
+  -> rows 0:0 2:2 | keyed 1=absent | 4 2
+end
+vector 480
+covers remove key-recorded no-write
+start 0:2 1:0 2:1
+turn on remove(1) ; on remove(1)
+  -> rows 0:2 2:1 | keyed 1=was:0 | 1 0
+turn on insert(2,2)
+  -> rows 0:2 2:1 | keyed | 1 1
+keep
+end
+vector 523
+covers other rewritten writes
+start 
+turn on put(0,0)
+  -> rows 0:0 | keyed 0=absent | 1 0
+keep
+turn fresh 0:2 1:0 2:1 ; other 0
+  -> rows 0:0 | rewritten | 3 1
+turn on remove(1) replace(1,2)
+  -> rows 0:0 | keyed | 3 3
+end
+vector 541
+covers remove rewritten writes
+start 0:1 1:0
+turn fresh 0:2 1:0 2:1 ; on remove(0)
+  -> rows 1:0 2:1 | rewritten | 2 0
+end
+vector 569
+covers update_all rewritten writes, saved rewritten writes
+start 0:2 1:0 2:1
+turn fresh 0:1 1:0 ; on update_all
+  -> rows 0:2 1:1 | rewritten | 2 0
+keep
+turn saved 0 replace(1,2) ; saved 0 update(0)
+  -> rows 0:0 1:1 | rewritten | 4 2
+turn on replace(0,2) ; fresh 0:1 1:0
+  -> rows 0:1 1:0 | rewritten | 6 4
+end
+vector 668
+covers update key-recorded no-write
+start 0:2 1:0 2:1
+turn on remove(0) ; on update(0)
+  -> rows 1:0 2:1 | keyed 0=was:2 | 1 0
+keep
+end
+vector 1119
+covers undo rewritten no-write
+start 0:0
+turn on update_all ; on undo
+  -> rows 0:1 | rewritten | 1 0
+turn on replace(1,2) ; fresh 0:2 1:0 2:1
+  -> rows 0:2 1:0 2:1 | rewritten | 2 1
+keep
+turn on insert(1,2) update(0)
+  -> rows 0:0 1:0 2:1 | keyed 0=was:2 | 3 2
+end
+vector 1236
+covers remove rewritten no-write
+start 0:0
+turn on replace(1,2)
+  -> rows 0:0 | keyed | 0 0
+turn on update_all ; on remove(1)
+  -> rows 0:1 | rewritten | 1 0
+end

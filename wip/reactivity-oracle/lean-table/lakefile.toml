@@ -1,9 +1,0 @@
-name = "tablespike"
-defaultTargets = ["TableSpike", "check"]
-
-[[lean_lib]]
-name = "TableSpike"
-
-[[lean_exe]]
-name = "check"
-root = "CheckMain"

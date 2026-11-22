@@ -471,7 +471,10 @@ flowchart LR
     Parser -->|"emitted steps"| Browser["replay in Chrome"]
 ```
 
-The engine is `Core.roc` and three modules of its own for tables: `TableCore.roc`
+The engine is `Core.roc`, `Sig.roc` (read signatures, exact write sets and
+the three scheduling decisions read from a write set: what a written layer's
+site does, what the root's pass carries, and how far a walk goes) and three
+modules of its own for tables: `TableCore.roc`
 (rows by key and the changes from a turn), `View.roc` (a sorted, filtered, windowed view kept up to
 date from those changes) and `Seq.roc` (a table view's ordered keys). `Engine.roc` is
 the authoring API over them. Its opaque `Table` wraps the internal table;
@@ -548,7 +551,11 @@ outcome and the accumulator. Messages are:
 
 - `Fire(path, pos, handler, payload)` — route an event or effect result down
   the site path to the block that owns the target.
-- `Changed(mask)` — some of what `mask` names changed; refresh what reads it.
+- `Changed(pass)` — a refresh. `Turn(mask)` is a pass of a turn: some of what
+  `mask` names changed; refresh what reads it. `Check` is the settle check (see
+  [Fuzzing, walks, soak and contract tests](#fuzzing-walks-soak-and-contract-tests)),
+  a harness's pass that refreshes everything. The two are different tags, so a
+  turn whose mask has every bit set is still a turn.
 - `Dispose(remove)` — release this site, emitting `REMOVE` for its top-level
   nodes when `remove` is set (an ancestor that removes its own DOM passes
   `False` to children).
@@ -783,6 +790,24 @@ A kept row whose new
 item is equal to its old item is pruned; a changed item marks the row dirty and
 only its live holes that read the row layer are re-evaluated.
 
+One reconciliation emits its commands in a fixed order. First the
+structure: the `MOVE`s of swapped ends, then the rows the new list drops,
+removed in their old order (`REMOVE` each, or one `CLEAR` when the list
+empties a site that is its parent's only child), then the rows it adds and
+the kept rows that move, created and moved. Then
+the holes: each row the turn marked, in the order it was marked, has its
+marked holes re-evaluated and their changes emitted (`SETTEXT`, `ATTR`,
+`HPROP`), and its nested sites refreshed. A row created in the turn is
+drawn whole by its `INST` and is not visited again. Where rows are created
+and moved depends on the path. A pure insertion creates from the first
+new row to the last; a swap of the two ends emits two `MOVE`s; the general
+path places from the last position to the first, creating each new row,
+and moving each kept row off the longest increasing run of old positions,
+before the row placed just after it. On that path rows that enter together
+are therefore created, and the requests their effect sites issue at mount
+are issued, from the last to the first, the reverse of a mount, a pure
+insertion and a table view.
+
 That comparison is linear in the list and needs the list from before, which
 is right for a list that is small or computed: the options of a select, the
 items of an answer, a list a `derive` produced, a few rows in local state.
@@ -819,14 +844,28 @@ names the rows it touches.
   changes began. A view remembers the count it is up to date with. A view
   that has seen exactly the count the changes start from can bring itself up
   to date from the changes; any other has missed writes and builds again.
+  A table whose count equals the start of its changes holds the rows its
+  writing turn began with, which is what lets a view at that count take the
+  table as unchanged. Within a turn the count can go down: a write that hands
+  back the table as an earlier handler of the same event read it stores that
+  table's count.
 - **No write can leave a view behind.** A table cell's generated modifier
-  notes the table's identity and where its changes began before the function
-  it applies runs. If what comes back is that same table, changed by its own
-  operations, the changes stand. If it is any other table (a new one, another
-  cell's, one saved in an earlier turn), the cell stores it as a whole
-  rewrite. So a `set` of a new table, a generated reset and a function that
-  ignores its argument are all whole rewrites, and none can leave a view
-  showing rows the table no longer has.
+  puts the table into its recording phase and notes its identity and where
+  its changes began before the function it applies runs. If what comes back
+  is that same table, changed by its own operations, the changes stand: it
+  has the cell's identity and start and is still recording. If it is any
+  other table (a new one, another cell's, one saved in an earlier turn), the
+  cell stores it as a whole rewrite. So a `set` of a new table, a generated
+  reset and a function that ignores its argument are all whole rewrites, and
+  none can leave a view showing rows the table no longer has.
+  Identity and count alone cannot tell a saved table from the cell's own:
+  two `Store` values taken up from one store are two histories with the
+  same cell identities, and they can reach one count with different rows.
+  The phase does. Every table an app can keep past a turn was rearmed when
+  that turn ended, so it is not recording, and a recording table exists
+  only inside one turn of one history, where it descends from the rows the
+  turn began with. A table saved across a turn that wrote nothing is a whole
+  rewrite too.
   A mounted program's table identities are disjoint from those in a `Store`
   value, so a table read with `Store.read` and set into a live cell is a whole
   rewrite.
@@ -902,10 +941,12 @@ keeps, in the query's order, and of those only the rows inside a window.
   nodes and anything nested in it, and one whose row was written is marked,
   so its holes that read the row are re-evaluated and pruned there. No list
   of rows is built, kept or compared, and the commands are the ones an
-  `each` site emits. Rows that enter in one turn are created from the first
-  to the last, each before the next row that stays put, as `each` and a
-  mount create them. For rows that own requests that is the order the
-  requests are issued in, and so which are refused at the in-flight bound.
+  `each` site emits. Every row that left is removed
+  first, then rows that entered and rows that moved are created and moved
+  from the first to the last, each before the next row that stays put, as
+  a mount creates them, and then the marked rows' holes are refreshed. For
+  rows that own requests that is the order the requests are issued in, and
+  so which are refused at the in-flight bound.
 - **Rows are found by the typed key.** The site indexes its rows by the
   table's key, through the key's own equality and hash. It never makes a
   text of a key to find a row: an inspected value is a debugging
@@ -997,7 +1038,9 @@ app-facing type makes it impossible for an app to call it.
 - Each view of a table pays for each written key, and each plain reader of
   the table is evaluated on each write to it.
 - A table is written with `update`. A `set` of a table built from a reading
-  of the same cell is still a keyed write, and copies the table.
+  of the same cell copies the table, and is a whole rewrite unless the
+  reading was taken after an earlier write of the cell in the same event (a
+  handler composed with `also`), when it is still a keyed write.
 - A write to a key the table does not hold writes nothing and reports no
   error, so a row handler that names another table's cell by mistake is
   silent. An error would punish a write that lost a race with its row's
@@ -1177,8 +1220,16 @@ State lives in three places, and each is written in its own way:
   cell replaces it. A decision composed second takes its reading from the
   environment `first` returned:
   `draft.update(|_| "").also(Engine.handle_by(draft.signal(), ..))` reads the
-  emptied draft. Both handlers have the same payload type, including when
-  that payload is the files of one event.
+  emptied draft. Writes compose: whatever `first` wrote, a local state or a
+  cell, a table's row included, is what `second` and its reading see. What
+  is computed from state is not recomputed between them. A `derive` or a
+  `resource` layer in that environment, and an `each` row's item, hold the
+  value of the last pass, before this event, until the event's own pass
+  recomputes them; a reading that combines a state `first` wrote with a
+  `derive` of it therefore sees the new state beside the old derived value.
+  A decision that needs a value computed from `first`'s write reads what
+  that value is computed from, not its `derive`. Both handlers have the same
+  payload type, including when that payload is the files of one event.
 - **One event is one atomic transition.** All writes made while an event
   fires are in place before any observation runs.
 - **A reset is a write the transition includes.** The generated reset of a
@@ -1261,7 +1312,7 @@ Rules:
 | Move an item between `each` sites | Dispose at the old site, create at the new | No cross-site transfer |
 | Write a row of a table | Preserve the row in every view whose window holds it before and after; re-evaluate its holes that read the row | Update only changed holes; move its nodes if its place changed |
 | A row leaves a table view's window (a scroll, a change of query, a move past the window's edge, removal from the table) | Dispose the row's sites, as for a removed key; its admitted requests reparent to the table view site. The table's row is untouched | Remove its node |
-| A row enters a table view's window | A new row lifetime. Rows that enter in one turn are created from the first to the last, as an `each` site creates them | Build new structure |
+| A row enters a table view's window | A new row lifetime. Rows that enter in one turn are created from the first to the last, as a mount creates them | Build new structure |
 | One event writes two of a table view's table, query and window | A row in the window before the event and after it is preserved; no row is created that the event does not leave drawn | One change of the rows drawn: move, remove and insert as the window after the event requires |
 | Change a table view's query, or rewrite its table whole | Rows in the window before and after are preserved; the rest leave or enter | Move, remove and insert as the new window requires |
 | Switch a branch or case | Dispose the departing branch; ancestors survive | Mount the selected branch |
@@ -1269,6 +1320,17 @@ Rules:
 | Hide a region with an attribute or class | Its sites stay live | Nodes stay |
 | Write a store cell | The cell and everything mounted survive; its readers refresh | Update only changed holes |
 | Dispose the root | Dispose everything it owns; the instance drops the store | Remove its nodes |
+
+A turn decides each site's structure once, from what the turn left: a
+`when`, `switch` or `remount_on` reads its selector or key once, an `each`
+site reads its list and reconciles once, and a table view changes its rows
+drawn once (see [One turn](#one-turn)). So no scope is disposed and created
+again within one turn. A scope whose branch, case, key or row is the same
+after the turn as before it is kept, whatever the turn wrote between: a
+selector written away and back in one event, or a table's row removed and
+inserted again by one event, leaves its scope as it was. A scope ends
+within a turn only because its identity changed, and the scope created for
+the new identity is new.
 
 State that must survive filtering, pagination or route changes belongs in the
 store: a cell, or a field of a table's row. Keeping a scope alive is never
@@ -1437,6 +1499,16 @@ carried, so no reader is shared between them. A walk down the event's path
 after the pass refreshes that layer's subtree at its own site, where the
 layers written below it join in the same way. The walk visits the sites on
 the event's path and evaluates nothing outside the subtrees it refreshes.
+
+The walk follows the event's path by child positions, not by identities,
+and the pass may have changed what lies on it. A site the pass mounted
+never waits: it was built from the values the turn left, so it has nothing
+to refresh, and the walk may enter it and pass through. A written layer
+whose scope the pass disposed is not refreshed anywhere: its value goes
+with its scope, as if the write had never been made, and it counts nothing
+in `dirty_source_roots`. Nothing is lost that a reader could see, since a
+layer is read only inside its own scope, and the event's writes to cells
+and to surviving layers stand.
 
 Effect results and follow-ups are turns of their own, applied in arrival
 order, except that a report replaced in place keeps the place of its
@@ -2891,8 +2963,10 @@ are all of that kind.
 
 ### Ids, results and staleness
 
-- Awaited ids are instance-wide, issued in order from 1. Follow-up ids are a
-  separate internal space and never appear on the wire.
+- Awaited ids are instance-wide, issued in order from 1, and a refused
+  request takes the next one too. `Self` follow-up ids are a separate
+  internal space and never appear on the wire. Neither is reused; what
+  happens when they run out is in [Boundedness](#boundedness).
 - A result enters exactly as a DOM event does: one turn on the reserved effect
   node `0xffffffff` with the id as handler number, firing down the owning
   site's path, where the reaction runs with the issued-for value, followed by
@@ -2909,7 +2983,11 @@ are all of that kind.
   `FileFailed(reason)`, `Copied`, `ClipboardFailed(NotAllowed | Unavailable)`,
   `StorageFailed({ store, key, reason })`, `PortAnswer(message)` and `PortFailed(Threw(text) |
   TooLarge | Closed)`. A subscription ends at its first `Threw` or `Closed`,
-  which retires its id like a cancel; `TooLarge` reports one message and the
+  which retires its id: the id leaves the in-flight table as a cancelled
+  one does and a later message for it is stale, but the engine emits no
+  `CANCEL`, since the page's JavaScript already ended it, and the message
+  is delivered to the reaction and counted `delivered`, not `cancelled`
+  (see [Counters](#counters)). `TooLarge` reports one message and the
   subscription goes on. `WorkRefused(TooDeep | NanKeys)` and
   `PortRefused(TooDeep)` are engine-local and never on the wire: a request
   whose payload the engine will not write is refused without being admitted
@@ -3060,7 +3138,13 @@ inference:
   still queued for it is dropped and counts `stale`. A late answer for a
   cancelled id is then stale like any other. A `plan` that returns `[]` makes a
   change a pure cancel. Disposal keeps the per-kind rules above: supersession
-  is about a value being replaced, disposal about an owner going away.
+  is about a value being replaced, disposal about an owner going away. So
+  the site owns only its current value's requests for one lifetime of the
+  site. A kept request (`Http`, a port call, a job of a task that says
+  `on_dispose: Keep`) of a disposed `watch_latest` is an orphan of the
+  nearest surviving ancestor, and its answer runs the reaction there even
+  after a `watch_latest` mounted again in its place has issued for a newer
+  value: the new site is a new scope, which neither owns nor cancels it.
 - **`keep_current(v, plan, react)`** issues at mount and each unequal value,
   keeping every request while delivering readers and reactions only for the
   latest issuing step. Every request of that step is eligible. An empty or
@@ -3074,8 +3158,13 @@ inference:
   passed environment, to equal its issued-for value. The check captures no
   environment or store; retired local reads use the existing snapshot and
   writes to retired state remain skipped. A remount is a new scope, not a
-  generation shared with the orphan. Existing cancellation, refusal, retirement
-  and reparenting rules remain in force.
+  generation shared with the orphan. This is intended: after a dispose and
+  a remount, an eligible orphan and the remounted site can both answer, the
+  orphan's reaction at the ancestor while the ancestor's signal still equals
+  the value it was issued for, and the new site's for the requests it
+  issued at its own mount. Neither withholds the other's; a reaction that
+  must apply one answer only decides that from what it reads. Existing
+  cancellation, refusal, retirement and reparenting rules remain in force.
   The site's index contains only outstanding ids from its current step,
   including queued follow-ups and refusals. Final delivery removes an id;
   progress retains it. Lookup is expected O(1). The pinned Dict retains bucket
@@ -3095,11 +3184,12 @@ inference:
   sets the layer to `resolve(s, a, res)` with the value `a` it was issued for.
   The layer prunes like `derive`, which means the site holds the previous
   value while `pending` and `resolve` run; they receive it shared, so a large layer
-  should be rebuilt rather than updated in place. Inside a row an answer
-  refreshes the site's own subtree at once, since the root's Changed pass
-  cannot reach the layer by signature there; elsewhere the site reports its
-  layer upward, and its static reads include its own layer so that pass
-  finds it. The site is a scope: disposing it disposes its body and applies
+  should be rebuilt rather than updated in place. An answer that changes
+  the layer refreshes the site's own subtree at once, at any depth, and
+  reports no write upward: it writes nothing else, so no pass above has
+  anything to settle first, and only the site's subtree can read the layer
+  (see [One turn](#one-turn)). An answer that folds to an equal value
+  refreshes nothing. The site is a scope: disposing it disposes its body and applies
   the per-kind rules to its requests, and an admitted answer reparented to a
   surviving ancestor writes the retired layer, a snapshot, so the write is
   skipped and counted. Each request a site owns records its position in the
@@ -3141,6 +3231,48 @@ effect-channel fuzz model asserts all of them exactly after every step.
 `effects_progress` separately counts delivered transfer reports (index 47),
 including those a `keep_current` site withholds from an older step, and
 excluding replaced reports; they do not increment `effects_delivered`.
+
+The counters keep one law, true after every host call, when the follow-up
+queue is empty:
+
+- **Every request id is issued or refused.** A request either takes a slot
+  in the in-flight table, with one `FX`, and counts `issued`, or is refused
+  without being admitted and counts `refused`: at the in-flight cap, and
+  the engine-local refusals (`WorkRefused`, `PortRefused`, a crypto request
+  the engine rejects before any work). A refused request takes an id but no
+  slot, sends nothing and has its result queued as a follow-up. So the id
+  the next request takes is `issued + refused + 1`. A `Self` follow-up
+  takes an id of the follow-up space and counts in neither.
+- **Every issued request is live, cancelled or retired.** `issued = live +
+  cancelled + retired`, where `live` is the gauge and *retired* is the
+  number of results that took an id out of the table: the final result of
+  a one-shot request, and the `Closed` or `Threw` that ends a port
+  subscription. A subscription its JavaScript ended leaves the table with
+  no `CANCEL` and is not counted `cancelled`; only disposal and
+  supersession cancel. Tearing down the instance counts nothing.
+- **Everything that arrives at a site is counted once.** A result, a
+  subscription message, a transfer report and a follow-up turn (a refusal
+  or a `Self`) count `delivered` when they reach a site that holds their id
+  (an orphan's adoptive ancestor included, and a result a `keep_current`
+  site or a view row's orphan does not run), `effects_progress` for a
+  delivered transfer report, and otherwise `stale`. `stale` is therefore
+  late results (an id never issued, already retired, cancelled or purged),
+  results and reports that reach a site that does not hold their id, and
+  follow-ups dropped by supersession or disposal before their turn. It
+  also counts each focus or scroll command whose reference names no live
+  element when the turn ends, which has no id. Each refusal is thus counted
+  once in `delivered` or `stale`, and so is each retirement.
+- **`reparented` counts adoptions, not requests.** Each time a surviving
+  site takes an orphan over it counts one; an orphan whose adoptive
+  ancestor is disposed in turn is adopted again and counted again, and it
+  stays in the table, and in `live`, until its result. `skipped` counts
+  writes an orphan's reaction made to retired state, and the runs of a
+  view row's orphan whose key has left the table.
+
+Since a message a subscription goes on after is not retired and a `Self`
+follow-up is never issued, `delivered + stale ≥ refused + (issued − live −
+cancelled)` is the law in the counters alone; the effect-channel fuzz model,
+which knows each arrival, holds every counter exactly.
 
 ### Observation
 
@@ -4593,6 +4725,8 @@ bound and a declared behaviour at the bound:
 | Resource | Bound | At the bound |
 |---|---|---|
 | Awaited requests in flight | 32 (per-program setting) | Typed `Refused` follow-up |
+| An admitted request kept past its owner, with no timeout (an `Http` or port call with `Unlimited`, a kept job without one) | Its in-flight slot, until its result arrives or the instance is torn down | Nothing retires it: it holds the slot, and its orphan's snapshot, for as long as no result comes |
+| Request ids, issued and refused together | U32, from 1, never reused; `Self` follow-up ids are U32 from 2³¹ | No declared bound. From the 2³¹st request, request ids lie in the follow-up space, where a request and a `Self` follow-up can share an id and the follow-up chain's depth is misjudged; when either counter would pass 2³² − 1 its increment overflows and the instance traps (`app_crash`), with no diagnostic naming the bound |
 | Follow-up chain depth per host call | 64 | `contract` poison |
 | Follow-up turns of depth 1 per host call | One for each request the external turn issued past the in-flight cap, and one for each `Self` it asked for | All run |
 | Follow-up turns of depth 2 or more per host call | 64 per in-flight slot, at least 4096 | `resource_limit` poison |
@@ -5267,12 +5401,12 @@ metric: soak plateaus assert it.
 | `set_text` | `SETTEXT` and `TEXT` commands |
 | `set_value`, `set_checked` | Control state the engine set: `PROP` and `HPROP` for the `value` / `checked` rows, and `INST` property holes of those rows |
 | `patches_emitted` | DOM commands (opcodes 1–12 and `PROP`/`HPROP`, 21–22) |
-| `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values; for a table view, each read of its query or its window and each row it places with the query's `keep` and `sort` (two for a written key it absorbs, the row before and after; every row of the table for a mount or a rebuild). A table view's comparisons are not counted |
+| `derived_calls_into_roc` | Signal reads the engine makes to propagate, one for each call of a signal's reader however many signals it combines (a `map2`, a record of signals or an interpolated text is one). At mount: each varying hole (text, attribute, property and reference; a constant is not a hole), the condition of a `when`, the value of a `switch`, the key of a `remount_on`, a placeholder's readiness, the input of a `derive` or a `resource`, the list of an `each`, the watched value of every effect site (`watch_changes` and `on_post` included, though they issue nothing then) and the value of a `guard_leave`. In a pass, each of those again where its signature meets what the pass carries, and each hole a browser echo marked; a placeholder's readiness again on its activation. A row created by a mount, a reconciliation or a view's window: each varying hole of its template once (a constant property, a handler and a nested site's anchor count none; the nested site counts its own). A kept row marked by the turn: each of its live holes that reads what marked it (the row, an outer layer or its selection), and a hole a browser echo marked. A cleanup's value when its scope is disposed. A table view: each read of its query or its window (both at mount; in a pass, each whose signature meets what the pass carries) and each row it places with the query's `keep` and `sort`, one for the pair: every row of the table at mount and for a rebuild (missed writes, a whole rewrite, changes large next to the table), one for each side of a written key it absorbs on which the row exists (two for an update, one for an insert or a removal), and every row of the table again when the query changed to an unequal value. Not counted: an `each` site's key function, key and item comparisons, the per-row value of a keyed selection, handlers, decisions and their readings (`handle_by`, `react_by`), plans, reactions, reducers, `pending` and `resolve`, a `keep_current` orphan's question, a table view's comparisons, and the settle check, whose pass runs on a copy whose counters are dropped |
 | `scopes_created` / `scopes_disposed` | Scopes mounted / disposed: `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites |
 | `dirty_source_roots` | What a turn wrote: one for each cell, and one for each layer when its readers are refreshed, whether its site started the pass, joined it or was reached by the walk after it (a layer disposed before then counts none; a `resource` answer that folds to an equal value writes none, and a decision that returns no write counts nothing) |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
 | `effects_progress` | Delivered transfer reports, including those withheld by `keep_current`, excluding replacements; the request remains in flight and the final-delivery counter is unchanged |
-| `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters"): awaited requests issued (one `FX` each), results delivered to their site (including withheld keep_current results), stale results dropped, requests refused at the in-flight cap, requests cancelled (one `CANCEL` each), requests reparented to a surviving ancestor, and reparented writes skipped because their state was retired |
+| `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters", which states the law they keep): awaited requests issued (one `FX` each); results, subscription messages and follow-ups delivered to a site that holds their id (including withheld keep_current results); stale results, dropped follow-ups and unresolved reference commands; requests refused without being admitted (at the in-flight cap, and the engine-local refusals); requests cancelled (one `CANCEL` each); adoptions of an orphan by a surviving ancestor; and reparented writes skipped because their state was retired |
 | `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it, and `PROP`/`HPROP` whose row claims an attribute; natively from the oracle, in Chrome from a MutationObserver of the mirrored attributes |
 | `expect-interval ms n` | Live `INTERVAL` subscriptions with period `ms` |
 | `tick-interval ms` | Deliver `Fired(current_clock)` to every live interval with period `ms`; a step with none live fails. `tick-interval-if-active` is a no-op when none is live |
@@ -5296,7 +5430,11 @@ pure turn. Generated modifiers start a written table's record before its
 first modifier, and retain its first earlier row per key across the list.
 The turn rearms exactly its written table cells; unrelated tables keep their
 last writing turn's record. `read(table).inverse()` describes that retained
-turn. The existing exact write-set words select only written cell IDs through
+turn. A table read from one `Store` value and handed to a cell in a turn of
+another is a whole rewrite, even when the two values come from one store and
+the table carries the count the turn starts from: two values taken up from
+one store are two histories, and only the table a modifier received is the
+cell's own. The existing exact write-set words select only written cell IDs through
 an immutable index of generated table callbacks, built once with the store.
 A turn never scans all table descriptors, unrelated rows or change records.
 Reclaiming a written table's preceding record remains
@@ -5304,6 +5442,38 @@ O(J_previous), as in a live turn. A component's
 operations on its own type are tested the same way. This is the check that
 sees a transition that left out a reset or wrote the wrong cell of the right
 type, which no propagation check can.
+
+### The reference semantics
+
+What a turn means is stated twice: in prose here, and as an executable
+reference in Lean 4 under `oracle/`. `oracle/turns` holds a kernel of
+programs as data, the reference (the page from scratch, and a turn as
+"apply the event's writes, then render again": a local state lives exactly
+while its identity is live, and one event's writes compose in order) and,
+separately, a second specification of the work a turn may do (which
+readers it must evaluate, what each must see, which texts it sets and
+which scopes it creates). `oracle/tables` transliterates a table's changes
+and its views and states what the record and a view mean beside them. Each
+module says what it is trusted for; the incremental algorithms there,
+including the known-bad ones, are what is checked, never a reference.
+
+The reference is the statement of a turn's meaning that the engine and the
+Roc references inside the fuzz targets are held to. It shares no code with
+them: they meet only through checked-in vector files the Lean side writes
+(`fuzz/structure/vectors.trace`, its known-bad companion, and the cover
+sets of `fuzz/table-changes` and `fuzz/view-follow`), whose grammar is in
+`oracle/README.md`. When the engine, a Roc reference and Lean disagree,
+Lean decides, unless this document says otherwise; a disagreement between
+Lean and this document is a design change, made here first and then in
+Lean, the Roc reference and the vectors, in one change. Lean runs on a
+contributor's machine (`blueprint run oracle`), not in CI; the vectors it
+wrote are what CI replays.
+
+The reference is about the programs its kernel can express, and the
+vectors about the trees the Roc structure generator can build: a property
+that needs a shape neither has (deeper nesting than the generator's typed
+levels, a `derive` that recomputes an equal value) is not covered by them.
+The proofs in `oracle/` are about the models, not about the engine.
 
 ### Fuzzing, walks, soak and contract tests
 
@@ -5350,9 +5520,10 @@ know nothing of the platform.
   effect-channel model are where coverage guidance meets the engine.
 - **The settle check** is the oracle every walk shares, and the native spec
   runner applies it after every step (`Core.settled`). After a turn, a root
-  `Changed` pass that names every layer and every cell, run on a copy of the
-  instance that is then dropped, must emit no command and change nothing in
-  the effect channel. Its scratch transition collection starts empty, and
+  `Changed(Check)` pass, run on a copy of the instance that is then dropped,
+  must emit no command and change nothing in the effect channel. `Check` is a
+  pass of its own, not a mask: a turn's mask, even one with every layer and
+  every cell bit set, is never taken for it. Its scratch transition collection starts empty, and
   any newly issued request fails the check even if its types duplicate those
   already issued in the real call. That pass re-evaluates every hole and
   descends into every child whatever the read signatures say, and the sites that settle
@@ -5368,8 +5539,9 @@ know nothing of the platform.
   same pass each table view site therefore also builds its view from scratch, for
   the query and the window as they read then, and requires the one it holds
   to equal it: the ordered keys of the whole view, the window, the rows
-  drawn, the count of writes it is up to date with, and the table's changes
-  cleared. A difference fails the check with the site's path, and the pass
+  drawn, the count of writes it is up to date with, and the table rearmed
+  for its next writing turn, its changes retained. A difference fails the
+  check with the site's path, and the pass
   stops at that site, whose rows may name keys the table no longer has. This
   second check costs a rebuild of every table view at every step.
 
@@ -5506,8 +5678,8 @@ In-place writes of large values in shipping builds are tracked against
 ## Measures of Effectiveness
 
 1. **One engine, thin host.** All reactive and structural logic is in the
-   engine's Roc modules (`Core.roc`, with `TableCore.roc`, `View.roc` and
-   `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
+   engine's Roc modules (`Core.roc`, with `Sig.roc`, `TableCore.roc`,
+   `View.roc` and `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
    *Holds when:* the same engine runs in the browser module and the native spec runner with
    the same command stream.
 2. **App semantics agree natively and in the browser.** Every maintained app's
@@ -6536,7 +6708,7 @@ that has run, in first-run order, with its run count.
 | 1–18 | Commands emitted, by opcode (`1` is `INST`, `4` `MOVE`, …) |
 | 19 | `set_value`: control values set (`PROP`/`HPROP` for property 1, and `INST` value property holes) |
 | 20 | `set_checked`: the same for `checked` |
-| 21 | Evaluations of app closures (`derived_calls_into_roc`) |
+| 21 | Signal reads made to propagate (`derived_calls_into_roc`, defined in [Work assertions](#work-assertions)) |
 | 22 | Rows removed by reconciliation, and rows that left a table view's window (`rows_removed`) |
 | 23 | Rows reused by a reconciliation that changed something (`rows_reused`) |
 | 24 | Kept rows whose item changed, and rows a view kept whose row in the table was written (`rows_updated`) |
