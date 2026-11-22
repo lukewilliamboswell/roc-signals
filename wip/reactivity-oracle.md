@@ -26,10 +26,10 @@ The coordinator keeps this table current. States: `todo`, `active`,
 | WP-15 | Design answers and contradictions | 1 | `wp/oracle-design` | merged | Findings F1–F4 in the PR body; F3 (request id exhaustion) is a candidate issue |
 | WP-21 | `Sig` module, `Pass` type, schedule table | 1 | `wp/oracle-sig` | merged | Inner-first seeded bug now lives in `Sig.at_state` |
 | WP-16 | Walk into a scope the pass remounted | 1 | `wp/oracle-walk-fix` | merged | `fresh` flag on block-choosing sites; `walk_stops` |
-| WP-22 | Probe and the checks that read it | 2 | `wp/oracle-probe` | merged | Gates on 11-19 at its tip; six seeded bugs caught; count model rejects the count-only bad traces. Integration re-check pending a working compiler: 0.1.0_RC1 and 11-21 hang checking `PicturePage` (`BUG_TO_INVESTIGATE.md`), 11-19 hangs on `--opt=speed` in check-slow |
+| WP-22 | Probe and the checks that read it | 2 | `wp/oracle-probe` | merged | Gates on 11-19 at its tip; six seeded bugs caught; count model rejects the count-only bad traces. `check` passed on integration at ce72e2e6 with 11-19 first on PATH (537/537 native and browser). 0.1.0_RC1 and 11-21 hang checking `PicturePage` (`BUG_TO_INVESTIGATE.md`), 11-19 hangs on `--opt=speed` in check-slow |
 | WP-23 | Vector replay and oracle sensitivity | 2 | `wp/oracle-vectors` | merged | `twoPassOuter`, `noJoinKeep`, `pruneWakes` are rejected by count only: WP-22's count model must reject them |
-| WP-31 | `Reconcile` planner | 3 | `wp/oracle-reconcile` | todo | After WP-22 |
-| WP-32 | `FxCore` and nested effect scopes | 3 | `wp/oracle-fx` | todo | After WP-22 |
+| WP-31 | `Reconcile` planner | 3 | `wp/oracle-reconcile` | active | From ce72e2e6 |
+| WP-32 | `FxCore` and nested effect scopes | 3 | `wp/oracle-fx` | merged | All seven effect bugs found (fx-core finds 5, fx-channel 7); probe's Owns/Adopted/Queued now tied to the in-flight table; WP-40 sweep: contributing.md suite list and count (34), AGENTS.md module list |
 | WP-40 | Close out and pull request | 4 | `integration/reactivity-oracle` | todo | |
 
 ## 1. Outcome

@@ -474,6 +474,9 @@ flowchart LR
 The engine is `Core.roc`, `Sig.roc` (read signatures, exact write sets and
 the three scheduling decisions read from a write set: what a written layer's
 site does, what the root's pass carries, and how far a walk goes),
+`FxCore.roc` (the effect channel's request lifecycle as a state machine:
+request ids, the in-flight table, the follow-up queue and the effect
+counters, and every lifecycle decision that needs no site),
 `Reconcile.roc` (the plan of an `each` site's reconciliation: which rows it
 keeps, creates, drops and moves, from positions alone) and three
 modules of its own for tables: `TableCore.roc`
@@ -3298,7 +3301,20 @@ queue is empty:
 Since a message a subscription goes on after is not retired and a `Self`
 follow-up is never issued, `delivered + stale ≥ refused + (issued − live −
 cancelled)` is the law in the counters alone; the effect-channel fuzz model,
-which knows each arrival, holds every counter exactly.
+which knows each arrival, holds every counter exactly. The law is checked
+as a stated rule beside that equality, after every call, by the
+effect-channel target's nested-scope model and by `fuzz/fx-core`.
+
+Which of these a request's life decides without a site is one state
+machine, `FxCore`: the id a request takes, whether the cap admits or
+refuses it, which path a result is routed to and whether it retires its
+id, what giving up an id found (a request in flight, now cancelled, or a
+queued follow-up, now dropped), an adoption, and which follow-up the drain
+runs next at what depth, or that a bound stops it. Each decision is
+returned once, so no caller recomputes it. The typed parts stay with the
+sites in `Core`: the issued-for values and readers, the orphans and their
+lowering through retired layers, whether a kind is kept or scoped, the
+`FX` and `CANCEL` bytes, and the crash text of a bound.
 
 ### Observation
 
@@ -5533,6 +5549,15 @@ was mounted under. A site mounted by the first mount is not checked by that
 last rule, since recording starts once the instance exists; it is when a
 turn mounts it again.
 
+The effect-channel target reads the probe's effect facts after every call:
+the request ids each effect site owns and the orphans each `when` adopted
+must be exactly those its model gives each site, together they must cover
+the requests in flight once each (the table agrees with the sites, so a
+site's own check that it holds an id never has to refuse a result the
+table routed to it), every orphan is a kept request, a live `watch_latest`
+site owns only requests of its current value and its own mount, and no
+follow-up waits after a call.
+
 In the valued modes every click is also held to a **count and shape model**
 (`fuzz/structure/Counts.roc`, which imports nothing of the platform): the
 signal reads `derived_calls_into_roc` counts, the scopes created and
@@ -5601,15 +5626,22 @@ know nothing of the platform.
   once, against a model that filters and sorts the table from scratch and
   takes each view from the window before an event to the window after it
   in one change), effect lifecycle (issue, supersede, dispose,
-  reparent, deliver, refuse, cancel, stale), generated site trees with guard
+  reparent, deliver, refuse, cancel, stale, in nested scopes with each
+  site's policy and written state generated, against a model that knows
+  each request's scope, mount, issuing step and holder), the request
+  lifecycle's state machine on its own (`fuzz/fx-core`: the cap, each id's
+  fate, routing, the counter law and the follow-up depth and breadth
+  bounds, against a model that tags each follow-up with its depth),
+  generated site trees with guard
   sites checked against whether any live guard reads true, and the
   spec, wire and port formats. Their oracles, not their inputs, carry the
   value.
 - **Pure cores** have targets of their own with no engine in the loop
   (the `FuzzCores.roc` suite): read signatures and write sets against exact
   sets (`fuzz/masks`), a table's changes and a view kept from them
-  (`fuzz/table-changes`, `fuzz/view-follow`), and the plan of a keyed
-  reconciliation (`fuzz/reconcile`). That target makes a new list of keys
+  (`fuzz/table-changes`, `fuzz/view-follow`), the request lifecycle
+  (`fuzz/fx-core`, above), and the plan of a keyed reconciliation
+  (`fuzz/reconcile`). That target makes a new list of keys
   from an old one, up to thousands of rows, by edits that reach every path
   of the plan, and applies the plan's steps to the old rows with a model
   that knows nothing of how they were planned: the steps must leave the new
@@ -5827,7 +5859,8 @@ In-place writes of large values in shipping builds are tracked against
 ## Measures of Effectiveness
 
 1. **One engine, thin host.** All reactive and structural logic is in the
-   engine's Roc modules (`Core.roc`, with `Sig.roc`, `Reconcile.roc`,
+   engine's Roc modules (`Core.roc`, with `Sig.roc`, `FxCore.roc`,
+   `Reconcile.roc`,
    `TableCore.roc`, `View.roc` and `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
    *Holds when:* the same engine runs in the browser module and the native spec runner with
    the same command stream.
