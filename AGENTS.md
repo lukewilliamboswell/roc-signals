@@ -31,7 +31,10 @@
 ## Protect the reactive model
 
 - Keep the engine in pure Roc in `platform/`. Every dynamic site is one closure
-  that owns its typed storage and answers `Fire`, `Changed` and `Dispose`. Do
+  that owns its typed storage and answers `Fire`, `Changed` and `Dispose`,
+  and a harness's `Describe`, which is outside the reactive model: it is
+  asked only of a copy that is dropped, and nothing in the engine reads its
+  answer. Do
   not introduce a node table, a value registry, runtime dependency discovery,
   host-side state, or a second reactive mechanism.
   No engine module imports a hosted function: a job's effects reach the

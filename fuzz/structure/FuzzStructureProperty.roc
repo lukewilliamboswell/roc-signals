@@ -6,6 +6,8 @@ import pf.SpecRunner
 import pf.WorkerCodec
 import pf.Wire
 import pf.Worker
+import Counts
+import ProbeRules
 import Reference
 
 ## Generated structure: bytes decode into a site tree and a session over it,
@@ -772,14 +774,34 @@ step = |s, op, b| {
 	}
 }
 
+## The probe's rules (`ProbeRules`) after a step: on what the sites hold
+## and on what the step's turns did. Gives the step's facts.
+probe_check : S, Str -> (S, List(Core.Fact))
+probe_check = |s, what| {
+	match ProbeRules.tree(Core.probe_tree(s.eng)) {
+		Ok(_) => {}
+		Err(why) => crash "${what}: ${why}"
+	}
+	(eng, facts) = Core.probe_take(s.eng)
+	match ProbeRules.turns(facts) {
+		Ok(_) => {}
+		Err(why) => crash "${what}: ${why}"
+	}
+	({ ..s, eng }, facts)
+}
+
+## Mount with the probe recording from the first turn.
+probed : S -> S
+probed = |s| probe_check({ ..s, eng: Core.probe_start(s.eng) }, "mount").0
+
 run : List(Node), Bool, List(U8) -> {}
 run = |tree, pure, events| {
-	var $s = settle_check(mount(tree, pure, 0), "mount")
+	var $s = probed(settle_check(mount(tree, pure, 0), "mount"))
 	var $i = 0.U64
 	while $i + 1 < events.len() {
 		(s1, what0) = step($s, (events.get($i) ?? 0).to_u64(), (events.get($i + 1) ?? 0).to_u64())
 		what = "step ${($i // 2).to_str()} (${what0})"
-		s2 = settle_check(s1, what)
+		s2 = probe_check(settle_check(s1, what), what).0
 		$s = if (pure) scratch_check(s2, tree, what) else s2
 		$i = $i + 2
 	}
@@ -829,23 +851,47 @@ agree = |s, tree, held, what| {
 	{}
 }
 
+## The engine's work for one valued click (or the mount) must be the count
+## model's: signal reads (work counter 21), scopes created and disposed (25
+## and 26) and written layers refreshed (27), and the probe must show the
+## same layers refreshed, in the model's order, by the click's one turn.
+## `before` is the work record before the click (empty at the mount) and the
+## layers the probe saw, per turn.
+counted : Counts.Turn, { work : List(U64), layers : List(List(U64)) }, S, Str -> {}
+counted = |want, before, s, what| {
+	after = Core.work_counters(s.eng)
+	delta = |i| (after.get(i) ?? 0) - (before.work.get(i) ?? 0)
+	got = { evals: delta(21), created: delta(25), disposed: delta(26), layers: delta(27) }
+	expected = { evals: want.evals, created: want.created, disposed: want.disposed, layers: want.layers.len() }
+	if got != expected {
+		crash "${what}: the engine's work differs from the count model:\n  engine ${Str.inspect(got)}\n  model  ${Str.inspect(expected)}"
+	}
+	if !before.work.is_empty() and before.layers != [want.layers] {
+		crash "${what}: the probe saw written layers ${Str.inspect(before.layers)} refreshed, the count model ${Str.inspect(want.layers)}"
+	}
+	{}
+}
+
 ## Mode 4: a session of clicks, each compared with the value model. Every
 ## second event byte chooses the button; the first is the op byte of the
 ## other modes and is not read, since valued mode only clicks.
 run_valued : List(Node), List(U8) -> Reference.Tally
 run_valued = |tree, events| {
-	var $s = settle_check(mount_as(tree, False, True, 0), "mount")
+	var $s = probed(settle_check(mount_as(tree, False, True, 0), "mount"))
 	var $seen = Reference.start
 	var $tally = Reference.no_tally
 	agree($s, tree, $seen.held, "mount")
+	counted(Counts.mount(tree, []), { work: [], layers: [] }, $s, "mount")
 	var $i = 0.U64
 	while $i + 1 < events.len() {
 		b = (events.get($i + 1) ?? 0).to_u64()
 		k = b % Reference.buttons(Reference.page(tree, $seen.held)).max(1)
 		(s1, what0) = step($s, 0, b)
 		what = "valued step ${($i // 2).to_str()} (${what0}, button ${k.to_str()})"
-		$s = settle_check(s1, what)
+		(s2, facts) = probe_check(settle_check(s1, what), what)
 		r = Reference.click(tree, $seen, k)
+		counted(Counts.turn(tree, $seen.held, r.seen.held, Reference.writes_at(tree, $seen.held, k)), { work: Core.work_counters($s.eng), layers: ProbeRules.layers(facts) }, s2, what)
+		$s = s2
 		$seen = r.seen
 		agree($s, tree, $seen.held, what)
 		$tally = Reference.add($tally, r.tally)
@@ -1124,6 +1170,34 @@ fuzz_target = Fuzz.target_with!({
 	test!,
 	show: Str.inspect,
 })
+
+## A write that gives a state the value it had is still a write: a state
+## does not prune on write, so the turn refreshes its readers from its own
+## site (`dirty_source_roots` rises by one, and the probe sees the pass and
+## the reader's evaluation, which kept its value), and equality pruning at
+## the reader emits nothing.
+equal_write_case : {} -> { cmds : List(U8), roots : U64, evals : U64, facts : List(Core.Fact) }
+equal_write_case = |_props| {
+	page = Core.state(
+		5.U64,
+		|st| Core.element("main", [], [Core.element("button", [Core.on("click", st.update(|value| value))], [Core.text("=")]), Core.text_s(st.signal().map(|value| value.to_str()))]),
+	)
+	(mounted, _) = Core.take_cmds(Core.probe_start(Core.mount(page)), [])
+	(clicked, cmds) = Core.take_cmds(Core.event(mounted, 2, 0, ""), [])
+	delta = |i| (Core.work_counters(clicked).get(i) ?? 0) - (Core.work_counters(mounted).get(i) ?? 0)
+	{ cmds, roots: delta(27), evals: delta(21), facts: Core.probe_take(clicked).1 }
+}
+
+## An equal write emits nothing and still counts as a write of its state.
+expect {
+	r = equal_write_case({})
+	{ ..r, facts: [] } == { cmds: [], roots: 1, evals: 1, facts: [] } and r.facts.contains(PassFrom(1)) and r.facts.any(
+		|fact| match fact {
+			Evaluated({ kept, .. }) => kept
+			_ => Bool.False
+		},
+	)
+}
 
 ## Ordinary root turns repeatedly dispose generated document shortcuts. The
 ## independent DOM oracle refuses any detached declaration without RELEASE.

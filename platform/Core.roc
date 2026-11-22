@@ -1285,7 +1285,9 @@ Core := [].{
 				elem = body(state_handle(depth))
 				(block, tx1) = mount_block(In.{ outer: env, value: init }, elem, depth, args.path, args.parent, args.before, { cap: args.cap, enclosing: args.enclosing }, tx)
 				reads = block.reads
-				(state_inst(init, block, depth, Settled), reads, tx1)
+				# The probe's `Mounted` fact, built only while a harness records.
+				mounted = if (recording(tx1)) probe_note(tx1, Mounted({ cap: args.cap, kind: State, depth, reads, static: elem_reads(body(state_handle(depth)), depth) })) else tx1
+				(state_inst(init, block, depth, Settled), reads, mounted)
 			},
 		),
 		# The static reads are the mounted ones, this layer and those below
@@ -1347,7 +1349,9 @@ Core := [].{
 				# Nested sites in the template report their static reads (kreads),
 				# which also covers rows mounted later.
 				reads = eff_mask(rows).bitwise_or(outer_mask).bitwise_or(smask_all).bitwise_or(plan.kreads.bitwise_and(Sig.above_bits(depth)))
-				(each_inst(cfg, rows, [], cols), reads, tx4)
+				# The probe's `Mounted` fact, built only while a harness records.
+				mounted = if (recording(tx4)) probe_note(tx4, Mounted({ cap: args.cap, kind: Each, depth, reads: eff_mask(rows).bitwise_or(outer_mask).bitwise_or(smask_all), static: eff_mask(rows).bitwise_or(elem_reads(template(RowRef.{ depth }), depth).bitwise_and(Sig.above_bits(depth))) })) else tx4
+				(each_inst(cfg, rows, [], cols), reads, mounted)
 			},
 		),
 		|d| {
@@ -1446,7 +1450,9 @@ Core := [].{
 				(cols, slots, tx4) = view_enter(cfg, cols_empty(plan.ncols, plan.holes.len()), |_, key| Row.{ outer: env, key: "", item: key }, view.shown_keys(), count_evals(tx3, 2 + rows.len()))
 				reads = Sig.cell_bit(source.cell).bitwise_or(eff_mask(props.query)).bitwise_or(eff_mask(props.window)).bitwise_or(outer_mask).bitwise_or(plan.kreads.bitwise_and(Sig.above_bits(depth)))
 				shows = { get, query: props.query, plan: props.plan, window: props.window }
-				(view_inst(cfg, shows, q, view, [], cols, slots), reads, tx4)
+				# The probe's `Mounted` fact, built only while a harness records.
+				mounted = if (recording(tx4)) probe_note(tx4, Mounted({ cap: args.cap, kind: View, depth, reads: Sig.cell_bit(source.cell).bitwise_or(eff_mask(props.query)).bitwise_or(eff_mask(props.window)).bitwise_or(outer_mask), static: Sig.cell_bit(source.cell).bitwise_or(eff_mask(props.query)).bitwise_or(eff_mask(props.window)).bitwise_or(elem_reads(template(view_key({}), view_row(source, depth, [])), depth).bitwise_and(Sig.above_bits(depth))) })) else tx4
+				(view_inst(cfg, shows, q, view, [], cols, slots), reads, mounted)
 			},
 		),
 		|d| {
@@ -1479,7 +1485,9 @@ Core := [].{
 					eff_mask(cond).bitwise_or(block.reads).bitwise_or(elem_reads(other, args.depth))
 				}
 				w = { cond, yes, no, anchor, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
-				(when_inst(w, c, [], True, block), reads, tx3)
+				# The probe's `Mounted` fact, built only while a harness records.
+				mounted = if (recording(tx3)) probe_note(tx3, Mounted({ cap: args.cap, kind: When, depth: args.depth, reads: eff_mask(cond).bitwise_or(block.reads), static: eff_mask(cond).bitwise_or(elem_reads(yes(), args.depth)).bitwise_or(elem_reads(no(), args.depth)) })) else tx3
+				(when_inst(w, c, [], True, block), reads, mounted)
 			},
 		),
 		|d| eff_mask(cond).bitwise_or(elem_reads(yes(), d)).bitwise_or(elem_reads(no(), d)),
@@ -1507,7 +1515,9 @@ Core := [].{
 				} else tx4
 				reads = eff_mask(ready).bitwise_or(elem_reads(body(), args.depth))
 				cfg = { ready, body, anchor, id, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
-				(placeholder_inst(cfg, True, block), reads, tx5)
+				# The probe's `Mounted` fact, built only while a harness records.
+				mounted = if (recording(tx5)) probe_note(tx5, Mounted({ cap: args.cap, kind: Placeholder, depth: args.depth, reads: eff_mask(ready).bitwise_or(block.reads), static: eff_mask(ready).bitwise_or(elem_reads(body(), args.depth)) })) else tx5
+				(placeholder_inst(cfg, True, block), reads, mounted)
 			},
 		),
 		|depth| eff_mask(ready).bitwise_or(elem_reads(body(), depth)),
@@ -1530,7 +1540,9 @@ Core := [].{
 				(block, tx3) = mount_block(env, body(k), args.depth, args.path, 0, anchor, { cap: args.cap, enclosing: args.enclosing }, bump(count_evals(tx2, 1), w_scopes_created, 1))
 				reads = if (args.cap != 0) args.cap else switch_reads(sel, cases, body, args.depth)
 				w = { sel, cases, body, anchor, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
-				(switch_inst(w, k, [], True, block), reads, tx3)
+				# The probe's `Mounted` fact, built only while a harness records.
+				mounted = if (recording(tx3)) probe_note(tx3, Mounted({ cap: args.cap, kind: Switch, depth: args.depth, reads: eff_mask(sel).bitwise_or(block.reads), static: switch_reads(sel, cases, body, args.depth) })) else tx3
+				(switch_inst(w, k, [], True, block), reads, mounted)
 			},
 		),
 		|d| switch_reads(sel, cases, body, d),
@@ -1563,7 +1575,9 @@ Core := [].{
 				(block, tx3) = mount_block(env, body(), args.depth, args.path, 0, anchor, { cap: args.cap, enclosing: args.enclosing }, bump(count_evals(tx2, 1), w_scopes_created, 1))
 				reads = if (args.cap != 0) args.cap else eff_mask(key).bitwise_or(block.reads)
 				w = { key, body, anchor, depth: args.depth, path: args.path, cap: args.cap, enclosing: args.enclosing }
-				(remount_inst(w, k, [], True, block), reads, tx3)
+				# The probe's `Mounted` fact, built only while a harness records.
+				mounted = if (recording(tx3)) probe_note(tx3, Mounted({ cap: args.cap, kind: Remount, depth: args.depth, reads: eff_mask(key).bitwise_or(block.reads), static: eff_mask(key).bitwise_or(elem_reads(body(), args.depth)) })) else tx3
+				(remount_inst(w, k, [], True, block), reads, mounted)
 			},
 		),
 		|d| eff_mask(key).bitwise_or(elem_reads(body(), d)),
@@ -1587,7 +1601,9 @@ Core := [].{
 				# site changes (refreshing its block itself): a state below it
 				# reports its bit upward, and the Changed pass must find it here.
 				reads = block.reads.bitwise_and(Sig.own_bit(depth).bitwise_not()).bitwise_or(eff_mask(input))
-				(derive_inst(input, v, block, depth), reads, tx1)
+				# The probe's `Mounted` fact, built only while a harness records.
+				mounted = if (recording(tx1)) probe_note(tx1, Mounted({ cap: args.cap, kind: Derive, depth, reads, static: eff_mask(input).bitwise_or(elem_reads(body({ mask: Sig.bit(depth), read: |e| e.value, sel: NoSel }), depth).bitwise_and(Sig.own_bit(depth).bitwise_not())) })) else tx1
+				(derive_inst(input, v, block, depth), reads, mounted)
 			},
 		),
 		|d| {
@@ -3341,7 +3357,7 @@ Core := [].{
 	## Finalization merges transition types into one terminal command.
 	take_cmds : App(st), List(U8) -> (App(st), List(U8))
 	take_cmds = |App.(AppBody.({ store, root, tx, programs })), buf| {
-		{ cmds, next, free, routes, work, paths, site_free, observations, fx } = tx
+		{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe } = tx
 		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
 		{ mounting, asked, types, seen: _ } = batch
 		var $cmds = cmds
@@ -3355,7 +3371,7 @@ Core := [].{
 			$cmds = $cmds.clear()
 		}
 		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
-		(App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2 }, programs }), $cmds)
+		(App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2, probe }, programs }), $cmds)
 	}
 
 	## For test platforms and harnesses: how many app closures (holes, values,
@@ -3418,9 +3434,123 @@ Core := [].{
 	settled = |App.(AppBody.({ store, root, tx, programs: _ }))| {
 		before = tx.fx
 		scratch = with_fx(tx, |effects| { ..effects, batch: { mounting: False, asked: False, types: [], seen: Dict.empty() } })
-		(_, _, after) = call(root, Root.{ store }, Changed(Check), { ..scratch, cmds: [] })
+		(_, _, after) = call(root, Root.{ store }, Changed(Check), { ..scratch, cmds: [], probe: Quiet })
 		note = settle_note(before, after.fx)
 		if (after.cmds.is_empty() and note.is_empty()) Ok({}) else Err({ cmds: after.cmds, note })
+	}
+
+	# ------------------------------------------------------------------
+	# The probe: what a harness may see of the engine beside its commands
+	# (design.md, "The probe").
+
+	## For test platforms and harnesses: one fact of the probe. A fact is
+	## read from the storage the engine tests, or noted at the call it
+	## names, beside the counter that call bumps; the engine never reads one
+	## back. Every field is a scalar or a text the probe made: no fact holds
+	## a value of an app's types.
+	##
+	## Stored facts ([Core.probe_tree]) describe the site tree in document
+	## order, read from the storage a pass tests. `AtSite` opens a site:
+	## its kind, its layer index (`depth`), whether its layer still waits for
+	## a pass (for the root: whether it holds a write set), the mask of the
+	## signal it reads itself (`own`: a condition, a selector, an input, a
+	## watched value) and the cap its parent gave it (`cap`, 0 for none).
+	## `ValueHeld` is a layer's value as `Str.inspect` writes it.
+	## `BlockReads` is what a block reports above it, `HoleHeld` one hole
+	## with its mask and what it last emitted, `NodesHeld` the node ids a
+	## site or a row holds, `ChildAt` opens child `index` with the reads its
+	## parent tests a pass against, `RowAt` opens a drawn row with the marks
+	## a pass may give it (`reads`, the row's own bit included) and the reads
+	## its nested sites are tested against (`kids`), and `Close` ends a
+	## child or a row. `Owns` and `Adopted` are the request ids a site owns
+	## and the orphans it adopted; `ViewHeld` is a table view's ordered keys,
+	## its window and the table version it is up to date with. `Ids` (first)
+	## is the node id allocator, and `Queued` (last) the follow-ups waiting
+	## and the requests in flight.
+	##
+	## Event facts ([Core.probe_start]) are noted while turns run, in the
+	## order the engine made them: `TurnBegan` (a turn: an event, a result,
+	## a follow-up or a placeholder's activation), `RootPass` (the root's pass
+	## for cells, with its mask), `PassFrom` (a pass started at the site of
+	## the layer at `depth`: the outermost write of an event, or an answer
+	## that changed an asynchronous layer), `Joined` and `Walked` (a waiting
+	## layer refreshed by joining the pass, or by the walk after it),
+	## `Entered` and `EnteredRow` with `Left` (a call into child `index` of a
+	## block, or into drawn row `slot` of an `each` or a table view, by a
+	## pass, a walk or an event), `Evaluated` (one evaluation of hole `hole`
+	## of a block, or of a row hole, on `node`, with the mask that woke it
+	## and whether it kept its last value), `Derived` (a `derive` input read),
+	## `Chose` (a `when`, `switch` or `remount_on` decided) and `Mounted` (a
+	## site mounted in a turn: what it reads as mounted, the static reads its
+	## description gives for the same depth, and the cap it was mounted
+	## under, which a site in a drawn row reports for its reads).
+	Fact : [
+		AtSite({ kind : SiteKind, depth : U64, waiting : Bool, own : U128, cap : U128 }),
+		ValueHeld(Str),
+		BlockReads(U128),
+		HoleHeld({ node : U32, mask : U128, dirty : Bool, last : Str }),
+		NodesHeld(List(U32)),
+		ChildAt({ index : U64, reads : U128 }),
+		RowAt({ slot : U32, node : U32, key : Str, reads : U128, kids : U128 }),
+		Close,
+		Owns(List(U32)),
+		Adopted(List(U32)),
+		ViewHeld({ keys : List(Str), start : U64, count : U64, version : U64 }),
+		Ids({ next : U32, free : List(U32) }),
+		Queued({ follow_ups : List(U32), live : List(U32) }),
+		TurnBegan,
+		RootPass(U128),
+		PassFrom(U64),
+		Joined(U64),
+		Walked(U64),
+		Entered(U64),
+		EnteredRow(U32),
+		Left,
+		Evaluated({ node : U32, hole : U64, carried : U128, kept : Bool }),
+		Derived({ depth : U64, kept : Bool }),
+		Chose({ kept : Bool }),
+		Mounted({ kind : SiteKind, depth : U64, reads : U128, static : U128, cap : U128 }),
+	]
+
+	## The kinds of site a probe names: every kind the engine mounts.
+	SiteKind : [Root, Plain, State, Derive, Resource, When, Switch, Remount, Placeholder, Each, View, Effect, Latest, Cleanup, Guard]
+
+	## For test platforms and harnesses: the site tree as the instance holds
+	## it now, as stored facts in document order (see [Fact]). Like
+	## `settled`, it asks a copy that is then dropped: each site answers
+	## `Describe` by noting what it holds and asking its children, and
+	## hands back no site, so the instance is never changed. The cost, one
+	## visit of every site and a text of every layer value, every row key
+	## and every hole's last value, is paid only by who asks.
+	probe_tree : App(st) -> List(Fact)
+	probe_tree = |App.(AppBody.({ store, root, tx, programs: _ }))| {
+		start = { ..tx, cmds: [], probe: Recording([Ids({ next: tx.next, free: tx.free })]) }
+		(_, _, after) = call(root, Root.{ store }, Describe, start)
+		match after.probe {
+			Recording(facts) => facts.append(Queued({ follow_ups: tx.fx.queue.entries.keep_if(|entry| tx.fx.queue.waiting.contains(entry.id)).map(|entry| entry.id), live: tx.fx.live.map(|entry| entry.id) }))
+			Quiet => []
+		}
+	}
+
+	## For test platforms and harnesses: record the event facts of the turns
+	## that follow (see [Fact]), until the instance is dropped. An instance
+	## a host runs never starts recording, so each note costs it one test of
+	## a tag and allocates nothing. Only a harness starts it, and only a
+	## harness takes what it recorded: what it keeps between two takes grows
+	## with the turns it ran, which the harness bounds.
+	probe_start : App(st) -> App(st)
+	probe_start = |App.(AppBody.({ store, root, tx, programs }))| App.(AppBody.{ store, root, tx: { ..tx, probe: Recording([]) }, programs })
+
+	## For test platforms and harnesses: the event facts recorded since the
+	## last take, in order, and an instance that goes on recording. An
+	## instance that is not recording gives none.
+	probe_take : App(st) -> (App(st), List(Fact))
+	probe_take = |App.(AppBody.({ store, root, tx, programs }))| {
+		{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe } = tx
+		match probe {
+			Recording(facts) => (App.(AppBody.{ store, root, tx: { cmds, next, free, routes, work, paths, site_free, observations, fx, probe: Recording([]) }, programs }), facts)
+			Quiet => (App.(AppBody.{ store, root, tx: { cmds, next, free, routes, work, paths, site_free, observations, fx, probe: Quiet }, programs }), [])
+		}
 	}
 
 	## The wire protocol version this engine speaks (design.md, Appendix B). The
@@ -3576,8 +3706,8 @@ Core := [].{
 				if tx.fx.startup.pending {
 					crash "contract: bootstrap acknowledgement required before files ingress"
 				}
-				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
-				fresh = App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs })
+				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx, probe } = tx
+				fresh = App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx, probe }, programs })
 				handles = blobs.map(|b| Blob.(b))
 				if node == fx_node {
 					# A result that carries files: a port's answer (result
@@ -3823,8 +3953,8 @@ Core := [].{
 				if tx.fx.startup.pending {
 					crash "contract: bootstrap acknowledgement required before ordinary ingress"
 				}
-				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
-				fresh = App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs })
+				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx, probe } = tx
+				fresh = App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx, probe }, programs })
 				if node == fx_node and handler == 0 and payload.first() == Ok(255) {
 					if payload.len() != 9 {
 						crash "contract: placeholder opportunity needs exactly one generation"
@@ -4315,7 +4445,12 @@ attach_kind = |event, { code, decode }, policies, { run }| On(
 	{ run: |env, payload, site| run(env, decode(payload, site), site), echo: NoEcho },
 )
 
-Msg := [Fire(List(U32), U64, U32, Payload), Changed(Sig.Pass), Dispose(Bool)]
+## `Describe` is the probe's question ([Core.probe_tree]), a harness's and
+## outside the reactive model: a site answers it by noting what it holds
+## (`Core.Fact`) and asking its children. It is sent only to a copy of the
+## tree that is then dropped, so a site hands back `noop` and never rebuilds
+## its closure for it.
+Msg := [Fire(List(U32), U64, U32, Payload), Changed(Sig.Pass), Dispose(Bool), Describe]
 
 ## Fire always hands the (possibly transformed) environment back up with
 ## the exact set of layers it wrote that no site below has settled yet
@@ -4363,6 +4498,116 @@ Tx : {
 	site_free : List(U32),
 	observations : { echo : Bool, shown : List(ShownChange) },
 	fx : Fx,
+	probe : Probe,
+}
+
+## Every kind of site a page mounts answers the probe's question as itself:
+## a page with one of each is described with each kind, so a new kind cannot
+## be mounted without a description. (`Plain`, a block site of its own, is
+## not mounted by any element today.)
+expect {
+	store = Core.store_of({}, Core.table(Table.from_list([{ key: 1.U64, row: "a" }])?).map(|c| { todos: c }))
+	todos = store.cells().todos
+	plan = |_| { keep: |_, _| Bool.True, sort: |k, _| k, compare: |a, b| if (a < b) Before else if (a > b) After else Same }
+	view = Core.element(
+		"main",
+		[],
+		[
+			Core.state(
+				0.U64,
+				|st| Core.derive(
+					st.signal(),
+					|d| Core.element(
+						"div",
+						[],
+						[
+							Core.when(d.map(|x| x == 0), || Core.text("y"), || Core.text("n")),
+							Core.switch(d, [0, 1], |_| Core.text("s")),
+							Core.remount_on(d, || Core.text("r")),
+							Core.placeholder(Core.const(False), Core.text("p"), || Core.text("q")),
+							Core.each(Core.const(["a"]), |k| k, |_| Core.element("p", [], [])),
+							Core.resource(d, { init: 0.U64, pending: |_, a| a, plan: |_| [], resolve: |s, _, _| s }, |r| Core.text_s(r.map(|x| x.to_str()))),
+							Core.watch(d, |x| [Core.command(Title(x.to_str()))], Core.ignore({})),
+							Core.watch_latest(d, |x| [Core.command(Title(x.to_str()))], Core.ignore({})),
+							Core.cleanup("probe"),
+							Core.guard_leave(Core.const(False)),
+						],
+					),
+				),
+			),
+			Core.table_view(todos, { query: Core.const({}), plan, window: Core.const({ start: 0, count: 10 }) }, |_, _| Core.element("p", [], [])),
+		],
+	)
+	kinds = Core.probe_tree(Core.mount_store(32, store.initial(), view)).keep_oks(
+		|fact| match fact {
+			AtSite({ kind, .. }) => Ok(kind)
+			_ => Err(Other)
+		},
+	)
+	[Root, State, Derive, Resource, When, Switch, Remount, Placeholder, Each, View, Effect, Latest, Cleanup, Guard].all(|kind| kinds.contains(kind))
+}
+
+## A harness's probe ([Core.probe_start]): `Quiet` in every instance a host
+## runs, so a note costs one test of this tag and never allocates;
+## `Recording` keeps the facts noted since the harness last took them.
+## Nothing in the engine reads a fact back: the probe is written to and
+## never decides anything (design.md, "The probe").
+Probe : [Quiet, Recording(List(Core.Fact))]
+
+## Note one fact if a harness is recording. An event fact is built from
+## scalars the call site already holds, so building it allocates nothing.
+probe_note : Tx, Core.Fact -> Tx
+probe_note = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }, fact| match probe {
+	Quiet => { cmds, next, free, routes, work, paths, site_free, observations, fx, probe: Quiet }
+	Recording(facts) => { cmds, next, free, routes, work, paths, site_free, observations, fx, probe: Recording(facts.append(fact)) }
+}
+
+## Whether a harness is recording: a fact that costs work to build (a
+## static read mask, a text) is built only then. A test of the tag, not a
+## closure, so a quiet instance allocates nothing for it.
+recording : Tx -> Bool
+recording = |tx| match tx.probe {
+	Quiet => False
+	Recording(_) => True
+}
+
+## Whether a layer's site still waits for a pass.
+is_waiting : [Settled, Waiting] -> Bool
+is_waiting = |waits| match waits {
+	Waiting => True
+	Settled => False
+}
+
+## The text a hole last emitted, for `HoleHeld`.
+last_text : [Absent, Present(Str)] -> Str
+last_text = |last| match last {
+	Absent => ""
+	Present(text) => text
+}
+
+## The ids a list of orphans holds, for `Adopted`.
+orphan_ids : List(Orphan(ctx)) -> List(U32)
+orphan_ids = |orphans| orphans.map(|orphan| orphan.id)
+
+## A block's answer to `Describe`: what it reports above it, its holes and
+## nodes as they are stored, then each child, opened with the reads the
+## block tests a pass against.
+describe_block : Block(ctx), ctx, Tx -> Tx
+describe_block = |{ holes, handlers: _, children, child_reads, child_top: _, nodes, tops: _, reads }, env, tx| {
+	var $tx = probe_note(probe_note(tx, BlockReads(reads)), NodesHeld(nodes))
+	for hole in holes {
+		$tx = probe_note($tx, HoleHeld({ node: hole.node, mask: hole.mask, dirty: hole.dirty, last: last_text(hole.last) }))
+	}
+	var $ks = children
+	var $j = 0.U64
+	while $j < $ks.len() {
+		{ list, prev } = $ks.replace($j, noop({})) ?? crash "child"
+		(_, _, t1) = call(prev, env, Describe, probe_note($tx, ChildAt({ index: $j, reads: child_reads.get($j) ?? 0 })))
+		$tx = probe_note(t1, Close)
+		$ks = list
+		$j = $j + 1
+	}
+	$tx
 }
 
 ## Work counters (design.md, "Work assertions"): one `Work` record in the
@@ -4599,11 +4844,11 @@ put_presence = |bytes, presence| match presence {
 ## opcode is counted in the work counters; property commands use the
 ## dedicated PROP and HPROP slots (design.md, "Work assertions").
 emit_op : Tx, U8, (List(U8) -> List(U8)) -> Tx
-emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else if (op == 25) 46 else if (op == 26) 48 else if (op >= 28 and op <= 31) op.to_u64() + 21 else op.to_u64(), 1), paths, site_free, observations, fx }
+emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else if (op == 25) 46 else if (op == 26) 48 else if (op >= 28 and op <= 31) op.to_u64() + 21 else op.to_u64(), 1), paths, site_free, observations, fx, probe }
 
 ## Add `n` to work counter `i`.
 bump : Tx, U64, U64 -> Tx
-bump = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, i, n| { cmds, next, free, routes, work: add_work(work, i, n), paths, site_free, observations, fx }
+bump = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }, i, n| { cmds, next, free, routes, work: add_work(work, i, n), paths, site_free, observations, fx, probe }
 
 ## One evaluation of an app closure (a hole, a condition, a list read, a
 ## `derive` input, a prop read, an effect site's watched value).
@@ -4635,14 +4880,14 @@ count_property = |tx, index| {
 
 ## Allocate a static node id, reusing a freed one first.
 alloc_id : Tx -> (U32, Tx)
-alloc_id = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }| {
+alloc_id = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }| {
 	match free.last() {
-		Ok(id) => (id, { cmds, next, free: free.drop_last(1), routes, work, paths, site_free, observations, fx })
+		Ok(id) => (id, { cmds, next, free: free.drop_last(1), routes, work, paths, site_free, observations, fx, probe })
 		Err(_) => {
 			if next >= 4294967294 {
 				crash "resource_limit: node ids exhausted (4294967294 live nodes)"
 			}
-			(next, { cmds, next: next + 1, free, routes, work, paths, site_free, observations, fx })
+			(next, { cmds, next: next + 1, free, routes, work, paths, site_free, observations, fx, probe })
 		}
 	}
 }
@@ -4692,10 +4937,10 @@ with_registrations = |{ next, inner, live, queue, max, issued, delivered, stale,
 
 ## Release a static node id and its route.
 free_id : Tx, U32 -> Tx
-free_id = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, id| {
+free_id = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }, id| {
 	routes2 = if (id.to_u64() < routes.len()) routes.set(id.to_u64(), NoRoute) ?? routes else routes
 	fx2 = if ((fx.ref_pos.get(id.to_u64()) ?? []).is_empty()) fx else drop_ref(fx, id)
-	{ cmds, next, free: free.append(id), routes: routes2, work, paths, site_free, observations: { ..observations, shown: observations.shown.append(DropShown(id)) }, fx: fx2 }
+	{ cmds, next, free: free.append(id), routes: routes2, work, paths, site_free, observations: { ..observations, shown: observations.shown.append(DropShown(id)) }, fx: fx2, probe }
 }
 
 ## Register a name with its node and construction site. The end-of-turn
@@ -4753,38 +4998,38 @@ with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused,
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
-set_route = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, id, path, handler| {
+set_route = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }, id, path, handler| {
 	var $r = routes
 	while $r.len() <= id.to_u64() {
 		$r = $r.append(NoRoute)
 	}
-	{ cmds, next, free, routes: $r.set(id.to_u64(), Route(path, handler)) ?? $r, work, paths, site_free, observations, fx }
+	{ cmds, next, free, routes: $r.set(id.to_u64(), Route(path, handler)) ?? $r, work, paths, site_free, observations, fx, probe }
 }
 
 set_row_route : Tx, U32, U32, U32 -> Tx
-set_row_route = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, id, site, slot| {
+set_row_route = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }, id, site, slot| {
 	var $r = routes
 	while $r.len() <= id.to_u64() {
 		$r = $r.append(NoRoute)
 	}
-	{ cmds, next, free, routes: $r.set(id.to_u64(), RowOf(site, slot)) ?? $r, work, paths, site_free, observations, fx }
+	{ cmds, next, free, routes: $r.set(id.to_u64(), RowOf(site, slot)) ?? $r, work, paths, site_free, observations, fx, probe }
 }
 
 ## Allocate an each-site id (template id).
 alloc_site : Tx, List(U32) -> (U32, Tx)
-alloc_site = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, path| {
+alloc_site = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }, path| {
 	match site_free.last() {
-		Ok(s) => (s, { cmds, next, free, routes, work, paths: paths.set(s.to_u64(), path) ?? crash "site", site_free: site_free.drop_last(1), observations, fx })
+		Ok(s) => (s, { cmds, next, free, routes, work, paths: paths.set(s.to_u64(), path) ?? crash "site", site_free: site_free.drop_last(1), observations, fx, probe })
 		Err(_) => {
 			s = paths.len().to_u32_wrap()
-			(s, { cmds, next, free, routes, work, paths: paths.append(path), site_free, observations, fx })
+			(s, { cmds, next, free, routes, work, paths: paths.append(path), site_free, observations, fx, probe })
 		}
 	}
 }
 
 free_site : Tx, U32 -> Tx
-free_site = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, s| {
-	{ cmds, next, free, routes, work, paths: paths.set(s.to_u64(), []) ?? paths, site_free: site_free.append(s), observations, fx }
+free_site = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }, s| {
+	{ cmds, next, free, routes, work, paths: paths.set(s.to_u64(), []) ?? paths, site_free: site_free.append(s), observations, fx, probe }
 }
 
 ## ------------------------------------------------------------------
@@ -5265,7 +5510,7 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 			{ list, prev } = $holes.replace($i, { node: 0, mask: 0, attr: NoAttribute, reference: NotReference, property: 0, read: |_| Absent, last: Absent, dirty: False }) ?? crash "hole"
 			{ node, mask: m, attr, reference, property, read, last, dirty: _ } = prev
 			v = read(env)
-			t1 = count_evals($tx, 1)
+			t1 = probe_note(count_evals($tx, 1), Evaluated({ node, hole: $i, carried: mask, kept: v == last }))
 			if v == last {
 				$holes = list.set($i, { node, mask: m, attr, reference, property, read, last, dirty: False }) ?? crash "hole"
 				$tx = t1
@@ -5290,9 +5535,9 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 		r = child_reads.get($j) ?? 0
 		if all or r.bitwise_and(mask) != 0 {
 			{ list, prev } = $kids.replace($j, noop({})) ?? crash "child"
-			(next, _, t2) = call(prev, env, Changed(pass), $tx)
+			(next, _, t2) = call(prev, env, Changed(pass), probe_note($tx, Entered($j)))
 			$kids = list.set($j, next) ?? crash "child"
-			$tx = t2
+			$tx = probe_note(t2, Left)
 		}
 		$j = $j + 1
 	}
@@ -5382,8 +5627,8 @@ fire_kid = |block, env, path, pos, h, payload, tx| {
 	k = (path.get(pos) ?? 0).to_u64()
 	{ holes, handlers, children, child_reads, child_top, nodes, tops, reads } = block
 	{ list, prev } = children.replace(k, noop({})) ?? crash "child"
-	(next, out, tx1) = call(prev, env, Fire(path, pos + 1, h, payload), tx)
-	({ holes, handlers, children: list.set(k, next) ?? crash "child", child_reads, child_top, nodes, tops, reads }, out, tx1)
+	(next, out, tx1) = call(prev, env, Fire(path, pos + 1, h, payload), probe_note(tx, Entered(k)))
+	({ holes, handlers, children: list.set(k, next) ?? crash "child", child_reads, child_top, nodes, tops, reads }, out, probe_note(tx1, Left))
 }
 
 ## Dispose a block's children (and its nodes); returns the orphans its
@@ -5443,7 +5688,7 @@ state_settle = |block, depth, out, path, pos, h, tx| {
 				Starts({ walk: waiting }) => {
 					# Every write of the turn is in place by now, and this is the
 					# outermost layer it wrote: its pass starts here.
-					(b3, t3) = refresh(block, In.{ outer: next_outer, value: s2 }, Turn(Sig.bit(depth)), bump(tx, w_dirty_roots, 1))
+					(b3, t3) = refresh(block, In.{ outer: next_outer, value: s2 }, Turn(Sig.bit(depth)), probe_note(bump(tx, w_dirty_roots, 1), PassFrom(depth)))
 					if Sig.is_empty(waiting) or pos >= path.len() {
 						(state_inst(s2, b3, depth, Settled), Pending(next_outer, Sig.none), t3)
 					} else {
@@ -5469,7 +5714,7 @@ state_walk : s, Block(In(ctx, s)), ctx, U64, [Settled, Waiting], [Further, Ends]
 state_walk = |s, block, env, depth, waits, on, path, pos, h, payload, tx| {
 	match waits {
 		Waiting => {
-			(b2, t2) = refresh(block, In.{ outer: env, value: s }, Turn(Sig.bit(depth)), bump(tx, w_dirty_roots, 1))
+			(b2, t2) = refresh(block, In.{ outer: env, value: s }, Turn(Sig.bit(depth)), probe_note(bump(tx, w_dirty_roots, 1), Walked(depth)))
 			state_walk_on(s, b2, env, depth, on, path, pos, h, payload, t2)
 		}
 		Settled => state_walk_on(s, block, env, depth, on, path, pos, h, payload, tx)
@@ -5535,7 +5780,7 @@ state_inst = |s0, block0, depth0, waits0| {
 							# site: the layer joins it. Its bit is added here, so it
 							# is carried in this subtree and nowhere else, and a
 							# reader below of both writes is evaluated once.
-							(b2, t2) = refresh(block, In.{ outer: env, value: s }, Sig.joined(pass, Sig.bit(depth)), bump(tx, w_dirty_roots, 1))
+							(b2, t2) = refresh(block, In.{ outer: env, value: s }, Sig.joined(pass, Sig.bit(depth)), probe_note(bump(tx, w_dirty_roots, 1), Joined(depth)))
 							(state_inst(s, b2, depth, Settled), Done, t2)
 						}
 						Settled => {
@@ -5564,6 +5809,7 @@ state_inst = |s0, block0, depth0, waits0| {
 						}
 					}
 				}
+				Describe => (noop({}), Done, describe_block(block, In.{ outer: env, value: s }, probe_note(probe_note(tx, AtSite({ kind: State, depth, waiting: is_waiting(waits), own: 0, cap: 0 })), ValueHeld(Str.inspect(s)))))
 				Dispose(remove) => {
 					(orph, t2) = dispose_block(block, In.{ outer: env, value: s }, remove, tx)
 					(noop({}), Orphaned(lower_in(orph, s, depth)), t2)
@@ -5632,6 +5878,7 @@ placeholder_inst = |cfg0, fresh0, block0| {
 						Miss => (placeholder_inst(cfg, False, block), Pending(env, Sig.none), tx)
 					}
 				}
+				Describe => (noop({}), Done, describe_block(block, env, probe_note(probe_note(tx, AtSite({ kind: Placeholder, depth: cfg.depth, waiting: False, own: eff_mask(cfg.ready), cap: cfg.cap })), NodesHeld([cfg.anchor]))))
 				Dispose(remove) => {
 					(orphans, tx1) = dispose_block(block, env, remove, bump(ready_remove(tx, cfg.id), w_scopes_disposed, 1))
 					tx2 = if remove {
@@ -5671,6 +5918,7 @@ active_placeholder_inst = |anchor0, block0| {
 					}
 					Miss => (active_placeholder_inst(anchor, block), Pending(env, Sig.none), tx)
 				}
+				Describe => (noop({}), Done, describe_block(block, env, probe_note(probe_note(tx, AtSite({ kind: Placeholder, depth: 0, waiting: False, own: 0, cap: 0 })), NodesHeld([anchor]))))
 				Dispose(remove) => {
 					(orphans, tx1) = dispose_block(block, env, remove, bump(tx, w_scopes_disposed, 1))
 					tx2 = if remove {
@@ -5794,7 +6042,7 @@ when_inst = |w0, cur0, adopted0, fresh0, block0| {
 				Changed(pass) => {
 					if Sig.meets(pass, eff_mask(w.cond)) {
 						c = (w.cond.read)(env)
-						t1 = count_evals(tx, 1)
+						t1 = probe_note(count_evals(tx, 1), Chose({ kept: c == cur }))
 						if c == cur {
 							(b2, t2) = refresh(block, env, pass, t1)
 							(when_inst(w, cur, adopted, fresh, b2), Done, t2)
@@ -5833,6 +6081,7 @@ when_inst = |w0, cur0, adopted0, fresh0, block0| {
 						}
 					}
 				}
+				Describe => (noop({}), Done, describe_block(block, env, probe_note(probe_note(probe_note(tx, AtSite({ kind: When, depth: w.depth, waiting: False, own: eff_mask(w.cond), cap: w.cap })), NodesHeld([w.anchor])), Adopted(orphan_ids(adopted)))))
 				Dispose(remove) => {
 					(orph, t1) = dispose_block(block, env, remove, bump(tx, w_scopes_disposed, 1))
 					t2 = if (remove) emit_op(t1, 5, |c| put_u32(c, w.anchor)) else t1
@@ -5868,6 +6117,7 @@ block_inst = |block0| {
 						Miss => (block_inst(block), Pending(env, Sig.none), tx)
 					}
 				}
+				Describe => (noop({}), Done, describe_block(block, env, probe_note(tx, AtSite({ kind: Plain, depth: 0, waiting: False, own: 0, cap: 0 }))))
 				Dispose(remove) => {
 					(orph, t2) = dispose_block(block, env, remove, tx)
 					(noop({}), Orphaned(orph), t2)
@@ -5913,6 +6163,7 @@ store_inst = |tables0, wrote0, block0| {
 					}
 					Miss => store_settle(block, tables, Pending(env, Sig.none), tx)
 				}
+				Describe => (noop({}), Done, describe_block(block, env, probe_note(tx, AtSite({ kind: Root, depth: 0, waiting: !Sig.is_empty(wrote), own: 0, cap: 0 }))))
 				Dispose(remove) => {
 					(_, t2) = dispose_block(block, env, remove, tx)
 					(noop({}), Orphaned([]), t2)
@@ -6723,7 +6974,7 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 	(node, tx0) = alloc_id(tx)
 	rnodes2 = put_at(rnodes, si, node)
 	row_env = env(key, item)
-	{ cmds, next, free: idfree, routes, work, paths, site_free, observations, fx } = set_row_route(tx0, node, cfg.site, slot)
+	{ cmds, next, free: idfree, routes, work, paths, site_free, observations, fx, probe } = set_row_route(tx0, node, cfg.site, slot)
 	var $c = put_u32(put_u32(put_u32(put_u32(cmds.append(1), node), cfg.parent), before), cfg.site)
 	var $lasts = lasts
 	var $sels = sels
@@ -6731,7 +6982,7 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 	# Control properties carried by INST count as set, like PROP would.
 	var $set_value = 0.U64
 	var $set_checked = 0.U64
-	var $t = { cmds: [], next, free: idfree, routes, work, paths, site_free, observations, fx }
+	var $t = { cmds: [], next, free: idfree, routes, work, paths, site_free, observations, fx, probe }
 	var $bound = List.repeat(0.U32, cfg.plan.mounts.len())
 	var $hi = 0.U64
 	for hole in cfg.plan.holes {
@@ -6777,11 +7028,11 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 		$hi = $hi + 1
 	}
 	known2 = known or cfg.sel_mask != 0
-	{ cmds: _, next: n3, free: f3, routes: r3, work: w3, paths: p3, site_free: sf3, observations: ob3, fx: fx3 } = $t
+	{ cmds: _, next: n3, free: f3, routes: r3, work: w3, paths: p3, site_free: sf3, observations: ob3, fx: fx3, probe: pr3 } = $t
 	# One INST (a row and its scope created), its hole evaluations and the
 	# key index work of the site that placed it.
 	w4 = add_work(add_work(add_work(add_work(add_work(add_work(add_work(w3, 1, 1), w_evals, $ev), w_scopes_created, 1), w_key_hashes, keyed.hashes), w_key_compares, keyed.compares), w_set_value, $set_value), w_set_checked, $set_checked)
-	var $tx = { cmds: $c, next: n3, free: f3, routes: r3, work: w4, paths: p3, site_free: sf3, observations: ob3, fx: fx3 }
+	var $tx = { cmds: $c, next: n3, free: f3, routes: r3, work: w4, paths: p3, site_free: sf3, observations: ob3, fx: fx3, probe: pr3 }
 	if cfg.dynamic {
 		var $insts = []
 		var $km = kid_mask
@@ -7340,6 +7591,7 @@ settle = |cfg, cols, env, pass, tx| {
 		item = items.get(si) ?? crash "item"
 		row_env = env(key, item)
 		node = rnodes.get(si) ?? crash "internal: row node"
+		$tx = probe_note($tx, EnteredRow(slot))
 		var $hi = 0.U64
 		for hole in cfg.plan.holes {
 			echo_dirty = match pending_echo {
@@ -7351,6 +7603,7 @@ settle = |cfg, cols, env, pass, tx| {
 				{ list, prev } = $lasts.replace(hole.col, []) ?? crash "lasts"
 				old = prev.get(si) ?? crash "internal: missing row hole observation"
 				$evals = $evals + 1
+				$tx = probe_note($tx, Evaluated({ node, hole: $hi, carried: m, kept: v == old }))
 				if v == old {
 					$lasts = list.set(hole.col, prev) ?? crash "lasts"
 				} else {
@@ -7377,15 +7630,16 @@ settle = |cfg, cols, env, pass, tx| {
 			var $j = 0.U64
 			while $j < $rk.len() {
 				{ list: rl, prev: kid } = $rk.replace($j, noop({})) ?? crash "kid"
-				(k2, _, t2) = call(kid, row_env, Changed(kid_pass), $tx)
+				(k2, _, t2) = call(kid, row_env, Changed(kid_pass), probe_note($tx, Entered($j)))
 				$rk = rl.set($j, k2) ?? crash "kid"
-				$tx = t2
+				$tx = probe_note(t2, Left)
 				$j = $j + 1
 			}
 			$kids = kl.set(si, $rk) ?? crash "kids"
 		}
 		{ list: maps, prev: row_shown } = $shown.replace(si, shown_empty) ?? crash "shown column"
 		$shown = maps.set(si, shown_since(row_shown, start, $tx)) ?? crash "shown column"
+		$tx = probe_note($tx, Left)
 	}
 	({ items, keys, order, free, index, lasts: $lasts, kids: $kids, binds, pend: $pend, dirty: dirty.clear(), sels, known, kid_mask, dropped, shown: $shown, pending_echo: NoEcho, rnodes }, count_evals($tx, $evals))
 }
@@ -7438,6 +7692,43 @@ select_changed = |cfg, cols, env, pass| {
 	}
 }
 
+## The drawn rows' answer to `Describe`, in drawn order: each row opened
+## with the marks a pass may give it and the reads its nested sites are
+## tested against, then its live holes, its nodes and its nested sites.
+describe_rows : EachCfg(r, find), Cols(r, item), (Str, item -> r), Tx -> Tx
+describe_rows = |cfg, cols, env, tx| {
+	marks = cfg.outer_mask.bitwise_or(cols.kid_mask).bitwise_and(Sig.above_bits(cfg.depth)).bitwise_or(Sig.bit(cfg.depth)).bitwise_or(cfg.sel_mask)
+	var $tx = tx
+	for slot in cols.order {
+		si = slot.to_u64()
+		key = cols.keys.get(si) ?? ""
+		item = cols.items.get(si) ?? crash "item"
+		node = cols.rnodes.get(si) ?? 0
+		$tx = probe_note($tx, RowAt({ slot, node, key: if (key.is_empty()) Str.inspect(item) else key, reads: marks, kids: cols.kid_mask }))
+		$tx = probe_note($tx, NodesHeld([node].concat(cols.binds.get(si) ?? [])))
+		var $hi = 0.U64
+		for hole in cfg.plan.holes {
+			if hole.live {
+				last = (cols.lasts.get(hole.col) ?? []).get(si) ?? Absent
+				$tx = probe_note($tx, HoleHeld({ node, mask: hole.mask.bitwise_or(hole.smask), dirty: False, last: last_text(last) }))
+			}
+			$hi = $hi + 1
+		}
+		row_env = env(key, item)
+		var $rk = cols.kids.get(si) ?? []
+		var $j = 0.U64
+		while $j < $rk.len() {
+			{ list, prev } = $rk.replace($j, noop({})) ?? crash "kid"
+			(_, _, t1) = call(prev, row_env, Describe, probe_note($tx, ChildAt({ index: $j, reads: cols.kid_mask })))
+			$tx = probe_note(t1, Close)
+			$rk = list
+			$j = $j + 1
+		}
+		$tx = probe_note($tx, Close)
+	}
+	$tx
+}
+
 ## Whether slot `si` holds a row: a row that was removed has no node
 ## (`remove_row`), and node 0 is the host's, never a row's.
 is_live : Cols(r, item), U64 -> Bool
@@ -7455,7 +7746,8 @@ each_fire_kid = |cols, row_env, si, path, pos, h, payload, tx| {
 	{ list: kl, prev: row_kids } = kids.replace(si, []) ?? crash "kids"
 	if j < row_kids.len() {
 		{ list: rl, prev: kid } = row_kids.replace(j, noop({})) ?? crash "kid"
-		(k2, out, t2) = call(kid, row_env, Fire(path, pos + 2, h, payload), tx)
+		(k2, out, t3) = call(kid, row_env, Fire(path, pos + 2, h, payload), probe_note(probe_note(tx, EnteredRow(si.to_u32_wrap())), Entered(j)))
+		t2 = probe_note(probe_note(t3, Left), Left)
 		kids2 = kl.set(si, rl.set(j, k2) ?? crash "kid") ?? crash "kids"
 		(outer, m) = row_out(out)
 		{ list: maps, prev: row_shown } = shown.replace(si, shown_empty) ?? crash "shown column"
@@ -7548,6 +7840,7 @@ each_inst = |cfg0, rows0, adopted0, cols0| {
 						}
 					}
 				}
+				Describe => (noop({}), Done, describe_rows(cfg, cols, mk, probe_note(probe_note(probe_note(tx, AtSite({ kind: Each, depth: cfg.depth, waiting: False, own: eff_mask(rows).bitwise_or(cfg.sel_mask), cap: 0 })), NodesHeld(if (cfg.sole) [] else [cfg.anchor])), Adopted(orphan_ids(adopted)))))
 				Dispose(remove) => {
 					# Row node ids come from the shared pool: release them even when
 					# nothing else needs doing for a static row set.
@@ -7846,6 +8139,7 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 						}
 					}
 				}
+				Describe => (noop({}), Done, describe_rows(cfg, cols, mk, probe_note(probe_note(probe_note(probe_note(tx, AtSite({ kind: View, depth: cfg.depth, waiting: False, own: eff_mask(shows.query).bitwise_or(eff_mask(shows.window)), cap: 0 })), NodesHeld(if (cfg.sole) [] else [cfg.anchor])), Adopted(orphan_ids(adopted))), ViewHeld({ keys: view.keys().map(|key| Str.inspect(key)), start: view.window_of().start, count: view.window_of().count, version: view.version() }))))
 				Dispose(remove) => {
 					(c1, t1) = if (remove or cfg.dynamic) clear_rows(cfg, cols, mk, remove, tx) else (cols, free_rows(cols, tx))
 					(_, orph) = take_dropped_view(c1, cfg.depth, shows.get)
@@ -7936,7 +8230,7 @@ switch_inst = |w0, cur0, adopted0, fresh0, block0| {
 				Changed(pass) => {
 					if Sig.meets(pass, eff_mask(w.sel)) {
 						k = switch_value(w.sel, w.cases, env, w.path)
-						t1 = count_evals(tx, 1)
+						t1 = probe_note(count_evals(tx, 1), Chose({ kept: k == cur }))
 						if k == cur {
 							(b2, t2) = refresh(block, env, pass, t1)
 							(switch_inst(w, cur, adopted, fresh, b2), Done, t2)
@@ -7974,6 +8268,7 @@ switch_inst = |w0, cur0, adopted0, fresh0, block0| {
 						}
 					}
 				}
+				Describe => (noop({}), Done, describe_block(block, env, probe_note(probe_note(probe_note(tx, AtSite({ kind: Switch, depth: w.depth, waiting: False, own: eff_mask(w.sel), cap: w.cap })), NodesHeld([w.anchor])), Adopted(orphan_ids(adopted)))))
 				Dispose(remove) => {
 					(orph, t1) = dispose_block(block, env, remove, bump(tx, w_scopes_disposed, 1))
 					t2 = if (remove) emit_op(t1, 5, |c| put_u32(c, w.anchor)) else t1
@@ -8004,7 +8299,7 @@ remount_inst = |w0, cur0, adopted0, fresh0, block0| {
 				Changed(pass) => {
 					if Sig.meets(pass, eff_mask(w.key)) {
 						k = (w.key.read)(env)
-						t1 = count_evals(tx, 1)
+						t1 = probe_note(count_evals(tx, 1), Chose({ kept: k == cur }))
 						if k == cur {
 							(b2, t2) = refresh(block, env, pass, t1)
 							(remount_inst(w, cur, adopted, fresh, b2), Done, t2)
@@ -8042,6 +8337,7 @@ remount_inst = |w0, cur0, adopted0, fresh0, block0| {
 						}
 					}
 				}
+				Describe => (noop({}), Done, describe_block(block, env, probe_note(probe_note(probe_note(tx, AtSite({ kind: Remount, depth: w.depth, waiting: False, own: eff_mask(w.key), cap: w.cap })), NodesHeld([w.anchor])), Adopted(orphan_ids(adopted)))))
 				Dispose(remove) => {
 					(orph, t1) = dispose_block(block, env, remove, bump(tx, w_scopes_disposed, 1))
 					t2 = if (remove) emit_op(t1, 5, |c| put_u32(c, w.anchor)) else t1
@@ -8063,7 +8359,7 @@ derive_inst = |input0, v0, block0, depth0| {
 				Changed(pass) => {
 					if Sig.meets(pass, eff_mask(input)) {
 						v2 = (input.read)(env)
-						t1 = count_evals(tx, 1)
+						t1 = probe_note(count_evals(tx, 1), Derived({ depth, kept: v2 == v }))
 						if v2 == v {
 							(b2, t2) = refresh(block, In.{ outer: env, value: v }, pass, t1)
 							(derive_inst(input, v, b2, depth), Done, t2)
@@ -8089,6 +8385,7 @@ derive_inst = |input0, v0, block0, depth0| {
 						Miss => (derive_inst(input, v, block, depth), Pending(env, Sig.none), tx)
 					}
 				}
+				Describe => (noop({}), Done, describe_block(block, In.{ outer: env, value: v }, probe_note(probe_note(tx, AtSite({ kind: Derive, depth, waiting: False, own: eff_mask(input), cap: 0 })), ValueHeld(Str.inspect(v)))))
 				Dispose(remove) => {
 					(orph, t2) = dispose_block(block, In.{ outer: env, value: v }, remove, tx)
 					(noop({}), Orphaned(lower_in(orph, v, depth)), t2)
@@ -8229,7 +8526,7 @@ mount_cold = |max, programs, start, elem, enclosing, mode, entry| mount_initial(
 
 mount_initial : U64, Catalogue, Core.Start(st), Elem(Root(st)), Enclosing, [None, Some({ mode : U8, entry : U32 })] -> App(st)
 mount_initial = |max, programs, { st, tables }, elem, enclosing, cold| {
-	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = new_tx([])
+	{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe } = new_tx([])
 	tx0 = {
 		cmds,
 		next,
@@ -8239,6 +8536,7 @@ mount_initial = |max, programs, { st, tables }, elem, enclosing, cold| {
 		paths,
 		site_free,
 		observations,
+		probe,
 		fx: {
 			..fx,
 			max,
@@ -8747,7 +9045,7 @@ write_ports = |tx, entries| {
 			_ => Err(NotWritten)
 		},
 	)
-	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = tx
+	{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe } = tx
 	first = match reqs.first() {
 		Ok((_, at, _)) => at
 		Err(_) => cmds.len()
@@ -8772,7 +9070,7 @@ write_ports = |tx, entries| {
 		}
 	}
 	out = if (in_place) $out else $out.concat(cmds.sublist({ start: $from, len: cmds.len() - $from }))
-	{ cmds: out, next, free, routes, work: add_work(work, w_port_sends, $sends), paths, site_free, observations, fx }
+	{ cmds: out, next, free, routes, work: add_work(work, w_port_sends, $sends), paths, site_free, observations, fx, probe }
 }
 
 ## A message as FX kinds 9 and 10 and `PORT` carry it: `json:str
@@ -9154,7 +9452,7 @@ replanned : (a -> List(request)) -> (a, a, List(U32) -> List(request))
 replanned = |plan| |_, a, _| plan(a)
 
 with_fx : Tx, (Fx -> Fx) -> Tx
-with_fx = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, f| { cmds, next, free, routes, work, paths, site_free, observations, fx: f(fx) }
+with_fx = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }, f| { cmds, next, free, routes, work, paths, site_free, observations, fx: f(fx), probe }
 
 fx_count : Tx, [Delivered, Stale] -> Tx
 fx_count = |tx, k| with_fx(
@@ -9395,14 +9693,14 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 		Err(message) => crash "${message} (site ${show_path(path)})"
 	}
 	# A port request's bytes are written at the end of the turn.
-	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = turn_end_later(tx, path, req)
+	{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe } = turn_end_later(tx, path, req)
 	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
 	if live.len() >= max {
 		fx2 = { next: id + 1, inner, live, queue: follow_up(queue, { id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }
-		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2 })
+		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2, probe })
 	} else {
 		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req), progress: progress_ms > 0 and supports_progress(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }
-		(id, { cmds: put_req(cmds, id, req, progress_ms), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2 })
+		(id, { cmds: put_req(cmds, id, req, progress_ms), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2, probe })
 	}
 }
 
@@ -9532,8 +9830,8 @@ issue_progress = |tx, path, reqs, owned, progress_ms| {
 				# Opcode 20 is not counted by opcode: index 20 of the work
 				# record is `set_checked`.
 				{ token, start, len } = file_ref(file)
-				{ cmds, next, free, routes, work, paths, site_free, observations, fx } = $tx
-				$tx = { cmds: put_str(put_u64(put_u64(put_u64(cmds.append(20), token), start), len), name), next, free, routes, work, paths, site_free, observations, fx }
+				{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe } = $tx
+				$tx = { cmds: put_str(put_u64(put_u64(put_u64(cmds.append(20), token), start), len), name), next, free, routes, work, paths, site_free, observations, fx, probe }
 			}
 			_ => {
 				(id, t1) = fx_admit_progress($tx, path, req, progress_ms)
@@ -9793,6 +10091,7 @@ cleanup_inst = |name, v, plan| Inst(
 		match msg {
 			Changed(_) => (cleanup_inst(name, v, plan), Done, tx)
 			Fire(_, _, _, _) => (cleanup_inst(name, v, plan), Pending(env, Sig.none), tx)
+			Describe => (noop({}), Done, probe_note(tx, AtSite({ kind: Cleanup, depth: 0, waiting: False, own: eff_mask(v), cap: 0 })))
 			Dispose(_) => {
 				commands = plan((v.read)(env))
 				(t1, _) = issue(bump(count_evals(tx, 1), w_cleanups, 1), [], commands.map(|command| { request: command_request(command), held: {} }), [])
@@ -9866,6 +10165,7 @@ effect_inst = |cfg0, last0, owned0| {
 						}
 					}
 				}
+				Describe => (noop({}), Done, probe_note(probe_note(tx, AtSite({ kind: Effect, depth: 0, waiting: False, own: eff_mask(cfg.v), cap: 0 })), Owns(owned.map(|o| o.id))))
 				Dispose(_) => {
 					(orph, t2) = effect_dispose(cfg, { tx, owned })
 					(noop({}), Orphaned(orph), t2)
@@ -9952,6 +10252,7 @@ latest_inst = |cfg0, last0, owned0| {
 						Err(_) => (latest_inst(cfg, last, owned), Pending(env, Sig.none), tx)
 					}
 				}
+				Describe => (noop({}), Done, probe_note(probe_note(tx, AtSite({ kind: Latest, depth: 0, waiting: False, own: eff_mask(cfg.v), cap: 0 })), Owns(owned.map(|o| o.id))))
 				Dispose(_) => {
 					(orph, t2) = fx_dispose(tx, cfg.react, owned, cfg.path)
 					(noop({}), Orphaned(orph), t2)
@@ -10116,6 +10417,7 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 						}
 					}
 				}
+				Describe => (noop({}), Done, describe_block(block, In.{ outer: env, value: s }, probe_note(probe_note(probe_note(tx, AtSite({ kind: Resource, depth: rc.depth, waiting: False, own: eff_mask(rc.input), cap: 0 })), ValueHeld(Str.inspect(s))), Owns(owned.map(|o| o.id)))))
 				Dispose(remove) => {
 					# The site's own requests follow the per-kind rules; an admitted
 					# one becomes an orphan whose resolve writes the retired layer, a
@@ -10154,7 +10456,7 @@ resource_deliver = |rc, last, s, owned, block, env, id, res, live, tx| {
 			if s2 == s {
 				(resource_inst(rc, last, s2, kept, block), Pending(env, Sig.none), t1)
 			} else {
-				(b2, t2) = refresh(block, In.{ outer: env, value: s2 }, Turn(Sig.bit(rc.depth)), bump(t1, w_dirty_roots, 1))
+				(b2, t2) = refresh(block, In.{ outer: env, value: s2 }, Turn(Sig.bit(rc.depth)), probe_note(bump(t1, w_dirty_roots, 1), PassFrom(rc.depth)))
 				(resource_inst(rc, last, s2, kept, b2), Pending(env, Sig.none), t2)
 			}
 		}
@@ -10467,12 +10769,12 @@ check_boot_keys = |boot, keys| {
 ## A routed call reserves its header before running any turn. A stale call
 ## leaves its recycled buffer empty and allocates no header. Scratch buffers stay empty.
 start_batch : Tx -> Tx
-start_batch = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }| {
-	{ cmds: if (cmds.is_empty()) cmds.append(0) else cmds, next, free, routes, work, paths, site_free, observations, fx }
+start_batch = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }| {
+	{ cmds: if (cmds.is_empty()) cmds.append(0) else cmds, next, free, routes, work, paths, site_free, observations, fx, probe }
 }
 
 new_tx : List(U8) -> Tx
-new_tx = |cmds| { cmds: cmds.append(0), next: 1, free: [], routes: [], work: work_zero, paths: [[]], site_free: [], observations: { echo: False, shown: [] }, fx: fx_empty }
+new_tx = |cmds| { cmds: cmds.append(0), next: 1, free: [], routes: [], work: work_zero, paths: [[]], site_free: [], observations: { echo: False, shown: [] }, fx: fx_empty, probe: Quiet }
 
 ## One turn: fire down `path`; then the root's Changed pass for the cells
 ## the event wrote, which the layers it wrote with them join where the
@@ -10482,7 +10784,7 @@ new_tx = |cmds| { cmds: cmds.append(0), next: 1, free: [], routes: [], work: wor
 ## is found; a missing one is counted stale).
 turn : App(st), List(U32), U32, Payload -> App(st)
 turn = |Core.App.(AppBody.({ store, root, tx, programs })), path, h, payload| {
-	(root2, out, tx2) = call(root, Root.{ store }, Fire(path, 0, h, payload), bump(tx, w_turns, 1))
+	(root2, out, tx2) = call(root, Root.{ store }, Fire(path, 0, h, payload), probe_note(bump(tx, w_turns, 1), TurnBegan))
 	(store2, writes) = root_answer(out)
 	force = tx2.observations.echo
 	{ pass, walk } = Sig.at_root(writes)
@@ -10496,7 +10798,7 @@ turn = |Core.App.(AppBody.({ store, root, tx, programs })), path, h, payload| {
 		# rebuilt one in a value (roc-lang/roc#12846).
 		NoPass => end_written_turn(root2, store2, tx2, { path, h, waiting: walk, force }, programs)
 		Cells(mask) => {
-			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Changed(Turn(mask)), bump(tx2, w_dirty_roots, Sig.count(Sig.cells_of(writes))))
+			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Changed(Turn(mask)), probe_note(bump(tx2, w_dirty_roots, Sig.count(Sig.cells_of(writes))), RootPass(mask)))
 			(store3, _) = root_answer(answer3)
 			end_written_turn(root3, store3, tx3, { path, h, waiting: walk, force }, programs)
 		}
@@ -12046,6 +12348,7 @@ guard_inst = |value, last| Inst(
 			}
 		}
 		Fire(_, _, _, _) => (guard_inst(value, last), Pending(env, Sig.none), tx)
+		Describe => (noop({}), Done, probe_note(tx, AtSite({ kind: Guard, depth: 0, waiting: False, own: eff_mask(value), cap: 0 })))
 		Dispose(_) => (noop({}), Orphaned([]), if (last) with_fx(tx, |fx| { ..fx, guard: { ..fx.guard, live: fx.guard.live - 1 } }) else tx)
 	},
 )

@@ -568,6 +568,12 @@ The engine therefore needs no node table, no erased value registry and no
 type tags: the closure's own captures are the typed storage, and the only
 dispatch is the message.
 
+A site also answers a fourth message, `Describe`, which is a harness's
+question and outside the reactive model (see [The probe](#the-probe)): the
+site notes what it holds and asks its children. It is sent only to a copy
+of the tree that is then dropped, never in a turn, so no site decides
+anything by it and no answer is read back by the engine.
+
 ### Contexts, layers and cells
 
 A site's environment is a typed context:
@@ -3298,7 +3304,11 @@ carry the browser's timer coarsening, reported as measured rather than
 corrected. By default it holds sizes, names and times, never payload bytes.
 Its cost is a few clock reads per job, and none for a turn nobody asked to
 see. The engine's own account stays the work record: the monitor reads it
-and adds nothing to it.
+and adds nothing to it. The engine's probe ([The probe](#the-probe)) is
+observation in the same sense, for harnesses only: the engine writes its
+facts after it has acted and never reads one back, so a harness that
+records a session sees the same commands, counters and results as one that
+does not.
 
 ### `dbg`
 
@@ -4813,6 +4823,10 @@ Wasm memory growth is an allocator mechanism, not a resource policy. Persistent
 columns and free lists must plateau under repeated valid activity; soak runs
 assert it.
 
+The engine's probe ([The probe](#the-probe)) keeps no bound on the facts it
+records, by design: an instance a host runs never records, and only a
+harness starts recording and takes the facts, after every step it runs.
+
 ## Testing Architecture
 
 ### The `.scm` spec language
@@ -5410,7 +5424,7 @@ metric: soak plateaus assert it.
 | `set_text` | `SETTEXT` and `TEXT` commands |
 | `set_value`, `set_checked` | Control state the engine set: `PROP` and `HPROP` for the `value` / `checked` rows, and `INST` property holes of those rows |
 | `patches_emitted` | DOM commands (opcodes 1–12 and `PROP`/`HPROP`, 21–22) |
-| `derived_calls_into_roc` | Signal reads the engine makes to propagate, one for each call of a signal's reader however many signals it combines (a `map2`, a record of signals or an interpolated text is one). At mount: each varying hole (text, attribute, property and reference; a constant is not a hole), the condition of a `when`, the value of a `switch`, the key of a `remount_on`, a placeholder's readiness, the input of a `derive` or a `resource`, the list of an `each`, the watched value of every effect site (`watch_changes` and `on_post` included, though they issue nothing then) and the value of a `guard_leave`. In a pass, each of those again where its signature meets what the pass carries, and each hole a browser echo marked; a placeholder's readiness again on its activation. A row created by a mount, a reconciliation or a view's window: each varying hole of its template once (a constant property, a handler and a nested site's anchor count none; the nested site counts its own). A kept row marked by the turn: each of its live holes that reads what marked it (the row, an outer layer or its selection), and a hole a browser echo marked. A cleanup's value when its scope is disposed. A table view: each read of its query or its window (both at mount; in a pass, each whose signature meets what the pass carries) and each row it places with the query's `keep` and `sort`, one for the pair: every row of the table at mount and for a rebuild (missed writes, a whole rewrite, changes large next to the table), one for each side of a written key it absorbs on which the row exists (two for an update, one for an insert or a removal), and every row of the table again when the query changed to an unequal value. Not counted: an `each` site's key function, key and item comparisons, the per-row value of a keyed selection, handlers, decisions and their readings (`handle_by`, `react_by`), plans, reactions, reducers, `pending` and `resolve`, a `keep_current` orphan's question, a table view's comparisons, and the settle check, whose pass runs on a copy whose counters are dropped |
+| `derived_calls_into_roc` | Signal reads the engine makes to propagate, one for each call of a signal's reader however many signals it combines (a `map2`, a record of signals or an interpolated text is one). At mount: each hole, a text, attribute, property or reference given as a signal, even one that reads nothing (a key handler's keymap is a property hole, read once as its element is built, though a constant keymap reads no layer); a literal is not a hole, and the authoring API makes a constant text, attribute or property one, the condition of a `when`, the value of a `switch`, the key of a `remount_on`, a placeholder's readiness, the input of a `derive` or a `resource`, the list of an `each`, the watched value of every effect site (`watch_changes` and `on_post` included, though they issue nothing then) and the value of a `guard_leave`. In a pass, each of those again where its signature meets what the pass carries, and each hole a browser echo marked; a placeholder's readiness again on its activation. A row created by a mount, a reconciliation or a view's window: each varying hole of its template once (a constant property, a handler and a nested site's anchor count none; the nested site counts its own). A kept row marked by the turn: each of its live holes that reads what marked it (the row, an outer layer or its selection), and a hole a browser echo marked. A cleanup's value when its scope is disposed. A table view: each read of its query or its window (both at mount; in a pass, each whose signature meets what the pass carries) and each row it places with the query's `keep` and `sort`, one for the pair: every row of the table at mount and for a rebuild (missed writes, a whole rewrite, changes large next to the table), one for each side of a written key it absorbs on which the row exists (two for an update, one for an insert or a removal), and every row of the table again when the query changed to an unequal value. Not counted: an `each` site's key function, key and item comparisons, the per-row value of a keyed selection, handlers, decisions and their readings (`handle_by`, `react_by`), plans, reactions, reducers, `pending` and `resolve`, a `keep_current` orphan's question, a table view's comparisons, and the settle check, whose pass runs on a copy whose counters are dropped |
 | `scopes_created` / `scopes_disposed` | Scopes mounted / disposed: `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites |
 | `dirty_source_roots` | What a turn wrote: one for each cell, and one for each layer when its readers are refreshed, whether its site started the pass, joined it or was reached by the walk after it (a layer disposed before then counts none; a `resource` answer that folds to an equal value writes none, and a decision that returns no write counts nothing) |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
@@ -5451,6 +5465,75 @@ O(J_previous), as in a live turn. A component's
 operations on its own type are tested the same way. This is the check that
 sees a transition that left out a reset or wrote the wrong cell of the right
 type, which no propagation check can.
+
+### The probe
+
+The command stream says what a turn emitted; the probe says what the engine
+holds and what a turn did, so a harness can check rules the commands cannot
+show. It is two functions of `Core` beside `Core.settled`, for test
+platforms and harnesses only; nothing an app can name reaches it.
+
+- `Core.probe_tree` describes the site tree as it is stored, in document
+  order: each site's kind, its layer, whether it waits for a pass, the
+  signal it reads itself and the cap it was mounted under; each block's
+  reported reads, each hole's mask and last value, and each child with the
+  reads its parent tests a pass against; each drawn row with the marks a
+  pass may give it and the reads its nested sites are tested against; the
+  node ids every site and row holds, the request ids each effect site owns
+  and the orphans each site adopted; each table view's ordered keys, window
+  and version; and the node id allocator, the follow-ups waiting and the
+  requests in flight. Like the settle check, it asks a copy of the tree
+  that is then dropped (`Describe`).
+- `Core.probe_start` and `Core.probe_take` record what turns do: the start
+  of each turn; the pass that settles it, from the root for cells or from
+  the site of its outermost written layer (or of an asynchronous layer an
+  answer changed); each waiting layer that joins it or that the walk after
+  it reaches; each call into a child or a drawn row; each hole and row hole
+  evaluated, with the mask that woke it and whether it kept its value; each
+  `derive` input read and each branch decided; and each site mounted in a
+  turn, with what it reads as mounted and what its static reads give.
+
+The rule for a fact: a stored fact is read from the storage a pass tests,
+never kept or recomputed beside it, and an event fact is noted at the call
+it names, beside the counter that call bumps. So a fact cannot be right
+while the engine is wrong about the thing the fact describes.
+
+The probe is observation ([Observation](#observation)): the engine writes
+facts and never reads one back, so recording changes no command, no counter
+and no scheduling. An instance a host runs never starts recording: a note
+then costs a test of one tag and allocates nothing, and a fact that costs
+work to build (a static read mask) is built only while recording. Only a
+harness starts recording and only a harness takes the facts, which is why
+what the engine keeps between two takes needs no bound of its own: it grows
+with the turns the harness runs between takes, and the harness takes them
+after every step.
+
+The structure target checks the probe after every step. No site waits and
+the root holds no write set. Each child's reads, a drawn row's marks and
+its nested sites' reads cover every mask held below them except the child
+site's own layer: the hypothesis under which a pass that skips a child
+skips no reader. The node ids the sites hold are exactly the live ones,
+none twice. Within a turn no hole or row hole is evaluated twice and no
+`derive` input or branch is read twice at one place; a `derive` is read
+before anything below it is evaluated; a turn runs at most one pass and
+refreshes each written layer once, below where that pass started; and a
+site mounted in a turn reads nothing beyond its static reads and the cap it
+was mounted under. A site mounted by the first mount is not checked by that
+last rule, since recording starts once the instance exists; it is when a
+turn mounts it again.
+
+In the valued modes every click is also held to a **count and shape model**
+(`fuzz/structure/Counts.roc`, which imports nothing of the platform): the
+signal reads `derived_calls_into_roc` counts, the scopes created and
+disposed, and the written layers refreshed, which `dirty_source_roots`
+counts and the probe must show in the model's order. The model compares
+the page before the turn with the page after it. A reader is due when its
+scope is new, or when it reads, on its own path, a layer the turn wrote or
+a `derive`, `resource` or row item whose value the turn changed; a written
+state is refreshed whatever value it was given, and a `derive` that
+recomputes an equal value carries nothing below it. A write that gives a
+state the value it had is checked on its own: its turn emits no command,
+and `dirty_source_roots` and its reader's evaluation still count it.
 
 ### The reference semantics
 
@@ -5598,7 +5681,10 @@ know nothing of the platform.
   changed) is held by `expect`s to minimum shares of its clicks, set at
   about half the shares at which the series found an event's writes settled
   by two passes and a kept row's state reset, so a generator change that
-  stops reaching these shapes fails rather than passes vacuously.
+  stops reaching these shapes fails rather than passes vacuously. After
+  every step the target also checks the engine's probe, and in its valued
+  modes holds every click to the count and shape model ([The
+  probe](#the-probe)).
 - **Soak.** Every app runs a long random walk in Chrome, with Wasm pages
   and live allocations asserted flat across repeated round trips. Natively,
   each app's round trip is an ordinary spec that the spec runner also
