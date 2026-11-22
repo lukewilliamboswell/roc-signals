@@ -55,18 +55,21 @@ and the table view site's `Changed`, line for line, with the Roc line ranges
 cited. They follow the code as it is, defects included. `Tables.Spec` states
 what the record and a view mean; `Tables.Proof` proves that the operations,
 the turn boundary and `kept` keep the record describing the turn's start,
-given that a table carrying the cell's identity and start describes it.
-`CheckMain` explores every state within small scopes and checks 31 rules.
+given that a table carrying the cell's identity and start, still in its
+recording phase, describes it. `CheckMain` explores every state within small
+scopes and checks 31 rules.
 
 `lake exe check gate` runs the scopes the exploration used, each with the
-rules it is expected to fail. One scope fails today, by design of the
-check: over the branching histories of a pure `Store` value, `kept`
-accepts a copy from another history as the cell's own, and `recordSound`,
-`recordCovers`, `inverseRestores` and `verEqStartMeansUnchanged` fail,
-where `design.md` "Tables and views" requires any table but the one the
-modifier received to be stored as a whole rewrite. The gate records that
-expectation; the fix changes it to none, in the same commit as the Roc
-change.
+rules it is expected to fail. None fails: over the branching histories of a
+pure `Store` value, two histories share the cell's identity and can reach
+one count with different rows, and `kept` takes as the cell's own only a
+table still in the recording phase its modifier put it in, as `design.md`
+"Tables and views" requires. One more scope runs the seeded `noPhase`
+defect, `kept` judging by identity and count alone, over those histories,
+and must fail `recordSound`, `recordCovers`, `inverseRestores` and
+`verEqStartMeansUnchanged`. Branching with copies saved mid-turn is refused:
+a pure `Store` builds its writes before the turn, so no such copy reaches
+another history.
 
 ## Vector files
 

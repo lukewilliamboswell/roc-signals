@@ -7,11 +7,12 @@ Invariant 23 / T5 splits into
 * a guarantee, proved here: the operations, the turn boundary and `kept`
   keep `Describes`, given
 * an assumption, `Lineage`: a table carrying the cell's `id` and the turn's
-  `start` describes the rows the turn began with. For a table changed only
-  by its own operations that is proved (`turn_describes`). For a copy an app
-  kept, it is what the exhaustive checker tests: it holds over the single
-  history of a mounted instance and fails over the branching histories of a
-  pure `Store`.
+  `start`, in its recording phase, describes the rows the turn began with.
+  For a table changed only by its own operations that is proved
+  (`turn_describes`). For a copy an app kept, it is what the exhaustive
+  checker tests: a copy kept from an earlier turn is `ready`, so `kept`
+  never takes it as the cell's own, and a `writing` copy exists only inside
+  one turn of one history.
 
 Trusted for: the theorems below, about the transliteration as it is.
 -/
@@ -147,9 +148,9 @@ theorem describes_begin (t : Table) (h : t.phase = .ready) :
   simp [beginChanges, h, clearChanges, cget]
 
 /-- What must hold of a table an app hands a cell: if it carries the cell's
-`id` and the turn's `start`, its changes describe the turn. -/
+`id` and the turn's `start` and is recording, its changes describe the turn. -/
 def Lineage (E : Rows) (m : Mark) (x : Table) : Prop :=
-  x.id = m.id → x.start = m.start → Describes E x
+  x.id = m.id → x.start = m.start → x.phase = .writing → Describes E x
 
 /-- `kept` (TableCore.roc:218-225) is sound under the lineage assumption:
 whatever table a write leaves, the cell stores one whose changes describe
@@ -157,11 +158,11 @@ the turn, or a whole rewrite (invariant 23 / T5, the guarantee half). -/
 theorem describes_kept (E : Rows) (x : Table) (m : Mark) (h : Lineage E m x) :
     Describes E (kept .none x m) := by
   unfold kept
-  by_cases hs : (x.id == m.id && x.start == m.start) = true
-  · have hs' : x.id = m.id ∧ x.start = m.start := by simpa using hs
+  by_cases hs : (x.id == m.id && x.start == m.start && x.phase == .writing) = true
+  · have hs' : (x.id = m.id ∧ x.start = m.start) ∧ x.phase = .writing := by simpa using hs
     simp only [reduceCtorEq, ite_false, hs, ite_true]
     intro hw
-    exact h hs'.1 hs'.2 hw
+    exact h hs'.1.1 hs'.1.2 hs'.2 hw
   · simp only [reduceCtorEq, ite_false, hs]
     intro hw; simp at hw
 
@@ -171,11 +172,11 @@ theorem describes_modify (E : Rows) (nv : Nat) (c : Table) (os : List Op)
     (h : Describes E (beginChanges .none c)) :
     Describes E (cellModify .none c fun x => os.foldl (Op.run .none nv) x) := by
   unfold cellModify
-  exact describes_kept E _ _ fun _ _ => describes_ops E nv os _ h
+  exact describes_kept E _ _ fun _ _ _ => describes_ops E nv os _ h
 
 theorem kept_phase (x : Table) (m : Mark) : (kept .none x m).phase = .writing := by
   unfold kept
-  by_cases hs : (x.id == m.id && x.start == m.start) = true <;> simp [hs]
+  by_cases hs : (x.id == m.id && x.start == m.start && x.phase == .writing) = true <;> simp [hs]
 
 theorem begin_writing (c : Table) (h : c.phase = .writing) : beginChanges .none c = c := by
   simp [beginChanges, h]

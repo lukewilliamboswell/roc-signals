@@ -181,7 +181,7 @@ def stepMod (r : Run) (sc : Scope) (m : Mid) (fn : Fn) (tr : Unit → String) : 
   | _ => pure ()
   let out := fn.run sc.bug sc.nv m.saved began
   let res := kept sc.bug out (mark began)
-  let own := out.id == began.id && out.start == began.start
+  let own := out.id == began.id && out.start == began.start && out.phase == .writing
   let E := if m.wrote then m.E else began.rows
   let s0 := if m.wrote then m.s0 else began.version
   -- keys written by a plain sequence of keyed operations
@@ -256,6 +256,12 @@ def siteStep (r : Run) (sc : Scope) (site : Site) (cell : Table) (wrote : Bool)
 /-- Explore every state within `sc`, check every rule, print the result,
 and answer the names of the rules that failed. -/
 partial def explore (sc : Scope) (verbose : Bool := true) : IO (List String) := do
+  -- A `writing` table exists only inside one turn of one history: a pure
+  -- `Store` hands its writes closures built before the turn, so no copy
+  -- saved mid-turn reaches another history. Branching with mid-turn copies
+  -- explores histories no program has.
+  if sc.branching && sc.saveMid then
+    throw (IO.userError "explore: branching histories take up only copies kept between turns (saveMid must be 0)")
   let r : Run := { stats := ← IO.mkRef (Array.replicate Ck.all.size {}), trans := ← IO.mkRef 0 }
   let t0 ← IO.monoMsNow
   let mut visited : Std.HashSet St := {}
@@ -373,7 +379,8 @@ partial def explore (sc : Scope) (verbose : Bool := true) : IO (List String) := 
 
 def parseBug : String → Bug
   | "latestRow" => .latestRow | "noClear" => .noClear | "staleOk" => .staleOk
-  | "idOk" => .idOk | "twoDraws" => .twoDraws | "noReach" => .noReach | _ => .none
+  | "idOk" => .idOk | "twoDraws" => .twoDraws | "noReach" => .noReach
+  | "noPhase" => .noPhase | _ => .none
 
 /-- The design's tie between keyed writes (design.md:862-866): a plan whose
 sort value does not include the key, and two rows that trade places. -/
@@ -391,16 +398,18 @@ def tie : IO Unit := do
 
 /-- The fixed set `blueprint run oracle` runs, each scope with the rules it
 is expected to fail. Every scope is one the exploration of the table's
-changes used. The branching history of a pure `Store` value fails four
-rules: `kept` identifies a turn by the cell's identity and the count its
-changes began at, which two histories of one value can share (design
-decision D7). The expectation changes with the fix. -/
+changes used. Over the branching histories of a pure `Store` value two
+histories share the cell's identity and can reach one count with different
+rows; `kept` takes only a table still recording as the cell's own (design
+decision D7), so no rule fails. The seeded `noPhase`, which judges by the
+identity and the count alone, must still fail four. -/
 def gates : List (String × Scope × List String) := [
   ("view, 2 keys, 2 rows, 2 turns", { turns := 2 }, []),
   ("view, rebuilt for many changes", { turns := 2, cfg := { ratio := 1, floor := 0 } }, []),
   ("view, 3 turns, no copies", { turns := 3, maxSaved := 0 }, []),
   ("branching histories, 3 turns", { turns := 3, maxSaved := 2, site := false, branching := true }, []),
-  ("branching histories, 5 turns", { turns := 5, mods := 1, maxSaved := 2, site := false, branching := true },
+  ("branching histories, 5 turns", { turns := 5, mods := 1, maxSaved := 2, site := false, branching := true }, []),
+  ("branching histories, 5 turns, kept without the phase", { bug := .noPhase, turns := 5, mods := 1, maxSaved := 2, site := false, branching := true },
     ["recordSound", "recordCovers", "inverseRestores", "verEqStartMeansUnchanged"])]
 
 def gate : IO Bool := do

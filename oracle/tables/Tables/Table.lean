@@ -30,6 +30,7 @@ inductive Bug where
   | idOk        -- `kept` compares the start only
   | twoDraws    -- the site draws for the table, then again for the window
   | noReach     -- `absorb` never reports that a change reached the window
+  | noPhase     -- `kept` compares the id and the start, not the phase (D7 undone)
   deriving DecidableEq, Repr
 
 inductive Before where
@@ -190,12 +191,19 @@ structure Mark where
 /-- TableCore.roc:208-209. -/
 def mark (t : Table) : Mark := { id := t.id, start := t.start, version := t.version }
 
-/-- TableCore.roc:218-225. -/
+/-- TableCore.roc:218-225, with D7: only a table already recording can be
+the cell's own. The generated modifier put the table it hands its function
+into its recording phase (`beginChanges`), and the table's operations keep
+the phase, so that table and anything made from it by its operations is
+`writing`. A copy kept from an earlier turn was rearmed (`finishChanges`)
+before anything could keep it, so it is `ready`, whatever its id and start
+say. Within one turn a `writing` copy descends from the turn's start. -/
 def kept (bug : Bug) (t : Table) (before : Mark) : Table :=
   let same :=
     if bug = .staleOk then t.id == before.id
     else if bug = .idOk then t.start == before.start
-    else t.id == before.id && t.start == before.start
+    else if bug = .noPhase then t.id == before.id && t.start == before.start
+    else t.id == before.id && t.start == before.start && t.phase == .writing
   if same then { t with phase := .writing }
   else { rows := t.rows, record := [], whole := .rewritten, version := before.version + 1,
          start := before.start, id := before.id, phase := .writing }
