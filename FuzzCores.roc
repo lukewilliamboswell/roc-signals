@@ -4,15 +4,18 @@ app [target] {
 	p0: "fuzz/masks/fuzz-package.roc",
 	p1: "fuzz/table-changes/fuzz-package.roc",
 	p2: "fuzz/view-follow/fuzz-package.roc",
+	p3: "fuzz/reconcile/fuzz-package.roc",
 }
 
 import fz.Fuzz
 import p0.FuzzMasksProperty
 import p1.FuzzTableChangesProperty
 import p2.FuzzViewFollowProperty
+import p3.FuzzReconcileProperty
 
 target = Fuzz.suite([
 	FuzzMasksProperty.target,
 	FuzzTableChangesProperty.target,
 	FuzzViewFollowProperty.target,
+	FuzzReconcileProperty.target,
 ])
