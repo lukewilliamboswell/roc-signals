@@ -115,6 +115,9 @@ theorem eval_congr {ρ ρ' : E} (e : Expr) (h : ∀ r ∈ e.reads, ρ r = ρ' r)
   | mod a b iha ihb =>
       simp only [Expr.reads, List.mem_append] at h
       simp [Expr.eval, iha (fun r hr => h r (Or.inl hr)), ihb (fun r hr => h r (Or.inr hr))]
+  | div a b iha ihb =>
+      simp only [Expr.reads, List.mem_append] at h
+      simp [Expr.eval, iha (fun r hr => h r (Or.inl hr)), ihb (fun r hr => h r (Or.inr hr))]
   | eq a b iha ihb =>
       simp only [Expr.reads, List.mem_append] at h
       simp [Expr.eval, iha (fun r hr => h r (Or.inl hr)), ihb (fun r hr => h r (Or.inr hr))]

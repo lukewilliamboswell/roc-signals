@@ -2,6 +2,7 @@ import fz.Fuzz
 import pf.Core
 import pf.TableCore exposing [Table]
 import pf.View
+import ChangeVectors
 
 ## A table's changes, held to a model of what they must say: bytes decode
 ## into a session of pure turns (`Store.after`) over one store of two table
@@ -600,14 +601,170 @@ series = |count| {
 	{}
 }
 
+# ------------------------------------------------------------- the vectors
+
+## A vector's operation as the session's.
+op_from : ChangeVectors.Op -> Op
+op_from = |op| match op {
+	Insert(k, r) => Insert(k, r)
+	Put(k, r) => Put(k, r)
+	Replace(k, r) => Replace(k, r)
+	Update(k) => Update(k)
+	Remove(k) => Remove(k)
+	All => All
+	Undo => Undo
+}
+
+## A vector's record with its keys in order, as the model and a `Dict` give
+## them in no particular order.
+record_text : ChangeVectors.Record -> Str
+record_text = |record| match record {
+	Rewritten => "rewritten"
+	Keyed(entries) => Str.inspect(entries.sort_with(|a, b| if (a.key < b.key) Before else if (a.key > b.key) After else Same))
+}
+
+## A cell whose last writing turn began with `rows` and wrote nothing.
+held_of : List((U64, U64)) -> Held
+held_of = |rows| { rows, last: Keyed(rows, []) }
+
+## The model through a vector's turns, against what Lean says each leaves.
+## A kept copy is a model value whose `spare` is its `rows`, so `Other(i)`
+## reads the copy; a new table is a kept value of its rows that no turn
+## has written, so `Copy(i)` of it is what `Fresh` is for the session.
+vector_model : ChangeVectors.Vector -> Try({}, Str)
+vector_model = |vector| {
+	var $model = { rows: held_of(vector.start), spare: held_of(first_spare) }
+	var $saved = []
+	var $n = 0.U64
+	for turn in vector.turns {
+		$n = $n + 1
+		(writes, kept) = turn.modifiers.fold(
+			([], $saved),
+			|(ws, ks), modifier| match modifier {
+				On(ops) => (ws.append(Rows(Arg, ops.map(op_from))), ks)
+				Saved(i, ops) => (ws.append(Rows(Copy(i), ops.map(op_from))), ks)
+				Other(i) => (ws.append(Rows(Other(i), [])), ks)
+				Fresh(rows) => {
+					fresh = held_of(rows.sort_with(by_key))
+					(ws.append(Rows(Copy(ks.len()), [])), ks.append({ rows: fresh, spare: fresh }))
+				}
+			},
+		)
+		model = model_turn($model, kept, writes)
+		record = match model.rows.last {
+			Whole => Rewritten
+			Keyed(began, written) =>
+				Keyed(
+					written.map(
+						|key| match rget(began, key) {
+							Ok(row) => { key, before: Was(row) }
+							Err(Missing) => { key, before: Absent }
+						},
+					),
+				)
+		}
+		want = turn.outcome
+		if model.rows.rows != want.rows or record_text(record) != record_text(want.record) {
+			return Err("vector ${vector.seed.to_str()}, turn ${$n.to_str()}: the model holds ${Str.inspect(model.rows.rows)} and says ${record_text(record)}; Lean ${Str.inspect(want.rows)} and ${record_text(want.record)}")
+		}
+		$saved = if (turn.keep) $saved.append({ rows: model.rows, spare: model.rows }) else $saved
+		$model = model
+	}
+	Ok({})
+}
+
+## The identity a kept copy is handed under for `Other`: no cell's.
+other_id : U64
+other_id = 1000000
+
+## The code through a vector's turns, as `Store.after` makes them with the
+## cell's generated modifier, against what Lean's transliteration of that
+## code says each leaves, write counts included.
+vector_code : ChangeVectors.Vector -> Try({}, Str)
+vector_code = |vector| {
+	var $value = Core.store_of({}, { rows: Core.table(start_table(vector.start)), spare: Core.table(start_table(first_spare)) }.Core.Cells)
+	held = $value.cells()
+	var $saved = []
+	var $n = 0.U64
+	for turn in vector.turns {
+		$n = $n + 1
+		saved = $saved
+		copy = |i| saved.get(i) ?? crash "table-changes: vector ${vector.seed.to_str()} names copy ${i.to_str()}, which was not kept"
+		run_ops = |table, ops| ops.fold(table, |t, op| run_op(t, op_from(op), []))
+		writes = turn.modifiers.map(
+			|modifier| held.rows.update(
+				|table| match modifier {
+					On(ops) => run_ops(table, ops)
+					Saved(i, ops) => run_ops(copy(i), ops)
+					Other(i) => TableCore.with_id(copy(i), other_id)
+					Fresh(rows) => start_table(rows)
+				},
+			),
+		)
+		$value = $value.after(writes)
+		table = $value.read(held.rows)
+		got = {
+			rows: rows_of(table),
+			record: match table.changes() {
+				Rewritten => Rewritten
+				Keyed(entries) => Keyed(entries.fold([], |acc, key, before| acc.append({ key, before })))
+			},
+			version: TableCore.version(table),
+			start: TableCore.changes_start(table),
+		}
+		want = turn.outcome
+		if got.rows != want.rows or record_text(got.record) != record_text(want.record) or got.version != want.version or got.start != want.start {
+			return Err("vector ${vector.seed.to_str()}, turn ${$n.to_str()}: the table holds ${Str.inspect(got.rows)}, says ${record_text(got.record)}, counts ${got.version.to_str()} from ${got.start.to_str()}; Lean ${Str.inspect(want.rows)}, ${record_text(want.record)}, ${want.version.to_str()} from ${want.start.to_str()}")
+		}
+		$saved = if (turn.keep) $saved.append(table) else $saved
+	}
+	Ok({})
+}
+
+## Crash naming every vector a replay does not hold to.
+vectors_hold : (ChangeVectors.Vector -> Try({}, Str)), Str -> Bool
+vectors_hold = |replay, what| {
+	wrong = ChangeVectors.vectors.keep_oks(
+		|vector| match replay(vector) {
+			Ok(_) => Err(Held)
+			Err(problem) => Ok(problem)
+		},
+	)
+	if !wrong.is_empty() {
+		crash "fuzz/table-changes/vectors.txt, by the ${what}:\n${Str.join_with(wrong, "\n")}"
+	}
+	!ChangeVectors.vectors.is_empty()
+}
+
+## The model says what Lean says of every vector's turns.
+expect vectors_hold(vector_model, "model")
+
+## `TableCore` and the generated modifier do what Lean's transliteration of
+## them does on every vector's turns.
+expect vectors_hold(vector_code, "code")
+
 ## `events` are a session's bytes. Mode 0 runs the session, as every
-## generated input does; mode 1 runs a seeded series of sessions instead.
+## generated input does; mode 1 runs a seeded series of sessions instead;
+## mode 2 replays the vector at index `events[0]` through the code.
 Input : { mode : U8, events : List(U8) }
 
 test! : Input => Fuzz.Outcome
 test! = |{ mode, events }| {
 	if mode == 1 {
 		Fuzz.expect_no_leaks!(|| series(200))
+	} else if mode == 2 {
+		Fuzz.expect_no_leaks!(
+			|| {
+				vector = match events {
+					[at] => ChangeVectors.vectors.get(at.to_u64()) ?? crash "table-changes: no vector at ${at.to_str()}"
+					_ => crash "table-changes: a vector replay names one index"
+				}
+				match vector_code(vector) {
+					Ok(_) => {}
+					Err(problem) => crash "table-changes: ${problem}"
+				}
+			},
+		)
 	} else {
 		Fuzz.expect_no_leaks!(|| run(steps_of(events)))
 	}
@@ -619,10 +776,10 @@ ex = |name, steps| Fuzz.example({ name, revision: "1", make: || { mode: 0, event
 
 fuzz_target = Fuzz.target_with!({
 	name: "table-changes",
-	examples: written_cases.map(|written| ex(written.name, written.steps)).append(Fuzz.example({ name: "series", revision: "1", make: || { mode: 1, events: [] } })),
+	examples: written_cases.map(|written| ex(written.name, written.steps)).append(Fuzz.example({ name: "series", revision: "1", make: || { mode: 1, events: [] } })).concat(ChangeVectors.vectors.map_with_index(|vector, at| Fuzz.example({ name: "vector-${vector.seed.to_str()}", revision: "1", make: || { mode: 2, events: [at.to_u8_wrap()] } }))),
 	generator: { mode: Fuzz.constant(0), events: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
 	test!,
-	show: |{ mode, events }| if (mode == 1) "a seeded series" else Str.inspect(steps_of(events)),
+	show: |{ mode, events }| if (mode == 1) "a seeded series" else if (mode == 2) "vector ${Str.inspect(events)}" else Str.inspect(steps_of(events)),
 })
 
 ## The same property, model and saved inputs used by the standalone app and suite.

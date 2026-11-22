@@ -18,6 +18,7 @@ namespace Turns
 inductive Item where
   | text (v : Val)                        -- a hole's text
   | texts (vs : List Val)                 -- a `joined` hole's values
+  | keyed (k v : Val)                     -- a `keyed` hole's row key and value
   | button (ws : List (Target × Val))     -- a live button and what a click writes
   | state (v : Val)                       -- a live local state (not on the page)
   deriving DecidableEq, Repr
@@ -42,6 +43,7 @@ mutual
 def renderNode (ρ : Rho) (env : Env) (sites : List (Option Ident)) (id : Ident) : Node → View
   | .show e => [(id, .text (e.eval env.get))]
   | .joined es => [(id, .texts (es.map (·.eval env.get)))]
+  | .keyed e => [(id, .keyed (rowKey id) (e.eval env.get))]
   | .bump h => [(id, .button (resolve env sites h))]
   | .state init body =>
       let v := (ρ.lookup id).getD init
@@ -57,8 +59,8 @@ def renderNode (ρ : Rho) (env : Env) (sites : List (Option Ident)) (id : Ident)
       | 1 => renderBlock ρ env sites (id ++ [.b 1]) 0 b
       | _ => renderBlock ρ env sites (id ++ [.b 2]) 0 c
   | .each src body =>
-      (keysOf (src.eval env.get)).flatMap fun k =>
-        renderBlock ρ (env.push k) (sites ++ [none]) (id ++ [.r k]) 0 body
+      (rowsOf (src.eval env.get)).flatMap fun (k, item) =>
+        renderBlock ρ (env.push item) (sites ++ [none]) (id ++ [.r k]) 0 body
 def renderBlock (ρ : Rho) (env : Env) (sites : List (Option Ident)) (id : Ident) (i : Nat) :
     List Node → View
   | [] => []
@@ -95,12 +97,14 @@ def stepRef (p : Prog) (w : World) (ev : Ident) : Option World :=
 inductive Leaf where
   | text (v : Val)
   | texts (vs : List Val)
+  | keyed (k v : Val)
   | button (writes : Nat)                 -- a button, and how many writes its click makes
   deriving DecidableEq, Repr, Inhabited
 
 def pageOf (v : View) : List (Ident × Leaf) := v.filterMap fun
   | (id, .text x) => some (id, .text x)
   | (id, .texts xs) => some (id, .texts xs)
+  | (id, .keyed k x) => some (id, .keyed k x)
   | (id, .button ws) => some (id, .button ws.length)
   | _ => none
 

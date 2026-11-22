@@ -6,7 +6,7 @@ start 0:1 1:0
 turn on put(1,2) insert(2,1)
   -> rows 0:1 1:2 2:1 | keyed 1=was:0 2=absent | 2 0
 turn on update_all ; on put(0,2)
-  -> rows 0:2 1:0 2:2 | rewritten | 4 2
+  -> rows 0:2 1:3 2:2 | rewritten | 4 2
 turn fresh 0:0 ; on update(1) insert(0,2)
   -> rows 0:0 | rewritten | 5 4
 end
@@ -211,7 +211,7 @@ turn on insert(2,2) insert(1,1) ; on insert(1,0)
   -> rows 1:1 2:2 | keyed 2=absent 1=absent | 2 0
 keep
 turn on put(2,2) ; on update(2)
-  -> rows 1:1 2:0 | keyed 2=was:2 | 4 2
+  -> rows 1:1 2:3 | keyed 2=was:2 | 4 2
 turn fresh 0:2 1:0 2:1
   -> rows 0:2 1:0 2:1 | rewritten | 5 4
 end
@@ -275,7 +275,7 @@ keep
 turn on put(2,1) ; on update(0)
   -> rows 0:2 1:0 2:1 | keyed 2=absent 0=was:1 | 3 1
 turn on replace(1,1) update(0)
-  -> rows 0:0 1:1 2:1 | keyed 1=was:0 0=was:2 | 5 3
+  -> rows 0:3 1:1 2:1 | keyed 1=was:0 0=was:2 | 5 3
 end
 vector 227
 covers undo keyed no-write
@@ -357,7 +357,7 @@ turn fresh 0:1 1:0 ; on update_all
   -> rows 0:2 1:1 | rewritten | 2 0
 keep
 turn saved 0 replace(1,2) ; saved 0 update(0)
-  -> rows 0:0 1:1 | rewritten | 4 2
+  -> rows 0:3 1:1 | rewritten | 4 2
 turn on replace(0,2) ; fresh 0:1 1:0
   -> rows 0:1 1:0 | rewritten | 6 4
 end
@@ -377,7 +377,7 @@ turn on replace(1,2) ; fresh 0:2 1:0 2:1
   -> rows 0:2 1:0 2:1 | rewritten | 2 1
 keep
 turn on insert(1,2) update(0)
-  -> rows 0:0 1:0 2:1 | keyed 0=was:2 | 3 2
+  -> rows 0:3 1:0 2:1 | keyed 0=was:2 | 3 2
 end
 vector 1236
 covers remove rewritten no-write

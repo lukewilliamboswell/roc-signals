@@ -1,6 +1,7 @@
 import fz.Fuzz
 import pf.TableCore exposing [Table]
 import pf.View
+import FollowVectors
 
 ## A table view kept from its table's changes, held to a filter, a sort and
 ## a slice of a plain list: bytes decode into turns over one table cell and
@@ -279,8 +280,11 @@ model_op = |t, op| {
 
 ## The keys a query keeps, in its order: a filter and a sort of the rows.
 spec_keys : U64, List((U64, U64)) -> List(U64)
-spec_keys = |q, rows| {
-	{ keep, sort, compare } = plan(q)
+spec_keys = |q, rows| plan_keys(plan(q), rows)
+
+## The keys a plan keeps, in its order.
+plan_keys : Plan, List((U64, U64)) -> List(U64)
+plan_keys = |{ keep, sort, compare }, rows| {
 	rows.keep_if(|(k, r)| keep(k, r)).map(|(k, r)| (sort(k, r), k)).sort_with(|(a, _), (b, _)| compare(a, b)).map(|(_, k)| k)
 }
 
@@ -406,7 +410,21 @@ check = |{ site, after, changes, how, placed, table, rows, window, written, ever
 	if after.drawn != shown {
 		return Err("the site draws ${Str.inspect(after.drawn)}; the window holds ${Str.inspect(shown)}")
 	}
-	before = site.drawn
+	drawn_rules({ before: site.drawn, shown, changes, written, every })?
+	if how != want_how {
+		return Err("follow brought the view up to date by ${Str.inspect(how)}; the model expects ${Str.inspect(want_how)}")
+	}
+	if how == Absorbed and placed > 2 * recorded {
+		return Err("absorbing ${recorded.to_str()} written keys placed ${placed.to_str()} rows")
+	}
+	Ok({})
+}
+
+## The rules for the changes of the rows drawn, from `before` to `shown`:
+## rows entered and left once each, moves minimal, and the rows marked
+## changed those in both the turn wrote (every one when `every`).
+drawn_rules : { before : List(U64), shown : List(U64), changes : List(Change), written : List(U64), every : Bool } -> Try({}, Str)
+drawn_rules = |{ before, shown, changes, written, every }| {
 	entered = changes.keep_oks(entered_key)
 	left = changes.keep_oks(left_key)
 	moved = changes.keep_oks(moved_key)
@@ -425,12 +443,6 @@ check = |{ site, after, changes, how, placed, table, rows, window, written, ever
 	want_marked = if (every) both else both.keep_if(|k| written.contains(k))
 	if sorted(marked) != sorted(want_marked) {
 		return Err("the rows marked changed are ${Str.inspect(marked)}; of the rows drawn before and after, the turn wrote ${Str.inspect(want_marked)}")
-	}
-	if how != want_how {
-		return Err("follow brought the view up to date by ${Str.inspect(how)}; the model expects ${Str.inspect(want_how)}")
-	}
-	if how == Absorbed and placed > 2 * recorded {
-		return Err("absorbing ${recorded.to_str()} written keys placed ${placed.to_str()} rows")
 	}
 	Ok({})
 }
@@ -630,12 +642,229 @@ expect {
 	t.absorbed > 0 and t.many > 0 and t.rewritten > 0 and t.behind > 0 and t.unchanged > 0
 }
 
+# ------------------------------------------------------------- the vectors
+
+## The queries a vector names, as `oracle/tables` defines them: 0 keeps
+## every row by row then key, 1 the rows of 1 or more by row then key, 2
+## every row by key descending.
+lean_plan : U64 -> Plan
+lean_plan = |q| match q {
+	0 => { keep: |_, _| Bool.True, sort: |key, row| (row, key), compare: ascending }
+	1 => { keep: |_, row| row >= 1, sort: |key, row| (row, key), compare: ascending }
+	2 => { keep: |_, _| Bool.True, sort: |key, _| (0, key), compare: descending }
+	_ => crash "view-follow: a vector names query ${q.to_str()}, which oracle/tables does not define"
+}
+
+## A vector's operation as the session's; `undo` is not in its
+## vocabulary, and `oracle/tables` writes none for this target.
+op_from : FollowVectors.Op -> Op
+op_from = |op| match op {
+	Insert(k, r) => Insert(k, r)
+	Put(k, r) => Put(k, r)
+	Replace(k, r) => Replace(k, r)
+	Update(k) => Update(k)
+	Remove(k) => Remove(k)
+	All => All
+	Undo => crash "view-follow: a vector holds an undo, which the model does not describe"
+}
+
+## `View.roc` fixes the rebuild thresholds; a vector with others cannot be
+## replayed here.
+fixed_thresholds : FollowVectors.Vector -> Try({}, Str)
+fixed_thresholds = |vector|
+	if vector.ratio == 8 and vector.floor == 64 {
+		Ok({})
+	} else {
+		Err("vector ${vector.seed.to_str()} asks for rebuild thresholds ${vector.ratio.to_str()} and ${vector.floor.to_str()}; View.roc fixes 8 and 64")
+	}
+
+## A vector's record with its keys in order.
+record_text : FollowVectors.Record -> Str
+record_text = |record| match record {
+	Rewritten => "rewritten"
+	Keyed(entries) => Str.inspect(entries.sort_with(|a, b| if (a.key < b.key) Before else if (a.key > b.key) After else Same))
+}
+
+## An outcome as text, its record's keys in order.
+outcome_text : FollowVectors.Outcome -> Str
+outcome_text = |o| Str.inspect({ how: o.how, rows: o.rows, record: record_text(o.record), counts: (o.version, o.start), keys: o.keys, drawn: o.drawn, changes: o.changes })
+
+## The model through a vector's turns, against what Lean says each leaves:
+## the rows, how `follow` must bring the view up to date, the ordered keys,
+## the rows drawn, and the changes of the rows drawn by `drawn_rules`.
+vector_model : FollowVectors.Vector -> Try({}, Str)
+vector_model = |vector| {
+	fixed_thresholds(vector)?
+	var $rows = vector.rows.sort_with(by_key)
+	var $q = vector.query
+	var $window = vector.window
+	var $drawn = spec_window(plan_keys(lean_plan($q), $rows), $window)
+	var $saved = []
+	var $n = 0.U64
+	for turn in vector.turns {
+		$n = $n + 1
+		saved = $saved
+		copy = |i| saved.get(i) ?? crash "view-follow: vector ${vector.seed.to_str()} names copy ${i.to_str()}, which was not kept"
+		model = turn.modifiers.fold(
+			{ rows: $rows, keys: [], whole: Bool.False },
+			|w, modifier| match modifier {
+				On(ops) => ops.map(op_from).fold(w, model_op)
+				Saved(i, ops) => ops.map(op_from).fold({ ..w, rows: copy(i), whole: Bool.True }, model_op)
+				Other(i) => { ..w, rows: copy(i), whole: Bool.True }
+				Fresh(rows) => { ..w, rows: rows.sort_with(by_key), whole: Bool.True }
+			},
+		)
+		q2 = turn.query ?? $q
+		w2 = turn.window ?? $window
+		keys = plan_keys(lean_plan(q2), model.rows)
+		shown = spec_window(keys, w2)
+		want_how = expected_how([model]).how
+		want = turn.outcome
+		at = "vector ${vector.seed.to_str()}, turn ${$n.to_str()}"
+		if model.rows != want.rows or want_how != want.how or keys != want.keys or shown != want.drawn {
+			return Err("${at}: the model holds ${Str.inspect(model.rows)}, follows by ${Str.inspect(want_how)}, orders ${Str.inspect(keys)} and draws ${Str.inspect(shown)}; Lean ${Str.inspect(want.rows)}, ${Str.inspect(want.how)}, ${Str.inspect(want.keys)} and ${Str.inspect(want.drawn)}")
+		}
+		match apply_changes($drawn, want.changes) {
+			Ok(after) if after == shown => {}
+			Ok(after) => return Err("${at}: Lean's changes take the rows drawn from ${Str.inspect($drawn)} to ${Str.inspect(after)}, not ${Str.inspect(shown)}")
+			Err(problem) => return Err("${at}: ${problem}")
+		}
+		every = want_how == Rebuilt(Behind) or want_how == Rebuilt(Rewritten)
+		match drawn_rules({ before: $drawn, shown, changes: want.changes, written: model.keys, every }) {
+			Ok(_) => {}
+			Err(problem) => return Err("${at}: Lean's changes break a rule: ${problem}")
+		}
+		$saved = if (turn.keep) $saved.append(model.rows) else $saved
+		$rows = model.rows
+		$q = q2
+		$window = w2
+		$drawn = shown
+	}
+	Ok({})
+}
+
+## The identity a kept copy is handed under for `Other`: no cell's.
+other_id : U64
+other_id = 1000000
+
+## The code through a vector's turns: the cell's modifier as `write_table`
+## makes it, then what an `Engine.table_view` site does on `Changed`,
+## against what Lean's transliteration of that code says each leaves,
+## write counts and the exact changes of the rows drawn included.
+vector_code : FollowVectors.Vector -> Try({}, Str)
+vector_code = |vector| {
+	fixed_thresholds(vector)?
+	start = TableCore.with_id(TableCore.clear_changes(Table.from_list(vector.rows.map(|(key, row)| { key, row })) ?? crash "view-follow: a vector's rows repeat a key"), 1)
+	view0 = View.build(start, { query: lean_plan(vector.query), window: vector.window, limit: 4, site: "view-follow vectors" })
+	var $table = start
+	var $site = { view: view0, q: vector.query, drawn: view0.shown_keys() }
+	var $window = vector.window
+	var $saved = []
+	var $n = 0.U64
+	for turn in vector.turns {
+		$n = $n + 1
+		saved = $saved
+		copy = |i| saved.get(i) ?? crash "view-follow: vector ${vector.seed.to_str()} names copy ${i.to_str()}, which was not kept"
+		run_ops = |table, ops| ops.map(op_from).fold(table, run_op)
+		written = turn.modifiers.fold(
+			$table,
+			|t0, modifier| {
+				began = TableCore.begin_changes(t0)
+				mark = TableCore.mark(began)
+				out = match modifier {
+					On(ops) => run_ops(began, ops)
+					Saved(i, ops) => run_ops(copy(i), ops)
+					Other(i) => TableCore.with_id(copy(i), other_id)
+					Fresh(rows) => Table.from_list(rows.map(|(key, row)| { key, row })) ?? crash "view-follow: a vector's new table repeats a key"
+				}
+				TableCore.kept(out, mark)
+			},
+		)
+		table = TableCore.finish_changes(written)
+		q2 = turn.query ?? $site.q
+		w2 = turn.window ?? $window
+		old = $site
+		followed = old.view.follow(table)
+		draws = followed.reached or (turn.query.is_ok() and q2 != old.q) or (turn.window.is_ok() and w2 != $window)
+		(view, changes) =
+			if !draws {
+				(followed.view, followed.touched.map(|key| Changed(key)))
+			} else if q2 == old.q {
+				drawn = followed.view.draw(table, { query: Same, window: w2, wrote: followed.wrote })
+				(drawn.view, drawn.changes)
+			} else {
+				drawn = followed.view.draw(table, { query: New(lean_plan(q2)), window: w2, wrote: followed.wrote })
+				(drawn.view, drawn.changes)
+			}
+		got = {
+			how: followed.how,
+			rows: table.to_list().map(|{ key, row }| (key, row)).sort_with(by_key),
+			record: match table.changes() {
+				Rewritten => Rewritten
+				Keyed(entries) => Keyed(entries.fold([], |acc, key, before| acc.append({ key, before })))
+			},
+			version: TableCore.version(table),
+			start: TableCore.changes_start(table),
+			keys: view.keys(),
+			drawn: View.apply_changes(old.drawn, changes),
+			changes,
+		}
+		want = turn.outcome
+		if outcome_text(got) != outcome_text(want) {
+			return Err("vector ${vector.seed.to_str()}, turn ${$n.to_str()}: the code leaves ${outcome_text(got)}; Lean ${outcome_text(want)}")
+		}
+		$saved = if (turn.keep) $saved.append(table) else $saved
+		$table = table
+		$site = { view, q: q2, drawn: got.drawn }
+		$window = w2
+	}
+	Ok({})
+}
+
+## Crash naming every vector a replay does not hold to.
+vectors_hold : (FollowVectors.Vector -> Try({}, Str)), Str -> Bool
+vectors_hold = |replay, what| {
+	wrong = FollowVectors.vectors.keep_oks(
+		|vector| match replay(vector) {
+			Ok(_) => Err(Held)
+			Err(problem) => Ok(problem)
+		},
+	)
+	if !wrong.is_empty() {
+		crash "fuzz/view-follow/vectors.txt, by the ${what}:\n${Str.join_with(wrong, "\n")}"
+	}
+	!FollowVectors.vectors.is_empty()
+}
+
+## The model says what Lean says of every vector's turns.
+expect vectors_hold(vector_model, "model")
+
+## `TableCore`, `View` and the site's `Changed` do what Lean's
+## transliteration of them does on every vector's turns.
+expect vectors_hold(vector_code, "code")
+
+## `events` are a session's bytes. Mode 0 runs the session, as every
+## generated input does; mode 1 runs a seeded series of sessions instead;
+## mode 2 replays the vector at index `events[0]` through the code.
 Input : { mode : U8, events : List(U8) }
 
 test! : Input => Fuzz.Outcome
 test! = |{ mode, events }| {
 	if mode == 1 {
 		Fuzz.expect_no_leaks!(|| series(200))
+	} else if mode == 2 {
+		Fuzz.expect_no_leaks!(
+			|| {
+				vector = match events {
+					[at] => FollowVectors.vectors.get(at.to_u64()) ?? crash "view-follow: no vector at ${at.to_str()}"
+					_ => crash "view-follow: a vector replay names one index"
+				}
+				match vector_code(vector) {
+					Ok(_) => {}
+					Err(problem) => crash "view-follow: ${problem}"
+				}
+			},
+		)
 	} else {
 		Fuzz.expect_no_leaks!(|| run(steps_of(events)))
 	}
@@ -647,10 +876,10 @@ ex = |name, steps| Fuzz.example({ name, revision: "1", make: || { mode: 0, event
 
 fuzz_target = Fuzz.target_with!({
 	name: "view-follow",
-	examples: written_cases.map(|written| ex(written.name, written.steps)).append(Fuzz.example({ name: "series", revision: "1", make: || { mode: 1, events: [] } })),
+	examples: written_cases.map(|written| ex(written.name, written.steps)).append(Fuzz.example({ name: "series", revision: "1", make: || { mode: 1, events: [] } })).concat(FollowVectors.vectors.map_with_index(|vector, at| Fuzz.example({ name: "vector-${vector.seed.to_str()}", revision: "1", make: || { mode: 2, events: [at.to_u8_wrap()] } }))),
 	generator: { mode: Fuzz.constant(0), events: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
 	test!,
-	show: |{ mode, events }| if (mode == 1) "a seeded series" else Str.inspect(steps_of(events)),
+	show: |{ mode, events }| if (mode == 1) "a seeded series" else if (mode == 2) "vector ${Str.inspect(events)}" else Str.inspect(steps_of(events)),
 })
 
 ## The same property, model and saved inputs used by the standalone app and suite.

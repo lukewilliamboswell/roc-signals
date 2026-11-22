@@ -75,13 +75,22 @@ another history.
 
 | File | Written by | Replayed by |
 |---|---|---|
-| `fuzz/structure/vectors.trace` | `turns`: `lake exe vectors structure` | `fuzz/structure` |
-| `fuzz/structure/vectors-bad.trace` | `turns`, from the known-bad algorithms | `fuzz/structure`, which must reject each |
-| `fuzz/table-changes/vectors.txt` | `tables`: `lake exe vectors write` | `fuzz/table-changes` |
-| `fuzz/view-follow/vectors.txt` | `tables` | `fuzz/view-follow` |
+| `fuzz/structure/vectors.trace` | `turns`: `lake exe vectors structure` | `fuzz/structure/Vectors.roc` |
+| `fuzz/structure/vectors-bad.trace` | `turns`, from the known-bad algorithms | `fuzz/structure/Vectors.roc`, which must reject each |
+| `fuzz/table-changes/vectors.txt` | `tables`: `lake exe vectors write` | `fuzz/table-changes/ChangeVectors.roc` |
+| `fuzz/view-follow/vectors.txt` | `tables` | `fuzz/view-follow/FollowVectors.roc` |
 
 Every file is text, one record per line, `#` starts a comment line, and
 tokens are separated by spaces. Nobody edits a vector file by hand.
+
+Each target imports its files as text and replays them two ways. A
+top-level `expect` runs the target's Roc reference alone over every
+vector (`roc test` on the target's root): the value model for
+`structure`, the session model for each table target. The target's fixed
+examples run every vector through the real code as well: the engine for
+`structure` (mode 6), `TableCore` and `View` for the table targets
+(mode 2). A vector the replay does not hold to fails with its name and
+step (or seed and turn); a line that does not parse fails naming it.
 
 ### Structure traces
 
@@ -94,15 +103,17 @@ step <k> | <leaf> ... | <n>
 end
 ```
 
-- `prog` is the tree, a list of the Roc generator's `Node` values in its
-  own tag names: `(Show i)`, `(Guard i)`, `(Control i)`, `(Bump i)`,
-  `(Bump2 i j)`, `(Pair i j)`, `(Watch k i)`, `(When i (yes...) (no...))`,
-  `(Switch i (a...) (b...) (c...))`, `(Layer kind i (body...))` and
-  `(Each i (body...))`.
+- `prog` is the tree, a list of the Roc generator's `Reference.Node`
+  values in its own tag names: `(Show i)`, `(Guard i)`, `(Control i)`,
+  `(Bump i)`, `(Bump2 i j)`, `(Pair i j)`, `(Watch k i)`,
+  `(When sel (yes...) (no...))`, `(Switch sel (a...) (b...) (c...))`,
+  `(Layer kind i (body...))` and `(Each sel (body...))`, where a selector
+  `sel` is `(One i)` or `(Two i j)`.
 - A leaf is what the page shows, in document order: a text's integer, a
-  `Pair`'s text as `x~d~y` (the Roc page shows `pair x~d~y`), or a button
-  as one `+` per write its click makes (`+` for `Bump`, `++` for `Bump2`).
-  Wrapper elements, attributes and properties are not leaves.
+  `Pair`'s text as `x~d~y` (the Roc page shows `pair x~d~y`), a row's
+  text as `key:item`, or a button as one `+` per write its click makes
+  (`+` for `Bump`, `++` for `Bump2`). Wrapper elements, attributes and
+  properties are not leaves.
 - `step k` clicks the k-th live button in document order, counting from 0.
   After it come the page and the evaluations the turn makes by
   `Turns.Expect`: the kernel's count, with exact signatures. It counts the
@@ -112,22 +123,28 @@ end
   recorded.
 - `variant` names the known-bad algorithm of `Turns.Incr` that observed the
   trace, and the first observation and step at which the reference rejects
-  it. A count-only rejection needs a count model to be seen from Roc.
+  it. The Roc value model compares pages only, so it must reject a `page`
+  or `button` trace at exactly that step and accept a `count` trace by the
+  page; seeing a `count` trace from Roc needs a count model.
 
-The trees follow the generator as `wip/reactivity-oracle/patches/value-model.patch`
-leaves it: the valued mode (every state starts at 0 and is written by
-clicks; a `resource` issues nothing and holds `pending`, its input plus 7), a
-`When`, `Switch` or `Each` whose index is 128 or more reading two signals as
-their sum, rows keyed by `row_keys`, and the typed levels of `level_below`.
-`Turns.Structure` is written from that generator; when it changes,
+The trees follow the generator in `fuzz/structure/Reference.roc` and
+`FuzzStructureProperty.roc` in its valued modes: every state starts at 0
+and is written by clicks; a `resource` issues nothing and holds `pending`,
+its input plus 7; a selector reads one value or the sum of two; an index
+counts from the start below 128 and from the end at 128 and above
+(`place`); a `derive` layer computes `2x + 1` or, for odd `kind // 5`,
+`x // 2`, which can leave its value unchanged; rows are `rows_of`'s
+`key:item` pairs, whose items change under a kept key; and the typed
+levels of `level_below`. The decoder includes the biased `two_writes`
+shape. `Turns.Structure` is written from that generator; when it changes,
 `Turns.Structure` changes with it and the vectors are written again.
 
-The file holds the structure target's four directed byte examples, decoded,
-four hand-written trees, sixteen seeded trees and, for each known-bad
-algorithm the others do not expose, the first seeded tree that does. One
-algorithm has no vector: `pruneWakes` adds a pruned `derive`'s bit anyway,
-and every `derive` the generator builds is injective, so none recomputes an
-equal value. The generator cannot test pruning at a `derive`.
+The file holds the structure target's eight valued byte examples, decoded,
+five hand-written trees, sixteen seeded trees and, for each known-bad
+algorithm the others do not expose, the first seeded tree that does.
+Every known-bad algorithm has a vector; `pruneWakes`, which wakes the
+readers of a `derive` that recomputed an equal value, is seen by the count
+alone, as are `twoPassOuter` and `noJoinKeep` on these trees.
 
 ### Table changes
 
@@ -146,8 +163,9 @@ end
   and changes the i-th kept copy; `other i` is the i-th kept copy under
   another cell's identity; `fresh <key>:<row> ...` is `Table.from_list`. An
   op is `insert(k,v)`, `put(k,v)`, `replace(k,v)`, `update(k)` (adds 1,
-  modulo 3), `remove(k)`, `update_all` (adds 1 to every row) or `undo`
-  (`apply(inverse)`).
+  modulo the target's row space: 4 for `table-changes`, 8 for
+  `view-follow`), `remove(k)`, `update_all` (adds 1 to every row, modulo
+  the same) or `undo` (`apply(inverse)`).
 - After each turn: the rows; the record as `keyed` followed by
   `<key>=was:<row>` or `<key>=absent` in the record's order, or
   `rewritten`; the table's write count and the count its changes began at.
@@ -172,8 +190,12 @@ keep
 end
 ```
 
-- `cfg` is `rebuild_ratio` and `rebuild_floor`; the small values let a small
-  table reach `rebuilt-many`.
+- `cfg` is `rebuild_ratio` and `rebuild_floor`. The file holds only
+  `View.roc`'s own, 8 and 64, since the target replays the real `View`;
+  a table of three keys never writes enough rows to rebuild under them,
+  so no vector is `rebuilt-many` (the target's own seeded series, over 24
+  keys, reaches it). The file's histories hold no `undo`, which the
+  target's model does not describe.
 - A query is 0 (every row, by row then key), 1 (rows of 1 or more, by row
   then key) or 2 (every row, by key descending); a window of count 1000
   draws every row.
