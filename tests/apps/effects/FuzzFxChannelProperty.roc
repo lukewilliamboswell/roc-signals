@@ -821,11 +821,13 @@ run_program! = |prog| {
 			res = if (arg % 3 == 0) PortAnswer({ json: "\"m${arg.to_str()}\"", blobs: [], files: [] }) else if (arg % 3 == 1) PortFailed(Closed) else PortFailed(Threw("t${arg.to_str()}"))
 			(deliver!($s, id, res), model_deliver(m0, id, res), "port result ${id.to_str()}")
 		} else {
-			# A tick, a job's answer (the echo task's answer `arg`: the byte
-			# and its `Ok` flag) or a lost job for an arbitrary id: a tick is an
-			# equal fold for R and "other" for logs.
+			# A tick, a job's answer (the echo task's answer `arg`: the byte in
+			# CBOR, one byte below 24 and `0x18` then the byte from 24, and its
+			# `Ok` flag) or a lost job for an arbitrary id: a tick is an equal
+			# fold for R and "other" for logs.
 			id = (arg.to_u32() % $m.next) + 1
-			res = if (arg % 4 == 1) Work({ output: [arg, 0], files: [] }) else if (arg % 4 == 3) WorkLost(AppCrash) else Fired(arg.to_i64())
+			answer = (if (arg < 24) [arg] else [0x18, arg]).append(0)
+			res = if (arg % 4 == 1) Work({ output: answer, files: [] }) else if (arg % 4 == 3) WorkLost(AppCrash) else Fired(arg.to_i64())
 			(deliver!($s, id, res), model_deliver(m0, id, res), "result ${id.to_str()}")
 		}
 		check!("step ${($i // 2).to_str()} ${what}", e, m2)
@@ -1092,6 +1094,8 @@ fuzz_target = Fuzz.target_with!({
 		ex("post-send-time-reading", 1, [12, 0, 4, 0, 12, 0, 4, 0, 12, 0, 2, 5, 2, 6, 2, 7]),
 		ex("persistence-lifetimes", 1, [3, 0, 2, 4, 1, 5, 1, 0, 8, 11, 0, 14, 1, 17, 1]),
 		ex("transition-batches", 1, [2, 1, 1, 3, 3, 0, 5, 4, 0, 1]),
+		# An echo answer of 109, which CBOR writes as two bytes, after a post
+		ex("echo-answer-past-23", 1, [2, 111, 109, 0, 1, 1, 90, 6, 20, 109, 97, 114, 103, 111, 30]),
 		ex("media-lifecycle", 1, [0, 0, 5, 1, 5, 0, 1, 0, 4, 0, 3, 0, 5, 0, 3, 0, 5, 1, 2, 0]),
 		# issue 0 x3 (third refused + self), deliver, toggle 0 (cancel), deliver cancelled, show again
 		ex("lifecycle", 1, [0, 0, 0, 0, 0, 0, 2, 1, 1, 0, 2, 2, 1, 0, 3, 7, 0, 1, 0, 2]),
