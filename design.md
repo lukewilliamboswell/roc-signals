@@ -1469,21 +1469,31 @@ Synchronous browser callbacks raised while JavaScript applies a batch, or
 while Wasm runs, never re-enter the engine. They are queued and delivered as
 their own turns after the current batch.
 
-The runtime's ingress queue is bounded at 4096 entries. Reports wait in it
-until the frame, one replaceable entry per source; a full queue of waiting
-reports drains early. While the runtime is busy, a feedback loop between
-the DOM and the engine can fill it. That overflow is not refused event by
-event (which would drop non-lossy input or strand an in-flight id): it
-poisons the runtime with class `resource_limit`, reported like any other fault.
-A full queue while a marked batch waits for its view-transition callback
-instead forces that batch to apply and drains the queue. Early effects and
-DOM application retain the ordinary busy overflow rule.
+The runtime's ingress queue has two budgets of 4096 entries each. Entries
+*waiting* were queued while the runtime was idle: reports waiting for their
+frame, one replaceable entry per source. An idle input that finds 4096
+waiting drains the queue early (rule 6 below), so the number of sources,
+which follows the app's data, never causes a poison. Entries *raised* were
+queued since the runtime last left idle, while a turn ran or a batch was
+applied; when the runtime returns to idle, whatever is still queued is
+waiting. A raised entry beyond its budget is a feedback loop between the DOM
+and the engine. That overflow is not refused event by event (which would
+drop non-lossy input or strand an in-flight id): it poisons the runtime with
+class `resource_limit`, reported like any other fault, and waiting entries
+never count towards it. A full raised budget while a marked batch waits for
+its view-transition callback instead forces that batch to apply and drains
+the queue. Early effects and DOM application retain the ordinary busy
+overflow rule. The queue therefore retains at most 8192 entries. A drain
+never returns the runtime to idle holding more than 4096: it delivers the
+oldest early instead, which only a drain cut short by a view transition can
+need.
 
-After its initiating turn, a drain delivers at most 4096 further turns
-before the runtime returns to idle. A loop that raises only one further
-event per turn never fills the queue, but still cannot settle: a 4097th
-further turn poisons with `resource_limit`.
-The native runner applies the same bound to the turns one step raises.
+A drain delivers at most 4096 turns for raised entries; reports that waited
+for their frame spend none. A loop that raises only one further event per
+turn never fills the raised budget, but still cannot settle: its 4097th
+raised turn in one drain poisons with `resource_limit`.
+The native runner keeps the same two budgets and the same drain budget for
+the inputs one step raises.
 
 ### Reports and occurrences
 
@@ -1521,7 +1531,9 @@ The runtime applies the declared delivery policy through one ingress queue:
    `FRAME_WAIT_MS = 100` timer alongside it. Whichever fires first drains
    the queue and cancels the other. When `environment.visible()` answers
    false, a microtask drains at the end of the reporting task instead.
-   A busy runtime waits until its batch has applied. Size reports drain when
+   A busy runtime waits until its batch has applied. A drain whose turn
+   starts a view transition stops there: the reports left behind wait for
+   the next frame, which is requested at once. Size reports drain when
    their ResizeObserver callback returns: it runs after the frame drain and
    before paint, so another frame would paint the old layout once.
 4. An occurrence joins the queue and drains it immediately in order when
@@ -1529,19 +1541,27 @@ The runtime applies the declared delivery policy through one ingress queue:
    waits for the batch's ordinary drain.
 5. Delivery is an ordinary turn through the event or result's existing
    entry, and removes its index entry.
-6. A report that finds the queue full while idle drains it early before
-   queuing. The number of sources can follow app data and never causes a
+6. A report that finds 4096 waiting while idle is queued, and the entries
+   ahead of it are delivered early: the oldest becomes the initiating turn,
+   the report takes its freed slot, and the older entries then drain. The
+   report keeps its place and waits for its frame unless an occurrence
+   pinned it. The number of sources can follow app data and never causes a
    poison merely because reports waited for a frame.
 
-An occurrence arriving at a full idle queue also drains in order. The
-oldest report becomes the initiating turn, outside the following drain's
-4096-turn budget; the occurrence occupies its freed slot and pins earlier
-reports before that initiating turn runs. This preserves both the queue
-bound and the order of reports raised during delivery.
+An occurrence arriving at a full waiting budget also drains in order. The
+oldest entry becomes the initiating turn; the occurrence occupies its freed
+slot and pins earlier reports before that initiating turn runs. Inputs the
+initiating turn raises join the raised budget behind it. This preserves
+both budgets and the order of reports raised during delivery.
 
 An occurrence follows every report queued before it, each with its newest
 value from before the occurrence, and precedes every report raised after
-it joined. Sources keep the order of their first report since the drain.
+it joined. Entries leave in the order they joined the queue, and a
+replaced report keeps its entry's place, so a source keeps the place of the
+report that made its entry. Three things take a report out of this order
+without delivering it: `CANCEL` of its source, a DOM report whose target
+was disconnected or whose element no longer declares its handler (below),
+and a poison, which discards the queue.
 `Every` port messages enter ingress when their subscription's turn comes,
 not when the handler emits: a report raised between emit and that turn is
 delivered first. This retains the bound on port traffic; an app needing a
@@ -2422,8 +2442,9 @@ allowed. The host's command buffer stays valid and is never copied. Inputs
 queue against the old page, and are delivered after the update; queued DOM
 events whose element was removed or whose id was recycled are dropped.
 The callback runs at most once. After 1000 ms without it, apply directly and
-skip the transition; a later callback does nothing. A full ingress queue
-while waiting also forces application and draining, rather than poisoning.
+skip the transition; a later callback does nothing. A full raised budget of
+the ingress queue while waiting also forces application and draining, rather
+than poisoning.
 This exception applies only to the waiting gap: overflow during early effects
 or DOM application keeps the ordinary busy feedback-loop bound. Unmount,
 poisoning and recovery invalidate old callbacks and release pending metadata.
@@ -4534,8 +4555,8 @@ static attributes, children, holes, hole path depth, row handlers — above 255;
 more follow-up turns of depth 2 or more in one host call than the breadth
 backstop allows.
 Each is checked before it could wrap. The runtime adds `resource_limit` for
-ingress-queue overflow or a drain delivering more than 4096 turns before
-returning to idle, and refuses a module of another protocol version
+more than 4096 ingress entries raised since it left idle, or a drain
+delivering more than 4096 turns for raised entries, and refuses a module of another protocol version
 before running it, and a page whose port handlers do not match the
 program's declarations before mounting it.
 It also raises `contract` for a `value` property applied to a file input,
@@ -4617,8 +4638,8 @@ bound and a declared behaviour at the bound:
 | Bytes of one fetched body | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)` |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | A table's changes | One earlier row per distinct key its last writing turn wrote, or a whole-rewrite marker | Released before the next writing turn's first modifier or disposal of the holder; unrelated turns retain them, with no time bound |
-| Runtime ingress queue | 4096 occurrences and reports | A report drains a full queue early while idle; a waiting transition applies and drains; other busy overflow is `resource_limit` poison |
-| Transition batches waiting for update | 1 | Inputs queue; a full queue forces apply and drain |
+| Runtime ingress queue | 4096 entries waiting, queued while idle, and 4096 raised since the runtime last left idle: at most 8192 | An idle input at a full waiting budget drains early; at a full raised budget a waiting transition applies and drains, and other overflow is `resource_limit` poison; a drain leaves at most 4096 at idle |
+| Transition batches waiting for update | 1 | Inputs queue; a full raised budget forces apply and drain |
 | Wait for transition update | 1000 ms | Apply directly and skip animation |
 | Transition observation history | Newest 4096 records and 1 MiB encoded type bytes, absolute U64 ordinals | Evicted or oversized records fail observation only; oversized entries clear prior history; exhaustion disables observation, never app progress |
 | Live document-key handlers | 32 per instance, structurally outside rows | `contract` at mount naming the site |
@@ -4636,7 +4657,7 @@ bound and a declared behaviour at the bound:
 | Manual native-UI readiness | Live controlled nodes; per-node U64 close count or coalesced toggle mark; 20 s observation deadline | Explicit observation failure, never app poison |
 | Manual pointer log | 4096 dispatch records, taken after each input step | `resource_limit` on overflow; production retains no log |
 | Spec driver pointers | One mouse/pen gesture or up to 16 touches, without overlap between modes | Step error before input; no such limit on production pointer dispatch |
-| Turns one drain delivers | 4096 | `resource_limit` poison |
+| Turns one drain delivers for raised entries | 4096; reports that waited for their frame spend none | `resource_limit` poison |
 | Payload kinds and element properties | Closed tables with one-byte indices | Unknown wire numbers are contained as `executor` |
 | Event policies | Closed table of 32 bits | Unknown fields do not compile; unknown wire bits are contained as `executor` |
 | Monitor job history | `history` option (default 128, at most 1024) | Oldest overwritten, counted |
