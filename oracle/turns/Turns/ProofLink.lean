@@ -4,9 +4,9 @@ proving. This file ties it to the executable algorithm by test, not by
 proof: on a static program, one turn of `Incr.turn` must leave the same
 storage as `Static.walk` after `Static.pass`.
 -/
-import Spike.Incr
-import Spike.Proof
-namespace Spike
+import Turns.Incr
+import Turns.Proof
+namespace Turns
 
 /-- A mounted static block as the proof's chain of sites. Buttons hold no
 storage and are left out. `none`: the block is not in the fragment. -/
@@ -22,12 +22,12 @@ partial def toS : List Node → List Inst → Option Static.S
 wrote more than one thing. -/
 def linkStep (g : Cfg) (p : Prog) (s : Instance) (ev : Ident) : Option (Bool × Bool) := do
   let (h, env, sites) ← locate p.body s.root ⟨s.cells, []⟩ [] ev
-  let ws := h.map fun (r, e) => (r, e.eval env.get)
+  let ws := h.writes env fun i => sites.getD i false
   let lw := ws.filterMap fun
-    | (.layer i, v) => if sites.getD i false then some (i, v) else none
+    | (.layer i, v) => some (i, v)
     | _ => none
   let cw := ws.filterMap fun
-    | (.cell c, v) => if c < s.cells.length then some (c, v) else none
+    | (.cell c, v) => some (c, v)
     | _ => none
   let cells := cw.foldl (fun cs (c, v) => cs.set c v) s.cells
   -- `Wrote`: every written state site takes its value and waits.
@@ -44,4 +44,4 @@ def linkStep (g : Cfg) (p : Prog) (s : Instance) (ev : Ident) : Option (Bool × 
   let m : Static.Mask := fun b => cw.any fun (c, _) => g.α.bit (.cell c) == b
   pure (decide (Static.walk g.α.bit ρ 0 (Static.pass g.α.bit m ρ 0 t) = want), lw.length + cw.length > 1)
 
-end Spike
+end Turns

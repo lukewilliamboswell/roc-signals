@@ -8,9 +8,12 @@ Abstractions:
   tie, crash on a missing entry); chunk splitting and merging is not modelled.
 * a query is a number; `plan` turns it into `keep`, `sort`, `compare`.
 * a crash is `Except.error`.
+
+Trusted for: what `View.roc` and the site's `Changed` do, as `Tables.Table`
+is for `TableCore.roc`.
 -/
-import TableSpike.Table
-namespace TableSpike
+import Tables.Table
+namespace Tables
 
 structure Window where
   start : Nat
@@ -28,7 +31,7 @@ structure Plan where
 
 def lex (a b : S) : Ordering := (compare a.1 b.1).then (compare a.2 b.2)
 
-/-- The queries of the spike. 0-2 are total orders (key breaks ties); 3 ties. -/
+/-- The queries the checker uses. 0-2 are total orders (key breaks ties); 3 ties. -/
 def plan : Nat → Plan
   | 0 => { keep := fun _ _ => true, sort := fun k v => (v, k), compare := lex }
   | 1 => { keep := fun _ v => v ≥ 1, sort := fun k v => (v, k), compare := lex }
@@ -300,4 +303,4 @@ def Site.changed (bug : Bug) (cfg : Cfg) (site : Site) (t : Table)
   let drawn ← applyChanges site.drawn changes
   return ({ q := q2, view := v2, drawn }, changes, f.how, f.placed)
 
-end TableSpike
+end Tables

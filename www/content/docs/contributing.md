@@ -40,6 +40,7 @@ recipe ready.
 | `fuzz/` | The platform's fuzz targets of the shared support (the spec, wire and port formats, generated site trees, and tables with their views) |
 | `examples/` | The example apps, each with its specs, any fuzz targets of its own pure logic (`fuzz-<subject>.roc`), and any JavaScript of its own beside it (the port handlers of the Reading List, the Status Page and the Million-Row Explorer, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`; the Log Explorer's `log-timings` element, `timings.mjs`, the Status Page's `latency-feed-monitor`, `feed-monitor.mjs`, and the Million-Row Explorer's `query-meter`, `meter.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
 | `cli/` | The source of `signals.roc`, the tool app authors run to create, serve, build and test an app (below) |
+| `oracle/` | The reference models in Lean 4 (`turns`, what a turn means; `tables`, a table's changes and its views) and the programs that write the fuzz targets' vector files (below, [The reference models](#the-reference-models)) |
 | `benchmarks/` | The js-framework-benchmark adapter |
 | `scripts/` | Roc scripts behind the tasks; shared modules in `scripts/src/` |
 | `www/` | This website; `www/samples/` holds every code sample the docs show, each a file `check` compiles and, for a sample app, tests |
@@ -123,6 +124,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run fuzz-smoke -- [TARGET...]` | Every registered fuzz target's fixed examples on plain optimized native builds, or the named targets; `-- --shard K/N` runs shard K of N, as CI does; never explores |
 | `blueprint run sizes -- [--runtime-only]` | Check shipped JavaScript Brotli sizes (gzip is reported); without the flag, also build and report each example's shipping module and development-only scripts |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign (600 s of exploration per target by default), local only: CI never runs one |
+| `blueprint run oracle` | Local only, never in CI: build the Lean reference models under `oracle/`, run their fixed checks and require every vector file they write to equal the checked-in one. Needs `lake` on `PATH` ([The reference models](#the-reference-models)) |
 | `blueprint run api` | Build and audit the API reference alone, including methods inherited through public aliases, without rebuilding the site examples |
 | `blueprint run site -- [--base-url URL] [--tool-url URL]` | Build the website, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
 | `blueprint run serve -- [DIR] [--port N]` | Serve `dist/` at `127.0.0.1:8000/roc-signals/`, its published path, or `DIR` at the root |
@@ -925,6 +927,33 @@ applies `Engine.sort_by` to the pure plan.
 an independent fragment encoder. Conduit's platform-free `fuzz-routes` checks
 decoded route parts; pure location tests and paired specs cover its fragment
 layout and browser navigation.
+
+## The reference models
+
+`oracle/` holds the reference semantics in Lean 4: `oracle/turns` says
+what a turn means (the page, the local state that survives, how one
+event's writes compose, which readers a turn must evaluate), and
+`oracle/tables` transliterates a table's changes and its views and checks
+them exhaustively over small scopes. They write the vector files that
+`fuzz/structure`, `fuzz/table-changes` and `fuzz/view-follow` replay, so
+the Roc reference inside each target is held to the Lean one.
+`oracle/README.md` lists the modules, what each is trusted for, and the
+grammar of every vector file.
+
+Install [elan](https://github.com/leanprover/elan), which puts `lake` on
+`PATH` and reads the Lean release from `oracle/lean-toolchain`; the
+projects need nothing else and nothing from the network. Then
+`blueprint run oracle` builds both, runs their gates and fails if a vector
+file it writes differs from the checked-in one. CI does not install Lean,
+so run it yourself whenever a change touches `oracle/` or a vector file.
+
+A change to what a turn, a table or a table view means lands in one pull
+request, in this order: `design.md`; the Lean model; the Roc reference in
+the fuzz target; the vector files, written by the models (copy them from
+`.build/oracle/` after a run). A vector file is never edited by hand. When
+the engine and a Lean model disagree, the model decides unless `design.md`
+says otherwise; a disagreement between the model and `design.md` is a
+design change.
 
 ## Performance
 

@@ -12,9 +12,11 @@ Invariant 23 / T5 splits into
   kept, it is what the exhaustive checker tests: it holds over the single
   history of a mounted instance and fails over the branching histories of a
   pure `Store`.
+
+Trusted for: the theorems below, about the transliteration as it is.
 -/
-import TableSpike.Spec
-namespace TableSpike
+import Tables.Spec
+namespace Tables
 
 theorem rget_rput (m : Rows) (k : K) (v : V) (k' : K) :
     rget (rput m k v) k' = if k' = k then some v else rget m k' := by
@@ -332,4 +334,4 @@ theorem op_counts (nv : Nat) (t : Table) (op : Op) (w : Bool) (h : op.writes t =
 #print axioms describes_kept
 #print axioms op_counts
 
-end TableSpike
+end Tables
