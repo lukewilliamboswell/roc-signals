@@ -777,8 +777,10 @@ not its inputs, carry the value.
 
 Every member is registered in `Targets.fuzz_targets`, with its standalone
 app, canonical property module and suite root, and every run starts from that
-registry. Six suite apps share builds across the 30 members: rendering,
-lifecycle, codecs, syntax, example text and example data. The examples still
+registry. Seven suite apps share builds across the 33 members: rendering,
+lifecycle, codecs, syntax, example text, example data and the pure engine
+cores (`FuzzCores.roc`: `masks`, `table-changes` and `view-follow`, which
+drive `Sig`, `TableCore` and `View` with no engine in the loop). The examples still
 import only their own pure modules. A `fuzz-package.roc` manifest exposes
 private property modules to a suite; it adds no application API and does not
 ship in the examples archive.
@@ -788,7 +790,7 @@ The driver builds each selected suite once, verifies its complete
 Members retain their names, declared examples, saved input bytes, models,
 corpora, baselines and report directories. Named selection builds only the
 suites it needs. CI shards assign whole suites, so a suite is compiled once
-across the six shards. Testing each suite root includes its members' top-level
+across the seven shards. Testing each suite root includes its members' top-level
 `expect`s.
 
 A target's fixed examples are its declared examples
@@ -808,7 +810,7 @@ inside the measured region.
 
 | Where | What runs | Build | How long |
 |---|---|---|---|
-| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in six shards (`fuzz-smoke -- --shard K/6`), beside Check (`check -- --without-fuzz`, in parts) | Plain optimized profile (below) | Each shard is allowed 60 minutes; compiler and replay durations are reported |
+| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in seven shards (`fuzz-smoke -- --shard K/7`), beside Check (`check -- --without-fuzz`, in parts) | Plain optimized profile (below) | Each shard is allowed 60 minutes; compiler and replay durations are reported |
 | `blueprint run check` | The same replays as CI's Fuzz smoke job, every target, in one run | Plain optimized profile (below) | Depends on the selected suites; compiler and replay durations are reported |
 | `blueprint run fuzz-smoke` | Every target's fixed examples, or those named, or one shard | Plain optimized profile (below) | Depends on the selected suites; compiler and replay durations are reported |
 | `blueprint run check-slow`, local only | Every target's fixed examples on the build a campaign explores | Instrumented `--fuzz` | Instrumented compiler and replay durations are reported |
@@ -822,7 +824,7 @@ failure, reduce it and add it to the target's examples with `Fuzz.saved`,
 so every later replay, CI's included, keeps it fixed.
 
 The compiler budget remains 16 GiB per fuzz suite, so a CI runner compiles
-one suite at a time; the six shards distribute those builds across runners.
+one suite at a time; the seven shards distribute those builds across runners.
 Reports keep compiler and replay batch durations separately. Do not compare
 those batch durations as individual member timings.
 

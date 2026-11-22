@@ -30,6 +30,7 @@ Targets := [].{
 		{ name: "markup", main: "fuzz/markup/main.roc", property: "fuzz/markup/FuzzMarkupProperty.roc", suite: "FuzzRendering.roc" },
 		{ name: "startup-placeholders", main: "fuzz/startup-placeholders/main.roc", property: "fuzz/startup-placeholders/FuzzStartupPlaceholdersProperty.roc", suite: "FuzzLifecycle.roc" },
 		{ name: "table-view", main: "fuzz/table-view/main.roc", property: "fuzz/table-view/FuzzTableViewProperty.roc", suite: "FuzzLifecycle.roc" },
+		{ name: "masks", main: "fuzz/masks/main.roc", property: "fuzz/masks/FuzzMasksProperty.roc", suite: "FuzzCores.roc" },
 		{ name: "result-readers", main: "fuzz/result-readers/main.roc", property: "fuzz/result-readers/FuzzResultReadersProperty.roc", suite: "FuzzCodecs.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc", property: "fuzz/port-json/FuzzPortJsonProperty.roc", suite: "FuzzCodecs.roc" },
 		{ name: "url", main: "fuzz/url/main.roc", property: "fuzz/url/FuzzUrlProperty.roc", suite: "FuzzSyntax.roc" },

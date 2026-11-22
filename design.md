@@ -471,7 +471,10 @@ flowchart LR
     Parser -->|"emitted steps"| Browser["replay in Chrome"]
 ```
 
-The engine is `Core.roc` and three modules of its own for tables: `TableCore.roc`
+The engine is `Core.roc`, `Sig.roc` (read signatures, exact write sets and
+the three scheduling decisions read from a write set: what a written layer's
+site does, what the root's pass carries, and how far a walk goes) and three
+modules of its own for tables: `TableCore.roc`
 (rows by key and the changes from a turn), `View.roc` (a sorted, filtered, windowed view kept up to
 date from those changes) and `Seq.roc` (a table view's ordered keys). `Engine.roc` is
 the authoring API over them. Its opaque `Table` wraps the internal table;
@@ -548,7 +551,11 @@ outcome and the accumulator. Messages are:
 
 - `Fire(path, pos, handler, payload)` — route an event or effect result down
   the site path to the block that owns the target.
-- `Changed(mask)` — some of what `mask` names changed; refresh what reads it.
+- `Changed(pass)` — a refresh. `Turn(mask)` is a pass of a turn: some of what
+  `mask` names changed; refresh what reads it. `Check` is the settle check (see
+  [Fuzzing, walks, soak and contract tests](#fuzzing-walks-soak-and-contract-tests)),
+  a harness's pass that refreshes everything. The two are different tags, so a
+  turn whose mask has every bit set is still a turn.
 - `Dispose(remove)` — release this site, emitting `REMOVE` for its top-level
   nodes when `remove` is set (an ancestor that removes its own DOM passes
   `False` to children).
@@ -5492,9 +5499,10 @@ know nothing of the platform.
   effect-channel model are where coverage guidance meets the engine.
 - **The settle check** is the oracle every walk shares, and the native spec
   runner applies it after every step (`Core.settled`). After a turn, a root
-  `Changed` pass that names every layer and every cell, run on a copy of the
-  instance that is then dropped, must emit no command and change nothing in
-  the effect channel. Its scratch transition collection starts empty, and
+  `Changed(Check)` pass, run on a copy of the instance that is then dropped,
+  must emit no command and change nothing in the effect channel. `Check` is a
+  pass of its own, not a mask: a turn's mask, even one with every layer and
+  every cell bit set, is never taken for it. Its scratch transition collection starts empty, and
   any newly issued request fails the check even if its types duplicate those
   already issued in the real call. That pass re-evaluates every hole and
   descends into every child whatever the read signatures say, and the sites that settle
@@ -5649,8 +5657,8 @@ In-place writes of large values in shipping builds are tracked against
 ## Measures of Effectiveness
 
 1. **One engine, thin host.** All reactive and structural logic is in the
-   engine's Roc modules (`Core.roc`, with `TableCore.roc`, `View.roc` and
-   `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
+   engine's Roc modules (`Core.roc`, with `Sig.roc`, `TableCore.roc`,
+   `View.roc` and `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
    *Holds when:* the same engine runs in the browser module and the native spec runner with
    the same command stream.
 2. **App semantics agree natively and in the browser.** Every maintained app's
