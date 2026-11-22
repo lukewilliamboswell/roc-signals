@@ -5,6 +5,7 @@ import Spelling
 import Layout
 import TableCore exposing [Table]
 import Sig
+import FxCore
 import View
 import MarkupAdvice
 import parser.Html as ParsedHtml
@@ -2404,13 +2405,13 @@ Core := [].{
 	## of requests in flight.
 	fx_stats : App(st) -> { issued : U64, delivered : U64, stale : U64, refused : U64, cancelled : U64, live : U64, reparented : U64, skipped : U64 }
 	fx_stats = |App.(AppBody.({ tx, .. }))| {
-		fx = tx.fx
-		{ issued: fx.issued, delivered: fx.delivered, stale: fx.stale, refused: fx.refused, cancelled: fx.cancelled, live: fx.live.len(), reparented: fx.reparented, skipped: fx.skipped }
+		{ counts, live, .. } = tx.fx.life
+		{ issued: counts.issued, delivered: counts.delivered, stale: counts.stale, refused: counts.refused, cancelled: counts.cancelled, live: live.len(), reparented: counts.reparented, skipped: counts.skipped }
 	}
 
 	## For test platforms and harnesses: the ids of the requests in flight, in issue order.
 	fx_live : App(st) -> List(U32)
-	fx_live = |App.(AppBody.({ tx, .. }))| tx.fx.live.map(|l| l.id)
+	fx_live = |App.(AppBody.({ tx, .. }))| tx.fx.life.live.map(|l| l.id)
 
 	## For the wire format: what a file's encoding carries beside its handle.
 	file_parts : File -> { name : Str, mime : Str, size : U64, start : U64, len : U64 }
@@ -3330,26 +3331,26 @@ Core := [].{
 	## dropped and counted `stale`.
 	result : App(st), U32, Result -> App(st)
 	result = |App.(AppBody.({ store, root, tx, programs })), id, res| {
-		match tx.fx.live.find_first(|l| l.id == id) {
-			Err(_) => App.(AppBody.{ store, root, tx: fx_count(tx, Stale), programs })
-			Ok(entry) => {
-				# A subscription stays live until it is cancelled, unless its
-				# JavaScript ended it (a port's `Closed` or `Threw`).
-				live = entry.sub and !(programs.ports.ends)(res)
-				tx1 = if (live) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
-				drain(turn(App.(AppBody.{ store, root, tx: start_batch(tx1), programs }), entry.path, id, Fx(Final(res, live))))
-			}
+		# A subscription stays live until it is cancelled, unless its
+		# JavaScript ended it (a port's `Closed` or `Threw`).
+		ended = (programs.ports.ends)(res)
+		(route, tx1) = life_step(tx, |life| FxCore.arrive(life, id, Final({ ends: ended })))
+		match route {
+			Deliver({ path, live }) => drain(turn(App.(AppBody.{ store, root, tx: start_batch(tx1), programs }), path, id, Fx(Final(res, live))))
+			Stale | Unasked(_) => App.(AppBody.{ store, root, tx: tx1, programs })
 		}
 	}
 
 	## Deliver a sampled transfer through its live request’s owning path without
 	## retiring the request. An unsolicited report is a contract error.
 	progress : App(st), U32, Transfer -> App(st)
-	progress = |App.(AppBody.({ store, root, tx, programs })), id, transfer| match tx.fx.live.find_first(|entry| entry.id == id) {
-		Err(_) => App.(AppBody.{ store, root, tx: fx_count(tx, Stale), programs })
-		Ok(entry) => if entry.progress {
-			drain(turn(App.(AppBody.{ store, root, tx: start_batch(tx), programs }), entry.path, id, Fx(Progress(transfer))))
-		} else crash "contract: transfer progress was not requested for effect ${id.to_str()} at site ${show_path(entry.path)}"
+	progress = |App.(AppBody.({ store, root, tx, programs })), id, transfer| {
+		(route, tx1) = life_step(tx, |life| FxCore.arrive(life, id, Report))
+		match route {
+			Deliver({ path, .. }) => drain(turn(App.(AppBody.{ store, root, tx: start_batch(tx1), programs }), path, id, Fx(Progress(transfer))))
+			Stale => App.(AppBody.{ store, root, tx: tx1, programs })
+			Unasked(path) => crash "contract: transfer progress was not requested for effect ${id.to_str()} at site ${show_path(path)}"
+		}
 	}
 
 	## For test platforms and harnesses: take the commands accumulated since the
@@ -3358,7 +3359,7 @@ Core := [].{
 	take_cmds : App(st), List(U8) -> (App(st), List(U8))
 	take_cmds = |App.(AppBody.({ store, root, tx, programs })), buf| {
 		{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe } = tx
-		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
+		{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
 		{ mounting, asked, types, seen: _ } = batch
 		var $cmds = cmds
 		if asked {
@@ -3370,7 +3371,7 @@ Core := [].{
 		} else if $cmds.len() == 1 {
 			$cmds = $cmds.clear()
 		}
-		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
+		fx2 = { life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
 		(App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2, probe }, programs }), $cmds)
 	}
 
@@ -3527,7 +3528,7 @@ Core := [].{
 		start = { ..tx, cmds: [], probe: Recording([Ids({ next: tx.next, free: tx.free })]) }
 		(_, _, after) = call(root, Root.{ store }, Describe, start)
 		match after.probe {
-			Recording(facts) => facts.append(Queued({ follow_ups: tx.fx.queue.entries.keep_if(|entry| tx.fx.queue.waiting.contains(entry.id)).map(|entry| entry.id), live: tx.fx.live.map(|entry| entry.id) }))
+			Recording(facts) => facts.append(Queued({ follow_ups: tx.fx.life.queue.entries.keep_if(|entry| tx.fx.life.queue.waiting.contains(entry.id)).map(|entry| entry.id), live: tx.fx.life.live.map(|entry| entry.id) }))
 			Quiet => []
 		}
 	}
@@ -4664,8 +4665,8 @@ w_count = 32
 ## accumulator keeps no second copy.
 fx_counters : App(st) -> List(U64)
 fx_counters = |Core.App.(AppBody.({ tx, .. }))| {
-	fx = tx.fx
-	[fx.issued, fx.delivered, fx.stale, fx.refused, fx.cancelled, fx.reparented, fx.skipped, fx.live.len()]
+	{ counts, live, .. } = tx.fx.life
+	[counts.issued, counts.delivered, counts.stale, counts.refused, counts.cancelled, counts.reparented, counts.skipped, live.len()]
 }
 
 ## Port commands sent (`PORT`, opcode 19). Counted here, at index 40 of the
@@ -4930,9 +4931,9 @@ release_node = |tx, owner| {
 ## Move the registration index out before modifying it, leaving no second
 ## holder in Fx that would make each observed-node change copy the index.
 with_registrations : Fx, (List(U32), LiveObservations -> (List(U32), LiveObservations)) -> Fx
-with_registrations = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, change| {
+with_registrations = |{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, change| {
 	(documents, observations) = change(document_nodes, observed)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups, guard, startup, batch }
+	{ life, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups, guard, startup, batch }
 }
 
 ## Release a static node id and its route.
@@ -4992,9 +4993,9 @@ drop_name = |fx, { node, name, path }| if (name.is_empty()) fx else with_refs(
 ## Move the reference indexes and pending checks out of the accumulator so
 ## updates retain one holder for each map, list and reverse-index column.
 with_refs : Fx, (RefMap, List(List(RefOwned)), List(TurnEnd) -> (RefMap, List(List(RefOwned)), List(TurnEnd))) -> Fx
-with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, change| {
+with_refs = |{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, change| {
 	(names, positions, checks) = change(refs, ref_pos, focus)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups, guard, startup, batch }
+	{ life, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups, guard, startup, batch }
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
@@ -8451,9 +8452,9 @@ derive_settle = |input, block, depth, out, tx| {
 # - Follow-up turns run after the current turn, in order. Each has
 #   its chain depth: a follow-up queued by an external turn (a DOM event,
 #   an effect result, the mount) is depth 1, one queued by a follow-up of
-#   depth d is depth d + 1. A chain deeper than `max_turns` is a contract
+#   depth d is depth d + 1. A chain deeper than `FxCore.max_turns` is a contract
 #   error (an effect feedback loop) naming the depth and the site; a turn
-#   that fans out into many independent follow-ups is not. `max_breadth`
+#   that fans out into many independent follow-ups is not. `FxCore.max_breadth`
 #   bounds the follow-up turns of depth 2 or more of one host call, so a
 #   loop that multiplies is stopped too (see `drain`).
 #
@@ -8539,7 +8540,7 @@ mount_initial = |max, programs, { st, tables }, elem, enclosing, cold| {
 		probe,
 		fx: {
 			..fx,
-			max,
+			life: { ..fx.life, max },
 			startup: {
 				..fx.startup,
 				pending: cold != None,
@@ -9149,22 +9150,6 @@ ends_subscription = |res| match res {
 	_ => False
 }
 
-Live : { id : U32, path : List(U32), sub : Bool, progress : Bool }
-
-Queued : { id : U32, path : List(U32), res : Result }
-
-## The follow-ups waiting to run, in order, and the ids among them that
-## still will. Supersession and disposal drop an id from `waiting` alone,
-## so finding and dropping it is an expected O(1) lookup whatever the
-## queue holds; `drain` skips an entry whose id is no longer waiting. The
-## queue follows the app's data (a refusal for each row that fetches past
-## the in-flight bound), so a scan of it per owned id would too.
-FollowUps : { entries : List(Queued), waiting : Dict(U32, {}) }
-
-## Queue a follow-up.
-follow_up : FollowUps, Queued -> FollowUps
-follow_up = |{ entries, waiting }, entry| { entries: entries.append(entry), waiting: waiting.insert(entry.id, {}) }
-
 RefMap : Dict(Str, List({ node : U32, path : List(U32), value_control : Bool }))
 
 RefOwned : { name : Str, path : List(U32) }
@@ -9180,18 +9165,11 @@ startup_empty : StartupState
 startup_empty = { pending: False, adopting: False, next: 1, head: 0, tail: 0, ready: ReadyIndex.ReadyIndex.empty(), armed: None, generation: 0 }
 
 Fx : {
-	next : U32,
-	inner : U32,
-	live : List(Live),
-	queue : FollowUps,
-	max : U64,
-	issued : U64,
-	delivered : U64,
-	stale : U64,
-	refused : U64,
-	cancelled : U64,
-	reparented : U64,
-	skipped : U64,
+	## Request ids, the in-flight table, the follow-up queue and the effect
+	## counters: the lifecycle state machine every lifecycle decision is
+	## asked of (see `FxCore`). One field, so a site that rebuilds `Fx`
+	## carries one value for all of it.
+	life : FxCore.Life(Result),
 
 	## Focus names and their live nodes with construction sites, and the checks awaiting the end of the
 	## turn (see [TurnEnd]).
@@ -9251,12 +9229,12 @@ PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe
 TransitionBatch : { mounting : Bool, asked : Bool, types : List(Str), seen : Dict(Str, {}) }
 
 fx_empty : Fx
-fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: { entries: [], waiting: Dict.empty() }, max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, startup: startup_empty, batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
+fx_empty = { life: FxCore.empty({}), document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, startup: startup_empty, batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
 
 ## Collect a request without allocating an awaited id. Removing the batch from
 ## its holder before updating keeps its hash set and ordered list unique.
 collect_transition : Fx, List(Str) -> Fx
-collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, names| {
+collect_transition = |{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, names| {
 	{ mounting, asked, types, seen } = batch
 	var $types = types
 	var $seen = seen
@@ -9268,34 +9246,12 @@ collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale,
 			}
 		}
 	}
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen } }
+	{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen } }
 }
-
-## The first follow-up id: follow-ups are a space of their own, above
-## every request id.
-fx_inner_base : U32
-fx_inner_base = 2147483648
 
 ## The host node id that marks an event as an effect result.
 fx_node : U32
 fx_node = 4294967295
-
-## The deepest chain of follow-up turns one host call may run: a
-## follow-up whose turn queues another, and so on. Breadth does not count:
-## one turn may queue any number of independent follow-ups (a refusal for
-## every request past the in-flight bound, say), each at the same depth.
-max_turns : U64
-max_turns = 64
-
-## The most follow-up turns of depth 2 or more one host call may run: 64
-## for each in-flight slot, and at least 64 x 64. The depth bound alone
-## stops every chain, but a feedback loop in which each follow-up queues two
-## or more would grow exponentially before reaching it; this backstop stops
-## that. The follow-ups of depth 1 are not counted (see `drain`): the
-## external turn queued them itself, so their number is what that one turn
-## issued, however many rows it drew, and never the work of a loop.
-max_breadth : U64 -> U64
-max_breadth = |inflight| max_turns * (if (inflight > max_turns) inflight else max_turns)
 
 ## A request the site owns: its id, whether it is a subscription, whether
 ## it is kept on disposal, its held snapshot and position in the plan. Typed
@@ -9454,12 +9410,29 @@ replanned = |plan| |_, a, _| plan(a)
 with_fx : Tx, (Fx -> Fx) -> Tx
 with_fx = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }, f| { cmds, next, free, routes, work, paths, site_free, observations, fx: f(fx), probe }
 
+## Change the request lifecycle (see `FxCore`) and nothing else of the turn.
+with_life : Tx, (FxCore.Life(Result) -> FxCore.Life(Result)) -> Tx
+with_life = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }, f| {
+	{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
+	{ cmds, next, free, routes, work, paths, site_free, observations, fx: { life: f(life), document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, probe }
+}
+
+## Ask the request lifecycle a decision that changes it, and take the
+## answer out. The turn and the effect record are taken apart and put back
+## together so the lifecycle is handed over uniquely and updated in place.
+life_step : Tx, (FxCore.Life(Result) -> (a, FxCore.Life(Result))) -> (a, Tx)
+life_step = |{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe }, f| {
+	{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
+	(answer, life2) = f(life)
+	(answer, { cmds, next, free, routes, work, paths, site_free, observations, fx: { life: life2, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, probe })
+}
+
 fx_count : Tx, [Delivered, Stale] -> Tx
-fx_count = |tx, k| with_fx(
+fx_count = |tx, k| with_life(
 	tx,
-	|fx| match k {
-		Delivered => { ..fx, delivered: fx.delivered + 1 }
-		Stale => { ..fx, stale: fx.stale + 1 }
+	|life| match k {
+		Delivered => FxCore.count(life, Delivered)
+		Stale => FxCore.count(life, Stale)
 	},
 )
 
@@ -9692,15 +9665,15 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 		Ok(_) => {}
 		Err(message) => crash "${message} (site ${show_path(path)})"
 	}
-	# A port request's bytes are written at the end of the turn.
-	{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe } = turn_end_later(tx, path, req)
-	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
-	if live.len() >= max {
-		fx2 = { next: id + 1, inner, live, queue: follow_up(queue, { id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }
-		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2, probe })
-	} else {
-		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req), progress: progress_ms > 0 and supports_progress(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }
-		(id, { cmds: put_req(cmds, id, req, progress_ms), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2, probe })
+	(admission, t1) = life_step(tx, |life| FxCore.admit(life, { path, sub: is_sub(req), progress: progress_ms > 0 and supports_progress(req) }, Refused))
+	# A port request's bytes are written at the end of the turn, at the
+	# offset its `FX` would take, or nowhere when it was refused.
+	match admission {
+		Refused(id) => (id, turn_end_later(t1, path, req, NoSlot))
+		Admitted(id) => {
+			{ cmds, next, free, routes, work, paths, site_free, observations, fx, probe } = turn_end_later(t1, path, req, Slot(id))
+			(id, { cmds: put_req(cmds, id, req, progress_ms), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx, probe })
+		}
 	}
 }
 
@@ -9712,20 +9685,22 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 ## `WorkRefused(NanKeys)`), and so is a port call or subscription whose
 ## message is nested past the port format's bound (`PortRefused(TooDeep)`).
 fx_refuse : Tx, List(U32), Result -> (U32, Tx)
-fx_refuse = |tx, path, res| {
-	id = tx.fx.next
-	(id, with_fx(tx, |fx| { ..fx, next: id + 1, queue: follow_up(fx.queue, { id, path, res }), refused: fx.refused + 1 }))
-}
+fx_refuse = |tx, path, res| life_step(tx, |life| FxCore.refuse(life, path, res))
 
 ## Queue what the end of the turn settles for a request (see [TurnEnd]) as
 ## it is issued: a focus or scroll command on a named reference, or a port request
-## with the place its bytes go (see [PortAt]), which is nowhere when the
-## in-flight bound is about to refuse it or its message was nested past the
-## port format's bound. Any other request needs nothing.
-turn_end_later : Tx, List(U32), Request -> Tx
-turn_end_later = |tx, path, req| {
+## with the place its bytes go (see [PortAt]): where its `FX` would be
+## written, in the request id admission gave it (`taken`), or nowhere when
+## the in-flight bound refused it or its message was nested past the port
+## format's bound. Any other request needs nothing, and a command's `taken`
+## is not read.
+turn_end_later : Tx, List(U32), Request, [Slot(U32), NoSlot] -> Tx
+turn_end_later = |tx, path, req, taken| {
 	at = tx.cmds.len()
-	slot = if (tx.fx.live.len() >= tx.fx.max) Refused else At(at, tx.fx.next)
+	slot = match taken {
+		Slot(id) => At(at, id)
+		NoSlot => Refused
+	}
 	entry = match req {
 		Focus(n) => Focus(1, n)
 		Blur(n) => Focus(2, n)
@@ -9755,10 +9730,7 @@ turn_end_later = |tx, path, req| {
 
 ## Queue a follow-up turn for `path` with result `res`.
 fx_follow : Tx, List(U32), Result -> (U32, Tx)
-fx_follow = |tx, path, res| {
-	id = tx.fx.inner
-	(id, with_fx(tx, |fx| { ..fx, inner: id + 1, queue: follow_up(fx.queue, { id, path, res }) }))
-}
+fx_follow = |tx, path, res| life_step(tx, |life| FxCore.follow(life, path, res))
 
 ## Issue a site's requests for value `a`.
 issue : Tx, List(U32), List(Planned(h)), List(Owned(h)) -> (Tx, List(Owned(h)))
@@ -9786,7 +9758,7 @@ issue_progress = |tx, path, reqs, owned, progress_ms| {
 			}
 			Focus(_) | Blur(_) | SelectText(_) | ApplyValue(_) | FocusInPlace(_) | ScrollIntoView(_, _) | ScrollTo(_, _) | PortCommand(_) => {
 				# Settled at the end of the turn (see [TurnEnd]).
-				$tx = turn_end_later($tx, path, req)
+				$tx = turn_end_later($tx, path, req, NoSlot)
 			}
 			Title(t) => {
 				$tx = emit_op($tx, 17, |c| put_str(c, t))
@@ -9812,7 +9784,7 @@ issue_progress = |tx, path, reqs, owned, progress_ms| {
 				# A message nested past the port format's bound: its port is
 				# still checked at the end of the turn, and the request is
 				# refused without being admitted, as a too-deep worker input is.
-				(id, t1) = fx_refuse(turn_end_later($tx, path, req), path, PortRefused(TooDeep))
+				(id, t1) = fx_refuse(turn_end_later($tx, path, req, NoSlot), path, PortRefused(TooDeep))
 				$tx = t1
 				$owned = $owned.append({ id, sub: is_sub(req), keep: is_kept(req), a, at })
 			}
@@ -9877,15 +9849,11 @@ fx_dispose_by = |tx, { owned, orphan }| {
 	var $orph = []
 	for o in owned {
 		id = o.id
-		if $tx.fx.live.any(|l| l.id == id) {
-			if o.keep {
-				$orph = $orph.append(orphan(o))
-			} else {
-				t1 = with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
-				$tx = emit_op(t1, 14, |c| put_u32(c, id))
-			}
-		} else if $tx.fx.queue.waiting.contains(id) {
-			$tx = with_fx($tx, |fx| { ..fx, queue: { ..fx.queue, waiting: fx.queue.waiting.remove(id) }, stale: fx.stale + 1 })
+		if o.keep and FxCore.in_flight($tx.fx.life, id) {
+			$orph = $orph.append(orphan(o))
+		} else {
+			(gave, t1) = life_step($tx, |life| FxCore.give_up(life, id))
+			$tx = if (gave == Cancelled) emit_op(t1, 14, |c| put_u32(c, id)) else t1
 		}
 	}
 	($orph, $tx)
@@ -9925,14 +9893,7 @@ fx_adopt = |tx, path, orphans| {
 		tx
 	} else {
 		ids = orphans.map(|o| o.id)
-		with_fx(
-			tx,
-			|fx| {
-				..fx,
-				live: fx.live.map(|l| if (ids.contains(l.id)) { ..l, path } else l),
-				reparented: fx.reparented + ids.len(),
-			},
-		)
+		with_life(tx, |life| FxCore.adopt(life, path, ids))
 	}
 }
 
@@ -9960,7 +9921,7 @@ adopt_deliver = |adopted, env, id, res, tx| {
 			run = o.run
 			kept = if (keeps_owned(res)) adopted else adopted.drop_at(i)
 			(e2, m, sk) = run(env, res)
-			(kept, Pending(e2, m), with_fx(count_delivery(tx, res), |fx| { ..fx, skipped: fx.skipped + sk }))
+			(kept, Pending(e2, m), with_life(count_delivery(tx, res), |life| FxCore.count(life, Skipped(sk))))
 		}
 		Err(_) => (adopted, Pending(env, Sig.none), fx_count(tx, Stale))
 	}
@@ -10212,12 +10173,8 @@ fx_supersede = |tx, owned| {
 	var $tx = tx
 	for o in owned {
 		id = o.id
-		if $tx.fx.live.any(|l| l.id == id) {
-			t1 = with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
-			$tx = emit_op(t1, 14, |c| put_u32(c, id))
-		} else if $tx.fx.queue.waiting.contains(id) {
-			$tx = with_fx($tx, |fx| { ..fx, queue: { ..fx.queue, waiting: fx.queue.waiting.remove(id) }, stale: fx.stale + 1 })
-		}
+		(gave, t1) = life_step($tx, |life| FxCore.give_up(life, id))
+		$tx = if (gave == Cancelled) emit_op(t1, 14, |c| put_u32(c, id)) else t1
 	}
 	$tx
 }
@@ -10851,7 +10808,7 @@ flush_turn = |incoming, programs| {
 							$tx = emit_op($tx, 18, |c| put_u32(c.append(op), node))
 						}
 						Err(_) => {
-							$tx = with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
+							$tx = fx_count($tx, Stale)
 						}
 					}
 				ScrollIntoView(name, props) => match ($tx.fx.refs.get(name) ?? []).first() {
@@ -10859,7 +10816,7 @@ flush_turn = |incoming, programs| {
 						$tx = emit_op($tx, 18, |commands| put_u32(commands.append(6), node).append(align_byte(props.block)).append(align_byte(props.inline)).append(behavior_byte(props.behavior)))
 					}
 					Err(_) => {
-						$tx = with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
+						$tx = fx_count($tx, Stale)
 					}
 				}
 				ScrollTo(name, props) => match ($tx.fx.refs.get(name) ?? []).first() {
@@ -10867,7 +10824,7 @@ flush_turn = |incoming, programs| {
 						$tx = emit_op($tx, 18, |commands| put_edge(put_edge(put_u32(commands.append(7), node), props.top), props.left).append(behavior_byte(props.behavior)))
 					}
 					Err(_) => {
-						$tx = with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
+						$tx = fx_count($tx, Stale)
 					}
 				}
 				CheckTask(task, path) =>
@@ -10892,20 +10849,10 @@ flush_turn = |incoming, programs| {
 ## What is bounded is a chain: a follow-up whose turn queues another, and
 ## so on. A follow-up queued by the external turn has depth 1, one queued
 ## by a turn of depth d has depth d + 1. Running one deeper than
-## `max_turns` is a contract error, because only a feedback loop (a
+## `FxCore.max_turns` is a contract error, because only a feedback loop (a
 ## reaction that issues again what is answered again, a refusal retried
 ## while the table is still full) keeps a chain going; a fan-out of
 ## independent follow-ups from one turn is any number of depth-one turns.
-##
-## The depth needs no field. The queue only grows at its end, so entries
-## sit in the order they were queued and turns run in non-decreasing
-## depth. Follow-up ids are minted in increasing order, refusals from the
-## request space and `Self` from the follow-up space (high bit set), and
-## only follow-ups are queued. So when the turns of depth d begin, the
-## counters of both spaces are a threshold: the entry run next has depth d
-## if its id is below the threshold of its space, and otherwise was queued
-## by a depth-d turn and opens depth d + 1, whose threshold is the counters
-## at that moment. O(1) per turn.
 ##
 ## Total work is bounded too. The turns of depth 1 are bounded by the
 ## external turn: it queued one follow-up for each request it issued past
@@ -10914,50 +10861,52 @@ flush_turn = |incoming, programs| {
 ## queues is deeper. Their number follows what the turn drew (a refusal for
 ## each of thousands of rows that fetch at mount), so they are not counted:
 ## a count that follows an app's data is not a loop. The turns of depth 2
-## or more are counted, at most `max_breadth(max_inflight)` per host call:
-## a loop in which each follow-up queues two or more reaches that long
-## before it reaches the depth bound.
+## or more are counted, at most `FxCore.max_breadth(max_inflight)` per host
+## call: a loop in which each follow-up queues two or more reaches that
+## long before it reaches the depth bound.
 ##
-## The loop carries the store, the site tree and the turn in three
-## variables and rebuilds the instance once, after it.
+## Which entry runs next, at what depth, and whether a bound is passed are
+## `FxCore.next`'s decisions (where the depth is inferred from the ids,
+## O(1) per turn); this loop runs the turn and raises the bound's error.
+## It carries the store, the site tree and the turn in three variables and
+## rebuilds the instance once, after it.
 drain : App(st) -> App(st)
 drain = |Core.App.(AppBody.({ store: store0, root: root0, tx: tx0, programs }))| {
 	var $store = store0
 	var $root = root0
 	var $tx = tx0
-	var $deep_turns = 0.U64
-	var $depth = 1.U64
-	var $below_next = tx0.fx.next
-	var $below_inner = tx0.fx.inner
-	breadth = max_breadth(tx0.fx.max)
-	while !$tx.fx.queue.entries.is_empty() {
-		tx = $tx
-		q = tx.fx.queue.entries.first() ?? crash "internal: a follow-up queue that is not empty has no first entry"
-		if !tx.fx.queue.waiting.contains(q.id) {
+	var $drain = FxCore.drain_start(tx0.fx.life)
+	var $running = True
+	# An empty queue is the common case, and asks the lifecycle nothing.
+	while $running and !$tx.fx.life.queue.entries.is_empty() {
+		at = $drain
+		(step, tx1) = life_step(
+			$tx,
+			|life| match FxCore.next(life, at) {
+				Idle(l) => (Idle, l)
+				Skipped(l, d) => (Skipped(d), l)
+				Run({ entry, depth: _ }, l, d) => (Run(entry, d), l)
+				TooDeep(path) => crash "contract: an effect follow-up chain reached depth 65 at site ${show_path(path)}: each follow-up's turn queued another, more than 64 deep in one call (feedback loop)"
+				TooBroad(path) => crash "resource_limit: the follow-up turns that follow-ups queued in one call exceeded 64 per in-flight slot (at least 4096) at site ${show_path(path)}: follow-ups are multiplying (feedback loop), or a follow-up's own turn issued far more requests than the in-flight bound admits (raise max_inflight)"
+			},
+		)
+		$tx = tx1
+		match step {
+			Idle => {
+				$running = False
+			}
 			# Dropped by supersession or disposal (and counted stale then):
 			# it was never to run, so it takes no turn and no depth.
-			$tx = with_fx(tx, |fx| { ..fx, queue: { ..fx.queue, entries: fx.queue.entries.drop_first(1) } })
-		} else {
-			deeper = if (q.id >= fx_inner_base) q.id >= $below_inner else q.id >= $below_next
-			if deeper {
-				$depth = $depth + 1
-				$below_next = tx.fx.next
-				$below_inner = tx.fx.inner
-				if $depth > max_turns {
-					crash "contract: an effect follow-up chain reached depth 65 at site ${show_path(q.path)}: each follow-up's turn queued another, more than 64 deep in one call (feedback loop)"
-				}
+			Skipped(d) => {
+				$drain = d
 			}
-			if $depth > 1 {
-				if $deep_turns >= breadth {
-					crash "resource_limit: the follow-up turns that follow-ups queued in one call exceeded 64 per in-flight slot (at least 4096) at site ${show_path(q.path)}: follow-ups are multiplying (feedback loop), or a follow-up's own turn issued far more requests than the in-flight bound admits (raise max_inflight)"
-				}
-				$deep_turns = $deep_turns + 1
+			Run(q, d) => {
+				$drain = d
+				Core.App.(AppBody.({ store, root, tx: tx2, programs: _ })) = turn(Core.App.(AppBody.{ store: $store, root: $root, tx: $tx, programs }), q.path, q.id, Fx(Final(q.res, False)))
+				$store = store
+				$root = root
+				$tx = tx2
 			}
-			tx1 = with_fx(tx, |fx| { ..fx, queue: { entries: fx.queue.entries.drop_first(1), waiting: fx.queue.waiting.remove(q.id) } })
-			Core.App.(AppBody.({ store, root, tx: tx2, programs: _ })) = turn(Core.App.(AppBody.{ store: $store, root: $root, tx: tx1, programs }), q.path, q.id, Fx(Final(q.res, False)))
-			$store = store
-			$root = root
-			$tx = tx2
 		}
 	}
 	Core.App.(AppBody.{ store: $store, root: $root, tx: ready_arm($tx), programs })
@@ -10997,8 +10946,9 @@ work_bytes = |Core.App.(AppBody.({ tx, .. })), buf| {
 		$i = $i + 1
 	}
 	fx = tx.fx
-	$b = put_u64(put_u64(put_u64(put_u64($b, fx.issued), fx.delivered), fx.stale), fx.refused)
-	$b = put_u64(put_u64(put_u64(put_u64($b, fx.cancelled), fx.reparented), fx.skipped), fx.live.len())
+	{ counts, live, .. } = fx.life
+	$b = put_u64(put_u64(put_u64(put_u64($b, counts.issued), counts.delivered), counts.stale), counts.refused)
+	$b = put_u64(put_u64(put_u64(put_u64($b, counts.cancelled), counts.reparented), counts.skipped), live.len())
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, w_port_sends)), work_get(counters, 41)), work_get(counters, 42))
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, 43)), fx.observed.live), work_get(counters, 45))
 	$b = put_u64($b, work_get(counters, 46))
@@ -11033,12 +10983,12 @@ settle_note = |a, b| {
 	)
 	pairs = [
 		("live leave guards", a.guard.live, b.guard.live),
-		("issued", a.issued, b.issued),
-		("refused", a.refused, b.refused),
-		("stale", a.stale, b.stale),
-		("cancelled", a.cancelled, b.cancelled),
-		("in flight", a.live.len(), b.live.len()),
-		("queued follow-ups", a.queue.waiting.len(), b.queue.waiting.len()),
+		("issued", a.life.counts.issued, b.life.counts.issued),
+		("refused", a.life.counts.refused, b.life.counts.refused),
+		("stale", a.life.counts.stale, b.life.counts.stale),
+		("cancelled", a.life.counts.cancelled, b.life.counts.cancelled),
+		("in flight", a.life.live.len(), b.life.live.len()),
+		("queued follow-ups", a.life.queue.waiting.len(), b.life.queue.waiting.len()),
 		("end-of-turn focus requests, program checks and port requests", a.focus.len(), b.focus.len() - drifts.len()),
 	]
 	changed = pairs.keep_if(|(_, x, y)| x != y).map(|(name, x, y)| "${name} ${x.to_str()} -> ${y.to_str()}")
