@@ -1501,12 +1501,21 @@ layers written below it join in the same way. The walk visits the sites on
 the event's path and evaluates nothing outside the subtrees it refreshes.
 
 The walk follows the event's path by child positions, not by identities,
-and the pass may have changed what lies on it. A site the pass mounted
-never waits: it was built from the values the turn left, so it has nothing
-to refresh, and the walk may enter it and pass through. A written layer
-whose scope the pass disposed is not refreshed anywhere: its value goes
-with its scope, as if the write had never been made, and it counts nothing
-in `dirty_source_roots`. Nothing is lost that a reader could see, since a
+and the turn may have changed what lies on it. Positions change only where
+the turn built a scope: a `when`, `switch`, `remount_on` or `placeholder`
+that built its block, in the pass or in a refresh the walk made, or a row
+the pass created, which may take the slot of a row it removed. Below such a
+site the event's positions name what the new block holds, not the event's
+path, so the walk never enters a block the turn built: a site that chooses
+its block stops the walk when it built that block after the event came down
+through it. Nothing there waits, since the block was built from the values
+the turn left. Rows of one `each` or table view share their template, so a
+new row in a reused slot has the old row's positions down to its first
+site that chooses its block, which was built with the row and stops the
+walk; a slot that holds no row ends it, and a kept row keeps its slot
+wherever it moves. A written layer whose scope the turn disposed is not
+refreshed anywhere: its value goes with its scope, as if the write had
+never been made, and it counts nothing in `dirty_source_roots`. Nothing is lost that a reader could see, since a
 layer is read only inside its own scope, and the event's writes to cells
 and to surviving layers stand.
 
@@ -5563,6 +5572,33 @@ know nothing of the platform.
   reader evaluated between two of an event's writes breaks one of these.
   The generator stays monomorphic by nesting layers a fixed number deep: a
   generator recursing through `state` would need polymorphic recursion.
+
+  The target's valued modes check the page against a **value model**
+  (`fuzz/structure/Reference.roc`), which imports nothing of the platform:
+  the page drawn from scratch for the tree and the local states alive, and
+  a click as "apply every write of the handler, in order, then draw again",
+  where a local state is carried exactly when its structural identity (its
+  path of child positions, branches taken and row keys) is drawn before and
+  after. Every state is written there, resources issue nothing and the
+  session only clicks. After every click the engine's page must show the
+  model's texts in document order, button labels included, and offer as
+  many click candidates as the model has buttons. That comparison sees a
+  kept scope whose state started again, a state carried across a removal
+  and a structural reader that settled on one new value beside one old one;
+  it does not see attributes, properties or the order of nodes without
+  text, and it counts no evaluations. Structural readers may follow two
+  values at once, rows keep their key while their item changes and keys
+  leave and come back, derived values include one that maps two inputs to
+  one, and the decoder is biased toward one shape bytes rarely build: a
+  button writing an outer and an inner state with a reader of both below,
+  one of them through a derived value, holding state. A pure tally of the
+  seeded series (clicks writing two states one structural reader follows,
+  of those some through a derived value, clicks disposing a state not at
+  its start, rows drawn again after a removal, kept rows whose item
+  changed) is held by `expect`s to minimum shares of its clicks, set at
+  about half the shares at which the series found an event's writes settled
+  by two passes and a kept row's state reset, so a generator change that
+  stops reaching these shapes fails rather than passes vacuously.
 - **Soak.** Every app runs a long random walk in Chrome, with Wasm pages
   and live allocations asserted flat across repeated round trips. Natively,
   each app's round trip is an ordinary spec that the spec runner also

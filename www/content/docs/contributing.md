@@ -730,7 +730,11 @@ pointer gestures with held reports checked against an input-side model,
 and more than 4,095 `each` sites (`controls`,
 `tests/apps/controls/fuzz-controls.roc`), generated site trees
 (`fuzz/structure`, whose pure mode also compares the page with a fresh
-mount, so the settle check meets nestings no app contains), tables and
+mount, so the settle check meets nestings no app contains, and whose valued
+modes compare the page after every click with a value model,
+`fuzz/structure/Reference.roc`, that draws it from scratch for the local
+states alive; top-level `expect`s hold the seeded valued series to minimum
+shares of the shapes that expose ordering and identity bugs), tables and
 their views against a model that filters, sorts and windows the table from
 scratch, over keyed writes, whole rewrites and events that write the table,
 the query and the window together (`fuzz/table-view`), the `.scm`
