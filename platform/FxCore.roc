@@ -107,7 +107,9 @@ FxCore :: [].{
 	empty : {} -> Life(res)
 	empty = |{}| { next: 1, inner: FxCore.inner_base, live: [], queue: { entries: [], waiting: Dict.empty() }, max: 32, counts: { issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0 } }
 
-	## Queue a follow-up.
+	## Append a follow-up at the end of the queue and mark its id waiting.
+	## Appending only at the end is what lets the drain derive each entry's
+	## depth from id thresholds instead of storing it ([drain_start]).
 	follow_up : FollowUps(res), Queued(res) -> FollowUps(res)
 	follow_up = |{ entries, waiting }, entry| { entries: entries.append(entry), waiting: waiting.insert(entry.id, {}) }
 
@@ -139,7 +141,8 @@ FxCore :: [].{
 		(id, { next: upcoming, inner: id + 1, live, queue: FxCore.follow_up(queue, { id, path, res }), max, counts })
 	}
 
-	## Whether `id` is in the in-flight table.
+	## Whether `id` is in the in-flight table: a scan bounded by the cap,
+	## O(in-flight).
 	in_flight : Life(res), U32 -> Bool
 	in_flight = |life, id| life.live.any(|l| l.id == id)
 

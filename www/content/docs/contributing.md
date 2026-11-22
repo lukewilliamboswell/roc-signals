@@ -35,9 +35,9 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The platform (`main.roc`): the engine (`Core.roc`, with read signatures, write sets and the scheduling decisions taken from them in `Sig.roc`, a table, its views and their ordered keys in `TableCore.roc`, `View.roc` and `Seq.roc`), the authoring API (`Engine.roc`, including its opaque `Table`, `Html.roc`, the plain layout payloads in `Layout.roc`, clipboard requests in `Clipboard.roc`, cryptographic requests and key handles in `WebCrypto.roc`, pure utility modules `Base64.roc`, `Order.roc` and `Url.roc`, checked browser-name and HTTP-method primitives in public `Web.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs`, its fact-reader helper `environment.mjs` and worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, with its walks and soaks, `PicturePage.roc` for exact host-template ranges and static route projection, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also `main-fuzz.roc`, a package root over the same pure modules (all but `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc`) that the platform's own fuzz targets depend on |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`, with read signatures, write sets and the scheduling decisions taken from them in `Sig.roc`, the plan of a keyed reconciliation in `Reconcile.roc`, the effect channel's request lifecycle in `FxCore.roc`, and a table, its views and their ordered keys in `TableCore.roc`, `View.roc` and `Seq.roc`), the authoring API (`Engine.roc`, including its opaque `Table`, `Html.roc`, the plain layout payloads in `Layout.roc`, clipboard requests in `Clipboard.roc`, cryptographic requests and key handles in `WebCrypto.roc`, pure utility modules `Base64.roc`, `Order.roc` and `Url.roc`, checked browser-name and HTTP-method primitives in public `Web.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs`, its fact-reader helper `environment.mjs` and worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, with its walks and soaks, `PicturePage.roc` for exact host-template ranges and static route projection, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also `main-fuzz.roc`, a package root over the same pure modules (all but `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc`) that the platform's own fuzz targets depend on |
 | `tests/` | Native lifetime contracts, browser contract tests and the apps they drive (`tests/apps/`, for example `store` for cells read and written at depth, `writes` for decisions, resets and `also`, `table` for a table and its table views, `remount` for `remount_on`, `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `deep-payload` for the payload's nesting bound, `prepared` for preparations, `tasks` for jobs that read and build files, `outbox` for posting requests and `gather` for one question split over several jobs, with the platform's fuzz targets of the effect channel and the controls beside their test apps as `fuzz-<subject>.roc`), the Chrome spec replay, and the release check helper |
-| `fuzz/` | The platform's fuzz targets of the shared support (the spec, wire and port formats, generated site trees, and tables with their views) |
+| `fuzz/` | The platform's fuzz targets of the shared support (the spec, wire and port formats, generated site trees, and tables with their views) and of the engine's pure cores (read signatures and write sets, a table's changes, a view kept from them, the request lifecycle and the reconciliation plan) |
 | `examples/` | The example apps, each with its specs, any fuzz targets of its own pure logic (`fuzz-<subject>.roc`), and any JavaScript of its own beside it (the port handlers of the Reading List, the Status Page and the Million-Row Explorer, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`; the Log Explorer's `log-timings` element, `timings.mjs`, the Status Page's `latency-feed-monitor`, `feed-monitor.mjs`, and the Million-Row Explorer's `query-meter`, `meter.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
 | `cli/` | The source of `signals.roc`, the tool app authors run to create, serve, build and test an app (below) |
 | `oracle/` | The reference models in Lean 4 (`turns`, what a turn means; `tables`, a table's changes and its views) and the programs that write the fuzz targets' vector files (below, [The reference models](#the-reference-models)) |
@@ -725,7 +725,9 @@ beside the two test apps whose engine sequences they generate. They decode
 arbitrary bytes into valid programs and check the engine against a model:
 the effect channel's lifecycle including worker jobs, port calls and
 subscriptions, a gather's jobs settling at their positions and an outbox's
-posts (`fx-channel`, `tests/apps/effects/fuzz-channel.roc`), controlled inputs,
+posts, with a second model of effect sites in nested scopes,
+`tests/apps/effects/NestedModel.roc`, that also reads the probe
+(`fx-channel`, `tests/apps/effects/fuzz-channel.roc`), controlled inputs,
 pointer gestures with held reports checked against an input-side model,
 and more than 4,095 `each` sites (`controls`,
 `tests/apps/controls/fuzz-controls.roc`), generated site trees
@@ -733,8 +735,11 @@ and more than 4,095 `each` sites (`controls`,
 mount, so the settle check meets nestings no app contains, and whose valued
 modes compare the page after every click with a value model,
 `fuzz/structure/Reference.roc`, that draws it from scratch for the local
-states alive; top-level `expect`s hold the seeded valued series to minimum
-shares of the shapes that expose ordering and identity bugs), tables and
+states alive, and the click's work with a count and shape model,
+`fuzz/structure/Counts.roc`; every mode checks the engine's probe after
+every step, `fuzz/structure/ProbeRules.roc`, and top-level `expect`s hold
+the seeded valued series to minimum shares of the shapes that expose
+ordering and identity bugs), tables and
 their views against a model that filters, sorts and windows the table from
 scratch, over keyed writes, whole rewrites and events that write the table,
 the query and the window together (`fuzz/table-view`), the `.scm`
@@ -744,6 +749,18 @@ shorthand), the worker wire format's decoder (`fuzz/wire`),
 the port message format's decoder (`fuzz/port-json`), URL parsing, builders
 and readers (`fuzz/url`), and DOM/Fetch name grammar (`fuzz/names`). Every
 target that drives the engine runs the settle check after every step.
+
+The engine's pure cores have targets of their own that call them directly,
+with no engine in the loop: `fuzz/masks` (`Sig`'s read signatures and write
+sets against exact sets, at indices past 64), `fuzz/table-changes`
+(`TableCore`'s changes over branching `Store.after` histories),
+`fuzz/view-follow` (`View.follow` and a table view site's one change of its
+drawn rows, against a filter, a sort and a slice of a plain list),
+`fuzz/fx-core` (`FxCore`'s request lifecycle against a model with an
+explicit depth for every follow-up) and `fuzz/reconcile` (`Reconcile.plan`
+applied to lists of up to thousands of keys). `fuzz/structure`,
+`fuzz/table-changes` and `fuzz/view-follow` also replay the vector files
+the Lean reference models write ([The reference models](#the-reference-models)).
 
 `fuzz/startup-placeholders` checks readiness and scoped replacement against a
 separate list-based FIFO/lifetime model. Its histories include cold-frame
@@ -781,20 +798,33 @@ not its inputs, carry the value.
 
 Every member is registered in `Targets.fuzz_targets`, with its standalone
 app, canonical property module and suite root, and every run starts from that
-registry. Seven suite apps share builds across the 33 members: rendering,
-lifecycle, codecs, syntax, example text, example data and the pure engine
-cores (`FuzzCores.roc`: `masks`, `table-changes` and `view-follow`, which
-drive `Sig`, `TableCore` and `View` with no engine in the loop). The examples still
-import only their own pure modules. A `fuzz-package.roc` manifest exposes
+registry. Six suite apps at the repository's root share builds across
+the 35 members:
+
+| Suite | Members |
+|---|---|
+| `FuzzRendering.roc` | `structure`, `dom`, `markup` |
+| `FuzzLifecycle.roc` | `startup-placeholders`, `table-view`, `fx-channel`, `controls` |
+| `FuzzCodecs.roc` | `crypto`, `boot`, `wire`, `result-readers`, `port-json` |
+| `FuzzSyntax.roc` | `links`, `base64`, `scm-parse`, `protocol-facts`, `url`, `names`, and the pure cores `masks`, `table-changes`, `view-follow`, `fx-core`, `reconcile` |
+| `FuzzExampleText.roc` | `markdown-editor`, `markdown-html`, `conduit`, `field-notes`, `csv-converter` |
+| `FuzzExampleData.roc` | `form-builder`, `kanban-board`, `data-grid`, `spreadsheet-lite`, `log-explorer`, `log-scroll-map`, `million-row-explorer-aggregates` |
+
+The examples' members import only their own pure modules. A `fuzz-package.roc` manifest exposes
 private property modules to a suite; it adds no application API and does not
 ship in the examples archive.
+
+A new target joins an existing suite rather than adding a root: each root is
+one more compile of the engine package in every `check`, `fuzz-smoke` and CI
+shard. Pick a light suite; `FuzzRendering.roc` and `FuzzLifecycle.roc` carry
+the engine-driving targets and are the slowest to build.
 
 The driver builds each selected suite once, verifies its complete
 `--list-targets` inventory, then selects each member with `--target=NAME`.
 Members retain their names, declared examples, saved input bytes, models,
 corpora, baselines and report directories. Named selection builds only the
 suites it needs. CI shards assign whole suites, so a suite is compiled once
-across the seven shards. Testing each suite root includes its members' top-level
+across the six shards. Testing each suite root includes its members' top-level
 `expect`s.
 
 A target's fixed examples are its declared examples
@@ -814,7 +844,7 @@ inside the measured region.
 
 | Where | What runs | Build | How long |
 |---|---|---|---|
-| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in seven shards (`fuzz-smoke -- --shard K/7`), beside Check (`check -- --without-fuzz`, in parts) | Plain optimized profile (below) | Each shard is allowed 60 minutes; compiler and replay durations are reported |
+| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in six shards (`fuzz-smoke -- --shard K/6`), beside Check (`check -- --without-fuzz`, in parts) | Plain optimized profile (below) | Each shard is allowed 60 minutes; compiler and replay durations are reported |
 | `blueprint run check` | The same replays as CI's Fuzz smoke job, every target, in one run | Plain optimized profile (below) | Depends on the selected suites; compiler and replay durations are reported |
 | `blueprint run fuzz-smoke` | Every target's fixed examples, or those named, or one shard | Plain optimized profile (below) | Depends on the selected suites; compiler and replay durations are reported |
 | `blueprint run check-slow`, local only | Every target's fixed examples on the build a campaign explores | Instrumented `--fuzz` | Instrumented compiler and replay durations are reported |
@@ -828,7 +858,7 @@ failure, reduce it and add it to the target's examples with `Fuzz.saved`,
 so every later replay, CI's included, keeps it fixed.
 
 The compiler budget remains 16 GiB per fuzz suite, so a CI runner compiles
-one suite at a time; the seven shards distribute those builds across runners.
+one suite at a time; the six shards distribute those builds across runners.
 Reports keep compiler and replay batch durations separately. Do not compare
 those batch durations as individual member timings.
 
@@ -863,10 +893,6 @@ compiler version skips a target, and nothing is skipped because its inputs
 look unchanged: every run builds every target it runs afresh.
 
 ### The plain and the instrumented builds
-
-The maintained targets pin roc-fuzz 0.6.2, which restores compatibility with
-`nightly-2026-11-13-03dce41` after its stricter duplicate-name check. The
-fixed-example inputs and public fuzz API are unchanged by that patch.
 
 Fuzz builds print compiler phase timings. Use those alongside the replay
 report to distinguish time spent compiling the optimized target from time
@@ -955,9 +981,10 @@ target also requires its value model to reject every known-bad trace in
 run the same vectors through the real code, so `fuzz-smoke` holds the
 engine, `TableCore` and `View` to them too.
 
-Install [elan](https://github.com/leanprover/elan), which puts `lake` on
-`PATH` and reads the Lean release from `oracle/lean-toolchain`; the
-projects need nothing else and nothing from the network. Then
+Install [elan](https://github.com/leanprover/elan), which installs `lake`
+in `~/.elan/bin` and reads the Lean release from `oracle/lean-toolchain`;
+the projects need nothing else and nothing from the network. With that
+directory on `PATH` (`PATH=$HOME/.elan/bin:$PATH`),
 `blueprint run oracle` builds both, runs their gates and fails if a vector
 file it writes differs from the checked-in one. CI does not install Lean,
 so run it yourself whenever a change touches `oracle/` or a vector file.

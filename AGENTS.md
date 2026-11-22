@@ -219,8 +219,10 @@
 - Put scheduling, reconciliation, identity, effect lifecycle and containment
   policy in `platform/Core.roc` and the platform's Roc modules; read
   signatures, write sets and the scheduling decisions taken from them are
-  `Sig.roc`, and a table, its table views and their ordered keys are
-  `TableCore.roc`, `View.roc` and `Seq.roc`. The
+  `Sig.roc`, the plan of a keyed list's reconciliation is `Reconcile.roc`,
+  the request lifecycle (ids, the in-flight table, the follow-up queue and
+  the effect counters) is `FxCore.roc`, and a table, its table views and
+  their ordered keys are `TableCore.roc`, `View.roc` and `Seq.roc`. The
   host,
   `runtime.mjs` and `worker.mjs` adapt the engine to the browser; they do not
   implement its semantics. The native spec runner drives the same engine; it
@@ -269,7 +271,10 @@
 - Keep observation passive. The runtime's monitor reports what the runtime
   and its pool did after they acted and never decides scheduling, a result
   or an order; everything it keeps is bounded, and an observer that
-  misbehaves is dropped rather than obeyed. Meet a measurement need by
+  misbehaves is dropped rather than obeyed. The engine's probe, for
+  harnesses only, is observation too: the engine notes its facts after it
+  acts and never reads one back, so a session recorded and one not
+  recorded emit the same commands and counters. Meet a measurement need by
   observing more, never by letting an observer steer.
 - Treat the command stream, event records, effect payloads, worker payloads,
   port messages, boot bytes and the program's declarations, and
