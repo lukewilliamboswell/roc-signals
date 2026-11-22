@@ -881,7 +881,9 @@ Owner: coordinator, with one agent for the documentation sweep.
 |---|---|---|
 | While developing | `roc build --opt=size fuzz/<t>/main.roc` and the binary's `check`; `roc test` on the target root; `roc fmt --check`; `node tests/runtime/<script>` | Agent |
 | Before handing back | `blueprint run fuzz-smoke -- <targets touched>`; `blueprint run spec -- <apps touched>`; for `Core.roc` changes, `blueprint run check` | Agent, under the heavy lock |
+| Before handing back | A 300 s campaign (`blueprint run fuzz -- --time 300 <targets>`) on every target the package adds or extends, and on every engine-driving target (`structure`, `table-view`, `startup-placeholders`, `controls`, `fx-channel`) when it changes `Core.roc`; any finding is minimised, saved with `Fuzz.saved`, triaged (engine, reference or design) and fixed or reported | Agent, under the heavy lock |
 | After each merge | `blueprint run check` on the integration branch | Coordinator |
+| After each wave | The same 300 s campaigns on the integration branch, over every target the wave touched | Coordinator, under the heavy lock |
 | Before the pull request | WP-40 step 1 | Coordinator |
 
 A gate that fails is reported with its output. A target that fails to build
@@ -970,7 +972,8 @@ wip/reactivity-oracle.md sections 3, 4, 5 and your package; the material
 your package names under wip/reactivity-oracle/.
 
 Do the package's steps. Meet its acceptance tests and record each result
-with the real output. Stay inside the files your package lists; if you need
+with the real output. Before handing back, run the 300 s campaigns section 8
+names and triage every finding. Stay inside the files your package lists; if you need
 another file, stop and say which and why.
 
 Do not commit. Stage your work and write the commit message to
