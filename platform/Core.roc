@@ -6019,37 +6019,19 @@ end_tables = |st, tables, wrote| {
 	if Sig.mask_of(wrote).bitwise_and(tables.written) == 0 {
 		st
 	} else {
-		var $state = finish_table_word(st, { tables: tables.cells, bits: wrote.cells, base: 0 })
-		var $base = 64.U64
-		for word in wrote.more {
-			$state = finish_table_word($state, { tables: tables.cells, bits: word, base: $base })
-			$base = $base + 64
-		}
-		$state
+		# A word has at most 64 positions and a zero word needs no lookup. A
+		# position that names an ordinary cell never invokes a table
+		# callback, and exact positions keep tables 64 cells apart
+		# independent despite their shared signature bit.
+		Sig.fold_cells(
+			wrote,
+			st,
+			|state, cell| match tables.cells.get(cell) {
+				Ok(table) => (table.finish)(state)
+				Err(_) => state
+			},
+		)
 	}
-}
-
-## A word has at most 64 positions. Zero words require no lookup, and a set
-## bit that names an ordinary cell never invokes a table callback. Exact IDs
-## keep tables 64 cells apart independent despite their shared signature bit.
-finish_table_word : st, { tables : Dict(U64, Core.TableCell(st)), bits : U64, base : U64 } -> st
-finish_table_word = |st, { tables, bits, base }| {
-	var $state = st
-	var $bits = bits
-	var $cell = base
-	while $bits != 0 {
-		if $bits.bitwise_and(1) != 0 {
-			match tables.get($cell) {
-				Ok(table) => {
-					$state = (table.finish)($state)
-				}
-				Err(_) => {}
-			}
-		}
-		$bits = $bits.shr_zf_wrap(1)
-		$cell = $cell + 1
-	}
-	$state
 }
 
 ## After an event, return its root environment intact to the instance and
