@@ -1084,7 +1084,7 @@ Core := [].{
 		## `first` returned, so it sees `first`'s writes (two writes of one
 		## state compose), and the event reports the union of both write
 		## sets, which one pass settles from the outermost down
-		## (`waits_for_outer`). An element
+		## (`Sig.at_state`). An element
 		## takes one handler per event, so this is how a click writes local
 		## state and also runs a decision, or a handler its owner passed
 		## down. Costs one closure call more per event.
@@ -3915,7 +3915,7 @@ Mount(ctx) := [Mount((ctx, Args, Tx -> (Inst(ctx), U128, Tx)))]
 ## text, the files a files-kind event carries and how many were refused, or
 ## an effect result), or `Settle`, which fires nothing. A `Settle` follows
 ## the pass of an event's outermost write down the event's path, and names
-## the written layers below it (`waits_for_outer`). Each of them joined that
+## the written layers below it (`Sig.at_state`). Each of them joined that
 ## pass if the pass reached its site; the walk refreshes, at its own site,
 ## each one the pass did not reach, and stops at the deepest of them.
 Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(EffectInput), Settle(Sig.Wrote, Bool), OpenState(Bool), Activate(U64)]
@@ -3924,7 +3924,7 @@ Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(EffectInput), Sett
 ## layer below index `depth`, so that it goes on past the state site there.
 finish_event : Payload, U64 -> Try([Further, Ends], [Fires])
 finish_event = |payload, depth| match payload {
-	Settle(left, forced) => if (!forced and Sig.is_empty(Sig.from(left, depth + 1))) Ok(Ends) else Ok(Further)
+	Settle(left, forced) => Ok(Sig.walk_on(left, depth, forced))
 	_ => Err(Fires)
 }
 
@@ -5319,40 +5319,14 @@ dispose_block = |{ holes: _, handlers: _, children, child_reads: _, child_top, n
 ## ------------------------------------------------------------------
 ## Site kinds.
 
-## Whether the written layer at index `depth` waits at its site when the
-## event that wrote it unwinds through it: the event also wrote a layer
-## above it on its path, or a store cell.
-##
-## A reader below the layer may also read the outer write, or something
-## derived from either: a `derive`, a `resource`, a row's item. Refreshed
-## for one write at a time, it would be evaluated with one new value beside
-## one old one, a pair that never held: a text would be written twice, and
-## an effect site would issue a request for it. So an event's writes are
-## settled by one pass, from the outermost. The inner layer hands its write
-## up and waits; the outermost written layer (or the root, for a cell)
-## starts the pass; and when the pass reaches the waiting layer's site, the
-## site adds its own layer to what the pass carries, for its subtree alone
-## (`state_inst`). Order within the pass follows nesting, so every `derive`
-## of either write is recomputed before anything below it reads it, and a
-## reader of both is evaluated once.
-##
-## A layer is readable only below its own site, so nothing outside the
-## waiting layer's subtree can need it, and no reader of a sibling layer at
-## the same index is woken. A waiting layer the pass does not reach has no
-## reader in common with it: nothing in its subtree reads what the pass
-## carried. The `Settle` walk that follows the pass down the event's path
-## refreshes each such layer at its own site.
-waits_for_outer : Sig.Wrote, U64 -> Bool
-waits_for_outer = |mask, depth| !Sig.is_empty(Sig.below(mask, depth))
-
 ## After an event below a state site: take this layer's value back from
-## the environment. A layer the event did not write hands the event's
-## write set up as it is. A written layer with something written above it
-## waits (`waits_for_outer`). A written layer with nothing written above it
-## starts the event's pass: it refreshes its block, where the layers
-## written below it join, and then sends the `Settle` walk down the event's
-## path (`path`, `pos` and `h` are the event's) for those the pass did not
-## reach.
+## the environment and do what `Sig.at_state` decides. A layer the event
+## did not write hands the event's write set up as it is. A written layer
+## with something written above it waits. A written layer with nothing
+## written above it starts the event's pass: it refreshes its block, where
+## the layers written below it join, and then sends the `Settle` walk down
+## the event's path (`path`, `pos` and `h` are the event's) for those the
+## pass did not reach.
 state_settle : Block(In(ctx, s)), U64, Out(In(ctx, s)), List(U32), U64, U32, Tx -> (Inst(ctx), Out(ctx), Tx)
 state_settle = |block, depth, out, path, pos, h, tx| {
 	match out {
@@ -5362,23 +5336,22 @@ state_settle = |block, depth, out, path, pos, h, tx| {
 			{ outer: next_outer, value: s2 } = next_inner
 			# The write set is exact: whether this layer was written, and
 			# what is handed up, never depend on a shared signature bit.
-			if !Sig.has_layer(mask, depth) {
-				(state_inst(s2, block, depth, Settled), Pending(next_outer, mask), tx)
-			} else if waits_for_outer(mask, depth) {
-				(state_inst(s2, block, depth, Waiting), Pending(next_outer, mask), tx)
-			} else {
-				# Every write of the turn is in place by now, and this is the
-				# outermost layer it wrote: its pass starts here.
-				(b3, t3) = refresh(block, In.{ outer: next_outer, value: s2 }, Turn(Sig.bit(depth)), bump(tx, w_dirty_roots, 1))
-				waiting = Sig.from(mask, depth + 1)
-				if Sig.is_empty(waiting) or pos >= path.len() {
-					(state_inst(s2, b3, depth, Settled), Pending(next_outer, Sig.none), t3)
-				} else {
-					# Then the walk for the written layers below it that the
-					# pass did not reach: they lie on the event's path.
-					(b4, settled, t4) = fire_kid(b3, In.{ outer: next_outer, value: s2 }, path, pos, h, Settle(waiting, False), t3)
-					(outer, s4) = state_out(settled)
-					(state_inst(s4, b4, depth, Settled), Pending(outer, Sig.none), t4)
+			match Sig.at_state(mask, depth) {
+				Untouched => (state_inst(s2, block, depth, Settled), Pending(next_outer, mask), tx)
+				Waits => (state_inst(s2, block, depth, Waiting), Pending(next_outer, mask), tx)
+				Starts({ walk: waiting }) => {
+					# Every write of the turn is in place by now, and this is the
+					# outermost layer it wrote: its pass starts here.
+					(b3, t3) = refresh(block, In.{ outer: next_outer, value: s2 }, Turn(Sig.bit(depth)), bump(tx, w_dirty_roots, 1))
+					if Sig.is_empty(waiting) or pos >= path.len() {
+						(state_inst(s2, b3, depth, Settled), Pending(next_outer, Sig.none), t3)
+					} else {
+						# Then the walk for the written layers below it that the
+						# pass did not reach: they lie on the event's path.
+						(b4, settled, t4) = fire_kid(b3, In.{ outer: next_outer, value: s2 }, path, pos, h, Settle(waiting, False), t3)
+						(outer, s4) = state_out(settled)
+						(state_inst(s4, b4, depth, Settled), Pending(outer, Sig.none), t4)
+					}
 				}
 			}
 		}
@@ -5438,7 +5411,7 @@ state_out = |out| match out {
 
 ## A state site: `s` is this layer's value at absolute depth `depth`.
 ## `waits` is `Waiting` from the moment an event that wrote this layer
-## below another of its writes unwinds through the site (`waits_for_outer`)
+## below another of its writes unwinds through the site (`Sig.at_state`)
 ## until its readers are refreshed, in the same turn: by the pass of the
 ## outer write, if that pass reaches the site, and otherwise by the
 ## `Settle` walk that follows it.
@@ -7699,7 +7672,7 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 					# The pass names what it brings of the query and the window. It
 					# carries every write of the event that this site can read: a
 					# layer written with the table joined the pass at its own site,
-					# above this one (`waits_for_outer`). So the table, the query
+					# above this one (`Sig.at_state`). So the table, the query
 					# and the window all arrive here together.
 					names_query = pass == Check or Sig.meets(pass, eff_mask(shows.query))
 					names_window = pass == Check or Sig.meets(pass, eff_mask(shows.window))
@@ -10383,7 +10356,7 @@ new_tx = |cmds| { cmds: cmds.append(0), next: 1, free: [], routes: [], work: wor
 
 ## One turn: fire down `path`; then the root's Changed pass for the cells
 ## the event wrote, which the layers it wrote with them join where the
-## pass reaches their sites (`waits_for_outer`); then a `Settle` walk down
+## pass reaches their sites (`Sig.at_state`); then a `Settle` walk down
 ## the same path for those the pass did not reach; then the turn's focus
 ## commands (resolved now, so a reference mounted later in the same turn
 ## is found; a missing one is counted stale).
@@ -10392,36 +10365,26 @@ turn = |Core.App.(AppBody.({ store, root, tx, programs })), path, h, payload| {
 	(root2, out, tx2) = call(root, Root.{ store }, Fire(path, 0, h, payload), bump(tx, w_turns, 1))
 	(store2, writes) = root_answer(out)
 	force = tx2.observations.echo
-	if Sig.is_empty(writes) {
-		if force {
-			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Fire(path, 0, h, Settle(Sig.none, True)), tx2)
-			Core.App.(AppBody.{ store: root_answer(answer3).0, root: root3, tx: flush_turn(tx3, programs), programs })
-		} else {
-			Core.App.(AppBody.{ store: store2, root: root2, tx: flush_turn(tx2, programs), programs })
-		}
-	} else {
-		cells = Sig.cells_of(writes)
-		waiting = Sig.from(writes, 0)
-		if Sig.is_empty(cells) {
-			# The root's pass is for cells (design.md, "One turn"). A turn
-			# that wrote local state alone has nothing for it to carry: it
-			# would test every hole and child of the root block against an
-			# empty mask, and no table was written to rearm. Its layers
-			# settled at their own sites, and the walk below reaches any left
-			# waiting. Each branch returns the instance itself, so the store
-			# never meets a rebuilt one in a value (roc-lang/roc#12846).
-			end_written_turn(root2, store2, tx2, { path, h, waiting, force }, programs)
-		} else {
-			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Changed(Turn(Sig.mask_of(cells))), bump(tx2, w_dirty_roots, Sig.count(cells)))
+	{ pass, walk } = Sig.at_root(writes)
+	match pass {
+		# The root's pass is for cells (design.md, "One turn"). A turn that
+		# wrote local state alone, or nothing, has nothing for it to carry:
+		# it would test every hole and child of the root block against an
+		# empty mask, and no table was written to rearm. Its layers settled
+		# at their own sites, and the walk reaches any left waiting. Each
+		# branch returns the instance itself, so the store never meets a
+		# rebuilt one in a value (roc-lang/roc#12846).
+		NoPass => end_written_turn(root2, store2, tx2, { path, h, waiting: walk, force }, programs)
+		Cells(mask) => {
+			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Changed(Turn(mask)), bump(tx2, w_dirty_roots, Sig.count(Sig.cells_of(writes))))
 			(store3, _) = root_answer(answer3)
-			end_written_turn(root3, store3, tx3, { path, h, waiting, force }, programs)
+			end_written_turn(root3, store3, tx3, { path, h, waiting: walk, force }, programs)
 		}
 	}
 }
 
-## The rest of a turn that wrote something: the walk down the event's path
-## for the layers the pass did not reach and for a browser echo, then the
-## end of the turn.
+## The rest of a turn: the walk down the event's path for the layers the
+## pass did not reach and for a browser echo, then the end of the turn.
 end_written_turn : Inst(Root(st)), st, Tx, { path : List(U32), h : U32, waiting : Sig.Wrote, force : Bool }, Catalogue -> App(st)
 end_written_turn = |root, store, tx, { path, h, waiting, force }, programs| {
 	if Sig.is_empty(waiting) and !force {

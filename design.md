@@ -471,7 +471,10 @@ flowchart LR
     Parser -->|"emitted steps"| Browser["replay in Chrome"]
 ```
 
-The engine is `Core.roc` and three modules of its own for tables: `TableCore.roc`
+The engine is `Core.roc`, `Sig.roc` (read signatures, exact write sets and
+the three scheduling decisions read from a write set: what a written layer's
+site does, what the root's pass carries, and how far a walk goes) and three
+modules of its own for tables: `TableCore.roc`
 (rows by key and the changes from a turn), `View.roc` (a sorted, filtered, windowed view kept up to
 date from those changes) and `Seq.roc` (a table view's ordered keys). `Engine.roc` is
 the authoring API over them. Its opaque `Table` wraps the internal table;
@@ -5490,8 +5493,8 @@ In-place writes of large values in shipping builds are tracked against
 ## Measures of Effectiveness
 
 1. **One engine, thin host.** All reactive and structural logic is in the
-   engine's Roc modules (`Core.roc`, with `TableCore.roc`, `View.roc` and
-   `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
+   engine's Roc modules (`Core.roc`, with `Sig.roc`, `TableCore.roc`,
+   `View.roc` and `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
    *Holds when:* the same engine runs in the browser module and the native spec runner with
    the same command stream.
 2. **App semantics agree natively and in the browser.** Every maintained app's
