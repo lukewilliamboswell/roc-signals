@@ -3989,7 +3989,7 @@ expect {
 ## The same through a `switch` whose case the outer write changes.
 expect {
 	button = |outer, inner| Core.state(0.U64, |_| Core.state(0.U64, |_| Core.element("button", [Core.on("click", outer.update(|n| n + 1).lift().lift().lift().also(inner.update(|n| n + 1).lift().lift()))], [])))
-	view = Core.state(0.U64, |outer| Core.element("main", [], [Core.switch(outer.signal().map(|n| n % 3), [0, 1, 2], |k| if k == 0 Core.state(0.U64, |inner| button(outer, inner)) else Core.each(Core.const(["a"]), |key| key, |_| Core.element("p", [], [])))]))
+	view = Core.state(0.U64, |outer| Core.element("main", [], [Core.switch(outer.signal().map(|n| n % 3), [0, 1, 2], |k| if (k == 0) Core.state(0.U64, |inner| button(outer, inner)) else Core.each(Core.const(["a"]), |key| key, |_| Core.element("p", [], [])))]))
 	(clean, _) = Core.take_cmds(Core.mount(view), [])
 	clicked = Core.event(clean, 3, 0, "")
 	(after, commands) = Core.take_cmds(clicked, [])
@@ -4023,7 +4023,7 @@ expect {
 			[],
 			[
 				Core.each(
-					outer.signal().map(|n| if n == 0 ["a"] else ["b"]),
+					outer.signal().map(|n| if (n == 0) ["a"] else ["b"]),
 					|key| key,
 					|row| Core.element("div", [], [Core.when(row.field(|key| key == "b"), || Core.each(Core.const(["x"]), |key| key, |_| Core.element("p", [], [])), || Core.state(0.U64, |inner| button(outer, inner)))]),
 				),
