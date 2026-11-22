@@ -412,8 +412,9 @@ Targets := [].{
 	}
 
 	## Exercise the monitor's bounded aggregation and environment facts, including
-	## time-zone probes in UTC and Sydney, and the documented port handlers
-	## with bounded queues and browser-resource cleanup, without a browser.
+	## time-zone probes in UTC and Sydney, the documented port handlers
+	## with bounded queues and browser-resource cleanup, and the ingress
+	## queue's rules over seeded sessions, without a browser.
 	## A Wasm fixture, tests/apps/write-scaling, also guards sparse-write
 	## allocation scaling on its development build (the one its specs use)
 	## and on a shipping build (`--opt=size`), and its declared protocol
@@ -424,7 +425,7 @@ Targets := [].{
 		Proc.run!({ program: o.tooling, args: ["scripts/test_parallel.roc"], cwd: o.root })?
 		Proc.run!({ program: o.tooling, args: ["scripts/test_protocol.roc"], cwd: o.root })?
 		Proc.run!({ program: o.tooling, args: ["scripts/test_worker_entries.roc"], cwd: o.root })?
-		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs", "protocol-facts.mjs", "boot-fault-unit.mjs", "forget-fault-unit.mjs", "work-request-unit.mjs", "crypto-unit.mjs", "storage-text-unit.mjs", "port-answer-unit.mjs", "conduit-urls.mjs", "dbg.test.mjs", "replay-errors.test.mjs", "compiler-profile.test.mjs"] {
+		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs", "protocol-facts.mjs", "boot-fault-unit.mjs", "forget-fault-unit.mjs", "work-request-unit.mjs", "crypto-unit.mjs", "storage-text-unit.mjs", "port-answer-unit.mjs", "ingress-unit.mjs", "conduit-urls.mjs", "dbg.test.mjs", "replay-errors.test.mjs", "compiler-profile.test.mjs"] {
 			code = Proc.status!({ program: o.node, args: ["tests/runtime/${script}"], cwd: o.root })?
 			if code != 0 {
 				$failures = $failures.append("${script} failed (exit ${code.to_str()})")
