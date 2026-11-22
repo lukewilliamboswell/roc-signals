@@ -8,7 +8,7 @@ import CompilerProfile
 ## js-framework-benchmark check.
 ##
 ## Every property remains beside the modules and saved inputs it tests, with a
-## thin standalone roc-fuzz app. Six repository suite roots share the compiler
+## thin standalone roc-fuzz app. Seven repository suite roots share the compiler
 ## work; the member registry names its standalone root, canonical property
 ## module and suite explicitly. Selection, reports and failures stay per member.
 ## Platform properties use the private engine package; example properties
@@ -47,6 +47,8 @@ Targets := [].{
 		{ name: "csv-converter", main: "examples/csv-converter/fuzz-csv.roc", property: "examples/csv-converter/FuzzCsvConverterProperty.roc", suite: "FuzzExampleText.roc" },
 		{ name: "log-explorer", main: "examples/log-explorer/fuzz-index.roc", property: "examples/log-explorer/FuzzLogExplorerProperty.roc", suite: "FuzzExampleData.roc" },
 		{ name: "log-scroll-map", main: "examples/log-explorer/fuzz-scroll-map.roc", property: "examples/log-explorer/FuzzLogScrollMapProperty.roc", suite: "FuzzExampleData.roc" },
+		{ name: "table-changes", main: "fuzz/table-changes/main.roc", property: "fuzz/table-changes/FuzzTableChangesProperty.roc", suite: "FuzzCores.roc" },
+		{ name: "view-follow", main: "fuzz/view-follow/main.roc", property: "fuzz/view-follow/FuzzViewFollowProperty.roc", suite: "FuzzCores.roc" },
 		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc", property: "examples/million-row-explorer/FuzzMillionRowExplorerAggregatesProperty.roc", suite: "FuzzExampleData.roc" },
 	]
 
