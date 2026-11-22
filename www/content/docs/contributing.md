@@ -798,7 +798,7 @@ not its inputs, carry the value.
 
 Every member is registered in `Targets.fuzz_targets`, with its standalone
 app, canonical property module and suite root, and every run starts from that
-registry. Seven suite apps at the repository's root share builds across
+registry. Six suite apps at the repository's root share builds across
 the 35 members:
 
 | Suite | Members |
@@ -806,8 +806,7 @@ the 35 members:
 | `FuzzRendering.roc` | `structure`, `dom`, `markup` |
 | `FuzzLifecycle.roc` | `startup-placeholders`, `table-view`, `fx-channel`, `controls` |
 | `FuzzCodecs.roc` | `crypto`, `boot`, `wire`, `result-readers`, `port-json` |
-| `FuzzSyntax.roc` | `links`, `base64`, `scm-parse`, `protocol-facts`, `url`, `names` |
-| `FuzzCores.roc` | `masks`, `table-changes`, `view-follow`, `fx-core`, `reconcile` |
+| `FuzzSyntax.roc` | `links`, `base64`, `scm-parse`, `protocol-facts`, `url`, `names`, and the pure cores `masks`, `table-changes`, `view-follow`, `fx-core`, `reconcile` |
 | `FuzzExampleText.roc` | `markdown-editor`, `markdown-html`, `conduit`, `field-notes`, `csv-converter` |
 | `FuzzExampleData.roc` | `form-builder`, `kanban-board`, `data-grid`, `spreadsheet-lite`, `log-explorer`, `log-scroll-map`, `million-row-explorer-aggregates` |
 
@@ -815,12 +814,17 @@ The examples' members import only their own pure modules. A `fuzz-package.roc` m
 private property modules to a suite; it adds no application API and does not
 ship in the examples archive.
 
+A new target joins an existing suite rather than adding a root: each root is
+one more compile of the engine package in every `check`, `fuzz-smoke` and CI
+shard. Pick a light suite; `FuzzRendering.roc` and `FuzzLifecycle.roc` carry
+the engine-driving targets and are the slowest to build.
+
 The driver builds each selected suite once, verifies its complete
 `--list-targets` inventory, then selects each member with `--target=NAME`.
 Members retain their names, declared examples, saved input bytes, models,
 corpora, baselines and report directories. Named selection builds only the
 suites it needs. CI shards assign whole suites, so a suite is compiled once
-across the seven shards. Testing each suite root includes its members' top-level
+across the six shards. Testing each suite root includes its members' top-level
 `expect`s.
 
 A target's fixed examples are its declared examples
@@ -840,7 +844,7 @@ inside the measured region.
 
 | Where | What runs | Build | How long |
 |---|---|---|---|
-| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in seven shards (`fuzz-smoke -- --shard K/7`), beside Check (`check -- --without-fuzz`, in parts) | Plain optimized profile (below) | Each shard is allowed 60 minutes; compiler and replay durations are reported |
+| CI, every pull request and push to main | Fuzz smoke: every registered target's fixed examples, in six shards (`fuzz-smoke -- --shard K/6`), beside Check (`check -- --without-fuzz`, in parts) | Plain optimized profile (below) | Each shard is allowed 60 minutes; compiler and replay durations are reported |
 | `blueprint run check` | The same replays as CI's Fuzz smoke job, every target, in one run | Plain optimized profile (below) | Depends on the selected suites; compiler and replay durations are reported |
 | `blueprint run fuzz-smoke` | Every target's fixed examples, or those named, or one shard | Plain optimized profile (below) | Depends on the selected suites; compiler and replay durations are reported |
 | `blueprint run check-slow`, local only | Every target's fixed examples on the build a campaign explores | Instrumented `--fuzz` | Instrumented compiler and replay durations are reported |
@@ -854,7 +858,7 @@ failure, reduce it and add it to the target's examples with `Fuzz.saved`,
 so every later replay, CI's included, keeps it fixed.
 
 The compiler budget remains 16 GiB per fuzz suite, so a CI runner compiles
-one suite at a time; the seven shards distribute those builds across runners.
+one suite at a time; the six shards distribute those builds across runners.
 Reports keep compiler and replay batch durations separately. Do not compare
 those batch durations as individual member timings.
 

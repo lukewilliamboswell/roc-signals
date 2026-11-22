@@ -5692,7 +5692,7 @@ know nothing of the platform.
   `watch_latest` site owns only requests of its current value and its own
   mount, and no follow-up waits after a call.
 - **Pure cores** have targets of their own with no engine in the loop,
-  sharing one build (`FuzzCores.roc`). Each core is a module that shares
+  built in the `FuzzSyntax.roc` suite. Each core is a module that shares
   nothing with the sites, so its target calls it directly with inputs no
   app would reach:
   - `fuzz/masks` holds `Sig`'s read signatures and write sets to exact
