@@ -11158,6 +11158,25 @@ expect {
 	} == { matching_start: True, disjoint: True, loaded: Rewritten, row: 11, identity: before.id }
 }
 
+## Two histories of one pure store can reach one write count with different
+## rows. A table read from one, under the cell's identity and at the count the
+## other's turn starts from, is still not the table the other's modifier
+## received: the cell stores it as a whole rewrite, so its changes never
+## describe a turn that began with other rows.
+expect {
+	store = Core.store_of({}, Core.table(Table.empty({})))
+	cell = store.cells()
+	kept = store.after([cell.update(|table| table.insert(0.U64, "a"))]).after([cell.update(|table| table)]).read(cell)
+	other = store.after([cell.update(|table| table.insert(0, "b"))])
+	held = other.after([cell.update(|_| kept.put(0, "a"))]).read(cell)
+	{
+		same_count: (TableCore.mark(kept).id, TableCore.mark(kept).start) == (TableCore.mark(other.read(cell)).id, TableCore.version(other.read(cell))),
+		began: other.read(cell).get(0)?,
+		now: held.get(0)?,
+		changes: held.changes(),
+	} == { same_count: True, began: "b", now: "a", changes: Rewritten }
+}
+
 ## A row's `item` reads the whole item and listens to the row's layer, as a
 ## `field` of it does.
 expect {

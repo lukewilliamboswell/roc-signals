@@ -18,13 +18,14 @@ The coordinator keeps this table current. States: `todo`, `active`,
 
 | WP | Title | Wave | Branch | State | Notes |
 |---|---|---|---|---|---|
-| WP-00 | Bootstrap the branch | 0 | `integration/reactivity-oracle` | todo | |
-| WP-11 | Ingress queue: fix, class, property test | 1 | `wp/oracle-ingress` | todo | |
-| WP-12 | Lean oracle project and vector format | 1 | `wp/oracle-lean` | todo | |
-| WP-13 | Tables: `kept` fix and direct targets | 1 | `wp/oracle-tables` | todo | |
-| WP-14 | Value model in the structure target | 1 | `wp/oracle-value-model` | todo | |
-| WP-15 | Design answers and contradictions | 1 | `wp/oracle-design` | todo | |
-| WP-21 | `Sig` module, `Pass` type, schedule table | 1 | `wp/oracle-sig` | todo | Owns `Core.roc` in Wave 1 |
+| WP-00 | Bootstrap the branch | 0 | `integration/reactivity-oracle` | merged | Base `check` failed on the stale 0.6.0 API baseline after 0.7.0 shipped; fixed in dc1b1ad0, then passed. `file-transfer-memory-browser.mjs` fails about half its runs at `e23f5c69` ("progress opt-in changed"): pre-existing, not ours |
+| WP-11 | Ingress queue: fix, class, property test | 1 | `wp/oracle-ingress` | active | |
+| WP-12 | Lean oracle project and vector format | 1 | `wp/oracle-lean` | merged | Generator `derive`s were injective; WP-14 added halving |
+| WP-13 | Tables: `kept` fix and direct targets | 1 | `wp/oracle-tables` | merged | `kept` requires `Writing`; four table vectors dropped |
+| WP-14 | Value model in the structure target | 1 | `wp/oracle-value-model` | review | Found a walk into a remounted branch (`crash "kids"`); merges with WP-16 |
+| WP-15 | Design answers and contradictions | 1 | `wp/oracle-design` | merged | Findings F1–F4 in the PR body; F3 (request id exhaustion) is a candidate issue |
+| WP-21 | `Sig` module, `Pass` type, schedule table | 1 | `wp/oracle-sig` | merged | Inner-first seeded bug now lives in `Sig.at_state` |
+| WP-16 | Walk into a scope the pass remounted | 1 | `wp/oracle-walk-fix` | active | Added: engine defect WP-14 found |
 | WP-22 | Probe and the checks that read it | 2 | `wp/oracle-probe` | todo | After WP-14, WP-15, WP-21 |
 | WP-23 | Vector replay and oracle sensitivity | 2 | `wp/oracle-vectors` | todo | After WP-12, WP-13, WP-14 |
 | WP-31 | `Reconcile` planner | 3 | `wp/oracle-reconcile` | todo | After WP-22 |

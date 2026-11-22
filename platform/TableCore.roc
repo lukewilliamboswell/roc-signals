@@ -203,21 +203,39 @@ TableCore := [].{
 		{ rows, record, whole, version: now, start, id, phase }
 	}
 
-	## For the engine: what a table cell notes before a write of it runs, to
-	## judge what the write leaves (`kept`).
+	## For the engine: what a table cell notes of the table its modifier
+	## received, already in its recording phase (`begin_changes`), to judge
+	## what the write leaves (`kept`). Within a turn the count can go down:
+	## a write that leaves another table stores the count after the mark,
+	## not the other table's own.
 	mark : Table(k, v) -> { id : U64, start : U64, version : U64 }
 	mark = |table| { id: table.id, start: table.start, version: table.version }
 
-	## For the engine: what a table cell stores after a write of it. A
-	## write that leaves the table the cell held, changed by the operations
-	## above, keeps its changes: it has the cell's `id` and `start`. Any
-	## other table (a new one from `from_list`, another cell's, a copy kept
-	## from an earlier turn) has no changes describing how it differs from what the
-	## views last saw, so it is stored as a whole rewrite and every view
-	## rebuilds. No write can leave a view stale.
+	## For the engine: what a table cell stores after a write of it. Only the
+	## table the modifier received, changed by the operations above, keeps
+	## its changes: it has the cell's `id` and `start` and is still in the
+	## recording phase the modifier put it in, since the operations keep the
+	## phase. Any other table (a new one from `from_list`, another cell's, a
+	## copy kept from an earlier turn) has no changes describing how it
+	## differs from what the views last saw, so it is stored as a whole
+	## rewrite and every view rebuilds. No write can leave a view stale.
+	##
+	## The phase is what tells a kept copy apart. Two histories of one pure
+	## `Store` value share the cell's `id` and can reach one count with
+	## different rows, so a copy from one can carry the `start` the other's
+	## turn begins at. Every copy an app can keep past a turn was rearmed
+	## (`finish_changes`) when that turn ended, so it is `Ready`; a `Writing`
+	## table exists only within one turn of one history, where it descends
+	## from the turn's first rows. A copy kept across a turn that wrote
+	## nothing is a whole rewrite too, which costs its views a rebuild.
+	##
+	## What keeps `View.follow` sound: a table whose count equals its
+	## changes' start holds the rows its writing turn began with, since every
+	## write adds one to the count and a whole rewrite stores the count after
+	## the mark.
 	kept : Table(k, v), { id : U64, start : U64, version : U64 } -> Table(k, v)
 	kept = |table, before|
-		if table.id == before.id and table.start == before.start {
+		if table.id == before.id and table.start == before.start and table.phase == Writing {
 			{ ..table, phase: Writing }
 		} else {
 			{ rows, .. } = table
@@ -288,16 +306,17 @@ expect {
 }
 
 ## A write that leaves the cell's own table keeps its changes; a new table,
-## another cell's and a copy from before the last clear are each stored as a
-## whole rewrite.
+## another cell's, a copy from before the last clear and a copy rearmed with
+## the cell's identity and start are each stored as a whole rewrite.
 expect {
-	cell = TableCore.with_id(Table.from_list([{ key: 1.U64, row: "a" }])?, 7)
+	cell = TableCore.begin_changes(TableCore.with_id(Table.from_list([{ key: 1.U64, row: "a" }])?, 7))
 	before = TableCore.mark(cell)
 	own = TableCore.kept(cell.put(2, "b"), before)
 	fresh = TableCore.kept(Table.from_list([{ key: 9.U64, row: "z" }])?, before)
 	other = TableCore.kept(TableCore.with_id(cell, 8).put(2, "b"), before)
-	later = TableCore.clear_changes(cell.put(2, "b"))
+	later = TableCore.begin_changes(TableCore.finish_changes(cell.put(2, "b")))
 	stale = TableCore.kept(cell.put(3, "c"), TableCore.mark(later))
+	rearmed = TableCore.kept(TableCore.finish_changes(cell).put(2, "b"), before)
 	show = |t| {
 		how = match t.changes() {
 			Keyed(_) => "keyed"
@@ -310,11 +329,13 @@ expect {
 		\\fresh: ${show(fresh)}
 		\\other: ${show(other)}
 		\\stale: ${show(stale)}
+		\\rearmed: ${show(rearmed)}
 	expected =
 		\\own: keyed v1 from 0 rows 2
 		\\fresh: rewritten v1 from 0 rows 1
 		\\other: rewritten v1 from 0 rows 2
 		\\stale: rewritten v2 from 1 rows 2
+		\\rearmed: rewritten v1 from 0 rows 2
 	actual == expected
 }
 

@@ -844,14 +844,28 @@ names the rows it touches.
   changes began. A view remembers the count it is up to date with. A view
   that has seen exactly the count the changes start from can bring itself up
   to date from the changes; any other has missed writes and builds again.
+  A table whose count equals the start of its changes holds the rows its
+  writing turn began with, which is what lets a view at that count take the
+  table as unchanged. Within a turn the count can go down: a write that hands
+  back the table as an earlier handler of the same event read it stores that
+  table's count.
 - **No write can leave a view behind.** A table cell's generated modifier
-  notes the table's identity and where its changes began before the function
-  it applies runs. If what comes back is that same table, changed by its own
-  operations, the changes stand. If it is any other table (a new one, another
-  cell's, one saved in an earlier turn), the cell stores it as a whole
-  rewrite. So a `set` of a new table, a generated reset and a function that
-  ignores its argument are all whole rewrites, and none can leave a view
-  showing rows the table no longer has.
+  puts the table into its recording phase and notes its identity and where
+  its changes began before the function it applies runs. If what comes back
+  is that same table, changed by its own operations, the changes stand: it
+  has the cell's identity and start and is still recording. If it is any
+  other table (a new one, another cell's, one saved in an earlier turn), the
+  cell stores it as a whole rewrite. So a `set` of a new table, a generated
+  reset and a function that ignores its argument are all whole rewrites, and
+  none can leave a view showing rows the table no longer has.
+  Identity and count alone cannot tell a saved table from the cell's own:
+  two `Store` values taken up from one store are two histories with the
+  same cell identities, and they can reach one count with different rows.
+  The phase does. Every table an app can keep past a turn was rearmed when
+  that turn ended, so it is not recording, and a recording table exists
+  only inside one turn of one history, where it descends from the rows the
+  turn began with. A table saved across a turn that wrote nothing is a whole
+  rewrite too.
   A mounted program's table identities are disjoint from those in a `Store`
   value, so a table read with `Store.read` and set into a live cell is a whole
   rewrite.
@@ -1024,7 +1038,9 @@ app-facing type makes it impossible for an app to call it.
 - Each view of a table pays for each written key, and each plain reader of
   the table is evaluated on each write to it.
 - A table is written with `update`. A `set` of a table built from a reading
-  of the same cell is still a keyed write, and copies the table.
+  of the same cell copies the table, and is a whole rewrite unless the
+  reading was taken after an earlier write of the cell in the same event (a
+  handler composed with `also`), when it is still a keyed write.
 - A write to a key the table does not hold writes nothing and reports no
   error, so a row handler that names another table's cell by mistake is
   silent. An error would punish a write that lost a race with its row's
@@ -5402,7 +5418,11 @@ pure turn. Generated modifiers start a written table's record before its
 first modifier, and retain its first earlier row per key across the list.
 The turn rearms exactly its written table cells; unrelated tables keep their
 last writing turn's record. `read(table).inverse()` describes that retained
-turn. The existing exact write-set words select only written cell IDs through
+turn. A table read from one `Store` value and handed to a cell in a turn of
+another is a whole rewrite, even when the two values come from one store and
+the table carries the count the turn starts from: two values taken up from
+one store are two histories, and only the table a modifier received is the
+cell's own. The existing exact write-set words select only written cell IDs through
 an immutable index of generated table callbacks, built once with the store.
 A turn never scans all table descriptors, unrelated rows or change records.
 Reclaiming a written table's preceding record remains
@@ -5507,8 +5527,9 @@ know nothing of the platform.
   same pass each table view site therefore also builds its view from scratch, for
   the query and the window as they read then, and requires the one it holds
   to equal it: the ordered keys of the whole view, the window, the rows
-  drawn, the count of writes it is up to date with, and the table's changes
-  cleared. A difference fails the check with the site's path, and the pass
+  drawn, the count of writes it is up to date with, and the table rearmed
+  for its next writing turn, its changes retained. A difference fails the
+  check with the site's path, and the pass
   stops at that site, whose rows may name keys the table no longer has. This
   second check costs a rebuild of every table view at every step.
 

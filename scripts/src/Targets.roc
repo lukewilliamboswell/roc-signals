@@ -48,6 +48,8 @@ Targets := [].{
 		{ name: "csv-converter", main: "examples/csv-converter/fuzz-csv.roc", property: "examples/csv-converter/FuzzCsvConverterProperty.roc", suite: "FuzzExampleText.roc" },
 		{ name: "log-explorer", main: "examples/log-explorer/fuzz-index.roc", property: "examples/log-explorer/FuzzLogExplorerProperty.roc", suite: "FuzzExampleData.roc" },
 		{ name: "log-scroll-map", main: "examples/log-explorer/fuzz-scroll-map.roc", property: "examples/log-explorer/FuzzLogScrollMapProperty.roc", suite: "FuzzExampleData.roc" },
+		{ name: "table-changes", main: "fuzz/table-changes/main.roc", property: "fuzz/table-changes/FuzzTableChangesProperty.roc", suite: "FuzzCores.roc" },
+		{ name: "view-follow", main: "fuzz/view-follow/main.roc", property: "fuzz/view-follow/FuzzViewFollowProperty.roc", suite: "FuzzCores.roc" },
 		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc", property: "examples/million-row-explorer/FuzzMillionRowExplorerAggregatesProperty.roc", suite: "FuzzExampleData.roc" },
 	]
 

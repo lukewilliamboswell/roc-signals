@@ -324,15 +324,6 @@ turn saved 0
 turn on insert(1,0) remove(1) ; on replace(1,0)
   -> rows 0:0 2:2 | keyed 1=absent | 4 2
 end
-vector 312
-covers saved keyed writes
-start 
-turn on replace(2,1) update(1)
-  -> rows  | keyed | 0 0
-keep
-turn on insert(0,1) ; saved 0
-  -> rows  | keyed | 0 0
-end
 vector 480
 covers remove key-recorded no-write
 start 0:2 1:0 2:1
@@ -340,18 +331,6 @@ turn on remove(1) ; on remove(1)
   -> rows 0:2 2:1 | keyed 1=was:0 | 1 0
 turn on insert(2,2)
   -> rows 0:2 2:1 | keyed | 1 1
-keep
-end
-vector 506
-covers saved turn-start no-write, saved turn-start writes
-start 0:2 1:0 2:1
-turn on insert(0,1) ; on insert(1,2)
-  -> rows 0:2 1:0 2:1 | keyed | 0 0
-keep
-turn saved 0
-  -> rows 0:2 1:0 2:1 | keyed | 0 0
-turn saved 0 replace(2,2) ; on insert(2,2)
-  -> rows 0:2 1:0 2:2 | keyed 2=was:1 | 1 0
 keep
 end
 vector 523
@@ -400,15 +379,6 @@ keep
 turn on insert(1,2) update(0)
   -> rows 0:0 1:0 2:1 | keyed 0=was:2 | 3 2
 end
-vector 1143
-covers saved keyed no-write
-start 0:1 1:0
-turn on undo
-  -> rows 0:1 1:0 | keyed | 0 0
-keep
-turn saved 0 ; saved 0
-  -> rows 0:1 1:0 | keyed | 0 0
-end
 vector 1236
 covers remove rewritten no-write
 start 0:0
@@ -416,15 +386,4 @@ turn on replace(1,2)
   -> rows 0:0 | keyed | 0 0
 turn on update_all ; on remove(1)
   -> rows 0:1 | rewritten | 1 0
-end
-vector 4344
-covers saved rewritten no-write
-start 
-turn on insert(0,2) insert(0,0)
-  -> rows 0:2 | keyed 0=absent | 1 0
-turn on update(1)
-  -> rows 0:2 | keyed | 1 1
-keep
-turn other 0 ; saved 0 insert(1,1)
-  -> rows 0:2 1:1 | keyed 1=absent | 2 1
 end
