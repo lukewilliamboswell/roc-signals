@@ -10,9 +10,9 @@ import Reference
 ##
 ## The comparison is the value model's: the page's texts in document order,
 ## button labels included, and the number of buttons. A vector's evaluation
-## counts are parsed and kept, but nothing here compares them: a known-bad
-## trace that only a count rejects is accepted by the page, and is listed as
-## such (`seen_by`).
+## counts are parsed and kept, and the count model compares them
+## (`Counts.replay`, the kernel's count): a known-bad trace that only a count
+## rejects is accepted by the page, and is listed as such (`seen_by`).
 Vectors := [].{
 
 	## How a known-bad trace is rejected: by the page, by the evaluation count,
@@ -368,7 +368,8 @@ expect held_to(Vectors.good, "fuzz/structure/vectors.trace")
 expect held_to(Vectors.bad, "fuzz/structure/vectors-bad.trace")
 
 ## Which known-bad algorithm the value model sees, and by what. Those seen
-## only by `Count` need a count model; the page comparison cannot see them.
+## only by `Count` need the count model (`Counts.replay`); the page
+## comparison cannot see them.
 ## Removing an algorithm's traces, or every rejection the page makes of
 ## one, changes this report.
 expect {

@@ -125,7 +125,10 @@ end
   trace, and the first observation and step at which the reference rejects
   it. The Roc value model compares pages only, so it must reject a `page`
   or `button` trace at exactly that step and accept a `count` trace by the
-  page; seeing a `count` trace from Roc needs a count model.
+  page. The Roc count model (`fuzz/structure/Counts.roc`) replays every
+  step's count with the kernel's definition and must agree on every
+  vector and reject a `count` trace at exactly its step; the same model,
+  with the engine's definition, holds the engine's counter to each click.
 
 The trees follow the generator in `fuzz/structure/Reference.roc` and
 `FuzzStructureProperty.roc` in its valued modes: every state starts at 0
