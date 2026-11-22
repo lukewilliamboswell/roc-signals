@@ -4,9 +4,9 @@ proving. This file ties it to the executable algorithm by test, not by
 proof: on a static program, one turn of `Incr.turn` must leave the same
 storage as `Static.walk` after `Static.pass`.
 -/
-import Spike.Incr
-import Spike.Proof
-namespace Spike
+import Turns.Incr
+import Turns.Proof
+namespace Turns
 
 /-- A mounted static block as the proof's chain of sites. Buttons hold no
 storage and are left out. `none`: the block is not in the fragment. -/
@@ -44,4 +44,4 @@ def linkStep (g : Cfg) (p : Prog) (s : Instance) (ev : Ident) : Option (Bool × 
   let m : Static.Mask := fun b => cw.any fun (c, _) => g.α.bit (.cell c) == b
   pure (decide (Static.walk g.α.bit ρ 0 (Static.pass g.α.bit m ρ 0 t) = want), lw.length + cw.length > 1)
 
-end Spike
+end Turns

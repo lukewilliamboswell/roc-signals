@@ -6,8 +6,8 @@ The fragment is modelled on its own here, as a chain of sites, so that
 every function is structurally recursive. It shares `Expr`, `Expr.eval` and
 `Expr.reads` with the executable model and nothing else.
 -/
-import Spike.Kernel
-namespace Spike.Static
+import Turns.Kernel
+namespace Turns.Static
 
 /-- A mounted static block: a chain of sites, each with its storage. -/
 inductive S where
@@ -298,6 +298,6 @@ theorem unreached_shares_no_reader (α : Ref → Nat) (m : Mask) (ρ ρ' : E) (d
     (ha : Agree α m ρ ρ') (hmiss : hit α m (reads t) = false) (hp : Pre ρ d t) : Pre ρ' d t :=
   pre_congr t ρ ρ' d (fun r hr => ha r (not_hit (by simp [hmiss]) r hr)) hp
 
-end Spike.Static
+end Turns.Static
 
-#print axioms Spike.Static.turn_static
+#print axioms Turns.Static.turn_static

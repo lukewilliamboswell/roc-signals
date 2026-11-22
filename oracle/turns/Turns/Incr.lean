@@ -8,8 +8,8 @@ rows. Its output is patch commands and a log of every evaluation.
 
 `Bug` seeds the deliberate defects the checks are measured against.
 -/
-import Spike.Spec
-namespace Spike
+import Turns.Spec
+namespace Turns
 
 inductive Bug where
   | none
@@ -383,4 +383,4 @@ partial def flatDoms (id : Ident) (ds : List Dom) : List (Ident × Leaf) :=
   (indexed ds).flatMap fun (i, d) => flatDom (id ++ [.c i]) d
 end
 
-end Spike
+end Turns

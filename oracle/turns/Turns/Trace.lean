@@ -12,8 +12,8 @@ reference semantics alone.
                                   observed after it; evaluations counted, or - for none
   end
 -/
-import Spike.Expect
-namespace Spike
+import Turns.Expect
+namespace Turns
 
 def Ref.sx : Ref → String
   | .layer i => s!"(L {i})"
@@ -219,4 +219,4 @@ def refTrace (α : Alpha) (p : Prog) (name : String) (clicks : List Nat) : Trace
     w := w1
   return { name, α, prog := p, page0 := leavesOf p (World.init p), steps := steps.toList }
 
-end Spike
+end Turns

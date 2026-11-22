@@ -13,8 +13,8 @@ Invariant 23 / T5 splits into
   history of a mounted instance and fails over the branching histories of a
   pure `Store`.
 -/
-import TableSpike.Spec
-namespace TableSpike
+import Tables.Spec
+namespace Tables
 
 theorem rget_rput (m : Rows) (k : K) (v : V) (k' : K) :
     rget (rput m k v) k' = if k' = k then some v else rget m k' := by
@@ -332,4 +332,4 @@ theorem op_counts (nv : Nat) (t : Table) (op : Op) (w : Bool) (h : op.writes t =
 #print axioms describes_kept
 #print axioms op_counts
 
-end TableSpike
+end Tables

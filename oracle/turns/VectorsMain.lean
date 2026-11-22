@@ -2,8 +2,8 @@
 `lake exe bridge`: write traces, and check trace files against the
 reference semantics.
 -/
-import Spike
-open Spike
+import Turns
+open Turns
 
 def nat (s : String) : Nat := s.toNat?.getD 0
 

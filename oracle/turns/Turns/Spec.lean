@@ -2,8 +2,8 @@
 The reference semantics: the page from scratch, and a turn as "apply the
 writes, render again". Nothing here is incremental.
 -/
-import Spike.Kernel
-namespace Spike
+import Turns.Kernel
+namespace Turns
 
 /-- What a render yields at an identity. -/
 inductive Item where
@@ -96,4 +96,4 @@ def buttonsOf (v : View) : List Ident := v.filterMap fun
   | (id, .button _) => some id
   | _ => none
 
-end Spike
+end Turns

@@ -4,7 +4,7 @@ type in `fuzz/structure/FuzzStructureProperty.roc`, with the app code
 (expressions, handlers) first-order too, so a program is data both a Lean
 model and the Roc engine could be handed.
 -/
-namespace Spike
+namespace Turns
 
 /-- One untyped value universe. -/
 abbrev Val := Int
@@ -136,4 +136,4 @@ def readsBlock : List Node → List Ref
   | n :: ns => readsNode n ++ readsBlock ns
 end
 
-end Spike
+end Turns

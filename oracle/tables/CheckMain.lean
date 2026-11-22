@@ -3,9 +3,9 @@ Bounded exhaustive checking: a breadth-first search over every state a table
 cell (and one table view site) can reach in a bounded number of turns, over a
 tiny universe of keys and rows, with every named rule checked at every state.
 -/
-import TableSpike
+import Tables
 import Std.Data.HashSet
-open TableSpike
+open Tables
 
 inductive Ck where
   -- the turn boundary (invariant 20, design.md:950-961)

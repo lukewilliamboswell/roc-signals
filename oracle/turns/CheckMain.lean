@@ -3,8 +3,8 @@
 over seeded random programs or every program within bounds, with or without
 a seeded bug.
 -/
-import Spike
-open Spike
+import Turns
+open Turns
 
 def parseBug : String → Option Bug
   | "none" => some .none

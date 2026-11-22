@@ -4,8 +4,8 @@ seeded random program; counting through every stream the generator can ask
 for (`nextDigits`) gives every program within the bounds (a program repeats
 where the size bound cuts a block short of the length chosen for it).
 -/
-import Spike.Kernel
-namespace Spike
+import Turns.Kernel
+namespace Turns
 
 structure GenP where
   maxDepth : Nat := 4    -- nesting of sites (a `state` can nest to any depth)
@@ -142,4 +142,4 @@ def randoms (seed : Nat) (n : Nat) : Array Nat := Id.run do
     out := out.push (z >>> 16).toNat
   return out
 
-end Spike
+end Turns

@@ -2,9 +2,9 @@
 The checks: P1–P5 for one turn of the incremental algorithm against the
 reference, and what an oracle that sees less would still see.
 -/
-import Spike.Expect
-import Spike.Incr
-namespace Spike
+import Turns.Expect
+import Turns.Incr
+namespace Turns
 
 /-- What a step can break. The first three need nothing but the command
 stream (and, for `CNT`, the engine's evaluation counter); the rest need the
@@ -87,4 +87,4 @@ def checkStep (g : Cfg) (p : Prog) (sim : Sim) (ev : Ident) : Sim × Nat × Nat 
               || !(created.all exp.created.contains && exp.created.all created.contains))
       (sim1, v, log.length)
 
-end Spike
+end Turns

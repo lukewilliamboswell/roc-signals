@@ -12,7 +12,7 @@ Abstractions (everything else is line for line):
 * keys and rows are `Nat`; `U64` overflow is not modelled.
 * `Bug` selects a seeded defect; `Bug.none` is the transliteration.
 -/
-namespace TableSpike
+namespace Tables
 
 abbrev K := Nat
 abbrev V := Nat
@@ -205,4 +205,4 @@ def cellModify (bug : Bug) (t : Table) (f : Table → Table) : Table :=
 def cellStart (rows : Rows) (id : Nat) : Table :=
   withId (clearChanges { Table.empty with rows := rows }) id
 
-end TableSpike
+end Tables

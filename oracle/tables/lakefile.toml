@@ -1,0 +1,9 @@
+name = "tables"
+defaultTargets = ["Tables", "check"]
+
+[[lean_lib]]
+name = "Tables"
+
+[[lean_exe]]
+name = "check"
+root = "CheckMain"

@@ -5,8 +5,8 @@ the turn evaluates it at all (P5 and the evaluation count), which texts it
 sets and which scopes it creates. It compares the world before with the
 world after; it is a specification, not an algorithm, and carries no state.
 -/
-import Spike.Spec
-namespace Spike
+import Turns.Spec
+namespace Turns
 
 structure Reading where
   id : Ident
@@ -95,4 +95,4 @@ def expect (α : Alpha) (p : Prog) (w0 w1 : World) (ws : List (Target × Val)) :
   { readers := facts.filterMap fun | .reader r => some r | _ => none
     created := facts.filterMap fun | .created id => some id | _ => none }
 
-end Spike
+end Turns
