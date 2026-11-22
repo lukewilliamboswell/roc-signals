@@ -181,18 +181,18 @@ ApiDocs := [].{
 	## The reviewed repairs of published baselines; empty once the latest
 	## release is one `roc bump` reads as it shipped.
 	##
-	## 0.6.0's `Wire.Sendable` constraint names the unexposed `WorkerCodec`
+	## 0.7.0's `Wire.Sendable` constraint names the unexposed `WorkerCodec`
 	## types, as the candidate does. The same extraction workaround adds
 	## that module to a copy of the published root, without changing the
 	## bundle or exposing it to apps. The digest binds the repair to the
 	## exact published asset. Upstream:
-	## https://github.com/roc-lang/roc/issues/13080. Once 0.6.0 is no longer
+	## https://github.com/roc-lang/roc/issues/13080. Once 0.7.0 is no longer
 	## the latest release, `baseline_plan` fails until this entry is retired.
 	baseline_repairs : List(BaselineRepair)
 	baseline_repairs = [
 		{
-			version: "0.6.0",
-			sha256: "ea59cb6c5577ed1be8322946edfc1f7b6effcd8160e369de976eeca7d63829e0",
+			version: "0.7.0",
+			sha256: "1bb78910b615189810ed7b1ed0adb4cef8d0117c065385aba4f6c40de99fd790",
 			reason: ApiDocs.candidate_repair.reason,
 			edits: ApiDocs.candidate_repair.edits,
 		},
@@ -428,13 +428,13 @@ expect {
 	actual == expected
 }
 
-## 0.6.0's repair adds exactly `WorkerCodec` to the exposed modules of its
+## 0.7.0's repair adds exactly `WorkerCodec` to the exposed modules of its
 ## published root, and nothing else.
 expect {
-	repair = ApiDocs.baseline_repairs.find_first(|r| r.version == "0.6.0")?
-	published = "platform \"\"\n\trequires {}\n\texposes [Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, Wire, Worker]\n\tpackages {}\n\tprovides {}\nimport Core\nimport Wire\nimport Worker\n"
+	repair = ApiDocs.baseline_repairs.find_first(|r| r.version == "0.7.0")?
+	published = "platform \"\"\n\trequires {}\n\texposes [Base64, Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, WebCrypto, Wire, Worker]\n\tpackages {}\n\tprovides {}\nimport Core\nimport Wire\nimport Worker\n"
 	repaired = ApiDocs.repaired_root(published, repair.edits)?
-	{ before: ApiDocs.modules(published)?, after: ApiDocs.modules(repaired)? } == { before: ["Clipboard", "Engine", "Files", "Html", "Layout", "Order", "Port", "PortJson", "Svg", "Url", "Web", "Wire", "Worker"], after: ["Clipboard", "Engine", "Files", "Html", "Layout", "Order", "Port", "PortJson", "Svg", "Url", "Web", "Wire", "WorkerCodec", "Worker"] }
+	{ before: ApiDocs.modules(published)?, after: ApiDocs.modules(repaired)? } == { before: ["Base64", "Clipboard", "Engine", "Files", "Html", "Layout", "Order", "Port", "PortJson", "Svg", "Url", "Web", "WebCrypto", "Wire", "Worker"], after: ["Base64", "Clipboard", "Engine", "Files", "Html", "Layout", "Order", "Port", "PortJson", "Svg", "Url", "Web", "WebCrypto", "Wire", "WorkerCodec", "Worker"] }
 }
 
 ## An edit whose text is missing or repeated refuses the baseline rather
