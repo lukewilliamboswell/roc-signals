@@ -91,6 +91,10 @@ config = [
 	Task("sizes", [Use("engine"), Run(["scripts/check_sizes.roc", "--"])]),
 	# A fuzz campaign, local only: `blueprint run fuzz -- --time 600 [TARGET...]`.
 	Task("fuzz", [Use("engine"), Run(["scripts/fuzz.roc", "--"])]),
+	# The Lean reference models under oracle/, local only and never in CI:
+	# build them, run their fixed checks and require every vector file they
+	# write to equal the checked-in one. Needs `lake` (elan) on the PATH.
+	Task("oracle", [Use("engine"), Run(["scripts/oracle.roc"])]),
 	# The release assets: `blueprint run release -- --version 0.3.0`.
 	Task("release", [Use("release"), Run(["scripts/release.roc", "--"])]),
 	# Build the site into dist/: `-- --base-url http://127.0.0.1:8000/roc-signals` for serve.

@@ -253,7 +253,9 @@ def siteStep (r : Run) (sc : Scope) (site : Site) (cell : Table) (wrote : Bool)
     r.chk .placedBound (how != .absorbed || placed ≤ 2 * cell.record.length) say'
     return some site'
 
-partial def explore (sc : Scope) : IO Unit := do
+/-- Explore every state within `sc`, check every rule, print the result,
+and answer the names of the rules that failed. -/
+partial def explore (sc : Scope) (verbose : Bool := true) : IO (List String) := do
   let r : Run := { stats := ← IO.mkRef (Array.replicate Ck.all.size {}), trans := ← IO.mkRef 0 }
   let t0 ← IO.monoMsNow
   let mut visited : Std.HashSet St := {}
@@ -344,7 +346,7 @@ partial def explore (sc : Scope) : IO Unit := do
               if !visited.contains st' then
                 visited := visited.insert st'
                 next := next.push (st', (line' ++ (if sv.length > m.saved.length then " ; (copy kept)" else "")) :: tr)
-    IO.println s!"turn {turn + 1}: frontier {frontier.size} -> new states {next.size}, total {visited.size}, transitions {← r.trans.get}"
+    if verbose then IO.println s!"turn {turn + 1}: frontier {frontier.size} -> new states {next.size}, total {visited.size}, transitions {← r.trans.get}"
     frontier := next
   let t1 ← IO.monoMsNow
   IO.println s!"bug={repr sc.bug} keys={sc.nk} rows={sc.nv} turns={sc.turns} mods={sc.mods} ops={sc.ops} saved={sc.maxSaved} site={sc.site} branching={sc.branching} saveMid={sc.saveMid} ratio={sc.cfg.ratio} floor={sc.cfg.floor} queries={sc.queries}"
@@ -360,10 +362,14 @@ partial def explore (sc : Scope) : IO Unit := do
       IO.println s!"  {if x.bad == 0 then "ok  " else "FAIL"} {name}: {x.n} checked, {x.bad} failed{if x.bad > 0 then s!" (first at application {x.firstAt})" else ""}"
       if x.bad > 0 then failed := failed + 1
   IO.println s!"rules failed: {failed}"
+  let mut names : List String := []
   for c in Ck.all do
     let x := stats[c.idx]!
-    if x.bad > 0 then
-      IO.println s!"--- first {(reprStr c).replace "Ck." ""}:\n   {x.first}"
+    let name := (reprStr c).replace "Ck." ""
+    if x.bad > 0 && !name.startsWith "w" then
+      names := names ++ [name]
+      if verbose then IO.println s!"--- first {name}:\n   {x.first}"
+  return names
 
 def parseBug : String → Bug
   | "latestRow" => .latestRow | "noClear" => .noClear | "staleOk" => .staleOk
@@ -383,54 +389,43 @@ def tie : IO Unit := do
     | .error e => IO.println s!"absorb: crash: {e}"
     | .ok (s, _, how, _) => IO.println s!"absorb: ok {repr how} drawn={s.drawn}"
 
-def showBefore : Before → String
-  | .absent => "absent"
-  | .was v => s!"was:{v}"
+/-- The fixed set `blueprint run oracle` runs, each scope with the rules it
+is expected to fail. Every scope is one the exploration of the table's
+changes used. The branching history of a pure `Store` value fails four
+rules: `kept` identifies a turn by the cell's identity and the count its
+changes began at, which two histories of one value can share (design
+decision D7). The expectation changes with the fix. -/
+def gates : List (String × Scope × List String) := [
+  ("view, 2 keys, 2 rows, 2 turns", { turns := 2 }, []),
+  ("view, rebuilt for many changes", { turns := 2, cfg := { ratio := 1, floor := 0 } }, []),
+  ("view, 3 turns, no copies", { turns := 3, maxSaved := 0 }, []),
+  ("branching histories, 3 turns", { turns := 3, maxSaved := 2, site := false, branching := true }, []),
+  ("branching histories, 5 turns", { turns := 5, mods := 1, maxSaved := 2, site := false, branching := true },
+    ["recordSound", "recordCovers", "inverseRestores", "verEqStartMeansUnchanged"])]
 
-/-- Test vectors: operation sequences with the record and the view Lean expects. -/
-def vectors : IO Unit := do
-  let sc : Scope := { nk := 3, nv := 3 }
-  let turns : List (List Op × Option Window) := [
-    ([.put 0 2, .put 0 1, .remove 1, .insert 2 0], none),
-    ([.update 2, .insert 1 1], some { start := 1, count := 2 }),
-    ([.remove 9], none),
-    ([.updateAll], none),
-    ([.put 1 0, .undo], some { start := 0, count := 2 })]
-  let mut cell := cellStart [(0, 0), (1, 1)] cellId
-  IO.println "# table-view vectors v1: `table` rows; `view` query window; then per turn"
-  IO.println "#   turn <ops> [window s c]  ->  rows | changes | version start | keys | drawn | row changes"
-  IO.println s!"table {" ".intercalate (cell.rows.map fun (p : K × V) => s!"{p.1}:{p.2}")}"
-  IO.println "view 0 0 2"
-  match Site.mount cell 0 { start := 0, count := 2 } with
-  | .error e => IO.println e
-  | .ok site0 =>
-    let mut site := site0
-    for (os, w) in turns do
-      let t : Table := finishChanges (cellModify .none cell fun t => os.foldl (Op.run .none sc.nv) t)
-      match Site.changed .none {} site t none w with
-      | .error e => IO.println s!"crash {e}"
-      | .ok (s, changes, _, _) =>
-        let rec_ := match t.whole with
-          | .rewritten => "rewritten"
-          | .keyed => "keyed " ++ " ".intercalate (t.record.map fun (p : K × Before) => s!"{p.1}={showBefore p.2}")
-        let ch := " ".intercalate (changes.map fun
-          | .left k => s!"left:{k}"
-          | .entered k b => s!"entered:{k}@{match b with | some a => toString a | none => "end"}"
-          | .moved k b => s!"moved:{k}@{match b with | some a => toString a | none => "end"}"
-          | .changed k => s!"changed:{k}")
-        IO.println s!"turn {showOps os}{match w with | some w => s!" window {w.start} {w.count}" | none => ""}"
-        IO.println s!"  -> rows {" ".intercalate (t.rows.map fun (p : K × V) => s!"{p.1}:{p.2}")} | {rec_} | {t.version} {t.start} | keys {s.view.seq.map (·.2)} | drawn {s.drawn} | {ch}"
-        cell := t
-        site := s
+def gate : IO Bool := do
+  let mut ok := true
+  for (name, sc, expected) in gates do
+    IO.println s!"== {name}"
+    let failed ← explore sc false
+    let good := failed == expected
+    ok := ok && good
+    IO.println s!"{if good then "ok  " else "FAIL"} {name}: failed [{", ".intercalate failed}], expected [{", ".intercalate expected}]"
+  return ok
 
-def main (args : List String) : IO Unit := do
+def main (args : List String) : IO UInt32 := do
   match args with
-  | ["tie"] => tie
-  | ["vectors"] => vectors
+  | ["tie"] => do tie; return 0
+  | ["gate"] => return (if (← gate) then 0 else 1)
   | "explore" :: bug :: nk :: nv :: turns :: mods :: ops :: saved :: site :: branching :: saveMid :: ratio :: floor :: rest =>
-    explore { bug := parseBug bug, nk := nk.toNat!, nv := nv.toNat!, turns := turns.toNat!,
-              mods := mods.toNat!, ops := ops.toNat!, maxSaved := saved.toNat!,
-              site := site == "1", branching := branching == "1", saveMid := saveMid == "1",
-              cfg := { ratio := ratio.toNat!, floor := floor.toNat! },
-              cap := (rest.head?.map String.toNat!).getD 4000000 }
-  | _ => IO.println "usage: check explore <bug> <keys> <rows> <turns> <mods> <ops> <saved> <site> <branching> <saveMid> <ratio> <floor> [cap] | tie | vectors"
+    let sc : Scope :=
+      { bug := parseBug bug, nk := nk.toNat!, nv := nv.toNat!, turns := turns.toNat!,
+        mods := mods.toNat!, ops := ops.toNat!, maxSaved := saved.toNat!,
+        site := site == "1", branching := branching == "1", saveMid := saveMid == "1",
+        cfg := { ratio := ratio.toNat!, floor := floor.toNat! },
+        cap := (rest.head?.map String.toNat!).getD 4000000 }
+    let _ ← explore sc
+    return 0
+  | _ =>
+    IO.println "usage: check explore <bug> <keys> <rows> <turns> <mods> <ops> <saved> <site> <branching> <saveMid> <ratio> <floor> [cap] | tie | gate"
+    return 2

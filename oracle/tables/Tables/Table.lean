@@ -11,6 +11,11 @@ Abstractions (everything else is line for line):
   order `inverse` folds in).
 * keys and rows are `Nat`; `U64` overflow is not modelled.
 * `Bug` selects a seeded defect; `Bug.none` is the transliteration.
+
+Trusted for: what `TableCore.roc` does, not what it should do. It follows
+the code as it is, defects included, so the checks show what the code
+keeps; where a check fails, `design.md` and `Tables.Spec` say what is
+wanted, and the fix lands here and in Roc together.
 -/
 namespace Tables
 

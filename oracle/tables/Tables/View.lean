@@ -8,6 +8,9 @@ Abstractions:
   tie, crash on a missing entry); chunk splitting and merging is not modelled.
 * a query is a number; `plan` turns it into `keep`, `sort`, `compare`.
 * a crash is `Except.error`.
+
+Trusted for: what `View.roc` and the site's `Changed` do, as `Tables.Table`
+is for `TableCore.roc`.
 -/
 import Tables.Table
 namespace Tables

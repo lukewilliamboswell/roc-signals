@@ -12,6 +12,8 @@ Invariant 23 / T5 splits into
   kept, it is what the exhaustive checker tests: it holds over the single
   history of a mounted instance and fails over the branching histories of a
   pure `Store`.
+
+Trusted for: the theorems below, about the transliteration as it is.
 -/
 import Tables.Spec
 namespace Tables
