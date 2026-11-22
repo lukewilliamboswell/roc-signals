@@ -22,12 +22,13 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // whether local storage is available at all (it is not when reaching or
 // reading it throws). Scoped environment subscriptions report later changes.
 //
-// Ingress: declared reports wait for the frame, with one replaceable entry
-// per source. Occurrences pin earlier reports and drain them synchronously.
-// At MAX_QUEUED entries an idle runtime drains early; exceeding that bound
-// while synchronously busy poisons with `resource_limit`. A waiting view
-// transition instead applies its held batch and drains. A drain delivers at most
-// MAX_QUEUED turns before idle, bounding a one-event-per-turn feedback loop.
+// Ingress (`Ingress`): declared reports wait for the frame, with one
+// replaceable entry per source. Occurrences pin earlier reports and drain
+// them synchronously. At MAX_QUEUED waiting entries an idle runtime drains
+// early; more than MAX_QUEUED entries raised since it left idle poison with
+// `resource_limit`, unless a waiting view transition can apply its held
+// batch and drain. A drain delivers at most MAX_QUEUED turns for raised
+// entries, bounding a one-event-per-turn feedback loop.
 //
 // Effects (see "Effects" in Engine.roc): the engine emits FX requests with
 // ids, CANCEL, NAV, STORAGE and TITLE commands. They are collected while a
@@ -184,7 +185,8 @@ import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, che
 // The wire protocol version this runtime implements (design.md, Appendix B).
 export const PROTOCOL_VERSION = 23;
 
-// The most events queued behind a running batch (see "Ingress" above).
+// Each of the ingress queue's two budgets, and its drain budget (see
+// "Ingress" above).
 export const MAX_QUEUED = 4096;
 
 // A visible page whose browser supplies no frames must still make progress.
@@ -3298,6 +3300,18 @@ function finishPicture(runtime) {
 // is constant work per entry it touches. `bound` is a constructor parameter
 // so a test can reach it with a few inputs.
 //
+// Two budgets of `bound` entries each (design.md, "Boundedness"): entries
+// *waiting*, queued while the runtime was idle, and entries *raised* since
+// the runtime last left idle, queued while a turn ran or a batch was being
+// applied. An idle input that finds `bound` waiting drains the queue early,
+// so the number of report sources never poisons; a raised input beyond its
+// budget is a feedback loop and poisons, unless a view transition is
+// waiting, which is then applied. The queue therefore holds at most twice
+// `bound`. A drain never returns the runtime to idle holding more than
+// `bound`: it delivers the oldest early instead. The drain budget counts
+// only turns for raised entries, so reports that waited for their frame
+// never spend it.
+//
 // An input is `{ node, handler, payload, el, target, source, owner }`; a
 // report has a `source` and an `owner` (the live effect entry or the DOM
 // report source) whose `reports` set names its queued entries, and
@@ -3314,6 +3328,27 @@ export class Ingress {
     // is never replaced again.
     this.sources = new Map();
     this.epoch = {};
+    // The busy period raised entries belong to: a fresh token each time the
+    // runtime leaves idle, null while it is idle. Returning to idle makes
+    // every queued entry waiting in O(1), by dropping the token.
+    this.period = null;
+    this.raised = 0;
+  }
+
+  // Entries queued while the runtime was idle, or left from an earlier
+  // busy period.
+  get waiting() {
+    return this.length - this.raised;
+  }
+
+  isRaised(entry) {
+    return entry.period !== null && entry.period === this.period;
+  }
+
+  // The runtime is idle: nothing queued was raised since it last left idle.
+  idle() {
+    this.period = null;
+    this.raised = 0;
   }
 
   // Whatever is left after a drain waits for a frame.
@@ -3325,11 +3360,14 @@ export class Ingress {
   // `replaced` (a waiting report took the new payload in place), `now` (an
   // idle occurrence with nothing ahead of it is delivered at once, never
   // queued), `shared` (another queue holding `shared` entries against the
-  // same bound is full), `poison` (the bound is exceeded while a turn runs),
-  // or `queued`, with `active` the oldest entry taken out to make room,
-  // which the runtime delivers as the initiating turn, and `forced` when
-  // that room was made by applying a waiting view transition.
+  // same bound is full), `poison` (the raised budget is exceeded while a
+  // turn runs), or `queued`, with `active` the oldest entry taken out to
+  // make room, which the runtime delivers as the initiating turn, and
+  // `forced` when that room was made by applying a waiting view transition.
+  // The input takes the class of the slot it was admitted to: the freed
+  // slot when `active` was taken, otherwise raised exactly when `busy`.
   admit(input, { busy, transitionWaiting = false, shared = 0 }) {
+    if (!busy) this.idle();
     const report = input.source !== undefined;
     if (report) {
       const waiting = this.sources.get(input.source);
@@ -3343,23 +3381,29 @@ export class Ingress {
     } else this.epoch = {};
     if (!report && !busy && this.length === 0) return { kind: "now" };
     if (shared > 0 && this.length + shared >= this.bound) return { kind: "shared" };
-    let active = null, forced = false;
-    if (this.length >= this.bound && transitionWaiting) {
+    let active = null, forced = false, raised = busy;
+    if (busy && this.raised >= this.bound) {
+      if (!transitionWaiting) return { kind: "poison" };
       // Reserve the oldest entry as the active delivery, as on an idle
       // full queue. Admit this input before any older turn can raise a
-      // newer report; the queue stays within its bound.
+      // newer report; both budgets hold.
+      raised = this.isRaised(this.head);
       active = this.take();
       forced = true;
-    }
-    if (this.length >= this.bound) {
-      if (busy) return { kind: "poison" };
+    } else if (!busy && this.length >= this.bound) {
       // Reports and occurrences both take their FIFO place before an
-      // older delivery can synchronously emit another report.
+      // older delivery can synchronously emit another report. Idle, every
+      // entry is waiting.
       active = this.take();
     }
     const entry = input;
     entry.epoch = this.epoch;
     entry.next = null;
+    if (raised) {
+      this.period ??= {};
+      this.raised += 1;
+    }
+    entry.period = raised ? this.period : null;
     if (this.tail === null) this.head = entry;
     else this.tail.next = entry;
     this.tail = entry;
@@ -3375,6 +3419,7 @@ export class Ingress {
   // Taking the head retires just that entry's index and ownership links.
   take() {
     const entry = this.head;
+    if (this.isRaised(entry)) this.raised -= 1;
     this.head = entry.next;
     this.length -= 1;
     if (this.length === 0) this.tail = null;
@@ -3388,12 +3433,23 @@ export class Ingress {
 
   // The entry a drain delivers next, taken out of the queue, or null where
   // the drain stops: at `before`, or, unless `reports` (a frame), at a live
-  // report of the current epoch, which waits for its frame.
+  // report of the current epoch, which waits for its frame, while no more
+  // than `bound` entries would be left waiting.
   next(reports = false, before = null) {
     const entry = this.head;
     if (entry === null || entry === before) return null;
-    if (entry.source !== undefined && entry.epoch === this.epoch && !reports && entry.payload !== null) return null;
+    if (entry.source !== undefined && entry.epoch === this.epoch && !reports && entry.payload !== null && this.length <= this.bound) return null;
     return this.take();
+  }
+
+  // Spend one turn of `drain` (`{ turns }`, one per drain) on delivering
+  // `entry`; false when the drain has already delivered `bound` turns for
+  // raised entries, a feedback loop that raises one event per turn.
+  spend(drain, entry) {
+    if (!this.isRaised(entry)) return true;
+    if (drain.turns >= this.bound) return false;
+    drain.turns += 1;
+    return true;
   }
 
   // CANCEL: a source owns its queued entries, including pinned earlier
@@ -3418,6 +3474,7 @@ export class Ingress {
     this.length = 0;
     this.sources.clear();
     this.epoch = {};
+    this.idle();
   }
 }
 
@@ -4602,7 +4659,7 @@ export class RocEngineRuntime {
         return;
       }
       if (outcome.kind === "poison") {
-        this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} events queued behind one batch (an event feedback loop)`), "resource_limit");
+        this.contain(new Error(`resource_limit: more than ${this.queue.bound} events raised since the runtime left idle are waiting (an event feedback loop)`), "resource_limit");
         return;
       }
       const { entry, active } = outcome;
@@ -4660,17 +4717,16 @@ export class RocEngineRuntime {
     reports ||= this.reportDue;
     this.reportDue = false;
     if (reports) this.cancelReportDrain();
-    let turns = 0;
+    const drain = { turns: 0 };
     while (!this.busy && !this.poisoned) {
       const entry = this.queue.next(reports, before);
       if (entry === null) break;
       const payload = this.takePayload(entry);
       if (payload === null) continue;
-      if (turns >= MAX_QUEUED) {
-        this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} turns delivered without returning to idle (an event feedback loop)`), "resource_limit");
+      if (!this.queue.spend(drain, entry)) {
+        this.contain(new Error(`resource_limit: more than ${this.queue.bound} turns for events raised since the runtime left idle in one drain (an event feedback loop)`), "resource_limit");
         return;
       }
-      turns += 1;
       this.busy = true;
       try {
         this.guard(() => this.deliver(entry.node, entry.handler, payload));
@@ -4678,6 +4734,7 @@ export class RocEngineRuntime {
         this.busy = this.pendingTransition !== null;
       }
     }
+    if (!this.busy && !this.poisoned) this.queue.idle();
     if (!this.queue.needsFrame) this.cancelReportDrain();
     else if (!this.poisoned) this.guard(() => this.scheduleReports());
   }
