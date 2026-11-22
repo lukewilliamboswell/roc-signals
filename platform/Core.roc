@@ -2186,9 +2186,12 @@ Core := [].{
 	## owns only the requests of its current value. Before it issues for a new
 	## value it cancels every awaited request it still holds from earlier values
 	## (`CANCEL`, counted `cancelled`), whatever its kind, and drops their queued
-	## follow-ups and refusals (counted `stale`), so a late answer for an earlier
-	## value never reaches `react`. A `plan` that returns `[]` makes a change a
-	## pure cancel. Disposal follows `watch`'s rules.
+	## follow-ups and refusals (counted `stale`), so within one lifetime of the
+	## site a late answer for an earlier value never reaches `react`. A `plan`
+	## that returns `[]` makes a change a pure cancel. Disposal follows
+	## `watch`'s rules: a kept request becomes an orphan of the nearest
+	## surviving ancestor, whose reaction its answer still runs after a site
+	## mounted again in this one's place has issued for a newer value.
 	watch_latest : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	watch_latest = |v, plan, react| Site(

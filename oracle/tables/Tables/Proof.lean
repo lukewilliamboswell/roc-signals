@@ -13,9 +13,11 @@ Invariant 23 / T5 splits into
   checker tests: a copy kept from an earlier turn is `ready`, so `kept`
   never takes it as the cell's own, and a `writing` copy exists only inside
   one turn of one history.
+
+Trusted for: the theorems below, about the transliteration as it is.
 -/
-import TableSpike.Spec
-namespace TableSpike
+import Tables.Spec
+namespace Tables
 
 theorem rget_rput (m : Rows) (k : K) (v : V) (k' : K) :
     rget (rput m k v) k' = if k' = k then some v else rget m k' := by
@@ -333,4 +335,4 @@ theorem op_counts (nv : Nat) (t : Table) (op : Op) (w : Bool) (h : op.writes t =
 #print axioms describes_kept
 #print axioms op_counts
 
-end TableSpike
+end Tables

@@ -1,0 +1,13 @@
+name = "tables"
+defaultTargets = ["Tables", "check", "vectors"]
+
+[[lean_lib]]
+name = "Tables"
+
+[[lean_exe]]
+name = "check"
+root = "CheckMain"
+
+[[lean_exe]]
+name = "vectors"
+root = "VectorsMain"

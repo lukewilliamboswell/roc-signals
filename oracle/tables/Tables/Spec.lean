@@ -2,9 +2,13 @@
 The specification, as plain functions that share nothing with the
 transliteration but the row lookup: what the record means, what a view is,
 and what an app's function over a table may be.
+
+Trusted for: what a table's changes and a table view mean. This is the
+reference the transliteration is checked against; where they disagree,
+this file and `design.md` decide.
 -/
-import TableSpike.View
-namespace TableSpike
+import Tables.View
+namespace Tables
 
 /-! ## The record (design.md:811-817, 950-961) -/
 
@@ -121,4 +125,4 @@ def Fn.show : Fn → String
   | .other i os => s!"|_| other(saved{i}).{showOps os}"
   | .fresh rows => s!"|_| from_list({rows})"
 
-end TableSpike
+end Tables

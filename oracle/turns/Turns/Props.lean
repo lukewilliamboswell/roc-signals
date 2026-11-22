@@ -1,10 +1,13 @@
 /-
 The checks: P1–P5 for one turn of the incremental algorithm against the
 reference, and what an oracle that sees less would still see.
+
+Trusted for: the rules a turn of an incremental algorithm must keep, stated
+over the reference (`Spec`) and the second specification (`Expect`).
 -/
-import Spike.Expect
-import Spike.Incr
-namespace Spike
+import Turns.Expect
+import Turns.Incr
+namespace Turns
 
 /-- What a step can break. The first three need nothing but the command
 stream (and, for `CNT`, the engine's evaluation counter); the rest need the
@@ -69,7 +72,7 @@ def checkStep (g : Cfg) (p : Prog) (sim : Sim) (ev : Ident) : Sim × Nat × Nat 
       let sim1 : Sim := { w := w1, s := s1, dom := dom1 }
       let log := tx.log.toList
       let cmds := tx.cmds.toList
-      let texts := cmds.filterMap fun | .setText id _ => some id | _ => none
+      let texts := cmds.filterMap fun | .setText id _ => some id | .setTexts id _ => some id | _ => none
       let created := cmds.filterMap fun | .create id _ => some id | _ => none
       let removed := cmds.filterMap fun | .remove id => some id | _ => none
       let due := exp.readers.filter (·.due)
@@ -87,4 +90,4 @@ def checkStep (g : Cfg) (p : Prog) (sim : Sim) (ev : Ident) : Sim × Nat × Nat 
               || !(created.all exp.created.contains && exp.created.all created.contains))
       (sim1, v, log.length)
 
-end Spike
+end Turns

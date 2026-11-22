@@ -1,10 +1,10 @@
 /-
 `lake exe check`: P1–P5 for the incremental algorithm against the reference,
 over seeded random programs or every program within bounds, with or without
-a seeded bug.
+a seeded bug; `check gate` runs the fixed set the oracle task requires.
 -/
-import Spike
-open Spike
+import Turns
+open Turns
 
 def parseBug : String → Option Bug
   | "none" => some .none
@@ -163,7 +163,20 @@ def directed (α : Alpha) : IO Unit := do
     let some body := parseBody text | IO.eprintln s!"does not parse: {text}"
     let p : Prog := { cells := [0, 0], body }
     IO.println s!"{name}"
-    IO.print (refTrace α p "expected" clicks).text
+    IO.println s!"  prog{blockSx p.body}"
+    let mut w := World.init p
+    IO.println s!"  page {leavesTok (leavesOf p w)}"
+    for k in clicks do
+      let v := view p w
+      let buttons := buttonsOf v
+      let ev := buttons.getD (k % buttons.length) []
+      let ws := match v.lookup ev with
+        | some (.button ws) => ws
+        | _ => []
+      let w1 := (stepRef p w ev).getD w
+      let due := ((expect α p w w1 ws).readers.filter (·.due)).length
+      IO.println s!"  step {k % buttons.length} | {leavesTok (leavesOf p w1)} | {due}"
+      w := w1
     for (bname, b) in bugs do
       let g : Cfg := { α, bug := b }
       let (sim0, v0) := mountSim g p
@@ -182,8 +195,50 @@ def timed (act : Unit → α) : IO (α × Nat) := do
   let t1 ← IO.monoMsNow
   return (x, t1 - t0)
 
+/-- The fixed set `blueprint run oracle` runs. Every program within small
+bounds, and seeded random programs at two signature abstractions, must
+break no rule under the design's algorithm; every known-bad algorithm must
+be caught by the seeded series; and the proof's model must agree with the
+executable algorithm. Answers whether every line held. -/
+def gate : IO Bool := do
+  let mut ok := true
+  let say := fun (good : Bool) (line : String) => IO.println s!"{if good then "ok  " else "FAIL"} {line}"
+  let small : GenP := { auto := true, maxDepth := 3, maxLen := 2, fuel := 5, cells := 1, menu := 3,
+                        kinds := 7, inits := 1, amounts := 1 }
+  let (st, seqs) := exhaustiveStats {} small 2 20000
+  ok := ok && st.caught == 0
+  say (st.caught == 0) s!"exhaustive none depth=3 len=2 fuel=5 cells=1 menu=3 events=2: programs={st.cases} sequences={seqs} caught={st.caught}"
+  for α in [Alpha.exact, ⟨2, 1⟩] do
+    let st := randomStats { α } {} 1 20000 20
+    ok := ok && st.caught == 0
+    say (st.caught == 0) s!"random none alpha={α.lm},{α.cm}: cases={st.cases} steps={st.steps} caught={st.caught}"
+  for (name, b) in bugs do
+    if b ≠ .none then
+      let st := randomStats { bug := b } {} 1 20000 20
+      ok := ok && st.caught > 0
+      say (st.caught > 0) s!"random {name}: cases={st.cases} caught={st.caught}{match st.first with | some n => s!" first@{n}" | none => ""}"
+  let g : Cfg := { α := ⟨64, 64⟩ }
+  let gp : GenP := { kinds := 4, maxDepth := 5, fuel := 16 }
+  let mut checked := 0
+  let mut differ := 0
+  for i in [0:2000] do
+    let (p, _) := decode gp (randoms (1 + i) 256)
+    let mut sim := (mountSim g p).1
+    for r in randoms (1 + i + 1000003) 20 do
+      let buttons := buttonsOf (view p sim.w)
+      if buttons.isEmpty then break
+      let ev := buttons.getD (r % buttons.length) []
+      if let some (same, _) := linkStep g p sim.s ev then
+        checked := checked + 1
+        if !same then differ := differ + 1
+      sim := (checkStep g p sim ev).1
+  ok := ok && differ == 0 && checked > 0
+  say (differ == 0 && checked > 0) s!"link: programs=2000 turns={checked} differ={differ}"
+  return ok
+
 def main (args : List String) : IO UInt32 := do
   match args with
+  | ["gate"] => return (if (← gate) then 0 else 1)
   | ["random", bug, lm, cm, auto, seed0, count, steps, depth, len, fuel] =>
       let some b := parseBug bug | IO.eprintln "unknown bug"; return 2
       let g : Cfg := { α := ⟨nat lm, nat cm⟩, bug := b }
