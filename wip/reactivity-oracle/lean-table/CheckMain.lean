@@ -181,7 +181,7 @@ def stepMod (r : Run) (sc : Scope) (m : Mid) (fn : Fn) (tr : Unit → String) : 
   | _ => pure ()
   let out := fn.run sc.bug sc.nv m.saved began
   let res := kept sc.bug out (mark began)
-  let own := out.id == began.id && out.start == began.start
+  let own := out.id == began.id && out.start == began.start && out.phase == .writing
   let E := if m.wrote then m.E else began.rows
   let s0 := if m.wrote then m.s0 else began.version
   -- keys written by a plain sequence of keyed operations
@@ -254,6 +254,12 @@ def siteStep (r : Run) (sc : Scope) (site : Site) (cell : Table) (wrote : Bool)
     return some site'
 
 partial def explore (sc : Scope) : IO Unit := do
+  -- A `writing` table exists only inside one turn of one history: a pure
+  -- `Store` hands its writes closures built before the turn, so no copy
+  -- saved mid-turn reaches another history. Branching with mid-turn copies
+  -- explores histories no program has.
+  if sc.branching && sc.saveMid then
+    throw (IO.userError "explore: branching histories take up only copies kept between turns (saveMid must be 0)")
   let r : Run := { stats := ← IO.mkRef (Array.replicate Ck.all.size {}), trans := ← IO.mkRef 0 }
   let t0 ← IO.monoMsNow
   let mut visited : Std.HashSet St := {}
@@ -367,7 +373,8 @@ partial def explore (sc : Scope) : IO Unit := do
 
 def parseBug : String → Bug
   | "latestRow" => .latestRow | "noClear" => .noClear | "staleOk" => .staleOk
-  | "idOk" => .idOk | "twoDraws" => .twoDraws | "noReach" => .noReach | _ => .none
+  | "idOk" => .idOk | "twoDraws" => .twoDraws | "noReach" => .noReach
+  | "noPhase" => .noPhase | _ => .none
 
 /-- The design's tie between keyed writes (design.md:862-866): a plan whose
 sort value does not include the key, and two rows that trade places. -/
