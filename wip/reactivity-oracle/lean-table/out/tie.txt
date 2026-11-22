@@ -1,2 +1,0 @@
-rows before [(0, 1), (1, 2)], after [(0, 2), (1, 1)] (distinct sort values before and after)
-absorb: crash: contract: two rows of a table view compare Same
