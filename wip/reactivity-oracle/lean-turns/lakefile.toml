@@ -1,0 +1,13 @@
+name = "spike"
+defaultTargets = ["Spike", "check", "bridge"]
+
+[[lean_lib]]
+name = "Spike"
+
+[[lean_exe]]
+name = "check"
+root = "CheckMain"
+
+[[lean_exe]]
+name = "bridge"
+root = "BridgeMain"

@@ -1,0 +1,14 @@
+# table-view vectors v1: `table` rows; `view` query window; then per turn
+#   turn <ops> [window s c]  ->  rows | changes | version start | keys | drawn | row changes
+table 0:0 1:1
+view 0 0 2
+turn put(0,2) put(0,1) remove(1) insert(2,0)
+  -> rows 0:1 2:0 | keyed 0=was:0 1=was:1 2=absent | 4 0 | keys [2, 0] | drawn [2, 0] | left:1 entered:2@0 changed:0
+turn update(2) insert(1,1) window 1 2
+  -> rows 0:1 1:1 2:1 | keyed 2=was:0 1=absent | 6 4 | keys [0, 1, 2] | drawn [1, 2] | left:0 entered:1@2 changed:2
+turn remove(9)
+  -> rows 0:1 1:1 2:1 | keyed  | 6 6 | keys [0, 1, 2] | drawn [1, 2] | 
+turn update_all
+  -> rows 0:2 1:2 2:2 | rewritten | 7 6 | keys [0, 1, 2] | drawn [1, 2] | changed:1 changed:2
+turn put(1,0) undo window 0 2
+  -> rows 0:2 1:2 2:2 | keyed 1=was:2 | 9 7 | keys [0, 1, 2] | drawn [0, 1] | left:2 entered:0@1 changed:1

@@ -1,0 +1,65 @@
+turn 1: frontier 3 -> new states 958, total 961, transitions 2114
+turn 2: frontier 958 -> new states 98839, total 99800, transitions 1121570
+turn 3: frontier 98839 -> new states 3099931, total 3199731, transitions 108686332
+turn 4: frontier 3099931 -> new states 2800284, total 6000015, transitions 236270020
+bug=TableSpike.Bug.none keys=2 rows=2 turns=4 mods=2 ops=1 saved=2 site=false branching=false saveMid=true ratio=8 floor=64 queries=[0, 1, 2]
+states=6000015 modifier-applications=236270020 time=239266ms (stopped at the state cap)
+  ok   clearedAtBegin: 13069194 checked, 0 failed
+  ok   beginIdempotent: 223200826 checked, 0 failed
+  ok   startsMonotone: 13069194 checked, 0 failed
+  ok   rearmed: 23260294 checked, 0 failed
+  ok   finishKeepsChanges: 23260294 checked, 0 failed
+  ok   phaseWriting: 236270020 checked, 0 failed
+  ok   idKept: 236270020 checked, 0 failed
+  ok   startIsEpoch: 236270020 checked, 0 failed
+  ok   versionGeStart: 236270020 checked, 0 failed
+  ok   opAddsOne: 67206440 checked, 0 failed
+  ok   recordSound: 41341590 checked, 0 failed
+  ok   recordCovers: 41341590 checked, 0 failed
+  ok   inverseRestores: 41341590 checked, 0 failed
+  ok   recordDistinct: 236270020 checked, 0 failed
+  ok   recordExact: 30638029 checked, 0 failed
+  ok   verEqStartMeansUnchanged: 236270020 checked, 0 failed
+  ok   rewrittenVerGtStart: 194928430 checked, 0 failed
+  ok   noCrash: 0 checked, 0 failed
+  ok   neverBehind: 0 checked, 0 failed
+  ok   seqIsScratch: 0 checked, 0 failed
+  ok   keysAreSpec: 0 checked, 0 failed
+  ok   viewVersion: 0 checked, 0 failed
+  ok   shownIsWindow: 0 checked, 0 failed
+  ok   drawnIsWindow: 0 checked, 0 failed
+  ok   enteredExact: 0 checked, 0 failed
+  ok   leftExact: 0 checked, 0 failed
+  ok   keptNotRecreated: 0 checked, 0 failed
+  ok   movedOnlyKept: 0 checked, 0 failed
+  ok   movesMinimal: 0 checked, 0 failed
+  ok   changedExact: 0 checked, 0 failed
+  ok   placedBound: 0 checked, 0 failed
+  witness wVersionDecreased: 208262 of 236270020
+  witness wCopyAcceptedAsOwn: 8139980 of 141832131
+  witness wStoredRewritten: 194928430 of 194928430
+  witness wAbsorbed: 0 of 0
+  witness wRebuiltMany: 0 of 0
+  witness wRebuiltRewritten: 0 of 0
+  witness wUnchangedAfterWrite: 0 of 0
+  witness wMoved: 0 of 0
+rules failed: 0
+--- first wVersionDecreased:
+   start rows=[]
+   turn 1:  ; (copy kept)
+   turn 2: |t| t.insert(0,0); |_| saved0.
+   began: rows=[(0, 0)] record=[(0, TableSpike.Before.absent)] whole=TableSpike.Whole.keyed v=1 start=0 id=5 TableSpike.Phase.writing
+--- first wCopyAcceptedAsOwn:
+   start rows=[]
+   turn 1: |t| t.; (copy kept mid-turn); |_| saved0.
+   began: rows=[] record=[] whole=TableSpike.Whole.keyed v=0 start=0 id=5 TableSpike.Phase.writing
+   => rows=[] record=[] whole=TableSpike.Whole.keyed v=0 start=0 id=5 TableSpike.Phase.writing
+--- first wStoredRewritten:
+   start rows=[]
+   turn 1: |t| t.update_all
+   => rows=[] record=[] whole=TableSpike.Whole.rewritten v=1 start=0 id=5 TableSpike.Phase.writing
+   turn began with rows=[]
+
+real	4m2.122s
+user	4m1.986s
+sys	0m0.122s

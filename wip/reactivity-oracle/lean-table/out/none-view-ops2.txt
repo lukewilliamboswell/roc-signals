@@ -1,0 +1,87 @@
+turn 1: frontier 12 -> new states 2100, total 2112, transitions 4152
+turn 2: frontier 2100 -> new states 53484, total 55596, transitions 751872
+bug=TableSpike.Bug.none keys=2 rows=2 turns=2 mods=1 ops=2 saved=1 site=true branching=false saveMid=false ratio=8 floor=64 queries=[0, 1, 2]
+states=55596 modifier-applications=751872 time=5611ms
+  ok   clearedAtBegin: 751872 checked, 0 failed
+  ok   beginIdempotent: 0 checked, 0 failed
+  ok   startsMonotone: 751872 checked, 0 failed
+  ok   rearmed: 99060 checked, 0 failed
+  ok   finishKeepsChanges: 99060 checked, 0 failed
+  ok   phaseWriting: 751872 checked, 0 failed
+  ok   idKept: 751872 checked, 0 failed
+  ok   startIsEpoch: 751872 checked, 0 failed
+  ok   versionGeStart: 751872 checked, 0 failed
+  ok   opAddsOne: 35904 checked, 0 failed
+  ok   recordSound: 649032 checked, 0 failed
+  ok   recordCovers: 649032 checked, 0 failed
+  ok   inverseRestores: 649032 checked, 0 failed
+  ok   recordDistinct: 751872 checked, 0 failed
+  ok   recordExact: 576576 checked, 0 failed
+  ok   verEqStartMeansUnchanged: 751872 checked, 0 failed
+  ok   rewrittenVerGtStart: 102840 checked, 0 failed
+  ok   noCrash: 1616640 checked, 0 failed
+  ok   neverBehind: 1616640 checked, 0 failed
+  ok   seqIsScratch: 1616640 checked, 0 failed
+  ok   keysAreSpec: 1616640 checked, 0 failed
+  ok   viewVersion: 1616640 checked, 0 failed
+  ok   shownIsWindow: 1616640 checked, 0 failed
+  ok   drawnIsWindow: 1616640 checked, 0 failed
+  ok   enteredExact: 1616640 checked, 0 failed
+  ok   leftExact: 1616640 checked, 0 failed
+  ok   keptNotRecreated: 1616640 checked, 0 failed
+  ok   movedOnlyKept: 1616640 checked, 0 failed
+  ok   movesMinimal: 1616640 checked, 0 failed
+  ok   changedExact: 1616640 checked, 0 failed
+  ok   placedBound: 1616640 checked, 0 failed
+  witness wVersionDecreased: 0 of 751872
+  witness wCopyAcceptedAsOwn: 684 of 20064
+  witness wStoredRewritten: 102840 of 102840
+  witness wAbsorbed: 1128000 of 1616640
+  witness wRebuiltMany: 0 of 1616640
+  witness wRebuiltRewritten: 389376 of 1616640
+  witness wUnchangedAfterWrite: 67584 of 1616640
+  witness wMoved: 29132 of 1616640
+rules failed: 0
+--- first wCopyAcceptedAsOwn:
+   start rows=[] q=0 window=(0,1)
+   turn 1:  ; (copy kept)
+   turn 2: |_| saved0.
+   began: rows=[] record=[] whole=TableSpike.Whole.keyed v=0 start=0 id=5 TableSpike.Phase.writing
+   => rows=[] record=[] whole=TableSpike.Whole.keyed v=0 start=0 id=5 TableSpike.Phase.writing
+--- first wStoredRewritten:
+   start rows=[] q=0 window=(0,1)
+   turn 1: |t| t.update_all
+   => rows=[] record=[] whole=TableSpike.Whole.rewritten v=1 start=0 id=5 TableSpike.Phase.writing
+   turn began with rows=[]
+--- first wAbsorbed:
+   start rows=[] q=0 window=(0,1)
+   turn 1: |t| t.insert(0,0)
+   table: rows=[(0, 0)] record=[(0, TableSpike.Before.absent)] whole=TableSpike.Whole.keyed v=1 start=0 id=5 TableSpike.Phase.ready
+   site before: q=0 window=(0,1) drawn=[] view.version=0
+   changes=[TableSpike.Change.entered 0 none] how=TableSpike.How.absorbed
+   site after: drawn=[0] keys=[0] view.version=1
+--- first wRebuiltRewritten:
+   start rows=[] q=0 window=(0,1)
+   turn 1: |t| t.update_all
+   table: rows=[] record=[] whole=TableSpike.Whole.rewritten v=1 start=0 id=5 TableSpike.Phase.ready
+   site before: q=0 window=(0,1) drawn=[] view.version=0
+   changes=[] how=TableSpike.How.rebuiltRewritten
+   site after: drawn=[] keys=[] view.version=1
+--- first wUnchangedAfterWrite:
+   start rows=[] q=0 window=(0,1)
+   turn 1: |t| t.
+   table: rows=[] record=[] whole=TableSpike.Whole.keyed v=0 start=0 id=5 TableSpike.Phase.ready
+   site before: q=0 window=(0,1) drawn=[] view.version=0
+   changes=[] how=TableSpike.How.unchanged
+   site after: drawn=[] keys=[] view.version=0
+--- first wMoved:
+   start rows=[(0, 1), (1, 0)] q=0 window=(0,2)
+   turn 1: |t| t.put(0,0)
+   table: rows=[(0, 0), (1, 0)] record=[(0, TableSpike.Before.was 1)] whole=TableSpike.Whole.keyed v=1 start=0 id=5 TableSpike.Phase.ready
+   site before: q=0 window=(0,2) drawn=[1, 0] view.version=0
+   changes=[TableSpike.Change.moved 1 none, TableSpike.Change.changed 0] how=TableSpike.How.absorbed
+   site after: drawn=[0, 1] keys=[0, 1] view.version=1
+
+real	0m5.626s
+user	0m5.621s
+sys	0m0.005s

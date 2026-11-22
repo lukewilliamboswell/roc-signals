@@ -1,0 +1,168 @@
+trace vector-1
+alpha 64 64
+cells 0 0
+prog (state 1 (show (L 0)) (bump ((L 0) (+ (L 0) 1))) (derive (% (+ (C 1) (C 0)) 2) (state 1 (show (L 2)) (bump ((L 2) (+ (L 2) 1))))) (show (= (L 0) (C 1))) (each (= (L 0) (C 1)) (show (L 1)) (each (= (L 0) (L 1)) (show (L 2)) (each (L 0) (show (L 3)) (bump ((L 0) (+ (L 0) 2)) ((C 0) (+ (C 0) 2))) (bump ((C 1) (+ (C 1) 2)) ((C 0) (+ (C 0) 2))) (bump ((C 0) (+ (C 0) 1)))) (derive (% (+ (C 0) (L 2)) 2) (show (L 3))) (derive (L 0) (show (L 2))))))
+page 1 B 1 B 0
+step 0 | 2 B 1 B 0 | 3
+step 1 | 2 B 2 B 0 | 1
+step 0 | 3 B 2 B 0 | 3
+step 1 | 3 B 3 B 0 | 1
+step 0 | 4 B 3 B 0 | 3
+step 1 | 4 B 4 B 0 | 1
+step 0 | 5 B 4 B 0 | 3
+step 0 | 6 B 4 B 0 | 3
+end
+trace vector-3
+alpha 64 64
+cells 0 0
+prog (each (% (C 1) 2) (show (L 0))) (bump ((C 0) (+ (C 0) 2)))
+page B
+step 0 | B | 0
+step 0 | B | 0
+step 0 | B | 0
+step 0 | B | 0
+step 0 | B | 0
+step 0 | B | 0
+step 0 | B | 0
+step 0 | B | 0
+end
+trace vector-5
+alpha 64 64
+cells 0 0
+prog (each (= (C 0) (C 1)) (show (L 0))) (bump ((C 0) (+ (C 0) 2)) ((C 1) (+ (C 1) 2))) (when (= (C 1) (C 1)) ((when (% (+ (C 1) (C 0)) 2) ((each (% (+ (C 1) (C 0)) 2) (show (L 0)) (derive (C 0) (show (+ (C 0) (L 0))))) (show (C 1)) (switch (= (C 1) (C 1)) ((switch (% (C 1) 2) ((show (C 1)) (show (C 0))) ((bump ((C 1) (+ (C 1) 1)))) ((show (C 1))))) () ())) ())) ())
+page 1 B
+step 0 | 1 B | 3
+step 0 | 1 B | 3
+step 0 | 1 B | 3
+step 0 | 1 B | 3
+step 0 | 1 B | 3
+step 0 | 1 B | 3
+step 0 | 1 B | 3
+step 0 | 1 B | 3
+end
+trace vector-6
+alpha 64 64
+cells 0 0
+prog (show (% (+ (C 1) (C 1)) 2)) (state 1 (show (L 0)) (bump ((L 0) (+ (L 0) 1)))) (when (= (C 1) (C 1)) ((show (C 0)) (derive (+ (C 0) (C 1))) (derive (C 0) (when (% (+ (L 0) (L 0)) 2) () ((bump ((C 0) (+ (C 0) 2))) (bump ((C 1) (+ (C 1) 2)) ((C 0) (+ (C 0) 2))))))) ((switch (C 0) ((when (+ (C 0) (C 1)) ((show (= (C 0) (C 0)))) ()) (state 0 (show (L 0)) (bump ((L 0) (+ (L 0) 1))) (state 1 (show (L 1)) (bump ((L 1) (+ (L 1) 1)))))) () ())))
+page 0 1 B 0 B B
+step 0 | 0 2 B 0 B B | 1
+step 2 | 0 2 B 2 B B | 6
+step 2 | 0 2 B 4 B B | 6
+step 1 | 0 2 B 6 B B | 4
+step 2 | 0 2 B 8 B B | 6
+step 2 | 0 2 B 10 B B | 6
+step 0 | 0 3 B 10 B B | 1
+step 0 | 0 4 B 10 B B | 1
+end
+trace vector-7
+alpha 64 64
+cells 0 0
+prog (derive (% (+ (C 0) (C 0)) 2) (each (C 0) (show (L 1)) (when (% (C 0) 2) () ((bump ((C 1) (+ (C 1) 2)) ((C 0) (+ (C 0) 2))))) (derive (% (+ (C 0) (L 1)) 2) (when (% (L 2) 2) ((bump ((C 1) (+ (C 1) 2)) ((C 0) (+ (C 0) 2))) (bump ((C 0) (+ (C 0) 1)))) ((show (L 1)))))) (bump ((C 0) (+ (C 0) 2))))
+page B
+step 0 | 2 B 2 0 B 0 B | 12
+step 2 | 4 B 4 B | 7
+step 1 | 6 B 6 B | 7
+step 0 | 1 B B B 5 B B B 2 B 2 B | 15
+step 6 | B | 2
+step 0 | 5 B B B 6 B 6 B | 11
+step 0 | 0 B 0 3 B B B 6 B 6 2 B 2 B | 18
+step 1 | 2 B 2 B | 4
+end
+trace vector-10
+alpha 64 64
+cells 0 0
+prog (show (% (+ (C 0) (C 1)) 2)) (bump ((C 0) (+ (C 0) 2))) (bump ((C 0) (+ (C 0) 1)))
+page 0 B B
+step 0 | 0 B B | 1
+step 0 | 0 B B | 1
+step 0 | 0 B B | 1
+step 0 | 0 B B | 1
+step 1 | 1 B B | 1
+step 0 | 1 B B | 1
+step 0 | 1 B B | 1
+step 0 | 1 B B | 1
+end
+trace vector-15
+alpha 64 64
+cells 0 0
+prog (show (% (C 0) 2)) (derive (% (+ (C 0) (C 0)) 2) (state 0 (show (L 1)) (bump ((L 1) (+ (L 1) 1))) (bump ((L 1) (+ (L 1) 1)) ((C 1) (+ (C 1) 1))) (state 0 (show (L 2)) (bump ((L 2) (+ (L 2) 1)))) (state 0 (show (L 2)) (bump ((L 2) (+ (L 2) 1))) (each (C 0) (show (L 3)) (bump ((C 1) (+ (C 1) 2)))) (switch (% (L 1) 2) ((bump ((C 0) (+ (C 0) 2)) ((L 2) (+ (L 2) 2))) (show (% (+ (L 1) (C 1)) 2))) ((bump ((L 2) (+ (L 2) 1)) ((L 1) (+ (L 1) 1))) (show (C 1))) ((show (% (L 1) 2)))))))
+page 0 0 B B 0 B 0 B B 0
+step 0 | 0 1 B B 0 B 0 B B 0 | 3
+step 2 | 0 1 B B 1 B 0 B B 0 | 1
+step 1 | 0 2 B B 1 B 0 B B 1 | 3
+step 4 | 0 2 B B 1 B 2 B 2 B 0 B B 1 | 6
+step 4 | 0 2 B B 1 B 2 B 2 B 0 B B 1 | 1
+step 4 | 0 2 B B 1 B 2 B 2 B 0 B B 1 | 1
+step 1 | 0 3 B B 1 B 2 B 2 B 0 B B 6 | 3
+step 1 | 0 4 B B 1 B 2 B 2 B 0 B B 1 | 3
+end
+trace vector-21
+alpha 64 64
+cells 0 0
+prog (state 0 (show (L 0)) (bump ((L 0) (+ (L 0) 1)))) (each (= (C 0) (C 1)) (show (L 0))) (when (+ (C 1) (C 0)) () ((derive (C 0)) (each (C 0) (show (L 0)))))
+page 0 B 1
+step 0 | 1 B 1 | 1
+step 0 | 2 B 1 | 1
+step 0 | 3 B 1 | 1
+step 0 | 4 B 1 | 1
+step 0 | 5 B 1 | 1
+step 0 | 6 B 1 | 1
+step 0 | 7 B 1 | 1
+step 0 | 8 B 1 | 1
+end
+trace vector-26
+alpha 64 64
+cells 0 0
+prog (bump ((C 0) (+ (C 0) 1)))
+page B
+step 0 | B | 0
+step 0 | B | 0
+step 0 | B | 0
+step 0 | B | 0
+step 0 | B | 0
+step 0 | B | 0
+step 0 | B | 0
+step 0 | B | 0
+end
+trace vector-28
+alpha 64 64
+cells 0 0
+prog (derive (% (C 1) 2) (switch (% (+ (L 0) (C 0)) 2) ((when (+ (C 0) (C 1)) ((each (% (C 1) 2) (show (L 1))) (switch (C 0) ((bump ((C 0) (+ (C 0) 1)) ((C 1) (+ (C 1) 1))) (bump ((C 0) (+ (C 0) 2)))) ((bump ((C 1) (+ (C 1) 1))) (show (% (+ (C 0) (L 0)) 2)) (show (+ (L 0) (C 1)))) ((bump ((C 1) (+ (C 1) 1))) (show (+ (C 0) (L 0)))))) ((state 0 (show (L 1)) (bump ((L 1) (+ (L 1) 1)))) (show (% (+ (L 0) (C 0)) 2))))) () ()))
+page 0 B 0
+step 0 | 1 B 0 | 1
+step 0 | 2 B 0 | 1
+step 0 | 3 B 0 | 1
+step 0 | 4 B 0 | 1
+step 0 | 5 B 0 | 1
+step 0 | 6 B 0 | 1
+step 0 | 7 B 0 | 1
+step 0 | 8 B 0 | 1
+end
+trace vector-30
+alpha 64 64
+cells 0 0
+prog (derive (= (C 1) (C 1))) (when (% (C 1) 2) ((when (% (C 1) 2) ((bump ((C 1) (+ (C 1) 1))) (when (= (C 0) (C 1)) ((derive (+ (C 1) (C 0)) (bump ((C 0) (+ (C 0) 2)))) (bump ((C 0) (+ (C 0) 1))) (show (= (C 0) (C 1)))) ((bump ((C 1) (+ (C 1) 1)) ((C 0) (+ (C 0) 1)))))) ((bump ((C 0) (+ (C 0) 2)))))) ((bump ((C 1) (+ (C 1) 1)) ((C 0) (+ (C 0) 1))) (bump ((C 0) (+ (C 0) 2)) ((C 1) (+ (C 1) 2))) (derive (= (C 0) (C 0)))))
+page B B
+step 1 | B B | 3
+step 1 | B B | 3
+step 1 | B B | 3
+step 0 | B B B 1 | 6
+step 2 | B B | 1
+step 1 | B B | 3
+step 1 | B B | 3
+step 1 | B B | 3
+end
+trace vector-31
+alpha 64 64
+cells 0 0
+prog (when (% (C 0) 2) ((bump ((C 1) (+ (C 1) 2)) ((C 0) (+ (C 0) 2)))) ((state 0 (show (L 0)) (bump ((L 0) (+ (L 0) 1))) (derive (+ (C 1) (C 1)) (show (% (+ (C 1) (C 1)) 2)))) (when (+ (C 1) (C 0)) () ((switch (% (+ (C 0) (C 0)) 2) ((show (= (C 0) (C 0))) (bump ((C 1) (+ (C 1) 2)) ((C 0) (+ (C 0) 2))) (when (C 0) ((bump ((C 1) (+ (C 1) 1))) (show (% (+ (C 0) (C 1)) 2)) (bump ((C 1) (+ (C 1) 1)))) ((show (% (+ (C 0) (C 0)) 2))))) () ())))))
+page 0 B 0 1 B 0
+step 0 | 1 B 0 1 B 0 | 1
+step 0 | 2 B 0 1 B 0 | 1
+step 0 | 3 B 0 1 B 0 | 1
+step 0 | 4 B 0 1 B 0 | 1
+step 0 | 5 B 0 1 B 0 | 1
+step 1 | 5 B 0 | 4
+step 0 | 6 B 0 | 1
+step 0 | 7 B 0 | 1
+end

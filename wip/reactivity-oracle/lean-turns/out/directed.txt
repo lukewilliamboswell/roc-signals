@@ -1,0 +1,105 @@
+G2-when: a `when` on two layers one event writes; local state inside the branch
+trace expected
+alpha 64 64
+cells 0 0
+prog (state 0 (state 0 (when (= (L 0) (L 1)) ((state 0 (show (L 2)) (bump ((L 2) (+ (L 2) 1))))) ()) (bump ((L 0) (+ (L 0) 1)) ((L 1) (+ (L 1) 1)))))
+page 0 B B
+step 0 | 1 B B | 1
+step 1 | 1 B B | 1
+end
+  none: - | - | -
+  twoPassInner: - | - | count+P2
+  twoPassOuter: - | - | count+P2
+  noJoinKeep: - | - | count+P2
+  perWrite: - | - | page+shape+count+P1+P2+P3id+P5
+G2-each: an `each` list on two layers one event writes; local state in the row
+trace expected
+alpha 64 64
+cells 0 0
+prog (state 1 (state 0 (each (+ (L 0) (L 1)) (state 0 (show (L 3)) (bump ((L 3) (+ (L 3) 1))))) (bump ((L 0) (+ (L 0) 1)) ((L 1) (+ (L 1) -1)))))
+page 0 B B
+step 0 | 1 B B | 1
+step 1 | 1 B B | 1
+end
+  none: - | - | -
+  twoPassInner: - | - | count+P2
+  twoPassOuter: - | - | count+P2
+  noJoinKeep: - | - | count+P2
+  perWrite: - | - | page+shape+count+P1+P2+P3id+P5
+G2-derive-outer: a `when` on an outer layer and a `derive` of an inner one
+trace expected
+alpha 64 64
+cells 0 0
+prog (state 0 (state 0 (derive (L 1) (when (= (L 0) (L 2)) ((state 0 (show (L 3)) (bump ((L 3) (+ (L 3) 1))))) ())) (bump ((L 0) (+ (L 0) 1)) ((L 1) (+ (L 1) 1)))))
+page 0 B B
+step 0 | 1 B B | 1
+step 1 | 1 B B | 2
+end
+  none: - | - | -
+  twoPassInner: - | - | count+P2
+  twoPassOuter: - | - | page+shape+count+P1+P2+P3id+P5
+  noJoinKeep: - | - | page+shape+count+P1+P2+P3id+P5
+  noJoinClear: - | - | page+shape+count+P1+P3id+P4
+  perWrite: - | - | page+shape+count+P1+P2+P3id+P5
+G2-derive-inner: a `when` on an inner layer and a `derive` of an outer one
+trace expected
+alpha 64 64
+cells 0 0
+prog (state 0 (derive (L 0) (state 0 (when (= (L 1) (L 2)) ((state 0 (show (L 3)) (bump ((L 3) (+ (L 3) 1))))) ()) (bump ((L 0) (+ (L 0) 1)) ((L 2) (+ (L 2) 1))))))
+page 0 B B
+step 0 | 1 B B | 1
+step 1 | 1 B B | 2
+end
+  none: - | - | -
+  twoPassInner: - | - | page+shape+count+P1+P2+P3id+P5
+  twoPassOuter: - | - | count+P2
+  noJoinKeep: - | - | count+P2
+  perWrite: - | - | page+shape+count+P1+P2+P3id+P5
+G1-rows: a row kept across a list change, and a key removed and reinserted
+trace expected
+alpha 64 64
+cells 0 0
+prog (state 1 (each (L 0) (state 0 (show (L 2)) (bump ((L 2) (+ (L 2) 1))))) (bump ((L 0) (+ (L 0) 1))))
+page 0 B B
+step 0 | 1 B B | 1
+step 1 | 0 B 0 B B | 3
+step 0 | 1 B 0 B B | 1
+step 2 | 0 B 1 B 0 B B | 3
+end
+  none: - | - | - | - | -
+  rowReset: - | - | - | - | page+shape+count+P1+P2+P3id+P5
+  rowResurrect: - | - | - | - | page+P1+P3id
+walk: an inner written layer the outer write's pass does not reach
+trace expected
+alpha 64 64
+cells 0 0
+prog (state 0 (state 0 (show (L 1)) (bump ((L 0) (+ (L 0) 1)) ((L 1) (+ (L 1) 1)))))
+page 0 B
+step 0 | 1 B | 1
+end
+  none: - | -
+  noWalk: - | page+shape+count+P3id+P4
+G3-prune: a `derive` that recomputes equal, with a reader of it alone
+trace expected
+alpha 64 64
+cells 0 0
+prog (state 0 (derive (% (L 0) 2) (show (L 1))) (bump ((L 0) (+ (L 0) 2))))
+page 0 B
+step 0 | 0 B | 1
+end
+  none: - | -
+  pruneWakes: - | count+P5
+glitch: a reader of an outer layer and a `derive` of an inner one, both written
+trace expected
+alpha 64 64
+cells 0 0
+prog (state 0 (state 0 (derive (L 1) (show (+ (L 0) (L 2)))) (bump ((L 0) (+ (L 0) 1)) ((L 1) (+ (L 1) 1)))))
+page 0 B
+step 0 | 2 B | 2
+end
+  none: - | -
+  twoPassInner: - | count+P2
+  twoPassOuter: - | shape+count+P1+P2
+  noJoinKeep: - | shape+count+P1+P2
+  noJoinClear: - | page+count+P1+P3id+P4
+  perWrite: - | shape+count+P1+P2
