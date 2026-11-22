@@ -5103,8 +5103,8 @@ across the supported same-origin document navigations and reloads;
 A fresh tab starts false. The native model preserves this browser fact,
 separately from a new document's reset CloseWatcher cancellation allowance.
 
-This carry-over deliberately corrects the earlier assumption that all
-activation resets on a new document. A plain-HTML Chrome contract verifies
+Activation does not all reset on a new document. A plain-HTML Chrome
+contract verifies
 new document identity, expired transient activation, retained sticky
 activation and the later real leave dialog. It agrees with the
 [upstream same-origin activation test](https://github.com/web-platform-tests/wpt/blob/master/html/user-activation/navigate-to-sameorigin.html)
@@ -5493,6 +5493,38 @@ operations on its own type are tested the same way. This is the check that
 sees a transition that left out a reset or wrote the wrong cell of the right
 type, which no propagation check can.
 
+### The reference semantics
+
+What a turn means is stated twice: in prose here, and as an executable
+reference in Lean 4 under `oracle/`. `oracle/turns` holds a kernel of
+programs as data, the reference (the page from scratch, and a turn as
+"apply the event's writes, then render again": a local state lives exactly
+while its identity is live, and one event's writes compose in order) and,
+separately, a second specification of the work a turn may do (which
+readers it must evaluate, what each must see, which texts it sets and
+which scopes it creates). `oracle/tables` transliterates a table's changes
+and its views and states what the record and a view mean beside them. Each
+module says what it is trusted for; the incremental algorithms there,
+including the known-bad ones, are what is checked, never a reference.
+
+The reference is the statement of a turn's meaning that the engine and the
+Roc references inside the fuzz targets are held to. It shares no code with
+them: they meet only through checked-in vector files the Lean side writes
+(`fuzz/structure/vectors.trace`, its known-bad companion
+`vectors-bad.trace`, and the cover sets of `fuzz/table-changes` and
+`fuzz/view-follow`), whose grammar is in `oracle/README.md`. Each of those
+targets replays its vectors twice: its top-level `expect`s against its Roc
+reference alone, and its fixed examples through the real code (the engine,
+or `TableCore` and `View`), so every replay holds both to Lean. Every
+known-bad structure trace must be rejected at the step Lean rejects it: by
+the value model, or, for a trace whose page is right and whose work is not,
+by the count model. When the engine, a Roc reference and Lean disagree,
+Lean decides, unless this document says otherwise; a disagreement between
+Lean and this document is a design change, made here first and then in
+Lean, the Roc reference and the vectors, in one change. Lean runs on a
+contributor's machine (`blueprint run oracle`), not in CI; the vectors it
+wrote are what CI replays.
+
 ### The probe
 
 The command stream says what a turn emitted; the probe says what the engine
@@ -5533,79 +5565,8 @@ work to build (a static read mask) is built only while recording. Only a
 harness starts recording and only a harness takes the facts, which is why
 what the engine keeps between two takes needs no bound of its own: it grows
 with the turns the harness runs between takes, and the harness takes them
-after every step.
-
-The structure target checks the probe after every step. No site waits and
-the root holds no write set. Each child's reads, a drawn row's marks and
-its nested sites' reads cover every mask held below them except the child
-site's own layer: the hypothesis under which a pass that skips a child
-skips no reader. The node ids the sites hold are exactly the live ones,
-none twice. Within a turn no hole or row hole is evaluated twice and no
-`derive` input or branch is read twice at one place; a `derive` is read
-before anything below it is evaluated; a turn runs at most one pass and
-refreshes each written layer once, below where that pass started; and a
-site mounted in a turn reads nothing beyond its static reads and the cap it
-was mounted under. A site mounted by the first mount is not checked by that
-last rule, since recording starts once the instance exists; it is when a
-turn mounts it again.
-
-The effect-channel target reads the probe's effect facts after every call:
-the request ids each effect site owns and the orphans each `when` adopted
-must be exactly those its model gives each site, together they must cover
-the requests in flight once each (the table agrees with the sites, so a
-site's own check that it holds an id never has to refuse a result the
-table routed to it), every orphan is a kept request, a live `watch_latest`
-site owns only requests of its current value and its own mount, and no
-follow-up waits after a call.
-
-In the valued modes every click is also held to a **count and shape model**
-(`fuzz/structure/Counts.roc`, which imports nothing of the platform): the
-signal reads `derived_calls_into_roc` counts, the scopes created and
-disposed, and the written layers refreshed, which `dirty_source_roots`
-counts and the probe must show in the model's order. The model compares
-the page before the turn with the page after it. A reader is due when its
-scope is new, or when it reads, on its own path, a layer the turn wrote or
-a `derive`, `resource` or row item whose value the turn changed; a written
-state is refreshed whatever value it was given, and a `derive` that
-recomputes an equal value carries nothing below it. The same model counted
-the kernel's way (which leaves out guards, form controls and watches, and
-counts a `Pair`'s text and watch as one reader) must give every step's
-count in the structure vectors and reject each known-bad trace that only a
-count rejects, at the step Lean rejects it. A write that gives a
-state the value it had is checked on its own: its turn emits no command,
-and `dirty_source_roots` and its reader's evaluation still count it.
-
-### The reference semantics
-
-What a turn means is stated twice: in prose here, and as an executable
-reference in Lean 4 under `oracle/`. `oracle/turns` holds a kernel of
-programs as data, the reference (the page from scratch, and a turn as
-"apply the event's writes, then render again": a local state lives exactly
-while its identity is live, and one event's writes compose in order) and,
-separately, a second specification of the work a turn may do (which
-readers it must evaluate, what each must see, which texts it sets and
-which scopes it creates). `oracle/tables` transliterates a table's changes
-and its views and states what the record and a view mean beside them. Each
-module says what it is trusted for; the incremental algorithms there,
-including the known-bad ones, are what is checked, never a reference.
-
-The reference is the statement of a turn's meaning that the engine and the
-Roc references inside the fuzz targets are held to. It shares no code with
-them: they meet only through checked-in vector files the Lean side writes
-(`fuzz/structure/vectors.trace`, its known-bad companion, and the cover
-sets of `fuzz/table-changes` and `fuzz/view-follow`), whose grammar is in
-`oracle/README.md`. When the engine, a Roc reference and Lean disagree,
-Lean decides, unless this document says otherwise; a disagreement between
-Lean and this document is a design change, made here first and then in
-Lean, the Roc reference and the vectors, in one change. Lean runs on a
-contributor's machine (`blueprint run oracle`), not in CI; the vectors it
-wrote are what CI replays.
-
-The reference is about the programs its kernel can express, and the
-vectors about the trees the Roc structure generator can build: a property
-that needs a shape neither has (deeper nesting than the generator's typed
-levels, a timer, a job or an effect) is not covered by them.
-The proofs in `oracle/` are about the models, not about the engine.
+after every step. The structure target and the effect-channel target read
+it after every step; what each requires of it is below.
 
 ### Fuzzing, walks, soak and contract tests
 
@@ -5621,34 +5582,153 @@ know nothing of the platform.
   beside the effect-channel and controls test apps; roc-fuzz apps on the
   engine package) decode arbitrary bytes into valid programs and check the
   engine against a reference model: keyed reconciliation, tables and their
-  views (generated keyed writes, whole rewrites, many writes in one event,
-  changes of query and window, and events that write several of them at
-  once, against a model that filters and sorts the table from scratch and
-  takes each view from the window before an event to the window after it
-  in one change), effect lifecycle (issue, supersede, dispose,
-  reparent, deliver, refuse, cancel, stale, in nested scopes with each
-  site's policy and written state generated, against a model that knows
-  each request's scope, mount, issuing step and holder), the request
-  lifecycle's state machine on its own (`fuzz/fx-core`: the cap, each id's
-  fate, routing, the counter law and the follow-up depth and breadth
-  bounds, against a model that tags each follow-up with its depth),
-  generated site trees with guard
-  sites checked against whether any live guard reads true, and the
-  spec, wire and port formats. Their oracles, not their inputs, carry the
-  value.
-- **Pure cores** have targets of their own with no engine in the loop
-  (the `FuzzCores.roc` suite): read signatures and write sets against exact
-  sets (`fuzz/masks`), a table's changes and a view kept from them
-  (`fuzz/table-changes`, `fuzz/view-follow`), the request lifecycle
-  (`fuzz/fx-core`, above), and the plan of a keyed reconciliation
-  (`fuzz/reconcile`). That target makes a new list of keys
-  from an old one, up to thousands of rows, by edits that reach every path
-  of the plan, and applies the plan's steps to the old rows with a model
-  that knows nothing of how they were planned: the steps must leave the new
-  list with each row where its step put it, keep exactly the keys in both,
-  create and drop the rest once each, drop in old order before placing,
-  move no more rows than the plan's shape needs, and refuse a repeated key
-  or create it where the site's key index refuses it.
+  views (`fuzz/table-view`: generated keyed writes, whole rewrites, many
+  writes in one event, changes of query and window, and events that write
+  several of them at once, against a model that filters and sorts the
+  table from scratch and takes each view from the window before an event
+  to the window after it in one change), the effect channel (below),
+  generated site trees (below), guard sites checked against whether any
+  live guard reads true, and the spec, wire and port formats. Every target
+  that drives the engine runs the settle check after every step. Their
+  oracles, not their inputs, carry the value.
+- **Generated structure** (`fuzz/structure`) decodes bytes into a site tree
+  over every site kind, bounded in depth and size, and a session of clicks
+  and timer and worker-job answers over it, so the settle check meets
+  nestings no fixed app contains. When every write goes to the root state,
+  the page is a function of that state, and after every step it must equal a
+  fresh mount started at it. The settle check sees where a turn ends, not
+  what it emitted on the way, so the target also holds each turn to what a
+  reader may see. One click may write two layers, and a generated reader
+  shows a layer, a `derive` of it and a second layer together, in a text
+  and in a `watch`'s title: a turn may write a node once, never a node it
+  created, and a title must name a derived value that follows its layer. A
+  reader evaluated between two of an event's writes breaks one of these.
+  The generator stays monomorphic by nesting layers a fixed number deep: a
+  generator recursing through `state` would need polymorphic recursion.
+
+  The target's valued modes check the page against a **value model**
+  (`fuzz/structure/Reference.roc`), which imports nothing of the platform:
+  the page drawn from scratch for the tree and the local states alive, and
+  a click as "apply every write of the handler, in order, then draw again",
+  where a local state is carried exactly when its structural identity (its
+  path of child positions, branches taken and row keys) is drawn before and
+  after. Every state is written there, resources issue nothing and the
+  session only clicks. After every click the engine's page must show the
+  model's texts in document order, button labels included, and offer as
+  many click candidates as the model has buttons. That comparison sees a
+  kept scope whose state started again, a state carried across a removal
+  and a structural reader that settled on one new value beside one old one.
+  Structural readers may follow two values at once, rows keep their key
+  while their item changes and keys leave and come back, derived values
+  include one that maps two inputs to one, and the decoder is biased toward
+  one shape bytes rarely build: a button writing an outer and an inner
+  state with a reader of both below, one of them through a derived value,
+  holding state. A pure tally of the seeded series (clicks writing two
+  states one structural reader follows, of those some through a derived
+  value, clicks disposing a state not at its start, rows drawn again after
+  a removal, kept rows whose item changed) is held by `expect`s to minimum
+  shares of its clicks, set at about half the shares at which the series
+  finds an event's writes settled by two passes and a kept row's state
+  reset, so a generator change that stops reaching these shapes fails
+  rather than passes vacuously. One mode runs the programs and clicks of
+  the structure vectors through the engine, so the engine meets every tree
+  the value model is held to.
+
+  In the valued modes every click is also held to a **count and shape
+  model** (`fuzz/structure/Counts.roc`, which imports nothing of the
+  platform): the signal reads `derived_calls_into_roc` counts, the scopes
+  created and disposed, and the written layers refreshed, which
+  `dirty_source_roots` counts and the probe must show in the model's order.
+  The model compares the page before the turn with the page after it. A
+  reader is due when its scope is new, or when it reads, on its own path, a
+  layer the turn wrote or a `derive`, `resource` or row item whose value the
+  turn changed; a written state is refreshed whatever value it was given,
+  and a `derive` that recomputes an equal value carries nothing below it.
+  The same model counted the kernel's way (which leaves out guards, form
+  controls and watches, and counts a `Pair`'s text and watch as one reader)
+  must give every step's count in the structure vectors. A write that gives
+  a state the value it had is checked on its own: its turn emits no
+  command, and `dirty_source_roots` and its reader's evaluation still count
+  it.
+
+  After every step the target also checks the probe, whatever the mode
+  (`fuzz/structure/ProbeRules.roc`). No site waits and the root holds no
+  write set. Each child's reads, a drawn row's marks and its nested sites'
+  reads cover every mask held below them except the child site's own
+  layer: the hypothesis under which a pass that skips a child skips no
+  reader. The node ids the sites hold are exactly the live ones, none
+  twice. Within a turn no hole or row hole is evaluated twice and no
+  `derive` input or branch is read twice at one place; a `derive` is read
+  before anything below it is evaluated; a turn runs at most one pass and
+  refreshes each written layer once, below where that pass started; and a
+  site mounted in a turn reads nothing beyond its static reads and the cap
+  it was mounted under. A site mounted by the first mount is not checked by
+  that last rule, since recording starts once the instance exists; it is
+  when a turn mounts it again.
+- **The effect channel** (`tests/apps/effects/fuzz-channel.roc`) drives
+  issue, supersede, dispose, reparent, deliver, refuse, cancel and stale
+  results over timers, HTTP requests, worker jobs, port calls and
+  subscriptions, a gather's jobs and an outbox's posts, from a host that
+  answers any id. After every step the effect commands, the counters and
+  the ids in flight must equal its model's. A second model runs the same
+  bytes over effect sites in nested scopes, the shape the lifecycle's rules
+  are hardest on: a `when` holding a state, an effect site and a nested
+  `when` with a state and an effect site of its own, beside a sibling
+  scope. The bytes choose each site's policy (`watch`, `watch_latest`,
+  `keep_current`) and which state its reaction writes (its own scope's, an
+  enclosing one's or the root's). That model knows nothing of the engine's
+  paths, owned lists or table: it numbers ids itself and records each
+  request's scope, mount, issuing step, kind and holder. It requires that
+  an orphan is a kept request, that a scoped request of a disposed site is
+  cancelled and its late result stale, that an orphan's write to a state
+  its scope's disposal retired is skipped and counted and never reaches a
+  state mounted again in its place, that what a `watch_latest` site gave
+  up is cancelled, and the counter law ([Counters](#counters)) after every
+  call. Through the probe, the request ids each effect site owns and the
+  orphans each `when` adopted must be exactly those the model gives each
+  site, and together they must cover the requests in flight once each (the
+  table agrees with the sites, so a site's own check that it holds an id
+  never has to refuse a result the table routed to it); a live
+  `watch_latest` site owns only requests of its current value and its own
+  mount, and no follow-up waits after a call.
+- **Pure cores** have targets of their own with no engine in the loop,
+  sharing one build (`FuzzCores.roc`). Each core is a module that shares
+  nothing with the sites, so its target calls it directly with inputs no
+  app would reach:
+  - `fuzz/masks` holds `Sig`'s read signatures and write sets to exact
+    sets, at indices spanning five words, so every operation meets indices
+    of 64 and more and indices 64 apart: a mask never drops a read at any
+    index, a site never strips a bit an ancestor shares, and `fold_cells`
+    visits exactly the cells written.
+  - `fuzz/table-changes` holds a table's changes to a model of what they
+    must say, over pure turns (`Store.after`) of branching histories, in
+    which two values of one store share their cells' identities and can
+    reach one count with different rows: after every turn the changes
+    name exactly the keys the turn wrote, each with its row when the turn
+    began, or say that the turn rewrote the table whole; `inverse`
+    restores the turn's start; and a view of the earlier value followed to
+    the new one equals a view built from scratch.
+  - `fuzz/view-follow` holds a table view kept from those changes to a
+    filter, a sort and a slice of a plain list, with its ordered keys in
+    chunks small enough that a session splits and merges them: after
+    every turn the ordered keys, the window and the rows drawn are the
+    model's, reached in one change, the rows entered and left are exactly
+    those the window gained and lost, the moves are the rows off one
+    longest run that kept its order, and absorbing places at most two rows
+    for each written key.
+  - `fuzz/fx-core` holds `FxCore`'s request lifecycle to a model that
+    numbers ids itself and tags each follow-up with its chain depth, from
+    an adversarial host: the cap and refusal exactly at it, each id's fate,
+    routing (an old answer never reaches a new request), the counter law,
+    and the follow-up depth and breadth bounds.
+  - `fuzz/reconcile` makes a new list of keys from an old one, up to
+    thousands of rows, by edits that reach every path of `Reconcile`'s
+    plan, and applies the plan's steps to the old rows with a model that
+    knows nothing of how they were planned: the steps must leave the new
+    list with each row where its step put it, keep exactly the keys in
+    both, create and drop the rest once each, drop in old order before
+    placing, move no more rows than the plan's shape needs, and refuse a
+    repeated key or create it where the site's key index refuses it.
 - **Walks.** The native spec runner walks an app (`RUNNER --walk STEPS
   --seed N FILE.scm...`) from a fresh mount, mounted as the first spec's
   setup: each step is a user event on a live control (chosen from the live
@@ -5700,50 +5780,6 @@ know nothing of the platform.
   mis-encoded command or a wrong `last` agree with themselves and pass.
   While the copy lives it shares the instance's storage, so the pass copies
   what it touches; it stays out of measured regions.
-- **Generated structure** (`fuzz/structure`) decodes bytes into a site tree
-  over every site kind, bounded in depth and size, and a session of clicks
-  and timer and worker-job answers over it, so the settle check meets
-  nestings no fixed app contains. When every write goes to the root state,
-  the page is a function of that state, and after every step it must equal a
-  fresh mount started at it. The settle check sees where a turn ends, not
-  what it emitted on the way, so the target also holds each turn to what a
-  reader may see. One click may write two layers, and a generated reader
-  shows a layer, a `derive` of it and a second layer together, in a text
-  and in a `watch`'s title: a turn may write a node once, never a node it
-  created, and a title must name a derived value that follows its layer. A
-  reader evaluated between two of an event's writes breaks one of these.
-  The generator stays monomorphic by nesting layers a fixed number deep: a
-  generator recursing through `state` would need polymorphic recursion.
-
-  The target's valued modes check the page against a **value model**
-  (`fuzz/structure/Reference.roc`), which imports nothing of the platform:
-  the page drawn from scratch for the tree and the local states alive, and
-  a click as "apply every write of the handler, in order, then draw again",
-  where a local state is carried exactly when its structural identity (its
-  path of child positions, branches taken and row keys) is drawn before and
-  after. Every state is written there, resources issue nothing and the
-  session only clicks. After every click the engine's page must show the
-  model's texts in document order, button labels included, and offer as
-  many click candidates as the model has buttons. That comparison sees a
-  kept scope whose state started again, a state carried across a removal
-  and a structural reader that settled on one new value beside one old one;
-  it does not see attributes, properties or the order of nodes without
-  text, and it counts no evaluations. Structural readers may follow two
-  values at once, rows keep their key while their item changes and keys
-  leave and come back, derived values include one that maps two inputs to
-  one, and the decoder is biased toward one shape bytes rarely build: a
-  button writing an outer and an inner state with a reader of both below,
-  one of them through a derived value, holding state. A pure tally of the
-  seeded series (clicks writing two states one structural reader follows,
-  of those some through a derived value, clicks disposing a state not at
-  its start, rows drawn again after a removal, kept rows whose item
-  changed) is held by `expect`s to minimum shares of its clicks, set at
-  about half the shares at which the series found an event's writes settled
-  by two passes and a kept row's state reset, so a generator change that
-  stops reaching these shapes fails rather than passes vacuously. After
-  every step the target also checks the engine's probe, and in its valued
-  modes holds every click to the count and shape model ([The
-  probe](#the-probe)).
 - **Soak.** Every app runs a long random walk in Chrome, with Wasm pages
   and live allocations asserted flat across repeated round trips. Natively,
   each app's round trip is an ordinary spec that the spec runner also
@@ -5769,7 +5805,44 @@ know nothing of the platform.
 - **Contract tests** (`tests/`) cover the host (`host.zig` tests: staging,
   containment, refusal after poison) and the runtime (`runtime.mjs` against the
   wire protocol: every opcode, payload encoding, effect performance and
-  cancellation, controlled inputs, containment and recovery).
+  cancellation, controlled inputs, containment and recovery). The ingress
+  queue's rules are checked over seeded sessions of the real runtime with
+  only the Wasm call and the browser's callbacks faked
+  (`tests/runtime/ingress-unit.mjs`): its two budgets, order by joining,
+  an occurrence after every earlier report and before every later one,
+  nothing non-lossy dropped short of a poison, and a poison only from a
+  real feedback loop.
+
+### What the checks cannot see
+
+Each check above is bounded by what it is about, and these bounds are
+part of the arrangement, not gaps a passing run closes:
+
+- The reference is about the programs its kernel can express, and the
+  structure vectors about the trees the Roc generator can build. The
+  generator's typed levels reach scopes four deep below the root's, with
+  one layer inside a row and no scope inside a row of a row; a property
+  that needs a deeper shape, a timer, a job or an effect is not covered by
+  the reference or the vectors. Depth beyond the generator's levels is
+  tested only on the pure cores, which take indices and lengths no app
+  reaches.
+- The value model compares texts in document order and the number of
+  buttons. Attributes, properties and the order of nodes without text are
+  outside it, and it counts no evaluations; the count model counts them,
+  only for valued programs.
+- That a hole's mask covers what its closure reads is checked directly
+  only for generated programs, whose reads the count model knows. In an
+  app, the settle check sees a missing read only once a walk changes what
+  was missed.
+- `Seq`'s chunks are checked by `fuzz/view-follow` against a plain list,
+  not modelled in Lean.
+- The proofs in `oracle/` cover a table's changes and the static fragment
+  of propagation, and each is about its model, not about the engine; the
+  vectors are what tie a model to the code.
+- The settle check sees propagation only, and the value model what a
+  generated handler wrote; neither sees a wrong reducer or decision, which
+  agrees with itself. That is what [Decisions as
+  functions](#decisions-as-functions) checks.
 
 ## Tooling
 
@@ -5842,7 +5915,7 @@ of them is platform semantics.
 | [roc-lang/roc#12919](https://github.com/roc-lang/roc/issues/12919) | A format with `encode_key_start` crashes monotype lowering when a derived encoder writes a `Dict` key that is a tuple, a record or a nominal type (even one over `U64` with derived codecs); `roc check` passes. Reproduced on `nightly-2026-11-13-03dce41` and `nightly-2026-11-14-a87808d` | `WorkerCodec` declares no `encode_key_start` or `parse_key_start`, so such a key in a payload is a `roc check` error naming the missing method (fixtures `wire-record-key`, `wire-nominal-key`). Restoring the hooks once #12919 and #13057 are fixed lets these keys cross |
 | [roc-lang/roc#13002](https://github.com/roc-lang/roc/issues/13002) | Compile-time Dict and Set work can be quadratic in the default page's rows | Engine.mounts has inherent default-mount work; the compiler's extra superlinear cost remains upstream. Removing the app constant disables the check |
 | [roc-lang/roc#13092](https://github.com/roc-lang/roc/issues/13092) | The compiler expands a mutually recursive group of two or more functions that are generic in a type variable again at every other function that calls into it, so its work is the number of calling functions times the size of the group. The native spec runner is generic in the app's state, and its event loop is such a group; reached directly from fifty other functions, it made a development build of the smallest app take about 25 seconds, against 1.1 on 0.5.0 | `SpecRunner`'s event-loop functions are named `*_in_loop` and call each other by those names; every other function reaches them through a one-line wrapper of the plain name, which the compiler expands once. `change_shown_with` calls itself rather than `change_shown`, so that pair is no group. The same build takes about 9 seconds. The wrappers and the suffix go once the compiler reuses a finished group |
-| [roc-lang/roc#13080](https://github.com/roc-lang/roc/issues/13080) | `roc bump` cannot extract a package's API when an exposed method's signature names an opaque type from a module the package does not expose, though `roc check` accepts the package | The API comparison's baseline is the published 0.6.0 bundle with `WorkerCodec` added to its exposed modules in a copy, a difference the gate prints; the repair verifies the published asset's SHA-256 and fails the gate once 0.6.0 is no longer the latest release. The candidate side needs the same extraction workaround: `Wire.Sendable`'s `where` clause names the unexposed `WorkerCodec` types (roc-lang/roc#13022), so the gate compares a copy of `platform/` that also exposes `WorkerCodec`, prints that it did, and fails once the unrepaired platform extracts |
+| [roc-lang/roc#13080](https://github.com/roc-lang/roc/issues/13080) | `roc bump` cannot extract a package's API when an exposed method's signature names an opaque type from a module the package does not expose, though `roc check` accepts the package | The API comparison's baseline is the published 0.7.0 bundle with `WorkerCodec` added to its exposed modules in a copy, a difference the gate prints; the repair verifies the published asset's SHA-256 and fails the gate once 0.7.0 is no longer the latest release. The candidate side needs the same extraction workaround: `Wire.Sendable`'s `where` clause names the unexposed `WorkerCodec` types (roc-lang/roc#13022), so the gate compares a copy of `platform/` that also exposes `WorkerCodec`, prints that it did, and fails once the unrepaired platform extracts |
 | [roc-lang/roc#12953](https://github.com/roc-lang/roc/issues/12953) | Since roc-lang/roc#12887, the host boundary rejects an opaque `Box` of a value that contains functions, though it accepts the same value as `Box(Iter(...))` | The sites cross as `Box(Iter(Core.Sites(st)))` inside the one outer `Handle`, beside the plain store; `platform/main.roc` alone wraps and unwraps them. `Core.Kept` holds its task runner as a `Box` of its own |
 | [roc-lang/roc#12945](https://github.com/roc-lang/roc/issues/12945) | Under `--specialize=no`, a derived record decode leaks on every call | Worker instances grow per job in that build, so the scaling task's memory checks fail for it |
 | [roc-lang/roc#12951](https://github.com/roc-lang/roc/issues/12951) | A lambda passed to a generic function is rejected when its body uses `?` on a method of its own parameter and then `?` again | A task whose `run!` reads a file and then uses `?` again is written as a named function, not a lambda in the props record; the Workers guide says so |
