@@ -47,6 +47,37 @@ Sig :: [].{
 	## by the exact cells.
 	Wrote : { lo : U64, hi : List(U64), cells : U64, more : List(U64) }
 
+	## What a `Changed` message is for. `Turn(mask)` is a pass of a turn: it
+	## refreshes the readers of what `mask` names and descends only where a
+	## child reads some of it. `Check` is the settle check (`Core.settled`),
+	## a harness's pass over a copy of the instance: it re-evaluates every
+	## hole, descends into every child whatever its reads, makes every view
+	## site compare its view with one built from scratch, and asks every table
+	## cell whether it was rearmed. A site that settles layers of its own (the
+	## rows of an `each`) passes `Check` inward whole.
+	##
+	## The two are different tags so that no turn can be taken for the check:
+	## a turn whose mask has every bit set is still a turn.
+	Pass : [Turn(Mask), Check]
+
+	## Whether a pass reaches a reader of `reads`: a turn when its mask
+	## shares a bit with them, the check whenever they are not empty.
+	meets : Pass, Mask -> Bool
+	meets = |pass, reads| match pass {
+		Turn(mask) => mask.bitwise_and(reads) != 0
+		Check => reads != 0
+	}
+
+	## A pass that also carries `bits` from here down: what a layer's site
+	## hands its subtree when its own layer changed in the same pass (a
+	## `derive` that recomputed, a waiting state that joins). The check
+	## already carries everything.
+	joined : Pass, Mask -> Pass
+	joined = |pass, bits| match pass {
+		Turn(mask) => Turn(mask.bitwise_or(bits))
+		Check => Check
+	}
+
 	## The read-signature bit of layer index `index`.
 	bit : U64 -> Mask
 	bit = |index| (1.U128).shl_wrap(index.bitwise_and(63).to_u8_wrap())
@@ -83,18 +114,12 @@ Sig :: [].{
 	## reads): exact below 64, every bit from 64 on (any bit may then belong to
 	## an ancestor). A store cell is above every layer.
 	above_bits : U64 -> Mask
-	above_bits = |index| if (index < 64) (Sig.bit(index) - 1).bitwise_or(Sig.all_cells) else Sig.every_layer
+	above_bits = |index| if (index < 64) (Sig.bit(index) - 1).bitwise_or(Sig.all_cells) else Sig.every
 
-	## Every layer and every cell at once: the mask of the settle check
-	## (`Core.settled`). A `Changed` with it re-evaluates every hole and
-	## descends into every child whatever its read mask, and a site that
-	## settles layers of its own (the rows of an `each`) passes it inward
-	## whole instead of translating it. A turn's own signature can equal
-	## it only when one turn wrote 64 layers whose indices differ modulo 64 and
-	## 64 cells; the pass then does what it would do for this mask, a superset
-	## of the work the turn needs, pruned like any other.
-	every_layer : Mask
-	every_layer = 0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF
+	## Every layer bit and every cell bit. It is an ordinary mask: a turn may
+	## carry it, and the settle check is `Check`, not this.
+	every : Mask
+	every = 0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF
 
 	## The signature bits of every index from 0 to `depth`, both included
 	## (every layer bit once `depth` reaches 63).
@@ -313,5 +338,21 @@ expect {
 ## index 64, where no layer above it can share them.
 expect {
 	actual = (Sig.own_bit(36), Sig.own_bit(100), Sig.above_bits(40), Sig.above_bits(104))
-	actual == (Sig.bit(36), 0, (Sig.bit(40) - 1).bitwise_or(Sig.all_cells), Sig.every_layer)
+	actual == (Sig.bit(36), 0, (Sig.bit(40) - 1).bitwise_or(Sig.all_cells), Sig.every)
+}
+
+## The check reaches every reader that reads anything and carries every
+## bit already; a turn reaches only the readers its mask shares a bit with,
+## even when that mask has every bit set.
+expect {
+	actual = {
+		check: (Sig.meets(Check, 0), Sig.meets(Check, Sig.bit(5)), Sig.joined(Check, Sig.bit(5))),
+		turn: (Sig.meets(Turn(Sig.bit(3)), Sig.bit(5)), Sig.meets(Turn(Sig.bit(3)), Sig.bit(67)), Sig.joined(Turn(Sig.bit(3)), Sig.bit(5))),
+		every: (Sig.meets(Turn(Sig.every), 0), Sig.joined(Turn(Sig.every), Sig.bit(5)) == Check),
+	}
+	actual == {
+		check: (Bool.False, Bool.True, Check),
+		turn: (Bool.False, Bool.True, Turn(Sig.bit(3).bitwise_or(Sig.bit(5)))),
+		every: (Bool.False, Bool.False),
+	}
 }

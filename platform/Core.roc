@@ -3381,8 +3381,9 @@ Core := [].{
 	## already shows what its layers imply, which is what a complete turn
 	## leaves behind (design.md, "Fuzzing, walks, soak and contract tests").
 	##
-	## It runs one root `Changed` pass with every layer bit set on a copy of
-	## the instance and discards the copy. That pass re-evaluates every hole,
+	## It runs one root `Changed(Check)` pass on a copy of the instance and
+	## discards the copy. `Check` is its own tag, so no turn's pass, whatever
+	## its mask, is taken for it. That pass re-evaluates every hole,
 	## re-decides every `when` and `switch`, reconciles every `each`, re-reads
 	## every `derive` and `resource` input and every effect site's watched
 	## value, and reaches into every row; each of those prunes against what
@@ -3414,7 +3415,7 @@ Core := [].{
 	settled = |App.(AppBody.({ store, root, tx, programs: _ }))| {
 		before = tx.fx
 		scratch = with_fx(tx, |effects| { ..effects, batch: { mounting: False, asked: False, types: [], seen: Dict.empty() } })
-		(_, _, after) = call(root, Root.{ store }, Changed(Sig.every_layer), { ..scratch, cmds: [] })
+		(_, _, after) = call(root, Root.{ store }, Changed(Check), { ..scratch, cmds: [] })
 		note = settle_note(before, after.fx)
 		if (after.cmds.is_empty() and note.is_empty()) Ok({}) else Err({ cmds: after.cmds, note })
 	}
@@ -4213,7 +4214,7 @@ attach_kind = |event, { code, decode }, policies, { run }| On(
 	{ run: |env, payload, site| run(env, decode(payload, site), site), echo: NoEcho },
 )
 
-Msg := [Fire(List(U32), U64, U32, Payload), Changed(U128), Dispose(Bool)]
+Msg := [Fire(List(U32), U64, U32, Payload), Changed(Sig.Pass), Dispose(Bool)]
 
 ## Fire always hands the (possibly transformed) environment back up with
 ## the exact set of layers it wrote that no site below has settled yet
@@ -5146,11 +5147,14 @@ call : Inst(ctx), ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx)
 call = |Inst(f), env, msg, tx| f(env, msg, tx)
 
 ## Re-evaluate the holes that read a changed layer, then descend into the
-## children whose subtrees read one. With `Sig.every_layer` it re-evaluates every
-## hole and descends into every child, whatever the masks say.
-refresh : Block(ctx), ctx, U128, Tx -> (Block(ctx), Tx)
-refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, reads }, env, mask, tx| {
-	all = mask == Sig.every_layer
+## children whose subtrees read one. The settle check (`Check`) re-evaluates
+## every hole and descends into every child, whatever the masks say.
+refresh : Block(ctx), ctx, Sig.Pass, Tx -> (Block(ctx), Tx)
+refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, reads }, env, pass, tx| {
+	(all, mask) = match pass {
+		Turn(m) => (Bool.False, m)
+		Check => (Bool.True, Sig.every)
+	}
 	var $holes = holes
 	var $tx = tx
 	var $i = 0.U64
@@ -5185,7 +5189,7 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 		r = child_reads.get($j) ?? 0
 		if all or r.bitwise_and(mask) != 0 {
 			{ list, prev } = $kids.replace($j, noop({})) ?? crash "child"
-			(next, _, t2) = call(prev, env, Changed(mask), $tx)
+			(next, _, t2) = call(prev, env, Changed(pass), $tx)
 			$kids = list.set($j, next) ?? crash "child"
 			$tx = t2
 		}
@@ -5219,7 +5223,7 @@ fire_leaf : Block(ctx), ctx, U32, Payload, List(U32), Tx -> (Block(ctx), Out(ctx
 fire_leaf = |block, env, h, payload, site, tx| {
 	if !fires(payload) {
 		(b2, t2) = match payload {
-			Settle(_, True) => refresh(block, env, 0, tx)
+			Settle(_, True) => refresh(block, env, Turn(0), tx)
 			_ => (block, tx)
 		}
 		return (b2, Pending(env, Sig.none), t2)
@@ -5365,7 +5369,7 @@ state_settle = |block, depth, out, path, pos, h, tx| {
 			} else {
 				# Every write of the turn is in place by now, and this is the
 				# outermost layer it wrote: its pass starts here.
-				(b3, t3) = refresh(block, In.{ outer: next_outer, value: s2 }, Sig.bit(depth), bump(tx, w_dirty_roots, 1))
+				(b3, t3) = refresh(block, In.{ outer: next_outer, value: s2 }, Turn(Sig.bit(depth)), bump(tx, w_dirty_roots, 1))
 				waiting = Sig.from(mask, depth + 1)
 				if Sig.is_empty(waiting) or pos >= path.len() {
 					(state_inst(s2, b3, depth, Settled), Pending(next_outer, Sig.none), t3)
@@ -5391,7 +5395,7 @@ state_walk : s, Block(In(ctx, s)), ctx, U64, [Settled, Waiting], [Further, Ends]
 state_walk = |s, block, env, depth, waits, on, path, pos, h, payload, tx| {
 	match waits {
 		Waiting => {
-			(b2, t2) = refresh(block, In.{ outer: env, value: s }, Sig.bit(depth), bump(tx, w_dirty_roots, 1))
+			(b2, t2) = refresh(block, In.{ outer: env, value: s }, Turn(Sig.bit(depth)), bump(tx, w_dirty_roots, 1))
 			state_walk_on(s, b2, env, depth, on, path, pos, h, payload, t2)
 		}
 		Settled => state_walk_on(s, block, env, depth, on, path, pos, h, payload, tx)
@@ -5411,7 +5415,7 @@ state_walk_on = |s, block, env, depth, on, path, pos, h, payload, tx| {
 		}
 		(_, Leaf) => {
 			(b2, t2) = match payload {
-				Settle(_, True) => refresh(block, In.{ outer: env, value: s }, 0, tx)
+				Settle(_, True) => refresh(block, In.{ outer: env, value: s }, Turn(0), tx)
 				_ => (block, tx)
 			}
 			(state_inst(s, b2, depth, Settled), Pending(env, Sig.none), t2)
@@ -5450,18 +5454,18 @@ state_inst = |s0, block0, depth0, waits0| {
 		|env, msg, tx| {
 			{ s, block, depth, waits } = held
 			match msg {
-				Changed(mask) => {
+				Changed(pass) => {
 					match waits {
 						Waiting => {
 							# The pass of a write above this layer has reached its
 							# site: the layer joins it. Its bit is added here, so it
 							# is carried in this subtree and nowhere else, and a
 							# reader below of both writes is evaluated once.
-							(b2, t2) = refresh(block, In.{ outer: env, value: s }, mask.bitwise_or(Sig.bit(depth)), bump(tx, w_dirty_roots, 1))
+							(b2, t2) = refresh(block, In.{ outer: env, value: s }, Sig.joined(pass, Sig.bit(depth)), bump(tx, w_dirty_roots, 1))
 							(state_inst(s, b2, depth, Settled), Done, t2)
 						}
 						Settled => {
-							(b2, t2) = refresh(block, In.{ outer: env, value: s }, mask, tx)
+							(b2, t2) = refresh(block, In.{ outer: env, value: s }, pass, tx)
 							(state_inst(s, b2, depth, Settled), Done, t2)
 						}
 					}
@@ -5508,8 +5512,8 @@ placeholder_inst = |cfg0, block0| {
 		|env, msg, tx| {
 			{ cfg, block } = held
 			match msg {
-				Changed(mask) => {
-					if mask.bitwise_and(eff_mask(cfg.ready)) != 0 {
+				Changed(pass) => {
+					if Sig.meets(pass, eff_mask(cfg.ready)) {
 						eligible = (cfg.ready.read)(env)
 						tx1 = count_evals(tx, 1)
 						tx2 = if eligible {
@@ -5572,8 +5576,8 @@ active_placeholder_inst = |anchor0, block0| {
 		|env, msg, tx| {
 			{ anchor, block } = held
 			match msg {
-				Changed(mask) => {
-					(next, tx1) = refresh(block, env, mask, tx)
+				Changed(pass) => {
+					(next, tx1) = refresh(block, env, pass, tx)
 					(active_placeholder_inst(anchor, next), Done, tx1)
 				}
 				Fire(path, pos, handler, payload) => match fire_target(block, path, pos) {
@@ -5706,13 +5710,12 @@ when_inst = |w0, cur0, adopted0, block0| {
 		|env, msg, tx| {
 			{ w, cur, adopted, block } = held
 			match msg {
-				Changed(mask) => {
-					cm = eff_mask(w.cond)
-					if cm.bitwise_and(mask) != 0 {
+				Changed(pass) => {
+					if Sig.meets(pass, eff_mask(w.cond)) {
 						c = (w.cond.read)(env)
 						t1 = count_evals(tx, 1)
 						if c == cur {
-							(b2, t2) = refresh(block, env, mask, t1)
+							(b2, t2) = refresh(block, env, pass, t1)
 							(when_inst(w, cur, adopted, b2), Done, t2)
 						} else {
 							(orph, t2) = dispose_block(block, env, True, bump(bump(t1, w_scopes_disposed, 1), w_scopes_created, 1))
@@ -5721,7 +5724,7 @@ when_inst = |w0, cur0, adopted0, block0| {
 							(when_inst(w, c, adopted.concat(orph), b3), Done, t3)
 						}
 					} else {
-						(b2, t2) = refresh(block, env, mask, tx)
+						(b2, t2) = refresh(block, env, pass, tx)
 						(when_inst(w, cur, adopted, b2), Done, t2)
 					}
 				}
@@ -5764,8 +5767,8 @@ block_inst = |block0| {
 		|env, msg, tx| {
 			{ block } = held
 			match msg {
-				Changed(mask) => {
-					(b2, t2) = refresh(block, env, mask, tx)
+				Changed(pass) => {
+					(b2, t2) = refresh(block, env, pass, tx)
 					(block_inst(b2), Done, t2)
 				}
 				Fire(path, pos, h, payload) => {
@@ -5804,13 +5807,15 @@ store_inst = |tables0, wrote0, block0| {
 		|env, msg, tx| {
 			{ tables, wrote, block } = held
 			match msg {
-				Changed(mask) => {
-					(b2, t2) = refresh(block, env, mask, tx)
-					# The settle check (`Core.settled`) is the only pass over every
-					# layer at the root. It also asks every table cell, drawn or
-					# not, whether its last writing turn rearmed it: O(tables),
-					# which only a harness pays.
-					t3 = if (mask == Sig.every_layer) unrearmed(tables, env.store, t2) else t2
+				Changed(pass) => {
+					(b2, t2) = refresh(block, env, pass, tx)
+					# The settle check (`Core.settled`) also asks every table cell,
+					# drawn or not, whether its last writing turn rearmed it:
+					# O(tables), which only a harness pays.
+					t3 = match pass {
+						Check => unrearmed(tables, env.store, t2)
+						Turn(_) => t2
+					}
 					(store_inst(tables, Sig.none, b2), Pending(Root.{ store: end_tables(env.store, tables, wrote) }, Sig.none), t3)
 				}
 				Fire(path, pos, h, payload) => match fire_target(block, path, pos) {
@@ -6791,6 +6796,16 @@ remove_row = |cfg, cols, env, slot, remove, tx| {
 	}
 }
 
+## The marks every row of an `each` or view site takes from a pass: the
+## bits of the pass its rows read (`reads`, what the template's holes and
+## nested sites read) of the layers above the site and the cells. The
+## settle check marks every row with every bit, whatever the reads.
+row_marks : Sig.Pass, U128, U64 -> U128
+row_marks = |pass, reads, depth| match pass {
+	Turn(mask) => mask.bitwise_and(reads).bitwise_and(Sig.above_bits(depth))
+	Check => Sig.every
+}
+
 mark_all : Cols(r, item), U128 -> Cols(r, item)
 mark_all = |cols, m| {
 	(c0, order) = take_order(cols)
@@ -7235,9 +7250,13 @@ lis_mark = |seq| {
 }
 
 ## Evaluate the marked holes of the dirty rows and forward changes to
-## their nested sites.
-settle : EachCfg(r, find), Cols(r, item), (Str, item -> r), Tx -> (Cols(r, item), Tx)
-settle = |cfg, cols, env, tx| {
+## their nested sites. A row's marks are the bits its own layer and the
+## layers above it changed by, so a turn's nested sites get a pass of
+## them; the settle check (`Check`) marks every row with every bit and
+## hands its nested sites the check itself. A `Settle` walk that reaches
+## a row's handler settles as a turn: its rows carry their own marks.
+settle : EachCfg(r, find), Cols(r, item), (Str, item -> r), Sig.Pass, Tx -> (Cols(r, item), Tx)
+settle = |cfg, cols, env, pass, tx| {
 	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes } = cols
 	var $lasts = lasts
 	var $pend = pend
@@ -7282,13 +7301,17 @@ settle = |cfg, cols, env, tx| {
 			}
 			$hi = $hi + 1
 		}
-		if cfg.dynamic and (m == Sig.every_layer or kid_mask.bitwise_and(m) != 0) {
+		kid_pass = match pass {
+			Check => Check
+			Turn(_) => Turn(m)
+		}
+		if cfg.dynamic and (kid_pass == Check or kid_mask.bitwise_and(m) != 0) {
 			{ list: kl, prev: row_kids } = $kids.replace(si, []) ?? crash "kids"
 			var $rk = row_kids
 			var $j = 0.U64
 			while $j < $rk.len() {
 				{ list: rl, prev: kid } = $rk.replace($j, noop({})) ?? crash "kid"
-				(k2, _, t2) = call(kid, row_env, Changed(m), $tx)
+				(k2, _, t2) = call(kid, row_env, Changed(kid_pass), $tx)
 				$rk = rl.set($j, k2) ?? crash "kid"
 				$tx = t2
 				$j = $j + 1
@@ -7302,8 +7325,8 @@ settle = |cfg, cols, env, tx| {
 }
 
 ## Selection changed: mark only the previously and newly selected rows.
-select_changed : EachCfg(r, find), Cols(r, item), (Str, item -> r), U128 -> Cols(r, item)
-select_changed = |cfg, cols, env, mask| {
+select_changed : EachCfg(r, find), Cols(r, item), (Str, item -> r), Sig.Pass -> Cols(r, item)
+select_changed = |cfg, cols, env, pass| {
 	first = cols.order.first()
 	match first {
 		Err(_) => {
@@ -7317,7 +7340,7 @@ select_changed = |cfg, cols, env, mask| {
 			var $cols = cols
 			var $hi = 0.U64
 			for hole in cfg.plan.holes {
-				if hole.smask.bitwise_and(mask) != 0 {
+				if Sig.meets(pass, hole.smask) {
 					nk = (hole.skey)(probe)
 					ok = $cols.sels.get($hi) ?? ""
 					if !$cols.known or nk != ok {
@@ -7398,22 +7421,21 @@ each_inst = |cfg0, rows0, adopted0, cols0| {
 			{ cfg, rows, adopted, cols } = held
 			mk = |k, it| Row.{ outer: env, key: k, item: it }
 			match msg {
-				Changed(mask) => {
+				Changed(pass) => {
 					# Mark existing rows first (outer layers, then the keyed selector),
 					# then reconcile: rows created now are evaluated once, at creation;
 					# rows removed now drop their marks. Rows settle their own layer
-					# locally, so `Sig.every_layer` reaches into them whole.
-					full = if (mask == Sig.every_layer) Sig.every_layer else mask.bitwise_and(cfg.outer_mask.bitwise_or(cols.kid_mask)).bitwise_and(Sig.above_bits(cfg.depth))
+					# locally, so the settle check reaches into them whole.
+					full = row_marks(pass, cfg.outer_mask.bitwise_or(cols.kid_mask), cfg.depth)
 					c1 = if (full != 0) mark_all(cols, full) else cols
-					c2 = if (cfg.sel_mask.bitwise_and(mask) != 0) select_changed(cfg, c1, mk, mask) else c1
-					rows_mask = eff_mask(rows)
-					(c3, t1) = if rows_mask.bitwise_and(mask) != 0 {
+					c2 = if (Sig.meets(pass, cfg.sel_mask)) select_changed(cfg, c1, mk, pass) else c1
+					(c3, t1) = if Sig.meets(pass, eff_mask(rows)) {
 						list = (rows.read)(env)
 						reconcile(cfg, c2, mk, list, count_evals(tx, 1))
 					} else {
 						(c2, tx)
 					}
-					(c4, t4) = settle(cfg, c3, mk, t1)
+					(c4, t4) = settle(cfg, c3, mk, pass, t1)
 					(c5, orph) = take_dropped(c4, cfg.depth)
 					(each_inst(cfg, rows, adopted.concat(orph), c5), Done, fx_adopt(t4, cfg.path, orph))
 				}
@@ -7434,7 +7456,7 @@ each_inst = |cfg0, rows0, adopted0, cols0| {
 						item = cols.items.get(si) ?? crash "item"
 						row_env = Row.{ outer: env, key, item }
 						if pos + 1 >= path.len() and !fires(payload) {
-							(c2, t2) = settle(cfg, cols, mk, tx)
+							(c2, t2) = settle(cfg, cols, mk, Turn(0), tx)
 							(each_inst(cfg, rows, adopted, c2), Pending(env, Sig.none), t2)
 						} else if pos + 1 >= path.len() {
 							match cfg.plan.handlers.get(h.to_u64()) {
@@ -7667,7 +7689,7 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 			{ cfg, shows, q, view, adopted, cols, slots } = held
 			mk = |_, key| Row.{ outer: env, key: "", item: key }
 			match msg {
-				Changed(mask) => {
+				Changed(pass) => {
 					# Whatever the pass is for, the table first: every write of the
 					# turn is in place, and when none was made it is a comparison of
 					# two counts. Then the query and the window, and only then the
@@ -7675,16 +7697,18 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 					# after, so a row drawn before and after is one row throughout,
 					# whatever the event wrote. Rows created now are evaluated once,
 					# at creation; then the rows settle.
-					all = mask == Sig.every_layer
 					table = (shows.get)(env)
 					# The settle check: a view that is not the one its table gives
 					# is reported, and the pass (which is discarded) stops here for
 					# this site, whose rows may name keys the table no longer has.
-					drift = if (all) view_check(cfg, shows, q, view, cols, table, env) else ""
+					drift = match pass {
+						Check => view_check(cfg, shows, q, view, cols, table, env)
+						Turn(_) => ""
+					}
 					if !drift.is_empty() {
 						return (view_inst(cfg, shows, q, view, adopted, cols, slots), Done, with_fx(tx, |fx| { ..fx, focus: fx.focus.append(Drift(drift)) }))
 					}
-					full = if (all) Sig.every_layer else mask.bitwise_and(cfg.outer_mask.bitwise_or(cols.kid_mask)).bitwise_and(Sig.above_bits(cfg.depth))
+					full = row_marks(pass, cfg.outer_mask.bitwise_or(cols.kid_mask), cfg.depth)
 					c1 = if (full != 0) mark_all(cols, full) else cols
 					window = view.window_of()
 					# `view` moves into `follow` and is not used again, so the ordered
@@ -7695,8 +7719,8 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 					# layer written with the table joined the pass at its own site,
 					# above this one (`waits_for_outer`). So the table, the query
 					# and the window all arrive here together.
-					names_query = all or eff_mask(shows.query).bitwise_and(mask) != 0
-					names_window = all or eff_mask(shows.window).bitwise_and(mask) != 0
+					names_query = pass == Check or Sig.meets(pass, eff_mask(shows.query))
+					names_window = pass == Check or Sig.meets(pass, eff_mask(shows.window))
 					q2 = if (names_query) (shows.query.read)(env) else q
 					w2 = if (names_window) (shows.window.read)(env) else window
 					draws = reached or (names_query and q2 != q) or (names_window and w2 != window)
@@ -7712,7 +7736,7 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 						(drawn.view, drawn.changes, count_evals(t1, table.len()))
 					}
 					(c4, s4, t4) = view_apply(cfg, c1, slots, mk, v2, changes, t2)
-					(c5, t5) = settle(cfg, c4, mk, t4)
+					(c5, t5) = settle(cfg, c4, mk, pass, t4)
 					(c6, orph) = take_dropped_view(c5, cfg.depth, shows.get)
 					(view_inst(cfg, shows, q2, v2, adopted.concat(orph), c6, s4), Done, fx_adopt(t5, cfg.path, orph))
 				}
@@ -7732,7 +7756,7 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 						key = cols.items.get(si) ?? crash "item"
 						row_env = Row.{ outer: env, key: "", item: key }
 						if pos + 1 >= path.len() and !fires(payload) {
-							(c2, t2) = settle(cfg, cols, mk, tx)
+							(c2, t2) = settle(cfg, cols, mk, Turn(0), tx)
 							(view_inst(cfg, shows, q, view, adopted, c2, slots), Pending(env, Sig.none), t2)
 						} else if pos + 1 >= path.len() {
 							match cfg.plan.handlers.get(h.to_u64()) {
@@ -7841,12 +7865,12 @@ switch_inst = |w0, cur0, adopted0, block0| {
 		|env, msg, tx| {
 			{ w, cur, adopted, block } = held
 			match msg {
-				Changed(mask) => {
-					if eff_mask(w.sel).bitwise_and(mask) != 0 {
+				Changed(pass) => {
+					if Sig.meets(pass, eff_mask(w.sel)) {
 						k = switch_value(w.sel, w.cases, env, w.path)
 						t1 = count_evals(tx, 1)
 						if k == cur {
-							(b2, t2) = refresh(block, env, mask, t1)
+							(b2, t2) = refresh(block, env, pass, t1)
 							(switch_inst(w, cur, adopted, b2), Done, t2)
 						} else {
 							(orph, t2) = dispose_block(block, env, True, bump(bump(t1, w_scopes_disposed, 1), w_scopes_created, 1))
@@ -7854,7 +7878,7 @@ switch_inst = |w0, cur0, adopted0, block0| {
 							(switch_inst(w, k, adopted.concat(orph), b3), Done, t3)
 						}
 					} else {
-						(b2, t2) = refresh(block, env, mask, tx)
+						(b2, t2) = refresh(block, env, pass, tx)
 						(switch_inst(w, cur, adopted, b2), Done, t2)
 					}
 				}
@@ -7905,12 +7929,12 @@ remount_inst = |w0, cur0, adopted0, block0| {
 		|env, msg, tx| {
 			{ w, cur, adopted, block } = held
 			match msg {
-				Changed(mask) => {
-					if eff_mask(w.key).bitwise_and(mask) != 0 {
+				Changed(pass) => {
+					if Sig.meets(pass, eff_mask(w.key)) {
 						k = (w.key.read)(env)
 						t1 = count_evals(tx, 1)
 						if k == cur {
-							(b2, t2) = refresh(block, env, mask, t1)
+							(b2, t2) = refresh(block, env, pass, t1)
 							(remount_inst(w, cur, adopted, b2), Done, t2)
 						} else {
 							(orph, t2) = dispose_block(block, env, True, bump(bump(t1, w_scopes_disposed, 1), w_scopes_created, 1))
@@ -7918,7 +7942,7 @@ remount_inst = |w0, cur0, adopted0, block0| {
 							(remount_inst(w, k, adopted.concat(orph), b3), Done, t3)
 						}
 					} else {
-						(b2, t2) = refresh(block, env, mask, tx)
+						(b2, t2) = refresh(block, env, pass, tx)
 						(remount_inst(w, cur, adopted, b2), Done, t2)
 					}
 				}
@@ -7961,19 +7985,19 @@ derive_inst = |input0, v0, block0, depth0| {
 		|env, msg, tx| {
 			{ input, v, block, depth } = held
 			match msg {
-				Changed(mask) => {
-					if eff_mask(input).bitwise_and(mask) != 0 {
+				Changed(pass) => {
+					if Sig.meets(pass, eff_mask(input)) {
 						v2 = (input.read)(env)
 						t1 = count_evals(tx, 1)
 						if v2 == v {
-							(b2, t2) = refresh(block, In.{ outer: env, value: v }, mask, t1)
+							(b2, t2) = refresh(block, In.{ outer: env, value: v }, pass, t1)
 							(derive_inst(input, v, b2, depth), Done, t2)
 						} else {
-							(b2, t2) = refresh(block, In.{ outer: env, value: v2 }, mask.bitwise_or(Sig.bit(depth)), t1)
+							(b2, t2) = refresh(block, In.{ outer: env, value: v2 }, Sig.joined(pass, Sig.bit(depth)), t1)
 							(derive_inst(input, v2, b2, depth), Done, t2)
 						}
 					} else {
-						(b2, t2) = refresh(block, In.{ outer: env, value: v }, mask, tx)
+						(b2, t2) = refresh(block, In.{ outer: env, value: v }, pass, tx)
 						(derive_inst(input, v, b2, depth), Done, t2)
 					}
 				}
@@ -9743,8 +9767,8 @@ effect_inst = |cfg0, last0, owned0| {
 		|env, msg, tx| {
 			{ cfg, last, owned } = held
 			match msg {
-				Changed(mask) => {
-					if eff_mask(cfg.v).bitwise_and(mask) == 0 {
+				Changed(pass) => {
+					if !Sig.meets(pass, eff_mask(cfg.v)) {
 						(effect_inst(cfg, last, owned), Done, tx)
 					} else {
 						a = (cfg.v.read)(env)
@@ -9833,8 +9857,8 @@ latest_inst = |cfg0, last0, owned0| {
 		|env, msg, tx| {
 			{ cfg, last, owned } = held
 			match msg {
-				Changed(mask) => {
-					if eff_mask(cfg.v).bitwise_and(mask) == 0 {
+				Changed(pass) => {
+					if !Sig.meets(pass, eff_mask(cfg.v)) {
 						(latest_inst(cfg, last, owned), Done, tx)
 					} else {
 						a = (cfg.v.read)(env)
@@ -9973,15 +9997,15 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 		|env, msg, tx| {
 			{ rc, last, s, owned, block } = held
 			match msg {
-				Changed(mask) => {
-					if eff_mask(rc.input).bitwise_and(mask) == 0 {
-						(b2, t2) = refresh(block, In.{ outer: env, value: s }, mask, tx)
+				Changed(pass) => {
+					if !Sig.meets(pass, eff_mask(rc.input)) {
+						(b2, t2) = refresh(block, In.{ outer: env, value: s }, pass, tx)
 						(resource_inst(rc, last, s, owned, b2), Done, t2)
 					} else {
 						a = (rc.input.read)(env)
 						t1 = count_evals(tx, 1)
 						if a == last {
-							(b2, t2) = refresh(block, In.{ outer: env, value: s }, mask, t1)
+							(b2, t2) = refresh(block, In.{ outer: env, value: s }, pass, t1)
 							(resource_inst(rc, last, s, owned, b2), Done, t2)
 						} else {
 							# Supersede, start the layer for the new input and issue,
@@ -9989,10 +10013,10 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 							s2 = (rc.pending)(s, a)
 							(t2, owned2) = issue(fx_supersede(t1, owned), rc.path, (rc.plan)(a), [])
 							if s2 == s {
-								(b3, t3) = refresh(block, In.{ outer: env, value: s2 }, mask, t2)
+								(b3, t3) = refresh(block, In.{ outer: env, value: s2 }, pass, t2)
 								(resource_inst(rc, a, s2, owned2, b3), Done, t3)
 							} else {
-								(b3, t3) = refresh(block, In.{ outer: env, value: s2 }, mask.bitwise_or(Sig.bit(rc.depth)), t2)
+								(b3, t3) = refresh(block, In.{ outer: env, value: s2 }, Sig.joined(pass, Sig.bit(rc.depth)), t2)
 								(resource_inst(rc, a, s2, owned2, b3), Done, t3)
 							}
 						}
@@ -10055,8 +10079,7 @@ resource_deliver = |rc, last, s, owned, block, env, id, res, live, tx| {
 			if s2 == s {
 				(resource_inst(rc, last, s2, kept, block), Pending(env, Sig.none), t1)
 			} else {
-				own = Sig.bit(rc.depth)
-				(b2, t2) = refresh(block, In.{ outer: env, value: s2 }, own, bump(t1, w_dirty_roots, 1))
+				(b2, t2) = refresh(block, In.{ outer: env, value: s2 }, Turn(Sig.bit(rc.depth)), bump(t1, w_dirty_roots, 1))
 				(resource_inst(rc, last, s2, kept, b2), Pending(env, Sig.none), t2)
 			}
 		}
@@ -10407,7 +10430,7 @@ turn = |Core.App.(AppBody.({ store, root, tx, programs })), path, h, payload| {
 			# never meets a rebuilt one in a value (roc-lang/roc#12846).
 			end_written_turn(root2, store2, tx2, { path, h, waiting, force }, programs)
 		} else {
-			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Changed(Sig.mask_of(cells)), bump(tx2, w_dirty_roots, Sig.count(cells)))
+			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Changed(Turn(Sig.mask_of(cells))), bump(tx2, w_dirty_roots, Sig.count(cells)))
 			(store3, _) = root_answer(answer3)
 			end_written_turn(root3, store3, tx3, { path, h, waiting, force }, programs)
 		}
@@ -11234,6 +11257,47 @@ expect {
 	actual == { removed: Bool.False, kept, settled: Bool.True }
 }
 
+## A turn whose mask has every bit set is a turn, not the settle check: the
+## view site it reaches follows the table the turn wrote and draws one row
+## fewer, the root rearms the table, and the instance is settled
+## afterwards. No typed app reaches this mask (one event
+## would have to write 64 cells and 64 layers whose indices differ modulo
+## 64), so the turn's root pass is sent with it directly.
+expect {
+	store = Core.store_of({}, Core.table(Table.from_list([{ key: 1.U64, row: "a" }, { key: 2, row: "b" }])?))
+	cell = store.cells()
+	view = Core.element(
+		"div",
+		[Core.on("click", Core.store_handler(|_| [cell.update(|table| table.remove(1))]))],
+		[
+			Core.table_view(
+				cell,
+				{
+					query: Core.const({}),
+					plan: |_| { keep: |_, _| Bool.True, sort: |key, _| key, compare: |a, b| if (a < b) Before else if (a > b) After else Same },
+					window: Core.const({ start: 0, count: 18446744073709551615 }),
+				},
+				|key, _row| Core.element("button", [Core.ref_s(key.map(|value| "key-${value.to_str()}"))], []),
+			),
+		],
+	)
+	(before, _) = Core.take_cmds(Core.mount_store(32, store.initial(), view), [])
+	path = match tx_of(before).routes.get(1) ?? NoRoute {
+		Route(route, _) => route
+		_ => crash "the clicked element has a route"
+	}
+	every_turn = |Core.App.(AppBody.({ store: start, root, tx, programs }))| {
+		(root2, out, tx2) = call(root, Root.{ store: start }, Fire(path, 0, 0, Ev([])), bump(start_batch(tx), w_turns, 1))
+		(store2, _) = root_answer(out)
+		(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Changed(Turn(Sig.every)), tx2)
+		Core.App.(AppBody.{ store: root_answer(answer3).0, root: root3, tx: flush_turn(tx3, programs), programs })
+	}
+	after = every_turn(before)
+	(_, commands) = Core.take_cmds(after, [])
+	actual = { removed: tx_of(after).fx.refs.contains("key-1"), kept: tx_of(after).fx.refs.contains("key-2"), emitted: !commands.is_empty(), settled: Core.settled(after).is_ok() }
+	actual == { removed: Bool.False, kept: Bool.True, emitted: Bool.True, settled: Bool.True }
+}
+
 ## Empty text and absence have distinct attribute command operands. A
 ## repeated observation prunes the write, while each transition evaluates
 ## the signal once and leaves the engine settled.
@@ -11888,8 +11952,8 @@ expect {
 guard_inst : Signal(ctx, Bool), Bool -> Inst(ctx)
 guard_inst = |value, last| Inst(
 	|env, msg, tx| match msg {
-		Changed(mask) => {
-			if eff_mask(value).bitwise_and(mask) == 0 {
+		Changed(pass) => {
+			if !Sig.meets(pass, eff_mask(value)) {
 				(guard_inst(value, last), Done, tx)
 			} else {
 				on = (value.read)(env)

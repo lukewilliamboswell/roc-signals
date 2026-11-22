@@ -548,7 +548,11 @@ outcome and the accumulator. Messages are:
 
 - `Fire(path, pos, handler, payload)` — route an event or effect result down
   the site path to the block that owns the target.
-- `Changed(mask)` — some of what `mask` names changed; refresh what reads it.
+- `Changed(pass)` — a refresh. `Turn(mask)` is a pass of a turn: some of what
+  `mask` names changed; refresh what reads it. `Check` is the settle check (see
+  [Fuzzing, walks, soak and contract tests](#fuzzing-walks-soak-and-contract-tests)),
+  a harness's pass that refreshes everything. The two are different tags, so a
+  turn whose mask has every bit set is still a turn.
 - `Dispose(remove)` — release this site, emitting `REMOVE` for its top-level
   nodes when `remove` is set (an ancestor that removes its own DOM passes
   `False` to children).
@@ -5329,9 +5333,10 @@ know nothing of the platform.
   effect-channel model are where coverage guidance meets the engine.
 - **The settle check** is the oracle every walk shares, and the native spec
   runner applies it after every step (`Core.settled`). After a turn, a root
-  `Changed` pass that names every layer and every cell, run on a copy of the
-  instance that is then dropped, must emit no command and change nothing in
-  the effect channel. Its scratch transition collection starts empty, and
+  `Changed(Check)` pass, run on a copy of the instance that is then dropped,
+  must emit no command and change nothing in the effect channel. `Check` is a
+  pass of its own, not a mask: a turn's mask, even one with every layer and
+  every cell bit set, is never taken for it. Its scratch transition collection starts empty, and
   any newly issued request fails the check even if its types duplicate those
   already issued in the real call. That pass re-evaluates every hole and
   descends into every child whatever the read signatures say, and the sites that settle
