@@ -46,7 +46,7 @@ inductive Inst where
   | state (v : Val) (waiting : Bool) (kids : List Inst)
   | derive (v : Val) (kids : List Inst)
   | branch (cur : Nat) (kids : List Inst)
-  | rows (rs : List (Val × List Inst))
+  | rows (rs : List (Val × Val × List Inst))   -- each row's key, item and body
 
 instance : Inhabited Inst := ⟨.button⟩
 
@@ -54,6 +54,7 @@ instance : Inhabited Inst := ⟨.button⟩
 inductive Dom where
   | text (v : Val)
   | texts (vs : List Val)
+  | keyed (k v : Val)
   | button (writes : Nat)
   | box (kids : List Dom)
   | branch (cur : Option Nat) (kids : List Dom)
@@ -104,7 +105,7 @@ partial def instRho1 (id : Ident) : Inst → Rho
   | .state v _ kids => (id, v) :: instRho id kids
   | .derive _ kids => instRho id kids
   | .branch cur kids => instRho (id ++ [.b cur]) kids
-  | .rows rs => rs.flatMap fun (k, is) => instRho (id ++ [.r k]) is
+  | .rows rs => rs.flatMap fun (k, _, is) => instRho (id ++ [.r k]) is
   | _ => []
 end
 
@@ -113,6 +114,7 @@ partial def mountNode (g : Cfg) (env : Env) (id : Ident) (n : Node) : M (Inst ×
   match n with
   | .show e => let v ← evalAt id env e; pure (.hole v, .text v)
   | .joined es => let vs ← evalAllAt id env es; pure (.holes vs, .texts vs)
+  | .keyed e => let v ← evalAt id env e; pure (.hole v, .keyed (rowKey id) v)
   | .bump h => pure (.button, .button h.length)
   | .state init body =>
       let dead := (← get).dead
@@ -124,10 +126,9 @@ partial def mountNode (g : Cfg) (env : Env) (id : Ident) (n : Node) : M (Inst ×
       let (is, ds) ← mountBlock g (env.push v) id body
       pure (.derive v is, .box ds)
   | .each src body =>
-      let ks := keysOf (← evalAt id env src)
-      let rows ← ks.mapM fun k => do
-        let (is, ds) ← mountBlock g (env.push k) (id ++ [.r k]) body
-        pure ((k, is), (k, ds))
+      let rows ← (rowsOf (← evalAt id env src)).mapM fun (k, item) => do
+        let (is, ds) ← mountBlock g (env.push item) (id ++ [.r k]) body
+        pure ((k, item, is), (k, ds))
       pure (.rows (rows.map (·.1)), .rows (rows.map (·.2)))
   | n =>
       match n.cases? with
@@ -155,6 +156,12 @@ partial def refreshNode (g : Cfg) (all : Bool) (m : Mask) (env : Env) (id : Iden
         if v ≠ last then emit (.setText id v)
         pure (.hole v)
       else pure x
+  | .keyed e, .hole last =>
+      if woke e then
+        let v ← evalAt id env e
+        if v ≠ last then emit (.setText id v)
+        pure (.hole v)
+      else pure x
   | .joined es, .holes last =>
       if all || hit (g.sigOf (es.flatMap Expr.reads)) m then
         let vs ← evalAllAt id env es
@@ -174,28 +181,33 @@ partial def refreshNode (g : Cfg) (all : Bool) (m : Mask) (env : Env) (id : Iden
         pure (.derive v2 (← refreshBlock g all m' (env.push v2) id body kids))
       else pure (.derive v (← refreshBlock g all m (env.push v) id body kids))
   | .each src body, .rows rs =>
-      let rowDue := all || hit (g.α.sig (readsBlock body)) m
-      let keep := fun (k : Val) (is : List Inst) =>
-        if rowDue then refreshBlock g all m (env.push k) (id ++ [.r k]) body is else pure is
-      let ks ← if woke src then pure (keysOf (← evalAt id env src)) else pure (rs.map (·.1))
+      -- A kept row is a layer: an item that changed adds its bit for the
+      -- row's own body; an equal one does not.
+      let keep := fun (k item0 item : Val) (is : List Inst) =>
+        let m' := if item ≠ item0 then m ||| bit else m
+        if all || hit (g.α.sig (readsBlock body)) m' then
+          refreshBlock g all m' (env.push item) (id ++ [.r k]) body is
+        else pure is
+      let now ← if woke src then pure (rowsOf (← evalAt id env src)) else pure (rs.map fun (k, v, _) => (k, v))
+      let ks := now.map (·.1)
       if ks == rs.map (·.1) then
-        pure (.rows (← rs.mapM fun (k, is) => do pure (k, ← keep k is)))
+        pure (.rows (← (rs.zip now).mapM fun ((k, v0, is), (_, v)) => do pure (k, v, ← keep k v0 v is)))
       else
         -- One change of the rows: a kept key keeps its row, a new key is
         -- created once, a removed key is disposed.
         let reset := g.bug = .rowReset
-        for (k, is) in rs do
+        for (k, _, is) in rs do
           if reset || !ks.contains k then
             emit (.remove (id ++ [.r k]))
             if g.bug = .rowResurrect then
               modify fun t => { t with dead := instRho (id ++ [.r k]) is ++ t.dead }
-        let rows ← ks.mapM fun k => do
+        let rows ← now.mapM fun (k, v) => do
           match (if reset then none else rs.lookup k) with
-          | some is => pure (k, ← keep k is)
+          | some (v0, is) => pure (k, v, ← keep k v0 v is)
           | none =>
-              let (is, ds) ← mountBlock g (env.push k) (id ++ [.r k]) body
+              let (is, ds) ← mountBlock g (env.push v) (id ++ [.r k]) body
               emit (.create (id ++ [.r k]) ds)
-              pure (k, is)
+              pure (k, v, is)
         emit (.order id ks)
         pure (.rows rows)
   | n, .branch cur kids =>
@@ -229,7 +241,7 @@ partial def locate (ns : List Node) (is : List Inst) (env : Env) (sites : List B
       | some (.state _ body), some (.state v _ kids), _ => locate body kids (env.push v) (sites ++ [true]) rest
       | some (.derive _ body), some (.derive v kids), _ => locate body kids (env.push v) (sites ++ [false]) rest
       | some (.each _ body), some (.rows rs), .r k :: rest' =>
-          (rs.lookup k).bind fun is => locate body is (env.push k) (sites ++ [false]) rest'
+          (rs.lookup k).bind fun (v, is) => locate body is (env.push v) (sites ++ [false]) rest'
       | some n, some (.branch cur kids), .b k :: rest' =>
           match n.cases? with
           | some (_, _, cases) => if k = cur then locate (cases.getD cur []) kids env sites rest' else none
@@ -252,8 +264,8 @@ partial def along (act : Nat → Ident → Env → List Node → Val × Bool × 
       | some (.derive _ body), some (.derive v kids), _ =>
           pure (is.set i (.derive v (← along act body kids (env.push v) id' rest)))
       | some (.each _ body), some (.rows rs), .r k :: rest' =>
-          let rs ← rs.mapM fun (k', row) => do
-            if k' = k then pure (k', ← along act body row (env.push k) (id' ++ [.r k]) rest') else pure (k', row)
+          let rs ← rs.mapM fun (k', v, row) => do
+            if k' = k then pure (k', v, ← along act body row (env.push v) (id' ++ [.r k]) rest') else pure (k', v, row)
           pure (is.set i (.rows rs))
       | some n, some (.branch cur kids), .b k :: rest' =>
           match n.cases? with
@@ -358,6 +370,9 @@ partial def patchDom (cmd : Cmd) : Ident → Dom → Except String Dom
   | [], .texts _ => match cmd with
       | .setTexts _ vs => pure (.texts vs)
       | _ => throw "not a text command"
+  | [], .keyed k _ => match cmd with
+      | .setText _ v => pure (.keyed k v)
+      | _ => throw "not a text command"
   | [], .rows rs => match cmd with
       | .order _ keys =>
           if keys.length = rs.length && keys.all (fun k => (rs.lookup k).isSome) then
@@ -399,6 +414,7 @@ mutual
 partial def flatDom (id : Ident) : Dom → List (Ident × Leaf)
   | .text v => [(id, .text v)]
   | .texts vs => [(id, .texts vs)]
+  | .keyed k v => [(id, .keyed k v)]
   | .button n => [(id, .button n)]
   | .box kids => flatDoms id kids
   | .branch (some k) kids => flatDoms (id ++ [.b k]) kids

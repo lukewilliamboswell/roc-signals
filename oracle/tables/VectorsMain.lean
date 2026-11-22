@@ -11,6 +11,12 @@ for `table-changes`, a kind of modifier, the state of the record it
 received and what it left; for `view-follow`, how the view followed its
 table and a kind of change of the rows drawn. `oracle/README.md` states the
 grammar.
+
+Each file is written within what its Roc target replays (`Target`): the
+modulus `update` and `update_all` add 1 under is the target's row space;
+`view-follow`'s histories hold no `undo`, which its model does not
+describe, and use the rebuild thresholds `View.roc` fixes, which a table of
+three keys never reaches, so no view vector is `rebuilt-many`.
 -/
 import Tables
 open Tables
@@ -33,13 +39,28 @@ def Rng.below (r : Rng) (n : Nat) : Nat × Rng :=
 def nk : Nat := 3
 def nv : Nat := 3
 
-def ops : List Op := Id.run do
+/-- What a vector file's Roc target replays: the modulus of `update`, whether
+`undo` is in its vocabulary, and whether it may change the rebuild
+thresholds. -/
+structure Target where
+  modulus : Nat
+  undo : Bool
+  anyCfg : Bool
+
+/-- `fuzz/table-changes`: rows bump modulo its `row_space`. -/
+def changesTarget : Target := { modulus := 4, undo := true, anyCfg := true }
+
+/-- `fuzz/view-follow`: rows bump modulo its `row_space`; no `undo`; the
+thresholds of `View.roc`. -/
+def followTarget : Target := { modulus := 8, undo := false, anyCfg := false }
+
+def ops (undo : Bool) : List Op := Id.run do
   let mut out : List Op := []
   for k in [0:nk] do
     for v in [0:nv] do
       out := out ++ [.insert k v, .put k v, .replace k v]
     out := out ++ [.update k, .remove k]
-  return out ++ [.updateAll, .undo]
+  return out ++ [.updateAll] ++ (if undo then [.undo] else [])
 
 def starts : List Rows := [[], [(0, 0)], [(0, 1), (1, 0)], [(0, 2), (1, 0), (2, 1)]]
 
@@ -134,7 +155,8 @@ structure History where
   cfg : Cfg
   turns : List Turn
 
-def randFn (r : Rng) (saved : Nat) : Fn × Rng := Id.run do
+def randFn (target : Target) (r : Rng) (saved : Nat) : Fn × Rng := Id.run do
+  let ops := ops target.undo
   let (c, r) := r.below 10
   let (o1, r) := r.below ops.length
   let (o2, r) := r.below ops.length
@@ -148,7 +170,7 @@ def randFn (r : Rng) (saved : Nat) : Fn × Rng := Id.run do
   if c == 9 then return (.fresh (starts.getD st []), r)
   return (.onArg (if two == 0 then [op1, op2] else [op1]), r)
 
-def randHistory (seed : Nat) : History := Id.run do
+def randHistory (target : Target) (seed : Nat) : History := Id.run do
   let mut r : Rng := { s := UInt64.ofNat (seed * 2654435761 + 7) }
   let (st, r1) := r.below starts.length
   let (q, r2) := r1.below 3
@@ -163,7 +185,7 @@ def randHistory (seed : Nat) : History := Id.run do
     r := r'
     let mut fns : Array Fn := #[]
     for _ in [0:m + 1] do
-      let (fn, r') := randFn r saved
+      let (fn, r') := randFn target r saved
       r := r'
       fns := fns.push fn
     let (aq, r') := r.below 5
@@ -177,12 +199,12 @@ def randHistory (seed : Nat) : History := Id.run do
                           window := if aw == 0 then windows[wv]? else none, keep }
     if keep then saved := saved + 1
   return { start := starts.getD st [], q, w := windows.getD w { start := 0, count := 1 },
-           cfg := if c == 0 then { ratio := 1, floor := 0 } else {}, turns := turns.toList }
+           cfg := if c == 0 && target.anyCfg then { ratio := 1, floor := 0 } else {}, turns := turns.toList }
 
 /-- Replay a history: the vector's text for each target, and the classes
 each reaches. `none` if the site crashes (a contract error, never part of a
 cover set). -/
-def replay (h : History) : Option (String × List String × String × List String) := Id.run do
+def replay (target : Target) (h : History) : Option (String × List String × String × List String) := Id.run do
   let cellId := 5
   let mut cell := cellStart h.start cellId
   let some site0 := (Site.mount cell h.q h.w).toOption | return none
@@ -197,7 +219,7 @@ def replay (h : History) : Option (String × List String × String × List Strin
     let mut t0 := cell
     for fn in t.fns do
       let began := beginChanges .none t0
-      let out := kept .none (fn.run .none nv saved began) (mark began)
+      let out := kept .none (fn.run .none target.modulus saved began) (mark began)
       tcls := tcls ++ [modClass first began fn out]
       first := false
       t0 := out
@@ -232,14 +254,17 @@ def writeVectors (changesOut viewOut : String) : IO UInt32 := do
   let mut nt := 0
   let mut nv' := 0
   for seed in [0:20000] do
-    match replay (randHistory seed) with
+    match replay changesTarget (randHistory changesTarget seed) with
     | none => pure ()
-    | some (tc, tcls, vf, vcls) =>
+    | some (tc, tcls, _, _) =>
         let tnew := tcls.eraseDups.filter (!tseen.contains ·)
         if !tnew.isEmpty then
           tseen := tseen ++ tnew
           tout := tout ++ s!"vector {seed}\ncovers {", ".intercalate tnew}\n{tc}end\n"
           nt := nt + 1
+    match replay followTarget (randHistory followTarget seed) with
+    | none => pure ()
+    | some (_, _, vf, vcls) =>
         let vnew := vcls.eraseDups.filter (!vseen.contains ·)
         if !vnew.isEmpty then
           vseen := vseen ++ vnew
@@ -249,7 +274,7 @@ def writeVectors (changesOut viewOut : String) : IO UInt32 := do
   IO.FS.writeFile viewOut vout
   IO.println s!"wrote {nt} vectors covering {tseen.length} classes to {changesOut}"
   IO.println s!"wrote {nv'} vectors covering {vseen.length} classes to {viewOut}"
-  let hows := ["unchanged", "absorbed", "rebuilt-many", "rebuilt-rewritten"]
+  let hows := ["unchanged", "absorbed", "rebuilt-rewritten"]
   let missing := hows.filter fun h => !(vseen.any (·.startsWith (h ++ " ")))
   if !missing.isEmpty then
     IO.eprintln s!"no vector for: {", ".intercalate missing}"

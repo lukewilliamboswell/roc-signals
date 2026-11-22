@@ -19,7 +19,7 @@ structure GenP where
   menu : Nat := 5        -- reader expressions: 2 has one read, 5 has two
   kinds : Nat := 7       -- site kinds: 6 leaves out `switch`
   inits : Nat := 2       -- a state starts at 0 .. inits-1
-  auto : Bool := true    -- a state shows itself and has a button; a row shows its key
+  auto : Bool := true    -- a state shows itself and has a button; a row shows its key and item
   amounts : Nat := 2     -- a write adds 1 .. amounts
 
 structure GS where
@@ -98,7 +98,7 @@ partial def genNode (p : GenP) (sc : List Bool) (depth : Nat) : G Node := do
       return .when sel yes (← genBlock p sc (depth - 1))
   | 5 =>
       let src ← genExpr p sc
-      let own := if p.auto then [Node.show (.rd (.layer sc.length))] else []
+      let own := if p.auto then [Node.keyed (.rd (.layer sc.length))] else []
       return .each src (own ++ (← genBlock p (sc ++ [false]) (depth - 1)))
   | _ =>
       let sel ← genExpr p sc

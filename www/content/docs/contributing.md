@@ -946,6 +946,15 @@ the Roc reference inside each target is held to the Lean one.
 `oracle/README.md` lists the modules, what each is trusted for, and the
 grammar of every vector file.
 
+Each of those targets imports its vector files as text (`Vectors.roc`,
+`ChangeVectors.roc`, `FollowVectors.roc`). `roc test` on the target's
+root replays every vector against the target's Roc reference alone and
+fails naming the vector and the step at which it disagrees; the structure
+target also requires its value model to reject every known-bad trace in
+`vectors-bad.trace` as the trace's label says. The target's fixed examples
+run the same vectors through the real code, so `fuzz-smoke` holds the
+engine, `TableCore` and `View` to them too.
+
 Install [elan](https://github.com/leanprover/elan), which puts `lake` on
 `PATH` and reads the Lean release from `oracle/lean-toolchain`; the
 projects need nothing else and nothing from the network. Then

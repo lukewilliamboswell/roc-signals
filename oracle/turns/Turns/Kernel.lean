@@ -25,6 +25,7 @@ inductive Expr where
   | add (a b : Expr)
   | mul (a b : Expr)
   | mod (a b : Expr)
+  | div (a b : Expr)
   | eq (a b : Expr)
   deriving DecidableEq, Repr, Inhabited
 
@@ -35,6 +36,7 @@ def Expr.eval (get : Ref → Val) : Expr → Val
   | .add a b => a.eval get + b.eval get
   | .mul a b => a.eval get * b.eval get
   | .mod a b => a.eval get % b.eval get
+  | .div a b => a.eval get / b.eval get
   | .eq a b => if a.eval get = b.eval get then 1 else 0
 
 /-- The exact read signature of an expression. -/
@@ -44,19 +46,22 @@ def Expr.reads : Expr → List Ref
   | .add a b => a.reads ++ b.reads
   | .mul a b => a.reads ++ b.reads
   | .mod a b => a.reads ++ b.reads
+  | .div a b => a.reads ++ b.reads
   | .eq a b => a.reads ++ b.reads
 
 /-- A handler: writes applied as one event, in order. -/
 abbrev Handler := List (Ref × Expr)
 
 /-- A site. `show` is a text hole; `joined` is one text hole showing several
-values together (the Roc generator's `Pair` text); `bump` a button;
-`state`, `derive` and each row of `each` add a layer for their body; `when`
-and `switch` select a branch. `Turns.Structure` says which Roc `Node`
-becomes which. -/
+values together (the Roc generator's `Pair` text); `keyed` is a text hole
+inside a row showing the row's key beside a value (the Roc generator's
+`key:item` text); `bump` a button; `state`, `derive` and each row of `each`
+add a layer for their body; `when` and `switch` select a branch.
+`Turns.Structure` says which Roc `Node` becomes which. -/
 inductive Node where
   | show (e : Expr)
   | joined (es : List Expr)
+  | keyed (e : Expr)
   | bump (h : Handler)
   | state (init : Val) (body : List Node)
   | derive (e : Expr) (body : List Node)
@@ -70,10 +75,22 @@ structure Prog where
   cells : List Val
   body : List Node
 
-/-- The keys an `each` draws for a value: the Roc generator's permutation. -/
-def keysOf (v : Val) : List Val :=
+/-- The rows an `each` draws for a value, as (key, item), in order: the Roc
+generator's `Reference.rows_of`. Key `k` of 0 to 4 is drawn unless
+`(x + k) % 4 = 0`, and no row is drawn when `x % 6 = 5`; the keys are
+ordered by `(k * m) % 5` with `m = 1 + (x / 2) % 4`; a row's item is
+`k + 10 * ((x / 3) % 3)`, so a kept key's item can change. A row's body
+reads its item as its layer; its identity is its key. -/
+def rowsOf (v : Val) : List (Val × Val) :=
   let x := v.toNat
-  ((List.range (x % 5)).map fun j => (((j * (x + 3) + x) % 7 : Nat) : Int)).eraseDups
+  -- The key at position p of the order is p times the inverse of m modulo 5.
+  let inv : Nat := match 1 + (x / 2) % 4 with
+    | 1 => 1
+    | 2 => 3
+    | 3 => 2
+    | _ => 4
+  (((List.range 5).map fun p => (p * inv) % 5).filter fun (k : Nat) => x % 6 != 5 && (x + k) % 4 != 0).map
+    fun (k : Nat) => (Int.ofNat k, Int.ofNat (k + 10 * ((x / 3) % 3)))
 
 /-- An environment: the cells and the layers on the path, outermost first. -/
 structure Env where
@@ -117,6 +134,11 @@ inductive Step where
 
 abbrev Ident := List Step
 
+/-- The key of the innermost row on an identity, which a `keyed` text shows;
+0 outside every row. -/
+def rowKey (id : Ident) : Val :=
+  (id.reverse.findSome? fun | .r k => some k | _ => none).getD 0
+
 /-- What a write names once the button is placed: a state site or a cell. -/
 inductive Target where
   | state (id : Ident)
@@ -150,6 +172,7 @@ mutual
 def readsNode : Node → List Ref
   | .show e => e.reads
   | .joined es => es.flatMap Expr.reads
+  | .keyed e => e.reads
   | .bump _ => []
   | .state _ body => readsBlock body
   | .derive e body => e.reads ++ readsBlock body

@@ -53,6 +53,10 @@ def expNode (x : Delta) (old : Option Env) (new : Env) (m : Mask) (id : Ident) :
       let v1 := es.map (·.eval new.get)
       [.reader ⟨id, rs, new, old.isNone || hit (x.α.sig rs) m,
         match old with | some o => es.map (·.eval o.get) != v1 | none => false⟩]
+  | .keyed e =>
+      let v1 := e.eval new.get
+      [.reader ⟨id, e.reads, new, old.isNone || hit (x.α.sig e.reads) m,
+        match old with | some o => e.eval o.get != v1 | none => false⟩]
   | .bump _ => []
   | .state init body =>
       let v0 := (x.w0.rho.lookup id).getD init
@@ -86,11 +90,15 @@ def expNode (x : Delta) (old : Option Env) (new : Env) (m : Mask) (id : Ident) :
       | 1 => rd :: mk ++ expBlock x old' new m (id ++ [.b 1]) 0 b
       | _ => rd :: mk ++ expBlock x old' new m (id ++ [.b 2]) 0 c
   | .each src body =>
-      let keys0 := match old with | some o => keysOf (src.eval o.get) | none => []
+      -- A kept row is a layer: when its item changes, its bit is added for
+      -- its own body, as a changed `derive`'s is.
+      let rows0 := match old with | some o => rowsOf (src.eval o.get) | none => []
       .reader ⟨id, src.reads, new, old.isNone || hit (x.α.sig src.reads) m, false⟩ ::
-        (keysOf (src.eval new.get)).flatMap fun k =>
-          let (old', mk) := scope old (keys0.contains k) (id ++ [.r k])
-          mk ++ expBlock x (old'.map (·.push k)) (new.push k) m (id ++ [.r k]) 0 body
+        (rowsOf (src.eval new.get)).flatMap fun (k, item) =>
+          let item0 := rows0.lookup k
+          let (old', mk) := scope old item0.isSome (id ++ [.r k])
+          let m' := if old'.isSome && item0 != some item then m ||| x.α.mask (.layer new.depth) else m
+          mk ++ expBlock x (old'.map (·.push (item0.getD item))) (new.push item) m' (id ++ [.r k]) 0 body
 def expBlock (x : Delta) (old : Option Env) (new : Env) (m : Mask) (id : Ident) (i : Nat) :
     List Node → List Fact
   | [] => []

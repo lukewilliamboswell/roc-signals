@@ -18,8 +18,8 @@ against the reference alone. `oracle/README.md` states the grammar.
                                              makes, or - for none recorded
   end
 
-A leaf is a text's integer, a `Pair` text as `x~d~y`, or a button as one
-`+` per write its click makes.
+A leaf is a text's integer, a `Pair` text as `x~d~y`, a row's text as
+`key:item`, or a button as one `+` per write its click makes.
 
 Trusted for: the format, and what replaying a trace against the reference
 answers. It holds no semantics of its own.
@@ -33,6 +33,7 @@ open Structure
 def Leaf.tok : Leaf → String
   | .text v => toString v
   | .texts vs => "~".intercalate (vs.map toString)
+  | .keyed k v => s!"{k}:{v}"
   | .button n => String.ofList (List.replicate (max n 1) '+')
 
 def leavesTok (ls : List Leaf) : String := " ".intercalate (ls.map Leaf.tok)
@@ -40,6 +41,10 @@ def leavesTok (ls : List Leaf) : String := " ".intercalate (ls.map Leaf.tok)
 def parseLeaf (t : String) : Option Leaf :=
   if t ≠ "" && t.all (· = '+') then some (.button t.length)
   else if t.contains '~' then ((t.splitOn "~").mapM String.toInt?).map .texts
+  else if t.contains ':' then
+    match t.splitOn ":" with
+    | [k, v] => do pure (.keyed (← k.toInt?) (← v.toInt?))
+    | _ => none
   else t.toInt?.map .text
 
 def parseLeaves (s : String) : Option (List Leaf) := (words s).mapM parseLeaf
