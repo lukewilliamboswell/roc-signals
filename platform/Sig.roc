@@ -236,6 +236,63 @@ Sig :: [].{
 		$state
 	}
 
+	## What the site of the layer at index `depth` does with an event's write
+	## set when the event unwinds through it (design.md, "Glitch freedom and
+	## ordering"). A layer the event did not write is `Untouched` and hands
+	## the set up. A written layer `Waits` at its site when the event also
+	## wrote a layer above it on its path, or a store cell. Otherwise it is
+	## the outermost write and `Starts` the event's pass at its own site,
+	## followed by a walk down the event's path for the layers written below
+	## it (`walk`).
+	##
+	## A reader below the layer may also read the outer write, or something
+	## derived from either: a `derive`, a `resource`, a row's item. Refreshed
+	## for one write at a time, it would be evaluated with one new value beside
+	## one old one, a pair that never held: a text would be written twice, and
+	## an effect site would issue a request for it. So an event's writes are
+	## settled by one pass, from the outermost. The inner layer hands its write
+	## up and waits; the outermost written layer (or the root, for a cell)
+	## starts the pass; and when the pass reaches the waiting layer's site, the
+	## site adds its own layer to what the pass carries, for its subtree alone.
+	## Order within the pass follows nesting, so every `derive` of either write
+	## is recomputed before anything below it reads it, and a reader of both is
+	## evaluated once.
+	##
+	## A layer is readable only below its own site, so nothing outside the
+	## waiting layer's subtree can need it, and no reader of a sibling layer at
+	## the same index is woken. A waiting layer the pass does not reach has no
+	## reader in common with it: nothing in its subtree reads what the pass
+	## carried. The walk that follows the pass refreshes each such layer at its
+	## own site.
+	at_state : Wrote, U64 -> [Untouched, Waits, Starts({ walk : Wrote })]
+	at_state = |wrote, depth|
+		if !Sig.has_layer(wrote, depth) {
+			Untouched
+		} else if !Sig.is_empty(Sig.below(wrote, depth)) {
+			Waits
+		} else {
+			Starts({ walk: Sig.from(wrote, depth + 1) })
+		}
+
+	## What the root does with an event's write set once the event is back:
+	## a pass of the cells written, when there are any (`Cells`, with their
+	## signature), and then a walk down the event's path for every written
+	## layer, each of which either joined that pass where it reached its site
+	## or still waits. A layer written with no cell has started its own pass
+	## at its site, and the walk reaches those below it.
+	at_root : Wrote -> { pass : [NoPass, Cells(Mask)], walk : Wrote }
+	at_root = |wrote| {
+		cells = Sig.cells_of(wrote)
+		{ pass: if (Sig.is_empty(cells)) NoPass else Cells(Sig.mask_of(cells)), walk: Sig.from(wrote, 0) }
+	}
+
+	## Whether a walk at the site of the layer at index `depth` goes on down
+	## the event's path: while it names a layer below that one, or always when
+	## it is `forced` by a browser echo, which marks a hole the walk must reach
+	## at the event's target.
+	walk_on : Wrote, U64, Bool -> [Further, Ends]
+	walk_on = |walk, depth, forced| if (!forced and Sig.is_empty(Sig.from(walk, depth + 1))) Ends else Further
+
 	## How many layers and cells a set names.
 	count : Wrote -> U64
 	count = |a| a.more.fold(a.hi.fold(popcount(a.lo) + popcount(a.cells), |acc, w| acc + popcount(w)), |acc, w| acc + popcount(w))
@@ -396,4 +453,76 @@ expect {
 	a = Sig.union(Sig.union(Sig.one_cell(134), Sig.one_cell(6)), Sig.union(Sig.one_cell(70), Sig.one_layer(6)))
 	actual = (Sig.fold_cells(a, [], |cells, cell| cells.append(cell)), Sig.fold_cells(Sig.one_layer(9), [], |cells, cell| cells.append(cell)))
 	actual == ([6, 70, 134], [])
+}
+
+## Every write set of layers 0 to 3, with and without cell 0: the layers it
+## names and whether it names the cell, beside the set.
+small_sets : List({ layers : List(U64), cell : Bool, wrote : Sig.Wrote })
+small_sets = (0.U64).until(32).fold(
+	[],
+	|sets, n| {
+		layers = [0, 1, 2, 3].keep_if(|i| n.shr_zf_wrap(i.to_u8_wrap()).bitwise_and(1) != 0)
+		cell = n >= 16
+		start = if (cell) Sig.one_cell(0) else Sig.none
+		sets.append({ layers, cell, wrote: layers.fold(start, |acc, i| Sig.union(acc, Sig.one_layer(i))) })
+	},
+)
+
+## At each of layers 0 to 3, over every small write set: an unwritten layer
+## is untouched; a written one waits exactly when a layer above it or a cell
+## was written, and otherwise starts the pass with a walk of the layers below
+## it. So a set with a cell starts no pass at a layer, and one with layers
+## and no cell starts exactly one, at the outermost.
+expect {
+	wrong = small_sets.keep_if(
+		|{ layers, cell, wrote }| {
+			decided = [0, 1, 2, 3].map(|depth| Sig.at_state(wrote, depth))
+			expected = [0, 1, 2, 3].map(
+				|depth|
+					if !layers.contains(depth) {
+						Untouched
+					} else if cell or layers.any(|i| i < depth) {
+						Waits
+					} else {
+						Starts({ walk: layers.keep_if(|i| i > depth).fold(Sig.none, |acc, i| Sig.union(acc, Sig.one_layer(i))) })
+					},
+			)
+			starts = decided.keep_if(
+				|d| match d {
+					Starts(_) => Bool.True
+					_ => Bool.False
+				},
+			)
+			decided != expected or starts.len() != (if (cell or layers.is_empty()) 0 else 1)
+		},
+	)
+	wrong.map(|set| set.wrote) == []
+}
+
+## Over every small write set, the root runs a pass exactly when a cell was
+## written, with that cell's signature alone, and walks every written layer.
+expect {
+	wrong = small_sets.keep_if(
+		|{ layers, cell, wrote }| {
+			{ pass, walk } = Sig.at_root(wrote)
+			expected_pass = if (cell) Cells(Sig.cell_bit(0)) else NoPass
+			pass != expected_pass or walk != layers.fold(Sig.none, |acc, i| Sig.union(acc, Sig.one_layer(i)))
+		},
+	)
+	wrong.map(|set| set.wrote) == []
+}
+
+## At each of layers 0 to 3, over every small write set and either echo: a
+## walk goes on exactly while it names a deeper layer, or when it is forced.
+expect {
+	wrong = small_sets.keep_if(
+		|{ layers, wrote, .. }|
+			[0, 1, 2, 3].any(
+				|depth| {
+					deeper = layers.any(|i| i > depth)
+					Sig.walk_on(wrote, depth, Bool.False) != (if (deeper) Further else Ends) or Sig.walk_on(wrote, depth, Bool.True) != Further
+				},
+			),
+	)
+	wrong.map(|set| set.wrote) == []
 }
