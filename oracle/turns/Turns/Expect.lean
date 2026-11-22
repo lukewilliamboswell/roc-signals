@@ -4,9 +4,18 @@ after the turn, the environment an evaluation of it must see (P1), whether
 the turn evaluates it at all (P5 and the evaluation count), which texts it
 sets and which scopes it creates. It compares the world before with the
 world after; it is a specification, not an algorithm, and carries no state.
+
+This is a second specification, beside `Turns.Spec`: Spec says what the
+page is, this file says how much work a turn may do and which reader may
+see what. Trusted for: the due set (the readers a turn must evaluate,
+under a signature abstraction), the environment each evaluation must see,
+the texts set and the scopes created. Its evaluation count is the
+kernel's: holes, `joined` holes, selectors, list reads and `derive`
+inputs. It is not the engine's counter of evaluations, which also counts
+what the kernel leaves out; relating the two is the count model's work.
 -/
-import Spike.Spec
-namespace Spike
+import Turns.Spec
+namespace Turns
 
 structure Reading where
   id : Ident
@@ -39,6 +48,11 @@ def expNode (x : Delta) (old : Option Env) (new : Env) (m : Mask) (id : Ident) :
       let v1 := e.eval new.get
       [.reader ⟨id, e.reads, new, old.isNone || hit (x.α.sig e.reads) m,
         match old with | some o => e.eval o.get != v1 | none => false⟩]
+  | .joined es =>
+      let rs := es.flatMap Expr.reads
+      let v1 := es.map (·.eval new.get)
+      [.reader ⟨id, rs, new, old.isNone || hit (x.α.sig rs) m,
+        match old with | some o => es.map (·.eval o.get) != v1 | none => false⟩]
   | .bump _ => []
   | .state init body =>
       let v0 := (x.w0.rho.lookup id).getD init
@@ -95,4 +109,4 @@ def expect (α : Alpha) (p : Prog) (w0 w1 : World) (ws : List (Target × Val)) :
   { readers := facts.filterMap fun | .reader r => some r | _ => none
     created := facts.filterMap fun | .created id => some id | _ => none }
 
-end Spike
+end Turns

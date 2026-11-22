@@ -1,13 +1,23 @@
 /-
-The reference semantics: the page from scratch, and a turn as "apply the
-writes, render again". Nothing here is incremental.
+The reference: the page from scratch, and a turn as "apply the writes,
+render again". Nothing here is incremental.
+
+Trusted for: what a turn means. This is the statement `design.md`
+"Propagation: Turns, Ordering, and Pruning" and "Identity" are held to: the
+page after a turn, the local state that survives it (a state lives exactly
+while its identity, its path with every branch and row key on it, is
+live), and how one event's writes compose. Where the engine, a Roc
+reference or a vector disagrees with this file, this file decides, unless
+`design.md` says otherwise; then `design.md` is changed first and this file
+with it.
 -/
-import Spike.Kernel
-namespace Spike
+import Turns.Kernel
+namespace Turns
 
 /-- What a render yields at an identity. -/
 inductive Item where
   | text (v : Val)                        -- a hole's text
+  | texts (vs : List Val)                 -- a `joined` hole's values
   | button (ws : List (Target × Val))     -- a live button and what a click writes
   | state (v : Val)                       -- a live local state (not on the page)
   deriving DecidableEq, Repr
@@ -22,16 +32,16 @@ abbrev Rho := List (Ident × Val)
 state site at that depth on the button's path; a write to a `derive` or a
 row is no write. -/
 def resolve (env : Env) (sites : List (Option Ident)) (h : Handler) : List (Target × Val) :=
-  h.filterMap fun (r, e) =>
-    let v := e.eval env.get
+  (h.writes env fun i => (sites.getD i none).isSome).filterMap fun (r, v) =>
     match r with
-    | .cell c => if c < env.cells.length then some (.cell c, v) else none
+    | .cell c => some (.cell c, v)
     | .layer i => (sites.getD i none).map fun id => (.state id, v)
 
 mutual
 /-- `render`: a state reads ρ at its identity, or starts at `init`. -/
 def renderNode (ρ : Rho) (env : Env) (sites : List (Option Ident)) (id : Ident) : Node → View
   | .show e => [(id, .text (e.eval env.get))]
+  | .joined es => [(id, .texts (es.map (·.eval env.get)))]
   | .bump h => [(id, .button (resolve env sites h))]
   | .state init body =>
       let v := (ρ.lookup id).getD init
@@ -84,16 +94,18 @@ def stepRef (p : Prog) (w : World) (ev : Ident) : Option World :=
 /-- The page: what the DOM shows. -/
 inductive Leaf where
   | text (v : Val)
-  | button
+  | texts (vs : List Val)
+  | button (writes : Nat)                 -- a button, and how many writes its click makes
   deriving DecidableEq, Repr, Inhabited
 
 def pageOf (v : View) : List (Ident × Leaf) := v.filterMap fun
   | (id, .text x) => some (id, .text x)
-  | (id, .button _) => some (id, .button)
+  | (id, .texts xs) => some (id, .texts xs)
+  | (id, .button ws) => some (id, .button ws.length)
   | _ => none
 
 def buttonsOf (v : View) : List Ident := v.filterMap fun
   | (id, .button _) => some id
   | _ => none
 
-end Spike
+end Turns

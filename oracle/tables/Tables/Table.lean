@@ -11,8 +11,13 @@ Abstractions (everything else is line for line):
   order `inverse` folds in).
 * keys and rows are `Nat`; `U64` overflow is not modelled.
 * `Bug` selects a seeded defect; `Bug.none` is the transliteration.
+
+Trusted for: what `TableCore.roc` does, not what it should do. It follows
+the code as it is, defects included, so the checks show what the code
+keeps; where a check fails, `design.md` and `Tables.Spec` say what is
+wanted, and the fix lands here and in Roc together.
 -/
-namespace TableSpike
+namespace Tables
 
 abbrev K := Nat
 abbrev V := Nat
@@ -205,4 +210,4 @@ def cellModify (bug : Bug) (t : Table) (f : Table → Table) : Table :=
 def cellStart (rows : Rows) (id : Nat) : Table :=
   withId (clearChanges { Table.empty with rows := rows }) id
 
-end TableSpike
+end Tables

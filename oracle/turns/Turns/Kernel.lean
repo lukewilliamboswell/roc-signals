@@ -1,10 +1,13 @@
 /-
-The kernel: a first-order AST of generated programs, a cousin of the `Node`
-type in `fuzz/structure/FuzzStructureProperty.roc`, with the app code
-(expressions, handlers) first-order too, so a program is data both a Lean
-model and the Roc engine could be handed.
+The kernel: a first-order AST of programs, with the app code (expressions,
+handlers) first-order too, so a program is data. Trusted for: what a
+program is and what its expressions read and evaluate to. Every model in
+this project (the reference, the second specification, the incremental
+algorithms, the proof) is written over it. The Roc generator's programs
+reach it through `Turns.Structure`, which is the only place that knows the
+Roc `Node` type.
 -/
-namespace Spike
+namespace Turns
 
 /-- One untyped value universe. -/
 abbrev Val := Int
@@ -43,15 +46,17 @@ def Expr.reads : Expr → List Ref
   | .mod a b => a.reads ++ b.reads
   | .eq a b => a.reads ++ b.reads
 
-/-- A handler: writes applied as one event. Every right-hand side reads the
-environment as it was before the event. -/
+/-- A handler: writes applied as one event, in order. -/
 abbrev Handler := List (Ref × Expr)
 
-/-- A site. Roc's `Show`, `Pair` are `show`; `Bump`, `Bump2` are `bump`;
-`Layer` kind 0 is `state` and kind 1 `derive`; `When`, `Switch`, `Each` are
-themselves. -/
+/-- A site. `show` is a text hole; `joined` is one text hole showing several
+values together (the Roc generator's `Pair` text); `bump` a button;
+`state`, `derive` and each row of `each` add a layer for their body; `when`
+and `switch` select a branch. `Turns.Structure` says which Roc `Node`
+becomes which. -/
 inductive Node where
   | show (e : Expr)
+  | joined (es : List Expr)
   | bump (h : Handler)
   | state (init : Val) (body : List Node)
   | derive (e : Expr) (body : List Node)
@@ -82,6 +87,25 @@ def Env.get (e : Env) : Ref → Val
 
 def Env.push (e : Env) (v : Val) : Env := { e with layers := e.layers ++ [v] }
 def Env.depth (e : Env) : Nat := e.layers.length
+
+/-- The writes a handler makes where its button is drawn, in order, with the
+value each stores. Writes compose (design decision D4, as handlers composed
+with `also` compose): each right-hand side reads the environment with the
+event's earlier writes applied to what they wrote. Nothing else follows
+them within the event: a `derive` or a row read by a later right-hand side
+holds its value from before the event. A write to a layer that is not
+writable (a `derive` or a row) or to a cell the store does not have is no
+write. -/
+def Handler.writes (h : Handler) (env : Env) (writable : Nat → Bool) : List (Ref × Val) :=
+  (h.foldl (fun (acc : Env × List (Ref × Val)) (r, e) =>
+    let (now, out) := acc
+    let v := e.eval now.get
+    match r with
+    | .cell c =>
+        if c < now.cells.length then ({ now with cells := now.cells.set c v }, out ++ [(r, v)]) else acc
+    | .layer i =>
+        if writable i then ({ now with layers := now.layers.set i v }, out ++ [(r, v)]) else acc)
+    (env, [])).2
 
 /-- Structural identity: child positions through blocks (`c`), the branch
 taken (`b`) and the row's key (`r`). -/
@@ -125,6 +149,7 @@ def hit (a b : Mask) : Bool := a &&& b != 0
 mutual
 def readsNode : Node → List Ref
   | .show e => e.reads
+  | .joined es => es.flatMap Expr.reads
   | .bump _ => []
   | .state _ body => readsBlock body
   | .derive e body => e.reads ++ readsBlock body
@@ -136,4 +161,4 @@ def readsBlock : List Node → List Ref
   | n :: ns => readsNode n ++ readsBlock ns
 end
 
-end Spike
+end Turns
