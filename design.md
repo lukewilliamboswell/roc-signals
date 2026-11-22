@@ -455,7 +455,7 @@ that row's — is the documented pattern that keeps app work local.
 
 ```mermaid
 flowchart LR
-    App["app: App.roc<br/>Elem tree of typed sites,<br/>a store of cells and tables"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, the store, each columns,<br/>tables and their table views (TableCore.roc, View.roc, Seq.roc),<br/>effects, command encoding"]
+    App["app: App.roc<br/>Elem tree of typed sites,<br/>a store of cells and tables"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, the store, each columns<br/>and their plan (Reconcile.roc),<br/>tables and their table views (TableCore.roc, View.roc, Seq.roc),<br/>effects, command encoding"]
     Engine --> Main["platform/main.roc<br/>keys · init · event · files · drop ·<br/>work · prepare · ask · forget"]
     Main --> Host["platform/host/host.zig<br/>allocator · one opaque Handle holding the store beside boxed sites, or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · dbg text · fault class"]
     Host --> Wire["command bytes in linear memory"]
@@ -476,7 +476,9 @@ the three scheduling decisions read from a write set: what a written layer's
 site does, what the root's pass carries, and how far a walk goes),
 `FxCore.roc` (the effect channel's request lifecycle as a state machine:
 request ids, the in-flight table, the follow-up queue and the effect
-counters, and every lifecycle decision that needs no site) and three
+counters, and every lifecycle decision that needs no site),
+`Reconcile.roc` (the plan of an `each` site's reconciliation: which rows it
+keeps, creates, drops and moves, from positions alone) and three
 modules of its own for tables: `TableCore.roc`
 (rows by key and the changes from a turn), `View.roc` (a sorted, filtered, windowed view kept up to
 date from those changes) and `Seq.roc` (a table view's ordered keys). `Engine.roc` is
@@ -784,7 +786,16 @@ its own representation:
 Reconciliation compares the new list against the site's columns with fast
 paths for a common prefix and suffix, swapped ends, pure insertion and pure
 removal, and otherwise a keyed move planned with a longest increasing
-subsequence, so surviving rows move rather than rebuild. A row also keeps an ordered index of its currently shown dialog and popover
+subsequence, so surviving rows move rather than rebuild. The plan is made
+apart from the rows, by `Reconcile.plan`, from the two lengths, a test of
+whether an old and a new position hold one key, and a lookup of a new key's
+old position. It hands its steps (keep, create, drop, move, each with the
+place it goes before) one at a time to the site, which applies each to its
+columns as it comes, so no list of steps is built and the fast paths
+allocate nothing for the plan. Its moves are the fewest its shape allows:
+two for each pair of swapped ends, and on the general path the kept rows
+of the middle less one longest increasing run of their old positions.
+The longest run is the one a table view's window uses too (`View`). A row also keeps an ordered index of its currently shown dialog and popover
 addresses. A changed shown command updates only that address in the rows on
 its call path; hiding and disposal remove it before an id can be reused.
 The index supports direct affected-owner removal and preserves show-intent
@@ -5625,6 +5636,19 @@ know nothing of the platform.
   sites checked against whether any live guard reads true, and the
   spec, wire and port formats. Their oracles, not their inputs, carry the
   value.
+- **Pure cores** have targets of their own with no engine in the loop
+  (the `FuzzCores.roc` suite): read signatures and write sets against exact
+  sets (`fuzz/masks`), a table's changes and a view kept from them
+  (`fuzz/table-changes`, `fuzz/view-follow`), the request lifecycle
+  (`fuzz/fx-core`, above), and the plan of a keyed reconciliation
+  (`fuzz/reconcile`). That target makes a new list of keys
+  from an old one, up to thousands of rows, by edits that reach every path
+  of the plan, and applies the plan's steps to the old rows with a model
+  that knows nothing of how they were planned: the steps must leave the new
+  list with each row where its step put it, keep exactly the keys in both,
+  create and drop the rest once each, drop in old order before placing,
+  move no more rows than the plan's shape needs, and refuse a repeated key
+  or create it where the site's key index refuses it.
 - **Walks.** The native spec runner walks an app (`RUNNER --walk STEPS
   --seed N FILE.scm...`) from a fresh mount, mounted as the first spec's
   setup: each step is a user event on a live control (chosen from the live
@@ -5836,6 +5860,7 @@ In-place writes of large values in shipping builds are tracked against
 
 1. **One engine, thin host.** All reactive and structural logic is in the
    engine's Roc modules (`Core.roc`, with `Sig.roc`, `FxCore.roc`,
+   `Reconcile.roc`,
    `TableCore.roc`, `View.roc` and `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
    *Holds when:* the same engine runs in the browser module and the native spec runner with
    the same command stream.

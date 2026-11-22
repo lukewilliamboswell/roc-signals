@@ -7,6 +7,7 @@ import TableCore exposing [Table]
 import Sig
 import FxCore
 import View
+import Reconcile
 import MarkupAdvice
 import parser.Html as ParsedHtml
 import parser.Markup
@@ -7177,13 +7178,6 @@ take_order = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty
 end_ref : EachCfg(r, find) -> U32
 end_ref = |cfg| if (cfg.sole) 0 else cfg.anchor
 
-## The node a row inserted at position `pos` (of `order`) goes before.
-ref_at : EachCfg(r, find), Cols(r, item), U64 -> U32
-ref_at = |cfg, cols, pos| match cols.order.get(pos) {
-	Ok(s) => node_of(cols, s)
-	Err(_) => end_ref(cfg)
-}
-
 key_of_slot : Cols(r, item), U32 -> Str
 key_of_slot = |cols, slot| cols.keys.get(slot.to_u64()) ?? crash "key"
 
@@ -7312,259 +7306,187 @@ change_marks = |tx| {
 	{ created: w.c01, moved: w.c04, removed: work_get(w, w_rows_removed), updated: work_get(w, w_rows_updated) }
 }
 
+## Reconcile the site's rows with `list` by the plan `Reconcile.plan`
+## makes from their keys, applying each step to the columns as it comes
+## (`place_step`). Emptying the list is not planned: `clear_rows` releases
+## every row at once, with one `CLEAR` when the site is its parent's only
+## child.
 reconcile_rows : EachCfg(r, (item -> Str)), Cols(r, item), (Str, item -> r), List(item), Tx -> (Cols(r, item), Tx)
 	where [item.is_eq : item, item -> Bool]
 reconcile_rows = |cfg, cols, env, list, tx| {
 	n_old = cols.order.len()
 	n_new = list.len()
-	row_bit = Sig.bit(cfg.depth)
 	if n_new == 0 {
 		if (n_old == 0) (cols, tx) else clear_rows(cfg, cols, env, True, bump(tx, w_rows_removed, n_old))
-	} else if n_old == 0 {
-		append_rows(cfg, cols, env, list, 0, tx)
 	} else {
-		var $cols = cols
-		var $tx = tx
-		# Kept rows whose item changed, counted once after the loops so the
-		# accumulator is not threaded through every kept row.
-		var $updated = 0.U64
-		var $i = 0.U64
-		var $oe = n_old
-		var $ne = n_new
-		var $go = True
-		while $go {
-			# common prefix
-			var $p = True
-			while $p and $i < $oe and $i < $ne {
-				slot = $cols.order.get($i) ?? crash "order"
-				item = list.get($i) ?? crash "row"
-				if same_row(cfg, $cols, slot, item) {
-					(c2, u) = keep_row_n($cols, slot, item, row_bit)
-					$cols = c2
-					$updated = $updated + u
-					$i = $i + 1
-				} else {
-					$p = False
-				}
-			}
-			# common suffix
-			var $q = True
-			while $q and $i < $oe and $i < $ne {
-				slot = $cols.order.get($oe - 1) ?? crash "order"
-				item = list.get($ne - 1) ?? crash "row"
-				if same_row(cfg, $cols, slot, item) {
-					(c2, u) = keep_row_n($cols, slot, item, row_bit)
-					$cols = c2
-					$updated = $updated + u
-					$oe = $oe - 1
-					$ne = $ne - 1
-				} else {
-					$q = False
-				}
-			}
-			# swapped ends
-			$go = False
-			if $oe - $i >= 2 and $ne - $i >= 2 and $i < $oe and $i < $ne {
-				a = $cols.order.get($i) ?? crash "order"
-				b = $cols.order.get($oe - 1) ?? crash "order"
-				first = list.get($i) ?? crash "row"
-				last = list.get($ne - 1) ?? crash "row"
-				if same_row(cfg, $cols, b, first) and same_row(cfg, $cols, a, last) {
-					na = node_of($cols, a)
-					after = ref_at(cfg, $cols, $oe)
-					$tx = move_row($cols, a, after, move_row($cols, b, na, $tx))
-					(c3, u3) = keep_row_n($cols, b, first, row_bit)
-					(c4, u4) = keep_row_n(c3, a, last, row_bit)
-					$cols = c4
-					$updated = $updated + u3 + u4
-					(c2, order) = take_order($cols)
-					$cols = set_order(c2, order.swap($i, $oe - 1) ?? crash "order")
-					$i = $i + 1
-					$oe = $oe - 1
-					$ne = $ne - 1
-					$go = True
-				}
-			}
+		(c0, order) = take_order(cols)
+		# What the steps read rides in the sink, so the three functions
+		# capture nothing: a capture of the site's configuration costs an
+		# allocation on every reconciliation.
+		at = { cfg, env, list, n_old, row_bit: Sig.bit(cfg.depth) }
+		start = { at, cols: c0, order, tx, updated: 0, tail: 0, placed: [], created: { at: 0, slot: 0 }, hashes: [], hashed_from: 0, positions: [] }
+		lists = {
+			old: n_old,
+			new: n_new,
+			same: same_step,
+			find: find_step,
 		}
-		$tx = bump($tx, w_rows_updated, $updated)
-		if $i == $oe and $i == $ne {
-			($cols, $tx)
-		} else if $i == $oe {
-			# pure insertion of list[i..ne) before position oe
-			if $oe == $cols.order.len() {
-				append_rows(cfg, $cols, env, list, $i, $tx)
-			} else {
-				before = ref_at(cfg, $cols, $oe)
-				var $new_slots = []
-				var $k = $i
-				while $k < $ne {
-					item = list.get($k) ?? crash "row"
-					(c2, slot, t2) = create_row(cfg, $cols, env, item, before, $tx)
-					$cols = c2
-					$tx = t2
-					$new_slots = $new_slots.append(slot)
-					$k = $k + 1
-				}
-				(c3, order) = take_order($cols)
-				merged = order.sublist({ start: 0, len: $i }).concat($new_slots).concat(order.sublist({ start: $oe, len: order.len() - $oe }))
-				(set_order(c3, merged), $tx)
-			}
-		} else if $i == $ne {
-			# pure removal of order[i..oe)
-			var $k = $i
-			while $k < $oe {
-				slot = $cols.order.get($k) ?? crash "order"
-				(c2, t2) = drop_row(cfg, $cols, env, slot, True, $tx)
-				$cols = c2
-				$tx = t2
+		match Reconcile.plan(lists, start, place_step) {
+			Ok(placing) => placed_order(placing, n_old, n_new)
+			Err(DuplicateKey(n)) => crash dup_key(cfg.path, (cfg.key)(list.get(n) ?? crash "row"))
+		}
+	}
+}
+
+## What a reconciliation carries while its plan's steps are applied: the
+## columns, with the old order taken out of them and left as it was so
+## that every old position the plan names finds its slot; the accumulator;
+## and what the new order needs.
+##
+## The new order is written once, after the plan (`placed_order`). A kept
+## row at its old position needs nothing written; nor does a row of the
+## kept suffix when the list grew or shrank (`tail` of them), which shifts
+## as a whole; a row created at the end of the order is appended to it at
+## once. Every other kept or created row is `placed`. So an equal list, a
+## suffix kept and a swap of two rows write nothing or a few slots, as
+## `order` is held once and changed in place.
+Placing(r, item) : {
+	at : { cfg : EachCfg(r, (item -> Str)), env : (Str, item -> r), list : List(item), n_old : U64, row_bit : U128 },
+	cols : Cols(r, item),
+	order : List(U32),
+	tx : Tx,
+	updated : U64,
+	tail : U64,
+	placed : List({ at : U64, slot : U32 }),
+	created : { at : U64, slot : U32 },
+	hashes : List(U64),
+	hashed_from : U64,
+	positions : List(U64),
+}
+
+## `Reconcile.plan`'s comparison: whether the old row at `o` holds the key
+## of `list[n]` (an equal item answers at once).
+same_step : Placing(r, item), U64, U64 -> Bool
+	where [item.is_eq : item, item -> Bool]
+same_step = |p, o, n| same_row(p.at.cfg, p.cols, slot_at(p.order, o), p.at.list.get(n) ?? crash "row")
+
+## `Reconcile.plan`'s lookup: the old position of the row holding the key
+## of `list[n]`, found in the key index and counted as a reconciliation's
+## hash and comparisons. The hash is kept for the row's creation, so a key
+## looked up is not hashed again. The first lookup maps every live slot to
+## its old position, once per reconciliation.
+find_step : Placing(r, item), U64 -> (Placing(r, item), Reconcile.Found)
+find_step = |placing, n| {
+	{ at, cols, order, tx, updated, tail, placed, created, hashes, hashed_from: from0, positions: pos0 } = placing
+	key = (at.cfg.key)(at.list.get(n) ?? crash "row")
+	h = hash_str(key)
+	probe = index_probe(cols.index, cols.keys, key, h)
+	(positions, hashed_from) =
+		if hashes.is_empty() {
+			var $pos = List.repeat(U64.highest, cols.items.len())
+			var $k = 0.U64
+			for s in order {
+				$pos = $pos.set(s.to_u64(), $k) ?? crash "internal: slot position"
 				$k = $k + 1
 			}
-			(c3, order) = take_order($cols)
-			kept = if ($oe - $i == 1) order.drop_at($i) else order.sublist({ start: 0, len: $i }).concat(order.sublist({ start: $oe, len: order.len() - $oe }))
-			(set_order(c3, kept), $tx)
+			($pos, n)
 		} else {
-			reconcile_general(cfg, $cols, env, list, $i, $oe, $ne, $tx)
+			(pos0, from0)
 		}
+	found = match probe.found {
+		Ok(s) => Old(positions.get(s.to_u64()) ?? crash "internal: an indexed key has no row")
+		Err(Missing) => Fresh
 	}
+	t2 = bump(bump(tx, w_key_hashes, 1), w_key_compares, probe.compares)
+	({ at, cols, order, tx: t2, updated, tail, placed, created, hashes: hashes.append(h), hashed_from, positions }, found)
 }
 
-## General keyed reconciliation of the middle ranges old order[i..oe) and
-## new list[i..ne). Allocates scratch proportional to the site.
-reconcile_general : EachCfg(r, (item -> Str)), Cols(r, item), (Str, item -> r), List(item), U64, U64, U64, Tx -> (Cols(r, item), Tx)
+## Apply one step of a plan to the columns: keep a row (pruning an equal
+## item), create one, drop one or move one, and note what the new order
+## needs (`Placing`).
+place_step : Placing(r, item), Reconcile.Step -> Placing(r, item)
 	where [item.is_eq : item, item -> Bool]
-reconcile_general = |cfg, cols, env, list, i, oe, ne, tx| {
-	row_bit = Sig.bit(cfg.depth)
-	nslots = cols.items.len()
-	# old position of every slot in the old middle (+1; 0 = not in middle)
-	var $oldpos = List.repeat(0.U64, nslots)
-	var $k = i
-	while $k < oe {
-		s = cols.order.get($k) ?? crash "order"
-		$oldpos = $oldpos.set(s.to_u64(), $k + 1) ?? crash "pos"
-		$k = $k + 1
-	}
-	# match new middle keys to existing slots
-	var $found = []
-	var $seen = List.repeat(False, nslots)
-	var $compares = 0.U64
-	var $hashes = []
-	$k = i
-	while $k < ne {
-		item = list.get($k) ?? crash "row"
-		key = (cfg.key)(item)
-		h = hash_str(key)
-		$hashes = $hashes.append(h)
-		probe = index_probe(cols.index, cols.keys, key, h)
-		$compares = $compares + probe.compares
-		r = match probe.found {
-			Ok(s) => {
-				if ($oldpos.get(s.to_u64()) ?? 0) == 0 {
-					crash dup_key(cfg.path, key)
-				}
-				if $seen.get(s.to_u64()) ?? False {
-					crash dup_key(cfg.path, key)
-				}
-				$seen = $seen.set(s.to_u64(), True) ?? $seen
-				s.to_u64() + 1
+place_step = |placing, step| {
+	{ at, cols, order, tx, updated, tail, placed, created, hashes, hashed_from, positions } = placing
+	{ cfg, env, list, n_old, row_bit } = at
+	match step {
+		Keep(o, n) => {
+			slot = slot_at(order, o)
+			(c2, u) = keep_row_n(cols, slot, list.get(n) ?? crash "row", row_bit)
+			n_new = list.len()
+			if o == n {
+				{ at, cols: c2, order, tx, updated: updated + u, tail, placed, created, hashes, hashed_from, positions }
+			} else if n + tail + 1 == n_new and o + n_new == n + n_old {
+				{ at, cols: c2, order, tx, updated: updated + u, tail: tail + 1, placed, created, hashes, hashed_from, positions }
+			} else {
+				{ at, cols: c2, order, tx, updated: updated + u, tail, placed: placed.append({ at: n, slot }), created, hashes, hashed_from, positions }
 			}
-			Err(Missing) => 0
 		}
-		$found = $found.append(r)
-		$k = $k + 1
-	}
-	# drop old middle rows that are gone
-	var $cols = cols
-	var $tx = bump(bump(tx, w_key_hashes, ne - i), w_key_compares, $compares)
-	$k = i
-	while $k < oe {
-		s = cols.order.get($k) ?? crash "order"
-		if !($seen.get(s.to_u64()) ?? False) {
-			(c2, t2) = drop_row(cfg, $cols, env, s, True, $tx)
-			$cols = c2
-			$tx = t2
-		}
-		$k = $k + 1
-	}
-	# longest increasing subsequence of old positions among kept rows
-	var $seq = []
-	for f in $found {
-		$seq = $seq.append(if (f == 0) 0 else $oldpos.get(f - 1) ?? 0)
-	}
-	stable = lis_mark($seq)
-	# place from the end
-	var $slots = List.repeat(0.U32, ne - i)
-	var $updated = 0.U64
-	var $ref = ref_at(cfg, $cols, oe)
-	var $p = ne
-	while $p > i {
-		$p = $p - 1
-		idx = $p - i
-		item = list.get($p) ?? crash "row"
-		f = $found.get(idx) ?? 0
-		if f == 0 {
-			(c2, slot, t2) = create_row_h(cfg, $cols, env, item, $ref, Ok($hashes.get(idx) ?? crash "internal: hash"), $tx)
-			$cols = c2
-			$tx = t2
-			$slots = $slots.set(idx, slot) ?? $slots
-			$ref = node_of($cols, slot)
-		} else {
-			slot = (f - 1).to_u32_wrap()
-			node = node_of($cols, slot)
-			if !(stable.get(idx) ?? False) {
-				r = $ref
-				$tx = move_row($cols, slot, r, $tx)
+		Create(n, before) => {
+			hash = if (!hashes.is_empty() and n >= hashed_from) hashes.get(n - hashed_from).map_err(|_| Unhashed) else Err(Unhashed)
+			node = node_before(cfg, cols, order, created, before)
+			(c2, slot, t2) = create_row_h(cfg, cols, env, list.get(n) ?? crash "row", node, hash, tx)
+			if n == order.len() and tail == 0 {
+				{ at, cols: c2, order: order.append(slot), tx: t2, updated, tail, placed, created: { at: n, slot }, hashes, hashed_from, positions }
+			} else {
+				{ at, cols: c2, order, tx: t2, updated, tail, placed: placed.append({ at: n, slot }), created: { at: n, slot }, hashes, hashed_from, positions }
 			}
-			(c4, u4) = keep_row_n($cols, slot, item, row_bit)
-			$cols = c4
-			$updated = $updated + u4
-			$slots = $slots.set(idx, slot) ?? $slots
-			$ref = node
+		}
+		Drop(o) => {
+			(c2, t2) = drop_row(cfg, cols, env, slot_at(order, o), True, tx)
+			{ at, cols: c2, order, tx: t2, updated, tail, placed, created, hashes, hashed_from, positions }
+		}
+		Move(o, before) => {
+			t2 = move_row(cols, slot_at(order, o), node_before(cfg, cols, order, created, before), tx)
+			{ at, cols, order, tx: t2, updated, tail, placed, created, hashes, hashed_from, positions }
 		}
 	}
-	(c3, order) = take_order($cols)
-	merged = order.sublist({ start: 0, len: i }).concat($slots).concat(order.sublist({ start: oe, len: order.len() - oe }))
-	(set_order(c3, merged), bump($tx, w_rows_updated, $updated))
 }
 
-## Mark the members of one longest strictly increasing subsequence of the
-## nonzero entries of `seq` (zeros are new rows and never stable).
-lis_mark : List(U64) -> List(Bool)
-lis_mark = |seq| {
-	n = seq.len()
-	var $tails = []
-	var $prev = List.repeat(0.U64, n)
-	var $i = 0.U64
-	while $i < n {
-		v = seq.get($i) ?? 0
-		if v != 0 {
-			# binary search the first tail whose value >= v
-			var $lo = 0.U64
-			var $hi = $tails.len()
-			while $lo < $hi {
-				mid = ($lo + $hi) // 2
-				tv = seq.get($tails.get(mid) ?? 0) ?? 0
-				if tv < v {
-					$lo = mid + 1
-				} else {
-					$hi = mid
-				}
-			}
-			p = if ($lo > 0) ($tails.get($lo - 1) ?? 0) + 1 else 0
-			$prev = $prev.set($i, p) ?? $prev
-			$tails = if ($lo == $tails.len()) $tails.append($i) else ($tails.set($lo, $i) ?? $tails)
+## The slot of the row at old position `o`.
+slot_at : List(U32), U64 -> U32
+slot_at = |order, o| order.get(o) ?? crash "internal: old position"
+
+## The node a placed row goes before: an old row's, the row the latest
+## `Create` made, or the site's end.
+node_before : EachCfg(r, find), Cols(r, item), List(U32), { at : U64, slot : U32 }, Reconcile.Before -> U32
+node_before = |cfg, cols, order, created, before| match before {
+	Old(o) => node_of(cols, slot_at(order, o))
+	New(n) => if (created.at == n) node_of(cols, created.slot) else crash "internal: a row is placed before a row not just created"
+	End => end_ref(cfg)
+}
+
+## The new order, written in place over the old one: the kept suffix
+## shifted by the change of length, then every placed row at its position.
+## A row kept at its own position needs nothing (`Placing`).
+placed_order : Placing(r, item), U64, U64 -> (Cols(r, item), Tx)
+placed_order = |{ at: _, cols, order, tx, updated, tail, placed, created: _, hashes: _, hashed_from: _, positions: _ }, n_old, n_new| {
+	var $order = order
+	if n_new < n_old {
+		shift = n_old - n_new
+		var $n = n_new - tail
+		while $n < n_new {
+			$order = $order.set($n, $order.get($n + shift) ?? crash "order") ?? crash "order"
+			$n = $n + 1
 		}
-		$i = $i + 1
+	} else if n_new > n_old {
+		shift = n_new - n_old
+		while $order.len() < n_new {
+			$order = $order.append(0)
+		}
+		var $n = n_new
+		while $n > n_new - tail {
+			$n = $n - 1
+			$order = $order.set($n, $order.get($n - shift) ?? crash "order") ?? crash "order"
+		}
 	}
-	var $out = List.repeat(False, n)
-	var $cur = match $tails.last() {
-		Ok(t) => t + 1
-		Err(_) => 0
+	for p in placed {
+		$order = $order.set(p.at, p.slot) ?? crash "order"
 	}
-	while $cur != 0 {
-		$out = $out.set($cur - 1, True) ?? $out
-		$cur = $prev.get($cur - 1) ?? 0
+	if $order.len() > n_new {
+		$order = $order.drop_last($order.len() - n_new)
 	}
-	$out
+	(set_order(cols, $order), bump(tx, w_rows_updated, updated))
 }
 
 ## Evaluate the marked holes of the dirty rows and forward changes to
