@@ -5461,8 +5461,8 @@ architecture are recorded here:
 - **Pinned tooling, floating compiler.** `Blueprint.roc` and its lock pin the
   scripts' Roc nightly (`roc-stable`), Zig, Node and Chrome. The platform,
   the examples and the tests are built with `roc`, the latest Roc nightly,
-  which is never pinned: each pull request answers whether the change works
-  with the compiler users install today. No platform or example file names a
+  which floats except for exact, documented compiler regressions. Each pull
+  request runs the checks with the resolved nightly. No platform or example file names a
   compiler or carries an absolute path.
 - **Roc scripts.** Automation is Roc scripts under `scripts/`; one `check`
   task runs formatting, `roc test`, every example's specs natively and in
@@ -5497,6 +5497,7 @@ of them is platform semantics.
 
 | Issue | Defect | Effect on the engine |
 |---|---|---|
+| [roc-lang/roc#13372](https://github.com/roc-lang/roc/issues/13372) | A nested record default through an alias to a defaulted nominal hangs during Boxy lowering on `nightly-2026-11-22-3350b1c` | CI and the release workflow select `nightly-2026-11-18-a520eed` when the latest nightly is the affected November 21 or November 22 build. Newer nightlies run every check as usual. Remove the fallback after a fixed nightly passes the spec and fuzz checks |
 | [roc-lang/roc#13020](https://github.com/roc-lang/roc/issues/13020) | The development Wasm backend retains removed refcounted elements after empty and partial `List.drop_last`/`Dict.remove` results until their owner is dropped; optimized builds release them | Development builds keep a removed file-valued row alive until its table is dropped. There is no workaround in the engine: no container rebuild or host-forced release substitutes for ownership. On the verified nightlies (`nightly-2026-11-13-03dce41`, `nightly-2026-11-14-a87808d`, `nightly-2026-11-15-f25da45`) the spec suite skips the Files test app's `table-a-record-keeps-handles-until-the-next-write` and `table-d-retained-handles-count-at-the-bound` in Chrome on the development Wasm build only, printing `SKIP`, and runs them in Chrome on an `--opt=size` build instead, where they must pass; natively they always run. The skip is data in `scripts/src/CompilerSkips.roc`; any other compiler runs them, and the entries go when a nightly fixes the defect |
 | [roc-lang/roc#13056](https://github.com/roc-lang/roc/issues/13056) | Native compilation of an empty preparation catalogue whose error type is `Worker.Never` crashes in monotype lowering | The declaration-refusal fixture gives its always-succeeding empty preparation a named inhabited error type. Restore `Worker.Never` once fixed; no engine or declaration semantics change |
 | [roc-lang/roc#13005](https://github.com/roc-lang/roc/issues/13005) | A top-level annotated constant using a missing method can crash `roc check` in `boxy_lowering` instead of reporting the missing item | The table-bookkeeping rejection fixture uses the unannotated spelling and links the issue. It still requires the compiler's missing-method diagnostic; an annotated spelling may crash until the compiler is fixed |

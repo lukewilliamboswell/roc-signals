@@ -277,8 +277,7 @@ Release := [].{
 		\\
 		\\## Compilers
 		\\
-		\\- Built and tested with `${compiler}`, the latest Roc nightly when the release
-		\\  was built.
+		\\- Built and tested with `${compiler}`, the Roc nightly resolved for this release.
 		\\- Release tooling ran on `${tooling}` (`roc-stable`).
 		\\${Release.store_ownership}
 
