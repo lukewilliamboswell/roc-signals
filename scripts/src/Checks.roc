@@ -267,7 +267,7 @@ Checks := [].{
 	## The declaration and request contracts, as cases of two apps, each
 	## built once: `tests/apps/key-contracts` (the platform's contracts) and
 	## the fixture `tests/key-contracts/oracle.roc.txt` (those of the native
-	## oracle and the engine package, which only a fixture may name). An
+	## oracle and engine, which its staged platform exposes to the fixture). An
 	## instance boots at a case's path to mount that case alone. Natively
 	## every case is one run of its app's runner on a spec that boots there,
 	## which must end with the case's class and rule and exit code; both
@@ -328,10 +328,24 @@ Checks := [].{
 		in_browser = browser_fixtures(Path.read_utf8!(Path.utf8("${o.root}/${browser_test}"))?, cases.keep_if(|test| test.program == Contracts).map(|test| test.name))
 		var $problems = in_browser.unknown.map(|name| "${browser_test} mounts the key contract ${name}, which is no case of tests/apps/key-contracts")
 		oracle_dir = "${dir}/oracle"
-		Path.create_all!(Path.utf8(oracle_dir))?
+		# Use one package root for the spec runner and the fixture's direct
+		# calls to Core and Dom. Two roots over the same modules can crash
+		# Roc while checking the fixture, even with the compiler cache off.
+		staged_platform = "${oracle_dir}/platform"
+		Path.create_all!(Path.utf8(staged_platform))?
+		for source in SpecSuite.roc_files!("${o.root}/platform")? {
+			name = source.split_on("/").last() ?? source
+			Path.copy!(Path.utf8(source), Path.utf8("${staged_platform}/${name}"))?
+		}
+		for file in PlatformTest.spec_inputs {
+			parent = Str.join_with(file.split_on("/").drop_last(1), "/")
+			Path.create_all!(Path.utf8("${staged_platform}/${parent}"))?
+			Path.copy!(Path.utf8("${o.root}/platform/${file}"), Path.utf8("${staged_platform}/${file}"))?
+		}
+		platform_source = Path.read_utf8!(Path.utf8("${staged_platform}/main.roc"))?
+		Path.write_utf8!(Path.utf8("${staged_platform}/main.roc"), platform_source.replace_each("\n\texposes [", "\n\texposes [Core, Dom, ").replace_each("\nimport Core\n", "\nimport Core\nimport Dom\n"))?
 		fixture = Path.read_utf8!(Path.utf8("${o.root}/tests/key-contracts/oracle.roc.txt"))?
-		up = Str.join_with(List.repeat("..", oracle_dir.split_on("/").keep_if(|part| !part.is_empty()).len()), "/")
-		Path.write_utf8!(Path.utf8("${oracle_dir}/main.roc"), fixture.replace_each("<PLATFORM>", "${up}/${o.root.drop_prefix("/")}/platform/main.roc").replace_each("<ORACLE>", "${up}/${o.root.drop_prefix("/")}/platform/main-fuzz.roc"))?
+		Path.write_utf8!(Path.utf8("${oracle_dir}/main.roc"), fixture.replace_each("<PLATFORM>", "./platform/main.roc"))?
 		runner_of = |program| match program {
 			Contracts => "${dir}/runner"
 			Oracle => "${oracle_dir}/runner"

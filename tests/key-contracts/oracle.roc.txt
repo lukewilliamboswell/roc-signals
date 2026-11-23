@@ -1,18 +1,16 @@
 app [main] {
     pf: platform "<PLATFORM>",
-    oracle: "<ORACLE>",
 }
 
 import pf.Engine
-import oracle.Core
-import oracle.Dom
+import pf.Core
+import pf.Dom
 
 ## The contracts the native oracle and the engine package keep, one case per
 ## first page, chosen by the path the instance boots at, so each case runs
-## through the one native runner this fixture builds. It names the internal
-## engine package, which only a fixture (never a test app under tests/apps)
-## may, so it stays a generated fixture. Each case is the view of the
-## fixture it replaced; the root path breaks no contract.
+## through the one native runner this fixture builds. Its staged platform
+## exposes the internal engine and oracle for this fixture. Each case is
+## the view of the fixture it replaced; the root path breaks no contract.
 main : Engine.Program
 main = Engine.program_boot({}, |boot| case(boot.url))
 

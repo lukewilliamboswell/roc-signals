@@ -232,8 +232,8 @@ problems found before it.
 9. The platform's link inputs for every target; the declaration and request
    contracts, as the cases of two apps each built once
    (`tests/apps/key-contracts`, and `tests/key-contracts/oracle.roc.txt` for
-   the native oracle's and the engine package's, which only a fixture may
-   name): an instance booted at a case's path mounts that case alone, so
+   the native oracle and engine contracts, with a staged platform root
+   that exposes their modules to that fixture): an instance booted at a case's path mounts that case alone, so
    each case is one run of its app's native runner on a spec that boots
    there and must end with the case's class, rule and exit code (and each
    app's root path must pass), and the platform app's cases are mounted
