@@ -232,8 +232,8 @@ problems found before it.
 9. The platform's link inputs for every target; the declaration and request
    contracts, as the cases of two apps each built once
    (`tests/apps/key-contracts`, and `tests/key-contracts/oracle.roc.txt` for
-   the native oracle's and the engine package's, which only a fixture may
-   name): an instance booted at a case's path mounts that case alone, so
+   the native oracle and engine contracts, with a staged platform root
+   that exposes their modules to that fixture): an instance booted at a case's path mounts that case alone, so
    each case is one run of its app's native runner on a spec that boots
    there and must end with the case's class, rule and exit code (and each
    app's root path must pass), and the platform app's cases are mounted
@@ -1133,8 +1133,15 @@ place of the release's.
 
 ## Releases
 
-A maintainer dispatches the `Release` workflow with a version. It builds the
-assets with `blueprint run release` and creates a draft GitHub release with:
+The standalone engine archive, `engine-<hash>.tar.zst`, ships under the
+same tag as the browser platform. Declare the same package URL in the
+native platform and in apps that import the package's authoring types.
+The platform root uses `EngineHost` for turns and worker callbacks and
+supplies its own linker inputs, hosted functions and protocol consumer.
+
+A maintainer dispatches the `Release` workflow with a version such as
+`0.8.0-rc1`. A version with a suffix is marked as a GitHub prerelease.
+The workflow builds the assets with `blueprint run release` and creates a draft GitHub release with:
 
 - the platform bundle, `<hash>.tar.zst`, which apps name as their platform:
   one platform whose `main.roc` builds for `wasm32` (the browser module) and

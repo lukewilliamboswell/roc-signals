@@ -78,7 +78,7 @@ ApiDocs := [].{
 		response : Response
 		response = Http.send!(with_token, {})?
 		published = ApiDocs.published_release({ status: response.status(), body: response.body() })?
-		bundle = match published.assets.keep_if(|asset| asset.name.ends_with(".tar.zst") and !asset.name.starts_with("signals-")) {
+		bundle = match published.assets.keep_if(|asset| ApiDocs.is_platform_bundle(asset.name)) {
 			[asset] => asset.browser_download_url
 			_ => return Err(AmbiguousPublishedPlatform(published.tag_name))
 		}
@@ -181,22 +181,28 @@ ApiDocs := [].{
 	## The reviewed repairs of published baselines; empty once the latest
 	## release is one `roc bump` reads as it shipped.
 	##
-	## 0.6.0's `Wire.Sendable` constraint names the unexposed `WorkerCodec`
+	## 0.7.0's `Wire.Sendable` constraint names the unexposed `WorkerCodec`
 	## types, as the candidate does. The same extraction workaround adds
 	## that module to a copy of the published root, without changing the
 	## bundle or exposing it to apps. The digest binds the repair to the
 	## exact published asset. Upstream:
-	## https://github.com/roc-lang/roc/issues/13080. Once 0.6.0 is no longer
+	## https://github.com/roc-lang/roc/issues/13080. Once 0.7.0 is no longer
 	## the latest release, `baseline_plan` fails until this entry is retired.
 	baseline_repairs : List(BaselineRepair)
 	baseline_repairs = [
 		{
-			version: "0.6.0",
-			sha256: "ea59cb6c5577ed1be8322946edfc1f7b6effcd8160e369de976eeca7d63829e0",
+			version: "0.7.0",
+			sha256: "1bb78910b615189810ed7b1ed0adb4cef8d0117c065385aba4f6c40de99fd790",
 			reason: ApiDocs.candidate_repair.reason,
 			edits: ApiDocs.candidate_repair.edits,
 		},
 	]
+
+	## The web platform uses Roc's bare hash filename. The CLI and engine
+	## each have their own prefixed bundle in the same release.
+	is_platform_bundle : Str -> Bool
+	is_platform_bundle = |name|
+		name.ends_with(".tar.zst") and !name.starts_with("signals-") and !name.starts_with("engine-")
 
 	## Which baseline the latest release gives: its bundle as published, or
 	## its one reviewed repair. A repair kept for any other release is an
@@ -428,13 +434,13 @@ expect {
 	actual == expected
 }
 
-## 0.6.0's repair adds exactly `WorkerCodec` to the exposed modules of its
+## 0.7.0's repair adds exactly `WorkerCodec` to the exposed modules of its
 ## published root, and nothing else.
 expect {
-	repair = ApiDocs.baseline_repairs.find_first(|r| r.version == "0.6.0")?
-	published = "platform \"\"\n\trequires {}\n\texposes [Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, Wire, Worker]\n\tpackages {}\n\tprovides {}\nimport Core\nimport Wire\nimport Worker\n"
+	repair = ApiDocs.baseline_repairs.find_first(|r| r.version == "0.7.0")?
+	published = "platform \"\"\n\trequires {}\n\texposes [Base64, Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, WebCrypto, Wire, Worker]\n\tpackages {}\n\tprovides {}\nimport Core\nimport Wire\nimport Worker\n"
 	repaired = ApiDocs.repaired_root(published, repair.edits)?
-	{ before: ApiDocs.modules(published)?, after: ApiDocs.modules(repaired)? } == { before: ["Clipboard", "Engine", "Files", "Html", "Layout", "Order", "Port", "PortJson", "Svg", "Url", "Web", "Wire", "Worker"], after: ["Clipboard", "Engine", "Files", "Html", "Layout", "Order", "Port", "PortJson", "Svg", "Url", "Web", "Wire", "WorkerCodec", "Worker"] }
+	{ before: ApiDocs.modules(published)?, after: ApiDocs.modules(repaired)? } == { before: ["Base64", "Clipboard", "Engine", "Files", "Html", "Layout", "Order", "Port", "PortJson", "Svg", "Url", "Web", "WebCrypto", "Wire", "Worker"], after: ["Base64", "Clipboard", "Engine", "Files", "Html", "Layout", "Order", "Port", "PortJson", "Svg", "Url", "Web", "WebCrypto", "Wire", "WorkerCodec", "Worker"] }
 }
 
 ## An edit whose text is missing or repeated refuses the baseline rather
@@ -529,3 +535,5 @@ expect {
 	good = "<h3 id=\"x\">Engine.Program.with_ports<a class=\"anchor\" href=\"#x\">§</a></h3><p>Declare ports.</p>"
 	{ present: ApiDocs.has_inherited_comment(good, "Engine.Program.with_ports"), followed: ApiDocs.has_inherited_comment("${good}${good.replace_each("with_ports", "with_workers")}", "Engine.Program.with_ports"), missing: ApiDocs.has_inherited_comment(good, "Engine.Program.with_workers"), neighbour: ApiDocs.has_inherited_comment("<h3 id=\"x\">Engine.Program.with_ports<a class=\"anchor\" href=\"#x\">§</a></h3>\n".concat(good.replace_each("with_ports", "with_workers")), "Engine.Program.with_ports") } == { present: True, followed: True, missing: False, neighbour: False }
 }
+
+expect ["hash.tar.zst", "engine-enginehash.tar.zst", "signals-toolhash.tar.zst", "runtime.mjs"].keep_if(ApiDocs.is_platform_bundle) == ["hash.tar.zst"]

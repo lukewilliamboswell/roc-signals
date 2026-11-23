@@ -1661,13 +1661,14 @@ once_steps = [
 	both({ ..quiet, local_listing: To({ show: All, order: ByRankDown }), local_window: To({ start: 1, count: 4 }), listing: To({ show: Only(1), order: ByKeyDown }), window: To({ start: 1, count: 3 }), ops: [Fill(3, 6, 11), Remove(14)], split: True }),
 ]
 
-## Copies of a table: one saved and put back while it is still the cell's
-## own table and after the table has moved on, and the other table's put in
+## Copies of a table: one saved and put back at once and after the table
+## has moved on, each a whole rewrite, and the other table's put in
 ## this one's cell. Writes of the other table, which `d` alone draws.
 copy_steps : List(Step)
 copy_steps = [
-	# Saved, then put back at once and written: the copy is the cell's own
-	# table still, and the writes after it are keyed.
+	# Saved, then put back at once and written: the turn that read the copy
+	# rearmed it when it ended, so it is no longer the table a modifier
+	# received, and putting it back is a whole rewrite.
 	reads({ ..quiet, save: True }),
 	reads({ ..quiet, head: Restore, ops: [Put(1, ranked(0, 1)), Remove(0)] }),
 	# Put back after those writes: a whole rewrite to the rows saved.

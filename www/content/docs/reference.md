@@ -451,7 +451,7 @@ shown after a batch, never in markup, so a picture shows it closed.
 | Zone span and offsets | `zone_days` each side (366 by default, at most 7305), 1–128 offsets | Default probe shortens both ends to fit; `OutsideZone` beyond its inclusive span |
 | Zone name | 64 UTF-8 bytes | Unavailable or overlong default browser name is empty; invalid injected data refuses mount |
 | Live DOM nodes | 2³² − 2 | Resource limit |
-| Ingress entries (occurrences and reports) | 4096 | A report drains a full queue early while idle; a waiting transition applies and drains; overflow in other busy phases is a resource limit |
+| Ingress entries (occurrences and reports) | 4096 waiting (queued while idle) and 4096 raised since the runtime last left idle: at most 8192 | An idle input at a full waiting budget drains the queue early; at a full raised budget a waiting transition applies and drains, and other overflow is a resource limit; a drain leaves at most 4096 at idle |
 | Transition batches waiting for update | 1 | Inputs queue; a full queue forces application and draining |
 | Wait for transition update | 1000 ms | Apply directly and skip the animation |
 | Transition observation history | Newest 4096 records and 1 MiB encoded type bytes, absolute U64 count | Overwritten or oversized records fail observation; an oversized record clears prior history. Counter exhaustion disables observation; app execution continues |
@@ -461,7 +461,7 @@ shown after a batch, never in markup, so a picture shows it closed.
 | Manual native UI callbacks | At most live controlled nodes, one coalesced toggle and a U64 close count per node; 20 s settle wait | Counter exhaustion or timeout fails observation |
 | Manual pointer log | 4096 records, taken after each input step | Resource limit on overflow |
 | Spec driver pointers | One mouse/pen gesture or up to 16 touches, without overlap between modes | Step error before input; production pointer dispatch has no driver limit |
-| Turns delivered before the runtime returns to idle | 4096 | Resource limit; bounds a focus feedback loop even when only one event waits at a time |
+| Turns one drain delivers for raised entries | 4096; reports that waited for their frame spend none | Resource limit; bounds a focus feedback loop even when only one event waits at a time |
 | Payload kinds, element properties | Closed tables with one-byte indices | Unknown numbers on the wire are contained as `executor` |
 | Event policies | Closed table of 32 bits | Unknown fields do not compile; unknown wire bits are contained as `executor` |
 | Live references with one nonempty name | 1, checked at the end of the turn | Contract error naming the name and both construction sites |

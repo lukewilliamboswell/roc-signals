@@ -292,7 +292,7 @@ issue_r = |m, r| {
 		m1 = admit_x(m, k_r, r, Ri, |id| Interval(id, 700), RefR)
 		# The echo task's input, a `U8`, is one byte on the wire; its 100 ms
 		# timeout and `Stop` cancel policy travel with it.
-		admit_x(m1, k_r, r, Rw, |id| Work(id, { task: FxApp.echo.name(), input: [r.to_u8_wrap()], files: [], timeout_ms: 100, cancel: 1, prepared: Unprepared }), RefR)
+		admit_x(m1, k_r, r, Rw, |id| Work(id, { task: FxApp.echo.name(), input: cbor_u8(r.to_u8_wrap()), files: [], timeout_ms: 100, cancel: 1, prepared: Unprepared }), RefR)
 	}
 }
 
@@ -821,11 +821,12 @@ run_program! = |prog| {
 			res = if (arg % 3 == 0) PortAnswer({ json: "\"m${arg.to_str()}\"", blobs: [], files: [] }) else if (arg % 3 == 1) PortFailed(Closed) else PortFailed(Threw("t${arg.to_str()}"))
 			(deliver!($s, id, res), model_deliver(m0, id, res), "port result ${id.to_str()}")
 		} else {
-			# A tick, a job's answer (the echo task's answer `arg`: the byte
-			# and its `Ok` flag) or a lost job for an arbitrary id: a tick is an
-			# equal fold for R and "other" for logs.
+			# A tick, a job's answer (the echo task's answer `arg` in CBOR,
+			# then its `Ok` flag) or a lost job for an arbitrary id: a tick is
+			# an equal fold for R and "other" for logs.
 			id = (arg.to_u32() % $m.next) + 1
-			res = if (arg % 4 == 1) Work({ output: [arg, 0], files: [] }) else if (arg % 4 == 3) WorkLost(AppCrash) else Fired(arg.to_i64())
+			answer = cbor_u8(arg).append(0)
+			res = if (arg % 4 == 1) Work({ output: answer, files: [] }) else if (arg % 4 == 3) WorkLost(AppCrash) else Fired(arg.to_i64())
 			(deliver!($s, id, res), model_deliver(m0, id, res), "result ${id.to_str()}")
 		}
 		check!("step ${($i // 2).to_str()} ${what}", e, m2)
@@ -1077,6 +1078,14 @@ test! = |{ mode, program }| {
 	}
 }
 
+## A `U8` as the worker payload format writes it: CBOR, one byte below 24
+## and `0x18` then the byte from 24. Written here rather than taken from the
+## codec, so a codec that wrote it wrongly would disagree with the model.
+cbor_u8 : U8 -> List(U8)
+cbor_u8 = |b| if (b < 24) [b] else [0x18, b]
+
+expect cbor_u8(23) == [23] and cbor_u8(24) == [0x18, 24]
+
 ex : Str, U8, List(U8) -> Fuzz.Example(Input)
 ex = |name, mode, program| Fuzz.example({ name, revision: "1", make: || { mode, program } })
 
@@ -1092,6 +1101,10 @@ fuzz_target = Fuzz.target_with!({
 		ex("post-send-time-reading", 1, [12, 0, 4, 0, 12, 0, 4, 0, 12, 0, 2, 5, 2, 6, 2, 7]),
 		ex("persistence-lifetimes", 1, [3, 0, 2, 4, 1, 5, 1, 0, 8, 11, 0, 14, 1, 17, 1]),
 		ex("transition-batches", 1, [2, 1, 1, 3, 3, 0, 5, 4, 0, 1]),
+		# An echo answer of 109, which CBOR writes as two bytes, after a post
+		ex("echo-answer-past-23", 1, [2, 111, 109, 0, 1, 1, 90, 6, 20, 109, 97, 114, 103, 111, 30]),
+		# An echo request for 24, which CBOR writes as two bytes
+		ex("echo-request-past-23", 1, [62].concat(List.repeat(200, 61))),
 		ex("media-lifecycle", 1, [0, 0, 5, 1, 5, 0, 1, 0, 4, 0, 3, 0, 5, 0, 3, 0, 5, 1, 2, 0]),
 		# issue 0 x3 (third refused + self), deliver, toggle 0 (cancel), deliver cancelled, show again
 		ex("lifecycle", 1, [0, 0, 0, 0, 0, 0, 2, 1, 1, 0, 2, 2, 1, 0, 3, 7, 0, 1, 0, 2]),

@@ -302,9 +302,8 @@ reconsidered.
   different meaning through mismatch repair. Per-request rendering or streaming is reconsidered
   only if a build-time frame cannot serve the intended apps. Search engines
   may index a picture; the platform makes no promise about it.
-- **A native desktop GUI host.** The engine is web-only. A GUI platform would
-  be a separate platform consuming its own command vocabulary, not a second
-  engine.
+- **A native desktop GUI host.** The shipped platform is web-only. A GUI platform
+  can use the engine package and consumes its supported command vocabulary.
 - **Multiple roots per Wasm instance.** One mount owns one instance.
   Reconsidered only if many-widget embedding measurements show per-instance
   cost is unacceptable.
@@ -479,7 +478,11 @@ bookkeeping is a function of the unexposed `TableCore` namespace, never a
 member of a type an app can name.
 
 The repository has one platform (`platform/main.roc`), web only, shipped as
-one release bundle. An app has one entry, `main.roc`, binding its `program`
+one platform bundle. The same release also carries a pure Roc engine
+package, built from the same source with its own root. Its `EngineHost`
+module gives platform authors the turn and worker entry points without
+exposing the engine internals. Each platform owns its host bindings, opaque
+boxes and supported vocabulary. An app has one entry, `main.roc`, binding its `program`
 as `main`, and the platform builds it for two targets with per-target link
 inputs:
 
@@ -548,7 +551,11 @@ outcome and the accumulator. Messages are:
 
 - `Fire(path, pos, handler, payload)` — route an event or effect result down
   the site path to the block that owns the target.
-- `Changed(mask)` — some of what `mask` names changed; refresh what reads it.
+- `Changed(pass)` — a refresh. `Turn(mask)` is a pass of a turn: some of what
+  `mask` names changed; refresh what reads it. `Check` is the settle check (see
+  [Fuzzing, walks, soak and contract tests](#fuzzing-walks-soak-and-contract-tests)),
+  a harness's pass that refreshes everything. The two are different tags, so a
+  turn whose mask has every bit set is still a turn.
 - `Dispose(remove)` — release this site, emitting `REMOVE` for its top-level
   nodes when `remove` is set (an ancestor that removes its own DOM passes
   `False` to children).
@@ -819,14 +826,28 @@ names the rows it touches.
   changes began. A view remembers the count it is up to date with. A view
   that has seen exactly the count the changes start from can bring itself up
   to date from the changes; any other has missed writes and builds again.
+  A table whose count equals the start of its changes holds the rows its
+  writing turn began with, which is what lets a view at that count take the
+  table as unchanged. Within a turn the count can go down: a write that hands
+  back the table as an earlier handler of the same event read it stores that
+  table's count.
 - **No write can leave a view behind.** A table cell's generated modifier
-  notes the table's identity and where its changes began before the function
-  it applies runs. If what comes back is that same table, changed by its own
-  operations, the changes stand. If it is any other table (a new one, another
-  cell's, one saved in an earlier turn), the cell stores it as a whole
-  rewrite. So a `set` of a new table, a generated reset and a function that
-  ignores its argument are all whole rewrites, and none can leave a view
-  showing rows the table no longer has.
+  puts the table into its recording phase and notes its identity and where
+  its changes began before the function it applies runs. If what comes back
+  is that same table, changed by its own operations, the changes stand: it
+  has the cell's identity and start and is still recording. If it is any
+  other table (a new one, another cell's, one saved in an earlier turn), the
+  cell stores it as a whole rewrite. So a `set` of a new table, a generated
+  reset and a function that ignores its argument are all whole rewrites, and
+  none can leave a view showing rows the table no longer has.
+  Identity and count alone cannot tell a saved table from the cell's own:
+  two `Store` values taken up from one store are two histories with the
+  same cell identities, and they can reach one count with different rows.
+  The phase does. Every table an app can keep past a turn was rearmed when
+  that turn ended, so it is not recording, and a recording table exists
+  only inside one turn of one history, where it descends from the rows the
+  turn began with. A table saved across a turn that wrote nothing is a whole
+  rewrite too.
   A mounted program's table identities are disjoint from those in a `Store`
   value, so a table read with `Store.read` and set into a live cell is a whole
   rewrite.
@@ -997,7 +1018,9 @@ app-facing type makes it impossible for an app to call it.
 - Each view of a table pays for each written key, and each plain reader of
   the table is evaluated on each write to it.
 - A table is written with `update`. A `set` of a table built from a reading
-  of the same cell is still a keyed write, and copies the table.
+  of the same cell copies the table, and is a whole rewrite unless the
+  reading was taken after an earlier write of the cell in the same event (a
+  handler composed with `also`), when it is still a keyed write.
 - A write to a key the table does not hold writes nothing and reports no
   error, so a row handler that names another table's cell by mistake is
   silent. An error would punish a write that lost a race with its row's
@@ -1438,6 +1461,12 @@ after the pass refreshes that layer's subtree at its own site, where the
 layers written below it join in the same way. The walk visits the sites on
 the event's path and evaluates nothing outside the subtrees it refreshes.
 
+The walk stops at a site whose block was built since the event descended
+through it. The saved child positions below the site refer to the disposed
+block, and the new block already reflects the turn's writes. A row that
+reuses a slot has its template's positions down to its first such site,
+which also stops the walk. A retained row keeps its slot.
+
 Effect results and follow-ups are turns of their own, applied in arrival
 order, except that a report replaced in place keeps the place of its
 source's waiting entry. Which of two concurrent results should win is application state, never
@@ -1469,21 +1498,31 @@ Synchronous browser callbacks raised while JavaScript applies a batch, or
 while Wasm runs, never re-enter the engine. They are queued and delivered as
 their own turns after the current batch.
 
-The runtime's ingress queue is bounded at 4096 entries. Reports wait in it
-until the frame, one replaceable entry per source; a full queue of waiting
-reports drains early. While the runtime is busy, a feedback loop between
-the DOM and the engine can fill it. That overflow is not refused event by
-event (which would drop non-lossy input or strand an in-flight id): it
-poisons the runtime with class `resource_limit`, reported like any other fault.
-A full queue while a marked batch waits for its view-transition callback
-instead forces that batch to apply and drains the queue. Early effects and
-DOM application retain the ordinary busy overflow rule.
+The runtime's ingress queue has two budgets of 4096 entries each. Entries
+*waiting* were queued while the runtime was idle: reports waiting for their
+frame, one replaceable entry per source. An idle input that finds 4096
+waiting drains the queue early (rule 6 below), so the number of sources,
+which follows the app's data, never causes a poison. Entries *raised* were
+queued since the runtime last left idle, while a turn ran or a batch was
+applied; when the runtime returns to idle, whatever is still queued is
+waiting. A raised entry beyond its budget is a feedback loop between the DOM
+and the engine. That overflow is not refused event by event (which would
+drop non-lossy input or strand an in-flight id): it poisons the runtime with
+class `resource_limit`, reported like any other fault, and waiting entries
+never count towards it. A full raised budget while a marked batch waits for
+its view-transition callback instead forces that batch to apply and drains
+the queue. Early effects and DOM application retain the ordinary busy
+overflow rule. The queue therefore retains at most 8192 entries. A drain
+never returns the runtime to idle holding more than 4096: it delivers the
+oldest early instead, which only a drain cut short by a view transition can
+need.
 
-After its initiating turn, a drain delivers at most 4096 further turns
-before the runtime returns to idle. A loop that raises only one further
-event per turn never fills the queue, but still cannot settle: a 4097th
-further turn poisons with `resource_limit`.
-The native runner applies the same bound to the turns one step raises.
+A drain delivers at most 4096 turns for raised entries; reports that waited
+for their frame spend none. A loop that raises only one further event per
+turn never fills the raised budget, but still cannot settle: its 4097th
+raised turn in one drain poisons with `resource_limit`.
+The native runner keeps the same two budgets and the same drain budget for
+the inputs one step raises.
 
 ### Reports and occurrences
 
@@ -1521,7 +1560,9 @@ The runtime applies the declared delivery policy through one ingress queue:
    `FRAME_WAIT_MS = 100` timer alongside it. Whichever fires first drains
    the queue and cancels the other. When `environment.visible()` answers
    false, a microtask drains at the end of the reporting task instead.
-   A busy runtime waits until its batch has applied. Size reports drain when
+   A busy runtime waits until its batch has applied. A drain whose turn
+   starts a view transition stops there: the reports left behind wait for
+   the next frame, which is requested at once. Size reports drain when
    their ResizeObserver callback returns: it runs after the frame drain and
    before paint, so another frame would paint the old layout once.
 4. An occurrence joins the queue and drains it immediately in order when
@@ -1529,19 +1570,27 @@ The runtime applies the declared delivery policy through one ingress queue:
    waits for the batch's ordinary drain.
 5. Delivery is an ordinary turn through the event or result's existing
    entry, and removes its index entry.
-6. A report that finds the queue full while idle drains it early before
-   queuing. The number of sources can follow app data and never causes a
+6. A report that finds 4096 waiting while idle is queued, and the entries
+   ahead of it are delivered early: the oldest becomes the initiating turn,
+   the report takes its freed slot, and the older entries then drain. The
+   report keeps its place and waits for its frame unless an occurrence
+   pinned it. The number of sources can follow app data and never causes a
    poison merely because reports waited for a frame.
 
-An occurrence arriving at a full idle queue also drains in order. The
-oldest report becomes the initiating turn, outside the following drain's
-4096-turn budget; the occurrence occupies its freed slot and pins earlier
-reports before that initiating turn runs. This preserves both the queue
-bound and the order of reports raised during delivery.
+An occurrence arriving at a full waiting budget also drains in order. The
+oldest entry becomes the initiating turn; the occurrence occupies its freed
+slot and pins earlier reports before that initiating turn runs. Inputs the
+initiating turn raises join the raised budget behind it. This preserves
+both budgets and the order of reports raised during delivery.
 
 An occurrence follows every report queued before it, each with its newest
 value from before the occurrence, and precedes every report raised after
-it joined. Sources keep the order of their first report since the drain.
+it joined. Entries leave in the order they joined the queue, and a
+replaced report keeps its entry's place, so a source keeps the place of the
+report that made its entry. Three things take a report out of this order
+without delivering it: `CANCEL` of its source, a DOM report whose target
+was disconnected or whose element no longer declares its handler (below),
+and a poison, which discards the queue.
 `Every` port messages enter ingress when their subscription's turn comes,
 not when the handler emits: a report raised between emit and that turn is
 delivered first. This retains the bound on port traffic; an app needing a
@@ -2422,8 +2471,9 @@ allowed. The host's command buffer stays valid and is never copied. Inputs
 queue against the old page, and are delivered after the update; queued DOM
 events whose element was removed or whose id was recycled are dropped.
 The callback runs at most once. After 1000 ms without it, apply directly and
-skip the transition; a later callback does nothing. A full ingress queue
-while waiting also forces application and draining, rather than poisoning.
+skip the transition; a later callback does nothing. A full raised budget of
+the ingress queue while waiting also forces application and draining, rather
+than poisoning.
 This exception applies only to the waiting gap: overflow during early effects
 or DOM application keeps the ordinary busy feedback-loop bound. Unmount,
 poisoning and recovery invalidate old callbacks and release pending metadata.
@@ -4534,8 +4584,8 @@ static attributes, children, holes, hole path depth, row handlers — above 255;
 more follow-up turns of depth 2 or more in one host call than the breadth
 backstop allows.
 Each is checked before it could wrap. The runtime adds `resource_limit` for
-ingress-queue overflow or a drain delivering more than 4096 turns before
-returning to idle, and refuses a module of another protocol version
+more than 4096 ingress entries raised since it left idle, or a drain
+delivering more than 4096 turns for raised entries, and refuses a module of another protocol version
 before running it, and a page whose port handlers do not match the
 program's declarations before mounting it.
 It also raises `contract` for a `value` property applied to a file input,
@@ -4617,8 +4667,8 @@ bound and a declared behaviour at the bound:
 | Bytes of one fetched body | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)` |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | A table's changes | One earlier row per distinct key its last writing turn wrote, or a whole-rewrite marker | Released before the next writing turn's first modifier or disposal of the holder; unrelated turns retain them, with no time bound |
-| Runtime ingress queue | 4096 occurrences and reports | A report drains a full queue early while idle; a waiting transition applies and drains; other busy overflow is `resource_limit` poison |
-| Transition batches waiting for update | 1 | Inputs queue; a full queue forces apply and drain |
+| Runtime ingress queue | 4096 entries waiting, queued while idle, and 4096 raised since the runtime last left idle: at most 8192 | An idle input at a full waiting budget drains early; at a full raised budget a waiting transition applies and drains, and other overflow is `resource_limit` poison; a drain leaves at most 4096 at idle |
+| Transition batches waiting for update | 1 | Inputs queue; a full raised budget forces apply and drain |
 | Wait for transition update | 1000 ms | Apply directly and skip animation |
 | Transition observation history | Newest 4096 records and 1 MiB encoded type bytes, absolute U64 ordinals | Evicted or oversized records fail observation only; oversized entries clear prior history; exhaustion disables observation, never app progress |
 | Live document-key handlers | 32 per instance, structurally outside rows | `contract` at mount naming the site |
@@ -4636,7 +4686,7 @@ bound and a declared behaviour at the bound:
 | Manual native-UI readiness | Live controlled nodes; per-node U64 close count or coalesced toggle mark; 20 s observation deadline | Explicit observation failure, never app poison |
 | Manual pointer log | 4096 dispatch records, taken after each input step | `resource_limit` on overflow; production retains no log |
 | Spec driver pointers | One mouse/pen gesture or up to 16 touches, without overlap between modes | Step error before input; no such limit on production pointer dispatch |
-| Turns one drain delivers | 4096 | `resource_limit` poison |
+| Turns one drain delivers for raised entries | 4096; reports that waited for their frame spend none | `resource_limit` poison |
 | Payload kinds and element properties | Closed tables with one-byte indices | Unknown wire numbers are contained as `executor` |
 | Event policies | Closed table of 32 bits | Unknown fields do not compile; unknown wire bits are contained as `executor` |
 | Monitor job history | `history` option (default 128, at most 1024) | Oldest overwritten, counted |
@@ -5275,7 +5325,11 @@ pure turn. Generated modifiers start a written table's record before its
 first modifier, and retain its first earlier row per key across the list.
 The turn rearms exactly its written table cells; unrelated tables keep their
 last writing turn's record. `read(table).inverse()` describes that retained
-turn. The existing exact write-set words select only written cell IDs through
+turn. A table read from one `Store` value and handed to a cell in a turn of
+another is a whole rewrite, even when the two values come from one store and
+the table carries the count the turn starts from: two values taken up from
+one store are two histories, and only the table a modifier received is the
+cell's own. The existing exact write-set words select only written cell IDs through
 an immutable index of generated table callbacks, built once with the store.
 A turn never scans all table descriptors, unrelated rows or change records.
 Reclaiming a written table's preceding record remains
@@ -5329,9 +5383,10 @@ know nothing of the platform.
   effect-channel model are where coverage guidance meets the engine.
 - **The settle check** is the oracle every walk shares, and the native spec
   runner applies it after every step (`Core.settled`). After a turn, a root
-  `Changed` pass that names every layer and every cell, run on a copy of the
-  instance that is then dropped, must emit no command and change nothing in
-  the effect channel. Its scratch transition collection starts empty, and
+  `Changed(Check)` pass, run on a copy of the instance that is then dropped,
+  must emit no command and change nothing in the effect channel. `Check` is a
+  pass of its own, not a mask: a turn's mask, even one with every layer and
+  every cell bit set, is never taken for it. Its scratch transition collection starts empty, and
   any newly issued request fails the check even if its types duplicate those
   already issued in the real call. That pass re-evaluates every hole and
   descends into every child whatever the read signatures say, and the sites that settle
@@ -5347,8 +5402,9 @@ know nothing of the platform.
   same pass each table view site therefore also builds its view from scratch, for
   the query and the window as they read then, and requires the one it holds
   to equal it: the ordered keys of the whole view, the window, the rows
-  drawn, the count of writes it is up to date with, and the table's changes
-  cleared. A difference fails the check with the site's path, and the pass
+  drawn, the count of writes it is up to date with, and the table rearmed
+  for its next writing turn, its changes retained. A difference fails the
+  check with the site's path, and the pass
   stops at that site, whose rows may name keys the table no longer has. This
   second check costs a rebuild of every table view at every step.
 
@@ -5405,8 +5461,8 @@ architecture are recorded here:
 - **Pinned tooling, floating compiler.** `Blueprint.roc` and its lock pin the
   scripts' Roc nightly (`roc-stable`), Zig, Node and Chrome. The platform,
   the examples and the tests are built with `roc`, the latest Roc nightly,
-  which is never pinned: each pull request answers whether the change works
-  with the compiler users install today. No platform or example file names a
+  which floats except for exact, documented compiler regressions. Each pull
+  request runs the checks with the resolved nightly. No platform or example file names a
   compiler or carries an absolute path.
 - **Roc scripts.** Automation is Roc scripts under `scripts/`; one `check`
   task runs formatting, `roc test`, every example's specs natively and in
@@ -5419,7 +5475,7 @@ architecture are recorded here:
   shows each compiles, links and runs; CI never explores. Campaigns run on
   a contributor's machine, on demand, and what they find comes back as a
   saved example every replay keeps.
-- **Releases.** A release publishes the one platform bundle (engine, Wasm
+- **Releases.** A release publishes the standalone engine package and the platform bundle (engine, Wasm
   host and runtime, and the native spec runner with its link inputs for
   Linux x86-64, macOS and Windows), `runtime.mjs`, an examples archive naming that bundle, and the
   generated API docs; `check` builds the same assets as a dry run. The shared
@@ -5441,6 +5497,7 @@ of them is platform semantics.
 
 | Issue | Defect | Effect on the engine |
 |---|---|---|
+| [roc-lang/roc#13372](https://github.com/roc-lang/roc/issues/13372) | A nested record default through an alias to a defaulted nominal hangs during Boxy lowering on `nightly-2026-11-22-3350b1c` | CI and the release workflow select `nightly-2026-11-18-a520eed` when the latest nightly is the affected November 21 or November 22 build. Newer nightlies run every check as usual. Remove the fallback after a fixed nightly passes the spec and fuzz checks |
 | [roc-lang/roc#13020](https://github.com/roc-lang/roc/issues/13020) | The development Wasm backend retains removed refcounted elements after empty and partial `List.drop_last`/`Dict.remove` results until their owner is dropped; optimized builds release them | Development builds keep a removed file-valued row alive until its table is dropped. There is no workaround in the engine: no container rebuild or host-forced release substitutes for ownership. On the verified nightlies (`nightly-2026-11-13-03dce41`, `nightly-2026-11-14-a87808d`, `nightly-2026-11-15-f25da45`) the spec suite skips the Files test app's `table-a-record-keeps-handles-until-the-next-write` and `table-d-retained-handles-count-at-the-bound` in Chrome on the development Wasm build only, printing `SKIP`, and runs them in Chrome on an `--opt=size` build instead, where they must pass; natively they always run. The skip is data in `scripts/src/CompilerSkips.roc`; any other compiler runs them, and the entries go when a nightly fixes the defect |
 | [roc-lang/roc#13056](https://github.com/roc-lang/roc/issues/13056) | Native compilation of an empty preparation catalogue whose error type is `Worker.Never` crashes in monotype lowering | The declaration-refusal fixture gives its always-succeeding empty preparation a named inhabited error type. Restore `Worker.Never` once fixed; no engine or declaration semantics change |
 | [roc-lang/roc#13005](https://github.com/roc-lang/roc/issues/13005) | A top-level annotated constant using a missing method can crash `roc check` in `boxy_lowering` instead of reporting the missing item | The table-bookkeeping rejection fixture uses the unannotated spelling and links the issue. It still requires the compiler's missing-method diagnostic; an annotated spelling may crash until the compiler is fixed |
@@ -5468,7 +5525,7 @@ of them is platform semantics.
 | [roc-lang/roc#12919](https://github.com/roc-lang/roc/issues/12919) | A format with `encode_key_start` crashes monotype lowering when a derived encoder writes a `Dict` key that is a tuple, a record or a nominal type (even one over `U64` with derived codecs); `roc check` passes. Reproduced on `nightly-2026-11-13-03dce41` and `nightly-2026-11-14-a87808d` | `WorkerCodec` declares no `encode_key_start` or `parse_key_start`, so such a key in a payload is a `roc check` error naming the missing method (fixtures `wire-record-key`, `wire-nominal-key`). Restoring the hooks once #12919 and #13057 are fixed lets these keys cross |
 | [roc-lang/roc#13002](https://github.com/roc-lang/roc/issues/13002) | Compile-time Dict and Set work can be quadratic in the default page's rows | Engine.mounts has inherent default-mount work; the compiler's extra superlinear cost remains upstream. Removing the app constant disables the check |
 | [roc-lang/roc#13092](https://github.com/roc-lang/roc/issues/13092) | The compiler expands a mutually recursive group of two or more functions that are generic in a type variable again at every other function that calls into it, so its work is the number of calling functions times the size of the group. The native spec runner is generic in the app's state, and its event loop is such a group; reached directly from fifty other functions, it made a development build of the smallest app take about 25 seconds, against 1.1 on 0.5.0 | `SpecRunner`'s event-loop functions are named `*_in_loop` and call each other by those names; every other function reaches them through a one-line wrapper of the plain name, which the compiler expands once. `change_shown_with` calls itself rather than `change_shown`, so that pair is no group. The same build takes about 9 seconds. The wrappers and the suffix go once the compiler reuses a finished group |
-| [roc-lang/roc#13080](https://github.com/roc-lang/roc/issues/13080) | `roc bump` cannot extract a package's API when an exposed method's signature names an opaque type from a module the package does not expose, though `roc check` accepts the package | The API comparison's baseline is the published 0.6.0 bundle with `WorkerCodec` added to its exposed modules in a copy, a difference the gate prints; the repair verifies the published asset's SHA-256 and fails the gate once 0.6.0 is no longer the latest release. The candidate side needs the same extraction workaround: `Wire.Sendable`'s `where` clause names the unexposed `WorkerCodec` types (roc-lang/roc#13022), so the gate compares a copy of `platform/` that also exposes `WorkerCodec`, prints that it did, and fails once the unrepaired platform extracts |
+| [roc-lang/roc#13080](https://github.com/roc-lang/roc/issues/13080) | `roc bump` cannot extract a package's API when an exposed method's signature names an opaque type from a module the package does not expose, though `roc check` accepts the package | The API comparison's baseline is the published 0.7.0 bundle with `WorkerCodec` added to its exposed modules in a copy, a difference the gate prints; the repair verifies the published asset's SHA-256 and fails the gate once 0.7.0 is no longer the latest release. The candidate side needs the same extraction workaround: `Wire.Sendable`'s `where` clause names the unexposed `WorkerCodec` types (roc-lang/roc#13022), so the gate compares a copy of `platform/` that also exposes `WorkerCodec`, prints that it did, and fails once the unrepaired platform extracts |
 | [roc-lang/roc#12953](https://github.com/roc-lang/roc/issues/12953) | Since roc-lang/roc#12887, the host boundary rejects an opaque `Box` of a value that contains functions, though it accepts the same value as `Box(Iter(...))` | The sites cross as `Box(Iter(Core.Sites(st)))` inside the one outer `Handle`, beside the plain store; `platform/main.roc` alone wraps and unwraps them. `Core.Kept` holds its task runner as a `Box` of its own |
 | [roc-lang/roc#12945](https://github.com/roc-lang/roc/issues/12945) | Under `--specialize=no`, a derived record decode leaks on every call | Worker instances grow per job in that build, so the scaling task's memory checks fail for it |
 | [roc-lang/roc#12951](https://github.com/roc-lang/roc/issues/12951) | A lambda passed to a generic function is rejected when its body uses `?` on a method of its own parameter and then `?` again | A task whose `run!` reads a file and then uses `?` again is written as a named function, not a lambda in the props record; the Workers guide says so |
@@ -5476,6 +5533,14 @@ of them is platform semantics.
 | [roc-lang/roc#12963](https://github.com/roc-lang/roc/issues/12963) | Roc has no field accessor or updater as a value | A store's storage cannot be a record the author wrote, addressed field by field. The record builder generates it as nested pairs, with a lens for each position (see [The store](#the-store)) |
 | [roc-lang/roc#12971](https://github.com/roc-lang/roc/issues/12971) | Under `--opt=size` and `--opt=speed`, a `while` loop over a `var` holding a record of two `Dict`s, which a table is, copies both on every iteration when the function holding the loop has two or more callers | Many writes to a table in one event are a fold over the keys (`List.fold`), never a loop over a `var` that holds the table |
 | [roc-lang/roc#13003](https://github.com/roc-lang/roc/issues/13003) | A `from_interpolation` rejection in a function nothing calls is not reported | `roc check` reports no rejection of a markup literal, with or without holes, in a view nothing calls or bound and never used, until something calls it. No workaround in code; the markup guide says so, and a fixture that checks a rejection calls its view |
+
+[The native mount reproducer](https://github.com/lukewilliamboswell/roc-native-macos/blob/df14a6742dfa572484614ef99bf9eac7b1e0dc74/patches/roc-compiler/README.adoc#mount-sharing)
+shows two ownership losses under optimized builds, also reproduced with
+`nightly-2026-11-22-3350b1c`. An inlined listener branch makes attribute
+mounting copy its growing command buffer. Inlined ordinary node branches
+make the child-site block copy its growing lists at each append. Core
+keeps those branches in their own functions so each append can take
+ownership. Remove the split once the reproducer scales without it.
 
 Code size is the main open cost of the architecture and is tracked against
 #12847 and #12848, with each example’s reported size beside them.

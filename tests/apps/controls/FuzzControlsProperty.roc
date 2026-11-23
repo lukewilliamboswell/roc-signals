@@ -867,6 +867,7 @@ fuzz_target = Fuzz.target_with!({
 		Fuzz.example({ name: "top-layer-openers", revision: "1", make: || { mode: 5, pad: 0, events: [8, 9, 10, 1, 11, 0, 0, 9, 1, 8, 1] } }),
 		Fuzz.example({ name: "top-layer-row-lifetimes", revision: "1", make: || { mode: 5, pad: 0, events: [13, 2, 13, 3, 2, 3, 4, 5, 2, 3, 13, 0, 1, 5, 2, 3, 11, 12] } }),
 		Fuzz.example({ name: "pointer-reports", revision: "1", make: || { mode: 4, pad: 0, events: [0, 2, 1, 4, 1, 3, 2, 0, 1, 3, 4] } }),
+		Fuzz.saved({ name: "many-sites-pad-past-range", revision: "1", bytes: [82, 70, 90, 1, 1, 21, 3, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 101, 118, 101, 110, 116, 115, 20, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 109, 111, 100, 101, 2, 1, 3, 0, 0, 0, 0, 0, 0, 0, 112, 97, 100, 8, 8, 0, 0, 0, 0, 105, 0, 0] }),
 	],
 	generator: {
 		mode: |arbitrary| {
@@ -878,7 +879,9 @@ fuzz_target = Fuzz.target_with!({
 	}.Fuzz,
 	test!: |{ mode, pad, events }| match mode {
 		0 => focus!({})
-		1 => many!(5000 + pad.to_u64())
+		# The generator gives `pad` 0; an explored input may carry any value, so
+		# it adds at most 63 sites to the declared 5000.
+		1 => many!(5000 + pad % 64)
 		2 => reference_focus!(events)
 		3 => attribute_presence!(events)
 		4 => pointer_history!(events)
