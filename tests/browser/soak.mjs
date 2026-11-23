@@ -141,23 +141,44 @@ async function open() {
 // app's commands and messages are not awaited requests, so it must also
 // stay quiet for QUIET consecutive checks (a write, then the read that
 // reports it).
+//
+// The walk fires its events faster than the browser draws frames. While a
+// marked batch waits for its view-transition update, every event it fires
+// queues against the old page (design.md, "Applied in a view
+// transition"), and once the walk ends each queued turn that marks its
+// batch waits for a frame of its own: the Reading List's walk leaves about
+// 2,600 queued events and 1,500 transitions, some 25 s of frames. So the
+// runtime has STALL_MS to make progress, the queue reaching a length below
+// any it has had during this wait, rather than STALL_MS to finish; a
+// runtime that stops draining still fails within STALL_MS, and no wait
+// exceeds CAP_MS.
 const QUIET = portsModule ? 10 : 0;
 const settle = (page) => page.evaluate(async (quiet) => {
+  const STALL_MS = 2000, CAP_MS = 120000;
   const rt = window.__rt;
-  const deadline = performance.now() + 2000;
+  const start = performance.now();
+  let least = rt.queue.length, progressed = start;
+  const expired = () => {
+    const now = performance.now();
+    if (rt.queue.length < least) { least = rt.queue.length; progressed = now; }
+    return now >= Math.min(progressed + STALL_MS, start + CAP_MS);
+  };
   let calm = 0;
   for (;;) {
-    let timer;
-    try {
-      await Promise.race([rt.idle(), new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("soak timed out waiting for transition idle")), Math.max(1, deadline - performance.now()));
-      })]);
-    } finally { clearTimeout(timer); }
+    // `idle()` is one promise shared by every transition that supersedes
+    // another, so it settles only when the queue no longer starts one.
+    for (;;) {
+      let timer;
+      const done = await Promise.race([rt.idle().then(() => true), new Promise((resolve) => { timer = setTimeout(() => resolve(false), 50); })]);
+      clearTimeout(timer);
+      if (done) break;
+      if (expired()) throw new Error(`soak timed out waiting for transition idle (${rt.queue.length} queued, ${Math.round(performance.now() - start)} ms)`);
+    }
     // A held job is not waited for: the soak runs it (`__runWork`).
     const busy = [...rt.live.values()].some((e) => e.kind === "http" || e.kind === "fetch" || e.kind === "file" || e.kind === "portcall" || (e.kind === "work" && e.running));
     calm = !busy && !rt.busy && rt.queue.length === 0 && rt.nativeEventsReady() ? calm + 1 : 0;
     if (calm > quiet) return;
-    if (performance.now() >= deadline) throw new Error("soak timed out waiting for a quiet runtime");
+    if (expired()) throw new Error(`soak timed out waiting for a quiet runtime (${rt.queue.length} queued, ${Math.round(performance.now() - start)} ms)`);
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }, QUIET);
