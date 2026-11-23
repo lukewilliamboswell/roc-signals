@@ -454,7 +454,7 @@ that row's — is the documented pattern that keeps app work local.
 
 ```mermaid
 flowchart LR
-    App["app: App.roc<br/>Elem tree of typed sites,<br/>a store of cells and tables"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, the store, each columns,<br/>tables and their table views (TableCore.roc, View.roc, Seq.roc),<br/>effects, command encoding"]
+    App["app: App.roc<br/>Elem tree of typed sites,<br/>a store of cells and tables"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, the store, each columns<br/>and their plan (Reconcile.roc),<br/>tables and their table views (TableCore.roc, View.roc, Seq.roc),<br/>effects, command encoding"]
     Engine --> Main["platform/main.roc<br/>keys · init · event · files · drop ·<br/>work · prepare · ask · forget"]
     Main --> Host["platform/host/host.zig<br/>allocator · one opaque Handle holding the store beside boxed sites, or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · dbg text · fault class"]
     Host --> Wire["command bytes in linear memory"]
@@ -472,7 +472,12 @@ flowchart LR
 
 The engine is `Core.roc`, `Sig.roc` (read signatures, exact write sets and
 the three scheduling decisions read from a write set: what a written layer's
-site does, what the root's pass carries, and how far a walk goes) and three
+site does, what the root's pass carries, and how far a walk goes),
+`FxCore.roc` (the effect channel's request lifecycle as a state machine:
+request ids, the in-flight table, the follow-up queue and the effect
+counters, and every lifecycle decision that needs no site),
+`Reconcile.roc` (the plan of an `each` site's reconciliation: which rows it
+keeps, creates, drops and moves, from positions alone) and three
 modules of its own for tables: `TableCore.roc`
 (rows by key and the changes from a turn), `View.roc` (a sorted, filtered, windowed view kept up to
 date from those changes) and `Seq.roc` (a table view's ordered keys). `Engine.roc` is
@@ -778,7 +783,16 @@ its own representation:
 Reconciliation compares the new list against the site's columns with fast
 paths for a common prefix and suffix, swapped ends, pure insertion and pure
 removal, and otherwise a keyed move planned with a longest increasing
-subsequence, so surviving rows move rather than rebuild. A row also keeps an ordered index of its currently shown dialog and popover
+subsequence, so surviving rows move rather than rebuild. The plan is made
+apart from the rows, by `Reconcile.plan`, from the two lengths, a test of
+whether an old and a new position hold one key, and a lookup of a new key's
+old position. It hands its steps (keep, create, drop, move, each with the
+place it goes before) one at a time to the site, which applies each to its
+columns as it comes, so no list of steps is built and the fast paths
+allocate nothing for the plan. Its moves are the fewest its shape allows:
+two for each pair of swapped ends, and on the general path the kept rows
+of the middle less one longest increasing run of their old positions.
+The longest run is the one a table view's window uses too (`View`). A row also keeps an ordered index of its currently shown dialog and popover
 addresses. A changed shown command updates only that address in the rows on
 its call path; hiding and disposal remove it before an id can be reused.
 The index supports direct affected-owner removal and preserves show-intent
@@ -792,6 +806,24 @@ This bookkeeping holds command addresses, never application identity.
 A kept row whose new
 item is equal to its old item is pruned; a changed item marks the row dirty and
 only its live holes that read the row layer are re-evaluated.
+
+One reconciliation emits its commands in a fixed order. First the
+structure: the `MOVE`s of swapped ends, then the rows the new list drops,
+removed in their old order (`REMOVE` each, or one `CLEAR` when the list
+empties a site that is its parent's only child), then the rows it adds and
+the kept rows that move, created and moved. Then
+the holes: each row the turn marked, in the order it was marked, has its
+marked holes re-evaluated and their changes emitted (`SETTEXT`, `ATTR`,
+`HPROP`), and its nested sites refreshed. A row created in the turn is
+drawn whole by its `INST` and is not visited again. Where rows are created
+and moved depends on the path. A pure insertion creates from the first
+new row to the last; a swap of the two ends emits two `MOVE`s; the general
+path places from the last position to the first, creating each new row,
+and moving each kept row off the longest increasing run of old positions,
+before the row placed just after it. On that path rows that enter together
+are therefore created, and the requests their effect sites issue at mount
+are issued, from the last to the first, the reverse of a mount, a pure
+insertion and a table view.
 
 That comparison is linear in the list and needs the list from before, which
 is right for a list that is small or computed: the options of a select, the
@@ -926,10 +958,12 @@ keeps, in the query's order, and of those only the rows inside a window.
   nodes and anything nested in it, and one whose row was written is marked,
   so its holes that read the row are re-evaluated and pruned there. No list
   of rows is built, kept or compared, and the commands are the ones an
-  `each` site emits. Rows that enter in one turn are created from the first
-  to the last, each before the next row that stays put, as `each` and a
-  mount create them. For rows that own requests that is the order the
-  requests are issued in, and so which are refused at the in-flight bound.
+  `each` site emits. Every row that left is removed
+  first, then rows that entered and rows that moved are created and moved
+  from the first to the last, each before the next row that stays put, as
+  a mount creates them, and then the marked rows' holes are refreshed. For
+  rows that own requests that is the order the requests are issued in, and
+  so which are refused at the in-flight bound.
 - **Rows are found by the typed key.** The site indexes its rows by the
   table's key, through the key's own equality and hash. It never makes a
   text of a key to find a row: an inspected value is a debugging
@@ -1287,7 +1321,7 @@ Rules:
 | Move an item between `each` sites | Dispose at the old site, create at the new | No cross-site transfer |
 | Write a row of a table | Preserve the row in every view whose window holds it before and after; re-evaluate its holes that read the row | Update only changed holes; move its nodes if its place changed |
 | A row leaves a table view's window (a scroll, a change of query, a move past the window's edge, removal from the table) | Dispose the row's sites, as for a removed key; its admitted requests reparent to the table view site. The table's row is untouched | Remove its node |
-| A row enters a table view's window | A new row lifetime. Rows that enter in one turn are created from the first to the last, as an `each` site creates them | Build new structure |
+| A row enters a table view's window | A new row lifetime. Rows that enter in one turn are created from the first to the last, as a mount creates them | Build new structure |
 | One event writes two of a table view's table, query and window | A row in the window before the event and after it is preserved; no row is created that the event does not leave drawn | One change of the rows drawn: move, remove and insert as the window after the event requires |
 | Change a table view's query, or rewrite its table whole | Rows in the window before and after are preserved; the rest leave or enter | Move, remove and insert as the new window requires |
 | Switch a branch or case | Dispose the departing branch; ancestors survive | Mount the selected branch |
@@ -2923,8 +2957,10 @@ are all of that kind.
 
 ### Ids, results and staleness
 
-- Awaited ids are instance-wide, issued in order from 1. Follow-up ids are a
-  separate internal space and never appear on the wire.
+- Awaited ids are instance-wide, issued in order from 1, and a refused
+  request takes the next one too. `Self` follow-up ids are a separate
+  internal space and never appear on the wire. Neither is reused; what
+  happens when they run out is in [Boundedness](#boundedness).
 - A result enters exactly as a DOM event does: one turn on the reserved effect
   node `0xffffffff` with the id as handler number, firing down the owning
   site's path, where the reaction runs with the issued-for value, followed by
@@ -2941,7 +2977,11 @@ are all of that kind.
   `FileFailed(reason)`, `Copied`, `ClipboardFailed(NotAllowed | Unavailable)`,
   `StorageFailed({ store, key, reason })`, `PortAnswer(message)` and `PortFailed(Threw(text) |
   TooLarge | Closed)`. A subscription ends at its first `Threw` or `Closed`,
-  which retires its id like a cancel; `TooLarge` reports one message and the
+  which retires its id: the id leaves the in-flight table as a cancelled
+  one does and a later message for it is stale, but the engine emits no
+  `CANCEL`, since the page's JavaScript already ended it, and the message
+  is delivered to the reaction and counted `delivered`, not `cancelled`
+  (see [Counters](#counters)). `TooLarge` reports one message and the
   subscription goes on. `WorkRefused(TooDeep | NanKeys)` and
   `PortRefused(TooDeep)` are engine-local and never on the wire: a request
   whose payload the engine will not write is refused without being admitted
@@ -3092,7 +3132,13 @@ inference:
   still queued for it is dropped and counts `stale`. A late answer for a
   cancelled id is then stale like any other. A `plan` that returns `[]` makes a
   change a pure cancel. Disposal keeps the per-kind rules above: supersession
-  is about a value being replaced, disposal about an owner going away.
+  is about a value being replaced, disposal about an owner going away. So
+  the site owns only its current value's requests for one lifetime of the
+  site. A kept request (`Http`, a port call, a job of a task that says
+  `on_dispose: Keep`) of a disposed `watch_latest` is an orphan of the
+  nearest surviving ancestor, and its answer runs the reaction there even
+  after a `watch_latest` mounted again in its place has issued for a newer
+  value: the new site is a new scope, which neither owns nor cancels it.
 - **`keep_current(v, plan, react)`** issues at mount and each unequal value,
   keeping every request while delivering readers and reactions only for the
   latest issuing step. Every request of that step is eligible. An empty or
@@ -3106,8 +3152,13 @@ inference:
   passed environment, to equal its issued-for value. The check captures no
   environment or store; retired local reads use the existing snapshot and
   writes to retired state remain skipped. A remount is a new scope, not a
-  generation shared with the orphan. Existing cancellation, refusal, retirement
-  and reparenting rules remain in force.
+  generation shared with the orphan. This is intended: after a dispose and
+  a remount, an eligible orphan and the remounted site can both answer, the
+  orphan's reaction at the ancestor while the ancestor's signal still equals
+  the value it was issued for, and the new site's for the requests it
+  issued at its own mount. Neither withholds the other's; a reaction that
+  must apply one answer only decides that from what it reads. Existing
+  cancellation, refusal, retirement and reparenting rules remain in force.
   The site's index contains only outstanding ids from its current step,
   including queued follow-ups and refusals. Final delivery removes an id;
   progress retains it. Lookup is expected O(1). The pinned Dict retains bucket
@@ -3173,6 +3224,61 @@ effect-channel fuzz model asserts all of them exactly after every step.
 `effects_progress` separately counts delivered transfer reports (index 47),
 including those a `keep_current` site withholds from an older step, and
 excluding replaced reports; they do not increment `effects_delivered`.
+
+The counters keep one law, true after every host call, when the follow-up
+queue is empty:
+
+- **Every request id is issued or refused.** A request either takes a slot
+  in the in-flight table, with one `FX`, and counts `issued`, or is refused
+  without being admitted and counts `refused`: at the in-flight cap, and
+  the engine-local refusals (`WorkRefused`, `PortRefused`, a crypto request
+  the engine rejects before any work). A refused request takes an id but no
+  slot, sends nothing and has its result queued as a follow-up. So the id
+  the next request takes is `issued + refused + 1`. A `Self` follow-up
+  takes an id of the follow-up space and counts in neither.
+- **Every issued request is live, cancelled or retired.** `issued = live +
+  cancelled + retired`, where `live` is the gauge and *retired* is the
+  number of results that took an id out of the table: the final result of
+  a one-shot request, and the `Closed` or `Threw` that ends a port
+  subscription. A subscription its JavaScript ended leaves the table with
+  no `CANCEL` and is not counted `cancelled`; only disposal and
+  supersession cancel. Tearing down the instance counts nothing.
+- **Everything that arrives at a site is counted once.** A result, a
+  subscription message, a transfer report and a follow-up turn (a refusal
+  or a `Self`) count `delivered` when they reach a site that holds their id
+  (an orphan's adoptive ancestor included, and a result a `keep_current`
+  site or a view row's orphan does not run), `effects_progress` for a
+  delivered transfer report, and otherwise `stale`. `stale` is therefore
+  late results (an id never issued, already retired, cancelled or purged),
+  results and reports that reach a site that does not hold their id, and
+  follow-ups dropped by supersession or disposal before their turn. It
+  also counts each focus or scroll command whose reference names no live
+  element when the turn ends, which has no id. Each refusal is thus counted
+  once in `delivered` or `stale`, and so is each retirement.
+- **`reparented` counts adoptions, not requests.** Each time a surviving
+  site takes an orphan over it counts one; an orphan whose adoptive
+  ancestor is disposed in turn is adopted again and counted again, and it
+  stays in the table, and in `live`, until its result. `skipped` counts
+  writes an orphan's reaction made to retired state, and the runs of a
+  view row's orphan whose key has left the table.
+
+Since a message a subscription goes on after is not retired and a `Self`
+follow-up is never issued, `delivered + stale ≥ refused + (issued − live −
+cancelled)` is the law in the counters alone; the effect-channel fuzz model,
+which knows each arrival, holds every counter exactly. The law is checked
+as a stated rule beside that equality, after every call, by the
+effect-channel target's nested-scope model and by `fuzz/fx-core`.
+
+Which of these a request's life decides without a site is one state
+machine, `FxCore`: the id a request takes, whether the cap admits or
+refuses it, which path a result is routed to and whether it retires its
+id, what giving up an id found (a request in flight, now cancelled, or a
+queued follow-up, now dropped), an adoption, and which follow-up the drain
+runs next at what depth, or that a bound stops it. Each decision is
+returned once, so no caller recomputes it. The typed parts stay with the
+sites in `Core`: the issued-for values and readers, the orphans and their
+lowering through retired layers, whether a kind is kept or scoped, the
+`FX` and `CANCEL` bytes, and the crash text of a bound.
 
 ### Observation
 
@@ -4625,6 +4731,8 @@ bound and a declared behaviour at the bound:
 | Resource | Bound | At the bound |
 |---|---|---|
 | Awaited requests in flight | 32 (per-program setting) | Typed `Refused` follow-up |
+| An admitted request kept past its owner, with no timeout (an `Http` or port call with `Unlimited`, a kept job without one) | Its in-flight slot, until its result arrives or the instance is torn down | Nothing retires it: it holds the slot, and its orphan's snapshot, for as long as no result comes |
+| Request ids, issued and refused together | U32, from 1, never reused; `Self` follow-up ids are U32 from 2³¹ | No declared bound. From the 2³¹st request, request ids lie in the follow-up space, where a request and a `Self` follow-up can share an id and the follow-up chain's depth is misjudged; when either counter would pass 2³² − 1 its increment overflows and the instance traps (`app_crash`), with no diagnostic naming the bound |
 | Follow-up chain depth per host call | 64 | `contract` poison |
 | Follow-up turns of depth 1 per host call | One for each request the external turn issued past the in-flight cap, and one for each `Self` it asked for | All run |
 | Follow-up turns of depth 2 or more per host call | 64 per in-flight slot, at least 4096 | `resource_limit` poison |
@@ -5304,7 +5412,7 @@ metric: soak plateaus assert it.
 | `dirty_source_roots` | What a turn wrote: one for each cell, and one for each layer when its readers are refreshed, whether its site started the pass, joined it or was reached by the walk after it (a layer disposed before then counts none; a `resource` answer that folds to an equal value writes none, and a decision that returns no write counts nothing) |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
 | `effects_progress` | Delivered transfer reports, including those withheld by `keep_current`, excluding replacements; the request remains in flight and the final-delivery counter is unchanged |
-| `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters"): awaited requests issued (one `FX` each), results delivered to their site (including withheld keep_current results), stale results dropped, requests refused at the in-flight cap, requests cancelled (one `CANCEL` each), requests reparented to a surviving ancestor, and reparented writes skipped because their state was retired |
+| `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters", which states the law they keep): awaited requests issued (one `FX` each); results, subscription messages and follow-ups delivered to a site that holds their id (including withheld keep_current results); stale results, dropped follow-ups and unresolved reference commands; requests refused without being admitted (at the in-flight cap, and the engine-local refusals); requests cancelled (one `CANCEL` each); adoptions of an orphan by a surviving ancestor; and reparented writes skipped because their state was retired |
 | `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it, and `PROP`/`HPROP` whose row claims an attribute; natively from the oracle, in Chrome from a MutationObserver of the mirrored attributes |
 | `expect-interval ms n` | Live `INTERVAL` subscriptions with period `ms` |
 | `tick-interval ms` | Deliver `Fired(current_clock)` to every live interval with period `ms`; a step with none live fails. `tick-interval-if-active` is a no-op when none is live |
@@ -5364,6 +5472,73 @@ know nothing of the platform.
   sites checked against whether any live guard reads true, and the
   spec, wire and port formats. Their oracles, not their inputs, carry the
   value.
+- **The effect channel** (`tests/apps/effects/fuzz-channel.roc`) drives
+  issue, supersede, dispose, reparent, deliver, refuse, cancel and stale
+  results over timers, HTTP requests, worker jobs, port calls and
+  subscriptions, a gather's jobs and an outbox's posts, from a host that
+  answers any id. After every step the effect commands, the counters and
+  the ids in flight must equal its model's. A second model runs the same
+  bytes over effect sites in nested scopes, the shape the lifecycle's rules
+  are hardest on: a `when` holding a state, an effect site and a nested
+  `when` with a state and an effect site of its own, beside a sibling
+  scope. The bytes choose each site's policy (`watch`, `watch_latest`,
+  `keep_current`) and which state its reaction writes (its own scope's, an
+  enclosing one's or the root's). That model knows nothing of the engine's
+  paths, owned lists or table: it numbers ids itself and records each
+  request's scope, mount, issuing step, kind and holder, and the engine's
+  commands, counters, ids in flight and states shown must equal its own.
+  It requires that an orphan is a kept request, that a scoped request of a
+  disposed site is cancelled and its late result stale, that an orphan's
+  write to a state its scope's disposal retired is skipped and counted and
+  never reaches a state mounted again in its place, that what a
+  `watch_latest` site gave up is cancelled, that a live `watch_latest`
+  site holds only requests of its current value and its own mount, and the
+  counter law ([Counters](#counters)) after every call.
+- **Pure cores** have targets of their own with no engine in the loop,
+  built in the `FuzzSyntax.roc` suite. Each core is a module that shares
+  nothing with the sites, so its target calls it directly with inputs no
+  app would reach:
+  - `fuzz/masks` holds `Sig`'s read signatures and write sets to exact
+    sets, at indices spanning five words, so every operation meets indices
+    of 64 and more and indices 64 apart: a mask never drops a read at any
+    index, a site never strips a bit an ancestor shares, and `fold_cells`
+    visits exactly the cells written.
+  - `fuzz/table-changes` holds a table's changes to a model of what they
+    must say, over pure turns (`Store.after`) of branching histories, in
+    which two values of one store share their cells' identities and can
+    reach one count with different rows: after every turn the changes
+    name exactly the keys the turn wrote, each with its row when the turn
+    began, or say that the turn rewrote the table whole; `inverse`
+    restores the turn's start; and a view of the earlier value followed to
+    the new one equals a view built from scratch.
+  - `fuzz/view-follow` holds a table view kept from those changes to a
+    filter, a sort and a slice of a plain list, with its ordered keys in
+    chunks small enough that a session splits and merges them: after
+    every turn the ordered keys, the window and the rows drawn are the
+    model's, reached in one change, the rows entered and left are exactly
+    those the window gained and lost, the moves are the rows off one
+    longest run that kept its order, and absorbing places at most two rows
+    for each written key.
+  - Both table targets also replay fixed histories whose every turn
+    states its outcome, written as Roc values beside the target
+    (`ChangeVectors.roc`, `FollowVectors.roc`): a top-level `expect` holds
+    the target's model to them, and its fixed examples hold the real code
+    (`TableCore`, the generated modifier and `View`, and a table view
+    site's change of its drawn rows) to them, so `fuzz-smoke` replays them
+    too.
+  - `fuzz/fx-core` holds `FxCore`'s request lifecycle to a model that
+    numbers ids itself and tags each follow-up with its chain depth, from
+    an adversarial host: the cap and refusal exactly at it, each id's fate,
+    routing (an old answer never reaches a new request), the counter law,
+    and the follow-up depth and breadth bounds.
+  - `fuzz/reconcile` makes a new list of keys from an old one, up to
+    thousands of rows, by edits that reach every path of `Reconcile`'s
+    plan, and applies the plan's steps to the old rows with a model that
+    knows nothing of how they were planned: the steps must leave the new
+    list with each row where its step put it, keep exactly the keys in
+    both, create and drop the rest once each, drop in old order before
+    placing, move no more rows than the plan's shape needs, and refuse a
+    repeated key or create it where the site's key index refuses it.
 - **Walks.** The native spec runner walks an app (`RUNNER --walk STEPS
   --seed N FILE.scm...`) from a fresh mount, mounted as the first spec's
   setup: each step is a user event on a live control (chosen from the live
@@ -5554,8 +5729,8 @@ In-place writes of large values in shipping builds are tracked against
 ## Measures of Effectiveness
 
 1. **One engine, thin host.** All reactive and structural logic is in the
-   engine's Roc modules (`Core.roc`, with `Sig.roc`, `TableCore.roc`,
-   `View.roc` and `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
+   engine's Roc modules (`Core.roc`, with `Sig.roc`, `FxCore.roc`,
+   `Reconcile.roc`, `TableCore.roc`, `View.roc` and `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
    *Holds when:* the same engine runs in the browser module and the native spec runner with
    the same command stream.
 2. **App semantics agree natively and in the browser.** Every maintained app's
