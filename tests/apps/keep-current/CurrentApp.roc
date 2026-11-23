@@ -35,6 +35,18 @@ CurrentApp := [].{
 		{ ..s, question: if (asked.text == "redirect") "after" else s.question, answers: s.answers.append("${asked.text}:${answer}") }
 	}
 
+	## The local count after one of its results: an answer advances it,
+	## which asks again; a failure leaves it. Advancing on a failure too
+	## would be a feedback loop, since the in-flight cap answers `Refused`
+	## in a follow-up turn of the same call: with the table full of the
+	## requests this site keeps, each refusal would ask again and be
+	## refused again.
+	local_answered : U64, U64, Try(Str, Engine.HttpError) -> U64
+	local_answered = |value, _, result| match result {
+		Ok(_) => value + 1
+		Err(_) => value
+	}
+
 	local_view : {} -> Elem(ctx)
 	local_view = |_| Engine.state(
 		1.U64,
@@ -43,7 +55,7 @@ CurrentApp := [].{
 			[
 				Html.button("Advance local", [], local.update(|n| n + 1)),
 				Html.p_s(local.signal().map(|n| n.to_str()), [Engine.test_id("local-value")]),
-				Engine.keep_current(local.signal(), |value| [Engine.http_body({ url: "/current/local/${value.to_str()}" })], local.on_result(|value, _, _| value + 1)),
+				Engine.keep_current(local.signal(), |value| [Engine.http_body({ url: "/current/local/${value.to_str()}" })], local.on_result(CurrentApp.local_answered)),
 			],
 		),
 	)
