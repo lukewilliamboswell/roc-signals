@@ -30,6 +30,7 @@ Targets := [].{
 		{ name: "markup", main: "fuzz/markup/main.roc", property: "fuzz/markup/FuzzMarkupProperty.roc", suite: "FuzzRendering.roc" },
 		{ name: "startup-placeholders", main: "fuzz/startup-placeholders/main.roc", property: "fuzz/startup-placeholders/FuzzStartupPlaceholdersProperty.roc", suite: "FuzzLifecycle.roc" },
 		{ name: "table-view", main: "fuzz/table-view/main.roc", property: "fuzz/table-view/FuzzTableViewProperty.roc", suite: "FuzzLifecycle.roc" },
+		{ name: "masks", main: "fuzz/masks/main.roc", property: "fuzz/masks/FuzzMasksProperty.roc", suite: "FuzzSyntax.roc" },
 		{ name: "result-readers", main: "fuzz/result-readers/main.roc", property: "fuzz/result-readers/FuzzResultReadersProperty.roc", suite: "FuzzCodecs.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc", property: "fuzz/port-json/FuzzPortJsonProperty.roc", suite: "FuzzCodecs.roc" },
 		{ name: "url", main: "fuzz/url/main.roc", property: "fuzz/url/FuzzUrlProperty.roc", suite: "FuzzSyntax.roc" },
@@ -47,6 +48,10 @@ Targets := [].{
 		{ name: "csv-converter", main: "examples/csv-converter/fuzz-csv.roc", property: "examples/csv-converter/FuzzCsvConverterProperty.roc", suite: "FuzzExampleText.roc" },
 		{ name: "log-explorer", main: "examples/log-explorer/fuzz-index.roc", property: "examples/log-explorer/FuzzLogExplorerProperty.roc", suite: "FuzzExampleData.roc" },
 		{ name: "log-scroll-map", main: "examples/log-explorer/fuzz-scroll-map.roc", property: "examples/log-explorer/FuzzLogScrollMapProperty.roc", suite: "FuzzExampleData.roc" },
+		{ name: "table-changes", main: "fuzz/table-changes/main.roc", property: "fuzz/table-changes/FuzzTableChangesProperty.roc", suite: "FuzzSyntax.roc" },
+		{ name: "view-follow", main: "fuzz/view-follow/main.roc", property: "fuzz/view-follow/FuzzViewFollowProperty.roc", suite: "FuzzSyntax.roc" },
+		{ name: "fx-core", main: "fuzz/fx-core/main.roc", property: "fuzz/fx-core/FuzzFxCoreProperty.roc", suite: "FuzzSyntax.roc" },
+		{ name: "reconcile", main: "fuzz/reconcile/main.roc", property: "fuzz/reconcile/FuzzReconcileProperty.roc", suite: "FuzzSyntax.roc" },
 		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc", property: "examples/million-row-explorer/FuzzMillionRowExplorerAggregatesProperty.roc", suite: "FuzzExampleData.roc" },
 	]
 

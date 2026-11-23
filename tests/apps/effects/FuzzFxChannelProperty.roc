@@ -6,6 +6,7 @@ import pf.Scm
 import pf.SpecRunner
 import FxApp
 import CurrentModel
+import NestedModel
 
 ## The engine and the oracle's DOM, driven through the engine directly.
 S : { eng : Core.App({}), dom : Dom.Model, steps : U64 }
@@ -1074,6 +1075,7 @@ test! = |{ mode, program }| {
 		run_persistence(program)
 		run_progress(program)
 		CurrentModel.run(program)
+		_ = NestedModel.run(program)
 		Fuzz.keep
 	}
 }
@@ -1144,6 +1146,14 @@ fuzz_target = Fuzz.target_with!({
 		# first, then post past the bound: the refusal reaches the log with
 		# its item
 		ex("post", 1, [1, 0, 1, 1, 12, 0, 12, 0, 12, 0, 2, 13, 2, 12, 12, 0, 12, 0, 12, 0, 12, 0, 12, 0, 12, 0]),
+		# Nested scopes (NestedModel): an orphan of B handed up to A's `when`
+		# when A is hidden, whose answer is a skipped write to B's state
+		ex("nested-readopted-orphan", 1, [3, 0, 0, 0, 4, 1, 1, 1, 0, 2, 0]),
+		# watch_latest supersedes a kept request and a subscription, then
+		# its disposal keeps the kept one and cancels the subscription
+		ex("nested-latest", 1, [3, 13, 11, 0, 12, 0, 12, 1, 0, 2, 0]),
+		# keep_current: an older step's answer does not run, a current orphan does
+		ex("nested-current", 1, [3, 26, 0, 0, 3, 0, 3, 2, 0, 1, 0, 2, 0]),
 	],
 	generator: { mode: Fuzz.constant(1), program: Fuzz.list(Fuzz.u8, 64) }.Fuzz,
 	test!,
