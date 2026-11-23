@@ -2189,9 +2189,12 @@ Core := [].{
 	## owns only the requests of its current value. Before it issues for a new
 	## value it cancels every awaited request it still holds from earlier values
 	## (`CANCEL`, counted `cancelled`), whatever its kind, and drops their queued
-	## follow-ups and refusals (counted `stale`), so a late answer for an earlier
-	## value never reaches `react`. A `plan` that returns `[]` makes a change a
-	## pure cancel. Disposal follows `watch`'s rules.
+	## follow-ups and refusals (counted `stale`), so within one lifetime of the
+	## site a late answer for an earlier value never reaches `react`. A `plan`
+	## that returns `[]` makes a change a pure cancel. Disposal follows
+	## `watch`'s rules: a kept request becomes an orphan of the nearest
+	## surviving ancestor, whose reaction its answer still runs after a site
+	## mounted again in this one's place has issued for a newer value.
 	watch_latest : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	watch_latest = |v, plan, react| Site(
@@ -9801,12 +9804,20 @@ effect_deliver = |cfg, last, owned, env, id, res, tx| {
 # Supersession (design.md, "Supersession and asynchronous layers").
 #
 # A `watch_latest` or `resource` site owns only the requests of its current
-# value. Before it issues for a new value it gives up everything it still
-# owns: an awaited request still in flight, of any kind, is stopped
-# (CANCEL id), leaves the in-flight table and counts `cancelled`, so its
-# late result is stale like any other; a follow-up still queued for it (a
-# `Self` or a refusal) is dropped and counts `stale`. Owned entries already
-# answered are not in either table and cost nothing. The work is
+# value, for one lifetime of the site. Before it issues for a new value it
+# gives up everything it still owns: an awaited request still in flight, of
+# any kind, is stopped (CANCEL id), leaves the in-flight table and counts
+# `cancelled`, so its late result is stale like any other; a follow-up still
+# queued for it (a `Self` or a refusal) is dropped and counts `stale`
+# (`FxCore.give_up` decides which). Owned entries already answered are not
+# in either table and cost nothing. Supersession never reaches past the
+# site's own lifetime: disposal applies the per-kind rules instead, so a
+# kept request of a disposed site is an orphan of the nearest surviving
+# ancestor, and a site mounted again in its place is a new scope that
+# neither owns nor gives it up, though its answer may arrive after the new
+# site has issued for a newer value. The effect-channel target's nested
+# model holds both rules (`supersededNeverRuns`, `latestOwnsOnlyCurrent`)
+# against the engine's commands, counters and ids in flight. The work is
 # O(owned x in-flight) in the in-flight table, bounded by the in-flight
 # cap, and an expected O(1) lookup per owned id in the follow-ups waiting
 # (`FollowUps`), whose number follows the app's data instead.

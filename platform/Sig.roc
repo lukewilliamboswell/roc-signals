@@ -145,6 +145,7 @@ Sig :: [].{
 	}
 
 	## The `total` store cells from `first`: what a write of a group names.
+	## O(total) unions, each over the words the span reaches.
 	cells_span : U64, U64 -> Wrote
 	cells_span = |first, total| {
 		var $set = Sig.none
@@ -160,7 +161,9 @@ Sig :: [].{
 	is_empty : Wrote -> Bool
 	is_empty = |a| a.lo == 0 and a.cells == 0 and a.hi.is_empty() and a.more.is_empty()
 
-	## The union of two sets.
+	## The union of two sets, in canonical form when both are: a word past
+	## the first is the bitwise or of the two, so no trailing zero word is
+	## made.
 	union : Wrote, Wrote -> Wrote
 	union = |a, b| { lo: a.lo.bitwise_or(b.lo), hi: words_or(a.hi, b.hi), cells: a.cells.bitwise_or(b.cells), more: words_or(a.more, b.more) }
 
