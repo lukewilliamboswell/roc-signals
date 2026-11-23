@@ -78,7 +78,7 @@ ApiDocs := [].{
 		response : Response
 		response = Http.send!(with_token, {})?
 		published = ApiDocs.published_release({ status: response.status(), body: response.body() })?
-		bundle = match published.assets.keep_if(|asset| asset.name.ends_with(".tar.zst") and !asset.name.starts_with("signals-")) {
+		bundle = match published.assets.keep_if(|asset| ApiDocs.is_platform_bundle(asset.name)) {
 			[asset] => asset.browser_download_url
 			_ => return Err(AmbiguousPublishedPlatform(published.tag_name))
 		}
@@ -197,6 +197,12 @@ ApiDocs := [].{
 			edits: ApiDocs.candidate_repair.edits,
 		},
 	]
+
+	## The web platform uses Roc's bare hash filename. The CLI and engine
+	## each have their own prefixed bundle in the same release.
+	is_platform_bundle : Str -> Bool
+	is_platform_bundle = |name|
+		name.ends_with(".tar.zst") and !name.starts_with("signals-") and !name.starts_with("engine-")
 
 	## Which baseline the latest release gives: its bundle as published, or
 	## its one reviewed repair. A repair kept for any other release is an
@@ -529,3 +535,5 @@ expect {
 	good = "<h3 id=\"x\">Engine.Program.with_ports<a class=\"anchor\" href=\"#x\">§</a></h3><p>Declare ports.</p>"
 	{ present: ApiDocs.has_inherited_comment(good, "Engine.Program.with_ports"), followed: ApiDocs.has_inherited_comment("${good}${good.replace_each("with_ports", "with_workers")}", "Engine.Program.with_ports"), missing: ApiDocs.has_inherited_comment(good, "Engine.Program.with_workers"), neighbour: ApiDocs.has_inherited_comment("<h3 id=\"x\">Engine.Program.with_ports<a class=\"anchor\" href=\"#x\">§</a></h3>\n".concat(good.replace_each("with_ports", "with_workers")), "Engine.Program.with_ports") } == { present: True, followed: True, missing: False, neighbour: False }
 }
+
+expect ["hash.tar.zst", "engine-enginehash.tar.zst", "signals-toolhash.tar.zst", "runtime.mjs"].keep_if(ApiDocs.is_platform_bundle) == ["hash.tar.zst"]

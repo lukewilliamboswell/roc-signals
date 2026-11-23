@@ -1,0 +1,2 @@
+## The pure Roc engine for platform authors. See EngineHost for the host contract.
+package [Engine, EngineHost, Layout, Port, PortJson, Web, Wire, Worker] { cbor: "https://github.com/lukewilliamboswell/roc-cbor/releases/download/0.6.3/J3xX4n61WoMZKK3tdWTnZBdKaVbi8SvXvmtC5i3qDAER.tar.zst", parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/6.0.0-rc.5/822J9njyNR1vgyX1KG4ck496dBx3AnLfvn2zHXn15Ksw.tar.zst" }

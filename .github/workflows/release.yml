@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release, such as 0.3.0"
+        description: "Version to release, such as 0.8.0-rc1"
         type: string
         required: true
 
@@ -36,7 +36,17 @@ jobs:
       - id: nightly
         env:
           GH_TOKEN: ${{ github.token }}
-        run: echo "tag=$(gh api repos/roc-lang/nightlies/releases/latest --jq .tag_name)" >> "$GITHUB_OUTPUT"
+        run: |
+          nightly=$(gh api repos/roc-lang/nightlies/releases/latest --jq .tag_name)
+          # TODO https://github.com/roc-lang/roc/issues/13372: remove this
+          # fallback when the nightly lowers nested record defaults again.
+          case "$nightly" in
+            nightly-2026-11-21-09f4dc3|nightly-2026-11-22-3350b1c)
+              echo "::warning::Roc $nightly hangs on nested record defaults (roc#13372). Testing on nightly-2026-11-18-a520eed."
+              nightly=nightly-2026-11-18-a520eed
+              ;;
+          esac
+          echo "tag=$nightly" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build
@@ -98,6 +108,10 @@ jobs:
           if gh release view "$VERSION" -R "$REPO" >/dev/null 2>&1; then
             echo "release $VERSION already exists"; exit 1
           fi
-          gh release create "$VERSION" -R "$REPO" --draft --target "$TARGET" \
+          release_flags=()
+          if [[ "$VERSION" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$VERSION" -R "$REPO" --draft "${release_flags[@]}" --target "$TARGET" \
             --title "Roc Signals $VERSION" --notes-file candidate/release-notes.md \
             candidate/*.tar.zst candidate/*.mjs candidate/*.zip candidate/signals.roc

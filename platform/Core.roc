@@ -5347,73 +5347,90 @@ mount_elem : Block(ctx), ctx, Elem(ctx), Elem(ctx), U64, List(U32), U32, U32, Bo
 mount_elem = |block, env, root_elem, elem, depth, path, parent, before, top, sole, scope, tx| {
 	at = if (top) before else 0
 	match elem {
-		Element(authored, attrs, kids) => {
-			tag = resolve_element(authored.name, scope.enclosing)
-			container = checked_container(tag, authored.container)
-			children_context = child_enclosing(scope.enclosing, { name: tag, site: path, placement: "", describe: || static_element_place(root_elem, block.nodes.len(), elem) })
-			check_element_attrs(attrs, tag, "", path, || static_element_place(root_elem, block.nodes.len(), elem))
-			if tx.fx.startup.pending {
-				problem = initial_attribute_problem(tag, attrs)
-				if !problem.is_empty() {
-					crash "contract: ${problem} at site ${show_path(path)}"
-				}
-			}
-			if tx.fx.startup.adopting {
-				problem = cold_element_problem(tag, attrs)
-				if !problem.is_empty() {
-					crash "contract: ${problem} at site ${show_path(path)}"
-				}
-			}
-			(id, tx1) = alloc_id(tx)
-			tx2 = emit_op(tx1, 8, |c| put_element_name(put_u32(put_u32(put_u32(c, id), parent), at), tag).append(container))
-			var $b = add_node(block, id, top)
-			var $t = tx2
-			value_control = declares_value(attrs)
-			for attr in attrs {
-				(b2, t2) = mount_attr($b, env, attr, id, path, value_control, tag, $t)
-				$b = b2
-				$t = t2
-			}
-			kid_sole = kids.len() == 1
-			for kid in kids {
-				(b3, t3) = mount_elem($b, env, root_elem, kid, depth, path, id, 0, False, kid_sole, { ..scope, enclosing: children_context }, $t)
-				$b = b3
-				$t = t3
-			}
-			($b, $t)
-		}
+		Element(authored, attrs, kids) => mount_element(block, env, root_elem, elem, authored, attrs, kids, depth, path, parent, at, top, scope, tx)
 		Placed(allowed, child) => {
 			check_parent(allowed, scope.enclosing, path)
 			mount_elem(block, env, root_elem, child, depth, path, parent, before, top, sole, scope, tx)
 		}
-		Comment(value) => {
-			check_construction_text(scope.enclosing.construction, { value: "", site: path, placement: " (comment)" })
-			(id, tx1) = alloc_id(tx)
-			tx2 = emit_op(tx1, 26, |commands| put_str(put_u32(put_u32(put_u32(commands, id), parent), at), value))
-			(add_node(block, id, top), tx2)
-		}
+		Comment(value) => mount_comment(block, value, path, parent, at, top, scope, tx)
 		Fragment(children) => children.fold((block, tx), |(held, acc), child| mount_elem(held, env, root_elem, child, depth, path, parent, at, top, sole and children.len() == 1, scope, acc))
-		Text(s) => {
-			check_construction_text(scope.enclosing.construction, { value: s, site: path, placement: "" })
-			(id, tx1) = alloc_id(tx)
-			tx2 = emit_op(tx1, 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
-			(add_node(block, id, top), tx2)
-		}
-		TextV(v) => {
-			check_text_hole(scope.enclosing.construction, { varies: eff_mask(v) != 0, site: path, placement: "" })
-			(id, tx1) = alloc_id(tx)
-			read = checked_text_read(v.read, { context: scope.enclosing.construction, site: path, placement: "" })
-			s = read(env)
-			tx2 = emit_op(count_evals(tx1, 1), 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
-			b1 = add_node(block, id, top)
-			(add_hole(b1, { node: id, mask: eff_mask(v), attr: NoAttribute, reference: NotReference, property: 0, read: |context| Present(read(context)), last: Present(s), dirty: False }), tx2)
-		}
+		Text(s) => mount_text(block, s, path, parent, at, top, scope, tx)
+		TextV(v) => mount_text_v(block, env, v, path, parent, at, top, scope, tx)
 		Site(Mount(mount), _) => {
 			k = block.children.len().to_u32_wrap()
 			(inst, reads, tx1) = mount(env, { depth, path: path.append(k), parent, before: at, sole: sole and !top, cap: scope.cap, enclosing: scope.enclosing }, tx)
 			(add_child(block, inst, reads, top), tx1)
 		}
 	}
+}
+
+## The static node kinds mount in functions of their own, keeping
+## `mount_elem` small: with them inline, the compiler's optimized builds
+## (including nightly-2026-11-22-3350b1c) handed `mount_elem` its block shared, so each dynamic
+## site appended to a copy of the block's child lists and mounting grew
+## quadratically with the sites in one block.
+mount_element : Block(ctx), ctx, Elem(ctx), Elem(ctx), { name : Web.Tag, container : [Children, TemplateContent] }, List(Attr(ctx)), List(Elem(ctx)), U64, List(U32), U32, U32, Bool, Scope, Tx -> (Block(ctx), Tx)
+mount_element = |block, env, root_elem, elem, authored, attrs, kids, depth, path, parent, at, top, scope, tx| {
+	tag = resolve_element(authored.name, scope.enclosing)
+	container = checked_container(tag, authored.container)
+	children_context = child_enclosing(scope.enclosing, { name: tag, site: path, placement: "", describe: || static_element_place(root_elem, block.nodes.len(), elem) })
+	check_element_attrs(attrs, tag, "", path, || static_element_place(root_elem, block.nodes.len(), elem))
+	if tx.fx.startup.pending {
+		problem = initial_attribute_problem(tag, attrs)
+		if !problem.is_empty() {
+			crash "contract: ${problem} at site ${show_path(path)}"
+		}
+	}
+	if tx.fx.startup.adopting {
+		problem = cold_element_problem(tag, attrs)
+		if !problem.is_empty() {
+			crash "contract: ${problem} at site ${show_path(path)}"
+		}
+	}
+	(id, tx1) = alloc_id(tx)
+	tx2 = emit_op(tx1, 8, |c| put_element_name(put_u32(put_u32(put_u32(c, id), parent), at), tag).append(container))
+	var $b = add_node(block, id, top)
+	var $t = tx2
+	value_control = declares_value(attrs)
+	for attr in attrs {
+		(b2, t2) = mount_attr($b, env, attr, id, path, value_control, tag, $t)
+		$b = b2
+		$t = t2
+	}
+	kid_sole = kids.len() == 1
+	for kid in kids {
+		(b3, t3) = mount_elem($b, env, root_elem, kid, depth, path, id, 0, False, kid_sole, { ..scope, enclosing: children_context }, $t)
+		$b = b3
+		$t = t3
+	}
+	($b, $t)
+}
+
+mount_comment : Block(ctx), Str, List(U32), U32, U32, Bool, Scope, Tx -> (Block(ctx), Tx)
+mount_comment = |block, value, path, parent, at, top, scope, tx| {
+	check_construction_text(scope.enclosing.construction, { value: "", site: path, placement: " (comment)" })
+	(id, tx1) = alloc_id(tx)
+	tx2 = emit_op(tx1, 26, |commands| put_str(put_u32(put_u32(put_u32(commands, id), parent), at), value))
+	(add_node(block, id, top), tx2)
+}
+
+mount_text : Block(ctx), Str, List(U32), U32, U32, Bool, Scope, Tx -> (Block(ctx), Tx)
+mount_text = |block, s, path, parent, at, top, scope, tx| {
+	check_construction_text(scope.enclosing.construction, { value: s, site: path, placement: "" })
+	(id, tx1) = alloc_id(tx)
+	tx2 = emit_op(tx1, 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
+	(add_node(block, id, top), tx2)
+}
+
+mount_text_v : Block(ctx), ctx, Signal(ctx, Str), List(U32), U32, U32, Bool, Scope, Tx -> (Block(ctx), Tx)
+mount_text_v = |block, env, v, path, parent, at, top, scope, tx| {
+	check_text_hole(scope.enclosing.construction, { varies: eff_mask(v) != 0, site: path, placement: "" })
+	(id, tx1) = alloc_id(tx)
+	read = checked_text_read(v.read, { context: scope.enclosing.construction, site: path, placement: "" })
+	s = read(env)
+	tx2 = emit_op(count_evals(tx1, 1), 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
+	b1 = add_node(block, id, top)
+	(add_hole(b1, { node: id, mask: eff_mask(v), attr: NoAttribute, reference: NotReference, property: 0, read: |context| Present(read(context)), last: Present(s), dirty: False }), tx2)
 }
 
 mount_attr : Block(ctx), ctx, Attr(ctx), U32, List(U32), Bool, Web.Tag, Tx -> (Block(ctx), Tx)
@@ -5437,24 +5454,32 @@ mount_attr = |block, env, attr, id, path, value_control, element_name, tx| {
 			next = shown_fact(emit_op(count_property(count_evals(tx, 1), index), 21, |commands| put_str(put_u32(commands, id).append(index), encoded)), id, 256, index, encoded)
 			(add_hole(block, { node: id, mask: eff_mask(value), attr: NoAttribute, reference: NotReference, property: index, read: |context| Present((value.read)(context)), last: Present(encoded), dirty: False }), next)
 		}
-		On(ev, handler) => {
-			tx0 = if ev.policies.bitwise_and(16) != 0 {
-				if tx.fx.document_nodes.len() >= 32 {
-					crash "contract: more than 32 live document key handlers at site ${show_path(path)}"
-				}
-				with_fx(tx, |fx| { ..fx, document_nodes: fx.document_nodes.append(id) })
-			} else tx
-			h = block.handlers.len().to_u32_wrap()
-			registered = if (ev.kind == 7 or ev.kind == 8) observe_node(tx0, id) else tx0
-			tx1 = emit_op(registered, 11, |c| put_u32(put_str(put_u32(put_u32(c, id), h), ev.event).append(ev.kind), ev.policies))
-			(add_handler(block, bind_block_echo(handler, block.holes)), set_route(tx1, id, path, h))
-		}
+		On(ev, handler) => mount_handler(block, ev, handler, id, path, tx)
 		Ref(value) => {
 			ref_path = path.append(block.holes.len().to_u32_wrap())
 			name = (value.read)(env)
 			(add_hole(block, { node: id, mask: eff_mask(value), attr: NoAttribute, reference: Reference(ref_path, value_control), property: 0, read: |context| Present((value.read)(context)), last: Present(name), dirty: False }), with_fx(count_evals(tx, 1), |fx| add_ref(fx, { name, node: id, path: ref_path, value_control })))
 		}
 	}
+}
+
+## An event listener: its command, its route and the block's handler.
+## This stays out of `mount_attr`, which runs once per attribute: with it
+## inline, the compiler's optimized builds (including nightly-2026-11-22-3350b1c) handed the turn
+## to `mount_attr` shared, so each attribute's command copied the whole
+## command buffer and mounting grew quadratically with the page.
+mount_handler : Block(ctx), EventDecl, RoutedHandler(ctx), U32, List(U32), Tx -> (Block(ctx), Tx)
+mount_handler = |block, ev, handler, id, path, tx| {
+	tx0 = if ev.policies.bitwise_and(16) != 0 {
+		if tx.fx.document_nodes.len() >= 32 {
+			crash "contract: more than 32 live document key handlers at site ${show_path(path)}"
+		}
+		with_fx(tx, |fx| { ..fx, document_nodes: fx.document_nodes.append(id) })
+	} else tx
+	h = block.handlers.len().to_u32_wrap()
+	registered = if (ev.kind == 7 or ev.kind == 8) observe_node(tx0, id) else tx0
+	tx1 = emit_op(registered, 11, |c| put_u32(put_str(put_u32(put_u32(c, id), h), ev.event).append(ev.kind), ev.policies))
+	(add_handler(block, bind_block_echo(handler, block.holes)), set_route(tx1, id, path, h))
 }
 
 add_node : Block(ctx), U32, Bool -> Block(ctx)

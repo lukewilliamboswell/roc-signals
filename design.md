@@ -302,9 +302,8 @@ reconsidered.
   different meaning through mismatch repair. Per-request rendering or streaming is reconsidered
   only if a build-time frame cannot serve the intended apps. Search engines
   may index a picture; the platform makes no promise about it.
-- **A native desktop GUI host.** The engine is web-only. A GUI platform would
-  be a separate platform consuming its own command vocabulary, not a second
-  engine.
+- **A native desktop GUI host.** The shipped platform is web-only. A GUI platform
+  can use the engine package and consumes its supported command vocabulary.
 - **Multiple roots per Wasm instance.** One mount owns one instance.
   Reconsidered only if many-widget embedding measurements show per-instance
   cost is unacceptable.
@@ -487,7 +486,11 @@ bookkeeping is a function of the unexposed `TableCore` namespace, never a
 member of a type an app can name.
 
 The repository has one platform (`platform/main.roc`), web only, shipped as
-one release bundle. An app has one entry, `main.roc`, binding its `program`
+one platform bundle. The same release also carries a pure Roc engine
+package, built from the same source with its own root. Its `EngineHost`
+module gives platform authors the turn and worker entry points without
+exposing the engine internals. Each platform owns its host bindings, opaque
+boxes and supported vocabulary. An app has one entry, `main.roc`, binding its `program`
 as `main`, and the platform builds it for two targets with per-target link
 inputs:
 
@@ -5852,8 +5855,8 @@ architecture are recorded here:
 - **Pinned tooling, floating compiler.** `Blueprint.roc` and its lock pin the
   scripts' Roc nightly (`roc-stable`), Zig, Node and Chrome. The platform,
   the examples and the tests are built with `roc`, the latest Roc nightly,
-  which is never pinned: each pull request answers whether the change works
-  with the compiler users install today. No platform or example file names a
+  which floats except for exact, documented compiler regressions. Each pull
+  request runs the checks with the resolved nightly. No platform or example file names a
   compiler or carries an absolute path.
 - **Roc scripts.** Automation is Roc scripts under `scripts/`; one `check`
   task runs formatting, `roc test`, every example's specs natively and in
@@ -5866,7 +5869,7 @@ architecture are recorded here:
   shows each compiles, links and runs; CI never explores. Campaigns run on
   a contributor's machine, on demand, and what they find comes back as a
   saved example every replay keeps.
-- **Releases.** A release publishes the one platform bundle (engine, Wasm
+- **Releases.** A release publishes the standalone engine package and the platform bundle (engine, Wasm
   host and runtime, and the native spec runner with its link inputs for
   Linux x86-64, macOS and Windows), `runtime.mjs`, an examples archive naming that bundle, and the
   generated API docs; `check` builds the same assets as a dry run. The shared
@@ -5888,6 +5891,7 @@ of them is platform semantics.
 
 | Issue | Defect | Effect on the engine |
 |---|---|---|
+| [roc-lang/roc#13372](https://github.com/roc-lang/roc/issues/13372) | A nested record default through an alias to a defaulted nominal hangs during Boxy lowering on `nightly-2026-11-22-3350b1c` | CI and the release workflow select `nightly-2026-11-18-a520eed` when the latest nightly is the affected November 21 or November 22 build. Newer nightlies run every check as usual. Remove the fallback after a fixed nightly passes the spec and fuzz checks |
 | [roc-lang/roc#13020](https://github.com/roc-lang/roc/issues/13020) | The development Wasm backend retains removed refcounted elements after empty and partial `List.drop_last`/`Dict.remove` results until their owner is dropped; optimized builds release them | Development builds keep a removed file-valued row alive until its table is dropped. There is no workaround in the engine: no container rebuild or host-forced release substitutes for ownership. On the verified nightlies (`nightly-2026-11-13-03dce41`, `nightly-2026-11-14-a87808d`, `nightly-2026-11-15-f25da45`) the spec suite skips the Files test app's `table-a-record-keeps-handles-until-the-next-write` and `table-d-retained-handles-count-at-the-bound` in Chrome on the development Wasm build only, printing `SKIP`, and runs them in Chrome on an `--opt=size` build instead, where they must pass; natively they always run. The skip is data in `scripts/src/CompilerSkips.roc`; any other compiler runs them, and the entries go when a nightly fixes the defect |
 | [roc-lang/roc#13056](https://github.com/roc-lang/roc/issues/13056) | Native compilation of an empty preparation catalogue whose error type is `Worker.Never` crashes in monotype lowering | The declaration-refusal fixture gives its always-succeeding empty preparation a named inhabited error type. Restore `Worker.Never` once fixed; no engine or declaration semantics change |
 | [roc-lang/roc#13005](https://github.com/roc-lang/roc/issues/13005) | A top-level annotated constant using a missing method can crash `roc check` in `boxy_lowering` instead of reporting the missing item | The table-bookkeeping rejection fixture uses the unannotated spelling and links the issue. It still requires the compiler's missing-method diagnostic; an annotated spelling may crash until the compiler is fixed |
@@ -5924,6 +5928,14 @@ of them is platform semantics.
 | [roc-lang/roc#12963](https://github.com/roc-lang/roc/issues/12963) | Roc has no field accessor or updater as a value | A store's storage cannot be a record the author wrote, addressed field by field. The record builder generates it as nested pairs, with a lens for each position (see [The store](#the-store)) |
 | [roc-lang/roc#12971](https://github.com/roc-lang/roc/issues/12971) | Under `--opt=size` and `--opt=speed`, a `while` loop over a `var` holding a record of two `Dict`s, which a table is, copies both on every iteration when the function holding the loop has two or more callers | Many writes to a table in one event are a fold over the keys (`List.fold`), never a loop over a `var` that holds the table |
 | [roc-lang/roc#13003](https://github.com/roc-lang/roc/issues/13003) | A `from_interpolation` rejection in a function nothing calls is not reported | `roc check` reports no rejection of a markup literal, with or without holes, in a view nothing calls or bound and never used, until something calls it. No workaround in code; the markup guide says so, and a fixture that checks a rejection calls its view |
+
+[The native mount reproducer](https://github.com/lukewilliamboswell/roc-native-macos/blob/df14a6742dfa572484614ef99bf9eac7b1e0dc74/patches/roc-compiler/README.adoc#mount-sharing)
+shows two ownership losses under optimized builds, also reproduced with
+`nightly-2026-11-22-3350b1c`. An inlined listener branch makes attribute
+mounting copy its growing command buffer. Inlined ordinary node branches
+make the child-site block copy its growing lists at each append. Core
+keeps those branches in their own functions so each append can take
+ownership. Remove the split once the reproducer scales without it.
 
 Code size is the main open cost of the architecture and is tracked against
 #12847 and #12848, with each example’s reported size beside them.
