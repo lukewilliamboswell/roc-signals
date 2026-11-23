@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release, such as 0.3.0"
+        description: "Version to release, such as 0.8.0-rc1"
         type: string
         required: true
 
@@ -98,6 +98,10 @@ jobs:
           if gh release view "$VERSION" -R "$REPO" >/dev/null 2>&1; then
             echo "release $VERSION already exists"; exit 1
           fi
-          gh release create "$VERSION" -R "$REPO" --draft --target "$TARGET" \
+          release_flags=()
+          if [[ "$VERSION" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$VERSION" -R "$REPO" --draft "${release_flags[@]}" --target "$TARGET" \
             --title "Roc Signals $VERSION" --notes-file candidate/release-notes.md \
             candidate/*.tar.zst candidate/*.mjs candidate/*.zip candidate/signals.roc

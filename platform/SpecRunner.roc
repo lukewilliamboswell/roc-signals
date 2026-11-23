@@ -242,7 +242,13 @@ SpecRunner := [].{
 
 		## One source index and epoch over the same ingress queue as focus
 		## callbacks. Slots are absolute while a drain removes its prefix.
-		reports : { held : Bool, releasing : Bool, replaced : U64, epoch : U64, head : U64, index : Dict(ReportSource, { epoch : U64, slot : U64 }) },
+		## The queue has two budgets of `bound` inputs, as the runtime's
+		## `Ingress` has: inputs waiting, queued while idle, and inputs
+		## raised since the runner last left idle, which carry the current
+		## `period` (0 while idle; `periods` counts the busy periods begun).
+		## `stop`, when a release flushes older inputs ahead of a newly
+		## admitted report, is that report's absolute slot.
+		reports : { held : Bool, releasing : Bool, replaced : U64, epoch : U64, head : U64, index : Dict(ReportSource, { epoch : U64, slot : U64 }), bound : U64, period : U64, periods : U64, raised : U64, stop : [None, Slot(U64)] },
 	}
 
 	## Browser task-source entries keep only never-reused model lifetimes.
@@ -262,8 +268,9 @@ SpecRunner := [].{
 	## for none) and the value it showed when it gained focus, and the value
 	## the engine wrote to the focused control that the controlled-input rule
 	## holds back until blur. Focus effects and their queued browser events
-	## share one iterative drain, bounded at 4096 events waiting and 4096
-	## turns delivered before returning to idle.
+	## share one iterative drain, bounded as the runtime's ingress queue is:
+	## 4096 inputs waiting, 4096 raised since the runner left idle, and 4096
+	## turns for raised inputs in one drain.
 	S(state) : {
 		inst : state,
 		buf : List(U8),
@@ -286,7 +293,8 @@ SpecRunner := [].{
 	}
 
 	## One ingress entry; its source fixes replacement, never its payload.
-	Input : { node : U32, handler : U32, payload : List(U8), owner : U64, source : [Occurrence, Report(ReportSource)] }
+	## `period` is the busy period it was raised in, or 0 when it waits.
+	Input : { node : U32, handler : U32, payload : List(U8), owner : U64, source : [Occurrence, Report(ReportSource)], period : U64 }
 
 	## Request ids and DOM pointer sources cannot alias. A DOM source follows
 	## its declaring element's lifetime, handler and pointer independently.
@@ -974,7 +982,7 @@ SpecRunner := [].{
 		scroll_error: "",
 		report_sources: Dict.empty(),
 		network: Dict.empty(),
-		reports: { held: Bool.False, releasing: Bool.False, replaced: 0, epoch: 0, head: 0, index: Dict.empty() },
+		reports: { held: Bool.False, releasing: Bool.False, replaced: 0, epoch: 0, head: 0, index: Dict.empty(), bound: 4096, period: 0, periods: 0, raised: 0, stop: None },
 	}
 
 	## A runner state for instance `inst` before its first batch.
@@ -1374,24 +1382,28 @@ SpecRunner := [].{
 			return s
 		}
 		if s.applying_focus or !s.event_queue.is_empty() {
-			input = { node, handler: h, payload, owner: if (node == SpecRunner.fx_node) 0 else Dom.lookup(s.dom, node), source: Occurrence }
-			if s.event_queue.len() + SpecRunner.failure_tasks(s.browser) >= 4096 {
-				if s.applying_focus or s.draining {
-					return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [], browser: SpecRunner.clear_callbacks(s.browser) }
+			input = { node, handler: h, payload, owner: if (node == SpecRunner.fx_node) 0 else Dom.lookup(s.dom, node), source: Occurrence, period: 0 }
+			admitting = if (SpecRunner.busy(s)) s else SpecRunner.idle_reports(s)
+			b0 = admitting.browser
+			# Queuing an occurrence pins every earlier report.
+			pinned = { ..admitting, browser: { ..b0, reports: { ..b0.reports, epoch: b0.reports.epoch + 1 } } }
+			match SpecRunner.ingress_room(pinned) {
+				Refuse(message) => return SpecRunner.poison(pinned, message)
+				Room(raised) => {
+					queued = SpecRunner.enqueue(pinned, input, raised)
+					return if (SpecRunner.busy(s)) queued else SpecRunner.drain_focus_in_loop(program, queued)
 				}
-				# Free one slot without delivering: the occurrence must pin the
-				# remaining reports before the oldest turn can raise callbacks.
-				{ input: oldest, rest } = SpecRunner.pop_input(s)
-				b = rest.browser
-				queued = { ..rest, draining: Bool.True, turns: 0, event_queue: rest.event_queue.append(input), browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } }
-				active = SpecRunner.deliver_input_in_loop(program, { state: queued, input: oldest })
-				return SpecRunner.release_reports_in_loop(program, { ..active, draining: Bool.False })
+				Full => {
+					# Free one slot without delivering: the occurrence must pin the
+					# remaining reports before the oldest turn can raise callbacks.
+					{ input: oldest, rest } = SpecRunner.pop_input(pinned)
+					queued = SpecRunner.enqueue(rest, input, Bool.False)
+					active = SpecRunner.deliver_input_in_loop(program, { state: { ..queued, draining: Bool.True, turns: 0 }, input: oldest })
+					return SpecRunner.drain_focus_in_loop(program, { ..active, draining: Bool.False, turns: 0 })
+				}
 			}
-			b = s.browser
-			queued = { ..s, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } }, event_queue: s.event_queue.append(input) }
-			return if (s.applying_focus or s.draining) queued else SpecRunner.drain_focus_in_loop(program, queued)
 		}
-		SpecRunner.send_now_in_loop(program, { state: s, node: node, handler: h, payload: payload })
+		SpecRunner.send_now_in_loop(program, { state: s, node: node, handler: h, payload: payload, raised: Bool.True })
 	}
 
 	## Run [send_in_loop] from outside the event loop.
@@ -1400,16 +1412,19 @@ SpecRunner := [].{
 
 	## Run an entry already selected for delivery, without queuing it again.
 	## Its batch's focus and storage callbacks still pass through ingress.
-	send_now_in_loop : Program(state), { state : S(state), node : U32, handler : U32, payload : List(U8) } -> S(state)
-	send_now_in_loop = |program, { state: s, node, handler: h, payload }| {
+	## A drain's turn budget counts only `raised` entries: inputs that waited
+	## for their frame never spend it.
+	send_now_in_loop : Program(state), { state : S(state), node : U32, handler : U32, payload : List(U8), raised : Bool } -> S(state)
+	send_now_in_loop = |program, { state: s, node, handler: h, payload, raised }| {
 		outer = !s.draining
 		active = if (outer) { ..s, draining: Bool.True, turns: 0 } else s
-		if !outer and active.turns >= 4096 {
-			return { ..active, fault: Poisoned("resource_limit: more than 4096 turns delivered without returning to idle (an event feedback loop)"), event_queue: [], after_batch: [], browser: SpecRunner.clear_callbacks(active.browser) }
+		spends = !outer and raised
+		if spends and active.turns >= active.browser.reports.bound {
+			return SpecRunner.poison(active, "resource_limit: more than ${active.browser.reports.bound.to_str()} turns for events raised since the runtime left idle in one drain (an event feedback loop)")
 		}
 		is_final_network = node == SpecRunner.fx_node and payload.first() != Ok(26) and active.browser.network.contains(h)
 		cleaned = if (is_final_network) { ..active, browser: { ..active.browser, report_sources: active.browser.report_sources.remove(h), network: active.browser.network.remove(h), reports: { ..active.browser.reports, index: active.browser.reports.index.remove(Request(h)) } } } else active
-		counted = { ..cleaned, turns: cleaned.turns + if (outer) 0 else 1 }
+		counted = { ..cleaned, turns: cleaned.turns + if (spends) 1 else 0 }
 		next = SpecRunner.answer_gets_in_loop(program, SpecRunner.engine_call(counted, |inst, buf, wbuf| (program.event)(inst, buf, wbuf, node, h, payload)))
 		if (outer) { ..SpecRunner.drain_focus_in_loop(program, next), draining: Bool.False } else next
 	}
@@ -1439,9 +1454,10 @@ SpecRunner := [].{
 				command = $s.after_batch.first() ?? crash "SpecRunner.drain_focus: not empty"
 				s = { ..$s, applying_focus: Bool.True, after_batch: $s.after_batch.drop_first(1) }
 				applied = match command {
-					Effect(StartupAck) => SpecRunner.send_now_in_loop(program, { state: s, node: SpecRunner.fx_node, handler: 0, payload: [254] })
+					Effect(StartupAck) => SpecRunner.send_now_in_loop(program, { state: s, node: SpecRunner.fx_node, handler: 0, payload: [254], raised: Bool.True })
 					Effect(fx) => {
-						browser = SpecRunner.absorb_limit(s.browser, [fx], 4096 - s.event_queue.len())
+						bound = s.browser.reports.bound
+						browser = SpecRunner.absorb_limit(s.browser, [fx], if (s.event_queue.len() >= bound) 0 else bound - s.event_queue.len())
 						if (browser.deferred_error.is_empty()) { ..s, browser } else { ..s, browser: SpecRunner.clear_callbacks(browser), fault: Poisoned(browser.deferred_error), event_queue: [], after_batch: [] }
 					}
 					Show(show) => if (SpecRunner.attached(s.dom, show.target) and (if (show.property == 6) Dom.node(s.dom, show.target).shown_intent.dialog else Dom.node(s.dom, show.target).shown_intent.popover) == show.intent) SpecRunner.change_shown(s, show.target, show.value) else s
@@ -1463,16 +1479,18 @@ SpecRunner := [].{
 			if !$s.event_queue.is_empty() and SpecRunner.head_ready($s) {
 				{ input, rest } = SpecRunner.pop_input($s)
 				$s = SpecRunner.deliver_input_in_loop(program, { state: rest, input: input })
-			} else if SpecRunner.callbacks_waiting($s.browser) {
+			} else if SpecRunner.callbacks_waiting($s.browser) and $s.event_queue.is_empty() {
 				$s = SpecRunner.answer_gets_in_loop(program, $s)
 			} else {
 				break
 			}
 		}
 		b = $s.browser
-		if $s.event_queue.is_empty() {
+		drained = if $s.event_queue.is_empty() {
 			{ ..$s, draining: s0.draining, browser: { ..b, reports: { ..b.reports, head: 0, index: Dict.empty() } } }
 		} else { ..$s, draining: s0.draining }
+		# Back at idle, nothing queued was raised since the runner left it.
+		if (s0.draining or s0.applying_focus) drained else SpecRunner.idle_reports(drained)
 	}
 
 	## Run [drain_focus_in_loop] from outside the event loop.
@@ -1485,7 +1503,8 @@ SpecRunner := [].{
 	pop_input = |s| {
 		input = s.event_queue.first() ?? crash "SpecRunner.pop_input: queue is not empty"
 		b = s.browser
-		reports = b.reports
+		reports0 = b.reports
+		reports = if (SpecRunner.is_raised(s, input)) { ..reports0, raised: reports0.raised - 1 } else reports0
 		index = match input.source {
 			Report(id) => match reports.index.get(id) {
 				Ok(position) if position.slot == reports.head => reports.index.remove(id)
@@ -1496,14 +1515,19 @@ SpecRunner := [].{
 		{ input, rest: { ..s, event_queue: s.event_queue.drop_first(1), browser: { ..b, reports: { ..reports, head: reports.head + 1, index } } } }
 	}
 
-	## An unpinned report waits for a frame. The source index identifies its
-	## current epoch and absolute slot without searching later queue entries.
+	## An unpinned report waits for a frame, while no more than the bound
+	## would be left waiting. The source index identifies its current epoch
+	## and absolute slot without searching later queue entries. A release
+	## that flushes older inputs stops at its `stop` slot.
 	head_ready : S(state) -> Bool
 	head_ready = |s| {
 		if s.browser.reports.releasing {
-			return True
+			return s.browser.reports.stop != Slot(s.browser.reports.head)
 		}
 		input = s.event_queue.first() ?? return False
+		if s.event_queue.len() > s.browser.reports.bound {
+			return True
+		}
 		match input.source {
 			Occurrence => True
 			Report(source) => match s.browser.reports.index.get(source) {
@@ -1526,7 +1550,7 @@ SpecRunner := [].{
 				input.node == SpecRunner.fx_node or (current == input.owner + 1 and SpecRunner.attached(s.dom, input.owner))
 			}
 		}
-		if (live) SpecRunner.send_now_in_loop(program, { state: s, node: input.node, handler: input.handler, payload: input.payload }) else s
+		if (live) SpecRunner.send_now_in_loop(program, { state: s, node: input.node, handler: input.handler, payload: input.payload, raised: SpecRunner.is_raised(s, input) }) else s
 	}
 
 	## Queue a frozen report, replacing only its source's entry in this
@@ -1563,14 +1587,86 @@ SpecRunner := [].{
 			}
 			_ => {}
 		}
-		if s.event_queue.len() + SpecRunner.failure_tasks(s.browser) >= 4096 {
-			if s.applying_focus or s.draining {
-				return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [], browser: { ..SpecRunner.clear_callbacks(b), reports: { ..reports, head: 0, index: Dict.empty() } } }
+		input = { node, handler, payload, owner, source: Report(source), period: 0 }
+		admitting = if (SpecRunner.busy(s)) s else SpecRunner.idle_reports(s)
+		match SpecRunner.ingress_room(admitting) {
+			Refuse(message) => SpecRunner.poison(admitting, message)
+			Room(raised) => SpecRunner.enqueue(admitting, input, raised)
+			Full => {
+				# The oldest entry becomes the initiating turn and this report
+				# takes its slot, before that turn can raise another report.
+				# Capacity pressure then flushes older inputs, not this report,
+				# keeping its FIFO place and ordinary epoch pacing.
+				{ input: oldest, rest } = SpecRunner.pop_input(admitting)
+				queued = SpecRunner.enqueue(rest, input, Bool.False)
+				slot = queued.browser.reports.head + queued.event_queue.len() - 1
+				active = SpecRunner.deliver_input_in_loop(program, { state: { ..queued, draining: Bool.True, turns: 0 }, input: oldest })
+				ab = active.browser
+				flushing = { ..active, draining: Bool.False, turns: 0, browser: { ..ab, reports: { ..ab.reports, releasing: Bool.True, stop: Slot(slot) } } }
+				flushed = SpecRunner.drain_focus_in_loop(program, flushing)
+				fb = flushed.browser
+				SpecRunner.drain_focus_in_loop(program, { ..flushed, turns: 0, browser: { ..fb, reports: { ..fb.reports, releasing: ab.reports.releasing, stop: None } } })
 			}
-			return SpecRunner.queue_report_in_loop(program, { state: SpecRunner.release_reports_in_loop(program, s), source, node, handler, owner, payload })
 		}
-		slot = reports.head + s.event_queue.len()
-		{ ..s, event_queue: s.event_queue.append({ node, handler, payload, owner, source: Report(source) }), browser: { ..b, reports: { ..reports, index: reports.index.insert(source, { epoch: reports.epoch, slot }) } } }
+	}
+
+	## Whether the runner is inside a turn or applying a batch: an input joins
+	## the raised budget then, and the waiting budget otherwise.
+	busy : S(state) -> Bool
+	busy = |s| s.applying_focus or s.draining
+
+	## Back at idle: every queued input now waits, in constant work.
+	idle_reports : S(state) -> S(state)
+	idle_reports = |s| {
+		b = s.browser
+		{ ..s, browser: { ..b, reports: { ..b.reports, period: 0, raised: 0 } } }
+	}
+
+	## Whether a queued input was raised since the runner last left idle.
+	is_raised : S(state), Input -> Bool
+	is_raised = |s, input| input.period != 0 and input.period == s.browser.reports.period
+
+	## Where the next input may go, as the runtime's `Ingress.admit` decides:
+	## failure callbacks share the bound; a busy runner admits raised inputs
+	## up to the bound and beyond it the loop poisons; an idle runner at a
+	## full waiting budget drains early (`Full`).
+	ingress_room : S(state) -> [Refuse(Str), Room(Bool), Full]
+	ingress_room = |s| {
+		bound = s.browser.reports.bound
+		queued = s.event_queue.len()
+		failures = SpecRunner.failure_tasks(s.browser)
+		if failures > 0 and queued + failures >= bound {
+			Refuse("resource_limit: more than ${bound.to_str()} pending storage failures and ingress entries")
+		} else if SpecRunner.busy(s) {
+			if (s.browser.reports.raised >= bound) Refuse("resource_limit: more than ${bound.to_str()} events raised since the runtime left idle are waiting (an event feedback loop)") else Room(Bool.True)
+		} else if queued >= bound {
+			Full
+		} else {
+			Room(Bool.False)
+		}
+	}
+
+	## Append an input in the budget of the slot it takes, indexing a report
+	## as its source's replaceable entry of the current epoch.
+	enqueue : S(state), Input, Bool -> S(state)
+	enqueue = |s, input, raised| {
+		b = s.browser
+		r = b.reports
+		period = if (!raised) 0 else if (r.period == 0) r.periods + 1 else r.period
+		counted = { ..r, period: if (raised) period else r.period, periods: if (raised and r.period == 0) period else r.periods, raised: if (raised) r.raised + 1 else r.raised }
+		slot = r.head + s.event_queue.len()
+		reports = match input.source {
+			Report(source) => { ..counted, index: counted.index.insert(source, { epoch: counted.epoch, slot }) }
+			Occurrence => counted
+		}
+		{ ..s, event_queue: s.event_queue.append({ ..input, period }), browser: { ..b, reports } }
+	}
+
+	## A fault discards the queue and every scheduled callback.
+	poison : S(state), Str -> S(state)
+	poison = |s, message| {
+		b = SpecRunner.clear_callbacks(s.browser)
+		{ ..s, fault: Poisoned(message), event_queue: [], after_batch: [], browser: { ..b, reports: { ..b.reports, head: 0, index: Dict.empty(), period: 0, raised: 0 } } }
 	}
 
 	## Run [queue_report_in_loop] from outside the event loop.
@@ -2368,10 +2464,15 @@ SpecRunner := [].{
 			return s
 		}
 		match Dom.target(s.dom, i, event, False) {
-			Ok(target) if target.kind == 1 and s.event_queue.len() + SpecRunner.failure_tasks(s.browser) >= 4096 => { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], after_batch: [], browser: SpecRunner.clear_callbacks(s.browser) }
 			Ok(target) if target.kind == 1 => {
 				b = s.browser
-				{ ..s, event_queue: s.event_queue.append({ node: target.node, handler: target.handler, payload: payload.to_utf8(), owner: Dom.lookup(s.dom, target.node), source: Occurrence }), browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } }
+				pinned = { ..s, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } }
+				input = { node: target.node, handler: target.handler, payload: payload.to_utf8(), owner: Dom.lookup(s.dom, target.node), source: Occurrence, period: 0 }
+				# A batch raised it: it joins the raised budget.
+				match SpecRunner.ingress_room({ ..pinned, applying_focus: Bool.True }) {
+					Refuse(message) => SpecRunner.poison(pinned, message)
+					_ => SpecRunner.enqueue(pinned, input, Bool.True)
+				}
 			}
 			_ => s
 		}
@@ -6460,7 +6561,7 @@ expect {
 	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
 	stopped = SpecRunner.drain_focus(program, { ..s, dom: $dom, after_batch: [Ref({ action: Focus(1), node: 1, target: Dom.lookup($dom, 1) })] })
 	refused = SpecRunner.send(program, stopped, 1, 0, [])
-	{ count: refused.inst, turns: refused.turns, check: SpecRunner.check_settled(program, refused) } == { count: 4096, turns: 4096, check: Err("resource_limit: more than 4096 turns delivered without returning to idle (an event feedback loop)") }
+	{ count: refused.inst, turns: refused.turns, check: SpecRunner.check_settled(program, refused) } == { count: 4096, turns: 4096, check: Err("resource_limit: more than 4096 turns for events raised since the runtime left idle in one drain (an event feedback loop)") }
 }
 
 ## Focus uses bubbling focusin in the browser, so the app's focus name can
@@ -7089,6 +7190,138 @@ expect {
 		queued: 0,
 		indexed: 0,
 	}
+}
+
+## A probe whose turns record their inputs, and whose turn for `focuser`
+## asks the browser to focus the input with routing id 1, as a batch can.
+focus_probe : U32 -> SpecRunner.Program(List({ id : U32, payload : List(U8) }))
+focus_probe = |focuser| {
+	..report_probe({}),
+	event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), if (id == focuser) SpecRunner.put_u32([0, 18, 1], 1) else [], List.repeat(0, 8)),
+}
+
+## A mounted probe at an ingress bound of `bound`, with report sources 1 to
+## `sources` live and an input (routing id 1) whose focus handler is 0.
+ingress_start : SpecRunner.Program(List({ id : U32, payload : List(U8) })), U64, U32 -> SpecRunner.S(List({ id : U32, payload : List(U8) }))
+ingress_start = |program, bound, sources| {
+	initial = SpecRunner.mount_in(program, {})
+	(d, input) = Dom.add_node(initial.dom, { ..Dom.empty_node, tag: "input", rn: 1, hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d, d.root, input, Err(End)), 1, input)
+	var $live = initial.browser.report_sources
+	var $id = 1.U32
+	while $id <= sources {
+		$live = $live.insert($id, {})
+		$id = $id + 1
+	}
+	{ ..initial, dom, browser: { ..initial.browser, report_sources: $live, reports: { ..initial.browser.reports, bound } } }
+}
+
+## The deliveries of an ingress script at bound 3 over sources 1 to 4:
+## `rN` a report from source N, `o` an occurrence (result 9000), `f` a
+## frame, `cN` a cancel of source N; step k (from 1) carries [k], and a
+## delivery reads `handler:k`. tests/runtime/ingress-unit.mjs replays the
+## same scripts through the browser runtime's `Ingress` and requires the
+## deliveries recorded below, so the two ingress models cannot drift apart.
+ingress_replay : Str -> Str
+ingress_replay = |script| {
+	program = report_probe({})
+	var $s = ingress_start(program, 3, 4)
+	var $k = 0.U8
+	for op in script.split_on(" ") {
+		$k = $k + 1
+		$s = match op {
+			"f" => SpecRunner.release_reports(program, $s)
+			"o" => SpecRunner.send(program, $s, SpecRunner.fx_node, 9000, [$k])
+			"r1" => SpecRunner.report(program, { state: $s, id: 1, payload: [$k] })
+			"r2" => SpecRunner.report(program, { state: $s, id: 2, payload: [$k] })
+			"r3" => SpecRunner.report(program, { state: $s, id: 3, payload: [$k] })
+			"r4" => SpecRunner.report(program, { state: $s, id: 4, payload: [$k] })
+			"c1" => { ..$s, browser: SpecRunner.absorb($s.browser, [Cancel(1)]) }
+			"c2" => { ..$s, browser: SpecRunner.absorb($s.browser, [Cancel(2)]) }
+			"c3" => { ..$s, browser: SpecRunner.absorb($s.browser, [Cancel(3)]) }
+			"c4" => { ..$s, browser: SpecRunner.absorb($s.browser, [Cancel(4)]) }
+			_ => crash "ingress_replay: unknown step ${op}"
+		}
+	}
+	delivered = $s.inst.map(|e| "${e.id.to_str()}:${(e.payload.first() ?? 0).to_str()}")
+	Str.join_with(if ($s.fault == Healthy) delivered else delivered.append("poisoned"), " ")
+}
+
+## The native ingress model delivers what the browser runtime delivers.
+expect {
+	ingress_replay("r3 r1 c2 o f o r3 o o r1 f r1 r4 r4 r4") == "3:1 1:2 9000:4 9000:6 3:7 9000:8 9000:9 1:10" and
+		ingress_replay("o c4 r4 r2 r2 r3 r2 r1 r4 r2 r1 o f o r2 r3") == "9000:1 2:10 3:6 1:11 9000:12 9000:14" and
+			ingress_replay("r1 r3 r2 r4 r3 o o o o o r3 o r3 r2 o") == "1:1 3:2 2:3 4:4 3:5 9000:6 9000:7 9000:8 9000:9 9000:10 3:11 9000:12 3:13 2:14 9000:15" and
+				ingress_replay("r2 r2 r2 r1 r1 r1 r3 f o r4 o r1 r4 f r1 c2 c3 r3 r4 o r4") == "2:3 1:6 3:7 9000:9 4:10 9000:11 1:12 4:13 1:15 4:19 9000:20" and
+					ingress_replay("c2 o r2 r2 r1 f r2 o r4 f r4 r2 r4 c1 f") == "9000:2 1:5 9000:8 4:9 4:13" and
+						ingress_replay("r2 r2 o o o r3 o r1 r2 o r1 r1 r3 r3 o c2 o r4 o") == "2:2 9000:3 9000:4 9000:5 3:6 9000:7 1:8 2:9 9000:10 1:12 3:14 9000:15 9000:17 4:18 9000:19" and
+							ingress_replay("c3 r4 r4 r4 o o c2 r3 f r3 o r3 f f o o r2") == "4:4 9000:5 9000:6 9000:11 9000:15 9000:16" and
+								ingress_replay("c1 c1 r4 r4 r4 r3 f r1 r4 o o r2 f r2 r3 c3 r2") == "4:5 3:6 4:9 9000:10 9000:11 2:12" and
+									ingress_replay("f r2 o r2 o o r3 o r2 r4 f f r1 o r2 r2") == "2:2 9000:3 2:4 9000:5 9000:6 3:7 9000:8 2:9 4:10 1:13 9000:14" and
+										ingress_replay("r4 r4 f o o r3 o c1 r3 r3 o r2 r2 f r3") == "4:2 9000:4 9000:5 3:6 9000:7 3:10 9000:11 2:13" and
+											ingress_replay("r2 c2 r1 o o f r1 r4 r1 f r2 r3 o r4 r2 r3") == "1:3 9000:4 9000:5 1:9 4:8 3:12 9000:13" and
+												ingress_replay("r3 f r1 r4 f o r3 r3 f r1 r1 r4 f r2") == "3:1 1:3 4:4 9000:6 3:8 1:11 4:12"
+}
+
+## A full waiting budget never poisons a turn that raises an input: the
+## oldest of 4096 waiting reports becomes an occurrence's initiating turn,
+## and the focus event its batch raises joins the raised budget.
+expect {
+	program = focus_probe(1)
+	var $s = ingress_start(program, 4096, 4096)
+	var $id = 1.U32
+	while $id <= 4096 {
+		$s = SpecRunner.report(program, { state: $s, id: $id, payload: [8, 0] })
+		$id = $id + 1
+	}
+	after = SpecRunner.send(program, $s, SpecRunner.fx_node, 9000, [5])
+	{ fault: after.fault, delivered: after.inst.len(), first: after.inst.first()?.id, last: after.inst.drop_first(4096).map(|e| e.id), queued: after.event_queue.len() } == {
+		fault: Healthy,
+		delivered: 4098,
+		first: 1,
+		last: [9000, 0],
+		queued: 0,
+	}
+}
+
+## A report at a full waiting budget: the oldest report's turn raises a
+## focus event, which pins the waiting reports. The older ones flush ahead
+## of the new report, which keeps its place before the focus event.
+expect {
+	program = focus_probe(1)
+	var $s = ingress_start(program, 3, 4)
+	for id in [1, 2, 3] {
+		$s = SpecRunner.report(program, { state: $s, id, payload: [8, 0] })
+	}
+	after = SpecRunner.report(program, { state: $s, id: 4, payload: [4] })
+	{ fault: after.fault, delivered: after.inst.map(|e| e.id), queued: after.event_queue.len(), raised: after.browser.reports.raised } == { fault: Healthy, delivered: [1, 2, 3, 4, 0], queued: 0, raised: 0 }
+}
+
+## A frame of reports that waited spends no turn budget: three waiting
+## reports at bound 3 and the focus event the first one's turn raises.
+expect {
+	program = focus_probe(1)
+	var $s = ingress_start(program, 3, 3)
+	for id in [1, 2, 3] {
+		$s = SpecRunner.report(program, { state: $s, id, payload: [8, 0] })
+	}
+	after = SpecRunner.release_reports(program, $s)
+	{ fault: after.fault, delivered: after.inst.map(|e| e.id) } == { fault: Healthy, delivered: [1, 2, 3, 0] }
+}
+
+## A feedback loop still poisons behind waiting reports: two inputs whose
+## focus handlers focus each other spend the raised turn budget of 3.
+expect {
+	base = report_probe({})
+	program = { ..base, event: |seen, _buf, _work, node, id, payload| (seen.append({ id, payload }), if (node == 1 or node == 2 or id == 1) SpecRunner.put_u32([0, 18, 1], if (node == 1) 2 else 1) else [], List.repeat(0, 8)) }
+	start = ingress_start(program, 3, 3)
+	(d, second) = Dom.add_node(start.dom, { ..Dom.empty_node, tag: "input", rn: 2, hs: [{ event: "focus", handler: 0, kind: 1, policies: 0 }] })
+	var $s = { ..start, dom: Dom.bind(Dom.insert(d, d.root, second, Err(End)), 2, second) }
+	for id in [1, 2, 3] {
+		$s = SpecRunner.report(program, { state: $s, id, payload: [8, 0] })
+	}
+	after = SpecRunner.release_reports(program, $s)
+	{ fault: after.fault, delivered: after.inst.len() } == { fault: Poisoned("resource_limit: more than 3 turns for events raised since the runtime left idle in one drain (an event feedback loop)"), delivered: 6 }
 }
 
 ## Storage is read when its later task runs, after preceding ingress and

@@ -14,6 +14,7 @@ import Targets
 ##   x86-64, macOS on Apple silicon and Intel, Windows x86-64),
 ##   `runtime.mjs`, its fact readers `environment.mjs`, startup binder
 ##   `startup.mjs` and `worker.mjs`;
+## - the pure engine package, `engine-<hash>.tar.zst`, for other platforms;
 ## - `runtime.mjs`, `environment.mjs`, `startup.mjs` and `worker.mjs` on their own, for pages that load an app
 ##   (the runtime loads the worker script from beside itself);
 ## - the `signals.roc` tool: its package, `signals-<hash>.tar.zst` (`cli/`
@@ -33,7 +34,33 @@ Release := [].{
 
 	## The platform files a bundle carries, relative to `platform/`.
 	bundle_files : List(Str)
-	bundle_files = ["main.roc", "Base64.roc", "Engine.roc", "Web.roc", "Spelling.roc", "MarkupAdvice.roc", "MarkupLiteral.roc", "Clipboard.roc", "WebCrypto.roc", "Html.roc", "Svg.roc", "Layout.roc", "Order.roc", "Url.roc", "Worker.roc", "Wire.roc", "WorkerCodec.roc", "Port.roc", "PortJson.roc", "PortRegistry.roc", "Protocol.roc", "ProtocolFacts.roc", "Core.roc", "ReadyIndex.roc", "EntryRoutes.roc", "SignalCore.roc", "TableCore.roc", "View.roc", "Seq.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "PicturePage.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "host/crypto.zig", "host/crypto_result.zig", "host/crypto_abi.zig", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
+	bundle_files = ["main.roc", "Base64.roc", "Engine.roc", "Web.roc", "Spelling.roc", "MarkupAdvice.roc", "MarkupLiteral.roc", "Clipboard.roc", "WebCrypto.roc", "Html.roc", "Svg.roc", "Layout.roc", "Order.roc", "Url.roc", "Worker.roc", "Wire.roc", "WorkerCodec.roc", "Port.roc", "PortJson.roc", "PortJsonBody.roc", "PortRegistry.roc", "Protocol.roc", "ProtocolFacts.roc", "Core.roc", "ReadyIndex.roc", "EntryRoutes.roc", "SignalCore.roc", "Sig.roc", "TableCore.roc", "View.roc", "Seq.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "PicturePage.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "host/crypto.zig", "host/crypto_result.zig", "host/crypto_abi.zig", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
+
+	## The production package's pure source closure, relative to platform/.
+	engine_files : List(Str)
+	engine_files = ["Core", "Engine", "EngineHost", "EntryRoutes", "Layout", "MarkupAdvice", "Port", "PortJson", "PortJsonBody", "PortRegistry", "ReadyIndex", "Seq", "Sig", "SignalCore", "Spelling", "TableCore", "Url", "View", "Web", "Wire", "Worker", "WorkerCodec"].map(|name| "${name}.roc")
+
+	engine_bundle! : SpecSuite.Options, Str => Try(Str, _)
+	engine_bundle! = |o, out| {
+		stage = "${o.build_dir}/release-engine"
+		packed = "${o.build_dir}/release-engine-packed"
+		SpecSuite.fresh_dir!(stage)?
+		SpecSuite.fresh_dir!(packed)?
+		Path.copy!(Path.utf8("${o.root}/platform/main-engine.roc"), Path.utf8("${stage}/main.roc"))?
+		Path.copy!(Path.utf8("${o.root}/LICENSE"), Path.utf8("${stage}/LICENSE"))?
+		for file in Release.engine_files {
+			Path.copy!(Path.utf8("${o.root}/platform/${file}"), Path.utf8("${stage}/${file}"))?
+		}
+		Proc.run!({ program: o.compiler, args: ["bundle", "main.roc", "LICENSE"].concat(Release.engine_files).concat(["--output-dir", packed]), cwd: stage })?
+		match SpecSuite.files_with!(packed, ".tar.zst")? {
+			[archive] => {
+				name = "engine-${archive.split_on("/").last() ?? archive}"
+				Path.copy!(Path.utf8(archive), Path.utf8("${out}/${name}"))?
+				Ok(name)
+			}
+			found => Err(EngineBundleNotFound(Str.inspect(found)))
+		}
+	}
 
 	archive_name : Str -> Str
 	archive_name = |version| "roc-signals-examples-${version}"
@@ -103,6 +130,7 @@ Release := [].{
 			[one] => one.split_on("/").last() ?? one
 			found => return Err(BundleNotFound(Str.inspect(found)))
 		}
+		engine_bundle = Release.engine_bundle!(o, out)?
 		SpecSuite.copy_runtime!(o.root, out)?
 		bundle_url = "${Release.repo_url}/releases/download/${version}/${bundle}"
 		compiler = Str.from_utf8_lossy(Proc.capture!({ program: o.compiler, args: ["version"], cwd: o.root })?).trim()
@@ -117,6 +145,10 @@ Release := [].{
 		SpecSuite.copy_runtime!(o.root, "${root}/runtime")?
 		Path.copy!(Path.utf8("${o.root}/tests/release/check.mjs"), Path.utf8("${root}/runtime/check.mjs"))?
 		var $problems = []
+		engine_status = Proc.status!({ program: o.node, args: ["tests/release/engine-package.mjs", o.compiler, "${out}/${engine_bundle}"], cwd: o.root })?
+		if engine_status != 0 {
+			$problems = $problems.append("released engine package contract failed (exit ${engine_status.to_str()})")
+		}
 		var $cases = []
 		for example in SpecSuite.apps {
 			dir = "${root}/examples/${example}"
@@ -154,7 +186,7 @@ Release := [].{
 		Proc.run!({ program: "zip", args: ["-q", "-r", "-X", "${out}/${name}.zip", name], cwd: stage })?
 
 		tooling = Str.from_utf8_lossy(Proc.capture!({ program: o.tooling, args: ["version"], cwd: o.root })?).trim()
-		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), Release.notes(version, bundle_url, { compiler, tooling }))?
+		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), Release.notes(version, bundle_url, { compiler, tooling }).concat("\n## Standalone engine package\n\nDownload [the Roc engine package](${Release.repo_url}/releases/download/${version}/${engine_bundle}). The compiler listed above built and checked both the platform and the engine package.\n"))?
 		Proc.note!("release ${version}: ${out}")
 		Ok($problems)
 	}

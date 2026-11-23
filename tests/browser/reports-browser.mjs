@@ -199,6 +199,116 @@ check("a storage read issued by a report sees a queued occurrence's later write"
 check("unmount clears waiting reports, owners, scheduled frames and timer", ingress.drop, [0, 0, 0, 0, null]);
 check("a Latest report snapshots mutable bytes and keeps immutable files by reference", ingress.snapshot, [[1, 2], true]);
 
+// A full queue of waiting reports never poisons (design.md, "Re-entrancy"):
+// an input raised during a turn has a budget of its own, and a drain spends
+// its turn budget only on raised inputs. Real buttons with real click
+// listeners raise the re-entrant inputs; only the Wasm call is replaced.
+const full = await page.evaluate(async () => {
+  const { RocEngineRuntime, MAX_QUEUED } = await import("/runtime.mjs");
+  const encoder = new TextEncoder();
+  const join = (...parts) => { const o = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let at = 0; for (const p of parts) { o.set(p, at); at += p.length; } return o; };
+  const u32 = (n) => { const o = new Uint8Array(4); new DataView(o.buffer).setUint32(0, n, true); return o; };
+  const str = (text) => { const b = encoder.encode(text); return join(u32(b.length), b); };
+  const elem = (id, tag) => join([8], u32(id), u32(0), u32(0), [0], str(""), str(tag), [0]);
+  const listen = (id, handler) => join([11], u32(id), u32(handler), str("click"), [10], u32(0));
+  // Reports wait for a frame this fixture supplies only when asked; the
+  // production scheduler runs (not manualEffects).
+  const fixture = () => {
+    const root = document.createElement("main"); document.body.append(root);
+    const memory = new WebAssembly.Memory({ initial: 2 }); let length = 0;
+    const exports = { memory, cmd_ptr: () => 0, cmd_len: () => length, keys_released: () => 0, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
+    const frames = new Map(); let frameId = 0;
+    const win = { requestAnimationFrame: (cb) => { frames.set(++frameId, cb); return frameId; }, cancelAnimationFrame: (id) => frames.delete(id) };
+    const rt = new RocEngineRuntime(exports, root, { window: win, environment: { visible: () => true } });
+    __bindProtocolFixture(rt);
+    const bytes = join([0], elem(1, "button"), listen(1, 7), elem(2, "button"), listen(2, 8));
+    new Uint8Array(memory.buffer).set(bytes); length = bytes.length;
+    rt.busy = true; try { rt.apply(); } finally { rt.busy = false; length = 0; } rt.drainQueue();
+    // A second button raises re-entrant clicks: HTMLElement.click() does
+    // nothing while the same element's click() is in progress.
+    const button = rt.statics[1], other = rt.statics[2];
+    const calls = [];
+    let during = null, chain = false;
+    rt.deliver = (node, handler, payload) => {
+      const act = during; during = null;
+      calls.push(typeof payload === "string" ? payload : `click@${node}`);
+      if (act) act();
+      if (chain && typeof payload !== "string") other.click();
+    };
+    const add = (id) => rt.live.set(id, { cancel: () => {} });
+    const state = () => ({ poisoned: rt.poisoned ? rt.poisoned.message : null, delivered: calls.length, queue: rt.queue.length, sources: rt.reportSources.size });
+    return {
+      rt, button, other, add, state, calls,
+      frame: () => { for (const cb of [...frames.values()]) cb(); },
+      set during(fn) { during = fn; }, set chain(on) { chain = on; },
+      end: () => { rt.unmount(); root.remove(); },
+    };
+  };
+  const fill = (f, count) => { for (let id = 100; id < 100 + count; id += 1) { f.add(id); f.rt.report(id, `r${id}`); } };
+  const out = {};
+  // A. The 4097th report's early drain delivers the oldest; that turn raises one click.
+  { const f = fixture(); fill(f, MAX_QUEUED); const before = f.state();
+    f.add(9000); f.during = () => f.button.click();
+    f.rt.report(9000, "the 4097th report");
+    out.A = [before, f.state(), f.calls[0], f.calls.at(-1)]; f.end(); }
+  // B. The same queue; the input is a click, whose oldest report raises another.
+  { const f = fixture(); fill(f, MAX_QUEUED);
+    f.during = () => f.other.click(); f.button.click();
+    out.B = [f.state(), f.calls.slice(-2)]; f.end(); }
+  // C. 4095 waiting reports, a click, and one click its first report raises.
+  { const f = fixture(); fill(f, MAX_QUEUED - 1);
+    f.during = () => f.other.click(); f.button.click();
+    out.C = f.state(); f.end(); }
+  // D. Control: a full queue, the 4097th report, nothing re-entrant.
+  { const f = fixture(); fill(f, MAX_QUEUED); f.add(9000);
+    f.rt.report(9000, "the 4097th report");
+    out.D = f.state(); f.end(); }
+  // E. A full queue; the initiating turn raises a report from a new source.
+  { const f = fixture(); fill(f, MAX_QUEUED); f.add(9000); f.add(9001);
+    f.during = () => f.rt.report(9001, "re-entrant report");
+    f.rt.report(9000, "the 4097th report");
+    out.E = f.state(); f.frame(); out.E = [out.E, f.state(), f.calls.slice(-2)]; f.end(); }
+  // F. A full queue; the initiating turn replaces a waiting report.
+  { const f = fixture(); fill(f, MAX_QUEUED); f.add(9000);
+    f.during = () => f.rt.report(200, "replacement");
+    f.rt.report(9000, "the 4097th report");
+    out.F = [f.state(), f.calls[100]]; f.end(); }
+  // G. Exactly 4096 waiting reports; the frame's first turn raises one click.
+  { const f = fixture(); fill(f, MAX_QUEUED);
+    f.during = () => f.other.click(); f.frame();
+    out.G = [f.state(), f.calls.at(-1)]; f.end(); }
+  // H. Control: 4096 waiting reports and a frame, nothing re-entrant.
+  { const f = fixture(); fill(f, MAX_QUEUED); f.frame();
+    out.H = f.state(); f.end(); }
+  // I. 4095 waiting reports, a frame and one re-entrant click.
+  { const f = fixture(); fill(f, MAX_QUEUED - 1);
+    f.during = () => f.other.click(); f.frame();
+    out.I = f.state(); f.end(); }
+  // A real loop behind 4096 waiting reports still poisons: a turn that
+  // raises more clicks than the budget, and clicks that each raise one more.
+  { const f = fixture(); fill(f, MAX_QUEUED);
+    f.during = () => { for (let i = 0; i <= MAX_QUEUED; i += 1) f.other.click(); }; f.frame();
+    out.fanOut = f.state(); f.end(); }
+  { const f = fixture(); fill(f, MAX_QUEUED);
+    f.during = () => f.other.click(); f.chain = true; f.frame();
+    out.chain = f.state(); f.end(); }
+  return out;
+});
+const quiet = (delivered, queue = 0, sources = queue) => ({ poisoned: null, delivered, queue, sources });
+check("A: an early drain's initiating turn may raise a click behind a full queue", full.A, [quiet(0, 4096), quiet(4098), "r100", "click@1"]);
+check("B: a click at a full queue lets the oldest report's turn raise another", full.B, [quiet(4098), ["click@1", "click@2"]]);
+check("C: a drain spends no turn budget on 4095 reports that waited", full.C, quiet(4097));
+check("D: a full queue's 4097th report waits for its frame", full.D, quiet(4096, 1));
+check("E: a report raised in the initiating turn waits beside the 4097th", full.E, [quiet(4096, 2), quiet(4098), ["the 4097th report", "re-entrant report"]]);
+check("F: a replacement in the initiating turn keeps its waiting entry", full.F, [quiet(4096, 1), "replacement"]);
+check("G: a frame of 4096 waiting reports delivers the click its first turn raised", full.G, [quiet(4097), "click@2"]);
+check("H: a frame delivers 4096 waiting reports", full.H, quiet(4096));
+check("I: a frame of 4095 waiting reports delivers one re-entrant click", full.I, quiet(4096));
+check("a turn raising more than 4096 events behind waiting reports poisons", full.fanOut,
+  { poisoned: "resource_limit: more than 4096 events raised since the runtime left idle are waiting (an event feedback loop)", delivered: 1, queue: 0, sources: 0 });
+check("clicks that each raise one more poison after 4096 raised turns, not counting waiting reports", full.chain,
+  { poisoned: "resource_limit: more than 4096 turns for events raised since the runtime left idle in one drain (an event feedback loop)", delivered: 8192, queue: 0, sources: 0 });
+
 // The ports app observes real result turns; nothing here substitutes a
 // reducer or a result. Frames are controlled so reports meet deterministically.
 const ports = await page.evaluate(async () => {
