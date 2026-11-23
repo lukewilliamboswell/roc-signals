@@ -2,3 +2,5 @@ nightly-2026-11-18-a520eed	wasm32	dev	size	https://github.com/roc-lang/roc/issue
 nightly-2026-11-18-a520eed	native-fuzz	speed	size	https://github.com/roc-lang/roc/issues/13197
 nightly-2026-11-19-54c51c9	native-fuzz	speed	size	https://github.com/roc-lang/roc/issues/13197
 nightly-2026-11-19-54c51c9	wasm32	dev	size	https://github.com/roc-lang/roc/issues/13195
+nightly-2026-11-18-a520eed	native-walk	speed	size	fixed in 0.1.0_RC1, so not filed: a walk runner's --opt=speed build never finishes
+nightly-2026-11-19-54c51c9	native-walk	speed	size	fixed in 0.1.0_RC1, so not filed: a walk runner's --opt=speed build never finishes
