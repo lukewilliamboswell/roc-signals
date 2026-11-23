@@ -245,26 +245,27 @@ TableCore := [].{
 
 ## Remember `key`'s state when the turn began (its first write wins) and
 ## apply the write: `Ok(row)` stores the row, `Err(Missing)` removes it.
+##
+## The table is taken apart by `match`: a destructuring statement left its
+## dictionaries shared until the function returned, so the insert copied
+## every row, and a loop of writes was quadratic. The changes take the key
+## with `contains` and `insert`, not `Dict.update`, which copied the
+## changes it shared when they grew. Both are compiler behaviour (see
+## design.md's compiler limitations); the meaning is the same.
 write : Table(k, v), k, [Absent, Was(v)], Try(v, [Missing]) -> Table(k, v)
 	where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-write = |table, key, before, after| {
-	{ rows, record, whole, version: now, start, id, phase } = table
-	next_record = match whole {
-		Rewritten => record
-		Keyed =>
-			record.update(
-				key,
-				|found| match found {
-					Ok(first) => Ok(first)
-					Err(Missing) => Ok(before)
-				},
-			)
+write = |table, key, before, after| match table {
+	{ rows, record, whole, version: now, start, id, phase } => {
+		next_record = match whole {
+			Rewritten => record
+			Keyed => if (record.contains(key)) record else record.insert(key, before)
+		}
+		next_rows = match after {
+			Ok(row) => rows.insert(key, row)
+			Err(Missing) => rows.remove(key)
+		}
+		{ rows: next_rows, record: next_record, whole, version: now + 1, start, id, phase }
 	}
-	next_rows = match after {
-		Ok(row) => rows.insert(key, row)
-		Err(Missing) => rows.remove(key)
-	}
-	{ rows: next_rows, record: next_record, whole, version: now + 1, start, id, phase }
 }
 
 ## How many keys a table's changes hold, or `Rewritten`.

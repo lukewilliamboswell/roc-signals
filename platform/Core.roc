@@ -432,9 +432,15 @@ Core := [].{
 				modify: |w, f| modify(
 					w,
 					|t| {
-						began = wrap(TableCore.begin_changes(unwrap(t)))
-						before = TableCore.mark(unwrap(began))
-						wrap(TableCore.kept(unwrap(f(began)), before))
+						# `began` stays unwrapped until the call, so the modifier
+						# receives the table's only reference and writes in place:
+						# wrapped first and unwrapped again for `mark`, it was
+						# held twice and the modifier's first write copied every
+						# row (compiler behaviour; see design.md's compiler
+						# limitations).
+						began = TableCore.begin_changes(unwrap(t))
+						before = TableCore.mark(began)
+						wrap(TableCore.kept(unwrap(f(wrap(began))), before))
 					},
 				),
 			},
