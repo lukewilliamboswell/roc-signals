@@ -5807,7 +5807,7 @@ SpecRunner := [].{
 	soak! = |program, host, spec, { cycles, warm }| {
 		forget = |s| {
 			r = s.inst
-			# TODO upstream: a record update whose base is a field of a row-polymorphic function's argument increfs that base after the update freed a replaced field (see design.md compiler limitations)
+			# TODO compiler: before nightly-2026-11-21-09f4dc3, a record update whose base is a field of a row-polymorphic function's argument increfs that base after the update freed a replaced field; restore `{ ..r, calls: [] }` once the pinned compiler is that nightly or later (see design.md compiler limitations)
 			{ ..s, inst: { inst: r.inst, calls: [], counted: r.counted, dom: r.dom, crypto_recipes: r.crypto_recipes } }
 		}
 		ran = SpecRunner.drive!(
