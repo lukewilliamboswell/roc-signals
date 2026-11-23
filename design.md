@@ -964,6 +964,25 @@ keeps, in the query's order, and of those only the rows inside a window.
   a mount creates them, and then the marked rows' holes are refreshed. For
   rows that own requests that is the order the requests are issued in, and
   so which are refused at the in-flight bound.
+- **The count of rows kept.** `Engine.table_view_counted(table, props,
+  name, template)` is a table view whose site also sets the attribute
+  `name` of its parent element to the number of rows the query keeps, in
+  decimal: one `ATTR` at mount, after the rows the mount creates, and one
+  in each pass that changes that number, after the change of the rows
+  drawn and before the marked rows' holes are refreshed. The number is the
+  length of the site's ordered keys, which the pass has brought up to
+  date, so counting costs no pass over the table: the site reads it before
+  `follow` and after the change of the rows drawn, and emits only when the
+  two differ. It is for a list drawn through a small window that must size
+  its scroller for every row. The name is a checked `AttrName`, and a
+  reserved transport name is a contract error where the view is
+  described. The parent must be an element the site's block mounts: a
+  site at the top of a branch or of the page, or anywhere in a drawn row
+  (whose template places its sites by anchor), names no parent, and a
+  counted view there is a contract error at mount, naming the site. The
+  attribute is the view's; an app that also writes it on the element gets
+  whichever was written last. `Engine.table_view` is the same site with no
+  count, and emits nothing more.
 - **Rows are found by the typed key.** The site indexes its rows by the
   table's key, through the key's own equality and hash. It never makes a
   text of a key to find a row: an inspected value is a debugging
@@ -6043,6 +6062,8 @@ keyed : Signal(ctx, Str), v, v -> Keyed(ctx, v)
 TableViewProps(ctx, q, k, v, s) : { query : Signal(ctx, q), plan : (q -> QueryPlan(k, v, s)), window : Signal(ctx, Window) }
 table_view : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s),
             (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)   # q has is_eq
+table_view_counted : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), AttrName,
+            (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
 QueryPlan(k, v, s) : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }
 sort_by : { keep : k, v -> Bool, sort : k, v -> s } -> QueryPlan(k, v, (s, k))
     where [s.order_relative_to : s, s -> [Before, Same, After], k.order_relative_to : k, k -> [Before, Same, After]]

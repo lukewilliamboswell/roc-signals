@@ -59,6 +59,9 @@ import pf.Engine exposing [Elem, Signal, State, Table]
 ##   moved are exactly those off a longest run that kept its order, so an
 ##   event changes the rows a view draws once and never by way of a window
 ##   it does not end with;
+## - each counted view's list (`a`, `b`, `c`, `e`) says in `data-kept` how
+##   many rows its listing keeps, and no other view's list has that
+##   attribute;
 ## - the readers of the row count and of the serial show the model's;
 ## - a reader of the table's inverse shows, applied to the table, the rows
 ##   the table held before its last writing turn (or that the turn
@@ -667,13 +670,19 @@ row_view = |table, key, row| Engine.element(
 )
 
 ## A view of `table`: the window `window` of `listing`, in a list that
-## carries `name`.
-list_of : Engine.Attr(ctx), Engine.Cell(st, Table(U64, Item)), Signal(ctx, Listing), Signal(ctx, Engine.Window) -> Elem(ctx)
+## carries `name`. A counted view also writes the number of rows its
+## listing keeps to the list's `data-kept`.
+list_of : Engine.Attr(ctx), [Counted, Uncounted], Engine.Cell(st, Table(U64, Item)), Signal(ctx, Listing), Signal(ctx, Engine.Window) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, st)]
-list_of = |name, table, listing, window| Engine.element(
+list_of = |name, counted, table, listing, window| Engine.element(
 	"ul",
 	[name],
-	[Engine.table_view(table, { query: listing, plan: query_plan, window }, |key, row| row_view(table, key, row))],
+	[
+		match counted {
+			Counted => Engine.table_view_counted(table, { query: listing, plan: query_plan, window }, "data-kept", |key, row| row_view(table, key, row))
+			Uncounted => Engine.table_view(table, { query: listing, plan: query_plan, window }, |key, row| row_view(table, key, row))
+		},
+	],
 )
 
 ## The page: the three controls a decision fires from (`plain`, `copy`,
@@ -692,7 +701,7 @@ page = |{}| {
 			Engine.element("p", [Engine.test_id("count")], [Engine.text_s(rows.signal().map(|table| table.len().to_str()))]),
 			Engine.element("p", [Engine.test_id("serial")], [Engine.text_s(cells.items.serial.signal().map(|n| n.to_str()))]),
 			Engine.element("p", [Engine.test_id("undo")], [Engine.text_s(rows.signal().map(undone_text))]),
-			list_of(Engine.test_id("a"), rows, cells.listing.signal(), cells.window.signal()),
+			list_of(Engine.test_id("a"), Counted, rows, cells.listing.signal(), cells.window.signal()),
 			Engine.state(
 				first_local,
 				|local| Engine.element(
@@ -710,20 +719,20 @@ page = |{}| {
 							],
 							[],
 						),
-						list_of(Engine.test_id("b"), rows, local.signal().map(|held| held.listing), local.signal().map(|held| held.window)),
+						list_of(Engine.test_id("b"), Counted, rows, local.signal().map(|held| held.listing), local.signal().map(|held| held.window)),
 						Engine.derive(
 							local.signal().map(|held| { listing: turned(held.listing), window: held.window }),
-							|shown| list_of(Engine.test_id("e"), rows, shown.map(|held| held.listing), shown.map(|held| held.window)),
+							|shown| list_of(Engine.test_id("e"), Counted, rows, shown.map(|held| held.listing), shown.map(|held| held.window)),
 						),
 					],
 				),
 			),
 			Engine.when(
 				cells.shown.signal(),
-				|| list_of(Engine.test_id("c"), rows, cells.listing.signal().map(turned), Engine.const(c_window)),
+				|| list_of(Engine.test_id("c"), Counted, rows, cells.listing.signal().map(turned), Engine.const(c_window)),
 				|| Engine.text(""),
 			),
-			list_of(Engine.test_id("d"), cells.spare, Engine.const(d_listing), Engine.const(d_window)),
+			list_of(Engine.test_id("d"), Uncounted, cells.spare, Engine.const(d_listing), Engine.const(d_window)),
 			Engine.element(
 				"ol",
 				[Engine.test_id("lanes")],
@@ -734,7 +743,7 @@ page = |{}| {
 						|lane| Engine.element(
 							"li",
 							[],
-							[list_of(Engine.test_id_s(lane.key().map(|shade| "lane ${shade}")), rows, lane.field(lane_listing), Engine.const(lane_window))],
+							[list_of(Engine.test_id_s(lane.key().map(|shade| "lane ${shade}")), Uncounted, rows, lane.field(lane_listing), Engine.const(lane_window))],
 						),
 					),
 				],
@@ -809,17 +818,22 @@ model_start = {
 compare_u64 : U64, U64 -> [Before, Same, After]
 compare_u64 = |x, y| if (x < y) Before else if (x > y) After else Same
 
-## The keys a view of `rows` draws: the rows the listing keeps, sorted from
-## scratch in the listing's order, and of those the window.
-drawn : List(Entry), Listing, Engine.Window -> List(U64)
-drawn = |rows, { show, order }, window| {
-	kept = rows.keep_if(
-		|e| match show {
+## The rows of `rows` a listing keeps, in no order.
+kept_by : List(Entry), Listing -> List(Entry)
+kept_by = |rows, listing|
+	rows.keep_if(
+		|e| match listing.show {
 			All => True
 			Only(shade) => e.row.shade == shade
 			Except(shade) => e.row.shade != shade
 		},
 	)
+
+## The keys a view of `rows` draws: the rows the listing keeps, sorted from
+## scratch in the listing's order, and of those the window.
+drawn : List(Entry), Listing, Engine.Window -> List(U64)
+drawn = |rows, { show, order }, window| {
+	kept = kept_by(rows, { show, order })
 	sorted = kept.sort_with(
 		|x, y| match order {
 			ByKey => compare_u64(x.key, y.key)
@@ -842,6 +856,19 @@ window_keys = |m, view| match view {
 	D => drawn(m.spare, d_listing, d_window)
 	E => drawn(m.rows, turned(m.local.listing), m.local.window)
 	Lane(shade) => drawn(m.rows, lane_listing(shade), lane_window)
+}
+
+## What view `view`'s list says in `data-kept`: the number of rows its
+## listing keeps for a counted view, and nothing for the views in each lane
+## and `d`, which do not count.
+kept_text : Model, ViewId -> Str
+kept_text = |m, view| match view {
+	A => kept_by(m.rows, m.listing).len().to_str()
+	B => kept_by(m.rows, m.local.listing).len().to_str()
+	C => kept_by(m.rows, turned(m.listing)).len().to_str()
+	E => kept_by(m.rows, turned(m.local.listing)).len().to_str()
+	D => ""
+	Lane(_) => ""
 }
 
 ## Whether the app draws view `view` at all.
@@ -1289,6 +1316,10 @@ problem = |s, ops, created, moved| {
 				want = window_keys(s.model, view).map(|key| row_text(s.model, view, key))
 				if got != want {
 					Err("view ${name} draws ${Str.inspect(got)}, the model ${Str.inspect(want)}")?
+				}
+				kept = Dom.attr_of(Dom.node(s.dom, list), "data-kept")
+				if kept != kept_text(s.model, view) {
+					Err("view ${name}'s list says ${Str.inspect(kept)} rows kept, the model ${Str.inspect(kept_text(s.model, view))}")?
 				}
 			}
 			(Err(NotFound), False) => {}

@@ -501,6 +501,34 @@ Engine := [].{
 		where [ctx.store : () -> Reach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
 	table_view = |{ c }, { query, plan, window }, template| Core.table_view(inner_cell(c), { query: core_signal(query), plan, window: core_signal(window) }, |key, row| template(SignalCore.varying(key), { s: row }))
 
+	## `table_view_counted(table, props, name, template)` is a `table_view`
+	## that also sets the attribute `name` of its parent element to the
+	## number of rows its query keeps, in decimal:
+	##
+	## ```
+	## Engine.element(
+	##     "ul",
+	##     [],
+	##     [Engine.table_view_counted(todos, { query, plan: Todo.plan, window }, "data-count", |key, todo| Todo.row(key, todo))],
+	## )
+	## ```
+	##
+	## Use it for a long list drawn through a small `window`, when the page
+	## must know how many rows there are in all, to size a scroller or to
+	## say "12 of 3,400". The attribute is set at mount and again in each
+	## turn that changes the number, which the view already holds, so
+	## counting costs nothing per row; a reader of the table that counted
+	## the rows itself would pass over the table on every write.
+	##
+	## The view must sit directly inside an element of your view, outside
+	## the rows of an `each` or another table view: a counted view with no
+	## such parent stops the app when it mounts, naming the site. The
+	## attribute belongs to the view: do not also set it on the element,
+	## or the two overwrite each other.
+	table_view_counted : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), AttrName, (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
+		where [ctx.store : () -> Reach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
+	table_view_counted = |{ c }, { query, plan, window }, name, template| Core.table_view_counted(inner_cell(c), { query: core_signal(query), plan, window: core_signal(window) }, name, |key, row| template(SignalCore.varying(key), { s: row }))
+
 	## An app's store: the cells it holds, their starting values, and the
 	## cells it gives to readers. Build it once with `store`, as a top-level value a
 	## module that composes the app can import, and hand it to
