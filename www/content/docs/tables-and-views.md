@@ -58,6 +58,11 @@ template)` is its site:
 
 {{ sample(file="scores/Scores.roc", region="board") }}
 
+This board uses `Engine.table_view_counted`, a table view that also counts
+the rows its query keeps into an attribute of the list ([Counting the rows
+kept](#counting-the-rows-kept)); `Engine.table_view` takes the same
+arguments without the name.
+
 The table view keeps the place of every row the query keeps. When a row is
 written, it works out that row's place again and touches only that row on
 the page: its text changes, it moves, or it enters or leaves the window.
@@ -134,6 +139,26 @@ This model assumes fixed-height rows. Measuring each row, page scrolling
 and variable-height virtualization are outside the platform's layout
 vocabulary. [Scrolling and layout](@/docs/effects-and-browser.md#scrolling-and-layout)
 describes size/seen observations and their lifetimes.
+
+### Counting the rows kept
+
+A window draws a few rows, and the page sometimes needs to know how many
+the query keeps in all: to size a scroller for every row, or to say "3 of
+1,200". `Engine.table_view_counted(table, props, name, template)` is a
+table view that sets the attribute `name` of its parent element to that
+number, in decimal. The board above sets `data-count` on its list: `6` at
+first, `3` once only the red team is shown, `4` when a red player joins.
+The attribute is written when the view mounts and again in each turn that
+changes the number; the view already holds the number, so counting costs
+nothing per row. A reader of the table that counted the rows itself would
+filter the whole table on every write.
+
+The view must be placed directly inside an element of your view, outside
+the rows of an `each` or another table view, so it has a parent to write
+to. Placed anywhere else, it stops the app when it mounts, with an error
+naming the site. The attribute is the view's: do not set it on the element
+as well, or the two overwrite each other. A spec reads it with
+`expect-attr`.
 
 ## A drawn row is handed its row
 

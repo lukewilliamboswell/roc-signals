@@ -34,11 +34,11 @@ Release := [].{
 
 	## The platform files a bundle carries, relative to `platform/`.
 	bundle_files : List(Str)
-	bundle_files = ["main.roc", "Base64.roc", "Engine.roc", "Web.roc", "Spelling.roc", "MarkupAdvice.roc", "MarkupLiteral.roc", "Clipboard.roc", "WebCrypto.roc", "Html.roc", "Svg.roc", "Layout.roc", "Order.roc", "Url.roc", "Worker.roc", "Wire.roc", "WorkerCodec.roc", "Port.roc", "PortJson.roc", "PortJsonBody.roc", "PortRegistry.roc", "Protocol.roc", "ProtocolFacts.roc", "Core.roc", "ReadyIndex.roc", "EntryRoutes.roc", "SignalCore.roc", "Sig.roc", "TableCore.roc", "View.roc", "Seq.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "PicturePage.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "host/crypto.zig", "host/crypto_result.zig", "host/crypto_abi.zig", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
+	bundle_files = ["main.roc", "Base64.roc", "Engine.roc", "Web.roc", "Spelling.roc", "MarkupAdvice.roc", "MarkupLiteral.roc", "Clipboard.roc", "WebCrypto.roc", "Html.roc", "Svg.roc", "Layout.roc", "Order.roc", "Url.roc", "Worker.roc", "Wire.roc", "WorkerCodec.roc", "Port.roc", "PortJson.roc", "PortJsonBody.roc", "PortRegistry.roc", "Protocol.roc", "ProtocolFacts.roc", "Core.roc", "ReadyIndex.roc", "EntryRoutes.roc", "SignalCore.roc", "Sig.roc", "Reconcile.roc", "FxCore.roc", "TableCore.roc", "View.roc", "Seq.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "PicturePage.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "host/crypto.zig", "host/crypto_result.zig", "host/crypto_abi.zig", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
 
 	## The production package's pure source closure, relative to platform/.
 	engine_files : List(Str)
-	engine_files = ["Core", "Engine", "EngineHost", "EntryRoutes", "Layout", "MarkupAdvice", "Port", "PortJson", "PortJsonBody", "PortRegistry", "ReadyIndex", "Seq", "Sig", "SignalCore", "Spelling", "TableCore", "Url", "View", "Web", "Wire", "Worker", "WorkerCodec"].map(|name| "${name}.roc")
+	engine_files = ["Core", "Engine", "EngineHost", "EntryRoutes", "FxCore", "Layout", "MarkupAdvice", "Port", "PortJson", "PortJsonBody", "PortRegistry", "ReadyIndex", "Reconcile", "Seq", "Sig", "SignalCore", "Spelling", "TableCore", "Url", "View", "Web", "Wire", "Worker", "WorkerCodec"].map(|name| "${name}.roc")
 
 	engine_bundle! : SpecSuite.Options, Str => Try(Str, _)
 	engine_bundle! = |o, out| {

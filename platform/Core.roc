@@ -5,7 +5,9 @@ import Spelling
 import Layout
 import TableCore exposing [Table]
 import Sig
+import FxCore
 import View
+import Reconcile
 import MarkupAdvice
 import parser.Html as ParsedHtml
 import parser.Markup
@@ -430,9 +432,15 @@ Core := [].{
 				modify: |w, f| modify(
 					w,
 					|t| {
-						began = wrap(TableCore.begin_changes(unwrap(t)))
-						before = TableCore.mark(unwrap(began))
-						wrap(TableCore.kept(unwrap(f(began)), before))
+						# `began` stays unwrapped until the call, so the modifier
+						# receives the table's only reference and writes in place:
+						# wrapped first and unwrapped again for `mark`, it was
+						# held twice and the modifier's first write copied every
+						# row (compiler behaviour; see design.md's compiler
+						# limitations).
+						began = TableCore.begin_changes(unwrap(t))
+						before = TableCore.mark(began)
+						wrap(TableCore.kept(unwrap(f(wrap(began))), before))
 					},
 				),
 			},
@@ -1084,7 +1092,7 @@ Core := [].{
 		## `first` returned, so it sees `first`'s writes (two writes of one
 		## state compose), and the event reports the union of both write
 		## sets, which one pass settles from the outermost down
-		## (`waits_for_outer`). An element
+		## (`Sig.at_state`). An element
 		## takes one handler per event, so this is how a click writes local
 		## state and also runs a decision, or a handler its owner passed
 		## down. Costs one closure call more per event.
@@ -1402,7 +1410,32 @@ Core := [].{
 	## the key.
 	table_view : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
 		where [ctx.store : () -> StoreReach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
-	table_view = |source, props, template| Site(
+	table_view = |source, props, template| Core.table_view_site(source, props, Uncounted, template)
+
+	## `table_view_counted(table, props, name, template)` is a `table_view`
+	## whose site also sets the attribute `name` of its parent element to
+	## the number of rows its query keeps, in decimal (`ATTR`): at mount,
+	## and in each pass that changes that number, which the site reads
+	## from its view's ordered keys, so the count costs no pass over the
+	## table. The parent must be an element the site's own block mounts: a
+	## site at the top of a branch or of the page, or anywhere in a drawn
+	## row, knows only an anchor, and a counted view there is a contract
+	## error at mount, as is a reserved transport name.
+	table_view_counted : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), Web.AttrName, (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
+		where [ctx.store : () -> StoreReach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
+	table_view_counted = |source, props, name, template| {
+		if Core.attribute_reserved(name) {
+			crash "contract: attribute ${Str.inspect(name.text())} is reserved for startup transport"
+		}
+		Core.table_view_site(source, props, Counted(name), template)
+	}
+
+	## The site of a table view, counted into its parent's attribute or not
+	## (see [Core.table_view_counted]). An uncounted site emits exactly what
+	## a view without a count emits.
+	table_view_site : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), ViewCount, (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
+		where [ctx.store : () -> StoreReach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
+	table_view_site = |source, props, counted, template| Site(
 		Mount(
 			|env, args, tx| {
 				get = {
@@ -1445,8 +1478,11 @@ Core := [].{
 				# The query, the window, and one placement for every row of the table.
 				(cols, slots, tx4) = view_enter(cfg, cols_empty(plan.ncols, plan.holes.len()), |_, key| Row.{ outer: env, key: "", item: key }, view.shown_keys(), count_evals(tx3, 2 + rows.len()))
 				reads = Sig.cell_bit(source.cell).bitwise_or(eff_mask(props.query)).bitwise_or(eff_mask(props.window)).bitwise_or(outer_mask).bitwise_or(plan.kreads.bitwise_and(Sig.above_bits(depth)))
-				shows = { get, query: props.query, plan: props.plan, window: props.window }
-				(view_inst(cfg, shows, q, view, [], cols, slots), reads, tx4)
+				if counted != Uncounted and args.parent == 0 {
+					crash "contract: a counted table view sets an attribute of its parent element, and the view at site ${show_path(args.path)} has none it can name: place it inside an element, outside the rows of an `each` or a table view"
+				}
+				shows = { get, query: props.query, plan: props.plan, window: props.window, counted }
+				(view_inst(cfg, shows, q, view, [], cols, slots), reads, view_count(shows, cfg.parent, view.len(), tx4))
 			},
 		),
 		|d| {
@@ -2187,9 +2223,12 @@ Core := [].{
 	## owns only the requests of its current value. Before it issues for a new
 	## value it cancels every awaited request it still holds from earlier values
 	## (`CANCEL`, counted `cancelled`), whatever its kind, and drops their queued
-	## follow-ups and refusals (counted `stale`), so a late answer for an earlier
-	## value never reaches `react`. A `plan` that returns `[]` makes a change a
-	## pure cancel. Disposal follows `watch`'s rules.
+	## follow-ups and refusals (counted `stale`), so within one lifetime of the
+	## site a late answer for an earlier value never reaches `react`. A `plan`
+	## that returns `[]` makes a change a pure cancel. Disposal follows
+	## `watch`'s rules: a kept request becomes an orphan of the nearest
+	## surviving ancestor, whose reaction its answer still runs after a site
+	## mounted again in this one's place has issued for a newer value.
 	watch_latest : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	watch_latest = |v, plan, react| Site(
@@ -2385,13 +2424,13 @@ Core := [].{
 	## of requests in flight.
 	fx_stats : App(st) -> { issued : U64, delivered : U64, stale : U64, refused : U64, cancelled : U64, live : U64, reparented : U64, skipped : U64 }
 	fx_stats = |App.(AppBody.({ tx, .. }))| {
-		fx = tx.fx
-		{ issued: fx.issued, delivered: fx.delivered, stale: fx.stale, refused: fx.refused, cancelled: fx.cancelled, live: fx.live.len(), reparented: fx.reparented, skipped: fx.skipped }
+		{ counts, live, .. } = tx.fx.life
+		{ issued: counts.issued, delivered: counts.delivered, stale: counts.stale, refused: counts.refused, cancelled: counts.cancelled, live: live.len(), reparented: counts.reparented, skipped: counts.skipped }
 	}
 
 	## For test platforms and harnesses: the ids of the requests in flight, in issue order.
 	fx_live : App(st) -> List(U32)
-	fx_live = |App.(AppBody.({ tx, .. }))| tx.fx.live.map(|l| l.id)
+	fx_live = |App.(AppBody.({ tx, .. }))| tx.fx.life.live.map(|l| l.id)
 
 	## For the wire format: what a file's encoding carries beside its handle.
 	file_parts : File -> { name : Str, mime : Str, size : U64, start : U64, len : U64 }
@@ -3311,26 +3350,26 @@ Core := [].{
 	## dropped and counted `stale`.
 	result : App(st), U32, Result -> App(st)
 	result = |App.(AppBody.({ store, root, tx, programs })), id, res| {
-		match tx.fx.live.find_first(|l| l.id == id) {
-			Err(_) => App.(AppBody.{ store, root, tx: fx_count(tx, Stale), programs })
-			Ok(entry) => {
-				# A subscription stays live until it is cancelled, unless its
-				# JavaScript ended it (a port's `Closed` or `Threw`).
-				live = entry.sub and !(programs.ports.ends)(res)
-				tx1 = if (live) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
-				drain(turn(App.(AppBody.{ store, root, tx: start_batch(tx1), programs }), entry.path, id, Fx(Final(res, live))))
-			}
+		# A subscription stays live until it is cancelled, unless its
+		# JavaScript ended it (a port's `Closed` or `Threw`).
+		ended = (programs.ports.ends)(res)
+		(route, tx1) = life_step(tx, |life| FxCore.arrive(life, id, Final({ ends: ended })))
+		match route {
+			Deliver({ path, live }) => drain(turn(App.(AppBody.{ store, root, tx: start_batch(tx1), programs }), path, id, Fx(Final(res, live))))
+			Stale | Unasked(_) => App.(AppBody.{ store, root, tx: tx1, programs })
 		}
 	}
 
 	## Deliver a sampled transfer through its live request’s owning path without
 	## retiring the request. An unsolicited report is a contract error.
 	progress : App(st), U32, Transfer -> App(st)
-	progress = |App.(AppBody.({ store, root, tx, programs })), id, transfer| match tx.fx.live.find_first(|entry| entry.id == id) {
-		Err(_) => App.(AppBody.{ store, root, tx: fx_count(tx, Stale), programs })
-		Ok(entry) => if entry.progress {
-			drain(turn(App.(AppBody.{ store, root, tx: start_batch(tx), programs }), entry.path, id, Fx(Progress(transfer))))
-		} else crash "contract: transfer progress was not requested for effect ${id.to_str()} at site ${show_path(entry.path)}"
+	progress = |App.(AppBody.({ store, root, tx, programs })), id, transfer| {
+		(route, tx1) = life_step(tx, |life| FxCore.arrive(life, id, Report))
+		match route {
+			Deliver({ path, .. }) => drain(turn(App.(AppBody.{ store, root, tx: start_batch(tx1), programs }), path, id, Fx(Progress(transfer))))
+			Stale => App.(AppBody.{ store, root, tx: tx1, programs })
+			Unasked(path) => crash "contract: transfer progress was not requested for effect ${id.to_str()} at site ${show_path(path)}"
+		}
 	}
 
 	## For test platforms and harnesses: take the commands accumulated since the
@@ -3339,7 +3378,7 @@ Core := [].{
 	take_cmds : App(st), List(U8) -> (App(st), List(U8))
 	take_cmds = |App.(AppBody.({ store, root, tx, programs })), buf| {
 		{ cmds, next, free, routes, work, paths, site_free, observations, fx } = tx
-		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
+		{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
 		{ mounting, asked, types, seen: _ } = batch
 		var $cmds = cmds
 		if asked {
@@ -3351,7 +3390,7 @@ Core := [].{
 		} else if $cmds.len() == 1 {
 			$cmds = $cmds.clear()
 		}
-		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
+		fx2 = { life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
 		(App.(AppBody.{ store, root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2 }, programs }), $cmds)
 	}
 
@@ -3915,7 +3954,7 @@ Mount(ctx) := [Mount((ctx, Args, Tx -> (Inst(ctx), U128, Tx)))]
 ## text, the files a files-kind event carries and how many were refused, or
 ## an effect result), or `Settle`, which fires nothing. A `Settle` follows
 ## the pass of an event's outermost write down the event's path, and names
-## the written layers below it (`waits_for_outer`). Each of them joined that
+## the written layers below it (`Sig.at_state`). Each of them joined that
 ## pass if the pass reached its site; the walk refreshes, at its own site,
 ## each one the pass did not reach, and stops at the deepest of them.
 Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(EffectInput), Settle(Sig.Wrote, Bool), OpenState(Bool), Activate(U64)]
@@ -3924,7 +3963,7 @@ Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(EffectInput), Sett
 ## layer below index `depth`, so that it goes on past the state site there.
 finish_event : Payload, U64 -> Try([Further, Ends], [Fires])
 finish_event = |payload, depth| match payload {
-	Settle(left, forced) => if (!forced and Sig.is_empty(Sig.from(left, depth + 1))) Ok(Ends) else Ok(Further)
+	Settle(left, forced) => Ok(Sig.walk_on(left, depth, forced))
 	_ => Err(Fires)
 }
 
@@ -4334,7 +4373,9 @@ orphans_of = |out| match out {
 	_ => []
 }
 
-Inst(ctx) := [Inst((ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx)))]
+## A site instance. `Spare` is never built: it is there for the compiler
+## (see `call`).
+Inst(ctx) := [Inst((ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx))), Spare(List(Inst(ctx)))]
 
 ## The site tree, the store and the turn of a [Core.App], behind its opaque
 ## name (see [Core.App] for why the body is a type of its own).
@@ -4416,8 +4457,8 @@ w_count = 32
 ## accumulator keeps no second copy.
 fx_counters : App(st) -> List(U64)
 fx_counters = |Core.App.(AppBody.({ tx, .. }))| {
-	fx = tx.fx
-	[fx.issued, fx.delivered, fx.stale, fx.refused, fx.cancelled, fx.reparented, fx.skipped, fx.live.len()]
+	{ counts, live, .. } = tx.fx.life
+	[counts.issued, counts.delivered, counts.stale, counts.refused, counts.cancelled, counts.reparented, counts.skipped, live.len()]
 }
 
 ## Port commands sent (`PORT`, opcode 19). Counted here, at index 40 of the
@@ -4682,9 +4723,9 @@ release_node = |tx, owner| {
 ## Move the registration index out before modifying it, leaving no second
 ## holder in Fx that would make each observed-node change copy the index.
 with_registrations : Fx, (List(U32), LiveObservations -> (List(U32), LiveObservations)) -> Fx
-with_registrations = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, change| {
+with_registrations = |{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, change| {
 	(documents, observations) = change(document_nodes, observed)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups, guard, startup, batch }
+	{ life, document_nodes: documents, observed: observations, refs, focus, ref_pos, cleanups, guard, startup, batch }
 }
 
 ## Release a static node id and its route.
@@ -4744,9 +4785,9 @@ drop_name = |fx, { node, name, path }| if (name.is_empty()) fx else with_refs(
 ## Move the reference indexes and pending checks out of the accumulator so
 ## updates retain one holder for each map, list and reverse-index column.
 with_refs : Fx, (RefMap, List(List(RefOwned)), List(TurnEnd) -> (RefMap, List(List(RefOwned)), List(TurnEnd))) -> Fx
-with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, change| {
+with_refs = |{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, change| {
 	(names, positions, checks) = change(refs, ref_pos, focus)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups, guard, startup, batch }
+	{ life, document_nodes, observed, refs: names, focus: checks, ref_pos: positions, cleanups, guard, startup, batch }
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
@@ -5266,8 +5307,27 @@ noop = |_| Inst(
 	},
 )
 
+## Call a site with the instance moved in, so it owns its storage and
+## rebuilds its block in place. The host boxes the engine state, so a
+## site's function is erased, and an erased call reads its captures
+## borrowed (and a rebuilt child list is then a copy, linear in the block's
+## sites, on every turn that passes through it) in two cases this avoids: a
+## call in tail position is deferred, and a deferred call never hands its
+## closure over, so the result is bound before it is returned; and a callee
+## whose answer holds exactly one function keeps its own closure to build
+## that function in, so `Inst` has the `Spare` variant, which makes the
+## answer hold a list of functions too. Neither half alone keeps the
+## captures owned. Compiler workaround for roc-lang/roc#13374 (see
+## design.md's compiler limitations): bind the call and drop `Spare` once
+## the pinned compiler owns an erased callee's captures.
 call : Inst(ctx), ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx)
-call = |Inst(f), env, msg, tx| f(env, msg, tx)
+call = |inst, env, msg, tx| match inst {
+	Inst(f) => {
+		(next, out, tx1) = f(env, msg, tx)
+		(next, out, tx1)
+	}
+	Spare(_) => crash "internal: a spare instance is never built"
+}
 
 ## Re-evaluate the holes that read a changed layer, then descend into the
 ## children whose subtrees read one. The settle check (`Check`) re-evaluates
@@ -5442,40 +5502,14 @@ dispose_block = |{ holes: _, handlers: _, children, child_reads: _, child_top, n
 ## ------------------------------------------------------------------
 ## Site kinds.
 
-## Whether the written layer at index `depth` waits at its site when the
-## event that wrote it unwinds through it: the event also wrote a layer
-## above it on its path, or a store cell.
-##
-## A reader below the layer may also read the outer write, or something
-## derived from either: a `derive`, a `resource`, a row's item. Refreshed
-## for one write at a time, it would be evaluated with one new value beside
-## one old one, a pair that never held: a text would be written twice, and
-## an effect site would issue a request for it. So an event's writes are
-## settled by one pass, from the outermost. The inner layer hands its write
-## up and waits; the outermost written layer (or the root, for a cell)
-## starts the pass; and when the pass reaches the waiting layer's site, the
-## site adds its own layer to what the pass carries, for its subtree alone
-## (`state_inst`). Order within the pass follows nesting, so every `derive`
-## of either write is recomputed before anything below it reads it, and a
-## reader of both is evaluated once.
-##
-## A layer is readable only below its own site, so nothing outside the
-## waiting layer's subtree can need it, and no reader of a sibling layer at
-## the same index is woken. A waiting layer the pass does not reach has no
-## reader in common with it: nothing in its subtree reads what the pass
-## carried. The `Settle` walk that follows the pass down the event's path
-## refreshes each such layer at its own site.
-waits_for_outer : Sig.Wrote, U64 -> Bool
-waits_for_outer = |mask, depth| !Sig.is_empty(Sig.below(mask, depth))
-
 ## After an event below a state site: take this layer's value back from
-## the environment. A layer the event did not write hands the event's
-## write set up as it is. A written layer with something written above it
-## waits (`waits_for_outer`). A written layer with nothing written above it
-## starts the event's pass: it refreshes its block, where the layers
-## written below it join, and then sends the `Settle` walk down the event's
-## path (`path`, `pos` and `h` are the event's) for those the pass did not
-## reach.
+## the environment and do what `Sig.at_state` decides. A layer the event
+## did not write hands the event's write set up as it is. A written layer
+## with something written above it waits. A written layer with nothing
+## written above it starts the event's pass: it refreshes its block, where
+## the layers written below it join, and then sends the `Settle` walk down
+## the event's path (`path`, `pos` and `h` are the event's) for those the
+## pass did not reach.
 state_settle : Block(In(ctx, s)), U64, Out(In(ctx, s)), List(U32), U64, U32, Tx -> (Inst(ctx), Out(ctx), Tx)
 state_settle = |block, depth, out, path, pos, h, tx| {
 	match out {
@@ -5485,23 +5519,22 @@ state_settle = |block, depth, out, path, pos, h, tx| {
 			{ outer: next_outer, value: s2 } = next_inner
 			# The write set is exact: whether this layer was written, and
 			# what is handed up, never depend on a shared signature bit.
-			if !Sig.has_layer(mask, depth) {
-				(state_inst(s2, block, depth, Settled), Pending(next_outer, mask), tx)
-			} else if waits_for_outer(mask, depth) {
-				(state_inst(s2, block, depth, Waiting), Pending(next_outer, mask), tx)
-			} else {
-				# Every write of the turn is in place by now, and this is the
-				# outermost layer it wrote: its pass starts here.
-				(b3, t3) = refresh(block, In.{ outer: next_outer, value: s2 }, Turn(Sig.bit(depth)), bump(tx, w_dirty_roots, 1))
-				waiting = Sig.from(mask, depth + 1)
-				if Sig.is_empty(waiting) or pos >= path.len() {
-					(state_inst(s2, b3, depth, Settled), Pending(next_outer, Sig.none), t3)
-				} else {
-					# Then the walk for the written layers below it that the
-					# pass did not reach: they lie on the event's path.
-					(b4, settled, t4) = fire_kid(b3, In.{ outer: next_outer, value: s2 }, path, pos, h, Settle(waiting, False), t3)
-					(outer, s4) = state_out(settled)
-					(state_inst(s4, b4, depth, Settled), Pending(outer, Sig.none), t4)
+			match Sig.at_state(mask, depth) {
+				Untouched => (state_inst(s2, block, depth, Settled), Pending(next_outer, mask), tx)
+				Waits => (state_inst(s2, block, depth, Waiting), Pending(next_outer, mask), tx)
+				Starts({ walk: waiting }) => {
+					# Every write of the turn is in place by now, and this is the
+					# outermost layer it wrote: its pass starts here.
+					(b3, t3) = refresh(block, In.{ outer: next_outer, value: s2 }, Turn(Sig.bit(depth)), bump(tx, w_dirty_roots, 1))
+					if Sig.is_empty(waiting) or pos >= path.len() {
+						(state_inst(s2, b3, depth, Settled), Pending(next_outer, Sig.none), t3)
+					} else {
+						# Then the walk for the written layers below it that the
+						# pass did not reach: they lie on the event's path.
+						(b4, settled, t4) = fire_kid(b3, In.{ outer: next_outer, value: s2 }, path, pos, h, Settle(waiting, False), t3)
+						(outer, s4) = state_out(settled)
+						(state_inst(s4, b4, depth, Settled), Pending(outer, Sig.none), t4)
+					}
 				}
 			}
 		}
@@ -5561,7 +5594,7 @@ state_out = |out| match out {
 
 ## A state site: `s` is this layer's value at absolute depth `depth`.
 ## `waits` is `Waiting` from the moment an event that wrote this layer
-## below another of its writes unwinds through the site (`waits_for_outer`)
+## below another of its writes unwinds through the site (`Sig.at_state`)
 ## until its readers are refreshed, in the same turn: by the pass of the
 ## outer write, if that pass reaches the site, and otherwise by the
 ## `Settle` walk that follows it.
@@ -6019,37 +6052,19 @@ end_tables = |st, tables, wrote| {
 	if Sig.mask_of(wrote).bitwise_and(tables.written) == 0 {
 		st
 	} else {
-		var $state = finish_table_word(st, { tables: tables.cells, bits: wrote.cells, base: 0 })
-		var $base = 64.U64
-		for word in wrote.more {
-			$state = finish_table_word($state, { tables: tables.cells, bits: word, base: $base })
-			$base = $base + 64
-		}
-		$state
+		# A word has at most 64 positions and a zero word needs no lookup. A
+		# position that names an ordinary cell never invokes a table
+		# callback, and exact positions keep tables 64 cells apart
+		# independent despite their shared signature bit.
+		Sig.fold_cells(
+			wrote,
+			st,
+			|state, cell| match tables.cells.get(cell) {
+				Ok(table) => (table.finish)(state)
+				Err(_) => state
+			},
+		)
 	}
-}
-
-## A word has at most 64 positions. Zero words require no lookup, and a set
-## bit that names an ordinary cell never invokes a table callback. Exact IDs
-## keep tables 64 cells apart independent despite their shared signature bit.
-finish_table_word : st, { tables : Dict(U64, Core.TableCell(st)), bits : U64, base : U64 } -> st
-finish_table_word = |st, { tables, bits, base }| {
-	var $state = st
-	var $bits = bits
-	var $cell = base
-	while $bits != 0 {
-		if $bits.bitwise_and(1) != 0 {
-			match tables.get($cell) {
-				Ok(table) => {
-					$state = (table.finish)($state)
-				}
-				Err(_) => {}
-			}
-		}
-		$bits = $bits.shr_zf_wrap(1)
-		$cell = $cell + 1
-	}
-	$state
 }
 
 ## After an event, return its root environment intact to the instance and
@@ -6992,13 +7007,6 @@ take_order = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty
 end_ref : EachCfg(r, find) -> U32
 end_ref = |cfg| if (cfg.sole) 0 else cfg.anchor
 
-## The node a row inserted at position `pos` (of `order`) goes before.
-ref_at : EachCfg(r, find), Cols(r, item), U64 -> U32
-ref_at = |cfg, cols, pos| match cols.order.get(pos) {
-	Ok(s) => node_of(cols, s)
-	Err(_) => end_ref(cfg)
-}
-
 key_of_slot : Cols(r, item), U32 -> Str
 key_of_slot = |cols, slot| cols.keys.get(slot.to_u64()) ?? crash "key"
 
@@ -7127,259 +7135,187 @@ change_marks = |tx| {
 	{ created: w.c01, moved: w.c04, removed: work_get(w, w_rows_removed), updated: work_get(w, w_rows_updated) }
 }
 
+## Reconcile the site's rows with `list` by the plan `Reconcile.plan`
+## makes from their keys, applying each step to the columns as it comes
+## (`place_step`). Emptying the list is not planned: `clear_rows` releases
+## every row at once, with one `CLEAR` when the site is its parent's only
+## child.
 reconcile_rows : EachCfg(r, (item -> Str)), Cols(r, item), (Str, item -> r), List(item), Tx -> (Cols(r, item), Tx)
 	where [item.is_eq : item, item -> Bool]
 reconcile_rows = |cfg, cols, env, list, tx| {
 	n_old = cols.order.len()
 	n_new = list.len()
-	row_bit = Sig.bit(cfg.depth)
 	if n_new == 0 {
 		if (n_old == 0) (cols, tx) else clear_rows(cfg, cols, env, True, bump(tx, w_rows_removed, n_old))
-	} else if n_old == 0 {
-		append_rows(cfg, cols, env, list, 0, tx)
 	} else {
-		var $cols = cols
-		var $tx = tx
-		# Kept rows whose item changed, counted once after the loops so the
-		# accumulator is not threaded through every kept row.
-		var $updated = 0.U64
-		var $i = 0.U64
-		var $oe = n_old
-		var $ne = n_new
-		var $go = True
-		while $go {
-			# common prefix
-			var $p = True
-			while $p and $i < $oe and $i < $ne {
-				slot = $cols.order.get($i) ?? crash "order"
-				item = list.get($i) ?? crash "row"
-				if same_row(cfg, $cols, slot, item) {
-					(c2, u) = keep_row_n($cols, slot, item, row_bit)
-					$cols = c2
-					$updated = $updated + u
-					$i = $i + 1
-				} else {
-					$p = False
-				}
-			}
-			# common suffix
-			var $q = True
-			while $q and $i < $oe and $i < $ne {
-				slot = $cols.order.get($oe - 1) ?? crash "order"
-				item = list.get($ne - 1) ?? crash "row"
-				if same_row(cfg, $cols, slot, item) {
-					(c2, u) = keep_row_n($cols, slot, item, row_bit)
-					$cols = c2
-					$updated = $updated + u
-					$oe = $oe - 1
-					$ne = $ne - 1
-				} else {
-					$q = False
-				}
-			}
-			# swapped ends
-			$go = False
-			if $oe - $i >= 2 and $ne - $i >= 2 and $i < $oe and $i < $ne {
-				a = $cols.order.get($i) ?? crash "order"
-				b = $cols.order.get($oe - 1) ?? crash "order"
-				first = list.get($i) ?? crash "row"
-				last = list.get($ne - 1) ?? crash "row"
-				if same_row(cfg, $cols, b, first) and same_row(cfg, $cols, a, last) {
-					na = node_of($cols, a)
-					after = ref_at(cfg, $cols, $oe)
-					$tx = move_row($cols, a, after, move_row($cols, b, na, $tx))
-					(c3, u3) = keep_row_n($cols, b, first, row_bit)
-					(c4, u4) = keep_row_n(c3, a, last, row_bit)
-					$cols = c4
-					$updated = $updated + u3 + u4
-					(c2, order) = take_order($cols)
-					$cols = set_order(c2, order.swap($i, $oe - 1) ?? crash "order")
-					$i = $i + 1
-					$oe = $oe - 1
-					$ne = $ne - 1
-					$go = True
-				}
-			}
+		(c0, order) = take_order(cols)
+		# What the steps read rides in the sink, so the three functions
+		# capture nothing: a capture of the site's configuration costs an
+		# allocation on every reconciliation.
+		at = { cfg, env, list, n_old, row_bit: Sig.bit(cfg.depth) }
+		start = { at, cols: c0, order, tx, updated: 0, tail: 0, placed: [], created: { at: 0, slot: 0 }, hashes: [], hashed_from: 0, positions: [] }
+		lists = {
+			old: n_old,
+			new: n_new,
+			same: same_step,
+			find: find_step,
 		}
-		$tx = bump($tx, w_rows_updated, $updated)
-		if $i == $oe and $i == $ne {
-			($cols, $tx)
-		} else if $i == $oe {
-			# pure insertion of list[i..ne) before position oe
-			if $oe == $cols.order.len() {
-				append_rows(cfg, $cols, env, list, $i, $tx)
-			} else {
-				before = ref_at(cfg, $cols, $oe)
-				var $new_slots = []
-				var $k = $i
-				while $k < $ne {
-					item = list.get($k) ?? crash "row"
-					(c2, slot, t2) = create_row(cfg, $cols, env, item, before, $tx)
-					$cols = c2
-					$tx = t2
-					$new_slots = $new_slots.append(slot)
-					$k = $k + 1
-				}
-				(c3, order) = take_order($cols)
-				merged = order.sublist({ start: 0, len: $i }).concat($new_slots).concat(order.sublist({ start: $oe, len: order.len() - $oe }))
-				(set_order(c3, merged), $tx)
-			}
-		} else if $i == $ne {
-			# pure removal of order[i..oe)
-			var $k = $i
-			while $k < $oe {
-				slot = $cols.order.get($k) ?? crash "order"
-				(c2, t2) = drop_row(cfg, $cols, env, slot, True, $tx)
-				$cols = c2
-				$tx = t2
+		match Reconcile.plan(lists, start, place_step) {
+			Ok(placing) => placed_order(placing, n_old, n_new)
+			Err(DuplicateKey(n)) => crash dup_key(cfg.path, (cfg.key)(list.get(n) ?? crash "row"))
+		}
+	}
+}
+
+## What a reconciliation carries while its plan's steps are applied: the
+## columns, with the old order taken out of them and left as it was so
+## that every old position the plan names finds its slot; the accumulator;
+## and what the new order needs.
+##
+## The new order is written once, after the plan (`placed_order`). A kept
+## row at its old position needs nothing written; nor does a row of the
+## kept suffix when the list grew or shrank (`tail` of them), which shifts
+## as a whole; a row created at the end of the order is appended to it at
+## once. Every other kept or created row is `placed`. So an equal list, a
+## suffix kept and a swap of two rows write nothing or a few slots, as
+## `order` is held once and changed in place.
+Placing(r, item) : {
+	at : { cfg : EachCfg(r, (item -> Str)), env : (Str, item -> r), list : List(item), n_old : U64, row_bit : U128 },
+	cols : Cols(r, item),
+	order : List(U32),
+	tx : Tx,
+	updated : U64,
+	tail : U64,
+	placed : List({ at : U64, slot : U32 }),
+	created : { at : U64, slot : U32 },
+	hashes : List(U64),
+	hashed_from : U64,
+	positions : List(U64),
+}
+
+## `Reconcile.plan`'s comparison: whether the old row at `o` holds the key
+## of `list[n]` (an equal item answers at once).
+same_step : Placing(r, item), U64, U64 -> Bool
+	where [item.is_eq : item, item -> Bool]
+same_step = |p, o, n| same_row(p.at.cfg, p.cols, slot_at(p.order, o), p.at.list.get(n) ?? crash "row")
+
+## `Reconcile.plan`'s lookup: the old position of the row holding the key
+## of `list[n]`, found in the key index and counted as a reconciliation's
+## hash and comparisons. The hash is kept for the row's creation, so a key
+## looked up is not hashed again. The first lookup maps every live slot to
+## its old position, once per reconciliation.
+find_step : Placing(r, item), U64 -> (Placing(r, item), Reconcile.Found)
+find_step = |placing, n| {
+	{ at, cols, order, tx, updated, tail, placed, created, hashes, hashed_from: from0, positions: pos0 } = placing
+	key = (at.cfg.key)(at.list.get(n) ?? crash "row")
+	h = hash_str(key)
+	probe = index_probe(cols.index, cols.keys, key, h)
+	(positions, hashed_from) =
+		if hashes.is_empty() {
+			var $pos = List.repeat(U64.highest, cols.items.len())
+			var $k = 0.U64
+			for s in order {
+				$pos = $pos.set(s.to_u64(), $k) ?? crash "internal: slot position"
 				$k = $k + 1
 			}
-			(c3, order) = take_order($cols)
-			kept = if ($oe - $i == 1) order.drop_at($i) else order.sublist({ start: 0, len: $i }).concat(order.sublist({ start: $oe, len: order.len() - $oe }))
-			(set_order(c3, kept), $tx)
+			($pos, n)
 		} else {
-			reconcile_general(cfg, $cols, env, list, $i, $oe, $ne, $tx)
+			(pos0, from0)
 		}
+	found = match probe.found {
+		Ok(s) => Old(positions.get(s.to_u64()) ?? crash "internal: an indexed key has no row")
+		Err(Missing) => Fresh
 	}
+	t2 = bump(bump(tx, w_key_hashes, 1), w_key_compares, probe.compares)
+	({ at, cols, order, tx: t2, updated, tail, placed, created, hashes: hashes.append(h), hashed_from, positions }, found)
 }
 
-## General keyed reconciliation of the middle ranges old order[i..oe) and
-## new list[i..ne). Allocates scratch proportional to the site.
-reconcile_general : EachCfg(r, (item -> Str)), Cols(r, item), (Str, item -> r), List(item), U64, U64, U64, Tx -> (Cols(r, item), Tx)
+## Apply one step of a plan to the columns: keep a row (pruning an equal
+## item), create one, drop one or move one, and note what the new order
+## needs (`Placing`).
+place_step : Placing(r, item), Reconcile.Step -> Placing(r, item)
 	where [item.is_eq : item, item -> Bool]
-reconcile_general = |cfg, cols, env, list, i, oe, ne, tx| {
-	row_bit = Sig.bit(cfg.depth)
-	nslots = cols.items.len()
-	# old position of every slot in the old middle (+1; 0 = not in middle)
-	var $oldpos = List.repeat(0.U64, nslots)
-	var $k = i
-	while $k < oe {
-		s = cols.order.get($k) ?? crash "order"
-		$oldpos = $oldpos.set(s.to_u64(), $k + 1) ?? crash "pos"
-		$k = $k + 1
-	}
-	# match new middle keys to existing slots
-	var $found = []
-	var $seen = List.repeat(False, nslots)
-	var $compares = 0.U64
-	var $hashes = []
-	$k = i
-	while $k < ne {
-		item = list.get($k) ?? crash "row"
-		key = (cfg.key)(item)
-		h = hash_str(key)
-		$hashes = $hashes.append(h)
-		probe = index_probe(cols.index, cols.keys, key, h)
-		$compares = $compares + probe.compares
-		r = match probe.found {
-			Ok(s) => {
-				if ($oldpos.get(s.to_u64()) ?? 0) == 0 {
-					crash dup_key(cfg.path, key)
-				}
-				if $seen.get(s.to_u64()) ?? False {
-					crash dup_key(cfg.path, key)
-				}
-				$seen = $seen.set(s.to_u64(), True) ?? $seen
-				s.to_u64() + 1
+place_step = |placing, step| {
+	{ at, cols, order, tx, updated, tail, placed, created, hashes, hashed_from, positions } = placing
+	{ cfg, env, list, n_old, row_bit } = at
+	match step {
+		Keep(o, n) => {
+			slot = slot_at(order, o)
+			(c2, u) = keep_row_n(cols, slot, list.get(n) ?? crash "row", row_bit)
+			n_new = list.len()
+			if o == n {
+				{ at, cols: c2, order, tx, updated: updated + u, tail, placed, created, hashes, hashed_from, positions }
+			} else if n + tail + 1 == n_new and o + n_new == n + n_old {
+				{ at, cols: c2, order, tx, updated: updated + u, tail: tail + 1, placed, created, hashes, hashed_from, positions }
+			} else {
+				{ at, cols: c2, order, tx, updated: updated + u, tail, placed: placed.append({ at: n, slot }), created, hashes, hashed_from, positions }
 			}
-			Err(Missing) => 0
 		}
-		$found = $found.append(r)
-		$k = $k + 1
-	}
-	# drop old middle rows that are gone
-	var $cols = cols
-	var $tx = bump(bump(tx, w_key_hashes, ne - i), w_key_compares, $compares)
-	$k = i
-	while $k < oe {
-		s = cols.order.get($k) ?? crash "order"
-		if !($seen.get(s.to_u64()) ?? False) {
-			(c2, t2) = drop_row(cfg, $cols, env, s, True, $tx)
-			$cols = c2
-			$tx = t2
-		}
-		$k = $k + 1
-	}
-	# longest increasing subsequence of old positions among kept rows
-	var $seq = []
-	for f in $found {
-		$seq = $seq.append(if (f == 0) 0 else $oldpos.get(f - 1) ?? 0)
-	}
-	stable = lis_mark($seq)
-	# place from the end
-	var $slots = List.repeat(0.U32, ne - i)
-	var $updated = 0.U64
-	var $ref = ref_at(cfg, $cols, oe)
-	var $p = ne
-	while $p > i {
-		$p = $p - 1
-		idx = $p - i
-		item = list.get($p) ?? crash "row"
-		f = $found.get(idx) ?? 0
-		if f == 0 {
-			(c2, slot, t2) = create_row_h(cfg, $cols, env, item, $ref, Ok($hashes.get(idx) ?? crash "internal: hash"), $tx)
-			$cols = c2
-			$tx = t2
-			$slots = $slots.set(idx, slot) ?? $slots
-			$ref = node_of($cols, slot)
-		} else {
-			slot = (f - 1).to_u32_wrap()
-			node = node_of($cols, slot)
-			if !(stable.get(idx) ?? False) {
-				r = $ref
-				$tx = move_row($cols, slot, r, $tx)
+		Create(n, before) => {
+			hash = if (!hashes.is_empty() and n >= hashed_from) hashes.get(n - hashed_from).map_err(|_| Unhashed) else Err(Unhashed)
+			node = node_before(cfg, cols, order, created, before)
+			(c2, slot, t2) = create_row_h(cfg, cols, env, list.get(n) ?? crash "row", node, hash, tx)
+			if n == order.len() and tail == 0 {
+				{ at, cols: c2, order: order.append(slot), tx: t2, updated, tail, placed, created: { at: n, slot }, hashes, hashed_from, positions }
+			} else {
+				{ at, cols: c2, order, tx: t2, updated, tail, placed: placed.append({ at: n, slot }), created: { at: n, slot }, hashes, hashed_from, positions }
 			}
-			(c4, u4) = keep_row_n($cols, slot, item, row_bit)
-			$cols = c4
-			$updated = $updated + u4
-			$slots = $slots.set(idx, slot) ?? $slots
-			$ref = node
+		}
+		Drop(o) => {
+			(c2, t2) = drop_row(cfg, cols, env, slot_at(order, o), True, tx)
+			{ at, cols: c2, order, tx: t2, updated, tail, placed, created, hashes, hashed_from, positions }
+		}
+		Move(o, before) => {
+			t2 = move_row(cols, slot_at(order, o), node_before(cfg, cols, order, created, before), tx)
+			{ at, cols, order, tx: t2, updated, tail, placed, created, hashes, hashed_from, positions }
 		}
 	}
-	(c3, order) = take_order($cols)
-	merged = order.sublist({ start: 0, len: i }).concat($slots).concat(order.sublist({ start: oe, len: order.len() - oe }))
-	(set_order(c3, merged), bump($tx, w_rows_updated, $updated))
 }
 
-## Mark the members of one longest strictly increasing subsequence of the
-## nonzero entries of `seq` (zeros are new rows and never stable).
-lis_mark : List(U64) -> List(Bool)
-lis_mark = |seq| {
-	n = seq.len()
-	var $tails = []
-	var $prev = List.repeat(0.U64, n)
-	var $i = 0.U64
-	while $i < n {
-		v = seq.get($i) ?? 0
-		if v != 0 {
-			# binary search the first tail whose value >= v
-			var $lo = 0.U64
-			var $hi = $tails.len()
-			while $lo < $hi {
-				mid = ($lo + $hi) // 2
-				tv = seq.get($tails.get(mid) ?? 0) ?? 0
-				if tv < v {
-					$lo = mid + 1
-				} else {
-					$hi = mid
-				}
-			}
-			p = if ($lo > 0) ($tails.get($lo - 1) ?? 0) + 1 else 0
-			$prev = $prev.set($i, p) ?? crash "internal: longest run predecessor index"
-			$tails = if ($lo == $tails.len()) $tails.append($i) else ($tails.set($lo, $i) ?? crash "internal: longest run tail index")
+## The slot of the row at old position `o`.
+slot_at : List(U32), U64 -> U32
+slot_at = |order, o| order.get(o) ?? crash "internal: old position"
+
+## The node a placed row goes before: an old row's, the row the latest
+## `Create` made, or the site's end.
+node_before : EachCfg(r, find), Cols(r, item), List(U32), { at : U64, slot : U32 }, Reconcile.Before -> U32
+node_before = |cfg, cols, order, created, before| match before {
+	Old(o) => node_of(cols, slot_at(order, o))
+	New(n) => if (created.at == n) node_of(cols, created.slot) else crash "internal: a row is placed before a row not just created"
+	End => end_ref(cfg)
+}
+
+## The new order, written in place over the old one: the kept suffix
+## shifted by the change of length, then every placed row at its position.
+## A row kept at its own position needs nothing (`Placing`).
+placed_order : Placing(r, item), U64, U64 -> (Cols(r, item), Tx)
+placed_order = |{ at: _, cols, order, tx, updated, tail, placed, created: _, hashes: _, hashed_from: _, positions: _ }, n_old, n_new| {
+	var $order = order
+	if n_new < n_old {
+		shift = n_old - n_new
+		var $n = n_new - tail
+		while $n < n_new {
+			$order = $order.set($n, $order.get($n + shift) ?? crash "order") ?? crash "order"
+			$n = $n + 1
 		}
-		$i = $i + 1
+	} else if n_new > n_old {
+		shift = n_new - n_old
+		while $order.len() < n_new {
+			$order = $order.append(0)
+		}
+		var $n = n_new
+		while $n > n_new - tail {
+			$n = $n - 1
+			$order = $order.set($n, $order.get($n - shift) ?? crash "order") ?? crash "order"
+		}
 	}
-	var $out = List.repeat(False, n)
-	var $cur = match $tails.last() {
-		Ok(t) => t + 1
-		Err(_) => 0
+	for p in placed {
+		$order = $order.set(p.at, p.slot) ?? crash "order"
 	}
-	while $cur != 0 {
-		$out = $out.set($cur - 1, True) ?? crash "internal: longest run output index"
-		$cur = $prev.get($cur - 1) ?? 0
+	if $order.len() > n_new {
+		$order = $order.drop_last($order.len() - n_new)
 	}
-	$out
+	(set_order(cols, $order), bump(tx, w_rows_updated, updated))
 }
 
 ## Evaluate the marked holes of the dirty rows and forward changes to
@@ -7640,8 +7576,21 @@ view_chunk : U64
 view_chunk = 1024
 
 ## Fixed per view site: the table's getter, the query and how it selects
-## and orders rows, and the window.
-Shows(ctx, q, k, v, s) : { get : (ctx -> Table(k, v)), query : Signal(ctx, q), plan : (q -> Core.QueryPlan(k, v, s)), window : Signal(ctx, Core.Window) }
+## and orders rows, the window, and the parent's attribute that counts the
+## rows the query keeps, if any (`Core.table_view_counted`).
+Shows(ctx, q, k, v, s) : { get : (ctx -> Table(k, v)), query : Signal(ctx, q), plan : (q -> Core.QueryPlan(k, v, s)), window : Signal(ctx, Core.Window), counted : ViewCount }
+
+## Whether a view site counts the rows its query keeps into an attribute
+## of its parent element.
+ViewCount : [Uncounted, Counted(Web.AttrName)]
+
+## Set a counted view's parent attribute to `count`, the number of rows its
+## query keeps (one `ATTR`); nothing for a view that is not counted.
+view_count : Shows(ctx, q, k, v, s), U32, U64, Tx -> Tx
+view_count = |shows, parent, count, tx| match shows.counted {
+	Uncounted => tx
+	Counted(name) => emit_op(tx, 9, |c| put_presence(put_attribute_name(put_u32(c, parent), name), Present(count.to_str())))
+}
 
 ## A view row's key. It is fixed for the row's lifetime, so it never
 ## triggers a refresh.
@@ -7844,13 +7793,14 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 					full = row_marks(pass, cfg.outer_mask.bitwise_or(cols.kid_mask), cfg.depth)
 					c1 = if (full != 0) mark_all(cols, full) else cols
 					window = view.window_of()
+					kept = view.len()
 					# `view` moves into `follow` and is not used again, so the ordered
 					# keys are changed in place.
 					{ view: v1, placed, reached, touched, wrote, .. } = view.follow(table)
 					# The pass names what it brings of the query and the window. It
 					# carries every write of the event that this site can read: a
 					# layer written with the table joined the pass at its own site,
-					# above this one (`waits_for_outer`). So the table, the query
+					# above this one (`Sig.at_state`). So the table, the query
 					# and the window all arrive here together.
 					names_query = pass == Check or Sig.meets(pass, eff_mask(shows.query))
 					names_window = pass == Check or Sig.meets(pass, eff_mask(shows.window))
@@ -7869,7 +7819,10 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 						(drawn.view, drawn.changes, count_evals(t1, table.len()))
 					}
 					(c4, s4, t4) = view_apply(cfg, c1, slots, mk, v2, changes, t2)
-					(c5, t5) = settle(cfg, c4, mk, pass, t4)
+					# A counted view's parent learns the rows its query keeps when
+					# their number changed, after the rows drawn.
+					t4c = if (v2.len() == kept) t4 else view_count(shows, cfg.parent, v2.len(), t4)
+					(c5, t5) = settle(cfg, c4, mk, pass, t4c)
 					(c6, orph) = take_dropped_view(c5, cfg.depth, shows.get)
 					(view_inst(cfg, shows, q2, v2, adopted.concat(orph), c6, s4), Done, fx_adopt(t5, cfg.path, orph))
 				}
@@ -8221,9 +8174,9 @@ derive_settle = |input, block, depth, out, tx| {
 # - Follow-up turns run after the current turn, in order. Each has
 #   its chain depth: a follow-up queued by an external turn (a DOM event,
 #   an effect result, the mount) is depth 1, one queued by a follow-up of
-#   depth d is depth d + 1. A chain deeper than `max_turns` is a contract
+#   depth d is depth d + 1. A chain deeper than `FxCore.max_turns` is a contract
 #   error (an effect feedback loop) naming the depth and the site; a turn
-#   that fans out into many independent follow-ups is not. `max_breadth`
+#   that fans out into many independent follow-ups is not. `FxCore.max_breadth`
 #   bounds the follow-up turns of depth 2 or more of one host call, so a
 #   loop that multiplies is stopped too (see `drain`).
 #
@@ -8308,7 +8261,7 @@ mount_initial = |max, programs, { st, tables }, elem, enclosing, cold| {
 		observations,
 		fx: {
 			..fx,
-			max,
+			life: { ..fx.life, max },
 			startup: {
 				..fx.startup,
 				pending: cold != None,
@@ -8918,22 +8871,6 @@ ends_subscription = |res| match res {
 	_ => False
 }
 
-Live : { id : U32, path : List(U32), sub : Bool, progress : Bool }
-
-Queued : { id : U32, path : List(U32), res : Result }
-
-## The follow-ups waiting to run, in order, and the ids among them that
-## still will. Supersession and disposal drop an id from `waiting` alone,
-## so finding and dropping it is an expected O(1) lookup whatever the
-## queue holds; `drain` skips an entry whose id is no longer waiting. The
-## queue follows the app's data (a refusal for each row that fetches past
-## the in-flight bound), so a scan of it per owned id would too.
-FollowUps : { entries : List(Queued), waiting : Dict(U32, {}) }
-
-## Queue a follow-up.
-follow_up : FollowUps, Queued -> FollowUps
-follow_up = |{ entries, waiting }, entry| { entries: entries.append(entry), waiting: waiting.insert(entry.id, {}) }
-
 RefMap : Dict(Str, List({ node : U32, path : List(U32), value_control : Bool }))
 
 RefOwned : { name : Str, path : List(U32) }
@@ -8949,18 +8886,11 @@ startup_empty : StartupState
 startup_empty = { pending: False, adopting: False, next: 1, head: 0, tail: 0, ready: ReadyIndex.ReadyIndex.empty(), armed: None, generation: 0 }
 
 Fx : {
-	next : U32,
-	inner : U32,
-	live : List(Live),
-	queue : FollowUps,
-	max : U64,
-	issued : U64,
-	delivered : U64,
-	stale : U64,
-	refused : U64,
-	cancelled : U64,
-	reparented : U64,
-	skipped : U64,
+	## Request ids, the in-flight table, the follow-up queue and the effect
+	## counters: the lifecycle state machine every lifecycle decision is
+	## asked of (see `FxCore`). One field, so a site that rebuilds `Fx`
+	## carries one value for all of it.
+	life : FxCore.Life(Result),
 
 	## Focus names and their live nodes with construction sites, and the checks awaiting the end of the
 	## turn (see [TurnEnd]).
@@ -9020,12 +8950,12 @@ PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe
 TransitionBatch : { mounting : Bool, asked : Bool, types : List(Str), seen : Dict(Str, {}) }
 
 fx_empty : Fx
-fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: { entries: [], waiting: Dict.empty() }, max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, startup: startup_empty, batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
+fx_empty = { life: FxCore.empty({}), document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, startup: startup_empty, batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
 
 ## Collect a request without allocating an awaited id. Removing the batch from
 ## its holder before updating keeps its hash set and ordered list unique.
 collect_transition : Fx, List(Str) -> Fx
-collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, names| {
+collect_transition = |{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }, names| {
 	{ mounting, asked, types, seen } = batch
 	var $types = types
 	var $seen = seen
@@ -9037,34 +8967,12 @@ collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale,
 			}
 		}
 	}
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen } }
+	{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen } }
 }
-
-## The first follow-up id: follow-ups are a space of their own, above
-## every request id.
-fx_inner_base : U32
-fx_inner_base = 2147483648
 
 ## The host node id that marks an event as an effect result.
 fx_node : U32
 fx_node = 4294967295
-
-## The deepest chain of follow-up turns one host call may run: a
-## follow-up whose turn queues another, and so on. Breadth does not count:
-## one turn may queue any number of independent follow-ups (a refusal for
-## every request past the in-flight bound, say), each at the same depth.
-max_turns : U64
-max_turns = 64
-
-## The most follow-up turns of depth 2 or more one host call may run: 64
-## for each in-flight slot, and at least 64 x 64. The depth bound alone
-## stops every chain, but a feedback loop in which each follow-up queues two
-## or more would grow exponentially before reaching it; this backstop stops
-## that. The follow-ups of depth 1 are not counted (see `drain`): the
-## external turn queued them itself, so their number is what that one turn
-## issued, however many rows it drew, and never the work of a loop.
-max_breadth : U64 -> U64
-max_breadth = |inflight| max_turns * (if (inflight > max_turns) inflight else max_turns)
 
 ## A request the site owns: its id, whether it is a subscription, whether
 ## it is kept on disposal, its held snapshot and position in the plan. Typed
@@ -9223,12 +9131,29 @@ replanned = |plan| |_, a, _| plan(a)
 with_fx : Tx, (Fx -> Fx) -> Tx
 with_fx = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, f| { cmds, next, free, routes, work, paths, site_free, observations, fx: f(fx) }
 
+## Change the request lifecycle (see `FxCore`) and nothing else of the turn.
+with_life : Tx, (FxCore.Life(Result) -> FxCore.Life(Result)) -> Tx
+with_life = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, f| {
+	{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
+	{ cmds, next, free, routes, work, paths, site_free, observations, fx: { life: f(life), document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } }
+}
+
+## Ask the request lifecycle a decision that changes it, and take the
+## answer out. The turn and the effect record are taken apart and put back
+## together so the lifecycle is handed over uniquely and updated in place.
+life_step : Tx, (FxCore.Life(Result) -> (a, FxCore.Life(Result))) -> (a, Tx)
+life_step = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, f| {
+	{ life, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
+	(answer, life2) = f(life)
+	(answer, { cmds, next, free, routes, work, paths, site_free, observations, fx: { life: life2, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } })
+}
+
 fx_count : Tx, [Delivered, Stale] -> Tx
-fx_count = |tx, k| with_fx(
+fx_count = |tx, k| with_life(
 	tx,
-	|fx| match k {
-		Delivered => { ..fx, delivered: fx.delivered + 1 }
-		Stale => { ..fx, stale: fx.stale + 1 }
+	|life| match k {
+		Delivered => FxCore.count(life, Delivered)
+		Stale => FxCore.count(life, Stale)
 	},
 )
 
@@ -9461,15 +9386,15 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 		Ok(_) => {}
 		Err(message) => crash "${message} (site ${show_path(path)})"
 	}
-	# A port request's bytes are written at the end of the turn.
-	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = turn_end_later(tx, path, req)
-	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch } = fx
-	if live.len() >= max {
-		fx2 = { next: id + 1, inner, live, queue: follow_up(queue, { id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }
-		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2 })
-	} else {
-		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req), progress: progress_ms > 0 and supports_progress(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, startup, batch }
-		(id, { cmds: put_req(cmds, id, req, progress_ms), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2 })
+	(admission, t1) = life_step(tx, |life| FxCore.admit(life, { path, sub: is_sub(req), progress: progress_ms > 0 and supports_progress(req) }, Refused))
+	# A port request's bytes are written at the end of the turn, at the
+	# offset its `FX` would take, or nowhere when it was refused.
+	match admission {
+		Refused(id) => (id, turn_end_later(t1, path, req, NoSlot))
+		Admitted(id) => {
+			{ cmds, next, free, routes, work, paths, site_free, observations, fx } = turn_end_later(t1, path, req, Slot(id))
+			(id, { cmds: put_req(cmds, id, req, progress_ms), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx })
+		}
 	}
 }
 
@@ -9481,20 +9406,22 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 ## `WorkRefused(NanKeys)`), and so is a port call or subscription whose
 ## message is nested past the port format's bound (`PortRefused(TooDeep)`).
 fx_refuse : Tx, List(U32), Result -> (U32, Tx)
-fx_refuse = |tx, path, res| {
-	id = tx.fx.next
-	(id, with_fx(tx, |fx| { ..fx, next: id + 1, queue: follow_up(fx.queue, { id, path, res }), refused: fx.refused + 1 }))
-}
+fx_refuse = |tx, path, res| life_step(tx, |life| FxCore.refuse(life, path, res))
 
 ## Queue what the end of the turn settles for a request (see [TurnEnd]) as
 ## it is issued: a focus or scroll command on a named reference, or a port request
-## with the place its bytes go (see [PortAt]), which is nowhere when the
-## in-flight bound is about to refuse it or its message was nested past the
-## port format's bound. Any other request needs nothing.
-turn_end_later : Tx, List(U32), Request -> Tx
-turn_end_later = |tx, path, req| {
+## with the place its bytes go (see [PortAt]): where its `FX` would be
+## written, in the request id admission gave it (`taken`), or nowhere when
+## the in-flight bound refused it or its message was nested past the port
+## format's bound. Any other request needs nothing, and a command's `taken`
+## is not read.
+turn_end_later : Tx, List(U32), Request, [Slot(U32), NoSlot] -> Tx
+turn_end_later = |tx, path, req, taken| {
 	at = tx.cmds.len()
-	slot = if (tx.fx.live.len() >= tx.fx.max) Refused else At(at, tx.fx.next)
+	slot = match taken {
+		Slot(id) => At(at, id)
+		NoSlot => Refused
+	}
 	entry = match req {
 		Focus(n) => Focus(1, n)
 		Blur(n) => Focus(2, n)
@@ -9524,10 +9451,7 @@ turn_end_later = |tx, path, req| {
 
 ## Queue a follow-up turn for `path` with result `res`.
 fx_follow : Tx, List(U32), Result -> (U32, Tx)
-fx_follow = |tx, path, res| {
-	id = tx.fx.inner
-	(id, with_fx(tx, |fx| { ..fx, inner: id + 1, queue: follow_up(fx.queue, { id, path, res }) }))
-}
+fx_follow = |tx, path, res| life_step(tx, |life| FxCore.follow(life, path, res))
 
 ## Issue a site's requests for value `a`.
 issue : Tx, List(U32), List(Planned(h)), List(Owned(h)) -> (Tx, List(Owned(h)))
@@ -9555,7 +9479,7 @@ issue_progress = |tx, path, reqs, owned, progress_ms| {
 			}
 			Focus(_) | Blur(_) | SelectText(_) | ApplyValue(_) | FocusInPlace(_) | ScrollIntoView(_, _) | ScrollTo(_, _) | PortCommand(_) => {
 				# Settled at the end of the turn (see [TurnEnd]).
-				$tx = turn_end_later($tx, path, req)
+				$tx = turn_end_later($tx, path, req, NoSlot)
 			}
 			Title(t) => {
 				$tx = emit_op($tx, 17, |c| put_str(c, t))
@@ -9581,7 +9505,7 @@ issue_progress = |tx, path, reqs, owned, progress_ms| {
 				# A message nested past the port format's bound: its port is
 				# still checked at the end of the turn, and the request is
 				# refused without being admitted, as a too-deep worker input is.
-				(id, t1) = fx_refuse(turn_end_later($tx, path, req), path, PortRefused(TooDeep))
+				(id, t1) = fx_refuse(turn_end_later($tx, path, req, NoSlot), path, PortRefused(TooDeep))
 				$tx = t1
 				$owned = $owned.append({ id, sub: is_sub(req), keep: is_kept(req), a, at })
 			}
@@ -9646,15 +9570,11 @@ fx_dispose_by = |tx, { owned, orphan }| {
 	var $orph = []
 	for o in owned {
 		id = o.id
-		if $tx.fx.live.any(|l| l.id == id) {
-			if o.keep {
-				$orph = $orph.append(orphan(o))
-			} else {
-				t1 = with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
-				$tx = emit_op(t1, 14, |c| put_u32(c, id))
-			}
-		} else if $tx.fx.queue.waiting.contains(id) {
-			$tx = with_fx($tx, |fx| { ..fx, queue: { ..fx.queue, waiting: fx.queue.waiting.remove(id) }, stale: fx.stale + 1 })
+		if o.keep and FxCore.in_flight($tx.fx.life, id) {
+			$orph = $orph.append(orphan(o))
+		} else {
+			(gave, t1) = life_step($tx, |life| FxCore.give_up(life, id))
+			$tx = if (gave == Cancelled) emit_op(t1, 14, |c| put_u32(c, id)) else t1
 		}
 	}
 	($orph, $tx)
@@ -9694,14 +9614,7 @@ fx_adopt = |tx, path, orphans| {
 		tx
 	} else {
 		ids = orphans.map(|o| o.id)
-		with_fx(
-			tx,
-			|fx| {
-				..fx,
-				live: fx.live.map(|l| if (ids.contains(l.id)) { ..l, path } else l),
-				reparented: fx.reparented + ids.len(),
-			},
-		)
+		with_life(tx, |life| FxCore.adopt(life, path, ids))
 	}
 }
 
@@ -9729,7 +9642,7 @@ adopt_deliver = |adopted, env, id, res, tx| {
 			run = o.run
 			kept = if (keeps_owned(res)) adopted else adopted.drop_at(i)
 			(e2, m, sk) = run(env, res)
-			(kept, Pending(e2, m), with_fx(count_delivery(tx, res), |fx| { ..fx, skipped: fx.skipped + sk }))
+			(kept, Pending(e2, m), with_life(count_delivery(tx, res), |life| FxCore.count(life, Skipped(sk))))
 		}
 		Err(_) => (adopted, Pending(env, Sig.none), fx_count(tx, Stale))
 	}
@@ -9963,12 +9876,20 @@ effect_deliver = |cfg, last, owned, env, id, res, tx| {
 # Supersession (design.md, "Supersession and asynchronous layers").
 #
 # A `watch_latest` or `resource` site owns only the requests of its current
-# value. Before it issues for a new value it gives up everything it still
-# owns: an awaited request still in flight, of any kind, is stopped
-# (CANCEL id), leaves the in-flight table and counts `cancelled`, so its
-# late result is stale like any other; a follow-up still queued for it (a
-# `Self` or a refusal) is dropped and counts `stale`. Owned entries already
-# answered are not in either table and cost nothing. The work is
+# value, for one lifetime of the site. Before it issues for a new value it
+# gives up everything it still owns: an awaited request still in flight, of
+# any kind, is stopped (CANCEL id), leaves the in-flight table and counts
+# `cancelled`, so its late result is stale like any other; a follow-up still
+# queued for it (a `Self` or a refusal) is dropped and counts `stale`
+# (`FxCore.give_up` decides which). Owned entries already answered are not
+# in either table and cost nothing. Supersession never reaches past the
+# site's own lifetime: disposal applies the per-kind rules instead, so a
+# kept request of a disposed site is an orphan of the nearest surviving
+# ancestor, and a site mounted again in its place is a new scope that
+# neither owns nor gives it up, though its answer may arrive after the new
+# site has issued for a newer value. The effect-channel target's nested
+# model holds both rules (`supersededNeverRuns`, `latestOwnsOnlyCurrent`)
+# against the engine's commands, counters and ids in flight. The work is
 # O(owned x in-flight) in the in-flight table, bounded by the in-flight
 # cap, and an expected O(1) lookup per owned id in the follow-ups waiting
 # (`FollowUps`), whose number follows the app's data instead.
@@ -9979,12 +9900,8 @@ fx_supersede = |tx, owned| {
 	var $tx = tx
 	for o in owned {
 		id = o.id
-		if $tx.fx.live.any(|l| l.id == id) {
-			t1 = with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
-			$tx = emit_op(t1, 14, |c| put_u32(c, id))
-		} else if $tx.fx.queue.waiting.contains(id) {
-			$tx = with_fx($tx, |fx| { ..fx, queue: { ..fx.queue, waiting: fx.queue.waiting.remove(id) }, stale: fx.stale + 1 })
-		}
+		(gave, t1) = life_step($tx, |life| FxCore.give_up(life, id))
+		$tx = if (gave == Cancelled) emit_op(t1, 14, |c| put_u32(c, id)) else t1
 	}
 	$tx
 }
@@ -10543,45 +10460,46 @@ new_tx = |cmds| { cmds: cmds.append(0), next: 1, free: [], routes: [], work: wor
 
 ## One turn: fire down `path`; then the root's Changed pass for the cells
 ## the event wrote, which the layers it wrote with them join where the
-## pass reaches their sites (`waits_for_outer`); then a `Settle` walk down
+## pass reaches their sites (`Sig.at_state`); then a `Settle` walk down
 ## the same path for those the pass did not reach; then the turn's focus
 ## commands (resolved now, so a reference mounted later in the same turn
 ## is found; a missing one is counted stale).
 turn : App(st), List(U32), U32, Payload -> App(st)
-turn = |Core.App.(AppBody.({ store, root, tx, programs })), path, h, payload| {
-	(root2, out, tx2) = call(root, Root.{ store }, Fire(path, 0, h, payload), bump(tx, w_turns, 1))
+turn = |Core.App.(AppBody.({ store, root, tx, programs })), path, h, payload| match call(root, Root.{ store }, Fire(path, 0, h, payload), bump(tx, w_turns, 1)) {
+	(root2, out, tx2) => fired_turn(root2, out, tx2, path, h, programs)
+}
+
+## The rest of a turn, once the event has fired. The root instance comes
+## in through a `match` on the answer of its call, not a destructuring
+## statement: a statement left each part of the answer shared until the
+## end of the function, so the root's pass read its block shared and every
+## site below it copied its storage (a table view's columns, the size of
+## its table) on every turn. Compiler behaviour; see design.md's compiler
+## limitations.
+fired_turn : Inst(Root(st)), Out(Root(st)), Tx, List(U32), U32, Catalogue -> App(st)
+fired_turn = |root2, out, tx2, path, h, programs| {
 	(store2, writes) = root_answer(out)
 	force = tx2.observations.echo
-	if Sig.is_empty(writes) {
-		if force {
-			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Fire(path, 0, h, Settle(Sig.none, True)), tx2)
-			Core.App.(AppBody.{ store: root_answer(answer3).0, root: root3, tx: flush_turn(tx3, programs), programs })
-		} else {
-			Core.App.(AppBody.{ store: store2, root: root2, tx: flush_turn(tx2, programs), programs })
-		}
-	} else {
-		cells = Sig.cells_of(writes)
-		waiting = Sig.from(writes, 0)
-		if Sig.is_empty(cells) {
-			# The root's pass is for cells (design.md, "One turn"). A turn
-			# that wrote local state alone has nothing for it to carry: it
-			# would test every hole and child of the root block against an
-			# empty mask, and no table was written to rearm. Its layers
-			# settled at their own sites, and the walk below reaches any left
-			# waiting. Each branch returns the instance itself, so the store
-			# never meets a rebuilt one in a value (roc-lang/roc#12846).
-			end_written_turn(root2, store2, tx2, { path, h, waiting, force }, programs)
-		} else {
-			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Changed(Turn(Sig.mask_of(cells))), bump(tx2, w_dirty_roots, Sig.count(cells)))
+	{ pass, walk } = Sig.at_root(writes)
+	match pass {
+		# The root's pass is for cells (design.md, "One turn"). A turn that
+		# wrote local state alone, or nothing, has nothing for it to carry:
+		# it would test every hole and child of the root block against an
+		# empty mask, and no table was written to rearm. Its layers settled
+		# at their own sites, and the walk reaches any left waiting. Each
+		# branch returns the instance itself, so the store never meets a
+		# rebuilt one in a value (roc-lang/roc#12846).
+		NoPass => end_written_turn(root2, store2, tx2, { path, h, waiting: walk, force }, programs)
+		Cells(mask) => {
+			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Changed(Turn(mask)), bump(tx2, w_dirty_roots, Sig.count(Sig.cells_of(writes))))
 			(store3, _) = root_answer(answer3)
-			end_written_turn(root3, store3, tx3, { path, h, waiting, force }, programs)
+			end_written_turn(root3, store3, tx3, { path, h, waiting: walk, force }, programs)
 		}
 	}
 }
 
-## The rest of a turn that wrote something: the walk down the event's path
-## for the layers the pass did not reach and for a browser echo, then the
-## end of the turn.
+## The rest of a turn: the walk down the event's path for the layers the
+## pass did not reach and for a browser echo, then the end of the turn.
 end_written_turn : Inst(Root(st)), st, Tx, { path : List(U32), h : U32, waiting : Sig.Wrote, force : Bool }, Catalogue -> App(st)
 end_written_turn = |root, store, tx, { path, h, waiting, force }, programs| {
 	if Sig.is_empty(waiting) and !force {
@@ -10626,7 +10544,7 @@ flush_turn = |incoming, programs| {
 							$tx = emit_op($tx, 18, |c| put_u32(c.append(op), node))
 						}
 						Err(_) => {
-							$tx = with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
+							$tx = fx_count($tx, Stale)
 						}
 					}
 				ScrollIntoView(name, props) => match ($tx.fx.refs.get(name) ?? []).first() {
@@ -10634,7 +10552,7 @@ flush_turn = |incoming, programs| {
 						$tx = emit_op($tx, 18, |commands| put_u32(commands.append(6), node).append(align_byte(props.block)).append(align_byte(props.inline)).append(behavior_byte(props.behavior)))
 					}
 					Err(_) => {
-						$tx = with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
+						$tx = fx_count($tx, Stale)
 					}
 				}
 				ScrollTo(name, props) => match ($tx.fx.refs.get(name) ?? []).first() {
@@ -10642,7 +10560,7 @@ flush_turn = |incoming, programs| {
 						$tx = emit_op($tx, 18, |commands| put_edge(put_edge(put_u32(commands.append(7), node), props.top), props.left).append(behavior_byte(props.behavior)))
 					}
 					Err(_) => {
-						$tx = with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
+						$tx = fx_count($tx, Stale)
 					}
 				}
 				CheckTask(task, path) =>
@@ -10667,20 +10585,10 @@ flush_turn = |incoming, programs| {
 ## What is bounded is a chain: a follow-up whose turn queues another, and
 ## so on. A follow-up queued by the external turn has depth 1, one queued
 ## by a turn of depth d has depth d + 1. Running one deeper than
-## `max_turns` is a contract error, because only a feedback loop (a
+## `FxCore.max_turns` is a contract error, because only a feedback loop (a
 ## reaction that issues again what is answered again, a refusal retried
 ## while the table is still full) keeps a chain going; a fan-out of
 ## independent follow-ups from one turn is any number of depth-one turns.
-##
-## The depth needs no field. The queue only grows at its end, so entries
-## sit in the order they were queued and turns run in non-decreasing
-## depth. Follow-up ids are minted in increasing order, refusals from the
-## request space and `Self` from the follow-up space (high bit set), and
-## only follow-ups are queued. So when the turns of depth d begin, the
-## counters of both spaces are a threshold: the entry run next has depth d
-## if its id is below the threshold of its space, and otherwise was queued
-## by a depth-d turn and opens depth d + 1, whose threshold is the counters
-## at that moment. O(1) per turn.
 ##
 ## Total work is bounded too. The turns of depth 1 are bounded by the
 ## external turn: it queued one follow-up for each request it issued past
@@ -10689,50 +10597,52 @@ flush_turn = |incoming, programs| {
 ## queues is deeper. Their number follows what the turn drew (a refusal for
 ## each of thousands of rows that fetch at mount), so they are not counted:
 ## a count that follows an app's data is not a loop. The turns of depth 2
-## or more are counted, at most `max_breadth(max_inflight)` per host call:
-## a loop in which each follow-up queues two or more reaches that long
-## before it reaches the depth bound.
+## or more are counted, at most `FxCore.max_breadth(max_inflight)` per host
+## call: a loop in which each follow-up queues two or more reaches that
+## long before it reaches the depth bound.
 ##
-## The loop carries the store, the site tree and the turn in three
-## variables and rebuilds the instance once, after it.
+## Which entry runs next, at what depth, and whether a bound is passed are
+## `FxCore.next`'s decisions (where the depth is inferred from the ids,
+## O(1) per turn); this loop runs the turn and raises the bound's error.
+## It carries the store, the site tree and the turn in three variables and
+## rebuilds the instance once, after it.
 drain : App(st) -> App(st)
 drain = |Core.App.(AppBody.({ store: store0, root: root0, tx: tx0, programs }))| {
 	var $store = store0
 	var $root = root0
 	var $tx = tx0
-	var $deep_turns = 0.U64
-	var $depth = 1.U64
-	var $below_next = tx0.fx.next
-	var $below_inner = tx0.fx.inner
-	breadth = max_breadth(tx0.fx.max)
-	while !$tx.fx.queue.entries.is_empty() {
-		tx = $tx
-		q = tx.fx.queue.entries.first() ?? crash "internal: a follow-up queue that is not empty has no first entry"
-		if !tx.fx.queue.waiting.contains(q.id) {
+	var $drain = FxCore.drain_start(tx0.fx.life)
+	var $running = True
+	# An empty queue is the common case, and asks the lifecycle nothing.
+	while $running and !$tx.fx.life.queue.entries.is_empty() {
+		at = $drain
+		(step, tx1) = life_step(
+			$tx,
+			|life| match FxCore.next(life, at) {
+				Idle(l) => (Idle, l)
+				Skipped(l, d) => (Skipped(d), l)
+				Run({ entry, depth: _ }, l, d) => (Run(entry, d), l)
+				TooDeep(path) => crash "contract: an effect follow-up chain reached depth 65 at site ${show_path(path)}: each follow-up's turn queued another, more than 64 deep in one call (feedback loop)"
+				TooBroad(path) => crash "resource_limit: the follow-up turns that follow-ups queued in one call exceeded 64 per in-flight slot (at least 4096) at site ${show_path(path)}: follow-ups are multiplying (feedback loop), or a follow-up's own turn issued far more requests than the in-flight bound admits (raise max_inflight)"
+			},
+		)
+		$tx = tx1
+		match step {
+			Idle => {
+				$running = False
+			}
 			# Dropped by supersession or disposal (and counted stale then):
 			# it was never to run, so it takes no turn and no depth.
-			$tx = with_fx(tx, |fx| { ..fx, queue: { ..fx.queue, entries: fx.queue.entries.drop_first(1) } })
-		} else {
-			deeper = if (q.id >= fx_inner_base) q.id >= $below_inner else q.id >= $below_next
-			if deeper {
-				$depth = $depth + 1
-				$below_next = tx.fx.next
-				$below_inner = tx.fx.inner
-				if $depth > max_turns {
-					crash "contract: an effect follow-up chain reached depth 65 at site ${show_path(q.path)}: each follow-up's turn queued another, more than 64 deep in one call (feedback loop)"
-				}
+			Skipped(d) => {
+				$drain = d
 			}
-			if $depth > 1 {
-				if $deep_turns >= breadth {
-					crash "resource_limit: the follow-up turns that follow-ups queued in one call exceeded 64 per in-flight slot (at least 4096) at site ${show_path(q.path)}: follow-ups are multiplying (feedback loop), or a follow-up's own turn issued far more requests than the in-flight bound admits (raise max_inflight)"
-				}
-				$deep_turns = $deep_turns + 1
+			Run(q, d) => {
+				$drain = d
+				Core.App.(AppBody.({ store, root, tx: tx2, programs: _ })) = turn(Core.App.(AppBody.{ store: $store, root: $root, tx: $tx, programs }), q.path, q.id, Fx(Final(q.res, False)))
+				$store = store
+				$root = root
+				$tx = tx2
 			}
-			tx1 = with_fx(tx, |fx| { ..fx, queue: { entries: fx.queue.entries.drop_first(1), waiting: fx.queue.waiting.remove(q.id) } })
-			Core.App.(AppBody.({ store, root, tx: tx2, programs: _ })) = turn(Core.App.(AppBody.{ store: $store, root: $root, tx: tx1, programs }), q.path, q.id, Fx(Final(q.res, False)))
-			$store = store
-			$root = root
-			$tx = tx2
 		}
 	}
 	Core.App.(AppBody.{ store: $store, root: $root, tx: ready_arm($tx), programs })
@@ -10772,8 +10682,9 @@ work_bytes = |Core.App.(AppBody.({ tx, .. })), buf| {
 		$i = $i + 1
 	}
 	fx = tx.fx
-	$b = put_u64(put_u64(put_u64(put_u64($b, fx.issued), fx.delivered), fx.stale), fx.refused)
-	$b = put_u64(put_u64(put_u64(put_u64($b, fx.cancelled), fx.reparented), fx.skipped), fx.live.len())
+	{ counts, live, .. } = fx.life
+	$b = put_u64(put_u64(put_u64(put_u64($b, counts.issued), counts.delivered), counts.stale), counts.refused)
+	$b = put_u64(put_u64(put_u64(put_u64($b, counts.cancelled), counts.reparented), counts.skipped), live.len())
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, w_port_sends)), work_get(counters, 41)), work_get(counters, 42))
 	$b = put_u64(put_u64(put_u64($b, work_get(counters, 43)), fx.observed.live), work_get(counters, 45))
 	$b = put_u64($b, work_get(counters, 46))
@@ -10808,12 +10719,12 @@ settle_note = |a, b| {
 	)
 	pairs = [
 		("live leave guards", a.guard.live, b.guard.live),
-		("issued", a.issued, b.issued),
-		("refused", a.refused, b.refused),
-		("stale", a.stale, b.stale),
-		("cancelled", a.cancelled, b.cancelled),
-		("in flight", a.live.len(), b.live.len()),
-		("queued follow-ups", a.queue.waiting.len(), b.queue.waiting.len()),
+		("issued", a.life.counts.issued, b.life.counts.issued),
+		("refused", a.life.counts.refused, b.life.counts.refused),
+		("stale", a.life.counts.stale, b.life.counts.stale),
+		("cancelled", a.life.counts.cancelled, b.life.counts.cancelled),
+		("in flight", a.life.live.len(), b.life.live.len()),
+		("queued follow-ups", a.life.queue.waiting.len(), b.life.queue.waiting.len()),
 		("end-of-turn focus requests, program checks and port requests", a.focus.len(), b.focus.len() - drifts.len()),
 	]
 	changed = pairs.keep_if(|(_, x, y)| x != y).map(|(name, x, y)| "${name} ${x.to_str()} -> ${y.to_str()}")

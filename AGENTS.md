@@ -214,8 +214,12 @@
 ## Preserve one engine and honest boundaries
 
 - Put scheduling, reconciliation, identity, effect lifecycle and containment
-  policy in `platform/Core.roc` and the platform's Roc modules; a table, its
-  table views and their ordered keys are `TableCore.roc`, `View.roc` and `Seq.roc`. The
+  policy in `platform/Core.roc` and the platform's Roc modules; read
+  signatures, write sets and the scheduling decisions taken from them are
+  `Sig.roc`, the plan of a keyed list's reconciliation is `Reconcile.roc`,
+  the request lifecycle (ids, the in-flight table, the follow-up queue and
+  the effect counters) is `FxCore.roc`, and a table, its table views and
+  their ordered keys are `TableCore.roc`, `View.roc` and `Seq.roc`. The
   host,
   `runtime.mjs` and `worker.mjs` adapt the engine to the browser; they do not
   implement its semantics. The native spec runner drives the same engine; it

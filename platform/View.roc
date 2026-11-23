@@ -1,3 +1,4 @@
+import Reconcile
 import Seq
 import TableCore exposing [Table]
 
@@ -305,8 +306,17 @@ window_changes = |old, new, is_changed| {
 	old_set = Set.from_list(old)
 	lefts = old.keep_if(|key| !new_at.contains(key)).map(|key| Left(key))
 	retained = old.keep_if(|key| new_at.contains(key))
-	positions = retained.map(|key| new_at.get(key) ?? crash "View.window_changes: a retained key has no position")
-	staying = Set.from_list(longest_run(positions).map(|i| retained.get(i) ?? crash "View.window_changes: index"))
+	# Each retained row's new position plus one: the run is of nonzero values.
+	marks = Reconcile.longest_run(retained.map(|key| (new_at.get(key) ?? crash "View.window_changes: a retained key has no position") + 1))
+	var $runs = List.with_capacity(retained.len())
+	var $r = 0
+	for key in retained {
+		if marks.get($r) ?? Bool.False {
+			$runs = $runs.append(key)
+		}
+		$r = $r + 1
+	}
+	staying = Set.from_list($runs)
 	# The row each position is placed before: the next row after it that
 	# stays put, or the end. Found from the last row to the first, so
 	# `anchors` is in reverse.
@@ -337,43 +347,6 @@ window_changes = |old, new, is_changed| {
 	}
 	changed = new.keep_if(|key| old_set.contains(key) and is_changed(key)).map(|key| Changed(key))
 	lefts.concat($placed).concat(changed)
-}
-
-## The indices of a longest strictly increasing subsequence of `values`.
-longest_run : List(U64) -> List(U64)
-longest_run = |values| {
-	none = U64.highest
-	var $tails = []
-	var $previous = List.repeat(none, values.len())
-	var $i = 0
-	while $i < values.len() {
-		value = values.get($i) ?? crash "View.longest_run: index"
-		var $lo = 0
-		var $hi = $tails.len()
-		while $lo < $hi {
-			mid = $lo + ($hi - $lo) // 2
-			tail = values.get($tails.get(mid) ?? crash "View.longest_run: tail") ?? crash "View.longest_run: value"
-			if tail < value {
-				$lo = mid + 1
-			} else {
-				$hi = mid
-			}
-		}
-		if $lo > 0 {
-			$previous = $previous.set($i, $tails.get($lo - 1) ?? crash "View.longest_run: tail") ?? crash "View.longest_run: index"
-		} else {
-			{}
-		}
-		$tails = if ($lo == $tails.len()) $tails.append($i) else $tails.set($lo, $i) ?? crash "View.longest_run: tail"
-		$i = $i + 1
-	}
-	var $out = []
-	var $at = $tails.last() ?? none
-	while $at != none {
-		$out = $out.append($at)
-		$at = $previous.get($at) ?? crash "View.longest_run: index"
-	}
-	$out.rev()
 }
 
 ## The keys `lo` up to `hi`, as rows of a table whose row is its key.
