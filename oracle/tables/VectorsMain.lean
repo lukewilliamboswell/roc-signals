@@ -1,18 +1,21 @@
 /-
 `lake exe vectors`: write the cover sets of the table targets from the
-transliteration.
+transliteration, as the `vectors` list of each target's Roc module.
 
-  vectors write <table-changes/vectors.txt> <view-follow/vectors.txt>
+  vectors write <ChangeVectors.roc> <changes-out> <FollowVectors.roc> <follow-out>
+
+Each module is read and kept as it is up to its line `\tvectors =`; what
+follows is written here, so the types and comments above it are the
+module's own and the list is never edited by hand.
 
 Histories are drawn from a seeded series over a small universe (three
 keys, three row values) on a single history, as a mounted instance has one.
 A history becomes a vector when it is the first to reach a cover class:
 for `table-changes`, a kind of modifier, the state of the record it
 received and what it left; for `view-follow`, how the view followed its
-table and a kind of change of the rows drawn. `oracle/README.md` states the
-grammar.
+table and a kind of change of the rows drawn.
 
-Each file is written within what its Roc target replays (`Target`): the
+Each list is written within what its Roc target replays (`Target`): the
 modulus `update` and `update_all` add 1 under is the target's row space;
 `view-follow`'s histories hold no `undo`, which its model does not
 describe, and use the rebuild thresholds `View.roc` fixes, which a table of
@@ -68,59 +71,82 @@ def windows : List Window :=
   [{ start := 0, count := 1 }, { start := 1, count := 2 }, { start := 0, count := 2 },
    { start := 1, count := 1 }, { start := 0, count := 1000 }]
 
-/-! ### Text -/
+/-! ### Roc values -/
 
-def rowsTok (rows : Rows) : String := " ".intercalate (rows.map fun (k, v) => s!"{k}:{v}")
+def list (xs : List String) : String := "[" ++ ", ".intercalate xs ++ "]"
 
-def opTok : Op → String
-  | .insert k v => s!"insert({k},{v})"
-  | .put k v => s!"put({k},{v})"
-  | .replace k v => s!"replace({k},{v})"
-  | .update k => s!"update({k})"
-  | .remove k => s!"remove({k})"
-  | .updateAll => "update_all"
-  | .undo => "undo"
+def rec (fields : List (String × String)) : String :=
+  "{ " ++ ", ".intercalate (fields.map fun (k, v) => k ++ ": " ++ v) ++ " }"
 
-def fnTok : Fn → String
-  | .onArg os => "on " ++ " ".intercalate (os.map opTok)
-  | .saved i os => s!"saved {i}" ++ String.join (os.map fun o => " " ++ opTok o)
-  | .other i os => s!"other {i}" ++ String.join (os.map fun o => " " ++ opTok o)
-  | .fresh rows => s!"fresh {rowsTok rows}"
+def rowsRoc (rows : Rows) : String := list (rows.map fun (k, v) => s!"({k}, {v})")
 
-def recordTok (t : Table) : String :=
+def opRoc : Op → String
+  | .insert k v => s!"Insert({k}, {v})"
+  | .put k v => s!"Put({k}, {v})"
+  | .replace k v => s!"Replace({k}, {v})"
+  | .update k => s!"Update({k})"
+  | .remove k => s!"Remove({k})"
+  | .updateAll => "All"
+  | .undo => "Undo"
+
+/-- A modifier. The generator hands `other` no operations, and the Roc
+targets' `Other` takes none. -/
+def fnRoc : Fn → String
+  | .onArg os => "On(" ++ list (os.map opRoc) ++ ")"
+  | .saved i os => s!"Saved({i}, " ++ list (os.map opRoc) ++ ")"
+  | .other i _ => s!"Other({i})"
+  | .fresh rows => "Fresh(" ++ rowsRoc rows ++ ")"
+
+def recordRoc (t : Table) : String :=
   match t.whole with
-  | .rewritten => "rewritten"
-  | .keyed => "keyed" ++ String.join (t.record.map fun (k, b) =>
-      match b with
-      | .was v => s!" {k}=was:{v}"
-      | .absent => s!" {k}=absent")
+  | .rewritten => "Rewritten"
+  | .keyed => "Keyed(" ++ list (t.record.map fun (k, b) =>
+      rec [("key", toString k), ("before", match b with | .was v => s!"Was({v})" | .absent => "Absent")]) ++ ")"
 
-def tableTok (t : Table) : String :=
-  s!"rows {rowsTok t.rows} | {recordTok t} | {t.version} {t.start}"
+def tableFields (t : Table) : List (String × String) :=
+  [("rows", rowsRoc t.rows), ("record", recordRoc t), ("version", toString t.version), ("start", toString t.start)]
 
-def howTok : How → String
-  | .unchanged => "unchanged" | .absorbed => "absorbed" | .rebuiltMany => "rebuilt-many"
-  | .rebuiltRewritten => "rebuilt-rewritten" | .rebuiltBehind => "rebuilt-behind"
+def boolRoc (b : Bool) : String := if b then "Bool.True" else "Bool.False"
 
-def anchorTok : Option K → String
-  | some k => toString k
-  | none => "end"
+def howRoc : How → String
+  | .unchanged => "Unchanged" | .absorbed => "Absorbed" | .rebuiltMany => "Rebuilt(Many)"
+  | .rebuiltRewritten => "Rebuilt(Rewritten)" | .rebuiltBehind => "Rebuilt(Behind)"
 
-def changeTok : Change → String
-  | .left k => s!"left:{k}"
-  | .entered k b => s!"entered:{k}@{anchorTok b}"
-  | .moved k b => s!"moved:{k}@{anchorTok b}"
-  | .changed k => s!"changed:{k}"
+def anchorRoc : Option K → String
+  | some k => s!"Row({k})"
+  | none => "End"
 
-def keysTok (ks : List K) : String := " ".intercalate (ks.map toString)
+def changeRoc : Change → String
+  | .left k => s!"Left({k})"
+  | .entered k b => "Entered(" ++ rec [("key", toString k), ("before", anchorRoc b)] ++ ")"
+  | .moved k b => "Moved(" ++ rec [("key", toString k), ("before", anchorRoc b)] ++ ")"
+  | .changed k => s!"Changed({k})"
+
+def keysRoc (ks : List K) : String := list (ks.map toString)
+
+def windowRoc (w : Window) : String := rec [("start", toString w.start), ("count", toString w.count)]
+
+/-- One element of a `vectors` list: its comment naming the classes it is
+the first to reach, then the record, at the list's indentation. -/
+def vectorRoc (covers : List String) (fields : List (String × String)) (turns : List String) : String :=
+  let c := ", ".intercalate covers
+  s!"\t\t\t# Covers {c}.\n\t\t\t\{\n"
+    ++ String.join (fields.map fun (k, v) => s!"\t\t\t\t{k}: {v},\n")
+    ++ "\t\t\t\tturns: [\n" ++ String.join (turns.map fun l => "\t\t\t\t\t" ++ l ++ ",\n") ++ "\t\t\t\t],\n\t\t\t},\n"
 
 /-! ### Histories -/
+
+/-- The name a cover class gives a single operation. -/
+def opKind : Op → String
+  | .insert _ _ => "insert" | .put _ _ => "put" | .replace _ _ => "replace"
+  | .update _ => "update" | .remove _ => "remove" | .updateAll => "update_all" | .undo => "undo"
+
 
 /-- One modifier and the class it reaches: its kind, the record it was
 handed, and what it left. -/
 def modClass (first : Bool) (began : Table) (fn : Fn) (out : Table) : String :=
   let kind := match fn with
-    | .onArg [o] => (opTok o).takeWhile (· != '(')
+    | .onArg [o] => opKind o
     | .onArg _ => "ops"
     | .saved _ _ => "saved"
     | .other _ _ => "other"
@@ -201,17 +227,26 @@ def randHistory (target : Target) (seed : Nat) : History := Id.run do
   return { start := starts.getD st [], q, w := windows.getD w { start := 0, count := 1 },
            cfg := if c == 0 && target.anyCfg then { ratio := 1, floor := 0 } else {}, turns := turns.toList }
 
-/-- Replay a history: the vector's text for each target, and the classes
-each reaches. `none` if the site crashes (a contract error, never part of a
-cover set). -/
-def replay (target : Target) (h : History) : Option (String × List String × String × List String) := Id.run do
+/-- The name a cover class gives how a view followed its table. -/
+def howClass : How → String
+  | .unchanged => "unchanged" | .absorbed => "absorbed" | .rebuiltMany => "rebuilt-many"
+  | .rebuiltRewritten => "rebuilt-rewritten" | .rebuiltBehind => "rebuilt-behind"
+
+/-- Replay a history: its fields and turns as Roc values for each target,
+and the classes each reaches. `none` if the site crashes (a contract error,
+never part of a cover set). -/
+def replay (target : Target) (h : History) :
+    Option (List (String × String) × List String × List String × List (String × String) × List String × List String) := Id.run do
   let cellId := 5
   let mut cell := cellStart h.start cellId
   let some site0 := (Site.mount cell h.q h.w).toOption | return none
   let mut site := site0
   let mut saved : List Table := []
-  let mut tc := s!"start {rowsTok h.start}\n"
-  let mut vf := s!"cfg {h.cfg.ratio} {h.cfg.floor}\ntable {rowsTok h.start}\nview {h.q} {h.w.start} {h.w.count}\n"
+  let tfields := [("start", rowsRoc h.start)]
+  let vfields := [("ratio", toString h.cfg.ratio), ("floor", toString h.cfg.floor), ("rows", rowsRoc h.start),
+                  ("query", toString h.q), ("window", windowRoc h.w)]
+  let mut tturns : List String := []
+  let mut vturns : List String := []
   let mut tcls : List String := []
   let mut vcls : List String := []
   for t in h.turns do
@@ -225,10 +260,9 @@ def replay (target : Target) (h : History) : Option (String × List String × St
       t0 := out
     let wrote := !t.fns.isEmpty
     let after := finishChanges t0
-    let line := " ; ".intercalate (t.fns.map fnTok)
-    tc := tc ++ s!"turn {line}\n  -> {tableTok after}\n"
-    let extra := (match t.query with | some q => s!" ; query {q}" | none => "")
-      ++ (match t.window with | some w => s!" ; window {w.start} {w.count}" | none => "")
+    let mods := ("modifiers", list (t.fns.map fnRoc))
+    let keep := ("keep", boolRoc t.keep)
+    tturns := tturns ++ [rec [mods, ("outcome", rec (tableFields after)), keep]]
     if wrote || t.query.isSome || t.window.isSome then
       match Site.changed .none h.cfg site after t.query t.window with
       | .error _ => return none
@@ -236,44 +270,55 @@ def replay (target : Target) (h : History) : Option (String × List String × St
           let kinds := (changes.map fun
             | .left _ => "left" | .entered _ _ => "entered" | .moved _ _ => "moved"
             | .changed _ => "changed").eraseDups
-          vcls := vcls ++ ((if kinds.isEmpty then ["none"] else kinds).map fun k => s!"{howTok how} {k}")
-          vf := vf ++ s!"turn {line}{extra}\n  -> how {howTok how} | {tableTok after} | keys {keysTok (s'.view.seq.map (·.2))} | drawn {keysTok s'.drawn} | {" ".intercalate (changes.map changeTok)}\n"
+          vcls := vcls ++ ((if kinds.isEmpty then ["none"] else kinds).map fun k => s!"{howClass how} {k}")
+          let q := match t.query with | some q => s!"Ok({q})" | none => "Err(Same)"
+          let w := match t.window with | some w => "Ok(" ++ windowRoc w ++ ")" | none => "Err(Same)"
+          let outcome := rec ([("how", howRoc how)] ++ tableFields after
+            ++ [("keys", keysRoc (s'.view.seq.map (·.2))), ("drawn", keysRoc s'.drawn), ("changes", list (changes.map changeRoc))])
+          vturns := vturns ++ [rec [mods, ("query", q), ("window", w), ("outcome", outcome), keep]]
           site := s'
     cell := after
     if t.keep then
       saved := saved ++ [cell]
-      tc := tc ++ "keep\n"
-      vf := vf ++ "keep\n"
-  return some (tc, tcls, vf, vcls)
+  return some (tfields, tturns, tcls, vfields, vturns, vcls)
 
-def writeVectors (changesOut viewOut : String) : IO UInt32 := do
+/-- A Roc module up to and including its line `\tvectors =`, which must
+appear once. -/
+def head (path : String) : IO String := do
+  let text ← IO.FS.readFile path
+  match text.splitOn "\n\tvectors =\n" with
+  | [before, _] => return before ++ "\n\tvectors =\n"
+  | _ => throw (IO.userError s!"{path}: expected one line `\tvectors =`")
+
+def writeVectors (changesIn changesOut followIn followOut : String) : IO UInt32 := do
   let mut tseen : List String := []
   let mut vseen : List String := []
-  let mut tout := "# fuzz/table-changes vectors: written by oracle/tables (`lake exe vectors write`); do not edit.\n# Grammar: oracle/README.md.\n"
-  let mut vout := "# fuzz/view-follow vectors: written by oracle/tables (`lake exe vectors write`); do not edit.\n# Grammar: oracle/README.md.\n"
+  let mut tout := ""
+  let mut vout := ""
   let mut nt := 0
   let mut nv' := 0
   for seed in [0:20000] do
     match replay changesTarget (randHistory changesTarget seed) with
     | none => pure ()
-    | some (tc, tcls, _, _) =>
+    | some (fields, turns, tcls, _, _, _) =>
         let tnew := tcls.eraseDups.filter (!tseen.contains ·)
         if !tnew.isEmpty then
           tseen := tseen ++ tnew
-          tout := tout ++ s!"vector {seed}\ncovers {", ".intercalate tnew}\n{tc}end\n"
+          tout := tout ++ vectorRoc tnew ([("seed", toString seed)] ++ fields) turns
           nt := nt + 1
     match replay followTarget (randHistory followTarget seed) with
     | none => pure ()
-    | some (_, _, vf, vcls) =>
+    | some (_, _, _, fields, turns, vcls) =>
         let vnew := vcls.eraseDups.filter (!vseen.contains ·)
         if !vnew.isEmpty then
           vseen := vseen ++ vnew
-          vout := vout ++ s!"vector {seed}\ncovers {", ".intercalate vnew}\n{vf}end\n"
+          vout := vout ++ vectorRoc vnew ([("seed", toString seed)] ++ fields) turns
           nv' := nv' + 1
-  IO.FS.writeFile changesOut tout
-  IO.FS.writeFile viewOut vout
+  let close := "\t\t]\n}\n"
+  IO.FS.writeFile changesOut ((← head changesIn) ++ "\t\t[\n" ++ tout ++ close)
+  IO.FS.writeFile followOut ((← head followIn) ++ "\t\t[\n" ++ vout ++ close)
   IO.println s!"wrote {nt} vectors covering {tseen.length} classes to {changesOut}"
-  IO.println s!"wrote {nv'} vectors covering {vseen.length} classes to {viewOut}"
+  IO.println s!"wrote {nv'} vectors covering {vseen.length} classes to {followOut}"
   let hows := ["unchanged", "absorbed", "rebuilt-rewritten"]
   let missing := hows.filter fun h => !(vseen.any (·.startsWith (h ++ " ")))
   if !missing.isEmpty then
@@ -283,5 +328,5 @@ def writeVectors (changesOut viewOut : String) : IO UInt32 := do
 
 def main (args : List String) : IO UInt32 := do
   match args with
-  | ["write", a, b] => writeVectors a b
-  | _ => IO.eprintln "usage: vectors write <table-changes/vectors.txt> <view-follow/vectors.txt>"; return 2
+  | ["write", a, b, c, d] => writeVectors a b c d
+  | _ => IO.eprintln "usage: vectors write <ChangeVectors.roc> <changes-out> <FollowVectors.roc> <follow-out>"; return 2

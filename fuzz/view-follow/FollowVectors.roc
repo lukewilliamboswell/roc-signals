@@ -1,15 +1,20 @@
-import "vectors.txt" as source : Str
-
-## The view-follow vectors `oracle/tables` writes (`blueprint run oracle`),
-## parsed. `oracle/README.md` states the grammar. Lean's transliteration of
-## `TableCore.roc`, `View.roc` and the table view site's `Changed` wrote
-## them; `FuzzViewFollowProperty` replays each against its model and
-## against the real code. A line that does not fit the grammar crashes
-## naming it, so a vector is never skipped.
+## Fixed histories of one table cell and one table view of it, each turn
+## with the outcome it must have: how the view followed its table, the
+## table's rows, changes and counts, the view's ordered keys, the keys
+## drawn, and the changes of the rows drawn. Each vector gives the view's
+## rebuild thresholds, the table's starting rows and the view's query and
+## window; a turn hands its modifiers to the cell's generated modifier
+## through `Store.after` and may bring a new query or window, and a turn
+## marked `keep` keeps a copy of the table for later `Saved` and `Other`
+## modifiers. `FuzzViewFollowProperty` replays each against its model
+## (top-level `expect`s) and against `TableCore`, `View` and a table view
+## site (its fixed examples), so all are held to these outcomes. Each
+## vector's comment names the ways of following and the changes of the
+## rows drawn it reaches.
 ##
-## The row, operation and record grammar is the one
-## `fuzz/table-changes/ChangeVectors.roc` reads; each target's package
-## reads its own file.
+## The operations, modifiers and records are those of
+## `fuzz/table-changes/ChangeVectors.roc`; each target's package keeps its
+## own copy of the types.
 FollowVectors := [].{
 
 	## An operation on a table, as in `ChangeVectors.Op`.
@@ -44,201 +49,160 @@ FollowVectors := [].{
 	## the table's starting rows, the view's query and window, and its turns.
 	Vector : { seed : U64, ratio : U64, floor : U64, rows : List((U64, U64)), query : U64, window : Window, turns : List(Turn) }
 
-	## The vectors of `fuzz/view-follow/vectors.txt`.
+	## Every vector, named by its seed. `oracle/tables` writes this list from
+	## its transliteration of `TableCore.roc`, `View.roc` and the table view site's `Changed`
+	## (`blueprint run oracle`, which fails if it differs), and keeps
+	## everything above it as it is: change the model there, never the list.
 	vectors : List(Vector)
-	vectors = {
-		empty = { seed: 0, ratio: 0, floor: 0, rows: [], query: 0, window: { start: 0, count: 0 }, turns: [] }
-		var $out = []
-		var $vector = empty
-		var $pending = { modifiers: [], query: Err(Same), window: Err(Same) }
-		var $line_number = 0.U64
-		for line in source.split_on("\n") {
-			$line_number = $line_number + 1
-			at = "FollowVectors: line ${$line_number.to_str()}"
-			match words_of(line) {
-				[] => {}
-				[first, ..] if first.starts_with("#") => {}
-				["vector", seed] => {
-					$vector = { ..empty, seed: number(seed, at) }
-				}
-				["covers", ..] => {}
-				["cfg", ratio, floor] => {
-					$vector = { ..$vector, ratio: number(ratio, at), floor: number(floor, at) }
-				}
-				["table", .. as rows] => {
-					$vector = { ..$vector, rows: rows.map(|row| row_of(row, at)) }
-				}
-				["view", query, start, count] => {
-					$vector = { ..$vector, query: number(query, at), window: { start: number(start, at), count: number(count, at) } }
-				}
-				["turn", ..] => {
-					$pending = line.drop_prefix("turn ").split_on(" ; ").fold(
-						{ modifiers: [], query: Err(Same), window: Err(Same) },
-						|acc, part| match words_of(part) {
-							["query", q] => { ..acc, query: Ok(number(q, at)) }
-							["window", start, count] => { ..acc, window: Ok({ start: number(start, at), count: number(count, at) }) }
-							_ => { ..acc, modifiers: acc.modifiers.append(modifier_of(part, at)) }
-						},
-					)
-				}
-				["->", ..] => {
-					turn = { modifiers: $pending.modifiers, query: $pending.query, window: $pending.window, outcome: outcome_of(line.drop_prefix("  -> ").split_on(" | "), at), keep: Bool.False }
-					$vector = { ..$vector, turns: $vector.turns.append(turn) }
-				}
-				["keep"] => {
-					turns = match $vector.turns.last() {
-						Ok(last) => $vector.turns.drop_last(1).append({ ..last, keep: Bool.True })
-						Err(_) => crash "${at}: keep before any turn"
-					}
-					$vector = { ..$vector, turns }
-				}
-				["end"] => {
-					$out = $out.append($vector)
-					$vector = empty
-				}
-				_ => crash "${at} is not a vector line: ${line}"
-			}
-		}
-		$out
-	}
-}
-
-words_of : Str -> List(Str)
-words_of = |text| text.split_on(" ").keep_if(|word| !word.is_empty())
-
-number : Str, Str -> U64
-number = |word, at| match U64.from_str(word) {
-	Ok(value) => value
-	Err(_) => crash "${at}: ${word} is not a number"
-}
-
-## `how <how> | rows ... | <record> | <version> <start> | keys ... |
-## drawn ... | <change> ...`, split on ` | `.
-outcome_of : List(Str), Str -> FollowVectors.Outcome
-outcome_of = |parts, at| match parts {
-	[how, rows, record, counts, keys, drawn, changes] => {
-		(version, start) = match words_of(counts) {
-			[v, s] => (number(v, at), number(s, at))
-			_ => crash "${at}: a write count and a start: ${counts}"
-		}
-		{
-			how: how_of(how, at),
-			rows: words_of(rows.drop_prefix("rows")).map(|row| row_of(row, at)),
-			record: record_of(record, at),
-			version,
-			start,
-			keys: words_of(keys.drop_prefix("keys")).map(|key| number(key, at)),
-			drawn: words_of(drawn.drop_prefix("drawn")).map(|key| number(key, at)),
-			changes: words_of(changes).map(|change| change_of(change, at)),
-		}
-	}
-	_ => crash "${at}: an outcome has seven parts"
-}
-
-how_of : Str, Str -> FollowVectors.How
-how_of = |text, at| match words_of(text) {
-	["how", "unchanged"] => Unchanged
-	["how", "absorbed"] => Absorbed
-	["how", "rebuilt-many"] => Rebuilt(Many)
-	["how", "rebuilt-rewritten"] => Rebuilt(Rewritten)
-	["how", "rebuilt-behind"] => Rebuilt(Behind)
-	_ => crash "${at}: ${text} is not how a view follows"
-}
-
-## `left:k`, `entered:k@anchor`, `moved:k@anchor` or `changed:k`, where the
-## anchor is the key the row goes before, or `end`.
-change_of : Str, Str -> FollowVectors.Change
-change_of = |text, at| {
-	placed = |rest| match rest.split_on("@") {
-		[key, "end"] => { key: number(key, at), before: End }
-		[key, anchor] => { key: number(key, at), before: Row(number(anchor, at)) }
-		_ => crash "${at}: ${text} names no place"
-	}
-	match text.split_on(":") {
-		["left", key] => Left(number(key, at))
-		["entered", rest] => Entered(placed(rest))
-		["moved", rest] => Moved(placed(rest))
-		["changed", key] => Changed(number(key, at))
-		_ => crash "${at}: ${text} is not a change"
-	}
-}
-
-## `rewritten`, or `keyed` and each `<key>=was:<row>` or `<key>=absent`.
-record_of : Str, Str -> FollowVectors.Record
-record_of = |text, at| match words_of(text) {
-	["rewritten"] => Rewritten
-	["keyed", .. as entries] =>
-		Keyed(
-			entries.map(
-				|entry| match entry.split_on("=") {
-					[key, "absent"] => { key: number(key, at), before: Absent }
-					[key, was] if was.starts_with("was:") => { key: number(key, at), before: Was(number(was.drop_prefix("was:"), at)) }
-					_ => crash "${at}: ${entry} is not a recorded key"
-				},
-			),
-		)
-	_ => crash "${at}: ${text} is not a record"
-}
-
-## `<key>:<row>`.
-row_of : Str, Str -> (U64, U64)
-row_of = |text, at| match text.split_on(":") {
-	[key, row] => (number(key, at), number(row, at))
-	_ => crash "${at}: ${text} is not a row"
-}
-
-## `on <op> ...`, `saved <i> <op> ...`, `other <i>` or `fresh <key>:<row> ...`.
-modifier_of : Str, Str -> FollowVectors.Modifier
-modifier_of = |text, at| match words_of(text) {
-	["on", .. as ops] => On(ops.map(|op| op_of(op, at)))
-	["saved", i, .. as ops] => Saved(number(i, at), ops.map(|op| op_of(op, at)))
-	["other", i] => Other(number(i, at))
-	["fresh", .. as rows] => Fresh(rows.map(|row| row_of(row, at)))
-	_ => crash "${at}: ${text} is not a modifier"
-}
-
-## An operation: `insert(k,v)`, `put(k,v)`, `replace(k,v)`, `update(k)`,
-## `remove(k)`, `update_all` or `undo`.
-op_of : Str, Str -> FollowVectors.Op
-op_of = |text, at| {
-	args = |name| text.drop_prefix("${name}(").drop_suffix(")").split_on(",").map(|arg| number(arg, at))
-	pair = |name| match args(name) {
-		[k, v] => (k, v)
-		_ => crash "${at}: ${text} takes a key and a row"
-	}
-	single = |name| match args(name) {
-		[k] => k
-		_ => crash "${at}: ${text} takes a key"
-	}
-	if text == "update_all" {
-		All
-	} else if text == "undo" {
-		Undo
-	} else if text.starts_with("insert(") {
-		(k, v) = pair("insert")
-		Insert(k, v)
-	} else if text.starts_with("put(") {
-		(k, v) = pair("put")
-		Put(k, v)
-	} else if text.starts_with("replace(") {
-		(k, v) = pair("replace")
-		Replace(k, v)
-	} else if text.starts_with("update(") {
-		Update(single("update"))
-	} else if text.starts_with("remove(") {
-		Remove(single("remove"))
-	} else {
-		crash "${at}: ${text} is not an operation"
-	}
-}
-
-## The file holds vectors, and the parser reads an outcome with every kind
-## of change.
-expect {
-	actual = Str.inspect({
-		read: !FollowVectors.vectors.is_empty(),
-		outcome: outcome_of("how rebuilt-rewritten | rows 0:2 | rewritten | 4 2 | keys 2 0 | drawn 2 | left:1 entered:2@end moved:0@2 changed:2".split_on(" | "), "test"),
-	})
-	expected = "{ outcome: { changes: [Left(1), Entered({ before: End, key: 2 }), Moved({ before: Row(2), key: 0 }), Changed(2)], drawn: [2], how: Rebuilt(Rewritten), keys: [2, 0], record: Rewritten, rows: [(0, 2)], start: 2, version: 4 }, read: True }"
-	actual == expected
+	vectors =
+		[
+			# Covers absorbed changed, rebuilt-rewritten left, rebuilt-rewritten changed.
+			{
+				seed: 0,
+				ratio: 8,
+				floor: 64,
+				rows: [(0, 1), (1, 0)],
+				query: 2,
+				window: { start: 0, count: 2 },
+				turns: [
+					{ modifiers: [On([Replace(2, 2), Put(1, 0)])], query: Err(Same), window: Err(Same), outcome: { how: Absorbed, rows: [(0, 1), (1, 0)], record: Keyed([{ key: 1, before: Was(0) }]), version: 1, start: 0, keys: [1, 0], drawn: [1, 0], changes: [Changed(1)] }, keep: Bool.False },
+					{ modifiers: [On([Replace(0, 2)]), On([Insert(0, 1)])], query: Err(Same), window: Err(Same), outcome: { how: Absorbed, rows: [(0, 2), (1, 0)], record: Keyed([{ key: 0, before: Was(1) }]), version: 2, start: 1, keys: [1, 0], drawn: [1, 0], changes: [Changed(0)] }, keep: Bool.False },
+					{ modifiers: [Fresh([(0, 0)]), On([Insert(1, 2), Remove(1)])], query: Err(Same), window: Err(Same), outcome: { how: Rebuilt(Rewritten), rows: [(0, 0)], record: Rewritten, version: 5, start: 2, keys: [0], drawn: [0], changes: [Left(1), Changed(0)] }, keep: Bool.False },
+				],
+			},
+			# Covers unchanged none.
+			{
+				seed: 1,
+				ratio: 8,
+				floor: 64,
+				rows: [(0, 1), (1, 0)],
+				query: 0,
+				window: { start: 1, count: 2 },
+				turns: [
+					{ modifiers: [On([Remove(2)])], query: Ok(2), window: Ok({ start: 1, count: 2 }), outcome: { how: Unchanged, rows: [(0, 1), (1, 0)], record: Keyed([]), version: 0, start: 0, keys: [1, 0], drawn: [0], changes: [] }, keep: Bool.True },
+				],
+			},
+			# Covers absorbed entered, rebuilt-rewritten entered.
+			{
+				seed: 2,
+				ratio: 8,
+				floor: 64,
+				rows: [(0, 0)],
+				query: 0,
+				window: { start: 0, count: 1000 },
+				turns: [
+					{ modifiers: [Fresh([(0, 1), (1, 0)]), Fresh([])], query: Ok(1), window: Ok({ start: 0, count: 2 }), outcome: { how: Rebuilt(Rewritten), rows: [], record: Rewritten, version: 2, start: 0, keys: [], drawn: [], changes: [Left(0)] }, keep: Bool.False },
+					{ modifiers: [On([Put(2, 0)]), On([Update(1), Insert(1, 2)])], query: Err(Same), window: Err(Same), outcome: { how: Absorbed, rows: [(1, 2), (2, 0)], record: Keyed([{ key: 2, before: Absent }, { key: 1, before: Absent }]), version: 4, start: 2, keys: [1], drawn: [1], changes: [Entered({ key: 1, before: End })] }, keep: Bool.True },
+					{ modifiers: [Fresh([(0, 1), (1, 0)])], query: Ok(2), window: Ok({ start: 1, count: 2 }), outcome: { how: Rebuilt(Rewritten), rows: [(0, 1), (1, 0)], record: Rewritten, version: 5, start: 4, keys: [1, 0], drawn: [0], changes: [Left(1), Entered({ key: 0, before: End })] }, keep: Bool.False },
+				],
+			},
+			# Covers absorbed none.
+			{
+				seed: 3,
+				ratio: 8,
+				floor: 64,
+				rows: [],
+				query: 0,
+				window: { start: 1, count: 1 },
+				turns: [
+					{ modifiers: [On([Insert(2, 0)]), On([Insert(2, 0)])], query: Err(Same), window: Err(Same), outcome: { how: Absorbed, rows: [(2, 0)], record: Keyed([{ key: 2, before: Absent }]), version: 1, start: 0, keys: [2], drawn: [], changes: [] }, keep: Bool.True },
+					{ modifiers: [On([Update(0), Insert(1, 0)])], query: Ok(0), window: Err(Same), outcome: { how: Absorbed, rows: [(1, 0), (2, 0)], record: Keyed([{ key: 1, before: Absent }]), version: 2, start: 1, keys: [1, 2], drawn: [2], changes: [Entered({ key: 2, before: End })] }, keep: Bool.False },
+					{ modifiers: [On([Replace(2, 0)])], query: Err(Same), window: Err(Same), outcome: { how: Absorbed, rows: [(1, 0), (2, 0)], record: Keyed([{ key: 2, before: Was(0) }]), version: 3, start: 2, keys: [1, 2], drawn: [2], changes: [Changed(2)] }, keep: Bool.False },
+				],
+			},
+			# Covers rebuilt-rewritten none.
+			{
+				seed: 6,
+				ratio: 8,
+				floor: 64,
+				rows: [],
+				query: 1,
+				window: { start: 0, count: 2 },
+				turns: [
+					{ modifiers: [Fresh([(0, 0)]), On([Update(0)])], query: Err(Same), window: Ok({ start: 1, count: 1 }), outcome: { how: Rebuilt(Rewritten), rows: [(0, 1)], record: Rewritten, version: 2, start: 0, keys: [0], drawn: [], changes: [] }, keep: Bool.True },
+					{ modifiers: [On([Update(0)])], query: Err(Same), window: Err(Same), outcome: { how: Absorbed, rows: [(0, 2)], record: Keyed([{ key: 0, before: Was(1) }]), version: 3, start: 2, keys: [0], drawn: [], changes: [] }, keep: Bool.False },
+					{ modifiers: [On([Insert(1, 1)]), On([Replace(1, 1)])], query: Ok(0), window: Err(Same), outcome: { how: Absorbed, rows: [(0, 2), (1, 1)], record: Keyed([{ key: 1, before: Absent }]), version: 5, start: 3, keys: [1, 0], drawn: [0], changes: [Entered({ key: 0, before: End })] }, keep: Bool.False },
+				],
+			},
+			# Covers absorbed left.
+			{
+				seed: 9,
+				ratio: 8,
+				floor: 64,
+				rows: [(0, 0)],
+				query: 0,
+				window: { start: 1, count: 1 },
+				turns: [
+					{ modifiers: [On([Put(1, 0)]), On([Update(2), Insert(1, 1)])], query: Err(Same), window: Err(Same), outcome: { how: Absorbed, rows: [(0, 0), (1, 0)], record: Keyed([{ key: 1, before: Absent }]), version: 1, start: 0, keys: [0, 1], drawn: [1], changes: [Entered({ key: 1, before: End })] }, keep: Bool.False },
+					{ modifiers: [On([Replace(2, 1)]), On([Put(0, 1)])], query: Err(Same), window: Err(Same), outcome: { how: Absorbed, rows: [(0, 1), (1, 0)], record: Keyed([{ key: 0, before: Was(0) }]), version: 2, start: 1, keys: [1, 0], drawn: [0], changes: [Left(1), Entered({ key: 0, before: End })] }, keep: Bool.True },
+				],
+			},
+			# Covers unchanged entered.
+			{
+				seed: 15,
+				ratio: 8,
+				floor: 64,
+				rows: [(0, 1), (1, 0)],
+				query: 1,
+				window: { start: 0, count: 2 },
+				turns: [
+					{ modifiers: [On([Update(2), Insert(0, 0)]), On([Insert(0, 0)])], query: Ok(0), window: Err(Same), outcome: { how: Unchanged, rows: [(0, 1), (1, 0)], record: Keyed([]), version: 0, start: 0, keys: [1, 0], drawn: [1, 0], changes: [Entered({ key: 1, before: Row(0) })] }, keep: Bool.True },
+					{ modifiers: [Other(0), On([Put(2, 0)])], query: Err(Same), window: Err(Same), outcome: { how: Rebuilt(Rewritten), rows: [(0, 1), (1, 0), (2, 0)], record: Rewritten, version: 2, start: 0, keys: [1, 2, 0], drawn: [1, 2], changes: [Left(0), Entered({ key: 2, before: End }), Changed(1)] }, keep: Bool.False },
+				],
+			},
+			# Covers rebuilt-rewritten moved.
+			{
+				seed: 29,
+				ratio: 8,
+				floor: 64,
+				rows: [],
+				query: 0,
+				window: { start: 0, count: 2 },
+				turns: [
+					{ modifiers: [On([Put(0, 2)]), On([Put(2, 0)])], query: Err(Same), window: Ok({ start: 0, count: 1000 }), outcome: { how: Absorbed, rows: [(0, 2), (2, 0)], record: Keyed([{ key: 0, before: Absent }, { key: 2, before: Absent }]), version: 2, start: 0, keys: [2, 0], drawn: [2, 0], changes: [Entered({ key: 2, before: End }), Entered({ key: 0, before: End })] }, keep: Bool.True },
+					{ modifiers: [On([Put(2, 2)]), On([All])], query: Err(Same), window: Err(Same), outcome: { how: Rebuilt(Rewritten), rows: [(0, 3), (2, 3)], record: Rewritten, version: 4, start: 2, keys: [0, 2], drawn: [0, 2], changes: [Moved({ key: 2, before: End }), Changed(0), Changed(2)] }, keep: Bool.False },
+					{ modifiers: [On([Put(1, 2)])], query: Ok(1), window: Err(Same), outcome: { how: Absorbed, rows: [(0, 3), (1, 2), (2, 3)], record: Keyed([{ key: 1, before: Absent }]), version: 5, start: 4, keys: [1, 0, 2], drawn: [1, 0, 2], changes: [Entered({ key: 1, before: Row(0) })] }, keep: Bool.True },
+				],
+			},
+			# Covers absorbed moved.
+			{
+				seed: 51,
+				ratio: 8,
+				floor: 64,
+				rows: [(0, 1), (1, 0)],
+				query: 0,
+				window: { start: 0, count: 2 },
+				turns: [
+					{ modifiers: [On([Replace(1, 1), Put(1, 2)])], query: Err(Same), window: Err(Same), outcome: { how: Absorbed, rows: [(0, 1), (1, 2)], record: Keyed([{ key: 1, before: Was(0) }]), version: 2, start: 0, keys: [0, 1], drawn: [0, 1], changes: [Moved({ key: 1, before: End }), Changed(1)] }, keep: Bool.True },
+					{ modifiers: [On([Put(0, 0), Update(1)]), On([Insert(1, 2)])], query: Err(Same), window: Err(Same), outcome: { how: Absorbed, rows: [(0, 0), (1, 3)], record: Keyed([{ key: 0, before: Was(1) }, { key: 1, before: Was(2) }]), version: 4, start: 2, keys: [0, 1], drawn: [0, 1], changes: [Changed(0), Changed(1)] }, keep: Bool.True },
+					{ modifiers: [Saved(1, [])], query: Err(Same), window: Err(Same), outcome: { how: Rebuilt(Rewritten), rows: [(0, 0), (1, 3)], record: Rewritten, version: 5, start: 4, keys: [0, 1], drawn: [0, 1], changes: [Changed(0), Changed(1)] }, keep: Bool.False },
+				],
+			},
+			# Covers unchanged left.
+			{
+				seed: 78,
+				ratio: 8,
+				floor: 64,
+				rows: [(0, 0)],
+				query: 0,
+				window: { start: 0, count: 1000 },
+				turns: [
+					{ modifiers: [On([Replace(2, 2)])], query: Ok(0), window: Ok({ start: 1, count: 1 }), outcome: { how: Unchanged, rows: [(0, 0)], record: Keyed([]), version: 0, start: 0, keys: [0], drawn: [], changes: [Left(0)] }, keep: Bool.False },
+					{ modifiers: [On([Insert(0, 1)])], query: Err(Same), window: Err(Same), outcome: { how: Unchanged, rows: [(0, 0)], record: Keyed([]), version: 0, start: 0, keys: [0], drawn: [], changes: [] }, keep: Bool.False },
+				],
+			},
+			# Covers unchanged moved.
+			{
+				seed: 1495,
+				ratio: 8,
+				floor: 64,
+				rows: [(0, 1), (1, 0)],
+				query: 2,
+				window: { start: 0, count: 1000 },
+				turns: [
+					{ modifiers: [On([Replace(1, 1), Insert(1, 0)])], query: Ok(1), window: Err(Same), outcome: { how: Absorbed, rows: [(0, 1), (1, 1)], record: Keyed([{ key: 1, before: Was(0) }]), version: 1, start: 0, keys: [0, 1], drawn: [0, 1], changes: [Moved({ key: 1, before: End }), Changed(1)] }, keep: Bool.True },
+					{ modifiers: [On([Insert(1, 0)])], query: Ok(2), window: Err(Same), outcome: { how: Unchanged, rows: [(0, 1), (1, 1)], record: Keyed([]), version: 1, start: 1, keys: [1, 0], drawn: [1, 0], changes: [Moved({ key: 0, before: End })] }, keep: Bool.False },
+				],
+			},
+		]
 }

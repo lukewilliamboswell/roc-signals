@@ -432,9 +432,15 @@ Core := [].{
 				modify: |w, f| modify(
 					w,
 					|t| {
-						began = wrap(TableCore.begin_changes(unwrap(t)))
-						before = TableCore.mark(unwrap(began))
-						wrap(TableCore.kept(unwrap(f(began)), before))
+						# `began` stays unwrapped until the call, so the modifier
+						# receives the table's only reference and writes in place:
+						# wrapped first and unwrapped again for `mark`, it was
+						# held twice and the modifier's first write copied every
+						# row (compiler behaviour; see design.md's compiler
+						# limitations).
+						began = TableCore.begin_changes(unwrap(t))
+						before = TableCore.mark(began)
+						wrap(TableCore.kept(unwrap(f(wrap(began))), before))
 					},
 				),
 			},
@@ -1408,7 +1414,32 @@ Core := [].{
 	## the key.
 	table_view : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
 		where [ctx.store : () -> StoreReach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
-	table_view = |source, props, template| Site(
+	table_view = |source, props, template| Core.table_view_site(source, props, Uncounted, template)
+
+	## `table_view_counted(table, props, name, template)` is a `table_view`
+	## whose site also sets the attribute `name` of its parent element to
+	## the number of rows its query keeps, in decimal (`ATTR`): at mount,
+	## and in each pass that changes that number, which the site reads
+	## from its view's ordered keys, so the count costs no pass over the
+	## table. The parent must be an element the site's own block mounts: a
+	## site at the top of a branch or of the page, or anywhere in a drawn
+	## row, knows only an anchor, and a counted view there is a contract
+	## error at mount, as is a reserved transport name.
+	table_view_counted : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), Web.AttrName, (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
+		where [ctx.store : () -> StoreReach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
+	table_view_counted = |source, props, name, template| {
+		if Core.attribute_reserved(name) {
+			crash "contract: attribute ${Str.inspect(name.text())} is reserved for startup transport"
+		}
+		Core.table_view_site(source, props, Counted(name), template)
+	}
+
+	## The site of a table view, counted into its parent's attribute or not
+	## (see [Core.table_view_counted]). An uncounted site emits exactly what
+	## a view without a count emits.
+	table_view_site : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), ViewCount, (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
+		where [ctx.store : () -> StoreReach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
+	table_view_site = |source, props, counted, template| Site(
 		Mount(
 			|env, args, tx| {
 				get = {
@@ -1451,10 +1482,13 @@ Core := [].{
 				# The query, the window, and one placement for every row of the table.
 				(cols, slots, tx4) = view_enter(cfg, cols_empty(plan.ncols, plan.holes.len()), |_, key| Row.{ outer: env, key: "", item: key }, view.shown_keys(), count_evals(tx3, 2 + rows.len()))
 				reads = Sig.cell_bit(source.cell).bitwise_or(eff_mask(props.query)).bitwise_or(eff_mask(props.window)).bitwise_or(outer_mask).bitwise_or(plan.kreads.bitwise_and(Sig.above_bits(depth)))
-				shows = { get, query: props.query, plan: props.plan, window: props.window }
+				if counted != Uncounted and args.parent == 0 {
+					crash "contract: a counted table view sets an attribute of its parent element, and the view at site ${show_path(args.path)} has none it can name: place it inside an element, outside the rows of an `each` or a table view"
+				}
+				shows = { get, query: props.query, plan: props.plan, window: props.window, counted }
 				# The probe's `Mounted` fact, built only while a harness records.
 				mounted = if (recording(tx4)) probe_note(tx4, Mounted({ cap: args.cap, kind: View, depth, reads: Sig.cell_bit(source.cell).bitwise_or(eff_mask(props.query)).bitwise_or(eff_mask(props.window)).bitwise_or(outer_mask), static: Sig.cell_bit(source.cell).bitwise_or(eff_mask(props.query)).bitwise_or(eff_mask(props.window)).bitwise_or(elem_reads(template(view_key({}), view_row(source, depth, [])), depth).bitwise_and(Sig.above_bits(depth))) })) else tx4
-				(view_inst(cfg, shows, q, view, [], cols, slots), reads, mounted)
+				(view_inst(cfg, shows, q, view, [], cols, slots), reads, view_count(shows, cfg.parent, view.len(), mounted))
 			},
 		),
 		|d| {
@@ -4474,7 +4508,9 @@ orphans_of = |out| match out {
 	_ => []
 }
 
-Inst(ctx) := [Inst((ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx)))]
+## A site instance. `Spare` is never built: it is there for the compiler
+## (see `call`).
+Inst(ctx) := [Inst((ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx))), Spare(List(Inst(ctx)))]
 
 ## The site tree, the store and the turn of a [Core.App], behind its opaque
 ## name (see [Core.App] for why the body is a type of its own).
@@ -5516,8 +5552,27 @@ noop = |_| Inst(
 	},
 )
 
+## Call a site with the instance moved in, so it owns its storage and
+## rebuilds its block in place. The host boxes the engine state, so a
+## site's function is erased, and an erased call reads its captures
+## borrowed (and a rebuilt child list is then a copy, linear in the block's
+## sites, on every turn that passes through it) in two cases this avoids: a
+## call in tail position is deferred, and a deferred call never hands its
+## closure over, so the result is bound before it is returned; and a callee
+## whose answer holds exactly one function keeps its own closure to build
+## that function in, so `Inst` has the `Spare` variant, which makes the
+## answer hold a list of functions too. Neither half alone keeps the
+## captures owned. Compiler workaround for roc-lang/roc#13374 (see
+## design.md's compiler limitations): bind the call and drop `Spare` once
+## the pinned compiler owns an erased callee's captures.
 call : Inst(ctx), ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx)
-call = |Inst(f), env, msg, tx| f(env, msg, tx)
+call = |inst, env, msg, tx| match inst {
+	Inst(f) => {
+		(next, out, tx1) = f(env, msg, tx)
+		(next, out, tx1)
+	}
+	Spare(_) => crash "internal: a spare instance is never built"
+}
 
 ## Re-evaluate the holes that read a changed layer, then descend into the
 ## children whose subtrees read one. The settle check (`Check`) re-evaluates
@@ -7814,8 +7869,21 @@ view_chunk : U64
 view_chunk = 1024
 
 ## Fixed per view site: the table's getter, the query and how it selects
-## and orders rows, and the window.
-Shows(ctx, q, k, v, s) : { get : (ctx -> Table(k, v)), query : Signal(ctx, q), plan : (q -> Core.QueryPlan(k, v, s)), window : Signal(ctx, Core.Window) }
+## and orders rows, the window, and the parent's attribute that counts the
+## rows the query keeps, if any (`Core.table_view_counted`).
+Shows(ctx, q, k, v, s) : { get : (ctx -> Table(k, v)), query : Signal(ctx, q), plan : (q -> Core.QueryPlan(k, v, s)), window : Signal(ctx, Core.Window), counted : ViewCount }
+
+## Whether a view site counts the rows its query keeps into an attribute
+## of its parent element.
+ViewCount : [Uncounted, Counted(Web.AttrName)]
+
+## Set a counted view's parent attribute to `count`, the number of rows its
+## query keeps (one `ATTR`); nothing for a view that is not counted.
+view_count : Shows(ctx, q, k, v, s), U32, U64, Tx -> Tx
+view_count = |shows, parent, count, tx| match shows.counted {
+	Uncounted => tx
+	Counted(name) => emit_op(tx, 9, |c| put_presence(put_attribute_name(put_u32(c, parent), name), Present(count.to_str())))
+}
 
 ## A view row's key. It is fixed for the row's lifetime, so it never
 ## triggers a refresh.
@@ -8018,6 +8086,7 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 					full = row_marks(pass, cfg.outer_mask.bitwise_or(cols.kid_mask), cfg.depth)
 					c1 = if (full != 0) mark_all(cols, full) else cols
 					window = view.window_of()
+					kept = view.len()
 					# `view` moves into `follow` and is not used again, so the ordered
 					# keys are changed in place.
 					{ view: v1, placed, reached, touched, wrote, .. } = view.follow(table)
@@ -8043,7 +8112,10 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 						(drawn.view, drawn.changes, count_evals(t1, table.len()))
 					}
 					(c4, s4, t4) = view_apply(cfg, c1, slots, mk, v2, changes, t2)
-					(c5, t5) = settle(cfg, c4, mk, pass, t4)
+					# A counted view's parent learns the rows its query keeps when
+					# their number changed, after the rows drawn.
+					t4c = if (v2.len() == kept) t4 else view_count(shows, cfg.parent, v2.len(), t4)
+					(c5, t5) = settle(cfg, c4, mk, pass, t4c)
 					(c6, orph) = take_dropped_view(c5, cfg.depth, shows.get)
 					(view_inst(cfg, shows, q2, v2, adopted.concat(orph), c6, s4), Done, fx_adopt(t5, cfg.path, orph))
 				}
@@ -10695,8 +10767,19 @@ new_tx = |cmds| { cmds: cmds.append(0), next: 1, free: [], routes: [], work: wor
 ## commands (resolved now, so a reference mounted later in the same turn
 ## is found; a missing one is counted stale).
 turn : App(st), List(U32), U32, Payload -> App(st)
-turn = |Core.App.(AppBody.({ store, root, tx, programs })), path, h, payload| {
-	(root2, out, tx2) = call(root, Root.{ store }, Fire(path, 0, h, payload), probe_note(bump(tx, w_turns, 1), TurnBegan))
+turn = |Core.App.(AppBody.({ store, root, tx, programs })), path, h, payload| match call(root, Root.{ store }, Fire(path, 0, h, payload), probe_note(bump(tx, w_turns, 1), TurnBegan)) {
+	(root2, out, tx2) => fired_turn(root2, out, tx2, path, h, programs)
+}
+
+## The rest of a turn, once the event has fired. The root instance comes
+## in through a `match` on the answer of its call, not a destructuring
+## statement: a statement left each part of the answer shared until the
+## end of the function, so the root's pass read its block shared and every
+## site below it copied its storage (a table view's columns, the size of
+## its table) on every turn. Compiler behaviour; see design.md's compiler
+## limitations.
+fired_turn : Inst(Root(st)), Out(Root(st)), Tx, List(U32), U32, Catalogue -> App(st)
+fired_turn = |root2, out, tx2, path, h, programs| {
 	(store2, writes) = root_answer(out)
 	force = tx2.observations.echo
 	{ pass, walk } = Sig.at_root(writes)

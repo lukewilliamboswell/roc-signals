@@ -970,6 +970,25 @@ keeps, in the query's order, and of those only the rows inside a window.
   a mount creates them, and then the marked rows' holes are refreshed. For
   rows that own requests that is the order the requests are issued in, and
   so which are refused at the in-flight bound.
+- **The count of rows kept.** `Engine.table_view_counted(table, props,
+  name, template)` is a table view whose site also sets the attribute
+  `name` of its parent element to the number of rows the query keeps, in
+  decimal: one `ATTR` at mount, after the rows the mount creates, and one
+  in each pass that changes that number, after the change of the rows
+  drawn and before the marked rows' holes are refreshed. The number is the
+  length of the site's ordered keys, which the pass has brought up to
+  date, so counting costs no pass over the table: the site reads it before
+  `follow` and after the change of the rows drawn, and emits only when the
+  two differ. It is for a list drawn through a small window that must size
+  its scroller for every row. The name is a checked `AttrName`, and a
+  reserved transport name is a contract error where the view is
+  described. The parent must be an element the site's block mounts: a
+  site at the top of a branch or of the page, or anywhere in a drawn row
+  (whose template places its sites by anchor), names no parent, and a
+  counted view there is a contract error at mount, naming the site. The
+  attribute is the view's; an app that also writes it on the element gets
+  whichever was written last. `Engine.table_view` is the same site with no
+  count, and emits nothing more.
 - **Rows are found by the typed key.** The site indexes its rows by the
   table's key, through the key's own equality and hash. It never makes a
   text of a key to find a row: an inspected value is a debugging
@@ -5513,9 +5532,11 @@ including the known-bad ones, are what is checked, never a reference.
 The reference is the statement of a turn's meaning that the engine and the
 Roc references inside the fuzz targets are held to. It shares no code with
 them: they meet only through checked-in vector files the Lean side writes
-(`fuzz/structure/vectors.trace`, its known-bad companion
-`vectors-bad.trace`, and the cover sets of `fuzz/table-changes` and
-`fuzz/view-follow`), whose grammar is in `oracle/README.md`. Each of those
+(`fuzz/structure/vectors.trace` and its known-bad companion
+`vectors-bad.trace`, whose grammar is in `oracle/README.md`, and the
+cover sets of `fuzz/table-changes` and `fuzz/view-follow`, the `vectors`
+lists of `ChangeVectors.roc` and `FollowVectors.roc`, written as Roc
+values). Each of those
 targets replays its vectors twice: its top-level `expect`s against its Roc
 reference alone, and its fixed examples through the real code (the engine,
 or `TableCore` and `View`), so every replay holds both to Lean. Every
@@ -5681,7 +5702,9 @@ know nothing of the platform.
   `keep_current`) and which state its reaction writes (its own scope's, an
   enclosing one's or the root's). That model knows nothing of the engine's
   paths, owned lists or table: it numbers ids itself and records each
-  request's scope, mount, issuing step, kind and holder. It requires that
+  request's scope, mount, issuing step, kind and holder, and the engine's
+  commands, counters, ids in flight and states shown must equal its own.
+  It requires that
   an orphan is a kept request, that a scoped request of a disposed site is
   cancelled and its late result stale, that an orphan's write to a state
   its scope's disposal retired is skipped and counted and never reaches a
@@ -5719,6 +5742,13 @@ know nothing of the platform.
     those the window gained and lost, the moves are the rows off one
     longest run that kept its order, and absorbing places at most two rows
     for each written key.
+  - Both table targets also replay fixed histories whose every turn
+    states its outcome, Roc values beside the target that `oracle/tables`
+    writes (`ChangeVectors.roc`, `FollowVectors.roc`): a top-level `expect`
+    holds the target's model to them, and its fixed examples hold the real code
+    (`TableCore`, the generated modifier and `View`, and a table view
+    site's change of its drawn rows) to them, so `fuzz-smoke` replays them
+    too.
   - `fuzz/fx-core` holds `FxCore`'s request lifecycle to a model that
     numbers ids itself and tags each follow-up with its chain depth, from
     an adversarial host: the cap and refusal exactly at it, each id's fate,
@@ -5904,6 +5934,9 @@ of them is platform semantics.
 | [roc-lang/roc#13087](https://github.com/roc-lang/roc/issues/13087) | Under Boxy (`--specialize=no`, the default for size builds), `Dict.remove` copies its bucket data on every removal, making a sequence of removals quadratic; reproduced on `nightly-2026-11-18-a520eed` | The independent DOM oracle removes row membership through the equivalent `Dict.update` callback returning `Err(Missing)`. Removed keys leave the dictionary, with no tombstones, retained history or shared engine index. The original allocation-scaling guard and all inputs remain unchanged. Restore direct removal after the upstream fix passes those controls |
 | [roc-lang/roc#13221](https://github.com/roc-lang/roc/issues/13221) | On `nightly-2026-11-18-a520eed`, x64mac development builds corrupt interior strings extracted or rejoined after `Str.split_on`; retained lines from repeated `split_first` also reproduce it. Runtime inputs demonstrate lost leading bytes in filename IDs, compiler versions, scaffold lines, reports, requests and paths; the original filename control preserves its bytes on arm64mac and the Nov15 compiler | Validated filename, version and parent boundaries use equivalent `split_first`/`split_last` operations. The private CLI text helper assembles owned UTF-8 parts for affected ASCII-delimited lines, requests and path guards; hidden paths are classified directly from prefixes. No character is invented or repaired, all exact native/CLI checks remain required, and a byte comparison checks generated scaffolds. Remove the helper and workaround notes once the compiler preserves slicing |
 | Not filed: fixed in `nightly-2026-11-21-09f4dc3` (a row-polymorphic record update frees a field it then increfs) | On `nightly-2026-11-18-a520eed` and `nightly-2026-11-19-54c51c9`, Boxy lowering (`--specialize=no`, the default for development and size builds) of a record update whose base is a field read from a row-polymorphic function's argument (`r = s.inner` then `{ ..r, calls: [] }`) consumes the base, freeing a uniquely held replaced field, and only then increfs the base, touching the freed field; an allocator that unmaps on free segfaults. Not reproduced on `nightly-2026-11-15-f25da45`, `nightly-2026-11-21-09f4dc3` or with `--specialize=yes` | The soak's unannotated `forget` in `SpecRunner.soak!` rebuilds the recorded record from its fields instead of updating it, so the replaced call list is dropped once, by its owner. Without it, a soak whose round trip records enough calls for musl to map their list on its own segfaults (the status page's). Restore the record update once the pinned compiler is `nightly-2026-11-21-09f4dc3` or later |
+| [roc-lang/roc#13374](https://github.com/roc-lang/roc/issues/13374) | An erased closure that rebuilds itself reads its captures borrowed, so an update of a captured list copies it, when the erased call is in tail position (a deferred call never transfers the closure) or when the closure's result holds exactly one function (the callee keeps its own closure as the destination for it). The host boxes the engine state, so every site's function is erased: a turn copied the child list of every block on the event's path, linear in the block's fan-out | `Core.call` binds the site's answer before returning it, and `Inst` has a variant, `Spare(List(Inst(ctx)))`, that is never built (`call` crashes on it as internal), so a site's answer holds more than one function. Neither half alone keeps the captures owned. Commands, turns and counters are unchanged; `Inst` grows by its tag. Remove both once the pinned compiler owns an erased callee's captures |
+| Not filed upstream: [destructure-sharing and dict-update-sharing](https://github.com/lukewilliamboswell/roc-native-macos/blob/59f1746/patches/roc-compiler/README.adoc) | In optimized builds, a record taken apart by a destructuring statement or a parameter pattern keeps its refcounted fields shared until the function returns when it has two or more of them, and `Dict.update` copies a dictionary it shares when it grows. A table's keyed write (`TableCore.write`'s `{ rows, record, .. } = table`), `Engine.inner`'s `|{ t }| t` inlined into a cell's modifier, and a modifier handed a table its lens still held each copied the table's rows, so a turn that wrote a few rows cost the table and a loop of `Table.insert` was quadratic | `TableCore.write` and `Engine.inner` take the table apart with `match`; the change record takes a key with `contains` and `insert`; the table cell's lens (`Core.table_of`) keeps the table it began unwrapped and wraps it only to call the modifier. Same changes recorded, commands and turns. Restore the statements once the pinned compiler moves the parts of a destructured value |
+| Not filed upstream: [destructure-sharing](https://github.com/lukewilliamboswell/roc-native-macos/blob/59f1746/patches/roc-compiler/README.adoc) | The same behaviour at a turn: `turn` took the root's answer apart with a statement, so the root instance stayed shared through the root's pass, its block's child list was copied when the pass replaced a site in it, and a table view below it copied its columns, the size of its table, on every turn that reached it | `turn` takes the root's answer apart with a `match` and hands the parts to `fired_turn`, the rest of the turn unchanged. The two later statements that take a call's answer apart in a turn remain: their instance is called again only for a walk of local-state layers. Restore the statement once the pinned compiler moves the parts of a destructured value |
 | [roc-lang/roc#13195](https://github.com/roc-lang/roc/issues/13195) | Official artifact `release-fast-e17a7826` and published nightlies `nightly-2026-11-18-a520eed` and `nightly-2026-11-19-54c51c9` retain hosted imports reachable only from unexported platform provides in development Wasm; the same source on `nightly-2026-11-15-f25da45` drops them | The worker host keeps its closed import vocabulary and refuses native spec-runner I/O. On those two published nightlies, CLI development builds and repository builders print `SKIP` for that compiler profile and use `--opt=size`, which passes the unchanged worker stories with only the declared worker imports. One complete match table, `cli/compiler-profiles.tsv`, serves the CLI, Roc scripts and direct Node CI driver. Every behavior check remains enabled; results identify the effective size profile, allocation guards use its guarantees, and shared size artifacts are built and measured once. Other compiler versions retry development builds automatically. No host imports, stubs or engine semantics change |
 | [roc-lang/roc#13196](https://github.com/roc-lang/roc/issues/13196) | On `nightly-2026-11-18-a520eed` and official artifact `release-fast-e17a7826`, an optimized native JSON reader carrying text, a position and a set copies the set on each insertion after reading a string. The same function-free, file-free source is linear on `nightly-2026-11-15-f25da45`; this is separate from #13081 | `PortJson.State` is an opaque cursor over one private boxed body. Advancing it allocates a constant-sized box, preserving linear total work at a constant-factor cost on the older compiler. Its dictionary frames retain only open dictionaries' decoded names. The port-json fuzz target bounds cumulative requested bytes as well as peak memory, with large distinct-key fixed inputs; an unboxed cursor returns only after the upstream fix and those guards establish linear work |
 | [roc-lang/roc#13197](https://github.com/roc-lang/roc/issues/13197) | Official artifact `release-fast-e17a7826` segfaults in post-check `lambda_solve` when optimizing the wire and placeholder lifecycle fuzz targets. The identical sources check on both compilers and pass optimized fixed replays on `nightly-2026-11-15-f25da45` | Optimized fixed replays remain required. The shared build-profile policy selects `--opt=size` instead of speed for native fuzz builds on `nightly-2026-11-18-a520eed` and `nightly-2026-11-19-54c51c9`, prints the substitution and records the actual profile; unknown compiler versions retry speed. Every member, saved input, model and leak check still runs. A compiler or replay failure remains a failed gate, and no compiler patch is part of the platform |
@@ -5947,8 +5980,7 @@ In-place writes of large values in shipping builds are tracked against
 
 1. **One engine, thin host.** All reactive and structural logic is in the
    engine's Roc modules (`Core.roc`, with `Sig.roc`, `FxCore.roc`,
-   `Reconcile.roc`,
-   `TableCore.roc`, `View.roc` and `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
+   `Reconcile.roc`, `TableCore.roc`, `View.roc` and `Seq.roc`). `host.zig` and `runtime.mjs` contain no reactive decision.
    *Holds when:* the same engine runs in the browser module and the native spec runner with
    the same command stream.
 2. **App semantics agree natively and in the browser.** Every maintained app's
@@ -6258,6 +6290,8 @@ keyed : Signal(ctx, Str), v, v -> Keyed(ctx, v)
 TableViewProps(ctx, q, k, v, s) : { query : Signal(ctx, q), plan : (q -> QueryPlan(k, v, s)), window : Signal(ctx, Window) }
 table_view : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s),
             (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)   # q has is_eq
+table_view_counted : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), AttrName,
+            (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
 QueryPlan(k, v, s) : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }
 sort_by : { keep : k, v -> Bool, sort : k, v -> s } -> QueryPlan(k, v, (s, k))
     where [s.order_relative_to : s, s -> [Before, Same, After], k.order_relative_to : k, k -> [Before, Same, After]]

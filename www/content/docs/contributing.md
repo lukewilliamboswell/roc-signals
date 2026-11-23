@@ -758,9 +758,16 @@ sets against exact sets, at indices past 64), `fuzz/table-changes`
 drawn rows, against a filter, a sort and a slice of a plain list),
 `fuzz/fx-core` (`FxCore`'s request lifecycle against a model with an
 explicit depth for every follow-up) and `fuzz/reconcile` (`Reconcile.plan`
-applied to lists of up to thousands of keys). `fuzz/structure`,
-`fuzz/table-changes` and `fuzz/view-follow` also replay the vector files
-the Lean reference models write ([The reference models](#the-reference-models)).
+applied to lists of up to thousands of keys). `fuzz/structure` also
+replays the vector files the Lean reference models write.
+`fuzz/table-changes` and `fuzz/view-follow` also replay fixed histories
+whose every turn states its outcome, kept as Roc values beside each
+target (`ChangeVectors.roc`, `FollowVectors.roc`), whose lists the Lean
+reference models write ([The reference models](#the-reference-models)):
+`roc test` on the target's root replays them against its model and the
+real code and fails naming the history and the turn at which they
+disagree, and the target's fixed examples replay them through the real
+code, so `fuzz-smoke` does too.
 
 `fuzz/startup-placeholders` checks readiness and scoped replacement against a
 separate list-based FIFO/lifetime model. Its histories include cold-frame
@@ -972,8 +979,10 @@ the Roc reference inside each target is held to the Lean one.
 `oracle/README.md` lists the modules, what each is trusted for, and the
 grammar of every vector file.
 
-Each of those targets imports its vector files as text (`Vectors.roc`,
-`ChangeVectors.roc`, `FollowVectors.roc`). `roc test` on the target's
+`fuzz/structure` imports its vector files as text (`Vectors.roc`). The
+table targets' vectors are Roc values: `oracle/tables` writes the
+`vectors` list at the end of `ChangeVectors.roc` and `FollowVectors.roc`,
+and keeps the types and comments above it as they are. `roc test` on the target's
 root replays every vector against the target's Roc reference alone and
 fails naming the vector and the step at which it disagrees; the structure
 target also requires its value model to reject every known-bad trace in
@@ -992,7 +1001,8 @@ so run it yourself whenever a change touches `oracle/` or a vector file.
 A change to what a turn, a table or a table view means lands in one pull
 request, in this order: `design.md`; the Lean model; the Roc reference in
 the fuzz target; the vector files, written by the models (copy them from
-`.build/oracle/` after a run). A vector file is never edited by hand. When
+`.build/oracle/` after a run). A vector file, or a vector list, is never
+edited by hand. When
 the engine and a Lean model disagree, the model decides unless `design.md`
 says otherwise; a disagreement between the model and `design.md` is a
 design change.

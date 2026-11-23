@@ -66,16 +66,18 @@ Scores := [League].{
 
 	# region board
 	## The board: three rows of the listing's order, from where the window
-	## starts.
+	## starts. The list's `data-count` says how many players the listing
+	## keeps, however few the window draws.
 	board : {} -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	board = |{}|
 		Html.ul(
-			[],
+			[Engine.test_id("board")],
 			[
-				Engine.table_view(
+				Engine.table_view_counted(
 					Scores.cells.league.players,
 					{ query: Scores.cells.listing.signal(), plan: Scores.plan, window: Scores.cells.window.signal() },
+					"data-count",
 					|key, player| Scores.row(key, player),
 				),
 			],

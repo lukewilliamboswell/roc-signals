@@ -42,12 +42,12 @@ main! = |raw_args| {
 		$problems = $problems.concat(step!("oracle/tables", ["exe", "check", "gate"], "tables: check gate")?)
 		$problems = $problems.concat(step!("oracle/turns", ["exe", "vectors", "check", "../../fuzz/structure/vectors.trace", "../../fuzz/structure/vectors-bad.trace"], "turns: vectors check")?)
 		$problems = $problems.concat(step!("oracle/turns", ["exe", "vectors", "structure", "../../${out}/vectors.trace", "../../${out}/vectors-bad.trace"], "turns: vectors structure")?)
-		$problems = $problems.concat(step!("oracle/tables", ["exe", "vectors", "write", "../../${out}/table-changes.txt", "../../${out}/view-follow.txt"], "tables: vectors write")?)
+		$problems = $problems.concat(step!("oracle/tables", ["exe", "vectors", "write", "../../fuzz/table-changes/ChangeVectors.roc", "../../${out}/ChangeVectors.roc", "../../fuzz/view-follow/FollowVectors.roc", "../../${out}/FollowVectors.roc"], "tables: vectors write")?)
 		generated = [
 			("${out}/vectors.trace", "fuzz/structure/vectors.trace"),
 			("${out}/vectors-bad.trace", "fuzz/structure/vectors-bad.trace"),
-			("${out}/table-changes.txt", "fuzz/table-changes/vectors.txt"),
-			("${out}/view-follow.txt", "fuzz/view-follow/vectors.txt"),
+			("${out}/ChangeVectors.roc", "fuzz/table-changes/ChangeVectors.roc"),
+			("${out}/FollowVectors.roc", "fuzz/view-follow/FollowVectors.roc"),
 		]
 		for (fresh, kept) in generated {
 			$problems = $problems.concat(same!(fresh, kept)?)

@@ -627,7 +627,7 @@ record_text = |record| match record {
 held_of : List((U64, U64)) -> Held
 held_of = |rows| { rows, last: Keyed(rows, []) }
 
-## The model through a vector's turns, against what Lean says each leaves.
+## The model through a vector's turns, against the outcome each states.
 ## A kept copy is a model value whose `spare` is its `rows`, so `Other(i)`
 ## reads the copy; a new table is a kept value of its rows that no turn
 ## has written, so `Copy(i)` of it is what `Fresh` is for the session.
@@ -665,7 +665,7 @@ vector_model = |vector| {
 		}
 		want = turn.outcome
 		if model.rows.rows != want.rows or record_text(record) != record_text(want.record) {
-			return Err("vector ${vector.seed.to_str()}, turn ${$n.to_str()}: the model holds ${Str.inspect(model.rows.rows)} and says ${record_text(record)}; Lean ${Str.inspect(want.rows)} and ${record_text(want.record)}")
+			return Err("vector ${vector.seed.to_str()}, turn ${$n.to_str()}: the model holds ${Str.inspect(model.rows.rows)} and says ${record_text(record)}; the vector states ${Str.inspect(want.rows)} and ${record_text(want.record)}")
 		}
 		$saved = if (turn.keep) $saved.append({ rows: model.rows, spare: model.rows }) else $saved
 		$model = model
@@ -678,8 +678,8 @@ other_id : U64
 other_id = 1000000
 
 ## The code through a vector's turns, as `Store.after` makes them with the
-## cell's generated modifier, against what Lean's transliteration of that
-## code says each leaves, write counts included.
+## cell's generated modifier, against the outcome each states, write
+## counts included.
 vector_code : ChangeVectors.Vector -> Try({}, Str)
 vector_code = |vector| {
 	var $value = Core.store_of({}, { rows: Core.table(start_table(vector.start)), spare: Core.table(start_table(first_spare)) }.Core.Cells)
@@ -714,7 +714,7 @@ vector_code = |vector| {
 		}
 		want = turn.outcome
 		if got.rows != want.rows or record_text(got.record) != record_text(want.record) or got.version != want.version or got.start != want.start {
-			return Err("vector ${vector.seed.to_str()}, turn ${$n.to_str()}: the table holds ${Str.inspect(got.rows)}, says ${record_text(got.record)}, counts ${got.version.to_str()} from ${got.start.to_str()}; Lean ${Str.inspect(want.rows)}, ${record_text(want.record)}, ${want.version.to_str()} from ${want.start.to_str()}")
+			return Err("vector ${vector.seed.to_str()}, turn ${$n.to_str()}: the table holds ${Str.inspect(got.rows)}, says ${record_text(got.record)}, counts ${got.version.to_str()} from ${got.start.to_str()}; the vector states ${Str.inspect(want.rows)}, ${record_text(want.record)}, ${want.version.to_str()} from ${want.start.to_str()}")
 		}
 		$saved = if (turn.keep) $saved.append(table) else $saved
 	}
@@ -731,16 +731,16 @@ vectors_hold = |replay, what| {
 		},
 	)
 	if !wrong.is_empty() {
-		crash "fuzz/table-changes/vectors.txt, by the ${what}:\n${Str.join_with(wrong, "\n")}"
+		crash "fuzz/table-changes/ChangeVectors.roc, by the ${what}:\n${Str.join_with(wrong, "\n")}"
 	}
 	!ChangeVectors.vectors.is_empty()
 }
 
-## The model says what Lean says of every vector's turns.
+## The model leaves the outcome every vector's turns state.
 expect vectors_hold(vector_model, "model")
 
-## `TableCore` and the generated modifier do what Lean's transliteration of
-## them does on every vector's turns.
+## `TableCore` and the generated modifier leave the outcome every vector's
+## turns state.
 expect vectors_hold(vector_code, "code")
 
 ## `events` are a session's bytes. Mode 0 runs the session, as every
@@ -758,9 +758,9 @@ test! = |{ mode, events }| {
 		Fuzz.expect_no_leaks!(
 			|| {
 				# A declared example names its vector by index; an explored input
-				# may name any number, counted round the file.
+				# may name any number, counted round the list.
 				at = (events.first() ?? 0).to_u64() % ChangeVectors.vectors.len()
-				vector = ChangeVectors.vectors.get(at) ?? crash "table-changes: the vector file is empty"
+				vector = ChangeVectors.vectors.get(at) ?? crash "table-changes: there are no vectors"
 				match vector_code(vector) {
 					Ok(_) => {}
 					Err(problem) => crash "table-changes: ${problem}"

@@ -77,20 +77,26 @@ another history.
 |---|---|---|
 | `fuzz/structure/vectors.trace` | `turns`: `lake exe vectors structure` | `fuzz/structure/Vectors.roc` |
 | `fuzz/structure/vectors-bad.trace` | `turns`, from the known-bad algorithms | `fuzz/structure/Vectors.roc`, which must reject each |
-| `fuzz/table-changes/vectors.txt` | `tables`: `lake exe vectors write` | `fuzz/table-changes/ChangeVectors.roc` |
-| `fuzz/view-follow/vectors.txt` | `tables` | `fuzz/view-follow/FollowVectors.roc` |
+| `fuzz/table-changes/ChangeVectors.roc`, its `vectors` list | `tables`: `lake exe vectors write` | `fuzz/table-changes/FuzzTableChangesProperty.roc` |
+| `fuzz/view-follow/FollowVectors.roc`, its `vectors` list | `tables` | `fuzz/view-follow/FuzzViewFollowProperty.roc` |
 
-Every file is text, one record per line, `#` starts a comment line, and
-tokens are separated by spaces. Nobody edits a vector file by hand.
+The structure traces are text, one record per line, `#` starts a comment
+line, and tokens are separated by spaces. The table vectors are Roc
+values: `lake exe vectors write` reads each module up to its line
+`\tvectors =`, keeps that part (the types and their comments) as it is,
+and writes the list after it, so the module's types state the format and
+the compiler checks every vector against them. Nobody edits a vector file,
+or a vector list, by hand.
 
-Each target imports its files as text and replays them two ways. A
+Each target replays its vectors two ways. A
 top-level `expect` runs the target's Roc reference alone over every
 vector (`roc test` on the target's root): the value model for
 `structure`, the session model for each table target. The target's fixed
 examples run every vector through the real code as well: the engine for
 `structure` (mode 6), `TableCore` and `View` for the table targets
 (mode 2). A vector the replay does not hold to fails with its name and
-step (or seed and turn); a line that does not parse fails naming it.
+step (or seed and turn); a trace line that does not parse fails naming
+it.
 
 ### Structure traces
 
@@ -151,29 +157,22 @@ alone, as are `twoPassOuter` and `noJoinKeep` on these trees.
 
 ### Table changes
 
-```
-vector <seed>
-covers <class>, ...
-start <key>:<row> ...
-turn <modifier> ; <modifier> ...
-  -> rows <key>:<row> ... | <record> | <version> <start>
-keep
-end
-```
+Each vector is a `ChangeVectors.Vector`: its seed, its starting rows and
+its turns, after a comment naming the classes it is the first to reach.
 
 - A modifier is a function handed to the cell's generated modifier:
-  `on <op> ...` changes the table it is given; `saved i <op> ...` ignores it
-  and changes the i-th kept copy; `other i` is the i-th kept copy under
-  another cell's identity; `fresh <key>:<row> ...` is `Table.from_list`. An
-  op is `insert(k,v)`, `put(k,v)`, `replace(k,v)`, `update(k)` (adds 1,
+  `On(ops)` changes the table it is given; `Saved(i, ops)` ignores it and
+  changes the i-th kept copy; `Other(i)` is the i-th kept copy under
+  another cell's identity; `Fresh(rows)` is `Table.from_list`. An op is
+  `Insert(k, v)`, `Put(k, v)`, `Replace(k, v)`, `Update(k)` (adds 1,
   modulo the target's row space: 4 for `table-changes`, 8 for
-  `view-follow`), `remove(k)`, `update_all` (adds 1 to every row, modulo
-  the same) or `undo` (`apply(inverse)`).
-- After each turn: the rows; the record as `keyed` followed by
-  `<key>=was:<row>` or `<key>=absent` in the record's order, or
-  `rewritten`; the table's write count and the count its changes began at.
-- `keep` keeps a copy of the cell's table as it stands, for later `saved`
-  and `other` modifiers.
+  `view-follow`), `Remove(k)`, `All` (`update_all`: adds 1 to every row,
+  modulo the same) or `Undo` (`apply(inverse)`).
+- A turn's outcome is the rows; the record, `Keyed` with each key and
+  `Was(row)` or `Absent` in the record's order, or `Rewritten`; the
+  table's write count and the count its changes began at.
+- `keep: Bool.True` keeps a copy of the cell's table as it stands after
+  the turn, for later `Saved` and `Other` modifiers.
 - A class is the modifier's kind, the record it was handed (`turn-start`,
   `key-recorded`, `key-unrecorded`, `keyed` or `rewritten`) and what it left
   (`writes`, `no-write`, `rewritten`). A vector is the first history of a
@@ -181,32 +180,26 @@ end
 
 ### View follow
 
-```
-vector <seed>
-covers <class>, ...
-cfg <ratio> <floor>
-table <key>:<row> ...
-view <query> <start> <count>
-turn <modifier> ; ... [; query <q>] [; window <start> <count>]
-  -> how <how> | rows ... | <record> | <version> <start> | keys <key> ... | drawn <key> ... | <change> ...
-keep
-end
-```
+Each vector is a `FollowVectors.Vector`: its seed, the rebuild thresholds
+(`ratio`, `floor`), the table's starting rows, the view's query and
+window, and its turns, after a comment naming the classes it reaches.
+Modifiers and records are those of `table-changes`.
 
-- `cfg` is `rebuild_ratio` and `rebuild_floor`. The file holds only
-  `View.roc`'s own, 8 and 64, since the target replays the real `View`;
-  a table of three keys never writes enough rows to rebuild under them,
-  so no vector is `rebuilt-many` (the target's own seeded series, over 24
-  keys, reaches it). The file's histories hold no `undo`, which the
+- The thresholds are `rebuild_ratio` and `rebuild_floor`. The list holds
+  only `View.roc`'s own, 8 and 64, since the target replays the real
+  `View`; a table of three keys never writes enough rows to rebuild under
+  them, so no vector is `rebuilt-many` (the target's own seeded series,
+  over 24 keys, reaches it). The histories hold no `Undo`, which the
   target's model does not describe.
 - A query is 0 (every row, by row then key), 1 (rows of 1 or more, by row
   then key) or 2 (every row, by key descending); a window of count 1000
-  draws every row.
-- After a turn that reaches the site: how the view followed its table
-  (`unchanged`, `absorbed`, `rebuilt-many`, `rebuilt-rewritten`), the
-  table, the ordered keys of the whole view, the drawn keys, and the
-  changes of the rows drawn: `left:k`, `entered:k@anchor`, `moved:k@anchor`
-  (`anchor` is the key it goes before, or `end`) and `changed:k`.
+  draws every row. A turn's `query` and `window` are `Ok` of the new one
+  when the turn changes it, or `Err(Same)`.
+- A turn's outcome is how the view followed its table (`Unchanged`,
+  `Absorbed`, `Rebuilt(Many)`, `Rebuilt(Rewritten)`), the table, the
+  ordered keys of the whole view, the drawn keys, and the changes of the
+  rows drawn: `Left(k)`, `Entered`, `Moved` (each with the key it goes
+  before, `Row(k)`, or `End`) and `Changed(k)`.
 - A class is how the view followed and one kind of change (or `none`).
 
 A table vector is written only from a single history, as a mounted instance
