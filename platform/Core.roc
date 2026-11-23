@@ -10420,8 +10420,19 @@ new_tx = |cmds| { cmds: cmds.append(0), next: 1, free: [], routes: [], work: wor
 ## commands (resolved now, so a reference mounted later in the same turn
 ## is found; a missing one is counted stale).
 turn : App(st), List(U32), U32, Payload -> App(st)
-turn = |Core.App.(AppBody.({ store, root, tx, programs })), path, h, payload| {
-	(root2, out, tx2) = call(root, Root.{ store }, Fire(path, 0, h, payload), bump(tx, w_turns, 1))
+turn = |Core.App.(AppBody.({ store, root, tx, programs })), path, h, payload| match call(root, Root.{ store }, Fire(path, 0, h, payload), bump(tx, w_turns, 1)) {
+	(root2, out, tx2) => fired_turn(root2, out, tx2, path, h, programs)
+}
+
+## The rest of a turn, once the event has fired. The root instance comes
+## in through a `match` on the answer of its call, not a destructuring
+## statement: a statement left each part of the answer shared until the
+## end of the function, so the root's pass read its block shared and every
+## site below it copied its storage (a table view's columns, the size of
+## its table) on every turn. Compiler behaviour; see design.md's compiler
+## limitations.
+fired_turn : Inst(Root(st)), Out(Root(st)), Tx, List(U32), U32, Catalogue -> App(st)
+fired_turn = |root2, out, tx2, path, h, programs| {
 	(store2, writes) = root_answer(out)
 	force = tx2.observations.echo
 	{ pass, walk } = Sig.at_root(writes)
