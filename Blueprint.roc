@@ -37,7 +37,7 @@ roc_docs_program = Fetch("roc-docs", Recipes.file("https://github.com/lukewillia
 # is pinned to it. roc-overlay packages each nightly as
 # `nix#rocpkgs.<tag>`; it is fetched directly here so no environment starts
 # Nix.
-roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-23-b5c77fc"))
+roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-24-ff5e544"))
 
 config = [
 	Name("roc-signals"),
