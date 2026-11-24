@@ -80,7 +80,7 @@ main! = |raw_args| {
 		return Err(ExamplesNotPublished(unpublished))
 	}
 	Proc.note!("== example module sizes (reported)")
-	Sizes.report_modules!({ root: o.root, node: o.node }, catalog.map(|slug| (slug, SpecSuite.wasm_of(o, slug))))?
+	Sizes.report_modules!({ root: o.root, node: o.node }, catalog.map(|slug| (slug, SpecSuite.size_wasm_of(o, slug))))?
 	ExampleFiles.copy_all!(o.root, dist)?
 	SpecSuite.copy_runtime!(o.root, dist)?
 	loader = SitePictures.copy_loader!(o, dist)?
