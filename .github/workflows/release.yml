@@ -38,14 +38,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           nightly=$(gh api repos/roc-lang/nightlies/releases/latest --jq .tag_name)
-          # TODO https://github.com/roc-lang/roc/issues/13372: remove this
-          # fallback when the nightly lowers nested record defaults again.
-          case "$nightly" in
-            nightly-2026-11-21-09f4dc3|nightly-2026-11-22-3350b1c|nightly-2026-11-23-b5c77fc)
-              echo "::warning::Roc $nightly hangs on nested record defaults (roc#13372). Testing on nightly-2026-11-18-a520eed."
-              nightly=nightly-2026-11-18-a520eed
-              ;;
-          esac
           echo "tag=$nightly" >> "$GITHUB_OUTPUT"
 
   build:
