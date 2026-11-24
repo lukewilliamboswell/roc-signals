@@ -549,7 +549,15 @@ script_tests! = |o| {
 		$roots = $roots.append({ path, text: Path.read_utf8!(Path.utf8(path))? })
 	}
 	plan = script_test_plan($roots)
-	results = Proc.parallel!(plan.test.map(|path| { program: o.tooling, args: ["test", path], cwd: "." }), Proc.compiler_jobs!(App)?)?
+	jobs = plan.test.map(
+		|path| {
+			# On b5c77fc, loading cached tests that import ClassCheck can
+			# stall. Compile the same tests from source for those roots.
+			args = if (["scripts/check_classes.roc", "scripts/site.roc"].contains(path)) ["test", "--no-cache", path] else ["test", path]
+			{ program: o.tooling, args, cwd: "." }
+		},
+	)
+	results = Proc.parallel!(jobs, Proc.compiler_jobs!(App)?)?
 	Ok(plan.problems.concat(List.map2(plan.test, results, |path, r| (path, r)).keep_if(|(_, r)| r.code != 0).map(|(path, r)| "roc-stable test ${path} failed (exit ${r.code.to_str()}): ${r.output.trim()}")))
 }
 
