@@ -162,7 +162,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 						Html.div(
 							"flex flex-wrap items-center gap-2 py-4 text-sm text-zinc-500",
 							[
-								Nav.link_s(props.nav, author, "font-medium text-emerald-600", author.map(profile_url)),
+								Nav.link_s(props.nav, author, "font-medium text-emerald-700", author.map(profile_url)),
 								Engine.text_s(field(|a| "${Format.display_date(a.created_at)} | ${a.favorites_count.to_str()} favorites")),
 							],
 						),

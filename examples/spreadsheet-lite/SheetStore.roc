@@ -1,6 +1,8 @@
+import pf.Clipboard
 import pf.Engine exposing [Signal, Table]
 import Cells
 import Formula
+import RangeText
 import Sheet
 
 ## Spreadsheet Lite's store: the state the formula bar, the controls and the
@@ -35,6 +37,8 @@ SheetStore := [Workbook].{
 	keyboard_start : Keyboard
 	keyboard_start = { anchor: 0, saved: "", pending: False, commands: Engine.outbox({}) }
 
+	Selection : { anchor : U64, active : U64 }
+
 	## The sheet a visit opens with. A top-level constant is evaluated while
 	## compiling, so a row key `Sheet.rows_of` gave twice would be a compile
 	## error naming it.
@@ -51,6 +55,8 @@ SheetStore := [Workbook].{
 			selected: Engine.cell(0.U64),
 			editing: Engine.cell(Resting),
 			keyboard: Engine.cell(SheetStore.keyboard_start),
+			copies: Engine.cell(Engine.outbox({})),
+			range_status: Engine.cell(""),
 			mode: Engine.cell(Values),
 			listing: Engine.cell(Sheet.whole_sheet),
 		}.Engine.Cells,
@@ -58,6 +64,79 @@ SheetStore := [Workbook].{
 
 	## The store's cells.
 	cells = SheetStore.store.cells()
+
+	## Both ends of the selection, independent of which rows the view lists.
+	selected_range : {} -> Signal(ctx, Selection)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	selected_range = |{}| { anchor: SheetStore.cells.keyboard.signal().map(|held| held.anchor), active: SheetStore.cells.selected.signal() }.Signal
+
+	## Copy the selected cell sources as a rectangle, including blank cells.
+	copy_requested : Selection -> List(Engine.Write(_))
+	copy_requested = |range| [SheetStore.cells.copies.update(|outbox| outbox.post(range))]
+
+	copy_asks : Table(U64, Sheet.Row), Selection -> List(Engine.Ask({}, [NotAllowed, Unavailable, Refused, InvalidField, TooLarge]))
+	copy_asks = |table, { anchor, active }| {
+		bounds = Cells.bounds(anchor, active)
+		sources = Cells.expand_range(anchor, active).map(|index| SheetStore.cell_at(table, index).source)
+		match RangeText.copied(sources, bounds.right - bounds.left + 1) {
+			Ok(text) => [Clipboard.text(text).map_err(|reason| reason)]
+			Err(InvalidField) => [Engine.again({}).map(|_| Err(InvalidField))]
+			Err(TooLarge) => [Engine.again({}).map(|_| Err(TooLarge))]
+		}
+	}
+
+	copy_answered : Try({}, [NotAllowed, Unavailable, Refused, InvalidField, TooLarge]) -> List(Engine.Write(_))
+	copy_answered = |result| [
+		SheetStore.cells.range_status.set(
+			match result {
+				Ok({}) => "Copied selected cells"
+				Err(NotAllowed) => "Clipboard permission was denied"
+				Err(Unavailable) => "Clipboard is unavailable"
+				Err(Refused) => "Clipboard is busy. Try again."
+				Err(InvalidField) => "Selection contains a line break inside a cell"
+				Err(TooLarge) => "Selection is too large to copy"
+			},
+		),
+	]
+
+	RangeEdit : { range : Selection, keyboard : Keyboard, focus : Focus }
+
+	edit_selection : {} -> Signal(ctx, RangeEdit)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	edit_selection = |{}| { range: SheetStore.selected_range({}), keyboard: SheetStore.cells.keyboard.signal(), focus: SheetStore.cells.editing.signal() }.Signal
+
+	## Clear cell sources in one table write and recompute dependents.
+	cleared : RangeEdit -> List(Engine.Write(_))
+	cleared = |at| range_written(
+		at,
+		{
+			edits: Cells.expand_range(at.range.anchor, at.range.active).map(|index| { index, source: "" }),
+			status: "Cleared selected cells",
+		},
+	)
+
+	## Place a pasted rectangle at the selection's top-left address.
+	pasted : RangeEdit, Engine.Paste -> List(Engine.Write(_))
+	pasted = |at, paste| {
+		bounds = Cells.bounds(at.range.anchor, at.range.active)
+		parsed = match paste {
+			Text(text) => RangeText.pasted(text, bounds.top * Cells.col_count + bounds.left)
+			TooLarge => Err(TooLarge)
+		}
+		match parsed {
+			Ok(edits) => range_written(at, { edits, status: "Pasted cells" })
+			Err(problem) => [
+				SheetStore.cells.range_status.set(
+					match problem {
+						TooLarge => "Pasted text is too large to import"
+						Ragged => "Pasted rows must have the same number of cells"
+						OutsideSheet => "Pasted cells would extend past the sheet"
+						InvalidField => "Pasted cells contain invalid quotes or a line break"
+					},
+				),
+			]
+		}
+	}
 
 	## Typing `text` into the cell at `index`, in the grid or in the formula
 	## bar.
@@ -124,7 +203,11 @@ SheetStore := [Workbook].{
 			[Engine.Chord.plain("Enter"), Engine.Chord.plain("F2"), Engine.Chord.plain("Escape")]
 				.concat(arrows.map(|key| Engine.Chord.plain(key).with_shift()))
 				.concat([Engine.Chord.plain("ArrowUp"), Engine.Chord.plain("ArrowDown")])
-				.concat(if (editing == Typing) [] else [Engine.Chord.plain("ArrowLeft"), Engine.Chord.plain("ArrowRight")])
+				.concat(
+					if (editing == Typing) [] else
+						[Engine.Chord.plain("ArrowLeft"), Engine.Chord.plain("ArrowRight"), Engine.Chord.plain("Delete")]
+							.concat(Engine.Chord.plain("c").primary()),
+				)
 				.concat(Engine.Chord.plain("ArrowUp").primary()).concat(Engine.Chord.plain("ArrowDown").primary()),
 		)
 	}
@@ -136,13 +219,13 @@ SheetStore := [Workbook].{
 		first = indices.first() ?? selected
 		last = indices.last() ?? selected
 		sum = indices.fold(
-			0.I64,
-			|total, index| match Cells.take_number(SheetStore.cell_at(table, index).out.text.to_utf8()) {
-				Ok(number) => if (number.rest.is_empty()) total + number.value else total
+			0.I128,
+			|total, index| match Cells.read_number(SheetStore.cell_at(table, index).out.text) {
+				Ok(number) => total + number.to_i128()
 				Err(_) => total
 			},
 		)
-		"${Cells.ref_of(first)}${if (first == last) "" else ":${Cells.ref_of(last)}"} · ${Cells.format_number(sum)}"
+		"${Cells.ref_of(first)}${if (first == last) "" else ":${Cells.ref_of(last)}"} · ${Cells.format_total(sum)}"
 	}
 
 	## The selected cell losing the focus. The caret stays where it is.
@@ -169,10 +252,7 @@ SheetStore := [Workbook].{
 	## `var` holding the table, which copies the table on every iteration
 	## in optimised builds (roc-lang/roc#12971).
 	retyped : Table(U64, Sheet.Row), U64, Str -> Table(U64, Sheet.Row)
-	retyped = |table, index, text| {
-		sources = Sheet.with_source(SheetStore.sources_of(table), index, text)
-		Sheet.rows_of(sources).fold(table, |written, { key, row }| if (written.get(key) == Ok(row)) written else written.put(key, row))
-	}
+	retyped = |table, index, text| rewritten(table, [{ index, source: text }])
 
 	## What is typed into every cell of the sheet `table` holds.
 	sources_of : Table(U64, Sheet.Row) -> List(Str)
@@ -209,6 +289,32 @@ SheetStore := [Workbook].{
 		index: SheetStore.cells.selected.signal(),
 		focus: SheetStore.cells.editing.signal(),
 	}.Signal.map(|{ table, index, focus }| SheetStore.bar_of(SheetStore.cell_at(table, index), focus))
+}
+
+## Apply the edits to the sources before running the dependency evaluator.
+## Only changed rows are written, as for a single edit.
+rewritten : Table(U64, Sheet.Row), List(RangeText.Edit) -> Table(U64, Sheet.Row)
+rewritten = |table, edits| {
+	sources = edits.fold(SheetStore.sources_of(table), |held, edit| Sheet.with_source(held, edit.index, edit.source))
+	Sheet.rows_of(sources).fold(table, |written, { key, row }| if (written.get(key) == Ok(row)) written else written.put(key, row))
+}
+
+## A range edit commits immediately. If it edits the focused cell, land its
+## new rendered value there and replace the snapshot Escape restores.
+range_written : SheetStore.RangeEdit, { edits : List(RangeText.Edit), status : Str } -> List(Engine.Write(_))
+range_written = |{ range, keyboard, focus }, { edits, status }| {
+	writes = [SheetStore.cells.sheet.update(|table| rewritten(table, edits)), SheetStore.cells.range_status.set(status)]
+	match edits.find_first(|edit| edit.index == range.active) {
+		Ok(edit) if focus != Resting => writes.concat([
+			SheetStore.cells.editing.set(Editing),
+			SheetStore.cells.keyboard.set({
+				..keyboard,
+				saved: edit.source,
+				commands: keyboard.commands.post([ApplyValue("cell-${Cells.ref_of(range.active)}")]),
+			}),
+		])
+		_ => writes
+	}
 }
 
 ## The values the cells named show in the sheet a store holds.
@@ -322,4 +428,19 @@ expect {
 	typed = SheetStore.store.after(SheetStore.typed(9, "999"))
 	cancelled = typed.after(SheetStore.cancelled(9, keyboard, Typing, "cell-B2"))
 	(values_at(cancelled, ["B2"]), cancelled.read(SheetStore.cells.keyboard).commands.last()) == (["1200"], Posted([ApplyValue("cell-B2")]))
+}
+
+## Bulk edits recompute in one table write and update the active cell's
+## Escape snapshot. The total includes the pasted negative cell.
+expect {
+	at = { range: { anchor: 95, active: 94 }, keyboard: SheetStore.keyboard_start, focus: Editing }
+	pasted = SheetStore.store.after(SheetStore.pasted(at, Text("-3\t2")))
+	clipped = pasted.read(SheetStore.cells.sheet)
+	cleared = pasted.after(SheetStore.cleared(at))
+	{
+		changed: clipped.inverse().map_ok(|changes| changes.len()),
+		selection: SheetStore.selection(clipped, 95, 94),
+		saved: pasted.read(SheetStore.cells.keyboard).saved,
+		blank: values_at(cleared, ["G12", "H12"]),
+	} == { changed: Ok(1), selection: "G12:H12 · -1", saved: "-3", blank: ["", ""] }
 }

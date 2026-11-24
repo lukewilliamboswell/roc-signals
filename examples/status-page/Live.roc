@@ -47,8 +47,8 @@ Live :: {
 	## What the reader chose: follow the feed, or stop it to read the chart.
 	Mode : [Following, Paused]
 
-	## Boot seeds the jitter; visibility is shared with the page's checks.
-	Props(st) : { visible : Cell(st, Bool), seed : U128, initially_visible : Bool }
+	## The page supplies the retry seed and visibility from its environment.
+	Props(st) : { visible : Cell(st, Bool), seed : Cell(st, U128) }
 
 	## The panel before the feed has said anything.
 	init : Live
@@ -159,15 +159,15 @@ Live :: {
 	## The panel, with a state of its own for the feed.
 	view : Props(st) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
-	view = |props| Engine.state(Live.seeded({ seed: props.seed, visible: props.initially_visible }), |live| panel(live, props.visible.signal()))
+	view = |props| Engine.state(Live.init, |live| panel(live, { visible: props.visible.signal(), seed: props.seed.signal() }))
 }
 
 ## The panel over its state. The subscription lives in a branch that is
 ## mounted only while the page is visible and the reader follows the feed,
 ## so hiding the page or pausing disposes it, which stops the feed's
 ## JavaScript; showing or resuming subscribes afresh.
-panel : State(ctx, Live), Signal(ctx, Bool) -> Elem(ctx)
-panel = |live, visible| {
+panel : State(ctx, Live), { visible : Signal(ctx, Bool), seed : Signal(ctx, U128) } -> Elem(ctx)
+panel = |live, { visible, seed }| {
 	lv = live.signal()
 	following = visible.map2(lv, |showing, l| showing and l.visible and l.mode == Following)
 	Html.section(
@@ -195,7 +195,12 @@ panel = |live, visible| {
 			# most four times a second however fast readings arrive.
 			Engine.derive(
 				lv.map(|l| l.drawn),
-				|drawn| Engine.element("plume-chart", [Engine.class("block"), Engine.attr("role", "img"), Html.aria_label("Live p95 latency by service"), Engine.test_id("latency-chart"), Engine.attr_s("data-figure", drawn.map(Charts.latency))], []),
+				|drawn| Parts.chart({
+					id: "latency-chart",
+					label: "Live p95 latency by service",
+					height: Charts.latency_height,
+					figure: drawn.map(Charts.latency),
+				}),
 			),
 			Html.div(
 				"toolbar",
@@ -215,7 +220,7 @@ panel = |live, visible| {
 			),
 			# The runtime's own account of the port, drawn by the
 			# example's `feed-monitor.mjs` from `runtime.monitor`.
-			Engine.element("latency-feed-monitor", [Engine.attr("data-port", Latency.ports.readings.name())], []),
+			Html.placeholder({}, "<div></div>", || Engine.element("latency-feed-monitor", [Engine.attr("data-port", Latency.ports.readings.name())], [])),
 			Engine.when(
 				following,
 				|| Html.div(
@@ -269,6 +274,7 @@ panel = |live, visible| {
 				|| Html.div("hidden", []),
 			),
 			Engine.on_post(lv.map(|l| l.outage), |cut| [Engine.command(Latency.ports.drop.send(cut))], Engine.ignore({})),
+			Engine.watch_changes(seed, |_| [Engine.again({})], live.on_result(|l, value, _| { ..l, rng: value.to_u64_wrap().bitwise_xor(value.shr_zf_wrap(64).to_u64_wrap()) })),
 			Engine.watch_changes(visible, |_| [Engine.again({})], live.on_result(|l, showing, _| Live.shown(l, showing))),
 		],
 	)

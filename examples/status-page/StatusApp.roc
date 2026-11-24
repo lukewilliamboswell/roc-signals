@@ -64,8 +64,8 @@ StatusApp := [].{
 	poll : Str, (Try(Str, Engine.HttpError) -> List(Engine.Write(_))) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	poll = |url, answered| Engine.watch_latest(
-		StatusStore.cells.serial.signal(),
-		|_| [Engine.http_body({ url, cache: NoStore })],
+		{ serial: StatusStore.cells.serial.signal(), ready: StatusStore.cells.ready.signal() }.Engine.Signal,
+		|{ ready, .. }| if (ready) [Engine.http_body({ url, cache: NoStore })] else [],
 		Engine.react(|_serial, res| answered(res)),
 	)
 
@@ -148,9 +148,9 @@ StatusApp := [].{
 
 	## The page, under the rollup of the four checks. Everything else it
 	## draws it reads from the store's cells where it draws it.
-	page : Signal(ctx, Status.Tally), Engine.Boot -> Elem(ctx)
+	page : Signal(ctx, Status.Tally) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	page = |totals, boot| {
+	page = |totals| {
 		cells = StatusStore.cells
 		visible = cells.visible.signal()
 		Html.div(
@@ -164,8 +164,8 @@ StatusApp := [].{
 						Html.p("Public service health, rolled up from independent per-service checks that refresh on an interval and pause while the page is hidden.", "app-subtitle"),
 					],
 				),
-				# The banner is the whole point of a status page: one
-				# unmistakable line, in the tone the rollup earned.
+				# Stack the banner on narrow screens so a longer rollup does
+				# not push the reporting count onto a new row after startup.
 				Html.div_s(
 					totals.map(Status.banner_class),
 					[
@@ -185,20 +185,31 @@ StatusApp := [].{
 								Parts.metric("count-degraded", "Degraded", totals.map(|t| t.degraded.to_str())),
 								Parts.metric("count-outage", "Outage", totals.map(|t| t.outage.to_str())),
 								Parts.metric("count-awaiting", "Awaiting check", totals.map(|t| t.unknown.to_str())),
-								Parts.metric("overall-uptime", "Overall uptime", totals.map(Status.overall_uptime_text)),
+								# Fit the initial "not reported" value in the same row as a percentage.
+								Html.div(
+									"stat",
+									[
+										Html.p("Overall uptime", "stat-label"),
+										Html.p_s(
+											totals.map(Status.overall_uptime_text),
+											[Engine.class("stat-value numeric max-sm:text-base/7"), Engine.test_id("overall-uptime"), Html.aria_label("Overall uptime")],
+										),
+									],
+								),
 							],
 						),
 						Html.div(
-							"toolbar justify-between border-t border-zinc-200 pt-4",
+							"grid gap-3 border-t border-zinc-200 pt-4 sm:flex sm:flex-wrap sm:items-end sm:justify-between",
 							[
 								Html.div(
 									"grid gap-0.5",
 									[
-										Html.p_s(visible.map(StatusApp.visibility_text), [Engine.class("hint"), Engine.test_id("refresh-mode")]),
+										# Reserve two lines for the longer paused message on narrow screens.
+										Html.p_s(visible.map(StatusApp.visibility_text), [Engine.class("hint min-h-8 sm:min-h-0"), Engine.test_id("refresh-mode")]),
 										Html.p_s(cells.requests.signal().map(StatusApp.refresh_count_text), [Engine.class("hint numeric"), Engine.test_id("refresh-count")]),
 									],
 								),
-								Html.button("Refresh now", [Engine.class("button-primary")], Engine.does(StatusStore.requested)),
+								Html.button("Refresh now", [Engine.class("button-primary justify-self-start")], Engine.does(StatusStore.requested)),
 							],
 						),
 					],
@@ -215,11 +226,26 @@ StatusApp := [].{
 						Html.h3("Uptime over the last ${Status.history_limit.to_str()} checks", "panel-title"),
 						Engine.derive(
 							cells.history.signal(),
-							|history| Engine.element("plume-chart", [Engine.class("block"), Engine.attr("role", "img"), Html.aria_label("Uptime history by service"), Engine.test_id("uptime-chart"), Engine.attr_s("data-figure", history.map(Charts.uptime_history))], []),
+							|history| Parts.chart({
+								id: "uptime-chart",
+								label: "Uptime history by service",
+								height: Charts.uptime_height,
+								figure: history.map(Charts.uptime_history),
+							}),
 						),
 					],
 				),
-				Live.view({ visible: cells.visible, seed: boot.seed, initially_visible: boot.visible }),
+				Engine.watch(
+					Engine.const({}),
+					|_| [Engine.environment({})],
+					Engine.react(
+						|_, result| match result {
+							Ok(facts) => StatusStore.initialized(facts)
+							Err(Refused) => []
+						},
+					),
+				),
+				Live.view({ visible: cells.visible, seed: cells.seed }),
 				StatusApp.incidents_panel(cells.feed.signal()),
 				# Polling lives inside the visible branch, so hiding the page
 				# disposes the interval. Already-admitted checks finish.
@@ -251,11 +277,11 @@ StatusApp := [].{
 
 	## The page under one rollup of the checks, which every reader of the
 	## rollup shares.
-	view : Engine.Boot -> Elem(Engine.StoreRoot(_))
-	view = |boot| Engine.derive(StatusStore.totals({}), |totals| StatusApp.page(totals, boot))
+	view : {} -> Elem(Engine.StoreRoot(_))
+	view = |{}| Engine.derive(StatusStore.totals({}), StatusApp.page)
 
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner.
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, StatusStore.start, StatusApp.view).with_ports(Latency.registrations)
+	program = Engine.program_startup_store({}, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| StatusStore.store, |_| StatusApp.view({})).with_ports(Latency.registrations)
 }

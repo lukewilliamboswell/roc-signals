@@ -85,7 +85,7 @@ LabApp := [].{
 	## The lab's program.
 	program : Engine.Program
 	program =
-		Engine.program_store({ storage_keys: [], max_inflight: Lab.max_inflight }, |_boot| LabStore.store, |_boot| LabApp.page({}))
+		Engine.program_startup_store({ storage_keys: [], max_inflight: Lab.max_inflight }, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| LabStore.store, |_| LabApp.page({}))
 			.with_workers([LabApp.primes(Unlimited).registration(), LabApp.tiles(Unlimited).registration(), LabApp.crasher(Unlimited).registration(), Picture.strip(Unlimited).registration(), Picture.compose.registration()])
 
 	heartbeat_ms : U32
@@ -479,7 +479,7 @@ LabApp := [].{
 					"grid items-start gap-4 lg:grid-cols-2",
 					[
 						LabApp.picture({}),
-						Engine.element("worker-pool-panel", [Engine.class("block"), Engine.attr("role", "region"), Html.aria_label("Worker pool"), Engine.test_id("pool-panel")], []),
+						Html.placeholder({}, "<div></div>", || Engine.element("worker-pool-panel", [Engine.class("block"), Engine.attr("role", "region"), Html.aria_label("Worker pool"), Engine.test_id("pool-panel")], [])),
 					],
 				),
 				Engine.on_post(cells.work.save.signal(), |file| [Engine.command(File.save(file, {}))], Engine.ignore({})),

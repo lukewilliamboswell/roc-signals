@@ -20,9 +20,48 @@
 // `data-background`, when present, supplies the paper and plot background
 // color chosen by Roc beside the figure. The renderer makes no media query.
 //
-// It reads `window.Plotly`, which the example page loads (deferred, before
-// this module) from a pinned CDN URL.
+// On the example site, wait for the app to mount and a chart with data to
+// near the viewport before executing Plotly. Pages can warm the download
+// once the app has mounted.
+// Standalone examples can supply an already-loaded Plotly global instead.
 const config = { responsive: true, displaylogo: false };
+const vendor = document.querySelector('meta[name="signals-plotly"]');
+let library;
+let mounted = false;
+
+function configureRequest(element) {
+  element.integrity = vendor.dataset.integrity;
+  element.crossOrigin = "anonymous";
+}
+
+function loadPlotly() {
+  library ??= new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    configureRequest(script);
+    script.src = vendor.content;
+    script.onload = () => {
+      if (window.Plotly) resolve();
+      else reject(new Error("The Plotly script did not provide a renderer."));
+    };
+    script.onerror = () => reject(new Error("The Plotly script failed to load."));
+    document.head.append(script);
+  });
+  return library;
+}
+
+if (vendor) {
+  document.addEventListener("roc-signals:runtime", () => {
+    mounted = true;
+    if (!vendor.hasAttribute("data-preload") || window.Plotly) return;
+    const preload = document.createElement("link");
+    preload.rel = "preload";
+    preload.as = "script";
+    preload.fetchPriority = "low";
+    configureRequest(preload);
+    preload.href = vendor.content;
+    document.head.append(preload);
+  }, { once: true });
+}
 
 class PlumeChart extends HTMLElement {
   static observedAttributes = ["data-figure", "data-background"];
@@ -30,29 +69,87 @@ class PlumeChart extends HTMLElement {
   // Whether this element listens to Plotly's clicks; `Plotly.purge` drops
   // the listener with the rest of its state.
   #listening = false;
+  #observer = null;
+  #nearViewport = false;
+  #waitingForLibrary = false;
+  #error = null;
 
   connectedCallback() {
-    this.#draw();
+    if (!vendor) {
+      this.#draw();
+      return;
+    }
+    if (mounted) this.#observe();
+    else document.addEventListener("roc-signals:runtime", this.#observe, { once: true });
   }
+
+  #observe = () => {
+    if (this.#observer || !this.dataset.figure) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (this.#observer !== observer || !entry.isIntersecting) return;
+      this.#stopObserving();
+      this.#nearViewport = true;
+      this.#draw();
+    }, { rootMargin: "200px" });
+    this.#observer = observer;
+    observer.observe(this);
+  };
 
   attributeChangedCallback() {
     this.#draw();
   }
 
   disconnectedCallback() {
+    document.removeEventListener("roc-signals:runtime", this.#observe);
+    this.#stopObserving();
+    this.#nearViewport = false;
     this.#purge();
+  }
+
+  #stopObserving() {
+    this.#observer?.disconnect();
+    this.#observer = null;
   }
 
   #purge() {
     window.Plotly?.purge(this);
     this.#listening = false;
+    this.#error?.remove();
+    this.#error = null;
+  }
+
+  #showLoadError(error) {
+    if (this.#error || !this.isConnected || this.#observer || !this.dataset.figure) return;
+    console.error(error);
+    this.#error = document.createElement("p");
+    this.#error.setAttribute("role", "status");
+    this.#error.textContent = "Chart unavailable.";
+    this.append(this.#error);
   }
 
   #draw() {
+    if (!this.isConnected || (vendor && !mounted)) return;
     const figure = this.dataset.figure;
-    if (!this.isConnected || !window.Plotly) return;
     if (!figure) {
+      this.#stopObserving();
       this.#purge();
+      return;
+    }
+    if (vendor && !this.#nearViewport) {
+      this.#observe();
+      return;
+    }
+    if (!window.Plotly) {
+      if (!vendor || this.#waitingForLibrary || this.#error) return;
+      this.#waitingForLibrary = true;
+      loadPlotly().then(() => {
+        this.#waitingForLibrary = false;
+        // Use the current attributes and connection after the shared download.
+        this.#draw();
+      }, (error) => {
+        this.#waitingForLibrary = false;
+        this.#showLoadError(error);
+      });
       return;
     }
     const { data, layout } = JSON.parse(figure);

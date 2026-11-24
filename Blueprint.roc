@@ -54,7 +54,7 @@ config = [
 	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["roc", "git", "curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome", "zip"])]),
 	Environment("startup-browsers", [Programs([roc_stable_program, zig_program, node_program, playwright_program]), Expect(["roc", "git", "curl", "tar", "zstd", "sha256sum", "getconf"])]),
 	# Building the documentation site, its API docs and its live examples.
-	Environment("site", [Programs([roc_stable_program, zig_program, zola_program, roc_docs_program, node_program, Fetch("tailwindcss", tailwind)]), Expect(["roc", "google-chrome"])]),
+	Environment("site", [Programs([roc_stable_program, zig_program, zola_program, roc_docs_program, node_program, Fetch("tailwindcss", tailwind)]), Expect(["roc", "sha256sum", "google-chrome"])]),
 	# Building the release assets, API docs included.
 	Environment("release", [Programs([roc_stable_program, zig_program, node_program, roc_docs_program]), Expect(["roc", "zip", "curl", "tar", "zstd", "sha256sum"])]),
 	Shell("default", [Use("engine")]),

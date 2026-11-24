@@ -24,6 +24,8 @@
 // Everything is seeded and in-memory: no clock, no randomness, so native and
 // JS assertions can rely on exact values.
 
+import publicSeed from "./public-seed.json" with { type: "json" };
+
 function httpJsonResponse(value, { status = 200 } = {}) {
   return { status, body: JSON.stringify(value), headers: { "content-type": "application/json; charset=utf-8" } };
 }
@@ -32,52 +34,8 @@ const bodyDecoder = new TextDecoder();
 
 const SEED_BASE_UTC_MS = Date.UTC(2026, 5, 1, 8, 0, 0);
 
-const SEED_USERS = [
-  {
-    username: "anna",
-    email: "anna@conduit.test",
-    password: "secret-anna",
-    bio: "Signals platform notes and release engineering.",
-    image: "https://example.test/avatars/anna.png",
-    follows: [],
-  },
-  {
-    username: "max",
-    email: "max@conduit.test",
-    password: "secret-max",
-    bio: "Writes about queues, latency, and dashboards.",
-    image: "https://example.test/avatars/max.png",
-    follows: [],
-  },
-  {
-    username: "kim",
-    email: "kim@conduit.test",
-    password: "secret-kim",
-    bio: "Reader. Occasionally files very detailed bug reports.",
-    image: "https://example.test/avatars/kim.png",
-    follows: ["anna"],
-  },
-];
-
-const SEED_TAG_SETS = [
-  ["signals", "webdev"],
-  ["roc", "release"],
-  ["performance", "signals"],
-  ["testing"],
-  ["webdev", "release"],
-  ["roc", "signals"],
-];
-
-const SEED_TOPICS = [
-  "Keyed lists without tears",
-  "Budgeting patches per interaction",
-  "Latest-wins request replacement",
-  "Storage keys on a shared origin",
-  "Deep links that survive reloads",
-  "Markdown to Elem nodes",
-  "Error envelopes worth rendering",
-  "Pagination that stays honest",
-];
+const SEED_FOLLOWS = new Map([["kim", ["anna"]]]);
+const SEED_FAVORITE_ORDER = ["kim", "anna", "max"];
 
 function seedToken(username) {
   return `jwt.conduit.${username}`;
@@ -96,51 +54,32 @@ function slugify(text) {
 
 function createConduitBackend() {
   const users = new Map();
-  for (const seed of SEED_USERS) {
-    users.set(seed.username, {
-      username: seed.username,
-      email: seed.email,
-      password: seed.password,
-      bio: seed.bio,
-      image: seed.image,
-      following: new Set(seed.follows),
-      token: seedToken(seed.username),
+  for (const profile of publicSeed.profiles) {
+    const { username } = profile;
+    users.set(username, {
+      ...profile,
+      email: `${username}@conduit.test`,
+      password: `secret-${username}`,
+      following: new Set(SEED_FOLLOWS.get(username)),
+      token: seedToken(username),
     });
   }
 
-  const articles = [];
-  for (let index = 1; index <= 23; index += 1) {
-    const topic = SEED_TOPICS[(index - 1) % SEED_TOPICS.length];
-    const title = `${topic} #${index}`;
-    const author = index % 3 === 0 ? "max" : "anna";
-    const favoritedBy = new Set(index % 4 === 1 ? ["kim"] : []);
-    articles.push({
-      slug: slugify(title),
-      title,
-      description: `Field notes ${index}: ${topic.toLowerCase()}.`,
-      body: [
-        `# ${topic}`,
-        "",
-        `Entry ${index} in the conduit seed series.`,
-        "",
-        "- observed behavior",
-        "  - measured, not guessed",
-        "- follow-up",
-        "",
-        "```",
-        `signals check --entry ${index}`,
-        "```",
-      ].join("\n"),
-      tagList: [...SEED_TAG_SETS[(index - 1) % SEED_TAG_SETS.length]],
-      createdAt: isoAfterHours(index * 7),
-      updatedAt: isoAfterHours(index * 7),
-      author,
-      favoritedBy,
-    });
-  }
+  const articles = publicSeed.articles.map(({ favoritesCount, ...article }) => {
+    if (favoritesCount > SEED_FAVORITE_ORDER.length) {
+      throw new Error(`public-seed.json: too many seeded favorites for ${article.slug}`);
+    }
+    return {
+      ...article,
+      tagList: [...new Set(article.tagList)],
+      updatedAt: article.createdAt,
+      favoritedBy: new Set(SEED_FAVORITE_ORDER.slice(0, favoritesCount)),
+    };
+  });
+  const oldest = articles.reduce((left, right) => byNewestFirst(left, right) > 0 ? left : right);
 
   const comments = new Map();
-  comments.set(articles[0].slug, [
+  comments.set(oldest.slug, [
     {
       id: 1,
       createdAt: isoAfterHours(30),

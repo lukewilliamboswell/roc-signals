@@ -136,16 +136,9 @@ ConduitApp := [].{
 
 	feed_req : Here -> LoadReq
 	feed_req = |w| match ConduitApp.route_of(w) {
-		Home(feed) => {
-			uri = Api.feed_uri(feed)
-			token = ConduitApp.token_of(w.session)
-			{ key: "${uri}|${token}", uri, token }
-		}
+		Home(feed) => Pages.feed_request({ feed, token: ConduitApp.token_of(w.session) })
 		_ => ConduitApp.no_req
 	}
-
-	tags_req : Here -> LoadReq
-	tags_req = |_| { key: "tags", uri: Api.tags_uri, token: "" }
 
 	profile_req : Here, M -> LoadReq
 	profile_req = |w, m| {
@@ -181,9 +174,9 @@ ConduitApp := [].{
 	## admits only the answers the page still asks for before storing them.
 	load_site : Signal(Engine.StoreRoot(_), LoadReq), (M, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M) -> Elem(Engine.StoreRoot(_))
 	load_site = |req, store| Engine.keep_current(
-		req,
-		|r| if (r.uri.is_empty()) [] else [Api.get_request(r.uri, r.token)],
-		Engine.react(|asked, res| [ConduitApp.pages.update(|m| store(m, asked, res))]),
+		{ req, ready: AppStore.cells.ready.signal() }.Engine.Signal,
+		|{ req: r, ready }| if (ready and !r.uri.is_empty()) [Api.get_request(r.uri, r.token)] else [],
+		Engine.react(|{ req: asked, .. }, res| [ConduitApp.pages.update(|m| store(m, asked, res))]),
 	)
 
 	store_feed : M, LoadReq, Try(Engine.Response, Engine.HttpFailure) -> M
@@ -571,7 +564,7 @@ ConduitApp := [].{
 				Html.div(
 					"mb-3 flex flex-wrap items-center gap-2 text-sm text-zinc-500",
 					[
-						Links.link_s(author, "font-medium text-emerald-600", author.map(ConduitApp.profile_url)),
+						Links.link_s(author, "font-medium text-emerald-700", author.map(ConduitApp.profile_url)),
 						Engine.text_s(art.map(|a| Format.display_date(a.created_at))),
 					],
 				),
@@ -723,7 +716,7 @@ ConduitApp := [].{
 		w = ConduitApp.here
 		feed = w.map(|x| Route.feed_of(ConduitApp.route_of(x)))
 		signed_in = AppStore.cells.session.signal().map(ConduitApp.is_signed_in)
-		tags = mv.map(|m| ConduitApp.remote(m.loads.tags, "tags"))
+		tags = mv.map(|m| ConduitApp.remote(m.loads.tags, Pages.tags_request.key))
 		active = "border-b-2 border-emerald-600 px-4 py-3 font-medium text-emerald-700 no-underline"
 		idle = "border-b-2 border-transparent px-4 py-3 text-zinc-500 no-underline"
 		Html.section(
@@ -731,7 +724,7 @@ ConduitApp := [].{
 			"pb-12",
 			[
 				ConduitApp.load_site(w.map(ConduitApp.feed_req), ConduitApp.store_feed),
-				ConduitApp.load_site(w.map(ConduitApp.tags_req), ConduitApp.store_tags),
+				ConduitApp.load_site(Engine.const(Pages.tags_request), ConduitApp.store_tags),
 				Html.div(
 					"bg-emerald-700 px-5 py-12 text-center text-white sm:py-16",
 					[
@@ -1144,10 +1137,25 @@ ConduitApp := [].{
 						},
 					),
 				),
+				Engine.watch(
+					Engine.const({}),
+					|_| [Engine.environment({})],
+					Engine.react_by(
+						ConduitApp.here,
+						|at, _, result| match result {
+							Ok(facts) => AppStore.restored(at, facts)
+							Err(Refused) => [AppStore.cells.ready.set(Bool.True)]
+						},
+					),
+				),
 				Engine.on_post(AppStore.cells.nav.signal(), |url| [Engine.command(Push(url)), Engine.again({})], Engine.react_by(ConduitApp.here, |at, url, _| AppStore.moved(at, url))),
-				Engine.keep_current(ConduitApp.here.map(|w| ConduitApp.guard_for(w.loc, w.session)), |u| if (u.is_empty()) [] else [Engine.command(Replace(u)), Engine.again({})], Engine.react_by(ConduitApp.here, |at, u, _| AppStore.moved(at, u))),
+				Engine.keep_current(ConduitApp.here.map2(AppStore.cells.ready.signal(), |w, ready| if (ready) ConduitApp.guard_for(w.loc, w.session) else ""), |u| if (u.is_empty()) [] else [Engine.command(Replace(u)), Engine.again({})], Engine.react_by(ConduitApp.here, |at, u, _| AppStore.moved(at, u))),
 				Engine.watch(ConduitApp.here.map2(AppStore.cells.article.cells.story.signal(), ConduitApp.title_of), |t| [Engine.command(Title(t))], Engine.ignore({})),
-				Engine.watch_changes(session, ConduitApp.storage_plan, Engine.ignore({})),
+				Engine.when(
+					AppStore.cells.ready.signal(),
+					|| Engine.watch_changes(session, ConduitApp.storage_plan, Engine.ignore({})),
+					|| Html.div("hidden", []),
+				),
 				Engine.watch_changes(
 					AppStore.cells.incoming.signal(),
 					|s| match s {
@@ -1157,12 +1165,12 @@ ConduitApp := [].{
 					Engine.react(|s, _| [AppStore.cells.session.set(s), AppStore.cells.incoming.set(Anonymous)]),
 				),
 				ConduitApp.header({}),
-				Engine.element("main", [Engine.class(Styles.main)], [Engine.switch(loc.map(|url| Route.kind(Locations.of_url(url))), ConduitApp.all_kinds, |k| ConduitApp.page(k))]),
+				Html.div(Styles.main, [Engine.switch(loc.map(|url| Route.kind(Locations.of_url(url))), ConduitApp.all_kinds, |k| ConduitApp.page(k))]),
 				Engine.element(
 					"footer",
 					[Engine.class(Styles.footer)],
 					[
-						Engine.element("span", [Engine.class("font-semibold text-emerald-600")], [Engine.text("conduit")]),
+						Engine.element("span", [Engine.class("font-semibold text-emerald-700")], [Engine.text("conduit")]),
 						Engine.text(" - the RealWorld demo app, built with Roc Signals."),
 					],
 				),
@@ -1173,7 +1181,7 @@ ConduitApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner.
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: ["conduit.jwt", "conduit.username"], max_inflight: 32 }, AppStore.start, |_| ConduitApp.view({}))
+	program = Engine.program_startup_store({ storage_keys: ["conduit.jwt", "conduit.username"], max_inflight: 32 }, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| AppStore.store, |_| ConduitApp.view({}))
 
 }
 
@@ -1194,7 +1202,7 @@ expect ConduitApp.auth_answered(Pages.no_submit, Ok({ status: 422, headers: [], 
 ## A typed sign-in rejection changes only its own form: settings, editor,
 ## profile and loads keep their state, and no session or navigation is posted.
 expect {
-	pages = Pages.init("")
+	pages = AppStore.store.read(AppStore.cells.pages)
 	after = AppStore.store.after(ConduitApp.auth_answered(Pages.no_submit, Ok({ status: 422, headers: [], body: "{\"errors\":{\"body\":[\"bad\"]}}" })))
 	{
 		pages: after.read(AppStore.cells.pages),

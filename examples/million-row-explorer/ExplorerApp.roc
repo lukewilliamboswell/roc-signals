@@ -27,8 +27,8 @@ import Orders
 ## `worker-pool-panel` (the shared pool panel).
 ExplorerApp := [].{
 
-	view : Explorer.Setup -> Elem(Engine.StoreRoot(_))
-	view = |setup| {
+	view : {} -> Elem(Engine.StoreRoot(_))
+	view = |{}| {
 		cells = Explorer.cells
 		Html.div(
 			"app-shell",
@@ -41,18 +41,30 @@ ExplorerApp := [].{
 						Html.p("A year of a shop's orders, generated inside four workers and never sent to the page. Every change of the question asks each worker for a few kilobytes of counts; the page adds them to the live orders arriving now and draws the charts.", "app-subtitle"),
 					],
 				),
-				ExplorerApp.controls(setup.size),
+				Engine.watch(
+					Engine.const({}),
+					|_| [Engine.environment({})],
+					Engine.react(
+						|_, result| match result {
+							Ok(facts) => Explorer.configured(Explorer.setup_of(facts.url))
+							Err(Refused) => [cells.note.set("Could not read the page address. Reload to retry.")]
+						},
+					),
+				),
+				ExplorerApp.controls({}),
 				Worker.gather(
 					Explorer.summary,
-					cells.asked.signal().map(|asked| Explorer.questions(setup.size, asked)),
-					|gathered| Engine.derive(Explorer.answering(setup.size).map2(gathered, Explorer.board), ExplorerApp.results),
+					{ ready: cells.ready.signal(), size: cells.size.signal(), asked: cells.asked.signal() }.Signal.map(
+						|{ ready, size, asked }| if (ready) Explorer.questions(size, asked) else [],
+					),
+					|gathered| Engine.derive(Explorer.answering({}).map2(gathered, Explorer.board), ExplorerApp.results),
 				),
 				Html.section(
 					"Measured",
 					"grid gap-3",
 					[
-						Engine.element("query-meter", [Engine.attr("data-task", Explorer.summary.name()), Engine.attr("data-port", Feed.ports.orders.name()), Engine.attr("data-shards", Explorer.shards.to_str())], []),
-						Engine.element("worker-pool-panel", [], []),
+						Engine.when(cells.ready.signal(), || Engine.element("query-meter", [Engine.attr("data-task", Explorer.summary.name()), Engine.attr("data-port", Feed.ports.orders.name()), Engine.attr("data-shards", Explorer.shards.to_str())], []), || Html.div("", [])),
+						Html.placeholder({}, "<div></div>", || Engine.element("worker-pool-panel", [], [])),
 					],
 				),
 				# A slider's question, asked when the timer fires: at most
@@ -68,10 +80,10 @@ ExplorerApp := [].{
 				# The live feed, for as long as it is on and at the pace
 				# chosen: a new pace or pausing stops the old subscription.
 				Engine.watch_latest(
-					{ flow: cells.flow.signal(), rate: cells.rate.signal() }.Signal,
-					|{ flow, rate }| match flow {
-						Live => [Feed.ports.orders.ask({ per_second: rate })]
-						Paused => []
+					{ ready: cells.ready.signal(), flow: cells.flow.signal(), rate: cells.rate.signal() }.Signal,
+					|{ ready, flow, rate }| match flow {
+						Live if ready => [Feed.ports.orders.ask({ per_second: rate })]
+						_ => []
 					},
 					Engine.react(|_, res| Explorer.received(res)),
 				),
@@ -81,9 +93,9 @@ ExplorerApp := [].{
 
 	## The question and the feed: the database's size, the categories, the
 	## value range and the live feed's switch and pace.
-	controls : U64 -> Elem(ctx)
+	controls : {} -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	controls = |size| {
+	controls = |{}| {
 		cells = Explorer.cells
 		shown = cells.shown.signal()
 		Html.section(
@@ -93,7 +105,7 @@ ExplorerApp := [].{
 				Html.div(
 					"toolbar",
 					[
-						Html.p_attrs("${Explorer.grouped(size)} orders. Generate", [Engine.class("field-label"), Engine.test_id("size")]),
+						Html.p_s(cells.size.signal().map(|size| "${Explorer.grouped(size)} orders. Generate"), [Engine.class("field-label"), Engine.test_id("size")]),
 					]
 						# Each size is a link: the page loads again at that size.
 						.concat(Explorer.sizes.map(|other| Html.link(Explorer.grouped(other), Web.Link.from_str("?orders=${other.to_str()}") ?? crash "internal: relative order link", [Engine.class("button button-sm")]))),
@@ -217,21 +229,21 @@ ExplorerApp := [].{
 	## figure is rewritten only when it differs, so the live feed redraws
 	## only the charts its orders change.
 	chart : Signal(ctx, Explorer.Board), Str, (Explorer.Board -> Str) -> Elem(ctx)
-	chart = |b, label, draw| Engine.element(
-		"plume-chart",
-		[Engine.class("box-content block panel"), Engine.attr("style", "height: 300px"), Engine.attr("role", "img"), Html.aria_label(label), Engine.attr_s("data-figure", b.map(draw))],
-		[],
+	chart = |b, label, draw| Html.placeholder(
+		{},
+		"<div class='panel' style='height:300px'></div>",
+		|| Engine.element(
+			"plume-chart",
+			[Engine.class("box-content block panel"), Engine.attr("style", "height: 300px"), Engine.attr("role", "group"), Html.aria_label(label), Engine.attr_s("data-figure", b.map(draw))],
+			[],
+		),
 	)
 
 	## The program `main.roc` binds for the browser module and the native
 	## spec runner. The page passes `ports.mjs`'s handler for the feed.
 	program : Engine.Program
 	program =
-		Engine.program_store(
-			{ storage_keys: [], max_inflight: 32 },
-			|boot| Explorer.start(Explorer.setup_of(boot.url)),
-			|boot| ExplorerApp.view(Explorer.setup_of(boot.url)),
-		)
+		Engine.program_startup_store({}, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| Explorer.store, |_| ExplorerApp.view({}))
 			.with_workers([Explorer.shard.registration([Explorer.summary.registration()])])
 			.with_ports(Feed.registrations)
 }

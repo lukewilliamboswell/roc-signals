@@ -25,8 +25,7 @@ import Orders
 ## - `live`: what the feed has delivered, folded into a fixed-size tally.
 ## - `note`: what the page says when something it was sent was refused.
 ##
-## The database's size is not state: the address chooses it before the
-## page mounts and it never changes (`Setup`).
+## The address chooses the database size once after the first frame binds.
 Explorer := [Shop].{
 
 	# -- In the workers -----------------------------------------------------
@@ -138,6 +137,8 @@ Explorer := [Shop].{
 	store = Engine.store(
 		Explorer.Shop,
 		{
+			size: Engine.cell(Explorer.default_size),
+			ready: Engine.cell(Bool.False),
 			shown: Engine.cell(Orders.everything),
 			asked: Engine.cell(Orders.everything),
 			flow: Engine.cell(Live),
@@ -150,11 +151,14 @@ Explorer := [Shop].{
 	## The store's cells.
 	cells = Explorer.store.cells()
 
-	## The store a page starts with, for the setup its address chose.
-	start : Setup -> Engine.Store(_, _)
-	start = |setup| Explorer.store
-		.with_initial(Explorer.cells.flow, setup.flow)
-		.with_initial(Explorer.cells.note, setup.note)
+	## Apply the address's size and feed choice together before starting work.
+	configured : Setup -> List(Engine.Write(_))
+	configured = |setup| [
+		Explorer.cells.size.set(setup.size),
+		Explorer.cells.flow.set(setup.flow),
+		Explorer.cells.note.set(setup.note),
+		Explorer.cells.ready.set(Bool.True),
+	]
 
 	## The question the controls show beside the one asked of the shards.
 	question : {} -> Signal(ctx, { shown : Orders.Filter, asked : Orders.Filter })
@@ -250,9 +254,9 @@ Explorer := [Shop].{
 	Answering : { size : U64, live : LiveOrders, asked : Orders.Filter }
 
 	## What a board is drawn from, for a database of `size` orders.
-	answering : U64 -> Signal(ctx, Answering)
+	answering : {} -> Signal(ctx, Answering)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	answering = |size| Explorer.cells.live.signal().map2(Explorer.cells.asked.signal(), |live, asked| { size, live, asked })
+	answering = |{}| { size: Explorer.cells.size.signal(), live: Explorer.cells.live.signal(), asked: Explorer.cells.asked.signal() }.Engine.Signal
 
 	## What the page shows: the shards' last complete answer added to the
 	## live orders, the question it shows, and how far the current question
@@ -445,7 +449,7 @@ expect {
 		\\not a size: ${Str.inspect(Explorer.size_of_url("/?orders=9000000"))} ${Str.inspect(Explorer.size_of_url("/?orders=lots"))}
 		\\note: ${Explorer.setup_of("/?orders=12").note}
 		\\paused: ${Str.inspect(Explorer.setup_of("/?orders=4000&feed=paused#/").flow)} ${Str.inspect(Explorer.setup_of("/?feed=on").flow)}
-		\\started: ${Str.inspect(Explorer.start(Explorer.setup_of("/?feed=paused")).read(Explorer.cells.flow))}
+		\\started: ${Str.inspect(Explorer.store.after(Explorer.configured(Explorer.setup_of("/?feed=paused"))).read(Explorer.cells.flow))}
 		\\range: ${Explorer.range_text({ ..Orders.everything, lowest: 2, highest: 4 })}
 	expected =
 		\\no toys: 7

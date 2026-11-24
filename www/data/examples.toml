@@ -1,19 +1,21 @@
 # The examples the site shows. Each runs on the web platform from the entry
 # point `source` names; its specs run natively and in Chrome. An example may
 # list `scripts` its page loads before the app mounts, name its port
-# handlers' module in `ports` (a file beside its app.wasm whose default
+# handlers' module in `ports` (a file in the example directory whose default
 # export site.mjs passes as the `ports` mount option), name its simulated
-# service in `backend` (a module beside its app.wasm whose default export,
+# service in `backend` (a module in the example directory whose default export,
 # `createBackend()`, returns a request handler that site.mjs turns into the
 # mount's `fetch`; see examples/conduit/backend.mjs), and list the files it
-# downloads at run time in `data`. scripts/site.roc copies every file named
-# here beside the example's app.wasm; each names a file directly in the
-# example's directory.
+# downloads at run time in `data`. The site build serves each example's
+# files from its own directory.
 #
-# A script's `src` is a URL (with its `integrity`) or a file of the example's
-# own; `shared` in its place names a file in examples/shared/, the JavaScript
-# several examples load (custom elements such as `plume-chart`), which the
-# site serves once at examples/shared/. `module = true` loads it as a module.
+# A script's `src` names a file of the example's own. Use `shared` for a file
+# under examples/shared/ or `vendor` with `integrity` for a third-party script
+# under www/static/vendor/. `module = true` loads example and shared scripts
+# as modules. `chart = true` lets plume-chart load its vendor script when
+# a chart nears the viewport. With `preload = true`, it preloads the script
+# at low priority once the app has hydrated. `preload_fonts` lists the fonts
+# whose early loading stabilizes the example's first frame.
 #
 # The examples index shows the `sections` below in order, and in each the
 # examples whose `section` names it, in the order they appear here: a
@@ -61,32 +63,35 @@ what_to_try = "Edit a draft and reload this tab, save it and open another tab, o
 [[examples]]
 slug = "form-builder"
 title = "Form Builder"
-description = "A field designer with settings dialogs and delete confirmation beside a live preview. Both draw views of one table; invalid submission opens a problem popover and scrolls and focuses the first problem."
+description = "A field designer with settings dialogs, a live preview and a form definition you can save and reopen. The designer and preview draw views of one table."
 source = "examples/form-builder/main.roc"
 specs = "examples/form-builder/specs"
 public = true
 section = "basics"
-features = ["Store", "Tables and views", "Forms", "Dialogs", "Popovers", "Scrolling", "Derived values", "Components"]
+features = ["Store", "Tables and views", "Forms", "Dialogs", "Popovers", "Scrolling", "Derived values", "Components", "Local storage"]
+what_to_try = "Add and reorder a few fields, save the definition, then reload and reopen it. Try submitting the preview with a required field empty."
 
 [[examples]]
 slug = "kanban-board"
 title = "Kanban Board"
-description = "A four-column board over one table of cards, each column a view of it, with cross-column moves, within-column reorder, per-column WIP limits, and counts derived once for each write."
+description = "Drag cards between four columns or reorder them within a column. The board uses one table of cards, a view for each column, and counts derived once for each write."
 source = "examples/kanban-board/main.roc"
 specs = "examples/kanban-board/specs"
 public = true
 section = "basics"
 features = ["Store", "Tables and views", "Components", "Derived values"]
+what_to_try = "Use a card's Drag handle to drop it above or below another card. Drop it on a column heading to move it to the end of that column."
 
 [[examples]]
 slug = "spreadsheet-lite"
 title = "Spreadsheet Lite"
-description = "An 8x12 formula grid with cell references, precedence, SUM ranges, error propagation, and cycle detection over fixed-point arithmetic; its rows are a table, and an edit writes only the rows whose cells changed. Keyboard navigation, range selection, Escape-to-revert and document shortcuts share a rendered keymap."
+description = "An 8x12 formula grid with cell references, SUM ranges and cycle detection over fixed-point arithmetic. Select a rectangle to copy, paste or clear cells. An edit writes only the rows whose cells changed."
 source = "examples/spreadsheet-lite/main.roc"
 specs = "examples/spreadsheet-lite/specs"
 public = true
 section = "basics"
-features = ["Store", "Tables and views", "Derived values", "Keyed lists", "Keyboard input"]
+features = ["Store", "Tables and views", "Derived values", "Keyed lists", "Keyboard input", "Clipboard"]
+what_to_try = "Select a range with Shift and the arrow keys. Copy it, paste it into another range, or clear the selected cells."
 
 [[examples]]
 slug = "data-grid"
@@ -126,15 +131,16 @@ backend = "backend.mjs"
 # Its simulated latency stream (a subscription) and the command that drops
 # its connection, the example's own JavaScript.
 ports = "ports.mjs"
+preload_fonts = ["ibm-plex-sans-400.woff2", "ibm-plex-sans-500.woff2", "ibm-plex-sans-600.woff2", "ibm-plex-mono-500.woff2"]
 
-# The charts: Plotly from its pinned CDN URL (the version Plume 0.6.0
-# pins), then the shared `plume-chart` element and the example's own
-# `latency-feed-monitor`, which shows the runtime monitor's record of the
-# feed's port. All are deferred, so they run in this order before the app
-# mounts.
+# The shared `plume-chart` element loads the vendored Plotly version Plume
+# 0.6.0 pins. The app's `latency-feed-monitor` shows the runtime monitor's
+# record of the feed's port.
 [[examples.scripts]]
-src = "https://cdn.plot.ly/plotly-4.2.0.min.js"
-integrity = "sha384-F4AdcRk3NYRZZUZ7qARRp/wPkwvdta756IMuHDAZcmtM5nuHKykTbDJd7N9h+Qff"
+vendor = "plotly-basic-4.2.0.min.js"
+integrity = "sha384-G7WkzKfBqPZ5hK8P+2RpS1TxzdAiyjFUT6h+lXBf/bnxi6cwuLYhXp2x/+6criWs"
+chart = true
+preload = true
 
 [[examples.scripts]]
 shared = "plume-chart.mjs"
@@ -157,6 +163,7 @@ features = ["Store", "Components", "HTTP", "Routing", "Local storage", "Keyed li
 what_to_try = "Sign in as anna@conduit.test with the password secret-anna, then favorite an article, follow an author and leave a comment."
 # Its simulated RealWorld API, the example's own JavaScript.
 backend = "backend.mjs"
+data = ["public-seed.json"]
 
 [[examples]]
 slug = "reading-list"
@@ -167,7 +174,7 @@ specs = "examples/reading-list/specs"
 public = true
 section = "ports"
 features = ["Store", "Tables and views", "Ports", "View transitions"]
-what_to_try = "Add a few books, switch shelves and finish or remove one to see the rows move and fade. Open a second tab: changes appear there too, and survive a reload."
+what_to_try = "Add a book, move it to another shelf and edit its title or author. Open a second tab to see the edit there, then reload to verify it was saved."
 # The app's port handlers (IndexedDB and a BroadcastChannel), its own
 # JavaScript, which site.mjs passes as the `ports` mount option.
 ports = "ports.mjs"
@@ -215,13 +222,14 @@ section = "workers"
 features = ["Store", "Workers", "Preparations", "Files", "Layout observations", "Media queries", "Custom elements"]
 what_to_try = "Generate a sample of a few hundred thousand entries and find the incident around midday. Click the timeline peak to open those lines, scroll the viewer, then use Last and Go to line to compare a coarse scrollbar move with a precise jump. Search for checkout to see its matches a minute."
 
-# The timeline: Plotly from its pinned CDN URL (the version Plume 0.6.0
-# pins), the shared `plume-chart` element, then the example's own
+# The timeline: the vendored Plotly version Plume 0.6.0 pins,
+# the shared `plume-chart` element, then the example's own
 # `log-timings` element, drawn from the runtime's monitor once site.mjs
 # announces the runtime (`roc-signals:runtime`).
 [[examples.scripts]]
-src = "https://cdn.plot.ly/plotly-4.2.0.min.js"
-integrity = "sha384-F4AdcRk3NYRZZUZ7qARRp/wPkwvdta756IMuHDAZcmtM5nuHKykTbDJd7N9h+Qff"
+vendor = "plotly-basic-4.2.0.min.js"
+integrity = "sha384-G7WkzKfBqPZ5hK8P+2RpS1TxzdAiyjFUT6h+lXBf/bnxi6cwuLYhXp2x/+6criWs"
+chart = true
 
 [[examples.scripts]]
 shared = "plume-chart.mjs"
@@ -246,13 +254,16 @@ what_to_try = "Drag the value sliders and watch the question time the meter show
 max_workers = 4
 # The live order feed, the example's own JavaScript.
 ports = "ports.mjs"
+preload_fonts = ["ibm-plex-sans-400.woff2", "ibm-plex-sans-500.woff2", "ibm-plex-sans-600.woff2", "ibm-plex-mono-500.woff2"]
 
-# Plotly from its pinned CDN URL (the version Plume 0.6.0 pins), the shared
+# The vendored Plotly version Plume 0.6.0 pins, the shared
 # chart and pool elements, and the example's own meter of the runtime's
 # measurements.
 [[examples.scripts]]
-src = "https://cdn.plot.ly/plotly-4.2.0.min.js"
-integrity = "sha384-F4AdcRk3NYRZZUZ7qARRp/wPkwvdta756IMuHDAZcmtM5nuHKykTbDJd7N9h+Qff"
+vendor = "plotly-basic-4.2.0.min.js"
+integrity = "sha384-G7WkzKfBqPZ5hK8P+2RpS1TxzdAiyjFUT6h+lXBf/bnxi6cwuLYhXp2x/+6criWs"
+chart = true
+preload = true
 
 [[examples.scripts]]
 shared = "plume-chart.mjs"

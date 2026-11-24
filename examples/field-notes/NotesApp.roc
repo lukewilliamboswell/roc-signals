@@ -27,9 +27,9 @@ import Time
 ## lane only while its generation is still the latest.
 NotesApp := [].{
 
-	## The page over the session's boot data.
-	view : Engine.Boot -> Elem(Engine.StoreRoot(_))
-	view = |boot| Engine.derive(
+	## The first frame and its ordinary environment and sync effects.
+	view : {} -> Elem(Engine.StoreRoot(_))
+	view = |{}| Engine.derive(
 		AppStore.cells.board.signal().map(Notes.board_rows),
 		|rows| Html.div(
 			page_class,
@@ -42,10 +42,20 @@ NotesApp := [].{
 						Html.p("Capture notes while offline, queue them in an outbox, and sync them one at a time when the connection returns.", "app-subtitle"),
 					],
 				),
-				sync_status(boot.storage_available, rows),
+				Engine.watch(
+					Engine.const({}),
+					|_| [Engine.environment({})],
+					Engine.react(
+						|_, result| match result {
+							Ok(facts) => AppStore.restored(facts)
+							Err(Refused) => []
+						},
+					),
+				),
+				sync_status(rows),
 				capture(rows),
 				outbox(rows),
-				captured_notes({ rows, zone: boot.zone, language: boot.languages.first() ?? crash "NotesApp.view: boot supplies a preferred language" }),
+				captured_notes(rows),
 				sync_lane(0),
 				sync_lane(1),
 				sync_lane(2),
@@ -100,7 +110,11 @@ NotesApp := [].{
 					),
 				),
 				# The notes, written back to local storage whenever they change.
-				Engine.watch_changes(AppStore.cells.board.signal().map(|b| Notes.encode_notes(b.notes)), |text| [Engine.command(StorageSet(Notes.notes_key, text))], Engine.ignore({})),
+				Engine.when(
+					AppStore.cells.ready.signal(),
+					|| Engine.watch_changes(AppStore.cells.board.signal().map(|b| Notes.encode_notes(b.notes)), |text| [Engine.command(StorageSet(Notes.notes_key, text))], Engine.ignore({})),
+					|| Html.div("hidden", []),
+				),
 			],
 		),
 	)
@@ -108,7 +122,7 @@ NotesApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner.
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: [Notes.notes_key], max_inflight: 32 }, AppStore.start, NotesApp.view)
+	program = Engine.program_startup_store({ storage_keys: [Notes.notes_key], max_inflight: 32 }, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| AppStore.store, |_| NotesApp.view({}))
 }
 
 page_class = "app-shell"
@@ -162,9 +176,9 @@ check_row = |label, checked, changed| Html.div("check-row", [Html.checkbox(Engin
 ## One note, a row of the list. Its handlers name the note by the row's
 ## key, read when the event fires, and write the board through the store's
 ## decisions: a row needs nothing handed to it.
-note_card : { zone : Engine.Zone, language : Str }, RowRef(ctx, Notes.Row) -> Elem(Row(ctx, Notes.Row))
+note_card : RowRef(ctx, Notes.Row) -> Elem(Row(ctx, Notes.Row))
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
-note_card = |locale, row| {
+note_card = |row| {
 	key = row.key()
 	named = |prefix| key.map(|k| "${prefix} ${k}")
 	status = row.field(|r| r.status)
@@ -213,7 +227,13 @@ note_card = |locale, row| {
 						),
 					),
 				],
-				[Engine.text_s(row.field(|note| note.captured).map2(AppStore.cells.clock.signal(), |captured, now_ms| capture_caption({ captured, now_ms, zone: locale.zone, language: locale.language })))],
+				[
+					Engine.text_s(
+						{ captured: row.field(|note| note.captured), now_ms: AppStore.cells.clock.signal(), locale: AppStore.cells.locale.signal() }.Engine.Signal.map(
+							|{ captured, now_ms, locale }| capture_caption({ captured, now_ms, zone: locale.zone, language: locale.language }),
+						),
+					),
+				],
 			),
 			Html.div(
 				toolbar_class,
@@ -251,11 +271,10 @@ sync_lane = |slot| Engine.watch(
 )
 
 ## The connection, auto-sync and the outbox at a glance, with the two
-## switches. `storage_available` is fixed for the session: the browser
-## reports it at boot.
-sync_status : Bool, Signal(ctx, List(Notes.Row)) -> Elem(ctx)
+## switches. The environment snapshot reports whether storage is available.
+sync_status : Signal(ctx, List(Notes.Row)) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
-sync_status = |storage_available, rows| {
+sync_status = |rows| {
 	board = AppStore.cells.board.signal()
 	online = board.map(|b| b.online)
 	auto = board.map(|b| b.auto)
@@ -292,7 +311,7 @@ sync_status = |storage_available, rows| {
 					),
 				],
 			),
-			Html.p_attrs(Notes.storage_notice(storage_available), [Engine.class("hint"), Engine.test_id("storage-notice")]),
+			Html.p_s(AppStore.cells.storage_available.signal().map(Notes.storage_notice), [Engine.class("hint"), Engine.test_id("storage-notice")]),
 		],
 	)
 }
@@ -322,10 +341,10 @@ capture = |rows| {
 			),
 			Html.action_button(
 				Engine.const("Save note"),
-				draft.map2(rows, |typed, all| Notes.draft_body(typed) == "" or Notes.is_full(all)),
+				{ draft, rows, ready: AppStore.cells.ready.signal() }.Engine.Signal.map(|reading| !reading.ready or Notes.draft_body(reading.draft) == "" or Notes.is_full(reading.rows)),
 				[Engine.class("button-primary justify-self-start")],
 				Engine.handle_by(
-					{ draft: draft, id: AppStore.cells.board.signal().map(Notes.next_id), has_room: rows.map(|all| !Notes.is_full(all)) }.Engine.Signal,
+					{ draft: draft, id: AppStore.cells.board.signal().map(Notes.next_id), has_room: rows.map2(AppStore.cells.ready.signal(), |all, ready| ready and !Notes.is_full(all)) }.Engine.Signal,
 					|reading, _| AppStore.saved(reading),
 				),
 			),
@@ -349,9 +368,9 @@ outbox = |rows| Html.section(
 )
 
 ## The captured notes, without the synced ones while they are hidden.
-captured_notes : { rows : Signal(ctx, List(Notes.Row)), zone : Engine.Zone, language : Str } -> Elem(ctx)
+captured_notes : Signal(ctx, List(Notes.Row)) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
-captured_notes = |{ rows, zone, language }| {
+captured_notes = |rows| {
 	shown = rows.map2(AppStore.cells.hide_synced.signal(), |all, hide| if (hide) all.keep_if(|r| r.status != Synced) else all)
 	Html.section(
 		"Notes",
@@ -361,7 +380,7 @@ captured_notes = |{ rows, zone, language }| {
 			Engine.when(
 				rows.map(|r| r.is_empty()),
 				|| Html.p("No notes captured yet. Write one above — it will save even while you are offline.", "empty-state"),
-				|| Html.div("grid gap-3", [Engine.each(shown, |r| r.id, |row| note_card({ zone, language }, row))]),
+				|| Html.div("grid gap-3", [Engine.each(shown, |r| r.id, note_card)]),
 			),
 		],
 	)

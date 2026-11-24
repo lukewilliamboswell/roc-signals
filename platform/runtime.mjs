@@ -865,7 +865,11 @@ const COMMAND_APPLIERS = {
     let at = reader.at;
     const tpl = dv.getUint32(at, true);
     const n = dv.getUint32(at + 4, true);
-    this.templates[tpl] = mode === "update" || this.startup ? batch.definitions.get(offset) : this.parseTemplate(u8, dv, at + 8, n);
+    const definition = mode === "update" || this.startup ? batch.definitions.get(offset) : this.parseTemplate(u8, dv, at + 8, n);
+    this.templates[tpl] = definition;
+    for (const hole of definition.holes) {
+      if (hole.kind === HOLE_CLICK && hole.entry.kind !== this.protocol.KIND_SIZE && hole.entry.kind !== this.protocol.KIND_SEEN) this.listen(hole.name);
+    }
     this.sites[tpl] = new Set();
     at += 8 + n;
     return at;
@@ -4998,7 +5002,6 @@ export class RocEngineRuntime {
         const policies = dv.getUint32(at, true);
         at += 4;
         hole.entry = handlerEntry(hole.handler, payloadKind, policies, hole.name, this.protocol);
-        if (!dry && payloadKind !== this.protocol.KIND_SIZE && payloadKind !== this.protocol.KIND_SEEN) this.listen(hole.name);
       } else if (kind === HOLE_PROP) {
         hole.prop = u8[at++];
         if (!this.protocol.PROPS[hole.prop]) throw new Error(`unknown element property ${hole.prop}`);

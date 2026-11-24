@@ -13,6 +13,7 @@
     (expect-pending-effects 2)
     (expect-visible (text "Loading articles..."))
     (expect-visible (text "Loading tags..."))
+    (expect-absent (role link :name "Error envelopes worth rendering #23") :never-drawn)
     (stub-http "tags" :url "/api/tags" :status 200 :body "{\"tags\":[\"signals\",\"roc\",\"webdev\"]}")
     (run-effect 2)
     (expect-visible (role link :name "webdev"))

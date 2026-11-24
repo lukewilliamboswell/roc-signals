@@ -87,13 +87,13 @@
 
     (mark-metrics)
     (click (role button :name "Hide empty rows"))
-    (expect-absent (role region :name "Row 11"))
-    (expect-visible (role region :name "Row 12"))
+    (expect-absent (role row :name "Row 11"))
+    (expect-visible (role row :name "Row 12"))
     (expect-metric-delta rows_removed 1)
     (expect-metric-delta rows_created 0)
     (mark-metrics)
     (click (role button :name "Show all rows"))
-    (expect-visible (role region :name "Row 11"))
+    (expect-visible (role row :name "Row 11"))
     (expect-value (label "A11") "")
     ; Row 11 comes back as one outer row plus its eight cell rows.
     (expect-metric-delta rows_created 9)

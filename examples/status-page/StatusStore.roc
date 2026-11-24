@@ -25,7 +25,9 @@ StatusStore := [StatusPage].{
 		{
 			serial: Engine.cell(0.U64),
 			requests: Engine.cell(0.U64),
-			visible: Engine.cell(Bool.True),
+			visible: Engine.cell(Bool.False),
+			seed: Engine.cell(0.U128),
+			ready: Engine.cell(Bool.False),
 			checks: {
 				api: Engine.cell(Status.pending_check),
 				web: Engine.cell(Status.pending_check),
@@ -40,9 +42,13 @@ StatusStore := [StatusPage].{
 	## The store's cells.
 	cells = StatusStore.store.cells()
 
-	## The store a page starts with: showing or hidden, as the browser says.
-	start : Engine.Boot -> Engine.Store(_, _)
-	start = |boot| StatusStore.store.with_initial(StatusStore.cells.visible, boot.visible)
+	## The environment determines initial polling and seeds retry jitter.
+	initialized : Engine.Boot -> List(Engine.Write(_))
+	initialized = |facts| [
+		StatusStore.cells.visible.set(facts.visible),
+		StatusStore.cells.seed.set(facts.seed),
+		StatusStore.cells.ready.set(Bool.True),
+	]
 
 	## The cell that holds a service's latest check.
 	cell_of : Status.Service -> Cell(_, Status.Check)

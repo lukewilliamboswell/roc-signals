@@ -30,11 +30,11 @@
     (expect-visible (role heading :name "Statistics"))
     (expect-attr (role region :name "Statistics") data-panel "statistics")
     (expect-value (label "Reading speed") "200")
-    (expect-text (test-id "stat-words") "147")
-    (expect-text (test-id "stat-characters") "822")
+    (expect-text (test-id "stat-words") "146")
+    (expect-text (test-id "stat-characters") "823")
     (expect-text (test-id "stat-headings") "5")
     (expect-text (test-id "stat-reading") "1 min")
-    (expect-text (test-id "stat-summary") "147 words | 822 characters | 5 headings | 1 min")
+    (expect-text (test-id "stat-summary") "146 words | 823 characters | 5 headings | 1 min")
     ; Preview view: headings, paragraphs, nested list, quote, fence, inline markup.
     (expect-visible (text "Roc Signals Field Guide"))
     (expect-visible (text "Signals keep the graph alive instead of rebuilding a whole view after every event."))
@@ -66,9 +66,7 @@
     (expect-attr (test-id "toc:roc-signals-field-guide") data-level "1")
     (expect-attr (test-id "toc:getting-started") data-level "2")
     (expect-attr (test-id "toc:editor-notes") data-level "3")
-    ; The document jumps from level three straight to level five; the outline keeps
-    ; the real level rather than normalizing it away.
-    (expect-attr (test-id "toc:deep-dive") data-level "5")
+    (expect-attr (test-id "toc:deep-dive") data-level "4")
     (expect-attr (test-id "toc:performance") data-level "2")
     ; The outline is numbered on mount, so its labels stay distinct from the
     ; preview's heading text even though both show the same titles.

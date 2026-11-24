@@ -1,5 +1,7 @@
 (test "Status page — Live latency readings draw the chart"
   (steps
+    (run-opportunity)
+    (run-opportunity)
     ; The page subscribes to the latency feed at mount. The spec stands in
     ; for the feed's JavaScript: each `emit-port` is one message, and each
     ; message is one turn of the app.

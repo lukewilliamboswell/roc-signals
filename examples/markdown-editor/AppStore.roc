@@ -11,7 +11,7 @@ AppStore := [Editor].{
 	## draws, headings at four levels, and text that looks like markup but
 	## is not.
 	sample_document : Str
-	sample_document = "# Roc Signals Field Guide\n\nSignals keep the graph alive instead of rebuilding a whole view after every event.\n\n## Getting Started\n\nRun `roc check main.roc` before you build anything larger, then read the guide.\n\n- Read the guide end to end\n- Skim the gallery examples\n  - Live search covers async and cleanup\n- Write the spec first\n\n### Editor Notes\n\nSpecial characters such as * and _ and # stay literal when they are not real markup.\n\nA line that says 2 * 3 = 6 is arithmetic, not emphasis, and [not a link( either.\n\n##### Deep Dive\n\nThis heading skips from level three to level five on purpose.\n\n## Performance\n\n> Keep derived values derived.\n\n```\n# this hash lives inside a fence and is not a heading\n```\n\nUse **map2** for fan-in and `combine` for wide fan-in, and see [the guide](https://example.test/guide) for more."
+	sample_document = "# Roc Signals Field Guide\n\nSignals keep the graph alive instead of rebuilding a whole view after every event.\n\n## Getting Started\n\nRun `roc check main.roc` before you build anything larger, then read the guide.\n\n- Read the guide end to end\n- Skim the gallery examples\n  - Live search covers async and cleanup\n- Write the spec first\n\n### Editor Notes\n\nSpecial characters such as * and _ and # stay literal when they are not real markup.\n\nA line that says 2 * 3 = 6 is arithmetic, not emphasis, and [not a link( either.\n\n#### Deep Dive\n\nA fourth-level heading nests under Editor Notes in the outline.\n\n## Performance\n\n> Keep derived values derived.\n\n```\n# this hash lives inside a fence and is not a heading\n```\n\nUse **map2** for fan-in and `combine` for wide fan-in, and see [the guide](https://example.test/guide) for more."
 
 	## A document with nothing for the table of contents to show.
 	no_heading_document : Str
@@ -66,15 +66,16 @@ AppStore := [Editor].{
 	## A restored session draft wins over the saved document. It starts dirty:
 	## the app does not compare two possibly large texts to guess whether they
 	## agree. Without a draft the saved document, or the sample, is clean.
-	start : Engine.Boot -> _
-	start = |boot| {
+	restored_from : Engine.Boot -> List(Engine.Write(_))
+	restored_from = |boot| {
 		saved_document = Engine.boot_storage(boot, "md.document") ?? AppStore.sample_document
 		source = Engine.boot_session(boot, "md.draft") ?? saved_document
 		restored = Engine.boot_session(boot, "md.draft").is_ok()
-		AppStore.store
-			.with_initial(AppStore.cells.source, source)
-			.with_initial(AppStore.cells.revision, if (restored) 1 else 0)
-			.with_initial(AppStore.cells.draft_status, if (boot.session_available) Ready else Unavailable)
+		[
+			AppStore.cells.source.set(source),
+			AppStore.cells.revision.set(if (restored) 1 else 0),
+			AppStore.cells.draft_status.set(if (boot.session_available) Ready else Unavailable),
+		]
 	}
 
 	## What is drawn has not been saved when its revision differs, or when a
@@ -286,8 +287,8 @@ expect {
 
 ## A session draft starts dirty, while a saved document alone starts clean.
 expect {
-	draft = AppStore.start({ session: [("md.draft", "draft")], storage: [("md.document", "saved")] })
-	saved = AppStore.start({ storage: [("md.document", "saved")] })
+	draft = AppStore.store.after(AppStore.restored_from({ session: [("md.draft", "draft")], storage: [("md.document", "saved")] }))
+	saved = AppStore.store.after(AppStore.restored_from({ storage: [("md.document", "saved")] }))
 	(draft.read(AppStore.cells.source), draft.read(AppStore.cells.revision), saved.read(AppStore.cells.source), saved.read(AppStore.cells.revision)) == ("draft", 1, "saved", 0)
 }
 

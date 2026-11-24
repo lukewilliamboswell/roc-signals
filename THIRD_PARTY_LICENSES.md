@@ -62,11 +62,10 @@ pinned by bundle URL. Copyright © 2025 Luke Boswell and subsequent authors
 Permissive License (UPL), Version 1.0. The compiler fetches it; its source is
 not copied into this repository.
 
-Those three example pages load [plotly.js 4.2.0](https://github.com/plotly/plotly.js)
-from `https://cdn.plot.ly/plotly-4.2.0.min.js`, pinned with a subresource
-integrity hash in `www/data/examples.toml`. Copyright (c) 2016-2024 Plotly
-Technologies Inc.; MIT License. The browser fetches it from the CDN; it is not
-copied into this repository, the examples archive or the site.
+Those three example pages load the vendored [plotly.js 4.2.0](https://github.com/plotly/plotly.js)
+bundle served from `www/static/vendor/`. The catalogue pins its subresource
+integrity hash. The [MIT license](www/static/vendor/plotly-LICENSE.txt)
+ships beside the script.
 
 ## Fuzz and tooling dependencies
 

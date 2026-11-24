@@ -63,6 +63,7 @@ LogStore := [Explorer].{
 			# Construct the full union: an open Light initializer crashes monotype
 			# across store tests (https://github.com/roc-lang/roc/issues/13011).
 			theme: Engine.cell(TimelineChart.preferred_theme(Bool.False)),
+			theme_ready: Engine.cell(Bool.False),
 			generating: Engine.cell(Idle),
 			note: Engine.cell(NoNote),
 		}.Engine.Cells,
@@ -75,11 +76,15 @@ LogStore := [Explorer].{
 	dark_query : Str
 	dark_query = "(prefers-color-scheme: dark)"
 
-	## The first figure already uses the declared boot preference.
-	start : Engine.Boot -> Engine.Store(_, _)
-	start = |boot| match Engine.boot_media(boot, LogStore.dark_query) {
-		Ok(matches) => LogStore.store.with_initial(LogStore.cells.theme, TimelineChart.preferred_theme(matches))
-		Err(Undeclared) => crash "LogStore.start: color-scheme query was not declared"
+	## Read the initial preference after binding, through the same decision
+	## that handles later preference changes.
+	appearance : Try(Engine.Boot, [Refused]) -> List(Engine.Write(_))
+	appearance = |result| match result {
+		Ok(facts) => match Engine.boot_media(facts, LogStore.dark_query) {
+			Ok(matches) => LogStore.media_changed(Ok(matches)).concat([LogStore.cells.theme_ready.set(Bool.True)])
+			Err(Undeclared) => crash "LogStore.appearance: color-scheme query was not declared"
+		}
+		Err(Refused) => [LogStore.cells.theme_ready.set(Bool.True)]
 	}
 
 	## A size report supplies both capacity and the scroll map's height. The
@@ -322,9 +327,9 @@ expect {
 	actual == expected
 }
 
-## The boot preference is available before any subscription result.
+## The environment snapshot applies the initial theme.
 expect {
-	boot = LogStore.start({ media: [(LogStore.dark_query, Bool.True)] })
+	boot = LogStore.store.after(LogStore.appearance(Ok({ media: [(LogStore.dark_query, Bool.True)] })))
 	boot.read(LogStore.cells.theme) == Dark
 }
 

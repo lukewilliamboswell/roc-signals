@@ -32,6 +32,9 @@ AppStore := [FieldNotes].{
 			draft: Engine.cell(""),
 			hide_synced: Engine.cell(False),
 			clock: Engine.cell(0.I64),
+			locale: Engine.cell({ zone: Engine.utc, language: "en" }),
+			storage_available: Engine.cell(Bool.False),
+			ready: Engine.cell(Bool.False),
 			stamps: Engine.cell(Engine.outbox({})),
 			refreshes: Engine.cell(Engine.outbox({})),
 		}.Engine.Cells,
@@ -40,10 +43,16 @@ AppStore := [FieldNotes].{
 	## The store's cells.
 	cells = AppStore.store.cells()
 
-	## The store a session starts with: the notes kept in local storage on
-	## a board that knows whether the browser is online.
-	start : Engine.Boot -> Engine.Store(_, _)
-	start = |boot| AppStore.store.with_initial(AppStore.cells.board, Notes.seeded(Notes.initial(Notes.stored_notes(boot.storage), boot.online), boot.seed)).with_initial(AppStore.cells.clock, boot.now_ms)
+	## Restore the notes together with the environment they need for
+	## identities, syncing and formatting.
+	restored : Engine.Boot -> List(Engine.Write(_))
+	restored = |facts| [
+		AppStore.cells.board.set(Notes.seeded(Notes.initial(Notes.stored_notes(facts.storage), facts.online), facts.seed)),
+		AppStore.cells.clock.set(facts.now_ms),
+		AppStore.cells.locale.set({ zone: facts.zone, language: facts.languages.first() ?? crash "AppStore.restored: environment supplies a preferred language" }),
+		AppStore.cells.storage_available.set(facts.storage_available),
+		AppStore.cells.ready.set(Bool.True),
+	]
 
 	## The reader types in the new note's box.
 	drafted : Str -> List(Engine.Write(_))
@@ -241,7 +250,7 @@ expect {
 ## A capture posts its own generated id; stamping it and ticking the clock
 ## write different cells, and a full board cannot silently clear a draft.
 expect {
-	fresh = AppStore.start({ seed: 7, now_ms: 1234 })
+	fresh = AppStore.store.after(AppStore.restored({ seed: 7, now_ms: 1234 }))
 	id = Notes.next_id(fresh.read(AppStore.cells.board))
 	saved = fresh.after(AppStore.saved({ draft: "one", id, has_room: True }))
 	stamped = saved.after(AppStore.stamped({ id, at_ms: 5678 }))
@@ -259,7 +268,7 @@ expect {
 ## Refusing the fresh timer records the last sampled time, including a
 ## negative wall clock, and never leaves the saved note without a time.
 expect {
-	initial = AppStore.start({ seed: 7, now_ms: -1 })
+	initial = AppStore.store.after(AppStore.restored({ seed: 7, now_ms: -1 }))
 	id = Notes.next_id(initial.read(AppStore.cells.board))
 	saved = initial.after(AppStore.saved({ draft: "one", id, has_room: True }))
 	answered = saved.after(AppStore.capture_answer({ id, clock: saved.read(AppStore.cells.clock), result: Err(Refused) }))

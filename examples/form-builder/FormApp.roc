@@ -26,7 +26,7 @@ FormApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner.
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_boot| AppStore.store, |_boot| FormApp.view({}))
+	program = Engine.program_startup_store({ storage_keys: [], max_inflight: 32 }, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| AppStore.store, |_| FormApp.view({}))
 }
 
 ## What the preview is drawn over: the fields it reads, and the cells it
@@ -74,6 +74,7 @@ page = |sums| Html.div(
 				),
 			],
 		),
+		definition_controls({}),
 		Html.div(
 			"grid gap-5 lg:grid-cols-2",
 			[
@@ -88,7 +89,44 @@ page = |sums| Html.div(
 ## for the next field when it is pressed.
 add_button : Str, Form.Kind -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
-add_button = |label, kind| Html.button(label, [Engine.class("button button-sm")].concat(if (kind == Form.text_kind) [Engine.ref("add-text-field")] else []), Engine.handle_by(AppStore.cells.schema.next.signal(), |number, _| Schema.added(AppStore.cells.schema, { kind, number })))
+add_button = |label, kind| {
+	next = AppStore.cells.schema.next.signal()
+	attrs = [Engine.class("button button-sm"), Html.disabled(next.map(Schema.is_exhausted))]
+	Html.button(label, attrs.concat(if (kind == Form.text_kind) [Engine.ref("add-text-field")] else []), Engine.handle_by(next, |number, _| Schema.added(AppStore.cells.schema, { kind, number })))
+}
+
+## Save field definitions separately from transient answers and feedback.
+definition_controls : {} -> Elem(ctx)
+	where [ctx.store : () -> Engine.Reach(ctx, _)]
+definition_controls = |_| {
+	status = AppStore.cells.storage_status.signal()
+	next = AppStore.cells.schema.next.signal()
+	definition = { fields: AppStore.cells.schema.fields.signal(), next }.Engine.Signal
+	reading = { status, definition }.Engine.Signal
+	action = |label, intent| Html.button(
+		label,
+		[Engine.class("button button-sm"), Html.disabled(status.map(AppStore.is_storage_busy))],
+		Engine.handle_by(reading, |at, _| AppStore.storage_requested(intent, at)),
+	)
+	Html.section(
+		"Saved form",
+		"panel grid gap-3 p-4",
+		[
+			Html.h2("Saved form", "panel-title"),
+			Html.div(
+				"toolbar",
+				[action("Save definition", Save), action("Reopen saved definition", Reopen)],
+			),
+			Html.p_s(status.map(AppStore.storage_caption), [Engine.class("hint"), Engine.test_id("storage-status"), Engine.attr("aria-live", "polite")]),
+			Engine.on_post_by(
+				AppStore.cells.storage_intent.signal(),
+				status,
+				AppStore.storage_plan,
+				Engine.react_by({ status, next }.Engine.Signal, AppStore.storage_answered),
+			),
+		],
+	)
+}
 
 ## One figure, under its caption.
 stat : { caption : Str, id : Str }, Signal(ctx, Str) -> Elem(ctx)

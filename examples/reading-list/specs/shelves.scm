@@ -5,11 +5,11 @@
     (click (role button :name "Start reading Dune"))
     (expect-visible (role button :name "Finish Dune"))
     (expect-text (label "Reading") "Reading (2)")
-    (expect-port-sends "roc-signals.example/reading-list/put" 1)
-    (expect-port-sent "roc-signals.example/reading-list/put" 1 "{\"added_ms\":\"10\",\"author\":\"Frank Herbert\",\"id\":\"b1\",\"shelf\":\"Reading\",\"title\":\"Dune\"}")
+    (expect-port-sends "roc-signals.example/reading-list/move" 1)
+    (expect-port-sent "roc-signals.example/reading-list/move" 1 "{\"id\":\"b1\",\"shelf\":\"Reading\"}")
     (click (role button :name "Finish Piranesi"))
     (click (role button :name "Finish Dune"))
-    (expect-port-sent "roc-signals.example/reading-list/put" 3 "{\"added_ms\":\"10\",\"author\":\"Frank Herbert\",\"id\":\"b1\",\"shelf\":\"Finished\",\"title\":\"Dune\"}")
+    (expect-port-sent "roc-signals.example/reading-list/move" 3 "{\"id\":\"b1\",\"shelf\":\"Finished\"}")
     ; A shelf shows its own books.
     (click (role button :name "Finished"))
     (expect-attr (role button :name "Finished") aria-pressed "true")
@@ -19,9 +19,9 @@
     (click (role button :name "All"))
     ; Read again puts the book back on the reading shelf: a write of its own.
     (click (role button :name "Read Dune again"))
-    (expect-port-sends "roc-signals.example/reading-list/put" 4)
+    (expect-port-sends "roc-signals.example/reading-list/move" 4)
     (click (role button :name "Finish Dune"))
-    (expect-port-sends "roc-signals.example/reading-list/put" 5)
+    (expect-port-sends "roc-signals.example/reading-list/move" 5)
     ; One click removes every finished book, a command for each.
     (click (role button :name "Remove finished books"))
     (expect-text (test-id "status") "No books yet. Add the first one above.")

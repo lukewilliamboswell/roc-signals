@@ -3,6 +3,23 @@
 
 {% block title %}{{ page.title }} · Examples · {{ config.title }}{% endblock title %}
 {% block body_class %}example-standalone{% endblock body_class %}
+{% block site_loader %}<script type="module" src="__ROC_EXAMPLE_LOADER__"></script>{% endblock site_loader %}
+
+{% block extra_head %}
+{% set data = load_data(path="data/examples.toml") %}
+{% for example in data.examples %}
+  {% if example.slug == page.extra.slug %}
+    {% for font in example.preload_fonts | default(value=[]) %}
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="{{ get_url(path='fonts/' ~ font) }}">
+    {% endfor %}
+    {% for script in example.scripts | default(value=[]) %}
+      {% if script.chart | default(value=false) %}
+    <meta name="signals-plotly" content="{{ get_url(path='vendor/' ~ script.vendor) }}" data-integrity="{{ script.integrity }}"{% if script.preload | default(value=false) %} data-preload{% endif %}>
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+{% endfor %}
+{% endblock extra_head %}
 
 {% block content %}
 {% set data = load_data(path="data/examples.toml") %}
@@ -24,16 +41,16 @@
         <a class="button-primary" href="{{ get_url(path='examples/', trailing_slash=true) }}">All examples</a>
       </div>
     </div>
-    <div data-signals-wasm="{{ get_url(path='examples/' ~ example.slug ~ '/app.wasm') }}" data-signals-title="{{ example.title }}"{% if example.max_workers is defined %} data-signals-max-workers="{{ example.max_workers }}"{% endif %}{% if example.workers is defined %} data-signals-workers="{{ example.workers }}"{% endif %}{% if example.ports is defined %} data-signals-ports="{{ get_url(path='examples/' ~ example.slug ~ '/' ~ example.ports) }}"{% endif %}{% if example.backend is defined %} data-signals-backend="{{ get_url(path='examples/' ~ example.slug ~ '/' ~ example.backend) }}"{% endif %}></div>
+    <div data-roc-picture data-signals-wasm="__ROC_EXAMPLE_MODULE__" data-signals-title="{{ example.title }}"{% if example.max_workers is defined %} data-signals-max-workers="{{ example.max_workers }}"{% endif %}{% if example.workers is defined %} data-signals-workers="{{ example.workers }}"{% endif %}{% if example.ports is defined %} data-signals-ports="{{ get_url(path='examples/' ~ example.slug ~ '/' ~ example.ports) }}"{% endif %}{% if example.backend is defined %} data-signals-backend="{{ get_url(path='examples/' ~ example.slug ~ '/' ~ example.backend) }}"{% endif %}></div>
   </section>
-  {# Deferred, so they run in document order after parsing and before
-     site.mjs (a module script, also deferred) mounts the app. #}
+  {# Example scripts are deferred. The chart element loads its vendor script
+     when a chart is near the viewport. #}
   {% for script in example.scripts | default(value=[]) %}
   {% if script.shared is defined %}
   <script {% if script.module | default(value=false) %}type="module"{% else %}defer{% endif %} src="{{ get_url(path='examples/shared/' ~ script.shared) }}"></script>
-  {% elif script.src is starting_with("https://") %}
-  <script defer src="{{ script.src | safe }}" integrity="{{ script.integrity | safe }}" crossorigin="anonymous"></script>
-  {% else %}
+  {% elif script.vendor is defined and not script.chart | default(value=false) %}
+  <script defer src="{{ get_url(path='vendor/' ~ script.vendor) }}" integrity="{{ script.integrity }}"></script>
+  {% elif script.src is defined %}
   <script {% if script.module | default(value=false) %}type="module"{% else %}defer{% endif %} src="{{ get_url(path='examples/' ~ example.slug ~ '/' ~ script.src) }}"></script>
   {% endif %}
   {% endfor %}

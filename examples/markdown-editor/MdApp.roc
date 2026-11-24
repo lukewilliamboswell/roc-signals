@@ -42,6 +42,17 @@ MdApp := [].{
 					Stats.view({ source: AppStore.cells.source }, spine.map(|found| found.len())),
 					Html.div("grid gap-6 lg:grid-cols-2", [editor({}), Preview.view(blocks.lift())]),
 					Outline.view(spine),
+					Engine.watch(
+						Engine.const({}),
+						|_| [Engine.environment({})],
+						Engine.react_by(
+							AppStore.cells.revision.signal(),
+							|revision, _, result| match result {
+								Ok(facts) if revision == 0 => AppStore.restored_from(facts)
+								_ => []
+							},
+						),
+					),
 				].concat(persistence_sites({})),
 			),
 		),
@@ -50,7 +61,7 @@ MdApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner.
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: ["md.document"], session_keys: ["md.draft"] }, AppStore.start, |_| MdApp.view({}))
+	program = Engine.program_startup_store({ storage_keys: ["md.document"], session_keys: ["md.draft"] }, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| AppStore.store, |_| MdApp.view({}))
 }
 
 ## A captioned row of buttons.

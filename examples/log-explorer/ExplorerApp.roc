@@ -275,29 +275,33 @@ ExplorerApp := [].{
 		Html.div(
 			"grid gap-1",
 			[
-				Engine.element(
-					"plume-chart",
-					[
-						Engine.class("block"),
-						Engine.attr("role", "img"),
-						Engine.test_id("timeline"),
-						# The element reports a click on a point as the point's
-						# time, in its value and a change event.
-						Engine.attr("data-click", "x"),
-						Engine.attr_s("data-background", LogStore.cells.theme.signal().map(TimelineChart.background)),
-						Engine.attr_s("aria-label", answered.map(|a| a.map_ok(|{ o, over_time, .. }| ExplorerApp.timeline_label(o, over_time)) ?? "Timeline")),
-						Engine.attr_presence(
-							"data-figure",
-							answered.map(
-								|a| match a {
-									Ok({ o, over_time, theme }) => TimelineChart.figure({ timeline: o.timeline, matches: over_time, revision: "${o.size.to_str()}/${o.lines.to_str()}", theme })
-									Err(NoAnswer) => Absent
-								},
+				Engine.when(
+					LogStore.cells.theme_ready.signal(),
+					|| Engine.element(
+						"plume-chart",
+						[
+							Engine.class("block"),
+							Engine.attr("role", "group"),
+							Engine.test_id("timeline"),
+							# The element reports a click on a point as the point's
+							# time, in its value and a change event.
+							Engine.attr("data-click", "x"),
+							Engine.attr_s("data-background", LogStore.cells.theme.signal().map(TimelineChart.background)),
+							Engine.attr_s("aria-label", answered.map(|a| a.map_ok(|{ o, over_time, .. }| ExplorerApp.timeline_label(o, over_time)) ?? "Timeline")),
+							Engine.attr_presence(
+								"data-figure",
+								answered.map(
+									|a| match a {
+										Ok({ o, over_time, theme }) => TimelineChart.figure({ timeline: o.timeline, matches: over_time, revision: "${o.size.to_str()}/${o.lines.to_str()}", theme })
+										Err(NoAnswer) => Absent
+									},
+								),
 							),
-						),
-						Html.on_change(Engine.handle_by({ remote: r, geometry: LogStore.cells.place.geometry.signal() }.Signal, |at, clicked| LogStore.timeline_clicked({ answered: at.remote.answered(), geometry: at.geometry, clicked }))),
-					],
-					[],
+							Html.on_change(Engine.handle_by({ remote: r, geometry: LogStore.cells.place.geometry.signal() }.Signal, |at, clicked| LogStore.timeline_clicked({ answered: at.remote.answered(), geometry: at.geometry, clicked }))),
+						],
+						[],
+					),
+					|| Html.div("", []),
 				),
 				Html.p_s(answered.map(|a| a.map_ok(|{ o, over_time, .. }| ExplorerApp.peak_text(o, over_time)) ?? ""), [Engine.class("hint"), Engine.test_id("timeline-peak")]),
 			],
@@ -657,6 +661,7 @@ ExplorerApp := [].{
 					],
 				),
 				Engine.watch(Engine.const({}), |_| [Engine.media_changes(LogStore.dark_query)], Engine.react(|_, result| LogStore.media_changed(result))),
+				Engine.watch(Engine.const({}), |_| [Engine.environment({})], Engine.react(|_, result| LogStore.appearance(result))),
 				ExplorerApp.opener({}),
 				Html.div(
 					"toolbar",
@@ -692,7 +697,7 @@ ExplorerApp := [].{
 				# What the preparation and each later question took, from the
 				# runtime's monitor: the example's own element, which draws in
 				# its own shadow root and only reads.
-				Engine.element("log-timings", [Engine.class("block")], []),
+				Html.placeholder({}, "<div></div>", || Engine.element("log-timings", [Engine.class("block")], [])),
 				# The sample, written to a file by a task of its own.
 				Engine.watch_latest(
 					cells.generating.signal(),
@@ -707,5 +712,5 @@ ExplorerApp := [].{
 	}
 
 	program : Engine.Program
-	program = Engine.program_store({ media: [LogStore.dark_query] }, LogStore.start, |_boot| ExplorerApp.view({})).with_workers(ExplorerApp.registrations)
+	program = Engine.program_startup_store({ media: [LogStore.dark_query] }, Engine.entries({ fallback: Some("/") }, [{ path: "/", route: 0.U8 }]), |_| LogStore.store, |_| ExplorerApp.view({})).with_workers(ExplorerApp.registrations)
 }

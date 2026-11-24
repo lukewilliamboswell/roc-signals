@@ -54,8 +54,8 @@
     ; ---------------------------------------------------------------------------
 
     (click (role button :name "Load sample document"))
-    (expect-text (test-id "stat-words") "147")
-    (expect-text (test-id "stat-characters") "822")
+    (expect-text (test-id "stat-words") "146")
+    (expect-text (test-id "stat-characters") "823")
     (expect-text (test-id "stat-headings") "5")
     (expect-text (test-id "stat-reading") "1 min")
     (expect-visible (test-id "toc:roc-signals-field-guide"))

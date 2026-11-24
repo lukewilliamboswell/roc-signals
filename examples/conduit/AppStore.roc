@@ -1,13 +1,11 @@
 import pf.Engine exposing [Handler, Signal]
 import Article
 import CommentForm
-import Comments
 import Nav
 import Pages
 import Route
 import Locations
 import Session
-import Story
 
 ## Conduit's store: the state the whole app shares, held at the root and
 ## reached from any depth with no `lift` and no prop. Each cell's getter
@@ -41,10 +39,11 @@ AppStore := [Conduit].{
 		AppStore.Conduit,
 		{
 			session: Engine.cell(Session.Anonymous),
-			loc: Engine.cell(""),
+			loc: Engine.cell(AppStore.home_url),
+			ready: Engine.cell(Bool.False),
 			nav: Engine.cell(Engine.outbox({})),
 			incoming: Engine.cell(Session.Anonymous),
-			pages: Engine.cell(Pages.init("")),
+			pages: Engine.cell(Pages.public_home),
 			article: Article.cells({}),
 		}.Engine.Cells,
 	)
@@ -61,21 +60,22 @@ AppStore := [Conduit].{
 	home_url : Str
 	home_url = Locations.to_url(Locations.home_location)
 
-	## The store a reader starts with: the session kept in local storage
-	## and the location the page was opened at.
-	start : Engine.Boot -> Engine.Store(_, _)
-	start = |boot| {
-		session = match (Engine.boot_storage(boot, AppStore.jwt_key), Engine.boot_storage(boot, AppStore.username_key)) {
+	## Apply the page address and stored session together before asking for
+	## its data. Only the default anonymous feed keeps the public first page.
+	restored : Here, Engine.Boot -> List(Engine.Write(_))
+	restored = |at, facts| {
+		session : Session
+		session = match (Engine.boot_storage(facts, AppStore.jwt_key), Engine.boot_storage(facts, AppStore.username_key)) {
 			(Ok(token), Ok(username)) => SignedIn({ token, username })
 			_ => Anonymous
 		}
-		loc = if (boot.url.is_empty()) AppStore.home_url else boot.url
-		slug = Article.slug_of(loc)
-		AppStore.store
-			.with_initial(AppStore.cells.session, session)
-			.with_initial(AppStore.cells.loc, loc)
-			.with_initial(AppStore.cells.article.cells.story, Story.init(slug))
-			.with_initial(AppStore.cells.article.cells.comments, Comments.init(slug))
+		loc = if (facts.url.is_empty()) AppStore.home_url else facts.url
+		keep_public = !session.is_signed_in() and Locations.of_url(loc) == Route.home
+		# A move to another page kind already resets Pages. On a signed-in
+		# home route, reset in this same turn before Favorite buttons can use
+		# the anonymous answer's flags.
+		discard = if (Article.same_kind(at.loc, loc) and !keep_public) [AppStore.cells.pages.set(Pages.init(loc))] else []
+		AppStore.moved(at, loc).concat(discard).concat([AppStore.cells.session.set(session), AppStore.cells.ready.set(Bool.True)])
 	}
 
 	## Where the reader is and who they are, as one value.

@@ -132,7 +132,7 @@ Board := [].{
 			slug = Kanban.Column.slug(column)
 			Engine.element(
 				"section",
-				[Html.aria_label(heading), Engine.class_s(marker.map(|now| if (now.over == Nowhere) "panel min-w-0" else "panel min-w-0 ring-2 ring-blue-500")), Engine.attr_s("data-wip", wip.map(Kanban.WipState.attr))],
+				[Html.aria_label(heading), Html.zone("lane:${slug}"), Engine.class_s(marker.map(|now| if (now.over == Nowhere) "panel min-w-0" else "panel min-w-0 ring-2 ring-blue-500")), Engine.attr_s("data-wip", wip.map(Kanban.WipState.attr))],
 				[
 					Html.div(
 						"panel-head",
@@ -148,7 +148,7 @@ Board := [].{
 						],
 					),
 					Html.div_attrs(
-						[Engine.class("panel-body"), Html.zone("lane:${slug}"), Engine.test_id("lane-${slug}")],
+						[Engine.class("panel-body"), Engine.test_id("lane-${slug}")],
 						[
 							Html.p_s("${size.map(|held| held.shown)} shown", [Engine.class("hint numeric"), Engine.test_id("matching-${slug}")]),
 							Engine.table_view(
@@ -268,13 +268,15 @@ card_row = |{ cards, drag, column, size, marker }, title, card| {
 							Html.zone_s(title.map(|name| "grip:${name}")),
 							Engine.test_id_s(title.map(|name| "grip-${name}")),
 							Engine.attr("aria-hidden", "true"),
-							Engine.attr("style", "display:inline-flex;width:24px;height:24px;align-items:center;justify-content:center;touch-action:none;user-select:none;cursor:grab"),
+							Engine.attr("title", "Drag to move this card"),
+							Engine.attr("style", "display:inline-flex;align-items:center;touch-action:none;user-select:none"),
+							Engine.class("min-h-8 shrink-0 cursor-grab border border-zinc-300 px-1.5 text-xs font-medium hover:bg-zinc-100 active:cursor-grabbing"),
 							Html.on_pointer_down_capture(Engine.handle_by({ title: title, drag: drag.signal() }.Engine.Signal, |before, pointer| Board.started_drag(drag, { before: before.drag, title: before.title, pointer }))),
 							Html.on_pointer_move_paced(Engine.handle_by(drag.signal(), |before, pointer| Board.moved_drag(drag, { before, pointer }))),
 							Html.on_pointer_up(Engine.handle_by({ drag: drag.signal(), listing: cards.signal().map(|table| table.to_list()) }.Engine.Signal, |before, pointer| Board.finished_drag({ cards, drag }, { before: before.drag, listing: before.listing, pointer }))),
 							Html.on_pointer_cancel(Engine.handle_by(drag.signal(), |before, pointer| Board.cancelled_drag(drag, { before, pointer }))),
 						],
-						[Engine.text("⠿")],
+						[Engine.text("⠿ Drag")],
 					),
 					Engine.element("h3", [Engine.class("card-title min-w-0")], [Engine.text_s(title)]),
 					Engine.when(

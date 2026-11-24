@@ -9,6 +9,7 @@
     <link rel="icon" href="{{ get_url(path='favicon.svg') }}" type="image/svg+xml">
     <script src="{{ get_url(path='appearance.js') }}"></script>
     <link rel="stylesheet" href="{{ get_url(path='signals.css') }}">
+    {% block extra_head %}{% endblock extra_head %}
   </head>
   <body class="min-h-screen {% block body_class %}{% endblock body_class %}">
     <header class="site-header" data-site-header>
@@ -29,6 +30,6 @@
       </nav>
     </header>
     {% block content %}{% endblock content %}
-    <script type="module" src="{{ get_url(path='site.mjs') }}"></script>
+    {% block site_loader %}<script type="module" src="{{ get_url(path='site.mjs') }}"></script>{% endblock site_loader %}
   </body>
 </html>

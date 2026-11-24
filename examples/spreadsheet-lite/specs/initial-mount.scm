@@ -6,9 +6,9 @@
     (expect-visible (role region :name "Formula bar"))
     (expect-visible (role region :name "Sheet controls"))
     (expect-visible (role region :name "Sheet grid"))
-    (expect-visible (role region :name "Row 1"))
-    (expect-visible (role region :name "Row 11"))
-    (expect-visible (role region :name "Row 12"))
+    (expect-visible (role row :name "Row 1"))
+    (expect-visible (role row :name "Row 11"))
+    (expect-visible (role row :name "Row 12"))
     ; Header row of literals.
     (expect-value (label "A1") "Item")
     (expect-value (label "B1") "Q1")

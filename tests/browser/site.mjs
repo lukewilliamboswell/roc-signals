@@ -1,5 +1,5 @@
-// The built site is the fixture: check source fidelity, controls and computed
-// colors in Chrome, without mounting an app or changing engine semantics.
+// The built site is the fixture: check page startup, source fidelity,
+// controls and computed colors in Chrome.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -11,6 +11,8 @@ const index = await fs.readFile(path.join(root, "index.html"), "utf8");
 assert(index.indexOf("/appearance.js") < index.indexOf("/signals.css"), "theme initializes before styles paint");
 const published = index.match(/href="([^"]+)\/signals.css"/)[1];
 let origin;
+let moduleGate = null;
+let plotlyRequests = 0;
 const server = createServer(async (req, res) => {
   try {
     const name = decodeURIComponent(new URL(req.url, "http://localhost").pathname).replace(/^\/roc-signals\//, "");
@@ -20,9 +22,11 @@ const server = createServer(async (req, res) => {
     const ext = path.extname(filename);
     // Localize navigation and assets without rewriting a published URL that
     // appears as text inside a source sample: that text is the fidelity oracle.
-    if (ext === ".html") data = Buffer.from(data.toString().replace(/(\b(?:href|src)=["'])([^"']*)/g, (attribute, prefix, value) =>
+    if (ext === ".html") data = Buffer.from(data.toString().replace(/(\b(?:href|src|data-signals-ports|data-signals-backend)=["']|<meta name="signals-plotly" content=")([^"']*)/g, (attribute, prefix, value) =>
       value.startsWith(`${published}/`) ? `${prefix}${origin}/roc-signals${value.slice(published.length)}` : attribute));
-    res.writeHead(200, { "content-type": ({ ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript", ".html": "text/html; charset=utf-8" })[ext] ?? "application/octet-stream" }).end(data);
+    if (ext === ".wasm") await moduleGate;
+    if (/^vendor\/plotly-.*\.js$/.test(name)) plotlyRequests++;
+    res.writeHead(200, { "content-type": ({ ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json", ".wasm": "application/wasm", ".html": "text/html; charset=utf-8" })[ext] ?? "application/octet-stream" }).end(data);
   } catch (_) { res.writeHead(404).end("not found"); }
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -422,6 +426,121 @@ try {
   assert(schemeSamples > 0 && schemeCopied.light && schemeCopied.dark);
   assert(htmlSamples > 0 && htmlCopied.light && htmlCopied.dark);
   console.log(`site browser: passed ${samples} sample renderings (${schemeSamples} highlighted Scheme, ${htmlSamples} highlighted HTML), ${downloads} published source downloads, ${colors} text colors; minimum contrast ${minimum}:1; both themes, real settled hover, system changes, storage, keyboard, copy, escaping and mobile layout`);
+
+  const examples = (await fs.readdir(path.join(root, "examples"), { withFileTypes: true })).filter(entry => entry.isDirectory() && entry.name !== "shared");
+  const chartExamples = new Map([["status-page", 2], ["million-row-explorer", 4], ["log-explorer", 1]]);
+  for (const { name } of examples) {
+    const examplePage = await browser.newPage();
+    const chartCount = chartExamples.get(name);
+    const mobile = chartCount !== undefined;
+    await examplePage.send("Emulation.setDeviceMetricsOverride", { width: mobile ? 390 : 1480, height: mobile ? 844 : 1040, deviceScaleFactor: 1, mobile });
+    await examplePage.evaluateOnNewDocument(() => {
+      document.addEventListener("roc-signals:runtime", event => { window.exampleRuntime = event.detail.runtime; });
+    });
+    const query = name === "million-row-explorer" ? "?orders=1000&feed=paused" : "";
+    const requestsBefore = plotlyRequests;
+    let releaseModule;
+    moduleGate = new Promise(resolve => { releaseModule = resolve; });
+    try {
+      await examplePage.goto(`${origin}/roc-signals/examples/${name}/${query}`);
+      const before = await examplePage.evaluate(() => {
+        const root = document.querySelector("[data-signals-wasm][data-roc-frame]");
+        const heading = root?.querySelector("h1");
+        window.firstHeading = heading;
+        return { mounted: !!window.exampleRuntime, heading: heading?.textContent.trim(), visible: !!heading?.getBoundingClientRect().height };
+      });
+      assert(before.heading && before.visible && !before.mounted, `${name} has a visible first frame before Wasm`);
+      if (name === "conduit") {
+        const firstArticle = await examplePage.evaluate(() => {
+          const link = document.querySelector('section[data-conduit="article-list"] article a[href*="#/article/"]');
+          window.firstArticle = link;
+          return link?.getBoundingClientRect().height ? link.textContent : null;
+        });
+        assert.equal(firstArticle, "Error envelopes worth rendering #23", "Conduit prerenders the public feed");
+      }
+      if (name === "status-page") {
+        await examplePage.evaluate(async () => {
+          await document.fonts.ready;
+          window.statusTop = document.querySelector('section[aria-label="Overall status"]').getBoundingClientRect().top;
+        });
+      }
+      assert.equal(plotlyRequests, requestsBefore, `${name} leaves Plotly out of the first frame`);
+    } finally {
+      releaseModule();
+      moduleGate = null;
+    }
+    await examplePage.waitForFunction(() => !!window.exampleRuntime);
+    assert(await examplePage.evaluate(() => {
+      const root = document.querySelector("[data-signals-wasm]");
+      return !window.exampleRuntime.poisoned && root.querySelector("h1") === window.firstHeading;
+    }), `${name} keeps its first heading during hydration`);
+    if (name === "conduit") {
+      assert(await examplePage.evaluate(() => window.firstArticle === document.querySelector('section[data-conduit="article-list"] article a[href*="#/article/"]')),
+        "Conduit keeps the first public article during hydration");
+    }
+    if (name === "status-page") {
+      await examplePage.waitForFunction(() => document.querySelector('[data-testid="overall-rollup"]').textContent === "All systems operational");
+      assert.equal(await examplePage.evaluate(() => document.querySelector('section[aria-label="Overall status"]').getBoundingClientRect().top - window.statusTop), 0,
+        "Status Page's live banner keeps the following mobile content in place");
+    }
+    if (name === "kanban-board") {
+      const center = selector => examplePage.$eval(selector, element => {
+        const rect = element.getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+      });
+      const grip = await center('[data-testid="grip-Draft onboarding copy"]');
+      const target = await center('section[aria-label="In Progress"] h2');
+      await examplePage.send("Input.dispatchMouseEvent", { type: "mousePressed", ...grip, button: "left", buttons: 1, clickCount: 1, pointerType: "mouse" });
+      await examplePage.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...target, button: "left", buttons: 1, pointerType: "mouse" });
+      await examplePage.waitForFunction(() => document.querySelector('[data-testid="drag-status"]')?.textContent === "Moving Draft onboarding copy to In Progress, place 2");
+      await examplePage.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...target, button: "left", buttons: 0, clickCount: 1, pointerType: "mouse" });
+      await examplePage.waitForFunction(() => document.querySelector('[data-testid="card-position-Draft onboarding copy"]')?.textContent === "2 of 2 in In Progress");
+    }
+    if (chartCount) {
+      const preloadsPlotly = name !== "log-explorer";
+      const vendor = await examplePage.$eval('meta[name="signals-plotly"]', meta => meta.content);
+      assert.equal(new URL(vendor).origin, origin);
+      if (preloadsPlotly) {
+        await examplePage.waitForFunction(url => performance.getEntriesByName(url).length > 0, {}, vendor);
+        assert.equal(plotlyRequests, requestsBefore + 1, `${name} fetches Plotly once after hydration`);
+        assert.equal(await examplePage.evaluate(() => document.querySelectorAll('link[rel=preload][as=font][crossorigin]').length), 4);
+      } else {
+        assert.equal(plotlyRequests, requestsBefore, `${name} waits for the first chart before fetching Plotly`);
+      }
+      assert.equal(await examplePage.evaluate(() => !!window.Plotly), false, `${name} keeps Plotly unevaluated before reaching a chart`);
+      if (name === "million-row-explorer") {
+        await examplePage.waitForFunction(() => document.querySelector('[data-testid="size"]')?.textContent === "1,000 orders. Generate");
+      }
+      if (name === "log-explorer") {
+        await examplePage.evaluate(() => {
+          const entries = document.querySelector('input[aria-label="Entries"]');
+          entries.value = "1000";
+          entries.dispatchEvent(new Event("input", { bubbles: true }));
+          [...document.querySelectorAll("button")].find(button => button.textContent === "Generate a sample log").click();
+        });
+      }
+      for (let index = 0; index < chartCount; index++) {
+        await examplePage.waitForFunction(index => !!document.querySelectorAll("plume-chart")[index]?.dataset.figure, {}, index);
+        await examplePage.evaluate(index => document.querySelectorAll("plume-chart")[index].scrollIntoView({ block: "center" }), index);
+        await examplePage.waitForFunction(index => !!document.querySelectorAll("plume-chart")[index]?.querySelector("svg.main-svg"), {}, index);
+      }
+      assert(await examplePage.evaluate(url => {
+        const meta = document.querySelector('meta[name="signals-plotly"]');
+        return [...document.scripts].some(script => script.src === url && script.integrity === meta.dataset.integrity);
+      }, vendor), `${name} applies the catalog integrity to the downloaded script`);
+      assert.equal(plotlyRequests, requestsBefore + 1, `${name} shares one vendor download across charts`);
+      if (name === "status-page") {
+        assert.deepEqual(await examplePage.evaluate(() => ["uptime-chart", "latency-chart"].map(id =>
+          document.querySelector(`[data-testid="${id}"]`).parentElement.getBoundingClientRect().height)), [280, 320]);
+        await examplePage.waitForFunction(() => Number(document.querySelector("latency-feed-monitor")?.shadowRoot?.querySelector("[data-field=messages]")?.textContent) > 0);
+      }
+    }
+    const foreign = await examplePage.evaluate(() => performance.getEntriesByType("resource").map(entry => entry.name).filter(url => new URL(url).origin !== location.origin));
+    assert.deepEqual(foreign, [], `${name} loads its startup resources from the site`);
+    assert.deepEqual(examplePage.errors, [], name);
+    await examplePage.close();
+  }
+  console.log(`site browser: ${examples.length} example first frames shown before Wasm and hydrated in place`);
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

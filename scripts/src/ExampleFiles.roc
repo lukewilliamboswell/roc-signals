@@ -1,29 +1,29 @@
 import cli.Path
 
 ## The files an example's page loads at run time besides its `app.wasm`, as
-## `www/data/examples.toml` names them: the scripts its page loads
-## (`[[examples.scripts]]` with a relative `src`), its port handlers
+## `www/data/examples.toml` names them: its scripts (`[[examples.scripts]]`
+## with `src`, `shared` or `vendor`), its port handlers
 ## (`ports`), its simulated service (`backend`) and the data it downloads
 ## (`data`). The site build copies each beside the app, so the catalogue is
 ## the one place an example declares them. A script several examples load
 ## (`shared` in place of `src`) lives in `examples/shared/` and is copied
-## there once.
+## there once. Zola publishes `vendor` scripts from `www/static/vendor/`.
 ##
 ## The catalogue is read line by line, not as general TOML: a table header,
 ## a comment, a blank line or `key = value`. The keys above must hold a
-## plain string, `true`/`false`, or a one-line list of plain strings, and
-## name a file directly in the example's directory; anything else they hold
-## is refused with its line, rather than guessed at.
+## plain string or a one-line list of plain strings. Each name identifies a
+## file directly in the directory selected by its key. Invalid names are
+## refused with their line.
 ExampleFiles := [].{
 	catalog = "www/data/examples.toml"
 
-	## One file to copy: `from` relative to the repository root, `to`
-	## relative to the built site.
-	Copy : { from : Str, to : Str }
+	## A catalogue asset and how it reaches the built site. The source is
+	## relative to the repository root and a copy's destination to the site.
+	Asset : { from : Str, publish : [CopyTo(Str), Zola] }
 
-	## The copies the catalogue's text names, in catalogue order.
-	copies : Str -> Try(List(Copy), [Unreadable(Str)])
-	copies = |text| {
+	## The assets the catalogue names, in catalogue order.
+	assets : Str -> Try(List(Asset), [Unreadable(Str)])
+	assets = |text| {
 		var $out = []
 		var $slug = ""
 		var $table = ""
@@ -38,7 +38,7 @@ ExampleFiles := [].{
 				parts = line.split_on(" = ")
 				key = (parts.first() ?? "").trim()
 				value = Str.join_with(parts.drop_first(1), " = ").trim()
-				names_a_file = key == "ports" or key == "backend" or key == "data" or ($table == "[[examples.scripts]]" and (key == "src" or key == "shared"))
+				names_a_file = key == "ports" or key == "backend" or key == "data" or ($table == "[[examples.scripts]]" and (key == "src" or key == "shared" or key == "vendor"))
 				if names_a_file and $slug == "" {
 					return Err(Unreadable(raw))
 				}
@@ -53,16 +53,19 @@ ExampleFiles := [].{
 						$out = $out.append(ExampleFiles.own($slug, name))
 					}
 				} else if $table == "[[examples.scripts]]" and key == "src" {
-					src = ExampleFiles.string(value) ? |_| Unreadable(raw)
-					if !src.starts_with("https://") {
-						name = ExampleFiles.file_name(value) ? |_| Unreadable(raw)
-						$out = $out.append(ExampleFiles.own($slug, name))
-					}
+					name = ExampleFiles.file_name(value) ? |_| Unreadable(raw)
+					$out = $out.append(ExampleFiles.own($slug, name))
 				} else if $table == "[[examples.scripts]]" and key == "shared" {
 					name = ExampleFiles.file_name(value) ? |_| Unreadable(raw)
-					copy = ExampleFiles.shared(name)
-					if !$out.contains(copy) {
-						$out = $out.append(copy)
+					asset = ExampleFiles.shared(name)
+					if !$out.contains(asset) {
+						$out = $out.append(asset)
+					}
+				} else if $table == "[[examples.scripts]]" and key == "vendor" {
+					name = ExampleFiles.file_name(value) ? |_| Unreadable(raw)
+					asset = { from: "www/static/vendor/${name}", publish: Zola }
+					if !$out.contains(asset) {
+						$out = $out.append(asset)
 					}
 				}
 			}
@@ -71,13 +74,19 @@ ExampleFiles := [].{
 	}
 
 	## A file in the example's own directory, served beside its app.
-	own : Str, Str -> Copy
-	own = |slug, name| { from: "examples/${slug}/${name}", to: "examples/${slug}/${name}" }
+	own : Str, Str -> Asset
+	own = |slug, name| {
+		path = "examples/${slug}/${name}"
+		{ from: path, publish: CopyTo(path) }
+	}
 
 	## A script several examples load (`shared` in a script's table): a file
 	## in `examples/shared/`, served once at `examples/shared/` in the site.
-	shared : Str -> Copy
-	shared = |name| { from: "examples/shared/${name}", to: "examples/shared/${name}" }
+	shared : Str -> Asset
+	shared = |name| {
+		path = "examples/shared/${name}"
+		{ from: path, publish: CopyTo(path) }
+	}
 
 	## A plain string value: `"text"`, with no quote or backslash inside.
 	string : Str -> Try(Str, [NotAString])
@@ -113,16 +122,24 @@ ExampleFiles := [].{
 		Ok($names)
 	}
 
-	## Copy every file the catalogue names from `root` into `dist`, each
-	## directory created as needed. A file that does not exist fails the
-	## copy, so a page never refers to a file the site lacks.
+	## Publish the example files from `root` into `dist`, each directory
+	## created as needed. Zola has already published the vendored scripts.
 	copy_all! : Str, Str => Try({}, _)
 	copy_all! = |root, dist| {
 		text = Path.read_utf8!(Path.utf8("${root}/${ExampleFiles.catalog}"))?
-		for { from, to } in ExampleFiles.copies(text)? {
-			dir = to.split_on("/").drop_last(1)
-			Path.create_all!(Path.utf8("${dist}/${Str.join_with(dir, "/")}"))?
-			Path.copy!(Path.utf8("${root}/${from}"), Path.utf8("${dist}/${to}"))?
+		for { from, publish } in ExampleFiles.assets(text)? {
+			match publish {
+				CopyTo(to) => {
+					dir = to.split_on("/").drop_last(1)
+					Path.create_all!(Path.utf8("${dist}/${Str.join_with(dir, "/")}"))?
+					Path.copy!(Path.utf8("${root}/${from}"), Path.utf8("${dist}/${to}"))?
+				}
+				Zola => {
+					if !Path.exists!(Path.utf8("${root}/${from}"))? {
+						return Err(MissingVendorScript(from))
+					}
+				}
+			}
 		}
 		Ok({})
 	}
@@ -172,7 +189,7 @@ ExampleFiles := [].{
 	check! = |root| {
 		text = Path.read_utf8!(Path.utf8("${root}/${ExampleFiles.catalog}"))?
 		sections = ExampleFiles.unsectioned(text).map(|slug| "${ExampleFiles.catalog}: example ${slug} names no section of the index")
-		match ExampleFiles.copies(text) {
+		match ExampleFiles.assets(text) {
 			Err(Unreadable(line)) => Ok(sections.append("${ExampleFiles.catalog}: cannot read the file this line names: ${line.trim()}"))
 			Ok(named) => {
 				var $out = sections
@@ -209,8 +226,7 @@ expect {
 	ExampleFiles.unsectioned(text) == ["b", "c"]
 }
 
-## Each kind of file an example names is copied from its directory to the
-## same place in the site; a script from a CDN is not copied.
+## Example files keep their paths, and Zola publishes each vendored script.
 expect {
 	text =
 		\\# The catalogue.
@@ -222,14 +238,14 @@ expect {
 		\\data = ["one.csv", "two.json"]
 		\\
 		\\[[examples.scripts]]
-		\\src = "https://cdn.example/x.js"
-		\\
-		\\[[examples.scripts]]
 		\\src = "chart.mjs"
 		\\module = true
 		\\
 		\\[[examples.scripts]]
 		\\shared = "panel.mjs"
+		\\
+		\\[[examples.scripts]]
+		\\vendor = "plotly.js"
 		\\
 		\\[[examples]]
 		\\slug = "b"
@@ -238,19 +254,26 @@ expect {
 		\\[[examples.scripts]]
 		\\module = true
 		\\shared = "panel.mjs"
-	ExampleFiles.copies(text)
+	ExampleFiles.assets(text)
 		== Ok([
-			{ from: "examples/a/ports.mjs", to: "examples/a/ports.mjs" },
-			{ from: "examples/a/backend.mjs", to: "examples/a/backend.mjs" },
-			{ from: "examples/a/one.csv", to: "examples/a/one.csv" },
-			{ from: "examples/a/two.json", to: "examples/a/two.json" },
-			{ from: "examples/a/chart.mjs", to: "examples/a/chart.mjs" },
-			{ from: "examples/shared/panel.mjs", to: "examples/shared/panel.mjs" },
+			{ from: "examples/a/ports.mjs", publish: CopyTo("examples/a/ports.mjs") },
+			{ from: "examples/a/backend.mjs", publish: CopyTo("examples/a/backend.mjs") },
+			{ from: "examples/a/one.csv", publish: CopyTo("examples/a/one.csv") },
+			{ from: "examples/a/two.json", publish: CopyTo("examples/a/two.json") },
+			{ from: "examples/a/chart.mjs", publish: CopyTo("examples/a/chart.mjs") },
+			{ from: "examples/shared/panel.mjs", publish: CopyTo("examples/shared/panel.mjs") },
+			{ from: "www/static/vendor/plotly.js", publish: Zola },
 		])
+}
+
+## The catalogue refuses remote example scripts.
+expect {
+	line = "src = \"https://cdn.example/x.js\""
+	ExampleFiles.assets("[[examples]]\nslug = \"a\"\n[[examples.scripts]]\n${line}\n") == Err(Unreadable(line))
 }
 
 ## A value the reader cannot be sure of is refused with its line.
 expect {
 	bad = ["backend = \"../x.mjs\"", "ports = 'p.mjs'", "data = [\"a.csv\", 3]", "backend = \"b.mjs\" # trailing"]
-	bad.all(|line| ExampleFiles.copies("[[examples]]\nslug = \"a\"\n${line}\n") == Err(Unreadable(line)))
+	bad.all(|line| ExampleFiles.assets("[[examples]]\nslug = \"a\"\n${line}\n") == Err(Unreadable(line)))
 }
