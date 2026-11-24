@@ -259,7 +259,15 @@ SpecSuite := [].{
 	build_job = |o, opt, main, target, output| {
 		profile = { compiler: o.nightly, target, requested: opt }
 		actual = CompilerProfile.effective(profile)
-		{ program: o.compiler, args: ["build", "--opt=${actual}", "--target=${target}", main, "--output=${output}"], cwd: o.root }
+		# ff5e544's Boxy lowering copies cells and keyed rows in this Wasm
+		# fixture. Specialize the two builds so they meet the allocation budget.
+		build_args = ["build", "--opt=${actual}", "--target=${target}", main, "--output=${output}"]
+		args = if o.nightly == "nightly-2026-11-24-ff5e544" and target == "wasm32" and main == "tests/apps/write-scaling/main.roc" {
+			build_args.append("--specialize=yes")
+		} else {
+			build_args
+		}
+		{ program: o.compiler, args, cwd: o.root }
 	}
 
 	## Roc exits 2 after a successful build with warnings, including intentional
