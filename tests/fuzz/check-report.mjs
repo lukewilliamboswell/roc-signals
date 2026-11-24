@@ -170,6 +170,9 @@ async function main(argv) {
     const entry = options.buildCommand[4];
     const output = options.buildCommand[5];
     const expected = ["build", `--opt=${optimizer}`, "--timings", entry, output];
+    if (options["compiler-version"] === "nightly-2026-11-24-ff5e544" && entry === "FuzzRendering.roc") {
+      expected.push("--specialize=no");
+    }
     need(options.buildCommand.length === expected.length + 1 && isDeepStrictEqual(options.buildCommand.slice(1), expected), "unexpected smoke compiler flags");
     need(typeof output === "string" && output.startsWith("--output=") && path.resolve(cwd, output.slice(9)) === binary, "smoke output path mismatch");
     need(typeof entry === "string" && entry.endsWith(".roc") && !path.isAbsolute(entry) && path.resolve(cwd, entry).startsWith(cwd + path.sep), "missing relative target entry");

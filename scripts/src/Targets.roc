@@ -305,7 +305,17 @@ Targets := [].{
 	## A plain optimized build of the actual suite app. This job is separate
 	## from covered build_fuzz_all!; it never supplies a campaign.
 	smoke_build_job : SpecSuite.Options, Fuzz -> Proc.Job
-	smoke_build_job = |o, t| { program: o.compiler, args: ["build", "--opt=${Targets.fuzz_opt(o)}", "--timings", t.suite, "--output=${Targets.smoke_exe_of(o, t)}"], cwd: o.root }
+	smoke_build_job = |o, t| {
+		build_args = ["build", "--opt=${Targets.fuzz_opt(o)}", "--timings", t.suite, "--output=${Targets.smoke_exe_of(o, t)}"]
+		# Bound this suite's compiler memory on hosted runners while keeping
+		# the speed optimizer and every replay.
+		args = if o.nightly == "nightly-2026-11-24-ff5e544" and t.suite == "FuzzRendering.roc" {
+			build_args.append("--specialize=no")
+		} else {
+			build_args
+		}
+		{ program: o.compiler, args, cwd: o.root }
+	}
 
 	## Check every declared example of each selected target. A failed build
 	## result blocks only its own replay; other built targets are checked.
