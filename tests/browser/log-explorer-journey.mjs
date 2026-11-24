@@ -80,6 +80,7 @@ function install() {
     window.__rt = await mountRocEngineApp({ wasmUrl: "/app.wasm", root, onFault: () => {}, ...options });
     window.__rt.monitor.subscribe((e) => window.__events.push(e));
     // As the site's page does once the app is mounted.
+    root.addEventListener("roc-signals:runtime-request", event => event.detail(window.__rt));
     root.dispatchEvent(new CustomEvent("roc-signals:runtime", { bubbles: true, detail: { runtime: window.__rt } }));
     return true;
   };
