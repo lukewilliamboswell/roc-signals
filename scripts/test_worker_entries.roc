@@ -2,7 +2,7 @@
 app [main!] {
 	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst",
 	pf: "../platform/main-fuzz.roc",
-	roc: "nightly-2026-11-14-a87808d",
+	roc: "nightly-2026-11-23-b5c77fc",
 }
 
 import cli.OsStr

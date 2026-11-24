@@ -857,7 +857,8 @@ Scm := [].{
 
 	## A parsed spec file and its resolved browser facts. The defaulted field
 	## also lets a pure harness construct a spec with Boot's default environment.
-	Spec := { name : Str, setup : List({ item : Setup, pos : Pos }), steps : List(Step), environment : Environment ?? {}, mount_root : MountRoot ?? { namespace: "http://www.w3.org/1999/xhtml", prefix: "", local: "div" } }.{
+	# Name the nominal type directly so Roc can lower its defaults (roc-lang/roc#13372).
+	Spec := { name : Str, setup : List({ item : Setup, pos : Pos }), steps : List(Step), environment : Core.Boot ?? {}, mount_root : MountRoot ?? { namespace: "http://www.w3.org/1999/xhtml", prefix: "", local: "div" } }.{
 
 		## Structural equality includes source positions and resolved environment
 		## facts alongside setup and steps, allowing parser consistency tests to
