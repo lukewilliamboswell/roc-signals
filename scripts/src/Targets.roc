@@ -309,7 +309,7 @@ Targets := [].{
 		build_args = ["build", "--opt=${Targets.fuzz_opt(o)}", "--timings", t.suite, "--output=${Targets.smoke_exe_of(o, t)}"]
 		# Bound this suite's compiler memory on hosted runners while keeping
 		# the speed optimizer and every replay.
-		args = if o.nightly == "nightly-2026-11-24-ff5e544" and t.suite == "FuzzRendering.roc" {
+		args = if o.nightly == "nightly-2026-11-24-ff5e544" and ["FuzzRendering.roc", "FuzzLifecycle.roc"].contains(t.suite) {
 			build_args.append("--specialize=no")
 		} else {
 			build_args

@@ -170,7 +170,7 @@ async function main(argv) {
     const entry = options.buildCommand[4];
     const output = options.buildCommand[5];
     const expected = ["build", `--opt=${optimizer}`, "--timings", entry, output];
-    if (options["compiler-version"] === "nightly-2026-11-24-ff5e544" && entry === "FuzzRendering.roc") {
+    if (options["compiler-version"] === "nightly-2026-11-24-ff5e544" && ["FuzzRendering.roc", "FuzzLifecycle.roc"].includes(entry)) {
       expected.push("--specialize=no");
     }
     need(options.buildCommand.length === expected.length + 1 && isDeepStrictEqual(options.buildCommand.slice(1), expected), "unexpected smoke compiler flags");

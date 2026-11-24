@@ -178,6 +178,8 @@ try {
   for (const [overrides, status] of [
     [{ ...affected, compilerFlags: ["--specialize=no"] }, 0],
     [affected, 1],
+    [{ ...affected, entry: "FuzzLifecycle.roc", compilerFlags: ["--specialize=no"] }, 0],
+    [{ ...affected, entry: "FuzzLifecycle.roc" }, 1],
     [{ ...affected, entry: "entry.roc", compilerFlags: ["--specialize=no"] }, 1],
     [{ ...affected, compilerVersion: "unit-test", compilerFlags: ["--specialize=no"] }, 1],
   ]) {
